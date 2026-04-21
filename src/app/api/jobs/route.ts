@@ -65,13 +65,23 @@ export async function POST(req: NextRequest) {
     await incrementIpJobCount(ip);
   }
 
-  const job = await createJob({
-    url: body.url,
-    stems: body.stems,
-    bars: body.bars,
-  });
-
-  return Response.json({ id: job.id }, { status: 201 });
+  try {
+    const job = await createJob({
+      url: body.url,
+      stems: body.stems,
+      bars: body.bars,
+    });
+    return Response.json({ id: job.id }, { status: 201 });
+  } catch (e) {
+    // Surface the underlying error so infra issues are diagnosable during bring-up.
+    // TODO: narrow this to a generic "try again" message once Redis is stable.
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[jobs] createJob failed:", msg);
+    return Response.json(
+      { error: "Server error", detail: msg },
+      { status: 500 },
+    );
+  }
 }
 
 export async function GET() {

@@ -13,15 +13,15 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Stemloop — Loops from anything.",
+  title: "Stem-Loops — Loops from anything.",
   description:
     "Paste a YouTube URL. Get perfect bar-aligned drum, bass, vocal, guitar, and keys loops. Free for your first three.",
   metadataBase: new URL("https://stem-loops.com"),
   openGraph: {
-    title: "Stemloop",
+    title: "Stem-Loops",
     description: "Loops from anything. In seconds.",
     url: "https://stem-loops.com",
-    siteName: "Stemloop",
+    siteName: "Stem-Loops",
     type: "website",
   },
 };

@@ -25,7 +25,7 @@ export default async function LoginPage(
               /sign in
             </div>
             <h1 className="text-3xl font-semibold tracking-tight">
-              {reason ? "You've used your 3 free songs" : "Sign in to Stemloop"}
+              {reason ? "You've used your 3 free songs" : "Sign in to Stem-Loops"}
             </h1>
             <p className="mt-3 text-sm text-muted leading-relaxed">
               {reason

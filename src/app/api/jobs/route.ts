@@ -20,8 +20,8 @@ function getClientIp(req: NextRequest): string {
 
 function isAuthenticated(req: NextRequest): boolean {
   // TODO: wire NextAuth session check. For now, treat a cookie named
-  // `stemloop-session` as logged in — lets you test the freemium wall.
-  return req.cookies.get("stemloop-session")?.value === "ok";
+  // `stem-loops-session` as logged in — lets you test the freemium wall.
+  return req.cookies.get("stem-loops-session")?.value === "ok";
 }
 
 export async function POST(req: NextRequest) {
@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
 export async function GET() {
   return Response.json({
     status: "ok",
-    service: "stemloop",
+    service: "stem-loops",
     freeLimit: FREE_LIMIT,
   });
 }

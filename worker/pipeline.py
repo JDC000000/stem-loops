@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Stemloop worker pipeline — ported from drum_loop_pipeline.py.
+Stem-Loops worker pipeline — ported from drum_loop_pipeline.py.
 
 Key differences from the single-stem version:
   - Processes N selected stems per job (drums, bass, vocals, guitar, keys)
@@ -137,7 +137,7 @@ def download_youtube(url: str, work_dir: str) -> tuple[str, str]:
 def separate_all_stems(wav_path: str, work_dir: str) -> dict[StemKind, str]:
     """
     Runs htdemucs (6-stem variant `htdemucs_6s`) to get drums, bass, vocals,
-    guitar, other, piano. Maps to stemloop's stem kinds.
+    guitar, other, piano. Maps to stem-loops's stem kinds.
     """
     _patch_torchaudio()
 
@@ -162,7 +162,7 @@ def separate_all_stems(wav_path: str, work_dir: str) -> dict[StemKind, str]:
     stem_name = Path(wav_path).stem
     base = os.path.join(sep_dir, "htdemucs_6s", stem_name)
 
-    # Map demucs stems → stemloop names
+    # Map demucs stems → stem-loops names
     # htdemucs_6s outputs: drums, bass, vocals, other, guitar, piano
     mapping = {
         "drums": "drums.wav",
@@ -173,10 +173,10 @@ def separate_all_stems(wav_path: str, work_dir: str) -> dict[StemKind, str]:
     }
 
     result: dict[StemKind, str] = {}
-    for stemloop_name, fname in mapping.items():
+    for our_name, fname in mapping.items():
         path = os.path.join(base, fname)
         if os.path.isfile(path):
-            result[stemloop_name] = path
+            result[our_name] = path
     return result
 
 
@@ -364,7 +364,7 @@ def run_job(
         if progress:
             progress(stage, pct, msg)
 
-    work_dir = tempfile.mkdtemp(prefix="stemloop_job_")
+    work_dir = tempfile.mkdtemp(prefix="stem_loops_job_")
 
     _report("downloading", 10, "Downloading audio from YouTube")
     title, wav_path = download_youtube(url, work_dir)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Stemloop queue consumer.
+Stem-Loops queue consumer.
 
 Pulls jobs from Redis (BullMQ-compatible), runs the pipeline, uploads results
 to S3/R2, and posts status updates back to the Next.js API.
@@ -8,7 +8,7 @@ to S3/R2, and posts status updates back to the Next.js API.
 Env vars required:
   REDIS_URL            redis://default:pass@host:port
   S3_ENDPOINT          https://<account>.r2.cloudflarestorage.com
-  S3_BUCKET            stemloop-loops
+  S3_BUCKET            stem-loops-audio
   S3_ACCESS_KEY_ID     ...
   S3_SECRET_ACCESS_KEY ...
   API_BASE_URL         https://stem-loops.com (for status callbacks)
@@ -37,10 +37,10 @@ from pipeline import JobOutput, LoopResult, run_job
 # --------------------------------------------------------------------------- #
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-QUEUE_NAME = os.environ.get("QUEUE_NAME", "stemloop:jobs")
+QUEUE_NAME = os.environ.get("QUEUE_NAME", "stem-loops:jobs")
 
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "")
-S3_BUCKET = os.environ.get("S3_BUCKET", "stemloop-loops")
+S3_BUCKET = os.environ.get("S3_BUCKET", "stem-loops-audio")
 S3_ACCESS_KEY_ID = os.environ.get("S3_ACCESS_KEY_ID", "")
 S3_SECRET_ACCESS_KEY = os.environ.get("S3_SECRET_ACCESS_KEY", "")
 

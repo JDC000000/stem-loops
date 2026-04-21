@@ -1,4 +1,4 @@
-# Stemloop
+# Stem-Loops
 
 > Loops from anything. In seconds.
 
@@ -10,7 +10,7 @@ get five bar-aligned, BPM-detected 24-bit WAV loops ready to drop into your DAW.
 ## What's in this repo
 
 ```
-stemloop/
+stem-loops/
 ├── src/                    Next.js 16 web app (App Router, Tailwind v4)
 │   ├── app/
 │   │   ├── page.tsx        Landing page (hero + form)
@@ -77,7 +77,7 @@ Total: **~$15-20/month** at low volume.
 ### 1. Next.js dev server
 
 ```bash
-cd stemloop
+cd stem-loops
 npm install
 npm run dev
 ```

@@ -11,7 +11,7 @@ export function Logo({ className = "" }: { className?: string }) {
         xmlns="http://www.w3.org/2000/svg"
         aria-hidden="true"
       >
-        {/* Stemloop mark — three stacked bars forming a loop */}
+        {/* Stem-Loops mark — three stacked bars forming a loop */}
         <rect x="2" y="9" width="3" height="6" rx="1" fill="currentColor" />
         <rect x="7" y="5" width="3" height="14" rx="1" fill="currentColor" />
         <rect x="12" y="7" width="3" height="10" rx="1" fill="currentColor" />
@@ -24,7 +24,7 @@ export function Logo({ className = "" }: { className?: string }) {
           fill="var(--accent)"
         />
       </svg>
-      <span className="text-[17px]">stemloop</span>
+      <span className="text-[17px]">stem-loops</span>
     </div>
   );
 }

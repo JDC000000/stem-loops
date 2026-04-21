@@ -152,7 +152,7 @@ export default function Home() {
         <div className="mx-auto max-w-6xl px-6 py-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-sm text-muted">
           <Logo />
           <div className="flex gap-6 font-mono text-xs">
-            <span>© 2026 stemloop</span>
+            <span>© 2026 stem-loops</span>
             <Link href="#" className="hover:text-foreground">
               Terms
             </Link>
@@ -169,7 +169,7 @@ export default function Home() {
 const STEPS = [
   {
     title: "Paste a URL",
-    body: "Any public YouTube video. Music, live sessions, DJ sets — if it has audio, Stemloop can loop it.",
+    body: "Any public YouTube video. Music, live sessions, DJ sets — if it has audio, Stem-Loops can loop it.",
   },
   {
     title: "Pick a stem",
@@ -188,7 +188,7 @@ const STEPS = [
 const FAQS = [
   {
     q: "Is this legal?",
-    a: "You're responsible for how you use extracted loops. Stemloop is a tool — the same as sampling from a record. For commercial releases, clear the sample. For personal practice, sketching, remix contests, and learning, you're fine.",
+    a: "You're responsible for how you use extracted loops. Stem-Loops is a tool — the same as sampling from a record. For commercial releases, clear the sample. For personal practice, sketching, remix contests, and learning, you're fine.",
   },
   {
     q: "How long does it take?",

@@ -6,7 +6,7 @@ export async function GET(
   ctx: RouteContext<"/api/jobs/[id]">,
 ) {
   const { id } = await ctx.params;
-  const job = getJob(id);
+  const job = await getJob(id);
   if (!job) {
     return Response.json({ error: "Job not found" }, { status: 404 });
   }

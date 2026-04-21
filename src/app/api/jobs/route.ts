@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
   // Freemium check
   if (!isAuthenticated(req)) {
     const ip = getClientIp(req);
-    const count = getIpJobCount(ip);
+    const count = await getIpJobCount(ip);
     if (count >= FREE_LIMIT) {
       return Response.json(
         {
@@ -62,10 +62,10 @@ export async function POST(req: NextRequest) {
         { status: 402 },
       );
     }
-    incrementIpJobCount(ip);
+    await incrementIpJobCount(ip);
   }
 
-  const job = createJob({
+  const job = await createJob({
     url: body.url,
     stems: body.stems,
     bars: body.bars,

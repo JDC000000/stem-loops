@@ -54,10 +54,18 @@ export async function createJob(req: JobRequest): Promise<Job> {
   };
   await writeJob(job);
 
-  // Fire-and-forget the mock pipeline. Once the real Python worker is
-  // deployed, we'll replace this with an LPUSH onto the queue:
-  //   await redis().lpush(keys.queue(), JSON.stringify({ id, ...req }));
-  void simulateJob(id);
+  // Hand the job off to the Python worker via Redis list.
+  // The worker pops from this key, runs the pipeline, and writes status
+  // updates directly back to job:<id>.
+  await redis().lpush(
+    keys.queue(),
+    JSON.stringify({
+      id,
+      url: req.url,
+      stems: req.stems,
+      bars: req.bars,
+    }),
+  );
 
   return job;
 }
@@ -87,87 +95,3 @@ async function writeJob(job: Job): Promise<void> {
   });
 }
 
-/* -------------------------------------------------------------------------- */
-/*  Mock pipeline simulator                                                   */
-/*                                                                            */
-/*  Kept until the Python worker is live. Each stage persists to Redis so     */
-/*  the frontend's polling gets real progress updates even if the Next.js     */
-/*  container restarts mid-simulation (the job will just sit at its last     */
-/*  written state since the stage-advancement loop is in-process only).       */
-/* -------------------------------------------------------------------------- */
-
-async function simulateJob(id: string): Promise<void> {
-  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const stages: Array<{
-    status: Job["status"];
-    stage: string;
-    progress: number;
-    ms: number;
-  }> = [
-    {
-      status: "downloading",
-      stage: "Downloading audio from YouTube",
-      progress: 15,
-      ms: 2000,
-    },
-    {
-      status: "separating",
-      stage: "Separating stems with Demucs",
-      progress: 55,
-      ms: 4000,
-    },
-    {
-      status: "extracting",
-      stage: "Extracting bar-aligned loops",
-      progress: 85,
-      ms: 2000,
-    },
-  ];
-
-  for (const s of stages) {
-    await wait(s.ms);
-    const exists = await getJob(id);
-    if (!exists) return; // Job was deleted / expired mid-run
-    await updateJob(id, s);
-  }
-
-  await wait(800);
-  const job = await getJob(id);
-  if (!job) return;
-
-  // Fabricate mock results so the UI can be demoed before the worker is live
-  const mockBpm = 120;
-  const mockResults = job.stems.map((stem) => ({
-    stem,
-    loops: Array.from({ length: 5 }, (_, i) => {
-      const energyLabels = [
-        "Quiet/Intro",
-        "Low Energy",
-        "Medium Energy",
-        "High Energy",
-        "Peak Energy",
-      ];
-      return {
-        index: i + 1,
-        filename: `mock_${stem}_${mockBpm}bpm_loop_${String(i + 1).padStart(2, "0")}.wav`,
-        downloadUrl: "#",
-        durationSec: (60 / mockBpm) * 4 * job.bars,
-        bpm: mockBpm,
-        energyLabel: energyLabels[i],
-        startSec: 10 + i * 30,
-        endSec: 10 + i * 30 + (60 / mockBpm) * 4 * job.bars,
-      };
-    }),
-  }));
-
-  await updateJob(id, {
-    status: "done",
-    progress: 100,
-    stage: "Complete",
-    title: "Mock YouTube Song",
-    artist: "Demo Artist",
-    bpm: mockBpm,
-    results: mockResults,
-    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-  });
-}

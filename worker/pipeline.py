@@ -109,19 +109,47 @@ def download_youtube(url: str, work_dir: str) -> tuple[str, str]:
     if not ytdlp:
         raise RuntimeError("yt-dlp not found on PATH")
 
-    title = subprocess.check_output(
-        [ytdlp, "--print", "title", url], stderr=subprocess.DEVNULL
-    ).decode().strip()
+    # Datacenter IPs (Railway, most clouds) often get flagged by YouTube.
+    # These flags help: pretend to be a real Safari, use the most permissive
+    # extractor, and retry on transient failures. Bot-challenge errors will
+    # still propagate — we surface the real stderr so the caller can diagnose.
+    common_args = [
+        "--user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        "--extractor-args", "youtube:player_client=web_safari,mweb",
+        "--retries", "3",
+        "--fragment-retries", "3",
+    ]
+
+    try:
+        title = subprocess.check_output(
+            [ytdlp, "--print", "title", *common_args, url],
+            stderr=subprocess.PIPE,
+            timeout=60,
+        ).decode().strip()
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or b"").decode(errors="replace")[-800:]
+        raise RuntimeError(f"yt-dlp title fetch failed: {stderr}") from e
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("yt-dlp title fetch timed out after 60s")
 
     safe = "".join(c if c.isalnum() or c in " -_" else "" for c in title).strip()
     safe = safe.replace(" ", "_")
     out_tmpl = os.path.join(work_dir, f"{safe}.%(ext)s")
 
-    subprocess.check_call(
-        [ytdlp, "-x", "--audio-format", "wav", "-o", out_tmpl, url],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        subprocess.check_call(
+            [ytdlp, "-x", "--audio-format", "wav", "-o", out_tmpl, *common_args, url],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=600,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or b"").decode(errors="replace")[-800:]
+        raise RuntimeError(f"yt-dlp download failed: {stderr}") from e
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("yt-dlp download timed out after 10 min")
 
     import glob
     candidates = glob.glob(os.path.join(work_dir, f"{safe}.wav"))

@@ -103,6 +103,26 @@ def _patch_torchaudio() -> None:
 # Step 1: Download                                                             #
 # --------------------------------------------------------------------------- #
 
+def _write_cookies_file(work_dir: str) -> Optional[str]:
+    """
+    If YOUTUBE_COOKIES env var is set (Netscape format, multi-line), write it
+    to a file and return its path. Otherwise return None.
+
+    The cookie file is the standard yt-dlp format — export it from your
+    browser with a "Get cookies.txt" extension while logged into YouTube.
+    """
+    raw = os.environ.get("YOUTUBE_COOKIES")
+    if not raw:
+        return None
+    # Railway strips trailing newlines; yt-dlp is happy either way
+    cookie_path = os.path.join(work_dir, "youtube_cookies.txt")
+    with open(cookie_path, "w") as fh:
+        fh.write(raw)
+        if not raw.endswith("\n"):
+            fh.write("\n")
+    return cookie_path
+
+
 def download_youtube(url: str, work_dir: str) -> tuple[str, str]:
     """Returns (title, wav_path)."""
     ytdlp = _find_bin("yt-dlp")
@@ -121,6 +141,11 @@ def download_youtube(url: str, work_dir: str) -> tuple[str, str]:
         "--retries", "3",
         "--fragment-retries", "3",
     ]
+
+    # Attach cookies if provided — required when YouTube flags our IP
+    cookies_path = _write_cookies_file(work_dir)
+    if cookies_path:
+        common_args += ["--cookies", cookies_path]
 
     try:
         title = subprocess.check_output(

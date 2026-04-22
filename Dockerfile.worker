@@ -1,3 +1,5 @@
+# Worker Dockerfile at repo root (unique name so Railway can't auto-detect
+# the wrong one). Build context is repo root, so worker/ is a subdirectory.
 FROM python:3.11-slim
 
 # System deps: ffmpeg for audio, libsndfile for soundfile
@@ -8,13 +10,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Python deps (the big ones first for better caching)
-COPY requirements.txt .
+# Install Python deps first (big layer, good for caching)
+COPY worker/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the Demucs model so cold start is instant
+# Pre-download the Demucs model so cold start is instant (~2 GB, slowest step)
 RUN python -c "import demucs.pretrained; demucs.pretrained.get_model('htdemucs_6s')"
 
-COPY pipeline.py worker.py ./
+COPY worker/pipeline.py worker/worker.py ./
 
 CMD ["python", "-u", "worker.py"]

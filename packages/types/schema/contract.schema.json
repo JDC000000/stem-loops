@@ -1,0 +1,397 @@
+{
+  "$defs": {
+    "ErrorEnvelope": {
+      "description": "Canonical error response \u2014 rendered from static code\u2192copy map, never interpolated.",
+      "properties": {
+        "error_code": {
+          "title": "Error Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "error_code",
+        "message"
+      ],
+      "title": "ErrorEnvelope",
+      "type": "object"
+    },
+    "Job": {
+      "description": "Full job state \u2014 returned by GET /api/jobs/:id.",
+      "properties": {
+        "bpm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bpm"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "error_message_user": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Message User"
+        },
+        "events": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/JobEvent"
+          },
+          "title": "Events",
+          "type": "array"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "loops": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Loop"
+          },
+          "title": "Loops",
+          "type": "array"
+        },
+        "musical_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Musical Key"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "youtube_url": {
+          "title": "Youtube Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "youtube_url",
+        "status",
+        "created_at",
+        "updated_at",
+        "expires_at"
+      ],
+      "title": "Job",
+      "type": "object"
+    },
+    "JobEvent": {
+      "description": "A single stage transition in the job trace.",
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        },
+        "id": {
+          "title": "Id",
+          "type": "integer"
+        },
+        "job_id": {
+          "format": "uuid",
+          "title": "Job Id",
+          "type": "string"
+        },
+        "pct": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pct"
+        },
+        "phase": {
+          "title": "Phase",
+          "type": "string"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "job_id",
+        "stage",
+        "phase",
+        "created_at"
+      ],
+      "title": "JobEvent",
+      "type": "object"
+    },
+    "JobRequest": {
+      "description": "POST /api/jobs request body.",
+      "properties": {
+        "loop_length_bars": {
+          "title": "Loop Length Bars",
+          "type": "integer"
+        },
+        "requested_stems": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Requested Stems",
+          "type": "array"
+        },
+        "youtube_url": {
+          "title": "Youtube Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "youtube_url",
+        "requested_stems",
+        "loop_length_bars"
+      ],
+      "title": "JobRequest",
+      "type": "object"
+    },
+    "JobResponse": {
+      "description": "POST /api/jobs response \u2014 returns job id for redirect.",
+      "properties": {
+        "job": {
+          "$ref": "#/$defs/Job"
+        }
+      },
+      "required": [
+        "job"
+      ],
+      "title": "JobResponse",
+      "type": "object"
+    },
+    "Loop": {
+      "description": "A single extracted loop \u2014 one stem, one section, bar-aligned.",
+      "properties": {
+        "bar_count": {
+          "title": "Bar Count",
+          "type": "integer"
+        },
+        "bpm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bpm"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        },
+        "end_sec": {
+          "title": "End Sec",
+          "type": "number"
+        },
+        "energy_class": {
+          "title": "Energy Class",
+          "type": "string"
+        },
+        "filename": {
+          "title": "Filename",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "job_id": {
+          "format": "uuid",
+          "title": "Job Id",
+          "type": "string"
+        },
+        "musical_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Musical Key"
+        },
+        "r2_key": {
+          "title": "R2 Key",
+          "type": "string"
+        },
+        "section_label": {
+          "title": "Section Label",
+          "type": "string"
+        },
+        "signed_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signed Url"
+        },
+        "start_bar": {
+          "title": "Start Bar",
+          "type": "integer"
+        },
+        "start_sec": {
+          "title": "Start Sec",
+          "type": "number"
+        },
+        "stem": {
+          "title": "Stem",
+          "type": "string"
+        },
+        "waveform_peaks": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Waveform Peaks"
+        }
+      },
+      "required": [
+        "id",
+        "job_id",
+        "stem",
+        "section_label",
+        "energy_class",
+        "start_sec",
+        "end_sec",
+        "start_bar",
+        "bar_count",
+        "r2_key",
+        "filename",
+        "created_at"
+      ],
+      "title": "Loop",
+      "type": "object"
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "ErrorEnvelope": {
+      "$ref": "#/$defs/ErrorEnvelope"
+    },
+    "Job": {
+      "$ref": "#/$defs/Job"
+    },
+    "JobEvent": {
+      "$ref": "#/$defs/JobEvent"
+    },
+    "JobRequest": {
+      "$ref": "#/$defs/JobRequest"
+    },
+    "JobResponse": {
+      "$ref": "#/$defs/JobResponse"
+    },
+    "Loop": {
+      "$ref": "#/$defs/Loop"
+    }
+  },
+  "required": [
+    "ErrorEnvelope",
+    "Job",
+    "JobEvent",
+    "JobRequest",
+    "JobResponse",
+    "Loop"
+  ],
+  "title": "StemLoopsContract",
+  "type": "object"
+}

@@ -5,7 +5,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "generate": "node --input-type=module scripts/codegen.mjs"
+    "generate": "node scripts/codegen.mjs"
   },
   "devDependencies": {
     "json-schema-to-typescript": "^14.0.0",

@@ -100,13 +100,17 @@ def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100
     """Per loop: seamless seam → 24-bit encode → R2 upload → loops row. Returns count."""
     bar = 4 * 60.0 / tags["bpm"]
     duration_ms = int(bars * bar * 1000)
+    # Loops inherit the job-level BPM/key (computed once from the reference stem).
+    # Re-detecting per loop is both slow and musically wrong — an isolated drum
+    # loop has no key, and every loop from one song shares its key/tempo.
+    bpm = tags["bpm"]
+    key = tags["musical_key"]
+    key_slug = key.replace(" ", "_")
     tmpdir = tempfile.mkdtemp(prefix="sl_loops_")
     count = 0
     for idx, loop in enumerate(loops):
         loop_id = str(uuid.uuid4())
         audio = seamless_apply(loop["audio"], sr)
-        mono = audio[0] if audio.ndim == 2 else audio
-        ltags = detect_bpm_and_key(mono, sr)
         out_path = os.path.join(tmpdir, f"{loop_id}.wav")
         encode_24bit(audio, sr, out_path)
         peaks = waveform_peaks(audio)
@@ -114,8 +118,7 @@ def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100
         section = seg_label.get(seg, "verse")
         energy = seg_energy.get(seg, "mid")
         r2_key = upload_loop(job_id, loop["stem"], section, idx, out_path)
-        key_slug = ltags["musical_key"].replace(" ", "_")
-        fname = f"{job_id}_{loop['stem']}_{ltags['bpm']}bpm_{key_slug}_{section}_{idx:04d}.wav"
+        fname = f"{job_id}_{loop['stem']}_{bpm}bpm_{key_slug}_{section}_{idx:04d}.wav"
         _insert_loop(
             (
                 loop_id,
@@ -127,8 +130,8 @@ def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100
                 loop["end_sec"],
                 int(loop["start_sec"] / bar),
                 bars,
-                ltags["bpm"],
-                ltags["musical_key"],
+                bpm,
+                key,
                 r2_key,
                 fname,
                 duration_ms,

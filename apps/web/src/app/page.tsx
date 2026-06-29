@@ -1,10 +1,25 @@
-// Submit page stub — Phase 1 implementation in T6
+import { SubmitForm } from '@/components/SubmitForm';
+
 export default function HomePage() {
   return (
-    <main>
-      <h1>stem-loops</h1>
-      <p>Paste a YouTube URL to extract stem loops.</p>
-      {/* SubmitForm component added in Phase 1 T6 */}
+    <main
+      style={{
+        minHeight: '100dvh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 24,
+        padding: 24,
+      }}
+    >
+      <header style={{ textAlign: 'center', maxWidth: 560 }}>
+        <h1 style={{ fontSize: 32, margin: 0, color: 'var(--text-primary)' }}>stem-loops</h1>
+        <p style={{ color: 'var(--text-muted)', marginTop: 8 }}>
+          Paste a YouTube URL to pull bar-aligned, key/BPM-tagged stem loops into your DAW.
+        </p>
+      </header>
+      <SubmitForm />
     </main>
-  )
+  );
 }

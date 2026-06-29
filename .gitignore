@@ -39,3 +39,4 @@ apps/worker/spikes/fixtures/*.flac
 # Secrets
 *.pem
 *.key
+apps/worker/tests/fixtures/*.wav

@@ -1,28 +1,153 @@
-"""Worker pipeline: orchestrates download -> separate -> extract -> upload.
+"""Worker pipeline (T11-T18): download → separate → extract → tag → align →
+label → encode → upload.
 
-Phase 1 STUB: walks the four stages, writing a started/completed job_event for
-each, then marks the job done. No real audio yet — Phase 2 (T11-T17) swaps in the
-real download (Cobalt + yt-dlp fallback), Replicate separation, librosa BPM/key,
-S3 heuristic loop extraction, S5 seamless crossfade, and R2 upload.
+Structure:
+  * The audio CORE (`extract_and_tag` + `encode_and_upload`, composed as
+    `process_stems`) is pure/sync and runs against any set of local stem WAVs —
+    so it is fixture-testable end-to-end (extract→upload) with no YouTube/Replicate.
+  * `run_pipeline` is the async orchestrator. download_audio (Cobalt+yt-dlp, gated
+    on the S1 bake-off) and Replicate separation (live in P2-12+) PRODUCE the stem
+    WAVs, then hand off to the core. Heavy sync work runs in a thread so the
+    co-located /health server stays responsive.
+
+Stem-label rule (LOCKED): piano→keys mapping already happens in replicate_client;
+everything here uses the contract names.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import tempfile
+import uuid
 
+import httpx
+import librosa
 import psycopg
+from psycopg.types.json import Json
 
+from .classifier.energy_classifier import classify_energy
+from .classifier.section_labeler import label_sections
+from .downloader import download_audio
+from .dsp.seamless import apply as seamless_apply
+from .encoder.wav_encoder import encode_24bit, waveform_peaks
+from .errors import InternalError, StemLoopsError
+from .extractor.loop_extractor import extract_loops
 from .logger import log_structured
-from .stub_separation import stub_separate
+from .replicate_client import poll_until_done, submit_or_reattach
+from .storage.r2_uploader import upload_loop
+from .tagger.bpm_key import detect_bpm_and_key
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-# pct anchors at each stage start (matches the web stage bands).
-STAGE_START_PCT = {"downloading": 0, "separating": 15, "extracting": 70, "uploading": 90}
-STAGES = ["downloading", "separating", "extracting", "uploading"]
+
+# --- small sync DB helpers (the core is sync; run them in a thread from async) ---
+def _db():
+    return psycopg.connect(DATABASE_URL)
 
 
+def _fetch_job(job_id: str):
+    with _db() as c:
+        return c.execute(
+            "SELECT youtube_url, requested_stems, loop_length_bars FROM jobs WHERE id=%s",
+            (job_id,),
+        ).fetchone()
+
+
+def _update_job_tags(job_id: str, tags: dict) -> None:
+    with _db() as c:
+        c.execute(
+            "UPDATE jobs SET bpm=%s, musical_key=%s WHERE id=%s",
+            (tags["bpm"], tags["musical_key"], job_id),
+        )
+        c.commit()
+
+
+def _insert_loop(row: tuple) -> None:
+    with _db() as c:
+        c.execute(
+            """
+            INSERT INTO loops(id, job_id, stem, section_label, energy_class, start_sec, end_sec,
+                start_bar, bar_count, bpm, musical_key, r2_key, filename, duration_ms, waveform_peaks)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT(job_id, r2_key) DO NOTHING
+            """,
+            row,
+        )
+        c.commit()
+
+
+# ----------------------------- audio core (sync) -----------------------------
+def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
+    """Load ref stem, detect bpm/key, extract loops, classify energy + label sections."""
+    sp = {k: v for k, v in stem_paths.items() if k in (requested_stems or stem_paths)}
+    if not sp:
+        sp = stem_paths
+    y_ref, _ = librosa.load(next(iter(sp.values())), sr=sr, mono=True)
+    tags = detect_bpm_and_key(y_ref, sr)
+    _update_job_tags(job_id, tags)
+
+    loops = list(extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars))
+    segs = sorted({(loop["start_sec"], loop["end_sec"]) for loop in loops})
+    energies = classify_energy(y_ref, sr, segs)
+    sections = label_sections(segs, energies)
+    seg_label = dict(zip(segs, sections))
+    seg_energy = dict(zip(segs, energies))
+    return loops, tags, seg_label, seg_energy
+
+
+def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100) -> int:
+    """Per loop: seamless seam → 24-bit encode → R2 upload → loops row. Returns count."""
+    bar = 4 * 60.0 / tags["bpm"]
+    duration_ms = int(bars * bar * 1000)
+    tmpdir = tempfile.mkdtemp(prefix="sl_loops_")
+    count = 0
+    for idx, loop in enumerate(loops):
+        loop_id = str(uuid.uuid4())
+        audio = seamless_apply(loop["audio"], sr)
+        mono = audio[0] if audio.ndim == 2 else audio
+        ltags = detect_bpm_and_key(mono, sr)
+        out_path = os.path.join(tmpdir, f"{loop_id}.wav")
+        encode_24bit(audio, sr, out_path)
+        peaks = waveform_peaks(audio)
+        seg = (loop["start_sec"], loop["end_sec"])
+        section = seg_label.get(seg, "verse")
+        energy = seg_energy.get(seg, "mid")
+        r2_key = upload_loop(job_id, loop["stem"], section, idx, out_path)
+        key_slug = ltags["musical_key"].replace(" ", "_")
+        fname = f"{job_id}_{loop['stem']}_{ltags['bpm']}bpm_{key_slug}_{section}_{idx:04d}.wav"
+        _insert_loop(
+            (
+                loop_id,
+                job_id,
+                loop["stem"],
+                section,
+                energy,
+                loop["start_sec"],
+                loop["end_sec"],
+                int(loop["start_sec"] / bar),
+                bars,
+                ltags["bpm"],
+                ltags["musical_key"],
+                r2_key,
+                fname,
+                duration_ms,
+                Json(peaks),
+            )
+        )
+        count += 1
+    return count
+
+
+def process_stems(job_id, stem_paths, requested_stems, bars, sr=44100) -> int:
+    """Full audio core: extract+tag then encode+upload. Returns loops created."""
+    loops, tags, seg_label, seg_energy = extract_and_tag(
+        job_id, stem_paths, requested_stems, bars, sr
+    )
+    return encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr)
+
+
+# --------------------------- async orchestrator ----------------------------
 async def emit_event(job_id: str, stage: str, phase: str, pct: int | None = None) -> None:
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
         await conn.execute(
@@ -40,17 +165,77 @@ async def set_status(job_id: str, status: str) -> None:
         await conn.commit()
 
 
-async def run_pipeline(job_id: str) -> None:
-    """Stub pipeline: fake separation -> stage trace -> done."""
-    log_structured("INFO", "pipeline_start", job_id=job_id)
-    for stage in STAGES:
-        await set_status(job_id, stage)
-        await emit_event(job_id, stage, "started", pct=STAGE_START_PCT[stage])
-        if stage == "separating":
-            # Exercise the stub separator so the path is wired end-to-end.
-            stub_separate(job_id)
-        await asyncio.sleep(0.1)
-        await emit_event(job_id, stage, "completed", pct=100)
+def _fetch_stems(stem_urls: dict, requested_stems) -> dict:
+    tmpdir = tempfile.mkdtemp(prefix="sl_stems_")
+    stem_paths = {}
+    for stem_name, stem_url in stem_urls.items():
+        if requested_stems and stem_name not in requested_stems:
+            continue
+        path = os.path.join(tmpdir, f"{stem_name}.wav")
+        with open(path, "wb") as f:
+            f.write(httpx.get(stem_url, timeout=30).content)
+        stem_paths[stem_name] = path
+    return stem_paths
 
-    await set_status(job_id, "done")
-    log_structured("INFO", "pipeline_done", job_id=job_id)
+
+async def run_pipeline(job_id: str) -> None:
+    """Real pipeline. download_audio + Replicate are gated (S1 bake-off / P2-12+);
+    the audio core runs against the produced stems. Typed errors set status=failed."""
+    try:
+        row = await asyncio.to_thread(_fetch_job, job_id)
+        url, requested_stems, bars = row
+        log_structured("INFO", "pipeline_start", job_id=job_id)
+
+        await set_status(job_id, "downloading")
+        await emit_event(job_id, "downloading", "started", pct=0)
+        override = os.environ.get("STEMLOOPS_AUDIO_URL")
+        if override:
+            # Gate 2 / testing escape hatch: a pre-downloaded PUBLIC WAV URL is fed
+            # straight to Replicate (which fetches the audio itself), skipping Cobalt.
+            # Lets the separation→extraction→upload chain be timed without T12/ffmpeg.
+            audio_src, _source = override, "override"
+            log_structured("INFO", "audio_source_override", job_id=job_id)
+        else:
+            audio_src, _source = await asyncio.to_thread(download_audio, url)
+        await emit_event(job_id, "downloading", "completed", pct=100)
+
+        await set_status(job_id, "separating")
+        await emit_event(job_id, "separating", "started", pct=15)
+        pred_id = await asyncio.to_thread(submit_or_reattach, job_id, audio_src)
+        stem_urls = await asyncio.to_thread(poll_until_done, job_id, pred_id)
+        stem_paths = await asyncio.to_thread(_fetch_stems, stem_urls, requested_stems)
+        await emit_event(job_id, "separating", "completed", pct=100)
+
+        await set_status(job_id, "extracting")
+        await emit_event(job_id, "extracting", "started", pct=70)
+        loops, tags, seg_label, seg_energy = await asyncio.to_thread(
+            extract_and_tag, job_id, stem_paths, requested_stems, bars
+        )
+        await emit_event(job_id, "extracting", "completed", pct=100)
+
+        await set_status(job_id, "uploading")
+        await emit_event(job_id, "uploading", "started", pct=90)
+        count = await asyncio.to_thread(
+            encode_and_upload, job_id, loops, tags, seg_label, seg_energy, bars
+        )
+        await emit_event(job_id, "uploading", "completed", pct=100)
+
+        await set_status(job_id, "done")
+        log_structured("INFO", "pipeline_done", job_id=job_id, loops=count)
+
+    except StemLoopsError as exc:
+        await _fail(job_id, exc.error_code, exc.user_message)
+        raise
+    except Exception as exc:  # noqa: BLE001 — surface as typed INTERNAL_ERROR
+        err = InternalError(str(exc)[:200])
+        await _fail(job_id, err.error_code, err.user_message)
+        raise
+
+
+async def _fail(job_id: str, error_code: str, user_message: str) -> None:
+    async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+        await conn.execute(
+            "UPDATE jobs SET status='failed', error_code=%s, error_message_user=%s, updated_at=now() WHERE id=%s",
+            (error_code, user_message, job_id),
+        )
+        await conn.commit()

@@ -1,0 +1,45 @@
+"""R2 upload with a deterministic key (T17) — overwrite-safe for idempotent retries.
+
+Endpoint resolves R2_ENDPOINT_URL, else MINIO_ENDPOINT (local dev), else builds the
+Cloudflare R2 endpoint from R2_ACCOUNT_ID. The key is fully determined by its inputs,
+so a retried job overwrites in place rather than creating duplicates.
+"""
+
+import os
+
+import boto3
+from botocore.config import Config
+
+from ..logger import log_structured
+
+
+def _endpoint() -> str:
+    if os.environ.get("R2_ENDPOINT_URL"):
+        return os.environ["R2_ENDPOINT_URL"]
+    if os.environ.get("MINIO_ENDPOINT"):
+        return os.environ["MINIO_ENDPOINT"]
+    return f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com"
+
+
+def _r2():
+    return boto3.client(
+        "s3",
+        endpoint_url=_endpoint(),
+        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        # Path-style addressing — required by MinIO (local dev) and supported by R2.
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+    )
+
+
+def upload_loop(job_id: str, stem: str, section: str, idx: int, local_path: str) -> str:
+    """Upload a loop WAV and return its deterministic r2_key."""
+    r2_key = f"{job_id}/{stem}/{section}_{idx:04d}.wav"
+    _r2().upload_file(
+        local_path,
+        os.environ["R2_BUCKET_NAME"],
+        r2_key,
+        ExtraArgs={"ContentType": "audio/wav"},
+    )
+    log_structured("INFO", "loop_uploaded", r2_key=r2_key)
+    return r2_key

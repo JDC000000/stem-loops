@@ -1,11 +1,18 @@
-"""Structured JSON logging with secret redaction (PRD §6.2).
+"""Structured JSON logger with secret redaction and a detail-size cap (PRD §6.2).
 
-Phase 1 minimal version: `log_structured(level, event, **fields)` emits one JSON
-line with `job_id` as the primary correlation key. All string values are scrubbed
-of cookie/token/bearer/session patterns before they are written, so no secret or
-YouTube auth material can leak into logs or `job_events.detail` (P2-5/9 harden
-this further). Stderr captured from subprocesses must be passed through `redact()`
-and truncated before persisting.
+`log_structured(level, event, **fields)` emits one JSON line to stderr with the
+fields nested under `detail`. Two redaction passes run before anything is written,
+so no token/cookie/secret can leak into logs or `job_events.detail` (PRD §6.1):
+
+  1. Prefixed secrets — `Bearer X`, `token=X`, `Set-Cookie: X`, `Authorization: X`,
+     `session_cookie=X`, `api_key=X`, `password=X` → value replaced with [REDACTED].
+  2. Keyword tokens — any whitespace-delimited word that itself contains a
+     secret-indicating keyword (token/secret/password/cookie/credential/apikey)
+     is replaced wholesale. This catches bare high-entropy values that carry the
+     keyword in their name even without a prefix.
+
+Subprocess stderr must be passed through `redact_secrets()` and is additionally
+capped at 4KB before it is persisted.
 """
 
 from __future__ import annotations
@@ -13,26 +20,40 @@ from __future__ import annotations
 import json
 import re
 import sys
+from typing import Any
 
-_REDACT_RE = re.compile(r"(cookie|token|bearer|session|authorization)[=:]\s*\S+", re.IGNORECASE)
+MAX_DETAIL = 4096
+
+# Pass 1: prefix=value pairs. The value run stops at whitespace.
+_PREFIX_RE = re.compile(
+    r"(?i)\b("
+    r"bearer\s+|"
+    r"token[=:\s]+|"
+    r"set-cookie:\s*|"
+    r"authorization:\s*|"
+    r"session[_-]?cookie[=:\s]*|"
+    r"cookie:\s*|"
+    r"api[_-]?key[=:\s]+|"
+    r"password[=:\s]+"
+    r")\S+"
+)
+
+# Pass 2: any token-ish word that carries a secret keyword in its name.
+_KEYWORD_WORD_RE = re.compile(
+    r"(?i)[A-Za-z0-9._%/+-]*(?:token|secret|password|cookie|credential|apikey)[A-Za-z0-9._%/+-]*"
+)
 
 
-def redact(text: str) -> str:
-    return _REDACT_RE.sub(r"\1=[REDACTED]", text)
+def redact_secrets(text: str) -> str:
+    text = _PREFIX_RE.sub(lambda m: m.group(1) + "[REDACTED]", text)
+    text = _KEYWORD_WORD_RE.sub("[REDACTED]", text)
+    return text
 
 
-def _scrub(value):
-    if isinstance(value, str):
-        return redact(value)
-    if isinstance(value, dict):
-        return {k: _scrub(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_scrub(v) for v in value]
-    return value
-
-
-def log_structured(level: str, event: str, **fields) -> None:
-    """Emit one structured JSON log line to stdout (job_id-correlated, redacted)."""
-    record = {"level": level, "event": event, **{k: _scrub(v) for k, v in fields.items()}}
-    sys.stdout.write(json.dumps(record, default=str) + "\n")
-    sys.stdout.flush()
+def log_structured(level: str, event: str, **fields: Any) -> None:
+    detail = json.dumps(fields, default=str)
+    if len(detail.encode()) > MAX_DETAIL:
+        detail = detail[:MAX_DETAIL] + "…"
+    safe = redact_secrets(detail)
+    record = json.dumps({"level": level, "event": event, "detail": safe})
+    print(record, file=sys.stderr, flush=True)

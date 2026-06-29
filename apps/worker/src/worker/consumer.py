@@ -13,14 +13,12 @@ import os
 
 import psycopg
 
-from .errors import INTERNAL_ERROR, StemLoopsError
+from .errors import InternalError, StemLoopsError
 from .logger import log_structured
 from .pipeline import run_pipeline
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 POLL_INTERVAL = 2  # seconds
-
-_INTERNAL_USER_MSG = "Something went wrong on our end. We've logged it — please try again."
 
 
 async def claim_and_run() -> bool:
@@ -48,7 +46,8 @@ async def claim_and_run() -> bool:
         await mark_failed(job_id, e.error_code, e.user_message)
     except Exception as e:  # noqa: BLE001 — isolate the failure, never crash the loop
         log_structured("ERROR", "unhandled_exception", job_id=job_id, error=str(e)[:200])
-        await mark_failed(job_id, INTERNAL_ERROR, _INTERNAL_USER_MSG)
+        err = InternalError()
+        await mark_failed(job_id, err.error_code, err.user_message)
     return True
 
 

@@ -43,3 +43,30 @@ def upload_loop(job_id: str, stem: str, section: str, idx: int, local_path: str)
     )
     log_structured("INFO", "loop_uploaded", r2_key=r2_key)
     return r2_key
+
+
+def presign_get(r2_key: str, expires: int = 3600) -> str:
+    """Return a presigned GET URL for an object (used to hand input audio to Replicate)."""
+    return _r2().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": os.environ["R2_BUCKET_NAME"], "Key": r2_key},
+        ExpiresIn=expires,
+    )
+
+
+def upload_input(job_id: str, local_path: str) -> str:
+    """Upload a source WAV (e.g. an operator-provided file) and return a presigned URL.
+
+    Replicate fetches the audio by URL — it cannot read a local path — so a local
+    file is staged to R2 and handed over as a short-lived presigned GET URL.
+    """
+    r2_key = f"{job_id}/_input.wav"
+    _r2().upload_file(
+        local_path,
+        os.environ["R2_BUCKET_NAME"],
+        r2_key,
+        ExtraArgs={"ContentType": "audio/wav"},
+    )
+    url = presign_get(r2_key, expires=3600)
+    log_structured("INFO", "input_uploaded", r2_key=r2_key)
+    return url

@@ -35,7 +35,7 @@ from .errors import InternalError, StemLoopsError
 from .extractor.loop_extractor import extract_loops
 from .logger import log_structured
 from .replicate_client import poll_until_done, submit_or_reattach
-from .storage.r2_uploader import upload_loop
+from .storage.r2_uploader import upload_input, upload_loop
 from .tagger.bpm_key import detect_bpm_and_key
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -188,13 +188,19 @@ async def run_pipeline(job_id: str) -> None:
 
         await set_status(job_id, "downloading")
         await emit_event(job_id, "downloading", "started", pct=0)
-        override = os.environ.get("STEMLOOPS_AUDIO_URL")
-        if override:
-            # Gate 2 / testing escape hatch: a pre-downloaded PUBLIC WAV URL is fed
+        override_url = os.environ.get("STEMLOOPS_AUDIO_URL")
+        override_file = os.environ.get("STEMLOOPS_AUDIO_FILE")
+        if override_url:
+            # Gate 2 / testing escape hatch: a pre-downloaded PUBLIC WAV URL fed
             # straight to Replicate (which fetches the audio itself), skipping Cobalt.
-            # Lets the separation→extraction→upload chain be timed without T12/ffmpeg.
-            audio_src, _source = override, "override"
-            log_structured("INFO", "audio_source_override", job_id=job_id)
+            audio_src, _source = override_url, "override_url"
+            log_structured("INFO", "audio_source_override_url", job_id=job_id)
+        elif override_file:
+            # Option A: a local WAV (e.g. operator upload). Stage it to R2 and hand
+            # Replicate a presigned URL — Replicate can't read a local path.
+            audio_src = await asyncio.to_thread(upload_input, job_id, override_file)
+            _source = "override_file"
+            log_structured("INFO", "audio_source_override_file", job_id=job_id)
         else:
             audio_src, _source = await asyncio.to_thread(download_audio, url)
         await emit_event(job_id, "downloading", "completed", pct=100)

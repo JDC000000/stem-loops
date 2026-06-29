@@ -1,0 +1,1296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>stem-loops V2 — Design Review · Phase 3b</title>
+  <link rel="stylesheet" href="../design-tokens.css" />
+  <style>
+    /* ── Page shell ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg-page);
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: var(--text-base);
+      line-height: var(--leading-normal);
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+    }
+
+    /* ── Nav ── */
+    .nav {
+      height: var(--nav-height);
+      background: var(--bg-nav);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      padding: 0 32px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      gap: 16px;
+    }
+
+    .logo {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -0.5px;
+      text-decoration: none;
+      flex-shrink: 0;
+    }
+
+    .logo-dash { color: #a3e635; }
+
+    .nav-sep {
+      width: 1px;
+      height: 20px;
+      background: var(--border-default);
+    }
+
+    .nav-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-subtle);
+      letter-spacing: 0.5px;
+    }
+
+    .nav-badge {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      height: 24px;
+      padding: 0 10px;
+      background: rgba(163, 230, 53, 0.1);
+      border: 1px solid rgba(163, 230, 53, 0.25);
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #a3e635;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+    }
+
+    /* ── Layout ── */
+    .page-content {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 48px 32px 80px;
+    }
+
+    /* ── Header ── */
+    .page-header {
+      margin-bottom: 56px;
+      padding-bottom: 40px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .page-eyebrow {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.4px;
+      margin-bottom: 12px;
+    }
+
+    .page-title {
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -0.5px;
+      line-height: 1.2;
+      margin-bottom: 10px;
+    }
+
+    .page-title .dash { color: #a3e635; }
+
+    .page-sub {
+      font-size: 16px;
+      color: var(--text-muted);
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+
+    .gate-notice {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      background: rgba(163, 230, 53, 0.08);
+      border: 1px solid rgba(163, 230, 53, 0.2);
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #a3e635;
+      margin-bottom: 16px;
+    }
+
+    .gate-notice .star { font-size: 14px; }
+
+    .header-meta {
+      display: flex;
+      gap: 24px;
+      font-size: 12px;
+      color: var(--text-subtle);
+      font-family: var(--font-mono);
+    }
+
+    .header-meta span { display: flex; align-items: center; gap: 6px; }
+    .header-meta .dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: var(--border-strong);
+    }
+
+    /* ── Section headers ── */
+    .section {
+      margin-bottom: 56px;
+    }
+
+    .section-header {
+      margin-bottom: 24px;
+    }
+
+    .section-num {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      margin-bottom: 6px;
+    }
+
+    .section-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -0.3px;
+      margin-bottom: 6px;
+    }
+
+    .section-desc {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    /* ── SECTION 1: Accent color cards ── */
+    .accent-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+
+    .accent-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      overflow: hidden;
+      transition: border-color 150ms ease, transform 150ms ease;
+    }
+
+    .accent-card:hover {
+      border-color: var(--border-strong);
+      transform: translateY(-1px);
+    }
+
+    .accent-swatch {
+      height: 100px;
+      display: flex;
+      align-items: flex-end;
+      padding: 12px 16px;
+      position: relative;
+    }
+
+    .swatch-hex {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 600;
+      color: rgba(0, 0, 0, 0.7);
+      background: rgba(0, 0, 0, 0.2);
+      padding: 3px 8px;
+      border-radius: 3px;
+      letter-spacing: 0.5px;
+    }
+
+    .accent-card-body {
+      padding: 20px;
+    }
+
+    .accent-label {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+    }
+
+    .accent-tag {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 8px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 2px;
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-subtle);
+      letter-spacing: 0.4px;
+      margin-bottom: 16px;
+    }
+
+    /* Mini logo + CTA examples */
+    .accent-example {
+      background: #0d0d0d;
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      padding: 12px 14px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .example-logo {
+      font-size: 15px;
+      font-weight: 700;
+      color: #ffffff;
+      letter-spacing: -0.5px;
+    }
+
+    .example-btn {
+      display: inline-flex;
+      align-items: center;
+      height: 30px;
+      padding: 0 12px;
+      border: none;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #0d0d0d;
+      cursor: default;
+      letter-spacing: 0.3px;
+      flex-shrink: 0;
+    }
+
+    .accent-pros {
+      list-style: none;
+      margin-bottom: 16px;
+    }
+
+    .accent-pros li {
+      font-size: 12px;
+      color: var(--text-muted);
+      padding: 3px 0;
+      padding-left: 14px;
+      position: relative;
+    }
+
+    .accent-pros li::before {
+      content: '+';
+      position: absolute;
+      left: 0;
+      color: var(--text-subtle);
+      font-weight: 600;
+    }
+
+    .accent-code {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 3px;
+      padding: 8px 10px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .accent-code .class-name {
+      font-weight: 600;
+    }
+
+    .accent-preview-note {
+      margin-top: 20px;
+      padding: 14px 16px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    .accent-preview-note code {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+      background: var(--bg-elevated);
+      padding: 1px 5px;
+      border-radius: 2px;
+    }
+
+    /* ── SECTION 2: Screen gallery ── */
+    .screens-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+
+    .screen-group {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .screen-group-header {
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .screen-group-num {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      margin-bottom: 4px;
+    }
+
+    .screen-group-name {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .screen-group-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 4px;
+      line-height: 1.5;
+    }
+
+    .screen-links {
+      padding: 12px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .screen-link {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 4px;
+      text-decoration: none;
+      transition: border-color 150ms ease, background 150ms ease;
+    }
+
+    .screen-link:hover {
+      border-color: var(--border-strong);
+      background: #222222;
+    }
+
+    .screen-link-badge {
+      display: inline-flex;
+      align-items: center;
+      height: 20px;
+      padding: 0 7px;
+      border-radius: 2px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+
+    .badge-mobile {
+      background: rgba(96, 165, 250, 0.12);
+      border: 1px solid rgba(96, 165, 250, 0.25);
+      color: #60a5fa;
+    }
+
+    .badge-desktop {
+      background: rgba(163, 230, 53, 0.1);
+      border: 1px solid rgba(163, 230, 53, 0.2);
+      color: #a3e635;
+    }
+
+    .badge-missing {
+      background: rgba(248, 113, 113, 0.1);
+      border: 1px solid rgba(248, 113, 113, 0.2);
+      color: #f87171;
+    }
+
+    .screen-link-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      flex: 1;
+    }
+
+    .screen-link-arrow {
+      font-size: 13px;
+      color: var(--text-subtle);
+    }
+
+    .screen-link.missing {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+
+    /* ── SECTION 3: Design decisions ── */
+    .decisions-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+
+    .decision-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      padding: 18px;
+    }
+
+    .decision-icon {
+      font-size: 18px;
+      margin-bottom: 10px;
+    }
+
+    .decision-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+      line-height: 1.3;
+    }
+
+    .decision-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    .decision-tag {
+      display: inline-flex;
+      align-items: center;
+      height: 18px;
+      padding: 0 6px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 2px;
+      font-size: 9px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-top: 8px;
+    }
+
+    .decision-tag.locked {
+      background: rgba(74, 222, 128, 0.07);
+      border-color: rgba(74, 222, 128, 0.2);
+      color: #4ade80;
+    }
+
+    /* ── SECTION 4: Token table ── */
+    .token-table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    thead th {
+      background: var(--bg-elevated);
+      padding: 10px 16px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      border-bottom: 1px solid var(--border-default);
+    }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    tbody tr:last-child {
+      border-bottom: none;
+    }
+
+    tbody tr:hover {
+      background: var(--bg-hover);
+    }
+
+    tbody td {
+      padding: 10px 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+      vertical-align: middle;
+    }
+
+    tbody td:first-child {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .token-swatch {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border-radius: 2px;
+      border: 1px solid rgba(255,255,255,0.1);
+      vertical-align: middle;
+      margin-right: 6px;
+      flex-shrink: 0;
+    }
+
+    .token-val {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .token-group-row td {
+      background: var(--bg-surface);
+      padding: 6px 16px;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+    }
+
+    /* ── SECTION 5: QA flag ── */
+    .qa-flag {
+      background: rgba(163, 230, 53, 0.06);
+      border: 2px solid rgba(163, 230, 53, 0.3);
+      border-radius: 6px;
+      padding: 28px 32px;
+      position: relative;
+    }
+
+    .qa-flag-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+
+    .qa-flag-icon {
+      font-size: 22px;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .qa-flag-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #a3e635;
+      letter-spacing: -0.2px;
+      line-height: 1.3;
+    }
+
+    .qa-flag-origin {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      font-style: italic;
+    }
+
+    .qa-flag-origin strong {
+      font-style: normal;
+      color: var(--text-secondary);
+    }
+
+    .qa-checklist {
+      list-style: none;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+
+    .qa-checklist li {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .qa-check {
+      width: 18px;
+      height: 18px;
+      border: 1.5px solid rgba(163, 230, 53, 0.4);
+      border-radius: 3px;
+      flex-shrink: 0;
+      margin-top: 1px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ── Footer ── */
+    .page-footer {
+      margin-top: 64px;
+      padding-top: 32px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .footer-gate {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      padding: 24px 28px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .footer-gate-icon {
+      font-size: 28px;
+      flex-shrink: 0;
+    }
+
+    .footer-gate-text {
+      flex: 1;
+    }
+
+    .footer-gate-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+
+    .footer-gate-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    .footer-gate-badge {
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      height: 32px;
+      padding: 0 14px;
+      background: rgba(248, 113, 113, 0.1);
+      border: 1px solid rgba(248, 113, 113, 0.25);
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #f87171;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    .footer-meta {
+      margin-top: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: var(--text-subtle);
+    }
+
+    .footer-meta a {
+      color: var(--text-subtle);
+      text-decoration: none;
+    }
+
+    .footer-meta a:hover {
+      color: var(--text-muted);
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 900px) {
+      .page-content { padding: 32px 20px 60px; }
+
+      .accent-grid { grid-template-columns: 1fr; gap: 16px; }
+      .screens-grid { grid-template-columns: 1fr; }
+      .decisions-grid { grid-template-columns: repeat(2, 1fr); }
+      .qa-checklist { grid-template-columns: 1fr; }
+
+      .footer-gate {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 14px;
+      }
+
+      .nav { padding: 0 20px; }
+    }
+
+    @media (max-width: 600px) {
+      .page-title { font-size: 24px; }
+      .nav-badge { display: none; }
+      .decisions-grid { grid-template-columns: 1fr; }
+      .header-meta { flex-direction: column; gap: 6px; }
+    }
+  </style>
+</head>
+<body class="sl-page accent-a">
+
+  <!-- NAV -->
+  <nav class="nav">
+    <span class="logo">stem<span class="logo-dash">-</span>loops</span>
+    <div class="nav-sep"></div>
+    <span class="nav-label">V2 Design Review</span>
+    <span class="nav-badge">Phase 3b Gate</span>
+  </nav>
+
+  <!-- PAGE CONTENT -->
+  <main class="page-content">
+
+    <!-- ── HEADER ── -->
+    <header class="page-header">
+      <div class="page-eyebrow">Design Review · Phase 3b · 2026-06-29</div>
+      <h1 class="page-title">stem<span class="dash">-</span>loops V2 — Design Review</h1>
+      <p class="page-sub">Visual designs + design tokens ready for review. All 10 screens (5 mobile + 5 desktop) delivered. One decision required before development begins.</p>
+      <div class="gate-notice">
+        <span class="star">&#9733;</span>
+        DESIGN REVIEW GATE — Approve to proceed to development
+      </div>
+      <div class="header-meta">
+        <span><span class="dot"></span>2026-06-29</span>
+        <span><span class="dot"></span>Phase 3b — Visual Blueprint complete</span>
+        <span><span class="dot"></span>Agent: Claude Sonnet 4.6</span>
+        <span><span class="dot"></span>Operator: joncartwright00@gmail.com</span>
+      </div>
+    </header>
+
+    <!-- ── SECTION 1: ACCENT COLOR SELECTION ── -->
+    <section class="section">
+      <div class="section-header">
+        <div class="section-num">Section 01</div>
+        <h2 class="section-title">Choose your accent color</h2>
+        <p class="section-desc">Required before development begins. This single value drives buttons, waveform fills, active states, and focus rings across all screens.</p>
+      </div>
+
+      <div class="accent-grid">
+
+        <!-- OPTION A -->
+        <div class="accent-card">
+          <div class="accent-swatch" style="background: #a3e635;">
+            <span class="swatch-hex">#a3e635</span>
+          </div>
+          <div class="accent-card-body">
+            <div class="accent-label">Option A — Neon Lime</div>
+            <div class="accent-tag">Producer Energy &middot; FL Studio palette</div>
+            <div class="accent-example">
+              <span class="example-logo">stem<span style="color:#a3e635;">-</span>loops</span>
+              <span class="example-btn" style="background:#a3e635; color:#0d0d0d;">Extract Loops</span>
+            </div>
+            <ul class="accent-pros">
+              <li>Maximum contrast on dark — highly readable</li>
+              <li>Energetic, creative-tool vibe</li>
+              <li>Distinctive — uncommon in audio SaaS</li>
+            </ul>
+            <div class="accent-code">body class=<span class="class-name">"sl-page accent-a"</span></div>
+          </div>
+        </div>
+
+        <!-- OPTION B -->
+        <div class="accent-card">
+          <div class="accent-swatch" style="background: #f59e0b;">
+            <span class="swatch-hex">#f59e0b</span>
+          </div>
+          <div class="accent-card-body">
+            <div class="accent-label">Option B — Amber Gold</div>
+            <div class="accent-tag">Warm &middot; DAW-native &middot; Ableton-adjacent</div>
+            <div class="accent-example">
+              <span class="example-logo">stem<span style="color:#f59e0b;">-</span>loops</span>
+              <span class="example-btn" style="background:#f59e0b; color:#0d0d0d;">Extract Loops</span>
+            </div>
+            <ul class="accent-pros">
+              <li>Warm and professional feeling</li>
+              <li>Familiar in audio software (Ableton, Logic)</li>
+              <li>Easy on the eyes during long sessions</li>
+            </ul>
+            <div class="accent-code">body class=<span class="class-name">"sl-page accent-b"</span></div>
+          </div>
+        </div>
+
+        <!-- OPTION C -->
+        <div class="accent-card">
+          <div class="accent-swatch" style="background: #2dd4bf;">
+            <span class="swatch-hex">#2dd4bf</span>
+          </div>
+          <div class="accent-card-body">
+            <div class="accent-label">Option C — Electric Teal</div>
+            <div class="accent-tag">Cool &middot; Technical &middot; Splice-adjacent</div>
+            <div class="accent-example">
+              <span class="example-logo">stem<span style="color:#2dd4bf;">-</span>loops</span>
+              <span class="example-btn" style="background:#2dd4bf; color:#0d0d0d;">Extract Loops</span>
+            </div>
+            <ul class="accent-pros">
+              <li>Cool and modern — tech-forward</li>
+              <li>Unique positioning vs Splice/Bandlab</li>
+              <li>Strong contrast, clean focus states</li>
+            </ul>
+            <div class="accent-code">body class=<span class="class-name">"sl-page accent-c"</span></div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="accent-preview-note">
+        To preview any accent live on the designs, open any screen file below and change the <code>&lt;body&gt;</code> class from <code>accent-a</code> to <code>accent-b</code> or <code>accent-c</code>. The design tokens file handles the rest — all colors update from that single class swap.
+      </div>
+    </section>
+
+    <!-- ── SECTION 2: SCREEN GALLERY ── -->
+    <section class="section">
+      <div class="section-header">
+        <div class="section-num">Section 02</div>
+        <h2 class="section-title">All screens — Phase 3b deliverables</h2>
+        <p class="section-desc">10 files total: 5 screens &times; mobile + desktop. All rendered at spec. All use the design tokens file.</p>
+      </div>
+
+      <div class="screens-grid">
+
+        <!-- Screen 1 — Submit -->
+        <div class="screen-group">
+          <div class="screen-group-header">
+            <div class="screen-group-num">Screen 01</div>
+            <div class="screen-group-name">Submit</div>
+            <div class="screen-group-desc">YouTube URL entry, BPM + key inputs, stem selection chips, and the primary Extract Loops CTA.</div>
+          </div>
+          <div class="screen-links">
+            <a href="submit-design-mobile.html" class="screen-link" target="_blank">
+              <span class="screen-link-badge badge-mobile">Mobile</span>
+              <span class="screen-link-label">submit-design-mobile.html</span>
+              <span class="screen-link-arrow">&#8599;</span>
+            </a>
+            <a href="submit-design-desktop.html" class="screen-link" target="_blank">
+              <span class="screen-link-badge badge-desktop">Desktop</span>
+              <span class="screen-link-label">submit-design-desktop.html</span>
+              <span class="screen-link-arrow">&#8599;</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Screen 2 — Progress -->
+        <div class="screen-group">
+          <div class="screen-group-header">
+            <div class="screen-group-num">Screen 02</div>
+            <div class="screen-group-name">Progress</div>
+            <div class="screen-group-desc">Real-time job processing stages, waveform preview loading, ETA display, and stage status indicators.</div>
+          </div>
+          <div class="screen-links">
+            <a href="progress-design-mobile.html" class="screen-link" target="_blank">
+              <span class="screen-link-badge badge-mobile">Mobile</span>
+              <span class="screen-link-label">progress-design-mobile.html</span>
+              <span class="screen-link-arrow">&#8599;</span>
+            </a>
+            <a href="progress-design-desktop.html" class="screen-link" target="_blank">
+              <span class="screen-link-badge badge-desktop">Desktop</span>
+              <span class="screen-link-label">progress-design-desktop.html</span>
+              <span class="screen-link-arrow">&#8599;</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Screen 3 — Results -->
+        <div class="screen-group">
+          <div class="screen-group-header">
+            <div class="screen-group-num">Screen 03</div>
+            <div class="screen-group-name">Results</div>
+            <div class="screen-group-desc">Stem waveform players (Drums / Bass / Keys / Vocals / Other), per-stem WAV downloads, ZIP CTA with sticky mobile bar, expiry timer.</div>
+          </div>
+          <div class="screen-links">
+            <a href="results-design-mobile.html" class="screen-link" target="_blank">
+              <span class="screen-link-badge badge-mobile">Mobile</span>
+              <span class="screen-link-label">results-design-mobile.html</span>
+              <span class="screen-link-arrow">&#8599;</span>
+            </a>
+            <a href="results-design-desktop.html" class="screen-link" target="_blank">
+              <span class="screen-link-badge badge-desktop">Desktop</span>
+              <span class="screen-link-label">results-design-desktop.html</span>
+              <span class="screen-link-arrow">&#8599;</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Screen 4 — Error States -->
+        <div class="screen-group">
+          <div class="screen-group-header">
+            <div class="screen-group-num">Screen 04</div>
+            <div class="screen-group-name">Error States</div>
+            <div class="screen-group-desc">URL validation errors, processing failure states, network errors, and retry flows with clear user guidance.</div>
+          </div>
+          <div class="screen-links">
+            <a href="error-states-design-mobile.html" class="screen-link" target="_blank">
+              <span class="screen-link-badge badge-mobile">Mobile</span>
+              <span class="screen-link-label">error-states-design-mobile.html</span>
+              <span class="screen-link-arrow">&#8599;</span>
+            </a>
+            <a href="error-states-design-desktop.html" class="screen-link" target="_blank">
+              <span class="screen-link-badge badge-desktop">Desktop</span>
+              <span class="screen-link-label">error-states-design-desktop.html</span>
+              <span class="screen-link-arrow">&#8599;</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Screen 5 — Job History -->
+        <div class="screen-group">
+          <div class="screen-group-header">
+            <div class="screen-group-num">Screen 05</div>
+            <div class="screen-group-name">Job History</div>
+            <div class="screen-group-desc">Paginated job list, filter chips by status, per-job status badges, re-download CTAs, expiry warnings, and empty state.</div>
+          </div>
+          <div class="screen-links">
+            <a href="job-history-design-mobile.html" class="screen-link" target="_blank">
+              <span class="screen-link-badge badge-mobile">Mobile</span>
+              <span class="screen-link-label">job-history-design-mobile.html</span>
+              <span class="screen-link-arrow">&#8599;</span>
+            </a>
+            <a href="job-history-design-desktop.html" class="screen-link" target="_blank">
+              <span class="screen-link-badge">Desktop 1440px</span>
+              <span class="screen-link-label">job-history-design-desktop.html</span>
+              <span class="screen-link-arrow">&#8599;</span>
+            </a>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ── SECTION 3: KEY DESIGN DECISIONS ── -->
+    <section class="section">
+      <div class="section-header">
+        <div class="section-num">Section 03</div>
+        <h2 class="section-title">Key design decisions in Phase 3b</h2>
+        <p class="section-desc">Decisions locked in this phase. Items marked LOCKED cannot be reversed without a design review.</p>
+      </div>
+
+      <div class="decisions-grid">
+
+        <div class="decision-card">
+          <div class="decision-icon">&#9656;</div>
+          <div class="decision-title">Waveform as hero element</div>
+          <div class="decision-desc">Accent color fills the played portion of waveform bars. Pre-computed peaks (no live analysis on load). Section markers at arrangement boundaries. Heights: 64px mobile / 80px desktop.</div>
+          <span class="decision-tag locked">Locked</span>
+        </div>
+
+        <div class="decision-card">
+          <div class="decision-icon">T</div>
+          <div class="decision-title">Typography system</div>
+          <div class="decision-desc">System sans (no custom font load) for all UI text. Monospace for technical values only: BPM, job IDs, file names, hex codes. Scale: 32px hero → 11px micro-label.</div>
+          <span class="decision-tag locked">Locked</span>
+        </div>
+
+        <div class="decision-card">
+          <div class="decision-icon">&#9632;</div>
+          <div class="decision-title">Dark mode foundation</div>
+          <div class="decision-desc">bg-page #0d0d0d → bg-nav #0a0a0a → bg-card #161616 → bg-elevated #1e1e1e. No pure black. Borders preferred over shadows. Four-level depth system.</div>
+          <span class="decision-tag locked">Locked</span>
+        </div>
+
+        <div class="decision-card">
+          <div class="decision-icon">&#11044;</div>
+          <div class="decision-title">Status color system</div>
+          <div class="decision-desc">Soft palette — never saturated: Done #4ade80, Processing #60a5fa, Failed #f87171, Expiry warning #fb923c. Each has an 8% opacity background variant for status areas.</div>
+          <span class="decision-tag locked">Locked</span>
+        </div>
+
+        <div class="decision-card">
+          <div class="decision-icon">&#8659;</div>
+          <div class="decision-title">Mobile sticky ZIP CTA</div>
+          <div class="decision-desc">On Results mobile, the Download All ZIP button docks to the bottom of the viewport in a 64px bar. Lifts above iOS home indicator. Q3 decision — accepted.</div>
+          <span class="decision-tag locked">Q3 Decision</span>
+        </div>
+
+        <div class="decision-card">
+          <div class="decision-icon">&#9836;</div>
+          <div class="decision-title">'Keys' stem label — never 'Piano'</div>
+          <div class="decision-desc">The keyboard/harmonic stem is always labeled "Keys" in all UI copy, filenames, and API responses. WAV filename format enforces this: *_keys_*.wav. Q2 decision — final.</div>
+          <span class="decision-tag locked">Q2 Decision</span>
+        </div>
+
+        <div class="decision-card">
+          <div class="decision-icon">&#8853;</div>
+          <div class="decision-title">Touch targets &ge;44px</div>
+          <div class="decision-desc">Every interactive element on mobile meets the 44px minimum touch target. Enforced via --touch-min token. Buttons, chips, links, drag handles — all verified. No exceptions.</div>
+          <span class="decision-tag locked">Locked</span>
+        </div>
+
+        <div class="decision-card">
+          <div class="decision-icon">&#8660;</div>
+          <div class="decision-title">WAV filename format</div>
+          <div class="decision-desc">Standardized pattern: <span style="font-family:monospace; font-size:11px; color:#999;">{title}_{stem}_{bpm}bpm_{key}_{section}_{idx}.wav</span>. Applied consistently across Results screen, History, and API responses.</div>
+          <span class="decision-tag locked">Locked</span>
+        </div>
+
+        <div class="decision-card">
+          <div class="decision-icon">&#9651;</div>
+          <div class="decision-title">Three accent options presented</div>
+          <div class="decision-desc">Design tokens ship with all three accent definitions. A single body class swap activates any option. No CSS changes needed in component files after the operator picks.</div>
+          <span class="decision-tag">Pending operator pick</span>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ── SECTION 4: DESIGN TOKENS REFERENCE ── -->
+    <section class="section">
+      <div class="section-header">
+        <div class="section-num">Section 04</div>
+        <h2 class="section-title">Design tokens reference</h2>
+        <p class="section-desc">Core token values from <code style="font-family:monospace; font-size:12px; color:#999; background:#1e1e1e; padding:2px 6px; border-radius:2px;">design-tokens.css</code>. Full file at <code style="font-family:monospace; font-size:12px; color:#999; background:#1e1e1e; padding:2px 6px; border-radius:2px;">public/downloads/designs/design-tokens.css</code>.</p>
+      </div>
+
+      <div class="token-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Token</th>
+              <th>Value</th>
+              <th>Swatch</th>
+              <th>Usage</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="token-group-row"><td colspan="4">Accent — Option A (Neon Lime, default)</td></tr>
+            <tr>
+              <td>--accent</td>
+              <td class="token-val">#a3e635</td>
+              <td><span class="token-swatch" style="background:#a3e635;"></span></td>
+              <td>Buttons, waveform played, active states</td>
+            </tr>
+            <tr>
+              <td>--accent-hover</td>
+              <td class="token-val">#bef264</td>
+              <td><span class="token-swatch" style="background:#bef264;"></span></td>
+              <td>Button hover state</td>
+            </tr>
+            <tr>
+              <td>--accent-muted</td>
+              <td class="token-val">rgba(163,230,53,0.12)</td>
+              <td><span class="token-swatch" style="background:rgba(163,230,53,0.12); border-color:#3a3a3a;"></span></td>
+              <td>Active chip bg, stage dot bg</td>
+            </tr>
+            <tr class="token-group-row"><td colspan="4">Accent — Option B (Amber Gold)</td></tr>
+            <tr>
+              <td>--accent (accent-b)</td>
+              <td class="token-val">#f59e0b</td>
+              <td><span class="token-swatch" style="background:#f59e0b;"></span></td>
+              <td>All interactive elements under .accent-b</td>
+            </tr>
+            <tr class="token-group-row"><td colspan="4">Accent — Option C (Electric Teal)</td></tr>
+            <tr>
+              <td>--accent (accent-c)</td>
+              <td class="token-val">#2dd4bf</td>
+              <td><span class="token-swatch" style="background:#2dd4bf;"></span></td>
+              <td>All interactive elements under .accent-c</td>
+            </tr>
+            <tr class="token-group-row"><td colspan="4">Backgrounds</td></tr>
+            <tr>
+              <td>--bg-page</td>
+              <td class="token-val">#0d0d0d</td>
+              <td><span class="token-swatch" style="background:#0d0d0d;"></span></td>
+              <td>Outermost canvas</td>
+            </tr>
+            <tr>
+              <td>--bg-nav</td>
+              <td class="token-val">#0a0a0a</td>
+              <td><span class="token-swatch" style="background:#0a0a0a;"></span></td>
+              <td>Sticky nav, sidebars</td>
+            </tr>
+            <tr>
+              <td>--bg-surface</td>
+              <td class="token-val">#111111</td>
+              <td><span class="token-swatch" style="background:#111111;"></span></td>
+              <td>Primary surface layer</td>
+            </tr>
+            <tr>
+              <td>--bg-card</td>
+              <td class="token-val">#161616</td>
+              <td><span class="token-swatch" style="background:#161616;"></span></td>
+              <td>Cards, panels</td>
+            </tr>
+            <tr>
+              <td>--bg-elevated</td>
+              <td class="token-val">#1e1e1e</td>
+              <td><span class="token-swatch" style="background:#1e1e1e;"></span></td>
+              <td>Inputs, tags, elevated UI</td>
+            </tr>
+            <tr class="token-group-row"><td colspan="4">Text</td></tr>
+            <tr>
+              <td>--text-primary</td>
+              <td class="token-val">#ffffff</td>
+              <td><span class="token-swatch" style="background:#ffffff;"></span></td>
+              <td>Headlines, high-emphasis</td>
+            </tr>
+            <tr>
+              <td>--text-secondary</td>
+              <td class="token-val">#e0e0e0</td>
+              <td><span class="token-swatch" style="background:#e0e0e0;"></span></td>
+              <td>Body text</td>
+            </tr>
+            <tr>
+              <td>--text-muted</td>
+              <td class="token-val">#999999</td>
+              <td><span class="token-swatch" style="background:#999999;"></span></td>
+              <td>Supporting / secondary labels</td>
+            </tr>
+            <tr>
+              <td>--text-subtle</td>
+              <td class="token-val">#666666</td>
+              <td><span class="token-swatch" style="background:#666666;"></span></td>
+              <td>Placeholders, micro-labels</td>
+            </tr>
+            <tr class="token-group-row"><td colspan="4">Status</td></tr>
+            <tr>
+              <td>--status-done</td>
+              <td class="token-val">#4ade80</td>
+              <td><span class="token-swatch" style="background:#4ade80;"></span></td>
+              <td>Completed job indicator</td>
+            </tr>
+            <tr>
+              <td>--status-processing</td>
+              <td class="token-val">#60a5fa</td>
+              <td><span class="token-swatch" style="background:#60a5fa;"></span></td>
+              <td>Active / in-progress</td>
+            </tr>
+            <tr>
+              <td>--status-failed</td>
+              <td class="token-val">#f87171</td>
+              <td><span class="token-swatch" style="background:#f87171;"></span></td>
+              <td>Error, failed job</td>
+            </tr>
+            <tr>
+              <td>--status-expiry</td>
+              <td class="token-val">#fb923c</td>
+              <td><span class="token-swatch" style="background:#fb923c;"></span></td>
+              <td>Expiry warning (&lt;24h)</td>
+            </tr>
+            <tr class="token-group-row"><td colspan="4">Borders / Radius / Spacing</td></tr>
+            <tr>
+              <td>--border-default</td>
+              <td class="token-val">#2a2a2a</td>
+              <td><span class="token-swatch" style="background:#2a2a2a;"></span></td>
+              <td>Cards, inputs, tags</td>
+            </tr>
+            <tr>
+              <td>--radius-md</td>
+              <td class="token-val">4px</td>
+              <td>&mdash;</td>
+              <td>Buttons, cards, inputs</td>
+            </tr>
+            <tr>
+              <td>--radius-full</td>
+              <td class="token-val">9999px</td>
+              <td>&mdash;</td>
+              <td>Filter chips (pill shape)</td>
+            </tr>
+            <tr>
+              <td>--touch-min</td>
+              <td class="token-val">44px</td>
+              <td>&mdash;</td>
+              <td>Minimum touch target height</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ── SECTION 5: QA MOBILE FLAG ── -->
+    <section class="section">
+      <div class="section-header">
+        <div class="section-num">Section 05</div>
+        <h2 class="section-title">Step 7 QA priority</h2>
+        <p class="section-desc">Mobile is a first-class requirement per operator instruction. The following checklist must be treated as thorough, not optional.</p>
+      </div>
+
+      <div class="qa-flag">
+        <div class="qa-flag-header">
+          <div class="qa-flag-icon">&#9873;</div>
+          <div>
+            <div class="qa-flag-title">STEP 7 QA PRIORITY — MOBILE IS A FIRST-CLASS REQUIREMENT</div>
+            <div class="qa-flag-origin">
+              Operator explicitly requested: <strong>"Let's add a mobile layout. I'd like this to definitely work on mobile."</strong> QA must treat mobile testing as thorough, not optional.
+            </div>
+          </div>
+        </div>
+
+        <ul class="qa-checklist">
+          <li>
+            <span class="qa-check"></span>
+            Test all 5 screens at 375px viewport width
+          </li>
+          <li>
+            <span class="qa-check"></span>
+            Verify sticky ZIP CTA docks correctly on Results mobile
+          </li>
+          <li>
+            <span class="qa-check"></span>
+            Verify all touch targets measure &ge;44px (use DevTools inspect)
+          </li>
+          <li>
+            <span class="qa-check"></span>
+            Verify no horizontal scroll on any screen at 375px
+          </li>
+          <li>
+            <span class="qa-check"></span>
+            Verify waveform bars render at 375px (no overflow, correct height 64px)
+          </li>
+          <li>
+            <span class="qa-check"></span>
+            Test jobs started on phone, resumed on desktop — history cross-device
+          </li>
+          <li>
+            <span class="qa-check"></span>
+            Verify stem filter chips scroll horizontally without page scroll
+          </li>
+          <li>
+            <span class="qa-check"></span>
+            Verify job history rows are tappable — full-width touch targets
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ── FOOTER ── -->
+    <footer class="page-footer">
+      <div class="footer-gate">
+        <div class="footer-gate-icon">&#9632;</div>
+        <div class="footer-gate-text">
+          <div class="footer-gate-title">Design Review Gate — Action Required</div>
+          <div class="footer-gate-sub">
+            DO NOT hand off to development until accent color is confirmed and designs are approved. Once the accent is picked, reply with the chosen option (A, B, or C) and any design feedback. Development begins on confirmation.
+          </div>
+        </div>
+        <span class="footer-gate-badge">Awaiting approval</span>
+      </div>
+      <div class="footer-meta">
+        <span>stem-loops V2 &middot; Phase 3b &middot; 2026-06-29</span>
+        <span>
+          <a href="../design-tokens.css">design-tokens.css</a>
+          &nbsp;&middot;&nbsp;
+          11 files delivered &middot; 10 screens (5 mobile + 5 desktop) + 1 design-tokens.css &middot; all present
+        </span>
+      </div>
+    </footer>
+
+  </main>
+
+</body>
+</html>

@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>stem-loops — Job History · Mobile</title>
+  <link rel="stylesheet" href="../design-tokens.css">
+  <style>
+    /* ─── Reset ─── */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100%;
+      overflow-x: hidden;
+    }
+
+    body {
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #1a1a1a;
+    }
+
+    /* ─── Device frame (375px mobile simulation) ─── */
+    .device-frame {
+      width: 375px;
+      min-height: 100dvh;
+      background: var(--bg-page);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    /* ─── Top Nav ─── */
+    .nav {
+      height: var(--nav-height);
+      background: var(--bg-nav);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--space-4);
+      position: sticky;
+      top: 0;
+      z-index: var(--z-nav);
+      flex-shrink: 0;
+    }
+
+    .nav-logo {
+      font-size: 19px;
+      font-weight: var(--weight-bold);
+      color: var(--text-primary);
+      letter-spacing: var(--tracking-tight);
+      text-decoration: none;
+      line-height: 1;
+    }
+
+    .nav-logo-dash {
+      color: var(--accent);
+    }
+
+    .nav-back {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: var(--text-sm);
+      font-weight: var(--weight-medium);
+      color: var(--text-muted);
+      text-decoration: none;
+      min-height: var(--touch-min);
+      padding: 0 var(--space-2);
+      border-radius: var(--radius-md);
+      transition: color var(--transition-fast);
+    }
+
+    .nav-back:hover {
+      color: var(--text-secondary);
+    }
+
+    .nav-back-arrow {
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    /* ─── Page content ─── */
+    .page-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding-bottom: 32px;
+    }
+
+    /* ─── Page title bar ─── */
+    .page-title-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px var(--space-4) 14px;
+      background: var(--bg-page);
+    }
+
+    .page-title {
+      font-size: var(--text-xl);
+      font-weight: var(--weight-bold);
+      color: var(--text-primary);
+      letter-spacing: var(--tracking-tight);
+      line-height: var(--leading-tight);
+    }
+
+    .clear-all-btn {
+      display: inline-flex;
+      align-items: center;
+      min-height: var(--touch-min);
+      padding: 0 var(--space-2);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-medium);
+      color: #a16060;
+      background: transparent;
+      border: none;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: color var(--transition-fast);
+      text-decoration: none;
+    }
+
+    .clear-all-btn:hover {
+      color: #c87070;
+    }
+
+    /* ─── Storage info banner ─── */
+    .storage-banner {
+      margin: 0 var(--space-4) 16px;
+      padding: 10px 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .storage-pulse-wrap {
+      flex-shrink: 0;
+      width: 10px;
+      height: 10px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .storage-pulse-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      position: relative;
+      z-index: 1;
+    }
+
+    .storage-pulse-ring {
+      position: absolute;
+      inset: -2px;
+      border-radius: 50%;
+      border: 1px solid var(--accent);
+      opacity: 0;
+      animation: pulse-ring 2.2s ease-out infinite;
+    }
+
+    @keyframes pulse-ring {
+      0%   { transform: scale(0.7); opacity: 0.6; }
+      80%  { transform: scale(1.8); opacity: 0; }
+      100% { transform: scale(1.8); opacity: 0; }
+    }
+
+    .storage-banner-text {
+      font-size: 11px;
+      font-weight: var(--weight-medium);
+      color: var(--text-subtle);
+      line-height: var(--leading-snug);
+    }
+
+    .storage-banner-text strong {
+      color: var(--text-muted);
+      font-weight: var(--weight-semibold);
+    }
+
+    /* ─── Jobs list ─── */
+    .jobs-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 0 var(--space-4);
+    }
+
+    /* ─── Job card ─── */
+    .job-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Status stripe — top 3px colored border */
+    .job-card::before {
+      content: '';
+      display: block;
+      height: 3px;
+      width: 100%;
+      flex-shrink: 0;
+    }
+
+    .job-card.status-done::before     { background: #4ade80; }
+    .job-card.status-processing::before { background: var(--accent); }
+    .job-card.status-failed::before   { background: #f87171; }
+
+    .job-card-body {
+      padding: 12px var(--space-4) 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    /* ─── Title row ─── */
+    .job-title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .job-status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .status-dot-done        { background: #4ade80; }
+    .status-dot-processing  { background: var(--accent); }
+    .status-dot-failed      { background: #f87171; }
+
+    /* Pulsing animation for processing dot */
+    .status-dot-processing {
+      animation: dot-pulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes dot-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.45; transform: scale(0.75); }
+    }
+
+    .job-title {
+      font-size: var(--text-md);
+      font-weight: var(--weight-semibold);
+      color: var(--text-primary);
+      letter-spacing: var(--tracking-tight);
+      line-height: var(--leading-tight);
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ─── Params badge row ─── */
+    .job-params-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      height: 20px;
+      padding: 0 7px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      font-size: 10px;
+      font-weight: var(--weight-medium);
+      color: var(--text-subtle);
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+    }
+
+    .badge-stem {
+      background: var(--accent-muted);
+      border-color: var(--accent-border);
+      color: var(--accent);
+    }
+
+    .badge-param {
+      background: var(--bg-elevated);
+      border-color: var(--border-default);
+      color: var(--text-subtle);
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+
+    .badge-loops {
+      background: rgba(255,255,255,0.04);
+      border-color: var(--border-subtle);
+      color: var(--text-muted);
+    }
+
+    /* ─── Date / expiry row ─── */
+    .job-meta-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .job-date {
+      font-size: var(--text-xs);
+      color: var(--text-subtle);
+      line-height: 1;
+    }
+
+    .job-date-expiring {
+      font-size: var(--text-xs);
+      color: #fb923c;
+      font-weight: var(--weight-medium);
+      line-height: 1;
+    }
+
+    .meta-sep {
+      width: 2px;
+      height: 2px;
+      border-radius: 50%;
+      background: var(--text-disabled);
+      flex-shrink: 0;
+    }
+
+    /* ─── Expiry warning note ─── */
+    .expiry-warning {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      background: rgba(251, 146, 60, 0.08);
+      border: 1px solid rgba(251, 146, 60, 0.2);
+      border-radius: var(--radius-sm);
+      padding: 6px 8px;
+      font-size: 11px;
+      font-weight: var(--weight-medium);
+      color: #fb923c;
+      line-height: var(--leading-snug);
+    }
+
+    .expiry-icon {
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+
+    /* ─── Action buttons row ─── */
+    .job-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 2px;
+    }
+
+    /* "View loops →" — ghost with accent text, flex:1 */
+    .btn-view-loops {
+      flex: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 44px;
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent-border);
+      border-radius: var(--radius-md);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-semibold);
+      letter-spacing: 0.2px;
+      cursor: pointer;
+      gap: 4px;
+      transition: background var(--transition-fast), border-color var(--transition-fast);
+      text-decoration: none;
+    }
+
+    .btn-view-loops:hover {
+      background: var(--accent-muted);
+      border-color: rgba(163, 230, 53, 0.4);
+    }
+
+    /* "Share" — ghost secondary, fixed width */
+    .btn-share {
+      flex-shrink: 0;
+      width: 80px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 44px;
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-medium);
+      cursor: pointer;
+      gap: 4px;
+      transition: border-color var(--transition-fast), color var(--transition-fast);
+      text-decoration: none;
+    }
+
+    .btn-share:hover {
+      border-color: var(--border-strong);
+      color: var(--text-secondary);
+    }
+
+    /* "Watch progress →" — accent bg full width */
+    .btn-watch-progress {
+      flex: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 44px;
+      background: var(--accent-muted);
+      color: var(--accent);
+      border: 1px solid var(--accent-border);
+      border-radius: var(--radius-md);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-semibold);
+      letter-spacing: 0.2px;
+      cursor: pointer;
+      gap: 5px;
+      transition: background var(--transition-fast);
+      text-decoration: none;
+    }
+
+    .btn-watch-progress:hover {
+      background: rgba(163, 230, 53, 0.18);
+    }
+
+    /* "Retry with new URL" — muted ghost for failed state */
+    .btn-retry {
+      flex: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 44px;
+      background: rgba(248, 113, 113, 0.06);
+      color: #f87171;
+      border: 1px solid rgba(248, 113, 113, 0.2);
+      border-radius: var(--radius-md);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-medium);
+      cursor: pointer;
+      gap: 5px;
+      transition: background var(--transition-fast), border-color var(--transition-fast);
+      text-decoration: none;
+    }
+
+    .btn-retry:hover {
+      background: rgba(248, 113, 113, 0.12);
+      border-color: rgba(248, 113, 113, 0.35);
+    }
+
+    /* ─── Processing spinner (small inline) ─── */
+    .processing-spinner {
+      width: 12px;
+      height: 12px;
+      border: 1.5px solid var(--accent-border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ─── Processing progress strip ─── */
+    .processing-progress-strip {
+      height: 2px;
+      background: var(--bg-elevated);
+      border-radius: 0;
+      overflow: hidden;
+      margin: 0 -16px;
+    }
+
+    .processing-progress-fill {
+      height: 100%;
+      width: 38%;
+      background: var(--accent);
+      border-radius: 0 2px 2px 0;
+      animation: progress-shimmer 2s ease-in-out infinite;
+    }
+
+    @keyframes progress-shimmer {
+      0%   { width: 15%; opacity: 0.8; }
+      50%  { width: 55%; opacity: 1; }
+      100% { width: 15%; opacity: 0.8; }
+    }
+
+    /* ─── Empty state (not used here but defined) ─── */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 64px var(--space-8);
+      gap: 12px;
+      text-align: center;
+    }
+
+    /* ─── Job count label ─── */
+    .jobs-count {
+      font-size: var(--text-xs);
+      font-weight: var(--weight-medium);
+      color: var(--text-disabled);
+      text-transform: uppercase;
+      letter-spacing: var(--tracking-caps);
+      padding: 0 var(--space-4) 8px;
+    }
+
+    /* ─── Divider within card for processing stage ─── */
+    .card-divider {
+      height: 1px;
+      background: var(--border-subtle);
+      margin: 0 -16px;
+    }
+
+    .processing-stage-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 0 2px;
+    }
+
+    .processing-stage-label {
+      font-size: 11px;
+      color: var(--text-subtle);
+    }
+
+    .processing-stage-value {
+      font-size: 11px;
+      font-weight: var(--weight-semibold);
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body class="sl-page accent-a">
+  <div class="device-frame">
+
+    <!-- ── Top nav ── -->
+    <nav class="nav">
+      <a href="#" class="nav-logo" aria-label="stem-loops home">
+        stem<span class="nav-logo-dash">-</span>loops
+      </a>
+      <a href="#" class="nav-back" aria-label="Start a new job">
+        <span class="nav-back-arrow">←</span>
+        New job
+      </a>
+    </nav>
+
+    <!-- ── Page content ── -->
+    <main class="page-content">
+
+      <!-- Title bar -->
+      <div class="page-title-bar">
+        <h1 class="page-title">My jobs</h1>
+        <button class="clear-all-btn" type="button" aria-label="Clear all jobs">
+          Clear all
+        </button>
+      </div>
+
+      <!-- Storage info banner -->
+      <div class="storage-banner" role="note" aria-label="Storage information">
+        <div class="storage-pulse-wrap" aria-hidden="true">
+          <div class="storage-pulse-dot"></div>
+          <div class="storage-pulse-ring"></div>
+        </div>
+        <p class="storage-banner-text">
+          <strong>Stored in this browser</strong> · no account needed · links valid 7 days
+        </p>
+      </div>
+
+      <!-- Job count -->
+      <p class="jobs-count">5 jobs</p>
+
+      <!-- ── Jobs list ── -->
+      <ul class="jobs-list" role="list" aria-label="Job history">
+
+        <!-- ────────────────────────────────────────────
+             JOB 1 — Done, 2h ago
+             drums · bass · 4 bars · 12 loops
+             ──────────────────────────────────────────── -->
+        <li class="job-card status-done" role="listitem">
+          <div class="job-card-body">
+
+            <!-- Title row -->
+            <div class="job-title-row">
+              <span class="job-status-dot status-dot-done" aria-hidden="true"></span>
+              <span class="job-title">soundcloud.com/artist/track-one</span>
+            </div>
+
+            <!-- Params badges -->
+            <div class="job-params-row" aria-label="Job parameters">
+              <span class="badge badge-stem">drums</span>
+              <span class="badge badge-stem">bass</span>
+              <span class="badge badge-param">4 bars</span>
+              <span class="badge badge-loops">12 loops</span>
+            </div>
+
+            <!-- Date / meta -->
+            <div class="job-meta-row">
+              <span class="job-date">Done</span>
+              <span class="meta-sep" aria-hidden="true"></span>
+              <span class="job-date">2 hours ago</span>
+              <span class="meta-sep" aria-hidden="true"></span>
+              <span class="job-date">Expires in 6d</span>
+            </div>
+
+            <!-- Actions -->
+            <div class="job-actions">
+              <a href="#" class="btn-view-loops" role="button">
+                View loops&nbsp;→
+              </a>
+              <a href="#" class="btn-share" role="button">
+                Share
+              </a>
+            </div>
+
+          </div>
+        </li>
+
+        <!-- ────────────────────────────────────────────
+             JOB 2 — Done, yesterday
+             keys · bass · drums · 8 bars · 18 loops
+             ──────────────────────────────────────────── -->
+        <li class="job-card status-done" role="listitem">
+          <div class="job-card-body">
+
+            <!-- Title row -->
+            <div class="job-title-row">
+              <span class="job-status-dot status-dot-done" aria-hidden="true"></span>
+              <span class="job-title">youtube.com/watch?v=dQw4w9WgXcQ</span>
+            </div>
+
+            <!-- Params badges -->
+            <div class="job-params-row" aria-label="Job parameters">
+              <span class="badge badge-stem">keys</span>
+              <span class="badge badge-stem">bass</span>
+              <span class="badge badge-stem">drums</span>
+              <span class="badge badge-param">8 bars</span>
+              <span class="badge badge-loops">18 loops</span>
+            </div>
+
+            <!-- Date / meta -->
+            <div class="job-meta-row">
+              <span class="job-date">Done</span>
+              <span class="meta-sep" aria-hidden="true"></span>
+              <span class="job-date">Yesterday</span>
+              <span class="meta-sep" aria-hidden="true"></span>
+              <span class="job-date">Expires in 5d</span>
+            </div>
+
+            <!-- Actions -->
+            <div class="job-actions">
+              <a href="#" class="btn-view-loops" role="button">
+                View loops&nbsp;→
+              </a>
+              <a href="#" class="btn-share" role="button">
+                Share
+              </a>
+            </div>
+
+          </div>
+        </li>
+
+        <!-- ────────────────────────────────────────────
+             JOB 3 — Processing, just now
+             all stems · 4 bars
+             ──────────────────────────────────────────── -->
+        <li class="job-card status-processing" role="listitem" aria-live="polite" aria-label="Job in progress">
+          <div class="job-card-body">
+
+            <!-- Title row -->
+            <div class="job-title-row">
+              <span class="job-status-dot status-dot-processing" aria-label="Processing"></span>
+              <span class="job-title">spotify.com/track/new-submission</span>
+            </div>
+
+            <!-- Params badges -->
+            <div class="job-params-row" aria-label="Job parameters">
+              <span class="badge badge-stem">drums</span>
+              <span class="badge badge-stem">bass</span>
+              <span class="badge badge-stem">keys</span>
+              <span class="badge badge-stem">vocals</span>
+              <span class="badge badge-param">4 bars</span>
+            </div>
+
+            <!-- Stage row -->
+            <div class="processing-stage-row">
+              <div class="processing-spinner" aria-hidden="true"></div>
+              <span class="processing-stage-label">Separating stems&nbsp;·&nbsp;</span>
+              <span class="processing-stage-value">Step 2 of 4</span>
+            </div>
+
+            <!-- Indented progress strip -->
+            <div class="processing-progress-strip" aria-hidden="true">
+              <div class="processing-progress-fill"></div>
+            </div>
+
+            <!-- Date / meta -->
+            <div class="job-meta-row" style="padding-top:4px;">
+              <span class="job-date" style="color:var(--accent); font-weight:500;">Processing</span>
+              <span class="meta-sep" aria-hidden="true"></span>
+              <span class="job-date">Just now</span>
+            </div>
+
+            <!-- Actions -->
+            <div class="job-actions">
+              <a href="#" class="btn-watch-progress" role="button">
+                Watch progress&nbsp;→
+              </a>
+            </div>
+
+          </div>
+        </li>
+
+        <!-- ────────────────────────────────────────────
+             JOB 4 — Failed, 3d ago
+             drums · 4 bars
+             ──────────────────────────────────────────── -->
+        <li class="job-card status-failed" role="listitem" aria-label="Failed job">
+          <div class="job-card-body">
+
+            <!-- Title row -->
+            <div class="job-title-row">
+              <span class="job-status-dot status-dot-failed" aria-label="Failed"></span>
+              <span class="job-title">soundcloud.com/user/private-track</span>
+            </div>
+
+            <!-- Params badges -->
+            <div class="job-params-row" aria-label="Job parameters">
+              <span class="badge badge-stem">drums</span>
+              <span class="badge badge-param">4 bars</span>
+              <span class="badge" style="background:rgba(248,113,113,0.08);border-color:rgba(248,113,113,0.2);color:#f87171;">
+                Failed
+              </span>
+            </div>
+
+            <!-- Error note -->
+            <div style="
+              display:flex;
+              align-items:center;
+              gap:5px;
+              background:rgba(248,113,113,0.06);
+              border:1px solid rgba(248,113,113,0.16);
+              border-radius:var(--radius-sm);
+              padding:6px 8px;
+              font-size:11px;
+              color:#f87171;
+              line-height:var(--leading-snug);
+            ">
+              <span aria-hidden="true" style="font-size:11px;">✕</span>
+              Track unavailable or region-blocked
+            </div>
+
+            <!-- Date / meta -->
+            <div class="job-meta-row">
+              <span class="job-date" style="color:#f87171; font-weight:500;">Failed</span>
+              <span class="meta-sep" aria-hidden="true"></span>
+              <span class="job-date">3 days ago</span>
+            </div>
+
+            <!-- Actions -->
+            <div class="job-actions">
+              <a href="#" class="btn-retry" role="button">
+                ↺&nbsp;Retry with new URL
+              </a>
+            </div>
+
+          </div>
+        </li>
+
+        <!-- ────────────────────────────────────────────
+             JOB 5 — Done but EXPIRING TOMORROW
+             drums · bass · 2 bars · 8 loops
+             ──────────────────────────────────────────── -->
+        <li class="job-card status-done" role="listitem" aria-label="Job expiring soon">
+          <div class="job-card-body">
+
+            <!-- Title row -->
+            <div class="job-title-row">
+              <span class="job-status-dot status-dot-done" aria-hidden="true"></span>
+              <span class="job-title">youtube.com/watch?v=oldUpload123</span>
+            </div>
+
+            <!-- Params badges -->
+            <div class="job-params-row" aria-label="Job parameters">
+              <span class="badge badge-stem">drums</span>
+              <span class="badge badge-stem">bass</span>
+              <span class="badge badge-param">2 bars</span>
+              <span class="badge badge-loops">8 loops</span>
+            </div>
+
+            <!-- Date / meta — expiry warning color -->
+            <div class="job-meta-row">
+              <span class="job-date">Done</span>
+              <span class="meta-sep" aria-hidden="true"></span>
+              <span class="job-date">6 days ago</span>
+              <span class="meta-sep" aria-hidden="true"></span>
+              <span class="job-date-expiring" aria-label="Expires tomorrow">Expires tomorrow</span>
+            </div>
+
+            <!-- Expiry warning advisory note -->
+            <div class="expiry-warning" role="alert" aria-label="Downloads expire tomorrow">
+              <span class="expiry-icon" aria-hidden="true">⚠</span>
+              Downloads expire tomorrow — save your files now
+            </div>
+
+            <!-- Actions -->
+            <div class="job-actions">
+              <a href="#" class="btn-view-loops" role="button">
+                View loops&nbsp;→
+              </a>
+              <a href="#" class="btn-share" role="button">
+                Share
+              </a>
+            </div>
+
+          </div>
+        </li>
+
+      </ul>
+      <!-- ── /jobs list ── -->
+
+    </main>
+    <!-- ── /page content ── -->
+
+  </div>
+  <!-- ── /device frame ── -->
+</body>
+</html>

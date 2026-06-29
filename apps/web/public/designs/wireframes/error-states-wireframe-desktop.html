@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1440">
+<title>stem-loops — Error States [Wireframe · Desktop]</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #e0e0e0; padding: 40px 20px; }
+  .screen-label { text-align: center; font-size: 11px; color: #444; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 20px; }
+  .frame { width: 1440px; background: #111; border: 2px solid #333; margin: 0 auto; }
+
+  /* Nav */
+  .topnav {
+    height: 56px; background: #0e0e0e; border-bottom: 1px dashed #2a2a2a;
+    display: flex; align-items: center; padding: 0 48px; justify-content: space-between;
+  }
+  .logo { font-size: 20px; font-weight: 700; color: #fff; }
+  .logo span { color: #666; }
+  .nav-right { font-size: 12px; color: #555; }
+
+  /* Section heading */
+  .section-intro {
+    padding: 32px 48px 24px; border-bottom: 1px dashed #1a1a1a;
+    display: flex; justify-content: space-between; align-items: flex-start;
+  }
+  .section-intro h1 { font-size: 18px; font-weight: 700; color: #ccc; margin-bottom: 6px; }
+  .section-intro p { font-size: 13px; color: #555; }
+  .section-intro-note { font-size: 11px; color: #444; max-width: 480px; text-align: right; line-height: 1.6; }
+
+  /* Error grid */
+  .error-grid { padding: 32px 48px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+
+  /* Error card */
+  .error-card {
+    background: #161616; border: 1px dashed #2a2a2a; border-radius: 4px; padding: 24px;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+
+  /* Error header */
+  .error-header { display: flex; align-items: flex-start; gap: 14px; }
+  .error-icon {
+    width: 44px; height: 44px; background: #1e1e1e; border: 1px dashed #444; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    font-size: 10px; color: #666; text-align: center; line-height: 1.2;
+  }
+  .error-code-label {
+    font-size: 10px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;
+  }
+  .error-title { font-size: 15px; font-weight: 700; color: #ccc; line-height: 1.3; }
+
+  /* Error body */
+  .error-message {
+    background: #111; border: 1px dashed #1e1e1e; border-radius: 3px; padding: 12px;
+    font-size: 13px; color: #888; line-height: 1.5;
+  }
+
+  /* What to do next */
+  .error-next { }
+  .error-next-label {
+    font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px;
+  }
+  .error-next-text { font-size: 12px; color: #666; line-height: 1.5; }
+
+  /* CTA buttons */
+  .error-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
+  .error-btn-primary {
+    height: 36px; background: #2a2a2a; border: 1px dashed #555; border-radius: 3px;
+    padding: 0 16px; font-size: 12px; color: #bbb; display: flex; align-items: center; gap: 6px;
+  }
+  .error-btn-secondary {
+    height: 36px; background: #1a1a1a; border: 1px dashed #2a2a2a; border-radius: 3px;
+    padding: 0 16px; font-size: 12px; color: #666; display: flex; align-items: center; gap: 6px;
+  }
+
+  /* Error type indicator dot */
+  .error-type-dot {
+    width: 6px; height: 6px; background: #555; border-radius: 50%; display: inline-block; margin-right: 6px;
+  }
+
+  /* Divider between groups */
+  .error-group-label {
+    grid-column: 1 / -1; font-size: 10px; color: #444; text-transform: uppercase; letter-spacing: 1.2px;
+    padding: 8px 0 0; border-top: 1px dashed #1a1a1a; display: flex; align-items: center; gap: 12px;
+  }
+
+  /* Notes */
+  .notes {
+    width: 1440px; margin: 16px auto 40px; background: #0a0a0a; border: 1px dashed #222; padding: 20px 48px;
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 28px;
+  }
+  .notes h4 { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .notes ul { font-size: 11px; color: #444; line-height: 1.8; padding-left: 14px; }
+
+  .anno { font-size: 10px; color: #444; font-style: italic; border-left: 2px solid #1e1e1e; padding-left: 8px; }
+</style>
+</head>
+<body>
+
+<div class="screen-label">WIREFRAME · Screen 4: Error States · Desktop (all 9 errors)</div>
+
+<div class="frame">
+
+  <!-- Nav -->
+  <div class="topnav">
+    <div class="logo">stem<span>-</span>loops</div>
+    <div class="nav-right">All error states shown on one screen for review</div>
+  </div>
+
+  <!-- Intro -->
+  <div class="section-intro">
+    <div>
+      <h1>Error states — all 9 typed errors</h1>
+      <p>One card per error code from TSD §6.2. Each includes: icon, code, user message, "what to do next", and action CTA.</p>
+    </div>
+    <div class="section-intro-note">
+      Design rule: no raw stack traces, no internal error codes visible to users (INTERNAL_ERROR excepted as a catch-all). Every error is actionable. Error cards appear inline on the Job Progress page where the current stage failed.
+    </div>
+  </div>
+
+  <!-- Error grid -->
+  <div class="error-grid">
+
+    <!-- GROUP: Download errors -->
+    <div class="error-group-label">Download errors (DOWNLOAD_*) — triggered before separation starts</div>
+
+    <!-- DOWNLOAD_INVALID_URL -->
+    <div class="error-card">
+      <div class="error-header">
+        <div class="error-icon">URL<br>ERR</div>
+        <div>
+          <div class="error-code-label">DOWNLOAD_INVALID_URL</div>
+          <div class="error-title">That doesn't look like a YouTube link</div>
+        </div>
+      </div>
+      <div class="error-message">
+        "Paste a full youtube.com or youtu.be URL — like https://youtube.com/watch?v=…"
+      </div>
+      <div class="error-next">
+        <div class="error-next-label">What to do next</div>
+        <div class="error-next-text">Check the URL in your address bar or copy it from YouTube directly. Short links (youtu.be/…) also work.</div>
+      </div>
+      <div class="error-actions">
+        <div class="error-btn-primary">Try a different URL</div>
+      </div>
+    </div>
+
+    <!-- DOWNLOAD_BLOCKED -->
+    <div class="error-card">
+      <div class="error-header">
+        <div class="error-icon">BOT<br>BLK</div>
+        <div>
+          <div class="error-code-label">DOWNLOAD_BLOCKED</div>
+          <div class="error-title">YouTube is temporarily blocking this</div>
+        </div>
+      </div>
+      <div class="error-message">
+        "YouTube is temporarily blocking automated access for this video. This usually clears up in a few minutes."
+      </div>
+      <div class="error-next">
+        <div class="error-next-label">What to do next</div>
+        <div class="error-next-text">Wait 2–5 minutes and try the same URL again. If it keeps failing, try a different video.</div>
+      </div>
+      <div class="error-actions">
+        <div class="error-btn-primary">Retry this video</div>
+        <div class="error-btn-secondary">Try different URL</div>
+      </div>
+    </div>
+
+    <!-- DOWNLOAD_TIMEOUT -->
+    <div class="error-card">
+      <div class="error-header">
+        <div class="error-icon">TIME<br>OUT</div>
+        <div>
+          <div class="error-code-label">DOWNLOAD_TIMEOUT</div>
+          <div class="error-title">Couldn't reach that video in time</div>
+        </div>
+      </div>
+      <div class="error-message">
+        "We couldn't fetch that video fast enough. This is usually a temporary network issue."
+      </div>
+      <div class="error-next">
+        <div class="error-next-label">What to do next</div>
+        <div class="error-next-text">Try again — it usually works on a second attempt. If it keeps failing, the video server may be slow right now.</div>
+      </div>
+      <div class="error-actions">
+        <div class="error-btn-primary">Retry</div>
+      </div>
+    </div>
+
+    <!-- DOWNLOAD_AGE_RESTRICTED -->
+    <div class="error-card">
+      <div class="error-header">
+        <div class="error-icon">18+<br>GATE</div>
+        <div>
+          <div class="error-code-label">DOWNLOAD_AGE_RESTRICTED</div>
+          <div class="error-title">This video is age-restricted</div>
+        </div>
+      </div>
+      <div class="error-message">
+        "This video requires a YouTube sign-in to access. We can't process age-restricted videos."
+      </div>
+      <div class="error-next">
+        <div class="error-next-label">What to do next</div>
+        <div class="error-next-text">Try a different video. Age-restricted content requires sign-in, which our system doesn't support for security reasons.</div>
+      </div>
+      <div class="error-actions">
+        <div class="error-btn-primary">Try a different URL</div>
+      </div>
+    </div>
+
+    <!-- DOWNLOAD_PRIVATE -->
+    <div class="error-card">
+      <div class="error-header">
+        <div class="error-icon">PRIV<br>ATE</div>
+        <div>
+          <div class="error-code-label">DOWNLOAD_PRIVATE</div>
+          <div class="error-title">This video is private or unavailable</div>
+        </div>
+      </div>
+      <div class="error-message">
+        "That video is set to private, unlisted without a direct link, or has been removed."
+      </div>
+      <div class="error-next">
+        <div class="error-next-label">What to do next</div>
+        <div class="error-next-text">Make sure you're using a public video. Open the link in a browser first to confirm it's accessible without being logged in.</div>
+      </div>
+      <div class="error-actions">
+        <div class="error-btn-primary">Try a different URL</div>
+      </div>
+    </div>
+
+    <!-- GROUP: Processing errors -->
+    <div class="error-group-label">Processing errors — triggered during/after separation</div>
+
+    <!-- SEPARATION_FAILED -->
+    <div class="error-card">
+      <div class="error-header">
+        <div class="error-icon">SEP<br>FAIL</div>
+        <div>
+          <div class="error-code-label">SEPARATION_FAILED</div>
+          <div class="error-title">Stem separation failed</div>
+        </div>
+      </div>
+      <div class="error-message">
+        "Stem separation failed for this track. This can happen with unusual audio formats or very short clips."
+      </div>
+      <div class="error-next">
+        <div class="error-next-label">What to do next</div>
+        <div class="error-next-text">Try a different song. If this keeps happening, try a shorter clip (under 6 minutes works best). Our separation service (Replicate/Demucs) handles standard audio well but may struggle with edge cases.</div>
+      </div>
+      <div class="error-actions">
+        <div class="error-btn-primary">Try a different video</div>
+        <div class="error-btn-secondary">Retry</div>
+      </div>
+    </div>
+
+    <!-- EXTRACTION_FAILED -->
+    <div class="error-card">
+      <div class="error-header">
+        <div class="error-icon">EXT<br>FAIL</div>
+        <div>
+          <div class="error-code-label">EXTRACTION_FAILED</div>
+          <div class="error-title">Couldn't find clean loops in this audio</div>
+        </div>
+      </div>
+      <div class="error-message">
+        "We couldn't extract bar-aligned loops from this track. It may be too short, mostly beatless, or a spoken-word recording."
+      </div>
+      <div class="error-next">
+        <div class="error-next-label">What to do next</div>
+        <div class="error-next-text">stem-loops works best with music that has a clear beat. Try a track with drums or a steady rhythm. The song should be at least 30 seconds.</div>
+      </div>
+      <div class="error-actions">
+        <div class="error-btn-primary">Try a different video</div>
+      </div>
+    </div>
+
+    <!-- UPLOAD_FAILED -->
+    <div class="error-card">
+      <div class="error-header">
+        <div class="error-icon">UPL<br>FAIL</div>
+        <div>
+          <div class="error-code-label">UPLOAD_FAILED</div>
+          <div class="error-title">Separated your stems but couldn't save them</div>
+        </div>
+      </div>
+      <div class="error-message">
+        "We successfully separated your stems but ran into an issue saving them for download. This is temporary."
+      </div>
+      <div class="error-next">
+        <div class="error-next-label">What to do next</div>
+        <div class="error-next-text">Please retry the same URL — the heavy work (separation) is done and the retry should be much faster. If it keeps failing, our storage may be experiencing an outage.</div>
+      </div>
+      <div class="error-actions">
+        <div class="error-btn-primary">Retry same URL</div>
+      </div>
+    </div>
+
+    <!-- INTERNAL_ERROR (catch-all, spans full width) -->
+    <div class="error-group-label">Catch-all — not surfaced in detail to users</div>
+
+    <div class="error-card" style="grid-column: 1 / -1; flex-direction: row; align-items: flex-start; gap: 32px;">
+      <div style="flex-shrink: 0; width: 280px;">
+        <div class="error-header">
+          <div class="error-icon">INT<br>ERR</div>
+          <div>
+            <div class="error-code-label">INTERNAL_ERROR</div>
+            <div class="error-title">Something went wrong on our end</div>
+          </div>
+        </div>
+      </div>
+      <div style="flex: 1;">
+        <div class="error-message">
+          "Something went wrong on our end. We've logged it and will look into it — please try again."
+        </div>
+        <div class="error-next" style="margin-top: 12px;">
+          <div class="error-next-label">What to do next</div>
+          <div class="error-next-text">Try again — this is usually transient. The error has been automatically logged for investigation. No internal details are shown to protect system security.</div>
+        </div>
+        <div class="error-actions" style="margin-top: 12px;">
+          <div class="error-btn-primary">Try again</div>
+          <div class="error-btn-secondary">Try a different URL</div>
+        </div>
+      </div>
+      <div style="flex-shrink: 0; max-width: 300px;">
+        <div class="anno">INTERNAL_ERROR is the catch-all. The actual error IS logged server-side (job_events.detail) but never exposed to the user (PRD §6.1: "No stack traces or server state in user-facing errors. Ever."). This card is the design pattern for that requirement.</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Design notes within frame -->
+  <div style="padding: 20px 48px 32px; border-top: 1px dashed #1a1a1a;">
+    <div class="anno" style="font-size: 11px; line-height: 1.7;">
+      <strong style="color: #555;">Error card placement:</strong> Error cards appear <em>inline on the Job Progress page</em> — replacing the current stage entry when it fails. The full stage machine stays visible above the error card so the user can see which stage failed. The "Try again" / "Try different URL" CTAs navigate back to the Submit screen with the URL pre-filled where appropriate.
+      <br><br>
+      <strong style="color: #555;">No stack traces rule:</strong> enforced by: (1) this design never rendering internal details, (2) a CI integration test that asserts no stderr or stack trace appears in any API response body (TSD §9).
+    </div>
+  </div>
+
+</div>
+
+<div class="notes">
+  <div>
+    <h4>Error Pattern Rules</h4>
+    <ul>
+      <li>Every error = icon + code label + title + message + next steps + CTA</li>
+      <li>Code label shown (e.g. DOWNLOAD_BLOCKED) for devtools, not primary copy</li>
+      <li>Message: plain English, no jargon, no internal details</li>
+      <li>"What to do next" is always present — never a dead end</li>
+      <li>Primary CTA always actionable (retry, try different URL, etc.)</li>
+    </ul>
+  </div>
+  <div>
+    <h4>Error Placement in App</h4>
+    <ul>
+      <li>Errors replace the active stage on the Progress screen (inline)</li>
+      <li>Stage machine stays visible above — shows which stage failed</li>
+      <li>DOWNLOAD_INVALID_URL: shown inline below URL input on Submit screen</li>
+      <li>Navigation: "Try different URL" → Submit screen, URL cleared</li>
+      <li>"Retry" → re-queues same URL (POST /api/jobs with same params)</li>
+    </ul>
+  </div>
+  <div>
+    <h4>Security Requirements</h4>
+    <ul>
+      <li>INTERNAL_ERROR: logged server-side, never detailed to user</li>
+      <li>No stderr, no stack traces, no file paths in any response</li>
+      <li>CI integration test enforces no-stack-trace rule per TSD §9</li>
+      <li>Error codes are typed (enum) — no free-text exceptions surface</li>
+      <li>All 9 error codes have a triggering integration test (TSD T30)</li>
+    </ul>
+  </div>
+</div>
+
+</body>
+</html>

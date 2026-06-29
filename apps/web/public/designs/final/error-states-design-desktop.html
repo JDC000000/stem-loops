@@ -1,0 +1,1145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1440">
+  <title>stem-loops V2 — Error States (Desktop 1440px)</title>
+  <link rel="stylesheet" href="../design-tokens.css">
+  <style>
+    /* ── Reset ──────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      min-height: 100vh;
+      width: 100%;
+    }
+
+    body {
+      min-width: 1440px;
+    }
+
+    /* ── Page shell ─────────────────────────────────────── */
+    .page-shell {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-page);
+    }
+
+    /* ── Top nav ────────────────────────────────────────── */
+    .nav {
+      height: var(--nav-height);
+      background: var(--bg-nav);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 48px;
+      position: sticky;
+      top: 0;
+      z-index: var(--z-nav);
+      flex-shrink: 0;
+      gap: 24px;
+    }
+
+    .nav-left {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      flex-shrink: 0;
+    }
+
+    .nav-logo {
+      font-size: 20px;
+      font-weight: var(--weight-bold);
+      color: var(--text-primary);
+      letter-spacing: var(--tracking-tight);
+      text-decoration: none;
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    .nav-logo-dash {
+      color: var(--accent);
+    }
+
+    .nav-divider {
+      width: 1px;
+      height: 20px;
+      background: var(--border-default);
+      flex-shrink: 0;
+    }
+
+    .nav-tagline {
+      font-size: 13px;
+      color: var(--text-subtle);
+      white-space: nowrap;
+    }
+
+    .nav-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+
+    .nav-link {
+      font-size: 13px;
+      color: var(--text-subtle);
+      text-decoration: none;
+      padding: 6px 10px;
+      border-radius: var(--radius-md);
+      transition: color var(--transition-fast);
+      white-space: nowrap;
+    }
+
+    .nav-link:hover {
+      color: var(--text-secondary);
+    }
+
+    /* ── Main content area ──────────────────────────────── */
+    .main-content {
+      flex: 1;
+      padding: 48px 48px 80px;
+      max-width: 1440px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    /* ── Page header ────────────────────────────────────── */
+    .page-header {
+      margin-bottom: 48px;
+    }
+
+    .page-header-eyebrow {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      margin-bottom: 10px;
+    }
+
+    .page-header-title {
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -0.5px;
+      line-height: 1.2;
+      margin-bottom: 12px;
+    }
+
+    .page-header-desc {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.6;
+      max-width: 680px;
+      margin-bottom: 16px;
+    }
+
+    .page-header-rule-box {
+      display: inline-flex;
+      align-items: flex-start;
+      gap: 10px;
+      background: rgba(248, 113, 113, 0.06);
+      border: 1px solid rgba(248, 113, 113, 0.18);
+      border-radius: var(--radius-md);
+      padding: 10px 14px;
+      max-width: 680px;
+    }
+
+    .page-header-rule-icon {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+      margin-top: 1px;
+      color: #f87171;
+    }
+
+    .page-header-rule-text {
+      font-size: 12px;
+      color: #f87171;
+      line-height: 1.5;
+    }
+
+    .page-header-rule-text strong {
+      font-weight: 600;
+    }
+
+    /* ── Group separator rows ────────────────────────────── */
+    .group-separator {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+      margin-top: 4px;
+    }
+
+    .group-separator-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .group-separator-line {
+      flex: 1;
+      height: 1px;
+      background: var(--border-subtle);
+    }
+
+    .group-separator-count {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-disabled);
+      letter-spacing: 0.5px;
+      flex-shrink: 0;
+      font-family: var(--font-mono);
+    }
+
+    /* ── Error card grid ─────────────────────────────────── */
+    .error-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    .error-grid-fullwidth {
+      grid-column: 1 / -1;
+    }
+
+    /* ── Error card ──────────────────────────────────────── */
+    .error-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      border-left: 3px solid #f87171;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: border-color var(--transition-fast);
+    }
+
+    .error-card:hover {
+      border-color: #f87171;
+      border-left-color: #f87171;
+    }
+
+    /* Card header */
+    .card-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 16px 16px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .card-icon-box {
+      width: 44px;
+      height: 44px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      color: #f87171;
+    }
+
+    .card-icon-box svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .card-header-text {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .card-code {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      font-family: var(--font-mono);
+      margin-bottom: 4px;
+    }
+
+    .card-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-primary);
+      line-height: 1.3;
+    }
+
+    /* Card body */
+    .card-body {
+      padding: 14px 16px 16px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* Message inset block */
+    .card-message-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      margin-bottom: 6px;
+    }
+
+    .card-message-block {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 10px 12px;
+    }
+
+    .card-message-text {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    /* What to do next */
+    .card-guidance-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      margin-bottom: 6px;
+    }
+
+    .card-guidance-text {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* CTA row */
+    .card-cta-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: auto;
+      padding-top: 4px;
+    }
+
+    .btn-retry {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 40px;
+      padding: 0 16px;
+      background: var(--btn-primary-bg);
+      color: var(--btn-primary-text);
+      border: none;
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      cursor: pointer;
+      transition: background var(--transition-fast);
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+
+    .btn-retry:hover {
+      background: var(--btn-primary-hover);
+    }
+
+    .btn-retry svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .btn-ghost {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 40px;
+      padding: 0 14px;
+      background: transparent;
+      color: var(--text-subtle);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: border-color var(--transition-fast), color var(--transition-fast);
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+
+    .btn-ghost:hover {
+      border-color: var(--border-strong);
+      color: var(--text-muted);
+    }
+
+    .btn-ghost svg {
+      width: 13px;
+      height: 13px;
+    }
+
+    /* ── INTERNAL_ERROR full-width card ─────────────────── */
+    .error-card-internal {
+      background: var(--bg-card);
+      border: 1px solid rgba(248, 113, 113, 0.22);
+      border-radius: var(--radius-md);
+      border-left: 3px solid #f87171;
+      overflow: hidden;
+    }
+
+    .internal-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 18px 20px 16px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .internal-icon-box {
+      width: 44px;
+      height: 44px;
+      background: rgba(248, 113, 113, 0.08);
+      border: 1px solid rgba(248, 113, 113, 0.2);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      color: #f87171;
+    }
+
+    .internal-icon-box svg {
+      width: 22px;
+      height: 22px;
+    }
+
+    .internal-header-text {
+      flex: 1;
+    }
+
+    .internal-code {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      font-family: var(--font-mono);
+      margin-bottom: 4px;
+    }
+
+    .internal-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .internal-body {
+      padding: 18px 20px 20px;
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .internal-message-col {
+      grid-column: span 2;
+    }
+
+    .internal-message-block {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+      margin-top: 6px;
+    }
+
+    .internal-message-text {
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .internal-note {
+      margin-top: 10px;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      background: rgba(163, 230, 53, 0.04);
+      border: 1px solid rgba(163, 230, 53, 0.12);
+      border-radius: var(--radius-md);
+      padding: 8px 12px;
+    }
+
+    .internal-note-icon {
+      width: 14px;
+      height: 14px;
+      color: var(--accent);
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .internal-note-text {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .internal-note-text strong {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .internal-action-col {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .internal-guidance-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      margin-bottom: 6px;
+    }
+
+    .internal-guidance-text {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .internal-cta-row {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .btn-retry-full {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 40px;
+      padding: 0 20px;
+      background: var(--btn-primary-bg);
+      color: var(--btn-primary-text);
+      border: none;
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background var(--transition-fast);
+      white-space: nowrap;
+    }
+
+    .btn-retry-full:hover {
+      background: var(--btn-primary-hover);
+    }
+
+    .btn-retry-full svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* ── Catch-all group with extra note ────────────────── */
+    .catchall-group {
+      margin-top: 4px;
+    }
+
+    /* ── Design notes footer ─────────────────────────────── */
+    .design-notes {
+      margin-top: 56px;
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 32px;
+    }
+
+    .design-notes-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      margin-bottom: 16px;
+    }
+
+    .design-notes-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+
+    .design-note-item {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .design-note-heading {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .design-note-body {
+      font-size: 12px;
+      color: var(--text-subtle);
+      line-height: 1.6;
+    }
+
+    /* ── Spacer utility ──────────────────────────────────── */
+    .mt-4 { margin-top: 4px; }
+    .mt-8 { margin-top: 8px; }
+    .mb-4 { margin-bottom: 4px; }
+
+  </style>
+</head>
+<body class="sl-page accent-a">
+
+<div class="page-shell">
+
+  <!-- ── Top nav ──────────────────────────────────────── -->
+  <nav class="nav">
+    <div class="nav-left">
+      <a class="nav-logo" href="#">
+        stem<span class="nav-logo-dash">-</span>loops
+      </a>
+      <div class="nav-divider"></div>
+      <span class="nav-tagline">Error States · Design Review</span>
+    </div>
+
+    <div class="nav-right">
+      <a href="#" class="nav-link">Docs</a>
+      <a href="#" class="nav-link">Status</a>
+    </div>
+  </nav>
+
+  <!-- ── Main content ─────────────────────────────────── -->
+  <main class="main-content">
+
+    <!-- Page header -->
+    <div class="page-header">
+      <p class="page-header-eyebrow">Phase 3b · Error States</p>
+      <h1 class="page-header-title">Error States</h1>
+      <p class="page-header-desc">
+        All 9 error codes rendered in their inline card format. Each error surfaces contextually within
+        the flow — never on a dedicated error page. Users see these in-place where the failure occurred
+        (submit form, progress screen, or results view) with a clear action to recover.
+      </p>
+      <div class="page-header-rule-box">
+        <!-- Alert icon -->
+        <svg class="page-header-rule-icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M8 1.5L14.5 13H1.5L8 1.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+          <path d="M8 6v3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          <circle cx="8" cy="11.5" r="0.75" fill="currentColor"/>
+        </svg>
+        <p class="page-header-rule-text">
+          <strong>No stack traces rule:</strong> Error messages are plain English only. Technical codes (e.g.
+          <code style="font-family: monospace; font-size: 11px;">DOWNLOAD_BLOCKED</code>) appear as micro-labels
+          for debugging context but are never the primary message. Server-side errors log internally; nothing is
+          surfaced to the user beyond a single reassuring sentence.
+        </p>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════
+         GROUP: Download errors (5)
+    ══════════════════════════════════════════════════════ -->
+    <div class="group-separator">
+      <span class="group-separator-label">Download errors</span>
+      <div class="group-separator-line"></div>
+      <span class="group-separator-count">5 / 9</span>
+    </div>
+
+    <div class="error-grid">
+
+      <!-- ── Card 1: DOWNLOAD_INVALID_URL ── -->
+      <div class="error-card">
+        <div class="card-header">
+          <div class="card-icon-box">
+            <!-- Link-slash icon -->
+            <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M3 3L17 17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <path d="M8.5 11.5a3.5 3.5 0 0 0 5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <path d="M11.5 8.5a3.5 3.5 0 0 0-5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <path d="M5.5 14.5l-2 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <path d="M14.5 5.5l2-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="card-header-text">
+            <p class="card-code">DOWNLOAD_INVALID_URL</p>
+            <h3 class="card-title">Invalid URL</h3>
+          </div>
+        </div>
+        <div class="card-body">
+          <div>
+            <p class="card-message-label">User-facing message</p>
+            <div class="card-message-block">
+              <p class="card-message-text">Paste a full youtube.com or youtu.be URL.</p>
+            </div>
+          </div>
+          <div>
+            <p class="card-guidance-label">What to do next</p>
+            <p class="card-guidance-text">
+              Check the URL starts with <code style="font-family:monospace;font-size:12px;color:var(--text-muted)">https://</code> and includes a video ID. Playlist or channel links won't work — link directly to a video.
+            </p>
+          </div>
+          <div class="card-cta-row">
+            <button class="btn-retry">
+              <svg viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M1.5 7A5.5 5.5 0 0 1 7 1.5a5.5 5.5 0 0 1 3.9 1.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M12.5 7A5.5 5.5 0 0 1 7 12.5a5.5 5.5 0 0 1-3.9-1.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M10.5 1l1 2.1-2.1 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Fix URL
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Card 2: DOWNLOAD_BLOCKED ── -->
+      <div class="error-card">
+        <div class="card-header">
+          <div class="card-icon-box">
+            <!-- Shield-x icon -->
+            <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M10 2L3 5v5c0 4 3.2 7.3 7 8 3.8-.7 7-4 7-8V5L10 2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+              <path d="M7.5 10.5l5-5M12.5 10.5l-5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="card-header-text">
+            <p class="card-code">DOWNLOAD_BLOCKED</p>
+            <h3 class="card-title">Access Blocked</h3>
+          </div>
+        </div>
+        <div class="card-body">
+          <div>
+            <p class="card-message-label">User-facing message</p>
+            <div class="card-message-block">
+              <p class="card-message-text">YouTube is temporarily blocking automated access. Try again in a few minutes.</p>
+            </div>
+          </div>
+          <div>
+            <p class="card-guidance-label">What to do next</p>
+            <p class="card-guidance-text">
+              This is a transient rate limit on YouTube's side. Wait 2–5 minutes then retry. The video itself is accessible — it's just a temporary hold.
+            </p>
+          </div>
+          <div class="card-cta-row">
+            <button class="btn-retry">
+              <svg viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M1.5 7A5.5 5.5 0 0 1 7 1.5a5.5 5.5 0 0 1 3.9 1.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M12.5 7A5.5 5.5 0 0 1 7 12.5a5.5 5.5 0 0 1-3.9-1.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M10.5 1l1 2.1-2.1 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Try Again
+            </button>
+            <button class="btn-ghost">
+              <svg viewBox="0 0 13 13" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6.5 1.5h-4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M9 1.5h2.5v2.5M11.5 1.5L6.5 6.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              New URL
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Card 3: DOWNLOAD_TIMEOUT ── -->
+      <div class="error-card">
+        <div class="card-header">
+          <div class="card-icon-box">
+            <!-- Clock-x icon -->
+            <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M10 6.5V10l2.5 2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M7.5 14l5-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" opacity="0.5"/>
+            </svg>
+          </div>
+          <div class="card-header-text">
+            <p class="card-code">DOWNLOAD_TIMEOUT</p>
+            <h3 class="card-title">Download Timed Out</h3>
+          </div>
+        </div>
+        <div class="card-body">
+          <div>
+            <p class="card-message-label">User-facing message</p>
+            <div class="card-message-block">
+              <p class="card-message-text">We couldn't reach that video in time. Check the link and try again.</p>
+            </div>
+          </div>
+          <div>
+            <p class="card-guidance-label">What to do next</p>
+            <p class="card-guidance-text">
+              The download took longer than 30 seconds — usually a network blip. Confirm the video still plays on YouTube, then retry. Very long videos (60+ min) may not be supported.
+            </p>
+          </div>
+          <div class="card-cta-row">
+            <button class="btn-retry">
+              <svg viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M1.5 7A5.5 5.5 0 0 1 7 1.5a5.5 5.5 0 0 1 3.9 1.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M12.5 7A5.5 5.5 0 0 1 7 12.5a5.5 5.5 0 0 1-3.9-1.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M10.5 1l1 2.1-2.1 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Retry Download
+            </button>
+            <button class="btn-ghost">
+              <svg viewBox="0 0 13 13" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6.5 1.5h-4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M9 1.5h2.5v2.5M11.5 1.5L6.5 6.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              New URL
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Card 4: DOWNLOAD_AGE_RESTRICTED ── -->
+      <div class="error-card">
+        <div class="card-header">
+          <div class="card-icon-box">
+            <!-- Lock icon -->
+            <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="4" y="9" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M7 9V6.5a3 3 0 0 1 6 0V9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <circle cx="10" cy="13.5" r="1" fill="currentColor"/>
+            </svg>
+          </div>
+          <div class="card-header-text">
+            <p class="card-code">DOWNLOAD_AGE_RESTRICTED</p>
+            <h3 class="card-title">Age-Restricted Video</h3>
+          </div>
+        </div>
+        <div class="card-body">
+          <div>
+            <p class="card-message-label">User-facing message</p>
+            <div class="card-message-block">
+              <p class="card-message-text">This video is age-restricted and can't be processed.</p>
+            </div>
+          </div>
+          <div>
+            <p class="card-guidance-label">What to do next</p>
+            <p class="card-guidance-text">
+              Age-restricted videos require YouTube sign-in to access — our system can't authenticate with YouTube. Try a different upload or find an unrestricted version of the track.
+            </p>
+          </div>
+          <div class="card-cta-row">
+            <button class="btn-ghost">
+              <svg viewBox="0 0 13 13" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6.5 1.5h-4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M9 1.5h2.5v2.5M11.5 1.5L6.5 6.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Try Different URL
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Card 5: DOWNLOAD_PRIVATE ── -->
+      <div class="error-card">
+        <div class="card-header">
+          <div class="card-icon-box">
+            <!-- Eye-off icon -->
+            <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M3 3L17 17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <path d="M6.5 6.5A6 6 0 0 0 4 10s2.5 5 6 5a5.8 5.8 0 0 0 3.5-1.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <path d="M8.5 4.2C9 4.1 9.5 4 10 4c3.5 0 6 5 6 5a10.7 10.7 0 0 1-1.5 2.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="card-header-text">
+            <p class="card-code">DOWNLOAD_PRIVATE</p>
+            <h3 class="card-title">Private or Unavailable</h3>
+          </div>
+        </div>
+        <div class="card-body">
+          <div>
+            <p class="card-message-label">User-facing message</p>
+            <div class="card-message-block">
+              <p class="card-message-text">This video is private or unavailable.</p>
+            </div>
+          </div>
+          <div>
+            <p class="card-guidance-label">What to do next</p>
+            <p class="card-guidance-text">
+              The video may have been removed, set to private, or the URL may be broken. Open the link in your browser to verify it's still public, then try again.
+            </p>
+          </div>
+          <div class="card-cta-row">
+            <button class="btn-ghost">
+              <svg viewBox="0 0 13 13" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6.5 1.5h-4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M9 1.5h2.5v2.5M11.5 1.5L6.5 6.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Try Different URL
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /error-grid (download) -->
+
+
+    <!-- ══════════════════════════════════════════════════
+         GROUP: Processing errors (3)
+    ══════════════════════════════════════════════════════ -->
+    <div class="group-separator">
+      <span class="group-separator-label">Processing errors</span>
+      <div class="group-separator-line"></div>
+      <span class="group-separator-count">3 / 9</span>
+    </div>
+
+    <div class="error-grid">
+
+      <!-- ── Card 6: SEPARATION_FAILED ── -->
+      <div class="error-card">
+        <div class="card-header">
+          <div class="card-icon-box">
+            <!-- Waveform-x icon -->
+            <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M3 10h1.5M5.5 7v6M7.5 5v10M9.5 8v4M11.5 6v8M13.5 8v4M15.5 7v6M17 10h.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.35"/>
+              <path d="M6 6L14 14M14 6L6 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="card-header-text">
+            <p class="card-code">SEPARATION_FAILED</p>
+            <h3 class="card-title">Stem Separation Failed</h3>
+          </div>
+        </div>
+        <div class="card-body">
+          <div>
+            <p class="card-message-label">User-facing message</p>
+            <div class="card-message-block">
+              <p class="card-message-text">Stem separation failed for this track. Try a different song.</p>
+            </div>
+          </div>
+          <div>
+            <p class="card-guidance-label">What to do next</p>
+            <p class="card-guidance-text">
+              Our AI couldn't isolate stems for this audio — likely due to heavy compression, very low quality, or an unusual audio format. Submit a different track to continue.
+            </p>
+          </div>
+          <div class="card-cta-row">
+            <button class="btn-ghost">
+              <svg viewBox="0 0 13 13" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6.5 1.5h-4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M9 1.5h2.5v2.5M11.5 1.5L6.5 6.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Try Different Song
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Card 7: EXTRACTION_FAILED ── -->
+      <div class="error-card">
+        <div class="card-header">
+          <div class="card-icon-box">
+            <!-- Scissors icon -->
+            <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="6" cy="6.5" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+              <circle cx="6" cy="13.5" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M8.5 8L16 4M8.5 12L16 16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="card-header-text">
+            <p class="card-code">EXTRACTION_FAILED</p>
+            <h3 class="card-title">No Loops Found</h3>
+          </div>
+        </div>
+        <div class="card-body">
+          <div>
+            <p class="card-message-label">User-facing message</p>
+            <div class="card-message-block">
+              <p class="card-message-text">Couldn't find clean loops (audio may be too short or beatless).</p>
+            </div>
+          </div>
+          <div>
+            <p class="card-guidance-label">What to do next</p>
+            <p class="card-guidance-text">
+              Loop extraction works best on tracks with a clear rhythmic pattern (drums, bass, keys). Very short clips or ambient/spoken-word audio won't yield usable loops. Try a full-length instrumental or vocal track.
+            </p>
+          </div>
+          <div class="card-cta-row">
+            <button class="btn-ghost">
+              <svg viewBox="0 0 13 13" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6.5 1.5h-4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M9 1.5h2.5v2.5M11.5 1.5L6.5 6.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Try Different Song
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Card 8: UPLOAD_FAILED ── -->
+      <div class="error-card">
+        <div class="card-header">
+          <div class="card-icon-box">
+            <!-- Upload-x icon -->
+            <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M7 13l3-3 3 3M10 10v7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M4.5 14.5A4 4 0 0 1 6 7a5 5 0 0 1 9.7 1.5A3.5 3.5 0 0 1 14.5 14.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="card-header-text">
+            <p class="card-code">UPLOAD_FAILED</p>
+            <h3 class="card-title">Save Failed</h3>
+          </div>
+        </div>
+        <div class="card-body">
+          <div>
+            <p class="card-message-label">User-facing message</p>
+            <div class="card-message-block">
+              <p class="card-message-text">We separated your stems but couldn't save them. Please retry.</p>
+            </div>
+          </div>
+          <div>
+            <p class="card-guidance-label">What to do next</p>
+            <p class="card-guidance-text">
+              The separation succeeded but the final upload to storage failed. Retrying re-uses the already-processed audio — no re-processing needed. Usually resolves immediately.
+            </p>
+          </div>
+          <div class="card-cta-row">
+            <button class="btn-retry">
+              <svg viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M1.5 7A5.5 5.5 0 0 1 7 1.5a5.5 5.5 0 0 1 3.9 1.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M12.5 7A5.5 5.5 0 0 1 7 12.5a5.5 5.5 0 0 1-3.9-1.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M10.5 1l1 2.1-2.1 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Retry Save
+            </button>
+            <button class="btn-ghost">
+              <svg viewBox="0 0 13 13" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6.5 1.5h-4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M9 1.5h2.5v2.5M11.5 1.5L6.5 6.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              New URL
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /error-grid (processing) -->
+
+
+    <!-- ══════════════════════════════════════════════════
+         GROUP: Catch-all (1)
+    ══════════════════════════════════════════════════════ -->
+    <div class="group-separator catchall-group">
+      <span class="group-separator-label">Catch-all</span>
+      <div class="group-separator-line"></div>
+      <span class="group-separator-count">1 / 9</span>
+    </div>
+
+    <!-- ── Card 9: INTERNAL_ERROR — full width ── -->
+    <div class="error-card-internal">
+      <div class="internal-header">
+        <div class="internal-icon-box">
+          <!-- Server-x icon -->
+          <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="2.5" y="2.5" width="15" height="5" rx="1" stroke="currentColor" stroke-width="1.6"/>
+            <rect x="2.5" y="9.5" width="15" height="5" rx="1" stroke="currentColor" stroke-width="1.6"/>
+            <circle cx="5.5" cy="5" r="0.8" fill="currentColor"/>
+            <circle cx="5.5" cy="12" r="0.8" fill="currentColor"/>
+            <path d="M9 17l2.5-2.5M11.5 17L9 14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M14.5 17l2.5-2.5M17 17l-2.5-2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="internal-header-text">
+          <p class="internal-code">INTERNAL_ERROR</p>
+          <h3 class="internal-title">Internal Server Error</h3>
+        </div>
+      </div>
+
+      <div class="internal-body">
+        <!-- Left 2 cols: message + logging note -->
+        <div class="internal-message-col">
+          <p class="card-message-label">User-facing message</p>
+          <div class="internal-message-block">
+            <p class="internal-message-text">
+              Something went wrong on our end. We've logged it — please try again.
+            </p>
+          </div>
+          <div class="internal-note">
+            <svg class="internal-note-icon" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.3"/>
+              <path d="M7 4.5v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+              <circle cx="7" cy="9.5" r="0.6" fill="currentColor"/>
+            </svg>
+            <p class="internal-note-text">
+              <strong>Server-side only logging:</strong> The error is captured in our backend log with a trace ID. No stack trace, error code, or technical detail is ever surfaced in the UI. The phrase "We've logged it" is the only signal to the user that we're aware of the issue.
+            </p>
+          </div>
+        </div>
+
+        <!-- Right col: guidance + CTA -->
+        <div class="internal-action-col">
+          <div>
+            <p class="internal-guidance-label">What to do next</p>
+            <p class="internal-guidance-text">
+              Retrying usually resolves transient infrastructure errors. If the problem persists across multiple attempts, the user should try again in a few minutes while our systems self-heal.
+            </p>
+          </div>
+          <div class="internal-cta-row">
+            <button class="btn-retry-full">
+              <svg viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M1.5 7A5.5 5.5 0 0 1 7 1.5a5.5 5.5 0 0 1 3.9 1.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M12.5 7A5.5 5.5 0 0 1 7 12.5a5.5 5.5 0 0 1-3.9-1.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M10.5 1l1 2.1-2.1 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Try Again
+            </button>
+          </div>
+        </div>
+      </div>
+    </div><!-- /internal error card -->
+
+
+    <!-- ══════════════════════════════════════════════════
+         Design notes footer
+    ══════════════════════════════════════════════════════ -->
+    <div class="design-notes">
+      <p class="design-notes-title">Design notes</p>
+      <div class="design-notes-grid">
+        <div class="design-note-item">
+          <p class="design-note-heading">Inline placement, not a dedicated page</p>
+          <p class="design-note-body">
+            All 9 error states render inline at the point of failure. Download errors appear inside the submit form card. Processing errors replace the progress indicator in the progress screen. Upload failures surface in the results view. There is no standalone error route — the user never leaves their context.
+          </p>
+        </div>
+        <div class="design-note-item">
+          <p class="design-note-heading">No stack traces rule</p>
+          <p class="design-note-body">
+            Error messages are constrained to plain English sentences. The error code (e.g. DOWNLOAD_BLOCKED) is displayed as a 10px uppercase micro-label for internal debugging reference only — it is never the primary communication. Stack traces, exception messages, and HTTP status codes are never shown in the UI under any circumstances.
+          </p>
+        </div>
+        <div class="design-note-item">
+          <p class="design-note-heading">CTA logic per error type</p>
+          <p class="design-note-body">
+            Recoverable errors (BLOCKED, TIMEOUT, UPLOAD_FAILED) show a primary accent-colored Retry button. Non-recoverable errors (AGE_RESTRICTED, PRIVATE, SEPARATION_FAILED, EXTRACTION_FAILED) skip the retry CTA and offer only a ghost "Try Different URL/Song" button. INTERNAL_ERROR always shows a retry. DOWNLOAD_INVALID_URL shows a "Fix URL" action that refocuses the input.
+          </p>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div><!-- /page-shell -->
+
+</body>
+</html>

@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>stem-loops — Job History [Wireframe · Mobile 375px]</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #1a1a1a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #e0e0e0; display: flex; flex-direction: column; align-items: center; padding: 24px 0 40px; }
+  .screen-label { font-size: 11px; color: #444; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 20px; }
+  .frame { width: 375px; min-height: 812px; background: #111; border: 2px solid #444; display: flex; flex-direction: column; }
+  .frame-label { background: #333; color: #999; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; padding: 6px 12px; text-align: center; }
+
+  /* Header */
+  .header { padding: 16px; border-bottom: 1px dashed #2a2a2a; display: flex; align-items: center; justify-content: space-between; }
+  .logo { font-size: 18px; font-weight: 700; color: #fff; }
+  .logo span { color: #666; }
+  .back-btn { font-size: 12px; color: #666; text-decoration: underline; text-underline-offset: 3px; }
+
+  /* Page title */
+  .page-title-bar { padding: 16px 16px 12px; border-bottom: 1px dashed #1e1e1e; display: flex; justify-content: space-between; align-items: center; }
+  .page-title { font-size: 16px; font-weight: 700; color: #ccc; }
+  .clear-btn { font-size: 12px; color: #555; text-decoration: underline; text-underline-offset: 3px; }
+
+  /* Storage info */
+  .storage-info {
+    padding: 10px 16px;
+    background: #161616;
+    border-bottom: 1px dashed #1e1e1e;
+    font-size: 11px;
+    color: #555;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .storage-dot { width: 6px; height: 6px; background: #3a3a3a; border-radius: 50%; border: 1px dashed #666; }
+  .anno { font-size: 10px; color: #444; font-style: italic; border-left: 2px solid #222; padding-left: 6px; margin: 4px 16px; }
+
+  /* Job list */
+  .job-list { padding: 12px 16px 24px; flex: 1; }
+
+  /* Job entry card */
+  .job-entry {
+    background: #161616;
+    border: 1px dashed #2a2a2a;
+    border-radius: 4px;
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+
+  /* Status stripe */
+  .status-stripe { height: 3px; background: #2a2a2a; }
+  .status-stripe.done { background: #4a4a4a; }
+  .status-stripe.failed { background: #3a2a2a; }
+  .status-stripe.processing { background: #2a3a4a; }
+
+  .job-entry-body { padding: 12px; }
+
+  /* Job title row */
+  .job-title-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+  .job-status-indicator {
+    width: 10px; height: 10px; border-radius: 50%; border: 1px dashed #555; flex-shrink: 0; margin-top: 3px;
+  }
+  .job-status-indicator.done { background: #3a3a3a; border-color: #777; }
+  .job-status-indicator.failed { background: #2a1a1a; border-color: #553333; }
+  .job-status-indicator.processing { background: #1a2a3a; border-color: #335577; }
+  .job-title-text { font-size: 13px; color: #bbb; line-height: 1.3; flex: 1; }
+  .job-title-ph { height: 13px; background: #2a2a2a; border-radius: 2px; width: 80%; }
+
+  /* Job meta */
+  .job-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .meta-badge { font-size: 10px; color: #555; background: #1a1a1a; border: 1px dashed #2a2a2a; border-radius: 2px; padding: 2px 7px; }
+  .meta-badge.status-done { border-color: #3a3a3a; color: #777; }
+  .meta-badge.status-failed { border-color: #3a2a2a; color: #663333; }
+  .meta-badge.status-processing { border-color: #2a3a4a; color: #336688; }
+
+  /* Date */
+  .job-date { font-size: 10px; color: #444; margin-bottom: 10px; }
+
+  /* Actions */
+  .job-actions { display: flex; gap: 8px; }
+  .action-btn {
+    flex: 1; height: 36px; background: #1e1e1e; border: 1px dashed #2a2a2a; border-radius: 3px;
+    font-size: 12px; color: #666; display: flex; align-items: center; justify-content: center;
+  }
+  .action-btn.primary { border-color: #444; color: #aaa; }
+  .action-btn.disabled { opacity: 0.4; }
+
+  /* Expiry note */
+  .expiry-note { font-size: 10px; color: #3a3a3a; text-align: center; margin-top: 6px; }
+
+  /* Empty state */
+  .empty-state {
+    padding: 40px 16px; text-align: center; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .empty-icon { width: 60px; height: 60px; background: #1a1a1a; border: 1px dashed #2a2a2a; border-radius: 50%; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #444; }
+  .empty-title { font-size: 15px; color: #555; margin-bottom: 8px; }
+  .empty-sub { font-size: 12px; color: #444; margin-bottom: 20px; line-height: 1.5; }
+  .empty-cta { height: 44px; background: #1e1e1e; border: 1px dashed #444; border-radius: 4px; padding: 0 20px; font-size: 13px; color: #999; display: flex; align-items: center; }
+
+  /* Notes */
+  .notes { width: 375px; background: #0d0d0d; border: 1px dashed #2a2a2a; padding: 14px; margin-top: 12px; }
+  .notes h3 { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .notes ul { font-size: 11px; color: #444; line-height: 1.8; padding-left: 14px; }
+</style>
+</head>
+<body>
+
+<div class="screen-label">WIREFRAME · Screen 5: Job History · Mobile 375px</div>
+
+<div class="frame">
+  <div class="frame-label">stem-loops.com · Job History · 375px</div>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="logo">stem<span>-</span>loops</div>
+    <div class="back-btn">← New job</div>
+  </div>
+
+  <!-- Page title bar -->
+  <div class="page-title-bar">
+    <div class="page-title">My jobs</div>
+    <div class="clear-btn">Clear all</div>
+  </div>
+
+  <!-- Storage info -->
+  <div class="storage-info">
+    <div class="storage-dot"></div>
+    <span>Stored in this browser · no account needed · links valid 7 days</span>
+  </div>
+  <div class="anno">Explains the localStorage + signed cookie mechanism without technical jargon.</div>
+
+  <!-- Job list -->
+  <div class="job-list">
+
+    <!-- Job entry 1: Done -->
+    <div class="job-entry">
+      <div class="status-stripe done"></div>
+      <div class="job-entry-body">
+        <div class="job-title-row">
+          <div class="job-status-indicator done"></div>
+          <div class="job-title-text">[YouTube video title — drum break sample]</div>
+        </div>
+        <div class="job-meta">
+          <div class="meta-badge">drums · bass</div>
+          <div class="meta-badge">4 bars</div>
+          <div class="meta-badge">12 loops</div>
+          <div class="meta-badge status-done">Done</div>
+        </div>
+        <div class="job-date">2 hours ago · expires in 7 days</div>
+        <div class="job-actions">
+          <div class="action-btn primary">View loops →</div>
+          <div class="action-btn">Share</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Job entry 2: Done (older) -->
+    <div class="job-entry">
+      <div class="status-stripe done"></div>
+      <div class="job-entry-body">
+        <div class="job-title-row">
+          <div class="job-status-indicator done"></div>
+          <div class="job-title-text">[YouTube video title — lo-fi jazz track]</div>
+        </div>
+        <div class="job-meta">
+          <div class="meta-badge">keys · bass · drums</div>
+          <div class="meta-badge">8 bars</div>
+          <div class="meta-badge">18 loops</div>
+          <div class="meta-badge status-done">Done</div>
+        </div>
+        <div class="job-date">Yesterday · expires in 6 days</div>
+        <div class="job-actions">
+          <div class="action-btn primary">View loops →</div>
+          <div class="action-btn">Share</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Job entry 3: Processing -->
+    <div class="job-entry">
+      <div class="status-stripe processing"></div>
+      <div class="job-entry-body">
+        <div class="job-title-row">
+          <div class="job-status-indicator processing"></div>
+          <div class="job-title-text">[YouTube video title — soul sample pack]</div>
+        </div>
+        <div class="job-meta">
+          <div class="meta-badge">all stems</div>
+          <div class="meta-badge">4 bars</div>
+          <div class="meta-badge status-processing">Separating stems…</div>
+        </div>
+        <div class="job-date">Just now</div>
+        <div class="job-actions">
+          <div class="action-btn primary">Watch progress →</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Job entry 4: Failed -->
+    <div class="job-entry">
+      <div class="status-stripe failed"></div>
+      <div class="job-entry-body">
+        <div class="job-title-row">
+          <div class="job-status-indicator failed"></div>
+          <div class="job-title-text">[YouTube video title — private video]</div>
+        </div>
+        <div class="job-meta">
+          <div class="meta-badge">drums</div>
+          <div class="meta-badge">4 bars</div>
+          <div class="meta-badge status-failed">Failed: private video</div>
+        </div>
+        <div class="job-date">3 days ago · expires in 4 days</div>
+        <div class="job-actions">
+          <div class="action-btn primary">Retry with new URL</div>
+          <div class="action-btn disabled">No loops</div>
+        </div>
+      </div>
+    </div>
+    <div class="anno">Failed entries show user-friendly error reason (not error code). Retry CTA pre-fills URL.</div>
+
+    <!-- Job entry 5: Expiring soon -->
+    <div class="job-entry">
+      <div class="status-stripe done"></div>
+      <div class="job-entry-body">
+        <div class="job-title-row">
+          <div class="job-status-indicator done"></div>
+          <div class="job-title-text">[YouTube video title — drill beat]</div>
+        </div>
+        <div class="job-meta">
+          <div class="meta-badge">drums · bass</div>
+          <div class="meta-badge">2 bars</div>
+          <div class="meta-badge">8 loops</div>
+          <div class="meta-badge status-done">Done</div>
+        </div>
+        <div class="job-date" style="color: #553333;">6 days ago · ⚠ expires tomorrow</div>
+        <div class="job-actions">
+          <div class="action-btn primary">View loops →</div>
+          <div class="action-btn">Share</div>
+        </div>
+        <div class="expiry-note">⚠ Downloads expire tomorrow — save your files now</div>
+      </div>
+    </div>
+    <div class="anno">Expiry warning: shown when &lt; 24h left. Prompts download before link expires.</div>
+
+  </div>
+
+</div>
+
+<div class="notes">
+  <h3>Job History — Mobile Notes</h3>
+  <ul>
+    <li>History is stored in localStorage (client-side) + signed cookie (server-side cross-device).</li>
+    <li>No login, no account — fully anonymous. History is per-browser.</li>
+    <li>Each entry shows: title (fetched at job creation), stems, bar length, loop count, status, date.</li>
+    <li>Status indicators: dot colour + text badge. Done (grey), Processing (blue), Failed (red).</li>
+    <li>Status stripe at top of card: thin 3px color band. Visual quick-scan.</li>
+    <li>Expiry warning: shown when &lt; 24h remaining. Red date text + advisory note.</li>
+    <li>"Clear all" removes localStorage + logs out the signed cookie session.</li>
+    <li>Failed jobs show user-friendly error reason (from error_message_user), not error code.</li>
+    <li>Jobs still in progress show "Watch progress" → links to the progress page.</li>
+    <li>Share button: copies job URL to clipboard (same shareable link from progress screen).</li>
+    <li>Mobile-first: all interactions are touch-friendly 44px+ targets.</li>
+  </ul>
+</div>
+
+</body>
+</html>

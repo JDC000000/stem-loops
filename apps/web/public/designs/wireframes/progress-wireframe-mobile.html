@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>stem-loops — Job Progress [Wireframe · Mobile 375px]</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #1a1a1a;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: #e0e0e0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 0 40px;
+  }
+  .screen-label {
+    font-size: 11px; color: #444; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 20px;
+  }
+  .frame {
+    width: 375px;
+    min-height: 812px;
+    background: #111111;
+    border: 2px solid #444;
+    display: flex;
+    flex-direction: column;
+  }
+  .frame-label { background: #333; color: #999; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; padding: 6px 12px; text-align: center; }
+
+  /* Header */
+  .header {
+    padding: 16px 20px;
+    border-bottom: 1px dashed #2a2a2a;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .logo { font-size: 18px; font-weight: 700; color: #fff; letter-spacing: -0.5px; }
+  .logo span { color: #666; }
+  .back-btn {
+    font-size: 12px; color: #666; text-decoration: underline; text-underline-offset: 3px;
+  }
+
+  /* Main */
+  .main { padding: 24px 20px; flex: 1; }
+
+  /* Job header */
+  .job-meta {
+    background: #1a1a1a;
+    border: 1px dashed #333;
+    border-radius: 4px;
+    padding: 14px;
+    margin-bottom: 24px;
+  }
+  .job-title { font-size: 13px; font-weight: 600; color: #ccc; margin-bottom: 6px; }
+  .job-title-placeholder {
+    height: 14px; background: #2a2a2a; border-radius: 2px; width: 80%; margin-bottom: 6px;
+  }
+  .job-detail { font-size: 11px; color: #666; }
+  .job-detail span { margin-right: 12px; }
+
+  /* Share URL row */
+  .share-row {
+    background: #1a1a1a;
+    border: 1px dashed #444;
+    border-radius: 4px;
+    padding: 10px 14px;
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .share-label { font-size: 11px; color: #666; flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.5px; }
+  .share-url {
+    flex: 1;
+    height: 28px;
+    background: #0e0e0e;
+    border: 1px dashed #333;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    font-size: 11px;
+    color: #555;
+  }
+  .copy-btn {
+    width: 60px;
+    height: 28px;
+    background: #2a2a2a;
+    border: 1px dashed #555;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: #888;
+    flex-shrink: 0;
+  }
+  .anno {
+    font-size: 10px; color: #444; font-style: italic; margin-top: 5px;
+    border-left: 2px solid #222; padding-left: 6px;
+  }
+
+  /* Overall progress bar */
+  .overall-progress {
+    margin-bottom: 24px;
+  }
+  .overall-label { font-size: 11px; color: #666; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.8px; }
+  .progress-bar-outer {
+    height: 6px;
+    background: #1e1e1e;
+    border: 1px dashed #333;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .progress-bar-inner {
+    height: 100%;
+    background: #555;
+    border-radius: 3px;
+  }
+  .progress-pct { font-size: 12px; color: #888; text-align: right; margin-top: 4px; }
+
+  /* Stage machine */
+  .stages { margin-bottom: 28px; }
+  .stages-header { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+  .stage {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 4px;
+    position: relative;
+  }
+  .stage-left {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+    width: 24px;
+  }
+  .stage-dot {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 1px dashed #444;
+    background: #1a1a1a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 8px;
+    color: #555;
+    flex-shrink: 0;
+  }
+  .stage-dot.done { background: #3a3a3a; border-color: #888; color: #aaa; }
+  .stage-dot.active { background: #2a2a2a; border-color: #aaa; border-style: solid; }
+  .stage-dot.pending { background: #111; border-color: #333; }
+  .stage-line {
+    width: 1px;
+    background: #2a2a2a;
+    flex: 1;
+    min-height: 20px;
+    margin-top: 2px;
+  }
+  .stage-content {
+    flex: 1;
+    padding-bottom: 16px;
+  }
+  .stage-name { font-size: 13px; color: #ccc; font-weight: 500; line-height: 1.3; }
+  .stage-name.active { color: #fff; font-weight: 600; }
+  .stage-name.done { color: #777; }
+  .stage-name.pending { color: #444; }
+  .stage-progress {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+  }
+  .stage-bar-outer { flex: 1; height: 4px; background: #1a1a1a; border: 1px dashed #333; border-radius: 2px; }
+  .stage-bar-inner { height: 100%; background: #666; border-radius: 2px; }
+  .stage-meta { font-size: 11px; color: #555; }
+  .stage-duration { font-size: 10px; color: #444; margin-top: 2px; }
+  .stage-status-icon { font-size: 12px; color: #888; }
+
+  /* Polling indicator */
+  .polling-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .pulse-dot {
+    width: 8px; height: 8px;
+    background: #555;
+    border-radius: 50%;
+    border: 1px dashed #888;
+  }
+  .polling-text { font-size: 11px; color: #555; }
+
+  /* Cancel */
+  .cancel-btn {
+    width: 100%;
+    height: 40px;
+    background: #1a1a1a;
+    border: 1px dashed #3a3a3a;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: #555;
+    cursor: pointer;
+  }
+
+  /* Notes */
+  .notes {
+    width: 375px;
+    background: #0d0d0d;
+    border: 1px dashed #2a2a2a;
+    padding: 14px;
+    margin-top: 12px;
+  }
+  .notes h3 { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .notes ul { font-size: 11px; color: #444; line-height: 1.8; padding-left: 14px; }
+</style>
+</head>
+<body>
+
+<div class="screen-label">WIREFRAME · Screen 2: Job Progress · Mobile 375px</div>
+
+<div class="frame">
+  <div class="frame-label">stem-loops.com · Job Progress · 375px</div>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="logo">stem<span>-</span>loops</div>
+    <div class="back-btn">← New job</div>
+  </div>
+
+  <div class="main">
+
+    <!-- Job metadata -->
+    <div class="job-meta">
+      <div class="job-title-placeholder"></div>
+      <div class="job-detail">
+        <span>[YouTube title loading…]</span>
+      </div>
+      <div style="margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap;">
+        <span style="font-size: 11px; color: #555; background: #222; border: 1px dashed #333; border-radius: 2px; padding: 2px 8px;">drums</span>
+        <span style="font-size: 11px; color: #555; background: #222; border: 1px dashed #333; border-radius: 2px; padding: 2px 8px;">bass</span>
+        <span style="font-size: 11px; color: #555; background: #222; border: 1px dashed #333; border-radius: 2px; padding: 2px 8px;">4 bars</span>
+      </div>
+    </div>
+    <div class="anno">Stem chips + loop-length badge shown as submitted params.</div>
+
+    <!-- Share URL row -->
+    <div class="share-row">
+      <span class="share-label">Share</span>
+      <div class="share-url">stem-loops.com/jobs/[job-id]</div>
+      <div class="copy-btn">Copy</div>
+    </div>
+    <div class="anno">Shareable URL shown early — before job completes. Copy-to-clipboard button.</div>
+
+    <!-- Polling indicator -->
+    <div class="polling-row">
+      <div class="pulse-dot"></div>
+      <span class="polling-text">Checking progress every 2s…</span>
+    </div>
+
+    <!-- Overall progress -->
+    <div class="overall-progress">
+      <div class="overall-label">Overall</div>
+      <div class="progress-bar-outer">
+        <div class="progress-bar-inner" style="width: 45%;"></div>
+      </div>
+      <div class="progress-pct">45% · ~32s remaining</div>
+    </div>
+
+    <!-- Stage machine -->
+    <div class="stages">
+      <div class="stages-header">Pipeline stages</div>
+
+      <!-- Queued → done -->
+      <div class="stage">
+        <div class="stage-left">
+          <div class="stage-dot done">✓</div>
+          <div class="stage-line"></div>
+        </div>
+        <div class="stage-content">
+          <div class="stage-name done">Queued</div>
+          <div class="stage-duration">0.1s</div>
+        </div>
+      </div>
+
+      <!-- Downloading → done -->
+      <div class="stage">
+        <div class="stage-left">
+          <div class="stage-dot done">✓</div>
+          <div class="stage-line"></div>
+        </div>
+        <div class="stage-content">
+          <div class="stage-name done">Downloading audio</div>
+          <div class="stage-duration">7.2s</div>
+        </div>
+      </div>
+
+      <!-- Separating → active -->
+      <div class="stage">
+        <div class="stage-left">
+          <div class="stage-dot active">~</div>
+          <div class="stage-line"></div>
+        </div>
+        <div class="stage-content">
+          <div class="stage-name active">Separating stems</div>
+          <div class="stage-progress">
+            <div class="stage-bar-outer">
+              <div class="stage-bar-inner" style="width: 62%;"></div>
+            </div>
+            <span class="stage-meta">62%</span>
+          </div>
+          <div class="stage-duration">18.4s elapsed</div>
+        </div>
+      </div>
+
+      <!-- Extracting → pending -->
+      <div class="stage">
+        <div class="stage-left">
+          <div class="stage-dot pending">—</div>
+          <div class="stage-line"></div>
+        </div>
+        <div class="stage-content">
+          <div class="stage-name pending">Extracting loops</div>
+        </div>
+      </div>
+
+      <!-- Uploading → pending -->
+      <div class="stage">
+        <div class="stage-left">
+          <div class="stage-dot pending">—</div>
+          <div class="stage-line"></div>
+        </div>
+        <div class="stage-content">
+          <div class="stage-name pending">Uploading to storage</div>
+        </div>
+      </div>
+
+      <!-- Done → pending -->
+      <div class="stage">
+        <div class="stage-left">
+          <div class="stage-dot pending">—</div>
+        </div>
+        <div class="stage-content">
+          <div class="stage-name pending">Done</div>
+        </div>
+      </div>
+
+    </div>
+    <div class="anno">Stage machine: queued → downloading → separating → extracting → uploading → done. Done = auto-navigate to results. Failed = error state inline.</div>
+
+    <!-- Cancel -->
+    <div class="cancel-btn">Cancel job</div>
+    <div class="anno">Cancel only shown while job is processing (not after done/failed).</div>
+
+  </div>
+</div>
+
+<div class="notes">
+  <h3>Progress Screen — Mobile Notes</h3>
+  <ul>
+    <li>Polling: GET /api/jobs/:id every 2s. No WebSocket needed for V2.</li>
+    <li>Auto-navigate to /jobs/:id/results when status = done.</li>
+    <li>Stage line (vertical connector) visually links stages.</li>
+    <li>Only active stage shows progress bar + elapsed time.</li>
+    <li>Share URL shown immediately (before job completes).</li>
+    <li>Cancel: soft delete — job marked cancelled in DB, no results page.</li>
+    <li>On failure: stage turns red + typed error message shown inline.</li>
+  </ul>
+</div>
+
+</body>
+</html>

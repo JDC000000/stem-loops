@@ -1,0 +1,34 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  lint-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v3
+      - run: pnpm install
+      - run: pnpm --filter web lint
+      - run: pnpm --filter web tsc --noEmit
+  lint-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install ruff black pytest
+      - run: ruff check apps/worker && black --check apps/worker
+  test-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install -r apps/worker/requirements.txt
+      - run: pytest apps/worker/tests/ -v
+        # NOTE: Phase 4 will add the full pipeline fixture test here (cached YouTube audio, no live API calls)
+  codegen-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make codegen
+      - run: git diff --exit-code packages/types/src/  # fail if codegen produces drift

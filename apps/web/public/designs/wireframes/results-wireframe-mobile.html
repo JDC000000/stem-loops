@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>stem-loops — Results [Wireframe · Mobile 375px]</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #1a1a1a;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: #e0e0e0;
+    display: flex; flex-direction: column; align-items: center; padding: 24px 0 40px;
+  }
+  .screen-label { font-size: 11px; color: #444; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 20px; }
+  .frame { width: 375px; background: #111; border: 2px solid #444; display: flex; flex-direction: column; }
+  .frame-label { background: #333; color: #999; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; padding: 6px 12px; text-align: center; }
+
+  /* Header */
+  .header { padding: 16px 16px 12px; border-bottom: 1px dashed #2a2a2a; }
+  .logo { font-size: 18px; font-weight: 700; color: #fff; }
+  .logo span { color: #666; }
+
+  /* Job summary bar */
+  .job-summary {
+    padding: 12px 16px;
+    background: #161616;
+    border-bottom: 1px dashed #2a2a2a;
+  }
+  .job-title-ph { height: 14px; background: #2a2a2a; border-radius: 2px; width: 75%; margin-bottom: 6px; }
+  .job-meta-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .meta-badge { font-size: 10px; color: #666; background: #1e1e1e; border: 1px dashed #333; border-radius: 2px; padding: 2px 7px; }
+  .anno { font-size: 10px; color: #444; font-style: italic; margin-top: 5px; border-left: 2px solid #222; padding-left: 6px; }
+
+  /* Pack download CTA — STICKY BOTTOM (Q3 decision) */
+  .pack-cta {
+    position: sticky;
+    bottom: 0;
+    left: 0; right: 0;
+    background: #0e0e0e;
+    border-top: 2px dashed #555;
+    padding: 10px 14px;
+    display: flex; align-items: center; justify-content: space-between;
+    z-index: 10;
+  }
+  .pack-label { font-size: 13px; font-weight: 600; color: #ccc; }
+  .pack-sub { font-size: 11px; color: #555; }
+  .pack-btn {
+    height: 32px; background: #2a2a2a; border: 1px dashed #666; border-radius: 3px;
+    padding: 0 12px; font-size: 12px; color: #aaa;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .dl-icon { width: 12px; height: 12px; background: #555; border-radius: 1px; }
+
+  /* Filter bar */
+  .filter-bar {
+    padding: 12px 16px;
+    display: flex; gap: 8px; overflow-x: auto; border-bottom: 1px dashed #1e1e1e;
+    scrollbar-width: none;
+  }
+  .filter-chip {
+    height: 32px; background: #1a1a1a; border: 1px dashed #333; border-radius: 16px;
+    padding: 0 12px; font-size: 12px; color: #666; flex-shrink: 0;
+    display: flex; align-items: center;
+  }
+  .filter-chip.active { background: #222; border-color: #777; color: #ccc; }
+
+  /* Loop cards */
+  .loops-section { padding: 12px 16px 24px; }
+  .loops-section-label {
+    font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 1px;
+    margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;
+  }
+  .loops-count { font-size: 10px; color: #444; }
+
+  /* Single loop card */
+  .loop-card {
+    background: #161616;
+    border: 1px dashed #2a2a2a;
+    border-radius: 4px;
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+
+  /* Waveform area */
+  .waveform-area {
+    height: 64px;
+    background: #0e0e0e;
+    border-bottom: 1px dashed #1e1e1e;
+    position: relative;
+    overflow: hidden;
+    display: flex; align-items: center;
+    padding: 0 12px;
+  }
+  .waveform-viz {
+    flex: 1;
+    height: 40px;
+    background: #111;
+    border: 1px dashed #2a2a2a;
+    border-radius: 2px;
+    position: relative;
+    overflow: hidden;
+  }
+  /* Fake waveform bars */
+  .wf-bars { display: flex; height: 100%; align-items: center; gap: 2px; padding: 4px 4px; }
+  .wf-bar { background: #3a3a3a; border-radius: 1px; flex: 1; }
+  /* Section marker */
+  .section-marker {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 1px; background: #555; border: none;
+  }
+  .section-marker-label {
+    position: absolute;
+    top: 2px; font-size: 8px; color: #666; transform: translateX(-50%);
+  }
+  .play-btn {
+    width: 36px; height: 36px; background: #2a2a2a; border: 1px dashed #555; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; color: #aaa; flex-shrink: 0; margin-right: 10px;
+  }
+
+  /* Loop card body */
+  .loop-body { padding: 10px 12px; }
+  .loop-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .loop-tag {
+    font-size: 10px; color: #666; background: #1a1a1a; border: 1px dashed #2a2a2a;
+    border-radius: 2px; padding: 2px 7px;
+  }
+  .loop-tag.stem { color: #aaa; border-color: #444; }
+  .loop-actions { display: flex; gap: 8px; align-items: center; }
+  .dl-btn {
+    flex: 1; height: 36px; background: #1e1e1e; border: 1px dashed #444; border-radius: 3px;
+    font-size: 12px; color: #999; display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .drag-handle {
+    width: 36px; height: 36px; background: #1a1a1a; border: 1px dashed #2a2a2a; border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .drag-dots { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+  .drag-dot { width: 3px; height: 3px; background: #444; border-radius: 50%; }
+
+  /* Notes */
+  .notes { width: 375px; background: #0d0d0d; border: 1px dashed #2a2a2a; padding: 14px; margin-top: 12px; }
+  .notes h3 { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .notes ul { font-size: 11px; color: #444; line-height: 1.8; padding-left: 14px; }
+</style>
+</head>
+<body>
+
+<div class="screen-label">WIREFRAME · Screen 3: Results · Mobile 375px</div>
+
+<div class="frame">
+  <div class="frame-label">stem-loops.com · Results · 375px</div>
+
+  <!-- Header -->
+  <div class="header">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <div class="logo">stem<span>-</span>loops</div>
+      <div style="font-size: 12px; color: #555;">← New job</div>
+    </div>
+  </div>
+
+  <!-- Job summary -->
+  <div class="job-summary">
+    <div class="job-title-ph"></div>
+    <div class="job-meta-row">
+      <div class="meta-badge">128 BPM</div>
+      <div class="meta-badge">F# minor</div>
+      <div class="meta-badge">drums · bass</div>
+      <div class="meta-badge">4 bars</div>
+      <div class="meta-badge">12 loops</div>
+    </div>
+  </div>
+  <div class="anno" style="padding: 4px 16px 8px;">Song title, detected BPM + key, stems, loop count.</div>
+
+  <!-- Filter bar -->
+  <div class="filter-bar">
+    <div class="filter-chip active">All</div>
+    <div class="filter-chip">Drums</div>
+    <div class="filter-chip">Bass</div>
+    <div class="filter-chip">Verse</div>
+    <div class="filter-chip">Chorus</div>
+    <div class="filter-chip">High energy</div>
+  </div>
+  <div class="anno" style="padding: 4px 16px 10px;">Horizontal-scroll filter chips. Filter by stem OR section. Scrollable for all tags.</div>
+
+  <!-- Loop cards -->
+  <div class="loops-section">
+    <div class="loops-section-label">
+      <span>12 LOOPS</span>
+      <span class="loops-count">sorted by section</span>
+    </div>
+
+    <!-- Loop card 1 -->
+    <div class="loop-card">
+      <div class="waveform-area">
+        <div class="play-btn">▶</div>
+        <div class="waveform-viz">
+          <div class="wf-bars">
+            <!-- fake waveform bars at varied heights -->
+            <div class="wf-bar" style="height:20%"></div>
+            <div class="wf-bar" style="height:60%"></div>
+            <div class="wf-bar" style="height:80%"></div>
+            <div class="wf-bar" style="height:40%"></div>
+            <div class="wf-bar" style="height:90%"></div>
+            <div class="wf-bar" style="height:70%"></div>
+            <div class="wf-bar" style="height:50%"></div>
+            <div class="wf-bar" style="height:85%"></div>
+            <div class="wf-bar" style="height:30%"></div>
+            <div class="wf-bar" style="height:75%"></div>
+            <div class="wf-bar" style="height:55%"></div>
+            <div class="wf-bar" style="height:65%"></div>
+            <div class="wf-bar" style="height:45%"></div>
+            <div class="wf-bar" style="height:80%"></div>
+            <div class="wf-bar" style="height:25%"></div>
+            <div class="wf-bar" style="height:70%"></div>
+            <div class="wf-bar" style="height:50%"></div>
+            <div class="wf-bar" style="height:90%"></div>
+            <div class="wf-bar" style="height:60%"></div>
+            <div class="wf-bar" style="height:35%"></div>
+          </div>
+          <!-- Section markers -->
+          <div class="section-marker" style="left: 33%;"></div>
+          <div class="section-marker" style="left: 66%;"></div>
+        </div>
+      </div>
+      <div class="loop-body">
+        <div class="loop-tags">
+          <div class="loop-tag stem">Drums</div>
+          <div class="loop-tag">128 BPM</div>
+          <div class="loop-tag">F# min</div>
+          <div class="loop-tag">Chorus</div>
+          <div class="loop-tag">High</div>
+        </div>
+        <div class="loop-actions">
+          <div class="dl-btn">
+            <div class="dl-icon"></div>
+            Download WAV
+          </div>
+          <div class="drag-handle">
+            <div class="drag-dots">
+              <div class="drag-dot"></div>
+              <div class="drag-dot"></div>
+              <div class="drag-dot"></div>
+              <div class="drag-dot"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="anno">Waveform card: waveform viz (wavesurfer.js peaks), play/pause, tags (stem/BPM/key/section/energy), download WAV, drag handle.</div>
+
+    <!-- Loop card 2 -->
+    <div class="loop-card">
+      <div class="waveform-area">
+        <div class="play-btn">▶</div>
+        <div class="waveform-viz">
+          <div class="wf-bars">
+            <div class="wf-bar" style="height:55%"></div>
+            <div class="wf-bar" style="height:30%"></div>
+            <div class="wf-bar" style="height:70%"></div>
+            <div class="wf-bar" style="height:85%"></div>
+            <div class="wf-bar" style="height:45%"></div>
+            <div class="wf-bar" style="height:60%"></div>
+            <div class="wf-bar" style="height:25%"></div>
+            <div class="wf-bar" style="height:80%"></div>
+            <div class="wf-bar" style="height:50%"></div>
+            <div class="wf-bar" style="height:70%"></div>
+            <div class="wf-bar" style="height:40%"></div>
+            <div class="wf-bar" style="height:65%"></div>
+            <div class="wf-bar" style="height:90%"></div>
+            <div class="wf-bar" style="height:35%"></div>
+            <div class="wf-bar" style="height:75%"></div>
+            <div class="wf-bar" style="height:20%"></div>
+            <div class="wf-bar" style="height:55%"></div>
+            <div class="wf-bar" style="height:80%"></div>
+            <div class="wf-bar" style="height:60%"></div>
+            <div class="wf-bar" style="height:45%"></div>
+          </div>
+          <div class="section-marker" style="left: 50%;"></div>
+        </div>
+      </div>
+      <div class="loop-body">
+        <div class="loop-tags">
+          <div class="loop-tag stem">Bass</div>
+          <div class="loop-tag">128 BPM</div>
+          <div class="loop-tag">F# min</div>
+          <div class="loop-tag">Verse</div>
+          <div class="loop-tag">Mid</div>
+        </div>
+        <div class="loop-actions">
+          <div class="dl-btn">
+            <div class="dl-icon"></div>
+            Download WAV
+          </div>
+          <div class="drag-handle">
+            <div class="drag-dots">
+              <div class="drag-dot"></div>
+              <div class="drag-dot"></div>
+              <div class="drag-dot"></div>
+              <div class="drag-dot"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- "More loops" indicator -->
+    <div style="text-align: center; padding: 8px 0 72px; font-size: 12px; color: #444;">
+      + 10 more loops · scroll to view all
+    </div>
+    <div class="anno">All loops scroll vertically on mobile. No pagination. Filter chips at top to narrow down.</div>
+
+  </div>
+
+  <!-- Sticky bottom ZIP CTA (Q3 — always reachable) -->
+  <div class="pack-cta">
+    <div>
+      <div class="pack-label" style="font-size: 13px; font-weight: 600; color: #ccc;">Loop pack</div>
+      <div class="pack-sub" style="font-size: 11px; color: #555;">12 loops · all stems · ZIP</div>
+    </div>
+    <div class="pack-btn">
+      <div class="dl-icon"></div>
+      Download ZIP
+    </div>
+  </div>
+
+</div>
+
+<div class="notes">
+  <h3>Results Screen — Mobile Notes</h3>
+  <ul>
+    <li>Loop cards are the primary element — full-width, scrollable vertically.</li>
+    <li>Waveform: 64px tall on mobile. Pre-computed peaks from DB (no client re-decode).</li>
+    <li>Play button left of waveform. Tap to audition before downloading.</li>
+    <li>Section markers on waveform: thin vertical lines (from section_label data).</li>
+    <li>Tags: 5 per loop — stem / BPM / key / section / energy class.</li>
+    <li>Download WAV: single-loop download. Drag handle: drag-to-DAW affordance.</li>
+    <li>Filter chips: horizontal scroll. Filter by stem type OR section label.</li>
+    <li>Loop pack ZIP download: prominent at top, above loop list.</li>
+    <li>All 12+ loops visible by scrolling — no pagination.</li>
+  </ul>
+</div>
+
+</body>
+</html>

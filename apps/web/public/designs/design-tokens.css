@@ -1,0 +1,472 @@
+/**
+ * stem-loops V2 — Design Tokens
+ * Phase 3b Visual Blueprint · 2026-06-29
+ *
+ * ★ PRODUCTION ACCENT: Neon Lime #a3e635 — LOCKED (operator approved 2026-06-29)
+ *
+ * --accent and all accent-* tokens are set directly on :root — no body class needed.
+ * The .accent-a class is an alias (same values) applied to <body> in HTML files as a
+ * readable marker; it is redundant but harmless and may be removed in production.
+ *
+ * Reference alternatives (not active — kept for archive):
+ *   Option B — Amber Gold   #f59e0b  (commented out below)
+ *   Option C — Electric Teal #2dd4bf  (commented out below)
+ */
+
+/* ────────────────────────────────────────────────────
+   1. BASE — shared dark-mode foundation (accent-agnostic)
+   ──────────────────────────────────────────────────── */
+:root {
+  /* ── Background ── */
+  --bg-page:        #0d0d0d;   /* outermost canvas */
+  --bg-surface:     #111111;   /* primary surface (cards, panels) */
+  --bg-card:        #161616;   /* raised card surface */
+  --bg-elevated:    #1e1e1e;   /* input fields, elevated UI */
+  --bg-nav:         #0a0a0a;   /* top nav, sidebars */
+  --bg-hover:       #1a1a1a;   /* row hover, chip hover */
+  --bg-selected:    #222222;   /* selected state */
+
+  /* ── Text ── */
+  --text-primary:   #ffffff;   /* headlines, high-emphasis */
+  --text-secondary: #e0e0e0;   /* body text */
+  --text-muted:     #999999;   /* supporting text */
+  --text-subtle:    #666666;   /* placeholders, labels */
+  --text-disabled:  #3a3a3a;   /* disabled elements */
+  --text-inverse:   #0d0d0d;   /* text on accent backgrounds */
+
+  /* ── Border ── */
+  --border-default: #2a2a2a;   /* standard borders */
+  --border-subtle:  #1e1e1e;   /* very subtle separators */
+  --border-strong:  #3a3a3a;   /* stronger borders, focus rings */
+  --border-focus:   #666666;   /* keyboard focus outline */
+
+  /* ── Waveform ── */
+  --wf-bg:          #0e0e0e;   /* waveform panel background */
+  --wf-bar-idle:    #2a2a2a;   /* unplayed waveform bars */
+  --wf-bar-played:  #4a4a4a;   /* played waveform bars (before accent) */
+  --wf-playhead:    #ffffff;   /* playhead line */
+  --wf-marker:      #555555;   /* section boundary markers */
+
+  /* ── Status ── */
+  --status-done:       #4ade80;  /* soft green: done */
+  --status-done-bg:    rgba(74, 222, 128, 0.08);
+  --status-processing: #60a5fa;  /* soft blue: in progress */
+  --status-processing-bg: rgba(96, 165, 250, 0.08);
+  --status-failed:     #f87171;  /* soft red: error */
+  --status-failed-bg:  rgba(248, 113, 113, 0.08);
+  --status-expiry:     #fb923c;  /* warning orange: expiring soon */
+  --status-expiry-bg:  rgba(251, 146, 60, 0.08);
+
+  /* ── Typography ── */
+  --font-sans:      -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --font-mono:      'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', 'Roboto Mono', Consolas, monospace;
+
+  /* Font size scale */
+  --text-xs:    10px;
+  --text-sm:    11px;
+  --text-base:  13px;
+  --text-md:    14px;
+  --text-lg:    16px;
+  --text-xl:    20px;
+  --text-2xl:   24px;
+  --text-3xl:   32px;
+  --text-4xl:   40px;
+
+  /* Font weights */
+  --weight-normal:  400;
+  --weight-medium:  500;
+  --weight-semibold: 600;
+  --weight-bold:    700;
+
+  /* Letter spacing */
+  --tracking-tight:  -0.5px;
+  --tracking-normal: 0px;
+  --tracking-wide:   0.5px;
+  --tracking-wider:  1px;
+  --tracking-caps:   1.2px;
+
+  /* Line heights */
+  --leading-tight:  1.2;
+  --leading-snug:   1.4;
+  --leading-normal: 1.6;
+  --leading-relaxed: 1.8;
+
+  /* ── Spacing (4px base) ── */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ── Border radius ── */
+  --radius-sm:   2px;    /* badges, tags */
+  --radius-md:   4px;    /* cards, buttons, inputs */
+  --radius-lg:   6px;    /* large cards */
+  --radius-full: 9999px; /* chips (pill) */
+
+  /* ── Shadows (dark mode — used sparingly, borders preferred) ── */
+  --shadow-card:  0 1px 3px rgba(0,0,0,0.5), 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-float: 0 4px 12px rgba(0,0,0,0.6);
+
+  /* ── Layout ── */
+  --nav-height:        56px;
+  --sidebar-width:     240px;
+  --sidebar-width-lg:  320px;
+  --form-card-width:   720px;
+  --content-max-width: 1200px;
+
+  /* ── Breakpoints (reference only — not usable in CSS vars) ── */
+  /* --bp-mobile: 375px; --bp-tablet: 768px; --bp-desktop: 1024px; --bp-wide: 1440px; */
+
+  /* ── Z-index ── */
+  --z-base:   0;
+  --z-nav:    100;
+  --z-sticky: 50;
+  --z-modal:  200;
+  --z-toast:  300;
+
+  /* ── Transitions ── */
+  --transition-fast:   100ms ease;
+  --transition-base:   200ms ease;
+  --transition-slow:   300ms ease;
+
+  /* ── Component: Touch target minimum ── */
+  --touch-min: 44px;
+
+  /* ── Component: Waveform heights ── */
+  --wf-height-sm:  52px;   /* mobile loop cards */
+  --wf-height-md:  64px;   /* mobile results */
+  --wf-height-lg:  80px;   /* desktop results */
+  --wf-height-xl:  96px;   /* featured/hero waveform */
+}
+
+/* ────────────────────────────────────────────────────
+   2. ACCENT A — Neon Lime #a3e635
+   Producer energy. "Go" signal. FL Studio palette.
+   ──────────────────────────────────────────────────── */
+:root,
+.accent-a {
+  --accent:           #a3e635;
+  --accent-hover:     #bef264;
+  --accent-active:    #84cc16;
+  --accent-muted:     rgba(163, 230, 53, 0.12);
+  --accent-border:    rgba(163, 230, 53, 0.25);
+  --accent-text:      #0d0d0d;   /* text on accent bg */
+
+  --wf-bar-accent:    #a3e635;   /* played waveform = accent */
+  --btn-primary-bg:   #a3e635;
+  --btn-primary-text: #0d0d0d;
+  --btn-primary-hover: #bef264;
+
+  --tag-stem-bg:      rgba(163, 230, 53, 0.08);
+  --tag-stem-border:  rgba(163, 230, 53, 0.2);
+  --tag-stem-text:    #a3e635;
+
+  --focus-ring:       0 0 0 2px rgba(163, 230, 53, 0.4);
+  --stage-active-color: #a3e635;
+
+  --accent-name: "Neon Lime";
+  --accent-hex: "#a3e635";
+}
+
+/* ────────────────────────────────────────────────────
+   3. ACCENT B — Amber Gold #f59e0b  [REFERENCE ONLY — NOT ACTIVE IN PRODUCTION]
+   Warm. DAW-native. Ableton-adjacent.
+   ──────────────────────────────────────────────────── */
+/*
+.accent-b {
+  --accent:           #f59e0b;
+  --accent-hover:     #fbbf24;
+  --accent-active:    #d97706;
+  --accent-muted:     rgba(245, 158, 11, 0.12);
+  --accent-border:    rgba(245, 158, 11, 0.25);
+  --accent-text:      #0d0d0d;
+
+  --wf-bar-accent:    #f59e0b;
+  --btn-primary-bg:   #f59e0b;
+  --btn-primary-text: #0d0d0d;
+  --btn-primary-hover: #fbbf24;
+
+  --tag-stem-bg:      rgba(245, 158, 11, 0.08);
+  --tag-stem-border:  rgba(245, 158, 11, 0.2);
+  --tag-stem-text:    #f59e0b;
+
+  --focus-ring:       0 0 0 2px rgba(245, 158, 11, 0.4);
+  --stage-active-color: #f59e0b;
+
+  --accent-name: "Amber Gold";
+  --accent-hex: "#f59e0b";
+}
+*/
+
+/* ────────────────────────────────────────────────────
+   4. ACCENT C — Electric Teal #2dd4bf  [REFERENCE ONLY — NOT ACTIVE IN PRODUCTION]
+   Cool, technical. Splice palette.
+   ──────────────────────────────────────────────────── */
+/*
+.accent-c {
+  --accent:           #2dd4bf;
+  --accent-hover:     #5eead4;
+  --accent-active:    #14b8a6;
+  --accent-muted:     rgba(45, 212, 191, 0.12);
+  --accent-border:    rgba(45, 212, 191, 0.25);
+  --accent-text:      #0d0d0d;
+
+  --wf-bar-accent:    #2dd4bf;
+  --btn-primary-bg:   #2dd4bf;
+  --btn-primary-text: #0d0d0d;
+  --btn-primary-hover: #5eead4;
+
+  --tag-stem-bg:      rgba(45, 212, 191, 0.08);
+  --tag-stem-border:  rgba(45, 212, 191, 0.2);
+  --tag-stem-text:    #2dd4bf;
+
+  --focus-ring:       0 0 0 2px rgba(45, 212, 191, 0.4);
+  --stage-active-color: #2dd4bf;
+
+  --accent-name: "Electric Teal";
+  --accent-hex: "#2dd4bf";
+}
+*/
+
+/* ────────────────────────────────────────────────────
+   5. BASE RESET + GLOBAL COMPONENT TOKENS
+   ──────────────────────────────────────────────────── */
+.sl-page {
+  background: var(--bg-page);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  font-weight: var(--weight-normal);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Nav */
+.sl-nav {
+  height: var(--nav-height);
+  background: var(--bg-nav);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex; align-items: center;
+  padding: 0 var(--space-12);
+  position: sticky; top: 0;
+  z-index: var(--z-nav);
+}
+
+/* Logo */
+.sl-logo {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+  color: var(--text-primary);
+  letter-spacing: var(--tracking-tight);
+}
+.sl-logo-dash { color: var(--accent); }
+
+/* Cards */
+.sl-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+.sl-card-elevated {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+/* Buttons */
+.sl-btn-primary {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: var(--touch-min);
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+  border: none; border-radius: var(--radius-md);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  gap: var(--space-2);
+}
+.sl-btn-primary:hover { background: var(--btn-primary-hover); }
+.sl-btn-primary:focus-visible { box-shadow: var(--focus-ring); outline: none; }
+.sl-btn-primary:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.sl-btn-secondary {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: var(--touch-min);
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  font-size: var(--text-md); font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+  gap: var(--space-2);
+}
+.sl-btn-secondary:hover { border-color: var(--text-muted); color: var(--text-secondary); }
+.sl-btn-secondary:focus-visible { box-shadow: var(--focus-ring); outline: none; }
+
+.sl-btn-ghost {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 36px;
+  background: transparent;
+  color: var(--text-subtle);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm); font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+  gap: var(--space-2);
+}
+.sl-btn-ghost:hover { border-color: var(--border-strong); color: var(--text-muted); }
+
+/* Inputs */
+.sl-input {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.sl-input:focus { border-color: var(--accent-border); box-shadow: var(--focus-ring); outline: none; }
+.sl-input::placeholder { color: var(--text-disabled); }
+
+/* Tags / badges */
+.sl-tag {
+  display: inline-flex; align-items: center;
+  height: 22px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs); font-weight: var(--weight-medium);
+  color: var(--text-subtle);
+  letter-spacing: var(--tracking-wide);
+}
+.sl-tag-stem {
+  background: var(--tag-stem-bg);
+  border-color: var(--tag-stem-border);
+  color: var(--tag-stem-text);
+}
+
+/* Waveform container */
+.sl-waveform {
+  background: var(--wf-bg);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  position: relative;
+}
+
+/* Section label */
+.sl-section-label {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: var(--text-subtle);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+}
+
+/* Monospace values (BPM, key, technical) */
+.sl-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+/* Progress bar */
+.sl-progress-track {
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.sl-progress-fill {
+  background: var(--accent);
+  height: 100%;
+  border-radius: var(--radius-sm);
+  transition: width var(--transition-slow);
+}
+
+/* Stage dots */
+.sl-stage-dot {
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: var(--weight-bold);
+  flex-shrink: 0;
+}
+.sl-stage-dot-done   { background: var(--bg-elevated); border: 1px solid var(--border-strong); color: var(--text-muted); }
+.sl-stage-dot-active { background: var(--accent-muted); border: 1px solid var(--accent); color: var(--accent); }
+.sl-stage-dot-pending { background: transparent; border: 1px solid var(--border-default); color: var(--text-disabled); }
+
+/* Status badges */
+.sl-status { display: inline-flex; align-items: center; gap: 6px; }
+.sl-status-dot { width: 6px; height: 6px; border-radius: 50%; }
+.sl-status-done .sl-status-dot { background: var(--status-done); }
+.sl-status-done { color: var(--status-done); }
+.sl-status-processing .sl-status-dot { background: var(--status-processing); }
+.sl-status-processing { color: var(--status-processing); }
+.sl-status-failed .sl-status-dot { background: var(--status-failed); }
+.sl-status-failed { color: var(--status-failed); }
+.sl-status-expiry { color: var(--status-expiry); }
+
+/* Filter chips */
+.sl-chip {
+  display: inline-flex; align-items: center;
+  height: 32px; padding: 0 var(--space-3);
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  font-size: var(--text-sm); color: var(--text-subtle);
+  cursor: pointer; white-space: nowrap;
+  transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+.sl-chip:hover { border-color: var(--border-strong); color: var(--text-muted); }
+.sl-chip.active {
+  background: var(--accent-muted);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+/* Dividers */
+.sl-divider { border: none; border-top: 1px solid var(--border-subtle); margin: 0; }
+
+/* Loop card drag handle */
+.sl-drag-handle {
+  width: 36px; height: var(--touch-min);
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 3px;
+  cursor: grab; flex-shrink: 0;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.sl-drag-handle:hover { border-color: var(--border-strong); background: var(--bg-elevated); }
+.sl-drag-handle-line { width: 12px; height: 1px; background: var(--border-strong); border-radius: 1px; }
+
+/*
+ * ── USAGE GUIDE ──────────────────────────────────────
+ *
+ * Import this file in each final design HTML:
+ *   <link rel="stylesheet" href="../design-tokens.css">
+ *
+ * Apply accent to <body>:
+ *   <body class="sl-page accent-a">   ← Neon Lime (default)
+ *   <body class="sl-page accent-b">   ← Amber Gold
+ *   <body class="sl-page accent-c">   ← Electric Teal
+ *
+ * Design review: the design-review-index.html presents all 3
+ * accent options with swatches + one applied example each.
+ * Operator picks at the Design Review Gate.
+ *
+ * ─────────────────────────────────────────────────────
+ */

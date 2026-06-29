@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1200">
+<title>stem-loops V2 — Wireframe Review Pack · Phase 3a</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0a0a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #e0e0e0; padding: 48px; }
+
+  .cover-header { margin-bottom: 48px; border-bottom: 1px dashed #2a2a2a; padding-bottom: 32px; }
+  .cover-title { font-size: 28px; font-weight: 700; color: #fff; letter-spacing: -0.5px; margin-bottom: 8px; }
+  .cover-sub { font-size: 16px; color: #555; margin-bottom: 16px; }
+  .cover-meta { display: flex; gap: 24px; font-size: 12px; color: #444; }
+  .meta-item { display: flex; align-items: center; gap: 6px; }
+  .meta-dot { width: 6px; height: 6px; background: #2a2a2a; border-radius: 50%; border: 1px dashed #555; }
+
+  .gate-notice {
+    background: #161616; border: 1px dashed #444; border-radius: 4px; padding: 20px 24px; margin-bottom: 40px;
+    display: flex; align-items: flex-start; gap: 16px;
+  }
+  .gate-icon { width: 32px; height: 32px; background: #1e1e1e; border: 1px dashed #666; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; color: #aaa; flex-shrink: 0; margin-top: 2px; }
+  .gate-text h2 { font-size: 15px; font-weight: 700; color: #ccc; margin-bottom: 6px; }
+  .gate-text p { font-size: 13px; color: #666; line-height: 1.6; }
+
+  /* Screen sections */
+  .screen-section { margin-bottom: 48px; }
+  .screen-heading { font-size: 14px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px dashed #1e1e1e; display: flex; align-items: center; gap: 12px; }
+  .screen-num { font-size: 11px; color: #444; }
+
+  .wireframe-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+
+  .wireframe-card {
+    background: #111; border: 1px dashed #2a2a2a; border-radius: 4px; overflow: hidden;
+    text-decoration: none; color: inherit; display: block;
+    transition: border-color 0.1s;
+  }
+  .wireframe-card:hover { border-color: #555; }
+
+  .wf-preview {
+    height: 200px; background: #0e0e0e; border-bottom: 1px dashed #1e1e1e;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  }
+  .wf-preview-mobile { background: #0e0e0e; }
+  .wf-preview-desktop { background: #0b0b0b; }
+
+  /* Mini preview mockups */
+  .mini-mobile { width: 60px; height: 100px; background: #161616; border: 1px solid #333; border-radius: 4px; display: flex; flex-direction: column; overflow: hidden; }
+  .mini-desktop { width: 140px; height: 88px; background: #161616; border: 1px solid #333; border-radius: 4px; display: flex; flex-direction: column; overflow: hidden; }
+  .mini-nav { height: 10px; background: #0e0e0e; border-bottom: 1px solid #222; flex-shrink: 0; }
+  .mini-content { flex: 1; padding: 4px; display: flex; flex-direction: column; gap: 3px; }
+  .mini-line { height: 3px; background: #2a2a2a; border-radius: 1px; }
+  .mini-line.wide { width: 100%; }
+  .mini-line.medium { width: 70%; }
+  .mini-line.short { width: 45%; }
+  .mini-block { height: 20px; background: #1e1e1e; border: 1px dashed #2a2a2a; border-radius: 2px; }
+  .mini-block.tall { height: 30px; }
+  .mini-wf { height: 16px; background: #1a1a1a; border: 1px dashed #2a2a2a; border-radius: 2px; display: flex; align-items: center; padding: 0 3px; gap: 1px; }
+  .mini-wf-bar { background: #333; border-radius: 1px; flex: 1; }
+
+  .wf-label { font-size: 11px; color: #555; text-align: center; }
+
+  /* Card body */
+  .wf-body { padding: 14px 16px; }
+  .wf-title { font-size: 14px; font-weight: 600; color: #ccc; margin-bottom: 4px; }
+  .wf-desc { font-size: 12px; color: #555; line-height: 1.5; margin-bottom: 10px; }
+  .wf-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  .wf-tag { font-size: 10px; color: #555; background: #161616; border: 1px dashed #2a2a2a; border-radius: 2px; padding: 2px 8px; }
+  .wf-open-btn {
+    display: inline-flex; height: 32px; background: #1a1a1a; border: 1px dashed #3a3a3a; border-radius: 3px;
+    padding: 0 14px; font-size: 12px; color: #888; align-items: center; margin-top: 10px; gap: 6px;
+  }
+
+  /* Design decisions section */
+  .decisions-section { margin-bottom: 48px; }
+  .decisions-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .decision-card { background: #111; border: 1px dashed #222; border-radius: 4px; padding: 20px; }
+  .decision-title { font-size: 13px; font-weight: 700; color: #aaa; margin-bottom: 10px; }
+  .decision-list { list-style: none; }
+  .decision-list li { font-size: 12px; color: #666; line-height: 1.7; display: flex; align-items: flex-start; gap: 8px; }
+  .decision-list li::before { content: '—'; color: #333; flex-shrink: 0; margin-top: 0; }
+
+  /* Questions for operator */
+  .questions-section { background: #111; border: 1px dashed #2a2a2a; border-radius: 4px; padding: 24px; margin-bottom: 40px; }
+  .questions-title { font-size: 14px; font-weight: 700; color: #aaa; margin-bottom: 16px; }
+  .question { display: flex; gap: 12px; margin-bottom: 14px; }
+  .q-num { font-size: 12px; color: #444; flex-shrink: 0; font-weight: 700; min-width: 24px; }
+  .q-text { font-size: 13px; color: #666; line-height: 1.6; }
+  .q-context { font-size: 11px; color: #444; margin-top: 4px; font-style: italic; }
+</style>
+</head>
+<body>
+
+<!-- Cover header -->
+<div class="cover-header">
+  <div class="cover-title">stem-loops V2 — Wireframe Review Pack</div>
+  <div class="cover-sub">Phase 3a: 9 wireframes across 5 screens · Mobile 375px + Desktop 1440px</div>
+  <div class="cover-meta">
+    <div class="meta-item"><div class="meta-dot"></div>Design Agent · 2026-06-29</div>
+    <div class="meta-item"><div class="meta-dot"></div>Phase 3a of stem-loops V2 Visual Blueprint</div>
+    <div class="meta-item"><div class="meta-dot"></div>Input: PRD + TSD v1.0</div>
+    <div class="meta-item"><div class="meta-dot"></div>Screens: Submit · Progress · Results · Errors · History</div>
+  </div>
+</div>
+
+<!-- Gate notice -->
+<div class="gate-notice">
+  <div class="gate-icon">★</div>
+  <div class="gate-text">
+    <h2>WIREFRAME REVIEW GATE — HUMAN APPROVAL REQUIRED before Phase 3b</h2>
+    <p>Review each wireframe for layout, structure, navigation, and component placement. Confirm: are all screens present? Are components where you'd expect them? Any layout changes needed before the visual design phase (Phase 3b — colors, typography, final polish) begins? <strong>Phase 3b will NOT start until you give explicit approval.</strong></p>
+  </div>
+</div>
+
+<!-- Screen 1: Submit -->
+<div class="screen-section">
+  <div class="screen-heading">
+    Screen 1 — Submit
+    <span class="screen-num">2 wireframes</span>
+  </div>
+  <div class="wireframe-grid">
+    <a class="wireframe-card" href="submit-wireframe-mobile.html" target="_blank">
+      <div class="wf-preview wf-preview-mobile">
+        <div class="mini-mobile">
+          <div class="mini-nav"></div>
+          <div class="mini-content">
+            <div class="mini-block" style="height: 14px; margin-bottom: 2px;"></div>
+            <div class="mini-line wide"></div>
+            <div class="mini-line medium"></div>
+            <div class="mini-block" style="display: grid; grid-template-columns: 1fr 1fr; gap: 2px;">
+            </div>
+            <div class="mini-block"></div>
+          </div>
+        </div>
+        <div class="wf-label">375px · mobile</div>
+      </div>
+      <div class="wf-body">
+        <div class="wf-title">Submit — Mobile</div>
+        <div class="wf-desc">YouTube URL input (hero) · stem chips (2-col grid) · loop length selector · Extract Loops CTA · job history link</div>
+        <div class="wf-tags">
+          <div class="wf-tag">single column</div>
+          <div class="wf-tag">44px touch targets</div>
+          <div class="wf-tag">disabled CTA state</div>
+        </div>
+        <div class="wf-open-btn">↗ Open wireframe</div>
+      </div>
+    </a>
+    <a class="wireframe-card" href="submit-wireframe-desktop.html" target="_blank">
+      <div class="wf-preview wf-preview-desktop">
+        <div class="mini-desktop">
+          <div class="mini-nav"></div>
+          <div class="mini-content">
+            <div class="mini-block" style="height: 12px; margin: 0 auto 3px; width: 80%;"></div>
+            <div class="mini-block" style="height: 10px; margin: 0 auto 3px; width: 60%;"></div>
+            <div class="mini-block" style="height: 24px; margin: 0 auto; width: 80%;"></div>
+          </div>
+        </div>
+        <div class="wf-label">1440px · desktop</div>
+      </div>
+      <div class="wf-body">
+        <div class="wf-title">Submit — Desktop</div>
+        <div class="wf-desc">Centered 720px form card · URL input full width · stems + loop length side by side · recent jobs strip (conditional)</div>
+        <div class="wf-tags">
+          <div class="wf-tag">centered card layout</div>
+          <div class="wf-tag">hero headline</div>
+          <div class="wf-tag">recent jobs</div>
+        </div>
+        <div class="wf-open-btn">↗ Open wireframe</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Screen 2: Progress -->
+<div class="screen-section">
+  <div class="screen-heading">
+    Screen 2 — Job Progress
+    <span class="screen-num">2 wireframes</span>
+  </div>
+  <div class="wireframe-grid">
+    <a class="wireframe-card" href="progress-wireframe-mobile.html" target="_blank">
+      <div class="wf-preview wf-preview-mobile">
+        <div class="mini-mobile">
+          <div class="mini-nav"></div>
+          <div class="mini-content">
+            <div class="mini-block" style="height: 10px; margin-bottom: 2px;"></div>
+            <div class="mini-line wide"></div>
+            <div class="mini-line medium"></div>
+            <div class="mini-line short"></div>
+            <div class="mini-line medium"></div>
+            <div class="mini-line short"></div>
+          </div>
+        </div>
+        <div class="wf-label">375px · mobile</div>
+      </div>
+      <div class="wf-body">
+        <div class="wf-title">Progress — Mobile</div>
+        <div class="wf-desc">Share URL bar · polling indicator · overall progress bar · vertical stage machine (queued→done) · cancel option</div>
+        <div class="wf-tags">
+          <div class="wf-tag">vertical stage list</div>
+          <div class="wf-tag">share URL early</div>
+          <div class="wf-tag">per-stage %</div>
+        </div>
+        <div class="wf-open-btn">↗ Open wireframe</div>
+      </div>
+    </a>
+    <a class="wireframe-card" href="progress-wireframe-desktop.html" target="_blank">
+      <div class="wf-preview wf-preview-desktop">
+        <div class="mini-desktop">
+          <div class="mini-nav"></div>
+          <div class="mini-content" style="display: grid; grid-template-columns: 35% 65%; gap: 4px;">
+            <div>
+              <div class="mini-line wide" style="margin-bottom: 2px;"></div>
+              <div class="mini-line medium" style="margin-bottom: 2px;"></div>
+              <div class="mini-line short" style="margin-bottom: 2px;"></div>
+              <div class="mini-line medium" style="margin-bottom: 2px;"></div>
+              <div class="mini-line short"></div>
+            </div>
+            <div>
+              <div class="mini-block" style="height: 20px; margin-bottom: 3px;"></div>
+              <div class="mini-line wide" style="margin-bottom: 2px;"></div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2px; margin-top: 3px;">
+                <div class="mini-block" style="height: 10px;"></div>
+                <div class="mini-block" style="height: 10px;"></div>
+                <div class="mini-block" style="height: 10px;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="wf-label">1440px · desktop</div>
+      </div>
+      <div class="wf-body">
+        <div class="wf-title">Progress — Desktop</div>
+        <div class="wf-desc">Sidebar: stage list + share URL. Content: large current-stage display + stage pip strip + timing cards (elapsed / ETA / stages done)</div>
+        <div class="wf-tags">
+          <div class="wf-tag">two-column sidebar</div>
+          <div class="wf-tag">large stage display</div>
+          <div class="wf-tag">timing cards</div>
+        </div>
+        <div class="wf-open-btn">↗ Open wireframe</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Screen 3: Results -->
+<div class="screen-section">
+  <div class="screen-heading">
+    Screen 3 — Results
+    <span class="screen-num">2 wireframes</span>
+  </div>
+  <div class="wireframe-grid">
+    <a class="wireframe-card" href="results-wireframe-mobile.html" target="_blank">
+      <div class="wf-preview wf-preview-mobile">
+        <div class="mini-mobile">
+          <div class="mini-nav"></div>
+          <div class="mini-content">
+            <div class="mini-wf">
+              <div class="mini-wf-bar" style="height:30%"></div>
+              <div class="mini-wf-bar" style="height:80%"></div>
+              <div class="mini-wf-bar" style="height:60%"></div>
+              <div class="mini-wf-bar" style="height:90%"></div>
+              <div class="mini-wf-bar" style="height:50%"></div>
+              <div class="mini-wf-bar" style="height:70%"></div>
+              <div class="mini-wf-bar" style="height:40%"></div>
+              <div class="mini-wf-bar" style="height:85%"></div>
+            </div>
+            <div class="mini-line wide" style="margin-top: 2px; margin-bottom: 2px;"></div>
+            <div class="mini-wf">
+              <div class="mini-wf-bar" style="height:60%"></div>
+              <div class="mini-wf-bar" style="height:40%"></div>
+              <div class="mini-wf-bar" style="height:75%"></div>
+              <div class="mini-wf-bar" style="height:55%"></div>
+              <div class="mini-wf-bar" style="height:85%"></div>
+              <div class="mini-wf-bar" style="height:35%"></div>
+              <div class="mini-wf-bar" style="height:70%"></div>
+              <div class="mini-wf-bar" style="height:50%"></div>
+            </div>
+          </div>
+        </div>
+        <div class="wf-label">375px · mobile</div>
+      </div>
+      <div class="wf-body">
+        <div class="wf-title">Results — Mobile</div>
+        <div class="wf-desc">Full-width loop cards · waveform + play button · 5 tags per loop · download WAV + drag handle · ZIP at top · filter chips (horizontal scroll)</div>
+        <div class="wf-tags">
+          <div class="wf-tag">waveform primary</div>
+          <div class="wf-tag">horizontal filter scroll</div>
+          <div class="wf-tag">section markers</div>
+        </div>
+        <div class="wf-open-btn">↗ Open wireframe</div>
+      </div>
+    </a>
+    <a class="wireframe-card" href="results-wireframe-desktop.html" target="_blank">
+      <div class="wf-preview wf-preview-desktop">
+        <div class="mini-desktop">
+          <div class="mini-nav"></div>
+          <div class="mini-content" style="display: grid; grid-template-columns: 20% 80%; gap: 3px;">
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+              <div class="mini-line wide"></div>
+              <div class="mini-line medium"></div>
+              <div class="mini-line short"></div>
+              <div class="mini-line medium"></div>
+              <div class="mini-line short"></div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 3px;">
+              <div class="mini-wf">
+                <div class="mini-wf-bar" style="height:40%"></div>
+                <div class="mini-wf-bar" style="height:80%"></div>
+                <div class="mini-wf-bar" style="height:60%"></div>
+                <div class="mini-wf-bar" style="height:90%"></div>
+                <div class="mini-wf-bar" style="height:50%"></div>
+              </div>
+              <div class="mini-wf">
+                <div class="mini-wf-bar" style="height:70%"></div>
+                <div class="mini-wf-bar" style="height:45%"></div>
+                <div class="mini-wf-bar" style="height:85%"></div>
+                <div class="mini-wf-bar" style="height:35%"></div>
+                <div class="mini-wf-bar" style="height:75%"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="wf-label">1440px · desktop</div>
+      </div>
+      <div class="wf-body">
+        <div class="wf-title">Results — Desktop</div>
+        <div class="wf-desc">Sidebar filters (stem / section / energy / sort) · 2-col loop card grid · ZIP pack CTA prominent · waveform cards 80px tall · drag handles</div>
+        <div class="wf-tags">
+          <div class="wf-tag">sidebar filters</div>
+          <div class="wf-tag">2-col card grid</div>
+          <div class="wf-tag">drag-to-DAW</div>
+        </div>
+        <div class="wf-open-btn">↗ Open wireframe</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Screen 4: Errors -->
+<div class="screen-section">
+  <div class="screen-heading">
+    Screen 4 — Error States
+    <span class="screen-num">1 wireframe (all 9 errors on one page)</span>
+  </div>
+  <div class="wireframe-grid">
+    <a class="wireframe-card" href="error-states-wireframe-desktop.html" target="_blank">
+      <div class="wf-preview wf-preview-desktop" style="height: 180px;">
+        <div class="mini-desktop" style="width: 200px; height: 120px;">
+          <div class="mini-nav"></div>
+          <div class="mini-content" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 3px;">
+            <div class="mini-block" style="height: 40px;"></div>
+            <div class="mini-block" style="height: 40px;"></div>
+            <div class="mini-block" style="height: 40px;"></div>
+            <div class="mini-block" style="height: 40px;"></div>
+            <div class="mini-block" style="height: 40px;"></div>
+            <div class="mini-block" style="height: 40px;"></div>
+          </div>
+        </div>
+        <div class="wf-label">All 9 error states · desktop</div>
+      </div>
+      <div class="wf-body">
+        <div class="wf-title">Error States — All 9 (Desktop review format)</div>
+        <div class="wf-desc">One card per error code from TSD §6.2: DOWNLOAD_INVALID_URL · DOWNLOAD_BLOCKED · DOWNLOAD_TIMEOUT · DOWNLOAD_AGE_RESTRICTED · DOWNLOAD_PRIVATE · SEPARATION_FAILED · EXTRACTION_FAILED · UPLOAD_FAILED · INTERNAL_ERROR</div>
+        <div class="wf-tags">
+          <div class="wf-tag">9 error cards</div>
+          <div class="wf-tag">icon + message + next steps</div>
+          <div class="wf-tag">actionable CTAs</div>
+          <div class="wf-tag">no stack traces</div>
+        </div>
+        <div class="wf-open-btn">↗ Open wireframe</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Screen 5: History -->
+<div class="screen-section">
+  <div class="screen-heading">
+    Screen 5 — Job History
+    <span class="screen-num">2 wireframes</span>
+  </div>
+  <div class="wireframe-grid">
+    <a class="wireframe-card" href="job-history-wireframe-mobile.html" target="_blank">
+      <div class="wf-preview wf-preview-mobile">
+        <div class="mini-mobile">
+          <div class="mini-nav"></div>
+          <div class="mini-content">
+            <div class="mini-block" style="height: 12px; margin-bottom: 3px;"></div>
+            <div class="mini-block" style="height: 12px; margin-bottom: 3px;"></div>
+            <div class="mini-block" style="height: 12px; margin-bottom: 3px;"></div>
+            <div class="mini-block" style="height: 12px;"></div>
+          </div>
+        </div>
+        <div class="wf-label">375px · mobile</div>
+      </div>
+      <div class="wf-body">
+        <div class="wf-title">Job History — Mobile</div>
+        <div class="wf-desc">Card list per job · status indicator + color stripe · stems + params · date + expiry warning · view loops / share / retry CTAs · clear history</div>
+        <div class="wf-tags">
+          <div class="wf-tag">status stripes</div>
+          <div class="wf-tag">expiry warning</div>
+          <div class="wf-tag">no account</div>
+        </div>
+        <div class="wf-open-btn">↗ Open wireframe</div>
+      </div>
+    </a>
+    <a class="wireframe-card" href="job-history-wireframe-desktop.html" target="_blank">
+      <div class="wf-preview wf-preview-desktop">
+        <div class="mini-desktop">
+          <div class="mini-nav"></div>
+          <div class="mini-content" style="display: flex; flex-direction: column; gap: 3px;">
+            <div class="mini-line wide" style="border-bottom: 1px solid #2a2a2a; padding-bottom: 2px;"></div>
+            <div class="mini-line wide"></div>
+            <div class="mini-line wide"></div>
+            <div class="mini-line wide"></div>
+            <div class="mini-line medium"></div>
+          </div>
+        </div>
+        <div class="wf-label">1440px · desktop</div>
+      </div>
+      <div class="wf-body">
+        <div class="wf-title">Job History — Desktop</div>
+        <div class="wf-desc">Table format: title / stems / bars / loops / date / status / actions. Filter tabs by status. Search by title. Sort control. Expiry warnings in table.</div>
+        <div class="wf-tags">
+          <div class="wf-tag">table layout</div>
+          <div class="wf-tag">filter + search</div>
+          <div class="wf-tag">expiry warnings</div>
+        </div>
+        <div class="wf-open-btn">↗ Open wireframe</div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- Key design decisions -->
+<div class="decisions-section">
+  <div style="font-size: 14px; font-weight: 700; color: #777; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 20px; padding-bottom: 8px; border-bottom: 1px dashed #1e1e1e;">Key Design Decisions Made in Phase 3a</div>
+  <div class="decisions-grid">
+    <div class="decision-card">
+      <div class="decision-title">Aesthetic direction (dark-mode audio tool)</div>
+      <ul class="decision-list">
+        <li>Background #111–#161616 (not pure black — matches DAW UI greys like Ableton Live)</li>
+        <li>Zero decorative imagery. Every pixel serves a function.</li>
+        <li>Waveform is the hero element on Results — larger than any other visual</li>
+        <li>Minimal chrome: no sidebar navigation, no modal overlays in V2</li>
+        <li>Greyscale wireframes communicate dark-mode-first intent clearly</li>
+      </ul>
+    </div>
+    <div class="decision-card">
+      <div class="decision-title">Submit screen: form-is-the-product</div>
+      <ul class="decision-list">
+        <li>URL input is the largest touch target on mobile — immediate focus</li>
+        <li>Stems use 2-col chip grid (mobile) / 3-col (desktop) for comfortable selection</li>
+        <li>Loop length: 4-up segmented selector across full width (mobile) — tactile</li>
+        <li>Submit CTA disabled until valid URL + ≥1 stem (zod validation)</li>
+        <li>Recent jobs strip on desktop (below form) — conditional on localStorage</li>
+        <li>No marketing copy beyond one-line tagline — users know what stems are</li>
+      </ul>
+    </div>
+    <div class="decision-card">
+      <div class="decision-title">Progress screen: real-time feel without WebSocket</div>
+      <ul class="decision-list">
+        <li>Polling GET /api/jobs/:id every 2s — sufficient for V2 scale</li>
+        <li>Share URL exposed immediately (before job completes) — share early</li>
+        <li>Desktop: sidebar (stage list) + large content (current stage viz) — two densities</li>
+        <li>Stage pip strip (6 dots): compact "where in pipeline" visual shorthand</li>
+        <li>Timing cards: elapsed / ~remaining / stages done. Remaining is approximate.</li>
+        <li>Auto-navigate to results when status = done</li>
+      </ul>
+    </div>
+    <div class="decision-card">
+      <div class="decision-title">Results screen: waveform-first, audition-before-download</div>
+      <ul class="decision-list">
+        <li>Waveform renders from pre-computed peaks (loops.waveform_peaks) — no client decode</li>
+        <li>Play button left of waveform — tap to audition BEFORE downloading</li>
+        <li>Section markers: thin vertical overlays on waveform at section boundaries</li>
+        <li>5 tags per loop: stem (prominent) / BPM / key / section / energy</li>
+        <li>Drag handle: HTML5 draggable → DAW accepts as .wav (PRD §4.4)</li>
+        <li>Desktop 2-col grid; mobile single-column. Both scrollable (no pagination)</li>
+      </ul>
+    </div>
+    <div class="decision-card">
+      <div class="decision-title">Error states: actionable, no dead ends, no stack traces</div>
+      <ul class="decision-list">
+        <li>All 9 TSD §6.2 errors have distinct cards: icon / code label / plain message / next steps / CTA</li>
+        <li>INTERNAL_ERROR: deliberately vague to user. Always logged server-side.</li>
+        <li>Error cards appear inline on Progress screen (not a separate error page)</li>
+        <li>"Retry" → re-queues same URL. "Try different URL" → Submit screen, cleared.</li>
+        <li>DOWNLOAD_INVALID_URL shown inline below URL input on Submit (not progress page)</li>
+      </ul>
+    </div>
+    <div class="decision-card">
+      <div class="decision-title">Job history: anonymous, persistent, mobile-first</div>
+      <ul class="decision-list">
+        <li>localStorage primary + signed cookie secondary (cross-tab persistence)</li>
+        <li>No account — fulfills PRD §4.4 "anonymous job history"</li>
+        <li>Mobile: card list with color status stripe. Desktop: table with filter/search.</li>
+        <li>Expiry warning: &lt;24h shows red date text + advisory note → download now</li>
+        <li>Failed jobs show user-friendly error reason, not raw error code</li>
+        <li>Processing jobs link to progress screen (jobs started on phone, finish on desktop)</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- Questions for operator -->
+<div class="questions-section">
+  <div class="questions-title">Questions for operator before Phase 3b</div>
+
+  <div class="question">
+    <div class="q-num">Q1</div>
+    <div>
+      <div class="q-text">Results screen: 2-column card grid vs 1-column full-width cards on desktop. The 2-column grid lets producers scan more loops at once, but each card is narrower (waveform height is limited). Preference?</div>
+      <div class="q-context">Current decision: 2-col grid on desktop (≥1440px), 1-col on mobile. A "wide" 1-col layout could make waveforms more readable at the cost of vertical scroll.</div>
+    </div>
+  </div>
+
+  <div class="question">
+    <div class="q-num">Q2</div>
+    <div>
+      <div class="q-text">Stem labels: the TSD confirms htdemucs_6s uses "piano" not "keys". The wireframes use "Piano" consistently. Is that the final label, or do you want to display "Keys" in the UI while mapping to "piano" internally?</div>
+      <div class="q-context">TSD §C5 says "Map keys → piano in the contract and UI labels." Current decision: show "Piano" in UI. Confirm or override.</div>
+    </div>
+  </div>
+
+  <div class="question">
+    <div class="q-num">Q3</div>
+    <div>
+      <div class="q-text">Should the mobile Results screen have a fixed bottom bar with "Download ZIP" so the CTA is always visible while scrolling through loops?</div>
+      <div class="q-context">Current decision: ZIP CTA is at the top of the loop list (scrolls away). A fixed bottom bar adds chrome but keeps the most valuable action always reachable.</div>
+    </div>
+  </div>
+
+  <div class="question">
+    <div class="q-num">Q4</div>
+    <div>
+      <div class="q-text">The Progress screen on desktop shows a "Cancel job" button in the sidebar. Should cancel be a destructive confirmation (modal) or instant with an undo window?</div>
+      <div class="q-context">Current wireframe shows a simple button. No modal shown. For V2 simplicity, instant cancel seems right — but confirm intent.</div>
+    </div>
+  </div>
+
+  <div class="question">
+    <div class="q-num">Q5</div>
+    <div>
+      <div class="q-text">Phase 3b color direction: the PRD says "dark-mode first, audio-tool aesthetic (Ableton/Splice/Bandcamp dark)." Any specific accent color in mind (Splice uses hot orange, Ableton uses a warm yellow)? Or should Phase 3b propose 2–3 accent options for your choice?</div>
+      <div class="q-context">Phase 3b will generate design-tokens.css. The accent color drives CTA buttons, active states, waveform playhead, and highlighted tags. A stem-loops brand color is needed.</div>
+    </div>
+  </div>
+
+</div>
+
+<div style="padding: 20px 0; text-align: center; font-size: 12px; color: #333; border-top: 1px dashed #1a1a1a;">
+  stem-loops V2 · Phase 3a Wireframes · Design Agent · 2026-06-29
+</div>
+
+</body>
+</html>

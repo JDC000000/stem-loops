@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>stem-loops — Submit [Wireframe · Mobile 375px]</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #1a1a1a;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0;
+  }
+  .frame {
+    width: 375px;
+    min-height: 812px;
+    background: #111111;
+    position: relative;
+    border: 2px solid #444;
+    overflow: hidden;
+  }
+  .frame-label {
+    background: #333;
+    color: #999;
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 6px 12px;
+    text-align: center;
+  }
+  /* Wireframe greyscale palette applied to dark bg */
+  .wf-bg { background: #111111; }
+  .wf-surface { background: #1e1e1e; border: 1px dashed #444; }
+  .wf-surface-light { background: #2a2a2a; border: 1px dashed #555; }
+  .wf-annotation {
+    font-size: 10px;
+    color: #666;
+    font-style: italic;
+    margin-top: 4px;
+    padding-left: 4px;
+  }
+
+  /* Header */
+  .header {
+    padding: 20px 20px 16px;
+    border-bottom: 1px dashed #333;
+  }
+  .logo {
+    font-size: 22px;
+    font-weight: 700;
+    color: #ffffff;
+    letter-spacing: -0.5px;
+  }
+  .logo span { color: #888; }
+  .tagline {
+    font-size: 11px;
+    color: #666;
+    margin-top: 4px;
+    letter-spacing: 0.3px;
+  }
+
+  /* History link */
+  .history-link {
+    font-size: 12px;
+    color: #888;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+    float: right;
+    margin-top: 4px;
+  }
+
+  /* Main content */
+  .main { padding: 24px 20px 40px; }
+
+  /* Hero URL input */
+  .url-section { margin-bottom: 28px; }
+  .section-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    margin-bottom: 10px;
+  }
+  .url-input-box {
+    width: 100%;
+    height: 52px;
+    background: #1e1e1e;
+    border: 2px dashed #555;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 10px;
+  }
+  .url-icon {
+    width: 20px;
+    height: 20px;
+    background: #333;
+    border: 1px dashed #666;
+    border-radius: 2px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 8px;
+    color: #666;
+  }
+  .url-placeholder {
+    font-size: 13px;
+    color: #555;
+    font-style: italic;
+  }
+  .url-hint {
+    font-size: 11px;
+    color: #555;
+    margin-top: 6px;
+  }
+
+  /* Stems */
+  .stems-section { margin-bottom: 28px; }
+  .stems-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .stem-chip {
+    height: 44px;
+    background: #1e1e1e;
+    border: 1px dashed #444;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 10px;
+    cursor: pointer;
+  }
+  .stem-chip.selected {
+    background: #2a2a2a;
+    border: 1px dashed #777;
+  }
+  .checkbox {
+    width: 16px;
+    height: 16px;
+    border: 1px dashed #666;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  .checkbox.checked {
+    background: #888;
+    border-color: #aaa;
+  }
+  .stem-name {
+    font-size: 13px;
+    color: #ccc;
+  }
+  .stem-icon {
+    width: 18px;
+    height: 18px;
+    background: #333;
+    border: 1px dashed #555;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  .stems-select-all {
+    font-size: 11px;
+    color: #777;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    margin-top: 8px;
+    display: inline-block;
+    cursor: pointer;
+  }
+
+  /* Loop length */
+  .loop-section { margin-bottom: 32px; }
+  .loop-selector {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+  }
+  .loop-option {
+    height: 44px;
+    background: #1e1e1e;
+    border: 1px dashed #444;
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .loop-option.selected {
+    background: #2a2a2a;
+    border: 1px dashed #888;
+  }
+  .loop-num {
+    font-size: 18px;
+    font-weight: 700;
+    color: #ccc;
+    line-height: 1;
+  }
+  .loop-unit {
+    font-size: 9px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 2px;
+  }
+
+  /* CTA */
+  .cta-section { }
+  .submit-btn {
+    width: 100%;
+    height: 52px;
+    background: #3a3a3a;
+    border: 2px dashed #777;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    cursor: pointer;
+  }
+  .btn-icon {
+    width: 20px;
+    height: 20px;
+    background: #555;
+    border-radius: 50%;
+  }
+  .btn-label {
+    font-size: 15px;
+    font-weight: 700;
+    color: #ffffff;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .cta-hint {
+    font-size: 11px;
+    color: #555;
+    text-align: center;
+    margin-top: 8px;
+  }
+
+  /* Annotation sidebar */
+  .anno {
+    font-size: 10px;
+    color: #555;
+    font-style: italic;
+    margin-top: 5px;
+    padding-left: 2px;
+    border-left: 2px solid #333;
+    padding-left: 6px;
+  }
+
+  /* Footer */
+  .footer {
+    padding: 20px;
+    border-top: 1px dashed #2a2a2a;
+    text-align: center;
+    margin-top: auto;
+  }
+  .footer-links { font-size: 11px; color: #444; }
+
+  /* Notes panel below frame */
+  .notes {
+    width: 375px;
+    background: #0d0d0d;
+    border: 1px dashed #333;
+    padding: 16px;
+    margin-top: 12px;
+    margin-bottom: 40px;
+  }
+  .notes h3 { font-size: 11px; color: #777; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+  .notes ul { font-size: 11px; color: #555; line-height: 1.8; padding-left: 16px; }
+  .notes ul li { margin-bottom: 2px; }
+</style>
+</head>
+<body>
+
+<div style="padding: 24px 0 8px; text-align: center;">
+  <span style="font-size: 11px; color: #555; letter-spacing: 1px; text-transform: uppercase;">WIREFRAME · Screen 1: Submit · Mobile 375px</span>
+</div>
+
+<div class="frame">
+  <div class="frame-label">stem-loops.com · Submit · 375px</div>
+
+  <!-- Header -->
+  <div class="header">
+    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+      <div>
+        <div class="logo">stem<span>-</span>loops</div>
+        <div class="tagline">YouTube → stems → loops → DAW</div>
+      </div>
+      <div class="history-link">↗ My jobs</div>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- URL Input (hero) -->
+    <div class="url-section">
+      <div class="section-label">YouTube URL</div>
+      <div class="url-input-box">
+        <div class="url-icon">YT</div>
+        <span class="url-placeholder">paste youtube.com / youtu.be link</span>
+      </div>
+      <div class="url-hint">↳ youtube.com/watch?v=... or youtu.be/...</div>
+      <div class="anno">Primary action. Large touch target. Error inline below on invalid URL.</div>
+    </div>
+
+    <!-- Stems multiselect -->
+    <div class="stems-section">
+      <div class="section-label">Stems to extract</div>
+      <div class="stems-grid">
+        <div class="stem-chip selected">
+          <div class="checkbox checked"></div>
+          <div class="stem-icon"></div>
+          <span class="stem-name">Drums</span>
+        </div>
+        <div class="stem-chip selected">
+          <div class="checkbox checked"></div>
+          <div class="stem-icon"></div>
+          <span class="stem-name">Bass</span>
+        </div>
+        <div class="stem-chip">
+          <div class="checkbox"></div>
+          <div class="stem-icon"></div>
+          <span class="stem-name">Vocals</span>
+        </div>
+        <div class="stem-chip">
+          <div class="checkbox"></div>
+          <div class="stem-icon"></div>
+          <span class="stem-name">Guitar</span>
+        </div>
+        <div class="stem-chip">
+          <div class="checkbox"></div>
+          <div class="stem-icon"></div>
+          <span class="stem-name">Keys</span>
+        </div>
+        <div class="stem-chip">
+          <div class="checkbox"></div>
+          <div class="stem-icon"></div>
+          <span class="stem-name">Other</span>
+        </div>
+      </div>
+      <span class="stems-select-all">select all</span>
+      <div class="anno">htdemucs_6s stems. Default: drums + bass. Min 1 required.</div>
+    </div>
+
+    <!-- Loop length -->
+    <div class="loop-section">
+      <div class="section-label">Loop length</div>
+      <div class="loop-selector">
+        <div class="loop-option">
+          <div class="loop-num">1</div>
+          <div class="loop-unit">bar</div>
+        </div>
+        <div class="loop-option">
+          <div class="loop-num">2</div>
+          <div class="loop-unit">bars</div>
+        </div>
+        <div class="loop-option selected">
+          <div class="loop-num">4</div>
+          <div class="loop-unit">bars</div>
+        </div>
+        <div class="loop-option">
+          <div class="loop-num">8</div>
+          <div class="loop-unit">bars</div>
+        </div>
+      </div>
+      <div class="anno">Default 4 bars. Tap to select. Visual highlight on selection.</div>
+    </div>
+
+    <!-- CTA -->
+    <div class="cta-section">
+      <div class="submit-btn">
+        <div class="btn-icon"></div>
+        <span class="btn-label">Extract Loops</span>
+      </div>
+      <div class="cta-hint">Free · no account needed · loops ready in ~60s</div>
+      <div class="anno">Full-width. Disabled state until URL valid + ≥1 stem selected.</div>
+    </div>
+
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <div class="footer-links">
+      stem-loops.com · open source · 7-day loop storage
+    </div>
+  </div>
+
+</div>
+
+<!-- Wireframe notes -->
+<div class="notes">
+  <h3>Design Notes — Submit · Mobile</h3>
+  <ul>
+    <li>Single-column stacked layout. No sidebar. Zero decoration.</li>
+    <li>URL input is the hero — largest interactive element on screen.</li>
+    <li>Stem chips use 2-column grid → comfortable 44px touch targets.</li>
+    <li>Loop length uses 4-up segmented selector across full width.</li>
+    <li>History link top-right: minimal, not competing with primary CTA.</li>
+    <li>Submit CTA disabled until URL + ≥1 stem selected (zod validation).</li>
+    <li>No decorative imagery, no hero illustration — tool-first aesthetic.</li>
+    <li>Dark background (#111) reflects DAW dark-mode context.</li>
+  </ul>
+</div>
+
+</body>
+</html>

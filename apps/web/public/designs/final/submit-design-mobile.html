@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>stem-loops — Submit · Mobile</title>
+  <link rel="stylesheet" href="../design-tokens.css">
+  <style>
+    /* ─── Reset ─── */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100%;
+      overflow-x: hidden;
+    }
+
+    /* ─── Page shell ─── */
+    body {
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ─── Mobile frame (simulates 375px device in browser) ─── */
+    .device-frame {
+      width: 375px;
+      min-height: 100dvh;
+      margin: 0 auto;
+      background: var(--bg-page);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    /* ─── Top Nav ─── */
+    .nav {
+      height: var(--nav-height);
+      background: var(--bg-nav);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--space-4);
+      position: sticky;
+      top: 0;
+      z-index: var(--z-nav);
+      flex-shrink: 0;
+    }
+
+    .nav-logo {
+      font-size: 19px;
+      font-weight: var(--weight-bold);
+      color: var(--text-primary);
+      letter-spacing: var(--tracking-tight);
+      text-decoration: none;
+      line-height: 1;
+    }
+
+    .nav-logo .dash {
+      color: var(--accent);
+    }
+
+    .nav-link {
+      font-size: var(--text-md);
+      font-weight: var(--weight-medium);
+      color: var(--text-muted);
+      text-decoration: none;
+      height: var(--touch-min);
+      display: flex;
+      align-items: center;
+      padding: 0 var(--space-2);
+      border-radius: var(--radius-md);
+      transition: color var(--transition-fast);
+      /* extend tap area */
+      min-width: 44px;
+      justify-content: flex-end;
+    }
+
+    .nav-link:hover {
+      color: var(--text-secondary);
+    }
+
+    .nav-link:active {
+      color: var(--text-primary);
+    }
+
+    /* ─── Main scroll area ─── */
+    .main {
+      flex: 1;
+      padding: var(--space-6) var(--space-4) var(--space-8);
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    /* ─── Tagline ─── */
+    .tagline {
+      font-size: 12px;
+      font-weight: var(--weight-medium);
+      color: var(--text-subtle);
+      letter-spacing: 0.3px;
+      margin-bottom: var(--space-6);
+      line-height: 1;
+    }
+
+    .tagline-sep {
+      color: var(--text-disabled);
+      margin: 0 3px;
+    }
+
+    /* ─── Hero URL Input ─── */
+    .url-input-wrapper {
+      position: relative;
+      margin-bottom: var(--space-6);
+      border-radius: var(--radius-md);
+      transition: box-shadow var(--transition-fast);
+    }
+
+    .url-input-wrapper:focus-within {
+      box-shadow: 0 0 0 2px rgba(163, 230, 53, 0.35), 0 0 16px rgba(163, 230, 53, 0.08);
+    }
+
+    .url-input-wrapper:focus-within .url-input-inner {
+      border-color: var(--accent-border);
+      background: #1a1a1a;
+    }
+
+    .url-input-inner {
+      display: flex;
+      align-items: center;
+      height: 56px;
+      background: var(--bg-elevated);
+      border: 1.5px solid var(--border-strong);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+      gap: 0;
+    }
+
+    .yt-badge {
+      flex-shrink: 0;
+      width: 52px;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-right: 1px solid var(--border-default);
+      background: rgba(220, 38, 38, 0.08);
+    }
+
+    .yt-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+    }
+
+    .yt-logo-wrap {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    /* YouTube icon SVG placeholder */
+    .yt-svg {
+      width: 26px;
+      height: 18px;
+      border-radius: 4px;
+      background: #dc2626;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .yt-svg::after {
+      content: '';
+      display: block;
+      width: 0;
+      height: 0;
+      border-style: solid;
+      border-width: 5px 0 5px 9px;
+      border-color: transparent transparent transparent #ffffff;
+      margin-left: 2px;
+    }
+
+    .url-input-field {
+      flex: 1;
+      height: 100%;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      font-weight: var(--weight-normal);
+      padding: 0 var(--space-3);
+      caret-color: var(--accent);
+    }
+
+    .url-input-field::placeholder {
+      color: var(--text-subtle);
+      font-weight: var(--weight-normal);
+    }
+
+    .url-clear-btn {
+      flex-shrink: 0;
+      width: 44px;
+      height: 100%;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      color: var(--text-subtle);
+      transition: color var(--transition-fast);
+    }
+
+    .url-clear-btn:hover {
+      color: var(--text-muted);
+    }
+
+    /* ─── Section labels ─── */
+    .section-label {
+      font-size: var(--text-sm);
+      font-weight: var(--weight-semibold);
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: var(--tracking-caps);
+      margin-bottom: var(--space-3);
+    }
+
+    /* ─── Stem chips grid ─── */
+    .stems-section {
+      margin-bottom: var(--space-5);
+    }
+
+    .stems-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-2);
+    }
+
+    .stem-chip {
+      position: relative;
+      height: 48px;
+      background: var(--bg-card);
+      border: 1.5px solid var(--border-default);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      padding: 0 var(--space-3);
+      gap: var(--space-2);
+      cursor: pointer;
+      transition:
+        border-color var(--transition-fast),
+        background var(--transition-fast);
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      overflow: hidden;
+    }
+
+    .stem-chip:hover {
+      border-color: var(--border-strong);
+      background: var(--bg-hover);
+    }
+
+    .stem-chip:active {
+      background: var(--bg-elevated);
+    }
+
+    .stem-chip.selected {
+      background: var(--accent-muted);
+      border-color: var(--accent-border);
+    }
+
+    .stem-chip.selected:hover {
+      background: rgba(163, 230, 53, 0.16);
+      border-color: rgba(163, 230, 53, 0.4);
+    }
+
+    /* Hidden native checkbox */
+    .stem-chip input[type="checkbox"] {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+      pointer-events: none;
+    }
+
+    .stem-check {
+      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: 3px;
+      border: 1.5px solid var(--border-strong);
+      background: transparent;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition:
+        border-color var(--transition-fast),
+        background var(--transition-fast);
+    }
+
+    .stem-chip.selected .stem-check {
+      border-color: var(--accent);
+      background: var(--accent);
+    }
+
+    .stem-check-mark {
+      display: none;
+      width: 10px;
+      height: 10px;
+    }
+
+    .stem-chip.selected .stem-check-mark {
+      display: block;
+    }
+
+    .stem-check-mark::before {
+      content: '';
+      display: block;
+      width: 10px;
+      height: 10px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 5L4 7.5L8.5 2.5' stroke='%230d0d0d' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E");
+      background-size: contain;
+      background-repeat: no-repeat;
+      background-position: center;
+    }
+
+    .stem-icon {
+      font-size: 16px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .stem-name {
+      font-size: var(--text-md);
+      font-weight: var(--weight-medium);
+      color: var(--text-secondary);
+      flex: 1;
+      transition: color var(--transition-fast);
+    }
+
+    .stem-chip.selected .stem-name {
+      color: var(--accent);
+      font-weight: var(--weight-semibold);
+    }
+
+    /* ─── Loop length section ─── */
+    .loop-section {
+      margin-bottom: var(--space-6);
+    }
+
+    .loop-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: var(--space-2);
+    }
+
+    .loop-btn {
+      height: 48px;
+      background: var(--bg-card);
+      border: 1.5px solid var(--border-default);
+      border-radius: var(--radius-md);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition:
+        border-color var(--transition-fast),
+        background var(--transition-fast);
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      gap: 2px;
+    }
+
+    .loop-btn:hover {
+      border-color: var(--border-strong);
+      background: var(--bg-hover);
+    }
+
+    .loop-btn:active {
+      background: var(--bg-elevated);
+    }
+
+    .loop-btn.selected {
+      background: var(--accent-muted);
+      border-color: var(--accent-border);
+    }
+
+    .loop-btn.selected:hover {
+      background: rgba(163, 230, 53, 0.16);
+      border-color: rgba(163, 230, 53, 0.4);
+    }
+
+    .loop-bars-num {
+      font-size: 18px;
+      font-weight: var(--weight-bold);
+      color: var(--text-secondary);
+      line-height: 1;
+      transition: color var(--transition-fast);
+    }
+
+    .loop-btn.selected .loop-bars-num {
+      color: var(--accent);
+    }
+
+    .loop-bars-label {
+      font-size: 10px;
+      font-weight: var(--weight-medium);
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      line-height: 1;
+      transition: color var(--transition-fast);
+    }
+
+    .loop-btn.selected .loop-bars-label {
+      color: rgba(163, 230, 53, 0.7);
+    }
+
+    /* ─── CTA Button ─── */
+    .cta-section {
+      margin-bottom: var(--space-4);
+    }
+
+    .cta-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-2);
+      width: 100%;
+      height: 52px;
+      background: var(--accent);
+      color: var(--accent-text);
+      border: none;
+      border-radius: var(--radius-md);
+      font-family: var(--font-sans);
+      font-size: 16px;
+      font-weight: var(--weight-bold);
+      letter-spacing: 0.3px;
+      cursor: not-allowed;
+      transition: background var(--transition-fast), opacity var(--transition-fast);
+      opacity: 0.35;
+      -webkit-tap-highlight-color: transparent;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Active (enabled) state — JS would toggle .enabled class when URL is present */
+    .cta-btn.enabled {
+      cursor: pointer;
+      opacity: 1;
+    }
+
+    .cta-btn.enabled:hover {
+      background: var(--btn-primary-hover);
+    }
+
+    .cta-btn.enabled:active {
+      background: var(--accent-active);
+      transform: scale(0.99);
+    }
+
+    .cta-btn.enabled:focus-visible {
+      outline: none;
+      box-shadow: var(--focus-ring);
+    }
+
+    .cta-arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+    }
+
+    /* Ripple overlay for CTA */
+    .cta-btn::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: transparent;
+      transition: background var(--transition-fast);
+    }
+
+    /* ─── Hint text ─── */
+    .hint-text {
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-subtle);
+      font-weight: var(--weight-normal);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-2);
+      flex-wrap: wrap;
+    }
+
+    .hint-dot {
+      width: 2px;
+      height: 2px;
+      background: var(--text-disabled);
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .hint-free {
+      color: var(--accent);
+      font-weight: var(--weight-semibold);
+    }
+
+    /* ─── Footer ─── */
+    .footer {
+      margin-top: auto;
+      padding: var(--space-6) var(--space-4) var(--space-5);
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .footer-links {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-4);
+      flex-wrap: wrap;
+    }
+
+    .footer-link {
+      font-size: 11px;
+      color: var(--text-subtle);
+      text-decoration: none;
+      transition: color var(--transition-fast);
+      min-height: 32px;
+      display: flex;
+      align-items: center;
+    }
+
+    .footer-link:hover {
+      color: var(--text-muted);
+    }
+
+    .footer-sep {
+      width: 1px;
+      height: 10px;
+      background: var(--border-default);
+    }
+
+    .footer-copy {
+      margin-top: var(--space-3);
+      text-align: center;
+      font-size: 10px;
+      color: var(--text-disabled);
+    }
+
+    /* ─── Stem count indicator ─── */
+    .stems-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: var(--space-3);
+    }
+
+    .stems-count {
+      font-size: 11px;
+      font-weight: var(--weight-medium);
+      color: var(--text-subtle);
+    }
+
+    .stems-count-num {
+      font-weight: var(--weight-semibold);
+      color: var(--accent);
+    }
+
+    /* ─── URL input validation indicator ─── */
+    .url-input-wrapper .input-hint {
+      display: block;
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--text-subtle);
+      padding-left: 2px;
+    }
+
+    /* ─── Spacing utility ─── */
+    .mt-5 { margin-top: var(--space-5); }
+    .mb-5 { margin-bottom: var(--space-5); }
+    .mb-6 { margin-bottom: var(--space-6); }
+  </style>
+</head>
+<body class="sl-page accent-a">
+  <div class="device-frame">
+
+    <!-- ── TOP NAV ──────────────────────────────────── -->
+    <nav class="nav" role="banner">
+      <a href="#" class="nav-logo" aria-label="stem-loops home">
+        stem<span class="dash">-</span>loops
+      </a>
+      <a href="#" class="nav-link" aria-label="My jobs">My jobs</a>
+    </nav>
+
+    <!-- ── MAIN CONTENT ─────────────────────────────── -->
+    <main class="main" role="main">
+
+      <!-- Tagline -->
+      <p class="tagline" aria-label="YouTube to stems to loops to DAW">
+        YouTube
+        <span class="tagline-sep">→</span>
+        stems
+        <span class="tagline-sep">→</span>
+        loops
+        <span class="tagline-sep">→</span>
+        DAW
+      </p>
+
+      <!-- URL Input -->
+      <div class="url-input-wrapper" role="search" aria-label="YouTube URL input">
+        <div class="url-input-inner">
+          <div class="yt-badge" aria-hidden="true">
+            <div class="yt-svg" title="YouTube"></div>
+          </div>
+          <input
+            type="url"
+            class="url-input-field"
+            id="yt-url"
+            placeholder="Paste a YouTube URL…"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="none"
+            spellcheck="false"
+            inputmode="url"
+            aria-label="YouTube video URL"
+          >
+        </div>
+        <span class="input-hint" id="url-hint" aria-live="polite"></span>
+      </div>
+
+      <!-- STEMS Section -->
+      <div class="stems-section">
+        <div class="stems-header">
+          <span class="section-label" id="stems-label">Stems</span>
+          <span class="stems-count" aria-live="polite">
+            <span class="stems-count-num" id="stems-count-num">2</span> selected
+          </span>
+        </div>
+
+        <div
+          class="stems-grid"
+          role="group"
+          aria-labelledby="stems-label"
+        >
+
+          <!-- Drums — selected by default -->
+          <label class="stem-chip selected" for="stem-drums" aria-label="Drums stem">
+            <input type="checkbox" id="stem-drums" name="stems" value="drums" checked>
+            <span class="stem-check" aria-hidden="true">
+              <span class="stem-check-mark"></span>
+            </span>
+            <span class="stem-icon" aria-hidden="true">🥁</span>
+            <span class="stem-name">Drums</span>
+          </label>
+
+          <!-- Bass — selected by default -->
+          <label class="stem-chip selected" for="stem-bass" aria-label="Bass stem">
+            <input type="checkbox" id="stem-bass" name="stems" value="bass" checked>
+            <span class="stem-check" aria-hidden="true">
+              <span class="stem-check-mark"></span>
+            </span>
+            <span class="stem-icon" aria-hidden="true">🎸</span>
+            <span class="stem-name">Bass</span>
+          </label>
+
+          <!-- Vocals -->
+          <label class="stem-chip" for="stem-vocals" aria-label="Vocals stem">
+            <input type="checkbox" id="stem-vocals" name="stems" value="vocals">
+            <span class="stem-check" aria-hidden="true">
+              <span class="stem-check-mark"></span>
+            </span>
+            <span class="stem-icon" aria-hidden="true">🎤</span>
+            <span class="stem-name">Vocals</span>
+          </label>
+
+          <!-- Guitar -->
+          <label class="stem-chip" for="stem-guitar" aria-label="Guitar stem">
+            <input type="checkbox" id="stem-guitar" name="stems" value="guitar">
+            <span class="stem-check" aria-hidden="true">
+              <span class="stem-check-mark"></span>
+            </span>
+            <span class="stem-icon" aria-hidden="true">🎸</span>
+            <span class="stem-name">Guitar</span>
+          </label>
+
+          <!-- Keys (never 'Piano') -->
+          <label class="stem-chip" for="stem-keys" aria-label="Keys stem">
+            <input type="checkbox" id="stem-keys" name="stems" value="keys">
+            <span class="stem-check" aria-hidden="true">
+              <span class="stem-check-mark"></span>
+            </span>
+            <span class="stem-icon" aria-hidden="true">🎹</span>
+            <span class="stem-name">Keys</span>
+          </label>
+
+          <!-- Other -->
+          <label class="stem-chip" for="stem-other" aria-label="Other stems">
+            <input type="checkbox" id="stem-other" name="stems" value="other">
+            <span class="stem-check" aria-hidden="true">
+              <span class="stem-check-mark"></span>
+            </span>
+            <span class="stem-icon" aria-hidden="true">🎵</span>
+            <span class="stem-name">Other</span>
+          </label>
+
+        </div>
+      </div>
+
+      <!-- LOOP LENGTH Section -->
+      <div class="loop-section">
+        <span class="section-label" id="loop-label">Loop Length</span>
+
+        <div
+          class="loop-grid mt-5"
+          role="radiogroup"
+          aria-labelledby="loop-label"
+        >
+
+          <button
+            class="loop-btn"
+            role="radio"
+            aria-checked="false"
+            data-bars="1"
+            aria-label="1 bar loop length"
+          >
+            <span class="loop-bars-num">1</span>
+            <span class="loop-bars-label">bar</span>
+          </button>
+
+          <button
+            class="loop-btn"
+            role="radio"
+            aria-checked="false"
+            data-bars="2"
+            aria-label="2 bars loop length"
+          >
+            <span class="loop-bars-num">2</span>
+            <span class="loop-bars-label">bars</span>
+          </button>
+
+          <!-- 4 bars — selected by default -->
+          <button
+            class="loop-btn selected"
+            role="radio"
+            aria-checked="true"
+            data-bars="4"
+            aria-label="4 bars loop length, selected"
+          >
+            <span class="loop-bars-num">4</span>
+            <span class="loop-bars-label">bars</span>
+          </button>
+
+          <button
+            class="loop-btn"
+            role="radio"
+            aria-checked="false"
+            data-bars="8"
+            aria-label="8 bars loop length"
+          >
+            <span class="loop-bars-num">8</span>
+            <span class="loop-bars-label">bars</span>
+          </button>
+
+        </div>
+      </div>
+
+      <!-- EXTRACT LOOPS CTA -->
+      <div class="cta-section">
+        <button
+          class="cta-btn"
+          id="extract-btn"
+          disabled
+          aria-disabled="true"
+          aria-label="Extract Loops — paste a YouTube URL to enable"
+        >
+          <svg class="cta-arrow" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M4 10L16 10M11 5L16 10L11 15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Extract Loops
+        </button>
+      </div>
+
+      <!-- Hint text -->
+      <div class="hint-text" aria-label="Free, no account needed, ready in about 60 seconds">
+        <span class="hint-free">Free</span>
+        <span class="hint-dot" aria-hidden="true"></span>
+        <span>no account needed</span>
+        <span class="hint-dot" aria-hidden="true"></span>
+        <span>ready in ~60s</span>
+      </div>
+
+    </main>
+
+    <!-- ── FOOTER ────────────────────────────────────── -->
+    <footer class="footer" role="contentinfo">
+      <nav class="footer-links" aria-label="Footer navigation">
+        <a href="#" class="footer-link">How it works</a>
+        <span class="footer-sep" aria-hidden="true"></span>
+        <a href="#" class="footer-link">Pricing</a>
+        <span class="footer-sep" aria-hidden="true"></span>
+        <a href="#" class="footer-link">Privacy</a>
+        <span class="footer-sep" aria-hidden="true"></span>
+        <a href="#" class="footer-link">Terms</a>
+      </nav>
+      <p class="footer-copy">&copy; 2026 stem-loops. All rights reserved.</p>
+    </footer>
+
+  </div><!-- /device-frame -->
+
+  <script>
+    // ── Stem chip toggles ──────────────────────────────
+    const stemChips = document.querySelectorAll('.stem-chip');
+    const stemsCountEl = document.getElementById('stems-count-num');
+
+    function updateStemsCount() {
+      const checked = document.querySelectorAll('.stem-chip input:checked').length;
+      stemsCountEl.textContent = checked;
+    }
+
+    stemChips.forEach(chip => {
+      const checkbox = chip.querySelector('input[type="checkbox"]');
+
+      chip.addEventListener('click', (e) => {
+        // Toggle checked state
+        checkbox.checked = !checkbox.checked;
+        chip.classList.toggle('selected', checkbox.checked);
+        updateStemsCount();
+      });
+
+      // Prevent double-toggle from label's default behavior
+      // (we handle the click manually above)
+      chip.addEventListener('keydown', (e) => {
+        if (e.key === ' ' || e.key === 'Enter') {
+          e.preventDefault();
+          checkbox.checked = !checkbox.checked;
+          chip.classList.toggle('selected', checkbox.checked);
+          updateStemsCount();
+        }
+      });
+
+      // Make chip focusable
+      chip.setAttribute('tabindex', '0');
+    });
+
+    // ── Loop length selector ───────────────────────────
+    const loopBtns = document.querySelectorAll('.loop-btn');
+
+    loopBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        loopBtns.forEach(b => {
+          b.classList.remove('selected');
+          b.setAttribute('aria-checked', 'false');
+        });
+        btn.classList.add('selected');
+        btn.setAttribute('aria-checked', 'true');
+      });
+    });
+
+    // ── URL input — enable/disable CTA ────────────────
+    const urlInput = document.getElementById('yt-url');
+    const extractBtn = document.getElementById('extract-btn');
+    const urlHint = document.getElementById('url-hint');
+
+    const YT_PATTERNS = [
+      /youtube\.com\/watch\?v=/,
+      /youtu\.be\//,
+      /youtube\.com\/shorts\//,
+      /youtube\.com\/live\//
+    ];
+
+    function isValidYouTubeUrl(val) {
+      return YT_PATTERNS.some(p => p.test(val));
+    }
+
+    urlInput.addEventListener('input', () => {
+      const val = urlInput.value.trim();
+
+      if (val.length === 0) {
+        extractBtn.disabled = true;
+        extractBtn.setAttribute('aria-disabled', 'true');
+        extractBtn.classList.remove('enabled');
+        urlHint.textContent = '';
+        return;
+      }
+
+      if (isValidYouTubeUrl(val)) {
+        extractBtn.disabled = false;
+        extractBtn.setAttribute('aria-disabled', 'false');
+        extractBtn.classList.add('enabled');
+        urlHint.textContent = '';
+        urlHint.style.color = '';
+      } else {
+        extractBtn.disabled = true;
+        extractBtn.setAttribute('aria-disabled', 'true');
+        extractBtn.classList.remove('enabled');
+        if (val.length > 8) {
+          urlHint.textContent = 'Paste a YouTube video URL (youtube.com or youtu.be)';
+          urlHint.style.color = 'var(--status-failed)';
+        } else {
+          urlHint.textContent = '';
+        }
+      }
+    });
+
+    // ── CTA button action ──────────────────────────────
+    extractBtn.addEventListener('click', () => {
+      if (extractBtn.disabled) return;
+
+      const url = urlInput.value.trim();
+      const stems = [...document.querySelectorAll('.stem-chip input:checked')].map(i => i.value);
+      const bars = document.querySelector('.loop-btn.selected')?.dataset.bars ?? '4';
+
+      // In production this would POST to the API.
+      // For the design mock, show a brief feedback state.
+      const originalContent = extractBtn.innerHTML;
+      extractBtn.innerHTML = `
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="animation: spin 0.8s linear infinite;">
+          <circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="2" stroke-dasharray="22 22" stroke-linecap="round"/>
+        </svg>
+        Processing…
+      `;
+      extractBtn.disabled = true;
+      extractBtn.classList.remove('enabled');
+
+      setTimeout(() => {
+        extractBtn.innerHTML = originalContent;
+        extractBtn.disabled = false;
+        extractBtn.classList.add('enabled');
+      }, 2000);
+    });
+  </script>
+
+  <style>
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+
+</body>
+</html>

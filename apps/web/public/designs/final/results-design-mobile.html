@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>stem-loops — Results · Mobile</title>
+  <link rel="stylesheet" href="../design-tokens.css">
+  <style>
+    /* ─── Reset ─── */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100%;
+      overflow-x: hidden;
+    }
+
+    body {
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ─── Device frame (375px mobile simulation) ─── */
+    .device-frame {
+      width: 375px;
+      min-height: 100dvh;
+      margin: 0 auto;
+      background: var(--bg-page);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    /* ─── Top Nav ─── */
+    .nav {
+      height: var(--nav-height);
+      background: var(--bg-nav);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--space-4);
+      position: sticky;
+      top: 0;
+      z-index: var(--z-nav);
+      flex-shrink: 0;
+    }
+
+    .nav-logo {
+      font-size: 19px;
+      font-weight: var(--weight-bold);
+      color: var(--text-primary);
+      letter-spacing: var(--tracking-tight);
+      text-decoration: none;
+      line-height: 1;
+    }
+
+    .nav-logo-dash {
+      color: var(--accent);
+    }
+
+    .nav-back {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-medium);
+      color: var(--text-muted);
+      text-decoration: none;
+      min-height: var(--touch-min);
+      padding: 0 var(--space-2);
+      border-radius: var(--radius-md);
+      transition: color var(--transition-fast);
+    }
+
+    .nav-back:hover {
+      color: var(--text-secondary);
+    }
+
+    .nav-back:active {
+      color: var(--text-primary);
+    }
+
+    /* ─── Scroll content ─── */
+    .page-scroll {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      /* bottom padding accounts for sticky ZIP bar height ~68px + extra breathing room */
+      padding-bottom: 80px;
+    }
+
+    /* ─── Job summary strip ─── */
+    .job-summary {
+      background: #161616;
+      border-bottom: 1px solid var(--border-default);
+      padding: var(--space-3) var(--space-4);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+    }
+
+    .job-summary-title {
+      font-size: var(--text-md);
+      font-weight: var(--weight-semibold);
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: var(--leading-tight);
+    }
+
+    .job-summary-badges {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    /* Standard badge */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 var(--space-2);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      font-size: 10px;
+      font-weight: var(--weight-medium);
+      color: var(--text-muted);
+      letter-spacing: var(--tracking-wide);
+      white-space: nowrap;
+    }
+
+    /* Musical highlight badges: BPM and key */
+    .badge-musical {
+      background: var(--accent-muted);
+      border-color: var(--accent-border);
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: var(--weight-semibold);
+    }
+
+    /* ─── Filter chips row ─── */
+    .filter-row {
+      padding: var(--space-3) var(--space-4);
+      border-bottom: 1px solid var(--border-subtle);
+      overflow-x: auto;
+      scrollbar-width: none; /* Firefox */
+      -ms-overflow-style: none; /* IE/Edge */
+      flex-shrink: 0;
+    }
+
+    .filter-row::-webkit-scrollbar {
+      display: none;
+    }
+
+    .filter-chips {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      width: max-content;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      height: 32px;
+      padding: 0 var(--space-3);
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-full);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-medium);
+      color: var(--text-subtle);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .chip:hover {
+      border-color: var(--border-strong);
+      color: var(--text-muted);
+    }
+
+    .chip.active {
+      background: var(--accent-muted);
+      border-color: var(--accent-border);
+      color: var(--accent);
+      font-weight: var(--weight-semibold);
+    }
+
+    /* ─── Loop cards list ─── */
+    .loop-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: var(--space-3) var(--space-4);
+    }
+
+    /* ─── Individual loop card ─── */
+    .loop-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Waveform area ── */
+    .waveform-area {
+      background: #0e0e0e;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      gap: 0;
+      position: relative;
+      padding-left: 56px; /* space for play button column */
+      overflow: hidden;
+    }
+
+    /* Play button column */
+    .play-col {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #0e0e0e;
+      border-right: 1px solid #1a1a1a;
+      flex-shrink: 0;
+      z-index: 2;
+    }
+
+    .play-btn {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: transparent;
+      border: 1.5px solid var(--border-strong);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+      -webkit-tap-highlight-color: transparent;
+      flex-shrink: 0;
+    }
+
+    .play-btn:hover {
+      border-color: var(--accent);
+      background: var(--accent-muted);
+    }
+
+    .play-btn:hover .play-icon {
+      color: var(--accent);
+    }
+
+    .play-icon {
+      color: var(--text-muted);
+      transition: color var(--transition-fast);
+      margin-left: 2px; /* optical centering for play triangle */
+    }
+
+    /* Waveform bars container */
+    .waveform-bars {
+      flex: 1;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      padding: 0 var(--space-3);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .wf-bar {
+      flex-shrink: 0;
+      width: 3px;
+      border-radius: 1.5px;
+      background: #2a2a2a;
+      transition: background var(--transition-fast);
+    }
+
+    .wf-bar.played {
+      background: var(--accent);
+      opacity: 0.9;
+    }
+
+    /* Playhead */
+    .playhead {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: rgba(255, 255, 255, 0.7);
+      pointer-events: none;
+      z-index: 3;
+    }
+
+    /* Section marker */
+    .section-marker {
+      position: absolute;
+      top: 0;
+      bottom: 14px; /* leave room for label */
+      width: 1px;
+      background: #555555;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    .section-marker-label {
+      position: absolute;
+      bottom: 0;
+      left: 3px;
+      font-size: 8px;
+      font-weight: var(--weight-semibold);
+      color: #555555;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+
+    /* Duration label bottom-right of waveform */
+    .wf-duration {
+      position: absolute;
+      bottom: 5px;
+      right: var(--space-3);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--text-subtle);
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    /* ── Card body ── */
+    .card-body {
+      padding: var(--space-2) var(--space-3) var(--space-3);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+    }
+
+    /* Tags row */
+    .tags-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 var(--space-2);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      font-size: 10px;
+      font-weight: var(--weight-medium);
+      color: var(--text-subtle);
+      letter-spacing: var(--tracking-wide);
+      white-space: nowrap;
+    }
+
+    /* Stem tag uses accent */
+    .tag-stem {
+      background: var(--tag-stem-bg);
+      border-color: var(--tag-stem-border);
+      color: var(--tag-stem-text);
+      font-weight: var(--weight-semibold);
+    }
+
+    /* ── Action row ── */
+    .action-row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+
+    .btn-download-wav {
+      flex: 1;
+      height: 44px;
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-medium);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-2);
+      transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+      letter-spacing: var(--tracking-wide);
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .btn-download-wav:hover {
+      border-color: var(--accent-border);
+      color: var(--accent);
+      background: var(--accent-muted);
+    }
+
+    .btn-download-wav:active {
+      background: var(--accent-muted);
+      border-color: var(--accent);
+    }
+
+    /* Drag handle button */
+    .drag-handle {
+      width: 36px;
+      height: 44px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      cursor: grab;
+      flex-shrink: 0;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .drag-handle:hover {
+      border-color: var(--border-strong);
+      background: var(--bg-elevated);
+    }
+
+    .drag-handle:active {
+      cursor: grabbing;
+    }
+
+    /* 2x3 dot grid for drag handle */
+    .drag-dots {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3px;
+    }
+
+    .drag-dot {
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: var(--border-strong);
+    }
+
+    /* ─── "More loops" hint ─── */
+    .more-hint {
+      text-align: center;
+      padding: var(--space-4) var(--space-4) var(--space-2);
+      font-size: var(--text-sm);
+      color: var(--text-subtle);
+    }
+
+    .more-hint-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: var(--weight-medium);
+      border-bottom: 1px solid var(--accent-border);
+      padding-bottom: 1px;
+    }
+
+    .more-hint-link:hover {
+      color: var(--accent-hover);
+    }
+
+    /* ─── Sticky ZIP bottom bar ─── */
+    .sticky-zip-bar {
+      position: sticky;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: var(--z-sticky);
+      background: #0a0a0a;
+      border-top: 1px solid var(--border-default);
+      padding: var(--space-3) var(--space-4);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      flex-shrink: 0;
+    }
+
+    .zip-bar-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .zip-bar-label {
+      font-size: var(--text-md);
+      font-weight: var(--weight-semibold);
+      color: var(--text-primary);
+      white-space: nowrap;
+    }
+
+    .zip-bar-meta {
+      font-size: var(--text-xs);
+      color: var(--text-subtle);
+      white-space: nowrap;
+    }
+
+    .btn-zip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-2);
+      height: 44px;
+      padding: 0 var(--space-5);
+      background: var(--accent);
+      color: var(--accent-text);
+      border: none;
+      border-radius: var(--radius-md);
+      font-size: var(--text-md);
+      font-weight: var(--weight-semibold);
+      letter-spacing: var(--tracking-wide);
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: background var(--transition-fast);
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .btn-zip:hover {
+      background: var(--accent-hover);
+    }
+
+    .btn-zip:active {
+      background: var(--accent-active);
+    }
+
+    /* ─── Wider browser context ─── */
+    @media (min-width: 376px) {
+      body {
+        background: #070707;
+        align-items: center;
+        padding: 24px 16px;
+      }
+
+      .device-frame {
+        border: 1px solid var(--border-subtle);
+        border-radius: 12px;
+        overflow: hidden;
+        min-height: auto;
+        box-shadow: 0 0 0 1px #1a1a1a, 0 8px 32px rgba(0,0,0,0.7);
+        /* Tall enough to show content + sticky bar in context */
+        height: 812px;
+      }
+
+      /* Re-scope sticky inside frame when viewed in browser */
+      .page-scroll {
+        overflow-y: auto;
+        flex: 1;
+      }
+
+      .sticky-zip-bar {
+        position: sticky;
+        bottom: 0;
+      }
+    }
+  </style>
+</head>
+<body class="sl-page accent-a">
+
+  <div class="device-frame">
+
+    <!-- ── TOP NAV ── -->
+    <nav class="nav">
+      <a href="#" class="nav-logo" aria-label="stem-loops home">
+        stem<span class="nav-logo-dash">-</span>loops
+      </a>
+      <a href="#" class="nav-back" aria-label="Start a new job">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <path d="M9 2.5L4.5 7 9 11.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        New job
+      </a>
+    </nav>
+
+    <!-- ── SCROLL CONTENT ── -->
+    <div class="page-scroll">
+
+      <!-- ── JOB SUMMARY STRIP ── -->
+      <div class="job-summary">
+        <div class="job-summary-title">Kendrick Lamar — Not Like Us (Official Audio)</div>
+        <div class="job-summary-badges" role="list" aria-label="Job parameters">
+          <!-- Musical badges — highlighted with accent -->
+          <span class="badge badge-musical" role="listitem" aria-label="128 BPM">128 BPM</span>
+          <span class="badge badge-musical" role="listitem" aria-label="Key: F sharp minor">F# min</span>
+          <!-- Standard badges -->
+          <span class="badge" role="listitem">Drums</span>
+          <span class="badge" role="listitem">Bass</span>
+          <span class="badge" role="listitem">4 bars</span>
+          <span class="badge" role="listitem">12 loops</span>
+        </div>
+      </div>
+
+      <!-- ── FILTER CHIPS ── -->
+      <div class="filter-row" role="navigation" aria-label="Filter loops by stem">
+        <div class="filter-chips" role="list">
+          <button class="chip active" role="listitem" aria-pressed="true" type="button">All</button>
+          <button class="chip" role="listitem" aria-pressed="false" type="button">Drums</button>
+          <button class="chip" role="listitem" aria-pressed="false" type="button">Bass</button>
+          <button class="chip" role="listitem" aria-pressed="false" type="button">Keys</button>
+          <button class="chip" role="listitem" aria-pressed="false" type="button">Vocals</button>
+          <button class="chip" role="listitem" aria-pressed="false" type="button">Verse</button>
+          <button class="chip" role="listitem" aria-pressed="false" type="button">Chorus</button>
+          <button class="chip" role="listitem" aria-pressed="false" type="button">High energy</button>
+        </div>
+      </div>
+
+      <!-- ── LOOP CARDS ── -->
+      <div class="loop-list" role="list" aria-label="Loop results">
+
+        <!-- ── CARD 1 — Drums / Verse A ── -->
+        <article class="loop-card" role="listitem" aria-label="Loop 1: Drums, Verse A">
+
+          <!-- Waveform area -->
+          <div class="waveform-area" aria-label="Waveform preview">
+
+            <!-- Play button -->
+            <div class="play-col">
+              <button class="play-btn" type="button" aria-label="Play loop 1">
+                <svg class="play-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <path d="M5.5 3.5l7 4.5-7 4.5V3.5z"/>
+                </svg>
+              </button>
+            </div>
+
+            <!-- Waveform bars — simulate a varied drum waveform -->
+            <div class="waveform-bars">
+              <!-- bars: played portion ~35% through (bars 1-22 played, rest unplayed) -->
+              <!-- height values simulate transient drum hits -->
+              <div class="wf-bar played" style="height:28px"></div>
+              <div class="wf-bar played" style="height:14px"></div>
+              <div class="wf-bar played" style="height:38px"></div>
+              <div class="wf-bar played" style="height:10px"></div>
+              <div class="wf-bar played" style="height:44px"></div>
+              <div class="wf-bar played" style="height:18px"></div>
+              <div class="wf-bar played" style="height:32px"></div>
+              <div class="wf-bar played" style="height:8px"></div>
+              <div class="wf-bar played" style="height:42px"></div>
+              <div class="wf-bar played" style="height:20px"></div>
+              <div class="wf-bar played" style="height:36px"></div>
+              <div class="wf-bar played" style="height:12px"></div>
+              <div class="wf-bar played" style="height:48px"></div>
+              <div class="wf-bar played" style="height:16px"></div>
+              <div class="wf-bar played" style="height:30px"></div>
+              <div class="wf-bar played" style="height:10px"></div>
+              <div class="wf-bar played" style="height:40px"></div>
+              <div class="wf-bar played" style="height:14px"></div>
+              <div class="wf-bar played" style="height:24px"></div>
+              <div class="wf-bar played" style="height:8px"></div>
+              <div class="wf-bar played" style="height:34px"></div>
+              <div class="wf-bar played" style="height:12px"></div>
+              <!-- playhead sits here -->
+              <div class="wf-bar" style="height:26px"></div>
+              <div class="wf-bar" style="height:10px"></div>
+              <div class="wf-bar" style="height:38px"></div>
+              <div class="wf-bar" style="height:14px"></div>
+              <div class="wf-bar" style="height:44px"></div>
+              <div class="wf-bar" style="height:18px"></div>
+              <div class="wf-bar" style="height:28px"></div>
+              <div class="wf-bar" style="height:8px"></div>
+              <div class="wf-bar" style="height:36px"></div>
+              <div class="wf-bar" style="height:12px"></div>
+              <div class="wf-bar" style="height:46px"></div>
+              <div class="wf-bar" style="height:16px"></div>
+              <div class="wf-bar" style="height:30px"></div>
+              <div class="wf-bar" style="height:10px"></div>
+              <div class="wf-bar" style="height:40px"></div>
+              <div class="wf-bar" style="height:20px"></div>
+              <div class="wf-bar" style="height:22px"></div>
+              <div class="wf-bar" style="height:8px"></div>
+              <div class="wf-bar" style="height:34px"></div>
+              <div class="wf-bar" style="height:14px"></div>
+              <div class="wf-bar" style="height:28px"></div>
+              <div class="wf-bar" style="height:10px"></div>
+              <div class="wf-bar" style="height:42px"></div>
+              <div class="wf-bar" style="height:16px"></div>
+              <div class="wf-bar" style="height:20px"></div>
+              <div class="wf-bar" style="height:8px"></div>
+              <div class="wf-bar" style="height:32px"></div>
+              <div class="wf-bar" style="height:12px"></div>
+              <div class="wf-bar" style="height:38px"></div>
+              <div class="wf-bar" style="height:14px"></div>
+              <div class="wf-bar" style="height:26px"></div>
+              <div class="wf-bar" style="height:8px"></div>
+              <div class="wf-bar" style="height:44px"></div>
+              <div class="wf-bar" style="height:18px"></div>
+              <div class="wf-bar" style="height:30px"></div>
+              <div class="wf-bar" style="height:10px"></div>
+              <div class="wf-bar" style="height:36px"></div>
+              <div class="wf-bar" style="height:14px"></div>
+              <div class="wf-bar" style="height:24px"></div>
+              <div class="wf-bar" style="height:8px"></div>
+
+              <!-- Playhead at ~35% -->
+              <div class="playhead" style="left: calc(56px + (100% - 56px) * 0.356);" aria-hidden="true"></div>
+
+              <!-- Section markers -->
+              <div class="section-marker" style="left: calc(56px + (100% - 56px) * 0.25);" aria-hidden="true">
+                <span class="section-marker-label">B2</span>
+              </div>
+              <div class="section-marker" style="left: calc(56px + (100% - 56px) * 0.5);" aria-hidden="true">
+                <span class="section-marker-label">B3</span>
+              </div>
+              <div class="section-marker" style="left: calc(56px + (100% - 56px) * 0.75);" aria-hidden="true">
+                <span class="section-marker-label">B4</span>
+              </div>
+
+              <!-- Duration -->
+              <div class="wf-duration" aria-label="Duration: 7.4 seconds">7.4s</div>
+            </div>
+          </div>
+
+          <!-- Card body -->
+          <div class="card-body">
+            <div class="tags-row" role="list" aria-label="Loop tags">
+              <span class="tag tag-stem" role="listitem">Drums</span>
+              <span class="tag" role="listitem">Verse A</span>
+              <span class="tag" role="listitem">128 BPM</span>
+              <span class="tag" role="listitem">4 bars</span>
+              <span class="tag" role="listitem">#1</span>
+            </div>
+            <div class="action-row">
+              <button class="btn-download-wav" type="button" aria-label="Download WAV: not-like-us_drums_128bpm_Fsmin_verse-a_01.wav">
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+                  <path d="M6.5 1v7.5M3.5 6l3 3 3-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M1.5 10.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                </svg>
+                Download WAV
+              </button>
+              <div class="drag-handle" role="button" tabindex="0" aria-label="Drag to reorder" title="Drag to reorder">
+                <div class="drag-dots" aria-hidden="true">
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <!-- ── CARD 2 — Bass / Chorus ── -->
+        <article class="loop-card" role="listitem" aria-label="Loop 2: Bass, Chorus">
+
+          <div class="waveform-area" aria-label="Waveform preview">
+            <div class="play-col">
+              <button class="play-btn" type="button" aria-label="Play loop 2">
+                <svg class="play-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <path d="M5.5 3.5l7 4.5-7 4.5V3.5z"/>
+                </svg>
+              </button>
+            </div>
+
+            <!-- Bass waveform — smoother, more sustained waves -->
+            <div class="waveform-bars">
+              <div class="wf-bar" style="height:16px"></div>
+              <div class="wf-bar" style="height:24px"></div>
+              <div class="wf-bar" style="height:36px"></div>
+              <div class="wf-bar" style="height:44px"></div>
+              <div class="wf-bar" style="height:50px"></div>
+              <div class="wf-bar" style="height:48px"></div>
+              <div class="wf-bar" style="height:40px"></div>
+              <div class="wf-bar" style="height:30px"></div>
+              <div class="wf-bar" style="height:20px"></div>
+              <div class="wf-bar" style="height:14px"></div>
+              <div class="wf-bar" style="height:22px"></div>
+              <div class="wf-bar" style="height:34px"></div>
+              <div class="wf-bar" style="height:46px"></div>
+              <div class="wf-bar" style="height:52px"></div>
+              <div class="wf-bar" style="height:48px"></div>
+              <div class="wf-bar" style="height:38px"></div>
+              <div class="wf-bar" style="height:26px"></div>
+              <div class="wf-bar" style="height:16px"></div>
+              <div class="wf-bar" style="height:12px"></div>
+              <div class="wf-bar" style="height:20px"></div>
+              <div class="wf-bar" style="height:32px"></div>
+              <div class="wf-bar" style="height:44px"></div>
+              <div class="wf-bar" style="height:50px"></div>
+              <div class="wf-bar" style="height:46px"></div>
+              <div class="wf-bar" style="height:36px"></div>
+              <div class="wf-bar" style="height:24px"></div>
+              <div class="wf-bar" style="height:14px"></div>
+              <div class="wf-bar" style="height:10px"></div>
+              <div class="wf-bar" style="height:18px"></div>
+              <div class="wf-bar" style="height:30px"></div>
+              <div class="wf-bar" style="height:42px"></div>
+              <div class="wf-bar" style="height:50px"></div>
+              <div class="wf-bar" style="height:48px"></div>
+              <div class="wf-bar" style="height:40px"></div>
+              <div class="wf-bar" style="height:28px"></div>
+              <div class="wf-bar" style="height:18px"></div>
+              <div class="wf-bar" style="height:12px"></div>
+              <div class="wf-bar" style="height:22px"></div>
+              <div class="wf-bar" style="height:34px"></div>
+              <div class="wf-bar" style="height:46px"></div>
+              <div class="wf-bar" style="height:52px"></div>
+              <div class="wf-bar" style="height:46px"></div>
+              <div class="wf-bar" style="height:36px"></div>
+              <div class="wf-bar" style="height:24px"></div>
+              <div class="wf-bar" style="height:14px"></div>
+              <div class="wf-bar" style="height:16px"></div>
+              <div class="wf-bar" style="height:26px"></div>
+              <div class="wf-bar" style="height:38px"></div>
+              <div class="wf-bar" style="height:48px"></div>
+              <div class="wf-bar" style="height:50px"></div>
+              <div class="wf-bar" style="height:44px"></div>
+              <div class="wf-bar" style="height:32px"></div>
+              <div class="wf-bar" style="height:20px"></div>
+              <div class="wf-bar" style="height:12px"></div>
+              <div class="wf-bar" style="height:16px"></div>
+              <div class="wf-bar" style="height:28px"></div>
+              <div class="wf-bar" style="height:40px"></div>
+              <div class="wf-bar" style="height:50px"></div>
+              <div class="wf-bar" style="height:48px"></div>
+              <div class="wf-bar" style="height:38px"></div>
+              <div class="wf-bar" style="height:26px"></div>
+              <div class="wf-bar" style="height:16px"></div>
+
+              <!-- Section markers only (no playhead = not playing) -->
+              <div class="section-marker" style="left: calc(56px + (100% - 56px) * 0.25);" aria-hidden="true">
+                <span class="section-marker-label">B2</span>
+              </div>
+              <div class="section-marker" style="left: calc(56px + (100% - 56px) * 0.5);" aria-hidden="true">
+                <span class="section-marker-label">B3</span>
+              </div>
+              <div class="section-marker" style="left: calc(56px + (100% - 56px) * 0.75);" aria-hidden="true">
+                <span class="section-marker-label">B4</span>
+              </div>
+
+              <div class="wf-duration" aria-label="Duration: 7.4 seconds">7.4s</div>
+            </div>
+          </div>
+
+          <div class="card-body">
+            <div class="tags-row" role="list" aria-label="Loop tags">
+              <span class="tag tag-stem" role="listitem">Bass</span>
+              <span class="tag" role="listitem">Chorus</span>
+              <span class="tag" role="listitem">128 BPM</span>
+              <span class="tag" role="listitem">4 bars</span>
+              <span class="tag" role="listitem">#2</span>
+            </div>
+            <div class="action-row">
+              <button class="btn-download-wav" type="button" aria-label="Download WAV: not-like-us_bass_128bpm_Fsmin_chorus_02.wav">
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+                  <path d="M6.5 1v7.5M3.5 6l3 3 3-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M1.5 10.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                </svg>
+                Download WAV
+              </button>
+              <div class="drag-handle" role="button" tabindex="0" aria-label="Drag to reorder" title="Drag to reorder">
+                <div class="drag-dots" aria-hidden="true">
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <!-- ── CARD 3 — Keys / Verse B · High energy ── -->
+        <article class="loop-card" role="listitem" aria-label="Loop 3: Keys, Verse B, High energy">
+
+          <div class="waveform-area" aria-label="Waveform preview">
+            <div class="play-col">
+              <button class="play-btn" type="button" aria-label="Play loop 3">
+                <svg class="play-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <path d="M5.5 3.5l7 4.5-7 4.5V3.5z"/>
+                </svg>
+              </button>
+            </div>
+
+            <!-- Keys waveform — medium density, more varied mid heights -->
+            <div class="waveform-bars">
+              <div class="wf-bar" style="height:22px"></div>
+              <div class="wf-bar" style="height:30px"></div>
+              <div class="wf-bar" style="height:18px"></div>
+              <div class="wf-bar" style="height:42px"></div>
+              <div class="wf-bar" style="height:36px"></div>
+              <div class="wf-bar" style="height:24px"></div>
+              <div class="wf-bar" style="height:46px"></div>
+              <div class="wf-bar" style="height:28px"></div>
+              <div class="wf-bar" style="height:38px"></div>
+              <div class="wf-bar" style="height:16px"></div>
+              <div class="wf-bar" style="height:34px"></div>
+              <div class="wf-bar" style="height:44px"></div>
+              <div class="wf-bar" style="height:20px"></div>
+              <div class="wf-bar" style="height:40px"></div>
+              <div class="wf-bar" style="height:30px"></div>
+              <div class="wf-bar" style="height:14px"></div>
+              <div class="wf-bar" style="height:48px"></div>
+              <div class="wf-bar" style="height:26px"></div>
+              <div class="wf-bar" style="height:36px"></div>
+              <div class="wf-bar" style="height:18px"></div>
+              <div class="wf-bar" style="height:44px"></div>
+              <div class="wf-bar" style="height:32px"></div>
+              <div class="wf-bar" style="height:22px"></div>
+              <div class="wf-bar" style="height:40px"></div>
+              <div class="wf-bar" style="height:16px"></div>
+              <div class="wf-bar" style="height:46px"></div>
+              <div class="wf-bar" style="height:28px"></div>
+              <div class="wf-bar" style="height:38px"></div>
+              <div class="wf-bar" style="height:20px"></div>
+              <div class="wf-bar" style="height:34px"></div>
+              <div class="wf-bar" style="height:44px"></div>
+              <div class="wf-bar" style="height:24px"></div>
+              <div class="wf-bar" style="height:50px"></div>
+              <div class="wf-bar" style="height:30px"></div>
+              <div class="wf-bar" style="height:18px"></div>
+              <div class="wf-bar" style="height:42px"></div>
+              <div class="wf-bar" style="height:26px"></div>
+              <div class="wf-bar" style="height:36px"></div>
+              <div class="wf-bar" style="height:14px"></div>
+              <div class="wf-bar" style="height:46px"></div>
+              <div class="wf-bar" style="height:32px"></div>
+              <div class="wf-bar" style="height:22px"></div>
+              <div class="wf-bar" style="height:40px"></div>
+              <div class="wf-bar" style="height:18px"></div>
+              <div class="wf-bar" style="height:28px"></div>
+              <div class="wf-bar" style="height:44px"></div>
+              <div class="wf-bar" style="height:16px"></div>
+              <div class="wf-bar" style="height:38px"></div>
+              <div class="wf-bar" style="height:24px"></div>
+              <div class="wf-bar" style="height:48px"></div>
+              <div class="wf-bar" style="height:30px"></div>
+              <div class="wf-bar" style="height:20px"></div>
+              <div class="wf-bar" style="height:42px"></div>
+              <div class="wf-bar" style="height:26px"></div>
+              <div class="wf-bar" style="height:36px"></div>
+              <div class="wf-bar" style="height:14px"></div>
+              <div class="wf-bar" style="height:46px"></div>
+              <div class="wf-bar" style="height:28px"></div>
+              <div class="wf-bar" style="height:34px"></div>
+              <div class="wf-bar" style="height:18px"></div>
+              <div class="wf-bar" style="height:40px"></div>
+
+              <div class="section-marker" style="left: calc(56px + (100% - 56px) * 0.25);" aria-hidden="true">
+                <span class="section-marker-label">B2</span>
+              </div>
+              <div class="section-marker" style="left: calc(56px + (100% - 56px) * 0.5);" aria-hidden="true">
+                <span class="section-marker-label">B3</span>
+              </div>
+              <div class="section-marker" style="left: calc(56px + (100% - 56px) * 0.75);" aria-hidden="true">
+                <span class="section-marker-label">B4</span>
+              </div>
+
+              <div class="wf-duration" aria-label="Duration: 7.4 seconds">7.4s</div>
+            </div>
+          </div>
+
+          <div class="card-body">
+            <div class="tags-row" role="list" aria-label="Loop tags">
+              <span class="tag tag-stem" role="listitem">Keys</span>
+              <span class="tag" role="listitem">Verse B</span>
+              <span class="tag" role="listitem">128 BPM</span>
+              <span class="tag" role="listitem">High energy</span>
+              <span class="tag" role="listitem">#3</span>
+            </div>
+            <div class="action-row">
+              <button class="btn-download-wav" type="button" aria-label="Download WAV: not-like-us_keys_128bpm_Fsmin_verse-b_03.wav">
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+                  <path d="M6.5 1v7.5M3.5 6l3 3 3-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M1.5 10.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                </svg>
+                Download WAV
+              </button>
+              <div class="drag-handle" role="button" tabindex="0" aria-label="Drag to reorder" title="Drag to reorder">
+                <div class="drag-dots" aria-hidden="true">
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                  <div class="drag-dot"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+      </div>
+      <!-- /loop-list -->
+
+      <!-- ── "+9 more loops" hint ── -->
+      <div class="more-hint" aria-label="9 more loops available">
+        <a href="#" class="more-hint-link" aria-label="Show all 12 loops">+9 more loops</a>
+        &nbsp;&mdash;&nbsp;scroll or tap to expand
+      </div>
+
+    </div>
+    <!-- /page-scroll -->
+
+    <!-- ── STICKY BOTTOM ZIP BAR ── -->
+    <div class="sticky-zip-bar" role="complementary" aria-label="Download all loops as ZIP">
+      <div class="zip-bar-info">
+        <div class="zip-bar-label">12 loops &middot; ZIP</div>
+        <div class="zip-bar-meta">~48 MB &middot; WAV 44.1kHz / 16-bit</div>
+      </div>
+      <button class="btn-zip" type="button" aria-label="Download ZIP of all 12 loops">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <path d="M7 1.5v8M4 7l3 3.5L10 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M1.5 11.5h11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        Download ZIP
+      </button>
+    </div>
+
+  </div>
+  <!-- /device-frame -->
+
+</body>
+</html>

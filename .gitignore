@@ -1,0 +1,34 @@
+# Node
+node_modules/
+.next/
+dist/
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Build artifacts
+apps/worker/spikes/s1_bakeoff/s1_results.csv
+
+# Secrets
+*.pem
+*.key

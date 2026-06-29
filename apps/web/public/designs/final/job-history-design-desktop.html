@@ -1,0 +1,1319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1440">
+  <title>stem-loops V2 — Job History (Desktop 1440px)</title>
+  <link rel="stylesheet" href="../design-tokens.css">
+  <style>
+    /* ── Reset ──────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      min-height: 100vh;
+      width: 100%;
+    }
+
+    body {
+      min-width: 1440px;
+    }
+
+    /* ── Page shell ─────────────────────────────────────── */
+    .page-shell {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-page);
+    }
+
+    /* ── Top nav ────────────────────────────────────────── */
+    .nav {
+      height: var(--nav-height);
+      background: var(--bg-nav);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 48px;
+      position: sticky;
+      top: 0;
+      z-index: var(--z-nav);
+      flex-shrink: 0;
+      gap: 24px;
+    }
+
+    .nav-left {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      flex-shrink: 0;
+    }
+
+    .nav-logo {
+      font-size: 20px;
+      font-weight: var(--weight-bold);
+      color: var(--text-primary);
+      letter-spacing: var(--tracking-tight);
+      text-decoration: none;
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    .nav-logo-dash {
+      color: var(--accent);
+    }
+
+    .nav-divider {
+      width: 1px;
+      height: 20px;
+      background: var(--border-default);
+      flex-shrink: 0;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .nav-link {
+      display: inline-flex;
+      align-items: center;
+      height: 36px;
+      padding: 0 14px;
+      font-size: 14px;
+      font-weight: var(--weight-medium);
+      color: var(--text-muted);
+      text-decoration: none;
+      border-radius: var(--radius-md);
+      position: relative;
+      transition: color var(--transition-fast);
+      white-space: nowrap;
+    }
+
+    .nav-link:hover {
+      color: var(--text-secondary);
+    }
+
+    .nav-link.active {
+      color: var(--accent);
+    }
+
+    /* Accent underline on active nav item */
+    .nav-link.active::after {
+      content: '';
+      position: absolute;
+      bottom: -1px;
+      left: 14px;
+      right: 14px;
+      height: 2px;
+      background: var(--accent);
+      border-radius: 2px 2px 0 0;
+    }
+
+    .nav-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .nav-new-job-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      font-weight: var(--weight-medium);
+      color: var(--text-muted);
+      text-decoration: none;
+      padding: 0 12px;
+      height: 34px;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      transition: border-color var(--transition-fast), color var(--transition-fast);
+      white-space: nowrap;
+    }
+
+    .nav-new-job-link:hover {
+      border-color: var(--border-strong);
+      color: var(--text-secondary);
+    }
+
+    .nav-new-job-link svg {
+      flex-shrink: 0;
+    }
+
+    /* ── Main content area ──────────────────────────────── */
+    .main {
+      flex: 1;
+      padding: 40px 48px 60px;
+    }
+
+    /* ── Page header ────────────────────────────────────── */
+    .page-header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      margin-bottom: 24px;
+      gap: 24px;
+    }
+
+    .page-header-left {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .page-title {
+      font-size: 28px;
+      font-weight: var(--weight-bold);
+      color: var(--text-primary);
+      letter-spacing: var(--tracking-tight);
+      line-height: 1.15;
+    }
+
+    .page-meta {
+      font-size: 13px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .page-meta-sep {
+      color: var(--border-strong);
+    }
+
+    /* Clear all ghost button */
+    .btn-clear-all {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 34px;
+      padding: 0 14px;
+      background: transparent;
+      color: var(--text-subtle);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      font-weight: var(--weight-medium);
+      cursor: pointer;
+      transition: border-color var(--transition-fast), color var(--transition-fast);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .btn-clear-all:hover {
+      border-color: var(--status-failed);
+      color: var(--status-failed);
+    }
+
+    /* ── Storage info banner ────────────────────────────── */
+    .storage-banner {
+      background: #0a0a0a;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
+    .storage-banner-icon {
+      width: 16px;
+      height: 16px;
+      color: var(--text-subtle);
+      flex-shrink: 0;
+    }
+
+    .storage-banner-text {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .storage-banner-text strong {
+      color: var(--text-secondary);
+      font-weight: var(--weight-medium);
+    }
+
+    .storage-banner-text a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .storage-banner-text a:hover {
+      text-decoration: underline;
+    }
+
+    .storage-banner-sep {
+      width: 1px;
+      height: 14px;
+      background: var(--border-default);
+      flex-shrink: 0;
+    }
+
+    /* ── Filter / search bar ────────────────────────────── */
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 2px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    /* Search input */
+    .search-wrap {
+      position: relative;
+      flex-shrink: 0;
+      width: 280px;
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-subtle);
+      pointer-events: none;
+    }
+
+    .search-input {
+      width: 100%;
+      height: 36px;
+      background: #161616;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      padding: 0 12px 0 36px;
+      transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+      outline: none;
+    }
+
+    .search-input::placeholder {
+      color: var(--text-disabled);
+    }
+
+    .search-input:focus {
+      border-color: var(--accent-border);
+      box-shadow: 0 0 0 3px rgba(163, 230, 53, 0.12);
+    }
+
+    /* Status tabs */
+    .status-tabs {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+
+    .status-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 34px;
+      padding: 0 14px;
+      background: transparent;
+      border: none;
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      font-weight: var(--weight-medium);
+      color: var(--text-muted);
+      cursor: pointer;
+      position: relative;
+      transition: color var(--transition-fast);
+      white-space: nowrap;
+    }
+
+    .status-tab:hover {
+      color: var(--text-secondary);
+    }
+
+    .status-tab.active {
+      color: var(--accent);
+    }
+
+    /* Accent underline on active tab */
+    .status-tab.active::after {
+      content: '';
+      position: absolute;
+      bottom: -17px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--accent);
+      border-radius: 2px 2px 0 0;
+    }
+
+    .tab-count {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 18px;
+      min-width: 18px;
+      padding: 0 5px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-full);
+      font-size: 10px;
+      font-weight: var(--weight-semibold);
+      color: var(--text-muted);
+      letter-spacing: 0;
+    }
+
+    .status-tab.active .tab-count {
+      background: var(--accent-muted);
+      border-color: var(--accent-border);
+      color: var(--accent);
+    }
+
+    /* Spacer */
+    .filter-spacer {
+      flex: 1;
+    }
+
+    /* Sort dropdown */
+    .sort-wrap {
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .sort-select {
+      appearance: none;
+      -webkit-appearance: none;
+      height: 34px;
+      padding: 0 32px 0 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      color: var(--text-muted);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: var(--weight-medium);
+      cursor: pointer;
+      outline: none;
+      transition: border-color var(--transition-fast), color var(--transition-fast);
+    }
+
+    .sort-select:hover {
+      border-color: var(--border-strong);
+      color: var(--text-secondary);
+    }
+
+    .sort-select:focus {
+      border-color: var(--accent-border);
+      box-shadow: 0 0 0 3px rgba(163, 230, 53, 0.12);
+    }
+
+    .sort-arrow {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-subtle);
+      pointer-events: none;
+    }
+
+    /* ── Table ──────────────────────────────────────────── */
+    .jobs-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    /* Table header */
+    .table-head-row {
+      display: grid;
+      grid-template-columns: 3fr 1.2fr 0.8fr 0.8fr 1fr 1fr 1fr;
+      padding: 0 20px;
+      gap: 16px;
+      margin-top: 4px;
+    }
+
+    .th {
+      font-size: 10px;
+      font-weight: var(--weight-semibold);
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      padding: 10px 0;
+      white-space: nowrap;
+    }
+
+    /* Table rows */
+    .table-body {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .table-row {
+      display: grid;
+      grid-template-columns: 3fr 1.2fr 0.8fr 0.8fr 1fr 1fr 1fr;
+      padding: 0 20px;
+      gap: 16px;
+      align-items: center;
+      min-height: 62px;
+      border-bottom: 1px solid var(--border-subtle);
+      transition: background var(--transition-fast);
+      cursor: default;
+    }
+
+    .table-row:first-child {
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .table-row:hover {
+      background: #1a1a1a;
+    }
+
+    .td {
+      padding: 14px 0;
+      display: flex;
+      align-items: center;
+    }
+
+    /* ── Video cell ─────────────────────────────────────── */
+    .video-cell {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      min-width: 0;
+    }
+
+    /* Title skeleton shimmer */
+    @keyframes shimmer {
+      0%   { background-position: -600px 0; }
+      100% { background-position: 600px 0; }
+    }
+
+    .title-skeleton {
+      height: 14px;
+      border-radius: 3px;
+      background: linear-gradient(
+        90deg,
+        #1e1e1e 0%,
+        #2a2a2a 40%,
+        #333333 50%,
+        #2a2a2a 60%,
+        #1e1e1e 100%
+      );
+      background-size: 600px 100%;
+      animation: shimmer 2s infinite linear;
+    }
+
+    .title-skeleton-wide  { width: 220px; }
+    .title-skeleton-med   { width: 180px; }
+    .title-skeleton-short { width: 150px; }
+    .title-skeleton-xs    { width: 130px; }
+
+    .video-url {
+      font-size: 11px;
+      color: var(--text-subtle);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+
+    /* ── Stems cell ─────────────────────────────────────── */
+    .stems-cell {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: center;
+    }
+
+    .stem-badge {
+      display: inline-flex;
+      align-items: center;
+      height: 20px;
+      padding: 0 7px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      font-size: 10px;
+      font-weight: var(--weight-medium);
+      color: var(--text-subtle);
+      text-transform: capitalize;
+      white-space: nowrap;
+      letter-spacing: 0.3px;
+    }
+
+    /* ── Numeric cells ──────────────────────────────────── */
+    .num-cell {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .num-cell-empty {
+      font-size: 13px;
+      color: var(--text-disabled);
+    }
+
+    /* ── Date cell ──────────────────────────────────────── */
+    .date-cell {
+      font-size: 13px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .date-cell-expiry {
+      color: #fb923c;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .expiry-icon {
+      flex-shrink: 0;
+    }
+
+    /* ── Status cell ────────────────────────────────────── */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: var(--weight-medium);
+      white-space: nowrap;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .status-badge-done {
+      color: #4ade80;
+    }
+    .status-badge-done .status-dot {
+      background: #4ade80;
+    }
+
+    .status-badge-processing {
+      color: var(--accent);
+    }
+    .status-badge-processing .status-dot {
+      background: var(--accent);
+      box-shadow: 0 0 6px rgba(163, 230, 53, 0.5);
+    }
+
+    /* Pulse animation for processing dot */
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.5; transform: scale(0.85); }
+    }
+
+    .status-badge-processing .status-dot {
+      animation: pulse-dot 1.6s ease-in-out infinite;
+    }
+
+    .status-badge-failed {
+      color: #f87171;
+    }
+    .status-badge-failed .status-dot {
+      background: #f87171;
+    }
+
+    /* ── Actions cell ───────────────────────────────────── */
+    .actions-cell {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: nowrap;
+    }
+
+    .btn-action-primary {
+      display: inline-flex;
+      align-items: center;
+      height: 30px;
+      padding: 0 12px;
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent-border);
+      border-radius: var(--radius-md);
+      font-size: 12px;
+      font-weight: var(--weight-medium);
+      cursor: pointer;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: background var(--transition-fast), border-color var(--transition-fast);
+    }
+
+    .btn-action-primary:hover {
+      background: var(--accent-muted);
+      border-color: var(--accent);
+    }
+
+    .btn-action-secondary {
+      display: inline-flex;
+      align-items: center;
+      height: 30px;
+      padding: 0 12px;
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      font-size: 12px;
+      font-weight: var(--weight-medium);
+      cursor: pointer;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: border-color var(--transition-fast), color var(--transition-fast);
+    }
+
+    .btn-action-secondary:hover {
+      border-color: var(--border-strong);
+      color: var(--text-secondary);
+    }
+
+    .btn-action-watch {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 30px;
+      padding: 0 12px;
+      background: var(--accent-muted);
+      color: var(--accent);
+      border: 1px solid var(--accent-border);
+      border-radius: var(--radius-md);
+      font-size: 12px;
+      font-weight: var(--weight-medium);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background var(--transition-fast);
+    }
+
+    .btn-action-watch:hover {
+      background: rgba(163, 230, 53, 0.18);
+    }
+
+    .btn-action-retry {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 30px;
+      padding: 0 12px;
+      background: transparent;
+      color: #f87171;
+      border: 1px solid rgba(248, 113, 113, 0.25);
+      border-radius: var(--radius-md);
+      font-size: 12px;
+      font-weight: var(--weight-medium);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background var(--transition-fast), border-color var(--transition-fast);
+    }
+
+    .btn-action-retry:hover {
+      background: rgba(248, 113, 113, 0.08);
+      border-color: rgba(248, 113, 113, 0.45);
+    }
+
+    /* ── Empty state (hidden, shown when no results) ────── */
+    .empty-state {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 80px 24px;
+      text-align: center;
+      gap: 12px;
+    }
+
+    .empty-state-icon {
+      width: 40px;
+      height: 40px;
+      color: var(--text-disabled);
+      margin-bottom: 4px;
+    }
+
+    .empty-state-title {
+      font-size: 16px;
+      font-weight: var(--weight-semibold);
+      color: var(--text-muted);
+    }
+
+    .empty-state-sub {
+      font-size: 13px;
+      color: var(--text-subtle);
+    }
+
+    /* ── Processing row progress strip ─────────────────── */
+    .progress-strip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .progress-track {
+      flex: 1;
+      height: 3px;
+      background: var(--bg-elevated);
+      border-radius: 2px;
+      overflow: hidden;
+      max-width: 120px;
+    }
+
+    @keyframes progress-indeterminate {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(300%); }
+    }
+
+    .progress-fill-indeterminate {
+      height: 100%;
+      width: 40%;
+      background: var(--accent);
+      border-radius: 2px;
+      animation: progress-indeterminate 1.6s ease-in-out infinite;
+    }
+
+    .progress-label {
+      font-size: 10px;
+      color: var(--text-subtle);
+      white-space: nowrap;
+    }
+
+    /* ── Footer spacer area ─────────────────────────────── */
+    .table-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 0 0;
+    }
+
+    .table-footer-meta {
+      font-size: 12px;
+      color: var(--text-subtle);
+    }
+
+    .table-footer-meta strong {
+      color: var(--text-muted);
+      font-weight: var(--weight-medium);
+    }
+
+    /* ── Accent switcher (dev helper) ───────────────────── */
+    .accent-switcher {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      align-items: flex-end;
+      z-index: var(--z-toast);
+    }
+
+    .accent-switcher-label {
+      font-size: 10px;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      text-align: right;
+    }
+
+    .accent-switcher-btns {
+      display: flex;
+      gap: 6px;
+    }
+
+    .accent-swatch {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      cursor: pointer;
+      transition: transform var(--transition-fast), border-color var(--transition-fast);
+    }
+
+    .accent-swatch:hover { transform: scale(1.15); }
+    .accent-swatch.selected { border-color: white; }
+    .swatch-a { background: #a3e635; }
+    .swatch-b { background: #f59e0b; }
+    .swatch-c { background: #2dd4bf; }
+
+  </style>
+</head>
+<body class="sl-page accent-a" id="page-body">
+
+<div class="page-shell">
+
+  <!-- ── Top Navigation ───────────────────────────────── -->
+  <nav class="nav" role="navigation" aria-label="Main navigation">
+    <div class="nav-left">
+      <!-- Logo -->
+      <a href="#" class="nav-logo" aria-label="stem-loops home">
+        stem<span class="nav-logo-dash">-</span>loops
+      </a>
+
+      <div class="nav-divider" aria-hidden="true"></div>
+
+      <!-- Nav links -->
+      <div class="nav-links" role="list">
+        <a href="#" class="nav-link active" role="listitem" aria-current="page">
+          My jobs&nbsp;<span style="color: var(--text-subtle); font-weight: 400;">(5)</span>
+        </a>
+      </div>
+    </div>
+
+    <!-- Right: new job link -->
+    <div class="nav-right">
+      <a href="#" class="nav-new-job-link">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <path d="M7.5 1.5L3 6l4.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        New job
+      </a>
+    </div>
+  </nav>
+
+  <!-- ── Main content ──────────────────────────────────── -->
+  <main class="main">
+
+    <!-- Page header -->
+    <header class="page-header">
+      <div class="page-header-left">
+        <h1 class="page-title">My jobs</h1>
+        <div class="page-meta">
+          <span>5 jobs</span>
+          <span class="page-meta-sep">·</span>
+          <span>stored in this browser</span>
+        </div>
+      </div>
+
+      <button class="btn-clear-all" type="button" aria-label="Clear all job history">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <path d="M2 3h8M5 3V2h2v1M4.5 3l.5 7M7.5 3l-.5 7" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Clear all history
+      </button>
+    </header>
+
+    <!-- Storage info banner -->
+    <div class="storage-banner" role="note" aria-label="Storage information">
+      <svg class="storage-banner-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.25"/>
+        <path d="M8 7v4M8 5.5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <span class="storage-banner-text">
+        <strong>Jobs are saved in your browser only</strong> — we use <strong>localStorage</strong> and session cookies. No account required. Clearing browser data will remove your history.
+      </span>
+      <div class="storage-banner-sep" aria-hidden="true"></div>
+      <span class="storage-banner-text">
+        Results expire after <strong>7 days</strong>. <a href="#">Download your loops</a> before they expire.
+      </span>
+    </div>
+
+    <!-- Filter / search bar -->
+    <div class="filter-bar" role="toolbar" aria-label="Job filter controls">
+
+      <!-- Search input -->
+      <div class="search-wrap">
+        <svg class="search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <circle cx="6" cy="6" r="4.25" stroke="currentColor" stroke-width="1.25"/>
+          <path d="M9.5 9.5L12.5 12.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+        </svg>
+        <input
+          type="search"
+          class="search-input"
+          placeholder="Search jobs…"
+          aria-label="Search jobs"
+        >
+      </div>
+
+      <!-- Status tabs -->
+      <div class="status-tabs" role="tablist" aria-label="Filter by status">
+        <button class="status-tab active" role="tab" aria-selected="true" type="button">
+          All <span class="tab-count" aria-label="5 total">5</span>
+        </button>
+        <button class="status-tab" role="tab" aria-selected="false" type="button">
+          Done <span class="tab-count" aria-label="3 done">3</span>
+        </button>
+        <button class="status-tab" role="tab" aria-selected="false" type="button">
+          Processing <span class="tab-count" aria-label="1 processing">1</span>
+        </button>
+        <button class="status-tab" role="tab" aria-selected="false" type="button">
+          Failed <span class="tab-count" aria-label="1 failed">1</span>
+        </button>
+      </div>
+
+      <!-- Flex spacer -->
+      <div class="filter-spacer" aria-hidden="true"></div>
+
+      <!-- Sort dropdown -->
+      <div class="sort-wrap">
+        <select class="sort-select" aria-label="Sort jobs">
+          <option>Newest first ↓</option>
+          <option>Oldest first ↑</option>
+          <option>Status</option>
+          <option>Most loops</option>
+        </select>
+        <svg class="sort-arrow" width="10" height="6" viewBox="0 0 10 6" fill="none" aria-hidden="true">
+          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+
+    </div>
+
+    <!-- Table header -->
+    <div class="table-head-row" role="row" aria-label="Column headers">
+      <div class="th" role="columnheader">Video</div>
+      <div class="th" role="columnheader">Stems</div>
+      <div class="th" role="columnheader">Bars</div>
+      <div class="th" role="columnheader">Loops</div>
+      <div class="th" role="columnheader">Date</div>
+      <div class="th" role="columnheader">Status</div>
+      <div class="th" role="columnheader">Actions</div>
+    </div>
+
+    <!-- Table body -->
+    <div class="table-body" role="table" aria-label="Job history">
+
+      <!-- ── Row 1: Done — drums · bass ─────────────────── -->
+      <div class="table-row" role="row" tabindex="0" aria-label="Job 1">
+
+        <!-- Video -->
+        <div class="td">
+          <div class="video-cell">
+            <div class="title-skeleton title-skeleton-wide"></div>
+            <span class="video-url">youtube.com/watch?v=dQw4w9Wgxc</span>
+          </div>
+        </div>
+
+        <!-- Stems -->
+        <div class="td">
+          <div class="stems-cell">
+            <span class="stem-badge">drums</span>
+            <span class="stem-badge">bass</span>
+          </div>
+        </div>
+
+        <!-- Bars -->
+        <div class="td">
+          <span class="num-cell">4</span>
+        </div>
+
+        <!-- Loops -->
+        <div class="td">
+          <span class="num-cell">12</span>
+        </div>
+
+        <!-- Date -->
+        <div class="td">
+          <span class="date-cell">2h ago</span>
+        </div>
+
+        <!-- Status -->
+        <div class="td">
+          <span class="status-badge status-badge-done" role="status" aria-label="Done">
+            <span class="status-dot" aria-hidden="true"></span>
+            Done
+          </span>
+        </div>
+
+        <!-- Actions -->
+        <div class="td">
+          <div class="actions-cell">
+            <a href="#" class="btn-action-primary">View loops</a>
+            <button class="btn-action-secondary" type="button">Share</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Row 2: Done — keys · bass · drums ──────────── -->
+      <div class="table-row" role="row" tabindex="0" aria-label="Job 2">
+
+        <!-- Video -->
+        <div class="td">
+          <div class="video-cell">
+            <div class="title-skeleton title-skeleton-med"></div>
+            <span class="video-url">youtube.com/watch?v=5NV6Rdv1a3I</span>
+          </div>
+        </div>
+
+        <!-- Stems -->
+        <div class="td">
+          <div class="stems-cell">
+            <span class="stem-badge">keys</span>
+            <span class="stem-badge">bass</span>
+            <span class="stem-badge">drums</span>
+          </div>
+        </div>
+
+        <!-- Bars -->
+        <div class="td">
+          <span class="num-cell">8</span>
+        </div>
+
+        <!-- Loops -->
+        <div class="td">
+          <span class="num-cell">18</span>
+        </div>
+
+        <!-- Date -->
+        <div class="td">
+          <span class="date-cell">Yesterday</span>
+        </div>
+
+        <!-- Status -->
+        <div class="td">
+          <span class="status-badge status-badge-done" role="status" aria-label="Done">
+            <span class="status-dot" aria-hidden="true"></span>
+            Done
+          </span>
+        </div>
+
+        <!-- Actions -->
+        <div class="td">
+          <div class="actions-cell">
+            <a href="#" class="btn-action-primary">View loops</a>
+            <button class="btn-action-secondary" type="button">Share</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Row 3: Processing — all stems ──────────────── -->
+      <div class="table-row" role="row" tabindex="0" aria-label="Job 3 — currently processing">
+
+        <!-- Video -->
+        <div class="td">
+          <div class="video-cell">
+            <div class="title-skeleton title-skeleton-short"></div>
+            <span class="video-url">youtube.com/watch?v=mN7p6LLQK9A</span>
+          </div>
+        </div>
+
+        <!-- Stems -->
+        <div class="td">
+          <div class="stems-cell">
+            <span class="stem-badge">all stems</span>
+          </div>
+        </div>
+
+        <!-- Bars -->
+        <div class="td">
+          <span class="num-cell">4</span>
+        </div>
+
+        <!-- Loops -->
+        <div class="td">
+          <span class="num-cell-empty">—</span>
+        </div>
+
+        <!-- Date -->
+        <div class="td">
+          <span class="date-cell">Just now</span>
+        </div>
+
+        <!-- Status -->
+        <div class="td">
+          <div>
+            <span class="status-badge status-badge-processing" role="status" aria-label="Separating stems, in progress">
+              <span class="status-dot" aria-hidden="true"></span>
+              Separating…
+            </span>
+            <div class="progress-strip">
+              <div class="progress-track" role="progressbar" aria-label="Progress" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                <div class="progress-fill-indeterminate"></div>
+              </div>
+              <span class="progress-label">stem separation</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="td">
+          <div class="actions-cell">
+            <button class="btn-action-watch" type="button">
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                <circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.25"/>
+                <path d="M5 3v2.5l1.5 1.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+              </svg>
+              Watch progress
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Row 4: Failed — drums ───────────────────────── -->
+      <div class="table-row" role="row" tabindex="0" aria-label="Job 4 — failed">
+
+        <!-- Video -->
+        <div class="td">
+          <div class="video-cell">
+            <div class="title-skeleton title-skeleton-xs"></div>
+            <span class="video-url" style="color: var(--status-failed); opacity: 0.6;">youtube.com/watch?v=INVALID</span>
+          </div>
+        </div>
+
+        <!-- Stems -->
+        <div class="td">
+          <div class="stems-cell">
+            <span class="stem-badge" style="opacity: 0.5;">drums</span>
+          </div>
+        </div>
+
+        <!-- Bars -->
+        <div class="td">
+          <span class="num-cell" style="opacity: 0.5;">4</span>
+        </div>
+
+        <!-- Loops -->
+        <div class="td">
+          <span class="num-cell-empty">—</span>
+        </div>
+
+        <!-- Date -->
+        <div class="td">
+          <span class="date-cell">3 days ago</span>
+        </div>
+
+        <!-- Status -->
+        <div class="td">
+          <span class="status-badge status-badge-failed" role="status" aria-label="Failed">
+            <span class="status-dot" aria-hidden="true"></span>
+            Failed
+          </span>
+        </div>
+
+        <!-- Actions -->
+        <div class="td">
+          <div class="actions-cell">
+            <button class="btn-action-retry" type="button">
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                <path d="M1.5 5a3.5 3.5 0 1 0 .8-2.2" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+                <path d="M1.5 2v1.5H3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Retry with new URL
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Row 5: Done — expires tomorrow ─────────────── -->
+      <div class="table-row" role="row" tabindex="0" aria-label="Job 5 — expires tomorrow">
+
+        <!-- Video -->
+        <div class="td">
+          <div class="video-cell">
+            <div class="title-skeleton title-skeleton-med"></div>
+            <span class="video-url">youtube.com/watch?v=qFCZ4SdpPLo</span>
+          </div>
+        </div>
+
+        <!-- Stems -->
+        <div class="td">
+          <div class="stems-cell">
+            <span class="stem-badge">drums</span>
+            <span class="stem-badge">bass</span>
+          </div>
+        </div>
+
+        <!-- Bars -->
+        <div class="td">
+          <span class="num-cell">2</span>
+        </div>
+
+        <!-- Loops -->
+        <div class="td">
+          <span class="num-cell">8</span>
+        </div>
+
+        <!-- Date -->
+        <div class="td">
+          <span class="date-cell-expiry" role="alert" aria-label="Expires tomorrow — download soon">
+            <svg class="expiry-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path d="M6 1L11 10H1L6 1z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
+              <path d="M6 5v2.5M6 8.5v.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+            </svg>
+            expires tomorrow
+          </span>
+        </div>
+
+        <!-- Status -->
+        <div class="td">
+          <span class="status-badge status-badge-done" role="status" aria-label="Done">
+            <span class="status-dot" aria-hidden="true"></span>
+            Done
+          </span>
+        </div>
+
+        <!-- Actions -->
+        <div class="td">
+          <div class="actions-cell">
+            <a href="#" class="btn-action-primary">View loops</a>
+            <button class="btn-action-secondary" type="button">Share</button>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /table-body -->
+
+    <!-- Table footer -->
+    <div class="table-footer">
+      <p class="table-footer-meta">
+        Showing <strong>5</strong> of <strong>5</strong> jobs &nbsp;·&nbsp; <strong>3</strong> ready to download
+      </p>
+    </div>
+
+  </main><!-- /main -->
+</div><!-- /page-shell -->
+
+
+<!-- ── Accent switcher (design review helper) ─────────── -->
+<div class="accent-switcher" role="region" aria-label="Accent color switcher">
+  <span class="accent-switcher-label">Accent</span>
+  <div class="accent-switcher-btns">
+    <button
+      class="accent-swatch swatch-a selected"
+      title="Option A — Neon Lime"
+      aria-label="Switch to Neon Lime accent"
+      onclick="setAccent('a', this)"
+    ></button>
+    <button
+      class="accent-swatch swatch-b"
+      title="Option B — Amber Gold"
+      aria-label="Switch to Amber Gold accent"
+      onclick="setAccent('b', this)"
+    ></button>
+    <button
+      class="accent-swatch swatch-c"
+      title="Option C — Electric Teal"
+      aria-label="Switch to Electric Teal accent"
+      onclick="setAccent('c', this)"
+    ></button>
+  </div>
+</div>
+
+<script>
+  function setAccent(variant, btn) {
+    const body = document.getElementById('page-body');
+    body.classList.remove('accent-a', 'accent-b', 'accent-c');
+    body.classList.add('accent-' + variant);
+    document.querySelectorAll('.accent-swatch').forEach(s => s.classList.remove('selected'));
+    btn.classList.add('selected');
+  }
+
+  // Tab switching (visual only)
+  document.querySelectorAll('.status-tab').forEach(tab => {
+    tab.addEventListener('click', function() {
+      document.querySelectorAll('.status-tab').forEach(t => {
+        t.classList.remove('active');
+        t.setAttribute('aria-selected', 'false');
+      });
+      this.classList.add('active');
+      this.setAttribute('aria-selected', 'true');
+    });
+  });
+</script>
+
+</body>
+</html>

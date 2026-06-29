@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1440">
+<title>stem-loops — Results [Wireframe · Desktop 1440px]</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #e0e0e0; padding: 40px 20px; }
+  .screen-label { text-align: center; font-size: 11px; color: #444; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 20px; }
+  .frame { width: 1440px; min-height: 900px; background: #111; border: 2px solid #333; margin: 0 auto; display: flex; flex-direction: column; }
+
+  /* Nav */
+  .topnav {
+    height: 56px; background: #0e0e0e; border-bottom: 1px dashed #2a2a2a;
+    display: flex; align-items: center; padding: 0 48px; justify-content: space-between;
+  }
+  .logo { font-size: 20px; font-weight: 700; color: #fff; }
+  .logo span { color: #666; }
+  .nav-job-meta { font-size: 12px; color: #555; }
+  .nav-right { display: flex; gap: 20px; align-items: center; }
+  .nav-btn {
+    height: 32px; background: #1a1a1a; border: 1px dashed #444; border-radius: 3px;
+    padding: 0 16px; font-size: 12px; color: #888; display: flex; align-items: center; gap: 6px;
+  }
+  .nav-btn.primary { border-color: #666; color: #ccc; }
+
+  /* Job header strip */
+  .job-header {
+    background: #0e0e0e; border-bottom: 1px dashed #1e1e1e; padding: 16px 48px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .job-title-block { display: flex; flex-direction: column; gap: 6px; }
+  .job-title-ph { height: 16px; background: #222; border-radius: 2px; width: 360px; }
+  .job-badges { display: flex; gap: 8px; }
+  .badge { font-size: 11px; color: #666; background: #1a1a1a; border: 1px dashed #2a2a2a; border-radius: 2px; padding: 3px 10px; }
+  .badge.highlight { border-color: #555; color: #aaa; }
+  .job-header-actions { display: flex; gap: 10px; align-items: center; }
+  .anno { font-size: 10px; color: #444; font-style: italic; margin-top: 6px; border-left: 2px solid #1e1e1e; padding-left: 8px; }
+
+  /* Layout */
+  .main-layout { flex: 1; display: grid; grid-template-columns: 240px 1fr; }
+
+  /* Sidebar: filters */
+  .sidebar {
+    background: #0e0e0e; border-right: 1px dashed #1e1e1e; padding: 24px 20px;
+  }
+  .sidebar-section { margin-bottom: 24px; }
+  .section-label { font-size: 10px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 10px; }
+  .filter-item {
+    display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 8px;
+    border: 1px dashed transparent; border-radius: 3px; cursor: pointer; margin-bottom: 2px;
+  }
+  .filter-item.active { background: #161616; border-color: #333; }
+  .filter-check { width: 14px; height: 14px; border: 1px dashed #444; border-radius: 2px; flex-shrink: 0; }
+  .filter-check.on { background: #555; border-color: #888; }
+  .filter-name { font-size: 12px; color: #777; }
+  .filter-name.active { color: #ccc; }
+  .filter-count { font-size: 10px; color: #444; margin-left: auto; }
+  .filter-divider { height: 1px; background: #1a1a1a; margin: 12px 0; }
+
+  /* Sort control */
+  .sort-control {
+    background: #161616; border: 1px dashed #2a2a2a; border-radius: 3px; padding: 8px 10px;
+  }
+  .sort-label { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }
+  .sort-option {
+    font-size: 12px; color: #555; height: 28px; display: flex; align-items: center; gap: 8px; padding: 0 4px;
+  }
+  .sort-option.active { color: #ccc; }
+  .sort-radio { width: 12px; height: 12px; border: 1px dashed #444; border-radius: 50%; flex-shrink: 0; }
+  .sort-radio.on { background: #666; }
+
+  /* Content area */
+  .content { padding: 24px 32px; }
+
+  /* Loop pack CTA */
+  .pack-cta {
+    background: #161616; border: 1px dashed #3a3a3a; border-radius: 4px; padding: 14px 20px;
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px;
+  }
+  .pack-info { display: flex; align-items: center; gap: 16px; }
+  .pack-icon { width: 40px; height: 40px; background: #1e1e1e; border: 1px dashed #444; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #666; }
+  .pack-text {}
+  .pack-title { font-size: 14px; font-weight: 600; color: #ccc; }
+  .pack-sub { font-size: 12px; color: #555; margin-top: 2px; }
+  .dl-zip-btn {
+    height: 40px; background: #2a2a2a; border: 1px dashed #666; border-radius: 4px;
+    padding: 0 20px; font-size: 13px; color: #bbb; display: flex; align-items: center; gap: 8px;
+  }
+
+  /* Loop grid */
+  .loop-grid-header {
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;
+  }
+  .grid-label { font-size: 11px; color: #555; text-transform: uppercase; letter-spacing: 1px; }
+  .grid-count { font-size: 11px; color: #444; }
+
+  .loop-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  /* Loop card */
+  .loop-card { background: #161616; border: 1px dashed #2a2a2a; border-radius: 4px; overflow: hidden; }
+  .loop-card:hover { border-color: #444; }
+
+  /* Waveform */
+  .waveform-area {
+    height: 80px; background: #0e0e0e; border-bottom: 1px dashed #1e1e1e;
+    display: flex; align-items: center; padding: 0 14px; gap: 12px; position: relative;
+  }
+  .play-btn {
+    width: 40px; height: 40px; background: #2a2a2a; border: 1px dashed #555; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; font-size: 12px; color: #aaa; flex-shrink: 0;
+  }
+  .waveform-viz {
+    flex: 1; height: 52px; background: #111; border: 1px dashed #1e1e1e; border-radius: 2px;
+    overflow: hidden; position: relative;
+  }
+  .wf-bars { display: flex; height: 100%; align-items: center; gap: 2px; padding: 4px 4px; }
+  .wf-bar { background: #3a3a3a; border-radius: 1px; flex: 1; }
+  .section-marker { position: absolute; top: 0; bottom: 0; width: 1px; background: #4a4a4a; }
+  .section-marker-label { position: absolute; top: 2px; font-size: 8px; color: #666; transform: translateX(-50%); }
+  .wf-playhead { position: absolute; left: 35%; top: 0; bottom: 0; width: 1px; background: #888; }
+  .wf-duration { position: absolute; right: 6px; bottom: 4px; font-size: 9px; color: #555; }
+
+  /* Loop body */
+  .loop-body { padding: 12px 14px; }
+  .loop-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .loop-tag {
+    font-size: 10px; color: #666; background: #1a1a1a; border: 1px dashed #2a2a2a;
+    border-radius: 2px; padding: 2px 8px;
+  }
+  .loop-tag.stem { color: #bbb; border-color: #444; font-weight: 600; }
+
+  .loop-actions { display: flex; gap: 8px; align-items: center; }
+  .dl-btn {
+    flex: 1; height: 36px; background: #1e1e1e; border: 1px dashed #3a3a3a; border-radius: 3px;
+    font-size: 12px; color: #888; display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .drag-handle {
+    width: 36px; height: 36px; background: #1a1a1a; border: 1px dashed #2a2a2a; border-radius: 3px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  }
+  .drag-line { width: 12px; height: 1px; background: #3a3a3a; border-radius: 1px; }
+
+  /* Notes */
+  .notes {
+    width: 1440px; margin: 16px auto 40px; background: #0a0a0a; border: 1px dashed #222; padding: 20px 48px;
+    display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 28px;
+  }
+  .notes h4 { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .notes ul { font-size: 11px; color: #444; line-height: 1.8; padding-left: 14px; }
+</style>
+</head>
+<body>
+
+<div class="screen-label">WIREFRAME · Screen 3: Results · Desktop 1440px</div>
+
+<div class="frame">
+
+  <!-- Nav -->
+  <div class="topnav">
+    <div class="logo">stem<span>-</span>loops</div>
+    <div class="nav-job-meta">[YouTube video title] · 128 BPM · F# min · 12 loops</div>
+    <div class="nav-right">
+      <div class="nav-btn">Share job</div>
+      <div class="nav-btn">← New job</div>
+    </div>
+  </div>
+
+  <!-- Job header strip -->
+  <div class="job-header">
+    <div class="job-title-block">
+      <div class="job-title-ph"></div>
+      <div class="job-badges">
+        <div class="badge highlight">128 BPM</div>
+        <div class="badge highlight">F# minor</div>
+        <div class="badge">3:47</div>
+        <div class="badge">drums · bass</div>
+        <div class="badge">4 bars</div>
+        <div class="badge">12 loops</div>
+        <div class="badge">Completed 2 min ago</div>
+      </div>
+    </div>
+    <div class="job-header-actions">
+      <div class="nav-btn">Copy job URL</div>
+    </div>
+  </div>
+
+  <!-- Main layout -->
+  <div class="main-layout">
+
+    <!-- Sidebar filters -->
+    <div class="sidebar">
+
+      <!-- Stem filter -->
+      <div class="sidebar-section">
+        <div class="section-label">Filter by stem</div>
+        <div class="filter-item active">
+          <div class="filter-check on"></div>
+          <span class="filter-name active">All stems</span>
+          <span class="filter-count">12</span>
+        </div>
+        <div class="filter-item">
+          <div class="filter-check on"></div>
+          <span class="filter-name">Drums</span>
+          <span class="filter-count">6</span>
+        </div>
+        <div class="filter-item">
+          <div class="filter-check on"></div>
+          <span class="filter-name">Bass</span>
+          <span class="filter-count">6</span>
+        </div>
+        <div class="filter-divider"></div>
+      </div>
+
+      <!-- Section filter -->
+      <div class="sidebar-section">
+        <div class="section-label">Filter by section</div>
+        <div class="filter-item">
+          <div class="filter-check"></div>
+          <span class="filter-name">Intro</span>
+          <span class="filter-count">2</span>
+        </div>
+        <div class="filter-item">
+          <div class="filter-check"></div>
+          <span class="filter-name">Verse</span>
+          <span class="filter-count">4</span>
+        </div>
+        <div class="filter-item">
+          <div class="filter-check"></div>
+          <span class="filter-name">Chorus</span>
+          <span class="filter-count">4</span>
+        </div>
+        <div class="filter-item">
+          <div class="filter-check"></div>
+          <span class="filter-name">Bridge</span>
+          <span class="filter-count">1</span>
+        </div>
+        <div class="filter-item">
+          <div class="filter-check"></div>
+          <span class="filter-name">Outro</span>
+          <span class="filter-count">1</span>
+        </div>
+        <div class="filter-divider"></div>
+      </div>
+
+      <!-- Energy filter -->
+      <div class="sidebar-section">
+        <div class="section-label">Energy</div>
+        <div class="filter-item">
+          <div class="filter-check"></div>
+          <span class="filter-name">High</span>
+          <span class="filter-count">5</span>
+        </div>
+        <div class="filter-item">
+          <div class="filter-check"></div>
+          <span class="filter-name">Mid</span>
+          <span class="filter-count">5</span>
+        </div>
+        <div class="filter-item">
+          <div class="filter-check"></div>
+          <span class="filter-name">Low</span>
+          <span class="filter-count">2</span>
+        </div>
+        <div class="filter-divider"></div>
+      </div>
+
+      <!-- Sort -->
+      <div class="sidebar-section">
+        <div class="section-label">Sort by</div>
+        <div class="sort-control">
+          <div class="sort-option active"><div class="sort-radio on"></div>Section order</div>
+          <div class="sort-option"><div class="sort-radio"></div>Stem</div>
+          <div class="sort-option"><div class="sort-radio"></div>Energy (high→low)</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Content: loops grid -->
+    <div class="content">
+
+      <!-- Loop pack CTA -->
+      <div class="pack-cta">
+        <div class="pack-info">
+          <div class="pack-icon">ZIP</div>
+          <div class="pack-text">
+            <div class="pack-title">Download loop pack</div>
+            <div class="pack-sub">12 loops · all stems · 24-bit WAV · named consistently</div>
+          </div>
+        </div>
+        <div class="dl-zip-btn">
+          ↓ Download ZIP
+        </div>
+      </div>
+      <div class="anno">ZIP pack = all loops from this job. Named: {title}_{stem}_{bpm}bpm_{key}_{section}_{idx}.wav. JSZip client-side assembly.</div>
+
+      <!-- Loop grid -->
+      <div class="loop-grid-header">
+        <span class="grid-label">12 loops</span>
+        <span class="grid-count">showing: all · sorted by section</span>
+      </div>
+
+      <div class="loop-grid">
+
+        <!-- Card 1: Drums / Chorus / High -->
+        <div class="loop-card">
+          <div class="waveform-area">
+            <div class="play-btn">▶</div>
+            <div class="waveform-viz">
+              <div class="wf-bars">
+                <div class="wf-bar" style="height:20%"></div><div class="wf-bar" style="height:75%"></div>
+                <div class="wf-bar" style="height:90%"></div><div class="wf-bar" style="height:55%"></div>
+                <div class="wf-bar" style="height:85%"></div><div class="wf-bar" style="height:70%"></div>
+                <div class="wf-bar" style="height:40%"></div><div class="wf-bar" style="height:95%"></div>
+                <div class="wf-bar" style="height:65%"></div><div class="wf-bar" style="height:80%"></div>
+                <div class="wf-bar" style="height:50%"></div><div class="wf-bar" style="height:88%"></div>
+                <div class="wf-bar" style="height:30%"></div><div class="wf-bar" style="height:75%"></div>
+                <div class="wf-bar" style="height:60%"></div><div class="wf-bar" style="height:45%"></div>
+                <div class="wf-bar" style="height:82%"></div><div class="wf-bar" style="height:25%"></div>
+                <div class="wf-bar" style="height:70%"></div><div class="wf-bar" style="height:55%"></div>
+                <div class="wf-bar" style="height:90%"></div><div class="wf-bar" style="height:40%"></div>
+                <div class="wf-bar" style="height:78%"></div><div class="wf-bar" style="height:65%"></div>
+              </div>
+              <div class="section-marker" style="left:25%"></div>
+              <div class="section-marker" style="left:50%"></div>
+              <div class="section-marker" style="left:75%"></div>
+              <div class="wf-playhead"></div>
+              <div class="wf-duration">4 bars · 7.5s</div>
+            </div>
+          </div>
+          <div class="loop-body">
+            <div class="loop-tags">
+              <div class="loop-tag stem">Drums</div>
+              <div class="loop-tag">128 BPM</div>
+              <div class="loop-tag">F# min</div>
+              <div class="loop-tag">Chorus</div>
+              <div class="loop-tag">High</div>
+            </div>
+            <div class="loop-actions">
+              <div class="dl-btn">↓ Download WAV</div>
+              <div class="drag-handle" title="Drag to DAW">
+                <div class="drag-line"></div>
+                <div class="drag-line"></div>
+                <div class="drag-line"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 2: Bass / Chorus / High -->
+        <div class="loop-card">
+          <div class="waveform-area">
+            <div class="play-btn">▶</div>
+            <div class="waveform-viz">
+              <div class="wf-bars">
+                <div class="wf-bar" style="height:60%"></div><div class="wf-bar" style="height:35%"></div>
+                <div class="wf-bar" style="height:70%"></div><div class="wf-bar" style="height:80%"></div>
+                <div class="wf-bar" style="height:45%"></div><div class="wf-bar" style="height:65%"></div>
+                <div class="wf-bar" style="height:90%"></div><div class="wf-bar" style="height:50%"></div>
+                <div class="wf-bar" style="height:75%"></div><div class="wf-bar" style="height:30%"></div>
+                <div class="wf-bar" style="height:85%"></div><div class="wf-bar" style="height:55%"></div>
+                <div class="wf-bar" style="height:40%"></div><div class="wf-bar" style="height:70%"></div>
+                <div class="wf-bar" style="height:25%"></div><div class="wf-bar" style="height:80%"></div>
+                <div class="wf-bar" style="height:60%"></div><div class="wf-bar" style="height:45%"></div>
+                <div class="wf-bar" style="height:88%"></div><div class="wf-bar" style="height:35%"></div>
+                <div class="wf-bar" style="height:72%"></div><div class="wf-bar" style="height:58%"></div>
+                <div class="wf-bar" style="height:42%"></div><div class="wf-bar" style="height:78%"></div>
+              </div>
+              <div class="section-marker" style="left:50%"></div>
+              <div class="wf-duration">4 bars · 7.5s</div>
+            </div>
+          </div>
+          <div class="loop-body">
+            <div class="loop-tags">
+              <div class="loop-tag stem">Bass</div>
+              <div class="loop-tag">128 BPM</div>
+              <div class="loop-tag">F# min</div>
+              <div class="loop-tag">Chorus</div>
+              <div class="loop-tag">High</div>
+            </div>
+            <div class="loop-actions">
+              <div class="dl-btn">↓ Download WAV</div>
+              <div class="drag-handle" title="Drag to DAW">
+                <div class="drag-line"></div>
+                <div class="drag-line"></div>
+                <div class="drag-line"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 3: Drums / Verse -->
+        <div class="loop-card">
+          <div class="waveform-area">
+            <div class="play-btn">▶</div>
+            <div class="waveform-viz">
+              <div class="wf-bars">
+                <div class="wf-bar" style="height:40%"></div><div class="wf-bar" style="height:65%"></div>
+                <div class="wf-bar" style="height:50%"></div><div class="wf-bar" style="height:75%"></div>
+                <div class="wf-bar" style="height:35%"></div><div class="wf-bar" style="height:80%"></div>
+                <div class="wf-bar" style="height:55%"></div><div class="wf-bar" style="height:45%"></div>
+                <div class="wf-bar" style="height:70%"></div><div class="wf-bar" style="height:30%"></div>
+                <div class="wf-bar" style="height:60%"></div><div class="wf-bar" style="height:85%"></div>
+                <div class="wf-bar" style="height:25%"></div><div class="wf-bar" style="height:70%"></div>
+                <div class="wf-bar" style="height:55%"></div><div class="wf-bar" style="height:40%"></div>
+                <div class="wf-bar" style="height:78%"></div><div class="wf-bar" style="height:62%"></div>
+                <div class="wf-bar" style="height:48%"></div><div class="wf-bar" style="height:73%"></div>
+                <div class="wf-bar" style="height:38%"></div><div class="wf-bar" style="height:58%"></div>
+                <div class="wf-bar" style="height:82%"></div><div class="wf-bar" style="height:44%"></div>
+              </div>
+              <div class="wf-duration">4 bars · 7.5s</div>
+            </div>
+          </div>
+          <div class="loop-body">
+            <div class="loop-tags">
+              <div class="loop-tag stem">Drums</div>
+              <div class="loop-tag">128 BPM</div>
+              <div class="loop-tag">F# min</div>
+              <div class="loop-tag">Verse</div>
+              <div class="loop-tag">Mid</div>
+            </div>
+            <div class="loop-actions">
+              <div class="dl-btn">↓ Download WAV</div>
+              <div class="drag-handle">
+                <div class="drag-line"></div>
+                <div class="drag-line"></div>
+                <div class="drag-line"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 4: Bass / Verse -->
+        <div class="loop-card">
+          <div class="waveform-area">
+            <div class="play-btn">▶</div>
+            <div class="waveform-viz">
+              <div class="wf-bars">
+                <div class="wf-bar" style="height:50%"></div><div class="wf-bar" style="height:30%"></div>
+                <div class="wf-bar" style="height:68%"></div><div class="wf-bar" style="height:42%"></div>
+                <div class="wf-bar" style="height:75%"></div><div class="wf-bar" style="height:55%"></div>
+                <div class="wf-bar" style="height:35%"></div><div class="wf-bar" style="height:80%"></div>
+                <div class="wf-bar" style="height:60%"></div><div class="wf-bar" style="height:45%"></div>
+                <div class="wf-bar" style="height:70%"></div><div class="wf-bar" style="height:25%"></div>
+                <div class="wf-bar" style="height:85%"></div><div class="wf-bar" style="height:50%"></div>
+                <div class="wf-bar" style="height:65%"></div><div class="wf-bar" style="height:38%"></div>
+                <div class="wf-bar" style="height:72%"></div><div class="wf-bar" style="height:48%"></div>
+                <div class="wf-bar" style="height:58%"></div><div class="wf-bar" style="height:82%"></div>
+                <div class="wf-bar" style="height:40%"></div><div class="wf-bar" style="height:76%"></div>
+                <div class="wf-bar" style="height:62%"></div><div class="wf-bar" style="height:44%"></div>
+              </div>
+              <div class="wf-duration">4 bars · 7.5s</div>
+            </div>
+          </div>
+          <div class="loop-body">
+            <div class="loop-tags">
+              <div class="loop-tag stem">Bass</div>
+              <div class="loop-tag">128 BPM</div>
+              <div class="loop-tag">F# min</div>
+              <div class="loop-tag">Verse</div>
+              <div class="loop-tag">Mid</div>
+            </div>
+            <div class="loop-actions">
+              <div class="dl-btn">↓ Download WAV</div>
+              <div class="drag-handle">
+                <div class="drag-line"></div>
+                <div class="drag-line"></div>
+                <div class="drag-line"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+      <div class="anno">2-column grid on desktop. Each card: waveform (80px tall) + play button + section markers + tags + download + drag handle. More cards below the fold.</div>
+      <div style="text-align: center; padding: 16px 0; font-size: 12px; color: #444; border-top: 1px dashed #1a1a1a; margin-top: 8px;">+ 8 more loops · scroll to see all</div>
+
+    </div>
+
+  </div>
+
+</div>
+
+<div class="notes">
+  <div>
+    <h4>Two-Column Results Layout</h4>
+    <ul>
+      <li>Sidebar (240px): filters by stem / section / energy + sort control</li>
+      <li>Content: loop pack ZIP CTA at top, then 2-col card grid</li>
+      <li>Sidebar filter state updates grid in real-time (client-side)</li>
+      <li>All filter counts reflect the current job's loop distribution</li>
+    </ul>
+  </div>
+  <div>
+    <h4>Loop Card Anatomy</h4>
+    <ul>
+      <li>Waveform: 80px tall, wavesurfer.js rendering pre-computed peaks</li>
+      <li>Playhead: animated while playing, draggable for scrubbing</li>
+      <li>Section markers: vertical lines at section boundary time offsets</li>
+      <li>5 tags: stem (prominent), BPM, key, section, energy</li>
+      <li>Drag handle: draggable file via HTML5 drag API → DAW accepts as .wav</li>
+    </ul>
+  </div>
+  <div>
+    <h4>Waveform Design</h4>
+    <ul>
+      <li>Pre-computed peaks stored in loops.waveform_peaks (jsonb)</li>
+      <li>wavesurfer.js renders peaks client-side — no re-decode needed</li>
+      <li>Section markers drawn as overlaid vertical lines on waveform</li>
+      <li>Playhead visible while playing; scrub to any position</li>
+      <li>Duration label bottom-right of waveform</li>
+    </ul>
+  </div>
+  <div>
+    <h4>Download & Drag Interactions</h4>
+    <ul>
+      <li>Download WAV: direct R2 signed URL (7-day). Single loop.</li>
+      <li>Download ZIP: JSZip client-side, assembles all visible loops</li>
+      <li>Drag handle: HTML5 draggable with .wav MIME type</li>
+      <li>DAW (Ableton/FL/Logic) accepts drag from browser as audio file</li>
+      <li>Tooltip on drag handle: "Drag into your DAW"</li>
+    </ul>
+  </div>
+</div>
+
+</body>
+</html>

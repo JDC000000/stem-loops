@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>stem-loops — Error States [Wireframe · Mobile 375px]</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #1a1a1a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #e0e0e0; display: flex; flex-direction: column; align-items: center; padding: 24px 0 40px; }
+  .screen-label { font-size: 11px; color: #444; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 20px; }
+  .frame { width: 375px; background: #111; border: 2px solid #444; display: flex; flex-direction: column; }
+  .frame-label { background: #333; color: #999; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; padding: 6px 12px; text-align: center; }
+
+  .header { padding: 16px; border-bottom: 1px dashed #2a2a2a; display: flex; align-items: center; justify-content: space-between; }
+  .logo { font-size: 18px; font-weight: 700; color: #fff; }
+  .logo span { color: #666; }
+  .back-link { font-size: 12px; color: #555; text-decoration: underline; text-underline-offset: 3px; }
+
+  .page-context { padding: 12px 16px; background: #161616; border-bottom: 1px dashed #1e1e1e; font-size: 11px; color: #555; line-height: 1.5; }
+
+  .main { padding: 16px 16px 32px; display: flex; flex-direction: column; gap: 16px; }
+
+  /* Error card — inline on progress screen context */
+  .progress-context {
+    background: #161616; border: 1px dashed #222; border-radius: 4px; padding: 12px;
+  }
+  .progress-label { font-size: 10px; color: #444; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; }
+  .stage-row { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .stage-dot-small { width: 14px; height: 14px; border-radius: 50%; border: 1px dashed #444; background: #111; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 7px; color: #555; }
+  .stage-dot-small.done { background: #2a2a2a; border-color: #666; color: #888; }
+  .stage-dot-small.error { background: #1a0a0a; border-color: #553333; color: #553333; }
+  .stage-text-small { font-size: 12px; }
+  .stage-text-small.done { color: #555; }
+  .stage-text-small.error { color: #884444; }
+
+  /* Error card */
+  .error-card {
+    background: #161616; border: 1px dashed #2a2a2a; border-radius: 4px; overflow: hidden;
+  }
+  .error-card-header {
+    background: #111; border-bottom: 1px dashed #1e1e1e; padding: 14px 14px 12px;
+    display: flex; align-items: flex-start; gap: 12px;
+  }
+  .error-icon {
+    width: 40px; height: 40px; background: #1e1e1e; border: 1px dashed #333; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center; font-size: 9px; color: #555;
+    text-align: center; line-height: 1.3; flex-shrink: 0;
+  }
+  .error-header-text { }
+  .error-code-label { font-size: 9px; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 3px; }
+  .error-title { font-size: 14px; font-weight: 700; color: #ccc; line-height: 1.3; }
+
+  .error-card-body { padding: 12px 14px; }
+  .error-message { font-size: 13px; color: #888; line-height: 1.6; margin-bottom: 12px; background: #111; border: 1px dashed #1e1e1e; border-radius: 3px; padding: 10px; }
+  .error-next-label { font-size: 9px; color: #555; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }
+  .error-next-text { font-size: 12px; color: #666; line-height: 1.5; margin-bottom: 12px; }
+  .error-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .error-btn-primary { height: 44px; background: #2a2a2a; border: 1px dashed #555; border-radius: 4px; padding: 0 16px; font-size: 13px; color: #bbb; display: flex; align-items: center; flex: 1; justify-content: center; }
+  .error-btn-secondary { height: 44px; background: #1a1a1a; border: 1px dashed #2a2a2a; border-radius: 4px; padding: 0 16px; font-size: 13px; color: #555; display: flex; align-items: center; flex: 1; justify-content: center; }
+
+  .anno { font-size: 10px; color: #444; font-style: italic; border-left: 2px solid #222; padding-left: 6px; margin: 0 16px 4px; }
+
+  .section-divider { font-size: 10px; color: #333; text-transform: uppercase; letter-spacing: 1px; padding: 8px 0; border-top: 1px dashed #1a1a1a; text-align: center; }
+
+  .notes { width: 375px; background: #0d0d0d; border: 1px dashed #2a2a2a; padding: 14px; margin-top: 12px; }
+  .notes h3 { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .notes ul { font-size: 11px; color: #444; line-height: 1.8; padding-left: 14px; }
+</style>
+</head>
+<body>
+
+<div class="screen-label">WIREFRAME · Screen 4: Error States · Mobile 375px · 3 representative errors</div>
+
+<div class="frame">
+  <div class="frame-label">stem-loops.com · Error States · 375px</div>
+
+  <div class="header">
+    <div class="logo">stem<span>-</span>loops</div>
+    <div class="back-link">← Try again</div>
+  </div>
+
+  <!-- Context explanation -->
+  <div class="page-context">
+    Error states appear <strong style="color:#888;">inline on the Job Progress screen</strong> — the current stage turns to an error state. The stage machine above remains visible so the user can see exactly which stage failed.
+  </div>
+
+  <div class="main">
+
+    <!-- Stage machine context (shows where errors appear) -->
+    <div class="progress-context">
+      <div class="progress-label">Context: error appears in the stage machine</div>
+      <div class="stage-row">
+        <div class="stage-dot-small done">✓</div>
+        <span class="stage-text-small done">Queued</span>
+      </div>
+      <div class="stage-row">
+        <div class="stage-dot-small done">✓</div>
+        <span class="stage-text-small done">Downloading audio</span>
+      </div>
+      <div class="stage-row">
+        <div class="stage-dot-small error">✕</div>
+        <span class="stage-text-small error">Downloading audio ← error here ↓</span>
+      </div>
+    </div>
+    <div class="anno">Error card appears below the failed stage entry. Rest of stage machine stays visible above.</div>
+
+    <!-- ERROR 1: DOWNLOAD_BLOCKED -->
+    <div class="section-divider">Error 1 of 3 — DOWNLOAD_BLOCKED</div>
+    <div class="error-card">
+      <div class="error-card-header">
+        <div class="error-icon">BOT<br>BLK</div>
+        <div class="error-header-text">
+          <div class="error-code-label">DOWNLOAD_BLOCKED</div>
+          <div class="error-title">YouTube is temporarily blocking this</div>
+        </div>
+      </div>
+      <div class="error-card-body">
+        <div class="error-message">
+          "YouTube is temporarily blocking automated access for this video. This usually clears up in a few minutes."
+        </div>
+        <div class="error-next-label">What to do next</div>
+        <div class="error-next-text">Wait 2–5 minutes and try the same URL again. If it keeps failing, try a different video.</div>
+        <div class="error-actions">
+          <div class="error-btn-primary">Retry this video</div>
+          <div class="error-btn-secondary">New URL</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ERROR 2: DOWNLOAD_AGE_RESTRICTED -->
+    <div class="section-divider">Error 2 of 3 — DOWNLOAD_AGE_RESTRICTED</div>
+    <div class="error-card">
+      <div class="error-card-header">
+        <div class="error-icon">18+<br>GATE</div>
+        <div class="error-header-text">
+          <div class="error-code-label">DOWNLOAD_AGE_RESTRICTED</div>
+          <div class="error-title">This video is age-restricted</div>
+        </div>
+      </div>
+      <div class="error-card-body">
+        <div class="error-message">
+          "This video requires a YouTube sign-in to access. We can't process age-restricted videos."
+        </div>
+        <div class="error-next-label">What to do next</div>
+        <div class="error-next-text">Try a different video. Age-restricted content requires sign-in, which our system doesn't support for security reasons.</div>
+        <div class="error-actions">
+          <div class="error-btn-primary">Try a different URL</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ERROR 3: INTERNAL_ERROR (catch-all) -->
+    <div class="section-divider">Error 3 of 3 — INTERNAL_ERROR (catch-all)</div>
+    <div class="error-card">
+      <div class="error-card-header">
+        <div class="error-icon">INT<br>ERR</div>
+        <div class="error-header-text">
+          <div class="error-code-label">INTERNAL_ERROR</div>
+          <div class="error-title">Something went wrong on our end</div>
+        </div>
+      </div>
+      <div class="error-card-body">
+        <div class="error-message">
+          "Something went wrong on our end. We've logged it and will look into it — please try again."
+        </div>
+        <div class="error-next-label">What to do next</div>
+        <div class="error-next-text">Try again — this is usually transient. The error has been automatically logged. No internal details are shown to protect system security.</div>
+        <div class="error-actions">
+          <div class="error-btn-primary">Try again</div>
+          <div class="error-btn-secondary">New URL</div>
+        </div>
+      </div>
+    </div>
+    <div class="anno">All 9 error codes follow this same card pattern. See error-states-wireframe-desktop.html for the full set.</div>
+
+  </div>
+</div>
+
+<div class="notes">
+  <h3>Error States — Mobile Notes</h3>
+  <ul>
+    <li>3 representative errors shown here: DOWNLOAD_BLOCKED, DOWNLOAD_AGE_RESTRICTED, INTERNAL_ERROR.</li>
+    <li>All 9 error codes use identical card structure — only icon + message + next steps change.</li>
+    <li>Error cards appear INLINE on the Progress screen below the failed stage.</li>
+    <li>CTAs are 44px tall — full mobile touch target compliance.</li>
+    <li>Primary CTA: retry / try new URL (most common actions). Full width when one CTA.</li>
+    <li>Secondary CTA: 50/50 split with primary when two actions available.</li>
+    <li>No stack traces, no error codes in user-facing message text (code shown in label only).</li>
+    <li>INTERNAL_ERROR: deliberately vague. Logged server-side, never detailed to user.</li>
+    <li>Back link top-right → Submit screen (start fresh).</li>
+  </ul>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,1455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1440">
+  <title>stem-loops V2 — Results (Desktop 1440px)</title>
+  <link rel="stylesheet" href="../design-tokens.css">
+  <style>
+    /* ── Reset ──────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      min-height: 100vh;
+      width: 100%;
+    }
+
+    body {
+      min-width: 1440px;
+    }
+
+    /* ── Page shell ─────────────────────────────────────── */
+    .page-shell {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-page);
+    }
+
+    /* ── Top nav ────────────────────────────────────────── */
+    .nav {
+      height: var(--nav-height);
+      background: var(--bg-nav);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 48px;
+      position: sticky;
+      top: 0;
+      z-index: var(--z-nav);
+      flex-shrink: 0;
+      gap: 24px;
+    }
+
+    .nav-left {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      flex-shrink: 0;
+    }
+
+    .nav-logo {
+      font-size: 20px;
+      font-weight: var(--weight-bold);
+      color: var(--text-primary);
+      letter-spacing: var(--tracking-tight);
+      text-decoration: none;
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    .nav-logo-dash {
+      color: var(--accent);
+    }
+
+    .nav-divider {
+      width: 1px;
+      height: 20px;
+      background: var(--border-default);
+      flex-shrink: 0;
+    }
+
+    .nav-job-title {
+      font-size: 14px;
+      font-weight: var(--weight-medium);
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 280px;
+    }
+
+    .nav-meta-badges {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .nav-badge {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 8px;
+      border-radius: var(--radius-sm);
+      font-size: 11px;
+      font-weight: var(--weight-semibold);
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+
+    .nav-badge-accent {
+      background: var(--accent-muted);
+      border: 1px solid var(--accent-border);
+      color: var(--accent);
+      font-family: var(--font-mono);
+    }
+
+    .nav-badge-neutral {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    .nav-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .btn-nav-ghost {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      height: 34px;
+      padding: 0 14px;
+      background: transparent;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      color: var(--text-muted);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: var(--weight-medium);
+      cursor: pointer;
+      white-space: nowrap;
+      text-decoration: none;
+      transition: border-color var(--transition-fast), color var(--transition-fast);
+    }
+
+    .btn-nav-ghost:hover {
+      border-color: var(--border-strong);
+      color: var(--text-secondary);
+    }
+
+    .btn-nav-ghost svg {
+      flex-shrink: 0;
+    }
+
+    /* ── Job header strip ───────────────────────────────── */
+    .job-header {
+      background: var(--bg-nav);
+      border-bottom: 1px solid var(--border-default);
+      padding: 14px 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .job-header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      min-width: 0;
+    }
+
+    .job-thumbnail {
+      width: 52px;
+      height: 36px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      color: var(--text-disabled);
+    }
+
+    .job-title-block {
+      min-width: 0;
+    }
+
+    .job-title {
+      font-size: 15px;
+      font-weight: var(--weight-semibold);
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 360px;
+    }
+
+    .job-sub {
+      font-size: 11px;
+      color: var(--text-subtle);
+      margin-top: 2px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .job-header-badges {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 8px;
+      border-radius: var(--radius-sm);
+      font-size: 11px;
+      font-weight: var(--weight-medium);
+      white-space: nowrap;
+      letter-spacing: 0.3px;
+    }
+
+    .badge-accent {
+      background: var(--accent-muted);
+      border: 1px solid var(--accent-border);
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-weight: var(--weight-semibold);
+    }
+
+    .badge-neutral {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      color: var(--text-muted);
+    }
+
+    .badge-done {
+      background: rgba(74, 222, 128, 0.08);
+      border: 1px solid rgba(74, 222, 128, 0.2);
+      color: var(--status-done);
+    }
+
+    .badge-expiry {
+      background: var(--status-expiry-bg);
+      border: 1px solid rgba(251, 146, 60, 0.2);
+      color: var(--status-expiry);
+    }
+
+    .job-header-right {
+      flex-shrink: 0;
+    }
+
+    .btn-copy-url {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      height: 32px;
+      padding: 0 12px;
+      background: transparent;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      color: var(--text-muted);
+      font-family: var(--font-sans);
+      font-size: 12px;
+      font-weight: var(--weight-medium);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: border-color var(--transition-fast), color var(--transition-fast);
+    }
+
+    .btn-copy-url:hover {
+      border-color: var(--border-strong);
+      color: var(--text-secondary);
+    }
+
+    /* ── Content area (sidebar + main) ─────────────────── */
+    .content-area {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+    }
+
+    /* ── LEFT SIDEBAR ────────────────────────────────────── */
+    .sidebar {
+      width: 240px;
+      flex-shrink: 0;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border-default);
+      padding: 20px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      position: sticky;
+      top: var(--nav-height);
+      height: calc(100vh - var(--nav-height) - 51px); /* subtract job header */
+      overflow-y: auto;
+    }
+
+    .sidebar::-webkit-scrollbar { width: 4px; }
+    .sidebar::-webkit-scrollbar-track { background: transparent; }
+    .sidebar::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 2px; }
+
+    .sidebar-section {
+      padding: 0 0 16px 0;
+    }
+
+    .sidebar-section + .sidebar-section {
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 16px;
+    }
+
+    .sidebar-section-title {
+      font-size: 10px;
+      font-weight: var(--weight-semibold);
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      padding: 0 20px 8px;
+    }
+
+    .filter-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 36px;
+      padding: 0 20px;
+      cursor: pointer;
+      transition: background var(--transition-fast);
+      gap: 8px;
+    }
+
+    .filter-item:hover {
+      background: #161616;
+    }
+
+    .filter-item-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 1;
+      min-width: 0;
+    }
+
+    /* Custom checkbox */
+    .filter-checkbox {
+      width: 15px;
+      height: 15px;
+      border-radius: 3px;
+      border: 1px solid var(--border-strong);
+      background: transparent;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+    }
+
+    .filter-checkbox.checked {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .filter-checkbox.checked svg {
+      display: block;
+    }
+
+    .filter-checkbox svg {
+      display: block;
+    }
+
+    .filter-item-label {
+      font-size: 13px;
+      font-weight: var(--weight-medium);
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+
+    .filter-item-count {
+      font-size: 11px;
+      color: var(--text-subtle);
+      font-family: var(--font-mono);
+      flex-shrink: 0;
+    }
+
+    /* Radio filter item */
+    .filter-radio {
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      border: 1px solid var(--border-strong);
+      background: transparent;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .filter-radio.selected {
+      border-color: var(--accent);
+    }
+
+    .filter-radio.selected::after {
+      content: '';
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    /* ── MAIN CONTENT ────────────────────────────────────── */
+    .main {
+      flex: 1;
+      min-width: 0;
+      padding: 24px 36px 48px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* ── ZIP CTA Card ────────────────────────────────────── */
+    .zip-cta-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      padding: 18px 24px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .zip-cta-icon {
+      width: 44px;
+      height: 44px;
+      background: var(--accent-muted);
+      border: 1px solid var(--accent-border);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      color: var(--accent);
+    }
+
+    .zip-cta-text {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .zip-cta-title {
+      font-size: 15px;
+      font-weight: var(--weight-semibold);
+      color: var(--text-primary);
+    }
+
+    .zip-cta-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 3px;
+    }
+
+    .zip-cta-sub span {
+      color: var(--text-subtle);
+      margin: 0 4px;
+    }
+
+    .btn-zip-download {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      height: 40px;
+      padding: 0 20px;
+      background: var(--accent);
+      color: var(--accent-text);
+      border: none;
+      border-radius: var(--radius-md);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      font-weight: var(--weight-semibold);
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: background var(--transition-fast);
+      letter-spacing: 0.2px;
+    }
+
+    .btn-zip-download:hover {
+      background: var(--accent-hover);
+    }
+
+    /* ── Loop list header ────────────────────────────────── */
+    .loops-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .loops-header-title {
+      font-size: 14px;
+      font-weight: var(--weight-semibold);
+      color: var(--text-secondary);
+    }
+
+    .loops-header-title strong {
+      color: var(--text-primary);
+    }
+
+    .loops-header-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* ── 2-column loop grid ──────────────────────────────── */
+    .loops-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    /* ── Loop Card ───────────────────────────────────────── */
+    .loop-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      transition: border-color var(--transition-fast);
+    }
+
+    .loop-card:hover {
+      border-color: var(--border-strong);
+    }
+
+    .loop-card.playing {
+      border-color: var(--accent-border);
+    }
+
+    /* Waveform area */
+    .loop-waveform-area {
+      background: var(--wf-bg);
+      height: 80px;
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      gap: 12px;
+      position: relative;
+      cursor: pointer;
+    }
+
+    /* Play button */
+    .play-btn {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      cursor: pointer;
+      transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+      color: var(--text-muted);
+    }
+
+    .loop-card:hover .play-btn,
+    .play-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-muted);
+    }
+
+    .loop-card.playing .play-btn {
+      border-color: var(--accent);
+      background: var(--accent-muted);
+      color: var(--accent);
+    }
+
+    /* Waveform SVG area */
+    .waveform-container {
+      flex: 1;
+      height: 56px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .waveform-bars {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      height: 100%;
+    }
+
+    .wf-bar {
+      flex: 1;
+      border-radius: 1px;
+      background: var(--wf-bar-idle);
+      min-width: 2px;
+    }
+
+    .wf-bar.played {
+      background: var(--accent);
+      opacity: 0.85;
+    }
+
+    /* Playhead */
+    .waveform-playhead {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: var(--wf-playhead);
+      pointer-events: none;
+      left: 35%;
+      opacity: 0;
+    }
+
+    .loop-card.playing .waveform-playhead {
+      opacity: 1;
+    }
+
+    /* Section marker */
+    .waveform-marker {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: var(--wf-marker);
+      pointer-events: none;
+    }
+
+    .waveform-marker-label {
+      position: absolute;
+      top: 2px;
+      left: 3px;
+      font-size: 8px;
+      font-weight: var(--weight-semibold);
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      white-space: nowrap;
+    }
+
+    /* Duration label in waveform area */
+    .wf-duration-label {
+      position: absolute;
+      bottom: 8px;
+      right: 14px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-subtle);
+      pointer-events: none;
+    }
+
+    /* Tags row */
+    .loop-card-tags {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 10px 14px 8px;
+      flex-wrap: wrap;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      height: 20px;
+      padding: 0 7px;
+      border-radius: var(--radius-sm);
+      font-size: 10px;
+      font-weight: var(--weight-medium);
+      white-space: nowrap;
+      letter-spacing: 0.3px;
+    }
+
+    .tag-stem {
+      background: var(--tag-stem-bg);
+      border: 1px solid var(--tag-stem-border);
+      color: var(--tag-stem-text);
+      font-weight: var(--weight-semibold);
+    }
+
+    .tag-mono {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+
+    .tag-section {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      font-size: 9px;
+    }
+
+    .tag-energy {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      color: var(--text-subtle);
+    }
+
+    /* Action row */
+    .loop-card-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 14px 12px;
+    }
+
+    .btn-download-wav {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 32px;
+      flex: 1;
+      background: transparent;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      color: var(--text-muted);
+      font-family: var(--font-sans);
+      font-size: 12px;
+      font-weight: var(--weight-medium);
+      cursor: pointer;
+      transition: border-color var(--transition-fast), color var(--transition-fast);
+      white-space: nowrap;
+    }
+
+    .btn-download-wav:hover {
+      border-color: var(--border-strong);
+      color: var(--text-secondary);
+    }
+
+    /* Drag handle */
+    .drag-handle {
+      width: 36px;
+      height: 32px;
+      background: transparent;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      cursor: grab;
+      flex-shrink: 0;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+      position: relative;
+    }
+
+    .drag-handle:hover {
+      border-color: var(--border-strong);
+      background: var(--bg-elevated);
+    }
+
+    .drag-handle-line {
+      width: 12px;
+      height: 1px;
+      background: var(--border-strong);
+      border-radius: 1px;
+    }
+
+    /* Drag handle tooltip */
+    .drag-handle .tooltip {
+      position: absolute;
+      bottom: calc(100% + 6px);
+      right: 0;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      padding: 4px 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity var(--transition-fast);
+    }
+
+    .drag-handle:hover .tooltip {
+      opacity: 1;
+    }
+
+    /* ── "More loops" hint ───────────────────────────────── */
+    .more-loops-hint {
+      text-align: center;
+      padding: 16px 0 8px;
+      font-size: 13px;
+      color: var(--text-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .more-loops-hint::before,
+    .more-loops-hint::after {
+      content: '';
+      flex: 1;
+      max-width: 120px;
+      height: 1px;
+      background: var(--border-subtle);
+    }
+
+    .btn-show-more {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 34px;
+      padding: 0 16px;
+      background: transparent;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      color: var(--text-muted);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: var(--weight-medium);
+      cursor: pointer;
+      transition: border-color var(--transition-fast), color var(--transition-fast);
+    }
+
+    .btn-show-more:hover {
+      border-color: var(--border-strong);
+      color: var(--text-secondary);
+    }
+
+    /* ── Waveform bar height variety util ────────────────── */
+    /* Done via inline style on each bar for visual variation */
+
+    /* ── Scrollbar global ────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+    /* ── Section number badge on loop card ───────────────── */
+    .loop-card-index {
+      position: absolute;
+      top: 8px;
+      left: 14px;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: var(--weight-semibold);
+      color: var(--text-subtle);
+      letter-spacing: 0.5px;
+      pointer-events: none;
+    }
+
+    /* ── Filename hint ───────────────────────────────────── */
+    .loop-filename {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--text-disabled);
+      padding: 0 14px 6px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+  </style>
+</head>
+<body class="sl-page accent-a">
+
+<div class="page-shell">
+
+  <!-- ── TOP NAV ──────────────────────────────────────── -->
+  <nav class="nav">
+    <div class="nav-left">
+      <a href="#" class="nav-logo">stem<span class="nav-logo-dash">-</span>loops</a>
+      <div class="nav-divider"></div>
+      <span class="nav-job-title">Burning Bridges (Official Audio) — Drake</span>
+      <div class="nav-meta-badges">
+        <span class="nav-badge nav-badge-accent">140 BPM</span>
+        <span class="nav-badge nav-badge-accent">F# Min</span>
+        <span class="nav-badge nav-badge-neutral">6 stems</span>
+        <span class="nav-badge nav-badge-neutral">4 bars</span>
+      </div>
+    </div>
+    <div class="nav-right">
+      <button class="btn-nav-ghost">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+          <path d="M10 2H14V6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M14 2L8.5 7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <rect x="2" y="5" width="7" height="9" rx="1" stroke="currentColor" stroke-width="1.5"/>
+        </svg>
+        Share job
+      </button>
+      <button class="btn-nav-ghost">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+          <path d="M10 8L6 4M6 4L2 8M6 4V12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        ← New job
+      </button>
+    </div>
+  </nav>
+
+  <!-- ── JOB HEADER STRIP ──────────────────────────────── -->
+  <div class="job-header">
+    <div class="job-header-left">
+      <!-- Thumbnail placeholder -->
+      <div class="job-thumbnail">
+        <svg width="18" height="14" viewBox="0 0 18 14" fill="none">
+          <rect x="1" y="1" width="16" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+          <path d="M7 4.5L12 7L7 9.5V4.5Z" fill="currentColor"/>
+        </svg>
+      </div>
+      <div class="job-title-block">
+        <div class="job-title">Burning Bridges (Official Audio) — Drake</div>
+        <div class="job-sub">
+          <span>Job #sl-9f3d21c</span>
+          <span>·</span>
+          <span>Completed 2 min ago</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="job-header-badges">
+      <span class="badge badge-accent">140 BPM</span>
+      <span class="badge badge-accent">F# Min</span>
+      <span class="badge badge-neutral">6 stems</span>
+      <span class="badge badge-neutral">4-bar loops</span>
+      <span class="badge badge-neutral">12 loops</span>
+      <span class="badge badge-done">
+        <svg width="8" height="8" viewBox="0 0 8 8" fill="none" style="margin-right:4px">
+          <circle cx="4" cy="4" r="3" fill="currentColor"/>
+        </svg>
+        Done
+      </span>
+      <span class="badge badge-expiry">
+        <svg width="8" height="8" viewBox="0 0 8 8" fill="none" style="margin-right:4px">
+          <circle cx="4" cy="4" r="3" stroke="currentColor" stroke-width="1.2"/>
+          <path d="M4 2.5V4.2L5 5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+        </svg>
+        Expires in 47h
+      </span>
+    </div>
+
+    <div class="job-header-right">
+      <button class="btn-copy-url">
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+          <rect x="1" y="4" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.2"/>
+          <path d="M4 4V3C4 2.45 4.45 2 5 2H9C9.55 2 10 2.45 10 3V7C10 7.55 9.55 8 9 8H8" stroke="currentColor" stroke-width="1.2"/>
+        </svg>
+        Copy job URL
+      </button>
+    </div>
+  </div>
+
+  <!-- ── CONTENT AREA ───────────────────────────────────── -->
+  <div class="content-area">
+
+    <!-- ── LEFT SIDEBAR ──────────────────────────────────── -->
+    <aside class="sidebar">
+
+      <!-- Filter by Stem -->
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Filter by stem</div>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox checked">
+              <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                <path d="M1 4L3.5 6.5L9 1" stroke="#0d0d0d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="filter-item-label">All stems</span>
+          </div>
+          <span class="filter-item-count">12</span>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox checked">
+              <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                <path d="M1 4L3.5 6.5L9 1" stroke="#0d0d0d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="filter-item-label">Drums</span>
+          </div>
+          <span class="filter-item-count">2</span>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox checked">
+              <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                <path d="M1 4L3.5 6.5L9 1" stroke="#0d0d0d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="filter-item-label">Bass</span>
+          </div>
+          <span class="filter-item-count">2</span>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox">
+            </div>
+            <span class="filter-item-label">Melody</span>
+          </div>
+          <span class="filter-item-count">2</span>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox">
+            </div>
+            <span class="filter-item-label">Keys</span>
+          </div>
+          <span class="filter-item-count">2</span>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox">
+            </div>
+            <span class="filter-item-label">Vocals</span>
+          </div>
+          <span class="filter-item-count">2</span>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox">
+            </div>
+            <span class="filter-item-label">FX</span>
+          </div>
+          <span class="filter-item-count">2</span>
+        </label>
+      </div>
+
+      <!-- Filter by Section -->
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Filter by section</div>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox checked">
+              <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                <path d="M1 4L3.5 6.5L9 1" stroke="#0d0d0d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="filter-item-label">Intro</span>
+          </div>
+          <span class="filter-item-count">2</span>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox checked">
+              <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                <path d="M1 4L3.5 6.5L9 1" stroke="#0d0d0d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="filter-item-label">Verse</span>
+          </div>
+          <span class="filter-item-count">4</span>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox checked">
+              <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                <path d="M1 4L3.5 6.5L9 1" stroke="#0d0d0d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="filter-item-label">Chorus</span>
+          </div>
+          <span class="filter-item-count">4</span>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox">
+            </div>
+            <span class="filter-item-label">Bridge</span>
+          </div>
+          <span class="filter-item-count">1</span>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox">
+            </div>
+            <span class="filter-item-label">Outro</span>
+          </div>
+          <span class="filter-item-count">1</span>
+        </label>
+      </div>
+
+      <!-- Filter by Energy -->
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Energy</div>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox checked">
+              <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                <path d="M1 4L3.5 6.5L9 1" stroke="#0d0d0d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="filter-item-label">High</span>
+          </div>
+          <span class="filter-item-count">5</span>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox checked">
+              <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                <path d="M1 4L3.5 6.5L9 1" stroke="#0d0d0d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="filter-item-label">Mid</span>
+          </div>
+          <span class="filter-item-count">5</span>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-checkbox">
+            </div>
+            <span class="filter-item-label">Low</span>
+          </div>
+          <span class="filter-item-count">2</span>
+        </label>
+      </div>
+
+      <!-- Sort by -->
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Sort by</div>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-radio selected"></div>
+            <span class="filter-item-label">Section order</span>
+          </div>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-radio"></div>
+            <span class="filter-item-label">Stem</span>
+          </div>
+        </label>
+
+        <label class="filter-item">
+          <div class="filter-item-left">
+            <div class="filter-radio"></div>
+            <span class="filter-item-label">Energy</span>
+          </div>
+        </label>
+      </div>
+
+    </aside>
+
+    <!-- ── MAIN CONTENT ───────────────────────────────────── -->
+    <main class="main">
+
+      <!-- ZIP CTA Card -->
+      <div class="zip-cta-card">
+        <div class="zip-cta-icon">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <path d="M10 2V13M10 13L6.5 9.5M10 13L13.5 9.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M3 15V16.5C3 17.05 3.45 17.5 4 17.5H16C16.55 17.5 17 17.05 17 16.5V15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="zip-cta-text">
+          <div class="zip-cta-title">Download all loops as ZIP</div>
+          <div class="zip-cta-sub">12 loops<span>·</span>all 6 stems<span>·</span>24-bit WAV<span>·</span>~84 MB</div>
+        </div>
+        <button class="btn-zip-download">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M7 1V9.5M7 9.5L4 6.5M7 9.5L10 6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M2 11V12C2 12.55 2.45 13 3 13H11C11.55 13 12 12.55 12 12V11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          ↓ Download ZIP
+        </button>
+      </div>
+
+      <!-- Loop list header -->
+      <div class="loops-header">
+        <div class="loops-header-title">
+          <strong>12 loops</strong> &nbsp;·&nbsp; sorted by section
+        </div>
+        <div class="loops-header-right">
+          <button class="btn-nav-ghost" style="font-size:12px; height:30px; padding: 0 11px;">
+            <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+              <path d="M1 3H11M3 6H9M5 9H7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            All stems
+          </button>
+          <button class="btn-nav-ghost" style="font-size:12px; height:30px; padding: 0 11px;">
+            <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+              <rect x="1" y="1" width="4" height="4" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
+              <rect x="7" y="1" width="4" height="4" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
+              <rect x="1" y="7" width="4" height="4" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
+              <rect x="7" y="7" width="4" height="4" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
+            </svg>
+            Grid
+          </button>
+        </div>
+      </div>
+
+      <!-- Loop Grid -->
+      <div class="loops-grid">
+
+        <!-- ── CARD 1: Drums / Intro / High ── -->
+        <div class="loop-card playing">
+          <div class="loop-waveform-area">
+            <span class="loop-card-index">01</span>
+            <button class="play-btn" aria-label="Pause">
+              <!-- Pause icon (currently playing) -->
+              <svg width="12" height="14" viewBox="0 0 12 14" fill="none">
+                <rect x="1" y="1" width="3.5" height="12" rx="1" fill="currentColor"/>
+                <rect x="7.5" y="1" width="3.5" height="12" rx="1" fill="currentColor"/>
+              </svg>
+            </button>
+            <div class="waveform-container">
+              <!-- Section marker: Chorus start -->
+              <div class="waveform-marker" style="left: 50%;">
+                <span class="waveform-marker-label" style="left:3px; font-size:8px;">CH</span>
+              </div>
+              <div class="waveform-marker" style="left: 75%;">
+                <span class="waveform-marker-label" style="left:3px; font-size:8px;">V2</span>
+              </div>
+              <!-- Playhead at 35% -->
+              <div class="waveform-playhead" style="left: 35%; opacity: 1;"></div>
+              <!-- Bars -->
+              <div class="waveform-bars" id="wf1"></div>
+            </div>
+          </div>
+          <div class="wf-duration-label">4 bars · 7.5s</div>
+          <div class="loop-card-tags">
+            <span class="tag tag-stem">Drums</span>
+            <span class="tag tag-mono">140 BPM</span>
+            <span class="tag tag-mono">F# Min</span>
+            <span class="tag tag-section">Intro</span>
+            <span class="tag tag-energy">⚡ High</span>
+          </div>
+          <div class="loop-filename">BurningBridges_drums_140bpm_F#min_intro_01.wav</div>
+          <div class="loop-card-actions">
+            <button class="btn-download-wav">
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                <path d="M6 1V8M6 8L3.5 5.5M6 8L8.5 5.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M1.5 9.5V10.5C1.5 11 1.9 11.5 2.5 11.5H9.5C10.1 11.5 10.5 11 10.5 10.5V9.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+              </svg>
+              ↓ Download WAV
+            </button>
+            <div class="drag-handle" title="Drag into your DAW">
+              <div class="drag-handle-line"></div>
+              <div class="drag-handle-line"></div>
+              <div class="drag-handle-line"></div>
+              <div class="tooltip">Drag into your DAW</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── CARD 2: Bass / Intro / High ── -->
+        <div class="loop-card">
+          <div class="loop-waveform-area">
+            <span class="loop-card-index">02</span>
+            <button class="play-btn" aria-label="Play">
+              <svg width="11" height="13" viewBox="0 0 11 13" fill="none">
+                <path d="M1.5 1.5L9.5 6.5L1.5 11.5V1.5Z" fill="currentColor"/>
+              </svg>
+            </button>
+            <div class="waveform-container">
+              <div class="waveform-marker" style="left: 33%;">
+                <span class="waveform-marker-label" style="left:3px; font-size:8px;">V1</span>
+              </div>
+              <div class="waveform-marker" style="left: 66%;">
+                <span class="waveform-marker-label" style="left:3px; font-size:8px;">CH</span>
+              </div>
+              <div class="waveform-bars" id="wf2"></div>
+            </div>
+          </div>
+          <div class="wf-duration-label">4 bars · 7.5s</div>
+          <div class="loop-card-tags">
+            <span class="tag tag-stem">Bass</span>
+            <span class="tag tag-mono">140 BPM</span>
+            <span class="tag tag-mono">F# Min</span>
+            <span class="tag tag-section">Intro</span>
+            <span class="tag tag-energy">⚡ High</span>
+          </div>
+          <div class="loop-filename">BurningBridges_bass_140bpm_F#min_intro_01.wav</div>
+          <div class="loop-card-actions">
+            <button class="btn-download-wav">
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                <path d="M6 1V8M6 8L3.5 5.5M6 8L8.5 5.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M1.5 9.5V10.5C1.5 11 1.9 11.5 2.5 11.5H9.5C10.1 11.5 10.5 11 10.5 10.5V9.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+              </svg>
+              ↓ Download WAV
+            </button>
+            <div class="drag-handle">
+              <div class="drag-handle-line"></div>
+              <div class="drag-handle-line"></div>
+              <div class="drag-handle-line"></div>
+              <div class="tooltip">Drag into your DAW</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── CARD 3: Drums / Verse / Mid ── -->
+        <div class="loop-card">
+          <div class="loop-waveform-area">
+            <span class="loop-card-index">03</span>
+            <button class="play-btn" aria-label="Play">
+              <svg width="11" height="13" viewBox="0 0 11 13" fill="none">
+                <path d="M1.5 1.5L9.5 6.5L1.5 11.5V1.5Z" fill="currentColor"/>
+              </svg>
+            </button>
+            <div class="waveform-container">
+              <div class="waveform-marker" style="left: 45%;">
+                <span class="waveform-marker-label" style="left:3px; font-size:8px;">V2</span>
+              </div>
+              <div class="waveform-bars" id="wf3"></div>
+            </div>
+          </div>
+          <div class="wf-duration-label">4 bars · 7.5s</div>
+          <div class="loop-card-tags">
+            <span class="tag tag-stem">Drums</span>
+            <span class="tag tag-mono">140 BPM</span>
+            <span class="tag tag-mono">F# Min</span>
+            <span class="tag tag-section">Verse</span>
+            <span class="tag tag-energy">~ Mid</span>
+          </div>
+          <div class="loop-filename">BurningBridges_drums_140bpm_F#min_verse_01.wav</div>
+          <div class="loop-card-actions">
+            <button class="btn-download-wav">
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                <path d="M6 1V8M6 8L3.5 5.5M6 8L8.5 5.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M1.5 9.5V10.5C1.5 11 1.9 11.5 2.5 11.5H9.5C10.1 11.5 10.5 11 10.5 10.5V9.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+              </svg>
+              ↓ Download WAV
+            </button>
+            <div class="drag-handle">
+              <div class="drag-handle-line"></div>
+              <div class="drag-handle-line"></div>
+              <div class="drag-handle-line"></div>
+              <div class="tooltip">Drag into your DAW</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── CARD 4: Keys / Chorus / High ── -->
+        <div class="loop-card">
+          <div class="loop-waveform-area">
+            <span class="loop-card-index">04</span>
+            <button class="play-btn" aria-label="Play">
+              <svg width="11" height="13" viewBox="0 0 11 13" fill="none">
+                <path d="M1.5 1.5L9.5 6.5L1.5 11.5V1.5Z" fill="currentColor"/>
+              </svg>
+            </button>
+            <div class="waveform-container">
+              <div class="waveform-marker" style="left: 25%;">
+                <span class="waveform-marker-label" style="left:3px; font-size:8px;">CH</span>
+              </div>
+              <div class="waveform-marker" style="left: 60%;">
+                <span class="waveform-marker-label" style="left:3px; font-size:8px;">BR</span>
+              </div>
+              <div class="waveform-bars" id="wf4"></div>
+            </div>
+          </div>
+          <div class="wf-duration-label">4 bars · 7.5s</div>
+          <div class="loop-card-tags">
+            <span class="tag tag-stem">Keys</span>
+            <span class="tag tag-mono">140 BPM</span>
+            <span class="tag tag-mono">F# Min</span>
+            <span class="tag tag-section">Chorus</span>
+            <span class="tag tag-energy">⚡ High</span>
+          </div>
+          <div class="loop-filename">BurningBridges_keys_140bpm_F#min_chorus_01.wav</div>
+          <div class="loop-card-actions">
+            <button class="btn-download-wav">
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                <path d="M6 1V8M6 8L3.5 5.5M6 8L8.5 5.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M1.5 9.5V10.5C1.5 11 1.9 11.5 2.5 11.5H9.5C10.1 11.5 10.5 11 10.5 10.5V9.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+              </svg>
+              ↓ Download WAV
+            </button>
+            <div class="drag-handle">
+              <div class="drag-handle-line"></div>
+              <div class="drag-handle-line"></div>
+              <div class="drag-handle-line"></div>
+              <div class="tooltip">Drag into your DAW</div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /loops-grid -->
+
+      <!-- "+ 8 more loops" hint -->
+      <div class="more-loops-hint">
+        <button class="btn-show-more">
+          <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+            <path d="M7 2V12M7 12L3.5 8.5M7 12L10.5 8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          + 8 more loops
+        </button>
+      </div>
+
+    </main><!-- /main -->
+
+  </div><!-- /content-area -->
+
+</div><!-- /page-shell -->
+
+<script>
+  // ── Generate waveform bars ────────────────────────────
+  // Each waveform: 72 bars, played=35%, rest idle
+  // Heights vary per waveform for visual variety
+
+  const WAVEFORMS = {
+    wf1: {
+      playedPct: 0.35,
+      pattern: [0.5,0.7,0.4,0.9,0.6,0.3,0.8,0.5,0.9,0.4,0.7,0.6,0.3,0.8,0.5,0.9,0.4,0.6,0.7,0.3,0.8,0.5,0.9,0.4,0.6,0.3,0.8,0.7,0.5,0.9,0.4,0.6,0.3,0.8,0.5,0.9,0.7,0.4,0.6,0.3,0.8,0.5,0.9,0.4,0.7,0.6,0.3,0.8,0.5,0.9,0.4,0.6,0.7,0.3,0.8,0.9,0.5,0.4,0.6,0.3,0.8,0.5,0.9,0.7,0.4,0.6,0.3,0.8,0.5,0.9,0.4,0.6]
+    },
+    wf2: {
+      playedPct: 0,
+      pattern: [0.3,0.5,0.8,0.4,0.6,0.9,0.3,0.7,0.5,0.4,0.8,0.6,0.3,0.5,0.9,0.4,0.7,0.6,0.3,0.8,0.5,0.4,0.9,0.6,0.3,0.7,0.5,0.8,0.4,0.6,0.9,0.3,0.5,0.7,0.4,0.8,0.6,0.3,0.9,0.5,0.4,0.7,0.6,0.8,0.3,0.5,0.9,0.4,0.6,0.7,0.3,0.8,0.5,0.4,0.9,0.6,0.3,0.7,0.5,0.8,0.4,0.6,0.9,0.3,0.5,0.7,0.4,0.8,0.6,0.3,0.5,0.9]
+    },
+    wf3: {
+      playedPct: 0,
+      pattern: [0.6,0.4,0.8,0.5,0.3,0.9,0.6,0.4,0.7,0.5,0.8,0.3,0.6,0.9,0.4,0.7,0.5,0.3,0.8,0.6,0.4,0.9,0.5,0.7,0.3,0.8,0.6,0.4,0.9,0.5,0.3,0.7,0.6,0.8,0.4,0.5,0.9,0.3,0.6,0.7,0.4,0.8,0.5,0.3,0.9,0.6,0.4,0.7,0.5,0.8,0.3,0.6,0.9,0.4,0.5,0.7,0.3,0.8,0.6,0.4,0.9,0.5,0.3,0.7,0.6,0.8,0.4,0.5,0.9,0.3,0.6,0.7]
+    },
+    wf4: {
+      playedPct: 0,
+      pattern: [0.4,0.9,0.5,0.7,0.3,0.6,0.8,0.4,0.5,0.9,0.3,0.7,0.6,0.4,0.8,0.5,0.9,0.3,0.6,0.7,0.4,0.8,0.5,0.3,0.9,0.6,0.4,0.7,0.5,0.8,0.3,0.6,0.9,0.4,0.7,0.5,0.3,0.8,0.6,0.4,0.9,0.5,0.7,0.3,0.6,0.8,0.4,0.5,0.9,0.3,0.7,0.6,0.4,0.8,0.5,0.9,0.3,0.6,0.7,0.4,0.8,0.5,0.3,0.9,0.6,0.4,0.7,0.5,0.8,0.3,0.6,0.9]
+    }
+  };
+
+  Object.entries(WAVEFORMS).forEach(([id, cfg]) => {
+    const container = document.getElementById(id);
+    if (!container) return;
+    const n = cfg.pattern.length;
+    cfg.pattern.forEach((h, i) => {
+      const bar = document.createElement('div');
+      bar.className = 'wf-bar' + (i / n < cfg.playedPct ? ' played' : '');
+      // height in percent of container (8px–56px range mapped to 14%–100%)
+      const pct = Math.round(14 + h * 86);
+      bar.style.height = pct + '%';
+      container.appendChild(bar);
+    });
+  });
+</script>
+
+</body>
+</html>

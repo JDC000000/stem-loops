@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1440">
+<title>stem-loops — Job History [Wireframe · Desktop 1440px]</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #e0e0e0; padding: 40px 20px; }
+  .screen-label { text-align: center; font-size: 11px; color: #444; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 20px; }
+  .frame { width: 1440px; min-height: 900px; background: #111; border: 2px solid #333; margin: 0 auto; display: flex; flex-direction: column; }
+
+  /* Nav */
+  .topnav { height: 56px; background: #0e0e0e; border-bottom: 1px dashed #2a2a2a; display: flex; align-items: center; padding: 0 48px; justify-content: space-between; }
+  .logo { font-size: 20px; font-weight: 700; color: #fff; }
+  .logo span { color: #666; }
+  .nav-right { display: flex; gap: 20px; align-items: center; }
+  .nav-btn { height: 32px; background: #1a1a1a; border: 1px dashed #444; border-radius: 3px; padding: 0 16px; font-size: 12px; color: #888; display: flex; align-items: center; gap: 6px; }
+  .nav-btn.active { border-color: #777; color: #ccc; }
+
+  /* Page header */
+  .page-header { padding: 24px 48px; border-bottom: 1px dashed #1a1a1a; display: flex; justify-content: space-between; align-items: center; }
+  .page-title { font-size: 20px; font-weight: 700; color: #ccc; }
+  .page-meta { font-size: 13px; color: #555; margin-top: 4px; }
+  .page-header-actions { display: flex; gap: 10px; align-items: center; }
+  .clear-btn { height: 36px; background: #111; border: 1px dashed #2a2a2a; border-radius: 3px; padding: 0 16px; font-size: 13px; color: #444; display: flex; align-items: center; }
+
+  /* Storage info banner */
+  .storage-banner {
+    background: #0e0e0e; border-bottom: 1px dashed #1a1a1a; padding: 10px 48px;
+    display: flex; align-items: center; gap: 12px; font-size: 12px; color: #444;
+  }
+  .info-dot { width: 6px; height: 6px; background: #2a2a2a; border-radius: 50%; border: 1px dashed #555; }
+
+  /* Main layout */
+  .main-layout { flex: 1; display: flex; flex-direction: column; padding: 0; }
+
+  /* Filter/search bar */
+  .filter-bar {
+    padding: 16px 48px; border-bottom: 1px dashed #1a1a1a;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .search-box {
+    width: 280px; height: 36px; background: #161616; border: 1px dashed #333; border-radius: 3px;
+    display: flex; align-items: center; padding: 0 12px; gap: 8px;
+  }
+  .search-icon { width: 14px; height: 14px; background: #2a2a2a; border: 1px dashed #444; border-radius: 50%; flex-shrink: 0; }
+  .search-ph { font-size: 12px; color: #444; font-style: italic; }
+  .filter-chips { display: flex; gap: 8px; }
+  .filter-chip {
+    height: 32px; background: #161616; border: 1px dashed #2a2a2a; border-radius: 16px;
+    padding: 0 14px; font-size: 12px; color: #555; display: flex; align-items: center;
+  }
+  .filter-chip.active { background: #1e1e1e; border-color: #555; color: #ccc; }
+  .filter-divider { flex: 1; }
+  .sort-control { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #555; }
+  .sort-select { background: #161616; border: 1px dashed #2a2a2a; border-radius: 3px; padding: 6px 12px; font-size: 12px; color: #777; }
+
+  /* Job table */
+  .job-table { padding: 0 48px 40px; }
+  .table-header {
+    display: grid; grid-template-columns: 3fr 1.2fr 0.8fr 0.8fr 1fr 1fr 1fr;
+    padding: 10px 0; border-bottom: 1px dashed #2a2a2a;
+    font-size: 10px; color: #444; text-transform: uppercase; letter-spacing: 0.8px;
+  }
+  .table-row {
+    display: grid; grid-template-columns: 3fr 1.2fr 0.8fr 0.8fr 1fr 1fr 1fr;
+    padding: 14px 0; border-bottom: 1px dashed #1a1a1a; align-items: center;
+  }
+  .table-row:hover { background: #141414; }
+
+  /* Status badge */
+  .status-badge {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+    background: #1a1a1a; border: 1px dashed #2a2a2a; border-radius: 2px; font-size: 11px;
+  }
+  .status-dot { width: 6px; height: 6px; border-radius: 50%; }
+  .status-done .status-dot { background: #555; }
+  .status-done { color: #666; }
+  .status-failed .status-dot { background: #442222; }
+  .status-failed { color: #553333; border-color: #2a1a1a; }
+  .status-processing .status-dot { background: #224466; }
+  .status-processing { color: #335577; border-color: #1a2a3a; }
+
+  /* Title cell */
+  .title-cell { display: flex; align-items: center; gap: 10px; }
+  .title-ph { height: 13px; background: #1e1e1e; border-radius: 2px; flex: 1; max-width: 340px; }
+  .url-snippet { font-size: 10px; color: #333; margin-top: 3px; }
+
+  /* Stems cell */
+  .stems-cell { display: flex; gap: 4px; flex-wrap: wrap; }
+  .stem-mini { font-size: 10px; color: #555; background: #161616; border: 1px dashed #2a2a2a; border-radius: 2px; padding: 1px 6px; }
+
+  /* Cell common */
+  .cell { font-size: 12px; color: #666; }
+  .cell.muted { color: #444; }
+  .cell.warn { color: #553333; }
+
+  /* Actions cell */
+  .actions-cell { display: flex; gap: 6px; }
+  .tbl-btn { height: 30px; background: #161616; border: 1px dashed #2a2a2a; border-radius: 3px; padding: 0 12px; font-size: 11px; color: #666; display: flex; align-items: center; white-space: nowrap; }
+  .tbl-btn.primary { border-color: #3a3a3a; color: #aaa; }
+
+  /* Empty state */
+  .empty-state { padding: 80px 48px; text-align: center; }
+  .empty-icon { width: 80px; height: 80px; background: #161616; border: 1px dashed #2a2a2a; border-radius: 50%; margin: 0 auto 20px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #444; }
+  .empty-title { font-size: 18px; color: #555; margin-bottom: 8px; }
+  .empty-sub { font-size: 14px; color: #444; margin-bottom: 24px; }
+  .empty-cta { display: inline-flex; height: 48px; background: #1e1e1e; border: 1px dashed #444; border-radius: 4px; padding: 0 24px; font-size: 14px; color: #999; align-items: center; }
+
+  /* Anno */
+  .anno { font-size: 10px; color: #444; font-style: italic; border-left: 2px solid #1e1e1e; padding-left: 8px; }
+
+  /* Notes */
+  .notes { width: 1440px; margin: 16px auto 40px; background: #0a0a0a; border: 1px dashed #222; padding: 20px 48px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 28px; }
+  .notes h4 { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .notes ul { font-size: 11px; color: #444; line-height: 1.8; padding-left: 14px; }
+</style>
+</head>
+<body>
+
+<div class="screen-label">WIREFRAME · Screen 5: Job History · Desktop 1440px</div>
+
+<div class="frame">
+
+  <!-- Nav -->
+  <div class="topnav">
+    <div class="logo">stem<span>-</span>loops</div>
+    <div class="nav-right">
+      <div class="nav-btn active">My jobs (5)</div>
+      <div class="nav-btn">← New job</div>
+    </div>
+  </div>
+
+  <!-- Page header -->
+  <div class="page-header">
+    <div>
+      <div class="page-title">My jobs</div>
+      <div class="page-meta">5 jobs · stored in this browser · no account required</div>
+    </div>
+    <div class="page-header-actions">
+      <div class="clear-btn">Clear all history</div>
+    </div>
+  </div>
+
+  <!-- Storage info banner -->
+  <div class="storage-banner">
+    <div class="info-dot"></div>
+    <span>Jobs are remembered in this browser using localStorage + a signed cookie. No account needed. History is only visible on this device unless you share job links. All jobs and downloads expire after 7 days.</span>
+  </div>
+
+  <!-- Filter/search bar -->
+  <div class="filter-bar">
+    <div class="search-box">
+      <div class="search-icon"></div>
+      <span class="search-ph">Search job titles…</span>
+    </div>
+    <div class="filter-chips">
+      <div class="filter-chip active">All (5)</div>
+      <div class="filter-chip">Done (3)</div>
+      <div class="filter-chip">Processing (1)</div>
+      <div class="filter-chip">Failed (1)</div>
+    </div>
+    <div class="filter-divider"></div>
+    <div class="sort-control">
+      Sort:
+      <div class="sort-select">Newest first ↓</div>
+    </div>
+  </div>
+  <div class="anno" style="padding: 4px 48px 8px;">Filter tabs by status. Search by video title. Sort by date or status.</div>
+
+  <!-- Job table -->
+  <div class="job-table">
+
+    <div class="table-header">
+      <div>Video</div>
+      <div>Stems</div>
+      <div>Bars</div>
+      <div>Loops</div>
+      <div>Date</div>
+      <div>Status</div>
+      <div>Actions</div>
+    </div>
+
+    <!-- Row 1: Done -->
+    <div class="table-row">
+      <div class="title-cell">
+        <div>
+          <div class="title-ph"></div>
+          <div class="url-snippet">youtube.com/watch?v=xXxXxX</div>
+        </div>
+      </div>
+      <div>
+        <div class="stems-cell">
+          <div class="stem-mini">drums</div>
+          <div class="stem-mini">bass</div>
+        </div>
+      </div>
+      <div class="cell">4</div>
+      <div class="cell">12</div>
+      <div class="cell">2h ago</div>
+      <div>
+        <div class="status-badge status-done"><div class="status-dot"></div>Done</div>
+      </div>
+      <div class="actions-cell">
+        <div class="tbl-btn primary">View loops</div>
+        <div class="tbl-btn">Share</div>
+      </div>
+    </div>
+
+    <!-- Row 2: Done -->
+    <div class="table-row">
+      <div class="title-cell">
+        <div>
+          <div class="title-ph" style="max-width: 280px;"></div>
+          <div class="url-snippet">youtu.be/yYyYyYy</div>
+        </div>
+      </div>
+      <div>
+        <div class="stems-cell">
+          <div class="stem-mini">keys</div>
+          <div class="stem-mini">bass</div>
+          <div class="stem-mini">drums</div>
+        </div>
+      </div>
+      <div class="cell">8</div>
+      <div class="cell">18</div>
+      <div class="cell">Yesterday</div>
+      <div>
+        <div class="status-badge status-done"><div class="status-dot"></div>Done</div>
+      </div>
+      <div class="actions-cell">
+        <div class="tbl-btn primary">View loops</div>
+        <div class="tbl-btn">Share</div>
+      </div>
+    </div>
+
+    <!-- Row 3: Processing -->
+    <div class="table-row">
+      <div class="title-cell">
+        <div>
+          <div class="title-ph" style="max-width: 300px; background: #1a2a3a;"></div>
+          <div class="url-snippet">youtube.com/watch?v=zZzZzZ</div>
+        </div>
+      </div>
+      <div>
+        <div class="stems-cell">
+          <div class="stem-mini">drums</div>
+          <div class="stem-mini">bass</div>
+          <div class="stem-mini">vocals</div>
+          <div class="stem-mini">guitar</div>
+          <div class="stem-mini">keys</div>
+          <div class="stem-mini">other</div>
+        </div>
+      </div>
+      <div class="cell">4</div>
+      <div class="cell">—</div>
+      <div class="cell">Just now</div>
+      <div>
+        <div class="status-badge status-processing"><div class="status-dot"></div>Separating…</div>
+      </div>
+      <div class="actions-cell">
+        <div class="tbl-btn primary">Watch progress</div>
+      </div>
+    </div>
+
+    <!-- Row 4: Failed -->
+    <div class="table-row">
+      <div class="title-cell">
+        <div>
+          <div class="title-ph" style="max-width: 260px; background: #2a1a1a;"></div>
+          <div class="url-snippet">youtube.com/watch?v=aAaAaA · private video</div>
+        </div>
+      </div>
+      <div>
+        <div class="stems-cell">
+          <div class="stem-mini">drums</div>
+        </div>
+      </div>
+      <div class="cell">4</div>
+      <div class="cell muted">—</div>
+      <div class="cell">3 days ago</div>
+      <div>
+        <div class="status-badge status-failed"><div class="status-dot"></div>Failed</div>
+      </div>
+      <div class="actions-cell">
+        <div class="tbl-btn primary">Retry with new URL</div>
+      </div>
+    </div>
+
+    <!-- Row 5: Done, expiring soon -->
+    <div class="table-row">
+      <div class="title-cell">
+        <div>
+          <div class="title-ph" style="max-width: 320px;"></div>
+          <div class="url-snippet">youtu.be/bBbBbBb</div>
+        </div>
+      </div>
+      <div>
+        <div class="stems-cell">
+          <div class="stem-mini">drums</div>
+          <div class="stem-mini">bass</div>
+        </div>
+      </div>
+      <div class="cell">2</div>
+      <div class="cell">8</div>
+      <div class="cell warn">6 days ago · ⚠ expires tomorrow</div>
+      <div>
+        <div class="status-badge status-done"><div class="status-dot"></div>Done</div>
+      </div>
+      <div class="actions-cell">
+        <div class="tbl-btn primary">View loops</div>
+        <div class="tbl-btn">Share</div>
+      </div>
+    </div>
+    <div class="anno" style="padding: 4px 0 4px;">Row with "expires tomorrow" warning shown in red. Prompts user to download before TTL.</div>
+
+  </div>
+
+  <!-- Footer area -->
+  <div style="padding: 20px 48px; border-top: 1px dashed #1a1a1a; margin-top: auto; display: flex; justify-content: space-between; font-size: 12px; color: #333;">
+    <span>Job history stored locally · 7-day TTL</span>
+    <span>stem-loops.com</span>
+  </div>
+
+</div>
+
+<div class="notes">
+  <div>
+    <h4>Desktop Layout</h4>
+    <ul>
+      <li>Table format for desktop — more scannable than card list</li>
+      <li>Columns: video title, stems, bars, loop count, date, status, actions</li>
+      <li>Filter tabs by status. Search box for title lookup.</li>
+      <li>Sort: newest first (default) or by status</li>
+      <li>Table rows hover state: subtle background highlight</li>
+    </ul>
+  </div>
+  <div>
+    <h4>Anonymous History Mechanism</h4>
+    <ul>
+      <li>Primary: localStorage stores array of {jobId, title, params, status, created}</li>
+      <li>Secondary: signed cookie from server (survives localStorage clear, cross-tab)</li>
+      <li>On first job creation: server sets signed cookie with job IDs</li>
+      <li>Cookie is signed (HMAC), not encrypted — tamper-evident, not private</li>
+      <li>"Clear all": deletes localStorage + sends cookie clear request to server</li>
+    </ul>
+  </div>
+  <div>
+    <h4>Expiry & TTL Handling</h4>
+    <ul>
+      <li>All jobs expire at 7 days (PRD §4.4). R2 objects also expire via lifecycle rule.</li>
+      <li>Warning shown when &lt; 24h remaining: date text turns red, advisory note</li>
+      <li>After expiry: row still shows but "View loops" → expired link message</li>
+      <li>Cleanup: front-end removes expired entries from localStorage on load</li>
+      <li>DB cleanup: server cron hard-deletes expired jobs (TSD T33)</li>
+    </ul>
+  </div>
+</div>
+
+</body>
+</html>

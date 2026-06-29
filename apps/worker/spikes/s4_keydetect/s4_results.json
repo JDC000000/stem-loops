@@ -1,0 +1,10 @@
+{
+  "labeled_song": {
+    "librosa_key": "C major"
+  },
+  "neosoul_keys": {
+    "librosa_key": "C major"
+  },
+  "keys_piano_mapping": "htdemucs_6s emits 'piano'; contract maps piano->keys in UI/DB",
+  "essentia": "not imported here; footprint measured via measure_footprint.sh"
+}

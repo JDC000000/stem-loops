@@ -1,0 +1,4 @@
+# S1 bake-off URL set (50 popular YouTube URLs, operator-provided).
+# One URL per line; blank lines and # comments ignored by harness.py.
+# Gate 2 canonical demo URL (video id 7Jj83FOlBF8) seeded below — operator to add 49 more.
+https://www.youtube.com/watch?v=7Jj83FOlBF8

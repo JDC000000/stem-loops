@@ -1,17 +1,29 @@
-.PHONY: dev test-job types codegen migrate lint test clean
+.PHONY: dev verify-dev test-job types codegen migrate lint test clean
 
 # Worker commands run with the src/ layout on PYTHONPATH so they work on a
 # fresh checkout whether or not `pip install -e .` has been run.
 WORKER_PY := PYTHONPATH=src .venv/bin/python
 
 # Start the full local stack: web + worker + Postgres + MinIO (R2 emulator).
-# Postgres + MinIO come up via docker compose; migrations run; then web + worker.
+# Seeds .env.local from the example on first run, then brings up services,
+# migrates, and starts web + worker.
 dev:
+	@test -f .env.local || cp .env.local.example .env.local
 	docker compose -f docker-compose.dev.yml up -d postgres minio
 	sleep 2
 	$(MAKE) migrate
 	pnpm --filter @stem-loops/web dev &
 	cd apps/worker && $(WORKER_PY) -m worker.main
+
+# Prove a fresh local setup end-to-end: clean Docker state -> migrate -> stub job.
+verify-dev:
+	@echo "=== Verifying fresh dev setup ==="
+	docker compose -f docker-compose.dev.yml down -v 2>/dev/null || true
+	docker compose -f docker-compose.dev.yml up -d postgres minio
+	sleep 3
+	$(MAKE) migrate
+	$(MAKE) test-job URL=https://www.youtube.com/watch?v=dQw4w9WgXcQ
+	@echo "=== verify-dev PASSED ==="
 
 # Run a single job directly against the worker — no queue, verbose trace.
 # Usage: make test-job URL=<youtube-url>
@@ -22,7 +34,7 @@ test-job:
 # Regenerate the cross-language type contract: Pydantic -> JSON Schema -> TS.
 # `types` is kept as an alias of `codegen` (tasks.md uses `types`, AGENTS.md uses `codegen`).
 codegen:
-	cd apps/worker && $(WORKER_PY) scripts/codegen.py
+	cd apps/worker && $(WORKER_PY) -m worker.codegen
 	cd packages/types && pnpm generate && pnpm build
 
 types: codegen

@@ -7,6 +7,7 @@ NOT imported here because it is a heavyweight optional dependency.
 keys->piano note: htdemucs_6s emits a 'piano' stem for what the PRD calls 'keys';
 the contract maps piano->keys in the UI/DB.
 """
+
 import json
 import os
 

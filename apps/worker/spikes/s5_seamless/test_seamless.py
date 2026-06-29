@@ -3,6 +3,7 @@
 Pass bar: all 4 tests green on the golden loop sample. Confirms zero-crossing
 alignment lands near silence and the micro-crossfade introduces no clicks/NaNs.
 """
+
 import os
 
 import numpy as np

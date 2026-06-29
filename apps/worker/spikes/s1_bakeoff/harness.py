@@ -6,6 +6,7 @@ Usage:
 Computes per-path success rate and p90 latency so the operator can pick the
 production primary path (Gate 0, P0-7). Run from the s1_bakeoff directory.
 """
+
 import concurrent.futures
 import csv
 import sys
@@ -31,15 +32,29 @@ def run(urls_file: str, out_file: str = "s1_results.csv") -> None:
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
         cobalt_futs = {ex.submit(fetch_audio_cobalt, u): u for u in urls}
         ytdlp_futs = {ex.submit(fetch_audio_ytdlp, u): u for u in urls}
-        cobalt_res = {cobalt_futs[f]: f.result() for f in concurrent.futures.as_completed(cobalt_futs)}
+        cobalt_res = {
+            cobalt_futs[f]: f.result() for f in concurrent.futures.as_completed(cobalt_futs)
+        }
         ytdlp_res = {ytdlp_futs[f]: f.result() for f in concurrent.futures.as_completed(ytdlp_futs)}
 
     with open(out_file, "w", newline="") as csvf:
         w = csv.writer(csvf)
-        w.writerow(["url", "cobalt_ok", "cobalt_ms", "cobalt_err", "ytdlp_ok", "ytdlp_ms", "ytdlp_err"])
+        w.writerow(
+            ["url", "cobalt_ok", "cobalt_ms", "cobalt_err", "ytdlp_ok", "ytdlp_ms", "ytdlp_err"]
+        )
         for u in urls:
             c, y = cobalt_res[u], ytdlp_res[u]
-            w.writerow([u, c["success"], c["latency_ms"], c["error"], y["success"], y["latency_ms"], y["error"]])
+            w.writerow(
+                [
+                    u,
+                    c["success"],
+                    c["latency_ms"],
+                    c["error"],
+                    y["success"],
+                    y["latency_ms"],
+                    y["error"],
+                ]
+            )
 
     n = len(urls)
     cobalt_ok = sum(1 for u in urls if cobalt_res[u]["success"])
@@ -47,7 +62,9 @@ def run(urls_file: str, out_file: str = "s1_results.csv") -> None:
     cobalt_p90 = _p90([cobalt_res[u]["latency_ms"] for u in urls if cobalt_res[u]["success"]])
     ytdlp_p90 = _p90([ytdlp_res[u]["latency_ms"] for u in urls if ytdlp_res[u]["success"]])
 
-    pct = lambda ok: f"{(ok / n * 100):.0f}%" if n else "n/a"
+    def pct(ok: int) -> str:
+        return f"{(ok / n * 100):.0f}%" if n else "n/a"
+
     print(f"Cobalt: {cobalt_ok}/{n} ({pct(cobalt_ok)})  p90={cobalt_p90}ms")
     print(f"yt-dlp: {ytdlp_ok}/{n} ({pct(ytdlp_ok)})  p90={ytdlp_p90}ms")
     print(f"Results written to {out_file}")

@@ -4,6 +4,7 @@ Measures success rate and latency of the self-hosted Cobalt instance against a
 sample of YouTube URLs. Server-side only — Cobalt sidesteps cookies entirely,
 satisfying PRD §8 anti-goal #1 (never ask the user for cookies/secrets).
 """
+
 import os
 import time
 
@@ -30,7 +31,12 @@ def fetch_audio_cobalt(youtube_url: str) -> dict:
         data = r.json()
         latency_ms = int((time.time() - t0) * 1000)
         if data.get("status") in ("redirect", "stream", "tunnel", "success"):
-            return {"success": True, "url": data.get("url"), "latency_ms": latency_ms, "error": None}
+            return {
+                "success": True,
+                "url": data.get("url"),
+                "latency_ms": latency_ms,
+                "error": None,
+            }
         return {
             "success": False,
             "url": None,

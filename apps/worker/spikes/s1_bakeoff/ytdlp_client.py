@@ -4,6 +4,7 @@ The cookie pool lives ONLY on the server (PRD §8 anti-goal #1: never ask the us
 for cookies). Cookie/token material is redacted from any captured stderr before it
 leaves this process (PRD §6.1 — no secrets in logs).
 """
+
 import os
 import re
 import subprocess
@@ -34,8 +35,15 @@ def fetch_audio_ytdlp(youtube_url: str) -> dict:
     cookie_file = _pick_cookie_file()
     with tempfile.TemporaryDirectory() as tmpdir:
         cmd = [
-            "yt-dlp", "--no-playlist", "-x", "--audio-format", "wav",
-            "-o", f"{tmpdir}/audio.%(ext)s", "--print", "after_move:filepath",
+            "yt-dlp",
+            "--no-playlist",
+            "-x",
+            "--audio-format",
+            "wav",
+            "-o",
+            f"{tmpdir}/audio.%(ext)s",
+            "--print",
+            "after_move:filepath",
         ]
         if cookie_file:
             cmd += ["--cookies", cookie_file]
@@ -57,7 +65,12 @@ def fetch_audio_ytdlp(youtube_url: str) -> dict:
                 "error": _redact(result.stderr[-500:]),
             }
         except subprocess.TimeoutExpired:
-            return {"success": False, "path": None, "latency_ms": TIMEOUT * 1000, "error": "timeout"}
+            return {
+                "success": False,
+                "path": None,
+                "latency_ms": TIMEOUT * 1000,
+                "error": "timeout",
+            }
         except FileNotFoundError:
             return {
                 "success": False,

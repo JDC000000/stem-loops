@@ -1,34 +1,64 @@
 name: CI
 on: [push, pull_request]
+
 jobs:
   lint-web:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v3
-      - run: pnpm install
-      - run: pnpm --filter web lint
-      - run: pnpm --filter web tsc --noEmit
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @stem-loops/types build
+      - run: pnpm --filter @stem-loops/web exec tsc --noEmit
+      - run: pnpm --filter @stem-loops/web lint
+
   lint-worker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
-      - run: pip install ruff black pytest
-      - run: ruff check apps/worker && black --check apps/worker
+      - run: pip install ruff black
+      - run: ruff check apps/worker
+      - run: black --check apps/worker
+
   test-worker:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_DB: stemloops, POSTGRES_USER: stemloops, POSTGRES_PASSWORD: stemloops }
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U stemloops" --health-interval 2s
+          --health-timeout 3s --health-retries 15
+    env:
+      DATABASE_URL: postgresql://stemloops:stemloops@localhost:5432/stemloops
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
-      - run: pip install -r apps/worker/requirements.txt
+      - run: pip install -e "apps/worker[dev]"
+      - run: python -m worker.migrate
       - run: pytest apps/worker/tests/ -v
-        # NOTE: Phase 4 will add the full pipeline fixture test here (cached YouTube audio, no live API calls)
+        # Phase 4 adds the full pipeline fixture test (cached YouTube audio, no live API calls).
+
   codegen-drift:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: make codegen
-      - run: git diff --exit-code packages/types/src/  # fail if codegen produces drift
+      - uses: pnpm/action-setup@v3
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pnpm install --frozen-lockfile
+      - run: pip install -e apps/worker
+      # Regenerate from Pydantic and fail if the committed TS contract drifted.
+      - run: python -m worker.codegen
+      - run: pnpm --filter @stem-loops/types generate
+      - run: git diff --exit-code packages/types/src/ packages/types/schema/

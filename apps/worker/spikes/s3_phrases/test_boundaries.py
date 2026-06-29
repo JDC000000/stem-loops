@@ -6,6 +6,7 @@ transitions have a detected boundary within 500ms.
 NOTE: fixture is WAV (the dev/CI box has no ffmpeg). Swap for a real labeled
 track when the operator judges musical quality at Gate 0.
 """
+
 import json
 import os
 

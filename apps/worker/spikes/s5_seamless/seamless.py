@@ -4,6 +4,7 @@ Produces seamless loops (PRD §4.3). Snap loop start/end to the nearest zero
 crossing, then apply a short cosine crossfade at the seam so the wrap from the
 last sample back to the first is click-free.
 """
+
 import numpy as np
 
 
@@ -26,7 +27,7 @@ def cosine_crossfade(loop: np.ndarray, sr: int, fade_ms: float = 7.5) -> np.ndar
     window = 0.5 * (1 - np.cos(np.pi * np.arange(fade_samples) / fade_samples))
     result = loop.astype(np.float64).copy()
     # Blend the head into the tail so the wrap point is continuous.
-    result[-fade_samples:] *= (1 - window)
+    result[-fade_samples:] *= 1 - window
     result[-fade_samples:] += loop[:fade_samples] * window
     return result[: len(loop) - fade_samples]  # trim so the loop keeps a clean length
 

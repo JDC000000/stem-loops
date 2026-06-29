@@ -7,6 +7,7 @@ audio, which the operator does at Gate 0.
 
 Run: python apps/worker/spikes/fixtures/make_synthetic_fixtures.py
 """
+
 import json
 import os
 
@@ -18,8 +19,18 @@ HERE = os.path.dirname(__file__)
 
 # Equal-tempered note frequencies (A4 = 440 Hz).
 _NOTE_SEMITONES = {
-    "C": -9, "C#": -8, "D": -7, "D#": -6, "E": -5, "F": -4,
-    "F#": -3, "G": -2, "G#": -1, "A": 0, "A#": 1, "B": 2,
+    "C": -9,
+    "C#": -8,
+    "D": -7,
+    "D#": -6,
+    "E": -5,
+    "F": -4,
+    "F#": -3,
+    "G": -2,
+    "G#": -1,
+    "A": 0,
+    "A#": 1,
+    "B": 2,
 }
 
 
@@ -69,7 +80,11 @@ def make_labeled_song() -> tuple[str, str]:
     song_path = os.path.join(HERE, "labeled_song.wav")
     sf.write(song_path, audio, SR)
 
-    gt = {"sections": [{"label": label, "start": i * seg_s} for i, (label, _, _) in enumerate(sections)]}
+    gt = {
+        "sections": [
+            {"label": label, "start": i * seg_s} for i, (label, _, _) in enumerate(sections)
+        ]
+    }
     gt_path = os.path.join(HERE, "labeled_song_ground_truth.json")
     with open(gt_path, "w") as f:
         json.dump(gt, f, indent=2)
@@ -79,10 +94,10 @@ def make_labeled_song() -> tuple[str, str]:
 def make_neosoul_keys() -> str:
     """16s Rhodes-ish progression in A minor: Am7 - Dm7 - G7 - Cmaj7."""
     prog = [
-        (["A", "C", "E", "G"], 0.5),   # Am7
-        (["D", "F", "A", "C"], 0.5),   # Dm7
-        (["G", "B", "D", "F"], 0.5),   # G7
-        (["C", "E", "G", "B"], 0.5),   # Cmaj7
+        (["A", "C", "E", "G"], 0.5),  # Am7
+        (["D", "F", "A", "C"], 0.5),  # Dm7
+        (["G", "B", "D", "F"], 0.5),  # G7
+        (["C", "E", "G", "B"], 0.5),  # Cmaj7
     ]
     audio = np.concatenate([_chord(notes, 4.0, amp, octave=4) for notes, amp in prog])
     path = os.path.join(HERE, "neosoul_keys.wav")

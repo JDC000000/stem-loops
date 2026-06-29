@@ -3,6 +3,7 @@ import { randomUUID, createHmac } from 'crypto';
 import { JobRequestSchema } from '@stem-loops/types';
 import { db } from '@/lib/db';
 import { enqueueJob } from '@/lib/queue';
+import { checkAdmission } from '@/lib/admission';
 
 // pg + crypto require the Node runtime (not edge).
 export const runtime = 'nodejs';
@@ -54,6 +55,18 @@ export async function POST(req: NextRequest) {
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? '0.0.0.0';
   const ipHash = hashIp(ip);
   const fingerprint = req.headers.get('x-fingerprint') ?? '';
+
+  // Admission control BEFORE any insert/enqueue — rate-limit + in-flight cap + spend ceiling.
+  const admission = await checkAdmission(ipHash);
+  if (!admission.allowed) {
+    return NextResponse.json(
+      {
+        error_code: admission.error_code,
+        message: "We're busy or you've hit the limit — wait a moment and try again.",
+      },
+      { status: 429 },
+    );
+  }
 
   const jobId = randomUUID();
   await db.query(

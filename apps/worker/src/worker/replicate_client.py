@@ -21,11 +21,14 @@ from .errors import SeparationFailedError
 from .logger import log_structured
 
 API = "https://api.replicate.com/v1"
-HARD_DEADLINE = 45  # seconds — keeps the job inside the <60s p90 budget
+# <60s p90 budget by default; overridable so a cold-boot measurement run can finish.
+HARD_DEADLINE = int(os.environ.get("REPLICATE_DEADLINE", "45"))
 POLL_INTERVAL = 2
 # htdemucs_6s → contract mapping. 'piano' is internal-only; everything else uses 'keys'.
 STEM_RENAME = {"piano": "keys"}
+# Replicate version hash for ryan5453/demucs (set via env in prod/CI).
 MODEL_VERSION = os.environ.get("REPLICATE_MODEL_VERSION", "htdemucs_6s")
+DEMUCS_MODEL = os.environ.get("REPLICATE_DEMUCS_MODEL", "htdemucs_6s")
 
 
 def _headers() -> dict:
@@ -61,7 +64,15 @@ def submit_or_reattach(job_id: str, audio_url: str) -> str:
         return existing
     r = httpx.post(
         f"{API}/predictions",
-        json={"version": MODEL_VERSION, "input": {"audio": audio_url, "model": "htdemucs_6s"}},
+        json={
+            "version": MODEL_VERSION,
+            "input": {
+                "audio": audio_url,
+                "model": DEMUCS_MODEL,  # htdemucs_6s → emits a 'piano' stem (→ keys)
+                "stem": "none",  # separate all stems
+                "output_format": "wav",
+            },
+        },
         headers=_headers(),
         timeout=30,
     )

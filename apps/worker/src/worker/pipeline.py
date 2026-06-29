@@ -83,7 +83,11 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     sp = {k: v for k, v in stem_paths.items() if k in (requested_stems or stem_paths)}
     if not sp:
         sp = stem_paths
-    y_ref, _ = librosa.load(next(iter(sp.values())), sr=sr, mono=True)
+    # Beat/boundary reference: prefer drums (clearest beat), else bass/other, else first.
+    # Reorder so the reference is first — extract_loops also keys off the first stem.
+    ref_stem = next((s for s in ("drums", "bass", "other") if s in sp), next(iter(sp)))
+    sp = {ref_stem: sp[ref_stem], **{k: v for k, v in sp.items() if k != ref_stem}}
+    y_ref, _ = librosa.load(sp[ref_stem], sr=sr, mono=True)
     tags = detect_bpm_and_key(y_ref, sr)
     _update_job_tags(job_id, tags)
 

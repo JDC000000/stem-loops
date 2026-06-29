@@ -33,16 +33,32 @@ The headline metric (≥95% success, p90 <10s) **cannot be measured from this sa
 [ ] A: Cobalt (primary) + yt-dlp (fallback)
 [ ] B: yt-dlp (primary) + Cobalt (fallback)
 
-## Developer recommendation (pre-measurement)
+## Gate 0 ruling (operator, 2026-06-29)
+**ARCHITECTURE approved: Cobalt primary + yt-dlp fallback** (PRD §7 locked decision). Building the
+client code in Phase 1 is approved. This unblocks Phase 1 (which uses a STUB downloader — no real
+YouTube call).
+
+**NOT approved / NOT done:** the download path is **NOT validated as production-ready.** The
+≥95%-success bake-off (PRD §7 open-question #1) was never measured — the sandbox IP was bot-challenged
+and the Cobalt instance was never deployed. Treating S1 as "validated" is explicitly out of bounds.
+
+## ⛔ PRE-T12 PRODUCTION GATE (REQUIRED, still OPEN)
+The real bake-off **MUST run and pass before T12** (Phase 2 real YouTube download integration):
+- **Bar:** ≥95% success across 50 popular YouTube URLs, p90 <10s, for the chosen primary path.
+- **Where:** Cobalt deployed on Fly.io (Fly IPs ARE the production scenario — no home IP needed for
+  the Cobalt half); yt-dlp fallback needs a non-datacenter IP or cookie rotation.
+
+### Operator infra needed to run it (flag with lead time before T12)
+1. **Fly.io account + CLI access** — to deploy the Cobalt instance (`fly deploy --config cobalt/fly.toml`).
+2. **ffmpeg** available in the execution environment (yt-dlp `-x --audio-format wav` needs it).
+3. **`apps/worker/spikes/fixtures/fixture_urls.txt`** — 50 popular YouTube URLs for `harness.py`.
+4. Run `python harness.py ../fixtures/fixture_urls.txt`, fill Results + Winner above.
+
+## Developer recommendation (pre-measurement, to confirm via the bake-off)
 Lean **A — Cobalt primary, yt-dlp fallback**. Cobalt sidesteps cookies entirely (zero cookie-pool
 maintenance, directly satisfies anti-goal #1) and the dual-path downloader (P2-8) keeps yt-dlp as a
-resilient fallback. Confirm with the real bake-off before locking.
+resilient fallback. **Do not lock until the ≥95% bake-off passes.**
 
-## Operator actions to open this gate
-1. Provision Fly.io; `fly deploy --config cobalt/fly.toml`.
-2. Provide `apps/worker/spikes/fixtures/fixture_urls.txt` (50 popular URLs).
-3. Run `python harness.py ../fixtures/fixture_urls.txt` from a representative network.
-4. Fill Results + Winner above.
-
-## Gate 0 Status
-[ ] APPROVED by operator
+## Status
+- Architecture (primary/fallback choice): **APPROVED at Gate 0**
+- ≥95% production bake-off: **[ ] NOT RUN — hard gate before T12**

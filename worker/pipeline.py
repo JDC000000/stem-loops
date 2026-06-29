@@ -129,16 +129,21 @@ def download_youtube(url: str, work_dir: str) -> tuple[str, str]:
     if not ytdlp:
         raise RuntimeError("yt-dlp not found on PATH")
 
-    # Datacenter IPs (Railway, most clouds) often get flagged by YouTube.
-    # These flags help: pretend to be a real Safari, use the most permissive
-    # extractor, and retry on transient failures. Bot-challenge errors will
-    # still propagate — we surface the real stderr so the caller can diagnose.
+    # Datacenter IPs (Railway, most clouds) get throttled or blocked by
+    # YouTube. Cookies are the real fix — set YOUTUBE_COOKIES env var with a
+    # logged-in session. These flags help on the margin:
+    #   - Spoofed Safari UA (less suspicious than a default Python UA)
+    #   - web_safari/mweb player clients (most permissive extractor path)
+    #   - --socket-timeout 20 so individual network reads fail fast instead of
+    #     hanging until the subprocess timeout fires (which gives no signal)
+    #   - --retries 2 so retry storms don't blow the subprocess timeout budget
     common_args = [
         "--user-agent",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
         "(KHTML, like Gecko) Version/17.0 Safari/605.1.15",
         "--extractor-args", "youtube:player_client=web_safari,mweb",
-        "--retries", "3",
+        "--socket-timeout", "20",
+        "--retries", "2",
         "--fragment-retries", "3",
     ]
 
@@ -147,17 +152,27 @@ def download_youtube(url: str, work_dir: str) -> tuple[str, str]:
     if cookies_path:
         common_args += ["--cookies", cookies_path]
 
+    title_timeout = 120
     try:
         title = subprocess.check_output(
             [ytdlp, "--print", "title", *common_args, url],
             stderr=subprocess.PIPE,
-            timeout=60,
+            timeout=title_timeout,
         ).decode().strip()
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or b"").decode(errors="replace")[-800:]
         raise RuntimeError(f"yt-dlp title fetch failed: {stderr}") from e
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("yt-dlp title fetch timed out after 60s")
+    except subprocess.TimeoutExpired as e:
+        # Capture partial stderr so the timeout isn't a black box. Without
+        # this we just see "timed out after Xs" with no clue whether yt-dlp
+        # was retrying, blocked on DNS, hit a captcha, etc.
+        partial = (e.stderr or b"").decode(errors="replace").strip()[-800:]
+        msg = f"yt-dlp title fetch timed out after {title_timeout}s"
+        if partial:
+            msg += f" — partial stderr: {partial}"
+        else:
+            msg += " (no stderr — likely IP blocked or rate limited; set YOUTUBE_COOKIES)"
+        raise RuntimeError(msg)
 
     safe = "".join(c if c.isalnum() or c in " -_" else "" for c in title).strip()
     safe = safe.replace(" ", "_")

@@ -2,6 +2,7 @@
 Minimal /health endpoint — available from Phase 1.
 Returns DB connectivity status. Cobalt health added in Phase 4 T32.
 """
+
 import os
 
 import psycopg

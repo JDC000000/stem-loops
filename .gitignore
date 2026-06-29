@@ -29,6 +29,13 @@ Thumbs.db
 # Build artifacts
 apps/worker/spikes/s1_bakeoff/s1_results.csv
 
+# Spike fixtures — regenerable synthetic audio (run make_synthetic_fixtures.py).
+# The generator + ground-truth JSON + measured results JSON ARE committed; the
+# WAVs are not (binary, deterministic, ~6MB).
+apps/worker/spikes/fixtures/*.wav
+apps/worker/spikes/fixtures/*.mp3
+apps/worker/spikes/fixtures/*.flac
+
 # Secrets
 *.pem
 *.key

@@ -1,0 +1,12 @@
+{
+  "name": "s2-pgboss-spike",
+  "private": true,
+  "type": "module",
+  "description": "S2 spike: validate the pg-boss polling pattern (enqueue -> work -> complete, poison isolation).",
+  "scripts": {
+    "validate": "node validate.js"
+  },
+  "dependencies": {
+    "pg-boss": "^10.1.5"
+  }
+}

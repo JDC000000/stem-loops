@@ -1,0 +1,28 @@
+{
+  "sections": [
+    {
+      "label": "intro",
+      "start": 0.0
+    },
+    {
+      "label": "verse",
+      "start": 8.0
+    },
+    {
+      "label": "chorus",
+      "start": 16.0
+    },
+    {
+      "label": "verse2",
+      "start": 24.0
+    },
+    {
+      "label": "bridge",
+      "start": 32.0
+    },
+    {
+      "label": "outro",
+      "start": 40.0
+    }
+  ]
+}

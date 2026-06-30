@@ -20,6 +20,7 @@ import asyncio
 import os
 import tempfile
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import librosa
@@ -111,8 +112,11 @@ def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100
     key = tags["musical_key"]
     key_slug = key.replace(" ", "_")
     tmpdir = tempfile.mkdtemp(prefix="sl_loops_")
-    count = 0
-    for idx, loop in enumerate(loops):
+
+    def _one(item) -> int:
+        # Runs in a worker thread: seamless → 24-bit encode → R2 upload → DB row.
+        # Each call uses its own DB connection; the R2 client is a shared singleton.
+        idx, loop = item
         loop_id = str(uuid.uuid4())
         audio = seamless_apply(loop["audio"], sr)
         out_path = os.path.join(tmpdir, f"{loop_id}.wav")
@@ -142,8 +146,11 @@ def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100
                 Json(peaks),
             )
         )
-        count += 1
-    return count
+        return 1
+
+    # Parallelize the network-bound upload work — the dominant cost at scale.
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        return sum(ex.map(_one, enumerate(loops)))
 
 
 def process_stems(job_id, stem_paths, requested_stems, bars, sr=44100) -> int:
@@ -174,15 +181,22 @@ async def set_status(job_id: str, status: str) -> None:
 
 def _fetch_stems(stem_urls: dict, requested_stems) -> dict:
     tmpdir = tempfile.mkdtemp(prefix="sl_stems_")
-    stem_paths = {}
-    for stem_name, stem_url in stem_urls.items():
-        if requested_stems and stem_name not in requested_stems:
-            continue
-        path = os.path.join(tmpdir, f"{stem_name}.wav")
+    wanted = [
+        (name, url)
+        for name, url in stem_urls.items()
+        if not requested_stems or name in requested_stems
+    ]
+
+    def _get(item):
+        name, url = item
+        path = os.path.join(tmpdir, f"{name}.wav")
         with open(path, "wb") as f:
-            f.write(httpx.get(stem_url, timeout=30).content)
-        stem_paths[stem_name] = path
-    return stem_paths
+            f.write(httpx.get(url, timeout=60).content)
+        return name, path
+
+    # Download stems concurrently — each is a full-length WAV.
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        return dict(ex.map(_get, wanted))
 
 
 async def run_pipeline(job_id: str) -> None:

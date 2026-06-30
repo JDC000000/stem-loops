@@ -6,6 +6,7 @@ so a retried job overwrites in place rather than creating duplicates.
 """
 
 import os
+from functools import lru_cache
 
 import boto3
 from botocore.config import Config
@@ -21,7 +22,10 @@ def _endpoint() -> str:
     return f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com"
 
 
+@lru_cache(maxsize=1)
 def _r2():
+    # Cached, thread-safe client — reused across all uploads in a job (boto3
+    # clients are safe to share across threads for independent operations).
     return boto3.client(
         "s3",
         endpoint_url=_endpoint(),

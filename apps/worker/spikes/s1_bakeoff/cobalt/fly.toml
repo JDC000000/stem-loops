@@ -3,9 +3,19 @@ primary_region = "lax"
 
 [build]
 
+# Cobalt v10 REQUIRES API_URL set to the instance's own public URL or the API
+# won't serve. Open spike instance: no API key / turnstile.
+[env]
+  API_URL = "https://stem-loops-cobalt-spike.fly.dev/"
+  CORS_WILDCARD = "1"
+
 [http_service]
   internal_port = 9000
   force_https = true
   auto_stop_machines = true
   auto_start_machines = true
   min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

@@ -1,4 +1,53 @@
-# S1 bake-off URL set (50 popular YouTube URLs, operator-provided).
-# One URL per line; blank lines and # comments ignored by harness.py.
-# Gate 2 canonical demo URL (video id 7Jj83FOlBF8) seeded below — operator to add 49 more.
-https://www.youtube.com/watch?v=7Jj83FOlBF8
+# S1 bake-off URL set — 50 representative YouTube URLs
+# Built via yt-dlp ytsearch across hip-hop(90s+modern)/lofi/neo-soul/drill/electronic; mixed era/popularity/duration.
+# Generated 2026-06-30T18:27Z by Developer (S1/R1). Operator may swap/add specific URLs.
+https://www.youtube.com/watch?v=n61ULEU7CO0
+https://www.youtube.com/watch?v=X4VbdwhkE10
+https://www.youtube.com/watch?v=lTRiuFIWV54
+https://www.youtube.com/watch?v=CFGLoQIhmow
+https://www.youtube.com/watch?v=-FlxM_0S2lA
+https://www.youtube.com/watch?v=sF80I-TQiW0
+https://www.youtube.com/watch?v=xZZS7zV9TSM
+https://www.youtube.com/watch?v=CPwd-Av9rwE
+https://www.youtube.com/watch?v=4Bj53dIfIdM
+https://www.youtube.com/watch?v=GHrsBNlxY48
+https://www.youtube.com/watch?v=L7HyFbR-x84
+https://www.youtube.com/watch?v=pDvhQ557VOY
+https://www.youtube.com/watch?v=or047P2NOjc
+https://www.youtube.com/watch?v=WIC8KedLRdo
+https://www.youtube.com/watch?v=bNY6CQJzEyw
+https://www.youtube.com/watch?v=JBP1tA9GYJk
+https://www.youtube.com/watch?v=cnVPm1dGQJc
+https://www.youtube.com/watch?v=K7d-c9BhWUc
+https://www.youtube.com/watch?v=PAFAfhod9TU
+https://www.youtube.com/watch?v=WlUgupH5GZk
+https://www.youtube.com/watch?v=rNxejpydPtI
+https://www.youtube.com/watch?v=m58DWuZFI2U
+https://www.youtube.com/watch?v=nftGJDj8ho0
+https://www.youtube.com/watch?v=K6en74gqBSM
+https://www.youtube.com/watch?v=KCYL43Rojm8
+https://www.youtube.com/watch?v=3NN2KfqeVXQ
+https://www.youtube.com/watch?v=0VbSIBzJWXc
+https://www.youtube.com/watch?v=Ya40bEheno0
+https://www.youtube.com/watch?v=7VmKUwmHKEY
+https://www.youtube.com/watch?v=s8eDbo7Jwl0
+https://www.youtube.com/watch?v=XZOWcZZNZBs
+https://www.youtube.com/watch?v=IGlVNIJXdg4
+https://www.youtube.com/watch?v=Z50N6gL136M
+https://www.youtube.com/watch?v=Re5Wc007Rts
+https://www.youtube.com/watch?v=4D89Qr5vH6U
+https://www.youtube.com/watch?v=IOO30CU6VmA
+https://www.youtube.com/watch?v=W8NuBLfbAfI
+https://www.youtube.com/watch?v=wkQxMFA_er4
+https://www.youtube.com/watch?v=4sbIAjo2zPI
+https://www.youtube.com/watch?v=ADpJspbZdSk
+https://www.youtube.com/watch?v=kX4E3htyK8s
+https://www.youtube.com/watch?v=bhS1TqA9emE
+https://www.youtube.com/watch?v=5yx6BWlEVcY
+https://www.youtube.com/watch?v=QRFv3HESAtE
+https://www.youtube.com/watch?v=9M4jZuqdw04
+https://www.youtube.com/watch?v=7NOSDKb0HlU
+https://www.youtube.com/watch?v=CLeZyIID9Bo
+https://www.youtube.com/watch?v=xx3X4HRbtgI
+https://www.youtube.com/watch?v=helHagf1mc0
+https://www.youtube.com/watch?v=q7O8RONeWtg

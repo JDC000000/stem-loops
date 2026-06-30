@@ -1,0 +1,11 @@
+{
+  "path": "yt-dlp (datacenter IP, no cookies)",
+  "n": 50,
+  "success": 0,
+  "success_pct": 0.0,
+  "p50_ms_success": null,
+  "p90_ms_success": null,
+  "categories": {
+    "BOT_BLOCK": 50
+  }
+}

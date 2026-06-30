@@ -3,13 +3,9 @@
   "private": true,
   "packageManager": "pnpm@9.0.0",
   "scripts": {
-    "types": "pnpm --filter @stem-loops/types build",
-    "codegen": "pnpm --filter @stem-loops/types generate",
-    "lint": "pnpm -r lint",
-    "test": "pnpm -r test"
-  },
-  "devDependencies": {
-    "typescript": "^5.4.0",
-    "eslint": "^8.57.0"
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "lint": "pnpm --filter web lint",
+    "test": "pnpm --filter web test"
   }
 }

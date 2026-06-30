@@ -1,129 +1,138 @@
-# stem-loops V2 — Agent Context
+# AGENTS.md — Canonical Context File
 
-## What This Repo Is
+> This is the SINGLE CANONICAL context file for the stem-loops repository.
+> All agents (Claude Code, Cursor, Copilot, CI bots) must read this file first.
+> CLAUDE.md is a thin pointer to this file only.
 
-**stem-loops V2** — a complete rewrite of stem-loops.com. Takes any YouTube song URL and separates it into individual instrument stems (drums, bass, vocals, guitar, keys, other), then extracts bar-aligned, BPM/key-tagged loops that bedroom producers can audition in-browser and drag into a DAW. Target: under 60 seconds, zero ceremony, no accounts.
+## Project Overview
 
-## Monorepo Structure
+**stem-loops** is a web app that takes a YouTube URL, separates the audio into stems (vocals/drums/bass/other) using AI (Replicate + demucs), extracts musical loops, and serves them for download.
+
+## External Documents (on CRHQ platform)
+
+- **PRD**: `documents/requirements/stem-loops/requirements.md`
+  - Contains §10 Handoff Rules for Claude Code
+  - Full product requirements, user stories, acceptance criteria
+- **TSD**: `documents/requirements/stem-loops/technical-scope.md`
+  - Contains §6 Data model (jobs/job_events/loops tables)
+  - Contains §6.2 Error codes
+  - Contains §6.3 State machine
+  - Contains §8 Anti-goals (V1 mistakes to NOT repeat)
+  - Contains §9 Build order
+  - Contains FLAG 1 resolution (this file is the canonical context)
+
+## FLAG 1 Resolution (TSD reference)
+
+The TSD flags a potential ambiguity about which file is the canonical context for Claude Code.
+**Resolution: AGENTS.md (this file) is the single source of truth.**
+- CLAUDE.md points here and contains nothing else
+- If any context file conflicts with AGENTS.md, AGENTS.md wins
+
+## Architecture
 
 ```
-stem-loops/
-├── apps/web/          — Next.js 14+ App Router (TypeScript) — Vercel Hobby deploy
-├── apps/worker/       — Python 3.11+ queue consumer + audio pipeline — Fly.io/Render
-├── packages/types/    — Shared contract: Pydantic models (worker) + codegen'd TS (web)
-└── docs/              — Architecture, runbook, secret convention
+apps/web/          Next.js 14 App Router → Vercel Hobby
+apps/worker/       Python FastAPI + pipeline → Fly.io / Render
+packages/types/    Pydantic → JSON Schema → TypeScript (codegen)
+fixtures/          CI fixtures (cached audio, golden loops) — committed to git
+evals/bugs.json    Regression tracking — pre-allocated per TSD §9
 ```
 
-**Key principle:** `web` and `worker` NEVER share code directly. All cross-language contracts go through `packages/types`.
-
-## Build Order (LOCKED — do not skip phases)
+## State Machine (TSD §6.3)
 
 ```
-Phase 0 Spikes → Gate 0 (HUMAN) → Phase 1 Foundation → Gate 1 → Phase 2 Audio → Gate 2 → Phase 3 UX → Gate 3 → Phase 4 Ship → Gate 4 (HUMAN)
+jobs.status:  queued → downloading → separating → extracting → uploading → done
+                                                                          → failed
 ```
 
-**Gate 0 warning:** NO Phase 1 production code on a spiked path until all 5 spike H-gates pass:
-- S1: YouTube download path (Cobalt vs yt-dlp) — ≥95% success on 50 URLs
-- S2: pg-boss queue validation — poison job isolation confirmed → **gates T4**
-- S3: Phrase-boundary heuristic — ≥5 loops/stem, ≥70% boundary accuracy
-- S4: Key-detection library (librosa vs essentia) + keys→piano validation
-- S5: Loop seamlessness algorithm — unit tests pass on golden loop
+Active stages emit events (job_events table):
+- Each active stage (downloading/separating/extracting/uploading) emits: `started`, then `completed` OR `failed`
 
-## PRD §8 Anti-Goals Checklist (score every task against this BEFORE writing code)
+## Error Codes (TSD §6.2)
 
-1. ❌ Never ask users to paste cookies, secrets, or env vars → YouTube auth is infra-managed server-side
-2. ❌ Never surface raw stderr or stack traces in user-facing errors → typed error taxonomy only
-3. ❌ No CPU Demucs (2-3 min) → Replicate GPU only (≤30s separation)
-4. ❌ No 24-hour signed URLs → 7-day persistent jobs, re-mint signed URLs on every GET /api/jobs/:id read
-5. ❌ No single-worker SPOF → stateless worker, horizontally scalable, durable Postgres queue
-6. ❌ No silent failures → every error path has a typed error code + user-actionable message
-7. ❌ No Redis / unqueryable state → Postgres with proper schema (jobs, job_events, loops)
-8. ❌ No deployed-env-only testing → `make dev` + `make test-job` work on fresh checkout
+| Code | When |
+|------|------|
+| DOWNLOAD_BLOCKED | yt-dlp blocked/unavailable |
+| DOWNLOAD_TIMEOUT | yt-dlp timed out |
+| DOWNLOAD_INVALID_URL | Not a valid YouTube URL |
+| DOWNLOAD_AGE_RESTRICTED | Video age-restricted |
+| DOWNLOAD_PRIVATE | Video is private |
+| SEPARATION_FAILED | Replicate/demucs error |
+| EXTRACTION_FAILED | Loop extraction error |
+| UPLOAD_FAILED | R2/MinIO upload error |
+| INTERNAL_ERROR | Unexpected error |
+| RATE_LIMITED | Rate limit exceeded |
 
-## PRD §6.1 Security Non-Negotiables
+## §9 Build Order
 
-- **Never** ask the user for secrets, cookies, or env vars — ever
-- **No stack traces or server state** in any user-facing response (including unhandled exceptions via Next.js error boundaries)
-- **No raw IPs** — store only keyed HMAC-SHA256 (`IP_HASH_KEY`)
-- **No browser secrets** — no `NEXT_PUBLIC_` prefix on any secret var
-- **Typed error taxonomy** — errors rendered from a static code→copy map, never interpolated from server state
-- **Secret redaction** in all logs before writing to `job_events.detail` or Better Stack drain
+1. **Foundation** — DB schema, migrations, worker health, types codegen, CI green
+2. **Audio Pipeline** — Download (yt-dlp), Separate (Replicate demucs), Extract loops, Upload to R2
+3. **UX Polish** — Web UI, job status polling, loop playback, download
+4. **Production/Ship** — Rate limiting, IP hashing, expiry cleanup, deploy pipeline
 
-## Module Boundaries
+## §8 Anti-Goals (V1 mistakes — DO NOT repeat)
 
-| Module | Location | Responsibility |
-|---|---|---|
-| `web-ui` | `apps/web/src/app/` + `src/components/` | Submit, progress, results, history, error states |
-| `api-routes` | `apps/web/src/app/api/` | POST /api/jobs (admission + enqueue), GET /api/jobs/:id (status + re-mint URLs) |
-| `worker-core` | `apps/worker/src/worker/` | Queue consumer, job state machine, /health |
-| `audio-pipeline` | `apps/worker/src/worker/` | download → separate → extract → tag → encode → upload |
-| `types-contract` | `packages/types/` | Pydantic models → JSON Schema → TS codegen (single source of truth) |
-| `infra` | `apps/worker/migrations/`, `docker-compose.dev.yml`, `.github/workflows/` | Migrations, local dev, CI |
+- Do NOT expose secrets to the browser. All API tokens are server-side only.
+- Do NOT call Replicate from the web layer. Only the worker calls Replicate.
+- Do NOT store audio files in the database. Use R2/MinIO only.
+- Do NOT block the event loop in the FastAPI worker. Use thread pool for pipeline.
+- Do NOT skip the migration runner. Always run `make migrate` before `make dev`.
+- Do NOT hard-code URLs or bucket names. Always use environment variables.
+- Do NOT commit `.env`. Only `.env.example` is committed.
+- Do NOT add audio files (*.wav, *.mp3, *.flac) outside of `fixtures/`.
+- Do NOT generate TypeScript types by hand. Always run `make types-generate`.
 
-**No cross-module coupling except via `types-contract`.** The `audio-pipeline` is a pure function: `(job_id, youtube_url, stems, options) → loops[] on R2`. The `api-routes` module never calls `audio-pipeline` directly — always via pg-boss queue.
+## Secret Convention
 
-## Make Targets Reference
+**All secrets are server-side only. Never in the browser. Never requested from users.**
 
-```bash
-make dev          # Start full local stack: web + worker + Postgres + MinIO (R2 emulator)
-make test-job URL=<youtube-url>  # Run one job directly (no queue, verbose trace)
-make migrate      # Run SQL migrations idempotently
-make codegen      # Regenerate TS types from Pydantic models (run after Pydantic changes)
-make lint         # Lint web (eslint + tsc) and worker (ruff + black)
-```
+| Variable | Where used | How to get |
+|----------|-----------|------------|
+| REPLICATE_API_TOKEN | worker only | replicate.com/account |
+| R2_ACCESS_KEY_ID | worker only | Cloudflare R2 dashboard |
+| R2_SECRET_ACCESS_KEY | worker only | Cloudflare R2 dashboard |
+| R2_ENDPOINT | worker only | Cloudflare R2 dashboard |
+| R2_BUCKET_NAME | worker only | Create in R2 dashboard |
+| DATABASE_URL | worker + web (server) | Supabase dashboard |
+| DATABASE_POOL_URL | worker + web (server) | Supabase dashboard |
+| BETTERSTACK_SOURCE_TOKEN | worker + web | betterstack.com |
+| IP_HASH_KEY | worker + web (server) | `openssl rand -hex 32` |
+| HISTORY_COOKIE_KEY | web (server) | `openssl rand -hex 32` |
 
-**Rule:** `make dev` must work on a fresh git clone. If it doesn't, it's a bug.
+See `.env.example` for the full list with documentation.
 
-## Key Reference Documents
+## Make Targets
 
-- **PRD** (requirements): `documents/requirements/stem-loops/requirements.md` (on satellite)
-- **TSD** (technical scope): `documents/requirements/stem-loops/technical-scope.md` (on satellite)
-- **Task plan** (101 subtasks): `documents/requirements/stem-loops/tasks.md` (on satellite)
-- **Visual Blueprint**: `apps/web/public/designs/` (vendored from satellite pipeline Step 3)
-- **Secret convention**: `docs/secret-convention.md`
-- **Agent registry**: `docs/agent-registry.md`
+| Target | What it does |
+|--------|-------------|
+| `make dev` | Spin up web + worker + Postgres + MinIO via docker-compose, run stub job end-to-end |
+| `make test-job URL=...` | Run worker on one URL with verbose logging, no queue |
+| `make types` | Run Pydantic → JSON Schema → TS codegen AND check for drift |
+| `make types-generate` | Run codegen only (no drift check) |
+| `make test` | Run pytest + pnpm test |
+| `make lint` | Run ruff + black check + eslint |
+| `make deploy-web` | Deploy to Vercel |
+| `make deploy-worker` | Deploy to Fly.io |
+| `make migrate` | Run database migrations (idempotent) |
+| `make install` | pnpm install + pip install -r requirements.txt |
 
-## Visual Blueprint
+## Type Source of Truth
 
-Visual Blueprint is at `apps/web/public/designs/`. QA loops the built product against these designs until pixel-perfect.
+`apps/worker/src/models.py` — Pydantic models — is the SINGLE SOURCE OF TRUTH for all types.
 
-**Accent A (Neon Lime #a3e635) is locked — do not change.**
+- Any schema change → edit models.py → run `make types-generate` → commit both
+- CI (types-drift job) will fail if generated types are out of sync with models.py
+- TypeScript consumers import from `@stem-loops/types` (packages/types)
 
-Mobile is operator-explicit first-class: all 5 screens must work at 375px (touch targets ≥44px, sticky CTAs, no horizontal scroll).
+## PRD §10 Handoff Rules for Claude Code
 
-Design token CSS var: `--color-accent-a: #a3e635` defined in `apps/web/public/designs/design-tokens.css` — import in `apps/web/src/app/globals.css`.
-
-## Stack Summary
-
-- **Frontend**: Next.js 14+, TypeScript, Tailwind, wavesurfer.js, JSZip
-- **Worker**: Python 3.11+, FastAPI (/health), psycopg3, librosa, soundfile, boto3
-- **Queue**: pg-boss (Postgres-native — one less service)
-- **Database**: Postgres on Supabase (free tier) — jobs, job_events, loops tables
-- **Storage**: Cloudflare R2 (S3-compatible) — 24-bit WAVs, signed URLs
-- **Separation**: Replicate htdemucs_6s (GPU, ~$0.01–0.03/job)
-- **Local dev**: MinIO (R2 emulator), Docker Compose
-
-## Typed Error Taxonomy (canonical — never deviate)
-
-| error_code | Trigger |
-|---|---|
-| `DOWNLOAD_BLOCKED` | YouTube bot challenge |
-| `DOWNLOAD_TIMEOUT` | Network/proxy timeout |
-| `DOWNLOAD_INVALID_URL` | Not a valid YouTube URL |
-| `DOWNLOAD_AGE_RESTRICTED` | Sign-in required |
-| `DOWNLOAD_PRIVATE` | Video is private |
-| `SEPARATION_FAILED` | Replicate error |
-| `EXTRACTION_FAILED` | Too short / no beats |
-| `UPLOAD_FAILED` | R2 issue |
-| `INTERNAL_ERROR` | Catch-all (logged, never detailed) |
-| `RATE_LIMITED` | Over IP/fingerprint window or global spend cap |
-
-## Phase Gates
-
-| Gate | Who | Condition |
-|---|---|---|
-| Gate 0 | **HUMAN** | All 5 spike decisions documented + operator sign-off |
-| Gate 1 | code-review-agent | Stub job via UI completes with fake loops; `make dev` works fresh |
-| Gate 2 | code-review-agent | Real YouTube→loops <60s p90; spend backstop live; typed errors |
-| Gate 3 | code-review-agent | Waveform+audition+zip+history+mobile; friends use unaided |
-| Gate 4 | **HUMAN** | CI green; security-review passed; cutover approved |
+1. Always read AGENTS.md first. It supersedes all other context.
+2. Run `make install` before starting any work session.
+3. Run `make dev` to verify the full stack is working before making changes.
+4. Run `make lint` and `make test` before committing.
+5. Never edit `packages/types/src/generated.ts` by hand — run `make types-generate`.
+6. Follow the §9 build order — do not skip ahead to UX before the pipeline works.
+7. When adding a new model field, update models.py and run `make types-generate`.
+8. All new secrets go in `.env.example` with a comment explaining how to obtain them.
+9. Regression bugs go in `evals/bugs.json`.
+10. The state machine (§6.3) is fixed — do not add or rename statuses.

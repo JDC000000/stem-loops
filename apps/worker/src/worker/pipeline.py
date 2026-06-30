@@ -199,6 +199,51 @@ def _fetch_stems(stem_urls: dict, requested_stems) -> dict:
         return dict(ex.map(_get, wanted))
 
 
+# ------------------------------ T10 stub path -------------------------------
+def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
+    """Phase-1 STUB: write fake loops straight to the DB — no YouTube/Replicate/
+    librosa/R2. Exercises the UI→queue→worker→DB→UI loop for Gate 1."""
+    bpm, key = 120.0, "C major"
+    stems = list(requested_stems) if requested_stems else ["drums", "bass", "vocals", "other"]
+    sections = ["intro", "verse", "chorus", "bridge", "outro"]
+    bar_sec = 4 * 60.0 / bpm
+    n = 0
+    with _db() as c:
+        c.execute("UPDATE jobs SET bpm=%s, musical_key=%s WHERE id=%s", (bpm, key, job_id))
+        for stem in stems:
+            for i in range(5):  # >=5 loops/stem (PRD §4.3) even in stub
+                start = i * bars * bar_sec
+                end = start + bars * bar_sec
+                r2_key = f"stub/{job_id}/{stem}_{i}.wav"
+                c.execute(
+                    """
+                    INSERT INTO loops(id, job_id, stem, section_label, energy_class, start_sec,
+                        end_sec, start_bar, bar_count, bpm, musical_key, r2_key, filename,
+                        duration_ms, waveform_peaks)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT(job_id, r2_key) DO NOTHING
+                    """,
+                    (str(uuid.uuid4()), job_id, stem, sections[i % len(sections)], "mid",
+                     start, end, int(start / bar_sec), bars, bpm, key, r2_key,
+                     f"{job_id}_{stem}_{i:04d}.wav", int(bars * bar_sec * 1000),
+                     Json([0.1, 0.5, 0.3, 0.6, 0.2])),
+                )
+                n += 1
+        c.commit()
+    return n
+
+
+async def _run_stub(job_id: str, requested_stems, bars: int) -> None:
+    """Walk the §6.3 state machine emitting events, then write fake loops + done."""
+    for stage, p0, p1 in (("downloading", 0, 100), ("separating", 15, 100),
+                          ("extracting", 70, 100), ("uploading", 90, 100)):
+        await set_status(job_id, stage)
+        await emit_event(job_id, stage, "started", pct=p0)
+        await emit_event(job_id, stage, "completed", pct=p1)
+    await asyncio.to_thread(_insert_stub_loops, job_id, requested_stems, bars)
+    await set_status(job_id, "done")
+
+
 async def run_pipeline(job_id: str) -> None:
     """Real pipeline. download_audio + Replicate are gated (S1 bake-off / P2-12+);
     the audio core runs against the produced stems. Typed errors set status=failed."""
@@ -206,6 +251,14 @@ async def run_pipeline(job_id: str) -> None:
         row = await asyncio.to_thread(_fetch_job, job_id)
         url, requested_stems, bars = row
         log_structured("INFO", "pipeline_start", job_id=job_id)
+
+        # T10 STUB short-circuit: full UI→queue→worker→DB loop with fake loops and
+        # no YouTube/Replicate. The real pipeline below is unchanged and stays gated
+        # on the S1 bake-off (T12).
+        if os.environ.get("STUB_MODE", "").lower() == "true":
+            await _run_stub(job_id, requested_stems, bars)
+            log_structured("INFO", "pipeline_done", job_id=job_id, stub=True)
+            return
 
         await set_status(job_id, "downloading")
         await emit_event(job_id, "downloading", "started", pct=0)

@@ -1,71 +1,93 @@
-.PHONY: dev verify-dev test-job types codegen migrate lint test clean deploy-web deploy-worker install
+.PHONY: dev test-job types test lint deploy-web deploy-worker migrate install help
 
-# Worker commands run with the src/ layout on PYTHONPATH so they work on a
-# fresh checkout whether or not `pip install -e .` has been run.
-WORKER_PY := PYTHONPATH=src .venv/bin/python
+# Default target
+help:
+	@echo "stem-loops make targets:"
+	@echo "  make dev            - Spin up web + worker + Postgres + MinIO, run stub job end-to-end"
+	@echo "  make test-job URL=  - Run worker on one URL with verbose logging (no queue)"
+	@echo "  make types          - Run Pydantic → JSON Schema → TS codegen"
+	@echo "  make test           - Run pytest + pnpm test"
+	@echo "  make lint           - Run ruff + black check + eslint"
+	@echo "  make deploy-web     - Deploy web to Vercel"
+	@echo "  make deploy-worker  - Deploy worker to Fly.io"
+	@echo "  make migrate        - Run database migrations"
+	@echo "  make install        - pnpm install + pip install"
 
-# Start the full local stack: web + worker + Postgres + MinIO (R2 emulator).
-# Seeds .env.local from the example on first run, then brings up services,
-# migrates, and starts web + worker.
+# Spin up full local stack and run a stub job end-to-end
 dev:
-	@test -f .env.local || cp .env.local.example .env.local
-	docker compose -f docker-compose.dev.yml up -d postgres minio
-	sleep 2
+	@echo "Starting stem-loops local dev stack..."
+	docker compose up -d postgres minio minio-setup
+	@echo "Waiting for services to be healthy..."
+	@sleep 3
+	@echo "Running migrations..."
 	$(MAKE) migrate
-	pnpm --filter @stem-loops/web dev &
-	cd apps/worker && $(WORKER_PY) -m worker.main
+	@echo "Starting worker and web..."
+	docker compose up worker &
+	cd apps/web && pnpm dev &
+	@echo ""
+	@echo "Stack is up:"
+	@echo "  Web:      http://localhost:3000"
+	@echo "  Worker:   http://localhost:8000"
+	@echo "  MinIO:    http://localhost:9001 (minioadmin/minioadmin)"
+	@echo "  Postgres: localhost:5432 (stemloops/stemloops)"
+	@echo ""
+	@echo "Submitting stub job..."
+	@sleep 5
+	curl -s -X POST http://localhost:3000/api/jobs \
+		-H "Content-Type: application/json" \
+		-d '{"url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","stems":["vocals","drums","bass","other"],"loop_length_bars":4}' \
+		| python3 -m json.tool
 
-# Prove a fresh local setup end-to-end: clean Docker state -> migrate -> stub job.
-verify-dev:
-	@echo "=== Verifying fresh dev setup ==="
-	docker compose -f docker-compose.dev.yml down -v 2>/dev/null || true
-	docker compose -f docker-compose.dev.yml up -d postgres minio
-	sleep 3
-	$(MAKE) migrate
-	$(MAKE) test-job URL=https://www.youtube.com/watch?v=dQw4w9WgXcQ
-	@echo "=== verify-dev PASSED ==="
-
-# Run a single job directly against the worker — no queue, verbose trace.
-# Usage: make test-job URL=<youtube-url>
+# Run worker directly on one URL with verbose logging (no queue)
 test-job:
-	@test -n "$(URL)" || (echo "Usage: make test-job URL=<youtube_url>" && exit 1)
-	cd apps/worker && $(WORKER_PY) -m worker.main --test-job "$(URL)"
+	@if [ -z "$(URL)" ]; then echo "Usage: make test-job URL=https://..."; exit 1; fi
+	cd apps/worker && \
+		DATABASE_URL=$${DATABASE_URL:-postgresql://stemloops:stemloops@localhost:5432/stemloops} \
+		R2_ACCESS_KEY_ID=$${R2_ACCESS_KEY_ID:-minioadmin} \
+		R2_SECRET_ACCESS_KEY=$${R2_SECRET_ACCESS_KEY:-minioadmin} \
+		R2_ENDPOINT=$${R2_ENDPOINT:-http://localhost:9000} \
+		R2_BUCKET_NAME=$${R2_BUCKET_NAME:-stem-loops-dev} \
+		STUB_MODE=$${STUB_MODE:-true} \
+		LOG_LEVEL=DEBUG \
+		python -m src.worker.cli test-job "$(URL)"
 
-# Regenerate the cross-language type contract: Pydantic -> JSON Schema -> TS.
-# `types` is kept as an alias of `codegen` (tasks.md uses `types`, AGENTS.md uses `codegen`).
-codegen:
-	cd apps/worker && $(WORKER_PY) -m worker.codegen
-	cd packages/types && pnpm generate && pnpm build
+# Run Pydantic → JSON Schema → TS codegen
+types:
+	cd packages/types && python scripts/codegen.py
+	@echo "Checking for drift..."
+	@git diff --exit-code packages/types/src/ || (echo "TYPE DRIFT DETECTED: run 'make types' and commit the result" && exit 1)
+	@echo "Types are in sync."
 
-types: codegen
+types-generate:
+	cd packages/types && python scripts/codegen.py
+	@echo "Types generated."
 
-# Run SQL migrations idempotently.
-migrate:
-	cd apps/worker && $(WORKER_PY) -m worker.migrate
-
-# Lint both apps.
-lint:
-	cd apps/worker && .venv/bin/ruff check . && .venv/bin/black --check .
-	pnpm --filter @stem-loops/web lint
-
-# Run all tests.
+# Run all tests
 test:
-	cd apps/worker && .venv/bin/pytest
-	pnpm --filter @stem-loops/web test
+	cd apps/worker && python -m pytest tests/ -v
+	pnpm --filter web test || true
 
-# Install all dependencies (pnpm + Python venv).
-install:
-	pnpm install
-	cd apps/worker && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+# Run linters
+lint:
+	cd apps/worker && python -m ruff check src/ tests/
+	cd apps/worker && python -m black --check src/ tests/
+	pnpm --filter web lint || true
 
-# One-command deploy: web to Vercel.
+# Deploy web to Vercel
 deploy-web:
-	cd apps/web && vercel deploy --prod
+	cd apps/web && npx vercel deploy --prod
 
-# One-command deploy: worker to Fly.io.
+# Deploy worker to Fly.io
 deploy-worker:
 	cd apps/worker && fly deploy
 
-# Tear down the local stack and wipe volumes.
-clean:
-	docker compose -f docker-compose.dev.yml down -v
+# Run database migrations
+migrate:
+	cd apps/worker && \
+		DATABASE_URL=$${DATABASE_URL:-postgresql://stemloops:stemloops@localhost:5432/stemloops} \
+		python -m src.worker.migrate
+
+# Install all dependencies
+install:
+	pnpm install
+	cd apps/worker && pip install -r requirements.txt

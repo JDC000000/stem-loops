@@ -1,28 +1,20 @@
-import { SubmitForm } from '@/components/SubmitForm';
-
 export default function HomePage() {
   return (
-    <main
-      style={{
-        minHeight: '100dvh',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 24,
-        padding: 24,
-      }}
-    >
-      <header style={{ textAlign: 'center', maxWidth: 560 }}>
-        <h1 style={{ fontSize: 32, margin: 0, color: 'var(--text-primary)' }}>stem-loops</h1>
-        <p style={{ color: 'var(--text-muted)', marginTop: 8 }}>
-          Paste a YouTube URL to pull bar-aligned, key/BPM-tagged stem loops into your DAW.
-        </p>
-        <a href="/history" style={{ fontSize: 14, color: 'var(--accent)' }}>
-          Your recent loops →
-        </a>
-      </header>
-      <SubmitForm />
+    <main style={{ maxWidth: 640, margin: '80px auto', padding: '0 24px', fontFamily: 'system-ui, sans-serif' }}>
+      <h1>Stem Loops</h1>
+      <p>Paste a YouTube URL to extract stem loops.</p>
+      <form action="/api/jobs" method="POST">
+        <input
+          type="url"
+          name="url"
+          placeholder="https://www.youtube.com/watch?v=..."
+          required
+          style={{ width: '100%', padding: '12px', fontSize: 16, marginBottom: 12, boxSizing: 'border-box' }}
+        />
+        <button type="submit" style={{ padding: '12px 24px', fontSize: 16, cursor: 'pointer' }}>
+          Extract Loops
+        </button>
+      </form>
     </main>
   );
 }

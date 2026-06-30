@@ -1,38 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
 [project]
 name = "stem-loops-worker"
 version = "0.1.0"
+description = "Stem Loops audio pipeline worker"
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic>=2.0",
-    "psycopg[binary]>=3.1",
-    "httpx>=0.27",
-    "librosa>=0.10",
-    "soundfile>=0.12",
-    "numpy>=1.26",
-    "scipy>=1.13",
-    "boto3>=1.34",
-    "fastapi>=0.111",
-    "uvicorn>=0.29",
+    "pydantic>=2.7.0",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "psycopg2-binary>=2.9.9",
+    "boto3>=1.34.0",
+    "librosa>=0.10.2",
+    "soundfile>=0.12.1",
+    "numpy>=1.26.0",
+    "scipy>=1.13.0",
+    "replicate>=0.31.0",
+    "yt-dlp>=2024.5.27",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.0",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4", "black>=24.0"]
-
 [tool.ruff]
-line-length = 100
 target-version = "py311"
+line-length = 100
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
 
 [tool.black]
 line-length = 100
 target-version = ["py311"]
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
 testpaths = ["tests"]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/worker"]
+asyncio_mode = "auto"

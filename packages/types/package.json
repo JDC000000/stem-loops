@@ -1,17 +1,14 @@
 {
   "name": "@stem-loops/types",
   "version": "0.1.0",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "scripts": {
-    "build": "tsc",
-    "generate": "node scripts/codegen.mjs"
+    "codegen": "python scripts/codegen.py"
   },
   "devDependencies": {
     "json-schema-to-typescript": "^14.0.0",
-    "typescript": "^5.4.0"
-  },
-  "dependencies": {
-    "zod": "^3.23.0"
+    "typescript": "^5.4.5"
   }
 }

@@ -1,42 +1,57 @@
 # Node
 node_modules/
+.pnpm-store/
+
+# Next.js
 .next/
+out/
 dist/
-.env
-.env.local
-.env.*.local
-*.tsbuildinfo
+build/
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
-*.egg-info/
+*.so
 .venv/
 venv/
+env/
+dist/
+*.egg-info/
+.eggs/
 .pytest_cache/
 .ruff_cache/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Audio files (fixtures/ are committed; loose audio is not)
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.aac
+*.m4a
+!fixtures/**
 
 # OS
 .DS_Store
 Thumbs.db
 
-# IDE
-.idea/
+# Editor
 .vscode/
+.idea/
 *.swp
+*.swo
 
-# Build artifacts
-apps/worker/spikes/s1_bakeoff/s1_results.csv
+# Docker volumes
+postgres_data/
+minio_data/
 
-# Spike fixtures — regenerable synthetic audio (run make_synthetic_fixtures.py).
-# The generator + ground-truth JSON + measured results JSON ARE committed; the
-# WAVs are not (binary, deterministic, ~6MB).
-apps/worker/spikes/fixtures/*.wav
-apps/worker/spikes/fixtures/*.mp3
-apps/worker/spikes/fixtures/*.flac
+# Vercel
+.vercel/
 
-# Secrets
-*.pem
-*.key
-apps/worker/tests/fixtures/*.wav
+# TypeScript build info
+*.tsbuildinfo

@@ -1,0 +1,103 @@
+/* loop-card.css (P3-2) — mobile-first layout for LoopCard. Consumes design tokens. */
+.loop-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  min-width: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md, 10px);
+}
+
+.loop-card .section-marker {
+  font-size: var(--text-xs, 11px);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.loop-card-waveform {
+  width: 100%;
+  min-height: 48px;
+  background: var(--wf-bg, #0e0e0e);
+  border-radius: var(--radius-sm, 6px);
+}
+
+.action-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* Touch targets >= 44px (PRD mobile rule). */
+.play-btn,
+.btn-download-wav,
+.action-row button,
+.action-row a {
+  min-height: 44px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 14px;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  touch-action: manipulation;
+  font-size: var(--text-sm, 14px);
+}
+
+.play-btn {
+  background: var(--accent);
+  color: var(--accent-text);
+  border: none;
+  font-weight: 700;
+}
+.btn-download-wav {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  text-decoration: none;
+}
+
+.tags-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: var(--text-xs, 12px);
+}
+.tags-row .tag {
+  padding: 2px 8px;
+  border-radius: var(--radius-full, 999px);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle, #1e1e1e);
+}
+.tags-row .tag-stem {
+  text-transform: capitalize;
+  border-color: var(--accent-border);
+}
+.tags-row .tag-section {
+  color: var(--accent);
+}
+
+.drag-handle {
+  cursor: grab;
+}
+
+@media (max-width: 375px) {
+  .loop-card {
+    padding: 8px;
+  }
+  .loop-card-waveform {
+    min-height: 40px;
+  }
+}
+
+/* No horizontal overflow on any viewport. */
+.loop-results {
+  overflow-x: hidden;
+  max-width: 100%;
+}

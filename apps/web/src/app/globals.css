@@ -18,3 +18,34 @@ body {
 a {
   color: var(--accent);
 }
+
+/* ── P3-8: mobile-responsive layout ───────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: inherit;
+}
+
+/* Results grid: single column on mobile, fluid on larger screens. */
+.loop-grid {
+  display: grid;
+  gap: 12px;
+}
+@media (max-width: 640px) {
+  .loop-grid {
+    grid-template-columns: 1fr;
+  }
+  /* Sticky submit CTA on mobile so it's always reachable with a thumb. */
+  .submit-cta {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+    padding-top: 12px;
+    background: linear-gradient(to top, var(--bg-page) 70%, transparent);
+  }
+}
+@media (min-width: 641px) {
+  .loop-grid {
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  }
+}

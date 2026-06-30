@@ -45,7 +45,7 @@ importers:
         specifier: ^18.3.0
         version: 18.3.1(react@18.3.1)
       wavesurfer.js:
-        specifier: ^7.8.0
+        specifier: ^7.12.8
         version: 7.12.8
       zod:
         specifier: ^3.23.0

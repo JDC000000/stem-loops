@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import type { Job } from '@stem-loops/types';
 import { JobProgress } from '@/components/JobProgress';
 import { JobError } from '@/components/JobError';
+import { LoopResults } from '@/components/LoopResults';
+import { addToHistory } from '@/lib/history';
 
 const TERMINAL = new Set(['done', 'failed']);
 
@@ -35,6 +37,11 @@ export default function JobPage({ params }: { params: { id: string } }) {
     };
   }, [params.id]);
 
+  // Record completed jobs in anonymous history (P3-7/11).
+  useEffect(() => {
+    if (job?.status === 'done') addToHistory(params.id);
+  }, [job?.status, params.id]);
+
   async function copyShare() {
     try {
       await navigator.clipboard.writeText(window.location.href);
@@ -45,24 +52,31 @@ export default function JobPage({ params }: { params: { id: string } }) {
     }
   }
 
+  const done = job?.status === 'done';
+
   return (
-    <main style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, padding: 24 }}>
+    <main
+      style={{
+        minHeight: '100dvh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: done ? 'flex-start' : 'center',
+        gap: 24,
+        padding: 24,
+      }}
+    >
       {!job ? (
         <p style={{ color: 'var(--text-muted)' }}>Loading job…</p>
       ) : job.status === 'failed' ? (
         <JobError errorCode={job.error_code ?? 'INTERNAL_ERROR'} />
-      ) : job.status === 'done' ? (
-        <div style={{ textAlign: 'center', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <h2 style={{ color: 'var(--status-done)', margin: 0 }}>Processing complete!</h2>
-          <p style={{ color: 'var(--text-muted)', margin: 0 }}>
-            Your loops are ready. (Full results UI — waveforms, audition, downloads — lands in Phase 3.)
-          </p>
-        </div>
+      ) : done ? (
+        <LoopResults job={job} />
       ) : (
         <JobProgress job={job} />
       )}
 
-      <ShareBox id={params.id} copied={copied} onCopy={copyShare} />
+      {!done && <ShareBox id={params.id} copied={copied} onCopy={copyShare} />}
     </main>
   );
 }

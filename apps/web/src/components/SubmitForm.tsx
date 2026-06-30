@@ -109,7 +109,7 @@ export function SubmitForm() {
         </p>
       )}
 
-      <button type="submit" disabled={loading} style={styles.submit}>
+      <button type="submit" disabled={loading} className="submit-cta" style={styles.submit}>
         {loading ? 'Submitting…' : 'Extract Loops'}
       </button>
     </form>

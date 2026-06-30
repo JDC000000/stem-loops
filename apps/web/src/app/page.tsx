@@ -18,6 +18,9 @@ export default function HomePage() {
         <p style={{ color: 'var(--text-muted)', marginTop: 8 }}>
           Paste a YouTube URL to pull bar-aligned, key/BPM-tagged stem loops into your DAW.
         </p>
+        <a href="/history" style={{ fontSize: 14, color: 'var(--accent)' }}>
+          Your recent loops →
+        </a>
       </header>
       <SubmitForm />
     </main>

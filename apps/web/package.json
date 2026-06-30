@@ -18,7 +18,7 @@
     "pg-boss": "^10.4.2",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
-    "wavesurfer.js": "^7.8.0",
+    "wavesurfer.js": "^7.12.8",
     "zod": "^3.23.0"
   },
   "devDependencies": {

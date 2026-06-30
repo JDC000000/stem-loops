@@ -1,6 +1,6 @@
 'use client';
 
-// Global error boundary. NEVER renders error.message or a stack trace (PRD §6.1).
+// Global error boundary. NEVER renders the raw error or any stack trace (PRD §6.1).
 export default function GlobalError({ reset }: { error: Error; reset: () => void }) {
   return (
     <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 560 }}>

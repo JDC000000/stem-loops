@@ -1,0 +1,12 @@
+{
+  "path": "Cobalt v10.9.4 self-hosted (datacenter IP, no cookies)",
+  "deployment": "local Docker (ghcr.io/imputnet/cobalt:10) — Fly app-create blocked by app-scoped token; same datacenter-IP class as Fly",
+  "measurement": "serial, rate-limit raised (RATELIMIT_MAX=1000) to remove Cobalt's own throttle",
+  "n": 50,
+  "success": 0,
+  "success_pct": 0.0,
+  "p50_ms_success": null,
+  "p90_ms_success": null,
+  "categories": { "error.api.youtube.login": 50 },
+  "note": "All 50 hit YouTube's login/bot wall — same failure class as yt-dlp. Concurrent run earlier also showed 31 error.api.rate_exceeded (Cobalt self-throttle); serial run confirms the underlying blocker is youtube.login for 100%."
+}

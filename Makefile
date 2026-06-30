@@ -1,4 +1,4 @@
-.PHONY: dev verify-dev test-job types codegen migrate lint test clean
+.PHONY: dev verify-dev test-job types codegen migrate lint test clean deploy-web deploy-worker install
 
 # Worker commands run with the src/ layout on PYTHONPATH so they work on a
 # fresh checkout whether or not `pip install -e .` has been run.
@@ -52,6 +52,19 @@ lint:
 test:
 	cd apps/worker && .venv/bin/pytest
 	pnpm --filter @stem-loops/web test
+
+# Install all dependencies (pnpm + Python venv).
+install:
+	pnpm install
+	cd apps/worker && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+
+# One-command deploy: web to Vercel.
+deploy-web:
+	cd apps/web && vercel deploy --prod
+
+# One-command deploy: worker to Fly.io.
+deploy-worker:
+	cd apps/worker && fly deploy
 
 # Tear down the local stack and wipe volumes.
 clean:

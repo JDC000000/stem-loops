@@ -86,10 +86,13 @@ export default function JobPage({ params }: { params: { id: string } }) {
           </Link>
         </div>
       ) : job.status === 'done' ? (
-        <LoopResults job={job} />
+        <LoopResults job={{ ...job, title: job.original_filename ?? undefined }} />
       ) : (
         <>
-          <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0 }}>Processing your track…</h1>
+          <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, textAlign: 'center' }}>
+            {job.original_filename ?? job.youtube_url ?? 'Your track'}
+          </h1>
+          <p style={{ margin: '-16px 0 0', color: 'var(--text-muted)' }}>Processing…</p>
           <JobProgress job={job} />
         </>
       )}

@@ -236,13 +236,33 @@ def _fetch_stems(stem_urls: dict, requested_stems) -> dict:
 
 
 # ------------------------------ T10 stub path -------------------------------
+def _stub_placeholder_wav() -> str | None:
+    """A tiny silent 24-bit WAV so stub-mode loop downloads RESOLVE (make dev /
+    Gate 1 stays fully offline — no Replicate). Returns a temp path, or None if
+    audio libs are unavailable."""
+    try:
+        import numpy as np
+        import soundfile as sf
+
+        sr = 44100
+        path = os.path.join(tempfile.mkdtemp(prefix="stub_ph_"), "silent.wav")
+        sf.write(path, np.zeros(sr, dtype="float32"), sr, subtype="PCM_24")  # 1s mono
+        return path
+    except Exception as exc:  # noqa: BLE001
+        log_structured("WARN", "stub_placeholder_failed", error=str(exc)[:120])
+        return None
+
+
 def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
-    """Phase-1 STUB: write fake loops straight to the DB — no YouTube/Replicate/
-    librosa/R2. Exercises the UI→queue→worker→DB→UI loop for Gate 1."""
+    """Phase-1 STUB: write fake loops to the DB AND upload a tiny silent 24-bit WAV
+    to each loop's r2_key (via upload_loop → same key scheme + audio/wav content-type
+    as production), so the full offline loop (upload → stub → DOWNLOAD) actually
+    returns real bytes without Replicate. The signed GET must not 404."""
     bpm, key = 120.0, "C major"
     stems = list(requested_stems) if requested_stems else ["drums", "bass", "vocals", "other"]
     sections = ["intro", "verse", "chorus", "bridge", "outro"]
     bar_sec = 4 * 60.0 / bpm
+    placeholder = _stub_placeholder_wav()  # tiny silent 24-bit WAV, uploaded per loop
     n = 0
     with _db() as c:
         c.execute("UPDATE jobs SET bpm=%s, musical_key=%s WHERE id=%s", (bpm, key, job_id))
@@ -250,7 +270,15 @@ def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
             for i in range(5):  # >=5 loops/stem (PRD §4.3) even in stub
                 start = i * bars * bar_sec
                 end = start + bars * bar_sec
-                r2_key = f"stub/{job_id}/{stem}_{i}.wav"
+                section = sections[i % len(sections)]
+                # Default to upload_loop's key scheme even if the upload is skipped.
+                r2_key = f"{job_id}/{stem}/{section}_{i:04d}.wav"
+                if placeholder:
+                    try:
+                        r2_key = upload_loop(job_id, stem, section, i, placeholder)
+                    except Exception as exc:  # noqa: BLE001 — no R2 (pure-DB test): skip, don't crash
+                        log_structured("WARN", "stub_upload_skipped", error=str(exc)[:120])
+                        placeholder = None  # stop retrying for the rest of the loops
                 c.execute(
                     """
                     INSERT INTO loops(id, job_id, stem, section_label, energy_class, start_sec,
@@ -259,7 +287,7 @@ def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
                     VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT(job_id, r2_key) DO NOTHING
                     """,
-                    (str(uuid.uuid4()), job_id, stem, sections[i % len(sections)], "mid",
+                    (str(uuid.uuid4()), job_id, stem, section, "mid",
                      start, end, int(start / bar_sec), bars, bpm, key, r2_key,
                      f"{job_id}_{stem}_{i:04d}.wav", int(bars * bar_sec * 1000),
                      Json([0.1, 0.5, 0.3, 0.6, 0.2])),

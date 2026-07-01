@@ -226,9 +226,23 @@ def _fetch_stems(stem_urls: dict, requested_stems) -> dict:
     def _get(item):
         name, url = item
         path = os.path.join(tmpdir, f"{name}.wav")
-        with open(path, "wb") as f:
-            f.write(httpx.get(url, timeout=60).content)
-        return name, path
+        # Stream to disk with retries. Replicate's CDN can drop a large stem body
+        # mid-download (httpx RemoteProtocolError). Real songs → 40-60MB stems, so
+        # chunk-stream + retry instead of buffering .content in one shot.
+        last_exc = None
+        for attempt in range(4):
+            try:
+                with httpx.stream("GET", url, timeout=180, follow_redirects=True) as r:
+                    r.raise_for_status()
+                    with open(path, "wb") as f:
+                        for chunk in r.iter_bytes(1 << 20):
+                            f.write(chunk)
+                return name, path
+            except Exception as exc:  # noqa: BLE001 — retry transient CDN drops
+                last_exc = exc
+                log_structured("WARN", "stem_fetch_retry", stem=name, attempt=attempt,
+                               error=str(exc)[:160])
+        raise InternalError(f"stem download failed after retries: {last_exc}")
 
     # Download stems concurrently — each is a full-length WAV.
     with ThreadPoolExecutor(max_workers=6) as ex:

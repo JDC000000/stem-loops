@@ -58,6 +58,13 @@ def presign_get(r2_key: str, expires: int = 3600) -> str:
     )
 
 
+def download_object(r2_key: str, local_path: str) -> str:
+    """Download an R2 object to a local path (used to fetch an uploaded input file)."""
+    _r2().download_file(os.environ["R2_BUCKET_NAME"], r2_key, local_path)
+    log_structured("INFO", "object_downloaded", r2_key=r2_key)
+    return local_path
+
+
 def upload_input(job_id: str, local_path: str) -> str:
     """Upload a source WAV (e.g. an operator-provided file) and return a presigned URL.
 

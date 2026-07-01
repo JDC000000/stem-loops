@@ -1,4 +1,4 @@
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 // R2 is S3-compatible. Locally this points at MinIO (MINIO_ENDPOINT).
@@ -21,6 +21,16 @@ export async function mintSignedUrl(r2Key: string, expiresIn = SEVEN_DAYS_SEC): 
   return getSignedUrl(
     r2,
     new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME!, Key: r2Key }),
+    { expiresIn },
+  );
+}
+
+// Presigned PUT so the browser uploads the source file DIRECT to R2 — bypassing
+// Vercel's 4.5 MB serverless request-body limit (real songs exceed it).
+export async function presignPut(r2Key: string, contentType: string, expiresIn = 600): Promise<string> {
+  return getSignedUrl(
+    r2,
+    new PutObjectCommand({ Bucket: process.env.R2_BUCKET_NAME!, Key: r2Key, ContentType: contentType }),
     { expiresIn },
   );
 }

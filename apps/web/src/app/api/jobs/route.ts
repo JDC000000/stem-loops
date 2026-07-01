@@ -5,17 +5,62 @@ import { enqueueJob } from '@/lib/queue';
 
 const IP_HASH_KEY = process.env.IP_HASH_KEY ?? 'dev-key';
 const VALID_BARS = new Set([1, 2, 4, 8]);
-const DEFAULT_STEMS = ['vocals', 'drums', 'bass', 'other'];
+const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function hashIp(ip: string): string {
   return createHash('sha256').update(IP_HASH_KEY + ip).digest('hex');
 }
 
-// POST /api/jobs — validate + canonicalize URL, INSERT jobs (status=queued),
-// enqueue. The Python worker claims via FOR UPDATE SKIP LOCKED (Gate 0 S2 / option a).
+function clientIpHashOf(request: NextRequest): string {
+  const ip =
+    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
+    request.headers.get('x-real-ip') ??
+    '0.0.0.0';
+  return hashIp(ip);
+}
+
+// POST /api/jobs — create a job. Two input kinds:
+//   • upload  (V2 PRIMARY): body { jobId, uploadKey, filename?, stems?, loop_length_bars? }
+//     — file already PUT to R2 by the browser (see POST /api/uploads).
+//   • youtube (DEFERRED/parked): body { url, ... }.
+// The Python worker claims via FOR UPDATE SKIP LOCKED (Gate 0 S2 / option a).
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+
+    // ── Upload job ──────────────────────────────────────────────────────────
+    if (body.uploadKey) {
+      const { jobId, uploadKey, filename, stems, loop_length_bars } = body;
+      if (typeof jobId !== 'string' || !UUID_RE.test(jobId) || typeof uploadKey !== 'string') {
+        return NextResponse.json(
+          { error_code: 'UPLOAD_INVALID', message: 'Missing or invalid upload reference.' },
+          { status: 400 }
+        );
+      }
+      const ubars = loop_length_bars ?? 4;
+      if (!VALID_BARS.has(ubars)) {
+        return NextResponse.json(
+          { error_code: 'UPLOAD_INVALID', message: 'loop_length_bars must be 1, 2, 4, or 8' },
+          { status: 400 }
+        );
+      }
+      const uStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
+      await db.query(
+        `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
+                           loop_length_bars, status, client_ip_hash, client_fingerprint)
+         VALUES ($1, 'upload', $2, $3, $4, $5, 'queued', $6, '')`,
+        [jobId, uploadKey, typeof filename === 'string' ? filename.slice(0, 255) : null, uStems, ubars, clientIpHashOf(request)]
+      );
+      try {
+        await enqueueJob(jobId);
+      } catch (e) {
+        console.error('enqueueJob failed (job still claimable via status):', e);
+      }
+      return NextResponse.json({ id: jobId, status: 'queued' }, { status: 201 });
+    }
+
+    // ── YouTube job (DEFERRED — kept, unwired at the worker until S1 clears) ──
     const { url, stems, loop_length_bars } = body;
 
     if (!url || typeof url !== 'string') {
@@ -35,18 +80,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const ip =
-      request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-      request.headers.get('x-real-ip') ??
-      '0.0.0.0';
-    const clientIpHash = hashIp(ip);
     const id = randomUUID();
     const requestedStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
 
     await db.query(
       `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint)
        VALUES ($1, $2, $3, $4, 'queued', $5, '')`,
-      [id, url, requestedStems, bars, clientIpHash]
+      [id, url, requestedStems, bars, clientIpHashOf(request)]
     );
 
     // pg-boss enqueue (retry/scheduling semantics). The worker also polls

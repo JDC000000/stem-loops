@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+import subprocess
 import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -32,11 +34,11 @@ from .classifier.section_labeler import label_sections
 from .downloader import download_audio
 from .dsp.seamless import apply as seamless_apply
 from .encoder.wav_encoder import encode_24bit, waveform_peaks
-from .errors import InternalError, StemLoopsError
+from .errors import InternalError, StemLoopsError, UploadInvalidError
 from .extractor.loop_extractor import extract_loops
 from .logger import log_structured
 from .replicate_client import poll_until_done, submit_or_reattach
-from .storage.r2_uploader import upload_input, upload_loop
+from .storage.r2_uploader import download_object, upload_input, upload_loop
 from .tagger.bpm_key import detect_bpm_and_key
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -50,9 +52,43 @@ def _db():
 def _fetch_job(job_id: str):
     with _db() as c:
         return c.execute(
-            "SELECT youtube_url, requested_stems, loop_length_bars FROM jobs WHERE id=%s",
+            "SELECT youtube_url, requested_stems, loop_length_bars, input_kind, upload_r2_key "
+            "FROM jobs WHERE id=%s",
             (job_id,),
         ).fetchone()
+
+
+def _ffmpeg_bin() -> str:
+    """System ffmpeg (present in the worker image) with an imageio-ffmpeg fallback."""
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as exc:  # noqa: BLE001
+        raise InternalError(f"ffmpeg unavailable: {exc}") from exc
+
+
+def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
+    """Upload-input path: pull the uploaded file from R2, ffmpeg-normalize ANY
+    audio/video container to a 44.1k stereo WAV, re-stage it, and return a
+    presigned URL for Replicate. Uniform decoding means every accepted format
+    (mp3/m4a/flac/ogg/mp4/mov/…) reaches separation identically."""
+    tmpdir = tempfile.mkdtemp(prefix="sl_upload_")
+    raw = os.path.join(tmpdir, "raw_input")
+    wav = os.path.join(tmpdir, "input.wav")
+    download_object(upload_r2_key, raw)
+    proc = subprocess.run(
+        [_ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y",
+         "-i", raw, "-ac", "2", "-ar", "44100", "-c:a", "pcm_s16le", wav],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not os.path.exists(wav) or os.path.getsize(wav) == 0:
+        # A file that ffmpeg can't decode is a bad/unsupported upload, not our fault.
+        raise UploadInvalidError(f"ffmpeg decode failed: {proc.stderr[:200]}")
+    return upload_input(job_id, wav)
 
 
 def _update_job_tags(job_id: str, tags: dict) -> None:
@@ -249,8 +285,8 @@ async def run_pipeline(job_id: str) -> None:
     the audio core runs against the produced stems. Typed errors set status=failed."""
     try:
         row = await asyncio.to_thread(_fetch_job, job_id)
-        url, requested_stems, bars = row
-        log_structured("INFO", "pipeline_start", job_id=job_id)
+        url, requested_stems, bars, input_kind, upload_r2_key = row
+        log_structured("INFO", "pipeline_start", job_id=job_id, input_kind=input_kind)
 
         # T10 STUB short-circuit: full UI→queue→worker→DB loop with fake loops and
         # no YouTube/Replicate. The real pipeline below is unchanged and stays gated
@@ -275,7 +311,14 @@ async def run_pipeline(job_id: str) -> None:
             audio_src = await asyncio.to_thread(upload_input, job_id, override_file)
             _source = "override_file"
             log_structured("INFO", "audio_source_override_file", job_id=job_id)
+        elif input_kind == "upload":
+            # V2 PRIMARY input: user-uploaded file already in R2. Normalize it to WAV
+            # and hand Replicate a presigned URL. No YouTube dependency.
+            audio_src = await asyncio.to_thread(_prepare_upload_source, job_id, upload_r2_key)
+            _source = "upload"
+            log_structured("INFO", "audio_source_upload", job_id=job_id)
         else:
+            # YouTube-link path (T12/C4) — DEFERRED post-launch (off-datacenter egress).
             audio_src, _source = await asyncio.to_thread(download_audio, url)
         await emit_event(job_id, "downloading", "completed", pct=100)
 

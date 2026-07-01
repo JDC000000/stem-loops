@@ -68,6 +68,19 @@ class UploadFailedError(StemLoopsError):
     user_message = "We separated your stems but couldn't save them. Please retry."
 
 
+class UploadInvalidError(StemLoopsError):
+    error_code = "UPLOAD_INVALID"
+    user_message = (
+        "That file type isn't supported. Upload an audio or video file "
+        "(mp3, wav, m4a, flac, ogg, aac, or mp4/mov)."
+    )
+
+
+class UploadTooLargeError(StemLoopsError):
+    error_code = "UPLOAD_TOO_LARGE"
+    user_message = "That file is too large. The maximum upload size is 50 MB."
+
+
 class InternalError(StemLoopsError):
     error_code = "INTERNAL_ERROR"
     user_message = "Something went wrong on our end. We've logged it — please try again."
@@ -82,6 +95,8 @@ _ALL_ERROR_CLASSES = [
     SeparationFailedError,
     ExtractionFailedError,
     UploadFailedError,
+    UploadInvalidError,
+    UploadTooLargeError,
     InternalError,
 ]
 

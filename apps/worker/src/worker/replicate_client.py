@@ -26,8 +26,10 @@ HARD_DEADLINE = int(os.environ.get("REPLICATE_DEADLINE", "45"))
 POLL_INTERVAL = 2
 # htdemucs_6s → contract mapping. 'piano' is internal-only; everything else uses 'keys'.
 STEM_RENAME = {"piano": "keys"}
-# Replicate version hash for ryan5453/demucs (set via env in prod/CI).
-MODEL_VERSION = os.environ.get("REPLICATE_MODEL_VERSION", "htdemucs_6s")
+# Replicate version hash for ryan5453/demucs — the verified default (Gate-2 /
+# upload-MVP spike). Non-secret; override via REPLICATE_MODEL_VERSION to bump it.
+DEFAULT_DEMUCS_VERSION = "5a7041cc9b82e5a558fea6b3d7b12dea89625e89da33f0447bd727c2d0ab9e77"
+MODEL_VERSION = os.environ.get("REPLICATE_MODEL_VERSION", DEFAULT_DEMUCS_VERSION)
 DEMUCS_MODEL = os.environ.get("REPLICATE_DEMUCS_MODEL", "htdemucs_6s")
 
 

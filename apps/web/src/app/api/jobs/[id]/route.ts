@@ -1,22 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-
-const R2_ENDPOINT = process.env.R2_ENDPOINT ?? '';
-const R2_BUCKET = process.env.R2_BUCKET_NAME ?? 'stem-loops-dev';
-
-// Build a loop URL from its r2_key. Phase 1 returns a direct dev URL; Phase 2 (T17)
-// re-mints a fresh signed URL on every read.
-function loopUrl(r2Key: string): string {
-  if (R2_ENDPOINT) return `${R2_ENDPOINT.replace(/\/$/, '')}/${R2_BUCKET}/${r2Key}`;
-  return `https://${R2_BUCKET}.r2.cloudflarestorage.com/${r2Key}`;
-}
+import { mintSignedUrl } from '@/lib/r2';
 
 // GET /api/jobs/:id — status + events + loops, read straight from Postgres.
+// Each loop gets a FRESHLY minted signed URL on every read (PRD §8 anti-goal #4).
 export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
   try {
     const jobRes = await db.query(
-      `SELECT id, youtube_url, requested_stems, loop_length_bars, status, error_code,
-              error_message_user, bpm, musical_key, created_at, updated_at, expires_at
+      `SELECT id, input_kind, youtube_url, upload_r2_key, original_filename, requested_stems,
+              loop_length_bars, status, error_code, error_message_user, bpm, musical_key,
+              created_at, updated_at, expires_at
        FROM jobs WHERE id = $1`,
       [params.id]
     );
@@ -26,30 +19,29 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     const job = jobRes.rows[0];
 
     const eventsRes = await db.query(
-      `SELECT stage, phase, pct, created_at FROM job_events WHERE job_id = $1 ORDER BY created_at ASC`,
+      `SELECT id, job_id, stage, phase, pct, duration_ms, created_at
+       FROM job_events WHERE job_id = $1 ORDER BY created_at ASC`,
       [params.id]
     );
 
     const loopsRes = await db.query(
-      `SELECT id, stem, section_label, energy_class, bar_count, bpm, musical_key,
-              r2_key, filename, duration_ms
+      `SELECT id, job_id, stem, section_label, energy_class, start_sec, end_sec, start_bar,
+              bar_count, bpm, musical_key, r2_key, filename, duration_ms, waveform_peaks, created_at
        FROM loops WHERE job_id = $1 ORDER BY stem, start_sec`,
       [params.id]
     );
 
-    const loops = loopsRes.rows.map((l) => ({
-      id: l.id,
-      stem: l.stem,
-      section_label: l.section_label,
-      energy_class: l.energy_class,
-      bar_count: l.bar_count,
-      loop_length_bars: l.bar_count, // UI alias
-      bpm: l.bpm,
-      musical_key: l.musical_key,
-      filename: l.filename,
-      duration_ms: l.duration_ms,
-      r2_url: loopUrl(l.r2_key),
-    }));
+    const loops = await Promise.all(
+      loopsRes.rows.map(async (l) => {
+        let signed_url: string | null = null;
+        try {
+          signed_url = await mintSignedUrl(l.r2_key);
+        } catch (e) {
+          console.error('mintSignedUrl failed for', l.r2_key, e);
+        }
+        return { ...l, signed_url };
+      })
+    );
 
     return NextResponse.json({ ...job, events: eventsRes.rows, loops });
   } catch (err) {

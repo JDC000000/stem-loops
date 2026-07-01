@@ -1,218 +1,91 @@
 #!/usr/bin/env python3
-"""
-Pydantic → JSON Schema → TypeScript codegen.
+"""Pydantic → TypeScript codegen (canonical contract).
 
-Reads models from apps/worker/src/models.py and generates TypeScript types
-in packages/types/src/generated.ts.
-
-Usage:
-    cd packages/types && python scripts/codegen.py
-    # or
-    make types-generate
+Emits TS interfaces DIRECTLY from the Pydantic field annotations — deterministic,
+no external json-schema-to-typescript dependency. Single source of truth:
+apps/worker/src/worker/models.py. Regenerate with `make types-generate`.
 """
 
 from __future__ import annotations
 
-import json
-import subprocess
+import datetime as _dt
 import sys
-import tempfile
+import typing
+import uuid
 from pathlib import Path
 
-# Resolve paths relative to this script
 SCRIPT_DIR = Path(__file__).parent
 REPO_ROOT = SCRIPT_DIR.parent.parent.parent
-WORKER_SRC = REPO_ROOT / "apps" / "worker" / "src"
 OUTPUT_FILE = SCRIPT_DIR.parent / "src" / "generated.ts"
-OUTPUT_DIR = OUTPUT_FILE.parent
+
+_PRIM = {str: "string", int: "number", float: "number", bool: "boolean"}
+
+
+def _ts_base(ann, names: set[str]) -> str:
+    origin = typing.get_origin(ann)
+    args = typing.get_args(ann)
+    if origin is typing.Union:  # includes Optional[X]
+        non_none = [a for a in args if a is not type(None)]
+        if len(non_none) == 1:
+            return _ts_base(non_none[0], names)
+        return " | ".join(_ts_base(a, names) for a in non_none)
+    if origin in (list, tuple):
+        return f"{_ts_base(args[0], names)}[]"
+    if ann in _PRIM:
+        return _PRIM[ann]
+    if ann in (uuid.UUID, _dt.datetime):
+        return "string"
+    name = getattr(ann, "__name__", None)
+    return name if name in names else "unknown"
+
+
+def _emit(name: str, model, names: set[str]) -> str:
+    out = [f"export interface {name} {{"]
+    for fname, field in model.model_fields.items():
+        ann = field.annotation
+        nullable = typing.get_origin(ann) is typing.Union and type(None) in typing.get_args(ann)
+        optional = nullable or not field.is_required()
+        ts = _ts_base(ann, names) + (" | null" if nullable else "")
+        out.append(f"  {fname}{'?' if optional else ''}: {ts};")
+    out.append("}")
+    return "\n".join(out)
 
 
 def main() -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Add worker src to path so we can import models
+    # Import the CANONICAL models (src/worker/models.py).
     sys.path.insert(0, str(REPO_ROOT / "apps" / "worker"))
-
-    from src.models import (  # type: ignore
-        CreateJobRequest,
-        ErrorCode,
+    from src.worker.models import (  # type: ignore  # noqa: E402
+        ErrorEnvelope,
         Job,
         JobEvent,
+        JobRequest,
         JobResponse,
-        JobStatus,
         Loop,
-        StemName,
-        EventStage,
-        EventType,
     )
 
+    # Order matters: referenced models (Loop, JobEvent) precede Job; Job precedes JobResponse.
     models = {
-        "JobStatus": JobStatus,
-        "StemName": StemName,
-        "EventStage": EventStage,
-        "EventType": EventType,
-        "ErrorCode": ErrorCode,
-        "CreateJobRequest": CreateJobRequest,
+        "JobRequest": JobRequest,
+        "ErrorEnvelope": ErrorEnvelope,
         "Loop": Loop,
         "JobEvent": JobEvent,
         "Job": Job,
         "JobResponse": JobResponse,
     }
+    names = set(models)
 
-    # Generate JSON Schema for each model
-    schemas: dict[str, dict] = {}
-    for name, model in models.items():
-        if hasattr(model, "model_json_schema"):
-            schemas[name] = model.model_json_schema()
-        else:
-            # Enum
-            import pydantic
-            class _Wrapper(pydantic.BaseModel):
-                value: model  # type: ignore
-            schema = _Wrapper.model_json_schema()
-            schemas[name] = schema
-
-    # Write combined schema
-    combined_schema = {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "definitions": {name: schema for name, schema in schemas.items()},
-    }
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump(combined_schema, f, indent=2)
-        schema_file = f.name
-
-    print(f"Generated JSON schema at {schema_file}")
-
-    # Try to use json-schema-to-typescript if available
-    node_modules = SCRIPT_DIR.parent / "node_modules" / ".bin" / "json2ts"
-    if node_modules.exists():
-        result = subprocess.run(
-            [str(node_modules), "--input", schema_file, "--output", str(OUTPUT_FILE)],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            print(f"TypeScript types written to {OUTPUT_FILE}")
-            return
-        else:
-            print(f"json2ts failed: {result.stderr}", file=sys.stderr)
-
-    # Fallback: write manual TypeScript definitions
-    print("Falling back to manual TypeScript generation...")
-    ts = _generate_ts_manually(schemas)
-    OUTPUT_FILE.write_text(ts)
-    print(f"TypeScript types written to {OUTPUT_FILE}")
-
-
-def _generate_ts_manually(schemas: dict[str, dict]) -> str:
-    """Generate TypeScript types manually as a fallback."""
-    lines = [
+    parts = [
         "// AUTO-GENERATED — DO NOT EDIT",
-        "// Source of truth: apps/worker/src/models.py",
+        "// Source of truth: apps/worker/src/worker/models.py",
         "// Regenerate with: make types-generate",
         "",
     ]
+    for n, m in models.items():
+        parts.append(_emit(n, m, names))
+        parts.append("")
 
-    status_values = ["queued", "downloading", "separating", "extracting", "uploading", "done", "failed"]
-    lines += [
-        "export type JobStatus =",
-        "  | " + "\n  | ".join(f'"{v}"' for v in status_values) + ";",
-        "",
-    ]
-
-    stem_values = ["vocals", "drums", "bass", "other"]
-    lines += [
-        "export type StemName =",
-        "  | " + "\n  | ".join(f'"{v}"' for v in stem_values) + ";",
-        "",
-    ]
-
-    stage_values = ["downloading", "separating", "extracting", "uploading"]
-    lines += [
-        "export type EventStage =",
-        "  | " + "\n  | ".join(f'"{v}"' for v in stage_values) + ";",
-        "",
-    ]
-
-    event_type_values = ["started", "completed", "failed"]
-    lines += [
-        "export type EventType =",
-        "  | " + "\n  | ".join(f'"{v}"' for v in event_type_values) + ";",
-        "",
-    ]
-
-    error_codes = [
-        "DOWNLOAD_BLOCKED", "DOWNLOAD_TIMEOUT", "DOWNLOAD_INVALID_URL",
-        "DOWNLOAD_AGE_RESTRICTED", "DOWNLOAD_PRIVATE", "SEPARATION_FAILED",
-        "EXTRACTION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR", "RATE_LIMITED",
-    ]
-    lines += [
-        "export type ErrorCode =",
-        "  | " + "\n  | ".join(f'"{v}"' for v in error_codes) + ";",
-        "",
-    ]
-
-    lines += [
-        "export interface Loop {",
-        "  id: string;",
-        "  job_id: string;",
-        "  stem: StemName;",
-        "  bar_count: number;",
-        "  loop_length_bars: number;",
-        "  r2_key: string;",
-        "  r2_url: string;",
-        "  duration_seconds?: number | null;",
-        "  bpm?: number | null;",
-        "  created_at: string;",
-        "}",
-        "",
-    ]
-
-    lines += [
-        "export interface JobEvent {",
-        "  id: string;",
-        "  job_id: string;",
-        "  stage: EventStage;",
-        "  event_type: EventType;",
-        "  detail?: string | null;",
-        "  created_at: string;",
-        "}",
-        "",
-    ]
-
-    lines += [
-        "export interface Job {",
-        "  id: string;",
-        "  source_url: string;",
-        "  stems: StemName[];",
-        "  loop_length_bars: number;",
-        "  status: JobStatus;",
-        "  error_code?: ErrorCode | null;",
-        "  error_detail?: string | null;",
-        "  client_ip_hash?: string | null;",
-        "  created_at: string;",
-        "  updated_at: string;",
-        "  expires_at?: string | null;",
-        "  loops?: Loop[] | null;",
-        "  events?: JobEvent[] | null;",
-        "}",
-        "",
-    ]
-
-    lines += [
-        "export interface JobResponse extends Job {}",
-        "",
-        "export interface CreateJobRequest {",
-        "  source_url: string;",
-        "  stems?: StemName[];",
-        "  loop_length_bars?: number;",
-        "  client_ip_hash?: string | null;",
-        "}",
-        "",
-    ]
-
-    return "\n".join(lines)
+    OUTPUT_FILE.write_text("\n".join(parts))
+    print(f"TypeScript types written to {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":

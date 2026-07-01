@@ -118,7 +118,10 @@ class Job(BaseModel):
     """Full job state — returned by GET /api/jobs/:id."""
 
     id: UUID
-    youtube_url: str
+    input_kind: str = "youtube"  # 'youtube' | 'upload' (V2 primary input)
+    youtube_url: Optional[str] = None  # nullable since migration 004 (upload jobs have none)
+    upload_r2_key: Optional[str] = None
+    original_filename: Optional[str] = None
     status: str
     error_code: Optional[str] = None
     error_message_user: Optional[str] = None

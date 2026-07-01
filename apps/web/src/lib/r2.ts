@@ -27,10 +27,23 @@ export async function mintSignedUrl(r2Key: string, expiresIn = SEVEN_DAYS_SEC): 
 
 // Presigned PUT so the browser uploads the source file DIRECT to R2 — bypassing
 // Vercel's 4.5 MB serverless request-body limit (real songs exceed it).
-export async function presignPut(r2Key: string, contentType: string, expiresIn = 600): Promise<string> {
+// Retention/abuse guard (R9): short expiry + the URL is bound to the exact
+// content-type AND content-length, so it can't be reused as open storage or to
+// smuggle a larger/different object than was validated at admission.
+export async function presignPut(
+  r2Key: string,
+  contentType: string,
+  contentLength: number,
+  expiresIn = 600, // 10 min — long enough for a 50 MB upload on a slow line, short enough to not linger
+): Promise<string> {
   return getSignedUrl(
     r2,
-    new PutObjectCommand({ Bucket: process.env.R2_BUCKET_NAME!, Key: r2Key, ContentType: contentType }),
+    new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET_NAME!,
+      Key: r2Key,
+      ContentType: contentType,
+      ContentLength: contentLength,
+    }),
     { expiresIn },
   );
 }

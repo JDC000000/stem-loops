@@ -21,9 +21,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error_code: v.error_code, message: v.message }, { status: 400 });
     }
 
+    // Key is under the {jobId}/ prefix — same as this job's loops — so the 7-day
+    // active-TTL cleanup (T33) + R2 lifecycle backstop delete the uploaded source
+    // alongside the outputs (PRD §6.1: no user content beyond TTL).
     const jobId = randomUUID();
     const key = `${jobId}/_input.${v.ext}`;
-    const uploadUrl = await presignPut(key, v.contentType);
+    const uploadUrl = await presignPut(key, v.contentType, size);
 
     return NextResponse.json({ jobId, key, uploadUrl, maxBytes: MAX_UPLOAD_BYTES, contentType: v.contentType });
   } catch (err) {

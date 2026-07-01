@@ -2,11 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createHash, randomUUID } from 'crypto';
 import { db } from '@/lib/db';
 import { enqueueJob } from '@/lib/queue';
+import { checkAdmission } from '@/lib/admission';
 
 const IP_HASH_KEY = process.env.IP_HASH_KEY ?? 'dev-key';
 const VALID_BARS = new Set([1, 2, 4, 8]);
 const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RATE_LIMIT_MSG =
+  "You're going a bit fast, or we're at capacity right now. Give it a minute and try again.";
 
 function hashIp(ip: string): string {
   return createHash('sha256').update(IP_HASH_KEY + ip).digest('hex');
@@ -46,11 +49,20 @@ export async function POST(request: NextRequest) {
         );
       }
       const uStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
+
+      // R9 / PRD §6.1: admission BEFORE the (Replicate-spending) job exists. Uploads
+      // bypass YouTube's gate, so this is the primary abuse/spend surface.
+      const clientIpHash = clientIpHashOf(request);
+      const adm = await checkAdmission(clientIpHash);
+      if (!adm.allowed) {
+        return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
+      }
+
       await db.query(
         `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
                            loop_length_bars, status, client_ip_hash, client_fingerprint)
          VALUES ($1, 'upload', $2, $3, $4, $5, 'queued', $6, '')`,
-        [jobId, uploadKey, typeof filename === 'string' ? filename.slice(0, 255) : null, uStems, ubars, clientIpHashOf(request)]
+        [jobId, uploadKey, typeof filename === 'string' ? filename.slice(0, 255) : null, uStems, ubars, clientIpHash]
       );
       try {
         await enqueueJob(jobId);
@@ -80,13 +92,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const clientIpHash = clientIpHashOf(request);
+    const adm = await checkAdmission(clientIpHash);
+    if (!adm.allowed) {
+      return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
+    }
+
     const id = randomUUID();
     const requestedStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
 
     await db.query(
       `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint)
        VALUES ($1, $2, $3, $4, 'queued', $5, '')`,
-      [id, url, requestedStems, bars, clientIpHashOf(request)]
+      [id, url, requestedStems, bars, clientIpHash]
     );
 
     // pg-boss enqueue (retry/scheduling semantics). The worker also polls

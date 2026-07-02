@@ -34,7 +34,7 @@ from .classifier.section_labeler import label_sections
 from .downloader import download_audio
 from .dsp.seamless import apply as seamless_apply
 from .encoder.wav_encoder import encode_24bit, waveform_peaks
-from .errors import InternalError, StemLoopsError, UploadInvalidError
+from .errors import DownloadBlockedError, InternalError, StemLoopsError, UploadInvalidError
 from .extractor.loop_extractor import extract_loops
 from .logger import log_structured
 from .replicate_client import poll_until_done, submit_or_reattach
@@ -368,6 +368,11 @@ async def run_pipeline(job_id: str) -> None:
             log_structured("INFO", "audio_source_upload", job_id=job_id)
         else:
             # YouTube-link path (T12/C4) — DEFERRED post-launch (off-datacenter egress).
+            # SECURITY / A1 (review #7): stay fully inert unless explicitly enabled, so a
+            # youtube job that slips past the API gate can't trigger the real Cobalt/yt-dlp
+            # path (STUB_MODE is not set in prod env). Defense-in-depth behind route.ts.
+            if os.environ.get("ALLOW_YOUTUBE_INPUT", "").lower() != "true":
+                raise DownloadBlockedError("YouTube ingestion is disabled pre-launch")
             audio_src, _source = await asyncio.to_thread(download_audio, url)
         await emit_event(job_id, "downloading", "completed", pct=100)
 

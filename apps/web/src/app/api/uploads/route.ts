@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { presignPut } from '@/lib/r2';
 import { validateUpload, MAX_UPLOAD_BYTES } from '@/lib/upload';
+import { checkUploadRate } from '@/lib/admission';
+import { clientIpHashOf } from '@/lib/client-ip';
+
+const RATE_LIMIT_MSG =
+  "You're going a bit fast, or we're at capacity right now. Give it a minute and try again.";
 
 // POST /api/uploads — validate an intended upload and return a presigned PUT URL.
 // The browser then uploads DIRECT to R2 (no bytes through this function), then
@@ -14,6 +19,12 @@ export async function POST(request: NextRequest) {
         { error_code: 'UPLOAD_INVALID', message: 'filename and size are required.' },
         { status: 400 }
       );
+    }
+
+    // Per-IP throttle BEFORE minting a real 200MB R2 PUT credential (review BLOCKER #2).
+    const adm = await checkUploadRate(clientIpHashOf(request));
+    if (!adm.allowed) {
+      return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
     }
 
     const v = validateUpload(filename, size);

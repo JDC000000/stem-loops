@@ -23,5 +23,7 @@ export async function getQueue(): Promise<PgBoss> {
 
 export async function enqueueJob(jobId: string): Promise<void> {
   const q = await getQueue();
-  await q.send(JOB_QUEUE, { jobId }, { retryLimit: 1, expireInHours: 1 });
+  // Operator non-negotiable (security review BLOCKER #4): max 3 attempts with
+  // exponential backoff (was retryLimit:1, no backoff).
+  await q.send(JOB_QUEUE, { jobId }, { retryLimit: 3, retryBackoff: true, expireInHours: 1 });
 }

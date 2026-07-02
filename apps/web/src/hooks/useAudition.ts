@@ -1,6 +1,15 @@
 // In-browser loop audition (P3-3) via the Web Audio API. Fetches and decodes the
 // loop WAV on demand (only the short loop, never the full track) and loops it.
-import { useCallback, useRef, useState } from 'react';
+//
+// SINGLE ACTIVE PLAYER: only one loop plays at a time. A module-level ref holds the
+// stop() of whatever is currently playing, so (a) starting a new loop stops the
+// previous one (SoundCloud/Splice-style UX) and (b) unmounting a card — e.g. clicking
+// a stem-filter tab re-renders the grid — always stops its audio. Without this, a
+// looping AudioBufferSourceNode (loop=true) gets orphaned on unmount and plays forever
+// with no UI left to stop it (only a page reload silences it).
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+let activeStop: (() => void) | null = null;
 
 export function useAudition(signedUrl: string | null | undefined) {
   const [playing, setPlaying] = useState(false);
@@ -15,6 +24,7 @@ export function useAudition(signedUrl: string | null | undefined) {
       /* already stopped */
     }
     srcRef.current = null;
+    if (activeStop === stop) activeStop = null;
     setPlaying(false);
   }, []);
 
@@ -24,6 +34,8 @@ export function useAudition(signedUrl: string | null | undefined) {
       stop();
       return;
     }
+    // Single active player: stop whatever other loop is currently playing first.
+    if (activeStop && activeStop !== stop) activeStop();
     setLoading(true);
     try {
       const ctx = ctxRef.current ?? new AudioContext();
@@ -38,6 +50,7 @@ export function useAudition(signedUrl: string | null | undefined) {
       src.onended = () => setPlaying(false);
       src.start();
       srcRef.current = src;
+      activeStop = stop;
       setPlaying(true);
     } catch {
       setPlaying(false);
@@ -45,6 +58,10 @@ export function useAudition(signedUrl: string | null | undefined) {
       setLoading(false);
     }
   }, [signedUrl, playing, stop]);
+
+  // Kill this card's audio when it unmounts (filter-tab re-render, navigation, etc.)
+  // so a looping source can never be orphaned. `stop` is stable, so this runs on unmount.
+  useEffect(() => stop, [stop]);
 
   return { playing, loading, toggle, stop };
 }

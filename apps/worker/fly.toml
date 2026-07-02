@@ -24,14 +24,13 @@ primary_region = "iad"  # us-east, near the Supabase project; adjust to match DB
   auto_start_machines = false
   min_machines_running = 1
 
-  # Relaxed so a CPU-busy extraction can't trip a kill (paired with the cheap
-  # non-blocking /health liveness probe).
-  [[http_service.checks]]
-    method = "get"
-    path = "/health"
-    interval = "30s"
-    timeout = "10s"
-    grace_period = "60s"
+  # NO HTTP health check on the worker. It is a queue consumer, not a web
+  # service: CPU-bound loop extraction holds the CPython GIL and starves the
+  # co-located asyncio /health server, so ANY HTTP health check (even a cheap
+  # non-blocking one) times out mid-job and Fly SIGTERMs a healthy-but-busy
+  # worker, orphaning the job. Liveness is handled by Fly's restart-on-exit;
+  # /health remains for manual probes. (Long-track hang recovery is a separate
+  # pipeline concern — see the per-job timeout / loop-cap recommendation.)
 
 [[vm]]
   # 2 shared cores so CPU-heavy loop extraction (librosa on 6 stems) runs without

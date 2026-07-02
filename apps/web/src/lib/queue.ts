@@ -23,7 +23,11 @@ export async function getQueue(): Promise<PgBoss> {
 
 export async function enqueueJob(jobId: string): Promise<void> {
   const q = await getQueue();
-  // Operator non-negotiable (security review BLOCKER #4): max 3 attempts with
-  // exponential backoff (was retryLimit:1, no backoff).
-  await q.send(JOB_QUEUE, { jobId }, { retryLimit: 3, retryBackoff: true, expireInHours: 1 });
+  // NOTE (security re-verification BLOCKER #4): the Python worker consumes jobs by
+  // polling the `jobs` table via FOR UPDATE SKIP LOCKED — it never calls boss.work(),
+  // so pg-boss's retry engine is NOT in the consume path. retryLimit/retryBackoff here
+  // would be pure config-theater (no-ops). The real bounded-attempts + exponential-
+  // backoff retry lives in the worker's reaper (apps/worker/src/worker/reaper.py). We
+  // keep only expireInHours so the durable enqueue record self-expires.
+  await q.send(JOB_QUEUE, { jobId }, { expireInHours: 1 });
 }

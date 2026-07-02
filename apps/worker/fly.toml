@@ -49,11 +49,14 @@ primary_region = "iad"  # us-east, near the Supabase project; adjust to match DB
   # pipeline concern — see the per-job timeout / loop-cap recommendation.)
 
 [[vm]]
-  # Right-sized DOWN (post-trial-cap): the worker crash-cycle was Fly's 5-minute TRIAL
-  # machine cap, NOT CPU/OOM — so the bigger machine that theory justified is moot. 1 shared
-  # core + 2GB (the max for shared-cpu-1x) is the lean always-on baseline for the <$X/mo cap.
-  # CAVEAT — tune on REAL evidence once the card lands: a full-length 6-stem track can peak
-  # ~1.5GB (6 float32 stems + loop audio + STFT). If a genuine full track OOMs on 1x/2GB,
-  # bump back to shared-cpu-2x / 4GB — but start lean per the right-size direction.
-  size = "shared-cpu-1x"
-  memory = "2048mb"
+  # FIRST full-length verify runs at 4GB / shared-cpu-2x — SAFE headroom, guaranteed to
+  # complete. Why start safe not lean (coordinator catch): no genuine >5min extraction has
+  # EVER completed — Fly's 5-minute TRIAL machine cap always killed it first — so the real
+  # memory peak is UNMEASURED. A full-length track yields more loops = more memory than
+  # anything we've observed, and OOMing the first DEFINITIVE verify run would waste a real
+  # Replicate spend. So: run this once at 4GB, measure the ACTUAL peak, THEN downsize to the
+  # lean steady-state — shared-cpu-1x + 2048mb (2GB is 1x's max) — on real data, not an
+  # estimate. (Right-size-down direction from b8c3185 still holds; just start the initial
+  # verify safe rather than optimized. The crash-cycle root cause was the trial cap, not OOM.)
+  size = "shared-cpu-2x"
+  memory = "4096mb"

@@ -62,10 +62,23 @@ def _db():
 def _fetch_job(job_id: str):
     with _db() as c:
         return c.execute(
-            "SELECT youtube_url, requested_stems, loop_length_bars, input_kind, upload_r2_key "
-            "FROM jobs WHERE id=%s",
+            "SELECT youtube_url, requested_stems, loop_length_bars, input_kind, upload_r2_key, "
+            "original_filename FROM jobs WHERE id=%s",
             (job_id,),
         ).fetchone()
+
+
+def _title_slug(original_filename: str | None, job_id: str) -> str:
+    """Filesystem-safe title for loop filenames (QA §4.4: use the song title like the
+    ZIP does, not the job UUID). Strips the extension and non-alphanumerics; falls back
+    to the job id when there's no title (e.g. the deferred YouTube path)."""
+    if not original_filename:
+        return job_id
+    base = os.path.splitext(original_filename)[0]
+    slug = "".join(c if (c.isascii() and c.isalnum()) else "_" for c in base).strip("_")
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug[:80] or job_id
 
 
 def _ffmpeg_bin() -> str:
@@ -147,7 +160,7 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     return loops, tags, seg_label, seg_energy
 
 
-def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100) -> int:
+def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100, title=None) -> int:
     """Per loop: seamless seam → 24-bit encode → R2 upload → loops row. Returns count."""
     bar = 4 * 60.0 / tags["bpm"]
     duration_ms = int(bars * bar * 1000)
@@ -157,6 +170,9 @@ def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100
     bpm = tags["bpm"]
     key = tags["musical_key"]
     key_slug = key.replace(" ", "_")
+    # Song-title prefix (QA §4.4) so a downloaded/zipped loop reads like its track, not a
+    # UUID. Falls back to the job id (e.g. the fixture path / YouTube) when there's no title.
+    name_base = title or job_id
     tmpdir = tempfile.mkdtemp(prefix="sl_loops_")
 
     def _one(item) -> int:
@@ -172,7 +188,7 @@ def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100
         section = seg_label.get(seg, "verse")
         energy = seg_energy.get(seg, "mid")
         r2_key = upload_loop(job_id, loop["stem"], section, idx, out_path)
-        fname = f"{job_id}_{loop['stem']}_{bpm}bpm_{key_slug}_{section}_{idx:04d}.wav"
+        fname = f"{name_base}_{loop['stem']}_{bpm}bpm_{key_slug}_{section}_{idx:04d}.wav"
         _insert_loop(
             (
                 loop_id,
@@ -344,7 +360,7 @@ async def run_pipeline(job_id: str) -> None:
     the audio core runs against the produced stems. Typed errors set status=failed."""
     try:
         row = await asyncio.to_thread(_fetch_job, job_id)
-        url, requested_stems, bars, input_kind, upload_r2_key = row
+        url, requested_stems, bars, input_kind, upload_r2_key, original_filename = row
         log_structured("INFO", "pipeline_start", job_id=job_id, input_kind=input_kind)
 
         # T10 STUB short-circuit: full UI→queue→worker→DB loop with fake loops and
@@ -419,7 +435,8 @@ async def run_pipeline(job_id: str) -> None:
         await set_status(job_id, "uploading")
         await emit_event(job_id, "uploading", "started", pct=90)
         count = await asyncio.to_thread(
-            encode_and_upload, job_id, loops, tags, seg_label, seg_energy, bars
+            encode_and_upload, job_id, loops, tags, seg_label, seg_energy, bars,
+            title=_title_slug(original_filename, job_id),
         )
         await emit_event(job_id, "uploading", "completed", pct=100)
 

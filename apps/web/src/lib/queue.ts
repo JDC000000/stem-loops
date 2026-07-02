@@ -1,4 +1,5 @@
 import PgBoss from 'pg-boss';
+import { sslFor } from '@/lib/db';
 
 // pg-boss (Node/web layer) owns enqueue, retry and scheduling. The Python worker
 // consumes jobs from the `jobs` table via FOR UPDATE SKIP LOCKED (Gate 0 S2 decision).
@@ -8,9 +9,11 @@ export const JOB_QUEUE = 'stem-loops-jobs';
 
 export async function getQueue(): Promise<PgBoss> {
   if (!boss) {
+    const conn = process.env.DATABASE_URL!;
     boss = new PgBoss({
-      connectionString: process.env.DATABASE_URL!,
+      connectionString: conn,
       max: 3, // stay within Supabase free-tier connection limit
+      ssl: sslFor(conn), // Supabase pooler: TLS without chain verification (see db.ts)
     });
     await boss.start();
     await boss.createQueue(JOB_QUEUE);

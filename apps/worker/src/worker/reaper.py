@@ -39,7 +39,9 @@ STALE_SECONDS = int(os.environ.get("REAPER_STALE_SECONDS", "300"))
 # (0 = original run only). Attempt N is only re-queued once it has been stale for
 # STALE_SECONDS * BACKOFF_FACTOR**attempts, so retries space out; once attempts reach
 # MAX_ATTEMPTS the job is failed terminally instead of looping forever.
-MAX_ATTEMPTS = int(os.environ.get("REAPER_MAX_ATTEMPTS", "3"))
+# Default 2 ⇒ up to 2 reaper re-queues = 3 TOTAL tries including the initial run, matching
+# the operator's "max 3 attempts" (per-deployment overridable via REAPER_MAX_ATTEMPTS).
+MAX_ATTEMPTS = int(os.environ.get("REAPER_MAX_ATTEMPTS", "2"))
 BACKOFF_FACTOR = float(os.environ.get("REAPER_BACKOFF_FACTOR", "2"))
 
 _NON_TERMINAL = ["downloading", "separating", "extracting", "uploading"]

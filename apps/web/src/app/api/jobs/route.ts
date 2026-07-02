@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { db } from '@/lib/db';
-import { enqueueJob } from '@/lib/queue';
 import { checkAdmission } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
 
@@ -78,11 +77,8 @@ export async function POST(request: NextRequest) {
          VALUES ($1, 'upload', $2, $3, $4, $5, 'queued', $6, '')`,
         [jobId, uploadKey, typeof filename === 'string' ? filename.slice(0, 255) : null, uStems, ubars, clientIpHash]
       );
-      try {
-        await enqueueJob(jobId);
-      } catch (e) {
-        console.error('enqueueJob failed (job still claimable via status):', e);
-      }
+      // No external queue: the Python worker claims the job straight off the jobs table
+      // (status='queued', FOR UPDATE SKIP LOCKED). pg-boss was vestigial and removed.
       return NextResponse.json({ id: jobId, status: 'queued' }, { status: 201 });
     }
 
@@ -130,14 +126,6 @@ export async function POST(request: NextRequest) {
        VALUES ($1, $2, $3, $4, 'queued', $5, '')`,
       [id, url, requestedStems, bars, clientIpHash]
     );
-
-    // pg-boss enqueue (retry/scheduling semantics). The worker also polls
-    // jobs.status, so a transient enqueue failure must not lose the job.
-    try {
-      await enqueueJob(id);
-    } catch (e) {
-      console.error('enqueueJob failed (job still claimable via status):', e);
-    }
 
     return NextResponse.json({ id, status: 'queued' }, { status: 201 });
   } catch (err) {

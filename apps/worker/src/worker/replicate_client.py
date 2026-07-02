@@ -87,8 +87,8 @@ def submit_or_reattach(job_id: str, audio_url: str) -> str:
     return pred_id
 
 
-def poll_until_done(job_id: str, pred_id: str, progress_cb=None) -> dict:
-    """Poll a prediction until it succeeds/fails. Returns {stem: url} (piano→keys)."""
+def poll_until_done(job_id: str, pred_id: str, progress_cb=None) -> tuple[dict, float]:
+    """Poll a prediction until it succeeds/fails. Returns ({stem: url} (piano→keys), cost_usd)."""
     deadline = time.monotonic() + HARD_DEADLINE
     retries = 0
     while time.monotonic() < deadline:
@@ -120,7 +120,7 @@ def poll_until_done(job_id: str, pred_id: str, progress_cb=None) -> dict:
                 cost_usd=round(cost, 4),
                 latency_ms=int(predict_time * 1000),
             )
-            return {STEM_RENAME.get(k, k): v for k, v in outputs.items()}
+            return {STEM_RENAME.get(k, k): v for k, v in outputs.items()}, round(cost, 4)
         if status in ("failed", "canceled"):
             raise SeparationFailedError(str(pred.get("error", "unknown")))
         time.sleep(POLL_INTERVAL)

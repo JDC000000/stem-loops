@@ -198,11 +198,13 @@ def process_stems(job_id, stem_paths, requested_stems, bars, sr=44100) -> int:
 
 
 # --------------------------- async orchestrator ----------------------------
-async def emit_event(job_id: str, stage: str, phase: str, pct: int | None = None) -> None:
+async def emit_event(
+    job_id: str, stage: str, phase: str, pct: int | None = None, detail: dict | None = None
+) -> None:
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
         await conn.execute(
-            "INSERT INTO job_events(job_id, stage, phase, pct) VALUES(%s,%s,%s,%s)",
-            (job_id, stage, phase, pct),
+            "INSERT INTO job_events(job_id, stage, phase, pct, detail) VALUES(%s,%s,%s,%s,%s)",
+            (job_id, stage, phase, pct, Json(detail) if detail is not None else None),
         )
         await conn.commit()
 
@@ -367,9 +369,11 @@ async def run_pipeline(job_id: str) -> None:
         await set_status(job_id, "separating")
         await emit_event(job_id, "separating", "started", pct=15)
         pred_id = await asyncio.to_thread(submit_or_reattach, job_id, audio_src)
-        stem_urls = await asyncio.to_thread(poll_until_done, job_id, pred_id)
+        stem_urls, sep_cost = await asyncio.to_thread(poll_until_done, job_id, pred_id)
         stem_paths = await asyncio.to_thread(_fetch_stems, stem_urls, requested_stems)
-        await emit_event(job_id, "separating", "completed", pct=100)
+        # Persist the Replicate cost so the admission spend-ceiling (which sums
+        # job_events.detail->>'cost_usd' over 24h) actually enforces (P4).
+        await emit_event(job_id, "separating", "completed", pct=100, detail={"cost_usd": sep_cost})
 
         await set_status(job_id, "extracting")
         await emit_event(job_id, "extracting", "started", pct=70)

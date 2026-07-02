@@ -148,7 +148,14 @@ export default function HomePage() {
   }
 
   const chip = (active: boolean): React.CSSProperties => ({
-    padding: '6px 14px',
+    // ≥44px touch target (PRD mobile requirement; QA P2 — was ~30px). inline-flex
+    // centres the label inside the enforced min box; horizontal padding keeps width.
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+    minWidth: 44,
+    padding: '0 16px',
     borderRadius: 999,
     border: `1px solid ${active ? 'var(--accent)' : 'var(--border-default)'}`,
     background: active ? 'var(--accent)' : 'var(--bg-elevated)',

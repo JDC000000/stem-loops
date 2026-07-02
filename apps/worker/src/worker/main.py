@@ -5,7 +5,10 @@ Run modes:
   python -m worker.main --test-job <url>     # run one job directly (no queue)
 
 The consumer claims jobs via FOR UPDATE SKIP LOCKED (Gate 0 S2 decision) so the
-worker is stateless and horizontally scalable (PRD §8 anti-goal #5).
+worker is stateless and horizontally scalable (PRD §8 anti-goal #5). It also reaps
+jobs orphaned by a crashed/restarted worker at startup and periodically (reaper.py).
+The /health server has no Fly check pointed at it (see fly.toml) — liveness is
+restart-on-exit + the reaper — so it stays purely for manual probes.
 """
 
 import asyncio

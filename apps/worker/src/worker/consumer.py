@@ -10,15 +10,19 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 
 import psycopg
 
 from .errors import InternalError, StemLoopsError
 from .logger import log_structured
 from .pipeline import run_pipeline
+from .reaper import reap_stale_jobs
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 POLL_INTERVAL = 2  # seconds
+# How often to sweep for jobs orphaned by a crashed/restarted worker.
+REAP_INTERVAL = int(os.environ.get("REAPER_INTERVAL_SECONDS", "60"))
 
 
 async def claim_and_run() -> bool:
@@ -64,14 +68,31 @@ async def mark_failed(job_id: str, error_code: str, message: str) -> None:
     log_structured("WARN", "job_failed", job_id=job_id, error_code=error_code)
 
 
+async def _safe_reap() -> None:
+    """Run the orphan reaper; a reaper failure must never kill the poll loop."""
+    try:
+        await reap_stale_jobs()
+    except Exception as e:  # noqa: BLE001
+        log_structured("ERROR", "reaper_error", error=str(e)[:200])
+
+
 async def poll_loop() -> None:
-    """Continuously claim and run jobs; idle-sleep when the queue is empty."""
+    """Continuously claim and run jobs; idle-sleep when the queue is empty.
+
+    Reaps orphaned jobs at startup (recover whatever a prior crash abandoned) and
+    then periodically (catch a sibling worker's death when horizontally scaled).
+    """
     log_structured("INFO", "consumer_started")
+    await _safe_reap()
+    last_reap = time.monotonic()
     while True:
         try:
             claimed = await claim_and_run()
         except Exception as e:  # noqa: BLE001 — DB blips must not kill the worker
             log_structured("ERROR", "consumer_loop_error", error=str(e)[:200])
             claimed = False
+        if time.monotonic() - last_reap >= REAP_INTERVAL:
+            await _safe_reap()
+            last_reap = time.monotonic()
         if not claimed:
             await asyncio.sleep(POLL_INTERVAL)

@@ -26,6 +26,10 @@ API = "https://api.replicate.com/v1"
 # completes instead of spuriously failing mid-audition. Overridable via REPLICATE_DEADLINE.
 HARD_DEADLINE = int(os.environ.get("REPLICATE_DEADLINE", "55"))
 POLL_INTERVAL = 2
+# During the (up to HARD_DEADLINE-long) separation poll, bump jobs.updated_at so the
+# orphan reaper (reaper.py) can tell a LIVE separation apart from a worker that died
+# mid-job. Must be << REAPER_STALE_SECONDS (default 300s).
+HEARTBEAT_SECONDS = int(os.environ.get("SEPARATION_HEARTBEAT_SECONDS", "20"))
 # htdemucs_6s → contract mapping. 'piano' is internal-only; everything else uses 'keys'.
 STEM_RENAME = {"piano": "keys"}
 # Replicate version hash for ryan5453/demucs — the verified default (Gate-2 /
@@ -60,6 +64,17 @@ def set_prediction_id(job_id: str, pred_id: str) -> None:
         conn.commit()
 
 
+def _heartbeat(job_id: str) -> None:
+    """Best-effort liveness bump so the reaper doesn't treat a live separation as
+    an orphan. Never let a heartbeat blip abort the separation."""
+    try:
+        with _db() as conn:
+            conn.execute("UPDATE jobs SET updated_at=now() WHERE id=%s", (job_id,))
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        log_structured("WARN", "separation_heartbeat_failed", job_id=job_id, error=str(exc)[:120])
+
+
 def submit_or_reattach(job_id: str, audio_url: str) -> str:
     """Submit a new prediction or re-attach an existing one. Returns prediction_id."""
     existing = get_prediction_id(job_id)
@@ -90,8 +105,12 @@ def submit_or_reattach(job_id: str, audio_url: str) -> str:
 def poll_until_done(job_id: str, pred_id: str, progress_cb=None) -> tuple[dict, float]:
     """Poll a prediction until it succeeds/fails. Returns ({stem: url} (piano→keys), cost_usd)."""
     deadline = time.monotonic() + HARD_DEADLINE
+    last_hb = time.monotonic()
     retries = 0
     while time.monotonic() < deadline:
+        if time.monotonic() - last_hb >= HEARTBEAT_SECONDS:
+            _heartbeat(job_id)
+            last_hb = time.monotonic()
         try:
             r = httpx.get(f"{API}/predictions/{pred_id}", headers=_headers(), timeout=15)
             r.raise_for_status()

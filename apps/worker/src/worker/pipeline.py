@@ -185,7 +185,12 @@ def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100
         return 1
 
     # Parallelize the network-bound upload work — the dominant cost at scale.
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    # Configurable so a small (2-core) Fly VM can cap concurrency: 8 CPU-bound encode
+    # threads there give no throughput gain (GIL) and multiply peak memory (a live
+    # encode buffer per thread), which contributed to OOM on full-length tracks.
+    # Default 8 keeps Option A's behaviour unchanged.
+    workers = int(os.environ.get("LOOP_ENCODE_WORKERS", "8"))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
         return sum(ex.map(_one, enumerate(loops)))
 
 

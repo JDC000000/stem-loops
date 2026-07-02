@@ -13,16 +13,27 @@ function fmtSize(bytes: number): string {
 }
 
 // Upload the file directly to R2 via the presigned PUT URL, with progress.
+// Large real files (50-100MB+) must not abort on a moderate connection and must
+// surface a REAL failure reason (not a generic message) so issues are diagnosable.
 function putToR2(uploadUrl: string, file: File, contentType: string, onProgress: (pct: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', uploadUrl);
+    xhr.timeout = 0; // no client timeout — a slow 50-100MB upload must not be aborted
     xhr.setRequestHeader('Content-Type', contentType);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
     };
-    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`Upload failed (${xhr.status})`)));
-    xhr.onerror = () => reject(new Error('Upload failed — check your connection.'));
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) return resolve();
+      // R2 returns an XML <Error><Code>…</Code></Error> body — surface it verbatim.
+      const body = (xhr.responseText || '').slice(0, 300);
+      reject(new Error(`Storage rejected the upload (HTTP ${xhr.status}${xhr.statusText ? ' ' + xhr.statusText : ''})${body ? ': ' + body : ''}`));
+    };
+    // status 0 + no body = network/CORS/DNS failure (browser hides the detail).
+    xhr.onerror = () =>
+      reject(new Error(`Upload failed: network or CORS error (no response; XHR status ${xhr.status}). If this persists the storage CORS/origin config may be blocking this domain.`));
+    xhr.ontimeout = () => reject(new Error('Upload timed out.'));
     xhr.send(file);
   });
 }

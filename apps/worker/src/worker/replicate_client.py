@@ -21,8 +21,10 @@ from .errors import SeparationFailedError
 from .logger import log_structured
 
 API = "https://api.replicate.com/v1"
-# <60s p90 budget by default; overridable so a cold-boot measurement run can finish.
-HARD_DEADLINE = int(os.environ.get("REPLICATE_DEADLINE", "45"))
+# Separation poll ceiling. Kept UNDER the 60s Gate-2 e2e target (55s = ~5s headroom,
+# not right at the edge) so a cold-start prediction that lands in the 45-60s band still
+# completes instead of spuriously failing mid-audition. Overridable via REPLICATE_DEADLINE.
+HARD_DEADLINE = int(os.environ.get("REPLICATE_DEADLINE", "55"))
 POLL_INTERVAL = 2
 # htdemucs_6s → contract mapping. 'piano' is internal-only; everything else uses 'keys'.
 STEM_RENAME = {"piano": "keys"}

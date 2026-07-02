@@ -30,4 +30,4 @@ primary_region = "iad"  # us-east, near the Supabase project; adjust to match DB
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "1024mb"  # librosa stem load + loop extraction; bump if OOM on long tracks
+  memory = "2048mb"  # headroom for the 200MB upload cap: ffmpeg + librosa loading 6 full stems

@@ -34,14 +34,24 @@ from .classifier.section_labeler import label_sections
 from .downloader import download_audio
 from .dsp.seamless import apply as seamless_apply
 from .encoder.wav_encoder import encode_24bit, waveform_peaks
-from .errors import DownloadBlockedError, InternalError, StemLoopsError, UploadInvalidError
+from .errors import (
+    DownloadBlockedError,
+    InternalError,
+    SeparationFailedError,
+    StemLoopsError,
+    UploadInvalidError,
+)
 from .extractor.loop_extractor import extract_loops
 from .logger import log_structured
-from .replicate_client import poll_until_done, submit_or_reattach
+from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
 from .storage.r2_uploader import download_object, upload_input, upload_loop
 from .tagger.bpm_key import detect_bpm_and_key
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+# Retry-on-deadline attempts for a slow-but-fine separation (QA P1). Each attempt
+# re-polls the SAME still-running prediction (re-attach), so this extends the effective
+# wait to N x HARD_DEADLINE without a second prediction/charge.
+SEPARATION_MAX_ATTEMPTS = int(os.environ.get("SEPARATION_MAX_ATTEMPTS", "3"))
 
 
 # --- small sync DB helpers (the core is sync; run them in a thread from async) ---
@@ -379,7 +389,21 @@ async def run_pipeline(job_id: str) -> None:
         await set_status(job_id, "separating")
         await emit_event(job_id, "separating", "started", pct=15)
         pred_id = await asyncio.to_thread(submit_or_reattach, job_id, audio_src)
-        stem_urls, sep_cost = await asyncio.to_thread(poll_until_done, job_id, pred_id)
+        # Retry-on-deadline (QA P1): a slow-but-fine separation must not permanently fail.
+        # On a poll timeout the prediction is still running server-side, so re-poll the
+        # SAME prediction (re-attach — no new prediction, no double charge) up to N times
+        # before giving up terminally. Distinct from the reaper (restart-orphan recovery).
+        for attempt in range(1, SEPARATION_MAX_ATTEMPTS + 1):
+            try:
+                stem_urls, sep_cost = await asyncio.to_thread(poll_until_done, job_id, pred_id)
+                break
+            except SeparationTimeout as exc:
+                if attempt >= SEPARATION_MAX_ATTEMPTS:
+                    raise SeparationFailedError(
+                        f"separation exceeded its time budget after {attempt} attempts"
+                    ) from exc
+                log_structured("WARN", "separation_timeout_retry", job_id=job_id,
+                               attempt=attempt, pred_id=pred_id)
         stem_paths = await asyncio.to_thread(_fetch_stems, stem_urls, requested_stems)
         # Persist the Replicate cost so the admission spend-ceiling (which sums
         # job_events.detail->>'cost_usd' over 24h) actually enforces (P4).

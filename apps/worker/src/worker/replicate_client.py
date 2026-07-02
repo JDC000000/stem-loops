@@ -20,6 +20,14 @@ import psycopg
 from .errors import SeparationFailedError
 from .logger import log_structured
 
+
+class SeparationTimeout(Exception):
+    """Poll deadline hit while the Replicate prediction is STILL running — RETRYABLE.
+    The prediction keeps executing server-side, so re-polling the same prediction_id
+    (idempotent re-attach: no second prediction, no double charge) can still succeed.
+    Distinct from SeparationFailedError, which is a terminal Replicate failure/cancel."""
+
+
 API = "https://api.replicate.com/v1"
 # Separation poll ceiling. Kept UNDER the 60s Gate-2 e2e target (55s = ~5s headroom,
 # not right at the edge) so a cold-start prediction that lands in the 45-60s band still
@@ -144,4 +152,5 @@ def poll_until_done(job_id: str, pred_id: str, progress_cb=None) -> tuple[dict, 
             raise SeparationFailedError(str(pred.get("error", "unknown")))
         time.sleep(POLL_INTERVAL)
 
-    raise SeparationFailedError(f"Replicate deadline exceeded ({HARD_DEADLINE}s)")
+    # Deadline hit but the prediction is still 'processing' (not failed) — retryable.
+    raise SeparationTimeout(f"poll deadline {HARD_DEADLINE}s exceeded; prediction still running")

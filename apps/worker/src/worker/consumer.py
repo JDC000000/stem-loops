@@ -16,6 +16,7 @@ import psycopg
 
 from .errors import InternalError, StemLoopsError
 from .logger import log_structured
+from .cleanup import sweep_expired
 from .pipeline import run_pipeline
 from .reaper import reap_stale_jobs
 
@@ -23,6 +24,8 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 POLL_INTERVAL = 2  # seconds
 # How often to sweep for jobs orphaned by a crashed/restarted worker.
 REAP_INTERVAL = int(os.environ.get("REAPER_INTERVAL_SECONDS", "60"))
+# How often to run the retention sweep (T33) — delete content past its 7-day TTL.
+CLEANUP_INTERVAL = int(os.environ.get("RETENTION_SWEEP_SECONDS", "3600"))
 
 
 async def claim_and_run() -> bool:
@@ -76,6 +79,14 @@ async def _safe_reap() -> None:
         log_structured("ERROR", "reaper_error", error=str(e)[:200])
 
 
+async def _safe_sweep() -> None:
+    """Run the retention sweep; a sweep failure must never kill the poll loop."""
+    try:
+        await sweep_expired()
+    except Exception as e:  # noqa: BLE001
+        log_structured("ERROR", "retention_sweep_error", error=str(e)[:200])
+
+
 async def poll_loop() -> None:
     """Continuously claim and run jobs; idle-sleep when the queue is empty.
 
@@ -84,7 +95,9 @@ async def poll_loop() -> None:
     """
     log_structured("INFO", "consumer_started")
     await _safe_reap()
+    await _safe_sweep()
     last_reap = time.monotonic()
+    last_cleanup = time.monotonic()
     while True:
         try:
             claimed = await claim_and_run()
@@ -94,5 +107,8 @@ async def poll_loop() -> None:
         if time.monotonic() - last_reap >= REAP_INTERVAL:
             await _safe_reap()
             last_reap = time.monotonic()
+        if time.monotonic() - last_cleanup >= CLEANUP_INTERVAL:
+            await _safe_sweep()
+            last_cleanup = time.monotonic()
         if not claimed:
             await asyncio.sleep(POLL_INTERVAL)

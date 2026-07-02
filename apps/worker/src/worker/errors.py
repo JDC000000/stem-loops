@@ -78,7 +78,7 @@ class UploadInvalidError(StemLoopsError):
 
 class UploadTooLargeError(StemLoopsError):
     error_code = "UPLOAD_TOO_LARGE"
-    user_message = "That file is too large. The maximum upload size is 50 MB."
+    user_message = "That file is too large. The maximum upload size is 200 MB."
 
 
 class InternalError(StemLoopsError):

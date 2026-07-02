@@ -2,7 +2,7 @@
 // The worker ffmpeg-normalizes any accepted container to WAV before separation,
 // so audio AND video files are supported.
 
-export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
+export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024; // 200 MB — real songs (esp. uncompressed WAV/FLAC) run 40-100+ MB
 
 // ext → content-type. Audio + common video containers (audio is extracted).
 export const ACCEPTED_TYPES: Record<string, string> = {
@@ -48,7 +48,7 @@ export function validateUpload(filename: string, size: number): UploadValidation
     return { ok: false, error_code: 'UPLOAD_INVALID', message: 'That file appears to be empty.' };
   }
   if (size > MAX_UPLOAD_BYTES) {
-    return { ok: false, error_code: 'UPLOAD_TOO_LARGE', message: 'That file is too large. Maximum is 50 MB.' };
+    return { ok: false, error_code: 'UPLOAD_TOO_LARGE', message: 'That file is too large. Maximum is 200 MB.' };
   }
   return { ok: true, ext, contentType: ACCEPTED_TYPES[ext] };
 }

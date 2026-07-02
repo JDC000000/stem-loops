@@ -34,7 +34,7 @@ export async function presignPut(
   r2Key: string,
   contentType: string,
   contentLength: number,
-  expiresIn = 600, // 10 min — long enough for a 50 MB upload on a slow line, short enough to not linger
+  expiresIn = 900, // 15 min — long enough for a 200 MB upload on a slow line, short enough to not linger
 ): Promise<string> {
   return getSignedUrl(
     r2,

@@ -39,3 +39,26 @@ queue (no Redis — anti-goal #7) while respecting the Python worker boundary.
 
 ## Gate 0 Status
 [ ] APPROVED by operator
+
+---
+
+## SUPERSEDED (2026-07-02) — Outcome: pg-boss removed, option B won in practice
+
+The recommendation above (A: keep pg-boss, Python worker consumes `pgboss.job` via
+`FOR UPDATE SKIP LOCKED`) was **never actually implemented**. What shipped is effectively
+**option B**: the Next.js API enqueued to pg-boss, but the Python worker consumes the
+`jobs` table directly via `SELECT … FOR UPDATE SKIP LOCKED` and **never called
+`boss.work()`** — so pg-boss's retry/scheduling engine was never in the consume path.
+
+A Phase-4 security re-verification flagged this: the "max 3 attempts, exponential
+backoff" retry config on `pg-boss.send()` was dead config (config-theater) with zero
+effect, and the real retry/re-drive is the worker-side reaper (`reaper.py`) + the T33
+retention sweep (`cleanup.py`). With nothing consuming it, pg-boss was pure dead weight —
+its enqueue records just accumulated (unconsumed) — and its presence was actively
+misleading for future work.
+
+**Decision reversed → remove pg-boss entirely.** Retry/attempt-cap/backoff now live in
+`reaper.py` (bounded attempts + exponential backoff, BLOCKER #4). Queueing is the single
+Postgres-native `jobs`-table `SKIP LOCKED` mechanism — still no Redis (anti-goal #7), one
+fewer dependency, and no orphaned "config-theater". This entry keeps the record honest
+rather than silently orphaning the original A recommendation.

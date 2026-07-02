@@ -1,0 +1,33 @@
+# Fly config for the stem-loops WORKER (queue consumer + /health).
+# Deploys to the existing 'stem-loops' app. The worker polls Postgres
+# (FOR UPDATE SKIP LOCKED) so it must stay running — no scale-to-zero.
+app = "stem-loops"
+primary_region = "iad"  # us-east, near the Supabase project; adjust to match DB region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  LOG_LEVEL = "INFO"
+  # Non-secret pinned model version (ryan5453/demucs). Secrets (DATABASE_URL, R2_*,
+  # REPLICATE_API_TOKEN, IP_HASH_KEY) are set via `fly secrets set`, never here.
+  REPLICATE_MODEL_VERSION = "5a7041cc9b82e5a558fea6b3d7b12dea89625e89da33f0447bd727c2d0ab9e77"
+  REPLICATE_DEMUCS_MODEL = "htdemucs_6s"
+
+[http_service]
+  internal_port = 8000          # /health
+  force_https = true
+  auto_stop_machines = false    # keep polling the queue
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "get"
+    path = "/health"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1024mb"  # librosa stem load + loop extraction; bump if OOM on long tracks

@@ -17,8 +17,8 @@ primary_region = "iad"  # us-east, near the Supabase project; adjust to match DB
 [http_service]
   internal_port = 8000          # /health
   force_https = true
-  auto_stop_machines = false    # keep polling the queue
-  auto_start_machines = true
+  auto_stop_machines = 'off'    # MUST stay running to poll the queue (string 'off', not bool)
+  auto_start_machines = false
   min_machines_running = 1
 
   [[http_service.checks]]

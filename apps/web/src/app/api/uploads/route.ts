@@ -13,7 +13,17 @@ const RATE_LIMIT_MSG =
 // calls POST /api/jobs with { jobId, uploadKey } to create the job.
 export async function POST(request: NextRequest) {
   try {
-    const { filename, size } = await request.json();
+    let payload: any;
+    try {
+      payload = await request.json();
+    } catch {
+      // Malformed JSON is a client error, not ours (QA P2 — was surfacing as a 500).
+      return NextResponse.json(
+        { error_code: 'UPLOAD_INVALID', message: 'Request body must be valid JSON.' },
+        { status: 400 }
+      );
+    }
+    const { filename, size } = payload ?? {};
     if (typeof filename !== 'string' || typeof size !== 'number') {
       return NextResponse.json(
         { error_code: 'UPLOAD_INVALID', message: 'filename and size are required.' },

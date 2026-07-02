@@ -7,6 +7,7 @@ import { clientIpHashOf } from '@/lib/client-ip';
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
 const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
+const VALID_STEMS = new Set(DEFAULT_STEMS);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RATE_LIMIT_MSG =
   "You're going a bit fast, or we're at capacity right now. Give it a minute and try again.";
@@ -21,7 +22,16 @@ const YOUTUBE_URL_RE = /^https?:\/\/(www\.|m\.)?(youtube\.com\/watch\?|youtu\.be
 // The Python worker claims via FOR UPDATE SKIP LOCKED (Gate 0 S2 / option a).
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    let body: any;
+    try {
+      body = await request.json();
+    } catch {
+      // Malformed JSON is a client error, not ours (QA P2 — was surfacing as a 500).
+      return NextResponse.json(
+        { error_code: 'INVALID_REQUEST', message: 'Request body must be valid JSON.' },
+        { status: 400 }
+      );
+    }
 
     // ── Upload job ──────────────────────────────────────────────────────────
     if (body.uploadKey) {
@@ -36,6 +46,19 @@ export async function POST(request: NextRequest) {
       if (!VALID_BARS.has(ubars)) {
         return NextResponse.json(
           { error_code: 'UPLOAD_INVALID', message: 'loop_length_bars must be 1, 2, 4, or 8' },
+          { status: 400 }
+        );
+      }
+      // Reject an explicitly-provided but empty/invalid stems list instead of silently
+      // defaulting (QA P2 — a direct-API caller should get a clear 400, not a surprise set).
+      if (
+        stems !== undefined &&
+        (!Array.isArray(stems) ||
+          stems.length === 0 ||
+          !stems.every((s: unknown) => VALID_STEMS.has(s as string)))
+      ) {
+        return NextResponse.json(
+          { error_code: 'UPLOAD_INVALID', message: 'stems must be a non-empty list of supported stems.' },
           { status: 400 }
         );
       }

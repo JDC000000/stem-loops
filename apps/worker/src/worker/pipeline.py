@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import resource
 import shutil
 import subprocess
 import tempfile
@@ -441,7 +442,11 @@ async def run_pipeline(job_id: str) -> None:
         await emit_event(job_id, "uploading", "completed", pct=100)
 
         await set_status(job_id, "done")
-        log_structured("INFO", "pipeline_done", job_id=job_id, loops=count)
+        # Peak worker RSS (kernel high-water mark) — real evidence for sizing the Option-B
+        # Fly VM. On Fly each deploy is a fresh machine, so ru_maxrss here IS this job's peak
+        # memory, letting us downsize 4GB→2GB on data not a guess. (ru_maxrss is KB on Linux.)
+        log_structured("INFO", "pipeline_done", job_id=job_id, loops=count,
+                       peak_rss_mb=round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1))
 
     except StemLoopsError as exc:
         await _fail(job_id, exc.error_code, exc.user_message)

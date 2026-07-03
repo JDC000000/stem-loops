@@ -49,14 +49,12 @@ primary_region = "iad"  # us-east, near the Supabase project; adjust to match DB
   # pipeline concern — see the per-job timeout / loop-cap recommendation.)
 
 [[vm]]
-  # FIRST full-length verify runs at 4GB / shared-cpu-2x — SAFE headroom, guaranteed to
-  # complete. Why start safe not lean (coordinator catch): no genuine >5min extraction has
-  # EVER completed — Fly's 5-minute TRIAL machine cap always killed it first — so the real
-  # memory peak is UNMEASURED. A full-length track yields more loops = more memory than
-  # anything we've observed, and OOMing the first DEFINITIVE verify run would waste a real
-  # Replicate spend. So: run this once at 4GB, measure the ACTUAL peak, THEN downsize to the
-  # lean steady-state — shared-cpu-1x + 2048mb (2GB is 1x's max) — on real data, not an
-  # estimate. (Right-size-down direction from b8c3185 still holds; just start the initial
-  # verify safe rather than optimized. The crash-cycle root cause was the trial cap, not OOM.)
+  # KEEP 4GB / shared-cpu-2x — decided on MEASURED data, not an estimate. The first genuine
+  # full-length production runs (2026-07-02, billing active, trial cap gone) reported peak
+  # worker RSS (pipeline_done peak_rss_mb) of 1163MB on a 3.4min track and 1627MB on a 5.6min
+  # fretless track. Downsizing to shared-cpu-1x/2GB would leave only ~400MB over that 1627MB
+  # peak — too tight — so the planned downsize is NOT taken. This supersedes b8c3185's
+  # start-lean-at-2GB estimate. (The old crash-cycle root cause was the Fly 5-min trial cap,
+  # now resolved — NOT OOM; but genuine full-length peaks do need this 4GB headroom.)
   size = "shared-cpu-2x"
   memory = "4096mb"

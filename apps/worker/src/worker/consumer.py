@@ -1,9 +1,12 @@
 """Worker queue consumer (Gate 0 S2 decision: Python consumes via FOR UPDATE SKIP LOCKED).
 
-pg-boss (Node/web layer) owns enqueue, retry and scheduling. The Python worker
-claims jobs straight off the `jobs` table with `SELECT … FOR UPDATE SKIP LOCKED`,
-so two stateless workers never grab the same job and one poison job can never block
-the queue (it fails in isolation and the loop continues). No Redis, no sidecar.
+There is no external queue broker: the web layer just INSERTs a job row (status='queued')
+and the Python worker claims jobs straight off the `jobs` table with
+`SELECT … FOR UPDATE SKIP LOCKED`, so two stateless workers never grab the same job and one
+poison job can never block the queue (it fails in isolation and the loop continues). No
+Redis, no sidecar. (pg-boss was evaluated in the S2 spike but never wired into the consume
+path and has been removed — see spikes/s2_pgboss/s2_decision.md; retry/attempt-cap + backoff
+live in reaper.py.)
 """
 
 from __future__ import annotations

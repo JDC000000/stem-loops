@@ -17,10 +17,26 @@ export const r2 = new S3Client({
 // 7-day TTL, re-minted on every GET /api/jobs/:id read (PRD §8 anti-goal #4).
 const SEVEN_DAYS_SEC = 7 * 24 * 60 * 60;
 
-export async function mintSignedUrl(r2Key: string, expiresIn = SEVEN_DAYS_SEC): Promise<string> {
+export async function mintSignedUrl(
+  r2Key: string,
+  filename?: string,
+  expiresIn = SEVEN_DAYS_SEC,
+): Promise<string> {
+  // Force a browser DOWNLOAD (attachment), not inline navigation/preview. The <a download>
+  // attribute is IGNORED for cross-origin URLs — R2 is a different domain from the app — so
+  // without this the "Download WAV" link just navigates to the file (QA P1). R2/S3 honors
+  // ResponseContentDisposition on the presigned GET regardless of origin. Filename is
+  // sanitized to keep it a single safe header value (no CR/LF/quote injection).
+  const contentDisposition = filename
+    ? `attachment; filename="${filename.replace(/[\r\n"\\]/g, '_').slice(0, 200)}"`
+    : undefined;
   return getSignedUrl(
     r2,
-    new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME!, Key: r2Key }),
+    new GetObjectCommand({
+      Bucket: process.env.R2_BUCKET_NAME!,
+      Key: r2Key,
+      ResponseContentDisposition: contentDisposition,
+    }),
     { expiresIn },
   );
 }

@@ -44,7 +44,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       loopsRes.rows.map(async (l) => {
         let signed_url: string | null = null;
         try {
-          signed_url = await mintSignedUrl(l.r2_key);
+          signed_url = await mintSignedUrl(l.r2_key, l.filename);
         } catch (e) {
           console.error('mintSignedUrl failed for', l.r2_key, e);
         }

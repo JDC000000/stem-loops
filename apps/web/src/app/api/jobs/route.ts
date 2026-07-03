@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { db } from '@/lib/db';
-import { checkAdmission } from '@/lib/admission';
+import { checkAdmission, RATE_LIMIT, RATE_WINDOW_MS } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
@@ -71,12 +71,22 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
       }
 
-      await db.query(
+      // Atomic per-IP rate enforcement (QA P0/P1): the count and the insert are ONE
+      // statement, so a concurrent burst can't each pass checkAdmission's pre-check and then
+      // insert unconditionally (the old TOCTOU). If already at the cap → 0 rows → 429.
+      const ins = await db.query(
         `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
                            loop_length_bars, status, client_ip_hash, client_fingerprint)
-         VALUES ($1, 'upload', $2, $3, $4, $5, 'queued', $6, '')`,
-        [jobId, uploadKey, typeof filename === 'string' ? filename.slice(0, 255) : null, uStems, ubars, clientIpHash]
+         SELECT $1, 'upload', $2, $3, $4, $5, 'queued', $6, ''
+         WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $6
+                AND created_at >= NOW() - ($7::int * INTERVAL '1 millisecond')) < $8
+         RETURNING id`,
+        [jobId, uploadKey, typeof filename === 'string' ? filename.slice(0, 255) : null,
+         uStems, ubars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT]
       );
+      if (!ins.rowCount) {
+        return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });
+      }
       // No external queue: the Python worker claims the job straight off the jobs table
       // (status='queued', FOR UPDATE SKIP LOCKED). pg-boss was vestigial and removed.
       return NextResponse.json({ id: jobId, status: 'queued' }, { status: 201 });
@@ -121,11 +131,17 @@ export async function POST(request: NextRequest) {
     const id = randomUUID();
     const requestedStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
 
-    await db.query(
+    const ins = await db.query(
       `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint)
-       VALUES ($1, $2, $3, $4, 'queued', $5, '')`,
-      [id, url, requestedStems, bars, clientIpHash]
+       SELECT $1, $2, $3, $4, 'queued', $5, ''
+       WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
+              AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
+       RETURNING id`,
+      [id, url, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT]
     );
+    if (!ins.rowCount) {
+      return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });
+    }
 
     return NextResponse.json({ id, status: 'queued' }, { status: 201 });
   } catch (err) {

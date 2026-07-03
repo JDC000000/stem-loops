@@ -7,8 +7,8 @@ export type AdmissionResult =
   | { allowed: true; error_code: null }
   | { allowed: false; error_code: 'RATE_LIMITED' };
 
-const RATE_WINDOW_MS = 60_000;
-const RATE_LIMIT = 5; // per-client jobs per minute
+export const RATE_WINDOW_MS = 60_000;
+export const RATE_LIMIT = 5; // per-client jobs per minute
 const MAX_IN_FLIGHT = 20; // global in-flight cap
 const dailySpendCeilingUsd = () => parseFloat(process.env.REPLICATE_SPEND_CEILING_USD ?? '10');
 
@@ -58,14 +58,23 @@ export async function checkAdmission(clientIpHash: string): Promise<AdmissionRes
 // being resolved spoof-resistantly (client-ip.ts / BLOCKER #1) — otherwise it's keyed on
 // a forgeable value.
 export async function checkUploadRate(clientIpHash: string): Promise<AdmissionResult> {
-  const recent = await db.query(
-    `SELECT COUNT(*)::int AS count FROM upload_rate_events
-     WHERE client_ip_hash = $1
-       AND created_at >= NOW() - ($2::int * INTERVAL '1 millisecond')`,
-    [clientIpHash, UPLOAD_RATE_WINDOW_MS],
+  // Atomic check-and-record (QA P0/P1): the count and the insert are ONE statement, so a
+  // request can't pass the check in the gap before it records its own event — the old
+  // two-round-trip TOCTOU where a concurrent burst all saw "under limit" then all inserted
+  // unconditionally. The INSERT ... SELECT records only while still under the cap (else 0
+  // rows). This fully serializes STAGGERED requests (each sees prior commits); a perfectly-
+  // simultaneous burst can still overshoot by ~the burst size under READ COMMITTED — a fully
+  // race-proof version would need a per-IP advisory lock or an atomic counter row (see report).
+  const res = await db.query(
+    `INSERT INTO upload_rate_events (client_ip_hash)
+     SELECT $1::text
+     WHERE (
+       SELECT COUNT(*) FROM upload_rate_events
+       WHERE client_ip_hash = $1
+         AND created_at >= NOW() - ($2::int * INTERVAL '1 millisecond')
+     ) < $3
+     RETURNING id`,
+    [clientIpHash, UPLOAD_RATE_WINDOW_MS, uploadRateLimit()],
   );
-  if (recent.rows[0].count >= uploadRateLimit()) return BLOCKED;
-
-  await db.query(`INSERT INTO upload_rate_events (client_ip_hash) VALUES ($1)`, [clientIpHash]);
-  return ALLOWED;
+  return (res.rowCount ?? 0) > 0 ? ALLOWED : BLOCKED;
 }

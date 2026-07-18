@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
+import * as Sentry from '@sentry/nextjs';
 import { presignPut } from '@/lib/r2';
 import { validateUpload, MAX_UPLOAD_BYTES } from '@/lib/upload';
 import { checkUploadRate } from '@/lib/admission';
@@ -51,6 +52,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ jobId, key, uploadUrl, maxBytes: MAX_UPLOAD_BYTES, contentType: v.contentType });
   } catch (err) {
+    Sentry.captureException(err);
     console.error('POST /api/uploads error:', err);
     return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500 });
   }

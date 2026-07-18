@@ -1,3 +1,5 @@
+const { withSentryConfig } = require('@sentry/nextjs');
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // Transpile workspace packages
@@ -13,4 +15,14 @@ const nextConfig = {
   // NEXT_PUBLIC_* vars go here if needed
 };
 
-module.exports = nextConfig;
+// withSentryConfig is safe to apply unconditionally — it only uploads source maps
+// (via sentry-cli) when SENTRY_AUTH_TOKEN is present at build time, and silently
+// skips that step otherwise. Doesn't require the DSN itself to be set.
+module.exports = withSentryConfig(nextConfig, {
+  silent: true,
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  // Don't fail the build if source-map upload isn't configured yet.
+  disableLogger: true,
+  automaticVercelMonitors: false,
+});

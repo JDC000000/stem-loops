@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx
 import librosa
 import psycopg
+import sentry_sdk
 from psycopg.types.json import Json
 
 from .classifier.energy_classifier import classify_energy
@@ -460,9 +461,16 @@ async def run_pipeline(job_id: str) -> None:
                        peak_rss_mb=round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1))
 
     except StemLoopsError as exc:
+        # Deliberately NOT sent to Sentry: these are the designed, typed error paths
+        # (DOWNLOAD_BLOCKED, DOWNLOAD_TIMEOUT, etc.) working exactly as intended —
+        # reporting every one would just be noise the sentry-triage job has to filter.
         await _fail(job_id, exc.error_code, exc.user_message)
         raise
     except Exception as exc:  # noqa: BLE001 — surface as typed INTERNAL_ERROR
+        # This IS worth reporting — an exception that fell through every typed error
+        # class is by definition something nobody anticipated. No-op if SENTRY_DSN
+        # isn't configured (main.py only calls sentry_sdk.init when it's set).
+        sentry_sdk.capture_exception(exc)
         err = InternalError(str(exc)[:200])
         await _fail(job_id, err.error_code, err.user_message)
         raise

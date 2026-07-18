@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
+import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { checkAdmission, RATE_LIMIT, RATE_WINDOW_MS } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
@@ -164,6 +165,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ id, status: 'queued' }, { status: 201 });
   } catch (err) {
+    // This try/catch swallows the error into a clean 500 JSON response (PRD §6.1 — no
+    // stack trace in the response body), which means it never reaches Next.js's own
+    // onRequestError hook. Report it to Sentry explicitly, or it just vanishes.
+    Sentry.captureException(err);
     console.error('POST /api/jobs error:', err);
     return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500 });
   }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { mintSignedUrl } from '@/lib/r2';
 
@@ -46,6 +47,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
         try {
           signed_url = await mintSignedUrl(l.r2_key, l.filename);
         } catch (e) {
+          Sentry.captureException(e);
           console.error('mintSignedUrl failed for', l.r2_key, e);
         }
         return { ...l, signed_url };
@@ -54,6 +56,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
 
     return NextResponse.json({ ...job, events: eventsRes.rows, loops });
   } catch (err) {
+    Sentry.captureException(err);
     console.error(`GET /api/jobs/${params.id} error:`, err);
     return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500 });
   }

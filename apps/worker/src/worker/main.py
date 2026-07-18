@@ -12,12 +12,24 @@ restart-on-exit + the reaper — so it stays purely for manual probes.
 """
 
 import asyncio
+import os
 import sys
 
+import sentry_sdk
 import uvicorn
 
 from .consumer import poll_loop
 from .health import app
+
+# No-op until SENTRY_DSN is set (Fly secret) — safe to ship before the Sentry project
+# exists. This is a low-volume portfolio worker, not a high-QPS service, so a modest
+# fixed trace sample rate has no real cost/noise tradeoff either way.
+if os.environ.get("SENTRY_DSN"):
+    sentry_sdk.init(
+        dsn=os.environ["SENTRY_DSN"],
+        environment=os.environ.get("FLY_APP_NAME", "production"),
+        traces_sample_rate=0.2,
+    )
 
 
 async def serve() -> None:

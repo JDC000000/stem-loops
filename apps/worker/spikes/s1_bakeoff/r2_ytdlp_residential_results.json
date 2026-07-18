@@ -1,0 +1,13 @@
+{
+  "path": "yt-dlp (residential/mobile proxy)",
+  "n": 50,
+  "success": 45,
+  "success_pct": 90.0,
+  "p50_ms_success": 4684,
+  "p90_ms_success": 13205,
+  "categories": {
+    "OK": 45,
+    "OTHER": 1,
+    "BOT_BLOCK": 4
+  }
+}

@@ -43,6 +43,15 @@ class DownloadInvalidUrlError(StemLoopsError):
     )
 
 
+class LiveStreamNotSupportedError(DownloadInvalidUrlError):
+    """R2 addendum: a 24/7 live stream (e.g. lofi radio) has no fixed end — yt-dlp would
+    otherwise try to download it indefinitely. Same error_code as its parent (still one of
+    the 9 typed classes, no taxonomy expansion) with an accurate message: unlike a bad URL,
+    the link IS a valid YouTube URL, it's just unsupported content."""
+
+    user_message = "Live streams aren't supported. Paste a link to a regular (non-live) video."
+
+
 class DownloadAgeRestrictedError(StemLoopsError):
     error_code = "DOWNLOAD_AGE_RESTRICTED"
     user_message = "This video is age-restricted and can't be processed."

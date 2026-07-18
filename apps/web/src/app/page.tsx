@@ -7,6 +7,15 @@ import { ACCEPT_ATTR, validateUpload, MAX_UPLOAD_BYTES } from '@/lib/upload';
 const STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
 const BAR_OPTIONS = [1, 2, 4, 8];
 
+// R2 rollout (youtube-input-v2-research.md): mirrors the server-side ALLOW_YOUTUBE_INPUT
+// gate (worker + /api/jobs) but as a build-time public flag purely for UI visibility — the
+// API is the real enforcement point either way, this just avoids showing a tab that would
+// 403 on submit while the feature is being staged. Defaults to hidden (off).
+const YOUTUBE_INPUT_ENABLED = process.env.NEXT_PUBLIC_ALLOW_YOUTUBE_INPUT === 'true';
+// Mirrors the API's YOUTUBE_URL_RE (apps/web/src/app/api/jobs/route.ts) for instant
+// client-side feedback; the API re-validates regardless, so this is UX-only, not a guard.
+const YOUTUBE_URL_RE = /^https?:\/\/(www\.|m\.)?(youtube\.com\/watch\?|youtu\.be\/)/i;
+
 function fmtSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -83,7 +92,9 @@ async function putToR2(uploadUrl: string, file: File, contentType: string, onPro
 export default function HomePage() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
+  const [mode, setMode] = useState<'upload' | 'youtube'>('upload');
   const [file, setFile] = useState<File | null>(null);
+  const [youtubeUrl, setYoutubeUrl] = useState('');
   const [stems, setStems] = useState<string[]>(STEMS);
   const [bars, setBars] = useState(4);
   const [dragging, setDragging] = useState(false);
@@ -107,40 +118,67 @@ export default function HomePage() {
     setStems((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
   }
 
+  async function submitUpload() {
+    if (!file) return;
+    // 1. presign
+    const pres = await fetch('/api/uploads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: file.name, size: file.size }),
+    });
+    const presJson = await pres.json();
+    if (!pres.ok) throw new Error(presJson.message ?? 'Could not start the upload.');
+
+    // 2. direct-to-R2 upload
+    await putToR2(presJson.uploadUrl, file, presJson.contentType, setProgress);
+
+    // 3. create job
+    const jobRes = await fetch('/api/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jobId: presJson.jobId,
+        uploadKey: presJson.key,
+        filename: file.name,
+        stems: stems.length ? stems : STEMS,
+        loop_length_bars: bars,
+      }),
+    });
+    const jobJson = await jobRes.json();
+    if (!jobRes.ok) throw new Error(jobJson.message ?? 'Could not create the job.');
+    router.push(`/jobs/${jobJson.id}`);
+  }
+
+  async function submitYoutube() {
+    const url = youtubeUrl.trim();
+    if (!url) return;
+    // Progress bar has nothing to track pre-fetch (no client-side upload step), so just
+    // show the indeterminate "Starting separation…" copy immediately.
+    setProgress(100);
+    const jobRes = await fetch('/api/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url,
+        stems: stems.length ? stems : STEMS,
+        loop_length_bars: bars,
+      }),
+    });
+    const jobJson = await jobRes.json();
+    if (!jobRes.ok) throw new Error(jobJson.message ?? 'Could not create the job.');
+    router.push(`/jobs/${jobJson.id}`);
+  }
+
   async function submit() {
-    if (!file || busy) return;
+    if (busy) return;
+    if (mode === 'upload' && !file) return;
+    if (mode === 'youtube' && !YOUTUBE_URL_RE.test(youtubeUrl.trim())) return;
     setBusy(true);
     setError(null);
     setProgress(0);
     try {
-      // 1. presign
-      const pres = await fetch('/api/uploads', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: file.name, size: file.size }),
-      });
-      const presJson = await pres.json();
-      if (!pres.ok) throw new Error(presJson.message ?? 'Could not start the upload.');
-
-      // 2. direct-to-R2 upload
-      await putToR2(presJson.uploadUrl, file, presJson.contentType, setProgress);
-
-      // 3. create job
-      const jobRes = await fetch('/api/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jobId: presJson.jobId,
-          uploadKey: presJson.key,
-          filename: file.name,
-          stems: stems.length ? stems : STEMS,
-          loop_length_bars: bars,
-        }),
-      });
-      const jobJson = await jobRes.json();
-      if (!jobRes.ok) throw new Error(jobJson.message ?? 'Could not create the job.');
-
-      router.push(`/jobs/${jobJson.id}`);
+      if (mode === 'upload') await submitUpload();
+      else await submitYoutube();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
       setBusy(false);
@@ -165,7 +203,11 @@ export default function HomePage() {
     userSelect: 'none',
   });
 
-  const disabled = !file || busy || stems.length === 0;
+  const youtubeValid = YOUTUBE_URL_RE.test(youtubeUrl.trim());
+  const disabled =
+    busy ||
+    stems.length === 0 ||
+    (mode === 'upload' ? !file : !youtubeValid);
 
   return (
     <main style={{ maxWidth: 640, margin: '0 auto', padding: '64px 24px 96px', fontFamily: 'var(--font-sans)' }}>
@@ -173,43 +215,80 @@ export default function HomePage() {
         stem<span style={{ color: 'var(--accent)' }}>loops</span>
       </h1>
       <p style={{ color: 'var(--text-muted)', margin: '0 0 32px', fontSize: 'var(--text-lg)' }}>
-        Upload a track — get bar-aligned, BPM-matched stem loops.
+        {mode === 'upload'
+          ? 'Upload a track — get bar-aligned, BPM-matched stem loops.'
+          : 'Paste a YouTube link — get bar-aligned, BPM-matched stem loops.'}
       </p>
 
-      {/* Drop-zone */}
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={() => !busy && inputRef.current?.click()}
-        onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && !busy && inputRef.current?.click()}
-        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => { e.preventDefault(); setDragging(false); if (!busy) pick(e.dataTransfer.files?.[0] ?? null); }}
-        style={{
-          border: `2px dashed ${dragging ? 'var(--accent)' : 'var(--border-strong)'}`,
-          background: dragging ? 'var(--bg-hover)' : 'var(--bg-elevated)',
-          borderRadius: 12,
-          padding: '40px 24px',
-          textAlign: 'center',
-          cursor: busy ? 'default' : 'pointer',
-          transition: 'border-color 120ms, background 120ms',
-        }}
-      >
-        <input ref={inputRef} type="file" accept={ACCEPT_ATTR} hidden onChange={(e) => pick(e.target.files?.[0] ?? null)} />
-        {file ? (
-          <div>
-            <div style={{ fontSize: 'var(--text-lg)', color: 'var(--text-primary)', wordBreak: 'break-all' }}>{file.name}</div>
-            <div style={{ fontSize: 'var(--text-base)', color: 'var(--text-muted)', marginTop: 4 }}>{fmtSize(file.size)} · click to replace</div>
-          </div>
-        ) : (
-          <div>
-            <div style={{ fontSize: 'var(--text-lg)', color: 'var(--text-secondary)' }}>Drop an audio or video file here</div>
-            <div style={{ fontSize: 'var(--text-base)', color: 'var(--text-subtle)', marginTop: 6 }}>
-              or click to browse · mp3, wav, m4a, flac, ogg, mp4, mov · max {fmtSize(MAX_UPLOAD_BYTES)}
+      {/* Input-source toggle (hidden entirely until NEXT_PUBLIC_ALLOW_YOUTUBE_INPUT=true) */}
+      {YOUTUBE_INPUT_ENABLED && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+          <span onClick={() => !busy && setMode('upload')} style={chip(mode === 'upload')}>Upload file</span>
+          <span onClick={() => !busy && setMode('youtube')} style={chip(mode === 'youtube')}>YouTube link</span>
+        </div>
+      )}
+
+      {mode === 'upload' ? (
+        /* Drop-zone */
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => !busy && inputRef.current?.click()}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && !busy && inputRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => { e.preventDefault(); setDragging(false); if (!busy) pick(e.dataTransfer.files?.[0] ?? null); }}
+          style={{
+            border: `2px dashed ${dragging ? 'var(--accent)' : 'var(--border-strong)'}`,
+            background: dragging ? 'var(--bg-hover)' : 'var(--bg-elevated)',
+            borderRadius: 12,
+            padding: '40px 24px',
+            textAlign: 'center',
+            cursor: busy ? 'default' : 'pointer',
+            transition: 'border-color 120ms, background 120ms',
+          }}
+        >
+          <input ref={inputRef} type="file" accept={ACCEPT_ATTR} hidden onChange={(e) => pick(e.target.files?.[0] ?? null)} />
+          {file ? (
+            <div>
+              <div style={{ fontSize: 'var(--text-lg)', color: 'var(--text-primary)', wordBreak: 'break-all' }}>{file.name}</div>
+              <div style={{ fontSize: 'var(--text-base)', color: 'var(--text-muted)', marginTop: 4 }}>{fmtSize(file.size)} · click to replace</div>
             </div>
+          ) : (
+            <div>
+              <div style={{ fontSize: 'var(--text-lg)', color: 'var(--text-secondary)' }}>Drop an audio or video file here</div>
+              <div style={{ fontSize: 'var(--text-base)', color: 'var(--text-subtle)', marginTop: 6 }}>
+                or click to browse · mp3, wav, m4a, flac, ogg, mp4, mov · max {fmtSize(MAX_UPLOAD_BYTES)}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* YouTube URL input */
+        <div>
+          <input
+            type="url"
+            inputMode="url"
+            placeholder="https://www.youtube.com/watch?v=…"
+            value={youtubeUrl}
+            disabled={busy}
+            onChange={(e) => { setYoutubeUrl(e.target.value); setError(null); }}
+            style={{
+              width: '100%',
+              boxSizing: 'border-box',
+              padding: '16px 18px',
+              fontSize: 'var(--text-lg)',
+              borderRadius: 12,
+              border: `2px solid ${youtubeUrl && !youtubeValid ? 'var(--status-failed)' : 'var(--border-strong)'}`,
+              background: 'var(--bg-elevated)',
+              color: 'var(--text-primary)',
+            }}
+          />
+          <div style={{ fontSize: 'var(--text-base)', color: 'var(--text-subtle)', marginTop: 8 }}>
+            youtube.com or youtu.be links only · the video must be public
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Stems */}
       <div style={{ marginTop: 28 }}>

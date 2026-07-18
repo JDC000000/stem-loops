@@ -1,6 +1,15 @@
 @import '../styles/design-tokens.css';
 
-* {
+/* QA fix (stem-loops-youtube-v2-prod-qa-report, P2 #1): `html` was never explicitly
+   border-box, and `*, *::before, *::after { box-sizing: inherit }` below made every
+   element inherit FROM html — so the whole app silently resolved to content-box
+   despite the `* { box-sizing: border-box }` rule that used to sit here, which the
+   later inherit-rule always overrode. Net effect: any width:100% + padding element
+   (e.g. the "Extract Loops" button, `padding: '0 24px'`... `width: 100%`) rendered
+   ~box-model-padding wider than intended — on a 375px viewport the CTA's right edge
+   was clipped (invisible only because body has overflow-x:hidden). Setting box-sizing
+   on `html` itself gives the inherit chain below a correct root to inherit from. */
+html {
   box-sizing: border-box;
 }
 

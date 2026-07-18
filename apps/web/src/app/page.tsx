@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ACCEPT_ATTR, validateUpload, MAX_UPLOAD_BYTES } from '@/lib/upload';
+import { canonicalizeYoutubeUrl } from '@/lib/youtube-url';
 
 const STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
 const BAR_OPTIONS = [1, 2, 4, 8];
@@ -12,9 +13,6 @@ const BAR_OPTIONS = [1, 2, 4, 8];
 // API is the real enforcement point either way, this just avoids showing a tab that would
 // 403 on submit while the feature is being staged. Defaults to hidden (off).
 const YOUTUBE_INPUT_ENABLED = process.env.NEXT_PUBLIC_ALLOW_YOUTUBE_INPUT === 'true';
-// Mirrors the API's YOUTUBE_URL_RE (apps/web/src/app/api/jobs/route.ts) for instant
-// client-side feedback; the API re-validates regardless, so this is UX-only, not a guard.
-const YOUTUBE_URL_RE = /^https?:\/\/(www\.|m\.)?(youtube\.com\/watch\?|youtu\.be\/)/i;
 
 function fmtSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -172,7 +170,7 @@ export default function HomePage() {
   async function submit() {
     if (busy) return;
     if (mode === 'upload' && !file) return;
-    if (mode === 'youtube' && !YOUTUBE_URL_RE.test(youtubeUrl.trim())) return;
+    if (mode === 'youtube' && !canonicalizeYoutubeUrl(youtubeUrl)) return;
     setBusy(true);
     setError(null);
     setProgress(0);
@@ -203,7 +201,7 @@ export default function HomePage() {
     userSelect: 'none',
   });
 
-  const youtubeValid = YOUTUBE_URL_RE.test(youtubeUrl.trim());
+  const youtubeValid = !!canonicalizeYoutubeUrl(youtubeUrl);
   const disabled =
     busy ||
     stems.length === 0 ||

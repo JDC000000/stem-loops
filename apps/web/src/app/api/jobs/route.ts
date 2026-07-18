@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { db } from '@/lib/db';
 import { checkAdmission, RATE_LIMIT, RATE_WINDOW_MS } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
+import { canonicalizeYoutubeUrl } from '@/lib/youtube-url';
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
 const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
@@ -10,9 +11,6 @@ const VALID_STEMS = new Set(DEFAULT_STEMS);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RATE_LIMIT_MSG =
   "You're going a bit fast, or we're at capacity right now. Give it a minute and try again.";
-// YouTube ingestion is DEFERRED pre-launch (A1). Anchored allowlist mirroring the
-// worker's SSRF guard — only consulted when ALLOW_YOUTUBE_INPUT re-enables the path.
-const YOUTUBE_URL_RE = /^https?:\/\/(www\.|m\.)?(youtube\.com\/watch\?|youtu\.be\/)/i;
 
 // POST /api/jobs — create a job. Two input kinds:
 //   • upload  (V2 PRIMARY): body { jobId, uploadKey, filename?, stems?, loop_length_bars? }
@@ -108,9 +106,16 @@ export async function POST(request: NextRequest) {
     if (!url || typeof url !== 'string') {
       return NextResponse.json({ error_code: 'DOWNLOAD_INVALID_URL', message: 'url is required' }, { status: 400 });
     }
-    if (!YOUTUBE_URL_RE.test(url)) {
+    // QA fix (P2/UX #3 + P3 #5): canonicalize + require an actual video id, and accept
+    // Shorts/Music/live/embed links, not just /watch and bare youtu.be/. The worker's
+    // SSRF allowlist (downloader/__init__.py) already accepts any youtube.com/youtu.be
+    // path, so this only widens web-layer *validation* — no new server-side attack
+    // surface. Persisting the canonicalized form (not the raw pasted url) also strips
+    // tracking params before the row ever exists.
+    const canonicalUrl = canonicalizeYoutubeUrl(url);
+    if (!canonicalUrl) {
       return NextResponse.json(
-        { error_code: 'DOWNLOAD_INVALID_URL', message: 'Only YouTube URLs are supported' },
+        { error_code: 'DOWNLOAD_INVALID_URL', message: 'That doesn’t look like a YouTube video link. Paste a full youtube.com or youtu.be URL.' },
         { status: 400 }
       );
     }
@@ -118,6 +123,20 @@ export async function POST(request: NextRequest) {
     if (!VALID_BARS.has(bars)) {
       return NextResponse.json(
         { error_code: 'DOWNLOAD_INVALID_URL', message: 'loop_length_bars must be 1, 2, 4, or 8' },
+        { status: 400 }
+      );
+    }
+    // QA fix (P2 #2): the youtube branch never validated `stems` against VALID_STEMS —
+    // {"stems":["piano","banana"]} was persisted and handed to the worker. Mirror the
+    // upload branch's check exactly.
+    if (
+      stems !== undefined &&
+      (!Array.isArray(stems) ||
+        stems.length === 0 ||
+        !stems.every((s: unknown) => VALID_STEMS.has(s as string)))
+    ) {
+      return NextResponse.json(
+        { error_code: 'DOWNLOAD_INVALID_URL', message: 'stems must be a non-empty list of supported stems.' },
         { status: 400 }
       );
     }
@@ -137,7 +156,7 @@ export async function POST(request: NextRequest) {
        WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
               AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
        RETURNING id`,
-      [id, url, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT]
+      [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT]
     );
     if (!ins.rowCount) {
       return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });

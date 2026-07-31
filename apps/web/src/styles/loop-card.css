@@ -87,6 +87,13 @@
   cursor: grab;
 }
 
+/* Playback failure (expired signed URL, decode error) — previously silent. */
+.loop-card-error {
+  margin-top: 6px;
+  font-size: var(--text-xs, 12px);
+  color: var(--status-failed);
+}
+
 @media (max-width: 375px) {
   .loop-card {
     padding: 8px;

@@ -10,7 +10,7 @@ type LoopWithUrl = Loop & { signed_url?: string | null };
 export function LoopCard({ loop }: { loop: LoopWithUrl }) {
   const waveRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<{ destroy: () => void } | null>(null);
-  const { playing, loading, toggle } = useAudition(loop.signed_url);
+  const { playing, loading, error, toggle } = useAudition(loop.signed_url);
 
   // Render the waveform from precomputed peaks — never fetch the full WAV just to draw.
   useEffect(() => {
@@ -76,6 +76,9 @@ export function LoopCard({ loop }: { loop: LoopWithUrl }) {
           href={loop.signed_url ?? '#'}
           download={loop.filename}
           aria-disabled={!loop.signed_url}
+          // aria-disabled is advisory only — an <a> has no native disabled state, so
+          // without this the "disabled" link still navigates to "#".
+          onClick={(e) => { if (!loop.signed_url) e.preventDefault(); }}
         >
           ⬇ WAV
         </a>
@@ -83,6 +86,12 @@ export function LoopCard({ loop }: { loop: LoopWithUrl }) {
           ⠿
         </span>
       </div>
+
+      {error && (
+        <div className="loop-card-error" role="status">
+          {error}
+        </div>
+      )}
     </div>
   );
 }

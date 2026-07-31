@@ -19,6 +19,7 @@ let activeLoad: AbortController | null = null;
 export function useAudition(signedUrl: string | null | undefined) {
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const srcRef = useRef<AudioBufferSourceNode | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
   const loadRef = useRef<AbortController | null>(null);
@@ -37,6 +38,13 @@ export function useAudition(signedUrl: string | null | undefined) {
       if (activeLoad === loadRef.current) activeLoad = null;
       loadRef.current = null;
     }
+    // Release the AudioContext too. Every stem-filter switch unmounts and remounts these
+    // cards, and each one that had played left an open context behind; Safari/iOS caps
+    // concurrent contexts, so enough filter-switching silently killed all playback.
+    // close() is async and rejects if already closed — neither matters here.
+    const ctx = ctxRef.current;
+    ctxRef.current = null;
+    ctx?.close().catch(() => {});
     setPlaying(false);
     setLoading(false);
   }, []);
@@ -56,11 +64,17 @@ export function useAudition(signedUrl: string | null | undefined) {
     activeLoad = ctrl;
     loadRef.current = ctrl;
     setLoading(true);
+    setError(null);
     try {
       const ctx = ctxRef.current ?? new AudioContext();
       ctxRef.current = ctx;
       if (ctx.state === 'suspended') await ctx.resume();
       const resp = await fetch(signedUrl, { signal: ctrl.signal });
+      // A signed URL that has expired (or an R2 hiccup) returns an XML error body that
+      // decodeAudioData chokes on, and the catch below used to swallow it — the button
+      // just flashed and reverted to "Play" with no explanation. Check the status so the
+      // user gets told to refresh.
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const buf = await ctx.decodeAudioData(await resp.arrayBuffer());
       // A later click may have superseded this load while we were decoding — bail so we
       // never start a second simultaneous player.
@@ -76,9 +90,15 @@ export function useAudition(signedUrl: string | null | undefined) {
       activeLoad = null;
       loadRef.current = null;
       setPlaying(true);
-    } catch {
-      // Aborted (superseded by a later click) or a network/decode error — just don't play.
+    } catch (e) {
       setPlaying(false);
+      // Being superseded by a later click is the designed path, not a failure — only a
+      // real load/decode problem is worth showing.
+      const aborted = e instanceof DOMException && e.name === 'AbortError';
+      if (!aborted) {
+        console.error('[audition] playback failed', e);
+        setError("Couldn't play this loop — refresh the page and try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -88,5 +108,5 @@ export function useAudition(signedUrl: string | null | undefined) {
   // so a looping source can never be orphaned. `stop` is stable, so this runs on unmount.
   useEffect(() => stop, [stop]);
 
-  return { playing, loading, toggle, stop };
+  return { playing, loading, error, toggle, stop };
 }

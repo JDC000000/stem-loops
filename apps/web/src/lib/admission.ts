@@ -1,4 +1,4 @@
-import { withTransaction, type Queryable } from '@/lib/db';
+import { db, withTransaction, type Queryable } from '@/lib/db';
 
 // Admission control (PRD draft-2 hardening): three gates run BEFORE a job row is
 // inserted or enqueued, so abuse and runaway spend are stopped at the door. The
@@ -116,4 +116,46 @@ export async function checkUploadRate(clientIpHash: string): Promise<AdmissionRe
     await tx.query(`INSERT INTO upload_rate_events (client_ip_hash) VALUES ($1)`, [clientIpHash]);
     return ALLOWED;
   });
+}
+
+// ── Upload-key binding (hardening review C1) ─────────────────────────────────────────
+// A presigned upload key is a capability. Before this, /api/jobs accepted any uploadKey
+// string a client sent, so learning someone else's key (GET /api/jobs/:id used to hand it
+// out) was enough to have the worker reprocess their private audio and return the stems.
+// upload_intents (migration 007) is the server-side record of what we actually minted.
+
+/** Record that we minted a presigned PUT for `r2Key`, to be claimed once by `jobId`. */
+export async function recordUploadIntent(
+  jobId: string,
+  r2Key: string,
+  clientIpHash: string,
+): Promise<void> {
+  await db.query(
+    `INSERT INTO upload_intents (job_id, r2_key, client_ip_hash) VALUES ($1, $2, $3)`,
+    [jobId, r2Key, clientIpHash],
+  );
+}
+
+/**
+ * Claim the upload intent for this job. Returns false if no intent exists for exactly
+ * this {jobId, r2Key} pair or it has already been consumed — i.e. the key was never
+ * minted by us, belongs to a different job, or is being replayed.
+ *
+ * The UPDATE ... WHERE consumed_at IS NULL is the whole guarantee: Postgres row locking
+ * makes the flag flip exactly once even under concurrent claims, so one upload can never
+ * back two jobs. Must run in the same transaction as the job INSERT so a rejected or
+ * failed insert releases the intent instead of burning it.
+ */
+export async function claimUploadIntent(
+  tx: Queryable,
+  jobId: string,
+  r2Key: string,
+): Promise<boolean> {
+  const claimed = await tx.query(
+    `UPDATE upload_intents SET consumed_at = NOW()
+     WHERE job_id = $1 AND r2_key = $2 AND consumed_at IS NULL
+     RETURNING job_id`,
+    [jobId, r2Key],
+  );
+  return (claimed.rowCount ?? 0) > 0;
 }

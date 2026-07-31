@@ -16,8 +16,12 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
   }
   try {
+    // upload_r2_key is deliberately NOT selected (hardening review C1). This endpoint has
+    // no auth, so anyone who learns a job UUID could read the raw R2 object key of that
+    // job's private source audio — and, before the upload-intent binding, replay it into
+    // a job of their own. Nothing in the UI ever used it.
     const jobRes = await db.query(
-      `SELECT id, input_kind, youtube_url, upload_r2_key, original_filename, requested_stems,
+      `SELECT id, input_kind, youtube_url, original_filename, requested_stems,
               loop_length_bars, status, error_code, error_message_user, bpm, musical_key,
               created_at, updated_at, expires_at
        FROM jobs WHERE id = $1`,

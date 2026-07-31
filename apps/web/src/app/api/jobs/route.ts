@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
-import { checkAdmission, isLockTimeout, lockJobAdmission } from '@/lib/admission';
+import { checkAdmission, claimUploadIntent, isLockTimeout, lockJobAdmission } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
 import { canonicalizeYoutubeUrl } from '@/lib/youtube-url';
 
@@ -45,6 +45,15 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
+      // Cheap structural check before touching the DB: /api/uploads only ever mints keys
+      // under the `{jobId}/` prefix, so a key naming a different job is rejected outright.
+      // The authoritative check is claimUploadIntent() below (hardening review C1).
+      if (!uploadKey.startsWith(`${jobId}/`)) {
+        return NextResponse.json(
+          { error_code: 'UPLOAD_INVALID', message: 'Missing or invalid upload reference.' },
+          { status: 400 }
+        );
+      }
       const ubars = loop_length_bars ?? 4;
       if (!VALID_BARS.has(ubars)) {
         return NextResponse.json(
@@ -76,10 +85,15 @@ export async function POST(request: NextRequest) {
       // spend ceiling were plain check-then-act and could be walked straight through by a
       // burst from many IPs. See lib/admission.ts for why the lock is global.
       const clientIpHash = clientIpHashOf(request);
-      const admitted = await db.tx(async (tx) => {
+      const outcome = await db.tx(async (tx) => {
         await lockJobAdmission(tx);
         const adm = await checkAdmission(tx, clientIpHash);
-        if (!adm.allowed) return false;
+        if (!adm.allowed) return 'rate_limited' as const;
+        // Consume the server-side record of this upload (C1). Rejecting here is what
+        // stops a replayed key, or one minted for somebody else's job, from ever
+        // reaching the worker. Claiming inside this transaction means a later failure
+        // rolls the claim back rather than burning the user's upload.
+        if (!(await claimUploadIntent(tx, jobId, uploadKey))) return 'bad_upload' as const;
         await tx.query(
           `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
                              loop_length_bars, status, client_ip_hash, client_fingerprint)
@@ -87,10 +101,18 @@ export async function POST(request: NextRequest) {
           [jobId, uploadKey, typeof filename === 'string' ? filename.slice(0, 255) : null,
            uStems, ubars, clientIpHash]
         );
-        return true;
+        return 'created' as const;
       });
-      if (!admitted) {
+      if (outcome === 'rate_limited') {
         return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });
+      }
+      if (outcome === 'bad_upload') {
+        // Deliberately identical to the shape-validation message above — telling a caller
+        // whether a key exists but is already consumed would leak that it exists at all.
+        return NextResponse.json(
+          { error_code: 'UPLOAD_INVALID', message: 'Missing or invalid upload reference.' },
+          { status: 400 }
+        );
       }
       // No external queue: the Python worker claims the job straight off the jobs table
       // (status='queued', FOR UPDATE SKIP LOCKED). pg-boss was vestigial and removed.

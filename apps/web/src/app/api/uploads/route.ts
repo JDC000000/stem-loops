@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import * as Sentry from '@sentry/nextjs';
 import { presignPut } from '@/lib/r2';
 import { validateUpload, MAX_UPLOAD_BYTES } from '@/lib/upload';
-import { checkUploadRate, isLockTimeout } from '@/lib/admission';
+import { checkUploadRate, isLockTimeout, recordUploadIntent } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
 
 const RATE_LIMIT_MSG =
@@ -33,7 +33,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Per-IP throttle BEFORE minting a real 200MB R2 PUT credential (review BLOCKER #2).
-    const adm = await checkUploadRate(clientIpHashOf(request));
+    const clientIpHash = clientIpHashOf(request);
+    const adm = await checkUploadRate(clientIpHash);
     if (!adm.allowed) {
       return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
     }
@@ -48,6 +49,12 @@ export async function POST(request: NextRequest) {
     // alongside the outputs (PRD §6.1: no user content beyond TTL).
     const jobId = randomUUID();
     const key = `${jobId}/_input.${v.ext}`;
+
+    // Record the intent BEFORE minting the credential (C1): POST /api/jobs will only
+    // accept an uploadKey that appears here, bound to this job id, and only once. Doing
+    // it first means we never hand out a PUT URL we can't subsequently honour.
+    await recordUploadIntent(jobId, key, clientIpHash);
+
     const uploadUrl = await presignPut(key, v.contentType, size);
 
     return NextResponse.json({ jobId, key, uploadUrl, maxBytes: MAX_UPLOAD_BYTES, contentType: v.contentType });

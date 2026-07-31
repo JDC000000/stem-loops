@@ -45,7 +45,7 @@ from .errors import (
     UploadInvalidError,
 )
 from .extractor.loop_extractor import extract_loops
-from .job_state import Heartbeat
+from .job_state import Heartbeat, fail_stage_for
 from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
 from .storage.r2_uploader import download_object, upload_input, upload_loop
@@ -571,19 +571,39 @@ async def run_pipeline(job_id: str) -> None:
 async def _fail(
     job_id: str, error_code: str, user_message: str, attempt: int | None = None
 ) -> None:
-    """Terminal failure write, fenced on `attempt` (H1) so a superseded worker can't
-    stamp 'failed' over the state of the worker that took its job over."""
-    sql = (
-        "UPDATE jobs SET status='failed', error_code=%s, error_message_user=%s, "
-        "updated_at=now() WHERE id=%s"
-    )
-    args = [error_code, user_message, job_id]
-    if attempt is not None:
-        sql += " AND attempts=%s AND status NOT IN ('done','failed')"
-        args.append(attempt)
+    """Terminal failure: set jobs.status='failed' AND append the matching 'failed'
+    job_event, in ONE transaction.
+
+    H6 — TSD §6.3 says every active stage emits `started` then `completed` OR
+    `failed`, but no failure path ever wrote the `failed` row, so every failed job
+    left an open `started` stage forever and anything reconstructing stage duration
+    from job_events silently broke.
+
+    Fenced on `attempt` (H1) so a superseded worker can't stamp 'failed' over the
+    state of the worker that took its job over, and on the job not already being
+    terminal so the first (most specific) error wins. The SELECT … FOR UPDATE both
+    locks the row against a concurrent failer and tells us which stage to attribute
+    the event to — the status is about to be overwritten by the same transaction.
+    """
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-        cur = await conn.execute(sql, args)
-        await conn.commit()
-        if cur.rowcount == 0:
+        sql = "SELECT status FROM jobs WHERE id=%s AND status NOT IN ('done','failed')"
+        args = [job_id]
+        if attempt is not None:
+            sql += " AND attempts=%s"
+            args.append(attempt)
+        row = await (await conn.execute(sql + " FOR UPDATE", args)).fetchone()
+        if row is None:
+            await conn.commit()
             log_structured("WARN", "fail_write_fenced_out", job_id=job_id,
                            error_code=error_code, attempt=attempt)
+            return
+        await conn.execute(
+            "UPDATE jobs SET status='failed', error_code=%s, error_message_user=%s, "
+            "updated_at=now() WHERE id=%s",
+            (error_code, user_message, job_id),
+        )
+        await conn.execute(
+            "INSERT INTO job_events(job_id, stage, phase, detail) VALUES(%s,%s,'failed',%s)",
+            (job_id, fail_stage_for(row[0]), Json({"error_code": error_code})),
+        )
+        await conn.commit()

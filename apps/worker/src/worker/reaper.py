@@ -19,9 +19,12 @@ bounded retry lives HERE:
   * the stale window GROWS exponentially per attempt — STALE_SECONDS * FACTOR**attempts —
     so successive retries back off instead of hammering a poison job every sweep.
 
-Staleness must exceed the longest heartbeated gap so a LIVE job is never reaped:
-separation (the long pole) heartbeats `updated_at` every ~20s and every other stage
-bumps it on entry, all well under the 300s base window.
+Staleness must exceed the longest heartbeated gap so a LIVE job is never reaped.
+Since H1 EVERY stage heartbeats `updated_at` at ~20s intervals (job_state.Heartbeat,
+plus replicate_client during separation) rather than only bumping it on stage entry,
+so the 300s base window has real headroom instead of depending on a stage finishing
+before it expires. Workers additionally fence their state writes on `attempts`, so a
+job reaped despite that cannot be corrupted by the worker that lost it.
 """
 
 from __future__ import annotations
@@ -54,16 +57,35 @@ async def reap_stale_jobs() -> dict[str, int]:
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
         # Fail first: attempts exhausted AND stale (base window). Mutually exclusive with
         # the requeue branch by `attempts`, so a row is only ever touched by one branch.
+        #
+        # The status UPDATE and the job_events 'failed' INSERT are one statement (and so
+        # one transaction) — TSD §6.3 requires the pair, and this path used to write only
+        # the status, leaving a permanently open `started` stage in the trace (H6). The
+        # pre-update status is captured in the `stale` CTE because it names the stage the
+        # event belongs to, and it is restricted to the four active stages, which is
+        # exactly what job_events.stage's CHECK constraint allows.
         failed = await (await conn.execute(
             """
-            UPDATE jobs SET status='failed', error_code='INTERNAL_ERROR',
-                   error_message_user=%s, updated_at=now()
-            WHERE status = ANY(%s)
-              AND attempts >= %s
-              AND updated_at < now() - (%s * interval '1 second')
-            RETURNING id
+            WITH stale AS (
+                SELECT id, status FROM jobs
+                WHERE status = ANY(%s)
+                  AND attempts >= %s
+                  AND updated_at < now() - (%s * interval '1 second')
+                FOR UPDATE SKIP LOCKED
+            ), upd AS (
+                UPDATE jobs SET status='failed', error_code='INTERNAL_ERROR',
+                       error_message_user=%s, updated_at=now()
+                WHERE id IN (SELECT id FROM stale)
+                RETURNING id
+            ), ev AS (
+                INSERT INTO job_events(job_id, stage, phase, detail)
+                SELECT id, status, 'failed',
+                       '{"error_code":"INTERNAL_ERROR","source":"reaper"}'::jsonb
+                FROM stale
+            )
+            SELECT id FROM upd
             """,
-            (_POISON_MESSAGE, _NON_TERMINAL, MAX_ATTEMPTS, STALE_SECONDS),
+            (_NON_TERMINAL, MAX_ATTEMPTS, STALE_SECONDS, _POISON_MESSAGE),
         )).fetchall()
         # Requeue: attempts left AND stale beyond this attempt's exponential backoff window.
         requeued = await (await conn.execute(

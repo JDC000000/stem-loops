@@ -16,8 +16,10 @@ import os
 import time
 
 import psycopg
+from psycopg.types.json import Json
 
 from .errors import InternalError, JobSupersededError, StemLoopsError
+from .job_state import fail_stage_for
 from .logger import log_structured
 from .cleanup import sweep_expired
 from .pipeline import run_pipeline
@@ -72,23 +74,39 @@ async def mark_failed(
 ) -> None:
     """Safety-net failure write for anything run_pipeline's own handler missed.
 
+    Writes jobs.status='failed' AND the matching job_events 'failed' row in ONE
+    transaction (H6 — TSD §6.3 requires the pair, and no fail path used to write
+    the event at all, leaving every failed job with a permanently open `started`
+    stage in the trace).
+
     Fenced on `attempt` (H1) and on the job not already being terminal: the pipeline
     normally records the precise typed error itself, so the first writer wins and this
     becomes a no-op rather than overwriting a better error code with a generic one.
     """
-    sql = (
-        "UPDATE jobs SET status='failed', error_code=%s, error_message_user=%s, updated_at=now() "
-        "WHERE id=%s AND status NOT IN ('done','failed')"
-    )
-    args = [error_code, message, job_id]
-    if attempt is not None:
-        sql += " AND attempts=%s"
-        args.append(attempt)
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-        cur = await conn.execute(sql, args)
+        sql = "SELECT status FROM jobs WHERE id=%s AND status NOT IN ('done','failed')"
+        args = [job_id]
+        if attempt is not None:
+            sql += " AND attempts=%s"
+            args.append(attempt)
+        row = await (await conn.execute(sql + " FOR UPDATE", args)).fetchone()
+        if row is None:
+            await conn.commit()
+            log_structured("INFO", "job_failed_noop", job_id=job_id, error_code=error_code)
+            return
+        await conn.execute(
+            """
+            UPDATE jobs SET status='failed', error_code=%s, error_message_user=%s, updated_at=now()
+            WHERE id=%s
+            """,
+            (error_code, message, job_id),
+        )
+        await conn.execute(
+            "INSERT INTO job_events(job_id, stage, phase, detail) VALUES(%s,%s,'failed',%s)",
+            (job_id, fail_stage_for(row[0]), Json({"error_code": error_code})),
+        )
         await conn.commit()
-        wrote = cur.rowcount > 0
-    log_structured("WARN", "job_failed", job_id=job_id, error_code=error_code, wrote=wrote)
+    log_structured("WARN", "job_failed", job_id=job_id, error_code=error_code)
 
 
 async def _safe_reap() -> None:

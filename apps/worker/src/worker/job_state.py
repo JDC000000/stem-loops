@@ -36,6 +36,18 @@ from .logger import log_structured
 # matches the separation heartbeat so every stage looks alike to the reaper.
 HEARTBEAT_SECONDS = int(os.environ.get("JOB_HEARTBEAT_SECONDS", "20"))
 
+# job_events.stage is CHECK-constrained to the four active stages (migration 002).
+STAGES = ("downloading", "separating", "extracting", "uploading")
+# Fallback when a job fails from a status that is not one of them (e.g. still
+# 'queued'): the trace row must still be written, so it is attributed to the
+# stage the state machine says comes first.
+DEFAULT_FAIL_STAGE = "downloading"
+
+
+def fail_stage_for(status: str | None) -> str:
+    """Map a jobs.status to the stage a 'failed' job_event should be recorded under."""
+    return status if status in STAGES else DEFAULT_FAIL_STAGE
+
 
 def _db():
     return psycopg.connect(os.environ.get("DATABASE_URL", ""))

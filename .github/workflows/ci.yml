@@ -104,6 +104,32 @@ jobs:
       - name: Node tests
         run: pnpm test
 
+  # Every other job runs against the checked-out source on the runner, so the
+  # Dockerfile was only ever exercised for the first time by a production
+  # `fly deploy`. Any COPY-set / system-dep / requirements drift was invisible
+  # until then. This builds the real image and proves the entrypoint imports.
+  worker-image:
+    name: Worker image build + smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build worker image
+        run: docker build -t stem-loops-worker:ci apps/worker
+      - name: Smoke test — entrypoint imports inside the image
+        run: |
+          docker run --rm stem-loops-worker:ci \
+            python -c "import src.worker.main; print('worker entrypoint import OK')"
+      - name: Smoke test — health app and migrations are packaged
+        run: |
+          docker run --rm stem-loops-worker:ci python -c "
+          import glob, os
+          from src.worker.health import app
+          from src.worker.migrate import MIGRATIONS_DIR
+          n = len(glob.glob(os.path.join(MIGRATIONS_DIR, '*.sql')))
+          assert n > 0, 'no migrations packaged in the image'
+          print(f'health app + {n} migrations present')
+          "
+
   fixture-pipeline:
     name: Fixture pipeline (stub)
     runs-on: ubuntu-latest

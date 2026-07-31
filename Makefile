@@ -65,13 +65,13 @@ types-generate:
 # Run all tests
 test:
 	cd apps/worker && python -m pytest tests/ -v
-	pnpm --filter web test || true
+	pnpm --filter web test
 
 # Run linters
 lint:
 	cd apps/worker && python -m ruff check src/ tests/
 	cd apps/worker && python -m black --check src/ tests/
-	pnpm --filter web lint || true
+	pnpm --filter web lint
 
 # Deploy web to Vercel
 deploy-web:

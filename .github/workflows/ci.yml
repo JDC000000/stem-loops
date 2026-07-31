@@ -1,10 +1,13 @@
 name: CI
 
+# NOTE: `main` alone meant CI had not run since 2026-06-29 — all of Phase 1-3
+# landed on phase-* branches, so every job below was dead code. Trigger on the
+# active integration branch too, otherwise none of these checks protect anything.
 on:
   push:
-    branches: [main]
+    branches: [main, phase-3-ux]
   pull_request:
-    branches: [main]
+    branches: [main, phase-3-ux]
 
 jobs:
   types-drift:
@@ -62,6 +65,11 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: ESLint
         run: pnpm --filter web lint
+      # ESLint does not type-check. Without this a type error only surfaces when
+      # `vercel deploy --prod` fails — i.e. mid-deploy (regression: an earlier
+      # version of this workflow ran tsc).
+      - name: TypeScript typecheck
+        run: pnpm --filter web exec tsc --noEmit
 
   test:
     name: Tests
@@ -77,6 +85,9 @@ jobs:
       - name: pytest
         run: cd apps/worker && python -m pytest tests/ -v
         env:
+          # The worker package is not pip-installed here, so `from worker import ...`
+          # only resolves via the source tree.
+          PYTHONPATH: ${{ github.workspace }}/apps/worker/src
           STUB_MODE: "true"
           R2_ACCESS_KEY_ID: test
           R2_SECRET_ACCESS_KEY: test
@@ -91,7 +102,7 @@ jobs:
       - name: pnpm install
         run: pnpm install --frozen-lockfile
       - name: Node tests
-        run: pnpm test || true
+        run: pnpm test
 
   fixture-pipeline:
     name: Fixture pipeline (stub)
@@ -136,13 +147,32 @@ jobs:
           AWS_ACCESS_KEY_ID=minioadmin \
           AWS_SECRET_ACCESS_KEY=minioadmin \
           aws --endpoint-url http://localhost:9000 s3 mb s3://stem-loops-ci
+      # migrations/ holds only .sql — the runner is src/worker/migrate.py.
       - name: Run migrations
-        run: cd apps/worker && python migrations/migrate.py
+        run: cd apps/worker && python -m src.worker.migrate
         env:
           DATABASE_URL: postgresql://stemloops:stemloops@localhost:5432/stemloops
-      - name: Run fixture pipeline (stub mode)
+
+      # The audio core (extract -> tag -> seamless -> encode -> upload -> DB) on
+      # synthetic stems against the real Postgres + MinIO above. This test skips
+      # itself unless DATABASE_URL + R2_ACCESS_KEY_ID/SECRET/BUCKET_NAME and
+      # MINIO_ENDPOINT|R2_ENDPOINT_URL are ALL set — it had been silently skipping.
+      - name: Audio core end-to-end (real Postgres + MinIO)
+        run: cd apps/worker && python -m pytest tests/test_pipeline_fixtures.py -v
+        env:
+          PYTHONPATH: ${{ github.workspace }}/apps/worker/src
+          DATABASE_URL: postgresql://stemloops:stemloops@localhost:5432/stemloops
+          R2_ACCESS_KEY_ID: minioadmin
+          R2_SECRET_ACCESS_KEY: minioadmin
+          R2_ENDPOINT_URL: http://localhost:9000
+          R2_BUCKET_NAME: stem-loops-ci
+
+      # Whole-job path: insert a queued job, run the pipeline, write loops + upload
+      # objects. `--test-job` is the entrypoint's only supported flag (the previous
+      # `src.main --run-once` referenced a module deleted in 95412ba).
+      - name: Stub job end-to-end (queue -> pipeline -> loops -> MinIO)
         run: |
-          cd apps/worker && python -m src.main --run-once "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+          cd apps/worker && python -m src.worker.main --test-job "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         env:
           STUB_MODE: "true"
           DATABASE_URL: postgresql://stemloops:stemloops@localhost:5432/stemloops
@@ -152,3 +182,13 @@ jobs:
           R2_BUCKET_NAME: stem-loops-ci
           IP_HASH_KEY: ci-test-key
           HISTORY_COOKIE_KEY: ci-cookie-key
+
+      # Without this the step above could "pass" while producing nothing.
+      - name: Verify stub job reached done with real objects behind every loop
+        run: cd apps/worker && python scripts/verify_stub_job.py
+        env:
+          DATABASE_URL: postgresql://stemloops:stemloops@localhost:5432/stemloops
+          R2_ACCESS_KEY_ID: minioadmin
+          R2_SECRET_ACCESS_KEY: minioadmin
+          R2_ENDPOINT_URL: http://localhost:9000
+          R2_BUCKET_NAME: stem-loops-ci

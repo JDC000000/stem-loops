@@ -2,18 +2,30 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { mintSignedUrl } from '@/lib/r2';
+import { clientIpHashOf } from '@/lib/client-ip';
+import { allowPoll } from '@/lib/poll-limit';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const POLL_LIMIT_MSG = 'Too many status requests. Slow down and try again shortly.';
 
 // GET /api/jobs/:id — status + events + loops, read straight from Postgres.
 // Each loop gets a FRESHLY minted signed URL on every read (PRD §8 anti-goal #4).
-export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   // A shape-invalid id (mistyped/truncated bookmark) would otherwise hit Postgres's
   // uuid-cast error → generic 500, which the client poll loop treats as non-terminal
   // and retries forever ("Processing... 0%" loop, QA P1). Return the clean 404 the UI
   // already handles, matching the UUID_RE guard POST /api/jobs already uses.
   if (!UUID_RE.test(params.id)) {
     return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+  }
+  // Throttle before spending any of the 3-connection pool (H5). Keyed per-IP rather than
+  // per-job so opening many job pages can't multiply one client's budget.
+  const poll = allowPoll(clientIpHashOf(request));
+  if (!poll.allowed) {
+    return NextResponse.json(
+      { error_code: 'RATE_LIMITED', message: POLL_LIMIT_MSG },
+      { status: 429, headers: { 'Retry-After': String(poll.retryAfterSec) } }
+    );
   }
   try {
     // upload_r2_key is deliberately NOT selected (hardening review C1). This endpoint has

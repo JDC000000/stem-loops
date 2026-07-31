@@ -24,6 +24,14 @@ export default function JobPage({ params }: { params: { id: string } }) {
           if (!stopped) setMissing(true);
           return;
         }
+        // Any other non-2xx (429 from the new poll throttle, a transient 500) is a
+        // response we must not parse into job state — it has no `status` field, so the
+        // old code stored an error payload as the job and kept polling at full rate.
+        // Back off and retry instead, which is also what makes the throttle recoverable.
+        if (!res.ok) {
+          if (!stopped) timer.current = setTimeout(poll, res.status === 429 ? POLL_MS * 15 : POLL_MS * 2);
+          return;
+        }
         const data = (await res.json()) as Job;
         if (stopped) return;
         setJob(data);

@@ -103,19 +103,22 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
     audio/video container to a 44.1k stereo WAV, re-stage it, and return a
     presigned URL for Replicate. Uniform decoding means every accepted format
     (mp3/m4a/flac/ogg/mp4/mov/…) reaches separation identically."""
-    tmpdir = tempfile.mkdtemp(prefix="sl_upload_")
-    raw = os.path.join(tmpdir, "raw_input")
-    wav = os.path.join(tmpdir, "input.wav")
-    download_object(upload_r2_key, raw)
-    proc = subprocess.run(
-        [_ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y",
-         "-i", raw, "-ac", "2", "-ar", "44100", "-c:a", "pcm_s16le", wav],
-        capture_output=True, text=True,
-    )
-    if proc.returncode != 0 or not os.path.exists(wav) or os.path.getsize(wav) == 0:
-        # A file that ffmpeg can't decode is a bad/unsupported upload, not our fault.
-        raise UploadInvalidError(f"ffmpeg decode failed: {proc.stderr[:200]}")
-    return upload_input(job_id, wav)
+    # The staged copies only have to survive until the WAV is re-uploaded to R2, so
+    # the whole lifecycle fits in one try/finally (H11: nothing used to delete these,
+    # and the worker is now an always-on machine with a finite disk).
+    with tempfile.TemporaryDirectory(prefix="sl_upload_") as tmpdir:
+        raw = os.path.join(tmpdir, "raw_input")
+        wav = os.path.join(tmpdir, "input.wav")
+        download_object(upload_r2_key, raw)
+        proc = subprocess.run(
+            [_ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y",
+             "-i", raw, "-ac", "2", "-ar", "44100", "-c:a", "pcm_s16le", wav],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0 or not os.path.exists(wav) or os.path.getsize(wav) == 0:
+            # A file that ffmpeg can't decode is a bad/unsupported upload, not our fault.
+            raise UploadInvalidError(f"ffmpeg decode failed: {proc.stderr[:200]}")
+        return upload_input(job_id, wav)
 
 
 def _update_job_tags(job_id: str, tags: dict) -> None:
@@ -218,6 +221,8 @@ def encode_and_upload(
     # Song-title prefix (QA §4.4) so a downloaded/zipped loop reads like its track, not a
     # UUID. Falls back to the job id (e.g. the fixture path / YouTube) when there's no title.
     name_base = title or job_id
+    # Each encoded WAV is only needed until it reaches R2 — 40-60MB/job of pure
+    # leak otherwise (H11).
     tmpdir = tempfile.mkdtemp(prefix="sl_loops_")
 
     def _one(item) -> int:
@@ -264,8 +269,11 @@ def encode_and_upload(
     # encode buffer per thread), which contributed to OOM on full-length tracks.
     # Default 8 keeps Option A's behaviour unchanged.
     workers = int(os.environ.get("LOOP_ENCODE_WORKERS", "8"))
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        return sum(ex.map(_one, enumerate(loops)))
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            return sum(ex.map(_one, enumerate(loops)))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def process_stems(job_id, stem_paths, requested_stems, bars, sr=44100) -> int:
@@ -331,8 +339,10 @@ async def _set_status_or_abort(job_id: str, status: str, attempt: int | None) ->
         raise JobSupersededError(f"job {job_id} superseded before status={status}")
 
 
-def _fetch_stems(stem_urls: dict, requested_stems) -> dict:
-    tmpdir = tempfile.mkdtemp(prefix="sl_stems_")
+def _fetch_stems(stem_urls: dict, requested_stems, tmpdir: str) -> dict:
+    """Download the requested stems into `tmpdir`. The directory is owned by the
+    caller because the files outlive this call — extraction and encoding both read
+    them — so cleanup belongs in run_pipeline's finally (H11)."""
     wanted = [
         (name, url)
         for name, url in stem_urls.items()
@@ -393,6 +403,19 @@ def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
     sections = ["intro", "verse", "chorus", "bridge", "outro"]
     bar_sec = 4 * 60.0 / bpm
     placeholder = _stub_placeholder_wav()  # tiny silent 24-bit WAV, uploaded per loop
+    placeholder_dir = os.path.dirname(placeholder) if placeholder else None
+    n = 0
+    try:
+        n = _write_stub_loops(job_id, stems, sections, bars, bpm, key, bar_sec, placeholder)
+    finally:
+        if placeholder_dir:
+            shutil.rmtree(placeholder_dir, ignore_errors=True)  # H11
+    return n
+
+
+def _write_stub_loops(job_id, stems, sections, bars, bpm, key, bar_sec, placeholder) -> int:
+    """DB/R2 writes for the stub path; split out so _insert_stub_loops can own the
+    placeholder tempdir's lifecycle in one try/finally."""
     n = 0
     with _db() as c:
         c.execute("UPDATE jobs SET bpm=%s, musical_key=%s WHERE id=%s", (bpm, key, job_id))
@@ -444,6 +467,11 @@ async def run_pipeline(job_id: str) -> None:
     """Real pipeline. download_audio + Replicate are gated (S1 bake-off / P2-12+);
     the audio core runs against the produced stems. Typed errors set status=failed."""
     run_attempt = None  # bound before the try so the failure paths can always fence
+    # Every temp directory this job creates is registered here and removed in the
+    # finally below, on success AND on every failure path (H11). The worker VM is
+    # always-on now, so anything left behind accumulates until the disk fills and
+    # every subsequent job fails with ENOSPC.
+    tmpdirs: list[str] = []
     try:
         row = await asyncio.to_thread(_fetch_job, job_id)
         url, requested_stems, bars, input_kind, upload_r2_key, original_filename, run_attempt = row
@@ -498,6 +526,9 @@ async def run_pipeline(job_id: str) -> None:
             # cannot read a local path"). Stage local results to R2 exactly like the
             # override_file/upload paths already do; leave an already-a-URL result alone.
             if _source == "ytdlp":
+                # yt-dlp downloaded into its own temp dir; it is only needed until the
+                # file reaches R2.
+                tmpdirs.append(os.path.dirname(dl_result))
                 audio_src = await asyncio.to_thread(upload_input, job_id, dl_result)
             else:
                 audio_src = dl_result
@@ -521,7 +552,11 @@ async def run_pipeline(job_id: str) -> None:
                     ) from exc
                 log_structured("WARN", "separation_timeout_retry", job_id=job_id,
                                attempt=poll_attempt, pred_id=pred_id)
-        stem_paths = await asyncio.to_thread(_fetch_stems, stem_urls, requested_stems)
+        stems_dir = tempfile.mkdtemp(prefix="sl_stems_")
+        tmpdirs.append(stems_dir)
+        stem_paths = await asyncio.to_thread(
+            _fetch_stems, stem_urls, requested_stems, stems_dir
+        )
         # Persist the Replicate cost so the admission spend-ceiling (which sums
         # job_events.detail->>'cost_usd' over 24h) actually enforces (P4).
         await emit_event(job_id, "separating", "completed", pct=100,
@@ -569,6 +604,9 @@ async def run_pipeline(job_id: str) -> None:
         err = InternalError(str(exc)[:200])
         await _fail(job_id, err.error_code, err.user_message, run_attempt)
         raise
+    finally:
+        for d in tmpdirs:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 async def _fail(

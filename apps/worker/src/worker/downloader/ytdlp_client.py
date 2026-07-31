@@ -17,6 +17,7 @@ is ever flipped on in prod.
 
 import os
 import secrets
+import shutil
 import string
 import subprocess
 import sys
@@ -155,21 +156,28 @@ def fetch_audio_file(youtube_url: str) -> str:
         cmd += ["--proxy", proxy]
     cmd.append(youtube_url)
 
+    # On SUCCESS the returned path lives in tmpdir, so the caller (run_pipeline) owns
+    # cleanup — it stages the file to R2 first. On every FAILURE path the directory is
+    # ours to remove, or a blocked/timed-out download leaks a partial file forever (H11).
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
-    except subprocess.TimeoutExpired as e:
-        raise DownloadTimeoutError("yt-dlp timed out") from e
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
+        except subprocess.TimeoutExpired as e:
+            raise DownloadTimeoutError("yt-dlp timed out") from e
 
-    if r.returncode != 0:
-        safe_err = redact_secrets((r.stderr or "")[-1000:])
-        log_structured("ERROR", "ytdlp_failed", stderr=safe_err)
-        lower = (r.stderr or "").lower()
-        for kw, exc_cls in _STDERR_MAP:
-            if kw in lower:
-                raise exc_cls(f"yt-dlp: {kw}")
-        raise DownloadBlockedError("yt-dlp download failed")
+        if r.returncode != 0:
+            safe_err = redact_secrets((r.stderr or "")[-1000:])
+            log_structured("ERROR", "ytdlp_failed", stderr=safe_err)
+            lower = (r.stderr or "").lower()
+            for kw, exc_cls in _STDERR_MAP:
+                if kw in lower:
+                    raise exc_cls(f"yt-dlp: {kw}")
+            raise DownloadBlockedError("yt-dlp download failed")
 
-    for f in os.listdir(tmpdir):
-        if f.endswith(".wav"):
-            return os.path.join(tmpdir, f)
-    raise DownloadBlockedError("yt-dlp produced no output")
+        for f in os.listdir(tmpdir):
+            if f.endswith(".wav"):
+                return os.path.join(tmpdir, f)
+        raise DownloadBlockedError("yt-dlp produced no output")
+    except BaseException:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise

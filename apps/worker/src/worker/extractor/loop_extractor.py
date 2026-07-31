@@ -4,6 +4,8 @@ Builds on the S3 heuristic from scratch (V1 is reference-only). Guards against
 beatless/too-short audio with EXTRACTION_FAILED so a bad source never yields junk.
 """
 
+import math
+
 import librosa
 import numpy as np
 
@@ -21,6 +23,14 @@ def extract_loops(
     """Yield {stem, start_sec, end_sec, audio (channels,samples), sr} per loop."""
     if loop_length_bars not in VALID_BARS:
         raise ValueError(f"loop_length_bars must be in {VALID_BARS}")
+    # Validate the tempo BEFORE dividing by it (H9). A silent or beatless reference
+    # stem — e.g. requesting only "vocals" on an instrumental, a normal user choice —
+    # makes beat tracking return 0.0, and `4 * 60 / bpm` then raised an unhandled
+    # ZeroDivisionError *before* this module's own beat guard below could run. That
+    # surfaced to the user as a generic INTERNAL_ERROR instead of the EXTRACTION_FAILED
+    # this case was always meant to produce.
+    if not math.isfinite(bpm) or bpm <= 0:
+        raise ExtractionFailedError(f"No usable tempo detected (bpm={bpm})")
     bar = 4 * 60.0 / bpm
     loop_dur = loop_length_bars * bar
 

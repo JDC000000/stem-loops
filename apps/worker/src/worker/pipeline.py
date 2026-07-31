@@ -185,12 +185,15 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100, hb=None
     tags = detect_bpm_and_key(y_ref, sr, y_key=y_key)
     log_structured("INFO", "job_tags_detected", job_id=job_id, tempo_stem=ref_stem,
                    key_stem=key_stem, bpm=tags["bpm"], musical_key=tags["musical_key"])
-    _update_job_tags(job_id, tags)
 
     loops = []
     for loop in extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars):
         loops.append(loop)
         hb.beat()  # one checkpoint per extracted loop; throttled internally
+    # Persist tags only once extraction has actually succeeded (H9). Writing them
+    # first meant a beatless/silent reference stem left bpm=0.0 and a fabricated key
+    # on a job that then failed, with nothing ever clearing them.
+    _update_job_tags(job_id, tags)
     segs = sorted({(loop["start_sec"], loop["end_sec"]) for loop in loops})
     energies = classify_energy(y_ref, sr, segs)
     sections = label_sections(segs, energies)

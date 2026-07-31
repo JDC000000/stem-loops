@@ -18,9 +18,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM deps AS production
 COPY . .
 
-# Health check
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+# NO HEALTHCHECK. This is a queue consumer, not a web service: CPU-bound loop
+# extraction holds the CPython GIL and starves the co-located asyncio /health
+# server, so any HTTP health probe times out mid-job and the platform kills a
+# healthy-but-busy worker, orphaning the job. Already learned once at the Fly
+# level (see fly.toml — no [http_service.checks]); a Dockerfile HEALTHCHECK
+# reintroduces the identical failure mode on any Docker-based runtime.
+# Liveness = restart-on-exit + the reaper. /health stays for manual probes.
 
 EXPOSE 8000
 

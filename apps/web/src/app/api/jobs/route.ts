@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
-import { checkAdmission, RATE_LIMIT, RATE_WINDOW_MS } from '@/lib/admission';
+import { checkAdmission, isLockTimeout, lockJobAdmission } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
 import { canonicalizeYoutubeUrl } from '@/lib/youtube-url';
 
@@ -69,26 +69,27 @@ export async function POST(request: NextRequest) {
 
       // R9 / PRD §6.1: admission BEFORE the (Replicate-spending) job exists. Uploads
       // bypass YouTube's gate, so this is the primary abuse/spend surface.
+      //
+      // Check and insert are ONE advisory-locked transaction (hardening review H2/H3):
+      // the previous INSERT ... WHERE count < limit only closed the per-IP gate, and even
+      // that leaked under true simultaneity, while the global in-flight cap and the daily
+      // spend ceiling were plain check-then-act and could be walked straight through by a
+      // burst from many IPs. See lib/admission.ts for why the lock is global.
       const clientIpHash = clientIpHashOf(request);
-      const adm = await checkAdmission(clientIpHash);
-      if (!adm.allowed) {
-        return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
-      }
-
-      // Atomic per-IP rate enforcement (QA P0/P1): the count and the insert are ONE
-      // statement, so a concurrent burst can't each pass checkAdmission's pre-check and then
-      // insert unconditionally (the old TOCTOU). If already at the cap → 0 rows → 429.
-      const ins = await db.query(
-        `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
-                           loop_length_bars, status, client_ip_hash, client_fingerprint)
-         SELECT $1, 'upload', $2, $3, $4, $5, 'queued', $6, ''
-         WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $6
-                AND created_at >= NOW() - ($7::int * INTERVAL '1 millisecond')) < $8
-         RETURNING id`,
-        [jobId, uploadKey, typeof filename === 'string' ? filename.slice(0, 255) : null,
-         uStems, ubars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT]
-      );
-      if (!ins.rowCount) {
+      const admitted = await db.tx(async (tx) => {
+        await lockJobAdmission(tx);
+        const adm = await checkAdmission(tx, clientIpHash);
+        if (!adm.allowed) return false;
+        await tx.query(
+          `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
+                             loop_length_bars, status, client_ip_hash, client_fingerprint)
+           VALUES ($1, 'upload', $2, $3, $4, $5, 'queued', $6, '')`,
+          [jobId, uploadKey, typeof filename === 'string' ? filename.slice(0, 255) : null,
+           uStems, ubars, clientIpHash]
+        );
+        return true;
+      });
+      if (!admitted) {
         return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });
       }
       // No external queue: the Python worker claims the job straight off the jobs table
@@ -148,28 +149,32 @@ export async function POST(request: NextRequest) {
     }
 
     const clientIpHash = clientIpHashOf(request);
-    const adm = await checkAdmission(clientIpHash);
-    if (!adm.allowed) {
-      return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
-    }
-
     const id = randomUUID();
     const requestedStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
 
-    const ins = await db.query(
-      `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint)
-       SELECT $1, $2, $3, $4, 'queued', $5, ''
-       WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
-              AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
-       RETURNING id`,
-      [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT]
-    );
-    if (!ins.rowCount) {
+    // Same advisory-locked check-and-insert as the upload branch above (H2/H3).
+    const admitted = await db.tx(async (tx) => {
+      await lockJobAdmission(tx);
+      const adm = await checkAdmission(tx, clientIpHash);
+      if (!adm.allowed) return false;
+      await tx.query(
+        `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint)
+         VALUES ($1, $2, $3, $4, 'queued', $5, '')`,
+        [id, canonicalUrl, requestedStems, bars, clientIpHash]
+      );
+      return true;
+    });
+    if (!admitted) {
       return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });
     }
 
     return NextResponse.json({ id, status: 'queued' }, { status: 201 });
   } catch (err) {
+    // Giving up waiting on the admission lock means the system is saturated, not that we
+    // broke — report it as capacity (429), not a 500 + Sentry alert.
+    if (isLockTimeout(err)) {
+      return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });
+    }
     // This try/catch swallows the error into a clean 500 JSON response (PRD §6.1 — no
     // stack trace in the response body), which means it never reaches Next.js's own
     // onRequestError hook. Report it to Sentry explicitly, or it just vanishes.

@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import * as Sentry from '@sentry/nextjs';
 import { presignPut } from '@/lib/r2';
 import { validateUpload, MAX_UPLOAD_BYTES } from '@/lib/upload';
-import { checkUploadRate } from '@/lib/admission';
+import { checkUploadRate, isLockTimeout } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
 
 const RATE_LIMIT_MSG =
@@ -52,6 +52,11 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ jobId, key, uploadUrl, maxBytes: MAX_UPLOAD_BYTES, contentType: v.contentType });
   } catch (err) {
+    // Giving up waiting on the per-IP rate lock means saturation, not a bug (see
+    // lib/admission.ts) — answer 429, not a 500 + Sentry alert.
+    if (isLockTimeout(err)) {
+      return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });
+    }
     Sentry.captureException(err);
     console.error('POST /api/uploads error:', err);
     return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500 });

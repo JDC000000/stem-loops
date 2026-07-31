@@ -1,4 +1,10 @@
-import { Pool } from 'pg';
+import { Pool, QueryResult } from 'pg';
+
+// Minimal query surface shared by the pool and a checked-out transaction client, so
+// admission helpers can run either standalone or inside db.tx() without caring which.
+export interface Queryable {
+  query(text: string, params?: unknown[]): Promise<QueryResult>;
+}
 
 // Supabase's pooler serves a cert not in Node's default CA bundle
 // (SELF_SIGNED_CERT_IN_CHAIN), and node-pg now forces verification for sslmode=require
@@ -35,6 +41,36 @@ function getPool(): Pool {
   return pool;
 }
 
-export const db = {
+// Run `fn` inside a single BEGIN/COMMIT on one checked-out connection. Needed by the
+// admission gates: their counters are read-then-act, so they only hold if the read, the
+// decision and the INSERT are one transaction serialized by a transaction-scoped
+// advisory lock (see lib/admission.ts).
+//
+// Only pg_advisory_XACT_lock is used, never the session-scoped variant — transaction
+// locks are released at COMMIT/ROLLBACK and so remain correct under pgbouncer's
+// transaction pooling. `fn` throwing rolls the whole thing back; returning normally
+// commits, so admission rejections must be *returned*, not thrown, only when nothing
+// durable should be undone.
+export async function withTransaction<T>(fn: (tx: Queryable) => Promise<T>): Promise<T> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      /* connection already broken — release() below discards it */
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export const db: Queryable & { tx: typeof withTransaction } = {
   query: (text: string, params?: unknown[]) => getPool().query(text, params),
+  tx: withTransaction,
 };

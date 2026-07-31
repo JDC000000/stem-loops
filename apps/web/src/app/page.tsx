@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ACCEPT_ATTR, validateUpload, MAX_UPLOAD_BYTES } from '@/lib/upload';
 import { canonicalizeYoutubeUrl } from '@/lib/youtube-url';
+import { addToHistory } from '@/lib/history';
 
 const STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
 const BAR_OPTIONS = [1, 2, 4, 8];
@@ -87,6 +88,48 @@ async function putToR2(uploadUrl: string, file: File, contentType: string, onPro
   throw new Error(lastErr?.message ?? 'Upload failed.');
 }
 
+const chipStyle = (active: boolean, disabled: boolean): React.CSSProperties => ({
+  // ≥44px touch target (PRD mobile requirement; QA P2 — was ~30px). inline-flex
+  // centres the label inside the enforced min box; horizontal padding keeps width.
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  minHeight: 44,
+  minWidth: 44,
+  padding: '0 16px',
+  borderRadius: 999,
+  border: `1px solid ${active ? 'var(--accent)' : 'var(--border-default)'}`,
+  background: active ? 'var(--accent)' : 'var(--bg-elevated)',
+  color: active ? 'var(--text-inverse)' : 'var(--text-secondary)',
+  fontFamily: 'inherit',
+  fontSize: 'var(--text-md)',
+  cursor: disabled ? 'default' : 'pointer',
+  userSelect: 'none',
+});
+
+// A real <button>, not a <span onClick> (hardening review H13). These chips are the only
+// way to deselect a stem, change loop length or switch input mode, and as spans they were
+// unreachable by keyboard and invisible to screen readers — while the drop-zone directly
+// below already implemented the accessible pattern. aria-pressed makes the on/off state
+// audible; a native button gets focus, Enter/Space and disabled semantics for free.
+function Chip({
+  active,
+  disabled,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  disabled: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button type="button" aria-pressed={active} disabled={disabled} onClick={onClick} style={chipStyle(active, disabled)}>
+      {children}
+    </button>
+  );
+}
+
 export default function HomePage() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -144,6 +187,7 @@ export default function HomePage() {
     });
     const jobJson = await jobRes.json();
     if (!jobRes.ok) throw new Error(jobJson.message ?? 'Could not create the job.');
+    addToHistory(jobJson.id);
     router.push(`/jobs/${jobJson.id}`);
   }
 
@@ -164,6 +208,7 @@ export default function HomePage() {
     });
     const jobJson = await jobRes.json();
     if (!jobRes.ok) throw new Error(jobJson.message ?? 'Could not create the job.');
+    addToHistory(jobJson.id);
     router.push(`/jobs/${jobJson.id}`);
   }
 
@@ -182,24 +227,6 @@ export default function HomePage() {
       setBusy(false);
     }
   }
-
-  const chip = (active: boolean): React.CSSProperties => ({
-    // ≥44px touch target (PRD mobile requirement; QA P2 — was ~30px). inline-flex
-    // centres the label inside the enforced min box; horizontal padding keeps width.
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 44,
-    minWidth: 44,
-    padding: '0 16px',
-    borderRadius: 999,
-    border: `1px solid ${active ? 'var(--accent)' : 'var(--border-default)'}`,
-    background: active ? 'var(--accent)' : 'var(--bg-elevated)',
-    color: active ? 'var(--text-inverse)' : 'var(--text-secondary)',
-    fontSize: 'var(--text-md)',
-    cursor: 'pointer',
-    userSelect: 'none',
-  });
 
   const youtubeValid = !!canonicalizeYoutubeUrl(youtubeUrl);
   const disabled =
@@ -220,9 +247,9 @@ export default function HomePage() {
 
       {/* Input-source toggle (hidden entirely until NEXT_PUBLIC_ALLOW_YOUTUBE_INPUT=true) */}
       {YOUTUBE_INPUT_ENABLED && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
-          <span onClick={() => !busy && setMode('upload')} style={chip(mode === 'upload')}>Upload file</span>
-          <span onClick={() => !busy && setMode('youtube')} style={chip(mode === 'youtube')}>YouTube link</span>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 20 }} role="group" aria-label="Input source">
+          <Chip active={mode === 'upload'} disabled={busy} onClick={() => setMode('upload')}>Upload file</Chip>
+          <Chip active={mode === 'youtube'} disabled={busy} onClick={() => setMode('youtube')}>YouTube link</Chip>
         </div>
       )}
 
@@ -262,11 +289,13 @@ export default function HomePage() {
           )}
         </div>
       ) : (
-        /* YouTube URL input */
-        <div>
+        /* YouTube URL input — a real form so Enter submits, which is what anyone
+           pasting a link expects (and the only affordance on a mobile keyboard). */
+        <form onSubmit={(e) => { e.preventDefault(); if (!disabled) submit(); }}>
           <input
             type="url"
             inputMode="url"
+            enterKeyHint="go"
             placeholder="https://www.youtube.com/watch?v=…"
             value={youtubeUrl}
             disabled={busy}
@@ -285,25 +314,25 @@ export default function HomePage() {
           <div style={{ fontSize: 'var(--text-base)', color: 'var(--text-subtle)', marginTop: 8 }}>
             youtube.com or youtu.be links only · the video must be public
           </div>
-        </div>
+        </form>
       )}
 
       {/* Stems */}
       <div style={{ marginTop: 28 }}>
-        <div style={{ fontSize: 'var(--text-sm)', textTransform: 'uppercase', letterSpacing: 'var(--tracking-caps)', color: 'var(--text-subtle)', marginBottom: 10 }}>Stems</div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <div id="stems-label" style={{ fontSize: 'var(--text-sm)', textTransform: 'uppercase', letterSpacing: 'var(--tracking-caps)', color: 'var(--text-subtle)', marginBottom: 10 }}>Stems</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }} role="group" aria-labelledby="stems-label">
           {STEMS.map((s) => (
-            <span key={s} onClick={() => !busy && toggleStem(s)} style={chip(stems.includes(s))}>{s}</span>
+            <Chip key={s} active={stems.includes(s)} disabled={busy} onClick={() => toggleStem(s)}>{s}</Chip>
           ))}
         </div>
       </div>
 
       {/* Loop length */}
       <div style={{ marginTop: 24 }}>
-        <div style={{ fontSize: 'var(--text-sm)', textTransform: 'uppercase', letterSpacing: 'var(--tracking-caps)', color: 'var(--text-subtle)', marginBottom: 10 }}>Loop length</div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div id="bars-label" style={{ fontSize: 'var(--text-sm)', textTransform: 'uppercase', letterSpacing: 'var(--tracking-caps)', color: 'var(--text-subtle)', marginBottom: 10 }}>Loop length</div>
+        <div style={{ display: 'flex', gap: 8 }} role="group" aria-labelledby="bars-label">
           {BAR_OPTIONS.map((b) => (
-            <span key={b} onClick={() => !busy && setBars(b)} style={chip(bars === b)}>{b} {b === 1 ? 'bar' : 'bars'}</span>
+            <Chip key={b} active={bars === b} disabled={busy} onClick={() => setBars(b)}>{b} {b === 1 ? 'bar' : 'bars'}</Chip>
           ))}
         </div>
       </div>

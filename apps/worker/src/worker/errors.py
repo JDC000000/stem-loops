@@ -14,6 +14,15 @@ from __future__ import annotations
 from typing import Optional
 
 
+class JobSupersededError(Exception):
+    """This worker no longer owns the job — the reaper re-queued it and someone else
+    picked it up (hardening review H1). Deliberately NOT a StemLoopsError: it is not
+    a user-facing failure and must never write a terminal state, because the state
+    that matters now belongs to the worker that superseded us. The correct response
+    is to stop quietly and let the owner finish.
+    """
+
+
 class StemLoopsError(Exception):
     error_code: str = "INTERNAL_ERROR"
     user_message: str = "Something went wrong on our end. We've logged it — please try again."

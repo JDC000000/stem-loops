@@ -17,7 +17,7 @@ import time
 
 import psycopg
 
-from .errors import InternalError, StemLoopsError
+from .errors import InternalError, JobSupersededError, StemLoopsError
 from .logger import log_structured
 from .cleanup import sweep_expired
 from .pipeline import run_pipeline
@@ -34,6 +34,8 @@ CLEANUP_INTERVAL = int(os.environ.get("RETENTION_SWEEP_SECONDS", "3600"))
 async def claim_and_run() -> bool:
     """Claim one queued job and run it. Returns True if a job was claimed."""
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+        # `attempts` comes back with the claim so the failure path can fence its write
+        # on the same token the pipeline uses (H1) — see job_state.py.
         row = await (await conn.execute("""
                 UPDATE jobs SET status='downloading', updated_at=now()
                 WHERE id = (
@@ -42,36 +44,51 @@ async def claim_and_run() -> bool:
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
                 )
-                RETURNING id
+                RETURNING id, attempts
                 """)).fetchone()
         await conn.commit()
     if not row:
         return False
 
-    job_id = str(row[0])
-    log_structured("INFO", "job_claimed", job_id=job_id)
+    job_id, attempt = str(row[0]), row[1]
+    log_structured("INFO", "job_claimed", job_id=job_id, attempt=attempt)
     try:
         await run_pipeline(job_id)
+    except JobSupersededError as e:
+        # Another worker owns this job now — run_pipeline already stood down. Do NOT
+        # mark it failed: the owner is still working on it.
+        log_structured("WARN", "job_superseded", job_id=job_id, detail=str(e)[:160])
     except StemLoopsError as e:
-        await mark_failed(job_id, e.error_code, e.user_message)
+        await mark_failed(job_id, e.error_code, e.user_message, attempt)
     except Exception as e:  # noqa: BLE001 — isolate the failure, never crash the loop
         log_structured("ERROR", "unhandled_exception", job_id=job_id, error=str(e)[:200])
         err = InternalError()
-        await mark_failed(job_id, err.error_code, err.user_message)
+        await mark_failed(job_id, err.error_code, err.user_message, attempt)
     return True
 
 
-async def mark_failed(job_id: str, error_code: str, message: str) -> None:
+async def mark_failed(
+    job_id: str, error_code: str, message: str, attempt: int | None = None
+) -> None:
+    """Safety-net failure write for anything run_pipeline's own handler missed.
+
+    Fenced on `attempt` (H1) and on the job not already being terminal: the pipeline
+    normally records the precise typed error itself, so the first writer wins and this
+    becomes a no-op rather than overwriting a better error code with a generic one.
+    """
+    sql = (
+        "UPDATE jobs SET status='failed', error_code=%s, error_message_user=%s, updated_at=now() "
+        "WHERE id=%s AND status NOT IN ('done','failed')"
+    )
+    args = [error_code, message, job_id]
+    if attempt is not None:
+        sql += " AND attempts=%s"
+        args.append(attempt)
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-        await conn.execute(
-            """
-            UPDATE jobs SET status='failed', error_code=%s, error_message_user=%s, updated_at=now()
-            WHERE id=%s
-            """,
-            (error_code, message, job_id),
-        )
+        cur = await conn.execute(sql, args)
         await conn.commit()
-    log_structured("WARN", "job_failed", job_id=job_id, error_code=error_code)
+        wrote = cur.rowcount > 0
+    log_structured("WARN", "job_failed", job_id=job_id, error_code=error_code, wrote=wrote)
 
 
 async def _safe_reap() -> None:

@@ -39,11 +39,13 @@ from .encoder.wav_encoder import encode_24bit, waveform_peaks
 from .errors import (
     DownloadBlockedError,
     InternalError,
+    JobSupersededError,
     SeparationFailedError,
     StemLoopsError,
     UploadInvalidError,
 )
 from .extractor.loop_extractor import extract_loops
+from .job_state import Heartbeat
 from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
 from .storage.r2_uploader import download_object, upload_input, upload_loop
@@ -65,7 +67,7 @@ def _fetch_job(job_id: str):
     with _db() as c:
         return c.execute(
             "SELECT youtube_url, requested_stems, loop_length_bars, input_kind, upload_r2_key, "
-            "original_filename FROM jobs WHERE id=%s",
+            "original_filename, attempts FROM jobs WHERE id=%s",
             (job_id,),
         ).fetchone()
 
@@ -153,8 +155,14 @@ UNKNOWN_KEY_SLUG = "unknown"
 
 
 # ----------------------------- audio core (sync) -----------------------------
-def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
-    """Load ref stem, detect bpm/key, extract loops, classify energy + label sections."""
+def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100, hb=None):
+    """Load ref stem, detect bpm/key, extract loops, classify energy + label sections.
+
+    `hb` is the stage Heartbeat (H1): extraction is CPU-bound and silent for its
+    whole duration, which used to let the reaper mistake a healthy job for a dead
+    one. Beats are throttled, so calling per checkpoint costs nothing.
+    """
+    hb = hb or Heartbeat(job_id)
     sp = {k: v for k, v in stem_paths.items() if k in (requested_stems or stem_paths)}
     if not sp:
         sp = stem_paths
@@ -173,12 +181,16 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
         y_key = y_ref
     else:
         y_key, _ = librosa.load(sp[key_stem], sr=sr, mono=True)
+    hb.beat()
     tags = detect_bpm_and_key(y_ref, sr, y_key=y_key)
     log_structured("INFO", "job_tags_detected", job_id=job_id, tempo_stem=ref_stem,
                    key_stem=key_stem, bpm=tags["bpm"], musical_key=tags["musical_key"])
     _update_job_tags(job_id, tags)
 
-    loops = list(extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars))
+    loops = []
+    for loop in extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars):
+        loops.append(loop)
+        hb.beat()  # one checkpoint per extracted loop; throttled internally
     segs = sorted({(loop["start_sec"], loop["end_sec"]) for loop in loops})
     energies = classify_energy(y_ref, sr, segs)
     sections = label_sections(segs, energies)
@@ -187,8 +199,11 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     return loops, tags, seg_label, seg_energy
 
 
-def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100, title=None) -> int:
+def encode_and_upload(
+    job_id, loops, tags, seg_label, seg_energy, bars, sr=44100, title=None, hb=None
+) -> int:
     """Per loop: seamless seam → 24-bit encode → R2 upload → loops row. Returns count."""
+    hb = hb or Heartbeat(job_id)
     bar = 4 * 60.0 / tags["bpm"]
     duration_ms = int(bars * bar * 1000)
     # Loops inherit the job-level BPM/key (computed once from the reference stem).
@@ -235,6 +250,9 @@ def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100
                 Json(peaks),
             )
         )
+        # Liveness for the upload stage (H1) — the previous code went silent from
+        # "uploading" until the whole stage finished.
+        hb.beat()
         return 1
 
     # Parallelize the network-bound upload work — the dominant cost at scale.
@@ -256,23 +274,58 @@ def process_stems(job_id, stem_paths, requested_stems, bars, sr=44100) -> int:
 
 
 # --------------------------- async orchestrator ----------------------------
+# Fencing (H1): `attempt` is the jobs.attempts value this worker started with. The
+# reaper increments it when it re-queues a job, so scoping state writes to that
+# value makes a superseded worker's writes affect 0 rows instead of overwriting
+# whatever the worker that took the job over has since written. `attempt=None`
+# means unfenced — used only by callers that own the job unconditionally (tests,
+# the CLI's one-shot path).
 async def emit_event(
-    job_id: str, stage: str, phase: str, pct: int | None = None, detail: dict | None = None
-) -> None:
-    async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-        await conn.execute(
-            "INSERT INTO job_events(job_id, stage, phase, pct, detail) VALUES(%s,%s,%s,%s,%s)",
-            (job_id, stage, phase, pct, Json(detail) if detail is not None else None),
+    job_id: str,
+    stage: str,
+    phase: str,
+    pct: int | None = None,
+    detail: dict | None = None,
+    attempt: int | None = None,
+) -> bool:
+    """Append a stage-trace row. Returns False if fenced out (write skipped)."""
+    args = [job_id, stage, phase, pct, Json(detail) if detail is not None else None]
+    if attempt is None:
+        sql = "INSERT INTO job_events(job_id, stage, phase, pct, detail) VALUES(%s,%s,%s,%s,%s)"
+    else:
+        # Conditional insert: only if we still own the job.
+        sql = (
+            "INSERT INTO job_events(job_id, stage, phase, pct, detail) "
+            "SELECT %s,%s,%s,%s,%s FROM jobs WHERE id=%s AND attempts=%s"
         )
+        args += [job_id, attempt]
+    async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+        cur = await conn.execute(sql, args)
         await conn.commit()
+        return cur.rowcount > 0
 
 
-async def set_status(job_id: str, status: str) -> None:
+async def set_status(job_id: str, status: str, attempt: int | None = None) -> bool:
+    """Move the job to `status`. Returns False if fenced out (write skipped)."""
+    sql = "UPDATE jobs SET status=%s, updated_at=now() WHERE id=%s"
+    args = [status, job_id]
+    if attempt is not None:
+        # Never resurrect a terminal state either: the reaper can fail a job
+        # outright (attempts exhausted) without moving `attempts`.
+        sql += " AND attempts=%s AND status NOT IN ('done','failed')"
+        args.append(attempt)
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-        await conn.execute(
-            "UPDATE jobs SET status=%s, updated_at=now() WHERE id=%s", (status, job_id)
-        )
+        cur = await conn.execute(sql, args)
         await conn.commit()
+        return cur.rowcount > 0
+
+
+async def _set_status_or_abort(job_id: str, status: str, attempt: int | None) -> None:
+    """Status transitions are the pipeline's checkpoints: if one is fenced out this
+    worker has been superseded, so stop rather than keep spending Replicate/R2/CPU
+    on a job someone else now owns."""
+    if not await set_status(job_id, status, attempt):
+        raise JobSupersededError(f"job {job_id} superseded before status={status}")
 
 
 def _fetch_stems(stem_urls: dict, requested_stems) -> dict:
@@ -371,35 +424,42 @@ def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
     return n
 
 
-async def _run_stub(job_id: str, requested_stems, bars: int) -> None:
+async def _run_stub(
+    job_id: str, requested_stems, bars: int, run_attempt: int | None = None
+) -> None:
     """Walk the §6.3 state machine emitting events, then write fake loops + done."""
     for stage, p0, p1 in (("downloading", 0, 100), ("separating", 15, 100),
                           ("extracting", 70, 100), ("uploading", 90, 100)):
-        await set_status(job_id, stage)
-        await emit_event(job_id, stage, "started", pct=p0)
-        await emit_event(job_id, stage, "completed", pct=p1)
+        await _set_status_or_abort(job_id, stage, run_attempt)
+        await emit_event(job_id, stage, "started", pct=p0, attempt=run_attempt)
+        await emit_event(job_id, stage, "completed", pct=p1, attempt=run_attempt)
     await asyncio.to_thread(_insert_stub_loops, job_id, requested_stems, bars)
-    await set_status(job_id, "done")
+    await _set_status_or_abort(job_id, "done", run_attempt)
 
 
 async def run_pipeline(job_id: str) -> None:
     """Real pipeline. download_audio + Replicate are gated (S1 bake-off / P2-12+);
     the audio core runs against the produced stems. Typed errors set status=failed."""
+    run_attempt = None  # bound before the try so the failure paths can always fence
     try:
         row = await asyncio.to_thread(_fetch_job, job_id)
-        url, requested_stems, bars, input_kind, upload_r2_key, original_filename = row
-        log_structured("INFO", "pipeline_start", job_id=job_id, input_kind=input_kind)
+        url, requested_stems, bars, input_kind, upload_r2_key, original_filename, run_attempt = row
+        # Fencing token (H1): every state write below is scoped to this attempts value,
+        # so if the reaper re-queues the job underneath us those writes become no-ops.
+        hb = Heartbeat(job_id, run_attempt)
+        log_structured("INFO", "pipeline_start", job_id=job_id, input_kind=input_kind,
+                       attempt=run_attempt)
 
         # T10 STUB short-circuit: full UI→queue→worker→DB loop with fake loops and
         # no YouTube/Replicate. The real pipeline below is unchanged and stays gated
         # on the S1 bake-off (T12).
         if os.environ.get("STUB_MODE", "").lower() == "true":
-            await _run_stub(job_id, requested_stems, bars)
+            await _run_stub(job_id, requested_stems, bars, run_attempt)
             log_structured("INFO", "pipeline_done", job_id=job_id, stub=True)
             return
 
-        await set_status(job_id, "downloading")
-        await emit_event(job_id, "downloading", "started", pct=0)
+        await _set_status_or_abort(job_id, "downloading", run_attempt)
+        await emit_event(job_id, "downloading", "started", pct=0, attempt=run_attempt)
         override_url = os.environ.get("STEMLOOPS_AUDIO_URL")
         override_file = os.environ.get("STEMLOOPS_AUDIO_FILE")
         if override_url:
@@ -438,58 +498,65 @@ async def run_pipeline(job_id: str) -> None:
                 audio_src = await asyncio.to_thread(upload_input, job_id, dl_result)
             else:
                 audio_src = dl_result
-        await emit_event(job_id, "downloading", "completed", pct=100)
+        await emit_event(job_id, "downloading", "completed", pct=100, attempt=run_attempt)
 
-        await set_status(job_id, "separating")
-        await emit_event(job_id, "separating", "started", pct=15)
+        await _set_status_or_abort(job_id, "separating", run_attempt)
+        await emit_event(job_id, "separating", "started", pct=15, attempt=run_attempt)
         pred_id = await asyncio.to_thread(submit_or_reattach, job_id, audio_src)
         # Retry-on-deadline (QA P1): a slow-but-fine separation must not permanently fail.
         # On a poll timeout the prediction is still running server-side, so re-poll the
         # SAME prediction (re-attach — no new prediction, no double charge) up to N times
         # before giving up terminally. Distinct from the reaper (restart-orphan recovery).
-        for attempt in range(1, SEPARATION_MAX_ATTEMPTS + 1):
+        for poll_attempt in range(1, SEPARATION_MAX_ATTEMPTS + 1):
             try:
                 stem_urls, sep_cost = await asyncio.to_thread(poll_until_done, job_id, pred_id)
                 break
             except SeparationTimeout as exc:
-                if attempt >= SEPARATION_MAX_ATTEMPTS:
+                if poll_attempt >= SEPARATION_MAX_ATTEMPTS:
                     raise SeparationFailedError(
-                        f"separation exceeded its time budget after {attempt} attempts"
+                        f"separation exceeded its time budget after {poll_attempt} attempts"
                     ) from exc
                 log_structured("WARN", "separation_timeout_retry", job_id=job_id,
-                               attempt=attempt, pred_id=pred_id)
+                               attempt=poll_attempt, pred_id=pred_id)
         stem_paths = await asyncio.to_thread(_fetch_stems, stem_urls, requested_stems)
         # Persist the Replicate cost so the admission spend-ceiling (which sums
         # job_events.detail->>'cost_usd' over 24h) actually enforces (P4).
-        await emit_event(job_id, "separating", "completed", pct=100, detail={"cost_usd": sep_cost})
+        await emit_event(job_id, "separating", "completed", pct=100,
+                         detail={"cost_usd": sep_cost}, attempt=run_attempt)
 
-        await set_status(job_id, "extracting")
-        await emit_event(job_id, "extracting", "started", pct=70)
+        await _set_status_or_abort(job_id, "extracting", run_attempt)
+        await emit_event(job_id, "extracting", "started", pct=70, attempt=run_attempt)
         loops, tags, seg_label, seg_energy = await asyncio.to_thread(
-            extract_and_tag, job_id, stem_paths, requested_stems, bars
+            extract_and_tag, job_id, stem_paths, requested_stems, bars, 44100, hb
         )
-        await emit_event(job_id, "extracting", "completed", pct=100)
+        await emit_event(job_id, "extracting", "completed", pct=100, attempt=run_attempt)
 
-        await set_status(job_id, "uploading")
-        await emit_event(job_id, "uploading", "started", pct=90)
+        await _set_status_or_abort(job_id, "uploading", run_attempt)
+        await emit_event(job_id, "uploading", "started", pct=90, attempt=run_attempt)
         count = await asyncio.to_thread(
             encode_and_upload, job_id, loops, tags, seg_label, seg_energy, bars,
-            title=_title_slug(original_filename, job_id),
+            title=_title_slug(original_filename, job_id), hb=hb,
         )
-        await emit_event(job_id, "uploading", "completed", pct=100)
+        await emit_event(job_id, "uploading", "completed", pct=100, attempt=run_attempt)
 
-        await set_status(job_id, "done")
+        await _set_status_or_abort(job_id, "done", run_attempt)
         # Peak worker RSS (kernel high-water mark) — real evidence for sizing the Option-B
         # Fly VM. On Fly each deploy is a fresh machine, so ru_maxrss here IS this job's peak
         # memory, letting us downsize 4GB→2GB on data not a guess. (ru_maxrss is KB on Linux.)
         log_structured("INFO", "pipeline_done", job_id=job_id, loops=count,
                        peak_rss_mb=round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1))
 
+    except JobSupersededError as exc:
+        # The reaper re-queued this job and another worker owns it now (H1). Our
+        # writes are already fenced out; stop quietly rather than failing a job that
+        # is very likely running fine elsewhere. Not a user-facing error.
+        log_structured("WARN", "job_superseded", job_id=job_id, detail=str(exc)[:160])
+        return
     except StemLoopsError as exc:
         # Deliberately NOT sent to Sentry: these are the designed, typed error paths
         # (DOWNLOAD_BLOCKED, DOWNLOAD_TIMEOUT, etc.) working exactly as intended —
         # reporting every one would just be noise the sentry-triage job has to filter.
-        await _fail(job_id, exc.error_code, exc.user_message)
+        await _fail(job_id, exc.error_code, exc.user_message, run_attempt)
         raise
     except Exception as exc:  # noqa: BLE001 — surface as typed INTERNAL_ERROR
         # This IS worth reporting — an exception that fell through every typed error
@@ -497,14 +564,26 @@ async def run_pipeline(job_id: str) -> None:
         # isn't configured (main.py only calls sentry_sdk.init when it's set).
         sentry_sdk.capture_exception(exc)
         err = InternalError(str(exc)[:200])
-        await _fail(job_id, err.error_code, err.user_message)
+        await _fail(job_id, err.error_code, err.user_message, run_attempt)
         raise
 
 
-async def _fail(job_id: str, error_code: str, user_message: str) -> None:
+async def _fail(
+    job_id: str, error_code: str, user_message: str, attempt: int | None = None
+) -> None:
+    """Terminal failure write, fenced on `attempt` (H1) so a superseded worker can't
+    stamp 'failed' over the state of the worker that took its job over."""
+    sql = (
+        "UPDATE jobs SET status='failed', error_code=%s, error_message_user=%s, "
+        "updated_at=now() WHERE id=%s"
+    )
+    args = [error_code, user_message, job_id]
+    if attempt is not None:
+        sql += " AND attempts=%s AND status NOT IN ('done','failed')"
+        args.append(attempt)
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-        await conn.execute(
-            "UPDATE jobs SET status='failed', error_code=%s, error_message_user=%s, updated_at=now() WHERE id=%s",
-            (error_code, user_message, job_id),
-        )
+        cur = await conn.execute(sql, args)
         await conn.commit()
+        if cur.rowcount == 0:
+            log_structured("WARN", "fail_write_fenced_out", job_id=job_id,
+                           error_code=error_code, attempt=attempt)

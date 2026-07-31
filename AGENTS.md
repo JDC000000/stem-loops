@@ -94,7 +94,7 @@ Active stages emit events (job_events table):
 | R2_ENDPOINT | worker only | Cloudflare R2 dashboard |
 | R2_BUCKET_NAME | worker only | Create in R2 dashboard |
 | DATABASE_URL | worker + web (server) | Supabase dashboard |
-| DATABASE_POOL_URL | worker + web (server) | Supabase dashboard |
+| DATABASE_URL_POOLED | worker + web (server) | Supabase dashboard (pooled/pgbouncer URL, port 6543) |
 | BETTERSTACK_SOURCE_TOKEN | worker + web | betterstack.com |
 | IP_HASH_KEY | worker + web (server) | `openssl rand -hex 32` |
 | HISTORY_COOKIE_KEY | web (server) | `openssl rand -hex 32` |

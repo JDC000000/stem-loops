@@ -1,3 +1,13 @@
 packages:
   - 'apps/web'
   - 'packages/*'
+
+# Root-only. This is the ONLY location pnpm reads overrides from on the pinned
+# packageManager version — the equivalent `pnpm.overrides` block in package.json
+# is ignored (pnpm prints a warning), so the version floor it was supposed to
+# enforce was doing nothing.
+overrides:
+  # postcss <8.5.18: GHSA-r28c-9q8g-f849 — path traversal via a crafted
+  # sourceMappingURL comment discloses arbitrary .map files. Transitive via
+  # next@14.2.35. Capped below 9 deliberately: next 14 expects postcss 8.
+  postcss: '^8.5.18'

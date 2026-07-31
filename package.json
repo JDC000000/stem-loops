@@ -1,16 +1,11 @@
 {
   "name": "stem-loops",
   "private": true,
-  "packageManager": "pnpm@9.0.0",
+  "packageManager": "pnpm@10.34.5",
   "scripts": {
     "dev": "pnpm --filter web dev",
     "build": "pnpm --filter web build",
     "lint": "pnpm --filter web lint",
     "test": "pnpm --filter web test"
-  },
-  "pnpm": {
-    "overrides": {
-      "postcss@<8.5.10": ">=8.5.10"
-    }
   }
 }

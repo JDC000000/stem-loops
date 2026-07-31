@@ -31,9 +31,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // `request.json()` also succeeds for valid-JSON non-objects (`null`, `7`, `"x"`),
+    // and destructuring those throws a TypeError that surfaced as a bogus 500 + Sentry
+    // alert. Same guard uploads/route.ts already uses (QA/hardening H10).
+    const b = body ?? {};
+
     // ── Upload job ──────────────────────────────────────────────────────────
-    if (body.uploadKey) {
-      const { jobId, uploadKey, filename, stems, loop_length_bars } = body;
+    if (b.uploadKey) {
+      const { jobId, uploadKey, filename, stems, loop_length_bars } = b;
       if (typeof jobId !== 'string' || !UUID_RE.test(jobId) || typeof uploadKey !== 'string') {
         return NextResponse.json(
           { error_code: 'UPLOAD_INVALID', message: 'Missing or invalid upload reference.' },
@@ -102,7 +107,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { url, stems, loop_length_bars } = body;
+    const { url, stems, loop_length_bars } = b;
 
     if (!url || typeof url !== 'string') {
       return NextResponse.json({ error_code: 'DOWNLOAD_INVALID_URL', message: 'url is required' }, { status: 400 });

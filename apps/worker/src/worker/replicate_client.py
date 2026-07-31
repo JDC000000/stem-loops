@@ -164,7 +164,12 @@ def _publish_prediction(job_id: str, token: str, pred_id: str) -> str:
         orphaned_pred_id=pred_id,
         winner_pred_id=winner,
     )
-    return winner or pred_id
+    # Only converge on a REAL prediction id. If the thief is itself still mid-submit
+    # its value is a claim token, which would make us poll a prediction that doesn't
+    # exist — our own prediction is real and already running, so poll that instead.
+    if winner and not winner.startswith(CLAIM_PREFIX):
+        return winner
+    return pred_id
 
 
 def _submit(job_id: str, token: str, audio_url: str) -> str:

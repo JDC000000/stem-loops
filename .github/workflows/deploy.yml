@@ -12,11 +12,52 @@ on:
           - all
           - web
           - worker
+      allow_red_ci:
+        description: 'Deploy even if CI is not green for this commit (emergency only — recorded in the run log)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
+  # Deploy stays MANUAL, but it must not be able to ship an untested or red
+  # commit: this job resolves the CI workflow's conclusion for the exact SHA
+  # being deployed and fails if it is anything other than success. Branch
+  # protection cannot help here — dispatching a workflow is not a merge.
+  require-green-ci:
+    name: Require green CI for this commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CI conclusion for ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALLOW_RED_CI: ${{ inputs.allow_red_ci }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh api \
+            "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&status=completed&per_page=1" \
+            --jq '.workflow_runs[0].conclusion // "none"')
+          echo "CI conclusion for ${SHA}: ${conclusion}"
+          if [ "$conclusion" = "success" ]; then
+            exit 0
+          fi
+          if [ "$ALLOW_RED_CI" = "true" ]; then
+            echo "::warning::Deploying ${SHA} with CI conclusion '${conclusion}' — allow_red_ci was set."
+            exit 0
+          fi
+          echo "::error::Refusing to deploy ${SHA}: CI conclusion is '${conclusion}', not 'success'."
+          echo "Push the commit, let CI finish green, then re-dispatch — or re-dispatch with allow_red_ci=true."
+          exit 1
+
   deploy-web:
     name: Deploy Web to Vercel
     runs-on: ubuntu-latest
+    needs: require-green-ci
     if: ${{ inputs.target == 'all' || inputs.target == 'web' }}
     steps:
       - uses: actions/checkout@v4
@@ -28,15 +69,20 @@ jobs:
           version: 9
       - name: Install deps
         run: pnpm install --frozen-lockfile
+      # The Vercel CLI reads VERCEL_TOKEN natively. Passing it as --token puts the
+      # secret in argv (process list, shell history) — same reason the Fly job below
+      # hands FLY_API_TOKEN over via env.
       - name: Deploy to Vercel
-        run: cd apps/web && npx vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }}
+        run: cd apps/web && npx vercel deploy --prod
         env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
   deploy-worker:
     name: Deploy Worker to Fly.io
     runs-on: ubuntu-latest
+    needs: require-green-ci
     if: ${{ inputs.target == 'all' || inputs.target == 'worker' }}
     steps:
       - uses: actions/checkout@v4

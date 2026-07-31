@@ -139,6 +139,19 @@ def _insert_loop(row: tuple) -> None:
         c.commit()
 
 
+# Tempo/beat reference: drums give the cleanest onsets, so beat tracking is most
+# reliable there (verified in the C2 repro: BPM was stable to 0.01 on drums alone).
+TEMPO_STEM_PREFERENCE = ("drums", "bass", "other")
+# Key reference (hardening review C2): deliberately drums-LAST — i.e. never. An
+# isolated drum stem has no key at all, but Krumhansl-Schmuckler correlation always
+# returns *some* key, which is how a random key ended up on nearly every job. Order
+# runs most-harmonic → least; if none of these stems is present the job's key is
+# reported as unknown (null) instead of invented.
+KEY_STEM_PREFERENCE = ("other", "keys", "guitar", "vocals", "bass")
+# Filename slug for a job whose key could not be determined with confidence.
+UNKNOWN_KEY_SLUG = "unknown"
+
+
 # ----------------------------- audio core (sync) -----------------------------
 def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     """Load ref stem, detect bpm/key, extract loops, classify energy + label sections."""
@@ -147,10 +160,22 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
         sp = stem_paths
     # Beat/boundary reference: prefer drums (clearest beat), else bass/other, else first.
     # Reorder so the reference is first — extract_loops also keys off the first stem.
-    ref_stem = next((s for s in ("drums", "bass", "other") if s in sp), next(iter(sp)))
+    ref_stem = next((s for s in TEMPO_STEM_PREFERENCE if s in sp), next(iter(sp)))
     sp = {ref_stem: sp[ref_stem], **{k: v for k, v in sp.items() if k != ref_stem}}
     y_ref, _ = librosa.load(sp[ref_stem], sr=sr, mono=True)
-    tags = detect_bpm_and_key(y_ref, sr)
+    # Key reference is a SEPARATE, harmonically-rich stem (C2): drums make a great
+    # tempo reference and a meaningless key reference. With no harmonic stem in the
+    # job (e.g. drums-only), the key is genuinely unknown and is reported as null.
+    key_stem = next((s for s in KEY_STEM_PREFERENCE if s in sp), None)
+    if key_stem is None:
+        y_key = None
+    elif key_stem == ref_stem:
+        y_key = y_ref
+    else:
+        y_key, _ = librosa.load(sp[key_stem], sr=sr, mono=True)
+    tags = detect_bpm_and_key(y_ref, sr, y_key=y_key)
+    log_structured("INFO", "job_tags_detected", job_id=job_id, tempo_stem=ref_stem,
+                   key_stem=key_stem, bpm=tags["bpm"], musical_key=tags["musical_key"])
     _update_job_tags(job_id, tags)
 
     loops = list(extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars))
@@ -170,8 +195,8 @@ def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100
     # Re-detecting per loop is both slow and musically wrong — an isolated drum
     # loop has no key, and every loop from one song shares its key/tempo.
     bpm = tags["bpm"]
-    key = tags["musical_key"]
-    key_slug = key.replace(" ", "_")
+    key = tags["musical_key"]  # None when no key passed the confidence floor (C2)
+    key_slug = key.replace(" ", "_") if key else UNKNOWN_KEY_SLUG
     # Song-title prefix (QA §4.4) so a downloaded/zipped loop reads like its track, not a
     # UUID. Falls back to the job id (e.g. the fixture path / YouTube) when there's no title.
     name_base = title or job_id

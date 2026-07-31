@@ -56,7 +56,9 @@ export function LoopCard({ loop }: { loop: LoopWithUrl }) {
       <div className="tags-row">
         <span className="tag tag-stem">{loop.stem}</span>
         <span className="tag tag-bpm">{loop.bpm} BPM</span>
-        <span className="tag tag-key">{loop.musical_key}</span>
+        {/* Key is nullable: the worker reports null instead of guessing when the
+            detector's confidence floor isn't met. Drop the chip entirely then. */}
+        {loop.musical_key ? <span className="tag tag-key">{loop.musical_key}</span> : null}
         <span className="tag tag-section">{loop.section_label}</span>
         <span className="tag tag-energy">{loop.energy_class}</span>
       </div>

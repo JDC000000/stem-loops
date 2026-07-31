@@ -74,5 +74,8 @@ def test_process_stems_end_to_end():
     for stem, c2 in by_stem.items():
         assert c2 >= 5, f"{stem}: only {c2} loops"
     assert "piano" not in by_stem, "piano stem leaked (must map to keys)"
-    assert job_tags[0] is not None and job_tags[1], "job bpm/key not written"
+    # musical_key is legitimately nullable since C2 (no key below the confidence
+    # floor), so only bpm is required; the key must be a real key string or null.
+    assert job_tags[0] is not None, "job bpm not written"
+    assert job_tags[1] is None or job_tags[1].split()[-1] in ("major", "minor"), job_tags[1]
     assert sample[0].startswith(f"{job_id}/"), "r2_key not deterministic"

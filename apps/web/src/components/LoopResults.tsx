@@ -39,7 +39,9 @@ export function LoopResults({ job }: { job: Job & { title?: string | null } }) {
         <div>
           <h1 style={{ margin: 0, fontSize: 24, color: 'var(--text-primary)' }}>Loops ready</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--text-muted)' }}>
-            {loops.length} loops · {job.bpm} BPM · {job.musical_key}
+            {/* musical_key is null when no key passed the detector's confidence
+                floor (e.g. a drums-only job) — omit it rather than show a guess. */}
+            {loops.length} loops · {job.bpm} BPM{job.musical_key ? ` · ${job.musical_key}` : ''}
           </p>
         </div>
         <button

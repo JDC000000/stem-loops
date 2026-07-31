@@ -33,6 +33,10 @@ ERROR_CODES = frozenset(
         "SEPARATION_FAILED",
         "EXTRACTION_FAILED",
         "UPLOAD_FAILED",
+        # Upload-input validation (errors.py raises both on the live pipeline path;
+        # they were missing here, so the frontend fell back to generic copy — H7).
+        "UPLOAD_INVALID",
+        "UPLOAD_TOO_LARGE",
         "INTERNAL_ERROR",
         "RATE_LIMITED",
     }

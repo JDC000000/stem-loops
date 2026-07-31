@@ -60,8 +60,14 @@ Active stages emit events (job_events table):
 | SEPARATION_FAILED | Replicate/demucs error |
 | EXTRACTION_FAILED | Loop extraction error |
 | UPLOAD_FAILED | R2/MinIO upload error |
+| UPLOAD_INVALID | Uploaded file is not a decodable audio/video container |
+| UPLOAD_TOO_LARGE | Uploaded file exceeds the max upload size |
 | INTERNAL_ERROR | Unexpected error |
 | RATE_LIMITED | Rate limit exceeded |
+
+Any code added here must exist in ALL FOUR places or the user sees generic copy:
+`errors.py` (raise site) → `models.py::ERROR_CODES` (contract) → `make types-generate`
+→ `apps/web/src/lib/error-copy.ts` (user-facing copy) → this table.
 
 ## §9 Build Order
 

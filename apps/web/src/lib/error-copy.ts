@@ -9,6 +9,8 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
   SEPARATION_FAILED: { headline: 'Stem separation failed for this track.', action: 'Try a different song.' },
   EXTRACTION_FAILED: { headline: "We couldn't find clean loops in this audio.", action: 'It may be too short or beatless.' },
   UPLOAD_FAILED: { headline: "We separated your stems but couldn't save them.", action: 'Please retry.' },
+  UPLOAD_INVALID: { headline: "That file type isn't supported.", action: 'Upload an audio or video file (mp3, wav, m4a, flac, ogg, aac, or mp4/mov).' },
+  UPLOAD_TOO_LARGE: { headline: 'That file is too large.', action: 'The maximum upload size is 200 MB.' },
   RATE_LIMITED: { headline: "We're busy or you've hit the limit.", action: 'Wait a moment and try again.' },
   INTERNAL_ERROR: { headline: "Something went wrong on our end. We've logged it.", action: 'Please try again.' },
 };

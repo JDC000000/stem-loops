@@ -41,6 +41,7 @@ from .errors import (
     InternalError,
     SeparationFailedError,
     StemLoopsError,
+    UploadFailedError,
     UploadInvalidError,
 )
 from .extractor.loop_extractor import extract_loops
@@ -285,10 +286,11 @@ def _fetch_stems(stem_urls: dict, requested_stems) -> dict:
 
 
 # ------------------------------ T10 stub path -------------------------------
-def _stub_placeholder_wav() -> str | None:
+def _stub_placeholder_wav() -> str:
     """A tiny silent 24-bit WAV so stub-mode loop downloads RESOLVE (make dev /
-    Gate 1 stays fully offline — no Replicate). Returns a temp path, or None if
-    audio libs are unavailable."""
+    Gate 1 stays fully offline — no Replicate). Raises if it can't be produced —
+    a stub job whose loops have no bytes behind them is a failed job, not a
+    silently-degraded one."""
     try:
         import numpy as np
         import soundfile as sf
@@ -297,9 +299,8 @@ def _stub_placeholder_wav() -> str | None:
         path = os.path.join(tempfile.mkdtemp(prefix="stub_ph_"), "silent.wav")
         sf.write(path, np.zeros(sr, dtype="float32"), sr, subtype="PCM_24")  # 1s mono
         return path
-    except Exception as exc:  # noqa: BLE001
-        log_structured("WARN", "stub_placeholder_failed", error=str(exc)[:120])
-        return None
+    except Exception as exc:  # noqa: BLE001 — any failure here means no loop bytes
+        raise UploadFailedError(f"stub placeholder WAV could not be created: {exc}") from exc
 
 
 def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
@@ -320,14 +321,17 @@ def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
                 start = i * bars * bar_sec
                 end = start + bars * bar_sec
                 section = sections[i % len(sections)]
-                # Default to upload_loop's key scheme even if the upload is skipped.
-                r2_key = f"{job_id}/{stem}/{section}_{i:04d}.wav"
-                if placeholder:
-                    try:
-                        r2_key = upload_loop(job_id, stem, section, i, placeholder)
-                    except Exception as exc:  # noqa: BLE001 — no R2 (pure-DB test): skip, don't crash
-                        log_structured("WARN", "stub_upload_skipped", error=str(exc)[:120])
-                        placeholder = None  # stop retrying for the rest of the loops
+                # FAIL LOUDLY on upload errors. This previously downgraded any R2
+                # failure to a WARN and kept inserting rows, so a misconfigured
+                # endpoint (e.g. the R2_ENDPOINT/R2_ENDPOINT_URL name mismatch)
+                # produced a status=done job whose every r2_key 404s — and made
+                # the CI stub run pass while storage was never exercised.
+                try:
+                    r2_key = upload_loop(job_id, stem, section, i, placeholder)
+                except Exception as exc:  # noqa: BLE001 — re-raised as a typed error
+                    raise UploadFailedError(
+                        f"stub loop upload failed (job={job_id} stem={stem} idx={i}): {exc}"
+                    ) from exc
                 c.execute(
                     """
                     INSERT INTO loops(id, job_id, stem, section_label, energy_class, start_sec,

@@ -55,7 +55,7 @@ services:
       DATABASE_URL: postgresql://stemloops:stemloops@postgres:5432/stemloops
       R2_ACCESS_KEY_ID: minioadmin
       R2_SECRET_ACCESS_KEY: minioadmin
-      R2_ENDPOINT: http://minio:9000
+      R2_ENDPOINT_URL: http://minio:9000
       R2_BUCKET_NAME: stem-loops-dev
       IP_HASH_KEY: dev-ip-hash-key-not-for-production
       HISTORY_COOKIE_KEY: dev-cookie-key-not-for-production

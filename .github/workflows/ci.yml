@@ -80,7 +80,7 @@ jobs:
           STUB_MODE: "true"
           R2_ACCESS_KEY_ID: test
           R2_SECRET_ACCESS_KEY: test
-          R2_ENDPOINT: http://localhost:9000
+          R2_ENDPOINT_URL: http://localhost:9000
           R2_BUCKET_NAME: test-bucket
       - uses: actions/setup-node@v4
         with:
@@ -148,7 +148,7 @@ jobs:
           DATABASE_URL: postgresql://stemloops:stemloops@localhost:5432/stemloops
           R2_ACCESS_KEY_ID: minioadmin
           R2_SECRET_ACCESS_KEY: minioadmin
-          R2_ENDPOINT: http://localhost:9000
+          R2_ENDPOINT_URL: http://localhost:9000
           R2_BUCKET_NAME: stem-loops-ci
           IP_HASH_KEY: ci-test-key
           HISTORY_COOKIE_KEY: ci-cookie-key

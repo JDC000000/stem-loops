@@ -91,7 +91,7 @@ Active stages emit events (job_events table):
 | REPLICATE_API_TOKEN | worker only | replicate.com/account |
 | R2_ACCESS_KEY_ID | worker only | Cloudflare R2 dashboard |
 | R2_SECRET_ACCESS_KEY | worker only | Cloudflare R2 dashboard |
-| R2_ENDPOINT | worker only | Cloudflare R2 dashboard |
+| R2_ENDPOINT_URL | worker only | Cloudflare R2 dashboard (S3 API endpoint) |
 | R2_BUCKET_NAME | worker only | Create in R2 dashboard |
 | DATABASE_URL | worker + web (server) | Supabase dashboard |
 | DATABASE_POOL_URL | worker + web (server) | Supabase dashboard |

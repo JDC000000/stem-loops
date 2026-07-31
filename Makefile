@@ -45,7 +45,7 @@ test-job:
 		DATABASE_URL=$${DATABASE_URL:-postgresql://stemloops:stemloops@localhost:5432/stemloops} \
 		R2_ACCESS_KEY_ID=$${R2_ACCESS_KEY_ID:-minioadmin} \
 		R2_SECRET_ACCESS_KEY=$${R2_SECRET_ACCESS_KEY:-minioadmin} \
-		R2_ENDPOINT=$${R2_ENDPOINT:-http://localhost:9000} \
+		R2_ENDPOINT_URL=$${R2_ENDPOINT_URL:-http://localhost:9000} \
 		R2_BUCKET_NAME=$${R2_BUCKET_NAME:-stem-loops-dev} \
 		STUB_MODE=$${STUB_MODE:-true} \
 		LOG_LEVEL=DEBUG \

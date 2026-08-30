@@ -1,0 +1,40 @@
+# Fly config for the self-hosted COBALT relay (production support service).
+#
+# Why this exists: the worker's download pipeline tries Cobalt first and only
+# falls back to yt-dlp. With no Cobalt deployed, every YouTube job fell straight
+# through to yt-dlp running on this server's datacenter IP, which YouTube
+# near-100% blocks -> DOWNLOAD_BLOCKED on every job. This app restores stage 1.
+#
+# The app name MUST stay "stem-loops-cobalt": it is the hardcoded default of
+# COBALT_URL in apps/worker/src/worker/downloader/cobalt_client.py, so no worker
+# env var / prod config change is needed for the worker to pick it up.
+app = "stem-loops-cobalt"
+
+# iad (not the spike's lax) to co-locate with the main 'stem-loops' worker app,
+# which also runs in iad. Cobalt v10 returns status="tunnel" for YouTube, i.e.
+# the audio bytes proxy THROUGH this instance to the worker — same-region keeps
+# that hop fast instead of adding a coast-to-coast round trip per job.
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Cobalt v10 REQUIRES API_URL to be set to the instance's OWN public URL or the
+# API refuses to serve. Open instance: no API key / turnstile (it is only ever
+# called server-side by the worker, never exposed to end users).
+[env]
+  API_URL = "https://stem-loops-cobalt.fly.dev/"
+  CORS_WILDCARD = "1"
+
+[http_service]
+  internal_port = 9000
+  force_https = true
+  # Stateless request/response service: safe to scale to zero between jobs and
+  # cold-start on the worker's first call. Keeps idle cost at ~$0.
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

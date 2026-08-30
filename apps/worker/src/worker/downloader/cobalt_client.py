@@ -86,7 +86,7 @@ def _verify_stream(url: str) -> None:
                     return
     except httpx.HTTPStatusError as e:
         raise DownloadBlockedError(f"Cobalt tunnel HTTP {e.response.status_code}") from e
-    except httpx.HTTPError as e:
+    except (httpx.HTTPError, httpx.InvalidURL) as e:
         raise DownloadBlockedError(f"Cobalt tunnel unreadable: {e}") from e
     raise DownloadBlockedError(
         "Cobalt returned an empty tunnel (0 bytes) — upstream media fetch was refused"
@@ -110,18 +110,35 @@ def fetch_audio_url(youtube_url: str) -> str:
         raise DownloadTimeoutError("Cobalt timed out") from e
     except httpx.HTTPStatusError as e:
         raise DownloadBlockedError(f"Cobalt HTTP {e.response.status_code}") from e
-    except httpx.HTTPError as e:
+    except (httpx.HTTPError, httpx.InvalidURL) as e:
         # DNS / connection failures (the instance not being deployed at all) must not
-        # escape as a bare httpx error — keep the taxonomy closed.
+        # escape as a bare httpx error — keep the taxonomy closed. httpx.InvalidURL is
+        # deliberately included: it does NOT subclass httpx.HTTPError, so a malformed
+        # operator-set COBALT_URL (no scheme, stray whitespace) would otherwise escape.
         raise DownloadBlockedError(f"Cobalt unreachable: {e}") from e
 
-    data = resp.json()
+    # A 2xx does NOT guarantee JSON: a Fly edge error page mid-deploy, an empty body,
+    # or a literal "null" would otherwise escape as JSONDecodeError/AttributeError and
+    # break this module's "every failure is a typed Download*Error" contract.
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise DownloadBlockedError(
+            f"Cobalt returned non-JSON ({resp.headers.get('content-type', '?')})"
+        ) from e
+    if not isinstance(data, dict):
+        raise DownloadBlockedError(f"Cobalt returned {type(data).__name__}, expected object")
+
     status = data.get("status", "")
     if status in _SUCCESS_STATUSES:
         url = data.get("url")
-        if not url and data.get("picker"):
-            url = (data["picker"] or [{}])[0].get("url")
-        if url:
+        if not url:
+            # picker entries are attacker/upstream-shaped; never index blindly.
+            for item in data.get("picker") or []:
+                if isinstance(item, dict) and item.get("url"):
+                    url = item["url"]
+                    break
+        if isinstance(url, str) and url:
             _verify_stream(url)
             return url
         raise DownloadBlockedError(f"Cobalt {status} with no url")
@@ -129,7 +146,8 @@ def fetch_audio_url(youtube_url: str) -> str:
     # v10 reports the reason as {"error": {"code": "..."}}; older builds used "text".
     err = data.get("error")
     code = err.get("code") if isinstance(err, dict) else None
-    text = (code or data.get("text") or "").lower()
+    raw = code or data.get("text") or ""
+    text = (raw if isinstance(raw, str) else str(raw)).lower()
     for keyword, exc_cls in _ERROR_MAP.items():
         if keyword in text:
             raise exc_cls(f"Cobalt: {text}")

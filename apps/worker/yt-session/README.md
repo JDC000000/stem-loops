@@ -37,13 +37,33 @@ video (`error.api.youtube.no_session_tokens`), i.e. 2/12 → 0/12.
 - **Not memory.** Raised to 2GB; same failure.
 - **The unmodified upstream call succeeds** when run by hand in the same image on
   the same VM.
+- **Not PID-1/zombie-reaping either.** Tried `tini` as `ENTRYPOINT` two ways:
+  plain (`/sbin/tini --`) and as a registered Linux subreaper (`/sbin/tini -s --`,
+  needed because Fly's own Firecracker init is the *real* PID 1 — our command is
+  always tini's child, never literal PID 1, so plain tini logged "Tini is not
+  running as PID 1 and isn't registered as a child subreaper. Zombie processes
+  will not be re-parented to Tini"). Deployed both variants
+  (`fly deploy --remote-only --ha=false`, 2026-08-30 ~14:2x). **Identical
+  failure either way** — same `Failed to connect to browser` exception at the
+  same `nodriver/core/browser.py:343` call site, same crash loop, machine hit
+  Fly's max-restart-count of 10 and was stopped. So PID-1/zombie-reaping is
+  ruled out too; the `ENTRYPOINT ["/sbin/tini", "-s", "--"]` line is left in the
+  Dockerfile as a harmless correctness improvement (proper signal forwarding is
+  good practice regardless) but it is **not** the fix — do not re-try
+  tini/dumb-init variants, that avenue is exhausted.
 
-So it fails **only** when launched as the container's entrypoint under Fly's init,
-while succeeding when run manually in that identical container. Prime remaining
-suspect is PID-1/process-group behaviour (Chromium subprocess reaping under Fly
-init) — try `tini`/`dumb-init`, or a Node-based provider that needs no browser at
-all (e.g. `bgutil-ytdlp-pot-provider`, which would need a small shim to expose
-cobalt's `/token` shape).
+So it fails **only** when launched as the container's entrypoint under Fly's
+init, while succeeding when run manually in that identical container, and it is
+NOT a PID-1/subreaper issue. Remaining untried options: (a) get an actual
+CDP-connection-refused root cause by adding verbose nodriver/CDP logging and
+capturing chromium's own stderr (currently swallowed — we only see nodriver's
+generic wrapper exception, never chromium's own startup output, so the real
+underlying error is still unknown), or (b) give up on the Chromium-based
+approach entirely and switch to a Node-based provider that needs no browser at
+all (e.g. `bgutil-ytdlp-pot-provider`), which would need a small shim to expose
+cobalt's `/token` shape. (b) is probably the higher-odds path given two
+independent theories (sandbox flags, PID-1 handling) have now both failed to
+explain the same symptom.
 
 The `sandbox=False` + `--no-sandbox --disable-dev-shm-usage` patch in the
 Dockerfile is retained: harmless, and required for any root-run Chromium.

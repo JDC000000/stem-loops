@@ -40,6 +40,26 @@ COBALT_API_KEY = os.environ.get("COBALT_API_KEY")  # only if the instance enforc
 # of the cold-start floor. Warm calls return in ~1-2s and are unaffected.
 TIMEOUT = float(os.environ.get("COBALT_TIMEOUT", "30"))
 
+# Cobalt can hand back a signed tunnel URL that streams NOTHING. Its stream/internal.js
+# HEADs the upstream googlevideo URL and, on a non-200 or missing content-length, calls
+# cleanup() -> res.end() — terminating our request with "200 OK, content-length: 0" and
+# no error status. Measured 2026-08-30 against 12 popular videos: 10 resolved
+# status="tunnel" and then streamed 0 bytes, because googlevideo answers the media
+# request with 403 (YouTube's SABR/proof-of-origin enforcement). That is IP-INDEPENDENT
+# — the identical 10 fail from a Fly datacenter IP and from an iproyal residential exit,
+# which is what rules out IP reputation as the cause.
+#
+# Without this probe, that failure is SILENT and strictly worse than an honest error:
+# fetch_audio_url returns a URL, no typed error is raised, the yt-dlp fallback in
+# downloader/__init__.py never fires, and the job dies much later on an empty file with
+# an unrelated-looking error. So: read a few bytes before declaring success, and turn an
+# empty tunnel into DownloadBlockedError.
+#
+# Verified safe: the probe does NOT consume the tunnel (a full GET after an 8KB probe
+# still returned all 37,589,168 bytes), and it IS discriminating (8192 bytes on a good
+# video vs 0 on a failing one). Set COBALT_VERIFY_BYTES=0 to disable.
+VERIFY_BYTES = int(os.environ.get("COBALT_VERIFY_BYTES", "8192"))
+
 _SUCCESS_STATUSES = ("tunnel", "redirect", "stream", "picker", "success")
 
 # Substring match against the v10 `error.code` string (e.g.
@@ -52,6 +72,25 @@ _ERROR_MAP = {
     "unavailable": DownloadBlockedError,
     "invalid": DownloadInvalidUrlError,
 }
+
+
+def _verify_stream(url: str) -> None:
+    """Raise DownloadBlockedError unless `url` actually streams audio bytes."""
+    if VERIFY_BYTES <= 0:
+        return
+    try:
+        with httpx.stream("GET", url, timeout=TIMEOUT, follow_redirects=True) as resp:
+            resp.raise_for_status()
+            for chunk in resp.iter_bytes(chunk_size=VERIFY_BYTES):
+                if chunk:
+                    return
+    except httpx.HTTPStatusError as e:
+        raise DownloadBlockedError(f"Cobalt tunnel HTTP {e.response.status_code}") from e
+    except httpx.HTTPError as e:
+        raise DownloadBlockedError(f"Cobalt tunnel unreadable: {e}") from e
+    raise DownloadBlockedError(
+        "Cobalt returned an empty tunnel (0 bytes) — upstream media fetch was refused"
+    )
 
 
 def fetch_audio_url(youtube_url: str) -> str:
@@ -83,6 +122,7 @@ def fetch_audio_url(youtube_url: str) -> str:
         if not url and data.get("picker"):
             url = (data["picker"] or [{}])[0].get("url")
         if url:
+            _verify_stream(url)
             return url
         raise DownloadBlockedError(f"Cobalt {status} with no url")
 

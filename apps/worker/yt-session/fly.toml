@@ -1,0 +1,28 @@
+# Fly config for the YouTube session (poToken) generator.
+#
+# Why this exists: YouTube's SABR rollout requires a Proof-of-Origin Token for
+# most mainstream videos. Without one, googlevideo answers the media request with
+# 403 even though the metadata resolve succeeds — measured 10/12 popular videos
+# failing this way, IDENTICALLY from a Fly datacenter IP and from a residential
+# proxy exit, which is what rules out IP reputation as the cause.
+app = "stem-loops-yt-session"
+primary_region = "iad"  # same region as stem-loops-cobalt (its only consumer)
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Always-on. Cobalt PULLS from this every YOUTUBE_SESSION_RELOAD_INTERVAL (300s)
+  # from its own process, not through fly-proxy, so there is no request that would
+  # auto-start a stopped machine — it must stay up or cobalt silently keeps serving
+  # a stale/absent token.
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  # 1GB, not 512MB: this boots a headless Chromium to run BotGuard.
+  size = "shared-cpu-1x"
+  memory = "2048mb"

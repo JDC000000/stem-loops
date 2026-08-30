@@ -25,6 +25,14 @@ primary_region = "iad"
 [env]
   API_URL = "https://stem-loops-cobalt.fly.dev/"
   CORS_WILDCARD = "1"
+  # Tunnel URLs default to a 90s lifespan (~100s measured). That is too short for our
+  # consumer: pipeline.py hands Cobalt's tunnel URL STRAIGHT to Replicate as audio_src
+  # (it is already a public URL, so unlike the yt-dlp path it is not staged to R2), and
+  # Replicate fetches it asynchronously after its own queue/cold-start. A queued
+  # prediction can easily start >100s after submit, which would expire the URL and turn
+  # a working download into a separation failure. 30 min is far beyond any plausible
+  # queue wait and still well short of anything worth treating as a durable link.
+  TUNNEL_LIFESPAN = "1800"
 
 [http_service]
   internal_port = 9000

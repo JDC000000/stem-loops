@@ -8,7 +8,14 @@ soundfile>=0.12.1
 numpy>=1.26.0
 scipy>=1.13.0
 replicate>=0.31.0
-yt-dlp>=2024.5.27
+# yt-dlp tracks YouTube's frequently-changing extraction internals, so a STALE version
+# is a live outage risk, not a cosmetic lag. The >=2024.5.27 floor let the Jul-21 image
+# build resolve to 2026.07.04, and by 2026-08-30 that build could not download ANY test
+# video from prod ("unable to download video data: HTTP Error 403"). Measured the same
+# day, same proxy, same 12 videos: 2026.07.04 -> 0/2 sampled, 2026.8.19 -> 11/12 first
+# attempt and 12/12 with the existing retry. Keep this floor current — bump it whenever
+# the worker image is rebuilt, and re-run the 12-video check if YouTube ingestion regresses.
+yt-dlp>=2026.8.19
 httpx>=0.27.0
 python-dotenv>=1.0.0
 sentry-sdk>=2.66.0

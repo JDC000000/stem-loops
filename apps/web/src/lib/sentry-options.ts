@@ -11,7 +11,10 @@
 //     with only a rate, an inbound `sentry-trace: ...-1` header makes the SDK
 //     inherit "sampled" and send a transaction anyway.
 //   - Errors and (if tracing is ever re-enabled) transactions go through one
-//     scrubber: no cookies, no auth/IP headers, no query string, job ids masked.
+//     scrubber: no cookies, no auth/IP/geo or secret-named headers, no query
+//     string, job ids masked in the URL, every other header value (referer,
+//     next-url, x-invoke-path...) and contexts.nextjs (request_path is the raw
+//     path + query on the onRequestError/captureRequestError path).
 //   - Spans lose cookie/auth/IP attributes and have job ids masked in URLs.
 //   - Breadcrumbs (fetch/xhr/http, navigation, console) ride along on every error
 //     event, so they are scrubbed when recorded: no query strings (signed R2 URLs),
@@ -25,8 +28,14 @@ export const tracesSampler = (): number => 0;
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 const PRESIGNED = /[?&]X-Amz-(Signature|Credential)=/i;
 const ABS_URL = /\b[a-z][a-z0-9+.-]*:\/\/[^\s'"<>`]+/gi;
+// A relative URL that carries a query or fragment, e.g. `/bucket/<id>/x.wav?X-Amz-...`.
+// The delimiter is captured rather than using a lookbehind (older Safari lacks it).
+const REL_URL_WITH_QUERY = /(^|[\s'"(=<[,])(\/[^\s'"<>`?#]*[?#][^\s'"<>`]*)/g;
+const AMZ_SECRET_PARAM = /(X-Amz-(?:Signature|Credential|Security-Token)=)[^&\s'"<>`]+/gi;
 const ORIGIN = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i;
-const DROP_HEADER = /^(cookie|set-cookie|authorization|proxy-authorization|x-forwarded-for|x-real-ip|forwarded|cf-connecting-ip|true-client-ip|x-vercel-forwarded-for|x-vercel-proxied-for)$/i;
+const DROP_HEADER = /^(cookie|set-cookie|authorization|proxy-authorization|x-forwarded-for|x-real-ip|forwarded|cf-connecting-ip|true-client-ip|x-vercel-forwarded-for|x-vercel-proxied-for|x-vercel-ip-.*|x-vercel-ja4-digest|x-invoke-query)$/i;
+// Any header whose name says it carries a secret (x-vercel-oidc-token, x-vercel-proxy-signature...).
+const DROP_HEADER_SECRET = /(token|secret|signature|api-?key)/i;
 const DROP_SPAN_ATTR = /(cookie|authorization|token|secret|client\.address|user\.ip|ip_address)/i;
 
 export function maskJobIds(s: string): string {
@@ -44,9 +53,15 @@ export function scrubUrl(u: string): string {
   return maskJobIds(stripUserinfo(u.split(/[?#]/)[0]));
 }
 
-// Free text (log/console messages): scrub every absolute URL, then mask job ids.
+// Free text (log/console messages, header values): scrub every absolute URL and every
+// relative URL with a query, redact any leftover X-Amz secret, then mask job ids.
 export function scrubText(s: string): string {
-  return maskJobIds(s.replace(ABS_URL, (u) => scrubUrl(u)));
+  return maskJobIds(
+    s
+      .replace(ABS_URL, (u) => scrubUrl(u))
+      .replace(REL_URL_WITH_QUERY, (_m, pre: string, u: string) => pre + scrubUrl(u))
+      .replace(AMZ_SECRET_PARAM, '$1[redacted]'),
+  );
 }
 
 type Req = {
@@ -56,7 +71,12 @@ type Req = {
   headers?: Record<string, unknown> | null;
   data?: unknown;
 };
-type Ev = { request?: Req | null; user?: Record<string, unknown> | null; transaction?: string };
+type Ev = {
+  request?: Req | null;
+  user?: Record<string, unknown> | null;
+  transaction?: string;
+  contexts?: Record<string, unknown> | null;
+};
 
 export function scrubEvent<T extends Ev>(event: T): T {
   const r = event.request;
@@ -64,9 +84,20 @@ export function scrubEvent<T extends Ev>(event: T): T {
     delete r.cookies;
     delete r.query_string;
     delete r.data;
-    if (typeof r.url === 'string') r.url = maskJobIds(r.url.split('?')[0]);
-    if (r.headers) {
-      for (const k of Object.keys(r.headers)) if (DROP_HEADER.test(k)) delete r.headers[k];
+    if (typeof r.url === 'string') r.url = scrubUrl(r.url);
+    const h = r.headers;
+    if (h) {
+      for (const k of Object.keys(h)) {
+        if (DROP_HEADER.test(k) || DROP_HEADER_SECRET.test(k)) delete h[k];
+        else if (typeof h[k] === 'string') h[k] = scrubText(h[k] as string);
+      }
+    }
+  }
+  const nextjs = event.contexts?.nextjs;
+  if (nextjs && typeof nextjs === 'object') {
+    const n = nextjs as Record<string, unknown>;
+    for (const k of Object.keys(n)) {
+      if (typeof n[k] === 'string') n[k] = k === 'request_path' ? scrubUrl(n[k] as string) : scrubText(n[k] as string);
     }
   }
   if (event.user) {

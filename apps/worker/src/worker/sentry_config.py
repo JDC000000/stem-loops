@@ -30,8 +30,17 @@ _URL = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s'\"<>]+", re.I)
 _URL_USERINFO = re.compile(r"^([a-z][a-z0-9+.-]*://)[^@/?#]*@", re.I)
 _ORIGIN = re.compile(r"^[a-z][a-z0-9+.-]*://[^/?#]*", re.I)
 _PRESIGNED = re.compile(r"[?&]X-Amz-(Signature|Credential)=", re.I)
-# Scheme-less `user:pass@host` (e.g. a proxy string echoed by a library).
-_BARE_USERINFO = re.compile(r"(?<![\w/:.@-])[^\s/:@'\"()\[\]]+:[^\s/@'\"()\[\]]+@(?=[\w.-])")
+# A relative URL that carries a query or fragment, e.g. urllib3's
+# `/bucket/<id>/x.wav?X-Amz-Signature=...` (same pattern as the web scrubber).
+_REL_URL_WITH_QUERY = re.compile(r"(^|[\s'\"(=<\[,])(/[^\s'\"<>?#]*[?#][^\s'\"<>]*)")
+_AMZ_SECRET_PARAM = re.compile(
+    r"(X-Amz-(?:Signature|Credential|Security-Token)=)[^&\s'\"<>]+", re.I
+)
+# Scheme-less `user:pass@host` (e.g. a proxy string echoed by a library). The host
+# must look like one (dotted name or name:port), so `12:30@noon` is left alone.
+_BARE_USERINFO = re.compile(
+    r"(?<![\w/:.@-])[^\s/:@'\"()\[\]]+:[^\s/@'\"()\[\]]+@(?=[\w-]+(?:\.[\w-]+)+|[\w.-]+:\d+)"
+)
 _DROP_CRUMB_DATA = {"http.query", "http.fragment"}
 _DROP_HEADER = re.compile(
     r"^(cookie|set-cookie|authorization|proxy-authorization|x-forwarded-for|x-real-ip|"
@@ -53,6 +62,8 @@ def scrub_url(url: str) -> str:
 
 def scrub_text(text: str) -> str:
     text = _URL.sub(lambda m: scrub_url(m.group(0)), text)
+    text = _REL_URL_WITH_QUERY.sub(lambda m: m.group(1) + scrub_url(m.group(2)), text)
+    text = _AMZ_SECRET_PARAM.sub(r"\1[redacted]", text)
     return _mask(_BARE_USERINFO.sub("[redacted]@", text))
 
 

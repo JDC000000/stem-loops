@@ -145,3 +145,24 @@ def test_real_sdk_error_event_is_scrubbed(monkeypatch):
         "stem download failed for job [id]",
     }
     assert any("[presigned]" in (b.get("message") or "") for b in event["breadcrumbs"]["values"])
+
+
+def test_scrub_text_relative_urls_and_bare_userinfo():
+    from worker.sentry_config import scrub_text
+
+    rel = f"/stem-loops/{JOB}/x.wav?X-Amz-Credential=AKIAEXAMPLE&X-Amz-Signature=deadbeefsig"
+    assert scrub_text(f"url: {rel} status=403") == "url: /[presigned] status=403"
+    assert scrub_text(f"GET /api/jobs/{JOB}?token=abc#f done") == "GET /api/jobs/[id] done"
+    assert (
+        scrub_text("key=k&X-Amz-Signature=deadbeefsig&x=1")
+        == "key=k&X-Amz-Signature=[redacted]&x=1"
+    )
+    # Proxy credentials without a scheme: dotted host or host:port.
+    assert (
+        scrub_text("via sluser:pr0xyp4ss@gate.example.com:7000")
+        == "via [redacted]@gate.example.com:7000"
+    )
+    assert scrub_text("via sluser:pr0xyp4ss@localhost:8080") == "via [redacted]@localhost:8080"
+    # Not credentials: left alone.
+    for s in ("meet 12:30@noon", "ratio 1:2@x", "a/b c /health"):
+        assert scrub_text(s) == s

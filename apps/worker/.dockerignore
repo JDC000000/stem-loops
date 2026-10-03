@@ -1,5 +1,7 @@
 # Runtime code only. The Aug-30 prod image was built from a working tree and carried an
 # 807 MB local .venv, wav fixtures and spikes/node_modules; none of it is used at runtime.
+# Fixture *data* is excluded, not the fixture helpers: tests/fixtures/make_stem_fixtures.py
+# regenerates the wavs, so the tests baked into the image still collect and run.
 .venv
 **/__pycache__
 **/*.pyc
@@ -7,6 +9,8 @@
 .ruff_cache
 **/node_modules
 spikes
-**/fixtures
+**/*.wav
+**/*.mp3
+**/*.flac
 .env
 .env.*

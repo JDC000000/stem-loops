@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import ts from 'typescript';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -140,5 +141,100 @@ for (const file of CONFIGS) {
     // Harmless crumbs pass through unchanged.
     const ui = { category: 'ui.click', message: 'button.upload' };
     assert.deepEqual(o.beforeBreadcrumb(structuredClone(ui), {}), ui);
+  });
+}
+
+test('scrubText strips queries from absolute AND relative URLs', async () => {
+  const { scrubText } = await import(optionsUrl);
+  assert.equal(
+    scrubText(`GET /stem-loops/${JOB}/x.wav?X-Amz-Credential=AKIAEXAMPLE&${SIG} -> 403`),
+    'GET /[presigned] -> 403',
+  );
+  assert.equal(scrubText(`see /api/jobs/${JOB}?secret=1#frag and /jobs/${JOB}`), 'see /api/jobs/[id] and /jobs/[id]');
+  assert.equal(scrubText(`url=${R2}/${JOB}/a.wav?${SIG}`), 'url=https://acct.r2.cloudflarestorage.com/[presigned]');
+  // A bare signature parameter outside any recognisable URL is still redacted.
+  assert.equal(scrubText(`key=k&${SIG}&x=1`), 'key=k&X-Amz-Signature=[redacted]&x=1');
+  // Plain text and query-less relative paths are untouched (apart from job ids).
+  assert.equal(scrubText('a/b c 12:30 /api/health'), 'a/b c 12:30 /api/health');
+});
+
+// Server errors reach Sentry through `onRequestError = Sentry.captureRequestError` (instrumentation.ts).
+// That path puts the raw path + query in contexts.nextjs.request_path and copies every request header
+// (referer, next-url, x-invoke-path, x-vercel-ip-*) onto the event. Drive the real SDK with each server-side
+// config's options and a capturing transport.
+test('instrumentation.ts reports server errors via captureRequestError', () => {
+  assert.match(readFileSync(join(WEB, 'instrumentation.ts'), 'utf8'), /onRequestError\s*=\s*Sentry\.captureRequestError/);
+});
+
+// The real SDK can be initialised only once per process, so it is initialised with the first config's
+// options and the event/breadcrumb hooks delegate to whichever config is under test.
+let realSdk;
+let hooks;
+const events = [];
+function realSentry(o) {
+  if (!realSdk) {
+    // The CJS build: the ESM namespace misses the SDK's re-exported functions (flush, ...).
+    realSdk = createRequire(import.meta.url)('@sentry/nextjs');
+    const transport = () => ({
+      send: async ([, items]) => {
+        for (const [h, payload] of items) if (h.type === 'event') events.push(payload);
+        return { statusCode: 200 };
+      },
+      flush: async () => true,
+    });
+    // Default integrations, as in prod (RequestData builds event.request).
+    realSdk.init({
+      ...o,
+      transport,
+      beforeSend: (e, h) => hooks.beforeSend(e, h),
+      beforeBreadcrumb: (b, h) => hooks.beforeBreadcrumb(b, h),
+    });
+  }
+  hooks = o;
+  events.length = 0;
+  return realSdk;
+}
+
+for (const file of ['sentry.server.config.ts', 'sentry.edge.config.ts']) {
+  test(`${file}: real captureRequestError event is scrubbed`, async () => {
+    const o = await initOptions(file);
+    const Sentry = realSentry(o);
+    Sentry.captureRequestError(
+      new Error('boom'),
+      {
+        path: `/api/jobs/${JOB}?t=SECRETQ`,
+        method: 'GET',
+        headers: {
+          cookie: 'sl-history=b64.SIG',
+          referer: `https://stem-loops.com/jobs/${JOB}?ref=SECRETQ`,
+          'next-url': `/jobs/${JOB}`,
+          'x-invoke-path': `/api/jobs/${JOB}`,
+          'x-invoke-query': '%7B%22t%22%3A%22SECRETQ%22%7D',
+          'x-forwarded-for': '9.9.9.9',
+          'x-real-ip': '9.9.9.9',
+          'x-vercel-ip-city': 'Seattle',
+          'x-vercel-ip-latitude': '47.6062',
+          'x-vercel-ip-longitude': '-122.3321',
+          'x-vercel-ip-country': 'US',
+          'x-vercel-oidc-token': 'OIDCSECRET',
+          'x-matched-path': '/api/jobs/[id]',
+          'user-agent': 'UA',
+        },
+      },
+      { routerKind: 'App Router', routePath: '/api/jobs/[id]', routeType: 'route' },
+    );
+    await Sentry.flush(2000);
+    assert.equal(events.length, 1, 'captureRequestError produced no error event');
+    const ev = events[0];
+    for (const v of ev.exception?.values ?? []) delete v.stacktrace; // frames quote this test's own source
+    const s = JSON.stringify(ev);
+    for (const bad of [JOB, 'SECRETQ', 'b64.SIG', '9.9.9.9', 'Seattle', '47.6062', '-122.3321', 'OIDCSECRET'])
+      assert.ok(!s.includes(bad), `captureRequestError event kept ${bad}`);
+    assert.ok(!Object.keys(ev.request.headers).some((k) => /^x-vercel-ip-/i.test(k)), 'geo headers kept');
+    assert.equal(ev.contexts.nextjs.request_path, '/api/jobs/[id]');
+    assert.equal(ev.request.headers.referer, 'https://stem-loops.com/jobs/[id]');
+    assert.equal(ev.request.headers['x-matched-path'], '/api/jobs/[id]');
+    assert.equal(ev.request.headers['user-agent'], 'UA');
+    assert.equal(ev.exception.values[0].value, 'boom');
   });
 }

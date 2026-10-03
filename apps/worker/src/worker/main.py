@@ -20,16 +20,12 @@ import uvicorn
 
 from .consumer import poll_loop
 from .health import app
+from .sentry_config import sentry_options
 
-# No-op until SENTRY_DSN is set (Fly secret) — safe to ship before the Sentry project
-# exists. This is a low-volume portfolio worker, not a high-QPS service, so a modest
-# fixed trace sample rate has no real cost/noise tradeoff either way.
+# No-op until SENTRY_DSN is set (Fly secret). Tracing off and events scrubbed; see
+# sentry_config.py (security review 2026-10-03).
 if os.environ.get("SENTRY_DSN"):
-    sentry_sdk.init(
-        dsn=os.environ["SENTRY_DSN"],
-        environment=os.environ.get("FLY_APP_NAME", "production"),
-        traces_sample_rate=0.2,
-    )
+    sentry_sdk.init(**sentry_options())
 
 
 async def serve() -> None:

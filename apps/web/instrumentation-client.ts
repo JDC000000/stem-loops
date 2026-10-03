@@ -2,7 +2,13 @@
 // — no manual import needed, unlike server/edge which go through instrumentation.ts).
 // No-op until NEXT_PUBLIC_SENTRY_DSN is set.
 import * as Sentry from '@sentry/nextjs';
-import { beforeSend, beforeSendSpan, beforeSendTransaction, tracesSampler } from './src/lib/sentry-options';
+import {
+  beforeBreadcrumb,
+  beforeSend,
+  beforeSendSpan,
+  beforeSendTransaction,
+  tracesSampler,
+} from './src/lib/sentry-options';
 
 const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN;
 
@@ -15,6 +21,7 @@ if (dsn) {
     beforeSend,
     beforeSendTransaction,
     beforeSendSpan,
+    beforeBreadcrumb,
     // Session replay is overkill for a low-traffic portfolio app and burns quota fast.
     replaysSessionSampleRate: 0,
     replaysOnErrorSampleRate: 0,

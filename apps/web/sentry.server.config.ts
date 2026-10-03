@@ -4,7 +4,13 @@
 // in user-facing responses, so right now a real server exception just vanishes into
 // Vercel's function logs with no automatic alerting at all. This closes that gap.
 import * as Sentry from '@sentry/nextjs';
-import { beforeSend, beforeSendSpan, beforeSendTransaction, tracesSampler } from './src/lib/sentry-options';
+import {
+  beforeBreadcrumb,
+  beforeSend,
+  beforeSendSpan,
+  beforeSendTransaction,
+  tracesSampler,
+} from './src/lib/sentry-options';
 
 const dsn = process.env.SENTRY_DSN;
 
@@ -17,6 +23,7 @@ if (dsn) {
     beforeSend,
     beforeSendTransaction,
     beforeSendSpan,
+    beforeBreadcrumb,
     environment: process.env.VERCEL_ENV || 'production',
   });
 }

@@ -1,7 +1,8 @@
 // Security review 2026-10-03. Dependency-free guard (node:test + the existing `typescript` devDependency).
 // Imports every Sentry config with a mocked SDK and fails if tracing can be on without beforeSendTransaction,
 // if the sampler is not 0 for a sampled parent, if a transaction keeps cookies/IPs/job ids, or if a new
-// Sentry.init site appears outside the guarded files.
+// Sentry.init site appears outside the guarded files. Breadcrumbs ride along on every error event, so each
+// config must also scrub them (signed R2 URLs, presigned PUTs, job ids in fetch/xhr/navigation/console crumbs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -79,5 +80,65 @@ for (const file of CONFIGS) {
     });
     assert.deepEqual(span.data, { 'url.full': 'https://stem-loops.com/jobs/[id]', 'http.method': 'GET' });
     assert.equal(span.description, 'GET /api/jobs/[id]');
+  });
+}
+
+const R2 = 'https://acct.r2.cloudflarestorage.com/stem-loops';
+const SIG = 'X-Amz-Signature=deadbeefsig';
+const signed = (key) => `${R2}/${key}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAEXAMPLE%2F20261003&${SIG}`;
+
+for (const file of CONFIGS) {
+  test(`${file}: breadcrumbs scrubbed`, async () => {
+    const o = await initOptions(file);
+    assert.equal(typeof o.beforeBreadcrumb, 'function', 'breadcrumbs carry signed URLs and job ids');
+    const crumb = (c) => {
+      const out = o.beforeBreadcrumb(structuredClone(c), {});
+      for (const bad of [JOB, 'deadbeefsig', 'AKIAEXAMPLE', 'X-Amz-', 'secret=1', 'p4ss'])
+        assert.ok(!JSON.stringify(out).includes(bad), `${c.category} breadcrumb kept ${bad}`);
+      return out;
+    };
+
+    // Signed R2 GET (useAudition / zipLoops): query and key gone, method/status kept.
+    const get = crumb({ category: 'fetch', type: 'http', data: { method: 'GET', url: signed(`${JOB}/loop_1.wav`), status_code: 200 } });
+    assert.deepEqual(get.data, { method: 'GET', url: 'https://acct.r2.cloudflarestorage.com/[presigned]', status_code: 200 });
+
+    // Presigned PUT upload (page.tsx XHR): only origin, method and status survive.
+    const put = crumb({
+      category: 'xhr',
+      type: 'http',
+      data: { method: 'PUT', url: signed(`${JOB}/_input.mp3`), status_code: 200, request_body_size: 5, response_body_size: 0 },
+    });
+    assert.deepEqual(put.data, { method: 'PUT', url: 'https://acct.r2.cloudflarestorage.com/[presigned]', status_code: 200 });
+
+    // App API fetch: job id masked, query stripped, the rest kept.
+    const api = crumb({ category: 'fetch', type: 'http', data: { method: 'GET', url: `/api/jobs/${JOB}?secret=1`, status_code: 404 } });
+    assert.deepEqual(api.data, { method: 'GET', url: '/api/jobs/[id]', status_code: 404 });
+
+    // Node http breadcrumb keeps the query in its own key.
+    const node = crumb({ category: 'http', data: { url: `https://p:p4ss@x.example/jobs/${JOB}`, 'http.method': 'GET', 'http.query': 'secret=1' } });
+    assert.deepEqual(node.data, { url: 'https://[redacted]@x.example/jobs/[id]', 'http.method': 'GET' });
+    const nodePut = crumb({
+      category: 'http',
+      data: { url: `${R2}/${JOB}/_input.mp3`, 'http.method': 'PUT', 'http.query': `?X-Amz-Credential=AKIAEXAMPLE&${SIG}`, status_code: 200 },
+    });
+    assert.deepEqual(nodePut.data, { url: 'https://acct.r2.cloudflarestorage.com/[presigned]', 'http.method': 'PUT', status_code: 200 });
+
+    // Navigation.
+    const nav = crumb({ category: 'navigation', data: { from: `/jobs/${JOB}?secret=1`, to: `/jobs/${JOB}#x` } });
+    assert.deepEqual(nav.data, { from: '/jobs/[id]', to: '/jobs/[id]' });
+
+    // Console: message scrubbed, raw arguments dropped.
+    const con = crumb({
+      category: 'console',
+      level: 'error',
+      message: `audition failed ${signed(`${JOB}/loop_2.wav`)} for job ${JOB}`,
+      data: { arguments: ['audition failed', signed(`${JOB}/loop_2.wav`)], logger: 'console' },
+    });
+    assert.equal(con.message, 'audition failed https://acct.r2.cloudflarestorage.com/[presigned] for job [id]');
+    assert.deepEqual(con.data, { logger: 'console' });
+
+    // Harmless crumbs pass through unchanged.
+    const ui = { category: 'ui.click', message: 'button.upload' };
+    assert.deepEqual(o.beforeBreadcrumb(structuredClone(ui), {}), ui);
   });
 }

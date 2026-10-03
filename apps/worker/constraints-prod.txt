@@ -1,0 +1,74 @@
+# Exact versions in the production worker image (Fly v18, image
+# deployment-01M1A1Q0Z4NXWQQKPNFP6PMHVF, built 2026-08-30 from 13f8939), read from the
+# image's pip layer. requirements.txt only sets floors, so without this file every
+# rebuild silently re-resolves the whole audio stack (numba/llvmlite, scipy, boto3...).
+# Used as a constraints file: pip install -r requirements.txt -c constraints-prod.txt
+#
+# To change a dependency (e.g. the yt-dlp floor), bump it here on purpose and regenerate
+# the rest from a fresh `pip freeze` of the built image.
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+audioread==3.1.0
+black==26.5.1
+boto3==1.43.83
+botocore==1.43.83
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+click==8.5.0
+decorator==5.3.1
+fastapi==0.141.1
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.19
+imageio-ffmpeg==0.6.0
+iniconfig==2.3.0
+jmespath==1.1.0
+joblib==1.5.3
+lazy-loader==0.5
+librosa==0.11.0
+llvmlite==0.49.0
+msgpack==1.2.2
+mypy-extensions==1.1.0
+narwhals==2.25.0
+numba==0.67.0
+numpy==2.4.6
+pathspec==1.1.1
+platformdirs==4.11.5
+pluggy==1.6.0
+pooch==1.9.0
+psycopg==3.3.4
+psycopg-binary==3.3.4
+pycparser==3.0
+pydantic==2.13.5
+pydantic-core==2.46.5
+pygments==2.21.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.3
+pytokens==0.4.1
+pyyaml==6.0.3
+replicate==1.0.7
+requests==2.34.2
+ruff==0.16.5
+s3transfer==0.19.2
+scikit-learn==1.9.0
+scipy==1.17.1
+sentry-sdk==2.68.1
+six==1.17.0
+soundfile==0.14.0
+soxr==1.1.0
+starlette==1.6.0
+threadpoolctl==3.6.0
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+urllib3==2.7.0
+uvicorn==0.52.4
+uvloop==0.22.1
+watchfiles==1.2.0
+websockets==17.1
+yt-dlp==2026.8.19

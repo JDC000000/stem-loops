@@ -1,0 +1,12 @@
+# Runtime code only. The Aug-30 prod image was built from a working tree and carried an
+# 807 MB local .venv, wav fixtures and spikes/node_modules; none of it is used at runtime.
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+**/node_modules
+spikes
+**/fixtures
+.env
+.env.*

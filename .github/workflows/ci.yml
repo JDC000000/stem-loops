@@ -73,7 +73,7 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - name: Install Python deps
-        run: pip install -r apps/worker/requirements.txt
+        run: pip install -r apps/worker/requirements.txt -c apps/worker/constraints-prod.txt
       - name: pytest
         run: cd apps/worker && python -m pytest tests/ -v
         env:
@@ -129,7 +129,7 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - name: Install Python deps
-        run: pip install -r apps/worker/requirements.txt
+        run: pip install -r apps/worker/requirements.txt -c apps/worker/constraints-prod.txt
       - name: Create MinIO bucket
         run: |
           pip install awscli

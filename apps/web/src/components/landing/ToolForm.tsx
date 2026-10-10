@@ -16,6 +16,7 @@ import { Ic } from './Icons';
 
 const ERR = {
   empty_input: ['Add a song first.', 'Paste a YouTube link or choose a file.'],
+  empty_file: ['Add a song first.', 'Choose an audio or video file.'],
   url: ['That isn’t a YouTube video link.', 'Paste the full address from youtube.com or youtu.be, or upload a file.'],
   playlist: ['That’s a playlist link.', 'Open one video from it and paste that link.'],
   channel: ['That’s a channel, not a video.', 'Open one video and paste its link.'],
@@ -63,6 +64,7 @@ export function ToolForm() {
   const sourceRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const replaceRef = useRef<HTMLButtonElement>(null);
+  const fileBtnRef = useRef<HTMLButtonElement>(null);
   const firstStemRef = useRef<HTMLInputElement>(null);
   const jobLinkRef = useRef<HTMLAnchorElement>(null);
   const focusNext = useRef<'source' | 'replace' | 'stem' | 'job' | null>(null);
@@ -82,7 +84,7 @@ export function ToolForm() {
   useEffect(() => {
     const f = focusNext.current;
     focusNext.current = null;
-    if (f === 'source') sourceRef.current?.focus();
+    if (f === 'source') (sourceRef.current ?? fileBtnRef.current)?.focus();
     else if (f === 'replace') replaceRef.current?.focus();
     else if (f === 'stem') firstStemRef.current?.focus();
     else if (f === 'job') jobLinkRef.current?.focus();
@@ -148,7 +150,9 @@ export function ToolForm() {
       if (dt.files && dt.files[0]) setFile(dt.files[0]);
       else {
         const t = dt.getData('text/uri-list') || dt.getData('text/plain');
-        if (t && !busy) {
+        if (t && !busy && !YOUTUBE_INPUT_ENABLED) {
+          setErr({ code: 'yt_off' });
+        } else if (t && !busy) {
           setFileState(null);
           setText(t.trim());
           setErr(null);
@@ -236,7 +240,7 @@ export function ToolForm() {
     if (busy) return;
     const t = text.trim();
     if (!file && !t) {
-      setErr({ code: 'empty_input' });
+      setErr({ code: YOUTUBE_INPUT_ENABLED ? 'empty_input' : 'empty_file' });
       focusNext.current = 'source';
       setPhase({ kind: 'idle' });
       return;
@@ -282,11 +286,18 @@ export function ToolForm() {
   return (
     <form id="tool" ref={formRef} className={formCls} noValidate autoComplete="off" aria-label="stem-loops tool" tabIndex={-1} onSubmit={onSubmit}>
       <div className="field">
+        {/* With the YouTube input gated off at build time the one input is a file picker, and
+            the copy says so plainly (the API refuses link jobs in that case anyway). */}
         <div className="label-row">
-          <label htmlFor="source" className="label">Link or file</label>
+          {YOUTUBE_INPUT_ENABLED ? (
+            <label htmlFor="source" className="label">Link or file</label>
+          ) : (
+            <span className="label" id="source-label">Audio or video file</span>
+          )}
           <span className="drop-hint" aria-hidden="true">or drop a file here</span>
         </div>
         <div className="source" id="source-wrap" hidden={!!file}>
+          {YOUTUBE_INPUT_ENABLED && (
           <input
             id="source"
             ref={sourceRef}
@@ -307,7 +318,15 @@ export function ToolForm() {
               resetJob();
             }}
           />
-          <button type="button" id="file-btn" className="btn btn-secondary btn-field" onClick={() => fileRef.current?.click()}>
+          )}
+          <button
+            type="button"
+            id="file-btn"
+            ref={fileBtnRef}
+            className={`btn btn-secondary btn-field${YOUTUBE_INPUT_ENABLED ? '' : ' btn-field-full'}`}
+            aria-describedby={YOUTUBE_INPUT_ENABLED ? undefined : 'source-label source-help source-error'}
+            onClick={() => fileRef.current?.click()}
+          >
             <Ic name="file" />
             <span>Choose a file</span>
           </button>
@@ -349,7 +368,11 @@ export function ToolForm() {
           </button>
         </div>
         <p className="sr-only" id="picked-live" aria-live="polite">{live}</p>
-        <p className="hint" id="source-help">A public YouTube link, or an audio or video file up to 200&nbsp;MB.</p>
+        <p className="hint" id="source-help">
+          {YOUTUBE_INPUT_ENABLED
+            ? 'A public YouTube link, or an audio or video file up to 200\u00a0MB.'
+            : 'YouTube links are paused right now. Upload an audio or video file up to 200\u00a0MB.'}
+        </p>
         <p className="error" id="source-error" role="alert" hidden={!errText}>
           <Ic name="alert" />
           <span>

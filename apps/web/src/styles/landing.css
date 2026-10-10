@@ -457,3 +457,4 @@ html:not(.js) .lanes, html:not(.js) .pipe-art, html:not(.js) #ab, html:not(.js) 
 .legal ul { list-style: disc; padding-left: var(--space-5); }
 .legal li { margin-top: var(--space-2); }
 .legal strong { color: var(--text-secondary); font-weight: 600; }
+.btn-field-full { flex: 1; }

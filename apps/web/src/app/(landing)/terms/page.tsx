@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
-import { CONTACT_EMAIL, LEGAL_UPDATED } from '@/components/landing/legal';
+import { CONTACT_LABEL, CONTACT_URL, LEGAL_UPDATED } from '@/components/landing/legal';
 
 export const metadata: Metadata = {
   title: 'Terms',
@@ -56,7 +56,7 @@ export default function TermsPage() {
             <h2>Changes and contact</h2>
             <p>
               We may update these terms; the date above shows the latest version. Questions:{' '}
-              <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>. See also the <a href="/privacy">privacy notice</a>.
+              open an issue on <a href={CONTACT_URL}>{CONTACT_LABEL}</a> (it’s public, so don’t include personal details). See also the <a href="/privacy">privacy notice</a>.
             </p>
           </div>
         </div>

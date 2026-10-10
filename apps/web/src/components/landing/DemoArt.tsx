@@ -195,7 +195,10 @@ export function ToInputLink({ className, children }: { className: string; childr
         const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         document.getElementById('tool')?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
         const picked = document.getElementById('picked');
-        const target = picked && !picked.hidden ? document.getElementById('picked-replace') : document.getElementById('source');
+        const target =
+          picked && !picked.hidden
+            ? document.getElementById('picked-replace')
+            : (document.getElementById('source') ?? document.getElementById('file-btn'));
         target?.focus({ preventScroll: true });
       }}
     >

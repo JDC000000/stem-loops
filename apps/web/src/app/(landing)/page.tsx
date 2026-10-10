@@ -9,6 +9,7 @@ import { AbCompare, DemoWavDownload, PipeCutArt, PipeSongArt, PipeStemsArt, ToIn
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import { Ic } from '@/components/landing/Icons';
 import type { Metadata } from 'next';
+import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
 
 const OG_TITLE = 'Paste a song. Get bar-length loops.';
 const OG_DESC = 'Stems split with Demucs, loops cut to 1, 2, 4 or 8 bars at the detected BPM. Free, 24-bit WAV, no account.';
@@ -71,7 +72,7 @@ export default function HomePage() {
                   <p className="mono pipe-meta">Lucky Ticket · 3:34 · original mix</p>
                 </div>
                 <div className="pipe-text">
-                  <p>A public YouTube link, or one audio or video file.</p>
+                  <p>{YOUTUBE_INPUT_ENABLED ? 'A public YouTube link, or one audio or video file.' : 'One audio or video file (YouTube links are paused right now).'}</p>
                   <dl className="kv">
                     <dt>Files</dt>
                     <dd>mp3, wav, m4a, aac, flac, ogg, opus, aiff, mp4, m4v, mov, webm</dd>
@@ -214,11 +215,15 @@ export default function HomePage() {
                 </details>
                 <details>
                   <summary>Does it work with YouTube links?</summary>
-                  <p>
-                    Yes, with public videos on youtube.com or youtu.be, including Shorts and YouTube Music links. Playlists, private,
-                    age-restricted and live videos don’t work. YouTube sometimes blocks automated fetches; if it does, try again in a
-                    few minutes or upload the file.
-                  </p>
+                  {YOUTUBE_INPUT_ENABLED ? (
+                    <p>
+                      Yes, with public videos on youtube.com or youtu.be, including Shorts and YouTube Music links. Playlists,
+                      private, age-restricted and live videos don’t work. YouTube sometimes blocks automated fetches; if it does,
+                      try again in a few minutes or upload the file.
+                    </p>
+                  ) : (
+                    <p>Not right now: YouTube links are paused. Upload the audio or video file instead.</p>
+                  )}
                 </details>
                 <details>
                   <summary>How accurate is the BPM?</summary>

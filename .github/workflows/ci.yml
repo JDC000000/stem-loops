@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, design/platform-a]  # TEMP: CI run for design/platform-a; removed in the final commit
   pull_request:
     branches: [main]
 

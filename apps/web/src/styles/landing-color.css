@@ -48,7 +48,7 @@
 .chip input:active + .chip-face { box-shadow: inset 0 0 0 1px var(--stem); }
 
 /* ── example lanes: context in a dimmed hue, the loop in full hue, played in a lighter hue ── */
-.lane-wave .wv path { fill: color-mix(in srgb, var(--stem) 42%, var(--bg-surface)); }
+.lane-wave .wv path { fill: color-mix(in srgb, var(--stem) 62%, var(--bg-surface)); }  /* context: >= 3:1 on the plate */
 .lane-wave .wv.is-loop path { fill: var(--stem); }
 .lane-wave .wv.is-played path { fill: color-mix(in srgb, var(--stem) 45%, #ffffff); }
 .lane-btn .ic { color: var(--stem); }
@@ -61,7 +61,7 @@
 .pipe-stem .mono { color: var(--stem); }
 .pipe-stem .wv path { fill: var(--stem); }
 .pipe-cut { --stem: var(--stem-drums); }
-.pipe-cut .wv path { fill: color-mix(in srgb, var(--stem) 42%, var(--wf-bg)); }
+.pipe-cut .wv path { fill: color-mix(in srgb, var(--stem) 62%, var(--wf-bg)); }
 .pipe-cut .wv.is-loop path { fill: var(--stem); }
 
 /* ── the file you get: the drums file carries the drums hue ── */

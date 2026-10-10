@@ -27,7 +27,7 @@ export function PipeStemsArt() {
   return (
     <div className="pipe-stems" id="pipe-stems" aria-hidden="true">
       {rows.map(({ n, d }) => (
-        <div className="pipe-stem" key={n}>
+        <div className="pipe-stem" data-stem={n} key={n}>
           <span className="mono">{n}</span>
           <div className="w">
             <Wave d={d} />

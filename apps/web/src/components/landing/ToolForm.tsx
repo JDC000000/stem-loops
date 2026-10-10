@@ -400,7 +400,7 @@ export function ToolForm() {
           <legend className="label">Stems</legend>
           <div className="chips chips-3">
             {STEM_ORDER.map((s, i) => (
-              <label className="chip" key={s}>
+              <label className="chip" data-stem={s} key={s}>
                 <input
                   type="checkbox"
                   name="stem"

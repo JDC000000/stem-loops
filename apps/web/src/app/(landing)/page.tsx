@@ -141,7 +141,7 @@ export default function HomePage() {
               <div className="file-card">
                 <div className="file-text">
                   <p className="file-name">
-                    lucky_<wbr />ticket_<wbr />drums_<wbr />102.0bpm_<wbr />G_<wbr />minor_<wbr />verse_<wbr />0006.wav
+                    lucky_<wbr />ticket_<wbr /><span className="fn-stem" data-stem="drums">drums</span>_<wbr />102.0bpm_<wbr />G_<wbr />minor_<wbr />verse_<wbr />0006.wav
                   </p>
                   <p className="mono file-meta">
                     <span className="tok">24&#8209;bit WAV ·</span> <span className="tok">44.1&nbsp;kHz ·</span>{' '}

@@ -16,7 +16,7 @@ export default function HistoryPage() {
     <main style={{ minHeight: '100dvh', padding: 24, maxWidth: 640, margin: '0 auto' }}>
       <h1 style={{ color: 'var(--text-primary)', fontSize: 26 }}>Your recent loops</h1>
       <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>
-        Files are deleted 24 hours after you create them.
+        Files are deleted after 24 hours.
       </p>
       {entries.length === 0 ? (
         <p style={{ color: 'var(--text-muted)' }}>

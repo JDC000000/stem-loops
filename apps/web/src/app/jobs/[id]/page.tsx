@@ -64,7 +64,7 @@ export default function JobPage({ params }: { params: { id: string } }) {
     <main style={wrap}>
       {back}
       {missing ? (
-        <p style={{ color: 'var(--text-muted)' }}>We couldn&apos;t find that job. Files are deleted 24 hours after they&apos;re created, so it may have expired.</p>
+        <p style={{ color: 'var(--text-muted)' }}>We couldn&apos;t find that job. Files are deleted after 24 hours, so it may have expired.</p>
       ) : !job ? (
         <p style={{ color: 'var(--text-muted)' }}>Loading…</p>
       ) : job.status === 'failed' ? (
@@ -90,8 +90,8 @@ export default function JobPage({ params }: { params: { id: string } }) {
         <>
           <LoopResults job={{ ...job, title: job.original_filename ?? undefined }} />
           <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
-            Download your loops now — files are deleted 24 hours after creation
-            {job.expires_at ? ` (${formatExpiresIn(new Date(job.expires_at).getTime())}).` : '.'}
+            Files are deleted after 24 hours.
+            {job.expires_at ? ` Yours expire ${formatExpiresIn(new Date(job.expires_at).getTime())}.` : ''}
           </p>
         </>
       ) : (

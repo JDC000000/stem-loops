@@ -20,9 +20,9 @@ import secrets
 import string
 import subprocess
 import sys
-import tempfile
 from urllib.parse import urlsplit, urlunsplit
 
+from .. import tmpdirs
 from ..errors import (
     DownloadAgeRestrictedError,
     DownloadBlockedError,
@@ -131,7 +131,7 @@ def fetch_audio_file(youtube_url: str) -> str:
     # calls this function again, generating a fresh session/IP each time.
     proxy = _sticky_proxy_url()
     _reject_if_live(youtube_url, proxy)
-    tmpdir = tempfile.mkdtemp(prefix="sl_ytdlp_")
+    tmpdir = tmpdirs.mkdtemp(prefix="sl_ytdlp_")
     # Invoke via `python -m yt_dlp` rather than a bare `yt-dlp` — the worker's venv
     # puts the console-script on .venv/bin, which isn't guaranteed to be on PATH for
     # every process manager that launches this worker (found via the R2 staging test:

@@ -17,9 +17,10 @@ import time
 
 import psycopg
 
+from . import tmpdirs
+from .cleanup import sweep_expired
 from .errors import InternalError, StemLoopsError
 from .logger import log_structured
-from .cleanup import sweep_expired
 from .pipeline import run_pipeline
 from .reaper import reap_stale_jobs
 
@@ -98,6 +99,11 @@ async def poll_loop() -> None:
     then periodically (catch a sibling worker's death when horizontally scaled).
     """
     log_structured("INFO", "consumer_started")
+    # A hard crash/OOM can strand a job's scratch dirs (user audio) on local disk.
+    try:
+        await asyncio.to_thread(tmpdirs.sweep_stale)
+    except Exception as e:  # noqa: BLE001
+        log_structured("ERROR", "tmp_sweep_error", error=str(e)[:200])
     await _safe_reap()
     await _safe_sweep()
     last_reap = time.monotonic()

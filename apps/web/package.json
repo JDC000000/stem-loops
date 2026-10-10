@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "echo 'No web tests yet'"
+    "test": "node --experimental-strip-types --test src/lib/*.test.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.600.0",

@@ -34,7 +34,15 @@ export async function POST(request: NextRequest) {
     // ── Upload job ──────────────────────────────────────────────────────────
     if (body.uploadKey) {
       const { jobId, uploadKey, filename, stems, loop_length_bars } = body;
-      if (typeof jobId !== 'string' || !UUID_RE.test(jobId) || typeof uploadKey !== 'string') {
+      // The key must sit under `{jobId}/` (that's what POST /api/uploads issues): the retention
+      // sweep deletes a job's objects by that prefix, so any other key would never be reaped
+      // with the job (and could point the worker at someone else's object).
+      if (
+        typeof jobId !== 'string' ||
+        !UUID_RE.test(jobId) ||
+        typeof uploadKey !== 'string' ||
+        !uploadKey.startsWith(`${jobId}/`)
+      ) {
         return NextResponse.json(
           { error_code: 'UPLOAD_INVALID', message: 'Missing or invalid upload reference.' },
           { status: 400 }

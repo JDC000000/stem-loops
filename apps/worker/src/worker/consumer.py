@@ -27,8 +27,9 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 POLL_INTERVAL = 2  # seconds
 # How often to sweep for jobs orphaned by a crashed/restarted worker.
 REAP_INTERVAL = int(os.environ.get("REAPER_INTERVAL_SECONDS", "60"))
-# How often to run the retention sweep (T33) — delete content past its 7-day TTL.
-CLEANUP_INTERVAL = int(os.environ.get("RETENTION_SWEEP_SECONDS", "3600"))
+# How often to run the retention sweep (T33) — delete content past its 24h TTL. 15 min keeps
+# the worst-case overshoot (plus any in-flight job it waits behind) well under an hour.
+CLEANUP_INTERVAL = int(os.environ.get("RETENTION_SWEEP_SECONDS", "900"))
 
 
 async def claim_and_run() -> bool:

@@ -2,11 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { mintSignedUrl } from '@/lib/r2';
+import { presignTtlSec } from '@/lib/retention';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // GET /api/jobs/:id — status + events + loops, read straight from Postgres.
-// Each loop gets a FRESHLY minted signed URL on every read (PRD §8 anti-goal #4).
+// Each loop gets a FRESHLY minted signed URL on every read (PRD §8 anti-goal #4), valid for
+// at most the job's remaining life (24h retention; the worker deletes the objects after
+// expires_at). Past expires_at the job is treated as gone even if the sweep hasn't run yet.
 export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
   // A shape-invalid id (mistyped/truncated bookmark) would otherwise hit Postgres's
   // uuid-cast error → generic 500, which the client poll loop treats as non-terminal
@@ -20,13 +23,14 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       `SELECT id, input_kind, youtube_url, upload_r2_key, original_filename, requested_stems,
               loop_length_bars, status, error_code, error_message_user, bpm, musical_key,
               created_at, updated_at, expires_at
-       FROM jobs WHERE id = $1`,
+       FROM jobs WHERE id = $1 AND expires_at > now()`,
       [params.id]
     );
     if (jobRes.rowCount === 0) {
       return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
     }
     const job = jobRes.rows[0];
+    const urlTtlSec = presignTtlSec(job.expires_at);
 
     const eventsRes = await db.query(
       `SELECT id, job_id, stage, phase, pct, duration_ms, created_at
@@ -45,7 +49,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       loopsRes.rows.map(async (l) => {
         let signed_url: string | null = null;
         try {
-          signed_url = await mintSignedUrl(l.r2_key, l.filename);
+          signed_url = await mintSignedUrl(l.r2_key, l.filename, urlTtlSec);
         } catch (e) {
           Sentry.captureException(e);
           console.error('mintSignedUrl failed for', l.r2_key, e);

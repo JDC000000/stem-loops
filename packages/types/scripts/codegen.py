@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import sys
+import types
 import typing
 import uuid
 from pathlib import Path
@@ -19,12 +20,14 @@ REPO_ROOT = SCRIPT_DIR.parent.parent.parent
 OUTPUT_FILE = SCRIPT_DIR.parent / "src" / "generated.ts"
 
 _PRIM = {str: "string", int: "number", float: "number", bool: "boolean"}
+# Optional[X] has origin typing.Union; PEP 604 `X | None` has origin types.UnionType.
+_UNION_ORIGINS = (typing.Union, types.UnionType)
 
 
 def _ts_base(ann, names: set[str]) -> str:
     origin = typing.get_origin(ann)
     args = typing.get_args(ann)
-    if origin is typing.Union:  # includes Optional[X]
+    if origin in _UNION_ORIGINS:  # Optional[X] and X | None
         non_none = [a for a in args if a is not type(None)]
         if len(non_none) == 1:
             return _ts_base(non_none[0], names)
@@ -43,7 +46,7 @@ def _emit(name: str, model, names: set[str]) -> str:
     out = [f"export interface {name} {{"]
     for fname, field in model.model_fields.items():
         ann = field.annotation
-        nullable = typing.get_origin(ann) is typing.Union and type(None) in typing.get_args(ann)
+        nullable = typing.get_origin(ann) in _UNION_ORIGINS and type(None) in typing.get_args(ann)
         optional = nullable or not field.is_required()
         ts = _ts_base(ann, names) + (" | null" if nullable else "")
         out.append(f"  {fname}{'?' if optional else ''}: {ts};")

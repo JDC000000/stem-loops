@@ -66,6 +66,24 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
+    # Postgres so the DB-backed tests (retention sweep, migration 007, consumer) actually
+    # run instead of skipping for lack of DATABASE_URL.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: stemloops
+          POSTGRES_PASSWORD: stemloops
+          POSTGRES_DB: stemloops
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    env:
+      DATABASE_URL: postgresql://stemloops:stemloops@localhost:5432/stemloops
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -74,6 +92,8 @@ jobs:
           cache: 'pip'
       - name: Install Python deps
         run: pip install -r apps/worker/requirements.txt -c apps/worker/constraints-prod.txt
+      - name: Apply migrations (001-007)
+        run: cd apps/worker && PYTHONPATH=src python -m worker.migrate
       - name: pytest
         run: cd apps/worker && python -m pytest tests/ -v
         env:
@@ -84,12 +104,14 @@ jobs:
           R2_BUCKET_NAME: test-bucket
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'  # web unit tests use node's built-in TypeScript stripping (>= 22.6)
       - uses: pnpm/action-setup@v4
         with:
           version: 9
       - name: pnpm install
         run: pnpm install --frozen-lockfile
+      - name: Web unit tests
+        run: pnpm --filter web test
       - name: Node tests
         run: pnpm test
 

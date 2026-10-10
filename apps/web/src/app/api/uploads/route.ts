@@ -43,8 +43,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error_code: v.error_code, message: v.message }, { status: 400 });
     }
 
-    // Key is under the {jobId}/ prefix — same as this job's loops — so the 7-day
-    // active-TTL cleanup (T33) + R2 lifecycle backstop delete the uploaded source
+    // Key is under the {jobId}/ prefix — same as this job's loops — so the 24-hour
+    // retention sweep (T33) + R2 lifecycle backstop delete the uploaded source
     // alongside the outputs (PRD §6.1: no user content beyond TTL).
     const jobId = randomUUID();
     const key = `${jobId}/_input.${v.ext}`;

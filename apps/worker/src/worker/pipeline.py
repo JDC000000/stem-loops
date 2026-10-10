@@ -21,7 +21,6 @@ import os
 import resource
 import shutil
 import subprocess
-import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -31,6 +30,7 @@ import psycopg
 import sentry_sdk
 from psycopg.types.json import Json
 
+from . import tmpdirs
 from .classifier.energy_classifier import classify_energy
 from .classifier.section_labeler import label_sections
 from .downloader import download_audio
@@ -101,7 +101,7 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
     audio/video container to a 44.1k stereo WAV, re-stage it, and return a
     presigned URL for Replicate. Uniform decoding means every accepted format
     (mp3/m4a/flac/ogg/mp4/mov/…) reaches separation identically."""
-    tmpdir = tempfile.mkdtemp(prefix="sl_upload_")
+    tmpdir = tmpdirs.mkdtemp(prefix="sl_upload_")
     raw = os.path.join(tmpdir, "raw_input")
     wav = os.path.join(tmpdir, "input.wav")
     download_object(upload_r2_key, raw)
@@ -175,7 +175,7 @@ def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100
     # Song-title prefix (QA §4.4) so a downloaded/zipped loop reads like its track, not a
     # UUID. Falls back to the job id (e.g. the fixture path / YouTube) when there's no title.
     name_base = title or job_id
-    tmpdir = tempfile.mkdtemp(prefix="sl_loops_")
+    tmpdir = tmpdirs.mkdtemp(prefix="sl_loops_")
 
     def _one(item) -> int:
         # Runs in a worker thread: seamless → 24-bit encode → R2 upload → DB row.
@@ -251,7 +251,7 @@ async def set_status(job_id: str, status: str) -> None:
 
 
 def _fetch_stems(stem_urls: dict, requested_stems) -> dict:
-    tmpdir = tempfile.mkdtemp(prefix="sl_stems_")
+    tmpdir = tmpdirs.mkdtemp(prefix="sl_stems_")
     wanted = [
         (name, url)
         for name, url in stem_urls.items()
@@ -294,7 +294,7 @@ def _stub_placeholder_wav() -> str | None:
         import soundfile as sf
 
         sr = 44100
-        path = os.path.join(tempfile.mkdtemp(prefix="stub_ph_"), "silent.wav")
+        path = os.path.join(tmpdirs.mkdtemp(prefix="stub_ph_"), "silent.wav")
         sf.write(path, np.zeros(sr, dtype="float32"), sr, subtype="PCM_24")  # 1s mono
         return path
     except Exception as exc:  # noqa: BLE001
@@ -358,6 +358,12 @@ async def _run_stub(job_id: str, requested_stems, bars: int) -> None:
 
 
 async def run_pipeline(job_id: str) -> None:
+    """Run the pipeline; every scratch dir it creates is removed when it ends (retention)."""
+    with tmpdirs.job_scope():
+        await _run_pipeline(job_id)
+
+
+async def _run_pipeline(job_id: str) -> None:
     """Real pipeline. download_audio + Replicate are gated (S1 bake-off / P2-12+);
     the audio core runs against the produced stems. Typed errors set status=failed."""
     try:

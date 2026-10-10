@@ -5,17 +5,18 @@ Replicate. Replaced by the real Replicate htdemucs_6s client in Phase 2 (T12).
 """
 
 import os
-import tempfile
 
 import numpy as np
 import soundfile as sf
+
+from . import tmpdirs
 
 STEMS = ["drums", "bass", "vocals", "guitar", "keys", "other"]
 
 
 def stub_separate(job_id: str) -> dict[str, str]:
     """Generate an 8s silent 24-bit WAV per stem; return {stem: path}."""
-    tmpdir = tempfile.mkdtemp(prefix=f"stub_{job_id}_")
+    tmpdir = tmpdirs.mkdtemp(prefix=f"stub_{job_id}_")
     sr = 44100
     silence = np.zeros(sr * 8, dtype=np.float32)  # 8 seconds (4 bars @ 120 BPM)
     stem_paths: dict[str, str] = {}

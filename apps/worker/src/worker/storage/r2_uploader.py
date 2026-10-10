@@ -81,3 +81,43 @@ def upload_input(job_id: str, local_path: str) -> str:
     url = presign_get(r2_key, expires=3600)
     log_structured("INFO", "input_uploaded", r2_key=r2_key)
     return url
+
+
+def delete_prefix(prefix: str) -> int:
+    """Delete every object under `prefix` (a job's whole R2 footprint). Returns the count.
+
+    Single-object DeleteObject calls (not the batch DeleteObjects) — a job has at most a
+    few dozen objects and the batch API's mandatory-checksum behaviour has differed
+    between boto3 releases and S3-compatible stores. Raises on any failure so the caller
+    keeps the DB row and retries on the next sweep.
+    """
+    bucket = os.environ["R2_BUCKET_NAME"]
+    client = _r2()
+    deleted = 0
+    for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            client.delete_object(Bucket=bucket, Key=obj["Key"])
+            deleted += 1
+    return deleted
+
+
+def list_objects_older_than(cutoff, limit: int = 2000) -> list[str]:
+    """Keys of objects whose LastModified is before `cutoff` (tz-aware datetime), up to `limit`."""
+    bucket = os.environ["R2_BUCKET_NAME"]
+    keys: list[str] = []
+    for page in _r2().get_paginator("list_objects_v2").paginate(Bucket=bucket):
+        for obj in page.get("Contents", []):
+            if obj["LastModified"] < cutoff:
+                keys.append(obj["Key"])
+                if len(keys) >= limit:
+                    return keys
+    return keys
+
+
+def delete_objects(keys: list[str]) -> int:
+    """Delete the given keys one by one. Returns the count deleted."""
+    bucket = os.environ["R2_BUCKET_NAME"]
+    client = _r2()
+    for key in keys:
+        client.delete_object(Bucket=bucket, Key=key)
+    return len(keys)

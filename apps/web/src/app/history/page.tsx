@@ -1,26 +1,30 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { getHistory } from '@/lib/history';
+import { getHistoryEntries, type HistoryEntry } from '@/lib/history';
+import { RETENTION_MS, formatExpiresIn } from '@/lib/retention';
 
 // Anonymous history page (P3-7) — renders recent jobs from localStorage. No login.
 export default function HistoryPage() {
-  const [ids, setIds] = useState<string[]>([]);
+  const [entries, setEntries] = useState<HistoryEntry[]>([]);
 
   useEffect(() => {
-    setIds(getHistory());
+    setEntries(getHistoryEntries());
   }, []);
 
   return (
     <main style={{ minHeight: '100dvh', padding: 24, maxWidth: 640, margin: '0 auto' }}>
       <h1 style={{ color: 'var(--text-primary)', fontSize: 26 }}>Your recent loops</h1>
-      {ids.length === 0 ? (
+      <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>
+        Files are deleted after 24 hours.
+      </p>
+      {entries.length === 0 ? (
         <p style={{ color: 'var(--text-muted)' }}>
           No jobs yet. <a href="/" style={{ color: 'var(--accent)' }}>Extract some loops →</a>
         </p>
       ) : (
         <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {ids.map((id) => (
+          {entries.map(({ id, at }) => (
             <li key={id}>
               <a
                 href={`/jobs/${id}`}
@@ -29,9 +33,13 @@ export default function HistoryPage() {
                   background: 'var(--bg-card)', border: '1px solid var(--border-default)',
                   borderRadius: 8, color: 'var(--text-secondary)', textDecoration: 'none',
                   fontFamily: 'var(--font-mono, monospace)', fontSize: 13,
+                  justifyContent: 'space-between', gap: 12,
                 }}
               >
-                {id}
+                <span>{id}</span>
+                <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                  expires {formatExpiresIn(at + RETENTION_MS)}
+                </span>
               </a>
             </li>
           ))}

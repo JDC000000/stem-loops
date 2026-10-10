@@ -52,3 +52,15 @@ export function validateUpload(filename: string, size: number): UploadValidation
   }
   return { ok: true, ext, contentType: ACCEPTED_TYPES[ext] };
 }
+
+/**
+ * The only upload key POST /api/uploads ever issues: `{jobId}/_input.{ext}` with a lowercase
+ * jobId and an accepted extension. POST /api/jobs requires an EXACT match, so a client can't
+ * point a job at another object ('../', extra segments, uppercase, odd extensions). The
+ * retention sweep deletes a job's files by the `{jobId}/` prefix, so this also guarantees
+ * the source file is always swept with the job.
+ */
+export function isValidUploadKey(jobId: string, uploadKey: string): boolean {
+  const m = /^([^/]+)\/_input\.([a-z0-9]+)$/.exec(uploadKey);
+  return !!m && m[1] === jobId.toLowerCase() && Object.prototype.hasOwnProperty.call(ACCEPTED_TYPES, m[2]);
+}

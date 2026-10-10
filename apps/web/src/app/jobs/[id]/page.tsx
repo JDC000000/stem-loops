@@ -5,6 +5,7 @@ import Link from 'next/link';
 import type { Job } from '@stem-loops/types';
 import { JobProgress } from '@/components/JobProgress';
 import { LoopResults } from '@/components/LoopResults';
+import { formatExpiresIn } from '@/lib/retention';
 
 const POLL_MS = 2000;
 const TERMINAL = new Set(['done', 'failed']);
@@ -63,7 +64,7 @@ export default function JobPage({ params }: { params: { id: string } }) {
     <main style={wrap}>
       {back}
       {missing ? (
-        <p style={{ color: 'var(--text-muted)' }}>We couldn&apos;t find that job. It may have expired.</p>
+        <p style={{ color: 'var(--text-muted)' }}>We couldn&apos;t find that job. Files are deleted after 24 hours, so it may have expired.</p>
       ) : !job ? (
         <p style={{ color: 'var(--text-muted)' }}>Loading…</p>
       ) : job.status === 'failed' ? (
@@ -86,7 +87,13 @@ export default function JobPage({ params }: { params: { id: string } }) {
           </Link>
         </div>
       ) : job.status === 'done' ? (
-        <LoopResults job={{ ...job, title: job.original_filename ?? undefined }} />
+        <>
+          <LoopResults job={{ ...job, title: job.original_filename ?? undefined }} />
+          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
+            Files are deleted after 24 hours.
+            {job.expires_at ? ` Yours expire ${formatExpiresIn(new Date(job.expires_at).getTime())}.` : ''}
+          </p>
+        </>
       ) : (
         <>
           <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, textAlign: 'center' }}>

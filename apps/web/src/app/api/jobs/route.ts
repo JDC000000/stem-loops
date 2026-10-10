@@ -5,6 +5,7 @@ import { db } from '@/lib/db';
 import { checkAdmission, RATE_LIMIT, RATE_WINDOW_MS } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
 import { canonicalizeYoutubeUrl } from '@/lib/youtube-url';
+import { isValidUploadKey } from '@/lib/upload';
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
 const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
@@ -34,7 +35,15 @@ export async function POST(request: NextRequest) {
     // ── Upload job ──────────────────────────────────────────────────────────
     if (body.uploadKey) {
       const { jobId, uploadKey, filename, stems, loop_length_bars } = body;
-      if (typeof jobId !== 'string' || !UUID_RE.test(jobId) || typeof uploadKey !== 'string') {
+      // The key must be EXACTLY what POST /api/uploads issues (`{jobId}/_input.{ext}`): the
+      // retention sweep deletes a job's objects by the `{jobId}/` prefix, so any other key
+      // would never be reaped with the job (and could point the worker at someone's object).
+      if (
+        typeof jobId !== 'string' ||
+        !UUID_RE.test(jobId) ||
+        typeof uploadKey !== 'string' ||
+        !isValidUploadKey(jobId, uploadKey)
+      ) {
         return NextResponse.json(
           { error_code: 'UPLOAD_INVALID', message: 'Missing or invalid upload reference.' },
           { status: 400 }

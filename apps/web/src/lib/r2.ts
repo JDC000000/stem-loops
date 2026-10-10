@@ -1,5 +1,6 @@
 import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { RETENTION_SEC } from '@/lib/retention';
 
 // R2 is S3-compatible. Locally this points at MinIO (MINIO_ENDPOINT).
 export const r2 = new S3Client({
@@ -14,13 +15,14 @@ export const r2 = new S3Client({
   },
 });
 
-// 7-day TTL, re-minted on every GET /api/jobs/:id read (PRD §8 anti-goal #4).
-const SEVEN_DAYS_SEC = 7 * 24 * 60 * 60;
+// Download URLs are re-minted on every GET /api/jobs/:id read (PRD §8 anti-goal #4). Default
+// TTL is the 24h retention window; callers pass retention.presignTtlSec(job.expires_at) so a
+// URL never outlives the job's objects (the worker deletes them after expires_at).
 
 export async function mintSignedUrl(
   r2Key: string,
   filename?: string,
-  expiresIn = SEVEN_DAYS_SEC,
+  expiresIn = RETENTION_SEC,
 ): Promise<string> {
   // Force a browser DOWNLOAD (attachment), not inline navigation/preview. The <a download>
   // attribute is IGNORED for cross-origin URLs — R2 is a different domain from the app — so

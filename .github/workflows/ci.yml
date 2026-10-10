@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, ci-fix]  # TEMP: verify on ci-fix; reverted in the next commit
   pull_request:
     branches: [main]
 

@@ -27,7 +27,7 @@
   --sl-reading: 720px;
   --sl-gutter: 16px;
   --sl-section: 64px;
-  --region: 25%;
+  --region: 50%; /* 4 of 8 bars: the default loop length */
   --ph: 0;
 }
 @media (min-width: 760px) { :root { --sl-lane-label-w: 112px; --sl-lane-h: 48px; --sl-gutter: 32px; --sl-section: 96px; } }

@@ -9,12 +9,12 @@ import {
   STEM_ORDER,
   barRange,
   detectedBpm,
-  driftMs,
+  driftBoundMs,
+  DEMO_ALIGNMENT,
   envPath,
   fmtT,
   isSilentStem,
   loopLen,
-  measuredBpm,
   setKeyOf,
   startBar,
   stemOf,
@@ -50,18 +50,18 @@ export function Lanes() {
     return { barsX, beats };
   }, [data]);
 
-  const sf = data ? data.ctx.loop.start_fraction : 0.0997;
-  const ef8 = data ? data.ctx.loop.nested_end_fraction['8bar'] : 0.18832;
-  const efKey = data ? data.ctx.loop.nested_end_fraction[key] : 0.1219;
-  const bpm = data ? detectedBpm(data) : '101.3';
-  const range = data ? barRange(data, bars) : '10–11';
+  // SSR fallbacks = demo v3 at the default 4 bars (no layout jump when the data arrives)
+  const sf = data ? data.ctx.loop.start_fraction : 0.57273;
+  const ef8 = data ? data.ctx.loop.nested_end_fraction['8bar'] : 0.66077;
+  const efKey = data ? data.ctx.loop.nested_end_fraction[key] : 0.61675;
+  const bpm = data ? detectedBpm(data) : '102.0';
+  const range = data ? barRange(data, bars) : '53–56';
   const time = !data
-    ? '0:00 / 0:04'
+    ? '0:00 / 0:09'
     : heroOn
       ? `${fmtT(audio.posSec)} / ${fmtT(loopLen(data, key))}`
       : `${fmtT(0)} / ${fmtT(data.loops.sets[key].duration_sec)}`;
-  const drift = data ? driftMs(data, bars) : 31;
-  const measured = data ? measuredBpm(data) : '102.0';
+  const drift = driftBoundMs(bars);
   const err = audio.heroError;
 
   const lanesCls = ['lanes', status === 'loading' ? 'is-loading' : '', status === 'failed' ? 'is-failed' : ''].filter(Boolean).join(' ');
@@ -75,7 +75,7 @@ export function Lanes() {
           </p>
           <p className="mono lanes-readout">
             <span id="lanes-readout">
-              <span className="tok">{bpm} BPM (detected) ·</span> <span className="tok">bars {range} ·</span>
+              <span className="tok">{bpm} BPM (detected) ·</span> <span className="tok">{bars === 1 ? "bar" : "bars"} {range} ·</span>
             </span>{' '}
             <span className="tok" id="lanes-time">{time}</span>
           </p>
@@ -190,7 +190,7 @@ export function Lanes() {
         ) : null}
       </div>
       <p className="drift" id="lanes-align">
-        {`Cut at the detected ${bpm} BPM; an independent beat tracker measures ${measured}, so repeats run long: about ${drift} ms per ${bars}‑bar loop. Trim or time‑stretch in your DAW.`}
+        {`Cut at the detected ${bpm} BPM: this loop starts within about ${DEMO_ALIGNMENT.startWithinMs}\u00a0ms of a measured beat and drifts under ${drift}\u00a0ms per ${bars}\u2011bar repeat (measurement noise). Bar 1 isn’t detected, so it starts on beat 4 of the previous bar; nudge it in your DAW if you need the downbeat.`}
       </p>
       <p className="hint hear-msg" id="hear-msg" aria-live="polite">
         {hearMsg}
@@ -199,19 +199,20 @@ export function Lanes() {
         <summary>How to read this</summary>
         <ul>
           <li>
-            One 8&#8209;bar loop from a real stem-loops job, 9 Oct 2026; the 1, 2 and 4&#8209;bar previews are cut from it. Playback is
+            One 8&#8209;bar loop from a real stem-loops job, 10 Oct 2026; the 1, 2 and 4&#8209;bar previews are cut from it. Playback is
             an MP3 preview; downloads are 24&#8209;bit WAV.
           </li>
           <li>The top strip is the whole song (3:34). The white part is the loop; the lanes below zoom in on it.</li>
           <li>
-            Bar numbers are counted in 4/4 from the start of the track. The small ticks are beats found by an independent beat
-            tracker (librosa), at 102.0 BPM.
+            Bar numbers are stem-loops’ own count of 4&#8209;beat bars from the first detected beat, not the song’s bar numbers. The
+            small ticks are beats found by an independent beat tracker (Beat This!), at 102.0 BPM.
           </li>
           <li>
-            On this example the cut starts 20 ms after one of those beats. That is a good case: across this song’s other loops,
-            starts landed anywhere from about half a beat early to half a beat late.
+            Here the loop starts within about 1 ms of one of those beats, and every bar line inside it is within 3 ms. Across the
+            whole song, loop starts were a median 3.5 ms from a measured beat, all within 8 ms.
           </li>
-          <li>Each lane is scaled to its own peak, so quiet stems look as tall as loud ones. Keys are silent in this part of the song.</li>
+          <li>Bar 1 isn’t detected: this loop starts one beat before the bar line, on beat 4 of the previous bar.</li>
+          <li>Each lane is scaled to its own peak, so quiet stems look as tall as loud ones. Keys are silent in this song.</li>
         </ul>
       </details>
     </section>

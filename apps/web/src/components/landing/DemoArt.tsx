@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { DEMO_WAV_FILENAME, DEMO_WAV_URL } from '@/lib/public-config';
 import { type AbChoice, useDemo } from './DemoProvider';
-import { type DemoData, SILENT_PEAKS, STEM_ORDER, driftMs, envPath, stemOf } from './demo-data';
+import { type DemoData, SILENT_PEAKS, STEM_ORDER, driftBoundMs, envPath, stemOf } from './demo-data';
 import { Ic, Wave } from './Icons';
 
 export function PipeSongArt() {
@@ -135,8 +135,8 @@ export function AbCompare() {
           </>
         ) : (
           <>
-            The first 4 bars of the drums file above, against the original mix at the same spot (MP3 preview). It also repeats long:
-            about {data ? driftMs(data, 4) : 62}&nbsp;ms per 4&#8209;bar loop. Expect a little bleed on dense mixes.
+            The first 4 bars of the drums file above, against the original mix at the same spot (MP3 preview). It loops in
+            time: under {driftBoundMs(4)}&nbsp;ms drift per 4&#8209;bar repeat. Expect a little bleed on dense mixes.
           </>
         )}
       </p>

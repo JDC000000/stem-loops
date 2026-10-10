@@ -14,7 +14,7 @@ import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
 const OG_TITLE = 'Paste a song. Get bar-length loops.';
 const OG_DESC = 'Stems split with Demucs, loops cut to 1, 2, 4 or 8 bars at the detected BPM. Free, 24-bit WAV, no account.';
 const OG_ALT =
-  'Four waveform lanes, drums, bass, vocals and guitar, with the first two of eight bars bracketed as the loop, under the headline Paste a song. Get bar-length loops.';
+  'Four waveform lanes, drums, bass, vocals and guitar, with the first four of eight bars bracketed as the loop, under the headline Paste a song. Get bar-length loops.';
 
 export const metadata: Metadata = {
   title: { absolute: 'stem-loops: split a song into stems and bar-length loops' },
@@ -27,9 +27,9 @@ export const metadata: Metadata = {
     url: '/',
     title: OG_TITLE,
     description: OG_DESC,
-    images: [{ url: '/og-image.png', width: 1200, height: 630, alt: OG_ALT }],
+    images: [{ url: '/og-image-v3.png', width: 1200, height: 630, alt: OG_ALT }],
   },
-  twitter: { card: 'summary_large_image', title: OG_TITLE, description: OG_DESC, images: [{ url: '/og-image.png', alt: OG_ALT }] },
+  twitter: { card: 'summary_large_image', title: OG_TITLE, description: OG_DESC, images: [{ url: '/og-image-v3.png', alt: OG_ALT }] },
 };
 
 export default function HomePage() {
@@ -108,8 +108,7 @@ export default function HomePage() {
                 </div>
                 <div className="pipe-text">
                   <p>
-                    Tempo is detected from the drums, or the bass if you skipped drums. Bars are counted in 4/4 from the start of the
-                    track, and each stem is cut into loops.
+                    Tempo is detected from the drums, or the bass if you skipped drums, and fitted to the beats. Bars are counted in 4&#8209;beat steps from the first detected beat, and each loop starts on a beat.
                   </p>
                   <dl className="kv">
                     <dt>Lengths</dt>
@@ -142,14 +141,14 @@ export default function HomePage() {
               <div className="file-card">
                 <div className="file-text">
                   <p className="file-name">
-                    lucky_<wbr />ticket_<wbr />drums_<wbr />101.33bpm_<wbr />G#_<wbr />minor_<wbr />chorus_<wbr />0001.wav
+                    lucky_<wbr />ticket_<wbr />drums_<wbr />102.0bpm_<wbr />G_<wbr />minor_<wbr />verse_<wbr />0006.wav
                   </p>
                   <p className="mono file-meta">
                     <span className="tok">24&#8209;bit WAV ·</span> <span className="tok">44.1&nbsp;kHz ·</span>{' '}
                     <span className="tok">stereo ·</span> <span className="tok">8&nbsp;bars ·</span>{' '}
-                    <span className="tok">18.95&nbsp;s ·</span> <span className="tok">4.8&nbsp;MB</span>
+                    <span className="tok">18.82&nbsp;s ·</span> <span className="tok">4.8&nbsp;MB</span>
                   </p>
-                  <p className="file-note">The key in the name is the tool’s estimate; another run of this song said G minor.</p>
+                  <p className="file-note">The key in the name is the tool’s estimate; another run of this song said G# minor.</p>
                 </div>
                 <DemoWavDownload />
                 <p className="licence">Free to use in your own music. Credit appreciated: Lucky Ticket by Jon Cartwright.</p>
@@ -175,9 +174,7 @@ export default function HomePage() {
                 <details>
                   <summary>What is a bar-length loop?</summary>
                   <p>
-                    A loop that is exactly 1, 2, 4 or 8 bars long at the tempo we detect. Bars are counted in 4/4 from the start of the
-                    track, so a loop’s start may need a nudge in your DAW. Tempo is detected automatically and can sit a fraction off
-                    the original, so check long loops by ear.
+                    A loop that is exactly 1, 2, 4 or 8 bars long at the tempo we detect. Each loop starts on a detected beat, so it repeats in time. We don’t detect where bar 1 is, so a loop can start on another beat of the bar (in our example, beat 4 of the previous bar): nudge it in your DAW if you need the downbeat.
                   </p>
                 </details>
                 <details>
@@ -228,8 +225,7 @@ export default function HomePage() {
                 <details>
                   <summary>How accurate is the BPM?</summary>
                   <p>
-                    Close. On the example above we detected 101.3 BPM; an independent beat tracker (librosa) measures 102.0. Detection
-                    can also land on half or double time, and there’s no manual override, so check it by ear.
+                    On the example above we detected 102.0 BPM; an independent beat tracker (Beat This!) measures 102.002. Tempo is fitted precisely, but detection can still land on half or double time, and there’s no manual override, so check it by ear.
                   </p>
                 </details>
               </div>

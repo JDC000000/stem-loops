@@ -47,7 +47,8 @@ export function DemoProvider({ children }: { children: React.ReactNode }) {
   const audio = useSyncExternalStore(engine.subscribe, engine.getSnapshot, getServerSnapshot);
 
   const [stems, setStems] = useState<ReadonlySet<string>>(() => new Set(STEM_ORDER));
-  const [bars, setBarsState] = useState(2);
+  // 4 bars by default (also the API default); with beat-anchored loops drift no longer argues for 2
+  const [bars, setBarsState] = useState(4);
   const [status, setStatus] = useState<DemoStatus>('loading');
   const [data, setData] = useState<DemoData | null>(null);
   const [loadNonce, setLoadNonce] = useState(0);

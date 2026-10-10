@@ -79,9 +79,17 @@ export const fmtT = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s 
 export const startBar = (d: DemoData) => d.ctx.loop.start_bar_index + 1;
 export const barRange = (d: DemoData, bars: number) =>
   bars === 1 ? String(startBar(d)) : `${startBar(d)}–${startBar(d) + bars - 1}`;
-export const driftMs = (d: DemoData, bars: number) => Math.round((d.ctx.window_alignment.drift_over_8bars_ms * bars) / 8);
+// Measured alignment of the v3 demo loop (demo-assets-v3/FINDINGS.md, vs an independent
+// beat tracker): start +1.1 ms from a measured beat; drift per repeat −0.9 / −1.8 / −0.6 / −5.7 ms
+// at 1 / 2 / 4 / 8 bars. That is noise-level and flips sign between loops, so the page states an
+// upper bound per length, never an exact value and never zero. Bar 1 is NOT detected: this loop
+// starts one beat before the bar line (beat 4 of the previous bar). Update with the demo set.
+export const DEMO_ALIGNMENT = {
+  startWithinMs: 1,
+  driftBoundMs: { 1: 2, 2: 2, 4: 2, 8: 6 } as Record<number, number>,
+};
+export const driftBoundMs = (bars: number) => DEMO_ALIGNMENT.driftBoundMs[bars] ?? 6;
 export const detectedBpm = (d: DemoData) => (+d.loops.pipeline.bpm).toFixed(1);
-export const measuredBpm = (d: DemoData) => (+(d.loops.pipeline.measured_bpm ?? 102)).toFixed(1);
 
 // Mirrored, filled min/max envelope (DAW-like), drawn in a 1000×40 box and stretched.
 export function envPath(peaks: number[]): string {

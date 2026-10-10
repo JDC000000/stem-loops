@@ -43,6 +43,7 @@ from .errors import (
     StemLoopsError,
     UploadInvalidError,
 )
+from .extractor.beat_grid import estimate_beat_grid
 from .extractor.loop_extractor import extract_loops
 from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
@@ -150,10 +151,13 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     ref_stem = next((s for s in ("drums", "bass", "other") if s in sp), next(iter(sp)))
     sp = {ref_stem: sp[ref_stem], **{k: v for k, v in sp.items() if k != ref_stem}}
     y_ref, _ = librosa.load(sp[ref_stem], sr=sr, mono=True)
-    tags = detect_bpm_and_key(y_ref, sr)
+    # One beat grid (fitted tempo + first-beat anchor) drives the reported BPM, the loop
+    # length and where loops start, so all three agree.
+    grid = estimate_beat_grid(y_ref, sr)
+    tags = detect_bpm_and_key(y_ref, sr, grid=grid)
     _update_job_tags(job_id, tags)
 
-    loops = list(extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars))
+    loops = list(extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars, grid=grid))
     segs = sorted({(loop["start_sec"], loop["end_sec"]) for loop in loops})
     energies = classify_energy(y_ref, sr, segs)
     sections = label_sections(segs, energies)
@@ -200,7 +204,7 @@ def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100
                 energy,
                 loop["start_sec"],
                 loop["end_sec"],
-                int(loop["start_sec"] / bar),
+                loop.get("start_bar", int(loop["start_sec"] / bar)),
                 bars,
                 bpm,
                 key,

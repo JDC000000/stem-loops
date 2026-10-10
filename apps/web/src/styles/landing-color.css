@@ -55,7 +55,7 @@
 
 /* ── example lanes: context in a dimmed hue, the loop at rest in 85% hue, the sounding lane
    in full hue, the played part lighter ── */
-.lane-wave .wv path { fill: color-mix(in srgb, var(--stem) 62%, var(--bg-surface)); }  /* context: >= 3:1 on the plate */
+.lane-wave .wv path { fill: color-mix(in srgb, var(--stem) 70%, var(--bg-surface)); }  /* context: >= 3.6:1 on the plate (QA A-1) */
 .lane-wave .wv.is-loop path { fill: color-mix(in srgb, var(--stem) 85%, var(--bg-surface)); }
 .lane.is-on .lane-wave .wv.is-loop path { fill: var(--stem); }
 .lane-wave .wv.is-played path { fill: color-mix(in srgb, var(--stem) 45%, #ffffff); }
@@ -69,14 +69,18 @@
 .pipe-stem .mono { color: var(--stem); }
 .pipe-stem .wv path { fill: color-mix(in srgb, var(--stem) 85%, var(--wf-bg)); }
 .pipe-cut { --stem: var(--stem-drums); }
-.pipe-cut .wv path { fill: color-mix(in srgb, var(--stem) 62%, var(--wf-bg)); }
+.pipe-cut .wv path { fill: color-mix(in srgb, var(--stem) 70%, var(--wf-bg)); }
 .pipe-cut .wv.is-loop path { fill: color-mix(in srgb, var(--stem) 85%, var(--wf-bg)); }
 
 /* ── the file you get: "drums" in the filename and the A/B drums wave carry the drums hue ── */
 .fn-stem { color: var(--stem); }
 .ab-wave .wv.is-loop path { fill: color-mix(in srgb, var(--stem-drums) 85%, var(--wf-bg)); }
 .is-playing-ab .ab-wave .wv.is-loop path { fill: var(--stem-drums); }
-.ab .seg-opt input[value="drums"]:checked + span { background: color-mix(in srgb, var(--stem-drums) 18%, var(--bg-page)); box-shadow: inset 0 -2px 0 var(--stem-drums); }
+/* ── segments (loop length, A/B): the chosen one gets a 3px light underline as well as the
+   fill step, so "selected" never rests on a 1.22:1 fill (QA A-2). Neutral, not lime: lime's
+   one job is the action. The A/B "Drums stem" underline takes the drums hue. ── */
+.seg-opt input:checked + span { box-shadow: inset 0 -3px 0 var(--text-secondary); }
+.ab .seg-opt input[value="drums"]:checked + span { background: color-mix(in srgb, var(--stem-drums) 18%, var(--bg-page)); box-shadow: inset 0 -3px 0 var(--stem-drums); }
 
 /* ── job stages on the form (it only reaches "sending" before handing off to /jobs/[id]):
    monochrome status; the stage name and the pulse carry it, not a hue ── */
@@ -85,4 +89,12 @@
 
 @media (prefers-reduced-motion: reduce) {
   .chip .chip-face { transition: none; }
+}
+
+/* ── forced colours (QA A-4, PB-1, PB-2): the UA drops box-shadows and does not force SVG
+   fills, so restate the selected segment and the waveforms in system colours ── */
+@media (forced-colors: active) {
+  .wv path { fill: CanvasText !important; } /* beats the more specific in-loop hue rules; the bracket marks the loop */
+  .seg-opt input:checked + span { outline: 3px solid Highlight; outline-offset: -3px; }
+  .chip input:checked + .chip-face { border-width: 3px; }
 }

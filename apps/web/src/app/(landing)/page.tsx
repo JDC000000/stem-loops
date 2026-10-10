@@ -45,7 +45,7 @@ export default function HomePage() {
           <div className="container hero-grid">
             <div className="hero-copy">
               <h1 id="h1">
-                <span className="h1-line">Paste a song.</span> <span className="h1-line">Get bar&#8209;length loops.</span>
+                <span className="h1-line">Paste a song.</span> <span className="h1-line h1-loop">Get bar&#8209;length loops.</span>
               </h1>
               <p className="lead">
                 stem-loops splits a song into stems and cuts 1,&nbsp;2,&nbsp;4 or 8&#8209;bar 24&#8209;bit WAV loops at the detected BPM,

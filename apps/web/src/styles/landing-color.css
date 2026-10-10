@@ -1,0 +1,81 @@
+/* Colour option B: "Warm room", a studio at night.
+   The neutral greys become warm (tungsten-lit) blacks and creams, one amber light falls on
+   the example from the top right, and the two middle sections sit on tonal warm bands.
+   One new hue, Tape amber, has one job: it marks the loop (the headline's loop line, the
+   bracket, the song window and its beam, the bar ruler, the BPM readout, the chosen loop
+   length). Lime keeps its job (primary action, wordmark dash, focus ring). The results-page
+   --wf-* tokens are not touched. Ratios are measured in the running page (OPTIONS.md). */
+
+body { background: #100c0a; }
+.sl-root { color: var(--text-secondary); }
+.sl-root {
+  /* warm neutrals (replace the grey ramp on the landing only) */
+  --bg-page: #100c0a;
+  --bg-nav: #0c0907;
+  --bg-surface: #17110e;
+  --bg-card: #1a1310;
+  --bg-elevated: #211915;
+  --bg-hover: #1f1713;
+  --bg-selected: #2e231c;
+  --text-primary: #fff7ee;   /* 17.6:1 on surface */
+  --text-secondary: #efe4d8; /* 14.9:1 */
+  --text-muted: #b5a595;     /*  7.2:1 on elevated */
+  --text-label: #a08f80;     /*  5.5:1 on elevated */
+  --text-inverse: #100c0a;
+  --border-default: #33281f;
+  --border-control: #8a7562; /* 3.95:1 on elevated, 4.45:1 on page (1.4.11) */
+  /* the loop */
+  --sl-amber: #ffb23e;       /* Tape amber: 10.4:1 on surface */
+  --sl-amber-soft: rgba(255, 178, 62, .14);
+  --sl-lane-peak: #6f6052;   /* context waveform, warm */
+  --sl-loop-peak: #f6e8d6;   /* inside the cut, warm white */
+  --sl-grid: #2f251d;
+  --sl-band-1: #1d1410;      /* "From one song..." band */
+  --sl-band-2: #261a13;      /* "The file you get" band */
+  --sl-band-line: #3f2f24;
+  --sl-light: 255, 150, 54;  /* the lamp (rgb triplet for alpha steps) */
+}
+
+/* ── the light: one warm pool behind the example, falling off before the fold ── */
+.hero {
+  background:
+    radial-gradient(ellipse 46% 62% at 72% 46%, rgba(var(--sl-light), .26), rgba(var(--sl-light), 0) 74%),
+    radial-gradient(ellipse 40% 55% at 0% 0%, rgba(255, 112, 67, .12), rgba(255, 112, 67, 0) 72%);
+}
+.h1-loop { color: var(--sl-amber); }
+
+/* ── tonal bands for the two middle sections. Drawn on a pseudo-element that starts half a
+   section-gap above the heading and ends half a gap below the content, so no box moves. ── */
+#how, #output { position: relative; isolation: isolate; }
+#how::before, #output::before {
+  content: ''; position: absolute; left: 0; right: 0; z-index: -1; pointer-events: none;
+  top: calc(var(--sl-section) / 2); bottom: calc(var(--sl-section) / -2);
+  border-block: 1px solid var(--sl-band-line);
+}
+#how::before { background: radial-gradient(ellipse 50% 60% at 0% 0%, rgba(var(--sl-light), .10), rgba(var(--sl-light), 0) 70%), var(--sl-band-1); }
+#output::before { background: radial-gradient(ellipse 50% 70% at 100% 100%, rgba(var(--sl-light), .12), rgba(var(--sl-light), 0) 70%), var(--sl-band-2); border-top: 0; }
+#how .pipe, #how .pipe-row { border-color: var(--sl-band-line); }
+
+/* ── the loop, in amber ── */
+.bracket { border-color: var(--sl-amber); background: var(--sl-amber-soft); }
+.song-win { border-color: var(--sl-amber); }
+.zoom polygon { fill: rgba(255, 178, 62, .16); }
+.ruler { color: var(--sl-amber); }
+.lanes-readout .bpm, .lanes-readout #lanes-readout .tok:first-child { color: var(--sl-amber); }
+.gridlines span { background: var(--sl-grid); }
+.lane-wave .wv.is-played path, .wv.is-played path { fill: var(--sl-amber); }
+.pipe-cut .wv.is-loop path { fill: var(--sl-loop-peak); }
+
+/* chosen loop length: amber underline on the selected segment */
+#len-seg .seg-opt input:checked + span { box-shadow: inset 0 -3px 0 var(--sl-amber); }
+.seg-opt input:checked + span { background: var(--bg-selected); }
+
+/* A/B: the drums stem is "the loop" */
+.ab-wave .wv.is-loop path { fill: var(--sl-amber); }
+
+/* file card sits on the warm band as a lit surface */
+.file-card { background: var(--bg-card); border-color: var(--sl-band-line); }
+
+/* waveform plates read the warm surface instead of the cool --wf-bg (token itself unchanged) */
+.song-wave, .pipe-song, .pipe-cut, .ab-wave { background: #0d0a08; }
+.song-wave .wv:not(.is-loop) path, .pipe-song .wv path { fill: #5a4c41; }

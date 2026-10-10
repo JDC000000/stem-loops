@@ -1,6 +1,7 @@
 import localFont from 'next/font/local';
 import { IconSprite } from '@/components/landing/Icons';
 import '@/styles/landing.css';
+import '@/styles/landing-color.css';
 
 // Self-hosted JetBrains Mono, variable weight, latin subset (40 KB), used for the small
 // mono labels only; the page text uses the system sans.

@@ -73,3 +73,12 @@
 @media (prefers-reduced-motion: reduce) {
   .jp-back, .jp-row, .jp-primary, .jp-filter, .jp-progress-fill { transition: none; }
 }
+
+/* forced colours: the UA drops box-shadows and background tints, so restate the chosen
+   filter, the Play edge and the progress fill in system colours */
+@media (forced-colors: active) {
+  .jp-filter[aria-pressed="true"] { outline: 3px solid Highlight; outline-offset: -3px; }
+  .play-btn, .jp-primary { outline: 1px solid ButtonText; outline-offset: -1px; }
+  .play-btn[aria-pressed="true"] { outline: 3px solid Highlight; outline-offset: -3px; }
+  .jp-progress-fill, .jp-progress-fill.is-stems { forced-color-adjust: none; background: CanvasText; }
+}

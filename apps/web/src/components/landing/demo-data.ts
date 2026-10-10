@@ -1,7 +1,7 @@
 // Demo data for the landing's example (Lucky Ticket): loops.json + song-context.json +
 // before-peaks.json, fetched from DEMO_ASSET_BASE. Schema documented in the prototype
 // (documents/stem-loops-landing/prototype/CHANGELOG.md).
-import { DEMO_ASSET_BASE } from '@/lib/public-config';
+import { DEMO_BEFORE_PEAKS_URL, DEMO_DATA_BASE } from '@/lib/public-config';
 
 export const STEM_ORDER = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'] as const;
 export type StemName = (typeof STEM_ORDER)[number];
@@ -51,15 +51,19 @@ export interface DemoData {
 
 export const isTrue = (f: Flag | undefined) => f === true || f === 'True';
 
-export async function loadDemoData(base = DEMO_ASSET_BASE): Promise<DemoData> {
+export async function loadDemoData(base = DEMO_DATA_BASE, beforeUrl = DEMO_BEFORE_PEAKS_URL): Promise<DemoData> {
   if (!base) throw new Error('NEXT_PUBLIC_DEMO_ASSET_BASE is not set');
-  const get = async (name: string) => {
-    const r = await fetch(base + name);
-    if (!r.ok) throw new Error(`${name} ${r.status}`);
+  const get = async (url: string) => {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`${url} ${r.status}`);
     return r.json();
   };
   // before-peaks is optional (the A/B falls back to whole-song peaks)
-  const [loops, ctx, before] = await Promise.all([get('loops.json'), get('song-context.json'), get('before-peaks.json').catch(() => null)]);
+  const [loops, ctx, before] = await Promise.all([
+    get(`${base}loops.json`),
+    get(`${base}song-context.json`),
+    get(beforeUrl).catch(() => null),
+  ]);
   return { loops, ctx, before };
 }
 

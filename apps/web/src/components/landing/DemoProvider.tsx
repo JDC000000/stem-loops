@@ -4,7 +4,7 @@
 // example lanes, and a lane tap turns its stem back on), the demo data, and the one audio
 // engine. Server-rendered sections sit inside this provider as children.
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { DEMO_ASSET_BASE } from '@/lib/public-config';
+import { DEMO_DATA_BASE } from '@/lib/public-config';
 import { DemoAudioEngine, type EngineSnapshot, IDLE_SNAPSHOT } from './audio-engine';
 import { type DemoData, STEM_ORDER, isSilentStem, loadDemoData, setKeyOf } from './demo-data';
 
@@ -60,7 +60,7 @@ export function DemoProvider({ children }: { children: React.ReactNode }) {
     loadDemoData()
       .then((d) => {
         if (cancelled) return;
-        engine.setData(d, DEMO_ASSET_BASE);
+        engine.setData(d, DEMO_DATA_BASE);
         setData(d);
         setStatus('ready');
       })

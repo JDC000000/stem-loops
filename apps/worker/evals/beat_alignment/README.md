@@ -29,7 +29,7 @@ encoder delay differently, which shifts the stem timeline by 23–25 ms.
 ## Reproduce
 
 ```bash
-DATA=/path/outside/repo            # e.g. .scratch/tempofit
+DATA=/path/outside/repo            # any scratch dir; never commit audio
 python synth.py $DATA/synth        # worker venv (numpy, soundfile)
 # real tracks: put WAVs in $DATA/audio/<name>.wav, then in an eval-only venv
 # (torch CPU + beat_this + demucs, never the worker image):
@@ -53,7 +53,7 @@ Real tracks used for the October 2026 run:
   - 639262 *Retro Party Dance 80s Funk*
   - 622426 *Happy Experimental Ethno Jazz … 120Bpm*
 
-## Results (base `phase-3-ux` cb5eefa vs this branch)
+## Results (base = extraction code as of `phase-3-ux` cb5eefa, identical on `feat/24h-retention` b64cb4f, vs this branch)
 
 Pooled over 548 loops on the tracks with reliable reference beats (jazz and the
 tempo-ramp track are excluded and reported separately below):

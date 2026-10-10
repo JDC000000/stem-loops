@@ -37,15 +37,15 @@ def extract_loops(
     ref = next(iter(stem_paths))
     y_ref, _ = librosa.load(stem_paths[ref], sr=sr, mono=True)
     if grid is None:
-        grid = estimate_beat_grid(y_ref, sr, bpm=bpm)
-    bar = grid.bar
-    loop_dur = loop_length_bars * bar
+        grid = estimate_beat_grid(y_ref, sr, bpm=bpm if bpm and bpm > 0 else None)
 
-    # Beat guard — reject beatless / wildly off-tempo audio.
-    if grid.tracked_beats < 4 or grid.tracker_bpm < 40 or grid.tracker_bpm > 250:
+    # Beat guard — reject beatless / wildly off-tempo audio (before any division by bpm).
+    if grid.bpm <= 0 or grid.tracked_beats < 4 or grid.tracker_bpm < 40 or grid.tracker_bpm > 250:
         raise ExtractionFailedError(
             f"No reliable beat (tempo={grid.tracker_bpm:.1f}, beats={grid.tracked_beats})"
         )
+    bar = grid.bar
+    loop_dur = loop_length_bars * bar
 
     total_bars = len(y_ref) / sr / bar
     if total_bars < MIN_BARS:

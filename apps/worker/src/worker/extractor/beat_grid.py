@@ -3,8 +3,7 @@
 Why this exists: `librosa.beat.beat_track` reports tempo as an autocorrelation *lag bin*
 (hop 512 @ 44.1 kHz → 101.33, 103.36, … around 100 BPM, ~2 % apart), and the extractor
 used to lay a 4/4 grid from t=0. On a steady 102.00 BPM master that put loop starts up to
-±0.47 beat off the real beats, and every 4-bar repeat slipped ~62 ms
-(documents/stem-loops-landing/demo-assets/LOOP-ALIGNMENT.md).
+±0.47 beat off the real beats, and every 4-bar repeat slipped ~62 ms.
 
 Method (no new dependency; numpy + the librosa already in the image):
   1. Onset-strength envelope at hop 256 (5.8 ms frames) from one mel spectrogram; its

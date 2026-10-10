@@ -28,10 +28,10 @@ export default function HistoryPage() {
             <li key={id}>
               <a
                 href={`/jobs/${id}`}
+                className="jp-row"
                 style={{
                   display: 'flex', minHeight: 48, alignItems: 'center', padding: '0 14px',
-                  background: 'var(--bg-card)', border: '1px solid var(--border-default)',
-                  borderRadius: 8, color: 'var(--text-secondary)', textDecoration: 'none',
+                  borderRadius: 8, textDecoration: 'none',
                   fontFamily: 'var(--font-mono, monospace)', fontSize: 13,
                   justifyContent: 'space-between', gap: 12,
                 }}

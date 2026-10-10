@@ -1,0 +1,75 @@
+/* Stem colour system (option A, "stem spectrum"), shared by every route.
+   Monochrome UI; the six stem hues are the only chroma, and each hue has one job: it means
+   that stem, wherever the stem appears. Lime keeps its one job (the primary action, the
+   wordmark dash and the focus ring). One non-stem hue remains: --status-failed, job = "this
+   failed", always paired with an icon or a heading. The results-page --wf-* waveform tokens
+   are not touched. Ratios measured in the running page: documents/stem-loops-color/PLATFORM-A.md */
+
+:root {
+  /* category: one hue per stem (design-standards appendix, Stemloops) */
+  --stem-drums: #ff6b3d;   /* Ember       6.87:1 on #0d0d0d */
+  --stem-bass: #9a85ff;    /* Low violet  6.64:1 */
+  --stem-vocals: #ffd23f;  /* Voice      13.46:1 */
+  --stem-guitar: #2ec4b6;  /* String      8.97:1 */
+  --stem-keys: #ff7ab6;    /* Key pink    8.06:1 */
+  --stem-other: #9aa0a6;   /* Remainder   7.36:1 */
+  --stem: var(--text-secondary);
+  /* The stem key: six equal segments in lane order. */
+  --sl-stem-strip: linear-gradient(90deg,
+    var(--stem-drums) 0 16.666%, var(--stem-bass) 0 33.333%, var(--stem-vocals) 0 50%,
+    var(--stem-guitar) 0 66.666%, var(--stem-keys) 0 83.333%, var(--stem-other) 0 100%);
+  /* Motion (design-standards §9); the landing defines the same values. */
+  --sl-ease: cubic-bezier(.2, .8, .2, 1);
+  --sl-dur-1: 160ms;
+  --sl-dur-2: 240ms;
+  --border-control: #737373;   /* 4.10:1 on #0d0d0d, 3.52:1 on #1e1e1e (1.4.11) */
+  --text-label: #8a8a8a;       /* 5.63:1 on #1e1e1e */
+}
+[data-stem="drums"] { --stem: var(--stem-drums); }
+[data-stem="bass"] { --stem: var(--stem-bass); }
+[data-stem="vocals"] { --stem: var(--stem-vocals); }
+[data-stem="guitar"] { --stem: var(--stem-guitar); }
+[data-stem="keys"] { --stem: var(--stem-keys); }
+[data-stem="other"] { --stem: var(--stem-other); }
+
+/* One focus ring everywhere: 2px lime at 2px offset (12.9:1 on #0d0d0d, 11.5:1 on #161616). */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ── job page, history, error boundary (outside the landing route group) ── */
+
+/* back link and the history rows */
+.jp-back { color: var(--text-muted); transition: color var(--sl-dur-1) var(--sl-ease); }
+.jp-back:hover { color: var(--text-primary); text-decoration: underline; text-underline-offset: 4px; }
+.jp-row { background: var(--bg-card); border: 1px solid var(--border-default); color: var(--text-secondary);
+  transition: border-color var(--sl-dur-1) var(--sl-ease), background var(--sl-dur-1) var(--sl-ease); }
+.jp-row:hover { background: var(--bg-hover); border-color: var(--border-control); color: var(--text-primary); }
+
+/* the one filled action on a view: lime */
+.jp-primary { background: var(--accent); color: var(--accent-text); transition: background var(--sl-dur-1) var(--sl-ease); }
+.jp-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.jp-primary:active:not(:disabled) { background: var(--accent-active); }
+.jp-primary:disabled { cursor: progress; }
+
+/* stem filters on the results page: each stem filter wears its hue at rest (66% edge, >= 3:1),
+   the chosen one gets the full hue, a 2px edge and a 14% tint; "all" stays neutral. */
+.jp-filter { background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border-control);
+  transition: background var(--sl-dur-1) var(--sl-ease), border-color var(--sl-dur-1) var(--sl-ease), color var(--sl-dur-1) var(--sl-ease); }
+.jp-filter[data-stem] { border-color: color-mix(in srgb, var(--stem) 66%, var(--bg-card)); }  /* >= 3:1 on the page */
+.jp-filter:hover { border-color: var(--text-secondary); color: var(--text-primary); }
+.jp-filter[data-stem]:hover { border-color: var(--stem); background: color-mix(in srgb, var(--stem) 8%, var(--bg-card)); }
+.jp-filter[aria-pressed="true"] { background: var(--bg-selected); border-color: var(--text-secondary); color: var(--text-primary); box-shadow: inset 0 0 0 1px var(--text-secondary); }
+.jp-filter[data-stem][aria-pressed="true"] { background: color-mix(in srgb, var(--stem) 14%, var(--bg-card)); border-color: var(--stem); box-shadow: inset 0 0 0 1px var(--stem); }
+
+/* processing: the bar is neutral until the song is split; from "separating" on it shows the
+   stem key (the same moment the landing's Separate stage takes colour). The stage name is
+   always written next to it, so status is never colour-only. */
+.jp-progress-fill { background: var(--text-secondary); transition: width var(--sl-dur-2) var(--sl-ease); }
+.jp-progress-fill.is-stems { background: var(--sl-stem-strip); }
+
+/* failed: the heading carries the failed hue, the explanation stays readable body text */
+.jp-failed { color: var(--text-secondary); }
+.jp-failed h1 { color: var(--status-failed); }
+
+@media (prefers-reduced-motion: reduce) {
+  .jp-back, .jp-row, .jp-primary, .jp-filter, .jp-progress-fill { transition: none; }
+}

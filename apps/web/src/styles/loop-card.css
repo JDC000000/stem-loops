@@ -8,13 +8,16 @@
   background: var(--bg-card);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md, 10px);
+  /* stem colour as data: a 2px band in the stem's hue across the top of the card, the way a
+     DAW clip carries its track colour (inset, so no box changes) */
+  box-shadow: inset 0 2px 0 var(--stem, transparent);
 }
 
 .loop-card .section-marker {
   font-size: var(--text-xs, 11px);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--accent);
+  color: var(--text-muted);
 }
 
 .loop-card-waveform {
@@ -49,18 +52,33 @@
   font-size: var(--text-sm, 14px);
 }
 
+.play-btn,
+.btn-download-wav {
+  transition: background var(--sl-dur-1) var(--sl-ease), border-color var(--sl-dur-1) var(--sl-ease), box-shadow var(--sl-dur-1) var(--sl-ease), color var(--sl-dur-1) var(--sl-ease);
+}
+/* Play is a secondary action (the page's one lime fill is "Download All"); its edge is drawn
+   inset, so the box is the same size as before. While it sounds it takes the stem's hue. */
 .play-btn {
-  background: var(--accent);
-  color: var(--accent-text);
+  background: transparent;
+  color: var(--text-primary);
   border: none;
+  box-shadow: inset 0 0 0 1px var(--border-control);
   font-weight: 700;
 }
+.play-btn:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--text-primary); background: var(--bg-hover); }
+.play-btn[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--stem, var(--text-secondary)) 20%, var(--bg-card));
+  box-shadow: inset 0 0 0 2px var(--stem, var(--text-secondary));
+}
+.play-btn:disabled { color: var(--text-label); box-shadow: inset 0 0 0 1px var(--border-default); cursor: not-allowed; }
 .btn-download-wav {
   background: var(--bg-elevated);
   color: var(--text-primary);
-  border: 1px solid var(--border-default);
+  border: 1px solid var(--border-control);
   text-decoration: none;
 }
+.btn-download-wav:hover { border-color: var(--text-primary); }
+.btn-download-wav[aria-disabled="true"] { color: var(--text-label); border-color: var(--border-default); cursor: not-allowed; }
 
 .tags-row {
   display: flex;
@@ -77,14 +95,19 @@
 }
 .tags-row .tag-stem {
   text-transform: capitalize;
-  border-color: var(--accent-border);
-}
-.tags-row .tag-section {
-  color: var(--accent);
+  /* the stem tag: hue edge + 14% tint, white text (same recipe as the landing's stem chips) */
+  border-color: var(--stem, var(--border-control));
+  background: color-mix(in srgb, var(--stem, transparent) 14%, var(--bg-elevated));
+  color: var(--text-primary);
 }
 
 .drag-handle {
   cursor: grab;
+  color: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .play-btn, .btn-download-wav { transition: none; }
 }
 
 @media (max-width: 375px) {

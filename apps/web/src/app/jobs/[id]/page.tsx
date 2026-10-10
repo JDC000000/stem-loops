@@ -54,7 +54,7 @@ export default function JobPage({ params }: { params: { id: string } }) {
 
   const back = (
     <div style={{ width: '100%', maxWidth: 960 }}>
-      <Link href="/" style={{ color: 'var(--text-muted)', fontSize: 'var(--text-md)', textDecoration: 'none' }}>
+      <Link href="/" className="jp-back" style={{ fontSize: 'var(--text-md)', textDecoration: 'none' }}>
         ← New track
       </Link>
     </div>
@@ -69,16 +69,16 @@ export default function JobPage({ params }: { params: { id: string } }) {
         <p style={{ color: 'var(--text-muted)' }}>Loading…</p>
       ) : job.status === 'failed' ? (
         <div
+          className="jp-failed"
           style={{
             width: '100%',
             maxWidth: 560,
             padding: '20px 24px',
             borderRadius: 12,
             background: 'var(--status-failed-bg)',
-            color: 'var(--status-failed)',
           }}
         >
-          <h2 style={{ margin: '0 0 8px', fontSize: 'var(--text-xl)' }}>Something went wrong</h2>
+          <h1 style={{ margin: '0 0 8px', fontSize: 'var(--text-xl)' }}>Something went wrong</h1>
           <p style={{ margin: 0 }}>
             {job.error_message_user ?? 'This track could not be processed. Please try another file.'}
           </p>

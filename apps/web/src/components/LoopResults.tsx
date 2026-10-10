@@ -46,29 +46,30 @@ export function LoopResults({ job }: { job: Job & { title?: string | null } }) {
           type="button"
           onClick={onZip}
           disabled={zipping || !loops.length}
+          className="jp-primary"
           style={{
             minHeight: 48, padding: '0 18px', fontWeight: 700, cursor: 'pointer',
-            background: 'var(--accent)', color: 'var(--accent-text)', border: 'none',
-            borderRadius: 10,
+            border: 'none', borderRadius: 10,
           }}
         >
           {zipping ? 'Zipping…' : '⬇ Download All (ZIP)'}
         </button>
       </header>
 
-      {/* Stem filter tabs — guitar shown as its own column alongside the rest. */}
+      {/* Stem filter tabs — guitar shown as its own column alongside the rest. Each stem
+          filter wears its stem hue (stem-color.css); the chosen one is aria-pressed. */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '16px 0' }}>
         {['all', ...stems].map((s) => (
           <button
             key={s}
             type="button"
+            className="jp-filter"
+            data-stem={s === 'all' ? undefined : s}
+            aria-pressed={stem === s}
             onClick={() => setStem(s)}
             style={{
               minHeight: 44, padding: '0 14px', textTransform: 'capitalize', cursor: 'pointer',
               borderRadius: 999, fontSize: 14,
-              background: stem === s ? 'var(--accent-muted)' : 'var(--bg-card)',
-              color: stem === s ? 'var(--accent)' : 'var(--text-secondary)',
-              border: `1px solid ${stem === s ? 'var(--accent)' : 'var(--border-default)'}`,
             }}
           >
             {s}

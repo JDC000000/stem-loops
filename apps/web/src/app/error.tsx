@@ -9,9 +9,10 @@ export default function GlobalError({ reset }: { error: Error; reset: () => void
       </p>
       <button
         onClick={reset}
+        className="jp-primary"
         style={{
-          minHeight: 48, fontSize: 16, fontWeight: 600, color: 'var(--accent-text)',
-          background: 'var(--accent)', border: 'none', borderRadius: 10, cursor: 'pointer',
+          minHeight: 48, fontSize: 16, fontWeight: 600,
+          border: 'none', borderRadius: 10, cursor: 'pointer',
         }}
       >
         Try again

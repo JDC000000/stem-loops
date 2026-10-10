@@ -11,6 +11,9 @@ const STAGE_BANDS: Record<string, [number, number]> = {
   uploading: [90, 100],
 };
 
+// From "separating" on, the song exists as stems: the bar shows the stem key from then.
+const STEM_STAGES = new Set(['separating', 'extracting', 'uploading', 'done']);
+
 const STAGE_LABEL: Record<string, string> = {
   queued: 'Queued',
   downloading: 'Downloading audio',
@@ -47,17 +50,22 @@ export function JobProgress({ job }: { job: Job }) {
     <div style={{ width: '100%', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)', fontSize: 15 }}>
         <span>
-          {label}
+          <span aria-live="polite">{label}</span>
           {startedAt && job.status !== 'done' ? `… ${elapsed}s` : ''}
         </span>
         <span style={{ color: 'var(--text-muted)' }}>{pct}%</span>
       </div>
-      <div style={{ width: '100%', height: 10, background: 'var(--wf-bar-idle)', borderRadius: 999, overflow: 'hidden' }}>
+      <div
+        role="progressbar"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct}
+        style={{ width: '100%', height: 10, background: 'var(--wf-bar-idle)', borderRadius: 999, overflow: 'hidden' }}
+      >
         <div
-          style={{
-            width: `${pct}%`, height: '100%', background: 'var(--accent)',
-            borderRadius: 999, transition: 'width 0.4s ease',
-          }}
+          className={`jp-progress-fill${STEM_STAGES.has(job.status) ? ' is-stems' : ''}`}
+          style={{ width: `${pct}%`, height: '100%', borderRadius: 999 }}
         />
       </div>
     </div>

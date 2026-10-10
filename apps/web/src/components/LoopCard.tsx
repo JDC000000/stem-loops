@@ -46,12 +46,12 @@ export function LoopCard({ loop }: { loop: LoopWithUrl }) {
   }
 
   return (
-    <div className="loop-card" draggable onDragStart={onDragStart}>
+    <div className="loop-card" data-stem={loop.stem} draggable onDragStart={onDragStart}>
       <div className="section-marker">
         {loop.section_label} · {loop.energy_class}
       </div>
 
-      <div ref={waveRef} className="loop-card-waveform" aria-label={`${loop.stem} loop waveform`} />
+      <div ref={waveRef} className="loop-card-waveform" role="img" aria-label={`${loop.stem} loop waveform`} />
 
       <div className="tags-row">
         <span className="tag tag-stem">{loop.stem}</span>

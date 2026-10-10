@@ -65,7 +65,7 @@ export default function PrivacyPage() {
 
             <h2>Contact</h2>
             <p>
-              Questions or deletion requests: open an issue on <a href={CONTACT_URL}>{CONTACT_LABEL}</a> (it’s public, so don’t include personal details). See also the{' '}
+              stem-loops is run by Jon Cartwright. Questions or deletion requests: open an issue on <a href={CONTACT_URL}>{CONTACT_LABEL}</a> (it’s public, so don’t include personal details). See also the{' '}
               <a href="/terms">terms</a>.
             </p>
           </div>

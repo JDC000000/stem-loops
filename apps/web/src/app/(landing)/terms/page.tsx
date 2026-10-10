@@ -55,7 +55,7 @@ export default function TermsPage() {
 
             <h2>Changes and contact</h2>
             <p>
-              We may update these terms; the date above shows the latest version. Questions:{' '}
+              stem-loops is run by Jon Cartwright. We may update these terms; the date above shows the latest version. Questions, or a copyright complaint about content on the service:{' '}
               open an issue on <a href={CONTACT_URL}>{CONTACT_LABEL}</a> (it’s public, so don’t include personal details). See also the <a href="/privacy">privacy notice</a>.
             </p>
           </div>

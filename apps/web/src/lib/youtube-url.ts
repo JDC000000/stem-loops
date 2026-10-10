@@ -12,10 +12,24 @@ const VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
 
 const YOUTUBE_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com']);
 
+// Mobile address bars hide the scheme, so people paste "youtube.com/watch?v=…" or
+// "youtu.be/…". `new URL()` throws on those, so prepend https:// — but ONLY when the text
+// already starts with an allowlisted YouTube host followed by "/". Anything else is left
+// as-is (and still has to pass the exact host allowlist below), so this can't widen what
+// we accept beyond the hosts we already trust.
+const SCHEMELESS_YOUTUBE_RE = /^(?:(?:www|m|music)\.)?(?:youtube\.com|youtu\.be)\//i;
+const HAS_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
+
+export function withScheme(raw: string): string {
+  const s = raw.trim();
+  if (HAS_SCHEME_RE.test(s)) return s;
+  return SCHEMELESS_YOUTUBE_RE.test(s) ? `https://${s}` : s;
+}
+
 export function canonicalizeYoutubeUrl(raw: string): string | null {
   let url: URL;
   try {
-    url = new URL(raw.trim());
+    url = new URL(withScheme(raw));
   } catch {
     return null;
   }
@@ -39,4 +53,25 @@ export function canonicalizeYoutubeUrl(raw: string): string | null {
 
   if (!id || !VIDEO_ID_RE.test(id)) return null;
   return `https://www.youtube.com/watch?v=${id}`;
+}
+
+// Why a paste was rejected, so the form can say something specific. Only meaningful when
+// canonicalizeYoutubeUrl() returned null.
+export type YoutubeUrlProblem = 'url' | 'playlist' | 'channel' | 'other';
+
+export function youtubeUrlProblem(raw: string): YoutubeUrlProblem {
+  let u: URL;
+  try {
+    u = new URL(withScheme(raw));
+  } catch {
+    return 'url';
+  }
+  const host = u.hostname.toLowerCase().replace(/^(?:www|m|music)\./, '');
+  if (host === 'youtube.com') {
+    if (u.pathname === '/playlist' || (u.searchParams.get('list') && !u.searchParams.get('v'))) return 'playlist';
+    if (/^\/(@|c\/|channel\/|user\/)/.test(u.pathname)) return 'channel';
+    return 'url';
+  }
+  if (host === 'youtu.be' || !host.includes('.')) return 'url';
+  return 'other';
 }

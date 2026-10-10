@@ -38,11 +38,11 @@ export default function PrivacyPage() {
               </li>
               <li>
                 <strong>Error reports and server logs.</strong> When something breaks we record technical details (Sentry error
-                reports, hosting logs). Cookies, IP addresses and job IDs are scrubbed from error reports.
+                reports, hosting logs). They are used only to fix problems.
               </li>
               <li>
                 <strong>Your recent jobs.</strong> Your browser keeps a list of your recent job IDs (local storage plus a small
-                signed cookie, kept up to 7 days) so the Job history page works. It is not used for anything else.
+                signed cookie, both dropped after 24 hours) so the Job history page works. It is not used for anything else.
               </li>
             </ul>
 

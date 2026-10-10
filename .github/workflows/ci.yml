@@ -17,13 +17,11 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - name: Install Python deps
-        run: pip install pydantic>=2.7.0
+        run: pip install 'pydantic>=2.7.0'
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - uses: pnpm/action-setup@v4  # version from package.json packageManager
       - name: Install Node deps
         run: pnpm install --frozen-lockfile
         working-directory: packages/types
@@ -47,7 +45,8 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - name: Install Python deps
-        run: pip install ruff black
+        # Pinned via the prod constraints so a new ruff/black release can't turn main red.
+        run: pip install ruff black -c apps/worker/constraints-prod.txt
       - name: ruff check
         run: cd apps/worker && python -m ruff check src/ tests/
       - name: black check
@@ -55,9 +54,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - uses: pnpm/action-setup@v4  # version from package.json packageManager
       - name: pnpm install
         run: pnpm install --frozen-lockfile
       - name: ESLint
@@ -105,9 +102,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'  # web unit tests use node's built-in TypeScript stripping (>= 22.6)
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - uses: pnpm/action-setup@v4  # version from package.json packageManager
       - name: pnpm install
         run: pnpm install --frozen-lockfile
       - name: Web unit tests
@@ -133,7 +128,10 @@ jobs:
         ports:
           - 5432:5432
       minio:
-        image: minio/minio:latest
+        # minio/minio was removed from Docker Hub (pull access denied) and quay.io now
+        # requires auth. Bitnami's frozen legacy image starts the server from its
+        # entrypoint (service containers can't pass `server /data`) and ships curl.
+        image: bitnamilegacy/minio:2025.7.23-debian-12-r5
         env:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
@@ -144,6 +142,15 @@ jobs:
           --health-retries 5
         ports:
           - 9000:9000
+    env:
+      STUB_MODE: "true"
+      DATABASE_URL: postgresql://stemloops:stemloops@localhost:5432/stemloops
+      R2_ACCESS_KEY_ID: minioadmin
+      R2_SECRET_ACCESS_KEY: minioadmin
+      R2_ENDPOINT_URL: http://localhost:9000  # what r2_uploader reads (not R2_ENDPOINT)
+      R2_BUCKET_NAME: stem-loops-ci
+      IP_HASH_KEY: ci-test-key
+      HISTORY_COOKIE_KEY: ci-cookie-key
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -153,24 +160,30 @@ jobs:
       - name: Install Python deps
         run: pip install -r apps/worker/requirements.txt -c apps/worker/constraints-prod.txt
       - name: Create MinIO bucket
+        # boto3 is already installed (pinned); `pip install awscli` would re-resolve botocore.
         run: |
-          pip install awscli
-          AWS_ACCESS_KEY_ID=minioadmin \
-          AWS_SECRET_ACCESS_KEY=minioadmin \
-          aws --endpoint-url http://localhost:9000 s3 mb s3://stem-loops-ci
+          python -c "import os, boto3; boto3.client('s3', endpoint_url=os.environ['R2_ENDPOINT_URL'], aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'], aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'], region_name='us-east-1').create_bucket(Bucket=os.environ['R2_BUCKET_NAME'])"
       - name: Run migrations
-        run: cd apps/worker && python migrations/migrate.py
-        env:
-          DATABASE_URL: postgresql://stemloops:stemloops@localhost:5432/stemloops
+        run: cd apps/worker && PYTHONPATH=src python -m worker.migrate
       - name: Run fixture pipeline (stub mode)
         run: |
-          cd apps/worker && python -m src.main --run-once "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+          cd apps/worker && PYTHONPATH=src python -m worker.cli test-job "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+      - name: Assert stub job finished and uploaded loops
+        run: |
+          cd apps/worker && python - <<'PY'
+          import os, boto3, psycopg
+          with psycopg.connect(os.environ["DATABASE_URL"]) as c:
+              status, loops = c.execute(
+                  "SELECT status, (SELECT count(*) FROM loops l WHERE l.job_id = j.id)"
+                  " FROM jobs j ORDER BY created_at DESC LIMIT 1").fetchone()
+          objs = boto3.client("s3", endpoint_url=os.environ["R2_ENDPOINT_URL"],
+                              region_name="us-east-1").list_objects_v2(
+              Bucket=os.environ["R2_BUCKET_NAME"]).get("KeyCount", 0)
+          print(f"status={status} loops={loops} objects={objs}")
+          assert status == "done" and loops > 0 and objs > 0
+          PY
         env:
-          STUB_MODE: "true"
-          DATABASE_URL: postgresql://stemloops:stemloops@localhost:5432/stemloops
-          R2_ACCESS_KEY_ID: minioadmin
-          R2_SECRET_ACCESS_KEY: minioadmin
-          R2_ENDPOINT: http://localhost:9000
-          R2_BUCKET_NAME: stem-loops-ci
-          IP_HASH_KEY: ci-test-key
-          HISTORY_COOKIE_KEY: ci-cookie-key
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+      - name: Fixture pipeline test (Postgres + MinIO)
+        run: cd apps/worker && python -m pytest tests/test_pipeline_fixtures.py -v

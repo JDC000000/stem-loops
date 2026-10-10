@@ -1,0 +1,100 @@
+/* Colour option C: "Chassis", bold colour blocks.
+   The page is built like a piece of studio hardware: a saturated Desk-blue body (header +
+   hero, and the footer) with dark screens set into it (the example lanes, the inputs), a
+   dark middle (the pipeline, all screens), and one inverted Paper band for the take-home
+   file. Colour lives in big flat fields, not in the data. Lime keeps its job (primary
+   action, wordmark dash, focus ring; on Paper the ring gets an ink keyline so it still
+   reaches 3:1). The results-page --wf-* tokens are not touched. Ratios measured in the
+   running page (OPTIONS.md). */
+
+.sl-root {
+  --sl-desk: #2a37c9;        /* Desk blue: field. White text 8.44:1, lime 5.60:1 */
+  --sl-desk-well: #1b247f;   /* recessed controls on Desk. White 13.1:1 */
+  --sl-desk-hover: #2531b0;
+  --sl-desk-line: #5663e0;   /* hairlines on Desk (decorative dividers only) */
+  --sl-paper: #f3eee4;       /* Paper: inverted band. Ink 16.2:1 */
+  --sl-ink: #121212;
+  --sl-screen: #0d0d0d;      /* the dark screens set into the chassis */
+}
+
+/* ── Desk-blue body: header + hero + footer ── */
+.site-header, .hero, .site-footer {
+  --text-primary: #ffffff;
+  --text-secondary: #f1f3ff;
+  --text-muted: #dce1ff;     /* 6.53:1 on Desk */
+  --text-label: #dce1ff;
+  --border-default: var(--sl-desk-line);
+  --border-control: #aeb7ff; /* 4.43:1 on Desk, 6.86:1 on the well (1.4.11) */
+  --bg-elevated: var(--sl-desk-well);
+  --bg-hover: var(--sl-desk-hover);
+  --bg-selected: var(--sl-screen);
+  --bg-nav: var(--sl-desk);
+  background: var(--sl-desk);
+}
+.site-header { border-bottom-color: rgba(255, 255, 255, .16); }
+.site-footer { border-top-color: transparent; }
+.hero { border-bottom: 0; }
+
+/* inputs and controls read as recessed wells; the chosen ones as lit black keys */
+.hero #source { background: var(--sl-desk-well); }
+.hero .chip input:checked + .chip-face { background: var(--sl-screen); border-color: #ffffff; color: #ffffff; }
+.hero .chip:hover input:not(:checked) + .chip-face { border-color: #ffffff; color: #ffffff; }
+.hero .seg { border-color: var(--border-control); }
+.hero .seg-opt + .seg-opt span { border-left-color: var(--border-control); }
+.hero .seg-opt span { background: var(--sl-desk-well); color: var(--text-muted); }
+.hero .seg-opt input:checked + span { background: var(--sl-screen); color: #ffffff; box-shadow: inset 0 0 0 1.5px #ffffff; }
+.hero .seg-opt:hover span { color: #ffffff; }
+.hero .btn-secondary { background: var(--sl-desk-well); }
+.hero .btn-secondary:hover { background: var(--sl-desk-hover); border-color: #ffffff; }
+.hero .job-stages li.is-now::before { border-color: #ffffff; background: #ffffff; }
+.hero .error .ic, .hero .job-msg.is-failed .ic { color: #ffb4b4; }      /* 6.0:1 on Desk */
+.hero .is-invalid #source, .hero .is-invalid #source:focus-visible { border-color: #ffb4b4; background: var(--sl-desk-well); }
+.hero .is-invalid #source:focus-visible { outline-color: #ffb4b4; }
+.hero .job-msg.is-done .ic, .hero .job-h .ic { color: #b9f6ca; }
+
+/* the example is a screen set into the body: neutral tokens restored inside it */
+.hero .lanes {
+  --text-primary: #ffffff;
+  --text-secondary: #e0e0e0;
+  --text-muted: #999999;
+  --text-label: #8a8a8a;
+  --border-default: #2a2a2a;
+  --border-control: #737373;
+  --bg-hover: #1a1a1a;
+  --bg-selected: #222222;
+  background: var(--sl-screen);
+  border-color: var(--sl-screen);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .35);
+}
+.hero .lanes .btn-secondary { background: transparent; }
+
+/* ── Paper band: "The file you get". Drawn on a pseudo-element half a section-gap around
+   the content, so no box moves. ── */
+#output { position: relative; isolation: isolate;
+  --text-primary: var(--sl-ink);
+  --text-secondary: #1f1f1f;
+  --text-muted: #4d4840;     /* 7.84:1 on Paper */
+  --text-label: #5e584f;     /* 6.08:1 */
+  --text-inverse: var(--sl-ink);
+  --border-default: #d6cfc2; /* decorative */
+  --border-control: #7d766b; /* 3.88:1 on Paper, 4.49:1 on white (1.4.11) */
+  --bg-surface: #ffffff;
+  --bg-hover: #e9e3d7;
+  --bg-selected: var(--sl-ink);
+  color: var(--text-secondary);
+}
+#output::before { content: ''; position: absolute; z-index: -1; left: 0; right: 0; pointer-events: none;
+  top: calc(var(--sl-section) / 2); bottom: calc(var(--sl-section) / -2); background: var(--sl-paper); }
+#output .seg-opt input:checked + span { background: var(--sl-ink); color: #ffffff; }
+#output .btn-secondary[aria-pressed="true"], #output .btn-secondary.is-active { background: var(--sl-ink); color: #ffffff; border-color: var(--sl-ink); }
+#output .btn-primary { border-color: var(--sl-ink); }
+#output .btn-primary:hover { background: var(--accent-hover); }
+/* lime ring + ink keyline: lime alone is 1.30:1 on Paper */
+#output :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: 0 0 0 2px var(--sl-ink); }
+#output .seg-opt input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -4px; box-shadow: inset 0 0 0 6px var(--sl-ink); }
+#output .file-card { box-shadow: 0 1px 0 rgba(18, 18, 18, .06); }
+/* the waveform stays a dark screen on the paper */
+#output .ab-wave { background: var(--sl-screen); }
+
+/* ── footer on Desk ── */
+.site-footer .footer-links a, .site-footer .back-top { color: #ffffff; }

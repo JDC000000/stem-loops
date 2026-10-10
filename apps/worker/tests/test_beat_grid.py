@@ -141,3 +141,15 @@ def test_beatless_audio_still_fails_extraction(tmp_path):
     sf.write(path, np.zeros(SR * 40, dtype=np.float32), SR)
     with pytest.raises(ExtractionFailedError):
         list(extract_loops({"drums": path}, 120.0))
+
+
+def test_beatless_audio_fails_cleanly_on_the_pipeline_path(tmp_path):
+    # Pipeline path: the grid is fitted first (bpm comes out 0 on silence) and passed in.
+    # Must raise the typed EXTRACTION_FAILED, not divide by zero.
+    path = os.path.join(tmp_path, "silence.wav")
+    y = np.zeros(SR * 40, dtype=np.float32)
+    sf.write(path, y, SR)
+    grid = estimate_beat_grid(y, SR)
+    tags = detect_bpm_and_key(y, SR, grid=grid)
+    with pytest.raises(ExtractionFailedError):
+        list(extract_loops({"drums": path}, tags["bpm"], grid=grid))

@@ -6,7 +6,7 @@ one must not, and nightly pre-releases must never inflate "releases behind".
 """
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -14,7 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from check_ytdlp_freshness import evaluate  # noqa: E402
 
-NOW = datetime(2026, 8, 30, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 30, tzinfo=UTC)
 
 
 def _payload(latest, releases):

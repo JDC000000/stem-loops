@@ -6,6 +6,7 @@ YouTube or Replicate; it feeds pre-separated stems straight into process_stems.
 Skips cleanly unless DATABASE_URL + R2/MinIO creds are present.
 """
 
+import contextlib
 import os
 import sys
 import time
@@ -32,10 +33,8 @@ pytestmark = pytest.mark.skipif(not (DB and R2_READY), reason="DATABASE_URL/R2 n
 def _ensure_bucket():
     from worker.storage.r2_uploader import _r2
 
-    try:
+    with contextlib.suppress(Exception):  # already-exists is fine
         _r2().create_bucket(Bucket=os.environ["R2_BUCKET_NAME"])
-    except Exception:  # noqa: BLE001 — already-exists is fine
-        pass
 
 
 def test_process_stems_end_to_end():

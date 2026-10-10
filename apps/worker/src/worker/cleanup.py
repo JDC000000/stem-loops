@@ -23,7 +23,7 @@ import asyncio
 import os
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 
@@ -120,7 +120,7 @@ async def _sweep_expired_jobs(conn, deadline: float) -> tuple[int, int]:
 
 async def _sweep_orphaned_objects(conn) -> int:
     """Delete R2 objects past the retention window that have no job row."""
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=RETENTION_SECONDS)
+    cutoff = datetime.now(UTC) - timedelta(seconds=RETENTION_SECONDS)
     keys = await asyncio.to_thread(list_objects_older_than, cutoff, MAX_ORPHANS_PER_SWEEP)
     if not keys:
         return 0

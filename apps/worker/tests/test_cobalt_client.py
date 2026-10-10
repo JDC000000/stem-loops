@@ -48,14 +48,15 @@ def _post(monkeypatch, resp):
 
 # --- malformed 200s must not escape as JSONDecodeError / AttributeError / TypeError ---
 
+
 @pytest.mark.parametrize(
     "resp",
     [
         _Resp(None, raw="<html>fly edge error</html>", content_type="text/html"),
-        _Resp(None, raw=""),                      # empty body
-        _Resp(None),                              # literal JSON null
-        _Resp([1, 2, 3]),                         # array, not object
-        _Resp("a string"),                        # bare JSON string
+        _Resp(None, raw=""),  # empty body
+        _Resp(None),  # literal JSON null
+        _Resp([1, 2, 3]),  # array, not object
+        _Resp("a string"),  # bare JSON string
     ],
     ids=["html", "empty", "null", "array", "string"],
 )
@@ -72,7 +73,9 @@ def test_success_status_without_url_is_typed(monkeypatch):
 
 
 def test_picker_with_junk_entries_does_not_crash(monkeypatch):
-    _post(monkeypatch, _Resp({"status": "picker", "picker": [None, "x", {}, {"url": "https://ok/a"}]}))
+    _post(
+        monkeypatch, _Resp({"status": "picker", "picker": [None, "x", {}, {"url": "https://ok/a"}]})
+    )
     assert cobalt_client.fetch_audio_url(URL) == "https://ok/a"
 
 
@@ -89,6 +92,7 @@ def test_non_string_error_text_does_not_crash(monkeypatch):
 
 
 # --- v10 error.code -> taxonomy mapping ---
+
 
 @pytest.mark.parametrize(
     "code,exc",
@@ -108,6 +112,7 @@ def test_v10_error_codes_map_to_taxonomy(monkeypatch, code, exc):
 
 
 # --- transport failures stay typed (incl. the not-deployed / DNS case) ---
+
 
 @pytest.mark.parametrize(
     "err", [httpx.ConnectError("dns"), httpx.ReadError("reset"), httpx.InvalidURL("bad")]

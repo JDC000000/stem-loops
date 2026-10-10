@@ -11,14 +11,12 @@ made on the web side before a job exists, not a worker pipeline error.
 
 from __future__ import annotations
 
-from typing import Optional
-
 
 class StemLoopsError(Exception):
     error_code: str = "INTERNAL_ERROR"
     user_message: str = "Something went wrong on our end. We've logged it — please try again."
 
-    def __init__(self, detail: Optional[str] = None):
+    def __init__(self, detail: str | None = None):
         self.detail = detail
         super().__init__(detail or self.user_message)
 

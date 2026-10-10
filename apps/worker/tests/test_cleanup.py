@@ -6,7 +6,7 @@ Runs against DATABASE_URL (skips cleanly otherwise). R2 is replaced by an in-mem
 import asyncio
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
@@ -25,7 +25,7 @@ class FakeR2:
         self.fail_prefix: str | None = None
 
     def put(self, key, age_hours=0.0):
-        self.objs[key] = datetime.now(timezone.utc) - timedelta(hours=age_hours)
+        self.objs[key] = datetime.now(UTC) - timedelta(hours=age_hours)
 
     def delete_prefix(self, prefix):
         if self.fail_prefix and prefix.startswith(self.fail_prefix):

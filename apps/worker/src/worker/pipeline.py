@@ -107,9 +107,24 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
     wav = os.path.join(tmpdir, "input.wav")
     download_object(upload_r2_key, raw)
     proc = subprocess.run(
-        [_ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y",
-         "-i", raw, "-ac", "2", "-ar", "44100", "-c:a", "pcm_s16le", wav],
-        capture_output=True, text=True,
+        [
+            _ffmpeg_bin(),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            raw,
+            "-ac",
+            "2",
+            "-ar",
+            "44100",
+            "-c:a",
+            "pcm_s16le",
+            wav,
+        ],
+        capture_output=True,
+        text=True,
     )
     if proc.returncode != 0 or not os.path.exists(wav) or os.path.getsize(wav) == 0:
         # A file that ffmpeg can't decode is a bad/unsupported upload, not our fault.
@@ -161,12 +176,14 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     segs = sorted({(loop["start_sec"], loop["end_sec"]) for loop in loops})
     energies = classify_energy(y_ref, sr, segs)
     sections = label_sections(segs, energies)
-    seg_label = dict(zip(segs, sections))
-    seg_energy = dict(zip(segs, energies))
+    seg_label = dict(zip(segs, sections, strict=False))
+    seg_energy = dict(zip(segs, energies, strict=False))
     return loops, tags, seg_label, seg_energy
 
 
-def encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr=44100, title=None) -> int:
+def encode_and_upload(
+    job_id, loops, tags, seg_label, seg_energy, bars, sr=44100, title=None
+) -> int:
     """Per loop: seamless seam → 24-bit encode → R2 upload → loops row. Returns count."""
     bar = 4 * 60.0 / tags["bpm"]
     duration_ms = int(bars * bar * 1000)
@@ -279,8 +296,9 @@ def _fetch_stems(stem_urls: dict, requested_stems) -> dict:
                 return name, path
             except Exception as exc:  # noqa: BLE001 — retry transient CDN drops
                 last_exc = exc
-                log_structured("WARN", "stem_fetch_retry", stem=name, attempt=attempt,
-                               error=str(exc)[:160])
+                log_structured(
+                    "WARN", "stem_fetch_retry", stem=name, attempt=attempt, error=str(exc)[:160]
+                )
         raise InternalError(f"stem download failed after retries: {last_exc}")
 
     # Download stems concurrently — each is a full-length WAV.
@@ -329,7 +347,9 @@ def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
                 if placeholder:
                     try:
                         r2_key = upload_loop(job_id, stem, section, i, placeholder)
-                    except Exception as exc:  # noqa: BLE001 — no R2 (pure-DB test): skip, don't crash
+                    except (
+                        Exception
+                    ) as exc:  # noqa: BLE001 — no R2 (pure-DB test): skip, don't crash
                         log_structured("WARN", "stub_upload_skipped", error=str(exc)[:120])
                         placeholder = None  # stop retrying for the rest of the loops
                 c.execute(
@@ -340,10 +360,23 @@ def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
                     VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT(job_id, r2_key) DO NOTHING
                     """,
-                    (str(uuid.uuid4()), job_id, stem, section, "mid",
-                     start, end, int(start / bar_sec), bars, bpm, key, r2_key,
-                     f"{job_id}_{stem}_{i:04d}.wav", int(bars * bar_sec * 1000),
-                     Json([0.1, 0.5, 0.3, 0.6, 0.2])),
+                    (
+                        str(uuid.uuid4()),
+                        job_id,
+                        stem,
+                        section,
+                        "mid",
+                        start,
+                        end,
+                        int(start / bar_sec),
+                        bars,
+                        bpm,
+                        key,
+                        r2_key,
+                        f"{job_id}_{stem}_{i:04d}.wav",
+                        int(bars * bar_sec * 1000),
+                        Json([0.1, 0.5, 0.3, 0.6, 0.2]),
+                    ),
                 )
                 n += 1
         c.commit()
@@ -352,8 +385,12 @@ def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
 
 async def _run_stub(job_id: str, requested_stems, bars: int) -> None:
     """Walk the §6.3 state machine emitting events, then write fake loops + done."""
-    for stage, p0, p1 in (("downloading", 0, 100), ("separating", 15, 100),
-                          ("extracting", 70, 100), ("uploading", 90, 100)):
+    for stage, p0, p1 in (
+        ("downloading", 0, 100),
+        ("separating", 15, 100),
+        ("extracting", 70, 100),
+        ("uploading", 90, 100),
+    ):
         await set_status(job_id, stage)
         await emit_event(job_id, stage, "started", pct=p0)
         await emit_event(job_id, stage, "completed", pct=p1)
@@ -441,8 +478,13 @@ async def _run_pipeline(job_id: str) -> None:
                     raise SeparationFailedError(
                         f"separation exceeded its time budget after {attempt} attempts"
                     ) from exc
-                log_structured("WARN", "separation_timeout_retry", job_id=job_id,
-                               attempt=attempt, pred_id=pred_id)
+                log_structured(
+                    "WARN",
+                    "separation_timeout_retry",
+                    job_id=job_id,
+                    attempt=attempt,
+                    pred_id=pred_id,
+                )
         stem_paths = await asyncio.to_thread(_fetch_stems, stem_urls, requested_stems)
         # Persist the Replicate cost so the admission spend-ceiling (which sums
         # job_events.detail->>'cost_usd' over 24h) actually enforces (P4).
@@ -458,7 +500,13 @@ async def _run_pipeline(job_id: str) -> None:
         await set_status(job_id, "uploading")
         await emit_event(job_id, "uploading", "started", pct=90)
         count = await asyncio.to_thread(
-            encode_and_upload, job_id, loops, tags, seg_label, seg_energy, bars,
+            encode_and_upload,
+            job_id,
+            loops,
+            tags,
+            seg_label,
+            seg_energy,
+            bars,
             title=_title_slug(original_filename, job_id),
         )
         await emit_event(job_id, "uploading", "completed", pct=100)
@@ -467,8 +515,13 @@ async def _run_pipeline(job_id: str) -> None:
         # Peak worker RSS (kernel high-water mark) — real evidence for sizing the Option-B
         # Fly VM. On Fly each deploy is a fresh machine, so ru_maxrss here IS this job's peak
         # memory, letting us downsize 4GB→2GB on data not a guess. (ru_maxrss is KB on Linux.)
-        log_structured("INFO", "pipeline_done", job_id=job_id, loops=count,
-                       peak_rss_mb=round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1))
+        log_structured(
+            "INFO",
+            "pipeline_done",
+            job_id=job_id,
+            loops=count,
+            peak_rss_mb=round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
+        )
 
     except StemLoopsError as exc:
         # Deliberately NOT sent to Sentry: these are the designed, typed error paths

@@ -61,8 +61,12 @@ def download_audio(youtube_url: str) -> tuple[str, str]:
         except _RETRYABLE as e:
             last_exc = e
             if attempt < YTDLP_MAX_ATTEMPTS:
-                log_structured("WARN", "ytdlp_retrying", attempt=attempt,
-                                error_code=getattr(e, "error_code", None))
+                log_structured(
+                    "WARN",
+                    "ytdlp_retrying",
+                    attempt=attempt,
+                    error_code=getattr(e, "error_code", None),
+                )
                 time.sleep(YTDLP_RETRY_DELAY_S)
                 continue
             raise

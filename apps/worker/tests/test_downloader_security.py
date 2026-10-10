@@ -21,9 +21,11 @@ def test_stderr_scrubbed(capsys):
     result = MagicMock()
     result.returncode = 1
     result.stderr = poisoned
-    with patch("worker.downloader.ytdlp_client.subprocess.run", return_value=result):
-        with pytest.raises(DownloadBlockedError):
-            ytdlp_client.fetch_audio_file("https://youtu.be/fake")
+    with (
+        patch("worker.downloader.ytdlp_client.subprocess.run", return_value=result),
+        pytest.raises(DownloadBlockedError),
+    ):
+        ytdlp_client.fetch_audio_file("https://youtu.be/fake")
     captured = capsys.readouterr()
     assert FAKE_TOKEN not in captured.err
     assert FAKE_TOKEN not in captured.out

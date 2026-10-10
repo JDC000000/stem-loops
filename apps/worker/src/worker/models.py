@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel, field_validator
@@ -92,13 +91,13 @@ class Loop(BaseModel):
     end_sec: float
     start_bar: int
     bar_count: int
-    bpm: Optional[float] = None
-    musical_key: Optional[str] = None
+    bpm: float | None = None
+    musical_key: str | None = None
     r2_key: str
     filename: str  # canonical: {title}_{stem}_{bpm}bpm_{key}_{section}_{idx}.wav
-    duration_ms: Optional[int] = None
-    waveform_peaks: Optional[list[float]] = None
-    signed_url: Optional[str] = None  # freshly minted on every GET /api/jobs/:id read
+    duration_ms: int | None = None
+    waveform_peaks: list[float] | None = None
+    signed_url: str | None = None  # freshly minted on every GET /api/jobs/:id read
     created_at: datetime
 
 
@@ -109,8 +108,8 @@ class JobEvent(BaseModel):
     job_id: UUID
     stage: str
     phase: str
-    pct: Optional[int] = None
-    duration_ms: Optional[int] = None
+    pct: int | None = None
+    duration_ms: int | None = None
     created_at: datetime
 
 
@@ -119,14 +118,14 @@ class Job(BaseModel):
 
     id: UUID
     input_kind: str = "youtube"  # 'youtube' | 'upload' (V2 primary input)
-    youtube_url: Optional[str] = None  # nullable since migration 004 (upload jobs have none)
-    upload_r2_key: Optional[str] = None
-    original_filename: Optional[str] = None
+    youtube_url: str | None = None  # nullable since migration 004 (upload jobs have none)
+    upload_r2_key: str | None = None
+    original_filename: str | None = None
     status: str
-    error_code: Optional[str] = None
-    error_message_user: Optional[str] = None
-    bpm: Optional[float] = None
-    musical_key: Optional[str] = None
+    error_code: str | None = None
+    error_message_user: str | None = None
+    bpm: float | None = None
+    musical_key: str | None = None
     created_at: datetime
     updated_at: datetime
     expires_at: datetime

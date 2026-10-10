@@ -54,8 +54,9 @@ async def reap_stale_jobs() -> dict[str, int]:
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
         # Fail first: attempts exhausted AND stale (base window). Mutually exclusive with
         # the requeue branch by `attempts`, so a row is only ever touched by one branch.
-        failed = await (await conn.execute(
-            """
+        failed = await (
+            await conn.execute(
+                """
             UPDATE jobs SET status='failed', error_code='INTERNAL_ERROR',
                    error_message_user=%s, updated_at=now()
             WHERE status = ANY(%s)
@@ -63,11 +64,13 @@ async def reap_stale_jobs() -> dict[str, int]:
               AND updated_at < now() - (%s * interval '1 second')
             RETURNING id
             """,
-            (_POISON_MESSAGE, _NON_TERMINAL, MAX_ATTEMPTS, STALE_SECONDS),
-        )).fetchall()
+                (_POISON_MESSAGE, _NON_TERMINAL, MAX_ATTEMPTS, STALE_SECONDS),
+            )
+        ).fetchall()
         # Requeue: attempts left AND stale beyond this attempt's exponential backoff window.
-        requeued = await (await conn.execute(
-            """
+        requeued = await (
+            await conn.execute(
+                """
             UPDATE jobs SET status='queued', attempts = attempts + 1, updated_at=now()
             WHERE status = ANY(%s)
               AND attempts < %s
@@ -75,12 +78,14 @@ async def reap_stale_jobs() -> dict[str, int]:
                   - (interval '1 second' * (%s::numeric * power(%s::numeric, attempts)))
             RETURNING id
             """,
-            (_NON_TERMINAL, MAX_ATTEMPTS, STALE_SECONDS, BACKOFF_FACTOR),
-        )).fetchall()
+                (_NON_TERMINAL, MAX_ATTEMPTS, STALE_SECONDS, BACKOFF_FACTOR),
+            )
+        ).fetchall()
         await conn.commit()
 
     result = {"requeued": len(requeued), "failed": len(failed)}
     if result["requeued"] or result["failed"]:
-        log_structured("WARN", "reaper_swept", stale_s=STALE_SECONDS,
-                       max_attempts=MAX_ATTEMPTS, **result)
+        log_structured(
+            "WARN", "reaper_swept", stale_s=STALE_SECONDS, max_attempts=MAX_ATTEMPTS, **result
+        )
     return result

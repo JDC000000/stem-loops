@@ -24,6 +24,10 @@
   --sl-dur-2: 240ms;
   --border-control: #737373;   /* 4.10:1 on #0d0d0d, 3.52:1 on #1e1e1e (1.4.11) */
   --text-label: #8a8a8a;       /* 5.63:1 on #1e1e1e */
+  /* status, failed: a chosen red, not the framework red-400 (#f87171), and 14deg further from
+     drums ember. 5.97:1 on the failed tint #1e1616, 6.53:1 on #0d0d0d. Always paired with a
+     heading or an icon, and on the failed card with a 2px rule (a shape as well as a hue). */
+  --status-failed: #ff5f5f;
 }
 [data-stem="drums"] { --stem: var(--stem-drums); }
 [data-stem="bass"] { --stem: var(--stem-bass); }
@@ -38,36 +42,49 @@
 /* ── job page, history, error boundary (outside the landing route group) ── */
 
 /* back link and the history rows */
-.jp-back { color: var(--text-muted); transition: color var(--sl-dur-1) var(--sl-ease); }
+.jp-back { color: var(--text-muted); transition: color var(--sl-dur-1) var(--sl-ease);
+  /* 24px+ hit area on an inline link without moving the line (design-standards 11) */
+  padding-block: 4px; }
 .jp-back:hover { color: var(--text-primary); text-decoration: underline; text-underline-offset: 4px; }
 .jp-row { background: var(--bg-card); border: 1px solid var(--border-default); color: var(--text-secondary);
   transition: border-color var(--sl-dur-1) var(--sl-ease), background var(--sl-dur-1) var(--sl-ease); }
 .jp-row:hover { background: var(--bg-hover); border-color: var(--border-control); color: var(--text-primary); }
 
-/* the one filled action on a view: lime */
-.jp-primary { background: var(--accent); color: var(--accent-text); transition: background var(--sl-dur-1) var(--sl-ease); }
+/* the one filled action on a view: lime. 16px label (it was the UA's 13.33px Arial). */
+.jp-primary { background: var(--accent); color: var(--accent-text); font-size: 16px; cursor: pointer; transition: background var(--sl-dur-1) var(--sl-ease); }
+a.jp-primary { display: inline-flex; align-items: center; min-height: 48px; padding: 0 18px; border-radius: 10px;
+  font-weight: 700; text-decoration: none; }
 .jp-primary:hover:not(:disabled) { background: var(--accent-hover); }
 .jp-primary:active:not(:disabled) { background: var(--accent-active); }
-.jp-primary:disabled { cursor: progress; }
+/* disabled is visibly off, not a full-lime twin of the enabled button: #c8c8c8 on #3a3a3a 6.80:1 */
+.jp-primary:disabled { background: #3a3a3a; color: #c8c8c8; cursor: not-allowed; }
+.jp-primary[aria-busy="true"]:disabled { cursor: progress; }
 
 /* stem filters on the results page: each stem filter wears its hue at rest (66% edge, >= 3:1),
-   the chosen one gets the full hue, a 2px edge and a 14% tint; "all" stays neutral. */
+   the chosen one gets the full hue, a 2px edge and a 28% tint; "all" stays neutral. */
 .jp-filter { background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border-control);
   transition: background var(--sl-dur-1) var(--sl-ease), border-color var(--sl-dur-1) var(--sl-ease), color var(--sl-dur-1) var(--sl-ease); }
 .jp-filter[data-stem] { border-color: color-mix(in srgb, var(--stem) 66%, var(--bg-card)); }  /* >= 3:1 on the page */
 .jp-filter:hover { border-color: var(--text-secondary); color: var(--text-primary); }
 .jp-filter[data-stem]:hover { border-color: var(--stem); background: color-mix(in srgb, var(--stem) 8%, var(--bg-card)); }
-.jp-filter[aria-pressed="true"] { background: var(--bg-selected); border-color: var(--text-secondary); color: var(--text-primary); box-shadow: inset 0 0 0 1px var(--text-secondary); }
-.jp-filter[data-stem][aria-pressed="true"] { background: color-mix(in srgb, var(--stem) 14%, var(--bg-card)); border-color: var(--stem); box-shadow: inset 0 0 0 1px var(--stem); }
+/* chosen: a fill step you can see at a glance (R2-CRO-2): "all" #333 (1.43:1 over the resting
+   #161616), a stem at a 28% tint (1.57-2.10:1), plus the 2px edge */
+.jp-filter[aria-pressed="true"] { background: #333333; border-color: var(--text-secondary); color: var(--text-primary); box-shadow: inset 0 0 0 1px var(--text-secondary); }
+.jp-filter[data-stem][aria-pressed="true"] { background: color-mix(in srgb, var(--stem) 28%, var(--bg-card)); border-color: var(--stem); box-shadow: inset 0 0 0 1px var(--stem); }
 
-/* processing: the bar is neutral until the song is split; from "separating" on it shows the
-   stem key (the same moment the landing's Separate stage takes colour). The stage name is
-   always written next to it, so status is never colour-only. */
+/* processing: the track is the key of the stems you asked for from the first poll (one equal
+   segment per requested stem, 22% hue over #2a2a2a; --sl-req-track / --sl-req-strip are set
+   inline by JobProgress). The fill is neutral until the song is split; from "separating" on it
+   is the same key in full hue, sized to the TRACK (100cqw), so each segment stays registered
+   over its own stem and lights up as the fill passes it: nothing reads as per-stem progress.
+   The stage name is always written next to it, so status is never colour-only. */
+.jp-progress { background: var(--sl-req-track, var(--border-default)); container-type: inline-size; }
 .jp-progress-fill { background: var(--text-secondary); transition: width var(--sl-dur-2) var(--sl-ease); }
-.jp-progress-fill.is-stems { background: var(--sl-stem-strip); }
+.jp-progress-fill.is-stems { background: var(--sl-req-strip, var(--sl-stem-strip)); background-size: 100% 100%; background-size: 100cqw 100%; background-repeat: no-repeat; }
 
-/* failed: the heading carries the failed hue, the explanation stays readable body text */
-.jp-failed { color: var(--text-secondary); }
+/* failed: the heading carries the failed hue, the explanation stays readable body text, and a
+   2px rule on the left gives the state a shape as well as a colour */
+.jp-failed { color: var(--text-secondary); box-shadow: inset 2px 0 0 var(--status-failed); }
 .jp-failed h1 { color: var(--status-failed); }
 
 @media (prefers-reduced-motion: reduce) {
@@ -81,4 +98,9 @@
   .play-btn, .jp-primary { outline: 1px solid ButtonText; outline-offset: -1px; }
   .play-btn[aria-pressed="true"] { outline: 3px solid Highlight; outline-offset: -3px; }
   .jp-progress-fill, .jp-progress-fill.is-stems { forced-color-adjust: none; background: CanvasText; }
+  .jp-progress { outline: 1px solid CanvasText; }
+  .jp-failed { border: 1px solid CanvasText; }
+  /* the edges above are outlines, so they would replace the focus ring on these controls:
+     restate a visible 2px focus ring in the system highlight colour */
+  .jp-filter:focus-visible, .play-btn:focus-visible, .jp-primary:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
 }

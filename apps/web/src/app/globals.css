@@ -29,6 +29,18 @@ a {
   color: var(--accent);
 }
 
+/* Type baseline (design-standards 4): form controls use the page face and size instead of the
+   UA's Arial 13.33px, and no faked bold or italic. The landing stylesheet already sets both. */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+* {
+  font-synthesis: none;
+}
+
 /* ── P3-8: mobile-responsive layout ───────────────────────────── */
 *,
 *::before,

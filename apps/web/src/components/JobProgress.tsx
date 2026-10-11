@@ -14,6 +14,19 @@ const STAGE_BANDS: Record<string, [number, number]> = {
 // From "separating" on, the song exists as stems: the bar shows the stem key from then.
 const STEM_STAGES = new Set(['separating', 'extracting', 'uploading', 'done']);
 
+// The stems the user asked for, in the lane order the rest of the site uses.
+const STEM_ORDER = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
+
+// One equal segment per requested stem: a 22% tint for the track, full hue for the fill.
+function stemKey(stems: string[], tint: boolean): string {
+  const step = 100 / stems.length;
+  const stops = stems.map((s, i) => {
+    const c = tint ? `color-mix(in srgb, var(--stem-${s}) 22%, #2a2a2a)` : `var(--stem-${s})`;
+    return `${c} ${(i * step).toFixed(3)}% ${((i + 1) * step).toFixed(3)}%`;
+  });
+  return `linear-gradient(90deg, ${stops.join(', ')})`;
+}
+
 const STAGE_LABEL: Record<string, string> = {
   queued: 'Queued',
   downloading: 'Downloading audio',
@@ -45,6 +58,14 @@ export function JobProgress({ job }: { job: Job }) {
   }, [startedAt, job.status]);
 
   const label = STAGE_LABEL[job.status] ?? job.status;
+  // The jobs API returns requested_stems (route.ts selects it); the generated Job type omits it.
+  const asked = new Set((job as Job & { requested_stems?: string[] | null }).requested_stems ?? []);
+  const requested = STEM_ORDER.filter((s) => asked.has(s));
+  const keyStems = requested.length ? requested : STEM_ORDER;
+  const keyVars = {
+    '--sl-req-track': stemKey(keyStems, true),
+    '--sl-req-strip': stemKey(keyStems, false),
+  } as React.CSSProperties;
 
   return (
     <div style={{ width: '100%', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -61,7 +82,8 @@ export function JobProgress({ job }: { job: Job }) {
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={pct}
-        style={{ width: '100%', height: 10, background: 'var(--wf-bar-idle)', borderRadius: 999, overflow: 'hidden' }}
+        className="jp-progress"
+        style={{ ...keyVars, width: '100%', height: 10, borderRadius: 999, overflow: 'hidden' }}
       >
         <div
           className={`jp-progress-fill${STEM_STAGES.has(job.status) ? ' is-stems' : ''}`}

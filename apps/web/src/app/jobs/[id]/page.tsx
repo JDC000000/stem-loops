@@ -64,7 +64,10 @@ export default function JobPage({ params }: { params: { id: string } }) {
     <main style={wrap}>
       {back}
       {missing ? (
-        <p style={{ color: 'var(--text-muted)' }}>We couldn&apos;t find that job. Files are deleted after 24 hours, so it may have expired.</p>
+        <div style={{ width: '100%', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <h1 style={{ margin: 0, fontSize: 'var(--text-xl)', color: 'var(--text-primary)' }}>We couldn&apos;t find that job.</h1>
+          <p style={{ margin: 0, color: 'var(--text-muted)' }}>Files are deleted after 24 hours, so it may have expired.</p>
+        </div>
       ) : !job ? (
         <p style={{ color: 'var(--text-muted)' }}>Loading…</p>
       ) : job.status === 'failed' ? (
@@ -82,7 +85,7 @@ export default function JobPage({ params }: { params: { id: string } }) {
           <p style={{ margin: 0 }}>
             {job.error_message_user ?? 'This track could not be processed. Please try another file.'}
           </p>
-          <Link href="/" style={{ display: 'inline-block', marginTop: 16, color: 'var(--accent)', fontWeight: 600 }}>
+          <Link href="/" className="jp-primary" style={{ marginTop: 16 }}>
             Try another track →
           </Link>
         </div>

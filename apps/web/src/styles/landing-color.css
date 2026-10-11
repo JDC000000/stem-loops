@@ -8,9 +8,11 @@
    Ratios are measured in the running page (documents/stem-loops-color/PLATFORM-A.md). */
 
 /* ── shell: the stem key as a quiet 1px rule under the header (overlays the existing 1px
-   border, so no box changes). The labelled key is on the options summary (phones). ── */
+   border, so no box changes), only on the page that has the tool: on /terms, /privacy and the
+   404 no stem is on the page, so the key would be ornament (D2-7). The labelled key is on the
+   options summary (phones). ── */
 .site-header { position: relative; }
-.site-header::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--sl-stem-strip); opacity: .7; pointer-events: none; }
+.sl-root:has(#tool) .site-header::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--sl-stem-strip); opacity: .7; pointer-events: none; }
 
 /* ── phones: the collapsed options summary carries the stem key, built from the live choice.
    A stem that is turned off drops to a grey segment, so the key is data, not decoration.
@@ -53,10 +55,17 @@
   background: color-mix(in srgb, var(--stem-other) 24%, var(--bg-elevated)); }
 .chip[data-stem="other"] input:checked + .chip-face .chip-check { color: var(--text-secondary); }
 
-/* ── example lanes: context in a dimmed hue, the loop at rest in 85% hue, the sounding lane
-   in full hue, the played part lighter ── */
-.lane-wave .wv path { fill: color-mix(in srgb, var(--stem) 70%, var(--bg-surface)); }  /* context: >= 3.6:1 on the plate (QA A-1) */
-.lane-wave .wv.is-loop path { fill: color-mix(in srgb, var(--stem) 85%, var(--bg-surface)); }
+/* ── example lanes (D2-1): at rest the lanes are stem-tinted greys, so lime is the one loud
+   thing in the first viewport and the stems keep their identity through the chips, the play
+   icons and the tint. Context waves: 30% hue into #8a8a8a (5.5-7.3:1 on the plate, >= 3:1 for
+   QA A-1). The loop window: 35% hue into #b4b4b4, lighter than the context, as production's
+   loop is lighter than its context (the bracket marks it too). A lane takes its hue when you
+   point at or focus its play button (85%), and its full hue while it sounds; the played part
+   is lighter ── */
+.lane-wave .wv path { fill: color-mix(in srgb, var(--stem) 30%, #8a8a8a); }
+.lane-wave .wv.is-loop path { fill: color-mix(in srgb, var(--stem) 35%, #b4b4b4); transition: fill var(--sl-dur-1) var(--sl-ease); }
+.lane:has(.lane-btn:hover:not(:disabled)) .lane-wave .wv.is-loop path,
+.lane:has(.lane-btn:focus-visible) .lane-wave .wv.is-loop path { fill: color-mix(in srgb, var(--stem) 85%, var(--bg-surface)); }
 .lane.is-on .lane-wave .wv.is-loop path { fill: var(--stem); }
 .lane-wave .wv.is-played path { fill: color-mix(in srgb, var(--stem) 45%, #ffffff); }
 .lane-btn .ic { color: var(--stem); }
@@ -69,7 +78,7 @@
 .pipe-stem .mono { color: var(--stem); }
 .pipe-stem .wv path { fill: color-mix(in srgb, var(--stem) 85%, var(--wf-bg)); }
 .pipe-cut { --stem: var(--stem-drums); }
-.pipe-cut .wv path { fill: color-mix(in srgb, var(--stem) 70%, var(--wf-bg)); }
+.pipe-cut .wv path { fill: color-mix(in srgb, var(--stem) 30%, #8a8a8a); }  /* context, as the lanes */
 .pipe-cut .wv.is-loop path { fill: color-mix(in srgb, var(--stem) 85%, var(--wf-bg)); }
 
 /* ── the file you get: "drums" in the filename and the A/B drums wave carry the drums hue ── */
@@ -88,7 +97,7 @@
 .job-msg.is-done .ic, .job-h .ic { color: var(--text-primary); }
 
 @media (prefers-reduced-motion: reduce) {
-  .chip .chip-face { transition: none; }
+  .chip .chip-face, .lane-wave .wv.is-loop path { transition: none; }
 }
 
 /* ── forced colours (QA A-4, PB-1, PB-2): the UA drops box-shadows and does not force SVG
@@ -97,4 +106,6 @@
   .wv path { fill: CanvasText !important; } /* beats the more specific in-loop hue rules; the bracket marks the loop */
   .seg-opt input:checked + span { outline: 3px solid Highlight; outline-offset: -3px; }
   .chip input:checked + .chip-face { border-width: 3px; }
+  /* the tick keeps no stem hue on the system canvas (yellow was about 1.3:1 on white) */
+  .chip .chip-check, .chip input:checked + .chip-face .chip-check { color: CanvasText !important; }
 }

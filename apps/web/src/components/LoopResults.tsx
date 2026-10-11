@@ -46,9 +46,10 @@ export function LoopResults({ job }: { job: Job & { title?: string | null } }) {
           type="button"
           onClick={onZip}
           disabled={zipping || !loops.length}
+          aria-busy={zipping}
           className="jp-primary"
           style={{
-            minHeight: 48, padding: '0 18px', fontWeight: 700, cursor: 'pointer',
+            minHeight: 48, padding: '0 18px', fontWeight: 700,
             border: 'none', borderRadius: 10,
           }}
         >

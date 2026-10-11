@@ -49,6 +49,8 @@
 .jp-row { background: var(--bg-card); border: 1px solid var(--border-default); color: var(--text-secondary);
   transition: border-color var(--sl-dur-1) var(--sl-ease), background var(--sl-dur-1) var(--sl-ease); }
 .jp-row:hover { background: var(--bg-hover); border-color: var(--border-control); color: var(--text-primary); }
+/* the job id stays on one line (it wrapped onto two at 390); the full id is in the link */
+.jp-row-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* the one filled action on a view: lime. 16px label (it was the UA's 13.33px Arial). */
 .jp-primary { background: var(--accent); color: var(--accent-text); font-size: 16px; cursor: pointer; transition: background var(--sl-dur-1) var(--sl-ease); }

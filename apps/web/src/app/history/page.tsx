@@ -36,7 +36,7 @@ export default function HistoryPage() {
                   justifyContent: 'space-between', gap: 12,
                 }}
               >
-                <span>{id}</span>
+                <span className="jp-row-id">{id}</span>
                 <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                   expires {formatExpiresIn(at + RETENTION_MS)}
                 </span>

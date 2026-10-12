@@ -30,6 +30,22 @@
   border-radius: var(--radius-sm, 6px);
 }
 
+/* Waveform colours per card. WaveSurfer paints a canvas, which cannot read var(), so LoopCard
+   reads these two through getComputedStyle (src/lib/wave-colors.ts) and passes rgb() strings.
+   Unplayed = the stem hue mixed toward the panel (>= 3:1 on #0e0e0e), played = the full hue. */
+.loop-card { --wf-idle: var(--wf-bar-idle); --wf-played: var(--stem, var(--text-secondary)); }
+.loop-card[data-stem="drums"] { --wf-idle: var(--wf-idle-drums); }
+.loop-card[data-stem="bass"] { --wf-idle: var(--wf-idle-bass); }
+.loop-card[data-stem="vocals"] { --wf-idle: var(--wf-idle-vocals); }
+.loop-card[data-stem="guitar"] { --wf-idle: var(--wf-idle-guitar); }
+.loop-card[data-stem="keys"] { --wf-idle: var(--wf-idle-keys); }
+.loop-card[data-stem="other"] { --wf-idle: var(--wf-idle-other); }
+/* forced colours: the UA cannot recolour a canvas, so the resolver picks these up instead
+   (the [data-stem] selector out-ranks the per-stem rules above) */
+@media (forced-colors: active) {
+  .loop-card, .loop-card[data-stem] { --wf-idle: CanvasText; --wf-played: Highlight; }
+}
+
 .action-row {
   display: flex;
   gap: 8px;

@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import type { Loop } from '@stem-loops/types';
 import { useAudition } from '@/hooks/useAudition';
+import { onWaveTokensChange, resolveWaveColors } from '@/lib/wave-colors';
 import '@/styles/loop-card.css';
 
 type LoopWithUrl = Loop & { signed_url?: string | null };
@@ -15,24 +16,28 @@ export function LoopCard({ loop }: { loop: LoopWithUrl }) {
   // Render the waveform from precomputed peaks — never fetch the full WAV just to draw.
   useEffect(() => {
     let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
     (async () => {
       if (!waveRef.current || !loop.waveform_peaks?.length) return;
       const WaveSurfer = (await import('wavesurfer.js')).default;
       if (cancelled || !waveRef.current) return;
+      const el = waveRef.current;
+      // the canvas cannot read var(): resolve the card's stem colours to rgb() first
       const ws = WaveSurfer.create({
-        container: waveRef.current,
+        container: el,
         height: 48,
-        waveColor: 'var(--wf-bar-idle, #2a2a2a)',
-        progressColor: 'var(--accent, #a3e635)',
+        ...resolveWaveColors(el),
         cursorColor: 'transparent',
         interact: false,
         peaks: [loop.waveform_peaks as number[]],
         duration: (loop.duration_ms ?? 4000) / 1000,
       });
       wsRef.current = ws;
+      unsubscribe = onWaveTokensChange(() => ws.setOptions(resolveWaveColors(el)));
     })();
     return () => {
       cancelled = true;
+      unsubscribe?.();
       wsRef.current?.destroy();
       wsRef.current = null;
     };

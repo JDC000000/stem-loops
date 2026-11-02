@@ -14,7 +14,9 @@ DB = os.environ.get("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
 # Destructive fixture: only ever run against a local throwaway database.
 if DB and not any(h in DB for h in ("127.0.0.1", "localhost")):
-    pytestmark = pytest.mark.skip(reason="gate DB tests wipe blocklist/fetch_attempts; local DB only")
+    pytestmark = pytest.mark.skip(
+        reason="gate DB tests wipe blocklist/fetch_attempts; local DB only"
+    )
 DOWN = (
     pathlib.Path(__file__).resolve().parents[1] / "migrations" / "down" / "008_fetch_gates_down.sql"
 )
@@ -81,7 +83,9 @@ def test_blocklist_lookup(conn):
     conn.commit()
     assert fetch_gates.is_blocklisted("dQw4w9WgXcQ") is True
     assert fetch_gates.is_blocklisted("aaaaaaaaaaa") is False
-    assert fetch_gates.is_blocklisted("DQW4W9WGXCQ") is False  # YouTube ids are case-sensitive; exact match only
+    assert (
+        fetch_gates.is_blocklisted("DQW4W9WGXCQ") is False
+    )  # YouTube ids are case-sensitive; exact match only
 
 
 def test_download_audio_refuses_blocklisted_id_with_real_tables(conn, monkeypatch):

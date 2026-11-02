@@ -448,7 +448,7 @@ async def _run_pipeline(job_id: str) -> None:
             # path (STUB_MODE is not set in prod env). Defense-in-depth behind route.ts.
             if os.environ.get("ALLOW_YOUTUBE_INPUT", "").lower() != "true":
                 raise DownloadBlockedError("YouTube ingestion is disabled pre-launch")
-            dl_result, _source = await asyncio.to_thread(download_audio, url)
+            dl_result, _source = await asyncio.to_thread(download_audio, url, job_id)
             # R2 fix (found in staging E2E test — T12 was never actually run before):
             # Cobalt's success path returns an already-public stream URL (Replicate can
             # fetch it directly), but yt-dlp's success path returns a LOCAL file path

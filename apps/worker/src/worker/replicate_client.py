@@ -47,6 +47,40 @@ MODEL_VERSION = os.environ.get("REPLICATE_MODEL_VERSION", DEFAULT_DEMUCS_VERSION
 DEMUCS_MODEL = os.environ.get("REPLICATE_DEMUCS_MODEL", "htdemucs_6s")
 
 
+# SL-B15 cost rate (USD per second of GPU prediction time). Was a hard-coded 0.0005.
+# Source: https://replicate.com/pricing, row "Nvidia A100 (80GB) GPU / gpu-a100-large":
+# "$0.001400 /sec, $5.04 /hr", fetched 2026-11-02. The model page
+# https://replicate.com/ryan5453/demucs says it "runs on Nvidia A100 (40GB) GPU hardware"
+# (fetched 2026-11-02); the pricing page lists no A100 40GB row, so the A100 list rate is
+# used. Replicate's usage page (account) is the final check: override with
+# REPLICATE_USD_PER_SECOND if it shows a different effective rate.
+DEFAULT_REPLICATE_USD_PER_SECOND = 0.0014
+
+
+def _load_usd_per_second() -> float:
+    raw = os.environ.get("REPLICATE_USD_PER_SECOND")
+    if raw is None or raw.strip() == "":
+        return DEFAULT_REPLICATE_USD_PER_SECOND
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if not value > 0:  # also rejects nan/inf-adjacent junk and negatives
+        log_structured(
+            "WARN", "replicate_rate_override_invalid", using=DEFAULT_REPLICATE_USD_PER_SECOND
+        )
+        return DEFAULT_REPLICATE_USD_PER_SECOND
+    return value
+
+
+REPLICATE_USD_PER_SECOND = _load_usd_per_second()
+
+
+def prediction_cost_usd(predict_time_s: float) -> float:
+    """Cost of one prediction from Replicate's metrics.predict_time (seconds)."""
+    return predict_time_s * REPLICATE_USD_PER_SECOND
+
+
 def _headers() -> dict:
     return {
         "Authorization": f"Token {os.environ['REPLICATE_API_TOKEN']}",
@@ -139,7 +173,7 @@ def poll_until_done(job_id: str, pred_id: str, progress_cb=None) -> tuple[dict, 
         if status == "succeeded":
             outputs = pred.get("output", {}) or {}
             predict_time = pred.get("metrics", {}).get("predict_time", 0) or 0
-            cost = predict_time * 0.0005
+            cost = prediction_cost_usd(predict_time)
             log_structured(
                 "INFO",
                 "separation_complete",

@@ -22,3 +22,8 @@ Terminal failure: `failed` (from any active stage)
 make migrate              # Apply all pending migrations
 DATABASE_URL=... make migrate  # Override database URL
 ```
+
+## Down migrations
+
+`migrations/down/NNN_*_down.sql` hold the manual reverse of a migration (first one: 008). The runner globs
+only `migrations/*.sql`, so down files are never applied automatically. Run one by hand against a throwaway DB.

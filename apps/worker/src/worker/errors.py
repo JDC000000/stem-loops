@@ -34,6 +34,14 @@ class DownloadTimeoutError(StemLoopsError):
     user_message = "We couldn't reach that video in time. Check the link and try again."
 
 
+class FetchPausedError(DownloadBlockedError):
+    """SL21 kill switch (fetch_global / fetch_youtube) is engaged: no outbound fetch is made.
+    Same error_code as its parent (still one of the typed classes); the message keeps the
+    drop-a-file path in front of the user."""
+
+    user_message = "YouTube links are paused right now. Drop your own audio file instead."
+
+
 class DownloadInvalidUrlError(StemLoopsError):
     error_code = "DOWNLOAD_INVALID_URL"
     user_message = (
@@ -58,6 +66,13 @@ class DownloadAgeRestrictedError(StemLoopsError):
 class DownloadPrivateError(StemLoopsError):
     error_code = "DOWNLOAD_PRIVATE"
     user_message = "This video is private or unavailable."
+
+
+class VideoBlocklistedError(DownloadPrivateError):
+    """SL21 blocklist hit (takedown / rightsholder / manual): refused before any fetch.
+    Same error_code as DOWNLOAD_PRIVATE; the message is deliberately neutral."""
+
+    user_message = "This video isn't available here. You can drop your own audio file instead."
 
 
 class SeparationFailedError(StemLoopsError):

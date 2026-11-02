@@ -15,11 +15,14 @@ spike clearing the same >=95%/p90<10s bar S1 used, before ALLOW_YOUTUBE_INPUT
 is ever flipped on in prod.
 """
 
+import hashlib
 import os
+import re
 import secrets
 import string
 import subprocess
 import sys
+import threading
 from urllib.parse import urlsplit, urlunsplit
 
 from .. import tmpdirs
@@ -57,6 +60,21 @@ _STDERR_MAP = [
     ("video is not available", DownloadBlockedError),
     ("invalid url", DownloadInvalidUrlError),
 ]
+
+
+# SL21: per-thread record of the LAST attempt's exit-session hash so downloader/__init__.py can
+# log it to fetch_attempts without touching proxy behaviour. Only a hash of the sticky session
+# id is kept, never the id or any proxy credential.
+_attempt = threading.local()
+
+
+def last_session_hash() -> str | None:
+    return getattr(_attempt, "session_hash", None)
+
+
+def _record_session(proxy: str) -> None:
+    m = re.search(r"_session-([a-z0-9]+)_", proxy or "")
+    _attempt.session_hash = hashlib.sha256(m.group(1).encode()).hexdigest()[:16] if m else None
 
 
 def _pick_cookie_file() -> str | None:
@@ -130,6 +148,7 @@ def fetch_audio_file(youtube_url: str) -> str:
     # download) — see _sticky_proxy_url(). A retry (download_audio(), __init__.py)
     # calls this function again, generating a fresh session/IP each time.
     proxy = _sticky_proxy_url()
+    _record_session(proxy)
     _reject_if_live(youtube_url, proxy)
     tmpdir = tmpdirs.mkdtemp(prefix="sl_ytdlp_")
     # Invoke via `python -m yt_dlp` rather than a bare `yt-dlp` — the worker's venv

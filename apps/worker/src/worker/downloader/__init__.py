@@ -1,6 +1,10 @@
-"""Dual-path YouTube downloader (T12) with SSRF allowlist.
+"""YouTube downloader (T12) with SSRF allowlist and SL21 Phase 0 gates.
 
-Cobalt primary → yt-dlp fallback (Gate 0 S1 architecture decision). The SSRF
+Chain (BUILD-R s2.2): blocklist -> kill switch -> yt-dlp (retry policy below) -> Cobalt, only
+when kill-switch scope `fetch_cobalt` is released (default engaged = OFF) -> typed error.
+The typed error keeps the drop-a-file path in front of the user. Every attempt is logged
+to fetch_attempts. (Before SL21 the order was Cobalt first; Cobalt worked 1 of 90 in T-F1
+day 1.) The SSRF
 guard validates the host against a YouTube allowlist before any outbound call
 (P1-29/P2-8). NOT wired into the live pipeline until the S1 bake-off passes.
 
@@ -21,16 +25,22 @@ import os
 import re
 import time
 
-from ..errors import DownloadBlockedError, DownloadInvalidUrlError, DownloadTimeoutError
+from ..errors import (
+    DownloadBlockedError,
+    DownloadInvalidUrlError,
+    DownloadTimeoutError,
+    FetchPausedError,
+    VideoBlocklistedError,
+)
 from ..logger import log_structured
-from . import cobalt_client, ytdlp_client
+from . import cobalt_client, fetch_gates, ytdlp_client
 
 _ALLOWED = re.compile(r"^https?://(www\.|m\.)?(youtube\.com|youtu\.be)(/|$)", re.IGNORECASE)
 
 # Only retry error classes where a DIFFERENT exit IP plausibly changes the outcome.
 # DOWNLOAD_AGE_RESTRICTED / DOWNLOAD_PRIVATE / DOWNLOAD_INVALID_URL are properties of
 # the video itself, not the network path — retrying those just burns the retry budget
-# on a guaranteed-identical result.
+# on a guaranteed-identical result. Cobalt is also only tried for these classes.
 _RETRYABLE = (DownloadBlockedError, DownloadTimeoutError)
 YTDLP_MAX_ATTEMPTS = int(os.environ.get("YTDLP_MAX_ATTEMPTS", "2"))
 YTDLP_RETRY_DELAY_S = float(os.environ.get("YTDLP_RETRY_DELAY_S", "2"))
@@ -41,24 +51,51 @@ def _ssrf_guard(url: str) -> None:
         raise DownloadInvalidUrlError(f"URL not in allowlist: {url}")
 
 
-def download_audio(youtube_url: str) -> tuple[str, str]:
-    """Return (path_or_url, source) where source is 'cobalt' or 'ytdlp'."""
-    _ssrf_guard(youtube_url)
-    try:
-        url = cobalt_client.fetch_audio_url(youtube_url)
-        log_structured("INFO", "cobalt_success")
-        return url, "cobalt"
-    except Exception as e:  # noqa: BLE001 — any Cobalt failure falls through to yt-dlp
-        log_structured("WARN", "cobalt_failed_fallback", error=str(e)[:200])
+def _outcome(exc: BaseException) -> str:
+    return getattr(exc, "error_code", None) or "other_error"
 
+
+def download_audio(youtube_url: str, job_id: str | None = None) -> tuple[str, str]:
+    """Return (path_or_url, source) where source is 'ytdlp' (local path) or 'cobalt' (URL)."""
+    _ssrf_guard(youtube_url)
+
+    # 0a. blocklist: refuse before any outbound call. An unreadable id is refused too, so a
+    # URL shape we cannot parse can never slip past a takedown.
+    video_id = fetch_gates.video_id_from_url(youtube_url)
+    if video_id is None:
+        raise DownloadInvalidUrlError("could not read a video id from the URL")
+    if fetch_gates.is_blocklisted(video_id):
+        log_structured("WARN", "fetch_refused_blocklist", job_id=job_id)
+        raise VideoBlocklistedError("blocklist hit")
+
+    # 0b. kill switch: no outbound fetch at all; the user is pointed at drop-a-file.
+    paused = fetch_gates.fetch_paused()
+    if paused:
+        log_structured("WARN", "fetch_refused_kill_switch", job_id=job_id, scope=paused)
+        raise FetchPausedError(f"kill switch {paused}")
+
+    attempt_no = 0
     last_exc: Exception | None = None
+
+    # 2. yt-dlp, attempt 1; on Blocked/Timeout attempt 2 (fresh subprocess = fresh exit IP).
     for attempt in range(1, max(YTDLP_MAX_ATTEMPTS, 1) + 1):
+        attempt_no += 1
+        t0 = time.monotonic()
         try:
             path = ytdlp_client.fetch_audio_file(youtube_url)
-            if attempt > 1:
-                log_structured("INFO", "ytdlp_recovered_on_retry", attempt=attempt)
-            return path, "ytdlp"
-        except _RETRYABLE as e:
+        except Exception as e:
+            fetch_gates.log_attempt(
+                job_id=job_id,
+                attempt=attempt_no,
+                path=_ytdlp_path(),
+                outcome_class=_outcome(e),
+                ms_total=int((time.monotonic() - t0) * 1000),
+                video_id=video_id,
+                exit_session_hash=ytdlp_client.last_session_hash(),
+                ytdlp_ver=fetch_gates.ytdlp_version(),
+            )
+            if not isinstance(e, _RETRYABLE):
+                raise
             last_exc = e
             if attempt < YTDLP_MAX_ATTEMPTS:
                 log_structured(
@@ -68,6 +105,59 @@ def download_audio(youtube_url: str) -> tuple[str, str]:
                     error_code=getattr(e, "error_code", None),
                 )
                 time.sleep(YTDLP_RETRY_DELAY_S)
-                continue
-            raise
-    raise last_exc  # unreachable given the loop above always returns or raises
+            continue
+        fetch_gates.log_attempt(
+            job_id=job_id,
+            attempt=attempt_no,
+            path=_ytdlp_path(),
+            outcome_class="ok",
+            ms_total=int((time.monotonic() - t0) * 1000),
+            video_id=video_id,
+            exit_session_hash=ytdlp_client.last_session_hash(),
+            nbytes=_size(path),
+            ytdlp_ver=fetch_gates.ytdlp_version(),
+        )
+        if attempt > 1:
+            log_structured("INFO", "ytdlp_recovered_on_retry", attempt=attempt)
+        return path, "ytdlp"
+
+    # 2b. Cobalt: only behind kill-switch scope fetch_cobalt (default engaged = skipped).
+    if fetch_gates.cobalt_allowed():
+        attempt_no += 1
+        t0 = time.monotonic()
+        try:
+            url = cobalt_client.fetch_audio_url(youtube_url)
+        except Exception as e:  # noqa: BLE001 — a Cobalt failure must not mask the yt-dlp error
+            fetch_gates.log_attempt(
+                job_id=job_id,
+                attempt=attempt_no,
+                path="cobalt",
+                outcome_class=_outcome(e),
+                ms_total=int((time.monotonic() - t0) * 1000),
+                video_id=video_id,
+            )
+            log_structured("WARN", "cobalt_failed", error=str(e)[:200])
+        else:
+            fetch_gates.log_attempt(
+                job_id=job_id,
+                attempt=attempt_no,
+                path="cobalt",
+                outcome_class="ok",
+                ms_total=int((time.monotonic() - t0) * 1000),
+                video_id=video_id,
+            )
+            return url, "cobalt"
+
+    # 3/4. typed error -> the user is offered "drop the file" (never behind a switch).
+    raise last_exc if last_exc is not None else DownloadBlockedError("no fetch path available")
+
+
+def _ytdlp_path() -> str:
+    return "ytdlp_proxy" if ytdlp_client.PROXY_URL else "ytdlp_direct"
+
+
+def _size(path: str) -> int | None:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None

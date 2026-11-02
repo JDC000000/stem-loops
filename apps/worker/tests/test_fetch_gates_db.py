@@ -12,6 +12,9 @@ from worker.errors import DownloadBlockedError
 
 DB = os.environ.get("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
+# Destructive fixture: only ever run against a local throwaway database.
+if DB and not any(h in DB for h in ("127.0.0.1", "localhost")):
+    pytestmark = pytest.mark.skip(reason="gate DB tests wipe blocklist/fetch_attempts; local DB only")
 DOWN = (
     pathlib.Path(__file__).resolve().parents[1] / "migrations" / "down" / "008_fetch_gates_down.sql"
 )
@@ -78,6 +81,22 @@ def test_blocklist_lookup(conn):
     conn.commit()
     assert fetch_gates.is_blocklisted("dQw4w9WgXcQ") is True
     assert fetch_gates.is_blocklisted("aaaaaaaaaaa") is False
+    assert fetch_gates.is_blocklisted("DQW4W9WGXCQ") is False  # YouTube ids are case-sensitive; exact match only
+
+
+def test_download_audio_refuses_blocklisted_id_with_real_tables(conn, monkeypatch):
+    from worker import downloader
+    from worker.errors import VideoBlocklistedError
+
+    conn.execute("INSERT INTO blocklist(video_id, reason) VALUES ('dQw4w9WgXcQ','takedown')")
+    conn.commit()
+
+    def _must_not_fetch(url):
+        pytest.fail("fetch_audio_file called for a blocklisted video")
+
+    monkeypatch.setattr(downloader.ytdlp_client, "fetch_audio_file", _must_not_fetch)
+    with pytest.raises(VideoBlocklistedError):
+        downloader.download_audio("https://youtu.be/dQw4w9WgXcQ?si=x")
 
 
 def test_blocklist_rejects_unknown_reason(conn):

@@ -74,6 +74,12 @@ def download_audio(youtube_url: str, job_id: str | None = None) -> tuple[str, st
         log_structured("WARN", "fetch_refused_kill_switch", job_id=job_id, scope=paused)
         raise FetchPausedError(f"kill switch {paused}")
 
+    # SL-B24 #1: rebuild a canonical watch URL from the gate-approved id and
+    # send THAT to every fetcher. A crafted raw URL like `watch?%76=A&v=B`
+    # could otherwise make the gate check A while yt-dlp/Cobalt fetch B.
+    # From here down, `youtube_url` is only used for logging; never for a fetch.
+    fetch_url = fetch_gates.canonical_watch_url(video_id)
+
     attempt_no = 0
     last_exc: Exception | None = None
 
@@ -82,7 +88,7 @@ def download_audio(youtube_url: str, job_id: str | None = None) -> tuple[str, st
         attempt_no += 1
         t0 = time.monotonic()
         try:
-            path = ytdlp_client.fetch_audio_file(youtube_url)
+            path = ytdlp_client.fetch_audio_file(fetch_url)
         except Exception as e:
             fetch_gates.log_attempt(
                 job_id=job_id,
@@ -126,7 +132,7 @@ def download_audio(youtube_url: str, job_id: str | None = None) -> tuple[str, st
         attempt_no += 1
         t0 = time.monotonic()
         try:
-            url = cobalt_client.fetch_audio_url(youtube_url)
+            url = cobalt_client.fetch_audio_url(fetch_url)
         except Exception as e:  # noqa: BLE001 — a Cobalt failure must not mask the yt-dlp error
             fetch_gates.log_attempt(
                 job_id=job_id,

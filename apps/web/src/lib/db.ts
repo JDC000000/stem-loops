@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { Pool, QueryResult, QueryResultRow } from 'pg';
 
 // Supabase's pooler serves a cert not in Node's default CA bundle
 // (SELF_SIGNED_CERT_IN_CHAIN), and node-pg now forces verification for sslmode=require
@@ -21,5 +21,8 @@ function getPool(): Pool {
 }
 
 export const db = {
-  query: (text: string, params?: unknown[]) => getPool().query(text, params),
+  query: <R extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[],
+  ): Promise<QueryResult<R>> => getPool().query<R>(text, params),
 };

@@ -1,4 +1,4 @@
-.PHONY: dev test-job types test lint deploy-web deploy-worker migrate install help
+.PHONY: dev test-job types test lint check-rls deploy-web deploy-worker migrate install help
 
 # Default target
 help:
@@ -8,6 +8,7 @@ help:
 	@echo "  make types          - Run Pydantic → JSON Schema → TS codegen"
 	@echo "  make test           - Run pytest + pnpm test"
 	@echo "  make lint           - Run ruff + black check + eslint"
+	@echo "  make check-rls      - Assert every migration table has RLS + a policy (SL-B26)"
 	@echo "  make deploy-web     - Deploy web to Vercel"
 	@echo "  make deploy-worker  - Deploy worker to Fly.io"
 	@echo "  make migrate        - Run database migrations"
@@ -91,3 +92,7 @@ migrate:
 install:
 	pnpm install
 	cd apps/worker && pip install -r requirements.txt -c constraints-prod.txt
+
+# Assert every table in migrations/*.sql has RLS + a CREATE POLICY (SL-B26 #1).
+check-rls:
+	python3 scripts/check_rls.py apps/worker/migrations/

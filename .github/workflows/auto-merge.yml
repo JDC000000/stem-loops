@@ -1,0 +1,40 @@
+# Auto-enable auto-merge on PRs that are triple-gated:
+#   * rollback-safe        — reversible by git revert
+#   * adversarial-reviewed — 3-lens review passed
+#   * NOT needs-jon-approval — Jon still eyes money/prod-touching code
+# When all three hold, fires `gh pr merge --auto`; GitHub's required status
+# checks still gate the actual merge.
+#
+# Security: pull_request_target has write access but does NOT check out PR
+# code; only the merge call runs. Only repo collaborators can apply labels
+# so a hostile PR author cannot self-label into auto-merge.
+
+name: Auto-merge labeled PRs
+
+on:
+  pull_request_target:
+    types: [labeled, synchronize, opened, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    name: Enable auto-merge on rollback-safe + adversarial-reviewed PRs
+    runs-on: ubuntu-latest
+    if: >
+      contains(github.event.pull_request.labels.*.name, 'rollback-safe') &&
+      contains(github.event.pull_request.labels.*.name, 'adversarial-reviewed') &&
+      !contains(github.event.pull_request.labels.*.name, 'needs-jon-approval')
+    steps:
+      - name: Enable auto-merge (squash, delete branch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "PR #${{ github.event.pull_request.number }} meets triple-gate; enabling auto-merge."
+          gh pr merge "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --squash \
+            --auto \
+            --delete-branch

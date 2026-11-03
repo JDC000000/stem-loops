@@ -1,0 +1,98 @@
+# CODEOWNERS — paths where a change requires Jon's review before merge.
+#
+# IMPORTANT: there is NO catch-all `*` owner, intentionally. The auto-merge
+# workflow (.github/workflows/auto-merge.yml) relies on CODEOWNERS being
+# a narrow "sensitive paths" list, not a repo-wide claim. A `*` owner would
+# force Jon's review on every PR once branch protection enables "Require
+# review from Code Owners", which defeats the whole triple-gate auto-merge
+# design for trivial rollback-safe PRs.
+#
+# To enforce this file, the repo's branch protection ruleset for `main` and
+# `v3/main` must have "Require review from Code Owners" enabled. Without
+# that setting the file is advisory only. The auto-label workflow
+# (.github/workflows/auto-label-codeowners.yml) also applies
+# `needs-jon-approval` on any PR whose diff touches these paths — that
+# label is the hard stop for the auto-merge workflow regardless of
+# branch-protection enforcement.
+#
+# When editing this file, also update auto-label-codeowners.yml's regex
+# (patterns inlined there because GitHub Actions has no CODEOWNERS parser).
+#
+# Pattern rules: last-match-wins per file.
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Money / prod / legal / auth / CI / supply-chain surfaces.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Database migrations — any change here runs against prod Supabase on deploy.
+apps/worker/migrations/**                       @JDC000000
+
+# Scripts — CI invokes several; broadening beyond check_rls.py because a new
+# script added here can silently become part of the build or lint path.
+scripts/**                                      @JDC000000
+
+# CI and workflow files — auto-merge rules, branch protection surfaces.
+.github/workflows/**                            @JDC000000
+.github/CODEOWNERS                              @JDC000000
+
+# Supply-chain: lockfiles, manifests, registry config. A malicious bump
+# or a transitive-dep swap would otherwise auto-merge silently.
+pnpm-lock.yaml                                  @JDC000000
+pnpm-workspace.yaml                             @JDC000000
+package.json                                    @JDC000000
+apps/web/package.json                           @JDC000000
+packages/types/package.json                     @JDC000000
+apps/worker/requirements.txt                    @JDC000000
+apps/worker/constraints-prod.txt                @JDC000000
+apps/worker/pyproject.toml                      @JDC000000
+.npmrc                                          @JDC000000
+# Env templates — define the SHAPE of secrets; a bad template can nudge
+# a reader to leak a real one, so lock-template changes get Jon's eyes.
+.env.example                                    @JDC000000
+.env.local.example                              @JDC000000
+
+# Prompt-injection surfaces — repo docs read by every agent session.
+AGENTS.md                                       @JDC000000
+CLAUDE.md                                       @JDC000000
+
+# Next.js security-relevant config.
+apps/web/next.config.js                         @JDC000000
+apps/web/next.config.mjs                        @JDC000000
+
+# Build invocation surface — CI calls `make` targets.
+Makefile                                        @JDC000000
+
+# Fetcher egress chain — SSRF surface, external API contracts.
+apps/worker/src/worker/downloader/**            @JDC000000
+
+# Deploy configuration — explicit paths (bare `Dockerfile` would match
+# vendored copies under spikes/, cobalt/, yt-session/ that we don't own).
+apps/worker/Dockerfile                          @JDC000000
+apps/worker/fly.toml                            @JDC000000
+docker-compose.yml                              @JDC000000
+docker-compose.dev.yml                          @JDC000000
+
+# Billing-adjacent files that EXIST today.
+apps/web/src/lib/stripe.ts                      @JDC000000
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Forward-looking — these paths DON'T exist yet, but they're the ones Phase 1a
+# will land. Listing them now so a PR introducing them starts gated from the
+# first commit, not after someone notices.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Billing: Stripe / Paddle providers, webhook, checkout, portal, entitlements.
+apps/web/src/lib/supabase-server.ts             @JDC000000
+apps/web/src/lib/billing/**                     @JDC000000
+apps/worker/src/worker/billing/**               @JDC000000
+apps/web/src/app/api/billing/**                 @JDC000000
+apps/web/src/app/api/entitlements/**            @JDC000000
+
+# Legal copy — ToS, privacy. Current structure uses the (landing) route group.
+apps/web/src/app/(landing)/terms/**             @JDC000000
+apps/web/src/app/(landing)/privacy/**           @JDC000000
+docs/legal/**                                   @JDC000000
+
+# Vercel project config (lands when stem-loops-staging deploys).
+apps/web/vercel.json                            @JDC000000
+vercel.json                                     @JDC000000

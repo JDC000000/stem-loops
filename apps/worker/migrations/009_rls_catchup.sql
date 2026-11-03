@@ -18,6 +18,11 @@
 --
 -- Idempotent per the migrations/README convention. Down: down/009_rls_catchup_down.sql.
 
+-- rls-backend-only: jobs, job_events, loops, upload_rate_events, kill_switches, blocklist, fetch_attempts
+--   ^ marker read by scripts/check_rls.py rule 3: these V2-era tables have no
+--   user_id column and are guarded by service_role bypass only. V3 user-data
+--   tables (010+) MUST reference auth.uid() in at least one policy.
+
 -- 1. Ensure the service_role grantee exists (noop in Supabase).
 DO $$
 BEGIN

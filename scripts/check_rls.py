@@ -1,18 +1,27 @@
 #!/usr/bin/env python3
 """
-SL-B26 #1 CI gate: assert every table defined in apps/worker/migrations/*.sql
-has (a) ENABLE ROW LEVEL SECURITY and (b) at least one CREATE POLICY ... ON
-that table, somewhere in the migrations tree.
+SL-B26 #1 CI gate: assert every table in apps/worker/migrations/*.sql ships
+with RLS + a policy, and that user-data tables carry a per-user policy
+(auth.uid() reference) unless explicitly declared backend-only.
 
-Scope: migrations/*.sql (the runner glob). Down migrations are not checked
-because the runner never applies them.
+Scope: migrations/*.sql only (the runner's glob). Down migrations are not
+checked because the runner never applies them.
+
+Rules enforced:
+  1. Every CREATE TABLE X must have a matching ENABLE ROW LEVEL SECURITY X.
+  2. Every CREATE TABLE X must have at least one CREATE POLICY ... ON X.
+  3. Every CREATE TABLE X must EITHER (a) be named in a
+     `-- rls-backend-only: <table>, ...` marker comment in some migration
+     file, OR (b) have at least one policy whose text references
+     `auth.uid()` or `request.jwt.claim` (so user-data tables cannot be
+     silently guarded only by a service_role-bypass policy).
+
+Backend-only marker format (comment line, any migration file):
+  -- rls-backend-only: jobs, job_events, loops
 
 Usage: python scripts/check_rls.py [MIGRATIONS_DIR]
-Exit 0 if all tables covered, 1 otherwise. Prints a per-table verdict.
 
-Deliberately simple: regex over SQL text, not a real parser. False positives
-on string literals or commented-out DDL are the author's problem to make the
-regex happy — a parser is overkill for a migrations folder we control.
+Exit 0 if every rule passes, 1 otherwise. Prints a per-table verdict.
 """
 from __future__ import annotations
 
@@ -20,95 +29,215 @@ import re
 import sys
 from pathlib import Path
 
+# -- Regex atoms --------------------------------------------------------------
+# The migrations tree is small and we author it, so permissive regexes are
+# fine. False positives on string literals are the author's problem to make
+# the regex happy; a real parser is overkill.
+
+# CREATE TABLE with optional UNLOGGED/TEMP/TEMPORARY, IF NOT EXISTS matched
+# as a unit (no backtrack onto "IF"), optional schema prefix, and quoted OR
+# bare identifier. Fixes the review-1 finding where `CREATE TABLE IF NOT
+# EXISTS "quoted"` captured literal `IF` as the table name.
 CREATE_TABLE_RE = re.compile(
-    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)",
+    r"CREATE\s+(?:UNLOGGED\s+|TEMP\s+|TEMPORARY\s+)?TABLE\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*)\.)?"
+    r'(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))',
     re.IGNORECASE,
 )
+
+# Defensive blacklist: if a regex ever captures one of these as a table name,
+# reject it rather than record a phantom table.
+SQL_KEYWORD_BLACKLIST = {
+    "IF", "NOT", "EXISTS", "UNLOGGED", "TEMP", "TEMPORARY", "ONLY",
+}
+
 ENABLE_RLS_RE = re.compile(
-    r"ALTER\s+TABLE\s+(?:%I|\"?)([A-Za-z_][A-Za-z0-9_]*)\"?\s+ENABLE\s+ROW\s+LEVEL\s+SECURITY",
+    r"ALTER\s+TABLE\s+(?:ONLY\s+)?"
+    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*)\.)?"
+    r'(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))'
+    r"\s+ENABLE\s+ROW\s+LEVEL\s+SECURITY",
     re.IGNORECASE,
 )
-# Match either literal `ALTER TABLE jobs ENABLE RLS` OR the format(...) pattern
-# used in 009's DO blocks, by scanning the plain text FOREACH array for members.
+
+# CREATE POLICY <name> ON <table> <body up to ; or end-of-text>
+# Body is captured so we can scan it for auth.uid() references (rule 3).
+CREATE_POLICY_RE = re.compile(
+    r"CREATE\s+POLICY\s+\S+\s+ON\s+"
+    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*)\.)?"
+    r'(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))'
+    r"([\s\S]*?)(?:;|\Z)",
+    re.IGNORECASE,
+)
+
+# DO $$ ... $$ blocks, non-greedy. Parsing each block independently (rather
+# than lumping all blocks in a file together) closes the review-1 finding
+# where two mismatched FOREACH arrays could cheat the gate.
+DO_BLOCK_RE = re.compile(r"DO\s+\$\$([\s\S]*?)\$\$", re.IGNORECASE)
+
 FOREACH_ARRAY_RE = re.compile(
     r"FOREACH\s+\w+\s+IN\s+ARRAY\s+ARRAY\[([^\]]+)\]",
     re.IGNORECASE,
 )
-CREATE_POLICY_RE = re.compile(
-    r"CREATE\s+POLICY\s+[^\s]+\s+ON\s+(?:%I|\"?)([A-Za-z_][A-Za-z0-9_]*)\"?",
+
+# Comment marker that exempts a table from the rule-3 per-user requirement.
+BACKEND_ONLY_MARKER_RE = re.compile(
+    r"--\s*rls-backend-only\s*:\s*([A-Za-z0-9_,\s]+)",
+    re.IGNORECASE,
+)
+
+# What counts as "per-user" scoping in a policy body.
+AUTHUID_REF_RE = re.compile(
+    r"auth\.uid\s*\(\s*\)|request\.jwt",
     re.IGNORECASE,
 )
 
 
+# -- Helpers ------------------------------------------------------------------
+
 def strip_sql_comments(text: str) -> str:
     """Remove -- line comments and /* ... */ block comments."""
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    text = re.sub(r"/\*[\s\S]*?\*/", "", text)
     text = re.sub(r"--[^\n]*", "", text)
     return text
 
 
-def tables_in_foreach(sql: str) -> set[str]:
-    """Expand table names from DO block FOREACH ... IN ARRAY ARRAY[...] patterns."""
+def _tables_in_foreach(do_block: str) -> set[str]:
+    """Expand table names from ONE DO block's FOREACH ARRAY[...]."""
     tables: set[str] = set()
-    for match in FOREACH_ARRAY_RE.finditer(sql):
+    for match in FOREACH_ARRAY_RE.finditer(do_block):
         for item in match.group(1).split(","):
             name = item.strip().strip("'\"")
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            if (
+                re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+                and name.upper() not in SQL_KEYWORD_BLACKLIST
+            ):
                 tables.add(name)
     return tables
 
 
+def _table_name_from_match(m: re.Match) -> str | None:
+    """Return the first non-None capture of a quoted|bare identifier."""
+    name = m.group(1) or m.group(2)
+    if not name:
+        return None
+    if name.upper() in SQL_KEYWORD_BLACKLIST:
+        return None
+    return name
+
+
+# -- Main ---------------------------------------------------------------------
+
 def main(migrations_dir: Path) -> int:
     sql_files = sorted(migrations_dir.glob("*.sql"))
     if not sql_files:
-        print(f"RLS gate: no .sql files found under {migrations_dir}", file=sys.stderr)
+        print(f"RLS gate: no .sql files found under {migrations_dir}",
+              file=sys.stderr)
         return 1
 
     created_tables: set[str] = set()
     rls_enabled: set[str] = set()
     policies_on: set[str] = set()
+    policies_with_authuid: set[str] = set()
+    backend_only: set[str] = set()
 
     for f in sql_files:
-        text = strip_sql_comments(f.read_text())
+        raw = f.read_text()
+
+        # Markers live in comments — parse raw text BEFORE stripping.
+        for m in BACKEND_ONLY_MARKER_RE.finditer(raw):
+            for name in m.group(1).split(","):
+                name = name.strip()
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                    backend_only.add(name)
+
+        text = strip_sql_comments(raw)
+
+        # 1. CREATE TABLE
         for m in CREATE_TABLE_RE.finditer(text):
-            created_tables.add(m.group(1))
+            name = _table_name_from_match(m)
+            if name:
+                created_tables.add(name)
+
+        # 2. Plain ALTER TABLE ... ENABLE RLS
         for m in ENABLE_RLS_RE.finditer(text):
-            rls_enabled.add(m.group(1))
+            name = _table_name_from_match(m)
+            if name:
+                rls_enabled.add(name)
+
+        # 3. Plain CREATE POLICY ... ON <table> <body>
         for m in CREATE_POLICY_RE.finditer(text):
-            policies_on.add(m.group(1))
-        # DO block FOREACH expansion: assume the loop body applies to every
-        # table named in the ARRAY (009's pattern). Pessimistic in both
-        # directions — we add to BOTH rls_enabled AND policies_on only if the
-        # file contains both patterns, so a mismatched block doesn't cheat.
-        if "ENABLE ROW LEVEL SECURITY" in text.upper():
-            rls_enabled.update(tables_in_foreach(text))
-        if "CREATE POLICY" in text.upper():
-            policies_on.update(tables_in_foreach(text))
+            name = _table_name_from_match(m)
+            if not name:
+                continue
+            body = m.group(3) or ""
+            policies_on.add(name)
+            if AUTHUID_REF_RE.search(body):
+                policies_with_authuid.add(name)
+
+        # 4. DO blocks: parse each one INDEPENDENTLY so mismatched arrays
+        #    in two blocks can't cheat the gate (fixes review-1 finding).
+        for do_match in DO_BLOCK_RE.finditer(text):
+            block = do_match.group(1)
+            block_tables = _tables_in_foreach(block)
+            if not block_tables:
+                continue
+            if "ENABLE ROW LEVEL SECURITY" in block.upper():
+                rls_enabled.update(block_tables)
+            if re.search(r"CREATE\s+POLICY", block, re.IGNORECASE):
+                policies_on.update(block_tables)
+                # A DO block that builds a policy via format(...) may also
+                # embed an auth.uid() reference in the format string.
+                if AUTHUID_REF_RE.search(block):
+                    policies_with_authuid.update(block_tables)
 
     missing_rls = sorted(created_tables - rls_enabled)
     missing_policy = sorted(created_tables - policies_on)
+    missing_user_scope = sorted(
+        (created_tables - backend_only) - policies_with_authuid
+    )
 
     print(f"RLS gate: {len(created_tables)} tables found in {migrations_dir}")
     for t in sorted(created_tables):
         rls_mark = "RLS" if t in rls_enabled else "---"
         pol_mark = "POL" if t in policies_on else "---"
-        print(f"  [{rls_mark}][{pol_mark}] {t}")
-
-    if missing_rls or missing_policy:
-        print()
-        if missing_rls:
-            print(f"FAIL: tables without ENABLE ROW LEVEL SECURITY: {missing_rls}")
-        if missing_policy:
-            print(f"FAIL: tables without any CREATE POLICY: {missing_policy}")
-        print(
-            "\nFix: every new table must ship with its RLS + at least one policy "
-            "(referencing auth.uid() for user-owned data, or TO service_role "
-            "for backend-only tables). Grandfathered 001-008 tables are covered "
-            "by 009_rls_catchup.sql."
+        scope_mark = (
+            "BACKEND"
+            if t in backend_only
+            else ("USER" if t in policies_with_authuid else "----")
         )
+        print(f"  [{rls_mark}][{pol_mark}][{scope_mark}] {t}")
+
+    if backend_only:
+        print(f"\nDeclared backend-only (service-role bypass only): "
+              f"{sorted(backend_only)}")
+
+    failed = False
+    if missing_rls:
+        print(f"\nFAIL (rule 1): tables without ENABLE ROW LEVEL SECURITY: "
+              f"{missing_rls}")
+        failed = True
+    if missing_policy:
+        print(f"\nFAIL (rule 2): tables without any CREATE POLICY: "
+              f"{missing_policy}")
+        failed = True
+    if missing_user_scope:
+        print(f"\nFAIL (rule 3): tables without a per-user policy and not "
+              f"declared backend-only: {missing_user_scope}")
+        print("  Either add an auth.uid()-referencing policy (for user-owned "
+              "data), or add a `-- rls-backend-only: <table>, ...` marker "
+              "comment in the migration file (for operational/service-only "
+              "tables).")
+        failed = True
+
+    if failed:
+        print("\nFix: every new table ships with RLS + >=1 policy. "
+              "User-owned data must reference auth.uid(); operational tables "
+              "must be declared backend-only via marker comment.")
         return 1
 
-    print("\nOK: all tables have RLS enabled and at least one policy.")
+    print("\nOK: all tables have RLS enabled, >=1 policy, and per-user "
+          "scoping or backend-only declaration.")
     return 0
 
 

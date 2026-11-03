@@ -116,7 +116,8 @@ CREATE TABLE IF NOT EXISTS public.subscriptions (
   cancel_at_period_end     boolean NOT NULL DEFAULT false,
   created_at               timestamptz NOT NULL DEFAULT now(),
   updated_at               timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (provider, provider_subscription_id)
+  UNIQUE (provider, provider_subscription_id),
+  CHECK (current_period_start < current_period_end)
 );
 CREATE INDEX IF NOT EXISTS subscriptions_user_active_idx
   ON public.subscriptions (user_id)
@@ -138,9 +139,10 @@ CREATE TABLE IF NOT EXISTS public.entitlements (
   plan_code              text NOT NULL REFERENCES public.plans(code),
   period_start           timestamptz NOT NULL,
   period_end             timestamptz NOT NULL,
-  jobs_used              integer NOT NULL DEFAULT 0,
+  jobs_used              integer NOT NULL DEFAULT 0 CHECK (jobs_used >= 0),
   computed_at            timestamptz NOT NULL DEFAULT now(),
-  source_subscription_id uuid REFERENCES public.subscriptions(id)
+  source_subscription_id uuid REFERENCES public.subscriptions(id),
+  CHECK (period_start < period_end)
 );
 ALTER TABLE public.entitlements ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS entitlements_self_read ON public.entitlements;
@@ -171,10 +173,16 @@ ALTER TABLE public.usage_events ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS usage_events_self_read ON public.usage_events;
 CREATE POLICY usage_events_self_read ON public.usage_events
   FOR SELECT TO authenticated USING (auth.uid() = user_id);
+-- APPEND-ONLY per TSD §1.4: split the FOR ALL policy into SELECT + INSERT so
+-- the stemloops_app role has no UPDATE/DELETE policy, and revoke the
+-- corresponding grants. Belt-and-braces: a compromised worker credential
+-- cannot erase metering evidence (Lens B finding #6, rolled up).
 DROP POLICY IF EXISTS stemloops_app_all ON public.usage_events;
-CREATE POLICY stemloops_app_all ON public.usage_events FOR ALL TO stemloops_app
-  USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.usage_events TO stemloops_app;
+DROP POLICY IF EXISTS stemloops_app_insert ON public.usage_events;
+DROP POLICY IF EXISTS stemloops_app_select ON public.usage_events;
+CREATE POLICY stemloops_app_insert ON public.usage_events FOR INSERT TO stemloops_app WITH CHECK (true);
+CREATE POLICY stemloops_app_select ON public.usage_events FOR SELECT TO stemloops_app USING (true);
+GRANT SELECT, INSERT ON public.usage_events TO stemloops_app;
 GRANT USAGE, SELECT ON SEQUENCE public.usage_events_id_seq TO stemloops_app;
 
 ------------------------------------------------------------------------------
@@ -194,19 +202,33 @@ CREATE TABLE IF NOT EXISTS public.credit_purchases (
   provider_charge_id text NOT NULL,
   pack_code          text NOT NULL CHECK (pack_code IN ('credits_20','credits_60','credits_180')),
   credits_granted    integer NOT NULL CHECK (credits_granted IN (20,60,180)),
-  amount_usd_cents   integer NOT NULL,
+  amount_usd_cents   integer NOT NULL CHECK (amount_usd_cents >= 0),
   promo_code         text,
   created_at         timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (provider, provider_charge_id)
+  UNIQUE (provider, provider_charge_id),
+  -- cross-column defense: pack_code and credits_granted must agree. A
+  -- buggy webhook writing (credits_60, 20) would otherwise sail past the
+  -- independent checks (Lens A finding #5).
+  CHECK ((pack_code, credits_granted) IN (
+    ('credits_20', 20),
+    ('credits_60', 60),
+    ('credits_180', 180)
+  ))
 );
+CREATE INDEX IF NOT EXISTS credit_purchases_user_created_idx
+  ON public.credit_purchases (user_id, created_at);
 ALTER TABLE public.credit_purchases ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS credit_purchases_self_read ON public.credit_purchases;
 CREATE POLICY credit_purchases_self_read ON public.credit_purchases
   FOR SELECT TO authenticated USING (auth.uid() = user_id);
+-- APPEND-ONLY per TSD §1.9: no UPDATE, no DELETE for the worker role.
+-- Prevents retroactive refund-fraud shaping / purchase row erasure.
 DROP POLICY IF EXISTS stemloops_app_all ON public.credit_purchases;
-CREATE POLICY stemloops_app_all ON public.credit_purchases FOR ALL TO stemloops_app
-  USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.credit_purchases TO stemloops_app;
+DROP POLICY IF EXISTS stemloops_app_insert ON public.credit_purchases;
+DROP POLICY IF EXISTS stemloops_app_select ON public.credit_purchases;
+CREATE POLICY stemloops_app_insert ON public.credit_purchases FOR INSERT TO stemloops_app WITH CHECK (true);
+CREATE POLICY stemloops_app_select ON public.credit_purchases FOR SELECT TO stemloops_app USING (true);
+GRANT SELECT, INSERT ON public.credit_purchases TO stemloops_app;
 
 ------------------------------------------------------------------------------
 -- 9. credit_consumption (append-only; one row per job that charged a credit, per §1.9)
@@ -218,14 +240,23 @@ CREATE TABLE IF NOT EXISTS public.credit_consumption (
   consumed_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (job_id)
 );
+CREATE INDEX IF NOT EXISTS credit_consumption_user_consumed_idx
+  ON public.credit_consumption (user_id, consumed_at);
 ALTER TABLE public.credit_consumption ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS credit_consumption_self_read ON public.credit_consumption;
 CREATE POLICY credit_consumption_self_read ON public.credit_consumption
   FOR SELECT TO authenticated USING (auth.uid() = user_id);
+-- APPEND-ONLY per TSD §1.9 AND §1.2a processor separation. The
+-- check_credit_decrement trigger enforces input_kind='upload' on INSERT
+-- (and UPDATE below, defense-in-depth). Not allowing UPDATE/DELETE closes
+-- the Lens B CRITICAL bypass where a worker-role compromise could DELETE
+-- consumption rows to retroactively mint free credits.
 DROP POLICY IF EXISTS stemloops_app_all ON public.credit_consumption;
-CREATE POLICY stemloops_app_all ON public.credit_consumption FOR ALL TO stemloops_app
-  USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.credit_consumption TO stemloops_app;
+DROP POLICY IF EXISTS stemloops_app_insert ON public.credit_consumption;
+DROP POLICY IF EXISTS stemloops_app_select ON public.credit_consumption;
+CREATE POLICY stemloops_app_insert ON public.credit_consumption FOR INSERT TO stemloops_app WITH CHECK (true);
+CREATE POLICY stemloops_app_select ON public.credit_consumption FOR SELECT TO stemloops_app USING (true);
+GRANT SELECT, INSERT ON public.credit_consumption TO stemloops_app;
 
 ------------------------------------------------------------------------------
 -- 10. check_credit_decrement trigger (processor-separation §1.2a):
@@ -241,8 +272,13 @@ CREATE OR REPLACE FUNCTION public.check_credit_decrement()
 AS $$
 DECLARE
   _input_kind text;
+  _job_user_id uuid;
 BEGIN
-  SELECT input_kind INTO _input_kind FROM public.jobs WHERE id = NEW.job_id;
+  -- Pull input_kind AND user_id so we can also assert the consumption row
+  -- actually belongs to the job it claims (Lens A finding #11, defense-in-depth
+  -- against a worker-side wiring bug debiting the wrong account).
+  SELECT input_kind, user_id INTO _input_kind, _job_user_id
+    FROM public.jobs WHERE id = NEW.job_id;
   IF _input_kind IS NULL THEN
     RAISE EXCEPTION 'credit_consumption rejected: job % not found', NEW.job_id;
   END IF;
@@ -250,12 +286,22 @@ BEGIN
     RAISE EXCEPTION 'credit_consumption rejected: job % is not input_kind=upload (processor separation TSD §1.2a, is=%)',
       NEW.job_id, _input_kind;
   END IF;
+  IF _job_user_id IS NOT NULL AND _job_user_id != NEW.user_id THEN
+    RAISE EXCEPTION 'credit_consumption rejected: NEW.user_id % does not match jobs.user_id % (billing-account mismatch)',
+      NEW.user_id, _job_user_id;
+  END IF;
   RETURN NEW;
 END;
 $$;
+-- Locks down EXECUTE: SECURITY DEFINER functions default to EXECUTE TO PUBLIC.
+REVOKE EXECUTE ON FUNCTION public.check_credit_decrement() FROM PUBLIC;
+
 DROP TRIGGER IF EXISTS credit_decrement_check ON public.credit_consumption;
+-- INSERT OR UPDATE: defense-in-depth. UPDATE is also denied at the grant level,
+-- but a trigger covering UPDATE means a future policy-relaxation does not
+-- silently drop the processor-separation invariant (Lens B finding #2).
 CREATE TRIGGER credit_decrement_check
-  BEFORE INSERT ON public.credit_consumption
+  BEFORE INSERT OR UPDATE ON public.credit_consumption
   FOR EACH ROW EXECUTE PROCEDURE public.check_credit_decrement();
 
 ------------------------------------------------------------------------------
@@ -267,8 +313,10 @@ CREATE OR REPLACE VIEW public.v_credit_balance
   WITH (security_invoker = true)
 AS
   SELECT u.id AS user_id,
+    -- SUM returns NULL on empty set so COALESCE stays; COUNT returns 0 so it
+    -- does not (Lens A nit #14).
     COALESCE((SELECT SUM(credits_granted)::bigint FROM public.credit_purchases WHERE user_id = u.id), 0)
-    - COALESCE((SELECT COUNT(*) FROM public.credit_consumption WHERE user_id = u.id), 0)
+    - (SELECT COUNT(*) FROM public.credit_consumption WHERE user_id = u.id)
     AS credits_remaining
   FROM public.users u;
 GRANT SELECT ON public.v_credit_balance TO authenticated, stemloops_app;
@@ -289,10 +337,14 @@ ALTER TABLE public.promo_redemptions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS promo_redemptions_self_read ON public.promo_redemptions;
 CREATE POLICY promo_redemptions_self_read ON public.promo_redemptions
   FOR SELECT TO authenticated USING (auth.uid() = user_id);
+-- APPEND-ONLY audit per TSD §1.6 V3-C9: no UPDATE/DELETE from the worker.
+-- Keeps coupon-abuse evidence immutable.
 DROP POLICY IF EXISTS stemloops_app_all ON public.promo_redemptions;
-CREATE POLICY stemloops_app_all ON public.promo_redemptions FOR ALL TO stemloops_app
-  USING (true) WITH CHECK (true);
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.promo_redemptions TO stemloops_app;
+DROP POLICY IF EXISTS stemloops_app_insert ON public.promo_redemptions;
+DROP POLICY IF EXISTS stemloops_app_select ON public.promo_redemptions;
+CREATE POLICY stemloops_app_insert ON public.promo_redemptions FOR INSERT TO stemloops_app WITH CHECK (true);
+CREATE POLICY stemloops_app_select ON public.promo_redemptions FOR SELECT TO stemloops_app USING (true);
+GRANT SELECT, INSERT ON public.promo_redemptions TO stemloops_app;
 
 ------------------------------------------------------------------------------
 -- 13. trial_grants (§1.6 V3-C10 — 3-song free trial, no card required)
@@ -315,7 +367,22 @@ CREATE POLICY stemloops_app_all ON public.trial_grants FOR ALL TO stemloops_app
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.trial_grants TO stemloops_app;
 
 ------------------------------------------------------------------------------
--- 14. Supabase auth.users → public.users trigger (V3-U4 per TSD §2.4)
+-- 14. Minimal 'free' plan row (self-contained, pre-trigger):
+--     Fixes the Lens A finding #4 sequencing hazard — the handle_new_user
+--     trigger inserts an entitlements row with plan_code='free', which FKs
+--     into plans(code). If this migration is applied without 014 yet, every
+--     signup would FK-fail. Self-seed a minimal 'free' row here; 014 then
+--     UPSERTs the full catalog. Nothing depends on 014's richer values for
+--     a signup to succeed.
+------------------------------------------------------------------------------
+INSERT INTO public.plans
+  (code, display_name, price_usd_cents, monthly_job_quota, services, export_stems, export_wav24, active)
+VALUES
+  ('free', 'Free', 0, 90, ARRAY['youtube','spotify','soundcloud']::text[], false, false, true)
+ON CONFLICT (code) DO NOTHING;
+
+------------------------------------------------------------------------------
+-- 15. Supabase auth.users → public.users trigger (V3-U4 per TSD §2.4)
 --     Seeds public.users AND a 'free' entitlement row on sign-up.
 ------------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.handle_new_user()
@@ -325,8 +392,14 @@ CREATE OR REPLACE FUNCTION public.handle_new_user()
   SET search_path = public, pg_temp
 AS $$
 BEGIN
+  -- Supabase auth.users.email is nullable (phone-auth, OAuth providers that
+  -- omit email). public.users.email is NOT NULL (TSD §2.3 line 352). A raw
+  -- VALUES (NEW.email) would then abort the whole signup transaction (Lens A
+  -- finding #3 + Lens B finding #4). Fall back to a derived placeholder so
+  -- the row seeds successfully; the API layer can later reconcile a real
+  -- email through the Supabase email-add flow if the provider returns one.
   INSERT INTO public.users (id, email)
-    VALUES (NEW.id, NEW.email)
+    VALUES (NEW.id, COALESCE(NEW.email, NEW.id::text || '@noemail.local'))
     ON CONFLICT (id) DO NOTHING;
   INSERT INTO public.entitlements (user_id, plan_code, period_start, period_end)
     VALUES (NEW.id, 'free', date_trunc('month', now()),
@@ -335,11 +408,32 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+REVOKE EXECUTE ON FUNCTION public.handle_new_user() FROM PUBLIC;
 
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+
+------------------------------------------------------------------------------
+-- 16. subscriptions.updated_at auto-update (Lens A finding #8)
+--     Any UPDATE on subscriptions bumps updated_at to now(). Downstream
+--     freshness checks (webhook replay dedupe) depend on this being live.
+------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.touch_subscription_updated_at()
+  RETURNS trigger
+  LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS subscriptions_touch_updated_at ON public.subscriptions;
+CREATE TRIGGER subscriptions_touch_updated_at
+  BEFORE UPDATE ON public.subscriptions
+  FOR EACH ROW EXECUTE PROCEDURE public.touch_subscription_updated_at();
 
 ------------------------------------------------------------------------------
 -- A3. cowork_ro read policy applied to every NEW public table in this migration

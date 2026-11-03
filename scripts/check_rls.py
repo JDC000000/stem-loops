@@ -141,10 +141,19 @@ AUTHUID_REF_RE = re.compile(
 # -- Helpers ------------------------------------------------------------------
 
 def strip_sql_comments(text: str) -> str:
-    """Remove -- line comments and /* ... */ block comments."""
-    text = re.sub(r"/\*[\s\S]*?\*/", "", text)
-    text = re.sub(r"--[^\n]*", "", text)
-    return text
+    """Remove `--` line comments and `/* ... */` block comments.
+
+    The naive regex version at this file's HEAD was fooled by comment markers
+    inside string literals: `SELECT '/*'; CREATE TABLE evil(); SELECT '*/';`
+    swallowed the CREATE TABLE as if it was a block comment. That gave an
+    attacker a one-line gate bypass (round-1 Lens finding).
+
+    Fix: reuse the single-pass lexer in `_mask_non_comment_lexical` by
+    returning a version that blanks comments and leaves strings/dollar-quoted
+    bodies/quoted identifiers alone. Length-preserving so downstream regex
+    positions are stable.
+    """
+    return _mask_lexical(text, blank_comments=True, blank_strings=False)
 
 
 # Dollar-quoted body opener/closer: `$$` or `$tag$`. Non-tag chars are not
@@ -152,21 +161,23 @@ def strip_sql_comments(text: str) -> str:
 _DOLLAR_TAG_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
 
 
-def _mask_non_comment_lexical(text: str) -> str:
-    """Replace SQL string literals, quoted identifiers, dollar-quoted bodies and
-    /* */ block comments with equal-length whitespace so a
-    `-- rls-backend-only:` sequence buried inside them cannot match
-    BACKEND_ONLY_MARKER_RE. LINE comments (`-- ...`) are left intact because
-    legitimate markers live on them; the marker regex runs on THIS output.
+def _mask_lexical(text: str, *, blank_comments: bool, blank_strings: bool) -> str:
+    """Single left-to-right lexer pass that first-token-wins over `--` comments,
+    `/* */` block comments, string literals ('..', E'..', U&'..'), quoted
+    identifiers ("..") and dollar-quoted bodies ($$..$$ or $tag$..$tag$).
 
-    Implemented as a single left-to-right lexer pass (not sequential regex
-    substitutions) so the first token to start wins:
-      * a `--` comment is consumed to end-of-line BEFORE any quote handling, so
-        an apostrophe in a comment (`shouldn't`) cannot open a phantom string
-        that swallows later lines and their markers (the bug that forced
-        migration 013 to be written without apostrophes);
-      * conversely a `--` or `'` inside a string / dollar body / block comment
-        is just text, so `'a -- b'` never truncates the string early.
+    The two callers pick which regions to blank:
+
+      strip_sql_comments(text)
+        → blank_comments=True, blank_strings=False — removes comments without
+          mis-interpreting comment markers hidden inside string literals (the
+          `SELECT '/*'` → "0 tables found" bypass from round-1 Lens finding).
+
+      _mask_non_comment_lexical(text)
+        → blank_comments=False, blank_strings=True — masks strings and
+          dollar-bodies so `-- rls-backend-only:` sequences hidden inside
+          them cannot match BACKEND_ONLY_MARKER_RE, while leaving `--`
+          line comments intact (legitimate markers live on them).
 
     Length is preserved (newlines kept, everything else replaced with spaces)
     so regex line/column accounting isn't affected for callers. Dollar-quote
@@ -188,11 +199,18 @@ def _mask_non_comment_lexical(text: str) -> str:
         c = text[i]
         if c == "-" and text.startswith("--", i):
             nl = text.find("\n", i)
-            i = n if nl < 0 else nl  # leave the comment text untouched
+            j = n if nl < 0 else nl
+            if blank_comments:
+                blank(i, j)
+            i = j
         elif c == "/" and text.startswith("/*", i):
             close = text.find("*/", i + 2)
             j = n if close < 0 else close + 2
-            blank(i, j)
+            # block comments are also "comment" territory — blank them when
+            # either comment-blanking or string-blanking is on (the latter
+            # preserves the existing `_mask_non_comment_lexical` behaviour).
+            if blank_comments or blank_strings:
+                blank(i, j)
             i = j
         elif c == "'":
             # E'...' strings also honour backslash escapes.
@@ -212,7 +230,8 @@ def _mask_non_comment_lexical(text: str) -> str:
                 else:
                     j += 1
             j = min(j, n)
-            blank(i, j)  # unterminated -> masks to EOF (fail closed)
+            if blank_strings:
+                blank(i, j)  # unterminated -> masks to EOF (fail closed)
             i = j
         elif c == '"':
             j = i + 1
@@ -225,7 +244,8 @@ def _mask_non_comment_lexical(text: str) -> str:
                 else:
                     j += 1
             j = min(j, n)
-            blank(i, j)
+            if blank_strings:
+                blank(i, j)
             i = j
         elif c == "$" and not (i > 0 and is_ident_char(text[i - 1])):
             m = _DOLLAR_TAG_RE.match(text, i)
@@ -235,15 +255,24 @@ def _mask_non_comment_lexical(text: str) -> str:
             tag = m.group(0)
             close = text.find(tag, m.end())
             if close < 0:
-                blank(m.end(), n)  # unterminated: mask everything after opener
+                if blank_strings:
+                    blank(m.end(), n)  # unterminated: mask everything after opener
                 i = n
             else:
-                blank(m.end(), close)
+                if blank_strings:
+                    blank(m.end(), close)
                 i = close + len(tag)
         else:
             i += 1
 
     return "".join(out)
+
+
+def _mask_non_comment_lexical(text: str) -> str:
+    """Mask strings, quoted identifiers, dollar-bodies and block comments to
+    whitespace while leaving `-- ...` line comments intact (legitimate markers
+    live on those)."""
+    return _mask_lexical(text, blank_comments=False, blank_strings=True)
 
 
 def _tables_in_foreach(do_block: str) -> set[str]:

@@ -204,3 +204,54 @@ def test_quoted_policy_name_accepted(tmp_path, capsys, name):
     sql = _GOOD.replace("CREATE POLICY stemloops_app_all", f"CREATE POLICY {name}")
     rc, out = _run(tmp_path, {"013_w.sql": sql}, capsys)
     assert rc == 0, out
+
+
+# --- Round-2: strip_sql_comments bypass fix (LOW-MED finding) ---------------
+
+def test_strip_comments_does_not_mis_interpret_block_comment_in_string(tmp_path, capsys):
+    """Round-1 Lens finding: `SELECT '/*'; CREATE TABLE evil(...); SELECT '*/';`
+    ate the CREATE TABLE as if it were a block-comment body (regex approach
+    is single-pass; a `/*` inside a string literal still opened a comment).
+    Must now see the CREATE TABLE and flag it as unprotected."""
+    sql = (
+        "SELECT '/*';\n"
+        "CREATE TABLE evil (id int);\n"
+        "SELECT '*/';\n"
+    )
+    rc, out = _run(tmp_path, {"013_e.sql": sql}, capsys)
+    assert rc == 1, out
+    assert "evil" in out, "evil table slipped past strip_sql_comments; gate bypass vector"
+
+
+def test_strip_comments_does_not_truncate_string_with_double_dash(tmp_path, capsys):
+    """A `--` inside a string literal must stay plain text; it must not
+    short-circuit the rest of a line of DDL (round-1 Lens finding)."""
+    sql = (
+        "INSERT INTO plans VALUES ('free -- not a comment');\n"
+        "CREATE TABLE evil (id int);\n"
+    )
+    rc, out = _run(tmp_path, {"013_e.sql": sql}, capsys)
+    # The CREATE TABLE must still be recognised (it is on its own line, so
+    # the behaviour is "see the table and complain about missing RLS").
+    assert rc == 1, out
+    assert "evil" in out
+
+
+# --- Round-2: ratchet to flip STRICT_FROM_MIGRATION when 011 lands ----------
+
+def test_ratchet_fails_once_011_exists_in_tree(tmp_path, capsys):
+    """Round-1 Lens finding: STRICT_FROM_MIGRATION=13 means rules (c)/(d) do
+    not actually fire on V2-era tables until 011 (role catchup) merges to
+    v3/main AND the constant is lowered to 1. There is no mechanism forcing
+    that flip. This ratchet test fails once 011_*.sql exists in the real
+    migrations tree while the constant is still > 1 — the fix is a 1-char
+    change to the constant.
+    """
+    migrations = Path(__file__).resolve().parents[1] / "migrations"
+    eleven_exists = any(migrations.glob("011_*.sql"))
+    if eleven_exists and check_rls.STRICT_FROM_MIGRATION > 1:
+        raise AssertionError(
+            "011_*.sql is on the base branch now. Lower STRICT_FROM_MIGRATION "
+            "to 1 in scripts/check_rls.py so rules (c)/(d) cover the full tree. "
+            f"(current: STRICT_FROM_MIGRATION={check_rls.STRICT_FROM_MIGRATION})"
+        )

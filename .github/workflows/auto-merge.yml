@@ -19,6 +19,14 @@ permissions:
   contents: write
   pull-requests: write
 
+# Serialize per-PR so a labeled run and a synchronize run cannot reorder and
+# leave auto-merge armed on an un-reviewed commit. cancel-in-progress stays
+# false — a drop-stale-review run must finish once it has started, even if
+# a labeled run arrives after it.
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   enable-auto-merge:
     name: Enable auto-merge on rollback-safe + adversarial-reviewed PRs
@@ -55,10 +63,21 @@ jobs:
       - name: Disable any pending auto-merge
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        # Check first, then disable: the previous `|| echo ...` swallowed real
+        # errors (403, GraphQL, network) and let the label-removal step run
+        # with auto-merge still armed — the exact hole this guard is meant to
+        # close. If disable fails for a real reason, fail the job loudly.
         run: |
-          gh pr merge "${{ github.event.pull_request.number }}" \
-            --repo "${{ github.repository }}" \
-            --disable-auto || echo "auto-merge was not enabled; nothing to disable."
+          set -euo pipefail
+          armed=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [ "$armed" = "true" ]; then
+            gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto
+          else
+            echo "auto-merge was not armed; nothing to disable."
+          fi
 
       - name: Remove label and comment
         uses: actions/github-script@v7

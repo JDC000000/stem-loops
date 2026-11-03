@@ -15,6 +15,17 @@ Rules enforced:
      file, OR (b) have at least one policy whose text references
      `auth.uid()` or `request.jwt.claim` (so user-data tables cannot be
      silently guarded only by a service_role-bypass policy).
+  4. (rule c, TSD 2.1a) Every table created in migration >= STRICT_FROM_MIGRATION
+     must have a `stemloops_app_all` policy, `FOR ALL TO stemloops_app` (the
+     worker write path). Applies to backend-only tables too: they are written
+     ONLY through this role.
+  5. (rule d, TSD 2.1a) Every table created in migration >= STRICT_FROM_MIGRATION
+     must have a `cowork_ro_read` policy (direct CREATE POLICY, an A3-style DO
+     block with FOREACH ARRAY[...], or an A3 `FROM pg_tables` loop).
+
+Rules 4+5 are scoped by migration number (not a feature flag) so V2-era tables
+that predate the stemloops_app / cowork_ro catch-up (migration 011) do not fail
+the gate. Once 011 is on the base branch, set STRICT_FROM_MIGRATION to 1.
 
 Backend-only marker format (comment line, any migration file):
   -- rls-backend-only: jobs, job_events, loops
@@ -63,12 +74,37 @@ ENABLE_RLS_RE = re.compile(
 # CREATE POLICY <name> ON <table> <body up to ; or end-of-text>
 # Body is captured so we can scan it for auth.uid() references (rule 3).
 CREATE_POLICY_RE = re.compile(
-    r"CREATE\s+POLICY\s+\S+\s+ON\s+"
+    r'CREATE\s+POLICY\s+(?P<pname>"[^"]+"|\S+)\s+ON\s+'
     r"(?:(?:[A-Za-z_][A-Za-z0-9_]*)\.)?"
-    r'(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))'
-    r"([\s\S]*?)(?:;|\Z)",
+    r'(?:"(?P<tq>[^"]+)"|(?P<tb>[A-Za-z_][A-Za-z0-9_]*))'
+    r"(?P<body>[\s\S]*?)(?:;|\Z)",
     re.IGNORECASE,
 )
+
+# Rules (c)/(d). Strict scope: only tables first created in a migration whose
+# numeric prefix is >= this value are checked. 013 = first migration authored
+# against the stemloops_app / cowork_ro template; 011 (catch-up for V2 tables)
+# is not on the base branch yet. Lower to 1 once 011 lands.
+STRICT_FROM_MIGRATION = 13
+
+_MIGRATION_NUM_RE = re.compile(r"^(\d+)_")
+
+# `FOR ALL` + `TO stemloops_app` (exact role: \b stops at `stemloops_app_all`).
+_FOR_ALL_RE = re.compile(r"\bFOR\s+ALL\b", re.IGNORECASE)
+_TO_APP_ROLE_RE = re.compile(r"\bTO\b[^;]*?\bstemloops_app\b", re.IGNORECASE)
+
+# Inside a DO block (policy often built via format('...')): one statement,
+# bounded by `;`, that creates stemloops_app_all FOR ALL TO stemloops_app.
+DO_APP_ALL_RE = re.compile(
+    r'CREATE\s+POLICY\s+"?stemloops_app_all"?\s+ON\b[^;]*?\bFOR\s+ALL\b'
+    r"[^;]*?\bTO\b[^;]*?\bstemloops_app\b",
+    re.IGNORECASE,
+)
+DO_COWORK_RE = re.compile(
+    r'CREATE\s+POLICY\s+"?cowork_ro_read"?\s+ON\b', re.IGNORECASE
+)
+# A3 catch-all loop: `FOR t IN SELECT tablename FROM pg_tables ...`.
+PG_TABLES_LOOP_RE = re.compile(r"\bFROM\s+pg_tables\b", re.IGNORECASE)
 
 # DO $$ ... $$ blocks, non-greedy. Parsing each block independently (rather
 # than lumping all blocks in a file together) closes the review-1 finding
@@ -114,64 +150,100 @@ def strip_sql_comments(text: str) -> str:
 # Dollar-quoted body opener/closer: `$$` or `$tag$`. Non-tag chars are not
 # allowed inside the tag (Postgres identifier rules).
 _DOLLAR_TAG_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
-# Single-quoted SQL string literal. `''` is an escaped single quote inside.
-_SQL_STRING_RE = re.compile(r"'(?:[^']|'')*'")
-# /* ... */ block comment, non-greedy.
-_SQL_BLOCK_COMMENT_RE = re.compile(r"/\*[\s\S]*?\*/")
 
 
 def _mask_non_comment_lexical(text: str) -> str:
-    """Replace SQL string literals, dollar-quoted bodies, and /* */ block
-    comments with equal-length whitespace so a `-- rls-backend-only:` sequence
-    buried inside them cannot match BACKEND_ONLY_MARKER_RE. LINE comments
-    (`-- ...`) are left intact because legitimate markers live on them.
+    """Replace SQL string literals, quoted identifiers, dollar-quoted bodies and
+    /* */ block comments with equal-length whitespace so a
+    `-- rls-backend-only:` sequence buried inside them cannot match
+    BACKEND_ONLY_MARKER_RE. LINE comments (`-- ...`) are left intact because
+    legitimate markers live on them; the marker regex runs on THIS output.
+
+    Implemented as a single left-to-right lexer pass (not sequential regex
+    substitutions) so the first token to start wins:
+      * a `--` comment is consumed to end-of-line BEFORE any quote handling, so
+        an apostrophe in a comment (`shouldn't`) cannot open a phantom string
+        that swallows later lines and their markers (the bug that forced
+        migration 013 to be written without apostrophes);
+      * conversely a `--` or `'` inside a string / dollar body / block comment
+        is just text, so `'a -- b'` never truncates the string early.
 
     Length is preserved (newlines kept, everything else replaced with spaces)
-    so regex line/column accounting isn't affected for callers.
-
-    This closes the residual round-3 Lens B vectors: multi-line string with
-    embedded marker, dollar-quoted DO body with embedded marker, and
-    multi-line block comment with embedded marker.
+    so regex line/column accounting isn't affected for callers. Dollar-quote
+    tags themselves are left in place; only the body is blanked.
     """
+    n = len(text)
+    out = list(text)
 
-    def _space_pad(s: str) -> str:
-        # Preserve newlines (so re.MULTILINE anchors still line up) and replace
-        # every non-newline with a space of equal length.
-        return "".join("\n" if ch == "\n" else " " for ch in s)
+    def blank(a: int, b: int) -> None:
+        for k in range(a, b):
+            if out[k] != "\n":
+                out[k] = " "
 
-    # 1. Dollar-quoted bodies FIRST. They can contain anything — including
-    #    single quotes — so masking them first prevents the string-literal
-    #    pass below from getting confused by a stray `'` inside a body.
-    out_parts: list[str] = []
+    def is_ident_char(ch: str) -> bool:
+        return ch.isalnum() or ch in "_$"
+
     i = 0
-    while i < len(text):
-        m = _DOLLAR_TAG_RE.search(text, i)
-        if not m:
-            out_parts.append(text[i:])
-            break
-        open_tag = m.group(0)  # literal "$$" or "$foo$"
-        out_parts.append(text[i : m.start()])
-        # Look for matching close tag (same literal).
-        close_idx = text.find(open_tag, m.end())
-        if close_idx < 0:
-            # Unterminated dollar-quote — mask everything after the opener.
-            out_parts.append(open_tag + _space_pad(text[m.end() :]))
-            i = len(text)
-            break
-        body = text[m.end() : close_idx]
-        out_parts.append(open_tag + _space_pad(body) + open_tag)
-        i = close_idx + len(open_tag)
-    text = "".join(out_parts)
+    while i < n:
+        c = text[i]
+        if c == "-" and text.startswith("--", i):
+            nl = text.find("\n", i)
+            i = n if nl < 0 else nl  # leave the comment text untouched
+        elif c == "/" and text.startswith("/*", i):
+            close = text.find("*/", i + 2)
+            j = n if close < 0 else close + 2
+            blank(i, j)
+            i = j
+        elif c == "'":
+            # E'...' strings also honour backslash escapes.
+            esc = i > 0 and text[i - 1] in "eE" and (
+                i == 1 or not is_ident_char(text[i - 2])
+            )
+            j = i + 1
+            while j < n:
+                if esc and text[j] == "\\":
+                    j += 2
+                elif text[j] == "'":
+                    if text.startswith("''", j):
+                        j += 2
+                    else:
+                        j += 1
+                        break
+                else:
+                    j += 1
+            j = min(j, n)
+            blank(i, j)  # unterminated -> masks to EOF (fail closed)
+            i = j
+        elif c == '"':
+            j = i + 1
+            while j < n:
+                if text.startswith('""', j):
+                    j += 2
+                elif text[j] == '"':
+                    j += 1
+                    break
+                else:
+                    j += 1
+            j = min(j, n)
+            blank(i, j)
+            i = j
+        elif c == "$" and not (i > 0 and is_ident_char(text[i - 1])):
+            m = _DOLLAR_TAG_RE.match(text, i)
+            if not m:
+                i += 1
+                continue
+            tag = m.group(0)
+            close = text.find(tag, m.end())
+            if close < 0:
+                blank(m.end(), n)  # unterminated: mask everything after opener
+                i = n
+            else:
+                blank(m.end(), close)
+                i = close + len(tag)
+        else:
+            i += 1
 
-    # 2. /* ... */ block comments.
-    text = _SQL_BLOCK_COMMENT_RE.sub(lambda m: _space_pad(m.group(0)), text)
-
-    # 3. Single-quoted SQL strings. Done LAST so an apostrophe inside a
-    #    (now-masked) dollar-quote or block comment can't mis-pair with a
-    #    real string's opener.
-    text = _SQL_STRING_RE.sub(lambda m: _space_pad(m.group(0)), text)
-
-    return text
+    return "".join(out)
 
 
 def _tables_in_foreach(do_block: str) -> set[str]:
@@ -190,7 +262,10 @@ def _tables_in_foreach(do_block: str) -> set[str]:
 
 def _table_name_from_match(m: re.Match) -> str | None:
     """Return the first non-None capture of a quoted|bare identifier."""
-    name = m.group(1) or m.group(2)
+    if "tq" in m.re.groupindex:
+        name = m.group("tq") or m.group("tb")
+    else:
+        name = m.group(1) or m.group(2)
     if not name:
         return None
     if name.upper() in SQL_KEYWORD_BLACKLIST:
@@ -200,7 +275,22 @@ def _table_name_from_match(m: re.Match) -> str | None:
 
 # -- Main ---------------------------------------------------------------------
 
-def main(migrations_dir: Path) -> int:
+def _migration_num(path: Path) -> int:
+    """Numeric prefix of NNN_name.sql; unnumbered files count as strict."""
+    m = _MIGRATION_NUM_RE.match(path.name)
+    return int(m.group(1)) if m else 10**9
+
+
+def _is_app_all_policy(name: str, body: str) -> bool:
+    return (
+        name.strip('"') == "stemloops_app_all"
+        and bool(_FOR_ALL_RE.search(body))
+        and bool(_TO_APP_ROLE_RE.search(body))
+    )
+
+
+def main(migrations_dir: Path,
+         strict_from: int = STRICT_FROM_MIGRATION) -> int:
     sql_files = sorted(migrations_dir.glob("*.sql"))
     if not sql_files:
         print(f"RLS gate: no .sql files found under {migrations_dir}",
@@ -212,14 +302,26 @@ def main(migrations_dir: Path) -> int:
     policies_on: set[str] = set()
     policies_with_authuid: set[str] = set()
     backend_only: set[str] = set()
+    # Rules (c)/(d) bookkeeping.
+    created_pos: dict[str, int] = {}   # table -> index of first creating file
+    created_num: dict[str, int] = {}   # table -> migration number of that file
+    app_all: set[str] = set()          # stemloops_app_all FOR ALL TO stemloops_app
+    cowork_read: set[str] = set()      # cowork_ro_read exists
+    # Catch-all (`FROM pg_tables`) loops cover every table created in that file
+    # or any earlier one: remember the file index of each such loop.
+    app_all_wild: list[int] = []
+    cowork_wild: list[int] = []
 
-    for f in sql_files:
+    for pos, f in enumerate(sql_files):
         raw = f.read_text()
+        num = _migration_num(f)
 
         # Markers live in LINE comments — but a `-- rls-backend-only: X`
         # sequence can also appear inside a string literal, dollar-quoted body
         # or /* */ block comment, where it means NOTHING. Pre-mask those so
-        # the regex only matches real comment lines. (round-3 Lens B fix)
+        # the regex only matches real comment lines. The masker keeps genuine
+        # `--` comment lines intact (and no longer lets an apostrophe inside
+        # one open a phantom string).
         marker_text = _mask_non_comment_lexical(raw)
         for m in BACKEND_ONLY_MARKER_RE.finditer(marker_text):
             for name in m.group(1).split(","):
@@ -234,6 +336,9 @@ def main(migrations_dir: Path) -> int:
             name = _table_name_from_match(m)
             if name:
                 created_tables.add(name)
+                if name not in created_pos:
+                    created_pos[name] = pos
+                    created_num[name] = num
 
         # 2. Plain ALTER TABLE ... ENABLE RLS
         for m in ENABLE_RLS_RE.finditer(text):
@@ -246,16 +351,28 @@ def main(migrations_dir: Path) -> int:
             name = _table_name_from_match(m)
             if not name:
                 continue
-            body = m.group(3) or ""
+            body = m.group("body") or ""
             policies_on.add(name)
             if AUTHUID_REF_RE.search(body):
                 policies_with_authuid.add(name)
+            pname = m.group("pname").strip('"')
+            if _is_app_all_policy(pname, body):
+                app_all.add(name)
+            if pname == "cowork_ro_read":
+                cowork_read.add(name)
 
         # 4. DO blocks: parse each one INDEPENDENTLY so mismatched arrays
         #    in two blocks can't cheat the gate (fixes review-1 finding).
         for do_match in DO_BLOCK_RE.finditer(text):
             block = do_match.group(1)
             block_tables = _tables_in_foreach(block)
+            has_app_all = bool(DO_APP_ALL_RE.search(block))
+            has_cowork = bool(DO_COWORK_RE.search(block))
+            if PG_TABLES_LOOP_RE.search(block):
+                if has_app_all:
+                    app_all_wild.append(pos)
+                if has_cowork:
+                    cowork_wild.append(pos)
             if not block_tables:
                 continue
             if "ENABLE ROW LEVEL SECURITY" in block.upper():
@@ -266,14 +383,32 @@ def main(migrations_dir: Path) -> int:
                 # embed an auth.uid() reference in the format string.
                 if AUTHUID_REF_RE.search(block):
                     policies_with_authuid.update(block_tables)
+            if has_app_all:
+                app_all.update(block_tables)
+            if has_cowork:
+                cowork_read.update(block_tables)
+
+    def covered(t: str, direct: set[str], wild: list[int]) -> bool:
+        return t in direct or any(w >= created_pos[t] for w in wild)
+
+    strict_tables = {
+        t for t in created_tables if created_num[t] >= strict_from
+    }
+    app_ok = {t for t in strict_tables if covered(t, app_all, app_all_wild)}
+    cowork_ok = {t for t in strict_tables
+                 if covered(t, cowork_read, cowork_wild)}
 
     missing_rls = sorted(created_tables - rls_enabled)
     missing_policy = sorted(created_tables - policies_on)
     missing_user_scope = sorted(
         (created_tables - backend_only) - policies_with_authuid
     )
+    missing_app_all = sorted(strict_tables - app_ok)
+    missing_cowork = sorted(strict_tables - cowork_ok)
 
-    print(f"RLS gate: {len(created_tables)} tables found in {migrations_dir}")
+    print(f"RLS gate: {len(created_tables)} tables found in {migrations_dir} "
+          f"(rules c+d enforced for migrations >= {strict_from:03d}: "
+          f"{len(strict_tables)} tables)")
     for t in sorted(created_tables):
         rls_mark = "RLS" if t in rls_enabled else "---"
         pol_mark = "POL" if t in policies_on else "---"
@@ -282,7 +417,12 @@ def main(migrations_dir: Path) -> int:
             if t in backend_only
             else ("USER" if t in policies_with_authuid else "----")
         )
-        print(f"  [{rls_mark}][{pol_mark}][{scope_mark}] {t}")
+        if t in strict_tables:
+            app_mark = "APP" if t in app_ok else "---"
+            ro_mark = "RO" if t in cowork_ok else "--"
+        else:
+            app_mark, ro_mark = "n/a", "n/a"
+        print(f"  [{rls_mark}][{pol_mark}][{scope_mark}][{app_mark}][{ro_mark}] {t}")
 
     if backend_only:
         print(f"\nDeclared backend-only (service-role bypass only): "
@@ -315,15 +455,30 @@ def main(migrations_dir: Path) -> int:
               "comment in the migration file (for operational/service-only "
               "tables).")
         failed = True
+    if missing_app_all:
+        print(f"\nFAIL (rule c): tables without a `stemloops_app_all` policy "
+              f"(FOR ALL TO stemloops_app): {missing_app_all}")
+        print("  Add: CREATE POLICY stemloops_app_all ON <table> FOR ALL TO "
+              "stemloops_app USING (true) WITH CHECK (true);")
+        failed = True
+    if missing_cowork:
+        print(f"\nFAIL (rule d): tables without a `cowork_ro_read` policy: "
+              f"{missing_cowork}")
+        print("  Add the table to the A3 DO block (FOREACH ARRAY[...]) that "
+              "creates cowork_ro_read, or a direct CREATE POLICY cowork_ro_read.")
+        failed = True
 
     if failed:
         print("\nFix: every new table ships with RLS + >=1 policy. "
               "User-owned data must reference auth.uid(); operational tables "
-              "must be declared backend-only via marker comment.")
+              "must be declared backend-only via marker comment. Tables from "
+              f"migration {strict_from:03d} on also need stemloops_app_all "
+              "and cowork_ro_read policies.")
         return 1
 
-    print("\nOK: all tables have RLS enabled, >=1 policy, and per-user "
-          "scoping or backend-only declaration.")
+    print("\nOK: all tables have RLS enabled, >=1 policy, per-user "
+          "scoping or backend-only declaration, and (migration "
+          f">={strict_from:03d}) stemloops_app_all + cowork_ro_read.")
     return 0
 
 

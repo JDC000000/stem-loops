@@ -33,9 +33,13 @@ const ABS_URL = /\b[a-z][a-z0-9+.-]*:\/\/[^\s'"<>`]+/gi;
 const REL_URL_WITH_QUERY = /(^|[\s'"(=<[,])(\/[^\s'"<>`?#]*[?#][^\s'"<>`]*)/g;
 const AMZ_SECRET_PARAM = /(X-Amz-(?:Signature|Credential|Security-Token)=)[^&\s'"<>`]+/gi;
 const ORIGIN = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i;
-const DROP_HEADER = /^(cookie|set-cookie|authorization|proxy-authorization|x-forwarded-for|x-real-ip|forwarded|cf-connecting-ip|true-client-ip|x-vercel-forwarded-for|x-vercel-proxied-for|x-vercel-ip-.*|x-vercel-ja4-digest|x-invoke-query)$/i;
+const DROP_HEADER = /^(cookie|set-cookie|authorization|proxy-authorization|x-forwarded-for|x-real-ip|forwarded|cf-connecting-ip|true-client-ip|x-vercel-forwarded-for|x-vercel-proxied-for|x-vercel-ip-.*|x-vercel-ja4-digest|x-invoke-query|x-vercel-sc-.*)$/i;
 // Any header whose name says it carries a secret (x-vercel-oidc-token, x-vercel-proxy-signature...).
 const DROP_HEADER_SECRET = /(token|secret|signature|api-?key)/i;
+// SL-B10a: any header VALUE that looks like a bearer credential is dropped
+// outright (not scrubbed), because a token in a never-seen custom header
+// would survive the key-based filters otherwise.
+const DROP_HEADER_VALUE_BEARER = /bearer\s/i;
 const DROP_SPAN_ATTR = /(cookie|authorization|token|secret|client\.address|user\.ip|ip_address)/i;
 
 export function maskJobIds(s: string): string {
@@ -88,8 +92,10 @@ export function scrubEvent<T extends Ev>(event: T): T {
     const h = r.headers;
     if (h) {
       for (const k of Object.keys(h)) {
+        const v = h[k];
         if (DROP_HEADER.test(k) || DROP_HEADER_SECRET.test(k)) delete h[k];
-        else if (typeof h[k] === 'string') h[k] = scrubText(h[k] as string);
+        else if (typeof v === 'string' && DROP_HEADER_VALUE_BEARER.test(v)) delete h[k];
+        else if (typeof v === 'string') h[k] = scrubText(v);
       }
     }
   }

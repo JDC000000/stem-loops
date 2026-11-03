@@ -14,7 +14,7 @@ Git tags: `stem-loops-com-2026-11-02` (main `c3f6a911`, the website and the work
 | Audio storage | Cloudflare R2 (bucket from `R2_BUCKET_NAME`) | 24 h retention; no permanent user files |
 | Stem separation | Replicate (Demucs; model from `REPLICATE_DEMUCS_MODEL` / `REPLICATE_MODEL_VERSION`) | external API |
 
-YouTube link input is OFF (`ALLOW_YOUTUBE_INPUT` / `NEXT_PUBLIC_ALLOW_YOUTUBE_INPUT`); users upload their own file.
+YouTube link input is ON (`ALLOW_YOUTUBE_INPUT=true` / `NEXT_PUBLIC_ALLOW_YOUTUBE_INPUT=true` since 2026-07-18); users can also upload their own file.
 
 ### Worker source
 The v23 image has no git SHA inside it. v22 (2026-10-10T04:07Z) and v23 use the same image; main was at `52ffe33` when it was built. Between `52ffe33` and `c3f6a911`, worker runtime files changed only in `05b967d` ("style(worker): clear ruff + black findings"), plus test files and `packages/types/scripts/codegen.py`. So `c3f6a911` builds the same worker behaviour (inferred from the git history, not proven byte for byte). For a byte-exact worker, use the image above. For a rebuild, use either tag.

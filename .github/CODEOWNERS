@@ -1,0 +1,64 @@
+# CODEOWNERS — paths that always require Jon's review before merge.
+#
+# To actually ENFORCE this file, the repo's branch protection ruleset for
+# `main` and `v3/main` must have "Require review from Code Owners" enabled.
+# Without that setting the file is advisory only. Documented here either way
+# so the policy intent is in the repo.
+#
+# Pattern rules:
+#   * Last matching pattern wins per file (so put broader rules first)
+#   * `*` is the catch-all default owner
+#
+# This file pairs with .github/workflows/auto-merge.yml:
+#   - auto-merge fires on PRs labeled rollback-safe + adversarial-reviewed
+#     + NOT needs-jon-approval
+#   - A PR touching a CODEOWNERS path adds Jon as a required reviewer; once
+#     he approves, the auto-merge workflow can still complete the merge.
+#   - For paths that must NEVER auto-merge regardless, the convention is to
+#     ALSO add the `needs-jon-approval` label at PR open time.
+
+# Catch-all — everything has Jon as the default owner.
+*                                           @JDC000000
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Must-review paths (money-touching, prod-touching, legal-surface, or CI/auth).
+# A change here needs Jon's explicit GitHub approval before merging.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Database migrations — anything here will run against prod Supabase on deploy.
+apps/worker/migrations/**                   @JDC000000
+
+# Stripe webhook — money fulfillment + signature verification.
+apps/web/src/app/api/billing/webhook/**     @JDC000000
+
+# Stripe checkout + portal — they mint real Stripe sessions in prod.
+apps/web/src/app/api/billing/**             @JDC000000
+
+# Stripe client singleton — API version pin, RAK handling.
+apps/web/src/lib/stripe.ts                  @JDC000000
+
+# Supabase auth helper — identity surface.
+apps/web/src/lib/supabase-server.ts         @JDC000000
+
+# RLS gate script + migrations/down — security posture.
+scripts/check_rls.py                        @JDC000000
+apps/worker/migrations/down/**              @JDC000000
+
+# CI and workflows — auto-merge rules, branch protection surfaces.
+.github/workflows/**                        @JDC000000
+.github/CODEOWNERS                          @JDC000000
+
+# Legal copy — ToS, privacy, DMCA.
+docs/legal/**                               @JDC000000
+apps/web/src/app/terms/**                   @JDC000000
+apps/web/src/app/privacy/**                 @JDC000000
+
+# Deploy configuration — Fly, Vercel, Dockerfile.
+fly.toml                                    @JDC000000
+apps/web/vercel.json                        @JDC000000
+Dockerfile                                  @JDC000000
+docker-compose.yml                          @JDC000000
+docker-compose.dev.yml                      @JDC000000
+
+# Fetcher egress chain — SSRF surface, external API contracts.
+apps/worker/src/worker/downloader/**        @JDC000000

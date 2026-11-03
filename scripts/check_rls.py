@@ -111,6 +111,69 @@ def strip_sql_comments(text: str) -> str:
     return text
 
 
+# Dollar-quoted body opener/closer: `$$` or `$tag$`. Non-tag chars are not
+# allowed inside the tag (Postgres identifier rules).
+_DOLLAR_TAG_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
+# Single-quoted SQL string literal. `''` is an escaped single quote inside.
+_SQL_STRING_RE = re.compile(r"'(?:[^']|'')*'")
+# /* ... */ block comment, non-greedy.
+_SQL_BLOCK_COMMENT_RE = re.compile(r"/\*[\s\S]*?\*/")
+
+
+def _mask_non_comment_lexical(text: str) -> str:
+    """Replace SQL string literals, dollar-quoted bodies, and /* */ block
+    comments with equal-length whitespace so a `-- rls-backend-only:` sequence
+    buried inside them cannot match BACKEND_ONLY_MARKER_RE. LINE comments
+    (`-- ...`) are left intact because legitimate markers live on them.
+
+    Length is preserved (newlines kept, everything else replaced with spaces)
+    so regex line/column accounting isn't affected for callers.
+
+    This closes the residual round-3 Lens B vectors: multi-line string with
+    embedded marker, dollar-quoted DO body with embedded marker, and
+    multi-line block comment with embedded marker.
+    """
+
+    def _space_pad(s: str) -> str:
+        # Preserve newlines (so re.MULTILINE anchors still line up) and replace
+        # every non-newline with a space of equal length.
+        return "".join("\n" if ch == "\n" else " " for ch in s)
+
+    # 1. Dollar-quoted bodies FIRST. They can contain anything — including
+    #    single quotes — so masking them first prevents the string-literal
+    #    pass below from getting confused by a stray `'` inside a body.
+    out_parts: list[str] = []
+    i = 0
+    while i < len(text):
+        m = _DOLLAR_TAG_RE.search(text, i)
+        if not m:
+            out_parts.append(text[i:])
+            break
+        open_tag = m.group(0)  # literal "$$" or "$foo$"
+        out_parts.append(text[i : m.start()])
+        # Look for matching close tag (same literal).
+        close_idx = text.find(open_tag, m.end())
+        if close_idx < 0:
+            # Unterminated dollar-quote — mask everything after the opener.
+            out_parts.append(open_tag + _space_pad(text[m.end() :]))
+            i = len(text)
+            break
+        body = text[m.end() : close_idx]
+        out_parts.append(open_tag + _space_pad(body) + open_tag)
+        i = close_idx + len(open_tag)
+    text = "".join(out_parts)
+
+    # 2. /* ... */ block comments.
+    text = _SQL_BLOCK_COMMENT_RE.sub(lambda m: _space_pad(m.group(0)), text)
+
+    # 3. Single-quoted SQL strings. Done LAST so an apostrophe inside a
+    #    (now-masked) dollar-quote or block comment can't mis-pair with a
+    #    real string's opener.
+    text = _SQL_STRING_RE.sub(lambda m: _space_pad(m.group(0)), text)
+
+    return text
+
+
 def _tables_in_foreach(do_block: str) -> set[str]:
     """Expand table names from ONE DO block's FOREACH ARRAY[...]."""
     tables: set[str] = set()
@@ -153,8 +216,12 @@ def main(migrations_dir: Path) -> int:
     for f in sql_files:
         raw = f.read_text()
 
-        # Markers live in comments — parse raw text BEFORE stripping.
-        for m in BACKEND_ONLY_MARKER_RE.finditer(raw):
+        # Markers live in LINE comments — but a `-- rls-backend-only: X`
+        # sequence can also appear inside a string literal, dollar-quoted body
+        # or /* */ block comment, where it means NOTHING. Pre-mask those so
+        # the regex only matches real comment lines. (round-3 Lens B fix)
+        marker_text = _mask_non_comment_lexical(raw)
+        for m in BACKEND_ONLY_MARKER_RE.finditer(marker_text):
             for name in m.group(1).split(","):
                 name = name.strip()
                 if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):

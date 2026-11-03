@@ -60,3 +60,30 @@ export function skuToPriceId(sku: BillingSku): string {
 export function skuMode(sku: BillingSku): SkuMode {
   return SKU_TABLE[sku].mode;
 }
+
+/** Credits granted per one-time credit-pack purchase. 0 for subscriptions. */
+export function skuToCredits(sku: BillingSku): number {
+  switch (sku) {
+    case 'credits_20':
+      return 20;
+    case 'credits_60':
+      return 60;
+    case 'credits_180':
+      return 180;
+    case 'pro_monthly':
+    case 'studio_monthly':
+      return 0; // subscriptions grant a capability, not credit batches
+  }
+}
+
+/** Which capability a subscription SKU grants (null for credit packs). */
+export function subscriptionCapability(sku: BillingSku): string | null {
+  switch (sku) {
+    case 'pro_monthly':
+      return 'pro';
+    case 'studio_monthly':
+      return 'studio';
+    default:
+      return null;
+  }
+}

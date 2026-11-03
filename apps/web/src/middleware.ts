@@ -65,16 +65,26 @@ export async function middleware(request: NextRequest) {
   // `getSession()` (trusts the cookie). The verification cost is the
   // price of the middleware being the trust boundary; everything
   // downstream can then rely on the cookie.
-  await supabase.auth.getUser();
+  //
+  // Swallow errors: a transient Supabase outage must NOT take down every
+  // page in the app (round-1 Lens finding). The route-level `getUser()`
+  // will reach Supabase again with its own error path; here we just want
+  // the refresh side-effect when it works.
+  try {
+    await supabase.auth.getUser();
+  } catch {
+    // intentional: middleware is best-effort, enforcement lives in routes.
+  }
 
   return response;
 }
 
-// Run on every request except static assets and the Next.js image pipeline.
-// Keep the matcher generous: cheaper to refresh too often than to miss a
-// page that needed a fresh session.
+// Run on every request except static assets, the Next.js image pipeline,
+// and bare crawler paths (robots.txt, sitemap.xml). Keep the matcher
+// generous: cheaper to refresh too often than to miss a page that needed
+// a fresh session.
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
+    '/((?!_next/static|_next/image|robots\\.txt|sitemap\\.xml|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
   ],
 };

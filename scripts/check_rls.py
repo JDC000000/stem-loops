@@ -85,7 +85,7 @@ CREATE_POLICY_RE = re.compile(
 # numeric prefix is >= this value are checked. 013 = first migration authored
 # against the stemloops_app / cowork_ro template; 011 (catch-up for V2 tables)
 # is not on the base branch yet. Lower to 1 once 011 lands.
-STRICT_FROM_MIGRATION = 13
+STRICT_FROM_MIGRATION = 1
 
 _MIGRATION_NUM_RE = re.compile(r"^(\d+)_")
 

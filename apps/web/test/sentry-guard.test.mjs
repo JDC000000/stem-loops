@@ -159,11 +159,13 @@ test('scrubText strips queries from absolute AND relative URLs', async () => {
 });
 
 // Server errors reach Sentry through `onRequestError = Sentry.captureRequestError` (instrumentation.ts).
+// SL-B10a (2026-11-03): moved from apps/web/instrumentation.ts to apps/web/src/instrumentation.ts
+// (Next.js 14 with src/app layout only reads src/instrumentation.ts).
 // That path puts the raw path + query in contexts.nextjs.request_path and copies every request header
 // (referer, next-url, x-invoke-path, x-vercel-ip-*) onto the event. Drive the real SDK with each server-side
 // config's options and a capturing transport.
 test('instrumentation.ts reports server errors via captureRequestError', () => {
-  assert.match(readFileSync(join(WEB, 'instrumentation.ts'), 'utf8'), /onRequestError\s*=\s*Sentry\.captureRequestError/);
+  assert.match(readFileSync(join(WEB, 'src/instrumentation.ts'), 'utf8'), /onRequestError\s*=\s*Sentry\.captureRequestError/);
 });
 
 // The real SDK can be initialised only once per process, so it is initialised with the first config's

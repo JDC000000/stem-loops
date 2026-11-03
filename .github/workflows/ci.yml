@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, v3/main]
   pull_request:
-    branches: [main]
+    branches: [main, v3/main]
 
 jobs:
   types-drift:
@@ -187,3 +187,14 @@ jobs:
           AWS_SECRET_ACCESS_KEY: minioadmin
       - name: Fixture pipeline test (Postgres + MinIO)
         run: cd apps/worker && python -m pytest tests/test_pipeline_fixtures.py -v
+
+  rls-gate:
+    name: RLS gate (SL-B26 #1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Assert RLS + policy on every migration table
+        run: python scripts/check_rls.py apps/worker/migrations/

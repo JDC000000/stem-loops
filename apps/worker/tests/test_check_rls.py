@@ -28,12 +28,9 @@ def _markers(sql: str) -> set[str]:
 
 # -- Bug 1: masker ------------------------------------------------------------
 
+
 def test_apostrophe_in_line_comment_does_not_swallow_later_marker():
-    sql = (
-        "-- this shouldn't open a string\n"
-        "-- rls-backend-only: plans\n"
-        "SELECT 'x';\n"
-    )
+    sql = "-- this shouldn't open a string\n" "-- rls-backend-only: plans\n" "SELECT 'x';\n"
     assert _markers(sql) == {"plans"}
 
 
@@ -55,11 +52,7 @@ def test_marker_inside_string_still_ignored():
 def test_marker_inside_string_with_dashes_and_apostrophe_comment():
     # `--` inside a string must not truncate the string (and leave a dangling
     # quote), and a later real marker must still be seen.
-    sql = (
-        "-- don't mind me\n"
-        "SELECT 'a -- b', 'x';\n"
-        "-- rls-backend-only: real\n"
-    )
+    sql = "-- don't mind me\n" "SELECT 'a -- b', 'x';\n" "-- rls-backend-only: real\n"
     assert _markers(sql) == {"real"}
 
 
@@ -73,10 +66,7 @@ def test_marker_inside_dollar_body_and_block_comment_ignored():
 
 
 def test_escape_string_and_quoted_identifier():
-    sql = (
-        "SELECT E'it\\'s\\n-- rls-backend-only: evil', \"it's\";\n"
-        "-- rls-backend-only: ok\n"
-    )
+    sql = "SELECT E'it\\'s\\n-- rls-backend-only: evil', \"it's\";\n" "-- rls-backend-only: ok\n"
     assert _markers(sql) == {"ok"}
 
 
@@ -177,7 +167,9 @@ END $$;
     rc, out = _run(tmp_path, {"013_w.sql": sql, "014_catchup.sql": catchup}, capsys)
     assert rc == 0, out
     # ...but a loop in an EARLIER migration does not cover a later table.
-    rc, out = _run(tmp_path, {"013_w.sql": catchup, "014_w.sql": sql.replace("widgets", "later")}, capsys)
+    rc, out = _run(
+        tmp_path, {"013_w.sql": catchup, "014_w.sql": sql.replace("widgets", "later")}, capsys
+    )
     assert rc == 1 and "later" in out
 
 
@@ -208,16 +200,13 @@ def test_quoted_policy_name_accepted(tmp_path, capsys, name):
 
 # --- Round-2: strip_sql_comments bypass fix (LOW-MED finding) ---------------
 
+
 def test_strip_comments_does_not_mis_interpret_block_comment_in_string(tmp_path, capsys):
     """Round-1 Lens finding: `SELECT '/*'; CREATE TABLE evil(...); SELECT '*/';`
     ate the CREATE TABLE as if it were a block-comment body (regex approach
     is single-pass; a `/*` inside a string literal still opened a comment).
     Must now see the CREATE TABLE and flag it as unprotected."""
-    sql = (
-        "SELECT '/*';\n"
-        "CREATE TABLE evil (id int);\n"
-        "SELECT '*/';\n"
-    )
+    sql = "SELECT '/*';\n" "CREATE TABLE evil (id int);\n" "SELECT '*/';\n"
     rc, out = _run(tmp_path, {"013_e.sql": sql}, capsys)
     assert rc == 1, out
     assert "evil" in out, "evil table slipped past strip_sql_comments; gate bypass vector"
@@ -226,10 +215,7 @@ def test_strip_comments_does_not_mis_interpret_block_comment_in_string(tmp_path,
 def test_strip_comments_does_not_truncate_string_with_double_dash(tmp_path, capsys):
     """A `--` inside a string literal must stay plain text; it must not
     short-circuit the rest of a line of DDL (round-1 Lens finding)."""
-    sql = (
-        "INSERT INTO plans VALUES ('free -- not a comment');\n"
-        "CREATE TABLE evil (id int);\n"
-    )
+    sql = "INSERT INTO plans VALUES ('free -- not a comment');\n" "CREATE TABLE evil (id int);\n"
     rc, out = _run(tmp_path, {"013_e.sql": sql}, capsys)
     # The CREATE TABLE must still be recognised (it is on its own line, so
     # the behaviour is "see the table and complain about missing RLS").
@@ -238,6 +224,7 @@ def test_strip_comments_does_not_truncate_string_with_double_dash(tmp_path, caps
 
 
 # --- Round-2: ratchet to flip STRICT_FROM_MIGRATION when 011 lands ----------
+
 
 def test_ratchet_fails_once_011_exists_in_tree(tmp_path, capsys):
     """Round-1 Lens finding: STRICT_FROM_MIGRATION=13 means rules (c)/(d) do

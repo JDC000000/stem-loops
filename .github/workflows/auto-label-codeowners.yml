@@ -1,0 +1,41 @@
+# Auto-apply `needs-jon-approval` label to any PR whose diff touches a path
+# listed in .github/CODEOWNERS. This is the enforcement arm of CODEOWNERS:
+# CODEOWNERS says "Jon owns these paths"; this workflow says "if your PR
+# touches those paths, it gets the manual-review label and the auto-merge
+# workflow (auto-merge.yml) refuses to fire until Jon labels or merges by hand".
+#
+# Companion of auto-merge.yml. CODEOWNERS is the source of truth for which
+# paths matter; this workflow has to inline the patterns because GitHub
+# Actions doesn't ship a CODEOWNERS parser. When CODEOWNERS changes, update
+# the regex in the step below. (The file's small — this is tolerable.)
+
+name: Auto-label CODEOWNERS-touching PRs
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label-needs-approval:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check diff against CODEOWNERS paths
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          changed=$(gh pr diff "$PR_NUM" --repo "$REPO" --name-only)
+          echo "Changed files in PR #$PR_NUM:"
+          echo "$changed"
+          echo
+          if echo "$changed" | grep -qE '^(apps/worker/migrations/|apps/web/src/app/api/billing/|apps/web/src/lib/stripe\.ts|apps/web/src/lib/supabase-server\.ts|scripts/check_rls\.py|\.github/workflows/|\.github/CODEOWNERS|docs/legal/|apps/web/src/app/terms/|apps/web/src/app/privacy/|fly\.toml|apps/web/vercel\.json|Dockerfile|docker-compose|apps/worker/src/worker/downloader/|apps/worker/src/worker/billing/|apps/web/src/lib/billing/)'; then
+            echo "PR touches a CODEOWNERS path. Applying needs-jon-approval label."
+            gh pr edit "$PR_NUM" --repo "$REPO" --add-label needs-jon-approval
+          else
+            echo "No CODEOWNERS paths touched. Leaving labels alone."
+          fi

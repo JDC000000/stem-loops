@@ -6,12 +6,9 @@ to rebuild a canonical `watch?v=<gate-approved-id>` URL after the gate check and
 only THAT to the fetchers.
 """
 
-from unittest.mock import patch
-
 import pytest
 
-from worker.downloader import download_audio
-from worker.downloader import fetch_gates
+from worker.downloader import download_audio, fetch_gates
 
 
 class _StubFetchGates:
@@ -79,14 +76,18 @@ def test_fetcher_receives_canonical_url(monkeypatch, raw_url, gate_id):
         return "/tmp/stub.wav"
 
     # Patch gates to be permissive and the ytdlp fetch to capture what it saw.
-    monkeypatch.setattr("worker.downloader.fetch_gates.is_blocklisted", _StubFetchGates.is_blocklisted)
+    monkeypatch.setattr(
+        "worker.downloader.fetch_gates.is_blocklisted", _StubFetchGates.is_blocklisted
+    )
     monkeypatch.setattr("worker.downloader.fetch_gates.fetch_paused", _StubFetchGates.fetch_paused)
     monkeypatch.setattr("worker.downloader.fetch_gates.log_attempt", _StubFetchGates.log_attempt)
-    monkeypatch.setattr("worker.downloader.fetch_gates.cobalt_allowed", _StubFetchGates.cobalt_allowed)
-    monkeypatch.setattr("worker.downloader.fetch_gates.ytdlp_version", _StubFetchGates.ytdlp_version)
     monkeypatch.setattr(
-        "worker.downloader.ytdlp_client.fetch_audio_file", fake_fetch_audio_file
+        "worker.downloader.fetch_gates.cobalt_allowed", _StubFetchGates.cobalt_allowed
     )
+    monkeypatch.setattr(
+        "worker.downloader.fetch_gates.ytdlp_version", _StubFetchGates.ytdlp_version
+    )
+    monkeypatch.setattr("worker.downloader.ytdlp_client.fetch_audio_file", fake_fetch_audio_file)
     monkeypatch.setattr("worker.downloader.ytdlp_client.last_session_hash", lambda: None)
 
     path, source = download_audio(raw_url)

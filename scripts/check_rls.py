@@ -81,9 +81,18 @@ FOREACH_ARRAY_RE = re.compile(
 )
 
 # Comment marker that exempts a table from the rule-3 per-user requirement.
+#
+# Line-anchored (re.MULTILINE + `^\s*--`) so the marker is recognised ONLY on
+# a comment line — not inside string literals, dollar-quoted bodies, COMMENT ON
+# payloads, or block comments. Each of those could otherwise silently exempt a
+# user-data table (review-2 Lens B finding).
+#
+# Capture is `[^\n]+` (not `[A-Za-z0-9_,\s]+`) so `\s` can't match `\n` and
+# swallow the next line into the marker — see review-2 Lens B+C finding; the
+# docstring's own happy-path example used to silently drop the marker.
 BACKEND_ONLY_MARKER_RE = re.compile(
-    r"--\s*rls-backend-only\s*:\s*([A-Za-z0-9_,\s]+)",
-    re.IGNORECASE,
+    r"^\s*--\s*rls-backend-only\s*:\s*([^\n]+)",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 # What counts as "per-user" scoping in a policy body.
@@ -211,6 +220,16 @@ def main(migrations_dir: Path) -> int:
     if backend_only:
         print(f"\nDeclared backend-only (service-role bypass only): "
               f"{sorted(backend_only)}")
+
+    # Orphan marker check: a `-- rls-backend-only: userz` with a typo silently
+    # exempts nothing today, but it rots — someone adds a real `users` table
+    # tomorrow and the typo now looks like the intended exemption. Warn (don't
+    # fail) so typos surface without blocking merges on a cosmetic. (review-2 NIT)
+    orphan_markers = sorted(backend_only - created_tables)
+    if orphan_markers:
+        print(f"\nWARN: `-- rls-backend-only:` names tables that don't exist "
+              f"in any migration: {orphan_markers}. Typo, or a stale marker "
+              f"left behind after a table was renamed/dropped?")
 
     failed = False
     if missing_rls:

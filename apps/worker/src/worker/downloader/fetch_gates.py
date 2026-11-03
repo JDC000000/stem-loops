@@ -61,6 +61,18 @@ def video_id_from_url(url: str) -> str | None:
     return m.group(1) if m else None
 
 
+def canonical_watch_url(video_id: str) -> str:
+    """SL-B24 #1: the ONLY URL shape every fetcher should see.
+
+    Rebuilt from the 11-char video_id so a crafted raw URL like
+    `watch?%76=A&v=B` (gate parses v=A, yt-dlp might fetch v=B) cannot make
+    the kill-switch/blocklist check one id while a fetcher pulls a different
+    one. Call this with the id returned by video_id_from_url and pass the
+    result to ytdlp_client / cobalt_client.
+    """
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
 def video_hash(video_id: str | None) -> str | None:
     return hashlib.sha256(video_id.encode()).hexdigest()[:16] if video_id else None
 

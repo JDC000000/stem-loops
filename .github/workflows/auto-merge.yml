@@ -23,7 +23,10 @@ jobs:
   enable-auto-merge:
     name: Enable auto-merge on rollback-safe + adversarial-reviewed PRs
     runs-on: ubuntu-latest
+    # synchronize is excluded: new commits invalidate the review verdict, so the
+    # drop-stale-review job below handles that event instead.
     if: >
+      github.event.action != 'synchronize' &&
       contains(github.event.pull_request.labels.*.name, 'rollback-safe') &&
       contains(github.event.pull_request.labels.*.name, 'adversarial-reviewed') &&
       !contains(github.event.pull_request.labels.*.name, 'needs-jon-approval')
@@ -38,3 +41,41 @@ jobs:
             --squash \
             --auto \
             --delete-branch
+
+  drop-stale-review:
+    name: Drop adversarial-reviewed label on new commits (stale-approval guard)
+    runs-on: ubuntu-latest
+    # Any push to the PR head (including rebases and back-merges) invalidates the
+    # review. There is no reliable way to prove a push is content-neutral, so
+    # re-review on every synchronize is the safe default.
+    if: >
+      github.event.action == 'synchronize' &&
+      contains(github.event.pull_request.labels.*.name, 'adversarial-reviewed')
+    steps:
+      - name: Disable any pending auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --disable-auto || echo "auto-merge was not enabled; nothing to disable."
+
+      - name: Remove label and comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            try {
+              await github.rest.issues.removeLabel({
+                owner, repo, issue_number, name: 'adversarial-reviewed',
+              });
+            } catch (e) {
+              if (e.status !== 404) throw e; // already removed
+              core.info('Label already removed; skipping comment.');
+              return;
+            }
+            await github.rest.issues.createComment({
+              owner, repo, issue_number,
+              body: 'Re-review required: new commits since adversarial review passed. Removing `adversarial-reviewed` label.',
+            });

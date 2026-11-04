@@ -128,6 +128,8 @@ export type BillingEvent =
       providerPaymentIntentId: string | null;
       /** true only when the charge is fully refunded (Stripe charge.refunded). */
       fullyRefunded: boolean;
+      /** Cumulative refunded so far, minor units (Stripe charge.amount_refunded). */
+      amountRefunded: number;
     }
   | {
       type: 'unhandled';

@@ -1,9 +1,9 @@
 """Migration 023 (credit_adjustments) regression tests — credit-ledger review M4.
 
 Covers: the balance view includes adjustments, the Stripe-retry idempotency
-UNIQUE, one-refund-per-charge, the append-only REVOKE for stemloops_app, and
+UNIQUE, per-charge refund stacking (024), the append-only REVOKE for stemloops_app, and
 the down-migration round trip. Requires a real local Postgres with migrations
-applied through 023; skipped without DATABASE_URL, refused on non-local hosts.
+applied through 024; skipped without DATABASE_URL, refused on non-local hosts.
 """
 
 from __future__ import annotations
@@ -99,13 +99,12 @@ def test_duplicate_provider_event_id_blocked(conn):
     conn.rollback()
 
 
-def test_second_refund_event_for_same_charge_blocked(conn):
+def test_second_refund_event_for_same_charge_allowed_after_024(conn):
+    """024 dropped the one-refund-per-charge UNIQUE so pro-rata partials can stack."""
     uid = _user(conn, "charge")
     _adjust(conn, uid, -20, "evt_credadj_c1", "pi_credadj_charge")
+    _adjust(conn, uid, -20, "evt_credadj_c2", "pi_credadj_charge")
     conn.commit()
-    with pytest.raises(psycopg.errors.UniqueViolation):
-        _adjust(conn, uid, -20, "evt_credadj_c2", "pi_credadj_charge")
-    conn.rollback()
 
 
 def test_zero_delta_rejected(conn):

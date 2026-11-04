@@ -17,7 +17,7 @@ import {
   enforceEntitlement,
   EntitlementError,
 } from '@/lib/billing/entitlements';
-import { consumeTrial } from '@/lib/trial';
+import { consumeTrialInTx } from '@/lib/trial';
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
 const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
@@ -259,14 +259,29 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
     }
 
+    const id = randomUUID();
+    const requestedStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
+
+    // Reusable INSERT body. Separate strings so we don't bend a query apart
+    // over two branches; the SQL parses once in the pool.
+    const AUTHED_INSERT_SQL = `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint, user_id)
+             SELECT $1, $2, $3, $4, 'queued', $5, '', $8::uuid
+             WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
+                    AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
+             RETURNING id`;
+    const ANON_INSERT_SQL = `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint)
+           SELECT $1, $2, $3, $4, 'queued', $5, ''
+           WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
+                  AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
+           RETURNING id`;
+
     // §1.2a: trial applies ONLY to the link-ingest branch (this one). For
-    // authed non-Pro/Studio users: try consumeTrial() first; if a song is
-    // spent, skip burst+quota for this request (the trial row's CHECK
-    // songs_used <= 3 + per-user advisory lock inside consumeTrial() keeps
-    // this bounded at 3 free jobs ever). Pro/Studio skip the trial entirely
-    // and use burst+quota. Anonymous requests have user===null and skip all
-    // of this; per-IP admission above is their only gate.
-    let trialConsumed = false;
+    // authed non-Pro/Studio users: try consumeTrialInTx() inside the same
+    // tx as the jobs INSERT. If the per-IP rate-limit WHERE returns 0 rows,
+    // we THROW RATE_LIMITED_SENTINEL so the tx rolls back — the trial song
+    // is NOT burned (PR #39 Lens A follow-up). Pro/Studio skip the trial
+    // entirely and use burst+quota. Anonymous users have user===null and
+    // skip all of this; per-IP admission above is their only gate.
     if (user) {
       let subscribed = false;
       try {
@@ -276,72 +291,92 @@ export async function POST(request: NextRequest) {
         // Fail restrictive: treat as not-subscribed and let the existing
         // gates decide (same stance enforceEntitlement takes on DB error).
       }
+
       if (!subscribed) {
+        // Try (consume trial + insert jobs) atomically. Three outcomes:
+        //   consumed:true          → tx committed, return 201
+        //   consumed:false         → tx committed, nothing changed; fall
+        //                            through to burst/quota + plain INSERT
+        //   throw RATE_SENTINEL    → tx rolled back (trial not burned), 429
+        const RATE_SENTINEL = Symbol('rate_limited');
         try {
-          const out = await consumeTrial(user.user_id);
-          if (out.ok) trialConsumed = true;
+          const outcome = await db.tx(async (client) => {
+            const consume = await consumeTrialInTx(client, user.user_id);
+            if (!consume.ok) return { consumed: false as const };
+            const r = await client.query(
+              AUTHED_INSERT_SQL,
+              [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT, user.user_id],
+            );
+            if (!r.rowCount) {
+              // Rate-limited AFTER a successful trial consume. Throw to
+              // roll back the whole tx — trial song is NOT burned.
+              throw RATE_SENTINEL;
+            }
+            await incrementJobsUsed(client, user.user_id);
+            return { consumed: true as const };
+          });
+          if (outcome.consumed) {
+            return NextResponse.json({ id, status: 'queued' }, { status: 201 });
+          }
+          // consumed:false → fall through to burst/quota + plain INSERT.
         } catch (err) {
-          // Trial read failure is non-fatal — the user still has the
-          // normal free-tier path; log and fall through.
+          if (err === RATE_SENTINEL) {
+            return NextResponse.json(
+              { error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG },
+              { status: 429 },
+            );
+          }
+          // Trial read/consume unexpected failure is non-fatal — log and
+          // fall through to the normal free-tier path.
           Sentry.captureException(err);
         }
       }
-      if (!trialConsumed) {
-        const burst = await checkBurstLimit(user.user_id);
-        if (burst) {
-          return new NextResponse(
-            JSON.stringify({
-              error: 'too many requests',
-              code: 'rate_limit_burst',
-              retry_after_s: burst.retry_after_s,
-            }),
-            {
-              status: 429,
-              headers: {
-                'content-type': 'application/json',
-                'Retry-After': String(burst.retry_after_s),
-              },
+
+      // Non-trial path: subscribed, or trial exhausted/missing. Run the
+      // paid-plan gates and then do the plain INSERT below.
+      const burst = await checkBurstLimit(user.user_id);
+      if (burst) {
+        return new NextResponse(
+          JSON.stringify({
+            error: 'too many requests',
+            code: 'rate_limit_burst',
+            retry_after_s: burst.retry_after_s,
+          }),
+          {
+            status: 429,
+            headers: {
+              'content-type': 'application/json',
+              'Retry-After': String(burst.retry_after_s),
             },
-          );
-        }
-        const quota = await checkMonthlyQuota(user.user_id);
-        if (quota) {
-          return NextResponse.json(
-            {
-              error: 'monthly quota reached',
-              code: 'quota_exceeded',
-              resets_at: quota.resets_at,
-            },
-            { status: 402 },
-          );
-        }
+          },
+        );
+      }
+      const quota = await checkMonthlyQuota(user.user_id);
+      if (quota) {
+        return NextResponse.json(
+          {
+            error: 'monthly quota reached',
+            code: 'quota_exceeded',
+            resets_at: quota.resets_at,
+          },
+          { status: 402 },
+        );
       }
     }
-
-    const id = randomUUID();
-    const requestedStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
 
     // V3-C4 (TSD §1.4): mirror the upload branch — tx + jobs_used bump for
     // authed users so the counter is consistent with the real insert.
     const inserted = user
       ? await db.tx(async (client) => {
           const r = await client.query(
-            `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint, user_id)
-             SELECT $1, $2, $3, $4, 'queued', $5, '', $8::uuid
-             WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
-                    AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
-             RETURNING id`,
+            AUTHED_INSERT_SQL,
             [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT, user.user_id],
           );
           if (r.rowCount) await incrementJobsUsed(client, user.user_id);
           return r;
         })
       : await db.query(
-          `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint)
-           SELECT $1, $2, $3, $4, 'queued', $5, ''
-           WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
-                  AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
-           RETURNING id`,
+          ANON_INSERT_SQL,
           [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT],
         );
     if (!inserted.rowCount) {

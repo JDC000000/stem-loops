@@ -55,6 +55,14 @@ function trialStub({ consumeResult = { ok: true, songs_remaining: 2, expires_at:
       globalThis.__calls.push({ fn: 'consumeTrial', userId });
       return cfg.consumeResult;
     };
+    // In-tx variant used by /api/jobs after PR #39 Lens A follow-up: the
+    // consume now shares a tx with the jobs INSERT so a rate-limited INSERT
+    // rolls the trial consume back. The stub records it under 'consumeTrial'
+    // so existing assertions still match.
+    export const consumeTrialInTx = async (_client, userId) => {
+      globalThis.__calls.push({ fn: 'consumeTrial', userId });
+      return cfg.consumeResult;
+    };
     export const grantTrial = async () => ({ granted: false, songs_remaining: 3, expires_at: '2099-01-01T00:00:00Z', expired: false });
     export const readTrial = async () => ({ present: false });
   `);
@@ -333,6 +341,150 @@ test('POST /api/jobs — Pro user on link branch skips trial consume', async () 
     // Burst gate still runs for Pro.
     const burstCalled = globalThis.__calls.find((c) => c.fn === 'checkBurstLimit');
     assert.ok(burstCalled, 'burst gate must run for Pro');
+  } finally {
+    delete process.env.ALLOW_YOUTUBE_INPUT;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// FIX #4 — trial-consume + jobs INSERT single-tx race (PR #39 Lens A).
+//
+// Before: consumeTrial() committed in its own tx, THEN jobs INSERT ran in a
+// separate tx. If the atomic rate-limit WHERE in the INSERT returned 0 rows,
+// the trial song was burned without a job. After the fix the two share a tx
+// and the INSERT-returned-0 path throws, so the tx rolls back and the trial
+// song is NOT burned.
+// ---------------------------------------------------------------------------
+
+// A db.tx stub that forces INSERT rowCount:0 (atomic rate-limit miss) and
+// records the tx outcome so we can tell commit from rollback apart.
+function dbStubTxFailsInsert({ insertRowCount = 0 } = {}) {
+  const payload = JSON.stringify({ insertRowCount });
+  return dataUrl(`
+    const cfg = ${payload};
+    globalThis.__calls = globalThis.__calls || [];
+    globalThis.__txOutcomes = globalThis.__txOutcomes || [];
+    export const db = {
+      query: async (text) => {
+        globalThis.__calls.push({ fn: 'db.query', sql: text });
+        return { rows: [{ id: 'row-ok' }], rowCount: 1 };
+      },
+      tx: async (fn) => {
+        const client = {
+          query: async (text) => {
+            globalThis.__calls.push({ fn: 'db.tx.query', sql: text });
+            // Any INSERT in the tx returns 0 rows: force the atomic
+            // rate-limit miss. SELECTs and advisory-lock writes still pass.
+            if (/^\\s*INSERT\\s+INTO\\s+jobs/i.test(text)) {
+              return { rows: [], rowCount: cfg.insertRowCount };
+            }
+            return { rows: [{ id: 'row-ok' }], rowCount: 1 };
+          },
+        };
+        try {
+          const out = await fn(client);
+          globalThis.__txOutcomes.push({ status: 'committed', value: out });
+          return out;
+        } catch (err) {
+          globalThis.__txOutcomes.push({
+            status: 'rolled_back',
+            sentinel: typeof err === 'symbol' ? err.toString() : String(err),
+          });
+          throw err;
+        }
+      },
+    };
+  `);
+}
+
+// Build the route with a custom db stub (the default loadRoute() can't swap
+// db-only). Mirrors loadRoute() otherwise.
+async function loadRouteWithDb({
+  user,
+  trial,
+  entitlements,
+  rateLimit,
+  admission,
+  dbSource,
+} = {}) {
+  globalThis.__calls = [];
+  globalThis.__txOutcomes = [];
+  let js = toJs(readFileSync(SRC, 'utf8'));
+  js = js
+    .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
+    .replace(/from ['"]@\/lib\/trial['"]/g, `from '${trialStub(trial ?? {})}'`)
+    .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${entitlementsStub(entitlements ?? {})}'`)
+    .replace(/from ['"]@\/lib\/billing\/rate-limit['"]/g, `from '${rateLimitStub(rateLimit ?? {})}'`)
+    .replace(/from ['"]@\/lib\/admission['"]/g, `from '${admissionStub(admission ?? {})}'`)
+    .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbSource}'`)
+    .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${clientIpStub()}'`)
+    .replace(/from ['"]@\/lib\/youtube-url['"]/g, `from '${youtubeUrlStub()}'`)
+    .replace(/from ['"]@\/lib\/upload['"]/g, `from '${uploadStub()}'`)
+    .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub()}'`)
+    .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
+  return await import(dataUrl(js) + '#' + Math.random());
+}
+
+test('POST /api/jobs — rate-limited INSERT after trial consume rolls back the whole tx (FIX #4)', async () => {
+  process.env.ALLOW_YOUTUBE_INPUT = 'true';
+  try {
+    const mod = await loadRouteWithDb({
+      user: USER,
+      entitlements: { planCode: 'free' },
+      // trial consume says ok:true; then the INSERT returns 0 → tx throws.
+      trial: { consumeResult: { ok: true, songs_remaining: 2, expires_at: '2099-01-01T00:00:00Z' } },
+      dbSource: dbStubTxFailsInsert({ insertRowCount: 0 }),
+    });
+    const res = await mod.POST(
+      makeReq({ url: 'https://youtu.be/dQw4w9WgXcQ', loop_length_bars: 4 }),
+    );
+    assert.equal(res.status, 429, 'rate-limited after consume must surface 429');
+    assert.equal(res.body.error_code, 'RATE_LIMITED');
+    // Core assertion: the tx that wrapped consume + INSERT MUST have rolled
+    // back. The dbStub records 'rolled_back' when fn(client) threw.
+    const firstTx = globalThis.__txOutcomes[0];
+    assert.ok(firstTx, 'tx must have been attempted');
+    assert.equal(
+      firstTx.status,
+      'rolled_back',
+      'tx must roll back when INSERT returns 0 rows after a successful consume → trial not burned',
+    );
+    // And no second tx ran (we didn't fall through to the plain INSERT path).
+    assert.equal(
+      globalThis.__txOutcomes.length,
+      1,
+      'exactly one tx attempt for the rate-limited consume-then-insert path',
+    );
+  } finally {
+    delete process.env.ALLOW_YOUTUBE_INPUT;
+  }
+});
+
+test('POST /api/jobs — consume returning {ok:false} falls through to burst/quota path (FIX #4)', async () => {
+  process.env.ALLOW_YOUTUBE_INPUT = 'true';
+  try {
+    // Trial says exhausted. The first tx should commit (nothing changed),
+    // then the plain INSERT path should run and succeed.
+    const mod = await loadRouteWithDb({
+      user: USER,
+      entitlements: { planCode: 'free' },
+      trial: { consumeResult: { ok: false, reason: 'exhausted' } },
+      dbSource: dbStubTxFailsInsert({ insertRowCount: 1 }),
+    });
+    const res = await mod.POST(
+      makeReq({ url: 'https://youtu.be/dQw4w9WgXcQ', loop_length_bars: 4 }),
+    );
+    assert.equal(res.status, 201, 'exhausted trial must fall through and still 201');
+    // Both the probe tx (consume=ok:false, no insert) AND the plain INSERT tx ran.
+    // Both should be committed, not rolled back.
+    for (const tx of globalThis.__txOutcomes) {
+      assert.equal(tx.status, 'committed', 'tx outcomes must all commit when nothing throws');
+    }
+    // Burst + quota ran on the fall-through path.
+    assert.ok(
+      globalThis.__calls.find((c) => c.fn === 'checkBurstLimit'),
+      'burst gate must run on the fall-through (exhausted-trial) path',
+    );
   } finally {
     delete process.env.ALLOW_YOUTUBE_INPUT;
   }

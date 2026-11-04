@@ -30,6 +30,17 @@ export interface SendEmailInput {
   html: string;
   /** Resend tag (shows up in the dashboard). Use template name. */
   tag: string;
+  /**
+   * Stable per-send key. Resend dedupes concurrent + retried requests that
+   * share this value for ~24h, so the webhook's retry-on-5xx path cannot
+   * accidentally double-send if the client times out between the API's
+   * write and its 200 response (PR #38 Lens A finding).
+   *
+   * Callers compose the key from the real business id — e.g.
+   * `welcome:<user_id>`, `receipt-sub:<invoice_id>` — not from fetched state.
+   * See dispatch.ts for the canonical shapes.
+   */
+  idempotencyKey: string;
 }
 
 export interface SendEmailResult {
@@ -84,9 +95,13 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
   };
 
   const body = JSON.stringify(payload);
-  const headers = {
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${apiKey}`,
+    // Idempotency-Key is honored by Resend to dedupe retries/concurrent
+    // sends on the SAME key for ~24h. Combined with our own retry-on-5xx,
+    // this makes a timed-out send safe to retry.
+    'Idempotency-Key': input.idempotencyKey,
   };
 
   // Up to 2 attempts total: initial + 1 retry on 5xx or network error.

@@ -184,12 +184,15 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         );
       }
       invalidateEntitlement(evt.userId);
-      // V3-M3 — receipt for one-time credit purchase.
+      // V3-M3 — receipt for one-time credit purchase. Idempotency key is
+      // the Stripe charge / payment-intent id (stable across retries), so a
+      // double-delivered webhook can't double-send the receipt.
       await emailBestEffort('receipt:credit_purchase', () =>
         sendReceipt(evt.userId, {
           amount_cad_cents: evt.amountCents,
           plan_or_pack_label: `${credits} credits (${evt.packCode})`,
           invoice_url: null,
+          receipt_source: { kind: 'credit', provider_charge_id: evt.providerChargeId },
         }),
       );
       return;
@@ -243,6 +246,7 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
           plan_code: evt.subscription.planCode,
           status: evt.subscription.status,
           period_end: evt.subscription.currentPeriodEnd,
+          provider_subscription_id: evt.subscription.providerSubscriptionId,
         }),
       );
       return;
@@ -268,6 +272,7 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
             plan_code: row?.plan_code ?? 'pro',
             status: 'canceled',
             period_end: row?.current_period_end ?? null,
+            provider_subscription_id: evt.providerSubscriptionId,
           }),
         );
       }
@@ -309,12 +314,15 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         console.error('[webhook] invoice_paid refresh failed:', err instanceof Error ? err.message : err);
       }
       invalidateEntitlement(userId);
-      // V3-M3 — receipt for subscription renewal.
+      // V3-M3 — receipt for subscription renewal. Idempotency key is the
+      // Stripe invoice id; a retried invoice.paid can't double-send the
+      // receipt.
       await emailBestEffort('receipt:invoice_paid', () =>
         sendReceipt(userId, {
           amount_cad_cents: evt.invoice.amountCents,
           plan_or_pack_label: planLabel,
           invoice_url: evt.invoice.hostedInvoiceUrl,
+          receipt_source: { kind: 'subscription', invoice_id: evt.invoice.providerInvoiceId },
         }),
       );
       return;

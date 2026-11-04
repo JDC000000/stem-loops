@@ -64,6 +64,18 @@ export type TrialState =
 /** Postgres advisory-lock namespace tag per the spec. */
 const CONSUME_LOCK_TAG = 'trial_consume';
 
+/**
+ * Minimal client shape consumeTrialInTx needs. Matches the `client` arg
+ * db.tx() passes into its callback, so the caller can share one tx with
+ * follow-up writes (e.g. INSERT INTO jobs) that must roll back together.
+ */
+type TxClient = {
+  query<R extends { [k: string]: unknown } = { [k: string]: unknown }>(
+    text: string,
+    params?: unknown[],
+  ): Promise<{ rows: R[]; rowCount: number | null }>;
+};
+
 /** Idempotent grant: INSERT with ON CONFLICT DO NOTHING. The follow-up
  *  SELECT is unconditional so a re-call that was a no-op still gets the
  *  current state to return (granted=false). Runs in one tx so the SELECT
@@ -109,46 +121,63 @@ export async function grantTrial(userId: string): Promise<GrantResult> {
   });
 }
 
+/**
+ * In-tx variant used by /api/jobs so the trial consume and the jobs INSERT
+ * share a single tx (PR #39 Lens A). If the caller then throws (e.g. the
+ * atomic rate-limit WHERE returns 0 rows), the tx rolls back and the trial
+ * song is NOT burned. Same body as consumeTrial — the outer db.tx() just
+ * moves up to the caller.
+ */
+export async function consumeTrialInTx(
+  client: TxClient,
+  userId: string,
+): Promise<ConsumeOutcome> {
+  await client.query(
+    `SELECT pg_advisory_xact_lock(hashtext($1 || ':' || $2::text))`,
+    [CONSUME_LOCK_TAG, userId],
+  );
+  const upd = await client.query<TrialRow>(
+    `UPDATE public.trial_grants
+        SET songs_used = songs_used + 1
+      WHERE user_id = $1::uuid
+        AND songs_used < ${TRIAL_SONG_CAP}
+        AND expires_at > now()
+      RETURNING user_id, granted_at, songs_used, expires_at`,
+    [userId],
+  );
+  if (upd.rowCount === 1) {
+    const row = upd.rows[0];
+    return {
+      ok: true,
+      songs_remaining: Math.max(0, TRIAL_SONG_CAP - row.songs_used),
+      expires_at: row.expires_at,
+    };
+  }
+  // Zero-row update: figure out why.
+  const sel = await client.query<TrialRow>(
+    `SELECT user_id, granted_at, songs_used, expires_at
+       FROM public.trial_grants WHERE user_id = $1::uuid`,
+    [userId],
+  );
+  const row = sel.rows[0];
+  if (!row) return { ok: false, reason: 'no_grant' };
+  if (new Date(row.expires_at).getTime() <= Date.now()) {
+    return { ok: false, reason: 'expired' };
+  }
+  return { ok: false, reason: 'exhausted' };
+}
+
 /** Atomic decrement: take the per-user advisory lock, then UPDATE the one
  *  row with the guards baked in (songs_used < 3 AND expires_at > now()).
  *  If 0 rows were updated, the follow-up SELECT distinguishes the three
- *  denial reasons for the caller. */
+ *  denial reasons for the caller.
+ *
+ *  Stand-alone callers (e.g. the /api/users/me/trial/consume route, used
+ *  by the UI) should use this version; callers that need to combine the
+ *  consume with another write (so both roll back together) use
+ *  consumeTrialInTx() above directly inside their own db.tx(). */
 export async function consumeTrial(userId: string): Promise<ConsumeOutcome> {
-  return db.tx(async (client) => {
-    await client.query(
-      `SELECT pg_advisory_xact_lock(hashtext($1 || ':' || $2::text))`,
-      [CONSUME_LOCK_TAG, userId],
-    );
-    const upd = await client.query<TrialRow>(
-      `UPDATE public.trial_grants
-          SET songs_used = songs_used + 1
-        WHERE user_id = $1::uuid
-          AND songs_used < ${TRIAL_SONG_CAP}
-          AND expires_at > now()
-        RETURNING user_id, granted_at, songs_used, expires_at`,
-      [userId],
-    );
-    if (upd.rowCount === 1) {
-      const row = upd.rows[0];
-      return {
-        ok: true,
-        songs_remaining: Math.max(0, TRIAL_SONG_CAP - row.songs_used),
-        expires_at: row.expires_at,
-      };
-    }
-    // Zero-row update: figure out why.
-    const sel = await client.query<TrialRow>(
-      `SELECT user_id, granted_at, songs_used, expires_at
-         FROM public.trial_grants WHERE user_id = $1::uuid`,
-      [userId],
-    );
-    const row = sel.rows[0];
-    if (!row) return { ok: false, reason: 'no_grant' };
-    if (new Date(row.expires_at).getTime() <= Date.now()) {
-      return { ok: false, reason: 'expired' };
-    }
-    return { ok: false, reason: 'exhausted' };
-  });
+  return db.tx(async (client) => consumeTrialInTx(client, userId));
 }
 
 /** Non-mutating read for UI branches (pricing banner, /trial page). */

@@ -64,6 +64,11 @@ apps/worker/pyproject.toml                      @JDC000000
 AGENTS.md                                       @JDC000000
 CLAUDE.md                                       @JDC000000
 
+# Subagent behavioural definitions — the dispatch roles read at `/agents`
+# load-time. A change here is a privilege / scope change; same prompt-
+# injection class as AGENTS.md. See docs/agent-registry.md for identity.
+.claude/agents/**                               @JDC000000
+
 # Next.js security-relevant config.
 apps/web/next.config.js                         @JDC000000
 apps/web/next.config.mjs                        @JDC000000

@@ -179,11 +179,14 @@ Every billable action goes through a single server-side guard: `enforceEntitleme
 - The old req IDs `V3-R-BILL-PROMO` are retained as aliases pointing to V3-C9 per Jon's "rename references but keep" directive.
 
 **Free trial (V3-C10):**
-- 3-song trial on paid-tier features. **NO card required.** Device-fingerprint + IP cohort rate-limited (same cohort as free tier, so a user cannot trial + free tier in the same day beyond 3 total).
+- 3-song trial on the link-ingest path (YouTube today; Spotify/SoundCloud when their branches ship). **NO card required.** Per-user cohort (one trial per authenticated user, lifetime).
 - Backed by a new `trial_grants` table `(user_id, granted_at, songs_used, expires_at=granted_at+7d)` — RLS self-read; worker writes via `stemloops_app`.
-- The trial path is `input_kind='upload'` only (never link-ingest). On trial exhaustion the user sees `TRIAL_EXHAUSTED` → prompted to buy Credits.
-- Trial grant is one-per-fingerprint-ever (not resettable). Fingerprint is `sha256(ip_hash || UA_hash || client-stable-random)` — same mechanism as pinned R-X2's `client_ip_hash`.
+- The trial path is `input_kind='youtube'` (the link-ingest branch per §1.2a Round-2 channel-separation rationale — upload is the credits/paid path and MUST NOT burn a trial song). When Spotify/SoundCloud link kinds are added, they inherit the same trial branch; upload stays separate. On trial exhaustion the free-tier gate takes over (see §1.3 — `TRIAL_EXHAUSTED` is emitted by `enforceEntitlement` when the snapshot has no active plan and the trial row is `songs_used = 3`).
+- Trial grant is one-per-user-ever (PK on `trial_grants.user_id`; not resettable). No fingerprint column, no fingerprint hashing — the PK is the idempotency boundary. Re-calling `POST /api/users/me/trial/grant` is an idempotent no-op that returns the existing row (`granted=false`).
+- Trial consume runs in-tx with the `/api/jobs` INSERT (`consumeTrialInTx`, see §6.1). Per-IP admission runs BEFORE the trial tx so a rate-limited request cannot leak a trial song; if the atomic rate-limit WHERE in the INSERT returns 0 rows the tx rolls back and the song is NOT burned.
 - The old req IDs `V3-R-BILL-TRIAL` are retained as aliases pointing to V3-C10.
+
+**Decision log:** session 6 (2026-11-04) reconciled §1.5a prose to match shipped code per Round-2 §1.2a reviewer finding (PR #39 + #59). Trial-as-upload would require ~2-3 weeks of rewrites and weaken Lens B processor separation; trial-as-link is the shipped and reviewed path.
 
 ### 1.6 DMCA agent & legal pages (V3-C5) — **Phase 5 gate, NOT Phase 1a blocker (per Jon 2026-11-02T22:45)**
 
@@ -598,7 +601,7 @@ All routes return the pinned error shape `{error_code, message}` (TSD §3). Rate
 
 **Reconciliation notes (what changed vs the 2026-11-02 draft):**
 - `POST /api/billing/checkout` was unified: one route accepts **either** `plan_code` (subscription) or `pack_code` (one-time credits), not both. This drops the separate `POST /api/billing/credits/checkout` route from the draft — the single-route shape keeps auth, rate-limit, and provider-abstraction in one place (TSD §1.1).
-- Trial grant/consume moved from `POST /api/billing/trial/start` to `POST /api/users/me/trial/*` (user-scoped). Shipped in PR #39 with per-user and per-fingerprint idempotency (§1.2a channel separation).
+- Trial grant/consume moved from `POST /api/billing/trial/start` to `POST /api/users/me/trial/*` (user-scoped). Shipped in PR #39 with per-user idempotency (PK on `trial_grants.user_id`; see §1.5a channel separation). The 2026-11-02 draft's "per-fingerprint idempotency" wording was a stale half-fix — removed per session-6 audit.
 - `GET /api/billing/subscriptions` and `GET /api/billing/invoices` are **deferred to Phase 1b** — not blocked by Phase 1a; the Customer Portal (`POST /api/billing/portal`) covers the user-facing listing path in the interim.
 
 | Method/Path | Purpose | Input | Output / Errors | Phase |
@@ -607,10 +610,14 @@ All routes return the pinned error shape `{error_code, message}` (TSD §3). Rate
 | GET `/api/billing/credits/balance` | User's current credit balance (reads `v_credit_balance`) | — | 200 `{credits_remaining: int, purchases: Purchase[], recent_consumption: Consumption[]}` ; 401 | 1a ✅ |
 | POST `/api/billing/portal` | Open Customer Portal (recurring customers only) | `{returnUrl}` | 200 `{url}` ; 401 ; 404 `NO_CUSTOMER` | 1a ✅ |
 | POST `/api/billing/webhook` | Stripe webhook endpoint (verifies signature) — handles `checkout.session.completed` (recurring + one-time), `invoice.paid`, `customer.subscription.updated`, `charge.refunded` | raw body | 200 (idempotent) ; 400 `BAD_SIGNATURE` ; 500 `WEBHOOK_HANDLER_ERROR` (logs + Sentry) | 1a ✅ |
-| POST `/api/users/me/trial/grant` | Grant the 3-song trial (one-per-fingerprint-ever, one-per-user-ever, no card). See §1.2a channel separation — trial is link-ingest only. | `{fingerprint: string}` | 200 `{granted: true, songs_available: 3}` ; 409 `TRIAL_ALREADY_USED` | 1a ✅ |
-| POST `/api/users/me/trial/consume` | Record a trial song consumption (atomic in same tx as job INSERT per PR #39 round-2 fix) | `{job_id: string}` | 200 `{songs_remaining: int}` ; 409 `TRIAL_EXHAUSTED` | 1a ✅ |
+| POST `/api/users/me/trial/grant` | Grant the 3-song trial (one-per-user-ever — PK on `trial_grants.user_id`; no card). See §1.5a channel separation — trial is the link-ingest branch (`input_kind='youtube'`). | — (no body) | 200 `{granted: bool, songs_remaining: int, expires_at: string, expired: bool}` (idempotent — a re-call returns `granted=false` with the existing row) ; 401 `UNAUTHENTICATED` ; 503 `TRIAL_UNAVAILABLE` | 1a ✅ |
+| POST `/api/users/me/trial/consume` | Decrement the caller's trial grant by one song (atomic in same tx as job INSERT per PR #39 round-2 fix when called from `/api/jobs`; this HTTP route exists for tests/ops and shares the same `consumeTrial` body). | — (no body) | 200 `{ok: true, songs_remaining: int, expires_at: string}` or 200 `{ok: false, reason: 'no_grant'\|'expired'\|'exhausted'}` ; 401 `UNAUTHENTICATED` ; 429 `rate_limit_burst` ; 503 `TRIAL_UNAVAILABLE` | 1a ✅ |
 | GET `/api/billing/subscriptions` | List current user's subs | — | 200 `{items: Subscription[]}` ; 401 | 1b ⚪ |
 | GET `/api/billing/invoices` | List invoices from provider | `?limit=20` | 200 `{items: Invoice[]}` ; 401 | 1b ⚪ |
+
+**Trial error-code reconciliation (session-6 audit):**
+- `TRIAL_ALREADY_USED` 409 is **not emitted** by shipped code. A re-call of `POST /api/users/me/trial/grant` is an idempotent no-op that returns 200 with `granted=false` and the existing row's state — no 409. The code is reserved for future use if we ever need to distinguish "already used" from "just granted" at the HTTP layer; for now, clients discriminate on the `granted` boolean.
+- `TRIAL_EXHAUSTED` 402 **is** emitted — surfaced by `enforceEntitlement` in `apps/web/src/lib/billing/entitlements.ts` (see §1.3). The `/api/users/me/trial/consume` route itself returns `ok: false, reason: 'exhausted'` (200) rather than a 409; the 402 is for the entitlement path, not the consume path.
 
 **Request body convention:** snake_case (`plan_code`, `pack_code`, `promo_code`) across all billing routes. The 2026-11-02 draft table used mixed camelCase (`planCode`) and snake_case; shipped code is snake_case throughout.
 

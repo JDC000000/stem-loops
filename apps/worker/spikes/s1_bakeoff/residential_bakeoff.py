@@ -26,6 +26,7 @@ PROXY_URL must be a full connection string yt-dlp understands directly via
 script refuses to run (so nobody accidentally re-runs the already-answered
 datacenter case under this filename).
 """
+
 import concurrent.futures as cf
 import json
 import os
@@ -54,9 +55,18 @@ def classify(err: str) -> str:
 def probe(url: str, proxy: str) -> dict:
     t0 = time.time()
     cmd = [
-        sys.executable, "-m", "yt_dlp", "--simulate", "--no-warnings",
-        "--proxy", proxy,
-        "-f", "bestaudio/best", "--print", "%(id)s", url,
+        sys.executable,
+        "-m",
+        "yt_dlp",
+        "--simulate",
+        "--no-warnings",
+        "--proxy",
+        proxy,
+        "-f",
+        "bestaudio/best",
+        "--print",
+        "%(id)s",
+        url,
     ]
     try:
         # Residential proxies add real latency (extra hop + slower consumer-grade
@@ -105,10 +115,12 @@ def measure(label, proxy, urls, max_workers=4):
 def main():
     proxy = os.environ.get("PROXY_URL")
     if not proxy:
-        print("PROXY_URL not set. This script only tests the proxied path — refusing to "
-              "silently re-run the already-answered 0%% datacenter case. Set PROXY_URL to "
-              "a full yt-dlp --proxy connection string (http://user:pass@host:port).",
-              file=sys.stderr)
+        print(
+            "PROXY_URL not set. This script only tests the proxied path — refusing to "
+            "silently re-run the already-answered 0%% datacenter case. Set PROXY_URL to "
+            "a full yt-dlp --proxy connection string (http://user:pass@host:port).",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if len(sys.argv) < 2:
         print("Usage: PROXY_URL=... python residential_bakeoff.py <urls_file>", file=sys.stderr)
@@ -121,8 +133,10 @@ def main():
     json.dump(result, open(os.path.join(here, "r2_ytdlp_residential_results.json"), "w"), indent=2)
 
     gate = result["success_pct"] >= 95 and (result["p90_ms_success"] or 9e9) < 10000
-    print(f"GATE ytdlp+proxy: {'PASS' if gate else 'FAIL'} "
-          f"({result['success_pct']}% success, p90={result['p90_ms_success']}ms)")
+    print(
+        f"GATE ytdlp+proxy: {'PASS' if gate else 'FAIL'} "
+        f"({result['success_pct']}% success, p90={result['p90_ms_success']}ms)"
+    )
 
 
 if __name__ == "__main__":

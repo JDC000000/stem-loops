@@ -11,6 +11,7 @@ Run (operator, once, after the 24h worker is deployed; needs the R2_* secrets):
   fly ssh console -a stem-loops -C "python /app/scripts/configure_r2_lifecycle.py"
 or locally: cd apps/worker && R2_LIFECYCLE_EXPIRE_DAYS=2 python scripts/configure_r2_lifecycle.py
 """
+
 import os
 import sys
 

@@ -109,7 +109,7 @@ def _grant(conn: Any, user_id: uuid.UUID) -> tuple[bool, dict[str, Any] | None]:
     if row is None:
         return was_insert, None
     cols = ["user_id", "granted_at", "songs_used", "expires_at"]
-    return was_insert, dict(zip(cols, row))
+    return was_insert, dict(zip(cols, row, strict=True))
 
 
 def _consume(conn: Any, user_id: uuid.UUID) -> dict[str, Any] | None:
@@ -119,7 +119,7 @@ def _consume(conn: Any, user_id: uuid.UUID) -> dict[str, Any] | None:
     if row is None:
         return None
     cols = ["user_id", "granted_at", "songs_used", "expires_at"]
-    return dict(zip(cols, row))
+    return dict(zip(cols, row, strict=True))
 
 
 # --- 1. Idempotency ------------------------------------------------------
@@ -133,18 +133,16 @@ def test_grant_is_idempotent(conn):
     assert first_row["songs_used"] == 0
 
     # Mutate the row so we can tell "read existing" from "re-insert"
-    conn.execute(
-        "UPDATE public.trial_grants SET songs_used = 1 WHERE user_id = %s", (u,)
-    )
+    conn.execute("UPDATE public.trial_grants SET songs_used = 1 WHERE user_id = %s", (u,))
     conn.commit()
 
     second_insert, second_row = _grant(conn, u)
     assert second_insert is False, "second grant must NOT insert"
     assert second_row is not None
     assert second_row["songs_used"] == 1, "existing songs_used must be preserved"
-    assert second_row["granted_at"] == first_row["granted_at"], (
-        "granted_at must not be rewritten on re-call"
-    )
+    assert (
+        second_row["granted_at"] == first_row["granted_at"]
+    ), "granted_at must not be rewritten on re-call"
 
 
 # --- 2. Consume increments + CHECK caps at 3 -----------------------------
@@ -201,9 +199,7 @@ def test_expired_grant_rejected_by_consume(conn):
     assert row is None, "consume must refuse an expired trial"
 
     # Counter should not have moved.
-    cur = conn.execute(
-        "SELECT songs_used FROM public.trial_grants WHERE user_id = %s", (u,)
-    )
+    cur = conn.execute("SELECT songs_used FROM public.trial_grants WHERE user_id = %s", (u,))
     fetched = cur.fetchone()
     assert fetched is not None
     assert fetched[0] == 0
@@ -221,16 +217,12 @@ def test_cross_user_isolation(conn):
     _consume(conn, a)
     _consume(conn, a)  # a now at 2
 
-    cur = conn.execute(
-        "SELECT songs_used FROM public.trial_grants WHERE user_id = %s", (b,)
-    )
+    cur = conn.execute("SELECT songs_used FROM public.trial_grants WHERE user_id = %s", (b,))
     fetched = cur.fetchone()
     assert fetched is not None
     assert fetched[0] == 0, "user B must not be affected by user A's consumes"
 
-    cur = conn.execute(
-        "SELECT songs_used FROM public.trial_grants WHERE user_id = %s", (a,)
-    )
+    cur = conn.execute("SELECT songs_used FROM public.trial_grants WHERE user_id = %s", (a,))
     fetched = cur.fetchone()
     assert fetched is not None
     assert fetched[0] == 2

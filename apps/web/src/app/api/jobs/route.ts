@@ -12,7 +12,11 @@ import {
   checkMonthlyQuota,
   incrementJobsUsed,
 } from '@/lib/billing/rate-limit';
-import { getEntitlementSnapshot } from '@/lib/billing/entitlements';
+import {
+  getEntitlementSnapshot,
+  enforceEntitlement,
+  EntitlementError,
+} from '@/lib/billing/entitlements';
 import { consumeTrial } from '@/lib/trial';
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
@@ -27,9 +31,15 @@ const RATE_LIMIT_MSG =
 //     — file already PUT to R2 by the browser (see POST /api/uploads).
 //   • youtube (DEFERRED/parked): body { url, ... }.
 // The Python worker claims via FOR UPDATE SKIP LOCKED (Gate 0 S2 / option a).
+//
+// Round-2 §1.2a: trial consumption is LINK-INGEST ONLY (YouTube / Spotify /
+// SoundCloud). Uploads are the credits/paid path and must NOT burn a trial
+// song. Also: per-IP admission runs BEFORE consumeTrial() so a rate-limited
+// request cannot leak a trial song (the trial UPDATE commits in its own tx;
+// if we then rejected for admission we would have already spent a song).
 export async function POST(request: NextRequest) {
   try {
-    let body: any;
+    let body: unknown;
     try {
       body = await request.json();
     } catch {
@@ -39,23 +49,223 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    const bodyObj = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
 
-    // V3-C4 (TSD §1.4) + V3-C10 (TSD §1.6): for authenticated users, the
-    // ordering is:
-    //   1. If plan_code is 'pro'/'studio' (subscribed), skip trial and use
-    //      the existing burst + monthly-quota gates.
-    //   2. Otherwise (free / no-plan), try consumeTrial(). On ok=true the
-    //      user has an active 3-song trial with a song left → skip burst +
-    //      quota for this request (per spec: "consume one trial song;
-    //      else fall back to existing rate-limit + quota flow"). The trial
-    //      CHECK (songs_used <= 3) and the per-user advisory lock inside
-    //      consumeTrial() keep this bounded at 3 free jobs ever, so
-    //      skipping burst here can't be abused past that ceiling.
-    //   3. If trial did NOT fire (no grant, expired, or exhausted), fall
-    //      back to burst + quota — same as before V3-C10.
-    // Free-tier (anonymous) requests have user === null and bypass all of
-    // this; the per-IP admission below is the only gate for those.
     const user = await getUser();
+
+    // ── Upload job ──────────────────────────────────────────────────────────
+    if (bodyObj.uploadKey) {
+      const jobId = bodyObj.jobId;
+      const uploadKey = bodyObj.uploadKey;
+      const filename = bodyObj.filename;
+      const stems = bodyObj.stems;
+      const loop_length_bars = bodyObj.loop_length_bars;
+      // The key must be EXACTLY what POST /api/uploads issues (`{jobId}/_input.{ext}`): the
+      // retention sweep deletes a job's objects by the `{jobId}/` prefix, so any other key
+      // would never be reaped with the job (and could point the worker at someone's object).
+      if (
+        typeof jobId !== 'string' ||
+        !UUID_RE.test(jobId) ||
+        typeof uploadKey !== 'string' ||
+        !isValidUploadKey(jobId, uploadKey)
+      ) {
+        return NextResponse.json(
+          { error_code: 'UPLOAD_INVALID', message: 'Missing or invalid upload reference.' },
+          { status: 400 }
+        );
+      }
+      const ubars = (loop_length_bars as number | undefined) ?? 4;
+      if (!VALID_BARS.has(ubars)) {
+        return NextResponse.json(
+          { error_code: 'UPLOAD_INVALID', message: 'loop_length_bars must be 1, 2, 4, or 8' },
+          { status: 400 }
+        );
+      }
+      // Reject an explicitly-provided but empty/invalid stems list instead of silently
+      // defaulting (QA P2 — a direct-API caller should get a clear 400, not a surprise set).
+      if (
+        stems !== undefined &&
+        (!Array.isArray(stems) ||
+          stems.length === 0 ||
+          !stems.every((s: unknown) => VALID_STEMS.has(s as string)))
+      ) {
+        return NextResponse.json(
+          { error_code: 'UPLOAD_INVALID', message: 'stems must be a non-empty list of supported stems.' },
+          { status: 400 }
+        );
+      }
+      const uStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
+      const filenameTrim = typeof filename === 'string' ? filename.slice(0, 255) : null;
+
+      // §1.2a: upload is NOT the trial path — it's credits/paid. For authed
+      // users enforce the upload entitlement (Pro/Studio quota, or credits
+      // for free-tier) BEFORE spending Replicate budget.
+      if (user) {
+        try {
+          await enforceEntitlement('start_job_upload', user.user_id);
+        } catch (err) {
+          if (err instanceof EntitlementError) {
+            return NextResponse.json(
+              { error_code: err.code, message: err.message },
+              { status: err.status },
+            );
+          }
+          throw err;
+        }
+        // Keep burst as a secondary guardrail. Monthly quota is already
+        // checked inside enforceEntitlement('start_job_upload') for paid
+        // plans; keep the explicit call here so the counter + response
+        // shape stay identical to pre-r2 code for the Pro/Studio flow.
+        const burst = await checkBurstLimit(user.user_id);
+        if (burst) {
+          return new NextResponse(
+            JSON.stringify({
+              error: 'too many requests',
+              code: 'rate_limit_burst',
+              retry_after_s: burst.retry_after_s,
+            }),
+            {
+              status: 429,
+              headers: {
+                'content-type': 'application/json',
+                'Retry-After': String(burst.retry_after_s),
+              },
+            },
+          );
+        }
+        const quota = await checkMonthlyQuota(user.user_id);
+        if (quota) {
+          return NextResponse.json(
+            {
+              error: 'monthly quota reached',
+              code: 'quota_exceeded',
+              resets_at: quota.resets_at,
+            },
+            { status: 402 },
+          );
+        }
+      }
+
+      // R9 / PRD §6.1: admission BEFORE the (Replicate-spending) job exists. Uploads
+      // bypass YouTube's gate, so this is the primary abuse/spend surface.
+      const clientIpHash = clientIpHashOf(request);
+      const adm = await checkAdmission(clientIpHash);
+      if (!adm.allowed) {
+        return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
+      }
+
+      // Atomic per-IP rate enforcement (QA P0/P1): the count and the insert are ONE
+      // statement, so a concurrent burst can't each pass checkAdmission's pre-check and then
+      // insert unconditionally (the old TOCTOU). If already at the cap → 0 rows → 429.
+      //
+      // V3-C4 (TSD §1.4): for authed users we wrap in a tx that also bumps
+      // entitlements.jobs_used under a per-(user,period) advisory lock, so
+      // the counter is consistent with the real insert. Anon path stays as
+      // a single statement — cheaper + the existing shape.
+      const inserted = user
+        ? await db.tx(async (client) => {
+            const r = await client.query(
+              `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
+                                 loop_length_bars, status, client_ip_hash, client_fingerprint, user_id)
+               SELECT $1, 'upload', $2, $3, $4, $5, 'queued', $6, '', $9::uuid
+               WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $6
+                      AND created_at >= NOW() - ($7::int * INTERVAL '1 millisecond')) < $8
+               RETURNING id`,
+              [jobId, uploadKey, filenameTrim, uStems, ubars, clientIpHash,
+               RATE_WINDOW_MS, RATE_LIMIT, user.user_id],
+            );
+            if (r.rowCount) await incrementJobsUsed(client, user.user_id);
+            return r;
+          })
+        : await db.query(
+            `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
+                               loop_length_bars, status, client_ip_hash, client_fingerprint)
+             SELECT $1, 'upload', $2, $3, $4, $5, 'queued', $6, ''
+             WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $6
+                    AND created_at >= NOW() - ($7::int * INTERVAL '1 millisecond')) < $8
+             RETURNING id`,
+            [jobId, uploadKey, filenameTrim, uStems, ubars, clientIpHash,
+             RATE_WINDOW_MS, RATE_LIMIT],
+          );
+      if (!inserted.rowCount) {
+        return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });
+      }
+      // No external queue: the Python worker claims the job straight off the jobs table
+      // (status='queued', FOR UPDATE SKIP LOCKED). pg-boss was vestigial and removed.
+      return NextResponse.json({ id: jobId, status: 'queued' }, { status: 201 });
+    }
+
+    // ── YouTube / link-ingest job (DEFERRED — kept, unwired at the worker until S1 clears) ──
+    // SECURITY / A1 scope (review #7): the worker would actually run Cobalt/yt-dlp for a
+    // youtube job (STUB_MODE isn't set in prod env), so gate the parked path at the door
+    // — it can't be reached from the UI, but this blocks a direct API call too.
+    if (process.env.ALLOW_YOUTUBE_INPUT !== 'true') {
+      return NextResponse.json(
+        { error_code: 'DOWNLOAD_INVALID_URL', message: 'YouTube input is not available yet.' },
+        { status: 403 }
+      );
+    }
+
+    const url = bodyObj.url;
+    const stems = bodyObj.stems;
+    const loop_length_bars = bodyObj.loop_length_bars;
+
+    if (!url || typeof url !== 'string') {
+      return NextResponse.json({ error_code: 'DOWNLOAD_INVALID_URL', message: 'url is required' }, { status: 400 });
+    }
+    // QA fix (P2/UX #3 + P3 #5): canonicalize + require an actual video id, and accept
+    // Shorts/Music/live/embed links, not just /watch and bare youtu.be/. The worker's
+    // SSRF allowlist (downloader/__init__.py) already accepts any youtube.com/youtu.be
+    // path, so this only widens web-layer *validation* — no new server-side attack
+    // surface. Persisting the canonicalized form (not the raw pasted url) also strips
+    // tracking params before the row ever exists.
+    const canonicalUrl = canonicalizeYoutubeUrl(url);
+    if (!canonicalUrl) {
+      return NextResponse.json(
+        { error_code: 'DOWNLOAD_INVALID_URL', message: 'That doesn’t look like a YouTube video link. Paste a full youtube.com or youtu.be URL.' },
+        { status: 400 }
+      );
+    }
+    const bars = (loop_length_bars as number | undefined) ?? 4;
+    if (!VALID_BARS.has(bars)) {
+      return NextResponse.json(
+        { error_code: 'DOWNLOAD_INVALID_URL', message: 'loop_length_bars must be 1, 2, 4, or 8' },
+        { status: 400 }
+      );
+    }
+    // QA fix (P2 #2): the youtube branch never validated `stems` against VALID_STEMS —
+    // {"stems":["piano","banana"]} was persisted and handed to the worker. Mirror the
+    // upload branch's check exactly.
+    if (
+      stems !== undefined &&
+      (!Array.isArray(stems) ||
+        stems.length === 0 ||
+        !stems.every((s: unknown) => VALID_STEMS.has(s as string)))
+    ) {
+      return NextResponse.json(
+        { error_code: 'DOWNLOAD_INVALID_URL', message: 'stems must be a non-empty list of supported stems.' },
+        { status: 400 }
+      );
+    }
+
+    // §1.2a admission-before-consume (round-2 FIX #2): run per-IP admission
+    // BEFORE consumeTrial(). consumeTrial commits in its own tx, so if a
+    // rate-limited request spent a trial song first, the song would already
+    // be gone when we returned 429 — a leak. Admission first → the trial
+    // decrement only happens on a request that will actually proceed.
+    const clientIpHash = clientIpHashOf(request);
+    const adm = await checkAdmission(clientIpHash);
+    if (!adm.allowed) {
+      return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
+    }
+
+    // §1.2a: trial applies ONLY to the link-ingest branch (this one). For
+    // authed non-Pro/Studio users: try consumeTrial() first; if a song is
+    // spent, skip burst+quota for this request (the trial row's CHECK
+    // songs_used <= 3 + per-user advisory lock inside consumeTrial() keeps
+    // this bounded at 3 free jobs ever). Pro/Studio skip the trial entirely
+    // and use burst+quota. Anonymous requests have user===null and skip all
+    // of this; per-IP admission above is their only gate.
     let trialConsumed = false;
     if (user) {
       let subscribed = false;
@@ -106,152 +316,6 @@ export async function POST(request: NextRequest) {
           );
         }
       }
-    }
-
-    // ── Upload job ──────────────────────────────────────────────────────────
-    if (body.uploadKey) {
-      const { jobId, uploadKey, filename, stems, loop_length_bars } = body;
-      // The key must be EXACTLY what POST /api/uploads issues (`{jobId}/_input.{ext}`): the
-      // retention sweep deletes a job's objects by the `{jobId}/` prefix, so any other key
-      // would never be reaped with the job (and could point the worker at someone's object).
-      if (
-        typeof jobId !== 'string' ||
-        !UUID_RE.test(jobId) ||
-        typeof uploadKey !== 'string' ||
-        !isValidUploadKey(jobId, uploadKey)
-      ) {
-        return NextResponse.json(
-          { error_code: 'UPLOAD_INVALID', message: 'Missing or invalid upload reference.' },
-          { status: 400 }
-        );
-      }
-      const ubars = loop_length_bars ?? 4;
-      if (!VALID_BARS.has(ubars)) {
-        return NextResponse.json(
-          { error_code: 'UPLOAD_INVALID', message: 'loop_length_bars must be 1, 2, 4, or 8' },
-          { status: 400 }
-        );
-      }
-      // Reject an explicitly-provided but empty/invalid stems list instead of silently
-      // defaulting (QA P2 — a direct-API caller should get a clear 400, not a surprise set).
-      if (
-        stems !== undefined &&
-        (!Array.isArray(stems) ||
-          stems.length === 0 ||
-          !stems.every((s: unknown) => VALID_STEMS.has(s as string)))
-      ) {
-        return NextResponse.json(
-          { error_code: 'UPLOAD_INVALID', message: 'stems must be a non-empty list of supported stems.' },
-          { status: 400 }
-        );
-      }
-      const uStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
-
-      // R9 / PRD §6.1: admission BEFORE the (Replicate-spending) job exists. Uploads
-      // bypass YouTube's gate, so this is the primary abuse/spend surface.
-      const clientIpHash = clientIpHashOf(request);
-      const adm = await checkAdmission(clientIpHash);
-      if (!adm.allowed) {
-        return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
-      }
-
-      // Atomic per-IP rate enforcement (QA P0/P1): the count and the insert are ONE
-      // statement, so a concurrent burst can't each pass checkAdmission's pre-check and then
-      // insert unconditionally (the old TOCTOU). If already at the cap → 0 rows → 429.
-      //
-      // V3-C4 (TSD §1.4): for authed users we wrap in a tx that also bumps
-      // entitlements.jobs_used under a per-(user,period) advisory lock, so
-      // the counter is consistent with the real insert. Anon path stays as
-      // a single statement — cheaper + the existing shape.
-      const filenameTrim = typeof filename === 'string' ? filename.slice(0, 255) : null;
-      const inserted = user
-        ? await db.tx(async (client) => {
-            const r = await client.query(
-              `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
-                                 loop_length_bars, status, client_ip_hash, client_fingerprint, user_id)
-               SELECT $1, 'upload', $2, $3, $4, $5, 'queued', $6, '', $9::uuid
-               WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $6
-                      AND created_at >= NOW() - ($7::int * INTERVAL '1 millisecond')) < $8
-               RETURNING id`,
-              [jobId, uploadKey, filenameTrim, uStems, ubars, clientIpHash,
-               RATE_WINDOW_MS, RATE_LIMIT, user.user_id],
-            );
-            if (r.rowCount) await incrementJobsUsed(client, user.user_id);
-            return r;
-          })
-        : await db.query(
-            `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
-                               loop_length_bars, status, client_ip_hash, client_fingerprint)
-             SELECT $1, 'upload', $2, $3, $4, $5, 'queued', $6, ''
-             WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $6
-                    AND created_at >= NOW() - ($7::int * INTERVAL '1 millisecond')) < $8
-             RETURNING id`,
-            [jobId, uploadKey, filenameTrim, uStems, ubars, clientIpHash,
-             RATE_WINDOW_MS, RATE_LIMIT],
-          );
-      if (!inserted.rowCount) {
-        return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });
-      }
-      // No external queue: the Python worker claims the job straight off the jobs table
-      // (status='queued', FOR UPDATE SKIP LOCKED). pg-boss was vestigial and removed.
-      return NextResponse.json({ id: jobId, status: 'queued' }, { status: 201 });
-    }
-
-    // ── YouTube job (DEFERRED — kept, unwired at the worker until S1 clears) ──
-    // SECURITY / A1 scope (review #7): the worker would actually run Cobalt/yt-dlp for a
-    // youtube job (STUB_MODE isn't set in prod env), so gate the parked path at the door
-    // — it can't be reached from the UI, but this blocks a direct API call too.
-    if (process.env.ALLOW_YOUTUBE_INPUT !== 'true') {
-      return NextResponse.json(
-        { error_code: 'DOWNLOAD_INVALID_URL', message: 'YouTube input is not available yet.' },
-        { status: 403 }
-      );
-    }
-
-    const { url, stems, loop_length_bars } = body;
-
-    if (!url || typeof url !== 'string') {
-      return NextResponse.json({ error_code: 'DOWNLOAD_INVALID_URL', message: 'url is required' }, { status: 400 });
-    }
-    // QA fix (P2/UX #3 + P3 #5): canonicalize + require an actual video id, and accept
-    // Shorts/Music/live/embed links, not just /watch and bare youtu.be/. The worker's
-    // SSRF allowlist (downloader/__init__.py) already accepts any youtube.com/youtu.be
-    // path, so this only widens web-layer *validation* — no new server-side attack
-    // surface. Persisting the canonicalized form (not the raw pasted url) also strips
-    // tracking params before the row ever exists.
-    const canonicalUrl = canonicalizeYoutubeUrl(url);
-    if (!canonicalUrl) {
-      return NextResponse.json(
-        { error_code: 'DOWNLOAD_INVALID_URL', message: 'That doesn’t look like a YouTube video link. Paste a full youtube.com or youtu.be URL.' },
-        { status: 400 }
-      );
-    }
-    const bars = loop_length_bars ?? 4;
-    if (!VALID_BARS.has(bars)) {
-      return NextResponse.json(
-        { error_code: 'DOWNLOAD_INVALID_URL', message: 'loop_length_bars must be 1, 2, 4, or 8' },
-        { status: 400 }
-      );
-    }
-    // QA fix (P2 #2): the youtube branch never validated `stems` against VALID_STEMS —
-    // {"stems":["piano","banana"]} was persisted and handed to the worker. Mirror the
-    // upload branch's check exactly.
-    if (
-      stems !== undefined &&
-      (!Array.isArray(stems) ||
-        stems.length === 0 ||
-        !stems.every((s: unknown) => VALID_STEMS.has(s as string)))
-    ) {
-      return NextResponse.json(
-        { error_code: 'DOWNLOAD_INVALID_URL', message: 'stems must be a non-empty list of supported stems.' },
-        { status: 400 }
-      );
-    }
-
-    const clientIpHash = clientIpHashOf(request);
-    const adm = await checkAdmission(clientIpHash);
-    if (!adm.allowed) {
-      return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
     }
 
     const id = randomUUID();

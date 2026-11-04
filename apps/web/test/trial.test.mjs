@@ -64,6 +64,11 @@ function trialStub({ grantResult, consumeResult, throwOnGrant, throwOnConsume })
 function nextStub() {
   return dataUrl(`
     export class NextResponse {
+      constructor(rawBody, init = {}) {
+        this.status = (init && init.status) ?? 200;
+        this.headers = new Map(Object.entries((init && init.headers) || {}));
+        try { this.body = JSON.parse(rawBody); } catch { this.body = rawBody; }
+      }
       static json(body, init = {}) {
         const headers = new Map(Object.entries((init && init.headers) || {}));
         return { status: init.status ?? 200, body, headers };
@@ -73,6 +78,8 @@ function nextStub() {
 }
 
 async function loadGrantRoute({ user, trial }) {
+  globalThis.__trialCalls = { grant: 0, consume: 0 };
+  globalThis.__trialLastUser = undefined;
   let js = toJs(readFileSync(GRANT_SRC, 'utf8'));
   js = js
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
@@ -81,11 +88,36 @@ async function loadGrantRoute({ user, trial }) {
   return await import(dataUrl(js) + '#' + Math.random());
 }
 
-async function loadConsumeRoute({ user, trial }) {
+// Burst-limit stub for /api/users/me/trial/consume (round-2 FIX #3).
+// `limited` = true → returns a BurstDenial, false → returns null and the
+// route proceeds. Records calls so tests can assert the gate ran.
+function burstStub({ limited = false } = {}) {
+  const payload = JSON.stringify({ limited });
+  return dataUrl(`
+    const cfg = ${payload};
+    globalThis.__burstCalls = 0;
+    export const checkBurstLimit = async (userId) => {
+      globalThis.__burstCalls++;
+      globalThis.__burstLastUser = userId;
+      if (cfg.limited) return { kind: 'rate_limit_burst', retry_after_s: 60 };
+      return null;
+    };
+  `);
+}
+
+async function loadConsumeRoute({ user, trial, burst } = {}) {
+  // Reset shared globalThis counters: stub data URLs with identical payloads
+  // are module-cached by the runtime, so their top-level init lines won't
+  // re-run on reload. Explicit reset per test keeps call counts accurate.
+  globalThis.__trialCalls = { grant: 0, consume: 0 };
+  globalThis.__trialLastUser = undefined;
+  globalThis.__burstCalls = 0;
+  globalThis.__burstLastUser = undefined;
   let js = toJs(readFileSync(CONSUME_SRC, 'utf8'));
   js = js
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
     .replace(/from ['"]@\/lib\/trial['"]/g, `from '${trialStub(trial ?? {})}'`)
+    .replace(/from ['"]@\/lib\/billing\/rate-limit['"]/g, `from '${burstStub(burst ?? {})}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
@@ -190,4 +222,34 @@ test('POST /api/users/me/trial/consume — 503 when DB throws', async () => {
   const res = await mod.POST();
   assert.equal(res.status, 503);
   assert.equal(res.body.code, 'TRIAL_UNAVAILABLE');
+});
+
+// Round-2 FIX #3: this route is publicly reachable to any authed caller, so
+// it must share /api/jobs' burst ceiling. When the limiter trips the route
+// must 429 with rate_limit_burst and MUST NOT call consumeTrial().
+test('POST /api/users/me/trial/consume — 429 when burst limit trips (round-2 FIX #3)', async () => {
+  const mod = await loadConsumeRoute({
+    user: USER,
+    trial: { consumeResult: { ok: true, songs_remaining: 2, expires_at: EXPIRY } },
+    burst: { limited: true },
+  });
+  const res = await mod.POST();
+  assert.equal(res.status, 429);
+  assert.equal(res.body.code, 'rate_limit_burst');
+  assert.equal(res.headers.get('Retry-After'), '60');
+  assert.equal(globalThis.__burstCalls, 1, 'burst check must run');
+  assert.equal(globalThis.__trialCalls.consume, 0, 'consume must NOT be called when burst-limited');
+});
+
+test('POST /api/users/me/trial/consume — burst check runs before consume (round-2 FIX #3)', async () => {
+  const mod = await loadConsumeRoute({
+    user: USER,
+    trial: { consumeResult: { ok: true, songs_remaining: 2, expires_at: EXPIRY } },
+    burst: { limited: false },
+  });
+  const res = await mod.POST();
+  assert.equal(res.status, 200);
+  assert.equal(globalThis.__burstCalls, 1, 'burst check runs even on the happy path');
+  assert.equal(globalThis.__burstLastUser, USER.user_id);
+  assert.equal(globalThis.__trialCalls.consume, 1);
 });

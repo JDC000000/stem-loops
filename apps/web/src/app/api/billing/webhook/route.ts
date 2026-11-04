@@ -25,6 +25,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getBillingProvider, type BillingEvent, type BillingSubscription } from '@/lib/billing';
 import { db } from '@/lib/db';
 import { invalidateEntitlement } from '@/lib/billing/entitlements';
+import {
+  sendReceipt,
+  sendSubscriptionChanged,
+  sendWelcomeIfFirstTime,
+} from '@/lib/emails/dispatch';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -90,6 +95,23 @@ async function ensureUserRow(userId: string, emailHint?: string | null): Promise
      ON CONFLICT (id) DO NOTHING`,
     [userId, email],
   );
+}
+
+/**
+ * Email sends are best-effort (TSD §M: "delivery is best-effort"). A Resend
+ * outage or a template-side bug must NEVER cause Stripe to retry — that would
+ * desync entitlements. Every email call goes through this swallow-and-log
+ * helper so the webhook's existing DB error path is untouched.
+ */
+async function emailBestEffort(label: string, work: () => Promise<void>): Promise<void> {
+  try {
+    await work();
+  } catch (err) {
+    console.error(
+      `[webhook] email dispatch failed (${label}):`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 /** Recompute the entitlements row from the authoritative subscription state.
@@ -162,6 +184,14 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         );
       }
       invalidateEntitlement(evt.userId);
+      // V3-M3 — receipt for one-time credit purchase.
+      await emailBestEffort('receipt:credit_purchase', () =>
+        sendReceipt(evt.userId, {
+          amount_cad_cents: evt.amountCents,
+          plan_or_pack_label: `${credits} credits (${evt.packCode})`,
+          invoice_url: null,
+        }),
+      );
       return;
     }
 
@@ -203,21 +233,44 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       );
       await upsertEntitlementFromSubscription(evt.userId, evt.subscription);
       invalidateEntitlement(evt.userId);
+      // V3-M1 + V3-M2 — welcome (first-time only) + subscription-changed.
+      // Welcome is idempotent via users.welcomed_at (see dispatch.ts).
+      await emailBestEffort('welcome:first_time', () =>
+        sendWelcomeIfFirstTime(evt.userId),
+      );
+      await emailBestEffort('subscription_changed:upsert', () =>
+        sendSubscriptionChanged(evt.userId, {
+          plan_code: evt.subscription.planCode,
+          status: evt.subscription.status,
+          period_end: evt.subscription.currentPeriodEnd,
+        }),
+      );
       return;
     }
 
     case 'subscription_canceled': {
       // Mark the row canceled; keep the entitlement row with its current
       // period_end so the user retains access until the paid period expires.
-      const res = await db.query<{ user_id: string }>(
+      const res = await db.query<{ user_id: string; plan_code: 'pro' | 'studio'; current_period_end: Date }>(
         `UPDATE subscriptions
             SET status = 'canceled', cancel_at_period_end = true, updated_at = now()
           WHERE provider = $1 AND provider_subscription_id = $2
-          RETURNING user_id`,
+          RETURNING user_id, plan_code, current_period_end`,
         [providerName, evt.providerSubscriptionId],
       );
-      const userId = res.rows[0]?.user_id ?? evt.userId;
+      const row = res.rows[0];
+      const userId = row?.user_id ?? evt.userId;
       if (userId) invalidateEntitlement(userId);
+      // V3-M2 — subscription-changed (canceled).
+      if (userId) {
+        await emailBestEffort('subscription_changed:canceled', () =>
+          sendSubscriptionChanged(userId, {
+            plan_code: row?.plan_code ?? 'pro',
+            status: 'canceled',
+            period_end: row?.current_period_end ?? null,
+          }),
+        );
+      }
       return;
     }
 
@@ -246,14 +299,24 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       }
       // Reload the subscription to recompute entitlement period. Falls back
       // to extending the existing period by the invoice interval.
+      let planLabel = 'stem-loops subscription';
       try {
         const provider = getBillingProvider();
         const sub = await provider.getSubscription(evt.providerSubscriptionId);
         await upsertEntitlementFromSubscription(userId, sub);
+        planLabel = `${sub.planCode} plan renewal`;
       } catch (err) {
         console.error('[webhook] invoice_paid refresh failed:', err instanceof Error ? err.message : err);
       }
       invalidateEntitlement(userId);
+      // V3-M3 — receipt for subscription renewal.
+      await emailBestEffort('receipt:invoice_paid', () =>
+        sendReceipt(userId, {
+          amount_cad_cents: evt.invoice.amountCents,
+          plan_or_pack_label: planLabel,
+          invoice_url: evt.invoice.hostedInvoiceUrl,
+        }),
+      );
       return;
     }
 

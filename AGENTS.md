@@ -137,6 +137,7 @@ See `.env.example` for the full list with documentation.
 9. Regression bugs go in `evals/bugs.json`.
 10. The state machine (§6.3) is fixed — do not add or rename statuses.
 
+<!-- M-7 structural fix landed 2026-11-03 PR #42 (auto-merge via BOT_TOKEN as JDC0000 bot) -->
 ## §11 Merge Safety Rules (added 2026-11-03 after #21 CI-bypass incident)
 
 The session that landed PRs #16–#26 used `gh pr merge --admin --squash` to

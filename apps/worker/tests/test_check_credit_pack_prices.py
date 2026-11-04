@@ -10,7 +10,9 @@ from unittest import mock
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "check_credit_pack_prices.py"
+_SCRIPT = (
+    Path(__file__).resolve().parents[3] / "scripts" / "check_credit_pack_prices.py"
+)
 _spec = importlib.util.spec_from_file_location("check_credit_pack_prices", _SCRIPT)
 cpp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cpp)
@@ -78,12 +80,32 @@ def test_db_source_detects_edited_price(monkeypatch, capsys):
 
 def test_auto_falls_back_to_migration_when_db_down(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x")
-    with mock.patch.object(cpp, "prices_from_db", side_effect=OSError("down")), _stripe(MATCH):
+    with mock.patch.object(cpp, "prices_from_db", side_effect=OSError("down")), _stripe(
+        MATCH
+    ):
         assert cpp.main(["--source", "auto"]) == 0
 
 
-def test_missing_env_exits_two(monkeypatch):
+def test_missing_env_skips_cleanly_by_default(monkeypatch):
+    # Default (non-strict) behavior: no STRIPE_SECRET_KEY → exit 0 with SKIPPED
+    # notice. This prevents the CI job from red-flagging every downstream PR
+    # before Jon adds the repo secrets (M-1 would otherwise refuse all merges).
     monkeypatch.delenv("STRIPE_SECRET_KEY")
+    monkeypatch.delenv("STRICT_RECON", raising=False)
+    assert cpp.main([]) == 0
+
+
+def test_missing_env_exits_two_with_strict_flag(monkeypatch):
+    # Opt-in enforcement: --strict re-enables fail-on-missing-secrets so once
+    # the secrets are configured we can't silently regress back to SKIPPED.
+    monkeypatch.delenv("STRIPE_SECRET_KEY")
+    assert cpp.main(["--strict"]) == 2
+
+
+def test_missing_env_exits_two_with_strict_env(monkeypatch):
+    # STRICT_RECON=1 env is the recommended CI toggle once secrets are in.
+    monkeypatch.delenv("STRIPE_SECRET_KEY")
+    monkeypatch.setenv("STRICT_RECON", "1")
     assert cpp.main([]) == 2
 
 

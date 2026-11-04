@@ -183,6 +183,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // M7: resolve the Stripe promotion_code id up front so it rides in session
+    // metadata and the webhook can de-dup promo_redemptions on retries.
+    // Failure/not-found -> null -> checkout proceeds without the audit key.
+    let promoCodeId: string | null = null;
+    if (promoCode && provider.resolvePromotionCodeId) {
+      try {
+        promoCodeId = await provider.resolvePromotionCodeId(promoCode);
+      } catch {
+        promoCodeId = null;
+      }
+    }
+
     let session;
     if (packRaw) {
       session = await provider.createCreditPurchaseSession(
@@ -191,6 +203,7 @@ export async function POST(req: NextRequest) {
         successUrl,
         cancelUrl,
         promoCode,
+        promoCodeId,
       );
     } else {
       session = await provider.createCheckoutSession(
@@ -199,6 +212,7 @@ export async function POST(req: NextRequest) {
         successUrl,
         cancelUrl,
         promoCode,
+        promoCodeId,
       );
     }
 

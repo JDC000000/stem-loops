@@ -75,13 +75,29 @@ def _insert_auth_user(conn: Any, email: str) -> uuid.UUID:
 
 
 def _insert_job(conn: Any, user_id: uuid.UUID, input_kind: str = "upload") -> uuid.UUID:
-    """Insert a job row and return its id. input_kind controls trigger behavior."""
+    """Insert a job row and return its id. input_kind controls trigger behavior.
+
+    Satisfies the full jobs schema: loop_length_bars + client_ip_hash are NOT
+    NULL (migration 001), and the jobs_input_source_chk CHECK (migration 004)
+    requires upload_r2_key for upload jobs OR youtube_url for youtube jobs.
+    """
     job_id = uuid.uuid4()
-    conn.execute(
-        "INSERT INTO public.jobs (id, input_kind, status, user_id) "
-        "VALUES (%s, %s, 'completed', %s)",
-        (job_id, input_kind, user_id),
-    )
+    if input_kind == "upload":
+        conn.execute(
+            "INSERT INTO public.jobs "
+            "(id, input_kind, status, user_id, loop_length_bars, "
+            " client_ip_hash, upload_r2_key) "
+            "VALUES (%s, %s, 'done', %s, 4, 'test-013-ip-hash', %s)",
+            (job_id, input_kind, user_id, f"test-013-{job_id}.wav"),
+        )
+    else:  # 'youtube' (link ingest) — the trigger-reject branch
+        conn.execute(
+            "INSERT INTO public.jobs "
+            "(id, input_kind, status, user_id, loop_length_bars, "
+            " client_ip_hash, youtube_url) "
+            "VALUES (%s, 'youtube', 'done', %s, 4, 'test-013-ip-hash', %s)",
+            (job_id, user_id, "https://www.youtube.com/watch?v=test0000013"),
+        )
     conn.commit()
     return job_id
 
@@ -107,7 +123,9 @@ def test_trigger_accepts_upload_job(conn):
 
 def test_trigger_rejects_link_job(conn):
     user_id = _insert_auth_user(conn, "test-013-link@example.com")
-    job_id = _insert_job(conn, user_id, input_kind="link")
+    # 'youtube' is the only non-'upload' value accepted by the jobs CHECK
+    # (migration 004); it is also what TSD §1.2a calls the link-ingest path.
+    job_id = _insert_job(conn, user_id, input_kind="youtube")
 
     with pytest.raises(psycopg.errors.RaiseException) as excinfo:
         conn.execute(

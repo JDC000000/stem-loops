@@ -12,6 +12,12 @@ import {
   checkMonthlyQuota,
   incrementJobsUsed,
 } from '@/lib/billing/rate-limit';
+import {
+  getEntitlementSnapshot,
+  enforceEntitlement,
+  EntitlementError,
+} from '@/lib/billing/entitlements';
+import { consumeTrial } from '@/lib/trial';
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
 const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
@@ -25,9 +31,15 @@ const RATE_LIMIT_MSG =
 //     — file already PUT to R2 by the browser (see POST /api/uploads).
 //   • youtube (DEFERRED/parked): body { url, ... }.
 // The Python worker claims via FOR UPDATE SKIP LOCKED (Gate 0 S2 / option a).
+//
+// Round-2 §1.2a: trial consumption is LINK-INGEST ONLY (YouTube / Spotify /
+// SoundCloud). Uploads are the credits/paid path and must NOT burn a trial
+// song. Also: per-IP admission runs BEFORE consumeTrial() so a rate-limited
+// request cannot leak a trial song (the trial UPDATE commits in its own tx;
+// if we then rejected for admission we would have already spent a song).
 export async function POST(request: NextRequest) {
   try {
-    let body: any;
+    let body: unknown;
     try {
       body = await request.json();
     } catch {
@@ -37,47 +49,17 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    const bodyObj = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
 
-    // V3-C4 (TSD §1.4): for authenticated users, enforce (B) per-user burst
-    // BEFORE (A) monthly quota — burst is the cheap guard that stops a
-    // runaway client from spamming the DB-side quota check. Free-tier
-    // (anonymous) requests have user === null and bypass both; the existing
-    // per-IP admission below is the only gate for those.
     const user = await getUser();
-    if (user) {
-      const burst = await checkBurstLimit(user.user_id);
-      if (burst) {
-        return new NextResponse(
-          JSON.stringify({
-            error: 'too many requests',
-            code: 'rate_limit_burst',
-            retry_after_s: burst.retry_after_s,
-          }),
-          {
-            status: 429,
-            headers: {
-              'content-type': 'application/json',
-              'Retry-After': String(burst.retry_after_s),
-            },
-          },
-        );
-      }
-      const quota = await checkMonthlyQuota(user.user_id);
-      if (quota) {
-        return NextResponse.json(
-          {
-            error: 'monthly quota reached',
-            code: 'quota_exceeded',
-            resets_at: quota.resets_at,
-          },
-          { status: 402 },
-        );
-      }
-    }
 
     // ── Upload job ──────────────────────────────────────────────────────────
-    if (body.uploadKey) {
-      const { jobId, uploadKey, filename, stems, loop_length_bars } = body;
+    if (bodyObj.uploadKey) {
+      const jobId = bodyObj.jobId;
+      const uploadKey = bodyObj.uploadKey;
+      const filename = bodyObj.filename;
+      const stems = bodyObj.stems;
+      const loop_length_bars = bodyObj.loop_length_bars;
       // The key must be EXACTLY what POST /api/uploads issues (`{jobId}/_input.{ext}`): the
       // retention sweep deletes a job's objects by the `{jobId}/` prefix, so any other key
       // would never be reaped with the job (and could point the worker at someone's object).
@@ -92,7 +74,7 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
-      const ubars = loop_length_bars ?? 4;
+      const ubars = (loop_length_bars as number | undefined) ?? 4;
       if (!VALID_BARS.has(ubars)) {
         return NextResponse.json(
           { error_code: 'UPLOAD_INVALID', message: 'loop_length_bars must be 1, 2, 4, or 8' },
@@ -113,6 +95,56 @@ export async function POST(request: NextRequest) {
         );
       }
       const uStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
+      const filenameTrim = typeof filename === 'string' ? filename.slice(0, 255) : null;
+
+      // §1.2a: upload is NOT the trial path — it's credits/paid. For authed
+      // users enforce the upload entitlement (Pro/Studio quota, or credits
+      // for free-tier) BEFORE spending Replicate budget.
+      if (user) {
+        try {
+          await enforceEntitlement('start_job_upload', user.user_id);
+        } catch (err) {
+          if (err instanceof EntitlementError) {
+            return NextResponse.json(
+              { error_code: err.code, message: err.message },
+              { status: err.status },
+            );
+          }
+          throw err;
+        }
+        // Keep burst as a secondary guardrail. Monthly quota is already
+        // checked inside enforceEntitlement('start_job_upload') for paid
+        // plans; keep the explicit call here so the counter + response
+        // shape stay identical to pre-r2 code for the Pro/Studio flow.
+        const burst = await checkBurstLimit(user.user_id);
+        if (burst) {
+          return new NextResponse(
+            JSON.stringify({
+              error: 'too many requests',
+              code: 'rate_limit_burst',
+              retry_after_s: burst.retry_after_s,
+            }),
+            {
+              status: 429,
+              headers: {
+                'content-type': 'application/json',
+                'Retry-After': String(burst.retry_after_s),
+              },
+            },
+          );
+        }
+        const quota = await checkMonthlyQuota(user.user_id);
+        if (quota) {
+          return NextResponse.json(
+            {
+              error: 'monthly quota reached',
+              code: 'quota_exceeded',
+              resets_at: quota.resets_at,
+            },
+            { status: 402 },
+          );
+        }
+      }
 
       // R9 / PRD §6.1: admission BEFORE the (Replicate-spending) job exists. Uploads
       // bypass YouTube's gate, so this is the primary abuse/spend surface.
@@ -130,7 +162,6 @@ export async function POST(request: NextRequest) {
       // entitlements.jobs_used under a per-(user,period) advisory lock, so
       // the counter is consistent with the real insert. Anon path stays as
       // a single statement — cheaper + the existing shape.
-      const filenameTrim = typeof filename === 'string' ? filename.slice(0, 255) : null;
       const inserted = user
         ? await db.tx(async (client) => {
             const r = await client.query(
@@ -164,7 +195,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ id: jobId, status: 'queued' }, { status: 201 });
     }
 
-    // ── YouTube job (DEFERRED — kept, unwired at the worker until S1 clears) ──
+    // ── YouTube / link-ingest job (DEFERRED — kept, unwired at the worker until S1 clears) ──
     // SECURITY / A1 scope (review #7): the worker would actually run Cobalt/yt-dlp for a
     // youtube job (STUB_MODE isn't set in prod env), so gate the parked path at the door
     // — it can't be reached from the UI, but this blocks a direct API call too.
@@ -175,7 +206,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { url, stems, loop_length_bars } = body;
+    const url = bodyObj.url;
+    const stems = bodyObj.stems;
+    const loop_length_bars = bodyObj.loop_length_bars;
 
     if (!url || typeof url !== 'string') {
       return NextResponse.json({ error_code: 'DOWNLOAD_INVALID_URL', message: 'url is required' }, { status: 400 });
@@ -193,7 +226,7 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    const bars = loop_length_bars ?? 4;
+    const bars = (loop_length_bars as number | undefined) ?? 4;
     if (!VALID_BARS.has(bars)) {
       return NextResponse.json(
         { error_code: 'DOWNLOAD_INVALID_URL', message: 'loop_length_bars must be 1, 2, 4, or 8' },
@@ -215,10 +248,74 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // §1.2a admission-before-consume (round-2 FIX #2): run per-IP admission
+    // BEFORE consumeTrial(). consumeTrial commits in its own tx, so if a
+    // rate-limited request spent a trial song first, the song would already
+    // be gone when we returned 429 — a leak. Admission first → the trial
+    // decrement only happens on a request that will actually proceed.
     const clientIpHash = clientIpHashOf(request);
     const adm = await checkAdmission(clientIpHash);
     if (!adm.allowed) {
       return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
+    }
+
+    // §1.2a: trial applies ONLY to the link-ingest branch (this one). For
+    // authed non-Pro/Studio users: try consumeTrial() first; if a song is
+    // spent, skip burst+quota for this request (the trial row's CHECK
+    // songs_used <= 3 + per-user advisory lock inside consumeTrial() keeps
+    // this bounded at 3 free jobs ever). Pro/Studio skip the trial entirely
+    // and use burst+quota. Anonymous requests have user===null and skip all
+    // of this; per-IP admission above is their only gate.
+    let trialConsumed = false;
+    if (user) {
+      let subscribed = false;
+      try {
+        const snap = await getEntitlementSnapshot(user.user_id);
+        subscribed = snap.plan_code === 'pro' || snap.plan_code === 'studio';
+      } catch {
+        // Fail restrictive: treat as not-subscribed and let the existing
+        // gates decide (same stance enforceEntitlement takes on DB error).
+      }
+      if (!subscribed) {
+        try {
+          const out = await consumeTrial(user.user_id);
+          if (out.ok) trialConsumed = true;
+        } catch (err) {
+          // Trial read failure is non-fatal — the user still has the
+          // normal free-tier path; log and fall through.
+          Sentry.captureException(err);
+        }
+      }
+      if (!trialConsumed) {
+        const burst = await checkBurstLimit(user.user_id);
+        if (burst) {
+          return new NextResponse(
+            JSON.stringify({
+              error: 'too many requests',
+              code: 'rate_limit_burst',
+              retry_after_s: burst.retry_after_s,
+            }),
+            {
+              status: 429,
+              headers: {
+                'content-type': 'application/json',
+                'Retry-After': String(burst.retry_after_s),
+              },
+            },
+          );
+        }
+        const quota = await checkMonthlyQuota(user.user_id);
+        if (quota) {
+          return NextResponse.json(
+            {
+              error: 'monthly quota reached',
+              code: 'quota_exceeded',
+              resets_at: quota.resets_at,
+            },
+            { status: 402 },
+          );
+        }
+      }
     }
 
     const id = randomUUID();

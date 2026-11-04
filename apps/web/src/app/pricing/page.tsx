@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { db } from '@/lib/db';
 import { getUser } from '@/lib/auth/supabase';
 import BillingButton from '@/components/BillingButton';
+import { readTrial, TRIAL_SONG_CAP } from '@/lib/trial';
 
 export const metadata: Metadata = { title: 'Pricing' };
 export const dynamic = 'force-dynamic';
@@ -84,12 +85,48 @@ const card = {
 export default async function PricingPage() {
   const [{ plans, degraded }, user] = await Promise.all([loadPlans(), getUser().catch(() => null)]);
 
+  // V3-C10 banner: show the "first 3 songs free" prompt ONLY when the
+  // viewer could still start a trial — i.e. they have no trial_grants
+  // row. A signed-out viewer also sees it (CTA links to /trial, which
+  // redirects to /login first). A signed-in viewer with a row already,
+  // active or expired, sees no banner.
+  let showTrialBanner = !user; // signed-out always sees it
+  if (user) {
+    try {
+      const trial = await readTrial(user.user_id);
+      showTrialBanner = trial.present === false;
+    } catch {
+      // Degraded read: default to hidden rather than nudge a user who
+      // may already have used the trial. Pricing still renders.
+      showTrialBanner = false;
+    }
+  }
+
   return (
     <main style={{ minHeight: '100dvh', padding: '24px 16px', maxWidth: 960, margin: '0 auto', boxSizing: 'border-box' }}>
       <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Pricing</h1>
       <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>
         Free forever for link import. Upgrade for unlimited own-file work and higher-quality exports.
       </p>
+      {showTrialBanner && (
+        <a
+          href="/trial"
+          aria-label={`First ${TRIAL_SONG_CAP} songs free — start trial`}
+          style={{
+            display: 'block',
+            marginTop: 12,
+            padding: '12px 16px',
+            borderRadius: 10,
+            border: '1px solid var(--border-default, #333)',
+            background: 'var(--bg-card, #151515)',
+            color: 'var(--text-primary)',
+            textDecoration: 'none',
+            fontSize: 14,
+          }}
+        >
+          <strong>First {TRIAL_SONG_CAP} songs free with signup</strong> — start trial →
+        </a>
+      )}
       {degraded && (
         <p role="status" style={{ color: 'var(--text-muted)', fontSize: 13 }}>
           Showing standard pricing; live plan data is temporarily unavailable.

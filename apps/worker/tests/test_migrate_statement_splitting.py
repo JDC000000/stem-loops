@@ -176,20 +176,29 @@ AS
 
 @pytestmark_db
 def test_splitter_lands_migration_023_view_rewrite() -> None:
-    """Direct integration canary: apply migration 023 one statement at a time
-    via split_sql_statements, then verify the CREATE OR REPLACE VIEW landed
-    in the live catalog.
+    """Direct integration canary: apply migration 023 (then 024 to restore the
+    partial-refund index shape) one statement at a time via
+    split_sql_statements, then verify the CREATE OR REPLACE VIEW landed in
+    the live catalog.
 
-    023's view: ``purchases + adjustments - consumption`` (no clamp — the
-    clamp is tracked as M6, separate from this migration). After 023 applies
-    cleanly, pg_get_viewdef MUST contain ``credit_adjustments`` and MUST NOT
-    contain ``GREATEST`` (the latter would mean the view is stuck at
-    migration 022's state, which is what we're guarding against).
+    023's view (as of PR #62): ``GREATEST(0, purchases + adjustments -
+    consumption)`` — the GREATEST clamp folded into the same migration.
+    After 023 applies cleanly, pg_get_viewdef MUST contain both
+    ``credit_adjustments`` AND ``GREATEST``.
 
-    All of 023's DDL is idempotent (``CREATE TABLE IF NOT EXISTS``,
-    ``DROP POLICY IF EXISTS`` + ``CREATE POLICY``, ``CREATE OR REPLACE
-    VIEW``, etc.), so this test is safe to re-run on a DB that has already
-    had 023 applied — which is the normal CI state.
+    Why we also re-apply 024: migration 023 unconditionally
+    ``CREATE UNIQUE INDEX IF NOT EXISTS credit_adjustments_one_refund_per_charge_idx``,
+    and migration 024 ``DROP INDEX IF EXISTS`` that and swaps in the
+    non-unique partial ``credit_adjustments_refund_charge_idx``. Re-running
+    only 023 against a post-024 DB would resurrect the dropped UNIQUE
+    (the IF NOT EXISTS guard is satisfied), which then breaks every
+    subsequent test that inserts >1 refund row per charge (notably
+    ``test_pro_rata_clawback.py``). Re-applying 024 after 023 restores the
+    final index shape, so this test leaves the DB in post-024 state.
+
+    All of 023's and 024's DDL is idempotent, so this test is safe to re-run
+    on a DB that has already had both applied — which is the normal CI
+    state.
 
     Why we apply 023 directly rather than calling ``migrate.run()``:
     ``migrate.run()`` would skip 023 (already in ``_migrations``), and the
@@ -200,15 +209,18 @@ def test_splitter_lands_migration_023_view_rewrite() -> None:
         h in DB for h in ("127.0.0.1", "localhost")
     ), "safety: this test applies DDL; local throwaway DB only"
 
-    migration_path = (
-        Path(__file__).resolve().parents[1] / "migrations" / "023_v3_credit_adjustments.sql"
-    )
-    sql = migration_path.read_text()
+    migrations_dir = Path(__file__).resolve().parents[1] / "migrations"
+    sql_023 = (migrations_dir / "023_v3_credit_adjustments.sql").read_text()
+    sql_024 = (migrations_dir / "024_v3_credit_adjustments_partial_refund_index.sql").read_text()
 
-    # Apply 023 one statement at a time via the splitter — the exact
-    # execution path migrate.run() uses in production.
+    # Apply 023 then 024 one statement at a time via the splitter — the exact
+    # execution path migrate.run() uses in production. 024 reverses the
+    # UNIQUE one-refund-per-charge index that 023 would re-create, so tests
+    # that insert multiple refund rows per charge continue to work.
     with psycopg.connect(DB) as conn:
-        for stmt in split_sql_statements(sql):
+        for stmt in split_sql_statements(sql_023):
+            conn.execute(stmt)
+        for stmt in split_sql_statements(sql_024):
             conn.execute(stmt)
         conn.commit()
 
@@ -223,9 +235,10 @@ def test_splitter_lands_migration_023_view_rewrite() -> None:
         "credit_adjustments term is missing from v_credit_balance. "
         f"Statement splitter regressed. Got:\n{viewdef}"
     )
-    assert "GREATEST" not in viewdef, (
-        "v_credit_balance still has GREATEST clamp after applying 023 — "
-        "023 is supposed to REPLACE the view and remove the clamp (M6 is a "
-        "separate migration). If GREATEST is still here, 023's CREATE OR "
-        f"REPLACE VIEW did not take effect. Got:\n{viewdef}"
+    assert "GREATEST" in viewdef, (
+        "migration 023's CREATE OR REPLACE VIEW did NOT land — the GREATEST "
+        "clamp is missing from v_credit_balance. 023 folds the M6 clamp into "
+        "the same migration as the credit_adjustments term; absence of "
+        "GREATEST means the splitter dropped the view rewrite and the view "
+        f"is stuck at a pre-023 state. Got:\n{viewdef}"
     )

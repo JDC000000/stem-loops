@@ -365,6 +365,7 @@ export class StripeProvider implements BillingProvider {
           providerChargeId: charge.id,
           providerPaymentIntentId: typeof pi === 'string' ? pi : (pi?.id ?? null),
           fullyRefunded: charge.refunded === true,
+          amountRefunded: charge.amount_refunded ?? 0,
         };
       }
       default:

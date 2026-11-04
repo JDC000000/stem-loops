@@ -66,6 +66,7 @@ async function loadRoute(opts) {
     .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billingStub(opts)}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${db}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${ent}'`)
+    .replace(/from ['"]@\/lib\/billing\/prorata['"]/g, `from 'data:text/javascript,export const computeProRataClawback = () => 0;'`)
     .replace(/from ['"]@\/lib\/emails\/dispatch['"]/g, `from '${em}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${next}'`);
   return import(dataUrl(js) + '#' + Math.random());

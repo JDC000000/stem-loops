@@ -1,9 +1,9 @@
 """Migration 023 (credit_adjustments) regression tests — credit-ledger review M4.
 
 Covers: the balance view includes adjustments, the Stripe-retry idempotency
-UNIQUE, one-refund-per-charge, the append-only REVOKE for stemloops_app, and
+UNIQUE, per-charge refund stacking (024), the append-only REVOKE for stemloops_app, and
 the down-migration round trip. Requires a real local Postgres with migrations
-applied through 023; skipped without DATABASE_URL, refused on non-local hosts.
+applied through 024; skipped without DATABASE_URL, refused on non-local hosts.
 """
 
 from __future__ import annotations
@@ -99,13 +99,12 @@ def test_duplicate_provider_event_id_blocked(conn):
     conn.rollback()
 
 
-def test_second_refund_event_for_same_charge_blocked(conn):
+def test_second_refund_event_for_same_charge_allowed_after_024(conn):
+    """024 dropped the one-refund-per-charge UNIQUE so pro-rata partials can stack."""
     uid = _user(conn, "charge")
     _adjust(conn, uid, -20, "evt_credadj_c1", "pi_credadj_charge")
+    _adjust(conn, uid, -20, "evt_credadj_c2", "pi_credadj_charge")
     conn.commit()
-    with pytest.raises(psycopg.errors.UniqueViolation):
-        _adjust(conn, uid, -20, "evt_credadj_c2", "pi_credadj_charge")
-    conn.rollback()
 
 
 def test_zero_delta_rejected(conn):
@@ -132,6 +131,7 @@ def test_down_migration_round_trip(conn):
     """Down restores the 013 view and drops the table; re-applying 023 restores both."""
     down = (MIGRATIONS / "down" / "023_v3_credit_adjustments_down.sql").read_text()
     up = (MIGRATIONS / "023_v3_credit_adjustments.sql").read_text()
+    up024 = (MIGRATIONS / "024_v3_credit_adjustments_partial_refund_index.sql").read_text()
     try:
         conn.execute(down)
         conn.commit()
@@ -142,6 +142,29 @@ def test_down_migration_round_trip(conn):
     finally:
         conn.rollback()
         conn.execute(up)
+        # Re-apply 024 too so later tests (test_pro_rata_clawback.py) see the
+        # real post-024 schema, not a stale 023-only one.
+        conn.execute(up024)
         conn.commit()
     exists = conn.execute("SELECT to_regclass('public.credit_adjustments')").fetchone()
     assert exists is not None and exists[0] is not None
+    # View must be the full 022 + 023 definition: clamp AND adjustments term.
+    viewdef = conn.execute("SELECT pg_get_viewdef('public.v_credit_balance'::regclass)").fetchone()
+    assert viewdef is not None
+    assert "credit_adjustments" in viewdef[0]
+    assert "GREATEST" in viewdef[0].upper()
+    # Behavioural check: the re-applied view counts adjustments.
+    uid = _user(conn, "roundtrip")
+    _purchase(conn, uid, "pi_credadj_roundtrip", 60)
+    _adjust(conn, uid, -20, "evt_credadj_roundtrip", "pi_credadj_roundtrip")
+    conn.commit()
+    assert _balance(conn, uid) == 40
+    # 024 state: refund index is the non-unique one.
+    idx = {
+        r[0]: r[1]
+        for r in conn.execute(
+            "SELECT indexname, indexdef FROM pg_indexes WHERE tablename='credit_adjustments'"
+        ).fetchall()
+    }
+    assert "credit_adjustments_one_refund_per_charge_idx" not in idx
+    assert "credit_adjustments_refund_charge_idx" in idx

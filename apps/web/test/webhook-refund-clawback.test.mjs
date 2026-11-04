@@ -23,7 +23,7 @@ const USER = '11111111-1111-1111-1111-111111111111';
 function makeState() {
   return {
     purchases: [
-      { user_id: USER, provider: 'stripe', provider_charge_id: 'pi_ABC', credits_granted: 60 },
+      { user_id: USER, provider: 'stripe', provider_charge_id: 'pi_ABC', credits_granted: 60, amount_cad_cents: 3000 },
     ],
     adjustments: [],
     usage: [],
@@ -40,17 +40,27 @@ async function loadRoute(event, state) {
     });
   `);
   const db = dataUrl(`
-    export const db = { query: async (sql, p) => {
+    const query = async (sql, p) => {
       const s = globalThis.__state;
+      if (/pg_advisory_xact_lock/.test(sql)) {
+        (s.locks ??= []).push(p[0]);
+        return { rows: [], rowCount: 1 };
+      }
       if (/FROM credit_purchases/.test(sql)) {
         const rows = s.purchases.filter((r) => r.provider === p[0] && p[1].includes(r.provider_charge_id));
         return { rows: rows.slice(0, 1), rowCount: Math.min(rows.length, 1) };
       }
+      if (/FROM credit_adjustments/.test(sql)) {
+        const sum = s.adjustments
+          .filter((a) => a.reason === 'refund' && a.provider === p[0] && a.provider_charge_id === p[1])
+          .reduce((n, a) => n - a.credits_delta, 0);
+        return { rows: [{ clawed: sum }], rowCount: 1 };
+      }
       if (/INSERT INTO credit_adjustments/.test(sql)) {
         const [user_id, credits_delta, provider, event_id, charge_id] = p;
-        const dup = s.adjustments.some((a) =>
-          (a.provider === provider && a.provider_event_id === event_id) ||
-          (a.reason === 'refund' && a.provider === provider && a.provider_charge_id === charge_id));
+        // 024 dropped the one-refund-per-charge index; only per-event dedup remains.
+        const dup = s.adjustments.some(
+          (a) => a.provider === provider && a.provider_event_id === event_id);
         if (dup) return { rows: [], rowCount: 0 };
         s.adjustments.push({ user_id, credits_delta, reason: 'refund', provider,
           provider_event_id: event_id, provider_charge_id: charge_id });
@@ -61,7 +71,8 @@ async function loadRoute(event, state) {
         return { rows: [], rowCount: 1 };
       }
       throw new Error('unexpected SQL: ' + sql);
-    } };
+    };
+    export const db = { query, tx: async (fn) => fn({ query }) };
   `);
   const ent = dataUrl(`export const invalidateEntitlement = () => {};`);
   const em = dataUrl(`
@@ -74,7 +85,9 @@ async function loadRoute(event, state) {
       static json(body, init = {}) { return { status: init.status ?? 200, body }; }
     }
   `);
+  const prorata = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/billing/prorata.ts'), 'utf8')));
   const js = toJs(readFileSync(SRC, 'utf8'))
+    .replace(/from ['"]@\/lib\/billing\/prorata['"]/g, `from '${prorata}'`)
     .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billing}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${db}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${ent}'`)
@@ -94,6 +107,7 @@ const refund = (over = {}) => ({
   providerChargeId: 'ch_ABC',
   providerPaymentIntentId: 'pi_ABC',
   fullyRefunded: true,
+  amountRefunded: 3000,
   ...over,
 });
 
@@ -142,9 +156,9 @@ test('refund of an unknown charge logs and returns 200 with no writes', async ()
   assert.equal(state.usage.length, 0);
 });
 
-test('partial refund does not claw back', async () => {
+test('partial refund with no refunded amount does not claw back', async () => {
   const state = makeState();
-  const mod = await loadRoute(refund({ fullyRefunded: false }), state);
+  const mod = await loadRoute(refund({ fullyRefunded: false, amountRefunded: 0 }), state);
   const res = await mod.POST(req());
   assert.equal(res.status, 200);
   assert.equal(state.adjustments.length, 0);

@@ -26,6 +26,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getBillingProvider, type BillingEvent, type BillingSubscription } from '@/lib/billing';
 import { db } from '@/lib/db';
 import { invalidateEntitlement } from '@/lib/billing/entitlements';
+import { computeProRataClawback } from '@/lib/billing/prorata';
 import {
   sendReceipt,
   sendSubscriptionChanged,
@@ -348,16 +349,16 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       // M4 (credit-ledger review 2026-11-03): claw back credits for a refunded
       // credit purchase. credit_purchases.provider_charge_id holds the
       // PaymentIntent id, so match on the charge id OR its payment_intent.
-      if (!evt.fullyRefunded) {
-        // Partial refund: no pro-rata policy yet; leave credits, flag for support.
-        console.warn(`[webhook] refund_created: partial refund on ${evt.providerChargeId}; no clawback`);
-        return;
-      }
       const ids = [evt.providerChargeId, evt.providerPaymentIntentId].filter(
         (x): x is string => !!x,
       );
-      const found = await db.query<{ user_id: string; provider_charge_id: string; credits_granted: number }>(
-        `SELECT user_id, provider_charge_id, credits_granted
+      const found = await db.query<{
+        user_id: string;
+        provider_charge_id: string;
+        credits_granted: number;
+        amount_cad_cents: number;
+      }>(
+        `SELECT user_id, provider_charge_id, credits_granted, amount_cad_cents
            FROM credit_purchases
           WHERE provider = $1 AND provider_charge_id = ANY($2::text[])
           LIMIT 1`,
@@ -369,37 +370,70 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         console.info(`[webhook] refund_created: no credit purchase for charge ${evt.providerChargeId}; ignoring`);
         return;
       }
-      // Idempotent on (provider, provider_event_id) for Stripe retries and on
-      // the partial unique (provider, provider_charge_id) WHERE reason='refund'
-      // for a second distinct event on the same charge.
-      const ins = await db.query(
-        `INSERT INTO credit_adjustments
-           (user_id, credits_delta, reason, provider, provider_event_id, provider_charge_id)
-         VALUES ($1, $2, 'refund', $3, $4, $5)
-         ON CONFLICT DO NOTHING`,
-        [
-          purchase.user_id,
-          -Math.abs(purchase.credits_granted | 0),
-          providerName,
-          evt.providerEventId,
-          purchase.provider_charge_id,
-        ],
-      );
-      if ((ins.rowCount ?? 0) > 0) {
-        await db.query(
-          `INSERT INTO usage_events (user_id, kind, detail)
-           VALUES ($1, 'refund_processed', $2::jsonb)`,
-          [
-            purchase.user_id,
-            JSON.stringify({
-              provider_event_id: evt.providerEventId,
-              provider_charge_id: purchase.provider_charge_id,
-              credits_clawed_back: purchase.credits_granted,
-            }),
-          ],
+      // Pro-rata (M4 follow-up, Option A): total clawed back so far for this
+      // charge; this event claws back only the delta. Full refunds close any
+      // floor() residual. Net <= 0 => no-op (Stripe retries, stale events).
+      // The SUM + INSERT run in one tx under a per-charge advisory lock so two
+      // concurrent charge.refunded events (distinct event ids) serialise and
+      // the second sees the first's row. Same lock-then-write shape as
+      // consumeCreditInTx (lib/billing/credits.ts).
+      const chargeId = purchase.provider_charge_id;
+      const outcome = await db.tx(async (client) => {
+        await client.query(
+          `SELECT pg_advisory_xact_lock(hashtext('refund_clawback:' || $1::text))`,
+          [chargeId],
         );
-        invalidateEntitlement(purchase.user_id);
+        const prior = await client.query<{ clawed: number | string }>(
+          `SELECT COALESCE(SUM(-credits_delta), 0) AS clawed
+             FROM credit_adjustments
+            WHERE provider = $1 AND provider_charge_id = $2 AND reason = 'refund'`,
+          [providerName, chargeId],
+        );
+        const alreadyClawed = Number(prior.rows[0]?.clawed ?? 0) | 0;
+        const toClaw = computeProRataClawback({
+          amountRefunded: evt.amountRefunded,
+          amountTotal: purchase.amount_cad_cents,
+          creditsGranted: purchase.credits_granted,
+          alreadyClawed,
+          isFullRefund: evt.fullyRefunded,
+        });
+        if (toClaw <= 0) return { alreadyClawed, toClaw, inserted: false };
+        // Idempotent on (provider, provider_event_id) for Stripe retries. Several
+        // refund rows per charge are legal (migration 024 drops the
+        // one-per-charge unique index); the locked SUM above bounds the total.
+        const ins = await client.query(
+          `INSERT INTO credit_adjustments
+             (user_id, credits_delta, reason, provider, provider_event_id, provider_charge_id)
+           VALUES ($1, $2, 'refund', $3, $4, $5)
+           ON CONFLICT DO NOTHING`,
+          [purchase.user_id, -toClaw, providerName, evt.providerEventId, chargeId],
+        );
+        const inserted = (ins.rowCount ?? 0) > 0;
+        if (inserted) {
+          await client.query(
+            `INSERT INTO usage_events (user_id, kind, detail)
+             VALUES ($1, 'refund_processed', $2::jsonb)`,
+            [
+              purchase.user_id,
+              JSON.stringify({
+                provider_event_id: evt.providerEventId,
+                provider_charge_id: chargeId,
+                credits_clawed_back: toClaw,
+                total_clawed_back: alreadyClawed + toClaw,
+                partial: !evt.fullyRefunded,
+              }),
+            ],
+          );
+        }
+        return { alreadyClawed, toClaw, inserted };
+      });
+      if (outcome.toClaw <= 0) {
+        console.info(
+          `[webhook] refund_created: nothing to claw back on ${evt.providerChargeId} (already ${outcome.alreadyClawed})`,
+        );
+        return;
       }
+      if (outcome.inserted) invalidateEntitlement(purchase.user_id);
       return;
     }
 

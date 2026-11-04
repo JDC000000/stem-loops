@@ -13,10 +13,10 @@
 --   * Partial UNIQUE (provider, provider_charge_id) WHERE reason = 'refund':
 --     a charge can only be clawed back once, even across distinct events.
 --
--- v_credit_balance is extended with + SUM(credits_delta). NOTE: the
--- GREATEST(0, ...) clamp is intentionally NOT added here (tracked separately
--- as M6). Until M6 lands, a user who spent credits and is then refunded can
--- show a negative balance.
+-- v_credit_balance is extended with + SUM(credits_delta) and KEEPS the
+-- GREATEST(0, ...) clamp from migration 022 (M6). DEPENDS ON 022 being applied
+-- first: this CREATE OR REPLACE is the full definition (clamp + adjustments),
+-- so re-running 023 never regresses the view to its pre-022 shape.
 --
 -- Down: migrations/down/023_v3_credit_adjustments_down.sql.
 
@@ -69,9 +69,11 @@ CREATE OR REPLACE VIEW public.v_credit_balance
   WITH (security_invoker = true)
 AS
   SELECT u.id AS user_id,
-    COALESCE((SELECT SUM(credits_granted)::bigint FROM public.credit_purchases WHERE user_id = u.id), 0)
-    + COALESCE((SELECT SUM(credits_delta)::bigint FROM public.credit_adjustments WHERE user_id = u.id), 0)
-    - (SELECT COUNT(*) FROM public.credit_consumption WHERE user_id = u.id)
-    AS credits_remaining
+    GREATEST(
+      0::bigint,
+      COALESCE((SELECT SUM(credits_granted)::bigint FROM public.credit_purchases WHERE user_id = u.id), 0)
+      + COALESCE((SELECT SUM(credits_delta)::bigint FROM public.credit_adjustments WHERE user_id = u.id), 0)
+      - (SELECT COUNT(*) FROM public.credit_consumption WHERE user_id = u.id)
+    ) AS credits_remaining
   FROM public.users u;
 GRANT SELECT ON public.v_credit_balance TO authenticated, stemloops_app;

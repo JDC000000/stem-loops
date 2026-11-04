@@ -189,7 +189,7 @@ jobs:
         run: cd apps/worker && python -m pytest tests/test_pipeline_fixtures.py -v
 
   rls-gate:
-    name: RLS gate (SL-B26 #1)
+    name: "RLS gate (SL-B26 #1)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -1,0 +1,49 @@
+# Auto-apply `needs-jon-approval` label to any PR whose diff touches a path
+# listed in .github/CODEOWNERS. Companion to auto-merge.yml:
+# CODEOWNERS says "Jon owns these paths"; this workflow says "if your PR
+# touches those paths, it gets the manual-review label and the auto-merge
+# workflow refuses to fire until Jon labels or merges by hand".
+#
+# IMPORTANT: when .github/CODEOWNERS changes, update the regex below to
+# match. Patterns are inlined because GitHub Actions has no CODEOWNERS
+# parser in the standard library. The regex matches EVERY pattern in
+# CODEOWNERS (including the forward-looking ones — those simply can't
+# fire until the paths exist). Any CODEOWNERS pattern missing from the
+# regex is a GAP; any regex alternation missing from CODEOWNERS is a LEAK.
+
+name: Auto-label CODEOWNERS-touching PRs
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label-needs-approval:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check diff against CODEOWNERS paths
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          changed=$(gh pr diff "$PR_NUM" --repo "$REPO" --name-only)
+          echo "Changed files in PR #$PR_NUM:"
+          echo "$changed"
+          echo
+          # Keep this regex in sync with .github/CODEOWNERS.
+          # Alternation grouped logically: migrations | scripts | workflows |
+          # supply-chain | env templates | prompt-injection surfaces |
+          # next config | Makefile | downloader | deploy config |
+          # billing / auth / legal (incl. forward-looking).
+          if echo "$changed" | grep -qE '^(apps/worker/migrations/|scripts/|\.github/workflows/|\.github/CODEOWNERS$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|apps/web/package\.json$|packages/types/package\.json$|apps/worker/requirements\.txt$|apps/worker/constraints-prod\.txt$|apps/worker/pyproject\.toml$|\.npmrc$|\.env(\.local)?\.example$|AGENTS\.md$|CLAUDE\.md$|apps/web/next\.config\.(js|mjs)$|Makefile$|apps/worker/src/worker/downloader/|apps/worker/Dockerfile$|apps/worker/fly\.toml$|docker-compose(\.dev)?\.yml$|apps/web/src/lib/stripe\.ts$|apps/web/src/lib/supabase-server\.ts$|apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/web/src/app/\(landing\)/(terms|privacy)/|docs/legal/|apps/web/vercel\.json$|vercel\.json$)'; then
+            echo "PR touches a CODEOWNERS path. Applying needs-jon-approval label."
+            gh pr edit "$PR_NUM" --repo "$REPO" --add-label needs-jon-approval
+          else
+            echo "No CODEOWNERS paths touched. Leaving labels alone."
+          fi

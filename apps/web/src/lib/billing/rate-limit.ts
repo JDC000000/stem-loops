@@ -107,6 +107,11 @@ export async function checkMonthlyQuota(userId: string): Promise<QuotaDenial | n
   const snap = await getEntitlementSnapshot(userId);
   // Pro / Studio sentinel: do not gate.
   if (snap.jobs_quota >= UNLIMITED_QUOTA_SENTINEL) return null;
+  // Credit-holders (review M1): a free-plan user who bought credits keeps
+  // entitlements.plan_code = 'free', so the free 90-jobs/mo quota would block
+  // jobs they have already paid for. Their spend is metered by the credit
+  // consume path (credits.ts), so skip the monthly quota while credits remain.
+  if (snap.plan_code === 'free' && snap.credits_remaining > 0) return null;
   // Period rollover (PR #33 round-2 fix #3): if the current wall-clock time is
   // past the user's period_end, the stored jobs_used belongs to a stale period
   // and the gate should allow — incrementJobsUsed() will reset the counter and

@@ -199,6 +199,34 @@ jobs:
       - name: Assert RLS + policy on every migration table
         run: python scripts/check_rls.py apps/worker/migrations/
 
+  check-tsd-refs:
+    name: "TSD §N.M refs resolve (Fleet Playbook Move 4)"
+    # PR-only: we read the PR body via the GitHub API, so push builds have
+    # nothing to validate.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # NOTE: `continue-on-error: true` is intentional for the first week of
+    # this gate (noise-tuning period). Flip to blocking (remove this line)
+    # after one week of green runs. Once-and-done: this line is the only
+    # thing standing between a TSD-ref typo and a red PR.
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate every TSD §N.M reference resolves to a heading
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr view "$PR_NUMBER" --repo "$REPO" --json body -q .body \
+            | python3 scripts/check_tsd_refs.py
+
   credit-pack-price-recon:
     name: "Credit pack price recon (audit M5)"
     runs-on: ubuntu-latest

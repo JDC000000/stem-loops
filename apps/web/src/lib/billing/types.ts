@@ -83,6 +83,9 @@ export type BillingEvent =
       currency: string;
       priceId: string;
       promoCode?: string;
+      // Stripe promotion_code id (promo_...) resolved at checkout creation and
+      // carried in session.metadata. Gives promo_redemptions a non-NULL dedup key.
+      promoCodeId?: string;
       // From Stripe Checkout Session: customer_email on the completed
       // session. The webhook uses this as a fallback to seed public.users
       // when the handle_new_user trigger has not caught up (round-1 MEDIUM
@@ -135,6 +138,7 @@ export interface BillingProvider {
     successUrl: string,
     cancelUrl: string,
     promoCode?: string | null,
+    promoCodeId?: string | null,
   ): Promise<BillingCheckoutResult>;
 
   createCreditPurchaseSession(
@@ -143,6 +147,7 @@ export interface BillingProvider {
     successUrl: string,
     cancelUrl: string,
     promoCode?: string | null,
+    promoCodeId?: string | null,
   ): Promise<BillingCheckoutResult>;
 
   createPortalSession(
@@ -162,6 +167,11 @@ export interface BillingProvider {
   listInvoices(customerId: string): Promise<BillingInvoice[]>;
 
   applyPromoCode(sessionId: string, code: string): Promise<void>;
+
+  /** Resolve a human promo code to the provider's promotion-code id. Returns
+   *  null (never throws) when unknown/inactive/unsupported. Optional so
+   *  providers without the concept (Paddle) need not implement it. */
+  resolvePromotionCodeId?(code: string): Promise<string | null>;
 }
 
 export class NotImplementedError extends Error {

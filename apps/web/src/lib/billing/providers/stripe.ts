@@ -174,6 +174,7 @@ export class StripeProvider implements BillingProvider {
     successUrl: string,
     cancelUrl: string,
     promoCode?: string | null,
+    promoCodeId?: string | null,
   ): Promise<BillingCheckoutResult> {
     if (planCode === 'free') {
       throw new Error('createCheckoutSession: "free" plan has no checkout');
@@ -188,6 +189,9 @@ export class StripeProvider implements BillingProvider {
     // handler accepted promo_code but never passed it to the provider, and
     // the webhook read session.metadata?.promo_code as always undefined.
     if (promoCode) metadata.promo_code = promoCode;
+    // M7: resolved at checkout time so the webhook's promo_redemptions insert
+    // has a non-NULL UNIQUE key and Stripe retries de-dup.
+    if (promoCodeId) metadata.stripe_promotion_code_id = promoCodeId;
     const session = await getClient().checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: planPriceId(planCode), quantity: 1 }],
@@ -211,6 +215,7 @@ export class StripeProvider implements BillingProvider {
     successUrl: string,
     cancelUrl: string,
     promoCode?: string | null,
+    promoCodeId?: string | null,
   ): Promise<BillingCheckoutResult> {
     const priceId = packPriceId(pack);
     const metadata: Record<string, string> = {
@@ -221,6 +226,9 @@ export class StripeProvider implements BillingProvider {
     // MEDIUM fix: see createCheckoutSession — thread promo_code through so
     // the one-time credit purchase webhook can audit the coupon redemption.
     if (promoCode) metadata.promo_code = promoCode;
+    // M7: resolved at checkout time so the webhook's promo_redemptions insert
+    // has a non-NULL UNIQUE key and Stripe retries de-dup.
+    if (promoCodeId) metadata.stripe_promotion_code_id = promoCodeId;
     const session = await getClient().checkout.sessions.create({
       mode: 'payment',
       line_items: [{ price: priceId, quantity: 1 }],
@@ -401,6 +409,8 @@ export class StripeProvider implements BillingProvider {
       currency: session.currency ?? 'cad',
       priceId,
       promoCode: (session.metadata?.promo_code as string | undefined) ?? undefined,
+      promoCodeId:
+        (session.metadata?.stripe_promotion_code_id as string | undefined) || undefined,
       // Carried for the webhook's defensive users-row upsert when the
       // handle_new_user trigger has not caught up — see ensureUserRow.
       customerEmail: session.customer_email ?? session.customer_details?.email ?? null,
@@ -418,6 +428,23 @@ export class StripeProvider implements BillingProvider {
         : null,
       hostedInvoiceUrl: inv.hosted_invoice_url ?? null,
     }));
+  }
+
+  /** Resolve a customer-facing promo code to its Stripe promotion_code id.
+   *  Returns null on not-found / inactive / Stripe error so checkout degrades
+   *  gracefully to "no promo audit key" instead of failing. */
+  async resolvePromotionCodeId(code: string): Promise<string | null> {
+    try {
+      const res = await getClient().promotionCodes.list({ code, active: true, limit: 1 });
+      const pc = res.data[0];
+      return pc && pc.active !== false ? pc.id : null;
+    } catch (err) {
+      console.error(
+        '[stripe] resolvePromotionCodeId failed:',
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
   }
 
   async applyPromoCode(_sessionId: string, _code: string): Promise<void> {

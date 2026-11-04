@@ -15,8 +15,8 @@
 //   credit_purchases     UNIQUE (provider, provider_charge_id)
 //   subscriptions        UNIQUE (provider, provider_subscription_id)
 //   promo_redemptions    UNIQUE (user_id, stripe_promotion_code_id)  (migration 015;
-//                        NULL stripe_promotion_code_id is NULLS DISTINCT by default —
-//                        intentional for Phase 1a, see that migration's header)
+//                        de-dups only when stripe_promotion_code_id is non-NULL; checkout
+//                        resolves it into session.metadata since M7 — see migration 015)
 //
 // Raw body: we MUST use req.text() (Next 14 App Router) — JSON parsing
 // would normalize whitespace and invalidate the signature.
@@ -169,18 +169,17 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         ],
       );
       if (evt.promoCode) {
-        // Audit the redemption. Migration 015 adds a natural UNIQUE on
-        // (user_id, stripe_promotion_code_id) so the ON CONFLICT clause has a
-        // real target — fixes the round-1 MEDIUM finding where Stripe retries
-        // double-inserted this row. The webhook currently only knows the raw
-        // code string, so stripe_promotion_code_id stays NULL here; Postgres'
-        // default UNIQUE treats NULLs as distinct, which is intentional for
-        // Phase 1a (see migration 015 header note).
+        // Audit the redemption. Migration 015's UNIQUE (user_id,
+        // stripe_promotion_code_id) de-dups Stripe retries ONLY when the id is
+        // non-NULL (NULLs are distinct). M7: checkout now resolves the id and
+        // threads it via session.metadata.stripe_promotion_code_id. Sessions
+        // created before this change (or with an unresolvable code) still
+        // arrive with NULL and keep the Phase 1a behaviour.
         await db.query(
-          `INSERT INTO promo_redemptions (user_id, code)
-           VALUES ($1, $2)
+          `INSERT INTO promo_redemptions (user_id, code, stripe_promotion_code_id)
+           VALUES ($1, $2, $3)
            ON CONFLICT (user_id, stripe_promotion_code_id) DO NOTHING`,
-          [evt.userId, evt.promoCode],
+          [evt.userId, evt.promoCode, evt.promoCodeId ?? null],
         );
       }
       invalidateEntitlement(evt.userId);

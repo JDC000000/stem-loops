@@ -10,9 +10,7 @@ from unittest import mock
 
 import pytest
 
-_SCRIPT = (
-    Path(__file__).resolve().parents[3] / "scripts" / "check_credit_pack_prices.py"
-)
+_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "check_credit_pack_prices.py"
 _spec = importlib.util.spec_from_file_location("check_credit_pack_prices", _SCRIPT)
 cpp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cpp)
@@ -80,9 +78,7 @@ def test_db_source_detects_edited_price(monkeypatch, capsys):
 
 def test_auto_falls_back_to_migration_when_db_down(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x")
-    with mock.patch.object(cpp, "prices_from_db", side_effect=OSError("down")), _stripe(
-        MATCH
-    ):
+    with mock.patch.object(cpp, "prices_from_db", side_effect=OSError("down")), _stripe(MATCH):
         assert cpp.main(["--source", "auto"]) == 0
 
 

@@ -35,8 +35,8 @@ const PACK_PRICE_ENV: Record<PackCode, { env: string; fallback: string }> = {
   credits_180: { env: 'STRIPE_PRICE_CREDITS_180', fallback: 'price_1UXmVmLrVEo8SyzrZoUF64Ji' },
 };
 const PLAN_PRICE_ENV: Record<Exclude<PlanCode, 'free'>, { env: string; fallback: string }> = {
-  pro_monthly: { env: 'STRIPE_PRICE_PRO_MONTHLY', fallback: 'price_1UXmVmLrVEo8SyzrzdLgw02p' },
-  studio_monthly: { env: 'STRIPE_PRICE_STUDIO_MONTHLY', fallback: 'price_1UXmVnLrVEo8SyzrOb1nASza' },
+  pro: { env: 'STRIPE_PRICE_PRO_MONTHLY', fallback: 'price_1UXmVmLrVEo8SyzrzdLgw02p' },
+  studio: { env: 'STRIPE_PRICE_STUDIO_MONTHLY', fallback: 'price_1UXmVnLrVEo8SyzrOb1nASza' },
 };
 
 function packPriceId(pack: PackCode): string {
@@ -113,7 +113,7 @@ function subFromStripe(sub: Stripe.Subscription): BillingSubscription {
   // API 2026-03-25.dahlia+ moved current_period_start/end to SubscriptionItem.
   const firstItem = sub.items.data[0];
   const priceId = firstItem?.price.id ?? '';
-  const planCode = priceIdToPlan(priceId) ?? 'pro_monthly';
+  const planCode = priceIdToPlan(priceId) ?? 'pro';
   return {
     providerSubscriptionId: sub.id,
     providerCustomerId:

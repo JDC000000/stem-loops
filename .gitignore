@@ -27,6 +27,10 @@ dist/
 .env.local
 .env.*.local
 
+# Claude Code local tooling state — per-session agent worktrees, caches,
+# nothing project-level. Each dev's workstation generates its own.
+.claude/
+
 # Audio files (fixtures/ are committed; loose audio is not)
 *.wav
 *.mp3

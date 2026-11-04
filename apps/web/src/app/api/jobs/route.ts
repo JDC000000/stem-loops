@@ -6,6 +6,12 @@ import { checkAdmission, RATE_LIMIT, RATE_WINDOW_MS } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
 import { canonicalizeYoutubeUrl } from '@/lib/youtube-url';
 import { isValidUploadKey } from '@/lib/upload';
+import { getUser } from '@/lib/auth/supabase';
+import {
+  checkBurstLimit,
+  checkMonthlyQuota,
+  incrementJobsUsed,
+} from '@/lib/billing/rate-limit';
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
 const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
@@ -30,6 +36,43 @@ export async function POST(request: NextRequest) {
         { error_code: 'INVALID_REQUEST', message: 'Request body must be valid JSON.' },
         { status: 400 }
       );
+    }
+
+    // V3-C4 (TSD §1.4): for authenticated users, enforce (B) per-user burst
+    // BEFORE (A) monthly quota — burst is the cheap guard that stops a
+    // runaway client from spamming the DB-side quota check. Free-tier
+    // (anonymous) requests have user === null and bypass both; the existing
+    // per-IP admission below is the only gate for those.
+    const user = await getUser();
+    if (user) {
+      const burst = await checkBurstLimit(user.user_id);
+      if (burst) {
+        return new NextResponse(
+          JSON.stringify({
+            error: 'too many requests',
+            code: 'rate_limit_burst',
+            retry_after_s: burst.retry_after_s,
+          }),
+          {
+            status: 429,
+            headers: {
+              'content-type': 'application/json',
+              'Retry-After': String(burst.retry_after_s),
+            },
+          },
+        );
+      }
+      const quota = await checkMonthlyQuota(user.user_id);
+      if (quota) {
+        return NextResponse.json(
+          {
+            error: 'monthly quota reached',
+            code: 'quota_exceeded',
+            resets_at: quota.resets_at,
+          },
+          { status: 402 },
+        );
+      }
     }
 
     // ── Upload job ──────────────────────────────────────────────────────────
@@ -82,17 +125,38 @@ export async function POST(request: NextRequest) {
       // Atomic per-IP rate enforcement (QA P0/P1): the count and the insert are ONE
       // statement, so a concurrent burst can't each pass checkAdmission's pre-check and then
       // insert unconditionally (the old TOCTOU). If already at the cap → 0 rows → 429.
-      const ins = await db.query(
-        `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
-                           loop_length_bars, status, client_ip_hash, client_fingerprint)
-         SELECT $1, 'upload', $2, $3, $4, $5, 'queued', $6, ''
-         WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $6
-                AND created_at >= NOW() - ($7::int * INTERVAL '1 millisecond')) < $8
-         RETURNING id`,
-        [jobId, uploadKey, typeof filename === 'string' ? filename.slice(0, 255) : null,
-         uStems, ubars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT]
-      );
-      if (!ins.rowCount) {
+      //
+      // V3-C4 (TSD §1.4): for authed users we wrap in a tx that also bumps
+      // entitlements.jobs_used under a per-(user,period) advisory lock, so
+      // the counter is consistent with the real insert. Anon path stays as
+      // a single statement — cheaper + the existing shape.
+      const filenameTrim = typeof filename === 'string' ? filename.slice(0, 255) : null;
+      const inserted = user
+        ? await db.tx(async (client) => {
+            const r = await client.query(
+              `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
+                                 loop_length_bars, status, client_ip_hash, client_fingerprint, user_id)
+               SELECT $1, 'upload', $2, $3, $4, $5, 'queued', $6, '', $9::uuid
+               WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $6
+                      AND created_at >= NOW() - ($7::int * INTERVAL '1 millisecond')) < $8
+               RETURNING id`,
+              [jobId, uploadKey, filenameTrim, uStems, ubars, clientIpHash,
+               RATE_WINDOW_MS, RATE_LIMIT, user.user_id],
+            );
+            if (r.rowCount) await incrementJobsUsed(client, user.user_id);
+            return r;
+          })
+        : await db.query(
+            `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
+                               loop_length_bars, status, client_ip_hash, client_fingerprint)
+             SELECT $1, 'upload', $2, $3, $4, $5, 'queued', $6, ''
+             WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $6
+                    AND created_at >= NOW() - ($7::int * INTERVAL '1 millisecond')) < $8
+             RETURNING id`,
+            [jobId, uploadKey, filenameTrim, uStems, ubars, clientIpHash,
+             RATE_WINDOW_MS, RATE_LIMIT],
+          );
+      if (!inserted.rowCount) {
         return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });
       }
       // No external queue: the Python worker claims the job straight off the jobs table
@@ -160,15 +224,30 @@ export async function POST(request: NextRequest) {
     const id = randomUUID();
     const requestedStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
 
-    const ins = await db.query(
-      `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint)
-       SELECT $1, $2, $3, $4, 'queued', $5, ''
-       WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
-              AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
-       RETURNING id`,
-      [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT]
-    );
-    if (!ins.rowCount) {
+    // V3-C4 (TSD §1.4): mirror the upload branch — tx + jobs_used bump for
+    // authed users so the counter is consistent with the real insert.
+    const inserted = user
+      ? await db.tx(async (client) => {
+          const r = await client.query(
+            `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint, user_id)
+             SELECT $1, $2, $3, $4, 'queued', $5, '', $8::uuid
+             WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
+                    AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
+             RETURNING id`,
+            [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT, user.user_id],
+          );
+          if (r.rowCount) await incrementJobsUsed(client, user.user_id);
+          return r;
+        })
+      : await db.query(
+          `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint)
+           SELECT $1, $2, $3, $4, 'queued', $5, ''
+           WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
+                  AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
+           RETURNING id`,
+          [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT],
+        );
+    if (!inserted.rowCount) {
       return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });
     }
 

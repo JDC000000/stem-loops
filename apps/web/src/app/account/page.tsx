@@ -61,9 +61,14 @@ export default async function AccountPage() {
         ) : (
           <p style={muted}>Plan details are temporarily unavailable.</p>
         )}
-        <div style={{ maxWidth: 260, marginTop: 8 }}>
-          <BillingButton label="Manage subscription" endpoint="/api/billing/portal" returnTo="/account" primary={false} />
-        </div>
+        {/* Portal is only useful for paid plans; free-tier users have no
+            customers_billing row and the portal call would 400. Show the
+            manage button only when the user is on a paid plan. */}
+        {ent.ok && ent.data.plan_code !== 'free' && (
+          <div style={{ maxWidth: 260, marginTop: 8 }}>
+            <BillingButton label="Manage subscription" endpoint="/api/billing/portal" returnTo="/account" primary={false} />
+          </div>
+        )}
         <p style={{ ...muted, marginTop: 8 }}><a href="/pricing">See plans and credit packs</a></p>
       </section>
 

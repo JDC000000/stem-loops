@@ -23,15 +23,19 @@ const FALLBACK: Plan[] = [
   { code: 'studio', display_name: 'Studio', price_usd_cents: 1200, monthly_job_quota: 100000, services: [], export_stems: true, export_wav24: true },
 ];
 
-// One-time credit SKUs, hardcoded per TSD §1.2 (not modeled in public.plans).
+// One-time credit SKUs, hardcoded per TSD §1.2 LOCKED (not modeled in
+// public.plans). Prices in CAD cents; display formatted below.
 const CREDIT_PACKS = [
-  { pack_code: 'credits_20', credits: 20 },
-  { pack_code: 'credits_60', credits: 60 },
-  { pack_code: 'credits_180', credits: 180 },
+  { pack_code: 'credits_20',  credits: 20,  price_cad_cents: 500  },
+  { pack_code: 'credits_60',  credits: 60,  price_cad_cents: 1200 },
+  { pack_code: 'credits_180', credits: 180, price_cad_cents: 3000 },
 ];
 
-// Checkout plan codes (billing/types.ts PlanCode) keyed by public.plans.code.
-const CHECKOUT_CODE: Record<string, string> = { pro: 'pro_monthly', studio: 'studio_monthly' };
+function priceCad(cents: number): string {
+  const dollars = cents / 100;
+  const whole = dollars === Math.floor(dollars);
+  return `$${whole ? dollars.toString() : dollars.toFixed(2)} CAD`;
+}
 
 async function loadPlans(): Promise<{ plans: Plan[]; degraded: boolean }> {
   try {
@@ -100,7 +104,7 @@ export default async function PricingPage() {
               <BillingButton
                 label={`Get ${p.display_name}`}
                 endpoint="/api/billing/checkout"
-                body={{ plan_code: CHECKOUT_CODE[p.code] ?? p.code }}
+                body={{ plan_code: p.code }}
                 returnTo="/pricing"
               />
             ) : (
@@ -116,8 +120,14 @@ export default async function PricingPage() {
       <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>One-time packs. Credits never expire.</p>
       <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
         {CREDIT_PACKS.map((c) => (
-          <section key={c.pack_code} style={card} aria-label={`${c.credits} credits`}>
+          <section key={c.pack_code} style={card} aria-label={`${c.credits} credits for ${priceCad(c.price_cad_cents)}`}>
             <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--text-primary)' }}>{c.credits} credits</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>
+              {priceCad(c.price_cad_cents)}
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+              Never expires · one-time purchase
+            </div>
             {user ? (
               <BillingButton label="Buy Credits" endpoint="/api/billing/checkout" body={{ pack_code: c.pack_code }} returnTo="/pricing" />
             ) : (

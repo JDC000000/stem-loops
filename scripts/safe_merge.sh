@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # safe_merge.sh — enforce AGENTS.md §11 M-1 before admin-merging a PR.
 #
-# M-1: `gh pr merge --admin` must not bypass a FAILING required status check.
-# Admin bypass is only for the CODEOWNERS self-approval deadlock. If any
-# required status check on the PR head is red, we refuse the merge.
+# M-1: `gh pr merge --admin` must not bypass a FAILING or PENDING check,
+# and must not merge a commit with zero check-runs registered yet. Admin
+# bypass is for the CODEOWNERS self-approval deadlock only.
 #
 # Usage:  scripts/safe_merge.sh <PR_NUMBER> [--squash|--merge|--rebase]
-#
-# Example:  scripts/safe_merge.sh 29 --squash
+# Default method: --squash. Always passes --delete-branch and
+# --match-head-commit to close the race where a push between the check
+# and the merge would otherwise admit unchecked code to main.
 #
 # Exits 0 after a successful merge; non-zero otherwise.
 
@@ -17,10 +18,19 @@ PR="${1:-}"
 METHOD="${2:---squash}"
 REPO="${GITHUB_REPO:-JDC000000/stem-loops}"
 
-if [[ -z "$PR" || ! "$PR" =~ ^[0-9]+$ ]]; then
+usage() {
   echo "usage: $(basename "$0") <PR_NUMBER> [--squash|--merge|--rebase]" >&2
-  exit 2
+  echo "       always adds --delete-branch and --match-head-commit." >&2
+}
+
+if [[ -z "$PR" || ! "$PR" =~ ^[0-9]+$ ]]; then
+  usage; exit 2
 fi
+
+case "$METHOD" in
+  --squash|--merge|--rebase) ;;
+  *) echo "safe_merge: invalid method '$METHOD'" >&2; usage; exit 2 ;;
+esac
 
 echo "safe_merge: checking PR #$PR on $REPO ..." >&2
 
@@ -30,18 +40,25 @@ if [[ -z "$HEAD" ]]; then
   exit 1
 fi
 
-# Collect failing + still-running required check names, if any.
-FAILED=$(
-  gh api "repos/$REPO/commits/$HEAD/check-runs?per_page=100" \
-    --jq '[.check_runs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | .name] | join(", ")'
-)
-PENDING=$(
-  gh api "repos/$REPO/commits/$HEAD/check-runs?per_page=100" \
-    --jq '[.check_runs[] | select(.status != "completed") | .name] | join(", ")'
-)
+# Fetch all check-runs once; parse for failing + pending + total count.
+CHECKS_JSON=$(gh api "repos/$REPO/commits/$HEAD/check-runs?per_page=100")
+TOTAL=$(jq -r '.check_runs | length' <<<"$CHECKS_JSON")
+
+if [[ "$TOTAL" -eq 0 ]]; then
+  echo "safe_merge: REFUSED — commit $HEAD has ZERO check-runs registered." >&2
+  echo "safe_merge: CI has not started yet (or no workflows match). Wait for CI." >&2
+  exit 1
+fi
+
+FAILED=$(jq -r '
+  [.check_runs[]
+    | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")
+    | .name] | join(", ")' <<<"$CHECKS_JSON")
+PENDING=$(jq -r '
+  [.check_runs[] | select(.status != "completed") | .name] | join(", ")' <<<"$CHECKS_JSON")
 
 if [[ -n "$FAILED" ]]; then
-  echo "safe_merge: REFUSED — PR #$PR has FAILING checks: $FAILED" >&2
+  echo "safe_merge: REFUSED — PR #$PR has FAILING/CANCELLED/TIMED-OUT checks: $FAILED" >&2
   echo "safe_merge: fix CI first; --admin is for CODEOWNERS bypass only (AGENTS.md §11 M-1)." >&2
   exit 1
 fi
@@ -52,5 +69,7 @@ if [[ -n "$PENDING" ]]; then
   exit 1
 fi
 
-echo "safe_merge: all checks on head $HEAD are green — merging with --admin $METHOD ..." >&2
-exec gh pr merge "$PR" --admin "$METHOD" --delete-branch
+echo "safe_merge: all $TOTAL check-runs on head $HEAD are green — merging..." >&2
+# --match-head-commit closes the TOCTOU race where a push between the
+# check and the merge would otherwise admit un-checked code to main.
+exec gh pr merge "$PR" --admin "$METHOD" --delete-branch --match-head-commit "$HEAD"

@@ -148,19 +148,25 @@ subsequent PR. Hotfix PR #27 restored green CI. These rules exist so that
 cannot recur.
 
 **M-1 (hard): `--admin` must not bypass a FAILING status check.** Admin
-bypass is for the CODEOWNERS / required-review layer only. If any required
-status check is red, do not merge — fix CI first, then merge. The pattern
-to run before admin-merge:
+bypass is for the CODEOWNERS / required-review layer only. If any check-run
+is red OR pending OR absent, do not merge — fix CI first, then merge. Use
+`scripts/safe_merge.sh <N>`, which enforces this (refuses on failure,
+cancelled, timed_out, pending, and on commits with zero check-runs).
+
+Manual check (equivalent to what the script does, if you need to inspect
+without merging):
 
 ```bash
-HEAD=$(gh api repos/JDC000000/stem-loops/pulls/<N> --jq '.head.sha')
-gh api "repos/JDC000000/stem-loops/commits/$HEAD/check-runs" \
-  --jq '[.check_runs[] | select(.conclusion == "failure") | .name]'
-# Must print []. If non-empty, STOP and fix CI.
+N=<pr>  # e.g. N=29
+HEAD=$(gh api "repos/JDC000000/stem-loops/pulls/$N" --jq '.head.sha')
+gh api "repos/JDC000000/stem-loops/commits/$HEAD/check-runs?per_page=100" --jq '
+  .check_runs
+  | map({name, s: (.conclusion // .status)})
+  | map(select(.s == "failure" or .s == "cancelled" or .s == "timed_out" or .s != "completed"))
+'
+# Must print []. If non-empty, STOP and fix CI. Also fail if the top-level
+# check_runs array is empty — CI has not registered yet.
 ```
-
-Future improvement: a short `scripts/safe_merge.sh <N>` that enforces this
-and then calls `gh pr merge --admin --squash --delete-branch`.
 
 **M-2 (hard): adversarial reviewers must verify CI is green** before
 scoring ≥93. Local `check_rls.py` passing is not enough — the review prompt
@@ -169,20 +175,24 @@ A reviewer who CANNOT run CI must state that explicitly so the author
 knows to re-check before promoting to ready-for-review.
 
 **M-3 (medium): migrations with Supabase-only objects need stubs.** When a
-migration references `auth.*`, Supabase roles (`authenticated`, `anon`), or
-helper functions like `auth.uid()`, the author must include a stub either
-in the same migration or in a prior one. `012_v3_supabase_stubs.sql` is the
-exemplar. Future improvement: a CI matrix job that runs migrations against
-a Postgres image with the Supabase prelude already present.
+migration references anything Supabase manages (`auth.*` schema, the
+`authenticated` / `anon` roles, helper fns like `auth.uid()`, and also
+`storage.*`, `realtime.*`, `vault.*`, `extensions.*`, etc.), the author must
+include a stub either in the same migration or in a prior one.
+`012_v3_supabase_stubs.sql` is the exemplar. Future improvement: a CI
+matrix job that runs migrations against a Postgres image with the Supabase
+prelude pre-seeded, so both bare-Postgres and Supabase-like paths are
+covered.
 
 **M-4 (medium): no cross-PR TYPE ↔ CODE drift.** When one PR adds a
 TypeScript enum that maps to a column value (`PlanCode` ↔ `plans.code`), the
 same PR must include either the migration setting those values OR a
 reference to the migration that does. Each PR's adversarial reviewer must
-check the enum values against the DB source of truth in the TSD. PR #29 is
-the exemplar of what to AVOID: `types.ts` landed with `'pro_monthly'` on
-#20 while the DB (merged on #21) used `'pro'`; every checkout would have
-500'd at the FK layer.
+check the enum values against the DB source of truth in the TSD. The
+incident: `types.ts` landed on PR #20 with `'pro_monthly'` / `'studio_monthly'`
+while the DB migration on PR #21 used `'pro'` / `'studio'`; every checkout
+would have 500'd at the FK layer. PR #29 fixed this (the enum caught up
+to the DB); future reviewers should catch it in round 1, not post-merge.
 
 **M-5 (process): hotfix PRs land before any dependent work merges.** If a
 merged PR breaks CI (M-1 violated, or an M-4 drift slipped), all other work

@@ -198,3 +198,33 @@ jobs:
           python-version: '3.11'
       - name: Assert RLS + policy on every migration table
         run: python scripts/check_rls.py apps/worker/migrations/
+
+  credit-pack-price-recon:
+    name: "Credit pack price recon (audit M5)"
+    runs-on: ubuntu-latest
+    # Repo secrets are unavailable to fork PRs; skip rather than fail there.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install stripe psycopg[binary]
+      - name: Reconcile credit_packs prices with Stripe unit_amount
+        # Default `--source auto` catches the actual M5 scenario (live DB
+        # price edits drifting from Stripe) when DATABASE_URL_CREDIT_PACKS_RO
+        # is wired as a repo secret. Falls back to migration 020 seed when
+        # the env var is absent. The script also skips cleanly (exit 0) if
+        # STRIPE_SECRET_KEY isn't set yet, so this job won't red-flag every
+        # downstream PR before Jon adds the repo secrets.
+        run: python scripts/check_credit_pack_prices.py
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_PRICE_CREDITS_20: ${{ secrets.STRIPE_PRICE_CREDITS_20 }}
+          STRIPE_PRICE_CREDITS_60: ${{ secrets.STRIPE_PRICE_CREDITS_60 }}
+          STRIPE_PRICE_CREDITS_180: ${{ secrets.STRIPE_PRICE_CREDITS_180 }}
+          # Optional: wire DATABASE_URL to a read-only Supabase connection
+          # string (role with SELECT on credit_packs only) so CI catches
+          # live DB-vs-Stripe drift, not just seed-vs-Stripe.
+          DATABASE_URL: ${{ secrets.DATABASE_URL_CREDIT_PACKS_RO }}

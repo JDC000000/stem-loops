@@ -30,6 +30,10 @@ apps/worker/migrations/**                       @JDC000000
 # Scripts — CI invokes several; broadening beyond check_rls.py because a new
 # script added here can silently become part of the build or lint path.
 scripts/**                                      @JDC000000
+# Explicit entry for the Fleet Playbook Move 4 gate — a behavioural script
+# that governs PR-body validation, redundant with `scripts/**` above but kept
+# so the ownership is obvious at a glance when auditing CI-side policy.
+scripts/check_tsd_refs.py                       @JDC000000
 
 # CI and workflow files — auto-merge rules, branch protection surfaces.
 .github/workflows/**                            @JDC000000

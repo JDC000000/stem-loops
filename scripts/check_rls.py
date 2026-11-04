@@ -25,17 +25,33 @@ Rules enforced:
 
 Rules 4+5 are scoped by migration number (not a feature flag) so V2-era tables
 that predate the stemloops_app / cowork_ro catch-up (migration 011) do not fail
-the gate. Once 011 is on the base branch, set STRICT_FROM_MIGRATION to 1.
+the gate.
+
+STRICT_FROM_MIGRATION threshold:
+  * In-file default: the `STRICT_FROM_MIGRATION` constant below (currently 1,
+    i.e. every migration is checked).
+  * Override at runtime by exporting the env var STRICT_FROM_MIGRATION to a
+    non-negative integer (e.g. `STRICT_FROM_MIGRATION=13` → only migrations
+    013+ are enforced strictly; older ones use lax mode and need only rules
+    1-3). CI uses the default; the env var is an escape hatch for a one-off
+    bisect or a forward-looking branch that hasn't rebased pre-strict
+    migrations yet. Audit-session-4 MINOR: previously the only knob was the
+    constant, so flipping it required a code change even for a local run.
+  * A non-integer / negative value is a configuration error and aborts fast,
+    so a typo (e.g. `STRICT_FROM_MIGRATION=true`) can't silently disable the
+    gate.
 
 Backend-only marker format (comment line, any migration file):
   -- rls-backend-only: jobs, job_events, loops
 
 Usage: python scripts/check_rls.py [MIGRATIONS_DIR]
+       STRICT_FROM_MIGRATION=13 python scripts/check_rls.py [MIGRATIONS_DIR]
 
 Exit 0 if every rule passes, 1 otherwise. Prints a per-table verdict.
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -84,8 +100,37 @@ CREATE_POLICY_RE = re.compile(
 # Rules (c)/(d). Strict scope: only tables first created in a migration whose
 # numeric prefix is >= this value are checked. 013 = first migration authored
 # against the stemloops_app / cowork_ro template; 011 (catch-up for V2 tables)
-# is not on the base branch yet. Lower to 1 once 011 lands.
+# landed on v3/main so the default is 1 (every migration enforced). The env
+# var STRICT_FROM_MIGRATION overrides at runtime for a local bisect — see the
+# module docstring.
 STRICT_FROM_MIGRATION = 1
+
+
+def _strict_from_env(
+    default: int = STRICT_FROM_MIGRATION,
+    env: dict[str, str] | None = None,
+) -> int:
+    """Read STRICT_FROM_MIGRATION from the environment (default: constant).
+    A non-integer / negative value aborts fast via SystemExit so a typo like
+    STRICT_FROM_MIGRATION=true can't silently disable the gate — the alternative
+    (silently falling back to the default) would be invisible in CI output.
+    """
+    raw = (env if env is not None else os.environ).get("STRICT_FROM_MIGRATION")
+    if raw is None or raw == "":
+        return default
+    try:
+        val = int(raw)
+    except ValueError:
+        sys.exit(
+            f"check_rls: STRICT_FROM_MIGRATION={raw!r} is not an integer. "
+            "Set it to a non-negative migration number (e.g. 13) or unset it."
+        )
+    if val < 0:
+        sys.exit(
+            f"check_rls: STRICT_FROM_MIGRATION={val} is negative. "
+            "Set it to a non-negative migration number (e.g. 13) or unset it."
+        )
+    return val
 
 _MIGRATION_NUM_RE = re.compile(r"^(\d+)_")
 
@@ -550,4 +595,4 @@ def main(migrations_dir: Path,
 
 if __name__ == "__main__":
     arg = sys.argv[1] if len(sys.argv) > 1 else "apps/worker/migrations"
-    sys.exit(main(Path(arg)))
+    sys.exit(main(Path(arg), strict_from=_strict_from_env()))

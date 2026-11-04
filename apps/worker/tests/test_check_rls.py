@@ -223,6 +223,55 @@ def test_strip_comments_does_not_truncate_string_with_double_dash(tmp_path, caps
     assert "evil" in out
 
 
+# --- audit MINOR (session-4): STRICT_FROM_MIGRATION env override -----------
+
+
+def test_strict_from_env_default_matches_constant(monkeypatch):
+    """Unset / empty env var → read the in-file constant (unchanged default)."""
+    monkeypatch.delenv("STRICT_FROM_MIGRATION", raising=False)
+    assert check_rls._strict_from_env() == check_rls.STRICT_FROM_MIGRATION
+    monkeypatch.setenv("STRICT_FROM_MIGRATION", "")
+    assert check_rls._strict_from_env() == check_rls.STRICT_FROM_MIGRATION
+
+
+def test_strict_from_env_integer_override(monkeypatch):
+    """A valid integer wins over the in-file constant."""
+    monkeypatch.setenv("STRICT_FROM_MIGRATION", "13")
+    assert check_rls._strict_from_env(default=1) == 13
+    monkeypatch.setenv("STRICT_FROM_MIGRATION", "0")
+    assert check_rls._strict_from_env(default=1) == 0
+
+
+def test_strict_from_env_bad_value_aborts(monkeypatch):
+    """Non-integer and negative values fail fast rather than silently defaulting
+    (a silent fallback would let `STRICT_FROM_MIGRATION=true` disable the gate
+    in CI unseen)."""
+    monkeypatch.setenv("STRICT_FROM_MIGRATION", "true")
+    with pytest.raises(SystemExit):
+        check_rls._strict_from_env()
+    monkeypatch.setenv("STRICT_FROM_MIGRATION", "-3")
+    with pytest.raises(SystemExit):
+        check_rls._strict_from_env()
+
+
+def test_strict_from_env_applied_end_to_end(tmp_path, capsys, monkeypatch):
+    """A migration that would FAIL rules (c)/(d) at strict_from=1 must PASS
+    when STRICT_FROM_MIGRATION is set high enough to exclude it."""
+    legacy = (
+        "-- rls-backend-only: old\n"
+        "CREATE TABLE old (id int);\n"
+        "ALTER TABLE old ENABLE ROW LEVEL SECURITY;\n"
+        "CREATE POLICY old_x ON old FOR SELECT TO authenticated USING (false);\n"
+    )
+    (tmp_path / "009_old.sql").write_text(legacy)
+    # At the default (1), this legacy migration fails rules c+d.
+    assert check_rls.main(tmp_path, strict_from=1) != 0
+    # With the env override pushed above the migration number, same tree passes.
+    monkeypatch.setenv("STRICT_FROM_MIGRATION", "13")
+    rc = check_rls.main(tmp_path, strict_from=check_rls._strict_from_env())
+    assert rc == 0, capsys.readouterr().out
+
+
 # --- Round-2: ratchet to flip STRICT_FROM_MIGRATION when 011 lands ----------
 
 

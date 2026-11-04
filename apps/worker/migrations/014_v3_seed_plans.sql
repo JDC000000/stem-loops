@@ -1,9 +1,9 @@
 -- 014_v3_seed_plans.sql — seed the locked plan catalog per Jon 2026-11-02T22:45.
 --
 -- Pricing table (TSD-V3-DELTA.md §1.2 + §1.2a + §1.3; Lens C findings C-01/C-02):
---   free    — 3 songs/day, no account       — $0           — youtube/spotify/soundcloud link-ingest
---   pro     — $4.99/mo — UNLIMITED own-file — stems export — NO link-ingest (§1.2a)
---   studio  — $12/mo   — UNLIMITED own-file — wav24 export — NO link-ingest (§1.2a)
+--   free    — 3 songs/day, no account       — $0 CAD           — youtube/spotify/soundcloud link-ingest
+--   pro     — $4.99 CAD/mo — UNLIMITED own-file — stems export — NO link-ingest (§1.2a)
+--   studio  — $12 CAD/mo   — UNLIMITED own-file — wav24 export — NO link-ingest (§1.2a)
 --
 -- §1.2a is the structural separation: paid tiers (Credits/Pro/Studio) NEVER
 -- touch the link-ingest path. Link ingest lives in the free tier forever. So
@@ -17,17 +17,19 @@
 -- that is intentional (the migration is the source of truth for pricing).
 
 INSERT INTO public.plans
-  (code, display_name, price_usd_cents, monthly_job_quota, services, export_stems, export_wav24, active)
+  (code, display_name, price_cad_cents, monthly_job_quota, services, export_stems, export_wav24, active)
 VALUES
   ('free',   'Free',     0,  90,      ARRAY['youtube','spotify','soundcloud']::text[], false, false, true),
   -- Pro/Studio "unlimited" is modeled as a practical sentinel (100000). The
   -- entitlement check-side treats >=1e5 as unlimited; swapping to a NULL-
   -- means-unlimited convention is a Phase 1b consideration (DDL change).
+  -- Prices are CAD cents per TSD §1.2: $4.99 CAD and $12 CAD. The Stripe
+  -- sandbox is a BC CAD catalog, so these values match what Stripe bills.
   ('pro',    'Pro',    499,  100000,  ARRAY[]::text[],                                 true,  false, true),
   ('studio', 'Studio', 1200, 100000,  ARRAY[]::text[],                                 true,  true,  true)
 ON CONFLICT (code) DO UPDATE SET
   display_name      = EXCLUDED.display_name,
-  price_usd_cents   = EXCLUDED.price_usd_cents,
+  price_cad_cents   = EXCLUDED.price_cad_cents,
   monthly_job_quota = EXCLUDED.monthly_job_quota,
   services          = EXCLUDED.services,
   export_stems      = EXCLUDED.export_stems,

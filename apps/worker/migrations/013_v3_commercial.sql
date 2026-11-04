@@ -64,7 +64,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.users TO stemloops_app;
 CREATE TABLE IF NOT EXISTS public.plans (
   code              text PRIMARY KEY,                  -- 'free' | 'pro' | 'studio'
   display_name      text NOT NULL,
-  price_usd_cents   integer NOT NULL DEFAULT 0,
+  -- CAD cents per TSD §1.2. The Stripe sandbox is a BC CAD catalog, so
+  -- storing values here as USD would misrepresent what customers are billed.
+  -- Renamed from price_usd_cents in 016_v3_rename_price_cad.sql for the
+  -- already-applied case; this column spelling is what fresh DBs get.
+  price_cad_cents   integer NOT NULL DEFAULT 0,
   monthly_job_quota integer NOT NULL,
   services          text[] NOT NULL,                   -- {'youtube','spotify',...}
   export_stems      boolean NOT NULL DEFAULT false,
@@ -376,7 +380,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.trial_grants TO stemloops_app;
 --     a signup to succeed.
 ------------------------------------------------------------------------------
 INSERT INTO public.plans
-  (code, display_name, price_usd_cents, monthly_job_quota, services, export_stems, export_wav24, active)
+  (code, display_name, price_cad_cents, monthly_job_quota, services, export_stems, export_wav24, active)
 VALUES
   ('free', 'Free', 0, 90, ARRAY['youtube','spotify','soundcloud']::text[], false, false, true)
 ON CONFLICT (code) DO NOTHING;

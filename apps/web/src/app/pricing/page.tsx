@@ -9,7 +9,9 @@ export const dynamic = 'force-dynamic';
 type Plan = {
   code: string;
   display_name: string;
-  price_usd_cents: number;
+  // CAD cents per TSD §1.2 — Stripe sandbox is a BC CAD catalog. Column
+  // renamed from price_usd_cents in migration 016_v3_rename_price_cad.sql.
+  price_cad_cents: number;
   monthly_job_quota: number;
   services: string[];
   export_stems: boolean;
@@ -18,9 +20,9 @@ type Plan = {
 
 // Fallback if public.plans is unreachable, so the page still renders (TSD §1.2).
 const FALLBACK: Plan[] = [
-  { code: 'free', display_name: 'Free', price_usd_cents: 0, monthly_job_quota: 90, services: ['youtube', 'spotify', 'soundcloud'], export_stems: false, export_wav24: false },
-  { code: 'pro', display_name: 'Pro', price_usd_cents: 499, monthly_job_quota: 100000, services: [], export_stems: true, export_wav24: false },
-  { code: 'studio', display_name: 'Studio', price_usd_cents: 1200, monthly_job_quota: 100000, services: [], export_stems: true, export_wav24: true },
+  { code: 'free', display_name: 'Free', price_cad_cents: 0, monthly_job_quota: 90, services: ['youtube', 'spotify', 'soundcloud'], export_stems: false, export_wav24: false },
+  { code: 'pro', display_name: 'Pro', price_cad_cents: 499, monthly_job_quota: 100000, services: [], export_stems: true, export_wav24: false },
+  { code: 'studio', display_name: 'Studio', price_cad_cents: 1200, monthly_job_quota: 100000, services: [], export_stems: true, export_wav24: true },
 ];
 
 // One-time credit SKUs, hardcoded per TSD §1.2 LOCKED (not modeled in
@@ -40,7 +42,7 @@ function priceCad(cents: number): string {
 async function loadPlans(): Promise<{ plans: Plan[]; degraded: boolean }> {
   try {
     const r = await db.query(
-      `SELECT code, display_name, price_usd_cents, monthly_job_quota, services, export_stems, export_wav24
+      `SELECT code, display_name, price_cad_cents, monthly_job_quota, services, export_stems, export_wav24
          FROM public.plans WHERE active = true`,
     );
     const rows = r.rows as Plan[];
@@ -53,7 +55,13 @@ async function loadPlans(): Promise<{ plans: Plan[]; degraded: boolean }> {
   return { plans: FALLBACK, degraded: true };
 }
 
-const price = (c: number) => (c === 0 ? '$0' : `$${(c / 100).toFixed(c % 100 ? 2 : 0)}`);
+// Plans are priced in CAD cents per TSD §1.2. Append " CAD" so the UI never
+// reads as implied USD — audit MAJOR finding (sandbox is BC CAD catalog).
+// $0 renders without a currency tag (free is currency-neutral in copy).
+const price = (c: number) => {
+  if (c === 0) return '$0';
+  return `$${(c / 100).toFixed(c % 100 ? 2 : 0)} CAD`;
+};
 const SERVICE_LABEL: Record<string, string> = { youtube: 'YouTube', spotify: 'Spotify', soundcloud: 'SoundCloud' };
 
 function features(p: Plan): string[] {
@@ -90,8 +98,8 @@ export default async function PricingPage() {
           <section key={p.code} style={card} aria-label={p.display_name}>
             <h2 style={{ margin: 0, fontSize: 20, color: 'var(--text-primary)' }}>{p.display_name}</h2>
             <div style={{ fontSize: 30, fontWeight: 700, color: 'var(--text-primary)' }}>
-              {price(p.price_usd_cents)}
-              {p.price_usd_cents > 0 && <span style={{ fontSize: 14, fontWeight: 400, color: 'var(--text-muted)' }}> /mo</span>}
+              {price(p.price_cad_cents)}
+              {p.price_cad_cents > 0 && <span style={{ fontSize: 14, fontWeight: 400, color: 'var(--text-muted)' }}> /mo</span>}
             </div>
             <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--text-secondary)', fontSize: 14, display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
               {features(p).map((f) => <li key={f}>{f}</li>)}

@@ -50,6 +50,10 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
     headline: "That promo code isn't valid.",
     action: 'Double-check the code or continue without one.',
   },
+  BOT_CHALLENGE_FAILED: {
+    headline: "We couldn't verify you're not a bot.",
+    action: 'Complete the challenge and try again. If it keeps failing, reload the page.',
+  },
 };
 
 export const DEFAULT_ERROR = ERROR_COPY.INTERNAL_ERROR;

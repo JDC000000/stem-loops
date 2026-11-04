@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import HCaptcha from '@hcaptcha/react-hcaptcha';
 import { createBrowserClient } from '@/lib/auth/supabase';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
 
@@ -28,6 +29,9 @@ export default function LoginForm({ returnTo }: { returnTo?: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const captchaRef = useRef<HCaptcha>(null);
+  const siteKey = process.env.NEXT_PUBLIC_HCAPTCHA_SITE_KEY;
 
   // Email links and the Google redirect land back on /login with a `?code=`;
   // the browser client exchanges it on init and fires SIGNED_IN, handled below.
@@ -73,11 +77,21 @@ export default function LoginForm({ returnTo }: { returnTo?: string }) {
         return 'If that email has an account, a reset link is on its way.';
       }
       if (mode === 'signup') {
-        const { data, error: err } = await supabase.auth.signUp({
-          email, password, options: { emailRedirectTo: callbackUrl() },
+        // Signup goes through the server route so the hCaptcha token is
+        // verified before Supabase signUp (V3-C1).
+        const res = await fetch('/api/auth/signup', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email, password, hcaptcha_token: captchaToken, return_to: dest }),
         });
-        if (err) throw err;
-        if (!data.session) return 'Check your email to confirm your account.';
+        const json = (await res.json().catch(() => ({}))) as {
+          ok?: boolean; error?: string; needs_confirmation?: boolean;
+        };
+        // Tokens are single-use: always demand a fresh challenge after an attempt.
+        setCaptchaToken(null);
+        captchaRef.current?.resetCaptcha();
+        if (!res.ok || !json.ok) throw new Error(json.error ?? 'Could not create account. Please try again.');
+        if (json.needs_confirmation) return 'Check your email to confirm your account.';
       } else {
         const { error: err } = await supabase.auth.signInWithPassword({ email, password });
         if (err) throw err;
@@ -128,7 +142,17 @@ export default function LoginForm({ returnTo }: { returnTo?: string }) {
               value={password} onChange={(e) => setPassword(e.target.value)} style={input} />
           </label>
         )}
-        <button type="submit" disabled={busy}
+        {mode === 'signup' && (siteKey ? (
+          <HCaptcha ref={captchaRef} sitekey={siteKey}
+            onVerify={(t) => setCaptchaToken(t)}
+            onExpire={() => setCaptchaToken(null)}
+            onError={() => setCaptchaToken(null)} />
+        ) : (
+          <p role="alert" style={{ color: 'var(--status-failed, #f66)', margin: 0, fontSize: 14 }}>
+            Bot check is unavailable. Please try again later.
+          </p>
+        ))}
+        <button type="submit" disabled={busy || (mode === 'signup' && !captchaToken)}
           style={{ ...btn, border: 'none', background: 'var(--btn-primary-bg, var(--accent))', color: 'var(--btn-primary-text, #000)' }}>
           {busy ? 'Working…' : mode === 'signup' ? 'Create account' : mode === 'reset' ? 'Send reset link' : 'Sign in'}
         </button>

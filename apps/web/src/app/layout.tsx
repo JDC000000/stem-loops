@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import FlashBanner from '@/components/FlashBanner';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://stem-loops.com'),
@@ -29,7 +30,10 @@ export default function RootLayout({
   return (
     // suppressHydrationWarning: the landing adds `js` / playback classes to <html> before hydration
     <html lang="en" suppressHydrationWarning>
-      <body>{children}</body>
+      <body>
+        <FlashBanner />
+        {children}
+      </body>
     </html>
   );
 }

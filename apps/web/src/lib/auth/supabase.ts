@@ -162,3 +162,35 @@ export async function getUser(): Promise<AuthenticatedUser | null> {
   const display_name = name ?? fullName;
   return display_name ? { user_id: id, email, display_name } : { user_id: id, email };
 }
+
+/**
+ * Permanently deletes a Supabase Auth user via the Admin API
+ * (`auth.admin.deleteUser`) — V3 account deletion (TSD §6.3, RGPD).
+ *
+ * Uses the SERVICE-ROLE key (`SUPABASE_SERVICE_ROLE_KEY`), which bypasses RLS
+ * and must never reach the browser: this function is server-only and builds a
+ * throwaway client with no session persistence. Deleting the auth.users row
+ * cascades to public.users and every table that references it (TSD §2.3 DDL).
+ *
+ * Throws on any failure (missing env, Supabase error). A user that is already
+ * gone ("user_not_found" / 404) is treated as success so retries are
+ * idempotent.
+ */
+export async function deleteAuthUser(userId: string): Promise<void> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url) throw new Error('NEXT_PUBLIC_SUPABASE_URL is not set.');
+  if (!serviceKey) throw new Error('SUPABASE_SERVICE_ROLE_KEY is not set.');
+  // Lazy import: keeps this module loadable in tests that stub only
+  // `@supabase/ssr`, and keeps the admin SDK out of any client bundle path.
+  const { createClient } = await import('@supabase/supabase-js');
+  const admin = createClient(url, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { error } = await admin.auth.admin.deleteUser(userId);
+  if (error) {
+    const e = error as { status?: number; code?: string };
+    if (e.status === 404 || e.code === 'user_not_found') return;
+    throw new Error(`auth.admin.deleteUser failed: ${error.message}`);
+  }
+}

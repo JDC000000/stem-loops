@@ -167,7 +167,7 @@ def test_balance_adds_purchase(conn):
     user_id = _insert_auth_user(conn, "test-013-balance20@example.com")
     conn.execute(
         "INSERT INTO public.credit_purchases "
-        "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_usd_cents) "
+        "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_cad_cents) "
         "VALUES (%s, 'stripe', 'ch_test_0001', 'credits_20', 20, 500)",
         (user_id,),
     )
@@ -183,7 +183,7 @@ def test_balance_subtracts_consumption(conn):
     user_id = _insert_auth_user(conn, "test-013-balance19@example.com")
     conn.execute(
         "INSERT INTO public.credit_purchases "
-        "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_usd_cents) "
+        "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_cad_cents) "
         "VALUES (%s, 'stripe', 'ch_test_0002', 'credits_20', 20, 500)",
         (user_id,),
     )
@@ -205,7 +205,7 @@ def test_balance_sums_multiple_purchases(conn):
     for idx, (pack, qty) in enumerate([("credits_20", 20), ("credits_60", 60)]):
         conn.execute(
             "INSERT INTO public.credit_purchases "
-            "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_usd_cents) "
+            "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_cad_cents) "
             "VALUES (%s, 'stripe', %s, %s, %s, %s)",
             (user_id, f"ch_test_sum_{idx}", pack, qty, qty * 25),
         )
@@ -243,7 +243,7 @@ def test_duplicate_charge_rejected(conn):
     user_id = _insert_auth_user(conn, "test-013-dup-charge@example.com")
     conn.execute(
         "INSERT INTO public.credit_purchases "
-        "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_usd_cents) "
+        "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_cad_cents) "
         "VALUES (%s, 'stripe', 'ch_test_dup_0001', 'credits_20', 20, 500)",
         (user_id,),
     )
@@ -251,7 +251,7 @@ def test_duplicate_charge_rejected(conn):
     with pytest.raises(psycopg.errors.UniqueViolation):
         conn.execute(
             "INSERT INTO public.credit_purchases "
-            "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_usd_cents) "
+            "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_cad_cents) "
             "VALUES (%s, 'stripe', 'ch_test_dup_0001', 'credits_20', 20, 500)",
             (user_id,),
         )
@@ -282,7 +282,7 @@ def test_invalid_pack_code_rejected(conn):
     with pytest.raises(psycopg.errors.CheckViolation):
         conn.execute(
             "INSERT INTO public.credit_purchases "
-            "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_usd_cents) "
+            "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_cad_cents) "
             "VALUES (%s, 'stripe', 'ch_test_bad_0001', 'credits_9999', 20, 500)",
             (user_id,),
         )
@@ -294,7 +294,7 @@ def test_invalid_credits_granted_rejected(conn):
     with pytest.raises(psycopg.errors.CheckViolation):
         conn.execute(
             "INSERT INTO public.credit_purchases "
-            "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_usd_cents) "
+            "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_cad_cents) "
             "VALUES (%s, 'stripe', 'ch_test_bad_qty', 'credits_20', 19, 500)",
             (user_id,),
         )
@@ -306,7 +306,7 @@ def test_invalid_provider_rejected(conn):
     with pytest.raises(psycopg.errors.CheckViolation):
         conn.execute(
             "INSERT INTO public.credit_purchases "
-            "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_usd_cents) "
+            "(user_id, provider, provider_charge_id, pack_code, credits_granted, amount_cad_cents) "
             "VALUES (%s, 'patreon', 'ch_test_bad_prov', 'credits_20', 20, 500)",
             (user_id,),
         )

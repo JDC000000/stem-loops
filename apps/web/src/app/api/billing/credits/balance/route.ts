@@ -27,7 +27,7 @@ export type Purchase = {
   id: string;
   pack_code: 'credits_20' | 'credits_60' | 'credits_180';
   credits_granted: number;
-  amount_usd_cents: number;
+  amount_cad_cents: number;
   promo_code: string | null;
   created_at: string;
 };
@@ -56,7 +56,7 @@ export async function GET() {
         [user.user_id],
       ),
       db.query<Purchase>(
-        `SELECT id, pack_code, credits_granted, amount_usd_cents, promo_code, created_at
+        `SELECT id, pack_code, credits_granted, amount_cad_cents, promo_code, created_at
            FROM credit_purchases
           WHERE user_id = $1
           ORDER BY created_at DESC

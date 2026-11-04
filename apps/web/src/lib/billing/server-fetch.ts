@@ -25,7 +25,7 @@ export async function serverGet<T>(path: string): Promise<ApiResult<T>> {
 
 export type CreditsBalance = {
   credits_remaining: number;
-  purchases?: Array<{ pack_code?: string; credits_granted?: number; amount_usd_cents?: number; created_at?: string }>;
+  purchases?: Array<{ pack_code?: string; credits_granted?: number; amount_cad_cents?: number; created_at?: string }>;
   recent_consumption?: Array<{ job_id?: string; consumed_at?: string }>;
 };
 

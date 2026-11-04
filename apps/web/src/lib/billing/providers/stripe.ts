@@ -350,7 +350,14 @@ export class StripeProvider implements BillingProvider {
       }
       case 'charge.refunded': {
         const charge = event.data.object as Stripe.Charge;
-        return { type: 'refund_created', providerChargeId: charge.id };
+        const pi = charge.payment_intent;
+        return {
+          type: 'refund_created',
+          providerEventId: event.id,
+          providerChargeId: charge.id,
+          providerPaymentIntentId: typeof pi === 'string' ? pi : (pi?.id ?? null),
+          fullyRefunded: charge.refunded === true,
+        };
       }
       default:
         return { type: 'unhandled', eventType: event.type };

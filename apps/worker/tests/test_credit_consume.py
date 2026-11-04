@@ -231,9 +231,7 @@ def test_consume_skipped_for_pro_plan(conn):
     """
     user_id = _insert_auth_user(conn, "pro")
     _buy_20_pack(conn, user_id)
-    conn.execute(
-        "UPDATE public.entitlements SET plan_code = 'pro' WHERE user_id = %s", (user_id,)
-    )
+    conn.execute("UPDATE public.entitlements SET plan_code = 'pro' WHERE user_id = %s", (user_id,))
     conn.commit()
     plan = conn.execute(
         "SELECT plan_code FROM public.entitlements WHERE user_id = %s", (user_id,)
@@ -246,7 +244,14 @@ def test_consume_skipped_for_pro_plan(conn):
     assert _balance(conn, user_id) == 20
 
     route = (
-        Path(__file__).resolve().parents[3] / "apps" / "web" / "src" / "app" / "api" / "jobs" / "route.ts"
+        Path(__file__).resolve().parents[3]
+        / "apps"
+        / "web"
+        / "src"
+        / "app"
+        / "api"
+        / "jobs"
+        / "route.ts"
     ).read_text()
     assert re.search(
         r"chargeCredit\s*=\s*entSnap\.plan_code\s*!==\s*'pro'\s*&&\s*entSnap\.plan_code\s*!==\s*'studio'",

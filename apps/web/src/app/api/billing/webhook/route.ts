@@ -13,6 +13,7 @@
 // Idempotency (critical): every insert uses UNIQUE constraints and
 // ON CONFLICT DO NOTHING. Specifically:
 //   credit_purchases     UNIQUE (provider, provider_charge_id)
+//   credit_adjustments   UNIQUE (provider, provider_event_id)  (migration 023)
 //   subscriptions        UNIQUE (provider, provider_subscription_id)
 //   promo_redemptions    UNIQUE (user_id, stripe_promotion_code_id)  (migration 015;
 //                        NULL stripe_promotion_code_id is NULLS DISTINCT by default —
@@ -344,13 +345,70 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       return;
     }
 
+    case 'refund_created': {
+      // M4 (credit-ledger review 2026-11-03): claw back credits for a refunded
+      // credit purchase. credit_purchases.provider_charge_id holds the
+      // PaymentIntent id, so match on the charge id OR its payment_intent.
+      if (!evt.fullyRefunded) {
+        // Partial refund: no pro-rata policy yet; leave credits, flag for support.
+        console.warn(`[webhook] refund_created: partial refund on ${evt.providerChargeId}; no clawback`);
+        return;
+      }
+      const ids = [evt.providerChargeId, evt.providerPaymentIntentId].filter(
+        (x): x is string => !!x,
+      );
+      const found = await db.query<{ user_id: string; provider_charge_id: string; credits_granted: number }>(
+        `SELECT user_id, provider_charge_id, credits_granted
+           FROM credit_purchases
+          WHERE provider = $1 AND provider_charge_id = ANY($2::text[])
+          LIMIT 1`,
+        [providerName, ids],
+      );
+      const purchase = found.rows[0];
+      if (!purchase) {
+        // Subscription invoice or non-credit charge: nothing to claw back.
+        console.info(`[webhook] refund_created: no credit purchase for charge ${evt.providerChargeId}; ignoring`);
+        return;
+      }
+      // Idempotent on (provider, provider_event_id) for Stripe retries and on
+      // the partial unique (provider, provider_charge_id) WHERE reason='refund'
+      // for a second distinct event on the same charge.
+      const ins = await db.query(
+        `INSERT INTO credit_adjustments
+           (user_id, credits_delta, reason, provider, provider_event_id, provider_charge_id)
+         VALUES ($1, $2, 'refund', $3, $4, $5)
+         ON CONFLICT DO NOTHING`,
+        [
+          purchase.user_id,
+          -Math.abs(purchase.credits_granted | 0),
+          providerName,
+          evt.providerEventId,
+          purchase.provider_charge_id,
+        ],
+      );
+      if ((ins.rowCount ?? 0) > 0) {
+        await db.query(
+          `INSERT INTO usage_events (user_id, kind, detail)
+           VALUES ($1, 'refund_processed', $2::jsonb)`,
+          [
+            purchase.user_id,
+            JSON.stringify({
+              provider_event_id: evt.providerEventId,
+              provider_charge_id: purchase.provider_charge_id,
+              credits_clawed_back: purchase.credits_granted,
+            }),
+          ],
+        );
+        invalidateEntitlement(purchase.user_id);
+      }
+      return;
+    }
+
     case 'dispute_created':
-    case 'refund_created':
     case 'unhandled':
     default:
-      // No-op: these events are recorded by Stripe Dashboard and don't
-      // alter entitlements directly in Phase 1a. Phase 1b adds a
-      // disputes/refunds ledger.
+      // No-op: disputes are recorded by Stripe Dashboard and don't alter
+      // entitlements yet. (Refunds are handled above — M4.)
       return;
   }
 }

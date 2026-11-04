@@ -116,7 +116,15 @@ export type BillingEvent =
     }
   | {
       type: 'refund_created';
+      /** Stripe event id — idempotency key for credit_adjustments. */
+      providerEventId: string;
+      /** Stripe charge id (ch_...). */
       providerChargeId: string;
+      /** Stripe payment_intent id (pi_...). credit_purchases.provider_charge_id
+       *  stores the PaymentIntent id, so the webhook matches on either. */
+      providerPaymentIntentId: string | null;
+      /** true only when the charge is fully refunded (Stripe charge.refunded). */
+      fullyRefunded: boolean;
     }
   | {
       type: 'unhandled';

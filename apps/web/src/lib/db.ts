@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 
 // Supabase's pooler serves a cert not in Node's default CA bundle
 // (SELF_SIGNED_CERT_IN_CHAIN), and node-pg now forces verification for sslmode=require
@@ -21,5 +21,47 @@ function getPool(): Pool {
 }
 
 export const db = {
-  query: (text: string, params?: unknown[]) => getPool().query(text, params),
+  query: <R extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[],
+  ): Promise<QueryResult<R>> => getPool().query<R>(text, params),
+
+  /**
+   * Run `fn` inside a single checked-out client, wrapped in BEGIN/COMMIT.
+   * The client's `query` is passed to `fn`; any throw triggers ROLLBACK.
+   * Used for advisory-lock-protected tx regions (e.g. billing checkout
+   * rate limit) where READ COMMITTED alone can't serialize concurrent
+   * requests. Advisory locks taken with pg_advisory_xact_lock release
+   * automatically at COMMIT/ROLLBACK.
+   */
+  tx: async <T>(
+    fn: (client: {
+      query: <R extends QueryResultRow = QueryResultRow>(
+        text: string,
+        params?: unknown[],
+      ) => Promise<QueryResult<R>>;
+    }) => Promise<T>,
+  ): Promise<T> => {
+    const client: PoolClient = await getPool().connect();
+    try {
+      await client.query('BEGIN');
+      const result = await fn({
+        query: <R extends QueryResultRow = QueryResultRow>(
+          text: string,
+          params?: unknown[],
+        ) => client.query<R>(text, params),
+      });
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // ignore rollback failure — original error wins
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  },
 };

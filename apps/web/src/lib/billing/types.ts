@@ -83,6 +83,11 @@ export type BillingEvent =
       currency: string;
       priceId: string;
       promoCode?: string;
+      // From Stripe Checkout Session: customer_email on the completed
+      // session. The webhook uses this as a fallback to seed public.users
+      // when the handle_new_user trigger has not caught up (round-1 MEDIUM
+      // on ensureUserRow silent return).
+      customerEmail?: string | null;
     }
   | {
       type: 'subscription_upserted';
@@ -129,6 +134,7 @@ export interface BillingProvider {
     planCode: PlanCode,
     successUrl: string,
     cancelUrl: string,
+    promoCode?: string | null,
   ): Promise<BillingCheckoutResult>;
 
   createCreditPurchaseSession(
@@ -136,6 +142,7 @@ export interface BillingProvider {
     pack: PackCode,
     successUrl: string,
     cancelUrl: string,
+    promoCode?: string | null,
   ): Promise<BillingCheckoutResult>;
 
   createPortalSession(

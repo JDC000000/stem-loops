@@ -161,11 +161,17 @@ N=<pr>  # e.g. N=29
 HEAD=$(gh api "repos/JDC000000/stem-loops/pulls/$N" --jq '.head.sha')
 gh api "repos/JDC000000/stem-loops/commits/$HEAD/check-runs?per_page=100" --jq '
   .check_runs
-  | map({name, s: (.conclusion // .status)})
-  | map(select(.s == "failure" or .s == "cancelled" or .s == "timed_out" or .s != "completed"))
+  | map(select(
+      .status != "completed"
+      or .conclusion == "failure"
+      or .conclusion == "cancelled"
+      or .conclusion == "timed_out"
+    ))
+  | map({name, status, conclusion})
 '
 # Must print []. If non-empty, STOP and fix CI. Also fail if the top-level
-# check_runs array is empty — CI has not registered yet.
+# check_runs array is empty — CI has not registered yet. This matches what
+# scripts/safe_merge.sh enforces operationally (pending OR concluded-bad).
 ```
 
 **M-2 (hard): adversarial reviewers must verify CI is green** before

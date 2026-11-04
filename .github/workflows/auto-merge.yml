@@ -45,34 +45,40 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'adversarial-reviewed') &&
       !contains(github.event.pull_request.labels.*.name, 'needs-jon-approval')
     steps:
-      - name: Enable auto-merge (squash, delete branch) — direct-merge fallback for already-clean
+      - name: Enable auto-merge (squash, delete branch) — REST fallback for fine-grained PATs
         env:
-          # Use the bot account's PAT (BOT_TOKEN secret, scoped to JDC0000) so
-          # the merge is performed by the bot — not by the default GitHub
-          # Actions identity. This closes the self-approval classifier block
-          # for PRs authored by the human owner (M-6/M-7 structural fix).
-          # Fallback: if BOT_TOKEN is unset or revoked, GITHUB_TOKEN is used.
+          # BOT_TOKEN (fine-grained PAT for JDC0000) cannot use GraphQL
+          # `mergePullRequest` — use REST `PUT /repos/{owner}/{repo}/pulls/{N}/merge` instead.
+          # Fallback to GITHUB_TOKEN if BOT_TOKEN is unset.
           GH_TOKEN: ${{ secrets.BOT_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -e
           PR_NUM="${{ github.event.pull_request.number }}"
           REPO="${{ github.repository }}"
-          echo "PR #$PR_NUM meets triple-gate; attempting merge."
-          # Try --auto first (works when CI still pending).
-          if gh pr merge "$PR_NUM" --repo "$REPO" --squash --auto --delete-branch 2>auto-merge.err; then
-            echo "Auto-merge enabled — will merge once CI greens."
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          echo "PR #$PR_NUM meets triple-gate; attempting REST merge against head $HEAD_SHA."
+
+          # REST merge; -f fields auto-string-cast — pass merge_method as string.
+          # Include sha so we abort if HEAD moved between label event and merge.
+          HTTP_OUT=$(gh api -X PUT "repos/$REPO/pulls/$PR_NUM/merge" \
+            --input - <<EOF 2>merge.err
+          {"merge_method":"squash","sha":"$HEAD_SHA"}
+          EOF
+          ) && MERGE_OK=1 || MERGE_OK=0
+
+          if [ "$MERGE_OK" = "1" ]; then
+            echo "Merge succeeded:"
+            echo "$HTTP_OUT"
+            # Delete the branch (best-effort; doesn't fail the merge if delete errors)
+            BRANCH="${{ github.event.pull_request.head.ref }}"
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" 2>branch-delete.err || \
+              echo "Note: branch delete returned error (branch may already be gone):" && cat branch-delete.err || true
             exit 0
           fi
-          # If --auto failed because the PR is already clean, fall through to a
-          # direct merge. GitHub returns "Pull request is in clean status" on 422.
-          if grep -q 'clean status' auto-merge.err; then
-            echo "PR is already CI-green; falling back to direct merge."
-            gh pr merge "$PR_NUM" --repo "$REPO" --squash --delete-branch
-            exit 0
-          fi
-          # Any other failure — surface the error.
-          echo "Auto-merge failed with unexpected error:"
-          cat auto-merge.err
+
+          # Merge failed — surface the error.
+          echo "REST merge failed:"
+          cat merge.err
           exit 1
 
   drop-stale-review:

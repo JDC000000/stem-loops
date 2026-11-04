@@ -28,8 +28,13 @@ dist/
 .env.*.local
 
 # Claude Code local tooling state — per-session agent worktrees, caches,
-# nothing project-level. Each dev's workstation generates its own.
-.claude/
+# settings. Each dev's workstation generates its own.
+# Note the `.claude/*` form (not `.claude/`): git cannot re-include a file
+# below an excluded directory, so we exclude only the CONTENTS of .claude/
+# and then negate the one subpath we DO want committed: .claude/agents/
+# (behavioural role definitions — see docs/agent-registry.md).
+.claude/*
+!.claude/agents/
 
 # Audio files (fixtures/ are committed; loose audio is not)
 *.wav

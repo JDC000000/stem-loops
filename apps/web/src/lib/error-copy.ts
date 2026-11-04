@@ -38,9 +38,13 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
     headline: "You've used all 3 songs in your free trial.",
     action: 'Pick a plan or buy a credit pack to keep going.',
   },
-  CREDITS_DEPLETED: {
+  CREDIT_BALANCE_INSUFFICIENT: {
     headline: "You're out of credits.",
     action: 'Buy a pack of credits to process more songs.',
+  },
+  PAID_LINK_INGEST_DISALLOWED: {
+    headline: 'Credits and Pro only work with files you upload.',
+    action: 'Paste a link into the free tier (3/day) instead, or upload your file.',
   },
   PROMO_INVALID: {
     headline: "That promo code isn't valid.",

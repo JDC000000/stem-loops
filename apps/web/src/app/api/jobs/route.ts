@@ -18,6 +18,7 @@ import {
   EntitlementError,
 } from '@/lib/billing/entitlements';
 import { consumeTrialInTx } from '@/lib/trial';
+import { consumeCreditInTx } from '@/lib/billing/credits';
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
 const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
@@ -100,9 +101,13 @@ export async function POST(request: NextRequest) {
       // §1.2a: upload is NOT the trial path — it's credits/paid. For authed
       // users enforce the upload entitlement (Pro/Studio quota, or credits
       // for free-tier) BEFORE spending Replicate budget.
+      let chargeCredit = false;
       if (user) {
         try {
-          await enforceEntitlement('start_job_upload', user.user_id);
+          const { snapshot: entSnap } = await enforceEntitlement('start_job_upload', user.user_id);
+          // Pro/Studio are unlimited (quota-metered); everyone else who got
+          // past the gate is on the credit path and is charged below.
+          chargeCredit = entSnap.plan_code !== 'pro' && entSnap.plan_code !== 'studio';
         } catch (err) {
           if (err instanceof EntitlementError) {
             return NextResponse.json(
@@ -162,7 +167,9 @@ export async function POST(request: NextRequest) {
       // entitlements.jobs_used under a per-(user,period) advisory lock, so
       // the counter is consistent with the real insert. Anon path stays as
       // a single statement — cheaper + the existing shape.
-      const inserted = user
+      let inserted;
+      try {
+      inserted = user
         ? await db.tx(async (client) => {
             const r = await client.query(
               `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
@@ -174,7 +181,14 @@ export async function POST(request: NextRequest) {
               [jobId, uploadKey, filenameTrim, uStems, ubars, clientIpHash,
                RATE_WINDOW_MS, RATE_LIMIT, user.user_id],
             );
-            if (r.rowCount) await incrementJobsUsed(client, user.user_id);
+            if (r.rowCount) {
+              // B1/M3: charge the credit in the SAME tx, AFTER the jobs row
+              // exists (check_credit_decrement trigger looks it up). DB-level
+              // advisory lock + conditional INSERT — not the 30 s cache.
+              // Throws CREDIT_BALANCE_INSUFFICIENT -> tx rolls back the job.
+              if (chargeCredit) await consumeCreditInTx(client, user.user_id, jobId);
+              await incrementJobsUsed(client, user.user_id);
+            }
             return r;
           })
         : await db.query(
@@ -187,6 +201,16 @@ export async function POST(request: NextRequest) {
             [jobId, uploadKey, filenameTrim, uStems, ubars, clientIpHash,
              RATE_WINDOW_MS, RATE_LIMIT],
           );
+      } catch (err) {
+        // Lost the race for the last credit (M3): tx already rolled back.
+        if (err instanceof EntitlementError) {
+          return NextResponse.json(
+            { error_code: err.code, message: err.message },
+            { status: err.status },
+          );
+        }
+        throw err;
+      }
       if (!inserted.rowCount) {
         return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });
       }

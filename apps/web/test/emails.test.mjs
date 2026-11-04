@@ -77,6 +77,7 @@ test('sendEmail: posts to Resend API with Bearer auth and JSON body', async () =
     subject: 'Hi',
     html: '<p>Hello</p>',
     tag: 'welcome',
+    idempotencyKey: 'welcome:u-1',
   });
   assert.equal(res.ok, true);
   assert.equal(res.id, 'em_abc');
@@ -93,6 +94,51 @@ test('sendEmail: posts to Resend API with Bearer auth and JSON body', async () =
   assert.deepEqual(body.tags, [{ name: 'template', value: 'welcome' }]);
 });
 
+// PR #38 Lens A follow-up: every send carries an Idempotency-Key header so
+// a retried-after-timeout send cannot double-deliver.
+test('sendEmail: sets Idempotency-Key header from idempotencyKey (PR #38 Lens A)', async () => {
+  setEnv();
+  const calls = mockFetch([{ status: 200, json: { id: 'em_idem' } }]);
+  const { sendEmail } = await loadResend();
+  const res = await sendEmail({
+    to: 'a@b.com',
+    subject: 's',
+    html: 'h',
+    tag: 'receipt',
+    idempotencyKey: 'receipt-sub:in_123',
+  });
+  assert.equal(res.ok, true);
+  assert.equal(
+    calls[0].init.headers['Idempotency-Key'],
+    'receipt-sub:in_123',
+    'Idempotency-Key header must carry the caller-supplied key verbatim',
+  );
+});
+
+test('sendEmail: Idempotency-Key is preserved across the retry on 5xx', async () => {
+  setEnv();
+  const calls = mockFetch([
+    { status: 502, text: 'bad gateway' },
+    { status: 200, json: { id: 'em_retry_ok' } },
+  ]);
+  const { sendEmail } = await loadResend();
+  const res = await sendEmail({
+    to: 'a@b.com',
+    subject: 's',
+    html: 'h',
+    tag: 'welcome',
+    idempotencyKey: 'welcome:u-7',
+  });
+  assert.equal(res.ok, true);
+  assert.equal(calls.length, 2, 'should have retried once');
+  assert.equal(calls[0].init.headers['Idempotency-Key'], 'welcome:u-7');
+  assert.equal(
+    calls[1].init.headers['Idempotency-Key'],
+    'welcome:u-7',
+    'the retry MUST reuse the same key so Resend dedupes it to the original',
+  );
+});
+
 test('sendEmail: retries exactly once on 5xx and succeeds on retry', async () => {
   setEnv();
   const calls = mockFetch([
@@ -100,7 +146,9 @@ test('sendEmail: retries exactly once on 5xx and succeeds on retry', async () =>
     { status: 200, json: { id: 'em_retry_ok' } },
   ]);
   const { sendEmail } = await loadResend();
-  const res = await sendEmail({ to: 'a@b.com', subject: 's', html: 'h', tag: 'welcome' });
+  const res = await sendEmail({
+    to: 'a@b.com', subject: 's', html: 'h', tag: 'welcome', idempotencyKey: 'k',
+  });
   assert.equal(res.ok, true);
   assert.equal(res.id, 'em_retry_ok');
   assert.equal(calls.length, 2, 'should have retried once');
@@ -110,7 +158,9 @@ test('sendEmail: returns {ok:false} on 4xx without retry, no throw', async () =>
   setEnv();
   const calls = mockFetch([{ status: 422, text: 'from domain not verified' }]);
   const { sendEmail } = await loadResend();
-  const res = await sendEmail({ to: 'bad', subject: 's', html: 'h', tag: 'receipt' });
+  const res = await sendEmail({
+    to: 'bad', subject: 's', html: 'h', tag: 'receipt', idempotencyKey: 'k',
+  });
   assert.equal(res.ok, false);
   assert.equal(res.status, 422);
   assert.match(res.error, /422/);
@@ -124,7 +174,9 @@ test('sendEmail: survives fetch throwing (network error) and retries once', asyn
     { throw: new Error('ECONNRESET again') },
   ]);
   const { sendEmail } = await loadResend();
-  const res = await sendEmail({ to: 'a@b.com', subject: 's', html: 'h', tag: 'welcome' });
+  const res = await sendEmail({
+    to: 'a@b.com', subject: 's', html: 'h', tag: 'welcome', idempotencyKey: 'k',
+  });
   assert.equal(res.ok, false);
   assert.match(res.error ?? '', /ECONNRESET/);
   assert.equal(calls.length, 2);
@@ -138,7 +190,9 @@ test('sendEmail: skips gracefully when RESEND_API_KEY is unset (no throw, no fet
     throw new Error('should not be called');
   };
   const { sendEmail } = await loadResend();
-  const res = await sendEmail({ to: 'a@b.com', subject: 's', html: 'h', tag: 'welcome' });
+  const res = await sendEmail({
+    to: 'a@b.com', subject: 's', html: 'h', tag: 'welcome', idempotencyKey: 'k',
+  });
   assert.equal(res.ok, false);
   assert.equal(fetched, false);
   assert.match(res.error ?? '', /RESEND_API_KEY/);
@@ -148,7 +202,9 @@ test('sendEmail: honors RESEND_SANDBOX=1 fallback sender', async () => {
   setEnv({ sandbox: '1' });
   const calls = mockFetch([{ status: 200, json: { id: 'em_1' } }]);
   const { sendEmail } = await loadResend();
-  await sendEmail({ to: 'a@b.com', subject: 's', html: 'h', tag: 'welcome' });
+  await sendEmail({
+    to: 'a@b.com', subject: 's', html: 'h', tag: 'welcome', idempotencyKey: 'k',
+  });
   const body = JSON.parse(calls[0].init.body);
   assert.equal(body.from, 'onboarding@resend.dev');
 });
@@ -245,6 +301,42 @@ test('receipt: rejects javascript: URLs in invoice_url (escapes to #)', async ()
     invoice_url: 'javascript:alert(1)',
   });
   assert.doesNotMatch(out.html, /javascript:/i);
+});
+
+// PR #38 Lens B follow-up: an invoice URL that contains a double-quote (or
+// angle brackets, after safeUrl accepted it) must be attribute-escaped so it
+// cannot break out of the href="" and inject markup.
+test('receipt: escapes double-quotes in invoice_url attribute (PR #38 Lens B)', async () => {
+  const { renderReceipt } = await loadTemplate('receipt');
+  const out = renderReceipt({
+    amount_cad_cents: 500,
+    plan_or_pack_label: 'test',
+    invoice_url: 'https://invoice.stripe.com/live?x="onmouseover=alert(1)&y=1',
+  });
+  // Raw quote must not appear unescaped inside the href attribute: a simple
+  // `" onmouseover` substring would prove the escape failed.
+  assert.doesNotMatch(
+    out.html,
+    /x="onmouseover/,
+    'raw double-quote injection must not reach the href attribute',
+  );
+  // The quote must land as the escaped form instead.
+  assert.match(
+    out.html,
+    /x=&quot;onmouseover/,
+    'double-quote in URL must be rendered as &quot; in the href attribute',
+  );
+});
+
+test('receipt: escapes angle-bracket injection attempt in invoice_url', async () => {
+  const { renderReceipt } = await loadTemplate('receipt');
+  const out = renderReceipt({
+    amount_cad_cents: 100,
+    plan_or_pack_label: 'x',
+    invoice_url: 'https://invoice.stripe.com/live</a><script>alert(1)</script>',
+  });
+  assert.doesNotMatch(out.html, /<script>alert\(1\)/, 'unescaped <script> must not appear');
+  assert.match(out.html, /&lt;script&gt;alert\(1\)/, 'script tag must be rendered as text');
 });
 
 test('shared escapeHtml and formatCadCents', async () => {

@@ -27,6 +27,14 @@ export function renderReceipt(vars: ReceiptVars): RenderedEmail {
   const label = vars.plan_or_pack_label;
   const invoiceUrl = safeUrl(vars.invoice_url);
 
+  // PR #38 Lens B: safeUrl() rejects non-http(s) schemes, but a URL still
+  // allowed by safeUrl can contain a `"` and break out of the href attribute
+  // once interpolated. Attribute-escape the URL (and the /account base URL)
+  // before use. escapeHtml covers &<>"'; that is sufficient for an HTML
+  // double-quoted attribute value.
+  const invoiceHref = escapeHtml(invoiceUrl);
+  const accountHref = escapeHtml(`${base}/account`);
+
   const subject = `Receipt from stem-loops — ${amount}`;
   const html = shell(
     `
@@ -49,17 +57,17 @@ export function renderReceipt(vars: ReceiptVars): RenderedEmail {
       ${
         invoiceUrl !== '#'
           ? `<p style="margin:0 0 24px;">
-          <a href="${invoiceUrl}"
+          <a href="${invoiceHref}"
              style="display:inline-block;background:#111;color:#fff;text-decoration:none;padding:10px 16px;border-radius:6px;font-size:14px;margin-right:8px;">
             View invoice
           </a>
-          <a href="${base}/account"
+          <a href="${accountHref}"
              style="display:inline-block;background:#f0f0f0;color:#111;text-decoration:none;padding:10px 16px;border-radius:6px;font-size:14px;">
             Account
           </a>
         </p>`
           : `<p style="margin:0 0 24px;">
-          <a href="${base}/account"
+          <a href="${accountHref}"
              style="display:inline-block;background:#111;color:#fff;text-decoration:none;padding:10px 16px;border-radius:6px;font-size:14px;">
             Account
           </a>

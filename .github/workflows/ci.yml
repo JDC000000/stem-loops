@@ -204,6 +204,12 @@ jobs:
     runs-on: ubuntu-latest
     # Repo secrets are unavailable to fork PRs; skip rather than fail there.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      # STRICT_RECON=1 flips check_credit_pack_prices.py from "warn only"
+      # to fail-hard when the DB price doesn't match the Stripe price_id
+      # (M5 enforcement). Without this, missing/mismatched Stripe prices
+      # would only log a warning and exit 0.
+      STRICT_RECON: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

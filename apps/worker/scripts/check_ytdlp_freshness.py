@@ -121,12 +121,20 @@ def evaluate(payload: dict, installed: str, max_age_days: int, now: datetime | N
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--max-age-days", type=int, default=DEFAULT_MAX_AGE_DAYS,
-                    help=f"days before the installed release is STALE (default {DEFAULT_MAX_AGE_DAYS})")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--max-age-days",
+        type=int,
+        default=DEFAULT_MAX_AGE_DAYS,
+        help=f"days before the installed release is STALE (default {DEFAULT_MAX_AGE_DAYS})",
+    )
     ap.add_argument("--version", help="check this version string instead of the installed one")
     ap.add_argument("--timeout", type=float, default=15.0, help="PyPI HTTP timeout in seconds")
-    ap.add_argument("--json", action="store_true", dest="as_json", help="emit machine-readable JSON")
+    ap.add_argument(
+        "--json", action="store_true", dest="as_json", help="emit machine-readable JSON"
+    )
     args = ap.parse_args(argv)
 
     inst = args.version or installed_version()
@@ -152,16 +160,22 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(res, indent=2))
     else:
         state = "STALE" if res["stale"] else "FRESH"
-        print(f"{state}: yt-dlp {res['installed']} (released {res['installed_release_date']}, "
-              f"{res['age_days']}d ago) | latest {res['latest']} | "
-              f"{res['releases_behind']} release(s) behind | threshold {res['threshold_days']}d")
+        print(
+            f"{state}: yt-dlp {res['installed']} (released {res['installed_release_date']}, "
+            f"{res['age_days']}d ago) | latest {res['latest']} | "
+            f"{res['releases_behind']} release(s) behind | threshold {res['threshold_days']}d"
+        )
         if not res["installed_version_known_to_pypi"]:
-            print("  note: installed version is not listed on PyPI (yanked or non-release build); "
-                  "age measured from the latest release instead.")
+            print(
+                "  note: installed version is not listed on PyPI (yanked or non-release build); "
+                "age measured from the latest release instead."
+            )
         if res["stale"]:
-            print("  ACTION: rebuild and redeploy the worker image "
-                  "(`cd apps/worker && fly deploy --remote-only`). Editing the requirements.txt "
-                  "floor alone does NOT update a running deployment.")
+            print(
+                "  ACTION: rebuild and redeploy the worker image "
+                "(`cd apps/worker && fly deploy --remote-only`). Editing the requirements.txt "
+                "floor alone does NOT update a running deployment."
+            )
     return EXIT_STALE if res["stale"] else EXIT_FRESH
 
 

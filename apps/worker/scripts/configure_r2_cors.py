@@ -11,6 +11,7 @@ Browser needs GET/HEAD (loop audition/zip) + PUT (presigned direct-to-R2 upload)
 Usage:
     python configure_r2_cors.py [extra_origin ...]   # e.g. https://stem-loops-abc123.vercel.app
 """
+
 import os
 import sys
 

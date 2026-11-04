@@ -275,14 +275,15 @@ def test_anonymous_has_no_rate_limit_state(conn):
 
 def test_job_start_attempt_is_append_only(conn):
     """stemloops_app (the app role) has INSERT/SELECT but no UPDATE/DELETE
-    on usage_events (migration 013 §6). Belt-and-braces: a compromised
-    worker credential cannot erase burst evidence to restart the counter.
+    on usage_events (migration 013 §6 + migration 017 explicit REVOKE).
+    Belt-and-braces: a compromised worker credential cannot erase burst
+    evidence to restart the counter.
 
-    This test connects AS stemloops_app and confirms DELETE/UPDATE both fail.
-    A session without the role password falls back to a policy-level check
-    via the postgres superuser — the policy still enforces no stemloops_app
-    DELETE policy exists, so a role switch is the tighter check."""
-    # Postgres as the app role — the migration grants stemloops_app only
+    PR #33 round-2 context: 011_role_catchup's ALTER DEFAULT PRIVILEGES
+    granted all CRUD to stemloops_app on future tables, so 013's plain
+    GRANT SELECT, INSERT did NOT remove the inherited UPDATE/DELETE on
+    usage_events. Migration 017 adds the missing REVOKE."""
+    # Postgres role grants — the migrations grant stemloops_app only
     # SELECT, INSERT (no UPDATE/DELETE grant, no UPDATE/DELETE policy).
     cur = conn.execute(
         "SELECT has_table_privilege('stemloops_app', 'public.usage_events', 'DELETE') AS d, "
@@ -291,3 +292,139 @@ def test_job_start_attempt_is_append_only(conn):
     row = cur.fetchone()
     assert row[0] is False, "stemloops_app must NOT have DELETE on usage_events"
     assert row[1] is False, "stemloops_app must NOT have UPDATE on usage_events"
+
+
+@pytest.mark.parametrize(
+    "table",
+    ["credit_purchases", "credit_consumption", "promo_redemptions"],
+)
+def test_other_append_only_tables_also_revoked(conn, table):
+    """Same invariant for the other three tables migration 013 declared
+    append-only. Without migration 017 these would inherit UPDATE/DELETE
+    from 011's ALTER DEFAULT PRIVILEGES, breaking the audit trail."""
+    cur = conn.execute(
+        "SELECT has_table_privilege('stemloops_app', %s, 'DELETE') AS d, "
+        "       has_table_privilege('stemloops_app', %s, 'UPDATE') AS u",
+        (f"public.{table}", f"public.{table}"),
+    )
+    row = cur.fetchone()
+    assert row[0] is False, f"stemloops_app must NOT have DELETE on {table}"
+    assert row[1] is False, f"stemloops_app must NOT have UPDATE on {table}"
+
+
+# -- (E) incrementJobsUsed UPSERT + period rollover -----------------------
+#
+# These exercise the SQL emitted by incrementJobsUsed() in
+# apps/web/src/lib/billing/rate-limit.ts. The web-side test harness doesn't
+# own a Postgres, so the invariant is pinned here against a real DB.
+
+INCREMENT_SQL = """
+INSERT INTO public.entitlements (user_id, plan_code, period_start, period_end, jobs_used)
+VALUES (
+  %s::uuid,
+  'free',
+  date_trunc('month', now()),
+  date_trunc('month', now()) + interval '1 month',
+  1
+)
+ON CONFLICT (user_id) DO UPDATE SET
+  jobs_used = CASE
+    WHEN public.entitlements.period_end <= now() THEN 1
+    ELSE public.entitlements.jobs_used + 1
+  END,
+  period_start = CASE
+    WHEN public.entitlements.period_end <= now() THEN date_trunc('month', now())
+    ELSE public.entitlements.period_start
+  END,
+  period_end = CASE
+    WHEN public.entitlements.period_end <= now()
+      THEN date_trunc('month', now()) + interval '1 month'
+    ELSE public.entitlements.period_end
+  END
+"""
+
+
+def test_increment_creates_row_when_missing(conn):
+    """When no entitlement row exists (e.g. the handle_new_user trigger has
+    not run yet for this user), the UPSERT must seed a free-tier row with
+    jobs_used = 1 and the current calendar month as the period. Prevents
+    the silent-no-op quota bypass identified in PR #33 round-2 review."""
+    user_id = _insert_auth_user(conn, "test-ratelimit-upsert-missing@example.com")
+    # Remove the row the handle_new_user trigger seeded so we exercise the
+    # row-missing branch of the UPSERT.
+    conn.execute("DELETE FROM public.entitlements WHERE user_id = %s", (user_id,))
+    conn.commit()
+
+    conn.execute(INCREMENT_SQL, (user_id,))
+    conn.commit()
+
+    cur = conn.execute(
+        "SELECT plan_code, jobs_used, "
+        "       period_start = date_trunc('month', now()) AS start_ok, "
+        "       period_end   = date_trunc('month', now()) + interval '1 month' AS end_ok "
+        "FROM public.entitlements WHERE user_id = %s",
+        (user_id,),
+    )
+    row = cur.fetchone()
+    assert row is not None, "UPSERT must INSERT when the row is missing"
+    assert row[0] == "free"
+    assert row[1] == 1
+    assert row[2] is True
+    assert row[3] is True
+
+
+def test_increment_bumps_within_current_period(conn):
+    """Row present, period still current → jobs_used = jobs_used + 1, and
+    neither period_start nor period_end moves."""
+    user_id = _insert_auth_user(conn, "test-ratelimit-upsert-current@example.com")
+    _set_entitlement(conn, user_id, "free", jobs_used=5)
+    cur = conn.execute(
+        "SELECT period_start, period_end FROM public.entitlements WHERE user_id = %s",
+        (user_id,),
+    )
+    before = cur.fetchone()
+
+    conn.execute(INCREMENT_SQL, (user_id,))
+    conn.commit()
+
+    cur = conn.execute(
+        "SELECT jobs_used, period_start, period_end "
+        "FROM public.entitlements WHERE user_id = %s",
+        (user_id,),
+    )
+    row = cur.fetchone()
+    assert row[0] == 6
+    assert row[1] == before[0]
+    assert row[2] == before[1]
+
+
+def test_increment_rolls_over_stale_period(conn):
+    """Row present but period_end is in the past → jobs_used resets to 1 and
+    period_start / period_end jump to the current calendar month. Verifies
+    PR #33 round-2 review fix #3."""
+    user_id = _insert_auth_user(conn, "test-ratelimit-upsert-stale@example.com")
+    # Back-date the period two months so NOW() > period_end.
+    conn.execute(
+        "UPDATE public.entitlements SET "
+        "  jobs_used = 90, "
+        "  period_start = date_trunc('month', now() - interval '2 months'), "
+        "  period_end   = date_trunc('month', now() - interval '1 month') "
+        "WHERE user_id = %s",
+        (user_id,),
+    )
+    conn.commit()
+
+    conn.execute(INCREMENT_SQL, (user_id,))
+    conn.commit()
+
+    cur = conn.execute(
+        "SELECT jobs_used, "
+        "       period_start = date_trunc('month', now()) AS start_ok, "
+        "       period_end   = date_trunc('month', now()) + interval '1 month' AS end_ok "
+        "FROM public.entitlements WHERE user_id = %s",
+        (user_id,),
+    )
+    row = cur.fetchone()
+    assert row[0] == 1, "stale period must reset jobs_used, not keep bumping it"
+    assert row[1] is True
+    assert row[2] is True

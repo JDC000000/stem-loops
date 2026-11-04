@@ -100,13 +100,20 @@ export async function checkBurstLimit(userId: string): Promise<BurstDenial | nul
  *
  *  Uses the entitlement snapshot's 30-second cache. That is a soft overcount
  *  risk — up to ~30 s of concurrent bursts can read a stale jobs_used — but
- *  the subsequent per-(user, period) advisory lock + UPDATE in
+ *  the subsequent per-(user, period) advisory lock + UPSERT in
  *  incrementJobsUsed() is the hard boundary; this check is the cheap 402
  *  short-circuit that avoids reaching the DB on the hot path. */
 export async function checkMonthlyQuota(userId: string): Promise<QuotaDenial | null> {
   const snap = await getEntitlementSnapshot(userId);
   // Pro / Studio sentinel: do not gate.
   if (snap.jobs_quota >= UNLIMITED_QUOTA_SENTINEL) return null;
+  // Period rollover (PR #33 round-2 fix #3): if the current wall-clock time is
+  // past the user's period_end, the stored jobs_used belongs to a stale period
+  // and the gate should allow — incrementJobsUsed() will reset the counter and
+  // roll period_start/period_end forward in the same tx as the jobs INSERT.
+  if (snap.period_end !== null && Date.parse(snap.period_end) <= Date.now()) {
+    return null;
+  }
   if (snap.jobs_used < snap.jobs_quota) return null;
   // period_end can be null in degraded reads; return an empty string rather
   // than crash — caller surfaces resets_at verbatim in the 402 body.
@@ -118,9 +125,21 @@ export async function checkMonthlyQuota(userId: string): Promise<QuotaDenial | n
 // ---------------------------------------------------------------------------
 
 /** Take the per-(user,period_start) advisory lock and bump jobs_used by 1.
- *  No-op when the user has no entitlements row (anonymous → never called)
- *  or when the plan is unlimited (we still count for analytics, but the
- *  check in checkMonthlyQuota skips the gate).
+ *
+ *  Three outcomes handled atomically inside the caller's tx:
+ *    (a) Entitlement row missing (signup trigger has not fired yet, or the
+ *        user was created before the trigger shipped): INSERT a fresh 'free'
+ *        row with the current month as the period and jobs_used = 1. The
+ *        alternative — silently no-op on UPDATE … WHERE user_id = $1 —
+ *        bypasses the quota gate and is a correctness bug (PR #33 round-2
+ *        review fix #2).
+ *    (b) Entitlement row present, period still current: bump jobs_used by 1.
+ *    (c) Entitlement row present, period stale (NOW() > period_end): reset
+ *        jobs_used to 1 and roll period_start/period_end forward to the
+ *        current calendar month (PR #33 round-2 review fix #3).
+ *
+ *  Unlimited plans: we still count for analytics, but the gate in
+ *  checkMonthlyQuota short-circuits via UNLIMITED_QUOTA_SENTINEL.
  *
  *  Must be called on the SAME transaction as the INSERT INTO jobs so a
  *  rollback of the insert also rolls back the count. */
@@ -136,6 +155,9 @@ export async function incrementJobsUsed(
   // Per-(user, period_start) advisory lock keeps two concurrent inserts
   // from reading the same jobs_used and both writing jobs_used+1 (double-
   // count). Scope is (user, period) so a period rollover does not block.
+  // period_start is read via a subselect; when the row does not exist yet
+  // (case a above) the COALESCE collapses to '' and the lock is still
+  // per-user.
   await client.query(
     `SELECT pg_advisory_xact_lock(hashtext(
        $1 || ':' || $2::text || ':' ||
@@ -143,8 +165,37 @@ export async function incrementJobsUsed(
      ))`,
     [QUOTA_LOCK_TAG, userId],
   );
+  // UPSERT handles all three cases in one statement:
+  //   - ON CONFLICT DO UPDATE always fires because user_id is PRIMARY KEY.
+  //   - When the row is new, the VALUES clause seeds it with 'free',
+  //     period = [this month, next month), jobs_used = 1.
+  //   - When the row exists and NOW() > period_end, the UPDATE clause
+  //     resets jobs_used to 1 and rolls the period forward.
+  //   - Otherwise the UPDATE clause bumps jobs_used by 1 and leaves the
+  //     period alone.
   await client.query(
-    `UPDATE entitlements SET jobs_used = jobs_used + 1 WHERE user_id = $1::uuid`,
+    `INSERT INTO entitlements (user_id, plan_code, period_start, period_end, jobs_used)
+     VALUES (
+       $1::uuid,
+       'free',
+       date_trunc('month', now()),
+       date_trunc('month', now()) + interval '1 month',
+       1
+     )
+     ON CONFLICT (user_id) DO UPDATE SET
+       jobs_used = CASE
+         WHEN entitlements.period_end <= now() THEN 1
+         ELSE entitlements.jobs_used + 1
+       END,
+       period_start = CASE
+         WHEN entitlements.period_end <= now() THEN date_trunc('month', now())
+         ELSE entitlements.period_start
+       END,
+       period_end = CASE
+         WHEN entitlements.period_end <= now()
+           THEN date_trunc('month', now()) + interval '1 month'
+         ELSE entitlements.period_end
+       END`,
     [userId],
   );
 }

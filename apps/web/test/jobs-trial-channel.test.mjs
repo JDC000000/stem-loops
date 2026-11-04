@@ -95,11 +95,21 @@ function entitlementsStub({ planCode = 'free', enforce = { allow: true } } = {})
     export const enforceEntitlement = async (action, userId) => {
       globalThis.__calls.push({ fn: 'enforceEntitlement', action, userId });
       if (!cfg.enforce.allow) {
-        throw new EntitlementError(cfg.enforce.code ?? 'CREDITS_DEPLETED', cfg.enforce.message ?? 'denied');
+        throw new EntitlementError(cfg.enforce.code ?? 'CREDIT_BALANCE_INSUFFICIENT', cfg.enforce.message ?? 'denied');
       }
       return { allowed: true, snapshot: { plan_code: cfg.planCode } };
     };
     export const invalidateEntitlement = () => {};
+  `);
+}
+
+function creditsStub() {
+  // consumeCreditInTx records itself so tests can assert the B1 wiring.
+  return dataUrl(`
+    globalThis.__calls = globalThis.__calls || [];
+    export const consumeCreditInTx = async (_client, userId, jobId) => {
+      globalThis.__calls.push({ fn: 'consumeCredit', userId, jobId });
+    };
   `);
 }
 
@@ -206,6 +216,7 @@ async function loadRoute({
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
     .replace(/from ['"]@\/lib\/trial['"]/g, `from '${trialStub(trial ?? {})}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${entitlementsStub(entitlements ?? {})}'`)
+    .replace(/from ['"]@\/lib\/billing\/credits['"]/g, `from '${creditsStub()}'`)
     .replace(/from ['"]@\/lib\/billing\/rate-limit['"]/g, `from '${rateLimitStub(rateLimit ?? {})}'`)
     .replace(/from ['"]@\/lib\/admission['"]/g, `from '${admissionStub(admission ?? {})}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub()}'`)
@@ -255,14 +266,14 @@ test('POST /api/jobs — authed free user UPLOAD blocked by credits returns 402 
     user: USER,
     entitlements: {
       planCode: 'free',
-      enforce: { allow: false, code: 'CREDITS_DEPLETED', message: 'credits depleted' },
+      enforce: { allow: false, code: 'CREDIT_BALANCE_INSUFFICIENT', message: 'credits depleted' },
     },
   });
   const res = await mod.POST(
     makeReq({ jobId: JOB_ID, uploadKey: UPLOAD_KEY, loop_length_bars: 4 }),
   );
   assert.equal(res.status, 402, 'credits-depleted upload must 402');
-  assert.equal(res.body.error_code, 'CREDITS_DEPLETED');
+  assert.equal(res.body.error_code, 'CREDIT_BALANCE_INSUFFICIENT');
   // And STILL no trial burn — this is the channel-separation core assertion.
   const consumeCalled = globalThis.__calls.find((c) => c.fn === 'consumeTrial');
   assert.equal(consumeCalled, undefined, 'credits-depleted upload MUST NOT burn a trial song');
@@ -414,6 +425,7 @@ async function loadRouteWithDb({
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
     .replace(/from ['"]@\/lib\/trial['"]/g, `from '${trialStub(trial ?? {})}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${entitlementsStub(entitlements ?? {})}'`)
+    .replace(/from ['"]@\/lib\/billing\/credits['"]/g, `from '${creditsStub()}'`)
     .replace(/from ['"]@\/lib\/billing\/rate-limit['"]/g, `from '${rateLimitStub(rateLimit ?? {})}'`)
     .replace(/from ['"]@\/lib\/admission['"]/g, `from '${admissionStub(admission ?? {})}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbSource}'`)
@@ -489,3 +501,31 @@ test('POST /api/jobs — consume returning {ok:false} falls through to burst/quo
     delete process.env.ALLOW_YOUTUBE_INPUT;
   }
 });
+
+// ---------------------------------------------------------------------------
+// B1 — credit consume wiring on the upload branch (credit-ledger review).
+// ---------------------------------------------------------------------------
+
+test('POST /api/jobs — free user UPLOAD charges a credit in the jobs tx (B1)', async () => {
+  const mod = await loadRoute({ user: USER, entitlements: { planCode: 'free' } });
+  const res = await mod.POST(makeReq({ jobId: JOB_ID, uploadKey: UPLOAD_KEY, loop_length_bars: 4 }));
+  assert.equal(res.status, 201);
+  const charged = globalThis.__calls.filter((c) => c.fn === 'consumeCredit');
+  assert.equal(charged.length, 1, 'exactly one credit charged');
+  assert.equal(charged[0].userId, USER.user_id);
+  assert.equal(charged[0].jobId, JOB_ID);
+  // Consume must come AFTER the jobs INSERT (trigger needs the job row).
+  const calls = globalThis.__calls;
+  const insertIdx = calls.findIndex((c) => c.fn === 'db.tx.query' && /INSERT INTO jobs/.test(c.sql));
+  assert.ok(insertIdx >= 0 && insertIdx < calls.findIndex((c) => c.fn === 'consumeCredit'));
+  assert.equal(calls.find((c) => c.fn === 'consumeTrial'), undefined, 'no trial double-consume');
+});
+
+for (const plan of ['pro', 'studio']) {
+  test(`POST /api/jobs — ${plan} UPLOAD does NOT charge a credit (B1)`, async () => {
+    const mod = await loadRoute({ user: USER, entitlements: { planCode: plan } });
+    const res = await mod.POST(makeReq({ jobId: JOB_ID, uploadKey: UPLOAD_KEY, loop_length_bars: 4 }));
+    assert.equal(res.status, 201);
+    assert.equal(globalThis.__calls.find((c) => c.fn === 'consumeCredit'), undefined);
+  });
+}

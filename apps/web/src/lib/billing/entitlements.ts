@@ -25,7 +25,8 @@ import { db } from '@/lib/db';
 export type EntitlementErrorCode =
   | 'ENTITLEMENT_UNAVAILABLE'
   | 'TRIAL_EXHAUSTED'
-  | 'CREDITS_DEPLETED'
+  | 'CREDIT_BALANCE_INSUFFICIENT'
+  | 'PAID_LINK_INGEST_DISALLOWED'
   | 'PLAN_NOT_FOUND';
 
 export class EntitlementError extends Error {
@@ -39,7 +40,8 @@ export class EntitlementError extends Error {
     this.code = code;
     // 402 Payment Required — consistent across billing-gated denials; the
     // response body carries the specific error_code for copy lookup.
-    this.status = 402;
+    // PAID_LINK_INGEST_DISALLOWED is a 400 per TSD §1.2a (not a payment problem).
+    this.status = code === 'PAID_LINK_INGEST_DISALLOWED' ? 400 : 402;
     this.errorCopyKey = code;
   }
 }
@@ -221,6 +223,10 @@ export async function enforceEntitlement(
     case 'start_job_spotify':
     case 'start_job_soundcloud': {
       const service = action.replace('start_job_', '');
+      // §1.2a processor separation: Pro/Studio are upload-only products.
+      if (snap.plan_code === 'pro' || snap.plan_code === 'studio') {
+        throw new EntitlementError('PAID_LINK_INGEST_DISALLOWED');
+      }
       // Link-ingest is free-tier only (§1.2a processor separation).
       if (snap.services.includes(service)) return { allowed: true, snapshot: snap };
       // Not in the plan's services — if the user has an active trial, allow.
@@ -240,7 +246,7 @@ export async function enforceEntitlement(
       }
       // Free / no-plan: needs at least one credit.
       if (snap.credits_remaining > 0) return { allowed: true, snapshot: snap };
-      throw new EntitlementError('CREDITS_DEPLETED');
+      throw new EntitlementError('CREDIT_BALANCE_INSUFFICIENT');
     }
     case 'export_stems': {
       if (snap.export.stems) return { allowed: true, snapshot: snap };

@@ -311,7 +311,12 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         await upsertEntitlementFromSubscription(userId, sub);
         planLabel = `${sub.planCode} plan renewal`;
       } catch (err) {
+        // B2 (credit-ledger review 2026-11-03): do NOT swallow. A 200 here
+        // tells Stripe not to retry, so entitlements.period_end never
+        // advances and the subscriber silently falls back to free. Re-throw
+        // so the outer POST catch returns 500 and Stripe retries.
         console.error('[webhook] invoice_paid refresh failed:', err instanceof Error ? err.message : err);
+        throw err;
       }
       invalidateEntitlement(userId);
       // V3-M3 — receipt for subscription renewal. Idempotency key is the

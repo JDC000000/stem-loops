@@ -206,7 +206,10 @@ CREATE TABLE IF NOT EXISTS public.credit_purchases (
   provider_charge_id text NOT NULL,
   pack_code          text NOT NULL CHECK (pack_code IN ('credits_20','credits_60','credits_180')),
   credits_granted    integer NOT NULL CHECK (credits_granted IN (20,60,180)),
-  amount_usd_cents   integer NOT NULL CHECK (amount_usd_cents >= 0),
+  -- CAD cents from Stripe session.amount_total (sandbox is BC CAD catalog
+  -- per TSD §1.2). Renamed from amount_usd_cents in 018_v3_credit_purchases_cad.sql
+  -- for the already-applied case; this column spelling is what fresh DBs get.
+  amount_cad_cents   integer NOT NULL CHECK (amount_cad_cents >= 0),
   promo_code         text,
   created_at         timestamptz NOT NULL DEFAULT now(),
   UNIQUE (provider, provider_charge_id),

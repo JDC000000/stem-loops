@@ -133,7 +133,7 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       await db.query(
         `INSERT INTO credit_purchases
            (user_id, provider, provider_charge_id, pack_code, credits_granted,
-            amount_usd_cents, promo_code)
+            amount_cad_cents, promo_code)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (provider, provider_charge_id) DO NOTHING`,
         [

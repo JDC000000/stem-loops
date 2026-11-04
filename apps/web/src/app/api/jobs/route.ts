@@ -12,6 +12,8 @@ import {
   checkMonthlyQuota,
   incrementJobsUsed,
 } from '@/lib/billing/rate-limit';
+import { getEntitlementSnapshot } from '@/lib/billing/entitlements';
+import { consumeTrial } from '@/lib/trial';
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
 const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
@@ -38,40 +40,71 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // V3-C4 (TSD §1.4): for authenticated users, enforce (B) per-user burst
-    // BEFORE (A) monthly quota — burst is the cheap guard that stops a
-    // runaway client from spamming the DB-side quota check. Free-tier
-    // (anonymous) requests have user === null and bypass both; the existing
-    // per-IP admission below is the only gate for those.
+    // V3-C4 (TSD §1.4) + V3-C10 (TSD §1.6): for authenticated users, the
+    // ordering is:
+    //   1. If plan_code is 'pro'/'studio' (subscribed), skip trial and use
+    //      the existing burst + monthly-quota gates.
+    //   2. Otherwise (free / no-plan), try consumeTrial(). On ok=true the
+    //      user has an active 3-song trial with a song left → skip burst +
+    //      quota for this request (per spec: "consume one trial song;
+    //      else fall back to existing rate-limit + quota flow"). The trial
+    //      CHECK (songs_used <= 3) and the per-user advisory lock inside
+    //      consumeTrial() keep this bounded at 3 free jobs ever, so
+    //      skipping burst here can't be abused past that ceiling.
+    //   3. If trial did NOT fire (no grant, expired, or exhausted), fall
+    //      back to burst + quota — same as before V3-C10.
+    // Free-tier (anonymous) requests have user === null and bypass all of
+    // this; the per-IP admission below is the only gate for those.
     const user = await getUser();
+    let trialConsumed = false;
     if (user) {
-      const burst = await checkBurstLimit(user.user_id);
-      if (burst) {
-        return new NextResponse(
-          JSON.stringify({
-            error: 'too many requests',
-            code: 'rate_limit_burst',
-            retry_after_s: burst.retry_after_s,
-          }),
-          {
-            status: 429,
-            headers: {
-              'content-type': 'application/json',
-              'Retry-After': String(burst.retry_after_s),
-            },
-          },
-        );
+      let subscribed = false;
+      try {
+        const snap = await getEntitlementSnapshot(user.user_id);
+        subscribed = snap.plan_code === 'pro' || snap.plan_code === 'studio';
+      } catch {
+        // Fail restrictive: treat as not-subscribed and let the existing
+        // gates decide (same stance enforceEntitlement takes on DB error).
       }
-      const quota = await checkMonthlyQuota(user.user_id);
-      if (quota) {
-        return NextResponse.json(
-          {
-            error: 'monthly quota reached',
-            code: 'quota_exceeded',
-            resets_at: quota.resets_at,
-          },
-          { status: 402 },
-        );
+      if (!subscribed) {
+        try {
+          const out = await consumeTrial(user.user_id);
+          if (out.ok) trialConsumed = true;
+        } catch (err) {
+          // Trial read failure is non-fatal — the user still has the
+          // normal free-tier path; log and fall through.
+          Sentry.captureException(err);
+        }
+      }
+      if (!trialConsumed) {
+        const burst = await checkBurstLimit(user.user_id);
+        if (burst) {
+          return new NextResponse(
+            JSON.stringify({
+              error: 'too many requests',
+              code: 'rate_limit_burst',
+              retry_after_s: burst.retry_after_s,
+            }),
+            {
+              status: 429,
+              headers: {
+                'content-type': 'application/json',
+                'Retry-After': String(burst.retry_after_s),
+              },
+            },
+          );
+        }
+        const quota = await checkMonthlyQuota(user.user_id);
+        if (quota) {
+          return NextResponse.json(
+            {
+              error: 'monthly quota reached',
+              code: 'quota_exceeded',
+              resets_at: quota.resets_at,
+            },
+            { status: 402 },
+          );
+        }
       }
     }
 

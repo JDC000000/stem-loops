@@ -136,3 +136,63 @@ See `.env.example` for the full list with documentation.
 8. All new secrets go in `.env.example` with a comment explaining how to obtain them.
 9. Regression bugs go in `evals/bugs.json`.
 10. The state machine (§6.3) is fixed — do not add or rename statuses.
+
+## §11 Merge Safety Rules (added 2026-11-03 after #21 CI-bypass incident)
+
+The session that landed PRs #16–#26 used `gh pr merge --admin --squash` to
+bypass CODEOWNERS self-approval and required-check name mismatches. That is
+the intended use — the author-is-reviewer deadlock is why `--admin` exists.
+But on PR #21 it also bypassed THREE FAILING status checks (Fixture pipeline,
+Tests, Lint) and shipped a migration that broke CI on `v3/main` for every
+subsequent PR. Hotfix PR #27 restored green CI. These rules exist so that
+cannot recur.
+
+**M-1 (hard): `--admin` must not bypass a FAILING status check.** Admin
+bypass is for the CODEOWNERS / required-review layer only. If any required
+status check is red, do not merge — fix CI first, then merge. The pattern
+to run before admin-merge:
+
+```bash
+HEAD=$(gh api repos/JDC000000/stem-loops/pulls/<N> --jq '.head.sha')
+gh api "repos/JDC000000/stem-loops/commits/$HEAD/check-runs" \
+  --jq '[.check_runs[] | select(.conclusion == "failure") | .name]'
+# Must print []. If non-empty, STOP and fix CI.
+```
+
+Future improvement: a short `scripts/safe_merge.sh <N>` that enforces this
+and then calls `gh pr merge --admin --squash --delete-branch`.
+
+**M-2 (hard): adversarial reviewers must verify CI is green** before
+scoring ≥93. Local `check_rls.py` passing is not enough — the review prompt
+includes a CI-check step and the reviewer states the result in the report.
+A reviewer who CANNOT run CI must state that explicitly so the author
+knows to re-check before promoting to ready-for-review.
+
+**M-3 (medium): migrations with Supabase-only objects need stubs.** When a
+migration references `auth.*`, Supabase roles (`authenticated`, `anon`), or
+helper functions like `auth.uid()`, the author must include a stub either
+in the same migration or in a prior one. `012_v3_supabase_stubs.sql` is the
+exemplar. Future improvement: a CI matrix job that runs migrations against
+a Postgres image with the Supabase prelude already present.
+
+**M-4 (medium): no cross-PR TYPE ↔ CODE drift.** When one PR adds a
+TypeScript enum that maps to a column value (`PlanCode` ↔ `plans.code`), the
+same PR must include either the migration setting those values OR a
+reference to the migration that does. Each PR's adversarial reviewer must
+check the enum values against the DB source of truth in the TSD. PR #29 is
+the exemplar of what to AVOID: `types.ts` landed with `'pro_monthly'` on
+#20 while the DB (merged on #21) used `'pro'`; every checkout would have
+500'd at the FK layer.
+
+**M-5 (process): hotfix PRs land before any dependent work merges.** If a
+merged PR breaks CI (M-1 violated, or an M-4 drift slipped), all other work
+blocks until the hotfix is on main. Worker agents can still PUSH their
+branches (CI will be red until rebased), but no other merges happen in the
+interval.
+
+**M-6 (process): the author of PR #N is a self-approval deadlock on #N.**
+GitHub blocks self-approval; CODEOWNERS requires the author's review when
+the author is the only owner on touched files. For a solo-dev repo this
+means every `needs-jon-approval` PR authored by Jon needs `--admin`
+bypass. Combined with M-1, that makes `--admin + green CI` the normal
+path. This is working as intended — do not weaken CODEOWNERS to avoid it.

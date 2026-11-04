@@ -1,0 +1,260 @@
+// Emails test — V3 Phase 1a (TSD §M1/M2/M3).
+//
+// Mocks global fetch and asserts:
+//   - sendEmail hits POST https://api.resend.com/emails with Bearer auth and
+//     a body carrying from/to/subject/html.
+//   - On 5xx the client retries exactly once and succeeds on the retry.
+//   - On 4xx the client does NOT retry, logs, and returns {ok:false} without
+//     throwing.
+//   - On a network error (fetch throws) the client retries once and still
+//     returns {ok:false} without throwing when both attempts fail.
+//   - Template renderers produce deterministic HTML for a fixed input, with
+//     a subject that reflects the plan/status (subscription-changed) and
+//     amount (receipt).
+//
+// Uses the same ts-to-data-url pattern as test/sentry-guard.test.mjs so
+// `@sentry/nextjs` can be stubbed without pulling in the SDK.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
+
+const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+const toJs = (src) =>
+  ts.transpileModule(src, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+const dataUrl = (js) => 'data:text/javascript;base64,' + Buffer.from(js).toString('base64');
+
+const sentryStub = dataUrl(`
+  export const captureException = () => {};
+`);
+
+async function loadResend() {
+  let js = toJs(readFileSync(join(WEB, 'src/lib/emails/resend.ts'), 'utf8'));
+  js = js.replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub}'`);
+  return await import(dataUrl(js) + '#' + Math.random());
+}
+
+/** Build a scripted fetch mock. Each call pops one response (or throws). */
+function mockFetch(responses) {
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (!responses.length) throw new Error('mockFetch: ran out of scripted responses');
+    const r = responses.shift();
+    if (r.throw) throw r.throw;
+    return {
+      ok: r.status >= 200 && r.status < 300,
+      status: r.status,
+      json: async () => r.json ?? {},
+      text: async () => r.text ?? '',
+    };
+  };
+  return calls;
+}
+
+function setEnv({ key = 'test_api_key', from, sandbox } = {}) {
+  process.env.RESEND_API_KEY = key;
+  if (from === undefined) delete process.env.RESEND_FROM;
+  else process.env.RESEND_FROM = from;
+  if (sandbox === undefined) delete process.env.RESEND_SANDBOX;
+  else process.env.RESEND_SANDBOX = sandbox;
+}
+
+// ── resend.ts ──────────────────────────────────────────────────────────
+
+test('sendEmail: posts to Resend API with Bearer auth and JSON body', async () => {
+  setEnv({ key: 're_test_123' });
+  const calls = mockFetch([{ status: 200, json: { id: 'em_abc' } }]);
+  const { sendEmail } = await loadResend();
+  const res = await sendEmail({
+    to: 'jon@example.com',
+    subject: 'Hi',
+    html: '<p>Hello</p>',
+    tag: 'welcome',
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.id, 'em_abc');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://api.resend.com/emails');
+  assert.equal(calls[0].init.method, 'POST');
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer re_test_123');
+  assert.equal(calls[0].init.headers['Content-Type'], 'application/json');
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(body.to, 'jon@example.com');
+  assert.equal(body.subject, 'Hi');
+  assert.equal(body.html, '<p>Hello</p>');
+  assert.equal(body.from, 'stem-loops <notifications@stem-loops.com>');
+  assert.deepEqual(body.tags, [{ name: 'template', value: 'welcome' }]);
+});
+
+test('sendEmail: retries exactly once on 5xx and succeeds on retry', async () => {
+  setEnv();
+  const calls = mockFetch([
+    { status: 502, text: 'bad gateway' },
+    { status: 200, json: { id: 'em_retry_ok' } },
+  ]);
+  const { sendEmail } = await loadResend();
+  const res = await sendEmail({ to: 'a@b.com', subject: 's', html: 'h', tag: 'welcome' });
+  assert.equal(res.ok, true);
+  assert.equal(res.id, 'em_retry_ok');
+  assert.equal(calls.length, 2, 'should have retried once');
+});
+
+test('sendEmail: returns {ok:false} on 4xx without retry, no throw', async () => {
+  setEnv();
+  const calls = mockFetch([{ status: 422, text: 'from domain not verified' }]);
+  const { sendEmail } = await loadResend();
+  const res = await sendEmail({ to: 'bad', subject: 's', html: 'h', tag: 'receipt' });
+  assert.equal(res.ok, false);
+  assert.equal(res.status, 422);
+  assert.match(res.error, /422/);
+  assert.equal(calls.length, 1, 'must not retry on 4xx');
+});
+
+test('sendEmail: survives fetch throwing (network error) and retries once', async () => {
+  setEnv();
+  const calls = mockFetch([
+    { throw: new Error('ECONNRESET') },
+    { throw: new Error('ECONNRESET again') },
+  ]);
+  const { sendEmail } = await loadResend();
+  const res = await sendEmail({ to: 'a@b.com', subject: 's', html: 'h', tag: 'welcome' });
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? '', /ECONNRESET/);
+  assert.equal(calls.length, 2);
+});
+
+test('sendEmail: skips gracefully when RESEND_API_KEY is unset (no throw, no fetch)', async () => {
+  delete process.env.RESEND_API_KEY;
+  let fetched = false;
+  globalThis.fetch = async () => {
+    fetched = true;
+    throw new Error('should not be called');
+  };
+  const { sendEmail } = await loadResend();
+  const res = await sendEmail({ to: 'a@b.com', subject: 's', html: 'h', tag: 'welcome' });
+  assert.equal(res.ok, false);
+  assert.equal(fetched, false);
+  assert.match(res.error ?? '', /RESEND_API_KEY/);
+});
+
+test('sendEmail: honors RESEND_SANDBOX=1 fallback sender', async () => {
+  setEnv({ sandbox: '1' });
+  const calls = mockFetch([{ status: 200, json: { id: 'em_1' } }]);
+  const { sendEmail } = await loadResend();
+  await sendEmail({ to: 'a@b.com', subject: 's', html: 'h', tag: 'welcome' });
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(body.from, 'onboarding@resend.dev');
+});
+
+// ── templates ──────────────────────────────────────────────────────────
+
+async function loadTemplate(name) {
+  const src = readFileSync(join(WEB, `src/lib/emails/templates/${name}.ts`), 'utf8');
+  let js = toJs(src);
+  // welcome & receipt only import ./shared; subscription-changed imports
+  // @/lib/billing/types for the plan/status types, which are erased at
+  // transpile time — but the import source stays in the emitted JS, so we
+  // rewrite it to an empty stub.
+  js = js.replace(
+    /from ['"]@\/lib\/billing\/types['"]/g,
+    `from '${dataUrl('export {};')}'`,
+  );
+  js = js.replace(/from ['"]\.\/shared['"]/g, `from '${sharedUrl}'`);
+  return await import(dataUrl(js) + '#' + Math.random());
+}
+const sharedUrl = dataUrl(
+  toJs(readFileSync(join(WEB, 'src/lib/emails/templates/shared.ts'), 'utf8')),
+);
+
+test('welcome template is deterministic and links to /account and /pricing', async () => {
+  const { renderWelcome } = await loadTemplate('welcome');
+  const a = renderWelcome();
+  const b = renderWelcome();
+  assert.equal(a.subject, b.subject);
+  assert.equal(a.html, b.html);
+  assert.equal(a.subject, 'Welcome to stem-loops');
+  assert.match(a.html, /https:\/\/stem-loops\.com\/account/);
+  assert.match(a.html, /https:\/\/stem-loops\.com\/pricing/);
+});
+
+test('subscription-changed: subject reflects plan and status', async () => {
+  const { renderSubscriptionChanged } = await loadTemplate('subscription-changed');
+  const active = renderSubscriptionChanged({
+    plan_code: 'pro',
+    status: 'active',
+    period_end: '2027-01-15T00:00:00Z',
+  });
+  assert.match(active.subject, /Pro plan is active/i);
+  assert.match(active.html, /2027-01-15/);
+
+  const canceled = renderSubscriptionChanged({
+    plan_code: 'studio',
+    status: 'canceled',
+    period_end: new Date('2027-02-01T00:00:00Z'),
+  });
+  assert.match(canceled.subject, /Studio plan was canceled/i);
+  assert.match(canceled.html, /2027-02-01/);
+});
+
+test('subscription-changed: output is deterministic for a fixed input', async () => {
+  const { renderSubscriptionChanged } = await loadTemplate('subscription-changed');
+  const input = { plan_code: 'pro', status: 'past_due', period_end: '2027-03-01T00:00:00Z' };
+  const a = renderSubscriptionChanged(input);
+  const b = renderSubscriptionChanged(input);
+  assert.equal(a.html, b.html);
+  assert.equal(a.subject, b.subject);
+});
+
+test('receipt: renders CAD amount, label, and hosted invoice URL', async () => {
+  const { renderReceipt } = await loadTemplate('receipt');
+  const out = renderReceipt({
+    amount_cad_cents: 1299,
+    plan_or_pack_label: '20 credits (credits_20)',
+    invoice_url: 'https://invoice.stripe.com/i/acct_X/live_Y',
+  });
+  assert.match(out.subject, /\$12\.99 CAD/);
+  assert.match(out.html, /\$12\.99 CAD/);
+  assert.match(out.html, /20 credits \(credits_20\)/);
+  assert.match(out.html, /https:\/\/invoice\.stripe\.com\/i\/acct_X\/live_Y/);
+});
+
+test('receipt: falls back gracefully when invoice_url is null', async () => {
+  const { renderReceipt } = await loadTemplate('receipt');
+  const out = renderReceipt({
+    amount_cad_cents: 500,
+    plan_or_pack_label: 'pro plan renewal',
+    invoice_url: null,
+  });
+  assert.match(out.html, /\$5\.00 CAD/);
+  assert.doesNotMatch(out.html, /View invoice/);
+});
+
+test('receipt: rejects javascript: URLs in invoice_url (escapes to #)', async () => {
+  const { renderReceipt } = await loadTemplate('receipt');
+  const out = renderReceipt({
+    amount_cad_cents: 100,
+    plan_or_pack_label: 'x',
+    // eslint-disable-next-line no-script-url
+    invoice_url: 'javascript:alert(1)',
+  });
+  assert.doesNotMatch(out.html, /javascript:/i);
+});
+
+test('shared escapeHtml and formatCadCents', async () => {
+  const mod = await import(dataUrl(toJs(readFileSync(join(WEB, 'src/lib/emails/templates/shared.ts'), 'utf8'))) + '#' + Math.random());
+  assert.equal(mod.escapeHtml('<script>&"\'</script>'), '&lt;script&gt;&amp;&quot;&#39;&lt;/script&gt;');
+  assert.equal(mod.formatCadCents(1999), '$19.99 CAD');
+  assert.equal(mod.formatCadCents(0), '$0.00 CAD');
+  assert.equal(mod.formatCadCents(100.6), '$1.01 CAD'); // rounds
+  assert.equal(mod.formatDateUtc('2026-11-03T20:00:00Z'), '2026-11-03');
+  assert.equal(mod.safeUrl('https://x.com'), 'https://x.com');
+  assert.equal(mod.safeUrl('javascript:alert(1)'), '#');
+  assert.equal(mod.safeUrl(null), '#');
+});

@@ -74,11 +74,23 @@ function entitlementsStub() {
   `);
 }
 
+function emailsDispatchStub() {
+  // Emails are best-effort and must never block the webhook. The stub
+  // records calls so we can assert later if needed, but by default returns
+  // success without side effects.
+  return dataUrl(`
+    export const sendWelcomeIfFirstTime = async () => {};
+    export const sendSubscriptionChanged = async () => {};
+    export const sendReceipt = async () => {};
+  `);
+}
+
 async function loadRoute({ handleWebhookThrows = false, event = { type: 'unhandled', eventType: 'noop' }, dbFail = false } = {}) {
   let js = toJs(readFileSync(SRC, 'utf8'));
   const bStub = billingStub({ handleWebhookThrows, event });
   const dStub = dbStub({ fail: dbFail });
   const eStub = entitlementsStub();
+  const emStub = emailsDispatchStub();
   // Stub the next/server imports too — in a pure node run we need our own
   // NextResponse that matches the Response-like shape the route uses.
   const nextStub = dataUrl(`
@@ -93,6 +105,7 @@ async function loadRoute({ handleWebhookThrows = false, event = { type: 'unhandl
     .replace(/from ['"]@\/lib\/billing['"]/g, `from '${bStub}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dStub}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${eStub}'`)
+    .replace(/from ['"]@\/lib\/emails\/dispatch['"]/g, `from '${emStub}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }

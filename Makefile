@@ -1,4 +1,4 @@
-.PHONY: dev test-job types test lint check-rls deploy-web deploy-worker migrate install help
+.PHONY: dev test-job types test lint check-rls check-prices deploy-web deploy-worker migrate install help
 
 # Default target
 help:
@@ -96,3 +96,9 @@ install:
 # Assert every table in migrations/*.sql has RLS + a CREATE POLICY (SL-B26 #1).
 check-rls:
 	python3 scripts/check_rls.py apps/worker/migrations/
+
+# Audit M5: credit_packs price vs Stripe unit_amount. Needs STRIPE_SECRET_KEY +
+# STRIPE_PRICE_CREDITS_{20,60,180}; SOURCE=db DATABASE_URL=... checks a live DB.
+# Also usable as a manual pre-deploy checklist item.
+check-prices:
+	python3 scripts/check_credit_pack_prices.py --source $${SOURCE:-migration}

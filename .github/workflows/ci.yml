@@ -198,3 +198,23 @@ jobs:
           python-version: '3.11'
       - name: Assert RLS + policy on every migration table
         run: python scripts/check_rls.py apps/worker/migrations/
+
+  credit-pack-price-recon:
+    name: "Credit pack price recon (audit M5)"
+    runs-on: ubuntu-latest
+    # Repo secrets are unavailable to fork PRs; skip rather than fail there.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install stripe
+      - name: Reconcile migration 020 seed prices with Stripe unit_amount
+        run: python scripts/check_credit_pack_prices.py --source migration
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_PRICE_CREDITS_20: ${{ secrets.STRIPE_PRICE_CREDITS_20 }}
+          STRIPE_PRICE_CREDITS_60: ${{ secrets.STRIPE_PRICE_CREDITS_60 }}
+          STRIPE_PRICE_CREDITS_180: ${{ secrets.STRIPE_PRICE_CREDITS_180 }}

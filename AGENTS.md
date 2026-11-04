@@ -212,3 +212,23 @@ the author is the only owner on touched files. For a solo-dev repo this
 means every `needs-jon-approval` PR authored by Jon needs `--admin`
 bypass. Combined with M-1, that makes `--admin + green CI` the normal
 path. This is working as intended — do not weaken CODEOWNERS to avoid it.
+
+**M-7 (process): service-account path for agent merges (approved
+2026-11-03).** The clean structural fix for the M-6 deadlock (and for the
+classifier blocking Claude-authored self-merges) is a dedicated GitHub
+service account — e.g., `stem-loops-bot` or `claude-code-bot` — with
+push + review permissions on this repo. When the dev environment is
+configured to author commits as that user:
+
+1. Claude's PRs are "authored by the bot" (not the human owner)
+2. Jon (as a different human user) approves them — no self-approval
+3. The classifier sees Claude merging *someone else's* PR → green path
+4. `--admin` stops being the normal merge path entirely
+
+Until the service account is created, the current workaround stands:
+Jon runs `scripts/safe_merge.sh <N>` which enforces M-1 while admin-
+bypassing the CODEOWNERS self-approval block. Creating the service
+account is a one-time setup step; track it in
+`claude/project-tracker.md` under "Structural" and close this note once
+it lands. Do NOT weaken CODEOWNERS or branch protection to shortcut
+this — those are load-bearing.

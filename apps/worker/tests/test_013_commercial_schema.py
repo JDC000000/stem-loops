@@ -43,12 +43,18 @@ def conn():
     """
     with psycopg.connect(DB) as c:  # type: ignore[arg-type]
         # Wipe any prior test fixture rows. Order respects FKs.
-        c.execute("DELETE FROM public.credit_consumption WHERE user_id IN "
-                  "(SELECT id FROM public.users WHERE email LIKE 'test-013-%')")
-        c.execute("DELETE FROM public.credit_purchases WHERE user_id IN "
-                  "(SELECT id FROM public.users WHERE email LIKE 'test-013-%')")
-        c.execute("DELETE FROM public.entitlements WHERE user_id IN "
-                  "(SELECT id FROM public.users WHERE email LIKE 'test-013-%')")
+        c.execute(
+            "DELETE FROM public.credit_consumption WHERE user_id IN "
+            "(SELECT id FROM public.users WHERE email LIKE 'test-013-%')"
+        )
+        c.execute(
+            "DELETE FROM public.credit_purchases WHERE user_id IN "
+            "(SELECT id FROM public.users WHERE email LIKE 'test-013-%')"
+        )
+        c.execute(
+            "DELETE FROM public.entitlements WHERE user_id IN "
+            "(SELECT id FROM public.users WHERE email LIKE 'test-013-%')"
+        )
         c.execute("DELETE FROM public.users WHERE email LIKE 'test-013-%'")
         c.execute("DELETE FROM auth.users WHERE email LIKE 'test-013-%'")
         c.commit()
@@ -81,6 +87,7 @@ def _insert_job(conn: Any, user_id: uuid.UUID, input_kind: str = "upload") -> uu
 
 
 # --- 1. check_credit_decrement trigger (processor separation §1.2a) -----
+
 
 def test_trigger_accepts_upload_job(conn):
     user_id = _insert_auth_user(conn, "test-013-upload@example.com")
@@ -127,6 +134,7 @@ def test_trigger_rejects_missing_job(conn):
 
 
 # --- 2. v_credit_balance view derives correctly ---------------------------
+
 
 def test_balance_starts_at_zero(conn):
     user_id = _insert_auth_user(conn, "test-013-balance0@example.com")
@@ -193,11 +201,10 @@ def test_balance_sums_multiple_purchases(conn):
 
 # --- 3. handle_new_user trigger ------------------------------------------
 
+
 def test_signup_seeds_public_users(conn):
     user_id = _insert_auth_user(conn, "test-013-signup@example.com")
-    cur = conn.execute(
-        "SELECT email FROM public.users WHERE id = %s", (user_id,)
-    )
+    cur = conn.execute("SELECT email FROM public.users WHERE id = %s", (user_id,))
     row = cur.fetchone()
     assert row is not None, "handle_new_user did not seed public.users"
     assert row[0] == "test-013-signup@example.com"
@@ -205,15 +212,14 @@ def test_signup_seeds_public_users(conn):
 
 def test_signup_seeds_free_entitlement(conn):
     user_id = _insert_auth_user(conn, "test-013-entitlement@example.com")
-    cur = conn.execute(
-        "SELECT plan_code FROM public.entitlements WHERE user_id = %s", (user_id,)
-    )
+    cur = conn.execute("SELECT plan_code FROM public.entitlements WHERE user_id = %s", (user_id,))
     row = cur.fetchone()
     assert row is not None, "handle_new_user did not seed entitlements"
     assert row[0] == "free"
 
 
 # --- 4. UNIQUE defences (idempotency against webhook retries) ------------
+
 
 def test_duplicate_charge_rejected(conn):
     user_id = _insert_auth_user(conn, "test-013-dup-charge@example.com")
@@ -251,6 +257,7 @@ def test_duplicate_consumption_rejected(conn):
 
 
 # --- 5. CHECK constraints -------------------------------------------------
+
 
 def test_invalid_pack_code_rejected(conn):
     user_id = _insert_auth_user(conn, "test-013-bad-pack@example.com")

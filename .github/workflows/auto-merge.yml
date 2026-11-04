@@ -76,9 +76,38 @@ jobs:
             exit 0
           fi
 
-          # Merge failed — surface the error.
-          echo "REST merge failed:"
+          # Merge failed — classify the reason.
+          #
+          # Branch-protection blocks (CODEOWNER review required, status checks
+          # pending, review required, resolve-review-threads required, etc.) are
+          # EXPECTED outcomes for PRs that touch CODEOWNERS paths. The reviewer
+          # agent labels `adversarial-reviewed` the moment its review passes,
+          # which can race the `auto-label-codeowners` workflow that adds
+          # `needs-jon-approval`. When this workflow fires in that window, it
+          # tries to merge and GitHub's branch protection correctly blocks it.
+          #
+          # That's not a workflow failure — it's the system working. Loudly
+          # failing the check-run here would then block `safe_merge.sh` (which
+          # refuses any PR with a FAILING check per AGENTS.md §11 M-1),
+          # requiring operator intervention to merge via `gh pr merge --admin`.
+          #
+          # So: detect branch-protection-blocked and exit 0 with a clear log
+          # line. Any other merge failure (missing permissions on BOT_TOKEN,
+          # conflict, HEAD moved, 5xx, etc.) still exits 1 and surfaces to the
+          # operator exactly as before.
+          echo "REST merge failed. Response body:"
           cat merge.err
+
+          # Heuristic: branch-protection responses carry 405 Method Not Allowed
+          # and a message naming the specific rule. Codify the known vocabulary
+          # so unknown failures still fail loudly.
+          if grep -qE 'required status check|require.*(approving )?review|code owner|resolve.*review threads|Required status checks have not passed|At least [0-9]+ approving review|Review required|Changes requested' merge.err; then
+            echo "::notice::auto-merge skipped — branch protection requires further review/checks on this PR."
+            echo "::notice::This is expected for CODEOWNERS-protected PRs; safe_merge.sh with CODEOWNER approval is the path forward."
+            exit 0
+          fi
+
+          # Unknown failure — fail loudly so the operator sees it.
           exit 1
 
   drop-stale-review:

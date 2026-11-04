@@ -74,12 +74,16 @@ export async function GET() {
     ]);
 
     const raw = balRes.rows[0]?.credits_remaining;
-    const credits_remaining =
+    // Defensive clamp (review M6): never surface a negative balance even if
+    // migration 022's GREATEST(0, ...) has not been applied yet.
+    const credits_remaining = Math.max(
+      0,
       typeof raw === 'number'
         ? raw
         : typeof raw === 'string'
           ? Number.parseInt(raw, 10) || 0
-          : 0;
+          : 0,
+    );
 
     return NextResponse.json(
       {

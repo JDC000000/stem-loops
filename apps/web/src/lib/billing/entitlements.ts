@@ -166,12 +166,16 @@ async function readSnapshot(userId: string): Promise<EntitlementSnapshot> {
   }
 
   const credits = balRes.rows[0]?.credits_remaining;
-  const credits_remaining =
+  // Defensive clamp (review M6): never surface a negative balance even if
+  // migration 022's GREATEST(0, ...) has not been applied yet.
+  const credits_remaining = Math.max(
+    0,
     typeof credits === 'number'
       ? credits
       : typeof credits === 'string'
         ? Number.parseInt(credits, 10) || 0
-        : 0;
+        : 0,
+  );
 
   let trial_songs_remaining: number | null = null;
   const trialRow = trialRes.rows[0];

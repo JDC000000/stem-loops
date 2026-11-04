@@ -1,46 +1,58 @@
-// POST /api/billing/portal
-// Create a Stripe Customer Portal session so the user can manage their
-// subscription, update payment method, or download past invoices.
-// Returns { url } for the client to redirect to.
+// POST /api/billing/portal — V3 Phase 1a (TSD §1.1).
 //
-// Auth: required. A user who has not yet made any purchase (and therefore
-// has no stripe_customer_id) gets 404 NO_CUSTOMER — portal only exists after
-// at least one checkout.
+// Creates a provider-hosted customer portal session (Stripe: Customer
+// Portal; Paddle: equivalent) so the signed-in user can update their
+// payment method, cancel/upgrade, and download invoices.
+//
+// Auth: required. Returns { portal_url } for the client to redirect to.
+// If the user has never checked out (no customers_billing row for the
+// current provider) the response is 404 NO_CUSTOMER — portal only exists
+// after at least one checkout attempt.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getStripe } from '@/lib/stripe';
-import { getUser } from '@/lib/supabase-server';
+import { getUser } from '@/lib/auth/supabase';
+import { getBillingProvider } from '@/lib/billing';
 import { db } from '@/lib/db';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   const user = await getUser();
   if (!user) {
     return NextResponse.json(
-      { error_code: 'UNAUTHENTICATED', message: 'Sign in to manage billing.' },
+      { error: 'Sign in to manage billing.', code: 'UNAUTHENTICATED' },
       { status: 401 },
     );
   }
 
-  const { rows } = await db.query<{ stripe_customer_id: string | null }>(
-    `SELECT stripe_customer_id FROM users WHERE id = $1`,
-    [user.id],
+  const provider = getBillingProvider();
+  const res = await db.query<{ provider_customer_id: string }>(
+    `SELECT provider_customer_id
+       FROM customers_billing
+      WHERE user_id = $1 AND provider = $2`,
+    [user.user_id, provider.name],
   );
-  const customerId = rows[0]?.stripe_customer_id ?? null;
+  const customerId = res.rows[0]?.provider_customer_id ?? null;
   if (!customerId) {
     return NextResponse.json(
       {
-        error_code: 'NO_CUSTOMER',
-        message: 'Make a purchase first before opening the billing portal.',
+        error: 'Make a purchase first before opening the billing portal.',
+        code: 'NO_CUSTOMER',
       },
       { status: 404 },
     );
   }
 
   const origin = req.headers.get('origin') ?? 'https://stem-loops.com';
-  const session = await getStripe().billingPortal.sessions.create({
-    customer: customerId,
-    return_url: `${origin}/account`,
-  });
-
-  return NextResponse.json({ url: session.url });
+  try {
+    const session = await provider.createPortalSession(customerId, `${origin}/account`);
+    return NextResponse.json({ portal_url: session.url });
+  } catch (err) {
+    console.error('[billing/portal] failed:', err instanceof Error ? err.message : err);
+    return NextResponse.json(
+      { error: 'We could not open the billing portal.', code: 'CHECKOUT_FAILED' },
+      { status: 502 },
+    );
+  }
 }

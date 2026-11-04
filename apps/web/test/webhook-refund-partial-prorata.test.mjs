@@ -41,8 +41,12 @@ async function loadRoute(event, state) {
     });
   `);
   const db = dataUrl(`
-    export const db = { query: async (sql, p) => {
+    const query = async (sql, p) => {
       const s = globalThis.__state;
+      if (/pg_advisory_xact_lock/.test(sql)) {
+        (s.locks ??= []).push(p[0]);
+        return { rows: [], rowCount: 1 };
+      }
       if (/FROM credit_purchases/.test(sql)) {
         const rows = s.purchases.filter((r) => r.provider === p[0] && p[1].includes(r.provider_charge_id));
         return { rows: rows.slice(0, 1), rowCount: Math.min(rows.length, 1) };
@@ -68,7 +72,8 @@ async function loadRoute(event, state) {
         return { rows: [], rowCount: 1 };
       }
       throw new Error('unexpected SQL: ' + sql);
-    } };
+    };
+    export const db = { query, tx: async (fn) => fn({ query }) };
   `);
   const ent = dataUrl(`export const invalidateEntitlement = () => {};`);
   const em = dataUrl(`

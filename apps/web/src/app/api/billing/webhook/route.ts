@@ -373,59 +373,67 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       // Pro-rata (M4 follow-up, Option A): total clawed back so far for this
       // charge; this event claws back only the delta. Full refunds close any
       // floor() residual. Net <= 0 => no-op (Stripe retries, stale events).
-      const prior = await db.query<{ clawed: number | string }>(
-        `SELECT COALESCE(SUM(-credits_delta), 0) AS clawed
-           FROM credit_adjustments
-          WHERE provider = $1 AND provider_charge_id = $2 AND reason = 'refund'`,
-        [providerName, purchase.provider_charge_id],
-      );
-      const alreadyClawed = Number(prior.rows[0]?.clawed ?? 0) | 0;
-      const toClaw = computeProRataClawback({
-        amountRefunded: evt.amountRefunded,
-        amountTotal: purchase.amount_cad_cents,
-        creditsGranted: purchase.credits_granted,
-        alreadyClawed,
-        isFullRefund: evt.fullyRefunded,
+      // The SUM + INSERT run in one tx under a per-charge advisory lock so two
+      // concurrent charge.refunded events (distinct event ids) serialise and
+      // the second sees the first's row. Same lock-then-write shape as
+      // consumeCreditInTx (lib/billing/credits.ts).
+      const chargeId = purchase.provider_charge_id;
+      const outcome = await db.tx(async (client) => {
+        await client.query(
+          `SELECT pg_advisory_xact_lock(hashtext('refund_clawback:' || $1::text))`,
+          [chargeId],
+        );
+        const prior = await client.query<{ clawed: number | string }>(
+          `SELECT COALESCE(SUM(-credits_delta), 0) AS clawed
+             FROM credit_adjustments
+            WHERE provider = $1 AND provider_charge_id = $2 AND reason = 'refund'`,
+          [providerName, chargeId],
+        );
+        const alreadyClawed = Number(prior.rows[0]?.clawed ?? 0) | 0;
+        const toClaw = computeProRataClawback({
+          amountRefunded: evt.amountRefunded,
+          amountTotal: purchase.amount_cad_cents,
+          creditsGranted: purchase.credits_granted,
+          alreadyClawed,
+          isFullRefund: evt.fullyRefunded,
+        });
+        if (toClaw <= 0) return { alreadyClawed, toClaw, inserted: false };
+        // Idempotent on (provider, provider_event_id) for Stripe retries. Several
+        // refund rows per charge are legal (migration 024 drops the
+        // one-per-charge unique index); the locked SUM above bounds the total.
+        const ins = await client.query(
+          `INSERT INTO credit_adjustments
+             (user_id, credits_delta, reason, provider, provider_event_id, provider_charge_id)
+           VALUES ($1, $2, 'refund', $3, $4, $5)
+           ON CONFLICT DO NOTHING`,
+          [purchase.user_id, -toClaw, providerName, evt.providerEventId, chargeId],
+        );
+        const inserted = (ins.rowCount ?? 0) > 0;
+        if (inserted) {
+          await client.query(
+            `INSERT INTO usage_events (user_id, kind, detail)
+             VALUES ($1, 'refund_processed', $2::jsonb)`,
+            [
+              purchase.user_id,
+              JSON.stringify({
+                provider_event_id: evt.providerEventId,
+                provider_charge_id: chargeId,
+                credits_clawed_back: toClaw,
+                total_clawed_back: alreadyClawed + toClaw,
+                partial: !evt.fullyRefunded,
+              }),
+            ],
+          );
+        }
+        return { alreadyClawed, toClaw, inserted };
       });
-      if (toClaw <= 0) {
+      if (outcome.toClaw <= 0) {
         console.info(
-          `[webhook] refund_created: nothing to claw back on ${evt.providerChargeId} (already ${alreadyClawed})`,
+          `[webhook] refund_created: nothing to claw back on ${evt.providerChargeId} (already ${outcome.alreadyClawed})`,
         );
         return;
       }
-      // Idempotent on (provider, provider_event_id) for Stripe retries. Several
-      // refund rows per charge are now legal (migration 024 drops the
-      // one-per-charge unique index); the SUM above bounds the total.
-      const ins = await db.query(
-        `INSERT INTO credit_adjustments
-           (user_id, credits_delta, reason, provider, provider_event_id, provider_charge_id)
-         VALUES ($1, $2, 'refund', $3, $4, $5)
-         ON CONFLICT DO NOTHING`,
-        [
-          purchase.user_id,
-          -toClaw,
-          providerName,
-          evt.providerEventId,
-          purchase.provider_charge_id,
-        ],
-      );
-      if ((ins.rowCount ?? 0) > 0) {
-        await db.query(
-          `INSERT INTO usage_events (user_id, kind, detail)
-           VALUES ($1, 'refund_processed', $2::jsonb)`,
-          [
-            purchase.user_id,
-            JSON.stringify({
-              provider_event_id: evt.providerEventId,
-              provider_charge_id: purchase.provider_charge_id,
-              credits_clawed_back: toClaw,
-              total_clawed_back: alreadyClawed + toClaw,
-              partial: !evt.fullyRefunded,
-            }),
-          ],
-        );
-        invalidateEntitlement(purchase.user_id);
-      }
+      if (outcome.inserted) invalidateEntitlement(purchase.user_id);
       return;
     }
 

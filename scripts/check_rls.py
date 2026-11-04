@@ -91,6 +91,8 @@ _MIGRATION_NUM_RE = re.compile(r"^(\d+)_")
 
 # `FOR ALL` + `TO stemloops_app` (exact role: \b stops at `stemloops_app_all`).
 _FOR_ALL_RE = re.compile(r"\bFOR\s+ALL\b", re.IGNORECASE)
+_FOR_INSERT_RE = re.compile(r"\bFOR\s+INSERT\b", re.IGNORECASE)
+_FOR_SELECT_RE = re.compile(r"\bFOR\s+SELECT\b", re.IGNORECASE)
 _TO_APP_ROLE_RE = re.compile(r"\bTO\b[^;]*?\bstemloops_app\b", re.IGNORECASE)
 
 # Inside a DO block (policy often built via format('...')): one statement,
@@ -318,6 +320,26 @@ def _is_app_all_policy(name: str, body: str) -> bool:
     )
 
 
+def _is_app_insert_policy(name: str, body: str) -> bool:
+    """Append-only pattern (introduced in 013 for credit ledger + usage_events +
+    promo_redemptions per TSD §1.9 / §1.4). The worker role has INSERT but no
+    UPDATE/DELETE — equivalent-or-stricter than FOR ALL for rule (c), which
+    only cares that stemloops_app can WRITE to the table."""
+    return (
+        name.strip('"') == "stemloops_app_insert"
+        and bool(_FOR_INSERT_RE.search(body))
+        and bool(_TO_APP_ROLE_RE.search(body))
+    )
+
+
+def _is_app_select_policy(name: str, body: str) -> bool:
+    return (
+        name.strip('"') == "stemloops_app_select"
+        and bool(_FOR_SELECT_RE.search(body))
+        and bool(_TO_APP_ROLE_RE.search(body))
+    )
+
+
 def main(migrations_dir: Path,
          strict_from: int = STRICT_FROM_MIGRATION) -> int:
     sql_files = sorted(migrations_dir.glob("*.sql"))
@@ -335,6 +357,10 @@ def main(migrations_dir: Path,
     created_pos: dict[str, int] = {}   # table -> index of first creating file
     created_num: dict[str, int] = {}   # table -> migration number of that file
     app_all: set[str] = set()          # stemloops_app_all FOR ALL TO stemloops_app
+    # Append-only pattern (013 §1.9): split into INSERT + SELECT. A table is
+    # "app-writeable" if it has FOR ALL, OR if it has BOTH insert + select.
+    app_insert: set[str] = set()
+    app_select: set[str] = set()
     cowork_read: set[str] = set()      # cowork_ro_read exists
     # Catch-all (`FROM pg_tables`) loops cover every table created in that file
     # or any earlier one: remember the file index of each such loop.
@@ -387,6 +413,10 @@ def main(migrations_dir: Path,
             pname = m.group("pname").strip('"')
             if _is_app_all_policy(pname, body):
                 app_all.add(name)
+            if _is_app_insert_policy(pname, body):
+                app_insert.add(name)
+            if _is_app_select_policy(pname, body):
+                app_select.add(name)
             if pname == "cowork_ro_read":
                 cowork_read.add(name)
 
@@ -423,7 +453,14 @@ def main(migrations_dir: Path,
     strict_tables = {
         t for t in created_tables if created_num[t] >= strict_from
     }
-    app_ok = {t for t in strict_tables if covered(t, app_all, app_all_wild)}
+    # A table satisfies rule (c) if the worker role has write access, however
+    # it is expressed: FOR ALL, OR the append-only split (INSERT + SELECT).
+    # The DO-block pg_tables wildcard only grants FOR ALL coverage.
+    app_split_ok = app_insert & app_select
+    app_ok = {
+        t for t in strict_tables
+        if covered(t, app_all, app_all_wild) or t in app_split_ok
+    }
     cowork_ok = {t for t in strict_tables
                  if covered(t, cowork_read, cowork_wild)}
 

@@ -27,15 +27,20 @@ export type PlanCode = 'free' | 'pro' | 'studio';
 // expire; one-time Stripe Checkout.
 export type PackCode = 'credits_20' | 'credits_60' | 'credits_180';
 
-// Subscription status mirrors the CHECK constraint in TSD §2.3.
+// Subscription status mirrors the CHECK constraint in TSD §2.3 /
+// migration 013. Exactly the six values the DB accepts; writing anything
+// else to subscriptions.status is a CHECK-violation 500.
+//
+// Stripe's own Subscription.Status has extra values ('incomplete_expired',
+// 'unpaid') that must be remapped before they hit this type or the DB.
+// See `_mapStripeStatus` in providers/stripe.ts — it is the ONLY place
+// a Stripe status is allowed to become a SubscriptionStatus.
 export type SubscriptionStatus =
   | 'trialing'
   | 'active'
   | 'past_due'
   | 'canceled'
   | 'incomplete'
-  | 'incomplete_expired'
-  | 'unpaid'
   | 'paused';
 
 export interface BillingCustomer {

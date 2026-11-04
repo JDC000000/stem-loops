@@ -48,9 +48,11 @@ function statusHeadline(status: SubscriptionStatus, plan: string, periodEnd: str
         subject: `Your stem-loops ${plan} plan was canceled`,
         lead: `Your ${plan} plan has been canceled. You'll keep access until ${periodEnd || 'the end of your paid period'}.`,
       };
-    case 'unpaid':
     case 'incomplete':
-    case 'incomplete_expired':
+      // Stripe's 'unpaid' and 'incomplete_expired' are remapped to
+      // 'past_due' and 'canceled' respectively at the provider boundary
+      // (_mapStripeStatus in providers/stripe.ts), so they can never
+      // reach this switch — do not re-add them.
       return {
         subject: `Your stem-loops ${plan} plan needs attention`,
         lead: `Your ${plan} subscription couldn't complete payment. Reopen your checkout or update your card to finish.`,

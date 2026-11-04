@@ -125,6 +125,76 @@ export class UnknownPriceError extends Error {
   }
 }
 
+// Sentinel thrown when Stripe emits a Subscription.Status value we do not
+// recognize. Modeled after UnknownPriceError: fail loud at the webhook
+// boundary rather than silently cast an unknown enum into our narrower
+// SubscriptionStatus and CHECK-violation on the DB upsert.
+//
+// Launch-blocker bug: Stripe's Subscription.Status includes
+// 'incomplete_expired' and 'unpaid', which the DB CHECK constraint on
+// subscriptions.status (migration 013:117 — 6 values) rejects. Blind
+// casting `sub.status as SubscriptionStatus` 500'd the webhook on every
+// failed-payment / 3DS-incomplete / past-due-too-long transition and
+// silently dropped the sub-state update. See _mapStripeStatus below.
+export class UnknownStatusError extends Error {
+  readonly stripeStatus: string;
+  constructor(stripeStatus: string) {
+    super(`Stripe Subscription.Status '${stripeStatus}' is not recognized — Stripe API drift or new enum value`);
+    this.name = 'UnknownStatusError';
+    this.stripeStatus = stripeStatus;
+  }
+}
+
+// Map Stripe's Subscription.Status to the 6-value DB-safe SubscriptionStatus.
+//
+// Stripe enum (as of 2026-10-28.endive): 'trialing' | 'active' | 'past_due'
+//   | 'canceled' | 'incomplete' | 'incomplete_expired' | 'unpaid' | 'paused'.
+// DB CHECK (migration 013:117): 'trialing' | 'active' | 'past_due' |
+//   'canceled' | 'incomplete' | 'paused'.
+//
+// Remaps:
+//   - 'incomplete_expired' → 'canceled'  (Stripe gives up after ~23h of
+//     unpaid initial invoice; subscription is dead — treat as canceled.)
+//   - 'unpaid'             → 'past_due'  (we don't track the extra
+//     "dunning exhausted but not canceled" state; collapse to past_due so
+//     the dunning email + access gate still fire.)
+// Unknown value → throw UnknownStatusError (fail loud, mirror
+// UnknownPriceError; webhook dispatch catches and returns `unhandled`).
+export function _mapStripeStatus(
+  stripeStatus: Stripe.Subscription.Status,
+): SubscriptionStatus {
+  // Note on the literal returns: Stripe's Subscription.Status type is
+  // `<literals> | OtherString` by design (SDK's shared.ts explains
+  // this is to surface future API-version drift without an SDK bump),
+  // so `stripeStatus` never narrows to a pure literal inside a case.
+  // We return the literal directly instead of `stripeStatus` to avoid
+  // an `as SubscriptionStatus` cast that would mask that drift.
+  switch (stripeStatus) {
+    case 'trialing':
+      return 'trialing';
+    case 'active':
+      return 'active';
+    case 'past_due':
+      return 'past_due';
+    case 'canceled':
+      return 'canceled';
+    case 'incomplete':
+      return 'incomplete';
+    case 'paused':
+      return 'paused';
+    case 'incomplete_expired':
+      return 'canceled';
+    case 'unpaid':
+      return 'past_due';
+    default:
+      // Exhaustiveness guard: Stripe's `OtherString` branch widens the
+      // enum to `string`, so this is the only hook we have for a value
+      // the SDK has not yet named. Fail loud; the webhook dispatch
+      // catches and returns `unhandled` so the operator sees the drift.
+      throw new UnknownStatusError(stripeStatus as string);
+  }
+}
+
 function subFromStripe(sub: Stripe.Subscription): BillingSubscription {
   // API 2026-03-25.dahlia+ moved current_period_start/end to SubscriptionItem.
   const firstItem = sub.items.data[0];
@@ -143,7 +213,10 @@ function subFromStripe(sub: Stripe.Subscription): BillingSubscription {
       typeof sub.customer === 'string' ? sub.customer : sub.customer.id,
     priceId,
     planCode,
-    status: sub.status as SubscriptionStatus,
+    // Remap through _mapStripeStatus — Stripe's enum is wider than our
+    // DB CHECK; a blind cast CHECK-violated the webhook on 'unpaid' /
+    // 'incomplete_expired'. See _mapStripeStatus / UnknownStatusError.
+    status: _mapStripeStatus(sub.status),
     currentPeriodStart: firstItem?.current_period_start
       ? new Date(firstItem.current_period_start * 1000)
       : null,
@@ -344,6 +417,15 @@ export class StripeProvider implements BillingProvider {
               `[stripe] ${event.type} dropped for sub ${sub.id}: ${err.message}`,
             );
             return { type: 'unhandled', eventType: `${event.type}:unknown_price` };
+          }
+          // Phase-1b launch-blocker: Stripe status we don't recognize.
+          // Mark unhandled (not 500) so the webhook returns 200, Stripe
+          // stops retrying, and the operator sees the drift in logs.
+          if (err instanceof UnknownStatusError) {
+            console.error(
+              `[stripe] ${event.type} dropped for sub ${sub.id}: ${err.message}`,
+            );
+            return { type: 'unhandled', eventType: `${event.type}:unknown_status` };
           }
           throw err;
         }

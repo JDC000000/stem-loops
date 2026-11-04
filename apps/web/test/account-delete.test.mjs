@@ -77,7 +77,10 @@ async function loadRoute({ user = USER, subIds = [], cancelError = null, deleteF
   return await import(dataUrl(js) + '#' + Math.random());
 }
 
-const makeReq = (body, headers = {}) => ({
+// Default headers include a same-origin pair so tests that aren't exercising
+// the origin guard still pass. Override via the second arg to test guard paths.
+const DEFAULT_HEADERS = { origin: 'https://stem-loops.com', host: 'stem-loops.com' };
+const makeReq = (body, headers = DEFAULT_HEADERS) => ({
   json: async () => body,
   headers: { get: (k) => headers[k.toLowerCase()] ?? null },
 });
@@ -190,4 +193,73 @@ test('DELETE /api/users/me — Supabase admin failure → 500, no audit row', as
   assert.equal(res.status, 500);
   assert.equal(res.body.code, 'DELETE_FAILED');
   assert.equal(auditInserts().length, 0);
+});
+
+// Review-fix tests (PR #54 round-2 adversarial findings)
+
+test('DELETE /api/users/me — 403 when Origin header missing (fail-closed)', async () => {
+  const mod = await loadRoute();
+  const res = await mod.DELETE(
+    makeReq({ confirm_email: USER.email }, { host: 'stem-loops.com' }),
+  );
+  assert.equal(res.status, 403);
+  assert.equal(res.body.code, 'BAD_ORIGIN');
+  assert.deepEqual(names(), []);
+});
+
+test('DELETE /api/users/me — 403 when Origin is literal "null" (sandboxed iframe)', async () => {
+  const mod = await loadRoute();
+  const res = await mod.DELETE(
+    makeReq({ confirm_email: USER.email }, { origin: 'null', host: 'stem-loops.com' }),
+  );
+  assert.equal(res.status, 403);
+  assert.equal(res.body.code, 'BAD_ORIGIN');
+  assert.deepEqual(names(), []);
+});
+
+test('DELETE /api/users/me — Host header with default port :443 still matches origin', async () => {
+  // Proxy sometimes forwards `Host: x.com:443`; route normalizes both sides.
+  const mod = await loadRoute({ subIds: [] });
+  const res = await mod.DELETE(
+    makeReq({ confirm_email: USER.email }, { origin: 'https://stem-loops.com', host: 'stem-loops.com:443' }),
+  );
+  assert.equal(res.status, 204);
+});
+
+test('DELETE /api/users/me — tolerates users.deleted_at column absent (42703)', async () => {
+  // Re-stub db so UPDATE public.users throws Postgres column-does-not-exist;
+  // route should catch and continue, still deleting auth user + writing audit.
+  let js = toJs(readFileSync(SRC, 'utf8'));
+  js = js
+    .replace(
+      /from ['"]@\/lib\/auth\/supabase['"]/g,
+      `from '${authStub(USER, { deleteFails: false })}'`,
+    )
+    .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billingStub({ cancelError: null })}'`)
+    .replace(
+      /from ['"]@\/lib\/db['"]/g,
+      `from '${dataUrl(`
+        export const db = {
+          query: async (text, params) => {
+            globalThis.__ad.calls.push(['query', text, params]);
+            if (/FROM public\\.subscriptions/.test(text)) {
+              return { rows: [], rowCount: 0 };
+            }
+            if (/UPDATE public\\.users/.test(text)) {
+              const err = new Error('column "deleted_at" does not exist');
+              err.code = '42703';
+              throw err;
+            }
+            return { rows: [], rowCount: 1 };
+          },
+        };
+      `)}'`,
+    )
+    .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
+  const mod = await import(dataUrl(js) + '#' + Math.random());
+
+  const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
+  assert.equal(res.status, 204, 'tolerance path: tombstone attempt swallows 42703 and continues');
+  assert.ok(names().includes('deleteAuthUser'));
+  assert.equal(auditInserts().length, 1);
 });

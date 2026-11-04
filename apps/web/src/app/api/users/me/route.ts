@@ -39,7 +39,7 @@
 // exists moments later; the webhook's upsert may fail its FK and Stripe will
 // retry/stop. See PR notes.
 
-import { createHash } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { deleteAuthUser, getUser } from '@/lib/auth/supabase';
 import { getBillingProvider } from '@/lib/billing';
@@ -66,16 +66,28 @@ export async function DELETE(req: NextRequest) {
   const user = await getUser();
   if (!user) return err(401, 'UNAUTHENTICATED', 'Sign in to delete your account.');
 
+  // Destructive endpoint — require a same-origin browser request. DELETE verb
+  // alone isn't a sufficient CSRF barrier (fetch can issue it cross-origin
+  // when the server returns permissive CORS on a preflight), so we require
+  // both an Origin header AND host-match. Missing Origin → 403 (fails closed;
+  // non-browser clients that want to delete accounts must use the admin path).
+  // Literal 'null' Origin (sandboxed iframe, data: URL) also rejected.
   const origin = req.headers?.get?.('origin');
   const host = req.headers?.get?.('host');
-  if (origin && host) {
-    let originHost = '';
-    try {
-      originHost = new URL(origin).host;
-    } catch {
-      /* fallthrough to reject */
-    }
-    if (originHost !== host) return err(403, 'BAD_ORIGIN', 'Cross-origin request refused.');
+  if (!origin || origin === 'null' || !host) {
+    return err(403, 'BAD_ORIGIN', 'Cross-origin or non-browser request refused.');
+  }
+  let originHost = '';
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    return err(403, 'BAD_ORIGIN', 'Malformed Origin header.');
+  }
+  // Normalize both sides: strip default ports (:443 for https, :80 for http)
+  // so a proxy that forwards `Host: x.com:443` doesn't 403 legitimate users.
+  const normalize = (h: string) => h.replace(/:(443|80)$/, '');
+  if (normalize(originHost) !== normalize(host)) {
+    return err(403, 'BAD_ORIGIN', 'Cross-origin request refused.');
   }
 
   let body: { confirm_email?: unknown };
@@ -126,7 +138,14 @@ export async function DELETE(req: NextRequest) {
         `INSERT INTO public.usage_events (user_id, kind, detail) VALUES (NULL, 'account_deleted', $1::jsonb)`,
         [
           JSON.stringify({
-            user_hash: createHash('sha256').update(user.user_id).digest('hex'),
+            // HMAC-SHA256 with the server-side IP_HASH_KEY so the audit hash
+            // isn't a confirmation oracle (plain SHA-256 of a known user_id
+            // would let anyone with the uuid verify deletion). Reuses the
+            // existing IP_HASH_KEY convention from lib/client-ip.ts rather
+            // than adding a new env var.
+            user_hash: createHmac('sha256', process.env.IP_HASH_KEY ?? 'dev-key')
+              .update(user.user_id)
+              .digest('hex'),
             subscriptions_cancelled: cancelled,
           }),
         ],

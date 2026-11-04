@@ -18,6 +18,14 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
     headline: "We couldn't start checkout.",
     action: 'Please try again, or contact support if it keeps failing.',
   },
+  UNAUTHENTICATED: {
+    headline: 'Sign in to continue.',
+    action: 'Create an account or sign in to access billing.',
+  },
+  NO_CUSTOMER: {
+    headline: 'No billing account yet.',
+    action: 'Make a purchase first — the billing portal opens after your first checkout.',
+  },
   ENTITLEMENT_UNAVAILABLE: {
     headline: "We couldn't verify your plan right now.",
     action: 'Refresh in a moment — your access will be back as soon as billing is reachable.',

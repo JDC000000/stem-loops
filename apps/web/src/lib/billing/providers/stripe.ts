@@ -109,11 +109,30 @@ function _invoiceSubId(invoice: Stripe.Invoice): string | undefined {
   return undefined;
 }
 
+// Sentinel thrown when a Stripe subscription carries a price_id that doesn't
+// map to any known PLAN_PRICE_ENV entry. Previously `priceIdToPlan ?? 'pro_monthly'`
+// silently downgraded a studio subscriber (env mismatch) or landed a legacy
+// one-off price on pro — HIGH severity MONEY-CODE bug. Now the webhook branch
+// catches this, returns an `unhandled` event, and surfaces to Stripe so the
+// operator can see the mismatch before it affects anyone's access.
+export class UnknownPriceError extends Error {
+  readonly priceId: string;
+  constructor(priceId: string) {
+    super(`Stripe price_id '${priceId}' does not map to any known plan — env mismatch or legacy price`);
+    this.name = 'UnknownPriceError';
+    this.priceId = priceId;
+  }
+}
+
 function subFromStripe(sub: Stripe.Subscription): BillingSubscription {
   // API 2026-03-25.dahlia+ moved current_period_start/end to SubscriptionItem.
   const firstItem = sub.items.data[0];
   const priceId = firstItem?.price.id ?? '';
-  const planCode = priceIdToPlan(priceId) ?? 'pro_monthly';
+  const planCode = priceIdToPlan(priceId);
+  if (!planCode) {
+    // Never guess — see UnknownPriceError above.
+    throw new UnknownPriceError(priceId);
+  }
   return {
     providerSubscriptionId: sub.id,
     providerCustomerId:
@@ -150,16 +169,27 @@ export class StripeProvider implements BillingProvider {
     planCode: PlanCode,
     successUrl: string,
     cancelUrl: string,
+    promoCode?: string | null,
   ): Promise<BillingCheckoutResult> {
     if (planCode === 'free') {
       throw new Error('createCheckoutSession: "free" plan has no checkout');
     }
+    const metadata: Record<string, string> = {
+      user_id: userId,
+      plan_code: planCode,
+      price_id: planPriceId(planCode),
+    };
+    // MEDIUM fix: thread promo_code into session metadata so the webhook can
+    // record it in credit_purchases/promo_redemptions. Previously the route
+    // handler accepted promo_code but never passed it to the provider, and
+    // the webhook read session.metadata?.promo_code as always undefined.
+    if (promoCode) metadata.promo_code = promoCode;
     const session = await getClient().checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: planPriceId(planCode), quantity: 1 }],
       success_url: successUrl,
       cancel_url: cancelUrl,
-      metadata: { user_id: userId, plan_code: planCode, price_id: planPriceId(planCode) },
+      metadata,
       integration_identifier: INTEGRATION_ID,
       allow_promotion_codes: true,
       // 3DS forcing per TSD §1.1: subscription cards get Radar 'any' rule;
@@ -176,14 +206,23 @@ export class StripeProvider implements BillingProvider {
     pack: PackCode,
     successUrl: string,
     cancelUrl: string,
+    promoCode?: string | null,
   ): Promise<BillingCheckoutResult> {
     const priceId = packPriceId(pack);
+    const metadata: Record<string, string> = {
+      user_id: userId,
+      pack_code: pack,
+      price_id: priceId,
+    };
+    // MEDIUM fix: see createCheckoutSession — thread promo_code through so
+    // the one-time credit purchase webhook can audit the coupon redemption.
+    if (promoCode) metadata.promo_code = promoCode;
     const session = await getClient().checkout.sessions.create({
       mode: 'payment',
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: successUrl,
       cancel_url: cancelUrl,
-      metadata: { user_id: userId, pack_code: pack, price_id: priceId },
+      metadata,
       integration_identifier: INTEGRATION_ID,
       allow_promotion_codes: true,
       // Per TSD §1.1 "3DS forced on all one-time credit purchases".
@@ -274,6 +313,7 @@ export class StripeProvider implements BillingProvider {
           providerSubscriptionId: sub,
         };
       }
+      case 'customer.subscription.created':
       case 'customer.subscription.updated':
       case 'customer.subscription.deleted': {
         const sub = event.data.object as Stripe.Subscription;
@@ -281,7 +321,20 @@ export class StripeProvider implements BillingProvider {
         if (event.type === 'customer.subscription.deleted') {
           return { type: 'subscription_canceled', userId, providerSubscriptionId: sub.id };
         }
-        return { type: 'subscription_upserted', userId, subscription: subFromStripe(sub) };
+        try {
+          return { type: 'subscription_upserted', userId, subscription: subFromStripe(sub) };
+        } catch (err) {
+          // HIGH #2: unknown price_id must NOT silently downgrade to pro.
+          // Mark unhandled so the webhook route logs it and the operator sees
+          // the mismatch via Stripe's dashboard retry/alerting.
+          if (err instanceof UnknownPriceError) {
+            console.error(
+              `[stripe] ${event.type} dropped for sub ${sub.id}: ${err.message}`,
+            );
+            return { type: 'unhandled', eventType: `${event.type}:unknown_price` };
+          }
+          throw err;
+        }
       }
       case 'charge.dispute.created': {
         const dispute = event.data.object as Stripe.Dispute;
@@ -344,6 +397,9 @@ export class StripeProvider implements BillingProvider {
       currency: session.currency ?? 'cad',
       priceId,
       promoCode: (session.metadata?.promo_code as string | undefined) ?? undefined,
+      // Carried for the webhook's defensive users-row upsert when the
+      // handle_new_user trigger has not caught up — see ensureUserRow.
+      customerEmail: session.customer_email ?? session.customer_details?.email ?? null,
     };
   }
 

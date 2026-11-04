@@ -35,6 +35,7 @@ export class PaddleProvider implements BillingProvider {
     _planCode: PlanCode,
     _successUrl: string,
     _cancelUrl: string,
+    _promoCode?: string | null,
   ): Promise<BillingCheckoutResult> {
     throw new NotImplementedError('createCheckoutSession');
   }
@@ -43,6 +44,7 @@ export class PaddleProvider implements BillingProvider {
     _pack: PackCode,
     _successUrl: string,
     _cancelUrl: string,
+    _promoCode?: string | null,
   ): Promise<BillingCheckoutResult> {
     throw new NotImplementedError('createCreditPurchaseSession');
   }

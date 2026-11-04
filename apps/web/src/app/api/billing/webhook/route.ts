@@ -14,7 +14,9 @@
 // ON CONFLICT DO NOTHING. Specifically:
 //   credit_purchases     UNIQUE (provider, provider_charge_id)
 //   subscriptions        UNIQUE (provider, provider_subscription_id)
-//   promo_redemptions    best-effort DO NOTHING on (user_id, code, applied_at)
+//   promo_redemptions    UNIQUE (user_id, stripe_promotion_code_id)  (migration 015;
+//                        NULL stripe_promotion_code_id is NULLS DISTINCT by default —
+//                        intentional for Phase 1a, see that migration's header)
 //
 // Raw body: we MUST use req.text() (Next 14 App Router) — JSON parsing
 // would normalize whitespace and invalidate the signature.
@@ -39,11 +41,56 @@ function credits_for_pack(pack: 'credits_20' | 'credits_60' | 'credits_180'): nu
   return pack === 'credits_20' ? 20 : pack === 'credits_60' ? 60 : 180;
 }
 
-async function ensureUserRow(userId: string): Promise<boolean> {
-  // The handle_new_user trigger seeds public.users at signup — but if a
-  // Stripe event beats the trigger (shouldn't happen, but defense), bail.
-  const res = await db.query('SELECT 1 FROM users WHERE id = $1', [userId]);
-  return (res.rowCount ?? 0) > 0;
+/**
+ * Round-1 MEDIUM fix: the previous `bail if missing` version silently returned
+ * 200 whenever a Stripe webhook beat the `handle_new_user` trigger — the
+ * customer paid, we never granted credits, and Stripe never retried because
+ * the handler said OK. Now we defensively upsert the row (mirroring the
+ * checkout route's defense at route.ts:114-118), and if the upsert itself
+ * fails we THROW — the route's outer catch turns that into a 500 and Stripe
+ * retries, which is exactly what we want.
+ *
+ * emailHint lets credit_purchase_completed pass session.customer_email so a
+ * row can be seeded even when auth.users isn't readable from the webhook
+ * (which uses the stemloops_app role, not the auth schema). Falls back to
+ * a stable derived placeholder matching the handle_new_user trigger, so the
+ * NOT NULL constraint is satisfied.
+ */
+async function ensureUserRow(userId: string, emailHint?: string | null): Promise<void> {
+  // Fast-path: row already exists.
+  const read = await db.query('SELECT 1 FROM users WHERE id = $1', [userId]);
+  if ((read.rowCount ?? 0) > 0) return;
+
+  // Try to recover an email from auth.users first (the webhook role has
+  // SELECT via the handle_new_user trigger's SECURITY DEFINER path in most
+  // deployments, but may not in all — tolerate failure).
+  let email = emailHint ?? null;
+  if (!email) {
+    try {
+      const auth = await db.query<{ email: string | null }>(
+        'SELECT email FROM auth.users WHERE id = $1',
+        [userId],
+      );
+      email = auth.rows[0]?.email ?? null;
+    } catch {
+      // auth schema not readable from this role; keep going with derived email
+    }
+  }
+  if (!email) {
+    // Match the derived-email shape used by the handle_new_user trigger so
+    // migration 013's citext UNIQUE doesn't later collide when the trigger
+    // catches up.
+    email = `${userId}@noemail.local`;
+  }
+
+  // Defensive upsert. If this throws (constraint violation other than the
+  // handled conflict, pool exhaustion, etc.) let it propagate — the route's
+  // outer catch returns 500 and Stripe retries.
+  await db.query(
+    `INSERT INTO users (id, email) VALUES ($1, $2)
+     ON CONFLICT (id) DO NOTHING`,
+    [userId, email],
+  );
 }
 
 /** Recompute the entitlements row from the authoritative subscription state.
@@ -78,7 +125,11 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
   switch (evt.type) {
     case 'credit_purchase_completed': {
       if (!evt.userId) return;
-      if (!(await ensureUserRow(evt.userId))) return;
+      // Defensive users-row upsert (round-1 MEDIUM): if the handle_new_user
+      // trigger hasn't caught up, seed the row here so we actually grant
+      // credits. On failure, this throws and the route returns 500 → Stripe
+      // retries. Email hint comes from the Checkout Session.
+      await ensureUserRow(evt.userId, evt.customerEmail ?? null);
       const credits = credits_for_pack(evt.packCode);
       await db.query(
         `INSERT INTO credit_purchases
@@ -97,11 +148,17 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         ],
       );
       if (evt.promoCode) {
-        // Audit the redemption; append-only so no uniqueness needed, but we
-        // DO NOTHING on the primary key (uuid default) to be safe.
+        // Audit the redemption. Migration 015 adds a natural UNIQUE on
+        // (user_id, stripe_promotion_code_id) so the ON CONFLICT clause has a
+        // real target — fixes the round-1 MEDIUM finding where Stripe retries
+        // double-inserted this row. The webhook currently only knows the raw
+        // code string, so stripe_promotion_code_id stays NULL here; Postgres'
+        // default UNIQUE treats NULLs as distinct, which is intentional for
+        // Phase 1a (see migration 015 header note).
         await db.query(
           `INSERT INTO promo_redemptions (user_id, code)
-           VALUES ($1, $2)`,
+           VALUES ($1, $2)
+           ON CONFLICT (user_id, stripe_promotion_code_id) DO NOTHING`,
           [evt.userId, evt.promoCode],
         );
       }
@@ -111,7 +168,8 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
 
     case 'subscription_upserted': {
       if (!evt.userId) return;
-      if (!(await ensureUserRow(evt.userId))) return;
+      // Defensive users-row upsert; throws on failure so Stripe retries.
+      await ensureUserRow(evt.userId, null);
       const planCode = dbPlanCode(evt.subscription.planCode);
       if (!planCode) return;
       // customers_billing must exist for the FK story; insert idempotently.
@@ -165,17 +223,38 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
     }
 
     case 'invoice_paid': {
+      // HIGH #1 FIX: Stripe does NOT populate `invoice.metadata.user_id` on
+      // RECURRING invoices — only on the FIRST invoice created from the
+      // Checkout session. On cycle rollover, evt.userId is '' and the old
+      // code early-returned, so entitlement period never refreshed and the
+      // user lost access at period end. Resolve via the subscription record
+      // we already persisted (subscriptions.provider_subscription_id → user_id)
+      // before giving up.
+      let userId = evt.userId;
+      if (!userId) {
+        const res = await db.query<{ user_id: string }>(
+          `SELECT user_id FROM subscriptions
+            WHERE provider = $1 AND provider_subscription_id = $2`,
+          [providerName, evt.providerSubscriptionId],
+        );
+        userId = res.rows[0]?.user_id ?? '';
+      }
+      if (!userId) {
+        console.warn(
+          `[webhook] invoice_paid: could not resolve user for sub ${evt.providerSubscriptionId}`,
+        );
+        return;
+      }
       // Reload the subscription to recompute entitlement period. Falls back
       // to extending the existing period by the invoice interval.
-      if (!evt.userId) return;
       try {
         const provider = getBillingProvider();
         const sub = await provider.getSubscription(evt.providerSubscriptionId);
-        await upsertEntitlementFromSubscription(evt.userId, sub);
+        await upsertEntitlementFromSubscription(userId, sub);
       } catch (err) {
         console.error('[webhook] invoice_paid refresh failed:', err instanceof Error ? err.message : err);
       }
-      invalidateEntitlement(evt.userId);
+      invalidateEntitlement(userId);
       return;
     }
 

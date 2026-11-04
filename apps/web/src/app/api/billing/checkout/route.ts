@@ -33,6 +33,10 @@ const PLAN_ALIASES: Record<string, Exclude<PlanCode, 'free'>> = {
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_PER_USER = 3;
+// Postgres advisory lock namespace tag. Short string hashed via hashtext()
+// gives a stable 32-bit integer key, safely partitioned from any other
+// advisory-lock caller in the app.
+const RATE_LIMIT_LOCK_TAG = 'billing_checkout';
 
 type Body = {
   pack_code?: unknown;
@@ -44,21 +48,40 @@ function badRequest(code: string, message: string) {
   return NextResponse.json({ error: message, code }, { status: 400 });
 }
 
-/** Atomic rate check + record in usage_events. */
+/** Atomic rate check + record in usage_events.
+ *
+ * Round-1 MEDIUM finding fix: the original single-statement INSERT ... SELECT
+ * is READ COMMITTED, so two concurrent requests could both observe COUNT=2
+ * and both insert → 4 checkouts in the window. Wrap the count+insert in a
+ * transaction and take a per-user advisory lock AT THE TOP of the tx with
+ * `pg_advisory_xact_lock(hashtext('billing_checkout:' || user_id))`. The
+ * lock queues concurrent callers for the same user; advisory locks release
+ * automatically at COMMIT/ROLLBACK, so there's no leak path.
+ */
 async function underCheckoutRateLimit(userId: string): Promise<boolean> {
-  const res = await db.query(
-    `INSERT INTO usage_events (user_id, kind, detail)
-     SELECT $1::uuid, 'billing_checkout_attempt', '{}'::jsonb
-     WHERE (
-       SELECT COUNT(*) FROM usage_events
-        WHERE user_id = $1
+  return db.tx(async (client) => {
+    // Per-user advisory lock — concurrent requests for different users do
+    // not block each other; same user serializes within the tx.
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1 || ':' || $2::text))`,
+      [RATE_LIMIT_LOCK_TAG, userId],
+    );
+    const countRes = await client.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM usage_events
+        WHERE user_id = $1::uuid
           AND kind = 'billing_checkout_attempt'
-          AND created_at >= NOW() - ($2::int * INTERVAL '1 millisecond')
-     ) < $3
-     RETURNING id`,
-    [userId, RATE_LIMIT_WINDOW_MS, RATE_LIMIT_PER_USER],
-  );
-  return (res.rowCount ?? 0) > 0;
+          AND created_at >= NOW() - ($2::int * INTERVAL '1 millisecond')`,
+      [userId, RATE_LIMIT_WINDOW_MS],
+    );
+    const n = Number.parseInt(countRes.rows[0]?.n ?? '0', 10);
+    if (n >= RATE_LIMIT_PER_USER) return false;
+    await client.query(
+      `INSERT INTO usage_events (user_id, kind, detail)
+       VALUES ($1::uuid, 'billing_checkout_attempt', '{}'::jsonb)`,
+      [userId],
+    );
+    return true;
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -92,7 +115,11 @@ export async function POST(req: NextRequest) {
     return badRequest('CHECKOUT_FAILED', `Unknown pack_code: ${packRaw}`);
   }
   if (planRaw && !PLAN_ALIASES[planRaw]) {
-    return badRequest('PLAN_NOT_FOUND', `Unknown plan_code: ${planRaw}`);
+    // LOW round-1 fix: this is INPUT validation ("that string isn't a plan I
+    // recognize"), not a billing-state "plan missing from the catalog" error.
+    // CHECKOUT_FAILED reads correctly in error-copy; PLAN_NOT_FOUND is for
+    // entitlements-side plan lookup failures.
+    return badRequest('CHECKOUT_FAILED', `Unknown plan_code: ${planRaw}`);
   }
 
   if (!(await underCheckoutRateLimit(user.user_id))) {
@@ -145,6 +172,7 @@ export async function POST(req: NextRequest) {
         packRaw as PackCode,
         successUrl,
         cancelUrl,
+        promoCode,
       );
     } else {
       const mappedPlan = PLAN_ALIASES[planRaw as string];
@@ -153,13 +181,15 @@ export async function POST(req: NextRequest) {
         mappedPlan,
         successUrl,
         cancelUrl,
+        promoCode,
       );
     }
 
     if (promoCode) {
       // Best-effort: Stripe applies promotion codes on the hosted page via
       // allow_promotion_codes, but we attempt a server-side attach in case
-      // a future provider honors it.
+      // a future provider honors it. The code is also threaded into session
+      // metadata (above) so the webhook can audit the redemption.
       try {
         await provider.applyPromoCode(session.sessionId, promoCode);
       } catch {

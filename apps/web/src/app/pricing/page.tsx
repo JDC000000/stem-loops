@@ -47,8 +47,11 @@ async function loadPlans(): Promise<{ plans: Plan[]; degraded: boolean }> {
     const order = ['free', 'pro', 'studio'];
     const plans = order.map((c) => rows.find((p) => p.code === c)).filter((p): p is Plan => !!p);
     if (plans.length) return { plans, degraded: false };
-  } catch {
-    // fall through to fallback
+  } catch (err) {
+    // Silently swallowing the error hides exactly what we need to see when
+    // staging/prod degrade to FALLBACK. Log it so Vercel runtime logs (and
+    // Sentry's console-integration) capture the cause, then fall through.
+    console.error('[pricing] loadPlans query failed; serving FALLBACK:', err);
   }
   return { plans: FALLBACK, degraded: true };
 }

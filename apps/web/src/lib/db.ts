@@ -15,6 +15,14 @@ let pool: Pool | null = null;
 function getPool(): Pool {
   if (!pool) {
     const conn = process.env.DATABASE_URL_POOLED ?? process.env.DATABASE_URL;
+    // Without a connection string, `pg` silently falls back to PG* env vars and
+    // localhost:5432 — on Vercel that surfaces as ECONNREFUSED far from the
+    // real cause. Fail loudly so the missing env var is visible in logs.
+    if (!conn) {
+      throw new Error(
+        'DATABASE_URL_POOLED (or DATABASE_URL) is not set — cannot create a Postgres pool.',
+      );
+    }
     pool = new Pool({ connectionString: conn, max: 3, ssl: sslFor(conn) });
   }
   return pool;

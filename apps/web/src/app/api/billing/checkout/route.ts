@@ -23,13 +23,12 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const PACKS: ReadonlyArray<PackCode> = ['credits_20', 'credits_60', 'credits_180'];
-// Public API uses the migration's plan codes ('pro' / 'studio'); the
-// BillingProvider interface still carries the longer '_monthly' suffix,
-// so we map on the way in. Keep the two codepaths in one place.
-const PLAN_ALIASES: Record<string, Exclude<PlanCode, 'free'>> = {
-  pro: 'pro_monthly',
-  studio: 'studio_monthly',
-};
+// Valid plan codes accepted on checkout. 'free' is excluded — the free
+// tier is the anonymous device-fingerprint cohort (§1.2) and has no
+// Stripe checkout flow. PR #29 aligned the BillingProvider PlanCode type
+// with plans.code (both now 'free' | 'pro' | 'studio'), so no translation
+// is needed on this boundary anymore.
+const PAID_PLANS: ReadonlyArray<Exclude<PlanCode, 'free'>> = ['pro', 'studio'];
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_PER_USER = 3;
@@ -114,7 +113,7 @@ export async function POST(req: NextRequest) {
   if (packRaw && !PACKS.includes(packRaw as PackCode)) {
     return badRequest('CHECKOUT_FAILED', `Unknown pack_code: ${packRaw}`);
   }
-  if (planRaw && !PLAN_ALIASES[planRaw]) {
+  if (planRaw && !PAID_PLANS.includes(planRaw as Exclude<PlanCode, 'free'>)) {
     // LOW round-1 fix: this is INPUT validation ("that string isn't a plan I
     // recognize"), not a billing-state "plan missing from the catalog" error.
     // CHECKOUT_FAILED reads correctly in error-copy; PLAN_NOT_FOUND is for
@@ -175,10 +174,9 @@ export async function POST(req: NextRequest) {
         promoCode,
       );
     } else {
-      const mappedPlan = PLAN_ALIASES[planRaw as string];
       session = await provider.createCheckoutSession(
         user.user_id,
-        mappedPlan,
+        planRaw as Exclude<PlanCode, 'free'>,
         successUrl,
         cancelUrl,
         promoCode,

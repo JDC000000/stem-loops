@@ -35,8 +35,8 @@ const PACK_PRICE_ENV: Record<PackCode, { env: string; fallback: string }> = {
   credits_180: { env: 'STRIPE_PRICE_CREDITS_180', fallback: 'price_1UXmVmLrVEo8SyzrZoUF64Ji' },
 };
 const PLAN_PRICE_ENV: Record<Exclude<PlanCode, 'free'>, { env: string; fallback: string }> = {
-  pro_monthly: { env: 'STRIPE_PRICE_PRO_MONTHLY', fallback: 'price_1UXmVmLrVEo8SyzrzdLgw02p' },
-  studio_monthly: { env: 'STRIPE_PRICE_STUDIO_MONTHLY', fallback: 'price_1UXmVnLrVEo8SyzrOb1nASza' },
+  pro: { env: 'STRIPE_PRICE_PRO_MONTHLY', fallback: 'price_1UXmVmLrVEo8SyzrzdLgw02p' },
+  studio: { env: 'STRIPE_PRICE_STUDIO_MONTHLY', fallback: 'price_1UXmVnLrVEo8SyzrOb1nASza' },
 };
 
 function packPriceId(pack: PackCode): string {
@@ -110,11 +110,12 @@ function _invoiceSubId(invoice: Stripe.Invoice): string | undefined {
 }
 
 // Sentinel thrown when a Stripe subscription carries a price_id that doesn't
-// map to any known PLAN_PRICE_ENV entry. Previously `priceIdToPlan ?? 'pro_monthly'`
-// silently downgraded a studio subscriber (env mismatch) or landed a legacy
-// one-off price on pro — HIGH severity MONEY-CODE bug. Now the webhook branch
-// catches this, returns an `unhandled` event, and surfaces to Stripe so the
-// operator can see the mismatch before it affects anyone's access.
+// map to any known PLAN_PRICE_ENV entry. Previously `priceIdToPlan ?? 'pro'`
+// (and before that, `?? 'pro_monthly'`) silently downgraded a studio
+// subscriber on an env mismatch, or landed a legacy one-off price on pro —
+// HIGH severity MONEY-CODE bug. Now the webhook branch catches this, returns
+// an `unhandled` event, and surfaces to Stripe so the operator can see the
+// mismatch before it affects anyone's access.
 export class UnknownPriceError extends Error {
   readonly priceId: string;
   constructor(priceId: string) {
@@ -130,7 +131,10 @@ function subFromStripe(sub: Stripe.Subscription): BillingSubscription {
   const priceId = firstItem?.price.id ?? '';
   const planCode = priceIdToPlan(priceId);
   if (!planCode) {
-    // Never guess — see UnknownPriceError above.
+    // Never guess — see UnknownPriceError above. #29 (plan-code fix) had
+    // this fallback at `?? 'pro'`; #31 (this PR) replaced it with a throw
+    // to avoid silently downgrading a studio customer to pro on a
+    // price_id mismatch. Throw wins on conflict.
     throw new UnknownPriceError(priceId);
   }
   return {

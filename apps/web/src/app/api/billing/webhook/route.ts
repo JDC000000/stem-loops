@@ -29,12 +29,11 @@ import { invalidateEntitlement } from '@/lib/billing/entitlements';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// Our DB plan_code column uses the short form ('pro', 'studio'); the
-// provider interface uses the longer suffix. Narrow on the way in.
+// PR #29 aligned BillingProvider's PlanCode with plans.code ('free' | 'pro' |
+// 'studio'), so no translation is needed anymore. We just narrow 'free' out,
+// which is not a valid subscription plan (TSD §1.2).
 function dbPlanCode(provider: BillingSubscription['planCode']): 'pro' | 'studio' | null {
-  if (provider === 'pro_monthly') return 'pro';
-  if (provider === 'studio_monthly') return 'studio';
-  return null;
+  return provider === 'pro' || provider === 'studio' ? provider : null;
 }
 
 function credits_for_pack(pack: 'credits_20' | 'credits_60' | 'credits_180'): number {

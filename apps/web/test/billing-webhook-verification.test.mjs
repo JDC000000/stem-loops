@@ -43,7 +43,7 @@ function billingStub({ handleWebhookThrows, event, name = 'stripe' }) {
         providerSubscriptionId: 'sub_X',
         providerCustomerId: 'cus_X',
         priceId: 'price_X',
-        planCode: 'pro_monthly',
+        planCode: 'pro',
         status: 'active',
         currentPeriodStart: new Date(),
         currentPeriodEnd: new Date(Date.now() + 2592000000),

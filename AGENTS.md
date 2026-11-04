@@ -136,3 +136,79 @@ See `.env.example` for the full list with documentation.
 8. All new secrets go in `.env.example` with a comment explaining how to obtain them.
 9. Regression bugs go in `evals/bugs.json`.
 10. The state machine (§6.3) is fixed — do not add or rename statuses.
+
+## §11 Merge Safety Rules (added 2026-11-03 after #21 CI-bypass incident)
+
+The session that landed PRs #16–#26 used `gh pr merge --admin --squash` to
+bypass CODEOWNERS self-approval and required-check name mismatches. That is
+the intended use — the author-is-reviewer deadlock is why `--admin` exists.
+But on PR #21 it also bypassed THREE FAILING status checks (Fixture pipeline,
+Tests, Lint) and shipped a migration that broke CI on `v3/main` for every
+subsequent PR. Hotfix PR #27 restored green CI. These rules exist so that
+cannot recur.
+
+**M-1 (hard): `--admin` must not bypass a FAILING status check.** Admin
+bypass is for the CODEOWNERS / required-review layer only. If any check-run
+is red OR pending OR absent, do not merge — fix CI first, then merge. Use
+`scripts/safe_merge.sh <N>`, which enforces this (refuses on failure,
+cancelled, timed_out, pending, and on commits with zero check-runs).
+
+Manual check (equivalent to what the script does, if you need to inspect
+without merging):
+
+```bash
+N=<pr>  # e.g. N=29
+HEAD=$(gh api "repos/JDC000000/stem-loops/pulls/$N" --jq '.head.sha')
+gh api "repos/JDC000000/stem-loops/commits/$HEAD/check-runs?per_page=100" --jq '
+  .check_runs
+  | map(select(
+      .status != "completed"
+      or .conclusion == "failure"
+      or .conclusion == "cancelled"
+      or .conclusion == "timed_out"
+    ))
+  | map({name, status, conclusion})
+'
+# Must print []. If non-empty, STOP and fix CI. Also fail if the top-level
+# check_runs array is empty — CI has not registered yet. This matches what
+# scripts/safe_merge.sh enforces operationally (pending OR concluded-bad).
+```
+
+**M-2 (hard): adversarial reviewers must verify CI is green** before
+scoring ≥93. Local `check_rls.py` passing is not enough — the review prompt
+includes a CI-check step and the reviewer states the result in the report.
+A reviewer who CANNOT run CI must state that explicitly so the author
+knows to re-check before promoting to ready-for-review.
+
+**M-3 (medium): migrations with Supabase-only objects need stubs.** When a
+migration references anything Supabase manages (`auth.*` schema, the
+`authenticated` / `anon` roles, helper fns like `auth.uid()`, and also
+`storage.*`, `realtime.*`, `vault.*`, `extensions.*`, etc.), the author must
+include a stub either in the same migration or in a prior one.
+`012_v3_supabase_stubs.sql` is the exemplar. Future improvement: a CI
+matrix job that runs migrations against a Postgres image with the Supabase
+prelude pre-seeded, so both bare-Postgres and Supabase-like paths are
+covered.
+
+**M-4 (medium): no cross-PR TYPE ↔ CODE drift.** When one PR adds a
+TypeScript enum that maps to a column value (`PlanCode` ↔ `plans.code`), the
+same PR must include either the migration setting those values OR a
+reference to the migration that does. Each PR's adversarial reviewer must
+check the enum values against the DB source of truth in the TSD. The
+incident: `types.ts` landed on PR #20 with `'pro_monthly'` / `'studio_monthly'`
+while the DB migration on PR #21 used `'pro'` / `'studio'`; every checkout
+would have 500'd at the FK layer. PR #29 fixed this (the enum caught up
+to the DB); future reviewers should catch it in round 1, not post-merge.
+
+**M-5 (process): hotfix PRs land before any dependent work merges.** If a
+merged PR breaks CI (M-1 violated, or an M-4 drift slipped), all other work
+blocks until the hotfix is on main. Worker agents can still PUSH their
+branches (CI will be red until rebased), but no other merges happen in the
+interval.
+
+**M-6 (process): the author of PR #N is a self-approval deadlock on #N.**
+GitHub blocks self-approval; CODEOWNERS requires the author's review when
+the author is the only owner on touched files. For a solo-dev repo this
+means every `needs-jon-approval` PR authored by Jon needs `--admin`
+bypass. Combined with M-1, that makes `--admin + green CI` the normal
+path. This is working as intended — do not weaken CODEOWNERS to avoid it.

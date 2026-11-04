@@ -272,6 +272,34 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // §1.2a channel separation: Pro/Studio are upload-only. For AUTHENTICATED
+    // users, run the link-ingest entitlement guard BEFORE admission / trial /
+    // quota so a paid user gets the friendly PAID_LINK_INGEST_DISALLOWED (400)
+    // instead of falling through to the admission gate. Only that one code is
+    // acted on here: free/trial users keep the existing behaviour (trial
+    // consume, then burst/quota + plain INSERT), so TRIAL_EXHAUSTED and
+    // ENTITLEMENT_UNAVAILABLE from this call are intentionally ignored.
+    // Anonymous users (user === null) skip this and stay on the free-tier path.
+    if (user) {
+      try {
+        await enforceEntitlement('start_job_youtube', user.user_id);
+      } catch (err) {
+        if (err instanceof EntitlementError) {
+          if (err.code === 'PAID_LINK_INGEST_DISALLOWED') {
+            return NextResponse.json(
+              { error_code: err.code, message: err.message },
+              { status: err.status },
+            );
+          }
+          // Other entitlement outcomes are handled by the existing gates below.
+        } else {
+          // Snapshot/DB failure: fail open to the existing gates (same stance
+          // as the getEntitlementSnapshot try/catch below), but report it.
+          Sentry.captureException(err);
+        }
+      }
+    }
+
     // §1.2a admission-before-consume (round-2 FIX #2): run per-IP admission
     // BEFORE consumeTrial(). consumeTrial commits in its own tx, so if a
     // rate-limited request spent a trial song first, the song would already

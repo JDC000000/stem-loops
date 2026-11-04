@@ -94,6 +94,12 @@ function entitlementsStub({ planCode = 'free', enforce = { allow: true } } = {})
     };
     export const enforceEntitlement = async (action, userId) => {
       globalThis.__calls.push({ fn: 'enforceEntitlement', action, userId });
+      if (action.startsWith('start_job_') && action !== 'start_job_upload' &&
+          (cfg.planCode === 'pro' || cfg.planCode === 'studio')) {
+        const e = new EntitlementError('PAID_LINK_INGEST_DISALLOWED', 'paid plans are upload-only');
+        e.status = 400;
+        throw e;
+      }
       if (!cfg.enforce.allow) {
         throw new EntitlementError(cfg.enforce.code ?? 'CREDIT_BALANCE_INSUFFICIENT', cfg.enforce.message ?? 'denied');
       }
@@ -336,7 +342,7 @@ test('POST /api/jobs — rate-limited link request does NOT consume trial (FIX #
   }
 });
 
-test('POST /api/jobs — Pro user on link branch skips trial consume', async () => {
+test('POST /api/jobs — Pro user on link branch is blocked with PAID_LINK_INGEST_DISALLOWED', async () => {
   process.env.ALLOW_YOUTUBE_INPUT = 'true';
   try {
     const mod = await loadRoute({
@@ -346,12 +352,10 @@ test('POST /api/jobs — Pro user on link branch skips trial consume', async () 
     const res = await mod.POST(
       makeReq({ url: 'https://youtu.be/dQw4w9WgXcQ', loop_length_bars: 4 }),
     );
-    assert.equal(res.status, 201);
+    assert.equal(res.status, 400);
+    assert.equal(res.body.error_code, 'PAID_LINK_INGEST_DISALLOWED');
     const consumeCalled = globalThis.__calls.find((c) => c.fn === 'consumeTrial');
     assert.equal(consumeCalled, undefined, 'Pro plan must skip the trial path');
-    // Burst gate still runs for Pro.
-    const burstCalled = globalThis.__calls.find((c) => c.fn === 'checkBurstLimit');
-    assert.ok(burstCalled, 'burst gate must run for Pro');
   } finally {
     delete process.env.ALLOW_YOUTUBE_INPUT;
   }

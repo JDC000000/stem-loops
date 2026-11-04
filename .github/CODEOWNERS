@@ -34,6 +34,11 @@ scripts/**                                      @JDC000000
 # that governs PR-body validation, redundant with `scripts/**` above but kept
 # so the ownership is obvious at a glance when auditing CI-side policy.
 scripts/check_tsd_refs.py                       @JDC000000
+# Explicit entry for the Fleet Playbook Move 2 hook — PostToolUse tracer that
+# POSTs digest-only events to Langfuse. Redundant with `scripts/**` above but
+# called out because a misconfigured trace path could exfil tool metadata; any
+# change here deserves explicit review beyond the catch-all.
+scripts/langfuse-trace.sh                       @JDC000000
 
 # CI and workflow files — auto-merge rules, branch protection surfaces.
 .github/workflows/**                            @JDC000000

@@ -1,12 +1,8 @@
 import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
+import { sslFor, sanitizeSupabaseConn } from './db-ssl';
 
-// Supabase's pooler serves a cert not in Node's default CA bundle
-// (SELF_SIGNED_CERT_IN_CHAIN), and node-pg now forces verification for sslmode=require
-// — so for Supabase hosts connect over TLS but skip chain verification. A local/dev
-// Postgres (no TLS) is left untouched so `make dev` still works.
-export function sslFor(conn: string | undefined): { rejectUnauthorized: false } | undefined {
-  return conn && /supabase\.(co|com)/.test(conn) ? { rejectUnauthorized: false } : undefined;
-}
+// Re-export so existing imports from '@/lib/db' keep working.
+export { sslFor, sanitizeSupabaseConn };
 
 // Lazy singleton pool. Uses the pooled (pgbouncer) URL for serverless API routes,
 // capped at 3 connections to stay within the Supabase free-tier limit.
@@ -23,7 +19,11 @@ function getPool(): Pool {
         'DATABASE_URL_POOLED (or DATABASE_URL) is not set — cannot create a Postgres pool.',
       );
     }
-    pool = new Pool({ connectionString: conn, max: 3, ssl: sslFor(conn) });
+    pool = new Pool({
+      connectionString: sanitizeSupabaseConn(conn),
+      max: 3,
+      ssl: sslFor(conn),
+    });
   }
   return pool;
 }

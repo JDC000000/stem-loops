@@ -14,10 +14,14 @@
 //   apps/web/src/lib/billing/providers/paddle.ts — PaddleProvider (stub Phase 1a)
 //   apps/worker/src/worker/billing/providers/... — mirror on worker side
 
-// Plan codes map to the subscriptions.plan_code column (TSD §2.3). Free is
-// included for completeness but has no checkout — the free tier is the
-// anonymous device-fingerprint cohort (§1.2).
-export type PlanCode = 'free' | 'pro_monthly' | 'studio_monthly';
+// Plan codes map to the subscriptions.plan_code column (TSD §2.3) which
+// FKs into plans.code. Locked catalog per Jon 2026-11-02T22:45 and
+// 014_v3_seed_plans.sql: 'free' | 'pro' | 'studio'. Earlier drafts of
+// this file used 'pro_monthly' / 'studio_monthly'; those never existed in
+// the DB and would have caused a plan_code FK violation on every checkout.
+// Free is included for completeness but has no checkout — the free tier
+// is the anonymous device-fingerprint cohort (§1.2).
+export type PlanCode = 'free' | 'pro' | 'studio';
 
 // Pack codes map to credit_purchases.pack_code (TSD §1.9). Credits never
 // expire; one-time Stripe Checkout.

@@ -1,0 +1,13 @@
+{
+  "PostToolUse": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "./scripts/langfuse-trace.sh"
+        }
+      ]
+    }
+  ]
+}

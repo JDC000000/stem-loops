@@ -5,6 +5,12 @@
 # When all three hold, fires `gh pr merge --auto`; GitHub's required status
 # checks still gate the actual merge.
 #
+# Fallback behavior: `gh pr merge --auto` returns 422 "Pull request is in
+# clean status" when CI is ALREADY green by labeling time (the normal case
+# for our adversarial-review-then-label flow, where review happens after
+# CI greens). The merge step catches that 422 and falls through to a
+# direct `gh pr merge --squash --delete-branch`. Any other error surfaces.
+#
 # Security: pull_request_target has write access but does NOT check out PR
 # code; only the merge call runs. Only repo collaborators can apply labels
 # so a hostile PR author cannot self-label into auto-merge.
@@ -39,16 +45,30 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'adversarial-reviewed') &&
       !contains(github.event.pull_request.labels.*.name, 'needs-jon-approval')
     steps:
-      - name: Enable auto-merge (squash, delete branch)
+      - name: Enable auto-merge (squash, delete branch) — direct-merge fallback for already-clean
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "PR #${{ github.event.pull_request.number }} meets triple-gate; enabling auto-merge."
-          gh pr merge "${{ github.event.pull_request.number }}" \
-            --repo "${{ github.repository }}" \
-            --squash \
-            --auto \
-            --delete-branch
+          set -e
+          PR_NUM="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+          echo "PR #$PR_NUM meets triple-gate; attempting merge."
+          # Try --auto first (works when CI still pending).
+          if gh pr merge "$PR_NUM" --repo "$REPO" --squash --auto --delete-branch 2>auto-merge.err; then
+            echo "Auto-merge enabled — will merge once CI greens."
+            exit 0
+          fi
+          # If --auto failed because the PR is already clean, fall through to a
+          # direct merge. GitHub returns "Pull request is in clean status" on 422.
+          if grep -q 'clean status' auto-merge.err; then
+            echo "PR is already CI-green; falling back to direct merge."
+            gh pr merge "$PR_NUM" --repo "$REPO" --squash --delete-branch
+            exit 0
+          fi
+          # Any other failure — surface the error.
+          echo "Auto-merge failed with unexpected error:"
+          cat auto-merge.err
+          exit 1
 
   drop-stale-review:
     name: Drop adversarial-reviewed label on new commits (stale-approval guard)

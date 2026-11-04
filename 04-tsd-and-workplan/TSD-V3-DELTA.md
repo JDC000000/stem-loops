@@ -594,17 +594,25 @@ Order (V3 unchanged from pinned, modulo branch α dropping the proxy):
 
 All routes return the pinned error shape `{error_code, message}` (TSD §3). Rate limiting per plan tier (§1.4). Entitlement guard (§1.3) applied before any work.
 
-### 6.1 Billing routes (`apps/web/src/app/api/billing/*`) — **UPDATED for credits + promo per Jon 2026-11-02T22:45**
-| Method/Path | Purpose | Input | Output / Errors |
-|---|---|---|---|
-| POST `/api/billing/checkout` | Create Checkout session for a Pro/Studio subscription | `{planCode: 'pro'\|'studio', interval?: 'month', promo_code?: string}` | 200 `{url}` ; 401 `UNAUTHENTICATED`; 400 `UNKNOWN_PLAN` ; 400 `INVALID_PROMO` ; 409 `ALREADY_SUBSCRIBED` |
-| POST `/api/billing/credits/checkout` | **NEW** — Create one-time Checkout for a credits pack | `{pack: 'credits_20'\|'credits_60'\|'credits_180', promo_code?: string}` | 200 `{url}` ; 401 ; 400 `UNKNOWN_PACK` ; 400 `INVALID_PROMO` |
-| GET `/api/billing/credits/balance` | **NEW** — User's current credit balance (reads `v_credit_balance`) | — | 200 `{credits_remaining: int, purchases: Purchase[], recent_consumption: Consumption[]}` |
-| POST `/api/billing/portal` | Open Customer Portal (recurring only) | `{returnUrl}` | 200 `{url}` ; 401 ; 404 `NO_CUSTOMER` |
-| POST `/api/billing/webhook` | Stripe webhook endpoint (verifies signature) — handles `checkout.session.completed` (recurring + one-time), `invoice.paid`, `customer.subscription.updated`, `charge.refunded` | raw body | 200 (idempotent); 400 `BAD_SIGNATURE` ; 500 `WEBHOOK_HANDLER_ERROR` (logs + Sentry) |
-| GET `/api/billing/subscriptions` | List current user's subs | — | 200 `{items: Subscription[]}` |
-| GET `/api/billing/invoices` | List invoices from provider | `?limit=20` | 200 `{items: Invoice[]}` |
-| POST `/api/billing/trial/start` | **NEW** — Grant the 3-song trial (one-per-fingerprint-ever, no card) | `{fingerprint: string}` | 200 `{granted: true, songs_available: 3}` ; 409 `TRIAL_ALREADY_USED` |
+### 6.1 Billing routes (`apps/web/src/app/api/billing/*`) — **RECONCILED to shipped Phase 1a code per audit 2026-11-03**
+
+**Reconciliation notes (what changed vs the 2026-11-02 draft):**
+- `POST /api/billing/checkout` was unified: one route accepts **either** `plan_code` (subscription) or `pack_code` (one-time credits), not both. This drops the separate `POST /api/billing/credits/checkout` route from the draft — the single-route shape keeps auth, rate-limit, and provider-abstraction in one place (TSD §1.1).
+- Trial grant/consume moved from `POST /api/billing/trial/start` to `POST /api/users/me/trial/*` (user-scoped). Shipped in PR #39 with per-user and per-fingerprint idempotency (§1.2a channel separation).
+- `GET /api/billing/subscriptions` and `GET /api/billing/invoices` are **deferred to Phase 1b** — not blocked by Phase 1a; the Customer Portal (`POST /api/billing/portal`) covers the user-facing listing path in the interim.
+
+| Method/Path | Purpose | Input | Output / Errors | Phase |
+|---|---|---|---|---|
+| POST `/api/billing/checkout` | Create Checkout session for a Pro/Studio subscription **or** a one-time credits pack (exactly one code required) | `{plan_code?: 'pro'\|'studio', pack_code?: 'credits_20'\|'credits_60'\|'credits_180', promo_code?: string}` | 200 `{checkout_url}` ; 401 `UNAUTHENTICATED` ; 400 `CHECKOUT_FAILED` (unknown code, both codes supplied, neither supplied) ; 400 `INVALID_PROMO` ; 409 `ALREADY_SUBSCRIBED` (plan path only) | 1a ✅ |
+| GET `/api/billing/credits/balance` | User's current credit balance (reads `v_credit_balance`) | — | 200 `{credits_remaining: int, purchases: Purchase[], recent_consumption: Consumption[]}` ; 401 | 1a ✅ |
+| POST `/api/billing/portal` | Open Customer Portal (recurring customers only) | `{returnUrl}` | 200 `{url}` ; 401 ; 404 `NO_CUSTOMER` | 1a ✅ |
+| POST `/api/billing/webhook` | Stripe webhook endpoint (verifies signature) — handles `checkout.session.completed` (recurring + one-time), `invoice.paid`, `customer.subscription.updated`, `charge.refunded` | raw body | 200 (idempotent) ; 400 `BAD_SIGNATURE` ; 500 `WEBHOOK_HANDLER_ERROR` (logs + Sentry) | 1a ✅ |
+| POST `/api/users/me/trial/grant` | Grant the 3-song trial (one-per-fingerprint-ever, one-per-user-ever, no card). See §1.2a channel separation — trial is link-ingest only. | `{fingerprint: string}` | 200 `{granted: true, songs_available: 3}` ; 409 `TRIAL_ALREADY_USED` | 1a ✅ |
+| POST `/api/users/me/trial/consume` | Record a trial song consumption (atomic in same tx as job INSERT per PR #39 round-2 fix) | `{job_id: string}` | 200 `{songs_remaining: int}` ; 409 `TRIAL_EXHAUSTED` | 1a ✅ |
+| GET `/api/billing/subscriptions` | List current user's subs | — | 200 `{items: Subscription[]}` ; 401 | 1b ⚪ |
+| GET `/api/billing/invoices` | List invoices from provider | `?limit=20` | 200 `{items: Invoice[]}` ; 401 | 1b ⚪ |
+
+**Request body convention:** snake_case (`plan_code`, `pack_code`, `promo_code`) across all billing routes. The 2026-11-02 draft table used mixed camelCase (`planCode`) and snake_case; shipped code is snake_case throughout.
 
 ### 6.2 Entitlement routes
 | Method/Path | Purpose | Input | Output |

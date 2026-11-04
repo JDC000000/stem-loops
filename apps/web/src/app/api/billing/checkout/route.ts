@@ -18,6 +18,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getUser } from '@/lib/auth/supabase';
 import { getBillingProvider, type PackCode, type PlanCode } from '@/lib/billing';
 import { db } from '@/lib/db';
+import { verifyHcaptchaToken } from '@/lib/hcaptcha';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -41,6 +42,7 @@ type Body = {
   pack_code?: unknown;
   plan_code?: unknown;
   promo_code?: unknown;
+  hcaptcha_token?: unknown;
 };
 
 function badRequest(code: string, message: string) {
@@ -119,6 +121,23 @@ export async function POST(req: NextRequest) {
     // CHECKOUT_FAILED reads correctly in error-copy; PLAN_NOT_FOUND is for
     // entitlements-side plan lookup failures.
     return badRequest('CHECKOUT_FAILED', `Unknown plan_code: ${planRaw}`);
+  }
+
+  // V3-C1: credit-pack purchases require a solved hCaptcha challenge.
+  // Subscription checkout (plan_code) is NOT gated — authenticated + rate
+  // limited already. Runs before the rate limiter so bot-challenge failures
+  // don't burn the user's checkout slots; the limiter still applies after.
+  if (packRaw) {
+    const token = typeof body.hcaptcha_token === 'string' ? body.hcaptcha_token : '';
+    const verdict = token
+      ? await verifyHcaptchaToken(token, req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || undefined)
+      : { success: false };
+    if (!verdict.success) {
+      return NextResponse.json(
+        { error: 'Bot check failed. Please try again.', code: 'BOT_CHALLENGE_FAILED' },
+        { status: 400 },
+      );
+    }
   }
 
   if (!(await underCheckoutRateLimit(user.user_id))) {

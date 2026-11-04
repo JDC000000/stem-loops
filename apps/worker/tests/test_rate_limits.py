@@ -388,8 +388,7 @@ def test_increment_bumps_within_current_period(conn):
     conn.commit()
 
     cur = conn.execute(
-        "SELECT jobs_used, period_start, period_end "
-        "FROM public.entitlements WHERE user_id = %s",
+        "SELECT jobs_used, period_start, period_end " "FROM public.entitlements WHERE user_id = %s",
         (user_id,),
     )
     row = cur.fetchone()

@@ -72,21 +72,32 @@ apps/worker/fly.toml                            @JDC000000
 docker-compose.yml                              @JDC000000
 docker-compose.dev.yml                          @JDC000000
 
-# Billing-adjacent files that EXIST today.
-apps/web/src/lib/stripe.ts                      @JDC000000
+# ──────────────────────────────────────────────────────────────────────────────
+# Billing / auth / emails / TSD — money + identity + transactional comms + spec.
+# Every line below must match a path that EXISTS on this branch; audit-era
+# forward-looking entries have been replaced by their real post-landing paths
+# (e.g. `apps/web/src/lib/stripe.ts` → `apps/web/src/lib/billing/providers/
+# stripe.ts`, which `apps/web/src/lib/billing/**` already covers; and
+# `apps/web/src/lib/supabase-server.ts`, which never existed, is now the real
+# `apps/web/src/lib/auth/supabase.ts`).
+# ──────────────────────────────────────────────────────────────────────────────
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Forward-looking — these paths DON'T exist yet, but they're the ones Phase 1a
-# will land. Listing them now so a PR introducing them starts gated from the
-# first commit, not after someone notices.
-# ──────────────────────────────────────────────────────────────────────────────
+# Server-side Supabase auth helper — session + user lookup for every API route.
+apps/web/src/lib/auth/supabase.ts               @JDC000000
 
 # Billing: Stripe / Paddle providers, webhook, checkout, portal, entitlements.
-apps/web/src/lib/supabase-server.ts             @JDC000000
 apps/web/src/lib/billing/**                     @JDC000000
 apps/worker/src/worker/billing/**               @JDC000000
 apps/web/src/app/api/billing/**                 @JDC000000
 apps/web/src/app/api/entitlements/**            @JDC000000
+
+# Transactional emails — welcome, receipt, subscription-changed. A bad
+# template can leak PII or send from the wrong identity.
+apps/web/src/lib/emails/**                      @JDC000000
+
+# TSD + workplan — the spec every session is briefed against. Prompt-injection
+# surface for the same reason AGENTS.md / CLAUDE.md are.
+04-tsd-and-workplan/**                          @JDC000000
 
 # Legal copy — ToS, privacy. Current structure uses the (landing) route group.
 apps/web/src/app/(landing)/terms/**             @JDC000000

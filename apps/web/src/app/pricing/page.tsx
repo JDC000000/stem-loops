@@ -19,6 +19,13 @@ type Plan = {
   export_wav24: boolean;
 };
 
+type CreditPack = {
+  pack_code: 'credits_20' | 'credits_60' | 'credits_180';
+  credits: number;
+  price_cad_cents: number;
+  display_name: string;
+};
+
 // Fallback if public.plans is unreachable, so the page still renders (TSD §1.2).
 const FALLBACK: Plan[] = [
   { code: 'free', display_name: 'Free', price_cad_cents: 0, monthly_job_quota: 90, services: ['youtube', 'spotify', 'soundcloud'], export_stems: false, export_wav24: false },
@@ -26,12 +33,15 @@ const FALLBACK: Plan[] = [
   { code: 'studio', display_name: 'Studio', price_cad_cents: 1200, monthly_job_quota: 100000, services: [], export_stems: true, export_wav24: true },
 ];
 
-// One-time credit SKUs, hardcoded per TSD §1.2 LOCKED (not modeled in
-// public.plans). Prices in CAD cents; display formatted below.
-const CREDIT_PACKS = [
-  { pack_code: 'credits_20',  credits: 20,  price_cad_cents: 500  },
-  { pack_code: 'credits_60',  credits: 60,  price_cad_cents: 1200 },
-  { pack_code: 'credits_180', credits: 180, price_cad_cents: 3000 },
+// Fallback for the one-time credit SKUs if public.credit_packs is unreachable.
+// Source of truth lives in that table (migration 020); this mirror only runs
+// in degraded mode so the page still renders during a Postgres outage.
+// Audit MINOR (session-4): previously the only source — migrated to DB-driven
+// to parallel the `plans` catalog and avoid a code deploy for price changes.
+const CREDIT_PACKS_FALLBACK: CreditPack[] = [
+  { pack_code: 'credits_20',  credits: 20,  price_cad_cents: 500,  display_name: '20 credits'  },
+  { pack_code: 'credits_60',  credits: 60,  price_cad_cents: 1200, display_name: '60 credits'  },
+  { pack_code: 'credits_180', credits: 180, price_cad_cents: 3000, display_name: '180 credits' },
 ];
 
 function priceCad(cents: number): string {
@@ -59,6 +69,29 @@ async function loadPlans(): Promise<{ plans: Plan[]; degraded: boolean }> {
   return { plans: FALLBACK, degraded: true };
 }
 
+async function loadCreditPacks(): Promise<{ packs: CreditPack[]; degraded: boolean }> {
+  try {
+    const r = await db.query(
+      `SELECT pack_code, credits, price_cad_cents, display_name
+         FROM public.credit_packs WHERE active = true`,
+    );
+    const rows = r.rows as CreditPack[];
+    // Stable display order — smallest pack first, same as the hardcoded list
+    // used to render. A row missing from the DB falls through (no entry); a
+    // row present with an unknown pack_code is skipped (defensive: only the
+    // three TSD-locked SKUs render as buy buttons, per /api/billing/checkout
+    // which validates pack_code against the same enum).
+    const order: CreditPack['pack_code'][] = ['credits_20', 'credits_60', 'credits_180'];
+    const packs = order
+      .map((pc) => rows.find((p) => p.pack_code === pc))
+      .filter((p): p is CreditPack => !!p);
+    if (packs.length) return { packs, degraded: false };
+  } catch (err) {
+    console.error('[pricing] loadCreditPacks query failed; serving FALLBACK:', err);
+  }
+  return { packs: CREDIT_PACKS_FALLBACK, degraded: true };
+}
+
 // Plans are priced in CAD cents per TSD §1.2. Append " CAD" so the UI never
 // reads as implied USD — audit MAJOR finding (sandbox is BC CAD catalog).
 // $0 renders without a currency tag (free is currency-neutral in copy).
@@ -83,7 +116,14 @@ const card = {
 };
 
 export default async function PricingPage() {
-  const [{ plans, degraded }, user] = await Promise.all([loadPlans(), getUser().catch(() => null)]);
+  const [{ plans, degraded: plansDegraded }, { packs, degraded: packsDegraded }, user] = await Promise.all([
+    loadPlans(),
+    loadCreditPacks(),
+    getUser().catch(() => null),
+  ]);
+  // Either catalog being on FALLBACK is enough to show the banner — the two
+  // live in the same DB and typically degrade together.
+  const degraded = plansDegraded || packsDegraded;
 
   // V3-C10 banner: show the "first 3 songs free" prompt ONLY when the
   // viewer could still start a trial — i.e. they have no trial_grants
@@ -167,7 +207,7 @@ export default async function PricingPage() {
       <h2 style={{ fontSize: 22, marginTop: 32, color: 'var(--text-primary)' }}>Credits</h2>
       <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>One-time packs. Credits never expire.</p>
       <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
-        {CREDIT_PACKS.map((c) => (
+        {packs.map((c) => (
           <section key={c.pack_code} style={card} aria-label={`${c.credits} credits for ${priceCad(c.price_cad_cents)}`}>
             <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--text-primary)' }}>{c.credits} credits</div>
             <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>

@@ -1,25 +1,36 @@
 """Regression tests for the migration runner's statement splitter.
 
 Context (L17, session-5 postmortem): the previous ``migrate.run`` passed a
-file's entire contents to a single ``conn.execute(f.read())``. Multi-statement
-files that mixed DO blocks with trailing DDL silently dropped the trailing
-statements in CI — specifically the ``CREATE OR REPLACE VIEW
-public.v_credit_balance`` at the bottom of migration 023, which extends the
-view to include ``+ SUM(credit_adjustments.credits_delta)``.
+file's entire contents to a single ``conn.execute(f.read())``. With files
+that interleave a ``DO $$...$$;`` block and trailing DDL — notably migration
+023 — later statements were observed to be silently dropped (the
+``CREATE OR REPLACE VIEW public.v_credit_balance`` at the bottom of 023 is
+the specific statement that gets dropped in the ``conn.execute(up)`` path
+PR #62's ``test_down_migration_round_trip`` uses).
 
-These tests pin that the splitter yields each top-level statement, including
-the one past a ``DO $$...$$;`` block, and that running ``migrate.run`` against
-a real Postgres lands the 023 view extension on-disk.
+These tests pin:
+  1. The splitter yields each top-level statement, including the one past a
+     ``DO $$...$$;`` block.
+  2. Applying migration 023's statements one-by-one via the splitter DOES
+     land the CREATE OR REPLACE VIEW in the live catalog.
+
+NOTE on test ordering: this test applies 023 DIRECTLY in isolation rather
+than via ``migrate.run`` — ``migrate.run`` would skip 023 because it is
+already recorded in ``_migrations``, and other tests' fixtures
+(``test_credit_balance_view_clamp.py``) re-apply migration 022 between
+``migrate.run`` and this test, reverting the view. Applying 023 directly
+in the test makes it ordering-independent.
 """
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import psycopg
 import pytest
 
-from worker.migrate import run, split_sql_statements
+from worker.migrate import split_sql_statements
 
 DB = os.environ.get("DATABASE_URL")
 pytestmark_db = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
@@ -160,34 +171,61 @@ AS
     assert "credit_adjustments" in stmts[2]
 
 
-# -------- Integration test: run migrate against the CI Postgres -------------
+# -------- Integration test: apply 023 via the splitter, verify viewdef ------
 
 
 @pytestmark_db
-def test_migrate_lands_migration_023_view_extension() -> None:
-    """After migrate.run(), pg_get_viewdef('public.v_credit_balance') must
-    contain BOTH the GREATEST clamp (migration 022) AND the credit_adjustments
-    term (migration 023). The old migrate.py silently dropped the 023 view
-    rewrite in CI; this test is the canary."""
+def test_splitter_lands_migration_023_view_rewrite() -> None:
+    """Direct integration canary: apply migration 023 one statement at a time
+    via split_sql_statements, then verify the CREATE OR REPLACE VIEW landed
+    in the live catalog.
+
+    023's view: ``purchases + adjustments - consumption`` (no clamp — the
+    clamp is tracked as M6, separate from this migration). After 023 applies
+    cleanly, pg_get_viewdef MUST contain ``credit_adjustments`` and MUST NOT
+    contain ``GREATEST`` (the latter would mean the view is stuck at
+    migration 022's state, which is what we're guarding against).
+
+    All of 023's DDL is idempotent (``CREATE TABLE IF NOT EXISTS``,
+    ``DROP POLICY IF EXISTS`` + ``CREATE POLICY``, ``CREATE OR REPLACE
+    VIEW``, etc.), so this test is safe to re-run on a DB that has already
+    had 023 applied — which is the normal CI state.
+
+    Why we apply 023 directly rather than calling ``migrate.run()``:
+    ``migrate.run()`` would skip 023 (already in ``_migrations``), and the
+    ``test_credit_balance_view_clamp.py`` fixture that runs alphabetically
+    before this test re-applies migration 022, reverting the view. Applying
+    023 directly in this test makes it ordering-independent."""
     assert DB and any(
         h in DB for h in ("127.0.0.1", "localhost")
-    ), "safety: this test runs only against a local throwaway DB"
+    ), "safety: this test applies DDL; local throwaway DB only"
 
-    # Idempotent — if already applied in this CI container, this is a no-op.
-    run()
+    migration_path = (
+        Path(__file__).resolve().parents[1] / "migrations" / "023_v3_credit_adjustments.sql"
+    )
+    sql = migration_path.read_text()
 
+    # Apply 023 one statement at a time via the splitter — the exact
+    # execution path migrate.run() uses in production.
     with psycopg.connect(DB) as conn:
+        for stmt in split_sql_statements(sql):
+            conn.execute(stmt)
+        conn.commit()
+
         row = conn.execute(
             "SELECT pg_get_viewdef('public.v_credit_balance'::regclass, true)"
         ).fetchone()
-        assert row is not None, "v_credit_balance view missing after migrate"
+        assert row is not None, "v_credit_balance view missing after apply"
         viewdef = row[0]
 
     assert "credit_adjustments" in viewdef, (
-        "migration 023 view rewrite did NOT land — the + SUM(credit_adjustments) "
-        "term is missing from v_credit_balance. Statement splitter regressed."
+        "migration 023's CREATE OR REPLACE VIEW did NOT land — the "
+        "credit_adjustments term is missing from v_credit_balance. "
+        f"Statement splitter regressed. Got:\n{viewdef}"
     )
-    assert "GREATEST" in viewdef, (
-        "migration 022 clamp did NOT land — GREATEST(0, ...) missing from "
-        "v_credit_balance. Statement splitter regressed."
+    assert "GREATEST" not in viewdef, (
+        "v_credit_balance still has GREATEST clamp after applying 023 — "
+        "023 is supposed to REPLACE the view and remove the clamp (M6 is a "
+        "separate migration). If GREATEST is still here, 023's CREATE OR "
+        f"REPLACE VIEW did not take effect. Got:\n{viewdef}"
     )

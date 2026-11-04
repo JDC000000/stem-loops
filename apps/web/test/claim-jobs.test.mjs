@@ -9,9 +9,18 @@
 //   2. 400 when client_fingerprint is missing or too short.
 //   3. Happy path — returns claimed_count == rowCount of the final UPDATE,
 //      and records a usage_events row BEFORE the UPDATE (so even a 0-match
-//      claim counts toward the rate limit).
-//   4. Zero ip-hash cohort — short-circuits to 0 without an UPDATE.
+//      claim counts toward the rate limit). truncated=false.
+//   4. Zero ip-hash cohort — short-circuits to 0 without an UPDATE,
+//      truncated=false.
 //   5. Rate limited — returns 429 when prior usage_events count >= 1.
+//   6. Truncated path — when the UPDATE hits MAX_CLAIMED_JOBS and the
+//      follow-up COUNT finds remaining eligible rows, the response has
+//      truncated=true and a usage_events row with kind='claim_jobs_truncated'
+//      is written. We override MAX_CLAIMED_JOBS to 3 in-fixture via an
+//      eval-time source rewrite so the test does not have to seed 5001 rows.
+//   7. Ceiling-hit without remainder — rowCount == MAX but the COUNT
+//      query returns 0, so truncated=false and NO claim_jobs_truncated
+//      row is written (exact-fit boundary).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -66,8 +75,16 @@ function nextStub() {
   `);
 }
 
-async function loadRoute({ user, scriptedTxResults = [] }) {
-  let js = toJs(readFileSync(SRC, 'utf8'));
+async function loadRoute({ user, scriptedTxResults = [], maxClaimedJobs }) {
+  let src = readFileSync(SRC, 'utf8');
+  if (typeof maxClaimedJobs === 'number') {
+    // Rewrite the compile-time MAX_CLAIMED_JOBS constant so a truncation
+    // test can hit the ceiling without seeding thousands of rows.
+    const re = /const\s+MAX_CLAIMED_JOBS\s*=\s*\d+\s*;/;
+    assert.ok(re.test(src), 'MAX_CLAIMED_JOBS constant must be present in route.ts');
+    src = src.replace(re, `const MAX_CLAIMED_JOBS = ${maxClaimedJobs};`);
+  }
+  let js = toJs(src);
   js = js
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub(scriptedTxResults)}'`)
@@ -127,6 +144,7 @@ test('POST /api/users/me/claim-jobs — happy path claims N jobs', async () => {
   const res = await mod.POST(makeReq({ client_fingerprint: 'fp_abcd1234abcd1234' }));
   assert.equal(res.status, 200);
   assert.equal(res.body.claimed_count, 3);
+  assert.equal(res.body.truncated, false, 'happy path must set truncated=false');
   const calls = globalThis.__claimJobsCalls;
   // usage_events INSERT must come BEFORE the UPDATE (gate on the rate-
   // limit count even on a zero-match claim).
@@ -137,6 +155,11 @@ test('POST /api/users/me/claim-jobs — happy path claims N jobs', async () => {
   assert.ok(insertIdx < updateIdx, 'INSERT must precede UPDATE');
   // The UPDATE filters by user_id IS NULL (idempotency guard).
   assert.match(calls[updateIdx].text, /user_id IS NULL/);
+  // Non-ceiling rowCount must NOT trigger the remaining-count probe.
+  const truncInsert = calls.find((c) =>
+    /INSERT INTO public\.usage_events/i.test(c.text) && /claim_jobs_truncated/i.test(String(c.params?.[1] ?? '')),
+  );
+  assert.equal(truncInsert, undefined, 'no truncation event on happy path');
 });
 
 test('POST /api/users/me/claim-jobs — zero ip-hash cohort returns claimed_count=0 without UPDATE', async () => {
@@ -156,6 +179,7 @@ test('POST /api/users/me/claim-jobs — zero ip-hash cohort returns claimed_coun
   const res = await mod.POST(makeReq({ client_fingerprint: 'fp_abcd1234abcd1234' }));
   assert.equal(res.status, 200);
   assert.equal(res.body.claimed_count, 0);
+  assert.equal(res.body.truncated, false, 'empty cohort must set truncated=false');
   const calls = globalThis.__claimJobsCalls;
   const updateCall = calls.find((c) => /^\s*UPDATE public\.jobs/i.test(c.text));
   assert.equal(updateCall, undefined, 'UPDATE must not fire for empty cohort');
@@ -179,4 +203,81 @@ test('POST /api/users/me/claim-jobs — second call inside window returns 429', 
   const insertCall = calls.find((c) => /INSERT INTO public\.usage_events/i.test(c.text));
   assert.equal(updateCall, undefined, 'UPDATE must not fire when rate-limited');
   assert.equal(insertCall, undefined, 'usage_events INSERT must not fire when rate-limited');
+});
+
+test('POST /api/users/me/claim-jobs — truncation: UPDATE hits MAX and remaining>0 sets truncated=true + logs claim_jobs_truncated', async () => {
+  // Rewrite MAX_CLAIMED_JOBS to 3 for this test so we can hit the ceiling
+  // with a scripted 3-row UPDATE (equivalent to seeding 5001+ rows in a
+  // real DB test against the default 5000 cap).
+  const mod = await loadRoute({
+    user: { user_id: '55555555-5555-5555-5555-555555555555', email: 't@t.co' },
+    maxClaimedJobs: 3,
+    scriptedTxResults: [
+      // 1. advisory lock
+      { rows: [{}] },
+      // 2. rate-limit count — 0
+      { rows: [{ n: '0' }] },
+      // 3. ip-hash cohort — one hash
+      { rows: [{ client_ip_hash: 'h1' }] },
+      // 4. usage_events claim_jobs insert
+      { rows: [], rowCount: 1 },
+      // 5. UPDATE jobs ... RETURNING id — three rows (== MAX_CLAIMED_JOBS)
+      { rows: [{ id: 'j1' }, { id: 'j2' }, { id: 'j3' }], rowCount: 3 },
+      // 6. SELECT COUNT remaining — 2 rows still eligible
+      { rows: [{ n: '2' }] },
+      // 7. usage_events claim_jobs_truncated insert
+      { rows: [], rowCount: 1 },
+    ],
+  });
+  const res = await mod.POST(makeReq({ client_fingerprint: 'fp_abcd1234abcd1234' }));
+  assert.equal(res.status, 200);
+  assert.equal(res.body.claimed_count, 3);
+  assert.equal(res.body.truncated, true, 'truncation path must set truncated=true');
+  const calls = globalThis.__claimJobsCalls;
+  // The truncation-COUNT probe must be the first query after the UPDATE.
+  const updateIdx = calls.findIndex((c) => /^\s*UPDATE public\.jobs/i.test(c.text));
+  const countIdx = calls.findIndex(
+    (c, i) => i > updateIdx && /SELECT COUNT\(\*\)/i.test(c.text) && /user_id IS NULL/.test(c.text),
+  );
+  assert.ok(countIdx !== -1, 'remaining-count probe must run when UPDATE hits MAX');
+  // A second usage_events INSERT with kind='claim_jobs_truncated' must be
+  // written, and its detail JSON must carry the TOTAL matched count
+  // (claimed + remaining).
+  const truncInsert = calls.find(
+    (c) =>
+      /INSERT INTO public\.usage_events/i.test(c.text) &&
+      /claim_jobs_truncated/.test(c.text),
+  );
+  assert.ok(truncInsert, 'claim_jobs_truncated row must be inserted');
+  const detail = JSON.parse(truncInsert.params[1]);
+  assert.equal(detail.count, 5, 'detail.count should be claimed + remaining (3+2)');
+});
+
+test('POST /api/users/me/claim-jobs — ceiling without remainder: truncated=false, no claim_jobs_truncated row', async () => {
+  // rowCount == MAX but no further eligible rows: boundary case where
+  // the UPDATE happened to drain the cohort exactly.
+  const mod = await loadRoute({
+    user: { user_id: '66666666-6666-6666-6666-666666666666', email: 'b@b.co' },
+    maxClaimedJobs: 3,
+    scriptedTxResults: [
+      { rows: [{}] },
+      { rows: [{ n: '0' }] },
+      { rows: [{ client_ip_hash: 'h1' }] },
+      { rows: [], rowCount: 1 },
+      // UPDATE — exactly 3 rows
+      { rows: [{ id: 'j1' }, { id: 'j2' }, { id: 'j3' }], rowCount: 3 },
+      // COUNT remaining — 0
+      { rows: [{ n: '0' }] },
+    ],
+  });
+  const res = await mod.POST(makeReq({ client_fingerprint: 'fp_abcd1234abcd1234' }));
+  assert.equal(res.status, 200);
+  assert.equal(res.body.claimed_count, 3);
+  assert.equal(res.body.truncated, false, 'exact-fit must set truncated=false');
+  const calls = globalThis.__claimJobsCalls;
+  const truncInsert = calls.find(
+    (c) =>
+      /INSERT INTO public\.usage_events/i.test(c.text) && /claim_jobs_truncated/.test(c.text),
+  );
+  assert.equal(truncInsert, undefined, 'no truncation row on exact-fit ceiling');
 });

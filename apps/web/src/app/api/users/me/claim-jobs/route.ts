@@ -13,8 +13,14 @@
 //   key used by the anonymous rate-limit path. The caller passes it in on
 //   the first authenticated request after sign-up.
 //
-// Response: { claimed_count: N } on success (200), or an error envelope
-//   { error, code } where `code` is an error_copy key.
+// Response: { claimed_count: N, truncated: boolean } on success (200), or
+//   an error envelope { error, code } where `code` is an error_copy key.
+//   `truncated` is true when the server attributed exactly MAX_CLAIMED_JOBS
+//   rows and more eligible anonymous rows remain; the caller can wait for
+//   the 1h rate-limit window to clear and call again to pick up the rest.
+//   Each `truncated=true` outcome also logs a usage_events row with
+//   kind='claim_jobs_truncated' and detail={count: <actual_matched>} so
+//   we can observe how often overflow users hit the ceiling.
 //
 // Auth: required via @/lib/auth/supabase getUser(). Unauth -> 401.
 //
@@ -23,6 +29,9 @@
 //   is wide so that an attacker cannot spin claims to fuzz fingerprints.
 //   Counted + enforced in usage_events (kind='claim_jobs') inside a tx
 //   guarded by a per-user advisory lock, same pattern as billing/checkout.
+//   An overflow user whose first call was truncated must wait out the
+//   full 1h window before the next call — the limit is NOT relaxed for
+//   truncated responses, by design.
 //
 // Scope control (TSD §2.2 "last N user hashes"): we do not blindly
 //   attribute every job that shares a fingerprint. A fingerprint collision
@@ -65,8 +74,11 @@ const RATE_LIMIT_LOCK_TAG = 'claim_jobs';
 // fingerprint across a huge IP space.
 const MAX_IP_HASHES_PER_CLAIM = 50;
 // Hard cap on jobs attributed in one call. Keeps the UPDATE bounded even
-// under pathological inputs.
-const MAX_CLAIMED_JOBS = 1000;
+// under pathological inputs. Sized at 5000 so a first-time sign-up covers
+// the full anon history for all but the very heaviest pre-auth users;
+// anyone past this ceiling gets truncated=true in the response and can
+// retry after the 1h rate-limit window to pick up the remainder.
+const MAX_CLAIMED_JOBS = 5000;
 // Fingerprint length guard: the browser ships an opaque short string
 // (currently a 32-char hex). Reject anything that could not plausibly be
 // our token to keep this out of the index as a random text probe.
@@ -158,7 +170,7 @@ export async function POST(req: NextRequest) {
       );
 
       if (ipHashes.length === 0) {
-        return { rateLimited: false as const, claimedCount: 0 };
+        return { rateLimited: false as const, claimedCount: 0, truncated: false };
       }
 
       // Attribute the anonymous jobs. Filter on user_id IS NULL so a
@@ -179,7 +191,37 @@ export async function POST(req: NextRequest) {
           RETURNING id`,
         [user.user_id, fingerprintRaw, ipHashes, MAX_CLAIMED_JOBS],
       );
-      return { rateLimited: false as const, claimedCount: updateRes.rowCount ?? 0 };
+      const claimedCount = updateRes.rowCount ?? 0;
+
+      // Truncation probe: if the UPDATE hit the ceiling, count the
+      // remaining eligible anonymous rows (still user_id IS NULL after
+      // the UPDATE) that match the same fingerprint + cohort. Anything
+      // > 0 means we left rows on the floor; record a usage_events row
+      // so we can see how often users hit the cap in practice.
+      let truncated = false;
+      if (claimedCount === MAX_CLAIMED_JOBS) {
+        const remainingRes = await client.query<{ n: string }>(
+          `SELECT COUNT(*)::text AS n FROM public.jobs
+            WHERE user_id IS NULL
+              AND client_fingerprint = $1
+              AND client_ip_hash = ANY($2::text[])`,
+          [fingerprintRaw, ipHashes],
+        );
+        const remaining = Number.parseInt(remainingRes.rows[0]?.n ?? '0', 10);
+        if (remaining > 0) {
+          truncated = true;
+          await client.query(
+            `INSERT INTO public.usage_events (user_id, kind, detail)
+             VALUES ($1::uuid, 'claim_jobs_truncated', $2::jsonb)`,
+            [
+              user.user_id,
+              JSON.stringify({ count: claimedCount + remaining }),
+            ],
+          );
+        }
+      }
+
+      return { rateLimited: false as const, claimedCount, truncated };
     });
 
     if (result.rateLimited) {
@@ -189,7 +231,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ claimed_count: result.claimedCount });
+    return NextResponse.json({
+      claimed_count: result.claimedCount,
+      truncated: result.truncated,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown error';
     console.error('[users/me/claim-jobs] failed:', message);

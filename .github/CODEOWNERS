@@ -19,110 +19,47 @@
 # (patterns inlined there because GitHub Actions has no CODEOWNERS parser).
 #
 # Pattern rules: last-match-wins per file.
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Money / prod / legal / auth / CI / supply-chain surfaces.
-# ──────────────────────────────────────────────────────────────────────────────
-
-# Database migrations — any change here runs against prod Supabase on deploy.
-apps/worker/migrations/**                       @JDC000000
-
-# V3-Y1 training pipeline — data provenance, licenses, and model recipe.
-# Everything here touches cease-and-desist defense + the attribution
-# contract for the open-source weights release.
-/apps/training/                                 @JDC000000
-
-# Scripts — CI invokes several; broadening beyond check_rls.py because a new
-# script added here can silently become part of the build or lint path.
-scripts/**                                      @JDC000000
-# Explicit entry for the Fleet Playbook Move 4 gate — a behavioural script
-# that governs PR-body validation, redundant with `scripts/**` above but kept
-# so the ownership is obvious at a glance when auditing CI-side policy.
-scripts/check_tsd_refs.py                       @JDC000000
-# Explicit entry for the Fleet Playbook Move 2 hook — PostToolUse tracer that
-# POSTs digest-only events to Langfuse. Redundant with `scripts/**` above but
-# called out because a misconfigured trace path could exfil tool metadata; any
-# change here deserves explicit review beyond the catch-all.
-scripts/langfuse-trace.sh                       @JDC000000
-
-# CI and workflow files — auto-merge rules, branch protection surfaces.
-.github/workflows/**                            @JDC000000
-.github/CODEOWNERS                              @JDC000000
-
-# Supply-chain: lockfiles, manifests, registry config. A malicious bump
-# or a transitive-dep swap would otherwise auto-merge silently.
-pnpm-lock.yaml                                  @JDC000000
-pnpm-workspace.yaml                             @JDC000000
-package.json                                    @JDC000000
-apps/web/package.json                           @JDC000000
-packages/types/package.json                     @JDC000000
-apps/worker/requirements.txt                    @JDC000000
-apps/worker/constraints-prod.txt                @JDC000000
-apps/worker/pyproject.toml                      @JDC000000
-.npmrc                                          @JDC000000
-# Env templates — define the SHAPE of secrets; a bad template can nudge
-# a reader to leak a real one, so lock-template changes get Jon's eyes.
-.env.example                                    @JDC000000
-.env.local.example                              @JDC000000
-
-# Prompt-injection surfaces — repo docs read by every agent session.
-AGENTS.md                                       @JDC000000
-CLAUDE.md                                       @JDC000000
-
-# Subagent behavioural definitions — the dispatch roles read at `/agents`
-# load-time. A change here is a privilege / scope change; same prompt-
-# injection class as AGENTS.md. See docs/agent-registry.md for identity.
-.claude/agents/**                               @JDC000000
-
-# Next.js security-relevant config.
-apps/web/next.config.js                         @JDC000000
-apps/web/next.config.mjs                        @JDC000000
-
-# Build invocation surface — CI calls `make` targets.
-Makefile                                        @JDC000000
-
-# Fetcher egress chain — SSRF surface, external API contracts.
-apps/worker/src/worker/downloader/**            @JDC000000
-
-# Deploy configuration — explicit paths (bare `Dockerfile` would match
-# vendored copies under spikes/, cobalt/, yt-session/ that we don't own).
-apps/worker/Dockerfile                          @JDC000000
-apps/worker/fly.toml                            @JDC000000
-docker-compose.yml                              @JDC000000
-docker-compose.dev.yml                          @JDC000000
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Billing / auth / emails / TSD — money + identity + transactional comms + spec.
-# Every line below must match a path that EXISTS on this branch; audit-era
-# forward-looking entries have been replaced by their real post-landing paths
-# (e.g. `apps/web/src/lib/stripe.ts` → `apps/web/src/lib/billing/providers/
-# stripe.ts`, which `apps/web/src/lib/billing/**` already covers; and
-# `apps/web/src/lib/supabase-server.ts`, which never existed, is now the real
-# `apps/web/src/lib/auth/supabase.ts`).
+#
+# ─── 2026-11-05 T1+T2 trim ───────────────────────────────────────────────────
+# Reduced from ~40 patterns to 6. Previous breadth was imported from a
+# multi-tenant SaaS context (MyZone brief) and inappropriate for a solo
+# lifestyle-business repo. Subagent writes to removed surfaces are now
+# guarded by `.claude/settings.json` deny rules instead.
+# See claude/merge-autonomy-recommendations.md §3 and
+# claude/session-7-handover.md §4 for the rationale.
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Server-side Supabase auth helper — session + user lookup for every API route.
-apps/web/src/lib/auth/supabase.ts               @JDC000000
-
-# Billing: Stripe / Paddle providers, webhook, checkout, portal, entitlements.
+# ──────────────────────────────────────────────────────────────────────────────
+# Stripe / billing lib paths — money surface, requires Jon on every edit.
+# ──────────────────────────────────────────────────────────────────────────────
 apps/web/src/lib/billing/**                     @JDC000000
 apps/worker/src/worker/billing/**               @JDC000000
 apps/web/src/app/api/billing/**                 @JDC000000
 apps/web/src/app/api/entitlements/**            @JDC000000
 
-# Transactional emails — welcome, receipt, subscription-changed. A bad
-# template can leak PII or send from the wrong identity.
-apps/web/src/lib/emails/**                      @JDC000000
+# ──────────────────────────────────────────────────────────────────────────────
+# Commercial (Stripe-touching) database migrations only.
+# Non-commercial migrations are now agent-mergeable under the standard
+# triple-gate; a commercial migration is the one that lands against prod
+# billing tables.
+# ──────────────────────────────────────────────────────────────────────────────
+apps/worker/migrations/*_v3_commercial*.sql     @JDC000000
 
-# TSD + workplan — the spec every session is briefed against. Prompt-injection
-# surface for the same reason AGENTS.md / CLAUDE.md are.
-04-tsd-and-workplan/**                          @JDC000000
+# ──────────────────────────────────────────────────────────────────────────────
+# CI / workflow surfaces — infrastructure of merge-gating itself.
+# Bootstrap self-protect: if auto-merge.yml or sibling workflows could be
+# edited without CODEOWNER review, the entire gating system is bypassable.
+# CODEOWNERS itself is listed because `.github/workflows/**` does not match
+# `.github/CODEOWNERS`; without this line a PR could narrow CODEOWNERS to
+# nothing and then merge anything.
+# ──────────────────────────────────────────────────────────────────────────────
+.github/workflows/**                            @JDC000000
+.github/CODEOWNERS                              @JDC000000
 
-# Legal copy — ToS, privacy. Current structure uses the (landing) route group.
-apps/web/src/app/(landing)/terms/**             @JDC000000
-apps/web/src/app/(landing)/privacy/**           @JDC000000
-docs/legal/**                                   @JDC000000
-
-# Vercel project config (lands when stem-loops-staging deploys).
-apps/web/vercel.json                            @JDC000000
-vercel.json                                     @JDC000000
+# ──────────────────────────────────────────────────────────────────────────────
+# Prompt-injection surface — the single doc read by every agent session.
+# CLAUDE.md is kept out of CODEOWNERS post-trim because it is a thin pointer
+# to AGENTS.md per repo convention; a drift there is caught by the main
+# session reading AGENTS.md at start.
+# ──────────────────────────────────────────────────────────────────────────────
+AGENTS.md                                       @JDC000000

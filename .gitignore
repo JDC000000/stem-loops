@@ -31,12 +31,15 @@ dist/
 # settings. Each dev's workstation generates its own.
 # Note the `.claude/*` form (not `.claude/`): git cannot re-include a file
 # below an excluded directory, so we exclude only the CONTENTS of .claude/
+# and re-include the tracked files below. settings.json re-included
+# 2026-11-05 per merge-autonomy T1 (session 7).
 # and then negate the subpaths we DO want committed:
 #   - .claude/agents/     behavioural role definitions (see docs/agent-registry.md)
 #   - .claude/hooks.json  PostToolUse hook wiring (see docs/ops/langfuse-tracing.md)
 .claude/*
 !.claude/agents/
 !.claude/hooks.json
+!.claude/settings.json
 
 # Audio files (fixtures/ are committed; loose audio is not)
 *.wav

@@ -1,8 +1,13 @@
-# Auto-enable auto-merge on PRs that are triple-gated:
-#   * rollback-safe        — reversible by git revert
-#   * adversarial-reviewed — 3-lens review passed
-#   * NOT needs-jon-approval — Jon still eyes money/prod-touching code
-# When all three hold, fires `gh pr merge --auto`; GitHub's required status
+# Auto-enable auto-merge on PRs that are gated. Two paths:
+#   STANDARD (R-3 review path):
+#     * rollback-safe        — reversible by git revert
+#     * adversarial-reviewed — 3-lens review passed
+#     * NOT needs-jon-approval — Jon still eyes money/prod-touching code
+#   FAST PATH (T2 auto-merge, 2026-11-05):
+#     * fast-path            — auto-applied by .github/workflows/auto-label-fast-path.yml
+#                              when the entire diff is docs/tests/generated-types
+#     * NOT needs-jon-approval — hard stop regardless
+# When conditions hold, fires `gh pr merge --auto`; GitHub's required status
 # checks still gate the actual merge.
 #
 # Fallback behavior: `gh pr merge --auto` returns 422 "Pull request is in
@@ -39,11 +44,20 @@ jobs:
     runs-on: ubuntu-latest
     # synchronize is excluded: new commits invalidate the review verdict, so the
     # drop-stale-review job below handles that event instead.
+    # Two merge paths:
+    #   STANDARD: rollback-safe + adversarial-reviewed
+    #   FAST PATH: fast-path (auto-applied by auto-label-fast-path.yml)
+    # Both require: NOT needs-jon-approval.
     if: >
       github.event.action != 'synchronize' &&
-      contains(github.event.pull_request.labels.*.name, 'rollback-safe') &&
-      contains(github.event.pull_request.labels.*.name, 'adversarial-reviewed') &&
-      !contains(github.event.pull_request.labels.*.name, 'needs-jon-approval')
+      !contains(github.event.pull_request.labels.*.name, 'needs-jon-approval') &&
+      (
+        (
+          contains(github.event.pull_request.labels.*.name, 'rollback-safe') &&
+          contains(github.event.pull_request.labels.*.name, 'adversarial-reviewed')
+        ) ||
+        contains(github.event.pull_request.labels.*.name, 'fast-path')
+      )
     steps:
       - name: Enable auto-merge (squash, delete branch) — REST fallback for fine-grained PATs
         env:
@@ -111,14 +125,20 @@ jobs:
           exit 1
 
   drop-stale-review:
-    name: Drop adversarial-reviewed label on new commits (stale-approval guard)
+    name: Drop adversarial-reviewed / fast-path label on new commits (stale-approval guard)
     runs-on: ubuntu-latest
     # Any push to the PR head (including rebases and back-merges) invalidates the
-    # review. There is no reliable way to prove a push is content-neutral, so
-    # re-review on every synchronize is the safe default.
+    # review AND the fast-path classification (a new file outside the allowlist
+    # could have landed). There is no reliable way to prove a push is content-
+    # neutral, so re-review / re-classify on every synchronize is the safe default.
+    # auto-label-fast-path.yml also fires on synchronize, so it will re-apply
+    # fast-path on the next push if the diff still qualifies.
     if: >
       github.event.action == 'synchronize' &&
-      contains(github.event.pull_request.labels.*.name, 'adversarial-reviewed')
+      (
+        contains(github.event.pull_request.labels.*.name, 'adversarial-reviewed') ||
+        contains(github.event.pull_request.labels.*.name, 'fast-path')
+      )
     steps:
       - name: Disable any pending auto-merge
         env:
@@ -139,22 +159,30 @@ jobs:
             echo "auto-merge was not armed; nothing to disable."
           fi
 
-      - name: Remove label and comment
+      - name: Remove labels and comment
         uses: actions/github-script@v7
         with:
           script: |
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
-            try {
-              await github.rest.issues.removeLabel({
-                owner, repo, issue_number, name: 'adversarial-reviewed',
-              });
-            } catch (e) {
-              if (e.status !== 404) throw e; // already removed
-              core.info('Label already removed; skipping comment.');
+            // Try to remove both labels; fast-path and adversarial-reviewed
+            // are mutually substitutable but either can be the live one.
+            const toRemove = ['adversarial-reviewed', 'fast-path'];
+            const removed = [];
+            for (const name of toRemove) {
+              try {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number, name });
+                removed.push(name);
+              } catch (e) {
+                if (e.status !== 404) throw e; // 404 = wasn't applied; fine.
+              }
+            }
+            if (removed.length === 0) {
+              core.info('No stale approval labels present; skipping comment.');
               return;
             }
+            const label_phrase = removed.map(n => '`' + n + '`').join(' and ');
             await github.rest.issues.createComment({
               owner, repo, issue_number,
-              body: 'Re-review required: new commits since adversarial review passed. Removing `adversarial-reviewed` label.',
+              body: `Re-review / re-classify required: new commits since approval. Removed ${label_phrase}. auto-label-fast-path.yml will re-apply fast-path on this synchronize if the diff still qualifies.`,
             });

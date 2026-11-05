@@ -1,0 +1,82 @@
+# Auto-label PRs whose entire diff falls inside the fast-path allowlist
+# as `fast-path`. Companion to auto-merge.yml: a `fast-path` label can
+# substitute for `adversarial-reviewed` in the merge gate because the
+# allowlisted paths cannot carry security-adjacent changes.
+#
+# Fast-path allowlist (every changed file must match ONE of these):
+#   - docs/**
+#   - *.md (anywhere)
+#   - apps/*/tests/**
+#   - apps/web/src/**/__tests__/**
+#   - packages/types/src/generated.ts
+#
+# If ANY file in the diff falls outside the allowlist, the label is not
+# applied (and if previously applied by an earlier push, it is removed).
+#
+# Security: pull_request_target has write access but does NOT check out PR
+# code; only the label operation runs. Only repo collaborators can apply
+# labels so a hostile PR author cannot self-label into fast-path. The
+# auto-merge workflow additionally requires !needs-jon-approval, so if a
+# fast-path diff somehow touches a CODEOWNERS path the merge still blocks.
+#
+# See claude/session-7-handover.md §4 (T2 auto-merge) and V-1 recommendation.
+
+name: Auto-label fast-path PRs
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: auto-label-fast-path-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  label-fast-path:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Classify diff and label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          changed=$(gh pr diff "$PR_NUM" --repo "$REPO" --name-only)
+          echo "Changed files in PR #$PR_NUM:"
+          echo "$changed"
+          echo
+
+          # Empty diff — should never happen, but guard. An empty diff
+          # should NOT get fast-path; let it fall through.
+          if [ -z "$changed" ]; then
+            echo "Empty diff; not applying fast-path."
+            gh pr edit "$PR_NUM" --repo "$REPO" --remove-label fast-path 2>/dev/null || true
+            exit 0
+          fi
+
+          # Fast-path allowlist. ALL files must match one of these patterns.
+          # Grouped: docs dir | any-dir markdown | per-app tests dir |
+          # web __tests__ anywhere under src | generated types file.
+          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$)'
+
+          # Find any file NOT matching the allowlist.
+          bad=$(echo "$changed" | grep -vE "$allow_re" || true)
+
+          if [ -n "$bad" ]; then
+            echo "Files outside fast-path allowlist:"
+            echo "$bad"
+            # Remove any stale fast-path label.
+            gh pr edit "$PR_NUM" --repo "$REPO" --remove-label fast-path 2>/dev/null || true
+            exit 0
+          fi
+
+          echo "All files match fast-path allowlist. Applying label."
+          # Also apply rollback-safe since docs/tests/generated-types are
+          # intrinsically revertable with git revert.
+          gh pr edit "$PR_NUM" --repo "$REPO" \
+            --add-label fast-path --add-label rollback-safe

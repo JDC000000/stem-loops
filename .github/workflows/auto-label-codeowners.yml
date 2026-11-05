@@ -37,11 +37,13 @@ jobs:
           echo "$changed"
           echo
           # Keep this regex in sync with .github/CODEOWNERS.
-          # Alternation grouped logically: migrations | scripts | workflows |
-          # supply-chain | env templates | prompt-injection surfaces |
-          # next config | Makefile | downloader | deploy config |
-          # billing / auth / emails / TSD / legal.
-          if echo "$changed" | grep -qE '^(apps/worker/migrations/|scripts/|\.github/workflows/|\.github/CODEOWNERS$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|apps/web/package\.json$|packages/types/package\.json$|apps/worker/requirements\.txt$|apps/worker/constraints-prod\.txt$|apps/worker/pyproject\.toml$|\.npmrc$|\.env(\.local)?\.example$|AGENTS\.md$|CLAUDE\.md$|\.claude/agents/|apps/web/next\.config\.(js|mjs)$|Makefile$|apps/worker/src/worker/downloader/|apps/worker/Dockerfile$|apps/worker/fly\.toml$|docker-compose(\.dev)?\.yml$|apps/web/src/lib/auth/supabase\.ts$|apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/web/src/lib/emails/|04-tsd-and-workplan/|apps/web/src/app/\(landing\)/(terms|privacy)/|docs/legal/|apps/web/vercel\.json$|vercel\.json$)'; then
+          # 2026-11-05 T1+T2 trim: regex reduced to match the 6 narrow patterns
+          # that survived. Removed paths are now guarded by .claude/settings.json
+          # deny rules (for subagents) and the main-session's safe_merge.sh
+          # discipline. See claude/session-7-handover.md §4.
+          # Alternation: billing lib paths | billing migrations | workflows |
+          # AGENTS.md.
+          if echo "$changed" | grep -qE '^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|AGENTS\.md$)'; then
             echo "PR touches a CODEOWNERS path. Applying needs-jon-approval label."
             gh pr edit "$PR_NUM" --repo "$REPO" --add-label needs-jon-approval
           else

@@ -6,21 +6,28 @@ HARD CAP: 1 billing cycle. The ``chords_complete`` log event makes per-call cost
 and latency visible to the dashboard; raise ``ChordQuotaExceeded`` surfaces 402
 TERMINALLY (never retried — the spend-ceiling layer handles it).
 
-API shape (base ``https://api.klang.io/``, bearer auth via ``KLANGIO_API_KEY``):
+API shape (base ``https://api.klang.io/``, auth header ``kl-api-key: <KLANGIO_API_KEY>``;
+verified empirically against the live service 2026-11-05). It is an ASYNC job API:
 
-  POST /transcription/chords (multipart ``audio_file=<wav>``)  → {"job_id": "..."}
-  GET  /job/<id>                                               → {"status": "...", ...}
-  GET  /job/<id>/json                                          → {"key": "...", "chords": [...], "strums": [...]}
+  POST /chord-recognition?vocabulary={root|major-minor|full}
+       (multipart, file field ``file``; ``vocabulary`` REQUIRED, omitted -> 422)
+                                       -> {"job_id": "...", "status_endpoint_url": ...}
+  GET  /job/<id>/status                -> {"status": IN_QUEUE|IN_PROGRESS|COMPLETED|FAILED,
+                                          "error": "..." (FAILED only)}
+  GET  /job/<id>/json                  -> [[start_sec, end_sec, harte_label], ...]  (bare array)
 
-Flow: POST → poll GET /job/<id> (``completed`` | ``failed``) → GET /job/<id>/json.
+Flow: validate duration locally -> POST -> poll status (backoff) -> GET json.
+Startup tier: 500 req/month (real money past that), 2 req/s, audio >5s and <=300s.
+Both duration bounds are checked BEFORE the POST because a rejected request still
+consumes quota. All calls pass through a process-wide 2 req/s throttle.
 
-Rate limits (2–10 req/s) and transient 5xxs → exponential backoff + jitter, cap
+Rate limits (429) and transient 5xxs → exponential backoff + jitter, cap
 60s, 5 retries. 402 → ``ChordQuotaExceeded`` (terminal). 4xx (not 402, 429) →
 raised immediately — these are our bugs, retrying wastes quota.
 
-Per-segment confidence: Klangio does NOT publish it (confirmed against the public
-docs 2026-11-04). We set 1.0 for every segment and leave a TODO to derive a
-heuristic from strum-gap width in Y1.2; ``is_valid_harte_label`` still gates the
+Per-segment confidence: Klangio does NOT publish it (the result is bare
+[start, end, label] triples; no key either, so ``ChordResult.key`` is None). We set
+1.0 for every segment and leave a TODO for a heuristic in Y1.2; ``is_valid_harte_label`` still gates the
 label contract regardless of the confidence source.
 """
 
@@ -29,6 +36,8 @@ from __future__ import annotations
 import hashlib
 import os
 import random
+import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,7 +54,7 @@ from ..chord_source import (
 )
 from ..logger import log_structured
 
-# Security audit §3 M6: Klangio's bearer token travels on every call. If
+# Security audit §3 M6: Klangio's API key travels on every call. If
 # KLANGIO_API_BASE is set to an http:// URL (CI typo, debugging stub,
 # malicious env injection), the token would leave the process in clear on
 # the wire. Fail fast at import time so no code path reaches _submit() with
@@ -53,8 +62,8 @@ from ..logger import log_structured
 _API_BASE_RAW = os.environ.get("KLANGIO_API_BASE", "https://api.klang.io")
 if not _API_BASE_RAW.startswith("https://"):
     raise ValueError(
-        "KLANGIO_API_BASE must use https:// — a Bearer-authenticated API over "
-        f"plain http would leak the token in clear. Got: {_API_BASE_RAW[:8]!r}..."
+        "KLANGIO_API_BASE must use https:// — an API-key-authenticated API over "
+        f"plain http would leak the key in clear. Got: {_API_BASE_RAW[:8]!r}..."
     )
 API_BASE = _API_BASE_RAW.rstrip("/")
 # Provider version pinned in the ChordResult for reproducibility; override via env
@@ -72,9 +81,99 @@ BACKOFF_BASE_SEC = float(os.environ.get("KLANGIO_BACKOFF_BASE_SEC", "1"))
 HTTP_TIMEOUT_SEC = float(os.environ.get("KLANGIO_HTTP_TIMEOUT_SEC", "30"))
 POLL_INTERVAL_SEC = float(os.environ.get("KLANGIO_POLL_INTERVAL_SEC", "2"))
 POLL_DEADLINE_SEC = float(os.environ.get("KLANGIO_POLL_DEADLINE_SEC", "600"))
-# Klangio's hard per-file limit (public docs 2026-11-04). We fail fast on files
-# longer than this rather than let the provider reject them mid-pipeline.
+# Klangio's hard per-file limits (Startup tier, measured 2026-11-05). We fail fast
+# on files outside them rather than let the provider reject the request: a
+# rejected request still costs quota, and quota is real money (500/mo, then $0.20).
 MAX_AUDIO_SEC = float(os.environ.get("KLANGIO_MAX_AUDIO_SEC", "300"))
+# Provider requires audio STRICTLY longer than this ("must be longer than 5 seconds").
+MIN_AUDIO_SEC = float(os.environ.get("KLANGIO_MIN_AUDIO_SEC", "5"))
+# Startup tier allows 2 req/s. Minimum spacing between ANY two requests issued by
+# this process (the worker may run several recognize() calls on a thread pool).
+MIN_REQUEST_INTERVAL_SEC = float(os.environ.get("KLANGIO_MIN_REQUEST_INTERVAL_SEC", "0.5"))
+
+# ``vocabulary`` is REQUIRED by the API (omitted -> HTTP 422). Default ``full``:
+# the product's factored quality x bass alphabet would be collapsed by
+# ``major-minor`` (7ths and slash chords, ~1/3 of real chord tokens).
+VALID_VOCABULARIES = ("root", "major-minor", "full")
+DEFAULT_VOCABULARY = "full"
+API_KEY_HEADER = "kl-api-key"
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_ERROR_MAX_CHARS = 200
+
+
+_throttle_lock = threading.Lock()
+_next_request_at = 0.0
+# Bound at import so tests that patch ``time.sleep`` (to skip backoff) neither
+# break nor are polluted by throttle waits.
+_throttle_sleep = time.sleep
+
+
+def _throttle() -> None:
+    """Block until this process may issue another request (2 req/s ceiling).
+
+    Slots are reserved under a lock and the wait happens outside it, so
+    concurrent threads queue up 0.5s apart instead of bursting.
+    """
+    global _next_request_at  # noqa: PLW0603
+    interval = MIN_REQUEST_INTERVAL_SEC
+    if interval <= 0:
+        return
+    with _throttle_lock:
+        now = time.monotonic()
+        slot = max(now, _next_request_at)
+        _next_request_at = slot + interval
+    wait = slot - now
+    if wait > 0:
+        _throttle_sleep(wait)
+
+
+def _resolve_vocabulary() -> str:
+    vocab = os.environ.get("KLANGIO_VOCABULARY", DEFAULT_VOCABULARY).strip() or DEFAULT_VOCABULARY
+    if vocab not in VALID_VOCABULARIES:
+        raise ChordProviderError(
+            f"KLANGIO_VOCABULARY={vocab[:32]!r} invalid; expected one of {VALID_VOCABULARIES}"
+        )
+    return vocab
+
+
+def _audio_duration_sec(audio_path: Path) -> float:
+    """Local duration probe. Fails closed: if we cannot measure it, do not spend."""
+    try:
+        import soundfile as sf  # noqa: PLC0415 — heavy native dep, keep import lazy
+
+        return float(sf.info(str(audio_path)).duration)
+    except Exception as exc:  # noqa: BLE001
+        raise ChordProviderError(
+            f"could not determine audio duration for {audio_path.name}: {type(exc).__name__}"
+        ) from exc
+
+
+def _check_duration_bounds(duration_sec: float) -> None:
+    if duration_sec <= MIN_AUDIO_SEC:
+        raise ChordProviderError(
+            f"audio too short for Klangio: {duration_sec:.2f}s (must be > {MIN_AUDIO_SEC:g}s); "
+            "no request sent"
+        )
+    if duration_sec > MAX_AUDIO_SEC:
+        raise ChordProviderError(
+            f"audio too long for Klangio: {duration_sec:.1f}s (max {MAX_AUDIO_SEC:g}s); "
+            "no request sent"
+        )
+
+
+def _safe_upstream_error(raw: Any, api_key: str) -> str:
+    """Bounded, printable, key-scrubbed form of Klangio's FAILED ``error`` string.
+
+    The error is actionable ("Audio file must be longer than 5 seconds!") so we
+    surface it, but it is still upstream text bound for Sentry: only the ``error``
+    field is ever read, it is truncated, and the API key is scrubbed.
+    """
+    if not isinstance(raw, str):
+        return "<none>"
+    text = "".join(ch for ch in raw if ch.isprintable())[:_ERROR_MAX_CHARS]
+    if api_key:
+        text = text.replace(api_key, "[redacted]")
+    return text
 
 
 class ChordProviderError(Exception):
@@ -124,11 +223,15 @@ class KlangioChordSource:
         if not key:
             raise ChordProviderError("KLANGIO_API_KEY not set — see docs/ops/chord-recognition.md")
 
+        # Validate everything locally BEFORE the first (billable) request.
+        vocabulary = _resolve_vocabulary()
+        _check_duration_bounds(_audio_duration_sec(audio_path))
+
         t0 = time.monotonic()
-        headers = {"Authorization": f"Bearer {key}"}
+        headers = {API_KEY_HEADER: key}
         with httpx.Client(base_url=self.api_base, headers=headers) as client:
-            job_id = self._submit(client, audio_path, stem)
-            self._poll_until_complete(client, job_id)
+            job_id = self._submit(client, audio_path, stem, vocabulary)
+            self._poll_until_complete(client, job_id, api_key=key)
             payload = self._fetch_json(client, job_id)
         model_ms = int((time.monotonic() - t0) * 1000)
 
@@ -146,42 +249,57 @@ class KlangioChordSource:
         return result
 
     # ------------------------------ HTTP steps ------------------------------
-    def _submit(self, client: httpx.Client, audio_path: Path, stem: StemKind) -> str:
-        with open(audio_path, "rb") as fh:
-            files = {"audio_file": (audio_path.name, fh, "audio/wav")}
-            data = {"stem": stem}
-            resp = _request_with_retry(
-                client,
-                method="POST",
-                url="/transcription/chords",
-                files=files,
-                data=data,
-            )
+    def _submit(
+        self,
+        client: httpx.Client,
+        audio_path: Path,
+        stem: StemKind,  # noqa: ARG002 — Klangio has no stem parameter; kept for the Protocol
+        vocabulary: str = DEFAULT_VOCABULARY,
+    ) -> str:
+        # Read once: a retried POST must re-send the full body (an open file
+        # handle would be at EOF on attempt 2).
+        audio_bytes = audio_path.read_bytes()
+        resp = _request_with_retry(
+            client,
+            method="POST",
+            url="/chord-recognition",
+            params={"vocabulary": vocabulary},
+            files={"file": (audio_path.name, audio_bytes, "audio/wav")},
+        )
         body = _parse_json(resp)
-        job_id = body.get("job_id") or body.get("id")
-        if not job_id:
-            raise ChordProviderError(f"Klangio POST did not return a job_id: {body!r}")
+        job_id = body.get("job_id") if isinstance(body, dict) else None
+        if not job_id or not _JOB_ID_RE.match(str(job_id)):
+            # Fingerprint only — never echo the body (audit §3 M5).
+            raise ChordProviderError(
+                f"Klangio POST did not return a usable job_id {_body_fingerprint(resp.text)}"
+            )
         return str(job_id)
 
-    def _poll_until_complete(self, client: httpx.Client, job_id: str) -> None:
+    def _poll_until_complete(self, client: httpx.Client, job_id: str, *, api_key: str = "") -> None:
         deadline = time.monotonic() + POLL_DEADLINE_SEC
         while time.monotonic() < deadline:
-            resp = _request_with_retry(client, method="GET", url=f"/job/{job_id}")
+            resp = _request_with_retry(client, method="GET", url=f"/job/{job_id}/status")
             body = _parse_json(resp)
-            status = (body.get("status") or "").lower()
-            if status in ("completed", "succeeded", "done"):
+            if not isinstance(body, dict):
+                raise ChordProviderError(
+                    f"Klangio job {job_id} status was not an object {_body_fingerprint(resp.text)}"
+                )
+            status = str(body.get("status") or "").upper()
+            if status == "COMPLETED":
                 return
-            if status in ("failed", "error", "cancelled", "canceled"):
-                # Redacted: body may contain user-supplied metadata or hints
-                # about the auth header. job_id + status is enough to find the
-                # upstream job in Klangio's dashboard.
-                raise ChordProviderError(f"Klangio job {job_id} terminal status={status}")
+            if status == "FAILED":
+                # Only the documented ``error`` field is surfaced (bounded and
+                # key-scrubbed); the rest of the body stays out of logs.
+                detail = _safe_upstream_error(body.get("error"), api_key)
+                raise ChordProviderError(f"Klangio job {job_id} terminal status=failed: {detail}")
+            # IN_QUEUE / IN_PROGRESS / anything unrecognised: keep polling until
+            # the deadline rather than abandon a job we already paid for.
             time.sleep(POLL_INTERVAL_SEC)
         raise ChordProviderError(
             f"Klangio job {job_id} did not complete within " f"{POLL_DEADLINE_SEC:.0f}s"
         )
 
-    def _fetch_json(self, client: httpx.Client, job_id: str) -> dict[str, Any]:
+    def _fetch_json(self, client: httpx.Client, job_id: str) -> list[Any]:
         resp = _request_with_retry(client, method="GET", url=f"/job/{job_id}/json")
         return _parse_json(resp)
 
@@ -202,6 +320,7 @@ def _request_with_retry(
     """
     last_exc: Exception | None = None
     for attempt in range(MAX_RETRIES + 1):
+        _throttle()  # every attempt (including retries) counts against 2 req/s
         try:
             resp = client.request(method, url, timeout=HTTP_TIMEOUT_SEC, **kwargs)
         except (httpx.TransportError, httpx.TimeoutException) as exc:
@@ -258,9 +377,11 @@ def _sleep_backoff(attempt: int, *, retry_after: str | None = None) -> None:
     time.sleep(jitter)
 
 
-def _parse_json(resp: httpx.Response) -> dict[str, Any]:
+def _parse_json(resp: httpx.Response) -> Any:
+    """Decode a JSON body. The result is a bare ARRAY; submit/status are objects,
+    so callers validate the shape they expect."""
     try:
-        body = resp.json()
+        return resp.json()
     except ValueError as exc:
         # Redacted: body fingerprint only — pre-fix we inlined the first 200
         # chars, which could echo auth hints or user filenames into Sentry.
@@ -268,45 +389,42 @@ def _parse_json(resp: httpx.Response) -> dict[str, Any]:
             f"Klangio response was not JSON (status={resp.status_code}) "
             f"{_body_fingerprint(resp.text)}"
         ) from exc
-    if not isinstance(body, dict):
-        raise ChordProviderError(f"Klangio response JSON was not a dict: {type(body).__name__}")
-    return body
 
 
 # --------------------------- response parsing ---------------------------
-def _parse_klangio_response(payload: dict[str, Any], *, model_ms: int) -> ChordResult:
-    """Map Klangio's JSON payload onto our provider-agnostic ChordResult."""
-    chords_raw = payload.get("chords") or []
+def _parse_klangio_response(payload: Any, *, model_ms: int) -> ChordResult:
+    """Map Klangio's result array ``[[start, end, label], ...]`` onto ChordResult."""
+    if not isinstance(payload, list):
+        raise ChordProviderError(f"Klangio result was not a JSON array: {type(payload).__name__}")
     segments: list[ChordSegment] = []
     duration_sec = 0.0
-    for row in chords_raw:
-        if not isinstance(row, dict):
+    for row in payload:
+        if not isinstance(row, (list, tuple)) or len(row) < 3:
             continue
-        start = float(row.get("start", 0.0))
-        end = float(row.get("end", start))
-        label = str(row.get("name", "N")).strip()
+        try:
+            start = float(row[0])
+            end = float(row[1])
+        except (TypeError, ValueError):
+            continue
+        label = str(row[2]).strip()
         if not is_valid_harte_label(label):
-            # Unknown qualities (Klangio sometimes returns e.g. 'C:maj9') map
-            # to the X ("unrecognised") bucket so downstream readers don't
-            # choke on the contract.
+            # Unknown qualities (e.g. 'C:maj9') map to the X ("unrecognised")
+            # bucket so downstream readers don't choke on the contract.
             label = "X"
         segments.append(
             ChordSegment(
                 start_sec=start,
                 end_sec=end,
                 label=label,
-                confidence=1.0,  # TODO Y1.2: derive from strums gap heuristic
+                confidence=1.0,  # TODO Y1.2: Klangio publishes no confidence
             )
         )
         if end > duration_sec:
             duration_sec = end
 
-    key_val = payload.get("key")
-    key = str(key_val) if key_val else None
-
     return ChordResult(
         segments=segments,
-        key=key,
+        key=None,  # the chord-recognition result carries no key
         provider="klangio",
         provider_version=PROVIDER_VERSION,
         duration_sec=duration_sec,

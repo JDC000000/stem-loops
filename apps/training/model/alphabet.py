@@ -77,6 +77,9 @@ ROOTS: tuple[str, ...] = (
 """Chromatic roots. Index = pitch class (C=0, B=11)."""
 
 NUM_ROOTS: int = 12
+ROOT_N_INDEX: int = NUM_ROOTS
+"""No-chord slot (12) in the 13-wide root head. Mirrors the constant of the
+same name in ``chordnet_2e1d.py``. Deliberately NOT part of ``ALPHABET_SHA``."""
 
 # ---------------------------------------------------------------------------
 # Quality head (25 classes, v1.5 canonical ordering — index = SHA input)
@@ -464,8 +467,9 @@ def encode_factored(harte: str) -> tuple[int, int, int] | None:
     and cannot be mapped (callers should drop or mark as ``X``).
 
     Special cases:
-        - ``"N"`` → ``(0, QUALITY_N_INDEX, BASS_N_INDEX)`` (root is unused when
-          quality == N; we pin to 0 so the tuple fits in all three heads).
+        - ``"N"`` → ``(ROOT_N_INDEX, QUALITY_N_INDEX, BASS_N_INDEX)``. The root
+          head is 13-wide and index 12 is its dedicated no-chord class; pinning
+          N to root 0 would train "C" on every no-chord frame.
         - ``"X"`` → ``None`` (out-of-vocab — caller must handle).
 
     Args:
@@ -476,7 +480,7 @@ def encode_factored(harte: str) -> tuple[int, int, int] | None:
         ``(root_idx, quality_idx, bass_idx)`` tuple, or ``None`` on unknown.
     """
     if harte == N_LABEL:
-        return (0, QUALITY_N_INDEX, BASS_N_INDEX)
+        return (ROOT_N_INDEX, QUALITY_N_INDEX, BASS_N_INDEX)
     if harte == X_LABEL:
         return None
 
@@ -546,7 +550,9 @@ def encode_factored(harte: str) -> tuple[int, int, int] | None:
 def decode_factored(root_idx: int, quality_idx: int, bass_idx: int) -> str:
     """Decode (root, quality, bass) indices to a Harte string.
 
-    - ``quality_idx == QUALITY_N_INDEX`` (24) → ``"N"``.
+    - ``quality_idx == QUALITY_N_INDEX`` (24) → ``"N"`` (any root, incl. ``ROOT_N_INDEX``).
+    - ``root_idx == ROOT_N_INDEX`` (12) with a non-N quality is degenerate and
+      raises ``ValueError`` (there is no pitch class to name).
     - ``bass_idx == BASS_SAME_INDEX`` (0) → no slash suffix.
     - ``bass_idx == BASS_N_INDEX`` (12) with chord quality → no slash suffix
       (``N`` bass with a non-N quality is a degenerate prediction; callers
@@ -554,8 +560,8 @@ def decode_factored(root_idx: int, quality_idx: int, bass_idx: int) -> str:
       decode it as a simple drop here rather than a crash).
     - ``bass_idx`` in ``[1, 11]`` → ``"/<harte-interval>"`` suffix.
     """
-    if not 0 <= root_idx < NUM_ROOTS:
-        raise ValueError(f"root_idx {root_idx} out of range [0, {NUM_ROOTS})")
+    if not 0 <= root_idx <= ROOT_N_INDEX:
+        raise ValueError(f"root_idx {root_idx} out of range [0, {ROOT_N_INDEX}]")
     if not 0 <= quality_idx < N_QUALITY:
         raise ValueError(f"quality_idx {quality_idx} out of range [0, {N_QUALITY})")
     if not 0 <= bass_idx < N_BASS:
@@ -563,6 +569,8 @@ def decode_factored(root_idx: int, quality_idx: int, bass_idx: int) -> str:
 
     if quality_idx == QUALITY_N_INDEX:
         return N_LABEL
+    if root_idx == ROOT_N_INDEX:
+        raise ValueError("root_idx ROOT_N_INDEX requires quality_idx == QUALITY_N_INDEX")
 
     root = ROOTS[root_idx]
     quality = QUALITY_LABELS[quality_idx]
@@ -583,12 +591,13 @@ def collapse_170_to_factored(idx: int) -> tuple[int, int, int]:
 
     Returns:
         ``(root_idx, quality_idx, bass_idx)``. For ``idx == 168`` (N) and
-        ``idx == 169`` (X) we return ``(0, QUALITY_N_INDEX, BASS_N_INDEX)``.
+        ``idx == 169`` (X) we return
+        ``(ROOT_N_INDEX, QUALITY_N_INDEX, BASS_N_INDEX)``.
     """
     if not 0 <= idx < 170:
         raise ValueError(f"170-class index {idx} out of range [0, 170)")
     if idx in (168, 169):
-        return (0, QUALITY_N_INDEX, BASS_N_INDEX)
+        return (ROOT_N_INDEX, QUALITY_N_INDEX, BASS_N_INDEX)
 
     root_idx = idx // 14
     quality_idx = idx % 14
@@ -647,6 +656,7 @@ __all__ = [
     # Shared
     "ROOTS",
     "NUM_ROOTS",
+    "ROOT_N_INDEX",
     "ALPHABET_SHA",
     # Legacy flat API (backward compat)
     "QUALITIES",

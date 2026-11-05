@@ -7,16 +7,28 @@ swapped the artefact.
 
 The new contract this file exercises:
 
-1. First-run flow (``FLUIDR3_SHA256 is None``) succeeds, prints the
-   computed hash to stderr, and tells the operator to pin it in source.
+1. Unpinned flow (``FLUIDR3_SHA256 is None``) **fails closed**: it raises
+   :class:`ChecksumMismatchError` naming the computed hash, and leaves the
+   downloaded artefact on disk so the operator can pin it.
 2. Pinned flow with a matching hash succeeds silently.
 3. Pinned flow with a mismatched hash raises
    :class:`ChecksumMismatchError` AND removes the untrusted bytes so a
    retry does not idempotently skip the re-download.
-4. The constant on disk is None (not a 32-char MD5-shaped string — the
-   shape check itself is a regression guard).
-5. MANIFEST.jsonl still records the computed sha256 in the first-run
-   case so provenance stays auditable even before pinning.
+4. The constant on disk is None or a 64-char hex SHA-256 (never a 32-char
+   MD5-shaped string — the shape check itself is a regression guard).
+5. The CLI maps the unpinned case to exit code 4 and surfaces the computed
+   sha256 in its error output, so provenance is auditable without ever
+   recording unverified bytes as if they were trusted.
+
+Contract change (PR-Y1.sec-F1, 2026-11-04)
+------------------------------------------
+Items 1 and 5 previously described **trust-on-first-use**: an unpinned run
+logged the computed hash and *accepted* the bytes. That silently
+reintroduced the H3 bug after any cache miss, so ``_download_fluidr3`` was
+changed to refuse unverified bytes outright. These tests were updated to
+the fail-closed contract in session 7 (2026-11-05); they had been asserting
+the pre-fix behaviour and were invisible because an unrelated ImportError
+stopped this package's tests from being collected at all.
 """
 
 from __future__ import annotations
@@ -118,39 +130,51 @@ def test_fluidr3_sha256_constant_is_none_not_md5_shaped() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_unpinned_first_run_succeeds_and_prints_pin_instructions(
-    cache_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+def test_unpinned_run_fails_closed_and_names_computed_sha(
+    cache_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When FLUIDR3_SHA256 is None, download succeeds and instructs operator to pin."""
+    """FLUIDR3_SHA256 is None => refuse the bytes, but name the hash to pin.
+
+    Fail-closed per PR-Y1.sec-F1. The error must carry everything the
+    operator needs to resolve it: the computed hash, the constant to set,
+    and the file to set it in.
+    """
     body = b"fake-fluidr3-bytes"
     expected_sha = hashlib.sha256(body).hexdigest()
 
     monkeypatch.setattr(dlmod, "FLUIDR3_SHA256", None)
     _install_stream(monkeypatch, body)
 
-    paths = _download_fluidr3(_fluidr3_source(), full=False)
+    with pytest.raises(ChecksumMismatchError) as exc:
+        _download_fluidr3(_fluidr3_source(), full=False)
 
-    assert len(paths) == 1
-    assert paths[0].name == "FluidR3_GM.sf2"
-    assert paths[0].read_bytes() == body
-
-    stderr = capsys.readouterr().err
-    assert expected_sha in stderr
-    # The pin-instruction banner points operators at the right place.
-    assert "FLUIDR3_SHA256" in stderr
-    assert "download.py" in stderr
+    msg = str(exc.value)
+    assert expected_sha in msg, "operator cannot pin a hash the error does not print"
+    assert "FLUIDR3_SHA256" in msg
+    assert "download.py" in msg
 
 
-def test_unpinned_first_run_leaves_file_on_disk_for_pinning(
+def test_unpinned_run_leaves_file_on_disk_for_pinning(
     cache_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Unpinned run must NOT delete the artefact — Jon needs it to pin the hash."""
+    """Unpinned run must NOT delete the artefact — it is needed to pin the hash.
+
+    This distinguishes the unpinned case from the pinned-MISMATCH case, which
+    deliberately removes the untrusted bytes (see
+    ``test_pinned_mismatched_hash_raises_checksum_mismatch``). Here the bytes
+    are merely unverified, not known-bad, and deleting them would force a
+    re-download on every pinning attempt.
+    """
     body = b"fake-fluidr3-bytes"
     monkeypatch.setattr(dlmod, "FLUIDR3_SHA256", None)
     _install_stream(monkeypatch, body)
 
-    paths = _download_fluidr3(_fluidr3_source(), full=False)
-    assert paths[0].exists()
+    with pytest.raises(ChecksumMismatchError):
+        _download_fluidr3(_fluidr3_source(), full=False)
+
+    cached = cache_dir / "fluidr3" / "FluidR3_GM.sf2"
+    assert cached.exists(), "artefact was deleted; operator cannot compute the pin"
+    assert cached.read_bytes() == body
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -224,11 +248,17 @@ def test_pinned_mismatch_deletes_untrusted_bytes(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_cli_unpinned_first_run_writes_manifest_entry_with_computed_sha(
-    cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+def test_cli_unpinned_run_exits_4_and_writes_no_manifest_row(
+    cache_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
     """End-to-end: `python -m training.data.download --source fluidr3 --confirm`
-    with no pin must still write a MANIFEST.jsonl row carrying the real sha256.
+    with no pin must exit 4 and record NOTHING in MANIFEST.jsonl.
+
+    Pre-PR-Y1.sec-F1 this wrote a provenance row for unverified bytes, which
+    is precisely the wrong outcome: MANIFEST.jsonl is the DATA-PROVENANCE.md
+    audit trail, and a row there asserts the bytes were checked. The computed
+    sha256 still reaches the operator via the error output, so pinning is just
+    as easy without faking the audit trail.
     """
     body = b"fake-fluidr3-bytes"
     expected_sha = hashlib.sha256(body).hexdigest()
@@ -237,16 +267,18 @@ def test_cli_unpinned_first_run_writes_manifest_entry_with_computed_sha(
     _install_stream(monkeypatch, body)
 
     rc = main(["--source", "fluidr3", "--confirm"])
-    assert rc == 0
+    assert rc == 4, "unpinned run must map to the ChecksumMismatchError exit code"
 
+    # The operator still gets the hash to pin.
+    captured = capsys.readouterr()
+    assert expected_sha in (captured.err + captured.out)
+
+    # No provenance row for bytes we refused to trust.
     manifest = cache_dir / "MANIFEST.jsonl"
-    lines = manifest.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 1
-    entry = json.loads(lines[0])
-    assert entry["source"] == "fluidr3"
-    assert entry["filename"] == "FluidR3_GM.sf2"
-    assert entry["sha256"] == expected_sha
-    assert entry["license"] == "MIT"
+    if manifest.exists():
+        assert manifest.read_text(encoding="utf-8").strip() == "", (
+            "unverified bytes must not get a MANIFEST provenance row"
+        )
 
 
 def test_cli_pinned_mismatch_returns_exit_4(

@@ -35,6 +35,25 @@ jobs:
             exit 1
           fi
 
+  alphabet-drift:
+    name: Alphabet drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Regenerate alphabet
+        run: python packages/types/scripts/codegen_alphabet.py
+      - name: Check for alphabet drift
+        run: |
+          GENERATED="apps/web/src/chord/alphabet.ts apps/web/src/chord/__tests__/fixtures/alphabet-parity.json"
+          if ! git diff --exit-code $GENERATED; then
+            echo "ALPHABET DRIFT DETECTED: run 'make alphabet-generate' and commit the result"
+            git diff $GENERATED
+            exit 1
+          fi
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

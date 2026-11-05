@@ -1,11 +1,6 @@
-"""ChordNet student model package (PR-Y1.4).
+"""ChordNet student model.
 
-Public surface:
-
-- ``alphabet`` — single source of truth for the 60-chord label alphabet
-  (plus the two boundary labels N and X, for 62 output classes total).
-- ``chordnet_2e1d`` — the 2-encoder / 1-decoder PyTorch architecture.
-
-PR-Y1.3 (parallel) owns ``cqt_plan.py`` (the frozen CQT hyper-plan).
-PR-Y1.5 will add the CRF decoder + Viterbi smoothing on top of this model.
+PR-Y1.4 lands the 2-encoder / 1-decoder architecture in
+``chordnet_2e1d.py``. PR-Y1.2 only ships the package shell so training.py and
+eval.py can import from a stable path.
 """

@@ -4,6 +4,7 @@ Usage::
 
     python -m training.data.download --list
     python -m training.data.download --source guitarset --confirm
+<<<<<<< HEAD
     python -m training.data.download --source aam --confirm            # 10% sample
     python -m training.data.download --source aam --confirm --full     # all 209 GB
     python -m training.data.download --source billboard --confirm
@@ -11,19 +12,29 @@ Usage::
     python -m training.data.download --source fma --confirm --full     # fma_medium
 
 Design rules (per PR-Y1.2, extended in PR-Y1.3 and PR-Y1.3c):
+=======
+    python -m training.data.download --source aam --confirm            # dev subset
+    python -m training.data.download --source aam --confirm --full     # all 209 GB
+
+Design rules (per PR-Y1.2):
+>>>>>>> origin/v3/main
 
 - **Dry by default.** Nothing is downloaded without ``--confirm``.
 - **Resume-on-interrupt.** Partial files are kept at ``<path>.part`` and
   continued with an HTTP ``Range`` request.
 - **Idempotent.** A file already present whose SHA-256 matches the recorded
   manifest entry is skipped. A mismatched hash is re-downloaded.
+<<<<<<< HEAD
 - **Robust transport.** 429 responses back off exponentially; transient
   connection errors retry up to three times before aborting.
+=======
+>>>>>>> origin/v3/main
 - **Provenance.** Every successful download appends a line to
   ``cache/MANIFEST.jsonl`` recording source slug, filename, sha256, license,
   download timestamp (UTC, ISO-8601), and the source URL. This is the audit
   trail cited in ``DATA-PROVENANCE.md``.
 
+<<<<<<< HEAD
 PR-Y1.3 wired three live sources — PDMX (Zenodo), OpenEWLD (git clone), and
 the FluidR3 soundfont (direct HTTP). PR-Y1.3c (this module as it now stands)
 wires five more:
@@ -47,11 +58,17 @@ wires five more:
 All eight sources (3 from PR-Y1.3 + 5 here) now have a wired path through
 ``_download_source``; nothing raises :class:`NotImplementedError` except the
 intentionally-manual Winterreise branch.
+=======
+The actual per-source download logic is scaffolded here but kept intentionally
+small for PR-Y1.2 — expanding each source to its real archive layout
+(Zenodo zip bundles, FMA metadata filtering, etc.) is PR-Y1.3 work.
+>>>>>>> origin/v3/main
 """
 
 from __future__ import annotations
 
 import argparse
+<<<<<<< HEAD
 import csv
 import hashlib
 import io
@@ -69,6 +86,17 @@ from typing import Any
 
 import httpx
 
+=======
+import hashlib
+import json
+import logging
+import sys
+from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path
+
+import httpx
+>>>>>>> origin/v3/main
 from training.data.sources import DATA_SOURCES, DataSource, by_name
 
 log = logging.getLogger("training.data.download")
@@ -79,6 +107,7 @@ DEFAULT_CACHE_DIR = Path(__file__).resolve().parent / "cache"
 MANIFEST_FILENAME = "MANIFEST.jsonl"
 CHUNK_SIZE = 1024 * 1024  # 1 MiB streaming reads
 
+<<<<<<< HEAD
 # Transport-level retry policy. Values are small by design so unit tests
 # don't block; real runs can tune via env (left as a follow-up).
 _MAX_RETRIES = 3
@@ -147,6 +176,8 @@ FLUIDR3_URL = "https://musical-artifacts.com/artifacts/738/FluidR3_GM.sf2"
 FLUIDR3_SHA256: str | None = None
 FLUIDR3_LICENSE = "MIT"
 
+=======
+>>>>>>> origin/v3/main
 
 def _cache_root() -> Path:
     """Resolve the cache root, honouring TRAINING_DATA_CACHE_DIR."""
@@ -172,6 +203,7 @@ def _sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
+<<<<<<< HEAD
 def _md5_of(path: Path) -> str:
     h = hashlib.md5()
     with path.open("rb") as f:
@@ -180,6 +212,8 @@ def _md5_of(path: Path) -> str:
     return h.hexdigest()
 
 
+=======
+>>>>>>> origin/v3/main
 def _manifest_path() -> Path:
     return _cache_root() / MANIFEST_FILENAME
 
@@ -200,6 +234,7 @@ def _already_have(target: Path, expected_sha256: str | None) -> bool:
     return _sha256_of(target) == expected_sha256
 
 
+<<<<<<< HEAD
 class ChecksumMismatchError(RuntimeError):
     """Raised when a downloaded archive's checksum does not match the upstream value."""
 
@@ -671,11 +706,41 @@ _WIRED: dict[str, object] = {
     "winterreise": _download_winterreise,
     "fma": _download_fma,
 }
+=======
+def _stream_download(url: str, target: Path, *, timeout: float = 60.0) -> None:
+    """Download `url` to `target` with resume support.
+
+    Writes to ``<target>.part`` and renames on success. On HTTP range-not-
+    satisfiable or 2xx without content-range, starts over cleanly.
+    """
+    partial = target.with_suffix(target.suffix + ".part")
+    resume_from = partial.stat().st_size if partial.exists() else 0
+    headers: dict[str, str] = {}
+    if resume_from > 0:
+        headers["Range"] = f"bytes={resume_from}-"
+        mode = "ab"
+    else:
+        mode = "wb"
+
+    log.info("downloading %s -> %s (resume_from=%d)", url, target, resume_from)
+    with httpx.stream("GET", url, headers=headers, timeout=timeout, follow_redirects=True) as resp:
+        if resp.status_code == 416:
+            # Range not satisfiable — server says we're already past the end.
+            # Restart cleanly.
+            partial.unlink(missing_ok=True)
+            return _stream_download(url, target, timeout=timeout)
+        resp.raise_for_status()
+        with partial.open(mode) as out:
+            for chunk in resp.iter_bytes(CHUNK_SIZE):
+                out.write(chunk)
+    partial.rename(target)
+>>>>>>> origin/v3/main
 
 
 def _download_source(source: DataSource, *, full: bool) -> list[Path]:
     """Download `source` into its cache dir.
 
+<<<<<<< HEAD
     All approved sources plus the FluidR3 soundfont are wired through
     :data:`_WIRED`. The transport layer (resume, retry, hashing, manifest
     append) is shared across every source and is exercised in the tests at
@@ -688,6 +753,19 @@ def _download_source(source: DataSource, *, full: bool) -> list[Path]:
     raise NotImplementedError(
         f"No download handler registered for {source.name!r}. "
         "Add it to _WIRED in apps/training/data/download.py."
+=======
+    PR-Y1.2 scaffold: the per-source archive layout is not finalised. This
+    function raises NotImplementedError with a clear pointer so PR-Y1.3 can
+    plug in the real Zenodo/GitHub record layouts. The transport, resume,
+    manifest, and hashing machinery around it is complete and tested.
+    """
+    _ = full  # reserved for aam --full vs dev subset; PR-Y1.3.
+    raise NotImplementedError(
+        f"Per-source archive layout for {source.name!r} is not wired yet. "
+        "Resume/hash/manifest transport is in place; PR-Y1.3 wires the "
+        "Zenodo record IDs and FMA metadata filter. See "
+        "apps/training/data/sources.py for citations and retrieval notes."
+>>>>>>> origin/v3/main
     )
 
 
@@ -702,20 +780,27 @@ def _confirm_or_die(args: argparse.Namespace) -> None:
 
 
 def _cmd_list(_args: argparse.Namespace) -> int:
+<<<<<<< HEAD
     # Also advertise the fluidr3 soundfont as a fetchable artefact. It is
     # documented in SOUNDFONTS (synthetic_render) but travels through the
     # same download CLI so the manifest covers every fetched byte.
+=======
+>>>>>>> origin/v3/main
     print(f"{'NAME':<14} {'LICENSE':<36} {'SIZE_GB':>8}  URL")
     print("-" * 110)
     for s in DATA_SOURCES:
         print(f"{s.name:<14} {s.license:<36} {s.size_gb:>8.1f}  {s.url}")
+<<<<<<< HEAD
     # Soundfont rows — not in DATA_SOURCES because they aren't annotation corpora.
     print(f"{'fluidr3':<14} {FLUIDR3_LICENSE:<36} {0.15:>8.1f}  {FLUIDR3_URL}")
+=======
+>>>>>>> origin/v3/main
     return 0
 
 
 def _cmd_download(args: argparse.Namespace) -> int:
     _confirm_or_die(args)
+<<<<<<< HEAD
     # Soundfonts are not DATA_SOURCES but we still wire them through the same
     # CLI. A synthetic DataSource record is used for the manifest entry.
     if args.source == "fluidr3":
@@ -732,6 +817,9 @@ def _cmd_download(args: argparse.Namespace) -> int:
         )
     else:
         source = by_name(args.source)
+=======
+    source = by_name(args.source)
+>>>>>>> origin/v3/main
     _source_dir(source)  # ensure it exists
 
     try:
@@ -740,10 +828,13 @@ def _cmd_download(args: argparse.Namespace) -> int:
         log.warning("%s", e)
         print(f"not-yet-implemented: {e}", file=sys.stderr)
         return 3
+<<<<<<< HEAD
     except ChecksumMismatchError as e:
         log.error("%s", e)
         print(f"checksum-mismatch: {e}", file=sys.stderr)
         return 4
+=======
+>>>>>>> origin/v3/main
 
     for path in downloaded:
         entry = {
@@ -780,11 +871,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the full dataclass record for --source and exit.",
     )
+<<<<<<< HEAD
     choices = [s.name for s in DATA_SOURCES] + ["fluidr3"]
     p.add_argument(
         "--source",
         choices=choices,
         help="Which source to act on (adds 'fluidr3' soundfont alongside corpora).",
+=======
+    p.add_argument(
+        "--source",
+        choices=[s.name for s in DATA_SOURCES],
+        help="Which source to act on.",
+>>>>>>> origin/v3/main
     )
     p.add_argument(
         "--confirm",

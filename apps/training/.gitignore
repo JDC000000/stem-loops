@@ -14,16 +14,20 @@ build/
 __pycache__/
 *.pyc
 
+<<<<<<< HEAD
 # Training run outputs (PR-Y1.4).
 runs/
 eval_reports/
 wandb/
 
+=======
+>>>>>>> origin/v3/main
 # Local model artefacts.
 *.onnx
 *.pt
 *.ckpt
 *.safetensors
+<<<<<<< HEAD
 
 # Synthetic-render inputs + outputs (PR-Y1.3).
 # Soundfonts are permissively licensed but large (~150 MB for FluidR3); we
@@ -35,3 +39,5 @@ wandb/
 *.mp3
 *.flac
 *.ogg
+=======
+>>>>>>> origin/v3/main

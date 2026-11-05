@@ -1,0 +1,325 @@
+{
+  "clip_count": 20,
+  "clips": [
+    {
+      "audio_path": "sine_a2_110hz.wav",
+      "audio_sha256": "096a82646afc2c9e2c522185d3be16d92cf97f49752808a853b374932ed81f47",
+      "cqt_path": "sine_a2_110hz.cqt.npy",
+      "cqt_sha256": "12b8f8bfd011cb8a9413126e8fb258af5a4d8d5aa78d315db73855a6d9a28b54",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "Pure A2 sine (110 Hz, low register)",
+      "duration_sec": 2.0,
+      "json_path": "sine_a2_110hz.json",
+      "kind": "sine",
+      "name": "sine_a2_110hz"
+    },
+    {
+      "audio_path": "sine_a3_220hz.wav",
+      "audio_sha256": "939b325de64fb00bdfb8b543ebc8e476539e6d217d143089f77ba015467d31df",
+      "cqt_path": "sine_a3_220hz.cqt.npy",
+      "cqt_sha256": "4c3688a15edb3114258f9f9b4a07ef90b10a075d6f7a46414ee901d9c6ab57c4",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "Pure A3 sine (220 Hz)",
+      "duration_sec": 2.0,
+      "json_path": "sine_a3_220hz.json",
+      "kind": "sine",
+      "name": "sine_a3_220hz"
+    },
+    {
+      "audio_path": "sine_a4_440hz.wav",
+      "audio_sha256": "05ca45327a84f4f7a79a5459938029057ba1ff9990c4a4c331d56cb93bd14660",
+      "cqt_path": "sine_a4_440hz.cqt.npy",
+      "cqt_sha256": "9f9a7c0b100b93f3df458b77dfda18cc92231318f473ec9be4f0fdb166295428",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "Pure A4 sine (440 Hz, concert pitch)",
+      "duration_sec": 2.0,
+      "json_path": "sine_a4_440hz.json",
+      "kind": "sine",
+      "name": "sine_a4_440hz"
+    },
+    {
+      "audio_path": "sine_a5_880hz.wav",
+      "audio_sha256": "9c4ac87eaa593be2fa698c61fd562973acf21802a71fc9df9f9a7152003946d7",
+      "cqt_path": "sine_a5_880hz.cqt.npy",
+      "cqt_sha256": "4c84b6a7f1a640358a8fd6abb845c5de2e157945a342778d4959ef64a5042cdd",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "Pure A5 sine (880 Hz)",
+      "duration_sec": 2.0,
+      "json_path": "sine_a5_880hz.json",
+      "kind": "sine",
+      "name": "sine_a5_880hz"
+    },
+    {
+      "audio_path": "sine_a6_1760hz.wav",
+      "audio_sha256": "a6bb9ec14184177653ea2fa26023912b67f1e30d267896c027b2147c446f48d5",
+      "cqt_path": "sine_a6_1760hz.cqt.npy",
+      "cqt_sha256": "704eca1805644df2a8518bd42513422da0cb55351de9af531aeff63b0da9fd28",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "Pure A6 sine (1760 Hz, upper register)",
+      "duration_sec": 2.0,
+      "json_path": "sine_a6_1760hz.json",
+      "kind": "sine",
+      "name": "sine_a6_1760hz"
+    },
+    {
+      "audio_path": "sine_c1_32_70hz.wav",
+      "audio_sha256": "0e1721910372a98615910038c43f01d3d4b16cf3a340ed22713c32b2d5111a9e",
+      "cqt_path": "sine_c1_32_70hz.cqt.npy",
+      "cqt_sha256": "226e64f3cbc21036411473a055f9a55370a653f526d9bc53bd011c5131e60e9a",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "Pure C1 sine (32.70 Hz, CQT fmin)",
+      "duration_sec": 2.0,
+      "json_path": "sine_c1_32_70hz.json",
+      "kind": "sine",
+      "name": "sine_c1_32_70hz"
+    },
+    {
+      "audio_path": "sine_b6_1975_53hz.wav",
+      "audio_sha256": "8c49eae3be547f7f455b65853e165493d144cf9b99d354c3a69d70c2d0789687",
+      "cqt_path": "sine_b6_1975_53hz.cqt.npy",
+      "cqt_sha256": "ce0093516b80e6d4591d811895869e905e0227ed596d3f96c1fafbee044fb5b3",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "Pure B6 sine (1975.53 Hz, CQT fmax)",
+      "duration_sec": 2.0,
+      "json_path": "sine_b6_1975_53hz.json",
+      "kind": "sine",
+      "name": "sine_b6_1975_53hz"
+    },
+    {
+      "audio_path": "sine_quartertone_a4_sharp.wav",
+      "audio_sha256": "a1d7eba15cc762d2250cc9117ad4dcc38e6a93cab4b26510884fb4f17576051b",
+      "cqt_path": "sine_quartertone_a4_sharp.cqt.npy",
+      "cqt_sha256": "726c1742e7b8f69ce8cd19ba5cc6dd6566c211a2216473e8f35eb63fc5efe1c3",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "A4 + 50 cents (453.08 Hz, inter-bin quarter-tone)",
+      "duration_sec": 2.0,
+      "json_path": "sine_quartertone_a4_sharp.json",
+      "kind": "sine",
+      "name": "sine_quartertone_a4_sharp"
+    },
+    {
+      "audio_path": "chord_c_major_root.wav",
+      "audio_sha256": "481593a2ee170aec1d5faa7195e9e47f20dc0aec7fb97ca9cf088ba08fe3e778",
+      "cqt_path": "chord_c_major_root.cqt.npy",
+      "cqt_sha256": "65b15e861fa01def399cafbb762365a952a5d68f5265a6eec94f63467df663bd",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "C major triad in root position (C4, E4, G4)",
+      "duration_sec": 2.0,
+      "json_path": "chord_c_major_root.json",
+      "kind": "sine_chord",
+      "name": "chord_c_major_root"
+    },
+    {
+      "audio_path": "chord_a_minor_root.wav",
+      "audio_sha256": "985a78f474884e96780c7fd2315bce4b3b18dc6460a3636363d729d1d0b5a4ea",
+      "cqt_path": "chord_a_minor_root.cqt.npy",
+      "cqt_sha256": "2b42c89788348a83f7557ab52eb95ff5b353cbcfcc68d1aa6a8c76d3ef574eed",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "A minor triad in root position (A3, C4, E4)",
+      "duration_sec": 2.0,
+      "json_path": "chord_a_minor_root.json",
+      "kind": "sine_chord",
+      "name": "chord_a_minor_root"
+    },
+    {
+      "audio_path": "chord_g7_root.wav",
+      "audio_sha256": "d7f7f069b9f31f29a0106d7e06f12d5affdabc7530b49b5b65a8f5873d230963",
+      "cqt_path": "chord_g7_root.cqt.npy",
+      "cqt_sha256": "e1c12f3cfd99069eac9658e9f203f00d46afceea3c48ee44c21eeb9c18533d37",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "G7 chord in root position (G3, B3, D4, F4)",
+      "duration_sec": 2.0,
+      "json_path": "chord_g7_root.json",
+      "kind": "sine_chord",
+      "name": "chord_g7_root"
+    },
+    {
+      "audio_path": "chord_fmaj7_rootless.wav",
+      "audio_sha256": "985a78f474884e96780c7fd2315bce4b3b18dc6460a3636363d729d1d0b5a4ea",
+      "cqt_path": "chord_fmaj7_rootless.cqt.npy",
+      "cqt_sha256": "2b42c89788348a83f7557ab52eb95ff5b353cbcfcc68d1aa6a8c76d3ef574eed",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "F maj7 without root (A3, C4, E4)",
+      "duration_sec": 2.0,
+      "json_path": "chord_fmaj7_rootless.json",
+      "kind": "sine_chord",
+      "name": "chord_fmaj7_rootless"
+    },
+    {
+      "audio_path": "white_noise.wav",
+      "audio_sha256": "ca04db80756fbe116d8e2a10d5b42839e443485541880ab66c49cefa6c317d44",
+      "cqt_path": "white_noise.cqt.npy",
+      "cqt_sha256": "3285a420ad35be3b9cc9371e5623e6365b51339a8dfbed7e92e66a9298d316be",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "White noise, uniform in [-0.3, 0.3]",
+      "duration_sec": 2.0,
+      "json_path": "white_noise.json",
+      "kind": "white_noise",
+      "name": "white_noise"
+    },
+    {
+      "audio_path": "pink_noise.wav",
+      "audio_sha256": "bdee33d053cfd257357e19c0b41171ab84183e15387c00f4b6378c8bc26da8f4",
+      "cqt_path": "pink_noise.cqt.npy",
+      "cqt_sha256": "170e69480c7ef3b5b79d69fd9eed66d62f8556074838974d83bac4f1a29742fc",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "1/f pink noise, normalised to 0.3 peak",
+      "duration_sec": 2.0,
+      "json_path": "pink_noise.json",
+      "kind": "pink_noise",
+      "name": "pink_noise"
+    },
+    {
+      "audio_path": "silence.wav",
+      "audio_sha256": "5b1870cf6b89ae9a9e699ccc42b21a6ebe1ace5234132811234dadaa066a03a6",
+      "cqt_path": "silence.cqt.npy",
+      "cqt_sha256": "822c2cdfbc7a6e5f4dd355251f4dfc9af1b1a64152464b9b83c5007eeed0f346",
+      "cqt_shape": [
+        11,
+        144
+      ],
+      "description": "Pure silence (all zeros)",
+      "duration_sec": 1.0,
+      "json_path": "silence.json",
+      "kind": "silence",
+      "name": "silence"
+    },
+    {
+      "audio_path": "chirp_sweep_55_880hz.wav",
+      "audio_sha256": "f52da22033d5bfc4ca7b37b21d3785db1a1d0ce00ce040e95bc28957a21ca1f2",
+      "cqt_path": "chirp_sweep_55_880hz.cqt.npy",
+      "cqt_sha256": "2006f6c97bb4c095e250f4604efeb9e75eed1207fc9eff8937c6612b06b9a8f1",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "Linear frequency sweep 55 Hz \u2192 880 Hz over 2 s",
+      "duration_sec": 2.0,
+      "json_path": "chirp_sweep_55_880hz.json",
+      "kind": "sweep",
+      "name": "chirp_sweep_55_880hz"
+    },
+    {
+      "audio_path": "mixed_a4_plus_noise.wav",
+      "audio_sha256": "3bb1bd79c335e5aa5896aa96c893180ad66bcf0dff4e989b1445a4f34bd6b85d",
+      "cqt_path": "mixed_a4_plus_noise.cqt.npy",
+      "cqt_sha256": "5b7724b5f9adf3420ee7b530dd41769cfe2ab2c13dec6a80896a4aa042cd4486",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "A4 sine (440 Hz) + white noise at 0.1 amplitude",
+      "duration_sec": 2.0,
+      "json_path": "mixed_a4_plus_noise.json",
+      "kind": "mixed",
+      "name": "mixed_a4_plus_noise"
+    },
+    {
+      "audio_path": "mixed_c_major_plus_noise.wav",
+      "audio_sha256": "afda6b2255af450479a32e4a38da335587c62766daccbef5894a1f466f805a91",
+      "cqt_path": "mixed_c_major_plus_noise.cqt.npy",
+      "cqt_sha256": "f49fc331d16465032536fa66e1611ab3fb8b83322a9caa6363f2f8b82a402b66",
+      "cqt_shape": [
+        22,
+        144
+      ],
+      "description": "C major triad + white noise at 0.05 amplitude",
+      "duration_sec": 2.0,
+      "json_path": "mixed_c_major_plus_noise.json",
+      "kind": "mixed",
+      "name": "mixed_c_major_plus_noise"
+    },
+    {
+      "audio_path": "sine_short_440hz.wav",
+      "audio_sha256": "c8e64194db303dbfede6e888428b630a4ba420ee01c5c62a74b8479a6aee1bd8",
+      "cqt_path": "sine_short_440hz.cqt.npy",
+      "cqt_sha256": "1ca55d3030082515ae0d5ee72a943650ec405258aab54dcc077a27ba3246d930",
+      "cqt_shape": [
+        6,
+        144
+      ],
+      "description": "A4 sine, 0.5 s (short clip; few CQT frames)",
+      "duration_sec": 0.5,
+      "json_path": "sine_short_440hz.json",
+      "kind": "sine",
+      "name": "sine_short_440hz"
+    },
+    {
+      "audio_path": "silence_short.wav",
+      "audio_sha256": "34bb1829335ea366c7e9305a8f0a6fb4ebaa61fc0e4f88b22bdb7ced03164a8a",
+      "cqt_path": "silence_short.cqt.npy",
+      "cqt_sha256": "cfc335996cfae29fdf14fd2db7ea853366d350a5d387aa3c322616e81dacd56b",
+      "cqt_shape": [
+        4,
+        144
+      ],
+      "description": "Short silence (0.3 s; tests sub-second CQT framing)",
+      "duration_sec": 0.3,
+      "json_path": "silence_short.json",
+      "kind": "silence",
+      "name": "silence_short"
+    }
+  ],
+  "plan": {
+    "bins_per_octave": 24,
+    "fmin_hz": 32.7,
+    "hop_length": 2048,
+    "log_amplitude": true,
+    "n_bins": 144,
+    "sample_rate": 22050,
+    "version": "v1",
+    "z_norm": "global"
+  },
+  "source": {
+    "module": "training.model.cqt_parity",
+    "regenerate_cmd": "python -m training.model.cqt_parity --out apps/training/tests/fixtures/cqt_parity"
+  },
+  "tolerance": {
+    "default_max_abs": 0.001,
+    "mobile_max_abs": 0.01,
+    "notes": "PR-Y1.6 (browser) asserts max |librosa_cqt - browser_cqt| < default_max_abs on desktop WASM/WebGPU. On Adreno 6xx/750 (Transpose/MatMul defects) the browser falls back to WASM and relaxes to mobile_max_abs. Any drift above mobile is a hard fail: do not ship."
+  },
+  "version": "v1"
+}

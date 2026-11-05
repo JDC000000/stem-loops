@@ -1,0 +1,22 @@
+# Downloaded corpora + synthetic renders (PR-Y1.3).
+data/cache/
+data/*/checkpoint-*/
+data/*/wandb/
+
+# Training run outputs (PR-Y1.4).
+runs/
+eval_reports/
+wandb/
+
+# Local model artefacts (PR-Y1.5b exports here; the dist/ folder is kept
+# but any emitted *.onnx / *.pt / *.ckpt / *.safetensors lives out of git).
+dist/*.onnx
+dist/*.pt
+dist/*.ckpt
+dist/*.safetensors
+*.onnx
+*.pt
+*.ckpt
+*.safetensors
+# ...but the committed parity fixtures ARE tracked (fixtures/cqt_parity/).
+!tests/fixtures/**

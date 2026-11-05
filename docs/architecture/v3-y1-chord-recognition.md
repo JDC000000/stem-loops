@@ -53,7 +53,7 @@ graph LR
     JSON --> Web[Web renders overlay]
 ```
 
-The `ChordSource` interface (PR #73, `apps/worker/src/worker/chord_source.py`) returns a `ChordResult` of Harte-syntax `ChordSegment`s. Both backends serialise to the same `play.chords.json` artifact next to the existing loops output, which the web overlay reads unchanged regardless of backend.
+The `ChordSource` interface (PR #73, `apps/worker/src/worker/chord_source.py`) returns a `ChordResult` of Harte-syntax `ChordSegment`s. Both backends serialise to the same `play.chords.json` artifact and the worker uploads it to R2 at `jobs/<job_id>/play.chords.json` (private bucket). The web overlay reads it via a 5-minute signed URL minted by `GET /api/jobs/<id>/play-chords` (PR-Y1.qa-T4), unchanged regardless of backend.
 
 ### 3.2 Browser-side inference (Variant Y)
 

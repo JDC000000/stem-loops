@@ -43,10 +43,13 @@ env var:
 
 The pipeline integration (`_maybe_run_chord_recognition` in
 `apps/worker/src/worker/pipeline.py`) runs **after** Demucs separation and
-writes `apps/worker/outputs/<job_id>/play.chords.json`. Failures there NEVER
-fail the job — chords are an optional overlay feature; a missing JSON
-degrades the Y1 UI only. All failures go to Sentry + a `chords_failed`
-structured log.
+uploads `jobs/<job_id>/play.chords.json` to R2 (bucket private;
+Content-Type `application/json`, Cache-Control `private, max-age=0`). The
+web overlay reads it via a 5-minute signed URL minted by
+`GET /api/jobs/<id>/play-chords`. Failures NEVER fail the job — chords are
+an optional overlay feature; a missing JSON degrades the Y1 UI only. All
+failures go to Sentry + a `chords_failed` (recognition) or
+`play_chords_upload_failed` (R2) structured log.
 
 ## Stem routing
 
@@ -123,6 +126,7 @@ See `.env.example` for the canonical list. The vars this module reads:
 | Var | Default | Purpose |
 |-----|---------|---------|
 | `CHORDS_PROVIDER` | `klangio` | Provider selector. Empty string disables the step. |
+| `CHORDS_STEM` | `instrumental` | Stem fed to the provider. Falls back to `other` / `keys` / `guitar` if the preferred stem is missing. |
 | `KLANGIO_API_KEY` | *(unset)* | Server-side only. Obtain at klang.io/account. |
 | `KLANGIO_API_BASE` | `https://api.klang.io` | Override for local proxy / staging. |
 | `KLANGIO_API_VERSION` | `2026-11-04` | Captured in `ChordResult.provider_version`. |

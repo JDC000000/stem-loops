@@ -47,7 +47,7 @@ from .extractor.beat_grid import estimate_beat_grid
 from .extractor.loop_extractor import extract_loops
 from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
-from .storage.r2_uploader import download_object, upload_input, upload_loop
+from .storage.r2_uploader import download_object, upload_input, upload_loop, upload_play_chords
 from .tagger.bpm_key import detect_bpm_and_key
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -252,37 +252,52 @@ def process_stems(job_id, stem_paths, requested_stems, bars, sr=44100) -> int:
 
 
 # --------------------------- Y1.1: chord recognition ----------------------------
-def _choose_chord_input(stem_paths: dict) -> str | None:
+# Default stem fed to the chord provider. "instrumental" is the free accuracy lever
+# from the Y1 foundations report (vocal track + harmonic residue is the worst-case
+# Klangio input). Override with CHORDS_STEM when a pipeline variant (e.g. a 2-stem
+# Demucs preset that skips 'instrumental') needs a different proxy.
+CHORDS_DEFAULT_STEM = os.environ.get("CHORDS_STEM", "instrumental")
+
+
+def _choose_chord_input(stem_paths: dict, preferred: str = "instrumental") -> tuple[str, str] | None:
     """Pick the audio path handed to the chord provider.
 
-    Preferred order (free accuracy lever from the foundations report):
-      1. An explicit 'instrumental' stem if Demucs already produced one.
-      2. 'other' (closest to a melodic/harmonic proxy).
-      3. 'keys' / 'guitar' as last resort (only non-vocal stems).
-    Returns None if no suitable stem is available — in that case the caller
-    skips the chord step entirely rather than feeding vocals (worst accuracy).
+    Returns ``(stem_name, local_path)`` or ``None``. The preferred stem — usually
+    ``'instrumental'`` for Demucs 6-stem presets — is tried first; otherwise we
+    fall through the foundations-report accuracy ladder (``other`` next, then
+    ``keys`` / ``guitar``). Returns ``None`` when no non-vocal stem is available;
+    the caller skips the chord step rather than feed vocals (worst accuracy).
     """
-    for name in ("instrumental", "other", "keys", "guitar"):
+    # Preferred first (de-duplicated against the fallback ladder below).
+    tried: list[str] = []
+    for name in (preferred, "instrumental", "other", "keys", "guitar"):
+        if name in tried:
+            continue
+        tried.append(name)
         p = stem_paths.get(name)
         if p:
-            return p
+            return name, p
     return None
 
 
 def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems) -> None:
-    """Y1.1 feature-flag entry point. Writes ``play.chords.json`` or logs + no-ops.
+    """Y1.1 feature-flag entry point. Uploads ``play.chords.json`` to R2 or no-ops.
 
     Guard: ``CHORDS_PROVIDER`` empty string (explicit disable) short-circuits
     without importing the provider — important for Gate-2 fixture runs that
     must not hit Klangio. Any provider-side error (missing API key, quota,
     network) is logged and swallowed; the pipeline MUST NOT fail here.
+
+    The JSON artifact lands at ``jobs/<job_id>/play.chords.json`` in R2 (not on
+    the worker's local disk — Fly machines are ephemeral). The web loader reads
+    it via a short-TTL signed URL; the key is kept private.
     """
     provider_name = os.environ.get("CHORDS_PROVIDER", "klangio")
     if not provider_name:
         log_structured("INFO", "chords_skipped_disabled", job_id=job_id)
         return
-    audio_path = _choose_chord_input(stem_paths)
-    if not audio_path:
+    chosen = _choose_chord_input(stem_paths, preferred=CHORDS_DEFAULT_STEM)
+    if not chosen:
         log_structured(
             "WARN",
             "chords_skipped_no_instrumental_stem",
@@ -290,6 +305,7 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             stems=sorted(stem_paths.keys()),
         )
         return
+    stem_name, audio_path = chosen
 
     try:
         # Import locally — a missing chord_providers package would otherwise
@@ -299,13 +315,27 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
 
         from .chord_source import get_chord_source  # noqa: PLC0415
 
-        result = get_chord_source(provider_name).recognize(_Path(audio_path), stem="instrumental")
-        out_dir = _Path("apps/worker/outputs") / job_id
-        out_dir.mkdir(parents=True, exist_ok=True)
+        result = get_chord_source(provider_name).recognize(_Path(audio_path), stem=stem_name)
+
         import json as _json  # noqa: PLC0415
 
-        with open(out_dir / "play.chords.json", "w") as f:
-            _json.dump(_asdict(result), f, indent=2)
+        body = _json.dumps(_asdict(result)).encode("utf-8")
+        try:
+            r2_key = upload_play_chords(job_id, body)
+        except Exception as upload_exc:  # noqa: BLE001 — chords are optional
+            # Upload failure is NON-FATAL: chord recognition itself succeeded,
+            # so we logged the result below. A missing object just means the
+            # web overlay degrades to the live tab-capture path (Y1 UX only).
+            log_structured(
+                "WARN",
+                "play_chords_upload_failed",
+                job_id=job_id,
+                provider=provider_name,
+                error=str(upload_exc)[:200],
+            )
+            sentry_sdk.capture_exception(upload_exc)
+            r2_key = None
+
         log_structured(
             "INFO",
             "chords_complete",
@@ -315,6 +345,8 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             segments=len(result.segments),
             model_ms=result.model_ms,
             key=result.key,
+            stem=stem_name,
+            r2_key=r2_key,
         )
     except Exception as exc:  # noqa: BLE001 — chords are optional
         log_structured(

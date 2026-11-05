@@ -18,22 +18,15 @@ import {
   useState,
 } from 'react';
 
-import { N_CHORD_CLASSES, chordLabel, labelIndex } from '../chord/alphabet.ts';
+import { N_CHORD_CLASSES, chordLabel } from '../chord/alphabet.ts';
 import {
   type ChordnetSession,
   loadChordnetSession,
   resolveModelUrl,
 } from '../chord/chordnet-session.ts';
 import { computeCQT, loadCqtPlan } from '../chord/cqt-frontend.ts';
-import {
-  collapseRuns,
-  smoothChordLogits,
-  type ChordRun,
-} from '../chord/smoother.ts';
-import {
-  type ChordObservation,
-  usePlayChords,
-} from '../chord/play-chords-loader.ts';
+import { collapseRuns, smoothChordLogits } from '../chord/smoother.ts';
+import { usePlayChords } from '../chord/play-chords-loader.ts';
 import {
   type TabCapture,
   UnsupportedBrowserError,
@@ -42,8 +35,16 @@ import {
 } from '../chord/tab-capture.ts';
 import {
   type ChordEdit,
+  type OverlayRun,
   buildChordEdit,
+  chipBox,
+  classIndexOrNull,
+  classifyLabel,
+  displayText,
+  observationsToRuns,
   popoverAlternatives,
+  runAriaLabel,
+  timelineWidthPx,
 } from './ChordOverlay.helpers.ts';
 
 export type { ChordEdit };
@@ -64,40 +65,11 @@ export interface ChordOverlayProps {
   jobId?: string | null;
 }
 
-// Scale used when mapping play.chords.json seconds → ChordRun frames. The
-// overlay's chip-width formula uses `frames * 8px` (see chipStyle), so 10
-// frames/sec gives each second ~80px — roughly one bar at 120 BPM / 4/4,
-// matching the density the live-capture path renders at.
-const CHORDS_FRAMES_PER_SEC = 10;
-
-/**
- * Convert ChordObservation[] (seconds-based, Harte labels) → ChordRun[]
- * (frame-based, class indices). N/X observations are dropped — they have no
- * class index in the 60-label alphabet and the chip row is better off empty
- * at those spans than cluttered with no-chord fillers.
- */
-export function observationsToRuns(obs: readonly ChordObservation[]): ChordRun[] {
-  const runs: ChordRun[] = [];
-  for (const o of obs) {
-    const chordClass = labelIndex(o.label);
-    if (chordClass < 0) continue;
-    const startFrame = Math.max(0, Math.round(o.startSec * CHORDS_FRAMES_PER_SEC));
-    const endFrame = Math.max(startFrame + 1, Math.round(o.endSec * CHORDS_FRAMES_PER_SEC));
-    runs.push({
-      startFrame,
-      endFrame,
-      startSec: o.startSec,
-      endSec: o.endSec,
-      chordClass,
-      label: o.label,
-    });
-  }
-  return runs;
-}
+export { observationsToRuns };
 
 interface State {
   phase: 'idle' | 'loading' | 'capturing' | 'error';
-  runs: ChordRun[];
+  runs: OverlayRun[];
   unsupportedMessage?: string;
   errorMessage?: string;
   provider?: 'webgpu' | 'wasm';
@@ -114,7 +86,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   jobId,
 }) => {
   const [state, setState] = useState<State>(INITIAL_STATE);
-  const [popoverFor, setPopoverFor] = useState<ChordRun | null>(null);
+  const [popoverFor, setPopoverFor] = useState<OverlayRun | null>(null);
   const sessionRef = useRef<ChordnetSession | null>(null);
   const captureRef = useRef<TabCapture | null>(null);
 
@@ -183,7 +155,15 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           const logits = await sessionRef.current.runFrames(frames, nFrames);
           // Logits → Viterbi best-path class indices → run-length segments.
           const classes = smoothChordLogits(logits, nFrames);
-          const runs = collapseRuns(classes, frameSec);
+          const runs: OverlayRun[] = collapseRuns(classes, frameSec).map((r) => ({
+            startFrame: r.startFrame,
+            endFrame: r.endFrame,
+            startSec: r.startSec,
+            endSec: r.endSec,
+            label: r.label,
+            kind: classifyLabel(r.label),
+            chordClass: classIndexOrNull(r.label) ?? r.chordClass,
+          }));
           setState((s) => ({ ...s, runs }));
         } catch (err) {
           // eslint-disable-next-line no-console
@@ -234,7 +214,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   }, [onStop]);
 
   const handlePickAlternative = useCallback(
-    (run: ChordRun, newCls: number) => {
+    (run: OverlayRun, newCls: number) => {
       onChordEdit?.(buildChordEdit(run, newCls));
       setPopoverFor(null);
     },
@@ -309,21 +289,40 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
         {state.runs.length === 0 && state.phase === 'capturing' ? (
           <div style={emptyStyle}>Listening…</div>
         ) : null}
-        {state.runs.map((run, idx) => (
-          <button
-            type="button"
-            key={`${run.startFrame}-${run.endFrame}-${idx}`}
-            onClick={() => setPopoverFor(run)}
-            style={{
-              ...chipStyle,
-              width: `${Math.max(32, (run.endFrame - run.startFrame) * 8)}px`,
-            }}
-            data-testid={`chord-chip-${idx}`}
-            aria-label={`${run.label} — edit`}
-          >
-            {run.label}
-          </button>
-        ))}
+        {/* Chips are placed by real time (left/width from startSec/endSec), so
+            an N or X span keeps its duration and never shifts later chips. */}
+        <div
+          style={{ position: 'relative', height: '32px', width: `${timelineWidthPx(state.runs)}px` }}
+        >
+          {state.runs.map((run, idx) => {
+            const box = chipBox(run);
+            return (
+              <button
+                type="button"
+                key={`${run.startFrame}-${run.endFrame}-${idx}`}
+                onClick={() => setPopoverFor(run)}
+                style={{
+                  ...chipStyle,
+                  ...(run.kind === 'none' ? restChipStyle : null),
+                  ...(run.kind === 'unknown' ? unknownChipStyle : null),
+                  position: 'absolute',
+                  top: 0,
+                  left: `${box.leftPx}px`,
+                  width: `${box.widthPx}px`,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  boxSizing: 'border-box',
+                }}
+                data-testid={`chord-chip-${idx}`}
+                data-kind={run.kind}
+                title={run.kind === 'chord' ? run.label : runAriaLabel(run)}
+                aria-label={runAriaLabel(run)}
+              >
+                {displayText(run)}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {popoverFor ? (
@@ -334,8 +333,13 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           data-testid="chord-popover"
         >
           <div style={popoverHeaderStyle}>
-            Change {popoverFor.label}
+            Change {displayText(popoverFor)}
           </div>
+          {popoverAlternatives(popoverFor.chordClass, 10).length === 0 ? (
+            <div style={emptyStyle} data-testid="no-alternatives">
+              No suggestions for this label.
+            </div>
+          ) : null}
           <div style={popoverGridStyle}>
             {popoverAlternatives(popoverFor.chordClass, 10).map((cls) => (
               <button
@@ -415,8 +419,6 @@ const providerPillStyle: CSSProperties = {
   letterSpacing: '0.05em',
 };
 const timelineStyle: CSSProperties = {
-  display: 'flex',
-  gap: '0.25rem',
   overflowX: 'auto',
   padding: '0.25rem 0',
   minHeight: '36px',
@@ -435,6 +437,17 @@ const chipStyle: CSSProperties = {
   cursor: 'pointer',
   whiteSpace: 'nowrap',
   fontVariantNumeric: 'tabular-nums',
+};
+// N (no chord): muted, dashed outline. X (unknown): amber, dotted outline.
+const restChipStyle: CSSProperties = {
+  background: 'transparent',
+  border: '1px dashed rgba(255,255,255,0.5)',
+  color: 'rgba(255,255,255,0.7)',
+};
+const unknownChipStyle: CSSProperties = {
+  background: '#78350f',
+  border: '1px dotted #fbbf24',
+  color: '#fde68a',
 };
 const popoverStyle: CSSProperties = {
   background: '#111827',

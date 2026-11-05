@@ -199,6 +199,26 @@ jobs:
       - name: Assert RLS + policy on every migration table
         run: python scripts/check_rls.py apps/worker/migrations/
 
+  training-merge-markers:
+    # PR-Y1.sec-F1 regression guard. A bad merge (#89 → 16378fe) landed 72+
+    # unresolved conflict markers under apps/training/ and killed the module
+    # import across the entire training pipeline. This gate catches the next
+    # one at PR time instead of on main.
+    name: "No merge markers in training/"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: No merge markers in training
+        run: |
+          if grep -rE '^(<<<<<<<|=======|>>>>>>>)' apps/training/; then
+            echo "Unresolved merge markers in apps/training/"
+            exit 1
+          fi
+          python -m compileall apps/training/
+
   check-tsd-refs:
     name: "TSD §N.M refs resolve (Fleet Playbook Move 4)"
     # PR-only: we read the PR body via the GitHub API, so push builds have

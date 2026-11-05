@@ -5,12 +5,6 @@ from __future__ import annotations
 import pytest
 import torch
 
-<<<<<<< HEAD
-from training.model.chordnet_2e1d import CQT_N_BINS, ChordNet2E1D
-
-# ---------------------------------------------------------------------------
-# Forward shape — structured mode
-=======
 from training.model.alphabet import N_BASS, N_QUALITY, NUM_ROOTS
 from training.model.chordnet_2e1d import CQT_N_BINS, ChordNet2E1D
 
@@ -83,7 +77,6 @@ def test_factored_predict_segments_labels_parse_as_harte() -> None:
 
 # ---------------------------------------------------------------------------
 # Forward shape — structured mode (PR-Y1.4 legacy)
->>>>>>> origin/v3/main
 # ---------------------------------------------------------------------------
 
 
@@ -135,8 +128,6 @@ def test_bad_output_mode_raises() -> None:
         ChordNet2E1D(output_mode="xyz")  # type: ignore[arg-type]
 
 
-<<<<<<< HEAD
-=======
 def test_all_three_modes_roundtrip() -> None:
     """Every supported mode constructs and forwards without crashing."""
     x = torch.randn(1, 16, CQT_N_BINS)
@@ -147,7 +138,6 @@ def test_all_three_modes_roundtrip() -> None:
         assert out, f"mode {mode} produced empty output"
 
 
->>>>>>> origin/v3/main
 # ---------------------------------------------------------------------------
 # Gradient flow — every parameter receives a non-zero grad on random data
 # ---------------------------------------------------------------------------

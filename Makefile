@@ -1,4 +1,4 @@
-.PHONY: dev test-job types test lint check-rls check-prices deploy-web deploy-worker migrate install help
+.PHONY: dev test-job types types-generate alphabet alphabet-generate testlint check-rls check-prices deploy-web deploy-worker migrate install help
 
 # Default target
 help:
@@ -6,6 +6,8 @@ help:
 	@echo "  make dev            - Spin up web + worker + Postgres + MinIO, run stub job end-to-end"
 	@echo "  make test-job URL=  - Run worker on one URL with verbose logging (no queue)"
 	@echo "  make types          - Run Pydantic → JSON Schema → TS codegen"
+	@echo "  make alphabet-generate - Regenerate web chord alphabet.ts from alphabet.py"
+	@echo "  make alphabet       - alphabet-generate + drift check"
 	@echo "  make test           - Run pytest + pnpm test"
 	@echo "  make lint           - Run ruff + black check + eslint"
 	@echo "  make check-rls      - Assert every migration table has RLS + a policy (SL-B26)"
@@ -62,6 +64,18 @@ types:
 types-generate:
 	cd packages/types && python scripts/codegen.py
 	@echo "Types generated."
+
+# Chord alphabet: apps/training/model/alphabet.py -> apps/web/src/chord/alphabet.ts
+ALPHABET_GENERATED = apps/web/src/chord/alphabet.ts apps/web/src/chord/__tests__/fixtures/alphabet-parity.json
+
+alphabet-generate:
+	python3 packages/types/scripts/codegen_alphabet.py
+	@echo "Alphabet generated."
+
+alphabet: alphabet-generate
+	@echo "Checking for drift..."
+	@git diff --exit-code $(ALPHABET_GENERATED) || (echo "ALPHABET DRIFT DETECTED: run 'make alphabet-generate' and commit the result" && exit 1)
+	@echo "Alphabet is in sync."
 
 # Run all tests
 test:

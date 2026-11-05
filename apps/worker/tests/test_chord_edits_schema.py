@@ -81,6 +81,9 @@ def _job(conn: Any, uid: uuid.UUID) -> uuid.UUID:
     return jid
 
 
+TRACK_HASH = "f" * 64  # 64-hex, satisfies migration 026's length check.
+
+
 def _insert(
     conn: Any,
     uid: uuid.UUID,
@@ -91,12 +94,29 @@ def _insert(
     original: str = "C",
     corrected: str = "C:min",
     alphabet_sha: str = ALPHABET_SHA,
+    track_hash: str = TRACK_HASH,
+    provider_version: str = "k-1.0",
+    cqt_plan_version: Any = None,
+    original_confidence: Any = None,
 ) -> None:
     conn.execute(
         "INSERT INTO public.chord_edits (user_id, job_id, track_hash, provider, "
         "provider_version, start_sec, end_sec, original_label, corrected_label, "
-        "alphabet_sha) VALUES (%s,%s,'th','klangio','k-1.0',%s,%s,%s,%s,%s)",
-        (uid, jid, start, end, original, corrected, alphabet_sha),
+        "alphabet_sha, cqt_plan_version, original_confidence) "
+        "VALUES (%s,%s,%s,'klangio',%s,%s,%s,%s,%s,%s,%s,%s)",
+        (
+            uid,
+            jid,
+            track_hash,
+            provider_version,
+            start,
+            end,
+            original,
+            corrected,
+            alphabet_sha,
+            cqt_plan_version,
+            original_confidence,
+        ),
     )
 
 
@@ -223,4 +243,148 @@ def test_down_migration_round_trip(conn):
     jid = _job(conn, uid)
     with pytest.raises(psycopg.errors.CheckViolation):
         _insert(conn, uid, jid, corrected="not_a_chord")
+    conn.rollback()
+
+
+# ---------------------------------------------------------------------------
+# Migration 026 — defence-in-depth length / range CHECKs (audit v2 F3).
+# ---------------------------------------------------------------------------
+
+def test_026_track_hash_length_rejected(conn):
+    uid = _user(conn, "th-len")
+    jid = _job(conn, uid)
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_track_hash_len"):
+        _insert(conn, uid, jid, track_hash="f" * 63)
+    conn.rollback()
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_track_hash_len"):
+        _insert(conn, uid, jid, track_hash="f" * 65)
+    conn.rollback()
+
+
+def test_026_alphabet_sha_length_rejected(conn):
+    uid = _user(conn, "as-len")
+    jid = _job(conn, uid)
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_alphabet_sha_len"):
+        _insert(conn, uid, jid, alphabet_sha="a" * 63)
+    conn.rollback()
+
+
+def test_026_provider_version_too_long_rejected(conn):
+    uid = _user(conn, "pv-len")
+    jid = _job(conn, uid)
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_provider_version_len"):
+        _insert(conn, uid, jid, provider_version="x" * 65)
+    conn.rollback()
+
+
+def test_026_cqt_plan_version_too_long_rejected(conn):
+    uid = _user(conn, "cqt-len")
+    jid = _job(conn, uid)
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_cqt_plan_version_len"):
+        _insert(conn, uid, jid, cqt_plan_version="x" * 65)
+    conn.rollback()
+
+
+def test_026_cqt_plan_version_null_allowed(conn):
+    """NULL cqt_plan_version is legal — the field is optional."""
+    uid = _user(conn, "cqt-null")
+    jid = _job(conn, uid)
+    _insert(conn, uid, jid, cqt_plan_version=None)
+    conn.commit()
+
+
+def test_026_original_label_too_long_rejected(conn):
+    uid = _user(conn, "ol-len")
+    jid = _job(conn, uid)
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_original_label_len"):
+        _insert(conn, uid, jid, original="x" * 17)
+    conn.rollback()
+
+
+def test_026_corrected_label_too_long_rejected(conn):
+    """Length CHECK fires on an over-long Harte-valid label (would otherwise
+    pass 025's valid_harte regex).
+    """
+    uid = _user(conn, "cl-len")
+    jid = _job(conn, uid)
+    # Harte-valid shape (C:<quality>) with quality = 20 'a's → 22 chars total.
+    too_long = "C:" + "a" * 20
+    with pytest.raises(
+        psycopg.errors.CheckViolation, match="chord_edits_corrected_label_len"
+    ):
+        _insert(conn, uid, jid, corrected=too_long)
+    conn.rollback()
+
+
+def test_026_start_sec_negative_rejected(conn):
+    uid = _user(conn, "start-neg")
+    jid = _job(conn, uid)
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_start_sec_range"):
+        _insert(conn, uid, jid, start=-1.0, end=1.0)
+    conn.rollback()
+
+
+def test_026_start_sec_over_cap_rejected(conn):
+    uid = _user(conn, "start-cap")
+    jid = _job(conn, uid)
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_start_sec_range"):
+        _insert(conn, uid, jid, start=86401.0, end=86402.0)
+    conn.rollback()
+
+
+def test_026_end_sec_over_cap_rejected(conn):
+    uid = _user(conn, "end-cap")
+    jid = _job(conn, uid)
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_end_sec_range"):
+        _insert(conn, uid, jid, start=0.0, end=86401.0)
+    conn.rollback()
+
+
+def test_026_original_confidence_range_rejected(conn):
+    uid = _user(conn, "conf-range")
+    jid = _job(conn, uid)
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_original_confidence_range"):
+        _insert(conn, uid, jid, original_confidence=1.5)
+    conn.rollback()
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_original_confidence_range"):
+        _insert(conn, uid, jid, original_confidence=-0.1)
+    conn.rollback()
+
+
+def test_026_original_confidence_null_allowed(conn):
+    uid = _user(conn, "conf-null")
+    jid = _job(conn, uid)
+    _insert(conn, uid, jid, original_confidence=None)
+    conn.commit()
+
+
+def test_026_down_migration_round_trip(conn):
+    """026 down drops only its constraints; 025 CHECKs survive."""
+    down = (MIGRATIONS / "down" / "026_chord_edits_length_checks.sql").read_text()
+    up = (MIGRATIONS / "026_chord_edits_length_checks.sql").read_text()
+    try:
+        conn.execute(down)
+        conn.commit()
+        # After down, a too-long track_hash should INSERT cleanly (025 had no such check).
+        uid = _user(conn, "026rt")
+        jid = _job(conn, uid)
+        _insert(conn, uid, jid, track_hash="f" * 70)
+        conn.commit()
+    finally:
+        # Clean up the row so re-applying the CHECK succeeds (ALTER TABLE
+        # ADD CONSTRAINT validates existing rows unless NOT VALID is used).
+        conn.rollback()
+        conn.execute("DELETE FROM public.chord_edits WHERE length(track_hash) <> 64")
+        conn.commit()
+        conn.execute(up)
+        conn.commit()
+    # 025 CHECKs are still live.
+    uid = _user(conn, "026rt2")
+    jid = _job(conn, uid)
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_valid_harte"):
+        _insert(conn, uid, jid, corrected="not_a_chord")
+    conn.rollback()
+    # 026 CHECK is live again after re-up.
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_track_hash_len"):
+        _insert(conn, uid, jid, track_hash="f" * 10)
     conn.rollback()

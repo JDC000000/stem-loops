@@ -81,6 +81,7 @@ test('iOS Safari: WASM-SIMD path loads + runs a forward pass', async () => {
     webgpuAvailable: () => false, // iOS Safari has no WebGPU
     isAdreno: () => false,
     sessionFactory: fakeWasmFactory(),
+    skipModelVerification: true, // fakeWasmFactory bypasses real ORT
   });
   assert.equal(session.provider, 'wasm');
 
@@ -135,6 +136,7 @@ test('iOS Safari: memory ceiling is bounded on repeated forward passes', async (
     webgpuAvailable: () => false,
     isAdreno: () => false,
     sessionFactory: fakeWasmFactory(),
+    skipModelVerification: true, // fakeWasmFactory bypasses real ORT
   });
   // Run 50 forward passes and make sure no run throws (i.e. no OOM bubble).
   const T = 128;

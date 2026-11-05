@@ -5,9 +5,9 @@
       "audio_path": "sine_a2_110hz.wav",
       "audio_sha256": "096a82646afc2c9e2c522185d3be16d92cf97f49752808a853b374932ed81f47",
       "cqt_path": "sine_a2_110hz.cqt.npy",
-      "cqt_sha256": "12b8f8bfd011cb8a9413126e8fb258af5a4d8d5aa78d315db73855a6d9a28b54",
+      "cqt_sha256": "0e7d4ff0fb0c00dbb12f42b5487548f7361649ac81ecc57ec98bd142d097a5fe",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "Pure A2 sine (110 Hz, low register)",
@@ -20,9 +20,9 @@
       "audio_path": "sine_a3_220hz.wav",
       "audio_sha256": "939b325de64fb00bdfb8b543ebc8e476539e6d217d143089f77ba015467d31df",
       "cqt_path": "sine_a3_220hz.cqt.npy",
-      "cqt_sha256": "4c3688a15edb3114258f9f9b4a07ef90b10a075d6f7a46414ee901d9c6ab57c4",
+      "cqt_sha256": "0aff95d8fbbe0537f2f06d1e8b8c97312e1a7b101f2d3245fb31e12c2f25c759",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "Pure A3 sine (220 Hz)",
@@ -35,9 +35,9 @@
       "audio_path": "sine_a4_440hz.wav",
       "audio_sha256": "05ca45327a84f4f7a79a5459938029057ba1ff9990c4a4c331d56cb93bd14660",
       "cqt_path": "sine_a4_440hz.cqt.npy",
-      "cqt_sha256": "9f9a7c0b100b93f3df458b77dfda18cc92231318f473ec9be4f0fdb166295428",
+      "cqt_sha256": "f1a8dceda0b1fcb8dbc153148975c4dae28ec66bfee2408642a43a9ad447457a",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "Pure A4 sine (440 Hz, concert pitch)",
@@ -50,9 +50,9 @@
       "audio_path": "sine_a5_880hz.wav",
       "audio_sha256": "9c4ac87eaa593be2fa698c61fd562973acf21802a71fc9df9f9a7152003946d7",
       "cqt_path": "sine_a5_880hz.cqt.npy",
-      "cqt_sha256": "4c84b6a7f1a640358a8fd6abb845c5de2e157945a342778d4959ef64a5042cdd",
+      "cqt_sha256": "e6fdd8e95e2b27f3dfb75471bdb49c59615574ef4125ac03b3030913311e5ebc",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "Pure A5 sine (880 Hz)",
@@ -65,9 +65,9 @@
       "audio_path": "sine_a6_1760hz.wav",
       "audio_sha256": "a6bb9ec14184177653ea2fa26023912b67f1e30d267896c027b2147c446f48d5",
       "cqt_path": "sine_a6_1760hz.cqt.npy",
-      "cqt_sha256": "704eca1805644df2a8518bd42513422da0cb55351de9af531aeff63b0da9fd28",
+      "cqt_sha256": "149cebe67b6430a50c58d60ea07707e5ebe2cb2464860c3ceaae884d3509ede3",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "Pure A6 sine (1760 Hz, upper register)",
@@ -80,9 +80,9 @@
       "audio_path": "sine_c1_32_70hz.wav",
       "audio_sha256": "0e1721910372a98615910038c43f01d3d4b16cf3a340ed22713c32b2d5111a9e",
       "cqt_path": "sine_c1_32_70hz.cqt.npy",
-      "cqt_sha256": "226e64f3cbc21036411473a055f9a55370a653f526d9bc53bd011c5131e60e9a",
+      "cqt_sha256": "ed958649290726d56fa7d83dd2b10975d064c829a4d65312574a09d8040024a6",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "Pure C1 sine (32.70 Hz, CQT fmin)",
@@ -95,9 +95,9 @@
       "audio_path": "sine_b6_1975_53hz.wav",
       "audio_sha256": "8c49eae3be547f7f455b65853e165493d144cf9b99d354c3a69d70c2d0789687",
       "cqt_path": "sine_b6_1975_53hz.cqt.npy",
-      "cqt_sha256": "ce0093516b80e6d4591d811895869e905e0227ed596d3f96c1fafbee044fb5b3",
+      "cqt_sha256": "0dacf70b3111d55c71a75ed73e97c7de82e851cf83f75ebcdbfab213eb0c8c8e",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "Pure B6 sine (1975.53 Hz, CQT fmax)",
@@ -110,9 +110,9 @@
       "audio_path": "sine_quartertone_a4_sharp.wav",
       "audio_sha256": "a1d7eba15cc762d2250cc9117ad4dcc38e6a93cab4b26510884fb4f17576051b",
       "cqt_path": "sine_quartertone_a4_sharp.cqt.npy",
-      "cqt_sha256": "726c1742e7b8f69ce8cd19ba5cc6dd6566c211a2216473e8f35eb63fc5efe1c3",
+      "cqt_sha256": "9fefc1adb27cc2562a8251b715abd0807860c2070006d17b60dccdc7ad139ffd",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "A4 + 50 cents (453.08 Hz, inter-bin quarter-tone)",
@@ -125,9 +125,9 @@
       "audio_path": "chord_c_major_root.wav",
       "audio_sha256": "481593a2ee170aec1d5faa7195e9e47f20dc0aec7fb97ca9cf088ba08fe3e778",
       "cqt_path": "chord_c_major_root.cqt.npy",
-      "cqt_sha256": "65b15e861fa01def399cafbb762365a952a5d68f5265a6eec94f63467df663bd",
+      "cqt_sha256": "bffcd011db4b8a9bf1ce0e8b4a7e38bcd332525999f2cbf4d289c75c813ecd19",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "C major triad in root position (C4, E4, G4)",
@@ -140,9 +140,9 @@
       "audio_path": "chord_a_minor_root.wav",
       "audio_sha256": "985a78f474884e96780c7fd2315bce4b3b18dc6460a3636363d729d1d0b5a4ea",
       "cqt_path": "chord_a_minor_root.cqt.npy",
-      "cqt_sha256": "2b42c89788348a83f7557ab52eb95ff5b353cbcfcc68d1aa6a8c76d3ef574eed",
+      "cqt_sha256": "46e41954558693577f5c620ce43d37530abfe30f6e4a6091a2aa37f0b09e4bbb",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "A minor triad in root position (A3, C4, E4)",
@@ -155,9 +155,9 @@
       "audio_path": "chord_g7_root.wav",
       "audio_sha256": "d7f7f069b9f31f29a0106d7e06f12d5affdabc7530b49b5b65a8f5873d230963",
       "cqt_path": "chord_g7_root.cqt.npy",
-      "cqt_sha256": "e1c12f3cfd99069eac9658e9f203f00d46afceea3c48ee44c21eeb9c18533d37",
+      "cqt_sha256": "84e973c6492c69872a213c09b2b0f02c09b5b0afdd6d42d20693bcf4b81b70d8",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "G7 chord in root position (G3, B3, D4, F4)",
@@ -170,9 +170,9 @@
       "audio_path": "chord_fmaj7_rootless.wav",
       "audio_sha256": "985a78f474884e96780c7fd2315bce4b3b18dc6460a3636363d729d1d0b5a4ea",
       "cqt_path": "chord_fmaj7_rootless.cqt.npy",
-      "cqt_sha256": "2b42c89788348a83f7557ab52eb95ff5b353cbcfcc68d1aa6a8c76d3ef574eed",
+      "cqt_sha256": "46e41954558693577f5c620ce43d37530abfe30f6e4a6091a2aa37f0b09e4bbb",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "F maj7 without root (A3, C4, E4)",
@@ -185,9 +185,9 @@
       "audio_path": "white_noise.wav",
       "audio_sha256": "ca04db80756fbe116d8e2a10d5b42839e443485541880ab66c49cefa6c317d44",
       "cqt_path": "white_noise.cqt.npy",
-      "cqt_sha256": "3285a420ad35be3b9cc9371e5623e6365b51339a8dfbed7e92e66a9298d316be",
+      "cqt_sha256": "fb78596898e443b50936d03c3cc6749b8dc7d170a32c2f75224c5111daf4220d",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "White noise, uniform in [-0.3, 0.3]",
@@ -200,9 +200,9 @@
       "audio_path": "pink_noise.wav",
       "audio_sha256": "bdee33d053cfd257357e19c0b41171ab84183e15387c00f4b6378c8bc26da8f4",
       "cqt_path": "pink_noise.cqt.npy",
-      "cqt_sha256": "170e69480c7ef3b5b79d69fd9eed66d62f8556074838974d83bac4f1a29742fc",
+      "cqt_sha256": "d2f6e6a64fb890bf54523067727cd15e00ef7adb1a6198a312a31048433ecc6d",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "1/f pink noise, normalised to 0.3 peak",
@@ -215,9 +215,9 @@
       "audio_path": "silence.wav",
       "audio_sha256": "5b1870cf6b89ae9a9e699ccc42b21a6ebe1ace5234132811234dadaa066a03a6",
       "cqt_path": "silence.cqt.npy",
-      "cqt_sha256": "822c2cdfbc7a6e5f4dd355251f4dfc9af1b1a64152464b9b83c5007eeed0f346",
+      "cqt_sha256": "175ff7d6d109c26871f030287a367b3c3ab509f56057b99724ef4a56b46b2188",
       "cqt_shape": [
-        11,
+        22,
         144
       ],
       "description": "Pure silence (all zeros)",
@@ -230,9 +230,9 @@
       "audio_path": "chirp_sweep_55_880hz.wav",
       "audio_sha256": "f52da22033d5bfc4ca7b37b21d3785db1a1d0ce00ce040e95bc28957a21ca1f2",
       "cqt_path": "chirp_sweep_55_880hz.cqt.npy",
-      "cqt_sha256": "2006f6c97bb4c095e250f4604efeb9e75eed1207fc9eff8937c6612b06b9a8f1",
+      "cqt_sha256": "10c3c5c2e07304eccd75a9a35d877e4fb1c45ca78319adb5cc33f01a2f5b8bf1",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "Linear frequency sweep 55 Hz \u2192 880 Hz over 2 s",
@@ -245,9 +245,9 @@
       "audio_path": "mixed_a4_plus_noise.wav",
       "audio_sha256": "3bb1bd79c335e5aa5896aa96c893180ad66bcf0dff4e989b1445a4f34bd6b85d",
       "cqt_path": "mixed_a4_plus_noise.cqt.npy",
-      "cqt_sha256": "5b7724b5f9adf3420ee7b530dd41769cfe2ab2c13dec6a80896a4aa042cd4486",
+      "cqt_sha256": "615b5294f4425c316f969c9c67d0decaaa0285ab9485ffde7e59091b4c247578",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "A4 sine (440 Hz) + white noise at 0.1 amplitude",
@@ -260,9 +260,9 @@
       "audio_path": "mixed_c_major_plus_noise.wav",
       "audio_sha256": "afda6b2255af450479a32e4a38da335587c62766daccbef5894a1f466f805a91",
       "cqt_path": "mixed_c_major_plus_noise.cqt.npy",
-      "cqt_sha256": "f49fc331d16465032536fa66e1611ab3fb8b83322a9caa6363f2f8b82a402b66",
+      "cqt_sha256": "6b14fe700a333c1b92ed431bd4cf4cdd6f653430a0c027ceddcac0d95e4c1079",
       "cqt_shape": [
-        22,
+        44,
         144
       ],
       "description": "C major triad + white noise at 0.05 amplitude",
@@ -275,9 +275,9 @@
       "audio_path": "sine_short_440hz.wav",
       "audio_sha256": "c8e64194db303dbfede6e888428b630a4ba420ee01c5c62a74b8479a6aee1bd8",
       "cqt_path": "sine_short_440hz.cqt.npy",
-      "cqt_sha256": "1ca55d3030082515ae0d5ee72a943650ec405258aab54dcc077a27ba3246d930",
+      "cqt_sha256": "3390911d4bf811b7a4ad91f54adcb1acc009568b3f8bf1111e4520befcb8f6b4",
       "cqt_shape": [
-        6,
+        11,
         144
       ],
       "description": "A4 sine, 0.5 s (short clip; few CQT frames)",
@@ -290,9 +290,9 @@
       "audio_path": "silence_short.wav",
       "audio_sha256": "34bb1829335ea366c7e9305a8f0a6fb4ebaa61fc0e4f88b22bdb7ced03164a8a",
       "cqt_path": "silence_short.cqt.npy",
-      "cqt_sha256": "cfc335996cfae29fdf14fd2db7ea853366d350a5d387aa3c322616e81dacd56b",
+      "cqt_sha256": "782972264d2f448a7741cb6afbc10275ffde7e1d3f5f9005fd45543a7c2b81b5",
       "cqt_shape": [
-        4,
+        7,
         144
       ],
       "description": "Short silence (0.3 s; tests sub-second CQT framing)",
@@ -305,12 +305,13 @@
   "plan": {
     "bins_per_octave": 24,
     "fmin_hz": 32.7,
-    "hop_length": 2048,
+    "hop_length": 1024,
+    "hpf_hz": 70.0,
     "log_amplitude": true,
     "n_bins": 144,
     "sample_rate": 22050,
-    "version": "v1",
-    "z_norm": "global"
+    "version": "v2",
+    "z_norm": "per_song"
   },
   "source": {
     "module": "training.model.cqt_parity",

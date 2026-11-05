@@ -13,9 +13,13 @@ Decision record v1.3 §Week-4 commits us to:
 
 Shape contract (static for simplicity — documented per PR-Y1.5b):
     input ``cqt``:   float32 ``(16, 128, 144)`` — (batch, frames, n_bins).
-    outputs:         four tensors matching the ChordNet "structured" head:
-                     ``root`` (B, T, 13), ``triad`` (B, T, 5),
-                     ``bass_interval`` (B, T, 13), ``has_7th`` (B, T, 4).
+    outputs:         depend on the model's ``output_mode`` (default "factored"):
+                     factored  -> ``root_logits`` (B, T, 13),
+                                  ``quality_logits`` (B, T, 25),
+                                  ``bass_logits`` (B, T, 13);
+                     structured -> ``root`` (B, T, 13), ``triad`` (B, T, 5),
+                                  ``bass_interval`` (B, T, 13), ``has_7th`` (B, T, 4);
+                     flat170   -> ``flat170`` (B, T, 170).
 
 Static shape rationale
 ----------------------
@@ -143,7 +147,7 @@ def _file_sha256(p: Path) -> str:
 
 def build_random_model(
     *,
-    output_mode: str = "structured",
+    output_mode: str = "factored",
     seed: int = 0,
 ):
     """Return a fresh ChordNet2E1D with deterministic random weights.
@@ -186,6 +190,8 @@ def load_checkpoint(path: str | Path, *, map_location: str = "cpu"):
 
 def _head_order(output_mode: str) -> list[str]:
     """Return the ONNX output names, in the order the graph exposes them."""
+    if output_mode == "factored":
+        return ["root_logits", "quality_logits", "bass_logits"]
     if output_mode == "structured":
         return ["root", "triad", "bass_interval", "has_7th"]
     if output_mode == "flat170":

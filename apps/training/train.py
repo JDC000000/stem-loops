@@ -49,17 +49,21 @@ from torch.utils.data import DataLoader, Dataset
 # Works both as module (`python -m training.train`) and as script
 # (`python apps/training/train.py` — the shape Modal's wrapper uses).
 if __package__:
+    from .model.alphabet import ROOT_N_INDEX
     from .model.chordnet_2e1d import CQT_N_BINS, N_BASS, N_QUALITY, ChordNet2E1D
 else:
     _APPS_DIR = Path(__file__).resolve().parent.parent
     if str(_APPS_DIR) not in sys.path:
         sys.path.insert(0, str(_APPS_DIR))
+    from training.model.alphabet import ROOT_N_INDEX  # type: ignore[no-redef]
     from training.model.chordnet_2e1d import (  # type: ignore[no-redef]
         CQT_N_BINS,
         N_BASS,
         N_QUALITY,
         ChordNet2E1D,
     )
+
+N_ROOT: int = ROOT_N_INDEX + 1  # 13-wide root head: 12 pitch classes + no-chord
 
 # ---------------------------------------------------------------------------
 # Config
@@ -90,6 +94,7 @@ class TrainConfig:
     warmup_steps: int = 500
     min_lr_ratio: float = 0.01
 
+    root_weight: float = 1.0
     quality_weight: float = 1.0
     bass_weight: float = 1.0
     ignore_index: int = -100
@@ -133,6 +138,7 @@ def load_config(config_path: Path) -> TrainConfig:
         betas=tuple(optim.get("betas", [0.9, 0.98])),  # type: ignore[arg-type]
         warmup_steps=int(scheduler.get("warmup_steps", 500)),
         min_lr_ratio=float(scheduler.get("min_lr_ratio", 0.01)),
+        root_weight=float(loss.get("root_weight", 1.0)),
         quality_weight=float(loss.get("quality_weight", 1.0)),
         bass_weight=float(loss.get("bass_weight", 1.0)),
         ignore_index=int(loss.get("ignore_index", -100)),
@@ -149,7 +155,7 @@ def load_config(config_path: Path) -> TrainConfig:
 # ---------------------------------------------------------------------------
 
 
-class _SyntheticFactoredDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
+class _SyntheticFactoredDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]):
     """Tiny in-memory dataset of random CQT frames + random factored labels.
 
     This exists so the training loop can be *exercised* end-to-end (grad flow,
@@ -158,6 +164,7 @@ class _SyntheticFactoredDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.
 
     Each sample yields:
         cqt:    (T, n_bins) float32
+        root:    (T,)       int64 in [0, N_ROOT)  (12 = no-chord, ROOT_N_INDEX)
         quality: (T,)       int64 in [0, N_QUALITY)
         bass:    (T,)       int64 in [0, N_BASS)
     """
@@ -178,15 +185,16 @@ class _SyntheticFactoredDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.
     def __len__(self) -> int:
         return self.n_samples
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # Deterministic per-index sampling so DataLoader workers reproduce.
         gen = torch.Generator()
         gen.manual_seed(int(self._rng.initial_seed()) + idx)
         t = self.max_frames
         cqt = torch.randn(t, self.n_bins, generator=gen)
+        root = torch.randint(0, N_ROOT, (t,), generator=gen, dtype=torch.long)
         quality = torch.randint(0, N_QUALITY, (t,), generator=gen, dtype=torch.long)
         bass = torch.randint(0, N_BASS, (t,), generator=gen, dtype=torch.long)
-        return cqt, quality, bass
+        return cqt, root, quality, bass
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +233,7 @@ def _build_dataset(cfg: TrainConfig, split: str) -> _SyntheticFactoredDataset:
 
 def train_one_step(
     model: ChordNet2E1D,
-    batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
     optimizer: torch.optim.Optimizer,
     cfg: TrainConfig,
     device: torch.device,
@@ -235,20 +243,27 @@ def train_one_step(
     Isolated so ``test_train_loop.py`` can call it with a 1-sample batch
     without instantiating the DataLoader / scheduler machinery.
     """
-    cqt, q_tgt, b_tgt = batch
+    cqt, r_tgt, q_tgt, b_tgt = batch
     cqt = cqt.to(device)
+    r_tgt = r_tgt.to(device)
     q_tgt = q_tgt.to(device)
     b_tgt = b_tgt.to(device)
 
     model.train()
+    # Factored contract (decision record v1.5): all three heads are supervised.
+    # Loss = root_weight*CE(root) + quality_weight*CE(quality) + bass_weight*CE(bass).
+    # Root targets come from encode_factored()[0]; no-chord frames carry
+    # ROOT_N_INDEX (12), a real class in the 13-wide root head.
     out = model(cqt)
-    q_logits = out["quality"].reshape(-1, N_QUALITY)
-    b_logits = out["bass"].reshape(-1, N_BASS)
+    r_logits = out["root_logits"].reshape(-1, N_ROOT)
+    q_logits = out["quality_logits"].reshape(-1, N_QUALITY)
+    b_logits = out["bass_logits"].reshape(-1, N_BASS)
 
     ce = nn.CrossEntropyLoss(ignore_index=cfg.ignore_index)
+    r_loss = ce(r_logits, r_tgt.reshape(-1))
     q_loss = ce(q_logits, q_tgt.reshape(-1))
     b_loss = ce(b_logits, b_tgt.reshape(-1))
-    loss = cfg.quality_weight * q_loss + cfg.bass_weight * b_loss
+    loss = cfg.root_weight * r_loss + cfg.quality_weight * q_loss + cfg.bass_weight * b_loss
 
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
@@ -258,6 +273,7 @@ def train_one_step(
 
     return {
         "loss": float(loss.detach().cpu()),
+        "root_loss": float(r_loss.detach().cpu()),
         "quality_loss": float(q_loss.detach().cpu()),
         "bass_loss": float(b_loss.detach().cpu()),
     }
@@ -273,19 +289,23 @@ def eval_one_epoch(
     """Compute mean per-head loss across ``loader``. CPU-safe."""
     model.eval()
     ce = nn.CrossEntropyLoss(ignore_index=cfg.ignore_index)
-    totals: dict[str, float] = {"loss": 0.0, "quality_loss": 0.0, "bass_loss": 0.0}
+    totals: dict[str, float] = {"loss": 0.0, "root_loss": 0.0, "quality_loss": 0.0, "bass_loss": 0.0}
     n_batches = 0
-    for cqt, q_tgt, b_tgt in loader:
+    for cqt, r_tgt, q_tgt, b_tgt in loader:
         cqt = cqt.to(device)
+        r_tgt = r_tgt.to(device)
         q_tgt = q_tgt.to(device)
         b_tgt = b_tgt.to(device)
         out = model(cqt)
-        q_logits = out["quality"].reshape(-1, N_QUALITY)
-        b_logits = out["bass"].reshape(-1, N_BASS)
+        r_logits = out["root_logits"].reshape(-1, N_ROOT)
+        q_logits = out["quality_logits"].reshape(-1, N_QUALITY)
+        b_logits = out["bass_logits"].reshape(-1, N_BASS)
+        r_loss = ce(r_logits, r_tgt.reshape(-1))
         q_loss = ce(q_logits, q_tgt.reshape(-1))
         b_loss = ce(b_logits, b_tgt.reshape(-1))
-        loss = cfg.quality_weight * q_loss + cfg.bass_weight * b_loss
+        loss = cfg.root_weight * r_loss + cfg.quality_weight * q_loss + cfg.bass_weight * b_loss
         totals["loss"] += float(loss.detach().cpu())
+        totals["root_loss"] += float(r_loss.detach().cpu())
         totals["quality_loss"] += float(q_loss.detach().cpu())
         totals["bass_loss"] += float(b_loss.detach().cpu())
         n_batches += 1
@@ -338,6 +358,7 @@ def run_training(cfg: TrainConfig, device: torch.device | None = None) -> dict[s
         d_model=cfg.d_model,
         gru_layers=cfg.gru_layers,
         dropout=cfg.dropout,
+        output_mode="factored",
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
@@ -544,6 +565,7 @@ def main(argv: list[str] | None = None) -> int:
             d_model=cfg.d_model,
             gru_layers=cfg.gru_layers,
             dropout=cfg.dropout,
+            output_mode="factored",
         )
         print(f"[train] dry-run OK: config={config_path}")
         return 0

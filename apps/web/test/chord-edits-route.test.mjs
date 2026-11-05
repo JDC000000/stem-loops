@@ -1,5 +1,6 @@
-// POST /api/chord-edits route tests — PR-Y1.7 (TSD §1.6a).
-// Harness copied from jobs-link-paid-blocked.test.mjs (stubbed deps, no DB).
+// POST /api/chord-edits route tests — PR-Y1.7 (TSD §1.6a) + session-6
+// audit v2 F3 (ownership, validation, atomic rate-limit).
+// Harness stubs deps; no real DB.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,15 +22,23 @@ function authStub(user) {
   return dataUrl(`export const getUser = async () => (${JSON.stringify(user)});`);
 }
 
+/**
+ * The new route uses both `db.query` (for the ownership check) and
+ * `db.tx` (for the rate-limit + INSERT). The stub must support both.
+ *
+ * `ownershipRowCount`:  controls the "SELECT 1 FROM public.jobs WHERE id=$1 AND user_id=$2"
+ * `recentCount`:        rate-limit count returned inside tx
+ * `insertRows`:         rows returned by the INSERT (inside tx)
+ * `insertThrows`:       if set, the INSERT (inside tx) throws with this code+constraint
+ */
 function dbStub({
+  ownershipRowCount = 1,
   recentCount = 0,
   insertRows = [{ id: 'edit-ok', created_at: '2026-11-04T00:00:00Z' }],
   insertRowCount = 1,
   insertThrows = null,
 } = {}) {
-  const payload = JSON.stringify({ recentCount, insertRows, insertRowCount });
-  // Inject the throw separately so it's a real Error with a .code — passing
-  // it through JSON.stringify would drop the .code.
+  const payload = JSON.stringify({ ownershipRowCount, recentCount, insertRows, insertRowCount });
   const throwBlock = insertThrows
     ? `const err = new Error(${JSON.stringify(insertThrows.message ?? 'db error')});
        err.code = ${JSON.stringify(insertThrows.code)};
@@ -39,18 +48,36 @@ function dbStub({
   return dataUrl(`
     const cfg = ${payload};
     globalThis.__calls = globalThis.__calls || [];
+    async function runQuery(text, params) {
+      globalThis.__calls.push({ fn: 'db.query', sql: text, params });
+      const t = String(text);
+      if (t.includes('FROM public.jobs') && t.includes('AND user_id')) {
+        return { rows: cfg.ownershipRowCount > 0 ? [{ '?column?': 1 }] : [], rowCount: cfg.ownershipRowCount };
+      }
+      if (t.includes('pg_advisory_xact_lock')) {
+        return { rows: [{ pg_advisory_xact_lock: null }], rowCount: 1 };
+      }
+      if (t.includes('SELECT COUNT(*)') && t.includes('chord_edits')) {
+        return { rows: [{ count: cfg.recentCount }], rowCount: 1 };
+      }
+      if (t.includes('INSERT INTO public.chord_edits')) {
+        ${throwBlock}
+        return { rows: cfg.insertRows, rowCount: cfg.insertRowCount };
+      }
+      return { rows: [], rowCount: 0 };
+    }
     export const db = {
-      query: async (text, params) => {
-        globalThis.__calls.push({ fn: 'db.query', sql: text, params });
-        const t = String(text);
-        if (t.includes('SELECT COUNT(*)') && t.includes('chord_edits')) {
-          return { rows: [{ count: cfg.recentCount }], rowCount: 1 };
+      query: runQuery,
+      tx: async (fn) => {
+        globalThis.__calls.push({ fn: 'db.tx.begin' });
+        try {
+          const result = await fn({ query: runQuery });
+          globalThis.__calls.push({ fn: 'db.tx.commit' });
+          return result;
+        } catch (err) {
+          globalThis.__calls.push({ fn: 'db.tx.rollback' });
+          throw err;
         }
-        if (t.includes('INSERT INTO public.chord_edits')) {
-          ${throwBlock}
-          return { rows: cfg.insertRows, rowCount: cfg.insertRowCount };
-        }
-        return { rows: [], rowCount: 0 };
       },
     };
   `);
@@ -97,10 +124,11 @@ function makeReq(body) {
 const USER = { user_id: '11111111-1111-1111-1111-111111111111', email: 'u@x.co' };
 const JOB_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const ALPHABET = 'a'.repeat(64);
+const TRACK_HASH = 'f'.repeat(64);
 
 const VALID_BODY = {
   job_id: JOB_ID,
-  track_hash: 't' + 'a'.repeat(63),
+  track_hash: TRACK_HASH,
   start_sec: 0.0,
   end_sec: 2.0,
   original_label: 'C',
@@ -178,28 +206,109 @@ test('400 CHORD_EDIT_INVALID on out-of-range confidence', async () => {
   assert.equal(res.body.error_code, 'CHORD_EDIT_INVALID');
 });
 
-test('429 RATE_LIMITED at 60 edits/hour', async () => {
+test('400 CHORD_EDIT_INVALID on non-hex track_hash (F3 tight validation)', async () => {
+  const mod = await loadRoute({ user: USER });
+  const res = await mod.POST(makeReq({ ...VALID_BODY, track_hash: 'g'.repeat(64) }));
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error_code, 'CHORD_EDIT_INVALID');
+});
+
+test('400 CHORD_EDIT_INVALID on track_hash length != 64 (F3)', async () => {
+  const mod = await loadRoute({ user: USER });
+  const res = await mod.POST(makeReq({ ...VALID_BODY, track_hash: 'f'.repeat(63) }));
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error_code, 'CHORD_EDIT_INVALID');
+});
+
+test('400 CHORD_EDIT_INVALID on huge start_sec (would overflow numeric(10,3)) (F3)', async () => {
+  const mod = await loadRoute({ user: USER });
+  const res = await mod.POST(makeReq({ ...VALID_BODY, start_sec: 1e12, end_sec: 1e12 + 1 }));
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error_code, 'CHORD_EDIT_INVALID');
+});
+
+test('400 CHORD_EDIT_INVALID on huge end_sec (F3)', async () => {
+  const mod = await loadRoute({ user: USER });
+  const res = await mod.POST(makeReq({ ...VALID_BODY, start_sec: 0, end_sec: 1e12 }));
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error_code, 'CHORD_EDIT_INVALID');
+});
+
+test('400 CHORD_EDIT_INVALID on oversized provider_version (F3)', async () => {
+  const mod = await loadRoute({ user: USER });
+  const res = await mod.POST(makeReq({ ...VALID_BODY, provider_version: 'x'.repeat(65) }));
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error_code, 'CHORD_EDIT_INVALID');
+});
+
+test('400 CHORD_EDIT_INVALID on oversized cqt_plan_version (F3)', async () => {
+  const mod = await loadRoute({ user: USER });
+  const res = await mod.POST(makeReq({ ...VALID_BODY, cqt_plan_version: 'x'.repeat(65) }));
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error_code, 'CHORD_EDIT_INVALID');
+});
+
+test('400 CHORD_EDIT_INVALID on oversized original_label (F3)', async () => {
+  const mod = await loadRoute({ user: USER });
+  const res = await mod.POST(makeReq({ ...VALID_BODY, original_label: 'x'.repeat(17) }));
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error_code, 'CHORD_EDIT_INVALID');
+});
+
+test('404 CHORD_EDIT_INVALID when job_id is not owned by this user (F3)', async () => {
+  const mod = await loadRoute({ user: USER, db: { ownershipRowCount: 0 } });
+  const res = await mod.POST(makeReq(VALID_BODY));
+  assert.equal(res.status, 404);
+  assert.equal(res.body.error_code, 'CHORD_EDIT_INVALID');
+  // Must have asked ownership first, then NOT reached rate-limit or INSERT.
+  const sqls = globalThis.__calls.filter((c) => c.sql).map((c) => c.sql);
+  assert.ok(sqls[0].includes('FROM public.jobs') && sqls[0].includes('AND user_id'));
+  assert.equal(
+    sqls.find((s) => s.includes('INSERT INTO public.chord_edits')),
+    undefined,
+  );
+});
+
+test('429 RATE_LIMITED at 60 edits/hour (atomic under tx + advisory lock)', async () => {
   const mod = await loadRoute({ user: USER, db: { recentCount: 60 } });
   const res = await mod.POST(makeReq(VALID_BODY));
   assert.equal(res.status, 429);
   assert.equal(res.body.error_code, 'RATE_LIMITED');
-  // Insert must NOT run when rate-limited.
+  // Advisory lock must have been acquired (F3: atomic path).
+  const lockCall = globalThis.__calls.find(
+    (c) => c.sql && String(c.sql).includes('pg_advisory_xact_lock'),
+  );
+  assert.ok(lockCall, 'advisory lock must run before the COUNT');
+  // INSERT must NOT run.
   const insertCall = globalThis.__calls.find(
-    (c) => c.fn === 'db.query' && String(c.sql).includes('INSERT INTO public.chord_edits'),
+    (c) => c.sql && String(c.sql).includes('INSERT INTO public.chord_edits'),
   );
   assert.equal(insertCall, undefined);
+  // The tx must have rolled back, not committed.
+  assert.ok(globalThis.__calls.find((c) => c.fn === 'db.tx.rollback'));
+  assert.equal(globalThis.__calls.find((c) => c.fn === 'db.tx.commit'), undefined);
 });
 
-test('201 on valid submission returns edit_id + created_at', async () => {
+test('201 on valid submission runs ownership check, then tx (lock+count+insert)', async () => {
   const mod = await loadRoute({ user: USER, db: { recentCount: 0 } });
   const res = await mod.POST(makeReq(VALID_BODY));
   assert.equal(res.status, 201);
   assert.equal(res.body.edit_id, 'edit-ok');
   assert.ok(res.body.created_at);
-  // Rate-limit check ran first, then the INSERT.
-  const sqls = globalThis.__calls.filter((c) => c.fn === 'db.query').map((c) => c.sql);
-  assert.ok(sqls[0].includes('SELECT COUNT(*)') && sqls[0].includes('chord_edits'));
-  assert.ok(sqls[1].includes('INSERT INTO public.chord_edits'));
+  // Order: ownership → tx.begin → advisory-lock → COUNT → INSERT → tx.commit.
+  const calls = globalThis.__calls;
+  const idx = (pred) => calls.findIndex(pred);
+  const i_own = idx((c) => c.sql && String(c.sql).includes('FROM public.jobs'));
+  const i_begin = idx((c) => c.fn === 'db.tx.begin');
+  const i_lock = idx((c) => c.sql && String(c.sql).includes('pg_advisory_xact_lock'));
+  const i_count = idx((c) => c.sql && String(c.sql).includes('SELECT COUNT(*)'));
+  const i_insert = idx((c) => c.sql && String(c.sql).includes('INSERT INTO public.chord_edits'));
+  const i_commit = idx((c) => c.fn === 'db.tx.commit');
+  assert.ok(i_own >= 0 && i_begin > i_own, 'ownership check runs before tx opens');
+  assert.ok(i_lock > i_begin, 'advisory lock inside tx');
+  assert.ok(i_count > i_lock, 'count after lock');
+  assert.ok(i_insert > i_count, 'insert after count');
+  assert.ok(i_commit > i_insert, 'commit after insert');
 });
 
 test('201 includes optional fields (confidence, cqt_plan_version) in the INSERT', async () => {
@@ -209,7 +318,7 @@ test('201 includes optional fields (confidence, cqt_plan_version) in the INSERT'
   );
   assert.equal(res.status, 201);
   const insertCall = globalThis.__calls.find(
-    (c) => c.fn === 'db.query' && String(c.sql).includes('INSERT INTO public.chord_edits'),
+    (c) => c.sql && String(c.sql).includes('INSERT INTO public.chord_edits'),
   );
   assert.ok(insertCall);
   // Params: [user_id, job_id, track_hash, provider, provider_version,

@@ -86,6 +86,7 @@ test('WebGPU unavailable → falls back to WASM', async () => {
     webgpuAvailable: () => false,
     isAdreno: () => false,
     sessionFactory: factory,
+    skipModelVerification: true,
   });
   assert.equal(session.provider, 'wasm');
   assert.equal(session.webgpuDisabled, false);
@@ -104,6 +105,7 @@ test('Adreno detection → forces WASM, flags webgpuDisabled', async () => {
     webgpuAvailable: () => true, // would use WebGPU normally
     isAdreno: () => true,
     sessionFactory: factory,
+    skipModelVerification: true,
   });
   assert.equal(session.provider, 'wasm');
   assert.equal(session.webgpuDisabled, true);
@@ -121,6 +123,7 @@ test('Parity drift → disables WebGPU and persists via sessionStorage', async (
     webgpuAvailable: () => true,
     isAdreno: () => false,
     sessionFactory: factory,
+    skipModelVerification: true,
   });
   assert.equal(session.provider, 'wasm');
   assert.equal(session.webgpuDisabled, true);
@@ -140,6 +143,7 @@ test('Parity match → keeps WebGPU', async () => {
     webgpuAvailable: () => true,
     isAdreno: () => false,
     sessionFactory: factory,
+    skipModelVerification: true,
   });
   assert.equal(session.provider, 'webgpu');
   assert.equal(session.webgpuDisabled, false);
@@ -155,6 +159,7 @@ test('WebGPU create() throws → falls back to WASM', async () => {
     webgpuAvailable: () => true,
     isAdreno: () => false,
     sessionFactory: factory,
+    skipModelVerification: true,
   });
   assert.equal(session.provider, 'wasm');
   assert.equal(session.webgpuDisabled, true);
@@ -165,6 +170,7 @@ test('runFrames: shape mismatch throws', async () => {
   const session = await loadChordnetSession('/stub.onnx', {
     webgpuAvailable: () => false,
     sessionFactory: factory,
+    skipModelVerification: true,
   });
   await assert.rejects(
     () => session.runFrames(new Float32Array(10), 1),
@@ -177,6 +183,7 @@ test('runFrames: returns a Float32Array of nFrames * 60', async () => {
   const session = await loadChordnetSession('/stub.onnx', {
     webgpuAvailable: () => false,
     sessionFactory: factory,
+    skipModelVerification: true,
   });
   const nFrames = 5;
   const logits = await session.runFrames(

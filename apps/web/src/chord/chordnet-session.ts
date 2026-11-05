@@ -15,11 +15,148 @@
 import * as ort from 'onnxruntime-web';
 
 import { N_CHORD_CLASSES } from './alphabet.ts';
+import { sha256Hex } from './sha256.ts';
 
 export const CHORDNET_INPUT_BINS = 144;
 export const DEFAULT_MODEL_URL = '/chord-stub.onnx';
 const SS_WEBGPU_DISABLED = 'stem-loops.chordnet.webgpu-disabled-v1';
 const PARITY_TOL = 1e-3;
+
+/**
+ * Hard upper bound on the ChordNet ONNX payload. The trained variant-Y
+ * model is ~14 MB; the stub is tiny. Anything beyond 50 MB is either a
+ * mis-routed response (HTML error page from a compromised CDN) or an
+ * attempt to exhaust memory before verification completes.
+ */
+export const MAX_MODEL_BYTES = 50 * 1024 * 1024;
+
+/**
+ * Build-time-embedded SHA-256 of the ChordNet ONNX payload (64 lowercase
+ * hex chars). Required in production when CHORDS_PROVIDER=internal; the
+ * model URL is host-controlled (R2 / CDN) and an unverified byte stream
+ * flows directly into a chord decoder whose output seeds the
+ * chord-edits → weekly-fine-tune flywheel. See session-6 security audit
+ * v2 finding F2 and `cqt-frontend.ts`'s EXPECTED_CQT_PLAN_SHA256 pattern.
+ *
+ * `null` means the operator has not pinned a hash — a development-only
+ * state. `fetchVerifiedModel()` warns in dev (`NODE_ENV !== 'production'`)
+ * and throws in prod.
+ *
+ * Next.js inlines `process.env.NEXT_PUBLIC_*` references at build time, so
+ * in the browser bundle this collapses to a literal string. In the Node
+ * test harness (where `process.env` can still change), use dynamic import
+ * with a cache-busting query string to pick up a new value — see the
+ * `.security.test.mjs` suite for the pattern.
+ */
+function readExpectedModelSha(): string | null {
+  if (typeof process === 'undefined' || !process.env) return null;
+  const v = process.env.NEXT_PUBLIC_CHORDNET_MODEL_SHA256;
+  if (!v) return null;
+  const trimmed = v.trim().toLowerCase();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export const EXPECTED_MODEL_SHA256: string | null = readExpectedModelSha();
+
+const HEX64_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * Module-level cache of verified model bytes, keyed by URL. Both the
+ * WASM and WebGPU InferenceSession.create() calls reuse these bytes so
+ * we fetch (and verify) once per page-load. Reset for tests via
+ * `__resetVerifiedModelCacheForTests()`.
+ */
+const verifiedModelCache = new Map<string, Uint8Array>();
+
+/**
+ * Fetch `url`, cap at MAX_MODEL_BYTES, verify SHA-256 against
+ * EXPECTED_MODEL_SHA256, and return the raw ONNX bytes. Throws on any
+ * failure mode (fetch non-2xx, oversize, hash mismatch, unset pin in
+ * production). Caches per-URL so repeat calls (WASM + WebGPU sessions)
+ * don't re-fetch or re-verify.
+ *
+ * `fetchImpl` is only used by tests; browser callers get global fetch.
+ */
+export async function fetchVerifiedModel(
+  url: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Uint8Array> {
+  const cached = verifiedModelCache.get(url);
+  if (cached) return cached;
+
+  const isProd =
+    typeof process !== 'undefined' &&
+    process.env &&
+    process.env.NODE_ENV === 'production';
+
+  // Re-read at call time so the Node test harness can swap env between
+  // cases without rewiring the module graph. In the browser bundle,
+  // Next.js inlines `process.env.NEXT_PUBLIC_*` at build time, so this
+  // collapses to the same literal string the EXPECTED_MODEL_SHA256
+  // constant was initialised with.
+  const pin = readExpectedModelSha();
+
+  if (!pin) {
+    const msg =
+      'chordnet: NEXT_PUBLIC_CHORDNET_MODEL_SHA256 is not set — the model ' +
+      'URL is unverified. Set a 64-hex SHA-256 before shipping. See ' +
+      'session-6 security audit v2 finding F2.';
+    if (isProd) throw new Error(msg);
+    // eslint-disable-next-line no-console
+    console.warn(msg);
+  } else if (!HEX64_RE.test(pin)) {
+    throw new Error(
+      `chordnet: NEXT_PUBLIC_CHORDNET_MODEL_SHA256 must be 64 lowercase hex ` +
+        `chars, got ${JSON.stringify(pin).slice(0, 80)}.`,
+    );
+  }
+
+  const res = await fetchImpl(url);
+  if (!res.ok) {
+    throw new Error(
+      `chordnet: fetch ${url} failed: ${res.status} ${res.statusText}`,
+    );
+  }
+  // Size-cap before reading the full body into memory. `content-length`
+  // is advisory (a hostile CDN can omit or lie), so we re-check after
+  // read as well.
+  const declared = Number.parseInt(
+    res.headers.get('content-length') ?? '',
+    10,
+  );
+  if (Number.isFinite(declared) && declared > MAX_MODEL_BYTES) {
+    throw new Error(
+      `chordnet: model declared size ${declared} > ${MAX_MODEL_BYTES} bytes.`,
+    );
+  }
+  const buf = await res.arrayBuffer();
+  if (buf.byteLength > MAX_MODEL_BYTES) {
+    throw new Error(
+      `chordnet: model size ${buf.byteLength} > ${MAX_MODEL_BYTES} bytes.`,
+    );
+  }
+  const bytes = new Uint8Array(buf);
+
+  if (pin) {
+    const digest = await sha256Hex(bytes);
+    if (digest !== pin) {
+      throw new Error(
+        `chordnet: model sha mismatch — got ${digest}, expected ` +
+          `${pin}. Refusing to load an unverified ONNX. ` +
+          `If the model was intentionally rotated, update ` +
+          `NEXT_PUBLIC_CHORDNET_MODEL_SHA256. See security audit v2 F2.`,
+      );
+    }
+  }
+
+  verifiedModelCache.set(url, bytes);
+  return bytes;
+}
+
+/** Test-only — drop the per-URL verified-bytes cache. */
+export function __resetVerifiedModelCacheForTests(): void {
+  verifiedModelCache.clear();
+}
 
 export type ExecutionProvider = 'webgpu' | 'wasm';
 
@@ -57,6 +194,13 @@ export interface LoadOptions {
    * runtime.
    */
   sessionFactory?: SessionFactory;
+  /**
+   * Hook for tests: bypass fetch+SHA verification entirely and pass the
+   * raw URL string to the session factory. Production code never passes
+   * this; the model-SHA gate always runs on first load. See security
+   * audit v2 finding F2 and the dedicated `.security.test.mjs` suite.
+   */
+  skipModelVerification?: boolean;
 }
 
 export interface SessionLike {
@@ -67,19 +211,32 @@ export interface SessionLike {
 }
 
 export interface SessionFactory {
+  /**
+   * `source` is either the original model URL (for tests / stubbed
+   * factories that don't go through fetchVerifiedModel) or a Uint8Array
+   * of pre-verified ONNX bytes (the production path, where both the
+   * WASM and WebGPU sessions share one verified buffer).
+   */
   create: (
-    url: string,
+    source: string | Uint8Array,
     opts: { executionProviders: string[] },
   ) => Promise<SessionLike>;
 }
 
 const defaultSessionFactory: SessionFactory = {
-  async create(url, options) {
-    return ort.InferenceSession.create(url, {
+  async create(source, options) {
+    // `ort.InferenceSession.create` has separate overloads for `string` and
+    // `Uint8Array`; the union narrows cleanly via typeof so TS picks the
+    // right overload at each branch.
+    const opts: ort.InferenceSession.SessionOptions = {
       executionProviders:
         options.executionProviders as ort.InferenceSession.SessionOptions['executionProviders'],
       graphOptimizationLevel: 'all',
-    }) as unknown as SessionLike;
+    };
+    if (typeof source === 'string') {
+      return ort.InferenceSession.create(source, opts) as unknown as SessionLike;
+    }
+    return ort.InferenceSession.create(source, opts) as unknown as SessionLike;
   },
 };
 
@@ -194,14 +351,27 @@ export async function loadChordnetSession(
   let provider: ExecutionProvider = 'wasm';
   let webgpuDisabled = adrenoDetected || webgpuEverDisabled;
 
+  // Verify the ONNX bytes once per page-load, then hand the same buffer
+  // to every InferenceSession.create() call below. The alternative — two
+  // separate fetches, one per EP — would fetch the model twice AND open
+  // a second TOCTOU window where the CDN could serve different bytes
+  // after the parity gate accepted the first. See audit v2 finding F2.
+  //
+  // `skipModelVerification` is a test-only hook: when set, we pass the
+  // URL string straight to the factory (back-compat with pre-F2 tests
+  // whose stub factories don't go through fetch).
+  const source: string | Uint8Array = opts.skipModelVerification
+    ? url
+    : await fetchVerifiedModel(url);
+
   // Create a WASM session first unconditionally — parity needs both.
-  const wasmSession = await factory.create(url, {
+  const wasmSession = await factory.create(source, {
     executionProviders: ['wasm'],
   });
 
   if (tryWebGPU && !opts.skipParityGate) {
     try {
-      const webgpuSession = await factory.create(url, {
+      const webgpuSession = await factory.create(source, {
         executionProviders: ['webgpu'],
       });
       const fixture = parityFixture();
@@ -239,7 +409,7 @@ export async function loadChordnetSession(
     }
   } else if (tryWebGPU && opts.skipParityGate) {
     try {
-      session = await factory.create(url, {
+      session = await factory.create(source, {
         executionProviders: ['webgpu'],
       });
       provider = 'webgpu';

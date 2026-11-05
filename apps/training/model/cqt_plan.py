@@ -10,6 +10,7 @@ still matches.
 This module is the single source of truth for those parameters:
 
 - :class:`CQTPlan` — the frozen dataclass naming every value.
+<<<<<<< HEAD
 - :data:`PLAN` — the canonical Y1 instance.
 - :func:`librosa_cqt` — the thin wrapper every training-side consumer calls.
 - :func:`serialize_plan` / :func:`deserialize_plan` — JSON round-trip used by
@@ -24,15 +25,53 @@ research synthesis in the project folder):
 - ``hop_length = 2048`` → 10.77 Hz frame rate at 22 050 Hz. Aligned with the
   Billboard / BTC beat-synchronous annotation cadence; coarse enough to keep
   per-song cost down and fine enough to resolve chord changes inside a bar.
+=======
+- :data:`PLAN` — the canonical Y1 instance (currently v2).
+- :func:`librosa_cqt` — the thin wrapper every training-side consumer calls.
+- :func:`serialize_plan` / :func:`deserialize_plan` — JSON round-trip used by
+  ``apps/training/model/cqt-plan.v2.json`` and, in a later PR, by the
+  browser-side CQT implementation that reads the same manifest.
+  ``apps/training/model/cqt-plan.v1.json`` is retained as a legacy artifact
+  for A/B comparison against the pre-red-team baseline; models trained on v1
+  cannot be scored with v2 without a retrain. See ``MIGRATION_NOTE.md``.
+
+Rationale for each pinned value (per the Y1 chord-model decision record,
+research synthesis, and the alphabet+CQT red-team brief in the project
+folder):
+
+- ``sample_rate = 22050`` — matches the BTC / SheetSage2 training recipe and
+  halves wall-clock vs 44.1 kHz with no measurable chord-eval regression.
+- ``hop_length = 1024`` → 21.53 Hz frame rate at 22 050 Hz **(v2)**. The v1
+  hop of 2048 (10.77 Hz) was flagged by the red team: SheetSage2 and
+  ChordFormer both use ≤1024. Coarser hops smear chord boundaries between
+  frames — most audible on fast tempi where a bar is only a few frames wide.
+>>>>>>> origin/v3/main
 - ``fmin_hz = 32.70`` (C1) + ``n_bins = 144`` + ``bins_per_octave = 24`` —
   6 octaves of coverage (C1 … B6) at quarter-tone resolution. Spans the
   fundamental range of every instrument we train on (bass guitar up through
   piano high register) without wasting bins on inaudible subharmonics or
+<<<<<<< HEAD
   the brittle top of the keyboard.
 - ``log_amplitude = True`` + ``z_norm = "global"`` — amplitude-to-dB with a
   per-corpus mean/std standardization. The mean/std themselves are computed
   over the full training split and written next to the manifest when the
   trainer snapshot ships.
+=======
+  the brittle top of the keyboard. The red team suggested bumping fmin to
+  E1 to save 4 bins; we did NOT adopt that — jazz tracks in McGill Billboard
+  have upright bass below E1, and 4 bins of savings is not worth truncating
+  the fundamental range. See ``MIGRATION_NOTE.md``.
+- ``log_amplitude = True`` + ``z_norm = "per_song"`` **(v2)** — amplitude-to-dB
+  followed by per-clip (song-local) mean/std standardization. The v1 plan
+  used ``"global"`` (corpus mean/std); the red team flagged that all three
+  peer systems (SheetSage2, ChordFormer, BTC) use per-song, because dynamic
+  range varies ~40 dB between acoustic folk and death-metal tracks and a
+  global z-norm effectively crushes quiet material into near-zero inputs.
+- ``hpf_hz = 70.0`` **(v2, NEW)** — high-pass filter applied *before* the
+  CQT to remove sub-bass rumble that carries no pitch information for
+  chord recognition. ChordFormer uses the same 70 Hz corner. Set to
+  ``0.0`` to disable (reserved for diagnostic use).
+>>>>>>> origin/v3/main
 
 A versioned, hashed JSON of this plan is what downstream code loads; see
 :func:`write_manifest` for the on-disk format.
@@ -62,8 +101,13 @@ class CQTPlan:
     sample_rate: int = 22050
     """Target sample rate in Hz. Audio is resampled on the way in."""
 
+<<<<<<< HEAD
     hop_length: int = 2048
     """Hop size in samples. At 22 050 Hz, 2048 ≈ 10.77 Hz frame rate."""
+=======
+    hop_length: int = 1024
+    """Hop size in samples. At 22 050 Hz, 1024 ≈ 21.53 Hz frame rate (v2)."""
+>>>>>>> origin/v3/main
 
     fmin_hz: float = 32.70
     """Centre frequency of the lowest CQT bin. 32.70 Hz = C1."""
@@ -77,6 +121,7 @@ class CQTPlan:
     log_amplitude: bool = True
     """If True, apply ``librosa.amplitude_to_db`` after the magnitude CQT."""
 
+<<<<<<< HEAD
     z_norm: str = "global"
     """
     Standardization mode applied to the log-amplitude CQT.
@@ -87,11 +132,42 @@ class CQTPlan:
       known.
     - ``"per_track"`` — standardize each clip independently. Faster to
       implement but gives up amplitude discrimination across tracks.
+=======
+    z_norm: str = "per_song"
+    """
+    Standardization mode applied to the log-amplitude CQT.
+
+    - ``"per_song"`` — standardize each clip independently against its own
+      mean/std. v2 default. Matches SheetSage2 / ChordFormer / BTC and makes
+      the input distribution insensitive to per-track loudness.
+    - ``"per_track"`` — alias for ``"per_song"``; kept for backward-compat
+      with any caller that typed the older name. Behaviour is identical.
+    - ``"global"`` — v1 behaviour: subtract a corpus-level mean and divide
+      by a corpus-level std. The actual (mean, std) pair is NOT part of this
+      plan; it is written alongside the trainer snapshot. Retained for
+      loading v1 manifests in A/B comparisons.
+>>>>>>> origin/v3/main
     - ``"none"`` — pass-through. Reserved for diagnostic use; the Y1
       recipe never ships with this value.
     """
 
+<<<<<<< HEAD
     version: str = "v1"
+=======
+    hpf_hz: float = 70.0
+    """
+    Corner frequency of the high-pass filter applied *before* the CQT (v2).
+
+    ``0.0`` disables the filter. The default of 70 Hz matches ChordFormer:
+    sub-bass energy below 70 Hz carries almost no chord-identifying
+    information (the lowest piano C is ~32 Hz but chord recognition relies
+    on the harmonic stack, not the rumbling fundamental). The filter is a
+    4th-order Butterworth applied bidirectionally via ``sosfiltfilt`` so it
+    is zero-phase — no latency, no smearing of transients.
+    """
+
+    version: str = "v2"
+>>>>>>> origin/v3/main
     """Plan schema version. Bump on ANY field change."""
 
 
@@ -101,9 +177,67 @@ class CQTPlan:
 PLAN = CQTPlan()
 
 
+<<<<<<< HEAD
 def librosa_cqt(y: np.ndarray, plan: CQTPlan = PLAN) -> np.ndarray:
     """Compute a log-amplitude, standardized CQT for ``y`` under ``plan``.
 
+=======
+def apply_hpf(y: np.ndarray, plan: CQTPlan) -> np.ndarray:
+    """Apply the plan's pre-CQT high-pass filter.
+
+    A 4th-order Butterworth, applied zero-phase via ``sosfiltfilt`` so there
+    is no group-delay bias on transients. When ``plan.hpf_hz <= 0`` the
+    input is returned unchanged. When the corner is impractically close to
+    Nyquist (``hpf_hz >= sample_rate / 2``) the call falls back to the
+    unfiltered input rather than raising — the CQT itself will throw away
+    the signal in that pathological case.
+
+    This is a separate function so tests (and later the browser-side CQT
+    port) can exercise the filter independently of librosa.
+
+    Parameters
+    ----------
+    y
+        Mono audio samples at ``plan.sample_rate`` Hz.
+    plan
+        The CQT plan whose ``hpf_hz`` corner to use.
+
+    Returns
+    -------
+    numpy.ndarray
+        A ``float32`` copy of ``y`` with frequencies below ``plan.hpf_hz``
+        attenuated by ≥24 dB/octave. Shape and dtype match the input.
+    """
+    import numpy as np
+
+    y = np.asarray(y, dtype=np.float32)
+    if plan.hpf_hz <= 0.0:
+        return y
+
+    nyquist = plan.sample_rate / 2.0
+    if plan.hpf_hz >= nyquist:
+        return y
+
+    from scipy.signal import butter, sosfiltfilt
+
+    # 4th-order Butterworth, SOS form (numerically stabler than b/a for
+    # low corners relative to the sample rate).
+    sos = butter(4, plan.hpf_hz / nyquist, btype="highpass", output="sos")
+    return sosfiltfilt(sos, y).astype(np.float32)
+
+
+def librosa_cqt(y: np.ndarray, plan: CQTPlan = PLAN) -> np.ndarray:
+    """Compute a log-amplitude, standardized CQT for ``y`` under ``plan``.
+
+    v2 pipeline order:
+
+    1. High-pass filter at ``plan.hpf_hz`` (``0`` disables; default 70 Hz).
+    2. Magnitude CQT with ``plan.hop_length`` / ``plan.fmin_hz`` /
+       ``plan.n_bins`` / ``plan.bins_per_octave``.
+    3. Log-amplitude (``librosa.amplitude_to_db``) if ``plan.log_amplitude``.
+    4. Standardization per ``plan.z_norm`` — ``per_song`` is the v2 default.
+
+>>>>>>> origin/v3/main
     Parameters
     ----------
     y
@@ -122,17 +256,38 @@ def librosa_cqt(y: np.ndarray, plan: CQTPlan = PLAN) -> np.ndarray:
 
     Notes
     -----
+<<<<<<< HEAD
     This wrapper intentionally imports ``librosa`` and ``numpy`` lazily so
     importing :mod:`training.model.cqt_plan` is free for callers that only
     need the dataclass or the serializer (notably the browser-side JSON
     writer and every one of our unit tests).
+=======
+    This wrapper intentionally imports ``librosa``, ``numpy`` and ``scipy``
+    lazily so importing :mod:`training.model.cqt_plan` is free for callers
+    that only need the dataclass or the serializer (notably the browser-side
+    JSON writer and every one of our unit tests).
+
+    TODO(v3?): pre-emphasis filter. ChordFormer uses a 0.97 pre-emphasis
+    before its spectrogram; we have not re-run the ablation for CQT inputs
+    so v2 omits it. Revisit if WCSR plateaus below the Y1 target.
+>>>>>>> origin/v3/main
     """
     import librosa
     import numpy as np
 
+<<<<<<< HEAD
     # Magnitude CQT in librosa returns (n_bins, n_frames); we transpose below.
     cqt = librosa.cqt(
         y=y,
+=======
+    # 1. Pre-CQT high-pass (v2). No-op when plan.hpf_hz == 0.
+    y_filt = apply_hpf(y, plan)
+
+    # 2. Magnitude CQT. librosa returns (n_bins, n_frames); we transpose
+    #    below so the on-disk layout matches the browser-side CQT.
+    cqt = librosa.cqt(
+        y=y_filt,
+>>>>>>> origin/v3/main
         sr=plan.sample_rate,
         hop_length=plan.hop_length,
         fmin=plan.fmin_hz,
@@ -141,6 +296,7 @@ def librosa_cqt(y: np.ndarray, plan: CQTPlan = PLAN) -> np.ndarray:
     )
     mag = np.abs(cqt).astype(np.float32)
 
+<<<<<<< HEAD
     if plan.log_amplitude:
         mag = librosa.amplitude_to_db(mag, ref=np.max).astype(np.float32)
 
@@ -152,6 +308,23 @@ def librosa_cqt(y: np.ndarray, plan: CQTPlan = PLAN) -> np.ndarray:
         std = float(mag.std()) or 1.0
         mag = (mag - mean) / std
     elif plan.z_norm == "per_track":
+=======
+    # 3. Log-amplitude.
+    if plan.log_amplitude:
+        mag = librosa.amplitude_to_db(mag, ref=np.max).astype(np.float32)
+
+    # 4. Standardization. v2 default is per_song (each clip against its own
+    #    mean/std); v1 global is retained for loading legacy manifests.
+    if plan.z_norm in ("per_song", "per_track"):
+        mean = float(mag.mean())
+        std = float(mag.std()) or 1.0
+        mag = (mag - mean) / std
+    elif plan.z_norm == "global":
+        # v1 semantics: corpus-level (mean, std) are pinned at
+        # trainer-snapshot time, not here. For the wrapper's purposes we
+        # fall back to per-clip standardization (the trainer overrides
+        # with its corpus statistics). Retained for backward-compat.
+>>>>>>> origin/v3/main
         mean = float(mag.mean())
         std = float(mag.std()) or 1.0
         mag = (mag - mean) / std
@@ -164,8 +337,22 @@ def librosa_cqt(y: np.ndarray, plan: CQTPlan = PLAN) -> np.ndarray:
 
 
 def serialize_plan(plan: CQTPlan) -> dict[str, Any]:
+<<<<<<< HEAD
     """Return the plan as a plain dict, ready to be written as JSON."""
     return asdict(plan)
+=======
+    """Return the plan as a plain dict, ready to be written as JSON.
+
+    A plan whose ``version`` is ``"v1"`` omits the v2-introduced ``hpf_hz``
+    field: the v1 on-disk manifest was hashed over an 8-field payload, and
+    stripping the field keeps the hash byte-stable across the v1 → v2
+    code change. v2 (and later) plans include every dataclass field.
+    """
+    data = asdict(plan)
+    if plan.version == "v1":
+        data.pop("hpf_hz", None)
+    return data
+>>>>>>> origin/v3/main
 
 
 def deserialize_plan(data: dict[str, Any]) -> CQTPlan:
@@ -173,7 +360,22 @@ def deserialize_plan(data: dict[str, Any]) -> CQTPlan:
 
     Unknown fields raise ``TypeError`` so a schema drift fails loudly instead
     of silently dropping values.
+<<<<<<< HEAD
     """
+=======
+
+    Backward-compat: a v1 payload (one that lacks the v2-introduced
+    ``hpf_hz`` field) is accepted and rehydrated with ``hpf_hz = 0.0``
+    (filter disabled) so the resulting plan reproduces the v1 behaviour
+    byte-for-byte. The ``version`` field is taken from the payload, so a
+    deserialized v1 plan still carries ``version == "v1"`` — tests use this
+    to assert the loaded plan is NOT the current v2 default.
+    """
+    data = dict(data)
+    # v1 manifests predate hpf_hz; fill in the v1 semantics (filter off).
+    if data.get("version") == "v1" and "hpf_hz" not in data:
+        data["hpf_hz"] = 0.0
+>>>>>>> origin/v3/main
     return CQTPlan(**data)
 
 

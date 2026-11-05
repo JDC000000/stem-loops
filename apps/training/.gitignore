@@ -28,6 +28,9 @@ wandb/
 *.ckpt
 *.safetensors
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> origin/v3/main
 
 # Synthetic-render inputs + outputs (PR-Y1.3).
 # Soundfonts are permissively licensed but large (~150 MB for FluidR3); we
@@ -39,5 +42,8 @@ wandb/
 *.mp3
 *.flac
 *.ogg
+<<<<<<< HEAD
+=======
+>>>>>>> origin/v3/main
 =======
 >>>>>>> origin/v3/main

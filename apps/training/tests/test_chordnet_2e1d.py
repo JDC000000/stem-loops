@@ -5,10 +5,85 @@ from __future__ import annotations
 import pytest
 import torch
 
+<<<<<<< HEAD
 from training.model.chordnet_2e1d import CQT_N_BINS, ChordNet2E1D
 
 # ---------------------------------------------------------------------------
 # Forward shape — structured mode
+=======
+from training.model.alphabet import N_BASS, N_QUALITY, NUM_ROOTS
+from training.model.chordnet_2e1d import CQT_N_BINS, ChordNet2E1D
+
+# ---------------------------------------------------------------------------
+# Forward shape — factored mode (v1.5 default)
+# ---------------------------------------------------------------------------
+
+
+def test_factored_is_default_output_mode() -> None:
+    model = ChordNet2E1D()
+    assert model.output_mode == "factored"
+
+
+def test_factored_forward_shapes() -> None:
+    model = ChordNet2E1D(output_mode="factored")
+    x = torch.randn(4, 128, CQT_N_BINS)
+    out = model(x)
+    assert set(out.keys()) == {"root_logits", "quality_logits", "bass_logits"}
+    assert out["root_logits"].shape == (4, 128, NUM_ROOTS + 1)
+    assert out["quality_logits"].shape == (4, 128, N_QUALITY)
+    assert out["bass_logits"].shape == (4, 128, N_BASS)
+
+
+def test_factored_grad_flow() -> None:
+    torch.manual_seed(0)
+    model = ChordNet2E1D(output_mode="factored")
+    x = torch.randn(2, 32, CQT_N_BINS)
+    out = model(x)
+    # Scalar across all three heads so each branch receives a non-zero grad.
+    loss = sum(o.float().sum() for o in out.values())
+    loss.backward()
+    for name, param in model.named_parameters():
+        assert param.grad is not None, f"{name} has no grad"
+        assert torch.isfinite(param.grad).all(), f"{name} grad is non-finite"
+    # Each of the three factored heads must have moved.
+    for head_name in ("heads.root.weight", "heads.quality.weight", "heads.bass.weight"):
+        grad = dict(model.named_parameters())[head_name].grad
+        assert grad is not None
+        assert grad.abs().sum().item() > 0.0, f"{head_name} has zero grad"
+
+
+def test_factored_predict_segments_returns_valid_structure() -> None:
+    torch.manual_seed(0)
+    model = ChordNet2E1D(output_mode="factored")
+    cqt = torch.randn(32, CQT_N_BINS)
+    segments = model.predict_segments(cqt)
+    assert isinstance(segments, list)
+    if segments:
+        assert segments[0][0] == 0
+        assert segments[-1][1] == 32
+        for s, e, label, conf in segments:
+            assert 0 <= s < e <= 32
+            assert isinstance(label, str)
+            # Factored confidence = root * quality * bass (all ≤ 1) → still in [0, 1].
+            assert 0.0 <= conf <= 1.0
+
+
+def test_factored_predict_segments_labels_parse_as_harte() -> None:
+    """Every emitted factored label must round-trip through encode_factored."""
+    from training.model.alphabet import encode_factored
+
+    torch.manual_seed(1)
+    model = ChordNet2E1D(output_mode="factored")
+    cqt = torch.randn(16, CQT_N_BINS)
+    segments = model.predict_segments(cqt)
+    for _s, _e, label, _c in segments:
+        enc = encode_factored(label)
+        assert enc is not None, f"emitted label {label!r} is unparseable"
+
+
+# ---------------------------------------------------------------------------
+# Forward shape — structured mode (PR-Y1.4 legacy)
+>>>>>>> origin/v3/main
 # ---------------------------------------------------------------------------
 
 
@@ -60,6 +135,19 @@ def test_bad_output_mode_raises() -> None:
         ChordNet2E1D(output_mode="xyz")  # type: ignore[arg-type]
 
 
+<<<<<<< HEAD
+=======
+def test_all_three_modes_roundtrip() -> None:
+    """Every supported mode constructs and forwards without crashing."""
+    x = torch.randn(1, 16, CQT_N_BINS)
+    for mode in ("factored", "structured", "flat170"):
+        model = ChordNet2E1D(output_mode=mode)  # type: ignore[arg-type]
+        out = model(x)
+        assert isinstance(out, dict)
+        assert out, f"mode {mode} produced empty output"
+
+
+>>>>>>> origin/v3/main
 # ---------------------------------------------------------------------------
 # Gradient flow — every parameter receives a non-zero grad on random data
 # ---------------------------------------------------------------------------

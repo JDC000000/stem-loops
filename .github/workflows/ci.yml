@@ -205,25 +205,54 @@ jobs:
       - name: Assert RLS + policy on every migration table
         run: python scripts/check_rls.py apps/worker/migrations/
 
-  training-merge-markers:
-    # PR-Y1.sec-F1 regression guard. A bad merge (#89 → 16378fe) landed 72+
-    # unresolved conflict markers under apps/training/ and killed the module
-    # import across the entire training pipeline. This gate catches the next
-    # one at PR time instead of on main.
-    name: "No merge markers in training/"
+  python-syntax-and-markers:
+    # R-2 (session 6 retrospective v2): CI gates every language that ships.
+    # Started as PR-Y1.sec-F1 regression guard for apps/training/ only.
+    # Session 7 widens to:
+    #   - compileall across every Python package (apps/worker, apps/training,
+    #     scripts, packages/types)
+    #   - merge-conflict marker grep repo-wide for canonical 7-wide markers
+    #     on text files (false-positive-free per 2026-11-05 audit)
+    # compileall is cheap (syntax-only, no imports) so no training dep install
+    # needed on this job.
+    name: "Python syntax (compileall) + repo-wide merge markers"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: No merge markers in training
+      - name: Merge-conflict marker grep (repo-wide, canonical 7-wide)
+        # Canonical markers only to avoid false-positives:
+        #   ^<<<<<<< <ref>   — conflict begin
+        #   ^=======$        — exact-match divider line
+        #   ^>>>>>>> <ref>   — conflict end
+        # --exclude-dir keeps node_modules / build outputs / git itself out.
         run: |
-          if grep -rE '^(<<<<<<<|=======|>>>>>>>)' apps/training/; then
-            echo "Unresolved merge markers in apps/training/"
+          if grep -rE '^(<<<<<<< |=======$|>>>>>>> )' \
+              --exclude-dir=node_modules \
+              --exclude-dir=.git \
+              --exclude-dir=.next \
+              --exclude-dir=dist \
+              --exclude-dir=build \
+              --exclude-dir=.turbo \
+              .; then
+            echo "Unresolved merge markers found. Resolve and re-push."
             exit 1
           fi
-          python -m compileall apps/training/
+      - name: compileall apps/worker
+        run: python -m compileall apps/worker/src
+      - name: compileall apps/training
+        run: python -m compileall apps/training
+      - name: compileall scripts
+        # scripts/ holds standalone tools; syntax must at least parse.
+        run: python -m compileall scripts
+      - name: compileall packages/types
+        # packages/types has python codegen; compileall its py files.
+        run: |
+          if [ -d packages/types/scripts ]; then
+            python -m compileall packages/types/scripts
+          fi
 
   check-tsd-refs:
     name: "TSD §N.M refs resolve (Fleet Playbook Move 4)"

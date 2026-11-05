@@ -88,12 +88,63 @@ test('a sustained change is preserved (no over-smoothing)', () => {
   assert.deepEqual(out.slice(7), ['C:maj', 'C:maj']);
 });
 
-test('unknown labels are ignored (treated as uniform emission)', () => {
-  // A single unknown label in the middle of a confident C run should not
-  // derail the smoothed output — the transition prior takes over.
+test('non-chord-shaped garbage is ignored (treated as uniform emission)', () => {
+  // A single non-chord-shape token in the middle of a confident C run should
+  // not derail the smoothed output — the transition prior takes over.
+  // XYZZY doesn't match the Harte-shape regex, so it falls through to the
+  // Viterbi pick (not the T5 passthrough branch).
   const raw = ['C:maj', 'C:maj', 'XYZZY', 'C:maj', 'C:maj'];
   const out = smoothChordSequence(raw);
-  // Surroundings held; middle was uniform, so Viterbi picks the self-
-  // transition from C:maj.
   for (const l of out) assert.equal(l, 'C:maj');
+});
+
+// ────────────── T5 (y1-test-coverage-audit.md): non-60-label passthrough ──
+// Klangio's output vocabulary is a strict superset of the 60-label alphabet
+// (dim, aug, sus2/4, maj6, min6, dim7, hdim7, minmaj7, bare-root triads).
+// The old smoother silently rewrote these to a neighbouring major/minor —
+// the smoother now preserves them.
+
+test('T5: C:dim passes through unchanged (dim is outside the 60-label alphabet)', () => {
+  const raw = ['C:maj', 'C:maj', 'C:dim', 'C:maj', 'C:maj'];
+  const out = smoothChordSequence(raw);
+  assert.equal(out[2], 'C:dim');
+});
+
+test('T5: F:aug passes through unchanged', () => {
+  const raw = ['C:maj', 'C:maj', 'F:aug', 'C:maj', 'C:maj'];
+  const out = smoothChordSequence(raw);
+  assert.equal(out[2], 'F:aug');
+});
+
+test('T5: G:sus4 passes through unchanged', () => {
+  const raw = ['C:maj', 'C:maj', 'G:sus4', 'C:maj', 'C:maj'];
+  const out = smoothChordSequence(raw);
+  assert.equal(out[2], 'G:sus4');
+});
+
+test('T5: A:maj6 passes through unchanged', () => {
+  const raw = ['C:maj', 'C:maj', 'A:maj6', 'C:maj', 'C:maj'];
+  const out = smoothChordSequence(raw);
+  assert.equal(out[2], 'A:maj6');
+});
+
+test('T5: D:min6 passes through unchanged', () => {
+  const raw = ['C:maj', 'C:maj', 'D:min6', 'C:maj', 'C:maj'];
+  const out = smoothChordSequence(raw);
+  assert.equal(out[2], 'D:min6');
+});
+
+test('T5: bare-root chord (no quality) passes through unchanged', () => {
+  // Klangio sometimes emits a bare root (equivalent to :maj in Chordify).
+  // The 60-label alphabet requires explicit :maj so bare roots fall outside
+  // it — passthrough should preserve them.
+  const raw = ['C:maj', 'C:maj', 'E', 'C:maj', 'C:maj'];
+  const out = smoothChordSequence(raw);
+  assert.equal(out[2], 'E');
+});
+
+test('T5: other Klangio qualities (dim7, hdim7, sus2, minmaj7) all pass through', () => {
+  const raw = ['C:dim7', 'F:hdim7', 'G:sus2', 'A:minmaj7'];
+  const out = smoothChordSequence(raw);
+  assert.deepEqual(out, raw);
 });

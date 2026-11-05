@@ -293,8 +293,22 @@ function stripInternal(b: BufferedEdit): ChordEdit {
 
 function isPermanentError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
-  // Pattern: `chord-edit submit failed: 4xx ...`
-  return /chord-edit submit failed: 4\d\d /.test(err.message) && !/ 429 /.test(err.message);
+  // Pattern: `chord-edit submit failed: <status> <body>`
+  //
+  // 4xx are permanent client errors EXCEPT:
+  //   - 401 Unauthorized  — session expired; the user will re-auth and the
+  //                         next flush should retry. Dropping here throws
+  //                         away flywheel training signal silently (T3 in
+  //                         y1-test-coverage-audit.md).
+  //   - 408 Request Timeout — transient server/network state; retry.
+  //   - 429 Too Many Requests — rate limited; retry on next flush.
+  // 5xx are server errors; always retry.
+  const match = err.message.match(/chord-edit submit failed: (\d{3}) /);
+  if (!match) return false;
+  const status = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(status)) return false;
+  if (status < 400 || status >= 500) return false; // 5xx (or non-HTTP code) → retry
+  return status !== 401 && status !== 408 && status !== 429;
 }
 
 async function safeReadErrorBody(res: Response): Promise<string> {

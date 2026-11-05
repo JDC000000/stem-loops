@@ -38,7 +38,7 @@ Report schema
     {
       "model_version": "v3-y1-exp1",
       "alphabet_sha": "...",
-      "cqt_plan_version": "v1",
+      "cqt_plan_version": "v2",
       "dataset_sha": "...",
       "n_shuffles": 3,
       "per_song": {
@@ -78,7 +78,8 @@ import numpy as np
 import torch
 
 from .model.alphabet import ALPHABET_SHA
-from .model.chordnet_2e1d import CQT_PLAN_VERSION, ChordNet2E1D
+from .model.chordnet_2e1d import ChordNet2E1D
+from .model.cqt_plan import PLAN as CQT_PLAN
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -405,7 +406,7 @@ def run_eval(
     report: dict[str, object] = {
         "model_version": model_version,
         "alphabet_sha": ALPHABET_SHA,
-        "cqt_plan_version": CQT_PLAN_VERSION,
+        "cqt_plan_version": CQT_PLAN.version,
         "dataset_sha": dataset_sha,
         "n_shuffles": shuffles,
         "seed": seed,

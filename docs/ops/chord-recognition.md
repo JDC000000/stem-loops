@@ -121,6 +121,32 @@ available stems; `chords_complete` also carries `stem`. Alert if
   `1.0` and flag a TODO in-code to derive one from strum-gap width in
   Y1.2.
 
+### Response parsing policy
+
+`_parse_klangio_response` never trusts the wire. Principle: the request is already paid
+for ($0.20), so keep every row we can prove is sane and drop the rest *loudly*; a dropped
+row is an honest gap (timestamps are absolute, later chords do not slide), whereas a guessed
+repair is a confident wrong chord.
+
+| Case | Action | Why |
+|---|---|---|
+| Not a 3+ element list | drop (`bad_shape`) | nothing to salvage |
+| Non-numeric / missing / bool / NaN / Infinity start or end | drop (`non_numeric_or_non_finite_time`) | `json.loads` accepts bare `NaN`/`Infinity`; `json.dumps` re-emits them as invalid JSON |
+| `end <= start` | drop (`end_not_after_start`) | can't tell which bound is wrong; zero duration is meaningless |
+| `end <= 0` | drop (`negative_end`) | entirely before the track |
+| `start < 0 < end` | clamp start to 0 (repair) | rounding noise at t=0 |
+| Out of order | stable sort by start (repair) | order is recoverable |
+| Overlap | trim earlier `end` to later `start` (repair) | timeline needs disjoint segments |
+| Same start as predecessor | drop later (`duplicate_start`) | ambiguous; keep first |
+| Unrecognised label | `X` (unchanged), counted | overlay renders `X` as "unknown" |
+| Rows present, zero survive | raise `ChordProviderError` | an empty track from a non-empty answer is a silent total failure |
+
+Observability: every parse emits one `klangio_parse_summary` event (level `WARNING` if any
+row was dropped or repaired or `x_fraction >= 0.30`, else `INFO`) with `rows_total`,
+`rows_kept`, `rows_dropped_malformed`, `dropped_by_reason`, `labels_mapped_to_x`,
+`x_fraction`, `segments_repaired`, `repaired_by_kind`, `bad_row_samples`, `x_label_samples`.
+A high `x_fraction` means a bad stem choice or a vocabulary mismatch.
+
 ## Spend protection
 
 Startup tier: $99/mo, 500 included requests, $0.20 each beyond. Overage is real money.

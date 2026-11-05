@@ -418,3 +418,142 @@ def test_chord_hook_skipped_when_no_harmonic_stem(
     names = [c.args[1] for c in log.call_args_list]
     assert "chords_skipped_no_harmonic_stem" in names
     assert "chords_skipped_no_instrumental_stem" not in names
+
+
+# ----------------------------- Part 4: per-job idempotency (reaper requeue) -----------------
+class _FakeR2:
+    """Tiny stateful R2: put_object stores, get_object returns or raises NoSuchKey."""
+
+    def __init__(self, preset: dict[str, bytes] | None = None) -> None:
+        self.objects: dict[str, bytes] = dict(preset or {})
+        self.put_object = MagicMock(side_effect=self._put)
+
+    def _put(self, **kw) -> None:
+        self.objects[kw["Key"]] = kw["Body"]
+
+    def get_object(self, Bucket: str, Key: str) -> dict:  # noqa: N803
+        if Key not in self.objects:
+            from botocore.exceptions import ClientError
+
+            raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "x"}}, "GetObject")
+        import io
+
+        return {"Body": io.BytesIO(self.objects[Key])}
+
+
+def _run_with_r2(job_id: str, stems: dict, result: ChordResult, r2, quota: MagicMock | None = None):
+    """Run the hook; ``quota`` stands in for the Klangio reserve that recognize() performs."""
+    provider = MagicMock()
+
+    def _recognize(*_a, **_k):
+        if quota is not None:
+            quota.reserve()
+        return result
+
+    provider.recognize.side_effect = _recognize
+    with (
+        patch("worker.chord_source.get_chord_source", return_value=provider),
+        patch("worker.storage.r2_uploader._r2", return_value=r2),
+    ):
+        pipeline._maybe_run_chord_recognition(job_id, stems, list(stems))
+    return provider
+
+
+@pytest.fixture
+def _chord_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHORDS_PROVIDER", "klangio")
+    monkeypatch.setenv("R2_BUCKET_NAME", "test-bucket")
+
+
+def test_rerun_with_artifact_makes_zero_provider_calls_and_no_quota(
+    stem_paths: dict[str, str], chord_result: ChordResult, _chord_env: None
+) -> None:
+    r2 = _FakeR2()
+    quota = MagicMock()
+    first = _run_with_r2("job-1", stem_paths, chord_result, r2, quota)
+    assert first.recognize.call_count == 1 and quota.reserve.call_count == 1
+    assert "jobs/job-1/play.chords.json" in r2.objects
+
+    # Reaper requeue: whole pipeline reruns, hook is invoked again for the same job.
+    second = _run_with_r2("job-1", stem_paths, chord_result, r2, quota)
+    assert second.recognize.call_count == 0
+    assert quota.reserve.call_count == 1  # unchanged: no increment for a call that never happened
+    assert r2.put_object.call_count == 1  # artifact not rewritten
+
+
+def test_first_run_without_artifact_behaves_as_before(
+    stem_paths: dict[str, str], chord_result: ChordResult, _chord_env: None
+) -> None:
+    r2 = _FakeR2()
+    quota = MagicMock()
+    provider = _run_with_r2("job-new", stem_paths, chord_result, r2, quota)
+    provider.recognize.assert_called_once()
+    assert quota.reserve.call_count == 1
+    assert r2.put_object.call_args.kwargs["Key"] == "jobs/job-new/play.chords.json"
+
+
+def test_artifact_for_other_job_is_not_reused(
+    stem_paths: dict[str, str], chord_result: ChordResult, _chord_env: None
+) -> None:
+    r2 = _FakeR2({"jobs/other/play.chords.json": b'{"segments":[{"label":"C"}]}'})
+    provider = _run_with_r2("job-2", stem_paths, chord_result, r2)
+    provider.recognize.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [b"", b"{not json", b"[]", b'"str"', b"{}", b'{"segments": []}', b'{"segments": null}'],
+    ids=["zero-byte", "truncated", "list", "string", "no-segments", "empty-segments", "null"],
+)
+def test_corrupt_or_empty_artifact_is_regenerated_not_permanent(
+    stem_paths: dict[str, str], chord_result: ChordResult, _chord_env: None, bad: bytes
+) -> None:
+    """Semantics: only a JSON object with a non-empty ``segments`` list suppresses the
+    provider. Anything else is regenerated and overwritten in place."""
+    key = "jobs/job-bad/play.chords.json"
+    r2 = _FakeR2({key: bad})
+    provider = _run_with_r2("job-bad", stem_paths, chord_result, r2)
+    provider.recognize.assert_called_once()
+    assert r2.objects[key] != bad and len(r2.objects[key]) > 0
+
+
+def test_reuse_check_r2_error_fails_open(
+    stem_paths: dict[str, str], chord_result: ChordResult, _chord_env: None
+) -> None:
+    """A transient R2 error on the check must not drop chords: fall through to the provider."""
+    r2 = _FakeR2()
+    r2.get_object = MagicMock(side_effect=RuntimeError("R2 503"))  # type: ignore[method-assign]
+    provider = _run_with_r2("job-503", stem_paths, chord_result, r2)
+    provider.recognize.assert_called_once()
+
+
+def test_existing_artifact_skips_before_stem_mix(
+    stem_paths: dict[str, str], chord_result: ChordResult, _chord_env: None
+) -> None:
+    r2 = _FakeR2({"jobs/job-3/play.chords.json": b'{"segments":[{"label":"C:maj"}]}'})
+    with patch.object(pipeline, "_choose_chord_input") as choose:
+        _run_with_r2("job-3", stem_paths, chord_result, r2)
+    choose.assert_not_called()
+
+
+def test_chord_heartbeat_beats_while_running_and_stops(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The chord stage (Klangio polling up to 600s) must bump jobs.updated_at inside the
+    300s reaper stale window; the beat task must be gone once the stage exits."""
+    import asyncio
+
+    from worker import replicate_client
+
+    beats: list[str] = []
+    monkeypatch.setattr(replicate_client, "HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(replicate_client, "_heartbeat", lambda jid: beats.append(jid))
+
+    async def go() -> int:
+        async with pipeline._chord_heartbeat("job-hb"):
+            await asyncio.sleep(0.1)
+        n = len(beats)
+        await asyncio.sleep(0.05)
+        assert len(beats) == n  # stopped on exit
+        return n
+
+    assert asyncio.run(go()) >= 2
+    assert set(beats) == {"job-hb"}

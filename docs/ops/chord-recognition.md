@@ -134,6 +134,25 @@ detect, so `POST /chord-recognition` is sent exactly once. Any failure (5xx, 429
 timeout) surfaces as `ChordProviderError` ("not retried: a billed job may exist");
 the caller decides whether to resubmit. The failed attempt still counts against the quota.
 
+**Idempotent per job (reaper requeues).** A job that finishes chord recognition and then
+dies in extract/upload (OOM) is requeued by the reaper up to 2 times, re-running the whole
+pipeline. Before stem selection and before the provider call (the quota is reserved inside
+`recognize()`, so a skipped call never increments it), `_maybe_run_chord_recognition` GETs
+`jobs/<id>/play.chords.json`. It is reused (log `chords_reused_existing_artifact`, zero
+provider calls) only if it is a JSON object with a non-empty `segments` list. A missing,
+zero-byte, non-JSON or segment-less object is regenerated and overwritten in place (log
+`chords_existing_artifact_invalid`), so a bad object can never leave a job permanently
+chord-less. A non-404 R2 error on the check fails open (`chords_reuse_check_failed`): at
+worst one extra request. The artifact does not record which stem was used, so one written
+under a different `CHORDS_STEM` is reused as-is; a requeue happens minutes after the first
+run, and re-billing to refresh a chart is the worse trade.
+
+**Heartbeat.** Klangio polling may run `KLANGIO_POLL_DEADLINE_SEC` (600s) against the
+reaper's 300s stale window, and nothing else bumped `jobs.updated_at` during the chord stage.
+The pipeline now heartbeats every `SEPARATION_HEARTBEAT_SECONDS` (20s) for the stage's
+duration, so a second machine's reaper (deploy overlap) cannot requeue a live job and
+submit a second billed request before the first artifact exists.
+
 **Quota accounting.** Each submit is counted *before* it is sent, against a cycle that
 renews on the 5th (`KLANGIO_BILLING_DAY`). Attempts are never refunded (a rejected request
 may still consume quota). Polls and result GETs are not counted.

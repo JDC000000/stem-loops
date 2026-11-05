@@ -223,7 +223,7 @@ ChordNet student. Two purposes:
      hex constant that was MD5-shaped and never actually compared — see
      `claude/phase-2-y1-qa-b-code-review.md` H3 and
      `claude/session-6-security-audit-v2.md` F1.
-- **SHA-256:** pending (pin before first production synthetic render)
+- **SHA-256:** 6ffd130fecbd28d743dfe2b4bcbdb6a3b3fc89bb9c862ca161317e1aa6b1d109 (pinned 2026-11-05)
 - **Citation:** Wen, F. (2000). FluidR3_GM: A General MIDI SoundFont. MIT
   License. Distributed via musical-artifacts.com.
 - **Attribution requirement:** MIT notice + author credit in the release

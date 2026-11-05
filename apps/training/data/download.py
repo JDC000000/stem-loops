@@ -153,7 +153,7 @@ FLUIDR3_URL = "https://musical-artifacts.com/artifacts/738/FluidR3_GM.sf2"
 #     | sha256sum
 # and replace the ``None`` below. Leaving it ``None`` is safe (fail-closed)
 # but blocks synthetic-render from running until pinned.
-FLUIDR3_SHA256: str | None = None
+FLUIDR3_SHA256: str | None = "6ffd130fecbd28d743dfe2b4bcbdb6a3b3fc89bb9c862ca161317e1aa6b1d109"
 FLUIDR3_LICENSE = "MIT"
 
 

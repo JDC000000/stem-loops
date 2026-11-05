@@ -17,6 +17,7 @@ everything here uses the contract names.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import resource
 import shutil
@@ -328,6 +329,50 @@ def _choose_chord_input(stem_paths: dict, preferred: str = HARMONIC_MIX) -> tupl
     return name, stem_paths[name]
 
 
+def _existing_play_chords(job_id: str) -> bool:
+    """True if a VALID ``jobs/<job_id>/play.chords.json`` already exists in R2.
+
+    Makes chord recognition idempotent per job: a reaper requeue (OOM in extract/upload)
+    re-runs the whole pipeline, and Klangio has no idempotency key, so without this every
+    rerun is another billed request. ``put_object`` is atomic on R2, so a half-written
+    object cannot occur; but a zero-byte / non-JSON / segment-less object must not
+    permanently suppress chords, so a bare existence (HEAD) check is NOT enough. We GET the
+    (small) object and require a JSON object with a non-empty ``segments`` list. Anything
+    else is treated as absent and regenerated (overwrites in place; bounded by the reaper's
+    attempt cap). A missing key is the normal first-run case. Any other R2 error fails
+    OPEN (returns False, logged): a transient R2 blip then costs at most one request,
+    whereas failing closed would silently drop chords.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from .storage import r2_uploader  # noqa: PLC0415
+
+    key = f"jobs/{job_id}/play.chords.json"
+    try:
+        obj = r2_uploader._r2().get_object(Bucket=os.environ["R2_BUCKET_NAME"], Key=key)
+        raw = obj["Body"].read()
+    except Exception as exc:  # noqa: BLE001
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        if code not in ("NoSuchKey", "404", "NotFound"):
+            log_structured("WARN", "chords_reuse_check_failed", job_id=job_id, error=str(exc)[:200])
+        return False
+    try:
+        payload = _json.loads(raw)
+        segments = payload.get("segments") if isinstance(payload, dict) else None
+        valid = isinstance(segments, list) and len(segments) > 0
+    except (ValueError, TypeError):
+        valid = False
+    if not valid:
+        log_structured(
+            "WARN",
+            "chords_existing_artifact_invalid",
+            job_id=job_id,
+            r2_key=key,
+            bytes=len(raw) if isinstance(raw, (bytes, bytearray)) else -1,
+        )
+    return valid
+
+
 def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems) -> None:
     """Y1.1 feature-flag entry point. Uploads ``play.chords.json`` to R2 or no-ops.
 
@@ -343,6 +388,17 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
     provider_name = os.environ.get("CHORDS_PROVIDER", "klangio")
     if not provider_name:
         log_structured("INFO", "chords_skipped_disabled", job_id=job_id)
+        return
+    # Idempotency gate: BEFORE stem selection (which may run an ffmpeg mix) and before the
+    # provider, whose recognize() is where the Klangio quota is reserved. Returning here means
+    # no ffmpeg, no quota increment, no billed request on a reaper rerun.
+    if _existing_play_chords(job_id):
+        log_structured(
+            "INFO",
+            "chords_reused_existing_artifact",
+            job_id=job_id,
+            r2_key=f"jobs/{job_id}/play.chords.json",
+        )
         return
     chosen = _choose_chord_input(stem_paths, preferred=CHORDS_DEFAULT_STEM)
     if not chosen:
@@ -415,6 +471,25 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
         )
         # Also tell Sentry so the Y1 bridge visibility doesn't die silently.
         sentry_sdk.capture_exception(exc)
+
+
+@contextlib.asynccontextmanager
+async def _chord_heartbeat(job_id: str):
+    """Bump ``jobs.updated_at`` every HEARTBEAT_SECONDS while the chord stage runs."""
+    from .replicate_client import HEARTBEAT_SECONDS, _heartbeat  # noqa: PLC0415
+
+    async def _beat() -> None:
+        while True:
+            await asyncio.sleep(HEARTBEAT_SECONDS)
+            await asyncio.to_thread(_heartbeat, job_id)  # best-effort; never raises
+
+    task = asyncio.create_task(_beat())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 # --------------------------- async orchestrator ----------------------------
@@ -661,7 +736,14 @@ async def _run_pipeline(job_id: str) -> None:
         # DISABLE — useful for fixture / Gate-2 runs that must not call the
         # provider. Failures here NEVER fail the pipeline: chords are an optional
         # overlay feature; a missing play.chords.json degrades Y1 UI only.
-        await asyncio.to_thread(_maybe_run_chord_recognition, job_id, stem_paths, requested_stems)
+        # Klangio polling can run 600s+ (POLL_DEADLINE_SEC) against a 300s reaper stale
+        # window and nothing else bumps updated_at here, so heartbeat for the duration.
+        # Otherwise a second machine's reaper (deploy overlap) requeues a LIVE job and
+        # the rerun submits a second billed request before the first artifact exists.
+        async with _chord_heartbeat(job_id):
+            await asyncio.to_thread(
+                _maybe_run_chord_recognition, job_id, stem_paths, requested_stems
+            )
 
         await set_status(job_id, "extracting")
         await emit_event(job_id, "extracting", "started", pct=70)

@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from training.model.cqt_plan import (
     PLAN,
     CQTPlan,

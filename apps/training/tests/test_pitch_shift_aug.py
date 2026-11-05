@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from training.data.pitch_shift_aug import (
     SemitoneRange,
     parse_range,

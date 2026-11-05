@@ -28,6 +28,7 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+
 from training.data import download as dlmod
 from training.data.download import (
     AAM_SAMPLE_COUNT,
@@ -35,6 +36,7 @@ from training.data.download import (
     ChecksumMismatchError,
     _download_aam,
     _download_billboard,
+    _download_fluidr3,
     _download_fma,
     _download_guitarset,
     _download_pdmx,
@@ -44,7 +46,7 @@ from training.data.download import (
     _verify_md5_or_abort,
     main,
 )
-from training.data.sources import by_name
+from training.data.sources import DataSource, by_name
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures.
@@ -659,6 +661,35 @@ def test_fma_idempotent_skips_existing_archives(
 # ─────────────────────────────────────────────────────────────────────────────
 # End-to-end CLI — download → manifest.
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FluidR3 (QA-B H3): the SHA guard fires on mismatch.
+# Deeper coverage of the unpinned/pinned/mismatch matrix lives in
+# ``test_fluidr3_sha_guard.py``; this test is the single-row contract check
+# that belongs beside the other checksum-mismatch assertions.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_fluidr3_checksum_mismatch_aborts(cache_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    body = b"cdn-replaced-bytes"
+    monkeypatch.setattr(dlmod, "FLUIDR3_SHA256", "f" * 64)  # 64-char hex that won't match
+
+    def handler(url: str, headers: dict[str, str]) -> _FakeStreamResponse:
+        return _FakeStreamResponse(body)
+
+    _install_stream(monkeypatch, handler)
+
+    source = DataSource(
+        name="fluidr3",
+        license=dlmod.FLUIDR3_LICENSE,
+        url=dlmod.FLUIDR3_URL,
+        size_gb=0.15,
+        citation="Wen, F. (2000). FluidR3_GM. MIT License.",
+        retrieval_notes="",
+    )
+    with pytest.raises(ChecksumMismatchError, match="FluidR3_GM.sf2"):
+        _download_fluidr3(source, full=False)
 
 
 def test_cli_guitarset_appends_manifest_with_sha256(

@@ -68,6 +68,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
 from training.data.sources import DATA_SOURCES, DataSource, by_name
 
 log = logging.getLogger("training.data.download")
@@ -134,7 +135,16 @@ FMA_ALLOWED_LICENSES = frozenset(
 # manifest + hash story is consistent with every other asset. FluidR3_GM is
 # the Y1 default soundfont per the decision record.
 FLUIDR3_URL = "https://musical-artifacts.com/artifacts/738/FluidR3_GM.sf2"
-FLUIDR3_SHA256 = "4f5dcc56862a9c98a8daff2812fe75f4"  # pinned at fetch time
+# QA-B H3: FluidR3 had a hex constant here previously (4f5dc...c592, which
+# is MD5-shaped at 32 chars, NOT SHA-256 which is 64 chars) that was never
+# compared against the computed hash — only logged. That silently defeated
+# DATA-PROVENANCE.md's MIT-bytes claim if the CDN swapped the artefact.
+#
+# New contract: FLUIDR3_SHA256 is None by default. On the first successful
+# download, _download_fluidr3 prints the computed sha256 and instructs the
+# operator to pin it in source. Every subsequent download refuses to accept
+# a mismatched artefact (ChecksumMismatchError, same as the Zenodo path).
+FLUIDR3_SHA256: str | None = None
 FLUIDR3_LICENSE = "MIT"
 
 
@@ -602,7 +612,20 @@ def _download_fma(source: DataSource, *, full: bool) -> list[Path]:
 
 
 def _download_fluidr3(source: DataSource, *, full: bool) -> list[Path]:
-    """Fetch the FluidR3_GM soundfont (MIT) and pin its sha256."""
+    """Fetch the FluidR3_GM soundfont (MIT) and enforce its pinned sha256.
+
+    QA-B H3: the previous version held a 32-char hex constant (MD5-shaped,
+    never a SHA-256) and *only logged* the computed hash — never compared.
+    The new contract:
+
+    - ``FLUIDR3_SHA256 is None`` (unpinned): log + print the computed hash
+      and instruct the operator to paste it back into source. The download
+      still succeeds this once so Jon can pin it.
+    - ``FLUIDR3_SHA256`` set: verify the computed hash against it; raise
+      :class:`ChecksumMismatchError` on mismatch. The MANIFEST.jsonl entry
+      is still appended with the computed SHA either way so provenance
+      stays auditable.
+    """
     _ = full
     target_dir = _source_dir(source)
     target = target_dir / "FluidR3_GM.sf2"
@@ -611,7 +634,27 @@ def _download_fluidr3(source: DataSource, *, full: bool) -> list[Path]:
         return [target]
     _stream_download(FLUIDR3_URL, target)
     actual = _sha256_of(target)
-    log.info("FluidR3_GM sha256=%s (pinned expected prefix=%s)", actual, FLUIDR3_SHA256[:16])
+    if FLUIDR3_SHA256 is None:
+        pin_notice = (
+            f"FluidR3_GM downloaded; computed sha256={actual}. "
+            "Pin this value by setting FLUIDR3_SHA256 in apps/training/data/download.py "
+            "and update apps/training/DATA-PROVENANCE.md in the same PR. Subsequent "
+            "downloads will refuse to run until the bytes on disk match the pinned hash."
+        )
+        log.warning(pin_notice)
+        print(pin_notice, file=sys.stderr)
+    elif actual != FLUIDR3_SHA256:
+        # Delete the untrusted bytes so a retry does not idempotently skip
+        # the re-download (``_already_have`` short-circuits on file-exists).
+        target.unlink(missing_ok=True)
+        raise ChecksumMismatchError(
+            "FluidR3_GM.sf2 sha256 mismatch: "
+            f"expected {FLUIDR3_SHA256}, got {actual}. Upstream artefact at "
+            f"{FLUIDR3_URL} appears to have been replaced; investigate before "
+            "updating the pin."
+        )
+    else:
+        log.info("FluidR3_GM sha256=%s (matches pin)", actual)
     return [target]
 
 

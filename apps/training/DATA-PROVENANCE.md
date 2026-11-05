@@ -196,6 +196,32 @@ ChordNet student. Two purposes:
 - **Usage scope:** Student training (real-audio feature coverage).
 - **Provenance verified by:** pending
 
+### FluidR3_GM soundfont (MIT)
+
+- **Source:** https://musical-artifacts.com/artifacts/738/FluidR3_GM.sf2
+- **License:** MIT (Frank Wen, 2000). Travels in the open-source weights
+  bundle; the MIT notice ships beside the release.
+- **Audio:** N/A — SoundFont asset, not a corpus. Used by
+  `apps/training/data/synthetic_render.py` to render the PDMX + OpenEWLD
+  MIDI/MusicXML feeds into training audio.
+- **Download command:** `python -m training.data.download --source fluidr3 --confirm`
+- **Downloaded:** pending
+- **SHA-256 pinning (QA-B H3 flow):** No SHA-256 is baked into the download
+  CLI on first run; `FLUIDR3_SHA256` in `apps/training/data/download.py`
+  starts as `None`. The first successful fetch prints the computed sha256
+  to stderr and logs it. Jon pastes that value back into `FLUIDR3_SHA256`
+  (and updates this line to record it) in the same PR; every subsequent
+  download then verifies against that pin and raises
+  `ChecksumMismatchError` on drift. This replaces the original 32-char
+  hex constant that was MD5-shaped and never actually compared — see
+  `claude/phase-2-y1-qa-b-code-review.md` H3.
+- **Citation:** Wen, F. (2000). FluidR3_GM: A General MIDI SoundFont. MIT
+  License. Distributed via musical-artifacts.com.
+- **Attribution requirement:** MIT notice + author credit in the release
+  notes.
+- **Usage scope:** Default soundfont for synthetic-rendering (PR-Y1.3).
+- **Provenance verified by:** pending
+
 ## Audio provenance for the Billboard eval
 
 The 20-song held-out eval uses Billboard chord labels against commercially-
@@ -214,3 +240,9 @@ use of commercially-released audio outside that explicit per-track table.
   manual-fetch steps that the CLI now points back to. `Downloaded`,
   `SHA-256`, and `Provenance verified by` fields stay `pending` until Jon
   actually runs each command.
+- **2026-11-04 — PR-QA-B-fixups (H3):** FluidR3_GM entry added. The
+  download CLI's `FLUIDR3_SHA256` constant is `None` on first run and is
+  pinned from the first successful fetch; mismatches on subsequent runs
+  raise `ChecksumMismatchError`. The previous 32-char hex constant was
+  MD5-shaped and never compared — bytes on disk were trusted implicitly
+  and the MIT-licensing claim rested on that implicit trust.

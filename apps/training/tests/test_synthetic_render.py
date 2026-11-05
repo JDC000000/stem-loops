@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
 from training.data.synthetic_render import (
     SOUNDFONTS,
     ChordEvent,

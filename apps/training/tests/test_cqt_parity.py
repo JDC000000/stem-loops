@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import struct
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +30,7 @@ from training.model.cqt_parity import (  # noqa: E402
     render_clip,
     verify_plan_mirror,
 )
+from training.model.cqt_plan import PLAN, apply_hpf  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Spec invariants
@@ -212,7 +214,66 @@ def test_generate_fixtures_is_deterministic(tmp_path: Path) -> None:
 # Audio SHAs are still compared EXACTLY. Clip synthesis is deterministic and
 # has never drifted across either environment.
 
-_FIXTURE_TOL = 1e-4  # float-noise band; a real change moves values by >= 1e-2
+# Two tiers, both set from MEASURED cross-machine drift (container vs GitHub
+# ubuntu-latest, same commit), not from guesswork:
+#
+#   19 of 20 clips      < 1e-4          -> _FIXTURE_TOL
+#   sine_c1_32_70hz       1.063e-4      -> _STARVED_TOL
+#
+# The outlier is the clip plan v2's 70 Hz high-pass starves of signal. It is a
+# 32.70 Hz sine at exactly the CQT's fmin, attenuated 220x (RMS 0.212 ->
+# 9.6e-04) to residual ringing near the AMIN=1e-5 floor. Absolute precision
+# collapses there, so ~10x more cross-machine drift than any other clip is
+# expected rather than surprising.
+#
+# Keeping the tight bound for the 19 clips that can meet it, instead of
+# raising one global tolerance to 1e-3, preserves 10x more sensitivity where
+# it is actually achievable. Both tiers stay orders of magnitude below a real
+# generator change (>= 1e-2), which test_fixture_tolerance_still_detects_real_drift
+# mutation-proves for each tier.
+#
+# Clip classification is COMPUTED from the audio via the plan's own filter —
+# change hpf_hz and the set reclassifies itself. Measured across all 20 clips
+# the split is unambiguous: one clip at 220x attenuation, every other at
+# <= 1.47x, so the 20x threshold sits in a wide empty gap.
+
+_FIXTURE_TOL = 1e-4  # clips the HPF leaves intact
+_STARVED_TOL = 1e-3  # clips the HPF reduces to its own residual
+_HPF_STARVE_RATIO = 20.0  # >20x RMS attenuation => starved
+
+
+def _read_wav_f32(path: Path) -> np.ndarray:
+    """Read a mono float32 WAV. stdlib `wave` cannot read format=3 (float)."""
+    b = path.read_bytes()
+    n_bytes = struct.unpack("<I", b[40:44])[0]
+    return np.frombuffer(b[44 : 44 + n_bytes], dtype="<f4")
+
+
+def _is_hpf_starved(root: Path, entry: dict) -> bool:
+    """True if the plan's own HPF removes most of this clip's energy."""
+    if PLAN.hpf_hz <= 0:
+        return False
+    audio = root / entry["audio_path"]
+    if not audio.exists():
+        return False
+    x = _read_wav_f32(audio).astype(np.float64)
+    if x.size == 0:
+        return False
+    rms_before = float(np.sqrt(np.mean(x**2)))
+    if rms_before <= 0.0:
+        return False  # exact silence reproduces fine
+    y = np.asarray(apply_hpf(x, PLAN), dtype=np.float64)
+    rms_after = float(np.sqrt(np.mean(y**2)))
+    if rms_after <= 0.0:
+        return True
+    return (rms_before / rms_after) > _HPF_STARVE_RATIO
+
+
+def _tol_for(root: Path, entry: dict) -> tuple[float, str]:
+    """Pick the tolerance tier for a clip, with a label for error messages."""
+    if _is_hpf_starved(root, entry):
+        return _STARVED_TOL, "HPF-starved"
+    return _FIXTURE_TOL, "normal"
 
 
 def _load_cqt(root: Path, entry: dict) -> np.ndarray:
@@ -269,9 +330,10 @@ def test_committed_fixtures_match_current_sha(tmp_path: Path) -> None:
             )
             continue
 
+        tol, tier = _tol_for(committed_root, committed_entry)
         max_abs = float(np.max(np.abs(live_cqt - committed_cqt)))
-        if max_abs >= _FIXTURE_TOL:
-            cqt_drift.append(f"  {name}: max abs diff {max_abs:.3e}")
+        if max_abs >= tol:
+            cqt_drift.append(f"  {name} [{tier}]: max abs diff {max_abs:.3e} >= {tol:.0e}")
 
     problems: list[str] = []
     if audio_drift:
@@ -280,8 +342,10 @@ def test_committed_fixtures_match_current_sha(tmp_path: Path) -> None:
         problems.append("CQT shape drift (plan or hop changed):\n" + "\n".join(shape_drift))
     if cqt_drift:
         problems.append(
-            f"CQT values drifted beyond {_FIXTURE_TOL:.0e} on "
-            f"{len(cqt_drift)}/{len(live_by_name)} clips:\n" + "\n".join(cqt_drift)
+            f"CQT values drifted beyond their tier tolerance on "
+            f"{len(cqt_drift)}/{len(live_by_name)} clips "
+            f"(normal {_FIXTURE_TOL:.0e}, HPF-starved {_STARVED_TOL:.0e}):\n"
+            + "\n".join(cqt_drift)
         )
     assert not problems, "committed fixtures no longer match the generator:\n\n" + "\n\n".join(problems)
 
@@ -303,15 +367,18 @@ def test_fixture_tolerance_still_detects_real_drift(tmp_path: Path) -> None:
     entry = manifest["clips"][0]
     original = _load_cqt(committed_root, entry)
 
-    # Float noise across machines: must be accepted.
-    noise = original.copy()
-    noise.flat[0] += 1e-7
-    assert float(np.max(np.abs(noise - original))) < _FIXTURE_TOL
+    for tol, label in ((_FIXTURE_TOL, "normal"), (_STARVED_TOL, "HPF-starved")):
+        # Float noise across machines: must be accepted by both tiers.
+        noise = original.copy()
+        noise.flat[0] += 1e-7
+        assert float(np.max(np.abs(noise - original))) < tol, f"{label} tier rejects float noise"
 
-    # A real generator change: must be rejected.
-    changed = original.copy()
-    changed.flat[0] += 1e-2
-    assert float(np.max(np.abs(changed - original))) >= _FIXTURE_TOL
+        # A real generator change: must be rejected by both tiers.
+        changed = original.copy()
+        changed.flat[0] += 1e-2
+        assert (
+            float(np.max(np.abs(changed - original))) >= tol
+        ), f"{label} tier accepts a real 1e-2 change — tolerance is too loose"
 
 
 def test_fixture_json_contains_cqt_base64(tmp_path: Path) -> None:

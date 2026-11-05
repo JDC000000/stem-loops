@@ -53,15 +53,31 @@ failures go to Sentry + a `chords_failed` (recognition) or
 
 ## Stem routing
 
-`ChordSource.recognize(audio_path, stem=...)` takes a `stem` hint
-(`mix` | `instrumental` | `other`). The Y1 foundations report flagged the
-instrumental stem as a free accuracy lever versus running on the full mix —
-vocals confuse most chord recognisers. The pipeline picks, in order:
+`ChordSource.recognize(audio_path, stem=...)` takes a `stem` label that is
+recorded on the result (Klangio itself has no stem parameter). The Y1 foundations
+report flagged removing vocals as a free accuracy lever versus running on the
+full mix: vocals confuse most chord recognisers.
 
-1. An explicit `instrumental` stem if Demucs already produced one.
-2. `other` (Demucs htdemucs_6s has this).
-3. `keys` / `guitar` (fallback).
-4. Skip entirely rather than feed vocals.
+`htdemucs_6s` emits exactly `vocals, drums, bass, other, guitar, keys`
+(`piano` is renamed to `keys`). **There is no `instrumental` stem.** In a 6-stem
+split `other` is the residue left after guitar and keys were extracted, so it is
+the harmonically thinnest non-vocal stem; the old ladder (`instrumental` ->
+`other` -> `keys` -> `guitar`) therefore always picked `other` and could drop
+sections whose harmony lives in guitar or keys. The pipeline now picks:
+
+1. **`harmonic_mix`** (default): `keys` + `guitar` + `other` (+ `bass` for
+   roots) summed with ffmpeg into a temporary 44.1 kHz stereo WAV (job-scoped
+   tmpdir, removed at job end). Used when 2+ of keys/guitar/other exist.
+2. A single stem when only one harmonic stem exists, or the mix fails:
+   `keys` -> `guitar` -> `other` (`other` last, it is the residue).
+3. Skip entirely (`chords_skipped_no_harmonic_stem`) when none of
+   keys/guitar/other exists. `vocals` and `drums` are never selected or mixed;
+   `bass` alone is not used.
+
+Observability: every run logs `chords_input_selected` with `chord_input`
+(`harmonic_mix` or the stem name), the configured `CHORDS_STEM`, and the
+available stems; `chords_complete` also carries `stem`. Alert if
+`chord_input=other` becomes common on 6-stem jobs.
 
 ## Klangio provider
 
@@ -142,7 +158,7 @@ See `.env.example` for the canonical list. The vars this module reads:
 | Var | Default | Purpose |
 |-----|---------|---------|
 | `CHORDS_PROVIDER` | `klangio` | Provider selector. Empty string disables the step. |
-| `CHORDS_STEM` | `instrumental` | Stem fed to the provider. Falls back to `other` / `keys` / `guitar` if the preferred stem is missing. |
+| `CHORDS_STEM` | `harmonic_mix` | Input fed to the provider: `harmonic_mix` (default), or a single stem `keys` / `guitar` / `other`. Legacy `instrumental` (no such stem exists) and unknown values resolve to `harmonic_mix`; `vocals` / `drums` are never used. A named stem that is missing falls back to the mix logic. |
 | `KLANGIO_API_KEY` | *(unset)* | Server-side only. Sent as `kl-api-key`. Obtain at klang.io/account. |
 | `KLANGIO_VOCABULARY` | `full` | `root` / `major-minor` / `full`. Required by the API. |
 | `KLANGIO_MIN_AUDIO_SEC` | `5` | Audio must be strictly longer than this. |

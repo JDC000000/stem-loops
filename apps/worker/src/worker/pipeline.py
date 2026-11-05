@@ -252,34 +252,80 @@ def process_stems(job_id, stem_paths, requested_stems, bars, sr=44100) -> int:
 
 
 # --------------------------- Y1.1: chord recognition ----------------------------
-# Default stem fed to the chord provider. "instrumental" is the free accuracy lever
-# from the Y1 foundations report (vocal track + harmonic residue is the worst-case
-# Klangio input). Override with CHORDS_STEM when a pipeline variant (e.g. a 2-stem
-# Demucs preset that skips 'instrumental') needs a different proxy.
-CHORDS_DEFAULT_STEM = os.environ.get("CHORDS_STEM", "instrumental")
+# Real stem set emitted by htdemucs_6s (see replicate_client.STEM_RENAME: piano -> keys):
+#   vocals, drums, bass, other, guitar, keys.
+# There is NO 'instrumental' stem. In a 6-stem split, 'other' is the residue left AFTER
+# guitar and keys were extracted, so it is the harmonically thinnest non-vocal stem.
+# Real songs spread harmony across instruments, so by default we sum the harmonic stems
+# into one temporary file ("harmonic_mix") and hand that to the provider.
+HARMONIC_MIX = "harmonic_mix"
+# Stems that carry harmony, in single-stem fallback order (harmony-richest first). 'other'
+# is LAST on purpose: under a 6-stem split it is the leftover residue.
+_HARMONIC_STEMS = ("keys", "guitar", "other")
+# Added to the mix (never used alone): bass supplies chord roots/inversions.
+_MIX_EXTRA_STEMS = ("bass",)
+# Legacy / alias values of CHORDS_STEM that mean "the harmonic mix". 'instrumental' was a
+# 4-stem-era assumption; existing deployments still set CHORDS_STEM=instrumental. Any other
+# unknown value (including 'vocals' / 'drums') also resolves to the mix: those two are never
+# selectable because only _HARMONIC_STEMS are ever candidates.
+CHORDS_DEFAULT_STEM = os.environ.get("CHORDS_STEM", HARMONIC_MIX)
 
 
-def _choose_chord_input(
-    stem_paths: dict, preferred: str = "instrumental"
-) -> tuple[str, str] | None:
-    """Pick the audio path handed to the chord provider.
+def _mix_stems_to_wav(stem_paths: list[str]) -> str | None:
+    """Sum stems into one 44.1k stereo WAV in a job-scoped tmpdir. None on any failure."""
+    try:
+        out = os.path.join(tmpdirs.mkdtemp(prefix="sl_chordmix_"), "harmonic_mix.wav")
+        cmd = [_ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y"]
+        for p in stem_paths:
+            cmd += ["-i", p]
+        cmd += [
+            "-filter_complex",
+            f"amix=inputs={len(stem_paths)}:normalize=0:duration=longest,alimiter=limit=0.95",
+            "-ac",
+            "2",
+            "-ar",
+            "44100",
+            "-c:a",
+            "pcm_s16le",
+            out,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if proc.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
+            log_structured("WARN", "chords_mix_failed", error=proc.stderr[:200])
+            return None
+        return out
+    except Exception as exc:  # noqa: BLE001 — caller falls back to a single stem
+        log_structured("WARN", "chords_mix_failed", error=str(exc)[:200])
+        return None
 
-    Returns ``(stem_name, local_path)`` or ``None``. The preferred stem — usually
-    ``'instrumental'`` for Demucs 6-stem presets — is tried first; otherwise we
-    fall through the foundations-report accuracy ladder (``other`` next, then
-    ``keys`` / ``guitar``). Returns ``None`` when no non-vocal stem is available;
-    the caller skips the chord step rather than feed vocals (worst accuracy).
+
+def _choose_chord_input(stem_paths: dict, preferred: str = HARMONIC_MIX) -> tuple[str, str] | None:
+    """Pick the audio handed to the chord provider.
+
+    Returns ``(label, local_path)`` or ``None``. ``label`` is ``'harmonic_mix'`` for a
+    synthesised mix or the stem name (``keys`` / ``guitar`` / ``other``) for a single stem.
+
+    * ``preferred`` is a real harmonic stem name (keys/guitar/other) and present -> that stem.
+    * Otherwise (``harmonic_mix``, legacy ``instrumental``, anything unknown) -> mix the
+      harmonic stems (keys + guitar + other, plus bass for roots) when 2+ exist; with one
+      harmonic stem use it directly; if the mix fails, fall back to the first single stem
+      in keys -> guitar -> other order.
+    * ``vocals`` / ``drums`` are never selected, even if requested. Bass alone is not
+      usable harmony. ``None`` when no keys/guitar/other exists, so the caller skips the
+      chord step rather than feed vocals.
     """
-    # Preferred first (de-duplicated against the fallback ladder below).
-    tried: list[str] = []
-    for name in (preferred, "instrumental", "other", "keys", "guitar"):
-        if name in tried:
-            continue
-        tried.append(name)
-        p = stem_paths.get(name)
-        if p:
-            return name, p
-    return None
+    harmonic = [n for n in _HARMONIC_STEMS if stem_paths.get(n)]
+    if preferred in _HARMONIC_STEMS and stem_paths.get(preferred):
+        return preferred, stem_paths[preferred]
+    if not harmonic:
+        return None
+    if len(harmonic) >= 2:
+        names = harmonic + [n for n in _MIX_EXTRA_STEMS if stem_paths.get(n)]
+        mixed = _mix_stems_to_wav([stem_paths[n] for n in names])
+        if mixed:
+            return HARMONIC_MIX, mixed
+    name = harmonic[0]
+    return name, stem_paths[name]
 
 
 def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems) -> None:
@@ -302,12 +348,21 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
     if not chosen:
         log_structured(
             "WARN",
-            "chords_skipped_no_instrumental_stem",
+            "chords_skipped_no_harmonic_stem",
             job_id=job_id,
             stems=sorted(stem_paths.keys()),
+            preferred=CHORDS_DEFAULT_STEM,
         )
         return
     stem_name, audio_path = chosen
+    log_structured(
+        "INFO",
+        "chords_input_selected",
+        job_id=job_id,
+        chord_input=stem_name,
+        preferred=CHORDS_DEFAULT_STEM,
+        available_stems=sorted(stem_paths.keys()),
+    )
 
     try:
         # Import locally — a missing chord_providers package would otherwise

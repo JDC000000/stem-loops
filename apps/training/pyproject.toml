@@ -15,6 +15,9 @@ dependencies = [
     "librosa>=0.10.2",
     "soundfile>=0.12.1",
     "numpy>=1.26.0",
+    # scipy.signal.butter + sosfiltfilt for the v2 pre-CQT high-pass filter
+    # (apps/training/model/cqt_plan.py). Added in PR-Y1.3b.
+    "scipy>=1.10",
     # Chord-eval and MIR utilities
     "mir_eval>=0.7",
     # MIDI + synthetic rendering (PR-Y1.3)

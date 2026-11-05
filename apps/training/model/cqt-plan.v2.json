@@ -1,0 +1,14 @@
+{
+  "plan": {
+    "bins_per_octave": 24,
+    "fmin_hz": 32.7,
+    "hop_length": 1024,
+    "hpf_hz": 70.0,
+    "log_amplitude": true,
+    "n_bins": 144,
+    "sample_rate": 22050,
+    "version": "v2",
+    "z_norm": "per_song"
+  },
+  "sha256": "2ecedcb2a237081d7758b42bd8068643f67d0d8d892a4625af7a0a4e53758ba0"
+}

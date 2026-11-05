@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stem-loops-training"
+version = "0.1.0"
+description = "ChordNet training pipeline for stem-loops V3 (Y1 clean-recipe)"
+requires-python = ">=3.11"
+dependencies = [
+    # Modal client — pinned min version per PR-Modal-Setup spec.
+    # Training deps mirror the Modal image's pip_install list in modal_app.py.
+    # Keep these two sources in sync when either changes.
+    "modal>=0.65",
+    # Core deep learning
+    "torch>=2.3.0",
+    "torchaudio>=2.3.0",
+    # Audio / DSP
+    "librosa>=0.10.2",
+    "soundfile>=0.12.1",
+    "numpy>=1.26.0",
+    "scipy>=1.13",
+    # Chord-eval and MIR utilities
+    "mir_eval>=0.7",
+    # MIDI + synthetic rendering (PR-Y1.3)
+    "pretty_midi>=0.2.10",
+    "pyFluidSynth>=1.3.3",
+    "music21>=9.1",
+    # Data download + manifest + config
+    "httpx>=0.27.0",
+    "tqdm>=4.66.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "black>=24.0",
+    "ruff>=0.5",
+]
+
+# Mirrors apps/worker/pyproject.toml so the two Python packages lint the
+# same way. Ruff's I ruleset handles import sorting (no isort).
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]

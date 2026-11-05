@@ -61,6 +61,20 @@ Thumbs.db
 postgres_data/
 minio_data/
 
+# V3-Y1 training — downloaded corpora, checkpoints, run artefacts
+# (see apps/training/.gitignore for the local scope too)
+apps/training/data/cache/
+apps/training/data/*/checkpoint-*/
+apps/training/data/*/wandb/
+
+# Y1 chord-recognition eval harness — audio cache + per-run reports.
+# See docs/ops/chord-recognition.md. The manifest is committed; audio and
+# report JSON are per-developer / per-run and never land in git.
+apps/worker/.chord-eval-cache/
+apps/worker/tests/chord_eval_reports/
+# play.chords.json per-job output written by the pipeline (feature-flagged).
+apps/worker/outputs/
+
 # Vercel
 .vercel/
 

@@ -534,3 +534,55 @@ export async function assertAlphabetSha(
     throw new AlphabetDriftError(ALPHABET_SHA, data.alphabet_sha);
   }
 }
+
+// ─── Compat exports consumed by PR-Y1.6 (ChordOverlay + chordnet-session) ───
+// Added when merging PR-Y1.6 (#92) alongside this codegen output.
+
+/** Alias of NUM_LABELS. Preserved for ChordOverlay/chordnet-session callers. */
+export const N_CHORD_CLASSES = NUM_LABELS;
+
+/** Alias of labelAt — the chord label for a class index. */
+export function chordLabel(cls: number): string {
+  return labelAt(cls);
+}
+
+/**
+ * Return up to k nearest chord class indices to `forCls` in the 60-label alphabet,
+ * excluding forCls itself. Used by the chord-edit popover.
+ * NB: this operates on the legacy flat-60 alphabet (NUM_LABELS), not the factored 25x13 head.
+ */
+export function nearestChords(forCls: number, k = 10): number[] {
+  if (!Number.isInteger(forCls) || forCls < 0 || forCls >= NUM_LABELS) {
+    return [];
+  }
+  const nQualities = 5; // legacy flat-60: 12 roots x 5 qualities
+  const rootIdx = Math.floor(forCls / nQualities);
+  const qualIdx = forCls % nQualities;
+  const out: number[] = [];
+  const seen = new Set<number>([forCls]);
+  const push = (idx: number) => {
+    if (idx >= 0 && idx < NUM_LABELS && !seen.has(idx)) {
+      seen.add(idx);
+      out.push(idx);
+    }
+  };
+  for (let q = 0; q < nQualities && out.length < k; q++) {
+    if (q !== qualIdx) push(rootIdx * nQualities + q);
+  }
+  const deltas = [5, 7, -5, -7, 2, -2, 1, -1, 3, -3, 4, -4, 6, -6];
+  for (const d of deltas) {
+    if (out.length >= k) break;
+    const r = ((rootIdx + d) % 12 + 12) % 12;
+    push(r * nQualities + qualIdx);
+  }
+  for (let d = 1; d < 12 && out.length < k; d++) {
+    for (const sign of [1, -1]) {
+      const r = ((rootIdx + sign * d) % 12 + 12) % 12;
+      for (let q = 0; q < nQualities && out.length < k; q++) {
+        if (q === qualIdx) continue;
+        push(r * nQualities + q);
+      }
+    }
+  }
+  return out.slice(0, k);
+}

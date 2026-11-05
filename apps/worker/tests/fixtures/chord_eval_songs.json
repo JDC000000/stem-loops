@@ -4,8 +4,12 @@
     "allowed_licenses": ["CC0", "CC BY 4.0", "CC BY 3.0", "CC BY-SA 4.0", "CC BY-SA 3.0", "Public Domain"],
     "excluded_licenses": ["CC BY-NC-*", "CC BY-ND-*", "all-rights-reserved", "YouTube-Content-ID-eligible"],
     "genre_target": {"pop": 4, "rock": 4, "folk": 2, "jazz": 2, "electronic": 2, "classical": 2, "wildcard": 4},
+<<<<<<< HEAD
     "verification_protocol": "Before CHORD_EVAL_FETCH=1 is ever flipped on, every row with verification_status != 'verified' MUST be manually reviewed against its FMA/Jamendo/YT Audio Library license page. The staging verification lead flips verification_status to 'verified' and commits the update in a follow-up PR. This file is intentionally seeded with verification_status='pending' because the PR author cannot fetch external URLs during the build and would not hallucinate specific track IDs under the CC3-strict guard.",
     "verification_log": "PR-Y1.eval-verify (2026-11-04) performed a first WebFetch-based verification pass. Companion report: chord_eval_songs.verification.json. Summary: 4 verified, 1 replace_recommended, 15 pending. Pending rows retain last_check_at + last_check_note and MUST be re-verified in a follow-up before CHORD_EVAL_FETCH=1."
+=======
+    "verification_protocol": "Before CHORD_EVAL_FETCH=1 is ever flipped on, every row with verification_status != 'verified' MUST be manually reviewed against its FMA/Jamendo/YT Audio Library license page. The staging verification lead flips verification_status to 'verified' and commits the update in a follow-up PR. This file is intentionally seeded with verification_status='pending' because the PR author cannot fetch external URLs during the build and would not hallucinate specific track IDs under the CC3-strict guard."
+>>>>>>> origin/v3/main
   },
   "songs": [
     {
@@ -18,6 +22,7 @@
       "genre": "pop",
       "expected_tempo_bpm": 110,
       "notes": "Kai Engel catalog on FMA is CC BY per artist page (verify specific track slug).",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "FMA artist page returned client_error on 2 attempts. Kai Engel's 'Idea' lives as a bandcamp album with no visible CC tag; sibling FMA albums defer to per-track pages. Need specific FMA track URL for 'Idea' with CC BY tag visible."
@@ -63,6 +68,45 @@
       "verification_status": "verified",
       "verified_at": "2026-11-04",
       "verified_via": "webfetch"
+=======
+      "verification_status": "pending"
+    },
+    {
+      "fma_id_or_jamendo_id": "josh-woodward-good-to-go",
+      "title": "Good To Go",
+      "artist": "Josh Woodward",
+      "license": "CC BY 4.0",
+      "url": "https://www.joshwoodward.com/",
+      "duration_sec": 200.0,
+      "genre": "pop",
+      "expected_tempo_bpm": 120,
+      "notes": "Josh Woodward releases entire catalog CC BY 4.0 via joshwoodward.com.",
+      "verification_status": "pending"
+    },
+    {
+      "fma_id_or_jamendo_id": "monplaisir-pop-track",
+      "title": "TBD Monplaisir pop track",
+      "artist": "Monplaisir",
+      "license": "CC0",
+      "url": "https://freemusicarchive.org/music/monplaisir/",
+      "duration_sec": 180.0,
+      "genre": "pop",
+      "expected_tempo_bpm": 115,
+      "notes": "Monplaisir releases entire FMA catalog as CC0 (public domain).",
+      "verification_status": "pending"
+    },
+    {
+      "fma_id_or_jamendo_id": "komiku-cheerful-track",
+      "title": "TBD Komiku cheerful track",
+      "artist": "Komiku",
+      "license": "CC0",
+      "url": "https://freemusicarchive.org/music/Komiku/",
+      "duration_sec": 165.0,
+      "genre": "pop",
+      "expected_tempo_bpm": 125,
+      "notes": "Komiku FMA catalog is CC0.",
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "kevin-macleod-rock-01",
@@ -74,23 +118,36 @@
       "genre": "rock",
       "expected_tempo_bpm": 128,
       "notes": "Incompetech is CC BY (attribution required); confirm specific track license page.",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "incompetech.com music page loads but doesn't surface a specific CC version in the fetched body (filter UI is JS). License page only says 'Requires that you credit the music.' License PDF and new-license announcement URLs returned client_error. Need an FMA mirror URL for a specific Kevin MacLeod rock track where the CC BY 4.0 tag renders."
+=======
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "jason-shaw-rock-01",
       "title": "TBD Jason Shaw rock track",
       "artist": "Jason Shaw",
+<<<<<<< HEAD
       "license": "CC BY 4.0",
+=======
+      "license": "CC BY 3.0",
+>>>>>>> origin/v3/main
       "url": "https://audionautix.com/",
       "duration_sec": 195.0,
       "genre": "rock",
       "expected_tempo_bpm": 132,
+<<<<<<< HEAD
       "notes": "Audionautix root page explicitly states Creative Commons Attribution 4.0 International License (previously recorded as CC BY 3.0 — corrected). Catalog-level license verified via WebFetch; specific rock track still TBD because the site's index.php rotation showed only a house track in this fetch. Flagged replace_recommended in verification report: pick a specific Audionautix rock track in a follow-up and re-verify.",
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "Catalog license CC BY 4.0 confirmed. Manifest license field corrected from 'CC BY 3.0' to 'CC BY 4.0'. Specific rock track pick needed; no rock track surfaced on audionautix.com root or /index.php during this pass."
+=======
+      "notes": "Audionautix (Jason Shaw) entire catalog is CC BY 3.0.",
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "jamendo-rock-tbd-01",
@@ -102,9 +159,13 @@
       "genre": "rock",
       "expected_tempo_bpm": 130,
       "notes": "Pick a specific track from Jamendo's CC BY rock filter; confirm license tag on the track page.",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "Jamendo search page is client-side rendered — WebFetch retrieves only meta tags, no track listings or license tags. Need a specific /track/<id> URL where the CC BY tag is server-rendered, or a direct Jamendo API lookup."
+=======
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "jamendo-rock-tbd-02",
@@ -116,9 +177,13 @@
       "genre": "rock",
       "expected_tempo_bpm": 125,
       "notes": "Second rock pick — different artist for diversity.",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "Same as row 6 — Jamendo search is JS-only. Need a specific /track/<id> URL."
+=======
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "lobo-loco-folk-ccby",
@@ -130,6 +195,7 @@
       "genre": "folk",
       "expected_tempo_bpm": 95,
       "notes": "Lobo Loco has a MIX of CC BY and CC BY-NC-SA releases — explicitly select a CC BY (not NC) track.",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "Lobo Loco FMA page shows a 2025 album titled 'Christmas Market / CC-BY' but album page returned client_error. Artist mixes CC BY + CC BY-NC-SA, so only a per-track CC BY page is safe. Need specific track URL for a CC BY (NOT CC BY-NC) folk track."
@@ -147,6 +213,21 @@
       "verification_status": "verified",
       "verified_at": "2026-11-04",
       "verified_via": "webfetch"
+=======
+      "verification_status": "pending"
+    },
+    {
+      "fma_id_or_jamendo_id": "jahzzar-folk-01",
+      "title": "TBD Jahzzar folk track",
+      "artist": "Jahzzar",
+      "license": "CC BY-SA 4.0",
+      "url": "https://freemusicarchive.org/music/Jahzzar/",
+      "duration_sec": 180.0,
+      "genre": "folk",
+      "expected_tempo_bpm": 105,
+      "notes": "Jahzzar catalog is CC BY-SA on FMA.",
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "kevin-macleod-jazz-01",
@@ -158,9 +239,13 @@
       "genre": "jazz",
       "expected_tempo_bpm": 100,
       "notes": "Jazz coverage for 7th/minor-7th chord density.",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "Jazz-filtered incompetech page loads but shows 'No Track selected.' and no track list (filter widget is JS). Same license-surface issue as row 4; need an FMA mirror URL for a specific Kevin MacLeod jazz track."
+=======
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "us-army-blues-pd-01",
@@ -172,9 +257,13 @@
       "genre": "jazz",
       "expected_tempo_bpm": 90,
       "notes": "US military ensembles release recordings as US Government public-domain works.",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "usarmyband.com returned client_error on WebFetch. Cannot confirm public-domain claim or any specific recording. May need replacement with a USAF/Navy band recording hosted on a WebFetch-reachable site."
+=======
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "dexter-britain-electronic-01",
@@ -186,9 +275,13 @@
       "genre": "electronic",
       "expected_tempo_bpm": 128,
       "notes": "Confirm the specific track is CC BY-SA 3.0 (some later releases moved to CC BY-NC).",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "FMA artist page did not surface a catalog-level license and directed to dexterbritain.com/info/#creative-commons. Sibling album probe returned client_error. Artist is known to have shifted some releases to CC BY-NC — only a specific CC BY-SA 3.0 track URL is safe."
+=======
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "podington-bear-electronic-01",
@@ -200,9 +293,13 @@
       "genre": "electronic",
       "expected_tempo_bpm": 120,
       "notes": "Podington Bear's FMA catalog mixes CC BY-NC and CC BY-SA — pick a CC BY-SA.",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "FMA artist page surfaced no catalog-level license (only a link to a 'License guide'). Catalog mixes CC BY-NC + CC BY-SA, so a specific CC BY-SA track URL is required."
+=======
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "kevin-macleod-classical-01",
@@ -214,9 +311,13 @@
       "genre": "classical",
       "expected_tempo_bpm": 80,
       "notes": "Simple triadic classical for a baseline classical test case.",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "Same license-surface block as rows 4 and 10. Need an FMA mirror URL for a specific Kevin MacLeod classical track."
+=======
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "us-marine-band-pd-01",
@@ -228,9 +329,13 @@
       "genre": "classical",
       "expected_tempo_bpm": 70,
       "notes": "US Marine Band recordings are US Government works (public domain).",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "marineband.marines.mil returned client_error on WebFetch. Cannot confirm US Government public-domain status or any specific recording."
+=======
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "wildcard-world-01",
@@ -242,9 +347,13 @@
       "genre": "wildcard",
       "expected_tempo_bpm": 110,
       "notes": "Wildcard: non-Western chord progression / modal — tests provider robustness beyond I-IV-V.",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "Jamendo search page is JS-only. Need a specific /track/<id> URL."
+=======
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "wildcard-metal-01",
@@ -256,9 +365,13 @@
       "genre": "wildcard",
       "expected_tempo_bpm": 150,
       "notes": "Wildcard: heavily distorted guitars — stress test for stem='instrumental' pathway.",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "Jamendo search page is JS-only. Need a specific /track/<id> URL."
+=======
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "wildcard-ambient-01",
@@ -270,9 +383,13 @@
       "genre": "wildcard",
       "expected_tempo_bpm": 70,
       "notes": "Wildcard: sparse/ambient — stresses the 'N' (no chord) output when there's no clear harmony.",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "FMA Ambient genre page shows artist names (Anemoia, Jon Shuemaker, amholt, Joseph Sacco, Mark Lingard) but no per-track license tags. Need a specific track URL + CC BY confirmation."
+=======
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     },
     {
       "fma_id_or_jamendo_id": "wildcard-acoustic-live-01",
@@ -284,9 +401,13 @@
       "genre": "wildcard",
       "expected_tempo_bpm": 100,
       "notes": "Wildcard: solo acoustic guitar/piano — no drums/bass, closest to upload-only own-file mode.",
+<<<<<<< HEAD
       "verification_status": "pending",
       "last_check_at": "2026-11-04T18:04:25-07:00",
       "last_check_note": "FMA Folk genre page: no per-track license tags rendered. Only 'Acoustic dream' by Melomaker surfaced (no license info). Need a specific track URL + CC BY confirmation."
+=======
+      "verification_status": "pending"
+>>>>>>> origin/v3/main
     }
   ]
 }

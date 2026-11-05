@@ -1,4 +1,4 @@
-# ChordNet 2E1D — training, eval, and alphabet (PR-Y1.4)
+# ChordNet 2E1D — training, eval, and alphabet (PR-Y1.4 / PR-Y1.4b)
 
 **Scope**: the clean-recipe ChordNet student model that powers stem-loops V3's
 chord overlay. This doc covers architecture, the training CLI, the eval ship
@@ -8,6 +8,38 @@ Everything here lives under `apps/training/` and is **not imported** by
 `apps/web/` or `apps/worker/` at runtime — the training package only ships
 weights (an ONNX export + `.pt` checkpoint) that the worker loads at serve
 time.
+
+## Factored alphabet (v1.5 — PR-Y1.4b)
+
+**Why.** Red-team Experiment A (`apps/training/exp_a_alphabet_collapse.md` on
+branch `v3-phase-2/exp-a-alphabet-collapse-audit`) measured the PR-Y1.4 flat
+60-label alphabet against 124,895 McGill Billboard (ChoCo CC BY 4.0) chord
+tokens and found it **demotes 39.04% of tokens** (7ths, slash chords, sus,
+power/unison, extensions). The factored 25-quality × 13-bass alphabet keeps
+all of that: it only drops 5.92%.
+
+**What.** Two independent softmax heads replace the single flat head:
+
+- **Quality head — 25 classes** (one per entry in `alphabet.QUALITY_LABELS`):
+  `maj min dim aug sus2 sus4 maj6 min6 maj7 min7 7 dim7 hdim7 minmaj7 maj9
+  min9 9 11 13 add9 add11 5 add6 aug7 N`.
+- **Bass head — 13 classes** (`alphabet.BASS_LABELS`):
+  `0 = same-as-root (or /1)`, `1..11 = semitones above root`, `12 = N`.
+- **Total output dim** across the three heads = 13 (root) + 25 (quality) +
+  13 (bass) = **51 output units** — *not* the Cartesian 25 × 13 = 325.
+
+**When to use.** `--output-mode factored` is the default on
+`python -m training.train`. `structured` (the PR-Y1.4 four-head) and
+`flat170` (PR-Y1.4 single-head) are kept for backward compat and remain
+fully tested; they are selected by `--output-mode structured|flat170`.
+
+**How to add a new quality.** Append the new shorthand to `QUALITY_LABELS`
+in `apps/training/model/alphabet.py` (before `"N"` so `QUALITY_N_INDEX`
+stays at 24), add any extras-based lift to `encode_factored`, and widen
+`_quality_to_flat5_table` in `chordnet_2e1d.py` with a mapping onto the
+legacy flat-5 bucket (needed only for the `validate()` MajMin proxy).
+Re-compute `ALPHABET_SHA` runs automatically on import; every existing
+checkpoint is incompatible and must be retrained.
 
 ---
 
@@ -37,15 +69,16 @@ Linear 144 → 128    ──► Encoder-1 (CNN)  ─► Encoder-2 (Transformer) 
                                  └───────────────────────────────────────┘
 ```
 
-| Stage           | Shape                                 | Notes                                    |
-| --------------- | ------------------------------------- | ---------------------------------------- |
-| CQT input       | `(B, T, 144)` float32                 | Frozen by `cqt_plan.py` (PR-Y1.3).       |
-| Input proj      | `(B, T, 128)`                         | Linear.                                  |
-| Local CNN       | `(B, T, 128)`                         | Dilations 1/2/4; receptive field ≈29 frames. |
-| Transformer     | `(B, T, 128)`                         | 4 layers.                                |
-| BiGRU           | `(B, T, 256)`                         | 1 layer, 128 hidden × 2 directions.      |
-| Heads (struct)  | 4 heads: 13 / 5 / 13 / 4              | Default output mode.                     |
-| Heads (flat170) | 170 classes                           | Opt-in.                                  |
+| Stage              | Shape                              | Notes                                        |
+| ------------------ | ---------------------------------- | -------------------------------------------- |
+| CQT input          | `(B, T, 144)` float32              | Frozen by `cqt_plan.py` (PR-Y1.3).           |
+| Input proj         | `(B, T, 128)`                      | Linear.                                      |
+| Local CNN          | `(B, T, 128)`                      | Dilations 1/2/4; receptive field ≈29 frames. |
+| Transformer        | `(B, T, 128)`                      | 4 layers.                                    |
+| BiGRU              | `(B, T, 256)`                      | 1 layer, 128 hidden × 2 directions.          |
+| Heads (factored)   | 3 heads: 13 / 25 / 13              | v1.5 default (per PR-Y1.4b / Exp A).         |
+| Heads (structured) | 4 heads: 13 / 5 / 13 / 4           | PR-Y1.4 legacy mode — kept for backward compat. |
+| Heads (flat170)    | 170 classes                        | PR-Y1.4 legacy mode — opt-in.                |
 
 **Parameter budget**: ~1.3M (structured) / ~1.4M (flat170) — well below the
 2–5M ceiling the PR-Y1.4 spec allows, in line with the single-GPU training
@@ -56,7 +89,14 @@ decoding — the 2E1D architecture itself is the invariant across Y1.4 → Y1.5.
 
 ---
 
-## 2. The 62-class alphabet (`model/alphabet.py`)
+## 2. The alphabets (`model/alphabet.py`)
+
+The module ships **two coexisting alphabets**:
+
+- **Factored (v1.5)** — 25 × 13 (see "Factored alphabet" section above).
+  Used by `output_mode="factored"`, which is the training default.
+- **Flat 62-class (PR-Y1.4 legacy)** — detailed below. Still used by
+  `output_mode="structured"` and `output_mode="flat170"`.
 
 - **60 chord labels** = 12 roots × 5 qualities (`maj`, `min`, `dim`, `aug`,
   `sus`). The "60-label alphabet" referred to in docs.
@@ -86,11 +126,15 @@ collapse is total (no orphans across all 170 source indices).
 
 ### `ALPHABET_SHA`
 
-`alphabet.ALPHABET_SHA` is a sha256 of the frozen label list. Every training
-run writes it into the checkpoint; the worker verifies it on load. **Any
-change to roots, qualities, or their ordering breaks the hash and forces a
-retrain** — so a decoder/model mismatch fails loud instead of silently
-mis-decoding.
+`alphabet.ALPHABET_SHA` is a sha256 of **both** frozen alphabets combined
+(roots + `QUALITY_LABELS` + `BASS_LABELS` + `QUALITIES` + the legacy flat
+label list, each with its canonical index). Every training run writes it
+into the checkpoint; the worker verifies it on load. **Any change to roots,
+to either alphabet's labels, or to their ordering breaks the hash and forces
+a retrain** — so a decoder/model mismatch fails loud instead of silently
+mis-decoding. The PR-Y1.4b SHA differs from the PR-Y1.4 one (different
+payload version string), so every PR-Y1.4 checkpoint is invalidated and
+must be retrained under the factored heads.
 
 ---
 
@@ -105,10 +149,16 @@ python -m training.train \
   --lr 1e-3 \
   --gpu l4 \
   --seed 42 \
+  --output-mode factored \
   --wandb-off
 ```
 
 **Required**: `--out`.
+
+**`--output-mode`**: one of `factored` (v1.5 default), `structured`, or
+`flat170`. The factored mode uses `compute_factored_class_weights` (per-head
+γ-tempered CE weights) and three independent cross-entropy losses summed
+into the total — see `_factored_loss_components` in `train.py`.
 
 ### Dataset layout
 
@@ -205,6 +255,11 @@ via `mir_eval.chord.weighted_accuracy`:
 - `--per-song-floor 0.50` is the hard gate. Below this, the eval raises
   `EvalGateFailure` and exits non-zero. The CI pipeline that calls this
   script treats non-zero as ship-blocking.
+- `--per-song-bass-floor 0.50` (PR-Y1.4b): minimum factored bass-head
+  accuracy per song. Set to `0.0` to disable; at the default `0.50`, any
+  song whose bass-head WCSR falls below 50% blocks the ship alongside the
+  MajMin floor. The factored quality head and bass head both appear in the
+  per-song report under keys `quality_head` and `bass_head`.
 
 ### Report schema
 
@@ -247,21 +302,29 @@ If the fixture is missing, the field is left `null` with a
 
 ## 5. Adding a new chord quality
 
-The 5-quality collapse is intentionally minimal for Y1. To add a sixth
-quality (say, `quartal`):
+The 25-quality factored head is intentionally the Y1 target vocabulary. To
+add a 26th quality (say, `quartal`):
 
-1. **Edit `apps/training/model/alphabet.py`**: add `"quartal"` to
-   `QUALITIES`, update `_HARTE_QUALITY_TO_COLLAPSED` with the mapping, and
-   add any new 170-class source qualities to `_ISMIR_170_QUALITIES` if they
-   are not already present.
-2. **Re-run `_compute_alphabet_sha`** — this happens automatically on import,
-   so `ALPHABET_SHA` changes. All existing checkpoints become incompatible.
-3. **Bump `output_mode="structured"` `triad` head width** by increasing the
-   `len(QUALITIES)` factor in `chordnet_2e1d._StructuredHeads`.
-4. **Add test cases** in `tests/test_alphabet.py` covering the new quality
-   round-trip and 170-collapse.
+1. **Edit `apps/training/model/alphabet.py`**: append `"quartal"` to
+   `QUALITY_LABELS` **before** the `"N"` slot so `QUALITY_N_INDEX` stays
+   at 24 (callers rely on that index being stable). Update
+   `_FACTORED_SHORTHAND_EXACT` with the shorthand → quality mapping.
+2. **Update `_quality_to_flat5_table`** in `chordnet_2e1d.py` with the
+   new slot's mapping onto the legacy flat-5 bucket (needed only for the
+   `validate()` MajMin proxy — the flat-5 collapse is unused by the
+   factored training loop itself).
+3. **Re-run `_compute_alphabet_sha`** — this happens automatically on
+   import, so `ALPHABET_SHA` changes. All existing checkpoints become
+   incompatible.
+4. **Add test cases** in `tests/test_factored_alphabet.py` covering the
+   new quality's round-trip (encode → decode → encode).
 5. **Retrain from scratch**. There is no transfer-learning path for a wider
-   triad head in Y1.
+   quality head in Y1.
+
+For the legacy `structured` mode (flat-5 collapse): follow the pre-PR-Y1.4b
+recipe (append to `QUALITIES`, update `_HARTE_QUALITY_TO_COLLAPSED`, widen
+`_StructuredHeads.triad`). That mode is kept only for backward compat and
+is not the recommended path for new vocabularies.
 
 ---
 
@@ -289,7 +352,7 @@ def train_remote(seed: int = 42, epochs: int = 30) -> str:
         batch_size=24,
         lr=1e-3,
         seed=seed,
-        output_mode="structured",
+        output_mode="factored",
         augment_pitch_shift=True,
         wandb_off=False,
         max_steps_per_epoch=0,
@@ -307,8 +370,15 @@ mount `/runs` as a volume you can download from, and fire with
 
 ## 7. Decision-record pointers
 
-- `claude/phase-2-y1-chord-model-decision.md` v1.3 — architecture + eval gate
+- `claude/phase-2-y1-chord-model-decision.md` **v1.5** — "Final alphabet
+  pin" (factored 25 × 13) switched from v1.3's flat 60 per Exp A results
   (**source of truth** for anything this doc summarises).
+- `apps/training/exp_a_alphabet_collapse.md` (branch
+  `v3-phase-2/exp-a-alphabet-collapse-audit`) — the empirical evidence for
+  the switch (39.04% Flat-60 token loss vs. 5.92% Factored on 124,895
+  McGill Billboard tokens).
+- `claude/phase-2-y1-chord-model-redteam-alphabet-cqt.md` — original
+  factored 25 × 13 proposal.
 - `claude/phase-2-y1-chord-model-synthesis.md` — research that fed v1.3.
 - `apps/training/DATA-PROVENANCE.md` — license audit trail for the open-
   source weights release.

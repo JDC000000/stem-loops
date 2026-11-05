@@ -17,14 +17,20 @@ Architecture (per PR-Y1.4 spec):
 - **Decoder**: BiGRU (128 hidden × 1 layer). PR-Y1.5 will add a CRF head on
   top of this GRU for Viterbi-smoothed decoding — the 2E1D model itself is
   the invariant architecture across PR-Y1.4 and PR-Y1.5.
-- **Output**: two modes selected by ``output_mode``:
-    - ``"structured"`` (default) — four heads: ``root`` (13), ``triad`` (5),
-      ``bass_interval`` (13), ``has_7th`` (4). Collapsed to the 62-label
-      alphabet at decode time by ``predict_segments``.
-    - ``"flat170"`` — single 170-class head; collapsed to 62 labels via
-      ``alphabet.collapse_170_to_60`` at decode time.
+- **Output**: three modes selected by ``output_mode`` (``"factored"`` is the
+  v1.5 default; the other two are kept for backward compat):
 
-Parameter budget: ~1.3–1.5M for structured mode, ~1.4M for flat170. The
+    * ``"factored"`` (default, v1.5 per Exp A verdict) — three heads:
+      ``root_logits`` (13 = 12 roots + N), ``quality_logits`` (25 per the
+      quality alphabet), ``bass_logits`` (13 per the bass alphabet). These
+      are decoded into Harte strings by ``decode_factored``.
+    * ``"structured"`` (PR-Y1.4 legacy) — four heads: ``root`` (13),
+      ``triad`` (5), ``bass_interval`` (13), ``has_7th`` (4). Collapsed to
+      the 62-label flat alphabet at decode time.
+    * ``"flat170"`` (PR-Y1.4 legacy) — single 170-class head; collapsed to
+      62 labels via ``alphabet.collapse_170_to_60`` at decode time.
+
+Parameter budget: ~1.3–1.5M for factored/structured, ~1.4M for flat170. The
 PR-Y1.4 spec called for "~2–5M params"; the faithful transcription of the
 stated hyperparameters lands at the lower end of that range, which is what
 the single-GPU / lifestyle-business training budget targets.
@@ -47,11 +53,18 @@ import torch.nn.functional as F
 
 from .alphabet import (
     ALPHABET_SHA,
+    BASS_N_INDEX,
+    BASS_SAME_INDEX,
+    N_BASS,
     N_INDEX,
+    N_QUALITY,
     NUM_LABELS,
+    NUM_ROOTS,
     QUALITIES,
+    QUALITY_N_INDEX,
     ROOTS,
     collapse_170_to_60,
+    decode_factored,
     decode_label,
 )
 
@@ -97,7 +110,6 @@ class _DilatedConvBlock(nn.Module):
 
     def __init__(self, channels: int, dilation: int) -> None:
         super().__init__()
-        # Same-padding for k=5, dilation=d: pad = (k - 1) * d // 2
         pad = (5 - 1) * dilation // 2
         self.conv = nn.Conv1d(
             in_channels=channels,
@@ -193,13 +205,34 @@ class BiGRUDecoder(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-class _StructuredHeads(nn.Module):
-    """Four output heads for the structured factorised prediction.
+class _FactoredHeads(nn.Module):
+    """Three output heads for the factored (25 × 13) prediction (v1.5).
 
-    - ``root``: 13 classes (12 pitch classes + 1 "no chord").
-    - ``triad``: 5 classes (maj/min/dim/aug/sus — matches ``QUALITIES``).
-    - ``bass_interval``: 13 classes (12 intervals above root + 1 "same as root").
-    - ``has_7th``: 4 classes (none / dim7 / min7 / maj7).
+    * ``root_logits`` : 13 classes (12 pitch classes + 1 "no chord").
+    * ``quality_logits``: ``N_QUALITY`` classes (25 — see ``alphabet.QUALITY_LABELS``).
+    * ``bass_logits``  : ``N_BASS`` classes (13 — see ``alphabet.BASS_LABELS``).
+    """
+
+    def __init__(self, hidden_dim: int) -> None:
+        super().__init__()
+        self.root = nn.Linear(hidden_dim, NUM_ROOTS + 1)
+        self.quality = nn.Linear(hidden_dim, N_QUALITY)
+        self.bass = nn.Linear(hidden_dim, N_BASS)
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        return {
+            "root_logits": self.root(x),
+            "quality_logits": self.quality(x),
+            "bass_logits": self.bass(x),
+        }
+
+
+class _StructuredHeads(nn.Module):
+    """Four output heads for the legacy PR-Y1.4 structured prediction.
+
+    Kept for backward compatibility. ``triad`` has 5 classes (the flat-60
+    collapsed qualities: maj/min/dim/aug/sus). The factored v1.5 head
+    replaces this.
     """
 
     def __init__(self, hidden_dim: int) -> None:
@@ -219,7 +252,7 @@ class _StructuredHeads(nn.Module):
 
 
 class _Flat170Head(nn.Module):
-    """Single 170-class head for the flat alphabet."""
+    """Single 170-class head for the legacy flat alphabet (PR-Y1.4)."""
 
     def __init__(self, hidden_dim: int) -> None:
         super().__init__()
@@ -234,7 +267,7 @@ class _Flat170Head(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-OutputMode = Literal["structured", "flat170"]
+OutputMode = Literal["factored", "structured", "flat170"]
 
 
 class ChordNet2E1D(nn.Module):
@@ -248,8 +281,11 @@ class ChordNet2E1D(nn.Module):
         ffn_dim: Transformer FFN hidden width.
         dropout: Transformer dropout.
         gru_hidden: BiGRU hidden size per direction.
-        output_mode: ``"structured"`` (default) or ``"flat170"``.
+        output_mode: one of ``"factored"`` (v1.5 default), ``"structured"``
+            (PR-Y1.4 legacy), or ``"flat170"`` (PR-Y1.4 legacy).
     """
+
+    _VALID_OUTPUT_MODES: tuple[str, ...] = ("factored", "structured", "flat170")
 
     def __init__(
         self,
@@ -260,11 +296,13 @@ class ChordNet2E1D(nn.Module):
         ffn_dim: int = 512,
         dropout: float = 0.1,
         gru_hidden: int = 128,
-        output_mode: OutputMode = "structured",
+        output_mode: OutputMode = "factored",
     ) -> None:
         super().__init__()
-        if output_mode not in ("structured", "flat170"):
-            raise ValueError(f"output_mode must be 'structured' or 'flat170', got {output_mode!r}")
+        if output_mode not in self._VALID_OUTPUT_MODES:
+            raise ValueError(
+                f"output_mode must be one of {self._VALID_OUTPUT_MODES}, got {output_mode!r}"
+            )
 
         self.n_bins = n_bins
         self.d_model = d_model
@@ -285,7 +323,9 @@ class ChordNet2E1D(nn.Module):
 
         hidden_out = self.decoder.out_dim
         self.heads: nn.Module
-        if output_mode == "structured":
+        if output_mode == "factored":
+            self.heads = _FactoredHeads(hidden_out)
+        elif output_mode == "structured":
             self.heads = _StructuredHeads(hidden_out)
         else:
             self.heads = _Flat170Head(hidden_out)
@@ -302,8 +342,9 @@ class ChordNet2E1D(nn.Module):
 
         Returns:
             Dict of head logits. Keys depend on ``output_mode``:
+            - factored:  ``{"root_logits", "quality_logits", "bass_logits"}``.
             - structured: ``{"root", "triad", "bass_interval", "has_7th"}``.
-            - flat170: ``{"flat170"}``.
+            - flat170:   ``{"flat170"}``.
         """
         if cqt.dim() != 3:
             raise ValueError(f"cqt must be 3D (B, T, n_bins); got shape {tuple(cqt.shape)}")
@@ -329,12 +370,13 @@ class ChordNet2E1D(nn.Module):
         """Argmax-decode frame logits to a list of ``(start_frame, end_frame, label, confidence)``.
 
         No smoothing, no Viterbi, no CRF — PR-Y1.5 wraps this with the HMM
-        transition prior. For PR-Y1.4 we simply:
+        transition prior. For PR-Y1.4b we simply:
 
         1. Forward-pass the CQT.
-        2. Collapse per-frame structured heads (or flat170) into a single
-           62-class label stream.
-        3. Merge consecutive identical labels into segments.
+        2. Argmax each head independently (factored) or collapse into the
+           flat 62-class label stream (structured / flat170).
+        3. Decode to a Harte string per frame.
+        4. Merge consecutive identical labels into segments.
 
         Args:
             cqt_frames: CQT tensor, shape ``(n_frames, n_bins)`` **or**
@@ -351,81 +393,140 @@ class ChordNet2E1D(nn.Module):
 
         self.eval()
         with torch.no_grad():
-            logits = self.forward(cqt_frames)  # dict
-            labels, confidences = self._collapse_to_62(logits)
-        labels_list: list[int] = labels.squeeze(0).tolist()
-        conf_list: list[float] = confidences.squeeze(0).tolist()
+            logits = self.forward(cqt_frames)
+            labels, confidences = self._decode_frames(logits)
 
-        if not labels_list:
+        if not labels:
             return []
+        assert len(labels) == len(confidences)  # noqa: S101 — invariant
 
         segments: list[tuple[int, int, str, float]] = []
         seg_start = 0
-        seg_label = labels_list[0]
-        seg_confs: list[float] = [conf_list[0]]
-        for t in range(1, len(labels_list)):
-            if labels_list[t] != seg_label:
+        seg_label = labels[0]
+        seg_confs: list[float] = [confidences[0]]
+        for t in range(1, len(labels)):
+            if labels[t] != seg_label:
                 segments.append(
                     (
                         seg_start,
                         t,
-                        decode_label(seg_label),
+                        seg_label,
                         float(sum(seg_confs) / len(seg_confs)),
                     )
                 )
                 seg_start = t
-                seg_label = labels_list[t]
-                seg_confs = [conf_list[t]]
+                seg_label = labels[t]
+                seg_confs = [confidences[t]]
             else:
-                seg_confs.append(conf_list[t])
+                seg_confs.append(confidences[t])
         segments.append(
             (
                 seg_start,
-                len(labels_list),
-                decode_label(seg_label),
+                len(labels),
+                seg_label,
                 float(sum(seg_confs) / len(seg_confs)),
             )
         )
         return segments
 
     # ------------------------------------------------------------------
-    # Internal: logits → 62-class labels + per-frame confidence
+    # Internal: logits → per-frame Harte labels + confidence
     # ------------------------------------------------------------------
 
-    def _collapse_to_62(self, logits: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return per-frame ``(labels, confidence)`` in the 62-class alphabet."""
+    def _decode_frames(self, logits: dict[str, torch.Tensor]) -> tuple[list[str], list[float]]:
+        """Dispatch to the mode-specific decoder and return (labels, confidences)."""
+        if self.output_mode == "factored":
+            return self._decode_factored_frames(logits)
         if self.output_mode == "structured":
-            root_logits = logits["root"]  # (B, T, 13)
-            triad_logits = logits["triad"]  # (B, T, 5)
-            root_probs = F.softmax(root_logits, dim=-1)
-            triad_probs = F.softmax(triad_logits, dim=-1)
-            root_idx = root_probs.argmax(dim=-1)  # (B, T)
-            triad_idx = triad_probs.argmax(dim=-1)  # (B, T)
-            # root_idx == 12 -> N (no chord)
-            is_n = root_idx == 12
-            # label = root * 5 + triad for chords; N_INDEX for no-chord.
-            labels = torch.where(
-                is_n,
-                torch.full_like(root_idx, N_INDEX),
-                root_idx * len(QUALITIES) + triad_idx,
-            )
-            # Confidence = root_prob * triad_prob (for chord frames)
-            #            = root_prob[N] (for N frames).
-            root_best = root_probs.gather(-1, root_idx.unsqueeze(-1)).squeeze(-1)
-            triad_best = triad_probs.gather(-1, triad_idx.unsqueeze(-1)).squeeze(-1)
-            confidence = torch.where(is_n, root_best, root_best * triad_best)
-            return labels, confidence
+            return self._decode_structured_frames(logits)
+        return self._decode_flat170_frames(logits)
 
-        # flat170 mode: argmax then collapse to 62.
+    def _decode_factored_frames(
+        self, logits: dict[str, torch.Tensor]
+    ) -> tuple[list[str], list[float]]:
+        root_logits = logits["root_logits"]  # (B=1, T, 13)
+        quality_logits = logits["quality_logits"]  # (B=1, T, N_QUALITY)
+        bass_logits = logits["bass_logits"]  # (B=1, T, N_BASS)
+
+        root_probs = F.softmax(root_logits, dim=-1)
+        quality_probs = F.softmax(quality_logits, dim=-1)
+        bass_probs = F.softmax(bass_logits, dim=-1)
+
+        root_idx = root_probs.argmax(dim=-1).squeeze(0)  # (T,)
+        quality_idx = quality_probs.argmax(dim=-1).squeeze(0)  # (T,)
+        bass_idx = bass_probs.argmax(dim=-1).squeeze(0)  # (T,)
+
+        root_best = root_probs.gather(-1, root_idx.unsqueeze(0).unsqueeze(-1)).squeeze()
+        quality_best = quality_probs.gather(-1, quality_idx.unsqueeze(0).unsqueeze(-1)).squeeze()
+        bass_best = bass_probs.gather(-1, bass_idx.unsqueeze(0).unsqueeze(-1)).squeeze()
+
+        labels: list[str] = []
+        confidences: list[float] = []
+        n_frames = root_idx.shape[0] if root_idx.dim() > 0 else 0
+        root_list = root_idx.tolist() if n_frames else []
+        quality_list = quality_idx.tolist() if n_frames else []
+        bass_list = bass_idx.tolist() if n_frames else []
+        root_conf = root_best.reshape(-1).tolist() if n_frames else []
+        quality_conf = quality_best.reshape(-1).tolist() if n_frames else []
+        bass_conf = bass_best.reshape(-1).tolist() if n_frames else []
+
+        for t in range(n_frames):
+            r = int(root_list[t])
+            q = int(quality_list[t])
+            b = int(bass_list[t])
+            # root head index 12 = "no chord" slot → force quality to N and
+            # bass to N so decode_factored emits "N".
+            if r >= NUM_ROOTS:
+                q = QUALITY_N_INDEX
+                b = BASS_N_INDEX
+                r = 0  # decode_factored clamps root when quality is N
+            elif q == QUALITY_N_INDEX:
+                # N quality overrides a chordal root prediction.
+                r = 0
+                b = BASS_N_INDEX
+            # Chord frames: a predicted N-bass slot is a degenerate output;
+            # clamp to "same-as-root" so decode_factored emits a clean label.
+            elif b == BASS_N_INDEX:
+                b = BASS_SAME_INDEX
+            label = decode_factored(r, q, b)
+            labels.append(label)
+            # Confidence = product of per-head confidences.
+            confidences.append(float(root_conf[t]) * float(quality_conf[t]) * float(bass_conf[t]))
+        return labels, confidences
+
+    def _decode_structured_frames(
+        self, logits: dict[str, torch.Tensor]
+    ) -> tuple[list[str], list[float]]:
+        root_logits = logits["root"]  # (B=1, T, 13)
+        triad_logits = logits["triad"]  # (B=1, T, 5)
+        root_probs = F.softmax(root_logits, dim=-1)
+        triad_probs = F.softmax(triad_logits, dim=-1)
+        root_idx = root_probs.argmax(dim=-1)  # (B, T)
+        triad_idx = triad_probs.argmax(dim=-1)  # (B, T)
+        is_n = root_idx == 12
+        labels_t = torch.where(
+            is_n,
+            torch.full_like(root_idx, N_INDEX),
+            root_idx * len(QUALITIES) + triad_idx,
+        )
+        root_best = root_probs.gather(-1, root_idx.unsqueeze(-1)).squeeze(-1)
+        triad_best = triad_probs.gather(-1, triad_idx.unsqueeze(-1)).squeeze(-1)
+        confidence = torch.where(is_n, root_best, root_best * triad_best)
+        labels_list = [decode_label(int(lbl)) for lbl in labels_t.squeeze(0).tolist()]
+        return labels_list, confidence.squeeze(0).tolist()
+
+    def _decode_flat170_frames(
+        self, logits: dict[str, torch.Tensor]
+    ) -> tuple[list[str], list[float]]:
         flat_logits = logits["flat170"]  # (B, T, 170)
         probs = F.softmax(flat_logits, dim=-1)
         best = probs.argmax(dim=-1)  # (B, T), 0..169
         confidence = probs.gather(-1, best.unsqueeze(-1)).squeeze(-1)
 
-        # Vectorised 170→62 lookup via a precomputed table.
         table = self._collapse_table_170(device=flat_logits.device)
-        labels = table[best]
-        return labels, confidence
+        labels_t = table[best]  # (B, T), 62-class indices
+        labels_list = [decode_label(int(lbl)) for lbl in labels_t.squeeze(0).tolist()]
+        return labels_list, confidence.squeeze(0).tolist()
 
     _cached_collapse_table: torch.Tensor | None = None
 
@@ -439,6 +540,113 @@ class ChordNet2E1D(nn.Module):
             cls._cached_collapse_table = table
         return cls._cached_collapse_table
 
+    # ------------------------------------------------------------------
+    # Legacy test-compat shim: _collapse_to_62(logits) -> (labels, conf)
+    # ------------------------------------------------------------------
+    #
+    # PR-Y1.4's train.validate() still calls this method. In the factored
+    # mode there is no 62-class label stream — we reuse the legacy flat
+    # 5-quality collapse (maj/min/dim/aug/sus) built from the 25-quality
+    # head so train.validate()'s MajMin proxy keeps working.
+
+    def _collapse_to_62(self, logits: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return per-frame ``(labels_62, confidence)`` in the legacy flat alphabet.
+
+        Caller: train.validate() (MajMin proxy). Tests for the factored path
+        exercise ``_decode_factored_frames`` directly; this method is a
+        convenience bridge back to the flat alphabet.
+        """
+        if self.output_mode == "structured":
+            root_logits = logits["root"]
+            triad_logits = logits["triad"]
+            root_probs = F.softmax(root_logits, dim=-1)
+            triad_probs = F.softmax(triad_logits, dim=-1)
+            root_idx = root_probs.argmax(dim=-1)
+            triad_idx = triad_probs.argmax(dim=-1)
+            is_n = root_idx == 12
+            labels = torch.where(
+                is_n,
+                torch.full_like(root_idx, N_INDEX),
+                root_idx * len(QUALITIES) + triad_idx,
+            )
+            root_best = root_probs.gather(-1, root_idx.unsqueeze(-1)).squeeze(-1)
+            triad_best = triad_probs.gather(-1, triad_idx.unsqueeze(-1)).squeeze(-1)
+            confidence = torch.where(is_n, root_best, root_best * triad_best)
+            return labels, confidence
+
+        if self.output_mode == "flat170":
+            flat_logits = logits["flat170"]
+            probs = F.softmax(flat_logits, dim=-1)
+            best = probs.argmax(dim=-1)
+            confidence = probs.gather(-1, best.unsqueeze(-1)).squeeze(-1)
+            table = self._collapse_table_170(device=flat_logits.device)
+            labels = table[best]
+            return labels, confidence
+
+        # factored: collapse the 25-quality head onto the 5 flat-60 buckets.
+        root_logits = logits["root_logits"]
+        quality_logits = logits["quality_logits"]
+        root_probs = F.softmax(root_logits, dim=-1)
+        quality_probs = F.softmax(quality_logits, dim=-1)
+        root_idx = root_probs.argmax(dim=-1)
+        quality_idx = quality_probs.argmax(dim=-1)
+
+        is_n = (root_idx == 12) | (quality_idx == QUALITY_N_INDEX)
+        # Factored quality (25) -> flat-5 ({maj, min, dim, aug, sus}).
+        qmap = self._quality_to_flat5_table(device=quality_logits.device)
+        flat5_q = qmap[quality_idx]  # (B, T) with entries in [0, 5)
+        labels = torch.where(
+            is_n,
+            torch.full_like(root_idx, N_INDEX),
+            root_idx * len(QUALITIES) + flat5_q,
+        )
+
+        root_best = root_probs.gather(-1, root_idx.unsqueeze(-1)).squeeze(-1)
+        quality_best = quality_probs.gather(-1, quality_idx.unsqueeze(-1)).squeeze(-1)
+        confidence = torch.where(is_n, root_best, root_best * quality_best)
+        return labels, confidence
+
+    _cached_quality_to_flat5: torch.Tensor | None = None
+
+    @classmethod
+    def _quality_to_flat5_table(cls, device: torch.device) -> torch.Tensor:
+        """Map each of the 25 factored qualities onto the flat-5 collapse."""
+        if cls._cached_quality_to_flat5 is None or cls._cached_quality_to_flat5.device != device:
+            # Flat-5 index: 0=maj, 1=min, 2=dim, 3=aug, 4=sus.
+            table = torch.tensor(
+                [
+                    0,  # 0  maj
+                    1,  # 1  min
+                    2,  # 2  dim
+                    3,  # 3  aug
+                    4,  # 4  sus2 -> sus
+                    4,  # 5  sus4 -> sus
+                    0,  # 6  maj6 -> maj
+                    1,  # 7  min6 -> min
+                    0,  # 8  maj7 -> maj
+                    1,  # 9  min7 -> min
+                    0,  # 10 7    -> maj
+                    2,  # 11 dim7 -> dim
+                    2,  # 12 hdim7-> dim
+                    1,  # 13 minmaj7 -> min
+                    0,  # 14 maj9 -> maj
+                    1,  # 15 min9 -> min
+                    0,  # 16 9    -> maj
+                    0,  # 17 11   -> maj
+                    0,  # 18 13   -> maj
+                    0,  # 19 add9 -> maj
+                    0,  # 20 add11-> maj
+                    0,  # 21 5    -> maj (power; no third, nearest is maj)
+                    0,  # 22 add6 -> maj
+                    3,  # 23 aug7 -> aug
+                    0,  # 24 N    -> (ignored; N frames are filtered before this map)
+                ],
+                dtype=torch.long,
+                device=device,
+            )
+            cls._cached_quality_to_flat5 = table
+        return cls._cached_quality_to_flat5
+
 
 # ---------------------------------------------------------------------------
 # Helpers for loss construction (used by train.py)
@@ -446,9 +654,16 @@ class ChordNet2E1D(nn.Module):
 
 
 def num_output_classes(output_mode: OutputMode) -> int:
-    """Return the max label index for the given output mode (for losses)."""
+    """Return a scalar size for logging — not all modes have a single answer.
+
+    * factored: returns ``N_QUALITY + N_BASS + NUM_ROOTS + 1`` — the total
+      softmax width across all three heads.
+    * structured: returns the legacy 62-class alphabet size.
+    * flat170: returns 170.
+    """
+    if output_mode == "factored":
+        return (NUM_ROOTS + 1) + N_QUALITY + N_BASS
     if output_mode == "structured":
-        # Caller handles four separate heads — this is the collapsed alphabet.
         return NUM_LABELS
     return 170
 

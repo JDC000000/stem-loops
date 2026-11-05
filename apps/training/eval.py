@@ -77,7 +77,13 @@ import mir_eval
 import numpy as np
 import torch
 
-from .model.alphabet import ALPHABET_SHA
+from .model.alphabet import (
+    ALPHABET_SHA,
+    BASS_N_INDEX,
+    BASS_SAME_INDEX,
+    QUALITY_N_INDEX,
+    encode_factored,
+)
 from .model.chordnet_2e1d import CQT_PLAN_VERSION, ChordNet2E1D
 
 # ---------------------------------------------------------------------------
@@ -121,6 +127,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.50,
         help="Minimum MajMin WCSR per song — below this is a hard gate violation.",
+    )
+    parser.add_argument(
+        "--per-song-bass-floor",
+        type=float,
+        default=0.50,
+        help=(
+            "Minimum bass-head accuracy per song (factored v1.5 gate). "
+            "Below this is a hard gate violation; set 0.0 to disable."
+        ),
     )
     parser.add_argument(
         "--compare-provider",
@@ -252,6 +267,75 @@ _METRIC_FUNCTIONS: dict[str, Callable[[np.ndarray, list[str]], np.ndarray]] = {
     "mirex": mir_eval.chord.mirex,
 }
 
+# Additional per-head metrics introduced in PR-Y1.4b for factored decoding.
+# Computed from the decoded Harte strings — no model-internal state needed.
+_FACTORED_HEAD_METRICS: tuple[str, ...] = (
+    "quality_head",
+    "bass_head",
+)
+
+
+def _factored_head_scores(ref_labels: list[str], est_labels: list[str]) -> dict[str, np.ndarray]:
+    """Return per-frame match arrays for the quality and bass heads.
+
+    Decodes each ref / est Harte string via ``encode_factored`` and compares
+    the quality-head and bass-head indices independently. A frame whose ref
+    label is unparseable contributes ``np.nan`` and is dropped from the WCSR
+    denominator by ``mir_eval.chord.weighted_accuracy``.
+
+    * ``quality_head``: 1.0 when ref.quality_idx == est.quality_idx, 0.0
+      otherwise. N-vs-chord mismatches count as 0.
+    * ``bass_head``: 1.0 on exact bass-slot match **on chord frames** (ref
+      is not N). N frames contribute ``np.nan`` so they do not weight the
+      per-song accuracy. The factored 0 (``same-as-root``) slot normalises
+      a "no slash" label and an explicit ``/1``.
+    """
+    quality: list[float] = []
+    bass: list[float] = []
+    for ref, est in zip(ref_labels, est_labels, strict=True):
+        ref_enc = encode_factored(ref)
+        est_enc = encode_factored(est)
+        if ref_enc is None:
+            # Unparseable ground truth → drop from both metrics.
+            quality.append(float("nan"))
+            bass.append(float("nan"))
+            continue
+        _ref_root, ref_q, ref_b = ref_enc
+        if est_enc is None:
+            # Est unparseable → counted as a mismatch on both heads.
+            quality.append(0.0)
+            bass.append(0.0 if ref_q != QUALITY_N_INDEX else float("nan"))
+            continue
+        _est_root, est_q, est_b = est_enc
+        quality.append(1.0 if est_q == ref_q else 0.0)
+        if ref_q == QUALITY_N_INDEX:
+            # Non-chord frame: bass metric is undefined — drop.
+            bass.append(float("nan"))
+        else:
+            # Normalise: predicting BASS_N_INDEX on a chord frame is a
+            # degenerate output; treat it as a mismatch unless the ref is
+            # also N (handled above).
+            est_b_norm = BASS_SAME_INDEX if est_b == BASS_N_INDEX else est_b
+            bass.append(1.0 if est_b_norm == ref_b else 0.0)
+    return {
+        "quality_head": np.array(quality, dtype=np.float64),
+        "bass_head": np.array(bass, dtype=np.float64),
+    }
+
+
+def _nan_weighted_accuracy(scores: np.ndarray, durations: np.ndarray) -> float:
+    """``mir_eval.chord.weighted_accuracy`` with ``np.nan`` in ``scores`` dropped.
+
+    ``mir_eval``'s own routine treats ``-1`` as "drop from denominator" (its
+    ``X`` convention); we use ``nan`` for the factored per-head metrics so
+    N-frame drops are explicit. Convert here.
+    """
+    if scores.size == 0:
+        return 0.0
+    nan_mask = np.isnan(scores)
+    cleaned = np.where(nan_mask, -1.0, scores)
+    return float(mir_eval.chord.weighted_accuracy(cleaned, durations))
+
 
 def score_song(
     pred_intervals: np.ndarray,
@@ -259,21 +343,28 @@ def score_song(
     gt_intervals: np.ndarray,
     gt_labels: list[str],
 ) -> dict[str, float]:
-    """Score one song across all 5 mir_eval chord metrics (WCSR)."""
+    """Score one song across the 5 mir_eval chord metrics + 2 factored heads.
+
+    Returns a dict with ``_METRIC_FUNCTIONS`` keys **plus** ``quality_head``
+    and ``bass_head`` from the factored alphabet. All values are WCSR
+    (duration-weighted frame accuracy).
+    """
     results: dict[str, float] = {}
+    all_metric_keys = tuple(_METRIC_FUNCTIONS) + _FACTORED_HEAD_METRICS
     if len(gt_intervals) == 0 or len(pred_intervals) == 0:
-        return {m: 0.0 for m in _METRIC_FUNCTIONS}
+        return {m: 0.0 for m in all_metric_keys}
 
     common_intervals, ref_labels, est_labels = mir_eval.util.merge_labeled_intervals(
         gt_intervals, gt_labels, pred_intervals, pred_labels
     )
     durations = mir_eval.util.intervals_to_durations(common_intervals)
     for name, func in _METRIC_FUNCTIONS.items():
-        # mir_eval.chord.* return per-frame comparison vectors; WCSR is a
-        # duration-weighted average.
         scores = func(ref_labels, est_labels)
         wcsr = float(mir_eval.chord.weighted_accuracy(scores, durations))
         results[name] = wcsr
+    head_scores = _factored_head_scores(ref_labels, est_labels)
+    for name, arr in head_scores.items():
+        results[name] = _nan_weighted_accuracy(arr, durations)
     return results
 
 
@@ -309,6 +400,7 @@ def run_eval(
     compare_provider: str | None,
     seed: int,
     model_version: str,
+    per_song_bass_floor: float = 0.0,
     model: ChordNet2E1D | None = None,
     loader: AudioAndGtLoader | None = None,
     frame_to_time: Callable[[np.ndarray], np.ndarray] | None = None,
@@ -328,15 +420,16 @@ def run_eval(
         raise ValueError(f"Eval manifest {eval_songs} has no songs.")
 
     rng = random.Random(seed)
+    all_metric_keys = tuple(_METRIC_FUNCTIONS) + _FACTORED_HEAD_METRICS
     per_song: dict[str, dict[str, list[float]]] = {
-        song.song_id: {m: [] for m in _METRIC_FUNCTIONS} for song in songs
+        song.song_id: {m: [] for m in all_metric_keys} for song in songs
     }
 
     # Model loading (deferred to actually-needed path so tests can skip it).
     if mock_predictions is None:
         if model is None:
             ckpt = torch.load(checkpoint, map_location="cpu")
-            model = ChordNet2E1D(output_mode=ckpt.get("output_mode", "structured"))
+            model = ChordNet2E1D(output_mode=ckpt.get("output_mode", "factored"))
             model.load_state_dict(ckpt["model_state"])
         model.eval()
         if loader is None:
@@ -380,23 +473,35 @@ def run_eval(
 
     # Per-song floor check (ship gate).
     violations: list[dict[str, object]] = []
+    bass_violations: list[dict[str, object]] = []
     for song_id, metric_values in per_song.items():
         majmin_values = metric_values["majmin"]
-        if not majmin_values:
-            continue
-        min_majmin = min(majmin_values)
-        if min_majmin < per_song_floor:
-            violations.append(
-                {
-                    "song_id": song_id,
-                    "min_majmin": min_majmin,
-                    "all_majmin": majmin_values,
-                }
-            )
+        if majmin_values:
+            min_majmin = min(majmin_values)
+            if min_majmin < per_song_floor:
+                violations.append(
+                    {
+                        "song_id": song_id,
+                        "min_majmin": min_majmin,
+                        "all_majmin": majmin_values,
+                    }
+                )
+        if per_song_bass_floor > 0.0:
+            bass_values = metric_values.get("bass_head", [])
+            if bass_values:
+                min_bass = min(bass_values)
+                if min_bass < per_song_bass_floor:
+                    bass_violations.append(
+                        {
+                            "song_id": song_id,
+                            "min_bass_head": min_bass,
+                            "all_bass_head": bass_values,
+                        }
+                    )
 
     # Aggregate: mean + std per metric across the pooled (song × shuffle) values.
     aggregate: dict[str, dict[str, float]] = {}
-    for metric in _METRIC_FUNCTIONS:
+    for metric in all_metric_keys:
         pooled: list[float] = []
         for song_id in per_song:
             pooled.extend(per_song[song_id][metric])
@@ -413,9 +518,12 @@ def run_eval(
         "aggregate": aggregate,
         "per_song_floor_majmin": per_song_floor,
         "per_song_floor_violated": violations,
+        "per_song_bass_floor": per_song_bass_floor,
+        "per_song_bass_floor_violated": bass_violations,
     }
 
-    # Optional baseline delta.
+    # Optional baseline delta (only the mir_eval metrics — baselines don't
+    # publish factored head accuracies).
     if compare_provider == "klangio":
         baseline_path = (
             Path("apps/worker/tests/fixtures") / f"chord_eval_baseline_{compare_provider}.json"
@@ -426,27 +534,39 @@ def run_eval(
             report["baseline_delta"] = {
                 metric: aggregate[metric]["mean"]
                 - float(baseline.get("aggregate", {}).get(metric, {}).get("mean", 0.0))
-                for metric in aggregate
+                for metric in _METRIC_FUNCTIONS
+                if metric in aggregate
             }
         else:
             report["baseline_provider"] = compare_provider
             report["baseline_delta"] = None
             report["baseline_warning"] = f"Baseline fixture not found at {baseline_path}"
 
-    # Write report + raise on floor violation.
+    # Write report + raise on floor violation(s).
     report_out.mkdir(parents=True, exist_ok=True)
     out_path = report_out / f"eval_{model_version}.json"
     out_path.write_text(json.dumps(report, indent=2, default=_json_default))
 
+    reasons: list[str] = []
     if violations:
-        raise EvalGateFailure(
-            f"Per-song floor {per_song_floor:.2%} MajMin violated on "
-            f"{len(violations)} song(s): "
+        reasons.append(
+            f"MajMin floor {per_song_floor:.2%} violated on {len(violations)} song(s): "
             + ", ".join(
                 f"{v['song_id']}={v['min_majmin']:.3f}"  # type: ignore[str-format]
                 for v in violations
             )
         )
+    if bass_violations:
+        reasons.append(
+            f"Bass floor {per_song_bass_floor:.2%} violated on "
+            f"{len(bass_violations)} song(s): "
+            + ", ".join(
+                f"{v['song_id']}={v['min_bass_head']:.3f}"  # type: ignore[str-format]
+                for v in bass_violations
+            )
+        )
+    if reasons:
+        raise EvalGateFailure("; ".join(reasons))
 
     return report
 
@@ -470,6 +590,7 @@ def main(argv: list[str] | None = None) -> int:
             shuffles=args.shuffles,
             report_out=args.report_out,
             per_song_floor=args.per_song_floor,
+            per_song_bass_floor=args.per_song_bass_floor,
             compare_provider=args.compare_provider,
             seed=args.seed,
             model_version=args.model_version,

@@ -1,56 +1,54 @@
-"""Chord-label alphabet for ChordNet Y1 (PR-Y1.4).
+"""Chord-label alphabet for ChordNet Y1 (PR-Y1.4b — factored 25 × 13).
 
-## Alphabet size: 60 chord labels + 2 boundary labels = 62 output classes
+## Alphabet pin (decision-record v1.5)
 
-- **60 chord labels** = 12 roots × 5 qualities. These are the "real chords"
-  the model is asked to recognise.
+Decision record v1.5 — `claude/phase-2-y1-chord-model-decision.md`, "Final
+alphabet pin" — **switches** the Y1 output from the flat 60-label alphabet to
+a **factored two-head alphabet**:
 
-  - Roots (12): ``C C# D D# E F F# G G# A A# B`` (sharp-only enharmonics; the
-    Harte encoder/decoder normalises flats on input, so ``Db`` and ``C#``
-    map to the same index).
-  - Qualities (5): ``maj min dim aug sus`` (sus is the collapsed 2/4 class;
-    see §"170 → 60 collapse" below).
+* **Quality head** — 25 classes:
+  ``0=maj  1=min  2=dim  3=aug  4=sus2  5=sus4``
+  ``6=maj6  7=min6  8=maj7  9=min7  10=7  11=dim7  12=hdim7  13=minmaj7``
+  ``14=maj9  15=min9  16=9  17=11  18=13``
+  ``19=add9  20=add11  21=5(power)  22=add6  23=aug7``
+  ``24=N``
+* **Bass head** — 13 classes:
+  ``0=same-as-root (or /1)``, ``1..11=pitch-class interval above root`` (in
+  semitones), ``12=N/none``.
 
-- **+2 boundary labels**: ``N`` (no-chord / silence) and ``X`` (chord
-  present but outside the reduced vocabulary — e.g. a quartal voicing that
-  does not reduce to a triad).
+Total output dim: ``25 + 13 = 38`` **classes** (two independent softmax
+heads, *not* the Cartesian 25 × 13 = 325).
 
-The 60-vs-62 distinction matters for two reasons:
+### Why the switch
 
-1. When documents ("the 60-label alphabet") refer to the vocabulary, they
-   mean the 60 harmonic labels. Both N and X are included in training loss
-   and in ``mir_eval`` scoring — ``mir_eval`` has native support for ``N``
-   and treats ``X`` as an un-scored boundary (``mir_eval.chord.weighted_accuracy``
-   drops X-labelled frames from the denominator).
-2. Model output layers carry **62** classes when ``output_mode == "flat170"``
-   is collapsed, or 13-root × 5-triad = 65 slots in ``output_mode ==
-   "structured"`` (see ``chordnet_2e1d.py``). Either way, the 60-label figure
-   is the harmonic-vocabulary count.
+Exp A (``apps/training/exp_a_alphabet_collapse.md`` on branch
+``v3-phase-2/exp-a-alphabet-collapse-audit``) audited both alphabets against
+124,895 McGill Billboard (ChoCo CC BY 4.0) chord tokens.
 
-## 170 → 60 collapse
+| Alphabet        | Exact  | Lossy  | X     |
+| --------------- | ------ | ------ | ----- |
+| Flat 60         | 60.79% | 39.04% | 0.17% |
+| Factored 25 × 13 | 93.84% | 5.92%  | 0.24% |
 
-The de-facto ISMIR 170-class alphabet is 12 roots × 14 qualities + N + X.
-Many public corpora (Billboard, RWC, Isophonics) ship with 170-class Harte
-annotations. For Y1 we collapse to 60 chord labels + N + X by folding:
+Flat 60 demotes **39.04%** of Billboard tokens (> 30% decision threshold).
+Factored only drops 5.92%. The switch is empirical, not aesthetic.
 
-| 170 qualities (per root)             | Collapsed quality |
-|--------------------------------------|-------------------|
-| ``maj maj6 maj7 7``                  | ``maj``           |
-| ``min min6 min7 minmaj7``            | ``min``           |
-| ``dim dim7 hdim7``                   | ``dim``           |
-| ``aug``                              | ``aug``           |
-| ``sus2 sus4``                        | ``sus``           |
+## Backward compat
 
-Every 170-class quality maps to exactly one 60-class bucket — the collapse is
-total, no orphans. ``collapse_170_to_60`` implements this map; the alphabet
-test suite verifies completeness.
+The 170 → 60 flat collapse (``collapse_170_to_60``) is kept for the
+``output_mode="flat170"`` path, which continues to work exactly as it did in
+PR-Y1.4. The new entry point ``collapse_170_to_factored`` collapses onto the
+factored heads. ``encode_label`` / ``decode_label`` remain the flat
+62-class API; the factored API is ``encode_factored`` /
+``decode_factored``.
 
 ## ALPHABET_SHA
 
-``ALPHABET_SHA`` is the sha256 of the frozen label list. Any change to roots,
-qualities, N, X — or their ordering — breaks the hash and forces a retrain
-(the training-run manifest records ``ALPHABET_SHA`` so an inference-time
-mismatch fails loud instead of silently mis-decoding).
+``ALPHABET_SHA`` is the sha256 of the frozen label lists (roots + quality
+labels + bass labels + N/X indices + version). It changes vs the PR-Y1.4
+flat-60 alphabet — every checkpoint written under PR-Y1.4 is incompatible
+with this file and must be retrained. The training-run manifest records
+``ALPHABET_SHA`` so an inference-time mismatch fails loud.
 """
 
 from __future__ import annotations
@@ -59,7 +57,7 @@ import hashlib
 import json
 
 # ---------------------------------------------------------------------------
-# Roots & qualities (frozen tuples — ordering is load-bearing for indices)
+# Roots (frozen — ordering is load-bearing for indices + SHA)
 # ---------------------------------------------------------------------------
 
 ROOTS: tuple[str, ...] = (
@@ -76,24 +74,77 @@ ROOTS: tuple[str, ...] = (
     "A#",
     "B",
 )
-"""Chromatic roots. Index = pitch-class (C=0, B=11)."""
+"""Chromatic roots. Index = pitch class (C=0, B=11)."""
+
+NUM_ROOTS: int = 12
+
+# ---------------------------------------------------------------------------
+# Quality head (25 classes, v1.5 canonical ordering — index = SHA input)
+# ---------------------------------------------------------------------------
+
+QUALITY_LABELS: tuple[str, ...] = (
+    "maj",
+    "min",
+    "dim",
+    "aug",
+    "sus2",
+    "sus4",
+    "maj6",
+    "min6",
+    "maj7",
+    "min7",
+    "7",
+    "dim7",
+    "hdim7",
+    "minmaj7",
+    "maj9",
+    "min9",
+    "9",
+    "11",
+    "13",
+    "add9",
+    "add11",
+    "5",
+    "add6",
+    "aug7",
+    "N",
+)
+"""Factored quality head labels (25 classes). Last entry is ``N`` (no-chord)."""
+
+assert len(QUALITY_LABELS) == 25  # noqa: S101 — structural invariant
+N_QUALITY: int = 25
+QUALITY_N_INDEX: int = 24  # the ``N`` slot in the quality head
+
+# ---------------------------------------------------------------------------
+# Bass head (13 classes)
+# ---------------------------------------------------------------------------
+
+BASS_LABELS: tuple[str, ...] = tuple(["same"] + [str(i) for i in range(1, 12)] + ["N"])
+"""Bass head labels (13 classes).
+
+- ``"same"`` (index 0): bass is the chord root (or unspecified / ``/1``).
+- ``"1"`` .. ``"11"`` (indices 1..11): bass is that many semitones above root.
+- ``"N"`` (index 12): no bass (no-chord frames)."""
+
+assert len(BASS_LABELS) == 13  # noqa: S101 — structural invariant
+N_BASS: int = 13
+BASS_SAME_INDEX: int = 0
+BASS_N_INDEX: int = 12
+
+# ---------------------------------------------------------------------------
+# Backward-compat: the flat 62-class alphabet (PR-Y1.4 — kept for flat170)
+# ---------------------------------------------------------------------------
 
 QUALITIES: tuple[str, ...] = ("maj", "min", "dim", "aug", "sus")
-"""Collapsed 5-quality alphabet. Ordering is load-bearing (encoded in SHA)."""
+"""Legacy flat-60 collapsed qualities. Kept for backward compat with the
+``output_mode="flat170"`` path. New code should use ``QUALITY_LABELS``."""
 
 N_LABEL: str = "N"
-"""No-chord / silence boundary label."""
-
 X_LABEL: str = "X"
-"""Chord-present-but-out-of-vocab label (``mir_eval`` drops these from the WCSR denominator)."""
-
-# ---------------------------------------------------------------------------
-# Derived constants: label list + indices
-# ---------------------------------------------------------------------------
 
 
-def _build_labels() -> list[str]:
-    """Build the 62-label list: 60 harmonic + N + X."""
+def _build_flat_labels() -> list[str]:
+    """Build the legacy 62-label list: 60 harmonic + N + X."""
     labels: list[str] = []
     for root in ROOTS:
         for quality in QUALITIES:
@@ -103,16 +154,13 @@ def _build_labels() -> list[str]:
     return labels
 
 
-LABELS: tuple[str, ...] = tuple(_build_labels())
-"""All 62 output labels in canonical order. Labels 0..59 are chord labels,
-60 = N, 61 = X."""
+LABELS: tuple[str, ...] = tuple(_build_flat_labels())
+"""Legacy flat 62-label list — ``maj/min/dim/aug/sus`` × 12 roots, plus N, X.
+
+Kept for the ``output_mode="flat170"`` path. New code uses the factored API."""
 
 NUM_CHORD_LABELS: int = 60
-"""Harmonic-vocabulary size (the "60-label alphabet" referenced in docs)."""
-
 NUM_LABELS: int = 62
-"""Total output classes including N and X."""
-
 N_INDEX: int = NUM_CHORD_LABELS  # 60
 X_INDEX: int = NUM_CHORD_LABELS + 1  # 61
 
@@ -120,7 +168,16 @@ X_INDEX: int = NUM_CHORD_LABELS + 1  # 61
 # Harte-input normalisation
 # ---------------------------------------------------------------------------
 
-# Flat → sharp enharmonic map (lossy; Y1 does not retain enharmonic spelling).
+_NAT_PC: dict[str, int] = {
+    "C": 0,
+    "D": 2,
+    "E": 4,
+    "F": 5,
+    "G": 7,
+    "A": 9,
+    "B": 11,
+}
+
 _FLAT_TO_SHARP: dict[str, str] = {
     "Db": "C#",
     "Eb": "D#",
@@ -133,50 +190,113 @@ _FLAT_TO_SHARP: dict[str, str] = {
     "B#": "C",
 }
 
-# Map Harte-syntax qualities (170-class) → our 5-quality collapse. Every
-# canonical 5-quality decoded string (``maj``, ``min``, ``dim``, ``aug``,
-# ``sus``) must be a key here so ``encode_label(decode_label(i)) == i`` round-
-# trips for all 60 chord labels.
+# Legacy Harte-quality → flat-60 collapse (unchanged from PR-Y1.4).
 _HARTE_QUALITY_TO_COLLAPSED: dict[str, str] = {
-    # maj family
     "maj": "maj",
     "maj6": "maj",
     "maj7": "maj",
     "7": "maj",
-    "": "maj",  # empty quality (bare root) = major by Harte convention
-    # min family
+    "": "maj",
     "min": "min",
     "min6": "min",
     "min7": "min",
     "minmaj7": "min",
-    # dim family
     "dim": "dim",
     "dim7": "dim",
     "hdim7": "dim",
-    # aug
     "aug": "aug",
-    # sus
-    "sus": "sus",  # canonical decoded form
+    "sus": "sus",
     "sus2": "sus",
     "sus4": "sus",
 }
 
 
 def _normalise_root(root: str) -> str:
-    """Return the sharp-spelled root (``Db`` → ``C#``, ``A#`` → ``A#``)."""
+    """Return the sharp-spelled root (``Db`` → ``C#``)."""
     return _FLAT_TO_SHARP.get(root, root)
 
 
+def _parse_root_pc(root: str) -> int | None:
+    """Parse any Harte root string → pitch class (0..11) or None if unparseable.
+
+    Accepts multi-accidental spellings like ``Cbb`` or ``F##`` by running
+    through the accidental tail rather than the fixed flat-to-sharp table.
+    """
+    if not root:
+        return None
+    letter = root[0].upper()
+    if letter not in _NAT_PC:
+        return None
+    pc = _NAT_PC[letter]
+    for ch in root[1:]:
+        if ch == "b":
+            pc -= 1
+        elif ch == "#":
+            pc += 1
+        else:
+            return None
+    return pc % 12
+
+
+# Harte interval → semitones above root. Covers degrees 1..13 with any number
+# of ``b`` / ``#`` accidentals (so ``bb7`` = 9 semitones, ``##4`` = 8, etc.).
+_DEG_SEMITONES: dict[str, int] = {
+    "1": 0,
+    "2": 2,
+    "3": 4,
+    "4": 5,
+    "5": 7,
+    "6": 9,
+    "7": 11,
+    "8": 12,
+    "9": 14,
+    "10": 16,
+    "11": 17,
+    "12": 19,
+    "13": 21,
+}
+
+_SEMITONES_TO_HARTE: dict[int, str] = {
+    0: "1",
+    1: "b2",
+    2: "2",
+    3: "b3",
+    4: "3",
+    5: "4",
+    6: "b5",
+    7: "5",
+    8: "b6",
+    9: "6",
+    10: "b7",
+    11: "7",
+}
+
+
+def _parse_interval(tok: str) -> int | None:
+    """Return semitones above root for a Harte interval token, or None on error."""
+    if not tok:
+        return None
+    shift = 0
+    i = 0
+    while i < len(tok) and tok[i] in "b#":
+        shift += -1 if tok[i] == "b" else 1
+        i += 1
+    deg = tok[i:]
+    if deg not in _DEG_SEMITONES:
+        return None
+    return (_DEG_SEMITONES[deg] + shift) % 12
+
+
 # ---------------------------------------------------------------------------
-# Public encode / decode API
+# Legacy flat encode / decode (kept for flat170 path)
 # ---------------------------------------------------------------------------
 
 
 def encode_label(harte: str) -> int:
-    """Encode a Harte-syntax chord string to its integer label.
+    """Encode a Harte-syntax chord string to its flat 62-class integer label.
 
-    Accepts the full Harte 170-class spellings; applies the 170→60 collapse
-    on the quality. ``N`` and ``X`` pass through unchanged.
+    This is the PR-Y1.4 API, kept for the flat170 compat path. New code uses
+    ``encode_factored``.
 
     Args:
         harte: Harte chord string (e.g. ``"C:maj"``, ``"G:min7"``, ``"Bb:7"``,
@@ -193,13 +313,8 @@ def encode_label(harte: str) -> int:
     if harte == X_LABEL:
         return X_INDEX
 
-    # Strip bass-interval (we ignore inversions at the 60-label layer):
-    # "C:maj/3" → "C:maj".
     if "/" in harte:
         harte = harte.split("/", 1)[0]
-
-    # Strip optional extension list (e.g. "C:maj(9)" or "C:(1,3,5)") —
-    # default to maj when no explicit quality remains.
     if "(" in harte:
         harte = harte.split("(", 1)[0]
 
@@ -222,17 +337,19 @@ def encode_label(harte: str) -> int:
 
 
 def decode_label(idx: int) -> str:
-    """Decode an integer label to its canonical string (``"C:maj"``, ``"N"``, ``"X"``)."""
+    """Decode a flat-62 integer label to its canonical string.
+
+    This is the PR-Y1.4 API. New code uses ``decode_factored``.
+    """
     if not 0 <= idx < NUM_LABELS:
         raise ValueError(f"Label index {idx} out of range [0, {NUM_LABELS})")
     return LABELS[idx]
 
 
 # ---------------------------------------------------------------------------
-# 170-class → 60-class collapse
+# 170-class alphabet collapse (legacy flat path — unchanged from PR-Y1.4)
 # ---------------------------------------------------------------------------
 
-# Canonical 170-class alphabet (12 roots × 14 qualities + N + X).
 _ISMIR_170_QUALITIES: tuple[str, ...] = (
     "maj",
     "min",
@@ -253,22 +370,9 @@ assert len(_ISMIR_170_QUALITIES) == 14  # noqa: S101 — structural invariant
 
 
 def collapse_170_to_60(idx: int) -> int:
-    """Collapse a 170-class alphabet index to our 62-class index.
+    """Collapse a 170-class alphabet index to the legacy flat 62-class index.
 
-    The 170-class alphabet is ordered: ``root_idx * 14 + quality_idx`` with
-    indices ``168 = N`` and ``169 = X``. Every one of the 170 source indices
-    maps to a 62-class index — no orphans.
-
-    Args:
-        idx: Integer in ``[0, 170)``.
-
-    Returns:
-        Integer in ``[0, 62)``.
-
-    Raises:
-        ValueError: If ``idx`` is out of range or its quality is not in the
-            canonical 170-class list (which would indicate a programming
-            error — the map is total).
+    Kept unchanged from PR-Y1.4 for the ``output_mode="flat170"`` path.
     """
     if not 0 <= idx < 170:
         raise ValueError(f"170-class index {idx} out of range [0, 170)")
@@ -282,10 +386,217 @@ def collapse_170_to_60(idx: int) -> int:
     source_quality = _ISMIR_170_QUALITIES[quality_idx]
     collapsed = _HARTE_QUALITY_TO_COLLAPSED.get(source_quality)
     if collapsed is None:
-        # This should be unreachable — every 170-class quality is covered.
         raise ValueError(f"170-class quality '{source_quality}' has no 62-class collapse (orphan)")
     collapsed_q_idx = QUALITIES.index(collapsed)
     return root_idx * len(QUALITIES) + collapsed_q_idx
+
+
+# ---------------------------------------------------------------------------
+# Factored encode / decode (v1.5 canonical API)
+# ---------------------------------------------------------------------------
+
+# Direct shorthand → factored quality (no extras). Covers every one of the 24
+# non-``N`` slots in ``QUALITY_LABELS`` so a ``decode_factored → encode_factored``
+# round-trip is identity on all 24 × 12 chord labels.
+_FACTORED_SHORTHAND_EXACT: dict[str, str] = {
+    "maj": "maj",
+    "min": "min",
+    "dim": "dim",
+    "aug": "aug",
+    "sus2": "sus2",
+    "sus4": "sus4",
+    "maj6": "maj6",
+    "min6": "min6",
+    "maj7": "maj7",
+    "min7": "min7",
+    "7": "7",
+    "dim7": "dim7",
+    "hdim7": "hdim7",
+    "minmaj7": "minmaj7",
+    "maj9": "maj9",
+    "min9": "min9",
+    "9": "9",
+    "11": "11",
+    "13": "13",
+    # Factored-head-only canonical shorthands — these are the decoder's exact
+    # output strings for the slots that are not standard Harte shorthands.
+    "add9": "add9",
+    "add11": "add11",
+    "add6": "add6",
+    "aug7": "aug7",
+    "5": "5",
+}
+
+# Lossy fallback for shorthands with no own slot (e.g. maj11 → maj9 drops 11th).
+_FACTORED_LOSSY_FALLBACK: dict[str, str] = {
+    "maj11": "maj9",
+    "maj13": "maj9",
+    "min11": "min9",
+    "min13": "min9",
+    "aug7": "aug7",  # exact: already its own slot
+}
+
+
+def _is_add9_only(extras: tuple[str, ...]) -> bool:
+    return extras in (("9",), ("add9",))
+
+
+def _is_add11_only(extras: tuple[str, ...]) -> bool:
+    return extras in (("11",), ("add11",))
+
+
+def _strip_parens(harte: str) -> tuple[str, tuple[str, ...]]:
+    """Split ``C:maj(9,11)`` into (``C:maj``, ``("9", "11")``)."""
+    if "(" not in harte:
+        return harte, ()
+    before, rest = harte.split("(", 1)
+    if ")" not in rest:
+        return harte, ()
+    inside = rest.split(")", 1)[0]
+    extras = tuple(t.strip() for t in inside.split(",") if t.strip())
+    return before, extras
+
+
+def encode_factored(harte: str) -> tuple[int, int, int] | None:
+    """Encode a Harte-syntax chord string to its (root, quality, bass) indices.
+
+    Returns ``None`` when the label falls outside the 25-quality vocabulary
+    and cannot be mapped (callers should drop or mark as ``X``).
+
+    Special cases:
+        - ``"N"`` → ``(0, QUALITY_N_INDEX, BASS_N_INDEX)`` (root is unused when
+          quality == N; we pin to 0 so the tuple fits in all three heads).
+        - ``"X"`` → ``None`` (out-of-vocab — caller must handle).
+
+    Args:
+        harte: Harte chord label (``"C:maj"``, ``"G:7/5"``, ``"A:maj(9)"``,
+            ``"N"``, ``"X"``). A bare root (``"C"``) is treated as ``"C:maj"``.
+
+    Returns:
+        ``(root_idx, quality_idx, bass_idx)`` tuple, or ``None`` on unknown.
+    """
+    if harte == N_LABEL:
+        return (0, QUALITY_N_INDEX, BASS_N_INDEX)
+    if harte == X_LABEL:
+        return None
+
+    # Split off slash bass before stripping parens.
+    bass_tok: str | None = None
+    if "/" in harte:
+        harte, bass_tok = harte.split("/", 1)
+
+    body, extras = _strip_parens(harte)
+
+    if ":" in body:
+        root_str, shorthand = body.split(":", 1)
+    else:
+        root_str, shorthand = body, ""
+
+    # Root: accept the full Harte spelling grammar (``Cbb``, ``F##``).
+    root_pc = _parse_root_pc(root_str)
+    if root_pc is None:
+        # Not a valid Harte root → caller handles as X.
+        return None
+    root_idx = root_pc
+
+    # Bass: /1 collapses onto "same".
+    if bass_tok is None:
+        bass_idx = BASS_SAME_INDEX
+    else:
+        semis = _parse_interval(bass_tok)
+        bass_idx = BASS_SAME_INDEX if semis is None or semis == 0 else semis
+
+    # Quality resolution with extras (ordered — most specific first).
+    quality: str | None = None
+    if shorthand == "" and not extras:
+        # Bare root — Harte convention is major.
+        quality = "maj"
+    elif shorthand in _FACTORED_SHORTHAND_EXACT and not extras:
+        quality = _FACTORED_SHORTHAND_EXACT[shorthand]
+    elif shorthand == "maj" and _is_add9_only(extras):
+        quality = "add9"
+    elif shorthand == "maj" and _is_add11_only(extras):
+        quality = "add11"
+    elif shorthand == "maj" and extras == ("13",):
+        quality = "13"
+    elif shorthand == "maj6" and _is_add9_only(extras):
+        quality = "add6"
+    elif shorthand == "aug" and extras == ("b7",):
+        quality = "aug7"
+    elif shorthand == "7":
+        # 7(b9), 7(#9), 7(#11), 7(b13), …: collapse onto plain 7.
+        quality = "7"
+    elif shorthand in _FACTORED_SHORTHAND_EXACT:
+        # Known shorthand + unrecognised extras → drop extras (lossy but safe).
+        quality = _FACTORED_SHORTHAND_EXACT[shorthand]
+    elif shorthand in _FACTORED_LOSSY_FALLBACK:
+        quality = _FACTORED_LOSSY_FALLBACK[shorthand]
+    elif shorthand == "1":
+        # Unison — nearest no-third slot is "5" (power).
+        quality = "5"
+    else:
+        return None
+
+    if quality not in QUALITY_LABELS:
+        return None
+    quality_idx = QUALITY_LABELS.index(quality)
+    return (root_idx, quality_idx, bass_idx)
+
+
+def decode_factored(root_idx: int, quality_idx: int, bass_idx: int) -> str:
+    """Decode (root, quality, bass) indices to a Harte string.
+
+    - ``quality_idx == QUALITY_N_INDEX`` (24) → ``"N"``.
+    - ``bass_idx == BASS_SAME_INDEX`` (0) → no slash suffix.
+    - ``bass_idx == BASS_N_INDEX`` (12) with chord quality → no slash suffix
+      (``N`` bass with a non-N quality is a degenerate prediction; callers
+      typically clamp to ``BASS_SAME_INDEX`` when the quality is non-N, but we
+      decode it as a simple drop here rather than a crash).
+    - ``bass_idx`` in ``[1, 11]`` → ``"/<harte-interval>"`` suffix.
+    """
+    if not 0 <= root_idx < NUM_ROOTS:
+        raise ValueError(f"root_idx {root_idx} out of range [0, {NUM_ROOTS})")
+    if not 0 <= quality_idx < N_QUALITY:
+        raise ValueError(f"quality_idx {quality_idx} out of range [0, {N_QUALITY})")
+    if not 0 <= bass_idx < N_BASS:
+        raise ValueError(f"bass_idx {bass_idx} out of range [0, {N_BASS})")
+
+    if quality_idx == QUALITY_N_INDEX:
+        return N_LABEL
+
+    root = ROOTS[root_idx]
+    quality = QUALITY_LABELS[quality_idx]
+    label = f"{root}:{quality}"
+    if bass_idx in (BASS_SAME_INDEX, BASS_N_INDEX):
+        return label
+    return f"{label}/{_SEMITONES_TO_HARTE[bass_idx]}"
+
+
+def collapse_170_to_factored(idx: int) -> tuple[int, int, int]:
+    """Collapse an ISMIR 170-class index onto the factored (root, quality, bass).
+
+    The 170 scheme has no slash notation, so ``bass`` is always
+    ``BASS_SAME_INDEX`` for chord frames and ``BASS_N_INDEX`` for ``N`` / ``X``.
+
+    Args:
+        idx: Integer in ``[0, 170)``.
+
+    Returns:
+        ``(root_idx, quality_idx, bass_idx)``. For ``idx == 168`` (N) and
+        ``idx == 169`` (X) we return ``(0, QUALITY_N_INDEX, BASS_N_INDEX)``.
+    """
+    if not 0 <= idx < 170:
+        raise ValueError(f"170-class index {idx} out of range [0, 170)")
+    if idx in (168, 169):
+        return (0, QUALITY_N_INDEX, BASS_N_INDEX)
+
+    root_idx = idx // 14
+    quality_idx = idx % 14
+    source_quality = _ISMIR_170_QUALITIES[quality_idx]
+    # Every 170-class source quality has its own slot in the factored head.
+    if source_quality not in QUALITY_LABELS:
+        raise ValueError(f"170-class quality '{source_quality}' has no factored slot")
+    return (root_idx, QUALITY_LABELS.index(source_quality), BASS_SAME_INDEX)
 
 
 # ---------------------------------------------------------------------------
@@ -294,15 +605,22 @@ def collapse_170_to_60(idx: int) -> int:
 
 
 def _compute_alphabet_sha() -> str:
-    """Hash the frozen label list — any reorder/change breaks the hash."""
+    """Hash the frozen label lists. Any reorder/change breaks the hash."""
     payload = json.dumps(
         {
-            "version": "y1-v1",
+            "version": "y1-v1.5-factored",
             "roots": list(ROOTS),
-            "qualities": list(QUALITIES),
-            "labels": list(LABELS),
-            "n_index": N_INDEX,
-            "x_index": X_INDEX,
+            "quality_labels": list(QUALITY_LABELS),
+            "bass_labels": list(BASS_LABELS),
+            "quality_n_index": QUALITY_N_INDEX,
+            "bass_same_index": BASS_SAME_INDEX,
+            "bass_n_index": BASS_N_INDEX,
+            # Legacy flat alphabet kept in the hash so flat170 checkpoints
+            # are invalidated too — one hash guards the whole module.
+            "legacy_qualities": list(QUALITIES),
+            "legacy_labels": list(LABELS),
+            "legacy_n_index": N_INDEX,
+            "legacy_x_index": X_INDEX,
         },
         sort_keys=True,
     )
@@ -310,5 +628,36 @@ def _compute_alphabet_sha() -> str:
 
 
 ALPHABET_SHA: str = _compute_alphabet_sha()
-"""sha256 of the frozen alphabet. Training manifests and eval reports both
-record this value — inference-time mismatch fails loud."""
+"""sha256 of the frozen factored + legacy alphabet. Training manifests and
+eval reports both record this value — inference-time mismatch fails loud."""
+
+
+__all__ = [
+    # Factored API (v1.5 canonical)
+    "QUALITY_LABELS",
+    "BASS_LABELS",
+    "N_QUALITY",
+    "N_BASS",
+    "QUALITY_N_INDEX",
+    "BASS_SAME_INDEX",
+    "BASS_N_INDEX",
+    "encode_factored",
+    "decode_factored",
+    "collapse_170_to_factored",
+    # Shared
+    "ROOTS",
+    "NUM_ROOTS",
+    "ALPHABET_SHA",
+    # Legacy flat API (backward compat)
+    "QUALITIES",
+    "LABELS",
+    "NUM_LABELS",
+    "NUM_CHORD_LABELS",
+    "N_INDEX",
+    "X_INDEX",
+    "N_LABEL",
+    "X_LABEL",
+    "encode_label",
+    "decode_label",
+    "collapse_170_to_60",
+]

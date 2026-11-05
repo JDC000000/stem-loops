@@ -50,6 +50,24 @@ if [[ "$TOTAL" -eq 0 ]]; then
   exit 1
 fi
 
+# NOTE (2026-11-05, audit L2.4): `conclusion: neutral` and
+# `conclusion: skipped` are treated as GREEN here BY DESIGN, and that is
+# already the behaviour — neither appears in the FAILED filter below, and
+# both have `status == "completed"` so neither appears in PENDING either.
+#
+# This is recorded because a merge-autonomy audit proposed "teach
+# safe_merge.sh to treat neutral as green" as an action item. It was a
+# no-op: verified by running both filters against synthetic check-runs
+# covering success / neutral / skipped / failure / in_progress, which
+# selected only the failure and the in_progress entries.
+#
+# Do NOT re-open that item assuming the behaviour was missed. If you need
+# to change it, the question is whether neutral SHOULD be green, not
+# whether it currently is.
+#
+# Why it matters: auto-merge.yml exits 0 on a branch-protection block
+# specifically so it does not register a FAILING check-run here, which
+# would trip M-1 and wedge the PR a human then has to merge by hand.
 FAILED=$(jq -r '
   [.check_runs[]
     | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "comment": "T1 subagent guardrails. Session-7 (2026-11-05). See claude/merge-autonomy-recommendations.md Decision box for the allow/deny rationale. These rules apply to subagents and to the main session alike; the main session merging via scripts/safe_merge.sh satisfies M-1 even though --admin itself is denied below.",
+  "permissions": {
+    "allow": [
+      "Bash(scripts/safe_merge.sh *)",
+      "Bash(git push origin v3/phase-*)",
+      "Bash(git push origin v3-phase-*)"
+    ],
+    "deny": [
+      "Bash(git push * main)",
+      "Bash(git push * v3/main)",
+      "Bash(git push --force* main)",
+      "Bash(git push --force* v3/main)",
+      "Bash(gh pr merge --admin*)"
+    ]
+  }
+}

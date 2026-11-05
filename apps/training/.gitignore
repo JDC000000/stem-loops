@@ -1,0 +1,32 @@
+# Downloaded corpora, synthetic renders, model checkpoints, run artefacts.
+# None of this is ever committed — DATA-PROVENANCE.md and MANIFEST.jsonl
+# (the committed/per-run audit trail) are what travels with the repo.
+data/cache/
+data/*/checkpoint-*/
+data/*/wandb/
+
+# Local virtualenvs / build cruft specific to the training package.
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+
+# Local model artefacts.
+*.onnx
+*.pt
+*.ckpt
+*.safetensors
+
+# Synthetic-render inputs + outputs (PR-Y1.3).
+# Soundfonts are permissively licensed but large (~150 MB for FluidR3); we
+# pin SHA-256s in docs/ops/synthetic-render.md and fetch them at render time
+# rather than committing bytes. Rendered audio stays local.
+*.sf2
+*.sf3
+*.wav
+*.mp3
+*.flac
+*.ogg

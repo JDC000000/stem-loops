@@ -1,0 +1,13 @@
+{
+  "plan": {
+    "bins_per_octave": 24,
+    "fmin_hz": 32.7,
+    "hop_length": 2048,
+    "log_amplitude": true,
+    "n_bins": 144,
+    "sample_rate": 22050,
+    "version": "v1",
+    "z_norm": "global"
+  },
+  "sha256": "1bb5302dd5f29c6f7551f6fca96b07d15d180c102875e7d25cdde6f53aedf8ed"
+}

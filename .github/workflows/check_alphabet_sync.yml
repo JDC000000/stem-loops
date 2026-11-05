@@ -1,0 +1,34 @@
+name: alphabet-mirror-sync
+
+# Enforce that apps/web/src/chord/alphabet.ts and apps/web/public/alphabet.v1.5.json
+# are byte-for-byte what `python scripts/codegen_alphabet.py` would emit from
+# apps/training/model/alphabet.py. The Python side is canonical; the TypeScript
+# side is generated. Any change to either side without a matching codegen run
+# fails this job, which blocks the PR — closing QA-B review H1
+# (claude/phase-2-y1-qa-b-code-review.md) permanently.
+
+on:
+  pull_request:
+    paths:
+      - 'apps/training/model/alphabet.py'
+      - 'apps/web/src/chord/alphabet.ts'
+      - 'apps/web/public/alphabet.v1.5.json'
+      - 'scripts/codegen_alphabet.py'
+      - '.github/workflows/check_alphabet_sync.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # No pip install needed — the codegen is Python 3.11 stdlib only.
+      - name: Codegen alphabet is in sync
+        run: python scripts/codegen_alphabet.py --check-only

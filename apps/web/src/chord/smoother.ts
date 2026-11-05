@@ -7,14 +7,22 @@
 // replacement. It also cleans the current Klangio code path's per-beat
 // outputs, which arrive unsmoothed.
 
-import { labelIndex, labelAt, NUM_LABELS } from './alphabet.ts';
+import { labelIndex, labelAt, chordLabel, NUM_LABELS } from './alphabet.ts';
 import {
   buildTransition,
+  defaultTransition,
   DEFAULT_SELF_PROB,
   DEFAULT_DIATONIC_PROB,
   DEFAULT_UNRELATED_PROB,
 } from './transition.ts';
 import { viterbi } from './viterbi.ts';
+
+// Harte-shape detector used by the T5 passthrough branch: a valid-shape chord
+// label starts with a diatonic letter, optional accidental, and optional
+// `:quality` suffix. Matches Klangio's full output vocabulary (dim, aug,
+// sus2/4, maj6, min6, dim7, hdim7, minmaj7, bare-root triads), NOT N/X, and
+// NOT garbage like "XYZZY". See T5 of y1-test-coverage-audit.md.
+const CHORD_SHAPE_RE = /^[A-G](#|b)?(:[a-z0-9]+)?$/;
 
 /** Floor to keep log(0) out of the emission tensor. 1e-6 is deep enough that
  *  a high-confidence label dominates, shallow enough that reciprocal
@@ -93,8 +101,21 @@ export function smoothChordSequence(
     }
     const idx = labelIndex(raw);
     if (idx < 0) {
-      // Unknown label — pass through to uniform, but don't force-replace
-      // the Viterbi pick, since the caller clearly meant *some* chord.
+      // Observation outside the 60-label alphabet.
+      //
+      // T5 fix (y1-test-coverage-audit.md): if the token has the SHAPE of a
+      // chord label (root + optional accidental + optional :quality) — e.g.
+      // Klangio emits C:dim, F:aug, G:sus4, A:maj6, D:min6, bare-root triads
+      // — preserve it. The 60-label Viterbi only smooths within its own
+      // vocabulary; rewriting one of these to a neighbouring major/minor is
+      // strictly worse than preserving the provider's call.
+      //
+      // For any other non-chord-shaped token (genuine garbage like "XYZZY")
+      // the old behaviour stands: emit uniform, let Viterbi's transition
+      // prior pick a neighbour.
+      if (CHORD_SHAPE_RE.test(raw)) {
+        passthrough[t] = raw;
+      }
       for (let s = 0; s < NUM_LABELS; s++) logits[off + s] = logUniform;
       continue;
     }
@@ -119,4 +140,102 @@ export function smoothChordSequence(
     out[t] = forced !== null ? forced : labelAt(path[t]);
   }
   return out;
+}
+
+// ────────────────────────── ChordOverlay plumbing ──────────────────────────
+// PR-Y1.6 — the live chord overlay consumes raw ChordNet logits (Float32,
+// row-major nFrames × NUM_LABELS) and wants a run-length-encoded timeline.
+// These helpers live in smoother.ts because the smoothing + run-length pass
+// is the composed operation callers want to import together.
+
+/**
+ * A run-length segment of the smoothed chord stream.
+ *
+ * - `startFrame` inclusive, `endFrame` exclusive (half-open, same as the
+ *   iteration invariant in `collapseRuns`).
+ * - `startSec`/`endSec` are `frame * frameSec`, where `frameSec` is the
+ *   seconds-per-hop at inference time (= cqtPlan.hop / cqtPlan.sr).
+ * - `label` is `chordLabel(chordClass)` — pre-computed so render code can
+ *   pass it straight to `<span>{run.label}</span>` without re-calling into
+ *   the alphabet module.
+ */
+export interface ChordRun {
+  /** Inclusive first frame index. */
+  startFrame: number;
+  /** Exclusive last frame index (so `endFrame - startFrame` = run length). */
+  endFrame: number;
+  /** Inclusive start time in seconds (= startFrame * frameSec). */
+  startSec: number;
+  /** Exclusive end time in seconds (= endFrame * frameSec). */
+  endSec: number;
+  /** Chord class index in the 60-label alphabet [0, NUM_LABELS). */
+  chordClass: number;
+  /** `chordLabel(chordClass)` — the Harte label for render. */
+  label: string;
+}
+
+/**
+ * Run-length-encode a per-frame chord class sequence.
+ *
+ * Adjacent frames with the same `chordClass` collapse into one `ChordRun`.
+ * `frameSec` is the seconds-per-hop at inference time — the caller must
+ * compute this from the CQT plan (`plan.hop / plan.sr`) so startSec/endSec
+ * are meaningful across different sample rates / hop lengths.
+ *
+ * Empty input → empty output (no error). Works on both `number[]` and
+ * `Uint16Array` (what Viterbi returns) via the ArrayLike<number> shape.
+ */
+export function collapseRuns(
+  chordClasses: ArrayLike<number>,
+  frameSec: number,
+): ChordRun[] {
+  const n = chordClasses.length;
+  if (n === 0) return [];
+  const runs: ChordRun[] = [];
+  let runStart = 0;
+  // Walk one past the end to flush the final run without duplicating logic.
+  for (let i = 1; i <= n; i++) {
+    if (i === n || chordClasses[i] !== chordClasses[runStart]) {
+      const cls = chordClasses[runStart];
+      runs.push({
+        startFrame: runStart,
+        endFrame: i,
+        startSec: runStart * frameSec,
+        endSec: i * frameSec,
+        chordClass: cls,
+        label: chordLabel(cls),
+      });
+      runStart = i;
+    }
+  }
+  return runs;
+}
+
+/**
+ * Smooth raw per-frame logits (ChordNet output) into chord class indices.
+ *
+ * Shape: `logits` is row-major `nFrames × NUM_LABELS`. Returns a `Uint16Array`
+ * of length `nFrames` whose values are the Viterbi best-path chord-class
+ * indices. Degenerate inputs (`nFrames === 0`) return an empty array.
+ *
+ * Why this exists in smoother.ts rather than the component: the overlay
+ * calls this once per captured audio chunk, and having smoothing +
+ * collapseRuns imported from the same module makes the pipeline obvious at
+ * the call site. See ChordOverlay.tsx for the full pipeline.
+ */
+export function smoothChordLogits(
+  logits: Float32Array,
+  nFrames: number,
+): Uint16Array {
+  if (nFrames <= 0) return new Uint16Array(0);
+  // Use the cached default transition prior — same music-theory priors as
+  // smoothChordSequence (self=0.95, diatonic=0.01, unrelated=0.001).
+  const transition = defaultTransition();
+  const { path } = viterbi({
+    logits,
+    nFrames,
+    nStates: NUM_LABELS,
+    transition,
+  });
+  return path;
 }

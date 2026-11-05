@@ -1,8 +1,8 @@
 // Live chord overlay — Variant Y (free tier) wedge component.
 // Decision record: claude/phase-2-y1-chord-model-decision.md v1.3 §1.6a.
 //
-// Pipeline: tab-capture → cqt-frontend → chordnet-session → smoothChordSequence
-//           → run-length collapse → timeline render.
+// Pipeline: tab-capture → cqt-frontend → chordnet-session → smoothChordLogits
+//           → collapseRuns → timeline render.
 //
 // Edits a user makes on the timeline hook into PR-Y1.7's edit-collector via
 // the `onChordEdit` prop (this component owns no state beyond the UI).
@@ -25,14 +25,17 @@ import {
   resolveModelUrl,
 } from '../chord/chordnet-session.ts';
 import { computeCQT, loadCqtPlan } from '../chord/cqt-frontend.ts';
-import { collapseRuns, type ChordRun } from '../chord/smoother.ts';
+import {
+  collapseRuns,
+  smoothChordLogits,
+  type ChordRun,
+} from '../chord/smoother.ts';
 import {
   type TabCapture,
   UnsupportedBrowserError,
   checkTabCaptureSupport,
   startTabCapture,
 } from '../chord/tab-capture.ts';
-import { smoothChordSequence } from '../chord/viterbi.ts';
 import {
   type ChordEdit,
   buildChordEdit,
@@ -93,11 +96,14 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
     try {
       const resolvedUrl = modelUrl ?? resolveModelUrl();
       // Load plan + model in parallel. Plan hash is verified inside loadCqtPlan.
-      const [, session] = await Promise.all([
+      const [plan, session] = await Promise.all([
         loadCqtPlan(),
         loadChordnetSession(resolvedUrl),
       ]);
       sessionRef.current = session;
+      // Seconds per hop at inference time. Must come from the plan — the
+      // CQT training/runtime parity gate asserts we share these numbers.
+      const frameSec = plan.hop / plan.sr;
 
       const capture = await startTabCapture({
         sampleRate: 22050,
@@ -112,8 +118,9 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           const { frames, nFrames } = await computeCQT(chunk);
           if (nFrames === 0) return;
           const logits = await sessionRef.current.runFrames(frames, nFrames);
-          const seq = smoothChordSequence(logits, nFrames);
-          const runs = collapseRuns(seq);
+          // Logits → Viterbi best-path class indices → run-length segments.
+          const classes = smoothChordLogits(logits, nFrames);
+          const runs = collapseRuns(classes, frameSec);
           setState((s) => ({ ...s, runs }));
         } catch (err) {
           // eslint-disable-next-line no-console
@@ -238,9 +245,9 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
               width: `${Math.max(32, (run.endFrame - run.startFrame) * 8)}px`,
             }}
             data-testid={`chord-chip-${idx}`}
-            aria-label={`${chordLabel(run.cls)} — edit`}
+            aria-label={`${run.label} — edit`}
           >
-            {chordLabel(run.cls)}
+            {run.label}
           </button>
         ))}
       </div>
@@ -253,10 +260,10 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           data-testid="chord-popover"
         >
           <div style={popoverHeaderStyle}>
-            Change {chordLabel(popoverFor.cls)}
+            Change {popoverFor.label}
           </div>
           <div style={popoverGridStyle}>
-            {popoverAlternatives(popoverFor.cls, 10).map((cls) => (
+            {popoverAlternatives(popoverFor.chordClass, 10).map((cls) => (
               <button
                 type="button"
                 key={cls}

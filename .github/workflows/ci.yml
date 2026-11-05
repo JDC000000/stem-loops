@@ -59,6 +59,12 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: ESLint
         run: pnpm --filter web lint
+      - name: Web typecheck (tsc --noEmit)
+        # Added PR-Y1.sec-T1: the absence of a tsc gate is how the ChordOverlay
+        # broken-import bug reached v3/main (y1-test-coverage-audit.md T1).
+        # Catches any import that doesn't resolve, missing export, or type
+        # mismatch before a PR can land.
+        run: pnpm --filter web typecheck
 
   test:
     name: Tests
@@ -198,6 +204,26 @@ jobs:
           python-version: '3.11'
       - name: Assert RLS + policy on every migration table
         run: python scripts/check_rls.py apps/worker/migrations/
+
+  training-merge-markers:
+    # PR-Y1.sec-F1 regression guard. A bad merge (#89 → 16378fe) landed 72+
+    # unresolved conflict markers under apps/training/ and killed the module
+    # import across the entire training pipeline. This gate catches the next
+    # one at PR time instead of on main.
+    name: "No merge markers in training/"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: No merge markers in training
+        run: |
+          if grep -rE '^(<<<<<<<|=======|>>>>>>>)' apps/training/; then
+            echo "Unresolved merge markers in apps/training/"
+            exit 1
+          fi
+          python -m compileall apps/training/
 
   check-tsd-refs:
     name: "TSD §N.M refs resolve (Fleet Playbook Move 4)"

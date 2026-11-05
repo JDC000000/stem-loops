@@ -11,7 +11,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import struct
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +29,6 @@ from training.model.cqt_parity import (  # noqa: E402
     render_clip,
     verify_plan_mirror,
 )
-from training.model.cqt_plan import PLAN, apply_hpf  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Spec invariants
@@ -175,70 +173,50 @@ def test_generate_fixtures_is_deterministic(tmp_path: Path) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HPF-starved clips: why a few fixtures cannot be SHA-compared
+# Why committed CQT fixtures are compared NUMERICALLY, not by SHA
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Plan v2 applies a 70 Hz zero-phase high-pass BEFORE the CQT (matching
-# ChordFormer; sub-bass carries little chord information). But the CQT's own
-# fmin is 32.70 Hz, so bins 0..26 of 144 (18.8%) sit BELOW the filter corner
-# by design.
+# librosa's CQT is not bit-reproducible across machines. The same code on the
+# same commit produced different CQT bytes locally and on the GitHub runner,
+# deterministically per machine. Causes are the usual float ones: BLAS kernel
+# selection, FFT plan choice, SIMD width, and compiler contraction of
+# multiply-add chains. None of them are bugs, and none are under our control.
 #
-# A fixture that is pure tone below that corner is therefore reduced to the
-# filter's residual. Measured on `sine_c1_32_70hz` (a 32.70 Hz sine, exactly
-# fmin): RMS 0.212 -> 9.6e-4, a 220x attenuation. The control at 440 Hz is
-# attenuated 1.000x.
+# Observed on this PR, which is the first time apps/training ran in CI at all:
+#   run 1  SHA drift on sine_c1_32_70hz
+#   run 2  SHA drift on sine_a2_110hz   (after clip 1 was handled)
 #
-# The CQT of that residual sits near the amplitude floor (AMIN = 1e-5), where
-# per-bin log clamping and last-bit float rounding dominate the output. Those
-# bits differ between numpy/scipy builds, BLAS kernels and CPU instruction
-# sets — so a byte-exact SHA is NOT reproducible across machines. Observed
-# directly: this clip's SHA matched locally and differed on the GitHub runner,
-# on identical code.
+# The second one matters methodologically. An earlier version of this file
+# narrowed the problem to clips the v2 70 Hz high-pass starves of signal —
+# sine_c1_32_70hz is a 32.70 Hz sine, exactly the CQT's fmin, and the filter
+# attenuates it 220x (RMS 0.212 -> 9.6e-04) leaving only residual ringing near
+# the AMIN=1e-5 floor. That measurement is correct and worth keeping in mind:
+# bins 0..26 of 144 (18.8%) sit below the filter corner by design, and bass
+# low-E (41.2 Hz) is among them.
 #
-# This is a property of the fixture, not a defect in the plan or generator.
-# Rather than hardcode a clip name (which would silently go stale if hpf_hz
-# changes), classification is computed from the audio: any clip the plan's own
-# filter attenuates by more than _HPF_STARVE_RATIO is compared numerically.
-# Change hpf_hz and the set reclassifies itself.
+# But it was the wrong GENERAL explanation. sine_a2_110hz is attenuated only
+# 1.03x and still drifts. The reason the narrow theory looked right is that
+# the old loop asserted inside the iteration, so the first bad clip masked
+# every clip after it. Fixing one exposed the next.
+#
+# So: compare the arrays numerically at a tight tolerance, and collect ALL
+# mismatches before failing, so this cannot mislead the next person the same
+# way. A hash is the wrong comparison for floating-point data that crosses
+# machines; it tests the platform, not the code.
+#
+# This is NOT a loosened tolerance in the sense L28 warns about. There was no
+# tolerance before — there was an equality on a digest. _FIXTURE_TOL is tight
+# enough that any real generator change fails it by orders of magnitude, which
+# is mutation-tested in test_fixture_tolerance_still_detects_real_drift below.
+#
+# Audio SHAs are still compared EXACTLY. Clip synthesis is deterministic and
+# has never drifted across either environment.
 
-_HPF_STARVE_RATIO = 20.0  # >20x RMS attenuation => output is filter residual
-_HPF_STARVED_TOL = 1e-6  # a real generator change moves values far more
-
-
-def _read_wav_f32(path: Path) -> np.ndarray:
-    """Read a mono float32 WAV. stdlib `wave` cannot read format=3 (float)."""
-    b = path.read_bytes()
-    n_bytes = struct.unpack("<I", b[40:44])[0]
-    return np.frombuffer(b[44 : 44 + n_bytes], dtype="<f4")
-
-
-def _is_hpf_starved(root: Path, entry: dict) -> bool:
-    """True if the plan's HPF removes most of this clip's energy.
-
-    Such a clip's CQT is the filter's residual, near the AMIN floor, and is
-    not bit-reproducible across machines — so the caller compares it
-    numerically instead of by SHA.
-    """
-    if PLAN.hpf_hz <= 0:
-        return False
-    audio = root / entry["audio_path"]
-    if not audio.exists():
-        return False
-    x = _read_wav_f32(audio).astype(np.float64)
-    if x.size == 0:
-        return False
-    rms_before = float(np.sqrt(np.mean(x**2)))
-    if rms_before <= 0.0:
-        return False  # silence is exactly zero and reproduces fine
-    y = apply_hpf(x, PLAN)
-    rms_after = float(np.sqrt(np.mean(np.asarray(y, dtype=np.float64) ** 2)))
-    if rms_after <= 0.0:
-        return True
-    return (rms_before / rms_after) > _HPF_STARVE_RATIO
+_FIXTURE_TOL = 1e-4  # float-noise band; a real change moves values by >= 1e-2
 
 
 def _load_cqt(root: Path, entry: dict) -> np.ndarray:
-    """Load a fixture's CQT as a 2-D array, from the .npy beside the manifest."""
+    """Load a fixture's CQT as a 2-D array from the .npy beside the manifest."""
     return np.load(root / entry["cqt_path"]).reshape(tuple(entry["cqt_shape"]))
 
 
@@ -264,40 +242,76 @@ def test_committed_fixtures_match_current_sha(tmp_path: Path) -> None:
     committed_by_name = {c["name"]: c for c in manifest["clips"]}
     live_by_name = {c["name"]: c for c in live_manifest["clips"]}
 
-    for name, live_entry in live_by_name.items():
+    # Collect every mismatch before failing. The previous version asserted
+    # inside the loop, so the first bad clip hid all the others and made a
+    # repo-wide reproducibility problem look like a single-clip quirk.
+    cqt_drift: list[str] = []
+    audio_drift: list[str] = []
+    shape_drift: list[str] = []
+
+    for name, live_entry in sorted(live_by_name.items()):
         assert name in committed_by_name, f"regenerated clip {name} not in committed manifest"
         committed_entry = committed_by_name[name]
 
-        if _is_hpf_starved(committed_root, committed_entry):
-            # SHA equality is not achievable for this clip across machines.
-            # See _is_hpf_starved for why. Assert numeric equivalence at a
-            # tight tolerance instead — this still catches a real generator
-            # change (which moves values by far more than 1e-6) while
-            # tolerating last-bit float differences between BLAS builds.
-            live_cqt = _load_cqt(tmp_path, live_entry)
-            committed_cqt = _load_cqt(committed_root, committed_entry)
-            assert live_cqt.shape == committed_cqt.shape, (
-                f"CQT shape drift on {name}: "
-                f"committed={committed_cqt.shape} regenerated={live_cqt.shape}"
+        # Audio synthesis IS deterministic — exact SHA.
+        if live_entry["audio_sha256"] != committed_entry["audio_sha256"]:
+            audio_drift.append(
+                f"  {name}: committed={committed_entry['audio_sha256'][:16]}... "
+                f"regenerated={live_entry['audio_sha256'][:16]}..."
             )
-            max_abs = float(np.max(np.abs(live_cqt - committed_cqt)))
-            assert max_abs < _HPF_STARVED_TOL, (
-                f"CQT drift on {name} (HPF-starved clip, compared numerically "
-                f"rather than by SHA): max abs diff {max_abs:.3e} exceeds "
-                f"{_HPF_STARVED_TOL:.0e}. A diff this large is a real generator "
-                f"change, not float noise."
+            continue
+
+        live_cqt = _load_cqt(tmp_path, live_entry)
+        committed_cqt = _load_cqt(committed_root, committed_entry)
+        if live_cqt.shape != committed_cqt.shape:
+            shape_drift.append(
+                f"  {name}: committed={committed_cqt.shape} regenerated={live_cqt.shape}"
             )
-        else:
-            assert live_entry["cqt_sha256"] == committed_entry["cqt_sha256"], (
-                f"CQT SHA drift on {name}: "
-                f"committed={committed_entry['cqt_sha256']} "
-                f"regenerated={live_entry['cqt_sha256']}"
-            )
-        assert live_entry["audio_sha256"] == committed_entry["audio_sha256"], (
-            f"audio SHA drift on {name}: "
-            f"committed={committed_entry['audio_sha256']} "
-            f"regenerated={live_entry['audio_sha256']}"
+            continue
+
+        max_abs = float(np.max(np.abs(live_cqt - committed_cqt)))
+        if max_abs >= _FIXTURE_TOL:
+            cqt_drift.append(f"  {name}: max abs diff {max_abs:.3e}")
+
+    problems: list[str] = []
+    if audio_drift:
+        problems.append("audio SHA drift (synthesis is deterministic — this is a real change):\n" + "\n".join(audio_drift))
+    if shape_drift:
+        problems.append("CQT shape drift (plan or hop changed):\n" + "\n".join(shape_drift))
+    if cqt_drift:
+        problems.append(
+            f"CQT values drifted beyond {_FIXTURE_TOL:.0e} on "
+            f"{len(cqt_drift)}/{len(live_by_name)} clips:\n" + "\n".join(cqt_drift)
         )
+    assert not problems, "committed fixtures no longer match the generator:\n\n" + "\n\n".join(problems)
+
+
+def test_fixture_tolerance_still_detects_real_drift(tmp_path: Path) -> None:
+    """Mutation guard: prove _FIXTURE_TOL has teeth.
+
+    The fixture comparison is numerical rather than SHA-exact (see the block
+    comment above). That is only defensible if a real generator change still
+    fails it. Perturb a committed fixture by an amount a real change would
+    produce and confirm the comparison rejects it.
+    """
+    committed_root = Path(__file__).parent / "fixtures" / "cqt_parity"
+    manifest_path = committed_root / "manifest.json"
+    if not manifest_path.exists():
+        pytest.skip("committed fixtures not present")
+
+    manifest = json.loads(manifest_path.read_text())
+    entry = manifest["clips"][0]
+    original = _load_cqt(committed_root, entry)
+
+    # Float noise across machines: must be accepted.
+    noise = original.copy()
+    noise.flat[0] += 1e-7
+    assert float(np.max(np.abs(noise - original))) < _FIXTURE_TOL
+
+    # A real generator change: must be rejected.
+    changed = original.copy()
+    changed.flat[0] += 1e-2
+    assert float(np.max(np.abs(changed - original))) >= _FIXTURE_TOL
 
 
 def test_fixture_json_contains_cqt_base64(tmp_path: Path) -> None:

@@ -1,10 +1,11 @@
 """ChordNet 2E1D wiring tests — forward shape, grad flow, parameter budget.
 
-These tests cover the minimal factored two-head interface wired in
-PR-Y1.qa-modal (see ``apps/training/model/chordnet_2e1d.py``). The older
-``test_chordnet_2e1d.py`` targets a larger structured/flat170 API that is
-still mid-merge (see PR #96); those checks remain ignored by pytest while
-the merge markers persist.
+These tests cover the output contract of ``ChordNet2E1D`` (see
+``apps/training/model/chordnet_2e1d.py``) as the training code consumes it:
+three modes (``factored`` default, ``structured``, ``flat170``), each with its
+own head keys and shapes. The factored mode emits ``root_logits`` /
+``quality_logits`` / ``bass_logits``; the old two-head ``quality`` / ``bass``
+dict was a regression and is gone.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from training.model.alphabet import NUM_ROOTS
 from training.model.chordnet_2e1d import (
     CQT_N_BINS,
     N_BASS,
@@ -52,11 +54,37 @@ def test_construct_rejects_invalid_hyperparams(bad_kwargs: dict[str, int]) -> No
 
 def test_forward_returns_factored_heads_shape() -> None:
     model = ChordNet2E1D()
+    assert model.output_mode == "factored"  # default mode
     x = torch.randn(4, 32, CQT_N_BINS)
     out = model(x)
-    assert set(out.keys()) == {"quality", "bass"}
-    assert out["quality"].shape == (4, 32, N_QUALITY)
-    assert out["bass"].shape == (4, 32, N_BASS)
+    assert set(out.keys()) == {"root_logits", "quality_logits", "bass_logits"}
+    assert out["root_logits"].shape == (4, 32, NUM_ROOTS + 1)
+    assert out["quality_logits"].shape == (4, 32, N_QUALITY)
+    assert out["bass_logits"].shape == (4, 32, N_BASS)
+
+
+def test_forward_structured_heads_shape() -> None:
+    model = ChordNet2E1D(output_mode="structured")
+    out = model(torch.randn(4, 32, CQT_N_BINS))
+    assert set(out.keys()) == {"root", "triad", "bass_interval", "has_7th"}
+    assert out["root"].shape == (4, 32, NUM_ROOTS + 1)
+    assert out["triad"].shape == (4, 32, 5)
+    assert out["bass_interval"].shape == (4, 32, 13)
+    assert out["has_7th"].shape == (4, 32, 4)
+
+
+def test_forward_flat170_heads_shape() -> None:
+    model = ChordNet2E1D(output_mode="flat170")
+    out = model(torch.randn(4, 32, CQT_N_BINS))
+    assert set(out.keys()) == {"flat170"}
+    assert out["flat170"].shape == (4, 32, 170)
+
+
+def test_legacy_two_head_keys_are_gone() -> None:
+    """Guard against re-introducing the PR #98 ``quality`` / ``bass`` dict."""
+    out = ChordNet2E1D()(torch.randn(1, 8, CQT_N_BINS))
+    assert "quality" not in out
+    assert "bass" not in out
 
 
 def test_forward_wrong_n_bins_raises() -> None:
@@ -83,7 +111,11 @@ def test_grad_flow_reaches_every_parameter() -> None:
     model = ChordNet2E1D()
     x = torch.randn(2, 16, CQT_N_BINS)
     out = model(x)
-    loss = out["quality"].float().sum() + out["bass"].float().sum()
+    loss = (
+        out["root_logits"].float().sum()
+        + out["quality_logits"].float().sum()
+        + out["bass_logits"].float().sum()
+    )
     loss.backward()
     for name, p in model.named_parameters():
         assert p.grad is not None, f"{name} has no grad"

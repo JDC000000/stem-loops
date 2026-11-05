@@ -241,9 +241,15 @@ def train_one_step(
     b_tgt = b_tgt.to(device)
 
     model.train()
+    # Factored contract (decision record v1.5): the model emits root_logits,
+    # quality_logits and bass_logits. The loss is unchanged from the previous
+    # two-head trainer: weighted sum of quality + bass CE. The data pipeline
+    # carries no root targets yet, so root_logits is intentionally not
+    # supervised here. TODO(root-head): add a root target to the batch and a
+    # root CE term when the real label pipeline lands.
     out = model(cqt)
-    q_logits = out["quality"].reshape(-1, N_QUALITY)
-    b_logits = out["bass"].reshape(-1, N_BASS)
+    q_logits = out["quality_logits"].reshape(-1, N_QUALITY)
+    b_logits = out["bass_logits"].reshape(-1, N_BASS)
 
     ce = nn.CrossEntropyLoss(ignore_index=cfg.ignore_index)
     q_loss = ce(q_logits, q_tgt.reshape(-1))
@@ -280,8 +286,8 @@ def eval_one_epoch(
         q_tgt = q_tgt.to(device)
         b_tgt = b_tgt.to(device)
         out = model(cqt)
-        q_logits = out["quality"].reshape(-1, N_QUALITY)
-        b_logits = out["bass"].reshape(-1, N_BASS)
+        q_logits = out["quality_logits"].reshape(-1, N_QUALITY)
+        b_logits = out["bass_logits"].reshape(-1, N_BASS)
         q_loss = ce(q_logits, q_tgt.reshape(-1))
         b_loss = ce(b_logits, b_tgt.reshape(-1))
         loss = cfg.quality_weight * q_loss + cfg.bass_weight * b_loss
@@ -338,6 +344,7 @@ def run_training(cfg: TrainConfig, device: torch.device | None = None) -> dict[s
         d_model=cfg.d_model,
         gru_layers=cfg.gru_layers,
         dropout=cfg.dropout,
+        output_mode="factored",
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
@@ -544,6 +551,7 @@ def main(argv: list[str] | None = None) -> int:
             d_model=cfg.d_model,
             gru_layers=cfg.gru_layers,
             dropout=cfg.dropout,
+            output_mode="factored",
         )
         print(f"[train] dry-run OK: config={config_path}")
         return 0

@@ -102,6 +102,27 @@ def test_train_one_step_populates_grads() -> None:
             assert torch.isfinite(p.grad).all()
 
 
+def test_train_loss_is_weighted_sum_of_quality_and_bass_heads() -> None:
+    """Loss semantics carried over from the two-head trainer onto the factored contract."""
+    torch.manual_seed(0)
+    device = torch.device("cpu")
+    model = ChordNet2E1D(d_model=16, gru_layers=1).to(device)
+    assert model.output_mode == "factored"
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    cfg = TrainConfig(d_model=16, gru_layers=1, quality_weight=2.0, bass_weight=0.5)
+
+    T = 4
+    batch = (
+        torch.randn(2, T, CQT_N_BINS),
+        torch.randint(0, 25, (2, T)),
+        torch.randint(0, 13, (2, T)),
+    )
+    m = train_one_step(model, batch, optimizer, cfg, device)
+    assert set(m) == {"loss", "quality_loss", "bass_loss"}
+    expected = cfg.quality_weight * m["quality_loss"] + cfg.bass_weight * m["bass_loss"]
+    assert abs(m["loss"] - expected) < 1e-5
+
+
 # ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------

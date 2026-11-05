@@ -227,6 +227,7 @@ def test_down_migration_round_trip(conn):
     """Down drops the table; re-applying 025 restores it."""
     down = (MIGRATIONS / "down" / "025_v3_chord_edits_down.sql").read_text()
     up = (MIGRATIONS / "025_v3_chord_edits.sql").read_text()
+    up_026 = (MIGRATIONS / "026_chord_edits_length_checks.sql").read_text()
     try:
         conn.execute(down)
         conn.commit()
@@ -235,6 +236,10 @@ def test_down_migration_round_trip(conn):
     finally:
         conn.rollback()
         conn.execute(up)
+        # Re-apply 026 too so subsequent 026 tests run against the full
+        # constraint set (025's down drops the table + all constraints
+        # incl. 026's; the up only restores 025's half).
+        conn.execute(up_026)
         conn.commit()
     exists = conn.execute("SELECT to_regclass('public.chord_edits')").fetchone()
     assert exists is not None and exists[0] is not None
@@ -249,6 +254,7 @@ def test_down_migration_round_trip(conn):
 # ---------------------------------------------------------------------------
 # Migration 026 — defence-in-depth length / range CHECKs (audit v2 F3).
 # ---------------------------------------------------------------------------
+
 
 def test_026_track_hash_length_rejected(conn):
     uid = _user(conn, "th-len")
@@ -309,9 +315,7 @@ def test_026_corrected_label_too_long_rejected(conn):
     jid = _job(conn, uid)
     # Harte-valid shape (C:<quality>) with quality = 20 'a's → 22 chars total.
     too_long = "C:" + "a" * 20
-    with pytest.raises(
-        psycopg.errors.CheckViolation, match="chord_edits_corrected_label_len"
-    ):
+    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_corrected_label_len"):
         _insert(conn, uid, jid, corrected=too_long)
     conn.rollback()
 
@@ -327,7 +331,11 @@ def test_026_start_sec_negative_rejected(conn):
 def test_026_start_sec_over_cap_rejected(conn):
     uid = _user(conn, "start-cap")
     jid = _job(conn, uid)
-    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_start_sec_range"):
+    # Both start and end are over cap; either constraint may fire (Postgres
+    # checks constraints in an unspecified order and the alphabetically-first
+    # end_sec_range often fires first). We just assert that over-cap start
+    # is rejected — by some range CHECK.
+    with pytest.raises(psycopg.errors.CheckViolation, match=r"chord_edits_(start|end)_sec_range"):
         _insert(conn, uid, jid, start=86401.0, end=86402.0)
     conn.rollback()
 
@@ -343,10 +351,14 @@ def test_026_end_sec_over_cap_rejected(conn):
 def test_026_original_confidence_range_rejected(conn):
     uid = _user(conn, "conf-range")
     jid = _job(conn, uid)
-    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_original_confidence_range"):
+    with pytest.raises(
+        psycopg.errors.CheckViolation, match="chord_edits_original_confidence_range"
+    ):
         _insert(conn, uid, jid, original_confidence=1.5)
     conn.rollback()
-    with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_original_confidence_range"):
+    with pytest.raises(
+        psycopg.errors.CheckViolation, match="chord_edits_original_confidence_range"
+    ):
         _insert(conn, uid, jid, original_confidence=-0.1)
     conn.rollback()
 

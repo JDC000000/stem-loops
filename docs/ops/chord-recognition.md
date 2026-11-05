@@ -129,17 +129,42 @@ may still consume quota). Polls and result GETs are not counted.
 - Unparseable spend env vars, or an unreadable/corrupt counter file, fail closed.
 - Watch it: filter worker logs for `event=klangio_quota`; `detail.count` / `detail.cap`.
 
-**Limitation: where the counter lives.** The default store is a flock-guarded JSON file
-(`KLANGIO_QUOTA_FILE`, default `$TMPDIR/klangio_quota.json`). It is correct for one
-machine, but it is per-machine and `apps/worker/fly.toml` has no volume, so **a deploy or
-restart resets it to zero**. Treat the cap as a runaway-loop guard until one of these is done:
+**Where the counter lives.** Two stores sit behind the `_QuotaStore` protocol
+(`reserve(cycle, cap) -> (count, granted)`):
 
-1. Mount a Fly volume and set `KLANGIO_QUOTA_FILE` onto it (no code change, single machine), or
-2. **Recommended long-term: a small Postgres table** (needs owner sign-off; migrations are
-   CODEOWNERS): `klangio_usage(cycle_start date primary key, count int not null)`, with the
-   atomic reserve `INSERT .. ON CONFLICT (cycle_start) DO UPDATE SET count = klangio_usage.count + 1
-   WHERE klangio_usage.count < $cap RETURNING count`. It implements the `_QuotaStore`
-   protocol in `klangio.py` (`reserve(cycle, cap) -> (count, granted)`), so callers do not change.
+- **Postgres (durable, shared across worker instances).** Table `public.klangio_usage`
+  (migration `028_v3_klangio_usage.sql`, one row per billing cycle, keyed by the cycle's
+  start date). Selected whenever `DATABASE_URL` is set. The reserve is one statement, so
+  racing instances cannot both take the last slot:
+
+  ```sql
+  INSERT INTO public.klangio_usage (cycle_start, count)
+  SELECT %(cycle)s::date, 1
+  WHERE %(cap)s::int > 0
+  ON CONFLICT (cycle_start) DO UPDATE
+    SET count = klangio_usage.count + 1, updated_at = now()
+    WHERE klangio_usage.count < %(cap)s::int
+  RETURNING count
+  ```
+
+  A returned row means granted; no row means refused. The `WHERE cap > 0` guard exists
+  because a first INSERT never evaluates the `DO UPDATE ... WHERE`. A database error
+  fails closed (`ChordProviderError`, nothing sent). The worker role has no
+  `DELETE`/`TRUNCATE` on the table: deleting the row would reset the counter.
+- **File (local/dev fallback).** flock-guarded JSON (`KLANGIO_QUOTA_FILE`, default
+  `$TMPDIR/klangio_quota.json`), used when `DATABASE_URL` is unset. Per-machine.
+  `apps/worker/fly.toml` mounts a volume at `/data` and points `KLANGIO_QUOTA_FILE` at it,
+  so the count survives deploys. A Fly volume is **per-machine**: that is durability across
+  deploys, not correctness across instances. Postgres is the real fix.
+
+`KLANGIO_QUOTA_BACKEND` (`auto` | `postgres` | `file`) overrides the choice. `postgres`
+without `DATABASE_URL` fails closed rather than quietly using a counter that resets.
+
+Deploy order: apply migration 028 (`make migrate`) **before** deploying this code, or the
+first submit fails closed on the missing table; and create the volume
+(`fly volumes create klangio_quota --app stem-loops --region iad --size 1`) before
+deploying the `fly.toml` change. If the counter is ever lost, recover the true count from
+the Klangio dashboard and `UPDATE public.klangio_usage SET count = <n> WHERE cycle_start = <date>`.
 
 **Content type.** The multipart `Content-Type` is inferred from the file extension
 (`.wav .mp3 .flac .ogg .m4a .aac`), else `application/octet-stream`; it is no longer
@@ -195,7 +220,9 @@ See `.env.example` for the canonical list. The vars this module reads:
 | `KLANGIO_MONTHLY_CAP` | `500` | Hard ceiling on submits per billing cycle; further submits raise `ChordQuotaExceeded`. |
 | `KLANGIO_WARN_FRACTION` | `0.8` | Log `WARNING` once count >= this fraction of the cap. |
 | `KLANGIO_BILLING_DAY` | `5` | Day of month the cycle renews (1-28). |
-| `KLANGIO_QUOTA_FILE` | `$TMPDIR/klangio_quota.json` | Counter file; put on a persistent volume or it resets on deploy. |
+| `KLANGIO_QUOTA_BACKEND` | `auto` | `auto` = Postgres if `DATABASE_URL` is set, else file. `postgres` / `file` force one (`postgres` without `DATABASE_URL` fails closed). |
+| `DATABASE_URL` | *(unset)* | Selects the Postgres counter (`public.klangio_usage`) when set. |
+| `KLANGIO_QUOTA_FILE` | `$TMPDIR/klangio_quota.json` | File-store counter path (fallback); per-machine, mounted on the Fly volume at `/data`. |
 | `KLANGIO_BACKOFF_CAP_SEC` | `60` | Hard ceiling on a single retry wait. |
 | `KLANGIO_BACKOFF_BASE_SEC` | `1` | Base for the exponential backoff. |
 | `KLANGIO_HTTP_TIMEOUT_SEC` | `30` | Per-call HTTP timeout. |

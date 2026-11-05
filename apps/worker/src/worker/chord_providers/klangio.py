@@ -281,9 +281,8 @@ class _QuotaStore(Protocol):
 
     ``reserve`` must, as one atomic step, reset the count if ``cycle`` differs from
     the stored cycle, refuse if the count is already ``>= cap``, otherwise
-    increment. A Postgres implementation (``INSERT .. ON CONFLICT (cycle_start)
-    DO UPDATE .. WHERE count < cap``) can replace the file store without touching
-    callers; see docs/ops/chord-recognition.md.
+    increment. ``_PostgresQuotaStore`` does this in one SQL statement; the file
+    store does it under ``flock``. See docs/ops/chord-recognition.md.
     """
 
     def reserve(self, cycle: str, cap: int) -> tuple[int, bool]:
@@ -296,9 +295,11 @@ class FileQuotaStore:
 
     LIMITS, stated plainly: it is per-machine, and on Fly without a volume the
     root filesystem is wiped on every deploy/restart, resetting the count to zero.
-    Point ``KLANGIO_QUOTA_FILE`` at a persistent volume, or move to a Postgres
-    store, for the cap to survive restarts. The ``klangio_quota`` log lines are the
-    durable record either way.
+    Point ``KLANGIO_QUOTA_FILE`` at a persistent volume (apps/worker/fly.toml mounts
+    one) for the count to survive deploys; a volume is still per-machine, so that is
+    durability, not cross-instance correctness. ``_PostgresQuotaStore`` is the real
+    fix and is preferred whenever ``DATABASE_URL`` is set. The ``klangio_quota`` log
+    lines are the durable record either way.
     """
 
     def __init__(self, path: Path) -> None:
@@ -338,7 +339,75 @@ class FileQuotaStore:
         return count if stored_cycle == cycle else 0  # new billing cycle -> reset
 
 
+# One statement, no read-then-write. A returned row means the slot was granted;
+# no row means the cycle is at the cap. ``ON CONFLICT DO UPDATE`` locks the
+# conflicting row, so a concurrent reserver waits and then re-evaluates the WHERE
+# against the committed count (READ COMMITTED) instead of both taking the last
+# slot. ``WHERE %(cap)s > 0`` is needed because the first INSERT of a cycle never
+# evaluates the DO UPDATE ... WHERE: without it a cap of 0 would admit one request.
+_RESERVE_SQL = """
+INSERT INTO public.klangio_usage (cycle_start, count)
+SELECT %(cycle)s::date, 1
+WHERE %(cap)s::int > 0
+ON CONFLICT (cycle_start) DO UPDATE
+  SET count = klangio_usage.count + 1, updated_at = now()
+  WHERE klangio_usage.count < %(cap)s::int
+RETURNING count
+"""
+_PEEK_SQL = "SELECT count FROM public.klangio_usage WHERE cycle_start = %(cycle)s::date"
+_PG_CONNECT_TIMEOUT_SEC = 5
+
+
+class _PostgresQuotaStore:
+    """Durable, cross-instance counter in ``public.klangio_usage`` (migration 028).
+
+    Survives deploys and is shared by every worker instance. Fails closed: any
+    database error raises ``ChordProviderError`` and no request is sent.
+    """
+
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
+
+    def reserve(self, cycle: str, cap: int) -> tuple[int, bool]:
+        import psycopg  # noqa: PLC0415 — only needed when this store is selected
+
+        params = {"cycle": cycle, "cap": cap}
+        try:
+            # autocommit: the single statement is its own transaction, so the row
+            # lock is released the moment the increment is durable.
+            with psycopg.connect(
+                self._dsn, autocommit=True, connect_timeout=_PG_CONNECT_TIMEOUT_SEC
+            ) as conn:
+                row = conn.execute(_RESERVE_SQL, params).fetchone()
+                if row is not None:
+                    return int(row[0]), True
+                # Refused. The peek is informational only (for the message/log).
+                peek = conn.execute(_PEEK_SQL, params).fetchone()
+                return (int(peek[0]) if peek else 0), False
+        except psycopg.Error as exc:
+            # Fail closed: if we cannot account for spend, we do not spend.
+            raise ChordProviderError(
+                f"Klangio quota database unusable ({type(exc).__name__}); refusing to spend"
+            ) from exc
+
+
 def _default_quota_store() -> _QuotaStore:
+    """Pick the counter backend from config.
+
+    ``KLANGIO_QUOTA_BACKEND``: ``postgres`` | ``file`` | unset/``auto``. Auto uses
+    Postgres when ``DATABASE_URL`` is set, else the file store (local/dev).
+    """
+    backend = os.environ.get("KLANGIO_QUOTA_BACKEND", "").strip().lower() or "auto"
+    if backend not in ("auto", "postgres", "file"):
+        raise ChordProviderError(
+            f"KLANGIO_QUOTA_BACKEND={backend[:16]!r} invalid; expected auto|postgres|file"
+        )
+    dsn = os.environ.get("DATABASE_URL", "").strip()
+    if backend == "postgres" and not dsn:
+        # Fail closed rather than silently fall back to a counter that resets.
+        raise ChordProviderError("KLANGIO_QUOTA_BACKEND=postgres but DATABASE_URL is not set")
+    if backend == "postgres" or (backend == "auto" and dsn):
+        return _PostgresQuotaStore(dsn)
     path = os.environ.get("KLANGIO_QUOTA_FILE", "").strip() or str(
         Path(tempfile.gettempdir()) / "klangio_quota.json"
     )
@@ -416,7 +485,7 @@ class KlangioChordSource:
 
     api_key: str | None = None  # defaults to env KLANGIO_API_KEY at call time
     api_base: str = API_BASE
-    quota_store: _QuotaStore | None = None  # defaults to FileQuotaStore (env-configured)
+    quota_store: _QuotaStore | None = None  # defaults per _default_quota_store() (env-configured)
 
     def recognize(self, audio_path: Path, *, stem: StemKind = "mix") -> ChordResult:
         audio_path = Path(audio_path)

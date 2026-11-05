@@ -33,38 +33,19 @@ ChordNet student. Two purposes:
 ### McGill Billboard (CC0)
 
 - **Source:** https://ddmal.music.mcgill.ca/research/The_McGill_Billboard_Project_(Chord_Analysis_Dataset)
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> origin/v3/main
 - **License:** CC0-1.0 (public domain dedication) — **labels only**.
   As fetched in PR-Y1.3c, the ChoCo re-packaging adds a CC-BY-4.0 overlay
   on the partition structure (the labels themselves remain CC0); credit
   ChoCo in the release alongside the McGill citation.
-<<<<<<< HEAD
-=======
-- **License:** CC0-1.0 (public domain dedication) — **labels only**
->>>>>>> origin/v3/main
-=======
->>>>>>> origin/v3/main
 - **Audio:** NOT distributed. We source audio separately per the decision
   record; audio source + license is tracked in a per-track audio-provenance
   table landed in a later PR. This entry covers only the Billboard
   annotation bundle.
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> origin/v3/main
 - **Download command:** `python -m training.data.download --source billboard --confirm`
   (fallback path: shallow-clones `github.com/smashub/choco` and keeps only
   `partitions/billboard/`. The Burgoyne/UvA canonical distribution replaces
   this path once the outreach in
   `claude/correspondence/burgoyne-mcgill-billboard-outreach.md` lands.)
-<<<<<<< HEAD
-=======
->>>>>>> origin/v3/main
-=======
->>>>>>> origin/v3/main
 - **Downloaded:** pending
 - **SHA-256 of label bundle:** pending
 - **Citation:** Burgoyne, J. A., Wild, J., & Fujinaga, I. (2011).
@@ -81,20 +62,11 @@ ChordNet student. Two purposes:
 - **Source:** https://zenodo.org/records/5794629
 - **License:** CC-BY-4.0
 - **Audio:** Multitrack stems included.
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> origin/v3/main
 - **Download command (sample, ~21 GB):** `python -m training.data.download --source aam --confirm`
 - **Download command (full, ~209 GB):** `python -m training.data.download --source aam --confirm --full`
   (Sample mode takes the first 300 file entries alphabetically from the
   Zenodo file list — deterministic ~10% coverage without a second API round
   trip. Each downloaded file is MD5-verified against the Zenodo checksum.)
-<<<<<<< HEAD
-=======
->>>>>>> origin/v3/main
-=======
->>>>>>> origin/v3/main
 - **Downloaded:** pending
 - **SHA-256(s):** pending (dev-subset archive; `--full` variant when fetched)
 - **Citation:** Ostermann, F., Vatolkin, I., & Ebeling, M. (2023).
@@ -110,18 +82,9 @@ ChordNet student. Two purposes:
 - **Source:** https://zenodo.org/records/3371780
 - **License:** CC-BY-4.0
 - **Audio:** 360 solo guitar recordings (~30 s each) included.
-<<<<<<< HEAD
-<<<<<<< HEAD
 - **Download command:** `python -m training.data.download --source guitarset --confirm`
   (Pulls every file listed on the Zenodo record (~2.5 GB total); each
   archive is MD5-verified against the Zenodo checksum.)
-=======
->>>>>>> origin/v3/main
-=======
-- **Download command:** `python -m training.data.download --source guitarset --confirm`
-  (Pulls every file listed on the Zenodo record (~2.5 GB total); each
-  archive is MD5-verified against the Zenodo checksum.)
->>>>>>> origin/v3/main
 - **Downloaded:** pending
 - **SHA-256(s):** pending
 - **Citation:** Xi, Q., Bittner, R. M., Pauwels, J., Ye, X., & Bello, J. P.
@@ -137,10 +100,6 @@ ChordNet student. Two purposes:
 - **Source:** https://www.audiolabs-erlangen.de/resources/MIR/2021-Schubert-Winterreise
 - **License:** CC-BY-3.0
 - **Audio:** Nine complete performances included.
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> origin/v3/main
 - **Download command:** MANUAL FETCH ONLY. The AudioLabs Erlangen page has
   no automatable endpoint (no public Zenodo mirror and the landing page
   gates downloads behind a form). Running
@@ -162,11 +121,6 @@ ChordNet student. Two purposes:
      as the license and src_url.
   4. Copy each archive's SHA-256 + the UTC timestamp back into this entry
      in the same PR.
-<<<<<<< HEAD
-=======
->>>>>>> origin/v3/main
-=======
->>>>>>> origin/v3/main
 - **Downloaded:** pending
 - **SHA-256(s):** pending
 - **Citation:** Weiß, C., Zalkow, F., Arifi-Müller, V., Müller, M.,
@@ -185,14 +139,7 @@ ChordNet student. Two purposes:
 - **Subset used:** `no_license_conflict` only. The broader PDMX archive
   contains a mix of licenses; we restrict strictly to the pre-filtered
   subset the authors guarantee as free of upstream conflicts.
-<<<<<<< HEAD
-<<<<<<< HEAD
 - **Download command:** `python -m training.data.download --source pdmx --confirm`
-=======
->>>>>>> origin/v3/main
-=======
-- **Download command:** `python -m training.data.download --source pdmx --confirm`
->>>>>>> origin/v3/main
 - **Downloaded:** pending
 - **SHA-256(s):** pending
 - **Citation:** Long, P., Edwards, D., Wu, Y., Dixon, S., McAuley, J., &
@@ -207,14 +154,7 @@ ChordNet student. Two purposes:
 - **Source:** https://github.com/00sapo/OpenEWLD
 - **License:** MIT for repo code; public-domain for the Wikifonia-derived
   lead-sheet content included.
-<<<<<<< HEAD
-<<<<<<< HEAD
 - **Download command:** `python -m training.data.download --source openewld --confirm`
-=======
->>>>>>> origin/v3/main
-=======
-- **Download command:** `python -m training.data.download --source openewld --confirm`
->>>>>>> origin/v3/main
 - **Downloaded:** pending
 - **SHA-256(s):** pending
 - **Citation:** Simonetta, F. (2019). OpenEWLD: A dataset for Enhanced
@@ -232,10 +172,6 @@ ChordNet student. Two purposes:
   CC-BY-4.0, CC-BY-SA-4.0, or CC0-1.0. Any other license tier (CC-BY-NC,
   CC-BY-ND, CC-BY-NC-SA, all-rights-reserved, etc.) is dropped at
   retrieval time by the download CLI's FMA filter.
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> origin/v3/main
 - **Download command (small audio subset):** `python -m training.data.download --source fma --confirm`
 - **Download command (medium audio subset):** `python -m training.data.download --source fma --confirm --full`
   (Both commands fetch `fma_metadata.zip` first, filter `tracks.csv` to the
@@ -245,11 +181,6 @@ ChordNet student. Two purposes:
   mirror; the training-data loader extracts only the retained tracks from
   it at train time, so any excluded-license audio is never written to the
   on-disk training set.)
-<<<<<<< HEAD
-=======
->>>>>>> origin/v3/main
-=======
->>>>>>> origin/v3/main
 - **Downloaded:** pending
 - **SHA-256(s):** pending (per retained track; the filter log also lands
   in the manifest)
@@ -265,7 +196,6 @@ ChordNet student. Two purposes:
 - **Usage scope:** Student training (real-audio feature coverage).
 - **Provenance verified by:** pending
 
-<<<<<<< HEAD
 ### FluidR3_GM soundfont (MIT)
 
 - **Source:** https://musical-artifacts.com/artifacts/738/FluidR3_GM.sf2
@@ -276,15 +206,24 @@ ChordNet student. Two purposes:
   MIDI/MusicXML feeds into training audio.
 - **Download command:** `python -m training.data.download --source fluidr3 --confirm`
 - **Downloaded:** pending
-- **SHA-256 pinning (QA-B H3 flow):** No SHA-256 is baked into the download
-  CLI on first run; `FLUIDR3_SHA256` in `apps/training/data/download.py`
-  starts as `None`. The first successful fetch prints the computed sha256
-  to stderr and logs it. Jon pastes that value back into `FLUIDR3_SHA256`
-  (and updates this line to record it) in the same PR; every subsequent
-  download then verifies against that pin and raises
-  `ChecksumMismatchError` on drift. This replaces the original 32-char
-  hex constant that was MD5-shaped and never actually compared — see
-  `claude/phase-2-y1-qa-b-code-review.md` H3.
+- **SHA-256 pinning (QA-B H3 → PR-Y1.sec-F1 fail-closed flow):**
+  `FLUIDR3_SHA256` in `apps/training/data/download.py` is `None` by default,
+  and the download helper now **fails closed** when it is `None` — raising
+  `ChecksumMismatchError` rather than trusting unverified bytes. To bring
+  the soundfont online:
+  1. Compute the sha256 locally once:
+     `curl -sL https://musical-artifacts.com/artifacts/738/FluidR3_GM.sf2 | sha256sum`
+  2. Paste the 64-hex value into `FLUIDR3_SHA256` in
+     `apps/training/data/download.py` and into the `SHA-256:` line on this
+     entry in the same PR.
+  3. Every subsequent download verifies the bytes on disk against that pin
+     and raises `ChecksumMismatchError` on drift — even for a
+     pre-existing cached file, so a swapped artefact in the cache dir
+     cannot slip through (TOCTOU fix). This replaces the original 32-char
+     hex constant that was MD5-shaped and never actually compared — see
+     `claude/phase-2-y1-qa-b-code-review.md` H3 and
+     `claude/session-6-security-audit-v2.md` F1.
+- **SHA-256:** pending (pin before first production synthetic render)
 - **Citation:** Wen, F. (2000). FluidR3_GM: A General MIDI SoundFont. MIT
   License. Distributed via musical-artifacts.com.
 - **Attribution requirement:** MIT notice + author credit in the release
@@ -292,8 +231,6 @@ ChordNet student. Two purposes:
 - **Usage scope:** Default soundfont for synthetic-rendering (PR-Y1.3).
 - **Provenance verified by:** pending
 
-=======
->>>>>>> origin/v3/main
 ## Audio provenance for the Billboard eval
 
 The 20-song held-out eval uses Billboard chord labels against commercially-
@@ -306,24 +243,24 @@ use of commercially-released audio outside that explicit per-track table.
 
 - **2026-11-04 — PR-Y1.2:** File created. Seven sources pre-populated,
   all fields `pending` until the respective downloads land.
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> origin/v3/main
 - **2026-11-04 — PR-Y1.3c:** Per-source `Download command:` lines added
   for Billboard (ChoCo fallback), AAM (sample vs `--full`), GuitarSet,
   PDMX, OpenEWLD, and FMA. Winterreise entry expanded with the explicit
   manual-fetch steps that the CLI now points back to. `Downloaded`,
   `SHA-256`, and `Provenance verified by` fields stay `pending` until Jon
   actually runs each command.
-<<<<<<< HEAD
 - **2026-11-04 — PR-QA-B-fixups (H3):** FluidR3_GM entry added. The
   download CLI's `FLUIDR3_SHA256` constant is `None` on first run and is
   pinned from the first successful fetch; mismatches on subsequent runs
   raise `ChecksumMismatchError`. The previous 32-char hex constant was
   MD5-shaped and never compared — bytes on disk were trusted implicitly
   and the MIT-licensing claim rested on that implicit trust.
-=======
->>>>>>> origin/v3/main
-=======
->>>>>>> origin/v3/main
+- **2026-11-04 — PR-Y1.sec-F1:** Resolved the stray merge markers left
+  behind by the bad `16378fe` merge (72 markers in `download.py` alone
+  killed `import training.data.download`). Took the guarded side on
+  `download.py` and the newer side on the other seven files. Hardened the
+  FluidR3 path further: `_download_fluidr3` now (a) always re-hashes the
+  on-disk `.sf2` even when it was pre-existing (TOCTOU fix — a swapped
+  cache file could have skipped the compare entirely before) and (b)
+  **fails closed** when `FLUIDR3_SHA256 is None`, raising
+  `ChecksumMismatchError` instead of the prior trust-on-first-use warning.

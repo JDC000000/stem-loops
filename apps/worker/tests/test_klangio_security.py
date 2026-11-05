@@ -7,7 +7,7 @@ M5 — exception messages must NOT contain upstream response bodies verbatim.
     count only.
 
 M6 — KLANGIO_API_BASE must be https:// at module import time. The provider
-    sends a Bearer token on every call; an http:// base would leak the token
+    sends the API key on every call; an http:// base would leak the token
     in clear on the wire.
 """
 
@@ -23,10 +23,17 @@ import httpx
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
+    from worker.chord_providers import klangio as kg
+
+    monkeypatch.setattr(kg, "MIN_REQUEST_INTERVAL_SEC", 0.0)
+
+
 def _mock_response(
     *,
     status_code: int = 200,
-    json_body: dict | None = None,
+    json_body: dict | list | None = None,
     text: str | None = None,
 ) -> MagicMock:
     resp = MagicMock(spec=httpx.Response)

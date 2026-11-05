@@ -339,8 +339,12 @@ jobs:
           PY
           pip install -r "$RUNNER_TEMP/training-reqs.txt"
       - name: pytest (apps/training)
-        # All tests are hermetic (httpx patched, rendering faked, no data files);
-        # tests needing optional libs (onnx, onnxruntime) importorskip cleanly.
+        # All tests are hermetic (httpx patched, rendering faked, no data files).
+        # onnx/onnxruntime/onnxscript are in pyproject's dev extras ON PURPOSE:
+        # test_export_onnx.py importorskip()s the whole file without them, which
+        # would make this job report green while the ONNX export path has zero
+        # coverage. If you trim those deps to speed the job up, you are deleting
+        # that coverage silently — skipped is not passed.
         if: steps.gate.outputs.run == 'true'
         run: cd apps/training && python -m pytest tests/ -v
 

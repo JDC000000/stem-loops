@@ -116,8 +116,41 @@ jobs:
           # and a message naming the specific rule. Codify the known vocabulary
           # so unknown failures still fail loudly.
           if grep -qE 'required status check|require.*(approving )?review|code owner|resolve.*review threads|Required status checks have not passed|At least [0-9]+ approving review|Review required|Changes requested' merge.err; then
-            echo "::notice::auto-merge skipped — branch protection requires further review/checks on this PR."
-            echo "::notice::This is expected for CODEOWNERS-protected PRs; safe_merge.sh with CODEOWNER approval is the path forward."
+            # Branch protection blocked the merge. That is the system working,
+            # not a workflow fault, so this step still exits 0 — see the long
+            # comment above for why failing here would wedge safe_merge.sh.
+            #
+            # BUT it must not be SILENT. This path used to log two ::notice::
+            # lines inside a job almost nobody opens, then exit 0 — which from
+            # the PR page is indistinguishable from "auto-merge succeeded".
+            # A reader saw a green check and an unmerged PR with no reason.
+            #
+            # So: extract the rule GitHub actually named and post it as a PR
+            # comment, where someone looking at a stuck PR will see it.
+            # exit 78 (neutral) is not available — GitHub removed neutral exit
+            # codes for `run` steps in 2019.
+            # Prefer GitHub's own message field — it carries the full sentence
+            # ("At least 1 approving review is required by reviewers with write
+            # access."). Fall back to the keyword regex, then to a generic
+            # string, so REASON is never empty.
+            REASON=$(grep -oE '"message":"[^"]*"' merge.err | head -1 | sed 's/^"message":"//; s/"$//')
+            if [ -z "$REASON" ]; then
+              REASON=$(grep -oiE 'required status check[^"]*|at least [0-9]+ approving review[^"]*|review required|changes requested|code owner[^"]*|resolve[^"]*review threads' merge.err | head -1)
+            fi
+            if [ -z "$REASON" ]; then REASON="branch protection (rule not parsed from response)"; fi
+            echo "::notice::auto-merge blocked by branch protection: $REASON"
+            MARKER="<!-- auto-merge-blocked -->"
+            printf '%s\n' "$MARKER" > body.md
+            printf '%s\n\n' "**auto-merge did not merge this PR.** Branch protection blocked it:" >> body.md
+            printf '> %s\n\n' "$REASON" >> body.md
+            printf '%s\n' "This is expected for PRs touching CODEOWNERS paths (billing, .github/workflows/**, AGENTS.md, commercial migrations). The workflow check is green because the workflow behaved correctly — it is the merge that was refused, not the automation that failed." >> body.md
+            printf '\n%s\n' "**Path forward:** run scripts/safe_merge.sh $PR_NUM with CODEOWNER approval, or merge from the GitHub UI." >> body.md
+            EXISTING=$(gh api "repos/$REPO/issues/$PR_NUM/comments" --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" 2>/dev/null | head -1)
+            if [ -n "$EXISTING" ]; then
+              gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING" -F body=@body.md > /dev/null && echo "Refreshed the auto-merge-blocked comment." || echo "Note: could not refresh the blocked comment (non-fatal)."
+            else
+              gh api -X POST "repos/$REPO/issues/$PR_NUM/comments" -F body=@body.md > /dev/null && echo "Posted an auto-merge-blocked comment." || echo "Note: could not post the blocked comment (non-fatal)."
+            fi
             exit 0
           fi
 

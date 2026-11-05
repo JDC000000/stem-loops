@@ -175,9 +175,7 @@ class KlangioChordSource:
                 # Redacted: body may contain user-supplied metadata or hints
                 # about the auth header. job_id + status is enough to find the
                 # upstream job in Klangio's dashboard.
-                raise ChordProviderError(
-                    f"Klangio job {job_id} terminal status={status}"
-                )
+                raise ChordProviderError(f"Klangio job {job_id} terminal status={status}")
             time.sleep(POLL_INTERVAL_SEC)
         raise ChordProviderError(
             f"Klangio job {job_id} did not complete within " f"{POLL_DEADLINE_SEC:.0f}s"
@@ -233,8 +231,7 @@ def _request_with_retry(
             # Other 4xx is our bug (bad body, bad auth, bad file) — fail now.
             # Body is fingerprinted, not inlined (audit §3 M5).
             raise ChordProviderError(
-                f"Klangio {method} {url} HTTP {status} "
-                f"{_body_fingerprint(resp.text)}"
+                f"Klangio {method} {url} HTTP {status} " f"{_body_fingerprint(resp.text)}"
             )
         return resp
 

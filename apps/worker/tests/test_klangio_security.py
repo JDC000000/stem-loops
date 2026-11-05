@@ -24,12 +24,17 @@ import pytest
 
 
 def _mock_response(
-    *, status_code: int = 200, json_body: dict | None = None, text: str | None = None,
+    *,
+    status_code: int = 200,
+    json_body: dict | None = None,
+    text: str | None = None,
 ) -> MagicMock:
     resp = MagicMock(spec=httpx.Response)
     resp.status_code = status_code
     resp.headers = {}
-    resp.text = text if text is not None else (json.dumps(json_body) if json_body is not None else "")
+    resp.text = (
+        text if text is not None else (json.dumps(json_body) if json_body is not None else "")
+    )
     resp.json = MagicMock(
         return_value=json_body if json_body is not None else {},
         side_effect=None if json_body is not None else ValueError("not json"),
@@ -58,7 +63,13 @@ def test_m5_4xx_other_message_does_not_inline_upstream_body() -> None:
     assert "body_bytes=" in msg
     assert re.search(r"body_sha256=[0-9a-f]{12}\b", msg)
     # … and none of the sensitive substrings leaked into the message.
-    for leak in ("Bearer sk_live_", "password_hint", "hunter2", "sk_test_SECRETVALUE", "Invalid Authorization"):
+    for leak in (
+        "Bearer sk_live_",
+        "password_hint",
+        "hunter2",
+        "sk_test_SECRETVALUE",
+        "Invalid Authorization",
+    ):
         assert leak not in msg, f"redaction regression: {leak!r} appeared in {msg!r}"
 
 
@@ -98,7 +109,9 @@ def test_m5_terminal_job_message_omits_body() -> None:
 
     client = MagicMock(spec=httpx.Client)
     # First poll already terminal: no retry, straight to error.
-    with patch.object(kg, "_request_with_retry", return_value=_mock_response(json_body=secret_hint)):
+    with patch.object(
+        kg, "_request_with_retry", return_value=_mock_response(json_body=secret_hint)
+    ):
         src = kg.KlangioChordSource()
         with pytest.raises(kg.ChordProviderError) as excinfo:
             src._poll_until_complete(client, "job-leaky")  # noqa: SLF001

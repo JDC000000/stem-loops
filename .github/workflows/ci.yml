@@ -408,3 +408,38 @@ jobs:
           # string (role with SELECT on credit_packs only) so CI catches
           # live DB-vs-Stripe drift, not just seed-vs-Stripe.
           DATABASE_URL: ${{ secrets.DATABASE_URL_CREDIT_PACKS_RO }}
+
+  web-build:
+    name: Web build
+    runs-on: ubuntu-latest
+    # Added 2026-11-05 as a PRECONDITION for widening fast-path auto-merge to
+    # apps/web/src/ (L2.3). Before this job, NO CI job built apps/web:
+    # `Lint` runs eslint, `Types drift check` runs tsc --noEmit, `Tests` runs
+    # unit tests. None of them runs `next build`.
+    #
+    # Vercel does build, but it reports as a commit STATUS ("Vercel"), not a
+    # check-run — so scripts/safe_merge.sh (which reads /commits/{sha}/check-runs)
+    # never sees it, and it was not among the ruleset's required contexts.
+    # A PR that broke the production build could therefore merge green.
+    #
+    # Vercel's status was NOT simply added as a required context instead,
+    # because a skipped Vercel deploy would never report and would then block
+    # the branch permanently — the same failure mode as the truncated
+    # "RLS gate (SL-B26" context this repo just fixed. This job always runs
+    # and always reports.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+      - name: next build
+        run: pnpm --filter web build
+        env:
+          # Build-time only. The app reads real values at runtime from Vercel;
+          # these exist so `next build` can statically evaluate the modules
+          # that reference them without a secret being present in CI.
+          NEXT_TELEMETRY_DISABLED: "1"
+

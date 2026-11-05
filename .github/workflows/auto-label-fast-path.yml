@@ -87,7 +87,26 @@ jobs:
           #   scripts/safe_merge.sh  — the M-1 merge rail
           #   scripts/check_*.py     — the RLS / TSD / price-recon CI gates
           #   .githooks/             — the R-1 pre-commit guard
-          deny_re='^(scripts/safe_merge\.sh$|scripts/check_[^/]*\.py$|\.githooks/)'
+          # ── L2.3 (2026-11-05): deny list extended alongside the widening ──
+          #
+          # Evaluated FIRST and always wins. Two groups:
+          #
+          # (a) The safety machinery itself — a change here could weaken a gate
+          #     and ship that weakening in one action.
+          #       scripts/safe_merge.sh, scripts/check_*.py, .githooks/
+          #
+          # (b) Every CODEOWNERS path that the widened allowlist could now
+          #     otherwise reach. DEFENCE IN DEPTH: auto-label-codeowners.yml
+          #     already applies needs-jon-approval to these, and auto-merge.yml
+          #     refuses that label — but those are two workflows racing on the
+          #     same PR. The deny list needs no race to win, so a money path can
+          #     never be labelled fast-path even if the labellers disagree.
+          #
+          #     AGENTS.md is in this group for a reason that is easy to miss:
+          #     it is a CODEOWNERS path AND it matches the allowlist's own
+          #     `.+\.md$` term, so it was reachable by fast-path before this
+          #     change and protected only by the label race.
+          deny_re='^(scripts/safe_merge\.sh$|scripts/check_[^/]*\.py$|\.githooks/|apps/web/src/lib/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/src/worker/billing/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|AGENTS\.md$)'
           denied=$(echo "$changed" | grep -E "$deny_re" || true)
           if [ -n "$denied" ]; then
             echo "Safety-critical paths touched; fast-path refused:"
@@ -114,7 +133,25 @@ jobs:
           #
           # scripts/** added same date: removed from CODEOWNERS by the T1
           # trim, and the safety-critical members are caught by deny_re.
-          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$|apps/training/|scripts/)'
+          # ── L2.3 (2026-11-05): widened to application source ──
+          #
+          # Added: apps/web/src/ and apps/worker/src/ — the change that moves
+          # ordinary app-code PRs onto the automation path.
+          #
+          # Both preconditions were verified live before this landed:
+          #   1. v3/main ruleset 26478884 now carries required_status_checks
+          #      (Lint, Tests, Types drift check, Fixture pipeline (stub),
+          #      RLS gate (SL-B26 #1)) with bypass_actors empty, so GitHub
+          #      itself refuses a red merge. Previously enforced only by
+          #      scripts/safe_merge.sh, a script a human had to remember.
+          #   2. The training-tests job is live on v3/main (#117), which is
+          #      what made apps/training/ legitimate in this list.
+          #
+          # A third precondition was added by this PR: the `Web build` job in
+          # ci.yml. Nothing built apps/web before it, so widening to
+          # apps/web/src/ without it would have let a broken production build
+          # auto-merge. Add `Web build` to the ruleset's required contexts.
+          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$|apps/training/|apps/web/src/|apps/worker/src/|scripts/)'
 
           # Find any file NOT matching the allowlist.
           bad=$(echo "$changed" | grep -vE "$allow_re" || true)

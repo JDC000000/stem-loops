@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-11-04T18:04:25-07:00",
-  "method": "WebFetch per URL (plus WebSearch to locate specific track pages where the manifest URL was a catalog/landing page)",
-  "pr": "PR-Y1.eval-verify (depends on PR-Y1.1 / #73)",
+  "generated_at": "2026-11-05T12:00:00-07:00",
+  "method": "WebFetch per URL (plus WebSearch and Tavily tavily_extract to locate specific track pages where the manifest URL was a catalog/landing page). Two passes.",
+  "pr": "PR-Y1.eval-verify-2 (follow-up to PR-Y1.eval-verify #91; depends on PR-Y1.1 / #73)",
   "ruleset": {
     "allowed_licenses": ["CC0", "CC BY 4.0", "CC BY 3.0", "CC BY-SA 4.0", "CC BY-SA 3.0", "Public Domain"],
     "rejected_licenses_patterns": ["CC BY-NC-*", "CC BY-ND-*", "all-rights-reserved", "research-only", "paid-only"],
@@ -21,6 +21,19 @@
       "duration_matches": null,
       "notes": "FMA artist page returned client_error on two attempts in-session (rate-limit behavior). WebSearch found that Kai Engel's 'Idea' lives as a bandcamp album (https://kaiengel.bandcamp.com/album/idea) with no visible CC license tag on the album page; FMA sibling-album pages (Better_Way, Paradigm_Lost, Irsens_Tale) all deferred to per-track license pages and did not surface a catalog-level CC license. Cannot confirm the specific 'Idea' track is CC BY on an authoritative CC-tagged URL via WebFetch. Keep pending.",
       "new_status": "pending"
+    },
+    {
+      "row_index": 0,
+      "fma_id_or_jamendo_id": "josh-woodward-breadcrumbs-2020-instrumental",
+      "url": "https://freemusicarchive.org/music/Josh_Woodward/Breadcrumbs",
+      "fetched_at": "2026-11-05T11:42:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY 3.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement for the Kai Engel row (which remained unreachable via WebFetch in this second pass too). Verified Josh Woodward Breadcrumbs album page: 'The songs in this album are licensed under: CC BY' linking to creativecommons.org/licenses/by/3.0/. Track '20/20 (Instrumental Version)' appears at track 4 of the album listing at 03:33 (213s). Album-level verification pattern — same as row 2 Monplaisir (/Free_To_Use) and row 3 Komiku (/ULTRA_PERSON_VOL4). Kept genre=pop (Josh Woodward's instrumental pop catalog).",
+      "new_status": "verified"
     },
     {
       "row_index": 1,
@@ -75,6 +88,19 @@
       "new_status": "pending"
     },
     {
+      "row_index": 4,
+      "fma_id_or_jamendo_id": "jahzzar-blinded-by-dust-roads-that-burned-our-boots",
+      "url": "https://freemusicarchive.org/music/Jahzzar/Blinded_by_dust/Roads_that_burned_our_boots",
+      "fetched_at": "2026-11-05T11:50:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY-SA 3.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement for the Kevin MacLeod rock row (which stayed blocked by incompetech's JS-only license surface and whose FMA mirror Rock_Sampler / Rock_Collection / Rockin album URLs returned client_error on multiple attempts in this pass). Verified Jahzzar track page: 'licensed under a Attribution-ShareAlike 3.0 International License' (CC BY-SA 3.0), duration 03:10 (190s). Album 'Blinded by Dust' (2011) is self-described as 'the most rocking of the three [Jahzzar albums]', with 'Roads that burned our boots' listed among the powerful-riff rock tracks. License shifted from CC BY 4.0 (manifest's prior desired) to CC BY-SA 3.0 (what's actually confirmable). Kept genre=rock.",
+      "new_status": "verified"
+    },
+    {
       "row_index": 5,
       "fma_id_or_jamendo_id": "jason-shaw-rock-01",
       "url": "https://audionautix.com/",
@@ -86,6 +112,19 @@
       "duration_matches": null,
       "notes": "audionautix.com root explicitly states: 'The music is licensed under a Creative Commons Attribution 4.0 International License' (link to CC BY 4.0 legal code). Manifest records 'CC BY 3.0' — version mismatch. Both are in allowed_licenses, so this is a metadata correction rather than a license rejection. However, title is still 'TBD Jason Shaw rock track' and the site's /index.php only shows 'Falling Sky' (house genre, 4:12), not a rock track. No specific rock track was observed via WebFetch in-session, so a specific-track pick cannot be verified yet. Flagging replace_recommended: upstream should (a) correct license to 'CC BY 4.0' and (b) select a specific Audionautix rock track and re-verify. Not flipping to verified without that specific-track confirmation.",
       "new_status": "replace_recommended"
+    },
+    {
+      "row_index": 5,
+      "fma_id_or_jamendo_id": "josh-woodward-breadcrumbs-border-blaster-instrumental",
+      "url": "https://freemusicarchive.org/music/Josh_Woodward/Breadcrumbs/JoshWoodward-Breadcrumbs-NoVox-03-BorderBlaster",
+      "fetched_at": "2026-11-05T11:52:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY 3.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement for the Audionautix rock row (previously replace_recommended): no specific audionautix.com rock track surfaced via WebFetch in two passes — the root /index.php still rotated to the 'Falling Sky' house track only. Verified Josh Woodward Breadcrumbs instrumental track page: 'licensed under a Creative Commons Attribution License' (CC BY 3.0 per linked badge), duration 04:39 (279s). Driving rock-instrumental from the Breadcrumbs album. License shifted from CC BY 4.0 (manifest's prior desired) to CC BY 3.0. Kept genre=rock.",
+      "new_status": "verified"
     },
     {
       "row_index": 6,
@@ -101,6 +140,19 @@
       "new_status": "pending"
     },
     {
+      "row_index": 6,
+      "fma_id_or_jamendo_id": "josh-woodward-breadcrumbs-private-hurricane-instrumental",
+      "url": "https://freemusicarchive.org/music/Josh_Woodward/Breadcrumbs/JoshWoodward-Breadcrumbs-NoVox-04-PrivateHurricane",
+      "fetched_at": "2026-11-05T11:53:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY 3.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement for the Jamendo CC BY rock row (Jamendo search remains JS-only in this pass). Verified Josh Woodward Breadcrumbs instrumental track page: 'licensed under a Creative Commons Attribution License' (CC BY 3.0), duration 04:45 (285s). Rock instrumental from the Breadcrumbs album (album-level CC BY 3.0 also confirmed). License shifted from CC BY 4.0 (manifest's prior desired) to CC BY 3.0. Kept genre=rock.",
+      "new_status": "verified"
+    },
+    {
       "row_index": 7,
       "fma_id_or_jamendo_id": "jamendo-rock-tbd-02",
       "url": "https://www.jamendo.com/search/tracks?licenseCCBYSA=1&fct=genres:rock",
@@ -114,6 +166,19 @@
       "new_status": "pending"
     },
     {
+      "row_index": 7,
+      "fma_id_or_jamendo_id": "josh-woodward-breadcrumbs-overthrown-instrumental",
+      "url": "https://freemusicarchive.org/music/Josh_Woodward/Breadcrumbs/JoshWoodward-Breadcrumbs-NoVox-08-Overthrown",
+      "fetched_at": "2026-11-05T11:54:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY 3.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement for the Jamendo CC BY-SA rock row (Jamendo search still JS-only). Verified Josh Woodward Breadcrumbs instrumental track page: 'Creative Commons Attribution License' (CC BY 3.0, linked to creativecommons.org/licenses/by/3.0/), duration 04:34 (274s). License shifted from CC BY-SA 4.0 (manifest's prior desired) to CC BY 3.0 — both allowed, but attribution-share-alike is lost; the row's downstream obligation is now straight attribution only. Documented so a reviewer can swap it for a CC BY-SA 4.0 rock track if the share-alike variety is load-bearing for the eval mix.",
+      "new_status": "verified"
+    },
+    {
       "row_index": 8,
       "fma_id_or_jamendo_id": "lobo-loco-folk-ccby",
       "url": "https://freemusicarchive.org/music/Lobo_Loco/",
@@ -125,6 +190,19 @@
       "duration_matches": null,
       "notes": "Lobo Loco artist page shows a 2025 album titled 'Christmas Market / CC-BY' but does not render per-track license tags; attempting the album page https://freemusicarchive.org/music/Lobo_Loco/Christmas_Market__CC-BY returned client_error. The artist is known to have a MIX of CC BY and CC BY-NC-SA, so flipping to verified without a specific CC BY track page confirmation would risk pulling in a CC BY-NC track. Keep pending; the specific track slug must be verified in a follow-up.",
       "new_status": "pending"
+    },
+    {
+      "row_index": 8,
+      "fma_id_or_jamendo_id": "jason-shaw-audionautix-acoustic-meditation",
+      "url": "https://freemusicarchive.org/music/Jason_Shaw/Audionautix_Acoustic",
+      "fetched_at": "2026-11-05T11:33:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY 3.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement for the Lobo Loco folk row: Lobo Loco's CC BY / CC BY-SA album 'FREE FOR YOU - CC BY' is mixed-license and its individual tracks that were WebFetch-reachable in this pass (Queens Shopping Tour, Beach and Surf, Roadtrip to Kansas) all landed in electronic-adjacent genre tags (Easy Listening / Ambient Electronic / Lo-fi Experimental), not folk. Switched artist to Jason Shaw: Audionautix: Acoustic album page confirms 'The songs in this album are licensed under: CC BY' (CC BY 3.0 per linked badge). Album is tagged Country / Folk (explicitly described on FMA as 'a collection of his acoustic, folk, and country tracks'). Track 11 'ACOUSTIC MEDITATION' is 03:14 (194s). Album-level verification pattern — same as row 2 Monplaisir and new row 0 above. License shifted from CC BY 4.0 (manifest's prior desired) to CC BY 3.0. Kept genre=folk.",
+      "new_status": "verified"
     },
     {
       "row_index": 9,
@@ -153,6 +231,19 @@
       "new_status": "pending"
     },
     {
+      "row_index": 10,
+      "fma_id_or_jamendo_id": "kevin-macleod-jazz-sampler-dances-and-dames",
+      "url": "https://freemusicarchive.org/music/Kevin_MacLeod/Jazz_Sampler/Dances_and_Dames",
+      "fetched_at": "2026-11-05T11:35:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY 3.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement URL for the Kevin MacLeod jazz row: incompetech still JS-only, but the FMA mirror Jazz_Sampler album page explicitly surfaces 'The songs in this album are licensed under: Attribution 3.0 International' (CC BY 3.0) — AND the specific track page https://freemusicarchive.org/music/Kevin_MacLeod/Jazz_Sampler/Dances_and_Dames explicitly says 'Dances and Dames by Kevin MacLeod is licensed under a Creative Commons Attribution License' (badge → creativecommons.org/licenses/by/3.0/), duration 02:26 (146s). License corrected from CC BY 4.0 → CC BY 3.0 (both allowed; matches what the page actually shows). Kept genre=jazz.",
+      "new_status": "verified"
+    },
+    {
       "row_index": 11,
       "fma_id_or_jamendo_id": "us-army-blues-pd-01",
       "url": "https://www.usarmyband.com/the-us-army-blues/the-us-army-blues-recordings.html",
@@ -164,6 +255,19 @@
       "duration_matches": null,
       "notes": "usarmyband.com returned client_error — WebFetch could not retrieve the page. Cannot confirm 'US Government public domain' claim or any specific recording. Keep pending; may require a direct .gov/.mil access path from an unauthenticated proxy, or a replacement with a USAF/Navy band recording hosted somewhere WebFetch can reach.",
       "new_status": "pending"
+    },
+    {
+      "row_index": 11,
+      "fma_id_or_jamendo_id": "kevin-macleod-jazz-sampler-as-i-figure",
+      "url": "https://freemusicarchive.org/music/Kevin_MacLeod/Jazz_Sampler/As_I_Figure",
+      "fetched_at": "2026-11-05T11:37:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY 3.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement for the US Army Blues Public Domain row: usarmyband.com still returned client_error in this pass and no equivalent WebFetch-reachable .mil/.gov PD jazz site could be substituted (marineband.marines.mil also failed for row 15). Switched to Kevin MacLeod's Jazz Sampler, a second track from the same CC BY 3.0 album as row 10. Verified track page: 'As I Figure by Kevin MacLeod is licensed under a Creative Commons Attribution License' (CC BY 3.0), duration 03:36 (216s). License shifted from Public Domain to CC BY 3.0 — both allowed; the row now carries a downstream attribution obligation (which was already the policy for the row 1 / row 10 Kevin MacLeod rows). Kept genre=jazz.",
+      "new_status": "verified"
     },
     {
       "row_index": 12,
@@ -179,6 +283,19 @@
       "new_status": "pending"
     },
     {
+      "row_index": 12,
+      "fma_id_or_jamendo_id": "lobo-loco-free-for-you-queens-shopping-tour",
+      "url": "https://freemusicarchive.org/music/Lobo_Loco/free-for-you-cc-by/queens-shopping-tour-id-2333/",
+      "fetched_at": "2026-11-05T11:40:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY 4.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement for the Dexter Britain electronic row: cross-checked that ALL of Dexter Britain's Creative Commons Volumes (1 through 5) carry CC BY-NC-SA (archive.org mirror for Volume 5 shows the NC/SA badges; musicbed also lists Creative_Commons_Vol_1 as a themed compilation) — meaning the manifest's hoped-for CC BY-SA 3.0 was never a safe pin for this artist. Switched to Lobo Loco's FREE FOR YOU - CC BY album, which is mixed CC BY + CC BY-SA 4.0 (so track-level verification is mandatory). Verified track page: 'Queens Shopping Tour (ID 2333) by Lobo Loco is licensed under a Attribution 4.0 International License' (CC BY 4.0), duration 03:22 (202s). Track-page genre tags are Easy Listening / Ambient Electronic / Lo-fi Experimental — electronic-adjacent, acceptable for the electronic slot. License corrected from CC BY-SA 3.0 → CC BY 4.0.",
+      "new_status": "verified"
+    },
+    {
       "row_index": 13,
       "fma_id_or_jamendo_id": "podington-bear-electronic-01",
       "url": "https://freemusicarchive.org/music/Podington_Bear/",
@@ -190,6 +307,19 @@
       "duration_matches": null,
       "notes": "Podington Bear artist page loaded but surfaced no catalog-level license (only linked to an FMA 'License guide'). Artist catalog is known to mix CC BY-NC and CC BY-SA, so flipping to verified without a specific CC BY-SA track page is unsafe. Keep pending.",
       "new_status": "pending"
+    },
+    {
+      "row_index": 13,
+      "fma_id_or_jamendo_id": "lobo-loco-free-for-you-beach-and-surf",
+      "url": "https://freemusicarchive.org/music/Lobo_Loco/free-for-you-cc-by/beach-and-surf-id-2361/",
+      "fetched_at": "2026-11-05T11:41:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY 4.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement for the Podington Bear electronic row: cross-checked that Podington Bear's two FMA box set albums 'Meet Podington Bear (Box Set Disc 1)' and 'Liquid Gold (Box Set Disc 2)' are BOTH CC BY-NC per their album pages — meaning the manifest's hoped-for CC BY-SA 3.0 was never a safe pin for this artist either (same failure mode as row 12 Dexter Britain). Switched to Lobo Loco's FREE FOR YOU - CC BY album. Verified track page: carries the CC BY 4.0 license badge (https://licensebuttons.net/l/by/4.0/88x31.png) directly on the track page. Duration 04:49 (289s) per the album index. License corrected from CC BY-SA 3.0 → CC BY 4.0.",
+      "new_status": "verified"
     },
     {
       "row_index": 14,
@@ -205,6 +335,19 @@
       "new_status": "pending"
     },
     {
+      "row_index": 14,
+      "fma_id_or_jamendo_id": "kevin-macleod-classical-sampler-canon-in-d-major",
+      "url": "https://freemusicarchive.org/music/Kevin_MacLeod/Classical_Sampler/Canon_in_D_Major",
+      "fetched_at": "2026-11-05T11:43:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY 3.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement URL for the Kevin MacLeod classical row: FMA mirror Classical_Sampler album page explicitly surfaces 'The songs in this album are licensed under: Attribution 3.0 International' (CC BY 3.0) — AND the specific track page says 'Canon in D Major by Kevin MacLeod is licensed under a Creative Commons Attribution License' (link to creativecommons.org/licenses/by/3.0/), duration 05:55 (355s). Pachelbel-style triadic classical — baseline classical test case. License corrected from CC BY 4.0 → CC BY 3.0.",
+      "new_status": "verified"
+    },
+    {
       "row_index": 15,
       "fma_id_or_jamendo_id": "us-marine-band-pd-01",
       "url": "https://www.marineband.marines.mil/Audio-Resources/",
@@ -216,6 +359,19 @@
       "duration_matches": null,
       "notes": "marineband.marines.mil returned client_error. Cannot confirm US Government public-domain status or any specific recording via WebFetch. Keep pending.",
       "new_status": "pending"
+    },
+    {
+      "row_index": 15,
+      "fma_id_or_jamendo_id": "kevin-macleod-calming-calmant",
+      "url": "https://freemusicarchive.org/music/Kevin_MacLeod/Calming/Calmant",
+      "fetched_at": "2026-11-05T11:45:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY 3.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement for the US Marine Band Public Domain classical row: marineband.marines.mil still returned client_error in this pass and no equivalent WebFetch-reachable PD classical site (musopen.org / Wikimedia Commons) could be pinned with a specific track URL in-session. Verified Kevin MacLeod track page: 'Calmant by Kevin MacLeod is licensed under a Attribution 3.0 International License' (CC BY 3.0), duration 03:24 (204s). Soft solo-piano classical — complements the Canon in D row. License shifted from Public Domain to CC BY 3.0 — both allowed; downstream attribution obligation is now explicit.",
+      "new_status": "verified"
     },
     {
       "row_index": 16,
@@ -231,16 +387,29 @@
       "new_status": "pending"
     },
     {
+      "row_index": 16,
+      "fma_id_or_jamendo_id": "lobo-loco-free-for-you-roadtrip-to-kansas",
+      "url": "https://freemusicarchive.org/music/Lobo_Loco/free-for-you-cc-by/roadtrip-to-kansas-id-2370/",
+      "fetched_at": "2026-11-05T11:46:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY-SA 4.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement for the Jamendo world/latin wildcard row (Jamendo search still JS-only). Verified Lobo Loco track page: carries the CC BY-SA 4.0 license badge (https://licensebuttons.net/l/by-sa/4.0/88x31.png) directly on the track page. Duration 06:03 (363s) per the album index. Americana-roadtrip feel (consistent with the wildcard slot's non-standard-progression intent). License shifted from CC BY 4.0 (manifest's prior desired) to CC BY-SA 4.0 — both allowed; the downstream obligation is attribution + share-alike.",
+      "new_status": "verified"
+    },
+    {
       "row_index": 17,
       "fma_id_or_jamendo_id": "wildcard-metal-01",
       "url": "https://www.jamendo.com/search/tracks?licenseCCBYSA=1&fct=genres:metal",
-      "fetched_at": "2026-11-04T18:04:25-07:00",
+      "fetched_at": "2026-11-05T11:55:00-07:00",
       "fetch_status": "js_only",
       "license_found_on_page": null,
       "license_matches_manifest": null,
       "artist_matches": null,
       "duration_matches": null,
-      "notes": "Same as rows 6, 7, 16 — Jamendo search is JS-only. Keep pending.",
+      "notes": "Still pending after PR-Y1.eval-verify-2. Jamendo search URL remains JS-only — WebFetch sees only meta tags, no track listings or license tags. Candidates attempted and discarded in this session: (a) Jahzzar 'Overdose' — breakingcopyright.com lists it as Metal/Rock but no FMA URL for 'Overdose' surfaced in either Tavily search or WebFetch; (b) Jahzzar 'Super' album URL (https://freemusicarchive.org/music/Jahzzar/Super) returned client_error; (c) Jahzzar 'Blinded by Dust' heavier tracks ('Magic Mountain', 'Scream from a Deaf Man', 'Driver') returned 404 via Tavily extract (slug mismatches — only 'Roads that burned our boots' resolved). FMA has no clean CC BY-SA 4.0 'Metal' genre album with a WebFetch-reachable track page that was confirmable in this session. Follow-up PR-Y1.eval-verify-3 should either (1) manually resolve a Jahzzar 'Super' or 'Overdose' track slug and WebFetch-verify its CC BY-SA 4.0 license, or (2) replace this row with a verified CC BY-SA 4.0 heavy-rock track from another FMA artist in the wildcard slot. The wildcard-metal row is the only row holding back the gate to 20/20.",
       "new_status": "pending"
     },
     {
@@ -257,6 +426,19 @@
       "new_status": "pending"
     },
     {
+      "row_index": 18,
+      "fma_id_or_jamendo_id": "kevin-macleod-calming-meditation-impromptu-01",
+      "url": "https://freemusicarchive.org/music/Kevin_MacLeod/Calming/Meditation_Impromptu_01",
+      "fetched_at": "2026-11-05T11:47:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY 3.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement URL for the FMA Ambient wildcard row: Kevin MacLeod Calming album page explicitly surfaces 'The songs in this album are licensed under: Attribution 3.0 International' (CC BY 3.0) — AND the specific track page explicitly says 'licensed under a Attribution 3.0 International License', duration 03:32 (212s). Sparse, slow, minimal-harmony solo piano meditation — stresses the 'N' (no chord) output when there's no clear harmony. License shifted from CC BY 4.0 → CC BY 3.0.",
+      "new_status": "verified"
+    },
+    {
       "row_index": 19,
       "fma_id_or_jamendo_id": "wildcard-acoustic-live-01",
       "url": "https://freemusicarchive.org/genre/Folk/",
@@ -266,25 +448,46 @@
       "license_matches_manifest": null,
       "artist_matches": null,
       "duration_matches": null,
-      "notes": "FMA Folk genre page loaded but no per-track license tags render. Only 'Acoustic dream' by Melomaker appeared in the Acoustic cross-tag with no license info. Row artist is TBD. Keep pending.",
+      "notes": "FMA Folk genre page loaded but no per-track license tags render. Only 'Acoustic dream' by Melomaker surfaced in the Acoustic cross-tag with no license info. Row artist is TBD. Keep pending.",
       "new_status": "pending"
+    },
+    {
+      "row_index": 19,
+      "fma_id_or_jamendo_id": "jason-shaw-audionautix-acoustic-pioneers",
+      "url": "https://freemusicarchive.org/music/Jason_Shaw/Audionautix_Acoustic",
+      "fetched_at": "2026-11-05T11:48:00-07:00",
+      "fetch_status": "ok",
+      "license_found_on_page": "CC BY 3.0",
+      "license_matches_manifest": true,
+      "artist_matches": true,
+      "duration_matches": true,
+      "notes": "PR-Y1.eval-verify-2 replacement URL for the FMA Folk wildcard acoustic row: Jason Shaw Audionautix: Acoustic album page confirms 'The songs in this album are licensed under: CC BY' (CC BY 3.0). Track 1 'PIONEERS' is 02:53 (173s) per the album index. Solo acoustic guitar — stand-in for upload-only own-file mode (no drums/bass, closest to a lone-instrument harmonic probe). Same album-level verification pattern as row 2 Monplaisir and the two new Josh Woodward / Audionautix Acoustic rows (0 and 8). License shifted from CC BY 4.0 → CC BY 3.0.",
+      "new_status": "verified"
     }
   ],
   "summary": {
-    "verified": 4,
+    "verified": 19,
     "failed": 0,
-    "replace_recommended": 1,
-    "pending": 15,
-    "total_rows": 20
+    "replace_recommended": 0,
+    "pending": 1,
+    "total_rows": 20,
+    "verified_in_pr_y1_eval_verify": 4,
+    "verified_in_pr_y1_eval_verify_2": 15,
+    "replaced_rows": [0, 4, 5, 6, 7, 8, 11, 12, 13, 15, 16, 18, 19],
+    "same_url_track_verified_rows": [10, 14],
+    "still_pending_rows": [17]
   },
   "fetch_notes": [
-    "freemusicarchive.org returned client_error on several artist/album pages, but a sibling fetch minutes later succeeded — behavior is consistent with per-host rate limiting on WebFetch. Future verification runs should space FMA calls or run per-track retries with backoff.",
-    "jamendo.com search pages are client-side rendered; WebFetch cannot see track listings or license tags. Follow-up verification will need either a direct Jamendo API call or a specific-track URL (jamendo.com/track/<id>).",
-    "incompetech.com surfaces only the 'free with attribution' prose on its free-music pages. Kevin MacLeod rows (4, 10, 14) will need either an FMA mirror URL (where the license tag renders) or a direct quote from incompetech's licenses PDF.",
-    "usarmyband.com and marineband.marines.mil returned client_error; rows 11 and 15 will need a replacement from a WebFetch-reachable Public Domain source."
+    "freemusicarchive.org continues to return client_error on many /music/<Artist>/ landing pages, but specific /music/<Artist>/<Album>/ album pages and /music/<Artist>/<Album>/<Track> track pages generally load when the slug is exact. Tavily's tavily_extract succeeded on several pages FMA's WebFetch bounced in-session — use it as a fallback when a per-track WebFetch bounces.",
+    "Jamendo search pages are irrevocably client-side rendered; neither WebFetch nor tavily_extract (on the search URL) surfaces track listings or license tags. Only a direct jamendo.com/track/<id> URL would be verifiable, and those IDs are not discoverable from the search filter URL.",
+    "incompetech.com surfaces only 'free with attribution' prose; it does not name the CC version in rendered HTML. All three Kevin MacLeod manifest rows were moved to their FMA mirrors (Jazz_Sampler / Classical_Sampler / Calming) where per-track CC BY 3.0 license tags render in the fetched body.",
+    "Dexter Britain's 'Creative Commons Volume X' compilations are ALL CC BY-NC-SA per archive.org mirrors — the manifest's prior CC BY-SA 3.0 pin was never achievable. Same failure mode for Podington Bear's box-set discs on FMA (CC BY-NC).",
+    ".mil band sites (usarmyband.com, marineband.marines.mil) still returned client_error in this pass. US Government PD recordings are theoretically ideal for the eval, but only when they live on a WebFetch-reachable mirror; both PD rows were replaced with CC BY 3.0 Kevin MacLeod tracks."
   ],
   "gate_status": {
     "CHORD_EVAL_FETCH_1_recommended": false,
-    "reason": "Only 4/20 rows verified against a WebFetch-reachable CC license page. 15 rows remain pending and 1 is replace_recommended. Flipping CHORD_EVAL_FETCH=1 now would download audio for rows whose license has not been confirmed on a reachable page, which violates the manifest's verification_protocol."
+    "reason": "19/20 rows verified against a WebFetch-reachable CC license page (up from 4/20 in PR-Y1.eval-verify). Row 17 (wildcard-metal) is still pending — no WebFetch-confirmable CC BY-SA 4.0 metal track could be substituted in this session. Per the manifest's hard rule ('CHORD_EVAL_FETCH=1 stays gated until every row is verified'), the CI flag should remain off until row 17 is resolved. However, the README's 'gate open' progress marker is updated to reflect 19/20 (≥18/20) so reviewers can see the second verification pass brought the gate most of the way open.",
+    "rows_pending": [17],
+    "next_action": "PR-Y1.eval-verify-3: resolve or replace row 17 (CC BY-SA 4.0 metal wildcard). Candidate paths listed in the row's last_check_note."
   }
 }

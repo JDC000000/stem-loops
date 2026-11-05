@@ -3,15 +3,60 @@
 # substitute for `adversarial-reviewed` in the merge gate because the
 # allowlisted paths cannot carry security-adjacent changes.
 #
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║ INVARIANT: the DENY list is evaluated FIRST and ALWAYS WINS.              ║
+# ║ A path matching both lists is REFUSED. Never reorder these two phases.    ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+#
 # Fast-path allowlist (every changed file must match ONE of these):
 #   - docs/**
 #   - *.md (anywhere)
 #   - apps/*/tests/**
 #   - apps/web/src/**/__tests__/**
 #   - packages/types/src/generated.ts
-#   - scripts/**         (T3, 2026-11-05 — minus the deny list below)
-#   - apps/training/**   (re-added 2026-11-05 by THIS PR, #117, which also adds
-#                        the `training-tests` CI job it depends on)
+#   - scripts/**           (T3, 2026-11-05 — minus the deny list below)
+#   - apps/training/**     (re-added 2026-11-05 alongside #117, which added the
+#                          `training-tests` CI job it depends on)
+#   - apps/web/src/**      (L2.3, 2026-11-05 — see preconditions below)
+#   - apps/worker/src/**   (L2.3, 2026-11-05 — see preconditions below)
+#
+# Deny list — evaluated first, always wins:
+#   SAFETY MACHINERY (a change here could weaken a gate and ship that
+#   weakening in one action):
+#     - scripts/safe_merge.sh
+#     - scripts/check_*.py
+#     - .githooks/
+#   MONEY + CONTEXT paths the widened allowlist could otherwise reach:
+#     - apps/web/src/lib/billing/
+#     - apps/web/src/app/api/billing/
+#     - apps/web/src/app/api/entitlements/
+#     - apps/worker/src/worker/billing/
+#     - apps/worker/migrations/*_v3_commercial*.sql
+#     - AGENTS.md
+#
+# Why AGENTS.md is in the DENY list and not merely a CODEOWNERS path:
+#   it matches this file's own `*.md (anywhere)` allowlist term. Before L2.3 it
+#   was therefore fast-path-REACHABLE, and the only thing stopping it was the
+#   `needs-jon-approval` label arriving in time. That is a race between two
+#   workflows on the same PR. The deny list needs no race to win.
+#
+# Same reasoning for the billing paths: auto-label-codeowners.yml already
+# labels them and auto-merge.yml refuses that label, but defence in depth
+# means a money path can never be labelled fast-path even if the two
+# labellers disagree about timing.
+#
+# L2.3 PRECONDITIONS — both verified live before apps/*/src/ was added:
+#   1. v3/main ruleset 26478884 carries required_status_checks (Lint, Tests,
+#      Types drift check, Fixture pipeline (stub), RLS gate (SL-B26 #1)) with
+#      bypass_actors empty, so GitHub itself refuses a red merge. Before that,
+#      "no merge on red CI" was enforced only by scripts/safe_merge.sh — a
+#      script a human had to remember to run (audit finding F1, HIGH).
+#   2. The `training-tests` job is live on v3/main (#117).
+#   3. Added by L2.3 itself: the `Web build` job in ci.yml. Nothing built
+#      apps/web before it, so widening to apps/web/src/ without it would have
+#      let a broken production build auto-merge. ⚠️ `Web build` must also be a
+#      REQUIRED CONTEXT on ruleset 26478884 or it reports without blocking —
+#      tracked in issue #132.
 #
 # History of the apps/training/** line — read before touching it:
 #   #118 (T3) added it on the stated condition that a `training-tests` CI job

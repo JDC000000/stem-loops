@@ -19,3 +19,14 @@ __pycache__/
 *.pt
 *.ckpt
 *.safetensors
+
+# Synthetic-render inputs + outputs (PR-Y1.3).
+# Soundfonts are permissively licensed but large (~150 MB for FluidR3); we
+# pin SHA-256s in docs/ops/synthetic-render.md and fetch them at render time
+# rather than committing bytes. Rendered audio stays local.
+*.sf2
+*.sf3
+*.wav
+*.mp3
+*.flac
+*.ogg

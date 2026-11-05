@@ -51,18 +51,23 @@ if TYPE_CHECKING:
 # CQT plan: prefer PR-Y1.3's frozen plan, fall back to local mirror.
 # ---------------------------------------------------------------------------
 
-# Local mirror of the Y1 CQT plan. If PR-Y1.3 hasn't landed on this branch
-# yet we use these constants directly; otherwise we assert they equal the
-# frozen ``PLAN``. Any drift is a hard error (``verify_plan_mirror``).
+# Local mirror of the Y1 CQT plan (currently v2). This is DELIBERATELY a
+# hand-maintained copy, not derived from ``cqt_plan.PLAN``: it documents what
+# the browser-side CQT implements, so a change to PLAN must be detected
+# (``verify_plan_mirror`` raises) and the mirror, fixtures and browser updated
+# together, never silently auto-healed. If PR-Y1.3 hasn't landed we use these
+# constants directly; otherwise we assert they equal the frozen ``PLAN``.
+# Every field of ``CQTPlan`` must be mirrored here.
 _LOCAL_PLAN: dict[str, Any] = {
     "sample_rate": 22050,
-    "hop_length": 2048,
+    "hop_length": 1024,
     "fmin_hz": 32.70,
     "n_bins": 144,
     "bins_per_octave": 24,
     "log_amplitude": True,
-    "z_norm": "global",
-    "version": "v1",
+    "z_norm": "per_song",
+    "hpf_hz": 70.0,
+    "version": "v2",
 }
 
 try:
@@ -303,8 +308,24 @@ def render_clip(spec: ClipSpec) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+def _apply_hpf(y: np.ndarray) -> np.ndarray:
+    """Pre-CQT zero-phase 4th-order Butterworth HPF (v2), per the mirror.
+
+    Mirrors ``cqt_plan.apply_hpf``; ``hpf_hz <= 0`` disables it.
+    """
+    y = np.asarray(y, dtype=np.float32)
+    hpf = _LOCAL_PLAN["hpf_hz"]
+    nyquist = _LOCAL_PLAN["sample_rate"] / 2.0
+    if hpf <= 0.0 or hpf >= nyquist:
+        return y
+    from scipy.signal import butter, sosfiltfilt
+
+    sos = butter(4, hpf / nyquist, btype="highpass", output="sos")
+    return sosfiltfilt(sos, y).astype(np.float32)
+
+
 def compute_cqt(y: np.ndarray) -> np.ndarray:
-    """Compute the log-amplitude, globally standardized CQT per the Y1 plan.
+    """Compute the log-amplitude, per-song standardized CQT per the Y1 (v2) plan.
 
     Returns a ``(n_frames, n_bins)`` ``float32`` matrix. Verifies the
     local plan mirror against PR-Y1.3's frozen plan when the latter is
@@ -315,6 +336,7 @@ def compute_cqt(y: np.ndarray) -> np.ndarray:
     import librosa  # lazy — keeps import-time cheap for the dataclass bank
 
     plan = _LOCAL_PLAN
+    y = _apply_hpf(y)
     cqt = librosa.cqt(
         y=y,
         sr=plan["sample_rate"],
@@ -326,7 +348,7 @@ def compute_cqt(y: np.ndarray) -> np.ndarray:
     mag = np.abs(cqt).astype(np.float32)
     if plan["log_amplitude"]:
         mag = librosa.amplitude_to_db(mag, ref=np.max).astype(np.float32)
-    # Global/per-track standardization. Matches cqt_plan.librosa_cqt's
+    # Per-song standardization (v2 z_norm). Matches cqt_plan.librosa_cqt's
     # per-clip default when global corpus stats aren't available.
     mean = float(mag.mean())
     std = float(mag.std()) or 1.0

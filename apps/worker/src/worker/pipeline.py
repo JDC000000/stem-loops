@@ -251,6 +251,83 @@ def process_stems(job_id, stem_paths, requested_stems, bars, sr=44100) -> int:
     return encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr)
 
 
+# --------------------------- Y1.1: chord recognition ----------------------------
+def _choose_chord_input(stem_paths: dict) -> str | None:
+    """Pick the audio path handed to the chord provider.
+
+    Preferred order (free accuracy lever from the foundations report):
+      1. An explicit 'instrumental' stem if Demucs already produced one.
+      2. 'other' (closest to a melodic/harmonic proxy).
+      3. 'keys' / 'guitar' as last resort (only non-vocal stems).
+    Returns None if no suitable stem is available — in that case the caller
+    skips the chord step entirely rather than feeding vocals (worst accuracy).
+    """
+    for name in ("instrumental", "other", "keys", "guitar"):
+        p = stem_paths.get(name)
+        if p:
+            return p
+    return None
+
+
+def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems) -> None:
+    """Y1.1 feature-flag entry point. Writes ``play.chords.json`` or logs + no-ops.
+
+    Guard: ``CHORDS_PROVIDER`` empty string (explicit disable) short-circuits
+    without importing the provider — important for Gate-2 fixture runs that
+    must not hit Klangio. Any provider-side error (missing API key, quota,
+    network) is logged and swallowed; the pipeline MUST NOT fail here.
+    """
+    provider_name = os.environ.get("CHORDS_PROVIDER", "klangio")
+    if not provider_name:
+        log_structured("INFO", "chords_skipped_disabled", job_id=job_id)
+        return
+    audio_path = _choose_chord_input(stem_paths)
+    if not audio_path:
+        log_structured(
+            "WARN",
+            "chords_skipped_no_instrumental_stem",
+            job_id=job_id,
+            stems=sorted(stem_paths.keys()),
+        )
+        return
+
+    try:
+        # Import locally — a missing chord_providers package would otherwise
+        # crash workers that haven't opted in.
+        from dataclasses import asdict as _asdict  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        from .chord_source import get_chord_source  # noqa: PLC0415
+
+        result = get_chord_source(provider_name).recognize(_Path(audio_path), stem="instrumental")
+        out_dir = _Path("apps/worker/outputs") / job_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        import json as _json  # noqa: PLC0415
+
+        with open(out_dir / "play.chords.json", "w") as f:
+            _json.dump(_asdict(result), f, indent=2)
+        log_structured(
+            "INFO",
+            "chords_complete",
+            job_id=job_id,
+            provider=result.provider,
+            provider_version=result.provider_version,
+            segments=len(result.segments),
+            model_ms=result.model_ms,
+            key=result.key,
+        )
+    except Exception as exc:  # noqa: BLE001 — chords are optional
+        log_structured(
+            "WARN",
+            "chords_failed",
+            job_id=job_id,
+            provider=provider_name,
+            error=str(exc)[:200],
+        )
+        # Also tell Sentry so the Y1 bridge visibility doesn't die silently.
+        sentry_sdk.capture_exception(exc)
+
+
 # --------------------------- async orchestrator ----------------------------
 async def emit_event(
     job_id: str, stage: str, phase: str, pct: int | None = None, detail: dict | None = None
@@ -489,6 +566,13 @@ async def _run_pipeline(job_id: str) -> None:
         # Persist the Replicate cost so the admission spend-ceiling (which sums
         # job_events.detail->>'cost_usd' over 24h) actually enforces (P4).
         await emit_event(job_id, "separating", "completed", pct=100, detail={"cost_usd": sep_cost})
+
+        # Y1.1: Chord recognition (feature-flagged post-Demucs). Default provider
+        # per the Y1 decision record is 'klangio'. Set CHORDS_PROVIDER='' to
+        # DISABLE — useful for fixture / Gate-2 runs that must not call the
+        # provider. Failures here NEVER fail the pipeline: chords are an optional
+        # overlay feature; a missing play.chords.json degrades Y1 UI only.
+        await asyncio.to_thread(_maybe_run_chord_recognition, job_id, stem_paths, requested_stems)
 
         await set_status(job_id, "extracting")
         await emit_event(job_id, "extracting", "started", pct=70)

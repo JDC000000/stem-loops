@@ -7,8 +7,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+<<<<<<< HEAD
     "test": "node --experimental-strip-types --test src/lib/*.test.mjs src/chord/__tests__/*.test.mjs src/components/__tests__/*.test.mjs test/*.test.mjs",
     "test:chord": "node --experimental-strip-types --test src/chord/__tests__/*.test.mjs src/components/__tests__/*.test.mjs",
+=======
+    "test": "node --experimental-strip-types --test src/lib/*.test.mjs src/chord/__tests__/*.test.mjs test/*.test.mjs",
+>>>>>>> origin/v3/main
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -14,6 +14,8 @@ import assert from 'node:assert/strict';
 import {
   buildChordEdit,
   chipBox,
+  completedJobStatus,
+  unavailableMessage,
   classifyLabel,
   displayText,
   observationsToRuns,
@@ -155,4 +157,48 @@ test('picker: no RangeError from labelAt for any run, including out-of-vocabular
 test('buildChordEdit: tolerates a run with no class index', () => {
   const edit = buildChordEdit({ startFrame: 1, endFrame: 2, chordClass: null }, 5, () => 1);
   assert.equal(edit.originalCls, null);
+});
+
+// ---- completed-job tri-state rendering (what the user sees) -----------------
+test('completedJobStatus loading: LOADING pill + loading message, no timeline', () => {
+  const s = completedJobStatus({ status: 'loading' });
+  assert.equal(s.pill, 'LOADING');
+  assert.match(s.message, /Loading chords/);
+  assert.equal(s.showTimeline, false);
+});
+
+test('completedJobStatus ready with chords: JOB pill, timeline, no message', () => {
+  const s = completedJobStatus({
+    status: 'ready',
+    observations: [{ startSec: 0, endSec: 2, label: 'C:maj', confidence: 1 }],
+  });
+  assert.deepEqual(s, { pill: 'JOB', message: null, showTimeline: true });
+});
+
+test('completedJobStatus ready with zero chords: says so instead of an empty box', () => {
+  const s = completedJobStatus({ status: 'ready', observations: [] });
+  assert.equal(s.pill, 'JOB');
+  assert.match(s.message, /No chords were detected/);
+  assert.equal(s.showTimeline, false);
+});
+
+test('completedJobStatus unavailable-too-long: tells the user the 5 minute limit', () => {
+  const s = completedJobStatus({ status: 'unavailable', reason: 'too_long' });
+  assert.equal(s.pill, 'UNAVAILABLE');
+  assert.match(s.message, /up to 5 minutes/);
+  assert.equal(s.showTimeline, false);
+});
+
+test('completedJobStatus unavailable-provider-failed: says detection failed, never LOADING', () => {
+  const s = completedJobStatus({ status: 'unavailable', reason: 'provider_failed' });
+  assert.equal(s.pill, 'UNAVAILABLE');
+  assert.match(s.message, /failed/);
+});
+
+test('unavailableMessage: every reason has distinct non-empty copy; unknown does not guess a cause', () => {
+  const reasons = ['too_long', 'too_short', 'provider_failed', 'not_attempted', 'load_failed', 'unknown'];
+  const msgs = reasons.map(unavailableMessage);
+  assert.equal(new Set(msgs).size, reasons.length);
+  for (const m of msgs) assert.ok(m.length > 10);
+  assert.doesNotMatch(unavailableMessage('unknown'), /too long/i);
 });

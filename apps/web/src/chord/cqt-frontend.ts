@@ -1,14 +1,24 @@
 // Browser-side CQT (constant-Q transform) frontend for Chordnet.
 //
-// Must stay in parity with `apps/training/model/cqt_plan.py` v1 (PR-Y1.3)
+// Must stay in parity with `apps/training/model/cqt_plan.py` v2 (PR-Y1.3b)
 // and its librosa pipeline in `apps/training/model/cqt_parity.py`:
-//   sr 22050, hop 2048, fmin 32.70 Hz, n_bins 144, bins_per_octave 24,
+//   sr 22050, hop 1024, fmin 32.70 Hz, n_bins 144, bins_per_octave 24,
+//   pre-CQT 70 Hz 4th-order Butterworth high-pass, applied zero-phase
+//   (forward-backward, == scipy.signal.sosfiltfilt),
 //   log-amp via amplitude_to_db(ref=np.max, amin=1e-5, top_db=80),
-//   per-clip z-norm. (The v1 plan JSON ships `znorm_mean`/`znorm_std`
-//   placeholders of 0/1 — they are intentionally bypassed and replaced
-//   with the per-clip statistics so the browser matches the training
-//   pipeline byte-for-byte. The parity suite in
-//   `src/chord/__tests__/cqt-parity.test.mjs` is the gate.)
+//   per-song z-norm (each clip against its own full-matrix mean/std).
+//   The parity suite in `src/chord/__tests__/cqt-parity.test.mjs` is the gate.
+//
+// v1 -> v2 deltas: hop 2048 -> 1024; z_norm "global" -> "per_song";
+// hpf_hz absent -> 70.0. A model trained on v1 cannot be scored with v2.
+//
+// FOLLOW-UP (outside this PR's file allowlist): the plan *delivery* layer
+// (`loadCqtPlan`, `public/cqt-plan.v1.json`, `EXPECTED_CQT_PLAN_SHA256`) is
+// still the v1 JSON + sha gate, and `ChordOverlay.tsx` derives `frameSec`
+// from that v1 plan (`plan.hop / plan.sr` = 2048/22050). `computeCQT` no
+// longer reads hop/hpf from that object: it uses `CQT_PLAN_V2` below, which
+// mirrors `cqt_plan.PLAN`. A follow-up must ship `public/cqt-plan.v2.json`
+// (+ sha), retarget the loader, and fix `frameSec` to 1024/22050.
 //
 // Implementation choice: pure-TypeScript, bank-of-filters CQT.
 // Pros: zero native deps, works in iOS Safari without WASM download,
@@ -52,6 +62,35 @@ export const EXPECTED_CQT_PLAN_SHA256 =
   'de787abc9f7261269fb868fe89098e755abdd14c58c63fb7eead310845f0d194';
 
 export const CQT_PLAN_URL = '/cqt-plan.v1.json';
+
+/**
+ * The v2 plan the CQT core implements. Hand-maintained mirror of
+ * `cqt_plan.PLAN` (and `_LOCAL_PLAN` in `cqt_parity.py`); the parity suite
+ * asserts it equals the fixture manifest's plan field by field.
+ */
+export interface CqtPlanV2 {
+  version: 'v2';
+  sample_rate: number;
+  hop_length: number;
+  fmin_hz: number;
+  n_bins: number;
+  bins_per_octave: number;
+  log_amplitude: boolean;
+  z_norm: 'per_song';
+  hpf_hz: number;
+}
+
+export const CQT_PLAN_V2: Readonly<CqtPlanV2> = Object.freeze({
+  version: 'v2',
+  sample_rate: 22050,
+  hop_length: 1024,
+  fmin_hz: 32.7,
+  n_bins: 144,
+  bins_per_octave: 24,
+  log_amplitude: true,
+  z_norm: 'per_song',
+  hpf_hz: 70.0,
+});
 
 let cachedPlan: CqtPlan | null = null;
 
@@ -266,8 +305,10 @@ let twiddles: Twiddles | null = null;
  */
 const CQT_WINDOW_CAP_SAMPLES = 4096;
 
-function buildTwiddles(plan: CqtPlan): Twiddles {
-  const { sr, fmin, n_bins, bins_per_octave } = plan;
+function buildTwiddles(plan: CqtPlanV2): Twiddles {
+  const sr = plan.sample_rate;
+  const fmin = plan.fmin_hz;
+  const { n_bins, bins_per_octave } = plan;
   const centers = new Float32Array(n_bins);
   const windows: Float32Array[] = new Array(n_bins);
   const sinTables: Float32Array[] = new Array(n_bins);
@@ -296,6 +337,120 @@ function buildTwiddles(plan: CqtPlan): Twiddles {
   return { centers, windows, sinTables, cosTables };
 }
 
+// ---------------- zero-phase 70 Hz high-pass (v2) ----------------
+//
+// Port of `cqt_plan.apply_hpf`:
+//   sos = butter(4, hpf_hz / (sr/2), btype="highpass", output="sos")
+//   sosfiltfilt(sos, y)
+// `sosfiltfilt` is NOT a single forward IIR pass. It (1) odd-extends the
+// signal by `padlen` samples at both ends, (2) filters forward with the
+// steady-state initial state scaled by the first extended sample, (3)
+// filters the reversed result again, state scaled by ITS first sample, and
+// (4) reverses back and strips the padding. The two passes cancel each
+// other's phase response (net response |H|^2, zero phase).
+// Everything runs in float64 like scipy; the result is rounded to float32
+// to mirror `.astype(np.float32)`.
+
+/** Second-order section [b0, b1, b2, a1, a2] (a0 normalised to 1). */
+type Sos = [number, number, number, number, number];
+
+/**
+ * 4th-order Butterworth high-pass as 2 biquads (bilinear transform with
+ * pre-warping). `fcNorm` is the corner as a fraction of Nyquist, i.e. what
+ * scipy's `butter(4, Wn, 'highpass')` takes. Section pairing/order differs
+ * from scipy's `zpk2sos`, but the cascade is the same filter.
+ */
+export function butterHighpass4Sos(fcNorm: number): Sos[] {
+  const order = 4;
+  const K = Math.tan((Math.PI * fcNorm) / 2);
+  const K2 = K * K;
+  const sections: Sos[] = [];
+  for (let i = 0; i < order / 2; i++) {
+    // Analog prototype biquad s^2 + c*s + 1, c = 2 sin((2i+1)pi / (2n)).
+    const c = 2 * Math.sin(((2 * i + 1) * Math.PI) / (2 * order));
+    const norm = 1 + c * K + K2;
+    sections.push([
+      1 / norm,
+      -2 / norm,
+      1 / norm,
+      (2 * (K2 - 1)) / norm,
+      (1 - c * K + K2) / norm,
+    ]);
+  }
+  return sections;
+}
+
+/**
+ * Per-section steady-state state for a unit-step input to the whole cascade
+ * (scipy `sosfilt_zi`): `lfilter_zi` of each biquad, times the running DC
+ * gain of the preceding sections (0 for a high-pass after section 0, so
+ * only the first section carries state).
+ */
+function sosfiltZi(sos: Sos[]): [number, number][] {
+  const zis: [number, number][] = [];
+  let scale = 1;
+  for (const [b0, b1, b2, a1, a2] of sos) {
+    const dc = (b0 + b1 + b2) / (1 + a1 + a2);
+    zis.push([(dc - b0) * scale, (b2 - a2 * dc) * scale]);
+    scale *= dc;
+  }
+  return zis;
+}
+
+/** One causal pass of the biquad cascade (DF2T), in place; state = zi * x0. */
+function sosfiltInPlace(sos: Sos[], x: Float64Array, zis: [number, number][]): void {
+  const x0 = x[0];
+  for (let s = 0; s < sos.length; s++) {
+    const [b0, b1, b2, a1, a2] = sos[s];
+    let z0 = zis[s][0] * x0;
+    let z1 = zis[s][1] * x0;
+    for (let n = 0; n < x.length; n++) {
+      const xn = x[n];
+      const yn = b0 * xn + z0;
+      z0 = b1 * xn - a1 * yn + z1;
+      z1 = b2 * xn - a2 * yn;
+      x[n] = yn;
+    }
+  }
+}
+
+/**
+ * Zero-phase forward-backward Butterworth high-pass: the algorithm of
+ * `scipy.signal.sosfiltfilt` with defaults (padtype='odd',
+ * padlen = 3 * (2 * n_sections + 1) = 15). Returns the input unchanged when
+ * `hpfHz <= 0` or `hpfHz >= sr / 2` (same fallbacks as `cqt_plan.apply_hpf`).
+ */
+export function zeroPhaseHighpass(
+  audio: Float32Array,
+  hpfHz: number,
+  sr: number,
+): Float32Array {
+  const nyquist = sr / 2;
+  if (hpfHz <= 0 || hpfHz >= nyquist) return audio;
+  const sos = butterHighpass4Sos(hpfHz / nyquist);
+  const padlen = 3 * (2 * sos.length + 1);
+  const n = audio.length;
+  if (n <= padlen) {
+    // scipy raises ValueError here; the training path never feeds such clips.
+    throw new Error(`zeroPhaseHighpass: need > ${padlen} samples, got ${n}`);
+  }
+  // Odd extension: 2*x[0] - x[padlen..1] | x | 2*x[-1] - x[-2..-padlen-1]
+  const ext = new Float64Array(n + 2 * padlen);
+  for (let i = 0; i < padlen; i++) ext[i] = 2 * audio[0] - audio[padlen - i];
+  for (let i = 0; i < n; i++) ext[padlen + i] = audio[i];
+  for (let i = 0; i < padlen; i++) {
+    ext[padlen + n + i] = 2 * audio[n - 1] - audio[n - 2 - i];
+  }
+  const zis = sosfiltZi(sos);
+  sosfiltInPlace(sos, ext, zis); // forward
+  ext.reverse();
+  sosfiltInPlace(sos, ext, zis); // backward (state scaled by reversed[0])
+  ext.reverse();
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = ext[padlen + i];
+  return out;
+}
+
 /**
  * Zero-pad `audio` by `pad` samples on each side. Matches
  * `numpy.pad(audio, pad, mode='constant')` — which is what librosa.cqt
@@ -310,14 +465,17 @@ function zeroPad(audio: Float32Array, pad: number): Float32Array {
 }
 
 /**
- * Compute a log-amplitude, per-clip z-normalised CQT of the input audio.
+ * Compute a log-amplitude, per-song z-normalised CQT of the input audio
+ * (v2 pipeline: HPF -> CQT -> dB -> per-song z-norm).
  *
- * `audio` must be mono Float32 PCM at plan.sr (22050). Resampling is the
+ * `audio` must be mono Float32 PCM at plan.sample_rate (22050). Resampling is the
  * caller's problem — tab-capture resamples before feeding this.
  *
  * Framing / normalisation match `apps/training/model/cqt_parity.py`'s
  * librosa pipeline, which is the training-side ground truth:
  *
+ * 0. 70 Hz 4th-order Butterworth high-pass, zero-phase (forward-backward,
+ *    scipy `sosfiltfilt` semantics) — see `zeroPhaseHighpass`.
  * 1. Zero-pad by `floor(maxWin/2)` samples each side, then take frames
  *    centred at `i*hop` in the original signal — matches librosa.cqt's
  *    default `pad_mode='constant'` + its always-on centred framing. The
@@ -329,18 +487,13 @@ function zeroPad(audio: Float32Array, pad: number): Float32Array {
  *    `librosa.amplitude_to_db(mag, ref=np.max, amin=1e-5, top_db=80)`
  *    modulo the constant `-20*log10(max(amin, ref))` offset that the
  *    subsequent z-norm absorbs anyway.
- * 4. Per-clip z-norm: subtract the full-matrix mean, divide by the
- *    full-matrix std (or 1 if std is zero — matches the Python reference
+ * 4. Per-song z-norm: subtract the full-matrix mean, divide by the
+ *    full-matrix (population, ddof=0) std (or 1 if std is zero — matches the Python reference
  *    which uses `std = float(mag.std()) or 1.0`).
  *
- * The plan-carried `znorm_mean` / `znorm_std` are intentionally ignored on
- * this code path: the v1 plan ships (0, 1) placeholders, and the reference
- * pipeline standardises per-clip. When the trainer ships corpus-level
- * (mean, std) they will live in a separate manifest and this function
- * will grow a `plan.znorm === 'corpus'` branch.
  *
  * Output layout: row-major `(nFrames, n_bins)` Float32Array with
- * `nFrames = 1 + floor(audio.length / plan.hop)`. Empty input → empty output.
+ * `nFrames = 1 + floor(audio.length / plan.hop_length)`. Empty input → empty output.
  *
  * Known parity caveat (Option B, tracked in evals/bugs.json): the lowest
  * ~60 bins (k < 60, f_k < ~184 Hz) use a window truncated to 4096 samples;
@@ -350,16 +503,25 @@ function zeroPad(audio: Float32Array, pad: number): Float32Array {
  */
 export async function computeCQT(
   audio: Float32Array,
-  plan?: CqtPlan,
+  plan: CqtPlanV2 = CQT_PLAN_V2,
 ): Promise<{ frames: Float32Array; nFrames: number }> {
-  const p = plan ?? (await loadCqtPlan());
-  if (!twiddles) twiddles = buildTwiddles(p);
+  if (plan.version !== 'v2') {
+    throw new Error(
+      `computeCQT: plan version ${String((plan as { version?: unknown }).version)} ` +
+        'is not v2; this build implements the v2 plan only.',
+    );
+  }
+  if (!twiddles) twiddles = buildTwiddles(plan);
   const tw = twiddles;
-  const { hop, n_bins } = p;
+  const hop = plan.hop_length;
+  const n_bins = plan.n_bins;
 
   if (audio.length === 0) {
     return { frames: new Float32Array(0), nFrames: 0 };
   }
+
+  // v2 step 1: zero-phase high-pass BEFORE the CQT (cqt_plan.apply_hpf).
+  audio = zeroPhaseHighpass(audio, plan.hpf_hz, plan.sample_rate);
 
   // Match librosa.cqt: zero-pad by half the longest window (pad_mode='constant',
   // the default) and centre each frame at `i*hop` in the ORIGINAL signal
@@ -407,7 +569,7 @@ export async function computeCQT(
     if (out[i] < dbFloor) out[i] = dbFloor;
   }
 
-  // --- Pass 3: per-clip z-norm (full-matrix mean / std) ---
+  // --- Pass 3: per-song z-norm (full-matrix mean / std) ---
   // Matches apps/training/model/cqt_parity.compute_cqt:
   //   mean = float(mag.mean()); std = float(mag.std()) or 1.0
   //   mag = ((mag - mean) / std)

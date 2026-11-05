@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stem-loops-training"
+version = "0.1.0"
+description = "Y1 chord-model training wrapper (runs on Modal L4)"
+requires-python = ">=3.11"
+dependencies = [
+    # Modal client — pinned min version per PR-Modal-Setup spec.
+    "modal>=0.65",
+    # Training deps mirror the Modal image's pip_install list in modal_app.py.
+    # Keep these two sources in sync when either changes.
+    "torch>=2.1",
+    "torchaudio",
+    "librosa>=0.10.2",
+    "mir_eval>=0.7",
+    "pyFluidSynth",
+    "music21>=9.1",
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "black>=24.0",
+    "ruff>=0.5",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]

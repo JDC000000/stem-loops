@@ -89,14 +89,13 @@ def test_fp32_export_produces_correct_output_shapes(tmp_path: Path, random_model
     rng = np.random.default_rng(0)
     cqt = rng.standard_normal((STATIC_BATCH, STATIC_FRAMES, STATIC_N_BINS)).astype(np.float32)
     out = sess.run(None, {"cqt": cqt})
-    # structured mode heads: root(13), triad(5), bass_interval(13), has_7th(4)
+    # factored mode (the project default) heads: root(13), quality(25), bass(13)
     expected = [
         (STATIC_BATCH, STATIC_FRAMES, 13),
-        (STATIC_BATCH, STATIC_FRAMES, 5),
+        (STATIC_BATCH, STATIC_FRAMES, 25),
         (STATIC_BATCH, STATIC_FRAMES, 13),
-        (STATIC_BATCH, STATIC_FRAMES, 4),
     ]
-    assert len(out) == 4, f"expected 4 heads, got {len(out)}"
+    assert len(out) == 3, f"expected 3 heads, got {len(out)}"
     for i, (arr, shape) in enumerate(zip(out, expected, strict=True)):
         assert tuple(arr.shape) == shape, f"head {i} shape {arr.shape} != {shape}"
 

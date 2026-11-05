@@ -273,6 +273,81 @@ jobs:
             python -m compileall packages/types/scripts
           fi
 
+  training-tests:
+    # R-2 (session 6 retrospective v2): apps/training/tests/ was never executed in CI.
+    #
+    # Path filtering: an in-job `git diff` gate, NOT a workflow-level `paths:` key
+    # and NOT dorny/paths-filter.
+    #   - A workflow-level `paths:` filter would stop the whole workflow from
+    #     triggering, which would leave a required check "Expected - waiting"
+    #     forever on PRs that don't touch training. Unsafe for required checks.
+    #   - A job-level `if:` (or dorny/paths-filter + `needs` + `if:`) yields a
+    #     *skipped* job, which GitHub counts as passing for required checks, but
+    #     dorny adds a third-party action and an extra job for a one-line check.
+    #   - The in-job gate keeps the job always running and always reporting a
+    #     real success/failure; heavy steps are simply skipped when irrelevant
+    #     (a no-op run costs ~10s). Safe to mark as a required check.
+    # Runs on every push (main / v3/main) and on PRs touching apps/training/** or
+    # this workflow file (so edits to this job are self-validated).
+    name: "Training tests (pytest, CPU torch)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # PR checkout is a merge commit; HEAD^1 is the base
+      - name: Decide whether training tests are relevant
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Push build: always run."
+            exit 0
+          fi
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          echo "$changed"
+          if echo "$changed" | grep -qE '^(apps/training/|\.github/workflows/ci\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No training changes; skipping heavy steps."
+          fi
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.run == 'true'
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          # No requirements.txt in apps/training; key the pip cache on pyproject.
+          cache-dependency-path: apps/training/pyproject.toml
+      - name: Install CPU-only torch
+        # Default PyPI torch pulls ~2GB of CUDA wheels; the CPU index is a few hundred MB.
+        # Installed first so the later `torch>=2.3.0` requirement is already satisfied.
+        if: steps.gate.outputs.run == 'true'
+        run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+      - name: Install training deps
+        # Read deps from pyproject (single source of truth). Not `pip install -e`:
+        # apps/training is a flat layout with several top-level dirs, which
+        # setuptools auto-discovery rejects. conftest.py puts apps/ on sys.path.
+        # No fluidsynth apt package: synthetic_render imports pyFluidSynth lazily
+        # and the tests patch render_midi_to_wav, so nothing needs libfluidsynth.
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/training-reqs.txt"
+          import tomllib
+          p = tomllib.load(open("apps/training/pyproject.toml", "rb"))["project"]
+          print("\n".join(p["dependencies"] + p["optional-dependencies"]["dev"]))
+          PY
+          pip install -r "$RUNNER_TEMP/training-reqs.txt"
+      - name: pytest (apps/training)
+        # All tests are hermetic (httpx patched, rendering faked, no data files).
+        # onnx/onnxruntime/onnxscript are in pyproject's dev extras ON PURPOSE:
+        # test_export_onnx.py importorskip()s the whole file without them, which
+        # would make this job report green while the ONNX export path has zero
+        # coverage. If you trim those deps to speed the job up, you are deleting
+        # that coverage silently — skipped is not passed.
+        if: steps.gate.outputs.run == 'true'
+        run: cd apps/training && python -m pytest tests/ -v
+
   check-tsd-refs:
     name: "TSD §N.M refs resolve (Fleet Playbook Move 4)"
     # PR-only: we read the PR body via the GitHub API, so push builds have

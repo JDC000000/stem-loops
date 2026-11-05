@@ -24,7 +24,7 @@ export function buildChordEdit(
   return {
     startFrame: run.startFrame,
     endFrame: run.endFrame,
-    originalCls: run.cls,
+    originalCls: run.chordClass,
     newCls,
     timestampMs: now(),
   };

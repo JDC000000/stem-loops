@@ -203,12 +203,79 @@ test('network error triggers exponential backoff and preserves the edit', async 
   assert.ok(Date.now() - start >= 400);
 });
 
-test('permanent (non-429) 4xx responses drop the edit (no infinite retry)', async () => {
+test('permanent (non-retryable) 4xx responses drop the edit (no infinite retry)', async () => {
   fetchImpl = async () => new Response(JSON.stringify({ error_code: 'CHORD_EDIT_INVALID' }), { status: 400 });
   const mod = await loadCollector();
   await mod.bufferChordEdit(VALID).catch(() => {});
   await mod.flushBufferedEdits();
   assert.equal(mod.peekBufferedEdits().length, 0, 'bad row must not wedge the queue');
+});
+
+// ─── T3 (y1-test-coverage-audit.md): retryable 4xx must NOT drop the edit ───
+// The fix at edit-collector.ts classifies 401/408/429 as retryable and 5xx
+// as retryable. Each of these tests buffers one edit, fails one flush
+// attempt with the given status, and asserts the edit is still buffered
+// (i.e. it will retry on the next flush). We use `scheduler.wait(0)` to
+// drain the microtask queue but don't wait for the backoff sleep — the
+// buffered edit just needs to survive the first attempt.
+
+test('T3: 401 Unauthorized is NOT permanent (session may expire and come back)', async () => {
+  fetchImpl = async () =>
+    new Response(JSON.stringify({ error_code: 'UNAUTHENTICATED' }), { status: 401 });
+  const mod = await loadCollector();
+  await mod.bufferChordEdit(VALID).catch(() => {});
+  // bufferChordEdit awaits a flush; after it returns we've had one attempt.
+  // The edit must still be in the buffer — dropping it would lose the
+  // flywheel training signal across a session expiry.
+  assert.equal(
+    mod.peekBufferedEdits().length,
+    1,
+    '401 must be retryable — session expiry can\'t silently drop edits',
+  );
+});
+
+test('T3: 408 Request Timeout is NOT permanent', async () => {
+  fetchImpl = async () => new Response('', { status: 408 });
+  const mod = await loadCollector();
+  await mod.bufferChordEdit(VALID).catch(() => {});
+  assert.equal(mod.peekBufferedEdits().length, 1, '408 must be retryable');
+});
+
+test('T3: 429 Too Many Requests is NOT permanent (rate-limited)', async () => {
+  fetchImpl = async () => new Response('', { status: 429 });
+  const mod = await loadCollector();
+  await mod.bufferChordEdit(VALID).catch(() => {});
+  assert.equal(mod.peekBufferedEdits().length, 1, '429 must be retryable');
+});
+
+test('T3: 5xx responses are NOT permanent', async () => {
+  fetchImpl = async () => new Response('server exploded', { status: 500 });
+  const mod = await loadCollector();
+  await mod.bufferChordEdit(VALID).catch(() => {});
+  assert.equal(mod.peekBufferedEdits().length, 1, '5xx must be retryable');
+});
+
+test('T3: 503 Service Unavailable is NOT permanent', async () => {
+  fetchImpl = async () => new Response('', { status: 503 });
+  const mod = await loadCollector();
+  await mod.bufferChordEdit(VALID).catch(() => {});
+  assert.equal(mod.peekBufferedEdits().length, 1, '503 must be retryable');
+});
+
+test('T3: 404 Not Found is permanent (route genuinely absent)', async () => {
+  fetchImpl = async () => new Response('', { status: 404 });
+  const mod = await loadCollector();
+  await mod.bufferChordEdit(VALID).catch(() => {});
+  await mod.flushBufferedEdits();
+  assert.equal(mod.peekBufferedEdits().length, 0, '404 must be dropped');
+});
+
+test('T3: 400 Bad Request is permanent (schema violation)', async () => {
+  fetchImpl = async () => new Response('', { status: 400 });
+  const mod = await loadCollector();
+  await mod.bufferChordEdit(VALID).catch(() => {});
+  await mod.flushBufferedEdits();
+  assert.equal(mod.peekBufferedEdits().length, 0, '400 must be dropped');
 });
 
 test('submitChordEdit returns the editId on success', async () => {

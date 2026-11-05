@@ -17,7 +17,16 @@ import {
 } from '../ChordOverlay.helpers.ts';
 
 test('buildChordEdit: carries startFrame, endFrame, original + new class, and timestamp', () => {
-  const run = { cls: 3, startFrame: 10, endFrame: 20 };
+  // ChordRun shape (post-PR-Y1.sec-T1): chordClass + label, startSec/endSec
+  // are present but not consumed by buildChordEdit.
+  const run = {
+    chordClass: 3,
+    startFrame: 10,
+    endFrame: 20,
+    startSec: 0.93,
+    endSec: 1.86,
+    label: 'C:min7',
+  };
   const edit = buildChordEdit(run, 7, () => 1700000000000);
   assert.deepEqual(edit, {
     startFrame: 10,
@@ -30,7 +39,17 @@ test('buildChordEdit: carries startFrame, endFrame, original + new class, and ti
 
 test('buildChordEdit: uses Date.now() when no clock is injected', () => {
   const before = Date.now();
-  const edit = buildChordEdit({ cls: 1, startFrame: 0, endFrame: 1 }, 2);
+  const edit = buildChordEdit(
+    {
+      chordClass: 1,
+      startFrame: 0,
+      endFrame: 1,
+      startSec: 0,
+      endSec: 0.093,
+      label: 'C:min',
+    },
+    2,
+  );
   const after = Date.now();
   assert.ok(edit.timestampMs >= before && edit.timestampMs <= after);
 });

@@ -65,6 +65,33 @@ def download_object(r2_key: str, local_path: str) -> str:
     return local_path
 
 
+def upload_play_chords(job_id: str, body: bytes) -> str:
+    """Upload the Y1 ``play.chords.json`` artifact for a job and return its r2_key.
+
+    Deterministic key ``jobs/<job_id>/play.chords.json`` so a retried job
+    overwrites in place. Content-Type is ``application/json`` and Cache-Control
+    is ``private, max-age=0`` — the artifact is user-scoped (served through a
+    short-TTL signed URL) and the browser should re-fetch on every job view so
+    a re-run picks up fresh chord data without a stale-cache hit.
+    """
+    r2_key = f"jobs/{job_id}/play.chords.json"
+    _r2().put_object(
+        Bucket=os.environ["R2_BUCKET_NAME"],
+        Key=r2_key,
+        Body=body,
+        ContentType="application/json",
+        CacheControl="private, max-age=0",
+    )
+    log_structured(
+        "INFO",
+        "play_chords_uploaded",
+        job_id=job_id,
+        r2_key=r2_key,
+        bytes=len(body),
+    )
+    return r2_key
+
+
 def upload_input(job_id: str, local_path: str) -> str:
     """Upload a source WAV (e.g. an operator-provided file) and return a presigned URL.
 

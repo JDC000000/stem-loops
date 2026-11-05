@@ -43,6 +43,36 @@ export async function mintSignedUrl(
   );
 }
 
+// Short-TTL signed GET for the Y1 chord-recognition artifact
+// (jobs/<id>/play.chords.json). The object is user-scoped — the bucket itself
+// is private, so the only way the browser can read it is via this URL.
+//
+// Why 5 min: the browser fetches the JSON once per completed-job view, parses
+// it into ChordObservation[] and caches in-memory. A short TTL limits replay
+// if the URL ever leaks out of the response envelope, without being so short
+// that a slow phone connection times out before the fetch completes.
+export const PLAY_CHORDS_SIGNED_URL_TTL_SEC = 300;
+
+export function playChordsR2Key(jobId: string): string {
+  // Mirror apps/worker/src/worker/storage/r2_uploader.py:upload_play_chords —
+  // the worker writes exactly this key; drift here silently 404s the overlay.
+  return `jobs/${jobId}/play.chords.json`;
+}
+
+export async function mintPlayChordsSignedUrl(
+  jobId: string,
+  expiresIn: number = PLAY_CHORDS_SIGNED_URL_TTL_SEC,
+): Promise<string> {
+  return getSignedUrl(
+    r2,
+    new GetObjectCommand({
+      Bucket: process.env.R2_BUCKET_NAME!,
+      Key: playChordsR2Key(jobId),
+    }),
+    { expiresIn },
+  );
+}
+
 // Presigned PUT so the browser uploads the source file DIRECT to R2 — bypassing
 // Vercel's 4.5 MB serverless request-body limit (real songs exceed it).
 // Retention/abuse guard (R9): short expiry + the URL is bound to the exact

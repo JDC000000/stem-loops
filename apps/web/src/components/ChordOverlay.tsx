@@ -18,7 +18,7 @@ import {
   useState,
 } from 'react';
 
-import { N_CHORD_CLASSES, chordLabel } from '../chord/alphabet.ts';
+import { N_CHORD_CLASSES, chordLabel, labelIndex } from '../chord/alphabet.ts';
 import {
   type ChordnetSession,
   loadChordnetSession,
@@ -30,6 +30,10 @@ import {
   smoothChordLogits,
   type ChordRun,
 } from '../chord/smoother.ts';
+import {
+  type ChordObservation,
+  usePlayChords,
+} from '../chord/play-chords-loader.ts';
 import {
   type TabCapture,
   UnsupportedBrowserError,
@@ -51,6 +55,44 @@ export interface ChordOverlayProps {
   onChordEdit?: (edit: ChordEdit) => void;
   /** Override for tests. */
   modelUrl?: string;
+  /**
+   * Completed-job mode. When set, the overlay skips the live tab-capture path
+   * entirely and renders the chord timeline produced by the worker (Klangio /
+   * future internal model), loaded from R2 via `usePlayChords`. Omit (or pass
+   * null) to get the default live-capture mode.
+   */
+  jobId?: string | null;
+}
+
+// Scale used when mapping play.chords.json seconds → ChordRun frames. The
+// overlay's chip-width formula uses `frames * 8px` (see chipStyle), so 10
+// frames/sec gives each second ~80px — roughly one bar at 120 BPM / 4/4,
+// matching the density the live-capture path renders at.
+const CHORDS_FRAMES_PER_SEC = 10;
+
+/**
+ * Convert ChordObservation[] (seconds-based, Harte labels) → ChordRun[]
+ * (frame-based, class indices). N/X observations are dropped — they have no
+ * class index in the 60-label alphabet and the chip row is better off empty
+ * at those spans than cluttered with no-chord fillers.
+ */
+export function observationsToRuns(obs: readonly ChordObservation[]): ChordRun[] {
+  const runs: ChordRun[] = [];
+  for (const o of obs) {
+    const chordClass = labelIndex(o.label);
+    if (chordClass < 0) continue;
+    const startFrame = Math.max(0, Math.round(o.startSec * CHORDS_FRAMES_PER_SEC));
+    const endFrame = Math.max(startFrame + 1, Math.round(o.endSec * CHORDS_FRAMES_PER_SEC));
+    runs.push({
+      startFrame,
+      endFrame,
+      startSec: o.startSec,
+      endSec: o.endSec,
+      chordClass,
+      label: o.label,
+    });
+  }
+  return runs;
 }
 
 interface State {
@@ -69,17 +111,38 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   onStop,
   onChordEdit,
   modelUrl,
+  jobId,
 }) => {
   const [state, setState] = useState<State>(INITIAL_STATE);
   const [popoverFor, setPopoverFor] = useState<ChordRun | null>(null);
   const sessionRef = useRef<ChordnetSession | null>(null);
   const captureRef = useRef<TabCapture | null>(null);
 
+  // Completed-job mode: load the worker-written chord timeline from R2 instead
+  // of running tab capture. A truthy jobId makes the component ignore the
+  // feature-detect path below and swap the start/stop controls out of the UI.
+  const completedJobChords = usePlayChords(jobId ?? null);
+  const isCompletedJobMode = Boolean(jobId);
+
   // Early feature-detect so we can show the banner without starting capture.
+  // Completed-job mode bypasses this: tab capture never runs there.
   const support = useMemo(() => {
+    if (isCompletedJobMode) return { supported: true } as const;
     if (typeof window === 'undefined') return { supported: true } as const;
     return checkTabCaptureSupport();
-  }, []);
+  }, [isCompletedJobMode]);
+
+  // Push the loaded observations into the shared `state.runs` so the render
+  // path below is identical to the live-capture one. On null (loading / 404)
+  // keep whatever was there — a transient re-fetch shouldn't blank the UI.
+  useEffect(() => {
+    if (!isCompletedJobMode) return;
+    if (completedJobChords === null) return;
+    setState({
+      phase: 'capturing',
+      runs: observationsToRuns(completedJobChords),
+    });
+  }, [isCompletedJobMode, completedJobChords]);
 
   useEffect(() => {
     return () => {
@@ -192,7 +255,18 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
       ) : null}
 
       <div style={controlsStyle}>
-        {state.phase !== 'capturing' ? (
+        {isCompletedJobMode ? (
+          // Completed-job mode owns no start/stop — the timeline is prebaked.
+          // Render a status pill while the fetch is in flight so the empty
+          // chip row doesn't look like a no-op.
+          <span
+            style={providerPillStyle}
+            data-testid="completed-job-pill"
+            aria-label="Chord data source: completed job"
+          >
+            {completedJobChords === null ? 'LOADING' : 'JOB'}
+          </span>
+        ) : state.phase !== 'capturing' ? (
           <button
             type="button"
             onClick={handleStart}

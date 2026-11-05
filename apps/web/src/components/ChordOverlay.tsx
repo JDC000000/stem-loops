@@ -26,10 +26,7 @@ import {
 } from '../chord/chordnet-session.ts';
 import { computeCQT, loadCqtPlan } from '../chord/cqt-frontend.ts';
 import { collapseRuns, smoothChordLogits } from '../chord/smoother.ts';
-import {
-  type ChordObservation,
-  usePlayChords,
-} from '../chord/play-chords-loader.ts';
+import { usePlayChords } from '../chord/play-chords-loader.ts';
 import {
   type TabCapture,
   UnsupportedBrowserError,

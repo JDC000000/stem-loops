@@ -7,14 +7,66 @@
 #     * fast-path            — auto-applied by .github/workflows/auto-label-fast-path.yml
 #                              when the entire diff is docs/tests/generated-types
 #     * NOT needs-jon-approval — hard stop regardless
-# When conditions hold, fires `gh pr merge --auto`; GitHub's required status
-# checks still gate the actual merge.
+# When conditions hold, the merge step calls REST
+# `PUT /repos/{owner}/{repo}/pulls/{N}/merge` directly. GitHub's required
+# status checks still gate the actual merge — and as of 2026-11-05 the
+# v3/main ruleset finally HAS required status checks (audit finding F1), so
+# that sentence is now true at the platform level rather than aspirational.
 #
-# Fallback behavior: `gh pr merge --auto` returns 422 "Pull request is in
-# clean status" when CI is ALREADY green by labeling time (the normal case
-# for our adversarial-review-then-label flow, where review happens after
-# CI greens). The merge step catches that 422 and falls through to a
-# direct `gh pr merge --squash --delete-branch`. Any other error surfaces.
+# ── CREDENTIAL CHAIN (L2.1, 2026-11-05) ──────────────────────────────────
+#
+#   GitHub App installation token  >  BOT_TOKEN  >  GITHUB_TOKEN
+#
+# Why an App: fine-grained PATs cannot use GraphQL's `mergePullRequest`
+# mutation (cli/cli#8352, cli/cli#8651), which is what made the bot unable
+# to merge. This workflow already sidestepped that by using REST — the
+# remaining problem was credential scope and attribution. An App
+# installation token is scoped to two permissions on one repo and expires
+# in an hour, a better posture than a classic PAT carrying `repo` scope
+# account-wide.
+#
+# The mint step is `continue-on-error: true` ON PURPOSE. If APP_ID is unset
+# or the mint fails, it must NOT take the merge down with it; the `||`
+# chain then falls back to exactly the previous behaviour, so the worst
+# case is "no change", never "auto-merge is broken". It is continue-on-error
+# rather than a conditional because the `secrets` context is not available
+# in step-level `if`.
+#
+# Because that fail-open is deliberately silent, a separate step logs WHICH
+# credential won as a ::notice:: (never the token itself). Without it, a
+# silently-failed mint would look identical to a working App. **That notice
+# is the only evidence that L2.1 actually works** — nothing else proves it,
+# because the agent cannot read /actions/secrets to confirm APP_ID exists.
+#
+# The App is deliberately NOT in the ruleset's bypass_actors: it merges
+# under the same required checks as a human.
+#
+# ── BRANCH-PROTECTION BLOCKS ARE NO LONGER SILENT (L2.4, 2026-11-05) ─────
+#
+# Audit finding F7. A refused merge used to log two ::notice:: lines and
+# exit 0. From the PR page that is indistinguishable from success: a green
+# check, an unmerged PR, and no stated reason anywhere a reader would look.
+#
+# IMPORTANT, and a correction to how this is often described: the check-run
+# `conclusion` does NOT distinguish the two outcomes. It is `success` for
+# both a completed merge and a branch-protection refusal, deliberately —
+# see the long comment at the refusal branch for why a `failure` here would
+# trip safe_merge.sh's M-1 and wedge the PR a human must then merge by hand.
+#
+# What distinguishes them is therefore NOT a conclusion value but:
+#   1. a PR COMMENT naming the rule GitHub cited, refreshed via PATCH on
+#      re-runs (keyed on an HTML marker, so one comment per PR), and
+#   2. the ::notice:: line in the run log.
+# If you are looking for "did it merge?", check whether the PR is merged —
+# not this workflow's conclusion.
+#
+# Genuinely unexpected failures (not matching the branch-protection
+# vocabulary) still exit 1 and fail loudly. That behaviour must not regress.
+#
+# Fallback behavior on 422: `gh pr merge --auto` returns 422 "Pull request
+# is in clean status" when CI is ALREADY green by labeling time (the normal
+# case for our adversarial-review-then-label flow, where review happens
+# after CI greens).
 #
 # Security: pull_request_target has write access but does NOT check out PR
 # code; only the merge call runs. Only repo collaborators can apply labels

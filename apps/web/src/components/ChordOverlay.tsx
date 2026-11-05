@@ -79,11 +79,18 @@ const CHORDS_FRAMES_PER_SEC = 10;
 export function observationsToRuns(obs: readonly ChordObservation[]): ChordRun[] {
   const runs: ChordRun[] = [];
   for (const o of obs) {
-    const cls = labelIndex(o.label);
-    if (cls < 0) continue;
+    const chordClass = labelIndex(o.label);
+    if (chordClass < 0) continue;
     const startFrame = Math.max(0, Math.round(o.startSec * CHORDS_FRAMES_PER_SEC));
     const endFrame = Math.max(startFrame + 1, Math.round(o.endSec * CHORDS_FRAMES_PER_SEC));
-    runs.push({ cls, startFrame, endFrame });
+    runs.push({
+      startFrame,
+      endFrame,
+      startSec: o.startSec,
+      endSec: o.endSec,
+      chordClass,
+      label: o.label,
+    });
   }
   return runs;
 }

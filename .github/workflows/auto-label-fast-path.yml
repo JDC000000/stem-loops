@@ -9,6 +9,22 @@
 #   - apps/*/tests/**
 #   - apps/web/src/**/__tests__/**
 #   - packages/types/src/generated.ts
+#   - scripts/**         (T3, 2026-11-05 — minus the deny list below)
+#
+# NOT in the allowlist (and why):
+#   - apps/training/**   Added by T3 (#118) on the stated condition that the
+#                        `training-tests` CI job be live on v3/main first.
+#                        It is NOT. v3/main's only coverage of apps/training is
+#                        `compileall` in python-syntax-and-markers — a
+#                        syntax-only check that imports nothing and runs no
+#                        tests. The 243-test training suite is not executed by
+#                        any job on v3/main. Re-add this line in the SAME PR
+#                        that lands the training-tests job (#117), not before.
+#
+# A DENY list is evaluated BEFORE the allowlist and always wins:
+#   - scripts/safe_merge.sh, scripts/check_*.py, .githooks/
+# These are the merge rail and the CI gates. Letting a change to them
+# auto-merge would let it weaken a gate and ship that weakening at once.
 #
 # If ANY file in the diff falls outside the allowlist, the label is not
 # applied (and if previously applied by an earlier push, it is removed).
@@ -59,10 +75,42 @@ jobs:
             exit 0
           fi
 
-          # Fast-path allowlist. ALL files must match one of these patterns.
+          # ── Phase 1: DENY list, checked FIRST ────────────────────────────
+          # These paths are the safety machinery itself. A change here that
+          # auto-merged could weaken a gate and ship that weakening in the
+          # same action. They are excluded even though they sit inside
+          # otherwise-allowed directories.
+          #   scripts/safe_merge.sh  — the M-1 merge rail
+          #   scripts/check_*.py     — the RLS / TSD / price-recon CI gates
+          #   .githooks/             — the R-1 pre-commit guard
+          deny_re='^(scripts/safe_merge\.sh$|scripts/check_[^/]*\.py$|\.githooks/)'
+          denied=$(echo "$changed" | grep -E "$deny_re" || true)
+          if [ -n "$denied" ]; then
+            echo "Safety-critical paths touched; fast-path refused:"
+            echo "$denied"
+            gh pr edit "$PR_NUM" --repo "$REPO" --remove-label fast-path 2>/dev/null || true
+            exit 0
+          fi
+
+          # ── Phase 2: ALLOW list. ALL files must match one of these ───────
           # Grouped: docs dir | any-dir markdown | per-app tests dir |
-          # web __tests__ anywhere under src | generated types file.
-          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$)'
+          # web __tests__ under src | generated types | training tree |
+          # scripts (minus the denies above).
+          #
+          # apps/training/** was added 2026-11-05 (T3, #118) and REMOVED the
+          # same day. The T3 justification (no production surface, no user
+          # data, no money path) still holds, but it was explicitly
+          # conditional on the `training-tests` CI job being live on v3/main.
+          # That job is still open in #117. Until it merges, the only v3/main
+          # coverage of apps/training is `compileall` — syntax-only, imports
+          # nothing, runs no tests — so allowlisting the tree would
+          # auto-merge genuinely unverified code. Evidence this is not
+          # theoretical: #117's run of the suite it adds reported 34 failures
+          # that no gate on v3/main would have caught.
+          #
+          # scripts/** added same date: removed from CODEOWNERS by the T1
+          # trim, and the safety-critical members are caught by deny_re.
+          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$|scripts/)'
 
           # Find any file NOT matching the allowlist.
           bad=$(echo "$changed" | grep -vE "$allow_re" || true)

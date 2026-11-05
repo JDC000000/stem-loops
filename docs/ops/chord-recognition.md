@@ -68,10 +68,24 @@ vocals confuse most chord recognisers. The pipeline picks, in order:
 `apps/worker/src/worker/chord_providers/klangio.py`.
 
 - **Base URL:** `https://api.klang.io` (`KLANGIO_API_BASE` env override).
-- **Auth:** `Authorization: Bearer <KLANGIO_API_KEY>`.
-- **Flow:** `POST /transcription/chords` (multipart WAV) → `{job_id}`; poll
-  `GET /job/<id>` until status `completed`; fetch results via
-  `GET /job/<id>/json`.
+- **Auth:** header `kl-api-key: <KLANGIO_API_KEY>` on every request.
+- **Flow (async job API, verified against the live service 2026-11-05):**
+  1. `POST /chord-recognition?vocabulary={root|major-minor|full}` — multipart,
+     file field `file`. `vocabulary` is **required** (omitted → HTTP 422).
+     Returns `{job_id, creation_date, deletion_date, status_endpoint_url}`.
+  2. Poll `GET /job/<id>/status` → `{"status": IN_QUEUE | IN_PROGRESS |
+     COMPLETED | FAILED}`; `FAILED` carries an `error` string (e.g. `Audio file
+     must be longer than 5 seconds!`), which is surfaced in the raised error
+     (bounded to 200 chars, API key scrubbed).
+  3. `GET /job/<id>/json` → bare array `[[start_sec, end_sec, harte_label], ...]`
+     (no object, no `chords` key, no key/tonality). A FAILED job 404s here
+     (`KL003`). `/midi` and `/xml` are not valid for chord jobs.
+- **Vocabulary:** `KLANGIO_VOCABULARY` (default `full`). `major-minor` would
+  collapse 7ths and slash chords (~1/3 of real chord tokens).
+- **Rate limit / quota (Startup, $99/mo):** 2 req/s, 500 requests/month then
+  $0.20 each. All requests (including retries and polls) pass a process-wide
+  throttle (`KLANGIO_MIN_REQUEST_INTERVAL_SEC`, default 0.5). Results are
+  deleted by Klangio after 30 days.
 - **Retries:** 429 and 5xx retried with exponential backoff + jitter, cap
   60s, 5 attempts max. `Retry-After` header is honoured.
 - **402 (quota exceeded):** terminal — raises `ChordQuotaExceeded`. This is
@@ -79,8 +93,10 @@ vocals confuse most chord recognisers. The pipeline picks, in order:
   before the next cycle. Never retried.
 - **Other 4xx:** terminal `ChordProviderError` — these are our bugs (bad
   body, bad auth), not transient failures.
-- **Max audio length:** 300s per file per the Klangio docs
-  (`KLANGIO_MAX_AUDIO_SEC` override). The pipeline currently runs this on
+- **Audio length bounds:** must be **> 5 s** and **<= 300 s**
+  (`KLANGIO_MIN_AUDIO_SEC` / `KLANGIO_MAX_AUDIO_SEC`). Both are checked locally
+  (via `soundfile`) *before* the POST because a rejected request still consumes
+  quota; unreadable audio also fails closed without a request. The pipeline currently runs this on
   the instrumental stem of whatever length the user uploaded; stretched
   tracks will need to be chunked in a follow-up.
 - **Confidence:** Klangio does not publish per-segment confidence. We set
@@ -127,7 +143,10 @@ See `.env.example` for the canonical list. The vars this module reads:
 |-----|---------|---------|
 | `CHORDS_PROVIDER` | `klangio` | Provider selector. Empty string disables the step. |
 | `CHORDS_STEM` | `instrumental` | Stem fed to the provider. Falls back to `other` / `keys` / `guitar` if the preferred stem is missing. |
-| `KLANGIO_API_KEY` | *(unset)* | Server-side only. Obtain at klang.io/account. |
+| `KLANGIO_API_KEY` | *(unset)* | Server-side only. Sent as `kl-api-key`. Obtain at klang.io/account. |
+| `KLANGIO_VOCABULARY` | `full` | `root` / `major-minor` / `full`. Required by the API. |
+| `KLANGIO_MIN_AUDIO_SEC` | `5` | Audio must be strictly longer than this. |
+| `KLANGIO_MIN_REQUEST_INTERVAL_SEC` | `0.5` | Min spacing between requests (2 req/s tier limit). |
 | `KLANGIO_API_BASE` | `https://api.klang.io` | Override for local proxy / staging. |
 | `KLANGIO_API_VERSION` | `2026-11-04` | Captured in `ChordResult.provider_version`. |
 | `KLANGIO_MAX_RETRIES` | `5` | 429/5xx retry budget. |
@@ -136,7 +155,7 @@ See `.env.example` for the canonical list. The vars this module reads:
 | `KLANGIO_HTTP_TIMEOUT_SEC` | `30` | Per-call HTTP timeout. |
 | `KLANGIO_POLL_INTERVAL_SEC` | `2` | Delay between job-status polls. |
 | `KLANGIO_POLL_DEADLINE_SEC` | `600` | Total wall-clock cap for job completion. |
-| `KLANGIO_MAX_AUDIO_SEC` | `300` | Provider's per-file max (docs). |
+| `KLANGIO_MAX_AUDIO_SEC` | `300` | Provider's per-file max. |
 | `CHORD_EVAL_FETCH` | *(unset)* | `1` enables audio downloads in the eval harness. |
 
 ## Deferred to Y1.2–Y1.7

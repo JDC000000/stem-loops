@@ -2,7 +2,7 @@
 
 Mocked end-to-end — no real Klangio call is ever issued. Covers:
   * Factory default behaviour (CHORDS_PROVIDER env).
-  * Harte-syntax validation against the 15-quality subset + N/X.
+  * Harte-syntax validation against the 24-quality alphabet + slash bass + N/X.
   * Klangio: job/poll/json round-trip wiring + response → ChordResult mapping.
   * Klangio: 429 → exponential backoff retry.
   * Klangio: 402 → ChordQuotaExceeded surfaces without retry.
@@ -32,21 +32,30 @@ from worker.chord_source import (
 
 
 # ----------------------------- fixtures -----------------------------
+@pytest.fixture(autouse=True)
+def _no_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 2 req/s throttle is covered in test_klangio_real_api.py; keep these fast."""
+    from worker.chord_providers import klangio as kg
+
+    monkeypatch.setattr(kg, "MIN_REQUEST_INTERVAL_SEC", 0.0)
+
+
 @pytest.fixture
 def tiny_wav(tmp_path: Path) -> Path:
-    """Minimal WAV so KlangioChordSource.recognize sees a real file to open."""
+    """Real 6 s mono 8 kHz silent WAV (>5 s so the min-duration guard passes)."""
+    import wave
+
     path = tmp_path / "tiny.wav"
-    # 44-byte canonical RIFF/WAVE header + zero samples — not played, just read.
-    path.write_bytes(
-        b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00"
-        b"\x01\x00\x01\x00\x44\xac\x00\x00\x88\x58\x01\x00"
-        b"\x02\x00\x10\x00data\x00\x00\x00\x00"
-    )
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(8000)
+        wf.writeframes(b"\x00\x00" * 8000 * 6)
     return path
 
 
 def _mock_response(
-    *, status_code: int = 200, json_body: dict | None = None, headers: dict | None = None
+    *, status_code: int = 200, json_body: dict | list | None = None, headers: dict | None = None
 ) -> MagicMock:
     """Build a response object shaped like httpx.Response for _request_with_retry."""
     resp = MagicMock(spec=httpx.Response)
@@ -109,6 +118,30 @@ def test_factory_unknown_provider_raises_value_error() -> None:
         "N",
         "X",
         "C",  # bare root accepted — Klangio sometimes omits quality
+        # extended qualities (were silently dropped by the legacy 14-quality set)
+        "C:maj9",
+        "D:min9",
+        "G:9",
+        "G:11",
+        "G:13",
+        "C:add9",
+        "C:add11",
+        "C:add6",
+        "C:aug7",
+        "C:5",
+        "C:sus2",
+        "C:maj6",
+        "C:min6",
+        # slash chords: bass is a scale degree
+        "C:maj/3",
+        "G:7/5",
+        "A:min/b3",
+        "C:maj/1",
+        "F:maj7/5",
+        "C/3",
+        "C:maj/#5",
+        "G:7/b7",
+        "C:maj/13",
     ],
 )
 def test_chord_segment_label_validates_harte_syntax_accepts(label: str) -> None:
@@ -120,7 +153,17 @@ def test_chord_segment_label_validates_harte_syntax_accepts(label: str) -> None:
     [
         "",
         "H:maj",  # H is a German/Scandinavian B — not in Harte subset
-        "C:maj9",  # 9th extensions not in our subset (map to X at ingest)
+        "C:maj/",  # empty bass
+        "C:/3",  # bass without quality
+        "C:maj/99",  # not a degree
+        "C:maj/0",
+        "C:maj/14",
+        "C:maj/x",
+        "C:maj/E",  # note names are not Harte bass tokens
+        "C:maj/3/5",  # two slashes
+        "N/3",  # N takes no bass
+        "X/3",
+        "C:maj99",
         "C:MAJ",  # case-sensitive
         "cmaj",  # missing colon
         "c:maj",  # lowercase root
@@ -133,19 +176,81 @@ def test_chord_segment_label_validates_harte_syntax_rejects(label: str) -> None:
     assert not is_valid_harte_label(label), f"should reject {label!r}"
 
 
+def _load_alphabet():
+    """Load apps/training/model/alphabet.py by path (no torch/package deps)."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[2] / "training" / "model" / "alphabet.py"
+    spec = importlib.util.spec_from_file_location("_alphabet_under_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    import sys
+
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_ROUND_TRIP_LABELS = [
+    "C:maj/3",
+    "G:7/5",
+    "A:min/b3",
+    "C:maj/1",
+    "F:maj7/5",
+    "C/3",
+    "C:maj/#5",
+    "G:7/b7",
+    "C:maj",
+    "E:min7",
+    "A:7",
+    "C",
+    "N",
+]
+
+
+@pytest.mark.parametrize("label", _ROUND_TRIP_LABELS)
+def test_validator_accepts_what_encoder_encodes(label: str) -> None:
+    alphabet = _load_alphabet()
+    assert is_valid_harte_label(label)
+    triple = alphabet.encode_factored(label)
+    assert triple is not None, f"validator accepts {label!r} but encoder returns None"
+    assert len(triple) == 3
+
+
+def test_slash_bass_indices_match_encoder() -> None:
+    alphabet = _load_alphabet()
+    assert alphabet.encode_factored("C:maj/1")[2] == alphabet.BASS_SAME_INDEX
+    assert alphabet.encode_factored("C:maj/3")[2] == 4
+    assert alphabet.encode_factored("G:7/5")[2] == 7
+    assert alphabet.encode_factored("A:min/b3")[2] == 3
+
+
+def test_every_alphabet_quality_is_valid_and_encodable() -> None:
+    """Guards against _HARTE_QUALITIES drifting from alphabet.QUALITY_LABELS."""
+    alphabet = _load_alphabet()
+    for quality in alphabet.QUALITY_LABELS:
+        if quality == "N":
+            continue
+        label = f"C:{quality}"
+        assert is_valid_harte_label(label), f"validator rejects alphabet quality {label!r}"
+        assert alphabet.encode_factored(label) is not None
+        assert is_valid_harte_label(f"C:{quality}/5")
+
+
+@pytest.mark.parametrize(
+    "label", ["C:maj/", "C:/3", "C:maj/99", "C:maj/x", "H:maj", "C:maj/0", "N/3"]
+)
+def test_malformed_labels_rejected_by_validator(label: str) -> None:
+    # The encoder is lenient on junk bass (unparseable bass collapses to "same"),
+    # so the VALIDATOR is the gate; it must reject these.
+    assert not is_valid_harte_label(label)
+
+
 # ----------------------------- response parsing -----------------------------
-def test_parse_klangio_response_maps_chords_and_key() -> None:
-    payload = {
-        "key": "C:major",
-        "chords": [
-            {"start": 0.0, "end": 2.4, "name": "C:maj"},
-            {"start": 2.4, "end": 4.8, "name": "F:maj"},
-            {"start": 4.8, "end": 7.2, "name": "G:7"},
-        ],
-    }
+def test_parse_klangio_response_maps_triples() -> None:
+    payload = [[0.0, 2.4, "C:maj"], [2.4, 4.8, "F:maj"], [4.8, 7.2, "G:7"]]
     result = _parse_klangio_response(payload, model_ms=123)
     assert isinstance(result, ChordResult)
-    assert result.key == "C:major"
+    assert result.key is None  # the chord-recognition result carries no key
     assert result.provider == "klangio"
     assert result.model_ms == 123
     assert result.duration_sec == 7.2
@@ -154,22 +259,51 @@ def test_parse_klangio_response_maps_chords_and_key() -> None:
 
 
 def test_parse_klangio_response_maps_unknown_quality_to_X() -> None:
-    payload = {
-        "key": "C:major",
-        "chords": [
-            {"start": 0.0, "end": 2.0, "name": "C:maj9"},  # 9th not in subset
-            {"start": 2.0, "end": 4.0, "name": "C:maj"},
-        ],
-    }
+    # Wire format is a flat array of [start, end, label] triples — verified
+    # against the live API. #121 wrote this against the old assumed
+    # {"chords": [{"start","end","name"}]} shape, which the API never sent.
+    # "C:maj99" is not a real quality; "C:maj9" IS a first-class alphabet
+    # member post-#121, so it would be the wrong example for this test.
+    payload = [
+        [0.0, 2.0, "C:maj99"],  # not a real quality
+        [2.0, 4.0, "C:maj"],
+    ]
     result = _parse_klangio_response(payload, model_ms=0)
     assert result.segments[0].label == "X"
     assert result.segments[1].label == "C:maj"
 
 
-def test_parse_klangio_response_handles_missing_key() -> None:
-    payload = {"chords": [{"start": 0, "end": 1, "name": "N"}]}
-    result = _parse_klangio_response(payload, model_ms=0)
+def test_parse_klangio_response_preserves_slash_and_extended_chords() -> None:
+    """Ported from #121 to the real array wire format.
+
+    This is the regression guard on #121's validator widening: before it,
+    HARTE_RE carried 14 of 24 qualities and no /bass alternative, so every
+    one of these except the deliberate bad one was silently discarded to X.
+    Keep this test — it is the only thing standing between a validator
+    regression and chords vanishing from the overlay with no error.
+    """
+    payload = [
+        [0.0, 1.0, "C:maj/3"],
+        [1.0, 2.0, "G:7/5"],
+        [2.0, 3.0, "C:maj9"],
+        [3.0, 4.0, "C:maj/x"],  # /x is not a scale degree -> X
+    ]
+    labels = [s.label for s in _parse_klangio_response(payload, model_ms=0).segments]
+    assert labels == ["C:maj/3", "G:7/5", "C:maj9", "X"]
+
+
+def test_parse_klangio_response_empty_array_is_empty_result() -> None:
+    result = _parse_klangio_response([], model_ms=0)
+    assert result.segments == []
+    # The array format carries no key field at all, so key is always None.
+    # (#121's test_parse_klangio_response_handles_missing_key asserted the
+    # same invariant via the dict shape; it is subsumed here.)
     assert result.key is None
+
+
+def test_parse_klangio_response_rejects_non_array() -> None:
+    with pytest.raises(ChordProviderError, match="not a JSON array"):
+        _parse_klangio_response({"chords": []}, model_ms=0)
 
 
 # ----------------------------- end-to-end mocked recognize() -----------------------------
@@ -178,22 +312,19 @@ def test_klangio_source_recognize_mocked(tiny_wav: Path, monkeypatch: pytest.Mon
     monkeypatch.setenv("KLANGIO_API_KEY", "test-key-abc123")
 
     responses = [
-        # POST /transcription/chords
+        # POST /chord-recognition
         _mock_response(json_body={"job_id": "job-42"}),
-        # GET /job/job-42 (still processing)
-        _mock_response(json_body={"status": "processing"}),
-        # GET /job/job-42 (completed)
-        _mock_response(json_body={"status": "completed"}),
-        # GET /job/job-42/json
+        # GET /job/job-42/status (still processing)
+        _mock_response(json_body={"status": "IN_PROGRESS"}),
+        # GET /job/job-42/status (completed)
+        _mock_response(json_body={"status": "COMPLETED"}),
+        # GET /job/job-42/json — bare array of [start, end, label]
         _mock_response(
-            json_body={
-                "key": "G:major",
-                "chords": [
-                    {"start": 0.0, "end": 1.6, "name": "G:maj"},
-                    {"start": 1.6, "end": 3.2, "name": "C:maj"},
-                    {"start": 3.2, "end": 4.8, "name": "D:7"},
-                ],
-            }
+            json_body=[
+                [0.0, 1.6, "G:maj"],
+                [1.6, 3.2, "C:maj"],
+                [3.2, 4.8, "D:7"],
+            ]
         ),
     ]
 
@@ -207,7 +338,7 @@ def test_klangio_source_recognize_mocked(tiny_wav: Path, monkeypatch: pytest.Mon
     ):
         result = KlangioChordSource().recognize(tiny_wav, stem="instrumental")
 
-    assert result.key == "G:major"
+    assert result.key is None
     assert result.provider == "klangio"
     assert [s.label for s in result.segments] == ["G:maj", "C:maj", "D:7"]
     assert result.duration_sec == 4.8
@@ -342,12 +473,12 @@ def test_recognize_never_calls_httpx_directly(
 
     def _fake(_client, *, method, url, **kwargs):  # noqa: ANN001
         sentinel_calls.append(f"{method} {url}")
-        if url == "/transcription/chords":
+        if url == "/chord-recognition":
             return _mock_response(json_body={"job_id": "j"})
-        if url == "/job/j":
-            return _mock_response(json_body={"status": "completed"})
+        if url == "/job/j/status":
+            return _mock_response(json_body={"status": "COMPLETED"})
         if url == "/job/j/json":
-            return _mock_response(json_body={"key": "C:major", "chords": []})
+            return _mock_response(json_body=[])
         raise AssertionError(f"unexpected url {url}")
 
     with (
@@ -356,7 +487,7 @@ def test_recognize_never_calls_httpx_directly(
     ):
         KlangioChordSource().recognize(tiny_wav)
     assert sentinel_calls == [
-        "POST /transcription/chords",
-        "GET /job/j",
+        "POST /chord-recognition",
+        "GET /job/j/status",
         "GET /job/j/json",
     ]

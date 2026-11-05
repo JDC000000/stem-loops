@@ -25,9 +25,15 @@
 //      subscription Stripe says no longer exists counts as cancelled.
 //   3. stamp public.users.deleted_at (tombstone; migration 021). Tolerates
 //      the column not existing yet so the route works before 021 is applied.
+//   3a. sweep tables that do NOT CASCADE from public.users. Today that is
+//      public.chord_edits (migration 025 has no ON DELETE CASCADE on user_id —
+//      the per-table header is explicit about the sweep being the audit
+//      trail). Must run BEFORE step 4 or auth.admin.deleteUser fails on the
+//      FK. Tolerates the table not existing yet (undefined_table / 42P01) so
+//      the route still works on envs that haven't applied 025.
 //   4. Supabase Admin auth.admin.deleteUser. The DB then cascades per the
 //      TSD §2.3 DDL (public.users and everything FK'd to it). We delete NO
-//      rows ourselves.
+//      rows ourselves other than the step-3a sweep.
 //   5. append a usage_events row kind='account_deleted'. user_id is NULL
 //      (the FK is ON DELETE SET NULL and the user is gone); the detail holds
 //      a SHA-256 of the user id, not the raw id or email, so the audit trail
@@ -127,6 +133,19 @@ export async function DELETE(req: NextRequest) {
     } catch (e) {
       const code = (e as { code?: string } | null)?.code;
       if (code !== '42703') throw e; // 42703 = undefined_column
+    }
+
+    // 3a. Sweep non-cascading training tables (chord_edits — migration 025).
+    //     Must run BEFORE deleteAuthUser or the FK on public.chord_edits.user_id
+    //     will refuse the public.users delete that Supabase cascades out of
+    //     auth.users. Tolerates 42P01 (undefined_table) so pre-025 envs still
+    //     delete cleanly. No other error class is swallowed — a failing sweep
+    //     must surface so the admin delete does not then explode on FK.
+    try {
+      await db.query(`DELETE FROM public.chord_edits WHERE user_id = $1::uuid`, [user.user_id]);
+    } catch (e) {
+      const code = (e as { code?: string } | null)?.code;
+      if (code !== '42P01') throw e; // 42P01 = undefined_table
     }
 
     // 4. Delete the auth user; the DB cascades the rest.

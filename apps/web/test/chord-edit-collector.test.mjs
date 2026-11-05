@@ -131,7 +131,8 @@ test('buffered edits survive a page reload (round-trip through localStorage)', a
   // Swallow the resulting flush rejection — the test does not await delivery.
   await first.bufferChordEdit(VALID).catch(() => {});
   assert.equal(first.peekBufferedEdits().length, 1);
-  const snapshot = storage.getItem('stem-loops-chord-edit-buffer');
+  // Per-M3 the key is scoped per-user with an `:anon` fallback.
+  const snapshot = storage.getItem('stem-loops-chord-edit-buffer:anon');
   assert.ok(snapshot, 'buffer was not written to localStorage');
 
   // Simulate a reload: fresh module, but the SAME localStorage contents.
@@ -312,4 +313,88 @@ test('bufferChordEdit snapshot omits internal fields when peeked', async () => {
   assert.equal(peek[0].jobId, VALID.jobId);
   assert.equal(peek[0]._at, undefined);
   assert.equal(peek[0]._attempts, undefined);
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// Security audit §3 M3: per-user buffer isolation + sign-out sweep.
+// ────────────────────────────────────────────────────────────────────────
+
+test('M3: setChordEditUser scopes the localStorage key per user', async () => {
+  // Fetch always fails so edits stay buffered — we are testing WHERE they
+  // land, not whether they ship.
+  fetchImpl = async () => { throw new TypeError('offline'); };
+  const mod = await loadCollector();
+
+  mod.setChordEditUser('user-A');
+  await mod.bufferChordEdit(VALID).catch(() => {});
+  assert.ok(
+    storage.getItem('stem-loops-chord-edit-buffer:user-A'),
+    'user A buffer should live under :user-A',
+  );
+  // The anon bucket must stay empty when a user is set.
+  assert.equal(storage.getItem('stem-loops-chord-edit-buffer:anon'), null);
+
+  // Switch to user B. A's buffer stays on disk under the OLD key but is NOT
+  // visible to B's reads.
+  mod.setChordEditUser('user-B');
+  assert.equal(mod.peekBufferedEdits().length, 0, 'B must not see A\'s buffer');
+  await mod.bufferChordEdit({ ...VALID, correctedLabel: 'F:maj' }).catch(() => {});
+  assert.ok(storage.getItem('stem-loops-chord-edit-buffer:user-B'));
+  // A's bucket is untouched.
+  assert.ok(storage.getItem('stem-loops-chord-edit-buffer:user-A'));
+});
+
+test('M3: flush under user B does NOT send user A\'s buffered edits', async () => {
+  // Reproduces the audit scenario: user A buffers while offline, logs out,
+  // user B signs in on the same device and starts flushing. B must not POST
+  // A's edits — they'd land under B's auth.uid().
+  fetchImpl = async () => { throw new TypeError('offline'); };
+  const mod = await loadCollector();
+
+  mod.setChordEditUser('user-A');
+  await mod.bufferChordEdit(VALID).catch(() => {});
+  await mod.bufferChordEdit({ ...VALID, correctedLabel: 'G:maj' }).catch(() => {});
+
+  // User A logs out: handler must call clearBufferedEdits + setChordEditUser(null).
+  mod.clearBufferedEdits();
+  mod.setChordEditUser(null);
+  assert.equal(storage.getItem('stem-loops-chord-edit-buffer:user-A'), null);
+
+  // User B logs in and triggers a flush. Even if the network recovers now,
+  // nothing from A should be POSTed.
+  mod.setChordEditUser('user-B');
+  fetchCalls = [];
+  fetchImpl = async (_url, init) => {
+    fetchCalls.push(init);
+    return new Response(JSON.stringify({ edit_id: 'edit-b', created_at: 'now' }), {
+      status: 201,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  const sent = await mod.flushBufferedEdits();
+  assert.equal(sent, 0, 'B must not inherit A\'s queue');
+  assert.equal(fetchCalls.length, 0);
+});
+
+test('M3: clearBufferedEdits wipes all per-user buckets (and legacy key)', async () => {
+  fetchImpl = async () => { throw new TypeError('offline'); };
+  const mod = await loadCollector();
+
+  // Plant buffers for two users AND a legacy single-key entry (pre-M3 shape).
+  mod.setChordEditUser('user-A');
+  await mod.bufferChordEdit(VALID).catch(() => {});
+  mod.setChordEditUser('user-B');
+  await mod.bufferChordEdit({ ...VALID, correctedLabel: 'A:min' }).catch(() => {});
+  storage.setItem('stem-loops-chord-edit-buffer', JSON.stringify([]));
+  // Sanity: three chord-edit entries present.
+  const before = [...storage.map.keys()].filter((k) => k.startsWith('stem-loops-chord-edit-buffer'));
+  assert.equal(before.length, 3);
+  // Plant an unrelated key to ensure the sweep is not over-broad.
+  storage.setItem('some-other-app-key', 'keep-me');
+
+  mod.clearBufferedEdits();
+
+  const after = [...storage.map.keys()].filter((k) => k.startsWith('stem-loops-chord-edit-buffer'));
+  assert.deepEqual(after, []);
+  assert.equal(storage.getItem('some-other-app-key'), 'keep-me');
 });

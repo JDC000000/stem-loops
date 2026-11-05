@@ -26,6 +26,7 @@ label contract regardless of the confidence source.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import random
 import time
@@ -44,7 +45,18 @@ from ..chord_source import (
 )
 from ..logger import log_structured
 
-API_BASE = os.environ.get("KLANGIO_API_BASE", "https://api.klang.io").rstrip("/")
+# Security audit §3 M6: Klangio's bearer token travels on every call. If
+# KLANGIO_API_BASE is set to an http:// URL (CI typo, debugging stub,
+# malicious env injection), the token would leave the process in clear on
+# the wire. Fail fast at import time so no code path reaches _submit() with
+# a dangerous base. The default is https so normal callers never trip this.
+_API_BASE_RAW = os.environ.get("KLANGIO_API_BASE", "https://api.klang.io")
+if not _API_BASE_RAW.startswith("https://"):
+    raise ValueError(
+        "KLANGIO_API_BASE must use https:// — a Bearer-authenticated API over "
+        f"plain http would leak the token in clear. Got: {_API_BASE_RAW[:8]!r}..."
+    )
+API_BASE = _API_BASE_RAW.rstrip("/")
 # Provider version pinned in the ChordResult for reproducibility; override via env
 # when Klangio ships a new decoder we want to re-eval against the 20-song set.
 PROVIDER_VERSION = os.environ.get("KLANGIO_API_VERSION", "2026-11-04")
@@ -67,6 +79,28 @@ MAX_AUDIO_SEC = float(os.environ.get("KLANGIO_MAX_AUDIO_SEC", "300"))
 
 class ChordProviderError(Exception):
     """Non-retryable terminal error from the Klangio provider (not 402/429)."""
+
+
+def _body_fingerprint(body: bytes | str | None) -> str:
+    """Audit-safe single-line digest of an upstream response body.
+
+    Security audit §3 M5: the pre-fix code raised ``ChordProviderError`` with
+    the full upstream body (or its first 200 chars) embedded in the message.
+    That message flows to stdout logs AND to Sentry — any user-supplied data
+    Klangio echoes back in an error (filename, headers, auth hints) ends up
+    in the log pipeline. Redact: emit a byte-count + sha256 prefix instead,
+    enough to correlate across logs without carrying any content.
+    """
+    if body is None:
+        body_bytes = b""
+    elif isinstance(body, str):
+        body_bytes = body.encode("utf-8", errors="replace")
+    else:
+        body_bytes = body
+    return (
+        f"body_bytes={len(body_bytes)} "
+        f"body_sha256={hashlib.sha256(body_bytes).hexdigest()[:12]}"
+    )
 
 
 @dataclass
@@ -138,9 +172,10 @@ class KlangioChordSource:
             if status in ("completed", "succeeded", "done"):
                 return
             if status in ("failed", "error", "cancelled", "canceled"):
-                raise ChordProviderError(
-                    f"Klangio job {job_id} terminal status={status} body={body!r}"
-                )
+                # Redacted: body may contain user-supplied metadata or hints
+                # about the auth header. job_id + status is enough to find the
+                # upstream job in Klangio's dashboard.
+                raise ChordProviderError(f"Klangio job {job_id} terminal status={status}")
             time.sleep(POLL_INTERVAL_SEC)
         raise ChordProviderError(
             f"Klangio job {job_id} did not complete within " f"{POLL_DEADLINE_SEC:.0f}s"
@@ -194,7 +229,10 @@ def _request_with_retry(
             continue
         if status >= 400:
             # Other 4xx is our bug (bad body, bad auth, bad file) — fail now.
-            raise ChordProviderError(f"Klangio {method} {url} HTTP {status}: {resp.text[:200]!r}")
+            # Body is fingerprinted, not inlined (audit §3 M5).
+            raise ChordProviderError(
+                f"Klangio {method} {url} HTTP {status} " f"{_body_fingerprint(resp.text)}"
+            )
         return resp
 
     # Loop fell through without return/raise — defensive.
@@ -224,8 +262,11 @@ def _parse_json(resp: httpx.Response) -> dict[str, Any]:
     try:
         body = resp.json()
     except ValueError as exc:
+        # Redacted: body fingerprint only — pre-fix we inlined the first 200
+        # chars, which could echo auth hints or user filenames into Sentry.
         raise ChordProviderError(
-            f"Klangio response was not JSON (status={resp.status_code}): {resp.text[:200]!r}"
+            f"Klangio response was not JSON (status={resp.status_code}) "
+            f"{_body_fingerprint(resp.text)}"
         ) from exc
     if not isinstance(body, dict):
         raise ChordProviderError(f"Klangio response JSON was not a dict: {type(body).__name__}")

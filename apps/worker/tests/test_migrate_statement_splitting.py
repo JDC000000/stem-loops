@@ -171,6 +171,35 @@ AS
     assert "credit_adjustments" in stmts[2]
 
 
+def test_split_migration_025_shape() -> None:
+    """Shape-pin: migration 025 (chord_edits, PR-Y1.7) has CREATE TABLE,
+    multiple policies, a DO block for cowork_ro, and a trailing COMMENT ON
+    TABLE. All must survive the splitter as their own statements."""
+    migration = Path(__file__).resolve().parents[1] / "migrations" / "025_v3_chord_edits.sql"
+    stmts = list(split_sql_statements(migration.read_text()))
+    # Expected shape: CREATE TABLE, 2 indexes, ALTER .. ENABLE RLS, 2 DROP
+    # POLICY + 2 CREATE POLICY (user), 3 DROP POLICY + 2 CREATE POLICY
+    # (stemloops_app), GRANT, REVOKE, DO $$..$$ (cowork_ro), COMMENT.
+    assert any(
+        "CREATE TABLE IF NOT EXISTS public.chord_edits" in s for s in stmts
+    ), "CREATE TABLE statement lost"
+    assert any(
+        "ALTER TABLE public.chord_edits ENABLE ROW LEVEL SECURITY" in s for s in stmts
+    ), "ENABLE RLS statement lost"
+    do_blocks = [s for s in stmts if "DO $$" in s and "END $$" in s]
+    assert len(do_blocks) == 1, f"expected 1 DO block, got {len(do_blocks)}"
+    # The COMMENT ON TABLE comes AFTER the DO block — this is the exact shape
+    # that session-5 postmortem said the pre-fix splitter would silently drop.
+    assert any(
+        s.lstrip().startswith("COMMENT ON TABLE public.chord_edits") for s in stmts
+    ), "trailing COMMENT ON TABLE swallowed"
+    # The Harte regex CHECK needs its literal regex preserved — the $ anchor
+    # could theoretically confuse a naive dollar-quote scanner.
+    create_table = next(s for s in stmts if "CREATE TABLE IF NOT EXISTS public.chord_edits" in s)
+    assert "chord_edits_valid_harte" in create_table
+    assert "N|X|[A-G]" in create_table
+
+
 # -------- Integration test: apply 023 via the splitter, verify viewdef ------
 
 

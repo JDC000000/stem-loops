@@ -61,6 +61,12 @@ Thumbs.db
 postgres_data/
 minio_data/
 
+# V3-Y1 training — downloaded corpora, checkpoints, run artefacts
+# (see apps/training/.gitignore for the local scope too)
+apps/training/data/cache/
+apps/training/data/*/checkpoint-*/
+apps/training/data/*/wandb/
+
 # Vercel
 .vercel/
 

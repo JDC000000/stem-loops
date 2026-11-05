@@ -27,6 +27,11 @@
 # Database migrations — any change here runs against prod Supabase on deploy.
 apps/worker/migrations/**                       @JDC000000
 
+# V3-Y1 training pipeline — data provenance, licenses, and model recipe.
+# Everything here touches cease-and-desist defense + the attribution
+# contract for the open-source weights release.
+/apps/training/                                 @JDC000000
+
 # Scripts — CI invokes several; broadening beyond check_rls.py because a new
 # script added here can silently become part of the build or lint path.
 scripts/**                                      @JDC000000

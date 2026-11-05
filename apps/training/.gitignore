@@ -1,0 +1,21 @@
+# Downloaded corpora, synthetic renders, model checkpoints, run artefacts.
+# None of this is ever committed — DATA-PROVENANCE.md and MANIFEST.jsonl
+# (the committed/per-run audit trail) are what travels with the repo.
+data/cache/
+data/*/checkpoint-*/
+data/*/wandb/
+
+# Local virtualenvs / build cruft specific to the training package.
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+
+# Local model artefacts.
+*.onnx
+*.pt
+*.ckpt
+*.safetensors

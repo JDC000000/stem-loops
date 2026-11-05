@@ -1,0 +1,13 @@
+{
+  "version": "v1",
+  "note": "Mirrors apps/training/model/cqt_plan.py v1 (PR-Y1.3). Any change here must land in the training-side plan in the same PR; browser loader fails fast on sha mismatch. Decision record v1.3 §Browser deployment.",
+  "sr": 22050,
+  "hop": 2048,
+  "fmin": 32.7,
+  "n_bins": 144,
+  "bins_per_octave": 24,
+  "mag": "log",
+  "znorm": "global",
+  "znorm_mean": 0.0,
+  "znorm_std": 1.0
+}

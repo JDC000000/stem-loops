@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --experimental-strip-types --test src/lib/*.test.mjs test/*.test.mjs",
+    "test": "node --experimental-strip-types --test src/lib/*.test.mjs src/chord/__tests__/*.test.mjs src/components/__tests__/*.test.mjs test/*.test.mjs",
+    "test:chord": "node --experimental-strip-types --test src/chord/__tests__/*.test.mjs src/components/__tests__/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -20,6 +21,7 @@
     "@supabase/supabase-js": "~2.117.0",
     "jszip": "^3.10.1",
     "next": "14.2.35",
+    "onnxruntime-web": "1.18.0",
     "pg": "^8.12.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

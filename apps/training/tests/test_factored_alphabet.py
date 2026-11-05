@@ -27,6 +27,7 @@ from training.model.alphabet import (
     N_QUALITY,
     QUALITY_LABELS,
     QUALITY_N_INDEX,
+    ROOT_N_INDEX,
     ROOTS,
     _compute_alphabet_sha,
     collapse_170_to_factored,
@@ -186,8 +187,24 @@ def test_seven_with_altered_tensions_collapses_to_seven() -> None:
 
 
 def test_n_round_trip() -> None:
-    assert encode_factored("N") == (0, QUALITY_N_INDEX, BASS_N_INDEX)
-    assert decode_factored(0, QUALITY_N_INDEX, BASS_N_INDEX) == "N"
+    assert encode_factored("N") == (ROOT_N_INDEX, QUALITY_N_INDEX, BASS_N_INDEX)
+    assert decode_factored(ROOT_N_INDEX, QUALITY_N_INDEX, BASS_N_INDEX) == "N"
+
+
+def test_n_root_is_dedicated_slot_not_c() -> None:
+    """N must not alias root 0 (C): it would poison the C class once root is supervised."""
+    assert ROOT_N_INDEX == 12
+    root, _, _ = encode_factored("N")  # type: ignore[misc]
+    assert root != encode_factored("C:maj")[0]  # type: ignore[index]
+    # The model module keeps its own copy of the constant; they must agree.
+    from training.model.chordnet_2e1d import ROOT_N_INDEX as MODEL_ROOT_N
+
+    assert MODEL_ROOT_N == ROOT_N_INDEX
+
+
+def test_decode_root_n_with_chord_quality_raises() -> None:
+    with pytest.raises(ValueError, match="ROOT_N_INDEX"):
+        decode_factored(ROOT_N_INDEX, 0, 0)
 
 
 def test_x_returns_none() -> None:
@@ -212,6 +229,8 @@ def test_flat_root_normalises_to_sharp_pc() -> None:
 def test_decode_rejects_out_of_range_indices() -> None:
     with pytest.raises(ValueError, match="root_idx"):
         decode_factored(99, 0, 0)
+    with pytest.raises(ValueError, match="root_idx"):
+        decode_factored(ROOT_N_INDEX + 1, QUALITY_N_INDEX, BASS_N_INDEX)
     with pytest.raises(ValueError, match="quality_idx"):
         decode_factored(0, 99, 0)
     with pytest.raises(ValueError, match="bass_idx"):
@@ -227,14 +246,14 @@ def test_collapse_170_factored_covers_all_source_indices() -> None:
     """Every ISMIR 170 index maps to a well-formed factored tuple."""
     for i in range(170):
         r, q, b = collapse_170_to_factored(i)
-        assert 0 <= r < 12
+        assert 0 <= r <= ROOT_N_INDEX
         assert 0 <= q < N_QUALITY
         assert 0 <= b < N_BASS
 
 
 def test_collapse_170_factored_n_x_both_land_on_n() -> None:
-    assert collapse_170_to_factored(168) == (0, QUALITY_N_INDEX, BASS_N_INDEX)
-    assert collapse_170_to_factored(169) == (0, QUALITY_N_INDEX, BASS_N_INDEX)
+    assert collapse_170_to_factored(168) == (ROOT_N_INDEX, QUALITY_N_INDEX, BASS_N_INDEX)
+    assert collapse_170_to_factored(169) == (ROOT_N_INDEX, QUALITY_N_INDEX, BASS_N_INDEX)
 
 
 def test_collapse_170_factored_out_of_range_raises() -> None:

@@ -21,9 +21,23 @@ Startup tier: 500 req/month (real money past that), 2 req/s, audio >5s and <=300
 Both duration bounds are checked BEFORE the POST because a rejected request still
 consumes quota. All calls pass through a process-wide 2 req/s throttle.
 
-Rate limits (429) and transient 5xxs → exponential backoff + jitter, cap
-60s, 5 retries. 402 → ``ChordQuotaExceeded`` (terminal). 4xx (not 402, 429) →
-raised immediately — these are our bugs, retrying wastes quota.
+SPEND SAFETY (Startup tier is real money: 500 incl., then $0.20/request):
+
+* The submit POST is NEVER retried. Klangio documents no idempotency key and
+  exposes no job-list endpoint (checked against the OpenAPI spec and docs
+  2026-11-05), so a retry after a lost response could create a second billed
+  job and nothing could detect it. A failed submit surfaces to the caller.
+  Only the idempotent GETs (status / result) are retried: 429 and transient 5xx
+  → exponential backoff + jitter, cap 60s, 5 retries.
+* Every submit is counted against a monthly allowance (``_QuotaStore``) BEFORE
+  the POST is sent, with the cycle anchored on the billing day (default the 5th).
+  A warning is logged from 80% of the allowance; at ``KLANGIO_MONTHLY_CAP``
+  (default 500) further submits are refused with ``ChordQuotaExceeded`` instead
+  of silently incurring overage. Attempts are never refunded: a rejected or
+  ambiguous request may still have consumed quota.
+
+402 → ``ChordQuotaExceeded`` (terminal). 4xx (not 402, 429) → raised
+immediately — these are our bugs, retrying wastes quota.
 
 Per-segment confidence: Klangio does NOT publish it (the result is bare
 [start, end, label] triples; no key either, so ``ChordResult.key`` is None). We set
@@ -34,14 +48,23 @@ label contract regardless of the confidence source.
 from __future__ import annotations
 
 import hashlib
+import json
+import mimetypes
 import os
 import random
 import re
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+
+try:  # POSIX only; the worker runs on Linux. Absent on Windows dev boxes.
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 
 import httpx
 
@@ -90,6 +113,16 @@ MIN_AUDIO_SEC = float(os.environ.get("KLANGIO_MIN_AUDIO_SEC", "5"))
 # Startup tier allows 2 req/s. Minimum spacing between ANY two requests issued by
 # this process (the worker may run several recognize() calls on a thread pool).
 MIN_REQUEST_INTERVAL_SEC = float(os.environ.get("KLANGIO_MIN_REQUEST_INTERVAL_SEC", "0.5"))
+
+# ---- spend protection ----
+# Startup tier: 500 included requests per billing cycle, $0.20 each beyond.
+# The cap defaults to the included allowance: pre-revenue, a failed transcription
+# is better than a surprise invoice. Raise it deliberately to accept overage.
+MONTHLY_CAP_DEFAULT = 500
+# Billing cycle renews on this day of the month (subscription renewed 2026-11-05).
+BILLING_DAY_DEFAULT = 5
+# Log a loud warning once usage reaches this fraction of the cap.
+WARN_FRACTION_DEFAULT = 0.8
 
 # ``vocabulary`` is REQUIRED by the API (omitted -> HTTP 422). Default ``full``:
 # the product's factored quality x bass alphabet would be collapsed by
@@ -161,6 +194,26 @@ def _check_duration_bounds(duration_sec: float) -> None:
         )
 
 
+_AUDIO_MIME = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+}
+
+
+def _audio_mime(audio_path: Path) -> str:
+    """MIME type from the file extension (not hardcoded audio/wav)."""
+    suffix = audio_path.suffix.lower()
+    if suffix in _AUDIO_MIME:
+        return _AUDIO_MIME[suffix]
+    guessed, _ = mimetypes.guess_type(audio_path.name)
+    return guessed or "application/octet-stream"
+
+
 def _safe_upstream_error(raw: Any, api_key: str) -> str:
     """Bounded, printable, key-scrubbed form of Klangio's FAILED ``error`` string.
 
@@ -178,6 +231,156 @@ def _safe_upstream_error(raw: Any, api_key: str) -> str:
 
 class ChordProviderError(Exception):
     """Non-retryable terminal error from the Klangio provider (not 402/429)."""
+
+
+# ------------------------------ quota accounting ------------------------------
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        # Fail closed: a typo in a spend-control variable must not silently
+        # disable the control.
+        raise ChordProviderError(f"{name}={raw[:16]!r} is not an integer") from exc
+
+
+def _env_fraction(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ChordProviderError(f"{name}={raw[:16]!r} is not a number") from exc
+    if not 0 < value <= 1:
+        raise ChordProviderError(f"{name}={raw[:16]!r} must be in (0, 1]")
+    return value
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def billing_cycle_start(today: date, billing_day: int = BILLING_DAY_DEFAULT) -> date:
+    """First day of the billing cycle containing ``today``.
+
+    With billing day 5: 2026-11-05..2026-12-04 -> 2026-11-05; 2026-11-04 -> 2026-10-05.
+    The day is clamped to 1..28 so every month has it.
+    """
+    day = max(1, min(28, billing_day))
+    if today.day >= day:
+        return date(today.year, today.month, day)
+    year, month = (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
+    return date(year, month, day)
+
+
+class _QuotaStore(Protocol):
+    """Atomic per-cycle request counter.
+
+    ``reserve`` must, as one atomic step, reset the count if ``cycle`` differs from
+    the stored cycle, refuse if the count is already ``>= cap``, otherwise
+    increment. A Postgres implementation (``INSERT .. ON CONFLICT (cycle_start)
+    DO UPDATE .. WHERE count < cap``) can replace the file store without touching
+    callers; see docs/ops/chord-recognition.md.
+    """
+
+    def reserve(self, cycle: str, cap: int) -> tuple[int, bool]:
+        """Return ``(count, granted)``; when refused, ``count`` is the unchanged total."""
+        ...
+
+
+class FileQuotaStore:
+    """JSON counter file guarded by ``flock`` (safe across processes on ONE host).
+
+    LIMITS, stated plainly: it is per-machine, and on Fly without a volume the
+    root filesystem is wiped on every deploy/restart, resetting the count to zero.
+    Point ``KLANGIO_QUOTA_FILE`` at a persistent volume, or move to a Postgres
+    store, for the cap to survive restarts. The ``klangio_quota`` log lines are the
+    durable record either way.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def reserve(self, cycle: str, cap: int) -> tuple[int, bool]:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(str(self.path) + ".lock", "a+") as lock:
+                if fcntl is not None:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                count = self._read(cycle)
+                if count >= cap:
+                    return count, False
+                count += 1
+                tmp = self.path.with_suffix(".tmp")
+                tmp.write_text(json.dumps({"cycle": cycle, "count": count}))
+                os.replace(tmp, self.path)
+                return count, True
+        except OSError as exc:
+            # Fail closed: if we cannot account for spend, we do not spend.
+            raise ChordProviderError(
+                f"Klangio quota file unusable ({type(exc).__name__}); refusing to spend"
+            ) from exc
+
+    def _read(self, cycle: str) -> int:
+        if not self.path.exists():
+            return 0
+        try:
+            data = json.loads(self.path.read_text())
+            stored_cycle, count = data["cycle"], int(data["count"])
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ChordProviderError(
+                f"Klangio quota file {self.path.name} is corrupt; refusing to spend "
+                "(fix or delete it after checking the dashboard count)"
+            ) from exc
+        return count if stored_cycle == cycle else 0  # new billing cycle -> reset
+
+
+def _default_quota_store() -> _QuotaStore:
+    path = os.environ.get("KLANGIO_QUOTA_FILE", "").strip() or str(
+        Path(tempfile.gettempdir()) / "klangio_quota.json"
+    )
+    return FileQuotaStore(Path(path))
+
+
+def _reserve_quota(store: _QuotaStore) -> None:
+    """Count one billable submit against the cycle allowance, or refuse.
+
+    Called immediately before the POST. Raises ``ChordQuotaExceeded`` at the cap
+    (no request is sent) and logs a warning from the warn threshold upward.
+    """
+    cap = _env_int("KLANGIO_MONTHLY_CAP", MONTHLY_CAP_DEFAULT)
+    warn_at = _env_fraction("KLANGIO_WARN_FRACTION", WARN_FRACTION_DEFAULT)
+    billing_day = _env_int("KLANGIO_BILLING_DAY", BILLING_DAY_DEFAULT)
+    cycle = billing_cycle_start(_utcnow().date(), billing_day).isoformat()
+
+    count, granted = store.reserve(cycle, cap)
+    if not granted:
+        log_structured(
+            "ERROR",
+            "klangio_quota",
+            outcome="refused_at_cap",
+            count=count,
+            cap=cap,
+            cycle_start=cycle,
+        )
+        raise ChordQuotaExceeded(
+            f"Klangio monthly cap reached ({count}/{cap}, cycle from {cycle}); request not sent. "
+            "Raise KLANGIO_MONTHLY_CAP to accept overage ($0.20/request)."
+        )
+    near = count >= warn_at * cap
+    log_structured(
+        "WARNING" if near else "INFO",
+        "klangio_quota",
+        outcome="reserved",
+        count=count,
+        cap=cap,
+        cycle_start=cycle,
+        pct=round(100 * count / cap, 1) if cap else None,
+        near_cap=near,
+    )
 
 
 def _body_fingerprint(body: bytes | str | None) -> str:
@@ -213,6 +416,7 @@ class KlangioChordSource:
 
     api_key: str | None = None  # defaults to env KLANGIO_API_KEY at call time
     api_base: str = API_BASE
+    quota_store: _QuotaStore | None = None  # defaults to FileQuotaStore (env-configured)
 
     def recognize(self, audio_path: Path, *, stem: StemKind = "mix") -> ChordResult:
         audio_path = Path(audio_path)
@@ -256,15 +460,17 @@ class KlangioChordSource:
         stem: StemKind,  # noqa: ARG002 — Klangio has no stem parameter; kept for the Protocol
         vocabulary: str = DEFAULT_VOCABULARY,
     ) -> str:
-        # Read once: a retried POST must re-send the full body (an open file
-        # handle would be at EOF on attempt 2).
+        # Read once up front (bytes, not an open handle).
         audio_bytes = audio_path.read_bytes()
+        # Count BEFORE sending: if the response is lost we may still have paid.
+        _reserve_quota(self.quota_store or _default_quota_store())
         resp = _request_with_retry(
             client,
             method="POST",
             url="/chord-recognition",
+            retry=False,  # no idempotency key exists: a retry could double-bill
             params={"vocabulary": vocabulary},
-            files={"file": (audio_path.name, audio_bytes, "audio/wav")},
+            files={"file": (audio_path.name, audio_bytes, _audio_mime(audio_path))},
         )
         body = _parse_json(resp)
         job_id = body.get("job_id") if isinstance(body, dict) else None
@@ -310,25 +516,30 @@ def _request_with_retry(
     *,
     method: str,
     url: str,
+    retry: bool = True,
     **kwargs: Any,
 ) -> httpx.Response:
     """Issue an HTTP call with exponential-backoff-plus-jitter retry.
 
-    Retries on 429 and 5xx up to ``MAX_RETRIES``. 402 is translated to
+    Retries on 429, 5xx and transport errors up to ``MAX_RETRIES`` — but only when
+    ``retry`` is true. The billable submit POST passes ``retry=False``: exactly one
+    attempt, any failure surfaces to the caller. 402 is translated to
     ``ChordQuotaExceeded`` and raised immediately (terminal — never retried).
     Other 4xxs are ``ChordProviderError`` (also terminal).
     """
     last_exc: Exception | None = None
-    for attempt in range(MAX_RETRIES + 1):
+    max_retries = MAX_RETRIES if retry else 0
+    for attempt in range(max_retries + 1):
         _throttle()  # every attempt (including retries) counts against 2 req/s
         try:
             resp = client.request(method, url, timeout=HTTP_TIMEOUT_SEC, **kwargs)
         except (httpx.TransportError, httpx.TimeoutException) as exc:
             last_exc = exc
-            if attempt >= MAX_RETRIES:
+            if attempt >= max_retries:
                 raise ChordProviderError(
                     f"Klangio {method} {url} transport failure after "
-                    f"{attempt + 1} attempts: {exc}"
+                    f"{attempt + 1} attempt(s): {exc}"
+                    + ("" if retry else " (not retried: a billed job may exist)")
                 ) from exc
             _sleep_backoff(attempt)
             continue
@@ -340,9 +551,11 @@ def _request_with_retry(
             # plan — do NOT retry.
             raise ChordQuotaExceeded("Klangio quota exceeded (HTTP 402) — see Y1 decision record.")
         if status == 429 or status >= 500:
-            if attempt >= MAX_RETRIES:
+            if attempt >= max_retries:
                 raise ChordProviderError(
-                    f"Klangio {method} {url} HTTP {status} after " f"{attempt + 1} attempts"
+                    f"Klangio {method} {url} HTTP {status} after "
+                    f"{attempt + 1} attempt(s)"
+                    + ("" if retry else " (not retried: a billed job may exist)")
                 )
             _sleep_backoff(attempt, retry_after=resp.headers.get("Retry-After"))
             continue

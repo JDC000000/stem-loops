@@ -65,8 +65,11 @@ def _wav(path: Path, seconds: float) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def _env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("KLANGIO_API_KEY", "kl-test-key-123")
+    # Spend accounting writes a counter file: never let tests touch the real one.
+    monkeypatch.setenv("KLANGIO_QUOTA_FILE", str(tmp_path / "quota" / "klangio_quota.json"))
+    monkeypatch.delenv("KLANGIO_MONTHLY_CAP", raising=False)
     monkeypatch.delenv("KLANGIO_VOCABULARY", raising=False)
     monkeypatch.setattr(kg, "MIN_REQUEST_INTERVAL_SEC", 0.0)
     monkeypatch.setattr(kg, "POLL_INTERVAL_SEC", 0.0)
@@ -295,22 +298,18 @@ def test_402_still_raises_quota_exceeded(tmp_path: Path, monkeypatch: pytest.Mon
         kg.KlangioChordSource()._submit(client, _wav(tmp_path / "a.wav", 6.0), "mix")
 
 
-def test_retried_post_resends_full_file_body(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A 429 on submit must not make the retry upload an empty (EOF) file."""
-    sizes: list[int] = []
+def test_429_on_submit_is_not_retried(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Submit is billable and Klangio has no idempotency key: exactly one POST, ever."""
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        sizes.append(len(request.read()))
         calls["n"] += 1
-        return httpx.Response(429) if calls["n"] == 1 else httpx.Response(200, json=SUBMIT_OK)
+        return httpx.Response(429)
 
     client = httpx.Client(base_url="https://api.klang.io", transport=httpx.MockTransport(handler))
-    with patch.object(kg.time, "sleep"):
+    with patch.object(kg.time, "sleep"), pytest.raises(kg.ChordProviderError, match="not retried"):
         kg.KlangioChordSource()._submit(client, _wav(tmp_path / "a.wav", 6.0), "mix")
-    assert len(sizes) == 2 and sizes[0] == sizes[1] > 90_000
+    assert calls["n"] == 1
 
 
 # ------------------------------ duration guards ------------------------------

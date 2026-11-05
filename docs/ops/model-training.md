@@ -51,8 +51,10 @@ Linear 144 → 128    ──► Encoder-1 (CNN)  ─► Encoder-2 (Transformer) 
 2–5M ceiling the PR-Y1.4 spec allows, in line with the single-GPU training
 budget (Modal L4 / A10).
 
-**PR-Y1.5** will add a CRF head on top of the BiGRU for Viterbi-smoothed
-decoding — the 2E1D architecture itself is the invariant across Y1.4 → Y1.5.
+**PR-Y1.5c** adds an opt-in linear-chain CRF on top of the flat-62 head
+(collapsed from flat-170) so the per-frame logits learn with a transition-
+aware objective. The 2E1D architecture itself is the invariant across Y1.4 →
+Y1.5. See §8 below for the CRF training mode.
 
 ---
 
@@ -311,4 +313,79 @@ mount `/runs` as a volume you can download from, and fire with
   (**source of truth** for anything this doc summarises).
 - `claude/phase-2-y1-chord-model-synthesis.md` — research that fed v1.3.
 - `apps/training/DATA-PROVENANCE.md` — license audit trail for the open-
-  source weights release.
+  source weights release (incl. the `pytorch-crf` MIT attribution).
+
+---
+
+## 8. CRF training mode (PR-Y1.5c)
+
+Opt-in via `--use-crf` on `train.py`. The CRF is a linear-chain decoder
+head that sits on top of the flat-62 alphabet (collapsed from the flat-170
+logits) and replaces the weighted cross-entropy loss with the CRF negative
+log-likelihood. The 2E1D backbone is unchanged.
+
+### When to use it
+
+- `--output-mode flat170` is **required** (CRF rides on the collapsed 62-tag
+  alphabet). The structured mode has four factorised heads and a joint-CRF
+  design is out of scope for Y1.5c.
+- Use CRF when you want the per-frame head to learn **transition-aware**
+  emissions, so the browser-side Viterbi (PR #79) smooths with the model's
+  own prior instead of a hand-written uniform transition matrix.
+
+### Train
+
+```bash
+python -m training.train \
+    --data-dir apps/training/data/cache \
+    --out apps/training/runs/exp-crf \
+    --output-mode flat170 \
+    --use-crf \
+    --epochs 30 \
+    --batch-size 24 \
+    --lr 1e-3 \
+    --wandb-off
+```
+
+Checkpoints are saved with `use_crf=True` so `eval.py` and the exporter can
+detect the mode without a separate flag at load time.
+
+### Export transitions for the browser
+
+```bash
+python -m training.export_crf_transitions \
+    --checkpoint apps/training/runs/exp-crf/best.pt \
+    --out apps/web/public/chord-transitions.v1.json
+```
+
+The JSON PR #79's `loadTransition()` consumes:
+
+```json
+{
+  "version": "v1",
+  "model_sha": "<sha256 of model weights>",
+  "alphabet_sha": "<ALPHABET_SHA — loader refuses on mismatch>",
+  "n_states": 62,
+  "transitions_log_prob": [[...], ...],
+  "start_transitions_log_prob": [...],
+  "end_transitions_log_prob": [...],
+  "generated_at": "<ISO-8601 UTC>"
+}
+```
+
+### Why we don't export the CRF to ONNX (H-3 fallback strategy)
+
+The red-team pre-mortem (`claude/phase-2-y1-chord-model-premortem.md`)
+flagged "CRF ONNX export fails" as the top failure mode (HIGH × HIGH).
+Our H-3 strategy avoids it entirely:
+
+1. **Train** with CRF (forward-backward algorithm runs only in Python).
+2. **Export** only the per-frame logits head to ONNX (unchanged from
+   PR-Y1.4; the CRF is bypassed at export time).
+3. **Export** the learned `(62, 62)` transition matrix to JSON.
+4. **Browser** loads both artifacts and runs the hand-rolled JS Viterbi
+   from PR #79, using the exported transitions as the prior.
+
+The CRF layer itself never leaves Python. If the CRF training path is
+unused (`--use-crf` not passed), the system degenerates to the PR-Y1.4
+argmax decode with no behaviour change — the flag is strictly opt-in.

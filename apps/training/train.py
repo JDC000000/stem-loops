@@ -121,6 +121,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Apply pitch-shift augmentation at data-load time (requires PR-Y1.3).",
     )
     parser.add_argument(
+        "--use-crf",
+        action="store_true",
+        help=(
+            "PR-Y1.5c: wrap the flat-62 head in a linear-chain CRF for transition-"
+            "aware training. Requires --output-mode flat170. Disables the per-"
+            "frame weighted CE in favour of -log p(tags | emissions)."
+        ),
+    )
+    parser.add_argument(
         "--wandb-off",
         action="store_true",
         help="Disable weights & biases logging (default behaviour).",
@@ -393,18 +402,52 @@ def _flat170_loss(
     return (loss * frame_w).sum() / frame_w.sum().clamp(min=1.0)
 
 
+def _crf_loss(
+    logits: dict[str, torch.Tensor],
+    labels: torch.Tensor,
+    mask: torch.Tensor,
+    model: ChordNet2E1D,
+) -> torch.Tensor:
+    """Negative CRF log-likelihood on the 62-class alphabet (token-mean).
+
+    Replaces the weighted CE when ``--use-crf`` is set. The emission tensor
+    is produced inside the model forward (``logits["crf_emissions"]``) as
+    log-probs marginalised from the 170-logit head; the tag targets are the
+    frame labels in the 62-class alphabet (already what ``_collate_pad``
+    produces). Padding frames are masked out — torchcrf requires the first
+    frame of every sequence be unmasked, which our padding guarantees since
+    every clip has length ≥ 1.
+    """
+    if model.crf is None:
+        raise RuntimeError("_crf_loss called but model.crf is None (use_crf=False)")
+    if "crf_emissions" not in logits:
+        raise RuntimeError("logits dict missing 'crf_emissions' — forward path mismatch")
+    emissions = logits["crf_emissions"]  # (B, T, 62)
+    log_likelihood = model.crf.log_likelihood(emissions, labels, mask=mask, reduction="token_mean")
+    return -log_likelihood
+
+
 def compute_loss(
     logits: dict[str, torch.Tensor],
     labels: torch.Tensor,
     lengths: torch.Tensor,
     class_weights: torch.Tensor,
     output_mode: OutputMode,
+    model: ChordNet2E1D | None = None,
 ) -> torch.Tensor:
-    """Weighted CE across heads, averaged over valid (unpadded) frames."""
+    """Weighted CE across heads (or CRF NLL when ``model.use_crf``).
+
+    ``model`` is optional for backwards compatibility with PR-Y1.4 call
+    sites that don't use CRF. When it is passed and ``model.use_crf`` is
+    True, the CRF negative log-likelihood is used in place of the weighted
+    CE and ``class_weights`` is ignored.
+    """
     b, t = labels.shape
     mask = torch.arange(t, device=labels.device).unsqueeze(0) < lengths.to(labels.device).unsqueeze(
         -1
     )
+    if model is not None and getattr(model, "use_crf", False):
+        return _crf_loss(logits, labels, mask, model)
     if output_mode == "structured":
         return _structured_loss(logits, labels, class_weights, mask)
     return _flat170_loss(logits, labels, class_weights, mask)
@@ -512,8 +555,14 @@ def train(
     num_workers: int,
     device: torch.device | None = None,
     gpu_profile: str = "l4",
+    use_crf: bool = False,
 ) -> Path:
     """Run the training loop. Returns the path to the ``best.pt`` checkpoint."""
+    if use_crf and output_mode != "flat170":
+        raise ValueError(
+            "--use-crf requires --output-mode flat170 (PR-Y1.5c design). "
+            f"Got output_mode={output_mode!r}."
+        )
     _set_seed(seed)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -549,7 +598,7 @@ def train(
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = ChordNet2E1D(output_mode=output_mode).to(device)
+    model = ChordNet2E1D(output_mode=output_mode, use_crf=use_crf).to(device)
     optimizer = AdamW(model.parameters(), lr=lr)
     scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.1, patience=2)
 
@@ -571,6 +620,7 @@ def train(
         "gpu_profile": gpu_profile,
         "seed": seed,
         "output_mode": output_mode,
+        "use_crf": use_crf,
     }
     append_jsonl(log_path, {"event": "run_start", **run_meta})
 
@@ -584,7 +634,7 @@ def train(
             lengths = batch["lengths"].to(device)
             optimizer.zero_grad()
             logits = model(cqt)
-            loss = compute_loss(logits, labels, lengths, class_weights, output_mode)
+            loss = compute_loss(logits, labels, lengths, class_weights, output_mode, model=model)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             optimizer.step()
@@ -608,31 +658,23 @@ def train(
         )
 
         # Checkpoint every epoch, plus a 'best' pointer.
+        # ``model_state`` carries the CRF transition matrix too when
+        # ``use_crf=True`` (it is an ``nn.Module`` inside ChordNet2E1D), so
+        # no separate persistence step is needed.
         epoch_ckpt = out / f"epoch-{epoch:03d}.pt"
-        torch.save(
-            {
-                "model_state": model.state_dict(),
-                "epoch": epoch,
-                "output_mode": output_mode,
-                "alphabet_sha": ALPHABET_SHA,
-                "cqt_plan_version": CQT_PLAN_VERSION,
-                "val_metrics": val_metrics,
-            },
-            epoch_ckpt,
-        )
+        _ckpt_payload = {
+            "model_state": model.state_dict(),
+            "epoch": epoch,
+            "output_mode": output_mode,
+            "use_crf": use_crf,
+            "alphabet_sha": ALPHABET_SHA,
+            "cqt_plan_version": CQT_PLAN_VERSION,
+            "val_metrics": val_metrics,
+        }
+        torch.save(_ckpt_payload, epoch_ckpt)
         if val_metrics["majmin"] > best_val_majmin:
             best_val_majmin = val_metrics["majmin"]
-            torch.save(
-                {
-                    "model_state": model.state_dict(),
-                    "epoch": epoch,
-                    "output_mode": output_mode,
-                    "alphabet_sha": ALPHABET_SHA,
-                    "cqt_plan_version": CQT_PLAN_VERSION,
-                    "val_metrics": val_metrics,
-                },
-                best_ckpt,
-            )
+            torch.save(_ckpt_payload, best_ckpt)
 
     append_jsonl(log_path, {"event": "run_end", "best_val_majmin": best_val_majmin})
     return best_ckpt
@@ -655,6 +697,7 @@ def main(argv: list[str] | None = None) -> int:
         num_workers=args.num_workers,
         device=device,
         gpu_profile=args.gpu,
+        use_crf=args.use_crf,
     )
     return 0
 

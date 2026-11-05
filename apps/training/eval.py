@@ -333,14 +333,23 @@ def run_eval(
     }
 
     # Model loading (deferred to actually-needed path so tests can skip it).
+    decoder_type: str = "argmax"
     if mock_predictions is None:
         if model is None:
             ckpt = torch.load(checkpoint, map_location="cpu")
-            model = ChordNet2E1D(output_mode=ckpt.get("output_mode", "structured"))
+            ckpt_use_crf = bool(ckpt.get("use_crf", False))
+            model = ChordNet2E1D(
+                output_mode=ckpt.get("output_mode", "structured"),
+                use_crf=ckpt_use_crf,
+            )
             model.load_state_dict(ckpt["model_state"])
         model.eval()
+        if getattr(model, "use_crf", False):
+            decoder_type = "crf_viterbi"
         if loader is None:
             loader = _default_loader
+    elif model is not None and getattr(model, "use_crf", False):
+        decoder_type = "crf_viterbi"
 
     for _shuffle_idx in range(shuffles):
         shuffle_seed = rng.randint(0, 2**31 - 1)
@@ -409,6 +418,8 @@ def run_eval(
         "dataset_sha": dataset_sha,
         "n_shuffles": shuffles,
         "seed": seed,
+        # PR-Y1.5c: "argmax" (PR #77 default) or "crf_viterbi" (PR-Y1.5c).
+        "decoder": decoder_type,
         "per_song": per_song,
         "aggregate": aggregate,
         "per_song_floor_majmin": per_song_floor,

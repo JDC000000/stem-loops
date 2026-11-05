@@ -39,6 +39,10 @@ CQT plan dependency:
 
 from __future__ import annotations
 
+import datetime as _dt
+import hashlib as _hashlib
+import json as _json
+from pathlib import Path
 from typing import Literal
 
 import torch
@@ -54,6 +58,7 @@ from .alphabet import (
     collapse_170_to_60,
     decode_label,
 )
+from .crf import CRFLayer
 
 # ---------------------------------------------------------------------------
 # CQT-plan dependency (PR-Y1.3, parallel)
@@ -249,6 +254,12 @@ class ChordNet2E1D(nn.Module):
         dropout: Transformer dropout.
         gru_hidden: BiGRU hidden size per direction.
         output_mode: ``"structured"`` (default) or ``"flat170"``.
+        use_crf: If True (PR-Y1.5c), add a linear-chain CRF on top of the
+            flat-170 logits collapsed to the 62-tag alphabet. Only valid with
+            ``output_mode="flat170"``. Default False — PR-Y1.4 behaviour is
+            unchanged. See ``model/crf.py`` and the H-3 note there for the
+            export-split strategy (per-frame logits → ONNX; transitions →
+            JSON; browser-side Viterbi decodes).
     """
 
     def __init__(
@@ -261,14 +272,25 @@ class ChordNet2E1D(nn.Module):
         dropout: float = 0.1,
         gru_hidden: int = 128,
         output_mode: OutputMode = "structured",
+        use_crf: bool = False,
     ) -> None:
         super().__init__()
         if output_mode not in ("structured", "flat170"):
             raise ValueError(f"output_mode must be 'structured' or 'flat170', got {output_mode!r}")
+        if use_crf and output_mode != "flat170":
+            # Decision v1.3 §Architecture: CRF rides on the flat-62 alphabet
+            # (collapsed from the flat-170 head). Structured mode has four
+            # factorised heads — a joint CRF over those heads would need a
+            # separate design and is out of scope for Y1.5c.
+            raise ValueError(
+                "use_crf=True requires output_mode='flat170' (collapsed to 62 tags). "
+                f"Got output_mode={output_mode!r}."
+            )
 
         self.n_bins = n_bins
         self.d_model = d_model
         self.output_mode: OutputMode = output_mode
+        self.use_crf = use_crf
         self.alphabet_sha = ALPHABET_SHA
         self.cqt_plan_version = CQT_PLAN_VERSION
 
@@ -289,6 +311,13 @@ class ChordNet2E1D(nn.Module):
             self.heads = _StructuredHeads(hidden_out)
         else:
             self.heads = _Flat170Head(hidden_out)
+
+        self.crf: CRFLayer | None
+        if use_crf:
+            # 62 = 60 chord labels + N + X (see alphabet.py).
+            self.crf = CRFLayer(num_tags=NUM_LABELS, batch_first=True)
+        else:
+            self.crf = None
 
     # ------------------------------------------------------------------
     # Forward
@@ -316,7 +345,12 @@ class ChordNet2E1D(nn.Module):
         x = self.local_cnn(x)  # (B, T, d_model)
         x = self.global_tx(x)  # (B, T, d_model)
         x = self.decoder(x)  # (B, T, 2 * gru_hidden)
-        return self.heads(x)
+        head_logits = self.heads(x)
+        if self.use_crf:
+            # Collapse 170-class log-probs → 62-class log-probs (marginalise
+            # within each collapse group). Used as CRF emissions.
+            head_logits["crf_emissions"] = self._flat170_to_crf_emissions(head_logits["flat170"])
+        return head_logits
 
     # ------------------------------------------------------------------
     # Segment-level prediction
@@ -326,15 +360,14 @@ class ChordNet2E1D(nn.Module):
         self,
         cqt_frames: torch.Tensor,
     ) -> list[tuple[int, int, str, float]]:
-        """Argmax-decode frame logits to a list of ``(start_frame, end_frame, label, confidence)``.
+        """Decode frame logits to a list of ``(start_frame, end_frame, label, confidence)``.
 
-        No smoothing, no Viterbi, no CRF — PR-Y1.5 wraps this with the HMM
-        transition prior. For PR-Y1.4 we simply:
-
-        1. Forward-pass the CQT.
-        2. Collapse per-frame structured heads (or flat170) into a single
-           62-class label stream.
-        3. Merge consecutive identical labels into segments.
+        When ``use_crf=False`` (default — PR-Y1.4 behaviour): per-frame argmax
+        over the collapsed 62-class alphabet. When ``use_crf=True`` (PR-Y1.5c):
+        the CRF layer's Viterbi decode produces a smoothed label sequence
+        using the learned transition prior; the confidence per frame is still
+        the argmax-softmax probability over the 62-class marginal (so the
+        number is comparable across modes).
 
         Args:
             cqt_frames: CQT tensor, shape ``(n_frames, n_bins)`` **or**
@@ -352,7 +385,17 @@ class ChordNet2E1D(nn.Module):
         self.eval()
         with torch.no_grad():
             logits = self.forward(cqt_frames)  # dict
-            labels, confidences = self._collapse_to_62(logits)
+            if self.use_crf:
+                assert self.crf is not None  # for mypy; use_crf gated construction
+                emissions = logits["crf_emissions"]  # (1, T, 62) log-probs
+                best_path = self.crf.decode(emissions)  # list[list[int]]
+                # Confidences = softmax-marginal at the chosen tag per frame.
+                # emissions are log-probs already, so exp() gives probs.
+                probs = emissions.exp()  # (1, T, 62)
+                labels = torch.tensor(best_path, dtype=torch.long, device=emissions.device)
+                confidences = probs.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
+            else:
+                labels, confidences = self._collapse_to_62(logits)
         labels_list: list[int] = labels.squeeze(0).tolist()
         conf_list: list[float] = confidences.squeeze(0).tolist()
 
@@ -428,6 +471,7 @@ class ChordNet2E1D(nn.Module):
         return labels, confidence
 
     _cached_collapse_table: torch.Tensor | None = None
+    _cached_collapse_groups: list[torch.Tensor] | None = None
 
     @classmethod
     def _collapse_table_170(cls, device: torch.device) -> torch.Tensor:
@@ -437,7 +481,145 @@ class ChordNet2E1D(nn.Module):
                 [collapse_170_to_60(i) for i in range(170)], dtype=torch.long, device=device
             )
             cls._cached_collapse_table = table
+            # Also cache per-62-class source-index groups (for logsumexp).
+            groups: list[torch.Tensor] = []
+            for c in range(NUM_LABELS):
+                src = (table == c).nonzero(as_tuple=False).squeeze(-1)
+                groups.append(src)
+            cls._cached_collapse_groups = groups
         return cls._cached_collapse_table
+
+    @classmethod
+    def _collapse_groups_170(cls, device: torch.device) -> list[torch.Tensor]:
+        """Return per-62-class list of 170-source-index tensors.
+
+        Each ``groups[c]`` is the set of 170-class indices ``i`` such that
+        ``collapse_170_to_60(i) == c``. Used to marginalise 170-class log-probs
+        into 62-class log-probs via logsumexp within each group.
+        """
+        # Force cache fill via _collapse_table_170 on the right device.
+        cls._collapse_table_170(device)
+        groups = cls._cached_collapse_groups
+        assert groups is not None  # populated by the sibling classmethod above
+        return groups
+
+    # ------------------------------------------------------------------
+    # CRF support (PR-Y1.5c): 170-logit head → 62-tag emissions
+    # ------------------------------------------------------------------
+
+    def _flat170_to_crf_emissions(self, flat170_logits: torch.Tensor) -> torch.Tensor:
+        """Marginalise 170-class logits into 62-class log-probs.
+
+        For each collapsed class ``c``, emissions[..., c] = logsumexp over
+        the source-170 log-probs that map to ``c``. Gradients flow through
+        both the 170-way softmax and the logsumexp, so the CRF objective
+        shapes the 170-head's parameters directly.
+
+        Args:
+            flat170_logits: ``(B, T, 170)`` raw logits from the flat-170 head.
+
+        Returns:
+            ``(B, T, 62)`` log-probability emissions (each (B, T) frame sums
+            to 1 in prob space, up to numerical error).
+        """
+        log_probs = F.log_softmax(flat170_logits, dim=-1)  # (B, T, 170)
+        groups = self._collapse_groups_170(device=flat170_logits.device)
+        parts: list[torch.Tensor] = []
+        for src_idx in groups:
+            # src_idx is a 1-D tensor of 170-class indices mapping to one 62-class.
+            # Index into the last dim and reduce via logsumexp.
+            selected = log_probs.index_select(-1, src_idx)  # (B, T, |group|)
+            parts.append(torch.logsumexp(selected, dim=-1, keepdim=True))  # (B, T, 1)
+        return torch.cat(parts, dim=-1)  # (B, T, 62)
+
+    # ------------------------------------------------------------------
+    # Transition export (PR-Y1.5c): JSON for browser-side Viterbi
+    # ------------------------------------------------------------------
+
+    def export_transitions_as_json(
+        self,
+        path: str | Path,
+        *,
+        version: str = "v1",
+        model_sha: str | None = None,
+    ) -> dict[str, object]:
+        """Write the learned CRF transition matrix as JSON.
+
+        Format consumed by PR #79's ``loadTransition()``:
+
+        .. code-block:: json
+
+            {
+              "version": "v1",
+              "model_sha": "<sha256 of model weights>",
+              "alphabet_sha": "<alphabet.ALPHABET_SHA>",
+              "n_states": 62,
+              "transitions_log_prob": [[...], ...],
+              "start_transitions_log_prob": [...],
+              "end_transitions_log_prob": [...],
+              "generated_at": "<ISO-8601 UTC>"
+            }
+
+        ``start_transitions_log_prob`` and ``end_transitions_log_prob`` are
+        included for forward-compatibility; PR #79 may ignore them today.
+
+        Args:
+            path: Output file path.
+            version: Schema version tag (default ``"v1"``).
+            model_sha: Optional model-weights sha256 to stamp in. If None we
+                compute it from the current state_dict.
+
+        Returns:
+            The payload dict actually written (also written to ``path``).
+        """
+        if not self.use_crf or self.crf is None:
+            raise RuntimeError(
+                "export_transitions_as_json requires use_crf=True — "
+                "there is no CRF layer to export from."
+            )
+        if model_sha is None:
+            model_sha = _sha256_of_state_dict(self.state_dict())
+
+        transitions = self.crf.transitions.detach().cpu().numpy().tolist()
+        start_t = self.crf.start_transitions.detach().cpu().numpy().tolist()
+        end_t = self.crf.end_transitions.detach().cpu().numpy().tolist()
+
+        payload: dict[str, object] = {
+            "version": version,
+            "model_sha": model_sha,
+            "alphabet_sha": self.alphabet_sha,
+            "n_states": self.crf.num_tags,
+            "transitions_log_prob": transitions,
+            "start_transitions_log_prob": start_t,
+            "end_transitions_log_prob": end_t,
+            "generated_at": _dt.datetime.now(tz=_dt.UTC).isoformat().replace("+00:00", "Z"),
+        }
+        out_path = Path(path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(_json.dumps(payload, indent=2))
+        return payload
+
+
+# ---------------------------------------------------------------------------
+# Hashing helper (module-level — no self needed)
+# ---------------------------------------------------------------------------
+
+
+def _sha256_of_state_dict(state: dict[str, torch.Tensor]) -> str:
+    """Return a stable sha256 over a model's state_dict tensors.
+
+    We hash each tensor's dtype, shape and byte contents, in sorted key
+    order, so two identical models produce the same hash on any machine.
+    """
+    hasher = _hashlib.sha256()
+    for key in sorted(state.keys()):
+        tensor = state[key]
+        hasher.update(key.encode("utf-8"))
+        hasher.update(str(tensor.dtype).encode("utf-8"))
+        hasher.update(str(tuple(tensor.shape)).encode("utf-8"))
+        # Use contiguous bytes; float32 matches the serialised checkpoint.
+        hasher.update(tensor.detach().cpu().contiguous().numpy().tobytes())
+    return hasher.hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -465,4 +647,5 @@ __all__ = [
     "CQT_PLAN_VERSION",
     "ROOTS",
     "QUALITIES",
+    "CRFLayer",
 ]

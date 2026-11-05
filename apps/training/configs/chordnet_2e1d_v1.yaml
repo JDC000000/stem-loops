@@ -1,0 +1,68 @@
+# ChordNet 2E1D — v1 training config (PR-Y1 wave 1 — L4 / 50-epoch run).
+#
+# Cross-ref:
+#   - Architecture: apps/training/model/chordnet_2e1d.py
+#   - Decision record v1.5: claude/phase-2-y1-chord-model-decision.md
+#   - Modal infra: apps/training/modal_app.py
+#
+# Edit this file to tune a full run. Edit chordnet_2e1d_v1_smoke100.yaml for
+# the tiny smoke run used by CI and local sanity checks.
+
+run:
+  name: chordnet_2e1d_v1
+  seed: 42
+  # Mix of synthetic (synth-rendered MIDI → audio → CQT) and real labelled
+  # corpora (Billboard, Isophonics, etc.). The dataset builder enforces the
+  # ratio by subsampling the larger pool.
+  dataset_mix:
+    synthetic: 0.7
+    real: 0.3
+
+model:
+  n_bins: 144            # matches cqt-plan.v1.json
+  d_model: 256
+  gru_layers: 2
+  dropout: 0.1
+
+train:
+  batch_size: 32
+  epochs: 50
+  mixed_precision: true  # AMP on L4 — halves VRAM; safe for CE.
+  grad_clip: 1.0
+
+optim:
+  name: adamw
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.98]
+
+scheduler:
+  name: cosine
+  warmup_steps: 500      # linear warmup then cosine decay to 1/100 of base.
+  min_lr_ratio: 0.01
+
+loss:
+  # Sum CE over both factored heads with equal weight (v1.5 ships w=1,1).
+  quality_weight: 1.0
+  bass_weight: 1.0
+  # Ignore padding frames and N-labelled bass frames during training loss.
+  ignore_index: -100
+
+data:
+  # Audio processing. Hop + sample rate must match cqt-plan.v1.json so the
+  # model sees the same feature as inference.
+  sample_rate: 22050
+  hop_length: 2048
+  # Max frames per training clip — longer clips get random-cropped.
+  max_frames: 512
+  num_workers: 4
+
+eval:
+  # Per-epoch sanity check — full held-out eval runs via eval.py separately.
+  interval_epochs: 1
+  split: val
+
+checkpoint:
+  # Written by train.py — "best.pt" is the lowest-val-loss checkpoint.
+  dir: ./checkpoints
+  keep_last: 5

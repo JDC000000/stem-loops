@@ -1,0 +1,66 @@
+# ChordNet 2E1D — smoke-test config (PR-Y1 QA).
+#
+# Tiny-corpus run used to prove the training pipeline end-to-end without
+# burning Modal credits. Target: ~5 min on CPU, ~1 min on L4.
+#
+# Shell:
+#   ./scripts/modal_train.sh --smoke
+#   (or, locally: CHORDNET_CONFIG=configs/chordnet_2e1d_v1_smoke100.yaml \
+#       python -m training.train)
+#
+# Changes vs chordnet_2e1d_v1.yaml:
+#   - 100-song dataset cap (the smoke subset)
+#   - 2 epochs
+#   - batch_size=8
+#   - num_workers=0 so CPU-only runs don't fork
+
+run:
+  name: chordnet_2e1d_v1_smoke100
+  seed: 42
+  dataset_mix:
+    synthetic: 0.7
+    real: 0.3
+  # New in smoke: hard cap on dataset size.
+  max_songs: 100
+
+model:
+  n_bins: 144
+  d_model: 256
+  gru_layers: 2
+  dropout: 0.1
+
+train:
+  batch_size: 8
+  epochs: 2
+  mixed_precision: false  # CPU-friendly default.
+  grad_clip: 1.0
+
+optim:
+  name: adamw
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.98]
+
+scheduler:
+  name: cosine
+  warmup_steps: 50
+  min_lr_ratio: 0.01
+
+loss:
+  quality_weight: 1.0
+  bass_weight: 1.0
+  ignore_index: -100
+
+data:
+  sample_rate: 22050
+  hop_length: 2048
+  max_frames: 128
+  num_workers: 0
+
+eval:
+  interval_epochs: 1
+  split: val
+
+checkpoint:
+  dir: ./checkpoints_smoke
+  keep_last: 2

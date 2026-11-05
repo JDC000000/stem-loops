@@ -69,6 +69,7 @@ def test_train_one_step_reduces_loss_on_repeated_call() -> None:
     T = 8
     batch = (
         torch.randn(2, T, CQT_N_BINS),
+        torch.randint(0, 13, (2, T)),
         torch.randint(0, 25, (2, T)),
         torch.randint(0, 13, (2, T)),
     )
@@ -92,6 +93,7 @@ def test_train_one_step_populates_grads() -> None:
     T = 4
     batch = (
         torch.randn(1, T, CQT_N_BINS),
+        torch.randint(0, 13, (1, T)),
         torch.randint(0, 25, (1, T)),
         torch.randint(0, 13, (1, T)),
     )
@@ -102,25 +104,66 @@ def test_train_one_step_populates_grads() -> None:
             assert torch.isfinite(p.grad).all()
 
 
-def test_train_loss_is_weighted_sum_of_quality_and_bass_heads() -> None:
-    """Loss semantics carried over from the two-head trainer onto the factored contract."""
+def test_train_loss_is_weighted_sum_of_root_quality_and_bass_heads() -> None:
+    """Loss = rw*root + qw*quality + bw*bass over the three factored heads."""
     torch.manual_seed(0)
     device = torch.device("cpu")
     model = ChordNet2E1D(d_model=16, gru_layers=1).to(device)
     assert model.output_mode == "factored"
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-    cfg = TrainConfig(d_model=16, gru_layers=1, quality_weight=2.0, bass_weight=0.5)
+    cfg = TrainConfig(d_model=16, gru_layers=1, root_weight=1.5, quality_weight=2.0, bass_weight=0.5)
 
     T = 4
     batch = (
         torch.randn(2, T, CQT_N_BINS),
+        torch.randint(0, 13, (2, T)),
         torch.randint(0, 25, (2, T)),
         torch.randint(0, 13, (2, T)),
     )
     m = train_one_step(model, batch, optimizer, cfg, device)
-    assert set(m) == {"loss", "quality_loss", "bass_loss"}
-    expected = cfg.quality_weight * m["quality_loss"] + cfg.bass_weight * m["bass_loss"]
+    assert set(m) == {"loss", "root_loss", "quality_loss", "bass_loss"}
+    expected = (
+        cfg.root_weight * m["root_loss"]
+        + cfg.quality_weight * m["quality_loss"]
+        + cfg.bass_weight * m["bass_loss"]
+    )
     assert abs(m["loss"] - expected) < 1e-5
+
+
+def test_root_head_receives_gradient() -> None:
+    """Regression: root_logits used to get no gradient (root head untrained)."""
+    torch.manual_seed(0)
+    device = torch.device("cpu")
+    model = ChordNet2E1D(d_model=16, gru_layers=1).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    cfg = TrainConfig(d_model=16, gru_layers=1, grad_clip=0.0)
+    T = 4
+    batch = (
+        torch.randn(2, T, CQT_N_BINS),
+        torch.randint(0, 13, (2, T)),
+        torch.randint(0, 25, (2, T)),
+        torch.randint(0, 13, (2, T)),
+    )
+    train_one_step(model, batch, optimizer, cfg, device)
+    root_params = [p for n, p in model.named_parameters() if "root" in n]
+    assert root_params
+    assert all(p.grad is not None and p.grad.abs().sum() > 0 for p in root_params)
+
+
+def test_load_config_reads_root_weight(tmp_path) -> None:
+    cfg_file = tmp_path / "c.yaml"
+    cfg_file.write_text("loss:\n  root_weight: 0.25\n")
+    assert load_config(cfg_file).root_weight == 0.25
+    assert load_config(Path(__file__).parent.parent / "configs" / "chordnet_2e1d_v1.yaml").root_weight == 1.0
+
+
+def test_synthetic_dataset_yields_root_quality_bass() -> None:
+    from training.train import _SyntheticFactoredDataset
+
+    cqt, root, quality, bass = _SyntheticFactoredDataset(2, 6, CQT_N_BINS)[0]
+    assert cqt.shape == (6, CQT_N_BINS)
+    assert root.shape == quality.shape == bass.shape == (6,)
+    assert int(root.max()) <= 12
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +258,7 @@ def test_eval_one_epoch_returns_finite_loss() -> None:
             T = 4
             yield (
                 torch.randn(1, T, CQT_N_BINS),
+                torch.randint(0, 13, (1, T)),
                 torch.randint(0, 25, (1, T)),
                 torch.randint(0, 13, (1, T)),
             )

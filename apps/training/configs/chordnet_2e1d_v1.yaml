@@ -42,10 +42,13 @@ scheduler:
   min_lr_ratio: 0.01
 
 loss:
-  # Sum CE over both factored heads with equal weight (v1.5 ships w=1,1).
+  # Sum CE over all three factored heads (root, quality, bass) with equal
+  # weight. root_weight defaults to 1.0: no documented reason for another value.
+  root_weight: 1.0
   quality_weight: 1.0
   bass_weight: 1.0
-  # Ignore padding frames and N-labelled bass frames during training loss.
+  # Ignore padding frames. N frames are real classes in every head (root 12,
+  # quality 24, bass 12), so they are NOT ignored.
   ignore_index: -100
 
 data:

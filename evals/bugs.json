@@ -1,5 +1,24 @@
 {
-  "bugs": [],
-  "last_updated": null,
+  "bugs": [
+    {
+      "id": "PR-Y1.qa-T2-FOLLOWUP",
+      "opened": "2026-11-04",
+      "title": "Close the strict 1e-3 CQT parity gap on bins k < 60 and on upper-bin basis normalisation",
+      "severity": "medium",
+      "area": "apps/web/src/chord/cqt-frontend.ts",
+      "related_pr": "v3-phase-2/pr-y1-qa-t2-cqt-parity",
+      "repro": [
+        "pnpm --filter web test:chord",
+        "cat the console log lines prefixed [cqt-parity] — the per-clip lowerMax / upperMax show the current state."
+      ],
+      "notes": [
+        "PR-Y1.qa-T2 shipped Option B: framing / log-amp / per-clip z-norm were brought into byte parity with the librosa pipeline in apps/training/model/cqt_parity.py, but the CQT window is still capped at 4096 samples (CQT_WINDOW_CAP_SAMPLES in cqt-frontend.ts). The ideal N_k at bin 0 (fmin=32.70 Hz) is ~23014 samples; the cap truncates windows for bins k < ~60, producing underestimated magnitudes in the bass octaves.",
+        "Even on the upper band (k >= 60) where the cap does not bite, we also do NOT L1-normalise the Hann basis the way librosa does with norm=1. The per-bin offset after z-norm is small but non-zero and will prevent the strict 1e-3 tolerance from closing without that correction.",
+        "The right end-state fix is a WASM librosa port (already flagged as TODO in cqt-frontend.ts header + docs/ops/variant-y-browser.md). The librosa CQT implementation is a Schörkhuber/Klapuri 2010 recursive filterbank with per-octave downsampling — pixel-perfect parity to a naive bank-of-filters is not reachable without that structure.",
+        "Interim plan: (a) L1-normalise the basis (sum(|win|) per bin), (b) raise the cap in a staged experiment behind a feature flag, measure iOS Safari memory + per-frame cost on a physical iPhone, (c) once (a)+(b) land, tighten cqt-parity.test.mjs: upper-bin assert → STRICT_TOL, lower-bin assert → something closer to 0.1 than 5.0."
+      ]
+    }
+  ],
+  "last_updated": "2026-11-04",
   "note": "Pre-allocated per TSD §9. Add regression cases here."
 }

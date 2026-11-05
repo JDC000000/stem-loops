@@ -102,8 +102,10 @@ available stems; `chords_complete` also carries `stem`. Alert if
   $0.20 each. All requests (including retries and polls) pass a process-wide
   throttle (`KLANGIO_MIN_REQUEST_INTERVAL_SEC`, default 0.5). Results are
   deleted by Klangio after 30 days.
-- **Retries:** 429 and 5xx retried with exponential backoff + jitter, cap
-  60s, 5 attempts max. `Retry-After` header is honoured.
+- **Retries:** only the idempotent GETs (status / result) are retried: 429 and
+  5xx with exponential backoff + jitter, cap 60s, 5 attempts max;
+  `Retry-After` is honoured. **The submit POST is never retried** (see
+  "Spend protection").
 - **402 (quota exceeded):** terminal — raises `ChordQuotaExceeded`. This is
   the single signal that forces the Y1 bridge decision to be reviewed
   before the next cycle. Never retried.
@@ -118,6 +120,71 @@ available stems; `chords_complete` also carries `stem`. Alert if
 - **Confidence:** Klangio does not publish per-segment confidence. We set
   `1.0` and flag a TODO in-code to derive one from strum-gap width in
   Y1.2.
+
+## Spend protection
+
+Startup tier: $99/mo, 500 included requests, $0.20 each beyond. Overage is real money.
+
+**No double-billing.** Klangio has no idempotency key and no job-list endpoint
+(verified against `https://api.klang.io/openapi.json` and `api-docs.klang.io`,
+2026-11-05: no `Idempotency-Key` header or request-id parameter on any endpoint, no
+`GET /job` or `/jobs`; jobs are reachable only by the `job_id` returned from the POST).
+A retried POST after a lost response would create a second billed job that nothing could
+detect, so `POST /chord-recognition` is sent exactly once. Any failure (5xx, 429,
+timeout) surfaces as `ChordProviderError` ("not retried: a billed job may exist");
+the caller decides whether to resubmit. The failed attempt still counts against the quota.
+
+**Quota accounting.** Each submit is counted *before* it is sent, against a cycle that
+renews on the 5th (`KLANGIO_BILLING_DAY`). Attempts are never refunded (a rejected request
+may still consume quota). Polls and result GETs are not counted.
+
+- From 80% of the cap: `klangio_quota` log at `WARNING` with `near_cap=true`.
+- At the cap: `ChordQuotaExceeded` is raised, nothing is sent, `klangio_quota`
+  logged at `ERROR` (`outcome=refused_at_cap`). Default cap = 500 = the included allowance.
+  Raise `KLANGIO_MONTHLY_CAP` to knowingly accept overage.
+- Unparseable spend env vars, or an unreadable/corrupt counter file, fail closed.
+- Watch it: filter worker logs for `event=klangio_quota`; `detail.count` / `detail.cap`.
+
+**Where the counter lives.** Two stores sit behind the `_QuotaStore` protocol
+(`reserve(cycle, cap) -> (count, granted)`):
+
+- **Postgres (durable, shared across worker instances).** Table `public.klangio_usage`
+  (migration `028_v3_klangio_usage.sql`, one row per billing cycle, keyed by the cycle's
+  start date). Selected whenever `DATABASE_URL` is set. The reserve is one statement, so
+  racing instances cannot both take the last slot:
+
+  ```sql
+  INSERT INTO public.klangio_usage (cycle_start, count)
+  SELECT %(cycle)s::date, 1
+  WHERE %(cap)s::int > 0
+  ON CONFLICT (cycle_start) DO UPDATE
+    SET count = klangio_usage.count + 1, updated_at = now()
+    WHERE klangio_usage.count < %(cap)s::int
+  RETURNING count
+  ```
+
+  A returned row means granted; no row means refused. The `WHERE cap > 0` guard exists
+  because a first INSERT never evaluates the `DO UPDATE ... WHERE`. A database error
+  fails closed (`ChordProviderError`, nothing sent). The worker role has no
+  `DELETE`/`TRUNCATE` on the table: deleting the row would reset the counter.
+- **File (local/dev fallback).** flock-guarded JSON (`KLANGIO_QUOTA_FILE`, default
+  `$TMPDIR/klangio_quota.json`), used when `DATABASE_URL` is unset. Per-machine.
+  `apps/worker/fly.toml` mounts a volume at `/data` and points `KLANGIO_QUOTA_FILE` at it,
+  so the count survives deploys. A Fly volume is **per-machine**: that is durability across
+  deploys, not correctness across instances. Postgres is the real fix.
+
+`KLANGIO_QUOTA_BACKEND` (`auto` | `postgres` | `file`) overrides the choice. `postgres`
+without `DATABASE_URL` fails closed rather than quietly using a counter that resets.
+
+Deploy order: apply migration 028 (`make migrate`) **before** deploying this code, or the
+first submit fails closed on the missing table; and create the volume
+(`fly volumes create klangio_quota --app stem-loops --region iad --size 1`) before
+deploying the `fly.toml` change. If the counter is ever lost, recover the true count from
+the Klangio dashboard and `UPDATE public.klangio_usage SET count = <n> WHERE cycle_start = <date>`.
+
+**Content type.** The multipart `Content-Type` is inferred from the file extension
+(`.wav .mp3 .flac .ogg .m4a .aac`), else `application/octet-stream`; it is no longer
+hardcoded `audio/wav`.
 
 ## Eval set
 
@@ -165,7 +232,13 @@ See `.env.example` for the canonical list. The vars this module reads:
 | `KLANGIO_MIN_REQUEST_INTERVAL_SEC` | `0.5` | Min spacing between requests (2 req/s tier limit). |
 | `KLANGIO_API_BASE` | `https://api.klang.io` | Override for local proxy / staging. |
 | `KLANGIO_API_VERSION` | `2026-11-04` | Captured in `ChordResult.provider_version`. |
-| `KLANGIO_MAX_RETRIES` | `5` | 429/5xx retry budget. |
+| `KLANGIO_MAX_RETRIES` | `5` | 429/5xx retry budget for GETs only (never the submit POST). |
+| `KLANGIO_MONTHLY_CAP` | `500` | Hard ceiling on submits per billing cycle; further submits raise `ChordQuotaExceeded`. |
+| `KLANGIO_WARN_FRACTION` | `0.8` | Log `WARNING` once count >= this fraction of the cap. |
+| `KLANGIO_BILLING_DAY` | `5` | Day of month the cycle renews (1-28). |
+| `KLANGIO_QUOTA_BACKEND` | `auto` | `auto` = Postgres if `DATABASE_URL` is set, else file. `postgres` / `file` force one (`postgres` without `DATABASE_URL` fails closed). |
+| `DATABASE_URL` | *(unset)* | Selects the Postgres counter (`public.klangio_usage`) when set. |
+| `KLANGIO_QUOTA_FILE` | `$TMPDIR/klangio_quota.json` | File-store counter path (fallback); per-machine, mounted on the Fly volume at `/data`. |
 | `KLANGIO_BACKOFF_CAP_SEC` | `60` | Hard ceiling on a single retry wait. |
 | `KLANGIO_BACKOFF_BASE_SEC` | `1` | Base for the exponential backoff. |
 | `KLANGIO_HTTP_TIMEOUT_SEC` | `30` | Per-call HTTP timeout. |

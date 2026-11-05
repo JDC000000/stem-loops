@@ -1,5 +1,22 @@
 # Variant Y — browser live chord overlay
 
+> **STATUS (2026-11-05): PAUSED.** Variant Y is off the critical path; the
+> product uses a third-party chord API today.
+>
+> - The browser CQT (`apps/web/src/chord/cqt-frontend.ts`) is **plan v1**
+>   (hop 2048, global z-norm, no high-pass). Training is **plan v2**
+>   (hop 1024, per-song z-norm, 70 Hz zero-phase high-pass).
+> - Parity gap measured on an attempted (uncommitted) v2 browser port: max abs
+>   error **~1.2-1.7** against a **1e-3** tolerance. The ported high-pass was
+>   correct (max 2.98e-8 vs `scipy.sosfiltfilt`); the divergence is in the CQT
+>   itself.
+> - The per-clip numeric tests in
+>   `apps/web/src/chord/__tests__/cqt-parity.test.mjs` are **skipped** (visible
+>   as skips in test output). Structural checks (manifest, tolerances, SHAs,
+>   shapes) still run. No tolerance was loosened.
+> - Unblock: a WASM librosa CQT port. Tracking: PR #114 and
+>   `evals/bugs.json` `PR-Y1.qa-T2-FOLLOWUP`.
+
 PR-Y1.6 — scaffold shipping with a stub ONNX model. The real weights land in
 PR-Y1.5b; swapping them in is a one-line env change.
 

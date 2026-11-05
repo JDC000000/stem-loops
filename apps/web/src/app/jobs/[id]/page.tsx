@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { Job } from '@stem-loops/types';
+import { ChordOverlay } from '@/components/ChordOverlay';
 import { JobProgress } from '@/components/JobProgress';
 import { LoopResults } from '@/components/LoopResults';
 import { formatExpiresIn } from '@/lib/retention';
@@ -92,6 +93,15 @@ export default function JobPage({ params }: { params: { id: string } }) {
       ) : job.status === 'done' ? (
         <>
           <LoopResults job={{ ...job, title: job.original_filename ?? undefined }} />
+          {/* Chord timeline for the finished job. Mounted only at status 'done':
+              the worker writes play.chords.json after the pipeline completes, and
+              the overlay itself renders loading / unavailable / empty states. */}
+          <section aria-label="Chords" style={{ width: '100%', maxWidth: 960 }}>
+            <h2 style={{ margin: '0 0 8px', fontSize: 'var(--text-lg, 18px)', color: 'var(--text-primary)' }}>
+              Chords
+            </h2>
+            <ChordOverlay jobId={job.id} />
+          </section>
           <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
             Files are deleted after 24 hours.
             {job.expires_at ? ` Yours expire ${formatExpiresIn(new Date(job.expires_at).getTime())}.` : ''}

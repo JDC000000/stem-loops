@@ -40,6 +40,7 @@ import {
   chipBox,
   classIndexOrNull,
   classifyLabel,
+  completedJobStatus,
   displayText,
   observationsToRuns,
   popoverAlternatives,
@@ -104,15 +105,17 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
     return checkTabCaptureSupport();
   }, [isCompletedJobMode]);
 
+  const completedStatus = completedJobStatus(completedJobChords);
+
   // Push the loaded observations into the shared `state.runs` so the render
-  // path below is identical to the live-capture one. On null (loading / 404)
-  // keep whatever was there — a transient re-fetch shouldn't blank the UI.
+  // path below is identical to the live-capture one. Only `ready` carries
+  // observations; loading / unavailable are rendered from `completedStatus`.
   useEffect(() => {
     if (!isCompletedJobMode) return;
-    if (completedJobChords === null) return;
+    if (completedJobChords.status !== 'ready') return;
     setState({
       phase: 'capturing',
-      runs: observationsToRuns(completedJobChords),
+      runs: observationsToRuns(completedJobChords.observations),
     });
   }, [isCompletedJobMode, completedJobChords]);
 
@@ -242,9 +245,9 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           <span
             style={providerPillStyle}
             data-testid="completed-job-pill"
-            aria-label="Chord data source: completed job"
+            aria-label={`Chord data status: ${completedStatus.pill.toLowerCase()}`}
           >
-            {completedJobChords === null ? 'LOADING' : 'JOB'}
+            {completedStatus.pill}
           </span>
         ) : state.phase !== 'capturing' ? (
           <button
@@ -285,6 +288,18 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
         </div>
       ) : null}
 
+      {isCompletedJobMode && completedStatus.message ? (
+        <div
+          role="status"
+          style={emptyStyle}
+          data-testid="completed-job-message"
+          data-state={completedJobChords.status}
+        >
+          {completedStatus.message}
+        </div>
+      ) : null}
+
+      {!isCompletedJobMode || completedStatus.showTimeline ? (
       <div style={timelineStyle} data-testid="chord-timeline">
         {state.runs.length === 0 && state.phase === 'capturing' ? (
           <div style={emptyStyle}>Listening…</div>
@@ -324,6 +339,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           })}
         </div>
       </div>
+      ) : null}
 
       {popoverFor ? (
         <div

@@ -16,7 +16,7 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { fetchPlayChords } from '../play-chords-loader.ts';
+import { fetchPlayChords, parseUnavailableReason } from '../play-chords-loader.ts';
 
 // ---- fetch-mock plumbing ----------------------------------------------------
 let originalFetch;
@@ -77,7 +77,9 @@ test('fetchPlayChords: hits /api/jobs/<id>/play-chords, follows signed URL, pars
     }),
   ]);
 
-  const observations = await fetchPlayChords('job-abc');
+  const result = await fetchPlayChords('job-abc');
+  assert.equal(result.status, 'ready');
+  const observations = result.observations;
 
   // First call: the API route for this job id (the "signed URL path").
   assert.equal(calls.length, 2);
@@ -106,7 +108,7 @@ test('fetchPlayChords: 404 at the API route returns null without touching R2', a
 
   const result = await fetchPlayChords('job-missing');
 
-  assert.equal(result, null);
+  assert.deepEqual(result, { status: 'unavailable', reason: 'unknown' });
   // Exactly one call — we never attempt the R2 fetch when there's no envelope.
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, '/api/jobs/job-missing/play-chords');
@@ -126,7 +128,7 @@ test('fetchPlayChords: 404 at the signed-URL fetch also returns null', async () 
 
   const result = await fetchPlayChords('job-gone');
 
-  assert.equal(result, null);
+  assert.deepEqual(result, { status: 'unavailable', reason: 'unknown' });
   assert.equal(calls.length, 2);
 });
 
@@ -144,7 +146,7 @@ test('fetchPlayChords: empty segments array returns an empty array (not null)', 
   ]);
 
   const result = await fetchPlayChords('job-empty');
-  assert.deepEqual(result, []);
+  assert.deepEqual(result, { status: 'ready', observations: [] });
 });
 
 test('fetchPlayChords: drops malformed segments without failing the whole fetch', async () => {
@@ -167,7 +169,9 @@ test('fetchPlayChords: drops malformed segments without failing the whole fetch'
     }),
   ]);
 
-  const result = await fetchPlayChords('job-mixed');
+  const out = await fetchPlayChords('job-mixed');
+  assert.equal(out.status, 'ready');
+  const result = out.observations;
   assert.equal(result.length, 2);
   assert.equal(result[0].label, 'C:maj');
   assert.equal(result[1].label, 'G:7');
@@ -195,4 +199,53 @@ test('fetchPlayChords: missing signed_url in envelope throws', async () => {
     () => fetchPlayChords('job-bad-envelope'),
     /missing signed_url/,
   );
+});
+
+// ---- tri-state: unavailable reasons ----------------------------------------
+test('tri-state ready: chords present -> status ready with observations', async () => {
+  mockFetchSequence([
+    makeResponse({ json: { signed_url: 'https://r2/x', expires_in_sec: 300 } }),
+    makeResponse({ json: { segments: [{ start_sec: 0, end_sec: 2, label: 'C:maj', confidence: 1 }] } }),
+  ]);
+  const r = await fetchPlayChords('job-ready');
+  assert.equal(r.status, 'ready');
+  assert.equal(r.observations.length, 1);
+});
+
+test('tri-state unavailable-too-long: API 404 carrying reason too_long', async () => {
+  mockFetchSequence([
+    makeResponse({ status: 404, json: { error_code: 'NOT_FOUND', reason: 'too_long' } }),
+  ]);
+  assert.deepEqual(await fetchPlayChords('job-long'), { status: 'unavailable', reason: 'too_long' });
+});
+
+test('tri-state unavailable-too-long: R2 tombstone payload with reason too_long', async () => {
+  mockFetchSequence([
+    makeResponse({ json: { signed_url: 'https://r2/x', expires_in_sec: 300 } }),
+    makeResponse({ json: { status: 'unavailable', reason: 'too_long' } }),
+  ]);
+  assert.deepEqual(await fetchPlayChords('job-long2'), { status: 'unavailable', reason: 'too_long' });
+});
+
+test('tri-state unavailable-provider-failed: tombstone reason provider_failed', async () => {
+  mockFetchSequence([
+    makeResponse({ json: { signed_url: 'https://r2/x', expires_in_sec: 300 } }),
+    makeResponse({ json: { status: 'unavailable', reason: 'provider_failed' } }),
+  ]);
+  assert.deepEqual(await fetchPlayChords('job-fail'), { status: 'unavailable', reason: 'provider_failed' });
+});
+
+test('tri-state unavailable: 404 with non-JSON body still resolves (reason unknown)', async () => {
+  mockFetchSequence([
+    { status: 404, ok: false, json: async () => { throw new SyntaxError('bad json'); } },
+  ]);
+  assert.deepEqual(await fetchPlayChords('job-html404'), { status: 'unavailable', reason: 'unknown' });
+});
+
+test('parseUnavailableReason: maps known strings, defaults to unknown', () => {
+  assert.equal(parseUnavailableReason('too_long'), 'too_long');
+  assert.equal(parseUnavailableReason('CHORDS_FAILED'), 'provider_failed');
+  assert.equal(parseUnavailableReason('disabled'), 'not_attempted');
+  assert.equal(parseUnavailableReason('???'), 'unknown');
+  assert.equal(parseUnavailableReason(undefined), 'unknown');
 });

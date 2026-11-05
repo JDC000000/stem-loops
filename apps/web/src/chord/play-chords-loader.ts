@@ -2,12 +2,11 @@
 //
 // Fetch flow:
 //   1. GET /api/jobs/<jobId>/play-chords  → { signed_url, expires_in_sec }
-//        - 404 → null (no chord artifact for this job: either not done, no
-//          Klangio pass, or the object wasn't written). The overlay falls
-//          back to its idle/live-capture state.
+//        - 404 → unavailable (no chord artifact for this job: not done, the
+//          provider rejected/failed, or chords were never attempted).
 //   2. GET <signed_url>  → the JSON written by the worker (shape = asdict of
 //      the ChordResult Pydantic model in apps/worker/src/worker/chord_source.py).
-//      404 here also → null (R2 miss / expired signed URL).
+//      404 here also → unavailable (R2 miss / expired signed URL).
 //
 // Audio never leaves R2 → the browser via this path — only the JSON summary of
 // the Klangio recognition pass does.
@@ -45,6 +44,11 @@ interface PlayChordsPayload {
   provider_version?: string;
   duration_sec?: number;
   model_ms?: number;
+  /** Optional tombstone fields. The worker does not write these today (a failed
+   *  or over-length chord pass writes NO object), but the loader honours them
+   *  so a future tombstone gives users a specific reason with no web change. */
+  status?: string;
+  reason?: string;
 }
 
 /** Shape of the API-route envelope. */
@@ -81,24 +85,69 @@ function toObservations(payload: unknown): ChordObservation[] {
 }
 
 /**
- * Non-React fetch primitive. Exposed so server-side code (or tests) can call it
- * without pulling in React. `signal` lets a React caller abort when the effect
- * unmounts mid-flight.
- *
- * Returns `null` for any 404 (either tier) — the overlay treats "no data" and
- * "data gone / expired" the same. Other errors throw so Sentry can see them
- * via the hook's effect-level catch.
+ * Why a job has no chords. `unknown` is the honest default: today the worker
+ * writes nothing when the pass is skipped or fails, so the web cannot tell
+ * "too long" from "provider failed" from "never attempted" without a tombstone.
+ */
+export type ChordUnavailableReason =
+  | 'too_long' // over the provider's 300s limit
+  | 'too_short'
+  | 'provider_failed' // provider/quota/upload error after we tried
+  | 'not_attempted' // chords disabled or no harmonic input
+  | 'load_failed' // the artifact may exist but we could not fetch it (network / 5xx)
+  | 'unknown'; // no artifact and no reason recorded
+
+/** Tri-state result: `loading` is "not yet", `unavailable` is "never". */
+export type PlayChordsResult =
+  | { status: 'loading' }
+  | { status: 'ready'; observations: ChordObservation[] }
+  | { status: 'unavailable'; reason: ChordUnavailableReason };
+
+const LOADING: PlayChordsResult = { status: 'loading' };
+
+/** Normalise a reason string from the API/worker onto the known set. */
+export function parseUnavailableReason(raw: unknown): ChordUnavailableReason {
+  if (typeof raw !== 'string') return 'unknown';
+  const v = raw.toLowerCase();
+  if (v === 'too_long' || v === 'chords_too_long' || v === 'duration_too_long') return 'too_long';
+  if (v === 'too_short' || v === 'duration_too_short') return 'too_short';
+  if (v === 'provider_failed' || v === 'chords_failed' || v === 'provider_error') return 'provider_failed';
+  if (v === 'not_attempted' || v === 'disabled' || v === 'skipped') return 'not_attempted';
+  return 'unknown';
+}
+
+async function readJsonSafe(res: Response): Promise<unknown> {
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+function reasonFrom(body: unknown): ChordUnavailableReason {
+  if (!body || typeof body !== 'object') return 'unknown';
+  const b = body as { reason?: unknown; unavailable_reason?: unknown };
+  return parseUnavailableReason(b.unavailable_reason ?? b.reason);
+}
+
+/**
+ * Non-React fetch primitive. Resolves to `ready` or `unavailable` (never
+ * `loading`). A 404 at either tier is "no chords exist" (`unavailable`, with a
+ * reason if the body or payload carries one). Other HTTP errors throw so the
+ * hook can map them to `load_failed` and Sentry can see them.
  */
 export async function fetchPlayChords(
   jobId: string,
   signal?: AbortSignal,
-): Promise<ChordObservation[] | null> {
+): Promise<PlayChordsResult> {
   // Tier 1: API-route envelope with the signed URL.
   const envRes = await fetch(`/api/jobs/${jobId}/play-chords`, {
     cache: 'no-store',
     signal,
   });
-  if (envRes.status === 404) return null;
+  if (envRes.status === 404) {
+    return { status: 'unavailable', reason: reasonFrom(await readJsonSafe(envRes)) };
+  }
   if (!envRes.ok) {
     throw new Error(`play-chords API ${envRes.status}`);
   }
@@ -111,44 +160,46 @@ export async function fetchPlayChords(
   // longer than that between the two fetches is a pathological client state
   // we treat as "no data" rather than a hard error.
   const r2Res = await fetch(envelope.signed_url, { signal });
-  if (r2Res.status === 404) return null;
+  if (r2Res.status === 404) return { status: 'unavailable', reason: 'unknown' };
   if (!r2Res.ok) {
     throw new Error(`play-chords R2 ${r2Res.status}`);
   }
   const payload = (await r2Res.json()) as unknown;
-  return toObservations(payload);
+  if (payload && typeof payload === 'object') {
+    const p = payload as PlayChordsPayload;
+    if (p.status === 'unavailable') {
+      return { status: 'unavailable', reason: parseUnavailableReason(p.reason) };
+    }
+  }
+  return { status: 'ready', observations: toObservations(payload) };
 }
 
 /**
- * React hook. Returns `null` until the fetch resolves. On resolve:
- *   - `ChordObservation[]` on success (possibly empty).
- *   - `null` if the artifact doesn't exist (404 at either tier).
+ * React hook. Starts `loading`; resolves to `ready` (possibly zero chords) or
+ * `unavailable` with a reason. A thrown fetch (network / 5xx) becomes
+ * `unavailable: load_failed` so the UI never spins forever.
  *
- * A missing `jobId` short-circuits (null without a fetch) so the ChordOverlay
- * can toggle between its live-capture and completed-job modes with one hook.
+ * A missing `jobId` returns `loading` without a fetch (the ChordOverlay's
+ * live-capture mode ignores the value).
  */
-export function usePlayChords(jobId: string | null | undefined): ChordObservation[] | null {
-  const [observations, setObservations] = useState<ChordObservation[] | null>(null);
+export function usePlayChords(jobId: string | null | undefined): PlayChordsResult {
+  const [result, setResult] = useState<PlayChordsResult>(LOADING);
 
   useEffect(() => {
-    if (!jobId) {
-      setObservations(null);
-      return;
-    }
+    setResult(LOADING);
+    if (!jobId) return;
     const controller = new AbortController();
     let stopped = false;
 
     (async () => {
       try {
         const data = await fetchPlayChords(jobId, controller.signal);
-        if (!stopped) setObservations(data);
+        if (!stopped) setResult(data);
       } catch (err) {
-        // AbortError on unmount is expected; everything else surfaces so the
-        // overlay can degrade without masking real bugs.
         if ((err as Error)?.name === 'AbortError') return;
         // eslint-disable-next-line no-console
         console.error('play-chords: fetch failed', err);
-        if (!stopped) setObservations(null);
+        if (!stopped) setResult({ status: 'unavailable', reason: 'load_failed' });
       }
     })();
 
@@ -158,5 +209,5 @@ export function usePlayChords(jobId: string | null | undefined): ChordObservatio
     };
   }, [jobId]);
 
-  return observations;
+  return result;
 }

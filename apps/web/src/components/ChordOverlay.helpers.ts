@@ -5,7 +5,11 @@
 // behaviour testable without jsdom is the point of this split.
 
 import { labelIndex, nearestChords } from '../chord/alphabet.ts';
-import type { ChordObservation } from '../chord/play-chords-loader.ts';
+import type {
+  ChordObservation,
+  ChordUnavailableReason,
+  PlayChordsResult,
+} from '../chord/play-chords-loader.ts';
 
 /** What a span means musically. 'none' = N (no chord), 'unknown' = X. */
 export type RunKind = 'chord' | 'none' | 'unknown';
@@ -130,4 +134,46 @@ export function popoverAlternatives(forCls: number | null | undefined, k = 10): 
   // Out-of-vocabulary current chord (null) -> no neighbours; never index with -1.
   if (forCls === null || forCls === undefined || !Number.isInteger(forCls) || forCls < 0) return [];
   return nearestChords(forCls, k);
+}
+
+/** What the completed-job status area shows for each tri-state value. */
+export interface CompletedJobStatus {
+  /** Short pill text. */
+  pill: 'LOADING' | 'JOB' | 'UNAVAILABLE';
+  /** Human sentence; null when the chip timeline alone is the answer. */
+  message: string | null;
+  /** Whether the chip timeline should render at all. */
+  showTimeline: boolean;
+}
+
+/** User-facing copy per unavailable reason. Never implies a spinner. */
+export function unavailableMessage(reason: ChordUnavailableReason): string {
+  switch (reason) {
+    case 'too_long':
+      return 'Chords aren\u2019t available for this track: chord detection supports tracks up to 5 minutes. Your stems and loops are unaffected.';
+    case 'too_short':
+      return 'Chords aren\u2019t available for this track: it\u2019s too short for chord detection. Your stems and loops are unaffected.';
+    case 'provider_failed':
+      return 'Chord detection failed for this track. Your stems and loops are unaffected.';
+    case 'not_attempted':
+      return 'Chord detection wasn\u2019t run for this track.';
+    case 'load_failed':
+      return 'We couldn\u2019t load the chords. Refresh the page to try again.';
+    default:
+      // No artifact and no recorded reason. Don't guess a cause.
+      return 'No chords are available for this track. Chord detection works on tracks up to 5 minutes and can fail on others. Your stems and loops are unaffected.';
+  }
+}
+
+export function completedJobStatus(result: PlayChordsResult): CompletedJobStatus {
+  switch (result.status) {
+    case 'loading':
+      return { pill: 'LOADING', message: 'Loading chords\u2026', showTimeline: false };
+    case 'unavailable':
+      return { pill: 'UNAVAILABLE', message: unavailableMessage(result.reason), showTimeline: false };
+    case 'ready':
+      return result.observations.length === 0
+        ? { pill: 'JOB', message: 'No chords were detected in this track.', showTimeline: false }
+        : { pill: 'JOB', message: null, showTimeline: true };
+  }
 }

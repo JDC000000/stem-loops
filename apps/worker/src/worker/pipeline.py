@@ -259,7 +259,9 @@ def process_stems(job_id, stem_paths, requested_stems, bars, sr=44100) -> int:
 CHORDS_DEFAULT_STEM = os.environ.get("CHORDS_STEM", "instrumental")
 
 
-def _choose_chord_input(stem_paths: dict, preferred: str = "instrumental") -> tuple[str, str] | None:
+def _choose_chord_input(
+    stem_paths: dict, preferred: str = "instrumental"
+) -> tuple[str, str] | None:
     """Pick the audio path handed to the chord provider.
 
     Returns ``(stem_name, local_path)`` or ``None``. The preferred stem — usually

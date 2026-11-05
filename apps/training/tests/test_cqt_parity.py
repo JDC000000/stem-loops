@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import struct
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +30,7 @@ from training.model.cqt_parity import (  # noqa: E402
     render_clip,
     verify_plan_mirror,
 )
+from training.model.cqt_plan import PLAN, apply_hpf  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Spec invariants
@@ -172,6 +174,74 @@ def test_generate_fixtures_is_deterministic(tmp_path: Path) -> None:
             ), f"nondeterministic: {clip['name']}/{key} differs between runs"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# HPF-starved clips: why a few fixtures cannot be SHA-compared
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Plan v2 applies a 70 Hz zero-phase high-pass BEFORE the CQT (matching
+# ChordFormer; sub-bass carries little chord information). But the CQT's own
+# fmin is 32.70 Hz, so bins 0..26 of 144 (18.8%) sit BELOW the filter corner
+# by design.
+#
+# A fixture that is pure tone below that corner is therefore reduced to the
+# filter's residual. Measured on `sine_c1_32_70hz` (a 32.70 Hz sine, exactly
+# fmin): RMS 0.212 -> 9.6e-4, a 220x attenuation. The control at 440 Hz is
+# attenuated 1.000x.
+#
+# The CQT of that residual sits near the amplitude floor (AMIN = 1e-5), where
+# per-bin log clamping and last-bit float rounding dominate the output. Those
+# bits differ between numpy/scipy builds, BLAS kernels and CPU instruction
+# sets — so a byte-exact SHA is NOT reproducible across machines. Observed
+# directly: this clip's SHA matched locally and differed on the GitHub runner,
+# on identical code.
+#
+# This is a property of the fixture, not a defect in the plan or generator.
+# Rather than hardcode a clip name (which would silently go stale if hpf_hz
+# changes), classification is computed from the audio: any clip the plan's own
+# filter attenuates by more than _HPF_STARVE_RATIO is compared numerically.
+# Change hpf_hz and the set reclassifies itself.
+
+_HPF_STARVE_RATIO = 20.0  # >20x RMS attenuation => output is filter residual
+_HPF_STARVED_TOL = 1e-6  # a real generator change moves values far more
+
+
+def _read_wav_f32(path: Path) -> np.ndarray:
+    """Read a mono float32 WAV. stdlib `wave` cannot read format=3 (float)."""
+    b = path.read_bytes()
+    n_bytes = struct.unpack("<I", b[40:44])[0]
+    return np.frombuffer(b[44 : 44 + n_bytes], dtype="<f4")
+
+
+def _is_hpf_starved(root: Path, entry: dict) -> bool:
+    """True if the plan's HPF removes most of this clip's energy.
+
+    Such a clip's CQT is the filter's residual, near the AMIN floor, and is
+    not bit-reproducible across machines — so the caller compares it
+    numerically instead of by SHA.
+    """
+    if PLAN.hpf_hz <= 0:
+        return False
+    audio = root / entry["audio_path"]
+    if not audio.exists():
+        return False
+    x = _read_wav_f32(audio).astype(np.float64)
+    if x.size == 0:
+        return False
+    rms_before = float(np.sqrt(np.mean(x**2)))
+    if rms_before <= 0.0:
+        return False  # silence is exactly zero and reproduces fine
+    y = apply_hpf(x, PLAN)
+    rms_after = float(np.sqrt(np.mean(np.asarray(y, dtype=np.float64) ** 2)))
+    if rms_after <= 0.0:
+        return True
+    return (rms_before / rms_after) > _HPF_STARVE_RATIO
+
+
+def _load_cqt(root: Path, entry: dict) -> np.ndarray:
+    """Load a fixture's CQT as a 2-D array, from the .npy beside the manifest."""
+    return np.load(root / entry["cqt_path"]).reshape(tuple(entry["cqt_shape"]))
+
+
 def test_committed_fixtures_match_current_sha(tmp_path: Path) -> None:
     """The fixtures committed to the repo must match what the generator emits now.
 
@@ -197,11 +267,32 @@ def test_committed_fixtures_match_current_sha(tmp_path: Path) -> None:
     for name, live_entry in live_by_name.items():
         assert name in committed_by_name, f"regenerated clip {name} not in committed manifest"
         committed_entry = committed_by_name[name]
-        assert live_entry["cqt_sha256"] == committed_entry["cqt_sha256"], (
-            f"CQT SHA drift on {name}: "
-            f"committed={committed_entry['cqt_sha256']} "
-            f"regenerated={live_entry['cqt_sha256']}"
-        )
+
+        if _is_hpf_starved(committed_root, committed_entry):
+            # SHA equality is not achievable for this clip across machines.
+            # See _is_hpf_starved for why. Assert numeric equivalence at a
+            # tight tolerance instead — this still catches a real generator
+            # change (which moves values by far more than 1e-6) while
+            # tolerating last-bit float differences between BLAS builds.
+            live_cqt = _load_cqt(tmp_path, live_entry)
+            committed_cqt = _load_cqt(committed_root, committed_entry)
+            assert live_cqt.shape == committed_cqt.shape, (
+                f"CQT shape drift on {name}: "
+                f"committed={committed_cqt.shape} regenerated={live_cqt.shape}"
+            )
+            max_abs = float(np.max(np.abs(live_cqt - committed_cqt)))
+            assert max_abs < _HPF_STARVED_TOL, (
+                f"CQT drift on {name} (HPF-starved clip, compared numerically "
+                f"rather than by SHA): max abs diff {max_abs:.3e} exceeds "
+                f"{_HPF_STARVED_TOL:.0e}. A diff this large is a real generator "
+                f"change, not float noise."
+            )
+        else:
+            assert live_entry["cqt_sha256"] == committed_entry["cqt_sha256"], (
+                f"CQT SHA drift on {name}: "
+                f"committed={committed_entry['cqt_sha256']} "
+                f"regenerated={live_entry['cqt_sha256']}"
+            )
         assert live_entry["audio_sha256"] == committed_entry["audio_sha256"], (
             f"audio SHA drift on {name}: "
             f"committed={committed_entry['audio_sha256']} "

@@ -38,6 +38,16 @@ dev = [
     "pytest-cov>=5.0",
     "black>=24.0",
     "ruff>=0.5",
+    # ONNX export stack. These are NOT optional-in-practice: without them
+    # tests/test_export_onnx.py pytest.importorskip()s the ENTIRE file, so the
+    # training-tests job reports green while the export path — the step that
+    # produces the browser inference artifact — has zero coverage. The job
+    # installs dependencies + this dev list, so anything absent here is
+    # silently unexercised in CI. A gate that skips its most important file
+    # is not a gate. See playbook L25.
+    "onnx>=1.15",
+    "onnxruntime>=1.18",
+    "onnxscript>=0.1",
 ]
 
 # Mirrors apps/worker/pyproject.toml so the two Python packages lint the

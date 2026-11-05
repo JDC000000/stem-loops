@@ -390,7 +390,7 @@ def run_eval(
     if mock_predictions is None:
         if model is None:
             ckpt = torch.load(checkpoint, map_location="cpu")
-            model = ChordNet2E1D(output_mode=ckpt.get("output_mode", "structured"))
+            model = ChordNet2E1D(output_mode=ckpt.get("output_mode", "factored"))
             model.load_state_dict(ckpt["model_state"])
         model.eval()
         if loader is None:

@@ -141,11 +141,23 @@ test('DELETE /api/users/me — happy path: cancels Stripe, deletes auth user, au
   const del = calls.filter((c) => c[0] === 'deleteAuthUser');
   assert.deepEqual(del, [['deleteAuthUser', USER.user_id]]);
 
-  // Order: cancel before deleteAuthUser before audit insert.
-  const order = calls.map((c) => c[0] + (c[0] === 'query' ? (/INSERT/.test(c[1]) ? ':audit' : /UPDATE/.test(c[1]) ? ':tombstone' : ':select') : ''));
+  // Order: cancel → tombstone → chord_edits sweep → deleteAuthUser → audit.
+  const order = calls.map((c) => {
+    if (c[0] !== 'query') return c[0];
+    if (/INSERT/.test(c[1])) return 'query:audit';
+    if (/UPDATE/.test(c[1])) return 'query:tombstone';
+    if (/DELETE FROM public\.chord_edits/.test(c[1])) return 'query:chord_edits_sweep';
+    return 'query:select';
+  });
   assert.ok(order.indexOf('cancelSubscription') < order.indexOf('query:tombstone'));
-  assert.ok(order.indexOf('query:tombstone') < order.indexOf('deleteAuthUser'));
+  assert.ok(order.indexOf('query:tombstone') < order.indexOf('query:chord_edits_sweep'));
+  assert.ok(order.indexOf('query:chord_edits_sweep') < order.indexOf('deleteAuthUser'));
   assert.ok(order.indexOf('deleteAuthUser') < order.indexOf('query:audit'));
+
+  // Chord-edits sweep scoped to this user id.
+  const sweep = calls.find((c) => c[0] === 'query' && /DELETE FROM public\.chord_edits/.test(c[1]));
+  assert.ok(sweep, 'expected a DELETE FROM public.chord_edits sweep before deleteAuthUser');
+  assert.equal(sweep[2][0], USER.user_id);
 
   // Subscription lookup scoped to this user and live statuses.
   const sel = calls.find((c) => c[0] === 'query' && /FROM public\.subscriptions/.test(c[1]));
@@ -224,6 +236,85 @@ test('DELETE /api/users/me — Host header with default port :443 still matches 
     makeReq({ confirm_email: USER.email }, { origin: 'https://stem-loops.com', host: 'stem-loops.com:443' }),
   );
   assert.equal(res.status, 204);
+});
+
+test('DELETE /api/users/me — tolerates chord_edits table absent (42P01)', async () => {
+  // Pre-025 env: chord_edits does not exist yet. The sweep must swallow 42P01
+  // and continue; everything else still runs.
+  let js = toJs(readFileSync(SRC, 'utf8'));
+  js = js
+    .replace(
+      /from ['"]@\/lib\/auth\/supabase['"]/g,
+      `from '${authStub(USER, { deleteFails: false })}'`,
+    )
+    .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billingStub({ cancelError: null })}'`)
+    .replace(
+      /from ['"]@\/lib\/db['"]/g,
+      `from '${dataUrl(`
+        export const db = {
+          query: async (text, params) => {
+            globalThis.__ad.calls.push(['query', text, params]);
+            if (/FROM public\\.subscriptions/.test(text)) {
+              return { rows: [], rowCount: 0 };
+            }
+            if (/DELETE FROM public\\.chord_edits/.test(text)) {
+              const err = new Error('relation "public.chord_edits" does not exist');
+              err.code = '42P01';
+              throw err;
+            }
+            return { rows: [], rowCount: 1 };
+          },
+        };
+      `)}'`,
+    )
+    .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
+  const mod = await import(dataUrl(js) + '#' + Math.random());
+
+  const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
+  assert.equal(res.status, 204, 'pre-025 path: sweep swallows 42P01 and continues');
+  assert.ok(names().includes('deleteAuthUser'));
+  assert.equal(auditInserts().length, 1);
+});
+
+test('DELETE /api/users/me — chord_edits sweep failure (non-42P01) aborts before auth delete', async () => {
+  // Any error other than undefined_table should propagate — otherwise we'd
+  // then explode on the FK inside auth.admin.deleteUser. 500 is the right
+  // outcome: nothing destructive happened past step 3a.
+  let js = toJs(readFileSync(SRC, 'utf8'));
+  js = js
+    .replace(
+      /from ['"]@\/lib\/auth\/supabase['"]/g,
+      `from '${authStub(USER, { deleteFails: false })}'`,
+    )
+    .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billingStub({ cancelError: null })}'`)
+    .replace(
+      /from ['"]@\/lib\/db['"]/g,
+      `from '${dataUrl(`
+        export const db = {
+          query: async (text, params) => {
+            globalThis.__ad.calls.push(['query', text, params]);
+            if (/FROM public\\.subscriptions/.test(text)) {
+              return { rows: [], rowCount: 0 };
+            }
+            if (/DELETE FROM public\\.chord_edits/.test(text)) {
+              const err = new Error('deadlock detected');
+              err.code = '40P01';
+              throw err;
+            }
+            return { rows: [], rowCount: 1 };
+          },
+        };
+      `)}'`,
+    )
+    .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
+  const mod = await import(dataUrl(js) + '#' + Math.random());
+
+  const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
+  assert.equal(res.status, 500);
+  assert.equal(res.body.code, 'DELETE_FAILED');
+  // deleteAuthUser must NOT have been reached.
+  assert.ok(!names().includes('deleteAuthUser'));
+  assert.equal(auditInserts().length, 0);
 });
 
 test('DELETE /api/users/me — tolerates users.deleted_at column absent (42703)', async () => {

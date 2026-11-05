@@ -203,6 +203,47 @@ def test_rls_enabled(conn):
     assert relrowsecurity is True
 
 
+# ────────────────────────────────────────────────────────────────────────
+# Migration 027 regression — security audit §3 M1.
+# After 027 the anon + authenticated roles must hold NO privileges on
+# public.chord_edits, and the pre-M1 "chord_edits_user_insert" /
+# "chord_edits_user_read_own" policies must be gone.
+# ────────────────────────────────────────────────────────────────────────
+
+
+def test_m1_anon_has_no_privileges_on_chord_edits(conn):
+    rows = conn.execute(
+        "SELECT privilege_type FROM information_schema.role_table_grants "
+        "WHERE table_schema='public' AND table_name='chord_edits' "
+        "AND grantee='anon'"
+    ).fetchall()
+    assert rows == [], f"anon still holds privileges on chord_edits: {rows!r}"
+
+
+def test_m1_authenticated_has_no_privileges_on_chord_edits(conn):
+    rows = conn.execute(
+        "SELECT privilege_type FROM information_schema.role_table_grants "
+        "WHERE table_schema='public' AND table_name='chord_edits' "
+        "AND grantee='authenticated'"
+    ).fetchall()
+    assert rows == [], f"authenticated still holds privileges on chord_edits: {rows!r}"
+
+
+def test_m1_authenticated_insert_policy_removed(conn):
+    names = {
+        r[0]
+        for r in conn.execute(
+            "SELECT policyname FROM pg_policies "
+            "WHERE schemaname='public' AND tablename='chord_edits'"
+        ).fetchall()
+    }
+    assert "chord_edits_user_insert" not in names
+    assert "chord_edits_user_read_own" not in names
+    # stemloops_app policies survive — they are the intended writer/reader.
+    assert "stemloops_app_insert" in names
+    assert "stemloops_app_select" in names
+
+
 def test_down_migration_round_trip(conn):
     """Down drops the table; re-applying 025 restores it."""
     down = (MIGRATIONS / "down" / "025_v3_chord_edits_down.sql").read_text()

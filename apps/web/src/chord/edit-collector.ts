@@ -20,6 +20,17 @@
 // state is a real training signal about where the model's output was NOT
 // right. The schema allows multiple edits on the same (job_id, start_sec,
 // end_sec) by design (migration 025) — don't suppress them here.
+//
+// Per-user buffer keying (security audit §3 M3): the localStorage buffer
+// is NOT a single shared blob. Each signed-in user has their own key
+// (`stem-loops-chord-edit-buffer:<userId>`), and the pre-login / signed-out
+// path uses a sentinel `:anon` bucket. Without this, a device where user A
+// buffered edits offline, then logged out, then user B logged in, would
+// flush A's edits under B's auth cookies — the server-side auth.uid() check
+// would write A's edits as if B had authored them. The caller is expected
+// to drive `setChordEditUser(userId)` from the auth layer (or whichever
+// session-aware wrapper fronts this module) and to call
+// `clearBufferedEdits()` on sign-out so no stale edit outlives the session.
 
 export type ChordProvider = 'klangio' | 'internal' | 'autochord';
 
@@ -40,10 +51,37 @@ export interface ChordEdit {
 /** Harte alphabet — must stay in lockstep with migration 025's CHECK. */
 const HARTE_RE = /^(N|X|[A-G](#|b)?(:[a-z0-9]+)?)$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const BUFFER_KEY = 'stem-loops-chord-edit-buffer';
+/** Per-user localStorage prefix. Actual key is `<prefix>:<userId>` — see
+ *  `bufferKey()`. Any code path that touches localStorage for chord edits
+ *  must go through `bufferKey()` so the per-user scoping is enforced in
+ *  exactly one place. */
+const BUFFER_KEY_PREFIX = 'stem-loops-chord-edit-buffer';
+const ANON_USER_ID = 'anon';
 const MAX_BUFFER = 200;
 const MAX_RETRIES = 4;
 const BASE_BACKOFF_MS = 500;
+
+/** The user id used to scope the buffer key. `null` until the auth layer
+ *  calls `setChordEditUser()` — falls back to the `:anon` bucket. */
+let _currentUserId: string | null = null;
+
+/**
+ * Set (or clear) the signed-in user id that scopes the localStorage buffer.
+ * Call from the auth layer whenever a session is established or restored,
+ * and from the sign-out handler with `null`. See the file header for why
+ * per-user scoping matters.
+ *
+ * Does NOT mutate any buffer. On sign-out the caller should also invoke
+ * `clearBufferedEdits()` to drop stale entries that will never be flushable
+ * under a different session.
+ */
+export function setChordEditUser(userId: string | null): void {
+  _currentUserId = userId && userId.length > 0 ? userId : null;
+}
+
+function bufferKey(): string {
+  return `${BUFFER_KEY_PREFIX}:${_currentUserId ?? ANON_USER_ID}`;
+}
 
 export class ChordEditValidationError extends Error {
   code: string;
@@ -117,7 +155,7 @@ interface BufferedEdit extends ChordEdit {
 function safeReadBuffer(): BufferedEdit[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = window.localStorage.getItem(BUFFER_KEY);
+    const raw = window.localStorage.getItem(bufferKey());
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -142,17 +180,38 @@ function safeReadBuffer(): BufferedEdit[] {
 function safeWriteBuffer(buf: BufferedEdit[]): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(BUFFER_KEY, JSON.stringify(buf));
+    window.localStorage.setItem(bufferKey(), JSON.stringify(buf));
   } catch {
     // quota exceeded / private mode: ignore. The in-flight edit still has a
     // chance to reach the API; losing the queue is a graceful degradation.
   }
 }
 
+/**
+ * Drop every chord-edit buffer in localStorage, across all per-user keys.
+ *
+ * Called from the sign-out handler so edits from a departing session cannot
+ * be flushed under the next user's auth cookies (security audit §3 M3). The
+ * sweep is intentionally broad: we don't know which user is leaving if the
+ * auth layer didn't drive `setChordEditUser()` beforehand, and losing a
+ * handful of un-delivered edits is strictly better than cross-user leakage.
+ *
+ * Also clears the legacy single-key buffer written by pre-M3 builds so a
+ * version upgrade doesn't leave an orphan entry under the pre-M3 name.
+ */
 export function clearBufferedEdits(): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.removeItem(BUFFER_KEY);
+    const ls = window.localStorage;
+    const toRemove: string[] = [];
+    for (let i = 0; i < ls.length; i += 1) {
+      const k = ls.key(i);
+      if (!k) continue;
+      if (k === BUFFER_KEY_PREFIX || k.startsWith(`${BUFFER_KEY_PREFIX}:`)) {
+        toRemove.push(k);
+      }
+    }
+    for (const k of toRemove) ls.removeItem(k);
   } catch {
     /* ignore */
   }

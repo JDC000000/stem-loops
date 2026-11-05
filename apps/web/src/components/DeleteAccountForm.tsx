@@ -5,6 +5,7 @@
 
 import { useState, type FormEvent } from 'react';
 import { createBrowserClient } from '@/lib/auth/supabase';
+import { clearBufferedEdits } from '@/chord/edit-collector';
 
 const input = {
   width: '100%',
@@ -46,7 +47,14 @@ export default function DeleteAccountForm({ email }: { email: string }) {
         setBusy(false);
         return;
       }
-      // Auth user is gone; clear the now-dead session cookies locally.
+      // Auth user is gone; clear the now-dead session cookies locally and
+      // drop any buffered chord edits so they can't be flushed under the
+      // next user's session (security audit §3 M3).
+      try {
+        clearBufferedEdits();
+      } catch {
+        /* non-fatal; buffer is best-effort anyway */
+      }
       try {
         await createBrowserClient().auth.signOut({ scope: 'local' });
       } catch {

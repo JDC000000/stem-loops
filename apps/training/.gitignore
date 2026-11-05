@@ -1,0 +1,15 @@
+# Downloaded corpora + synthetic renders (PR-Y1.3).
+data/cache/
+data/*/checkpoint-*/
+data/*/wandb/
+
+# Training run outputs (PR-Y1.4).
+runs/
+eval_reports/
+wandb/
+
+# Local model artefacts.
+*.onnx
+*.pt
+*.ckpt
+*.safetensors

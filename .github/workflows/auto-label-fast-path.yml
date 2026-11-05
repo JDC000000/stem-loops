@@ -9,8 +9,17 @@
 #   - apps/*/tests/**
 #   - apps/web/src/**/__tests__/**
 #   - packages/types/src/generated.ts
-#   - apps/training/**   (T3, 2026-11-05 — gated by the training-tests CI job)
 #   - scripts/**         (T3, 2026-11-05 — minus the deny list below)
+#
+# NOT in the allowlist (and why):
+#   - apps/training/**   Added by T3 (#118) on the stated condition that the
+#                        `training-tests` CI job be live on v3/main first.
+#                        It is NOT. v3/main's only coverage of apps/training is
+#                        `compileall` in python-syntax-and-markers — a
+#                        syntax-only check that imports nothing and runs no
+#                        tests. The 243-test training suite is not executed by
+#                        any job on v3/main. Re-add this line in the SAME PR
+#                        that lands the training-tests job (#117), not before.
 #
 # A DENY list is evaluated BEFORE the allowlist and always wins:
 #   - scripts/safe_merge.sh, scripts/check_*.py, .githooks/
@@ -88,15 +97,20 @@ jobs:
           # web __tests__ under src | generated types | training tree |
           # scripts (minus the denies above).
           #
-          # apps/training/** added 2026-11-05 (T3). Justification: no
-          # production surface (the worker Docker context is apps/worker, so
-          # apps/training never ships), no user data, no money path. Gated by
-          # the `training-tests` CI job — DO NOT merge this widening until
-          # that job is live on v3/main, or this auto-merges unverified code.
+          # apps/training/** was added 2026-11-05 (T3, #118) and REMOVED the
+          # same day. The T3 justification (no production surface, no user
+          # data, no money path) still holds, but it was explicitly
+          # conditional on the `training-tests` CI job being live on v3/main.
+          # That job is still open in #117. Until it merges, the only v3/main
+          # coverage of apps/training is `compileall` — syntax-only, imports
+          # nothing, runs no tests — so allowlisting the tree would
+          # auto-merge genuinely unverified code. Evidence this is not
+          # theoretical: #117's run of the suite it adds reported 34 failures
+          # that no gate on v3/main would have caught.
           #
           # scripts/** added same date: removed from CODEOWNERS by the T1
           # trim, and the safety-critical members are caught by deny_re.
-          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$|apps/training/|scripts/)'
+          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$|scripts/)'
 
           # Find any file NOT matching the allowlist.
           bad=$(echo "$changed" | grep -vE "$allow_re" || true)

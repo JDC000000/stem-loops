@@ -3,6 +3,22 @@
 This directory holds the committed fixtures used by the worker's test suite and
 the Phase-2 Y1 chord-recognition evaluation.
 
+## Current gate status (PR-Y1.eval-verify-2, 2026-11-05)
+
+| Metric | Value |
+|--------|-------|
+| Verified rows | **19 / 20** |
+| Pending rows | 1 (row 17 — `wildcard-metal`) |
+| `CHORD_EVAL_FETCH=1` recommended in CI? | **No, not yet** — one row still `pending`. Per the hard rule below, the CI flag only flips on once every row is `verified`. |
+| Last verification pass | PR-Y1.eval-verify-2 (replaces #91's leftovers; see `chord_eval_songs.verification.json` for the per-row evidence trail). |
+
+The second pass moved the gate from 4 / 20 → 19 / 20. The remaining row 17 is
+documented in the verification JSON under `last_check_note` with the exact
+candidate paths a follow-up (PR-Y1.eval-verify-3) should try. Once row 17
+flips to `verified`, CI owners can enable `CHORD_EVAL_FETCH=1` in the chord-eval
+job without violating the manifest's verification protocol.
+
+
 ## Contents
 
 | File | Purpose |

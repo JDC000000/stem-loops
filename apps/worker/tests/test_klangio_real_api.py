@@ -9,6 +9,8 @@ NO live calls are made.
 
 from __future__ import annotations
 
+import json
+import math
 import threading
 import wave
 from pathlib import Path
@@ -230,6 +232,127 @@ def test_malformed_rows_are_skipped_not_fatal() -> None:
     payload = [[0.0, 1.0, "C"], [1.0], "junk", ["a", "b", "G"], {"start": 0}, [2.0, 3.0, "D"]]
     result = kg._parse_klangio_response(payload, model_ms=0)
     assert [s.label for s in result.segments] == ["C", "D"]
+
+
+# ---------------- parse hardening: structurally invalid rows ----------------
+def _summary(capsys: pytest.CaptureFixture[str]) -> dict:
+    """Last klangio_parse_summary event's detail, decoded from the stderr JSON line."""
+    events = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
+    ev = [e for e in events if e["event"] == "klangio_parse_summary"][-1]
+    return {"level": ev["level"], **json.loads(ev["detail"])}
+
+
+def _spans(result) -> list[tuple[float, float, str]]:
+    return [(s.start_sec, s.end_sec, s.label) for s in result.segments]
+
+
+def test_reversed_row_is_dropped_not_kept(capsys: pytest.CaptureFixture[str]) -> None:
+    r = kg._parse_klangio_response([[0.0, 1.0, "C"], [6, 5, "A:min"], [1.0, 2.0, "G"]], model_ms=0)
+    assert _spans(r) == [(0.0, 1.0, "C"), (1.0, 2.0, "G")]
+    s = _summary(capsys)
+    assert s["rows_dropped_malformed"] == 1
+    assert s["dropped_by_reason"] == {"end_not_after_start": 1}
+    assert s["level"] == "WARNING"
+
+
+def test_zero_duration_row_is_dropped() -> None:
+    r = kg._parse_klangio_response([[0.0, 1.0, "C"], [1.0, 1.0, "G"], [1.0, 2.0, "F"]], model_ms=0)
+    assert _spans(r) == [(0.0, 1.0, "C"), (1.0, 2.0, "F")]
+
+
+def test_non_numeric_start_is_dropped_and_counted(capsys: pytest.CaptureFixture[str]) -> None:
+    r = kg._parse_klangio_response([[0.0, 1.0, "C"], ["x", 9, "G"], [1.0, 2.0, "D"]], model_ms=0)
+    assert [s.label for s in r.segments] == ["C", "D"]
+    s = _summary(capsys)
+    assert s["rows_dropped_malformed"] == 1
+    assert s["dropped_by_reason"] == {"non_numeric_or_non_finite_time": 1}
+    assert s["bad_row_samples"] and "'x'" in s["bad_row_samples"][0]
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), True, None])
+def test_non_finite_and_bool_times_are_dropped(bad) -> None:
+    r = kg._parse_klangio_response([[0.0, 1.0, "C"], [bad, 2.0, "G"], [1.0, bad, "F"]], model_ms=0)
+    assert _spans(r) == [(0.0, 1.0, "C")]
+    # The surviving result must serialise to STRICT JSON (no NaN / Infinity tokens).
+    json.dumps([vars(s) for s in r.segments] + [r.duration_sec], allow_nan=False)
+
+
+def test_nan_really_arrives_via_json_parse_and_is_neutralised() -> None:
+    payload = json.loads('[[0, 1, "C"], [NaN, 2, "G"], [1, Infinity, "F"]]')
+    assert any(math.isnan(x) for x in (payload[1][0],))  # json.loads accepts NaN by default
+    r = kg._parse_klangio_response(payload, model_ms=0)
+    assert _spans(r) == [(0.0, 1.0, "C")]
+    json.dumps({"d": r.duration_sec}, allow_nan=False)
+
+
+def test_negative_start_is_clamped_negative_end_is_dropped(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    r = kg._parse_klangio_response(
+        [[-0.02, 1.0, "C"], [-3.0, -1.0, "G"], [1.0, 2.0, "F"]], model_ms=0
+    )
+    assert _spans(r) == [(0.0, 1.0, "C"), (1.0, 2.0, "F")]
+    s = _summary(capsys)
+    assert s["repaired_by_kind"]["clamped_negative_start"] == 1
+    assert s["dropped_by_reason"] == {"negative_end": 1}
+
+
+def test_out_of_order_rows_are_sorted(capsys: pytest.CaptureFixture[str]) -> None:
+    r = kg._parse_klangio_response([[2.0, 3.0, "F"], [0.0, 1.0, "C"], [1.0, 2.0, "G"]], model_ms=0)
+    assert _spans(r) == [(0.0, 1.0, "C"), (1.0, 2.0, "G"), (2.0, 3.0, "F")]
+    assert _summary(capsys)["repaired_by_kind"]["reordered"] == 1
+
+
+def test_overlap_trims_earlier_segment(capsys: pytest.CaptureFixture[str]) -> None:
+    r = kg._parse_klangio_response([[0.0, 3.0, "C"], [2.0, 4.0, "G"]], model_ms=0)
+    assert _spans(r) == [(0.0, 2.0, "C"), (2.0, 4.0, "G")]
+    assert _summary(capsys)["repaired_by_kind"]["overlap_trimmed"] == 1
+
+
+def test_duplicate_start_keeps_first_and_drops_second(capsys: pytest.CaptureFixture[str]) -> None:
+    r = kg._parse_klangio_response([[0.0, 2.0, "C"], [0.0, 1.0, "G"]], model_ms=0)
+    assert _spans(r) == [(0.0, 2.0, "C")]
+    assert _summary(capsys)["dropped_by_reason"] == {"duplicate_start": 1}
+
+
+def test_one_bad_row_among_many_good_keeps_the_rest(capsys: pytest.CaptureFixture[str]) -> None:
+    good = [[float(i), float(i + 1), "C" if i % 2 else "G"] for i in range(50)]
+    payload = good[:25] + [[9, 8, "A:min"]] + good[25:]
+    r = kg._parse_klangio_response(payload, model_ms=0)
+    assert len(r.segments) == 50  # no whole-response rejection
+    assert [s.start_sec for s in r.segments] == [float(i) for i in range(50)]
+    s = _summary(capsys)
+    assert (s["rows_total"], s["rows_kept"], s["rows_dropped_malformed"]) == (51, 50, 1)
+
+
+def test_all_rows_unusable_raises() -> None:
+    with pytest.raises(kg.ChordProviderError, match="none were usable"):
+        kg._parse_klangio_response([[5, 4, "C"], "junk", ["x", 1, "G"]], model_ms=0)
+
+
+def test_x_labels_are_counted(capsys: pytest.CaptureFixture[str]) -> None:
+    payload = [[0, 1, "C:maj99"], [1, 2, "N.C."], [2, 3, "C:maj7(9)"], [3, 4, "G"]]
+    r = kg._parse_klangio_response(payload, model_ms=0)
+    assert [s.label for s in r.segments] == ["X", "X", "X", "G"]  # X fallback unchanged
+    s = _summary(capsys)
+    assert s["labels_mapped_to_x"] == 3
+    assert s["x_fraction"] == 0.75
+    assert s["rows_dropped_malformed"] == 0
+    assert s["level"] == "WARNING"
+    assert "N.C." in s["x_label_samples"]
+
+
+def test_valid_response_unaffected_and_logs_info(capsys: pytest.CaptureFixture[str]) -> None:
+    r = kg._parse_klangio_response(SONG_14, model_ms=5)
+    assert len(r.segments) == 14
+    s = _summary(capsys)
+    assert s["level"] == "INFO"
+    assert (s["rows_dropped_malformed"], s["labels_mapped_to_x"], s["segments_repaired"]) == (
+        0,
+        0,
+        0,
+    )
+    assert s["rows_kept"] == 14
 
 
 def test_parse_json_accepts_array_body() -> None:

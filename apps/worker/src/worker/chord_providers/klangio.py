@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import mimetypes
 import os
 import random
@@ -56,7 +57,7 @@ import re
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -674,25 +675,98 @@ def _parse_json(resp: httpx.Response) -> Any:
 
 
 # --------------------------- response parsing ---------------------------
+# Parse policy (see docs/ops/chord-recognition.md "Response parsing policy").
+# Pre-revenue, ~10 users, a wasted request costs $0.20 that is already spent: we
+# keep every row we can PROVE is sane and drop the rest, loudly. A dropped row
+# leaves an honest gap on the timeline (timestamps are absolute, so later chords
+# do not slide); a repaired-by-guessing row would be a confident wrong chord.
+# Only a response with rows but ZERO survivors raises, since an empty track from
+# a non-empty answer is a total silent failure.
+X_FRACTION_WARN = 0.30  # >=30% X labels logs at WARNING (bad stem / vocab mismatch)
+_BAD_SAMPLE_MAX = 5
+
+
+def _coerce_time(value: Any) -> float | None:
+    """Finite float or None. Rejects bool (True is not 1.0 seconds), NaN and +-Inf.
+
+    Python's ``json`` accepts bare ``NaN`` / ``Infinity`` on parse, so they can arrive;
+    serialised back with ``json.dumps`` they become invalid JSON (``allow_nan``).
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
 def _parse_klangio_response(payload: Any, *, model_ms: int) -> ChordResult:
-    """Map Klangio's result array ``[[start, end, label], ...]`` onto ChordResult."""
+    """Map Klangio's result array ``[[start, end, label], ...]`` onto ChordResult.
+
+    Per-row policy: drop (counted by reason) rows that are not a 3+ element list,
+    have a non-finite/non-numeric start or end, a negative end, or ``end <= start``.
+    Repair (counted): a slightly negative start is clamped to 0; out-of-order rows are
+    sorted by start; an overlap is resolved by trimming the earlier segment's end to
+    the later segment's start (a later row with the same start as its predecessor is
+    dropped as a duplicate). Unrecognised labels become ``X`` (counted, not dropped).
+    """
     if not isinstance(payload, list):
         raise ChordProviderError(f"Klangio result was not a JSON array: {type(payload).__name__}")
-    segments: list[ChordSegment] = []
-    duration_sec = 0.0
+    dropped: dict[str, int] = {}
+    bad_samples: list[str] = []
+
+    def drop(reason: str, row: Any) -> None:
+        dropped[reason] = dropped.get(reason, 0) + 1
+        if len(bad_samples) < _BAD_SAMPLE_MAX:
+            bad_samples.append(repr(row)[:60])
+
+    x_labels = 0
+    x_examples: list[str] = []
+    repaired = {"clamped_negative_start": 0, "reordered": 0, "overlap_trimmed": 0}
+    parsed: list[tuple[float, float, str]] = []
     for row in payload:
         if not isinstance(row, (list, tuple)) or len(row) < 3:
+            drop("bad_shape", row)
             continue
-        try:
-            start = float(row[0])
-            end = float(row[1])
-        except (TypeError, ValueError):
+        start = _coerce_time(row[0])
+        end = _coerce_time(row[1])
+        if start is None or end is None:
+            drop("non_numeric_or_non_finite_time", row)
             continue
+        if end <= 0:
+            drop("negative_end", row)
+            continue
+        if end <= start:
+            drop("end_not_after_start", row)
+            continue
+        if start < 0:
+            start = 0.0
+            repaired["clamped_negative_start"] += 1
         label = str(row[2]).strip()
         if not is_valid_harte_label(label):
-            # Unknown qualities (e.g. 'C:maj9') map to the X ("unrecognised")
+            # Unknown qualities (e.g. 'C:maj99', 'N.C.') map to the X ("unrecognised")
             # bucket so downstream readers don't choke on the contract.
+            x_labels += 1
+            if len(x_examples) < _BAD_SAMPLE_MAX:
+                x_examples.append(label[:24])
             label = "X"
+        parsed.append((start, end, label))
+
+    if any(parsed[i][0] > parsed[i + 1][0] for i in range(len(parsed) - 1)):
+        parsed.sort(key=lambda t: t[0])  # stable: ties keep wire order
+        repaired["reordered"] = 1
+
+    segments: list[ChordSegment] = []
+    for start, end, label in parsed:
+        if segments:
+            prev = segments[-1]
+            if start < prev.end_sec:
+                if start <= prev.start_sec:
+                    drop("duplicate_start", [start, end, label])
+                    continue
+                segments[-1] = replace(prev, end_sec=start)
+                repaired["overlap_trimmed"] += 1
         segments.append(
             ChordSegment(
                 start_sec=start,
@@ -701,14 +775,36 @@ def _parse_klangio_response(payload: Any, *, model_ms: int) -> ChordResult:
                 confidence=1.0,  # TODO Y1.2: Klangio publishes no confidence
             )
         )
-        if end > duration_sec:
-            duration_sec = end
+
+    n_dropped = sum(dropped.values())
+    n_repaired = sum(repaired.values())
+    x_fraction = round(x_labels / len(segments), 3) if segments else 0.0
+    noisy = bool(n_dropped or n_repaired or x_fraction >= X_FRACTION_WARN)
+    log_structured(
+        "WARNING" if noisy else "INFO",
+        "klangio_parse_summary",
+        rows_total=len(payload),
+        rows_kept=len(segments),
+        rows_dropped_malformed=n_dropped,
+        dropped_by_reason=dropped,
+        labels_mapped_to_x=x_labels,
+        x_fraction=x_fraction,
+        segments_repaired=n_repaired,
+        repaired_by_kind=repaired,
+        bad_row_samples=bad_samples,
+        x_label_samples=x_examples,
+    )
+    if payload and not segments:
+        raise ChordProviderError(
+            f"Klangio returned {len(payload)} rows but none were usable "
+            f"(dropped_by_reason={dropped})"
+        )
 
     return ChordResult(
         segments=segments,
         key=None,  # the chord-recognition result carries no key
         provider="klangio",
         provider_version=PROVIDER_VERSION,
-        duration_sec=duration_sec,
+        duration_sec=max((seg.end_sec for seg in segments), default=0.0),
         model_ms=model_ms,
     )

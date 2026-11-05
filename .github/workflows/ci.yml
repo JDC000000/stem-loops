@@ -231,11 +231,8 @@ jobs:
     # nothing to validate.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    # NOTE: `continue-on-error: true` is intentional for the first week of
-    # this gate (noise-tuning period). Flip to blocking (remove this line)
-    # after one week of green runs. Once-and-done: this line is the only
-    # thing standing between a TSD-ref typo and a red PR.
-    continue-on-error: true
+    # Blocking as of session 7 (2026-11-05): noise-tuning period ended clean,
+    # TSD-ref typos now fail PRs. See claude/session-7-handover.md §6.
     permissions:
       contents: read
       pull-requests: read

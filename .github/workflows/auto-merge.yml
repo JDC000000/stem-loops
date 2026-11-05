@@ -59,12 +59,50 @@ jobs:
         contains(github.event.pull_request.labels.*.name, 'fast-path')
       )
     steps:
+      # L2.1 — mint a short-lived GitHub App installation token.
+      #
+      # Why an App instead of the fine-grained BOT_TOKEN: fine-grained PATs
+      # cannot use GraphQL's `mergePullRequest` mutation (cli/cli#8352,
+      # cli/cli#8651), which is what made the bot unable to merge. This
+      # workflow already sidesteps that by using REST, but an App token is
+      # properly scoped (contents + pull_requests on this repo only), expires
+      # in an hour, and is attributable to the app rather than a human.
+      #
+      # continue-on-error is deliberate: if APP_ID / APP_PRIVATE_KEY are not
+      # set, or the mint fails for any reason, this step must NOT take the
+      # merge down with it. The token selection below falls back to the
+      # previous behaviour, so the worst case is "no change from today".
+      # The `secrets` context is not available in step-level `if`, which is
+      # why this is continue-on-error rather than a conditional.
+      - name: Mint GitHub App token (optional — falls back to BOT_TOKEN)
+        id: apptoken
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Report which credential will be used
+        env:
+          HAVE_APP: ${{ steps.apptoken.outputs.token != '' }}
+          HAVE_BOT: ${{ secrets.BOT_TOKEN != '' }}
+        run: |
+          # Never echo a token. Only say which source won.
+          if [ "$HAVE_APP" = "true" ]; then
+            echo "::notice::merging as the stem-loops-automerge GitHub App (L2.1)"
+          elif [ "$HAVE_BOT" = "true" ]; then
+            echo "::notice::App token unavailable — falling back to BOT_TOKEN"
+          else
+            echo "::notice::App token and BOT_TOKEN both unavailable — falling back to GITHUB_TOKEN"
+            echo "::warning::GITHUB_TOKEN cannot merge PRs opened by other actors in some configs; if the merge below fails with a permissions error, that is why."
+          fi
+
       - name: Enable auto-merge (squash, delete branch) — REST fallback for fine-grained PATs
         env:
-          # BOT_TOKEN (fine-grained PAT for JDC0000) cannot use GraphQL
-          # `mergePullRequest` — use REST `PUT /repos/{owner}/{repo}/pulls/{N}/merge` instead.
-          # Fallback to GITHUB_TOKEN if BOT_TOKEN is unset.
-          GH_TOKEN: ${{ secrets.BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          # Preference order: App installation token (L2.1) > BOT_TOKEN > GITHUB_TOKEN.
+          # REST `PUT /repos/{owner}/{repo}/pulls/{N}/merge` is used rather than
+          # `gh pr merge`, because the latter routes through GraphQL.
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || secrets.BOT_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -e
           PR_NUM="${{ github.event.pull_request.number }}"

@@ -1,17 +1,26 @@
 // Browser-side CQT (constant-Q transform) frontend for Chordnet.
 //
-// Must stay in parity with `apps/training/model/cqt_plan.py` v1 (PR-Y1.3):
+// Must stay in parity with `apps/training/model/cqt_plan.py` v1 (PR-Y1.3)
+// and its librosa pipeline in `apps/training/model/cqt_parity.py`:
 //   sr 22050, hop 2048, fmin 32.70 Hz, n_bins 144, bins_per_octave 24,
-//   log-amp, global z-norm.
+//   log-amp via amplitude_to_db(ref=np.max, amin=1e-5, top_db=80),
+//   per-clip z-norm. (The v1 plan JSON ships `znorm_mean`/`znorm_std`
+//   placeholders of 0/1 — they are intentionally bypassed and replaced
+//   with the per-clip statistics so the browser matches the training
+//   pipeline byte-for-byte. The parity suite in
+//   `src/chord/__tests__/cqt-parity.test.mjs` is the gate.)
 //
-// Implementation choice: pure-TypeScript, FFT-based CQT.
-// Pros: zero native deps, ~8 kB gzipped, works in iOS Safari without WASM
-//       download, zero-copy Float32Array.
-// Cons: slower than a WASM librosa port. Measured on the stub model this is
-//       fine (CQT is <5 ms per 1-s window on mid laptop). If perf is
-//       inadequate once PR-Y1.5b's real model lands (deeper CQT? wider
-//       windows?), swap in a WASM librosa port — TODO documented in
-//       docs/ops/variant-y-browser.md.
+// Implementation choice: pure-TypeScript, bank-of-filters CQT.
+// Pros: zero native deps, works in iOS Safari without WASM download,
+//       zero-copy Float32Array.
+// Cons: slower than a WASM librosa port, and on the lowest ~60 bins
+//       the window is truncated to 4096 samples for perf (see
+//       `CQT_WINDOW_CAP_SAMPLES`). The bass-band truncation is the
+//       main source of the known strict-parity gap and is tracked as
+//       `PR-Y1.qa-T2-FOLLOWUP` in `evals/bugs.json`. If parity on the
+//       bass band becomes blocking before that ticket lands, swap in
+//       a WASM librosa port — TODO documented in
+//       `docs/ops/variant-y-browser.md`.
 //
 // The CQT plan is loaded from `/cqt-plan.v1.json` at runtime and a canonical-
 // JSON SHA-256 is asserted against a hard-coded expected value. A drift in
@@ -219,6 +228,11 @@ export function __resetCqtPlanCacheForTests(): void {
   cachedPlan = null;
 }
 
+/** Only for tests — clears the module-level twiddles cache. */
+export function __resetTwiddlesCacheForTests(): void {
+  twiddles = null;
+}
+
 // ---------------- CQT core ----------------
 // Pre-computed twiddles for the pinned plan. Built lazily on first use.
 interface Twiddles {
@@ -230,6 +244,28 @@ interface Twiddles {
 
 let twiddles: Twiddles | null = null;
 
+/**
+ * Per-bin window-length cap. The ideal CQT uses N_k = round(Q·sr/f_k)
+ * samples per bin, which at fmin=32.70 Hz / bpo=24 evaluates to ~23 014
+ * samples at bin 0 (a ~1.04-second kernel at sr=22050). We cap at 4096
+ * samples (~186 ms), which is below the ideal for the lowest ~60 bins.
+ * The under-length window underestimates magnitude in the bass octaves,
+ * and that's the primary source of the strict-parity gap documented in
+ * PR-Y1.qa-T2 (follow-up bug in `evals/bugs.json`). The upper ~84 bins
+ * (k ≥ 60, f_k ≥ ~184 Hz, where ideal N_k ≤ 4096) are unaffected by the
+ * cap and are the ones the parity suite asserts against the strict
+ * 1e-3 librosa tolerance in `cqt-parity.test.mjs`.
+ *
+ * Why not just raise the cap? iOS Safari memory + per-frame O(sum(N_k))
+ * inner-loop cost on the capture path; and even once that is paid,
+ * librosa's CQT uses a recursive/hybrid filterbank (Schörkhuber &
+ * Klapuri 2010) with per-octave downsampling — a from-scratch librosa
+ * WASM port is the right end-state fix for the lowest-order bins.
+ * Tracked as a follow-up; see `docs/ops/variant-y-browser.md`
+ * ("swap in a WASM librosa port").
+ */
+const CQT_WINDOW_CAP_SAMPLES = 4096;
+
 function buildTwiddles(plan: CqtPlan): Twiddles {
   const { sr, fmin, n_bins, bins_per_octave } = plan;
   const centers = new Float32Array(n_bins);
@@ -238,7 +274,7 @@ function buildTwiddles(plan: CqtPlan): Twiddles {
   const cosTables: Float32Array[] = new Array(n_bins);
   // Q = 1 / (2^(1/bpo) - 1). Each bin has N_k = round(Q * sr / f_k) samples.
   const Q = 1 / (Math.pow(2, 1 / bins_per_octave) - 1);
-  const maxN = Math.min(sr, 4096); // cap window length for perf
+  const maxN = Math.min(sr, CQT_WINDOW_CAP_SAMPLES);
   for (let k = 0; k < n_bins; k++) {
     const fk = fmin * Math.pow(2, k / bins_per_octave);
     centers[k] = fk;
@@ -261,13 +297,56 @@ function buildTwiddles(plan: CqtPlan): Twiddles {
 }
 
 /**
- * Compute a log-magnitude, globally z-normalised CQT of the input audio.
+ * Zero-pad `audio` by `pad` samples on each side. Matches
+ * `numpy.pad(audio, pad, mode='constant')` — which is what librosa.cqt
+ * uses by default (`pad_mode='constant'`, constant_values=0). Zero-cost
+ * passthrough when `pad === 0`.
+ */
+function zeroPad(audio: Float32Array, pad: number): Float32Array {
+  if (pad <= 0) return audio;
+  const out = new Float32Array(audio.length + 2 * pad); // zero-initialised
+  out.set(audio, pad);
+  return out;
+}
+
+/**
+ * Compute a log-amplitude, per-clip z-normalised CQT of the input audio.
  *
  * `audio` must be mono Float32 PCM at plan.sr (22050). Resampling is the
  * caller's problem — tab-capture resamples before feeding this.
  *
- * Output layout: row-major `(nFrames, n_bins)` Float32Array. `nFrames =
- * floor((audio.length - maxWindowLen) / hop) + 1`.
+ * Framing / normalisation match `apps/training/model/cqt_parity.py`'s
+ * librosa pipeline, which is the training-side ground truth:
+ *
+ * 1. Zero-pad by `floor(maxWin/2)` samples each side, then take frames
+ *    centred at `i*hop` in the original signal — matches librosa.cqt's
+ *    default `pad_mode='constant'` + its always-on centred framing. The
+ *    resulting frame count is `1 + floor(len/hop)`.
+ * 2. For each (frame, bin), compute the magnitude via a Hann-windowed
+ *    complex dot product with the bin's pre-computed sin/cos tables.
+ * 3. Convert to dB with `20*log10(max(amin, mag))`, clip relative values
+ *    at `global_max - top_db`. Equivalent to
+ *    `librosa.amplitude_to_db(mag, ref=np.max, amin=1e-5, top_db=80)`
+ *    modulo the constant `-20*log10(max(amin, ref))` offset that the
+ *    subsequent z-norm absorbs anyway.
+ * 4. Per-clip z-norm: subtract the full-matrix mean, divide by the
+ *    full-matrix std (or 1 if std is zero — matches the Python reference
+ *    which uses `std = float(mag.std()) or 1.0`).
+ *
+ * The plan-carried `znorm_mean` / `znorm_std` are intentionally ignored on
+ * this code path: the v1 plan ships (0, 1) placeholders, and the reference
+ * pipeline standardises per-clip. When the trainer ships corpus-level
+ * (mean, std) they will live in a separate manifest and this function
+ * will grow a `plan.znorm === 'corpus'` branch.
+ *
+ * Output layout: row-major `(nFrames, n_bins)` Float32Array with
+ * `nFrames = 1 + floor(audio.length / plan.hop)`. Empty input → empty output.
+ *
+ * Known parity caveat (Option B, tracked in evals/bugs.json): the lowest
+ * ~60 bins (k < 60, f_k < ~184 Hz) use a window truncated to 4096 samples;
+ * see `CQT_WINDOW_CAP_SAMPLES`. The strict 1e-3 librosa tolerance holds
+ * on bins k ≥ 60; on bins k < 60 a looser bound applies (see the
+ * `cqt-parity.test.mjs` suite for the exact numbers).
  */
 export async function computeCQT(
   audio: Float32Array,
@@ -276,60 +355,114 @@ export async function computeCQT(
   const p = plan ?? (await loadCqtPlan());
   if (!twiddles) twiddles = buildTwiddles(p);
   const tw = twiddles;
-  const { hop, n_bins, znorm_mean, znorm_std } = p;
+  const { hop, n_bins } = p;
 
-  // nFrames counts hops after a centre-aligned pad of half the longest
-  // window. Everything short enough to not produce a full frame returns 0.
-  const maxWin = tw.windows.reduce((m, w) => Math.max(m, w.length), 0);
-  if (audio.length < maxWin) {
+  if (audio.length === 0) {
     return { frames: new Float32Array(0), nFrames: 0 };
   }
-  const nFrames = Math.floor((audio.length - maxWin) / hop) + 1;
+
+  // Match librosa.cqt: zero-pad by half the longest window (pad_mode='constant',
+  // the default) and centre each frame at `i*hop` in the ORIGINAL signal
+  // (equivalently `i*hop + pad` in the padded signal).
+  const maxWin = tw.windows.reduce((m, w) => Math.max(m, w.length), 0);
+  const pad = Math.floor(maxWin / 2);
+  const padded = zeroPad(audio, pad);
+
+  const nFrames = 1 + Math.floor(audio.length / hop);
   const out = new Float32Array(nFrames * n_bins);
 
-  const EPS = 1e-10;
+  // --- Pass 1: magnitude → 20*log10(max(amin, mag)), track the global max ---
+  // `AMIN` matches librosa.amplitude_to_db's default (1e-5 on the amplitude
+  // axis, equivalent to 1e-10 on the squared/power axis).
+  const AMIN = 1e-5;
+  const LOG10_AMIN_20 = 20 * Math.log10(AMIN); // -100 dB
+  let globalMaxDb = -Infinity;
+
   for (let f = 0; f < nFrames; f++) {
-    const start = f * hop;
+    const centerPadded = f * hop + pad;
     for (let k = 0; k < n_bins; k++) {
       const win = tw.windows[k];
       const sTab = tw.sinTables[k];
       const cTab = tw.cosTables[k];
       const N = win.length;
-      // Centre each bin's window within the longest window frame.
-      const off = start + Math.floor((maxWin - N) / 2);
+      const start = centerPadded - (N >> 1); // floor(N/2) samples before centre
       let re = 0;
       let im = 0;
       for (let n = 0; n < N; n++) {
-        const s = audio[off + n] * win[n];
+        const s = padded[start + n] * win[n];
         re += s * cTab[n];
         im -= s * sTab[n];
       }
       const mag = Math.sqrt(re * re + im * im);
-      const v = Math.log(mag + EPS);
-      out[f * n_bins + k] = (v - znorm_mean) / (znorm_std || 1);
+      const db = mag < AMIN ? LOG10_AMIN_20 : 20 * Math.log10(mag);
+      out[f * n_bins + k] = db;
+      if (db > globalMaxDb) globalMaxDb = db;
     }
   }
+
+  // --- Pass 2: top_db clip (floor each value at globalMax - 80) ---
+  const TOP_DB = 80;
+  const dbFloor = globalMaxDb - TOP_DB;
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] < dbFloor) out[i] = dbFloor;
+  }
+
+  // --- Pass 3: per-clip z-norm (full-matrix mean / std) ---
+  // Matches apps/training/model/cqt_parity.compute_cqt:
+  //   mean = float(mag.mean()); std = float(mag.std()) or 1.0
+  //   mag = ((mag - mean) / std)
+  let sum = 0;
+  for (let i = 0; i < out.length; i++) sum += out[i];
+  const mean = sum / out.length;
+  let sq = 0;
+  for (let i = 0; i < out.length; i++) {
+    const d = out[i] - mean;
+    sq += d * d;
+  }
+  const rawStd = Math.sqrt(sq / out.length);
+  const std = rawStd > 0 ? rawStd : 1;
+  for (let i = 0; i < out.length; i++) {
+    out[i] = (out[i] - mean) / std;
+  }
+
   return { frames: out, nFrames };
 }
 
 /**
  * Compare a browser-side CQT against an expected server-side (librosa) output
- * and return max-abs-diff. For PR-Y1.6 this is a stub — real parity fixtures
- * ship with PR-Y1.3 training renderer. The helper is here so PR-Y1.5b can
- * call it from CI without changing this module's surface.
+ * and return max-abs-diff. The optional `nBins` parameter (defaulting to
+ * `undefined`, the whole-matrix path) also returns per-bin max-diff statistics
+ * — used by the fixture-based parity suite to assert per-bin tolerances
+ * separately for the upper bins (k ≥ 60, strict 1e-3) and the lower bins
+ * (k < 60, bounded; see `cqt-parity.test.mjs`).
  */
 export function assertCQTParity(
   actual: Float32Array,
   expected: Float32Array,
   tol = 1e-3,
-): { ok: boolean; maxDiff: number } {
+  nBins?: number,
+): { ok: boolean; maxDiff: number; perBinMaxDiff?: Float32Array } {
   if (actual.length !== expected.length) {
     return { ok: false, maxDiff: Infinity };
   }
   let maxDiff = 0;
-  for (let i = 0; i < actual.length; i++) {
-    const d = Math.abs(actual[i] - expected[i]);
-    if (d > maxDiff) maxDiff = d;
+  let perBinMaxDiff: Float32Array | undefined;
+  if (nBins && nBins > 0 && actual.length % nBins === 0) {
+    perBinMaxDiff = new Float32Array(nBins);
+    const nFrames = actual.length / nBins;
+    for (let f = 0; f < nFrames; f++) {
+      const row = f * nBins;
+      for (let k = 0; k < nBins; k++) {
+        const d = Math.abs(actual[row + k] - expected[row + k]);
+        if (d > maxDiff) maxDiff = d;
+        if (d > perBinMaxDiff[k]) perBinMaxDiff[k] = d;
+      }
+    }
+  } else {
+    for (let i = 0; i < actual.length; i++) {
+      const d = Math.abs(actual[i] - expected[i]);
+      if (d > maxDiff) maxDiff = d;
+    }
   }
-  return { ok: maxDiff <= tol, maxDiff };
+  return { ok: maxDiff <= tol, maxDiff, perBinMaxDiff };
 }

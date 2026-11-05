@@ -3,7 +3,19 @@
 #
 # Usage:
 #   ./scripts/modal_train.sh [--gpu l4|a10|a100-40|a100-80] [--epochs N] [--seed N]
+#   ./scripts/modal_train.sh --smoke                           # tiny smoke run
+#   ./scripts/modal_train.sh --config configs/some.yaml        # custom config
 #   ./scripts/modal_train.sh --help
+#
+# Flags:
+#   --gpu      l4 | a10 | a100-40 | a100-80         (default: l4)
+#   --epochs   integer                              (default: 30 full, 2 smoke)
+#   --seed     integer                              (default: 42)
+#   --config   path/to/config.yaml                  (default: v1 full config;
+#                                                    overridden by --smoke)
+#   --smoke    route to configs/chordnet_2e1d_v1_smoke100.yaml (100 songs,
+#              2 epochs, batch 8) — used by CI and local sanity. Mutually
+#              exclusive with --config (last-wins).
 #
 # Prereqs:
 #   - `pip install modal>=0.65` (see apps/training/pyproject.toml)
@@ -29,9 +41,10 @@ usage() {
 }
 
 GPU="l4"
-EPOCHS=30
+EPOCHS=""
 SEED=42
-CONFIG="configs/chordnet_2e1d_v1.yaml"
+CONFIG=""
+SMOKE=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -51,6 +64,10 @@ while [[ $# -gt 0 ]]; do
             CONFIG="${2:-}"
             shift 2
             ;;
+        --smoke)
+            SMOKE=1
+            shift 1
+            ;;
         -h|--help)
             usage 0
             ;;
@@ -60,6 +77,24 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Apply defaults AFTER parsing so flag ordering never surprises the caller:
+#   - --smoke sets the default config + default epoch count, but any explicit
+#     --config / --epochs always wins.
+if [[ -z "$CONFIG" ]]; then
+    if [[ "$SMOKE" == "1" ]]; then
+        CONFIG="configs/chordnet_2e1d_v1_smoke100.yaml"
+    else
+        CONFIG="configs/chordnet_2e1d_v1.yaml"
+    fi
+fi
+if [[ -z "$EPOCHS" ]]; then
+    if [[ "$SMOKE" == "1" ]]; then
+        EPOCHS=2
+    else
+        EPOCHS=30
+    fi
+fi
 
 # Validate GPU shorthand → canonical Modal name.
 case "$GPU" in
@@ -85,7 +120,12 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-echo "[modal_train] gpu=$MODAL_GPU epochs=$EPOCHS seed=$SEED config=$CONFIG"
+MODE_TAG="full"
+if [[ "$SMOKE" == "1" ]]; then
+    MODE_TAG="smoke"
+fi
+
+echo "[modal_train] mode=$MODE_TAG gpu=$MODAL_GPU epochs=$EPOCHS seed=$SEED config=$CONFIG"
 exec modal run apps/training/modal_app.py::train_chordnet \
     --config-path "$CONFIG" \
     --epochs "$EPOCHS" \

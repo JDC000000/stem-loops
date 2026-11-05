@@ -73,8 +73,8 @@ def _job(conn: Any, uid: uuid.UUID) -> uuid.UUID:
     jid = uuid.uuid4()
     conn.execute(
         "INSERT INTO public.jobs (id, youtube_url, status, client_ip_hash, "
-        "client_fingerprint, user_id) "
-        "VALUES (%s, 'https://example.test/x', 'done', 'h', '', %s)",
+        "client_fingerprint, user_id, loop_length_bars) "
+        "VALUES (%s, 'https://example.test/x', 'done', 'h', '', %s, 8)",
         (jid, uid),
     )
     conn.commit()

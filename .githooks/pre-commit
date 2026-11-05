@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# R-1 enforcement — pre-commit guard committed to the repo.
+#
+# Session 6 retrospective v2 (claude/session-6-bug-retrospective-v2.md)
+# attributed 10 HIGH-severity findings in part to subagents committing
+# without running the four verifying commands. This hook makes that the
+# tool-enforced default so the rule fires at 2 AM when no human is
+# watching.
+#
+# The hook runs (in order, short-circuit on first failure):
+#   1. make lint                                   — ruff + black + web lint
+#   2. make test                                   — pytest + web tests
+#   3. pnpm --filter web typecheck                 — `tsc --noEmit`
+#   4. python -m compileall apps/training          — training syntax check
+#   5. repo-wide merge-conflict marker grep on staged diff
+#
+# Enable the hook once per clone with:
+#   bash scripts/setup.sh
+# or equivalently:
+#   git config core.hooksPath .githooks
+#
+# Skip for a specific commit (emergency escape) with:
+#   SKIP_PRECOMMIT=1 git commit ...
+# Prefer `git commit --no-verify` only if you understand the hook's
+# contract — subagents MUST NOT use either.
+
+set -euo pipefail
+
+if [ "${SKIP_PRECOMMIT:-0}" = "1" ]; then
+  echo "pre-commit: SKIP_PRECOMMIT=1 — bypassing R-1 checks." >&2
+  exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+fail() {
+  echo
+  echo "pre-commit: FAILED at step '$1'." >&2
+  echo "pre-commit: fix the failure and re-stage, OR set SKIP_PRECOMMIT=1 for" >&2
+  echo "pre-commit: an intentional emergency commit (document why in the message)." >&2
+  exit 1
+}
+
+echo "pre-commit: R-1 checks starting."
+
+# ─── 1. make lint ────────────────────────────────────────────────────────────
+echo "pre-commit: [1/5] make lint"
+make lint >/tmp/precommit-lint.log 2>&1 || { cat /tmp/precommit-lint.log >&2; fail "make lint"; }
+
+# ─── 2. make test ────────────────────────────────────────────────────────────
+echo "pre-commit: [2/5] make test"
+make test >/tmp/precommit-test.log 2>&1 || { cat /tmp/precommit-test.log >&2; fail "make test"; }
+
+# ─── 3. web typecheck ────────────────────────────────────────────────────────
+echo "pre-commit: [3/5] pnpm --filter web typecheck"
+pnpm --filter web typecheck >/tmp/precommit-tsc.log 2>&1 || { cat /tmp/precommit-tsc.log >&2; fail "pnpm --filter web typecheck"; }
+
+# ─── 4. training syntax check ────────────────────────────────────────────────
+echo "pre-commit: [4/5] python -m compileall apps/training"
+python -m compileall apps/training >/tmp/precommit-compileall.log 2>&1 || { cat /tmp/precommit-compileall.log >&2; fail "python -m compileall apps/training"; }
+
+# ─── 5. merge-conflict marker grep on staged diff ────────────────────────────
+echo "pre-commit: [5/5] merge-conflict marker check"
+# Match canonical conflict markers (7-wide at column 1) ONLY on ADDED lines.
+# Patterns:
+#   ^+<<<<<<< <ref>   (conflict begin)
+#   ^+=======$        (conflict divider — exact match, 7 equals, nothing else)
+#   ^+>>>>>>> <ref>   (conflict end)
+# The `--diff-filter=ACM` keeps renames/deletes from firing. `-U0` omits
+# context so we only see +/- lines.
+if git diff --cached -U0 --diff-filter=ACM | \
+     grep -nE '^\+(<<<<<<< |=======$|>>>>>>> )' > /tmp/precommit-markers.log; then
+  echo "pre-commit: conflict markers found in staged changes:" >&2
+  cat /tmp/precommit-markers.log >&2
+  fail "merge-conflict marker check"
+fi
+
+echo "pre-commit: all R-1 checks passed."

@@ -29,26 +29,47 @@ StemKind = Literal["mix", "instrumental", "other"]
 ProviderName = Literal["klangio", "replicate", "internal"]
 
 # Harte-subset regex for the provider contract. Root is a natural letter plus an
-# OPTIONAL sharp/flat; quality is one of the Chordify-compatible 15 we care about,
-# or the special labels N (no chord) / X (unrecognised). The provider MAY omit
-# the quality for a bare triad — e.g. ``C`` == ``C:maj`` — which is accepted.
+# OPTIONAL sharp/flat; quality is one of the 24 chord qualities in
+# ``training.model.alphabet.QUALITY_LABELS`` (every slot except ``N``), or the
+# special labels N (no chord) / X (unrecognised). The provider MAY omit the
+# quality for a bare triad — e.g. ``C`` == ``C:maj`` — which is accepted.
+#
+# An optional ``/<bass>`` suffix is accepted. The bass token is a Harte INTERVAL
+# (scale degree), never a note name, in exactly the grammar of
+# ``alphabet._parse_interval``: zero or more ``b``/``#`` accidentals followed by a
+# degree 1..13 (``/3``, ``/5``, ``/b3``, ``/#5``, ``/b7``, ``/1``). N and X take no
+# bass. Keep this in sync with alphabet.py (source of truth); the round-trip test
+# in test_chord_source.py fails if the two drift.
 _HARTE_QUALITIES = (
     "maj",
     "min",
     "dim",
     "aug",
+    "sus2",
+    "sus4",
+    "maj6",
+    "min6",
     "maj7",
     "min7",
     "7",
     "dim7",
     "hdim7",
-    "sus2",
-    "sus4",
-    "maj6",
-    "min6",
     "minmaj7",
+    "maj9",
+    "min9",
+    "9",
+    "11",
+    "13",
+    "add9",
+    "add11",
+    "5",
+    "add6",
+    "aug7",
 )
-HARTE_RE = re.compile(r"^(?:N|X|[A-G](?:#|b)?(?::(?:" + "|".join(_HARTE_QUALITIES) + r"))?)$")
+_HARTE_BASS = r"/[b#]*(?:1[0-3]|[1-9])"
+HARTE_RE = re.compile(
+    r"^(?:N|X|[A-G](?:#|b)?(?::(?:" + "|".join(_HARTE_QUALITIES) + r"))?(?:" + _HARTE_BASS + r")?)$"
+)
 
 
 def is_valid_harte_label(label: str) -> bool:

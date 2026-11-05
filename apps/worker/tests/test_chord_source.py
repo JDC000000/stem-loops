@@ -2,7 +2,7 @@
 
 Mocked end-to-end — no real Klangio call is ever issued. Covers:
   * Factory default behaviour (CHORDS_PROVIDER env).
-  * Harte-syntax validation against the 15-quality subset + N/X.
+  * Harte-syntax validation against the 24-quality alphabet + slash bass + N/X.
   * Klangio: job/poll/json round-trip wiring + response → ChordResult mapping.
   * Klangio: 429 → exponential backoff retry.
   * Klangio: 402 → ChordQuotaExceeded surfaces without retry.
@@ -118,6 +118,30 @@ def test_factory_unknown_provider_raises_value_error() -> None:
         "N",
         "X",
         "C",  # bare root accepted — Klangio sometimes omits quality
+        # extended qualities (were silently dropped by the legacy 14-quality set)
+        "C:maj9",
+        "D:min9",
+        "G:9",
+        "G:11",
+        "G:13",
+        "C:add9",
+        "C:add11",
+        "C:add6",
+        "C:aug7",
+        "C:5",
+        "C:sus2",
+        "C:maj6",
+        "C:min6",
+        # slash chords: bass is a scale degree
+        "C:maj/3",
+        "G:7/5",
+        "A:min/b3",
+        "C:maj/1",
+        "F:maj7/5",
+        "C/3",
+        "C:maj/#5",
+        "G:7/b7",
+        "C:maj/13",
     ],
 )
 def test_chord_segment_label_validates_harte_syntax_accepts(label: str) -> None:
@@ -129,7 +153,17 @@ def test_chord_segment_label_validates_harte_syntax_accepts(label: str) -> None:
     [
         "",
         "H:maj",  # H is a German/Scandinavian B — not in Harte subset
-        "C:maj9",  # 9th extensions not in our subset (map to X at ingest)
+        "C:maj/",  # empty bass
+        "C:/3",  # bass without quality
+        "C:maj/99",  # not a degree
+        "C:maj/0",
+        "C:maj/14",
+        "C:maj/x",
+        "C:maj/E",  # note names are not Harte bass tokens
+        "C:maj/3/5",  # two slashes
+        "N/3",  # N takes no bass
+        "X/3",
+        "C:maj99",
         "C:MAJ",  # case-sensitive
         "cmaj",  # missing colon
         "c:maj",  # lowercase root
@@ -140,6 +174,75 @@ def test_chord_segment_label_validates_harte_syntax_accepts(label: str) -> None:
 )
 def test_chord_segment_label_validates_harte_syntax_rejects(label: str) -> None:
     assert not is_valid_harte_label(label), f"should reject {label!r}"
+
+
+def _load_alphabet():
+    """Load apps/training/model/alphabet.py by path (no torch/package deps)."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[2] / "training" / "model" / "alphabet.py"
+    spec = importlib.util.spec_from_file_location("_alphabet_under_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    import sys
+
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_ROUND_TRIP_LABELS = [
+    "C:maj/3",
+    "G:7/5",
+    "A:min/b3",
+    "C:maj/1",
+    "F:maj7/5",
+    "C/3",
+    "C:maj/#5",
+    "G:7/b7",
+    "C:maj",
+    "E:min7",
+    "A:7",
+    "C",
+    "N",
+]
+
+
+@pytest.mark.parametrize("label", _ROUND_TRIP_LABELS)
+def test_validator_accepts_what_encoder_encodes(label: str) -> None:
+    alphabet = _load_alphabet()
+    assert is_valid_harte_label(label)
+    triple = alphabet.encode_factored(label)
+    assert triple is not None, f"validator accepts {label!r} but encoder returns None"
+    assert len(triple) == 3
+
+
+def test_slash_bass_indices_match_encoder() -> None:
+    alphabet = _load_alphabet()
+    assert alphabet.encode_factored("C:maj/1")[2] == alphabet.BASS_SAME_INDEX
+    assert alphabet.encode_factored("C:maj/3")[2] == 4
+    assert alphabet.encode_factored("G:7/5")[2] == 7
+    assert alphabet.encode_factored("A:min/b3")[2] == 3
+
+
+def test_every_alphabet_quality_is_valid_and_encodable() -> None:
+    """Guards against _HARTE_QUALITIES drifting from alphabet.QUALITY_LABELS."""
+    alphabet = _load_alphabet()
+    for quality in alphabet.QUALITY_LABELS:
+        if quality == "N":
+            continue
+        label = f"C:{quality}"
+        assert is_valid_harte_label(label), f"validator rejects alphabet quality {label!r}"
+        assert alphabet.encode_factored(label) is not None
+        assert is_valid_harte_label(f"C:{quality}/5")
+
+
+@pytest.mark.parametrize(
+    "label", ["C:maj/", "C:/3", "C:maj/99", "C:maj/x", "H:maj", "C:maj/0", "N/3"]
+)
+def test_malformed_labels_rejected_by_validator(label: str) -> None:
+    # The encoder is lenient on junk bass (unparseable bass collapses to "same"),
+    # so the VALIDATOR is the gate; it must reject these.
+    assert not is_valid_harte_label(label)
 
 
 # ----------------------------- response parsing -----------------------------
@@ -156,8 +259,13 @@ def test_parse_klangio_response_maps_triples() -> None:
 
 
 def test_parse_klangio_response_maps_unknown_quality_to_X() -> None:
+    # Wire format is a flat array of [start, end, label] triples — verified
+    # against the live API. #121 wrote this against the old assumed
+    # {"chords": [{"start","end","name"}]} shape, which the API never sent.
+    # "C:maj99" is not a real quality; "C:maj9" IS a first-class alphabet
+    # member post-#121, so it would be the wrong example for this test.
     payload = [
-        [0.0, 2.0, "C:maj9"],  # 9th not in subset
+        [0.0, 2.0, "C:maj99"],  # not a real quality
         [2.0, 4.0, "C:maj"],
     ]
     result = _parse_klangio_response(payload, model_ms=0)
@@ -165,9 +273,31 @@ def test_parse_klangio_response_maps_unknown_quality_to_X() -> None:
     assert result.segments[1].label == "C:maj"
 
 
+def test_parse_klangio_response_preserves_slash_and_extended_chords() -> None:
+    """Ported from #121 to the real array wire format.
+
+    This is the regression guard on #121's validator widening: before it,
+    HARTE_RE carried 14 of 24 qualities and no /bass alternative, so every
+    one of these except the deliberate bad one was silently discarded to X.
+    Keep this test — it is the only thing standing between a validator
+    regression and chords vanishing from the overlay with no error.
+    """
+    payload = [
+        [0.0, 1.0, "C:maj/3"],
+        [1.0, 2.0, "G:7/5"],
+        [2.0, 3.0, "C:maj9"],
+        [3.0, 4.0, "C:maj/x"],  # /x is not a scale degree -> X
+    ]
+    labels = [s.label for s in _parse_klangio_response(payload, model_ms=0).segments]
+    assert labels == ["C:maj/3", "G:7/5", "C:maj9", "X"]
+
+
 def test_parse_klangio_response_empty_array_is_empty_result() -> None:
     result = _parse_klangio_response([], model_ms=0)
     assert result.segments == []
+    # The array format carries no key field at all, so key is always None.
+    # (#121's test_parse_klangio_response_handles_missing_key asserted the
+    # same invariant via the dict shape; it is subsumed here.)
     assert result.key is None
 
 

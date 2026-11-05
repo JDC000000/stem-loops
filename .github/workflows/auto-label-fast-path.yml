@@ -9,6 +9,13 @@
 #   - apps/*/tests/**
 #   - apps/web/src/**/__tests__/**
 #   - packages/types/src/generated.ts
+#   - apps/training/**   (T3, 2026-11-05 — gated by the training-tests CI job)
+#   - scripts/**         (T3, 2026-11-05 — minus the deny list below)
+#
+# A DENY list is evaluated BEFORE the allowlist and always wins:
+#   - scripts/safe_merge.sh, scripts/check_*.py, .githooks/
+# These are the merge rail and the CI gates. Letting a change to them
+# auto-merge would let it weaken a gate and ship that weakening at once.
 #
 # If ANY file in the diff falls outside the allowlist, the label is not
 # applied (and if previously applied by an earlier push, it is removed).
@@ -59,10 +66,37 @@ jobs:
             exit 0
           fi
 
-          # Fast-path allowlist. ALL files must match one of these patterns.
+          # ── Phase 1: DENY list, checked FIRST ────────────────────────────
+          # These paths are the safety machinery itself. A change here that
+          # auto-merged could weaken a gate and ship that weakening in the
+          # same action. They are excluded even though they sit inside
+          # otherwise-allowed directories.
+          #   scripts/safe_merge.sh  — the M-1 merge rail
+          #   scripts/check_*.py     — the RLS / TSD / price-recon CI gates
+          #   .githooks/             — the R-1 pre-commit guard
+          deny_re='^(scripts/safe_merge\.sh$|scripts/check_[^/]*\.py$|\.githooks/)'
+          denied=$(echo "$changed" | grep -E "$deny_re" || true)
+          if [ -n "$denied" ]; then
+            echo "Safety-critical paths touched; fast-path refused:"
+            echo "$denied"
+            gh pr edit "$PR_NUM" --repo "$REPO" --remove-label fast-path 2>/dev/null || true
+            exit 0
+          fi
+
+          # ── Phase 2: ALLOW list. ALL files must match one of these ───────
           # Grouped: docs dir | any-dir markdown | per-app tests dir |
-          # web __tests__ anywhere under src | generated types file.
-          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$)'
+          # web __tests__ under src | generated types | training tree |
+          # scripts (minus the denies above).
+          #
+          # apps/training/** added 2026-11-05 (T3). Justification: no
+          # production surface (the worker Docker context is apps/worker, so
+          # apps/training never ships), no user data, no money path. Gated by
+          # the `training-tests` CI job — DO NOT merge this widening until
+          # that job is live on v3/main, or this auto-merges unverified code.
+          #
+          # scripts/** added same date: removed from CODEOWNERS by the T1
+          # trim, and the safety-critical members are caught by deny_re.
+          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$|apps/training/|scripts/)'
 
           # Find any file NOT matching the allowlist.
           bad=$(echo "$changed" | grep -vE "$allow_re" || true)

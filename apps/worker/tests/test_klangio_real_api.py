@@ -206,8 +206,24 @@ def test_array_result_parses_14_triples_with_correct_values() -> None:
 
 
 def test_unknown_label_in_array_maps_to_X() -> None:
-    result = kg._parse_klangio_response([[0.0, 1.0, "C:maj9"], [1.0, 2.0, "G"]], model_ms=0)
+    # "C:maj9" was the original example here, written when HARTE_RE carried
+    # only 14 of 24 qualities. #121 widened the validator and maj9 became a
+    # first-class alphabet member, so it now correctly passes through — the
+    # test premise went stale, not the behaviour. "C:maj99" is not a real
+    # quality in any vocabulary, so it is a stable example of the real thing.
+    result = kg._parse_klangio_response([[0.0, 1.0, "C:maj99"], [1.0, 2.0, "G"]], model_ms=0)
     assert [s.label for s in result.segments] == ["X", "G"]
+
+
+def test_extended_and_slash_labels_survive_the_array_path() -> None:
+    """Counterpart to the test above: the widened vocabulary must pass through.
+
+    Guards the direction the stale test was accidentally asserting against —
+    that real extended/slash chords are NOT discarded to X.
+    """
+    payload = [[0.0, 1.0, "C:maj9"], [1.0, 2.0, "G:7/5"], [2.0, 3.0, "A:min/b3"]]
+    result = kg._parse_klangio_response(payload, model_ms=0)
+    assert [s.label for s in result.segments] == ["C:maj9", "G:7/5", "A:min/b3"]
 
 
 def test_malformed_rows_are_skipped_not_fatal() -> None:

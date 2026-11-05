@@ -10,6 +10,18 @@ and reports ``mir_eval`` chord metrics:
 - ``sevenths``   — seventh accuracy (``mir_eval.chord.sevenths``).
 - ``mirex``      — MIREX blended metric (``mir_eval.chord.mirex``).
 
+Factored-head metrics (PR-Y1.4b; duration-weighted frame accuracy over the
+``mir_eval`` merged segmentation, labels mapped through ``encode_factored``):
+
+- ``quality_head`` — quality-index (25-class) agreement. Root and bass are
+  ignored. ``N`` frames count (``N`` is a quality slot). Frames whose GT label
+  is out-of-vocabulary (``X``) are excluded; an un-encodable prediction is a miss.
+- ``bass_head``    — bass-index (13-class) agreement, scored ONLY on frames
+  where the GT is a chord. GT ``N`` frames are excluded from the denominator
+  (bass is undefined there), not counted wrong. A predicted ``N`` on a GT chord
+  frame is a miss. ``NaN`` when a song has no bass-scorable frames; such
+  songs are skipped by the bass floor and aggregates.
+
 Decision-record v1.2 eval gate
 ------------------------------
 
@@ -67,6 +79,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import random
 import statistics
 from collections.abc import Callable
@@ -77,7 +90,7 @@ import mir_eval
 import numpy as np
 import torch
 
-from .model.alphabet import ALPHABET_SHA
+from .model.alphabet import ALPHABET_SHA, BASS_N_INDEX, QUALITY_N_INDEX, encode_factored
 from .model.chordnet_2e1d import ChordNet2E1D
 from .model.cqt_plan import PLAN as CQT_PLAN
 
@@ -122,6 +135,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.50,
         help="Minimum MajMin WCSR per song — below this is a hard gate violation.",
+    )
+    parser.add_argument(
+        "--per-song-bass-floor",
+        type=float,
+        default=0.0,
+        help="Minimum bass_head accuracy per song; 0 (default) disables the bass floor.",
     )
     parser.add_argument(
         "--compare-provider",
@@ -183,7 +202,9 @@ def _read_eval_songs(manifest_path: Path) -> tuple[list[EvalSong], str]:
 AudioAndGtLoader = Callable[[EvalSong, Path], tuple[np.ndarray, list[tuple[float, float, str]]]]
 
 
-def _default_loader(song: EvalSong, audio_cache: Path) -> tuple[
+def _default_loader(
+    song: EvalSong, audio_cache: Path
+) -> tuple[
     np.ndarray,
     list[tuple[float, float, str]],
 ]:
@@ -253,6 +274,35 @@ _METRIC_FUNCTIONS: dict[str, Callable[[np.ndarray, list[str]], np.ndarray]] = {
     "mirex": mir_eval.chord.mirex,
 }
 
+# Factored-head metrics (not mir_eval functions; computed in ``_factored_head_scores``).
+_HEAD_METRICS: tuple[str, ...] = ("quality_head", "bass_head")
+_ALL_METRICS: tuple[str, ...] = (*_METRIC_FUNCTIONS, *_HEAD_METRICS)
+
+
+def _factored_head_scores(
+    ref_labels: list[str], est_labels: list[str], durations: np.ndarray
+) -> dict[str, float]:
+    """Duration-weighted quality-head and bass-head accuracy (see module docstring)."""
+    q_hit = q_total = b_hit = b_total = 0.0
+    for ref, est, dur in zip(ref_labels, est_labels, durations, strict=True):
+        ref_enc = encode_factored(ref)
+        if ref_enc is None:  # out-of-vocab GT: unscorable
+            continue
+        est_enc = encode_factored(est)
+        dur = float(dur)
+        q_total += dur
+        if est_enc is not None and est_enc[1] == ref_enc[1]:
+            q_hit += dur
+        if ref_enc[1] == QUALITY_N_INDEX or ref_enc[2] == BASS_N_INDEX:
+            continue  # GT N frame: bass undefined, excluded from denominator
+        b_total += dur
+        if est_enc is not None and est_enc[2] == ref_enc[2]:
+            b_hit += dur
+    return {
+        "quality_head": q_hit / q_total if q_total > 0 else 0.0,
+        "bass_head": b_hit / b_total if b_total > 0 else float("nan"),
+    }
+
 
 def score_song(
     pred_intervals: np.ndarray,
@@ -260,10 +310,10 @@ def score_song(
     gt_intervals: np.ndarray,
     gt_labels: list[str],
 ) -> dict[str, float]:
-    """Score one song across all 5 mir_eval chord metrics (WCSR)."""
+    """Score one song: 5 mir_eval chord metrics plus quality_head / bass_head (WCSR)."""
     results: dict[str, float] = {}
     if len(gt_intervals) == 0 or len(pred_intervals) == 0:
-        return {m: 0.0 for m in _METRIC_FUNCTIONS}
+        return {m: 0.0 for m in _ALL_METRICS}
 
     common_intervals, ref_labels, est_labels = mir_eval.util.merge_labeled_intervals(
         gt_intervals, gt_labels, pred_intervals, pred_labels
@@ -275,6 +325,7 @@ def score_song(
         scores = func(ref_labels, est_labels)
         wcsr = float(mir_eval.chord.weighted_accuracy(scores, durations))
         results[name] = wcsr
+    results.update(_factored_head_scores(ref_labels, est_labels, durations))
     return results
 
 
@@ -284,6 +335,7 @@ def score_song(
 
 
 def _mean_std(values: list[float]) -> dict[str, float]:
+    values = [v for v in values if not math.isnan(v)]
     if not values:
         return {"mean": 0.0, "std": 0.0}
     if len(values) == 1:
@@ -307,6 +359,7 @@ def run_eval(
     shuffles: int,
     report_out: Path,
     per_song_floor: float,
+    per_song_bass_floor: float = 0.0,
     compare_provider: str | None,
     seed: int,
     model_version: str,
@@ -330,7 +383,7 @@ def run_eval(
 
     rng = random.Random(seed)
     per_song: dict[str, dict[str, list[float]]] = {
-        song.song_id: {m: [] for m in _METRIC_FUNCTIONS} for song in songs
+        song.song_id: {m: [] for m in _ALL_METRICS} for song in songs
     }
 
     # Model loading (deferred to actually-needed path so tests can skip it).
@@ -395,9 +448,19 @@ def run_eval(
                 }
             )
 
+    # Per-song bass floor (disabled at 0). NaN (no bass-scorable frames) is skipped.
+    bass_violations: list[dict[str, object]] = []
+    if per_song_bass_floor > 0:
+        for song_id, metric_values in per_song.items():
+            vals = [v for v in metric_values["bass_head"] if not math.isnan(v)]
+            if vals and min(vals) < per_song_bass_floor:
+                bass_violations.append(
+                    {"song_id": song_id, "min_bass_head": min(vals), "all_bass_head": vals}
+                )
+
     # Aggregate: mean + std per metric across the pooled (song × shuffle) values.
     aggregate: dict[str, dict[str, float]] = {}
-    for metric in _METRIC_FUNCTIONS:
+    for metric in _ALL_METRICS:
         pooled: list[float] = []
         for song_id in per_song:
             pooled.extend(per_song[song_id][metric])
@@ -414,6 +477,8 @@ def run_eval(
         "aggregate": aggregate,
         "per_song_floor_majmin": per_song_floor,
         "per_song_floor_violated": violations,
+        "per_song_bass_floor": per_song_bass_floor,
+        "per_song_bass_floor_violated": bass_violations,
     }
 
     # Optional baseline delta.
@@ -437,10 +502,11 @@ def run_eval(
     # Write report + raise on floor violation.
     report_out.mkdir(parents=True, exist_ok=True)
     out_path = report_out / f"eval_{model_version}.json"
-    out_path.write_text(json.dumps(report, indent=2, default=_json_default))
+    out_path.write_text(json.dumps(_nan_to_none(report), indent=2, default=_json_default))
 
+    failures: list[str] = []
     if violations:
-        raise EvalGateFailure(
+        failures.append(
             f"Per-song floor {per_song_floor:.2%} MajMin violated on "
             f"{len(violations)} song(s): "
             + ", ".join(
@@ -448,8 +514,30 @@ def run_eval(
                 for v in violations
             )
         )
+    if bass_violations:
+        failures.append(
+            f"Bass floor {per_song_bass_floor:.2%} bass_head violated on "
+            f"{len(bass_violations)} song(s): "
+            + ", ".join(
+                f"{v['song_id']}={v['min_bass_head']:.3f}"  # type: ignore[str-format]
+                for v in bass_violations
+            )
+        )
+    if failures:
+        raise EvalGateFailure("; ".join(failures))
 
     return report
+
+
+def _nan_to_none(obj: object) -> object:
+    """Recursively replace NaN floats with None so the report is strict JSON."""
+    if isinstance(obj, float) and math.isnan(obj):
+        return None
+    if isinstance(obj, dict):
+        return {k: _nan_to_none(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_nan_to_none(v) for v in obj]
+    return obj
 
 
 def _json_default(obj: object) -> object:
@@ -471,6 +559,7 @@ def main(argv: list[str] | None = None) -> int:
             shuffles=args.shuffles,
             report_out=args.report_out,
             per_song_floor=args.per_song_floor,
+            per_song_bass_floor=args.per_song_bass_floor,
             compare_provider=args.compare_provider,
             seed=args.seed,
             model_version=args.model_version,

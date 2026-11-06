@@ -68,6 +68,23 @@
 # case for our adversarial-review-then-label flow, where review happens
 # after CI greens).
 #
+# ── POST-CI RE-ATTEMPT (#142, 2026-11-06) ─────────────────────────────────
+#
+# Every pull_request_target event (labeled / opened / reopened) fires while CI
+# has just started, so the merge below always found checks pending and took
+# the graceful-block path. The `workflow_run` trigger re-attempts the merge
+# once CI has COMPLETED. It is `workflow_run`, not `check_suite`, on purpose:
+# GitHub does not deliver `check_suite` to workflows when the suite was
+# created by GitHub Actions ("to prevent recursive workflows"), and every
+# required check here is an Actions check, so that trigger would never fire.
+# `workflow_run` always runs the copy of this file on the default branch.
+#
+# A workflow_run payload carries no reliable PR context, so the first step
+# resolves the PR from the head SHA and re-derives EVERYTHING live (state,
+# head SHA, labels, check-runs) rather than trusting the event. That step
+# is the gate for the post-CI path; see its comments for M-1 and the
+# stale-approval race. The pull_request_target path is unchanged.
+#
 # Security: pull_request_target has write access but does NOT check out PR
 # code; only the merge call runs. Only repo collaborators can apply labels
 # so a hostile PR author cannot self-label into auto-merge.
@@ -77,17 +94,24 @@ name: Auto-merge labeled PRs
 on:
   pull_request_target:
     types: [labeled, synchronize, opened, reopened]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 permissions:
   contents: write
   pull-requests: write
+  checks: read
 
 # Serialize per-PR so a labeled run and a synchronize run cannot reorder and
 # leave auto-merge armed on an un-reviewed commit. cancel-in-progress stays
 # false — a drop-stale-review run must finish once it has started, even if
 # a labeled run arrives after it.
+# workflow_run gets its OWN group: with cancel-in-progress false a newer
+# queued run still cancels an older PENDING one, and a post-CI run must never
+# be able to cancel a pending drop-stale-review run for the same PR.
 concurrency:
-  group: auto-merge-${{ github.event.pull_request.number }}
+  group: auto-merge-${{ github.event_name == 'workflow_run' && format('ci-{0}', github.event.workflow_run.head_sha) || github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
@@ -100,7 +124,16 @@ jobs:
     #   STANDARD: rollback-safe + adversarial-reviewed
     #   FAST PATH: fast-path (auto-applied by auto-label-fast-path.yml)
     # Both require: NOT needs-jon-approval.
+    # workflow_run: only a COMPLETED + SUCCESSFUL CI run for a same-repo
+    # pull_request. Red CI, push-to-branch CI and fork PRs never start the job
+    # (shown as "skipped", not failed). Labels are checked live in `resolve`.
     if: >
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      ) || (
       github.event.action != 'synchronize' &&
       !contains(github.event.pull_request.labels.*.name, 'needs-jon-approval') &&
       (
@@ -110,7 +143,82 @@ jobs:
         ) ||
         contains(github.event.pull_request.labels.*.name, 'fast-path')
       )
+      )
     steps:
+      - name: Resolve PR and gate (post-CI path re-checks CI, labels and freshness live)
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EV_PR: ${{ github.event.pull_request.number }}
+          EV_SHA: ${{ github.event.pull_request.head.sha }}
+          EV_REF: ${{ github.event.pull_request.head.ref }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          emit() { printf 'proceed=%s\npr=%s\nsha=%s\nref=%s\n' "$1" "${2:-}" "${3:-}" "${4:-}" >> "$GITHUB_OUTPUT"; }
+          skip() { echo "::notice::auto-merge (post-CI) not merging: $1"; emit false; exit 0; }
+
+          # pull_request_target: the job `if` already applied the label gate.
+          if [ "$EVENT_NAME" != "workflow_run" ]; then
+            emit true "$EV_PR" "$EV_SHA" "$EV_REF"
+            exit 0
+          fi
+
+          # workflow_run has no PR context. Resolve open same-repo PRs whose
+          # head IS the commit CI just ran on. Zero -> nothing to do (closed,
+          # merged, or head already moved). More than one -> ambiguous, refuse;
+          # each PR still gets its own attempt from its `labeled` event.
+          PRS=$(gh api --paginate "repos/$REPO/commits/$RUN_SHA/pulls?per_page=100" \
+            --jq ".[] | select(.state==\"open\" and .head.sha==\"$RUN_SHA\" and .head.repo.full_name==\"$REPO\") | .number")
+          COUNT=$(printf '%s\n' "$PRS" | sed '/^$/d' | wc -l)
+          if [ "$COUNT" -eq 0 ]; then skip "no open PR has head $RUN_SHA"; fi
+          if [ "$COUNT" -gt 1 ]; then skip "$COUNT open PRs share head $RUN_SHA; ambiguous"; fi
+          PR="$PRS"
+
+          # Re-read the PR NOW. Never trust labels or SHA from the event.
+          PR_JSON=$(gh api "repos/$REPO/pulls/$PR")
+          if [ "$(jq -r .state <<<"$PR_JSON")" != "open" ]; then skip "PR #$PR is not open"; fi
+          if [ "$(jq -r .head.sha <<<"$PR_JSON")" != "$RUN_SHA" ]; then skip "PR #$PR head moved since CI ran"; fi
+
+          # M-1 (AGENTS.md §11): every check-run on the head commit must be
+          # completed AND green. Pending, red, cancelled, timed out, or ABSENT
+          # all refuse. Allowlist, not denylist, so unknown states also refuse.
+          CHECKS=$(gh api "repos/$REPO/commits/$RUN_SHA/check-runs?per_page=100")
+          TOTAL=$(jq '.total_count' <<<"$CHECKS")
+          SEEN=$(jq '.check_runs | length' <<<"$CHECKS")
+          if [ "$TOTAL" -eq 0 ] || [ "$TOTAL" -ne "$SEEN" ]; then skip "check-runs absent or truncated ($SEEN of $TOTAL)"; fi
+          BAD=$(jq -r '[.check_runs[] | select(.status != "completed" or ((.conclusion // "") | IN("success","neutral","skipped") | not)) | .name] | join(", ")' <<<"$CHECKS")
+          if [ -n "$BAD" ]; then skip "M-1: checks not green: $BAD"; fi
+
+          # Same gate as the job `if`, evaluated on live labels.
+          has() { jq -e --arg l "$1" 'any(.labels[]; .name == $l)' <<<"$PR_JSON" > /dev/null; }
+          if has needs-jon-approval; then skip "needs-jon-approval is set"; fi
+
+          # Stale-approval race. drop-stale-review removes adversarial-reviewed
+          # and fast-path on synchronize, but it is a separate run that could be
+          # delayed past the new commit's CI. So those two labels only count if
+          # they were (last) applied at or after the head commit's own date;
+          # a label older than the commit approved different code. The head-SHA
+          # check above and the sha pinned in the merge call cover the rest.
+          # (rollback-safe is not dropped on push, so presence is enough.)
+          COMMIT_AT=$(gh api "repos/$REPO/commits/$RUN_SHA" --jq .commit.committer.date)
+          EVENTS=$(gh api --paginate "repos/$REPO/issues/$PR/events?per_page=100" \
+            --jq '.[] | select(.event == "labeled") | "\(.label.name) \(.created_at)"')
+          fresh() {
+            has "$1" || return 1
+            local at
+            at=$(grep "^$1 " <<<"$EVENTS" | cut -d' ' -f2 | sort | tail -1 || true)
+            [ -n "$at" ] && [[ ! "$at" < "$COMMIT_AT" ]]
+          }
+          if fresh fast-path || { has rollback-safe && fresh adversarial-reviewed; }; then
+            echo "PR #$PR: CI green on $RUN_SHA and approval labels are live and fresh."
+          else
+            skip "PR #$PR lacks fresh fast-path or rollback-safe+adversarial-reviewed (commit $COMMIT_AT)"
+          fi
+          emit true "$PR" "$RUN_SHA" "$(jq -r .head.ref <<<"$PR_JSON")"
+
       # L2.1 — mint a short-lived GitHub App installation token.
       #
       # Why an App instead of the fine-grained BOT_TOKEN: fine-grained PATs
@@ -128,6 +236,7 @@ jobs:
       # why this is continue-on-error rather than a conditional.
       - name: Mint GitHub App token (optional — falls back to BOT_TOKEN)
         id: apptoken
+        if: steps.resolve.outputs.proceed == 'true'
         continue-on-error: true
         uses: actions/create-github-app-token@v2
         with:
@@ -135,6 +244,7 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Report which credential will be used
+        if: steps.resolve.outputs.proceed == 'true'
         env:
           HAVE_APP: ${{ steps.apptoken.outputs.token != '' }}
           HAVE_BOT: ${{ secrets.BOT_TOKEN != '' }}
@@ -150,16 +260,20 @@ jobs:
           fi
 
       - name: Enable auto-merge (squash, delete branch) — REST fallback for fine-grained PATs
+        if: steps.resolve.outputs.proceed == 'true'
         env:
+          # From the `resolve` step. Passed via env, not interpolated into the
+          # script, because head.ref is attacker-controllable text.
+          PR_NUM: ${{ steps.resolve.outputs.pr }}
+          HEAD_SHA: ${{ steps.resolve.outputs.sha }}
+          HEAD_REF: ${{ steps.resolve.outputs.ref }}
           # Preference order: App installation token (L2.1) > BOT_TOKEN > GITHUB_TOKEN.
           # REST `PUT /repos/{owner}/{repo}/pulls/{N}/merge` is used rather than
           # `gh pr merge`, because the latter routes through GraphQL.
           GH_TOKEN: ${{ steps.apptoken.outputs.token || secrets.BOT_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          PR_NUM="${{ github.event.pull_request.number }}"
           REPO="${{ github.repository }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           echo "PR #$PR_NUM meets triple-gate; attempting REST merge against head $HEAD_SHA."
 
           # REST merge; -f fields auto-string-cast — pass merge_method as string.
@@ -174,7 +288,7 @@ jobs:
             echo "Merge succeeded:"
             echo "$HTTP_OUT"
             # Delete the branch (best-effort; doesn't fail the merge if delete errors)
-            BRANCH="${{ github.event.pull_request.head.ref }}"
+            BRANCH="$HEAD_REF"
             gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" 2>branch-delete.err || \
               echo "Note: branch delete returned error (branch may already be gone):" && cat branch-delete.err || true
             exit 0

@@ -443,3 +443,149 @@ jobs:
           # that reference them without a secret being present in CI.
           NEXT_TELEMETRY_DISABLED: "1"
 
+
+  supabase-prelude-migrations:
+    name: Migrations on a Supabase-like Postgres
+    runs-on: ubuntu-latest
+    # AGENTS.md §11 M-3 asked for this job by name.
+    #
+    # Every other migration step in this file runs as a SUPERUSER against bare
+    # Postgres. A superuser bypasses privilege checks, and bare Postgres has no
+    # `auth` schema at all, so an entire class of Supabase-only failure is
+    # invisible to CI. Migration 012 is the proof: `42501 permission denied for
+    # schema auth` on Supabase, green here, found only by rehearsing against a
+    # real project on the day of the production cutover.
+    #
+    # This job runs the real runner over every real migration as a role shaped
+    # like Supabase's `postgres`: NOSUPERUSER, owns the database, no CREATE on
+    # `auth`.
+    #
+    # Image is postgres:16 for consistency with the other jobs in this file;
+    # the calibration project is PG 17.11. Nothing this job exercises differs
+    # between 16 and 17, but if that stops being true, calibrate against 17.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Python deps
+        run: pip install -r apps/worker/requirements.txt -c apps/worker/constraints-prod.txt
+
+      - name: Apply the Supabase-like prelude (as superuser)
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -f apps/worker/tests/fixtures/supabase_prelude.sql
+
+      # Without this the job could pass while testing nothing: grant CREATE on
+      # `auth` by accident and every migration sails through exactly as it does
+      # on bare Postgres — a green tick over a gate that quietly stopped being a
+      # gate. That is this project's house bug, so the gate pins its own
+      # preconditions. This list must stay identical to the CALIBRATION block in
+      # the prelude. Values read from a live Supabase project 2026-11-06.
+      - name: Assert the prelude still reproduces Supabase
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          fail=0
+          check() {
+            got=$(psql -h localhost -U postgres -d postgres -tAc "$2")
+            if [ "$got" != "$3" ]; then
+              echo "::error::prelude drift: $1 is '$got', expected '$3'"
+              fail=1
+            else
+              echo "  ok  $1 = $got"
+            fi
+          }
+          check "create_on_database" "SELECT has_database_privilege('migrator',current_database(),'CREATE')" "t"
+          check "create_on_auth"     "SELECT has_schema_privilege('migrator','auth','CREATE')"               "f"
+          check "usage_on_auth"      "SELECT has_schema_privilege('migrator','auth','USAGE')"                "t"
+          check "select_auth_users"  "SELECT has_table_privilege('migrator','auth.users','SELECT')"           "t"
+          check "trigger_auth_users" "SELECT has_table_privilege('migrator','auth.users','TRIGGER')"          "t"
+          check "is_superuser"       "SELECT rolsuper FROM pg_roles WHERE rolname='migrator'"                 "f"
+          check "bypassrls"          "SELECT rolbypassrls FROM pg_roles WHERE rolname='migrator'"             "t"
+          check "createrole"         "SELECT rolcreaterole FROM pg_roles WHERE rolname='migrator'"            "t"
+          check "database_owner"     "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname=current_database()" "migrator"
+          check "public_owner"       "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='public'"        "pg_database_owner"
+          exit $fail
+
+      - name: Run every migration as the restricted role
+        env:
+          DATABASE_URL: postgresql://migrator:migrator@localhost:5432/postgres
+        run: cd apps/worker && PYTHONPATH=src python -m worker.migrate
+
+      - name: Assert the whole chain landed, and that grants were not silent no-ops
+        env:
+          PGPASSWORD: migrator
+        run: |
+          set -euo pipefail
+          q() { psql -h localhost -U migrator -d postgres -tAc "$1"; }
+          # `find -maxdepth 1` rather than `ls *.sql`: ls would expand a
+          # DIRECTORY named *.sql into its contents and miscount. This mirrors
+          # the runner's top-level-only glob.
+          expected=$(find apps/worker/migrations -maxdepth 1 -name '*.sql' -type f | wc -l | tr -d ' ')
+          actual=$(q "SELECT count(*) FROM public._migrations")
+          echo "repo migrations: $expected   ledger rows: $actual"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::ledger holds $actual rows but the repo has $expected migrations"
+            exit 1
+          fi
+          # Migration 011 grants stemloops_app USAGE on public. Under an earlier
+          # prelude that executed as `WARNING: no privileges were granted` and
+          # psycopg swallowed it — green chain, wrong ACL. Assert the explicit
+          # grantee entry, not has_schema_privilege, which is also true via the
+          # PUBLIC pseudo-role and so cannot distinguish the two.
+          acl=$(q "SELECT COALESCE(nspacl::text,'') FROM pg_namespace WHERE nspname='public'")
+          echo "public acl: $acl"
+          case "$acl" in
+            *stemloops_app=U*) echo "  ok  011's grant took effect" ;;
+            *) echo "::error::011's GRANT USAGE ON SCHEMA public TO stemloops_app did not take effect — likely a silent no-op"; exit 1 ;;
+          esac
+
+      - name: Re-run to prove idempotency
+        env:
+          DATABASE_URL: postgresql://migrator:migrator@localhost:5432/postgres
+        run: cd apps/worker && PYTHONPATH=src python -m worker.migrate
+
+      # The code-to-schema drift gate ships in a sibling PR and its own
+      # docstring says "NOT WIRED" — a script nothing runs is the seam-class-6
+      # shape it was written to prevent. This wires it the moment it lands.
+      #
+      # The conditional ships WITH its condition (L25): this ref does not
+      # contain the script, so the step skips today and starts running by
+      # itself once the gate merges, with no coordination. Running it here also
+      # gives `fetch_applied` its only end-to-end exercise against a real
+      # ledger.
+      - name: Run the code-to-schema drift gate against the migrated database
+        if: hashFiles('scripts/check_migration_drift.py') != ''
+        env:
+          DATABASE_URL: postgresql://migrator:migrator@localhost:5432/postgres
+        run: python scripts/check_migration_drift.py
+
+      # A step that silently skips forever is exactly this project's house bug,
+      # so the skip is made loud. When the warning stops appearing, the guard
+      # above has served its purpose and can be deleted.
+      - name: Say plainly whether the drift gate ran
+        run: |
+          if [ -f scripts/check_migration_drift.py ]; then
+            echo "drift gate present and executed in the previous step"
+          else
+            echo "::warning::scripts/check_migration_drift.py is not on this ref, so the drift gate step above was SKIPPED. Once that PR has merged, this warning disappears and the hashFiles guard can be removed."
+          fi

@@ -218,6 +218,11 @@ export async function POST(req: NextRequest) {
         cancelUrl,
         promoCode,
         promoCodeId,
+        // Without this the provider omits `customer:` and Stripe mints a
+        // throwaway customer per session, so the customer we just stored
+        // above stays empty and /api/billing/portal opens the wrong one --
+        // a subscriber then cannot cancel or see invoices (#148).
+        providerCustomerId,
       );
     } else {
       session = await provider.createCheckoutSession(
@@ -227,6 +232,10 @@ export async function POST(req: NextRequest) {
         cancelUrl,
         promoCode,
         promoCodeId,
+        // See the credit-pack call above: required for the Customer Portal to
+        // resolve, and for subscription_data.metadata to ride on the real
+        // customer rather than a throwaway one (#148).
+        providerCustomerId,
       );
     }
 

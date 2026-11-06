@@ -441,9 +441,13 @@ so 012 raises:
 Through the runner this halts at 012 and leaves 013–031 unapplied. The local-Postgres rehearsal
 could not surface it, because bare Postgres has no `auth` schema. AGENTS.md M-3 anticipated this class.
 
-**Fixed** by wrapping the create in a `DO` block guarded by a `pg_class` existence check. Watched to
-fail before the fix and to pass as a no-op after. This removes the manual deviation §2 documented
-(record 012 without running it).
+**Fixed and merged.** PR #157 wraps the create in a `DO` block guarded by a `pg_class` existence
+check. Watched to fail before the fix and to pass as a no-op after, against a real Supabase project.
+This removes the manual deviation §2 documented (record 012 without running it), so the runner now
+completes 009→031 end to end with no human intervention.
+
+**Consequence for §5.1:** the sanctioned deviation for 012 no longer applies. Do not record 012
+without running it — run it.
 
 ### 9.3 031 is mandatory before Phase 7, not optional
 

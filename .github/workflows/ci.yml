@@ -564,15 +564,20 @@ jobs:
           DATABASE_URL: postgresql://migrator:migrator@localhost:5432/postgres
         run: cd apps/worker && PYTHONPATH=src python -m worker.migrate
 
-      # The code-to-schema drift gate ships in a sibling PR and its own
-      # docstring says "NOT WIRED" — a script nothing runs is the seam-class-6
-      # shape it was written to prevent. This wires it the moment it lands.
+      # Smoke-runs the code-to-schema drift gate from the sibling PR.
+      #
+      # BE CLEAR ABOUT WHAT THIS DOES NOT DO. It checks a ledger this job just
+      # populated itself, from this same checkout, so it can never report
+      # drift. It proves the gate executes and reads a real ledger; it does not
+      # protect production. As of 2026-11-06 prod's `_migrations` holds 8 rows
+      # against 30 in the repo and nothing here turns red over it. Closing that
+      # needs a read-only ledger credential as a secret (house pattern:
+      # `DATABASE_URL_CREDIT_PACKS_RO`) or a deploy-time hook. Tracked; not
+      # done.
       #
       # The conditional ships WITH its condition (L25): this ref does not
       # contain the script, so the step skips today and starts running by
-      # itself once the gate merges, with no coordination. Running it here also
-      # gives `fetch_applied` its only end-to-end exercise against a real
-      # ledger.
+      # itself once the gate merges, with no coordination.
       - name: Run the code-to-schema drift gate against the migrated database
         if: hashFiles('scripts/check_migration_drift.py') != ''
         env:

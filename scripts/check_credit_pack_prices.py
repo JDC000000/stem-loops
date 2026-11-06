@@ -13,12 +13,18 @@ Expected-price source (--source):
                        source of truth for a fresh deploy and needs no DB.
   db                   SELECT pack_code, price_cad_cents FROM credit_packs
                        using DATABASE_URL (staging/prod drift check).
-  auto                 db if DATABASE_URL is set; migration only if it is NOT
-                       set. A DATABASE_URL that is set but unusable for ANY
-                       reason (unreachable, auth, permission denied, driver
-                       missing, credit_packs absent) is exit 2, never a silent
-                       fall back to the seed: "could not read the DB" must not
-                       be reported as "checked".
+  auto                 THREE states, not two:
+                         DATABASE_URL set         -> read the live table. Set
+                           but unusable for ANY reason (unreachable, auth,
+                           permission denied, driver missing, credit_packs
+                           absent) is exit 2, never a silent fall back to the
+                           seed: "could not read the DB" must not be reported
+                           as "checked".
+                         DATABASE_URL SET BUT EMPTY -> exit 2. A secret was
+                           wired and did not expand. Substituting the seed here
+                           would let a renamed or rotated secret degrade this
+                           job to seed-vs-Stripe silently and permanently.
+                         DATABASE_URL unset       -> the seed, honestly.
 
 Env: STRIPE_SECRET_KEY, STRIPE_PRICE_CREDITS_20, STRIPE_PRICE_CREDITS_60,
      STRIPE_PRICE_CREDITS_180 (and DATABASE_URL for db/auto).
@@ -28,7 +34,8 @@ Usage: python scripts/check_credit_pack_prices.py [--source migration|db|auto]
 Exit codes (each means exactly one thing):
   0  CHECKED, no drift: every pack matched Stripe. The ONLY success.
   1  CHECKED, drift found: a pack's amount or currency differs from Stripe.
-  2  broken: seed missing/unparseable, or the Stripe/DB lookup itself failed.
+  2  broken: seed missing/unparseable, the Stripe/DB lookup itself failed, or
+     DATABASE_URL is set but empty (a wired secret that did not expand).
   3  NOT CHECKED: STRIPE_SECRET_KEY or a STRIPE_PRICE_CREDITS_* var is unset
      or empty, so no comparison was attempted. This is a configuration state,
      never success. The script has no flag that turns it into 0; if a caller
@@ -36,8 +43,14 @@ Exit codes (each means exactly one thing):
      RECON_ALLOW_UNCONFIGURED switch in .github/workflows/ci.yml).
 
 Default is `--source auto` so CI catches live-DB drift (the actual M5
-scenario) when DATABASE_URL is wired, and uses the migration seed only when no
-DATABASE_URL was supplied at all.
+scenario) when DATABASE_URL is wired, and uses the migration seed only when
+DATABASE_URL is entirely UNSET.
+
+"Unset" and "empty" are different facts here, and review round 2 found that
+distinction load-bearing: `ci.yml` used to map DATABASE_URL to a secret
+unconditionally, GitHub expands a missing secret to "", and so the empty state
+was the ONLY way CI ever reached the seed. The mapping is now absent from
+ci.yml until the secret exists; see the comment block there.
 """
 
 from __future__ import annotations
@@ -104,10 +117,40 @@ def load_expected(source: str) -> tuple[dict[str, int], str]:
         if not url:
             raise ConfigError("--source db requires DATABASE_URL")
         return prices_from_db(url), "credit_packs table"
-    # auto: the seed is the intended source ONLY when no DATABASE_URL was given.
-    # If one was given, any failure reading it propagates to main() -> exit 2.
-    # Deliberately no try/except here: a forgiving branch under a broad except
-    # turns "could not reach the DB" into a green check.
+    # auto. Three states, not two -- review round 2 found the middle one was
+    # both unpinned and the ONLY state CI ever actually reaches.
+    #
+    #   DATABASE_URL set            -> read the live table. Any failure
+    #                                  propagates to main() -> exit 2. No
+    #                                  try/except here on purpose: a forgiving
+    #                                  branch under a broad except turns
+    #                                  "could not reach the DB" into a green.
+    #   DATABASE_URL SET BUT EMPTY  -> refuse. Someone wired a secret and the
+    #                                  secret did not arrive. Substituting the
+    #                                  seed here would mean that a renamed,
+    #                                  rotated, environment-scoped or deleted
+    #                                  DATABASE_URL_CREDIT_PACKS_RO silently
+    #                                  degrades this job to seed-vs-Stripe --
+    #                                  green, forever, with one stdout line as
+    #                                  the only trace. The M5 scenario this job
+    #                                  exists for would then go unchecked.
+    #   DATABASE_URL unset          -> the seed is the intended source. This is
+    #                                  a real comparison, not a consolation:
+    #                                  seed vs Stripe is what `--source
+    #                                  migration` does and what the Makefile
+    #                                  target runs.
+    #
+    # Nine lines below, this same file already treats an empty STRIPE_SECRET_KEY
+    # as "not configured". Same GitHub mechanism; it would be incoherent to
+    # reach the opposite conclusion here. The sibling drift gate draws the same
+    # line for the same reason.
+    if url is not None and not url.strip():
+        raise ConfigError(
+            "DATABASE_URL is set but empty: DATABASE_URL_CREDIT_PACKS_RO did "
+            "not expand. Refusing to substitute the migration seed -- that "
+            "would compare the seed while reporting on the live table. If this "
+            "job should use the seed, stop setting DATABASE_URL at all."
+        )
     if url:
         return prices_from_db(url), "credit_packs table"
     return prices_from_migration(MIGRATION), "migration 020 seed"
@@ -131,8 +174,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     # Default `--source auto` covers the actual M5 scenario (live DB edits
     # drifting from Stripe) when DATABASE_URL is present, and uses the
-    # migration seed only when it is absent (CI default). Review of PR #56 round-1
-    # flagged that `--source migration` alone misses the live-edit drift case.
+    # migration seed only when DATABASE_URL is entirely UNSET -- set-but-empty
+    # is exit 2, see load_expected(). Round-1 review flagged that
+    # `--source migration` alone misses the live-edit drift case.
     ap.add_argument("--source", choices=("migration", "db", "auto"), default="auto")
     args = ap.parse_args(argv)
 

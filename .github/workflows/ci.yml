@@ -419,10 +419,33 @@ jobs:
           STRIPE_PRICE_CREDITS_20: ${{ secrets.STRIPE_PRICE_CREDITS_20 }}
           STRIPE_PRICE_CREDITS_60: ${{ secrets.STRIPE_PRICE_CREDITS_60 }}
           STRIPE_PRICE_CREDITS_180: ${{ secrets.STRIPE_PRICE_CREDITS_180 }}
-          # Optional: wire DATABASE_URL to a read-only Supabase connection
-          # string (role with SELECT on credit_packs only) so CI catches
-          # live DB-vs-Stripe drift, not just seed-vs-Stripe.
-          DATABASE_URL: ${{ secrets.DATABASE_URL_CREDIT_PACKS_RO }}
+          # DATABASE_URL is deliberately NOT mapped here yet. Read before
+          # adding it back -- two preconditions and one gotcha.
+          #
+          # Mapping a secret that does not exist sets the variable to the EMPTY
+          # STRING, not to nothing. The script treats that as a
+          # misconfiguration and exits 2, because the alternative -- quietly
+          # comparing the migration seed while this job's name says it
+          # reconciled the live table -- is a green tick over an unchecked M5
+          # scenario, reachable by a rename or a rotation. With no mapping at
+          # all the variable is genuinely unset, the seed path is taken
+          # honestly, and the output says `Expected source: migration 020 seed`.
+          #
+          # To turn on live DB-vs-Stripe checking, map
+          # secrets.DATABASE_URL_CREDIT_PACKS_RO to DATABASE_URL here, once
+          # BOTH of these hold:
+          #   1. the secret exists, and
+          #   2. migration 020 has been applied to the database it points at.
+          #      Production was on 008 as of 2026-11-06 and `credit_packs`
+          #      arrives in 020, so wiring this before the cutover makes every
+          #      PR red with `relation "public.credit_packs" does not exist`.
+          #
+          # The gotcha: a role with SELECT on credit_packs only still returns
+          # ZERO ROWS under 020's RLS, whose policies cover anon/authenticated,
+          # stemloops_app and cowork_ro. Fail-closed, but the error reads
+          # `packs missing from credit_packs table`, which points at the table
+          # contents rather than at RLS. Grant the role one of those roles, or
+          # add a policy for it.
 
   web-build:
     name: Web build

@@ -319,3 +319,45 @@ def test_ci_switch_on_forgives_only_not_checked(tmp_path, code, expected):
 def test_stripe_error_exits_two():
     with mock.patch("stripe.Price.retrieve", side_effect=RuntimeError("boom")):
         assert cpp.main([]) == 2
+
+
+def test_auto_with_empty_database_url_is_config_error_not_seed(monkeypatch, capsys):
+    """Review round 2, defect A -- the state CI actually reaches, pinned by
+    nothing until now.
+
+    `ci.yml` used to map DATABASE_URL to a secret unconditionally, and GitHub
+    expands a secret that does not exist to "". So the variable was NEVER unset
+    in CI and the seed path was reached ONLY through this state -- meaning a
+    renamed, rotated, environment-scoped or deleted secret would silently
+    degrade the job to seed-vs-Stripe, green, with one stdout line as the only
+    trace.
+
+    The mutant that motivated this test is `if url:` -> `if url is not None:`,
+    which the whole 44-test suite passed.
+    """
+    for empty in ("", "   "):
+        monkeypatch.setenv("DATABASE_URL", empty)
+        with mock.patch.object(cpp, "prices_from_db") as from_db, _stripe(MATCH):
+            rc = cpp.main(["--source", "auto"])
+        assert rc == cpp.EXIT_BROKEN, (empty, rc)
+        # It must not reach the live table OR the seed -- it must refuse.
+        from_db.assert_not_called()
+        out = capsys.readouterr()
+        assert "set but empty" in (out.err + out.out).lower(), repr(empty)
+        assert "migration 020 seed" not in out.out, repr(empty)
+        # And not forgivable by the CI switch, which forgives exit 3 only.
+        assert rc != cpp.EXIT_NOT_CHECKED
+
+
+def test_ci_does_not_map_a_database_url_secret():
+    """The other half of defect A. If someone re-adds the mapping before the
+    secret exists, every PR goes red at exit 2 -- correct, but a surprise. This
+    fails loudly at that moment and points the reader at the comment block
+    explaining the two preconditions. Uses the comment-stripped view, so the
+    documentation of how to re-enable it does not trip the assertion."""
+    assert "secrets.DATABASE_URL_CREDIT_PACKS_RO" not in _ci_code(), (
+        "ci.yml maps DATABASE_URL_CREDIT_PACKS_RO again. That is correct ONLY "
+        "if the secret exists AND migration 020 has reached the database it "
+        "names -- see the comment block at that line. If both hold, delete "
+        "this test."
+    )

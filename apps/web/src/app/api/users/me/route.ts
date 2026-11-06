@@ -15,30 +15,46 @@
 //       DELETE + JSON already forces a CORS preflight, this is belt+braces)
 //   502 SUBSCRIPTION_CANCEL_FAILED — Stripe refused; NOTHING was deleted,
 //       safe to retry
-//   500 DELETE_FAILED — Supabase Admin delete failed after subscriptions
-//       were cancelled; users.deleted_at is stamped, retry is idempotent
+//   500 DELETE_FAILED — the chord_edits erasure failed (NOTHING irreversible
+//       happened: no subscription was cancelled, safe to retry), or the
+//       Supabase Admin delete failed after subscriptions were cancelled
+//       (users.deleted_at is stamped, retry is idempotent)
 //
 // Order of operations (each step only runs if the previous one succeeded):
 //   1. getUser() + confirm_email check
-//   2. cancel every active/trialing/past_due subscription for this user
-//      immediately (not at period end — the account is going away). A
-//      subscription Stripe says no longer exists counts as cancelled.
-//   3. stamp public.users.deleted_at (tombstone; migration 021). Tolerates
+//   2. read this user's active/trialing/past_due subscriptions (read-only).
+//   3. ONE database transaction, in this order:
+//        a. erase the user's public.chord_edits rows via
+//           public.delete_chord_edits_for_user() (migration 031). chord_edits
+//           has no ON DELETE CASCADE and is append-only for stemloops_app
+//           (migration 025: no DELETE privilege), so a raw DELETE raises 42501;
+//           the SECURITY DEFINER function is the one sanctioned erasure path.
+//           It runs FIRST so a missing function / missing privilege / deadlock
+//           fails the request while nothing irreversible has happened.
+//        b. cancel each subscription immediately (not at period end — the
+//           account is going away). A subscription Stripe says no longer
+//           exists counts as cancelled.
+//      The transaction COMMITs only after every cancel succeeded. If Stripe
+//      refuses, the throw ROLLs BACK the erasure, so the user keeps their
+//      account AND their chord edits (502, safe to retry). Stripe cannot be
+//      rolled back, which is why it is the LAST thing inside the transaction:
+//      the only way to cancel and still fail is the COMMIT itself failing (or
+//      step 5), and by then the erasure statement has already succeeded.
+//   4. stamp public.users.deleted_at (tombstone; migration 021). Tolerates
 //      the column not existing yet so the route works before 021 is applied.
-//   3a. sweep tables that do NOT CASCADE from public.users. Today that is
-//      public.chord_edits (migration 025 has no ON DELETE CASCADE on user_id —
-//      the per-table header is explicit about the sweep being the audit
-//      trail). Must run BEFORE step 4 or auth.admin.deleteUser fails on the
-//      FK. Tolerates the table not existing yet (undefined_table / 42P01) so
-//      the route still works on envs that haven't applied 025.
-//   4. Supabase Admin auth.admin.deleteUser. The DB then cascades per the
+//   5. Supabase Admin auth.admin.deleteUser. The DB then cascades per the
 //      TSD §2.3 DDL (public.users and everything FK'd to it). We delete NO
-//      rows ourselves other than the step-3a sweep.
-//   5. append a usage_events row kind='account_deleted'. user_id is NULL
+//      rows ourselves other than the step-3 erasure.
+//   6. append a usage_events row kind='account_deleted'. user_id is NULL
 //      (the FK is ON DELETE SET NULL and the user is gone); the detail holds
-//      a SHA-256 of the user id, not the raw id or email, so the audit trail
+//      an HMAC of the user id, not the raw id or email, so the audit trail
 //      carries no personal data. Failure here is logged, not surfaced — the
 //      account is already gone.
+//
+// Errors from the erasure are NOT tolerated (no 42P01 / 42883 swallowing):
+// a missing function (42883, migration 031 not applied) or a permission
+// problem (42501) must stop the request before anything is cancelled, and is
+// logged with its SQLSTATE so the operator can see which it was.
 //
 // Webhook interaction (not changed here): cancelling a subscription makes
 // Stripe emit customer.subscription.deleted for a user that no longer
@@ -55,6 +71,9 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const CANCELLABLE_STATUSES = ['active', 'trialing', 'past_due'];
+
+/** Thrown inside the erase+cancel transaction so it ROLLs BACK and maps to 502. */
+class SubscriptionCancelFailed extends Error {}
 
 function err(status: number, code: string, message: string) {
   return NextResponse.json({ error: message, code }, { status });
@@ -108,26 +127,52 @@ export async function DELETE(req: NextRequest) {
   }
 
   try {
-    // 2. Cancel subscriptions.
+    // 2. Read the subscriptions to cancel (read-only; nothing changes yet).
     const provider = getBillingProvider();
     const subs = await db.query<{ provider_subscription_id: string }>(
       `SELECT provider_subscription_id FROM public.subscriptions
         WHERE user_id = $1::uuid AND provider = $2 AND status = ANY($3::text[])`,
       [user.user_id, provider.name, CANCELLABLE_STATUSES],
     );
+
+    // 3. Erase chord_edits, THEN cancel Stripe, in one transaction. See the
+    //    header: the erasure goes first so its failure cancels nothing, and a
+    //    Stripe failure rolls the erasure back.
     let cancelled = 0;
-    for (const row of subs.rows) {
-      try {
-        await provider.cancelSubscription(row.provider_subscription_id, false);
-        cancelled += 1;
-      } catch (e) {
-        if (isAlreadyCanceled(e)) continue;
-        console.error('[users/me DELETE] subscription cancel failed:', e instanceof Error ? e.message : 'unknown');
+    try {
+      await db.tx(async (client) => {
+        try {
+          await client.query(`SELECT public.delete_chord_edits_for_user($1::uuid)`, [user.user_id]);
+        } catch (e) {
+          const code = (e as { code?: string } | null)?.code ?? 'unknown';
+          // 42883 = undefined_function (migration 031 not applied),
+          // 42501 = insufficient_privilege (EXECUTE not granted to this role).
+          console.error(
+            `[users/me DELETE] chord_edits erasure failed (SQLSTATE ${code}); nothing was cancelled or deleted:`,
+            e instanceof Error ? e.message : 'unknown',
+          );
+          throw e;
+        }
+
+        for (const row of subs.rows) {
+          try {
+            await provider.cancelSubscription(row.provider_subscription_id, false);
+            cancelled += 1;
+          } catch (e) {
+            if (isAlreadyCanceled(e)) continue;
+            console.error('[users/me DELETE] subscription cancel failed:', e instanceof Error ? e.message : 'unknown');
+            throw new SubscriptionCancelFailed();
+          }
+        }
+      });
+    } catch (e) {
+      if (e instanceof SubscriptionCancelFailed) {
         return err(502, 'SUBSCRIPTION_CANCEL_FAILED', 'We could not cancel your subscription, so your account was not deleted. Please try again.');
       }
+      throw e;
     }
 
-    // 3. Tombstone (best-effort if migration 021 is not applied yet).
+    // 4. Tombstone (best-effort if migration 021 is not applied yet).
     try {
       await db.query(`UPDATE public.users SET deleted_at = now() WHERE id = $1::uuid`, [user.user_id]);
     } catch (e) {
@@ -135,23 +180,10 @@ export async function DELETE(req: NextRequest) {
       if (code !== '42703') throw e; // 42703 = undefined_column
     }
 
-    // 3a. Sweep non-cascading training tables (chord_edits — migration 025).
-    //     Must run BEFORE deleteAuthUser or the FK on public.chord_edits.user_id
-    //     will refuse the public.users delete that Supabase cascades out of
-    //     auth.users. Tolerates 42P01 (undefined_table) so pre-025 envs still
-    //     delete cleanly. No other error class is swallowed — a failing sweep
-    //     must surface so the admin delete does not then explode on FK.
-    try {
-      await db.query(`DELETE FROM public.chord_edits WHERE user_id = $1::uuid`, [user.user_id]);
-    } catch (e) {
-      const code = (e as { code?: string } | null)?.code;
-      if (code !== '42P01') throw e; // 42P01 = undefined_table
-    }
-
-    // 4. Delete the auth user; the DB cascades the rest.
+    // 5. Delete the auth user; the DB cascades the rest.
     await deleteAuthUser(user.user_id);
 
-    // 5. Audit (no personal data).
+    // 6. Audit (no personal data).
     try {
       await db.query(
         `INSERT INTO public.usage_events (user_id, kind, detail) VALUES (NULL, 'account_deleted', $1::jsonb)`,

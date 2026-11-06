@@ -15,17 +15,38 @@
 -- 1. auth schema + minimal users table ----------------------------------
 CREATE SCHEMA IF NOT EXISTS auth;
 
-CREATE TABLE IF NOT EXISTS auth.users (
-  id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  email              text,
-  aud                text,
-  role               text,
-  encrypted_password text,
-  email_confirmed_at timestamptz,
-  phone              text,
-  created_at         timestamptz NOT NULL DEFAULT now(),
-  updated_at         timestamptz NOT NULL DEFAULT now()
-);
+-- Guarded so this is a true no-op on Supabase.
+-- `CREATE TABLE IF NOT EXISTS` performs the schema CREATE-privilege check
+-- BEFORE the IF-NOT-EXISTS short-circuit. On Supabase the `postgres` role
+-- does NOT hold CREATE on the `auth` schema, so the bare statement raises
+--   ERROR: 42501: permission denied for schema auth
+-- even though auth.users already exists. A bare-Postgres rehearsal cannot
+-- surface this because bare Postgres has no auth schema at all.
+-- Verified against a real Supabase project 2026-11-06: the bare statement
+-- fails, this guarded form succeeds as a no-op, and on bare Postgres the
+-- CREATE still runs. See AGENTS.md M-3.
+DO $guard$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'auth' AND c.relname = 'users' AND c.relkind = 'r'
+  ) THEN
+    CREATE TABLE auth.users (
+      id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      email              text,
+      aud                text,
+      role               text,
+      encrypted_password text,
+      email_confirmed_at timestamptz,
+      phone              text,
+      created_at         timestamptz NOT NULL DEFAULT now(),
+      updated_at         timestamptz NOT NULL DEFAULT now()
+    );
+  END IF;
+END
+$guard$;
 
 -- 2+3. authenticated and anon roles -------------------------------------
 -- On Supabase these are LOGIN roles; here NOLOGIN suffices for the RLS

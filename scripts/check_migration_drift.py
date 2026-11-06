@@ -303,10 +303,22 @@ def fetch_applied(database_url: str) -> set[str]:
     try:
         conninfo_to_dict(database_url)
     except Exception as exc:
-        # Round 7, defect 9: libpq quotes the OFFENDING STRING back at you, and
-        # for a typo'd scheme the offending string is the whole DSN -- password
-        # included. GitHub masks registered secrets; nothing else does.
-        raise BadConfiguration(str(exc).replace(database_url, "<DATABASE_URL>")) from exc
+        # Round 7, defect 9, and its own follow-up. libpq quotes the OFFENDING
+        # STRING back at you. For a typo'd scheme that is the whole DSN; for a
+        # bad percent-escape it is a FRAGMENT (`invalid percent-encoded token:
+        # "hun%zzter2"`). The first version here substituted the full DSN out of
+        # the message, which cannot match a fragment -- an incomplete redaction
+        # that looked complete when tested with the easy case.
+        #
+        # So: no exception text at all. The type is the only detail that cannot
+        # carry a credential, and the operator has the variable in front of
+        # them. GitHub masks exact secret values, never substrings; nothing
+        # masks anything in a local run.
+        raise BadConfiguration(
+            f"DATABASE_URL is not a valid connection string "
+            f"({type(exc).__name__}). The message is withheld because libpq "
+            f"quotes the offending text back, which can be the value itself."
+        ) from exc
 
     try:
         conn = psycopg.connect(database_url, connect_timeout=15)

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "comment": "T1 subagent guardrails. Session-7 (2026-11-05). See claude/merge-autonomy-recommendations.md Decision box for the allow/deny rationale. These rules apply to subagents and to the main session alike; the main session merging via scripts/safe_merge.sh satisfies M-1 even though --admin itself is denied below.",
+  "comment": "T1 subagent guardrails. Session-7 (2026-11-05). See claude/merge-autonomy-recommendations.md Decision box for the allow/deny rationale. These rules apply to subagents and to the main session alike; the main session merging via scripts/safe_merge.sh satisfies M-1 even though --admin itself is denied below. || DEFERRED TO LEVEL 3 (2026-11-05, audit finding F9): this file denies Bash(gh pr merge --admin*) while allowing Bash(scripts/safe_merge.sh *), and that script's final line is `exec gh pr merge \"$PR\" --admin ...`. So an allowed wrapper executes a denied command. THE OPEN QUESTION, for the Level-3 reviewer at the 72h retro: does the permission layer inspect subprocesses spawned by an allowed script, or only the Bash invocation it was given? If only the invocation, then EVERY deny rule in this file is circumventable by a wrapper script, which matters far beyond merging. Not tested as of 2026-11-05 because testing it means attempting a blocked merge. Do not treat the deny list as a security boundary until this is answered. Retro task: trig_017AKZq6MEVFDioEbEwpHM1g.",
   "permissions": {
     "allow": [
       "Bash(scripts/safe_merge.sh *)",

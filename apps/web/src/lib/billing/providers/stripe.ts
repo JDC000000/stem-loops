@@ -98,6 +98,19 @@ function getClient(): Stripe {
 
 
 
+function warnIfNoCustomer(method: string, customerId?: string | null): void {
+  if (!customerId) {
+    console.warn(
+      `[stripe] ${method} called without customerId — Stripe will mint a throwaway customer and the billing portal will be empty`,
+    );
+  }
+}
+
+function _customerId(c: string | { id: string } | null | undefined): string | null {
+  if (!c) return null;
+  return typeof c === 'string' ? c : c.id;
+}
+
 // Pull the subscription id out of an Invoice across API-version shapes.
 // 2026-03-25.dahlia+ moved it under invoice.parent.subscription_details.
 function _invoiceSubId(invoice: Stripe.Invoice): string | undefined {
@@ -107,6 +120,21 @@ function _invoiceSubId(invoice: Stripe.Invoice): string | undefined {
   const parent = (invoice as unknown as { parent?: { type?: string; subscription_details?: { subscription?: string } } }).parent;
   if (parent?.type === 'subscription_details') return parent.subscription_details?.subscription;
   return undefined;
+}
+
+// user_id for an invoice: invoice.metadata is empty on subscription invoices;
+// newer API versions carry the subscription's metadata under
+// invoice.parent.subscription_details.metadata. Empty string when neither has
+// it — the webhook route then resolves via customers_billing / subscriptions.
+function _invoiceUserId(invoice: Stripe.Invoice): string {
+  const parent = (invoice as unknown as {
+    parent?: { subscription_details?: { metadata?: Record<string, string> | null } };
+  }).parent;
+  return (
+    (invoice.metadata?.user_id as string | undefined) ||
+    parent?.subscription_details?.metadata?.user_id ||
+    ''
+  );
 }
 
 // Sentinel thrown when a Stripe subscription carries a price_id that doesn't
@@ -248,6 +276,7 @@ export class StripeProvider implements BillingProvider {
     cancelUrl: string,
     promoCode?: string | null,
     promoCodeId?: string | null,
+    customerId?: string | null,
   ): Promise<BillingCheckoutResult> {
     if (planCode === 'free') {
       throw new Error('createCheckoutSession: "free" plan has no checkout');
@@ -265,12 +294,21 @@ export class StripeProvider implements BillingProvider {
     // M7: resolved at checkout time so the webhook's promo_redemptions insert
     // has a non-NULL UNIQUE key and Stripe retries de-dup.
     if (promoCodeId) metadata.stripe_promotion_code_id = promoCodeId;
+    warnIfNoCustomer('createCheckoutSession', customerId);
     const session = await getClient().checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: planPriceId(planCode), quantity: 1 }],
       success_url: successUrl,
       cancel_url: cancelUrl,
+      // Attach the STORED customer. Without it Stripe mints a throwaway
+      // customer per session and the portal opens an empty one.
+      ...(customerId ? { customer: customerId } : {}),
       metadata,
+      // Stripe does NOT copy session metadata onto the subscription or its
+      // invoices. subscription_data.metadata is what lands on the
+      // Subscription object, which every customer.subscription.* webhook
+      // reads user_id from.
+      subscription_data: { metadata: { user_id: userId, plan_code: planCode } },
       integration_identifier: INTEGRATION_ID,
       allow_promotion_codes: true,
       // 3DS forcing per TSD §1.1: subscription cards get Radar 'any' rule;
@@ -289,6 +327,7 @@ export class StripeProvider implements BillingProvider {
     cancelUrl: string,
     promoCode?: string | null,
     promoCodeId?: string | null,
+    customerId?: string | null,
   ): Promise<BillingCheckoutResult> {
     const priceId = packPriceId(pack);
     const metadata: Record<string, string> = {
@@ -302,11 +341,13 @@ export class StripeProvider implements BillingProvider {
     // M7: resolved at checkout time so the webhook's promo_redemptions insert
     // has a non-NULL UNIQUE key and Stripe retries de-dup.
     if (promoCodeId) metadata.stripe_promotion_code_id = promoCodeId;
+    warnIfNoCustomer('createCreditPurchaseSession', customerId);
     const session = await getClient().checkout.sessions.create({
       mode: 'payment',
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: successUrl,
       cancel_url: cancelUrl,
+      ...(customerId ? { customer: customerId } : {}),
       metadata,
       integration_identifier: INTEGRATION_ID,
       allow_promotion_codes: true,
@@ -375,7 +416,8 @@ export class StripeProvider implements BillingProvider {
         if (!sub) return { type: 'unhandled', eventType: event.type };
         return {
           type: 'invoice_paid',
-          userId: (invoice.metadata?.user_id as string | undefined) ?? '',
+          userId: _invoiceUserId(invoice),
+          providerCustomerId: _customerId(invoice.customer),
           providerSubscriptionId: sub,
           invoice: {
             providerInvoiceId: invoice.id,
@@ -394,7 +436,8 @@ export class StripeProvider implements BillingProvider {
         if (!sub) return { type: 'unhandled', eventType: event.type };
         return {
           type: 'invoice_payment_failed',
-          userId: (invoice.metadata?.user_id as string | undefined) ?? '',
+          userId: _invoiceUserId(invoice),
+          providerCustomerId: _customerId(invoice.customer),
           providerSubscriptionId: sub,
         };
       }
@@ -404,7 +447,12 @@ export class StripeProvider implements BillingProvider {
         const sub = event.data.object as Stripe.Subscription;
         const userId = (sub.metadata?.user_id as string | undefined) ?? '';
         if (event.type === 'customer.subscription.deleted') {
-          return { type: 'subscription_canceled', userId, providerSubscriptionId: sub.id };
+          return {
+            type: 'subscription_canceled',
+            userId,
+            providerSubscriptionId: sub.id,
+            providerCustomerId: _customerId(sub.customer),
+          };
         }
         try {
           return { type: 'subscription_upserted', userId, subscription: subFromStripe(sub) };
@@ -432,10 +480,13 @@ export class StripeProvider implements BillingProvider {
       }
       case 'charge.dispute.created': {
         const dispute = event.data.object as Stripe.Dispute;
+        const dpi = dispute.payment_intent;
         return {
           type: 'dispute_created',
+          providerEventId: event.id,
           providerChargeId:
             typeof dispute.charge === 'string' ? dispute.charge : dispute.charge.id,
+          providerPaymentIntentId: typeof dpi === 'string' ? dpi : (dpi?.id ?? null),
         };
       }
       case 'charge.refunded': {
@@ -504,6 +555,7 @@ export class StripeProvider implements BillingProvider {
       // Carried for the webhook's defensive users-row upsert when the
       // handle_new_user trigger has not caught up — see ensureUserRow.
       customerEmail: session.customer_email ?? session.customer_details?.email ?? null,
+      providerCustomerId: _customerId(session.customer),
     };
   }
 

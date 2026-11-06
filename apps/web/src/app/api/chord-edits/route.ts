@@ -30,10 +30,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { getUser } from '@/lib/auth/supabase';
+// Shared with chord/edit-collector.ts; mirrors chord_source.py and migration 029.
+import { HARTE_RE } from '@/chord/harte';
 
-// Harte 2010 quality part is tighter than the DB regex: lowercase alphanum
-// only, length-bounded in the route too (DB CHECK is length ≤ 16 overall).
-const HARTE_RE = /^(N|X|[A-G](#|b)?(:[a-z0-9]+)?)$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 const PROVIDERS = new Set(['klangio', 'internal', 'autochord']);

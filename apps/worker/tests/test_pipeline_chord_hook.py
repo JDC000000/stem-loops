@@ -19,6 +19,7 @@ client are mocked. Stems are real tiny WAVs so the ffmpeg mix runs for real.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import struct
@@ -170,7 +171,12 @@ def test_chord_hook_provider_failure_is_logged_not_raised(
     ):
         pipeline._maybe_run_chord_recognition("job-fail", stem_paths, ["keys"])
 
-    fake_r2.put_object.assert_not_called()
+    # No chord artifact is written, only a tombstone saying the provider failed.
+    fake_r2.put_object.assert_called_once()
+    assert json.loads(fake_r2.put_object.call_args.kwargs["Body"]) == {
+        "status": "unavailable",
+        "reason": "provider_failed",
+    }
 
 
 # ----------------------------- Part 3: stem selection (real 6-stem set) ---------------
@@ -414,7 +420,11 @@ def test_chord_hook_skipped_when_no_harmonic_stem(
         pipeline._maybe_run_chord_recognition("job-vocals", stems, ["vocals"])
 
     fake_provider.recognize.assert_not_called()
-    fake_r2.put_object.assert_not_called()
+    fake_r2.put_object.assert_called_once()
+    assert json.loads(fake_r2.put_object.call_args.kwargs["Body"]) == {
+        "status": "unavailable",
+        "reason": "not_attempted",
+    }
     names = [c.args[1] for c in log.call_args_list]
     assert "chords_skipped_no_harmonic_stem" in names
     assert "chords_skipped_no_instrumental_stem" not in names
@@ -557,3 +567,136 @@ def test_chord_heartbeat_beats_while_running_and_stops(monkeypatch: pytest.Monke
 
     assert asyncio.run(go()) >= 2
     assert set(beats) == {"job-hb"}
+
+
+# ----------------------- duration gate + tombstones (too_long etc.) -----------------------
+def _tombstone(r2: MagicMock) -> dict:
+    r2.put_object.assert_called_once()
+    return json.loads(r2.put_object.call_args.kwargs["Body"])
+
+
+def test_under_limit_track_behaves_as_before(
+    stem_paths: dict[str, str], chord_result: ChordResult, _chord_env: None
+) -> None:
+    """0.2 s stems: provider is called once and the artifact is the real ChordResult."""
+    r2 = _FakeR2()
+    provider = _run_with_r2("job-short", stem_paths, chord_result, r2)
+    provider.recognize.assert_called_once()
+    body = json.loads(r2.objects["jobs/job-short/play.chords.json"])
+    assert body["segments"] and "status" not in body
+
+
+def test_over_limit_skips_provider_mix_and_writes_too_long_tombstone(
+    stem_paths: dict[str, str], monkeypatch: pytest.MonkeyPatch, _chord_env: None
+) -> None:
+    monkeypatch.setattr(pipeline, "_probe_duration_sec", lambda _p: 1200.0)  # 20 min
+    provider = MagicMock()
+    r2 = MagicMock()
+    r2.get_object.side_effect = RuntimeError("NoSuchKey")
+    with (
+        patch.object(pipeline, "_choose_chord_input") as choose,
+        patch("worker.chord_source.get_chord_source", return_value=provider),
+        patch("worker.storage.r2_uploader._r2", return_value=r2),
+    ):
+        pipeline._maybe_run_chord_recognition("job-long", stem_paths, list(stem_paths))
+    provider.recognize.assert_not_called()  # no Klangio call
+    choose.assert_not_called()  # and no wasted ffmpeg mix
+    body = _tombstone(r2)
+    assert body["status"] == "unavailable" and body["reason"] == "too_long"
+    assert r2.put_object.call_args.kwargs["Key"] == "jobs/job-long/play.chords.json"
+
+
+def test_limit_is_read_from_config_not_hardcoded(
+    stem_paths: dict[str, str],
+    chord_result: ChordResult,
+    monkeypatch: pytest.MonkeyPatch,
+    _chord_env: None,
+) -> None:
+    monkeypatch.setattr(pipeline, "_probe_duration_sec", lambda _p: 400.0)
+    # Default 300: 400 s is too long.
+    monkeypatch.delenv("CHORDS_MAX_AUDIO_SEC", raising=False)
+    assert pipeline._chords_max_audio_sec() == 300.0
+    r2 = _FakeR2()
+    assert _run_with_r2("job-a", stem_paths, chord_result, r2).recognize.call_count == 0
+    # Raised to 600 (e.g. Enterprise): the same track now goes through.
+    monkeypatch.setenv("CHORDS_MAX_AUDIO_SEC", "600")
+    r2 = _FakeR2()
+    assert _run_with_r2("job-b", stem_paths, chord_result, r2).recognize.call_count == 1
+    # Lowered to 100: a 150 s track is skipped.
+    monkeypatch.setenv("CHORDS_MAX_AUDIO_SEC", "100")
+    monkeypatch.setattr(pipeline, "_probe_duration_sec", lambda _p: 150.0)
+    assert _run_with_r2("job-c", stem_paths, chord_result, _FakeR2()).recognize.call_count == 0
+
+
+@pytest.mark.parametrize("bad", ["abc", "0", "-5", "inf", "nan"])
+def test_invalid_limit_falls_back_to_default(bad: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHORDS_MAX_AUDIO_SEC", bad)
+    assert pipeline._chords_max_audio_sec() == 300.0
+
+
+def test_exactly_at_limit_is_allowed(
+    stem_paths: dict[str, str],
+    chord_result: ChordResult,
+    monkeypatch: pytest.MonkeyPatch,
+    _chord_env: None,
+) -> None:
+    monkeypatch.setattr(pipeline, "_probe_duration_sec", lambda _p: 300.0)
+    assert _run_with_r2("job-edge", stem_paths, chord_result, _FakeR2()).recognize.call_count == 1
+
+
+def test_unmeasurable_duration_fails_open_to_provider_check(
+    stem_paths: dict[str, str],
+    chord_result: ChordResult,
+    monkeypatch: pytest.MonkeyPatch,
+    _chord_env: None,
+) -> None:
+    """If we cannot probe, do not tombstone: the provider's own fail-closed check decides."""
+    monkeypatch.setattr(pipeline, "_probe_duration_sec", lambda _p: None)
+    assert _run_with_r2("job-np", stem_paths, chord_result, _FakeR2()).recognize.call_count == 1
+
+
+def test_real_probe_measures_a_wav(tmp_path: Path) -> None:
+    p = tmp_path / "x.wav"
+    _write_wav(p, 440.0, secs=1.5)
+    assert pipeline._probe_duration_sec(str(p)) == pytest.approx(1.5, abs=0.05)
+    assert pipeline._probe_duration_sec(str(tmp_path / "missing.wav")) is None
+
+
+def test_tombstone_is_not_treated_as_a_reusable_artifact(
+    stem_paths: dict[str, str], chord_result: ChordResult, _chord_env: None
+) -> None:
+    """A rerun after a (possibly transient) provider_failed tombstone must retry."""
+    key = "jobs/job-tomb/play.chords.json"
+    r2 = _FakeR2({key: b'{"status":"unavailable","reason":"provider_failed"}'})
+    provider = _run_with_r2("job-tomb", stem_paths, chord_result, r2)
+    provider.recognize.assert_called_once()
+
+
+def test_tombstone_write_failure_is_swallowed(
+    stem_paths: dict[str, str], monkeypatch: pytest.MonkeyPatch, _chord_env: None
+) -> None:
+    monkeypatch.setattr(pipeline, "_probe_duration_sec", lambda _p: 1200.0)
+    r2 = MagicMock()
+    r2.get_object.side_effect = RuntimeError("NoSuchKey")
+    r2.put_object.side_effect = RuntimeError("R2 down")
+    with patch("worker.storage.r2_uploader._r2", return_value=r2):
+        pipeline._maybe_run_chord_recognition("job-x", stem_paths, list(stem_paths))
+
+
+def test_disabled_provider_writes_no_tombstone(
+    stem_paths: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CHORDS_PROVIDER", "")
+    monkeypatch.setattr(pipeline, "_probe_duration_sec", lambda _p: 1200.0)
+    r2 = MagicMock()
+    with patch("worker.storage.r2_uploader._r2", return_value=r2):
+        pipeline._maybe_run_chord_recognition("job-off2", stem_paths, list(stem_paths))
+    r2.put_object.assert_not_called()
+
+
+def test_loader_reasons_match_what_worker_writes() -> None:
+    """The reasons the worker writes must be ones play-chords-loader.ts maps (not 'unknown')."""
+    loader = Path(__file__).resolve().parents[3] / "apps/web/src/chord/play-chords-loader.ts"
+    src = loader.read_text()
+    for reason in ("too_long", "provider_failed", "not_attempted"):
+        assert f"v === '{reason}'" in src

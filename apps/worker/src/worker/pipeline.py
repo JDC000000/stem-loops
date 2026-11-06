@@ -373,6 +373,72 @@ def _existing_play_chords(job_id: str) -> bool:
     return valid
 
 
+CHORDS_MAX_AUDIO_SEC_DEFAULT = 300.0
+
+
+def _chords_max_audio_sec() -> float:
+    """Longest track (seconds) we will send to the chord provider. Read at call time.
+
+    Mirrors Klangio's 300 s limit on every tier below Enterprise (see
+    ``KLANGIO_MAX_AUDIO_SEC``, which the provider still enforces independently). Invalid or
+    non-positive values fall back to the default rather than silently disabling the guard.
+    """
+    raw = os.environ.get("CHORDS_MAX_AUDIO_SEC", "").strip()
+    if not raw:
+        return CHORDS_MAX_AUDIO_SEC_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if not value > 0 or value == float("inf"):
+        log_structured("WARN", "chords_max_audio_sec_invalid", using=CHORDS_MAX_AUDIO_SEC_DEFAULT)
+        return CHORDS_MAX_AUDIO_SEC_DEFAULT
+    return value
+
+
+def _probe_duration_sec(path: str) -> float | None:
+    """Local duration probe (soundfile, then ffprobe). None if it cannot be measured."""
+    try:
+        import soundfile as sf  # noqa: PLC0415 — heavy native dep, keep import lazy
+
+        return float(sf.info(path).duration)
+    except Exception:  # noqa: BLE001 — fall through to ffprobe
+        pass
+    try:
+        exe = shutil.which("ffprobe")
+        if not exe:
+            return None
+        proc = subprocess.run(
+            [exe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return float(proc.stdout.strip()) if proc.returncode == 0 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _write_chords_tombstone(job_id: str, reason: str, **detail) -> None:
+    """Record WHY a job has no chords at ``jobs/<job_id>/play.chords.json``.
+
+    Shape ``{"status": "unavailable", "reason": <reason>}`` is what the web loader
+    (``play-chords-loader.ts``) already understands. It has no ``segments``, so
+    ``_existing_play_chords`` treats it as absent and a reaper rerun still retries. Never
+    raises: this is a best-effort UX hint on an optional feature.
+    """
+    import json as _json  # noqa: PLC0415
+
+    try:
+        upload_play_chords(
+            job_id, _json.dumps({"status": "unavailable", "reason": reason, **detail}).encode()
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_structured(
+            "WARN", "chords_tombstone_failed", job_id=job_id, reason=reason, error=str(exc)[:200]
+        )
+
+
 def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems) -> None:
     """Y1.1 feature-flag entry point. Uploads ``play.chords.json`` to R2 or no-ops.
 
@@ -400,6 +466,25 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             r2_key=f"jobs/{job_id}/play.chords.json",
         )
         return
+    # Duration gate: BEFORE stem selection so an over-length track also skips the ffmpeg
+    # harmonic mix. The track is still accepted (stems/loops are the product); only the
+    # optional chord overlay is skipped, with a specific reason for the UI.
+    probe_path = next(
+        (stem_paths[n] for n in (*_HARMONIC_STEMS, *_MIX_EXTRA_STEMS) if stem_paths.get(n)),
+        next((p for p in stem_paths.values() if p), None),
+    )
+    duration = _probe_duration_sec(probe_path) if probe_path else None
+    max_sec = _chords_max_audio_sec()
+    if duration is not None and duration > max_sec:
+        log_structured(
+            "INFO",
+            "chords_skipped_too_long",
+            job_id=job_id,
+            duration_sec=round(duration, 1),
+            max_sec=max_sec,
+        )
+        _write_chords_tombstone(job_id, "too_long", duration_sec=round(duration, 1))
+        return
     chosen = _choose_chord_input(stem_paths, preferred=CHORDS_DEFAULT_STEM)
     if not chosen:
         log_structured(
@@ -409,6 +494,7 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             stems=sorted(stem_paths.keys()),
             preferred=CHORDS_DEFAULT_STEM,
         )
+        _write_chords_tombstone(job_id, "not_attempted")
         return
     stem_name, audio_path = chosen
     log_structured(
@@ -471,6 +557,8 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
         )
         # Also tell Sentry so the Y1 bridge visibility doesn't die silently.
         sentry_sdk.capture_exception(exc)
+        # We tried and it failed: tell the user that, not the generic text.
+        _write_chords_tombstone(job_id, "provider_failed")
 
 
 @contextlib.asynccontextmanager

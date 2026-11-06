@@ -110,7 +110,10 @@ async function loadRoute({ user, db } = {}) {
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub(db ?? {})}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub()}'`)
-    .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
+    .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`)
+    // Shared validator: inline the real harte.ts so the route is tested against
+    // the same regex that ships.
+    .replace(/from ['"]@\/chord\/harte['"]/g, `from '${dataUrl(toJs(readFileSync(join(WEB, 'src/chord/harte.ts'), 'utf8')))}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
 
@@ -174,6 +177,23 @@ test('400 CHORD_EDIT_HARTE on invalid Harte label', async () => {
   const res = await mod.POST(makeReq({ ...VALID_BODY, corrected_label: 'Cmaj7' }));
   assert.equal(res.status, 400);
   assert.equal(res.body.error_code, 'CHORD_EDIT_HARTE');
+});
+
+test('400 CHORD_EDIT_HARTE on unknown quality / out-of-range bass', async () => {
+  const mod = await loadRoute({ user: USER });
+  for (const bad of ['C:zzz', 'C:maj/14', 'C:maj/0', 'N/3', 'X/5', 'C:maj/']) {
+    const res = await mod.POST(makeReq({ ...VALID_BODY, corrected_label: bad }));
+    assert.equal(res.status, 400, bad);
+    assert.equal(res.body.error_code, 'CHORD_EDIT_HARTE', bad);
+  }
+});
+
+test('slash chords pass Harte validation (no CHORD_EDIT_HARTE)', async () => {
+  const mod = await loadRoute({ user: USER });
+  for (const good of ['G:7/5', 'A:min/b3', 'C#:maj7/b7', 'Bb:sus4/5']) {
+    const res = await mod.POST(makeReq({ ...VALID_BODY, corrected_label: good }));
+    assert.notEqual(res.body?.error_code, 'CHORD_EDIT_HARTE', good);
+  }
 });
 
 test('400 CHORD_EDIT_TIME_RANGE when end_sec <= start_sec', async () => {

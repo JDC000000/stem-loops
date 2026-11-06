@@ -75,7 +75,7 @@ const USER = '11111111-1111-1111-1111-111111111111';
 // Snapshot the read order from entitlements.ts::readSnapshot:
 //   Promise.all([ entitlements, v_credit_balance, trial_grants ]) then plans.
 const PRO_ROWS = [
-  { rows: [{ plan_code: 'pro', period_start: '2026-11-01T00:00:00Z', period_end: '2026-12-01T00:00:00Z', jobs_used: 2 }] },
+  { rows: [{ plan_code: 'pro', period_start: '2026-11-01T00:00:00Z', period_end: '2026-12-01T00:00:00Z', jobs_used: 2, sub_status: 'active', sub_period_start: '2026-11-01T00:00:00Z' }] },
   { rows: [{ credits_remaining: 5 }] },
   { rows: [] },
   { rows: [{ code: 'pro', monthly_job_quota: 100000, services: [], export_stems: true, export_wav24: false }] },

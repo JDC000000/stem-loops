@@ -115,6 +115,40 @@ test('buildCsp includes the required default-src and frame-ancestors tokens', as
   assert.match(csp, /connect-src .*https:\/\/sentry\.io/);
 });
 
+// Extract one directive's source list from a CSP string.
+const directive = (csp, name) =>
+  csp.split('; ').find((d) => d.startsWith(name + ' '))?.split(' ').slice(1) ?? null;
+
+test('buildCsp permits hCaptcha on script-src, frame-src, style-src and connect-src', async () => {
+  const csp = (await loadMiddleware()).buildCsp();
+  for (const name of ['script-src', 'frame-src', 'style-src', 'connect-src']) {
+    const srcs = directive(csp, name);
+    assert.ok(srcs, `${name} directive must exist`);
+    assert.ok(srcs.includes('https://hcaptcha.com'), `${name} must allow https://hcaptcha.com`);
+    assert.ok(srcs.includes('https://*.hcaptcha.com'), `${name} must allow https://*.hcaptcha.com`);
+  }
+});
+
+test('hCaptcha is scoped: frame-src is hcaptcha-only; no broad wildcards; locked directives unchanged', async () => {
+  const csp = (await loadMiddleware()).buildCsp();
+  assert.deepEqual(directive(csp, 'frame-src'), ['https://hcaptcha.com', 'https://*.hcaptcha.com']);
+  assert.deepEqual(directive(csp, 'default-src'), ["'self'"]);
+  assert.deepEqual(directive(csp, 'frame-ancestors'), ["'none'"]);
+  assert.deepEqual(directive(csp, 'object-src'), ["'none'"]);
+  assert.deepEqual(directive(csp, 'base-uri'), ["'self'"]);
+  assert.deepEqual(directive(csp, 'form-action'), ["'self'"]);
+  // Existing script-src/style-src tokens are retained, not replaced.
+  assert.ok(directive(csp, 'script-src').includes("'wasm-unsafe-eval'"));
+  assert.ok(directive(csp, 'script-src').includes("'self'"));
+  assert.ok(directive(csp, 'style-src').includes("'self'"));
+  // No bare wildcard or scheme-only source in the directives we touched.
+  for (const name of ['script-src', 'frame-src', 'style-src', 'connect-src']) {
+    for (const src of directive(csp, name)) {
+      assert.ok(!['*', 'https:', 'http:'].includes(src), `${name} must not contain ${src}`);
+    }
+  }
+});
+
 test('buildCsp picks up NEXT_PUBLIC_CHORDNET_MODEL_URL host', async () => {
   process.env.NEXT_PUBLIC_CHORDNET_MODEL_URL = 'https://models.example.com/chordnet-v1.onnx';
   const mod = await loadMiddleware();

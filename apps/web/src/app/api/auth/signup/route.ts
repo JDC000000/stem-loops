@@ -10,7 +10,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { createServerClient } from '@/lib/auth/supabase';
-import { validateEmail } from '@/lib/auth/password-rules';
+import { validateEmail, validatePassword } from '@/lib/auth/password-rules';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
 import { verifyHcaptchaToken } from '@/lib/hcaptcha';
 
@@ -43,9 +43,11 @@ export async function POST(request: NextRequest) {
   }
 
   const emailError = validateEmail(body?.email);
-  if (emailError || typeof body?.password !== 'string' || body.password.length === 0) {
+  // Authoritative password policy (same validator as password reset).
+  const passwordError = validatePassword(body?.password);
+  if (emailError || passwordError) {
     return NextResponse.json(
-      { ok: false, code: 'SIGNUP_INVALID', error: emailError ?? 'Enter a password.' },
+      { ok: false, code: 'SIGNUP_INVALID', error: emailError ?? passwordError },
       { status: 400, headers: NO_STORE },
     );
   }

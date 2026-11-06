@@ -202,3 +202,12 @@ test('/auth/callback — non-GET methods return 405 Allow: GET', async () => {
     assert.equal(res.headers.get('Allow'), 'GET', verb);
   }
 });
+
+test('GET /auth/callback — Supabase error_code=otp_expired (no code) -> auth_link_expired', async () => {
+  const mod = await loadRoute();
+  const res = await mod.GET(
+    makeReq('https://stem-loops.com/auth/callback?error=access_denied&error_code=otp_expired'),
+  );
+  assert.equal(res.headers.get('location'), 'https://stem-loops.com/login?error=auth_link_expired');
+  assert.equal(globalThis.__exchangeCalls.length, 0);
+});

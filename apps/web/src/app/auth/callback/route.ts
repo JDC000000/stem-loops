@@ -1,34 +1,31 @@
-// /auth/callback — server-side PKCE exchange for Supabase Auth flows.
+// /auth/callback -- server-side PKCE exchange for Supabase Auth flows.
 //
-// Supabase sends the browser here after:
-//   • Email confirmation link click (type=signup)
-//   • Password reset link click       (type=recovery)
-//   • OAuth provider return           (type=oauth)
+// Supabase email links (password reset, signup confirmation) point here with
+// a one-time `?code=...`. The SERVER exchanges it for a session using the
+// cookies on the request (including the PKCE verifier set when the link was
+// requested, which is why a link opened in a different browser fails).
 //
-// The link carries a one-time `?code=...` that the SERVER (not the browser)
-// exchanges for a session using the service-free anon key plus the cookies on
-// the request. On success we redirect the user to a sanitized `?next=` (or
-// `/account` by default); on any failure we redirect to `/login` with a
-// stable `error=auth_callback_failed` code the login page can render via the
-// existing `ERROR_COPY` map.
+// Outcomes:
+//   • success                 -> redirect to the sanitized `?next=` (default /account)
+//   • any failure             -> redirect to `/login?error=<code>`; the login page
+//                                renders it via LOGIN_ERROR_COPY
+//                                (lib/auth/login-errors.ts). Codes emitted:
+//       auth_link_expired     Supabase redirected here with `error_code=otp_expired`
+//       auth_callback_failed  everything else: no `code`, exchange rejected
+//                             (expired, reused, missing PKCE verifier), or the
+//                             exchange threw
 //
-// Hardening rules enforced here:
-//   • `?next` is sanitized via `sanitizeReturnTo` (same whitelist used by
-//     `/login`), which rejects external hosts, protocol-relative URLs,
-//     control characters and anything that doesn't start with "/".
-//   • Non-GET methods return 405 Method Not Allowed. The Supabase link is a
-//     GET, and letting arbitrary methods through would expose the exchange
-//     endpoint to CSRF-shaped probing.
-//   • Auth exchange failures are reported to Sentry (same `captureException`
-//     used elsewhere in the app). The user still gets the friendly redirect
-//     — no stack traces leak.
-//   • No code in the query → treat as a mis-handled link and redirect to
-//     /login with the same error code. (Returning a 400 JSON would be
-//     correct but unfriendly: the browser landed here, not the client.)
+// NOT routed through here: magic-link and Google sign-in use
+// `/login?code=...` and are exchanged by the browser client in LoginForm.
 //
-// Caching: forced dynamic. The response depends on the `?code=` single-use
-// token; serving a cached redirect would at best burn a token and at worst
-// hand a different user's exchange to the wrong browser.
+// Hardening:
+//   • `?next` goes through `sanitizeReturnTo` (no external hosts, protocol-
+//     relative URLs, control characters).
+//   • Non-GET methods return 405 Allow: GET.
+//   • Exchange failures and throws are reported to Sentry; the user only sees
+//     the redirect.
+//
+// Caching: forced dynamic. The response depends on a single-use token.
 
 import { NextResponse, type NextRequest } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
@@ -39,6 +36,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const FAILED = '/login?error=auth_callback_failed';
+const EXPIRED = '/login?error=auth_link_expired';
 
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = request.nextUrl;
@@ -47,9 +45,12 @@ export async function GET(request: NextRequest) {
   const next = sanitizeReturnTo(nextRaw, '/account');
 
   if (!code) {
-    // Reached without a code — a stale link, a copy-paste, or a bot. Send
-    // them to login with the standard failure code rather than a blank 400,
-    // so the user sees actionable copy instead of a browser error page.
+    // No code: Supabase reporting an expired link (`error_code=otp_expired`),
+    // or a stale link, copy-paste or bot. Redirect with a code the login page
+    // has copy for, rather than a blank 400.
+    if (searchParams.get('error_code') === 'otp_expired') {
+      return NextResponse.redirect(new URL(EXPIRED, origin));
+    }
     return NextResponse.redirect(new URL(FAILED, origin));
   }
 

@@ -62,6 +62,15 @@ export async function POST(request: NextRequest) {
         { status: 400, headers: { 'Cache-Control': 'no-store' } },
       );
     }
+    // Revoke every OTHER session so a stolen session does not survive the
+    // reset. Best-effort: the password is already changed, so a failure here
+    // is reported but does not fail the request.
+    const { error: revokeError } = await supabase.auth.signOut({ scope: 'others' });
+    if (revokeError) {
+      Sentry.captureException(revokeError, {
+        tags: { route: 'api/auth/reset-password-confirm', step: 'revoke-other-sessions' },
+      });
+    }
   } catch (err) {
     Sentry.captureException(err, {
       tags: { route: 'api/auth/reset-password-confirm' },

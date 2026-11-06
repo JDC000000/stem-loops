@@ -1,0 +1,31 @@
+{
+  "job_id": "11111111-2222-4333-8444-555555555555",
+  "r2_key": "jobs/11111111-2222-4333-8444-555555555555/play.chords.json",
+  "payload": {
+    "segments": [
+      {
+        "start_sec": 0.0,
+        "end_sec": 1.6,
+        "label": "C:maj",
+        "confidence": 1.0
+      },
+      {
+        "start_sec": 1.6,
+        "end_sec": 3.2,
+        "label": "F#:min7",
+        "confidence": 0.9
+      },
+      {
+        "start_sec": 3.2,
+        "end_sec": 4.8,
+        "label": "G:7/5",
+        "confidence": 0.5
+      }
+    ],
+    "key": "C:major",
+    "provider": "klangio",
+    "provider_version": "golden-v1",
+    "duration_sec": 4.8,
+    "model_ms": 123
+  }
+}

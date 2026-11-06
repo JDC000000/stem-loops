@@ -1,0 +1,656 @@
+{
+ "_comment": "Shared Harte validity table (issue #141 item 4). Hand-authored, independent of every validator. Consumed by apps/worker/tests/test_harte_cross_layer.py (worker is_valid_harte_label + the migrated DB CHECK) and apps/web/test/harte-cross-layer.test.mjs (real chord-edits route + real edit-collector).",
+ "qualities": [
+  "maj",
+  "min",
+  "dim",
+  "aug",
+  "sus2",
+  "sus4",
+  "maj6",
+  "min6",
+  "maj7",
+  "min7",
+  "7",
+  "dim7",
+  "hdim7",
+  "minmaj7",
+  "maj9",
+  "min9",
+  "9",
+  "11",
+  "13",
+  "add9",
+  "add11",
+  "5",
+  "add6",
+  "aug7"
+ ],
+ "labels": [
+  {
+   "label": "C:maj",
+   "valid": true,
+   "note": "quality maj"
+  },
+  {
+   "label": "C:min",
+   "valid": true,
+   "note": "quality min"
+  },
+  {
+   "label": "C:dim",
+   "valid": true,
+   "note": "quality dim"
+  },
+  {
+   "label": "C:aug",
+   "valid": true,
+   "note": "quality aug"
+  },
+  {
+   "label": "C:sus2",
+   "valid": true,
+   "note": "quality sus2"
+  },
+  {
+   "label": "C:sus4",
+   "valid": true,
+   "note": "quality sus4"
+  },
+  {
+   "label": "C:maj6",
+   "valid": true,
+   "note": "quality maj6"
+  },
+  {
+   "label": "C:min6",
+   "valid": true,
+   "note": "quality min6"
+  },
+  {
+   "label": "C:maj7",
+   "valid": true,
+   "note": "quality maj7"
+  },
+  {
+   "label": "C:min7",
+   "valid": true,
+   "note": "quality min7"
+  },
+  {
+   "label": "C:7",
+   "valid": true,
+   "note": "quality 7"
+  },
+  {
+   "label": "C:dim7",
+   "valid": true,
+   "note": "quality dim7"
+  },
+  {
+   "label": "C:hdim7",
+   "valid": true,
+   "note": "quality hdim7"
+  },
+  {
+   "label": "C:minmaj7",
+   "valid": true,
+   "note": "quality minmaj7"
+  },
+  {
+   "label": "C:maj9",
+   "valid": true,
+   "note": "quality maj9"
+  },
+  {
+   "label": "C:min9",
+   "valid": true,
+   "note": "quality min9"
+  },
+  {
+   "label": "C:9",
+   "valid": true,
+   "note": "quality 9"
+  },
+  {
+   "label": "C:11",
+   "valid": true,
+   "note": "quality 11"
+  },
+  {
+   "label": "C:13",
+   "valid": true,
+   "note": "quality 13"
+  },
+  {
+   "label": "C:add9",
+   "valid": true,
+   "note": "quality add9"
+  },
+  {
+   "label": "C:add11",
+   "valid": true,
+   "note": "quality add11"
+  },
+  {
+   "label": "C:5",
+   "valid": true,
+   "note": "quality 5"
+  },
+  {
+   "label": "C:add6",
+   "valid": true,
+   "note": "quality add6"
+  },
+  {
+   "label": "C:aug7",
+   "valid": true,
+   "note": "quality aug7"
+  },
+  {
+   "label": "F#:maj",
+   "valid": true,
+   "note": "sharp root"
+  },
+  {
+   "label": "Bb:maj",
+   "valid": true,
+   "note": "flat root"
+  },
+  {
+   "label": "F#:min7",
+   "valid": true,
+   "note": "sharp root"
+  },
+  {
+   "label": "Bb:min7",
+   "valid": true,
+   "note": "flat root"
+  },
+  {
+   "label": "F#:7",
+   "valid": true,
+   "note": "sharp root"
+  },
+  {
+   "label": "Bb:7",
+   "valid": true,
+   "note": "flat root"
+  },
+  {
+   "label": "A:maj",
+   "valid": true,
+   "note": "root A"
+  },
+  {
+   "label": "B:maj",
+   "valid": true,
+   "note": "root B"
+  },
+  {
+   "label": "D:maj",
+   "valid": true,
+   "note": "root D"
+  },
+  {
+   "label": "E:maj",
+   "valid": true,
+   "note": "root E"
+  },
+  {
+   "label": "G:maj",
+   "valid": true,
+   "note": "root G"
+  },
+  {
+   "label": "Db:maj",
+   "valid": true,
+   "note": "root Db"
+  },
+  {
+   "label": "Eb:maj",
+   "valid": true,
+   "note": "root Eb"
+  },
+  {
+   "label": "Gb:maj",
+   "valid": true,
+   "note": "root Gb"
+  },
+  {
+   "label": "Ab:maj",
+   "valid": true,
+   "note": "root Ab"
+  },
+  {
+   "label": "C#:maj",
+   "valid": true,
+   "note": "root C#"
+  },
+  {
+   "label": "D#:maj",
+   "valid": true,
+   "note": "root D#"
+  },
+  {
+   "label": "F#:maj",
+   "valid": true,
+   "note": "root F#"
+  },
+  {
+   "label": "G#:maj",
+   "valid": true,
+   "note": "root G#"
+  },
+  {
+   "label": "A#:maj",
+   "valid": true,
+   "note": "root A#"
+  },
+  {
+   "label": "Cb:maj",
+   "valid": true,
+   "note": "root Cb"
+  },
+  {
+   "label": "E#:maj",
+   "valid": true,
+   "note": "root E#"
+  },
+  {
+   "label": "C",
+   "valid": true,
+   "note": "bare root = implicit maj"
+  },
+  {
+   "label": "F#",
+   "valid": true,
+   "note": "bare sharp root"
+  },
+  {
+   "label": "Bb",
+   "valid": true,
+   "note": "bare flat root"
+  },
+  {
+   "label": "N",
+   "valid": true,
+   "note": "no chord"
+  },
+  {
+   "label": "X",
+   "valid": true,
+   "note": "unknown"
+  },
+  {
+   "label": "C:maj/1",
+   "valid": true,
+   "note": "slash bass /1"
+  },
+  {
+   "label": "C:maj/3",
+   "valid": true,
+   "note": "slash bass /3"
+  },
+  {
+   "label": "C:maj/5",
+   "valid": true,
+   "note": "slash bass /5"
+  },
+  {
+   "label": "C:maj/7",
+   "valid": true,
+   "note": "slash bass /7"
+  },
+  {
+   "label": "C:maj/9",
+   "valid": true,
+   "note": "slash bass /9"
+  },
+  {
+   "label": "C:maj/10",
+   "valid": true,
+   "note": "slash bass /10"
+  },
+  {
+   "label": "C:maj/11",
+   "valid": true,
+   "note": "slash bass /11"
+  },
+  {
+   "label": "C:maj/12",
+   "valid": true,
+   "note": "slash bass /12"
+  },
+  {
+   "label": "C:maj/13",
+   "valid": true,
+   "note": "slash bass /13"
+  },
+  {
+   "label": "C:maj/b3",
+   "valid": true,
+   "note": "slash bass /b3"
+  },
+  {
+   "label": "C:maj/b5",
+   "valid": true,
+   "note": "slash bass /b5"
+  },
+  {
+   "label": "C:maj/b7",
+   "valid": true,
+   "note": "slash bass /b7"
+  },
+  {
+   "label": "C:maj/#5",
+   "valid": true,
+   "note": "slash bass /#5"
+  },
+  {
+   "label": "C:maj/#4",
+   "valid": true,
+   "note": "slash bass /#4"
+  },
+  {
+   "label": "C:maj/bb7",
+   "valid": true,
+   "note": "slash bass /bb7"
+  },
+  {
+   "label": "C:maj/##1",
+   "valid": true,
+   "note": "slash bass /##1"
+  },
+  {
+   "label": "G:7/5",
+   "valid": true,
+   "note": "the label that exposed the drift"
+  },
+  {
+   "label": "A:min/b3",
+   "valid": true,
+   "note": "min with flat-3 bass"
+  },
+  {
+   "label": "C/3",
+   "valid": true,
+   "note": "bare root with bass"
+  },
+  {
+   "label": "F#:min7/b7",
+   "valid": true,
+   "note": "sharp root slash"
+  },
+  {
+   "label": "Bb/5",
+   "valid": true,
+   "note": "flat bare root with bass"
+  },
+  {
+   "label": "",
+   "valid": false,
+   "note": "empty"
+  },
+  {
+   "label": " ",
+   "valid": false,
+   "note": "space"
+  },
+  {
+   "label": "C:foo",
+   "valid": false,
+   "note": "unknown quality (old [a-z0-9]+ accepted this)"
+  },
+  {
+   "label": "C:zzz",
+   "valid": false,
+   "note": "unknown quality"
+  },
+  {
+   "label": "C:",
+   "valid": false,
+   "note": "dangling colon"
+  },
+  {
+   "label": "C:maj/",
+   "valid": false,
+   "note": "dangling slash"
+  },
+  {
+   "label": "C:maj/0",
+   "valid": false,
+   "note": "bass degree 0"
+  },
+  {
+   "label": "C:maj/14",
+   "valid": false,
+   "note": "bass degree 14"
+  },
+  {
+   "label": "C:maj/20",
+   "valid": false,
+   "note": "bass degree 20"
+  },
+  {
+   "label": "C:maj/E",
+   "valid": false,
+   "note": "note-name bass (Harte bass is an interval)"
+  },
+  {
+   "label": "C/E",
+   "valid": false,
+   "note": "note-name bass, bare root"
+  },
+  {
+   "label": "C:maj/3/5",
+   "valid": false,
+   "note": "two basses"
+  },
+  {
+   "label": "C:maj:min",
+   "valid": false,
+   "note": "two qualities"
+  },
+  {
+   "label": "H:maj",
+   "valid": false,
+   "note": "root H"
+  },
+  {
+   "label": "c:maj",
+   "valid": false,
+   "note": "lowercase root"
+  },
+  {
+   "label": "C:MAJ",
+   "valid": false,
+   "note": "uppercase quality"
+  },
+  {
+   "label": "C:Maj7",
+   "valid": false,
+   "note": "mixed-case quality"
+  },
+  {
+   "label": "C##:maj",
+   "valid": false,
+   "note": "double sharp root"
+  },
+  {
+   "label": "Cbb",
+   "valid": false,
+   "note": "double flat root"
+  },
+  {
+   "label": "C#b",
+   "valid": false,
+   "note": "sharp-flat root"
+  },
+  {
+   "label": "B#b:maj",
+   "valid": false,
+   "note": "root garbage"
+  },
+  {
+   "label": "N:maj",
+   "valid": false,
+   "note": "N takes no quality"
+  },
+  {
+   "label": "X:min",
+   "valid": false,
+   "note": "X takes no quality"
+  },
+  {
+   "label": "N/5",
+   "valid": false,
+   "note": "N takes no bass"
+  },
+  {
+   "label": "X/3",
+   "valid": false,
+   "note": "X takes no bass"
+  },
+  {
+   "label": "n",
+   "valid": false,
+   "note": "lowercase N"
+  },
+  {
+   "label": "x",
+   "valid": false,
+   "note": "lowercase X"
+  },
+  {
+   "label": "NN",
+   "valid": false,
+   "note": "double N"
+  },
+  {
+   "label": "C:maj7 ",
+   "valid": false,
+   "note": "trailing space"
+  },
+  {
+   "label": " C:maj",
+   "valid": false,
+   "note": "leading space"
+  },
+  {
+   "label": "C:maj7\n",
+   "valid": false,
+   "note": "trailing newline"
+  },
+  {
+   "label": "\nC:maj",
+   "valid": false,
+   "note": "leading newline"
+  },
+  {
+   "label": "C:maj\r\n",
+   "valid": false,
+   "note": "trailing CRLF"
+  },
+  {
+   "label": "C:maj\tx",
+   "valid": false,
+   "note": "tab junk"
+  },
+  {
+   "label": "C:maj7x",
+   "valid": false,
+   "note": "quality + suffix"
+  },
+  {
+   "label": "C:maj77",
+   "valid": false,
+   "note": "quality doubled"
+  },
+  {
+   "label": "C:sus",
+   "valid": false,
+   "note": "unlisted sus"
+  },
+  {
+   "label": "C:m",
+   "valid": false,
+   "note": "m shorthand"
+  },
+  {
+   "label": "C:min7b5",
+   "valid": false,
+   "note": "non-alphabet quality"
+  },
+  {
+   "label": "C:6",
+   "valid": false,
+   "note": "bare 6 quality"
+  },
+  {
+   "label": "C:aug7/",
+   "valid": false,
+   "note": "aug7 dangling"
+  },
+  {
+   "label": "C\u266f:maj",
+   "valid": false,
+   "note": "unicode sharp"
+  },
+  {
+   "label": "\uff23:maj",
+   "valid": false,
+   "note": "fullwidth C"
+  },
+  {
+   "label": "C:maj/\uff13",
+   "valid": false,
+   "note": "fullwidth digit bass"
+  },
+  {
+   "label": "C:maj/\u0663",
+   "valid": false,
+   "note": "arabic-indic digit bass"
+  },
+  {
+   "label": "C:\uff17",
+   "valid": false,
+   "note": "fullwidth 7"
+  },
+  {
+   "label": "C:maj;DROP TABLE chord_edits",
+   "valid": false,
+   "note": "sql junk"
+  },
+  {
+   "label": "<script>",
+   "valid": false,
+   "note": "html junk"
+  },
+  {
+   "label": "C:maj\u0000",
+   "valid": false,
+   "note": "NUL"
+  },
+  {
+   "label": "C:maj/b",
+   "valid": false,
+   "note": "flat with no degree"
+  },
+  {
+   "label": "C:maj/#",
+   "valid": false,
+   "note": "sharp with no degree"
+  },
+  {
+   "label": "C:maj/b0",
+   "valid": false,
+   "note": "b0"
+  },
+  {
+   "label": "C:maj/010",
+   "valid": false,
+   "note": "leading zero bass"
+  }
+ ]
+}

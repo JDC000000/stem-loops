@@ -4,6 +4,9 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import HCaptcha from '@hcaptcha/react-hcaptcha';
 import { createBrowserClient } from '@/lib/auth/supabase';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
+import { PASSWORD_MIN_LENGTH, validatePassword } from '@/lib/auth/password-rules';
+import { loginErrorMessage } from '@/lib/auth/login-errors';
+import { sendMagicLink } from '@/lib/auth/magic-link';
 
 type Mode = 'signin' | 'signup' | 'reset';
 
@@ -23,13 +26,15 @@ const linkBtn = {
   minHeight: 44, padding: '0 8px', display: 'inline-flex', alignItems: 'center',
 };
 
-export default function LoginForm({ returnTo }: { returnTo?: string }) {
+export default function LoginForm({
+  returnTo, initialError, initialMode = 'signin',
+}: { returnTo?: string; initialError?: string; initialMode?: Mode }) {
   const dest = sanitizeReturnTo(returnTo, '/account');
-  const [mode, setMode] = useState<Mode>('signin');
+  const [mode, setMode] = useState<Mode>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(loginErrorMessage(initialError));
   const [notice, setNotice] = useState<string | null>(null);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const captchaRef = useRef<HCaptcha>(null);
@@ -79,6 +84,13 @@ export default function LoginForm({ returnTo }: { returnTo?: string }) {
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
+    // Same rule the server enforces (/api/auth/signup), so the form never
+    // accepts a password the server will reject. Sign-in is never checked:
+    // existing accounts may predate these rules.
+    if (mode === 'signup') {
+      const pwError = validatePassword(password);
+      if (pwError) { setError(pwError); return; }
+    }
     void run(async () => {
       const supabase = createBrowserClient();
       if (mode === 'reset') {
@@ -114,11 +126,7 @@ export default function LoginForm({ returnTo }: { returnTo?: string }) {
   function magicLink() {
     if (!email) { setError('Enter your email first.'); return; }
     void run(async () => {
-      const { error: err } = await createBrowserClient().auth.signInWithOtp({
-        email, options: { emailRedirectTo: callbackUrl() },
-      });
-      if (err) throw err;
-      return 'Check your email for a one-time login link.';
+      return sendMagicLink(createBrowserClient(), email, callbackUrl());
     });
   }
 
@@ -147,9 +155,15 @@ export default function LoginForm({ returnTo }: { returnTo?: string }) {
         {mode !== 'reset' && (
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4, color: 'var(--text-secondary)', fontSize: 14 }}>
             Password
-            <input type="password" required minLength={8}
+            <input type="password" required
+              minLength={mode === 'signup' ? PASSWORD_MIN_LENGTH : undefined}
               autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
               value={password} onChange={(e) => setPassword(e.target.value)} style={input} />
+            {mode === 'signup' && (
+              <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+                At least {PASSWORD_MIN_LENGTH} characters, with a letter and a digit.
+              </span>
+            )}
           </label>
         )}
         {mode === 'signup' && (siteKey ? (

@@ -121,3 +121,26 @@ test('valid token -> verifies (with client IP) then calls Supabase signUp', asyn
   assert.equal(globalThis.__signUpCalls[0].email, 'alice@example.com');
   assert.match(globalThis.__signUpCalls[0].options.emailRedirectTo, /^https:\/\/stem-loops\.com\/login\?return_to=/);
 });
+
+// Bug 4: the server is authoritative for password rules.
+test('weak password (valid captcha) -> 400 SIGNUP_INVALID, signUp never called', async () => {
+  for (const password of ['short1', 'abcdefghijkl', '1234567890123', ' padded1234567 ']) {
+    stubHcaptcha({ success: true });
+    const { POST } = await loadRoute();
+    const res = await POST(makeReq({ email: 'alice@example.com', password, hcaptcha_token: 'good' }));
+    assert.equal(res.status, 400, password);
+    assert.equal(res.body.code, 'SIGNUP_INVALID', password);
+    assert.equal(globalThis.__signUpCalls.length, 0, password);
+  }
+});
+
+test('form and server agree: the form validator (validatePassword) is what the route uses', async () => {
+  const { validatePassword } = await import(rulesUrl);
+  for (const password of ['correcthorse1battery', 'abcdefghi1', 'abcdefgh12', 'short1']) {
+    stubHcaptcha({ success: true });
+    globalThis.__signUpCalls = [];
+    const { POST } = await loadRoute();
+    const res = await POST(makeReq({ email: 'alice@example.com', password, hcaptcha_token: 'good' }));
+    assert.equal(res.status === 200, validatePassword(password) === null, password);
+  }
+});

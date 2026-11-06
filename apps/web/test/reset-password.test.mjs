@@ -67,9 +67,9 @@ function sentryStub() {
 // Unified supabase stub: scripts both resetPasswordForEmail and updateUser
 // return values, and records every call. getUser() returns the scripted user
 // (null for unauthenticated-confirm tests).
-function supabaseStub({ resetResult = { error: null }, updateResult = { error: null }, user = null } = {}) {
+function supabaseStub({ resetResult = { error: null }, updateResult = { error: null }, signOutResult = { error: null }, user = null } = {}) {
   return dataUrl(`
-    globalThis.__supabaseCalls = { resetPasswordForEmail: [], updateUser: [], getUser: 0 };
+    globalThis.__supabaseCalls = { resetPasswordForEmail: [], updateUser: [], signOut: [], getUser: 0 };
     export async function createServerClient() {
       return {
         auth: {
@@ -80,6 +80,10 @@ function supabaseStub({ resetResult = { error: null }, updateResult = { error: n
           updateUser: async (attrs) => {
             globalThis.__supabaseCalls.updateUser.push(attrs);
             return ${JSON.stringify(updateResult)};
+          },
+          signOut: async (opts) => {
+            globalThis.__supabaseCalls.signOut.push(opts);
+            return ${JSON.stringify(signOutResult)};
           },
         },
       };
@@ -98,7 +102,7 @@ async function loadRoute(src, opts) {
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub()}'`)
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${supabaseStub(opts)}'`)
     .replace(/from ['"]@\/lib\/auth\/password-rules['"]/g, `from '${rulesUrl}'`);
-  globalThis.__supabaseCalls = { resetPasswordForEmail: [], updateUser: [], getUser: 0 };
+  globalThis.__supabaseCalls = { resetPasswordForEmail: [], updateUser: [], signOut: [], getUser: 0 };
   globalThis.__sentryCaptures = [];
   return await import(dataUrl(js) + '#' + Math.random());
 }
@@ -284,4 +288,19 @@ test('reset-password-confirm: supabase updateUser error → 400 + Sentry capture
     globalThis.__sentryCaptures[0].tags?.route,
     'api/auth/reset-password-confirm',
   );
+});
+
+// Session revocation: a stolen session must not survive the victim's reset.
+test('reset-password-confirm: success revokes OTHER sessions', async () => {
+  const mod = await loadRoute(CFM_SRC, { user: { id: 'u1' } });
+  const res = await mod.POST(makeReq('https://x/api/auth/reset-password-confirm', { password: 'correcthorse1battery' }));
+  assert.equal(res.status, 200);
+  assert.deepEqual(globalThis.__supabaseCalls.signOut, [{ scope: 'others' }]);
+});
+
+test('reset-password-confirm: revoke failure does not fail the reset, but is reported', async () => {
+  const mod = await loadRoute(CFM_SRC, { user: { id: 'u1' }, signOutResult: { error: { message: 'boom' } } });
+  const res = await mod.POST(makeReq('https://x/api/auth/reset-password-confirm', { password: 'correcthorse1battery' }));
+  assert.equal(res.status, 200);
+  assert.equal(globalThis.__sentryCaptures.length, 1);
 });

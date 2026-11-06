@@ -1,0 +1,214 @@
+# Nightly end-to-end billing smoke test against STAGING.
+#
+# Runs scripts/smoke_staging.mjs: creates an ephemeral Supabase user, grants a
+# trial, checks entitlements/credits, opens a credit-pack and a subscription
+# Stripe Checkout session, then deletes the Stripe customer and the user.
+# It exists because the checkout success_url / subscription-fulfilment bugs
+# shipped with nothing exercising the money path.
+#
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║ NEVER PRODUCTION. How that is enforced (defence in depth):               ║
+# ║  1. STAGING_BASE_URL and SUPABASE_URL are HARDCODED in the step `env:`   ║
+# ║     below. They are not secrets, not inputs, not repo variables.         ║
+# ║     workflow_dispatch has NO inputs, so nobody can point it elsewhere.   ║
+# ║  2. SMOKE_ALLOW_PROD is forced empty (the script only honours "1"), and  ║
+# ║     the run step re-asserts that and that the URL is not stem-loops.com. ║
+# ║  3. The Stripe key must be sk_test_/rk_test_ or the run aborts. The      ║
+# ║     script itself also refuses sk_live_ without SMOKE_ALLOW_PROD.        ║
+# ║  4. Secret names carry a STAGING_ prefix so a prod credential is never   ║
+# ║     "the same secret as" something else in the repo (e.g. the            ║
+# ║     STRIPE_SECRET_KEY used by credit-pack-price-recon).                  ║
+# ║  5. A prod Supabase key cannot authenticate against the pinned staging   ║
+# ║     project URL, and the sweep step refuses any other project host.      ║
+# ║ If you edit this file: do not add inputs, do not template those URLs.    ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+#
+# FAILURE POLICY (see the run step for the implementation):
+#   RED, immediately, no retry:
+#     - a required secret is missing (never a silent green; see `preflight`)
+#     - guard trips / setup error (script exit 2)
+#     - Vercel deployment protection blocking us (needs the bypass secret)
+#     - cleanup failed (leaked user/rows; needs a human)
+#     - attempt exceeded its time limit
+#   RETRY (3 attempts, 60s then 120s backoff), then RED if still failing:
+#     - step 1 /pricing fails: staging asleep, mid-deploy, 5xx, DB degraded
+#       banner. No user has been created at that point, so retrying is free.
+#   RETRY ONCE, then RED if still failing:
+#     - any later step fails but cleanup verified clean (Stripe sandbox or
+#       Supabase hiccup). Every attempt cleans up after itself, so a second
+#       attempt is safe. A pass on retry stays green but emits a ::warning::
+#       so flakes are visible, not hidden.
+#   A deterministic bug (404 success_url, wrong price, ...) fails every attempt
+#   and so goes RED. SKIP rows printed by the script are the documented manual
+#   card-entry steps and are not failures.
+#
+# CLEANUP: the script cleans up in try/finally, but a runner cancel/timeout
+# kills node without running `finally`. The last step (`if: always()`) runs
+# scripts/smoke_staging_sweep.mjs, which deletes any leaked
+# smoke-test-<ts>@stemloops.test user (+ its Stripe sandbox customer) in
+# staging. `concurrency` serialises runs (never cancel-in-progress, which
+# would itself cause leaks).
+#
+# Scheduled workflows only fire from the default branch (v3/main).
+
+name: Nightly staging smoke
+
+on:
+  schedule:
+    # 09:47 UTC daily = 01:47 PST / 02:47 PDT. Not on the hour, and outside the
+    # busy 13:00-17:00 UTC (6-9am Pacific) window. After the day's merges have
+    # deployed to staging, before the working day starts.
+    - cron: '47 9 * * *'
+  workflow_dispatch: {}   # deliberately no inputs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-staging-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Staging billing smoke
+    runs-on: ubuntu-latest
+    # Hard ceiling, far below the 24h schedule interval. Worst case is
+    # 3 attempts x 5 min + 3 min backoff = 18 min.
+    timeout-minutes: 25
+    # Secrets are unavailable to forks; do not run (and do not fake a pass) there.
+    if: github.repository == 'JDC000000/stem-loops'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Presence check only. `secrets.X != ''` evaluates to the string
+      # 'true'/'false', so no secret value enters this step.
+      - name: Preflight (required secrets present?)
+        env:
+          HAS_SERVICE_ROLE: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY != '' }}
+          HAS_ANON: ${{ secrets.STAGING_SUPABASE_ANON_KEY != '' }}
+          HAS_STRIPE: ${{ secrets.STAGING_STRIPE_SECRET_KEY != '' }}
+        run: |
+          missing=""
+          [ "$HAS_SERVICE_ROLE" = "true" ] || missing="$missing STAGING_SUPABASE_SERVICE_ROLE_KEY"
+          [ "$HAS_ANON" = "true" ] || missing="$missing STAGING_SUPABASE_ANON_KEY"
+          [ "$HAS_STRIPE" = "true" ] || missing="$missing STAGING_STRIPE_SECRET_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error title=Staging smoke NOT RUN::Missing required repo secret(s):$missing. Nothing was tested. Add them under Settings > Secrets and variables > Actions."
+            {
+              echo "## Staging smoke: NOT RUN"
+              echo "Missing required secret(s):$missing"
+              echo "This is a failure on purpose: a green tick here would mean nothing was checked."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Run staging smoke test
+        env:
+          # --- pinned, never inherited -------------------------------------
+          STAGING_BASE_URL: https://stem-loops-staging.vercel.app
+          SUPABASE_URL: https://ylzokjwnsraehmpclnkx.supabase.co
+          NEXT_PUBLIC_SUPABASE_URL: https://ylzokjwnsraehmpclnkx.supabase.co
+          SMOKE_ALLOW_PROD: ''
+          SMOKE_ENV_FILE: /dev/null
+          # --- credentials: this step only, never echoed --------------------
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STAGING_STRIPE_SECRET_KEY }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.STAGING_VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          set -u
+
+          # Guards, re-asserted here independent of the script's own.
+          if [ "${SMOKE_ALLOW_PROD:-}" = "1" ]; then
+            echo "::error::SMOKE_ALLOW_PROD must never be set in CI."; exit 1
+          fi
+          case "$STAGING_BASE_URL" in
+            *stem-loops.com*) echo "::error::STAGING_BASE_URL points at production."; exit 1 ;;
+          esac
+          case "$STRIPE_SECRET_KEY" in
+            sk_test_*|rk_test_*) ;;
+            *) echo "::error title=Refusing to run::STAGING_STRIPE_SECRET_KEY is not a Stripe test-mode key (sk_test_/rk_test_). Aborting before any request."; exit 1 ;;
+          esac
+
+          out="$RUNNER_TEMP/smoke.out"
+          attempt=0
+          while :; do
+            attempt=$((attempt + 1))
+            echo "::group::Attempt $attempt"
+            set +e
+            timeout 300 node scripts/smoke_staging.mjs 2>&1 | tee "$out"
+            rc=${PIPESTATUS[0]}
+            set -e
+            echo "::endgroup::"
+            {
+              echo "### Attempt $attempt (exit $rc)"
+              echo '```'
+              cat "$out"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            if [ "$rc" -eq 0 ]; then
+              if [ "$attempt" -gt 1 ]; then
+                echo "::warning title=Staging smoke flaked::Passed on attempt $attempt. Earlier attempt(s) failed; see the step summary."
+              fi
+              exit 0
+            fi
+
+            fails=$(grep -E '\| FAIL ' "$out" | head -5 | tr '\n' ';' | cut -c1-600)
+
+            if [ "$rc" -eq 2 ]; then
+              echo "::error title=Staging smoke setup/guard error::Script exited 2 (guard tripped or env missing): $fails"
+              exit 1
+            fi
+            if [ "$rc" -eq 124 ]; then
+              echo "::error title=Staging smoke timed out::Attempt exceeded 300s. A user may have leaked; the sweep step will clean it."
+              exit 1
+            fi
+            if grep -Eq 'deployment protection is on' "$out"; then
+              echo "::error title=Staging behind Vercel deployment protection::Set the STAGING_VERCEL_AUTOMATION_BYPASS_SECRET repo secret (Vercel project > Settings > Deployment Protection)."
+              exit 1
+            fi
+            if grep -Eq 'MANUAL CLEANUP NEEDED|Cleanup: (auth\.users|DB cascade) +\| FAIL' "$out"; then
+              echo "::error title=Staging smoke cleanup failed::Test data may be left in staging (sweep step will retry): $fails"
+              exit 1
+            fi
+
+            if grep -Eq 'Health: /pricing +\| FAIL' "$out"; then
+              max=3          # nothing created yet; free to retry
+            else
+              max=2          # cleanup verified clean above; one retry is safe
+            fi
+            if [ "$attempt" -ge "$max" ]; then
+              echo "::error title=Staging billing smoke FAILED::After $attempt attempt(s): $fails"
+              exit 1
+            fi
+            wait=$((attempt * 60))
+            echo "::warning title=Staging smoke attempt $attempt failed::Retrying in ${wait}s: $fails"
+            sleep "$wait"
+          done
+
+      # Runs even when the previous step failed, timed out or was cancelled.
+      # Service-role key is in env: of this step only.
+      - name: Sweep leaked smoke-test users
+        if: always()
+        env:
+          SUPABASE_URL: https://ylzokjwnsraehmpclnkx.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STAGING_STRIPE_SECRET_KEY }}
+          SWEEP_MIN_AGE_MIN: '10'
+        run: |
+          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "::warning title=Sweep skipped::No service-role secret; nothing could have been created either."
+            exit 0
+          fi
+          case "$STRIPE_SECRET_KEY" in
+            sk_test_*|rk_test_*|'') ;;
+            *) echo "::error::Refusing to sweep: Stripe key is not test-mode."; exit 1 ;;
+          esac
+          node scripts/smoke_staging_sweep.mjs

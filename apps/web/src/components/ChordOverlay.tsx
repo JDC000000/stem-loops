@@ -4,8 +4,19 @@
 // Pipeline: tab-capture → cqt-frontend → chordnet-session → smoothChordLogits
 //           → collapseRuns → timeline render.
 //
-// Edits a user makes on the timeline hook into PR-Y1.7's edit-collector via
-// the `onChordEdit` prop (this component owns no state beyond the UI).
+// NOT WIRED (parked 2026-11-05). This component exposes `onChordEdit` and
+// `onChordLabelEdit`, but NOTHING consumes them: jobs/[id]/page.tsx mounts
+// <ChordOverlay jobId={...} /> with no handler, so every correction a user
+// makes is dropped on the floor. The write path behind them is also
+// incomplete -- play.chords.json carries neither `track_hash` nor
+// `alphabet_sha`, both of which /api/chord-edits requires and chord_edits
+// has as NOT NULL, and no part of the system computes a track_hash at all.
+// The props are kept as the integration seam, deliberately: the flywheel
+// feeds the Y1 chord model, and Variant Y is paused pending a WASM librosa
+// port, so there is no consumer for the data yet. Do not describe this path
+// as working, and do not wire a handler without closing the write path first.
+// Full finding + the four options considered: issue #135.
+// This component owns no state beyond the UI.
 'use client';
 
 import {

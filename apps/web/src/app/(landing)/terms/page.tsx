@@ -44,7 +44,11 @@ export default function TermsPage() {
             </p>
 
             <h2>Deletion</h2>
-            <p>Your files, loops and jobs are deleted after 24 hours. Download what you want to keep.</p>
+            <p>
+              Your files, loops and job details are deleted after 24 hours — download what you want to keep. If a job was
+              paid for, we keep an anonymised billing record so purchases and credits stay accounted for; it contains no
+              audio and no file names.
+            </p>
 
             <h2>No warranty</h2>
             <p>

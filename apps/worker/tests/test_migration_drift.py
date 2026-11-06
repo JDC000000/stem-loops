@@ -62,7 +62,9 @@ def test_discovery_matches_the_runner_and_excludes_down(tmp_path: Path):
 
 
 def test_discovery_sees_the_real_repo_migrations():
-    found = drift_mod.discover_repo_migrations(_REPO_ROOT / "apps" / "worker" / "migrations")
+    found = drift_mod.discover_repo_migrations(
+        _REPO_ROOT / "apps" / "worker" / "migrations"
+    )
     assert found, "no migrations discovered in the real repo"
     assert found[0].startswith("001_"), found[:3]
     assert all(f.endswith(".sql") for f in found)
@@ -99,7 +101,9 @@ def test_extra_applied_migration_is_reported_but_not_a_blocker():
     d = drift_mod.diff_migrations(["001_a.sql"], {"001_a.sql", "999_future.sql"})
     assert d.extra == ["999_future.sql"]
     assert d.missing == []
-    assert d.has_drift is False, "an extra applied migration does not stop this code from running"
+    assert (
+        d.has_drift is False
+    ), "an extra applied migration does not stop this code from running"
 
 
 def test_a_gap_in_the_middle_is_caught_not_just_a_short_tail():
@@ -125,9 +129,12 @@ def test_missing_database_url_does_not_exit_zero(monkeypatch, capsys):
     assert rc != drift_mod.EXIT_OK
 
 
-def test_blank_database_url_is_treated_as_absent(monkeypatch):
+def test_blank_database_url_is_a_misconfiguration_not_an_absence(monkeypatch):
+    """Renamed in round 6: "treated as absent" is what the bug WAS. A set-but-
+    empty DATABASE_URL means a secret was wired and did not arrive."""
     monkeypatch.setenv("DATABASE_URL", "   ")
     assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
 
 
 def test_allow_unreachable_is_an_explicit_opt_in_and_warns(monkeypatch, capsys):
@@ -158,7 +165,9 @@ def test_drift_exits_one(monkeypatch):
 
 def test_expect_row_count_mismatch_fails(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x/x")
-    real = drift_mod.discover_repo_migrations(_REPO_ROOT / "apps" / "worker" / "migrations")
+    real = drift_mod.discover_repo_migrations(
+        _REPO_ROOT / "apps" / "worker" / "migrations"
+    )
     monkeypatch.setattr(drift_mod, "fetch_applied", lambda _u: set(real))
     assert drift_mod.main([]) == drift_mod.EXIT_OK
     assert drift_mod.main(["--expect", str(len(real) + 1)]) == drift_mod.EXIT_DRIFT
@@ -218,7 +227,9 @@ def _psycopg_stub_if_missing():
         # stays CACHED with the dead stub bound as its `psycopg`, so a later
         # importer gets the stubbed module and results depend on whether
         # _load_runner happened to run first. Evict it too.
-        for name in [m for m in sys.modules if m == "worker" or m.startswith("worker.")]:
+        for name in [
+            m for m in sys.modules if m == "worker" or m.startswith("worker.")
+        ]:
             sys.modules.pop(name, None)
 
 
@@ -235,7 +246,10 @@ def _load_runner():
 
 def test_gate_and_runner_point_at_the_same_directory():
     runner = _load_runner()
-    assert Path(runner.MIGRATIONS_DIR).resolve() == drift_mod.DEFAULT_MIGRATIONS_DIR.resolve()
+    assert (
+        Path(runner.MIGRATIONS_DIR).resolve()
+        == drift_mod.DEFAULT_MIGRATIONS_DIR.resolve()
+    )
 
 
 def test_gate_delegates_discovery_to_the_runner_rather_than_copying_it():
@@ -467,7 +481,9 @@ def test_fetch_applied_returns_filenames_from_a_real_ledger():
     assert isinstance(applied, set)
     if not applied:
         return  # an empty ledger is a legitimate state
-    assert all(isinstance(x, str) and x.endswith(".sql") for x in applied), sorted(applied)[:5]
+    assert all(isinstance(x, str) and x.endswith(".sql") for x in applied), sorted(
+        applied
+    )[:5]
 
 
 def test_post_connect_failure_is_not_forgiven_real_database(monkeypatch):
@@ -586,14 +602,18 @@ def test_a_server_that_answers_and_refuses_us_is_never_forgiven():
 
     base = conninfo_to_dict(url)
     cases = {
-        "no such database": make_conninfo(**{**base, "dbname": "drift_gate_no_such_db"}),
+        "no such database": make_conninfo(
+            **{**base, "dbname": "drift_gate_no_such_db"}
+        ),
         "no such role": make_conninfo(**{**base, "user": "drift_gate_no_such_role"}),
     }
     # Round 6, defect 8: the headline case -- a WRONG PASSWORD, i.e. a typo'd
     # CI secret -- was not in the suite. CI's postgres:16-alpine uses password
     # auth, so it pins there; additive so a trust-auth server just omits it.
     if base.get("password"):
-        cases["wrong password"] = make_conninfo(**{**base, "password": "definitely-not-it"})
+        cases["wrong password"] = make_conninfo(
+            **{**base, "password": "definitely-not-it"}
+        )
     for label, bad in cases.items():
         with pytest.raises(drift_mod.ServerRejected) as caught:
             drift_mod.fetch_applied(bad)
@@ -601,7 +621,9 @@ def test_a_server_that_answers_and_refuses_us_is_never_forgiven():
         os.environ["DATABASE_URL"] = bad
         try:
             assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN, label
-            assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN, label
+            assert (
+                drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+            ), label
         finally:
             os.environ["DATABASE_URL"] = url
 
@@ -647,12 +669,22 @@ def test_the_flag_forgives_only_an_absent_url(monkeypatch):
     widened back to message matching. Blank counts as absent: GitHub expands an
     unset secret to the empty string, and that IS the no-database case."""
     pytest.importorskip("psycopg")
-    for absent in ("", "   "):
-        monkeypatch.setenv("DATABASE_URL", absent)
-        assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN, repr(absent)
-        assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_OK, repr(absent)
+    # UNSET: the one forgivable fact.
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
     assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_OK
+
+    # SET BUT EMPTY: never forgiven. In GitHub Actions an unset secret expands
+    # to "", so `env: DATABASE_URL: ${{ secrets.MISSING }}` lands here. Treating
+    # it as "absent" is the "secret present vs. job meaningful" seam this gate
+    # cites as its reason for existing -- reintroduced, briefly, inside the fix
+    # for it.
+    for empty in ("", "   ", "\t"):
+        monkeypatch.setenv("DATABASE_URL", empty)
+        assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN, repr(empty)
+        assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN, repr(
+            empty
+        )
 
 
 def test_the_crash_guard_reports_unknown_not_drift(monkeypatch):

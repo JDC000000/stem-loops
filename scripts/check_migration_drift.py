@@ -345,11 +345,14 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-unreachable",
         action="store_true",
         help=(
-            "forgive exactly ONE thing: DATABASE_URL being absent or blank. "
+            "forgive exactly ONE thing: DATABASE_URL being entirely UNSET. "
             "Exit 0 with a loud warning, having checked nothing. EVERY other "
             "failure still exits 2, including a database you named and could "
             "not reach. Setting DATABASE_URL is a claim that a database is "
-            "there; failing to reach it is a failure, not an absence. (Round 6: "
+            "there; failing to reach it is a failure, not an absence. A "
+            "DATABASE_URL that is set but EMPTY is also not forgiven -- an "
+            "unset GitHub secret expands to the empty string, which is a "
+            "misconfiguration, not an absent database. (Round 6: "
             "this flag used to forgive by matching libpq's message text, which "
             "is localized and was incomplete in English anyway.)"
         ),
@@ -362,7 +365,27 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_UNKNOWN
     print(f"repo: {len(repo)} migrations, {repo[0]} .. {repo[-1]}")
 
-    database_url = os.environ.get("DATABASE_URL", "").strip()
+    # ABSENT and EMPTY are different facts, and conflating them reopened the
+    # very seam this gate cites. `env: DATABASE_URL: ${{ secrets.MISSING }}`
+    # sets the variable to the EMPTY STRING -- somebody wired a secret and the
+    # secret was not there. A job that simply never mentions DATABASE_URL
+    # leaves the variable unset. The first is a misconfiguration and must never
+    # be forgiven; only the second is the "this job has no database" case the
+    # flag exists for. This distinction needs no message parsing and no locale.
+    raw = os.environ.get("DATABASE_URL")
+
+    if raw is not None and not raw.strip():
+        print(
+            "FAIL: DATABASE_URL is SET but empty. Something wired it and the "
+            "value did not arrive -- in GitHub Actions an unset secret expands "
+            "to the empty string. That is a misconfiguration, not an absent "
+            "database, so --allow-unreachable does NOT forgive it. If this job "
+            "genuinely has no database, stop setting DATABASE_URL at all.",
+            file=sys.stderr,
+        )
+        return EXIT_UNKNOWN
+
+    database_url = (raw or "").strip()
     if not database_url:
         msg = "DATABASE_URL is not set, so drift CANNOT be checked."
         if args.allow_unreachable:

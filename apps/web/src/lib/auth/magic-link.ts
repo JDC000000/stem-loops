@@ -2,12 +2,12 @@
 //
 // `shouldCreateUser: false` stops signInWithOtp from creating accounts, which
 // would bypass the hCaptcha gate on /api/auth/signup. Supabase answers an
-// unknown address with an `otp_disabled` / "Signups not allowed for otp" error;
-// we turn that into an instruction instead of surfacing the raw string.
+// unknown address with an `otp_disabled` / "Signups not allowed for otp" error.
+// We swallow it into the SAME message as success, matching the reset-password
+// flow's anti-enumeration policy, so this form cannot be used to probe which
+// addresses are registered.
 
-export const MAGIC_LINK_SENT = 'Check your email for a one-time login link.';
-export const MAGIC_LINK_NO_ACCOUNT =
-  'No account found for that email. Use "Create account" to sign up first; one-time links only work for existing accounts.';
+export const MAGIC_LINK_SENT = 'If an account exists for that address, a sign-in link is on its way.';
 
 interface OtpClient {
   auth: {
@@ -29,7 +29,7 @@ export async function sendMagicLink(
   });
   if (error) {
     if (error.code === 'otp_disabled' || /signups? not allowed/i.test(error.message ?? '')) {
-      return MAGIC_LINK_NO_ACCOUNT;
+      return MAGIC_LINK_SENT;
     }
     throw error;
   }

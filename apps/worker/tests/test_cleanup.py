@@ -223,3 +223,173 @@ def test_migration_007_default_is_24h_and_shortens_existing_rows():
             await conn.commit()
 
     asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------------------
+# Ledger-bound jobs. credit_consumption.job_id is ON DELETE RESTRICT (013) and
+# chord_edits.job_id has no cascade (025): DELETE FROM jobs raises ForeignKeyViolation for any
+# job that charged a credit or has a chord edit. Before the fix that exception escaped the
+# sweep, every pass re-selected the same oldest row, and nothing else was ever swept.
+# --------------------------------------------------------------------------------------
+LEDGER_EMAIL = "test-cleanup-ledger-%@example.com"
+
+
+def _purge_ledger_fixtures(c) -> None:
+    c.rollback()
+    like = "(SELECT id FROM public.users WHERE email LIKE %s)"
+    c.execute(f"DELETE FROM public.chord_edits WHERE user_id IN {like}", (LEDGER_EMAIL,))
+    c.execute(f"DELETE FROM public.credit_consumption WHERE user_id IN {like}", (LEDGER_EMAIL,))
+    c.execute(f"DELETE FROM public.credit_purchases WHERE user_id IN {like}", (LEDGER_EMAIL,))
+    c.execute(f"DELETE FROM public.jobs WHERE user_id IN {like}", (LEDGER_EMAIL,))
+    c.execute("DELETE FROM public.users WHERE email LIKE %s", (LEDGER_EMAIL,))
+    c.execute("DELETE FROM auth.users WHERE email LIKE %s", (LEDGER_EMAIL,))
+    c.commit()
+
+
+@pytest.fixture
+def ledger_db():
+    if not any(h in (DB or "") for h in ("127.0.0.1", "localhost")):
+        pytest.skip("inserts into auth.users; local throwaway DB only")
+    with psycopg.connect(DB) as c:
+        _purge_ledger_fixtures(c)
+        yield c
+        _purge_ledger_fixtures(c)
+
+
+def _ledger_user(c) -> uuid.UUID:
+    uid = uuid.uuid4()
+    c.execute(
+        "INSERT INTO auth.users (id, email, aud, role, encrypted_password, "
+        "email_confirmed_at, created_at, updated_at) "
+        "VALUES (%s, %s, 'authenticated', 'authenticated', 'x', now(), now(), now())",
+        (uid, f"test-cleanup-ledger-{uid.hex[:8]}@example.com"),
+    )
+    c.commit()
+    return uid
+
+
+def _ledger_upload_job(c, user_id, age_hours: float) -> str:
+    """An expired upload job that charged a credit (credit_consumption row)."""
+    job_id = str(uuid.uuid4())
+    c.execute(
+        "INSERT INTO public.jobs (id, input_kind, status, user_id, loop_length_bars, "
+        "  client_ip_hash, client_fingerprint, upload_r2_key, original_filename, title, bpm, "
+        "  created_at, expires_at) "
+        "VALUES (%s,'upload','done',%s,4,'iphash','fp',%s,'secret song.wav','My Title',120, "
+        "  now() - (%s * interval '1 hour'), now() - (%s * interval '1 hour') + interval '24 hours')",
+        (job_id, user_id, f"{job_id}/_input.wav", age_hours, age_hours),
+    )
+    c.execute(
+        "INSERT INTO public.credit_consumption (user_id, job_id) VALUES (%s,%s)", (user_id, job_id)
+    )
+    c.commit()
+    return job_id
+
+
+def _job_row(c, job_id: str):
+    return c.execute(
+        "SELECT youtube_url, upload_r2_key, original_filename, title, bpm, client_ip_hash, "
+        "client_fingerprint, status, user_id FROM public.jobs WHERE id=%s",
+        (job_id,),
+    ).fetchone()
+
+
+def test_credit_charged_job_is_anonymised_and_later_jobs_still_swept(r2, ledger_db):
+    c = ledger_db
+
+    async def scenario():
+        uid = _ledger_user(c)
+        ledger_job = _ledger_upload_job(c, uid, 48)  # oldest -> head of ORDER BY expires_at
+        later = [await _insert_job(30 + i) for i in range(3)]
+        orphan = str(uuid.uuid4())
+        for j in [ledger_job, *later]:
+            r2.put(f"{j}/_input.wav", 48)
+        r2.put(f"{orphan}/_input.mp3", 40)  # orphan sweep only runs if the job sweep returns
+        async with await psycopg.AsyncConnection.connect(DB) as conn:
+            await conn.execute(
+                "INSERT INTO upload_rate_events(client_ip_hash, created_at) "
+                "VALUES('x', now() - interval '3 days')"
+            )
+            await conn.commit()
+
+        res = await cleanup.sweep_expired()
+
+        # The sweep survived the FK violation and carried on past it.
+        for j in later:
+            assert not await _exists(j), "jobs behind a ledger-bound job must still be swept"
+        assert f"{orphan}/_input.mp3" not in r2.objs, "orphan sweep must still run"
+        assert res["upload_events"] >= 1, "upload_rate_events prune must still run"
+        assert res["jobs"] == 3 and res["anonymised"] == 1
+
+        # The ledger job is kept as an anonymised shell; its R2 objects are gone.
+        assert not [k for k in r2.objs if k.startswith(ledger_job)]
+        row = _job_row(c, ledger_job)
+        assert row is not None, "ledger FK target must survive"
+        yt, key, fname, title, bpm, iph, fp, status, user = row
+        assert (yt, key, fname, title, bpm) == (None, "", None, None, None)
+        assert iph == fp == cleanup.PURGED_MARKER
+        assert status == "done" and user == uid
+        # The append-only ledger is untouched.
+        assert (
+            c.execute(
+                "SELECT COUNT(*) FROM public.credit_consumption WHERE job_id=%s", (ledger_job,)
+            ).fetchone()[0]
+            == 1
+        )
+
+    asyncio.run(scenario())
+
+
+def test_chord_edit_job_is_anonymised_not_deleted(r2, ledger_db):
+    c = ledger_db
+
+    async def scenario():
+        uid = _ledger_user(c)
+        job = await _insert_job(30)
+        c.execute("UPDATE public.jobs SET user_id=%s WHERE id=%s", (uid, job))
+        c.execute(
+            "INSERT INTO public.chord_edits (user_id, job_id, track_hash, provider, "
+            "provider_version, start_sec, end_sec, original_label, corrected_label, alphabet_sha) "
+            "VALUES (%s,%s,%s,'klangio','v1',0,1,'C','G',%s)",
+            (uid, job, "b" * 64, "a" * 64),
+        )
+        c.commit()
+        res = await cleanup.sweep_expired()
+        assert res["anonymised"] == 1
+        row = _job_row(c, job)
+        assert row is not None and row[0] == "" and row[5] == cleanup.PURGED_MARKER
+        assert (
+            c.execute("SELECT COUNT(*) FROM public.chord_edits WHERE job_id=%s", (job,)).fetchone()[
+                0
+            ]
+            == 1
+        )
+
+    asyncio.run(scenario())
+
+
+def test_anonymised_shell_is_not_reselected_so_it_cannot_starve_the_batch(
+    r2, ledger_db, monkeypatch
+):
+    """With a batch of 1, the oldest ledger shell must not be re-picked on every pass."""
+    c = ledger_db
+
+    async def scenario():
+        uid = _ledger_user(c)
+        ledger_job = _ledger_upload_job(c, uid, 48)
+        newer = await _insert_job(30)
+        # Drop expired rows left by other tests so the batch of 1 is deterministic.
+        c.execute(
+            "DELETE FROM public.jobs WHERE expires_at < now() AND id NOT IN (%s, %s)",
+            (ledger_job, newer),
+        )
+        c.commit()
+        monkeypatch.setattr(cleanup, "MAX_JOBS_PER_SWEEP", 1)
+        first = await cleanup.sweep_expired()
+        assert first["anonymised"] == 1 and await _exists(newer)
+        r2.put(f"{ledger_job}/late.wav", 48)  # would reappear in delete_prefix if re-selected
+        second = await cleanup.sweep_expired()
+        assert second["jobs"] == 1 and not await _exists(newer), "pass 2 reaches the newer job"
+        assert any(k.startswith(ledger_job) for k in r2.objs), "shell was not swept a second time"
+
+    asyncio.run(scenario())

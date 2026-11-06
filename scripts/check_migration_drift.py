@@ -35,9 +35,11 @@ absent — passing while checking nothing. A drift gate that silently skips is
 worse than no gate, because it produces a green tick that a reader trusts.
 
 So: no DATABASE_URL, an unreachable database, or a missing `_migrations` table
-all exit 2. `--allow-unreachable` downgrades exactly ONE of those to 0 — a
-DATABASE_URL that is absent or blank — and says so loudly. Nothing else is
-forgiven, ever.
+all exit 2. `--allow-no-database` downgrades exactly ONE of those to 0 — a
+DATABASE_URL that is entirely UNSET — and says so loudly. Nothing else is
+forgiven, ever. A DATABASE_URL that is SET BUT EMPTY exits 2: in GitHub
+Actions an unset secret expands to the empty string, so that is a credential
+somebody wired which did not arrive.
 
 That narrowness is the whole design, arrived at by having the previous two
 versions taken apart. A flag that decides what to forgive by reading an error
@@ -57,7 +59,7 @@ USAGE
 -----
   DATABASE_URL=postgresql://... python scripts/check_migration_drift.py
   python scripts/check_migration_drift.py --expect 30
-  python scripts/check_migration_drift.py --allow-unreachable   # CI without a DB
+  python scripts/check_migration_drift.py --allow-no-database   # CI without a DB
 
 STATUS. ON THIS BRANCH NOTHING RUNS THIS SCRIPT. Review round 5 caught the
 previous paragraph here asserting that a CI job executes it; no such job exists
@@ -91,9 +93,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # scripts/check_migration_drift.py -> apps/worker/migrations
-DEFAULT_MIGRATIONS_DIR = (
-    Path(__file__).resolve().parents[1] / "apps" / "worker" / "migrations"
-)
+DEFAULT_MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "apps" / "worker" / "migrations"
 
 EXIT_OK = 0
 EXIT_DRIFT = 1
@@ -107,7 +107,7 @@ class Unreachable(Exception):
     this wrong in the same direction:
 
       v1  `except Exception` — a reachable database with an unreadable ledger
-          was called "unreachable" and --allow-unreachable returned 0.
+          was called "unreachable" and --allow-no-database returned 0.
       v2  `except psycopg.OperationalError` — narrower in name only. That class
           has ~92 subclasses in psycopg 3, including QUERY-time ones: a
           `lock_timeout` or `statement_timeout` cancelling the ledger SELECT
@@ -155,12 +155,12 @@ class BadConfiguration(Exception):
         `sslmode=bogus`) — libpq raises this from `connect()` without touching
         the network, so it is caught by message, not by phase.
 
-    WHERE THE LINE SITS, precisely, because round 4 described it wrongly and
-    round 5 caught that: not "parses vs resolves". A host that does not resolve,
-    a refused TCP port and a refused unix socket are indistinguishable from a
-    database that is down or firewalled off from this runner, so those stay
-    Unreachable and stay forgivable. Anything the client or the server actively
-    REJECTED is a configuration error and is not.
+    This class is now a LABEL, not a decision. Round 6 deleted
+    message-based forgiveness entirely, so nothing here changes an exit code --
+    a host that does not resolve, a refused port, a rejected DSN and a server
+    that refuses us all exit 2. Rounds 4 and 5 both wrote a confident sentence
+    here about "where the line sits" and both sentences were wrong; there is no
+    line any more, which is the point.
     """
 
 
@@ -169,23 +169,21 @@ class ServerRejected(Exception):
 
     A wrong password, a database or role that does not exist, a pg_hba rule
     that excludes this host. The server is plainly reachable — it replied — so
-    forgiving this under a flag named `--allow-unreachable` would be a false
+    forgiving this under a flag named `--allow-no-database` would be a false
     green of the worst kind: CI with the wrong credentials, passing.
 
-    Detected by `FATAL:` in the message, which is libpq's rendering of a server
-    ErrorResponse. That is a string match and therefore brittle, and it is
-    deliberately FAIL-OPEN: an error this classifier does not recognise stays
-    Unreachable, so a psycopg reword degrades CI to the old behaviour instead
-    of turning every database-less job red. The brittleness is pinned by
-    real-database tests that drive genuine FATALs — if the wording changes,
-    those go red in CI and name this classifier.
+    Detected by `FATAL:` in the message, libpq's rendering of a server
+    ErrorResponse. That match is brittle -- the severity is LOCALIZED -- and
+    since round 6 it no longer matters: this class changes no exit code, only
+    the sentence the operator reads. A missed match costs a slightly misleading
+    message, never a pass.
     """
 
 
 class LedgerMissing(Exception):
     """`public._migrations` is absent, so the applied set is unknowable.
 
-    Deliberately NOT one of the errors --allow-unreachable forgives. Staging
+    Deliberately NOT one of the errors --allow-no-database forgives. Staging
     has exactly this shape: tables present, no ledger. "Which tables exist" and
     "which migrations ran" are different questions, and no flag should let the
     second be answered by guessing.
@@ -212,9 +210,7 @@ class Drift:
 # 'invalid integer value "notaport" for connection option "port"' and
 # 'invalid sslmode value: "bogus"'. Deliberately NOT matched: 'Connection
 # refused' and 'failed to resolve host', which are genuine unreachability.
-_CLIENT_REJECTED_VALUE = re.compile(
-    r"invalid \w+ value|for connection option", re.IGNORECASE
-)
+_CLIENT_REJECTED_VALUE = re.compile(r"invalid \w+ value|for connection option", re.IGNORECASE)
 
 # libpq's rendering of a server ErrorResponse during startup.
 _SERVER_ANSWERED = "FATAL:"
@@ -299,7 +295,7 @@ def fetch_applied(database_url: str) -> set[str]:
 
     # Parse the DSN BEFORE connecting. psycopg raises conninfo errors from
     # connect(), which made a typo'd DATABASE_URL look like an unreachable
-    # database and go green under --allow-unreachable. A malformed DSN is a
+    # database and go green under --allow-no-database. A malformed DSN is a
     # configuration error, never an unreachable database. Review round 4, D-B:
     # the help text already promised this; the code did not do it.
     from psycopg.conninfo import conninfo_to_dict
@@ -307,7 +303,10 @@ def fetch_applied(database_url: str) -> set[str]:
     try:
         conninfo_to_dict(database_url)
     except Exception as exc:
-        raise BadConfiguration(str(exc)) from exc
+        # Round 7, defect 9: libpq quotes the OFFENDING STRING back at you, and
+        # for a typo'd scheme the offending string is the whole DSN -- password
+        # included. GitHub masks registered secrets; nothing else does.
+        raise BadConfiguration(str(exc).replace(database_url, "<DATABASE_URL>")) from exc
 
     try:
         conn = psycopg.connect(database_url, connect_timeout=15)
@@ -315,6 +314,20 @@ def fetch_applied(database_url: str) -> set[str]:
         raise _classify_connect_failure(exc) from exc
 
     with conn, conn.cursor() as cur:
+        # Round 7, defect 8: with another session holding ACCESS EXCLUSIVE on
+        # the ledger this blocked indefinitely -- measured. At deploy time,
+        # against a database mid-migration, that is a CI job timeout rather
+        # than exit 2, and a timeout tells the operator nothing.
+        #
+        # Only set what the caller has NOT set: a 0 means "unlimited", i.e.
+        # nobody chose. The lock test deliberately passes lock_timeout=300ms in
+        # its DSN and must keep it.
+        for setting, default in (("lock_timeout", "15s"), ("statement_timeout", "30s")):
+            cur.execute(f"SELECT current_setting('{setting}')")
+            current = cur.fetchone()
+            if current and current[0] in ("0", "0ms"):
+                cur.execute(f"SET {setting} = '{default}'")
+
         cur.execute("SELECT to_regclass('public._migrations')")
         row = cur.fetchone()
         if row is None or row[0] is None:
@@ -342,10 +355,12 @@ def main(argv: list[str] | None = None) -> int:
         help="also assert the ledger holds exactly N rows",
     )
     ap.add_argument(
-        "--allow-unreachable",
+        "--allow-no-database",
         action="store_true",
         help=(
             "forgive exactly ONE thing: DATABASE_URL being entirely UNSET. "
+            "(Renamed from --allow-unreachable in round 7: that name promised "
+            "the one thing this flag refuses to do. It had no callers.) "
             "Exit 0 with a loud warning, having checked nothing. EVERY other "
             "failure still exits 2, including a database you named and could "
             "not reach. Setting DATABASE_URL is a claim that a database is "
@@ -379,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
             "FAIL: DATABASE_URL is SET but empty. Something wired it and the "
             "value did not arrive -- in GitHub Actions an unset secret expands "
             "to the empty string. That is a misconfiguration, not an absent "
-            "database, so --allow-unreachable does NOT forgive it. If this job "
+            "database, so --allow-no-database does NOT forgive it. If this job "
             "genuinely has no database, stop setting DATABASE_URL at all.",
             file=sys.stderr,
         )
@@ -388,16 +403,15 @@ def main(argv: list[str] | None = None) -> int:
     database_url = (raw or "").strip()
     if not database_url:
         msg = "DATABASE_URL is not set, so drift CANNOT be checked."
-        if args.allow_unreachable:
+        if args.allow_no_database:
             print(
-                f"WARNING: {msg} --allow-unreachable given; reporting success "
+                f"WARNING: {msg} --allow-no-database given; reporting success "
                 f"WITHOUT having checked anything.",
                 file=sys.stderr,
             )
             return EXIT_OK
         print(
-            f"FAIL: {msg} Pass --allow-unreachable only if you accept an "
-            f"unchecked deploy.",
+            f"FAIL: {msg} Pass --allow-no-database only if you accept an " f"unchecked deploy.",
             file=sys.stderr,
         )
         return EXIT_UNKNOWN
@@ -409,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
         # it refused us. Forgiving this would pass CI on a wrong password.
         print(
             f"FAIL: the database answered and refused the connection: {exc}. "
-            f"It is reachable, so --allow-unreachable does not forgive this.",
+            f"It is reachable, so --allow-no-database does not forgive this.",
             file=sys.stderr,
         )
         return EXIT_UNKNOWN
@@ -418,23 +432,23 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"FAIL: DATABASE_URL is not a valid connection string: {exc}. "
             f"This is a configuration error, not an unreachable database, so "
-            f"--allow-unreachable does not forgive it.",
+            f"--allow-no-database does not forgive it.",
             file=sys.stderr,
         )
         return EXIT_UNKNOWN
     except LedgerMissing as exc:
-        # NOT forgiven by --allow-unreachable. The database answered; it simply
+        # NOT forgiven by --allow-no-database. The database answered; it simply
         # cannot say what has been applied. Blessing that would be guessing.
         print(f"FAIL: {exc}", file=sys.stderr)
         return EXIT_UNKNOWN
     except Unreachable as exc:
-        # NOT forgiven, even with --allow-unreachable. Round 6: see the flag's
+        # NOT forgiven, even with --allow-no-database. Round 6: see the flag's
         # help text. Setting DATABASE_URL is a claim that a database is there;
         # failing to reach the one you named is a real failure, and a transient
         # network fault forgiven here means drift goes unchecked in silence.
         print(
             f"FAIL: could not reach the database: {exc}. A DATABASE_URL was "
-            f"set, so this is a failure, not an absence. --allow-unreachable "
+            f"set, so this is a failure, not an absence. --allow-no-database "
             f"forgives only an absent DATABASE_URL.",
             file=sys.stderr,
         )
@@ -507,14 +521,21 @@ def _cli(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         return EXIT_UNKNOWN
     except Exception:  # noqa: BLE001 - crash handler: blind is the point here
-        import traceback
+        # Round 7, defect 7: this handler was not total. With stdout AND stderr
+        # on a closed pipe, the reporting below raised BrokenPipeError OUT of
+        # the handler, and Python exits 1 -- this gate's code for DRIFT. A
+        # crash guard whose own reporting can crash past it is not a guard.
+        try:
+            import traceback
 
-        traceback.print_exc()
-        print(
-            "\nFAIL: the drift gate itself crashed, so drift is UNDETERMINED "
-            "(exit 2). This is not a report that the database is behind.",
-            file=sys.stderr,
-        )
+            traceback.print_exc()
+            print(
+                "\nFAIL: the drift gate itself crashed, so drift is UNDETERMINED "
+                "(exit 2). This is not a report that the database is behind.",
+                file=sys.stderr,
+            )
+        except BaseException:  # noqa: BLE001,S110 - reporting must not change the exit code
+            pass
         return EXIT_UNKNOWN
 
 

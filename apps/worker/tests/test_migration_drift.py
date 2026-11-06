@@ -62,9 +62,7 @@ def test_discovery_matches_the_runner_and_excludes_down(tmp_path: Path):
 
 
 def test_discovery_sees_the_real_repo_migrations():
-    found = drift_mod.discover_repo_migrations(
-        _REPO_ROOT / "apps" / "worker" / "migrations"
-    )
+    found = drift_mod.discover_repo_migrations(_REPO_ROOT / "apps" / "worker" / "migrations")
     assert found, "no migrations discovered in the real repo"
     assert found[0].startswith("001_"), found[:3]
     assert all(f.endswith(".sql") for f in found)
@@ -101,9 +99,7 @@ def test_extra_applied_migration_is_reported_but_not_a_blocker():
     d = drift_mod.diff_migrations(["001_a.sql"], {"001_a.sql", "999_future.sql"})
     assert d.extra == ["999_future.sql"]
     assert d.missing == []
-    assert (
-        d.has_drift is False
-    ), "an extra applied migration does not stop this code from running"
+    assert d.has_drift is False, "an extra applied migration does not stop this code from running"
 
 
 def test_a_gap_in_the_middle_is_caught_not_just_a_short_tail():
@@ -134,12 +130,12 @@ def test_blank_database_url_is_a_misconfiguration_not_an_absence(monkeypatch):
     empty DATABASE_URL means a secret was wired and did not arrive."""
     monkeypatch.setenv("DATABASE_URL", "   ")
     assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
 
 
-def test_allow_unreachable_is_an_explicit_opt_in_and_warns(monkeypatch, capsys):
+def test_allow_no_database_is_an_explicit_opt_in_and_warns(monkeypatch, capsys):
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    rc = drift_mod.main(["--allow-unreachable"])
+    rc = drift_mod.main(["--allow-no-database"])
     assert rc == drift_mod.EXIT_OK
     err = capsys.readouterr().err
     assert (
@@ -165,9 +161,7 @@ def test_drift_exits_one(monkeypatch):
 
 def test_expect_row_count_mismatch_fails(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x/x")
-    real = drift_mod.discover_repo_migrations(
-        _REPO_ROOT / "apps" / "worker" / "migrations"
-    )
+    real = drift_mod.discover_repo_migrations(_REPO_ROOT / "apps" / "worker" / "migrations")
     monkeypatch.setattr(drift_mod, "fetch_applied", lambda _u: set(real))
     assert drift_mod.main([]) == drift_mod.EXIT_OK
     assert drift_mod.main(["--expect", str(len(real) + 1)]) == drift_mod.EXIT_DRIFT
@@ -227,9 +221,7 @@ def _psycopg_stub_if_missing():
         # stays CACHED with the dead stub bound as its `psycopg`, so a later
         # importer gets the stubbed module and results depend on whether
         # _load_runner happened to run first. Evict it too.
-        for name in [
-            m for m in sys.modules if m == "worker" or m.startswith("worker.")
-        ]:
+        for name in [m for m in sys.modules if m == "worker" or m.startswith("worker.")]:
             sys.modules.pop(name, None)
 
 
@@ -246,10 +238,7 @@ def _load_runner():
 
 def test_gate_and_runner_point_at_the_same_directory():
     runner = _load_runner()
-    assert (
-        Path(runner.MIGRATIONS_DIR).resolve()
-        == drift_mod.DEFAULT_MIGRATIONS_DIR.resolve()
-    )
+    assert Path(runner.MIGRATIONS_DIR).resolve() == drift_mod.DEFAULT_MIGRATIONS_DIR.resolve()
 
 
 def test_gate_delegates_discovery_to_the_runner_rather_than_copying_it():
@@ -287,11 +276,11 @@ def test_runner_discovery_is_top_level_only_on_the_real_tree():
 
 
 # --------------------------------------------------------------------------
-# D5: --allow-unreachable must not forgive a reachable database with no ledger
+# D5: --allow-no-database must not forgive a reachable database with no ledger
 # --------------------------------------------------------------------------
 
 
-def test_missing_ledger_is_never_forgiven_even_with_allow_unreachable(monkeypatch):
+def test_missing_ledger_is_never_forgiven_even_with_allow_no_database(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x/x")
 
     def _raise(_u):
@@ -300,7 +289,7 @@ def test_missing_ledger_is_never_forgiven_even_with_allow_unreachable(monkeypatc
     monkeypatch.setattr(drift_mod, "fetch_applied", _raise)
     assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
     assert (
-        drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+        drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
     ), "staging's exact shape: tables present, no ledger. No flag may bless it"
 
 
@@ -316,7 +305,7 @@ def test_a_simulated_connect_failure_is_not_forgiven_by_the_flag(monkeypatch):
     # database was CLAIMED to exist; failing to reach it is a failure, not an
     # absence. Rounds 4-6 each shipped a false green trying to decide which
     # connect failures were benign by reading libpq's message.
-    assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
 
 
 def test_reachable_but_unreadable_ledger_is_never_forgiven(monkeypatch):
@@ -327,7 +316,7 @@ def test_reachable_but_unreadable_ledger_is_never_forgiven(monkeypatch):
 
     monkeypatch.setattr(drift_mod, "fetch_applied", _raise)
     assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
 
 
 def test_a_simulated_query_time_failure_is_not_forgiven(monkeypatch):
@@ -348,7 +337,7 @@ def test_a_simulated_query_time_failure_is_not_forgiven(monkeypatch):
     monkeypatch.setattr(drift_mod, "fetch_applied", _raise)
     assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
     assert (
-        drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+        drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
     ), "a query cancelled mid-read is not an unreachable database"
 
 
@@ -420,6 +409,19 @@ def _pg_url_or_skip_ddl():
     # `service=` with the host in pg_service.conf. Any of them could have put
     # CREATE/DROP DATABASE on a remote. If we cannot see the host plainly, we
     # do not get to call it disposable.
+    # Round 7, defect 1: libpq honours PGHOSTADDR whenever `hostaddr` is absent
+    # from the DSN, and PGSERVICE whenever `service` is. Round 6 closed the DSN
+    # halves and left the environment halves wide open -- measured: a localhost
+    # URL plus PGHOSTADDR=10.255.255.1 was called disposable and libpq went to
+    # the remote.
+    for env_opaque in ("PGHOSTADDR", "PGSERVICE"):
+        if os.environ.get(env_opaque):
+            pytest.skip(
+                f"{env_opaque}={os.environ[env_opaque]!r} is set, so libpq will "
+                f"connect somewhere this guard cannot see. These tests create "
+                f"and drop schema. Set DRIFT_GATE_TEST_DB_IS_DISPOSABLE=1 to "
+                f"override."
+            )
     for opaque in ("hostaddr", "service"):
         if parsed.get(opaque):
             pytest.skip(
@@ -434,7 +436,11 @@ def _pg_url_or_skip_ddl():
             f"DRIFT_GATE_TEST_DB_IS_DISPOSABLE=1 to override."
         )
     host = (parsed.get("host") or "").strip()
-    if host in _DISPOSABLE_HOSTS or host.startswith("/"):
+    # A comma-separated host list is tried in order, so "/tmp,10.255.255.1" was
+    # called disposable on the strength of its first entry while libpq would
+    # fall through to the remote. Every entry must be local, not just the first.
+    entries = [h.strip() for h in host.split(",")] if host else [host]
+    if all(h in _DISPOSABLE_HOSTS or h.startswith("/") for h in entries):
         return url
     if os.environ.get("DRIFT_GATE_TEST_DB_IS_DISPOSABLE") == "1":
         return url
@@ -481,9 +487,7 @@ def test_fetch_applied_returns_filenames_from_a_real_ledger():
     assert isinstance(applied, set)
     if not applied:
         return  # an empty ledger is a legitimate state
-    assert all(isinstance(x, str) and x.endswith(".sql") for x in applied), sorted(
-        applied
-    )[:5]
+    assert all(isinstance(x, str) and x.endswith(".sql") for x in applied), sorted(applied)[:5]
 
 
 def test_post_connect_failure_is_not_forgiven_real_database(monkeypatch):
@@ -501,7 +505,14 @@ def test_post_connect_failure_is_not_forgiven_real_database(monkeypatch):
     import psycopg
     from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
+    # Round 7, defect 6: this created public._migrations and never dropped it,
+    # so on a ledger-less database the gate's verdict flipped from exit 2
+    # ("unknowable") to exit 1 ("missing 30") for every later run -- the
+    # round-5 hazard, scoped to local hosts rather than removed, and a
+    # developer's docker-compose Postgres is local. Create it only if absent,
+    # and drop it again if we were the ones who made it.
     with psycopg.connect(url, autocommit=True) as c:
+        we_created_it = c.execute("SELECT to_regclass('public._migrations')").fetchone()[0] is None
         c.execute(
             "CREATE TABLE IF NOT EXISTS public._migrations "
             "(filename text PRIMARY KEY, applied_at timestamptz DEFAULT now())"
@@ -533,16 +544,19 @@ def test_post_connect_failure_is_not_forgiven_real_database(monkeypatch):
             drift_mod.fetch_applied(slow)
         assert not isinstance(caught.value, drift_mod.Unreachable), (
             "a query cancelled after a successful connect is not an unreachable "
-            "database; classifying it as one lets --allow-unreachable return 0"
+            "database; classifying it as one lets --allow-no-database return 0"
         )
         # monkeypatch, NOT os.environ: an unrestored DATABASE_URL carrying
         # lock_timeout leaks into every later test in the session.
         monkeypatch.setenv("DATABASE_URL", slow)
         assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-        assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+        assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
     finally:
         blocker.rollback()
         blocker.close()
+        if we_created_it:
+            with psycopg.connect(url, autocommit=True) as c:
+                c.execute("DROP TABLE IF EXISTS public._migrations")
 
 
 def test_malformed_conninfo_is_never_forgiven(monkeypatch):
@@ -562,7 +576,7 @@ def test_malformed_conninfo_is_never_forgiven(monkeypatch):
     with pytest.raises(drift_mod.BadConfiguration):
         drift_mod.fetch_applied("garbage")
     assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
 
 
 def test_an_unresolvable_host_is_not_forgiven_either(monkeypatch):
@@ -580,7 +594,7 @@ def test_an_unresolvable_host_is_not_forgiven_either(monkeypatch):
     # not exist.
     monkeypatch.setenv("DATABASE_URL", "postgresql://u@no-such-host.invalid:5432/d")
     assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
 
 
 def test_a_server_that_answers_and_refuses_us_is_never_forgiven():
@@ -589,7 +603,7 @@ def test_a_server_that_answers_and_refuses_us_is_never_forgiven():
     `connect()` raises when the SERVER answered and rejected us: a wrong
     password, a database or role that does not exist, a pg_hba rule excluding
     this host. The old code classified every connect failure as Unreachable, so
-    a CI job with a typo'd password reported exit 0 under --allow-unreachable.
+    a CI job with a typo'd password reported exit 0 under --allow-no-database.
     The database was plainly reachable -- it replied.
 
     Driven against a real server, not simulated, because the discriminator is
@@ -602,28 +616,27 @@ def test_a_server_that_answers_and_refuses_us_is_never_forgiven():
 
     base = conninfo_to_dict(url)
     cases = {
-        "no such database": make_conninfo(
-            **{**base, "dbname": "drift_gate_no_such_db"}
-        ),
+        "no such database": make_conninfo(**{**base, "dbname": "drift_gate_no_such_db"}),
         "no such role": make_conninfo(**{**base, "user": "drift_gate_no_such_role"}),
     }
     # Round 6, defect 8: the headline case -- a WRONG PASSWORD, i.e. a typo'd
     # CI secret -- was not in the suite. CI's postgres:16-alpine uses password
     # auth, so it pins there; additive so a trust-auth server just omits it.
     if base.get("password"):
-        cases["wrong password"] = make_conninfo(
-            **{**base, "password": "definitely-not-it"}
-        )
+        cases["wrong password"] = make_conninfo(**{**base, "password": "definitely-not-it"})
     for label, bad in cases.items():
-        with pytest.raises(drift_mod.ServerRejected) as caught:
+        # Assert the BEHAVIOUR, not the label. Round 7, defect 2: asserting
+        # `ServerRejected` and `"FATAL" in ...` pinned libpq's LOCALIZED
+        # severity, so a non-English server or a translated libpq turned CI red
+        # while every exit code below still passed. The label stopped deciding
+        # anything in round 6; pinning it only buys false reds.
+        with pytest.raises(Exception) as caught:
             drift_mod.fetch_applied(bad)
-        assert "FATAL" in str(caught.value), (label, str(caught.value))
+        assert not isinstance(caught.value, drift_mod.Unreachable), (label, caught.value)
         os.environ["DATABASE_URL"] = bad
         try:
             assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN, label
-            assert (
-                drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
-            ), label
+            assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN, label
         finally:
             os.environ["DATABASE_URL"] = url
 
@@ -638,10 +651,13 @@ def test_client_rejected_dsn_values_are_not_forgiven(monkeypatch):
         "postgresql://u@127.0.0.1:5432/d?sslmode=bogus",
     ):
         monkeypatch.setenv("DATABASE_URL", bad)
-        with pytest.raises(drift_mod.BadConfiguration):
-            drift_mod.fetch_applied(bad)
+        # No assertion on the exception TYPE. Round 7, defect 2: these two
+        # inputs are classified from libpq's message, which is localized, so
+        # pinning the type bought a red CI on a reword while the exit codes --
+        # the actual behaviour -- were unaffected. The exit codes are the
+        # contract; assert those.
         assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN, bad
-        assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN, bad
+        assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN, bad
 
 
 def test_a_named_database_that_cannot_be_reached_is_never_forgiven(monkeypatch):
@@ -661,7 +677,7 @@ def test_a_named_database_that_cannot_be_reached_is_never_forgiven(monkeypatch):
     pytest.importorskip("psycopg")
     monkeypatch.setenv("DATABASE_URL", "postgresql://u@127.0.0.1:5499/d")
     assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
 
 
 def test_the_flag_forgives_only_an_absent_url(monkeypatch):
@@ -672,7 +688,7 @@ def test_the_flag_forgives_only_an_absent_url(monkeypatch):
     # UNSET: the one forgivable fact.
     monkeypatch.delenv("DATABASE_URL", raising=False)
     assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_OK
+    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_OK
 
     # SET BUT EMPTY: never forgiven. In GitHub Actions an unset secret expands
     # to "", so `env: DATABASE_URL: ${{ secrets.MISSING }}` lands here. Treating
@@ -682,9 +698,7 @@ def test_the_flag_forgives_only_an_absent_url(monkeypatch):
     for empty in ("", "   ", "\t"):
         monkeypatch.setenv("DATABASE_URL", empty)
         assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN, repr(empty)
-        assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN, repr(
-            empty
-        )
+        assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN, repr(empty)
 
 
 def test_the_crash_guard_reports_unknown_not_drift(monkeypatch):
@@ -711,7 +725,7 @@ def test_the_crash_guard_reports_unknown_not_drift(monkeypatch):
     with pytest.raises(RuntimeError):
         drift_mod.main([])  # main() still propagates; _cli is what classifies
     assert drift_mod._cli([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod._cli(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod._cli(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
 
     # Stage 2: discovery AND the ledger read both succeed; the comparison
     # crashes. This is past main()'s own `except Exception` around the ledger
@@ -724,4 +738,73 @@ def test_the_crash_guard_reports_unknown_not_drift(monkeypatch):
     with pytest.raises(RuntimeError):
         drift_mod.main([])
     assert drift_mod._cli([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod._cli(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod._cli(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "env,dsn",
+    [
+        ({}, "postgresql://u:p@db.example.com:5432/prod"),
+        ({}, "postgresql://u:p@/prod?hostaddr=10.255.255.1"),
+        ({}, "postgresql://u:p@/prod?service=prodsvc"),
+        ({"PGHOSTADDR": "10.255.255.1"}, "postgresql://u:p@localhost:5432/prod"),
+        ({"PGSERVICE": "prodsvc"}, "postgresql://u:p@/prod"),
+        ({}, "postgresql://u:p@/prod?host=/tmp,10.255.255.1"),
+    ],
+)
+def test_the_ddl_guard_refuses_anything_it_cannot_prove_is_local(monkeypatch, env, dsn):
+    """Round 7: deleting the DDL guard's body was GREEN in rounds 6 AND 7.
+
+    That guard is the only thing standing between `pytest` and
+    `CREATE DATABASE` / `DROP DATABASE` / `CREATE TABLE` against whatever
+    DATABASE_URL names -- and the gate's own docstring says staging is exactly
+    the ledger-less shape it describes, so pointing the suite at staging would
+    destroy the evidence it reports. A guard with no test is scaffolding that
+    nothing would notice the removal of. This pins it.
+
+    Each case below is a shape a previous round found being waved through.
+    """
+    pytest.importorskip("psycopg")
+    monkeypatch.delenv("PGHOSTADDR", raising=False)
+    monkeypatch.delenv("PGSERVICE", raising=False)
+    monkeypatch.delenv("PGHOST", raising=False)
+    monkeypatch.delenv("DRIFT_GATE_TEST_DB_IS_DISPOSABLE", raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("DATABASE_URL", dsn)
+    # BaseException, not Exception: pytest.skip raises Skipped, which derives
+    # from BaseException. Catching Exception let the Skipped propagate and the
+    # TEST skipped instead of asserting -- a guard test that silently does not
+    # run, which is the defect class this whole file is about.
+    with pytest.raises(BaseException) as caught:
+        _pg_url_or_skip_ddl()
+    assert "Skipped" in type(caught.value).__name__ or "skip" in str(caught.value).lower(), (
+        f"the guard ALLOWED {dsn!r} with env {env!r}; it must refuse anything "
+        f"it cannot prove is local"
+    )
+
+
+def test_the_ddl_guard_allows_a_plainly_local_target(monkeypatch):
+    """The other side: the guard must NOT skip on CI's own URL, or the DDL
+    tests silently stop running and round 5's defect 3 becomes a false green
+    instead of a hazard."""
+    pytest.importorskip("psycopg")
+    for k in ("PGHOSTADDR", "PGSERVICE", "PGHOST", "DRIFT_GATE_TEST_DB_IS_DISPOSABLE"):
+        monkeypatch.delenv(k, raising=False)
+    for ok in (
+        "postgresql://stemloops:stemloops@localhost:5432/stemloops",
+        "postgresql://stemloops@127.0.0.1:5432/stemloops",
+        "postgresql://u:p@/db?host=/tmp",
+    ):
+        monkeypatch.setenv("DATABASE_URL", ok)
+        assert _pg_url_or_skip_ddl() == ok, ok
+
+
+def test_the_disposable_override_wins(monkeypatch):
+    """The documented escape hatch, asserted so it keeps working -- it is the
+    only way to run these tests against a deliberately disposable remote."""
+    pytest.importorskip("psycopg")
+    monkeypatch.setenv("PGHOSTADDR", "10.255.255.1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@db.example.com:5432/throwaway")
+    monkeypatch.setenv("DRIFT_GATE_TEST_DB_IS_DISPOSABLE", "1")
+    assert _pg_url_or_skip_ddl().startswith("postgresql://")

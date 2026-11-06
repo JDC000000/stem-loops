@@ -44,15 +44,34 @@ function billingStub({ cancelError = null } = {}) {
   `);
 }
 
-function dbStub(subIds) {
+// Records tx lifecycle as ['tx','begin'|'commit'|'rollback'] so tests can assert
+// that a failure inside the erase+cancel transaction rolls it back.
+// opts.errors maps a statement regex source -> { code, message } to throw.
+function dbStub(subIds, errors = {}) {
   return dataUrl(`
+    const errors = ${JSON.stringify(errors)};
+    const run = async (text, params) => {
+      globalThis.__ad.calls.push(['query', text, params]);
+      for (const [re, e] of Object.entries(errors)) {
+        if (new RegExp(re).test(text)) throw Object.assign(new Error(e.message), { code: e.code });
+      }
+      if (/FROM public\\.subscriptions/.test(text)) {
+        return { rows: ${JSON.stringify(subIds)}.map((id) => ({ provider_subscription_id: id })), rowCount: ${subIds.length} };
+      }
+      return { rows: [], rowCount: 1 };
+    };
     export const db = {
-      query: async (text, params) => {
-        globalThis.__ad.calls.push(['query', text, params]);
-        if (/FROM public\\.subscriptions/.test(text)) {
-          return { rows: ${JSON.stringify(subIds)}.map((id) => ({ provider_subscription_id: id })), rowCount: ${subIds.length} };
+      query: run,
+      tx: async (fn) => {
+        globalThis.__ad.calls.push(['tx', 'begin']);
+        try {
+          const r = await fn({ query: run });
+          globalThis.__ad.calls.push(['tx', 'commit']);
+          return r;
+        } catch (e) {
+          globalThis.__ad.calls.push(['tx', 'rollback']);
+          throw e;
         }
-        return { rows: [], rowCount: 1 };
       },
     };
   `);
@@ -67,12 +86,12 @@ const nextStub = () =>
     export class NextRequest {}
   `);
 
-async function loadRoute({ user = USER, subIds = [], cancelError = null, deleteFails = false } = {}) {
+async function loadRoute({ user = USER, subIds = [], cancelError = null, deleteFails = false, dbErrors = {} } = {}) {
   let js = toJs(readFileSync(SRC, 'utf8'));
   js = js
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user, { deleteFails })}'`)
     .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billingStub({ cancelError })}'`)
-    .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub(subIds)}'`)
+    .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub(subIds, dbErrors)}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
@@ -141,23 +160,33 @@ test('DELETE /api/users/me — happy path: cancels Stripe, deletes auth user, au
   const del = calls.filter((c) => c[0] === 'deleteAuthUser');
   assert.deepEqual(del, [['deleteAuthUser', USER.user_id]]);
 
-  // Order: cancel → tombstone → chord_edits sweep → deleteAuthUser → audit.
+  // Order: erase chord_edits (fn) → cancel Stripe → COMMIT → tombstone → deleteAuthUser → audit.
   const order = calls.map((c) => {
+    if (c[0] === 'tx') return `tx:${c[1]}`;
     if (c[0] !== 'query') return c[0];
     if (/INSERT/.test(c[1])) return 'query:audit';
     if (/UPDATE/.test(c[1])) return 'query:tombstone';
-    if (/DELETE FROM public\.chord_edits/.test(c[1])) return 'query:chord_edits_sweep';
+    if (/delete_chord_edits_for_user/.test(c[1])) return 'query:chord_edits_erase';
     return 'query:select';
   });
-  assert.ok(order.indexOf('cancelSubscription') < order.indexOf('query:tombstone'));
-  assert.ok(order.indexOf('query:tombstone') < order.indexOf('query:chord_edits_sweep'));
-  assert.ok(order.indexOf('query:chord_edits_sweep') < order.indexOf('deleteAuthUser'));
-  assert.ok(order.indexOf('deleteAuthUser') < order.indexOf('query:audit'));
+  const at = (k) => order.indexOf(k);
+  assert.ok(at('tx:begin') < at('query:chord_edits_erase'));
+  assert.ok(at('query:chord_edits_erase') < at('cancelSubscription'), 'erase BEFORE the irreversible Stripe cancel');
+  assert.ok(at('cancelSubscription') < at('tx:commit'));
+  assert.ok(at('tx:commit') < at('query:tombstone'));
+  assert.ok(at('query:tombstone') < at('deleteAuthUser'));
+  assert.ok(at('deleteAuthUser') < at('query:audit'));
+  assert.ok(!order.includes('tx:rollback'));
 
-  // Chord-edits sweep scoped to this user id.
-  const sweep = calls.find((c) => c[0] === 'query' && /DELETE FROM public\.chord_edits/.test(c[1]));
-  assert.ok(sweep, 'expected a DELETE FROM public.chord_edits sweep before deleteAuthUser');
-  assert.equal(sweep[2][0], USER.user_id);
+  // Erasure goes through the SECURITY DEFINER function (migration 031), never a
+  // raw DELETE (stemloops_app has no DELETE on chord_edits — migration 025).
+  assert.ok(
+    !calls.some((c) => c[0] === 'query' && /DELETE\s+FROM\s+public\.chord_edits/i.test(c[1])),
+    'raw DELETE FROM chord_edits would raise 42501 as stemloops_app',
+  );
+  const sweep = calls.find((c) => c[0] === 'query' && /delete_chord_edits_for_user/.test(c[1]));
+  assert.ok(sweep, 'expected a delete_chord_edits_for_user() call before deleteAuthUser');
+  assert.deepEqual(sweep[2], [USER.user_id]);
 
   // Subscription lookup scoped to this user and live statuses.
   const sel = calls.find((c) => c[0] === 'query' && /FROM public\.subscriptions/.test(c[1]));
@@ -183,11 +212,15 @@ test('DELETE /api/users/me — no subscriptions: still deletes', async () => {
   assert.ok(names().includes('deleteAuthUser'));
 });
 
-test('DELETE /api/users/me — Stripe failure aborts BEFORE any deletion (502)', async () => {
+test('DELETE /api/users/me — Stripe failure ROLLS BACK the erasure, no tombstone (502)', async () => {
   const mod = await loadRoute({ subIds: ['sub_a'], cancelError: { code: 'api_connection_error' } });
   const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
   assert.equal(res.status, 502);
   assert.equal(res.body.code, 'SUBSCRIPTION_CANCEL_FAILED');
+  const calls = globalThis.__ad.calls;
+  assert.ok(calls.some((c) => c[0] === 'tx' && c[1] === 'rollback'), 'erase+cancel tx must roll back');
+  assert.ok(!calls.some((c) => c[0] === 'tx' && c[1] === 'commit'));
+  assert.ok(!calls.some((c) => c[0] === 'query' && /UPDATE public\.users/.test(c[1])), 'no tombstone');
   assert.ok(!names().includes('deleteAuthUser'));
   assert.equal(auditInserts().length, 0);
 });
@@ -238,117 +271,38 @@ test('DELETE /api/users/me — Host header with default port :443 still matches 
   assert.equal(res.status, 204);
 });
 
-test('DELETE /api/users/me — tolerates chord_edits table absent (42P01)', async () => {
-  // Pre-025 env: chord_edits does not exist yet. The sweep must swallow 42P01
-  // and continue; everything else still runs.
-  let js = toJs(readFileSync(SRC, 'utf8'));
-  js = js
-    .replace(
-      /from ['"]@\/lib\/auth\/supabase['"]/g,
-      `from '${authStub(USER, { deleteFails: false })}'`,
-    )
-    .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billingStub({ cancelError: null })}'`)
-    .replace(
-      /from ['"]@\/lib\/db['"]/g,
-      `from '${dataUrl(`
-        export const db = {
-          query: async (text, params) => {
-            globalThis.__ad.calls.push(['query', text, params]);
-            if (/FROM public\\.subscriptions/.test(text)) {
-              return { rows: [], rowCount: 0 };
-            }
-            if (/DELETE FROM public\\.chord_edits/.test(text)) {
-              const err = new Error('relation "public.chord_edits" does not exist');
-              err.code = '42P01';
-              throw err;
-            }
-            return { rows: [], rowCount: 1 };
-          },
-        };
-      `)}'`,
-    )
-    .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
-  const mod = await import(dataUrl(js) + '#' + Math.random());
-
-  const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
-  assert.equal(res.status, 204, 'pre-025 path: sweep swallows 42P01 and continues');
-  assert.ok(names().includes('deleteAuthUser'));
-  assert.equal(auditInserts().length, 1);
-});
-
-test('DELETE /api/users/me — chord_edits sweep failure (non-42P01) aborts before auth delete', async () => {
-  // Any error other than undefined_table should propagate — otherwise we'd
-  // then explode on the FK inside auth.admin.deleteUser. 500 is the right
-  // outcome: nothing destructive happened past step 3a.
-  let js = toJs(readFileSync(SRC, 'utf8'));
-  js = js
-    .replace(
-      /from ['"]@\/lib\/auth\/supabase['"]/g,
-      `from '${authStub(USER, { deleteFails: false })}'`,
-    )
-    .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billingStub({ cancelError: null })}'`)
-    .replace(
-      /from ['"]@\/lib\/db['"]/g,
-      `from '${dataUrl(`
-        export const db = {
-          query: async (text, params) => {
-            globalThis.__ad.calls.push(['query', text, params]);
-            if (/FROM public\\.subscriptions/.test(text)) {
-              return { rows: [], rowCount: 0 };
-            }
-            if (/DELETE FROM public\\.chord_edits/.test(text)) {
-              const err = new Error('deadlock detected');
-              err.code = '40P01';
-              throw err;
-            }
-            return { rows: [], rowCount: 1 };
-          },
-        };
-      `)}'`,
-    )
-    .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
-  const mod = await import(dataUrl(js) + '#' + Math.random());
-
-  const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
-  assert.equal(res.status, 500);
-  assert.equal(res.body.code, 'DELETE_FAILED');
-  // deleteAuthUser must NOT have been reached.
-  assert.ok(!names().includes('deleteAuthUser'));
-  assert.equal(auditInserts().length, 0);
-});
+// The erasure failing must stop the request BEFORE the irreversible Stripe cancel
+// (this is the prod bug: 42501 after the subscription was already cancelled).
+for (const [label, code, message] of [
+  ['permission denied (42501)', '42501', 'permission denied for function delete_chord_edits_for_user'],
+  ['function missing, migration 031 not applied (42883)', '42883', 'function public.delete_chord_edits_for_user(uuid) does not exist'],
+  ['table missing (42P01) is no longer swallowed', '42P01', 'relation "public.chord_edits" does not exist'],
+  ['deadlock (40P01)', '40P01', 'deadlock detected'],
+]) {
+  test(`DELETE /api/users/me — chord_edits erasure failure, ${label}: 500, NOTHING cancelled`, async () => {
+    const mod = await loadRoute({
+      subIds: ['sub_a'],
+      dbErrors: { 'delete_chord_edits_for_user': { code, message } },
+    });
+    const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
+    assert.equal(res.status, 500);
+    assert.equal(res.body.code, 'DELETE_FAILED');
+    assert.ok(!names().includes('cancelSubscription'), 'subscription must NOT be cancelled');
+    assert.ok(!names().includes('deleteAuthUser'));
+    assert.ok(
+      !globalThis.__ad.calls.some((c) => c[0] === 'query' && /UPDATE public\.users/.test(c[1])),
+      'deleted_at must NOT be stamped',
+    );
+    assert.equal(auditInserts().length, 0);
+  });
+}
 
 test('DELETE /api/users/me — tolerates users.deleted_at column absent (42703)', async () => {
-  // Re-stub db so UPDATE public.users throws Postgres column-does-not-exist;
-  // route should catch and continue, still deleting auth user + writing audit.
-  let js = toJs(readFileSync(SRC, 'utf8'));
-  js = js
-    .replace(
-      /from ['"]@\/lib\/auth\/supabase['"]/g,
-      `from '${authStub(USER, { deleteFails: false })}'`,
-    )
-    .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billingStub({ cancelError: null })}'`)
-    .replace(
-      /from ['"]@\/lib\/db['"]/g,
-      `from '${dataUrl(`
-        export const db = {
-          query: async (text, params) => {
-            globalThis.__ad.calls.push(['query', text, params]);
-            if (/FROM public\\.subscriptions/.test(text)) {
-              return { rows: [], rowCount: 0 };
-            }
-            if (/UPDATE public\\.users/.test(text)) {
-              const err = new Error('column "deleted_at" does not exist');
-              err.code = '42703';
-              throw err;
-            }
-            return { rows: [], rowCount: 1 };
-          },
-        };
-      `)}'`,
-    )
-    .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
-  const mod = await import(dataUrl(js) + '#' + Math.random());
-
+  // UPDATE public.users throws column-does-not-exist; route should catch and
+  // continue, still deleting auth user + writing audit.
+  const mod = await loadRoute({
+    dbErrors: { 'UPDATE public\\.users': { code: '42703', message: 'column "deleted_at" does not exist' } },
+  });
   const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
   assert.equal(res.status, 204, 'tolerance path: tombstone attempt swallows 42703 and continues');
   assert.ok(names().includes('deleteAuthUser'));

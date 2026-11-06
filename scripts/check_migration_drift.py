@@ -35,8 +35,10 @@ absent — passing while checking nothing. A drift gate that silently skips is
 worse than no gate, because it produces a green tick that a reader trusts.
 
 So: no DATABASE_URL, an unreachable database, or a missing `_migrations` table
-all exit 2. Only `--allow-unreachable` downgrades that to 0, and it says so
-loudly. A missing `_migrations` table is a hard failure rather than "assume
+all exit 2. `--allow-unreachable` downgrades exactly TWO of those to 0 — a
+missing DATABASE_URL and a database that could not be reached — and says so
+loudly. It never downgrades a missing or unreadable ledger, a DSN the client
+rejected, or a server that answered and refused us. A missing `_migrations` table is a hard failure rather than "assume
 zero": staging has no such table, and its true migration level is therefore
 unknowable from inside — see the cutover plan.
 
@@ -52,9 +54,18 @@ USAGE
   python scripts/check_migration_drift.py --expect 30
   python scripts/check_migration_drift.py --allow-unreachable   # CI without a DB
 
-STATUS. The Supabase-prelude matrix job runs this against the database it has
-just migrated, which exercises the gate end to end but CANNOT report drift —
-it is checking a ledger it populated itself from the same checkout.
+STATUS. ON THIS BRANCH NOTHING RUNS THIS SCRIPT. Review round 5 caught the
+previous paragraph here asserting that a CI job executes it; no such job exists
+on this ref (`git grep check_migration_drift -- .github/` is empty). The only
+invocation lives on the sibling branch `feat/supabase-prelude-migration-matrix`
+in the `supabase-prelude-migrations` job, which is NOT an ancestor or descendant
+of this one. Merge this branch alone and you get a gate nothing calls — the
+seam-class-6 shape this script was written to prevent, reproduced in the script
+itself. The two must land together, or the step must move here.
+
+Even once wired, that job CANNOT report drift: it checks a ledger it populated
+itself from the same checkout. It proves the gate executes against a real
+ledger; it does not protect production.
 
 The thing this script exists for is still NOT WIRED: nothing points it at a
 real deployed database. As of 2026-11-06 production's `public._migrations`
@@ -69,6 +80,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -97,24 +109,58 @@ class Unreachable(Exception):
           still landed here, and the flag still returned 0.
 
     Both let through the exact case the flag must never forgive: the database
-    answered and we still do not know what is applied. Only a failure raised by
-    `psycopg.connect` can be an Unreachable; anything raised afterwards is a
-    database that answered.
+    answered and we still do not know what is applied.
+
+      v3  phase alone — "raised by connect() means unreachable". Round 5
+          refuted it by measurement: `connect()` also raises when the SERVER
+          answered and refused us (`FATAL:  role "x" does not exist`, a wrong
+          password, a wrong database name) and when the CLIENT rejected the
+          DSN's values before touching the network (`invalid sslmode value`).
+          A CI job with a typo'd password was therefore "unreachable" and went
+          green. psycopg carries no `sqlstate` on any of these — measured, all
+          None — so the phase is necessary but not sufficient.
+
+    So Unreachable now means: raised by `connect`, AND not a server rejection,
+    AND not a client-side DSN rejection. See `_classify_connect_failure`.
     """
 
 
 class BadConfiguration(Exception):
-    """DATABASE_URL is not a usable connection string.
+    """DATABASE_URL is not a usable connection string. Never forgiven.
 
-    Distinct from Unreachable on purpose. A DSN that does not parse is a
-    configuration mistake in whatever invoked this gate; no database was ever
-    contacted, so "could not reach the database" would be a lie and
-    --allow-unreachable must not forgive it.
+    No database was ever contacted, so "could not reach the database" would be
+    a lie. Two kinds land here:
 
-    The line sits at PARSING, not at resolving: a host that does not resolve,
-    or a port that is refused, is indistinguishable from a database that is
-    genuinely down or firewalled off from this runner, so that stays
-    Unreachable and stays forgivable.
+      * the string does not PARSE (`garbage`, `=oops`, a bad `%zz` escape, an
+        unknown option name) — caught by `conninfo_to_dict` before connecting;
+      * the string parses but the CLIENT rejects a VALUE (`port=notaport`,
+        `sslmode=bogus`) — libpq raises this from `connect()` without touching
+        the network, so it is caught by message, not by phase.
+
+    WHERE THE LINE SITS, precisely, because round 4 described it wrongly and
+    round 5 caught that: not "parses vs resolves". A host that does not resolve,
+    a refused TCP port and a refused unix socket are indistinguishable from a
+    database that is down or firewalled off from this runner, so those stay
+    Unreachable and stay forgivable. Anything the client or the server actively
+    REJECTED is a configuration error and is not.
+    """
+
+
+class ServerRejected(Exception):
+    """The database answered and refused the connection. Never forgiven.
+
+    A wrong password, a database or role that does not exist, a pg_hba rule
+    that excludes this host. The server is plainly reachable — it replied — so
+    forgiving this under a flag named `--allow-unreachable` would be a false
+    green of the worst kind: CI with the wrong credentials, passing.
+
+    Detected by `FATAL:` in the message, which is libpq's rendering of a server
+    ErrorResponse. That is a string match and therefore brittle, and it is
+    deliberately FAIL-OPEN: an error this classifier does not recognise stays
+    Unreachable, so a psycopg reword degrades CI to the old behaviour instead
+    of turning every database-less job red. The brittleness is pinned by
+    real-database tests that drive genuine FATALs — if the wording changes,
+    those go red in CI and name this classifier.
     """
 
 
@@ -144,6 +190,34 @@ class Drift:
         return bool(self.missing)
 
 
+# Matches libpq's own phrasing for a value it would not accept, e.g.
+# 'invalid integer value "notaport" for connection option "port"' and
+# 'invalid sslmode value: "bogus"'. Deliberately NOT matched: 'Connection
+# refused' and 'failed to resolve host', which are genuine unreachability.
+_CLIENT_REJECTED_VALUE = re.compile(
+    r"invalid \w+ value|for connection option", re.IGNORECASE
+)
+
+# libpq's rendering of a server ErrorResponse during startup.
+_SERVER_ANSWERED = "FATAL:"
+
+
+def _classify_connect_failure(exc: Exception) -> Exception:
+    """Decide whether a connect() failure is forgivable. Fail-open by design.
+
+    Round 5 measured every case against a live server: psycopg reports
+    `sqlstate is None` for ALL of them — server FATALs included — so the
+    exception type and sqlstate carry no signal here and the message is the
+    only thing that distinguishes them.
+    """
+    msg = str(exc)
+    if _SERVER_ANSWERED in msg:
+        return ServerRejected(msg)
+    if _CLIENT_REJECTED_VALUE.search(msg):
+        return BadConfiguration(msg)
+    return Unreachable(msg)
+
+
 def discover_repo_migrations(migrations_dir: Path) -> list[str]:
     """Basenames of forward migrations, in the runner's own order.
 
@@ -154,9 +228,9 @@ def discover_repo_migrations(migrations_dir: Path) -> list[str]:
     expression left in a docstring) all slipped past a test that compared this
     function against a copy of the glob written in the test.
     """
-    sys.path.insert(
-        0, str(Path(__file__).resolve().parents[1] / "apps" / "worker" / "src")
-    )
+    src = str(Path(__file__).resolve().parents[1] / "apps" / "worker" / "src")
+    if src not in sys.path:  # called per-test; insert() grew sys.path to 36
+        sys.path.insert(0, src)
     from worker.migrate import discover_migration_paths
 
     return [os.path.basename(p) for p in discover_migration_paths(str(migrations_dir))]
@@ -173,11 +247,16 @@ def diff_migrations(repo: list[str], applied: set[str]) -> Drift:
 def fetch_applied(database_url: str) -> set[str]:
     """Read the ledger.
 
-    Raises Unreachable only if the CONNECT fails. Every later failure — no
-    ledger, no SELECT privilege, a cancelled query — propagates as itself and
-    is never forgiven.
+    Raises Unreachable ONLY for a connect failure that is neither a server
+    rejection nor a client-side DSN rejection — see `_classify_connect_failure`.
+    Every post-connect failure — no ledger, no SELECT privilege, a cancelled
+    query — propagates as itself and is never forgiven.
     """
-    import psycopg  # imported late so --help works without the dependency
+    # Imported here rather than at module scope so `--help` works without the
+    # dependency. NOTE (round 5): that is now true of `--help` only.
+    # `discover_repo_migrations` imports `worker.migrate`, which imports psycopg
+    # at module scope, so any real run needs it regardless.
+    import psycopg
 
     # Parse the DSN BEFORE connecting. psycopg raises conninfo errors from
     # connect(), which made a typo'd DATABASE_URL look like an unreachable
@@ -194,7 +273,7 @@ def fetch_applied(database_url: str) -> set[str]:
     try:
         conn = psycopg.connect(database_url, connect_timeout=15)
     except Exception as exc:
-        raise Unreachable(str(exc)) from exc
+        raise _classify_connect_failure(exc) from exc
 
     with conn, conn.cursor() as cur:
         cur.execute("SELECT to_regclass('public._migrations')")
@@ -227,10 +306,12 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-unreachable",
         action="store_true",
         help=(
-            "downgrade an UNREACHABLE database (connection failure) from exit 2 "
-            "to exit 0, printing a warning. Does NOT forgive a malformed "
-            "DATABASE_URL, nor a database that answered: a missing ledger or "
-            "an unreadable ledger still fail."
+            "downgrade an UNREACHABLE database from exit 2 to exit 0, printing "
+            "a warning. Forgives exactly two things: no DATABASE_URL, and a "
+            "host/port/socket that could not be reached (DNS failure, refused, "
+            "timed out). Does NOT forgive: a DSN the client rejected, a server "
+            "that answered and refused us (bad password, no such database or "
+            "role), a missing ledger, or an unreadable ledger."
         ),
     )
     args = ap.parse_args(argv)
@@ -260,6 +341,15 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         applied = fetch_applied(database_url)
+    except ServerRejected as exc:
+        # NOT forgiven. The server replied, so it is demonstrably reachable;
+        # it refused us. Forgiving this would pass CI on a wrong password.
+        print(
+            f"FAIL: the database answered and refused the connection: {exc}. "
+            f"It is reachable, so --allow-unreachable does not forgive this.",
+            file=sys.stderr,
+        )
+        return EXIT_UNKNOWN
     except BadConfiguration as exc:
         # NOT forgiven. Nothing was contacted; the string itself is wrong.
         print(
@@ -332,5 +422,37 @@ def main(argv: list[str] | None = None) -> int:
     return EXIT_OK
 
 
+def _cli(argv: list[str] | None = None) -> int:
+    """Entry point. Round 5, defect 4: an uncaught exception left Python to
+    exit 1, and 1 is this gate's code for "the database is BEHIND". A crash
+    was reported to every caller as drift. Unexpected failures are exit 2 --
+    "cannot determine" -- which is what a crash actually means.
+
+    Not folded into main(): the tests call main() directly and a bare
+    traceback there is more useful than a swallowed 2.
+
+    Takes `argv` for the same reason main() does. Writing the test for this
+    guard is what showed it mattered: the first version took no arguments, so
+    the only way to exercise it was under pytest, where argparse then read
+    PYTEST's argv and exited 2 for the wrong reason -- a pass that proved
+    nothing. An entry point that cannot be called with explicit arguments
+    cannot be tested.
+    """
+    try:
+        return main(argv)
+    except KeyboardInterrupt:
+        return EXIT_UNKNOWN
+    except Exception:  # noqa: BLE001 - crash handler: blind is the point here
+        import traceback
+
+        traceback.print_exc()
+        print(
+            "\nFAIL: the drift gate itself crashed, so drift is UNDETERMINED "
+            "(exit 2). This is not a report that the database is behind.",
+            file=sys.stderr,
+        )
+        return EXIT_UNKNOWN
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_cli())

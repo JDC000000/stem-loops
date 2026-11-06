@@ -15,9 +15,11 @@ Part 4 lists exactly that failure in a sibling script.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import os
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -39,7 +41,7 @@ drift_mod = _load_module()
 
 
 # --------------------------------------------------------------------------
-# discovery must mirror migrate.py exactly
+# discovery: ONE definition, owned by migrate.py and called by the gate
 # --------------------------------------------------------------------------
 
 
@@ -60,7 +62,9 @@ def test_discovery_matches_the_runner_and_excludes_down(tmp_path: Path):
 
 
 def test_discovery_sees_the_real_repo_migrations():
-    found = drift_mod.discover_repo_migrations(_REPO_ROOT / "apps" / "worker" / "migrations")
+    found = drift_mod.discover_repo_migrations(
+        _REPO_ROOT / "apps" / "worker" / "migrations"
+    )
     assert found, "no migrations discovered in the real repo"
     assert found[0].startswith("001_"), found[:3]
     assert all(f.endswith(".sql") for f in found)
@@ -97,7 +101,9 @@ def test_extra_applied_migration_is_reported_but_not_a_blocker():
     d = drift_mod.diff_migrations(["001_a.sql"], {"001_a.sql", "999_future.sql"})
     assert d.extra == ["999_future.sql"]
     assert d.missing == []
-    assert d.has_drift is False, "an extra applied migration does not stop this code from running"
+    assert (
+        d.has_drift is False
+    ), "an extra applied migration does not stop this code from running"
 
 
 def test_a_gap_in_the_middle_is_caught_not_just_a_short_tail():
@@ -156,7 +162,9 @@ def test_drift_exits_one(monkeypatch):
 
 def test_expect_row_count_mismatch_fails(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x/x")
-    real = drift_mod.discover_repo_migrations(_REPO_ROOT / "apps" / "worker" / "migrations")
+    real = drift_mod.discover_repo_migrations(
+        _REPO_ROOT / "apps" / "worker" / "migrations"
+    )
     monkeypatch.setattr(drift_mod, "fetch_applied", lambda _u: set(real))
     assert drift_mod.main([]) == drift_mod.EXIT_OK
     assert drift_mod.main(["--expect", str(len(real) + 1)]) == drift_mod.EXIT_DRIFT
@@ -175,37 +183,59 @@ def test_expect_row_count_mismatch_fails(monkeypatch):
 _MIGRATE_PY = _REPO_ROOT / "apps" / "worker" / "src" / "worker" / "migrate.py"
 
 
-def _load_runner():
-    """Import the real runner, stubbing psycopg only if it is NOT INSTALLABLE.
+def _psycopg_importable() -> bool:
+    try:
+        import psycopg  # noqa: F401
 
-    Review round 3 (new defect 1): the previous condition was
-    `"psycopg" not in sys.modules`, so running a pin test before anything had
-    imported psycopg installed a stub for the REST OF THE SESSION and the
-    real-database tests then died with
-    `TypeError: 'NoneType' object does not support the context manager
-    protocol`. CI only escaped it by accident of collection order. Key on
-    importability, never on what happens to be in sys.modules.
+        return True
+    except ImportError:
+        return False
+
+
+@contextlib.contextmanager
+def _psycopg_stub_if_missing():
+    """Install a psycopg stub for the duration of ONE import, then remove it.
+
+    Review round 3 keyed this on importability rather than on `sys.modules`,
+    which fixed half of it. Round 5 found the other half: the stub was
+    installed with `sys.modules.setdefault` and never removed, so for the rest
+    of the session `pytest.importorskip("psycopg")` FOUND the stub and did not
+    skip. Tests then ran against it and failed with
+    `No module named 'psycopg.conninfo'; 'psycopg' is not a package` --
+    outcome depending on collection order. A stub that outlives its import is
+    indistinguishable from the real thing to every later importorskip.
     """
-    import types
+    if _psycopg_importable():
+        yield
+        return
+    stub = types.ModuleType("psycopg")
+    stub.connect = lambda *a, **k: None
+    stub.OperationalError = type("OperationalError", (Exception,), {})
+    sys.modules["psycopg"] = stub
+    try:
+        yield
+    finally:
+        # Unconditional: never leave a stub for a later importorskip to find.
+        sys.modules.pop("psycopg", None)
 
+
+def _load_runner():
+    """Import the real runner, stubbing psycopg only while importing it."""
     src = str(_REPO_ROOT / "apps" / "worker" / "src")
     if src not in sys.path:
         sys.path.insert(0, src)
-    try:
-        import psycopg  # noqa: F401
-    except ImportError:
-        stub = types.ModuleType("psycopg")
-        stub.connect = lambda *a, **k: None
-        stub.OperationalError = type("OperationalError", (Exception,), {})
-        sys.modules.setdefault("psycopg", stub)
-    import worker.migrate as runner
+    with _psycopg_stub_if_missing():
+        import worker.migrate as runner
 
     return runner
 
 
 def test_gate_and_runner_point_at_the_same_directory():
     runner = _load_runner()
-    assert Path(runner.MIGRATIONS_DIR).resolve() == drift_mod.DEFAULT_MIGRATIONS_DIR.resolve()
+    assert (
+        Path(runner.MIGRATIONS_DIR).resolve()
+        == drift_mod.DEFAULT_MIGRATIONS_DIR.resolve()
+    )
 
 
 def test_gate_delegates_discovery_to_the_runner_rather_than_copying_it():
@@ -260,7 +290,7 @@ def test_missing_ledger_is_never_forgiven_even_with_allow_unreachable(monkeypatc
     ), "staging's exact shape: tables present, no ledger. No flag may bless it"
 
 
-def test_only_a_connect_phase_failure_is_forgiven_by_the_flag(monkeypatch):
+def test_a_connect_phase_failure_is_forgiven_by_the_flag(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x/x")
 
     def _raise(_u):
@@ -282,7 +312,7 @@ def test_reachable_but_unreadable_ledger_is_never_forgiven(monkeypatch):
     assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
 
 
-def test_a_query_time_operational_error_is_not_forgiven(monkeypatch):
+def test_a_simulated_query_time_failure_is_not_forgiven(monkeypatch):
     """Round 3, N2 again: psycopg.OperationalError has ~92 subclasses and some
     are raised at QUERY time. A lock_timeout cancelling the ledger SELECT was
     reaching the forgiving branch and returning 0 — the database answered and
@@ -337,9 +367,43 @@ def _pg_url_or_skip():
     return url
 
 
+_DISPOSABLE_HOSTS = {"", "localhost", "127.0.0.1", "::1", "/tmp", "/var/run/postgresql"}
+
+
+def _pg_url_or_skip_ddl():
+    """Like `_pg_url_or_skip`, but for tests that WRITE SCHEMA.
+
+    Round 5, defect 3: the tests below run `CREATE DATABASE`, `DROP DATABASE`
+    and `CREATE TABLE public._migrations` against whatever `DATABASE_URL`
+    names, with no guard. The gate's own docstring says staging is exactly the
+    ledger-less shape -- so a developer running pytest with
+    `DATABASE_URL=<staging>` silently GIVES staging a ledger, and the gate's
+    verdict on it flips from exit 2 ("unknowable") to exit 1 ("missing 30").
+    The tests would have quietly destroyed the evidence they describe.
+
+    Self-arming, so CI needs no new variable and cannot be left behind a flag
+    nobody sets -- which would be a false green of its own. A local or
+    containerised postgres is disposable; anything else must say so explicitly.
+    """
+    import pytest
+    from psycopg.conninfo import conninfo_to_dict
+
+    url = _pg_url_or_skip()
+    host = (conninfo_to_dict(url).get("host") or "").strip()
+    if host in _DISPOSABLE_HOSTS or host.startswith("/"):
+        return url
+    if os.environ.get("DRIFT_GATE_TEST_DB_IS_DISPOSABLE") == "1":
+        return url
+    pytest.skip(
+        f"DATABASE_URL points at host {host!r}, which is not local. These tests "
+        f"create and drop schema. Set DRIFT_GATE_TEST_DB_IS_DISPOSABLE=1 only "
+        f"if that database is genuinely disposable."
+    )
+
+
 def test_fetch_applied_raises_ledger_missing_on_a_database_without_one():
     """The to_regclass branch, exercised against a real ledger-less database."""
-    url = _pg_url_or_skip()  # skips before importing psycopg if there is no DB
+    url = _pg_url_or_skip_ddl()  # CREATE/DROP DATABASE below -- must be local
     import psycopg
 
     name = "drift_gate_probe_db"
@@ -360,12 +424,22 @@ def test_fetch_applied_raises_ledger_missing_on_a_database_without_one():
 
 
 def test_fetch_applied_returns_filenames_from_a_real_ledger():
+    """Round 5, defect 3: this used to fail on a ledger-less database, because
+    it depended on a LATER test in the file having created the table. Pass or
+    fail by collection order. A ledger-less database is a legitimate state and
+    simply not this test's subject, so skip rather than create one -- creating
+    it is what defect 3 is about."""
     url = _pg_url_or_skip()
-    applied = drift_mod.fetch_applied(url)
+    try:
+        applied = drift_mod.fetch_applied(url)
+    except drift_mod.LedgerMissing:
+        pytest.skip("no public._migrations here; that is this file's OTHER test")
     assert isinstance(applied, set)
     if not applied:
         return  # an empty ledger is a legitimate state
-    assert all(isinstance(x, str) and x.endswith(".sql") for x in applied), sorted(applied)[:5]
+    assert all(isinstance(x, str) and x.endswith(".sql") for x in applied), sorted(
+        applied
+    )[:5]
 
 
 def test_post_connect_failure_is_not_forgiven_real_database(monkeypatch):
@@ -379,7 +453,7 @@ def test_post_connect_failure_is_not_forgiven_real_database(monkeypatch):
     with a short lock_timeout. The cancellation happens at query time, so it
     must NOT be an Unreachable and must NOT be forgiven by the flag.
     """
-    url = _pg_url_or_skip()
+    url = _pg_url_or_skip_ddl()  # CREATE TABLE below -- must be disposable
     import psycopg
     from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
@@ -389,11 +463,29 @@ def test_post_connect_failure_is_not_forgiven_real_database(monkeypatch):
             "(filename text PRIMARY KEY, applied_at timestamptz DEFAULT now())"
         )
 
-    slow = make_conninfo(**{**conninfo_to_dict(url), "options": "-c lock_timeout=300"})
+    # APPEND to any options already in the DSN. make_conninfo with a bare
+    # "options" key REPLACES them (verified), which would silently drop e.g. a
+    # search_path the URL carried. Harmless with CI's URL today; not harmless
+    # the first time someone's URL has options. Round 5, defect 6.
+    existing = (conninfo_to_dict(url).get("options") or "").strip()
+    opts = f"{existing} -c lock_timeout=300".strip()
+    slow = make_conninfo(**{**conninfo_to_dict(url), "options": opts})
+
     blocker = psycopg.connect(url)
     try:
+        # The blocker bounds its OWN wait too. Nothing else holds this lock in
+        # CI, but under pytest-xdist two workers would both try, and an
+        # unbounded LOCK TABLE hangs the suite instead of failing it.
+        blocker.execute("SET lock_timeout = '5s'")
         blocker.execute("LOCK TABLE public._migrations IN ACCESS EXCLUSIVE MODE")
-        with pytest.raises(Exception) as caught:
+
+        # Assert the SPECIFIC error. Round 5, defect 6: `pytest.raises(Exception)`
+        # plus "not Unreachable" passed for ANY non-Unreachable exception -- a
+        # BadConfiguration, a LedgerMissing, even a typo raising NameError --
+        # without the lock ever being contended. The point of this test is that
+        # a QUERY cancelled after a successful connect is not forgiven, so it
+        # must prove that is the error it got.
+        with pytest.raises(psycopg.errors.LockNotAvailable) as caught:
             drift_mod.fetch_applied(slow)
         assert not isinstance(caught.value, drift_mod.Unreachable), (
             "a query cancelled after a successful connect is not an unreachable "
@@ -414,11 +506,12 @@ def test_malformed_conninfo_is_never_forgiven(monkeypatch):
     DATABASE_URL was classed as 'unreachable' and returned 0 under the flag.
     Parsing now happens before the connect and raises BadConfiguration.
 
-    Only strings that do not PARSE are config errors. Writing this test is what
-    showed the line has to sit there: "postgresql://host:notaport/db" parses
-    fine and then fails at getaddrinfo, which is the same failure a genuinely
-    down or firewalled database gives. Forgiving that is the whole point of the
-    flag, so it stays Unreachable -- see test below.
+    Round 5 REFUTED the previous version of this docstring, which claimed
+    "postgresql://host:notaport/db parses fine and then fails at getaddrinfo".
+    It does not: libpq rejects the port VALUE before touching the network
+    (`connection is bad: invalid integer value "notaport"`), and the old code
+    classified that as Unreachable and FORGAVE it. Value rejections are now
+    BadConfiguration too -- see test_client_rejected_dsn_values_are_not_forgiven.
     """
     pytest.importorskip("psycopg")
     monkeypatch.setenv("DATABASE_URL", "garbage")
@@ -434,8 +527,97 @@ def test_unresolvable_host_stays_forgivable(monkeypatch):
     nobody 'tightens' BadConfiguration into the connect phase and makes every
     CI job that runs without a database go red."""
     pytest.importorskip("psycopg")
-    monkeypatch.setenv(
-        "DATABASE_URL", "postgresql://u@no-such-host.invalid:5432/d?connect_timeout=1"
-    )
+    # No connect_timeout in the URL: the gate passes connect_timeout=15 as a
+    # kwarg, which OVERRIDES the URL's value (verified round 5, defect 7), and
+    # psycopg resolves hostnames in Python before libpq anyway, so neither
+    # bounds getaddrinfo. Carrying the parameter here implied a bound that does
+    # not exist.
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@no-such-host.invalid:5432/d")
     assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
     assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_OK
+
+
+def test_a_server_that_answers_and_refuses_us_is_never_forgiven():
+    """Round 5, defect 2 -- the worst false green found in five rounds.
+
+    `connect()` raises when the SERVER answered and rejected us: a wrong
+    password, a database or role that does not exist, a pg_hba rule excluding
+    this host. The old code classified every connect failure as Unreachable, so
+    a CI job with a typo'd password reported exit 0 under --allow-unreachable.
+    The database was plainly reachable -- it replied.
+
+    Driven against a real server, not simulated, because the discriminator is
+    libpq's message text and the whole point is that it must match what a real
+    PostgreSQL actually sends. If psycopg or libpq rewords this, THIS TEST goes
+    red and names the classifier -- which is how the brittleness is paid for.
+    """
+    url = _pg_url_or_skip()
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+    base = conninfo_to_dict(url)
+    cases = {
+        "no such database": make_conninfo(
+            **{**base, "dbname": "drift_gate_no_such_db"}
+        ),
+        "no such role": make_conninfo(**{**base, "user": "drift_gate_no_such_role"}),
+    }
+    for label, bad in cases.items():
+        with pytest.raises(drift_mod.ServerRejected) as caught:
+            drift_mod.fetch_applied(bad)
+        assert "FATAL" in str(caught.value), (label, str(caught.value))
+        os.environ["DATABASE_URL"] = bad
+        try:
+            assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN, label
+            assert (
+                drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+            ), label
+        finally:
+            os.environ["DATABASE_URL"] = url
+
+
+def test_client_rejected_dsn_values_are_not_forgiven(monkeypatch):
+    """The other half of defect 2: the DSN parses, but libpq refuses a VALUE
+    before any network I/O. Measured round 5 -- these never leave the process,
+    so calling them "unreachable" and forgiving them was wrong."""
+    pytest.importorskip("psycopg")
+    for bad in (
+        "postgresql://u@127.0.0.1:notaport/d",
+        "postgresql://u@127.0.0.1:5432/d?sslmode=bogus",
+    ):
+        monkeypatch.setenv("DATABASE_URL", bad)
+        with pytest.raises(drift_mod.BadConfiguration):
+            drift_mod.fetch_applied(bad)
+        assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN, bad
+        assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN, bad
+
+
+def test_a_refused_port_stays_forgivable(monkeypatch):
+    """The fail-open side. A refused connection is indistinguishable from a
+    database that is down, so it stays Unreachable and the flag forgives it.
+    Asserted so nobody "tightens" the classifier into refusing every
+    database-less CI job -- the failure mode on the other side of defect 2."""
+    pytest.importorskip("psycopg")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@127.0.0.1:5499/d")
+    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_OK
+
+
+def test_the_crash_guard_reports_unknown_not_drift(monkeypatch):
+    """Round 5, defect 4: an uncaught exception let Python exit 1, and 1 is
+    this gate's code for "the database is BEHIND". Every crash was reported to
+    its caller as drift."""
+
+    def boom(*a, **k):
+        raise RuntimeError("the gate itself broke")
+
+    monkeypatch.setattr(drift_mod, "discover_repo_migrations", boom)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@127.0.0.1:5499/d")
+    with pytest.raises(RuntimeError):
+        drift_mod.main([])  # main() still propagates; the CLI wrapper classifies
+    assert drift_mod._cli([]) == drift_mod.EXIT_UNKNOWN
+    # and a real crash, not just a patched one: the gate must not report drift
+    # when it cannot even discover its own migrations.
+    assert (
+        drift_mod._cli(["--migrations-dir", "/nonexistent-xyz"])
+        == drift_mod.EXIT_UNKNOWN
+    )

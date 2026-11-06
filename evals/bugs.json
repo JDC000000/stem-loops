@@ -17,8 +17,37 @@
         "The right end-state fix is a WASM librosa port (already flagged as TODO in cqt-frontend.ts header + docs/ops/variant-y-browser.md). The librosa CQT implementation is a Schörkhuber/Klapuri 2010 recursive filterbank with per-octave downsampling — pixel-perfect parity to a naive bank-of-filters is not reachable without that structure.",
         "Interim plan: (a) L1-normalise the basis (sum(|win|) per bin), (b) raise the cap in a staged experiment behind a feature flag, measure iOS Safari memory + per-frame cost on a physical iPhone, (c) once (a)+(b) land, tighten cqt-parity.test.mjs: upper-bin assert → STRICT_TOL, lower-bin assert → something closer to 0.1 than 5.0."
       ]
+    },
+    {
+      "id": "WK-RETENTION-FK",
+      "opened": "2026-11-05",
+      "title": "Retention sweep aborted permanently on the first credit-charged job (FK RESTRICT)",
+      "severity": "high",
+      "area": "apps/worker/src/worker/cleanup.py",
+      "related_pr": "v3-phase-2/fix-retention-and-replicate-leak",
+      "repro": [
+        "cd apps/worker && python -m pytest tests/test_cleanup.py -k credit_charged"
+      ],
+      "notes": [
+        "DELETE FROM jobs ran outside any try after R2 was already purged; credit_consumption (ON DELETE RESTRICT) and chord_edits raise ForeignKeyViolation, the oldest row is re-selected every pass, so nothing was ever swept. Fixed: such jobs are anonymised, not deleted; ledger untouched."
+      ]
+    },
+    {
+      "id": "WK-REPLICATE-LEAK",
+      "opened": "2026-11-05",
+      "title": "Abandoned Replicate predictions never cancelled; spend ceiling under-counts; submit not crash-safe",
+      "severity": "high",
+      "area": "apps/worker/src/worker/replicate_client.py",
+      "related_pr": "v3-phase-2/fix-retention-and-replicate-leak",
+      "repro": [
+        "cd apps/worker && python -m pytest tests/test_replicate_spend.py"
+      ],
+      "notes": [
+        "Fixed: cancel on abandonment, idempotent per-job cost booking inside replicate_client, pending marker before POST.",
+        "OPEN (pipeline.py, queued behind PR #134): pipeline still emits its own separating/completed cost_usd (now 0.0 normally); _fetch_stems failure is covered because cost is booked at poll success."
+      ]
     }
   ],
-  "last_updated": "2026-11-04",
+  "last_updated": "2026-11-05",
   "note": "Pre-allocated per TSD §9. Add regression cases here."
 }

@@ -8,6 +8,10 @@ Product promise: "Files are deleted after 24 hours." Each job carries expires_at
      the uploaded source `_input.*` and all loop WAVs), THEN delete the DB row (loops +
      job_events cascade). R2 goes first so a failed R2 delete leaves the row in place and
      the next sweep retries; the reverse order would orphan the files forever.
+     A job that is referenced by the append-only credit ledger (credit_consumption is
+     ON DELETE RESTRICT, chord_edits has no cascade) CANNOT be deleted. It is ANONYMISED
+     instead: every user-identifying / content column is blanked and the shell row is kept
+     so the ledger keeps its FK target. See _anonymise_job.
   2. Orphan sweep: objects older than the retention window whose job row no longer exists
      (e.g. a presigned upload that never became a job) are deleted too.
   3. upload_rate_events are ephemeral per-IP rate markers (not user content); pruned on a
@@ -26,6 +30,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import psycopg
+from psycopg import errors as pg_errors
 
 from . import tmpdirs
 from .logger import log_structured
@@ -53,6 +58,12 @@ INFLIGHT_GRACE = "1 hour"
 _failed: dict[str, tuple[int, float]] = {}
 STUCK_AFTER_FAILURES = 3
 MAX_BACKOFF_SECONDS = 6 * 3600
+# Written to client_ip_hash / client_fingerprint of an anonymised job shell. Real values are
+# hex digests so this cannot collide, and it is how the sweep recognises a shell it has already
+# processed (otherwise the oldest ledger-bound jobs would be re-selected forever and, with the
+# LIMIT, eventually starve every newer job). A purged_at column would be cleaner; this avoids a
+# schema change.
+PURGED_MARKER = "purged"
 
 
 def _job_id_of(key: str) -> str:
@@ -71,8 +82,43 @@ def _backoff_seconds(failures: int) -> float:
     return min(MAX_BACKOFF_SECONDS, 900 * (2 ** (failures - 1)))
 
 
-async def _sweep_expired_jobs(conn, deadline: float) -> tuple[int, int]:
-    """Returns (swept, stuck). Skips jobs in failure backoff; stops at the deadline."""
+def _record_failure(job_id: str, event: str, exc: Exception) -> None:
+    """Back off a job whose delete keeps failing so it cannot hog the batch."""
+    n = _failed.get(job_id, (0, 0.0))[0] + 1
+    _failed[job_id] = (n, time.monotonic() + _backoff_seconds(n))
+    log_structured(
+        "ERROR",
+        event.replace("_failed", "_stuck") if n >= STUCK_AFTER_FAILURES else event,
+        job_id=job_id,
+        failures=n,
+        error=str(exc)[:200],
+    )
+
+
+async def _anonymise_job(conn, job_id: str) -> None:
+    """Strip user content from a job row that must outlive retention for ledger integrity.
+
+    Blanked: source URL / video id / title, uploaded filename and R2 key, the hashed client
+    ip + fingerprint, analysis results, and the loops rows (which only describe R2 objects that
+    are already gone). Kept: id, status, timestamps, requested_stems, user_id, the Replicate
+    prediction id and job_events (cost trace) — none of it is user content, and the ledger rows
+    (credit_consumption, chord_edits) point at the id. The text columns use '' not NULL because
+    jobs_input_source_chk requires youtube_url / upload_r2_key to be non-null for their kind.
+    """
+    await conn.execute("DELETE FROM loops WHERE job_id = %s", (job_id,))
+    await conn.execute(
+        "UPDATE jobs SET youtube_url = CASE WHEN input_kind = 'youtube' THEN '' ELSE NULL END, "
+        "  upload_r2_key = CASE WHEN input_kind = 'upload' THEN '' ELSE NULL END, "
+        "  original_filename = NULL, video_id = NULL, title = NULL, bpm = NULL, "
+        "  musical_key = NULL, client_ip_hash = %s, client_fingerprint = %s "
+        "WHERE id = %s",
+        (PURGED_MARKER, PURGED_MARKER, job_id),
+    )
+    await conn.commit()
+
+
+async def _sweep_expired_jobs(conn, deadline: float) -> tuple[int, int, int]:
+    """Returns (swept, stuck, anonymised). Skips jobs in failure backoff; stops at the deadline."""
     now = time.monotonic()
     skip = [jid for jid, (_n, until) in _failed.items() if until > now]
     rows = await (
@@ -80,12 +126,14 @@ async def _sweep_expired_jobs(conn, deadline: float) -> tuple[int, int]:
             "SELECT id::text FROM jobs "
             "WHERE expires_at < now() "
             f"  AND (status IN ('done','failed') OR expires_at < now() - interval '{INFLIGHT_GRACE}') "
+            "  AND client_ip_hash <> %s "
             "  AND NOT (id::text = ANY(%s)) "
             "ORDER BY expires_at LIMIT %s",
-            (skip, MAX_JOBS_PER_SWEEP),
+            (PURGED_MARKER, skip, MAX_JOBS_PER_SWEEP),
         )
     ).fetchall()
     swept = 0
+    anonymised = 0
     for (job_id,) in rows:
         if time.monotonic() >= deadline:
             log_structured(
@@ -96,26 +144,32 @@ async def _sweep_expired_jobs(conn, deadline: float) -> tuple[int, int]:
             # R2 first; if this raises the DB row stays and a later sweep retries.
             await asyncio.to_thread(delete_prefix, f"{job_id}/")
         except Exception as e:  # noqa: BLE001 — one bad job must not block the rest
-            n = _failed.get(job_id, (0, 0.0))[0] + 1
-            _failed[job_id] = (n, time.monotonic() + _backoff_seconds(n))
-            log_structured(
-                "ERROR",
-                (
-                    "retention_r2_delete_stuck"
-                    if n >= STUCK_AFTER_FAILURES
-                    else "retention_r2_delete_failed"
-                ),
-                job_id=job_id,
-                failures=n,
-                error=str(e)[:200],
-            )
+            _record_failure(job_id, "retention_r2_delete_failed", e)
+            continue
+        try:
+            await conn.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
+            await conn.commit()
+            _failed.pop(job_id, None)
+            swept += 1
+            continue
+        except pg_errors.ForeignKeyViolation:
+            # Ledger rows reference this job (append-only by design): keep the shell.
+            await conn.rollback()
+        except Exception as e:  # noqa: BLE001 — one bad row must never abort the sweep
+            await conn.rollback()
+            _record_failure(job_id, "retention_db_delete_failed", e)
+            continue
+        try:
+            await _anonymise_job(conn, job_id)
+        except Exception as e:  # noqa: BLE001
+            await conn.rollback()
+            _record_failure(job_id, "retention_anonymise_failed", e)
             continue
         _failed.pop(job_id, None)
-        await conn.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
-        await conn.commit()
-        swept += 1
+        anonymised += 1
+        log_structured("INFO", "retention_job_anonymised", job_id=job_id)
     stuck = sum(1 for n, _ in _failed.values() if n >= STUCK_AFTER_FAILURES)
-    return swept, stuck
+    return swept, stuck, anonymised
 
 
 async def _sweep_orphaned_objects(conn) -> int:
@@ -141,12 +195,12 @@ async def _sweep_orphaned_objects(conn) -> int:
 
 
 async def sweep_expired() -> dict[str, int]:
-    """Enforce the retention window. Returns {'jobs','orphan_objects','upload_events','stuck'}."""
+    """Enforce the retention window. Returns {'jobs','anonymised','orphan_objects','upload_events','stuck'}."""
     deadline = time.monotonic() + SWEEP_BUDGET_SECONDS
     # Leftover scratch dirs from a crashed job (user audio on local disk) age out too.
     await asyncio.to_thread(tmpdirs.sweep_stale)
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-        jobs, stuck = await _sweep_expired_jobs(conn, deadline)
+        jobs, stuck, anonymised = await _sweep_expired_jobs(conn, deadline)
         orphans = 0
         if time.monotonic() < deadline:
             try:
@@ -164,6 +218,7 @@ async def sweep_expired() -> dict[str, int]:
 
     result = {
         "jobs": jobs,
+        "anonymised": anonymised,
         "orphan_objects": orphans,
         "upload_events": len(upload_events),
         "stuck": stuck,

@@ -101,6 +101,8 @@ beforeEach(() => {
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = 'anon';
   delete process.env.NEXT_PUBLIC_CHORDNET_MODEL_URL;
   delete process.env.R2_PUBLIC_HOST;
+  delete process.env.NEXT_PUBLIC_SENTRY_DSN;
+  delete process.env.NEXT_PUBLIC_DEMO_ASSET_BASE;
 });
 
 test('buildCsp includes the required default-src and frame-ancestors tokens', async () => {
@@ -197,4 +199,63 @@ test('middleware stamps security headers even when Supabase getUser throws', asy
   const mod = await loadMiddleware({ ssrThrows: true });
   const res = await mod.middleware(makeReq());
   assert.ok(res.headers.get('content-security-policy'));
+});
+
+// ── Landing demo origin ─────────────────────────────────────────────────────
+// The landing demo fetch()es JSON + audio from DEMO_ASSET_BASE (connect-src), and
+// media-src is restricted too. When the policy omitted this host every visitor saw
+// "The sample didn't load". Derive the expectation from public-config.ts itself so a
+// changed default can't drift from the policy.
+const publicConfigSrc = readFileSync(join(WEB, 'src/lib/public-config.ts'), 'utf8');
+const defaultDemoBase = publicConfigSrc.match(/DEFAULT_DEMO_ASSET_BASE = '([^']+)'/)?.[1];
+
+test('public-config default demo base is parseable (guard for the tests below)', () => {
+  assert.ok(defaultDemoBase, 'DEFAULT_DEMO_ASSET_BASE not found in public-config.ts');
+  assert.equal(new URL(defaultDemoBase).protocol, 'https:');
+});
+
+test('default demo origin is permitted in connect-src and media-src (what the demo uses)', async () => {
+  const csp = (await loadMiddleware()).buildCsp();
+  const origin = new URL(defaultDemoBase).origin;
+  for (const name of ['connect-src', 'media-src']) {
+    assert.ok(directive(csp, name).includes(origin), `${name} must allow ${origin}`);
+  }
+  // img-src is already `'self' data: https:` (covers the demo host); pin it so narrowing it later
+  // without adding the host fails here.
+  const img = directive(csp, 'img-src');
+  assert.ok(img.includes('https:') || img.includes(origin), 'img-src must cover the demo origin');
+});
+
+test('NEXT_PUBLIC_DEMO_ASSET_BASE overrides the demo origin; blank turns it off', async () => {
+  process.env.NEXT_PUBLIC_DEMO_ASSET_BASE = 'https://demo-assets.example.org/some/path/';
+  let csp = (await loadMiddleware()).buildCsp();
+  assert.ok(directive(csp, 'connect-src').includes('https://demo-assets.example.org'));
+  assert.ok(directive(csp, 'media-src').includes('https://demo-assets.example.org'));
+  assert.ok(!csp.includes(new URL(defaultDemoBase).host), 'default host must not linger when overridden');
+  process.env.NEXT_PUBLIC_DEMO_ASSET_BASE = ' ';
+  csp = (await loadMiddleware()).buildCsp();
+  assert.ok(!csp.includes(new URL(defaultDemoBase).host));
+});
+
+// ── Sentry ingest host ──────────────────────────────────────────────────────
+test('Sentry ingest host is derived from NEXT_PUBLIC_SENTRY_DSN (non-zero org id)', async () => {
+  process.env.NEXT_PUBLIC_SENTRY_DSN = 'https://abc123publickey@o4507654321098.ingest.de.sentry.io/4507654321099';
+  const csp = (await loadMiddleware()).buildCsp();
+  const connect = directive(csp, 'connect-src');
+  assert.ok(connect.includes('https://o4507654321098.ingest.de.sentry.io'), 'policy must follow the DSN');
+  assert.ok(!connect.some((s) => s.includes('abc123publickey')), 'DSN key must not leak into the policy');
+  assert.ok(!connect.some((s) => /\/4507654321099/.test(s)), 'origin only, no path');
+  assert.ok(!csp.includes('o0.ingest'), 'no placeholder org id');
+});
+
+test('Sentry: no wildcard, no placeholder, safe fallback when DSN unset or malformed', async () => {
+  for (const dsn of [undefined, '', 'not a dsn', 'http://k@o1.ingest.sentry.io/1']) {
+    if (dsn === undefined) delete process.env.NEXT_PUBLIC_SENTRY_DSN;
+    else process.env.NEXT_PUBLIC_SENTRY_DSN = dsn;
+    const connect = directive((await loadMiddleware()).buildCsp(), 'connect-src');
+    assert.ok(!connect.some((s) => /\*\.(ingest\.)?(us\.)?sentry\.io|\*\.sentry\.io/.test(s)), `wildcard for dsn=${dsn}`);
+    assert.ok(!connect.some((s) => s.startsWith('https://o0.')), `placeholder for dsn=${dsn}`);
+    assert.ok(connect.includes('https://sentry.io'), 'fallback kept');
+    assert.ok(!connect.some((s) => /\.ingest\./.test(s)), `unusable dsn=${dsn} must add no ingest host`);
+  }
 });

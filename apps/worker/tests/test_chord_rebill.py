@@ -29,6 +29,11 @@ from worker.chord_source import ChordJobLedger, ChordSubmitUncertain
 JOB = "817a59d1-0000-4000-8000-000000000000"  # Klangio's job id
 RESULT = [[0.0, 2.0, "C:maj"], [2.0, 4.0, "G:7"]]
 DB = os.environ.get("DATABASE_URL")
+# jobs.id is a uuid column. Fixed (not random) so a failure names its scenario. Anything that
+# reaches a real DB statement (CI sets DATABASE_URL) rejects a non-uuid id like "job-ok".
+JOB_BEATLESS = "00000000-0000-4000-8000-0000000b0001"  # beatless track: extract fails
+JOB_OK = "00000000-0000-4000-8000-0000000b0002"  # chords run after extract
+JOB_OFF = "00000000-0000-4000-8000-0000000b0003"  # CHORDS_PROVIDER unset
 _DB_OK = bool(DB) and any(h in (DB or "") for h in ("127.0.0.1", "localhost"))
 
 
@@ -370,6 +375,9 @@ def _orchestrate(monkeypatch: pytest.MonkeyPatch, *, extract_raises: Exception |
 
     from worker import replicate_client
 
+    # CI sets STUB_MODE=true for the whole worker suite. _run_pipeline then short-circuits into
+    # _run_stub (real INSERT/UPDATE against Postgres) and never reaches the ordering under test.
+    monkeypatch.delenv("STUB_MODE", raising=False)
     calls: list[str] = []
     row = ("", ["drums", "bass", "vocals", "other"], 4, "upload", "uploads/x", "song.mp3")
     monkeypatch.setattr(pipeline, "_fetch_job", lambda _j: row)
@@ -421,7 +429,7 @@ def test_beatless_track_fails_before_any_chord_request(monkeypatch: pytest.Monke
     monkeypatch.setenv("CHORDS_PROVIDER", "klangio")
     calls, _, failed, asyncio = _orchestrate(monkeypatch, extract_raises=ExtractionFailedError("x"))
     with pytest.raises(ExtractionFailedError):
-        asyncio.run(pipeline._run_pipeline("job-beatless"))
+        asyncio.run(pipeline._run_pipeline(JOB_BEATLESS))
     assert calls == [
         "fetch",
         "extract",
@@ -434,7 +442,7 @@ def test_chords_run_after_extract_with_the_harmonic_stems_the_user_deselected(
 ) -> None:
     monkeypatch.setenv("CHORDS_PROVIDER", "klangio")
     calls, got, _, asyncio = _orchestrate(monkeypatch, extract_raises=None)
-    asyncio.run(pipeline._run_pipeline("job-ok"))
+    asyncio.run(pipeline._run_pipeline(JOB_OK))
     assert calls == ["fetch", "extract", "chords"]
     assert {"keys", "guitar", "other", "bass"} <= got["chord_stems"]
     assert pipeline._choose_chord_input({n: _tmp_wav(n) for n in got["chord_stems"]}) is not None
@@ -443,7 +451,7 @@ def test_chords_run_after_extract_with_the_harmonic_stems_the_user_deselected(
 def test_chords_disabled_fetches_no_extra_stems(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHORDS_PROVIDER", "")
     _, got, _, asyncio = _orchestrate(monkeypatch, extract_raises=None)
-    asyncio.run(pipeline._run_pipeline("job-off"))
+    asyncio.run(pipeline._run_pipeline(JOB_OFF))
     assert got["also"] == ()
 
 

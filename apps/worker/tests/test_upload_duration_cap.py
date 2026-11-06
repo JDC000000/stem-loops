@@ -22,6 +22,9 @@ from tests.test_chord_rebill import FakeKlangioServer
 from worker import pipeline
 from worker.errors import ALL_ERROR_CODES, UploadInvalidError, UploadTooLongError
 
+# jobs.id is a uuid column; a non-uuid id fails at the first real DB statement.
+JOB_LONG = "00000000-0000-4000-8000-0000000c0001"  # 5 s upload against a 3 s cap
+
 
 def _wav(path: Path, secs: float, sr: int = 8000) -> Path:
     with wave.open(str(path), "wb") as w:
@@ -153,6 +156,9 @@ def test_over_length_upload_reaches_no_paid_provider(
     from worker import replicate_client
 
     source, _ = staged
+    # CI sets STUB_MODE=true; _run_pipeline would then skip the real path (and the duration gate)
+    # entirely and write fake loops to Postgres instead.
+    monkeypatch.delenv("STUB_MODE", raising=False)
     source["path"] = _wav(tmp_path / "long.wav", 5.0)
     monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
     monkeypatch.setenv("CHORDS_PROVIDER", "klangio")
@@ -180,7 +186,7 @@ def test_over_length_upload_reaches_no_paid_provider(
     monkeypatch.setattr(pipeline, "_fail", record_fail)
 
     with pytest.raises(UploadTooLongError):
-        asyncio.run(pipeline._run_pipeline("job-long"))
+        asyncio.run(pipeline._run_pipeline(JOB_LONG))
 
     assert klangio.requests == []
     replicate_posts.assert_not_called()

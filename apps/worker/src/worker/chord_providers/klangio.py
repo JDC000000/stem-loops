@@ -70,6 +70,7 @@ except ImportError:  # pragma: no cover
 import httpx
 
 from ..chord_source import (
+    ChordJobLedger,
     ChordQuotaExceeded,
     ChordResult,
     ChordSegment,
@@ -488,7 +489,19 @@ class KlangioChordSource:
     api_base: str = API_BASE
     quota_store: _QuotaStore | None = None  # defaults per _default_quota_store() (env-configured)
 
-    def recognize(self, audio_path: Path, *, stem: StemKind = "mix") -> ChordResult:
+    def recognize(
+        self,
+        audio_path: Path,
+        *,
+        stem: StemKind = "mix",
+        ledger: ChordJobLedger | None = None,
+    ) -> ChordResult:
+        """Recognise chords. With a ``ledger`` the call is at-most-once billed per job.
+
+        A recorded Klangio job id is REATTACHED (free, idempotent GETs). Otherwise the
+        id is persisted right after the POST and before polling, so a SIGTERM / OOM /
+        failed artifact upload after that point can never cause a second POST.
+        """
         audio_path = Path(audio_path)
         if not audio_path.exists():
             raise ChordProviderError(f"audio file not found: {audio_path}")
@@ -499,12 +512,20 @@ class KlangioChordSource:
 
         # Validate everything locally BEFORE the first (billable) request.
         vocabulary = _resolve_vocabulary()
-        _check_duration_bounds(_audio_duration_sec(audio_path))
+        # A job already submitted for this pipeline job is reattached: no POST, so the
+        # audio bounds (which guard the POST) do not apply.
+        existing_id = ledger.existing() if ledger is not None else None
+        if existing_id is None:
+            _check_duration_bounds(_audio_duration_sec(audio_path))
 
         t0 = time.monotonic()
         headers = {API_KEY_HEADER: key}
         with httpx.Client(base_url=self.api_base, headers=headers) as client:
-            job_id = self._submit(client, audio_path, stem, vocabulary)
+            if existing_id is not None:
+                job_id = existing_id
+                log_structured("INFO", "klangio_reattach", klangio_job_id=job_id)
+            else:
+                job_id = self._submit(client, audio_path, stem, vocabulary, ledger=ledger)
             self._poll_until_complete(client, job_id, api_key=key)
             payload = self._fetch_json(client, job_id)
         model_ms = int((time.monotonic() - t0) * 1000)
@@ -529,11 +550,23 @@ class KlangioChordSource:
         audio_path: Path,
         stem: StemKind,  # noqa: ARG002 — Klangio has no stem parameter; kept for the Protocol
         vocabulary: str = DEFAULT_VOCABULARY,
+        ledger: ChordJobLedger | None = None,
     ) -> str:
         # Read once up front (bytes, not an open handle).
         audio_bytes = audio_path.read_bytes()
+        # Marker BEFORE the POST (and before the quota slot): if we die anywhere between
+        # sending the request and recording its id, the next run sees the marker and
+        # refuses to POST again. It also serialises two workers racing on one job.
+        if ledger is not None:
+            ledger.claim()
         # Count BEFORE sending: if the response is lost we may still have paid.
-        _reserve_quota(self.quota_store or _default_quota_store())
+        try:
+            _reserve_quota(self.quota_store or _default_quota_store())
+        except BaseException:
+            # Nothing was sent, so nothing was paid: free the claim for a later retry.
+            if ledger is not None:
+                ledger.release()
+            raise
         resp = _request_with_retry(
             client,
             method="POST",
@@ -549,6 +582,20 @@ class KlangioChordSource:
             raise ChordProviderError(
                 f"Klangio POST did not return a usable job_id {_body_fingerprint(resp.text)}"
             )
+        # Persist the id IMMEDIATELY, before polling (up to POLL_DEADLINE_SEC). From here
+        # a deploy / OOM / failed upload reattaches instead of paying again. A failure to
+        # record is logged, not fatal: this process still holds the id and finishes the
+        # job; only a crash in that exact window falls back to the sentinel (skip chords).
+        if ledger is not None:
+            try:
+                ledger.record(str(job_id))
+            except Exception as exc:  # noqa: BLE001
+                log_structured(
+                    "ERROR",
+                    "klangio_job_id_record_failed",
+                    klangio_job_id=str(job_id),
+                    error=str(exc)[:200],
+                )
         return str(job_id)
 
     def _poll_until_complete(self, client: httpx.Client, job_id: str, *, api_key: str = "") -> None:

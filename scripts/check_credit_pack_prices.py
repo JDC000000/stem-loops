@@ -13,7 +13,12 @@ Expected-price source (--source):
                        source of truth for a fresh deploy and needs no DB.
   db                   SELECT pack_code, price_cad_cents FROM credit_packs
                        using DATABASE_URL (staging/prod drift check).
-  auto                 db if DATABASE_URL is set and reachable, else migration.
+  auto                 db if DATABASE_URL is set; migration only if it is NOT
+                       set. A DATABASE_URL that is set but unusable for ANY
+                       reason (unreachable, auth, permission denied, driver
+                       missing, credit_packs absent) is exit 2, never a silent
+                       fall back to the seed: "could not read the DB" must not
+                       be reported as "checked".
 
 Env: STRIPE_SECRET_KEY, STRIPE_PRICE_CREDITS_20, STRIPE_PRICE_CREDITS_60,
      STRIPE_PRICE_CREDITS_180 (and DATABASE_URL for db/auto).
@@ -31,8 +36,8 @@ Exit codes (each means exactly one thing):
      RECON_ALLOW_UNCONFIGURED switch in .github/workflows/ci.yml).
 
 Default is `--source auto` so CI catches live-DB drift (the actual M5
-scenario) when DATABASE_URL is wired, falling back to the migration seed
-otherwise.
+scenario) when DATABASE_URL is wired, and uses the migration seed only when no
+DATABASE_URL was supplied at all.
 """
 
 from __future__ import annotations
@@ -70,7 +75,10 @@ class ConfigError(Exception):
 
 
 def prices_from_migration(path: Path = MIGRATION) -> dict[str, int]:
-    sql = path.read_text()
+    try:
+        sql = path.read_text()
+    except OSError as exc:
+        raise ConfigError(f"cannot read migration seed {path}: {exc}") from exc
     idx = sql.find("INSERT INTO public.credit_packs")
     if idx < 0:
         raise ConfigError(f"no credit_packs seed INSERT found in {path}")
@@ -90,19 +98,19 @@ def prices_from_db(database_url: str) -> dict[str, int]:
 
 def load_expected(source: str) -> tuple[dict[str, int], str]:
     if source == "migration":
-        return prices_from_migration(), "migration 020 seed"
+        return prices_from_migration(MIGRATION), "migration 020 seed"
     url = os.environ.get("DATABASE_URL")
     if source == "db":
         if not url:
             raise ConfigError("--source db requires DATABASE_URL")
         return prices_from_db(url), "credit_packs table"
-    # auto
+    # auto: the seed is the intended source ONLY when no DATABASE_URL was given.
+    # If one was given, any failure reading it propagates to main() -> exit 2.
+    # Deliberately no try/except here: a forgiving branch under a broad except
+    # turns "could not reach the DB" into a green check.
     if url:
-        try:
-            return prices_from_db(url), "credit_packs table"
-        except Exception as exc:  # noqa: BLE001 - fall back on any DB failure
-            print(f"DB unreachable ({exc}); falling back to migration seed")
-    return prices_from_migration(), "migration 020 seed"
+        return prices_from_db(url), "credit_packs table"
+    return prices_from_migration(MIGRATION), "migration 020 seed"
 
 
 def fetch_stripe(price_ids: dict[str, str]) -> dict[str, tuple[int | None, str | None]]:
@@ -122,8 +130,8 @@ def main(argv: list[str] | None = None) -> int:
         description="Reconcile credit_packs with Stripe prices"
     )
     # Default `--source auto` covers the actual M5 scenario (live DB edits
-    # drifting from Stripe) when DATABASE_URL is present, and falls back to the
-    # migration seed when it isn't (CI default). Review of PR #56 round-1
+    # drifting from Stripe) when DATABASE_URL is present, and uses the
+    # migration seed only when it is absent (CI default). Review of PR #56 round-1
     # flagged that `--source migration` alone misses the live-edit drift case.
     ap.add_argument("--source", choices=("migration", "db", "auto"), default="auto")
     args = ap.parse_args(argv)
@@ -153,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"CONFIG ERROR: {exc}", file=sys.stderr)
         return EXIT_BROKEN
-    except Exception as exc:  # noqa: BLE001 - Stripe/network errors
+    except Exception as exc:  # noqa: BLE001 - fail CLOSED: Stripe/DB/driver errors are 2
         print(f"LOOKUP ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_BROKEN
 

@@ -76,10 +76,103 @@ def test_db_source_detects_edited_price(monkeypatch, capsys):
     assert "300" in capsys.readouterr().out
 
 
-def test_auto_falls_back_to_migration_when_db_down(monkeypatch):
+@pytest.mark.parametrize(
+    "exc",
+    [
+        OSError("connection refused"),
+        ImportError("No module named 'psycopg'"),
+        RuntimeError('relation "public.credit_packs" does not exist'),
+        RuntimeError("permission denied for table credit_packs"),
+    ],
+    ids=["unreachable", "driver-missing", "table-absent", "permission-denied"],
+)
+def test_auto_with_database_url_and_db_failing_is_broken_not_green(monkeypatch, capsys, exc):
+    """DATABASE_URL set + DB unusable for ANY reason -> exit 2, never the seed.
+
+    The previous test here (test_auto_falls_back_to_migration_when_db_down)
+    asserted == 0 and so pinned a FALSE GREEN: a bare `except Exception` fell
+    back to the migration seed, compared that to Stripe and printed OK. That
+    same green covered auth failure, permission denied, a missing driver and
+    `relation credit_packs does not exist` (production's state until 020 ships).
+    "Could not read the DB" must not share an outcome with "checked".
+    """
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    with mock.patch.object(cpp, "prices_from_db", side_effect=exc), _stripe(MATCH):
+        assert cpp.main(["--source", "auto"]) == cpp.EXIT_BROKEN == 2
+    cap = capsys.readouterr()
+    assert "LOOKUP ERROR" in cap.err
+    assert "OK" not in cap.out and "migration" not in cap.out  # no seed comparison ran
+
+
+def test_auto_without_database_url_uses_seed(capsys):
+    # The seed is the intended source only when no DATABASE_URL was supplied.
+    with mock.patch.object(cpp, "prices_from_db") as from_db, _stripe(MATCH):
+        assert cpp.main(["--source", "auto"]) == 0
+    from_db.assert_not_called()
+    assert "migration 020 seed" in capsys.readouterr().out
+
+
+def test_auto_consults_db_when_database_url_set(monkeypatch, capsys):
+    # M5 on CI's default path: auto must read the live table, not the seed.
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    edited = {**DB, "credits_20": 300}
+    with mock.patch.object(cpp, "prices_from_db", return_value=edited) as from_db, _stripe(MATCH):
+        assert cpp.main(["--source", "auto"]) == 1
+    from_db.assert_called_once_with("postgresql://x")
+    assert "credit_packs table" in capsys.readouterr().out
+
+
+def test_db_source_failure_exits_two(monkeypatch, capsys):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x")
     with mock.patch.object(cpp, "prices_from_db", side_effect=OSError("down")), _stripe(MATCH):
-        assert cpp.main(["--source", "auto"]) == 0
+        assert cpp.main(["--source", "db"]) == 2
+    assert "LOOKUP ERROR" in capsys.readouterr().err
+
+
+def test_db_source_without_database_url_is_config_error(capsys):
+    with _stripe(MATCH):
+        assert cpp.main(["--source", "db"]) == 2
+    assert "CONFIG ERROR" in capsys.readouterr().err
+
+
+def test_pack_missing_from_expected_source_is_config_error(monkeypatch, capsys):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    partial = {k: v for k, v in DB.items() if k != "credits_180"}
+    with mock.patch.object(cpp, "prices_from_db", return_value=partial), _stripe(MATCH):
+        assert cpp.main(["--source", "db"]) == 2
+    err = capsys.readouterr().err
+    assert "CONFIG ERROR" in err and "credits_180" in err
+
+
+def test_missing_migration_file_is_config_error_not_lookup_error(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cpp, "MIGRATION", tmp_path / "020_moved.sql")
+    with _stripe(MATCH):
+        assert cpp.main(["--source", "migration"]) == 2
+    err = capsys.readouterr().err
+    assert "CONFIG ERROR" in err and "LOOKUP ERROR" not in err
+
+
+def test_migration_without_seed_insert_is_config_error(monkeypatch, tmp_path, capsys):
+    sql = tmp_path / "020.sql"
+    sql.write_text("CREATE TABLE public.credit_packs (pack_code text);\n")
+    monkeypatch.setattr(cpp, "MIGRATION", sql)
+    with _stripe(MATCH):
+        assert cpp.main(["--source", "migration"]) == 2
+    assert "CONFIG ERROR" in capsys.readouterr().err
+
+
+def test_none_unit_amount_is_mismatch_exit_one(capsys):
+    # A tiered / decimal-amount Stripe price has unit_amount None: drift, not a crash.
+    with mock.patch(
+        "stripe.Price.retrieve",
+        side_effect=lambda pid: {
+            "unit_amount": None if pid == "price_60" else MATCH[pid],
+            "currency": "cad",
+        },
+    ):
+        assert cpp.main([]) == 1
+    line = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("credits_60")][0]
+    assert "None" in line and "MISMATCH" in line
 
 
 _SECRETS = (
@@ -167,9 +260,48 @@ def _run_step(tmp_path, script_exit: int, allow: str) -> int:
     return res.returncode
 
 
-def test_ci_switch_defaults_to_not_forgiving():
-    assert 'RECON_ALLOW_UNCONFIGURED: "0"' in _CI.read_text()
-    assert "STRICT_RECON" not in _CI.read_text()
+def _strip_yaml_comment(line: str) -> str:
+    """Drop a trailing `# ...` comment (a `#` at line start or after whitespace, outside quotes)."""
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i].rstrip()
+    return line.rstrip()
+
+
+def _ci_code() -> str:
+    """ci.yml with comments removed, so a comment can neither satisfy nor trip an assertion."""
+    return "\n".join(_strip_yaml_comment(ln) for ln in _CI.read_text().splitlines())
+
+
+def _declared_switch_values() -> list[str]:
+    vals = []
+    for ln in _ci_code().splitlines():
+        key, sep, val = ln.strip().partition(":")
+        if sep and key == "RECON_ALLOW_UNCONFIGURED":
+            vals.append(val.strip().strip("\"'"))
+    return vals
+
+
+def test_ci_switch_declared_once_and_defaults_to_not_forgiving(tmp_path):
+    # Assert on the parsed declaration (comments stripped), then on behaviour:
+    # with the switch exactly as shipped, a script exit of 3 must still fail the job.
+    declared = _declared_switch_values()
+    assert declared == ["0"]
+    assert _run_step(tmp_path, 3, declared[0]) == 3
+
+
+def test_ci_has_no_strict_recon_and_step_reads_only_the_one_switch():
+    import re
+
+    assert "STRICT_RECON" not in _ci_code()
+    # A renamed reintroduction would have to be read by the step script itself.
+    read = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", _recon_step_script()))
+    assert read == {"rc", "RECON_ALLOW_UNCONFIGURED"}
 
 
 @pytest.mark.parametrize("code", [0, 1, 2, 3])

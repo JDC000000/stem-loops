@@ -271,6 +271,7 @@ See `.env.example` for the canonical list. The vars this module reads:
 |-----|---------|---------|
 | `CHORDS_PROVIDER` | `klangio` | Provider selector. Empty string disables the step. |
 | `CHORDS_STEM` | `harmonic_mix` | Input fed to the provider: `harmonic_mix` (default), or a single stem `keys` / `guitar` / `other`. Legacy `instrumental` (no such stem exists) and unknown values resolve to `harmonic_mix`; `vocals` / `drums` are never used. A named stem that is missing falls back to the mix logic. |
+| `CHORDS_MAX_AUDIO_SEC` | `300` | Longest track sent to the provider. Over it, the job still completes (stems and loops are the product); chords are skipped before the harmonic mix and a `too_long` tombstone is written. Invalid/non-positive values fall back to 300. Raise together with `KLANGIO_MAX_AUDIO_SEC` if the Klangio tier changes. |
 | `KLANGIO_API_KEY` | *(unset)* | Server-side only. Sent as `kl-api-key`. Obtain at klang.io/account. |
 | `KLANGIO_VOCABULARY` | `full` | `root` / `major-minor` / `full`. Required by the API. |
 | `KLANGIO_MIN_AUDIO_SEC` | `5` | Audio must be strictly longer than this. |
@@ -291,6 +292,21 @@ See `.env.example` for the canonical list. The vars this module reads:
 | `KLANGIO_POLL_DEADLINE_SEC` | `600` | Total wall-clock cap for job completion. |
 | `KLANGIO_MAX_AUDIO_SEC` | `300` | Provider's per-file max. |
 | `CHORD_EVAL_FETCH` | *(unset)* | `1` enables audio downloads in the eval harness. |
+
+## Why no chords (tombstones)
+
+When a job ends without chords, the worker writes `jobs/<job_id>/play.chords.json` as
+`{"status":"unavailable","reason":...}` (no `segments`, so a reaper rerun still retries). The
+web loader maps `reason` to a specific message:
+
+| reason | written when |
+|--------|--------------|
+| `too_long` | probed duration > `CHORDS_MAX_AUDIO_SEC` (no provider call, no ffmpeg mix) |
+| `provider_failed` | the provider/quota step raised after we tried |
+| `not_attempted` | no harmonic stem to analyse |
+
+`CHORDS_PROVIDER=''` (disabled) writes nothing. A track under the provider's minimum length
+currently surfaces as `provider_failed`.
 
 ## Deferred to Y1.2–Y1.7
 

@@ -35,10 +35,15 @@ absent — passing while checking nothing. A drift gate that silently skips is
 worse than no gate, because it produces a green tick that a reader trusts.
 
 So: no DATABASE_URL, an unreachable database, or a missing `_migrations` table
-all exit 2. `--allow-unreachable` downgrades exactly TWO of those to 0 — a
-missing DATABASE_URL and a database that could not be reached — and says so
-loudly. It never downgrades a missing or unreadable ledger, a DSN the client
-rejected, or a server that answered and refused us. A missing `_migrations` table is a hard failure rather than "assume
+all exit 2. `--allow-unreachable` downgrades exactly ONE of those to 0 — a
+DATABASE_URL that is absent or blank — and says so loudly. Nothing else is
+forgiven, ever.
+
+That narrowness is the whole design, arrived at by having the previous two
+versions taken apart. A flag that decides what to forgive by reading an error
+message cannot be correct, because the message is localized and the set of
+possible messages is not knowable. A flag that forgives one locale-proof,
+locally-checkable fact — "nobody told me where the database is" — can be. A missing `_migrations` table is a hard failure rather than "assume
 zero": staging has no such table, and its true migration level is therefore
 unknowable from inside — see the cutover plan.
 
@@ -96,7 +101,7 @@ EXIT_UNKNOWN = 2
 
 
 class Unreachable(Exception):
-    """The database could not be CONNECTED to. The only forgivable failure.
+    """The database could not be CONNECTED to. NOT forgiven since round 6.
 
     Keyed on the PHASE, not on an exception class. Two earlier versions got
     this wrong in the same direction:
@@ -120,8 +125,21 @@ class Unreachable(Exception):
           green. psycopg carries no `sqlstate` on any of these — measured, all
           None — so the phase is necessary but not sufficient.
 
-    So Unreachable now means: raised by `connect`, AND not a server rejection,
-    AND not a client-side DSN rejection. See `_classify_connect_failure`.
+      v4  message matching — `FATAL:` for a server rejection, a regex for a
+          client-side value rejection, everything else forgiven. Round 6
+          measured `FATAL:` as a LOCALIZED string and found five more English
+          cases the regex missed, among them `fe_sendauth: no password
+          supplied` — the "secret present vs. job meaningful" seam this very
+          script cites — and every SSL certificate failure, which the planned
+          read-only Supabase credential will certainly be able to produce.
+
+    The lesson, and it is the fourth time this file has learned a version of
+    it: **the forgiving branch must not depend on classifying the failure.**
+    Every version above tried to be cleverer about which failures are benign,
+    and each one shipped a false green. So the flag now forgives one fact that
+    needs no classification at all — DATABASE_URL being absent — and this class
+    is a LABEL for the operator, not a decision. See
+    `_classify_connect_failure`.
     """
 
 
@@ -203,12 +221,33 @@ _SERVER_ANSWERED = "FATAL:"
 
 
 def _classify_connect_failure(exc: Exception) -> Exception:
-    """Decide whether a connect() failure is forgivable. Fail-open by design.
+    """Label a connect() failure for the OPERATOR. Decides no exit code.
 
-    Round 5 measured every case against a live server: psycopg reports
-    `sqlstate is None` for ALL of them — server FATALs included — so the
-    exception type and sqlstate carry no signal here and the message is the
-    only thing that distinguishes them.
+    Round 5 built this to decide forgiveness and round 6 demolished that:
+
+      * `FATAL:` is the server's LOCALIZED severity. PostgreSQL 16 ships
+        `ВАЖНО` (ru), `ФАТАЛЬНО` (uk), `치명적오류` (ko), `致命错误` (zh_CN),
+        `KATASTROFALNY` (pl), `FATALE` (it). A wrong password against a server
+        with one of those `lc_messages` matched nothing. The client cannot
+        force English either: auth and database-existence FATALs are raised
+        before startup `options=` are processed.
+      * libpq translates the CLIENT half too — `de.po` renders
+        `invalid integer value "%s" for connection option "%s"` as
+        `ungültiger Zahlenwert …` — so the regex fails under a translated
+        libpq as well.
+      * psycopg offers no locale-proof field: both `sqlstate` and
+        `diag.severity_nonlocalized` are None on connect failures (measured).
+      * Even in English it was incomplete. Round 6 measured five more classes
+        it missed: `invalid port number: "99999"` (the regex wants
+        an `invalid <word> value` regex), `fe_sendauth: no password supplied`, SSL
+        certificate failures, `target_session_attrs` mismatches and
+        `channel_binding` failures. Every one was forgiven.
+
+    So no exit code depends on this any more. It still earns its place: told
+    "the server refused you" rather than "unreachable", an operator stops
+    checking the firewall and goes and looks at the password. When the label
+    is wrong the operator reads a slightly misleading sentence, which is the
+    whole cost now.
     """
     msg = str(exc)
     if _SERVER_ANSWERED in msg:
@@ -306,12 +345,13 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-unreachable",
         action="store_true",
         help=(
-            "downgrade an UNREACHABLE database from exit 2 to exit 0, printing "
-            "a warning. Forgives exactly two things: no DATABASE_URL, and a "
-            "host/port/socket that could not be reached (DNS failure, refused, "
-            "timed out). Does NOT forgive: a DSN the client rejected, a server "
-            "that answered and refused us (bad password, no such database or "
-            "role), a missing ledger, or an unreadable ledger."
+            "forgive exactly ONE thing: DATABASE_URL being absent or blank. "
+            "Exit 0 with a loud warning, having checked nothing. EVERY other "
+            "failure still exits 2, including a database you named and could "
+            "not reach. Setting DATABASE_URL is a claim that a database is "
+            "there; failing to reach it is a failure, not an absence. (Round 6: "
+            "this flag used to forgive by matching libpq's message text, which "
+            "is localized and was incomplete in English anyway.)"
         ),
     )
     args = ap.parse_args(argv)
@@ -365,15 +405,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL: {exc}", file=sys.stderr)
         return EXIT_UNKNOWN
     except Unreachable as exc:
-        msg = f"could not reach the database: {exc}"
-        if args.allow_unreachable:
-            print(
-                f"WARNING: {msg} --allow-unreachable given; reporting success "
-                f"WITHOUT having checked anything.",
-                file=sys.stderr,
-            )
-            return EXIT_OK
-        print(f"FAIL: {msg}", file=sys.stderr)
+        # NOT forgiven, even with --allow-unreachable. Round 6: see the flag's
+        # help text. Setting DATABASE_URL is a claim that a database is there;
+        # failing to reach the one you named is a real failure, and a transient
+        # network fault forgiven here means drift goes unchecked in silence.
+        print(
+            f"FAIL: could not reach the database: {exc}. A DATABASE_URL was "
+            f"set, so this is a failure, not an absence. --allow-unreachable "
+            f"forgives only an absent DATABASE_URL.",
+            file=sys.stderr,
+        )
         return EXIT_UNKNOWN
     except Exception as exc:  # noqa: BLE001
         # Reachable, but the ledger could not be read (no SELECT, no USAGE on

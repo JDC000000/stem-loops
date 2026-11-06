@@ -28,8 +28,8 @@ override path with `SMOKE_ENV_FILE`). Shell values win.
 | Var | Required | Where to get it |
 |-----|----------|-----------------|
 | `SUPABASE_URL` | yes | `https://ylzokjwnsraehmpclnkx.supabase.co` (scheme optional) |
-| `SUPABASE_SERVICE_ROLE_KEY` | yes | Supabase dashboard > Project Settings > API > `service_role`, or `vercel env pull .env.staging --environment=preview` |
-| `SUPABASE_ANON_KEY` | yes (see note) | Same page, anon/publishable key. Also accepted as `NEXT_PUBLIC_SUPABASE_ANON_KEY`. |
+| `SUPABASE_SERVICE_ROLE_KEY` | yes | Supabase dashboard > Project Settings > API Keys > the secret key labelled `service` (description: `service_role`; click Reveal), or `vercel env pull .env.staging --environment=preview` |
+| `SUPABASE_ANON_KEY` | yes (see note) | Same page, the modern publishable key (`sb_publishable_...`). Do **not** use the legacy `anon` JWT (`eyJ...`, under the Legacy API Keys tab): it may be disabled and sign-in then fails. The variable is still named `SUPABASE_ANON_KEY`, and `NEXT_PUBLIC_SUPABASE_ANON_KEY` is also accepted. |
 | `STRIPE_SECRET_KEY` | recommended | Stripe sandbox > Developers > API keys (`sk_test_...`). Enables session verification (mode, CAD, amount) and Stripe cleanup. Without it those parts are skipped. |
 | `STAGING_BASE_URL` | no | Default `https://stem-loops-staging.vercel.app` |
 | `VERCEL_AUTOMATION_BYPASS_SECRET` | only if staging has deployment protection | Vercel project > Settings > Deployment Protection |

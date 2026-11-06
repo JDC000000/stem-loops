@@ -149,7 +149,21 @@ export async function POST(req: NextRequest) {
 
   const provider = getBillingProvider();
   const origin = req.headers.get('origin') ?? 'https://stem-loops.com';
-  const successUrl = `${origin}/billing/success?session_id={CHECKOUT_SESSION_ID}`;
+  // The success page lives at app/success/page.tsx -> /success. This used to
+  // point at /billing/success, and there is no app/billing/ route segment at
+  // all (only app/api/billing/), so EVERY paying customer landed on a 404 the
+  // instant they paid. Credits still arrived via the webhook, so nothing was
+  // lost -- but the 404 hit at the worst possible moment. No rewrite or
+  // redirect covered it; this was checked in next.config, vercel.json and
+  // middleware before changing anything here.
+  //
+  // The page also reads `credits` as the PACK SIZE ("20" | "60" | "180"), not
+  // the pack code ("credits_20"), so passing packRaw verbatim would silently
+  // fall through to the generic "Your credits/subscription is active." Strip
+  // the prefix so the confirmation names the pack the user actually bought.
+  // Plan checkouts have no packRaw and correctly omit the param.
+  const creditsParam = packRaw ? `&credits=${packRaw.replace(/^credits_/, '')}` : '';
+  const successUrl = `${origin}/success?session_id={CHECKOUT_SESSION_ID}${creditsParam}`;
   const cancelUrl = `${origin}/pricing`;
 
   try {
@@ -204,6 +218,11 @@ export async function POST(req: NextRequest) {
         cancelUrl,
         promoCode,
         promoCodeId,
+        // Without this the provider omits `customer:` and Stripe mints a
+        // throwaway customer per session, so the customer we just stored
+        // above stays empty and /api/billing/portal opens the wrong one --
+        // a subscriber then cannot cancel or see invoices (#148).
+        providerCustomerId,
       );
     } else {
       session = await provider.createCheckoutSession(
@@ -213,6 +232,10 @@ export async function POST(req: NextRequest) {
         cancelUrl,
         promoCode,
         promoCodeId,
+        // See the credit-pack call above: required for the Customer Portal to
+        // resolve, and for subscription_data.metadata to ride on the real
+        // customer rather than a throwaway one (#148).
+        providerCustomerId,
       );
     }
 

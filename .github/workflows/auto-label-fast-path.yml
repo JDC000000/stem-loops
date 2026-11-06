@@ -104,9 +104,53 @@ jobs:
   label-fast-path:
     runs-on: ubuntu-latest
     steps:
+      # L2.1 ROOT CAUSE FIX. This workflow used to label with GITHUB_TOKEN.
+      # GitHub deliberately does NOT emit workflow-triggering events for
+      # actions taken by GITHUB_TOKEN (loop prevention), so the `labeled`
+      # event never fired and auto-merge.yml -- which triggers on
+      # [labeled, synchronize, opened, reopened] -- never saw the label.
+      # Its only run was on `opened`, before this job had labelled anything,
+      # so it skipped. Net effect: auto-merge could never fire on ANY PR,
+      # however correct its own gating was. Verified on PRs #136-#139:
+      # #138 carried `fast-path` and auto-merge still reported "skipped".
+      #
+      # An App installation token DOES trigger downstream workflows. Same
+      # mint pattern (and same fallback order) as auto-merge.yml.
+      #
+      # continue-on-error is deliberate: if APP_ID / APP_PRIVATE_KEY are
+      # unset or the mint fails, labelling must still happen. The fallback
+      # then reproduces today's behaviour -- labels get applied but do not
+      # chain to auto-merge. The `secrets` context is not available in a
+      # step-level `if`, which is why this is continue-on-error.
+      - name: Mint GitHub App token (optional — falls back to BOT_TOKEN)
+        id: apptoken
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Report which credential will label (decides if auto-merge chains)
+        env:
+          HAVE_APP: ${{ steps.apptoken.outputs.token != '' }}
+          HAVE_BOT: ${{ secrets.BOT_TOKEN != '' }}
+        run: |
+          # Never echo a token. Only say which source won.
+          if [ "$HAVE_APP" = "true" ]; then
+            echo "::notice::labelling as the stem-loops-automerge GitHub App (L2.1) — the label WILL trigger auto-merge.yml"
+          elif [ "$HAVE_BOT" = "true" ]; then
+            echo "::notice::App token unavailable — falling back to BOT_TOKEN; the label will trigger auto-merge.yml"
+          else
+            echo "::notice::App token and BOT_TOKEN both unavailable — falling back to GITHUB_TOKEN"
+            echo "::warning::Labels applied with GITHUB_TOKEN do NOT emit a \`labeled\` event, so auto-merge.yml will not run and nothing will auto-merge. Set APP_ID + APP_PRIVATE_KEY (or BOT_TOKEN) to close the chain."
+          fi
+
       - name: Classify diff and label
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Preference order: App installation token (L2.1) > BOT_TOKEN >
+          # GITHUB_TOKEN. Only the first two cause the resulting `labeled`
+          # event to trigger auto-merge.yml.
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || secrets.BOT_TOKEN || secrets.GITHUB_TOKEN }}
           PR_NUM: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
@@ -151,7 +195,7 @@ jobs:
           #     it is a CODEOWNERS path AND it matches the allowlist's own
           #     `.+\.md$` term, so it was reachable by fast-path before this
           #     change and protected only by the label race.
-          deny_re='^(scripts/safe_merge\.sh$|scripts/check_[^/]*\.py$|\.githooks/|apps/web/src/lib/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/src/worker/billing/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|AGENTS\.md$)'
+          deny_re='^(scripts/safe_merge\.sh$|scripts/check_[^/]*\.py$|\.githooks/|apps/web/src/lib/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/src/worker/billing/|apps/web/src/middleware\.ts$|apps/web/src/app/auth/|apps/web/src/lib/auth/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|AGENTS\.md$)'
           denied=$(echo "$changed" | grep -E "$deny_re" || true)
           if [ -n "$denied" ]; then
             echo "Safety-critical paths touched; fast-path refused:"
@@ -196,7 +240,7 @@ jobs:
           # ci.yml. Nothing built apps/web before it, so widening to
           # apps/web/src/ without it would have let a broken production build
           # auto-merge. Add `Web build` to the ruleset's required contexts.
-          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$|apps/training/|apps/web/src/|apps/worker/src/|scripts/)'
+          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests?/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$|apps/training/|apps/web/src/|apps/worker/src/|scripts/)'
 
           # Find any file NOT matching the allowlist.
           bad=$(echo "$changed" | grep -vE "$allow_re" || true)

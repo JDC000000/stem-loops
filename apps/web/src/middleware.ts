@@ -17,7 +17,7 @@
 // Why this exists (security headers, audit §3 M4):
 //   The app had no CSP, no X-Frame-Options, no X-Content-Type-Options, no
 //   Referrer-Policy and no Permissions-Policy. The attached host names in
-//   `connect-src` are wall-garden-tight — Supabase + R2 + Sentry + the
+//   `connect-src` are wall-garden-tight — Supabase + R2 + Sentry (DSN-derived) + the demo asset host + the
 //   browser's chord-model host — so a compromised dependency can't
 //   exfiltrate to an arbitrary attacker-controlled endpoint. `wasm-unsafe-eval`
 //   is required for ONNX Runtime Web (chord overlay); `'unsafe-inline'` on
@@ -36,6 +36,27 @@ import { createServerClient } from '@supabase/ssr';
 
 // ──────────────────────── security headers ────────────────────────
 
+/** Origin-only https token from a URL-ish env value (CSP sources take no paths/userinfo); null if unusable. */
+function originOf(raw: string | undefined): string | null {
+  if (!raw || !raw.trim()) return null;
+  try {
+    const u = new URL(raw.trim());
+    return u.protocol === 'https:' ? `https://${u.host}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Must match DEFAULT_DEMO_ASSET_BASE in `lib/public-config.ts` (pinned by a drift test in
+ * csp-headers.test.mjs; middleware is kept import-free so the test can load it standalone).
+ * NEXT_PUBLIC_DEMO_ASSET_BASE overrides it exactly as public-config does; blank = demo off.
+ */
+const DEFAULT_DEMO_ASSET_BASE = 'https://myzone-jon-cartwright-stem-loops-demo.crhq.ai/';
+function demoOrigin(): string | null {
+  return originOf(process.env.NEXT_PUBLIC_DEMO_ASSET_BASE ?? DEFAULT_DEMO_ASSET_BASE);
+}
+
 /**
  * Hosts allowed on the `connect-src` directive. Supabase + R2 (presigned
  * reads) + Sentry (error telemetry) are always permitted; the browser-side
@@ -52,8 +73,15 @@ export function cspConnectSrcHosts(): string[] {
     'https://*.supabase.co',
     'https://*.r2.cloudflarestorage.com',
     'https://sentry.io',
-    'https://o0.ingest.us.sentry.io',
   ]);
+  // Sentry ingest host comes from the DSN (o<orgId>.ingest.<region>.sentry.io),
+  // never a hardcoded org id: a placeholder here silently drops every browser
+  // error. Origin-only, https-only, no wildcard over the telemetry sink. DSN
+  // unset => Sentry is a no-op (instrumentation-client.ts), so nothing to add.
+  const sentry = originOf(process.env.NEXT_PUBLIC_SENTRY_DSN);
+  if (sentry) hosts.add(sentry);
+  const demo = demoOrigin();
+  if (demo) hosts.add(demo);
   const chordnet = process.env.NEXT_PUBLIC_CHORDNET_MODEL_URL;
   if (chordnet) {
     try {
@@ -92,6 +120,8 @@ function mediaSrcHosts(): string[] {
   const hosts = ["'self'", 'https://*.r2.cloudflarestorage.com'];
   const r2Public = process.env.R2_PUBLIC_HOST;
   if (r2Public) hosts.push(`https://${r2Public}`);
+  const demo = demoOrigin();
+  if (demo) hosts.push(demo);
   return hosts;
 }
 

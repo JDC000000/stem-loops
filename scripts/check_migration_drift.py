@@ -76,6 +76,22 @@ EXIT_DRIFT = 1
 EXIT_UNKNOWN = 2
 
 
+def _connection_error_types() -> tuple[type[BaseException], ...]:
+    """Exceptions that genuinely mean "could not reach the database".
+
+    Narrow on purpose. The first version caught bare `Exception` here, which
+    classified a reachable database with an unreadable ledger as unreachable
+    and let --allow-unreachable return 0 — a green tick over a gate that
+    checked nothing. This repo already uses narrow-grant *_RO credentials for
+    jobs like this, so that is a live shape, not a hypothetical.
+    """
+    try:
+        import psycopg
+    except ImportError:  # pragma: no cover - psycopg absent means we never connected
+        return ()
+    return (psycopg.OperationalError,)
+
+
 class LedgerMissing(Exception):
     """`public._migrations` is absent, so the applied set is unknowable.
 
@@ -154,9 +170,10 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-unreachable",
         action="store_true",
         help=(
-            "downgrade an UNREACHABLE database from exit 2 to exit 0 (prints a "
-            "warning). Does NOT forgive a reachable database with no "
-            "_migrations ledger - that always fails."
+            "downgrade an UNREACHABLE database (connection failure) from exit 2 "
+            "to exit 0, printing a warning. Does NOT forgive a database that "
+            "answered: a missing ledger, an unreadable ledger, or a bad "
+            "conninfo all still fail."
         ),
     )
     args = ap.parse_args(argv)
@@ -185,13 +202,22 @@ def main(argv: list[str] | None = None) -> int:
         # cannot say what has been applied. Blessing that would be guessing.
         print(f"FAIL: {exc}", file=sys.stderr)
         return EXIT_UNKNOWN
-    except Exception as exc:  # noqa: BLE001 - could not reach the database
+    except _connection_error_types() as exc:
         msg = f"could not reach the database: {exc}"
         if args.allow_unreachable:
             print(f"WARNING: {msg} --allow-unreachable given; reporting success "
                   f"WITHOUT having checked anything.", file=sys.stderr)
             return EXIT_OK
         print(f"FAIL: {msg}", file=sys.stderr)
+        return EXIT_UNKNOWN
+    except Exception as exc:  # noqa: BLE001
+        # Reachable, but the ledger could not be read (no SELECT, no USAGE on
+        # public, malformed conninfo...). NOT forgivable: the database answered
+        # and we still do not know what is applied.
+        print(
+            f"FAIL: reached the database but could not read the ledger: {exc}",
+            file=sys.stderr,
+        )
         return EXIT_UNKNOWN
 
     print(f"database: {len(applied)} migrations recorded")

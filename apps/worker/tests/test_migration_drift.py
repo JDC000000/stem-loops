@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -174,39 +173,79 @@ def test_expect_row_count_mismatch_fails(monkeypatch):
 _MIGRATE_PY = _REPO_ROOT / "apps" / "worker" / "src" / "worker" / "migrate.py"
 
 
-def test_gate_and_runner_resolve_to_the_same_migrations_directory():
-    import os as _os
+def _load_runner():
+    """Import the real runner module, stubbing psycopg if it is not installed.
 
-    # Recomputed the way migrate.py computes it, from migrate.py's own location.
-    runner_dir = _os.path.normpath(_os.path.join(_MIGRATE_PY.parent, "..", "..", "migrations"))
-    assert (
-        Path(runner_dir).resolve() == drift_mod.DEFAULT_MIGRATIONS_DIR.resolve()
-    ), "the gate is looking at a different directory than the runner"
-
-
-def test_runner_discovery_is_still_a_top_level_sql_glob():
-    """Pin the runner's actual expression. If it changes, this goes red.
-
-    This is the only thing standing between "the gate mirrors the runner" being
-    true and being a comment that used to be true.
+    Round-2 review N1: the previous version of these tests recomputed the
+    runner's path from the runner's *filename* and compared the gate against a
+    *copy* of the glob written in the test. Both were tautologies — a reviewer
+    repointed MIGRATIONS_DIR and they stayed green. Import the module and read
+    its real values.
     """
-    src = _MIGRATE_PY.read_text()
-    assert 'glob.glob(os.path.join(MIGRATIONS_DIR, "*.sql"))' in src, (
-        "migrate.py's discovery changed. scripts/check_migration_drift.py "
-        "and the CI job's count must change with it."
+    import types
+
+    if "psycopg" not in sys.modules:
+        stub = types.ModuleType("psycopg")
+        stub.connect = lambda *a, **k: None
+        stub.OperationalError = type("OperationalError", (Exception,), {})
+        sys.modules["psycopg"] = stub
+    src = str(_REPO_ROOT / "apps" / "worker" / "src")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    import worker.migrate as runner
+
+    return runner
+
+
+def _strip_py_comments(source: str) -> str:
+    """Remove comments so a 'the code still says X' check cannot be satisfied
+    by X appearing in a comment. Review N1 defeated the old check exactly that
+    way: rewrite the glob to rglob, leave the old expression in a comment."""
+    import io
+    import tokenize
+
+    out = []
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type == tokenize.COMMENT:
+            continue
+        out.append(tok)
+    return tokenize.untokenize(out)
+
+
+def test_gate_and_runner_point_at_the_same_directory():
+    """Reads worker.migrate.MIGRATIONS_DIR itself — not a recomputation."""
+    runner = _load_runner()
+    assert (
+        Path(runner.MIGRATIONS_DIR).resolve() == drift_mod.DEFAULT_MIGRATIONS_DIR.resolve()
+    ), "the gate and the runner are looking at different directories"
+
+
+def test_runner_discovery_is_still_a_top_level_sql_glob_in_real_code():
+    """Pin the runner's expression, ignoring comments.
+
+    If migrate.py's discovery changes, this goes red and whoever changed it
+    must change the gate and the CI count with it. Comments are stripped so the
+    pin cannot be satisfied by a leftover comment.
+    """
+    code = _strip_py_comments(_MIGRATE_PY.read_text())
+    assert 'glob.glob(os.path.join(MIGRATIONS_DIR, "*.sql"))' in code, (
+        "migrate.py's discovery changed; scripts/check_migration_drift.py and "
+        "the CI job's migration count must change with it"
     )
-    assert "recursive=True" not in src, "runner went recursive; gate would miss down/"
+    assert (
+        "rglob" not in code and "recursive=True" not in code
+    ), "the runner went recursive; the gate would then miss down/"
 
 
-def test_gate_discovery_matches_the_runners_glob_on_the_real_tree():
+def test_gate_discovery_equals_the_runners_own_directory_listing():
     import glob as _glob
     import os as _os
 
-    runner = sorted(
-        _os.path.basename(p)
-        for p in _glob.glob(_os.path.join(str(drift_mod.DEFAULT_MIGRATIONS_DIR), "*.sql"))
+    runner = _load_runner()
+    runner_files = sorted(
+        _os.path.basename(x) for x in _glob.glob(_os.path.join(runner.MIGRATIONS_DIR, "*.sql"))
     )
-    assert drift_mod.discover_repo_migrations(drift_mod.DEFAULT_MIGRATIONS_DIR) == runner
+    assert drift_mod.discover_repo_migrations(Path(runner.MIGRATIONS_DIR)) == runner_files
 
 
 # --------------------------------------------------------------------------
@@ -227,15 +266,36 @@ def test_missing_ledger_is_never_forgiven_even_with_allow_unreachable(monkeypatc
     ), "staging's exact shape: tables present, no ledger. No flag may bless it"
 
 
-def test_unreachable_database_is_forgiven_only_with_the_flag(monkeypatch):
+def test_only_a_connection_failure_is_forgiven_by_the_flag(monkeypatch):
+    fake = type("FakeOperationalError", (Exception,), {})
+    monkeypatch.setattr(drift_mod, "_connection_error_types", lambda: (fake,))
     monkeypatch.setenv("DATABASE_URL", "postgresql://x/x")
 
     def _raise(_u):
-        raise OSError("connection refused")
+        raise fake("connection refused")
 
     monkeypatch.setattr(drift_mod, "fetch_applied", _raise)
     assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
     assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_OK
+
+
+def test_reachable_but_unreadable_ledger_is_never_forgiven(monkeypatch):
+    """Round-2 review N2: the broad `except Exception` classified a reachable
+    database with an unreadable ledger as 'unreachable', so --allow-unreachable
+    returned 0 — a green tick over a gate that checked nothing. This repo uses
+    narrow-grant *_RO credentials for jobs like this, so it is a live shape."""
+    fake = type("FakeOperationalError", (Exception,), {})
+    monkeypatch.setattr(drift_mod, "_connection_error_types", lambda: (fake,))
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x/x")
+
+    def _raise(_u):
+        raise PermissionError("permission denied for table _migrations")
+
+    monkeypatch.setattr(drift_mod, "fetch_applied", _raise)
+    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
+    assert (
+        drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+    ), "the database answered; no flag may bless an unread ledger"
 
 
 # --------------------------------------------------------------------------
@@ -281,7 +341,11 @@ def test_fetch_applied_raises_ledger_missing_on_a_database_without_one():
         conn.execute(f"DROP DATABASE IF EXISTS {name}")
         conn.execute(f"CREATE DATABASE {name}")
     try:
-        probe_url = re.sub(r"/[^/?]*(\?|$)", f"/{name}\\1", url, count=1)
+        from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+        # Review N3: a regex rewrite broke on passwords containing "?",
+        # path-less URLs and key=value conninfo. Let psycopg parse it.
+        probe_url = make_conninfo(**{**conninfo_to_dict(url), "dbname": name})
         with pytest.raises(drift_mod.LedgerMissing):
             drift_mod.fetch_applied(probe_url)
     finally:

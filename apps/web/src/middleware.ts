@@ -71,6 +71,19 @@ export function cspConnectSrcHosts(): string[] {
 }
 
 /**
+ * hCaptcha origins (signup + Buy Credits bot check). Per
+ * https://docs.hcaptcha.com/#content-security-policy-settings the same two
+ * sources are required on script-src, frame-src, style-src and connect-src.
+ * The bare host is listed explicitly because `*.hcaptcha.com` does not match
+ * it. Do not pin asset subdomains (newassets.* etc.) — hCaptcha says they
+ * change. One list, four directives: change it here only.
+ */
+export const HCAPTCHA_HOSTS: readonly string[] = [
+  'https://hcaptcha.com',
+  'https://*.hcaptcha.com',
+];
+
+/**
  * Hosts allowed on the `media-src` directive. R2 private bucket gets the
  * presigned-URL wildcard; the public bucket host (if any) is appended so
  * the landing demo clips play without CSP violations.
@@ -84,14 +97,18 @@ function mediaSrcHosts(): string[] {
 
 /** Build the full Content-Security-Policy value. Pure for unit testing. */
 export function buildCsp(): string {
-  const connect = cspConnectSrcHosts().join(' ');
+  const connect = [...cspConnectSrcHosts(), ...HCAPTCHA_HOSTS].join(' ');
   const media = mediaSrcHosts().join(' ');
+  const hcaptcha = HCAPTCHA_HOSTS.join(' ');
   return [
     "default-src 'self'",
     // `wasm-unsafe-eval` is required for ORT Web (chord overlay); inline
     // scripts are a known gap tracked as a follow-up nonce migration.
-    "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'",
-    "style-src 'self' 'unsafe-inline'",
+    `script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline' ${hcaptcha}`,
+    // No other frame is embedded; before this, frame-src fell back to
+    // default-src 'self' and the hCaptcha challenge iframe was refused.
+    `frame-src ${hcaptcha}`,
+    `style-src 'self' 'unsafe-inline' ${hcaptcha}`,
     "img-src 'self' data: https:",
     `connect-src ${connect}`,
     'worker-src blob:',

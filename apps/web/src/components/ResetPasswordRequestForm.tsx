@@ -32,6 +32,11 @@ const btn = {
   boxSizing: 'border-box' as const,
 };
 
+// Text links need a 44px tap target; inline-flex centres the label.
+const linkStyle = {
+  display: 'inline-flex', alignItems: 'center', minHeight: 44, padding: '0 8px', marginLeft: -8,
+};
+
 export default function ResetPasswordRequestForm() {
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
@@ -85,7 +90,7 @@ export default function ResetPasswordRequestForm() {
           Can&apos;t find the email? Check your spam folder.
         </p>
         <p style={{ fontSize: 14, color: 'var(--text-muted)', margin: 0 }}>
-          <a href="/login">Back to sign in</a>
+          <a href="/login" style={linkStyle}>Back to sign in</a>
         </p>
       </div>
     );
@@ -130,7 +135,7 @@ export default function ResetPasswordRequestForm() {
       )}
 
       <p style={{ fontSize: 14, color: 'var(--text-muted)', margin: 0 }}>
-        <a href="/login">Back to sign in</a>
+        <a href="/login" style={linkStyle}>Back to sign in</a>
       </p>
     </div>
   );

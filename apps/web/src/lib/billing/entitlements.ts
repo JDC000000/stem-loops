@@ -124,6 +124,10 @@ type EntitlementRow = {
   period_start: string;
   period_end: string;
   jobs_used: number;
+  /** Status / period start of the user's best subscription (LEFT JOIN; null
+   *  when the user has no subscriptions row). */
+  sub_status?: string | null;
+  sub_period_start?: string | null;
 };
 type PlanRow = {
   code: string;
@@ -135,11 +139,61 @@ type PlanRow = {
 type CreditBalanceRow = { credits_remaining: number | string };
 type TrialGrantRow = { songs_used: number; expires_at: string };
 
+/** past_due grace policy. A failed renewal leaves the subscription past_due
+ *  while Stripe retries the card (Smart Retries run for up to ~3 weeks). We
+ *  keep paid access for 7 days from the start of the failed period, then drop
+ *  to free: long enough that a lapsed card / bank hiccup does not lock out a
+ *  paying customer mid-dunning, short enough that a dead card does not mean
+ *  Pro forever. Measured from subscriptions.current_period_start because the
+ *  failed renewal is what rolled that forward, and it needs no new column.
+ *  period_end is NOT used for past_due: Stripe has already rolled it a full
+ *  period ahead by the time the renewal fails. */
+export const PAST_DUE_GRACE_MS = 7 * 24 * 3600 * 1000;
+
+/** Which plan the user is ENTITLED to right now, as opposed to what the
+ *  entitlements row says. The row is only ever written upward by the webhook,
+ *  so it is not trusted on its own:
+ *    active / trialing -> row plan, only while now < period_end
+ *    past_due          -> row plan, only inside PAST_DUE_GRACE_MS
+ *    anything else (canceled, incomplete, paused, no subscription row)
+ *                      -> 'free'
+ *  Free rows pass through unchanged. */
+export function effectivePlanCode(args: {
+  planCode: string;
+  periodEnd: string | null;
+  subStatus: string | null | undefined;
+  subPeriodStart: string | null | undefined;
+  now: number;
+}): string {
+  const { planCode, periodEnd, subStatus, subPeriodStart, now } = args;
+  if (planCode === 'free') return 'free';
+  if (subStatus === 'active' || subStatus === 'trialing') {
+    const end = periodEnd ? Date.parse(periodEnd) : NaN;
+    return Number.isFinite(end) && end > now ? planCode : 'free';
+  }
+  if (subStatus === 'past_due') {
+    const start = subPeriodStart ? Date.parse(subPeriodStart) : NaN;
+    return Number.isFinite(start) && now < start + PAST_DUE_GRACE_MS ? planCode : 'free';
+  }
+  return 'free';
+}
+
 async function readSnapshot(userId: string): Promise<EntitlementSnapshot> {
   const [entRes, balRes, trialRes] = await Promise.all([
     db.query<EntitlementRow>(
-      `SELECT plan_code, period_start, period_end, jobs_used
-         FROM entitlements WHERE user_id = $1`,
+      `SELECT e.plan_code, e.period_start, e.period_end, e.jobs_used,
+              s.status AS sub_status, s.current_period_start AS sub_period_start
+         FROM entitlements e
+         LEFT JOIN LATERAL (
+           SELECT status, current_period_start
+             FROM subscriptions
+            WHERE user_id = e.user_id
+            ORDER BY (status IN ('active','trialing')) DESC,
+                     (status = 'past_due') DESC,
+                     current_period_end DESC
+            LIMIT 1
+         ) s ON true
+        WHERE e.user_id = $1`,
       [userId],
     ),
     db.query<CreditBalanceRow>(
@@ -153,7 +207,17 @@ async function readSnapshot(userId: string): Promise<EntitlementSnapshot> {
   ]);
 
   const entRow = entRes.rows[0];
-  const planCode = entRow?.plan_code ?? 'free';
+  // Never trust entitlements.plan_code alone: gate on period_end and the
+  // subscription status (see effectivePlanCode).
+  const planCode = entRow
+    ? effectivePlanCode({
+        planCode: entRow.plan_code,
+        periodEnd: entRow.period_end,
+        subStatus: entRow.sub_status,
+        subPeriodStart: entRow.sub_period_start,
+        now: Date.now(),
+      })
+    : 'free';
 
   const planRes = await db.query<PlanRow>(
     `SELECT code, monthly_job_quota, services, export_stems, export_wav24

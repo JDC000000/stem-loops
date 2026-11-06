@@ -96,6 +96,9 @@ export type BillingEvent =
       // when the handle_new_user trigger has not caught up (round-1 MEDIUM
       // on ensureUserRow silent return).
       customerEmail?: string | null;
+      // Stripe customer id on the completed session. Fallback key to resolve
+      // userId (via customers_billing) when session.metadata.user_id is empty.
+      providerCustomerId?: string | null;
     }
   | {
       type: 'subscription_upserted';
@@ -106,21 +109,29 @@ export type BillingEvent =
       type: 'subscription_canceled';
       userId: string;
       providerSubscriptionId: string;
+      providerCustomerId?: string | null;
     }
   | {
       type: 'invoice_paid';
       userId: string;
       providerSubscriptionId: string;
+      providerCustomerId?: string | null;
       invoice: BillingInvoice;
     }
   | {
       type: 'invoice_payment_failed';
       userId: string;
       providerSubscriptionId: string;
+      providerCustomerId?: string | null;
     }
   | {
       type: 'dispute_created';
+      /** Stripe event id — idempotency key for the clawback adjustment. */
+      providerEventId: string;
+      /** Stripe charge id (ch_...). */
       providerChargeId: string;
+      /** Stripe payment_intent id (pi_...); credit_purchases keys on this. */
+      providerPaymentIntentId: string | null;
     }
   | {
       type: 'refund_created';
@@ -147,6 +158,10 @@ export interface BillingProvider {
 
   createCustomer(userId: string, email: string): Promise<BillingCustomer>;
 
+  /** `customerId` is the provider customer stored in customers_billing. It
+   *  MUST be passed: without it the provider mints a throwaway customer per
+   *  session, the stored one stays empty, and the portal opens an empty
+   *  customer (subscriber cannot cancel). */
   createCheckoutSession(
     userId: string,
     planCode: PlanCode,
@@ -154,8 +169,10 @@ export interface BillingProvider {
     cancelUrl: string,
     promoCode?: string | null,
     promoCodeId?: string | null,
+    customerId?: string | null,
   ): Promise<BillingCheckoutResult>;
 
+  /** See createCheckoutSession re `customerId`. */
   createCreditPurchaseSession(
     userId: string,
     pack: PackCode,
@@ -163,6 +180,7 @@ export interface BillingProvider {
     cancelUrl: string,
     promoCode?: string | null,
     promoCodeId?: string | null,
+    customerId?: string | null,
   ): Promise<BillingCheckoutResult>;
 
   createPortalSession(

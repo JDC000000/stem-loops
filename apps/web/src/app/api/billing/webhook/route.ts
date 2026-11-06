@@ -8,7 +8,9 @@
 // forever. All paths return a JSON body and an explicit status:
 //   200 — handled or intentionally ignored (unhandled event type)
 //   400 — signature invalid / unparseable
-//   500 — DB write failure (Stripe should retry)
+//   500 — DB write failure, OR money was taken but the payer could not be
+//         resolved to a user (Stripe must retry; never ack a paid event we
+//         did not fulfil)
 //
 // Idempotency (critical): every insert uses UNIQUE constraints and
 // ON CONFLICT DO NOTHING. Specifically:
@@ -116,14 +118,89 @@ async function emailBestEffort(label: string, work: () => Promise<void>): Promis
   }
 }
 
+/** Thrown when money was taken but we cannot tell whose it is. The route turns
+ *  any throw into a 500 so Stripe retries and the failure is loud; returning
+ *  200 here would silently abandon a paid purchase. */
+class UnresolvedPayerError extends Error {
+  constructor(what: string, detail: Record<string, unknown>) {
+    super(`${what}: cannot resolve user (${JSON.stringify(detail)})`);
+    this.name = 'UnresolvedPayerError';
+  }
+}
+
+/** Resolve the owning user for a billing event. Order: explicit metadata
+ *  user_id, then customers_billing by provider customer id (the row checkout
+ *  stores before creating a session), then the subscriptions row, then a
+ *  matching users.email as a last resort. Returns '' when nothing matches. */
+async function resolveUserId(
+  providerName: string,
+  hint: {
+    userId?: string | null;
+    customerId?: string | null;
+    subscriptionId?: string | null;
+    email?: string | null;
+  },
+): Promise<string> {
+  if (hint.userId) return hint.userId;
+  if (hint.customerId) {
+    const res = await db.query<{ user_id: string }>(
+      `SELECT user_id FROM customers_billing
+        WHERE provider = $1 AND provider_customer_id = $2`,
+      [providerName, hint.customerId],
+    );
+    if (res.rows[0]?.user_id) return res.rows[0].user_id;
+  }
+  if (hint.subscriptionId) {
+    const res = await db.query<{ user_id: string }>(
+      `SELECT user_id FROM subscriptions
+        WHERE provider = $1 AND provider_subscription_id = $2`,
+      [providerName, hint.subscriptionId],
+    );
+    if (res.rows[0]?.user_id) return res.rows[0].user_id;
+  }
+  if (hint.email) {
+    const res = await db.query<{ id: string }>(
+      `SELECT id FROM users WHERE email = $1`,
+      [hint.email],
+    );
+    if (res.rows[0]?.id) return res.rows[0].id;
+  }
+  return '';
+}
+
+/** Drop a user's paid entitlement to free, unless another subscription of
+ *  theirs still entitles them. Callers must have already persisted the new
+ *  (canceled / paused) subscription status. */
+async function downgradeEntitlementIfUnentitled(userId: string): Promise<void> {
+  await db.query(
+    `UPDATE entitlements
+        SET plan_code = 'free', computed_at = now()
+      WHERE user_id = $1
+        AND plan_code <> 'free'
+        AND NOT EXISTS (
+          SELECT 1 FROM subscriptions
+           WHERE user_id = $1 AND status IN ('active','trialing','past_due'))`,
+    [userId],
+  );
+}
+
 /** Recompute the entitlements row from the authoritative subscription state.
- *  Called on subscription_upserted and invoice_paid events. */
+ *  Called on subscription_upserted and invoice_paid events.
+ *    active / trialing -> grant/refresh the paid plan
+ *    canceled / paused -> downgrade to free
+ *    past_due          -> leave the row; readSnapshot applies the grace window
+ *    incomplete        -> never paid; grant nothing */
 async function upsertEntitlementFromSubscription(
   userId: string,
   sub: BillingSubscription,
 ): Promise<void> {
   const planCode = dbPlanCode(sub.planCode);
   if (!planCode) return;
+  if (sub.status === 'canceled' || sub.status === 'paused') {
+    await downgradeEntitlementIfUnentitled(userId);
+    return;
+  }
+  if (sub.status !== 'active' && sub.status !== 'trialing') return;
   const periodStart = sub.currentPeriodStart ?? new Date();
   const periodEnd = sub.currentPeriodEnd ?? new Date(Date.now() + 30 * 24 * 3600 * 1000);
   // Upsert entitlements; jobs_used resets to 0 on a new period.
@@ -144,15 +221,137 @@ async function upsertEntitlementFromSubscription(
   );
 }
 
+/** Claw back credits for a refunded or disputed credit purchase. Shared by
+ *  refund_created and dispute_created so both draw on the same per-charge
+ *  'refund' ledger and can never claw back more than was granted. Idempotent
+ *  on (provider, provider_event_id). */
+async function clawBackCreditPurchase(
+  providerName: string,
+  evt: {
+    label: string;
+    providerEventId: string;
+    providerChargeId: string;
+    providerPaymentIntentId: string | null;
+    fullyRefunded: boolean;
+    amountRefunded: number;
+  },
+): Promise<void> {
+  // M4 (credit-ledger review 2026-11-03): claw back credits for a refunded
+  // credit purchase. credit_purchases.provider_charge_id holds the
+  // PaymentIntent id, so match on the charge id OR its payment_intent.
+  const ids = [evt.providerChargeId, evt.providerPaymentIntentId].filter(
+    (x): x is string => !!x,
+  );
+  const found = await db.query<{
+    user_id: string;
+    provider_charge_id: string;
+    credits_granted: number;
+    amount_cad_cents: number;
+  }>(
+    `SELECT user_id, provider_charge_id, credits_granted, amount_cad_cents
+       FROM credit_purchases
+      WHERE provider = $1 AND provider_charge_id = ANY($2::text[])
+      LIMIT 1`,
+    [providerName, ids],
+  );
+  const purchase = found.rows[0];
+  if (!purchase) {
+    // Subscription invoice or non-credit charge: nothing to claw back.
+    console.info(`[webhook] ${evt.label}: no credit purchase for charge ${evt.providerChargeId}; ignoring`);
+    return;
+  }
+  // Pro-rata (M4 follow-up, Option A): total clawed back so far for this
+  // charge; this event claws back only the delta. Full refunds close any
+  // floor() residual. Net <= 0 => no-op (Stripe retries, stale events).
+  // The SUM + INSERT run in one tx under a per-charge advisory lock so two
+  // concurrent charge.refunded events (distinct event ids) serialise and
+  // the second sees the first's row. Same lock-then-write shape as
+  // consumeCreditInTx (lib/billing/credits.ts).
+  const chargeId = purchase.provider_charge_id;
+  const outcome = await db.tx(async (client) => {
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtext('refund_clawback:' || $1::text))`,
+      [chargeId],
+    );
+    const prior = await client.query<{ clawed: number | string }>(
+      `SELECT COALESCE(SUM(-credits_delta), 0) AS clawed
+         FROM credit_adjustments
+        WHERE provider = $1 AND provider_charge_id = $2 AND reason = 'refund'`,
+      [providerName, chargeId],
+    );
+    const alreadyClawed = Number(prior.rows[0]?.clawed ?? 0) | 0;
+    const toClaw = computeProRataClawback({
+      amountRefunded: evt.amountRefunded,
+      amountTotal: purchase.amount_cad_cents,
+      creditsGranted: purchase.credits_granted,
+      alreadyClawed,
+      isFullRefund: evt.fullyRefunded,
+    });
+    if (toClaw <= 0) return { alreadyClawed, toClaw, inserted: false };
+    // Idempotent on (provider, provider_event_id) for Stripe retries. Several
+    // refund rows per charge are legal (migration 024 drops the
+    // one-per-charge unique index); the locked SUM above bounds the total.
+    const ins = await client.query(
+      `INSERT INTO credit_adjustments
+         (user_id, credits_delta, reason, provider, provider_event_id, provider_charge_id)
+       VALUES ($1, $2, 'refund', $3, $4, $5)
+       ON CONFLICT DO NOTHING`,
+      [purchase.user_id, -toClaw, providerName, evt.providerEventId, chargeId],
+    );
+    const inserted = (ins.rowCount ?? 0) > 0;
+    if (inserted) {
+      await client.query(
+        `INSERT INTO usage_events (user_id, kind, detail)
+         VALUES ($1, 'refund_processed', $2::jsonb)`,
+        [
+          purchase.user_id,
+          JSON.stringify({
+            provider_event_id: evt.providerEventId,
+            provider_charge_id: chargeId,
+            credits_clawed_back: toClaw,
+            total_clawed_back: alreadyClawed + toClaw,
+            partial: !evt.fullyRefunded,
+            source: evt.label,
+          }),
+        ],
+      );
+    }
+    return { alreadyClawed, toClaw, inserted };
+  });
+  if (outcome.toClaw <= 0) {
+    console.info(
+      `[webhook] ${evt.label}: nothing to claw back on ${evt.providerChargeId} (already ${outcome.alreadyClawed})`,
+    );
+    return;
+  }
+  if (outcome.inserted) invalidateEntitlement(purchase.user_id);
+}
+
 async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'paddle'): Promise<void> {
   switch (evt.type) {
     case 'credit_purchase_completed': {
-      if (!evt.userId) return;
+      // Money has been taken. NEVER drop this with a 200: resolve the payer
+      // (metadata -> session.customer -> customer_email) or throw so Stripe
+      // retries and the failure is loud.
+      const payerId = await resolveUserId(providerName, {
+        userId: evt.userId,
+        customerId: evt.providerCustomerId,
+        email: evt.customerEmail,
+      });
+      if (!payerId) {
+        console.error(
+          `[webhook][UNFULFILLED PAYMENT] credit purchase ${evt.providerChargeId} (${evt.packCode}, ${evt.amountCents} ${evt.currency}) paid but no user resolvable; customer=${evt.providerCustomerId ?? 'none'} email=${evt.customerEmail ?? 'none'}. Returning 500 so Stripe retries.`,
+        );
+        throw new UnresolvedPayerError('credit_purchase_completed', {
+          charge: evt.providerChargeId,
+          customer: evt.providerCustomerId ?? null,
+        });
+      }
       // Defensive users-row upsert (round-1 MEDIUM): if the handle_new_user
       // trigger hasn't caught up, seed the row here so we actually grant
       // credits. On failure, this throws and the route returns 500 → Stripe
       // retries. Email hint comes from the Checkout Session.
-      await ensureUserRow(evt.userId, evt.customerEmail ?? null);
+      await ensureUserRow(payerId, evt.customerEmail ?? null);
       const credits = credits_for_pack(evt.packCode);
       await db.query(
         `INSERT INTO credit_purchases
@@ -161,7 +360,7 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (provider, provider_charge_id) DO NOTHING`,
         [
-          evt.userId,
+          payerId,
           providerName,
           evt.providerChargeId,
           evt.packCode,
@@ -181,15 +380,15 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
           `INSERT INTO promo_redemptions (user_id, code, stripe_promotion_code_id)
            VALUES ($1, $2, $3)
            ON CONFLICT (user_id, stripe_promotion_code_id) DO NOTHING`,
-          [evt.userId, evt.promoCode, evt.promoCodeId ?? null],
+          [payerId, evt.promoCode, evt.promoCodeId ?? null],
         );
       }
-      invalidateEntitlement(evt.userId);
+      invalidateEntitlement(payerId);
       // V3-M3 — receipt for one-time credit purchase. Idempotency key is
       // the Stripe charge / payment-intent id (stable across retries), so a
       // double-delivered webhook can't double-send the receipt.
       await emailBestEffort('receipt:credit_purchase', () =>
-        sendReceipt(evt.userId, {
+        sendReceipt(payerId, {
           amount_cad_cents: evt.amountCents,
           plan_or_pack_label: `${credits} credits (${evt.packCode})`,
           invoice_url: null,
@@ -200,9 +399,25 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
     }
 
     case 'subscription_upserted': {
-      if (!evt.userId) return;
+      // subscription_data.metadata.user_id is the primary key; fall back to
+      // the stored customer for subscriptions created without it. Unresolved
+      // => throw (500, Stripe retries) rather than silently abandon a payer.
+      const subUserId = await resolveUserId(providerName, {
+        userId: evt.userId,
+        customerId: evt.subscription.providerCustomerId,
+        subscriptionId: evt.subscription.providerSubscriptionId,
+      });
+      if (!subUserId) {
+        console.error(
+          `[webhook][UNFULFILLED SUBSCRIPTION] ${evt.subscription.providerSubscriptionId} (${evt.subscription.status}) has no user_id metadata and customer ${evt.subscription.providerCustomerId} is not in customers_billing. Returning 500 so Stripe retries.`,
+        );
+        throw new UnresolvedPayerError('subscription_upserted', {
+          subscription: evt.subscription.providerSubscriptionId,
+          customer: evt.subscription.providerCustomerId,
+        });
+      }
       // Defensive users-row upsert; throws on failure so Stripe retries.
-      await ensureUserRow(evt.userId, null);
+      await ensureUserRow(subUserId, null);
       const planCode = dbPlanCode(evt.subscription.planCode);
       if (!planCode) return;
       // customers_billing must exist for the FK story; insert idempotently.
@@ -210,7 +425,7 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         `INSERT INTO customers_billing (user_id, provider, provider_customer_id)
          VALUES ($1, $2, $3)
          ON CONFLICT (user_id, provider) DO NOTHING`,
-        [evt.userId, providerName, evt.subscription.providerCustomerId],
+        [subUserId, providerName, evt.subscription.providerCustomerId],
       );
       await db.query(
         `INSERT INTO subscriptions
@@ -225,7 +440,7 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
            cancel_at_period_end = EXCLUDED.cancel_at_period_end,
            updated_at           = now()`,
         [
-          evt.userId,
+          subUserId,
           providerName,
           evt.subscription.providerSubscriptionId,
           planCode,
@@ -235,15 +450,15 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
           evt.subscription.cancelAtPeriodEnd,
         ],
       );
-      await upsertEntitlementFromSubscription(evt.userId, evt.subscription);
-      invalidateEntitlement(evt.userId);
+      await upsertEntitlementFromSubscription(subUserId, evt.subscription);
+      invalidateEntitlement(subUserId);
       // V3-M1 + V3-M2 — welcome (first-time only) + subscription-changed.
       // Welcome is idempotent via users.welcomed_at (see dispatch.ts).
       await emailBestEffort('welcome:first_time', () =>
-        sendWelcomeIfFirstTime(evt.userId),
+        sendWelcomeIfFirstTime(subUserId),
       );
       await emailBestEffort('subscription_changed:upsert', () =>
-        sendSubscriptionChanged(evt.userId, {
+        sendSubscriptionChanged(subUserId, {
           plan_code: evt.subscription.planCode,
           status: evt.subscription.status,
           period_end: evt.subscription.currentPeriodEnd,
@@ -254,8 +469,10 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
     }
 
     case 'subscription_canceled': {
-      // Mark the row canceled; keep the entitlement row with its current
-      // period_end so the user retains access until the paid period expires.
+      // Mark the row canceled and downgrade the entitlement. Stripe sends
+      // customer.subscription.deleted when the paid period has ended (or on an
+      // immediate cancel), so access ends now. readSnapshot also gates on
+      // subscription status, so a stale 'pro' row can never outlive this.
       const res = await db.query<{ user_id: string; plan_code: 'pro' | 'studio'; current_period_end: Date }>(
         `UPDATE subscriptions
             SET status = 'canceled', cancel_at_period_end = true, updated_at = now()
@@ -264,8 +481,16 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         [providerName, evt.providerSubscriptionId],
       );
       const row = res.rows[0];
-      const userId = row?.user_id ?? evt.userId;
-      if (userId) invalidateEntitlement(userId);
+      const userId =
+        row?.user_id ??
+        (await resolveUserId(providerName, {
+          userId: evt.userId,
+          customerId: evt.providerCustomerId,
+        }));
+      if (userId) {
+        await downgradeEntitlementIfUnentitled(userId);
+        invalidateEntitlement(userId);
+      }
       // V3-M2 — subscription-changed (canceled).
       if (userId) {
         await emailBestEffort('subscription_changed:canceled', () =>
@@ -288,20 +513,20 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       // user lost access at period end. Resolve via the subscription record
       // we already persisted (subscriptions.provider_subscription_id → user_id)
       // before giving up.
-      let userId = evt.userId;
+      const userId = await resolveUserId(providerName, {
+        userId: evt.userId,
+        subscriptionId: evt.providerSubscriptionId,
+        customerId: evt.providerCustomerId,
+      });
       if (!userId) {
-        const res = await db.query<{ user_id: string }>(
-          `SELECT user_id FROM subscriptions
-            WHERE provider = $1 AND provider_subscription_id = $2`,
-          [providerName, evt.providerSubscriptionId],
+        // A paid invoice we cannot attribute. Do not ack with 200.
+        console.error(
+          `[webhook][UNFULFILLED PAYMENT] invoice ${evt.invoice.providerInvoiceId} (${evt.invoice.amountCents} ${evt.invoice.currency}) paid for sub ${evt.providerSubscriptionId} but no user resolvable. Returning 500 so Stripe retries.`,
         );
-        userId = res.rows[0]?.user_id ?? '';
-      }
-      if (!userId) {
-        console.warn(
-          `[webhook] invoice_paid: could not resolve user for sub ${evt.providerSubscriptionId}`,
-        );
-        return;
+        throw new UnresolvedPayerError('invoice_paid', {
+          invoice: evt.invoice.providerInvoiceId,
+          subscription: evt.providerSubscriptionId,
+        });
       }
       // Reload the subscription to recompute entitlement period. Falls back
       // to extending the existing period by the invoice interval.
@@ -335,113 +560,50 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
     }
 
     case 'invoice_payment_failed': {
-      // Flip the subscription to past_due. Keep entitlement until period end.
-      await db.query(
+      // Flip the subscription to past_due. Access continues for the grace
+      // window (PAST_DUE_GRACE_MS, applied by readSnapshot) and then drops to
+      // free; the entitlement row itself is left alone.
+      const res = await db.query<{ user_id: string }>(
         `UPDATE subscriptions SET status = 'past_due', updated_at = now()
-          WHERE provider = $1 AND provider_subscription_id = $2`,
+          WHERE provider = $1 AND provider_subscription_id = $2
+          RETURNING user_id`,
         [providerName, evt.providerSubscriptionId],
       );
-      if (evt.userId) invalidateEntitlement(evt.userId);
+      const failedUser = res.rows[0]?.user_id ?? evt.userId;
+      if (failedUser) invalidateEntitlement(failedUser);
       return;
     }
 
     case 'refund_created': {
-      // M4 (credit-ledger review 2026-11-03): claw back credits for a refunded
-      // credit purchase. credit_purchases.provider_charge_id holds the
-      // PaymentIntent id, so match on the charge id OR its payment_intent.
-      const ids = [evt.providerChargeId, evt.providerPaymentIntentId].filter(
-        (x): x is string => !!x,
-      );
-      const found = await db.query<{
-        user_id: string;
-        provider_charge_id: string;
-        credits_granted: number;
-        amount_cad_cents: number;
-      }>(
-        `SELECT user_id, provider_charge_id, credits_granted, amount_cad_cents
-           FROM credit_purchases
-          WHERE provider = $1 AND provider_charge_id = ANY($2::text[])
-          LIMIT 1`,
-        [providerName, ids],
-      );
-      const purchase = found.rows[0];
-      if (!purchase) {
-        // Subscription invoice or non-credit charge: nothing to claw back.
-        console.info(`[webhook] refund_created: no credit purchase for charge ${evt.providerChargeId}; ignoring`);
-        return;
-      }
-      // Pro-rata (M4 follow-up, Option A): total clawed back so far for this
-      // charge; this event claws back only the delta. Full refunds close any
-      // floor() residual. Net <= 0 => no-op (Stripe retries, stale events).
-      // The SUM + INSERT run in one tx under a per-charge advisory lock so two
-      // concurrent charge.refunded events (distinct event ids) serialise and
-      // the second sees the first's row. Same lock-then-write shape as
-      // consumeCreditInTx (lib/billing/credits.ts).
-      const chargeId = purchase.provider_charge_id;
-      const outcome = await db.tx(async (client) => {
-        await client.query(
-          `SELECT pg_advisory_xact_lock(hashtext('refund_clawback:' || $1::text))`,
-          [chargeId],
-        );
-        const prior = await client.query<{ clawed: number | string }>(
-          `SELECT COALESCE(SUM(-credits_delta), 0) AS clawed
-             FROM credit_adjustments
-            WHERE provider = $1 AND provider_charge_id = $2 AND reason = 'refund'`,
-          [providerName, chargeId],
-        );
-        const alreadyClawed = Number(prior.rows[0]?.clawed ?? 0) | 0;
-        const toClaw = computeProRataClawback({
-          amountRefunded: evt.amountRefunded,
-          amountTotal: purchase.amount_cad_cents,
-          creditsGranted: purchase.credits_granted,
-          alreadyClawed,
-          isFullRefund: evt.fullyRefunded,
-        });
-        if (toClaw <= 0) return { alreadyClawed, toClaw, inserted: false };
-        // Idempotent on (provider, provider_event_id) for Stripe retries. Several
-        // refund rows per charge are legal (migration 024 drops the
-        // one-per-charge unique index); the locked SUM above bounds the total.
-        const ins = await client.query(
-          `INSERT INTO credit_adjustments
-             (user_id, credits_delta, reason, provider, provider_event_id, provider_charge_id)
-           VALUES ($1, $2, 'refund', $3, $4, $5)
-           ON CONFLICT DO NOTHING`,
-          [purchase.user_id, -toClaw, providerName, evt.providerEventId, chargeId],
-        );
-        const inserted = (ins.rowCount ?? 0) > 0;
-        if (inserted) {
-          await client.query(
-            `INSERT INTO usage_events (user_id, kind, detail)
-             VALUES ($1, 'refund_processed', $2::jsonb)`,
-            [
-              purchase.user_id,
-              JSON.stringify({
-                provider_event_id: evt.providerEventId,
-                provider_charge_id: chargeId,
-                credits_clawed_back: toClaw,
-                total_clawed_back: alreadyClawed + toClaw,
-                partial: !evt.fullyRefunded,
-              }),
-            ],
-          );
-        }
-        return { alreadyClawed, toClaw, inserted };
+      await clawBackCreditPurchase(providerName, {
+        label: 'refund_created',
+        providerEventId: evt.providerEventId,
+        providerChargeId: evt.providerChargeId,
+        providerPaymentIntentId: evt.providerPaymentIntentId,
+        fullyRefunded: evt.fullyRefunded,
+        amountRefunded: evt.amountRefunded,
       });
-      if (outcome.toClaw <= 0) {
-        console.info(
-          `[webhook] refund_created: nothing to claw back on ${evt.providerChargeId} (already ${outcome.alreadyClawed})`,
-        );
-        return;
-      }
-      if (outcome.inserted) invalidateEntitlement(purchase.user_id);
       return;
     }
 
-    case 'dispute_created':
+    case 'dispute_created': {
+      // A chargeback must not leave the user holding the credits. Disputes
+      // are clawed back in full through the same ledger as refunds, keyed on
+      // the dispute event id (idempotent on Stripe retries). A later won
+      // dispute does not re-grant credits; that is a manual adjustment.
+      await clawBackCreditPurchase(providerName, {
+        label: 'dispute_created',
+        providerEventId: evt.providerEventId,
+        providerChargeId: evt.providerChargeId,
+        providerPaymentIntentId: evt.providerPaymentIntentId,
+        fullyRefunded: true,
+        amountRefunded: 0,
+      });
+      return;
+    }
+
     case 'unhandled':
     default:
-      // No-op: disputes are recorded by Stripe Dashboard and don't alter
-      // entitlements yet. (Refunds are handled above — M4.)
       return;
   }
 }

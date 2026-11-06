@@ -21,12 +21,30 @@
 # Pattern rules: last-match-wins per file.
 #
 # ─── 2026-11-05 T1+T2 trim ───────────────────────────────────────────────────
-# Reduced from ~40 patterns to 6. Previous breadth was imported from a
-# multi-tenant SaaS context (MyZone brief) and inappropriate for a solo
+# Reduced from ~40 patterns to the 8 below. Previous breadth was imported from
+# a multi-tenant SaaS context (MyZone brief) and inappropriate for a solo
 # lifestyle-business repo. Subagent writes to removed surfaces are now
 # guarded by `.claude/settings.json` deny rules instead.
 # See claude/merge-autonomy-recommendations.md §3 and
 # claude/session-7-handover.md §4 for the rationale.
+#
+# THE 8 PATTERNS (keep this list in sync with the entries below AND with the
+# regex in .github/workflows/auto-label-codeowners.yml — a pattern missing
+# from that regex is a GAP; a regex alternation missing from here is a LEAK):
+#
+#   1  apps/web/src/lib/billing/**
+#   2  apps/worker/src/worker/billing/**
+#   3  apps/web/src/app/api/billing/**
+#   4  apps/web/src/app/api/entitlements/**
+#   5  apps/worker/migrations/*_v3_commercial*.sql
+#   6  .github/workflows/**
+#   7  .github/CODEOWNERS
+#   8  AGENTS.md
+#
+# Audited 2026-11-05: the regex covers all 8, so there is no live GAP or LEAK.
+# Both this header and the workflow previously said "6", which is why the
+# count is now enumerated rather than stated — a bare number goes stale
+# silently, a list does not.
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────────────────────────────────────

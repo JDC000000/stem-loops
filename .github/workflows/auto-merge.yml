@@ -7,14 +7,66 @@
 #     * fast-path            — auto-applied by .github/workflows/auto-label-fast-path.yml
 #                              when the entire diff is docs/tests/generated-types
 #     * NOT needs-jon-approval — hard stop regardless
-# When conditions hold, fires `gh pr merge --auto`; GitHub's required status
-# checks still gate the actual merge.
+# When conditions hold, the merge step calls REST
+# `PUT /repos/{owner}/{repo}/pulls/{N}/merge` directly. GitHub's required
+# status checks still gate the actual merge — and as of 2026-11-05 the
+# v3/main ruleset finally HAS required status checks (audit finding F1), so
+# that sentence is now true at the platform level rather than aspirational.
 #
-# Fallback behavior: `gh pr merge --auto` returns 422 "Pull request is in
-# clean status" when CI is ALREADY green by labeling time (the normal case
-# for our adversarial-review-then-label flow, where review happens after
-# CI greens). The merge step catches that 422 and falls through to a
-# direct `gh pr merge --squash --delete-branch`. Any other error surfaces.
+# ── CREDENTIAL CHAIN (L2.1, 2026-11-05) ──────────────────────────────────
+#
+#   GitHub App installation token  >  BOT_TOKEN  >  GITHUB_TOKEN
+#
+# Why an App: fine-grained PATs cannot use GraphQL's `mergePullRequest`
+# mutation (cli/cli#8352, cli/cli#8651), which is what made the bot unable
+# to merge. This workflow already sidestepped that by using REST — the
+# remaining problem was credential scope and attribution. An App
+# installation token is scoped to two permissions on one repo and expires
+# in an hour, a better posture than a classic PAT carrying `repo` scope
+# account-wide.
+#
+# The mint step is `continue-on-error: true` ON PURPOSE. If APP_ID is unset
+# or the mint fails, it must NOT take the merge down with it; the `||`
+# chain then falls back to exactly the previous behaviour, so the worst
+# case is "no change", never "auto-merge is broken". It is continue-on-error
+# rather than a conditional because the `secrets` context is not available
+# in step-level `if`.
+#
+# Because that fail-open is deliberately silent, a separate step logs WHICH
+# credential won as a ::notice:: (never the token itself). Without it, a
+# silently-failed mint would look identical to a working App. **That notice
+# is the only evidence that L2.1 actually works** — nothing else proves it,
+# because the agent cannot read /actions/secrets to confirm APP_ID exists.
+#
+# The App is deliberately NOT in the ruleset's bypass_actors: it merges
+# under the same required checks as a human.
+#
+# ── BRANCH-PROTECTION BLOCKS ARE NO LONGER SILENT (L2.4, 2026-11-05) ─────
+#
+# Audit finding F7. A refused merge used to log two ::notice:: lines and
+# exit 0. From the PR page that is indistinguishable from success: a green
+# check, an unmerged PR, and no stated reason anywhere a reader would look.
+#
+# IMPORTANT, and a correction to how this is often described: the check-run
+# `conclusion` does NOT distinguish the two outcomes. It is `success` for
+# both a completed merge and a branch-protection refusal, deliberately —
+# see the long comment at the refusal branch for why a `failure` here would
+# trip safe_merge.sh's M-1 and wedge the PR a human must then merge by hand.
+#
+# What distinguishes them is therefore NOT a conclusion value but:
+#   1. a PR COMMENT naming the rule GitHub cited, refreshed via PATCH on
+#      re-runs (keyed on an HTML marker, so one comment per PR), and
+#   2. the ::notice:: line in the run log.
+# If you are looking for "did it merge?", check whether the PR is merged —
+# not this workflow's conclusion.
+#
+# Genuinely unexpected failures (not matching the branch-protection
+# vocabulary) still exit 1 and fail loudly. That behaviour must not regress.
+#
+# Fallback behavior on 422: `gh pr merge --auto` returns 422 "Pull request
+# is in clean status" when CI is ALREADY green by labeling time (the normal
+# case for our adversarial-review-then-label flow, where review happens
+# after CI greens).
 #
 # Security: pull_request_target has write access but does NOT check out PR
 # code; only the merge call runs. Only repo collaborators can apply labels
@@ -59,12 +111,50 @@ jobs:
         contains(github.event.pull_request.labels.*.name, 'fast-path')
       )
     steps:
+      # L2.1 — mint a short-lived GitHub App installation token.
+      #
+      # Why an App instead of the fine-grained BOT_TOKEN: fine-grained PATs
+      # cannot use GraphQL's `mergePullRequest` mutation (cli/cli#8352,
+      # cli/cli#8651), which is what made the bot unable to merge. This
+      # workflow already sidesteps that by using REST, but an App token is
+      # properly scoped (contents + pull_requests on this repo only), expires
+      # in an hour, and is attributable to the app rather than a human.
+      #
+      # continue-on-error is deliberate: if APP_ID / APP_PRIVATE_KEY are not
+      # set, or the mint fails for any reason, this step must NOT take the
+      # merge down with it. The token selection below falls back to the
+      # previous behaviour, so the worst case is "no change from today".
+      # The `secrets` context is not available in step-level `if`, which is
+      # why this is continue-on-error rather than a conditional.
+      - name: Mint GitHub App token (optional — falls back to BOT_TOKEN)
+        id: apptoken
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Report which credential will be used
+        env:
+          HAVE_APP: ${{ steps.apptoken.outputs.token != '' }}
+          HAVE_BOT: ${{ secrets.BOT_TOKEN != '' }}
+        run: |
+          # Never echo a token. Only say which source won.
+          if [ "$HAVE_APP" = "true" ]; then
+            echo "::notice::merging as the stem-loops-automerge GitHub App (L2.1)"
+          elif [ "$HAVE_BOT" = "true" ]; then
+            echo "::notice::App token unavailable — falling back to BOT_TOKEN"
+          else
+            echo "::notice::App token and BOT_TOKEN both unavailable — falling back to GITHUB_TOKEN"
+            echo "::warning::GITHUB_TOKEN cannot merge PRs opened by other actors in some configs; if the merge below fails with a permissions error, that is why."
+          fi
+
       - name: Enable auto-merge (squash, delete branch) — REST fallback for fine-grained PATs
         env:
-          # BOT_TOKEN (fine-grained PAT for JDC0000) cannot use GraphQL
-          # `mergePullRequest` — use REST `PUT /repos/{owner}/{repo}/pulls/{N}/merge` instead.
-          # Fallback to GITHUB_TOKEN if BOT_TOKEN is unset.
-          GH_TOKEN: ${{ secrets.BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          # Preference order: App installation token (L2.1) > BOT_TOKEN > GITHUB_TOKEN.
+          # REST `PUT /repos/{owner}/{repo}/pulls/{N}/merge` is used rather than
+          # `gh pr merge`, because the latter routes through GraphQL.
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || secrets.BOT_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -e
           PR_NUM="${{ github.event.pull_request.number }}"
@@ -116,8 +206,41 @@ jobs:
           # and a message naming the specific rule. Codify the known vocabulary
           # so unknown failures still fail loudly.
           if grep -qE 'required status check|require.*(approving )?review|code owner|resolve.*review threads|Required status checks have not passed|At least [0-9]+ approving review|Review required|Changes requested' merge.err; then
-            echo "::notice::auto-merge skipped — branch protection requires further review/checks on this PR."
-            echo "::notice::This is expected for CODEOWNERS-protected PRs; safe_merge.sh with CODEOWNER approval is the path forward."
+            # Branch protection blocked the merge. That is the system working,
+            # not a workflow fault, so this step still exits 0 — see the long
+            # comment above for why failing here would wedge safe_merge.sh.
+            #
+            # BUT it must not be SILENT. This path used to log two ::notice::
+            # lines inside a job almost nobody opens, then exit 0 — which from
+            # the PR page is indistinguishable from "auto-merge succeeded".
+            # A reader saw a green check and an unmerged PR with no reason.
+            #
+            # So: extract the rule GitHub actually named and post it as a PR
+            # comment, where someone looking at a stuck PR will see it.
+            # exit 78 (neutral) is not available — GitHub removed neutral exit
+            # codes for `run` steps in 2019.
+            # Prefer GitHub's own message field — it carries the full sentence
+            # ("At least 1 approving review is required by reviewers with write
+            # access."). Fall back to the keyword regex, then to a generic
+            # string, so REASON is never empty.
+            REASON=$(grep -oE '"message":"[^"]*"' merge.err | head -1 | sed 's/^"message":"//; s/"$//')
+            if [ -z "$REASON" ]; then
+              REASON=$(grep -oiE 'required status check[^"]*|at least [0-9]+ approving review[^"]*|review required|changes requested|code owner[^"]*|resolve[^"]*review threads' merge.err | head -1)
+            fi
+            if [ -z "$REASON" ]; then REASON="branch protection (rule not parsed from response)"; fi
+            echo "::notice::auto-merge blocked by branch protection: $REASON"
+            MARKER="<!-- auto-merge-blocked -->"
+            printf '%s\n' "$MARKER" > body.md
+            printf '%s\n\n' "**auto-merge did not merge this PR.** Branch protection blocked it:" >> body.md
+            printf '> %s\n\n' "$REASON" >> body.md
+            printf '%s\n' "This is expected for PRs touching CODEOWNERS paths (billing, .github/workflows/**, AGENTS.md, commercial migrations). The workflow check is green because the workflow behaved correctly — it is the merge that was refused, not the automation that failed." >> body.md
+            printf '\n%s\n' "**Path forward:** run scripts/safe_merge.sh $PR_NUM with CODEOWNER approval, or merge from the GitHub UI." >> body.md
+            EXISTING=$(gh api "repos/$REPO/issues/$PR_NUM/comments" --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" 2>/dev/null | head -1)
+            if [ -n "$EXISTING" ]; then
+              gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING" -F body=@body.md > /dev/null && echo "Refreshed the auto-merge-blocked comment." || echo "Note: could not refresh the blocked comment (non-fatal)."
+            else
+              gh api -X POST "repos/$REPO/issues/$PR_NUM/comments" -F body=@body.md > /dev/null && echo "Posted an auto-merge-blocked comment." || echo "Note: could not post the blocked comment (non-fatal)."
+            fi
             exit 0
           fi
 

@@ -3,7 +3,7 @@
 **Target:** Supabase project `qthrhamfljhifhfwvvwj` (production; confirmed by `docs/RESTORE-stem-loops-com-2026-11-02.md`).
 **Source:** repo `v3/main` at `25d0934` (2026-11-06). Every statement below was read from the actual SQL in `apps/worker/migrations/` and `apps/worker/migrations/down/`, and from `apps/worker/src/worker/migrate.py`.
 **Rehearsal evidence:** a parallel session ran the repo runner against a clean local Postgres 16.15 (001–008 first, then 009–030). Results are cited inline as **[rehearsed]**. Everything else is a static read of the code **[static]**. Where the two disagree it is said so in §4.6.
-**Status:** plan only. No database was touched to write this. It must be rehearsed on a throwaway copy before prod.
+**Status:** **REHEARSED end-to-end on a real Supabase replica, 2026-11-06.** 009→031 applied and verified. One blocker was found and fixed (012; see §9). **§9 lists five corrections that supersede statements below — read it first.**
 
 ---
 
@@ -280,10 +280,10 @@ SELECT column_name FROM information_schema.columns
  WHERE table_name='jobs' AND column_name='klangio_job_id';                         -- 1 row
 SELECT string_agg(privilege_type, ',' ORDER BY 1) FROM information_schema.role_table_grants
  WHERE table_name='klangio_usage' AND grantee='stemloops_app';                     -- INSERT,SELECT,UPDATE
-SELECT count(*) FROM public._migrations;                                           -- 29
+SELECT count(*) FROM public._migrations;                                           -- 30 (see §9.1)
 SELECT filename FROM public._migrations ORDER BY filename;                         -- 001..009, 011..030
 ```
-**29 is complete.** There is no `010_*.sql`; 30 would mean something extra was recorded.
+**30 is complete** (001–009, 011–031). There is no `010_*.sql`. **29 means 031 was missed**, and 031 is mandatory — see §9.1 and §9.3.
 
 **Phase 6 — Worker deploy (Fly app `stem-loops`).**
 1. Fly dashboard → Volumes: confirm `klangio_quota` (1 GB, `iad`) exists. If not, create it (dashboard) — the new `fly.toml` mounts it and the Machine will not start without it.
@@ -332,7 +332,8 @@ SELECT extname FROM pg_extension WHERE extname='citext';                  -- 0 r
 
 **P-3 RLS / owner state of the hot tables.**
 ```sql
-SELECT tablename, tableowner, rowsecurity, forcerowsecurity FROM pg_tables WHERE schemaname='public' ORDER BY 1;
+SELECT c.relname, pg_get_userbyid(c.relowner) AS owner, c.relrowsecurity, c.relforcerowsecurity
+  FROM pg_class c WHERE c.relnamespace='public'::regnamespace AND c.relkind='r' ORDER BY 1;
 ```
 Owner should be the role you will run migrations as (`postgres`). If any table is owned by another role, `ALTER TABLE` in 013/030 fails — **BLOCKING** until resolved.
 
@@ -407,3 +408,96 @@ Flipping live later needs, together: live restricted key, live webhook endpoint 
 9. Current Vercel production deployment and Fly release ids (P-11) — the restore doc's values are from 2026-11-02 and may be stale.
 10. Supabase Auth configuration (site URL, redirect URLs, providers, email templates) for the prod project — entirely outside the repo.
 11. Whether the Supabase SQL editor executes a multi-statement paste atomically and completely (§4.6). The `BEGIN/COMMIT` wrapper and per-phase verification queries make the plan correct either way.
+
+
+---
+
+## 9. Post-rehearsal corrections — 2026-11-06
+
+The plan was rehearsed end to end against a throwaway Supabase project created to mirror prod
+(baseline parity confirmed on 9 checks: ledger at 008, RLS on all 8 tables, `stemloops_app_all`
+policies present, `stemloops_app` without BYPASSRLS, no `cowork_ro`, `PUBLIC` not a grantee).
+Migrations 009→031 were then applied in the runner's lexical order and verified.
+
+**Everything in this section is [rehearsed] unless marked otherwise. Where it conflicts with
+§§0–8, this section wins.**
+
+### 9.1 The ledger target is 30, not 29
+
+§5 Phase 5 said 29 and warned that 30 "would mean something extra was recorded". That was written
+for 009→030. Migration **031 exists on `origin/v3/main` and is mandatory** (§9.3), so the correct
+post-cutover count is **30**. Verifying against 29 would read as a failure, or worse, as success
+with 031 missing.
+
+### 9.2 Migration 012 fails on Supabase — fixed
+
+`CREATE TABLE IF NOT EXISTS auth.users` performs the schema CREATE-privilege check **before** the
+IF-NOT-EXISTS short-circuit. On Supabase `postgres` does **not** hold CREATE on `auth`
+(`has_schema_privilege('postgres','auth','CREATE')` = false, confirmed on prod and on the replica),
+so 012 raises:
+
+    ERROR: 42501: permission denied for schema auth
+
+Through the runner this halts at 012 and leaves 013–031 unapplied. The local-Postgres rehearsal
+could not surface it, because bare Postgres has no `auth` schema. AGENTS.md M-3 anticipated this class.
+
+**Fixed** by wrapping the create in a `DO` block guarded by a `pg_class` existence check. Watched to
+fail before the fix and to pass as a no-op after. This removes the manual deviation §2 documented
+(record 012 without running it).
+
+### 9.3 031 is mandatory before Phase 7, not optional
+
+Pre-flight P-6 resolved against us: the app connects as **`stemloops_app`**, which does not hold
+BYPASSRLS. After 025 that role has SELECT/INSERT only on `chord_edits`, and Postgres checks table
+privilege before touching rows — so even a zero-row delete raises `42501`, **after** the Stripe
+cancel and the `deleted_at` stamp.
+
+Both halves were tested on the replica:
+
+| Action, as `stemloops_app` | Result |
+|---|---|
+| `DELETE FROM public.chord_edits WHERE user_id = ...` | `ERROR: 42501: permission denied for table chord_edits` |
+| `SELECT public.delete_chord_edits_for_user(...)` | returned `1` — row erased |
+
+031 is the remedy and it works. Do not deploy the web app without it.
+
+*Caveat:* `pg_stat_activity` proves the connected role is `stemloops_app`; it cannot distinguish the
+web app from the worker if they share a credential. The conclusion holds either way. To make it
+Direct, read the username portion of the Vercel `DATABASE_URL_POOLED` and the Fly `DATABASE_URL`.
+
+### 9.4 Two hazards §4.1 worried about do not exist on prod
+
+- **RLS is already enabled** on all 8 tables, and the **`stemloops_app_all` policy already exists**
+  on all 8 — 011's header claim from 2026-11-02, re-verified 2026-11-06. 009 also never touches
+  `stemloops_app` grants or policies (it revokes only from `PUBLIC`, grants only to `service_role`).
+  So the "009 commits, RLS on with no policy, worker locked out until 011" window **cannot occur**.
+  Bundling 009+011+012 is still harmless, but it is no longer load-bearing — which matters because
+  the repo runner uses **one transaction per file** and never bundles.
+- **`PUBLIC` is not a grantee** on any of the 8 tables, so 009's `REVOKE ALL ... FROM PUBLIC`
+  removes nothing the app relies on. P-5's BLOCKING condition is not triggered.
+
+### 9.5 Things the verification queries will show that are NOT failures
+
+- **`cowork_ro` does not exist on prod.** Every `cowork_ro_read` policy branch in 011/013/020/023/025/028
+  is guarded and will skip. Their absence is correct, not a failed migration.
+- **`anon` and `authenticated` hold ALL privileges (`arwdDxtm`) on all 8 tables.** This is Supabase's
+  **default** for tables created by `postgres` in `public` — reproduced identically on a brand-new
+  project — not a misconfiguration. RLS is what gates them, and neither role has BYPASSRLS. 009
+  revokes from `PUBLIC` but not from these two, so it survives the cutover. Latent, not urgent:
+  one disabled RLS flag away from anonymous write access.
+- **001–008 contain zero RLS, role, policy or grant statements** (all eight grepped). Prod's entire
+  grant posture was applied out of band and exists nowhere in version control. That is a class-6
+  seam in its own right.
+
+### 9.6 Notes on execution path
+
+- `execute_sql` through the Supabase connector runs a multi-statement string **atomically** — a probe
+  that errored mid-string rolled back the whole thing, and statements after a row-returning `SELECT`
+  **do** still execute (both tested). This does not settle §4.6, which is about the **Dashboard SQL
+  editor**, a different surface that remains untested.
+- The connector's destructive-statement gate **did not fire once** across all 30 migrations, including
+  009's REVOKEs and 029's DROP CONSTRAINT. The session-8 claim that it "blocks migration 009" is not
+  reproducible.
+- `postgres` holds TRIGGER privilege on `auth.users` even though `supabase_auth_admin` owns it, so
+  013's `on_auth_user_created` trigger creates cleanly. Verified by inserting a real `auth.users` row:
+  `public.users` and a `free` entitlement were both created by the trigger.

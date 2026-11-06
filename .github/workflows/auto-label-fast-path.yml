@@ -19,6 +19,7 @@
 #                          `training-tests` CI job it depends on)
 #   - apps/web/src/**      (L2.3, 2026-11-05 — see preconditions below)
 #   - apps/worker/src/**   (L2.3, 2026-11-05 — see preconditions below)
+#   - fixtures/**         (2026-11-06 — root only; shared test data, not executable)
 #
 # Deny list — evaluated first, always wins:
 #   SAFETY MACHINERY (a change here could weaken a gate and ship that
@@ -240,8 +241,19 @@ jobs:
           # ci.yml. Nothing built apps/web before it, so widening to
           # apps/web/src/ without it would have let a broken production build
           # auto-merge. Add `Web build` to the ruleset's required contexts.
-          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests?/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$|apps/training/|apps/web/src/|apps/worker/src/|scripts/)'
+          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests?/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$|apps/training/|apps/web/src/|apps/worker/src/|scripts/|fixtures/)'
 
+          # fixtures/ added 2026-11-06: shared Python<->TypeScript test data
+          # (e.g. fixtures/contracts/harte-labels.json, play-chords.golden.json).
+          # It is DATA, not executable code: nothing under it is imported into
+          # a build, run in production, or deployed, so it carries no
+          # security-adjacent change. A single golden file read by both
+          # languages must live at repo root because neither side owns it; a
+          # test-only PR (#151) was falling off the fast path purely for being
+          # well-tested. Anchored by the leading ^ of the alternation, so this
+          # matches ONLY the root fixtures/ directory, not apps/*/fixtures/ or
+          # any other nested fixtures/ (those are still judged by their own
+          # app-level terms above).
           # Find any file NOT matching the allowlist.
           bad=$(echo "$changed" | grep -vE "$allow_re" || true)
 

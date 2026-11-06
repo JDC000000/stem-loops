@@ -248,6 +248,42 @@ PR #42. That was false and contradicted this very paragraph. It was deleted
 on 2026-11-05 per the adversarial audit. **Do not re-add a "landed" claim
 until the `::notice::` evidence exists.**
 
+**M-7 status, 2026-11-06 — LANDED. Evidence below.**
+
+PR **#161** was merged by `stem-loops-automerge[bot]`, type `Bot`:
+
+    GET /repos/JDC000000/stem-loops/pulls/161
+      merged_by.login = stem-loops-automerge[bot]
+      merged_by.type  = Bot
+      merged_at       = 2026-11-06T21:51:40Z
+      labels          = rollback-safe, fast-path
+
+That is the field no amount of timing evidence could supply. Until #161,
+every auto-merge read `JDC000000` / type `User`, because the workflow fell
+back to `BOT_TOKEN` and the API cannot distinguish "Jon's PAT used by
+Actions" from "Jon clicked merge". A `Bot` actor can only come from the App
+installation token.
+
+**The failure, for the record:** `APP_ID` and `APP_PRIVATE_KEY` both existed
+as repository secrets and the App was correctly installed with
+contents + pull_requests read/write — but the stored PEM had been pasted
+**without its `-----BEGIN RSA PRIVATE KEY-----` and `-----END ...-----`
+lines**. Those are the PEM framing, not decoration; without them the key does
+not parse, `create-github-app-token` fails, and `continue-on-error: true`
+converts that into a silent fallback. Three of issue #143's four suspected
+causes had already been eliminated; this was the fourth, and it was invisible
+in the UI because GitHub never displays a stored secret.
+
+**Consequences, now unlocked:**
+- Merge attribution is auditable. `merged_by` distinguishes automation from a
+  human, which it could not do before.
+- Dimension 5 of `claude/agent-effectiveness-scoring.md` moves from
+  **Inferred** to **Direct** evidence, lifting the cap that rule imposed.
+- `BOT_TOKEN` can now be revoked as the real test that the App is doing the
+  work — but only deliberately, and not in the same change as anything else.
+
+Close issue #143.
+
 ---
 
 ### M-8 (reference): what Anthropic's agent-side controls block
@@ -278,3 +314,74 @@ agent merge rights.
 **Therefore:** ruleset changes and secret writes are always operator
 actions. Prepare the exact command and hand it over; do not attempt the
 call and do not attempt to route around a denial.
+
+---
+
+### M-9 (hard): adversarial review before merge, on a different model
+
+**Added 2026-11-06.** Full protocol, worked examples and the verbatim
+trigger prompt: `claude/dev-playbook-v1.1.md` §27.
+
+**Where that file is.** It lives in the **Claude Project** attached to this
+work, NOT in this repository — `claude/` here holds only a handful of docs.
+Several paths cited in this file are the same way (`claude/project-tracker.md`,
+`claude/merge-autonomy-level-2-handover.md`, `claude/seam-inventory.md`).
+An agent with repo access and no Project access will find nothing at those
+paths, and nothing fails loudly when it doesn't — it simply proceeds without
+the rule. That is a class-6 (Deployment) seam in this file itself.
+
+**So M-9 is written to be binding on its own.** Everything below is the rule,
+not a summary of one. If you cannot reach the playbook, follow this section
+and say in your handover that you could not read §27. Do not treat an
+unreachable reference as permission to skip the review.
+
+**R-6** already requires author subagent ≠ reviewer subagent. **R-7 adds:
+the reviewer must run on a different MODEL FAMILY from the author**, not
+merely a different context. Two instances of one model share blind spots
+and will miss the same thing for the same reason, which is the failure R-6
+exists to prevent.
+
+**Review is mandatory before requesting merge when the change is any of:**
+
+1. **A CI gate, or anything that reports pass/fail.** No exceptions. A
+   broken gate is worse than no gate, because its green tick is trusted.
+2. Anything touching **migrations, grants, RLS, or roles**.
+3. Anything on the **money path** — billing, credits, entitlements, Stripe.
+4. Anything whose failure mode is **silence** — seam classes 5 (Trigger)
+   and 6 (Deployment). Those are: a **Trigger** seam, where the thing that
+   was supposed to fire never fired, and a **Deployment** seam, where code
+   and the environment it runs against disagree. Both fail silently. (The
+   full six-class taxonomy is in the Project's `claude/seam-inventory.md`;
+   the two named here are what this trigger needs.)
+5. Anything the author **verified only by running it successfully**. A
+   thing that works is not a thing that is right.
+
+**The bar: below 90/100 is not merged.** Revise and re-review. Rounds
+continue until the reviewer clears 90, or states plainly that the remaining
+defects are accepted, named and recorded. Tell the reviewer explicitly
+**not to inflate the score to be agreeable** — a wrong pass is worse than a
+low score.
+
+**Every brief must give the reviewer:** the exact refs with literal read
+commands, plus a warning that the checked-out tree is NOT the artifact
+(session 8: a reviewer read a stale tree and refuted three *true* claims);
+an instruction to name the ref for every claim (C-8); the settled context
+so it attacks rather than rediscovers; the author's verification claims
+stated AS claims with an explicit invitation to refute them; a named attack
+surface; permission to say "I could not verify that"; and
+**"do not fix anything, report only"** — a reviewer that edits becomes an
+author and the next round has no independent party.
+
+**Why this is a hard rule.** Session 9 shipped two CI gates, both verified
+against a real database in both directions and believed correct. Round 1
+scored **84** and found nine defects, including a migration role that was
+not the database owner — which made migration 011's `GRANT USAGE ON SCHEMA
+public` execute as `WARNING: no privileges were granted`, swallowed by
+psycopg, green chain, wrong ACL. A silent no-op inside the gate built to
+catch silent no-ops. Round 2 scored **88** and found a **false green**: a
+`--allow-unreachable` flag returning exit 0 for a database that answered
+but whose ledger could not be read. Neither round found a typo. Both found
+what the author could not see because he had decided what the code meant
+before writing it.
+
+Cost is roughly ten minutes of agent time per round.

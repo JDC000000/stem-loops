@@ -113,18 +113,17 @@ def fetch_applied(database_url: str) -> set[str]:
     """Read the ledger. Raises on anything that makes the answer unknowable."""
     import psycopg  # imported late so --help works without the dependency
 
-    with psycopg.connect(database_url, connect_timeout=15) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT to_regclass('public._migrations')")
-            row = cur.fetchone()
-            if row is None or row[0] is None:
-                raise RuntimeError(
-                    "public._migrations does not exist. The applied set is "
-                    "unknowable from inside this database — tables present do "
-                    "not tell you which migrations ran. Refusing to guess."
-                )
-            cur.execute("SELECT filename FROM public._migrations")
-            return {r[0] for r in cur.fetchall()}
+    with psycopg.connect(database_url, connect_timeout=15) as conn, conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('public._migrations')")
+        row = cur.fetchone()
+        if row is None or row[0] is None:
+            raise RuntimeError(
+                "public._migrations does not exist. The applied set is "
+                "unknowable from inside this database — tables present do "
+                "not tell you which migrations ran. Refusing to guess."
+            )
+        cur.execute("SELECT filename FROM public._migrations")
+        return {r[0] for r in cur.fetchall()}
 
 
 def main(argv: list[str] | None = None) -> int:

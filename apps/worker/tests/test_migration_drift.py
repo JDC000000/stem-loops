@@ -19,8 +19,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import pytest
-
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCRIPT = _REPO_ROOT / "scripts" / "check_migration_drift.py"
 
@@ -41,6 +39,7 @@ drift_mod = _load_module()
 # discovery must mirror migrate.py exactly
 # --------------------------------------------------------------------------
 
+
 def test_discovery_matches_the_runner_and_excludes_down(tmp_path: Path):
     (tmp_path / "down").mkdir()
     for name in ("001_a.sql", "011_c.sql", "009_b.sql"):
@@ -58,9 +57,7 @@ def test_discovery_matches_the_runner_and_excludes_down(tmp_path: Path):
 
 
 def test_discovery_sees_the_real_repo_migrations():
-    found = drift_mod.discover_repo_migrations(
-        _REPO_ROOT / "apps" / "worker" / "migrations"
-    )
+    found = drift_mod.discover_repo_migrations(_REPO_ROOT / "apps" / "worker" / "migrations")
     assert found, "no migrations discovered in the real repo"
     assert found[0].startswith("001_"), found[:3]
     assert all(f.endswith(".sql") for f in found)
@@ -70,6 +67,7 @@ def test_discovery_sees_the_real_repo_migrations():
 # --------------------------------------------------------------------------
 # the comparison
 # --------------------------------------------------------------------------
+
 
 def test_no_drift_when_everything_is_applied():
     repo = ["001_a.sql", "002_b.sql"]
@@ -96,9 +94,7 @@ def test_extra_applied_migration_is_reported_but_not_a_blocker():
     d = drift_mod.diff_migrations(["001_a.sql"], {"001_a.sql", "999_future.sql"})
     assert d.extra == ["999_future.sql"]
     assert d.missing == []
-    assert d.has_drift is False, (
-        "an extra applied migration does not stop this code from running"
-    )
+    assert d.has_drift is False, "an extra applied migration does not stop this code from running"
 
 
 def test_a_gap_in_the_middle_is_caught_not_just_a_short_tail():
@@ -112,6 +108,7 @@ def test_a_gap_in_the_middle_is_caught_not_just_a_short_tail():
 # --------------------------------------------------------------------------
 # property 2: never report success without having checked
 # --------------------------------------------------------------------------
+
 
 def test_missing_database_url_does_not_exit_zero(monkeypatch, capsys):
     monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -133,9 +130,9 @@ def test_allow_unreachable_is_an_explicit_opt_in_and_warns(monkeypatch, capsys):
     rc = drift_mod.main(["--allow-unreachable"])
     assert rc == drift_mod.EXIT_OK
     err = capsys.readouterr().err
-    assert "WITHOUT having checked" in err, (
-        "the skip path must say plainly that nothing was verified"
-    )
+    assert (
+        "WITHOUT having checked" in err
+    ), "the skip path must say plainly that nothing was verified"
 
 
 def test_unreadable_ledger_is_unknown_not_success(monkeypatch):
@@ -154,9 +151,7 @@ def test_drift_exits_one(monkeypatch):
 
 def test_expect_row_count_mismatch_fails(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x/x")
-    real = drift_mod.discover_repo_migrations(
-        _REPO_ROOT / "apps" / "worker" / "migrations"
-    )
+    real = drift_mod.discover_repo_migrations(_REPO_ROOT / "apps" / "worker" / "migrations")
     monkeypatch.setattr(drift_mod, "fetch_applied", lambda _u: set(real))
     assert drift_mod.main([]) == drift_mod.EXIT_OK
     assert drift_mod.main(["--expect", str(len(real) + 1)]) == drift_mod.EXIT_DRIFT

@@ -320,8 +320,20 @@ call and do not attempt to route around a denial.
 ### M-9 (hard): adversarial review before merge, on a different model
 
 **Added 2026-11-06.** Full protocol, worked examples and the verbatim
-trigger prompt: `claude/dev-playbook-v1.1.md` §27. This section is the
-trigger; the playbook is the detail.
+trigger prompt: `claude/dev-playbook-v1.1.md` §27.
+
+**Where that file is.** It lives in the **Claude Project** attached to this
+work, NOT in this repository — `claude/` here holds only a handful of docs.
+Several paths cited in this file are the same way (`claude/project-tracker.md`,
+`claude/merge-autonomy-level-2-handover.md`, `claude/seam-inventory.md`).
+An agent with repo access and no Project access will find nothing at those
+paths, and nothing fails loudly when it doesn't — it simply proceeds without
+the rule. That is a class-6 (Deployment) seam in this file itself.
+
+**So M-9 is written to be binding on its own.** Everything below is the rule,
+not a summary of one. If you cannot reach the playbook, follow this section
+and say in your handover that you could not read §27. Do not treat an
+unreachable reference as permission to skip the review.
 
 **R-6** already requires author subagent ≠ reviewer subagent. **R-7 adds:
 the reviewer must run on a different MODEL FAMILY from the author**, not
@@ -336,7 +348,11 @@ exists to prevent.
 2. Anything touching **migrations, grants, RLS, or roles**.
 3. Anything on the **money path** — billing, credits, entitlements, Stripe.
 4. Anything whose failure mode is **silence** — seam classes 5 (Trigger)
-   and 6 (Deployment) in `claude/seam-inventory.md`.
+   and 6 (Deployment). Those are: a **Trigger** seam, where the thing that
+   was supposed to fire never fired, and a **Deployment** seam, where code
+   and the environment it runs against disagree. Both fail silently. (The
+   full six-class taxonomy is in the Project's `claude/seam-inventory.md`;
+   the two named here are what this trigger needs.)
 5. Anything the author **verified only by running it successfully**. A
    thing that works is not a thing that is right.
 

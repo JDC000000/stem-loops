@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { db } from '@/lib/db';
 import { getUser } from '@/lib/auth/supabase';
-import BillingButton from '@/components/BillingButton';
+import BillingButton, { CreditPackCheckout, PackBuyButton } from '@/components/BillingButton';
 import { readTrial, TRIAL_SONG_CAP } from '@/lib/trial';
 
 export const metadata: Metadata = { title: 'Pricing' };
@@ -206,7 +206,8 @@ export default async function PricingPage() {
 
       <h2 style={{ fontSize: 22, marginTop: 32, color: 'var(--text-primary)' }}>Credits</h2>
       <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>One-time packs. Credits never expire.</p>
-      <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+      <CreditPackCheckout returnTo="/pricing">
+      <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(min(200px, 100%), 1fr))' }}>
         {packs.map((c) => (
           <section key={c.pack_code} style={card} aria-label={`${c.credits} credits for ${priceCad(c.price_cad_cents)}`}>
             <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--text-primary)' }}>{c.credits} credits</div>
@@ -217,7 +218,7 @@ export default async function PricingPage() {
               Never expires · one-time purchase
             </div>
             {user ? (
-              <BillingButton label="Buy Credits" endpoint="/api/billing/checkout" body={{ pack_code: c.pack_code }} returnTo="/pricing" />
+              <PackBuyButton packCode={c.pack_code} label="Buy Credits" />
             ) : (
               <a href="/login?return_to=/pricing" style={{ minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: 'var(--btn-primary-bg, var(--accent))', color: 'var(--btn-primary-text, #000)', textDecoration: 'none', fontWeight: 600 }}>
                 Buy Credits
@@ -226,6 +227,7 @@ export default async function PricingPage() {
           </section>
         ))}
       </div>
+      </CreditPackCheckout>
     </main>
   );
 }

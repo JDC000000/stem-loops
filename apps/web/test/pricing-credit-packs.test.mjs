@@ -71,7 +71,13 @@ async function billingButtonStub() {
   return dataUrl(`
     import { createElement } from '${reactUrl}';
     export default function BillingButton(props) {
-      return createElement('button', { 'data-pack': props.body && props.body.pack_code, 'data-plan': props.body && props.body.plan_code }, props.label);
+      return createElement('button', { 'data-plan': props.body && props.body.plan_code }, props.label);
+    }
+    export function PackBuyButton(props) {
+      return createElement('button', { 'data-pack': props.packCode }, props.label);
+    }
+    export function CreditPackCheckout(props) {
+      return createElement('div', { 'data-pack-checkout': true }, props.children);
     }
   `);
 }
@@ -150,8 +156,8 @@ test('pricing page renders credit packs from DB, not from FALLBACK', async () =>
   // Scan the rendered tree for BillingButton stub children carrying pack codes.
   const buttons = [];
   for (const el of walk(tree)) {
-    if (el && el.type && typeof el.type === 'function' && el.props && el.props.body && el.props.body.pack_code) {
-      buttons.push(el.props.body.pack_code);
+    if (el && el.type && typeof el.type === 'function' && el.props && el.props.packCode) {
+      buttons.push(el.props.packCode);
     }
   }
   // All three pack buy buttons are present.
@@ -205,4 +211,27 @@ test('pricing page omits degraded banner when both queries succeed', async () =>
   const tree = await mod.default();
   const text = textOf(tree);
   assert.doesNotMatch(text, /live plan data is temporarily unavailable/i);
+});
+
+// Layout/money-path guard: exactly ONE captcha owner for the pack grid. The
+// cards must not embed their own BillingButton for pack purchases (that put an
+// hCaptcha widget in every card and overflowed at 768px / clipped at 375px).
+test('pricing pack cards use one shared CreditPackCheckout, not per-card captchas', async () => {
+  const mod = await loadPricing({ user: USER, plans: PLANS_OK, packs: PACKS_OK });
+  const tree = await mod.default();
+  let wrappers = 0;
+  let packBillingButtons = 0;
+  for (const el of walk(tree)) {
+    if (el && el.props && el.props.returnTo === '/pricing' && el.props.children && !el.props.endpoint) wrappers++;
+    if (el && typeof el.type === 'function' && el.props && el.props.body && el.props.body.pack_code) packBillingButtons++;
+  }
+  assert.equal(wrappers, 1, 'exactly one CreditPackCheckout wrapper');
+  assert.equal(packBillingButtons, 0, 'no per-card BillingButton with pack_code');
+});
+
+test('BillingButton source: hCaptcha is instantiated once, outside any per-card component', () => {
+  const src = readFileSync(join(WEB, 'src/components/BillingButton.tsx'), 'utf8');
+  assert.equal((src.match(/^\s*<HCaptcha\s/gm) ?? []).length, 1, 'single <HCaptcha> element in the file');
+  assert.match(src, /export function CreditPackCheckout/);
+  assert.match(src, /export function PackBuyButton/);
 });

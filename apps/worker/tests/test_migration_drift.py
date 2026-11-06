@@ -141,7 +141,9 @@ def test_allow_unreachable_is_an_explicit_opt_in_and_warns(monkeypatch, capsys):
 def test_unreadable_ledger_is_unknown_not_success(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://nope/nope")
     monkeypatch.setattr(
-        drift_mod, "fetch_applied", lambda _u: (_ for _ in ()).throw(RuntimeError("boom"))
+        drift_mod,
+        "fetch_applied",
+        lambda _u: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
 
@@ -163,11 +165,11 @@ def test_expect_row_count_mismatch_fails(monkeypatch):
 # --------------------------------------------------------------------------
 # the gate's discovery must track the runner's, not merely resemble it
 #
-# Review finding D4: the discovery test above asserts a hard-coded list and
-# never consults the runner, while the script's docstring says "if the runner's
-# discovery ever changes, this check must change with it". Nothing enforced
-# that. The glob now exists in three places (migrate.py, this gate, and the CI
-# job); these tests go red when they stop agreeing.
+# migrate.py owns discovery; the gate calls it. These tests fail if anyone
+# reintroduces a second copy in the gate. The CI job deliberately keeps its own
+# independent count (`find -maxdepth 1`) in "Assert the whole chain landed" —
+# an independent check is worth more than a shared one there, and it is what
+# would catch a runner that stopped calling the function.
 # --------------------------------------------------------------------------
 
 _MIGRATE_PY = _REPO_ROOT / "apps" / "worker" / "src" / "worker" / "migrate.py"
@@ -364,3 +366,76 @@ def test_fetch_applied_returns_filenames_from_a_real_ledger():
     if not applied:
         return  # an empty ledger is a legitimate state
     assert all(isinstance(x, str) and x.endswith(".sql") for x in applied), sorted(applied)[:5]
+
+
+def test_post_connect_failure_is_not_forgiven_real_database(monkeypatch):
+    """Round 4, D-A: the previous test for this monkeypatched `fetch_applied`
+    away, so it exercised main()'s dispatch and NOT the connect/query phase
+    split. It passed against the buggy round-3 script, and a mutant that
+    reintroduced the bug survived the whole suite.
+
+    This drives a real post-connect failure through `fetch_applied`: hold an
+    ACCESS EXCLUSIVE lock on the ledger from a second connection and read it
+    with a short lock_timeout. The cancellation happens at query time, so it
+    must NOT be an Unreachable and must NOT be forgiven by the flag.
+    """
+    url = _pg_url_or_skip()
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+    with psycopg.connect(url, autocommit=True) as c:
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS public._migrations "
+            "(filename text PRIMARY KEY, applied_at timestamptz DEFAULT now())"
+        )
+
+    slow = make_conninfo(**{**conninfo_to_dict(url), "options": "-c lock_timeout=300"})
+    blocker = psycopg.connect(url)
+    try:
+        blocker.execute("LOCK TABLE public._migrations IN ACCESS EXCLUSIVE MODE")
+        with pytest.raises(Exception) as caught:
+            drift_mod.fetch_applied(slow)
+        assert not isinstance(caught.value, drift_mod.Unreachable), (
+            "a query cancelled after a successful connect is not an unreachable "
+            "database; classifying it as one lets --allow-unreachable return 0"
+        )
+        # monkeypatch, NOT os.environ: an unrestored DATABASE_URL carrying
+        # lock_timeout leaks into every later test in the session.
+        monkeypatch.setenv("DATABASE_URL", slow)
+        assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
+        assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+
+def test_malformed_conninfo_is_never_forgiven(monkeypatch):
+    """Round 4, D-B: psycopg raises conninfo errors from connect(), so a typo'd
+    DATABASE_URL was classed as 'unreachable' and returned 0 under the flag.
+    Parsing now happens before the connect and raises BadConfiguration.
+
+    Only strings that do not PARSE are config errors. Writing this test is what
+    showed the line has to sit there: "postgresql://host:notaport/db" parses
+    fine and then fails at getaddrinfo, which is the same failure a genuinely
+    down or firewalled database gives. Forgiving that is the whole point of the
+    flag, so it stays Unreachable -- see test below.
+    """
+    pytest.importorskip("psycopg")
+    monkeypatch.setenv("DATABASE_URL", "garbage")
+    with pytest.raises(drift_mod.BadConfiguration):
+        drift_mod.fetch_applied("garbage")
+    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+
+
+def test_unresolvable_host_stays_forgivable(monkeypatch):
+    """The other side of the line above. This is NOT a config error we can tell
+    apart from a down database, so --allow-unreachable forgives it. Asserted so
+    nobody 'tightens' BadConfiguration into the connect phase and makes every
+    CI job that runs without a database go red."""
+    pytest.importorskip("psycopg")
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql://u@no-such-host.invalid:5432/d?connect_timeout=1"
+    )
+    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_OK

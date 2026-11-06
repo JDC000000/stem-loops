@@ -21,11 +21,11 @@ WHAT IT DOES
 Compares the migrations the repo contains against the rows in the target
 database's `public._migrations` ledger, and fails if the database is behind.
 
-Discovery deliberately mirrors `apps/worker/src/worker/migrate.py` exactly:
-`sorted(glob("*.sql"))` over the TOP LEVEL of apps/worker/migrations only.
-`down/` is not globbed by the runner, so it is not globbed here. If the runner's
-discovery ever changes, this check must change with it or it will compare the
-wrong sets.
+Discovery is NOT reimplemented here. This script calls the runner's own
+`worker.migrate.discover_migration_paths()`, so the two cannot disagree about
+what "the migrations" are. An earlier version kept a second glob plus a test
+that tried to keep the copies honest; three mutations of the runner slipped
+past it. One definition beats a test that two definitions agree.
 
 WHY IT DOES NOT EXIT 0 WHEN IT CANNOT CHECK
 -------------------------------------------
@@ -103,6 +103,21 @@ class Unreachable(Exception):
     """
 
 
+class BadConfiguration(Exception):
+    """DATABASE_URL is not a usable connection string.
+
+    Distinct from Unreachable on purpose. A DSN that does not parse is a
+    configuration mistake in whatever invoked this gate; no database was ever
+    contacted, so "could not reach the database" would be a lie and
+    --allow-unreachable must not forgive it.
+
+    The line sits at PARSING, not at resolving: a host that does not resolve,
+    or a port that is refused, is indistinguishable from a database that is
+    genuinely down or firewalled off from this runner, so that stays
+    Unreachable and stays forgivable.
+    """
+
+
 class LedgerMissing(Exception):
     """`public._migrations` is absent, so the applied set is unknowable.
 
@@ -139,7 +154,9 @@ def discover_repo_migrations(migrations_dir: Path) -> list[str]:
     expression left in a docstring) all slipped past a test that compared this
     function against a copy of the glob written in the test.
     """
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps" / "worker" / "src"))
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parents[1] / "apps" / "worker" / "src")
+    )
     from worker.migrate import discover_migration_paths
 
     return [os.path.basename(p) for p in discover_migration_paths(str(migrations_dir))]
@@ -161,6 +178,18 @@ def fetch_applied(database_url: str) -> set[str]:
     is never forgiven.
     """
     import psycopg  # imported late so --help works without the dependency
+
+    # Parse the DSN BEFORE connecting. psycopg raises conninfo errors from
+    # connect(), which made a typo'd DATABASE_URL look like an unreachable
+    # database and go green under --allow-unreachable. A malformed DSN is a
+    # configuration error, never an unreachable database. Review round 4, D-B:
+    # the help text already promised this; the code did not do it.
+    from psycopg.conninfo import conninfo_to_dict
+
+    try:
+        conninfo_to_dict(database_url)
+    except Exception as exc:
+        raise BadConfiguration(str(exc)) from exc
 
     try:
         conn = psycopg.connect(database_url, connect_timeout=15)
@@ -199,9 +228,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "downgrade an UNREACHABLE database (connection failure) from exit 2 "
-            "to exit 0, printing a warning. Does NOT forgive a database that "
-            "answered: a missing ledger, an unreadable ledger, or a bad "
-            "conninfo all still fail."
+            "to exit 0, printing a warning. Does NOT forgive a malformed "
+            "DATABASE_URL, nor a database that answered: a missing ledger or "
+            "an unreadable ledger still fail."
         ),
     )
     args = ap.parse_args(argv)
@@ -216,15 +245,30 @@ def main(argv: list[str] | None = None) -> int:
     if not database_url:
         msg = "DATABASE_URL is not set, so drift CANNOT be checked."
         if args.allow_unreachable:
-            print(f"WARNING: {msg} --allow-unreachable given; reporting success "
-                  f"WITHOUT having checked anything.", file=sys.stderr)
+            print(
+                f"WARNING: {msg} --allow-unreachable given; reporting success "
+                f"WITHOUT having checked anything.",
+                file=sys.stderr,
+            )
             return EXIT_OK
-        print(f"FAIL: {msg} Pass --allow-unreachable only if you accept an "
-              f"unchecked deploy.", file=sys.stderr)
+        print(
+            f"FAIL: {msg} Pass --allow-unreachable only if you accept an "
+            f"unchecked deploy.",
+            file=sys.stderr,
+        )
         return EXIT_UNKNOWN
 
     try:
         applied = fetch_applied(database_url)
+    except BadConfiguration as exc:
+        # NOT forgiven. Nothing was contacted; the string itself is wrong.
+        print(
+            f"FAIL: DATABASE_URL is not a valid connection string: {exc}. "
+            f"This is a configuration error, not an unreachable database, so "
+            f"--allow-unreachable does not forgive it.",
+            file=sys.stderr,
+        )
+        return EXIT_UNKNOWN
     except LedgerMissing as exc:
         # NOT forgiven by --allow-unreachable. The database answered; it simply
         # cannot say what has been applied. Blessing that would be guessing.
@@ -233,14 +277,17 @@ def main(argv: list[str] | None = None) -> int:
     except Unreachable as exc:
         msg = f"could not reach the database: {exc}"
         if args.allow_unreachable:
-            print(f"WARNING: {msg} --allow-unreachable given; reporting success "
-                  f"WITHOUT having checked anything.", file=sys.stderr)
+            print(
+                f"WARNING: {msg} --allow-unreachable given; reporting success "
+                f"WITHOUT having checked anything.",
+                file=sys.stderr,
+            )
             return EXIT_OK
         print(f"FAIL: {msg}", file=sys.stderr)
         return EXIT_UNKNOWN
     except Exception as exc:  # noqa: BLE001
         # Reachable, but the ledger could not be read (no SELECT, no USAGE on
-        # public, malformed conninfo...). NOT forgivable: the database answered
+        # public, a cancelled query...). NOT forgivable: the database answered
         # and we still do not know what is applied.
         print(
             f"FAIL: reached the database but could not read the ledger: {exc}",

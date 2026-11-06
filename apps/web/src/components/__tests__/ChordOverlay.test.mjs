@@ -23,6 +23,18 @@ import {
   runAriaLabel,
   timelineWidthPx,
   PX_PER_SEC,
+  MAX_PX_PER_SEC,
+  chordAlternatives,
+  buildChordLabelEdit,
+  durationSec,
+  fitPxPerSec,
+  clampPxPerSec,
+  ppsToSlider,
+  sliderToPps,
+  rulerTicks,
+  layoutRows,
+  chipDensity,
+  formatTime,
 } from '../ChordOverlay.helpers.ts';
 import { chordLabel } from '../../chord/alphabet.ts';
 
@@ -201,4 +213,159 @@ test('unavailableMessage: every reason has distinct non-empty copy; unknown does
   assert.equal(new Set(msgs).size, reasons.length);
   for (const m of msgs) assert.ok(m.length > 10);
   assert.doesNotMatch(unavailableMessage('unknown'), /too long/i);
+});
+
+// ---------------- FIX 1: alternatives for the full vocabulary ----------------
+const labelsOf = (a) => a.map((x) => x.label);
+
+test('chordAlternatives: non-empty for a slash chord, an extended chord and a bare triad', () => {
+  for (const l of ['G:7/5', 'A:min/b3', 'F:maj9', 'E:dim', 'C:sus4', 'C', 'C:maj', 'D:min6']) {
+    const alts = chordAlternatives(l);
+    assert.ok(alts.length >= 8, `${l}: ${alts.length}`);
+    assert.ok(alts.length <= 12, l);
+    assert.equal(new Set(labelsOf(alts)).size, alts.length, `${l} has duplicates`);
+    assert.ok(!labelsOf(alts).includes(l), `${l} offered itself`);
+  }
+});
+
+test('chordAlternatives: slash chord offers root position first-class, and vice versa', () => {
+  assert.ok(labelsOf(chordAlternatives('G:7/5')).includes('G:7'));
+  assert.ok(labelsOf(chordAlternatives('A:min/b3')).includes('A:min'));
+  const root = labelsOf(chordAlternatives('C:maj'));
+  assert.ok(root.includes('C:maj/3') && root.includes('C:maj/5'));
+});
+
+test('chordAlternatives: neighbours lead; "C" and "C:maj" count as the same chord', () => {
+  const alts = chordAlternatives('G:7', { prevLabel: 'C:maj', nextLabel: 'C' });
+  assert.deepEqual(labelsOf(alts).slice(0, 1), ['C:maj']); // next 'C' deduped against prev
+  assert.equal(labelsOf(alts).filter((l) => l === 'C' || l === 'C:maj').length, 1);
+  // A neighbour equal to the current chord is not offered.
+  assert.ok(!labelsOf(chordAlternatives('G:7', { prevLabel: 'G:7' })).slice(0, 1).includes('G:7'));
+});
+
+test('chordAlternatives: N and X are offered, N->X and X->N, never themselves', () => {
+  const c = labelsOf(chordAlternatives('C:maj'));
+  assert.ok(c.includes('N') && c.includes('X'));
+  const n = labelsOf(chordAlternatives('N', { prevLabel: 'C:maj', nextLabel: 'G:7' }));
+  assert.ok(!n.includes('N') && n.includes('X') && n.includes('C:maj') && n.includes('G:7'));
+  const x = labelsOf(chordAlternatives('X'));
+  assert.ok(x.includes('N') && !x.includes('X'));
+});
+
+test('chordAlternatives: never throws, never empty, on hostile input', () => {
+  for (const l of ['', 'X', 'N', 'Z:foo', 'C:weird/99', 'H', ' ', 'C#:maj/b9', null, undefined, 42]) {
+    let a;
+    assert.doesNotThrow(() => { a = chordAlternatives(l, { prevLabel: undefined, nextLabel: 'garbage' }, 10); }, String(l));
+    assert.ok(a.length >= 1, String(l));
+  }
+  assert.doesNotThrow(() => chordAlternatives('C:maj', {}, -3));
+  assert.doesNotThrow(() => chordAlternatives('C:maj', {}, NaN));
+});
+
+test('chordAlternatives: every offered label is Harte-valid for the collector; cls is null or a real index', () => {
+  const HARTE = /^(N|X|[A-G](#|b)?(:[a-z0-9]+)?(\/[b#]*(1[0-3]|[1-9]))?)$/;
+  for (const r of observationsToRuns(MIXED)) {
+    for (const a of chordAlternatives(r.label)) {
+      assert.match(a.label, HARTE);
+      assert.ok(a.cls === null || (Number.isInteger(a.cls) && a.cls >= 0 && a.cls < 60), a.label);
+      assert.doesNotThrow(() => chordLabel(a.cls ?? 0));
+    }
+  }
+});
+
+test('chordAlternatives: cls matches the flat-60 index for legacy labels (D:min = 5)', () => {
+  const a = chordAlternatives('C:maj').find((x) => x.label === 'C:min');
+  assert.equal(a.cls, 1);
+  assert.equal(chordAlternatives('G:7/5').find((x) => x.label === 'G:7').cls, 7 * 5 + 2);
+});
+
+test('buildChordEdit persisted shape is unchanged; label edit is a separate additive payload', () => {
+  const run = { chordClass: null, startFrame: 3, endFrame: 9, startSec: 0.3, endSec: 0.9, label: 'G:7/5' };
+  assert.deepEqual(Object.keys(buildChordEdit(run, 7, () => 1)).sort(),
+    ['endFrame', 'newCls', 'originalCls', 'startFrame', 'timestampMs']);
+  assert.deepEqual(buildChordLabelEdit(run, 'G:7', () => 5), {
+    startFrame: 3, endFrame: 9, startSec: 0.3, endSec: 0.9,
+    originalLabel: 'G:7/5', newLabel: 'G:7', timestampMs: 5,
+  });
+});
+
+// ---------------- FIX 2: zoom, ruler, wrapped layout ----------------
+test('zoom: positions scale proportionally with px/sec', () => {
+  const runs = observationsToRuns(MIXED);
+  const a = chipBox(runs[3], 10);
+  const b = chipBox(runs[3], 40);
+  assert.equal(b.leftPx / a.leftPx, 4);
+  assert.equal(b.widthPx / a.widthPx, 4);
+  assert.equal(timelineWidthPx(runs, 40), 4 * timelineWidthPx(runs, 10));
+});
+
+test('timing: mid-sequence N/X does not shift later chords at two zoom levels (left = startSec x pxPerSec)', () => {
+  const runs = observationsToRuns(MIXED);
+  for (const pps of [7.5, 33, MAX_PX_PER_SEC]) {
+    assert.equal(chipBox(runs[6], pps).leftPx, 12 * pps);
+    assert.equal(chipBox(runs[6], pps).widthPx, 2 * pps);
+    assert.equal(chipBox(runs[4], pps).leftPx, 8 * pps);
+    assert.equal(chipBox(runs[5], pps).leftPx, 10 * pps);
+  }
+});
+
+test('zoom: fit-to-width fills the width, is capped at 80, and is the minimum', () => {
+  assert.equal(fitPxPerSec(240, 888), 3.7);
+  assert.equal(fitPxPerSec(6, 888), MAX_PX_PER_SEC); // short/live: never above max
+  assert.equal(fitPxPerSec(0, 888), MAX_PX_PER_SEC);
+  assert.equal(fitPxPerSec(240, 0), MAX_PX_PER_SEC);
+  assert.equal(clampPxPerSec(1, 3.7), 3.7);
+  assert.equal(clampPxPerSec(500, 3.7), 80);
+  assert.equal(clampPxPerSec(NaN, 3.7), 3.7);
+  assert.equal(clampPxPerSec(10, 100), 80); // min above max collapses to max
+  assert.equal(timelineWidthPx([{ endSec: 240 }], fitPxPerSec(240, 888)), 888);
+});
+
+test('zoom slider mapping round-trips and hits both ends', () => {
+  assert.equal(ppsToSlider(3.7, 3.7), 0);
+  assert.ok(Math.abs(ppsToSlider(80, 3.7) - 1) < 1e-9);
+  for (const t of [0, 0.25, 0.5, 1]) assert.ok(Math.abs(ppsToSlider(sliderToPps(t, 3.7), 3.7) - t) < 1e-9);
+  assert.equal(sliderToPps(5, 3.7), 80);
+  assert.equal(ppsToSlider(10, 80, 80), 0);
+});
+
+test('ruler: marks are never closer than the minimum spacing at any zoom, start at 0:00, labelled m:ss', () => {
+  for (const pps of [1.3, 3.7, 10, 40, 80]) {
+    const ticks = rulerTicks(240, pps);
+    assert.equal(ticks[0].label, '0:00');
+    for (let i = 1; i < ticks.length; i++) assert.ok(ticks[i].leftPx - ticks[i - 1].leftPx >= 64 - 1e-9, `pps ${pps}`);
+    assert.ok(ticks.length <= 240 / 1 + 1);
+  }
+  assert.equal(rulerTicks(240, 3.7)[1].label, '0:30');
+  assert.equal(rulerTicks(240, 80)[1].label, '0:01');
+  assert.deepEqual(rulerTicks(0, 10), []);
+  assert.equal(formatTime(125.9), '2:05');
+});
+
+test('wrapped layout: time-proportional per row, splits runs across rows, nothing lost or shifted', () => {
+  const runs = observationsToRuns(MIXED); // 0..14s
+  const rows = layoutRows(runs, 8, 40);
+  assert.equal(rows.length, 2);
+  // C bare at 12-14s lands in row 1 at (12-8)*40.
+  const seg = rows[1].segments.find((s) => s.runIndex === 6);
+  assert.equal(seg.leftPx, 160);
+  assert.equal(seg.widthPx, 80);
+  assert.equal(seg.continued, false);
+  // F:maj9 (6-8) stays in row 0; N (8-10) starts row 1 at 0.
+  assert.ok(rows[0].segments.some((s) => s.runIndex === 3));
+  assert.equal(rows[1].segments.find((s) => s.runIndex === 4).leftPx, 0);
+  // A run crossing a boundary is split, and total width is conserved.
+  const split = layoutRows([{ startSec: 6, endSec: 10 }], 8, 10);
+  assert.equal(split[0].segments[0].widthPx, 20);
+  assert.equal(split[1].segments[0].widthPx, 20);
+  assert.equal(split[1].segments[0].continued, true);
+  assert.deepEqual(layoutRows([], 8, 10), []);
+  assert.deepEqual(layoutRows(runs, 0, 10), []);
+  assert.equal(durationSec(runs), 14);
+});
+
+test('chipDensity: slivers degrade to ticks instead of overlapping; wide chips stay full', () => {
+  assert.equal(chipDensity(80), 'full');
+  assert.equal(chipDensity(20), 'tight');
+  assert.equal(chipDensity(6), 'tick');
 });

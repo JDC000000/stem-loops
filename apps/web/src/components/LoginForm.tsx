@@ -43,7 +43,9 @@ export default function LoginForm({ returnTo }: { returnTo?: string }) {
 
   // Email links and the Google redirect land back on /login with a `?code=`;
   // the browser client exchanges it on init and fires SIGNED_IN, handled below.
-  // (No server callback route exists yet; this keeps the flow self-contained.)
+  // A server callback route DOES exist (app/auth/callback/route.ts; recoveryUrl()
+  // above uses it). Magic-link and Google stay on this self-contained path on
+  // purpose -- moving them is a separate change with its own testing.
   const callbackUrl = () =>
     `${window.location.origin}/login?return_to=${encodeURIComponent(dest)}`;
 

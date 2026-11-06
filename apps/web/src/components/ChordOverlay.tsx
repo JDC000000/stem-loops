@@ -4,8 +4,19 @@
 // Pipeline: tab-capture → cqt-frontend → chordnet-session → smoothChordLogits
 //           → collapseRuns → timeline render.
 //
-// Edits a user makes on the timeline hook into PR-Y1.7's edit-collector via
-// the `onChordEdit` prop (this component owns no state beyond the UI).
+// NOT WIRED (parked 2026-11-05). This component exposes `onChordEdit` and
+// `onChordLabelEdit`, but NOTHING consumes them: jobs/[id]/page.tsx mounts
+// <ChordOverlay jobId={...} /> with no handler, so every correction a user
+// makes is dropped on the floor. The write path behind them is also
+// incomplete -- play.chords.json carries neither `track_hash` nor
+// `alphabet_sha`, both of which /api/chord-edits requires and chord_edits
+// has as NOT NULL, and no part of the system computes a track_hash at all.
+// The props are kept as the integration seam, deliberately: the flywheel
+// feeds the Y1 chord model, and Variant Y is paused pending a WASM librosa
+// port, so there is no consumer for the data yet. Do not describe this path
+// as working, and do not wire a handler without closing the write path first.
+// Full finding + the four options considered: issue #135.
+// This component owns no state beyond the UI.
 'use client';
 
 import {
@@ -18,7 +29,7 @@ import {
   useState,
 } from 'react';
 
-import { N_CHORD_CLASSES, chordLabel } from '../chord/alphabet.ts';
+import { N_CHORD_CLASSES } from '../chord/alphabet.ts';
 import {
   type ChordnetSession,
   loadChordnetSession,
@@ -34,27 +45,58 @@ import {
   startTabCapture,
 } from '../chord/tab-capture.ts';
 import {
+  type ChordAlternative,
   type ChordEdit,
+  type ChordLabelEdit,
   type OverlayRun,
+  MAX_PX_PER_SEC,
+  NARROW_BREAKPOINT_PX,
+  WRAP_DEFAULT_ROW_SEC,
+  WRAP_MAX_ROW_SEC,
+  alternativeText,
   buildChordEdit,
+  buildChordLabelEdit,
   chipBox,
+  chipDensity,
+  chordAlternatives,
   classIndexOrNull,
   classifyLabel,
+  clampPxPerSec,
   completedJobStatus,
   displayText,
+  durationSec,
+  fitPxPerSec,
+  formatTime,
+  layoutRows,
   observationsToRuns,
-  popoverAlternatives,
+  ppsToSlider,
+  rootHue,
+  rulerTicks,
   runAriaLabel,
+  sliderToPps,
   timelineWidthPx,
 } from './ChordOverlay.helpers.ts';
 
-export type { ChordEdit };
+export type { ChordEdit, ChordLabelEdit };
+
+// Visual constants for the timeline.
+const RULER_H = 20;
+const GUTTER_PX = 44; // row-time labels in the wrapped (narrow) layout
+const CHIP_H_STRIP = 36;
+const CHIP_H_WRAP = 44; // touch target
 
 export interface ChordOverlayProps {
   onStart?: () => void;
   onStop?: () => void;
-  /** Fired when the user picks a replacement chord from the popover. */
+  /**
+   * Fired when the user picks a replacement chord that exists in the legacy
+   * flat-60 vocabulary. Shape unchanged (class indices). Slash chords, 9ths,
+   * sus, N and X have no class index, so they are NOT delivered here; use
+   * `onChordLabelEdit` to collect every correction.
+   */
   onChordEdit?: (edit: ChordEdit) => void;
+  /** Fired for EVERY picked correction, carrying Harte label strings. */
+  onChordLabelEdit?: (edit: ChordLabelEdit) => void;
   /** Override for tests. */
   modelUrl?: string;
   /**
@@ -83,11 +125,19 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   onStart,
   onStop,
   onChordEdit,
+  onChordLabelEdit,
   modelUrl,
   jobId,
 }) => {
   const [state, setState] = useState<State>(INITIAL_STATE);
-  const [popoverFor, setPopoverFor] = useState<OverlayRun | null>(null);
+  const [popoverFor, setPopoverFor] = useState<{ run: OverlayRun; idx: number } | null>(null);
+  // Zoom: null = fit-to-width (the default); otherwise explicit px/sec.
+  const [userPps, setUserPps] = useState<number | null>(null);
+  const [wrapEl, setWrapEl] = useState<HTMLDivElement | null>(null);
+  const [widthPx, setWidthPx] = useState(0);
+  const [scrollInfo, setScrollInfo] = useState({ left: 0, client: 0, total: 0 });
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const centerSecRef = useRef<number | null>(null);
   const sessionRef = useRef<ChordnetSession | null>(null);
   const captureRef = useRef<TabCapture | null>(null);
 
@@ -217,12 +267,69 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   }, [onStop]);
 
   const handlePickAlternative = useCallback(
-    (run: OverlayRun, newCls: number) => {
-      onChordEdit?.(buildChordEdit(run, newCls));
+    (run: OverlayRun, alt: ChordAlternative) => {
+      // Legacy collector path: unchanged shape, only for labels that have a
+      // flat-60 class index (never -1, never labelAt).
+      if (alt.cls !== null) onChordEdit?.(buildChordEdit(run, alt.cls));
+      onChordLabelEdit?.(buildChordLabelEdit(run, alt.label));
       setPopoverFor(null);
     },
-    [onChordEdit],
+    [onChordEdit, onChordLabelEdit],
   );
+
+  // ---- timeline geometry ---------------------------------------------------
+  useEffect(() => {
+    if (!wrapEl) return;
+    const measure = () => setWidthPx(Math.floor(wrapEl.getBoundingClientRect().width));
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(wrapEl);
+    return () => ro.disconnect();
+  }, [wrapEl]);
+
+  const dur = durationSec(state.runs);
+  const measured = widthPx > 0;
+  const narrow = measured && widthPx < NARROW_BREAKPOINT_PX;
+  const rowWidthPx = Math.max(120, widthPx - GUTTER_PX);
+  // Strip: the minimum zoom is "whole track fits". Wrapped: rows of at most 16s.
+  const minPps = narrow
+    ? Math.min(MAX_PX_PER_SEC, rowWidthPx / WRAP_MAX_ROW_SEC)
+    : fitPxPerSec(dur, widthPx);
+  const defaultPps = narrow
+    ? clampPxPerSec(rowWidthPx / WRAP_DEFAULT_ROW_SEC, minPps)
+    : minPps;
+  const pps = userPps === null ? defaultPps : clampPxPerSec(userPps, minPps);
+  const chipH = narrow ? CHIP_H_WRAP : CHIP_H_STRIP;
+
+  const setZoom = useCallback(
+    (next: number | null) => {
+      const el = scrollRef.current;
+      if (el && !narrow && pps > 0) centerSecRef.current = (el.scrollLeft + el.clientWidth / 2) / pps;
+      setUserPps(next);
+    },
+    [narrow, pps],
+  );
+
+  const syncScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setScrollInfo((p) =>
+      p.left === el.scrollLeft && p.client === el.clientWidth && p.total === el.scrollWidth
+        ? p
+        : { left: el.scrollLeft, client: el.clientWidth, total: el.scrollWidth },
+    );
+  }, []);
+
+  // After a zoom change keep the same moment centred, then refresh scroll state.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && centerSecRef.current !== null) {
+      el.scrollLeft = Math.max(0, centerSecRef.current * pps - el.clientWidth / 2);
+      centerSecRef.current = null;
+    }
+    syncScroll();
+  }, [pps, widthPx, state.runs, syncScroll]);
 
   const bannerMessage =
     !support.supported && support.message
@@ -299,46 +406,121 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
         </div>
       ) : null}
 
-      {!isCompletedJobMode || completedStatus.showTimeline ? (
-      <div style={timelineStyle} data-testid="chord-timeline">
-        {state.runs.length === 0 && state.phase === 'capturing' ? (
-          <div style={emptyStyle}>Listening…</div>
-        ) : null}
-        {/* Chips are placed by real time (left/width from startSec/endSec), so
-            an N or X span keeps its duration and never shifts later chips. */}
-        <div
-          style={{ position: 'relative', height: '32px', width: `${timelineWidthPx(state.runs)}px` }}
-        >
-          {state.runs.map((run, idx) => {
-            const box = chipBox(run);
-            return (
-              <button
-                type="button"
-                key={`${run.startFrame}-${run.endFrame}-${idx}`}
-                onClick={() => setPopoverFor(run)}
-                style={{
-                  ...chipStyle,
-                  ...(run.kind === 'none' ? restChipStyle : null),
-                  ...(run.kind === 'unknown' ? unknownChipStyle : null),
-                  position: 'absolute',
-                  top: 0,
-                  left: `${box.leftPx}px`,
-                  width: `${box.widthPx}px`,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  boxSizing: 'border-box',
-                }}
-                data-testid={`chord-chip-${idx}`}
-                data-kind={run.kind}
-                title={run.kind === 'chord' ? run.label : runAriaLabel(run)}
-                aria-label={runAriaLabel(run)}
-              >
-                {displayText(run)}
-              </button>
-            );
-          })}
+      {(!isCompletedJobMode || completedStatus.showTimeline) && state.runs.length > 0 ? (
+        <div style={zoomBarStyle} data-testid="zoom-bar">
+          <button
+            type="button"
+            style={zoomBtnStyle}
+            aria-label="Zoom out"
+            data-testid="zoom-out"
+            disabled={!measured || pps <= minPps * 1.001}
+            onClick={() => setZoom(clampPxPerSec(pps / 1.5, minPps))}
+          >
+            {'−'}
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={1000}
+            value={Math.round(ppsToSlider(pps, minPps) * 1000)}
+            disabled={!measured || minPps >= MAX_PX_PER_SEC}
+            aria-label="Timeline zoom"
+            data-testid="zoom-slider"
+            style={{ flex: 1, minWidth: 80, accentColor: '#60a5fa' }}
+            onChange={(e) => setZoom(sliderToPps(Number(e.target.value) / 1000, minPps))}
+          />
+          <button
+            type="button"
+            style={zoomBtnStyle}
+            aria-label="Zoom in"
+            data-testid="zoom-in"
+            disabled={!measured || pps >= MAX_PX_PER_SEC * 0.999}
+            onClick={() => setZoom(clampPxPerSec(pps * 1.5, minPps))}
+          >
+            +
+          </button>
+          <button
+            type="button"
+            style={{ ...zoomBtnStyle, width: 'auto', padding: '0 0.75rem' }}
+            data-testid="zoom-fit"
+            disabled={userPps === null}
+            onClick={() => setZoom(null)}
+          >
+            {narrow ? 'Reset' : 'Fit'}
+          </button>
         </div>
-      </div>
+      ) : null}
+
+      {!isCompletedJobMode || completedStatus.showTimeline ? (
+        <div
+          ref={setWrapEl}
+          style={{ position: 'relative', visibility: measured ? 'visible' : 'hidden' }}
+          data-testid="chord-timeline"
+          data-layout={narrow ? 'wrapped' : 'strip'}
+          data-px-per-sec={pps.toFixed(3)}
+        >
+          <style>{SCROLLBAR_CSS}</style>
+          {state.runs.length === 0 && state.phase === 'capturing' ? (
+            <div style={emptyStyle}>Listening…</div>
+          ) : null}
+          {narrow ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }} data-testid="chord-rows">
+              {layoutRows(state.runs, rowWidthPx / pps, pps).map((row, ri) => (
+                <div key={ri} style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+                  <span style={rowLabelStyle}>{formatTime(row.startSec)}</span>
+                  <div style={{ position: 'relative', height: chipH, width: rowWidthPx, flex: 'none' }}>
+                    {row.segments.map((seg) => {
+                      const run = state.runs[seg.runIndex];
+                      return renderChip(run, seg.runIndex, seg.leftPx, seg.widthPx, chipH, seg.continued ? ri : null, setPopoverFor);
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <>
+              <div
+                ref={scrollRef}
+                className="co-scroll"
+                style={timelineStyle}
+                onScroll={syncScroll}
+                data-testid="chord-scroll"
+                tabIndex={0}
+                role="region"
+                aria-label="Chord timeline, scrolls horizontally"
+              >
+                <div style={{ position: 'relative', width: `${timelineWidthPx(state.runs, pps)}px`, height: RULER_H + chipH }}>
+                  <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: RULER_H, overflow: 'hidden' }} data-testid="time-ruler" aria-hidden="true">
+                    {rulerTicks(dur, pps).map((t) => (
+                      <span key={t.sec} style={{ ...tickStyle, left: `${t.leftPx}px` }} data-testid={`tick-${t.sec}`}>
+                        {t.label}
+                      </span>
+                    ))}
+                  </div>
+                  <div style={{ position: 'absolute', top: RULER_H, left: 0, right: 0, height: chipH }}>
+                    {state.runs.map((run, idx) => {
+                      const box = chipBox(run, pps);
+                      return renderChip(run, idx, box.leftPx, box.widthPx, chipH, null, setPopoverFor);
+                    })}
+                  </div>
+                </div>
+              </div>
+              {scrollInfo.left > 1 ? <div style={{ ...fadeStyle, left: 0, background: 'linear-gradient(90deg, rgba(0,0,0,0.7), transparent)' }} aria-hidden="true" /> : null}
+              {scrollInfo.total - scrollInfo.client - scrollInfo.left > 1 ? (
+                <div style={{ ...fadeStyle, right: 0, background: 'linear-gradient(270deg, rgba(0,0,0,0.7), transparent)' }} aria-hidden="true" />
+              ) : null}
+            </>
+          )}
+          {state.runs.length > 0 ? (
+            <div style={hintStyle} data-testid="timeline-hint">
+              {narrow
+                ? `${formatTime(dur)} total · ${Math.round(rowWidthPx / pps)}s per row · zoom for more or less per row`
+                : scrollInfo.total - scrollInfo.client > 1
+                  ? `Showing ${formatTime(scrollInfo.left / pps)}–${formatTime((scrollInfo.left + scrollInfo.client) / pps)} of ${formatTime(dur)} · scroll sideways or zoom out`
+                  : `Whole track (${formatTime(dur)}) shown · zoom in for detail`}
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
       {popoverFor ? (
@@ -349,23 +531,23 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           data-testid="chord-popover"
         >
           <div style={popoverHeaderStyle}>
-            Change {displayText(popoverFor)}
+            Change {displayText(popoverFor.run)}
           </div>
-          {popoverAlternatives(popoverFor.chordClass, 10).length === 0 ? (
-            <div style={emptyStyle} data-testid="no-alternatives">
-              No suggestions for this label.
-            </div>
-          ) : null}
           <div style={popoverGridStyle}>
-            {popoverAlternatives(popoverFor.chordClass, 10).map((cls) => (
+            {chordAlternatives(popoverFor.run.label, {
+              prevLabel: state.runs[popoverFor.idx - 1]?.label ?? null,
+              nextLabel: state.runs[popoverFor.idx + 1]?.label ?? null,
+            }).map((alt) => (
               <button
                 type="button"
-                key={cls}
-                onClick={() => handlePickAlternative(popoverFor, cls)}
-                data-testid={`alt-${cls}`}
+                key={alt.label}
+                onClick={() => handlePickAlternative(popoverFor.run, alt)}
+                data-testid={`alt-${alt.label}`}
+                data-reason={alt.reason}
+                title={altTitle(alt)}
                 style={altButtonStyle}
               >
-                {chordLabel(cls)}
+                {alternativeText(alt)}
               </button>
             ))}
           </div>
@@ -383,6 +565,78 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
 };
 
 export { N_CHORD_CLASSES };
+
+function altTitle(a: ChordAlternative): string {
+  switch (a.reason) {
+    case 'neighbour': return 'The chord next to this one';
+    case 'inversion': return 'Same chord, different bass note';
+    case 'quality': return 'Same root, different chord type';
+    case 'relative': return 'Relative major/minor';
+    case 'degree': return 'Dominant or subdominant';
+    case 'none': return 'No chord (silence or non-harmonic)';
+    case 'unknown': return 'Mark as unknown';
+  }
+}
+
+/** One chip, shared by the strip and the wrapped layout. */
+function renderChip(
+  run: OverlayRun,
+  idx: number,
+  leftPx: number,
+  widthPx: number,
+  heightPx: number,
+  continuedRow: number | null,
+  open: (v: { run: OverlayRun; idx: number }) => void,
+) {
+  const w = Math.max(1, widthPx - 1); // 1px gap so adjacent chips stay distinct
+  const density = chipDensity(w);
+  const hue = run.kind === 'chord' ? rootHue(run.label) : null;
+  return (
+    <button
+      type="button"
+      key={continuedRow === null ? `${run.startFrame}-${run.endFrame}-${idx}` : `${run.startFrame}-${run.endFrame}-${idx}-r${continuedRow}`}
+      onClick={() => open({ run, idx })}
+      style={{
+        ...chipStyle,
+        ...(hue !== null ? { background: `hsl(${hue} 50% 30%)` } : null),
+        ...(run.kind === 'none' ? restChipStyle : null),
+        ...(run.kind === 'unknown' ? unknownChipStyle : null),
+        position: 'absolute',
+        top: 0,
+        left: `${leftPx}px`,
+        width: `${w}px`,
+        height: `${heightPx}px`,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        boxSizing: 'border-box',
+        // Narrow chips drop their padding, then their label (they become
+        // colour ticks); zooming in restores both.
+        padding: density === 'full' ? '0 0.5rem' : '0',
+        ...(density === 'tight' ? { fontSize: '0.625rem' } : null),
+        ...(density === 'tick' ? { color: 'transparent' } : null),
+        borderRadius: density === 'tick' ? '2px' : '6px',
+        ...(continuedRow !== null ? { opacity: 0.85, borderTopLeftRadius: 0, borderBottomLeftRadius: 0 } : null),
+      }}
+      data-testid={continuedRow === null ? `chord-chip-${idx}` : `chord-chip-${idx}-r${continuedRow}`}
+      data-kind={run.kind}
+      data-density={density}
+      title={run.kind === 'chord' ? run.label : runAriaLabel(run)}
+      aria-label={runAriaLabel(run)}
+    >
+      {displayText(run)}
+    </button>
+  );
+}
+
+// WebKit has no inline way to style scrollbars; Firefox/Chrome also get
+// scrollbar-color/-width inline on the scroller. An always-visible track is
+// the point: overlay scrollbars on macOS/iOS hide until touched.
+const SCROLLBAR_CSS = `
+.co-scroll{scrollbar-width:auto;scrollbar-color:rgba(255,255,255,.55) rgba(255,255,255,.12)}
+.co-scroll::-webkit-scrollbar{height:12px}
+.co-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,.12);border-radius:6px}
+.co-scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.55);border-radius:6px;border:2px solid transparent;background-clip:padding-box}
+`;
 
 // ---------------- inline styles ----------------
 // Visual polish happens in a later PR — these are plain, dark-mode-safe
@@ -435,9 +689,54 @@ const providerPillStyle: CSSProperties = {
   letterSpacing: '0.05em',
 };
 const timelineStyle: CSSProperties = {
-  overflowX: 'auto',
-  padding: '0.25rem 0',
+  overflowX: 'scroll', // 'scroll' (not 'auto') so the track is always drawn
+  overflowY: 'hidden',
+  padding: '0.25rem 0 0.5rem',
   minHeight: '36px',
+};
+const zoomBarStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: '0.5rem' };
+const zoomBtnStyle: CSSProperties = {
+  background: '#374151',
+  color: '#fff',
+  border: 'none',
+  borderRadius: '6px',
+  minWidth: 44,
+  width: 44,
+  height: 44,
+  fontSize: '1.125rem',
+  cursor: 'pointer',
+};
+const tickStyle: CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  height: RULER_H,
+  paddingLeft: 4,
+  borderLeft: '1px solid rgba(255,255,255,0.35)',
+  fontSize: '0.6875rem',
+  lineHeight: `${RULER_H}px`,
+  color: 'rgba(255,255,255,0.7)',
+  fontVariantNumeric: 'tabular-nums',
+  whiteSpace: 'nowrap',
+  pointerEvents: 'none',
+};
+const fadeStyle: CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  bottom: 28,
+  width: 28,
+  pointerEvents: 'none',
+};
+const hintStyle: CSSProperties = {
+  color: 'rgba(255,255,255,0.65)',
+  fontSize: '0.75rem',
+  paddingTop: 4,
+};
+const rowLabelStyle: CSSProperties = {
+  width: GUTTER_PX,
+  flex: 'none',
+  fontSize: '0.6875rem',
+  color: 'rgba(255,255,255,0.65)',
+  fontVariantNumeric: 'tabular-nums',
 };
 const emptyStyle: CSSProperties = {
   color: 'rgba(255,255,255,0.6)',
@@ -478,13 +777,14 @@ const popoverHeaderStyle: CSSProperties = {
 };
 const popoverGridStyle: CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+  gridTemplateColumns: 'repeat(auto-fill, minmax(84px, 1fr))',
   gap: '0.25rem',
 };
 const altButtonStyle: CSSProperties = {
   background: '#374151',
   color: '#fff',
   border: 'none',
+  minHeight: 44,
   padding: '0.25rem 0.5rem',
   borderRadius: '4px',
   cursor: 'pointer',

@@ -42,6 +42,21 @@ MIGRATIONS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", 
 _DOLLAR_TAG = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
 
 
+def discover_migration_paths(migrations_dir: str | None = None) -> list[str]:
+    """The migrations this runner will apply, in the order it applies them.
+
+    Top-level ``*.sql`` only — ``down/`` is a subdirectory and is deliberately
+    not matched. Lexical order; there is no ``010``.
+
+    Extracted so there is exactly ONE definition of "the migrations".
+    ``scripts/check_migration_drift.py`` compares applied-vs-required and MUST
+    agree with the runner about that set; previously each had its own glob and
+    a test tried to keep them honest. A test that two copies agree is weaker
+    than not having two copies.
+    """
+    return sorted(glob.glob(os.path.join(migrations_dir or MIGRATIONS_DIR, "*.sql")))
+
+
 def split_sql_statements(sql: str) -> Iterator[str]:
     """Yield individual SQL statements from ``sql``.
 
@@ -161,7 +176,7 @@ def run() -> None:
             )
             """)
         conn.commit()
-        for path in sorted(glob.glob(os.path.join(MIGRATIONS_DIR, "*.sql"))):
+        for path in discover_migration_paths():
             fname = os.path.basename(path)
             already = conn.execute(
                 "SELECT 1 FROM _migrations WHERE filename=%s", (fname,)

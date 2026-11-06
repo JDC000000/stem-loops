@@ -52,15 +52,22 @@ USAGE
   python scripts/check_migration_drift.py --expect 30
   python scripts/check_migration_drift.py --allow-unreachable   # CI without a DB
 
-STATUS: NOT WIRED to CI yet. Shipped as a runnable gate first so it can be
-pointed at production by hand during the cutover; the CI job and the deploy-time
-hook land in a follow-up, because .github/ is outside the fast-path allowlist.
+STATUS. The Supabase-prelude matrix job runs this against the database it has
+just migrated, which exercises the gate end to end but CANNOT report drift —
+it is checking a ledger it populated itself from the same checkout.
+
+The thing this script exists for is still NOT WIRED: nothing points it at a
+real deployed database. As of 2026-11-06 production's `public._migrations`
+holds 8 rows (max `008_fetch_gates.sql`) against 30 in the repo, and no job in
+this repo turns red over it. Closing that needs a read-only ledger credential
+as a secret — the house pattern is `DATABASE_URL_CREDIT_PACKS_RO`, used by
+`check_credit_pack_prices` — or a deploy-time hook. Until one of those exists,
+do not describe this gate as preventing R-1.
 """
 
 from __future__ import annotations
 
 import argparse
-import glob
 import os
 import sys
 from dataclasses import dataclass, field
@@ -76,20 +83,24 @@ EXIT_DRIFT = 1
 EXIT_UNKNOWN = 2
 
 
-def _connection_error_types() -> tuple[type[BaseException], ...]:
-    """Exceptions that genuinely mean "could not reach the database".
+class Unreachable(Exception):
+    """The database could not be CONNECTED to. The only forgivable failure.
 
-    Narrow on purpose. The first version caught bare `Exception` here, which
-    classified a reachable database with an unreadable ledger as unreachable
-    and let --allow-unreachable return 0 — a green tick over a gate that
-    checked nothing. This repo already uses narrow-grant *_RO credentials for
-    jobs like this, so that is a live shape, not a hypothetical.
+    Keyed on the PHASE, not on an exception class. Two earlier versions got
+    this wrong in the same direction:
+
+      v1  `except Exception` — a reachable database with an unreadable ledger
+          was called "unreachable" and --allow-unreachable returned 0.
+      v2  `except psycopg.OperationalError` — narrower in name only. That class
+          has ~92 subclasses in psycopg 3, including QUERY-time ones: a
+          `lock_timeout` or `statement_timeout` cancelling the ledger SELECT
+          still landed here, and the flag still returned 0.
+
+    Both let through the exact case the flag must never forgive: the database
+    answered and we still do not know what is applied. Only a failure raised by
+    `psycopg.connect` can be an Unreachable; anything raised afterwards is a
+    database that answered.
     """
-    try:
-        import psycopg
-    except ImportError:  # pragma: no cover - psycopg absent means we never connected
-        return ()
-    return (psycopg.OperationalError,)
 
 
 class LedgerMissing(Exception):
@@ -121,10 +132,17 @@ class Drift:
 def discover_repo_migrations(migrations_dir: Path) -> list[str]:
     """Basenames of forward migrations, in the runner's own order.
 
-    Mirrors migrate.py: top-level *.sql only, lexically sorted. `down/` is a
-    subdirectory and is therefore not matched by the glob.
+    Calls the RUNNER's own discovery rather than reimplementing it. The two
+    must agree about what "the migrations" are, and the strongest way to
+    guarantee that is to have one definition. Review round 3: three mutations
+    of the runner (append down/, skip a prefix, rewrite to os.walk with the old
+    expression left in a docstring) all slipped past a test that compared this
+    function against a copy of the glob written in the test.
     """
-    return sorted(os.path.basename(p) for p in glob.glob(str(migrations_dir / "*.sql")))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps" / "worker" / "src"))
+    from worker.migrate import discover_migration_paths
+
+    return [os.path.basename(p) for p in discover_migration_paths(str(migrations_dir))]
 
 
 def diff_migrations(repo: list[str], applied: set[str]) -> Drift:
@@ -136,10 +154,20 @@ def diff_migrations(repo: list[str], applied: set[str]) -> Drift:
 
 
 def fetch_applied(database_url: str) -> set[str]:
-    """Read the ledger. Raises on anything that makes the answer unknowable."""
+    """Read the ledger.
+
+    Raises Unreachable only if the CONNECT fails. Every later failure — no
+    ledger, no SELECT privilege, a cancelled query — propagates as itself and
+    is never forgiven.
+    """
     import psycopg  # imported late so --help works without the dependency
 
-    with psycopg.connect(database_url, connect_timeout=15) as conn, conn.cursor() as cur:
+    try:
+        conn = psycopg.connect(database_url, connect_timeout=15)
+    except Exception as exc:
+        raise Unreachable(str(exc)) from exc
+
+    with conn, conn.cursor() as cur:
         cur.execute("SELECT to_regclass('public._migrations')")
         row = cur.fetchone()
         if row is None or row[0] is None:
@@ -202,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
         # cannot say what has been applied. Blessing that would be guessing.
         print(f"FAIL: {exc}", file=sys.stderr)
         return EXIT_UNKNOWN
-    except _connection_error_types() as exc:
+    except Unreachable as exc:
         msg = f"could not reach the database: {exc}"
         if args.allow_unreachable:
             print(f"WARNING: {msg} --allow-unreachable given; reporting success "

@@ -269,6 +269,7 @@ def test_down_migration_round_trip(conn):
     down = (MIGRATIONS / "down" / "025_v3_chord_edits_down.sql").read_text()
     up = (MIGRATIONS / "025_v3_chord_edits.sql").read_text()
     up_026 = (MIGRATIONS / "026_chord_edits_length_checks.sql").read_text()
+    up_029 = (MIGRATIONS / "029_v3_chord_edits_harte_slash.sql").read_text()
     try:
         conn.execute(down)
         conn.commit()
@@ -281,6 +282,10 @@ def test_down_migration_round_trip(conn):
         # constraint set (025's down drops the table + all constraints
         # incl. 026's; the up only restores 025's half).
         conn.execute(up_026)
+        # ...and 029, which replaces 025's Harte CHECK. Without this the round trip leaves the
+        # database on 025's `[a-z0-9]+` constraint for every test that runs after it (found by
+        # test_harte_cross_layer.py, the first test to exercise the 029 constraint).
+        conn.execute(up_029)
         conn.commit()
     exists = conn.execute("SELECT to_regclass('public.chord_edits')").fetchone()
     assert exists is not None and exists[0] is not None

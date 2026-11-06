@@ -32,6 +32,8 @@
 // session-aware wrapper fronts this module) and to call
 // `clearBufferedEdits()` on sign-out so no stale edit outlives the session.
 
+import { HARTE_RE } from './harte.ts';
+
 export type ChordProvider = 'klangio' | 'internal' | 'autochord';
 
 export interface ChordEdit {
@@ -48,8 +50,6 @@ export interface ChordEdit {
   alphabetSha: string;
 }
 
-/** Harte alphabet — must stay in lockstep with migration 025's CHECK. */
-const HARTE_RE = /^(N|X|[A-G](#|b)?(:[a-z0-9]+)?)$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Per-user localStorage prefix. Actual key is `<prefix>:<userId>` — see
  *  `bufferKey()`. Any code path that touches localStorage for chord edits

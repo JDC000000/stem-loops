@@ -11,6 +11,7 @@ import ts from 'typescript';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(WEB, 'src/chord/edit-collector.ts');
+const HARTE_SRC = join(WEB, 'src/chord/harte.ts');
 
 const toJs = (src) =>
   ts.transpileModule(src, {
@@ -49,7 +50,11 @@ function installWindow() {
 }
 
 async function loadCollector() {
-  const js = toJs(readFileSync(SRC, 'utf8'));
+  // edit-collector imports the shared validator from ./harte.ts; a data: URL
+  // module cannot resolve relative specifiers, so inline harte.ts as its own
+  // data: URL and point the import at it.
+  const harteUrl = dataUrl(toJs(readFileSync(HARTE_SRC, 'utf8')));
+  const js = toJs(readFileSync(SRC, 'utf8')).replace(/from '\.\/harte\.ts'/, `from '${harteUrl}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
 
@@ -69,7 +74,7 @@ beforeEach(() => installWindow());
 
 test('validateChordEdit rejects invalid Harte labels', async () => {
   const { validateChordEdit, ChordEditValidationError } = await loadCollector();
-  for (const bad of ['Cmaj7', 'c', 'H', 'A♭', 'C/G', 'C:', '', ' C']) {
+  for (const bad of ['Cmaj7', 'c', 'H', 'A♭', 'C/G', 'C:', '', ' C', 'C:zzz', 'C:maj/14', 'C:maj/0', 'N/3', 'X/5']) {
     assert.throws(
       () => validateChordEdit({ ...VALID, correctedLabel: bad }),
       (err) => err instanceof ChordEditValidationError && err.code === 'EDIT_HARTE',
@@ -80,7 +85,7 @@ test('validateChordEdit rejects invalid Harte labels', async () => {
 
 test('validateChordEdit accepts representative Harte labels', async () => {
   const { validateChordEdit } = await loadCollector();
-  for (const good of ['N', 'X', 'A', 'G#', 'Bb', 'C:maj', 'F#:min7', 'D:sus4', 'G:7']) {
+  for (const good of ['N', 'X', 'A', 'G#', 'Bb', 'C:maj', 'F#:min7', 'D:sus4', 'G:7', 'G:7/5', 'A:min/b3', 'C#:maj7/b7', 'Bb:sus4/5']) {
     validateChordEdit({ ...VALID, correctedLabel: good });
   }
 });

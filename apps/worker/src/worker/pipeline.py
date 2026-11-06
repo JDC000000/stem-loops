@@ -32,6 +32,7 @@ import sentry_sdk
 from psycopg.types.json import Json
 
 from . import tmpdirs
+from .chord_source import ChordSubmitUncertain
 from .classifier.energy_classifier import classify_energy
 from .classifier.section_labeler import label_sections
 from .downloader import download_audio
@@ -43,6 +44,7 @@ from .errors import (
     SeparationFailedError,
     StemLoopsError,
     UploadInvalidError,
+    UploadTooLongError,
 )
 from .extractor.beat_grid import estimate_beat_grid
 from .extractor.loop_extractor import extract_loops
@@ -98,38 +100,113 @@ def _ffmpeg_bin() -> str:
         raise InternalError(f"ffmpeg unavailable: {exc}") from exc
 
 
+# Longest upload (seconds) we will separate. ONE knob, read at call time so it can be
+# tuned with an env change instead of a deploy. 600 s (10 min):
+#   * Klangio chords only work <= 300 s, so a track beyond that already loses the chord
+#     overlay; 600 s leaves headroom for ordinary long songs (extended mixes, prog) without
+#     opening the door to DJ sets / albums.
+#   * Replicate separation is billed per GPU-second ($0.0014/s, replicate_client) and the
+#     predict time scales with audio length, so every extra minute is real spend and a
+#     longer hold on the single paid GPU path. The web layer only caps BYTES (200 MB,
+#     ~3.5 h of 128 kbps mp3), which is no bound on cost.
+MAX_UPLOAD_DURATION_SEC_DEFAULT = 600.0
+# Wall-clock budget for the ffmpeg normalise step. A pathological/hostile file must not
+# hold the worker thread (and its heartbeat-less job) indefinitely.
+FFMPEG_DECODE_TIMEOUT_SEC_DEFAULT = 120.0
+
+
+def _env_positive_float(name: str, default: float) -> float:
+    """Positive finite float from the environment; invalid/zero/negative -> ``default``."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if not value > 0 or value == float("inf"):
+        log_structured("WARN", "env_float_invalid", name=name, using=default)
+        return default
+    return value
+
+
+def _max_upload_duration_sec() -> float:
+    return _env_positive_float("MAX_UPLOAD_DURATION_SEC", MAX_UPLOAD_DURATION_SEC_DEFAULT)
+
+
+def _ffmpeg_decode_timeout_sec() -> float:
+    return _env_positive_float("FFMPEG_DECODE_TIMEOUT_SEC", FFMPEG_DECODE_TIMEOUT_SEC_DEFAULT)
+
+
 def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
     """Upload-input path: pull the uploaded file from R2, ffmpeg-normalize ANY
     audio/video container to a 44.1k stereo WAV, re-stage it, and return a
     presigned URL for Replicate. Uniform decoding means every accepted format
-    (mp3/m4a/flac/ogg/mp4/mov/…) reaches separation identically."""
+    (mp3/m4a/flac/ogg/mp4/mov/…) reaches separation identically.
+
+    Enforces the duration cap (``MAX_UPLOAD_DURATION_SEC``) HERE, before the returned URL
+    is ever handed to Replicate: a header probe rejects an over-length file before decoding
+    it, the decode itself is bounded (``-t cap+1`` so a lying/missing header cannot expand
+    into a multi-GB WAV, plus a wall-clock timeout), and the decoded WAV is re-measured.
+    """
+    max_sec = _max_upload_duration_sec()
     tmpdir = tmpdirs.mkdtemp(prefix="sl_upload_")
     raw = os.path.join(tmpdir, "raw_input")
     wav = os.path.join(tmpdir, "input.wav")
     download_object(upload_r2_key, raw)
-    proc = subprocess.run(
-        [
-            _ffmpeg_bin(),
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-i",
-            raw,
-            "-ac",
-            "2",
-            "-ar",
-            "44100",
-            "-c:a",
-            "pcm_s16le",
-            wav,
-        ],
-        capture_output=True,
-        text=True,
-    )
+
+    def _too_long(seconds: float | None) -> UploadTooLongError:
+        log_structured(
+            "INFO",
+            "upload_rejected_too_long",
+            job_id=job_id,
+            duration_sec=None if seconds is None else round(seconds, 1),
+            max_sec=max_sec,
+        )
+        return UploadTooLongError(
+            f"upload duration {seconds}s exceeds MAX_UPLOAD_DURATION_SEC={max_sec:g}",
+            max_seconds=max_sec,
+        )
+
+    declared = _probe_duration_sec(raw)
+    if declared is not None and declared > max_sec:
+        raise _too_long(declared)
+
+    try:
+        proc = subprocess.run(
+            [
+                _ffmpeg_bin(),
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                raw,
+                "-ac",
+                "2",
+                "-ar",
+                "44100",
+                "-c:a",
+                "pcm_s16le",
+                # Output cap: one second past the limit is enough to prove "too long".
+                "-t",
+                f"{max_sec + 1:.3f}",
+                wav,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_ffmpeg_decode_timeout_sec(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise UploadInvalidError(
+            f"ffmpeg decode exceeded {_ffmpeg_decode_timeout_sec():g}s timeout"
+        ) from exc
     if proc.returncode != 0 or not os.path.exists(wav) or os.path.getsize(wav) == 0:
         # A file that ffmpeg can't decode is a bad/unsupported upload, not our fault.
         raise UploadInvalidError(f"ffmpeg decode failed: {proc.stderr[:200]}")
+    decoded = _probe_duration_sec(wav)
+    if decoded is not None and decoded > max_sec:
+        raise _too_long(decoded)
     return upload_input(job_id, wav)
 
 
@@ -301,32 +378,34 @@ def _mix_stems_to_wav(stem_paths: list[str]) -> str | None:
 
 
 def _choose_chord_input(stem_paths: dict, preferred: str = HARMONIC_MIX) -> tuple[str, str] | None:
-    """Pick the audio handed to the chord provider.
+    """Pick the audio handed to the (billable) chord provider, or ``None`` to skip.
 
-    Returns ``(label, local_path)`` or ``None``. ``label`` is ``'harmonic_mix'`` for a
-    synthesised mix or the stem name (``keys`` / ``guitar`` / ``other``) for a single stem.
+    Returns ``(label, local_path)``. ``label`` is ``'harmonic_mix'`` for a synthesised mix or
+    the stem name (``keys`` / ``guitar`` / ``other``) for an explicitly requested single stem.
 
     * ``preferred`` is a real harmonic stem name (keys/guitar/other) and present -> that stem.
+      This is an explicit operator override (``CHORDS_STEM``), honoured as asked.
     * Otherwise (``harmonic_mix``, legacy ``instrumental``, anything unknown) -> mix the
-      harmonic stems (keys + guitar + other, plus bass for roots) when 2+ exist; with one
-      harmonic stem use it directly; if the mix fails, fall back to the first single stem
-      in keys -> guitar -> other order.
-    * ``vocals`` / ``drums`` are never selected, even if requested. Bass alone is not
-      usable harmony. ``None`` when no keys/guitar/other exists, so the caller skips the
-      chord step rather than feed vocals.
+      harmonic stems (keys + guitar + other, plus bass for roots) but ONLY when 2+ harmonic
+      stems exist. In a 6-stem split ``other`` is the residue left after guitar and keys were
+      extracted, so ``other`` alone (what survives when a user deselects guitar/keys and the
+      stems were never fetched) is plausible-looking but wrong, and Klangio would bill for it.
+      With fewer than two harmonic stems we return ``None``: skip WITHOUT spending.
+    * If the mix itself fails there is deliberately NO single-stem fallback: the old
+      keys -> guitar -> other fallback sent a possibly near-silent ``keys`` stem to a paid API.
+    * ``vocals`` / ``drums`` are never selected, even if requested. Bass alone is not usable
+      harmony.
     """
     harmonic = [n for n in _HARMONIC_STEMS if stem_paths.get(n)]
     if preferred in _HARMONIC_STEMS and stem_paths.get(preferred):
         return preferred, stem_paths[preferred]
-    if not harmonic:
+    if len(harmonic) < 2:
         return None
-    if len(harmonic) >= 2:
-        names = harmonic + [n for n in _MIX_EXTRA_STEMS if stem_paths.get(n)]
-        mixed = _mix_stems_to_wav([stem_paths[n] for n in names])
-        if mixed:
-            return HARMONIC_MIX, mixed
-    name = harmonic[0]
-    return name, stem_paths[name]
+    names = harmonic + [n for n in _MIX_EXTRA_STEMS if stem_paths.get(n)]
+    mixed = _mix_stems_to_wav([stem_paths[n] for n in names])
+    if mixed:
+        return HARMONIC_MIX, mixed
+    return None
 
 
 def _existing_play_chords(job_id: str) -> bool:
@@ -337,9 +416,12 @@ def _existing_play_chords(job_id: str) -> bool:
     rerun is another billed request. ``put_object`` is atomic on R2, so a half-written
     object cannot occur; but a zero-byte / non-JSON / segment-less object must not
     permanently suppress chords, so a bare existence (HEAD) check is NOT enough. We GET the
-    (small) object and require a JSON object with a non-empty ``segments`` list. Anything
-    else is treated as absent and regenerated (overwrites in place; bounded by the reaper's
-    attempt cap). A missing key is the normal first-run case. Any other R2 error fails
+    (small) object and require a JSON object with a ``segments`` LIST. An empty list is a
+    valid, complete result: a silent or atonal track legitimately yields ``[]``, and the
+    request for it was already paid for, so it must suppress reruns. A tombstone
+    (``{"status": "unavailable", ...}``) has no ``segments`` and still counts as absent.
+    Anything else is treated as absent and regenerated (overwrites in place; bounded by the
+    reaper's attempt cap; a recorded Klangio job id makes the regeneration free). A missing key is the normal first-run case. Any other R2 error fails
     OPEN (returns False, logged): a transient R2 blip then costs at most one request,
     whereas failing closed would silently drop chords.
     """
@@ -359,7 +441,7 @@ def _existing_play_chords(job_id: str) -> bool:
     try:
         payload = _json.loads(raw)
         segments = payload.get("segments") if isinstance(payload, dict) else None
-        valid = isinstance(segments, list) and len(segments) > 0
+        valid = isinstance(segments, list)
     except (ValueError, TypeError):
         valid = False
     if not valid:
@@ -439,6 +521,67 @@ def _write_chords_tombstone(job_id: str, reason: str, **detail) -> None:
         )
 
 
+class _KlangioJobLedger:
+    """``jobs.klangio_job_id`` as the durable at-most-once record of a Klangio spend.
+
+    The Klangio analogue of ``replicate_prediction_id`` / ``submit_or_reattach``:
+      NULL -> never submitted;  ``SENTINEL`` -> a POST began but its id was not recorded
+      (cannot reattach, must not re-POST);  anything else -> the Klangio job id (reattach).
+    Every transition is one conditional UPDATE, so two workers cannot both claim a job.
+    Migration 030 adds the column and must be applied before this code ships.
+    """
+
+    SENTINEL = "submitting"
+
+    def __init__(self, job_id: str) -> None:
+        self.job_id = job_id
+
+    def existing(self) -> str | None:
+        with _db() as c:
+            row = c.execute(
+                "SELECT klangio_job_id FROM jobs WHERE id=%s", (self.job_id,)
+            ).fetchone()
+        value = row[0] if row else None
+        if value is None:
+            return None
+        if value == self.SENTINEL:
+            raise ChordSubmitUncertain(
+                "a Klangio submit began for this job but its id was never recorded; "
+                "not submitting again (possible double bill)"
+            )
+        return str(value)
+
+    def claim(self) -> None:
+        with _db() as c:
+            cur = c.execute(
+                "UPDATE jobs SET klangio_job_id=%s WHERE id=%s AND klangio_job_id IS NULL",
+                (self.SENTINEL, self.job_id),
+            )
+            claimed = cur.rowcount == 1
+            c.commit()
+        if not claimed:
+            raise ChordSubmitUncertain("another worker already holds or recorded a Klangio submit")
+
+    def record(self, provider_job_id: str) -> None:
+        with _db() as c:
+            cur = c.execute(
+                "UPDATE jobs SET klangio_job_id=%s WHERE id=%s AND klangio_job_id=%s",
+                (provider_job_id, self.job_id, self.SENTINEL),
+            )
+            recorded = cur.rowcount == 1
+            c.commit()
+        if not recorded:
+            raise InternalError("klangio_job_id claim missing when recording the job id")
+
+    def release(self) -> None:
+        with _db() as c:
+            c.execute(
+                "UPDATE jobs SET klangio_job_id=NULL WHERE id=%s AND klangio_job_id=%s",
+                (self.job_id, self.SENTINEL),
+            )
+            c.commit()
+
+
 def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems) -> None:
     """Y1.1 feature-flag entry point. Uploads ``play.chords.json`` to R2 or no-ops.
 
@@ -491,6 +634,7 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             "WARN",
             "chords_skipped_no_harmonic_stem",
             job_id=job_id,
+            harmonic_available=sum(1 for n in _HARMONIC_STEMS if stem_paths.get(n)),
             stems=sorted(stem_paths.keys()),
             preferred=CHORDS_DEFAULT_STEM,
         )
@@ -514,7 +658,11 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
 
         from .chord_source import get_chord_source  # noqa: PLC0415
 
-        result = get_chord_source(provider_name).recognize(_Path(audio_path), stem=stem_name)
+        # The ledger makes the billable POST at-most-once per job: a recorded Klangio job id
+        # is reattached (free GETs) after a reaper requeue / deploy / failed R2 upload.
+        result = get_chord_source(provider_name).recognize(
+            _Path(audio_path), stem=stem_name, ledger=_KlangioJobLedger(job_id)
+        )
 
         import json as _json  # noqa: PLC0415
 
@@ -547,6 +695,14 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             stem=stem_name,
             r2_key=r2_key,
         )
+    except ChordSubmitUncertain as exc:
+        # A previous run may already have paid for this job but lost the id: skip rather than
+        # risk a second $0.20. Tombstone reason stays one the web loader maps.
+        log_structured(
+            "WARN", "chords_skipped_submit_uncertain", job_id=job_id, error=str(exc)[:200]
+        )
+        sentry_sdk.capture_exception(exc)
+        _write_chords_tombstone(job_id, "provider_failed")
     except Exception as exc:  # noqa: BLE001 — chords are optional
         log_structured(
             "WARN",
@@ -600,12 +756,24 @@ async def set_status(job_id: str, status: str) -> None:
         await conn.commit()
 
 
-def _fetch_stems(stem_urls: dict, requested_stems) -> dict:
+def _chords_enabled() -> bool:
+    """Same switch the hook uses: ``CHORDS_PROVIDER=''`` disables chords entirely."""
+    return bool(os.environ.get("CHORDS_PROVIDER", "klangio"))
+
+
+def _fetch_stems(stem_urls: dict, requested_stems, also: tuple[str, ...] = ()) -> dict:
+    """Download the user's requested stems plus any ``also`` stems the pipeline needs itself.
+
+    ``also`` is for stems that are not loop output but are inputs to another stage (the
+    chord harmonic mix). They are fetched regardless of what the user toggled, so the chord
+    input never silently degrades to the post-extraction ``other`` residue. Loop extraction
+    still honours ``requested_stems`` (``extract_and_tag`` filters), so no unrequested loops.
+    """
     tmpdir = tmpdirs.mkdtemp(prefix="sl_stems_")
     wanted = [
         (name, url)
         for name, url in stem_urls.items()
-        if not requested_stems or name in requested_stems
+        if not requested_stems or name in requested_stems or name in also
     ]
 
     def _get(item):
@@ -814,12 +982,22 @@ async def _run_pipeline(job_id: str) -> None:
                     attempt=attempt,
                     pred_id=pred_id,
                 )
-        stem_paths = await asyncio.to_thread(_fetch_stems, stem_urls, requested_stems)
+        # Chord recognition needs the harmonic stems whether or not the user toggled them as
+        # loop output (deselecting guitar/keys must not leave only the `other` residue).
+        chord_stems = (*_HARMONIC_STEMS, *_MIX_EXTRA_STEMS) if _chords_enabled() else ()
+        stem_paths = await asyncio.to_thread(_fetch_stems, stem_urls, requested_stems, chord_stems)
         # Persist the Replicate cost so the admission spend-ceiling (which sums
         # job_events.detail->>'cost_usd' over 24h) actually enforces (P4).
         await emit_event(job_id, "separating", "completed", pct=100, detail={"cost_usd": sep_cost})
 
-        # Y1.1: Chord recognition (feature-flagged post-Demucs). Default provider
+        await set_status(job_id, "extracting")
+        await emit_event(job_id, "extracting", "started", pct=70)
+        loops, tags, seg_label, seg_energy = await asyncio.to_thread(
+            extract_and_tag, job_id, stem_paths, requested_stems, bars
+        )
+        # Y1.1: Chord recognition (feature-flagged). Runs AFTER extract_and_tag succeeds: a
+        # beatless / too-short track fails the job there, and must do so BEFORE the $0.20
+        # Klangio request is made, not after. Default provider
         # per the Y1 decision record is 'klangio'. Set CHORDS_PROVIDER='' to
         # DISABLE — useful for fixture / Gate-2 runs that must not call the
         # provider. Failures here NEVER fail the pipeline: chords are an optional
@@ -833,11 +1011,6 @@ async def _run_pipeline(job_id: str) -> None:
                 _maybe_run_chord_recognition, job_id, stem_paths, requested_stems
             )
 
-        await set_status(job_id, "extracting")
-        await emit_event(job_id, "extracting", "started", pct=70)
-        loops, tags, seg_label, seg_energy = await asyncio.to_thread(
-            extract_and_tag, job_id, stem_paths, requested_stems, bars
-        )
         await emit_event(job_id, "extracting", "completed", pct=100)
 
         await set_status(job_id, "uploading")

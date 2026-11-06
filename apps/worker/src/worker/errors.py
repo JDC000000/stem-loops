@@ -103,6 +103,28 @@ class UploadTooLargeError(StemLoopsError):
     user_message = "That file is too large. The maximum upload size is 200 MB."
 
 
+class UploadTooLongError(StemLoopsError):
+    """Upload exceeds the worker's duration cap (``MAX_UPLOAD_DURATION_SEC``).
+
+    Raised before any paid call (Replicate separation, Klangio). The message is built from
+    the cap actually in force so a tuned env var never leaves a stale number in the UI.
+    """
+
+    error_code = "UPLOAD_TOO_LONG"
+    user_message = "That track is too long. Trim it to a shorter length and upload it again."
+
+    def __init__(self, detail: str | None = None, *, max_seconds: float | None = None):
+        super().__init__(detail)
+        if max_seconds is not None:
+            minutes = max_seconds / 60.0
+            shown = f"{minutes:g}" if minutes >= 1 else f"{max_seconds:g} seconds"
+            unit = "" if minutes < 1 else (" minute" if minutes == 1 else " minutes")
+            self.user_message = (
+                f"That track is too long. The maximum length is {shown}{unit}. "
+                "Trim it and upload it again."
+            )
+
+
 class InternalError(StemLoopsError):
     error_code = "INTERNAL_ERROR"
     user_message = "Something went wrong on our end. We've logged it — please try again."
@@ -119,6 +141,7 @@ _ALL_ERROR_CLASSES = [
     UploadFailedError,
     UploadInvalidError,
     UploadTooLargeError,
+    UploadTooLongError,
     InternalError,
 ]
 

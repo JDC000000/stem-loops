@@ -114,10 +114,50 @@ class ChordQuotaExceeded(Exception):
     """
 
 
+class ChordSubmitUncertain(Exception):
+    """A paid submission for this job may already exist but cannot be reattached.
+
+    Raised when the per-job ledger holds the pre-POST sentinel (a previous run died
+    between sending the billable POST and recording the provider job id) or another
+    worker holds the claim. The safe action is to NOT submit again: chords are an
+    optional overlay, a second bill is real money.
+    """
+
+
+class ChordJobLedger(Protocol):
+    """Durable per-job record of a provider submission (the Replicate
+    ``replicate_prediction_id`` pattern, for providers that bill per request).
+
+    Contract, in the order ``recognize`` uses it:
+      * ``existing()``  - the recorded provider job id, or ``None`` if nothing was ever
+                          submitted. Raises ``ChordSubmitUncertain`` if a submit began
+                          but its id was never recorded.
+      * ``claim()``     - atomically mark "about to submit" BEFORE the billable POST.
+                          Raises ``ChordSubmitUncertain`` if already claimed/recorded.
+      * ``record(id)``  - persist the provider job id IMMEDIATELY after the POST,
+                          before polling.
+      * ``release()``   - undo ``claim()`` when nothing was sent (quota refused).
+    """
+
+    def existing(self) -> str | None: ...
+
+    def claim(self) -> None: ...
+
+    def record(self, provider_job_id: str) -> None: ...
+
+    def release(self) -> None: ...
+
+
 class ChordSource(Protocol):
     """Every provider implements exactly this one method."""
 
-    def recognize(self, audio_path: Path, *, stem: StemKind = "mix") -> ChordResult: ...
+    def recognize(
+        self,
+        audio_path: Path,
+        *,
+        stem: StemKind = "mix",
+        ledger: ChordJobLedger | None = None,
+    ) -> ChordResult: ...
 
 
 def get_chord_source(provider: str | None = None) -> ChordSource:

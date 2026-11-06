@@ -149,7 +149,9 @@ def test_chord_hook_upload_failure_is_logged_not_raised(
     ):
         pipeline._maybe_run_chord_recognition("job-xyz", stem_paths, ["keys"])
 
-    # The upload failure happened AFTER recognition, so the paid call isn't wasted.
+    # Recognition ran once and its upload failed. The result is NOT kept, so a requeue would
+    # call recognize() again; that second call reattaches to the recorded Klangio job instead
+    # of paying (see test_chord_rebill.py::test_failed_upload_then_rerun_does_not_pay_twice).
     fake_provider.recognize.assert_called_once()
 
 
@@ -211,7 +213,7 @@ def test_chord_hook_default_sends_harmonic_mix_not_bare_other(
     seen: dict[str, object] = {}
     fake_provider = MagicMock()
 
-    def recognize(audio_path, *, stem):
+    def recognize(audio_path, *, stem, **_kw):
         # The temp mix must exist and be non-empty at call time.
         seen["exists"] = os.path.exists(audio_path) and os.path.getsize(audio_path) > 44
         return chord_result
@@ -302,32 +304,28 @@ def test_legacy_instrumental_setting_resolves_to_harmonic_mix(
     assert str(call.args[0]) not in stem_paths.values()
 
 
-def test_single_harmonic_stem_present_is_used_directly(tmp_path: Path) -> None:
-    """Only one harmonic stem (+ vocals/drums): no mix needed, use it as-is."""
-    stems = _make_stems(tmp_path, ("vocals", "drums", "guitar"))
-    with patch.object(pipeline, "_mix_stems_to_wav") as mix:
-        chosen = pipeline._choose_chord_input(stems)
-    mix.assert_not_called()
-    assert chosen == ("guitar", stems["guitar"])
+def test_single_harmonic_stem_present_skips_without_spending(tmp_path: Path) -> None:
+    """One harmonic stem is not a mix. In a 6-stem split `other` is the residue after guitar and
+    keys were removed, so sending it alone is plausible but wrong: skip, no mix, no request."""
+    for only in ("guitar", "keys", "other"):
+        stems = _make_stems(tmp_path, ("vocals", "drums", only))
+        with patch.object(pipeline, "_mix_stems_to_wav") as mix:
+            assert pipeline._choose_chord_input(stems) is None
+        mix.assert_not_called()
 
 
-def test_only_other_and_vocals_falls_back_to_other(tmp_path: Path) -> None:
-    """4-stem-style output (other is the only harmonic stem) still works."""
+def test_only_other_and_vocals_is_skipped_not_sent_as_other(tmp_path: Path) -> None:
     stems = _make_stems(tmp_path, ("vocals", "other"))
-    assert pipeline._choose_chord_input(stems) == ("other", stems["other"])
+    assert pipeline._choose_chord_input(stems) is None
 
 
-def test_mix_failure_falls_back_to_best_single_stem_keys_before_other(
+def test_mix_failure_skips_instead_of_sending_a_single_stem(
     stem_paths: dict[str, str],
 ) -> None:
-    """If ffmpeg mixing fails, fall back to keys -> guitar -> other (other is the
-    residue and comes LAST)."""
+    """If ffmpeg mixing fails there is no single-stem fallback: the old keys-first fallback
+    could send a near-silent stem to a paid API."""
     with patch.object(pipeline, "_mix_stems_to_wav", return_value=None):
-        assert pipeline._choose_chord_input(stem_paths) == ("keys", stem_paths["keys"])
-        no_keys = {k: v for k, v in stem_paths.items() if k != "keys"}
-        assert pipeline._choose_chord_input(no_keys) == ("guitar", stem_paths["guitar"])
-        only_other = {k: v for k, v in stem_paths.items() if k not in ("keys", "guitar")}
-        assert pipeline._choose_chord_input(only_other) == ("other", stem_paths["other"])
+        assert pipeline._choose_chord_input(stem_paths) is None
 
 
 def test_real_ffmpeg_mix_produces_nonempty_wav(stem_paths: dict[str, str]) -> None:
@@ -512,14 +510,14 @@ def test_artifact_for_other_job_is_not_reused(
 
 @pytest.mark.parametrize(
     "bad",
-    [b"", b"{not json", b"[]", b'"str"', b"{}", b'{"segments": []}', b'{"segments": null}'],
-    ids=["zero-byte", "truncated", "list", "string", "no-segments", "empty-segments", "null"],
+    [b"", b"{not json", b"[]", b'"str"', b"{}", b'{"segments": null}'],
+    ids=["zero-byte", "truncated", "list", "string", "no-segments", "null"],
 )
 def test_corrupt_or_empty_artifact_is_regenerated_not_permanent(
     stem_paths: dict[str, str], chord_result: ChordResult, _chord_env: None, bad: bytes
 ) -> None:
-    """Semantics: only a JSON object with a non-empty ``segments`` list suppresses the
-    provider. Anything else is regenerated and overwritten in place."""
+    """Semantics: only a JSON object with a ``segments`` list (empty is valid: a silent track
+    yields []) suppresses the provider. Anything else is regenerated and overwritten in place."""
     key = "jobs/job-bad/play.chords.json"
     r2 = _FakeR2({key: bad})
     provider = _run_with_r2("job-bad", stem_paths, chord_result, r2)

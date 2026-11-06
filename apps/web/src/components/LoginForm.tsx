@@ -17,8 +17,10 @@ const btn = {
   boxSizing: 'border-box' as const,
 };
 const linkBtn = {
-  background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer',
+  background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer',
   textDecoration: 'underline', font: 'inherit',
+  // 44px tap target (was ~17px); inline-flex keeps the text vertically centred.
+  minHeight: 44, padding: '0 8px', display: 'inline-flex', alignItems: 'center',
 };
 
 export default function LoginForm({ returnTo }: { returnTo?: string }) {
@@ -32,6 +34,12 @@ export default function LoginForm({ returnTo }: { returnTo?: string }) {
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const captchaRef = useRef<HCaptcha>(null);
   const siteKey = process.env.NEXT_PUBLIC_HCAPTCHA_SITE_KEY;
+
+  // Password-reset emails go through the server callback so the user lands on
+  // the set-password form (the SIGNED_IN handler below would send them to
+  // /account instead).
+  const recoveryUrl = () =>
+    `${window.location.origin}/auth/callback?type=recovery&next=${encodeURIComponent('/account/reset-password')}`;
 
   // Email links and the Google redirect land back on /login with a `?code=`;
   // the browser client exchanges it on init and fires SIGNED_IN, handled below.
@@ -72,7 +80,7 @@ export default function LoginForm({ returnTo }: { returnTo?: string }) {
     void run(async () => {
       const supabase = createBrowserClient();
       if (mode === 'reset') {
-        const { error: err } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: callbackUrl() });
+        const { error: err } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: recoveryUrl() });
         if (err) throw err;
         return 'If that email has an account, a reset link is on its way.';
       }
@@ -149,9 +157,16 @@ export default function LoginForm({ returnTo }: { returnTo?: string }) {
             onError={() => setCaptchaToken(null)} />
         ) : (
           <p role="alert" style={{ color: 'var(--status-failed, #f66)', margin: 0, fontSize: 14 }}>
-            Bot check is unavailable. Please try again later.
+            Sign-up is temporarily unavailable because the bot check is not configured.
+            Existing users can still sign in. Please try again later.
           </p>
         ))}
+        {mode === 'signup' && siteKey && !captchaToken && (
+          <p role="status" style={{ color: 'var(--text-muted)', margin: 0, fontSize: 13 }}>
+            Complete the bot check above to enable Create account. If it does not appear,
+            disable ad or script blockers, check your connection, then reload the page.
+          </p>
+        )}
         <button type="submit" disabled={busy || (mode === 'signup' && !captchaToken)}
           style={{ ...btn, border: 'none', background: 'var(--btn-primary-bg, var(--accent))', color: 'var(--btn-primary-text, #000)' }}>
           {busy ? 'Working…' : mode === 'signup' ? 'Create account' : mode === 'reset' ? 'Send reset link' : 'Sign in'}
@@ -161,7 +176,7 @@ export default function LoginForm({ returnTo }: { returnTo?: string }) {
       {error && <p role="alert" style={{ color: 'var(--status-failed, #f66)', margin: 0, fontSize: 14 }}>{error}</p>}
       {notice && <p role="status" style={{ color: 'var(--status-done, #6c6)', margin: 0, fontSize: 14 }}>{notice}</p>}
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', fontSize: 14, color: 'var(--text-muted)' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 8px', fontSize: 14, color: 'var(--text-muted)' }}>
         {mode === 'signin' && (
           <>
             <button type="button" style={linkBtn} onClick={() => setMode('signup')}>Create account</button>

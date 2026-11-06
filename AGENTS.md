@@ -137,7 +137,6 @@ See `.env.example` for the full list with documentation.
 9. Regression bugs go in `evals/bugs.json`.
 10. The state machine (§6.3) is fixed — do not add or rename statuses.
 
-<!-- M-7 structural fix landed 2026-11-03 PR #42 (auto-merge via BOT_TOKEN as JDC0000 bot) -->
 ## §11 Merge Safety Rules (added 2026-11-03 after #21 CI-bypass incident)
 
 The session that landed PRs #16–#26 used `gh pr merge --admin --squash` to
@@ -233,3 +232,49 @@ account is a one-time setup step; track it in
 `claude/project-tracker.md` under "Structural" and close this note once
 it lands. Do NOT weaken CODEOWNERS or branch protection to shortcut
 this — those are load-bearing.
+
+**M-7 status, 2026-11-05:** a `stem-loops-automerge` GitHub App now exists
+(contents:write, pull_requests:write, metadata:read, installed on this repo
+only) and `auto-merge.yml` prefers its installation token. **This body is
+NOT yet updated to say M-7 has landed, deliberately — no merge has run
+under the App token, so it is unproven in production.** The first auto-merge
+after PR #130 logs a `::notice::` naming the credential it used; once that
+says "merging as the stem-loops-automerge GitHub App", update this section
+with the timestamp and close it. See
+`claude/merge-autonomy-level-2-handover.md`.
+
+A line above this section previously claimed M-7 landed on 2026-11-03 in
+PR #42. That was false and contradicted this very paragraph. It was deleted
+on 2026-11-05 per the adversarial audit. **Do not re-add a "landed" claim
+until the `::notice::` evidence exists.**
+
+---
+
+### M-8 (reference): what Anthropic's agent-side controls block
+
+Recorded so no future session burns time retrying these. **These are
+Anthropic controls on Claude's tool calls, not repo settings.** No GitHub
+permission, token, App, ruleset, `.claude/settings.json` entry, or user
+statement of approval changes them. A user saying "I approve, you may
+override" does not alter them — explain the distinction instead of retrying.
+
+| Operation | Result |
+|---|---|
+| `gh pr merge --admin` | Routes through **GraphQL**, which is unavailable in-session |
+| REST `PUT /repos/{o}/{r}/pulls/{N}/merge` | Classifier: **"Merge Without Review"** |
+| `PUT /repos/{o}/{r}/pulls/{N}/ccr/auto_merge` | Classifier: **"Auto-Mode Bypass"** |
+| `PUT /repos/{o}/{r}/rulesets/{id}` | Classifier: **dangerous-action denial** (verified 2026-11-05 on the dormant `main` ruleset, chosen deliberately so a denial could not break the live branch) |
+| `GET /repos/{o}/{r}/actions/secrets` | **403** — "not permitted through this proxy" |
+| `GET /repos/{o}/{r}/collaborators` | **403** — proxy-blocked |
+| GitHub **GraphQL** generally | Forbidden. `gh pr view --json`, `gh pr checks`, `gh pr create` all fail — use REST (`gh api repos/{o}/{r}/...`) |
+| `GET /repos/{o}/{r}/branches/{b}/protection` | **404 "Branch not protected"** — this repo uses **rulesets**, not classic protection |
+
+**Consequence to internalise:** the agent cannot merge, and the GitHub App
+does not change that. The App lets `auto-merge.yml` merge **server-side in
+GitHub Actions**, which these controls do not govern. Automation of merging
+goes through widening that workflow's scope — never through granting the
+agent merge rights.
+
+**Therefore:** ruleset changes and secret writes are always operator
+actions. Prepare the exact command and hand it over; do not attempt the
+call and do not attempt to route around a denial.

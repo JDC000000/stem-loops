@@ -18,15 +18,21 @@ Expected-price source (--source):
 Env: STRIPE_SECRET_KEY, STRIPE_PRICE_CREDITS_20, STRIPE_PRICE_CREDITS_60,
      STRIPE_PRICE_CREDITS_180 (and DATABASE_URL for db/auto).
 
-Usage: python scripts/check_credit_pack_prices.py [--source migration|db|auto] [--strict]
-Exit 0 all match (or: secrets absent and not --strict → SKIPPED);
-     1 any mismatch;
-     2 configuration/lookup error (requires --strict for missing env).
+Usage: python scripts/check_credit_pack_prices.py [--source migration|db|auto]
+
+Exit codes (each means exactly one thing):
+  0  CHECKED, no drift: every pack matched Stripe. The ONLY success.
+  1  CHECKED, drift found: a pack's amount or currency differs from Stripe.
+  2  broken: seed missing/unparseable, or the Stripe/DB lookup itself failed.
+  3  NOT CHECKED: STRIPE_SECRET_KEY or a STRIPE_PRICE_CREDITS_* var is unset
+     or empty, so no comparison was attempted. This is a configuration state,
+     never success. The script has no flag that turns it into 0; if a caller
+     chooses to tolerate it, that policy lives in the caller (see the
+     RECON_ALLOW_UNCONFIGURED switch in .github/workflows/ci.yml).
 
 Default is `--source auto` so CI catches live-DB drift (the actual M5
 scenario) when DATABASE_URL is wired, falling back to the migration seed
-otherwise. Default is NOT `--strict` so an unconfigured CI job gracefully
-skips rather than red-flagging every downstream PR.
+otherwise.
 """
 
 from __future__ import annotations
@@ -48,6 +54,11 @@ MIGRATION = (
     / "apps/worker/migrations/020_v3_credit_packs_table.sql"
 )
 EXPECTED_CURRENCY = "cad"
+
+EXIT_OK = 0
+EXIT_DRIFT = 1
+EXIT_BROKEN = 2
+EXIT_NOT_CHECKED = 3
 
 _SEED_ROW_RE = re.compile(
     r"\(\s*'(credits_\d+)'\s*,\s*\d+\s*,\s*(\d+)\s*,\s*'[^']*'\s*\)"
@@ -115,40 +126,24 @@ def main(argv: list[str] | None = None) -> int:
     # migration seed when it isn't (CI default). Review of PR #56 round-1
     # flagged that `--source migration` alone misses the live-edit drift case.
     ap.add_argument("--source", choices=("migration", "db", "auto"), default="auto")
-    # Skip gracefully when the Stripe secret isn't configured. This is the
-    # CI-startup state before Jon adds the repo secrets — without this flag,
-    # the job exits 2 (config error) and shows RED on every downstream PR,
-    # which `safe_merge.sh` then refuses per M-1. Opt-in gate: set
-    # STRICT_RECON=1 (or `--strict`) to re-enable fail-on-missing-secrets
-    # once the secrets land.
-    ap.add_argument(
-        "--strict",
-        action="store_true",
-        default=os.environ.get("STRICT_RECON") == "1",
-        help="Fail (exit 2) when STRIPE_SECRET_KEY is absent instead of "
-        "skipping with a notice. Set once repo secrets are configured so "
-        "silent-skip can no longer hide a genuine misconfiguration.",
-    )
     args = ap.parse_args(argv)
 
+    # Unset and empty are the same thing: GitHub Actions expands a secret that
+    # does not exist to "". No comparison is attempted in this state, so it must
+    # never share an exit code with "compared and found no drift".
     missing_secrets = [
         v for v in ("STRIPE_SECRET_KEY", *PRICE_ENV.values()) if not os.environ.get(v)
     ]
-    if missing_secrets and not args.strict:
-        # The whole point of the check is a Stripe lookup. If the key isn't
-        # here we can't do the lookup, but we also don't want to red-flag
-        # every downstream PR. Say so clearly and exit 0.
+    if missing_secrets:
         print(
-            "SKIPPED: " + ", ".join(missing_secrets) + " not set — "
-            "add the repo secrets (see PR #56 body) and re-run. "
-            "Pass --strict or STRICT_RECON=1 to enforce.",
+            "NOT CHECKED: " + ", ".join(missing_secrets) + " not set, so NO "
+            "credit pack price was compared with Stripe. This is not a pass. "
+            "Add the repo secrets (see PR #56 body) and re-run.",
             file=sys.stderr,
         )
-        return 0
+        return EXIT_NOT_CHECKED
 
     try:
-        if missing_secrets:
-            raise ConfigError("missing env: " + ", ".join(missing_secrets))
         expected, label = load_expected(args.source)
         absent = [p for p in PACKS if p not in expected]
         if absent:
@@ -157,10 +152,10 @@ def main(argv: list[str] | None = None) -> int:
         actual = fetch_stripe(price_ids)
     except ConfigError as exc:
         print(f"CONFIG ERROR: {exc}", file=sys.stderr)
-        return 2
+        return EXIT_BROKEN
     except Exception as exc:  # noqa: BLE001 - Stripe/network errors
         print(f"LOOKUP ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 2
+        return EXIT_BROKEN
 
     print(f"Expected source: {label}")
     header = f"{'pack':<12} {'price_id':<32} {'expected':>9} {'stripe':>9} cur  status"
@@ -182,9 +177,9 @@ def main(argv: list[str] | None = None) -> int:
             "what /pricing shows.",
             file=sys.stderr,
         )
-        return 1
+        return EXIT_DRIFT
     print("\nOK: all credit pack prices match Stripe.")
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":

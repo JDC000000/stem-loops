@@ -82,27 +82,106 @@ def test_auto_falls_back_to_migration_when_db_down(monkeypatch):
         assert cpp.main(["--source", "auto"]) == 0
 
 
-def test_missing_env_skips_cleanly_by_default(monkeypatch):
-    # Default (non-strict) behavior: no STRIPE_SECRET_KEY → exit 0 with SKIPPED
-    # notice. This prevents the CI job from red-flagging every downstream PR
-    # before Jon adds the repo secrets (M-1 would otherwise refuse all merges).
+_SECRETS = (
+    "STRIPE_SECRET_KEY",
+    "STRIPE_PRICE_CREDITS_20",
+    "STRIPE_PRICE_CREDITS_60",
+    "STRIPE_PRICE_CREDITS_180",
+)
+
+
+@pytest.mark.parametrize("var", _SECRETS)
+@pytest.mark.parametrize("strict_env", [None, "0", "1"])
+def test_missing_secret_is_not_checked_exit_three(monkeypatch, capsys, var, strict_env):
+    # "Secret absent, so I checked nothing" must never look like success (0),
+    # nor like drift (1) or a broken lookup (2). STRICT_RECON is gone; setting
+    # it in any state must change nothing.
+    monkeypatch.delenv(var)
+    if strict_env is not None:
+        monkeypatch.setenv("STRICT_RECON", strict_env)
+    with mock.patch("stripe.Price.retrieve") as retrieve:
+        assert cpp.main([]) == cpp.EXIT_NOT_CHECKED == 3
+        retrieve.assert_not_called()  # nothing was compared
+    err = capsys.readouterr().err
+    assert "NOT CHECKED" in err and var in err
+
+
+def test_empty_secret_counts_as_missing(monkeypatch):
+    # GitHub Actions expands an unconfigured secret to "", not to unset.
+    for var in _SECRETS:
+        monkeypatch.setenv(var, "")
+    assert cpp.main([]) == 3
+
+
+def test_strict_flag_no_longer_exists():
+    with pytest.raises(SystemExit) as e:
+        cpp.main(["--strict"])
+    assert e.value.code == 2  # argparse usage error, not a silent no-op
+
+
+def test_exit_codes_are_pairwise_distinct():
+    codes = (cpp.EXIT_OK, cpp.EXIT_DRIFT, cpp.EXIT_BROKEN, cpp.EXIT_NOT_CHECKED)
+    assert len(set(codes)) == 4
+
+
+def test_not_checked_is_not_masked_by_a_present_db(monkeypatch):
+    # Secrets absent but a DB reachable: still nothing compared against Stripe.
     monkeypatch.delenv("STRIPE_SECRET_KEY")
-    monkeypatch.delenv("STRICT_RECON", raising=False)
-    assert cpp.main([]) == 0
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    with mock.patch.object(cpp, "prices_from_db", return_value=DB):
+        assert cpp.main(["--source", "db"]) == 3
 
 
-def test_missing_env_exits_two_with_strict_flag(monkeypatch):
-    # Opt-in enforcement: --strict re-enables fail-on-missing-secrets so once
-    # the secrets are configured we can't silently regress back to SKIPPED.
-    monkeypatch.delenv("STRIPE_SECRET_KEY")
-    assert cpp.main(["--strict"]) == 2
+# --- the CI job's policy switch: what it does NOT forgive ---------------------
+
+_CI = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "ci.yml"
 
 
-def test_missing_env_exits_two_with_strict_env(monkeypatch):
-    # STRICT_RECON=1 env is the recommended CI toggle once secrets are in.
-    monkeypatch.delenv("STRIPE_SECRET_KEY")
-    monkeypatch.setenv("STRICT_RECON", "1")
-    assert cpp.main([]) == 2
+def _recon_step_script() -> str:
+    lines = _CI.read_text().splitlines()
+    start = next(i for i, ln in enumerate(lines) if "name: Reconcile credit_packs" in ln)
+    run = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
+    body = []
+    for ln in lines[run + 1 :]:
+        if ln.strip() and not ln.startswith(" " * 10):
+            break
+        body.append(ln[10:])
+    return "\n".join(body)
+
+
+def _run_step(tmp_path, script_exit: int, allow: str) -> int:
+    import subprocess
+
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "check_credit_pack_prices.py").write_text(
+        f"import sys; sys.exit({script_exit})\n"
+    )
+    shell = _recon_step_script().replace("python ", f"{sys.executable} ")
+    res = subprocess.run(
+        ["bash", "-e", "-c", shell],
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin", "RECON_ALLOW_UNCONFIGURED": allow},
+        capture_output=True,
+        text=True,
+    )
+    return res.returncode
+
+
+def test_ci_switch_defaults_to_not_forgiving():
+    assert 'RECON_ALLOW_UNCONFIGURED: "0"' in _CI.read_text()
+    assert "STRICT_RECON" not in _CI.read_text()
+
+
+@pytest.mark.parametrize("code", [0, 1, 2, 3])
+def test_ci_switch_off_passes_script_exit_through(tmp_path, code):
+    assert _run_step(tmp_path, code, "0") == code
+
+
+@pytest.mark.parametrize("code,expected", [(3, 0), (0, 0), (1, 1), (2, 2)])
+def test_ci_switch_on_forgives_only_not_checked(tmp_path, code, expected):
+    # Exit 3 (nothing compared) is the ONLY code the switch rewrites.
+    # Drift (1) and broken lookup (2) must still fail the job.
+    assert _run_step(tmp_path, code, "1") == expected
 
 
 def test_stripe_error_exits_two():

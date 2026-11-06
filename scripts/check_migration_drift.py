@@ -76,6 +76,16 @@ EXIT_DRIFT = 1
 EXIT_UNKNOWN = 2
 
 
+class LedgerMissing(Exception):
+    """`public._migrations` is absent, so the applied set is unknowable.
+
+    Deliberately NOT one of the errors --allow-unreachable forgives. Staging
+    has exactly this shape: tables present, no ledger. "Which tables exist" and
+    "which migrations ran" are different questions, and no flag should let the
+    second be answered by guessing.
+    """
+
+
 @dataclass
 class Drift:
     """Result of comparing repo migrations against the applied ledger."""
@@ -117,7 +127,7 @@ def fetch_applied(database_url: str) -> set[str]:
         cur.execute("SELECT to_regclass('public._migrations')")
         row = cur.fetchone()
         if row is None or row[0] is None:
-            raise RuntimeError(
+            raise LedgerMissing(
                 "public._migrations does not exist. The applied set is "
                 "unknowable from inside this database — tables present do "
                 "not tell you which migrations ran. Refusing to guess."
@@ -143,7 +153,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--allow-unreachable",
         action="store_true",
-        help="downgrade 'cannot determine' from exit 2 to exit 0 (prints a warning)",
+        help=(
+            "downgrade an UNREACHABLE database from exit 2 to exit 0 (prints a "
+            "warning). Does NOT forgive a reachable database with no "
+            "_migrations ledger - that always fails."
+        ),
     )
     args = ap.parse_args(argv)
 
@@ -166,8 +180,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         applied = fetch_applied(database_url)
-    except Exception as exc:  # noqa: BLE001 - any failure means "unknowable"
-        msg = f"could not read the migration ledger: {exc}"
+    except LedgerMissing as exc:
+        # NOT forgiven by --allow-unreachable. The database answered; it simply
+        # cannot say what has been applied. Blessing that would be guessing.
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return EXIT_UNKNOWN
+    except Exception as exc:  # noqa: BLE001 - could not reach the database
+        msg = f"could not reach the database: {exc}"
         if args.allow_unreachable:
             print(f"WARNING: {msg} --allow-unreachable given; reporting success "
                   f"WITHOUT having checked anything.", file=sys.stderr)
@@ -197,11 +216,16 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_DRIFT
 
     if args.expect is not None and len(applied) != args.expect:
+        # Exit 1 means "the database is behind". Fewer rows than expected is
+        # that. MORE rows is a different surprise and gets exit 2, so whatever
+        # reads the exit code is not told the opposite of what happened.
+        behind = len(applied) < args.expect
         print(
-            f"\nFAIL: ledger holds {len(applied)} rows, expected {args.expect}.",
+            f"\nFAIL: ledger holds {len(applied)} rows, expected {args.expect} "
+            f"({'fewer' if behind else 'MORE'} than expected).",
             file=sys.stderr,
         )
-        return EXIT_DRIFT
+        return EXIT_DRIFT if behind else EXIT_UNKNOWN
 
     print("OK: every migration this code requires is applied.")
     return EXIT_OK

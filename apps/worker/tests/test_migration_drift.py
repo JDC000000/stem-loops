@@ -16,8 +16,12 @@ Part 4 lists exactly that failure in a sibling script.
 from __future__ import annotations
 
 import importlib.util
+import os
+import re
 import sys
 from pathlib import Path
+
+import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCRIPT = _REPO_ROOT / "scripts" / "check_migration_drift.py"
@@ -155,3 +159,140 @@ def test_expect_row_count_mismatch_fails(monkeypatch):
     monkeypatch.setattr(drift_mod, "fetch_applied", lambda _u: set(real))
     assert drift_mod.main([]) == drift_mod.EXIT_OK
     assert drift_mod.main(["--expect", str(len(real) + 1)]) == drift_mod.EXIT_DRIFT
+
+
+# --------------------------------------------------------------------------
+# the gate's discovery must track the runner's, not merely resemble it
+#
+# Review finding D4: the discovery test above asserts a hard-coded list and
+# never consults the runner, while the script's docstring says "if the runner's
+# discovery ever changes, this check must change with it". Nothing enforced
+# that. The glob now exists in three places (migrate.py, this gate, and the CI
+# job); these tests go red when they stop agreeing.
+# --------------------------------------------------------------------------
+
+_MIGRATE_PY = _REPO_ROOT / "apps" / "worker" / "src" / "worker" / "migrate.py"
+
+
+def test_gate_and_runner_resolve_to_the_same_migrations_directory():
+    import os as _os
+
+    # Recomputed the way migrate.py computes it, from migrate.py's own location.
+    runner_dir = _os.path.normpath(_os.path.join(_MIGRATE_PY.parent, "..", "..", "migrations"))
+    assert (
+        Path(runner_dir).resolve() == drift_mod.DEFAULT_MIGRATIONS_DIR.resolve()
+    ), "the gate is looking at a different directory than the runner"
+
+
+def test_runner_discovery_is_still_a_top_level_sql_glob():
+    """Pin the runner's actual expression. If it changes, this goes red.
+
+    This is the only thing standing between "the gate mirrors the runner" being
+    true and being a comment that used to be true.
+    """
+    src = _MIGRATE_PY.read_text()
+    assert 'glob.glob(os.path.join(MIGRATIONS_DIR, "*.sql"))' in src, (
+        "migrate.py's discovery changed. scripts/check_migration_drift.py "
+        "and the CI job's count must change with it."
+    )
+    assert "recursive=True" not in src, "runner went recursive; gate would miss down/"
+
+
+def test_gate_discovery_matches_the_runners_glob_on_the_real_tree():
+    import glob as _glob
+    import os as _os
+
+    runner = sorted(
+        _os.path.basename(p)
+        for p in _glob.glob(_os.path.join(str(drift_mod.DEFAULT_MIGRATIONS_DIR), "*.sql"))
+    )
+    assert drift_mod.discover_repo_migrations(drift_mod.DEFAULT_MIGRATIONS_DIR) == runner
+
+
+# --------------------------------------------------------------------------
+# D5: --allow-unreachable must not forgive a reachable database with no ledger
+# --------------------------------------------------------------------------
+
+
+def test_missing_ledger_is_never_forgiven_even_with_allow_unreachable(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x/x")
+
+    def _raise(_u):
+        raise drift_mod.LedgerMissing("public._migrations does not exist")
+
+    monkeypatch.setattr(drift_mod, "fetch_applied", _raise)
+    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
+    assert (
+        drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_UNKNOWN
+    ), "staging's exact shape: tables present, no ledger. No flag may bless it"
+
+
+def test_unreachable_database_is_forgiven_only_with_the_flag(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x/x")
+
+    def _raise(_u):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(drift_mod, "fetch_applied", _raise)
+    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main(["--allow-unreachable"]) == drift_mod.EXIT_OK
+
+
+# --------------------------------------------------------------------------
+# D6: more rows than expected is not "the database is behind"
+# --------------------------------------------------------------------------
+
+
+def test_expect_fewer_is_drift_but_expect_more_is_unknown(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x/x")
+    real = drift_mod.discover_repo_migrations(drift_mod.DEFAULT_MIGRATIONS_DIR)
+    monkeypatch.setattr(drift_mod, "fetch_applied", lambda _u: set(real))
+    # ledger has len(real); asking for more -> genuinely behind -> exit 1
+    assert drift_mod.main(["--expect", str(len(real) + 1)]) == drift_mod.EXIT_DRIFT
+    # ledger has MORE than expected -> a surprise, not "behind" -> exit 2
+    assert drift_mod.main(["--expect", str(len(real) - 1)]) == drift_mod.EXIT_UNKNOWN
+
+
+# --------------------------------------------------------------------------
+# D7: fetch_applied had no test at all — every DB-touching test above
+# monkeypatches it away, so the to_regclass branch and the row-shape
+# assumption were exercised by nothing. These run for real when DATABASE_URL
+# is set, which CI's `test` job does (it has a postgres service).
+# --------------------------------------------------------------------------
+
+
+def _pg_url_or_skip():
+    import pytest
+
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if not url:
+        pytest.skip("DATABASE_URL not set; CI's test job provides one")
+    pytest.importorskip("psycopg")
+    return url
+
+
+def test_fetch_applied_raises_ledger_missing_on_a_database_without_one():
+    """The to_regclass branch, exercised against a real ledger-less database."""
+    url = _pg_url_or_skip()  # skips before importing psycopg if there is no DB
+    import psycopg
+
+    name = "drift_gate_probe_db"
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(f"DROP DATABASE IF EXISTS {name}")
+        conn.execute(f"CREATE DATABASE {name}")
+    try:
+        probe_url = re.sub(r"/[^/?]*(\?|$)", f"/{name}\\1", url, count=1)
+        with pytest.raises(drift_mod.LedgerMissing):
+            drift_mod.fetch_applied(probe_url)
+    finally:
+        with psycopg.connect(url, autocommit=True) as conn:
+            conn.execute(f"DROP DATABASE IF EXISTS {name}")
+
+
+def test_fetch_applied_returns_filenames_from_a_real_ledger():
+    url = _pg_url_or_skip()
+    applied = drift_mod.fetch_applied(url)
+    assert isinstance(applied, set)
+    if not applied:
+        return  # an empty ledger is a legitimate state
+    assert all(isinstance(x, str) and x.endswith(".sql") for x in applied), sorted(applied)[:5]

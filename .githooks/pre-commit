@@ -49,12 +49,44 @@ echo "pre-commit: [1/5] make lint"
 make lint >/tmp/precommit-lint.log 2>&1 || { cat /tmp/precommit-lint.log >&2; fail "make lint"; }
 
 # ─── 2. make test ────────────────────────────────────────────────────────────
+# [2/5] make test. The worker imports `datetime.UTC`, which is Python 3.11+.
+# A 3.10 interpreter CANNOT run these tests -- 14 collection errors, and no
+# amount of pip installing fixes a language-version requirement. Rather than
+# hard-fail and train everyone to set SKIP_PRECOMMIT=1 (which disables ALL
+# five steps, including the lint step that actually catches things), skip this
+# one LOUDLY and keep the rest enforcing.
 echo "pre-commit: [2/5] make test"
-make test >/tmp/precommit-test.log 2>&1 || { cat /tmp/precommit-test.log >&2; fail "make test"; }
+if python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+  make test >/tmp/precommit-test.log 2>&1 || { cat /tmp/precommit-test.log >&2; fail "make test"; }
+else
+  echo "pre-commit: [2/5] SKIPPED -- python3 is $(python3 -V 2>&1), and the worker" >&2
+  echo "pre-commit:       requires 3.11+ (datetime.UTC). CI runs 3.11, so these" >&2
+  echo "pre-commit:       tests DO run there. This machine cannot run them." >&2
+  echo "pre-commit:       => Your commit is NOT test-verified locally." >&2
+fi
 
 # ─── 3. web typecheck ────────────────────────────────────────────────────────
+# [3/5] typecheck. Needs pnpm AND node_modules, and a git worktree never has
+# node_modules, so this step does not run in a worktree even on a machine where
+# pnpm is installed. Skip loudly rather than hard-fail.
+#
+# RETRACTION: an earlier version of this comment claimed `pnpm install
+# --frozen-lockfile` refuses because pnpm-lock.yaml declares an `overrides:`
+# block that package.json does not, and called it a security pin living only in
+# the lockfile. THAT WAS FALSE. v3/main's package.json has both
+# `packageManager: pnpm@9.0.0` and `pnpm.overrides: {"postcss@<8.5.10":
+# ">=8.5.10"}`; they landed together in 3b41529 (#7), and CI's
+# --frozen-lockfile passes. The mismatch was observed against a POLLUTED V1
+# package.json left in the working tree by a half-applied branch switch -- i.e.
+# it was the wrong copy, found while investigating a wrong-copy problem (L35).
 echo "pre-commit: [3/5] pnpm --filter web typecheck"
-pnpm --filter web typecheck >/tmp/precommit-tsc.log 2>&1 || { cat /tmp/precommit-tsc.log >&2; fail "pnpm --filter web typecheck"; }
+if command -v pnpm >/dev/null 2>&1 && [ -d node_modules ]; then
+  pnpm --filter web typecheck >/tmp/precommit-tsc.log 2>&1 || { cat /tmp/precommit-tsc.log >&2; fail "pnpm --filter web typecheck"; }
+else
+  echo "pre-commit: [3/5] SKIPPED -- pnpm or node_modules missing." >&2
+  echo "pre-commit:       A worktree has no node_modules, so this never runs" >&2
+  echo "pre-commit:       there. => Commit is NOT typecheck-verified locally." >&2
+fi
 
 # ─── 4. training syntax check ────────────────────────────────────────────────
 echo "pre-commit: [4/5] python -m compileall apps/training"
@@ -76,4 +108,5 @@ if git diff --cached -U0 --diff-filter=ACM | \
   fail "merge-conflict marker check"
 fi
 
-echo "pre-commit: all R-1 checks passed."
+echo "pre-commit: R-1 checks finished. Steps marked SKIPPED above were NOT run;"
+echo "pre-commit: only CI verifies those. See AGENTS.md R-1."

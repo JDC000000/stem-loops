@@ -406,6 +406,77 @@ Cost is roughly ten minutes of agent time per round.
 
 ---
 
+### M-11 (hard): adversarial SECURITY review — below 90/100 is not merged
+
+**Added 2026-11-07, at Jon's instruction.** Separate pass from M-9, different
+model family from the author (R-7), and **its score DOES gate the merge.**
+
+**The bar is deliberately different from M-9's, and the asymmetry is the
+point.** M-9 dropped its ≥90 gate because a false green *announces itself*:
+a reviewer demonstrates it with an input, so "no demonstrated false green"
+is a property you can actually test, and the number was rewarding churn. A
+missed vulnerability does not announce itself. There is no "run it and watch
+it fail" equivalent, so a properties bar has nothing to bite on. And the
+churn that killed the ≥90 code bar is far less likely here, because security
+findings rarely sit inside the previous round's fix. **So: ≥90, hard, and
+revise-and-re-review until it clears or the residue is accepted, named and
+recorded in the PR by Jon — not by the agent.**
+
+**Mandatory before merge when the change touches any of:**
+
+1. **RLS policies, grants, or roles.**
+2. **Auth, sessions, or the service-role key.**
+3. **Secret handling** — anything reading an environment variable for a
+   credential, anything that can print one, any workflow that can read one.
+4. **The money path** — billing, credits, entitlements, Stripe.
+5. **File upload**, or any user-supplied path reaching storage.
+
+**Use the `security` agent type.** Read-only by convention (Read, Grep, Glob,
+Bash) — a reviewer that edits becomes an author and the next round has no
+independent party, exactly as in M-9.
+
+**The brief gets M-9's seven required contents, plus these five facts, because
+an agent that re-derives them wastes its budget and one of them it cannot
+derive at all:**
+
+- `anon` and `authenticated` hold **ALL privileges** on new `public` tables by
+  Supabase default. Every table's safety therefore rests on RLS alone. This is
+  the single most important standing fact for a security pass on this repo.
+- `postgres` on Supabase project `qthrhamfljhifhfwvvwj` is **NOSUPERUSER**,
+  BYPASSRLS, CREATEROLE, and owns the database. It has no CREATE on `auth`.
+- Known credential-exposure paths, all previously found and none yet closed:
+  the **dead** Vercel project `stem-loops`
+  (`prj_n1PkHnu2Krc3QFO4dwS2iYqAZifY`) still holds encrypted `DATABASE_URL`,
+  `R2_*`, `IP_HASH_KEY` and `HISTORY_COOKIE_KEY`, three flagged
+  `readable-secret`; the **live** project exposes `DATABASE_URL`,
+  `DATABASE_URL_POOLED` and `R2_SECRET_ACCESS_KEY` as `readable-secret` to
+  preview+development.
+- The web app **falls back to hardcoded sandbox Stripe price IDs** when
+  `STRIPE_PRICE_CREDITS_*` are unset in Vercel
+  (`apps/web/src/lib/billing/providers/stripe.ts`). No gate in this repo can
+  detect it, and at the live-mode flip it bills real customers at sandbox
+  prices.
+- The prior audit is `claude/session-6-security-audit.md` (in the Project, not
+  the repo — see M-10's note on unreachable paths). Tell the reviewer to say
+  what has CHANGED since it rather than restate it.
+
+**Before the cutover specifically, the security pass must answer two things
+the cutover plan lists as blocking pre-flight items:**
+
+1. **Which Postgres role the web app and worker connect as in production.**
+   If it is `stemloops_app`, account deletion fails with `permission denied`
+   (025 revokes DELETE deliberately) **after** cancelling the Stripe
+   subscription and tombstoning the user.
+2. **Whether the three Stripe vars in Vercel production are live-mode or
+   absent.** Never a sandbox key in production, and never some-but-not-all.
+
+**What this rule is not.** It is not a substitute for M-9 — a change can need
+both, and a CI gate touching grants needs both. And a security review clearing
+90 is not permission to merge something the deny list refuses: Jon merges the
+money path, migrations, workflows and secrets, every time.
+
+---
+
 ### M-10 (hard): get GitHub API access in the first minute of every session
 
 **Added 2026-11-07, at Jon's instruction.** Without it an agent is blind to

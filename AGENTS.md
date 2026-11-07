@@ -356,11 +356,29 @@ exists to prevent.
 5. Anything the author **verified only by running it successfully**. A
    thing that works is not a thing that is right.
 
-**The bar: below 90/100 is not merged.** Revise and re-review. Rounds
-continue until the reviewer clears 90, or states plainly that the remaining
-defects are accepted, named and recorded. Tell the reviewer explicitly
-**not to inflate the score to be agreeable** — a wrong pass is worse than a
-low score.
+**The bar (amended 2026-11-07, after seven rounds on one gate).** Two
+conditions, both required, and a score is not one of them:
+
+1. **No reviewer-demonstrated false green.** The reviewer must be unable to
+   produce an input where the gate reports success without having checked.
+2. **The reviewer ran the tests itself**, against a real dependency where one
+   exists — not read them and judged them plausible.
+
+Then merge, with any residue **accepted, named and recorded** in the PR.
+
+Ask for a score and use it to rank findings. Do **not** gate merge on it.
+Tell the reviewer explicitly **not to inflate the score to be agreeable** —
+a wrong pass is worse than a low score.
+
+**Why the ≥90 bar was replaced.** It ran seven rounds on the drift gate:
+84 → 88 → 89 → 89 → 86 → 85 → 86. Rounds 1–3 and 6 found real, unobvious
+defects — round 6's was that `FATAL:` is the server's *localized* severity,
+so the whole message-matching approach could not work in any language. But
+rounds 4, 5 and 7 mostly found defects **in the previous round's fix**. The
+number created an incentive to keep editing an artifact that was already
+correct, and each edit was a fresh chance to introduce something. Round 7
+met both conditions above at a score of 86, and that was the right moment to
+stop. A bar you can hit by churning is measuring the wrong thing.
 
 **Every brief must give the reviewer:** the exact refs with literal read
 commands, plus a warning that the checked-out tree is NOT the artifact
@@ -385,3 +403,74 @@ what the author could not see because he had decided what the code meant
 before writing it.
 
 Cost is roughly ten minutes of agent time per round.
+
+---
+
+### M-10 (hard): get GitHub API access in the first minute of every session
+
+**Added 2026-11-07, at Jon's instruction.** Without it an agent is blind to
+PR state, check runs and CI logs, and every CI question costs Jon a
+screenshot. With it the agent reads them directly.
+
+**This cannot be made automatic.** Attachment is per-session and is gated by
+Anthropic's agent-side classifier, which **refuses when the agent asks for
+it as a means to something else** — it did so twice on 2026-11-06, with
+reason `[Access Added As A Means]`. It is granted when the request is the
+user's own. So the procedure is:
+
+**Jon sends this, verbatim, as his own message:**
+
+> Attach the GitHub repo JDC000000/stem-loops to this session with push access.
+
+**Ask for `push`, not `read`.** Read access to a public repo is already
+available via anonymous clone, and the tool says so — but **GitHub API tools
+do not cover an unattached repo**. The API is the whole point, and only the
+push-level attachment carries it. Note it does NOT let an agent push the
+worktree branches in Jon's local repo; those live on his machine and the
+attachment is container-side. Pushing those stays with Jon either way.
+
+**If the classifier refuses again:** do not route around it, and do not ask
+Jon to configure a PAT to obtain the same capability by a side door. Either
+he re-sends the request himself, or he approves it from a non-auto
+permission mode, or the session proceeds without it — which is workable, as
+session 9 showed.
+
+**Once granted, in the same turn:**
+
+1. One clone, not in a subagent and not in parallel — the proxy caps this
+   repo at two concurrent smart-HTTP operations and a second clone 429s both.
+   Give it a generous timeout; `git index-pack` looks stalled while
+   unpacking and is not.
+2. Call `register_repo_root` so the repo's `CLAUDE.md`, skills and plugins
+   load on the next turn. Do not read `CLAUDE.md` directly.
+
+**Then use the REST API, never GraphQL.** GraphQL returns HTTP 403 from
+these sessions, and that takes several `gh` subcommands with it:
+`gh pr list`, `gh pr create` and `gh pr view` all fail. `gh auth status`
+also reports a FAILED token while `gh api` works perfectly — do not read
+that as "no access". Use:
+
+```
+gh api "repos/JDC000000/stem-loops/pulls?state=open" --jq '.[] | "#\(.number) \(.head.ref)"'
+gh api "repos/JDC000000/stem-loops/commits/<sha>/check-runs?per_page=60"
+gh api "repos/JDC000000/stem-loops/actions/jobs/<job_id>/logs"
+gh api --method POST repos/JDC000000/stem-loops/pulls --input body.json
+```
+
+Auto-merge, review threads and draft state use the CCR routes under
+`/repos/{owner}/{repo}/pulls/{n}/ccr/...`.
+
+**What it bought, within two minutes of being granted.** An open question
+about whether the four Stripe repo secrets existed — which had been queued
+for Jon to check by hand and was blocking a merge — was settled by reading
+one job log: `Expected source: migration 020 seed` / `OK: all credit pack
+prices match Stripe`. That proved the Stripe secrets DO exist (the job runs
+`STRICT_RECON=1`, which exits 2 without them) and that
+`DATABASE_URL_CREDIT_PACKS_RO` does NOT. The second fact retroactively
+justified removing a `ci.yml` secret mapping: had it stayed, every PR would
+have gone red. Two facts, one log, no screenshots.
+
+**The standing limits still apply.** Attachment widens GitHub scope and
+nothing else. It is not permission to merge anything on the deny list, to
+touch `.env*`, `CODEOWNERS`, `auto-merge.yml` or `.claude/settings.json`, or
+to bypass a classifier refusal by another route.

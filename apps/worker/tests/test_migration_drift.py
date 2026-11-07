@@ -118,29 +118,61 @@ def test_a_gap_in_the_middle_is_caught_not_just_a_short_tail():
 def test_missing_database_url_does_not_exit_zero(monkeypatch, capsys):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     rc = drift_mod.main([])
-    assert rc == drift_mod.EXIT_UNKNOWN, (
-        "no DATABASE_URL must NOT be success — a gate that skips silently is "
-        "worse than no gate (seam-inventory Part 4, item 5)"
+    assert rc == drift_mod.EXIT_NOT_CHECKED, (
+        "no DATABASE_URL is NOT ATTEMPTED (3), its own code -- distinct from "
+        "exit 2's attempted-and-failed, so a caller can tolerate one without "
+        "tolerating the other. It must never be success: a gate that skips "
+        "silently is worse than no gate (seam-inventory Part 4, item 5)"
     )
     assert rc != drift_mod.EXIT_OK
+    assert rc != drift_mod.EXIT_BROKEN, (
+        "collapsing 'not configured' into 'broken' is what forced the old "
+        "in-script forgiving flag to exist, and that flag is where five review "
+        "rounds found false greens"
+    )
 
 
 def test_blank_database_url_is_a_misconfiguration_not_an_absence(monkeypatch):
     """Renamed in round 6: "treated as absent" is what the bug WAS. A set-but-
     empty DATABASE_URL means a secret was wired and did not arrive."""
     monkeypatch.setenv("DATABASE_URL", "   ")
-    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main([]) == drift_mod.EXIT_BROKEN
 
 
-def test_allow_no_database_is_an_explicit_opt_in_and_warns(monkeypatch, capsys):
+def test_no_flag_on_this_script_turns_any_failure_into_success(monkeypatch, capsys):
+    """Replaces test_allow_no_database_is_an_explicit_opt_in_and_warns.
+
+    That flag is gone. Tolerating an unconfigured gate is a CALLER's policy and
+    belongs in the workflow file, where a person reviewing CI can see it -- not
+    in an argparse option, which is the one place nobody looks. Five rounds of
+    review found a false green inside that option, every time by a different
+    route, which is the argument for not having it at all.
+    """
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    rc = drift_mod.main(["--allow-no-database"])
-    assert rc == drift_mod.EXIT_OK
+    assert drift_mod.main([]) == drift_mod.EXIT_NOT_CHECKED
     err = capsys.readouterr().err
-    assert (
-        "WITHOUT having checked" in err
-    ), "the skip path must say plainly that nothing was verified"
+    assert "NOT CHECKED" in err, "the unattempted path must say so plainly"
+
+    # No argparse option may map a failure to 0. If someone adds one, this
+    # fails and they have to read the paragraph above.
+    import argparse
+
+    parser_actions = []
+
+    real_add = argparse.ArgumentParser.add_argument
+
+    def record(self, *a, **k):
+        parser_actions.extend(x for x in a if isinstance(x, str) and x.startswith("--"))
+        return real_add(self, *a, **k)
+
+    monkeypatch.setattr(argparse.ArgumentParser, "add_argument", record)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@127.0.0.1:5499/d")
+    drift_mod.main([])
+    forgiving = [f for f in parser_actions if "allow" in f or "ignore" in f or "skip" in f]
+    assert not forgiving, (
+        f"this script has grown a forgiving flag again: {forgiving}. Tolerance "
+        f"is the caller's policy -- see scripts/_gate_exit.py."
+    )
 
 
 def test_unreadable_ledger_is_unknown_not_success(monkeypatch):
@@ -150,7 +182,7 @@ def test_unreadable_ledger_is_unknown_not_success(monkeypatch):
         "fetch_applied",
         lambda _u: (_ for _ in ()).throw(RuntimeError("boom")),
     )
-    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main([]) == drift_mod.EXIT_BROKEN
 
 
 def test_drift_exits_one(monkeypatch):
@@ -276,21 +308,23 @@ def test_runner_discovery_is_top_level_only_on_the_real_tree():
 
 
 # --------------------------------------------------------------------------
-# D5: --allow-no-database must not forgive a reachable database with no ledger
+# D5: exit 2 must not be forgiven for a reachable database with no ledger
 # --------------------------------------------------------------------------
 
 
-def test_missing_ledger_is_never_forgiven_even_with_allow_no_database(monkeypatch):
+def test_missing_ledger_is_broken_not_unattempted(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x/x")
 
     def _raise(_u):
         raise drift_mod.LedgerMissing("public._migrations does not exist")
 
     monkeypatch.setattr(drift_mod, "fetch_applied", _raise)
-    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert (
-        drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
-    ), "staging's exact shape: tables present, no ledger. No flag may bless it"
+    assert drift_mod.main([]) == drift_mod.EXIT_BROKEN
+    assert drift_mod.main([]) == drift_mod.EXIT_BROKEN, (
+        "staging's exact shape: tables present, no ledger. This is exit 2 -- "
+        "ATTEMPTED AND FAILED, because the database answered and still cannot "
+        "say what ran. Not exit 3: something WAS attempted. Nothing forgives it"
+    )
 
 
 def test_a_simulated_connect_failure_is_not_forgiven_by_the_flag(monkeypatch):
@@ -300,12 +334,11 @@ def test_a_simulated_connect_failure_is_not_forgiven_by_the_flag(monkeypatch):
         raise drift_mod.Unreachable("connection refused")
 
     monkeypatch.setattr(drift_mod, "fetch_applied", _raise)
-    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main([]) == drift_mod.EXIT_BROKEN
     # Round 6: the flag no longer forgives this. A DATABASE_URL was set, so a
     # database was CLAIMED to exist; failing to reach it is a failure, not an
     # absence. Rounds 4-6 each shipped a false green trying to decide which
     # connect failures were benign by reading libpq's message.
-    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
 
 
 def test_reachable_but_unreadable_ledger_is_never_forgiven(monkeypatch):
@@ -315,8 +348,7 @@ def test_reachable_but_unreadable_ledger_is_never_forgiven(monkeypatch):
         raise PermissionError("permission denied for table _migrations")
 
     monkeypatch.setattr(drift_mod, "fetch_applied", _raise)
-    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main([]) == drift_mod.EXIT_BROKEN
 
 
 def test_a_simulated_query_time_failure_is_not_forgiven(monkeypatch):
@@ -335,10 +367,12 @@ def test_a_simulated_query_time_failure_is_not_forgiven(monkeypatch):
         raise LockNotAvailable("canceling statement due to lock timeout")
 
     monkeypatch.setattr(drift_mod, "fetch_applied", _raise)
-    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert (
-        drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
-    ), "a query cancelled mid-read is not an unreachable database"
+    assert drift_mod.main([]) == drift_mod.EXIT_BROKEN
+    assert drift_mod.main([]) == drift_mod.EXIT_BROKEN, (
+        "a query cancelled mid-read is not an unreachable database, and under "
+        "the four-code contract it is not 'not attempted' either -- it was "
+        "attempted and it failed, which is exit 2"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -353,7 +387,7 @@ def test_expect_fewer_is_drift_but_expect_more_is_unknown(monkeypatch):
     # ledger has len(real); asking for more -> genuinely behind -> exit 1
     assert drift_mod.main(["--expect", str(len(real) + 1)]) == drift_mod.EXIT_DRIFT
     # ledger has MORE than expected -> a surprise, not "behind" -> exit 2
-    assert drift_mod.main(["--expect", str(len(real) - 1)]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main(["--expect", str(len(real) - 1)]) == drift_mod.EXIT_BROKEN
 
 
 # --------------------------------------------------------------------------
@@ -544,13 +578,12 @@ def test_post_connect_failure_is_not_forgiven_real_database(monkeypatch):
             drift_mod.fetch_applied(slow)
         assert not isinstance(caught.value, drift_mod.Unreachable), (
             "a query cancelled after a successful connect is not an unreachable "
-            "database; classifying it as one lets --allow-no-database return 0"
+            "database; classifying it as one would have let the old flag return 0"
         )
         # monkeypatch, NOT os.environ: an unrestored DATABASE_URL carrying
         # lock_timeout leaks into every later test in the session.
         monkeypatch.setenv("DATABASE_URL", slow)
-        assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-        assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
+        assert drift_mod.main([]) == drift_mod.EXIT_BROKEN
     finally:
         blocker.rollback()
         blocker.close()
@@ -575,8 +608,7 @@ def test_malformed_conninfo_is_never_forgiven(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "garbage")
     with pytest.raises(drift_mod.BadConfiguration):
         drift_mod.fetch_applied("garbage")
-    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main([]) == drift_mod.EXIT_BROKEN
 
 
 def test_an_unresolvable_host_is_not_forgiven_either(monkeypatch):
@@ -593,8 +625,7 @@ def test_an_unresolvable_host_is_not_forgiven_either(monkeypatch):
     # bounds getaddrinfo. Carrying the parameter here implied a bound that does
     # not exist.
     monkeypatch.setenv("DATABASE_URL", "postgresql://u@no-such-host.invalid:5432/d")
-    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main([]) == drift_mod.EXIT_BROKEN
 
 
 def test_a_server_that_answers_and_refuses_us_is_never_forgiven():
@@ -603,7 +634,7 @@ def test_a_server_that_answers_and_refuses_us_is_never_forgiven():
     `connect()` raises when the SERVER answered and rejected us: a wrong
     password, a database or role that does not exist, a pg_hba rule excluding
     this host. The old code classified every connect failure as Unreachable, so
-    a CI job with a typo'd password reported exit 0 under --allow-no-database.
+    a CI job with a typo'd password reported exit 0 under the removed forgiving flag.
     The database was plainly reachable -- it replied.
 
     Driven against a real server, not simulated, because the discriminator is
@@ -635,8 +666,7 @@ def test_a_server_that_answers_and_refuses_us_is_never_forgiven():
         assert not isinstance(caught.value, drift_mod.Unreachable), (label, caught.value)
         os.environ["DATABASE_URL"] = bad
         try:
-            assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN, label
-            assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN, label
+            assert drift_mod.main([]) == drift_mod.EXIT_BROKEN, label
         finally:
             os.environ["DATABASE_URL"] = url
 
@@ -656,8 +686,7 @@ def test_client_rejected_dsn_values_are_not_forgiven(monkeypatch):
         # pinning the type bought a red CI on a reword while the exit codes --
         # the actual behaviour -- were unaffected. The exit codes are the
         # contract; assert those.
-        assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN, bad
-        assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN, bad
+        assert drift_mod.main([]) == drift_mod.EXIT_BROKEN, bad
 
 
 def test_a_named_database_that_cannot_be_reached_is_never_forgiven(monkeypatch):
@@ -676,19 +705,17 @@ def test_a_named_database_that_cannot_be_reached_is_never_forgiven(monkeypatch):
     HTTP server, or nothing at all -- every one exits 2."""
     pytest.importorskip("psycopg")
     monkeypatch.setenv("DATABASE_URL", "postgresql://u@127.0.0.1:5499/d")
-    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod.main([]) == drift_mod.EXIT_BROKEN
 
 
-def test_the_flag_forgives_only_an_absent_url(monkeypatch):
-    """The other side of the line, asserted so the flag cannot be quietly
-    widened back to message matching. Blank counts as absent: GitHub expands an
-    unset secret to the empty string, and that IS the no-database case."""
+def test_unset_is_not_attempted_and_empty_is_broken(monkeypatch):
+    """The two states that look the same and are not. Renamed from
+    test_the_flag_forgives_only_an_absent_url -- there is no flag now, and the
+    distinction is carried by the exit code instead."""
     pytest.importorskip("psycopg")
-    # UNSET: the one forgivable fact.
+    # UNSET: nobody said where the database is. Exit 3, NOT ATTEMPTED.
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_OK
+    assert drift_mod.main([]) == drift_mod.EXIT_NOT_CHECKED
 
     # SET BUT EMPTY: never forgiven. In GitHub Actions an unset secret expands
     # to "", so `env: DATABASE_URL: ${{ secrets.MISSING }}` lands here. Treating
@@ -697,8 +724,7 @@ def test_the_flag_forgives_only_an_absent_url(monkeypatch):
     # for it.
     for empty in ("", "   ", "\t"):
         monkeypatch.setenv("DATABASE_URL", empty)
-        assert drift_mod.main([]) == drift_mod.EXIT_UNKNOWN, repr(empty)
-        assert drift_mod.main(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN, repr(empty)
+        assert drift_mod.main([]) == drift_mod.EXIT_BROKEN, repr(empty)
 
 
 def test_the_crash_guard_reports_unknown_not_drift(monkeypatch):
@@ -724,8 +750,7 @@ def test_the_crash_guard_reports_unknown_not_drift(monkeypatch):
     monkeypatch.setattr(drift_mod, "discover_repo_migrations", boom)
     with pytest.raises(RuntimeError):
         drift_mod.main([])  # main() still propagates; _cli is what classifies
-    assert drift_mod._cli([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod._cli(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod._cli([]) == drift_mod.EXIT_BROKEN
 
     # Stage 2: discovery AND the ledger read both succeed; the comparison
     # crashes. This is past main()'s own `except Exception` around the ledger
@@ -737,8 +762,7 @@ def test_the_crash_guard_reports_unknown_not_drift(monkeypatch):
     monkeypatch.setattr(drift_mod, "diff_migrations", boom)
     with pytest.raises(RuntimeError):
         drift_mod.main([])
-    assert drift_mod._cli([]) == drift_mod.EXIT_UNKNOWN
-    assert drift_mod._cli(["--allow-no-database"]) == drift_mod.EXIT_UNKNOWN
+    assert drift_mod._cli([]) == drift_mod.EXIT_BROKEN
 
 
 @pytest.mark.parametrize(
@@ -808,3 +832,49 @@ def test_the_disposable_override_wins(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@db.example.com:5432/throwaway")
     monkeypatch.setenv("DRIFT_GATE_TEST_DB_IS_DISPOSABLE", "1")
     assert _pg_url_or_skip_ddl().startswith("postgresql://")
+
+
+def test_the_exit_codes_come_from_the_shared_module_not_a_copy():
+    """D3: there must be ONE definition of the house exit-code contract.
+
+    Until 2026-11-07 the two gates disagreed -- `2` meant "cannot determine"
+    here and "broken lookup" in check_credit_pack_prices.py, and "not checked"
+    was `2` in one and `3` in the other. Same repo, both in CI, both read by a
+    person looking at a red job.
+
+    This is dev-playbook L39 applied: rule 1, import the thing and read its
+    value rather than recomputing what it should be; rule 2, strip comments
+    before asserting on source text, because a reviewer once defeated three
+    pins by leaving the old expression in a comment; rule 3, a duplicated
+    expression is not pinned by a copy of itself -- so the assertion below is
+    that the copy does not exist, not that two copies agree.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_gate_exit_under_test", _REPO_ROOT / "scripts" / "_gate_exit.py"
+    )
+    assert spec and spec.loader
+    shared = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shared)
+
+    for name in ("EXIT_OK", "EXIT_DRIFT", "EXIT_BROKEN", "EXIT_NOT_CHECKED"):
+        assert getattr(drift_mod, name) == getattr(shared, name), name
+
+    values = [shared.EXIT_OK, shared.EXIT_DRIFT, shared.EXIT_BROKEN, shared.EXIT_NOT_CHECKED]
+    assert values == [0, 1, 2, 3], values
+    assert len(set(values)) == 4, "the four codes must be pairwise distinct"
+
+    # And the gate must not have re-grown its own copy. Comments stripped via
+    # tokenize, so documenting the old values cannot satisfy or trip this.
+    import io
+    import tokenize
+
+    src = (_REPO_ROOT / "scripts" / "check_migration_drift.py").read_text()
+    code = "".join(
+        tok.string if tok.type != tokenize.COMMENT else ""
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline)
+    )
+    for name in ("EXIT_OK", "EXIT_DRIFT", "EXIT_BROKEN", "EXIT_NOT_CHECKED"):
+        assert f"{name}=" not in code.replace(" ", ""), (
+            f"{name} is assigned inside check_migration_drift.py. The contract "
+            f"lives in scripts/_gate_exit.py; import it, do not redefine it."
+        )

@@ -379,11 +379,20 @@ jobs:
     # Repo secrets are unavailable to fork PRs; skip rather than fail there.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
-      # STRICT_RECON=1 flips check_credit_pack_prices.py from "warn only"
-      # to fail-hard when the DB price doesn't match the Stripe price_id
-      # (M5 enforcement). Without this, missing/mismatched Stripe prices
-      # would only log a warning and exit 0.
-      STRICT_RECON: "1"
+      # THE ONE POLICY SWITCH for this job. Owner decision (Jon).
+      #
+      # The script exits 3 ("NOT CHECKED") when STRIPE_SECRET_KEY or any
+      # STRIPE_PRICE_CREDITS_* secret is unset/empty: nothing was compared.
+      #   "0" (default) -> exit 3 fails the job. An unconfigured gate is RED, so
+      #                    a green tick always means prices were actually compared.
+      #                    CAUTION: if those repo secrets are not set, this is red
+      #                    on every PR until they are added.
+      #   "1"           -> exit 3 (and ONLY exit 3) becomes a ::warning:: and the
+      #                    job passes. Prices were NOT checked; the warning says so.
+      #                    It never forgives exit 1 (drift) or exit 2 (broken
+      #                    seed, or Stripe/DB lookup failure).
+      # Flip to "1" only to knowingly run unguarded until the secrets exist.
+      RECON_ALLOW_UNCONFIGURED: "0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -395,19 +404,48 @@ jobs:
         # Default `--source auto` catches the actual M5 scenario (live DB
         # price edits drifting from Stripe) when DATABASE_URL_CREDIT_PACKS_RO
         # is wired as a repo secret. Falls back to migration 020 seed when
-        # the env var is absent. The script also skips cleanly (exit 0) if
-        # STRIPE_SECRET_KEY isn't set yet, so this job won't red-flag every
-        # downstream PR before Jon adds the repo secrets.
-        run: python scripts/check_credit_pack_prices.py
+        # the env var is absent. Exit codes: see the script docstring and the
+        # RECON_ALLOW_UNCONFIGURED switch above (only exit 3 is ever forgiven).
+        run: |
+          rc=0
+          python scripts/check_credit_pack_prices.py || rc=$?
+          if [ "$rc" -eq 3 ] && [ "$RECON_ALLOW_UNCONFIGURED" = "1" ]; then
+            echo "::warning title=Credit pack price recon NOT RUN::Stripe secrets are not configured; no prices were compared (RECON_ALLOW_UNCONFIGURED=1)."
+            exit 0
+          fi
+          exit "$rc"
         env:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           STRIPE_PRICE_CREDITS_20: ${{ secrets.STRIPE_PRICE_CREDITS_20 }}
           STRIPE_PRICE_CREDITS_60: ${{ secrets.STRIPE_PRICE_CREDITS_60 }}
           STRIPE_PRICE_CREDITS_180: ${{ secrets.STRIPE_PRICE_CREDITS_180 }}
-          # Optional: wire DATABASE_URL to a read-only Supabase connection
-          # string (role with SELECT on credit_packs only) so CI catches
-          # live DB-vs-Stripe drift, not just seed-vs-Stripe.
-          DATABASE_URL: ${{ secrets.DATABASE_URL_CREDIT_PACKS_RO }}
+          # DATABASE_URL is deliberately NOT mapped here yet. Read before
+          # adding it back -- two preconditions and one gotcha.
+          #
+          # Mapping a secret that does not exist sets the variable to the EMPTY
+          # STRING, not to nothing. The script treats that as a
+          # misconfiguration and exits 2, because the alternative -- quietly
+          # comparing the migration seed while this job's name says it
+          # reconciled the live table -- is a green tick over an unchecked M5
+          # scenario, reachable by a rename or a rotation. With no mapping at
+          # all the variable is genuinely unset, the seed path is taken
+          # honestly, and the output says `Expected source: migration 020 seed`.
+          #
+          # To turn on live DB-vs-Stripe checking, map
+          # secrets.DATABASE_URL_CREDIT_PACKS_RO to DATABASE_URL here, once
+          # BOTH of these hold:
+          #   1. the secret exists, and
+          #   2. migration 020 has been applied to the database it points at.
+          #      Production was on 008 as of 2026-11-06 and `credit_packs`
+          #      arrives in 020, so wiring this before the cutover makes every
+          #      PR red with `relation "public.credit_packs" does not exist`.
+          #
+          # The gotcha: a role with SELECT on credit_packs only still returns
+          # ZERO ROWS under 020's RLS, whose policies cover anon/authenticated,
+          # stemloops_app and cowork_ro. Fail-closed, but the error reads
+          # `packs missing from credit_packs table`, which points at the table
+          # contents rather than at RLS. Grant the role one of those roles, or
+          # add a policy for it.
 
   web-build:
     name: Web build

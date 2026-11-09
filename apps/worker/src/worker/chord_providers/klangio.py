@@ -295,12 +295,14 @@ class _QuotaStore(Protocol):
 class FileQuotaStore:
     """JSON counter file guarded by ``flock`` (safe across processes on ONE host).
 
-    LIMITS, stated plainly: it is per-machine, and on Fly without a volume the
-    root filesystem is wiped on every deploy/restart, resetting the count to zero.
-    Point ``KLANGIO_QUOTA_FILE`` at a persistent volume (apps/worker/fly.toml mounts
-    one) for the count to survive deploys; a volume is still per-machine, so that is
-    durability, not cross-instance correctness. ``_PostgresQuotaStore`` is the real
-    fix and is preferred whenever ``DATABASE_URL`` is set. The ``klangio_quota`` log
+    LIMITS, stated plainly: it is per-machine, and on Fly the root filesystem is wiped
+    on every deploy/restart, resetting the count to zero. ``reserve`` creates the parent
+    directory, so pointing ``KLANGIO_QUOTA_FILE`` at an unmounted path does NOT fail —
+    it silently counts from zero again after each deploy. This is a local/dev store only.
+    ``apps/worker/fly.toml`` deliberately mounts NO volume and pins
+    ``KLANGIO_QUOTA_BACKEND = "postgres"``; see the comment there for why.
+    ``_PostgresQuotaStore`` is the real fix and is preferred whenever ``DATABASE_URL``
+    is set. The ``klangio_quota`` log
     lines are the durable record either way.
     """
 

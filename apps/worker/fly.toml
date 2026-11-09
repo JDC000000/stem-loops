@@ -22,18 +22,28 @@ primary_region = "iad"  # us-east, near the Supabase project; adjust to match DB
   # Cap CPU-bound loop-encode threads on this 1-core VM: 8 (Option A default) give no
   # throughput gain here and multiply peak memory. See pipeline.encode_and_upload.
   LOOP_ENCODE_WORKERS = "2"
-  # Klangio spend counter, FILE fallback (used only where DATABASE_URL is unset; with it
-  # set, the worker counts in Postgres public.klangio_usage and ignores this). Lives on
-  # the volume below so a deploy/restart does not reset it to zero. A Fly volume is
-  # per-machine: this buys durability across deploys, NOT correctness across instances
-  # (two machines would each count on their own volume). Postgres is the real fix.
-  KLANGIO_QUOTA_FILE = "/data/klangio_quota.json"
+  # Klangio spend counter — PINNED to Postgres (public.klangio_usage), deliberately.
+  # There is no volume any more (see below), so the FILE backend would now write to an
+  # EPHEMERAL /data: FileQuotaStore.reserve() does mkdir(parents=True) and succeeds as
+  # root, and _read() returns 0 for a missing file, so the count would silently restart
+  # at zero on every deploy while still logging `klangio_quota outcome=reserved`. That is
+  # a green log with no cap, at $0.20/request. 'postgres' fails CLOSED when DATABASE_URL
+  # is unset (klangio.py _default_quota_store) instead of falling back to that counter.
+  # KLANGIO_QUOTA_FILE is intentionally NOT set here.
+  KLANGIO_QUOTA_BACKEND = "postgres"
 
-# Persistent volume for the Klangio quota file (see KLANGIO_QUOTA_FILE above). The volume
-# must exist BEFORE the next deploy or Fly refuses to start the Machine:
-#   fly volumes create klangio_quota --app stem-loops --region iad --size 1
-# A volume attaches to exactly one Machine, so this config only supports a single worker
-# Machine (which is what min_machines_running = 1 below already assumes).
+# NO VOLUME, AND DO NOT ADD ONE. There was one — `klangio_quota`, mounted at /data for
+# the file quota counter — and on 2026-11-09 it took production down. A Fly volume is
+# pinned to one physical host; zone c71e had no capacity, so the rolling deploy destroyed
+# the running Machine and could not place a replacement ("insufficient resources to create
+# new machine with existing volume 'klangio_quota'"). `fly status` then showed zero
+# Machines. Deleting [mounts] fixed it on the next deploy. The counter lives in Postgres
+# (KLANGIO_QUOTA_BACKEND above), so the volume was never load-bearing.
+#
+# The volume was ALSO the only thing structurally holding this app at one Machine, because
+# a volume attaches to exactly one. min_machines_running = 1 below is a FLOOR, not a
+# ceiling: with no volume, `fly deploy` creates a second Machine for HA. Every deploy path
+# therefore passes --ha=false (.github/workflows/deploy.yml, Makefile deploy-worker).
 
 [http_service]
   internal_port = 8000          # /health

@@ -42,6 +42,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be  # 1.5
       - name: Deploy to Fly.io
-        run: cd apps/worker && fly deploy
+        # --ha=false: this app must stay at ONE Machine (FOR UPDATE SKIP LOCKED makes
+        # two safe, but min_machines_running is a floor and HA would add a second).
+        run: cd apps/worker && fly deploy --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

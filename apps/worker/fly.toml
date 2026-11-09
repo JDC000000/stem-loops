@@ -34,9 +34,6 @@ primary_region = "iad"  # us-east, near the Supabase project; adjust to match DB
 #   fly volumes create klangio_quota --app stem-loops --region iad --size 1
 # A volume attaches to exactly one Machine, so this config only supports a single worker
 # Machine (which is what min_machines_running = 1 below already assumes).
-[mounts]
-  source = "klangio_quota"
-  destination = "/data"
 
 [http_service]
   internal_port = 8000          # /health

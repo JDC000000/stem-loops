@@ -248,6 +248,42 @@ PR #42. That was false and contradicted this very paragraph. It was deleted
 on 2026-11-05 per the adversarial audit. **Do not re-add a "landed" claim
 until the `::notice::` evidence exists.**
 
+**M-7 status, 2026-11-06 — LANDED. Evidence below.**
+
+PR **#161** was merged by `stem-loops-automerge[bot]`, type `Bot`:
+
+    GET /repos/JDC000000/stem-loops/pulls/161
+      merged_by.login = stem-loops-automerge[bot]
+      merged_by.type  = Bot
+      merged_at       = 2026-11-06T21:51:40Z
+      labels          = rollback-safe, fast-path
+
+That is the field no amount of timing evidence could supply. Until #161,
+every auto-merge read `JDC000000` / type `User`, because the workflow fell
+back to `BOT_TOKEN` and the API cannot distinguish "Jon's PAT used by
+Actions" from "Jon clicked merge". A `Bot` actor can only come from the App
+installation token.
+
+**The failure, for the record:** `APP_ID` and `APP_PRIVATE_KEY` both existed
+as repository secrets and the App was correctly installed with
+contents + pull_requests read/write — but the stored PEM had been pasted
+**without its `-----BEGIN RSA PRIVATE KEY-----` and `-----END ...-----`
+lines**. Those are the PEM framing, not decoration; without them the key does
+not parse, `create-github-app-token` fails, and `continue-on-error: true`
+converts that into a silent fallback. Three of issue #143's four suspected
+causes had already been eliminated; this was the fourth, and it was invisible
+in the UI because GitHub never displays a stored secret.
+
+**Consequences, now unlocked:**
+- Merge attribution is auditable. `merged_by` distinguishes automation from a
+  human, which it could not do before.
+- Dimension 5 of `claude/agent-effectiveness-scoring.md` moves from
+  **Inferred** to **Direct** evidence, lifting the cap that rule imposed.
+- `BOT_TOKEN` can now be revoked as the real test that the App is doing the
+  work — but only deliberately, and not in the same change as anything else.
+
+Close issue #143.
+
 ---
 
 ### M-8 (reference): what Anthropic's agent-side controls block
@@ -278,3 +314,234 @@ agent merge rights.
 **Therefore:** ruleset changes and secret writes are always operator
 actions. Prepare the exact command and hand it over; do not attempt the
 call and do not attempt to route around a denial.
+
+---
+
+### M-9 (hard): adversarial review before merge, on a different model
+
+**Added 2026-11-06.** Full protocol, worked examples and the verbatim
+trigger prompt: `claude/dev-playbook-v1.1.md` §27.
+
+**Where that file is.** It lives in the **Claude Project** attached to this
+work, NOT in this repository — `claude/` here holds only a handful of docs.
+Several paths cited in this file are the same way (`claude/project-tracker.md`,
+`claude/merge-autonomy-level-2-handover.md`, `claude/seam-inventory.md`).
+An agent with repo access and no Project access will find nothing at those
+paths, and nothing fails loudly when it doesn't — it simply proceeds without
+the rule. That is a class-6 (Deployment) seam in this file itself.
+
+**So M-9 is written to be binding on its own.** Everything below is the rule,
+not a summary of one. If you cannot reach the playbook, follow this section
+and say in your handover that you could not read §27. Do not treat an
+unreachable reference as permission to skip the review.
+
+**R-6** already requires author subagent ≠ reviewer subagent. **R-7 adds:
+the reviewer must run on a different MODEL FAMILY from the author**, not
+merely a different context. Two instances of one model share blind spots
+and will miss the same thing for the same reason, which is the failure R-6
+exists to prevent.
+
+**Review is mandatory before requesting merge when the change is any of:**
+
+1. **A CI gate, or anything that reports pass/fail.** No exceptions. A
+   broken gate is worse than no gate, because its green tick is trusted.
+2. Anything touching **migrations, grants, RLS, or roles**.
+3. Anything on the **money path** — billing, credits, entitlements, Stripe.
+4. Anything whose failure mode is **silence** — seam classes 5 (Trigger)
+   and 6 (Deployment). Those are: a **Trigger** seam, where the thing that
+   was supposed to fire never fired, and a **Deployment** seam, where code
+   and the environment it runs against disagree. Both fail silently. (The
+   full six-class taxonomy is in the Project's `claude/seam-inventory.md`;
+   the two named here are what this trigger needs.)
+5. Anything the author **verified only by running it successfully**. A
+   thing that works is not a thing that is right.
+
+**The bar (amended 2026-11-07, after seven rounds on one gate).** Two
+conditions, both required, and a score is not one of them:
+
+1. **No reviewer-demonstrated false green.** The reviewer must be unable to
+   produce an input where the gate reports success without having checked.
+2. **The reviewer ran the tests itself**, against a real dependency where one
+   exists — not read them and judged them plausible.
+
+Then merge, with any residue **accepted, named and recorded** in the PR.
+
+Ask for a score and use it to rank findings. Do **not** gate merge on it.
+Tell the reviewer explicitly **not to inflate the score to be agreeable** —
+a wrong pass is worse than a low score.
+
+**Why the ≥90 bar was replaced.** It ran seven rounds on the drift gate:
+84 → 88 → 89 → 89 → 86 → 85 → 86. Rounds 1–3 and 6 found real, unobvious
+defects — round 6's was that `FATAL:` is the server's *localized* severity,
+so the whole message-matching approach could not work in any language. But
+rounds 4, 5 and 7 mostly found defects **in the previous round's fix**. The
+number created an incentive to keep editing an artifact that was already
+correct, and each edit was a fresh chance to introduce something. Round 7
+met both conditions above at a score of 86, and that was the right moment to
+stop. A bar you can hit by churning is measuring the wrong thing.
+
+**Every brief must give the reviewer:** the exact refs with literal read
+commands, plus a warning that the checked-out tree is NOT the artifact
+(session 8: a reviewer read a stale tree and refuted three *true* claims);
+an instruction to name the ref for every claim (C-8); the settled context
+so it attacks rather than rediscovers; the author's verification claims
+stated AS claims with an explicit invitation to refute them; a named attack
+surface; permission to say "I could not verify that"; and
+**"do not fix anything, report only"** — a reviewer that edits becomes an
+author and the next round has no independent party.
+
+**Why this is a hard rule.** Session 9 shipped two CI gates, both verified
+against a real database in both directions and believed correct. Round 1
+scored **84** and found nine defects, including a migration role that was
+not the database owner — which made migration 011's `GRANT USAGE ON SCHEMA
+public` execute as `WARNING: no privileges were granted`, swallowed by
+psycopg, green chain, wrong ACL. A silent no-op inside the gate built to
+catch silent no-ops. Round 2 scored **88** and found a **false green**: a
+`--allow-unreachable` flag returning exit 0 for a database that answered
+but whose ledger could not be read. Neither round found a typo. Both found
+what the author could not see because he had decided what the code meant
+before writing it.
+
+Cost is roughly ten minutes of agent time per round.
+
+---
+
+### M-11 (hard): adversarial SECURITY review — below 90/100 is not merged
+
+**Added 2026-11-07, at Jon's instruction.** Separate pass from M-9, different
+model family from the author (R-7), and **its score DOES gate the merge.**
+
+**The bar is deliberately different from M-9's, and the asymmetry is the
+point.** M-9 dropped its ≥90 gate because a false green *announces itself*:
+a reviewer demonstrates it with an input, so "no demonstrated false green"
+is a property you can actually test, and the number was rewarding churn. A
+missed vulnerability does not announce itself. There is no "run it and watch
+it fail" equivalent, so a properties bar has nothing to bite on. And the
+churn that killed the ≥90 code bar is far less likely here, because security
+findings rarely sit inside the previous round's fix. **So: ≥90, hard, and
+revise-and-re-review until it clears or the residue is accepted, named and
+recorded in the PR by Jon — not by the agent.**
+
+**Mandatory before merge when the change touches any of:**
+
+1. **RLS policies, grants, or roles.**
+2. **Auth, sessions, or the service-role key.**
+3. **Secret handling** — anything reading an environment variable for a
+   credential, anything that can print one, any workflow that can read one.
+4. **The money path** — billing, credits, entitlements, Stripe.
+5. **File upload**, or any user-supplied path reaching storage.
+
+**Use the `security` agent type.** Read-only by convention (Read, Grep, Glob,
+Bash) — a reviewer that edits becomes an author and the next round has no
+independent party, exactly as in M-9.
+
+**The brief gets M-9's seven required contents, plus these five facts, because
+an agent that re-derives them wastes its budget and one of them it cannot
+derive at all:**
+
+- `anon` and `authenticated` hold **ALL privileges** on new `public` tables by
+  Supabase default. Every table's safety therefore rests on RLS alone. This is
+  the single most important standing fact for a security pass on this repo.
+- `postgres` on Supabase project `qthrhamfljhifhfwvvwj` is **NOSUPERUSER**,
+  BYPASSRLS, CREATEROLE, and owns the database. It has no CREATE on `auth`.
+- Known credential-exposure paths, all previously found and none yet closed:
+  the **dead** Vercel project `stem-loops`
+  (`prj_n1PkHnu2Krc3QFO4dwS2iYqAZifY`) still holds encrypted `DATABASE_URL`,
+  `R2_*`, `IP_HASH_KEY` and `HISTORY_COOKIE_KEY`, three flagged
+  `readable-secret`; the **live** project exposes `DATABASE_URL`,
+  `DATABASE_URL_POOLED` and `R2_SECRET_ACCESS_KEY` as `readable-secret` to
+  preview+development.
+- The web app **falls back to hardcoded sandbox Stripe price IDs** when
+  `STRIPE_PRICE_CREDITS_*` are unset in Vercel
+  (`apps/web/src/lib/billing/providers/stripe.ts`). No gate in this repo can
+  detect it, and at the live-mode flip it bills real customers at sandbox
+  prices.
+- The prior audit is `claude/session-6-security-audit.md` (in the Project, not
+  the repo — see M-10's note on unreachable paths). Tell the reviewer to say
+  what has CHANGED since it rather than restate it.
+
+**Before the cutover specifically, the security pass must answer two things
+the cutover plan lists as blocking pre-flight items:**
+
+1. **Which Postgres role the web app and worker connect as in production.**
+   If it is `stemloops_app`, account deletion fails with `permission denied`
+   (025 revokes DELETE deliberately) **after** cancelling the Stripe
+   subscription and tombstoning the user.
+2. **Whether the three Stripe vars in Vercel production are live-mode or
+   absent.** Never a sandbox key in production, and never some-but-not-all.
+
+**What this rule is not.** It is not a substitute for M-9 — a change can need
+both, and a CI gate touching grants needs both. And a security review clearing
+90 is not permission to merge something the deny list refuses: Jon merges the
+money path, migrations, workflows and secrets, every time.
+
+---
+
+### M-10 (hard): get GitHub API access in the first minute of every session
+
+**Added 2026-11-07, at Jon's instruction.** Without it an agent is blind to
+PR state, check runs and CI logs, and every CI question costs Jon a
+screenshot. With it the agent reads them directly.
+
+**This cannot be made automatic.** Attachment is per-session and is gated by
+Anthropic's agent-side classifier, which **refuses when the agent asks for
+it as a means to something else** — it did so twice on 2026-11-06, with
+reason `[Access Added As A Means]`. It is granted when the request is the
+user's own. So the procedure is:
+
+**Jon sends this, verbatim, as his own message:**
+
+> Attach the GitHub repo JDC000000/stem-loops to this session with push access.
+
+**Ask for `push`, not `read`.** Read access to a public repo is already
+available via anonymous clone, and the tool says so — but **GitHub API tools
+do not cover an unattached repo**. The API is the whole point, and only the
+push-level attachment carries it. Note it does NOT let an agent push the
+worktree branches in Jon's local repo; those live on his machine and the
+attachment is container-side. Pushing those stays with Jon either way.
+
+**If the classifier refuses again:** do not route around it, and do not ask
+Jon to configure a PAT to obtain the same capability by a side door. Either
+he re-sends the request himself, or he approves it from a non-auto
+permission mode, or the session proceeds without it — which is workable, as
+session 9 showed.
+
+**Once granted, in the same turn:**
+
+1. One clone, not in a subagent and not in parallel — the proxy caps this
+   repo at two concurrent smart-HTTP operations and a second clone 429s both.
+   Give it a generous timeout; `git index-pack` looks stalled while
+   unpacking and is not.
+2. Call `register_repo_root` so the repo's `CLAUDE.md`, skills and plugins
+   load on the next turn. Do not read `CLAUDE.md` directly.
+
+**Then use the REST API, never GraphQL.** GraphQL returns HTTP 403 from
+these sessions, and that takes several `gh` subcommands with it:
+`gh pr list`, `gh pr create` and `gh pr view` all fail. `gh auth status`
+also reports a FAILED token while `gh api` works perfectly — do not read
+that as "no access". Use:
+
+```
+gh api "repos/JDC000000/stem-loops/pulls?state=open" --jq '.[] | "#\(.number) \(.head.ref)"'
+gh api "repos/JDC000000/stem-loops/commits/<sha>/check-runs?per_page=60"
+gh api "repos/JDC000000/stem-loops/actions/jobs/<job_id>/logs"
+gh api --method POST repos/JDC000000/stem-loops/pulls --input body.json
+```
+
+Auto-merge, review threads and draft state use the CCR routes under
+`/repos/{owner}/{repo}/pulls/{n}/ccr/...`.
+
+**What it bought, within two minutes of being granted.** An open question
+about whether the four Stripe repo secrets existed — which had been queued
+for Jon to check by hand and was blocking a merge — was settled by reading
+one job log: `Expected source: migration 020 seed` / `OK: all credit pack
+prices match Stripe`. That proved the Stripe secrets DO exist (the job runs
+`STRICT_RECON=1`, which exits 2 without them) and that
+`DATABASE_URL_CREDIT_PACKS_RO` does NOT. The second fact retroactively
+justified removing a `ci.yml` secret mapping: had it stayed, every PR would
+have gone red. Two facts, one log, no screenshots.
+
+**The standing limits still apply.** Attachment widens GitHub scope and
+nothing else. It is not permission to merge anything on the deny list, to
+touch `.env*`, `CODEOWNERS`, `auto-merge.yml` or `.claude/settings.json`, or
+to bypass a classifier refusal by another route.

@@ -225,6 +225,37 @@ Both reached stage `downloading`, which **proves `ALLOW_YOUTUBE_INPUT` is `'true
 
 **V3-J9 pass bar:** a throwaway account signs up, receives its entitlement row, downloads 3 `.wav` stems, and is refused the 4th with a clear upsell — then `DELETE /api/users/me` removes it cleanly (currently **Inferred from code and never executed**).
 
+### 12.10 V3-J10 — the residential proxy (NEW in v1.7, decided by Jon: IPRoyal)
+
+**Jon's decision, 2026-11-10:** *"lets use IPROYAL."* This closes §11 **O-2** and unblocks **V3-J7**, the launch blocker.
+
+**IPRoyal is what the code was written for.** `ytdlp_client.py:40` carries it as the worked example (`http://user:pass@geo.iproyal.com:12321`), and `_sticky_proxy_url()` implements IPRoyal's session syntax specifically, gated on the hostname so a future vendor switch cannot silently corrupt a password with a suffix it does not understand.
+
+**Why sticky sessions are load-bearing and not an optimisation** (`ytdlp_client.py:87-110`, found during a staging E2E test, not the bake-off): a plain IPRoyal string **rotates its exit IP per new connection**. yt-dlp makes several requests per video — webpage, player API, then the byte download — and **the signed `googlevideo.com` media URL it receives is itself IP-bound.** If the byte fetch lands on a different rotated IP than the one that resolved the URL, it **403s** even though both went through the same account. Observed live: extraction succeeded, the very next request 403'd, every time.
+
+The fix is already implemented: a **fresh random 8-character session id per fetch attempt**, appended as `_session-<id>_lifetime-2m`, so all of one attempt's requests share one IP while a **retry deliberately gets a new IP** rather than re-trying a bad one.
+
+> ⚠️ **Therefore `PROXY_URL` must be set to the PLAIN credentials with NO session suffix.** The worker appends `_session-…_lifetime-2m` itself. A value that already contains a session parameter would be **double-suffixed and malformed**. This is the single most likely way to configure it wrongly.
+
+**Configuration:**
+
+| Item | Value |
+|---|---|
+| Secret | `PROXY_URL` on the **Fly worker** (`stem-loops`) — **not** Vercel; only the worker fetches |
+| Format | `http://<user>:<pass>@geo.iproyal.com:12321` |
+| Port | **12321** is the username/password endpoint. `geo.iproyal.com` ports 11200+ are the **IP-whitelist** endpoints and are the wrong ones here |
+| Session suffix | **Do not add one.** The worker generates it per attempt |
+| Timeout | automatic — `TIMEOUT = 10 if not PROXY_URL else 30` (`ytdlp_client.py:44`), because the R2 spike measured p50 ~4.5 s / p90 ~10–13 s / outliers ~26 s through the proxy, and 20 s produced false `DOWNLOAD_TIMEOUT`s |
+| Vendor lock | none — the sticky-session syntax is applied **only** when the host contains `iproyal.com` |
+
+**Cost, sized rather than guessed.** yt-dlp runs `-x --audio-format wav`, so the **network** transfer is the compressed source stream (the WAV conversion is local, after download). A 5-minute track at ~128 kbps is **≈5 MB**, plus webpage/player-API overhead and the `--simulate` live-check: call it **~6 MB per successful fetch**. `YTDLP_MAX_ATTEMPTS=2` means a retry roughly doubles a failed job's cost, so budget **~10 MB/job**.
+
+- **1 GB ≈ 100–170 YouTube jobs.**
+- IPRoyal residential pay-as-you-go starts around **$7/GB**, cheaper at volume, and **PAYG traffic does not expire** [third-party review, 2026 — confirm on IPRoyal's own pricing page before buying].
+- **So the single hard blocker on the launch path costs on the order of $7**, and 1 GB plausibly covers months at pre-revenue volume.
+
+**V3-J10 pass bar:** `PROXY_URL` set on Fly, worker redeployed, and **three different public YouTube links reach `done`** — which is also V3-J7's bar. ⚠️ **Watch the first runs for `402`/`407` in fetch logs**: `08-runbooks.md` §6 maps those to *"proxy balance/credential"*, so they mean the proxy is reachable but the account is out of funds or the credentials are wrong — **a different failure from `DOWNLOAD_BLOCKED`, and good news, because it proves the proxy is in the path.**
+
 ### 12.8 V3-J8 — the 2026-12-05 validation deadline
 
 The Klangio Startup subscription cancels **2026-12-05** — v1.4's documented hard cap, working as designed. **Chords stop that day** unless it is kept, `autochord` is implemented, or ChordNet training is resourced (dataset is a random-label placeholder, R-4). Jon, 2026-11-10: *"we have to validate this product before THEN."* **V3-J1 must be validated by Jon's own use before that date.**
@@ -1041,7 +1072,7 @@ Three surfaces, read in this priority order (first non-null wins), cached 30 s:
 | # | Open item | Why it matters |
 |---|---|---|
 | ~~**O-1**~~ | ~~Can a 3-free stem-download allowance be enforced on an anonymous launch path?~~ **DECIDED by Jon 2026-11-10: require sign-up.** See the new **§12.9** — this pulls the authed path into launch scope | ✅ **CLOSED** |
-| **O-2** | **The residential proxy (V3-J7).** The YouTube path fails 100% and the documented cause is datacenter egress. Needs a paid subscription — an external purchase, not an engineering fix | **The launch blocker.** See §12.6 |
+| ~~**O-2**~~ | ~~The residential proxy~~ **DECIDED by Jon 2026-11-10: IPRoyal.** See the new **§12.10** — ~$7/GB, ≈100–170 jobs per GB | ✅ **CLOSED** |
 | **O-3** | **What happens to chords on 2026-12-05** — keep the Klangio subscription, implement `autochord`, or resource ChordNet training | Chords stop that day. See §12.8 |
 | **O-4** | **§8.2 needs rewriting against reality.** `ENABLE_V3_PLAY` does not exist in code (0 hits), and §8.2 describes it as the rollback master switch. Rollback is actually promote-previous-deployment | A rollback contract naming a switch that was never built is worse than none |
 | **O-5** | **§12.3's sync tolerance is unspecified** — no number, no test id, no clock source (§3.1's `startFrame` vs `AudioContext.currentTime`) | V3-J3 is stated but not yet actionable |

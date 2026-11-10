@@ -127,13 +127,39 @@ Requirements:
 - Stems obey the **same 24-hour expiry** as every other job artifact. The retention promise in §1.6a does not change.
 - Adds R2 storage and egress per job. Bounded by the 24-hour expiry.
 
+### 12.2a V3-J2a — the Ogg demuxer nobody has scoped (NEW in v1.7) ⚠️ **unnamed dependency on the launch path**
+
+**Measured 2026-11-10, in a real browser, not reasoned about.** The playback artifact is `libopus` at 128 kbps / 48 kHz in an **Ogg** container (`ffprobe`: `codec_name=opus, sample_rate=48000, channels=2, format_name=ogg`). Chromium decodes it correctly through `decodeAudioData` — 20 s in, 20 s out, 2 channels, 48 kHz — so **the bytes are valid and the artifact is sound.**
+
+**But `decodeAudioData` is the path §3 explicitly rejects**, and the path §3 *requires* cannot read a container:
+
+- §3 T-E2: *"the full-decode fallback peaks at 643 MB and **FAILS** the 400 MB bar"*. Independent arithmetic agrees — 5 min stereo at 48 kHz as float32 is 300 × 48000 × 2 × 4 = **110 MiB per stem**, ×6 = **659 MiB**, which lands on their measured 643 MB. So `decodeAudioData` is not an option for six stems, only for variant S.
+- §3 Variant D holds *"the **Opus-encoded bytes**"* and drives *"a **WebCodecs `AudioDecoder`** per stem"*, re-seeding at *"a **packet-boundary** close + reopen"*.
+
+**`AudioDecoder` does not demux.** It consumes `EncodedAudioChunk`s — raw Opus packets. So between the `.opus` file and the engine there must be an **Ogg page/packet demuxer in JavaScript**, and *no section of this TSD names it, scopes it, or assigns it*. §12.4's sequencing (V3-J2 → V3-J3 → §3 engine + faders) silently assumes it exists.
+
+**Not a defect in the artifact — a missing work item.** The container is the right transport and matches §3.1's wording. What is missing is the ~200 lines that turn Ogg pages into packets.
+
+**Open question for the engine phase, stated rather than assumed:** Ogg or WebM. Both need demuxing; Ogg is what `libopus` emits by default and what §3.1's "Opus-encoded bytes" implies. Changing it is a one-flag change in `_encode_stem_opus` plus the two key builders, so this is cheap to revisit **before** the demuxer is written and expensive after.
+
+⚠️ **`AudioDecoder` itself remains UNVERIFIED on real hardware.** The headless Chromium used for the measurement above reports `typeof AudioDecoder === 'undefined'`, so `AudioDecoder.isConfigSupported({codec:'opus', sampleRate:48000, numberOfChannels:2})` — the capability probe §3's browser matrix is built on — **could not be executed**. That is a limitation of the test environment and is **not** evidence either way about production Chrome. §3's matrix and the V3-TE2b Safari gate still rest on unexecuted assumptions.
+
+**Measured sizes, for the §12.2 "4–5 MB per stem" figure.** Both encoded with the worker's exact command:
+
+| Content | 20 s / 10 s bytes | Projected 5-min stem |
+|---|---|---|
+| pure sine (compresses well) | 148,160 (10 s) | **4.24 MB** |
+| 3-way mix, pink noise + two tones | 219,557 (20 s) | **3.14 MB** |
+
+128 kbps puts a dense real stem at or just under the bitrate ceiling (128000 × 300 / 8 = **4.8 MB**). So a real stem lands in **~3–4.8 MB**: at or below §12.2's figure, never above it. Six stems ≈ **19–29 MB**, against ≈ **300 MB** for the same six as WAV.
+
 ### 12.3 V3-J3 — chord / playhead synchronisation (NEW)
 
 `ChordOverlay` already renders a timeline from `play.chords.json`. V3-J3 adds a playhead input and auto-scroll so the chord under the playhead is the chord being heard, within a **stated and measured** tolerance. The component's existing `onChordEdit` / `onChordLabelEdit` props stay unwired — the write path is incomplete (issue **#135**) and V3-J3 does not open it.
 
 ### 12.4 Sequencing
 
-V3-J2 → V3-J3 → §3 engine + faders → **V3-J1 (Jon's own acceptance)** → §3.6 hardening. Loop download survives unchanged; the landing copy must be rewritten, since it currently sells loops and not play-along.
+V3-J2 → **V3-J2a (the Ogg demuxer, §12.2a — newly surfaced and previously unscoped)** → V3-J3 → §3 engine + faders → **V3-J1 (Jon's own acceptance)** → §3.6 hardening. Loop download survives unchanged; the landing copy must be rewritten, since it currently sells loops and not play-along.
 
 **Revised in v1.7 to include the launch requirements that v1.6 left out of this section:** V3-J2 → V3-J7 (the fetch path must work at all) → V3-J3 → §3 engine + faders → **V3-J1** → §3.6 hardening. **V3-J5** (browser scope) and **V3-J8** (the Dec 5 date) constrain every step.
 

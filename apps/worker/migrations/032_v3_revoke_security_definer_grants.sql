@@ -1,0 +1,75 @@
+-- 032_v3_revoke_security_definer_grants.sql — remove anon/authenticated EXECUTE
+-- on two SECURITY DEFINER trigger functions.
+--
+-- Why this exists:
+--   Supabase's own security advisor flags both functions as
+--   "Public Can Execute SECURITY DEFINER Function" and "Signed-In Users Can
+--   Execute SECURITY DEFINER Function" (lints 0028 / 0029), because EXECUTE is
+--   granted to `anon` and `authenticated`:
+--
+--     check_credit_decrement()  anon=X | authenticated=X | service_role=X | postgres=X
+--     handle_new_user()         anon=X | authenticated=X | service_role=X | postgres=X
+--
+--   No migration in this repo grants that. The source is Supabase's PLATFORM
+--   DEFAULT PRIVILEGES on schema `public`, verified on the production project:
+--
+--     SELECT pg_get_userbyid(defaclrole), nspname, defaclacl
+--     FROM pg_default_acl d JOIN pg_namespace n ON n.oid = d.defaclnamespace
+--     WHERE defaclobjtype = 'f';
+--
+--       postgres       | public | postgres=X/postgres | anon=X | authenticated=X | service_role=X
+--       supabase_admin | public | postgres=X          | anon=X | authenticated=X | service_role=X
+--
+--   So the grant was never a decision anyone made. It is applied automatically
+--   to EVERY function created in `public`.
+--
+-- ⚠️ THEREFORE THIS MIGRATION IS NOT A PERMANENT FIX, AND MUST NOT BE READ AS ONE.
+--   It revokes two specific functions. The default privilege is unchanged, so the
+--   NEXT function created in `public` gets anon/authenticated EXECUTE again, and
+--   the advisor findings come back. Any new SECURITY DEFINER function needs its
+--   own explicit REVOKE in the migration that creates it.
+--
+--   Changing the default itself (ALTER DEFAULT PRIVILEGES ... REVOKE EXECUTE ...
+--   FROM anon, authenticated) was considered and NOT done here: Supabase's
+--   PostgREST RPC model relies on that default for functions we deliberately want
+--   callable over /rest/v1/rpc, so flipping it is a platform-wide behaviour change
+--   that deserves its own decision and its own migration, not a rider on a
+--   two-line hygiene fix.
+--
+-- Exploitability, checked BEFORE escalating rather than assumed:
+--   Both are `RETURNS trigger`. PostgREST does not expose trigger-returning
+--   functions over /rest/v1/rpc, and a direct call would fail on unset NEW/TG_OP
+--   anyway. So this is HYGIENE, not a live hole. It is done now because
+--   check_credit_decrement() guards the money path (credit_consumption), which
+--   M-11 gates at >=90, and it is cheaper to clean before Stripe lands.
+--
+-- Why this is SAFE — demonstrated on staging, not argued from the manual:
+--   A trigger function is invoked by the system, not by the role performing the
+--   DML, so that role does NOT need EXECUTE on it. PostgreSQL checks EXECUTE at
+--   CREATE TRIGGER time, not at fire time.
+--
+--   Rehearsal 1 (isolated objects, inside a rolled-back transaction on staging):
+--     a SECURITY DEFINER trigger function with EXECUTE revoked from
+--     `authenticated` still fired when `authenticated` performed the INSERT.
+--       -> "trigger fired for id=1", 1 row logged.
+--
+--   Rehearsal 2 (the REAL functions, inside a rolled-back transaction on staging):
+--     with EXECUTE revoked from anon AND authenticated, inserting into auth.users
+--     still created the public.users row via on_auth_user_created.
+--       -> public_users_row_created = 1.
+--
+--   So signup is unaffected. The two triggers this touches:
+--     on_auth_user_created   AFTER INSERT ON auth.users          -> handle_new_user()
+--     credit_decrement_check BEFORE INSERT OR UPDATE ON public.credit_consumption
+--                                                                -> check_credit_decrement()
+--
+-- What is deliberately NOT changed:
+--   service_role and postgres keep EXECUTE. Nothing calls these directly today,
+--   but removing the owner's and the service role's grant would buy no security
+--   (service_role already bypasses RLS) while risking a migration or admin path
+--   that does call them.
+--
+-- Idempotent: REVOKE on an already-revoked grant is a no-op, so a re-run is safe.
+
+REVOKE EXECUTE ON FUNCTION public.handle_new_user()        FROM anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.check_credit_decrement() FROM anon, authenticated;

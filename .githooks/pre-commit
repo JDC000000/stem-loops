@@ -11,7 +11,7 @@
 #   1. make lint                                   — ruff + black + web lint
 #   2. make test                                   — pytest + web tests
 #   3. pnpm --filter web typecheck                 — `tsc --noEmit`
-#   4. python -m compileall apps/training          — training syntax check
+#   4. python3 -m compileall apps/training         — training syntax check
 #   5. repo-wide merge-conflict marker grep on staged diff
 #
 # Enable the hook once per clone with:
@@ -45,20 +45,117 @@ fail() {
 echo "pre-commit: R-1 checks starting."
 
 # ─── 1. make lint ────────────────────────────────────────────────────────────
+# [1/5] make lint. Gated for the SAME reason step 2 is, and the omission was a
+# real defect: `make lint` runs `python3 -m ruff` and `python3 -m black`, so on
+# a fresh interpreter without them this step hard-failed and blocked the commit
+# before step 2's probe was ever reached. OBSERVED 2026-11-10 by an adversarial
+# reviewer, through a real `git commit` against a clean venv:
+#     No module named ruff / make: *** [Makefile:87: lint] Error 1 / exit 1
+# The machines the hook's own comments name -- a worktree, a fresh clone, stock
+# macOS -- are exactly the ones that hit it.
+#
+# This also covers python3 < 3.10, where the CI-pinned black==26.5.1 CANNOT be
+# installed at all ("requires Python>=3.10"), and an older black disagrees with
+# CI on a clean tree. There is no version of this step that can pass there, so
+# skipping is the only correct behaviour.
+#
+# The probe runs the commands the Makefile actually runs, not an import guess.
+r1_lint_env() {
+  python3 -m ruff --version >/dev/null 2>&1 || return 1
+  python3 -m black --version >/dev/null 2>&1 || return 2
+  return 0
+}
 echo "pre-commit: [1/5] make lint"
-make lint >/tmp/precommit-lint.log 2>&1 || { cat /tmp/precommit-lint.log >&2; fail "make lint"; }
+r1_lint_rc=0
+r1_lint_env || r1_lint_rc=$?
+if [ "$r1_lint_rc" = "0" ]; then
+  make lint >/tmp/precommit-lint.log 2>&1 || { cat /tmp/precommit-lint.log >&2; fail "make lint"; }
+else
+  if [ "$r1_lint_rc" = "1" ]; then r1_missing="ruff"; else r1_missing="black"; fi
+  echo "pre-commit: [1/5] SKIPPED -- python3 -m $r1_missing is not runnable in" >&2
+  echo "pre-commit:       $(command -v python3). Install the linters the way CI" >&2
+  echo "pre-commit:       does, which also pins the versions:" >&2
+  echo "pre-commit:         pip install ruff black -c apps/worker/constraints-prod.txt" >&2
+  echo "pre-commit:       On python3 < 3.10 the pinned black cannot be installed at" >&2
+  echo "pre-commit:       all; use 3.10+ if you want this step to run." >&2
+  echo "pre-commit:       CI runs ruff and black, so lint IS enforced there." >&2
+  echo "pre-commit:       => Your commit is NOT lint-verified locally." >&2
+fi
 
 # ─── 2. make test ────────────────────────────────────────────────────────────
+# [2/5] make test. TWO independent things can leave a machine unable to run
+# this suite, and gating on the interpreter version alone was not enough:
+#
+#   (a) python3 < 3.11 -- the worker imports `datetime.UTC`. No amount of pip
+#       installing fixes a language-version requirement.
+#   (b) The worker test dependencies are absent from this interpreter. A git
+#       worktree, a fresh clone and stock macOS all hit this. OBSERVED
+#       2026-11-09 on python3 3.13 -- which passed the version check -- as 34
+#       collection errors on psycopg / httpx / soundfile / sentry_sdk, so the
+#       step hard-failed and blocked the commit. That is the exact outcome
+#       this block exists to prevent.
+#
+# Either way the commit is NOT test-verified, so skip LOUDLY and keep the
+# other steps enforcing, rather than hard-failing and training everyone into
+# SKIP_PRECOMMIT=1, which disables ALL FIVE steps including the lint step that
+# actually catches things.
+#
+# The sentinel import list is deliberately NOT exhaustive -- it names what the
+# suite fails on today. If the suite grows a new third-party dependency this
+# step HARD-FAILS rather than skipping: noisy, but never a false green. A
+# skip here must only ever mean "this machine cannot run them", never "they
+# ran and passed".
+r1_test_env() {
+  python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null || return 1
+  python3 -c 'import psycopg, httpx, soundfile, sentry_sdk, boto3, librosa' 2>/dev/null || return 2
+  return 0
+}
 echo "pre-commit: [2/5] make test"
-make test >/tmp/precommit-test.log 2>&1 || { cat /tmp/precommit-test.log >&2; fail "make test"; }
+r1_env_rc=0
+r1_test_env || r1_env_rc=$?
+if [ "$r1_env_rc" = "0" ]; then
+  make test >/tmp/precommit-test.log 2>&1 || { cat /tmp/precommit-test.log >&2; fail "make test"; }
+elif [ "$r1_env_rc" = "1" ]; then
+  echo "pre-commit: [2/5] SKIPPED -- python3 is $(python3 -V 2>&1), and the worker" >&2
+  echo "pre-commit:       requires 3.11+ (datetime.UTC). CI runs 3.11+, so these" >&2
+  echo "pre-commit:       tests DO run there. This machine cannot run them." >&2
+  echo "pre-commit:       => Your commit is NOT test-verified locally." >&2
+else
+  echo "pre-commit: [2/5] SKIPPED -- worker test dependencies are not installed" >&2
+  echo "pre-commit:       in $(command -v python3). A worktree or fresh clone has" >&2
+  echo "pre-commit:       none. Install them the way CI does:" >&2
+  echo "pre-commit:         pip install -r apps/worker/requirements.txt \\" >&2
+  echo "pre-commit:           -c apps/worker/constraints-prod.txt" >&2
+  echo "pre-commit:       CI installs them, so these tests DO run there." >&2
+  echo "pre-commit:       => Your commit is NOT test-verified locally." >&2
+fi
 
 # ─── 3. web typecheck ────────────────────────────────────────────────────────
+# [3/5] typecheck. Needs pnpm AND node_modules, and a git worktree never has
+# node_modules, so this step does not run in a worktree even on a machine where
+# pnpm is installed. Skip loudly rather than hard-fail.
+#
+# RETRACTION: an earlier version of this comment claimed `pnpm install
+# --frozen-lockfile` refuses because pnpm-lock.yaml declares an `overrides:`
+# block that package.json does not, and called it a security pin living only in
+# the lockfile. THAT WAS FALSE. v3/main's package.json has both
+# `packageManager: pnpm@9.0.0` and `pnpm.overrides: {"postcss@<8.5.10":
+# ">=8.5.10"}`; they landed together in 3b41529 (#7), and CI's
+# --frozen-lockfile passes. The mismatch was observed against a POLLUTED V1
+# package.json left in the working tree by a half-applied branch switch -- i.e.
+# it was the wrong copy, found while investigating a wrong-copy problem (L35).
 echo "pre-commit: [3/5] pnpm --filter web typecheck"
-pnpm --filter web typecheck >/tmp/precommit-tsc.log 2>&1 || { cat /tmp/precommit-tsc.log >&2; fail "pnpm --filter web typecheck"; }
+if command -v pnpm >/dev/null 2>&1 && [ -d node_modules ]; then
+  pnpm --filter web typecheck >/tmp/precommit-tsc.log 2>&1 || { cat /tmp/precommit-tsc.log >&2; fail "pnpm --filter web typecheck"; }
+else
+  echo "pre-commit: [3/5] SKIPPED -- pnpm or node_modules missing." >&2
+  echo "pre-commit:       A worktree has no node_modules, so this never runs" >&2
+  echo "pre-commit:       there. => Commit is NOT typecheck-verified locally." >&2
+fi
 
 # ─── 4. training syntax check ────────────────────────────────────────────────
-echo "pre-commit: [4/5] python -m compileall apps/training"
-python -m compileall apps/training >/tmp/precommit-compileall.log 2>&1 || { cat /tmp/precommit-compileall.log >&2; fail "python -m compileall apps/training"; }
+echo "pre-commit: [4/5] python3 -m compileall apps/training"
+python3 -m compileall apps/training >/tmp/precommit-compileall.log 2>&1 || { cat /tmp/precommit-compileall.log >&2; fail "python3 -m compileall apps/training"; }
 
 # ─── 5. merge-conflict marker grep on staged diff ────────────────────────────
 echo "pre-commit: [5/5] merge-conflict marker check"
@@ -67,13 +164,26 @@ echo "pre-commit: [5/5] merge-conflict marker check"
 #   ^+<<<<<<< <ref>   (conflict begin)
 #   ^+=======$        (conflict divider — exact match, 7 equals, nothing else)
 #   ^+>>>>>>> <ref>   (conflict end)
-# The `--diff-filter=ACM` keeps renames/deletes from firing. `-U0` omits
-# context so we only see +/- lines.
-if git diff --cached -U0 --diff-filter=ACM | \
+# `-U0` omits context so we only see +/- lines.
+#
+# `--diff-filter=ACMR` INCLUDES renames. It used to be ACM, with a comment
+# claiming that "keeps renames/deletes from firing" -- but a rename carries its
+# added lines, so excluding R was a false NEGATIVE, not a guard. Demonstrated
+# 2026-11-10: `git mv README.md README2.md` plus an appended conflict block
+# gives status R096, which ACM excludes, and the hook exited 0 with three
+# marker lines in the index.
+#
+# `-c color.ui=false` is load-bearing. With `color.ui=always` in config or
+# environment, git wraps every diff line in escape codes, the `^\+` anchor no
+# longer matches, and step 5 silently passes everything. Demonstrated the same
+# day via GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=always -> exit 0 on the
+# same staged file that otherwise exits 1.
+if git -c color.ui=false diff --cached -U0 --diff-filter=ACMR | \
      grep -nE '^\+(<<<<<<< |=======$|>>>>>>> )' > /tmp/precommit-markers.log; then
   echo "pre-commit: conflict markers found in staged changes:" >&2
   cat /tmp/precommit-markers.log >&2
   fail "merge-conflict marker check"
 fi
 
-echo "pre-commit: all R-1 checks passed."
+echo "pre-commit: R-1 checks finished. Steps marked SKIPPED above were NOT run;"
+echo "pre-commit: only CI verifies those, and CI is the authority on them."

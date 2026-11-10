@@ -79,13 +79,13 @@ alphabet: alphabet-generate
 
 # Run all tests
 test:
-	cd apps/worker && python -m pytest tests/ -v
+	cd apps/worker && python3 -m pytest tests/ -v
 	pnpm --filter web test || true
 
 # Run linters
 lint:
-	cd apps/worker && python -m ruff check src/ tests/
-	cd apps/worker && python -m black --check src/ tests/
+	cd apps/worker && python3 -m ruff check src/ tests/
+	cd apps/worker && python3 -m black --check src/ tests/
 	pnpm --filter web lint || true
 
 # Deploy web to Vercel

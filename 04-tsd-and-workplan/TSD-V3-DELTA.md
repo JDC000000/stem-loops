@@ -5,6 +5,53 @@ This document EXTENDS the pinned TSD at `stem-loops-handoff/07-roadmap/TSD.md` (
 
 ---
 
+## Changelog — v1.5 → v1.6 (2026-11-10 — launch scope, answered by Jon)
+
+Source: **Jon's answers 2026-11-10** to the four scope questions v1.5 left open. Surgical: only §0, §12 and this changelog are touched. No schema or route contract moves.
+
+| § | Change | Source |
+|---|---|---|
+| §0 Header | v1.5 → v1.6 | this amendment |
+| **§12.2** | **Stem formats fixed: Opus for playback, plus a downloadable WAV or MP3.** Opus is the streaming/playback format per §3.1; the download is a separate user-facing artifact | Jon: *"STEM FORMAT - wav or mp3 downloadable too"* |
+| **§12.5 (NEW)** | **V3-J4 — the 5-minute song cap.** `MAX_UPLOAD_DURATION_SEC` drops **600 → 300** so that chords are never silently missing | Jon: *"5 mins is fine"* |
+| **§12.6 (NEW)** | **V3-J5 — launch browser scope: Chrome/Edge desktop.** Firefox and Safari added only where cheap | Jon: *"chrome at launch is FINE. add the other browsers if it's easy."* |
+| **§3.3 (V3-E3)** | Tempo/pitch **deferred out of launch** to hardening. Content unchanged | Jon: *"tempo / pitch - defer to hardening. we don't need it at launch"* |
+| **§12.7 (NEW)** | **The 2026-12-05 validation deadline** is promoted to a requirement, not a note | Jon: *"we have to validate this product before THEN"* |
+
+### 12.5 V3-J4 — the 5-minute song cap (NEW in v1.6)
+
+**Measured conflict, 2026-11-10:** `pipeline.py:112` sets `MAX_UPLOAD_DURATION_SEC_DEFAULT = 600.0` (10 min), while `klangio.py:112` sets `MAX_AUDIO_SEC = 300` (5 min) and raises above it. A 6-minute song therefore **succeeds** at stems and loops and **silently loses chords** to a `provider_failed` tombstone — `pipeline.py:706` catches it as non-fatal by design.
+
+With chords now core to the product (v1.5 §12.1), **losing them silently is the wrong failure.** So:
+
+- `MAX_UPLOAD_DURATION_SEC` default becomes **300.0**, matching Klangio's own ceiling.
+- A song over 5:00 is **rejected at ingest** with a clear user-facing message, rather than processed into a chordless result.
+- Rationale: **a visible refusal beats an invisible degradation.** This is the §15.6 principle — silence and success must never share an outcome.
+- `KLANGIO_MIN_AUDIO_SEC` is **5 s** (`klangio.py:114`), so clips under 5 s also get no chords. Same treatment: reject at ingest, do not degrade silently.
+- ⚠️ **The cap is one env knob read at call time**, so raising it later re-opens the silent-degradation path unless Klangio's ceiling rises with it. **Do not raise one without the other.**
+
+### 12.6 V3-J5 — launch browser scope (NEW in v1.6)
+
+**Launch target: Chrome and Edge, desktop.** Firefox and Safari are added only where they are cheap, and **cheapness is measured, not assumed.**
+
+§3.4's matrix is the reference and is unchanged, but note what it already says and what the override changed:
+
+- Firefox's exclusion in §5.4 was about **tab-capture** dropping the audio track — that was a **Variant Y** constraint, and Variant Y is off the launch path (v1.5). **Firefox is not excluded from the launch player on that ground.** §3.4 lists Firefox ≥ 130 as supporting Opus in WebCodecs, so it is a *candidate*, pending measurement.
+- Safari and iOS remain genuinely harder: §3.4 marks Opus-in-WebCodecs **partial** on Safari ≥ 17.4 and routes it to the variant-S fallback with a possible **3-minute cap**. That is below V3-J4's 5-minute cap, so **Safari would need its own, lower limit** — not a launch item.
+- **Unsupported browsers must be feature-detected at page load and shown a banner, never a button that fails silently.** The §5.4 UX rule carries over to the player verbatim.
+
+### 12.7 V3-J6 — the 2026-12-05 validation deadline (NEW in v1.6)
+
+Jon, 2026-11-10: *"re Dec 5th subscription end - noted. we have to validate this product before THEN."*
+
+The Klangio Startup subscription is **scheduled to cancel effective 2026-12-05** — the hard cap v1.4 pinned, working as designed. **Chords stop that day** unless the subscription is kept, `autochord` is implemented as a provider, or ChordNet training is resourced (its dataset is a random-label placeholder — R-4).
+
+**So V3-J1 must be validated by Jon's own use before 2026-12-05.** That is a hard date on the critical path, and it is the reason V3-J2 and the player precede every hardening item. **Anything that does not move V3-J1 toward that date is not launch work.**
+
+Items intentionally UNCHANGED in v1.6: §1, §2, §3 (content — only its launch priority and the §3.3 deferral change), §4, §5, §6, §7, §8, §10, and §12.1/§12.3/§12.4 from v1.5.
+
+---
+
 ## Changelog — v1.4 → v1.5 (2026-11-10 — the play-along launch, and Jon's link-path stems override)
 
 Source: **Jon's directives 2026-11-10**, verbatim where quoted. This amendment changes **scope and the launch definition**, not schema or route contracts. It is the first amendment to **reverse a legal-risk mitigation**, so the reversal is recorded with its original reasoning intact rather than deleted.
@@ -78,7 +125,8 @@ Items intentionally UNCHANGED in v1.5: §1 commercial layer (other than the §1.
 
 Requirements:
 - The worker **retains** the 6 full-length stems and uploads them under the job's R2 prefix.
-- Stems are **Opus**, consistent with §3.1's engine assumption (*"the Opus-encoded bytes (compressed, 4–5 MB per stem)"*) and with `AudioContext` at 48 kHz to avoid resample cost.
+- **Playback format: Opus**, consistent with §3.1's engine assumption (*"the Opus-encoded bytes (compressed, 4–5 MB per stem)"*) and with `AudioContext` at 48 kHz to avoid resample cost.
+- **Download format (NEW in v1.6, per Jon): a downloadable WAV or MP3 per stem**, separate from the playback artifact. Opus is the right streaming codec and the wrong hand-off to a DAW. ⚠️ **This is a second encode and a second R2 object per stem** — 6 extra objects per job, materially larger than the Opus set — so the 24-hour expiry does real work here. Pick **one** download format rather than shipping both; MP3 is smaller and universally importable, WAV is lossless and larger. **Open for Jon.**
 - `Job` gains a stems collection; stem URLs are **short-TTL signed GETs** from the private bucket, matching the existing `loops` and `play-chords` pattern — never public objects.
 - Stems obey the **same 24-hour expiry** as every other job artifact. The retention promise in §1.6a does not change.
 - Adds R2 storage and egress per job. Bounded by the 24-hour expiry.

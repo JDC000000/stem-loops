@@ -49,6 +49,45 @@ def upload_loop(job_id: str, stem: str, section: str, idx: int, local_path: str)
     return r2_key
 
 
+# V3-J2: the stem key prefix. Deliberately UNDER the `{job_id}/` prefix, because
+# cleanup.py's per-job retention delete is `delete_prefix(f"{job_id}/")` and
+# `_job_id_of()` reads the FIRST path segment. `upload_play_chords` writes
+# `jobs/<id>/...` instead, so its first segment is the literal "jobs" and the
+# per-job delete MISSES it entirely — chord artifacts survive until the budget-
+# limited orphan sweep happens to catch them. Do not copy that layout here.
+# The leading underscore matches `_input.wav`: a non-loop artifact, so it can
+# never collide with `{job_id}/{stem}/...` loop keys.
+def stem_r2_key(job_id: str, stem: str) -> str:
+    """Deterministic key for a retained full-length stem.
+
+    Mirrored in apps/web/src/lib/r2.ts:stemR2Key — drift silently 404s the player,
+    which is exactly how the chord overlay's key drift would have failed. A test
+    pins both sides.
+    """
+    return f"{job_id}/_stems/{stem}.wav"
+
+
+def upload_stem(job_id: str, stem: str, local_path: str) -> str:
+    """Upload a full-length separated stem and return its deterministic r2_key.
+
+    Why this exists (V3-J2): htdemucs_6s produces six full-length stems, we cut
+    bar-length loops from them, and then THREW THE STEMS AWAY — `job_scope()`
+    rmtree'd the scratch dir at job end and nothing had copied them anywhere. The
+    play-along product needs per-stem volume faders, which is impossible without
+    the full-length audio, so the stems are now retained for the normal 24h window
+    alongside the loops they produced.
+    """
+    r2_key = stem_r2_key(job_id, stem)
+    _r2().upload_file(
+        local_path,
+        os.environ["R2_BUCKET_NAME"],
+        r2_key,
+        ExtraArgs={"ContentType": "audio/wav"},
+    )
+    log_structured("INFO", "stem_uploaded", r2_key=r2_key, stem=stem)
+    return r2_key
+
+
 def presign_get(r2_key: str, expires: int = 3600) -> str:
     """Return a presigned GET URL for an object (used to hand input audio to Replicate)."""
     return _r2().generate_presigned_url(

@@ -34,7 +34,7 @@ export const OPUS_TIMEBASE_HZ = 48000;
 // allocated per LACING VALUE, and a page may carry 255 lacing values in 255 bytes.
 // A 2.15 MB file of 255 one-byte packets per page measured 1,020,000 packets and
 // 184 MB of heap in 313 ms — 85x amplification. The amplification is per-lacing-
-// value, so MAX_PACKET_COUNT is what actually bounds the heap; a byte cap alone
+// value, so MAX_PACKETS is what actually bounds the heap; a byte cap alone
 // does not, which is why both exist and both are tested separately.
 // ---------------------------------------------------------------------------
 

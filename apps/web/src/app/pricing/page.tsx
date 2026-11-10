@@ -4,7 +4,7 @@ import { getUser } from '@/lib/auth/supabase';
 import BillingButton, { CreditPackCheckout, PackBuyButton } from '@/components/BillingButton';
 import { readTrial, TRIAL_SONG_CAP } from '@/lib/trial';
 
-export const metadata: Metadata = { title: 'Pricing' };
+export const metadata: Metadata = { title: 'Pricing', robots: { index: false, follow: false } };
 export const dynamic = 'force-dynamic';
 
 type Plan = {

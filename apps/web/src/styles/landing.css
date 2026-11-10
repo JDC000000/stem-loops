@@ -60,7 +60,11 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .header-row { height: 100%; display: flex; align-items: center; justify-content: space-between; }
 .wordmark { font-size: var(--text-xl); font-weight: 700; letter-spacing: -0.02em; text-decoration: none; color: var(--text-primary); display: inline-flex; align-items: center; min-height: var(--h-control); }
 .wm-loops { color: var(--accent); }
-.header-link { color: var(--text-secondary); font-size: var(--text-md); text-decoration: none; min-height: var(--h-control); display: inline-flex; align-items: center; padding-inline: var(--space-2); margin-right: calc(-1 * var(--space-2)); border-radius: var(--radius-md); }
+.header-nav { display: flex; align-items: center; gap: var(--space-1); }
+.header-link { color: var(--text-secondary); font-size: var(--text-md); text-decoration: none; min-height: var(--h-control); display: inline-flex; align-items: center; padding-inline: var(--space-2); border-radius: var(--radius-md); }
+/* Pull only the last link's padding flush to the container edge; applying this to every
+   .header-link made adjacent links overlap once the header had more than one. */
+.header-nav > .header-link:last-child { margin-right: calc(-1 * var(--space-2)); }
 .header-link:hover { color: var(--text-primary); text-decoration: underline; text-underline-offset: 4px; }
 
 /* hero */

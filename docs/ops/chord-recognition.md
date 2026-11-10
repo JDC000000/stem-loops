@@ -213,18 +213,20 @@ may still consume quota). Polls and result GETs are not counted.
   fails closed (`ChordProviderError`, nothing sent). The worker role has no
   `DELETE`/`TRUNCATE` on the table: deleting the row would reset the counter.
 - **File (local/dev fallback).** flock-guarded JSON (`KLANGIO_QUOTA_FILE`, default
-  `$TMPDIR/klangio_quota.json`), used when `DATABASE_URL` is unset. Per-machine.
-  `apps/worker/fly.toml` mounts a volume at `/data` and points `KLANGIO_QUOTA_FILE` at it,
-  so the count survives deploys. A Fly volume is **per-machine**: that is durability across
-  deploys, not correctness across instances. Postgres is the real fix.
+  `$TMPDIR/klangio_quota.json`), used when `DATABASE_URL` is unset. Per-machine, and
+  **local/dev only**. `reserve` creates the parent directory, so an unmounted path does
+  not fail — it just counts from zero again after every deploy, while logging as healthy.
+  `apps/worker/fly.toml` mounts **no** volume and pins `KLANGIO_QUOTA_BACKEND = "postgres"`
+  for exactly that reason. Postgres is the real fix.
 
 `KLANGIO_QUOTA_BACKEND` (`auto` | `postgres` | `file`) overrides the choice. `postgres`
 without `DATABASE_URL` fails closed rather than quietly using a counter that resets.
 
 Deploy order: apply migration 028 (`make migrate`) **before** deploying this code, or the
-first submit fails closed on the missing table; and create the volume
-(`fly volumes create klangio_quota --app stem-loops --region iad --size 1`) before
-deploying the `fly.toml` change. If the counter is ever lost, recover the true count from
+first submit fails closed on the missing table. **Do NOT create a `klangio_quota` volume** —
+an earlier version of this page told you to, and on 2026-11-09 that volume pinned the
+worker to one Fly host with no capacity and took production down. There is no volume and
+none is needed. If the counter is ever lost, recover the true count from
 the Klangio dashboard and `UPDATE public.klangio_usage SET count = <n> WHERE cycle_start = <date>`.
 
 **Content type.** The multipart `Content-Type` is inferred from the file extension
@@ -284,7 +286,7 @@ See `.env.example` for the canonical list. The vars this module reads:
 | `KLANGIO_BILLING_DAY` | `5` | Day of month the cycle renews (1-28). |
 | `KLANGIO_QUOTA_BACKEND` | `auto` | `auto` = Postgres if `DATABASE_URL` is set, else file. `postgres` / `file` force one (`postgres` without `DATABASE_URL` fails closed). |
 | `DATABASE_URL` | *(unset)* | Selects the Postgres counter (`public.klangio_usage`) when set. |
-| `KLANGIO_QUOTA_FILE` | `$TMPDIR/klangio_quota.json` | File-store counter path (fallback); per-machine, mounted on the Fly volume at `/data`. |
+| `KLANGIO_QUOTA_FILE` | `$TMPDIR/klangio_quota.json` | File-store counter path; **local/dev only**, per-machine. Not set in production — there is no volume, and an unmounted path resets to zero on every deploy without failing. |
 | `KLANGIO_BACKOFF_CAP_SEC` | `60` | Hard ceiling on a single retry wait. |
 | `KLANGIO_BACKOFF_BASE_SEC` | `1` | Base for the exponential backoff. |
 | `KLANGIO_HTTP_TIMEOUT_SEC` | `30` | Per-call HTTP timeout. |

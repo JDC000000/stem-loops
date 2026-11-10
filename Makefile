@@ -94,7 +94,7 @@ deploy-web:
 
 # Deploy worker to Fly.io
 deploy-worker:
-	cd apps/worker && fly deploy
+	cd apps/worker && fly deploy --ha=false
 
 # Run database migrations
 migrate:

@@ -50,7 +50,13 @@ from .extractor.beat_grid import estimate_beat_grid
 from .extractor.loop_extractor import extract_loops
 from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
-from .storage.r2_uploader import download_object, upload_input, upload_loop, upload_play_chords
+from .storage.r2_uploader import (
+    download_object,
+    upload_input,
+    upload_loop,
+    upload_play_chords,
+    upload_stem,
+)
 from .tagger.bpm_key import detect_bpm_and_key
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -319,6 +325,40 @@ def encode_and_upload(
     workers = int(os.environ.get("LOOP_ENCODE_WORKERS", "8"))
     with ThreadPoolExecutor(max_workers=workers) as ex:
         return sum(ex.map(_one, enumerate(loops)))
+
+
+# V3-J2 — retain the full-length stems.
+#
+# Until now htdemucs_6s produced six full-length stems, `extract_and_tag` cut
+# bar-length loops out of them, and `job_scope()` then rmtree'd the scratch dir:
+# the stems themselves were never persisted anywhere. The play-along product needs
+# per-stem volume faders over the whole song, which the loops cannot provide, so
+# the stems are now uploaded alongside them and expire on the SAME 24h window
+# (their keys sit under `{job_id}/`, which cleanup's per-job delete_prefix covers).
+#
+# Failure posture: a stem upload failure must NOT fail the job. Loops are the
+# shipped product and they are already encoded by this point; losing a fader is a
+# degraded player, losing the job is a lost $0.20 separation. The route reports
+# whichever stems exist, so a partial upload degrades to fewer faders.
+def retain_stems(job_id, stem_paths) -> list[str]:
+    """Upload each full-length stem WAV. Returns the stem names that landed."""
+    uploaded: list[str] = []
+    for name, path in sorted(stem_paths.items()):
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            upload_stem(job_id, name, path)
+            uploaded.append(name)
+        except Exception as exc:  # noqa: BLE001 — a fader is optional, the job is not
+            log_structured(
+                "WARN",
+                "stem_retain_failed",
+                job_id=job_id,
+                stem=name,
+                error=str(exc)[:200],
+            )
+    log_structured("INFO", "stems_retained", job_id=job_id, uploaded=uploaded, count=len(uploaded))
+    return uploaded
 
 
 def process_stems(job_id, stem_paths, requested_stems, bars, sr=44100) -> int:
@@ -1025,7 +1065,10 @@ async def _run_pipeline(job_id: str) -> None:
             bars,
             title=_title_slug(original_filename, job_id),
         )
-        await emit_event(job_id, "uploading", "completed", pct=100)
+        # V3-J2: retain the full-length stems for the play-along faders. After the
+        # loops, so a stem-upload problem can never cost us the loops.
+        retained = await asyncio.to_thread(retain_stems, job_id, stem_paths)
+        await emit_event(job_id, "uploading", "completed", pct=100, detail={"stems": retained})
 
         await set_status(job_id, "done")
         # Peak worker RSS (kernel high-water mark) — real evidence for sizing the Option-B

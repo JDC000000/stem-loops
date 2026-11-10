@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import LoginForm from '@/components/LoginForm';
 
-export const metadata: Metadata = { title: 'Sign in', robots: { index: false, follow: false } };
+export const metadata: Metadata = { title: 'Sign in' };
 
 export default function LoginPage({ searchParams }: { searchParams: { return_to?: string; error?: string } }) {
   return (

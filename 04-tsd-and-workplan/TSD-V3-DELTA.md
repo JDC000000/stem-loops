@@ -177,8 +177,17 @@ Both reached stage `downloading`, which **proves `ALLOW_YOUTUBE_INPUT` is `'true
 
 **Two independent causes, in the order the runbook prescribes:**
 
-1. **Stale yt-dlp.** `check_ytdlp_freshness.py` reported `STALE | 82d ago | 2 releases behind | threshold 45d`. **Fixed in PR #170** (`2026.8.19` → `2026.10.26`). ⚠️ `constraints-prod.txt` is an **exact pin**, so a rebuild alone never updated it — and `fly deploy` builds from the **local working tree**, so a deploy without `git pull` first rebuilds the old pin.
-2. **No residential proxy — and this is the likely real cause.** `ytdlp_client.py:9-12`: `PROXY_URL` routes egress through a residential proxy *"instead of datacenter egress — **the cause**"*. The chain's 98%-success design figure was measured **through** such a proxy. `08-runbooks.md` §6 records **"prod has no proxy"**, and `PROXY_URL` is absent from `fly secrets list` [static 2026-11-09].
+1. ~~**Stale yt-dlp.**~~ ✅ **TESTED AND FALSIFIED, 2026-11-10.** It was genuinely stale — `pip show yt-dlp` on the Machine returned **`Version: 2026.8.19`**, 82 days old against a 45-day threshold — and PR #170 fixed it. **It was not the cause.** Full Direct chain:
+
+   | Step | Evidence |
+   |---|---|
+   | Stale pin confirmed live | `fly ssh console -a stem-loops -C "pip show yt-dlp"` → `Version: 2026.8.19` |
+   | New pin pulled | `git pull` → `Updating eb28e08..f4b729c`; `grep` printed `yt-dlp==2026.10.26` |
+   | New pin built in | `[deps 2/2] RUN pip install … 46.0s` — **not `CACHED`**, so the layer rebuilt. Image `deployment-01M73B599RQC17AZYYTRT7T8ME` |
+   | Still fails | job `624a5288-18ae-4cc1-9f30-e9b5990c16ce` → `DOWNLOAD_BLOCKED` at stage `downloading` |
+
+   **Three jobs, three failures, now with a fresh yt-dlp on the Machine.** The cheap hypothesis was correctly prioritised (the runbook names it first), correctly executed, and **correctly falsified.** ⚠️ Note for the next person: `constraints-prod.txt` is an **exact pin**, so a rebuild alone never updates it, and `fly deploy` builds from the **local working tree** — a deploy without `git pull` first rebuilds the old pin.
+2. **No residential proxy — and by elimination this is NOW THE CAUSE, not a hypothesis.** `ytdlp_client.py:9-12`: `PROXY_URL` routes egress through a residential proxy *"instead of datacenter egress — **the cause**"*. The chain's 98%-success design figure was measured **through** such a proxy. `08-runbooks.md` §6 records **"prod has no proxy"**, and `PROXY_URL` is absent from `fly secrets list` [static 2026-11-09].
 
 ⚠️ **`PROXY_URL` is documented NOWHERE** — not in `docs/`, `.env.example`, `fly.toml` or the `Makefile`. It exists only in code. **A textbook class-6 Deployment seam**, and the reason nobody set it: nothing ever said to.
 
@@ -193,6 +202,28 @@ Both reached stage `downloading`, which **proves `ALLOW_YOUTUBE_INPUT` is `'true
 - Firefox's §5.4 exclusion was a **tab-capture** constraint, and Variant Y left the launch path in v1.5 — so it does **not** exclude Firefox from the player. §3.4 lists **Firefox ≥ 130** as supporting Opus in WebCodecs: a candidate pending measurement.
 - Safari stays harder: §3.4 marks Opus-in-WebCodecs **partial** on Safari ≥ 17.4 and routes it to variant S. ⚠️ **v1.6 misattributed the 3-minute cap to §3.4; it is in §3.6.** §3.4 says "> 4 min". Either way Safari needs its own lower limit — not a launch item.
 - Unsupported browsers get a **feature-detected banner, never a button that fails silently**. ⚠️ v1.6 said the §5.4 copy carries over "verbatim"; it must **not** — *"Your browser does not support tab-audio capture"* is false for the player, which uses no tab capture.
+
+### 12.9 V3-J9 — stem download requires sign-up (NEW in v1.7, decided by Jon)
+
+**Jon's decision, 2026-11-10:** *"lets require sign up"* — closing §11 **O-1**. A 3-download allowance needs an identity, hashed-IP is a rate-limit cohort and not one, so **stem download is gated behind an account.**
+
+**This is a launch-scope change and it is the largest one in this document.** The authed path was explicitly OUT of scope in v1.5 (*"Free, no account"*, no sign-in affordance on the landing page). It is now IN.
+
+| Consequence | Owner | Note |
+|---|---|---|
+| `NEXT_PUBLIC_HCAPTCHA_SITE_KEY` + `HCAPTCHA_SECRET_KEY` in Vercel | **Jon** | Confirmed **absent** 2026-11-10 by reading the env [Direct]. The hCaptcha site must be registered for `stem-loops.com` or it fails *with* keys set |
+| The **matching** hCaptcha secret in **production Supabase Auth** | **Jon** | ⚠️ **Both sides, or sign-up returns HTTP 400.** This is why the staging smoke has failed `captcha_failed` three times. Setting the Vercel pair alone is **not sufficient** |
+| `RESEND_API_KEY` + `RESEND_FROM` | **Jon** | Confirmed absent. Without it welcome mail is silently skipped with a warn — degraded, not fatal |
+| A **redeploy** after the keys land | agent | `NEXT_PUBLIC_*` is **build-time inlined**; an env edit alone changes nothing |
+| **Revert `/login` from `noindex`** | agent | PR #167 noindexed it when the authed path was out of scope. It is now **in the funnel** and must be reachable and indexable |
+| **A sign-in affordance on the landing page** | agent | There is **none today** — the only links are `/`, `/history`, `/privacy`, `/terms`. A gated download with no visible way to sign in is a dead end |
+| **The staging billing smoke becomes a real prerequisite again** | **Jon** dispatches | Its steps 4–8 exercise **sign-up → trial grant → entitlements → credits** — exactly this path. It has never got past step 3b (`captcha_failed`), so **this path has never been exercised by anything** |
+| Reuse `trial_grants`, do not invent a counter | agent | Already one-per-user-ever with a PK on `user_id` (§6.1). The 3-download allowance maps onto it |
+| Migration 013's `on_auth_user_created` trigger | — | ✅ Present and verified 2026-11-09. Without it sign-up writes `auth.users` but no `public.users` or entitlement row |
+
+**What does NOT change:** the core journey (§12.1) stays anonymous — paste a link, get stems, play along with faders and chords. **Only the `.wav` stem *download* is gated.** A visitor can still do the whole play-along without an account; sign-up buys them files to keep.
+
+**V3-J9 pass bar:** a throwaway account signs up, receives its entitlement row, downloads 3 `.wav` stems, and is refused the 4th with a clear upsell — then `DELETE /api/users/me` removes it cleanly (currently **Inferred from code and never executed**).
 
 ### 12.8 V3-J8 — the 2026-12-05 validation deadline
 
@@ -1009,7 +1040,7 @@ Three surfaces, read in this priority order (first non-null wins), cached 30 s:
 
 | # | Open item | Why it matters |
 |---|---|---|
-| **O-1** | **Can a 3-free stem-download allowance be enforced on an anonymous launch path?** Hashed-IP cohorts are not an identity. Either the allowance is weak by design, or stem download requires sign-up — which pulls the authed path back into launch scope | **Changes launch scope either way.** See §12.2 |
+| ~~**O-1**~~ | ~~Can a 3-free stem-download allowance be enforced on an anonymous launch path?~~ **DECIDED by Jon 2026-11-10: require sign-up.** See the new **§12.9** — this pulls the authed path into launch scope | ✅ **CLOSED** |
 | **O-2** | **The residential proxy (V3-J7).** The YouTube path fails 100% and the documented cause is datacenter egress. Needs a paid subscription — an external purchase, not an engineering fix | **The launch blocker.** See §12.6 |
 | **O-3** | **What happens to chords on 2026-12-05** — keep the Klangio subscription, implement `autochord`, or resource ChordNet training | Chords stop that day. See §12.8 |
 | **O-4** | **§8.2 needs rewriting against reality.** `ENABLE_V3_PLAY` does not exist in code (0 hits), and §8.2 describes it as the rollback master switch. Rollback is actually promote-previous-deployment | A rollback contract naming a switch that was never built is worse than none |

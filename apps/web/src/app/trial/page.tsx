@@ -11,7 +11,7 @@ import { getUser } from '@/lib/auth/supabase';
 import { readTrial, TRIAL_SONG_CAP } from '@/lib/trial';
 import StartTrialButton from './StartTrialButton';
 
-export const metadata: Metadata = { title: 'Free trial' };
+export const metadata: Metadata = { title: 'Free trial', robots: { index: false, follow: false } };
 export const dynamic = 'force-dynamic';
 
 const section = {

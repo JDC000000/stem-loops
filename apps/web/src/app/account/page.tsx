@@ -5,7 +5,7 @@ import { db } from '@/lib/db';
 import { serverGet, type CreditsBalance, type Entitlements } from '@/lib/billing/server-fetch';
 import BillingButton from '@/components/BillingButton';
 
-export const metadata: Metadata = { title: 'Account' };
+export const metadata: Metadata = { title: 'Account', robots: { index: false, follow: false } };
 export const dynamic = 'force-dynamic';
 
 type JobRow = { id: string; title: string | null; status: string; created_at: string };

@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { getUser } from '@/lib/auth/supabase';
 import { serverGet, type CreditsBalance } from '@/lib/billing/server-fetch';
 
-export const metadata: Metadata = { title: 'Thank you' };
+export const metadata: Metadata = { title: 'Thank you', robots: { index: false, follow: false } };
 export const dynamic = 'force-dynamic';
 
 const PACKS = new Set(['20', '60', '180']);

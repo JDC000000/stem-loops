@@ -11,7 +11,7 @@
 #   1. make lint                                   — ruff + black + web lint
 #   2. make test                                   — pytest + web tests
 #   3. pnpm --filter web typecheck                 — `tsc --noEmit`
-#   4. python -m compileall apps/training          — training syntax check
+#   4. python3 -m compileall apps/training         — training syntax check
 #   5. repo-wide merge-conflict marker grep on staged diff
 #
 # Enable the hook once per clone with:
@@ -49,19 +49,50 @@ echo "pre-commit: [1/5] make lint"
 make lint >/tmp/precommit-lint.log 2>&1 || { cat /tmp/precommit-lint.log >&2; fail "make lint"; }
 
 # ─── 2. make test ────────────────────────────────────────────────────────────
-# [2/5] make test. The worker imports `datetime.UTC`, which is Python 3.11+.
-# A 3.10 interpreter CANNOT run these tests -- 14 collection errors, and no
-# amount of pip installing fixes a language-version requirement. Rather than
-# hard-fail and train everyone to set SKIP_PRECOMMIT=1 (which disables ALL
-# five steps, including the lint step that actually catches things), skip this
-# one LOUDLY and keep the rest enforcing.
+# [2/5] make test. TWO independent things can leave a machine unable to run
+# this suite, and gating on the interpreter version alone was not enough:
+#
+#   (a) python3 < 3.11 -- the worker imports `datetime.UTC`. No amount of pip
+#       installing fixes a language-version requirement.
+#   (b) The worker test dependencies are absent from this interpreter. A git
+#       worktree, a fresh clone and stock macOS all hit this. OBSERVED
+#       2026-11-09 on python3 3.13 -- which passed the version check -- as 34
+#       collection errors on psycopg / httpx / soundfile / sentry_sdk, so the
+#       step hard-failed and blocked the commit. That is the exact outcome
+#       this block exists to prevent.
+#
+# Either way the commit is NOT test-verified, so skip LOUDLY and keep the
+# other steps enforcing, rather than hard-failing and training everyone into
+# SKIP_PRECOMMIT=1, which disables ALL FIVE steps including the lint step that
+# actually catches things.
+#
+# The sentinel import list is deliberately NOT exhaustive -- it names what the
+# suite fails on today. If the suite grows a new third-party dependency this
+# step HARD-FAILS rather than skipping: noisy, but never a false green. A
+# skip here must only ever mean "this machine cannot run them", never "they
+# ran and passed".
+r1_test_env() {
+  python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null || return 1
+  python3 -c 'import psycopg, httpx, soundfile, sentry_sdk, boto3, librosa' 2>/dev/null || return 2
+  return 0
+}
 echo "pre-commit: [2/5] make test"
-if python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+r1_env_rc=0
+r1_test_env || r1_env_rc=$?
+if [ "$r1_env_rc" = "0" ]; then
   make test >/tmp/precommit-test.log 2>&1 || { cat /tmp/precommit-test.log >&2; fail "make test"; }
-else
+elif [ "$r1_env_rc" = "1" ]; then
   echo "pre-commit: [2/5] SKIPPED -- python3 is $(python3 -V 2>&1), and the worker" >&2
-  echo "pre-commit:       requires 3.11+ (datetime.UTC). CI runs 3.11, so these" >&2
+  echo "pre-commit:       requires 3.11+ (datetime.UTC). CI runs 3.11+, so these" >&2
   echo "pre-commit:       tests DO run there. This machine cannot run them." >&2
+  echo "pre-commit:       => Your commit is NOT test-verified locally." >&2
+else
+  echo "pre-commit: [2/5] SKIPPED -- worker test dependencies are not installed" >&2
+  echo "pre-commit:       in $(command -v python3). A worktree or fresh clone has" >&2
+  echo "pre-commit:       none. Install them the way CI does:" >&2
+  echo "pre-commit:         pip install -r apps/worker/requirements.txt \\" >&2
+  echo "pre-commit:           -c apps/worker/constraints-prod.txt" >&2
+  echo "pre-commit:       CI installs them, so these tests DO run there." >&2
   echo "pre-commit:       => Your commit is NOT test-verified locally." >&2
 fi
 
@@ -89,8 +120,8 @@ else
 fi
 
 # ─── 4. training syntax check ────────────────────────────────────────────────
-echo "pre-commit: [4/5] python -m compileall apps/training"
-python -m compileall apps/training >/tmp/precommit-compileall.log 2>&1 || { cat /tmp/precommit-compileall.log >&2; fail "python -m compileall apps/training"; }
+echo "pre-commit: [4/5] python3 -m compileall apps/training"
+python3 -m compileall apps/training >/tmp/precommit-compileall.log 2>&1 || { cat /tmp/precommit-compileall.log >&2; fail "python3 -m compileall apps/training"; }
 
 # ─── 5. merge-conflict marker grep on staged diff ────────────────────────────
 echo "pre-commit: [5/5] merge-conflict marker check"

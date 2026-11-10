@@ -20,7 +20,8 @@ export default function TermsPage() {
 
             <h2>The service</h2>
             <p>
-              stem-loops splits audio you give it into stems and cuts them into loops. It is free and there are no accounts. By
+              stem-loops splits audio you give it into stems and cuts them into loops. It is free. Cutting and downloading loops needs
+              no account; downloading the separated stems does. By
               using it you agree to these terms.
             </p>
 

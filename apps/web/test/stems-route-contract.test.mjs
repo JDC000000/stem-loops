@@ -163,10 +163,10 @@ test('six WAVs and zero Opus -> encode_failed, NOT "unavailable"', async () => {
   assert.equal(res.body.state, 'encode_failed');
   assert.equal(res.body.complete, false);
   assert.deepEqual(res.body.stems, []);
-  assert.ok(
-    globalThis.__st.sentry.some((e) => e[0] === 'message' && /encode_failed/.test(e[1])),
-    'encode_failed must reach Sentry, not just a log line',
-  );
+  // Reporting this to Sentry is the WORKER's job, not the route's — see the
+  // "does NOT report to Sentry from the route" test below for why. What the route
+  // owes the client is a state it can act on, and that is what is asserted here.
+  assert.notEqual(res.body.state, 'unavailable', 'broken must not look like a legacy job');
 });
 
 test('no stems of either kind -> unavailable, and NOTHING is reported to Sentry', async () => {
@@ -280,4 +280,46 @@ test('an R2 list failure is a loud 502, never a silent empty 200', async () => {
   assert.equal(res.status, 502);
   assert.equal(res.body.error_code, 'STEM_LIST_FAILED');
   assert.ok(globalThis.__st.sentry.some((e) => e[0] === 'exception'));
+});
+
+// ---------- the SQL gate itself ----------
+
+test('the job lookup is gated on expires_at, not just on id', async () => {
+  // Kills a mutation that drops `AND expires_at > now()`. The db stub ignores the
+  // SQL text, so no behavioural assertion can see this — an expired job would be
+  // served stems whose R2 objects the retention sweep has already deleted, i.e.
+  // signed URLs to nothing. Asserting on the statement is the only way to pin it.
+  const mod = await loadRoute({ keys: SIX.map(PLAY) });
+  await call(mod);
+  const q = globalThis.__st.calls.find((c) => c[0] === 'query');
+  assert.ok(q, 'the route must query for the job');
+  const sql = q[1].replace(/\s+/g, ' ');
+  assert.match(sql, /expires_at\s*>\s*now\(\)/i, 'the expiry gate must be in the SQL');
+  assert.match(sql, /FROM jobs/i);
+  assert.deepEqual(q[2], [JOB], 'the id must be a bound parameter, never interpolated');
+});
+
+test('the status and expiry gates are BOTH required, not either/or', async () => {
+  // expired (no row) -> 404; present but not done -> 404. Neither reaches R2.
+  const expired = await loadRoute({ rowCount: 0, keys: SIX.map(PLAY) });
+  assert.equal((await call(expired)).status, 404);
+  globalThis.__st = { calls: [], minted: [], sentry: [] };
+  const running = await loadRoute({ status: 'extracting', keys: SIX.map(PLAY) });
+  assert.equal((await call(running)).status, 404);
+  assert.equal(listedPrefix(), undefined);
+});
+
+test('encode_failed does NOT report to Sentry from the route', async () => {
+  // The route is unauthenticated, so a per-GET Sentry call lets anyone holding a job
+  // UUID fire unbounded events by refetching a broken job. The worker already
+  // reports this condition once per job, with a likely_cause. A reviewer flagged
+  // the amplification; this pins the removal.
+  const mod = await loadRoute({ keys: SIX.map(DL) });
+  const res = await call(mod);
+  assert.equal(res.body.state, 'encode_failed');
+  assert.deepEqual(
+    globalThis.__st.sentry.filter((e) => e[0] === 'message'),
+    [],
+    'no Sentry message from the route on encode_failed',
+  );
 });

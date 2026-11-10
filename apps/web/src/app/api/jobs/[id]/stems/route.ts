@@ -118,15 +118,12 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     }
 
     const state = stemState(playable.size, downloadable.size);
-    if (state === 'encode_failed') {
-      // The worker already reports this, but a job retained before that logging
-      // existed would otherwise be invisible. Cheap, and it fires at most once per
-      // request on an already-broken job.
-      Sentry.captureMessage(
-        `V3-J2 encode_failed: ${downloadable.size} downloads, 0 playable for job ${jobId}`,
-        'error'
-      );
-    }
+    // NOTE: this route deliberately does NOT report `encode_failed` to Sentry.
+    // An earlier version did, and a reviewer pointed out the consequence: the route
+    // is unauthenticated, so anyone holding a job UUID could fire an unbounded
+    // number of Sentry events just by refetching a broken job. The worker already
+    // reports the same condition ONCE per job, at the moment it happens, with a
+    // likely_cause — which is strictly better telemetry and cannot be amplified.
 
     // Mixer channel order, not R2's lexical order.
     const stems = await Promise.all(

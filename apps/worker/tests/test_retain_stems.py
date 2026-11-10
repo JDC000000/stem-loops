@@ -7,6 +7,7 @@ artifact, make the encoder always fail, or change the retained stem set, and not
 failed. These tests pin the BEHAVIOUR, and each names the mutation it kills.
 """
 
+import json
 import os
 import subprocess
 
@@ -261,3 +262,275 @@ def test_complete_is_false_when_a_stem_is_absent(stem_wavs, recorder):
     assert "drums" not in report["play"]
     # expected still names all six, so a consumer can see WHAT is missing
     assert "drums" in report["expected"]
+
+
+# --------------------------------------------------------------------------
+# Telemetry is part of the fix, so it is pinned like the fix
+# --------------------------------------------------------------------------
+
+
+def _capture_sentry(monkeypatch):
+    """Record sentry_sdk.capture_message calls instead of sending them."""
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        pipeline.sentry_sdk,
+        "capture_message",
+        lambda msg, level=None, **k: sent.append((msg, level)),
+    )
+    return sent
+
+
+def test_incomplete_retention_reports_to_sentry(stem_wavs, recorder, monkeypatch):
+    """Kills the mutation that deletes the capture_message call.
+
+    The whole point of the F1 fix is that a broken job is VISIBLE. A log line that
+    nobody greps is not visibility, so the Sentry half is pinned, not just the log.
+    """
+    sent = _capture_sentry(monkeypatch)
+    monkeypatch.setattr(pipeline, "_ffmpeg_bin", lambda: "/bin/false")
+    pipeline.retain_stems(JOB, stem_wavs)
+
+    assert len(sent) == 1, "exactly one Sentry event per incomplete retention"
+    msg, level = sent[0]
+    assert level == "error"
+    assert "0/6 playable" in msg
+    assert "6/6 downloadable" in msg
+    assert "likely_cause=encoder" in msg
+    assert JOB in msg
+
+
+def test_a_PARTIAL_retention_also_alerts(stem_wavs, monkeypatch):
+    """Kills the mutation that alerts only when ZERO stems are playable.
+
+    5 of 6 is a song with an instrument silently missing — the exact failure the
+    `complete` flag exists to prevent. If only a total failure alerted, a partial
+    one would go back to being silent.
+    """
+    sent = _capture_sentry(monkeypatch)
+    real_encode = pipeline._encode_stem_opus
+
+    def encode_all_but_guitar(src, out_dir, stem, job_id=""):
+        return None if stem == "guitar" else real_encode(src, out_dir, stem, job_id)
+
+    monkeypatch.setattr(pipeline, "_encode_stem_opus", encode_all_but_guitar)
+    monkeypatch.setattr(pipeline, "upload_stem", lambda *a, **k: "k")
+
+    report = pipeline.retain_stems(JOB, stem_wavs)
+    assert len(report["play"]) == 5
+    assert report["complete"] is False
+    assert len(sent) == 1, "a partial retention must alert too, not just a total failure"
+    assert "5/6 playable" in sent[0][0]
+    # 5 playable vs 6 downloadable is FEWER encodes than uploads -> the encoder.
+    assert "likely_cause=encoder" in sent[0][0]
+
+
+def test_a_complete_retention_is_SILENT(stem_wavs, recorder, monkeypatch):
+    """The other half of the contract: six of six must not page anyone."""
+    sent = _capture_sentry(monkeypatch)
+    report = pipeline.retain_stems(JOB, stem_wavs)
+    assert report["complete"] is True
+    assert sent == []
+
+
+def test_a_sentry_outage_cannot_fail_the_job(stem_wavs, recorder, monkeypatch):
+    """Telemetry is never load-bearing — capture_message is wrapped in suppress()."""
+
+    def boom(*a, **k):
+        raise RuntimeError("sentry down")
+
+    monkeypatch.setattr(pipeline.sentry_sdk, "capture_message", boom)
+    monkeypatch.setattr(pipeline, "_ffmpeg_bin", lambda: "/bin/false")
+    report = pipeline.retain_stems(JOB, stem_wavs)  # must not raise
+    assert report["complete"] is False
+
+
+def test_the_job_id_reaches_the_encoder_log(stem_wavs, monkeypatch, capsys):
+    """Kills the mutation that stops passing job_id into _encode_stem_opus.
+
+    Without it the encode-failure log names a stem but not which job, which is the
+    difference between an actionable alert and a curiosity.
+    """
+    monkeypatch.setattr(pipeline, "upload_stem", lambda *a, **k: "k")
+    monkeypatch.setattr(pipeline, "_ffmpeg_bin", lambda: "/bin/false")
+    pipeline.retain_stems(JOB, {"drums": stem_wavs["drums"]})
+    cap = capsys.readouterr()
+    out = cap.err + cap.out
+    assert '"event": "stem_opus_encode_failed"' in out
+    assert JOB in out
+
+
+def test_the_logged_stderr_is_the_TAIL_and_long_enough_to_diagnose(monkeypatch, capsys, tmp_path):
+    """Kills the mutation that truncates stderr to a useless prefix.
+
+    ffmpeg puts its banner at the TOP and the actual reason on the LAST line, so a
+    head-truncated stderr is worse than none. A fake ffmpeg emits a long banner then
+    the real cause; the cause must survive.
+    """
+    fake = tmp_path / "ffmpeg"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "i=0; while [ $i -lt 40 ]; do echo 'ffmpeg version banner line' >&2; i=$((i+1)); done\n"
+        "echo \"Unknown encoder 'libopus'\" >&2\n"
+        "exit 1\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setattr(pipeline, "_ffmpeg_bin", lambda: str(fake))
+    monkeypatch.setattr(pipeline, "upload_stem", lambda *a, **k: "k")
+
+    src = tmp_path / "s.wav"
+    src.write_bytes(b"RIFF....WAVEfmt ")
+    pipeline.retain_stems(JOB, {"drums": str(src)})
+    cap = capsys.readouterr()
+    out = cap.err + cap.out
+    assert "Unknown encoder" in out, "the LAST stderr line is the diagnosis and must survive"
+
+    # log_structured nests detail as a JSON STRING inside a JSON record
+    # (logger.py:54-58), so the fields are escaped and a naive substring match on
+    # '"returncode": 1' fails. Parse it rather than match the escaping.
+    rec = next(
+        json.loads(line)
+        for line in out.splitlines()
+        if line.startswith("{") and "stem_opus_encode_failed" in line
+    )
+    detail = json.loads(rec["detail"])
+    assert detail["returncode"] == 1
+    assert detail["job_id"] == JOB
+    assert "Unknown encoder" in detail["stderr_tail"]
+    # The precise property is that the slice is taken from the END: the tail must
+    # FINISH with ffmpeg's last line. (A first draft asserted the banner was absent
+    # from the last 40 chars, which is wrong — the error line is only 25 chars, so
+    # the preceding banner legitimately falls inside that window.)
+    assert detail["stderr_tail"].rstrip().endswith("Unknown encoder 'libopus'")
+    assert len(detail["stderr_tail"]) <= 500
+
+
+# --------------------------------------------------------------------------
+# The encode parameters are a budget, not a detail
+# --------------------------------------------------------------------------
+
+
+def test_the_encoded_stream_is_opus_and_reports_48_kHz(stem_wavs, recorder):
+    """Codec and container sanity.
+
+    NOTE this canNOT pin STEM_OPUS_RATE: Opus is natively 48 kHz and ALWAYS reports
+    48000 here, whatever `-ar` was. A reviewer's `-ar 24000` mutation survived this
+    assertion; the test below is the one that catches it.
+    """
+    pipeline.retain_stems(JOB, {"bass": stem_wavs["bass"]})
+    opus = [p for _, p, k in recorder if k == "play"][0]
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=sample_rate,codec_name",
+            "-of",
+            "default=nw=1:nk=1",
+            opus,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    assert probe[0] == "opus", f"codec must be opus, got {probe[0]}"
+    assert probe[1] == "48000"
+
+
+def test_content_above_12_kHz_SURVIVES_the_encode(tmp_path, monkeypatch):
+    """Kills a mutation of STEM_OPUS_RATE — behaviourally, not by reading a constant.
+
+    `-ar 24000` puts the Nyquist limit at 12 kHz, so everything above it is destroyed
+    before libopus ever sees it. The encoded file still REPORTS 48000 (Opus always
+    does), which is why the probe test above cannot catch it. What changes is the
+    audio: cymbals and air disappear from every stem, permanently, and nothing in the
+    pipeline would say so.
+
+    So: encode a 16 kHz tone and measure whether it is still there.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    src = tmp_path / "hi.wav"
+    sr = 48000
+    tone_hz = 16000
+    n = sr * 2
+    sig = 0.5 * np.sin(2 * np.pi * tone_hz * np.arange(n) / sr)
+    sf.write(str(src), np.column_stack([sig, sig]), sr, subtype="PCM_24")
+
+    out_dir = str(tmp_path)
+    opus = pipeline._encode_stem_opus(str(src), out_dir, "hi", job_id=JOB)
+    assert opus, "the probe tone must encode"
+
+    decoded = tmp_path / "decoded.wav"
+    subprocess.run(
+        [
+            pipeline._ffmpeg_bin(),
+            "-nostdin",
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            opus,
+            "-ac",
+            "1",
+            "-ar",
+            str(sr),
+            str(decoded),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    y, _ = sf.read(str(decoded))
+    spec = np.abs(np.fft.rfft(y * np.hanning(len(y))))
+    freqs = np.fft.rfftfreq(len(y), 1 / sr)
+
+    band = (freqs > tone_hz - 800) & (freqs < tone_hz + 800)
+    rest = freqs < 10000
+    energy_at_tone = float(spec[band].max())
+    energy_below = float(spec[rest].max()) + 1e-9
+
+    assert energy_at_tone > energy_below, (
+        f"the {tone_hz} Hz tone did not survive the encode "
+        f"(peak {energy_at_tone:.1f} vs {energy_below:.1f} below 10 kHz) — "
+        "STEM_OPUS_RATE is almost certainly below 48000, which silently destroys "
+        "everything above its Nyquist limit"
+    )
+
+
+def test_the_bitrate_stays_inside_the_4_to_5_MB_per_stem_budget(stem_wavs, recorder):
+    """Kills a mutation of STEM_OPUS_BITRATE.
+
+    TSD 12.2 budgets 4-5 MB per stem and 3.1's whole 287 MB memory figure rests on
+    it. Raising the bitrate keeps every extension and size-vs-WAV check happy while
+    silently blowing that budget, so the bound is asserted directly: at 128 kbps a
+    1-second stereo stem is ~16 KB, and a 5-minute one projects to ~4.8 MB.
+    """
+    assert pipeline.STEM_OPUS_BITRATE == "128k"
+    pipeline.retain_stems(JOB, {"bass": stem_wavs["bass"]})
+    opus = [p for _, p, k in recorder if k == "play"][0]
+    seconds = 1.0
+    projected_5min_mb = os.path.getsize(opus) / seconds * 300 / 1024 / 1024
+    assert (
+        projected_5min_mb < 6.0
+    ), f"projected {projected_5min_mb:.2f} MB for a 5-minute stem — over the 4-5 MB budget"
+
+
+def test_a_zero_byte_encode_is_treated_as_failure(stem_wavs, monkeypatch, tmp_path):
+    """Kills the mutation that drops the empty-output check.
+
+    ffmpeg can exit 0 having written nothing. Uploading a 0-byte .opus would give
+    the mixer a channel that decodes to silence, with `complete: true` — a false
+    green of exactly the kind this PR exists to remove.
+    """
+    fake = tmp_path / "ffmpeg"
+    fake.write_text('#!/bin/sh\nfor a in "$@"; do out="$a"; done\n: > "$out"\nexit 0\n')
+    fake.chmod(0o755)
+    monkeypatch.setattr(pipeline, "_ffmpeg_bin", lambda: str(fake))
+    uploaded: list[str] = []
+    monkeypatch.setattr(pipeline, "upload_stem", lambda j, s, p, k: uploaded.append(k) or "key")
+    report = pipeline.retain_stems(JOB, {"drums": stem_wavs["drums"]})
+    assert report["play"] == [], "a zero-byte encode must not count as playable"
+    assert "play" not in uploaded, "a zero-byte encode must never be uploaded"

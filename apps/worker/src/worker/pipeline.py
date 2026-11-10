@@ -470,7 +470,11 @@ def retain_stems(job_id, stem_paths) -> dict:
     # ENCODER problem (libopus missing, ffmpeg broken); zero of both is an upload or
     # R2 problem.
     if len(played) != len(ALL_STEMS):
-        cause = "encoder" if downloadable and not played else "upload_or_r2"
+        # A reviewer caught this labelling a PARTIAL encoder failure (say 3 playable,
+        # 6 downloadable) as "upload_or_r2". The distinguishing fact is not "zero
+        # playable" — it is that FEWER stems encoded than uploaded, which can only be
+        # the encoder. Only when nothing uploaded either is it an upload/R2 problem.
+        cause = "encoder" if len(downloadable) > len(played) else "upload_or_r2"
         log_structured(
             "ERROR",
             "stems_retained_incomplete",

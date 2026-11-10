@@ -20,8 +20,8 @@ export default function PrivacyPage() {
 
             <h2>The short version</h2>
             <p>
-              No accounts, no ads, no tracking cookies. We keep your audio only long enough to make your loops, and delete files and
-              jobs after 24 hours.
+              No ads, no tracking cookies. Loops are free and need no account; downloading the separated stems needs one. We
+              delete your audio, stems, loops and job records after 24 hours. Account details stay until you delete the account.
             </p>
 
             <h2>What we process</h2>
@@ -32,6 +32,12 @@ export default function PrivacyPage() {
               </li>
               <li>
                 <strong>Job details.</strong> The link or file name, the stems and loop length you chose, and the job’s progress.
+              </li>
+              <li>
+                <strong>Your account, if you make one.</strong> An account is needed only to download the separated stems. We store
+                your email address; your password is stored by Supabase as a hash, never in plain text, and we never see it. If you
+                sign up after making jobs anonymously, you can attach those earlier jobs to your account so your history is
+                continuous.
               </li>
               <li>
                 <strong>A hashed IP address,</strong> used only for rate limiting. We store a keyed hash, not the IP itself.
@@ -48,13 +54,18 @@ export default function PrivacyPage() {
 
             <h2>How long</h2>
             <p>Uploaded files, fetched audio, stems, loops and job records are deleted after 24 hours.</p>
+            <p>
+              Account details are the exception: they are not on that 24-hour clock, because an account has to outlive a job to be
+              useful. They stay until you delete the account, which you can do yourself from your{' '}
+              <a href="/account">account page</a> at any time, or by emailing us.
+            </p>
 
             <h2>Who else handles it</h2>
             <ul>
               <li>Replicate runs the stem separation (Demucs).</li>
               <li>Cloudflare R2 stores files until they’re deleted.</li>
               <li>Fly.io runs the processing worker; Vercel hosts the website.</li>
-              <li>Supabase hosts the job database.</li>
+              <li>Supabase hosts the job database and handles sign-in and password storage.</li>
               <li>Sentry receives error reports.</li>
               <li>YouTube downloads may go through a proxy provider.</li>
             </ul>

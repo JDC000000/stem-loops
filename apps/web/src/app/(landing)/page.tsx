@@ -187,9 +187,10 @@ export default function HomePage() {
                 <details id="faq-files">
                   <summary>What happens to my files?</summary>
                   <p>
-                    Your link or file goes to our storage, and the audio goes to Replicate to run Demucs. Sources and loops are deleted
-                    after 24 hours. There are no accounts; recent jobs are remembered in your browser. Anyone with a job’s link can
-                    open it, so don’t pass it around. More in the <a href="/privacy">privacy notice</a>.
+                    Your link or file goes to our storage, and the audio goes to Replicate to run Demucs. Sources, stems and loops
+                    are deleted after 24 hours. Cutting loops needs no account and recent jobs are remembered in your browser.
+                    Anyone with a job’s link can open it, so don’t pass it around. More in the{' '}
+                    <a href="/privacy">privacy notice</a>.
                   </p>
                 </details>
                 <details>

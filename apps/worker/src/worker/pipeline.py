@@ -327,38 +327,104 @@ def encode_and_upload(
         return sum(ex.map(_one, enumerate(loops)))
 
 
+# The canonical htdemucs_6s stem set. ALL SIX are retained for the mixer,
+# independently of `requested_stems`, which only governs which loops get cut.
+ALL_STEMS = ("vocals", "drums", "bass", "other", "guitar", "keys")
+
+# Opus bitrate for the playback artifact. TSD 12.2 requires Opus and 3.1 assumes
+# "4-5 MB per stem": 128 kbps x 300 s = 4.8 MB, so 128k lands on that figure for a
+# 5-minute track. 48 kHz because the browser AudioContext runs at 48 kHz and a
+# resample on decode is wasted work on a phone.
+STEM_OPUS_BITRATE = os.environ.get("STEM_OPUS_BITRATE", "128k")
+STEM_OPUS_RATE = "48000"
+
+
+def _encode_stem_opus(src_wav: str, out_dir: str, stem: str) -> str | None:
+    """Encode one stem WAV to Opus for playback. None on any failure."""
+    out = os.path.join(out_dir, f"{stem}.opus")
+    cmd = [
+        _ffmpeg_bin(),
+        "-nostdin",
+        "-y",
+        "-i",
+        src_wav,
+        "-c:a",
+        "libopus",
+        "-b:a",
+        STEM_OPUS_BITRATE,
+        "-ar",
+        STEM_OPUS_RATE,
+        "-vn",
+        out,
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+        return out if os.path.exists(out) and os.path.getsize(out) > 0 else None
+    except Exception as exc:  # noqa: BLE001 — caller degrades this stem, not the job
+        log_structured("WARN", "stem_opus_encode_failed", stem=stem, error=str(exc)[:200])
+        return None
+
+
 # V3-J2 — retain the full-length stems.
 #
-# Until now htdemucs_6s produced six full-length stems, `extract_and_tag` cut
-# bar-length loops out of them, and `job_scope()` then rmtree'd the scratch dir:
-# the stems themselves were never persisted anywhere. The play-along product needs
-# per-stem volume faders over the whole song, which the loops cannot provide, so
-# the stems are now uploaded alongside them and expire on the SAME 24h window
-# (their keys sit under `{job_id}/`, which cleanup's per-job delete_prefix covers).
+# htdemucs_6s produces six full-length stems, `extract_and_tag` cuts bar-length
+# loops out of them, and `job_scope()` then rmtree's the scratch dir: the stems
+# themselves were never persisted. The play-along mixer needs per-stem faders over
+# the whole song, which loops cannot provide.
 #
-# Failure posture: a stem upload failure must NOT fail the job. Loops are the
-# shipped product and they are already encoded by this point; losing a fader is a
-# degraded player, losing the job is a lost $0.20 separation. The route reports
-# whichever stems exist, so a partial upload degrades to fewer faders.
-def retain_stems(job_id, stem_paths) -> list[str]:
-    """Upload each full-length stem WAV. Returns the stem names that landed."""
-    uploaded: list[str] = []
+# TWO artifacts per stem, per TSD 12.2:
+#   * Opus, for playback. The engine streams these; WAV at 40-60 MB/stem would be
+#     240-360 MB per song into the browser, roughly 12x what the Variant D memory
+#     budget was measured against.
+#   * WAV, for download. Opus is the right streaming codec and the wrong hand-off
+#     to a DAW.
+#
+# Failure posture: per-stem try/except. A failed stem is a degraded mixer; failing
+# the job would discard a completed $0.20 separation and the loops that succeeded.
+# The route reports `complete` so the client can refuse to present a partial mix
+# rather than silently playing a song with an instrument missing.
+def retain_stems(job_id, stem_paths) -> dict:
+    """Upload Opus (playback) + WAV (download) per stem. Returns a per-kind report."""
+    enc_dir = tmpdirs.mkdtemp(prefix="sl_stemopus_")
+    played: list[str] = []
+    downloadable: list[str] = []
     for name, path in sorted(stem_paths.items()):
-        if not path or not os.path.exists(path):
+        if name not in ALL_STEMS or not path or not os.path.exists(path):
             continue
+        opus = _encode_stem_opus(path, enc_dir, name)
+        if opus:
+            try:
+                upload_stem(job_id, name, opus, "play")
+                played.append(name)
+            except Exception as exc:  # noqa: BLE001
+                log_structured(
+                    "WARN",
+                    "stem_retain_failed",
+                    job_id=job_id,
+                    stem=name,
+                    kind="play",
+                    error=str(exc)[:200],
+                )
         try:
-            upload_stem(job_id, name, path)
-            uploaded.append(name)
-        except Exception as exc:  # noqa: BLE001 — a fader is optional, the job is not
+            upload_stem(job_id, name, path, "download")
+            downloadable.append(name)
+        except Exception as exc:  # noqa: BLE001
             log_structured(
                 "WARN",
                 "stem_retain_failed",
                 job_id=job_id,
                 stem=name,
+                kind="download",
                 error=str(exc)[:200],
             )
-    log_structured("INFO", "stems_retained", job_id=job_id, uploaded=uploaded, count=len(uploaded))
-    return uploaded
+    report = {
+        "play": played,
+        "download": downloadable,
+        "expected": list(ALL_STEMS),
+        "complete": len(played) == len(ALL_STEMS),
+    }
+    log_structured("INFO", "stems_retained", job_id=job_id, **report)
+    return report
 
 
 def process_stems(job_id, stem_paths, requested_stems, bars, sr=44100) -> int:
@@ -758,8 +824,15 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
 
 
 @contextlib.asynccontextmanager
-async def _chord_heartbeat(job_id: str):
-    """Bump ``jobs.updated_at`` every HEARTBEAT_SECONDS while the chord stage runs."""
+async def _stage_heartbeat(job_id: str):
+    """Bump ``jobs.updated_at`` every HEARTBEAT_SECONDS while a long stage runs.
+
+    Any stage that can run longer than the reaper's STALE_SECONDS (300s) without
+    emitting an event MUST hold this, or a second machine's reaper re-queues a LIVE
+    job and the rerun pays for a second separation. The chord stage needed it for
+    Klangio polling; stem retention needs it because six Opus encodes plus ~300 MB
+    of uploads is easily minutes with nothing else bumping updated_at.
+    """
     from .replicate_client import HEARTBEAT_SECONDS, _heartbeat  # noqa: PLC0415
 
     async def _beat() -> None:
@@ -1024,8 +1097,13 @@ async def _run_pipeline(job_id: str) -> None:
                 )
         # Chord recognition needs the harmonic stems whether or not the user toggled them as
         # loop output (deselecting guitar/keys must not leave only the `other` residue).
-        chord_stems = (*_HARMONIC_STEMS, *_MIX_EXTRA_STEMS) if _chords_enabled() else ()
-        stem_paths = await asyncio.to_thread(_fetch_stems, stem_urls, requested_stems, chord_stems)
+        # V3-J2: fetch ALL SIX stems, not just the requested ones plus the chord
+        # stage's harmonic set. `_fetch_stems` filters on `requested_stems`, so a job
+        # that asked for only vocals previously retained vocals/keys/guitar/other/bass
+        # and NO DRUMS — and the mixer would then play a drumless song with no error
+        # at all. `requested_stems` governs which LOOPS get cut (extract_and_tag
+        # filters independently); it must not govern which stems the mixer can fade.
+        stem_paths = await asyncio.to_thread(_fetch_stems, stem_urls, requested_stems, ALL_STEMS)
         # Persist the Replicate cost so the admission spend-ceiling (which sums
         # job_events.detail->>'cost_usd' over 24h) actually enforces (P4).
         await emit_event(job_id, "separating", "completed", pct=100, detail={"cost_usd": sep_cost})
@@ -1046,7 +1124,7 @@ async def _run_pipeline(job_id: str) -> None:
         # window and nothing else bumps updated_at here, so heartbeat for the duration.
         # Otherwise a second machine's reaper (deploy overlap) requeues a LIVE job and
         # the rerun submits a second billed request before the first artifact exists.
-        async with _chord_heartbeat(job_id):
+        async with _stage_heartbeat(job_id):
             await asyncio.to_thread(
                 _maybe_run_chord_recognition, job_id, stem_paths, requested_stems
             )
@@ -1067,8 +1145,9 @@ async def _run_pipeline(job_id: str) -> None:
         )
         # V3-J2: retain the full-length stems for the play-along faders. After the
         # loops, so a stem-upload problem can never cost us the loops.
-        retained = await asyncio.to_thread(retain_stems, job_id, stem_paths)
-        await emit_event(job_id, "uploading", "completed", pct=100, detail={"stems": retained})
+        async with _stage_heartbeat(job_id):
+            stem_report = await asyncio.to_thread(retain_stems, job_id, stem_paths)
+        await emit_event(job_id, "uploading", "completed", pct=100, detail={"stems": stem_report})
 
         await set_status(job_id, "done")
         # Peak worker RSS (kernel high-water mark) — real evidence for sizing the Option-B

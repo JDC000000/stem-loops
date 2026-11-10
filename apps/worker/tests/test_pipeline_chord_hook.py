@@ -544,7 +544,7 @@ def test_existing_artifact_skips_before_stem_mix(
     choose.assert_not_called()
 
 
-def test_chord_heartbeat_beats_while_running_and_stops(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stage_heartbeat_beats_while_running_and_stops(monkeypatch: pytest.MonkeyPatch) -> None:
     """The chord stage (Klangio polling up to 600s) must bump jobs.updated_at inside the
     300s reaper stale window; the beat task must be gone once the stage exits."""
     import asyncio
@@ -556,7 +556,7 @@ def test_chord_heartbeat_beats_while_running_and_stops(monkeypatch: pytest.Monke
     monkeypatch.setattr(replicate_client, "_heartbeat", lambda jid: beats.append(jid))
 
     async def go() -> int:
-        async with pipeline._chord_heartbeat("job-hb"):
+        async with pipeline._stage_heartbeat("job-hb"):
             await asyncio.sleep(0.1)
         n = len(beats)
         await asyncio.sleep(0.05)

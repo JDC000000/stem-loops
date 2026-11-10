@@ -448,11 +448,39 @@ def test_chords_run_after_extract_with_the_harmonic_stems_the_user_deselected(
     assert pipeline._choose_chord_input({n: _tmp_wav(n) for n in got["chord_stems"]}) is not None
 
 
-def test_chords_disabled_fetches_no_extra_stems(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_chords_disabled_still_fetches_all_six_stems_for_the_mixer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """V3-J2 changed this contract deliberately; the old assertion was `also == ()`.
+
+    Before V3-J2 the only reason to fetch a stem the user had not requested was the
+    chord harmonic mix, so with ``CHORDS_PROVIDER=''`` there was nothing extra to
+    pull and the optimisation was free. The play-along mixer changed that: it needs
+    a fader per instrument over the whole song, so ALL SIX stems are retained
+    regardless of ``requested_stems`` AND regardless of whether chords run.
+
+    The defect this replaces was silent. A job requesting only ``vocals`` with
+    chords ON retained vocals/keys/guitar/other/bass and NO DRUMS, and the mixer
+    then played a drumless song with no error of any kind.
+
+    Fetching six stems that Replicate has ALREADY produced costs CDN bandwidth, not
+    another GPU-second: the separation is billed once and emits all six either way.
+    So widening `also` does not widen the bill, which is why this change is safe to
+    make in a file about rebilling.
+
+    This test deliberately does NOT assert "no chord stage ran". `_orchestrate`
+    monkeypatches `_maybe_run_chord_recognition` wholesale, so the harness records
+    that hook as called regardless of `CHORDS_PROVIDER` — the real function's
+    `_chords_enabled()` early return is stubbed out. An assertion on `calls` here
+    would be testing the stub. (I tried it; it failed, correctly.) The no-spend
+    guarantees live in this file's own `test_single_harmonic_stem_spends_nothing`
+    and `test_beatless_track_fails_before_any_chord_request`.
+    """
     monkeypatch.setenv("CHORDS_PROVIDER", "")
     _, got, _, asyncio = _orchestrate(monkeypatch, extract_raises=None)
     asyncio.run(pipeline._run_pipeline(JOB_OFF))
-    assert got["also"] == ()
+    assert set(got["also"]) == set(pipeline.ALL_STEMS)
+    assert len(pipeline.ALL_STEMS) == 6
 
 
 _TMP: dict[str, str] = {}

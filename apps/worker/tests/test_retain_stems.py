@@ -9,6 +9,7 @@ failed. These tests pin the BEHAVIOUR, and each names the mutation it kills.
 
 import json
 import os
+import shutil
 import subprocess
 
 import pytest
@@ -409,6 +410,16 @@ def test_the_logged_stderr_is_the_TAIL_and_long_enough_to_diagnose(monkeypatch, 
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    shutil.which("ffprobe") is None,
+    reason=(
+        "no ffprobe on PATH. CI has ffmpeg but NOT ffprobe: _ffmpeg_bin() falls back "
+        "to imageio_ffmpeg.get_ffmpeg_exe(), which ships ffmpeg alone. This test is a "
+        "redundant sanity check - the Ogg magic bytes are asserted by "
+        "test_the_encoded_artifact_really_is_ogg_opus, and the sample rate is pinned "
+        "behaviourally by the 16 kHz test below, neither of which needs ffprobe."
+    ),
+)
 def test_the_encoded_stream_is_opus_and_reports_48_kHz(stem_wavs, recorder):
     """Codec and container sanity.
 

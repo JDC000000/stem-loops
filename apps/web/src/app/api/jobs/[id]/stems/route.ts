@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
-import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { r2 } from '@/lib/r2';
-import { presignTtlSec } from '@/lib/retention';
 import { mintStemPlayUrl } from '@/lib/stem-urls';
 import {
   PLAYABLE_STEMS,
@@ -15,6 +13,18 @@ import {
 } from '@/lib/stem-keys';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// This response body is a set of bearer credentials: each `signed_url` is a presigned
+// R2 GET that anyone holding the string can replay until it expires. Without this
+// header a shared proxy or a browser's back/forward cache can retain them, so they
+// outlive the tab that asked for them. `private` keeps shared caches out; `no-store`
+// stops the local one from writing them to disk at all.
+const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
+
+/** `name: message` only — never the error object. See the 500 handler for why. */
+function errLabel(e: unknown): string {
+  return e instanceof Error ? `${e.name}: ${e.message}` : 'non-Error thrown';
+}
 
 // GET /api/jobs/:id/stems — the Opus playback stems for the play-along mixer (V3-J2).
 //
@@ -55,6 +65,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // six full-length stems reconstruct the WHOLE track where a 4-bar loop does not.
 // That is a larger exposure behind the same existing door, and a code comment is not
 // acceptance.
+//
+// ⚠️ SECOND RESIDUE, same status (M-11): this route has NO rate limit, though
+// lib/rate-limit.ts exists and other routes use it. Left as an owner decision rather
+// than added here — it changes who can reach a free, unauthenticated launch hook, and
+// the security round that raised it recorded it as acceptance, not as a fix.
 export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
   if (!UUID_RE.test(params.id)) {
     return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
@@ -79,11 +94,27 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     // exist, returning a silent empty list. Postgres renders uuid as lowercase.
     const jobId: string = job.id;
 
-    // Clamp the TTL twice over. presignTtlSec alone would hand out URLs valid for up
-    // to 24h, and TSD §12.2 says "short-TTL signed GETs"; the earlier fix traded one
-    // bug (outliving the objects) for another (a 24h stem URL). min() keeps both
-    // properties: never longer than 15 min, never past the job's own expiry.
-    const expiresIn = Math.min(STEM_SIGNED_URL_TTL_SEC, presignTtlSec(job.expires_at));
+    // Clamp the TTL from the RAW remaining lifetime, not via presignTtlSec.
+    //
+    // presignTtlSec floors at MIN_PRESIGN_SEC (60s). That floor is correct for the
+    // loop route — a 24h-capped URL for a job seconds from expiry is harmless there,
+    // the objects go when the job does — but here it made this route's own "a signed
+    // URL never outlives expires_at" claim FALSE by up to 59s: a job with 1 second
+    // left yielded a 60-second URL, so the signature stayed valid after the retention
+    // sweep's window opened. Floor at 1s instead: always valid-but-short, and never a
+    // zero or negative expiresIn, which the presigner rejects outright.
+    //
+    // Both properties still hold: never longer than 15 min (TSD §12.2 "short-TTL
+    // signed GETs"), never past the job's own expiry. The 24h RETENTION_SEC cap
+    // presignTtlSec also applied is subsumed by the 900s one.
+    const remainingMs = new Date(job.expires_at).getTime() - Date.now();
+    // The SQL gate already proved `expires_at > now()` in Postgres, so a non-finite
+    // value here is a driver/serialisation quirk rather than an expired job: fall
+    // back to the ceiling and let the 900s cap do the work.
+    const remainingSec = Number.isFinite(remainingMs)
+      ? Math.floor(remainingMs / 1000)
+      : STEM_SIGNED_URL_TTL_SEC;
+    const expiresIn = Math.min(STEM_SIGNED_URL_TTL_SEC, Math.max(1, remainingSec));
 
     // ONE list over the shared `_stems/` parent covers both artifact kinds, which is
     // what makes `encode_failed` distinguishable from `unavailable`.
@@ -97,7 +128,17 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
         })
       );
     } catch (listErr) {
-      Sentry.captureException(listErr, { tags: { route: 'api/jobs/[id]/stems', op: 'list' } });
+      // Deliberately NOT reported to Sentry, for the same reason the encode_failed
+      // note below gives: this route is UNAUTHENTICATED, and a capture here is
+      // amplifiable. The realistic trigger is a backend fault, not a one-off — a prod
+      // credential lacking ListBucket makes EVERY request for ANY valid done job
+      // throw, so the event rate is the request rate. There is no capture-side
+      // sampling, rate limit or dedupe in sentry.server.config.ts / sentry-options.ts
+      // to absorb that, so the quota is spent by whoever refreshes fastest and the
+      // real alert is buried. The 502 is still loud where loudness is cheap: the
+      // status code, and this log line — errLabel, not the error object, for the
+      // reason the 500 handler gives.
+      console.error('GET /api/jobs/[id]/stems: R2 list failed:', errLabel(listErr));
       return NextResponse.json(
         { error_code: 'STEM_LIST_FAILED', message: 'Could not list stems' },
         { status: 502 }
@@ -133,16 +174,38 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       }))
     );
 
-    return NextResponse.json({
-      stems,
-      expected: PLAYABLE_STEMS,
-      complete: state === 'ready',
-      state,
-      expires_in_sec: expiresIn,
-    });
+    return NextResponse.json(
+      {
+        stems,
+        expected: PLAYABLE_STEMS,
+        complete: state === 'ready',
+        state,
+        expires_in_sec: expiresIn,
+      },
+      { headers: NO_STORE },
+    );
   } catch (err) {
-    Sentry.captureException(err);
-    console.error(`GET /api/jobs/${params.id}/stems error:`, err);
+    // Also NOT reported to Sentry, and dropping it was chosen over throttling it.
+    //
+    // A throttle would have had to be an in-process, once-per-N-minutes guard with a
+    // fixed fingerprint, and on Vercel "in-process" means per lambda instance: the
+    // guard multiplies by the instance count under exactly the load it exists to
+    // bound, so it is a weaker bound than it looks while being strictly more code.
+    // What makes dropping safe is that the amplification vector here needs no valid
+    // job at all — the DB query runs before any job-existence check, so a flood of
+    // random UUIDs reaches it, and pool exhaustion is itself the fault that would be
+    // captured, one event per request. The 500 status and this log line remain, and
+    // the DB-side fault surfaces in Supabase and Vercel telemetry regardless.
+    //
+    // NOT FIXED HERE, deliberately (scope): ordering a cheap existence check before
+    // the DB query would blunt that pool-exhaustion vector at its source. Noted for
+    // the owner; it is a change to the route's gate order, not a security fix to this
+    // PR's diff.
+    //
+    // `errLabel`, not `err`: an AWS SDK error carries `$metadata` (request ids,
+    // attempt counts), NoSuchBucket carries the bucket name, and a DNS failure
+    // embeds `<account>.r2.cloudflarestorage.com`. Logs only, never the caller.
+    console.error(`GET /api/jobs/${params.id}/stems error:`, errLabel(err));
     return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500 });
   }
 }

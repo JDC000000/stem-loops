@@ -94,12 +94,59 @@ test('the two signers never produce the same key for the same stem', async () =>
   assert.ok(dl.endsWith('.wav'));
 });
 
-test('the caller-supplied TTL is passed through to the presigner', async () => {
-  // Kills a mutation that ignores expiresIn and uses an SDK default (3600s),
-  // which would silently undo the route's min(900, remaining) clamp.
+test('a TTL under the ceiling reaches the presigner unchanged', async () => {
+  // Kills a mutation that ignores expiresIn and uses an SDK default (3600s), which
+  // would silently undo the route's min(900, remaining) clamp. The clamp added below
+  // must NOT become a floor: a short TTL stays short.
   const m = await load();
   await m.mintStemPlayUrl(JOB, 'drums', 137);
   assert.equal(globalThis.__su.signed[0].opts.expiresIn, 137);
+});
+
+test('mintStemPlayUrl CLAMPS a TTL above the 900s ceiling', async () => {
+  // THE FIX (security round 1, −1). Both signers took a required `expiresIn` with no
+  // internal ceiling: the ONLY clamp was at the stems route's call site, and the test
+  // above — pinning the pass-through — was the only TTL coverage, so a new caller
+  // passing 86400 (the planned WAV download route is the obvious one) would have
+  // minted a 24-hour stem URL with every suite green. A signer that mints bearer
+  // credentials owes its own ceiling.
+  const m = await load();
+  await m.mintStemPlayUrl(JOB, 'drums', 86400);
+  assert.equal(globalThis.__su.signed[0].opts.expiresIn, 900, 'must be clamped to the ceiling');
+});
+
+test('mintStemDownloadUrl CLAMPS a TTL above the 900s ceiling too', async () => {
+  // The WAV is the LARGER capability — a full-length stem handed to a DAW — so it has
+  // no claim to a longer life than the Opus playback URL.
+  const m = await load();
+  await m.mintStemDownloadUrl(JOB, 'bass', 86400);
+  assert.equal(globalThis.__su.signed[0].opts.expiresIn, 900);
+});
+
+test('the signers never mint a zero, negative or non-finite TTL', async () => {
+  // getSignedUrl rejects expiresIn <= 0, and NaN would survive a bare Math.min and
+  // reach the presigner. The route can legitimately compute 1s for a job on the edge
+  // of expiry, so the floor is 1 — never 0.
+  const m = await load();
+  for (const bad of [0, -5, -86400]) {
+    globalThis.__su = { commands: [], signed: [] };
+    await m.mintStemPlayUrl(JOB, 'drums', bad);
+    assert.equal(globalThis.__su.signed[0].opts.expiresIn, 1, `expiresIn=${bad} must floor to 1`);
+  }
+  globalThis.__su = { commands: [], signed: [] };
+  await m.mintStemPlayUrl(JOB, 'drums', Number.NaN);
+  assert.equal(globalThis.__su.signed[0].opts.expiresIn, 900, 'NaN takes the ceiling, never NaN');
+});
+
+test('the clamp is the module ceiling, not a number copied into the signer', async () => {
+  // If a future change raises STEM_SIGNED_URL_TTL_SEC, the signer must follow it
+  // rather than keep a stale hardcoded 900 — and vice versa.
+  const m = await load();
+  const keys = await import(
+    dataUrl(toJs(readFileSync(KEYS, 'utf8'))) + '#' + Math.random()
+  );
+  await m.mintStemPlayUrl(JOB, 'drums', keys.STEM_SIGNED_URL_TTL_SEC + 1);
+  assert.equal(globalThis.__su.signed[0].opts.expiresIn, keys.STEM_SIGNED_URL_TTL_SEC);
 });
 
 test('playback URLs carry NO attachment disposition; downloads can', async () => {

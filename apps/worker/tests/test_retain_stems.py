@@ -201,6 +201,65 @@ def test_encode_failure_logs_the_exit_code_and_ffmpeg_stderr(stem_wavs, monkeypa
     assert JOB in out, "the job id must be present or the log cannot be acted on"
 
 
+def test_the_encoder_runs_ffmpeg_at_loglevel_error(stem_wavs, monkeypatch):
+    """The encoder must pass `-loglevel error` (security round 1, informational).
+
+    Without it ffmpeg emits its multi-line banner plus per-frame progress on stderr
+    for EVERY stem of EVERY job. Two costs: the function/worker logs carry six
+    banners per job for no diagnostic gain, and — the part that actually bites —
+    this function captures stderr and logs only its last 500 chars on failure, so
+    banner lines compete for the budget that has to carry the real reason.
+
+    `error`, not `quiet`: error-level lines are exactly what stderr_tail wants, and
+    the test below this one proves they still arrive.
+    """
+    seen: list[list[str]] = []
+    real_run = subprocess.run
+
+    def recording_run(cmd, *a, **k):
+        seen.append(list(cmd))
+        return real_run(cmd, *a, **k)
+
+    monkeypatch.setattr(pipeline.subprocess, "run", recording_run)
+    monkeypatch.setattr(pipeline, "upload_stem", lambda *a, **k: "k")
+    pipeline.retain_stems(JOB, {"drums": stem_wavs["drums"]})
+
+    encodes = [c for c in seen if "libopus" in c]
+    assert encodes, "the opus encode must have run"
+    for cmd in encodes:
+        assert "-loglevel" in cmd, f"-loglevel missing from {cmd}"
+        assert cmd[cmd.index("-loglevel") + 1] == "error"
+        # Before the input, or ffmpeg applies it too late to silence the banner.
+        assert cmd.index("-loglevel") < cmd.index("-i")
+
+
+def test_loglevel_error_does_NOT_silence_the_failure_diagnosis(stem_wavs, monkeypatch, capsys):
+    """-loglevel error must keep error-level stderr, which stderr_tail depends on.
+
+    This is the regression that would make the flag above a net loss: `-loglevel
+    quiet` (or `-8`) would also remove the banner, and every existing stderr_tail
+    test uses a FAKE ffmpeg that ignores its arguments, so none of them would catch
+    it. This one runs the REAL ffmpeg with a bad codec and requires a reason.
+    """
+    monkeypatch.setattr(pipeline, "upload_stem", lambda *a, **k: "k")
+    monkeypatch.setattr(pipeline, "STEM_OPUS_BITRATE", "not-a-bitrate")
+    pipeline.retain_stems(JOB, {"drums": stem_wavs["drums"]})
+    cap = capsys.readouterr()
+    out = cap.err + cap.out
+
+    rec = next(
+        json.loads(line)
+        for line in out.splitlines()
+        if line.startswith("{") and "stem_opus_encode_failed" in line
+    )
+    detail = json.loads(rec["detail"])
+    assert detail["returncode"] != 0
+    assert detail["stderr_tail"].strip(), (
+        "-loglevel must not be quiet: an error-level reason has to survive for "
+        "stderr_tail to be worth logging"
+    )
+
+
 def test_an_incomplete_retention_reports_a_likely_cause(stem_wavs, monkeypatch, capsys):
     monkeypatch.setattr(pipeline, "upload_stem", lambda *a, **k: "k")
     monkeypatch.setattr(pipeline, "_ffmpeg_bin", lambda: "/bin/false")

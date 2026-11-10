@@ -27,10 +27,17 @@
 //
 // TSD §12.2 requires "short-TTL signed GETs". 15 min, not the chord artifact's 5: a
 // stem is ~4-5 MB and the mixer opens all six, so a phone on a slow line needs
-// materially longer than a small JSON fetch. The route takes
-// min(this, presignTtlSec(expires_at)) so a URL is never longer-lived than this AND
-// never outlives the objects it points at — an earlier version used presignTtlSec
-// alone, which traded the outlive bug for a 24-hour stem URL.
+// materially longer than a small JSON fetch.
+//
+// Enforced in TWO places, on purpose. The route takes
+// min(this, max(1, remaining_sec)) so a URL is never longer-lived than this AND
+// never outlives the objects it points at. The SIGNERS in lib/stem-urls.ts clamp to
+// this value internally as well, so a future caller that forgets the route's clamp —
+// a download route passing 86400, say — cannot mint a long-lived stem URL.
+//
+// Two earlier versions each had one half: presignTtlSec alone traded the outlive bug
+// for a 24-hour stem URL, and presignTtlSec's own 60s FLOOR made "never outlives
+// expires_at" false by up to 59s for a job seconds from expiry.
 export const STEM_SIGNED_URL_TTL_SEC = 900;
 
 // The six stems htdemucs_6s emits (replicate_client.STEM_RENAME maps piano -> keys).

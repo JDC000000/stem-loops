@@ -360,6 +360,13 @@ def _encode_stem_opus(src_wav: str, out_dir: str, stem: str, job_id: str = "") -
             _ffmpeg_bin(),
             "-nostdin",
             "-y",
+            # Suppress the banner and the per-frame progress spam. NOT cosmetic
+            # here: stderr is captured and its TAIL is what gets logged on failure,
+            # so ~40 lines of banner compete for the 500-char budget that has to
+            # carry the actual reason ("Unknown encoder 'libopus'"). `error` keeps
+            # every error-level line, which is exactly what the diagnostic wants.
+            "-loglevel",
+            "error",
             "-i",
             src_wav,
             "-c:a",

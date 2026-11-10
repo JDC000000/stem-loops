@@ -37,10 +37,19 @@ const PLAY = (s) => `${JOB}/_stems/play/${s}.opus`;
 const DL = (s) => `${JOB}/_stems/dl/${s}.wav`;
 const SIX = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'];
 
-function dbStub({ rows, rowCount }) {
+function dbStub({ rows, rowCount, dbThrows = false }) {
   return dataUrl(`
     export const db = { query: async (text, params) => {
       globalThis.__st.calls.push(['query', text, params]);
+      if (${dbThrows}) {
+        // Shaped like the errors this handler actually sees: a name, a message, and
+        // the extra properties an AWS SDK / pg error hangs off the object.
+        const e = new Error('boom-the-message');
+        e.name = 'SpecificTestError';
+        e.$metadata = { requestId: 'secret-metadata-req-id', attempts: 3 };
+        e.bucket = 'secret-metadata-bucket';
+        throw e;
+      }
       return ${JSON.stringify({ rows, rowCount })};
     } };
   `);
@@ -79,7 +88,13 @@ const sentryStub = () =>
 
 const nextStub = () =>
   dataUrl(`
-    export class NextResponse { static json(body, init = {}) { return { status: init.status ?? 200, body }; } }
+    export class NextResponse {
+      static json(body, init = {}) {
+        // init.headers is carried through so the Cache-Control assertions below
+        // land on what the route sets, not on a stub that silently drops it.
+        return { status: init.status ?? 200, body, headers: init.headers ?? {} };
+      }
+    }
     export class NextRequest {}
   `);
 
@@ -90,12 +105,13 @@ async function loadRoute({
   expiresAt = null,
   rowCount = 1,
   listThrows = false,
+  dbThrows = false,
 } = {}) {
   const expires = expiresAt ?? new Date(Date.now() + 24 * 3600 * 1000).toISOString();
   const rows = rowCount === 0 ? [] : [{ id: rowId, status, expires_at: expires }];
   let js = toJs(readFileSync(SRC, 'utf8'));
   js = js
-    .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub({ rows, rowCount })}'`)
+    .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub({ rows, rowCount, dbThrows })}'`)
     .replace(/from ['"]@\/lib\/r2['"]/g, `from '${r2Stub({ keys, listThrows })}'`)
     .replace(/from ['"]@\/lib\/stem-urls['"]/g, `from '${stemUrlsStub()}'`)
     // the REAL modules, inlined — the logic under test, not a stub of it
@@ -109,6 +125,14 @@ async function loadRoute({
 
 const call = (mod, id = JOB) => mod.GET({}, { params: { id } });
 const listedPrefix = () => globalThis.__st.calls.find((c) => c[0] === 'list')?.[1];
+
+/** Swap console.error for a recorder; returns a restore fn. */
+function captureConsoleError() {
+  const real = console.error;
+  const lines = [];
+  console.error = (...args) => lines.push(args);
+  return { lines, restore: () => { console.error = real; } };
+}
 
 beforeEach(() => {
   globalThis.__st = { calls: [], minted: [], sentry: [] };
@@ -250,6 +274,41 @@ test('TTL never outlives the job: a job 5 min from expiry gets ~300s', async () 
 
 // ---------- the id used for the R2 prefix ----------
 
+test('a job with LESS than 60s left gets a TTL that does not outlive it', async () => {
+  // THE FIX (security round 1, −1). The route claimed a signed URL "cannot outlive
+  // expires_at". It was false by up to 59s: presignTtlSec floors at MIN_PRESIGN_SEC
+  // (60), so a job with 1 second left yielded a 60-SECOND URL whose signature stayed
+  // valid after the retention sweep's window opened. No test covered remaining < 60s,
+  // which is why the floor survived. The clamp is now min(900, max(1, remaining)).
+  const mod = await loadRoute({
+    keys: SIX.map(PLAY),
+    expiresAt: new Date(Date.now() + 3 * 1000).toISOString(),
+  });
+  const res = await call(mod);
+  assert.ok(
+    res.body.expires_in_sec <= 3,
+    `a job 3s from expiry must not mint a longer URL; got ${res.body.expires_in_sec}`,
+  );
+  assert.ok(res.body.expires_in_sec >= 1, 'but it must stay a positive, signable TTL');
+  assert.ok(
+    globalThis.__st.minted.every((m) => m.expiresIn === res.body.expires_in_sec),
+    'the reported TTL must be the one actually signed',
+  );
+});
+
+test('a job on the very edge of expiry still gets a signable TTL, never 0 or negative', async () => {
+  // The floor exists because the presigner rejects expiresIn <= 0. The SQL gate
+  // (`expires_at > now()`) means the row is unexpired in Postgres, but the few ms
+  // between that SELECT and this arithmetic can still round to 0.
+  const mod = await loadRoute({
+    keys: SIX.map(PLAY),
+    expiresAt: new Date(Date.now() + 10).toISOString(),
+  });
+  const res = await call(mod);
+  assert.equal(res.body.expires_in_sec, 1);
+  assert.ok(globalThis.__st.minted.every((m) => m.expiresIn === 1));
+});
+
 test('the R2 prefix comes from the DB row, not the request path', async () => {
   // UUID_RE is case-insensitive and Postgres uuid comparison is too, so an UPPERCASE
   // uuid in the URL passes the lookup. Building the prefix from params.id would then
@@ -276,10 +335,92 @@ test('an R2 list failure is a loud 502, never a silent empty 200', async () => {
   // presigns, which is offline — so a credential could lack ListBucket while every
   // offline test passes. An empty 200 would look exactly like "no stems".
   const mod = await loadRoute({ listThrows: true });
+  const con = captureConsoleError();
+  try {
+    const res = await call(mod);
+    assert.equal(res.status, 502);
+    assert.equal(res.body.error_code, 'STEM_LIST_FAILED');
+  } finally {
+    con.restore();
+  }
+  assert.ok(con.lines.length > 0, 'the fault must still reach the function log');
+});
+
+test('an R2 list failure reports NOTHING to Sentry', async () => {
+  // THE FIX (security round 1, −3). This route is UNAUTHENTICATED and there is no
+  // capture-side sampling, rate limit or dedupe in sentry.server.config.ts or
+  // sentry-options.ts. The realistic trigger for this path is a backend fault, not a
+  // one-off: a prod credential lacking ListBucket makes EVERY request for ANY valid
+  // done job throw, so the event rate equals the request rate and the Sentry quota
+  // goes to whoever refreshes fastest. An earlier version captured here, which
+  // contradicted this same route's own comment rejecting per-GET Sentry as
+  // amplifiable. The 502 and the log line carry the signal instead.
+  const mod = await loadRoute({ listThrows: true });
+  const con = captureConsoleError();
+  try {
+    const res = await call(mod);
+    assert.equal(res.status, 502);
+  } finally {
+    con.restore();
+  }
+  assert.deepEqual(globalThis.__st.sentry, [], 'no Sentry event on the list-failure path');
+});
+
+test('the 500 handler reports NOTHING to Sentry either', async () => {
+  // Same amplification, worse reach: the DB query runs before any job-existence
+  // check, so a flood of random UUIDs reaches it without a valid job id, and pool
+  // exhaustion is itself the fault that would be captured — one event per request.
+  // Dropping it was chosen over an in-process throttle, which on Vercel multiplies
+  // by the lambda instance count under exactly the load it exists to bound.
+  const mod = await loadRoute({ dbThrows: true });
+  const con = captureConsoleError();
+  try {
+    const res = await call(mod);
+    assert.equal(res.status, 500);
+    assert.equal(res.body.error_code, 'INTERNAL_ERROR');
+  } finally {
+    con.restore();
+  }
+  assert.deepEqual(globalThis.__st.sentry, [], 'no Sentry event on the 500 path');
+});
+
+test('the 500 handler logs err.name and err.message, never the error object', async () => {
+  // THE FIX (security round 1, −0.5). An AWS SDK error carries `$metadata` (request
+  // ids, attempt counts), NoSuchBucket carries the bucket name, and a DNS failure
+  // embeds `<account>.r2.cloudflarestorage.com`. Logging the raw object put all of
+  // that into the function log. Logs only, never the caller, and never credentials.
+  const mod = await loadRoute({ dbThrows: true });
+  const con = captureConsoleError();
+  try {
+    await call(mod);
+  } finally {
+    con.restore();
+  }
+  const flat = con.lines.flat();
+  assert.ok(flat.length > 0, 'the 500 must still be logged');
+  for (const arg of flat) {
+    assert.equal(typeof arg, 'string', 'every logged argument must be a string, not an Error/object');
+  }
+  const joined = flat.join(' ');
+  assert.match(joined, /SpecificTestError/, 'the error NAME must survive');
+  assert.match(joined, /boom-the-message/, 'the error MESSAGE must survive');
+  assert.doesNotMatch(joined, /secret-metadata/, 'no $metadata may be logged');
+});
+
+// ---------- Cache-Control (security round 1, −1) ----------
+
+test('the 200 carrying signed URLs is private, no-store', async () => {
+  // The body is a set of bearer credentials: each signed_url is replayable by anyone
+  // holding the string until it expires. Without this header a shared proxy or the
+  // browser's back/forward cache can retain them past the tab that asked.
+  const mod = await loadRoute({ keys: SIX.map(PLAY) });
   const res = await call(mod);
-  assert.equal(res.status, 502);
-  assert.equal(res.body.error_code, 'STEM_LIST_FAILED');
-  assert.ok(globalThis.__st.sentry.some((e) => e[0] === 'exception'));
+  assert.equal(res.status, 200);
+  assert.ok(res.body.stems.length > 0, 'this test is only meaningful with URLs in the body');
+  const cc = res.headers['Cache-Control'] ?? res.headers['cache-control'];
+  assert.ok(cc, 'the response must set Cache-Control');
+  assert.match(cc, /no-store/);
+  assert.match(cc, /private/);
 });
 
 // ---------- the SQL gate itself ----------

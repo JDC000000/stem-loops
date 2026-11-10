@@ -2,7 +2,7 @@
 import { ToInputLink } from './DemoArt';
 import { Ic } from './Icons';
 
-export function SiteHeader({ showHistory = true }: { showHistory?: boolean }) {
+export function SiteHeader({ showHistory = true, showSignIn = true }: { showHistory?: boolean; showSignIn?: boolean }) {
   return (
     <header className="site-header">
       <div className="container header-row">
@@ -12,10 +12,26 @@ export function SiteHeader({ showHistory = true }: { showHistory?: boolean }) {
           <span className="wm-dash">-</span>
           <span className="wm-loops">loops</span>
         </a>
-        {showHistory && (
-          <a className="header-link" href="/history">
-            Job history
-          </a>
+        {/* Grouped so the header stays wordmark-left / links-right: .header-row is
+            space-between, and a third direct child would strand "Job history" in the
+            middle of the bar. */}
+        {(showHistory || showSignIn) && (
+          <nav className="header-nav" aria-label="Account">
+            {showHistory && (
+              <a className="header-link" href="/history">
+                Job history
+              </a>
+            )}
+            {/* V3-J9: an account is required to download stems, so sign-in needs a way in
+                from the landing page. Sign-in itself works today; the sign-up tab
+                self-describes as unavailable until NEXT_PUBLIC_HCAPTCHA_SITE_KEY is set
+                (LoginForm.tsx), so this link never leads to a silently broken form. */}
+            {showSignIn && (
+              <a className="header-link" href="/login">
+                Sign in
+              </a>
+            )}
+          </nav>
         )}
       </div>
     </header>

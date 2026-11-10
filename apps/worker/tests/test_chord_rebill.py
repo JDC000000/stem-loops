@@ -12,6 +12,7 @@ Every ledger test runs against an in-memory ledger AND the real ``jobs.klangio_j
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import uuid
@@ -479,8 +480,11 @@ def test_chords_disabled_still_fetches_all_six_stems_for_the_mixer(
     monkeypatch.setenv("CHORDS_PROVIDER", "")
     _, got, _, asyncio = _orchestrate(monkeypatch, extract_raises=None)
     asyncio.run(pipeline._run_pipeline(JOB_OFF))
-    assert set(got["also"]) == set(pipeline.ALL_STEMS)
-    assert len(pipeline.ALL_STEMS) == 6
+    # Assert the LITERAL six, not `set(ALL_STEMS)`. The first version of this test
+    # compared the code to itself, which is a tautology: a reviewer's mutation
+    # renaming `drums` to `piano` passed it. The literal is the actual contract with
+    # htdemucs_6s and with apps/web/src/lib/stem-keys.ts.
+    assert set(got["also"]) == {"vocals", "drums", "bass", "other", "guitar", "keys"}
 
 
 _TMP: dict[str, str] = {}
@@ -493,3 +497,47 @@ def _tmp_wav(name: str) -> str:
         d = tempfile.mkdtemp()
         _TMP.update(_make_stems(Path(d), REAL_6S_STEMS))
     return _TMP[name]
+
+
+def test_stem_retention_runs_INSIDE_the_stage_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kills the mutation that removes the heartbeat from stem retention.
+
+    Six Opus encodes plus ~300 MB of uploads easily exceeds the reaper's 300s stale
+    window (REAPER_STALE_SECONDS), and nothing else bumps `jobs.updated_at` during
+    that stretch. Without the heartbeat a second machine's reaper re-queues a LIVE
+    job and the rerun pays for a second separation. The chord stage needed this for
+    the same reason; the rename to `_stage_heartbeat` is tested elsewhere, but the
+    WRAPPING of retention was unpinned until now.
+    """
+    monkeypatch.setenv("CHORDS_PROVIDER", "")
+    _, _, _, asyncio_mod = _orchestrate(monkeypatch, extract_raises=None)
+
+    order: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def tracking_heartbeat(job_id: str):
+        order.append("heartbeat_enter")
+        try:
+            yield
+        finally:
+            order.append("heartbeat_exit")
+
+    def fake_retain(job_id, stem_paths):
+        order.append("retain_stems")
+        return {"play": [], "download": [], "expected": list(pipeline.ALL_STEMS), "complete": False}
+
+    monkeypatch.setattr(pipeline, "_stage_heartbeat", tracking_heartbeat)
+    monkeypatch.setattr(pipeline, "retain_stems", fake_retain)
+
+    asyncio_mod.run(pipeline._run_pipeline(JOB_OFF))
+
+    assert "retain_stems" in order, "retention must run"
+    i = order.index("retain_stems")
+    before = order[:i]
+    after = order[i + 1 :]
+    assert (
+        before and before[-1] == "heartbeat_enter"
+    ), f"retention must be wrapped by the heartbeat; order was {order}"
+    assert (
+        after and after[0] == "heartbeat_exit"
+    ), f"the heartbeat must be released after retention; order was {order}"

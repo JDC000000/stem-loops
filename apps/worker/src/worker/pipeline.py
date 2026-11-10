@@ -339,29 +339,67 @@ STEM_OPUS_BITRATE = os.environ.get("STEM_OPUS_BITRATE", "128k")
 STEM_OPUS_RATE = "48000"
 
 
-def _encode_stem_opus(src_wav: str, out_dir: str, stem: str) -> str | None:
-    """Encode one stem WAV to Opus for playback. None on any failure."""
+def _encode_stem_opus(src_wav: str, out_dir: str, stem: str, job_id: str = "") -> str | None:
+    """Encode one stem WAV to Opus for playback. None on any failure.
+
+    Diagnosability is the point of the error handling here, not tidiness. The first
+    version logged ``str(exc)[:200]``, which for a CalledProcessError is the COMMAND
+    LINE — truncated before the exit status — and threw ffmpeg's stderr away. A
+    reviewer showed that a total encode failure then looked identical to "this job
+    predates V3-J2": no job id, no reason, no Sentry event. So this logs the exit
+    code and the tail of ffmpeg's stderr, which is where "Unknown encoder 'libopus'"
+    appears, and carries the job id.
+    """
     out = os.path.join(out_dir, f"{stem}.opus")
-    cmd = [
-        _ffmpeg_bin(),
-        "-nostdin",
-        "-y",
-        "-i",
-        src_wav,
-        "-c:a",
-        "libopus",
-        "-b:a",
-        STEM_OPUS_BITRATE,
-        "-ar",
-        STEM_OPUS_RATE,
-        "-vn",
-        out,
-    ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
-        return out if os.path.exists(out) and os.path.getsize(out) > 0 else None
+        # _ffmpeg_bin() raises InternalError when no ffmpeg exists anywhere, and it
+        # belongs INSIDE the try: outside it, that exception escaped retain_stems and
+        # failed a job whose loops had already uploaded — the exact opposite of this
+        # function's documented posture.
+        cmd = [
+            _ffmpeg_bin(),
+            "-nostdin",
+            "-y",
+            "-i",
+            src_wav,
+            "-c:a",
+            "libopus",
+            "-b:a",
+            STEM_OPUS_BITRATE,
+            "-ar",
+            STEM_OPUS_RATE,
+            "-vn",
+            out,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, timeout=300, check=False)
+        if proc.returncode != 0:
+            stderr = (proc.stderr or b"").decode("utf-8", "replace").strip()
+            log_structured(
+                "ERROR",
+                "stem_opus_encode_failed",
+                job_id=job_id,
+                stem=stem,
+                returncode=proc.returncode,
+                # the TAIL, not the head: ffmpeg's banner is at the top and the
+                # actual reason is on the last line.
+                stderr_tail=stderr[-500:],
+            )
+            return None
+        if not os.path.exists(out) or os.path.getsize(out) == 0:
+            log_structured(
+                "ERROR", "stem_opus_encode_empty", job_id=job_id, stem=stem, returncode=0
+            )
+            return None
+        return out
     except Exception as exc:  # noqa: BLE001 — caller degrades this stem, not the job
-        log_structured("WARN", "stem_opus_encode_failed", stem=stem, error=str(exc)[:200])
+        log_structured(
+            "ERROR",
+            "stem_opus_encode_error",
+            job_id=job_id,
+            stem=stem,
+            error_type=type(exc).__name__,
+            error=str(exc)[:300],
+        )
         return None
 
 
@@ -374,15 +412,15 @@ def _encode_stem_opus(src_wav: str, out_dir: str, stem: str) -> str | None:
 #
 # TWO artifacts per stem, per TSD 12.2:
 #   * Opus, for playback. The engine streams these; WAV at 40-60 MB/stem would be
-#     240-360 MB per song into the browser, roughly 12x what the Variant D memory
-#     budget was measured against.
+#     240-360 MB per song into the browser, ~12x the measured Variant D budget.
 #   * WAV, for download. Opus is the right streaming codec and the wrong hand-off
 #     to a DAW.
 #
-# Failure posture: per-stem try/except. A failed stem is a degraded mixer; failing
-# the job would discard a completed $0.20 separation and the loops that succeeded.
-# The route reports `complete` so the client can refuse to present a partial mix
-# rather than silently playing a song with an instrument missing.
+# Failure posture: per-stem try/except, because failing the job would discard a
+# completed separation and the loops that already uploaded. But "degrade" must not
+# mean "degrade silently" — a reviewer demonstrated that a TOTAL encode failure was
+# indistinguishable from a pre-V3-J2 job, so a short playback set now emits an ERROR
+# log AND a Sentry event, and the route reports a state rather than just a count.
 def retain_stems(job_id, stem_paths) -> dict:
     """Upload Opus (playback) + WAV (download) per stem. Returns a per-kind report."""
     enc_dir = tmpdirs.mkdtemp(prefix="sl_stemopus_")
@@ -391,31 +429,33 @@ def retain_stems(job_id, stem_paths) -> dict:
     for name, path in sorted(stem_paths.items()):
         if name not in ALL_STEMS or not path or not os.path.exists(path):
             continue
-        opus = _encode_stem_opus(path, enc_dir, name)
+        opus = _encode_stem_opus(path, enc_dir, name, job_id=job_id)
         if opus:
             try:
                 upload_stem(job_id, name, opus, "play")
                 played.append(name)
             except Exception as exc:  # noqa: BLE001
                 log_structured(
-                    "WARN",
+                    "ERROR",
                     "stem_retain_failed",
                     job_id=job_id,
                     stem=name,
                     kind="play",
-                    error=str(exc)[:200],
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:300],
                 )
         try:
             upload_stem(job_id, name, path, "download")
             downloadable.append(name)
         except Exception as exc:  # noqa: BLE001
             log_structured(
-                "WARN",
+                "ERROR",
                 "stem_retain_failed",
                 job_id=job_id,
                 stem=name,
                 kind="download",
-                error=str(exc)[:200],
+                error_type=type(exc).__name__,
+                error=str(exc)[:300],
             )
     report = {
         "play": played,
@@ -424,6 +464,32 @@ def retain_stems(job_id, stem_paths) -> dict:
         "complete": len(played) == len(ALL_STEMS),
     }
     log_structured("INFO", "stems_retained", job_id=job_id, **report)
+    # A short playback set means the mixer cannot present this song properly. Make it
+    # visible where someone actually looks, not only in a log line nobody greps.
+    # The WAV count distinguishes the two causes: six WAVs with zero Opus is an
+    # ENCODER problem (libopus missing, ffmpeg broken); zero of both is an upload or
+    # R2 problem.
+    if len(played) != len(ALL_STEMS):
+        cause = "encoder" if downloadable and not played else "upload_or_r2"
+        log_structured(
+            "ERROR",
+            "stems_retained_incomplete",
+            job_id=job_id,
+            playable=len(played),
+            downloadable=len(downloadable),
+            expected=len(ALL_STEMS),
+            likely_cause=cause,
+        )
+        # Bare capture_message with the facts in the string, matching how the rest of
+        # this module reports to Sentry. Wrapped because a Sentry outage must not take
+        # a job down over an optional artifact.
+        with contextlib.suppress(Exception):  # telemetry is never load-bearing
+            sentry_sdk.capture_message(
+                f"V3-J2 stem retention incomplete: {len(played)}/{len(ALL_STEMS)} "
+                f"playable, {len(downloadable)}/{len(ALL_STEMS)} downloadable, "
+                f"likely_cause={cause}, job_id={job_id}",
+                level="error",
+            )
     return report
 
 

@@ -23,6 +23,16 @@
 // segment is the literal "jobs", so the per-job delete misses it and it survives
 // until the budget-limited orphan sweep happens to catch it. Stems are far larger.
 
+// Signed-URL lifetime CEILING for a stem, in seconds.
+//
+// TSD §12.2 requires "short-TTL signed GETs". 15 min, not the chord artifact's 5: a
+// stem is ~4-5 MB and the mixer opens all six, so a phone on a slow line needs
+// materially longer than a small JSON fetch. The route takes
+// min(this, presignTtlSec(expires_at)) so a URL is never longer-lived than this AND
+// never outlives the objects it points at — an earlier version used presignTtlSec
+// alone, which traded the outlive bug for a 24-hour stem URL.
+export const STEM_SIGNED_URL_TTL_SEC = 900;
+
 // The six stems htdemucs_6s emits (replicate_client.STEM_RENAME maps piano -> keys).
 // Order is the mixer's channel order, not alphabetical: rhythm section first.
 // ALL SIX are retained regardless of which loops the user asked for — `requested_stems`
@@ -30,6 +40,8 @@
 export const PLAYABLE_STEMS = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'] as const;
 export type PlayableStem = (typeof PLAYABLE_STEMS)[number];
 
+/** The shared parent of both artifact prefixes — one list call covers them both. */
+export const STEM_PREFIX = '_stems/';
 export const STEM_PLAY_PREFIX = '_stems/play/';
 export const STEM_DOWNLOAD_PREFIX = '_stems/dl/';
 export const STEM_PLAY_EXT = 'opus';
@@ -46,15 +58,52 @@ export function stemDownloadR2Key(jobId: string, stem: string): string {
   return `${jobId}/${STEM_DOWNLOAD_PREFIX}${stem}.${STEM_DOWNLOAD_EXT}`;
 }
 
-/** Parse a stem name out of a playback key, or null if it is not one of the six.
+function stemNameFrom(key: string, prefix: string, ext: string): PlayableStem | null {
+  // Require the FULL prefix, not just the extension: play/ and dl/ are siblings, so
+  // matching on extension alone would let a download key be served as playback.
+  const marker = `/${prefix}`;
+  const at = key.indexOf(marker);
+  if (at < 0) return null;
+  const file = key.slice(at + marker.length);
+  if (!file.endsWith(`.${ext}`) || file.includes('/')) return null;
+  const name = file.slice(0, -(ext.length + 1));
+  return (PLAYABLE_STEMS as readonly string[]).includes(name) ? (name as PlayableStem) : null;
+}
+
+/** Parse a stem name out of a PLAYBACK key, or null if it is not one of the six.
  *
  * Validated against the closed set on purpose: the prefix is shared with whatever
  * else a future change puts under it, and an unvalidated `pop()` would happily
- * surface a stray object as a playable stem.
+ * surface a stray object — or the WAV download artifact — as a playable stem.
  */
 export function stemNameFromPlayKey(key: string): PlayableStem | null {
-  const file = key.split('/').pop();
-  if (!file || !file.endsWith(`.${STEM_PLAY_EXT}`)) return null;
-  const name = file.slice(0, -(STEM_PLAY_EXT.length + 1));
-  return (PLAYABLE_STEMS as readonly string[]).includes(name) ? (name as PlayableStem) : null;
+  return stemNameFrom(key, STEM_PLAY_PREFIX, STEM_PLAY_EXT);
+}
+
+/** Parse a stem name out of a DOWNLOAD key, or null.
+ *
+ * Needed to tell two states apart that otherwise look identical: a job that
+ * predates V3-J2 (no stems at all) and a job whose Opus encoding failed (six WAVs,
+ * zero Opus). Both yield an empty playback set, and a reviewer demonstrated that
+ * collapsing them hides a total encoder failure behind "not an error".
+ */
+export function stemNameFromDownloadKey(key: string): PlayableStem | null {
+  return stemNameFrom(key, STEM_DOWNLOAD_PREFIX, STEM_DOWNLOAD_EXT);
+}
+
+/** What the mixer should do with a job, derived from what actually landed in R2. */
+export type StemState =
+  /** No stems of either kind: a pre-V3-J2 job. Fall back to the loop view. */
+  | 'unavailable'
+  /** All six playable. */
+  | 'ready'
+  /** Some but not all playable — a mix with an instrument missing. Do not autoplay. */
+  | 'partial'
+  /** Downloads exist but nothing is playable: the ENCODER failed. Alertable. */
+  | 'encode_failed';
+
+export function stemState(playCount: number, downloadCount: number): StemState {
+  if (playCount === PLAYABLE_STEMS.length) return 'ready';
+  if (playCount > 0) return 'partial';
+  return downloadCount > 0 ? 'encode_failed' : 'unavailable';
 }

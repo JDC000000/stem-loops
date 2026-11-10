@@ -71,3 +71,29 @@ def test_upload_stem_rejects_an_unknown_artifact_kind():
 
     with pytest.raises(ValueError, match="unknown stem artifact kind"):
         upload_stem(JOB, "bass", "/nonexistent.wav", "sideways")
+
+
+def test_upload_stem_sets_the_right_content_type_per_kind(monkeypatch):
+    """Kills the mutation that serves Opus as audio/wav (or vice versa).
+
+    The browser and R2 both go by Content-Type: a mislabelled playback object can be
+    refused by the decoder or mishandled by a CDN, and a mislabelled download lands
+    in a DAW with the wrong extension handling.
+    """
+    from worker.storage import r2_uploader
+
+    seen: list[tuple[str, dict]] = []
+
+    class FakeR2:
+        def upload_file(self, local, bucket, key, ExtraArgs=None):  # noqa: N803
+            seen.append((key, ExtraArgs or {}))
+
+    monkeypatch.setattr(r2_uploader, "_r2", lambda: FakeR2())
+    monkeypatch.setenv("R2_BUCKET_NAME", "b")
+
+    r2_uploader.upload_stem(JOB, "bass", "/tmp/x.opus", "play")
+    r2_uploader.upload_stem(JOB, "bass", "/tmp/x.wav", "download")
+
+    kinds = dict((k, a.get("ContentType")) for k, a in seen)
+    assert kinds[f"{JOB}/_stems/play/bass.opus"] == "audio/ogg"
+    assert kinds[f"{JOB}/_stems/dl/bass.wav"] == "audio/wav"

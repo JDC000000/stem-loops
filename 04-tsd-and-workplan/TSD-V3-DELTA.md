@@ -1,7 +1,95 @@
 # TSD-V3-DELTA: Stem-Loops V3 (commercial layer + Play engine + Spotify + fetch) — delta over the pinned TSD
 
-Author: SL-V3 architect lane. Date: 2026-11-04 (v1.4 amendment pass — Y1 chord-model drift fixes per session 5 + 6 postmortems and decision record v1.3; see Changelog below). Status: DRAFT for Jon's review.
+Author: SL-V3 architect lane. Date: 2026-11-10 (v1.5 amendment pass — Jon's play-along launch directive and the link-path stems override; see Changelog below). Status: DRAFT for Jon's review.
 This document EXTENDS the pinned TSD at `stem-loops-handoff/07-roadmap/TSD.md` (SL21-tsd, commit c3f6a911 of `stem-loops`). It is a DELTA only — anything the pinned TSD covers (job state machine, kill switches, blocklist, fetch chain, loops/export, R2 layout, migrations 001–012) is NOT restated here, only cross-referenced by section number (e.g. `TSD §3.1`). All new requirement IDs are prefixed **V3-**; new tests prefixed **T-V3-**. Pinned reqs use their existing IDs (R-A0, R-X2, etc.).
+
+---
+
+## Changelog — v1.4 → v1.5 (2026-11-10 — the play-along launch, and Jon's link-path stems override)
+
+Source: **Jon's directives 2026-11-10**, verbatim where quoted. This amendment changes **scope and the launch definition**, not schema or route contracts. It is the first amendment to **reverse a legal-risk mitigation**, so the reversal is recorded with its original reasoning intact rather than deleted.
+
+### The directives
+
+1. *"I want stems from a youtube link."*
+2. *"Launch = the put in a youtube link, get stems generated, then you can play along to the song with the chords showing on top of the song. You can also lower the volume on any stem. You can also play along to the guitar or other part which you see the chords"*
+3. On the §5.4 processor-exposure mitigation: *"**APPROVED — I do not care about the legal risk decision.** Update the documentation."* and *"re PHASE E — I gave you the legal decision... **I do not care about the legal risk**"*
+4. *"guitar plugged in"* = an outboard headphone amp (Fender Mustang Micro). Jon already has this workflow on Chordify: guitar into the device, song playing, stems split, per-stem volume, chords visible.
+
+| § | Change | Source |
+|---|---|---|
+| §0 Header | v1.4 → v1.5; date 2026-11-10 | this amendment |
+| **§5.4** | **Link-path stem separation is now PERMITTED.** The sentence *"Stem separation on the free-tier link path is NOT offered"* is **OVERRIDDEN by Jon 2026-11-10.** | Jon directive 1 + 3 |
+| **§5.4** | **Variant Y is REMOVED FROM THE LAUNCH PATH** and reclassified as optional future work | consequence of the override — see below |
+| **§1.2a** | Stems are **no longer paid-tier-only**. The parenthetical *"(paid tier, §1.2a)"* at §5.4 no longer holds. ⚠️ **The paid/free separation rule itself is NOT otherwise amended** and must be revisited when Stripe lands | consequence of the override |
+| **§3** | The Variant D engine is **promoted from Phase 1b to the LAUNCH path**. It is the mixer, and the mixer is now the product | Jon directive 2 |
+| **§12 (NEW)** | **V3-J1 — the core customer journey**, stated as a single acceptance test, plus **V3-J2 stem retention** and **V3-J3 chord/playhead sync** | Jon directive 2 |
+| §9 | New req IDs V3-J1, V3-J2, V3-J3 | this amendment |
+
+### What the override costs, recorded honestly
+
+§5.4's excluded sentence was not an oversight. Its stated purpose:
+
+> *"This is the direct processor-exposure mitigation that moves Lens B from 84 to 90+."*
+
+So an adversarial legal review scored the architecture **84** and this exclusion is what raised it to **90+**. Separating audio fetched from a third-party link on our own servers is the exposure that exclusion removed. **Jon was shown this reasoning verbatim and overrode it explicitly, twice, on 2026-11-10.** It is his decision to make and it is recorded as his, not as an evidence-driven one.
+
+**Not legal advice.** This document records a business decision by the owner; nobody with a legal qualification has reviewed it. If stem-loops later takes investment, is sold, or receives a rightsholder complaint, **this changelog entry is the audit trail** and §5.4's original reasoning is deliberately preserved above for that purpose.
+
+**Unchanged by the override:** §1.6 / §1.6a Chordify-aligned legal posture, the §259 Phase-5 DMCA designated-agent gate, and the 24-hour retention rule. The override is about *where separation may run*, not about retention, attribution or takedown handling.
+
+### Why Variant Y leaves the launch path — this is a simplification, not a loss
+
+Variant Y existed **because of** the constraint Jon just lifted. Its whole design — official YouTube IFrame, browser tab-capture, 100% client-side chord detection — was to deliver chords on a link *without our servers touching the audio*. With server-side separation permitted on the link path, chords for that path come from the **server-side provider pass** that is already wired end to end, and playback is of **our own stems**.
+
+**Consequently the launch path no longer depends on any of:** the WASM librosa port (`ChordOverlay.tsx:15` — *"Variant Y is paused pending a WASM librosa port"*), ONNX Runtime Web, the ChordNet 2E1D student (PR-Y1.4), browser tab-capture, or the Chrome/Edge-only `getDisplayMedia({audio:true})` matrix. **The single largest blocker on Jon's journey was a dependency of a mitigation that no longer applies.**
+
+Variant Y is **not deleted** — `apps/web/src/chord/` (cqt-frontend, viterbi, smoother, alphabet, tab-capture) and issue **#135** stand. It is reclassified as **optional future work**, valuable if the legal posture is ever revisited or if a zero-server-cost chord path is wanted.
+
+### ⚠️ The Klangio bridge expires before its replacement exists
+
+v1.4's own decision log pins: *"**Klangio Startup $99 / 1 billing cycle only (hard cap)**... swap out by end of Month 1 to the self-hosted ChordNet student."* Measured 2026-11-10: the subscription is **Klangio API Monthly — Startup, $99.99/mo**, subscribed 2026-11-05 and **already scheduled to cancel effective 5 Dec 2026** — i.e. the hard cap is in force exactly as designed.
+
+**The swap-out target does not exist.** `_SyntheticFactoredDataset` is a random-label placeholder (tracker red flag **R-4**), so ChordNet 2E1D cannot be trained, distilled or hosted by 5 Dec.
+
+**So chords — which Jon states are core to V3 (*"Chords are very important to the V3"*) — stop working on 5 Dec 2026 unless one of:** the Klangio subscription is kept past the documented cap; `autochord` is implemented as a provider (see `claude/vendor-tos/autochord-gpl-licence-decision.md` — note it is **not** in `chord_source.py`'s closed provider set and needs an OS-level VAMP plugin in the worker Dockerfile); or ChordNet training is resourced with real data. **This is a dated, scheduled failure, not a risk. Decision needed before 5 Dec.**
+
+**Also unresolved:** Klangio's API commercial-use grant. Public ToU §12.4 restricts to *"private, non-commercial purposes"*; §5.2.3 carves the API out to **unpublished** separate terms. Asked 2026-11-05 (request **#61093**), escalated by their AI assistant, **no human reply in 5 days**. Jon's decision 2026-11-10: *"If they don't answer I don't care. We keep goin"* — chords ON for the **free** launch, written grant remains a gate on the **paid** tier.
+
+Items intentionally UNCHANGED in v1.5: §1 commercial layer (other than the §1.2a note above), §2 users + RLS, §4 Spotify resolver, §5.1–§5.3, §5.5, §6 routes, §7 observability, §8 rollback contract, §10 cross-ref matrix. **§3 is unchanged in content and promoted in priority.**
+
+---
+
+## 12. V3-J — the core customer journey (NEW in v1.5)
+
+**This section is the launch definition.** Jon, 2026-11-10: launch is the play-along, not the loop downloader.
+
+### 12.1 V3-J1 — the journey, as one acceptance test
+
+> A visitor pastes a public YouTube link on `stem-loops.com`. The song is fetched and separated into 6 stems server-side. On the result page they press play; the song plays back as a synchronised 6-stem mix. A **fader per stem** lets them pull any part to silence. A **chord timeline above the transport scrolls in sync with the playhead**. With an electric guitar in an outboard headphone amp, they play along to the song with the guitar stem removed, reading the chords as they pass.
+
+**Explicitly OUT of scope for V3-J1**, per Jon's answer that the guitar is mixed in hardware: live audio input, input monitoring, round-trip latency budgets, and any `getUserMedia` path. The guitar never enters the browser.
+
+**Pass bar:** Jon performs the journey end to end on a real song with his own guitar and confirms it. A green test suite is **not** a pass for V3-J1 — this requirement is defined by the owner's own use.
+
+### 12.2 V3-J2 — stem retention and serving (NEW — blocking V3-J1)
+
+**Measured gap, 2026-11-10:** `apps/worker/src/worker/storage/r2_uploader.py` exposes **`upload_input`, `upload_loop`, `upload_play_chords`** and **no `upload_stem`**; `packages/types` `Job` carries `loops?: Loop[]` and **no stems field**. Full-length separated stems are produced from Replicate, used to cut loops, and **discarded**. V3-J1 is impossible until they are retained.
+
+Requirements:
+- The worker **retains** the 6 full-length stems and uploads them under the job's R2 prefix.
+- Stems are **Opus**, consistent with §3.1's engine assumption (*"the Opus-encoded bytes (compressed, 4–5 MB per stem)"*) and with `AudioContext` at 48 kHz to avoid resample cost.
+- `Job` gains a stems collection; stem URLs are **short-TTL signed GETs** from the private bucket, matching the existing `loops` and `play-chords` pattern — never public objects.
+- Stems obey the **same 24-hour expiry** as every other job artifact. The retention promise in §1.6a does not change.
+- Adds R2 storage and egress per job. Bounded by the 24-hour expiry.
+
+### 12.3 V3-J3 — chord / playhead synchronisation (NEW)
+
+`ChordOverlay` already renders a timeline from `play.chords.json`. V3-J3 adds a playhead input and auto-scroll so the chord under the playhead is the chord being heard, within a **stated and measured** tolerance. The component's existing `onChordEdit` / `onChordLabelEdit` props stay unwired — the write path is incomplete (issue **#135**) and V3-J3 does not open it.
+
+### 12.4 Sequencing
+
+V3-J2 → V3-J3 → §3 engine + faders → **V3-J1 (Jon's own acceptance)** → §3.6 hardening. Loop download survives unchanged; the landing copy must be rewritten, since it currently sells loops and not play-along.
 
 ---
 
@@ -603,11 +691,14 @@ Order (V3 unchanged from pinned, modulo branch α dropping the proxy):
 
 ### 5.4 Variant Y (Chordify-style free-tier chord overlay) — **moved up from Phase 4 to Phase 2 fast-track (V3-Y1, per Jon 2026-11-02T22:45 + adversarial review Lens B)**
 
+> 🟡 **RECLASSIFIED 2026-11-10 (v1.5): Variant Y is NO LONGER ON THE LAUNCH PATH.** It existed *because of* the constraint struck through below, and that constraint is now overridden. With server-side separation permitted on the link path, chords come from the **server-side provider pass** (already wired end to end) and playback is of **our own stems** — so the launch path depends on **none** of: the WASM librosa port (`ChordOverlay.tsx:15`), ONNX Runtime Web, ChordNet 2E1D (PR-Y1.4), tab-capture, or the Chrome/Edge-only `getDisplayMedia` matrix. Variant Y is **optional future work**, not deleted: `apps/web/src/chord/*` and issue #135 stand. **Everything below this banner is retained for that future, and is not a launch requirement.**
+
 **What it is:** The PRD's Variant Y (official YouTube IFrame + browser tab-capture `getDisplayMedia({audio:true})` + real-time chord detection on the captured audio stream). This matches Chordify's architecture — the chord overlay lives alongside the IFrame, never on a downloaded audio file.
 
 **Why move it up:** 
 - Processor-safe: on the "paste a link" happy path, **the free tier never fetches audio on our servers**. Audio stays within the user's browser (tab-capture, 100% client-side chord detection — the chord model runs in WASM on the client).
-- Stem separation on the free-tier link path is NOT offered. Stems come only via file upload (paid tier, §1.2a). This is the direct processor-exposure mitigation that moves Lens B from 84 to 90+.
+- ~~Stem separation on the free-tier link path is NOT offered. Stems come only via file upload (paid tier, §1.2a). This is the direct processor-exposure mitigation that moves Lens B from 84 to 90+.~~
+  > 🔴 **OVERRIDDEN BY JON, 2026-11-10 — DO NOT FOLLOW THE STRUCK-THROUGH LINE.** *"I want stems from a youtube link."* / *"APPROVED — I do not care about the legal risk decision."* **Link-path stem separation is PERMITTED.** The original reasoning is preserved above, struck through, deliberately: it is the audit trail, not an instruction. The Lens B 84→90+ exposure it removed is now **accepted by the owner**. See the v1.4 → v1.5 changelog for the full record. Stems are consequently **no longer paid-tier-only** — §1.2a's paid/free separation rule is otherwise unamended and must be revisited when Stripe lands.
 - Chord-only is the Chordify model and has clear precedent as fair-use adjacent (teaching/practice annotation).
 
 **Delivery (Phase 2):**

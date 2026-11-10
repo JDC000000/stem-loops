@@ -1,7 +1,29 @@
 # TSD-V3-DELTA: Stem-Loops V3 (commercial layer + Play engine + Spotify + fetch) — delta over the pinned TSD
 
-Author: SL-V3 architect lane. Date: 2026-11-10 (v1.5 amendment pass — Jon's play-along launch directive and the link-path stems override; see Changelog below). Status: DRAFT for Jon's review.
+Author: SL-V3 architect lane. Date: 2026-11-10 (v1.7 amendment pass — corrections to v1.5/v1.6 after an adversarial review scored them 48/100, plus Jon's .wav and 3-free-stems decisions; see Changelog below). Status: DRAFT for Jon's review.
 This document EXTENDS the pinned TSD at `stem-loops-handoff/07-roadmap/TSD.md` (SL21-tsd, commit c3f6a911 of `stem-loops`). It is a DELTA only — anything the pinned TSD covers (job state machine, kill switches, blocklist, fetch chain, loops/export, R2 layout, migrations 001–012) is NOT restated here, only cross-referenced by section number (e.g. `TSD §3.1`). All new requirement IDs are prefixed **V3-**; new tests prefixed **T-V3-**. Pinned reqs use their existing IDs (R-A0, R-X2, etc.).
+
+---
+
+## Changelog — v1.6 → v1.7 (2026-11-10 — corrections after an adversarial review, and Jon's two decisions)
+
+**Why this amendment exists.** An M-9 adversarial review on a different model family scored v1.5+v1.6 **48/100, "do not merge as written."** It was right. **v1.6 had already auto-merged before the review returned** (`8fb87ef`, by `stem-loops-automerge[bot]`), so these are corrections to *merged* content, not to a draft.
+
+| § | Correction | Finding |
+|---|---|---|
+| §0 Header | v1.5 → **v1.7**. ⚠️ v1.6's changelog claimed a header bump **that never landed** — line 3 still read "v1.5 amendment pass" | review M2 |
+| **§12.5** | **V3-J4 WITHDRAWN.** Its "measured" failure mode was false, and implementing it would have rejected 5–10 minute songs that work today | review **H1** |
+| **§12.6** | **NEW V3-J7** — the fetch path is the actual launch blocker. Replaces the inert cap with the real, measured gap | review **H2** |
+| §12.7, §12.8 | v1.6 wrote §12.5–12.7 **inside its own changelog**, so a reader of §12 never saw them. Now in §12 | review **M3** |
+| **§9** | V3-J1…J8 rows **added for real**. ⚠️ v1.5's changelog claimed it added V3-J1…J3 to §9 and **§9 was never touched** | review **H5** |
+| **§3** | Launch banner added. The "promoted to LAUNCH" claim existed only in a changelog row | review H5, M1 |
+| **§1.3** | Resolved against §12.2's stem download, per Jon's "3 free then paid" decision | review **H4** |
+| **§8.2** | `ENABLE_V3_PLAY` resolved against the §12 launch | review **H3** |
+| §12.2 | **Download format: `.wav`** (Jon). **Stem download: 3 free, then paid once Stripe lands** (Jon) | Jon 2026-11-10 |
+
+**The process failure, recorded because it will recur.** The review ran **after** the merge. Three PRs auto-merged in one afternoon on `rollback-safe` + `fast-path`, which is the merge autonomy this project has wanted for four sessions — and it means **a spec defect reaches `v3/main` exactly as fast as a good one.** For a document that is the contract every PR cites, the review belongs **before the label**. **A TSD amendment should carry `needs-jon-approval` until its review returns.**
+
+**Still open for Jon** (added to §11): whether a 3-free stem-download allowance can be enforced on an **anonymous** launch path at all — hashed-IP cohorts are not an identity, so either the allowance is weak or stem download requires sign-up, which pulls the authed path back into launch scope.
 
 ---
 
@@ -18,35 +40,7 @@ Source: **Jon's answers 2026-11-10** to the four scope questions v1.5 left open.
 | **§3.3 (V3-E3)** | Tempo/pitch **deferred out of launch** to hardening. Content unchanged | Jon: *"tempo / pitch - defer to hardening. we don't need it at launch"* |
 | **§12.7 (NEW)** | **The 2026-12-05 validation deadline** is promoted to a requirement, not a note | Jon: *"we have to validate this product before THEN"* |
 
-### 12.5 V3-J4 — the 5-minute song cap (NEW in v1.6)
-
-**Measured conflict, 2026-11-10:** `pipeline.py:112` sets `MAX_UPLOAD_DURATION_SEC_DEFAULT = 600.0` (10 min), while `klangio.py:112` sets `MAX_AUDIO_SEC = 300` (5 min) and raises above it. A 6-minute song therefore **succeeds** at stems and loops and **silently loses chords** to a `provider_failed` tombstone — `pipeline.py:706` catches it as non-fatal by design.
-
-With chords now core to the product (v1.5 §12.1), **losing them silently is the wrong failure.** So:
-
-- `MAX_UPLOAD_DURATION_SEC` default becomes **300.0**, matching Klangio's own ceiling.
-- A song over 5:00 is **rejected at ingest** with a clear user-facing message, rather than processed into a chordless result.
-- Rationale: **a visible refusal beats an invisible degradation.** This is the §15.6 principle — silence and success must never share an outcome.
-- `KLANGIO_MIN_AUDIO_SEC` is **5 s** (`klangio.py:114`), so clips under 5 s also get no chords. Same treatment: reject at ingest, do not degrade silently.
-- ⚠️ **The cap is one env knob read at call time**, so raising it later re-opens the silent-degradation path unless Klangio's ceiling rises with it. **Do not raise one without the other.**
-
-### 12.6 V3-J5 — launch browser scope (NEW in v1.6)
-
-**Launch target: Chrome and Edge, desktop.** Firefox and Safari are added only where they are cheap, and **cheapness is measured, not assumed.**
-
-§3.4's matrix is the reference and is unchanged, but note what it already says and what the override changed:
-
-- Firefox's exclusion in §5.4 was about **tab-capture** dropping the audio track — that was a **Variant Y** constraint, and Variant Y is off the launch path (v1.5). **Firefox is not excluded from the launch player on that ground.** §3.4 lists Firefox ≥ 130 as supporting Opus in WebCodecs, so it is a *candidate*, pending measurement.
-- Safari and iOS remain genuinely harder: §3.4 marks Opus-in-WebCodecs **partial** on Safari ≥ 17.4 and routes it to the variant-S fallback with a possible **3-minute cap**. That is below V3-J4's 5-minute cap, so **Safari would need its own, lower limit** — not a launch item.
-- **Unsupported browsers must be feature-detected at page load and shown a banner, never a button that fails silently.** The §5.4 UX rule carries over to the player verbatim.
-
-### 12.7 V3-J6 — the 2026-12-05 validation deadline (NEW in v1.6)
-
-Jon, 2026-11-10: *"re Dec 5th subscription end - noted. we have to validate this product before THEN."*
-
-The Klangio Startup subscription is **scheduled to cancel effective 2026-12-05** — the hard cap v1.4 pinned, working as designed. **Chords stop that day** unless the subscription is kept, `autochord` is implemented as a provider, or ChordNet training is resourced (its dataset is a random-label placeholder — R-4).
-
-**So V3-J1 must be validated by Jon's own use before 2026-12-05.** That is a hard date on the critical path, and it is the reason V3-J2 and the player precede every hardening item. **Anything that does not move V3-J1 toward that date is not launch work.**
+> **⟲ v1.7 note:** §12.5–12.7 were originally written **into this changelog instead of into §12**, which meant a reader of §12 never saw them. They now live in **§12.5–§12.8**. **V3-J4 was withdrawn in v1.7** — its premise was false. See the v1.6 → v1.7 changelog.
 
 Items intentionally UNCHANGED in v1.6: §1, §2, §3 (content — only its launch priority and the §3.3 deferral change), §4, §5, §6, §7, §8, §10, and §12.1/§12.3/§12.4 from v1.5.
 
@@ -126,10 +120,38 @@ Items intentionally UNCHANGED in v1.5: §1 commercial layer (other than the §1.
 Requirements:
 - The worker **retains** the 6 full-length stems and uploads them under the job's R2 prefix.
 - **Playback format: Opus**, consistent with §3.1's engine assumption (*"the Opus-encoded bytes (compressed, 4–5 MB per stem)"*) and with `AudioContext` at 48 kHz to avoid resample cost.
-- **Download format (NEW in v1.6, per Jon): a downloadable WAV or MP3 per stem**, separate from the playback artifact. Opus is the right streaming codec and the wrong hand-off to a DAW. ⚠️ **This is a second encode and a second R2 object per stem** — 6 extra objects per job, materially larger than the Opus set — so the 24-hour expiry does real work here. Pick **one** download format rather than shipping both; MP3 is smaller and universally importable, WAV is lossless and larger. **Open for Jon.**
+- **Download format: `.wav`** — decided by Jon, 2026-11-10 (*"download = .wav"*). Separate artifact from the Opus playback stems: Opus is the right streaming codec and the wrong hand-off to a DAW. ⚠️ **A second encode and a second R2 object per stem** — 6 extra objects per job, and `.wav` is **much** larger than Opus (roughly 10 MB/min/stereo at 16-bit/44.1k vs 4–5 MB for a whole Opus stem), so a 5-minute 6-stem job adds on the order of **300 MB** of R2 writes. The 24-hour expiry is what makes that affordable; **do not extend retention without re-costing this.**
+- **Entitlement: 3 free stem downloads, then paid once Stripe is integrated** — decided by Jon, 2026-11-10. This resolves the §1.3 contradiction the M-9 review found: a 3-download allowance is a **trial**, not a free tier, so it is consistent with §1.3 keeping `export_stems` on the paid tiers.
+  > ⚠️ **Open, and it is load-bearing: the allowance needs an identity the launch path does not have.** The launch is anonymous (*"Free, no account"*), and anonymous users are keyed by **hashed IP** (`IP_HASH_KEY`), which is a rate-limit cohort, not an identity — trivially reset by changing network. So either (a) the allowance is per-IP-cohort and weak by design, or (b) **stem download requires sign-up**, which pulls the authed path — hCaptcha, Resend, the whole §12-excluded surface — back into launch scope. **This is Jon's call and it changes launch scope either way.** Existing machinery worth reusing if (b): `trial_grants` is already one-per-user-ever with a PK on `user_id` (§6.1), so a second counter should not be invented.
 - `Job` gains a stems collection; stem URLs are **short-TTL signed GETs** from the private bucket, matching the existing `loops` and `play-chords` pattern — never public objects.
 - Stems obey the **same 24-hour expiry** as every other job artifact. The retention promise in §1.6a does not change.
 - Adds R2 storage and egress per job. Bounded by the 24-hour expiry.
+
+### 12.2a V3-J2a — the Ogg demuxer nobody has scoped (NEW in v1.7) ⚠️ **unnamed dependency on the launch path**
+
+**Measured 2026-11-10, in a real browser, not reasoned about.** The playback artifact is `libopus` at 128 kbps / 48 kHz in an **Ogg** container (`ffprobe`: `codec_name=opus, sample_rate=48000, channels=2, format_name=ogg`). Chromium decodes it correctly through `decodeAudioData` — 20 s in, 20 s out, 2 channels, 48 kHz — so **the bytes are valid and the artifact is sound.**
+
+**But `decodeAudioData` is the path §3 explicitly rejects**, and the path §3 *requires* cannot read a container:
+
+- §3 T-E2: *"the full-decode fallback peaks at 643 MB and **FAILS** the 400 MB bar"*. Independent arithmetic agrees — 5 min stereo at 48 kHz as float32 is 300 × 48000 × 2 × 4 = **110 MiB per stem**, ×6 = **659 MiB**, which lands on their measured 643 MB. So `decodeAudioData` is not an option for six stems, only for variant S.
+- §3 Variant D holds *"the **Opus-encoded bytes**"* and drives *"a **WebCodecs `AudioDecoder`** per stem"*, re-seeding at *"a **packet-boundary** close + reopen"*.
+
+**`AudioDecoder` does not demux.** It consumes `EncodedAudioChunk`s — raw Opus packets. So between the `.opus` file and the engine there must be an **Ogg page/packet demuxer in JavaScript**, and *no section of this TSD names it, scopes it, or assigns it*. §12.4's sequencing (V3-J2 → V3-J3 → §3 engine + faders) silently assumes it exists.
+
+**Not a defect in the artifact — a missing work item.** The container is the right transport and matches §3.1's wording. What is missing is the ~200 lines that turn Ogg pages into packets.
+
+**Open question for the engine phase, stated rather than assumed:** Ogg or WebM. Both need demuxing; Ogg is what `libopus` emits by default and what §3.1's "Opus-encoded bytes" implies. Changing it is a one-flag change in `_encode_stem_opus` plus the two key builders, so this is cheap to revisit **before** the demuxer is written and expensive after.
+
+⚠️ **`AudioDecoder` itself remains UNVERIFIED on real hardware.** The headless Chromium used for the measurement above reports `typeof AudioDecoder === 'undefined'`, so `AudioDecoder.isConfigSupported({codec:'opus', sampleRate:48000, numberOfChannels:2})` — the capability probe §3's browser matrix is built on — **could not be executed**. That is a limitation of the test environment and is **not** evidence either way about production Chrome. §3's matrix and the V3-TE2b Safari gate still rest on unexecuted assumptions.
+
+**Measured sizes, for the §12.2 "4–5 MB per stem" figure.** Both encoded with the worker's exact command:
+
+| Content | 20 s / 10 s bytes | Projected 5-min stem |
+|---|---|---|
+| pure sine (compresses well) | 148,160 (10 s) | **4.24 MB** |
+| 3-way mix, pink noise + two tones | 219,557 (20 s) | **3.14 MB** |
+
+128 kbps puts a dense real stem at or just under the bitrate ceiling (128000 × 300 / 8 = **4.8 MB**). So a real stem lands in **~3–4.8 MB**: at or below §12.2's figure, never above it. Six stems ≈ **19–29 MB**, against ≈ **300 MB** for the same six as WAV.
 
 ### 12.3 V3-J3 — chord / playhead synchronisation (NEW)
 
@@ -137,7 +159,132 @@ Requirements:
 
 ### 12.4 Sequencing
 
-V3-J2 → V3-J3 → §3 engine + faders → **V3-J1 (Jon's own acceptance)** → §3.6 hardening. Loop download survives unchanged; the landing copy must be rewritten, since it currently sells loops and not play-along.
+V3-J2 → **V3-J2a (the Ogg demuxer, §12.2a — newly surfaced and previously unscoped)** → V3-J3 → §3 engine + faders → **V3-J1 (Jon's own acceptance)** → §3.6 hardening. Loop download survives unchanged; the landing copy must be rewritten, since it currently sells loops and not play-along.
+
+**Revised in v1.7 to include the launch requirements that v1.6 left out of this section:** V3-J2 → V3-J7 (the fetch path must work at all) → V3-J3 → §3 engine + faders → **V3-J1** → §3.6 hardening. **V3-J5** (browser scope) and **V3-J8** (the Dec 5 date) constrain every step.
+
+### 12.5 ~~V3-J4 — the 5-minute song cap~~ — **WITHDRAWN in v1.7**
+
+> 🔴 **WITHDRAWN. The premise was false, and implementing it would have caused a regression.** Recorded rather than deleted, because a wrong requirement that reached `v3/main` is worth more as a record than as a deletion.
+
+v1.6 claimed a 6-minute song *"succeeds at stems and loops and silently loses chords to a `provider_failed` tombstone"* via `pipeline.py:706`. **It does not.** An adversarial review found a duration gate the author never read:
+
+```
+pipeline.py:612-630
+    # Duration gate: BEFORE stem selection so an over-length track also skips the ffmpeg
+    # harmonic mix. The track is still accepted (stems/loops are the product); only the
+    # optional chord overlay is skipped, with a specific reason for the UI.
+    if duration is not None and duration > max_sec:
+        log_structured("INFO", "chords_skipped_too_long", ...)
+        _write_chords_tombstone(job_id, "too_long", duration_sec=round(duration, 1))
+        return
+```
+
+Three corrections:
+
+1. **The tombstone is `too_long`, not `provider_failed`.**
+2. **It is not silent.** `ChordOverlay.helpers.ts:486` renders *"Chords aren't available for this track: chord detection supports tracks up to 5 minutes. Your stems and loops are unaffected."*
+3. **The 600-vs-300 gap is deliberate and documented** at `pipeline.py:103-111`, with a stated Replicate-cost rationale: *"600 s leaves headroom for ordinary long songs (extended mixes, prog) without opening the door to DJ sets / albums."*
+
+And the governing knob is a **third** one v1.6 never mentioned: **`CHORDS_MAX_AUDIO_SEC`** (`pipeline.py:458`, default 300.0), not `KLANGIO_MAX_AUDIO_SEC`.
+
+**So the existing behaviour is already correct** and lowering `MAX_UPLOAD_DURATION_SEC` to 300 would **reject 5–10 minute songs that work fine today**. Jon's *"5 mins is fine"* referred to the 5-minute **chord** limit, which already holds. **No change required. `MAX_UPLOAD_DURATION_SEC` stays at 600.**
+
+### 12.6 V3-J7 — the fetch path must actually work (NEW in v1.7) — **THE LAUNCH BLOCKER**
+
+V3-J1 begins *"a visitor pastes a public YouTube link"*. **That step currently fails 100% of the time.** Measured 2026-11-10, two jobs, same video, 26 minutes apart:
+
+| Job | Created | Result |
+|---|---|---|
+| `d1835fad-5a61-4deb-99a5-1a4be3111bcf` | 17:45:32Z | `DOWNLOAD_BLOCKED` |
+| `459064cf-eb7a-47f2-9bfe-ff7a39540d43` | 18:11:51Z | `DOWNLOAD_BLOCKED` |
+
+Both reached stage `downloading`, which **proves `ALLOW_YOUTUBE_INPUT` is `'true'`** — independently confirmed by reading the Vercel env (both flags `plain = "true"`, production). **This is not a flag problem and not a legal one.**
+
+**Two independent causes, in the order the runbook prescribes:**
+
+1. ~~**Stale yt-dlp.**~~ ✅ **TESTED AND FALSIFIED, 2026-11-10.** It was genuinely stale — `pip show yt-dlp` on the Machine returned **`Version: 2026.8.19`**, 82 days old against a 45-day threshold — and PR #170 fixed it. **It was not the cause.** Full Direct chain:
+
+   | Step | Evidence |
+   |---|---|
+   | Stale pin confirmed live | `fly ssh console -a stem-loops -C "pip show yt-dlp"` → `Version: 2026.8.19` |
+   | New pin pulled | `git pull` → `Updating eb28e08..f4b729c`; `grep` printed `yt-dlp==2026.10.26` |
+   | New pin built in | `[deps 2/2] RUN pip install … 46.0s` — **not `CACHED`**, so the layer rebuilt. Image `deployment-01M73B599RQC17AZYYTRT7T8ME` |
+   | Still fails | job `624a5288-18ae-4cc1-9f30-e9b5990c16ce` → `DOWNLOAD_BLOCKED` at stage `downloading` |
+
+   **Three jobs, three failures, now with a fresh yt-dlp on the Machine.** The cheap hypothesis was correctly prioritised (the runbook names it first), correctly executed, and **correctly falsified.** ⚠️ Note for the next person: `constraints-prod.txt` is an **exact pin**, so a rebuild alone never updates it, and `fly deploy` builds from the **local working tree** — a deploy without `git pull` first rebuilds the old pin.
+2. **No residential proxy — and by elimination this is NOW THE CAUSE, not a hypothesis.** `ytdlp_client.py:9-12`: `PROXY_URL` routes egress through a residential proxy *"instead of datacenter egress — **the cause**"*. The chain's 98%-success design figure was measured **through** such a proxy. `08-runbooks.md` §6 records **"prod has no proxy"**, and `PROXY_URL` is absent from `fly secrets list` [static 2026-11-09].
+
+⚠️ **`PROXY_URL` is documented NOWHERE** — not in `docs/`, `.env.example`, `fly.toml` or the `Makefile`. It exists only in code. **A textbook class-6 Deployment seam**, and the reason nobody set it: nothing ever said to.
+
+⚠️ **And the error message actively misdirects.** *"YouTube is temporarily blocking automated access for this video. Try again in a few minutes."* reads as transient and external. If the cause is a missing proxy credential, **retrying never works**, and every prior session read this as YouTube's fault.
+
+**V3-J7 pass bar:** three different public YouTube links reach `done`. **This requires a purchasing decision from Jon** (a residential-proxy subscription), not an engineering one. **It is the single hard dependency on the critical path and it is external.**
+
+### 12.7 V3-J5 — launch browser scope
+
+**Chrome and Edge, desktop.** Firefox and Safari only where measurably cheap.
+
+- Firefox's §5.4 exclusion was a **tab-capture** constraint, and Variant Y left the launch path in v1.5 — so it does **not** exclude Firefox from the player. §3.4 lists **Firefox ≥ 130** as supporting Opus in WebCodecs: a candidate pending measurement.
+- Safari stays harder: §3.4 marks Opus-in-WebCodecs **partial** on Safari ≥ 17.4 and routes it to variant S. ⚠️ **v1.6 misattributed the 3-minute cap to §3.4; it is in §3.6.** §3.4 says "> 4 min". Either way Safari needs its own lower limit — not a launch item.
+- Unsupported browsers get a **feature-detected banner, never a button that fails silently**. ⚠️ v1.6 said the §5.4 copy carries over "verbatim"; it must **not** — *"Your browser does not support tab-audio capture"* is false for the player, which uses no tab capture.
+
+### 12.9 V3-J9 — stem download requires sign-up (NEW in v1.7, decided by Jon)
+
+**Jon's decision, 2026-11-10:** *"lets require sign up"* — closing §11 **O-1**. A 3-download allowance needs an identity, hashed-IP is a rate-limit cohort and not one, so **stem download is gated behind an account.**
+
+**This is a launch-scope change and it is the largest one in this document.** The authed path was explicitly OUT of scope in v1.5 (*"Free, no account"*, no sign-in affordance on the landing page). It is now IN.
+
+| Consequence | Owner | Note |
+|---|---|---|
+| `NEXT_PUBLIC_HCAPTCHA_SITE_KEY` + `HCAPTCHA_SECRET_KEY` in Vercel | **Jon** | Confirmed **absent** 2026-11-10 by reading the env [Direct]. The hCaptcha site must be registered for `stem-loops.com` or it fails *with* keys set |
+| The **matching** hCaptcha secret in **production Supabase Auth** | **Jon** | ⚠️ **Both sides, or sign-up returns HTTP 400.** This is why the staging smoke has failed `captcha_failed` three times. Setting the Vercel pair alone is **not sufficient** |
+| `RESEND_API_KEY` + `RESEND_FROM` | **Jon** | Confirmed absent. Without it welcome mail is silently skipped with a warn — degraded, not fatal |
+| A **redeploy** after the keys land | agent | `NEXT_PUBLIC_*` is **build-time inlined**; an env edit alone changes nothing |
+| **Revert `/login` from `noindex`** | agent | PR #167 noindexed it when the authed path was out of scope. It is now **in the funnel** and must be reachable and indexable |
+| **A sign-in affordance on the landing page** | agent | There is **none today** — the only links are `/`, `/history`, `/privacy`, `/terms`. A gated download with no visible way to sign in is a dead end |
+| **The staging billing smoke becomes a real prerequisite again** | **Jon** dispatches | Its steps 4–8 exercise **sign-up → trial grant → entitlements → credits** — exactly this path. It has never got past step 3b (`captcha_failed`), so **this path has never been exercised by anything** |
+| Reuse `trial_grants`, do not invent a counter | agent | Already one-per-user-ever with a PK on `user_id` (§6.1). The 3-download allowance maps onto it |
+| Migration 013's `on_auth_user_created` trigger | — | ✅ Present and verified 2026-11-09. Without it sign-up writes `auth.users` but no `public.users` or entitlement row |
+
+**What does NOT change:** the core journey (§12.1) stays anonymous — paste a link, get stems, play along with faders and chords. **Only the `.wav` stem *download* is gated.** A visitor can still do the whole play-along without an account; sign-up buys them files to keep.
+
+**V3-J9 pass bar:** a throwaway account signs up, receives its entitlement row, downloads 3 `.wav` stems, and is refused the 4th with a clear upsell — then `DELETE /api/users/me` removes it cleanly (currently **Inferred from code and never executed**).
+
+### 12.10 V3-J10 — the residential proxy (NEW in v1.7, decided by Jon: IPRoyal)
+
+**Jon's decision, 2026-11-10:** *"lets use IPROYAL."* This closes §11 **O-2** and unblocks **V3-J7**, the launch blocker.
+
+**IPRoyal is what the code was written for.** `ytdlp_client.py:40` carries it as the worked example (`http://user:pass@geo.iproyal.com:12321`), and `_sticky_proxy_url()` implements IPRoyal's session syntax specifically, gated on the hostname so a future vendor switch cannot silently corrupt a password with a suffix it does not understand.
+
+**Why sticky sessions are load-bearing and not an optimisation** (`ytdlp_client.py:87-110`, found during a staging E2E test, not the bake-off): a plain IPRoyal string **rotates its exit IP per new connection**. yt-dlp makes several requests per video — webpage, player API, then the byte download — and **the signed `googlevideo.com` media URL it receives is itself IP-bound.** If the byte fetch lands on a different rotated IP than the one that resolved the URL, it **403s** even though both went through the same account. Observed live: extraction succeeded, the very next request 403'd, every time.
+
+The fix is already implemented: a **fresh random 8-character session id per fetch attempt**, appended as `_session-<id>_lifetime-2m`, so all of one attempt's requests share one IP while a **retry deliberately gets a new IP** rather than re-trying a bad one.
+
+> ⚠️ **Therefore `PROXY_URL` must be set to the PLAIN credentials with NO session suffix.** The worker appends `_session-…_lifetime-2m` itself. A value that already contains a session parameter would be **double-suffixed and malformed**. This is the single most likely way to configure it wrongly.
+
+**Configuration:**
+
+| Item | Value |
+|---|---|
+| Secret | `PROXY_URL` on the **Fly worker** (`stem-loops`) — **not** Vercel; only the worker fetches |
+| Format | `http://<user>:<pass>@geo.iproyal.com:12321` |
+| Port | **12321** is the username/password endpoint. `geo.iproyal.com` ports 11200+ are the **IP-whitelist** endpoints and are the wrong ones here |
+| Session suffix | **Do not add one.** The worker generates it per attempt |
+| Timeout | automatic — `TIMEOUT = 10 if not PROXY_URL else 30` (`ytdlp_client.py:44`), because the R2 spike measured p50 ~4.5 s / p90 ~10–13 s / outliers ~26 s through the proxy, and 20 s produced false `DOWNLOAD_TIMEOUT`s |
+| Vendor lock | none — the sticky-session syntax is applied **only** when the host contains `iproyal.com` |
+
+**Cost, sized rather than guessed.** yt-dlp runs `-x --audio-format wav`, so the **network** transfer is the compressed source stream (the WAV conversion is local, after download). A 5-minute track at ~128 kbps is **≈5 MB**, plus webpage/player-API overhead and the `--simulate` live-check: call it **~6 MB per successful fetch**. `YTDLP_MAX_ATTEMPTS=2` means a retry roughly doubles a failed job's cost, so budget **~10 MB/job**.
+
+- **1 GB ≈ 100–170 YouTube jobs.**
+- IPRoyal residential pay-as-you-go starts around **$7/GB**, cheaper at volume, and **PAYG traffic does not expire** [third-party review, 2026 — confirm on IPRoyal's own pricing page before buying].
+- **So the single hard blocker on the launch path costs on the order of $7**, and 1 GB plausibly covers months at pre-revenue volume.
+
+**V3-J10 pass bar:** `PROXY_URL` set on Fly, worker redeployed, and **three different public YouTube links reach `done`** — which is also V3-J7's bar. ⚠️ **Watch the first runs for `402`/`407` in fetch logs**: `08-runbooks.md` §6 maps those to *"proxy balance/credential"*, so they mean the proxy is reachable but the account is out of funds or the credentials are wrong — **a different failure from `DOWNLOAD_BLOCKED`, and good news, because it proves the proxy is in the path.**
+
+### 12.8 V3-J8 — the 2026-12-05 validation deadline
+
+The Klangio Startup subscription cancels **2026-12-05** — v1.4's documented hard cap, working as designed. **Chords stop that day** unless it is kept, `autochord` is implemented, or ChordNet training is resourced (dataset is a random-label placeholder, R-4). Jon, 2026-11-10: *"we have to validate this product before THEN."* **V3-J1 must be validated by Jon's own use before that date.**
 
 ---
 
@@ -308,6 +455,7 @@ Every billable action goes through a single server-side guard: `enforceEntitleme
   - **`check_processor_separation`** (new): if the request carries `user_id` with ANY active paid entitlement (credits balance > 0, Pro, or Studio) AND `input_kind != 'upload'`, the guard either (a) routes the request to the anonymous free-tier cohort (preferred — transparent) or (b) returns `PAID_LINK_INGEST_DISALLOWED` 400 if the user has already used their 3 free songs today. This is the enforcement half of §1.2a. (Patreon-mapped entitlement check removed per Jon 2026-11-03.)
   - `fetch_service:<name>`: inside `create_job`, discriminated by host (`youtube | spotify | soundcloud`). All services available on free tier (link ingest is free tier only). Apple/Tidal remain Phase 4 trigger-based.
   - `export_stems`: at the signed-URL mint path (TSD §3.2 `GET /api/jobs/:id`). Free gets `mix` only; Credits/Pro/Studio get stems (if the job was `input_kind='upload'`); Studio gets WAV 24-bit.
+    > 🟡 **AMENDED 2026-11-10 (v1.7), per Jon: "stem download = 3 free then move to paid once stripe is integrated."** So at launch `export_stems` is **not** a hard paid gate — it is a **3-download allowance, then paid**. This resolves the contradiction the M-9 review found between this line and §12.2 (v1.6 had specified a free per-stem download outright, which would have given away the paid tiers' differentiator). Two constraints carried forward: the `input_kind='upload'` restriction **no longer applies** (Jon's link-path override, v1.5 §5.4), and **`.wav` is the download format** (Jon). ⚠️ **Open:** the allowance needs an identity, and the launch path is anonymous — see §11.
   - `play_access`: at `GET /api/jobs/:id` when `play` block is requested.
 - Guard order: kill switch → **processor separation** → entitlement → rate limit → admission (per TSD §3.1 M5 pattern). Guard runs in the request handler, not in the client, and is covered by T-V3-C3 (mutant: remove the guard → test must fail).
 - `enforceEntitlement` returns a typed denial reason that maps to a user copy entry in `apps/web/src/lib/error-copy.ts`:
@@ -623,6 +771,8 @@ CREATE TRIGGER on_auth_user_created AFTER INSERT ON auth.users
 
 ## 3. Variant D engine (bakes the T-E2 result into design)
 
+> 🟢 **PROMOTED TO THE LAUNCH PATH, 2026-11-10 (v1.5, banner added for real in v1.7).** This engine **is** the per-stem mixer of §12.1, and the mixer is now the product. §9 and §10 still place V3-E1…E4 in "Phase 1b" — ⚠️ **treat §12's LAUNCH designation as authoritative over those two tables.** ⚠️ **§3.3 (tempo/pitch) is the one exception: DEFERRED out of launch** per Jon 2026-11-10. ⚠️ **`apps/web/src/lib/play/` does not exist** — this engine is greenfield, and §3.1's `SharedArrayBuffer` requires COOP/COEP headers that this document does not yet specify. See §11.
+
 **T-E2 verdict (`evidence/T-E2-REPORT.md`): variant D passes at 287 MB peak; the full-decode fallback peaks at 643 MB and FAILS the 400 MB bar. Variant A peaks at 1384 MB.** The pinned TSD §3.8 interface is correct; the implementation that TSD-P1-11..15 names (decode-all-to-float32) is NOT viable at 5 min × 6 stems. V3 replaces that implementation with D.
 
 ### 3.1 V3-E1 — Decoder architecture
@@ -861,6 +1011,10 @@ Three surfaces, read in this priority order (first non-null wins), cached 30 s:
 
 **Rule:** `ENABLE_V3_PLAY=false` MUST produce **exactly today's product (unchanged)**. `ENABLE_V3_PLAY=true` produces the full V3 Play experience. No partial states; no "V3 UI but no billing" or "billing but no V3 engine" — the flag is the single master switch.
 
+> 🔴 **SUPERSEDED for the launch defined in §12 — 2026-11-10 (v1.7).** The M-9 review found there is **no state of this flag in which §12's launch is shippable**: §12 ships the V3 engine **free, before Stripe, with Variant Y off the path**, which `true` forbids (it enforces paid tiers and activates Variant Y) and `false` forbids (it mandates exactly today's product, while V3-J2 changes the worker and the `Job` contract). **§12 is authoritative; this rule is not a launch gate.**
+>
+> ⚠️ **And `ENABLE_V3_PLAY` does not exist in code** — 0 hits in the codebase, 8 in this document. The tracker has recorded this since session 8. So this section describes a switch that was never built, and **rollback is promote-previous-deployment**, not a flag. The whole of §8.2 needs rewriting against reality; **that rewrite is deliberately NOT in v1.7**, which is a corrections pass, and is recorded in §11 instead.
+
 - `ENABLE_V3_PLAY=false` and switch off and no user opt-in:
   - `/play` page returns the pinned-TSD UI (variant R from TSD-P1-17): mix-first, w0 then full stems, no V3 engine, no auth.
   - `POST /api/billing/*`, `POST /api/billing/credits/*`, `POST /api/users/*`, `POST /api/jobs/play`, `GET /api/entitlements` return 404 `NOT_FOUND` (routes are present but hidden).
@@ -909,7 +1063,15 @@ Three surfaces, read in this priority order (first non-null wins), cached 30 s:
 | V3-E4 | 1b | Safari fallback-S honored on Safari 17.4; Chrome/Edge/FF stay on D | T-V3-E4 |
 | V3-M1..M3 | 1a | Each email flow fires once per trigger (idempotent by id); bounces recorded | T-V3-M* |
 | **V3-F1** | 1a entry gate | T-F1 ≥90% within 2 attempts AND own-file p95 <2s on 100 sessions | T-V3-F1 |
-| **V3-Y1** | 2 | Variant Y chord detection median <500ms E2E on 2020 4-core Chrome; accuracy within 2% of server **chord-recognition provider** (Klangio bridge → ChordNet 2E1D student per PR-Y1.1 / PR-Y1.4; decision record v1.3) on 20-song eval. `allin1` is a structure-analysis model, **not** a chord recognizer; wording corrected v1.4 | T-V3-Y1 |
+| **V3-Y1** | **2 — NO LONGER ON THE LAUNCH PATH (v1.5)** | Variant Y chord detection median <500ms E2E on 2020 4-core Chrome; accuracy within 2% of server **chord-recognition provider** (Klangio bridge → ChordNet 2E1D student per PR-Y1.1 / PR-Y1.4; decision record v1.3) on 20-song eval. `allin1` is a structure-analysis model, **not** a chord recognizer; wording corrected v1.4 | T-V3-Y1 |
+| **V3-J1** | **LAUNCH** | Jon performs the full journey — YouTube link → stems → play along with a per-stem fader and a synced chord timeline — on a real song with his own guitar, and confirms it. **A green test suite is explicitly NOT a pass** | **owner acceptance**, not CI |
+| **V3-J2** | **LAUNCH** | 6 full-length Opus stems retained and reachable by short-TTL signed URL for a real job id; **a `.wav` per stem downloadable**; all bound by the existing 24-hour expiry | T-V3-J2 |
+| **V3-J3** | **LAUNCH** | The chord under the playhead is the chord being heard, within a stated and measured tolerance. ⚠️ **Tolerance number, test id and clock source are still UNSPECIFIED** — see §11 | T-V3-J3 |
+| ~~**V3-J4**~~ | ~~LAUNCH~~ | **WITHDRAWN v1.7** — premise false; existing 600 s upload cap and 300 s chord gate are already correct. See §12.5 | — |
+| **V3-J5** | **LAUNCH** | Chrome/Edge desktop pass V3-J1. Unsupported browsers show a feature-detected banner, never a failing button | T-V3-J5 |
+| **V3-J6** | — | **ID RETIRED in v1.7** to avoid collision: v1.6 used V3-J6 for the Dec-5 deadline, now **V3-J8** | — |
+| **V3-J7** | **LAUNCH — BLOCKER** | Three different public YouTube links reach `done`. **Currently 0%** — two measured failures 2026-11-10. ⚠️ Depends on an external purchase (residential proxy), not on code | T-V3-J7 |
+| **V3-J8** | **LAUNCH — dated** | V3-J1 validated by Jon's own use **before 2026-12-05**, when the Klangio bridge expires with no working replacement | **date gate** |
 | V3-R1 | pre-launch | Rollback drills 1–3 pass; drill-1 includes byte-equivalent `/play` HTML snapshot when flag OFF | T-V3-R1 |
 
 ---
@@ -930,6 +1092,19 @@ Three surfaces, read in this priority order (first non-null wins), cached 30 s:
 ---
 
 ## 11. Still open for Jon (post-v1.1 amendment — items awaiting decision)
+
+### Added 2026-11-10 (v1.7) — open items from the corrections pass
+
+| # | Open item | Why it matters |
+|---|---|---|
+| ~~**O-1**~~ | ~~Can a 3-free stem-download allowance be enforced on an anonymous launch path?~~ **DECIDED by Jon 2026-11-10: require sign-up.** See the new **§12.9** — this pulls the authed path into launch scope | ✅ **CLOSED** |
+| ~~**O-2**~~ | ~~The residential proxy~~ **DECIDED by Jon 2026-11-10: IPRoyal.** See the new **§12.10** — ~$7/GB, ≈100–170 jobs per GB | ✅ **CLOSED** |
+| **O-3** | **What happens to chords on 2026-12-05** — keep the Klangio subscription, implement `autochord`, or resource ChordNet training | Chords stop that day. See §12.8 |
+| **O-4** | **§8.2 needs rewriting against reality.** `ENABLE_V3_PLAY` does not exist in code (0 hits), and §8.2 describes it as the rollback master switch. Rollback is actually promote-previous-deployment | A rollback contract naming a switch that was never built is worse than none |
+| **O-5** | **§12.3's sync tolerance is unspecified** — no number, no test id, no clock source (§3.1's `startFrame` vs `AudioContext.currentTime`) | V3-J3 is stated but not yet actionable |
+| **O-6** | **COOP/COEP for `SharedArrayBuffer`.** §3.1's engine requires it; this document has zero mentions of COOP, COEP or `crossOriginIsolated`, and cross-origin isolation interacts with R2 signed URLs, hCaptcha, Stripe and Sentry embeds | Could block the engine late. Raised by the M-9 review |
+| **O-7** | **Opus container, bitrate and demuxer are unspecified.** WebCodecs needs demuxed packets | V3-J2 is not fully actionable without it |
+
 
 Items 1–6 below are the only remaining open items for Jon after the 2026-11-02T22:45 lock-in pass. Everything else in v1.0 that was open has been decided (processor, auth, pricing model, DMCA deferral, Variant Y promotion, Spotify ISRC chain). Numbered for clean reference:
 

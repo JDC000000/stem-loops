@@ -77,9 +77,26 @@ export interface StemState {
   /** Story 2.4 — Jon: "we want what Moises has", both mute AND solo. */
   readonly soloed: boolean;
   /**
-   * True when this stem is currently silent for ANY reason — muted, or some
-   * OTHER stem is soloed. The mixer renders from this, so solo logic lives in
-   * one place rather than being re-derived per component.
+   * True when this stem is currently silent for any reason. The engine is the
+   * ONLY place this is computed; the mixer renders from it rather than
+   * re-deriving solo logic, so there is exactly one implementation to be right.
+   *
+   *   effectivelySilent = muted || (anySoloed && !soloed)
+   *
+   * where `anySoloed` is true when ANY stem in the mix has `soloed === true`.
+   *
+   *   - nothing soloed        → only muted stems are silent
+   *   - one or more soloed    → every NON-soloed stem is silent; all the
+   *                             soloed ones play, however many there are
+   *   - soloed AND muted      → still silent; mute wins
+   *
+   * ⚠️ The first version of this comment said "muted, or some OTHER stem is
+   * soloed", which is wrong and was caught by an agent building against it.
+   * Read literally, two soloed stems each see "some other stem is soloed" and
+   * silence each other — the opposite of additive solo. The predicate above is
+   * normative; the prose is not. Any implementation needs a test for the
+   * TWO-STEMS-SOLOED case specifically, because that is the case the wrong
+   * reading breaks and the only one that distinguishes them.
    */
   readonly effectivelySilent: boolean;
 }

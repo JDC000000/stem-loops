@@ -30,26 +30,32 @@ import { useState } from 'react';
 export type SignedInNavProps = {
   /** Server-resolved. Drives Account (true) vs Sign in (false). */
   signedIn: boolean;
-  /** Where "Play along" goes — a job if the viewer has one, else the tool. */
-  playHref: string;
-  /** Where "Download loops" goes — that job's loops, else the tool. */
-  loopsHref: string;
 };
 
 type Item = { label: string; href: string; match: (p: string) => boolean; outlined?: true };
 
-export default function SignedInNav({ signedIn, playHref, loopsHref }: SignedInNavProps) {
+export default function SignedInNav({ signedIn }: SignedInNavProps) {
   // usePathname returns null outside a router (and in renderToStaticMarkup).
   // The nav still renders in full; only aria-current goes quiet.
   const pathname = usePathname() ?? '';
   const [open, setOpen] = useState(false);
 
+  // WHY THERE IS NO "DOWNLOAD LOOPS" ITEM YET. Jon asked for the loops as a
+  // SEPARATE secondary product page. There is no such route: the loops render
+  // in LoopResults, inside the `job.status === 'done'` branch of the job page,
+  // so the only thing a nav item could point at today is a fragment on a URL
+  // that (a) needs a job id the bar does not have, and (b) has no such anchor
+  // at all while a job is processing, failed or expired. Two differently
+  // labelled items resolving to one page teaches the reader that the labels do
+  // not mean what they say, so the item lands with /loops itself, as its own
+  // piece of work. The dead-end defect this bar exists to close is closed
+  // without it.
+  //
+  // "Play along" goes to the tool rather than to a specific job for the reason
+  // set out in SignedInChrome: a per-browser cookie cannot answer "which job is
+  // THIS user's" and must not be asked to.
   const items: Item[] = [
-    { label: 'Play along', href: playHref, match: (p) => p.startsWith('/jobs/') },
-    // "Download loops" — Jon's wording, approved over "Song loops". The loops
-    // live in the <section id="loops"> below the player on the job page, so
-    // this is that section, not a route of its own. There is no /loops page.
-    { label: 'Download loops', href: loopsHref, match: () => false },
+    { label: 'Play along', href: '/', match: (p) => p.startsWith('/jobs/') },
     { label: 'Job history', href: '/history', match: (p) => p === '/history' },
     signedIn
       ? { label: 'Account', href: '/account', match: (p) => p.startsWith('/account'), outlined: true }

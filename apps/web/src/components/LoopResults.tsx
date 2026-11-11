@@ -34,7 +34,7 @@ export function LoopResults({ job }: { job: Job & { title?: string | null } }) {
   }
 
   return (
-    <section id="loops" className="loop-results" style={{ width: '100%', maxWidth: 960 }}>
+    <section className="loop-results" style={{ width: '100%', maxWidth: 960 }}>
       <header style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 24, color: 'var(--text-primary)' }}>Loops ready</h1>

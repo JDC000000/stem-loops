@@ -1,4 +1,4 @@
-// The server half of the signed-in header: it reads the request, the nav
+// The server half of the signed-in header: it reads the session, the nav
 // renders it.
 //
 // MOUNTED BY: app/{account,jobs,history,login,pricing,success,trial}/layout.tsx
@@ -6,9 +6,29 @@
 // app/account/layout.tsx for why a layout per subtree rather than one route
 // group, and test/signed-in-nav.test.mjs for the gate that fails when a
 // routable page appears outside that set.
-import { cookies } from 'next/headers';
+//
+// THIS COMPONENT READS THE SESSION AND NOTHING ELSE, AND THAT IS DELIBERATE.
+// An earlier revision resolved the viewer's newest job from the `sl-history`
+// cookie so "Play along" could deep-link to it. Three faults, each on an
+// ordinary path, not an exotic one:
+//
+//   1. `sl-history` is the ANONYMOUS history mirror. It is per-BROWSER and is
+//      never scoped to the signed-in user, while this bar is per-SESSION. On a
+//      shared machine — A runs a track, signs out, B signs in — B's nav would
+//      point at A's job, and app/jobs/[id]/page.tsx checks `getUser()` but does
+//      NO ownership check. That turns a pre-existing weakness into one click.
+//   2. The ids carry no timestamps (lib/history.ts) and are never pruned, while
+//      the cookie's maxAge refreshes on every write and jobs die 24h after
+//      CREATION. So a live cookie routinely holds a dead id, and the fallback
+//      only fires when there is no cookie at all — the viewer lands on
+//      "We couldn't find that job."
+//   3. It bought a deep link the product does not otherwise offer, at the cost
+//      of a second source of truth for "your jobs" beside /history.
+//
+// If a "jump to my latest job" affordance is wanted later, it must come from
+// the viewer's OWN jobs, server-side and ownership-checked — not from this
+// cookie.
 import { getUser } from '@/lib/auth/supabase';
-import { latestJobId } from '@/lib/history-cookie';
 import SignedInNav from './SignedInNav';
 
 export default async function SignedInChrome() {
@@ -20,28 +40,24 @@ export default async function SignedInChrome() {
   let signedIn = false;
   try {
     signedIn = (await getUser()) !== null;
-  } catch {
+  } catch (err) {
+    // NEVER swallow Next's control-flow throws. `redirect()`, `notFound()`
+    // and DynamicServerError are all signalled by THROWING, and all carry a
+    // `digest`; a bare `catch {}` turns any of them into "signed out" and
+    // loses the control flow. Re-throw anything Next owns, swallow only a
+    // genuine Supabase failure.
+    //
+    // This re-throw is NOT what keeps these routes dynamic — measured, not
+    // assumed: with it in place /history still prerendered as ○, because
+    // @supabase/ssr reads the cookie jar behind its own error handling and no
+    // DynamicServerError ever reaches here. That is why every one of these
+    // seven layouts declares `dynamic = 'force-dynamic'` instead of relying on
+    // Next inferring it. A statically prerendered segment would bake
+    // `signedIn: false` into the HTML and serve a signed-in visitor a cached
+    // "Sign in" bar.
+    if (typeof (err as { digest?: unknown } | null)?.digest === 'string') throw err;
     signedIn = false;
   }
 
-  // `/jobs/<id>` needs an id and a global bar has none. The signed `sl-history`
-  // cookie already carries the viewer's recent job ids, newest first, so the
-  // two product items point at a real page with no database round trip. With
-  // no cookie — a new viewer, or one whose jobs have aged out — both fall back
-  // to `/`, the tool, which is the honest destination: you cannot play along
-  // with, or download loops from, a song you have not uploaded yet.
-  let latest: string | null = null;
-  try {
-    latest = latestJobId(cookies().get('sl-history')?.value);
-  } catch {
-    latest = null;
-  }
-
-  return (
-    <SignedInNav
-      signedIn={signedIn}
-      playHref={latest ? `/jobs/${latest}` : '/'}
-      loopsHref={latest ? `/jobs/${latest}#loops` : '/'}
-    />
-  );
+  return <SignedInNav signedIn={signedIn} />;
 }

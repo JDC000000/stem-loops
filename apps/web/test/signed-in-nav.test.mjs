@@ -16,7 +16,7 @@
 // compiles the REAL modules and renders them, and the gates read what came
 // out. The components under test are never stubbed: test/helpers/render-chrome.mjs
 // keeps an allowlist of what may be, and it holds only the two things node
-// cannot supply — a Supabase session and a request cookie jar.
+// cannot supply — a Supabase session, and the router behind usePathname.
 //
 // THE DEAD-END GATE is "layout chain" below. For each signed-in route it reads
 // app/ FROM DISK, collects the layouts that really wrap that route, renders
@@ -31,20 +31,19 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
-import { readdirSync, existsSync, statSync } from 'node:fs';
+import { readdirSync, existsSync, statSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import React from 'react';
 import {
   compile,
   navigationStub,
-  headersStub,
   authStub,
   authThrowsStub,
   chromePortalStub,
   toMarkup,
 } from './helpers/render-chrome.mjs';
+import { withDom } from './helpers/dom.mjs';
 
 const APP = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'app');
 
@@ -86,22 +85,12 @@ async function resolveAsync(node) {
 
 const renderTree = async (el) => toMarkup(await resolveAsync(el));
 
-/** A correctly signed `sl-history` cookie over `ids` — what the app writes. */
-function signHistory(ids) {
-  const payload = JSON.stringify(ids);
-  const sig = createHmac('sha256', process.env.HISTORY_COOKIE_KEY ?? 'dev')
-    .update(payload)
-    .digest('hex');
-  return `${Buffer.from(payload).toString('base64')}.${sig}`;
-}
-
 const JOB_A = '477fb242-695a-4b29-9373-a26b9067a8fa';
 
-/** Render the real SignedInChrome for a given session, cookie jar and path. */
-async function chrome({ user = null, cookie = null, path = '/account' } = {}) {
+/** Render the real SignedInChrome for a given session and path. */
+async function chrome({ user = null, path = '/account' } = {}) {
   const [url] = compile(['components/chrome/SignedInChrome.tsx'], {
     'next/navigation': navigationStub(path),
-    'next/headers': headersStub(cookie ? { 'sl-history': cookie } : {}),
     '@/lib/auth/supabase': user === 'throws' ? authThrowsStub() : authStub(user),
   });
   const mod = await import(`${url}?${Math.random()}`);
@@ -136,24 +125,39 @@ test('signed IN: the bar offers Account and no Sign in link', async () => {
   assert.equal(l.filter((x) => x.text === 'Sign in').length, 0);
 });
 
-test('the bar carries every item the audit asked for', async () => {
+test('the bar carries every item it claims to', async () => {
   const html = await chrome({ user: { user_id: 'u1', email: 'a@b.c' } });
   const l = links(html);
   const by = (t) => l.find((x) => x.text === t);
   assert.ok(l.some((x) => x.href === TOOL), 'wordmark must link to the tool');
-  assert.ok(by('Play along'), 'Play along missing');
-  assert.ok(by('Download loops'), 'Download loops missing');
+  assert.equal(by('Play along')?.href, TOOL);
   assert.equal(by('Job history')?.href, '/history');
   assert.equal(by('Account')?.href, '/account');
+  // Exactly these four, in this order. A fifth item added without a gate — the
+  // loops item in particular — turns this red rather than sliding in.
+  // Link TEXT, in document order — the wordmark reads "stem-loops"; its
+  // accessible name ("stem-loops, home") is asserted separately above.
+  assert.deepEqual(l.map((x) => x.text).filter(Boolean), [
+    'stem-loops',
+    'Play along',
+    'Job history',
+    'Account',
+  ]);
 });
 
-test('the loops item is labelled exactly "Download loops"', async () => {
-  // Jon approved this wording over "Song loops"; the gate is on the RENDERED
-  // label, so a renamed constant or a commented-out alternative cannot satisfy it.
-  const html = await chrome({ user: { user_id: 'u1', email: 'a@b.c' } });
-  const texts = links(html).map((x) => x.text);
-  assert.ok(texts.includes('Download loops'), texts.join(' | '));
-  assert.ok(!texts.includes('Song loops'), texts.join(' | '));
+test('no loops item ships until /loops does, and nothing points at a fragment', async () => {
+  // Jon asked for the loops as a SEPARATE page. There is none: LoopResults
+  // renders inside the job page's `done` branch, so a "Download loops" item
+  // could only ever be a fragment on a URL this bar has no id for — and no
+  // anchor at all while a job is processing, failed or expired. The item lands
+  // with /loops. This gate fails if it is reintroduced before then.
+  for (const user of [null, { user_id: 'u1', email: 'a@b.c' }]) {
+    const html = await chrome({ user });
+    const texts = links(html).map((x) => x.text);
+    assert.ok(!texts.includes('Download loops'), texts.join(' | '));
+    assert.ok(!texts.includes('Song loops'), texts.join(' | '));
+    assert.ok(!hrefs(html).some((h) => h.includes('#loops')), hrefs(html).join(' | '));
+  }
 });
 
 test('getUser throwing degrades to the signed-out bar, not to a dead end', async () => {
@@ -206,42 +210,35 @@ test('a page with no match marks nothing current', async () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════
-// 3. The two product items point somewhere real — and only somewhere real.
+// 3. The product item points at the tool — and at nothing session-specific.
 // ═════════════════════════════════════════════════════════════════════════
 
-test('with a signed history cookie, both product items reach that job', async () => {
-  const html = await chrome({
-    user: { user_id: 'u', email: 'a@b.c' },
-    cookie: signHistory([JOB_A, '00000000-0000-4000-8000-000000000001']),
-  });
-  const l = links(html);
-  assert.equal(l.find((x) => x.text === 'Play along')?.href, `/jobs/${JOB_A}`);
-  assert.equal(l.find((x) => x.text === 'Download loops')?.href, `/jobs/${JOB_A}#loops`);
+test('"Play along" goes to the tool, for every session state', async () => {
+  for (const user of [null, { user_id: 'u1', email: 'a@b.c' }, 'throws']) {
+    const l = links(await chrome({ user }));
+    assert.equal(l.find((x) => x.text === 'Play along')?.href, TOOL);
+  }
 });
 
-test('with no cookie, both product items fall back to the tool', async () => {
-  const l = links(await chrome({ user: { user_id: 'u', email: 'a@b.c' }, cookie: null }));
-  assert.equal(l.find((x) => x.text === 'Play along')?.href, TOOL);
-  assert.equal(l.find((x) => x.text === 'Download loops')?.href, TOOL);
-});
-
-test('a TAMPERED cookie cannot put its job id into a nav href', async () => {
-  const evil = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
-  const forged = `${Buffer.from(JSON.stringify([evil])).toString('base64')}.${'0'.repeat(64)}`;
-  const html = await chrome({ user: { user_id: 'u', email: 'a@b.c' }, cookie: forged });
-  assert.ok(!html.includes(evil), 'unsigned cookie payload reached the markup');
-  assert.equal(links(html).find((x) => x.text === 'Play along')?.href, TOOL);
-});
-
-test('a validly signed cookie holding a non-UUID is still not interpolated', async () => {
-  const nasty = '../../etc/passwd';
-  const html = await chrome({
-    user: { user_id: 'u', email: 'a@b.c' },
-    cookie: signHistory([nasty, JOB_A]),
-  });
-  // The first entry is skipped on shape, so the nav lands on the next real id.
-  assert.ok(!html.includes('etc/passwd'), html);
-  assert.equal(links(html).find((x) => x.text === 'Play along')?.href, `/jobs/${JOB_A}`);
+test('the bar never reads the sl-history cookie', async () => {
+  // It used to, to deep-link "Play along" at the viewer's newest job. That
+  // cookie is the ANONYMOUS, per-BROWSER history mirror and is never scoped to
+  // the signed-in user, so on a shared machine it pointed one account's nav at
+  // another account's job — and app/jobs/[id]/page.tsx has no ownership check.
+  // This gate is structural: the chrome's compiled module graph must not
+  // mention next/headers or that cookie at all, so the deep link cannot come
+  // back without someone reading this comment.
+  const src = readFileSync(join(APP, '..', 'components/chrome/SignedInChrome.tsx'), 'utf8');
+  const nav = readFileSync(join(APP, '..', 'components/chrome/SignedInNav.tsx'), 'utf8');
+  for (const [name, text] of [['SignedInChrome', src], ['SignedInNav', nav]]) {
+    assert.ok(!text.includes("from 'next/headers'"), `${name} imports next/headers`);
+    assert.ok(!text.includes('history-cookie'), `${name} imports the history cookie reader`);
+  }
+  // And the rendered proof: no job-specific href is produced for any session.
+  for (const user of [null, { user_id: 'u1', email: 'a@b.c' }]) {
+    const html = await chrome({ user });
+    assert.ok(!hrefs(html).some((h) => h.startsWith('/jobs/')), hrefs(html).join(' | '));
+  }
 });
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -253,11 +250,16 @@ function layoutChain(route) {
   const parts = route.split('/').filter(Boolean);
   const chain = [];
   let dir = APP;
-  for (const p of parts) {
+  // `entries()`, not `indexOf(p)`: indexOf returns the segment's FIRST index,
+  // so a route that repeats a segment (/jobs/jobs) would rebuild the wrong
+  // prefix while `dir` walked the right one. Harmless on today's routes and
+  // wrong the moment one repeats.
+  for (const [i, p] of parts.entries()) {
     dir = join(dir, p);
     if (!existsSync(dir) || !statSync(dir).isDirectory()) break;
-    const l = join(dir, 'layout.tsx');
-    if (existsSync(l)) chain.push(`app/${parts.slice(0, parts.indexOf(p) + 1).join('/')}/layout.tsx`);
+    if (existsSync(join(dir, 'layout.tsx'))) {
+      chain.push(`app/${parts.slice(0, i + 1).join('/')}/layout.tsx`);
+    }
   }
   return chain;
 }
@@ -272,7 +274,6 @@ test('layout chain: every signed-in route renders a link to the tool', async () 
 
     const stubs = {
       'next/navigation': navigationStub(route),
-      'next/headers': headersStub({}),
       '@/lib/auth/supabase': authStub({ user_id: 'u', email: 'a@b.c' }),
     };
 
@@ -337,19 +338,133 @@ test('no routable page is left without chrome', async () => {
 
 test('CONTROL: there is no /loops route, and the bar does not pretend there is', async () => {
   // This is the control mutant's home. It states something TRUE and plain:
-  // the repo has no app/loops directory, so "Download loops" resolves to the
-  // loops section of a job page (or to the tool), never to a /loops URL.
-  // Every mutant in the table must leave this GREEN. A suite that cannot
-  // tolerate a true statement is testing its own phrasing, not the product.
+  // the repo has no app/loops directory, so the bar offers no loops item and
+  // links to no /loops URL. Every mutant in the table must leave this GREEN.
+  // A suite that cannot tolerate a true statement is testing its own phrasing,
+  // not the product.
   assert.equal(existsSync(join(APP, 'loops')), false, 'a /loops route now exists — update the nav');
 
-  const withJob = await chrome({
-    user: { user_id: 'u', email: 'a@b.c' },
-    cookie: signHistory([JOB_A]),
-  });
-  const withoutJob = await chrome({ user: { user_id: 'u', email: 'a@b.c' } });
-  for (const html of [withJob, withoutJob]) {
+  for (const user of [null, { user_id: 'u', email: 'a@b.c' }]) {
+    const html = await chrome({ user });
     assert.ok(!hrefs(html).some((h) => h === '/loops' || h.startsWith('/loops/')), html);
-    assert.ok(links(html).some((x) => x.text === 'Download loops'));
+    // The bar still gets the viewer somewhere real without it.
+    assert.ok(hrefs(html).includes(TOOL));
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// 6. THE TOGGLE ACTUALLY TOGGLES — a real DOM, a real click, real state.
+//
+// WHY THIS SECTION EXISTS. Every gate above goes through
+// renderToStaticMarkup, which renders the INITIAL state and never runs an
+// event handler. That left a hole a reviewer walked straight through:
+// changing `setOpen((v) => !v)` to `setOpen(false)` kept the whole suite at
+// 1210/1190/0/20 and `tsc` clean, while in Chromium at 390px the click did
+// nothing — aria-expanded stayed "false", `.sin-nav` stayed `display: none`,
+// and the number of visible nav items was ZERO.
+//
+// That is not a cosmetic miss. Below 760px `.sin-nav` is hidden unless
+// `.sin-open`, so a dead toggle means a signed-in user ON A PHONE has no
+// navigation at all — precisely the dead end this change exists to remove,
+// reintroduced for the half of the audience that matters most. The old
+// toggle test matched /aria-expanded="(true|false)"/ against initial markup,
+// which "false" satisfies forever.
+//
+// So: mount the real component in happy-dom (test/helpers/dom.mjs — React
+// effects, real events), click the real button, and assert the state MOVED.
+// Layout is still unreachable here (that helper's own header says so), so
+// this gates the STATE MACHINE; the pixels were measured in Chromium and are
+// reported in the PR, gated by nothing.
+// ═════════════════════════════════════════════════════════════════════════
+
+test('clicking the toggle opens the menu, and clicking again closes it', async () => {
+  const [url] = compile(['components/chrome/SignedInNav.tsx'], {
+    'next/navigation': navigationStub('/account'),
+  });
+  const { default: SignedInNav } = await import(`${url}?${Math.random()}`);
+
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(SignedInNav, { signedIn: true }));
+
+    const toggle = dom.find('.sin-toggle');
+    const menu = dom.find('#sin-menu');
+    assert.ok(toggle && menu, 'the bar did not mount');
+
+    // CLOSED — and the gate would be vacuous if this were already open.
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+    assert.ok(!menu.className.split(/\s+/).includes('sin-open'), menu.className);
+    const closedLabel = toggle.getAttribute('aria-label');
+
+    // OPEN
+    await dom.act(() => toggle.click());
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true', 'the click did not open the menu');
+    assert.ok(
+      menu.className.split(/\s+/).includes('sin-open'),
+      `#sin-menu never gained sin-open, so below 760px it stays display:none: ${menu.className}`,
+    );
+    // The accessible name has to move too, or a screen-reader user is told
+    // "Open menu" on an open menu.
+    assert.notEqual(toggle.getAttribute('aria-label'), closedLabel);
+
+    // CLOSE AGAIN — kills a `setOpen(true)` mutant, which the open half alone
+    // would pass.
+    await dom.act(() => toggle.click());
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false', 'the menu never closes again');
+    assert.ok(!menu.className.split(/\s+/).includes('sin-open'), menu.className);
+    assert.equal(toggle.getAttribute('aria-label'), closedLabel);
+  });
+});
+
+test('every nav item is reachable once the menu is open', async () => {
+  // The companion to the above: opening must reveal the WHOLE menu, not just
+  // flip an attribute. Asserted on the live DOM inside the opened <nav>.
+  const [url] = compile(['components/chrome/SignedInNav.tsx'], {
+    'next/navigation': navigationStub('/account'),
+  });
+  const { default: SignedInNav } = await import(`${url}?${Math.random()}`);
+
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(SignedInNav, { signedIn: false }));
+    const toggle = dom.find('.sin-toggle');
+    await dom.act(() => toggle.click());
+
+    const items = dom.findAll('#sin-menu.sin-open a.sin-item').map((a) => a.textContent.trim());
+    assert.deepEqual(items, ['Play along', 'Job history', 'Sign in']);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// 7. THE BAR MUST NEVER BE PRERENDERED.
+//
+// Found by reading the build's route table, not by a test — which is why
+// there is now a test. `SignedInChrome` awaits getUser(), and a session-aware
+// bar in a STATIC segment bakes `signedIn: false` into the HTML: a signed-in
+// visitor is served a cached "Sign in". Next does not infer the dynamic
+// requirement here — @supabase/ssr reads the cookie jar behind its own error
+// handling, so no DynamicServerError escapes — and `/history` duly built as
+// `○ /history` until every one of these layouts declared it. With the
+// declaration it builds as `ƒ /history`.
+//
+// Asserted by EVALUATING each layout module and reading its exported route
+// segment config, not by grepping for the string.
+// ═════════════════════════════════════════════════════════════════════════
+
+test('every signed-in layout opts its segment out of static rendering', async () => {
+  const layouts = SIGNED_IN_ROUTES.flatMap(layoutChain);
+  const unique = [...new Set(layouts)];
+  assert.equal(unique.length, 7, `expected 7 signed-in layouts, got: ${unique.join(', ')}`);
+
+  const urls = compile(unique, {
+    'next/navigation': navigationStub('/account'),
+    '@/lib/auth/supabase': authStub(null),
+  });
+  for (const [i, url] of urls.entries()) {
+    const mod = await import(`${url}?${Math.random()}`);
+    assert.equal(
+      mod.dynamic,
+      'force-dynamic',
+      `${unique[i]} does not export dynamic='force-dynamic', so its segment can be ` +
+        'prerendered with a signed-out bar baked in',
+    );
   }
 });

@@ -11,8 +11,8 @@
 // relative specifier is repointed at its emitted twin.
 //
 // WHAT THE STUBS ARE FOR, and what they are NOT allowed to do. The signed-in
-// chrome reaches two things node cannot provide: a Supabase session
-// (`@/lib/auth/supabase`) and a request cookie jar (`next/headers`). Those are
+// chrome reaches one thing node cannot provide: a Supabase session
+// (`@/lib/auth/supabase`). That, and the router that `usePathname` reads, are
 // stubbed. The COMPONENTS UNDER TEST ARE NEVER STUBBED — SignedInNav and
 // SignedInChrome are the real compiled modules, and every assertion in
 // signed-in-nav.test.mjs reads markup those real modules produced. A stub that
@@ -39,7 +39,6 @@ const SRC = join(WEB, 'src');
 // async CALL is not replacing the component.
 const STUBBABLE = new Set([
   'next/navigation',
-  'next/headers',
   '@/lib/auth/supabase',
   '@/components/chrome/SignedInChrome',
 ]);
@@ -111,12 +110,6 @@ export const navigationStub = (p) =>
   `export const useRouter = () => ({ push(){}, replace(){}, refresh(){} });\n` +
   `export const useSearchParams = () => new URLSearchParams();\n` +
   `export const redirect = (u) => { const e = new Error('NEXT_REDIRECT:' + u); e.digest = 'NEXT_REDIRECT'; throw e; };\n`;
-
-/** `cookies()` holding exactly `jar` (name → value). */
-export const headersStub = (jar) =>
-  `const jar = new Map(Object.entries(${JSON.stringify(jar)}));\n` +
-  `export const cookies = () => ({ get: (n) => (jar.has(n) ? { name: n, value: jar.get(n) } : undefined) });\n` +
-  `export const headers = () => new Map();\n`;
 
 /** `getUser()` answering with `user` (an object, or null for signed out). */
 export const authStub = (user) =>

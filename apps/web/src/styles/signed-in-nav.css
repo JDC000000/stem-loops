@@ -12,10 +12,16 @@
  * the icon-only toggle, which is why it carries `min-width` too. Measured in
  * real Chromium at 390/768/1280/1440, not read off these declarations.
  *
- * CONTRAST. Nav text is --text-secondary #e0e0e0, which is 14.7:1 on the bar
- * (#0d0d0d) and 12.9:1 on the active pill (#1c1c1f). The muted greys are
- * deliberately NOT used here: #999 would be 6.8:1 on the bar but this is
- * primary navigation, and the audit's failing examples were all muted text.
+ * CONTRAST, measured in Chromium against the composited background.
+ *   - resting nav text  --text-secondary #e0e0e0 on the bar #0d0d0d  14.72:1
+ *   - wordmark          --text-primary   #ffffff on the bar #0d0d0d  19.44:1
+ *   - ACTIVE pill       --accent         #a3e635 on #1c1c1f          11.27:1
+ * The active pill sets `color: var(--accent)`, so #e0e0e0 never sits on
+ * #1c1c1f — an earlier version of this comment quoted a 12.9:1 figure for a
+ * pairing the stylesheet cannot produce. The muted greys are deliberately NOT
+ * used here: #999 is 6.8:1 on the bar, which passes, but this is primary
+ * navigation. (For the record, the audit's failing items failed on SIZE, not
+ * contrast: --text-muted is #999999, and #71717a appears nowhere in this repo.)
  */
 
 .sin-bar {

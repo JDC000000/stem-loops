@@ -8,6 +8,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { playerArt } from './helpers/render-player-art.mjs';
+import { landingPage } from './helpers/render-landing-page.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const walk = (d) => readdirSync(d).flatMap((n) => { const p = join(d, n); return statSync(p).isDirectory() ? walk(p) : [p]; });
@@ -38,7 +39,14 @@ const LANDING = [...walk(join(WEB, 'src/app/(landing)')), ...walk(join(WEB, 'src
  * against — the art-drift gate — therefore no longer reads source text at all; it asserts on
  * RENDERED OUTPUT, which no literal can fake. See test/helpers/render-player-art.mjs.
  *
- * BAN LISTS DO NOT USE THIS AT ALL — see RAW_PAGE_AND_COMPONENTS.
+ * AND THE SAFETY ARGUMENT ABOVE HAS A PRECONDITION. Being wrong only in the false-RED
+ * direction holds because every surviving positive gate over this text is a PREFIX or a
+ * PRESENCE assertion (`^Required\.`, `/\bfaders?\b/`, `<dt>Tempo</dt>`), and deleting text
+ * can only make those fail. If anyone later writes a positive gate over a WHOLE decommented
+ * value — an equality, or a match anchored at both ends — that reasoning stops holding and
+ * this must go. Whoever wires up `code-only.mjs` should delete it rather than extend it.
+ *
+ * BAN LISTS DO NOT USE THIS AT ALL — see RAW_PAGE_AND_COMPONENTS and READ_AS.
  */
 const decomment = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/[^\n]*/g, '$1');
 
@@ -68,12 +76,36 @@ const PAGE = PAGE_AND_COMPONENTS.find(([f]) => f.endsWith('(landing)/page.tsx'))
  * a page rendering the exact sentence it forbids — tsc --noEmit exit 0, suite unchanged at
  * 925/905/0/20.
  *
- * Stripping can only ever REMOVE text from a ban list's view, so a ban list that strips can
- * only be weakened, never strengthened. Run raw, the worst case is a false RED when a banned
- * phrase sits in a comment — and a comment on this page promising "no account" is something
- * we want to hear about anyway.
+ * THIS IS A BACKSTOP, NOT THE GATE. Round 2 shipped it with the argument that "stripping can
+ * only REMOVE text from a ban list's view, so a ban list that strips can only be weakened;
+ * run raw, the worst case is a false RED." THAT ARGUMENT IS FALSE and two reviewers believed
+ * it. It assumes raw source is a superset of rendered text. It is not — JSX text is COMPILED,
+ * not copied. `No&nbsp;account needed — start a job straight&nbsp;away.` RENDERS the exact
+ * sentence the account gate forbids while the raw source contains neither `no account` nor
+ * `straight away`; measured 2026-11-11, suite unchanged at 926/906/0/20 with the gate green.
+ * Prettier wrapping a phrase across two lines, `No <strong>account</strong> needed`, and a
+ * const or template all do the same.
+ *
+ * So BOTH source forms are unsound, in different directions: stripped misses what it deletes,
+ * raw misses what the compiler produces. Raw is kept only because it covers two things the
+ * render cannot see — the `metadata` description, which never reaches the DOM, and copy on a
+ * branch the default render does not take. The gate that actually decides is READ_AS.
  */
 const RAW_PAGE_AND_COMPONENTS = LANDING.filter(([f]) => !/\(landing\)\/(?:privacy|terms)\//.test(f));
+
+/**
+ * The landing page as a human reads it. Rendered once, at module scope, by
+ * test/helpers/render-landing-page.mjs — which carries the full argument for why a
+ * source-text ban list is unsound in both of its forms.
+ *
+ * Two normalisations, because evading one walks into the other: `textSpaced` turns every tag
+ * into a space (the human reading — this is what kills `No&nbsp;account` and a phrase wrapped
+ * across lines) and `textTight` turns every tag into nothing (this kills
+ * `no<span> </span>account`, where markup is used to break a banned phrase apart). A ban list
+ * asserts against both; either matching is a failure.
+ */
+const RENDER = await landingPage();
+const READ_AS = [['the rendered page', RENDER.textSpaced], ['the rendered page, markup removed', RENDER.textTight]];
 
 /** The one ceiling. Read from the module the player enforces, so the test cannot drift either. */
 const MAX_TRACK_SEC = Number(
@@ -81,11 +113,20 @@ const MAX_TRACK_SEC = Number(
 );
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
-/** Pull one <dd> out of the scope sheet by its <dt>. */
+/**
+ * Pull one <dd> out of the scope sheet by its <dt>, from the RENDERED page — so what the gate
+ * reads is the row the reader gets, with the JSX `{' '}` artifacts and the entities already
+ * resolved.
+ *
+ * These stay PREFIX assertions on purpose (`^Required\.`). Everything after the prefix is
+ * policed by the ban lists, which is sound now that they read the rendered page: appending
+ * "In practice no account is needed yet — you can start a job straight away." to this row
+ * passed the prefix AND evaded a raw ban list, suite unchanged (2026-11-11).
+ */
 const specRow = (dt) => {
-  const m = PAGE.match(new RegExp(`<dt>${dt}</dt>\\s*<dd>([\\s\\S]*?)</dd>`));
-  assert.ok(m, `the scope sheet has no "${dt}" row`);
-  return m[1].replace(/<[^>]*>/g, '').replace(/&nbsp;|\s+/g, ' ').trim();
+  const m = RENDER.html.match(new RegExp(`<dt>${dt}</dt>\\s*<dd>([\\s\\S]*?)</dd>`));
+  assert.ok(m, `the rendered scope sheet has no "${dt}" row`);
+  return m[1].replace(/<[^>]*>/g, ' ').replace(/[\s\u00a0]+/g, ' ').trim();
 };
 
 test('no pre-tempo-fit numbers or never-true claims in the landing', () => {
@@ -112,15 +153,18 @@ test('the landing never claims "no account" — sign-in is required from launch 
     /account (?:is )?optional/i, /\boptional\b[^.]{0,20}account/i, /not required/i, /without signing in/i,
     /no sign.?in/i, /start(?: a job)? (?:straight|right) away/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
+  for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
 });
 
 test('the landing shows no price, plan or paywall — there is no payment at launch', () => {
   const banned = [/\$\d/, /\bper month\b/i, /\/mo\b/, /\bfree forever\b/i, /\bupgrade\b/i, /\bpricing\b/i, /\bpaid plan/i, /\bcredits\b/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
+  for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
 });
 
 test('the landing never links to /pricing', () => {
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) assert.doesNotMatch(src, /href="\/pricing/, `${file} links /pricing`);
+  assert.doesNotMatch(RENDER.html, /href="\/pricing/, 'the rendered page links /pricing');
 });
 
 test('the landing claims no mobile or non-Chrome support (Story 5.3)', () => {
@@ -131,6 +175,7 @@ test('the landing claims no mobile or non-Chrome support (Story 5.3)', () => {
   const banned = [/works on (?:your |a )?(?:phone|mobile|ios|android|tablet|handset)/i, /\bany browser\b/i, /\bevery browser\b/i,
     /mobile.friendly/i, /runs? (?:fine |well |great )?on (?:a )?(?:tablet|handset|phone|mobile)/i, /(?:tablet|handset|phone)s? (?:too|as well)\b/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
+  for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
 });
 
 test('the landing says tempo and pitch are coming, and never implies we have them', () => {
@@ -151,6 +196,7 @@ test('the landing says tempo and pitch are coming, and never implies we have the
   // and the marketing copy never offers either as something you can do today
   const banned = [/\byou can slow\b/i, /\bslow it down\b(?![^.]*\bnot\b)/i, /\bhalf speed\b/i, /\btranspose\b/i, /\bchange its key\b(?![^.]*\bnot\b)/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
+  for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
   // lyrics are out of scope (not "coming"), and the page says so in its own row
   const lyrics = page.match(/<dt>Lyrics<\/dt>\s*<dd>([^<]*)/);
   assert.ok(lyrics, 'no <dd> for the Lyrics row');
@@ -161,6 +207,7 @@ test('the landing invents no social proof — production has zero registered use
   const banned = [/\btestimonial/i, /\d[\d,.]*\s*(?:\+\s*)?(?:happy\s+)?(?:users|musicians|players|customers|members)\b/i,
     /\bloved by\b/i, /\btrusted by\b/i, /\bas seen (?:in|on)\b/i, /\b\d(?:\.\d)?\s*\/\s*5\b/, /\bstars?\b/i, /\breviews?\b/i, /\bjoin \d/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
+  for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
 });
 
 test('every minute figure on the page IS MAX_TRACK_MIN, not merely not-the-literal', () => {
@@ -190,6 +237,12 @@ test('the page renders <PlayerArt /> — the one object the play section is buil
   // surrounding prose (adversarial sweep, 2026-11-11).
   assert.match(PAGE, /import \{ PlayerArt \} from '@\/components\/landing\/PlayerArt'/);
   assert.match(PAGE, /<PlayerArt\s*\/>/);
+  // …and it is in the RENDERED page. Both lines above are source text, which a dead string
+  // literal can satisfy; a literal cannot put a mounted component into rendered HTML.
+  assert.match(RENDER.html, /<figure class="player">/, 'the rendered page has no player illustration');
+  // scoped to the rail: `data-stem` is also used by the hero's example lanes.
+  assert.equal((RENDER.html.match(/<div class="pl-ch[^"]*" data-stem="/g) ?? []).length, 6,
+    'the rendered page must carry the six-channel mixer rail');
 });
 
 test('the page claims no submit-time length gate — nothing enforces one', () => {
@@ -199,6 +252,7 @@ test('the page claims no submit-time length gate — nothing enforces one', () =
   // not promise it is turned away at the door.
   const banned = [/\brefused\b/i, /\brejected\b/i, /\bturned away\b/i, /\bwon't be accepted\b/i, /\bwe'll stop you\b/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} claims a gate that does not exist (${re})`);
+  for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} claims a gate that does not exist (${re})`);
   assert.match(specRow('Track length'), /not supported/i);
 });
 
@@ -210,6 +264,11 @@ test('the page itself names the player, the faders, mute, solo, the chords and t
   // So: page.tsx only, comments stripped. Each of these is a row of the approved table.
   for (const re of [/\bplayer\b/i, /\bfaders?\b/i, /\bmute\b/i, /\bsolo\b/i, /\bchords?\b/i, /section of the song/i, /six stems|<dd>Six —/i]) {
     assert.match(PAGE, re, `the landing page never says ${re}`);
+  }
+  // …and the RENDERED page says them, which source text alone cannot prove: a dead literal
+  // satisfies a source-text `match`, and a commented-out section still reads as prose here.
+  for (const re of [/\bplayer\b/i, /\bfaders?\b/i, /\bmute\b/i, /\bsolo\b/i, /\bchords?\b/i, /section of the song/i, /six stems|\bSix —/i]) {
+    assert.match(RENDER.textSpaced, re, `the rendered landing page never says ${re}`);
   }
 });
 
@@ -232,11 +291,36 @@ test('the drawing shows what the copy claims — the art and the page cannot dri
   assert.equal(STEM_ORDER.length, 6, 'STEM_ORDER is the six stems the page claims');
   assert.deepEqual(drawn, STEM_ORDER, 'the rail must draw one channel per stem, in STEM_ORDER');
 
-  // a fader, a mute and a solo on EVERY channel, as real rendered nodes
+  // a fader, a mute and a solo on EVERY channel, as real rendered nodes.
+  //
+  // Counting `>M<` across the whole document proves PRESENCE, not VISIBILITY, and not that
+  // the node is the toggle: deleting the real `.pl-toggles` and leaving
+  // `<span hidden>M</span><span hidden>S</span>` held the document-wide count at six with
+  // both controls gone from the picture (adversarial sweep round 3, 2026-11-11; tsc exit 0,
+  // suite unchanged at 926/906/0/20). So each letter has to be a `.pl-tog`, every `.pl-tog`
+  // has to be visible, and the document may hold no spare `>M<` the toggles do not account
+  // for. A `hidden` attribute is a deliberate act, unlike the `&nbsp;` of FG4 — but the gate
+  // should not be the thing that misses it.
   const count = (re) => (html.match(re) ?? []).length;
   assert.equal(count(/class="pl-fader"/g), STEM_ORDER.length, 'every channel must draw a fader');
-  assert.equal(count(/>M</g), STEM_ORDER.length, 'every channel must draw a mute toggle');
-  assert.equal(count(/>S</g), STEM_ORDER.length, 'every channel must draw a solo toggle');
+  for (const [label, letter] of [['mute', 'M'], ['solo', 'S']]) {
+    const togs = [...html.matchAll(new RegExp(`<span class="pl-tog[^"]*"([^>]*)>${letter}</span>`, 'g'))];
+    assert.equal(togs.length, STEM_ORDER.length, `every channel must draw a ${label} toggle as a .pl-tog`);
+    for (const t of togs) {
+      assert.doesNotMatch(t[1], /\bhidden\b|display:\s*none|visibility:\s*hidden/i,
+        `a ${label} toggle is rendered but hidden: ${JSON.stringify(t[0])}`);
+    }
+    assert.equal(count(new RegExp(`>${letter}<`, 'g')), STEM_ORDER.length,
+      `every >${letter}< in the page must BE a ${label} toggle — no spare copies elsewhere`);
+  }
+  // one of each per channel, not six on one channel
+  for (const [i, chunk] of html.split(/(?=<div class="pl-ch[ "])/).slice(1).entries()) {
+    const own = chunk.slice(0, chunk.indexOf('</div></div>') + 1 || undefined);
+    for (const [label, letter] of [['mute', 'M'], ['solo', 'S']]) {
+      assert.match(own, new RegExp(`<span class="pl-tog[^"]*"[^>]*>${letter}</span>`),
+        `channel ${i} (${STEM_ORDER[i]}) must draw its own ${label} toggle`);
+    }
+  }
 
   // the chord ribbon, with chord names actually inside it
   const ribbon = html.match(/<div class="pl-chords">([\s\S]*?)<\/div>/);

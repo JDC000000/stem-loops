@@ -134,33 +134,49 @@ test('the bar carries every item it claims to', async () => {
   const by = (t) => l.find((x) => x.text === t);
   assert.ok(l.some((x) => x.href === TOOL), 'wordmark must link to the tool');
   assert.equal(by('Play along')?.href, TOOL);
+  assert.equal(by('Download loops')?.href, '/loops');
   assert.equal(by('Job history')?.href, '/history');
   assert.equal(by('Account')?.href, '/account');
-  // Exactly these four, in this order. A fifth item added without a gate — the
-  // loops item in particular — turns this red rather than sliding in.
+  // Exactly these five, in this order. A sixth item added without a gate turns
+  // this red rather than sliding in.
   // Link TEXT, in document order — the wordmark reads "stem-loops"; its
   // accessible name ("stem-loops, home") is asserted separately above.
   assert.deepEqual(l.map((x) => x.text).filter(Boolean), [
     'stem-loops',
     'Play along',
+    'Download loops',
     'Job history',
     'Account',
   ]);
 });
 
-test('no loops item ships until /loops does, and nothing points at a fragment', async () => {
-  // Jon asked for the loops as a SEPARATE page. There is none: LoopResults
-  // renders inside the job page's `done` branch, so a "Download loops" item
-  // could only ever be a fragment on a URL this bar has no id for — and no
-  // anchor at all while a job is processing, failed or expired. The item lands
-  // with /loops. This gate fails if it is reintroduced before then.
+test('the loops item goes to the page, in BOTH session states, and never to a fragment', async () => {
+  // THE HALF THAT CHANGED. The item was withheld until /loops existed; it now
+  // does (app/loops/page.tsx), so the item ships and this gate turns positive.
+  //
+  // THE HALF THAT DID NOT. The defect that kept it out was never the label —
+  // it was the TARGET. `/jobs/<id>#loops` needed an id the bar cannot honestly
+  // get, and the `#loops` anchor lives inside the `job.status === 'done'`
+  // branch of JobView, so it does not exist for a processing, failed or
+  // expired job. A fragment is therefore still banned here, and so is any
+  // job-specific href, which the sl-history gate below also pins.
   for (const user of [null, { user_id: 'u1', email: 'a@b.c' }]) {
     const html = await chrome({ user });
-    const texts = links(html).map((x) => x.text);
-    assert.ok(!texts.includes('Download loops'), texts.join(' | '));
-    assert.ok(!texts.includes('Song loops'), texts.join(' | '));
+    const l = links(html);
+    const item = l.find((x) => x.text === 'Download loops');
+    assert.ok(item, `no loops item for ${user ? 'a signed-in' : 'a signed-out'} viewer`);
+    assert.equal(item.href, '/loops');
     assert.ok(!hrefs(html).some((h) => h.includes('#loops')), hrefs(html).join(' | '));
+    assert.ok(!hrefs(html).some((h) => h.startsWith('/jobs/')), hrefs(html).join(' | '));
   }
+});
+
+test('/loops is a real route, so the item is not a link to a 404', async () => {
+  // The item's whole premise. Asserted against the filesystem rather than
+  // against the bar, because the bar cannot tell a live href from a dead one —
+  // which is exactly how the `#loops` fragment shipped in the first place.
+  assert.ok(existsSync(join(APP, 'loops', 'page.tsx')), 'app/loops/page.tsx is gone');
+  assert.ok(existsSync(join(APP, 'loops', 'layout.tsx')), 'app/loops/layout.tsx is gone');
 });
 
 test('getUser throwing degrades to the signed-out bar, not to a dead end', async () => {
@@ -189,6 +205,7 @@ test('exactly one item is aria-current="page", and it is the right one', async (
     ['/account', 'Account'],
     ['/account/delete', 'Account'],
     ['/history', 'Job history'],
+    ['/loops', 'Download loops'],
     [`/jobs/${JOB_A}`, 'Play along'],
   ]) {
     const html = await chrome({ user: { user_id: 'u', email: 'a@b.c' }, path });
@@ -442,7 +459,7 @@ test('every nav item is reachable once the menu is open', async () => {
     await dom.act(() => toggle.click());
 
     const items = dom.findAll('#sin-menu.sin-open a.sin-item').map((a) => a.textContent.trim());
-    assert.deepEqual(items, ['Play along', 'Job history', 'Sign in']);
+    assert.deepEqual(items, ['Play along', 'Download loops', 'Job history', 'Sign in']);
   });
 });
 

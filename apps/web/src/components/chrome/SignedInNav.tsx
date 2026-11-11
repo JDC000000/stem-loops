@@ -40,22 +40,24 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
   const pathname = usePathname() ?? '';
   const [open, setOpen] = useState(false);
 
-  // WHY THERE IS NO "DOWNLOAD LOOPS" ITEM YET. Jon asked for the loops as a
-  // SEPARATE secondary product page. There is no such route: the loops render
-  // in LoopResults, inside the `job.status === 'done'` branch of the job page,
-  // so the only thing a nav item could point at today is a fragment on a URL
-  // that (a) needs a job id the bar does not have, and (b) has no such anchor
-  // at all while a job is processing, failed or expired. Two differently
-  // labelled items resolving to one page teaches the reader that the labels do
-  // not mean what they say, so the item lands with /loops itself, as its own
-  // piece of work. The dead-end defect this bar exists to close is closed
-  // without it.
+  // "DOWNLOAD LOOPS" POINTS AT /loops, AND THAT IS WHY IT CAN SHIP NOW.
+  // When this bar landed (#206) the item was deliberately left out: the loops
+  // rendered only inside LoopResults, in the `job.status === 'done'` branch of
+  // the job page, so the only thing an item could have pointed at was
+  // `/jobs/<id>#loops` — a fragment that (a) needed a job id this bar has no
+  // honest way to obtain, and (b) did not exist at all while a job was
+  // processing, failed or expired. app/loops/ is now a route in its own right
+  // and it takes NO id: the page's own picker chooses the song. So the item is
+  // a plain link to a page that is always there, which is the condition the
+  // omission was waiting on. test/signed-in-nav.test.mjs still forbids any
+  // href containing `#loops`, because that part of the defect has not changed.
   //
   // "Play along" goes to the tool rather than to a specific job for the reason
   // set out in SignedInChrome: a per-browser cookie cannot answer "which job is
   // THIS user's" and must not be asked to.
   const items: Item[] = [
     { label: 'Play along', href: '/', match: (p) => p.startsWith('/jobs/') },
+    { label: 'Download loops', href: '/loops', match: (p) => p.startsWith('/loops') },
     { label: 'Job history', href: '/history', match: (p) => p === '/history' },
     signedIn
       ? { label: 'Account', href: '/account', match: (p) => p.startsWith('/account'), outlined: true }

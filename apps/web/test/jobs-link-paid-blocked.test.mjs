@@ -84,9 +84,12 @@ function entitlementsStub({ planCode = 'free', enforce = { allow: true } } = {})
       if (!cfg.enforce.allow) {
         throw new EntitlementError(cfg.enforce.code ?? 'CREDIT_BALANCE_INSUFFICIENT', cfg.enforce.message ?? 'denied');
       }
-      return { allowed: true, snapshot: { plan_code: cfg.planCode } };
+      return { allowed: true, snapshot: { plan_code: cfg.planCode, credits_remaining: 0 } };
     };
     export const invalidateEntitlement = () => {};
+    // route.ts imports this to decide whether a free upload is on the credit
+    // path or the monthly-quota path. Same call-time read as the real module.
+    export const billingEnforced = () => process.env.BILLING_ENFORCED === 'true';
   `);
 }
 

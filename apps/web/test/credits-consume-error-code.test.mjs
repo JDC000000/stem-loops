@@ -65,14 +65,22 @@ test('zero-credit free upload -> CREDIT_BALANCE_INSUFFICIENT (not CREDITS_DEPLET
     { rows: [{ code: 'free', monthly_job_quota: 90, services: ['youtube'], export_stems: false, export_wav24: false }] },
   ]);
   mod._resetEntitlementCacheForTests();
-  await assert.rejects(
-    () => mod.enforceEntitlement('start_job_upload', USER),
-    (err) =>
-      err instanceof mod.EntitlementError &&
-      err.code === 'CREDIT_BALANCE_INSUFFICIENT' &&
-      err.errorCopyKey === 'CREDIT_BALANCE_INSUFFICIENT' &&
-      err.status === 402,
-  );
+  // The credit gate is what this test is about, so arm it. With
+  // BILLING_ENFORCED unset the same call rides the free plan's monthly quota
+  // instead — see billing-free-upload-quota.test.mjs.
+  process.env.BILLING_ENFORCED = 'true';
+  try {
+    await assert.rejects(
+      () => mod.enforceEntitlement('start_job_upload', USER),
+      (err) =>
+        err instanceof mod.EntitlementError &&
+        err.code === 'CREDIT_BALANCE_INSUFFICIENT' &&
+        err.errorCopyKey === 'CREDIT_BALANCE_INSUFFICIENT' &&
+        err.status === 402,
+    );
+  } finally {
+    delete process.env.BILLING_ENFORCED;
+  }
 });
 
 test('error-copy carries CREDIT_BALANCE_INSUFFICIENT and no CREDITS_DEPLETED', async () => {

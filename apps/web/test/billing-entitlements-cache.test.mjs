@@ -167,9 +167,17 @@ test('enforceEntitlement maps actions to allow/deny per plan', async () => {
     () => mod.enforceEntitlement('export_stems', USER),
     (err) => err instanceof mod.EntitlementError && err.code === 'ENTITLEMENT_UNAVAILABLE',
   );
-  // start_job_upload on free with 0 credits -> CREDIT_BALANCE_INSUFFICIENT.
-  await assert.rejects(
-    () => mod.enforceEntitlement('start_job_upload', USER),
-    (err) => err instanceof mod.EntitlementError && err.code === 'CREDIT_BALANCE_INSUFFICIENT',
-  );
+  // start_job_upload on free with 0 credits -> CREDIT_BALANCE_INSUFFICIENT,
+  // but ONLY with billing enforced. With the switch off (the default while no
+  // payment provider is connected) the same call rides the monthly quota —
+  // see billing-free-upload-quota.test.mjs for both sides.
+  process.env.BILLING_ENFORCED = 'true';
+  try {
+    await assert.rejects(
+      () => mod.enforceEntitlement('start_job_upload', USER),
+      (err) => err instanceof mod.EntitlementError && err.code === 'CREDIT_BALANCE_INSUFFICIENT',
+    );
+  } finally {
+    delete process.env.BILLING_ENFORCED;
+  }
 });

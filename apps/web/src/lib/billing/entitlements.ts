@@ -26,6 +26,7 @@ export type EntitlementErrorCode =
   | 'ENTITLEMENT_UNAVAILABLE'
   | 'TRIAL_EXHAUSTED'
   | 'CREDIT_BALANCE_INSUFFICIENT'
+  | 'FREE_MONTHLY_QUOTA_EXHAUSTED'
   | 'PAID_LINK_INGEST_DISALLOWED'
   | 'PLAN_NOT_FOUND';
 
@@ -76,6 +77,32 @@ export type EntitlementSnapshot = {
 };
 
 export type EntitlementAllow = { allowed: true; snapshot: EntitlementSnapshot };
+
+// ---------------------------------------------------------------------------
+// Billing enforcement switch (TSD §1.3 / §1.7).
+//
+// While no payment provider is connected there is no way for anyone to buy a
+// credit, so gating free uploads on `credits_remaining > 0` charges a currency
+// that cannot be obtained — a signed-in free account can do nothing at all.
+// With the switch OFF (the default), a free / no-plan upload falls back to the
+// plan's own `monthly_job_quota` instead: still a hard, metered spend bound
+// (Replicate bills per GPU-second), already seeded in plans, already counted by
+// incrementJobsUsed(). TSD §1.7 already assumes this shape — "Upload jobs on
+// the free tier are not affected (free plan always has >=0 upload jobs
+// available)".
+//
+// Set BILLING_ENFORCED=true (one Fly secret / env var, no deploy of this file)
+// the day Stripe goes live and the credit gate below returns exactly as it is
+// today. Read at CALL time — never captured at module load — so the flag can be
+// flipped without a rebuild and so tests can exercise both sides, same shape as
+// `dailySpendCeilingUsd()` / `uploadRateLimit()` in lib/admission.ts.
+export const billingEnforced = (): boolean => process.env.BILLING_ENFORCED === 'true';
+
+/** Human-readable denial for a free account that has spent its monthly job
+ *  allowance. Must stay equal to ERROR_COPY.FREE_MONTHLY_QUOTA_EXHAUSTED's
+ *  headline + action (asserted in billing-free-upload-quota.test.mjs). */
+export const FREE_QUOTA_EXHAUSTED_MESSAGE =
+  "You've used all your free songs this month. Your allowance resets at the start of next month.";
 
 // ---------------------------------------------------------------------------
 // In-memory cache. 30-second TTL per TSD §1.7. Module-level Map; serverless
@@ -312,8 +339,21 @@ export async function enforceEntitlement(
         if (snap.jobs_used < snap.jobs_quota) return { allowed: true, snapshot: snap };
         throw new EntitlementError('ENTITLEMENT_UNAVAILABLE', 'quota exhausted');
       }
-      // Free / no-plan: needs at least one credit.
+      // Free / no-plan: a credit always works, whichever side of the switch
+      // we are on — a credit someone already holds is never stranded.
       if (snap.credits_remaining > 0) return { allowed: true, snapshot: snap };
+      // Billing not enforced (no payment provider connected): fall back to the
+      // plan's monthly job quota so the account is bounded but usable. The
+      // counter this reads is the one incrementJobsUsed() writes in the jobs
+      // INSERT tx, and checkMonthlyQuota() re-checks it on the same request.
+      if (!billingEnforced()) {
+        if (snap.jobs_used < snap.jobs_quota) return { allowed: true, snapshot: snap };
+        // The message, not just the code: /api/jobs returns it verbatim and the
+        // landing form renders `json.message`, so a bare code would reach the
+        // user as the string FREE_MONTHLY_QUOTA_EXHAUSTED. Kept in step with
+        // ERROR_COPY by a test rather than by importing it here.
+        throw new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', FREE_QUOTA_EXHAUSTED_MESSAGE);
+      }
       throw new EntitlementError('CREDIT_BALANCE_INSUFFICIENT');
     }
     case 'export_stems': {

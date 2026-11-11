@@ -42,6 +42,10 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
     headline: "You're out of credits.",
     action: 'Buy a pack of credits to process more songs.',
   },
+  FREE_MONTHLY_QUOTA_EXHAUSTED: {
+    headline: "You've used all your free songs this month.",
+    action: 'Your allowance resets at the start of next month.',
+  },
   PAID_LINK_INGEST_DISALLOWED: {
     headline: 'Credits and Pro only work with files you upload.',
     action: 'Paste a link into the free tier (3/day) instead, or upload your file.',

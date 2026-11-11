@@ -44,7 +44,7 @@ import {
   slug,
   type LoopSpec,
 } from '@/lib/loops/plan';
-import { cutPlan, type CutLoop, type DecodedStem } from '@/lib/loops/cut';
+import { cutPlan, downmixToMono, type CutLoop, type DecodedStem } from '@/lib/loops/cut';
 import { formatExpiresIn, RETENTION_MS } from '@/lib/retention';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -110,7 +110,10 @@ async function defaultDecode(bytes: ArrayBuffer): Promise<DecodedBytes> {
   const decoded = await sharedCtx.decodeAudioData(bytes.slice(0));
   const channels: Float32Array[] = [];
   for (let c = 0; c < decoded.numberOfChannels; c += 1) channels.push(decoded.getChannelData(c));
-  return { channels, sampleRate: decoded.sampleRate };
+  // Mono, before anything else holds a reference to the stereo pair. See
+  // downmixToMono for the measured memory reason and for why the plan's size
+  // figures depend on it.
+  return { channels: downmixToMono(channels), sampleRate: decoded.sampleRate };
 }
 
 export const productionDeps: LoopsDeps = {

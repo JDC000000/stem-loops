@@ -75,6 +75,36 @@ export interface CutLoop {
   readonly peaks: number[];
 }
 
+/**
+ * Sum N channels down to one, scaled by 1/N.
+ *
+ * TWO reasons, and the first is a measured cliff rather than a preference.
+ * `decodeAudioData` hands back a STEREO buffer, and a cut holds every stem
+ * decoded at once: six stems x 300 s x 48 kHz x 4 B x 2 channels is 691 MB of
+ * live Float32, which `lib/play/types.ts` records as MEASURED FAILING. Mono
+ * halves it to the 345 MB profile the play engine ships on, and the engine
+ * downmixes at exactly this point for exactly this reason
+ * (`engine.ts:downmixToMono`).
+ *
+ * Second, `planLoops` is called with `channels: 1`, so the file size each card
+ * promises BEFORE the cut is a mono size. A stereo cut would hand the viewer a
+ * file twice the size of the figure they were shown.
+ *
+ * 1/N rather than a straight sum, so a correlated stereo pair cannot clip.
+ */
+export function downmixToMono(channels: readonly Float32Array[]): Float32Array[] {
+  if (channels.length === 0) return [];
+  if (channels.length === 1) return [channels[0]];
+  const frames = channels[0].length;
+  const out = new Float32Array(frames);
+  const scale = 1 / channels.length;
+  for (const c of channels) {
+    const n = Math.min(frames, c.length);
+    for (let i = 0; i < n; i += 1) out[i] += c[i] * scale;
+  }
+  return [out];
+}
+
 /** Coarse peak envelope, `buckets` values in 0..1, for the card's waveform. */
 export function peakEnvelope(channels: readonly Float32Array[], buckets = 48): number[] {
   const frames = channels[0]?.length ?? 0;

@@ -291,7 +291,37 @@ test('a malformed call is refused rather than writing a broken file', () => {
 // 7. The cut.
 // ═════════════════════════════════════════════════════════════════════════
 
-const { sliceFrames, declick, cutLoop, cutPlan, peakEnvelope, DECLICK_SEC } = cut;
+const { sliceFrames, declick, cutLoop, cutPlan, peakEnvelope, downmixToMono, DECLICK_SEC } = cut;
+
+test('a decoded stem is summed to ONE channel, scaled so it cannot clip', () => {
+  // Not cosmetic. A cut holds every stem decoded at once, and lib/play/types.ts
+  // records 6 x 300 s x 48 kHz x 4 B x 2 channels = 691 MB as MEASURED FAILING.
+  // It is also what makes the size on each idle card true: planLoops is called
+  // with channels: 1, so a stereo cut would be twice the promised file.
+  const out = downmixToMono([Float32Array.from([1, 0, -1]), Float32Array.from([0, 1, -1])]);
+  assert.equal(out.length, 1, 'the downmix left more than one channel');
+  assert.deepEqual([...out[0]], [0.5, 0.5, -1]);
+  // Correlated full-scale on both sides stays inside full scale.
+  assert.deepEqual([...downmixToMono([Float32Array.from([1]), Float32Array.from([1])])[0]], [1]);
+  // Already mono: one channel in, one channel out, values untouched.
+  assert.deepEqual([...downmixToMono([Float32Array.from([0.25, -0.25])])[0]], [0.25, -0.25]);
+  assert.deepEqual(downmixToMono([]), []);
+  // Six channels, the worst case the stems could present.
+  const six = Array.from({ length: 6 }, () => Float32Array.from([1]));
+  assert.deepEqual([...downmixToMono(six)[0]], [1]);
+});
+
+test('a planned size is the size the cut file actually has', () => {
+  // The two halves of the promise, checked against each other: planLoops says
+  // 1,152,044 bytes for a 4-bar loop at 120 BPM / 48 kHz / 1 channel, and the
+  // encoder is handed a downmixed stem. Both figures are also asserted
+  // separately against hand arithmetic above, so this is not circular.
+  const stereo = [new Float32Array(48000 * 20).fill(0.5), new Float32Array(48000 * 20).fill(-0.5)];
+  const source = { name: 'drums', channels: downmixToMono(stereo), sampleRate: 48000 };
+  const spec = planLoops(BASE).find((s) => s.stem === 'drums' && s.bars === 4);
+  assert.equal(cutLoop(source, spec).bytes.byteLength, spec.byteLength);
+  assert.equal(spec.byteLength, 1152044);
+});
 
 test('a slice that runs past the end is padded with silence, not shortened', () => {
   const src = [Float32Array.from([1, 1, 1, 1])];

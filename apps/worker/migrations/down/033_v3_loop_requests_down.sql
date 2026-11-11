@@ -30,3 +30,9 @@ ALTER TABLE public.loops DROP COLUMN IF EXISTS cut_at;
 -- 3. The request queue. Dropping the table drops its indexes and policies with
 --    it; the grants go with the table too.
 DROP TABLE IF EXISTS public.loop_requests;
+
+-- 4. Give the ledger row back, so `make migrate` re-applies 033 instead of
+--    skipping it. Same convention as down/008, down/009, down/011 and down/031.
+--    Without this the schema is down but the runner believes it is up, which is
+--    the one state nothing can recover from automatically.
+DELETE FROM _migrations WHERE filename = '033_v3_loop_requests.sql';

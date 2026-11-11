@@ -480,24 +480,6 @@ test("a throwing body reaches the caller unchanged, even when teardown also comp
   assert.equal(domIsActive(), false);
 });
 
-test('a throwing React effect cleanup at teardown fails the test instead of being swallowed', async () => {
-  // This is the shape this codebase will have: `() => audioCtx.close()` where
-  // audioCtx is null. Previously the test reported pass.
-  await assert.rejects(
-    withDom(async (dom) => {
-      function Boom() {
-        React.useEffect(() => () => {
-          throw new Error('audioCtx.close() of null');
-        }, []);
-        return React.createElement('div', null, 'boom');
-      }
-      await dom.mount(React.createElement(Boom));
-    }),
-    /effect cleanup threw during teardown: audioCtx\.close\(\) of null/,
-  );
-  assert.equal(domIsActive(), false);
-});
-
 test('a teardown that reports problems still clears the active flag', async () => {
   await assert.rejects(withDom(async () => { globalThis.__wedge = 1; }), /__wedge was added/);
   assert.equal(domIsActive(), false, 'active was cleared despite the teardown throwing');
@@ -517,18 +499,40 @@ test('an unrestorable global does not wedge the harness for the rest of the proc
         Object.defineProperty(globalThis, 'localStorage', { value: {}, configurable: false });
       });
     } catch (e) { first = e.message; }
+    let second = 'no-throw';
+    try { await withDom(async () => 'ok'); } catch (e) { second = e.message; }
     console.log('active=' + domIsActive());
-    console.log('namesRealCause=' + /localStorage/.test(first));
+    console.log('secondBlamesNesting=' + /already active/.test(second));
+    console.log('harnessCollected=' + /^withDom\\(\\) teardown problems: /.test(first));
+    console.log('namesKeyAsHarnessDoes=' + /could not restore globalThis\\.localStorage/.test(first));
     console.log('blamesNesting=' + /already active/.test(first));
   `;
   const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8',
     cwd: fileURLToPath(new URL('../..', import.meta.url)),
   });
-  // Anchored: an unanchored /active=false/ also matches inside "blamesNesting=false".
+  // Every match is ANCHORED. An unanchored /active=false/ also matches inside
+  // "blamesNesting=false" — the same substring trap these assertions had before:
+  // /localStorage/ matched the raw "Cannot delete property 'localStorage'" just as
+  // happily as the harness's own report, so removing the per-key restore guard
+  // survived. The assertions below name the harness's OWN wording, which only the
+  // guarded path produces.
   assert.match(out, /^active=false$/m, 'the active flag was cleared');
-  assert.match(out, /^namesRealCause=true$/m, 'the error names the real cause');
+  assert.match(
+    out,
+    /^harnessCollected=true$/m,
+    'the failure came back as a collected teardown report, not a raw escaping TypeError',
+  );
+  assert.match(
+    out,
+    /^namesKeyAsHarnessDoes=true$/m,
+    'and the report names the offending key in the harness\'s own words',
+  );
   assert.match(out, /^blamesNesting=false$/m, 'and does not blame nesting');
+  // The next call in this process does NOT succeed, and must not be asserted to: a
+  // non-configurable localStorage is irreversible, so install genuinely cannot run
+  // again. What matters is that it fails for THAT reason and still not for nesting.
+  assert.match(out, /^secondBlamesNesting=false$/m, 'nor does the call after it');
 });
 
 test('nested withDom is refused, and the outer call still tears down', async () => {
@@ -591,4 +595,316 @@ test('drag() rejects an empty point list rather than silently doing nothing', as
     dom.document.body.appendChild(el);
     await assert.rejects(dom.drag(el, []), /at least one/);
   });
+});
+
+// ---------------------------------------------------------------------------
+// 9. The gaps round 2 left open: each of these had a demonstrated false green
+// ---------------------------------------------------------------------------
+
+test('drag() fires pointerup at the LAST point, not the first', async () => {
+  // Transport.tsx's onPointerUp does `commit(posAt(e.clientX))`, so a fader that
+  // commits its value from the pointerup coordinate is verified against THAT
+  // coordinate. Firing pointerup at points[0] used to pass every drag test here.
+  await withDom(async (dom) => {
+    const log = [];
+    const el = dom.document.createElement('div');
+    dom.document.body.appendChild(el);
+    for (const type of ['pointerdown', 'pointermove', 'pointerup']) {
+      el.addEventListener(type, (e) => log.push([e.type, e.clientX, e.clientY]));
+    }
+
+    await dom.drag(el, [[10, 1], [40, 2], [90, 3]]);
+    assert.deepEqual(log, [
+      ['pointerdown', 10, 1],
+      ['pointermove', 40, 2],
+      ['pointermove', 90, 3],
+      ['pointerup', 90, 3],
+    ], 'the pointerup carries the last point, which is what a commit handler reads');
+
+    log.length = 0;
+    await dom.drag(el, [[7, 8]]);
+    assert.deepEqual(log, [
+      ['pointerdown', 7, 8],
+      ['pointerup', 7, 8],
+    ], 'a one-point drag downs and ups at that same point');
+  });
+});
+
+test('happyDOM.close() at teardown aborts timers the body left pending', async () => {
+  // The header claims pending timers are cancelled at teardown "instead of firing
+  // during the next test". That claim is true but was unpinned: skipping the close
+  // entirely passed the whole suite.
+  const fired = [];
+  await withDom(async (dom) => {
+    dom.window.setTimeout(() => fired.push('a'), 5);
+    dom.window.setTimeout(() => fired.push('b'), 10);
+    assert.deepEqual(fired, [], 'neither has fired inside the body');
+  });
+
+  // Real time, on Node's timers, well past both delays. If close() had not aborted
+  // the window's task manager these would land here — i.e. in whatever test runs next.
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.deepEqual(fired, [], '0 of 2 queued timers fired after teardown');
+});
+
+test('a frame callback receives a real clock timestamp, not 0', async () => {
+  // A playhead doing `pos += v * (t - lastT)` gets t from here. Replacing the
+  // timestamp with a constant 0 used to leave the whole suite green.
+  await withDom(async (dom) => {
+    const seen = [];
+    dom.window.requestAnimationFrame((t) => seen.push(t));
+    await dom.nextFrame();
+
+    const [first] = seen;
+    assert.equal(typeof first, 'number');
+    assert.ok(Number.isFinite(first), 'finite');
+    assert.ok(first > 0, 'a real clock reading, not 0 and not a fresh time origin');
+    assert.ok(
+      first <= dom.window.performance.now(),
+      'taken from the same clock a component would read, no later than now',
+    );
+
+    dom.window.requestAnimationFrame((t) => seen.push(t));
+    await dom.nextFrame();
+    assert.ok(seen[1] >= seen[0], 'successive frames do not go backwards');
+  });
+  // NOT asserted, because it is not true: these advance by however long the test
+  // took, not by ~16.67ms. See FRAMES in dom.mjs.
+});
+
+test('a symbol-keyed global is reported and reverted like any other', async () => {
+  // `globalThis[Symbol.for('x')] = singleton` is a common caching idiom, and a
+  // names-only snapshot let it cross withDom() calls with no teardown complaint.
+  const key = Symbol.for('harness.test.symbolLeak');
+  await assert.rejects(
+    withDom(async () => { globalThis[key] = 'leaked'; }),
+    /globalThis\.Symbol\(harness\.test\.symbolLeak\) was added/,
+  );
+  assert.equal(globalThis[key], undefined, 'and it was actually removed');
+});
+
+test('prototype pollution is caught on every class the window exposes, not six of them', async () => {
+  // The watch list is derived from the window. These five were all unwatched, so
+  // polluting them was neither detected nor reverted, and the residue was still live
+  // in the next withDom() call. PointerEvent and KeyboardEvent are the two classes
+  // this harness exists to exercise.
+  for (const name of ['HTMLMediaElement', 'PointerEvent', 'KeyboardEvent', 'CSSStyleDeclaration', 'DOMRect']) {
+    await assert.rejects(
+      withDom(async (dom) => { dom.window[name].prototype.__protoLeak = name; }),
+      new RegExp(`${name}\\.prototype\\.__protoLeak was added`),
+      `${name}.prototype pollution is reported`,
+    );
+    const residue = await withDom(async (dom) => dom.window[name].prototype.__protoLeak);
+    assert.equal(residue, undefined, `${name}.prototype carried no residue into the next call`);
+  }
+});
+
+test('[launch path] a stubbed HTMLMediaElement.prototype.play cannot survive into the next test', async () => {
+  // There is no AudioContext under happy-dom, so stubbing playback is the documented
+  // route — and `HTMLMediaElement.prototype.play = ...` is how it gets written. Before
+  // the derived watch list: teardown reported clean, the stub stayed live, and a later
+  // test asserting "does NOT auto-play" stacked its own stub on top of one that was
+  // still counting. Both green; one lying.
+  const original = await withDom(async (dom) => dom.window.HTMLMediaElement.prototype.play);
+  assert.equal(typeof original, 'function', 'happy-dom really does own play()');
+
+  let playCalls = 0;
+  await assert.rejects(
+    withDom(async (dom) => {
+      dom.window.HTMLMediaElement.prototype.play = () => { playCalls += 1; };
+      const audio = dom.document.createElement('audio');
+      audio.play();
+      assert.equal(playCalls, 1, "the stub works inside its own test");
+    }),
+    /HTMLMediaElement\.prototype\.play was modified/,
+    'the stub is reported to the test that installed it',
+  );
+
+  const callsAfter = playCalls;
+  await withDom(async (dom) => {
+    assert.equal(
+      dom.window.HTMLMediaElement.prototype.play,
+      original,
+      'the next test sees happy-dom\'s own play(), by identity',
+    );
+    dom.document.createElement('audio').play();
+  });
+  assert.equal(playCalls, callsAfter, "the previous test's stub did not count this call");
+});
+
+test('an animation frame left queued at teardown fails the test by itself', async () => {
+  // The mutation this kills: delete cancelAnimationFrame(id) from a playhead's effect
+  // cleanup. Timers are aborted automatically by happyDOM.close() and globals and
+  // prototypes are checked automatically, but the frame queue was simply abandoned —
+  // so this defect was pure silence unless a test remembered to assert pendingFrames.
+  function LeakyPlayhead() {
+    const [frame, setFrame] = React.useState(0);
+    React.useEffect(() => {
+      let id = requestAnimationFrame(function tick() {
+        setFrame((n) => n + 1);
+        id = requestAnimationFrame(tick);
+      });
+      return () => { void id; /* the defect: no cancelAnimationFrame(id) */ };
+    }, []);
+    return React.createElement('div', null, `frame=${frame}`);
+  }
+
+  await assert.rejects(
+    withDom(async (dom) => {
+      await dom.mount(React.createElement(LeakyPlayhead));
+      await dom.frames(2);
+      await dom.unmountAll();
+      assert.equal(dom.pendingFrames, 1, 'the cleanup did not cancel it');
+    }),
+    /1 animation frame callback\(s\) were still queued at teardown/,
+  );
+
+  // And with no explicit unmount either — teardown unmounts, the cleanup still
+  // forgets, the frame is still reported.
+  await assert.rejects(
+    withDom(async (dom) => {
+      await dom.mount(React.createElement(LeakyPlayhead));
+      await dom.frames(2);
+    }),
+    /animation frame callback\(s\) were still queued at teardown/,
+  );
+  assert.equal(domIsActive(), false);
+});
+
+test('pendingFrames refuses to answer under realFrames instead of reading a vacuous 0', async () => {
+  // frameQueue is never used under realFrames, so this used to be a permanent 0 and
+  // `assert.equal(dom.pendingFrames, 0)` — the harness's own documented idiom for
+  // "the cleanup cancelled the frame" — passed without checking anything.
+  await withDom(async (dom) => {
+    dom.window.requestAnimationFrame(() => {});
+    assert.throws(() => dom.pendingFrames, /unavailable under \{ realFrames: true \}/);
+  }, { realFrames: true });
+});
+
+test("a body that calls fetch() does not trip the globalThis check on Node's lazy dispatcher symbol", () => {
+  // Node creates Symbol(undici.globalDispatcher.1) on globalThis on the process's
+  // FIRST fetch(). Snapshotting symbol keys (which is what catches a Symbol.for
+  // singleton leak) could therefore make a fetching body look like it added it — and
+  // the harness would then DELETE it, breaking fetch for every later test in the file.
+  // Child process, so this is measured from a known-clean process rather than after
+  // 40 other tests. Note what the measurement actually shows: importing happy-dom
+  // ALREADY creates the symbol, so the HARNESS_OWNED_SYMBOLS exemption is inert today
+  // and removing it does not fail this test. What is pinned here is the invariant a
+  // test author depends on, not the mechanism that currently provides it.
+  const script = `
+    import { withDom } from ${JSON.stringify(HARNESS)};
+    const KEY = Symbol.for('undici.globalDispatcher.1');
+    // Already true: the happy-dom import above created it.
+    console.log('symbolAfterHarnessImport=' + (KEY in globalThis));
+    let verdict = 'clean';
+    try {
+      await withDom(async () => {
+        // Fails fast (nothing listens on port 1); creating the dispatcher is the point.
+        await fetch('http://127.0.0.1:1/').catch(() => {});
+      });
+    } catch (e) { verdict = e.message; }
+    console.log('symbolAfter=' + (KEY in globalThis));
+    console.log('teardownClean=' + (verdict === 'clean'));
+    console.log('fetchStillWorks=' + (typeof globalThis.fetch === 'function'));
+  `;
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+    encoding: 'utf8',
+    cwd: fileURLToPath(new URL('../..', import.meta.url)),
+  });
+  assert.match(
+    out,
+    /^symbolAfterHarnessImport=true$/m,
+    "importing the harness already creates Node's dispatcher symbol",
+  );
+  assert.match(out, /^teardownClean=true$/m, "and the body's fetch is not reported as pollution");
+  assert.match(out, /^symbolAfter=true$/m, 'the dispatcher was left in place, not deleted');
+  assert.match(out, /^fetchStillWorks=true$/m);
+});
+
+test('a failure in the install phase does not wedge the harness for the rest of the file', async () => {
+  // `new Window({ url })` ran outside any try/finally, so one typo'd option left
+  // `active` true and every later call in the file failed with a misleading
+  // "already active" — the wild-goose chase F1 was filed to eliminate.
+  await assert.rejects(withDom(async () => {}, { url: 'not a url' }), /Invalid URL/);
+  assert.equal(domIsActive(), false, 'the install-phase throw still cleared active');
+
+  // The second bad url is the one that used to show the misleading error.
+  await assert.rejects(withDom(async () => {}, { url: 'http://[' }), /Invalid URL/);
+  assert.equal(domIsActive(), false);
+
+  assert.equal(await withDom(async () => 'still works'), 'still works');
+});
+
+test('a non-Error throw plus a leak still reaches the caller as the body\'s failure', async () => {
+  // Assigning `.cause` to a primitive throws in strict module code, and that
+  // TypeError REPLACED the body's failure — so F2 was reinstated for non-Error
+  // throws, in precisely the case F2 exists for (a throw AND pollution).
+  for (const thrown of ['THE REAL FAILURE (string)', 42]) {
+    await assert.rejects(
+      withDom(async () => {
+        globalThis.__nonErrorLeak = 'yes';
+        throw thrown;
+      }),
+      (error) => {
+        assert.ok(error instanceof Error, 'the caller gets an Error it can read');
+        assert.match(error.message, /THE REAL FAILURE \(string\)|: 42 /, 'the thrown value survives');
+        assert.match(error.message, /__nonErrorLeak was added/, 'and so does the teardown detail');
+        assert.equal(error.cause, thrown, 'the original thrown value is reachable');
+        return true;
+      },
+    );
+    assert.equal(globalThis.__nonErrorLeak, undefined, 'and the leak was reverted');
+  }
+
+  // A non-Error throw with NOTHING to report still propagates completely unchanged.
+  await assert.rejects(withDom(async () => { throw 'bare string'; }), (thrown) => {
+    assert.equal(thrown, 'bare string');
+    return true;
+  });
+});
+
+test("a body error that already carries its own cause does not swallow the teardown detail", async () => {
+  // `bodyError.cause ??= ...` silently DROPPED the teardown report whenever the body
+  // threw `new Error(msg, { cause })`, so the leak went unreported.
+  const own = new Error('my own cause');
+  await assert.rejects(
+    withDom(async () => {
+      globalThis.__causeLeak = 'yes';
+      throw new Error('THE REAL FAILURE', { cause: own });
+    }),
+    (error) => {
+      assert.equal(error.message, 'THE REAL FAILURE', 'still the headline');
+      assert.match(String(error.cause?.message), /__causeLeak was added/, 'teardown detail is reported');
+      assert.equal(error.cause.cause, own, "and the body's own cause is kept one level down");
+      return true;
+    },
+  );
+  assert.equal(globalThis.__causeLeak, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// 10. MUST BE LAST IN THIS FILE — see the "A THROWING EFFECT CLEANUP" note in
+//     dom.mjs. React 18.3.1 does not recover from a cleanup that throws out of
+//     act(): react-dom's module-level `executionContext` is left non-zero, and the
+//     next test in the same PROCESS that goes through the async act path dies with
+//     "Should not already be working." and a stack pointing only into React. The
+//     harness cannot repair that from outside, so the rule is positional.
+// ---------------------------------------------------------------------------
+
+test('a throwing React effect cleanup at teardown fails the test instead of being swallowed', async () => {
+  // This is the shape this codebase will have: `() => audioCtx.close()` where
+  // audioCtx is null. Previously the test reported pass.
+  await assert.rejects(
+    withDom(async (dom) => {
+      function Boom() {
+        React.useEffect(() => () => {
+          throw new Error('audioCtx.close() of null');
+        }, []);
+        return React.createElement('div', null, 'boom');
+      }
+      await dom.mount(React.createElement(Boom));
+    }),
+    /effect cleanup threw during teardown: audioCtx\.close\(\) of null/,
+  );
+  assert.equal(domIsActive(), false);
 });

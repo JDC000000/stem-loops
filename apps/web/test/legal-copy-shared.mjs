@@ -98,29 +98,62 @@ export const PROCESSORS = [
 ];
 
 /**
- * Run the ban list over one page's four rendered channels.
+ * WHAT THESE GATES ARE, STATED PLAINLY — because overclaiming here is the same defect the
+ * pages themselves were fixed for.
  *
- * `metaSpaced`/`metaTight` are asserted for the reason given at length in the render helper:
- * `export const metadata` NEVER reaches the DOM, so a DOM-only gate cannot see the
- * `<meta name="description">` or the Open Graph card — which is the copy read in search
- * results and link previews BEFORE anyone opens the page.
+ * They are a TRIPWIRE ON NAMED FRAGMENTS plus a handful of lexical bans. They do NOT verify
+ * that the pages are true. No assertion in this suite reads cleanup.py, a migration or a
+ * route; the link between a sentence and the code that makes it true lives in the comments
+ * and in a human reading both. Specifically they CANNOT catch:
+ *   - a falsehood nobody thought to ban. "We never keep any record of a job after 24 hours",
+ *     "your audio is never sent to Klangio" and "Resend never sees your email address" are
+ *     all false and all pass every check in this file.
+ *   - a banned claim reworded around the pattern.
+ *   - a true fragment left standing in a sentence that has been made false around it. The
+ *     checks match FRAGMENTS, and a fragment is not a sentence.
+ * What they DO catch is the regression this PR was opened for: a disclosure silently
+ * dropped, and four specific false sentences coming back in any rendered form.
  */
+
+/** Run the ban list over one page's four rendered channels. */
 export function assertNoBannedClaims(assert, page, label) {
   for (const [why, re] of BANNED) {
     for (const [channel, text] of [
-      ['rendered text, tags→space', page.textSpaced],
-      ['rendered text, tags→nothing', page.textTight],
-      ['metadata, tags→space', page.metaSpaced],
-      ['metadata, tags→nothing', page.metaTight],
+      ['rendered text, tags\u2192space', page.textSpaced],
+      ['rendered text, tags\u2192nothing', page.textTight],
+      ['metadata, tags\u2192space', page.metaSpaced],
+      ['metadata, tags\u2192nothing', page.metaTight],
     ]) {
       assert.doesNotMatch(text, re, `${label} (${channel}) must not claim: ${why}`);
     }
   }
 }
 
-/** Assert a phrase is present in BOTH rendered normalisations. */
+/** Assert a fragment is present in BOTH rendered normalisations of the whole page. */
 export function assertSays(assert, page, text, label) {
   const re = phrase(text);
-  assert.match(page.textSpaced, re, `${label} (tags→space) must say: ${text}`);
-  assert.match(page.textTight, re, `${label} (tags→nothing) must say: ${text}`);
+  assert.match(page.textSpaced, re, `${label} (tags\u2192space) must say: ${text}`);
+  assert.match(page.textTight, re, `${label} (tags\u2192nothing) must say: ${text}`);
+}
+
+/**
+ * The slice of a rendered page between two headings, in both normalisations.
+ *
+ * THE PROCESSOR CHECK IS WORTHLESS WITHOUT THIS. `assertSays` matches the WHOLE page, and
+ * "Supabase" and "Google" also appear in the "Your account" bullet — so deleting either
+ * one's entry from the processor list left the suite GREEN while the disclosure was gone.
+ * A reviewer demonstrated exactly that. R2 happened to be killed only because it is named
+ * nowhere else, which is the dangerous kind of half-working gate: it looks like coverage.
+ *
+ * Scoping to the list means the assertion fails when the ENTRY goes, regardless of what the
+ * rest of the page happens to mention.
+ */
+export function section(page, startHeading, endHeading) {
+  const cut = (text) => {
+    const i = text.indexOf(startHeading);
+    if (i < 0) return '';
+    const j = text.indexOf(endHeading, i + startHeading.length);
+    return text.slice(i, j < 0 ? text.length : j);
+  };
+  return { textSpaced: cut(page.textSpaced), textTight: cut(page.textTight) };
 }

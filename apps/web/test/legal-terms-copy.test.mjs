@@ -15,11 +15,11 @@ import { assertNoBannedClaims, assertSays } from './legal-copy-shared.mjs';
 
 const TERMS = 'app/(landing)/terms/page.tsx';
 
-test('terms: the old false claims cannot come back, in text or in metadata', async () => {
+test('terms: the four banned sentences match nothing in text or metadata', async () => {
   assertNoBannedClaims(assert, await renderPage(TERMS), 'terms');
 });
 
-test('terms: states the account rule the code actually implements', async () => {
+test('terms: the account-rule fragments are still present', async () => {
   const page = await renderPage(TERMS);
   // TRUE: src/app/api/jobs/route.ts has ZERO 401s and an anonymous INSERT branch that omits
   // user_id (:183-190); src/app/api/uploads/route.ts never calls getUser(); and
@@ -29,7 +29,7 @@ test('terms: states the account rule the code actually implements', async () => 
   assertSays(assert, page, 'You need an account to open the player', 'terms');
 });
 
-test('terms: states the 5-minute cap AND that it bites at submit', async () => {
+test('terms: the duration fragments are the un-overstated ones', async () => {
   const page = await renderPage(TERMS);
   // Both halves are now true, and they became true at different times — which is why they
   // are asserted separately rather than as one sentence.
@@ -46,7 +46,7 @@ test('terms: states the 5-minute cap AND that it bites at submit', async () => {
   assertSays(assert, page, 'Longer tracks are not accepted', 'terms');
 });
 
-test('terms: discloses the retention exception, and scopes it the way the sweep does', async () => {
+test('terms: a fragment of each known 24-hour survivor is still present', async () => {
   const page = await renderPage(TERMS);
   assertSays(assert, page, 'deleted after 24 hours', 'terms');
   // apps/worker/src/worker/cleanup.py:_sweep_expired_jobs tries `DELETE FROM jobs` FIRST and

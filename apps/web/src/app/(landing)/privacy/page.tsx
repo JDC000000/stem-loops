@@ -41,9 +41,7 @@ export default function PrivacyPage() {
                 and basic profile; we never see your Google password.
               </li>
               <li>
-                <strong>A hashed IP address,</strong> used to rate-limit, and — if you sign up after making jobs
-                anonymously — to work out which of those earlier jobs were yours so your history is continuous. We store a
-                keyed hash, not the IP itself.
+                <strong>A hashed IP address,</strong> used only to rate-limit. We store a keyed hash, not the IP itself.
               </li>
               <li>
                 <strong>Error reports and server logs.</strong> When something breaks we record technical details. They are used
@@ -66,9 +64,10 @@ export default function PrivacyPage() {
             <ul>
               <li>
                 <strong>A shell of a job that charged a credit,</strong> kept so purchases and credits stay accounted for. It
-                holds the job’s id, status and timestamps, which account it belonged to, the stems and loop length you chose,
-                the progress trace, and an internal reference to the separation run. Your file names, your links and your audio
-                are gone from it.
+                holds the job’s id, status, timestamps and expiry, which account it belonged to, whether it was an upload or
+                a link, the stems and loop length you chose, the progress trace, how many attempts it took and any error it
+                ended with, and the reference numbers for the separation and chord-recognition runs — including the one held
+                by Klangio. Your file names, your links and your audio are gone from it.
               </li>
               <li>
                 <strong>Chord corrections you save,</strong> kept to improve the chord estimates: the part of the song a
@@ -77,7 +76,8 @@ export default function PrivacyPage() {
               </li>
               <li>
                 <strong>Counters and diagnostics,</strong> kept without a time limit: that a job was started, that a payment
-                was attempted, and how an attempt to fetch audio went. They hold no audio, no file names and no links — a YouTube fetch is
+                was attempted or refunded (with the payment provider’s reference numbers), that an account was deleted, and how
+                an attempt to fetch audio went. They hold no audio, no file names and no links — a YouTube fetch is
                 recorded against a one-way hash of the video id, never the address you pasted.
               </li>
             </ul>

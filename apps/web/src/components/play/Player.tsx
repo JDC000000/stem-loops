@@ -31,14 +31,30 @@
  *
  * TWO REAL REASONS, neither of them throughput:
  *
- * 1. React logs `Warning: The result of getSnapshot should be cached to avoid
- *    an infinite loop` on every pass. The engine's `positionSec` comes from
- *    `AudioContext.currentTime` at the moment it is read (engine.ts
- *    `livePosition()`), and `snapshotsEqual` treats >=10 ms of movement as a
- *    change (`POSITION_EPSILON_SEC`), so the render-time read and the
- *    post-commit read legitimately differ while playing. The store is correct;
- *    it simply does not satisfy the contract the warning polices, and a console
- *    warning on every frame of playback is not shippable.
+ * 1. `getSnapshot()` is not a pure cached read: it calls `rebuild()`, which
+ *    reads the clock AND ASSIGNS `this.snapshot` (engine.ts ~699-731).
+ *    `useSyncExternalStore` calls the accessor several times per pass — once in
+ *    render, again in the post-commit consistency check, again from
+ *    `handleStoreChange` — so React's own consistency machinery would be
+ *    driving engine state mutation. The identity property the hook needs then
+ *    holds only by arithmetic (`snapshotsEqual`'s 10 ms
+ *    `POSITION_EPSILON_SEC`) rather than by construction, which is a thin
+ *    thing to rest a framework contract on.
+ *
+ *    ⚠️ What this reason is NOT: an earlier version of this note claimed React
+ *    logs `Warning: The result of getSnapshot should be cached to avoid an
+ *    infinite loop` "on every pass" and that "a console warning on every frame
+ *    of playback is not shippable". Both are false, and review measured them
+ *    false. React guards that warning with a MODULE-SCOPED
+ *    `didWarnUncachedGetSnapshot` flag (react-dom.development.js 15971-15991,
+ *    16044-16051), so it can fire at most ONCE PER PAGE LOAD, and the whole
+ *    block is dev-only — it is absent from a production build. Nor does this
+ *    engine reliably trip it: the check calls `getSnapshot()` twice
+ *    back-to-back and compares with `Object.is`, and `rebuild()` returns the
+ *    PREVIOUS object whenever `snapshotsEqual` holds, so two reads microseconds
+ *    apart are identity-equal unless they happen to straddle a 10 ms epsilon
+ *    boundary. Measured over real playback: 0-1 warnings per page load, never
+ *    per frame. Reason 2 is the one that actually decides this.
  *
  * 2. `useSyncExternalStore`'s actual guarantee is TEAR-SAFETY under concurrent
  *    rendering — that two components reading the same store in one pass see one
@@ -189,9 +205,29 @@ export type Phase =
  * sitting at 0 returns 0, so the marker sits on the first chord rather than
  * vanishing.
  */
+/**
+ * The ONE predicate for "the transport, mixer and section looper may be shown".
+ *
+ * `playable` in the view and `chordPositionFor` below used to encode this
+ * separately, and review found the divergence: dropping `snapshot.error` from
+ * `playable` alone survived the whole suite, and the state it breaks is
+ * REACHABLE IN PRODUCTION, not hypothetical. `engine.load()` reports
+ * TOO_LONG / DECODE_FAILED / NO_STEMS / NO_AUDIO by calling `fail()` and
+ * RETURNING rather than throwing (engine.ts 251, 286, 290, 300), so `Player`
+ * sets `phase = 'ready'` while `snapshot.error` is set. A >300 s track decodes,
+ * `fail(TOO_LONG)` runs, and without this guard the user gets the error banner
+ * PLUS a full Transport + Mixer + SectionLoop over an engine with zero buffers
+ * and `durationSec 0`, whose `play()` returns early — exactly the "dead control
+ * over audio that does not exist" the no-stems test already forbids.
+ *
+ * Both call sites now derive from here, so they cannot drift again.
+ */
+export function isPlayable(phase: Phase, snapshot: EngineSnapshot): boolean {
+  return phase.kind === 'ready' && snapshot.error === null;
+}
+
 export function chordPositionFor(phase: Phase, snapshot: EngineSnapshot): number | null {
-  if (phase.kind !== 'ready') return null;
-  if (snapshot.error !== null) return null;
+  if (!isPlayable(phase, snapshot)) return null;
   return Number.isFinite(snapshot.positionSec) ? snapshot.positionSec : null;
 }
 
@@ -357,7 +393,9 @@ export function PlayerView({
   onLoop,
 }: PlayerViewProps) {
   const engineError = snapshot.error;
-  const playable = phase.kind === 'ready' && engineError === null;
+  // Derived, never re-stated: see `isPlayable`. Re-inlining this predicate is
+  // what let `playable` and `chordPositionFor` disagree.
+  const playable = isPlayable(phase, snapshot);
 
   // Story 3.3 / 3.4 — THE WIRING THAT WAS MISSING. The chord playhead reads the
   // engine position and nothing else. See `chordPositionFor`: `null` means NOT

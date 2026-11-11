@@ -142,6 +142,7 @@ const {
   chordPositionFor,
   degradedMessage,
   hasWebAudio,
+  isPlayable,
   stemLoadMessage,
 } = Player;
 
@@ -548,12 +549,77 @@ test('phase "no-stems" renders the fallback note and NO transport', async () => 
   assert.equal(attr(html, 'data-phase'), 'no-stems');
   assert.match(html, /data-testid="player-banner"/);
   assert.ok(html.includes(NO_STEMS_MESSAGE), 'the fallback note is missing');
+  // Story 6.4 is explicitly NOT a failure, so this banner is a polite status,
+  // never an alert. Inverting the two roles used to survive the whole suite.
+  assert.match(html, /role="status"/, 'the no-stems fallback must not be an alert');
+  assert.doesNotMatch(html, /role="alert"/, 'the fallback is being announced as a failure');
   // A transport here would be a dead control over audio that does not exist.
   assert.doesNotMatch(html, /data-testid="transport"/);
   assert.doesNotMatch(html, /aria-label="Stem mixer"/);
   // The chord track survives the fallback — that is the rest of Story 6.4.
   assert.match(html, /data-testid="chord-overlay"/);
   assert.equal(positionOf(html), null);
+});
+
+// ═══ Story 1.4 — ready + engine error is REACHABLE, and must not be playable ══
+
+test('phase "ready" WITH an engine error renders the banner and NO transport', async () => {
+  // The gap review found. `engine.load()` reports TOO_LONG / DECODE_FAILED /
+  // NO_STEMS / NO_AUDIO by calling `fail()` and RETURNING, not throwing, so
+  // Player reaches `phase = 'ready'` with `snapshot.error` set. This is the one
+  // such state actually reachable through load(), and it was the only one not
+  // pinned: `no-stems` and `unsupported` were, so dropping the error guard from
+  // `playable` passed all 958 tests while putting a full Transport + Mixer +
+  // SectionLoop over an engine with zero buffers and durationSec 0.
+  const snapshot = Object.freeze({
+    ...IDLE,
+    status: 'error',
+    error: { code: 'PLAY_TRACK_TOO_LONG', message: 'Track is 420.0 s; the limit is 300 s.' },
+  });
+  const html = renderView({ phase: { kind: 'ready' }, snapshot });
+
+  assert.match(html, /data-testid="player-banner"/, 'the engine error is not surfaced');
+  assert.ok(html.includes('the limit is 300 s'), "the banner must name the engine's own reason");
+  // An engine error is an ALERT, not a status note: a screen reader must be
+  // interrupted by it. Nothing asserted any role/aria on these banners before,
+  // so inverting error and notice was a silent, assistive-tech-only change.
+  assert.match(html, /role="alert"/, 'an engine error must be announced as an alert');
+  // Every control the `playable` gate owns. A transport here is a dead button.
+  assert.doesNotMatch(html, /data-testid="transport"/, 'a dead transport over a failed engine');
+  assert.doesNotMatch(html, /aria-label="Stem mixer"/, 'a dead mixer over a failed engine');
+  assert.doesNotMatch(html, /aria-label="Loop a section"/, 'dead loop chips over a failed engine');
+  // The other half of the contract, already pinned, restated here so the two
+  // halves live together.
+  assert.equal(positionOf(html), null, 'the chord marker must not run on a failed engine');
+  // The chord track itself stays, as in every non-playable phase.
+  assert.match(html, /data-testid="chord-overlay"/);
+});
+
+test('isPlayable and chordPositionFor agree on every phase/error combination', () => {
+  // The structural fix for the above: one predicate, two call sites. If they
+  // are ever re-stated separately, this fails before the render tests do.
+  const phases = [
+    { kind: 'idle' },
+    { kind: 'loading' },
+    { kind: 'no-stems' },
+    { kind: 'ready' },
+    { kind: 'load-error', message: 'x' },
+    { kind: 'unsupported', message: 'x' },
+  ];
+  const errors = [null, { code: 'PLAY_TRACK_TOO_LONG', message: 'too long' }];
+  for (const phase of phases) {
+    for (const error of errors) {
+      const snapshot = Object.freeze({ ...IDLE, positionSec: 1.5, error });
+      const playable = isPlayable(phase, snapshot);
+      const position = chordPositionFor(phase, snapshot);
+      assert.equal(
+        playable,
+        position !== null,
+        `isPlayable=${playable} but chordPositionFor=${position} for phase ${phase.kind}, error ${error ? error.code : 'none'}`,
+      );
+      assert.equal(playable, phase.kind === 'ready' && error === null);
+    }
+  }
 });
 
 test('phase "unsupported" renders the browser banner and no transport', async () => {
@@ -595,11 +661,38 @@ test('a complete snapshot renders NO degraded banner', async () => {
 
 // ═══ Story 2.7 / 1.2 — the two mounts that carry the story ══════════════════
 
+/**
+ * Source with ALL comments stripped. Prose must not be able to pass or fail a
+ * test — every assertion in this section matches against code only.
+ *
+ * Three rules, and the ORDER matters:
+ *   1. whole-line `//` FIRST, so a commented-out line containing `/*` cannot
+ *      open a bogus block for rule 2 and swallow real code after it;
+ *   2. block comments, which also covers JSX `{/* … *\/}` (an earlier version
+ *      had a separate JSX rule, but rule 2 always consumed the interior first,
+ *      so that rule was dead code — the leftover `{ }` is inert);
+ *   3. TRAILING `//`, the gap review exploited: the previous helper stripped
+ *      whole-line comments only, so `const POLL_MS = 2000; // <Player renders
+ *      before <LoopResults` defeated the ordering gate below. `[^:]` keeps
+ *      `https://` and friends intact.
+ */
+function codeOnly(src) {
+  return src
+    .replace(/^[ \t]*\/\/.*$/gm, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
 test('Story 2.7: the Mixer mount carries jobId, which is its memory key', () => {
   // The Mixer keys sessionStorage on `jobId` (mixerMemoryKey). Drop the prop
   // and the component is purely props-driven: faders silently stop being
   // remembered, with nothing else observable changing.
-  const src = read('src/components/play/Player.tsx');
+  //
+  // codeOnly, and that is not incidental: read raw, this assertion was a false
+  // green. Dropping jobId from the live mount and leaving a plausible
+  // commented-out `{/* was: <Mixer … jobId={jobId} /> */}` above it passed the
+  // whole suite with per-job memory dead.
+  const src = codeOnly(read('src/components/play/Player.tsx'));
   assert.match(
     src,
     /<Mixer[^>]*\bjobId=\{jobId\}/,
@@ -607,13 +700,18 @@ test('Story 2.7: the Mixer mount carries jobId, which is its memory key', () => 
   );
 });
 
-/** Source with comments stripped. Prose must not be able to pass or fail a test. */
-function codeOnly(src) {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, '') // block comments, incl. the file header
-    .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, '') // JSX comments
-    .replace(/^\s*\/\/.*$/gm, ''); // line comments
-}
+test('codeOnly strips whole-line, trailing and JSX comments, and spares URLs', () => {
+  // The helper above is load-bearing for three Story gates, so it is pinned
+  // directly rather than only through them.
+  assert.equal(codeOnly('  // gone\nkept();').trim(), 'kept();');
+  assert.equal(codeOnly('kept(); // gone').trim(), 'kept();');
+  assert.equal(codeOnly('/* gone\n gone */kept();').trim(), 'kept();');
+  assert.doesNotMatch(codeOnly('const a = 1; // <Player'), /<Player/);
+  assert.doesNotMatch(codeOnly('{/* <Mixer jobId={jobId} /> */}'), /<Mixer/);
+  // A line comment must not be able to open a block that eats real code.
+  assert.match(codeOnly('// /* not a comment\nkept();'), /kept\(\)/);
+  assert.match(codeOnly("const u = 'https://x.example/a';"), /https:\/\/x\.example/);
+});
 
 test('Story 1.2: the Player is mounted ABOVE LoopResults on the job page', () => {
   // "Everybody uploading songs wants to see the player and toggle and play
@@ -640,8 +738,15 @@ test('the job page gutter is the token with a 16px fallback, never a literal', (
   // channels to exactly 46.00px and truncated "VOCALS" to "VOCA…" — the defect
   // #194's 5c3c181 exists to prevent. A literal here cannot be seen by either
   // side's tests, so the literal is what this pins.
+  //
+  // Scoped to the `wrap` object rather than the file's FIRST `padding:`. There
+  // is a second padding declaration further down (the failed-job box), so the
+  // unscoped form depended purely on declaration order: reordering the two
+  // would have pointed this assertion at the wrong rule.
   const view = codeOnly(read('src/app/jobs/[id]/JobView.tsx'));
-  const padding = view.match(/padding:\s*'([^']+)'/)?.[1];
+  const wrap = view.match(/const wrap:[^=]*=\s*\{[\s\S]*?\n\s*\};/)?.[0];
+  assert.ok(wrap, 'the page wrapper style object moved or was renamed');
+  const padding = wrap.match(/padding:\s*'([^']+)'/)?.[1];
   assert.ok(padding, 'the page wrapper lost its padding declaration');
   assert.match(padding, /var\(--sl-gutter,\s*16px\)/, `gutter is not the token: ${padding}`);
   assert.doesNotMatch(

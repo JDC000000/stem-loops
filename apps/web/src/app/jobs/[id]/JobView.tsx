@@ -62,11 +62,19 @@ export default function JobView({ id }: { id: string }) {
 
   // GUTTER: the token, never a literal. Found across #197 + #194 — neither PR
   // could see it alone. This was a hard-coded `24px`, and the mixer's entire
-  // 360px layout budget is computed against the app's 16px gutter. At 360px the
-  // extra 8px per side ate the mixer's whole margin: channels landed at exactly
-  // 46.00px and "VOCALS" truncated to "VOCA…" — reintroducing the very defect
-  // #194's 5c3c181 was written to fix. An inline literal is what made the drift
-  // invisible to both sides, so the number is gone.
+  // 360px layout budget is computed against the app's 16px gutter.
+  //
+  // ⚠️ SCOPE OF THE MEASUREMENT, stated precisely because an earlier draft of
+  // this comment overstated it. On a tree that HAS #194's 5c3c181, its reviewer
+  // measured the extra 8px per side eating the mixer's margin: channels at
+  // exactly 46.00px (360 − 48 − 24 − 2 = 286 of usable width) and "VOCALS"
+  // truncated to "VOCA…". That is NOT reproducible on THIS branch: 5c3c181 is
+  // not an ancestor here (`git merge-base --is-ancestor` says so), and measured
+  // on this tree channels land at 52.00px with no clipping at 320 / 360 / 390.
+  // So the hard-coded 24px is a latent defect that lands the moment #194
+  // merges, not a live one — which is reason to fix it now, not reason to
+  // claim a truncation this branch does not show. An inline literal is what
+  // made the drift invisible to both sides, so the number is gone.
   //
   // ⚠️ THE FALLBACK IS LOAD-BEARING, not belt-and-braces. `--sl-gutter` is
   // defined in src/styles/landing.css, which is imported ONLY by

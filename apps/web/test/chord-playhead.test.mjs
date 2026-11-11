@@ -638,16 +638,30 @@ test('the live mount now carries positionSec, and positionSec is still optional'
   // Component that renders only <JobView/> and could not mount the overlay if
   // it tried. JobView is the file that could reintroduce the original bug, so
   // that is the file to hold to it.
-  const jobView = readFileSync(
-    join(import.meta.dirname, '..', 'src/app/jobs/[id]/JobView.tsx'),
-    'utf8',
+  //
+  // Comments are stripped before matching, and that is NOT incidental. Read
+  // raw, the `<Player` assertion below was a FALSE GREEN: JobView's own header
+  // comment contains the words `<Player>` twice, so deleting the real
+  // `<Player … />` mount from the file left this test 31/31 green. Prose must
+  // not be able to satisfy a structural assertion.
+  const strip = (src) =>
+    src
+      .replace(/^[ \t]*\/\/.*$/gm, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+  const jobView = strip(
+    readFileSync(join(import.meta.dirname, '..', 'src/app/jobs/[id]/JobView.tsx'), 'utf8'),
   );
   assert.doesNotMatch(
     jobView,
     /<ChordOverlay/,
     'the job body mounts its own overlay again; only Player has a position to give it',
   );
-  assert.match(jobView, /<Player/, 'the job body stopped mounting the Player');
+  assert.match(
+    jobView,
+    /<Player\s+jobId=/,
+    'the job body stopped mounting the Player (code, not a comment that names it)',
+  );
 });
 
 test('the zoom slider is still the zoom slider: the playhead adds no second range input', () => {

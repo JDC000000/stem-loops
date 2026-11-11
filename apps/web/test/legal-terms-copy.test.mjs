@@ -37,11 +37,13 @@ test('terms: states the 5-minute cap AND that it bites at submit', async () => {
   // The NUMBER: src/lib/play/types.ts:62 MAX_TRACK_SEC = 300, and the worker's
   // MAX_UPLOAD_DURATION_SEC_DEFAULT = 300.0 (apps/worker/src/worker/pipeline.py:134).
   assertSays(assert, page, 'Tracks up to 5 minutes', 'terms');
-  // WHERE IT BITES: refusal at SUBMIT is what PR #202 added (merged 2026-11-11 17:21:34Z,
-  // 0167553) — src/lib/upload-duration.ts probes the duration in the browser before the
-  // bytes are uploaded. Before #202 the default was 600.0 and the only refusal happened in
-  // the worker, after submission; this sentence was false and was held back for it.
-  assertSays(assert, page, 'Longer tracks are refused when you submit them', 'terms');
+  // WHERE IT BITES, stated WITHOUT overclaiming. #202 (merged 2026-11-11 17:21:34Z, 0167553)
+  // added a browser probe in src/lib/upload-duration.ts, but that file's own header is blunt
+  // that it FAILS OPEN: an unmeasurable container (it names flac and aiff), a header
+  // reporting NaN/Infinity, a slow decode, or a direct call to POST /api/uploads with no
+  // browser at all — every one of those proceeds and is refused later, by the worker. So
+  // "refused when you submit them" was overstated; "not accepted" is true of both paths.
+  assertSays(assert, page, 'Longer tracks are not accepted', 'terms');
 });
 
 test('terms: discloses the retention exception, and scopes it the way the sweep does', async () => {
@@ -55,6 +57,11 @@ test('terms: discloses the retention exception, and scopes it the way the sweep 
   // job" and was wrong in the alarming direction.
   assertSays(assert, page, 'charged a credit', 'terms');
   assertSays(assert, page, 'Every other job is deleted outright', 'terms');
+  // The sweep leaves THREE kinds of survivor, not one (see the privacy gate for the
+  // derivation). The terms carry the short form and point at the privacy notice for the
+  // detail, so both of the other two are named here as well.
+  assertSays(assert, page, 'chord corrections you saved', 'terms');
+  assertSays(assert, page, 'counters and diagnostics', 'terms');
 });
 
 test('terms: metadata is the terms metadata, not another page’s', async () => {

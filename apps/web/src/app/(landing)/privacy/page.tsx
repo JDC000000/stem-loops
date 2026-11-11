@@ -41,7 +41,9 @@ export default function PrivacyPage() {
                 and basic profile; we never see your Google password.
               </li>
               <li>
-                <strong>A hashed IP address,</strong> used only for rate limiting. We store a keyed hash, not the IP itself.
+                <strong>A hashed IP address,</strong> used to rate-limit, and — if you sign up after making jobs
+                anonymously — to work out which of those earlier jobs were yours so your history is continuous. We store a
+                keyed hash, not the IP itself.
               </li>
               <li>
                 <strong>Error reports and server logs.</strong> When something breaks we record technical details. They are used
@@ -54,19 +56,32 @@ export default function PrivacyPage() {
             </ul>
 
             <h2>How long</h2>
-            <p>Uploaded files, fetched audio, stems, loops and job records are deleted after 24 hours.</p>
+            <p>Uploaded files, fetched audio, stems, loops and the job’s own row are deleted after 24 hours.</p>
             <p>
-              Two things are the exception. Account details are not on that 24-hour clock, because an account has to outlive a
-              job to be useful; they stay until you delete the account, which you can do yourself from your{' '}
-              <a href="/account">account page</a> at any time, or by emailing us.
+              Account details are not on that clock, because an account has to outlive a job to be useful. They stay until you
+              delete the account, which you can do yourself from your <a href="/account">account page</a> at any time, or by
+              emailing us.
             </p>
-            <p>
-              The second applies only to a job that charged a credit, or that you saved a chord correction on. A stripped-down
-              record of that job is kept so purchases and credits stay accounted for. It holds the job’s id, status and
-              timestamps, which account it belonged to, the stems and loop length you chose, the progress trace, and an
-              internal reference to the separation run. Your file names, your links, your audio and what we estimated from it
-              are removed. Every other job is deleted outright.
-            </p>
+            <p>Three other things outlive the 24 hours:</p>
+            <ul>
+              <li>
+                <strong>A shell of a job that charged a credit,</strong> kept so purchases and credits stay accounted for. It
+                holds the job’s id, status and timestamps, which account it belonged to, the stems and loop length you chose,
+                the progress trace, and an internal reference to the separation run. Your file names, your links and your audio
+                are gone from it.
+              </li>
+              <li>
+                <strong>Chord corrections you save,</strong> kept to improve the chord estimates: the part of the song a
+                correction covers, what we estimated, what you changed it to, and a one-way fingerprint of the audio. These are
+                not on the 24-hour clock — they stay until you delete your account. Nothing in the player sends them today.
+              </li>
+              <li>
+                <strong>Counters and diagnostics,</strong> kept without a time limit: that a job was started, that a payment
+                was attempted, and how an attempt to fetch audio went. They hold no audio, no file names and no links — a YouTube fetch is
+                recorded against a one-way hash of the video id, never the address you pasted.
+              </li>
+            </ul>
+            <p>Deleting your account removes your account details and your chord corrections.</p>
 
             <h2>Who else handles it</h2>
             <p>These are everyone who touches your audio or your account, and what each one does:</p>
@@ -98,6 +113,9 @@ export default function PrivacyPage() {
                 address. We never see or store your card number.
               </li>
               <li>
+                <strong>Resend</strong> sends account and receipt emails, so it receives your email address.
+              </li>
+              <li>
                 <strong>Sentry</strong> receives error reports.
               </li>
               <li>A proxy provider may be used to fetch audio from YouTube links.</li>
@@ -105,7 +123,11 @@ export default function PrivacyPage() {
             <p>We don’t sell your data or share it for advertising.</p>
 
             <h2>Links to jobs</h2>
-            <p>Anyone with a job’s link and an account can open it until it is deleted, so don’t share links you want to keep private.</p>
+            <p>
+              A job’s link is the only thing protecting it. The player page asks you to sign in, but that gate is on the page
+              alone — the job’s audio and stems can be fetched by anyone holding the link, with no account at all, until the
+              job is deleted. So don’t share a link you want to keep private.
+            </p>
 
             <h2>Contact</h2>
             <p>

@@ -31,7 +31,7 @@ export default function TermsPage() {
 
             <h2>What it can and cannot do</h2>
             <ul>
-              <li>Tracks up to 5 minutes. Longer tracks are refused when you submit them.</li>
+              <li>Tracks up to 5 minutes. Longer tracks are not accepted.</li>
               <li>Chrome, on a desktop or laptop. Other browsers and phones are not supported yet.</li>
               <li>
                 The chords are an <strong>estimate made from the audio</strong>, not a transcription anyone checked. Trust your
@@ -67,10 +67,11 @@ export default function TermsPage() {
               Your files, stems, loops and job details are deleted after 24 hours — download what you want to keep.
             </p>
             <p>
-              Two things outlive that. Your account stays until you delete it. And if a job charged a credit, or you saved a
-              chord correction on it, a stripped-down record of that one job is kept so purchases and credits stay accounted
-              for — what you asked for and when, with your file names, your links and your audio removed. Every other job is
-              deleted outright.
+              Some things outlive that: your account, until you delete it; a stripped-down shell of any job that charged a
+              credit, so purchases stay accounted for; any chord corrections you saved, which are kept until you delete your
+              account; and counters and diagnostics that hold no audio, file names or links. The{' '}
+              <a href="/privacy">privacy notice</a> sets out exactly what each of those keeps. Every other job is deleted
+              outright.
             </p>
 
             <h2>No warranty</h2>

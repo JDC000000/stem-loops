@@ -36,9 +36,10 @@ export const BANNED = [
   [
     // Old terms: "downloading the separated stems does [need an account]".
     // Old privacy: "An account is needed only to download the separated stems."
-    // There is no stem-download route. `mintStemDownloadUrl` (src/lib/stem-urls.ts:68) has
-    // ZERO production consumers — the only references are its own definition and
-    // test/stem-urls-contract.test.mjs. The claim described a feature that does not exist.
+    // There is no stem-download route at all. `mintStemDownloadUrl` (src/lib/stem-urls.ts:68)
+    // has ZERO production consumers — its own definition and test/stem-urls-contract.test.mjs.
+    // The claim described a feature that does not exist, which is why THIS half of the old
+    // sentence is banned and the "loops need no account" half is not: see the note below.
     'stem downloads need an account — there is no stem-download route at all',
     /download(?:ing)?\s*the\s*separated\s*stems/i,
   ],
@@ -47,26 +48,53 @@ export const BANNED = [
     /stems?\s*downloads?\s*(?:needs?|requires?)\s*an\s*account/i,
   ],
   [
-    // Old privacy: "Loops are free and need no account".
-    // Old terms: "Cutting and downloading loops needs no account".
-    // False since the player gate landed: src/app/jobs/[id]/page.tsx:32-33 does
-    // `getUser()` then `redirect('/login?return_to=…')`, so NO result — loops included —
-    // is reachable without an account.
-    'loops (or anything else) need no account — the player gate makes every result account-only',
-    /(?:needs?|requires?|required)\s*no\s*account/i,
+    // Shipped in the first cut of this PR and caught in review. It overstates the
+    // protection: /api/jobs/[id], /api/jobs/[id]/stems and /api/jobs/[id]/play-chords
+    // NEVER call getUser(). Only the HTML page redirects. A job UUID alone reaches the
+    // audio and a presigned R2 URL per stem, with no account anywhere in the path — the
+    // stems route's own header names a leaked UUID as the threat it is guarding.
+    'a job link plus an account is the gate — the gate is on the PAGE only, not on the files',
+    /link\s*and\s*an\s*account/i,
   ],
   [
-    'no account needed',
-    /no\s*account\s*(?:needed|required|necessary)/i,
+    // The ABSOLUTE form only. /pricing sells Pro ($4.99 CAD/mo), Studio ($12 CAD/mo) and
+    // credit packs, and src/lib/billing/entitlements.ts:309-318 refuses a free-plan upload
+    // at a zero credit balance. A QUALIFIED sentence ("free to use at the moment", "while
+    // billing is off there is nothing to pay for") is true and must stay sayable, so this
+    // pattern pins the unqualified claim rather than the words "nothing to pay for".
+    'it is free and there is nothing to pay for — stated absolutely, with no qualifier',
+    /(?:it\s*is|it[\u2019']s)\s*free,?\s*and\s*there\s*is\s*nothing\s*to\s*pay\s*for/i,
   ],
-  [
-    // Drafted for this page and caught in review: /pricing sells Pro ($4.99 CAD/mo),
-    // Studio ($12 CAD/mo) and credit packs ($5/$12/$30 CAD) through Stripe, and a
-    // signed-in free-plan upload is refused with CREDIT_BALANCE_INSUFFICIENT at a zero
-    // balance (src/lib/billing/entitlements.ts:309-318).
-    'there is nothing to pay for — /pricing sells plans and credit packs',
-    /nothing\s*to\s*pay\s*for/i,
-  ],
+];
+
+// DELIBERATELY NOT BANNED: "needs no account" / "no account needed" in general.
+// An earlier cut of this file banned those outright. That was an OVER-BAN — it forbade
+// sentences that are TRUE: you can start a job without an account (api/jobs/route.ts has
+// zero 401s and an anonymous INSERT branch), and after the Links-to-jobs correction above,
+// reaching a job by its link needs no account either. A gate that forbids the truth is its
+// own defect, so the bans are now tied to the two claims that are false however they are
+// phrased: a stem-download feature that does not exist, and the account-protects-the-link
+// overstatement.
+
+/**
+ * Every processor the privacy page must name, with the file that proves it receives
+ * something. ASSERTED ONE BY ONE — an earlier cut asserted only the four that were new in
+ * this PR while its header claimed the list was checked "name by name", and a reviewer
+ * deleted Cloudflare R2, Supabase, Sentry and the proxy sentence with the suite still green.
+ * An overclaim in a disclosure gate is a false green with a softer voice.
+ */
+export const PROCESSORS = [
+  ['Replicate', 'apps/worker/src/worker/replicate_client.py:44 — POSTs audio to api.replicate.com'],
+  ['Klangio', 'chord_providers/klangio.py:574 — POST /chord-recognition, multipart, field `file`'],
+  ['Cloudflare R2', 'src/lib/r2.ts + stem-urls.ts — stores and presigns every object'],
+  ['Fly.io', 'the worker host'],
+  ['Vercel', 'the web host'],
+  ['Supabase', 'src/lib/auth/supabase.ts + src/lib/db.ts — auth and the job database'],
+  ['Google', 'src/components/LoginForm.tsx:135-136 — signInWithOAuth({ provider: "google" })'],
+  ['hCaptcha', 'src/lib/hcaptcha.ts + api/auth/signup/route.ts:37'],
+  ['Stripe', 'src/lib/billing/providers/stripe.ts + api/billing/{checkout,portal,webhook}'],
+  ['Resend', 'src/lib/emails/resend.ts:23 — POSTs to api.resend.com with the address in `to:`'],
+  ['Sentry', 'src/lib/sentry-options.ts — error reports'],
 ];
 
 /**

@@ -1,8 +1,27 @@
 // Shared upload validation — accepted formats + size cap (V2 primary input).
 // The worker ffmpeg-normalizes any accepted container to WAV before separation,
 // so audio AND video files are supported.
+// Relative WITH the .ts extension, not the '@/' alias and not an extensionless specifier:
+// this module is covered by src/lib/upload.test.mjs, which node:test loads directly and
+// which resolves neither tsconfig path aliases nor extensionless ESM. Same convention as
+// src/lib/play/engine.ts and load-stems.ts; tsconfig has allowImportingTsExtensions.
+import { MAX_TRACK_SEC } from './play/types.ts';
 
 export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024; // 200 MB — real songs (esp. uncompressed WAV/FLAC) run 40-100+ MB
+
+/**
+ * Longest track we accept, in seconds. NOT a second ceiling — it is re-exported from
+ * `MAX_TRACK_SEC`, the one the player enforces, so there is no number here to drift.
+ *
+ * The same 300 s is also `MAX_UPLOAD_DURATION_SEC_DEFAULT` and `CHORDS_MAX_AUDIO_SEC` in
+ * the Python worker, which cannot import this; those two carry a comment pointing back.
+ *
+ * `validateUpload` below does NOT check this, and cannot: it is given a filename and a
+ * byte count, which is all POST /api/uploads ever receives (the browser PUTs the bytes
+ * straight to R2 on a presigned URL, so no server of ours sees them). Duration is probed
+ * in the browser — see `upload-duration.ts` — and enforced for real in the worker.
+ */
+export const MAX_UPLOAD_DURATION_SEC = MAX_TRACK_SEC;
 
 // ext → content-type. Audio + common video containers (audio is extracted).
 export const ACCEPTED_TYPES: Record<string, string> = {

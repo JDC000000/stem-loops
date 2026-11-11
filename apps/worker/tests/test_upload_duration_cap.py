@@ -54,14 +54,32 @@ def staged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     return source, uploaded
 
 
-def test_default_cap_is_600_seconds_and_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_cap_is_300_seconds_and_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 600.0 until 2026-11-11. Lowered to 300.0 so the upload cap, the chord cap and the
+    # player's MAX_TRACK_SEC are ONE number: above 300 s the chord overlay is always a
+    # `too_long` tombstone and the web player refuses the track outright, so a 301-600 s
+    # upload could only ever buy a paid Replicate separation the visitor cannot play.
     monkeypatch.delenv("MAX_UPLOAD_DURATION_SEC", raising=False)
-    assert pipeline._max_upload_duration_sec() == 600.0
+    assert pipeline._max_upload_duration_sec() == 300.0
     monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "900")
     assert pipeline._max_upload_duration_sec() == 900.0
     for bad in ("abc", "0", "-5", "inf", ""):
         monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", bad)
-        assert pipeline._max_upload_duration_sec() == 600.0
+        assert pipeline._max_upload_duration_sec() == 300.0
+
+
+def test_upload_cap_is_not_looser_than_the_chord_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The drift gate, not a restatement of the line above.
+
+    Asserting `== 300.0` twice would still pass if someone raised ONLY the upload cap back
+    to 600 and left chords at 300 -- which is exactly the state this PR removed. This
+    compares the two knobs to each other, so re-opening the gap fails here even if both
+    literals change together. Compared on the DEFAULTS with the env cleared: an operator
+    who deliberately raises both via env is out of scope for a unit test.
+    """
+    for name in ("MAX_UPLOAD_DURATION_SEC", "CHORDS_MAX_AUDIO_SEC"):
+        monkeypatch.delenv(name, raising=False)
+    assert pipeline._max_upload_duration_sec() <= pipeline._chords_max_audio_sec()
 
 
 def test_error_code_is_registered_and_message_names_the_limit() -> None:
@@ -69,6 +87,8 @@ def test_error_code_is_registered_and_message_names_the_limit() -> None:
     err = UploadTooLongError("x", max_seconds=600.0)
     assert err.error_code == "UPLOAD_TOO_LONG"
     assert "10 minutes" in err.user_message
+    # …and the cap actually in force now renders as the 5 minutes the landing promises.
+    assert "5 minutes" in UploadTooLongError(max_seconds=300.0).user_message
     assert "1 minute" in UploadTooLongError(max_seconds=60.0).user_message
     assert "30 seconds" in UploadTooLongError(max_seconds=30.0).user_message
     assert "Trim" in UploadTooLongError().user_message  # no-limit default still actionable

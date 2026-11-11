@@ -5,7 +5,8 @@
 // → PUT straight to R2 (putToR2, with its retries) → POST /api/jobs; link → POST /api/jobs.
 // Validation, rate limits, admission and error codes all stay server-side in those routes.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ACCEPT_ATTR, validateUpload } from '@/lib/upload';
+import { ACCEPT_ATTR, MAX_UPLOAD_DURATION_SEC, validateUpload } from '@/lib/upload';
+import { durationVerdict, probeDurationSec } from '@/lib/upload-duration';
 import { putToR2 } from '@/lib/upload-client';
 import { canonicalizeYoutubeUrl, youtubeUrlProblem } from '@/lib/youtube-url';
 import { addToHistory } from '@/lib/history';
@@ -13,6 +14,10 @@ import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
 import { useDemo } from './DemoProvider';
 import { BAR_OPTIONS, STEM_ORDER } from './demo-data';
 import { Ic } from './Icons';
+
+// Fed from the one ceiling (MAX_TRACK_SEC, via MAX_UPLOAD_DURATION_SEC) rather than typed
+// as a figure, so the copy here cannot drift from the cap the worker enforces.
+const MAX_UPLOAD_MIN = Math.round(MAX_UPLOAD_DURATION_SEC / 60);
 
 const ERR = {
   empty_input: ['Add a song first.', 'Paste a YouTube link or choose a file.'],
@@ -25,6 +30,7 @@ const ERR = {
   type: ['We can’t use that file type.', 'Choose mp3, wav, m4a, aac, flac, ogg, opus, aiff, mp4, m4v, mov or webm.'],
   empty: ['That file is empty.', 'Choose a different one.'],
   large: ['That file is over the 200 MB limit.', 'Export a shorter or compressed version (mp3 or m4a) and try again.'],
+  long: [`That track is over the ${MAX_UPLOAD_MIN}-minute limit.`, 'Trim it, or choose a shorter song, and try again.'],
 } as const;
 type ErrCode = keyof typeof ERR;
 
@@ -78,6 +84,10 @@ export function ToolForm() {
   const [dragging, setDragging] = useState(false);
   const [live, setLive] = useState('');
   const [narrow, setNarrow] = useState(false);
+  // True while the admission duration probe is in flight for the current pick.
+  const [checking, setChecking] = useState(false);
+  // Monotonic pick counter: only the newest pick may write state when its probe resolves.
+  const pickSeq = useRef(0);
   const busy = phase.kind === 'busy';
 
   // focus after the DOM reflects the new state (e.g. the picked-file row now exists)
@@ -93,7 +103,7 @@ export function ToolForm() {
   const resetJob = useCallback(() => setPhase((p) => (p.kind === 'busy' ? p : { kind: 'idle' })), []);
 
   const setFile = useCallback(
-    (f: File | null) => {
+    async (f: File | null) => {
       if (busy) return;
       setErr(null);
       resetJob();
@@ -105,18 +115,39 @@ export function ToolForm() {
       const v = validateUpload(f.name, f.size);
       if (!v.ok) {
         // keep the previous valid file (if any) and say why this one did not pass the
-        // client-side name-and-size check. Nothing here gates on DURATION — see the
-        // landing's "Track length" row, and the ban list in test/landing-copy.test.mjs
-        // that now reads this file RAW, comments included.
+        // client-side name-and-size check.
         const code: ErrCode = v.error_code === 'UPLOAD_TOO_LARGE' ? 'large' : f.size <= 0 ? 'empty' : 'type';
         setErr({ code, suffix: file ? ` Still using ${file.name}.` : undefined });
         focusNext.current = file ? 'replace' : 'source';
         return;
       }
+      // Show the pick straight away so the row and the submit handler agree about which
+      // file is selected, THEN measure its length. `checking` holds submit shut for the
+      // few ms that takes, so a quick click cannot start a job on an unmeasured file.
+      const seq = ++pickSeq.current;
       setFileState(f);
       setText('');
       setLive(`File chosen: ${f.name}, ${fmtSize(f.size)}`);
       focusNext.current = 'replace';
+      setChecking(true);
+      let verdict;
+      try {
+        verdict = durationVerdict(await probeDurationSec(f));
+      } finally {
+        if (seq === pickSeq.current) setChecking(false);
+      }
+      // A newer pick landed while this one was being measured: that pick owns the state.
+      if (seq !== pickSeq.current) return;
+      if (!verdict.ok) {
+        // SPEND-AND-UX GUARD ONLY, never a limit — see the header of lib/upload-duration.ts.
+        // It runs in the browser, it fails open whenever it cannot measure, and the worker's
+        // MAX_UPLOAD_DURATION_SEC is what actually holds. Declining here just saves the
+        // visitor an upload and a paid separation that ends in a player they cannot open.
+        setFileState(null);
+        setErr({ code: 'long' });
+        setLive('That track is too long.');
+        focusNext.current = 'source';
+      }
     },
     [busy, file, resetJob],
   );
@@ -150,7 +181,7 @@ export function ToolForm() {
       setDragging(false);
       const dt = e.dataTransfer;
       if (!dt) return;
-      if (dt.files && dt.files[0]) setFile(dt.files[0]);
+      if (dt.files && dt.files[0]) void setFile(dt.files[0]);
       else {
         const t = dt.getData('text/uri-list') || dt.getData('text/plain');
         if (t && !busy && !YOUTUBE_INPUT_ENABLED) {
@@ -241,6 +272,12 @@ export function ToolForm() {
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (busy) return;
+    if (checking) {
+      // The duration probe for the current pick has not come back yet. Say so rather than
+      // starting a job we are about to have an answer about.
+      setLive('Still checking that track, one moment.');
+      return;
+    }
     const t = text.trim();
     if (!file && !t) {
       setErr({ code: YOUTUBE_INPUT_ENABLED ? 'empty_input' : 'empty_file' });
@@ -282,7 +319,13 @@ export function ToolForm() {
     focusNext.current = 'source';
   }
 
-  const ctaLabel = phase.kind === 'busy' ? phase.label : phase.kind === 'failed' ? 'Try again' : 'Separate and play';
+  const ctaLabel = phase.kind === 'busy'
+    ? phase.label
+    : checking
+      ? 'Checking the track\u2026'
+      : phase.kind === 'failed'
+        ? 'Try again'
+        : 'Separate and play';
   const errText = err ? ERR[err.code] : null;
   const formCls = ['tool', err ? 'is-invalid' : '', dragging ? 'is-dragging' : ''].filter(Boolean).join(' ');
 
@@ -343,7 +386,7 @@ export function ToolForm() {
             accept={ACCEPT_ATTR}
             onChange={(e) => {
               const f = e.target.files?.[0];
-              if (f) setFile(f);
+              if (f) void setFile(f);
             }}
           />
         </div>
@@ -362,7 +405,7 @@ export function ToolForm() {
             id="picked-clear"
             aria-label="Remove file"
             onClick={() => {
-              setFile(null);
+              void setFile(null);
               setLive('File removed');
               focusNext.current = 'source';
             }}

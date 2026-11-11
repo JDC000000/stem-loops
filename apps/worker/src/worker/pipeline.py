@@ -107,15 +107,31 @@ def _ffmpeg_bin() -> str:
 
 
 # Longest upload (seconds) we will separate. ONE knob, read at call time so it can be
-# tuned with an env change instead of a deploy. 600 s (10 min):
-#   * Klangio chords only work <= 300 s, so a track beyond that already loses the chord
-#     overlay; 600 s leaves headroom for ordinary long songs (extended mixes, prog) without
-#     opening the door to DJ sets / albums.
+# tuned with an env change instead of a deploy.
+#
+# 300 s (5 min), and deliberately the SAME number as every other ceiling in the product:
+# CHORDS_MAX_AUDIO_SEC below, KLANGIO_MAX_AUDIO_SEC in the provider, MAX_TRACK_SEC in the
+# web player (apps/web/src/lib/play/types.ts) and the landing copy, which is fed from that
+# constant. If one of them moves, move all of them.
+#
+# It was 600 s until 2026-11-11, which was not a number anyone chose for this pipeline --
+# it predates the Gate-0 playback spike, whose shipping decision table already fixed the
+# product ceiling at 300 s "to agree with KLANGIO_MAX_AUDIO_SEC" (Jon, 2026-11-10). Nothing
+# wired that decision into this file. A 301-600 s upload therefore did three bad things:
+#   * The PLAYER would not open it. engine.ts refuses above MAX_TRACK_SEC (300 s) -- and it
+#     checks only AFTER decoding and downmixing all six stems, so a 600 s track first
+#     allocates 6 x 600 x 48000 x 4 bytes = ~659 MiB of PCM on the visitor's machine. The
+#     spike measured that same byte count at 805 MB RSS and REJECTED it against a ~600 MB
+#     bar. So the user pays the memory peak and still gets an error instead of a player.
+#   * The CHORD overlay was always absent: chords cap at CHORDS_MAX_AUDIO_SEC = 300 s, so
+#     the step below writes a `too_long` tombstone. Chords are the headline feature.
 #   * Replicate separation is billed per GPU-second ($0.0014/s, replicate_client) and the
-#     predict time scales with audio length, so every extra minute is real spend and a
-#     longer hold on the single paid GPU path. The web layer only caps BYTES (200 MB,
-#     ~3.5 h of 128 kbps mp3), which is no bound on cost.
-MAX_UPLOAD_DURATION_SEC_DEFAULT = 600.0
+#     predict time scales with audio length, so all of that was paid for in real money.
+#
+# The web layer now ALSO probes duration at admission, but that probe runs in the browser,
+# fails open when it cannot measure, and is therefore a spend-and-UX guard only. THIS is
+# the enforcement: it runs server-side on bytes we hold, before Replicate is ever called.
+MAX_UPLOAD_DURATION_SEC_DEFAULT = 300.0
 # Wall-clock budget for the ffmpeg normalise step. A pathological/hostile file must not
 # hold the worker thread (and its heartbeat-less job) indefinitely.
 FFMPEG_DECODE_TIMEOUT_SEC_DEFAULT = 120.0

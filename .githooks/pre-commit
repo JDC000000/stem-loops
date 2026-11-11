@@ -105,9 +105,18 @@ fi
 # step HARD-FAILS rather than skipping: noisy, but never a false green. A
 # skip here must only ever mean "this machine cannot run them", never "they
 # ran and passed".
+#
+# The probe ALSO requires pnpm and node_modules, mirroring step 3. `make test`
+# runs `pnpm --filter web test` as its second leg, so in a fresh worktree with
+# the Python deps present but no node_modules the probe used to pass, the step
+# ran, and the web leg exited non-zero purely because node_modules was absent --
+# not because any test was wrong. Before the `|| true` on that line was removed
+# this was merely invisible; now it would BLOCK the commit with a misleading
+# message, so the condition step 3 already applies belongs here too.
 r1_test_env() {
   python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null || return 1
   python3 -c 'import psycopg, httpx, soundfile, sentry_sdk, boto3, librosa' 2>/dev/null || return 2
+  command -v pnpm >/dev/null 2>&1 && [ -d node_modules ] || return 3
   return 0
 }
 echo "pre-commit: [2/5] make test"
@@ -115,6 +124,14 @@ r1_env_rc=0
 r1_test_env || r1_env_rc=$?
 if [ "$r1_env_rc" = "0" ]; then
   make test >/tmp/precommit-test.log 2>&1 || { cat /tmp/precommit-test.log >&2; fail "make test"; }
+elif [ "$r1_env_rc" = "3" ]; then
+  echo "pre-commit: [2/5] SKIPPED -- pnpm or node_modules missing, and \`make test\`" >&2
+  echo "pre-commit:       runs \`pnpm --filter web test\` as its second leg. A worktree" >&2
+  echo "pre-commit:       has no node_modules, so that leg would fail on the missing" >&2
+  echo "pre-commit:       install rather than on a real test failure. Step 3 skips on" >&2
+  echo "pre-commit:       exactly this condition. CI installs them, so these tests DO" >&2
+  echo "pre-commit:       run there." >&2
+  echo "pre-commit:       => Your commit is NOT test-verified locally." >&2
 elif [ "$r1_env_rc" = "1" ]; then
   echo "pre-commit: [2/5] SKIPPED -- python3 is $(python3 -V 2>&1), and the worker" >&2
   echo "pre-commit:       requires 3.11+ (datetime.UTC). CI runs 3.11+, so these" >&2

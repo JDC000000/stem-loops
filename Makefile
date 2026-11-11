@@ -1,4 +1,4 @@
-.PHONY: dev test-job types types-generate alphabet alphabet-generate testlint check-rls check-prices deploy-web deploy-worker migrate install help
+.PHONY: dev test-job types types-generate alphabet alphabet-generate test lint check-rls check-prices deploy-web deploy-worker migrate install help
 
 # Default target
 help:
@@ -86,7 +86,7 @@ test:
 lint:
 	cd apps/worker && python3 -m ruff check src/ tests/
 	cd apps/worker && python3 -m black --check src/ tests/
-	pnpm --filter web lint || true
+	pnpm --filter web lint
 
 # Deploy web to Vercel
 deploy-web:

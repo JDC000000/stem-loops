@@ -1,0 +1,113 @@
+/* Play-along transport. Tokens only (src/styles/design-tokens.css); no new palette.
+   Deliberately unlike the ChordOverlay zoom slider (native range, blue): this is a
+   tall custom bar with an accent fill and a round thumb. */
+
+.root {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-sans);
+  color: var(--text-secondary);
+}
+
+.play {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1.5px solid transparent;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: var(--text-inverse);
+  cursor: pointer;
+}
+.play:hover:not(:disabled) { background: var(--accent-hover, var(--accent)); }
+.play:active:not(:disabled) { transform: translateY(1px); }
+.play:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.play:disabled {
+  cursor: not-allowed;
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--text-muted);
+}
+
+.track {
+  flex: 1 1 160px;
+  min-width: 120px;
+  height: 32px;            /* generous hit area around a thin rail */
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;      /* a horizontal drag must not scroll the page */
+  user-select: none;
+  -webkit-user-select: none;
+  border-radius: var(--radius-md);
+}
+.track:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.track[aria-disabled='true'] { cursor: not-allowed; opacity: 0.6; }
+
+.rail {
+  position: relative;
+  width: 100%;
+  height: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+}
+.fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+  border-radius: var(--radius-full);
+  pointer-events: none;
+}
+.thumb {
+  position: absolute;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  background: var(--text-primary);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-full);
+  pointer-events: none;
+}
+.track[data-scrubbing='true'] .thumb { transform: scale(1.25); }
+.track[aria-disabled='true'] .thumb { display: none; }
+
+.readout {
+  flex: none;
+  min-width: 88px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.sep { color: var(--text-muted); }
+
+.hint {
+  flex-basis: 100%;
+  font-size: var(--text-base);
+  color: var(--text-muted);
+}
+
+.busy .rail {
+  background: linear-gradient(90deg, var(--bg-elevated), var(--bg-selected), var(--bg-elevated));
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+@keyframes shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .busy .rail { animation: none; } }
+
+.error { border-color: var(--status-failed); background: var(--status-failed-bg); }
+.error .hint { color: var(--status-failed); }
+.error .play:disabled { border-color: var(--status-failed); color: var(--status-failed); }

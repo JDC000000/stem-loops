@@ -58,10 +58,18 @@
  * buffer coexisting with all the monos decoded before it. The settled figure is
  * therefore not the peak, and the peak is what kills a tab:
  *
- *   6 stems, 48 kHz mono, 300 s — measured renderer RSS, real Chromium
- *     settled (the number the docs used to quote)   482 MB
- *     peak during load, BEFORE this fix             592 MB   (+110)
- *     peak during load, AFTER this fix              547 MB   (+64)
+ *   6 stems, 48 kHz mono, 300 s — measured renderer RSS, real Chromium,
+ *   median of 3 reps per side, same harness both sides:
+ *                                      BEFORE      AFTER
+ *     settled                           480 MB     484 MB
+ *     PEAK, during load                 592 MB     548 MB
+ *     transient over settled           +112 MB      +64 MB
+ *
+ *   Settled is ~4 MB HIGHER after, reproducibly, and that is the honest
+ *   trade: eager release frees stores one at a time where the old path let GC
+ *   reclaim a whole buffer at once, so the allocator settles slightly less
+ *   compactly. 4 MB bought 44 MB of peak, and peak is the number that kills a
+ *   tab.
  *
  * The peak happens during LOAD, before a note plays: a device that survives
  * steady-state playback can still die loading. `downmixToMono` below is what

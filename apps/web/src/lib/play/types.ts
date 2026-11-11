@@ -61,20 +61,20 @@ export type StemName = (typeof PLAYABLE_STEMS)[number];
  * at SEVEN whole-track mono buffers, not six, and the peak lands during LOAD,
  * before a note plays. 6 stems, 48 kHz mono, 300 s:
  *
- *   settled        6 x 57,600,000 B = 345,600,000 B = 329.6 MiB   482 MiB renderer RSS
- *   peak           7 x 57,600,000 B = 403,200,000 B = 384.5 MiB   547 MiB renderer RSS
+ *   settled        6 x 57,600,000 B = 345,600,000 B = 329.6 MiB   484 MiB renderer RSS
+ *   peak           7 x 57,600,000 B = 403,200,000 B = 384.5 MiB   548 MiB renderer RSS
  *
  * so the settled figure understates peak PCM by exactly 7/6, i.e. +16.7%.
  * Budget against 384.5, not 329.6.
  *
  * Before the decode-transient fix of 2026-11-11 the peak was EIGHT buffers
- * (439.5 MiB PCM / 592 MiB renderer RSS) because the mono buffer was allocated
- * while the stereo one was still live. Seven is the floor for this
- * architecture: `decodeAudioData` materialises a stereo buffer and there is no
+ * (439.5 MiB PCM / 592 MiB renderer RSS, against 480 MiB settled) because the
+ * mono buffer was allocated while the stereo one was still live. Seven is the
+ * floor for this architecture: `decodeAudioData` materialises a stereo buffer and there is no
  * API that asks it not to. See MEMORY in `./engine.ts`.
  *
  * Jon relaxed the bar from 400 to ~600 MiB on 2026-11-10 specifically so the
- * reference track keeps full bandwidth. The measured peak of 547 MiB is ~9%
+ * reference track keeps full bandwidth. The measured peak of 548 MiB is ~9%
  * under that bar — and 592 MiB was only ~1% under it — so MAX_TRACK_SEC below
  * is a hard ceiling, not a suggestion.
  */

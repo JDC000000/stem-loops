@@ -234,8 +234,10 @@
 /* ── M / S ───────────────────────────────────────────────────────────────── */
 
 /* On phones M sits ABOVE S rather than beside it. Side by side, two buttons
-   splitting a ~49px channel measured 24x40px each — a chiclet, not a thumb
-   target. Stacked, each one is the full channel width by --touch-min tall, so
+   splitting a ~48px channel measured 19x40px each in Chrome at 360px — a
+   chiclet, not a thumb target. (The app is border-box via globals.css, so
+   `.toggles`' own padding came OUT of that width rather than being added to
+   it.) Stacked, each button is the full channel width by --touch-min tall, so
    both axes clear 44px. From 760px up there is width to spare and they go back
    to a row. */
 .toggles {

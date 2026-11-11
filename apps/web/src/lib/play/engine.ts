@@ -55,36 +55,65 @@
  *
  * ⚠️ THAT PARAGRAPH USED TO STOP THERE, AND IT WAS INCOMPLETE. Decoding
  * sequentially stops six stereo buffers coexisting; it does NOT stop ONE stereo
- * buffer coexisting with all the monos decoded before it. The settled figure is
- * therefore not the peak, and the peak is what kills a tab:
+ * buffer coexisting with all the monos decoded before it. So `downmixToMono`
+ * below sums into the decoded buffer's own channel 0 rather than allocating a
+ * second full-length buffer beside the live stereo one, and releases each
+ * channel's backing store the moment it is spent.
  *
- *   6 stems, 48 kHz mono, 300 s — measured renderer RSS, real Chromium,
- *   median of 3 reps per side, same harness both sides:
- *                                      BEFORE      AFTER
- *     settled                           480 MB     484 MB
- *     PEAK, during load                 592 MB     548 MB
- *     transient over settled           +112 MB      +64 MB
+ * ⚠️ READ THE UNITS AND READ WHICH NUMBER IS WHICH. Everything below is
+ * MiB (2²⁰ B) — VmRSS and VmHWM are reported by the kernel in KiB. And there
+ * are TWO different measurements here, which earlier versions of this comment
+ * ran together:
  *
- *   Settled is ~4 MB HIGHER after, reproducibly, and that is the honest
- *   trade: eager release frees stores one at a time where the old path let GC
- *   reclaim a whole buffer at once, so the allocator settles slightly less
- *   compactly. 4 MB bought 44 MB of peak, and peak is the number that kills a
- *   tab.
+ *   SAMPLED RSS — /proc read 350 ms after each step of the load. It shows the
+ *   structure of the change but it CANNOT see a spike between samples.
+ *   HIGH-WATER MARK — VmHWM, reset via /proc/<renderer>/clear_refs=5 just
+ *   before the stem loop. This is the real process peak. Use this one.
+ *
+ * 6 stems, 300 s, 48 kHz mono, renderer process only, real Chromium:
+ *
+ *   HIGH-WATER MARK (VmHWM)                     BEFORE     AFTER    reps
+ *     8 kHz WAV source, GC forced per stem      766-767   656-658      9
+ *     8 kHz WAV source, no forced GC            764-766   658-713      6
+ *     real Ogg/Opus 48 kHz (production format)  870-871   762-763      3
+ *
+ *   SETTLED RSS, once reclaimed                 BEFORE     AFTER
+ *     8 kHz WAV source                          480-484   482-484
+ *     real Ogg/Opus 48 kHz                      577-578   579-580
+ *
+ *   SAMPLED RSS, highest sample                 BEFORE     AFTER
+ *     8 kHz WAV source                              592       548
+ *
+ * ⚠️ THE ~600 BAR IS NOT MET, BEFORE OR AFTER. The high-water mark is 656+
+ * MiB on the synthetic source and 762+ MiB on the production Opus one. This
+ * change lowers it by ~110 MiB and does not bring it under the bar. Anyone
+ * quoting 548, or quoting the settled figure, is quoting a number that is not
+ * the process peak — which is the mistake this comment exists to stop.
+ *
+ * WHAT STILL SETS THE MARK IS `decodeAudioData` ITSELF, not the downmix:
+ * after this change the high-water mark still sits ~175 MiB above settled,
+ * and no part of that is the mono buffer. Reducing it means changing how the
+ * decode happens, which is a separate piece of work nobody has scoped.
  *
  * The peak happens during LOAD, before a note plays: a device that survives
- * steady-state playback can still die loading. `downmixToMono` below is what
- * moved it. It sums into the decoded buffer's own channel 0 instead of
- * allocating a second full-length buffer alongside the live stereo one, and
- * hands each finished channel's backing store back to the allocator the moment
- * it is spent. What is left — one stereo buffer alive beside five monos at the
- * last decode — is the floor for this architecture: `decodeAudioData` gives us
- * a stereo buffer and there is no API that asks it not to.
+ * steady-state playback can still die loading.
+ *
+ * MEASUREMENT CAVEATS, because they bound what the table above licenses: one
+ * headless Chromium on one Linux box; the Opus run holds all six encoded
+ * buffers resident at once, which is what `load()` really does but which also
+ * raises its settled figure; with no forced GC the AFTER figure is the noisier
+ * of the two (one run in six landed at 658 rather than ~712); and nothing here
+ * was measured on WebKit or on a real device.
+ *
+ * What is left in the downmix — one stereo buffer alive beside five monos at
+ * the last decode — is the floor for this architecture: `decodeAudioData`
+ * gives us a stereo buffer and there is no API that asks it not to.
  *
  * Releasing eagerly rather than waiting for GC also matters on iOS, where
  * WebKit bug 189337 (open since 2018) can keep decoded audio resident for ~a
  * minute after the last reference is dropped. `load()` is re-runnable by design
  * via `loadId`, so a failed load plus a user retry could otherwise stack two
- * generations of PCM on exactly the path taken when memory is already tight.
+  * generations of PCM on exactly the path taken when memory is already tight.
  */
 
 import {
@@ -229,8 +258,12 @@ function releaseChannelData(data: Float32Array): void {
  * rate. `decoded` is CONSUMED: its channels are summed in place and then
  * released, so the caller must drop its reference and must not read it again.
  *
- * The order of the four steps is the whole point, and is what moved the
- * measured peak from 592 MB to 547 MB (see MEMORY at the top of this file):
+ * The order of the four steps is the whole point. It is what lowered the
+ * renderer high-water mark by ~110 MiB (see MEMORY at the top of this file;
+ * the mark is still above the ~600 bar afterwards). The order is gated by
+ * `the spent channels are released BEFORE the mono buffer is allocated` in
+ * play-engine.test.mjs — without that test, moving step 2 below step 3 frees
+ * the same bytes, leaves the same end state, and passes every other test:
  *
  *   1. sum into channel 0 IN PLACE   — no second full-length allocation while
  *                                      every source channel is still resident
@@ -240,9 +273,10 @@ function releaseChannelData(data: Float32Array): void {
  *                                      line rather than whenever GC gets to it
  *
  * Allocating the mono buffer first (as this used to) means one stereo buffer
- * and one mono buffer are both live for the length of the loop. That is the
- * +110 MB transient, and it is an allocation-ORDER bug, not a volume one:
- * exactly the same bytes are read and written either way.
+ * and one mono buffer are both live for the length of the loop. It is an
+ * allocation-ORDER bug, not a volume one: exactly the same bytes are read and
+ * written either way, and the end state is identical, which is precisely why
+ * no after-the-fact assertion can catch a regression here.
  *
  * A single-channel decode is returned as-is, UNRELEASED: it is the buffer we
  * are going to play, and copying it would double peak memory for no gain.

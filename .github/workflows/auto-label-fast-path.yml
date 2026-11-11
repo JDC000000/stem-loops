@@ -17,8 +17,10 @@
 #   - scripts/**           (T3, 2026-11-05 — minus the deny list below)
 #   - apps/training/**     (re-added 2026-11-05 alongside #117, which added the
 #                          `training-tests` CI job it depends on)
-#   - apps/web/src/**      (L2.3, 2026-11-05 — see preconditions below)
-#   - apps/worker/src/**   (L2.3, 2026-11-05 — see preconditions below)
+#   (REMOVED 2026-11-11, session 12 — see "Why implementation left the
+#    allowlist" below:)
+#   - apps/web/src/**      (L2.3, 2026-11-05 — WITHDRAWN)
+#   - apps/worker/src/**   (L2.3, 2026-11-05 — WITHDRAWN)
 #   - fixtures/**         (2026-11-06 — root only; shared test data, not executable)
 #
 # Deny list — evaluated first, always wins:
@@ -34,6 +36,39 @@
 #     - apps/worker/src/worker/billing/
 #     - apps/worker/migrations/*_v3_commercial*.sql
 #     - AGENTS.md
+#
+#
+# ── Why implementation left the allowlist (2026-11-11, session 12) ───────
+#
+# L2.3 widened this allowlist to apps/web/src/ and apps/worker/src/. Because
+# auto-merge.yml accepts `fast-path` as a SUBSTITUTE for
+# `adversarial-reviewed`, that one line made every feature PR mergeable with
+# zero independent review. The deny list below still protected money, auth
+# and the safety machinery — but ordinary product code was never the thing
+# the deny list was guarding.
+#
+# What that cost, measured on the night of 2026-11-10:
+#   PRs #182-#187 auto-merged to v3/main in 24 minutes, ~5,100 added lines of
+#   the play-along player (Mixer.tsx 571, Transport.tsx 443, ChordOverlay 471,
+#   load-stems 215, sections 212). Independent reviews commissioned AFTER the
+#   merges scored two of them BELOW the >=90 merge gate: #184 at 83 (six
+#   channels clip at 360px; M/S toggles 24x40, not the claimed 44px; the note
+#   explaining a missing stem rendered at ~2.8:1 contrast, under WCAG AA) and
+#   #187 at 89 (the chord-lookup hint diverges on unsorted or overlapping
+#   runs — 14,179 of 20,000 fuzzed datasets — and nothing upstream sorts or
+#   de-overlaps them).
+#
+# Neither defect is security-adjacent, so the deny list was never going to
+# catch them. Both are exactly what a reviewer catches. The gate's own stated
+# rationale — "the allowlisted paths cannot carry security-adjacent changes"
+# — was true and also beside the point: review is not only a security
+# control.
+#
+# This does NOT reduce merge autonomy. `adversarial-reviewed` is applied by a
+# reviewing AGENT, not by Jon. The bot still merges; it merges after someone
+# other than the author has looked. Implementation now needs
+# rollback-safe + adversarial-reviewed, which is the R-3 path that already
+# exists and already works.
 #
 # Why AGENTS.md is in the DENY list and not merely a CODEOWNERS path:
 #   it matches this file's own `*.md (anywhere)` allowlist term. Before L2.3 it
@@ -253,7 +288,7 @@ jobs:
           # ci.yml. Nothing built apps/web before it, so widening to
           # apps/web/src/ without it would have let a broken production build
           # auto-merge. Add `Web build` to the ruleset's required contexts.
-          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests?/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$|apps/training/|apps/web/src/|apps/worker/src/|scripts/|fixtures/)'
+          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests?/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$|apps/training/|scripts/|fixtures/)'
 
           # fixtures/ added 2026-11-06: shared Python<->TypeScript test data
           # (e.g. fixtures/contracts/harte-labels.json, play-chords.golden.json).

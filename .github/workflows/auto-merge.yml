@@ -5,7 +5,15 @@
 #     * NOT needs-jon-approval — Jon still eyes money/prod-touching code
 #   FAST PATH (T2 auto-merge, 2026-11-05):
 #     * fast-path            — auto-applied by .github/workflows/auto-label-fast-path.yml
-#                              when the entire diff is docs/tests/generated-types
+#                              when the entire diff is docs / tests / fixtures /
+#                              generated types / apps/training / scripts.
+#                              NOTE (2026-11-11): between 2026-11-05 and
+#                              2026-11-11 this ALSO covered apps/web/src/ and
+#                              apps/worker/src/, i.e. all product code, so this
+#                              comment was false and ~5,100 lines of the
+#                              play-along player merged with no independent
+#                              review. Implementation is out of the allowlist
+#                              again; it takes the STANDARD path above.
 #     * NOT needs-jon-approval — hard stop regardless
 # When conditions hold, the merge step calls REST
 # `PUT /repos/{owner}/{repo}/pulls/{N}/merge` directly. GitHub's required

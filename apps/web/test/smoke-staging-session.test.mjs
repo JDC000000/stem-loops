@@ -562,6 +562,70 @@ test('an honest 401 still retries even when the body is not JSON', async () => {
   assert.equal(fetchImpl.calls[2].headers.apikey, KEY);
 });
 
+// --------- 17e. a THROWN error's `.status` must never reach the retry bound
+// The bound reads err.status, and err.status is only ever attached from a
+// response object. On the fetch-REJECTION path there is no response, so the
+// error carries no status. Attaching `e?.status` there would re-open exactly
+// the forged-status route the status bound exists to close: a thrown object is
+// not the transport, so a `.status` on it is the remote end's word again --
+// the same delegation the message regex was. Unreachable with the real global
+// fetch (undici's rejections carry no `.status`), so this is latent, not an
+// exploitable finding; it is pinned here because the mechanism is sold as
+// structural and a mutant attaching `e?.status` otherwise survives the suite.
+test('a thrown error carrying a forged .status does NOT trigger the service-key retry', async () => {
+  for (const forged of [401, 403]) {
+    const thrower = () => {
+      const e = new Error('ECONNRESET');
+      e.status = forged;      // a forged transport status
+      e.ok = false;           // and response-shaped, to defeat a shape check too
+      throw e;
+    };
+    const fetchImpl = stubFetch([linkOk(), thrower, res(200, SESSION)]);
+    await assert.rejects(
+      () => mintServiceRoleSession({ sbUrl: SB, serviceKey: KEY, anonKey: ANON, email: EMAIL, fetchImpl }),
+      (e) => {
+        assert.equal(e.step, 'verify', `forged .status = ${forged}`);
+        assert.equal(
+          e.status, undefined,
+          `forged .status = ${forged}: a transport failure must carry no status`,
+        );
+        return true;
+      },
+    );
+    assert.equal(
+      fetchImpl.calls.length, 2,
+      `forged .status = ${forged}: must not retry -- a thrown object must not trigger the fallback`,
+    );
+    assert.equal(
+      fetchImpl.calls[1].headers.apikey, ANON,
+      `forged .status = ${forged}: the anon key must have been the only key used on /verify`,
+    );
+    assert.ok(
+      !fetchImpl.calls.slice(1).some((c) => c.headers.apikey === KEY),
+      `forged .status = ${forged}: the service-role key must NOT have been sent to /verify`,
+    );
+  }
+});
+
+test('the status on an error is only ever read off a response object', async () => {
+  // The complement of the test above: an honest response still attaches its
+  // status, so the bound is pinned shut without being pinned closed.
+  const { run } = mint([res(401, { m: 1 })]);
+  await assert.rejects(run, (e) => {
+    assert.equal(e.status, 401, 'a real response status must still be attached');
+    return true;
+  });
+  // A rejection that is a plain non-object value must also attach nothing.
+  for (const thrown of [401, '401', null, undefined]) {
+    const r = mint([() => { throw thrown; }]);
+    await assert.rejects(r.run, (e) => {
+      assert.equal(e.status, undefined, `thrown ${String(thrown)} must attach no status`);
+      assert.equal(e.step, 'generate_link');
+      return true;
+    });
+  }
+});
+
 // ------------------------------------- 17d. the fallback must be observable
 test('the fallback reports itself through onNotice', async () => {
   const notices = [];
@@ -684,6 +748,43 @@ test('every error is constructed in exactly one place, so redaction is structura
       `throw must be boom(...) or a bare re-throw of the caught error, got: throw ${t.slice(0, 60)}`,
     );
   }
+  // ...and err.status must have exactly ONE attach site, reading off a
+  // RESPONSE. Same class as scrub(step): the retry bound is sold as reading
+  // the transport status, so the status must not be able to originate anywhere
+  // else. A bare number or a thrown Error is not response-like.
+  const attaches = [...code.matchAll(/err\.status\s*=/g)].length;
+  assert.equal(attaches, 1, `expected exactly one "err.status =" site, found ${attaches}`);
+  assert.match(
+    code,
+    /if \(isResponseLike\(response\)\) err\.status = response\.status;/,
+    'the status must be attached only from a response-like object',
+  );
+  assert.match(
+    code,
+    /typeof r\.status === 'number' && Number\.isFinite\(r\.status\)\s*&&\s*typeof r\.ok === 'boolean'/,
+    'isResponseLike must require a finite numeric .status AND a boolean .ok',
+  );
+  // The fetch-REJECTION path must pass NO third argument. `e` there is an
+  // arbitrary thrown value; attaching `e?.status` would re-open the
+  // forged-status route the status bound exists to close. Unreachable with the
+  // real global fetch (undici's rejections carry no .status), so this is the
+  // structural half of the pin -- 17e is the behavioural half.
+  assert.ok(
+    code.includes('throw boom(step, `POST ${path} request failed: ${clean(e?.message ?? e)}`);'),
+    'the fetch-rejection throw must pass exactly two arguments to boom()',
+  );
+  assert.ok(!code.includes('e?.status'), 'no status may be read off an arbitrary thrown value');
+  // `e.status` is legitimate only after `e` has been narrowed to a
+  // SmokeSessionError that boom() built from a response: twice in the retry
+  // bound and once in the notice that reports the fallback. Pin the count and
+  // the narrowing so it cannot spread to an un-narrowed thrown value.
+  const eStatus = [...code.matchAll(/\be\.status\b/g)].length;
+  assert.equal(eStatus, 3, `expected e.status only in the retry bound and its notice, found ${eStatus} uses`);
+  assert.match(
+    code,
+    /e instanceof SmokeSessionError\s*&&\s*\(e\.status === 401 \|\| e\.status === 403\)/,
+    'the retry bound must narrow to SmokeSessionError before reading .status',
+  );
 });
 
 test('a hostile body cannot flood the CI line through its key names', async () => {

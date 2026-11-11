@@ -167,13 +167,34 @@ export async function mintServiceRoleSession({ sbUrl, serviceKey, anonKey = '', 
   // construction point is a hole in that claim rather than a live leak. A
   // review mutant that put a credential in `step` leaked it in full.
   //
-  // `status` is the HTTP status, attached so callers can branch on the STATUS
-  // rather than on the message. The message embeds `clean(text)`, i.e.
+  // `err.status` is the HTTP status, attached so callers can branch on the
+  // STATUS rather than on the message. The message embeds `clean(text)`, i.e.
   // attacker-controlled response body, so any decision made by matching the
   // message is really a decision made by the remote end.
-  const boom = (step, msg, status) => {
+  //
+  // The third parameter is the RESPONSE OBJECT, not a bare status, and the
+  // status is read off it only when it is actually response-shaped: a finite
+  // numeric `status` AND a boolean `ok`. That is what makes "the status came
+  // off the transport" structural rather than a convention. The fetch-REJECTION
+  // path has no response, so it passes nothing and the error carries no status
+  // -- which is why a thrown error bearing a forged `.status = 401` cannot
+  // reach the retry bound. Attaching `e?.status` there would re-open the
+  // forged-status route; a number is not response-like, and neither is an
+  // Error. Pinned by the source assertion on the two-argument form and
+  // behaviourally by the forged-status cases (17e) in the test file.
+  const isResponseLike = (r) => (
+    r !== null && typeof r === 'object'
+    && typeof r.status === 'number' && Number.isFinite(r.status)
+    && typeof r.ok === 'boolean'
+  );
+  const boom = (step, msg, response) => {
     const err = new SmokeSessionError(scrub(step), scrub(msg));
-    if (typeof status === 'number') err.status = status;
+    // The ONE place a status is ever attached, and it reads it off a response.
+    // A bare number or a thrown Error is not response-like, so neither can be
+    // laundered into the retry bound. No throw here: the single-construction-
+    // point invariant says every throw in this module is boom(), and boom()
+    // must not be the exception to it.
+    if (isResponseLike(response)) err.status = response.status;
     return err;
   };
 
@@ -203,6 +224,12 @@ export async function mintServiceRoleSession({ sbUrl, serviceKey, anonKey = '', 
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
+      // No response exists on this path, so NOTHING is passed as the third
+      // argument and the error carries no status -- deliberately. `e` is an
+      // arbitrary thrown value; a `.status` on it is not a transport status.
+      // undici's rejections carry none today, so this is latent rather than
+      // live, but the retry bound reads err.status and must not be reachable
+      // from a thrown object.
       throw boom(step, `POST ${path} request failed: ${clean(e?.message ?? e)}`);
     }
     // Inside the try: a body-stream failure must not escape as a bare,
@@ -211,21 +238,21 @@ export async function mintServiceRoleSession({ sbUrl, serviceKey, anonKey = '', 
     try {
       text = await res.text();
     } catch (e) {
-      throw boom(step, `POST ${path} HTTP ${res.status}: could not read the response body: ${clean(e?.message ?? e)}`, res.status);
+      throw boom(step, `POST ${path} HTTP ${res.status}: could not read the response body: ${clean(e?.message ?? e)}`, res);
     }
     if (res.status >= 300 && res.status < 400) {
       throw boom(
         step,
         `POST ${path} returned a redirect (HTTP ${res.status}). Not followed on purpose: a cross-origin hop `
           + 'would carry the apikey header with it. Check SUPABASE_URL.',
-        res.status,
+        res,
       );
     }
     let json = null;
     try { json = JSON.parse(text); } catch { /* not JSON; reported below */ }
-    if (!res.ok) throw boom(step, `POST ${path} HTTP ${res.status}: ${clean(text) || '(empty body)'}`, res.status);
+    if (!res.ok) throw boom(step, `POST ${path} HTTP ${res.status}: ${clean(text) || '(empty body)'}`, res);
     if (json === null || typeof json !== 'object') {
-      throw boom(step, `POST ${path} HTTP ${res.status} returned non-JSON body: ${clean(text) || '(empty body)'}`, res.status);
+      throw boom(step, `POST ${path} HTTP ${res.status} returned non-JSON body: ${clean(text) || '(empty body)'}`, res);
     }
     return json;
   };

@@ -61,6 +61,7 @@ import {
   chipBox,
   chipDensity,
   estimateLabelPx,
+  makeCanvasMeasurer,
   readablePxPerSec,
   CHIP_FONT_PX,
   type LabelMeasure,
@@ -338,6 +339,12 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   // Built once per container element and memoised per (label, size); nothing
   // here runs per frame. Falls back to the calibrated table when there is no
   // canvas (SSR, happy-dom, a hardened browser that returns a null context).
+  // The measuring itself lives in makeCanvasMeasurer (a pure, exported factory
+  // over a narrow 2D-context interface) so that the path which runs in every
+  // real browser is reachable from a test. This hook only sources the context
+  // and the font off the element the chips inherit from. happy-dom's
+  // getContext('2d') returns null, so without that split the production
+  // measurer would be executed by no test at all.
   const measureLabel = useMemo<LabelMeasure>(() => {
     if (typeof document === 'undefined' || typeof window === 'undefined' || !wrapEl) {
       return estimateLabelPx;
@@ -348,23 +355,11 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
     } catch {
       ctx = null;
     }
-    if (!ctx) return estimateLabelPx;
     const cs = window.getComputedStyle(wrapEl);
-    const family = cs.fontFamily || 'sans-serif';
-    const weight = cs.fontWeight || '400';
-    const cache = new Map<string, number>();
-    return (label, fontPx) => {
-      const key = `${fontPx}|${label}`;
-      const hit = cache.get(key);
-      if (hit !== undefined) return hit;
-      ctx.font = `${weight} ${fontPx}px ${family}`;
-      const w = ctx.measureText(label).width;
-      // A browser that cannot measure must not silently report 0: that would
-      // declare every label to fit and bring the transparent-text bug back.
-      const px = Number.isFinite(w) && w > 0 ? w : estimateLabelPx(label, fontPx);
-      cache.set(key, px);
-      return px;
-    };
+    return makeCanvasMeasurer(ctx, {
+      fontFamily: cs.fontFamily,
+      fontWeight: cs.fontWeight,
+    });
   }, [wrapEl]);
 
   // THE DEFAULT ZOOM. The strip used to default to fit-the-whole-track, which
@@ -654,7 +649,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           <button
             type="button"
             style={{ ...zoomBtnStyle, width: 'auto', padding: '0 0.75rem' }}
-            data-testid="zoom-fit"
+            data-testid="zoom-reset"
             disabled={userPps === null}
             onClick={() => setZoom(null)}
           >

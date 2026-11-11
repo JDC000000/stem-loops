@@ -36,6 +36,8 @@ import { fileURLToPath } from 'node:url';
 import {
   CHIP_FONT_PX,
   CHIP_FULL_PAD_PX,
+  MAX_PX_PER_SEC,
+  canvasFontString,
   chipBox,
   chipDensity,
   clampPxPerSec,
@@ -43,6 +45,10 @@ import {
   estimateLabelPx,
   displayText,
   fitPxPerSec,
+  makeCanvasMeasurer,
+  NARROW_BREAKPOINT_PX,
+  WRAP_DEFAULT_ROW_SEC,
+  WRAP_MAX_ROW_SEC,
   observationsToRuns,
   readablePxPerSec,
 } from '../src/components/ChordOverlay.helpers.ts';
@@ -60,13 +66,18 @@ const OBSERVATIONS = PAYLOAD.segments.map((s) => ({
 const RUNS = observationsToRuns(OBSERVATIONS);
 const DUR = durationSec(RUNS);
 
-// The container widths the job page actually gives the overlay. JobView caps at
-// maxWidth 960 with 16px gutters, so 1280 and 1440 are the same container; 768
-// is gutter-limited. Both verified in Chromium (904px and 712px).
+// The container widths the job page actually gives the overlay, MEASURED in
+// Chromium. JobView's wrap is `maxWidth: 960` with `padding: 48px
+// var(--sl-gutter, 16px) 96px`, and --sl-gutter is 16px at :root but 32px above
+// 760px (design-tokens.css), so every desktop width uses the 32px gutter:
+// 960 - 64 - 24px of overlay padding = 872, and at 768 the viewport binds
+// instead: 768 - 64 - 24 = 680. 1280 and 1440 are the same container.
+// (JobView.tsx's own comment claims --sl-gutter is out of scope on this route
+// and that its 16px fallback is load-bearing. Both are false; see the PR.)
 const DESKTOP_WIDTHS = [
-  { viewport: 768, containerPx: 712 },
-  { viewport: 1280, containerPx: 904 },
-  { viewport: 1440, containerPx: 904 },
+  { viewport: 768, containerPx: 680 },
+  { viewport: 1280, containerPx: 872 },
+  { viewport: 1440, containerPx: 872 },
 ];
 
 /** Exactly what ChordOverlay does for the strip: the default px/sec it lands on. */
@@ -190,11 +201,136 @@ test('a sparse song still fits the strip; a dense song is capped, not run away',
   );
   const densePps = readablePxPerSec(dense, estimateLabelPx);
   assert.ok(Number.isFinite(densePps));
-  assert.equal(densePps, 80); // MAX_PX_PER_SEC, imported transitively via the helper
+  // The imported constant, not a literal that merely happens to equal it today.
+  assert.equal(densePps, MAX_PX_PER_SEC);
+  assert.ok(readablePxPerSec(dense, estimateLabelPx, MAX_PX_PER_SEC) <= MAX_PX_PER_SEC);
 });
 
 // ---------------------------------------------------------------------------
-// 2. The render gate: nothing counted may be invisible
+// 2. The measurer that actually runs in a browser
+// ---------------------------------------------------------------------------
+//
+// happy-dom's `getContext('2d')` returns null (asserted below), so under the
+// DOM harness the component ALWAYS falls back to `estimateLabelPx`. Without
+// these tests the canvas path -- the one path every real user is served -- is
+// executed by nothing. A mutant that quartered `measureText(...).width`, or
+// dropped the `px` unit from the font shorthand, left the whole suite green
+// while restoring the defect in Chromium.
+
+/** A 2D context that only measures what its font is actually set to. */
+function fakeCtx({ widths, initialFont = '10px sans-serif', strict = true } = {}) {
+  return {
+    font: initialFont,
+    set _(v) {},
+    measureText(text) {
+      const m = /(?:^|\s)(\d+(?:\.\d+)?)px(?:\s|$)/.exec(this.font);
+      const px = m ? Number(m[1]) : 10;
+      return { width: widths(text, px) };
+    },
+    // Canvas IGNORES an invalid shorthand and keeps the old value. Model that.
+    assign(v) {
+      if (!strict || /(?:^|\s)\d+(?:\.\d+)?px(?:\s|$)/.test(v)) this.font = v;
+    },
+  };
+}
+/** Wrap so `ctx.font = x` goes through the canvas accept/ignore rule. */
+function strictCtx(opts) {
+  const inner = fakeCtx(opts);
+  return {
+    get font() { return inner.font; },
+    set font(v) { inner.assign(v); },
+    measureText: (t) => inner.measureText(t),
+  };
+}
+
+test('happy-dom really has no 2D context — so these tests are the only cover', async () => {
+  await withDom(async (dom) => {
+    const ctx = dom.window.document.createElement('canvas').getContext('2d');
+    assert.equal(ctx, null, 'if happy-dom gained a canvas, revisit what the render gate proves');
+    // And the factory degrades to the calibrated table rather than throwing.
+    const m = makeCanvasMeasurer(ctx, { fontFamily: 'x', fontWeight: '400' });
+    assert.equal(m('F#:min7', CHIP_FONT_PX), estimateLabelPx('F#:min7', CHIP_FONT_PX));
+  });
+});
+
+test('canvasFontString always carries an explicit px size', () => {
+  const f = canvasFontString('400', 16, 'ui-sans-serif, system-ui');
+  assert.match(f, /(?:^|\s)16px(?:\s|$)/, `font shorthand had no px size: "${f}"`);
+  assert.equal(f, '400 16px ui-sans-serif, system-ui');
+  assert.equal(canvasFontString('700', 10, 'x'), '700 10px x');
+});
+
+test('the canvas measurer reports the size it ASKED for, or falls back', () => {
+  // A context that honours the font: the measurer must pass the width through.
+  const honest = strictCtx({ widths: (t, px) => estimateLabelPx(t, px) });
+  const m = makeCanvasMeasurer(honest, { fontFamily: 'ui-sans-serif', fontWeight: '400' });
+  assert.equal(m('F#:min7', CHIP_FONT_PX), estimateLabelPx('F#:min7', CHIP_FONT_PX));
+  assert.equal(m('F#:min7', 10), estimateLabelPx('F#:min7', 10));
+  assert.ok(m('F#:min7', CHIP_FONT_PX) > m('G:7', CHIP_FONT_PX));
+
+  // A context that REFUSES the font (the shorthand was invalid) keeps its old
+  // 10px default and would otherwise hand back a width ~1.6x too small, in the
+  // direction that declares text to fit when it does not. The read-back must
+  // catch that and fall back to the table.
+  const refusing = {
+    _f: '10px sans-serif',
+    get font() { return this._f; },
+    set font(_v) { /* canvas IGNORES a shorthand it cannot parse */ },
+    measureText(t) { return { width: estimateLabelPx(t, 10) }; },
+  };
+  const m2 = makeCanvasMeasurer(refusing, { fontFamily: 'ui-sans-serif', fontWeight: '400' });
+  assert.equal(
+    m2('F#:min7', CHIP_FONT_PX),
+    estimateLabelPx('F#:min7', CHIP_FONT_PX),
+    'a context stuck at 10px must not be believed about a 16px label',
+  );
+  assert.ok(m2('F#:min7', CHIP_FONT_PX) > estimateLabelPx('F#:min7', 10) * 1.5);
+});
+
+test('the canvas measurer never reports a width it did not measure', () => {
+  for (const bad of [0, -5, NaN, Infinity, undefined]) {
+    const ctx = strictCtx({ widths: () => bad });
+    const m = makeCanvasMeasurer(ctx, { fontFamily: 'x', fontWeight: '400' });
+    assert.equal(
+      m('F#:min7', CHIP_FONT_PX),
+      estimateLabelPx('F#:min7', CHIP_FONT_PX),
+      `width ${String(bad)} must fall back to the table, not be passed through`,
+    );
+  }
+  // A context that throws is a fallback, not a crash.
+  const throwing = { font: '', measureText() { throw new Error('nope'); } };
+  const m = makeCanvasMeasurer(throwing, { fontFamily: 'x', fontWeight: '400' });
+  assert.equal(m('C:maj', CHIP_FONT_PX), estimateLabelPx('C:maj', CHIP_FONT_PX));
+  assert.equal(makeCanvasMeasurer(null, { fontFamily: 'x', fontWeight: '400' })('C:maj', 16),
+    estimateLabelPx('C:maj', 16));
+});
+
+test('a measurer that under-reports moves the default zoom, and the gate sees it', () => {
+  // The shape of M3 (`width / 4`) and M7 (dropped unit), expressed as a property:
+  // a measurer that reports less than the truth lowers the default zoom, which
+  // is exactly how the chips stopped fitting their names.
+  const honest = makeCanvasMeasurer(
+    strictCtx({ widths: (t, px) => estimateLabelPx(t, px) }),
+    { fontFamily: 'x', fontWeight: '400' },
+  );
+  const quartered = (label, px) => estimateLabelPx(label, px) / 4;
+  const truePps = readablePxPerSec(RUNS, honest);
+  const badPps = readablePxPerSec(RUNS, quartered);
+  assert.ok(
+    badPps < truePps / 2,
+    `under-measuring must lower the zoom: ${badPps.toFixed(3)} vs ${truePps.toFixed(3)}`,
+  );
+
+  // And at that zoom the chips demonstrably cannot carry their names.
+  const clipped = RUNS.filter((run) => {
+    const w = Math.max(1, chipBox(run, badPps).widthPx - 1);
+    return chipDensity(w, estimateLabelPx(displayText(run), CHIP_FONT_PX)) !== 'full';
+  }).length;
+  assert.ok(clipped > RUNS.length * 0.9, `${clipped}/${RUNS.length} chips clipped at the bad zoom`);
+});
+
+// ---------------------------------------------------------------------------
+// 3. The render gate: nothing counted may be invisible
 // ---------------------------------------------------------------------------
 
 /** rgb()/rgba()/named -> {r,g,b,a}. Returns null for a value we cannot read. */
@@ -280,17 +416,46 @@ async function mountOverlay(dom, { containerPx, afterMount } = {}) {
     assert.ok(timeline, 'the timeline container did not render');
     // SCOPED to the container: a chip counted here is a chip on the timeline.
     const chips = [...timeline.querySelectorAll('[data-testid^="chord-chip-"]')];
+    // WHAT THIS MODELS, EXACTLY -- so the assertions are not read as more than
+    // they are. Each chip's own DECLARED text colour composited over its own
+    // DECLARED background, and both of those composited over the page
+    // background with the chip's element `opacity` (the component sets 0.85 on
+    // continued-row chips, which fades text and background together towards the
+    // page and so really does cut contrast). It does NOT walk the ancestor
+    // chain for an inherited background, because happy-dom resolves no cascade
+    // and the overlay's own ancestors declare none. `parseColor('transparent')`
+    // deliberately returns an alpha-0 colour rather than null so it composites
+    // instead of being swapped for an opaque default.
     const pageBg = parseColor('#0b0d12');
+    const over = (c, under) => ({
+      r: c.r * c.a + under.r * (1 - c.a),
+      g: c.g * c.a + under.g * (1 - c.a),
+      b: c.b * c.a + under.b * (1 - c.a),
+      a: 1,
+    });
     const rows = chips.map((chip) => {
       const cs = w.getComputedStyle(chip);
       const fg = parseColor(cs.color) ?? { r: 255, g: 255, b: 255, a: 1 };
-      const bg = parseColor(cs.backgroundColor) ?? parseColor(cs.background) ?? pageBg;
+      const bgRaw = parseColor(cs.backgroundColor) ?? parseColor(cs.background) ?? { r: 0, g: 0, b: 0, a: 0 };
+      const o = Number.isFinite(Number(cs.opacity)) && cs.opacity !== '' ? Number(cs.opacity) : 1;
+      // chip background as painted, then the text on top of it, both faded by o.
+      const bgPainted = over({ ...bgRaw, a: bgRaw.a * o }, pageBg);
+      const fgPainted = over({ ...fg, a: fg.a * o }, bgPainted);
+      const text = chip.textContent;
+      // FIT, independent of colour: the chip's own inline width, put back
+      // through the real density function with the real label. A chip that
+      // paints readable text in a box too small for it is still a failure.
+      const declaredW = parseFloat(chip.style.width) || 0;
+      const labelPx = estimateLabelPx(text, CHIP_FONT_PX);
       return {
         density: chip.dataset.density,
-        text: chip.textContent,
-        hasText: chip.textContent.length > 0,
+        text,
+        hasText: text.length > 0,
         color: cs.color,
-        contrast: contrast(fg, bg),
+        opacity: o,
+        widthPx: declaredW,
+        fitsDensity: text.length === 0 ? null : chipDensity(declaredW, labelPx),
+        contrast: contrast(fgPainted, bgPainted),
       };
     });
     return { timeline, chips, rows };
@@ -304,7 +469,7 @@ async function mountOverlay(dom, { containerPx, afterMount } = {}) {
 
 test('default view: every chord chip on the timeline shows a READABLE label', async () => {
   await withDom(async (dom) => {
-    const { rows } = await mountOverlay(dom, { containerPx: 904 });
+    const { rows } = await mountOverlay(dom, { containerPx: 872 });
 
     assert.equal(rows.length, RUNS.length, 'wrong number of chips on the timeline');
 
@@ -320,6 +485,19 @@ test('default view: every chord chip on the timeline shows a READABLE label', as
       readable.length >= rows.length - 1,
       `only ${readable.length}/${rows.length} chips carry a readable label`,
     );
+
+    // Colour is not fit. A chip can paint perfectly legible text in a box too
+    // small to hold it, which is what the old 34px `full` threshold produced.
+    // Put each chip's OWN inline width back through the real density function
+    // with its real label and require the answer to match what it rendered as.
+    const mismatched = rows.filter((r) => r.hasText && r.fitsDensity !== r.density);
+    assert.deepEqual(
+      mismatched.map((r) => `${r.text}: ${r.widthPx}px rendered as ${r.density}, fits ${r.fitsDensity}`),
+      [],
+      'a chip\'s declared width does not match the density it rendered at',
+    );
+    const notFull = rows.filter((r) => r.hasText && r.fitsDensity === 'tick');
+    assert.deepEqual(notFull.map((r) => r.text), [], 'a chip has text in a box too small for any size');
     await dom.unmountAll();
   });
 });
@@ -330,7 +508,7 @@ test('at ANY zoom a chip either shows a readable label or carries no text at all
   // the user used to land in as well as the one they land in now.
   await withDom(async (dom) => {
     const { rows } = await mountOverlay(dom, {
-      containerPx: 904,
+      containerPx: 872,
       afterMount: async (d) => {
         const slider = d.find('[data-testid="zoom-slider"]');
         assert.ok(slider, 'no zoom slider');
@@ -361,7 +539,7 @@ test('at ANY zoom a chip either shows a readable label or carries no text at all
 test('a tick chip keeps its chord on an accessible name even with no visible text', async () => {
   await withDom(async (dom) => {
     const { chips } = await mountOverlay(dom, {
-      containerPx: 904,
+      containerPx: 872,
       afterMount: async (d) => {
         const slider = d.find('[data-testid="zoom-slider"]');
         await d.act(() => {
@@ -379,6 +557,73 @@ test('a tick chip keeps its chord on an accessible name even with no visible tex
     // And the first chord's real label is reachable there, not merely "a string".
     const first = chips[0].getAttribute('aria-label');
     assert.match(first, /C/, `first chip's accessible name was "${first}"`);
+    await dom.unmountAll();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. The wrapped (narrow) layout
+// ---------------------------------------------------------------------------
+//
+// The strip and the wrapped layout take their defaults from DIFFERENT places
+// (`readablePxPerSec` vs `WRAP_DEFAULT_ROW_SEC`), so gating the strip gates
+// nothing here. A mutant that moved WRAP_DEFAULT_ROW_SEC from 8 to 40 left the
+// whole suite green with half the phone's chips nameless.
+
+/** 390px viewport -> 334px container, measured in Chromium. */
+const NARROW_CONTAINER_PX = 334;
+const GUTTER_PX = 44; // row-time labels, mirrors ChordOverlay
+
+test('the wrapped layout is the one the phone gets at 390px', () => {
+  assert.ok(
+    NARROW_CONTAINER_PX < NARROW_BREAKPOINT_PX,
+    `a ${NARROW_CONTAINER_PX}px container must take the wrapped layout`,
+  );
+  assert.ok(WRAP_DEFAULT_ROW_SEC < WRAP_MAX_ROW_SEC, 'the default row must be tighter than the loosest');
+});
+
+test('the narrow default puts chord names on the phone, not ticks', () => {
+  const rowWidthPx = Math.max(120, NARROW_CONTAINER_PX - GUTTER_PX);
+  const minPps = Math.min(MAX_PX_PER_SEC, rowWidthPx / WRAP_MAX_ROW_SEC);
+  const pps = clampPxPerSec(rowWidthPx / WRAP_DEFAULT_ROW_SEC, minPps);
+
+  const ticks = RUNS.filter((run) => {
+    const w = Math.max(1, chipBox(run, pps).widthPx - 1);
+    return chipDensity(w, estimateLabelPx(displayText(run), CHIP_FONT_PX)) === 'tick';
+  }).length;
+  assert.ok(
+    ticks <= 2,
+    `${ticks}/${RUNS.length} chords are nameless at the phone's default (${pps.toFixed(2)}px/sec)`,
+  );
+
+  // And the default really is tighter than the floor -- if it collapsed onto
+  // minPps the way the strip's default used to, this is where it would show.
+  assert.ok(pps > minPps, `the narrow default collapsed onto its minimum (${pps} vs ${minPps})`);
+});
+
+test('wrapped render: nothing on the phone timeline is invisible or mis-sized', async () => {
+  await withDom(async (dom) => {
+    const { rows } = await mountOverlay(dom, { containerPx: NARROW_CONTAINER_PX });
+    const timeline = dom.find('[data-testid="chord-timeline"]');
+    assert.equal(timeline.dataset.layout, 'wrapped', 'expected the wrapped layout at 334px');
+    assert.ok(rows.length >= RUNS.length, 'runs split across rows should produce at least one chip each');
+
+    assert.deepEqual(
+      rows.filter((r) => r.hasText && r.contrast < 1.05).map((r) => `${r.text} @ ${r.color}`),
+      [],
+      'a chip on the phone has a text node the user cannot see',
+    );
+    assert.deepEqual(
+      rows.filter((r) => r.hasText && r.fitsDensity === 'tick').map((r) => r.text),
+      [],
+      'a chip on the phone has text in a box too small for any size',
+    );
+    // Nameless ticks are legitimate on a phone, but they must stay a minority.
+    const named = rows.filter((r) => r.hasText).length;
+    assert.ok(
+      named >= rows.length * 0.75,
+      `only ${named}/${rows.length} chips on the phone carry a name`,
+    );
     await dom.unmountAll();
   });
 });

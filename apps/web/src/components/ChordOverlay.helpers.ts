@@ -706,6 +706,82 @@ export function estimateLabelPx(label: string, fontPx: number = CHIP_FONT_PX): n
   return (w * fontPx) / CHIP_FONT_PX;
 }
 
+/**
+ * The 2D-context surface the canvas measurer needs. Narrowed to what is used so
+ * a test can supply a fake one: the real measurer is the one that runs in every
+ * browser, and it must not be the one path no test executes.
+ */
+export interface Measurable2DContext {
+  font: string;
+  measureText(text: string): { width: number };
+}
+
+export interface CanvasFontSpec {
+  fontFamily: string;
+  fontWeight: string;
+}
+
+/**
+ * The CSS font shorthand for a canvas context. Separate and exported because
+ * the ONE thing that can go wrong here is silent: canvas IGNORES an invalid
+ * shorthand and keeps whatever the context had. Dropping the `px` unit leaves
+ * the context at its default `10px sans-serif`, so every label measures ~1.6x
+ * too small -- in the direction that declares text to fit when it does not.
+ */
+export function canvasFontString(fontWeight: string, fontPx: number, fontFamily: string): string {
+  return `${fontWeight} ${fontPx}px ${fontFamily}`;
+}
+
+/** Pulls the px size out of a canvas `font` read-back, which normalises the string. */
+const FONT_PX_RE = /(?:^|\s)(\d+(?:\.\d+)?)px(?:\s|$)/;
+
+/**
+ * THE MEASURER THAT RUNS IN PRODUCTION. Memoised per (label, size).
+ *
+ * After every assignment it READS `ctx.font` BACK and checks the size actually
+ * took. Canvas accepts a bad shorthand silently, so without the read-back a
+ * one-character typo would under-measure every label and quietly restore the
+ * invisible-chord bug with the whole suite green. A context that cannot be
+ * measured, cannot take the font, or returns a non-positive width falls back to
+ * the calibrated table rather than reporting a width it did not measure.
+ *
+ * KNOWN GAP: canvas 2D has no `font-variant-numeric`, and the chips declare
+ * `tabular-nums`. Measured in Chromium on this font stack, canvas under-measures
+ * digit-bearing labels by up to 1.656px at 16px ("G:7/5": 41.094 vs 42.750
+ * rendered) -- always the unsafe direction. The `full` branch reserves 16px of
+ * padding and the `tight` branch 2px against a delta that scales to ~1.04px at
+ * 10px, so it is absorbed today. It is not fixable from here: there is no canvas
+ * API for it.
+ */
+export function makeCanvasMeasurer(
+  ctx: Measurable2DContext | null | undefined,
+  spec: CanvasFontSpec,
+): LabelMeasure {
+  if (!ctx || typeof ctx.measureText !== 'function') return estimateLabelPx;
+  const family = spec.fontFamily || 'sans-serif';
+  const weight = spec.fontWeight || '400';
+  const cache = new Map<string, number>();
+  return (label, fontPx = CHIP_FONT_PX) => {
+    const key = `${fontPx}|${label}`;
+    const hit = cache.get(key);
+    if (hit !== undefined) return hit;
+    let px: number;
+    try {
+      ctx.font = canvasFontString(weight, fontPx, family);
+      const took = FONT_PX_RE.exec(String(ctx.font ?? ''));
+      const w = ctx.measureText(label).width;
+      px =
+        took && Math.abs(Number(took[1]) - fontPx) < 0.5 && Number.isFinite(w) && w > 0
+          ? w
+          : estimateLabelPx(label, fontPx);
+    } catch {
+      px = estimateLabelPx(label, fontPx);
+    }
+    cache.set(key, px);
+    return px;
+  };
+}
+
 /** Chip width at which `label` fits at full size, padding and inter-chip gap included. */
 export function fullChipPx(labelPx: number): number {
   return labelPx + CHIP_FULL_PAD_PX + CHIP_GAP_PX;

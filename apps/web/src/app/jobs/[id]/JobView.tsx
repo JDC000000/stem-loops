@@ -60,10 +60,27 @@ export default function JobView({ id }: { id: string }) {
     };
   }, [id]);
 
+  // GUTTER: the token, never a literal. Found across #197 + #194 — neither PR
+  // could see it alone. This was a hard-coded `24px`, and the mixer's entire
+  // 360px layout budget is computed against the app's 16px gutter. At 360px the
+  // extra 8px per side ate the mixer's whole margin: channels landed at exactly
+  // 46.00px and "VOCALS" truncated to "VOCA…" — reintroducing the very defect
+  // #194's 5c3c181 was written to fix. An inline literal is what made the drift
+  // invisible to both sides, so the number is gone.
+  //
+  // ⚠️ THE FALLBACK IS LOAD-BEARING, not belt-and-braces. `--sl-gutter` is
+  // defined in src/styles/landing.css, which is imported ONLY by
+  // app/(landing)/layout.tsx and app/not-found.tsx. This route is not in the
+  // (landing) group, so the token is NOT in scope here. A bare
+  // `var(--sl-gutter)` would be invalid at computed-value time and take the
+  // WHOLE shorthand down with it — padding would compute to 0 and the 48px top
+  // and 96px bottom would vanish too. `16px` is landing.css's own base value,
+  // so this renders identically to every other page at mobile widths and
+  // automatically picks up the token if this route is ever brought into scope.
   const wrap: React.CSSProperties = {
     maxWidth: 960,
     margin: '0 auto',
-    padding: '48px 24px 96px',
+    padding: '48px var(--sl-gutter, 16px) 96px',
     fontFamily: 'var(--font-sans)',
     display: 'flex',
     flexDirection: 'column',

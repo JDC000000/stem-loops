@@ -632,6 +632,44 @@ test('Story 1.2: the Player is mounted ABOVE LoopResults on the job page', () =>
   assert.ok(player < loops, 'LoopResults is above the Player — Story 1.2 is inverted');
 });
 
+// ═══ the page gutter the mixer budgeted against ═════════════════════════════
+
+test('the job page gutter is the token with a 16px fallback, never a literal', () => {
+  // Cross-PR defect (#197 + #194). The mixer's 360px layout budget assumes the
+  // app's 16px gutter. This page hard-coded 24px inline, which at 360px drove
+  // channels to exactly 46.00px and truncated "VOCALS" to "VOCA…" — the defect
+  // #194's 5c3c181 exists to prevent. A literal here cannot be seen by either
+  // side's tests, so the literal is what this pins.
+  const view = codeOnly(read('src/app/jobs/[id]/JobView.tsx'));
+  const padding = view.match(/padding:\s*'([^']+)'/)?.[1];
+  assert.ok(padding, 'the page wrapper lost its padding declaration');
+  assert.match(padding, /var\(--sl-gutter,\s*16px\)/, `gutter is not the token: ${padding}`);
+  assert.doesNotMatch(
+    padding,
+    /\d+px\s+\d+px\s+\d+px/,
+    `a hard-coded three-value gutter is back: ${padding}`,
+  );
+});
+
+test('the gutter fallback is present, because the token is NOT in scope on this route', () => {
+  // `--sl-gutter` lives in src/styles/landing.css, imported only by
+  // app/(landing)/layout.tsx and app/not-found.tsx. /jobs/[id] is not in that
+  // group. A BARE var(--sl-gutter) would be invalid at computed-value time and
+  // collapse the whole padding shorthand to 0 — losing the 48px top and 96px
+  // bottom as well. If this route is ever brought into landing.css's scope,
+  // delete this test; until then the fallback is the only thing rendering.
+  const landing = read('src/styles/landing.css');
+  assert.match(landing, /--sl-gutter:\s*16px/, 'landing.css changed its base gutter');
+  const layout = read('src/app/layout.tsx');
+  assert.doesNotMatch(layout, /landing\.css/, 'landing.css is global now — revisit the fallback');
+  const view = codeOnly(read('src/app/jobs/[id]/JobView.tsx'));
+  assert.doesNotMatch(
+    view,
+    /var\(--sl-gutter\)/,
+    'a bare var(--sl-gutter) would compute padding to 0 on this route',
+  );
+});
+
 test('a partial load reports exactly the missing stems, which is what Story 5.1 renders', async () => {
   const { engine } = await loadedEngine();
   await engine.load([

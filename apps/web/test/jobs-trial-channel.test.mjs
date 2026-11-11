@@ -68,8 +68,8 @@ function trialStub({ consumeResult = { ok: true, songs_remaining: 2, expires_at:
   `);
 }
 
-function entitlementsStub({ planCode = 'free', enforce = { allow: true } } = {}) {
-  const payload = JSON.stringify({ planCode, enforce });
+function entitlementsStub({ planCode = 'free', enforce = { allow: true }, credits = 0 } = {}) {
+  const payload = JSON.stringify({ planCode, enforce, credits });
   return dataUrl(`
     const cfg = ${payload};
     globalThis.__calls = globalThis.__calls || [];
@@ -103,9 +103,15 @@ function entitlementsStub({ planCode = 'free', enforce = { allow: true } } = {})
       if (!cfg.enforce.allow) {
         throw new EntitlementError(cfg.enforce.code ?? 'CREDIT_BALANCE_INSUFFICIENT', cfg.enforce.message ?? 'denied');
       }
-      return { allowed: true, snapshot: { plan_code: cfg.planCode } };
+      return {
+        allowed: true,
+        snapshot: { plan_code: cfg.planCode, credits_remaining: cfg.credits ?? 0 },
+      };
     };
     export const invalidateEntitlement = () => {};
+    // Mirrors the real entitlements.ts export: read at CALL time, never
+    // captured at module load, so a test can flip it around a single POST.
+    export const billingEnforced = () => process.env.BILLING_ENFORCED === 'true';
   `);
 }
 
@@ -511,18 +517,26 @@ test('POST /api/jobs — consume returning {ok:false} falls through to burst/quo
 // ---------------------------------------------------------------------------
 
 test('POST /api/jobs — free user UPLOAD charges a credit in the jobs tx (B1)', async () => {
-  const mod = await loadRoute({ user: USER, entitlements: { planCode: 'free' } });
-  const res = await mod.POST(makeReq({ jobId: JOB_ID, uploadKey: UPLOAD_KEY, loop_length_bars: 4 }));
-  assert.equal(res.status, 201);
-  const charged = globalThis.__calls.filter((c) => c.fn === 'consumeCredit');
-  assert.equal(charged.length, 1, 'exactly one credit charged');
-  assert.equal(charged[0].userId, USER.user_id);
-  assert.equal(charged[0].jobId, JOB_ID);
-  // Consume must come AFTER the jobs INSERT (trigger needs the job row).
-  const calls = globalThis.__calls;
-  const insertIdx = calls.findIndex((c) => c.fn === 'db.tx.query' && /INSERT INTO jobs/.test(c.sql));
-  assert.ok(insertIdx >= 0 && insertIdx < calls.findIndex((c) => c.fn === 'consumeCredit'));
-  assert.equal(calls.find((c) => c.fn === 'consumeTrial'), undefined, 'no trial double-consume');
+  // BILLING_ENFORCED=true is the credit-gate world this test was written for.
+  // With the switch off the free upload rides the monthly quota instead and
+  // charges nothing — asserted separately below.
+  process.env.BILLING_ENFORCED = 'true';
+  try {
+    const mod = await loadRoute({ user: USER, entitlements: { planCode: 'free' } });
+    const res = await mod.POST(makeReq({ jobId: JOB_ID, uploadKey: UPLOAD_KEY, loop_length_bars: 4 }));
+    assert.equal(res.status, 201);
+    const charged = globalThis.__calls.filter((c) => c.fn === 'consumeCredit');
+    assert.equal(charged.length, 1, 'exactly one credit charged');
+    assert.equal(charged[0].userId, USER.user_id);
+    assert.equal(charged[0].jobId, JOB_ID);
+    // Consume must come AFTER the jobs INSERT (trigger needs the job row).
+    const calls = globalThis.__calls;
+    const insertIdx = calls.findIndex((c) => c.fn === 'db.tx.query' && /INSERT INTO jobs/.test(c.sql));
+    assert.ok(insertIdx >= 0 && insertIdx < calls.findIndex((c) => c.fn === 'consumeCredit'));
+    assert.equal(calls.find((c) => c.fn === 'consumeTrial'), undefined, 'no trial double-consume');
+  } finally {
+    delete process.env.BILLING_ENFORCED;
+  }
 });
 
 for (const plan of ['pro', 'studio']) {

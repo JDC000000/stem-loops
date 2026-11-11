@@ -16,6 +16,7 @@ import {
   getEntitlementSnapshot,
   enforceEntitlement,
   EntitlementError,
+  billingEnforced,
 } from '@/lib/billing/entitlements';
 import { consumeTrialInTx } from '@/lib/trial';
 import { consumeCreditInTx } from '@/lib/billing/credits';
@@ -107,7 +108,18 @@ export async function POST(request: NextRequest) {
           const { snapshot: entSnap } = await enforceEntitlement('start_job_upload', user.user_id);
           // Pro/Studio are unlimited (quota-metered); everyone else who got
           // past the gate is on the credit path and is charged below.
-          chargeCredit = entSnap.plan_code !== 'pro' && entSnap.plan_code !== 'studio';
+          //
+          // With billing NOT enforced, a free user who got past the gate did so
+          // on the monthly-quota path (entitlements.ts) unless they actually
+          // hold credits — charging a credit they do not have would throw
+          // CREDIT_BALANCE_INSUFFICIENT inside the tx and roll the job back,
+          // re-creating the very defect the gate change removes. When
+          // BILLING_ENFORCED=true the `||` short-circuits and this is
+          // character-for-character the old predicate.
+          chargeCredit =
+            entSnap.plan_code !== 'pro' &&
+            entSnap.plan_code !== 'studio' &&
+            (billingEnforced() || entSnap.credits_remaining > 0);
         } catch (err) {
           if (err instanceof EntitlementError) {
             return NextResponse.json(

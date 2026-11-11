@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --experimental-strip-types --test src/lib/*.test.mjs src/chord/__tests__/*.test.mjs src/components/__tests__/*.test.mjs test/*.test.mjs",
+    "test": "node --experimental-strip-types --test src/lib/*.test.mjs src/chord/__tests__/*.test.mjs src/components/__tests__/*.test.mjs test/*.test.mjs test/helpers/*.test.mjs",
     "test:chord": "node --experimental-strip-types --test src/chord/__tests__/*.test.mjs src/components/__tests__/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },
@@ -37,6 +37,7 @@
     "@typescript-eslint/parser": "^7.18.0",
     "eslint": "^8.57.0",
     "eslint-config-next": "14.2.35",
+    "happy-dom": "^21.0.4",
     "typescript": "^5.4.5"
   }
 }

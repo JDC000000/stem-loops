@@ -5,5 +5,27 @@
   "rules": {
     "@typescript-eslint/no-explicit-any": "warn",
     "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }]
-  }
+  },
+  "overrides": [
+    {
+      "files": ["src/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["**/test/**", "*/test/*", "**/*.test.*"],
+                "message": "Production code under src/ must not import test-only modules. test/helpers/dom.mjs wraps happy-dom, a devDependency; importing it from src/ compiles happy-dom into the production bundle."
+              },
+              {
+                "group": ["happy-dom", "happy-dom/*"],
+                "message": "Production code under src/ must not import happy-dom directly. It is a devDependency used only by test/helpers/dom.mjs; importing it from src/ ships happy-dom plus ws, whatwg-mimetype, buffer-image-size and entities into .next/server. Guarding only the harness path left this one-line route open."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
 }

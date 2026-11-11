@@ -27,6 +27,9 @@
  *  3. BOUNDED PER CALL. At most MAX_MANIFEST_REFRESHES (2) refreshes per
  *     `loadStems` call, so the worst case is 1 + 2 = 3 manifest requests per
  *     call. A stem still 403 after the budget goes to `missing`; we never loop.
+ *     In practice the budget is only ever spent on refreshes that SUCCEED and
+ *     still hand back a URL that 403s, because the first refresh failure stops
+ *     the retrying outright (note 5).
  *
  *     That bound is PER CALL and nothing more — there is deliberately no
  *     cross-call memory, so it is NOT a storm bound. 30 sequential all-403 loads
@@ -37,21 +40,33 @@
  *  4. `expires_in_sec` <= 0 / non-finite is NOT trusted or acted on up front: we
  *     still try the URLs, and the bounded 403 path handles reality. A hostile or
  *     buggy value therefore cannot cause a refresh loop.
- *  5. A refresh that returns 429 or 404 does NOT throw away stems that already
- *     downloaded. The job expiring mid-load is exactly when a partial result is
- *     most valuable. So: record the failure, leave siblings holding valid URLs
- *     alone, send the stems that needed the refresh to `missing`, and return the
- *     partial result with `refreshFailure` set so the UI can say "too many
- *     requests" instead of silently degrading. Story 5 — the player works with a
- *     stem missing and SAYS which, rather than failing whole.
+ *  5. A FAILED REFRESH DOES NOT THROW AWAY STEMS THAT ALREADY DOWNLOADED, and
+ *     is never swallowed. The job expiring mid-load is exactly when a partial
+ *     result is most valuable. So, for ANY refresh failure — 429, 404, 5xx,
+ *     network, invalid JSON alike: record it in `refreshFail`, leave siblings
+ *     holding valid URLs alone, send the stems that needed the refresh to
+ *     `missing`, and return the partial result with `refreshFailure` set so the
+ *     UI can name the cause instead of silently degrading. Story 5 — the player
+ *     works with a stem missing and SAYS which, rather than failing whole.
+ *     (Story 5 in the contract: `types.ts:64` `StemAvailability`, `:121`
+ *     `EngineSnapshot.degraded`, `:170-179` `LoadedStems`.)
  *
- *     It is thrown only when NOTHING loaded: a result with zero sources is not a
- *     degraded player, it is a failed load, and there the caller needs the code
- *     and `retryAfterSec` to decide when to come back.
+ *     Recording EVERY failure, not just 429/404, is what makes the field
+ *     trustworthy: a swallowed refresh 5xx left `refreshFailure` null and the UI
+ *     saying "the encoder never made vocals" when the truth was "the URL expired
+ *     and the refresh route was down". It also ends the retry loop at the first
+ *     failure, so a known-dead URL is not re-fetched for the rest of the budget.
  *
- * Failure model: a stem that is absent, 404s, errors, exceeds MAX_STEM_BYTES or
- * returns an empty body is `missing`, never an exception. Only manifest-level
- * problems, abort, and a refresh failure with zero stems loaded throw.
+ *     The cost, accepted: a TRANSIENT refresh 5xx is no longer retried, even
+ *     though the second refresh might have worked. Re-fetching a URL that is
+ *     already known dead, twice, against a route that is already failing, is
+ *     the worse trade.
+ *
+ * Failure model: a stem that is absent, 404s, 429s, errors, exceeds
+ * MAX_STEM_BYTES or returns an empty body is `missing`, never an exception. Only
+ * manifest-level problems, abort, and a nameable failure with zero stems loaded
+ * throw. See THE ZERO-SOURCE RULE at the bottom of `loadStems` for exactly when
+ * a zero-source load is a thrown error and when it is a returned result.
  *
  * KNOWN RESIDUES (accepted, not oversights)
  * -----------------------------------------
@@ -64,17 +79,41 @@
  *    `PLAYABLE_STEMS` drives the download loop, deleting it is an equivalent
  *    mutant. It stays so that a future caller iterating the manifest itself
  *    cannot be handed `kazoo` or `__proto__`.
- *  - Three more equivalent mutants, measured and kept on purpose rather than
- *    left unmentioned. Each is unobservable ALONE but not as a pair, and the
- *    suite kills the pair:
- *      * `if (refreshFail.current) return` inside `refresh` is masked by the
- *        same check in `download`'s 403 branch, and vice versa. Removing BOTH
- *        is caught. Two guards because either one moving later should not
- *        silently re-open re-fetching a URL the route has already refused.
- *      * `refreshFail.current ??= e` vs `=`: only one refresh failure can ever
- *        be recorded, since the next refresh short-circuits on it.
- *      * `fail(e)` on an ABORTED refresh: `ctl` is aborted only by the caller's
- *        signal, which `throwIfAborted()` already turns into ABORTED.
+ *  - MAX_IDLE_READS and the two yields in the reader are DEFENSIVE. The
+ *    empty-chunk stall they close reproduces against an in-process stream but
+ *    NOT over real HTTP — undici coalesces, and HTTP/1.1 chunked encoding cannot
+ *    express a zero-length chunk without ending the body. They are kept because
+ *    the loader accepts an injected `fetch`, so an in-process source is a
+ *    supported input, and because without the yields the documented
+ *    `AbortSignal.timeout` mitigation provably could not fire (there is a test
+ *    for exactly that).
+ *  - Equivalent mutants, measured and listed so nobody re-derives them. Each is
+ *    unobservable, and that is a property of the code, not a gap in the tests:
+ *      * `if (refreshFail.current) return` inside `refresh`. Deleting it changes
+ *        nothing because `if (generation > seen) return` on the line above
+ *        catches the same callers first: all six downloads sample `seen` in the
+ *        same tick, so once a refresh has completed — successfully or not —
+ *        `generation` has already advanced past every stem's `seen`. (An earlier
+ *        revision of this comment blamed the guard in `download`; that was the
+ *        wrong mechanism.) Kept because a future change to how `seen` is sampled
+ *        would otherwise silently re-open refreshing against a route that has
+ *        already refused us.
+ *      * `refreshFail.current ??= e` vs `=` inside `note`: unreachable, because
+ *        the first recorded failure stops every later refresh and every later
+ *        403 retry, so a second record cannot happen.
+ *      * recording an ABORTED refresh into `refreshFail` instead of skipping
+ *        it: the final `throwIfAborted()` runs before the zero-source rule, so
+ *        the recorded value could never be read. Skipped anyway, because
+ *        `refreshFailure` describes a DEGRADED load and an aborted one is not.
+ *      * dropping the `current.has(name)` pre-check in the `Promise.all`:
+ *        `download` re-reads `current.get(stem)` and returns null for a miss,
+ *        so the pre-check only avoids entering the loop.
+ *    Two more were removed rather than documented, because they were dead
+ *    machinery rather than defence: the `fatal`/`fail()` pair and its
+ *    `if (fatal) throw fatal` sites. With note 5 in place `fail()` was reachable
+ *    only from the ABORTED refresh branch, which `throwIfAborted()` already
+ *    covers, so the whole mechanism went. `ctl` itself stays — it is the shared
+ *    signal that carries the caller's abort into every in-flight request.
  */
 import { PLAYABLE_STEMS } from './types.ts';
 import type { LoadedStems, StemName, StemSource } from './types.ts';
@@ -87,17 +126,44 @@ export const MAX_MANIFEST_REFRESHES = 2;
  *
  * Why 16 MiB: a real stem is a 48 kHz mono Opus of a <=300 s track (types.ts
  * MAX_TRACK_SEC), which measures ~2-2.5 MB. 16 MiB is ~6x the largest real stem,
- * so nothing legitimate trips it, while six of them bound one load at 96 MiB of
- * compressed bytes against the ~576 MB RSS budget that types.ts records as
- * SHIPPING. Without a cap a single bad encode, a wrong object key, or a slow
- * body we keep accumulating hands us an unbounded ArrayBuffer and OOMs the tab
- * before `decodeAudioData` is even reached — a 64 MB body is accepted today.
+ * so nothing legitimate trips it. Without a cap a single bad encode, a wrong
+ * object key, or a slow body we keep accumulating hands us an unbounded
+ * ArrayBuffer and OOMs the tab before `decodeAudioData` is even reached.
  *
- * Content-Length alone is not enough: it is absent on a chunked response and a
- * server is free to lie about it, so the streaming read counts too and bails the
- * moment the running total crosses the cap, keeping nothing.
+ * What the cap bounds, stated precisely, because the loose version of this
+ * sentence was wrong. Six stems at the cap RETAIN 96 MiB of compressed bytes.
+ * The transient PEAK is higher, and the peak is what matters against the
+ * ~576 MB RSS the types.ts note records as SHIPPING against a 600 MB bar — only
+ * ~4% of headroom, with `decodeAudioData` PCM landing on top of it.
+ *
+ * MEASURED here, six stems at exactly the cap, 64 KiB chunks over loopback HTTP,
+ * node 22.23.4, whole-process peak RSS sampled every 2 ms against a 35.8 MiB
+ * empty-process baseline, 4 runs each:
+ *   Content-Length present (pre-sized)   96.0 MiB retained / 229.6-230.2 MiB peak
+ *   Content-Length absent (accumulate)   96.0 MiB retained / 269.6-289.9 MiB peak
+ * The second is worse because the reader holds every chunk AND the assembled
+ * copy at the same time. That is why the Content-Length path reads straight into
+ * one pre-sized buffer — 40-60 MiB off the peak in the normal case, since R2
+ * always sends Content-Length on a GET. Peak is ~2.4x retained either way, so
+ * size the cap against the peak, not the 96 MiB.
+ *
+ * Content-Length alone is not enough to bound anything: it is absent on a
+ * chunked response and a server is free to lie about it, so the streaming read
+ * counts too and bails the moment the running total crosses the cap, keeping
+ * nothing. The pre-sized buffer is an allocation hint, never the bound.
  */
 export const MAX_STEM_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Consecutive zero-length reads tolerated before a stem body is abandoned.
+ * Guards the one shape the byte cap cannot see: an endless stream of empty
+ * chunks, which never grows the running total. 1024 is far more than any real
+ * transfer produces (a conformant sender emits none) and small enough to end
+ * the spin promptly — the reader yields on each such read, so reaching the bound
+ * costs on the order of a second of wall time, during which a caller's
+ * AbortSignal can and does fire.
+ */
+export const MAX_IDLE_READS = 1024;
 
 export type StemLoadErrorCode =
   | 'RATE_LIMITED' // manifest 429: "too many requests, try again shortly"
@@ -121,10 +187,11 @@ export class StemLoadError extends Error {
 }
 
 /**
- * A manifest refresh that failed while at least one stem had already
- * downloaded. Same fields as `StemLoadError`, as plain data: it is a reportable
- * condition, not a thrown one. Carries `retryAfterSec` because honouring it is
- * the caller's obligation (see strategy note 3).
+ * A nameable failure that degraded a load which still produced something: a
+ * manifest refresh that failed for any reason, or a stem object that answered
+ * 429. Same fields as `StemLoadError`, as plain data, because it is a reportable
+ * condition rather than a thrown one. Carries `retryAfterSec` because honouring
+ * it is the caller's obligation (see strategy note 3).
  */
 export interface StemRefreshFailure {
   readonly code: StemLoadErrorCode;
@@ -136,12 +203,16 @@ export interface StemRefreshFailure {
 /**
  * `LoadedStems` plus WHY the result is degraded, when we know.
  *
- * Extends the contract rather than editing `types.ts`: every existing consumer
- * keeps working because this is assignable to `LoadedStems`, and `missing`
- * still feeds `EngineSnapshot.degraded` untouched. A UI that wants to
- * distinguish "the encoder never made vocals" from "the signed-URL route
- * rate-limited us mid-load" reads `refreshFailure`; one that does not, ignores
- * it. `null` on every clean load, including a load degraded for ordinary
+ * Declared here instead of in `types.ts` so the contract file stays the shared
+ * seam it was built to be. It is assignable to `LoadedStems` and `missing` still
+ * feeds `EngineSnapshot.degraded` untouched, so it is a widening, not a break —
+ * though note there are currently NO production callers of `loadStems` (the
+ * engine takes `StemSource[]` directly, per the contract), so that is a design
+ * property and not evidence gathered from real consumers.
+ *
+ * A UI that wants to distinguish "the encoder never made vocals" from "the
+ * signed-URL route was down mid-load" reads `refreshFailure`; one that does not,
+ * ignores it. `null` on every clean load, and on a load degraded for ordinary
  * reasons (a stem absent from the manifest, a 404, an empty body).
  */
 export interface LoadStemsResult extends LoadedStems {
@@ -183,10 +254,16 @@ function parseManifest(body: unknown): Map<StemName, string> {
  */
 async function readBoundedBody(res: Response): Promise<ArrayBuffer | null> {
   const declared = Number(res.headers?.get?.('content-length'));
-  // Cheap gate: refuse before a single byte is read.
-  if (Number.isFinite(declared) && declared > MAX_STEM_BYTES) return null;
-
   const body = (res as { body?: ReadableStream<Uint8Array> | null }).body;
+
+  // Cheap gate: refuse before a single byte is read, and TERMINATE the response
+  // rather than abandoning it — backpressure means nothing accumulates, but an
+  // un-cancelled body holds the connection until the GC gets to it.
+  if (Number.isFinite(declared) && declared > MAX_STEM_BYTES) {
+    await body?.cancel?.().catch(() => {});
+    return null;
+  }
+
   if (!body || typeof body.getReader !== 'function') {
     // No readable stream (a shim or a test double). Nothing to count as we go,
     // so the after-the-fact check is the best available.
@@ -194,33 +271,77 @@ async function readBoundedBody(res: Response): Promise<ArrayBuffer | null> {
     return buf.byteLength > 0 && buf.byteLength <= MAX_STEM_BYTES ? buf : null;
   }
 
-  const reader = body.getReader();
+  // A usable Content-Length lets us read straight into ONE correctly-sized
+  // buffer. Without it we must accumulate chunks and then assemble, which holds
+  // the chunks AND the copy at the same time — so the transient peak is about
+  // twice what we end up retaining. Pre-sizing removes that doubling for the
+  // normal case (R2 always sends Content-Length on a GET).
+  const presized = Number.isInteger(declared) && declared > 0 && declared <= MAX_STEM_BYTES;
+  const out = presized ? new Uint8Array(declared) : null;
   const chunks: Uint8Array[] = [];
+
+  const reader = body.getReader();
   let total = 0;
+  let idleReads = 0;
+  let reads = 0;
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (!value) continue;
+      // `await reader.read()` settles as a MICROTASK when a value is already
+      // queued, so a loop fed by an in-memory stream never reaches the macrotask
+      // queue: timers do not fire, and the caller's AbortSignal.timeout — the
+      // mitigation this module documents — could never run. Over real HTTP each
+      // read waits on the socket and this is moot, but a non-conformant or
+      // in-process source must not be able to starve the event loop. Yield
+      // periodically so it always can.
+      if ((++reads & 0x3ff) === 0) await new Promise((r) => setTimeout(r, 0));
+      if (!value || value.byteLength === 0) {
+        // Empty chunks never grow `total`, so the byte cap cannot bound them.
+        // Bound the no-progress reads instead, and yield on every one of them:
+        // this path is already abnormal, so fairness beats throughput here.
+        if (++idleReads > MAX_IDLE_READS) {
+          await reader.cancel().catch(() => {});
+          return null;
+        }
+        await new Promise((r) => setTimeout(r, 0));
+        continue;
+      }
+      idleReads = 0;
       total += value.byteLength;
       // Truthful gate: stop the transfer and keep nothing.
       if (total > MAX_STEM_BYTES) {
         await reader.cancel().catch(() => {});
         return null;
       }
-      chunks.push(value);
+      if (out) {
+        // Content-Length said `declared`; a body longer than that is a
+        // non-conformant response, and trusting it would overrun the buffer.
+        if (total > declared) {
+          await reader.cancel().catch(() => {});
+          return null;
+        }
+        out.set(value, total - value.byteLength);
+      } else {
+        chunks.push(value);
+      }
     }
   } finally {
     reader.releaseLock?.();
   }
   if (total === 0) return null; // an empty 200 is not a stem
-  const out = new Uint8Array(total);
+  if (out) {
+    // A body SHORTER than Content-Length is also non-conformant, but here the
+    // bytes we did get are intact, so hand back exactly those.
+    return total === declared ? out.buffer : out.buffer.slice(0, total);
+  }
+  const assembled = new Uint8Array(total);
   let at = 0;
   for (const c of chunks) {
-    out.set(c, at);
+    assembled.set(c, at);
     at += c.byteLength;
   }
-  return out.buffer;
+  return assembled.buffer;
 }
 
 export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Promise<LoadStemsResult> {
@@ -231,16 +352,12 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
   };
   throwIfAborted();
 
-  // Internal controller: cancels sibling downloads when one failure is fatal.
+  // Internal controller: the single signal every request in this load shares,
+  // so the caller's abort reaches all of them. Nothing else aborts it — a
+  // failure now degrades the load instead of cancelling its siblings.
   const ctl = new AbortController();
   const onAbort = () => ctl.abort();
   outer?.addEventListener('abort', onAbort, { once: true });
-
-  let fatal: StemLoadError | null = null;
-  const fail = (e: StemLoadError) => {
-    fatal ??= e;
-    ctl.abort();
-  };
 
   const manifestUrl = `${opts.baseUrl ?? ''}/api/jobs/${encodeURIComponent(jobId)}/stems`;
 
@@ -277,12 +394,16 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
     let refreshes = 0;
     let inflight: Promise<void> | null = null;
     /**
-     * A 429/404 on a REFRESH. Recorded, never fatal: it must not cancel
-     * siblings that are already downloading on URLs that still work. Boxed so
-     * that the assignment, which happens inside the refresh closure, is visible
-     * to narrowing out here.
+     * The first nameable, non-abort failure that degraded this load: a manifest
+     * refresh that failed for ANY reason, or a stem object that answered 429.
+     * Recorded, never fatal — it must not cancel siblings that are already
+     * downloading on URLs that still work. Boxed so that the assignments, which
+     * happen inside nested closures, are visible to narrowing out here.
      */
     const refreshFail: { current: StemLoadError | null } = { current: null };
+    const note = (e: StemLoadError) => {
+      refreshFail.current ??= e;
+    };
 
     // Single-flight refresh. Returns once `generation` has advanced past `seen`
     // or the budget is spent (the caller's stem then becomes missing).
@@ -297,16 +418,22 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
         try {
           current = await fetchManifest();
         } catch (e) {
-          if (e instanceof StemLoadError && e.code === 'ABORTED') {
-            // The caller cancelled: there is nothing to salvage.
-            fail(e);
-          } else if (e instanceof StemLoadError && (e.code === 'RATE_LIMITED' || e.code === 'NOT_FOUND')) {
-            // Record and carry on. Stems already in flight keep their valid
-            // URLs; the ones that needed this refresh become `missing`.
-            refreshFail.current ??= e;
+          // EVERY refresh failure is recorded, not just 429/404. A refresh that
+          // 5xxs, fails the network or returns junk leaves the old URLs in
+          // place, and those URLs are known-dead — the 403 is what sent us
+          // here. Swallowing it meant `refreshFailure` stayed null and the UI
+          // said "the encoder never made vocals" when the truth was "the URL
+          // expired and the refresh route was down", which is exactly the
+          // ambiguity this field exists to remove. Recording it also stops
+          // `download` from re-fetching the dead URL for the rest of its
+          // budget, since its guard now fires on the first 403.
+          if (e instanceof StemLoadError) {
+            // ABORTED needs no record: the caller already knows, and the final
+            // throwIfAborted() turns it into the thrown ABORTED.
+            if (e.code !== 'ABORTED') note(e);
+          } else {
+            note(new StemLoadError('MANIFEST_FAILED', 'Stems manifest refresh failed unexpectedly'));
           }
-          // Any other refresh failure leaves the old (dead) URLs in place, so
-          // the affected stems end up missing without a special case.
         } finally {
           generation += 1;
           inflight = null;
@@ -328,9 +455,23 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
         }
         if (res.status === 403) {
           await refresh(seen);
-          if (fatal || refreshFail.current || ctl.signal.aborted) return null;
+          if (refreshFail.current || ctl.signal.aborted) return null;
           seen = generation;
           continue;
+        }
+        if (res.status === 429) {
+          // The object store itself rate-limited us. The stem is still
+          // `missing`, but a load where a rate limit demonstrably happened must
+          // not report `refreshFailure: null` — that was a constructible case of
+          // "too many requests" degrading silently.
+          const ra = Number(res.headers?.get?.('retry-after'));
+          note(
+            new StemLoadError('RATE_LIMITED', 'Too many requests, try again shortly', {
+              status: 429,
+              retryAfterSec: Number.isFinite(ra) && ra > 0 ? ra : undefined,
+            }),
+          );
+          return null;
         }
         if (!res.ok) return null; // 404 etc: same as a missing stem
         try {
@@ -348,7 +489,6 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
     );
 
     throwIfAborted();
-    if (fatal) throw fatal;
 
     const sources: StemSource[] = [];
     const missing: StemName[] = [];
@@ -356,9 +496,17 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
       if (r.bytes) sources.push({ name: r.name, bytes: r.bytes });
       else missing.push(r.name);
     }
-    // Zero sources is a failed load, not a degraded one: throw so the caller
-    // gets the code and can honour retryAfterSec. With anything playable, the
-    // partial result plus `refreshFailure` is strictly more useful.
+    // THE ZERO-SOURCE RULE, stated once so the code, this comment and the tests
+    // agree:
+    //   nothing loaded AND a nameable failure  -> throw it. Something broke that
+    //     we can put a code on, and the caller needs that code plus
+    //     `retryAfterSec` to decide when to come back.
+    //   nothing loaded AND no nameable failure -> RETURN `{ sources: [],
+    //     missing: all six, refreshFailure: null }`. The job legitimately has no
+    //     playable stems (an encode produced none, every object 404s, or the
+    //     bounded 403 retries ran out against a healthy manifest route). That is
+    //     a job state, not a load error, so it stays a successful result —
+    //     `engine.ts` maps it to PLAY_NO_STEMS.
     const failed = refreshFail.current;
     if (failed && sources.length === 0) throw failed;
     return {
@@ -369,7 +517,6 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
         : null,
     };
   } catch (e) {
-    if (fatal) throw fatal;
     throwIfAborted();
     throw e;
   } finally {

@@ -94,7 +94,7 @@
  *
  * So the ~110 MiB is bought by RELEASING EAGERLY AT ALL — not by the order.
  * Once the stores are handed back on the spot, the high-water moment moves
- * inside `decodeAudioData`, which is above both downmix variants, so the
+ * inside `decodeAudioData`, which is above every downmix variant, so the
  * ordering stops being visible in VmHWM.
  *
  * The order still earns its place, and it is worth being exact about what it
@@ -127,14 +127,21 @@
  * was measured on WebKit or on a real device.
  *
  * What is left in the downmix — one stereo buffer alive beside five monos at
- * the last decode — is the floor for this architecture: `decodeAudioData`
- * gives us a stereo buffer and there is no API that asks it not to.
+ * the last decode — is the LIVE-PCM floor for this architecture:
+ * `decodeAudioData` gives us a stereo buffer and there is no API that asks it
+ * not to. It is a floor on PCM, not a prediction of VmHWM, which the table
+ * above shows is far higher.
  *
- * Releasing eagerly rather than waiting for GC also matters on iOS, where
- * WebKit bug 189337 (open since 2018) can keep decoded audio resident for ~a
- * minute after the last reference is dropped. `load()` is re-runnable by design
- * via `loadId`, so a failed load plus a user retry could otherwise stack two
-  * generations of PCM on exactly the path taken when memory is already tight.
+ * WHY EAGER RELEASE AND NOT JUST DROPPING THE REFERENCE. The attribution
+ * table is the evidence for something the iOS bug reports already implied:
+ * handing the store back is not the same as making it collectable. WebKit bug
+ * 189337 (open since 2018) can keep decoded audio resident for ~a minute after
+ * the last reference is dropped, and the 766 -> 657 row here is Chromium
+ * showing the same shape — a forced `gc()` between stems did NOT get that
+ * memory back, an explicit transfer-detach did. `load()` is re-runnable by
+ * design via `loadId`, so a failed load plus a user retry could otherwise
+ * stack two generations of PCM on exactly the path taken when memory is
+ * already tight.
  */
 
 import {

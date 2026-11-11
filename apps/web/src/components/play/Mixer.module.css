@@ -1,0 +1,399 @@
+/**
+ * Mixer — six vertical faders. Story 2.
+ *
+ * Every colour, size, radius and easing here comes from the locked token set
+ * (src/styles/design-tokens.css + src/styles/stem-color.css). No new palette:
+ * each channel wears its own stem hue via `[data-stem]` -> `--stem`, which is
+ * the same rule the results page and the landing lanes use, and lime keeps its
+ * one job (the primary action and the focus ring).
+ *
+ * Vertical range inputs, three ways, because no single mechanism covers the
+ * browsers we ship to:
+ *   - `writing-mode: vertical-lr` + `direction: rtl`  — the standard, Chrome
+ *     130+/Firefox 129+/Safari 17.4+, min at the bottom.
+ *   - `-webkit-appearance: slider-vertical`            — older Safari/Chrome.
+ *   - `orient="vertical"` (set in Mixer.tsx)           — older Firefox.
+ * The three agree on direction (max at the top). A rotate() hack is NOT used:
+ * it moves the hit area away from the painted control, which is exactly the
+ * thing a guitarist reaching for a fader by feel would be bitten by.
+ */
+
+.mixer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+}
+
+/* Six channels share the width. Below ~360px the rail scrolls rather than
+   crushing the 44px fader hit areas. */
+.rail {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-1);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.channel {
+  flex: 1 1 0;
+  min-width: 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0 var(--space-1);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  transition:
+    background var(--sl-dur-1, 160ms) var(--sl-ease, ease),
+    border-color var(--sl-dur-1, 160ms) var(--sl-ease, ease),
+    opacity var(--sl-dur-1, 160ms) var(--sl-ease, ease);
+}
+
+@media (min-width: 760px) {
+  .channel {
+    min-width: 72px;
+    gap: var(--space-3);
+  }
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  width: 100%;
+}
+
+.name {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--stem, var(--text-secondary));
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.readout {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-label, var(--text-muted));
+}
+
+/* ── the fader ───────────────────────────────────────────────────────────── */
+
+.slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 132px;
+  width: 100%;
+}
+
+@media (min-width: 760px) {
+  .slot {
+    height: 176px;
+  }
+}
+
+.fader {
+  /* a 44px-wide touch column over a 6px painted track */
+  box-sizing: border-box;
+  width: var(--touch-min);
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  cursor: ns-resize;
+  touch-action: none; /* a vertical drag must not scroll the page instead */
+
+  -webkit-appearance: slider-vertical; /* older WebKit */
+  writing-mode: vertical-lr; /* the standard */
+  direction: rtl; /* zero at the bottom */
+}
+
+.fader:disabled {
+  cursor: not-allowed;
+}
+
+/* WebKit/Blink track + thumb. The fill below the thumb is the stem hue, so the
+   level is readable at a glance without reading the number. */
+.fader::-webkit-slider-runnable-track {
+  width: 6px;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background:
+    linear-gradient(
+      to top,
+      var(--stem, var(--text-secondary)) 0 var(--mx-fill, 0%),
+      var(--bg-elevated) var(--mx-fill, 0%) 100%
+    );
+  border: 1px solid var(--border-default);
+}
+
+.fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 32px;
+  height: 14px;
+  margin-left: -13px; /* centre the cap over the 6px track */
+  border-radius: 3px;
+  background: var(--text-secondary);
+  border: 1px solid var(--bg-page);
+  box-shadow: var(--shadow-card);
+}
+
+.fader:hover:not(:disabled)::-webkit-slider-thumb {
+  background: var(--text-primary);
+}
+
+.fader:disabled::-webkit-slider-runnable-track {
+  background: var(--bg-elevated);
+  border-style: dashed;
+}
+
+.fader:disabled::-webkit-slider-thumb {
+  background: var(--text-disabled);
+  box-shadow: none;
+}
+
+/* Gecko */
+.fader::-moz-range-track {
+  width: 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+}
+
+.fader::-moz-range-progress {
+  width: 6px;
+  border-radius: var(--radius-full);
+  background: var(--stem, var(--text-secondary));
+}
+
+.fader::-moz-range-thumb {
+  width: 32px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--text-secondary);
+  border: 1px solid var(--bg-page);
+}
+
+.fader:disabled::-moz-range-track {
+  border-style: dashed;
+}
+
+.fader:disabled::-moz-range-thumb {
+  background: var(--text-disabled);
+}
+
+/* One focus ring everywhere (stem-color.css sets the same on :focus-visible);
+   restated here because the control is inside a scroll container. */
+.fader:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── M / S ───────────────────────────────────────────────────────────────── */
+
+.toggles {
+  display: flex;
+  gap: var(--space-1);
+  width: 100%;
+  padding-inline: var(--space-1);
+}
+
+.toggle {
+  flex: 1 1 0;
+  min-width: 0;
+  /* 40px on phones, 44px from tablet up: a thumb target, not a 20px chiclet */
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  border: 1px solid var(--border-control, var(--border-strong));
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  transition:
+    background var(--sl-dur-1, 160ms) var(--sl-ease, ease),
+    border-color var(--sl-dur-1, 160ms) var(--sl-ease, ease),
+    color var(--sl-dur-1, 160ms) var(--sl-ease, ease);
+}
+
+@media (min-width: 760px) {
+  .toggle {
+    height: var(--touch-min);
+  }
+}
+
+.toggle:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
+.toggle:disabled {
+  color: var(--text-disabled);
+  border-color: var(--border-subtle);
+  cursor: not-allowed;
+}
+
+.toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Engaged M: the "failed/off" hue, which already means "this is not sounding".
+   Engaged S: the stem's own hue, because solo is "listen to THIS one". The two
+   pressed states are different colours AND different fills, so the pair never
+   reads as one generic "on". */
+.mute[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--status-failed) 26%, var(--bg-elevated));
+  border-color: var(--status-failed);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--status-failed);
+}
+
+.solo[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--stem, var(--accent)) 28%, var(--bg-elevated));
+  border-color: var(--stem, var(--accent));
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--stem, var(--accent));
+}
+
+/* ── per-channel note (the reason) ───────────────────────────────────────── */
+
+.note {
+  margin: 0;
+  min-height: 2.4em; /* reserve the line so a state change does not reflow the rail */
+  width: 100%;
+  padding-inline: 2px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  text-align: center;
+  color: var(--text-label, var(--text-muted));
+  overflow-wrap: anywhere;
+}
+
+/* ── channel states ──────────────────────────────────────────────────────── */
+
+/* Muted by the user: the name is struck through, the same shape the landing
+   lanes use for "off". */
+.isMuted .name {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.isMuted .note {
+  color: var(--status-failed);
+}
+
+/* Silent because something ELSE is soloed. Deliberately NOT the muted look:
+   the whole channel recedes and the note says why, but nothing is struck
+   through, because the user did not turn this off — it will come back on its
+   own when the solo clears. */
+.isDucked:not(.isMuted) {
+  opacity: 0.55;
+}
+
+.isDucked:not(.isMuted) .note {
+  font-style: italic;
+}
+
+/* Soloed: the channel is lifted, with its hue on the edge. */
+.isSoloed {
+  background: var(--bg-selected);
+  border-color: var(--stem, var(--accent));
+}
+
+/* Unavailable (Story 5.1 / 5.2): visibly inert, and the note carries the why. */
+.isDisabled {
+  background: var(--bg-surface);
+  border-style: dashed;
+  border-color: var(--border-default);
+}
+
+.isDisabled .name {
+  color: var(--text-muted);
+}
+
+.isDisabled .note {
+  color: var(--text-muted);
+}
+
+/* ── legend ──────────────────────────────────────────────────────────────── */
+
+.legend {
+  margin: 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-subtle);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── motion and forced colours ───────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .channel,
+  .toggle {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  /* The UA drops background tints and inset shadows, so restate every state
+     that was carried by colour alone. */
+  .mute[aria-pressed='true'],
+  .solo[aria-pressed='true'] {
+    outline: 3px solid Highlight;
+    outline-offset: -3px;
+  }
+
+  .toggle {
+    outline: 1px solid ButtonText;
+    outline-offset: -1px;
+  }
+
+  .toggle:focus-visible,
+  .fader:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  .isDucked:not(.isMuted) {
+    opacity: 1; /* opacity is not a reliable signal here; the note carries it */
+  }
+
+  .fader::-webkit-slider-runnable-track {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+}

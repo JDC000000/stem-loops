@@ -1,25 +1,29 @@
 /**
- * Proves the DOM harness does what the interactive components need, and that it
- * cannot poison the suite.
+ * Proves the DOM harness does what the interactive components need, and — the part
+ * that actually matters for a helper every later test builds on — that it cannot
+ * turn a red test green or poison the test that follows it.
  *
- * Every component here is a throwaway defined in this file. Nothing is imported
- * from src/components on purpose: the real mixer / transport / section-loop
- * components live on unmerged branches, and importing them would make this file
- * conflict on every one of them.
+ * Every component here is a throwaway defined in this file, so this file does not
+ * couple to any component's current shape.
  *
  * No JSX — this is a .mjs file run directly by node:test, so React.createElement
  * is used throughout.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import React from 'react';
 
-import { withDom, domIsActive } from './dom.mjs';
+import { withDom, domIsActive, codeForKey } from './dom.mjs';
+
+const HARNESS = fileURLToPath(new URL('./dom.mjs', import.meta.url));
 
 // Snapshot the pristine process globals at module load, BEFORE any withDom call.
-// Anything that differs afterwards is a leak.
 const PRISTINE_GLOBALS = new Set(Object.getOwnPropertyNames(globalThis));
 const PRISTINE_NAVIGATOR = globalThis.navigator;
+// Captured by identity: never *called*, since calling real fetch with no URL rejects.
+const PRISTINE_FETCH = globalThis.fetch;
 
 // ---------------------------------------------------------------------------
 // 1. Opt-in: importing the helper must not create a DOM
@@ -39,14 +43,10 @@ test('withDom installs a DOM for the body and removes it afterwards', async () =
     assert.equal(globalThis.document, dom.document);
     assert.equal(typeof globalThis.PointerEvent, 'function');
     assert.equal(typeof globalThis.requestAnimationFrame, 'function');
-    assert.equal(typeof globalThis.setPointerCaptureProbe, 'undefined');
     return 'returned-from-body';
   });
 
-  // withDom hands back the body's return value.
   assert.equal(inside, 'returned-from-body');
-
-  // ...and the globals are gone again.
   assert.equal(typeof globalThis.window, 'undefined');
   assert.equal(typeof globalThis.document, 'undefined');
   assert.equal(typeof globalThis.PointerEvent, 'undefined');
@@ -119,10 +119,8 @@ test('a pointer down/move/up drag with pointer capture drives component state', 
       ['down', 'move', 'move', 'up'],
       'the full pointer sequence reached the component handlers',
     );
-    // Capture was genuinely held during the drag and genuinely released at the end.
     assert.equal(log[0].captured, true, 'setPointerCapture took effect on pointerdown');
     assert.equal(log.at(-1).captured, false, 'releasePointerCapture took effect on pointerup');
-    // The moves were only honoured because hasPointerCapture() reported true.
     assert.deepEqual(log.filter((e) => e.phase === 'move').map((e) => e.x), [32, 64]);
     assert.match(host.innerHTML, /value=64 dragging=false/, 'React re-rendered from the drag');
   });
@@ -161,33 +159,63 @@ test('dom.pointer dispatches a PointerEvent carrying pointerId and coordinates',
 // 3. A window-level keydown listener registered in an effect
 // ---------------------------------------------------------------------------
 
-/** Throwaway transport: a window keydown shortcut, the way a real one is wired. */
+/**
+ * Throwaway transport. Reads `event.code`, the way a play/pause shortcut is normally
+ * written — a harness that reports `code === 'Key '` for the spacebar would make a
+ * correct component look broken.
+ */
 function Transport() {
-  const [keys, setKeys] = React.useState([]);
+  const [log, setLog] = React.useState([]);
   React.useEffect(() => {
     const onKeyDown = (event) => {
-      if (event.key === ' ' || event.key === 'k') setKeys((prev) => [...prev, event.key]);
+      if (event.code === 'Space') setLog((prev) => [...prev, 'toggle']);
+      else if (event.code === 'Digit1') setLog((prev) => [...prev, 'cue1']);
+      else if (event.code === 'KeyK') setLog((prev) => [...prev, 'k']);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
-  return React.createElement('div', { 'data-testid': 'transport' }, `keys=${keys.join(',')}`);
+  return React.createElement('div', { 'data-testid': 'transport' }, `log=${log.join(',')}`);
 }
 
-test("a component's window keydown listener receives dispatched keys", async () => {
+test('codeForKey maps keys to the codes a browser would report', () => {
+  assert.equal(codeForKey(' '), 'Space', 'the spacebar is Space, not "Key "');
+  assert.equal(codeForKey('1'), 'Digit1', 'digits are DigitN, not KeyN');
+  assert.equal(codeForKey('k'), 'KeyK');
+  assert.equal(codeForKey('K'), 'KeyK');
+  assert.equal(codeForKey('ArrowLeft'), 'ArrowLeft');
+  assert.equal(codeForKey('Enter'), 'Enter');
+  assert.equal(codeForKey('/'), 'Slash');
+  assert.equal(codeForKey('.'), 'Period');
+});
+
+test("a component's window keydown listener receives dispatched keys with browser codes", async () => {
   await withDom(async (dom) => {
     await dom.mount(React.createElement(Transport));
     const shown = () => dom.find('[data-testid="transport"]').textContent;
-    assert.equal(shown(), 'keys=');
+    assert.equal(shown(), 'log=');
 
+    // The transport's play/pause key. This is the case that was silently broken.
     await dom.keydown(' ');
-    assert.equal(shown(), 'keys= ', 'space reached the window listener');
+    assert.equal(shown(), 'log=toggle', 'space arrived with code === "Space"');
+
+    await dom.keydown('1');
+    assert.equal(shown(), 'log=toggle,cue1', 'the digit arrived with code === "Digit1"');
 
     await dom.keydown('k');
-    assert.equal(shown(), 'keys= ,k', 'a second key appended');
+    assert.equal(shown(), 'log=toggle,cue1,k');
 
     await dom.keydown('q');
-    assert.equal(shown(), 'keys= ,k', 'an unhandled key changed nothing');
+    assert.equal(shown(), 'log=toggle,cue1,k', 'an unhandled key changed nothing');
+  });
+});
+
+test('an explicit code in the init overrides the derived one', async () => {
+  await withDom(async (dom) => {
+    const codes = [];
+    dom.window.addEventListener('keydown', (e) => codes.push(e.code));
+    await dom.keydown('x', { code: 'F13' });
+    assert.deepEqual(codes, ['F13']);
   });
 });
 
@@ -195,16 +223,16 @@ test('a keydown on an element bubbles up to the window listener', async () => {
   await withDom(async (dom) => {
     await dom.mount(React.createElement(Transport));
     const target = dom.find('[data-testid="transport"]');
-    await dom.keydown('k', { target });
-    assert.equal(target.textContent, 'keys=k');
+    await dom.keydown(' ', { target });
+    assert.equal(target.textContent, 'log=toggle');
   });
 });
 
 test('the window keydown listener is gone after unmount', async () => {
   await withDom(async (dom) => {
     const host = await dom.mount(React.createElement(Transport));
-    await dom.keydown('k');
-    assert.equal(dom.find('[data-testid="transport"]').textContent, 'keys=k');
+    await dom.keydown(' ');
+    assert.equal(dom.find('[data-testid="transport"]').textContent, 'log=toggle');
 
     await dom.unmountAll();
     assert.equal(host.innerHTML, '', 'React removed the tree');
@@ -212,13 +240,13 @@ test('the window keydown listener is gone after unmount', async () => {
 
     // If the effect cleanup had not removed the listener, this keydown would call
     // setState on an unmounted root.
-    await dom.keydown('k');
+    await dom.keydown(' ');
     assert.equal(host.innerHTML, '');
   });
 });
 
 // ---------------------------------------------------------------------------
-// 4. Effects: run on mount, clean up on unmount, including timers and frames
+// 4. Effects: run on mount, clean up on unmount, including timers
 // ---------------------------------------------------------------------------
 
 function Lifecycle({ log }) {
@@ -272,104 +300,133 @@ test('effect cleanup runs at teardown even if the test forgets to unmount', asyn
   assert.deepEqual(log, ['effect:run', 'effect:cleanup'], 'teardown unmounted the root for us');
 });
 
-/** One rAF, then a state update: the shape of a "measure after paint" effect. */
-function OneFrame({ log }) {
-  const [painted, setPainted] = React.useState(false);
+// ---------------------------------------------------------------------------
+// 5. Animation frames: the controlled clock, and the playhead that used to hang
+// ---------------------------------------------------------------------------
+
+/**
+ * The shape the transport playhead has: rAF -> setState -> rAF, forever. Under
+ * happy-dom's own timer-driven rAF this cannot even be mounted — act() never reaches
+ * quiescence and mount() hangs. The controlled frame clock is what makes it testable.
+ */
+function Playhead() {
+  const [frame, setFrame] = React.useState(0);
   React.useEffect(() => {
-    const id = requestAnimationFrame(() => {
-      log.push('raf');
-      setPainted(true);
+    let id = requestAnimationFrame(function tick() {
+      setFrame((n) => n + 1);
+      id = requestAnimationFrame(tick);
     });
     return () => cancelAnimationFrame(id);
   }, []);
-  return React.createElement('div', { 'data-testid': 'one-frame' }, `painted=${painted}`);
+  return React.createElement('div', { 'data-testid': 'playhead' }, `frame=${frame}`);
 }
 
-test('requestAnimationFrame fires and its state update is flushed', async () => {
+test('a continuous rAF -> setState playhead mounts and advances one frame at a time', async () => {
   await withDom(async (dom) => {
-    const log = [];
-    await dom.mount(React.createElement(OneFrame, { log }));
-    const shown = () => dom.find('[data-testid="one-frame"]').textContent;
+    // Mounting at all is the fix: this is the case that used to hang forever.
+    await dom.mount(React.createElement(Playhead));
+    const shown = () => dom.find('[data-testid="playhead"]').textContent;
 
-    // Note: mount()'s act() awaits, which can already let a pending frame run, so
-    // the value here is deliberately not asserted — only the post-frame value is.
-    await dom.act(() => dom.nextFrame());
+    assert.equal(shown(), 'frame=0', 'no frame has run yet — frames are manual');
+    assert.equal(dom.pendingFrames, 1, 'the effect scheduled exactly one frame');
 
-    assert.deepEqual(log, ['raf'], 'the rAF callback ran exactly once');
-    assert.equal(shown(), 'painted=true', 'and its setState was flushed into the DOM');
+    assert.equal(await dom.nextFrame(), 1, 'one callback ran');
+    assert.equal(shown(), 'frame=1');
+    assert.equal(dom.pendingFrames, 1, 'the loop re-scheduled itself for the next frame');
+
+    await dom.frames(3);
+    assert.equal(shown(), 'frame=4', 'the playhead advanced deterministically');
   });
 });
 
-/**
- * A continuous rAF loop, as a playhead or level meter would run one. It logs frames
- * instead of calling setState on every frame — see "WHAT THIS HARNESS STILL CANNOT DO"
- * in dom.mjs: an unbounded rAF -> setState loop never lets act() reach quiescence.
- */
-function FrameLoop({ log }) {
-  React.useEffect(() => {
-    let id = requestAnimationFrame(function tick() {
-      log.push('frame');
-      id = requestAnimationFrame(tick);
-    });
-    return () => {
-      log.push('cancelled');
-      cancelAnimationFrame(id);
-    };
-  }, []);
-  return React.createElement('div', null, 'loop');
-}
-
-test('cancelAnimationFrame in an effect cleanup actually stops a running rAF loop', async () => {
+test('cancelAnimationFrame in an effect cleanup stops the loop', async () => {
   await withDom(async (dom) => {
-    const log = [];
-    await dom.mount(React.createElement(FrameLoop, { log }));
-
-    await dom.nextFrame();
-    await dom.nextFrame();
-    const framesWhileMounted = log.filter((e) => e === 'frame').length;
-    assert.ok(framesWhileMounted >= 1, `the loop ran while mounted (${framesWhileMounted} frames)`);
+    await dom.mount(React.createElement(Playhead));
+    await dom.frames(2);
+    assert.equal(dom.find('[data-testid="playhead"]').textContent, 'frame=2');
+    assert.equal(dom.pendingFrames, 1);
 
     await dom.unmountAll();
-    assert.ok(log.includes('cancelled'), 'the cleanup ran');
 
-    const atUnmount = log.filter((e) => e === 'frame').length;
-    // Real elapsed time, deliberately: if cancelAnimationFrame were a no-op the loop
-    // would keep ticking here and bleed frames into the next test.
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    assert.equal(
-      log.filter((e) => e === 'frame').length,
-      atUnmount,
-      'no frames ran after unmount',
-    );
+    assert.equal(dom.pendingFrames, 0, 'the cleanup cancelled the queued frame');
+    assert.equal(await dom.nextFrame(), 0, 'and no callback runs afterwards');
   });
+});
+
+test('a one-shot rAF fires and its state update is flushed', async () => {
+  await withDom(async (dom) => {
+    const log = [];
+    function OneFrame() {
+      const [painted, setPainted] = React.useState(false);
+      React.useEffect(() => {
+        const id = requestAnimationFrame(() => {
+          log.push('raf');
+          setPainted(true);
+        });
+        return () => cancelAnimationFrame(id);
+      }, []);
+      return React.createElement('div', { 'data-testid': 'one-frame' }, `painted=${painted}`);
+    }
+    await dom.mount(React.createElement(OneFrame));
+    assert.equal(dom.find('[data-testid="one-frame"]').textContent, 'painted=false');
+
+    await dom.nextFrame();
+
+    assert.deepEqual(log, ['raf'], 'the rAF callback ran exactly once');
+    assert.equal(dom.find('[data-testid="one-frame"]').textContent, 'painted=true');
+  });
+});
+
+test('realFrames: true restores happy-dom timer-driven frames', async () => {
+  await withDom(async (dom) => {
+    let fired = false;
+    await dom.act(() => new Promise((resolve) => {
+      dom.window.requestAnimationFrame(() => { fired = true; resolve(); });
+    }));
+    assert.equal(fired, true, 'the frame fired on its own, without nextFrame()');
+  }, { realFrames: true });
 });
 
 // ---------------------------------------------------------------------------
-// 5. Isolation: a test that pollutes the DOM must not affect the next
+// 6. Isolation: pollution must not reach the next test — additions AND changes
 // ---------------------------------------------------------------------------
 
 /** Bumped by a listener registered in the polluting test. Must never move again. */
 let pollutingListenerHits = 0;
 
-test('[polluter] scribbles on window, document and the global key listener', async () => {
-  await withDom(async (dom) => {
-    dom.window.__harnessPollution = 'polluted';
-    dom.window.localStorage.setItem('harness-pollution', 'yes');
-    dom.document.body.setAttribute('data-polluted', 'yes');
-    dom.document.body.appendChild(dom.document.createElement('section'));
-    dom.window.addEventListener('keydown', () => { pollutingListenerHits += 1; });
+test('[polluter] scribbles on window, document, globals and a shared DOM prototype', async () => {
+  // Every one of these is detected and reverted at teardown, so withDom rejects —
+  // which is the point: pollution fails the test that caused it, not a later one.
+  await assert.rejects(
+    withDom(async (dom) => {
+      dom.window.__harnessPollution = 'polluted';
+      dom.window.localStorage.setItem('harness-pollution', 'yes');
+      dom.document.body.setAttribute('data-polluted', 'yes');
+      dom.document.body.appendChild(dom.document.createElement('section'));
+      dom.window.addEventListener('keydown', () => { pollutingListenerHits += 1; });
 
-    await dom.keydown('x');
-    assert.equal(pollutingListenerHits, 1, 'the polluter\'s own listener does fire inside its own test');
-    assert.equal(dom.window.__harnessPollution, 'polluted');
-  });
+      await dom.keydown(' ');
+      assert.equal(pollutingListenerHits, 1, "the polluter's own listener fires inside its own test");
 
-  // The polluted window never escapes to globalThis.
+      // An added global, a MODIFIED existing global, and prototype pollution of a
+      // class happy-dom shares between windows.
+      globalThis.__harnessAddedGlobal = 'added';
+      globalThis.fetch = () => 'HIJACKED';
+      dom.window.Element.prototype.__harnessProtoLeak = 'leaked';
+    }),
+    (error) => {
+      assert.match(error.message, /globalThis\.__harnessAddedGlobal was added/);
+      assert.match(error.message, /globalThis\.fetch was modified/);
+      assert.match(error.message, /Element\.prototype\.__harnessProtoLeak was added/);
+      return true;
+    },
+  );
+
   assert.equal(typeof globalThis.window, 'undefined');
   assert.equal(typeof globalThis.localStorage, 'undefined');
 });
 
-test('[victim] sees a pristine DOM, and the polluter\'s listener is dead', async () => {
+test('[victim] sees a pristine DOM and pristine globals', async () => {
   const hitsBefore = pollutingListenerHits;
   await withDom(async (dom) => {
     assert.equal(dom.window.__harnessPollution, undefined, 'window properties did not carry over');
@@ -377,7 +434,14 @@ test('[victim] sees a pristine DOM, and the polluter\'s listener is dead', async
     assert.equal(dom.document.body.getAttribute('data-polluted'), null, 'body attributes did not carry over');
     assert.equal(dom.document.body.children.length, 0, 'the body is empty again');
 
-    await dom.keydown('x');
+    // The reverted global modification, and the reverted prototype pollution. Without
+    // the descriptor-level revert, a stubbed fetch would still be live here and every
+    // element in this "fresh" window would carry __harnessProtoLeak.
+    assert.equal(globalThis.fetch, PRISTINE_FETCH, 'the hijacked fetch was reverted by identity');
+    assert.equal(globalThis.__harnessAddedGlobal, undefined);
+    assert.equal(dom.document.createElement('div').__harnessProtoLeak, undefined);
+
+    await dom.keydown(' ');
     assert.equal(
       pollutingListenerHits,
       hitsBefore,
@@ -394,22 +458,77 @@ test('each withDom call gets a distinct window and document', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. The harness fails safe
+// 7. The harness fails safe — it must never turn a red test green, or wedge
 // ---------------------------------------------------------------------------
 
-test('a throwing body still tears the DOM down', async () => {
+test("a throwing body reaches the caller unchanged, even when teardown also complains", async () => {
   await assert.rejects(
     withDom(async (dom) => {
       await dom.mount(React.createElement(Transport));
-      throw new Error('boom from the test body');
+      globalThis.__alsoLeaked = 'yes';
+      throw new Error('THE REAL FAILURE');
     }),
-    /boom from the test body/,
+    (error) => {
+      // The body's error is the headline. Before the fix the caller saw only
+      // "withDom() leaked globals: __alsoLeaked" and the real failure vanished.
+      assert.equal(error.message, 'THE REAL FAILURE');
+      assert.match(String(error.cause?.message), /__alsoLeaked was added/);
+      return true;
+    },
   );
-  assert.equal(typeof globalThis.window, 'undefined');
-  assert.equal(typeof globalThis.document, 'undefined');
+  assert.equal(globalThis.__alsoLeaked, undefined, 'and the leak was still reverted');
   assert.equal(domIsActive(), false);
-  const leaked = Object.getOwnPropertyNames(globalThis).filter((k) => !PRISTINE_GLOBALS.has(k));
-  assert.deepEqual(leaked, []);
+});
+
+test('a throwing React effect cleanup at teardown fails the test instead of being swallowed', async () => {
+  // This is the shape this codebase will have: `() => audioCtx.close()` where
+  // audioCtx is null. Previously the test reported pass.
+  await assert.rejects(
+    withDom(async (dom) => {
+      function Boom() {
+        React.useEffect(() => () => {
+          throw new Error('audioCtx.close() of null');
+        }, []);
+        return React.createElement('div', null, 'boom');
+      }
+      await dom.mount(React.createElement(Boom));
+    }),
+    /effect cleanup threw during teardown: audioCtx\.close\(\) of null/,
+  );
+  assert.equal(domIsActive(), false);
+});
+
+test('a teardown that reports problems still clears the active flag', async () => {
+  await assert.rejects(withDom(async () => { globalThis.__wedge = 1; }), /__wedge was added/);
+  assert.equal(domIsActive(), false, 'active was cleared despite the teardown throwing');
+  // The real regression: the NEXT withDom in the same file must still work.
+  assert.equal(await withDom(async () => 'still works'), 'still works');
+});
+
+test('an unrestorable global does not wedge the harness for the rest of the process', () => {
+  // Making a global non-configurable is irreversible by nature, so this runs in its
+  // own process: the point is that `active` is cleared and the next call proceeds,
+  // rather than every later call rejecting with a misleading "already active".
+  const script = `
+    import { withDom, domIsActive } from ${JSON.stringify(HARNESS)};
+    let first = 'no-throw';
+    try {
+      await withDom(async () => {
+        Object.defineProperty(globalThis, 'localStorage', { value: {}, configurable: false });
+      });
+    } catch (e) { first = e.message; }
+    console.log('active=' + domIsActive());
+    console.log('namesRealCause=' + /localStorage/.test(first));
+    console.log('blamesNesting=' + /already active/.test(first));
+  `;
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+    encoding: 'utf8',
+    cwd: fileURLToPath(new URL('../..', import.meta.url)),
+  });
+  // Anchored: an unanchored /active=false/ also matches inside "blamesNesting=false".
+  assert.match(out, /^active=false$/m, 'the active flag was cleared');
+  assert.match(out, /^namesRealCause=true$/m, 'the error names the real cause');
+  assert.match(out, /^blamesNesting=false$/m, 'and does not blame nesting');
 });
 
 test('nested withDom is refused, and the outer call still tears down', async () => {
@@ -421,16 +540,48 @@ test('nested withDom is refused, and the outer call still tears down', async () 
   assert.equal(typeof globalThis.window, 'undefined');
 });
 
-test('stubRect supplies the geometry happy-dom has no layout engine for', async () => {
+// ---------------------------------------------------------------------------
+// 8. Layout: absent, and stubbed honestly
+// ---------------------------------------------------------------------------
+
+test('every box metric is 0 — there is no layout engine', async () => {
+  await withDom(async (dom) => {
+    const el = dom.document.createElement('div');
+    el.style.width = '360px';
+    dom.document.body.appendChild(el);
+
+    assert.equal(el.getBoundingClientRect().width, 0);
+    assert.equal(el.offsetWidth, 0);
+    assert.equal(el.clientWidth, 0);
+    assert.equal(el.scrollWidth, 0);
+
+    // The trap worth knowing about: computed style reports the DECLARED value, so a
+    // test can read 360px here and wrongly believe layout happened.
+    assert.equal(dom.window.getComputedStyle(el).width, '360px');
+  });
+});
+
+test('stubRect supplies the rect AND the box metrics, including an overflow case', async () => {
   await withDom(async (dom) => {
     const el = dom.document.createElement('div');
     dom.document.body.appendChild(el);
-    assert.equal(el.getBoundingClientRect().width, 0, 'no layout engine: everything is zero');
 
-    dom.stubRect(el, { left: 100, width: 200, top: 0, height: 20 });
+    dom.stubRect(el, { left: 100, top: 0, width: 200, height: 20 });
     const rect = el.getBoundingClientRect();
     assert.equal(rect.left, 100);
     assert.equal(rect.width, 200);
+    assert.equal(rect.right, 300, 'right is derived from left + width');
+    assert.equal(el.offsetWidth, 200, 'the box metrics follow the rect');
+    assert.equal(el.clientWidth, 200);
+    assert.equal(el.scrollWidth, 200);
+
+    // Diverging the metrics is how an overflow is expressed: content wider than box.
+    const track = dom.document.createElement('div');
+    dom.document.body.appendChild(track);
+    dom.stubRect(track, { width: 334, height: 44, metrics: { scrollWidth: 347 } });
+    assert.equal(track.clientWidth, 334);
+    assert.equal(track.scrollWidth, 347);
+    assert.ok(track.scrollWidth > track.clientWidth, 'an overflow case is now expressible');
   });
 });
 

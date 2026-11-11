@@ -5,53 +5,82 @@
  * ---------------
  * This repo's runner is node:test, which has no DOM. Pure helpers were testable;
  * interactive wiring (pointer drags, pointer capture, window-level keydown, React
- * effects and timers) was not. Import this helper from the handful of test files
- * that need a DOM; every other test file is untouched and pays nothing.
+ * effects and timers) was not. Import this helper from the test files that need a
+ * DOM; every other test file is untouched and pays nothing.
  *
  * It is deliberately NOT a global setup file. node:test runs one process per test
  * file, so a file that never imports this helper never loads happy-dom at all.
  *
  * WHY happy-dom AND NOT jsdom
  * ---------------------------
- * Measured, not assumed (see the PR description for the probe output):
+ * Measured, not assumed:
  *   - jsdom 31.0.0 does not implement `setPointerCapture` / `releasePointerCapture` /
  *     `hasPointerCapture` ANYWHERE on the prototype chain. A real drag handler that
  *     calls `e.currentTarget.setPointerCapture(e.pointerId)` throws "is not a
  *     function" under jsdom. That is precisely the wiring this project needs to test.
- *   - happy-dom 21.0.4 implements all three and tracks capture state
- *     (`hasPointerCapture` flips true on set, false on release).
+ *   - happy-dom 21.0.4 implements all three and tracks capture state.
  *   - happy-dom is also ~4.6x cheaper to construct (7.8ms vs 36.2ms per window).
  *
- * WHAT THIS HARNESS STILL CANNOT DO
- * ---------------------------------
- *   - An unbounded rAF -> setState loop (a playhead ticking every frame) cannot be
- *     driven inside act(): the queue refills from a timer faster than act() can
- *     drain it and act() never reaches quiescence. Test such a loop by asserting on
- *     the frame callback's side effects, not on rendered state (see dom.test.mjs).
- *   - No real layout, so nothing that depends on measured geometry, scroll position
- *     or element visibility is exercised. Use dom.stubRect() to inject geometry.
- *   - No Web Audio (no AudioContext), so audio graph wiring stays untested here.
- *   - It does not replace a browser test. It covers event wiring and React
- *     lifecycle, not paint, CSS cascade or real input devices.
+ * WHAT THIS HARNESS GENUINELY COVERS
+ * ----------------------------------
+ * Pointer drags with real capture state; window-level keyboard shortcuts; effect
+ * mount/cleanup ordering; listener teardown; timer wiring; and animation-frame
+ * wiring via a controlled frame clock (see FRAMES below).
  *
- * WHERE happy-dom DIVERGES FROM A BROWSER (assert against these, don't assume parity):
- *   - Pointer capture does NOT retarget events: while element A holds capture, an
- *     event dispatched on B is still delivered to B. Real browsers retarget to A.
- *     Fire drag moves at the capturing element directly — dom.drag() does exactly that,
- *     which is also what a browser ends up delivering once capture is held.
+ * WHAT IT CANNOT COVER — read this before trusting a green test
+ * -------------------------------------------------------------
+ *   - LAYOUT. There is no layout engine. `getBoundingClientRect()` is all zeros AND
+ *     `offsetWidth` / `offsetHeight` / `clientWidth` / `clientHeight` / `scrollWidth` /
+ *     `scrollHeight` are ALL 0. Any defect that depends on real measured geometry
+ *     (an overflow at a given viewport width, say) is unreachable by construction.
+ *     `dom.stubRect()` injects both the rect and the box metrics so such a case can
+ *     be *expressed*, but you are then asserting against numbers you supplied.
+ *     Beware: `getComputedStyle(el).width` returns the DECLARED inline/CSS value, not
+ *     a computed layout value, so a test can read computed style and wrongly believe
+ *     it has layout.
+ *   - WEB AUDIO. There is no `AudioContext` at all. For an audio product this is the
+ *     core of the thing, and none of it is exercised here.
+ *   - PAINT, CSS cascade effects on geometry, and real input devices.
+ *   - happy-dom's pointer capture does not RETARGET events: while element A holds
+ *     capture, an event dispatched on B is still delivered to B, where a browser
+ *     retargets to A. `dom.drag()` fires every move at the capturing element, which
+ *     is what a browser delivers anyway once capture is held — but a component that
+ *     relies on retargeting is being tested under slightly wrong semantics.
  *   - `gotpointercapture` / `lostpointercapture` are never fired. Assert on
- *     hasPointerCapture() instead of on those events.
+ *     `hasPointerCapture()` instead.
+ *   - happy-dom's DOM classes (`Element`, `HTMLElement`, `Node`, ...) are MODULE-LEVEL
+ *     SINGLETONS shared by every window, so `Element.prototype` is shared across
+ *     withDom() calls. The harness detects and reverts prototype pollution at
+ *     teardown and fails the test, but it cannot give you per-window classes.
+ *   - These files are NOT type-checked. `apps/web/tsconfig.json` includes only
+ *     TypeScript sources (.ts and .tsx), so nothing under `test/` enters the tsc
+ *     program; the @typedef below is documentation, not a checked contract.
+ *
+ * FRAMES
+ * ------
+ * Animation frames are MANUAL by default. happy-dom drives `requestAnimationFrame`
+ * off a real timer, which makes the single most important component shape here — a
+ * transport playhead doing `rAF -> setState -> rAF` — impossible to test: the queue
+ * refills faster than `act()` can drain it, so `mount()` never returns and the test
+ * hangs. So `requestAnimationFrame` queues the callback and nothing runs until the
+ * test asks:
+ *
+ *     await dom.nextFrame();      // runs exactly one frame's callbacks, inside act()
+ *     dom.pendingFrames;          // how many are queued
+ *
+ * Callbacks that re-schedule land in the NEXT frame, so a continuous loop advances
+ * one frame per call instead of running away. Pass `{ realFrames: true }` to get
+ * happy-dom's timer-driven frames back.
  *
  * USAGE
  * -----
  *   import { withDom } from './dom.mjs';
  *
  *   await withDom(async (dom) => {
- *     const host = await dom.mount(React.createElement(Fader));
+ *     await dom.mount(React.createElement(Fader));
  *     const el = dom.find('[data-testid="fader"]');
  *     await dom.drag(el, [[0, 0], [64, 0]]);   // down, move(s), up — with capture
- *     await dom.keydown(' ');                   // window-level keydown
- *     assert.match(host.innerHTML, /v=64/);
+ *     await dom.keydown(' ');                   // window-level; code === 'Space'
  *   });
  */
 
@@ -66,7 +95,7 @@ import { Window } from 'happy-dom';
  * not listed here is still reachable as `dom.window.Thing`.
  *
  * Timers ARE taken from the window on purpose: `happyDOM.close()` aborts the window's
- * task manager, so a component's pending setTimeout/setInterval/rAF is cancelled at
+ * task manager, so a component's pending setTimeout/setInterval is cancelled at
  * teardown instead of firing during the next test. That is the classic DOM-harness flake.
  */
 const INSTALLED_GLOBALS = [
@@ -84,12 +113,55 @@ const INSTALLED_GLOBALS = [
   // Observers & style
   'MutationObserver', 'ResizeObserver', 'IntersectionObserver',
   'getComputedStyle', 'matchMedia', 'CSS', 'CSSStyleDeclaration',
-  // Frames & timers (see note above)
+  // Frames & timers (see note above; frames are replaced by the controlled clock)
   'requestAnimationFrame', 'cancelAnimationFrame',
   'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
   // Storage
   'localStorage', 'sessionStorage',
 ];
+
+/** Names the globalThis pollution check ignores, because the harness owns them. */
+const HARNESS_OWNED = new Set([...INSTALLED_GLOBALS, 'IS_REACT_ACT_ENVIRONMENT']);
+
+/**
+ * happy-dom's DOM classes are shared across windows, so their prototypes are shared
+ * state. These are watched for pollution and reverted at teardown.
+ */
+const WATCHED_PROTOTYPES = [
+  'Node', 'Element', 'HTMLElement', 'Document', 'Event', 'EventTarget',
+];
+
+/** Browser `KeyboardEvent.code` values that are not derivable from `key`. */
+const EXPLICIT_KEY_CODES = {
+  ' ': 'Space',
+  Spacebar: 'Space',
+  '-': 'Minus',
+  '=': 'Equal',
+  '[': 'BracketLeft',
+  ']': 'BracketRight',
+  '\\': 'Backslash',
+  ';': 'Semicolon',
+  "'": 'Quote',
+  ',': 'Comma',
+  '.': 'Period',
+  '/': 'Slash',
+  '`': 'Backquote',
+};
+
+/**
+ * Best-effort `KeyboardEvent.code` for a `key`. Browsers derive `code` from the
+ * physical key, so this cannot be exact for every layout — but it must at least get
+ * Space and the digits right, because `e.code === 'Space'` is how a transport
+ * play/pause shortcut is normally written. Pass `code` explicitly to override.
+ */
+export function codeForKey(key) {
+  if (typeof key !== 'string') return undefined;
+  if (key in EXPLICIT_KEY_CODES) return EXPLICIT_KEY_CODES[key];
+  if (/^[a-zA-Z]$/.test(key)) return `Key${key.toUpperCase()}`;
+  if (/^[0-9]$/.test(key)) return `Digit${key}`;
+  // 'Enter', 'Tab', 'ArrowLeft', 'Escape', 'F5', 'Home'... are already code-shaped.
+  return key;
+}
 
 /** Re-entrancy guard: nested withDom would clobber the outer call's globals. */
 let active = false;
@@ -102,16 +174,77 @@ const define = (key, value) =>
     enumerable: true,
   });
 
+/** Snapshot every own property descriptor of `target`. Does not invoke getters. */
+function describeOwn(target) {
+  const map = new Map();
+  for (const key of Object.getOwnPropertyNames(target)) {
+    map.set(key, Object.getOwnPropertyDescriptor(target, key));
+  }
+  return map;
+}
+
+/** Object.is on `value` so NaN compares equal to itself. */
+function sameDescriptor(a, b) {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    Object.is(a.value, b.value) &&
+    a.get === b.get &&
+    a.set === b.set &&
+    a.writable === b.writable &&
+    a.enumerable === b.enumerable &&
+    a.configurable === b.configurable
+  );
+}
+
+/**
+ * Revert `target`'s own properties to `snapshot`, reporting every difference found.
+ *
+ * This catches MODIFICATION, not just addition. A body that does
+ * `globalThis.fetch = stub` leaves a name that already existed, so a
+ * getOwnPropertyNames diff sees nothing — which is exactly how a stubbed fetch
+ * silently poisons every later test in a file.
+ *
+ * @returns {string[]} human-readable descriptions of what the body changed
+ */
+function revertOwn(label, target, snapshot, ignore = new Set()) {
+  const problems = [];
+
+  for (const key of Object.getOwnPropertyNames(target)) {
+    if (ignore.has(key) || snapshot.has(key)) continue;
+    try {
+      delete target[key];
+      problems.push(`${label}.${key} was added`);
+    } catch (error) {
+      problems.push(`${label}.${key} was added and could not be removed (${error.message})`);
+    }
+  }
+
+  for (const [key, before] of snapshot) {
+    if (ignore.has(key)) continue;
+    const now = Object.getOwnPropertyDescriptor(target, key);
+    if (sameDescriptor(before, now)) continue;
+    const what = now === undefined ? 'was deleted' : 'was modified';
+    try {
+      Object.defineProperty(target, key, before);
+      problems.push(`${label}.${key} ${what}`);
+    } catch (error) {
+      problems.push(`${label}.${key} ${what} and could not be restored (${error.message})`);
+    }
+  }
+
+  return problems;
+}
+
 /**
  * Run `body` with a fresh DOM installed on globalThis, then tear it down completely.
  *
- * Teardown is unconditional (runs even if `body` throws) and restores every global
- * to the exact property descriptor it had before — including re-installing Node's
- * getter-only `navigator` and deleting globals that did not previously exist.
+ * Teardown is unconditional and never masks the body's own failure: if the body
+ * throws, that error is what the caller sees, with any teardown problems attached as
+ * `error.cause`. If the body succeeds, teardown problems become the failure.
  *
  * @template T
  * @param {(dom: DomHarness) => Promise<T> | T} body
- * @param {{ url?: string, html?: string }} [options]
+ * @param {{ url?: string, html?: string, realFrames?: boolean }} [options]
  * @returns {Promise<T>} whatever `body` returned
  */
 export async function withDom(body, options = {}) {
@@ -123,29 +256,55 @@ export async function withDom(body, options = {}) {
   }
   active = true;
 
-  const { url = 'http://localhost:3000/', html = '<!doctype html><html><body></body></html>' } = options;
+  const {
+    url = 'http://localhost:3000/',
+    html = '<!doctype html><html><body></body></html>',
+    realFrames = false,
+  } = options;
 
-  // Snapshot descriptors (not values): the only way to restore an absent global as
-  // absent, and Node's accessor-only `navigator` as an accessor.
-  const saved = new Map();
-  for (const key of INSTALLED_GLOBALS) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+  // Descriptors (not values) for the globals the harness itself installs: the only
+  // way to restore an absent global as absent, and to put back Node's getter-only
+  // `navigator`, which a plain assignment cannot overwrite at all.
+  const savedHarnessGlobals = new Map();
+  for (const key of [...INSTALLED_GLOBALS, 'IS_REACT_ACT_ENVIRONMENT']) {
+    savedHarnessGlobals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
   }
-  const savedActEnv = Object.getOwnPropertyDescriptor(globalThis, 'IS_REACT_ACT_ENVIRONMENT');
-  const globalsBefore = new Set(Object.getOwnPropertyNames(globalThis));
 
   const window = new Window({ url });
   window.document.write(html);
 
-  // Install. `window` first so anything reading it during install sees a DOM.
+  // --- controlled frame clock (see FRAMES in the header) -------------------
+  let frameSeq = 0;
+  let frameQueue = new Map();
+  const requestFrame = (callback) => {
+    const id = (frameSeq += 1);
+    frameQueue.set(id, callback);
+    return id;
+  };
+  const cancelFrame = (id) => {
+    frameQueue.delete(id);
+  };
+  if (!realFrames) {
+    window.requestAnimationFrame = requestFrame;
+    window.cancelAnimationFrame = cancelFrame;
+  }
+
+  // --- install ------------------------------------------------------------
   define('window', window);
   for (const key of INSTALLED_GLOBALS) {
     if (key === 'window') continue;
     const value = window[key];
     if (value !== undefined) define(key, value);
   }
-  // React's act() requires this flag; without it React logs a warning on every update.
+  // React's act() requires this flag; without it React warns on every update.
   define('IS_REACT_ACT_ENVIRONMENT', true);
+
+  // Snapshot AFTER installing, so the diff at teardown attributes changes to the
+  // body rather than to the harness's own footprint.
+  const globalsAfterInstall = describeOwn(globalThis);
+  const prototypesAfterInstall = WATCHED_PROTOTYPES
+    .filter((name) => typeof window[name] === 'function')
+    .map((name) => ({ name, object: window[name].prototype, snapshot: describeOwn(window[name].prototype) }));
 
   /** host element -> React root, unmounted in reverse order at teardown. */
   const roots = new Map();
@@ -171,6 +330,11 @@ export async function withDom(body, options = {}) {
     /** The <body> element of the fresh document. */
     get body() {
       return window.document.body;
+    },
+
+    /** How many animation-frame callbacks are queued (controlled frames only). */
+    get pendingFrames() {
+      return frameQueue.size;
     },
 
     /**
@@ -256,7 +420,7 @@ export async function withDom(body, options = {}) {
     /**
      * A full drag: pointerdown at points[0], pointermove for each subsequent point,
      * pointerup at the last. Every event is dispatched at `target`, which is also
-     * what a real browser does once the element has taken pointer capture.
+     * what a real browser delivers once the element has taken pointer capture.
      *
      * @param {Element} target
      * @param {Array<[number, number]>} points [[clientX, clientY], ...] (>= 1)
@@ -277,8 +441,8 @@ export async function withDom(body, options = {}) {
 
     /**
      * Dispatch a keydown. Defaults to `window` as the target, because window-level
-     * keyboard shortcuts are the thing this harness exists to test. Pass a target
-     * to aim it at an element instead.
+     * keyboard shortcuts are the thing this harness exists to test. Pass `target` to
+     * aim it at an element instead, and `code` to override the derived value.
      */
     async keydown(key, init = {}) {
       return dom.keyEvent('keydown', key, init);
@@ -293,7 +457,7 @@ export async function withDom(body, options = {}) {
       const { target = window, ...rest } = init;
       const event = new window.KeyboardEvent(type, {
         key,
-        code: typeof key === 'string' && key.length === 1 ? `Key${key.toUpperCase()}` : key,
+        code: codeForKey(key),
         bubbles: true,
         cancelable: true,
         ...rest,
@@ -304,9 +468,32 @@ export async function withDom(body, options = {}) {
       return event;
     },
 
-    /** Resolve after one animation frame has run. */
-    nextFrame() {
-      return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+    /**
+     * Run exactly one frame's worth of animation-frame callbacks, inside act() so any
+     * resulting React updates are flushed. Callbacks that re-schedule land in the next
+     * frame, so a continuous loop advances one step per call.
+     *
+     * @returns {Promise<number>} how many callbacks ran
+     */
+    async nextFrame() {
+      if (realFrames) {
+        await dom.act(() => new Promise((resolve) => window.requestAnimationFrame(() => resolve())));
+        return 1;
+      }
+      const due = frameQueue;
+      frameQueue = new Map();
+      const now = window.performance?.now?.() ?? Date.now();
+      await dom.act(async () => {
+        for (const callback of due.values()) callback(now);
+      });
+      return due.size;
+    },
+
+    /** Run `count` frames in sequence. */
+    async frames(count) {
+      let ran = 0;
+      for (let i = 0; i < count; i++) ran += await dom.nextFrame();
+      return ran;
     },
 
     /**
@@ -314,57 +501,114 @@ export async function withDom(body, options = {}) {
      * resulting React updates are flushed before this resolves.
      */
     async advance(ms) {
-      const R = await loadReact();
-      await R.act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, ms));
-      });
+      await dom.act(() => new Promise((resolve) => window.setTimeout(resolve, ms)));
     },
 
     /**
-     * Give the document a non-zero layout box for one element. happy-dom has no
-     * layout engine, so anything that reads geometry must be told what it is.
+     * Give one element a layout box. happy-dom has no layout engine, so
+     * getBoundingClientRect() AND every box metric (offset/client/scrollWidth and
+     * friends) read 0 until told otherwise.
+     *
+     * Pass `metrics` to diverge the metrics from the rect — which is how you express
+     * an overflow case, e.g. `{ width: 334, metrics: { scrollWidth: 347 } }`.
+     *
+     * Remember you are asserting against numbers you supplied, not measured layout.
      */
-    stubRect(element, rect) {
+    stubRect(element, rect = {}) {
+      const { metrics = {}, ...boxInput } = rect;
       const box = {
         x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0,
-        ...rect,
+        ...boxInput,
       };
+      if (boxInput.width !== undefined && boxInput.right === undefined) box.right = box.left + box.width;
+      if (boxInput.height !== undefined && boxInput.bottom === undefined) box.bottom = box.top + box.height;
       element.getBoundingClientRect = () => ({ ...box, toJSON: () => box });
+
+      const resolved = {
+        offsetWidth: box.width, offsetHeight: box.height,
+        clientWidth: box.width, clientHeight: box.height,
+        scrollWidth: box.width, scrollHeight: box.height,
+        ...metrics,
+      };
+      for (const [key, value] of Object.entries(resolved)) {
+        Object.defineProperty(element, key, { value, writable: true, configurable: true });
+      }
       return element;
     },
   };
 
+  let bodyError;
+  let result;
   try {
-    return await body(dom);
-  } finally {
-    // Unmount first so effect cleanups run against a live DOM, then close the window
-    // (which aborts its pending timers and frames), then restore every global.
+    result = await body(dom);
+  } catch (error) {
+    bodyError = error ?? new Error('withDom(): body threw a falsy value');
+  }
+
+  // --- teardown -----------------------------------------------------------
+  // Everything below runs whether or not the body threw, and nothing below is
+  // allowed to replace the body's error.
+  const problems = [];
+
+  // 1. Unmount, so effect cleanups run against a live DOM. A cleanup that throws is
+  //    a real defect (the audio-context-close-on-null shape), so it is reported —
+  //    not swallowed — unless the body already failed and would mask it anyway.
+  if (roots.size && React) {
     try {
-      if (roots.size && React) await dom.unmountAll();
-    } catch {
-      /* a failing cleanup must not mask the test's own error */
-    }
-    try {
-      await window.happyDOM?.close?.();
-    } catch {
-      /* ditto */
-    }
-
-    for (const [key, descriptor] of saved) {
-      if (descriptor === undefined) delete globalThis[key];
-      else Object.defineProperty(globalThis, key, descriptor);
-    }
-    if (savedActEnv === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
-    else Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', savedActEnv);
-
-    active = false;
-
-    // Belt and braces: fail loudly if the harness (or the body) left a global behind.
-    const leaked = Object.getOwnPropertyNames(globalThis).filter((k) => !globalsBefore.has(k));
-    if (leaked.length) {
-      throw new Error(`withDom() leaked globals: ${leaked.join(', ')}`);
+      await dom.unmountAll();
+    } catch (error) {
+      problems.push(`a React effect cleanup threw during teardown: ${error.message}`);
     }
   }
+
+  // 2. Close the window: aborts its pending timers and intervals.
+  try {
+    await window.happyDOM?.close?.();
+  } catch (error) {
+    problems.push(`happyDOM.close() threw: ${error.message}`);
+  }
+
+  // 3. Detect and revert anything the body changed on globalThis — additions AND
+  //    modifications — and any pollution of the shared DOM prototypes.
+  try {
+    problems.push(...revertOwn('globalThis', globalThis, globalsAfterInstall, HARNESS_OWNED));
+  } catch (error) {
+    problems.push(`globalThis pollution check failed: ${error.message}`);
+  }
+  for (const { name, object, snapshot } of prototypesAfterInstall) {
+    try {
+      problems.push(...revertOwn(`${name}.prototype`, object, snapshot));
+    } catch (error) {
+      problems.push(`${name}.prototype pollution check failed: ${error.message}`);
+    }
+  }
+
+  // 4. Uninstall the harness's own globals. Guarded per key, and `active` is cleared
+  //    in a finally: a throw here must never wedge the module for the rest of the file.
+  try {
+    for (const [key, descriptor] of savedHarnessGlobals) {
+      try {
+        if (descriptor === undefined) delete globalThis[key];
+        else Object.defineProperty(globalThis, key, descriptor);
+      } catch (error) {
+        problems.push(`could not restore globalThis.${key}: ${error.message}`);
+      }
+    }
+  } finally {
+    active = false;
+  }
+
+  if (bodyError) {
+    if (problems.length) {
+      // Keep the body's failure as the headline; teardown detail rides along.
+      bodyError.cause ??= new Error(`withDom() teardown also reported: ${problems.join('; ')}`);
+    }
+    throw bodyError;
+  }
+  if (problems.length) {
+    throw new Error(`withDom() teardown problems: ${problems.join('; ')}`);
+  }
+  return result;
 }
 
 /** True while a withDom() body is running. Exposed for the harness's own tests. */
@@ -375,6 +619,7 @@ export const domIsActive = () => active;
  * @property {import('happy-dom').Window} window
  * @property {Document} document
  * @property {HTMLElement} body
+ * @property {number} pendingFrames
  * @property {(fn?: () => unknown) => Promise<void>} act
  * @property {(element: unknown) => Promise<HTMLElement>} mount
  * @property {(host: HTMLElement, element: unknown) => Promise<HTMLElement>} rerender
@@ -386,7 +631,8 @@ export const domIsActive = () => active;
  * @property {(key: string, init?: object) => Promise<Event>} keydown
  * @property {(key: string, init?: object) => Promise<Event>} keyup
  * @property {(type: string, key: string, init?: object) => Promise<Event>} keyEvent
- * @property {() => Promise<void>} nextFrame
+ * @property {() => Promise<number>} nextFrame
+ * @property {(count: number) => Promise<number>} frames
  * @property {(ms: number) => Promise<void>} advance
- * @property {(element: Element, rect: object) => Element} stubRect
+ * @property {(element: Element, rect?: object) => Element} stubRect
  */

@@ -5,5 +5,23 @@
   "rules": {
     "@typescript-eslint/no-explicit-any": "warn",
     "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }]
-  }
+  },
+  "overrides": [
+    {
+      "files": ["src/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["**/test/**", "*/test/*", "**/*.test.*"],
+                "message": "Production code under src/ must not import test-only modules. test/helpers/dom.mjs wraps happy-dom, a devDependency; importing it from src/ compiles happy-dom into the production bundle."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
 }

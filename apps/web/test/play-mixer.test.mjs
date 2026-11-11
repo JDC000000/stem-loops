@@ -622,12 +622,31 @@ test('the mixer and each channel are labelled regions, and the legend is announc
 //    is strictly wider than the previous claim, which fired only on a
 //    COMBINATOR plus an exact match among applied rules, and so missed
 //    `.channel[data-stem]`, `.channel.channel`, `.channel:is(…)`,
-//    `#x.channel` and anything at all inside `@supports`. Two narrowings are
-//    made and both are categorical, not heuristic: a pseudo-ELEMENT is a
-//    different box (`.fader::-webkit-slider-runnable-track { width }` cannot
-//    size `.fader`), and a rule gated on a transient interaction state
-//    (`:hover`, `:focus-within`, …) does not apply at rest. THE RESTING STATE
-//    IS THE ONLY STATE THESE LOOKUPS RESOLVE.
+//    `#x.channel` and anything at all inside `@supports`.
+//
+//    TWO EXEMPTIONS, BOTH NAMED IN FULL — the previous wording called them
+//    "categorical, not heuristic", which was true of their FORM and false of
+//    one of their CATEGORIES, and that framing is what stopped anyone looking
+//    at the membership for a round. So the membership is now stated, not
+//    characterised:
+//      (a) A pseudo-ELEMENT is a different box.
+//          `.fader::-webkit-slider-runnable-track { width }` cannot size
+//          `.fader`. Sound; nothing has defeated it. But a `::before` /
+//          `::after` box can still grow or overflow its PARENT, which is
+//          geometry and therefore limit 1's problem, not this guard's.
+//      (b) Exactly SIX pseudo-classes are exempt: `:hover`, `:focus`,
+//          `:focus-visible`, `:focus-within`, `:active`, `:target`. Each needs
+//          the user to be pointing at, typing into or navigating to the
+//          element. NOTHING ELSE IS EXEMPT — in particular `:disabled`,
+//          `:checked`, `:enabled`, `:valid`, `:invalid`, `:read-only`,
+//          `:placeholder-shown`, `:link`, `:visited`, `:open` and
+//          `:autofill` are RESTING states and are refused. This list held
+//          twenty-one until a reviewer shrank the disabled touch target to
+//          20px with `.toggle:disabled { min-height: 20px }` and the suite
+//          stayed 65/65 green. See PSEUDO_STATE.
+//
+//    THE RESTING STATE IS THE ONLY STATE THESE LOOKUPS RESOLVE, and after
+//    that fix they resolve it genuinely rather than nominally.
 //
 // 3. IT DOES NOT EVALUATE `@supports` OR `@layer`, AND REFUSES ON BOTH — now
 //    including a selector inside one that merely OUTRANKS the one asked
@@ -734,17 +753,37 @@ const subject = (selectorText) => selectorText.trim().split(/\s*[ >+~]\s*/).filt
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * Pseudo-classes that describe a TRANSIENT INTERACTION STATE. A rule gated on
- * one of these does not apply in the resting state, so it cannot be the rule
- * that answers a resting-state question — `.slot:focus-within { opacity: 1 }`
- * does not make the ducked slot's resting 0.55 wrong. Everything NOT on this
- * list (`:is`, `:not`, `:nth-child`, an attribute, a second class, an id) is
- * treated as outranking and refused. This narrowing, and the pseudo-ELEMENT
- * one beside it, are the only two the override guard makes; the resting state
- * is the only state these lookups claim to resolve. See the residue list.
+ * The SIX pseudo-classes the override guard exempts, exhaustively, and nothing
+ * else: `:hover`, `:focus`, `:focus-visible`, `:focus-within`, `:active`,
+ * `:target`. Every one of them requires the user to be pointing at, typing
+ * into, or navigating to the element, so a rule gated on one of them cannot be
+ * the rule that answers a RESTING-state question — `.slot:focus-within
+ * { opacity: 1 }` does not make the ducked slot's resting 0.55 wrong.
+ *
+ * THIS LIST USED TO HOLD TWENTY-ONE, AND THAT WAS A FALSE GREEN OF ITS OWN.
+ * Fifteen of the extras — `:disabled`, `:enabled`, `:checked`,
+ * `:indeterminate`, `:read-only`, `:read-write`, `:valid`, `:invalid`,
+ * `:default`, `:placeholder-shown`, `:link`, `:visited`, `:open`,
+ * `:popover-open`, `:autofill` — describe a RESTING state: a rule gated on one
+ * of them applies with nobody touching the page at all. `:disabled` is the one
+ * this component actively renders (`disabled: stem.availability !== 'ready'`,
+ * Mixer.tsx), and in the absent-stem case this file tests, FIFTEEN of the
+ * mixer's controls carry it at first paint. So `.toggle:disabled
+ * { min-height: 20px }` was exempted from the guard, resolved by nobody, and
+ * passed 65/65 while Chrome rendered a 20px-tall touch target on every
+ * disabled channel — against the 44px floor asserted a few screens down, whose
+ * own comment promises the box "may grow but never shrink under the target".
+ * `.fader:disabled { width: 10px }` did the same to the 44px fader column.
+ *
+ * The lesson is in the wording as much as the regex. The old comment called
+ * this a TRANSIENT-state exemption while the list exempted resting states, and
+ * the disclosure called it "categorical, not heuristic" — categorical in form,
+ * but the category was mislabelled, and that framing discouraged the scrutiny
+ * a heuristic would have invited. Anything NOT on this list of six — `:is`,
+ * `:not`, `:nth-child`, `:disabled`, an attribute, a second class, an id — is
+ * treated as outranking and REFUSED.
  */
-const PSEUDO_STATE =
-  /:(?:hover|focus-visible|focus-within|focus|active|target|visited|link|checked|disabled|enabled|indeterminate|placeholder-shown|user-invalid|user-valid|invalid|valid|default|read-only|read-write|open|popover-open|autofill)\b/g;
+const PSEUDO_STATE = /:(?:hover|focus-visible|focus-within|focus|active|target)\b/g;
 
 /**
  * Does `needle` appear in `hay` as a whole compound token rather than as the
@@ -966,7 +1005,9 @@ const declIn = (css, selector, prop, env) => {
         if (!hasToken(subject(one), want)) continue;
         if (hasToken(selector, one)) continue; // weaker form of the same selector
         const resting = one.replace(PSEUDO_STATE, '');
-        // the same element in an interaction state this lookup does not claim
+        // the same element, reachable only while the user is pointing at,
+        // typing into or navigating to it — never at rest. A RESTING-state
+        // pseudo-class such as `:disabled` is NOT exempt; see PSEUDO_STATE.
         if (resting === selector || hasToken(selector, resting)) continue;
         const also = rule.decls.find((d) => d.prop === prop || relatives(prop).includes(d.prop));
         assert.ok(
@@ -1180,6 +1221,77 @@ test('resolver: refuses an outranking selector inside an at-rule it cannot evalu
     () => declAt(`@supports (display: flex) { .channel { min-width: 150px } }\n.channel { min-width: 46px }`, 360, '.channel', 'min-width'),
     /cannot\s+evaluate/,
   );
+});
+
+test('resolver: a RESTING-state pseudo-class outranks and is refused; only six are exempt', () => {
+  // THE SEVENTH VARIANT. `PSEUDO_STATE` listed twenty-one pseudo-classes and
+  // the guard stripped all of them, so `.toggle:disabled { min-height: 20px }`
+  // was treated as "a different interaction state" and left unresolved — a
+  // confident wrong answer, 65/65 green, while Chrome rendered the disabled
+  // M/S button 46.67 x 20.00 at rest with no interaction at all. Fifteen of
+  // the twenty-one describe a state that applies with nobody touching the
+  // page. `:disabled` is the one this component renders, on 15 controls at
+  // first paint in the absent-stem case (`disabled: stem.availability !==
+  // 'ready'`). The exemption was never forced by this stylesheet: its only
+  // `:disabled` rules set `cursor`, `color` and `border-color`.
+  //
+  // Both directions are pinned, so neither putting one back nor dropping one
+  // of the six can pass.
+  const RESTING = [
+    'disabled', 'enabled', 'checked', 'indeterminate', 'read-only', 'read-write',
+    'valid', 'invalid', 'default', 'placeholder-shown', 'link', 'visited',
+    'open', 'popover-open', 'autofill',
+  ];
+  for (const state of RESTING) {
+    refuses(
+      () => declAt(`.toggle:${state} { min-height: 20px }\n.toggle { min-height: 44px }`, 360, '.toggle', 'min-height'),
+      new RegExp(`\`\\.toggle:${state}\` sets \`min-height\` and outranks \`\\.toggle\``),
+    );
+  }
+  // …and the six that genuinely need the user to be pointing at, typing into
+  // or navigating to the element stay exempt, because this stylesheet really
+  // does restate the ducked slot under `:focus-within`.
+  const TRANSIENT = ['hover', 'focus', 'focus-visible', 'focus-within', 'active', 'target'];
+  for (const state of TRANSIENT) {
+    assert.equal(
+      declAt(`.toggle:${state} { min-height: 20px }\n.toggle { min-height: 44px }`, 360, '.toggle', 'min-height'),
+      '44px',
+      `:${state} is not a resting state and must stay exempt`,
+    );
+  }
+  // the list is exhaustive in the other direction too: a pseudo-class nobody
+  // thought about is treated as outranking rather than quietly exempted
+  refuses(
+    () => declAt(`.toggle:nth-child(2) { min-height: 20px }\n.toggle { min-height: 44px }`, 360, '.toggle', 'min-height'),
+    /outranks/,
+  );
+});
+
+test('resolver: the two disabled-state shrinks that defeated the touch-target floor', () => {
+  // B1 and B2 verbatim, against the properties whose assertions they defeated:
+  // `px(narrow('.toggle', 'min-height')) === touch` and
+  // `px(at('.fader', 'width')) === touch`. Measured in Chrome at 360px at rest:
+  // B1 gave a 20px-tall disabled M/S against the 44px floor (enabled stayed
+  // 44px), B2 a 10px-wide disabled fader column (enabled stayed 44px).
+  refuses(
+    () => declAt(`.toggle:disabled { min-height: 20px; }\n.toggle { min-height: var(--touch-min); }`, 360, '.toggle', 'min-height'),
+    /`\.toggle:disabled` sets `min-height` and outranks `\.toggle`/,
+  );
+  refuses(
+    () => declAt(`.fader:disabled { width: 10px; }\n.fader { width: var(--touch-min); }`, 360, '.fader', 'width'),
+    /`\.fader:disabled` sets `width` and outranks `\.fader`/,
+  );
+  // a pseudo-ELEMENT on the disabled state is still a different box, which is
+  // what this stylesheet actually uses `:disabled` for
+  assert.equal(
+    declAt(`.fader:disabled::-webkit-slider-thumb { width: 10px }\n.fader { width: 44px }`, 360, '.fader', 'width'),
+    '44px',
+  );
+  // and the real stylesheet's own `:disabled` rules set no geometry, so the
+  // narrowing costs it nothing
+  const css = read(MIXER_CSS);
+  assert.equal(px(declAt(css, NARROWEST, '.fader', 'width')), px('var(--touch-min)'));
+  assert.equal(px(declAt(css, NARROWEST, '.toggle', 'min-height')), px('var(--touch-min)'));
 });
 
 test('resolver: refuses a shorthand and its longhand on the same selector', () => {

@@ -30,8 +30,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, existsSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 
@@ -878,22 +878,101 @@ test('the job page gutter is the token with a 16px fallback, never a literal', (
   );
 });
 
-test('the gutter fallback is present, because the token is NOT in scope on this route', () => {
-  // `--sl-gutter` lives in src/styles/landing.css, imported only by
-  // app/(landing)/layout.tsx and app/not-found.tsx. /jobs/[id] is not in that
-  // group. A BARE var(--sl-gutter) would be invalid at computed-value time and
-  // collapse the whole padding shorthand to 0 — losing the 48px top and 96px
-  // bottom as well. If this route is ever brought into landing.css's scope,
-  // delete this test; until then the fallback is the only thing rendering.
-  const landing = read('src/styles/landing.css');
-  assert.match(landing, /--sl-gutter:\s*16px/, 'landing.css changed its base gutter');
-  const layout = read('src/app/layout.tsx');
-  assert.doesNotMatch(layout, /landing\.css/, 'landing.css is global now — revisit the fallback');
-  const view = codeOnly(read('src/app/jobs/[id]/JobView.tsx'));
-  assert.doesNotMatch(
-    view,
-    /var\(--sl-gutter\)/,
-    'a bare var(--sl-gutter) would compute padding to 0 on this route',
+// Length-preserving CSS comment blanker, same contract as the scanner in
+// helpers/code-only.mjs: offsets and line numbers keep meaning what they say.
+// A gate that reads a STYLESHEET's text has the same comment-blind hole a JS
+// gate has, and here it is not hypothetical — design-tokens.css's own prose
+// names `--sl-gutter` twice, within a few lines of the declaration, and one of
+// those lines is the explanation of this very move. Matching raw CSS would let
+// the comment satisfy the gate after the declaration had gone.
+function cssCodeOnly(src) {
+  const out = Array.from(src);
+  for (let i = 0; i < src.length - 1; i += 1) {
+    if (src[i] === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2);
+      const stop = end === -1 ? src.length : end + 2;
+      for (let k = i; k < stop; k += 1) if (out[k] !== '\n') out[k] = ' ';
+      i = stop - 1;
+    }
+  }
+  return out.join('');
+}
+
+test('the gutter token is in scope on this route, because the root layout imports it', () => {
+  // THIS GATE IS THE INVERSE OF THE ONE IT REPLACES, and the inversion is the
+  // point. Until #199 `--sl-gutter` lived in src/styles/landing.css, imported
+  // only by app/(landing)/layout.tsx and app/not-found.tsx; /jobs/[id] is not
+  // in that group, so the token was NOT in scope here and the `16px` fallback
+  // in JobView's padding was the only thing rendering. The old test pinned
+  // that — `landing.css` still declares 16px — and said in its own comment:
+  // "If this route is ever brought into landing.css's scope, delete this test."
+  //
+  // #199 did something better than bring the route into landing.css's scope:
+  // it moved the token OUT of landing.css into design-tokens.css, which
+  // globals.css imports and the ROOT layout imports, so it now resolves
+  // identically on every route. The old premise is false by design, and the
+  // assertion fired as soon as #197 and #199 were in the same tree.
+  //
+  // DELETING THE TEST WOULD HAVE BEEN A FALSE GREEN. The property worth
+  // guarding did not vanish, it changed sides: it used to be "the fallback is
+  // load-bearing because the token is out of scope", and it is now "the token
+  // is in scope globally, so `var(--sl-gutter)` resolves on every route". So
+  // this asserts the LIVE IMPORT CHAIN and fails if anyone un-globals the
+  // token — by deleting the declaration, by dropping globals.css's @import, or
+  // by dropping the root layout's import of globals.css. Any of the three puts
+  // /jobs/[id] back on a 16px literal at every width WITHOUT changing JobView,
+  // which is exactly the kind of cross-file drift that produced this bug.
+  //
+  // The 16px FALLBACK stays, and the sibling test above still pins it: it is
+  // what renders if this chain is ever broken, and a bare `var(--sl-gutter)`
+  // would take the whole padding shorthand — the 48px top and 96px bottom with
+  // it — down to 0 rather than degrade.
+  //
+  // Each link is RESOLVED ON DISK rather than string-matched, so renaming or
+  // moving any of the three files fails this instead of silently passing.
+  // Note what this does NOT claim: that the token has a particular VALUE at a
+  // particular width. play-mixer.test.mjs owns that (`pageGutter()`), along
+  // with the invariant that exactly one file declares it.
+  const tokensRel = 'src/styles/design-tokens.css';
+  const globalsRel = 'src/app/globals.css';
+  const layoutRel = 'src/app/layout.tsx';
+
+  for (const rel of [tokensRel, globalsRel, layoutRel]) {
+    assert.ok(existsSync(join(WEB, rel)), `${rel} is gone — the scope chain names a file that is not there`);
+  }
+
+  // ── link 1: design-tokens.css DECLARES the token ───────────────────────────
+  const tokens = cssCodeOnly(read(tokensRel));
+  assert.match(
+    tokens,
+    /--sl-gutter\s*:\s*\S/,
+    `${tokensRel} no longer declares --sl-gutter; /jobs/[id] is back on the literal`,
+  );
+
+  // ── link 2: globals.css @imports design-tokens.css ─────────────────────────
+  const globals = cssCodeOnly(read(globalsRel));
+  const cssImports = [...globals.matchAll(/@import\s+(?:url\()?['"]([^'"]+)['"]/g)].map((m) => m[1]);
+  assert.ok(
+    cssImports.some((spec) => resolve(dirname(join(WEB, globalsRel)), spec) === join(WEB, tokensRel)),
+    `${globalsRel} no longer @imports ${tokensRel} — it imports ${JSON.stringify(cssImports)}`,
+  );
+
+  // ── link 3: the ROOT layout imports globals.css ────────────────────────────
+  // `withoutComments` to READ the specifier (it is a string literal, which
+  // `codeOnly` would blank), then `codeOnly` at the SAME offset to prove the
+  // match is a real import statement and not a decoy inside another string:
+  // `const s = "import './globals.css';"` reads as `import …` to the first
+  // scanner and as spaces to the second. Both preserve length, so the offset
+  // means the same thing in each.
+  const layoutSrc = read(layoutRel);
+  const layoutText = withoutComments(layoutSrc);
+  const layoutCode = codeOnly(layoutSrc);
+  const sideEffectImports = [...layoutText.matchAll(/import\s+['"]([^'"]+)['"]/g)]
+    .filter((m) => layoutCode.startsWith('import', m.index))
+    .map((m) => m[1]);
+  assert.ok(
+    sideEffectImports.some((spec) => resolve(dirname(join(WEB, layoutRel)), spec) === join(WEB, globalsRel)),
+    `the root layout no longer imports ${globalsRel} — it side-effect imports ${JSON.stringify(sideEffectImports)}`,
   );
 });
 

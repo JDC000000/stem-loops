@@ -190,6 +190,44 @@ And the governing knob is a **third** one v1.6 never mentioned: **`CHORDS_MAX_AU
 
 **So the existing behaviour is already correct** and lowering `MAX_UPLOAD_DURATION_SEC` to 300 would **reject 5–10 minute songs that work fine today**. Jon's *"5 mins is fine"* referred to the 5-minute **chord** limit, which already holds. **No change required. `MAX_UPLOAD_DURATION_SEC` stays at 600.**
 
+#### ⟲ REINSTATED in v1.8 (2026-11-11) — the withdrawal's own premise was false
+
+> 🟢 **V3-J4 is back, and implemented.** Approved directly by Jon, 2026-11-11. The v1.7 text
+> above is kept verbatim; this is the correction to it, not a rewrite of it.
+
+v1.7 withdrew V3-J4 on one load-bearing sentence: *"lowering `MAX_UPLOAD_DURATION_SEC` to 300
+would reject 5–10 minute songs that work fine today."*
+
+**Those songs do not work fine today.** v1.7 checked the chord path and the worker, and never
+checked the player it was written to protect:
+
+| Layer | What a 301–600 s track gets | Where |
+|---|---|---|
+| Worker upload cap | accepted (600 s) | `pipeline.py:118` before this change |
+| Chord overlay | **never produced** — a `too_long` tombstone | `pipeline.py:641`, `:804-812` |
+| **Web player** | **`PLAY_TRACK_TOO_LONG`. The player does not open at all.** | `engine.ts:94`, `:298-303` vs `MAX_TRACK_SEC = 300` (`play/types.ts:62`) |
+
+So the 600 s cap never bought a working 5–10 minute song. It bought a **paid Replicate
+separation whose only possible outcome is an error screen** — and, because `engine.ts` checks
+the ceiling only *after* decoding and downmixing all six stems, it buys that error at a peak of
+`6 × 600 × 48000 × 4 B ≈ 659 MiB` of PCM on the visitor's machine, the same byte count the
+Gate-0 spike measured at 805 MB RSS and **rejected** against a ~600 MB bar.
+
+`MAX_TRACK_SEC = 300` was fixed by the Gate-0 playback spike (`claude/spike-simple-playback-engine-2026-11-10.md`
+v1.1, decided by Jon 2026-11-10: *"300 s, to agree with `KLANGIO_MAX_AUDIO_SEC`… one product-wide
+ceiling"*). **Nothing ever wired that decision into the worker.** 600 was not a number anyone
+chose for this pipeline; it was a number nobody revisited. This change is the wiring, not a new
+requirement.
+
+v1.7's other three corrections stand unchanged and are not disturbed: the tombstone is
+`too_long`, it is not silent, and `CHORDS_MAX_AUDIO_SEC` is the governing chord knob.
+
+**Change required. `MAX_UPLOAD_DURATION_SEC_DEFAULT` is 300.0**, equal to
+`CHORDS_MAX_AUDIO_SEC`, `KLANGIO_MAX_AUDIO_SEC`, `MAX_TRACK_SEC` and the landing's "up to 5
+minutes". A browser-side duration probe at admission declines the obvious case before the
+upload and the spend; it **fails open** and is a spend-and-UX guard only — the worker cap
+remains the enforcement.
+
 ### 12.6 V3-J7 — the fetch path must actually work (NEW in v1.7) — **THE LAUNCH BLOCKER**
 
 V3-J1 begins *"a visitor pastes a public YouTube link"*. **That step currently fails 100% of the time.** Measured 2026-11-10, two jobs, same video, 26 minutes apart:

@@ -35,6 +35,9 @@ import {
   layoutRows,
   chipDensity,
   formatTime,
+  estimateLabelPx,
+  CHIP_FONT_PX,
+  CHIP_FULL_PAD_PX,
 } from '../ChordOverlay.helpers.ts';
 import { chordLabel } from '../../chord/alphabet.ts';
 
@@ -364,8 +367,25 @@ test('wrapped layout: time-proportional per row, splits runs across rows, nothin
   assert.equal(durationSec(runs), 14);
 });
 
-test('chipDensity: slivers degrade to ticks instead of overlapping; wide chips stay full', () => {
-  assert.equal(chipDensity(80), 'full');
-  assert.equal(chipDensity(20), 'tight');
-  assert.equal(chipDensity(6), 'tick');
+test('chipDensity: judged against the MEASURED label, not against a constant', () => {
+  // The thresholds used to be hardcoded (34 / 14) and had nothing to do with
+  // the text being gated: at the 16px chips render at, "F#:min7" is 61.6px, so
+  // a 34px chip was called `full` and could show barely half its own name.
+  // The density now answers the only question that matters: does THIS label fit?
+  const short = estimateLabelPx('G:7', CHIP_FONT_PX);   // 26.6px in Chromium
+  const long = estimateLabelPx('F#:min7', CHIP_FONT_PX); // 61.6px in Chromium
+
+  assert.equal(chipDensity(long + CHIP_FULL_PAD_PX, long), 'full');
+  assert.equal(chipDensity(long + CHIP_FULL_PAD_PX - 1, long), 'tight');
+  assert.equal(chipDensity(long * 0.625 + 2, long), 'tight');
+  assert.equal(chipDensity(long * 0.625 + 1, long), 'tick');
+
+  // Same chip width, different label: the short name fits where the long one does not.
+  const w = short + CHIP_FULL_PAD_PX;
+  assert.equal(chipDensity(w, short), 'full');
+  assert.equal(chipDensity(w, long), 'tight');
+
+  // The old constants, held against a real label, were wrong in both directions.
+  assert.notEqual(chipDensity(34, long), 'full');
+  assert.equal(chipDensity(20, long), 'tick');
 });

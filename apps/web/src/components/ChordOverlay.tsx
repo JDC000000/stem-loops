@@ -59,7 +59,14 @@ import {
   buildChordEdit,
   buildChordLabelEdit,
   chipBox,
+  CHIP_FULL_PAD_PX,
+  CHIP_TIGHT_FONT_PX,
   chipDensity,
+  estimateLabelPx,
+  makeCanvasMeasurer,
+  readablePxPerSec,
+  CHIP_FONT_PX,
+  type LabelMeasure,
   chordAlternatives,
   classIndexOrNull,
   classifyLabel,
@@ -330,9 +337,47 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   const minPps = narrow
     ? Math.min(MAX_PX_PER_SEC, rowWidthPx / WRAP_MAX_ROW_SEC)
     : fitPxPerSec(dur, widthPx);
+  // Real text metrics for the chips, from the font the chips actually inherit.
+  // Built once per container element and memoised per (label, size); nothing
+  // here runs per frame. Falls back to the calibrated table when there is no
+  // canvas (SSR, happy-dom, a hardened browser that returns a null context).
+  // The measuring itself lives in makeCanvasMeasurer (a pure, exported factory
+  // over a narrow 2D-context interface) so that the path which runs in every
+  // real browser is reachable from a test. This hook only sources the context
+  // and the font off the element the chips inherit from. happy-dom's
+  // getContext('2d') returns null, so without that split the production
+  // measurer would be executed by no test at all.
+  const measureLabel = useMemo<LabelMeasure>(() => {
+    if (typeof document === 'undefined' || typeof window === 'undefined' || !wrapEl) {
+      return estimateLabelPx;
+    }
+    let ctx: CanvasRenderingContext2D | null = null;
+    try {
+      ctx = document.createElement('canvas').getContext('2d');
+    } catch {
+      ctx = null;
+    }
+    const cs = window.getComputedStyle(wrapEl);
+    return makeCanvasMeasurer(ctx, {
+      fontFamily: cs.fontFamily,
+      fontWeight: cs.fontWeight,
+    });
+  }, [wrapEl]);
+
+  // THE DEFAULT ZOOM. The strip used to default to fit-the-whole-track, which
+  // for a 3:33 track in a 904px container is 4.2px/sec -- every chip a 7px
+  // sliver, every chord name invisible. It now defaults to the zoom this job's
+  // own chord data needs to print its names (see readablePxPerSec), floored at
+  // fit-to-width so a short track still fills the strip. The wrapped (narrow)
+  // layout already derived its default from seconds-per-row and already read
+  // correctly; it is unchanged.
+  const readablePps = useMemo(
+    () => readablePxPerSec(state.runs, measureLabel),
+    [state.runs, measureLabel],
+  );
   const defaultPps = narrow
     ? clampPxPerSec(rowWidthPx / WRAP_DEFAULT_ROW_SEC, minPps)
-    : minPps;
+    : clampPxPerSec(readablePps, minPps);
   const pps = userPps === null ? defaultPps : clampPxPerSec(userPps, minPps);
   const chipH = narrow ? CHIP_H_WRAP : CHIP_H_STRIP;
 
@@ -413,9 +458,9 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
     () =>
       state.runs.map((run, idx) => {
         const box = chipBox(run, pps);
-        return renderChip(run, idx, box.leftPx, box.widthPx, chipH, null, setPopoverFor);
+        return renderChip(run, idx, box.leftPx, box.widthPx, chipH, null, setPopoverFor, measureLabel);
       }),
-    [state.runs, pps, chipH],
+    [state.runs, pps, chipH, measureLabel],
   );
 
   // The ruler and the timeline width are the other two things a frame used to
@@ -462,12 +507,13 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
                 chipH,
                 seg.continued ? ri : null,
                 setPopoverFor,
+                measureLabel,
               ),
             )}
           </div>
         </div>
       )),
-    [wrapped.rows, state.runs, rowWidthPx, chipH],
+    [wrapped.rows, state.runs, rowWidthPx, chipH, measureLabel],
   );
 
   // Keep the sounding chord visible — on chord change only. `playhead` is
@@ -605,11 +651,15 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           <button
             type="button"
             style={{ ...zoomBtnStyle, width: 'auto', padding: '0 0.75rem' }}
-            data-testid="zoom-fit"
+            data-testid="zoom-reset"
             disabled={userPps === null}
             onClick={() => setZoom(null)}
           >
-            {narrow ? 'Reset' : 'Fit'}
+            {/* Not 'Fit': the default is no longer whole-track, it is the zoom
+                this job's chord names need. Whole-track is still one drag of the
+                slider (or the - button) away, and the hint line below says which
+                of the two the user is looking at. */}
+            Reset
           </button>
         </div>
       ) : null}
@@ -817,9 +867,11 @@ function renderChip(
   heightPx: number,
   continuedRow: number | null,
   open: (v: { run: OverlayRun; idx: number }) => void,
+  measureLabel: LabelMeasure,
 ) {
   const w = Math.max(1, widthPx - 1); // 1px gap so adjacent chips stay distinct
-  const density = chipDensity(w);
+  const text = displayText(run);
+  const density = chipDensity(w, measureLabel(text, CHIP_FONT_PX));
   const hue = run.kind === 'chord' ? rootHue(run.label) : null;
   return (
     <button
@@ -841,9 +893,20 @@ function renderChip(
         boxSizing: 'border-box',
         // Narrow chips drop their padding, then their label (they become
         // colour ticks); zooming in restores both.
-        padding: density === 'full' ? '0 0.5rem' : '0',
-        ...(density === 'tight' ? { fontSize: '0.625rem' } : null),
-        ...(density === 'tick' ? { color: 'transparent' } : null),
+        //
+        // THESE COME FROM THE CONSTANTS chipDensity DECIDES WITH, and must keep
+        // doing so. They were `'0 0.5rem'` and `'0.625rem'` -- numerically equal
+        // to CHIP_FULL_PAD_PX and CHIP_TIGHT_FONT_PX at a 16px root, but tied to
+        // them by nothing. The number that decides a label fits and the number
+        // that renders were four independent values in two files, and no test
+        // referenced the rendered pair. Measured: widening the padding literal
+        // alone to `0 1rem` clipped 20 desktop and 25 mobile chord names with
+        // all 1210 tests passing -- this PR's own defect, reintroduced, with a
+        // green suite. Written as one number each, that edit cannot be made.
+        // (The comment below this chip's styles announces a later polish PR;
+        // padding and font-size are the first things such a pass touches.)
+        padding: density === 'full' ? `0 ${CHIP_FULL_PAD_PX / 2}px` : '0',
+        ...(density === 'tight' ? { fontSize: `${CHIP_TIGHT_FONT_PX}px` } : null),
         borderRadius: density === 'tick' ? '2px' : '6px',
         ...(continuedRow !== null ? { opacity: 0.85, borderTopLeftRadius: 0, borderBottomLeftRadius: 0 } : null),
       }}
@@ -853,7 +916,13 @@ function renderChip(
       title={run.kind === 'chord' ? run.label : runAriaLabel(run)}
       aria-label={runAriaLabel(run)}
     >
-      {displayText(run)}
+      {/* A tick is too narrow for any legible size, so it renders as a colour
+          block with NO text node. It used to render the label at
+          `color: transparent`: in the DOM, satisfying every text-content
+          assertion, and invisible on screen. The chord is still on
+          `aria-label` and `title`, which is where an unreadable-but-present
+          label belongs. */}
+      {density === 'tick' ? null : text}
     </button>
   );
 }

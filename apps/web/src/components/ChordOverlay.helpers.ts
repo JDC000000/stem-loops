@@ -643,11 +643,227 @@ export function rootHue(label: string): number | null {
   return f && f[0] < 12 ? f[0] * 30 : null;
 }
 
-/** What a chip of this pixel width can show. */
-export function chipDensity(widthPx: number): 'full' | 'tight' | 'tick' {
-  if (widthPx >= 34) return 'full';
-  if (widthPx >= 14) return 'tight';
+// ---------------------------------------------------------------------------
+// Chip text metrics
+// ---------------------------------------------------------------------------
+//
+// WHY THERE IS A TABLE HERE AND NOT A CONSTANT.
+//
+// chipDensity used to answer "can this chip show its label?" with two hardcoded
+// pixel thresholds (34 / 14) that were never derived from any label. At the
+// 16px the chips actually render at, "F#:min7" is 61.6px wide, so a chip could
+// be `full` (>= 34px) and still be unable to show a third of its own name --
+// and a chip below 14px was painted `color: transparent`, i.e. it kept a text
+// node the user could not see. Both bugs are the same mistake: deciding what
+// text fits without measuring text.
+//
+// The real measurement happens in the browser (ChordOverlay passes a canvas
+// `measureText` measurer). This table is the headless fallback and the unit of
+// account for the tests. Its advances were MEASURED, not guessed: Chromium
+// 1280x900 on the job page's own font stack (ui-sans-serif/system-ui, weight
+// 400, font-variant-numeric: tabular-nums) at 16px, via a hidden span. Summing
+// the table reproduces real Chromium widths to within 0.21px across the chord
+// alphabet ("C:maj" 42.859 vs 42.859, "C#:minmaj7" 90.719 vs 90.711,
+// "Ab:maj7/3" 78.531 vs 78.734).
+
+/** Font size chips render their label at (inherited; 1rem). */
+export const CHIP_FONT_PX = 16;
+/** Font size the `tight` density drops to (0.625rem). */
+export const CHIP_TIGHT_FONT_PX = 10;
+/** Horizontal padding a `full` chip spends on `padding: 0 0.5rem`. */
+export const CHIP_FULL_PAD_PX = 16;
+/** A `tight` chip has no padding; keep 2px so the glyphs are not flush to the edge. */
+export const CHIP_TIGHT_PAD_PX = 2;
+/** renderChip takes 1px off every chip so neighbours stay visually distinct. */
+export const CHIP_GAP_PX = 1;
+
+const ADVANCE_16PX: Readonly<Record<string, number>> = Object.freeze({
+  A: 11.25, B: 10.4688, C: 11.6875, D: 11.5469, E: 9.6172, F: 9.4453, G: 11.9375,
+  N: 12.0547, X: 10.9141,
+  a: 8.9844, b: 9.7969, d: 9.7969, g: 9.8125, i: 3.875, j: 3.875, m: 14.0156,
+  n: 9.4531, s: 8.4453, u: 9.4609, x: 8.7344,
+  '0': 10.375, '1': 10.375, '2': 10.375, '3': 10.375, '4': 10.375,
+  '5': 10.375, '6': 10.375, '7': 10.375, '8': 10.375, '9': 10.375,
+  ':': 4.2969, '#': 10.1328, '/': 5.7656, '.': 4.2969, '?': 8.1797,
+  '-': 10.375, '(': 6.25, ')': 6.25, ' ': 4.4453,
+});
+// Widest advance in the table: an unlisted glyph must never be UNDER-estimated,
+// or a label would be declared to fit when it does not.
+const WIDEST_ADVANCE_16PX = 14.0156;
+
+/** A measurer: the rendered width of `label` at `fontPx`, in CSS pixels. */
+export type LabelMeasure = (label: string, fontPx: number) => number;
+
+/**
+ * Headless fallback measurer. Linear in font size: Chromium's advances scale
+ * exactly with font-size for this stack (measured: every label's 10px width is
+ * 0.625x its 16px width, to 3dp).
+ */
+export function estimateLabelPx(label: string, fontPx: number = CHIP_FONT_PX): number {
+  if (!label) return 0;
+  let w = 0;
+  for (const ch of label) w += ADVANCE_16PX[ch] ?? WIDEST_ADVANCE_16PX;
+  return (w * fontPx) / CHIP_FONT_PX;
+}
+
+/**
+ * The 2D-context surface the canvas measurer needs. Narrowed to what is used so
+ * a test can supply a fake one: the real measurer is the one that runs in every
+ * browser, and it must not be the one path no test executes.
+ */
+export interface Measurable2DContext {
+  font: string;
+  measureText(text: string): { width: number };
+}
+
+export interface CanvasFontSpec {
+  fontFamily: string;
+  fontWeight: string;
+}
+
+/**
+ * The CSS font shorthand for a canvas context. Separate and exported because
+ * the ONE thing that can go wrong here is silent: canvas IGNORES an invalid
+ * shorthand and keeps whatever the context had. Dropping the `px` unit leaves
+ * the context at its default `10px sans-serif`, so every label measures ~1.6x
+ * too small -- in the direction that declares text to fit when it does not.
+ */
+export function canvasFontString(fontWeight: string, fontPx: number, fontFamily: string): string {
+  return `${fontWeight} ${fontPx}px ${fontFamily}`;
+}
+
+/** Pulls the px size out of a canvas `font` read-back, which normalises the string. */
+const FONT_PX_RE = /(?:^|\s)(\d+(?:\.\d+)?)px(?:\s|$)/;
+
+/**
+ * THE MEASURER THAT RUNS IN PRODUCTION. Memoised per (label, size).
+ *
+ * After every assignment it READS `ctx.font` BACK and checks the size actually
+ * took. Canvas accepts a bad shorthand silently, so without the read-back a
+ * one-character typo would under-measure every label and quietly restore the
+ * invisible-chord bug with the whole suite green. A context that cannot be
+ * measured, cannot take the font, or returns a non-positive width falls back to
+ * the calibrated table rather than reporting a width it did not measure.
+ *
+ * KNOWN GAP 1: canvas 2D has no `font-variant-numeric`, and the chips declare
+ * `tabular-nums`. Measured in Chromium on this font stack, canvas under-measures
+ * digit-bearing labels by up to 1.656px at 16px ("G:7/5": 41.094 vs 42.750
+ * rendered) -- always the unsafe direction. Digit-driven but NOT per-digit: the
+ * delta runs -1.664 to +0.313 across the alphabet, so no per-character
+ * correction models it.
+ *
+ * `tight` absorbs it: CHIP_TIGHT_PAD_PX is 2px against a delta that scales to
+ * ~1.04px at 10px. `full` DOES NOT, and the earlier note here claiming its 16px
+ * of padding covered it was wrong: that 16px is SPENT on padding, not held as
+ * slack. `full` requires w >= labelPx_canvas + CHIP_FULL_PAD_PX and the chip
+ * then renders exactly CHIP_FULL_PAD_PX of padding, so the inner box is
+ * labelPx_canvas = labelPx_real - delta. Slack against delta is zero by
+ * construction, and a `full` chip landing within 1.66px of its threshold clips
+ * by up to 1.66px. Zero such chips at the current default, so it is residue --
+ * but it is residue for the true reason, not the comfortable one. Not fixable
+ * from here: there is no canvas API for it.
+ *
+ * KNOWN GAP 2: the read-back below checks the font SIZE only, never the family
+ * or the weight. A context that refused the shorthand but happened to hold a
+ * font of the right size and the wrong face would be believed. The realistic
+ * shape of that -- a context stuck at its `10px sans-serif` default while 10px
+ * is requested -- cannot arise here, because the only caller asks for
+ * CHIP_FONT_PX. Widening the guard to the whole normalised string would couple
+ * it to each engine's serialisation, which is a worse trade.
+ */
+export function makeCanvasMeasurer(
+  ctx: Measurable2DContext | null | undefined,
+  spec: CanvasFontSpec,
+): LabelMeasure {
+  if (!ctx || typeof ctx.measureText !== 'function') return estimateLabelPx;
+  const family = spec.fontFamily || 'sans-serif';
+  const weight = spec.fontWeight || '400';
+  const cache = new Map<string, number>();
+  return (label, fontPx = CHIP_FONT_PX) => {
+    const key = `${fontPx}|${label}`;
+    const hit = cache.get(key);
+    if (hit !== undefined) return hit;
+    let px: number;
+    try {
+      ctx.font = canvasFontString(weight, fontPx, family);
+      const took = FONT_PX_RE.exec(String(ctx.font ?? ''));
+      const w = ctx.measureText(label).width;
+      px =
+        took && Math.abs(Number(took[1]) - fontPx) < 0.5 && Number.isFinite(w) && w > 0
+          ? w
+          : estimateLabelPx(label, fontPx);
+    } catch {
+      px = estimateLabelPx(label, fontPx);
+    }
+    cache.set(key, px);
+    return px;
+  };
+}
+
+/** Chip width at which `label` fits at full size, padding and inter-chip gap included. */
+export function fullChipPx(labelPx: number): number {
+  return labelPx + CHIP_FULL_PAD_PX + CHIP_GAP_PX;
+}
+
+/**
+ * What a chip of this pixel width can show, decided by MEASURED text and not by
+ * a constant. `labelPx` is the label's width at CHIP_FONT_PX.
+ *
+ *   full  - the label fits at 16px with its padding.
+ *   tight - it fits at 10px (the `tight` branch's font size).
+ *   tick  - it does not fit at all. The chip is a colour block and renders NO
+ *           text node (see renderChip): a label the user cannot read must not
+ *           be in the DOM claiming otherwise. The full chord stays on the
+ *           chip's `aria-label`/`title`, where a reader can get at it.
+ */
+export function chipDensity(widthPx: number, labelPx: number): 'full' | 'tight' | 'tick' {
+  if (widthPx >= labelPx + CHIP_FULL_PAD_PX) return 'full';
+  if (widthPx >= (labelPx * CHIP_TIGHT_FONT_PX) / CHIP_FONT_PX + CHIP_TIGHT_PAD_PX) return 'tight';
   return 'tick';
+}
+
+/** Median of a numeric list (upper median for even lengths). Empty -> 0. */
+function median(xs: readonly number[]): number {
+  if (xs.length === 0) return 0;
+  const a = [...xs].sort((x, y) => x - y);
+  return a[Math.floor(a.length / 2)];
+}
+
+/**
+ * THE DEFAULT ZOOM for the horizontal strip.
+ *
+ * Derived from this job's own chord data, not from a constant: the px/sec at
+ * which a chord of TYPICAL length is wide enough to print the job's LONGEST
+ * chord name at full size.
+ *
+ *   widest  - max measured label width over the runs. Sizing to the widest
+ *             name means no chip of typical length has to ellipsise.
+ *   typical - the MEDIAN run duration. Sizing to the shortest run would let one
+ *             0.2s passing chord dictate the zoom for the whole song; the
+ *             median keeps half the chips fully readable by construction and
+ *             degrades the rest through `tight` rather than off a cliff.
+ *
+ * The caller still clamps: never below fit-to-width (a short track should fill
+ * the strip rather than leave it empty) and never above MAX_PX_PER_SEC.
+ */
+export function readablePxPerSec(
+  runs: readonly Pick<OverlayRun, 'startSec' | 'endSec' | 'kind' | 'label'>[],
+  measure: LabelMeasure = estimateLabelPx,
+  maxPps: number = MAX_PX_PER_SEC,
+): number {
+  if (runs.length === 0) return maxPps;
+  let widest = 0;
+  const durs: number[] = [];
+  for (const r of runs) {
+    const w = measure(displayText(r), CHIP_FONT_PX);
+    if (Number.isFinite(w) && w > widest) widest = w;
+    const d = Math.max(0, r.endSec - r.startSec);
+    if (d > 0) durs.push(d);
+  }
+  const typical = median(durs);
+  if (!(typical > 0) || !(widest > 0)) return maxPps;
+  const need = fullChipPx(widest);
+  return Math.min(maxPps, need / typical);
 }
 
 /** What the completed-job status area shows for each tri-state value. */

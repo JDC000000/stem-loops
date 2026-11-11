@@ -29,7 +29,7 @@ from . import tmpdirs
 from .cleanup import sweep_expired
 from .errors import InternalError, StemLoopsError
 from .logger import log_structured
-from .loop_cutter import claim_and_cut
+from .loop_cutter import claim_and_cut, reap_stale_requests
 from .pipeline import run_pipeline
 from .reaper import reap_stale_jobs
 
@@ -86,11 +86,22 @@ async def mark_failed(job_id: str, error_code: str, message: str) -> None:
 
 
 async def _safe_reap() -> None:
-    """Run the orphan reaper; a reaper failure must never kill the poll loop."""
+    """Run the orphan reapers; a reaper failure must never kill the poll loop.
+
+    Two queues, two orphan classes: a job stuck mid-pipeline (reaper.py) and a
+    loop request stuck at 'running' because its worker died (loop_cutter). The
+    second matters as much as the first — `loop_requests_live_idx` makes 'running'
+    exclusive per job, so a stuck request blocks that job's loops forever.
+    Separately guarded, so one failing reaper does not skip the other.
+    """
     try:
         await reap_stale_jobs()
     except Exception as e:  # noqa: BLE001
         log_structured("ERROR", "reaper_error", error=str(e)[:200])
+    try:
+        await reap_stale_requests()
+    except Exception as e:  # noqa: BLE001
+        log_structured("ERROR", "loop_request_reaper_error", error=str(e)[:200])
 
 
 async def _safe_sweep() -> None:

@@ -53,6 +53,12 @@ from .storage.r2_uploader import download_object, stem_download_r2_key
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
+# A claimed request with no worker behind it any more. The cut has no heartbeat
+# (it is one bounded pass over a known row set), so staleness is measured from
+# `claimed_at`. 900 s is generous: 60 loops at the measured 27.9 ms of CPU plus
+# six stem downloads is seconds, not minutes.
+STALE_SECONDS = int(os.environ.get("LOOP_CUT_STALE_SECONDS", "900"))
+
 
 async def claim_and_cut() -> bool:
     """Claim one queued loop request and cut it. True if a request was claimed.
@@ -160,3 +166,40 @@ async def _close(
             (status, loops_cut, error_code, request_id),
         )
         await conn.commit()
+
+
+async def reap_stale_requests() -> int:
+    """Close out requests whose worker died mid-cut. Returns how many.
+
+    WHY THIS HAS TO EXIST. `loop_requests_live_idx` makes 'queued' and 'running'
+    exclusive per job -- which is the guarantee that stops a double claim, and
+    which also means a request stuck at 'running' blocks that job's loops from
+    EVER being cut again. A worker killed by a Fly SIGTERM, a deploy or an OOM
+    leaves exactly that. Nothing else re-claims it: `claim_and_cut` only takes
+    'queued'. Same hole `reaper.py` exists to close for `jobs`.
+
+    WHY 'failed' AND NOT BACK TO 'queued'. Re-queueing would need an attempt
+    counter to stop a request that OOMs the worker every time from doing it
+    forever -- reaper.py carries `jobs.attempts` for precisely that. A terminal
+    'failed' needs no column: it leaves the partial index, so the user can simply
+    ask again, and because `cut_at` is per ROW the retry only cuts what is still
+    uncut. The work already done is kept, so a resumed cut is cheaper than the
+    first one. Bounded by construction rather than by configuration.
+    """
+    async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+        rows = await (
+            await conn.execute(
+                """
+                UPDATE loop_requests
+                   SET status='failed', error_code='INTERNAL_ERROR', updated_at=now()
+                 WHERE status='running'
+                   AND claimed_at < now() - make_interval(secs => %s)
+                RETURNING id
+                """,
+                (STALE_SECONDS,),
+            )
+        ).fetchall()
+        await conn.commit()
+    if rows:
+        log_structured("WARN", "loop_requests_reaped", count=len(rows), stale_s=STALE_SECONDS)
+    return len(rows)

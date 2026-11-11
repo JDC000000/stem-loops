@@ -46,28 +46,38 @@ interface JobRow {
 
 /**
  * Resolve the job and decide whether this caller may act on it.
- * Returns the job row, or a NextResponse to return instead.
+ *
+ * Returns a DISCRIMINATED result — `{ job }` or `{ denied }` — rather than
+ * "the row, or else a NextResponse". The union-plus-instanceof version read
+ * fine and was wrong in a way the type checker could not see: `instanceof`
+ * needs NextResponse to be a real constructor at runtime, so the check silently
+ * becomes a TypeError wherever it is not, every request 500s, and the ownership
+ * rule is bypassed on the way to the error handler. A tagged result cannot do
+ * that.
  */
-async function authorize(jobId: string): Promise<JobRow | NextResponse> {
+type Authorized = { job: JobRow; denied?: undefined };
+type Denied = { job?: undefined; denied: NextResponse };
+
+async function authorize(jobId: string): Promise<Authorized | Denied> {
   if (!UUID_RE.test(jobId)) {
-    return bad('NOT_FOUND', 'Job not found', 404);
+    return { denied: bad('NOT_FOUND', 'Job not found', 404) };
   }
   const res = await db.query<JobRow>(
     `SELECT user_id, status FROM jobs WHERE id = $1 AND expires_at > now()`,
     [jobId],
   );
   if (res.rowCount === 0) {
-    return bad('NOT_FOUND', 'Job not found', 404);
+    return { denied: bad('NOT_FOUND', 'Job not found', 404) };
   }
   const job = res.rows[0];
   if (job.user_id !== null) {
     const user = await getUser();
     if (!user || user.user_id !== job.user_id) {
       // 404 rather than 403: a 403 confirms the job exists.
-      return bad('NOT_FOUND', 'Job not found', 404);
+      return { denied: bad('NOT_FOUND', 'Job not found', 404) };
     }
   }
-  return job;
+  return { job };
 }
 
 export async function POST(
@@ -75,8 +85,9 @@ export async function POST(
   { params }: { params: { id: string } },
 ): Promise<NextResponse> {
   try {
-    const job = await authorize(params.id);
-    if (job instanceof NextResponse) return job;
+    const auth = await authorize(params.id);
+    if (auth.denied) return auth.denied;
+    const job = auth.job;
 
     // Nothing to cut until the pipeline has recorded the rows. `done` is the only
     // status where `loops` is complete; an earlier status means the description
@@ -145,8 +156,8 @@ export async function GET(
   { params }: { params: { id: string } },
 ): Promise<NextResponse> {
   try {
-    const job = await authorize(params.id);
-    if (job instanceof NextResponse) return job;
+    const auth = await authorize(params.id);
+    if (auth.denied) return auth.denied;
 
     const [counts, live] = await Promise.all([
       db.query<{ total: number; cut: number }>(

@@ -522,3 +522,72 @@ def test_cut_at_is_what_marks_a_loop_cut():
     # The player's three columns are untouched by a cut -- a cut must never be
     # able to move a section boundary under a listener.
     assert (float(start), float(end), label) == (1.5, 9.5, "verse")
+
+
+@needs_db
+def test_a_request_whose_worker_died_is_reaped_and_the_job_can_be_asked_again():
+    """`loop_requests_live_idx` makes 'running' exclusive per job, so a request
+    stranded by a killed worker blocks that job's loops FOREVER. Nothing else
+    re-claims it — claim_and_cut only takes 'queued'."""
+    job_id = _job()
+    request_id = _request(job_id, status="running")
+    with psycopg.connect(DB) as c:
+        # Stranded well past the window, as a SIGTERM'd worker leaves it.
+        c.execute(
+            "UPDATE loop_requests SET claimed_at = now() - make_interval(secs => %s) WHERE id=%s",
+            (loop_cutter.STALE_SECONDS + 60, request_id),
+        )
+        c.commit()
+        # Precondition, so the gate is not vacuous: a NEW request is impossible now.
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            c.execute("INSERT INTO loop_requests(job_id) VALUES(%s)", (job_id,))
+            c.commit()
+
+    assert asyncio.run(loop_cutter.reap_stale_requests()) == 1
+
+    with psycopg.connect(DB) as c:
+        status, code = c.execute(
+            "SELECT status, error_code FROM loop_requests WHERE id=%s", (request_id,)
+        ).fetchone()
+    assert (status, code) == ("failed", "INTERNAL_ERROR")
+    # And the whole point: the job is askable again.
+    assert _request(job_id)
+
+
+@needs_db
+def test_the_reaper_does_not_touch_a_cut_that_is_still_running():
+    """A live cut has a recent `claimed_at`. Reaping it would hand the same work
+    to a second worker while the first is still writing — the exact thing the
+    claim loop exists to prevent."""
+    job_id = _job()
+    request_id = _request(job_id, status="running")
+    with psycopg.connect(DB) as c:
+        c.execute(
+            "UPDATE loop_requests SET claimed_at = now() - make_interval(secs => %s) WHERE id=%s",
+            (loop_cutter.STALE_SECONDS - 30, request_id),
+        )
+        c.commit()
+
+    assert asyncio.run(loop_cutter.reap_stale_requests()) == 0
+
+    with psycopg.connect(DB) as c:
+        assert (
+            c.execute("SELECT status FROM loop_requests WHERE id=%s", (request_id,)).fetchone()[0]
+            == "running"
+        )
+
+
+@needs_db
+def test_the_reaper_leaves_queued_and_terminal_requests_alone():
+    """Only 'running' is stranded. A 'queued' row has no worker to lose, and a
+    terminal row is already out of the live index."""
+    for status in ("queued", "done", "failed"):
+        rid = _request(_job(), status=status)
+        with psycopg.connect(DB) as c:
+            c.execute(
+                "UPDATE loop_requests SET claimed_at = now() - make_interval(secs => %s) "
+                "WHERE id=%s",
+                (loop_cutter.STALE_SECONDS * 10, rid),
+            )
+            c.commit()
+    assert asyncio.run(loop_cutter.reap_stale_requests()) == 0

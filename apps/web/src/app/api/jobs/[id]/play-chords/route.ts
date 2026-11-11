@@ -17,6 +17,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 //        404 when the job doesn't exist, has expired, or hasn't produced chords.
 //          (A missing R2 object vs a missing job collapses to the same 404 — the
 //           loader treats it as "no chord data for this job" either way.)
+const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
+
 export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
   if (!UUID_RE.test(params.id)) {
     return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
@@ -39,10 +41,17 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       return NextResponse.json({ error_code: 'NOT_READY', message: 'Job not yet complete' }, { status: 404 });
     }
     const signed_url = await mintPlayChordsSignedUrl(params.id);
-    return NextResponse.json({
-      signed_url,
-      expires_in_sec: PLAY_CHORDS_SIGNED_URL_TTL_SEC,
-    });
+    // This body carries a BEARER CREDENTIAL (a presigned R2 URL), so it must
+    // never land in a shared cache that could replay it to another caller.
+    // Next's default on this route was `public, max-age=0, must-revalidate`,
+    // which permits a shared cache to store it; `must-revalidate` governs
+    // staleness, not storage. Found by a production QA sweep on 2026-11-11,
+    // which observed the public header live on this route while the sibling
+    // stems route correctly sent `private, no-store`. Matching that here.
+    return NextResponse.json(
+      { signed_url, expires_in_sec: PLAY_CHORDS_SIGNED_URL_TTL_SEC },
+      { headers: NO_STORE },
+    );
   } catch (err) {
     Sentry.captureException(err);
     console.error(`GET /api/jobs/${params.id}/play-chords error:`, err);

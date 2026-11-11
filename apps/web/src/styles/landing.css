@@ -25,12 +25,12 @@
   --sl-grid: #2a2a2a;
   --sl-container: 1200px;
   --sl-reading: 720px;
-  --sl-gutter: 16px;
+  /* --sl-gutter lives in design-tokens.css: it is read off this page too. */
   --sl-section: 64px;
   --region: 50%; /* 4 of 8 bars: the default loop length */
   --ph: 0;
 }
-@media (min-width: 760px) { :root { --sl-lane-label-w: 112px; --sl-lane-h: 48px; --sl-gutter: 32px; --sl-section: 96px; } }
+@media (min-width: 760px) { :root { --sl-lane-label-w: 112px; --sl-lane-h: 48px; --sl-section: 96px; } }
 
 *, *::before, *::after { box-sizing: border-box; }
 * { font-synthesis: none; }

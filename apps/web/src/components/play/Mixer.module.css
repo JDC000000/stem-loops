@@ -40,13 +40,15 @@
    must never engage, because a horizontal scrollbar there cuts the sixth
    channel's Solo button in half.
 
-   The node:test that guards this RESOLVES every number above out of the
-   stylesheets — the gutter from landing.css, this file's padding, border,
-   channel floor, gap and fader column — rather than restating any of them, so
-   moving one fails the test. What it still cannot do is lay out a box: an
-   overflow caused by something the arithmetic does not model (a padded
-   descendant, a scrollbar) would pass. The rendered numbers were taken in
-   Chrome at 360px and are in the PR. */
+   The node:test that guards this resolves every number above out of the
+   stylesheets — the gutter from design-tokens.css, this file's padding,
+   border, channel floor, gap and fader column — at the cascade that applies
+   AT 360px, rather than restating any of them or reading the base cascade.
+   It fails when one of them moves far enough to break the budget; a change
+   that still fits stays green, which is correct rather than lenient. What it
+   cannot do is lay out a box, so an overflow caused by something the
+   arithmetic does not model — a padded descendant, a scrollbar — would pass.
+   The rendered numbers were taken in Chrome at 360px and are in the PR. */
 .rail {
   display: flex;
   align-items: stretch;
@@ -84,10 +86,6 @@
     min-width: 72px;
     gap: var(--space-3);
   }
-
-  .name {
-    letter-spacing: var(--tracking-wide);
-  }
 }
 
 .head {
@@ -102,7 +100,7 @@
 /* `--tracking-normal` on phones, not `--tracking-wide`: in a ~48px channel the
    extra 0.5px per letter is the difference between VOCALS and "VOCA…", and a
    legible label is worth more than the tracking at --text-sm. The wide
-   tracking comes back at 760px where there is room for it. */
+   tracking comes back at 760px, in the block BELOW this rule. */
 .name {
   font-size: var(--text-sm);
   font-weight: var(--weight-semibold);
@@ -113,6 +111,18 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A media query adds no specificity, so this has to come AFTER the rule it
+   overrides or it simply loses. It did not: the 760px `.name` block used to
+   sit above, and the wide tracking never applied at ANY width — measured
+   `letter-spacing: normal` at 1024px. The width test now resolves the cascade
+   at a given viewport instead of comparing blocks in isolation, which is what
+   caught it. */
+@media (min-width: 760px) {
+  .name {
+    letter-spacing: var(--tracking-wide);
+  }
 }
 
 .readout {
@@ -359,11 +369,30 @@
 }
 
 /* Silent because something ELSE is soloed. Deliberately NOT the muted look:
-   the whole channel recedes and the note says why, but nothing is struck
-   through, because the user did not turn this off — it will come back on its
-   own when the solo clears. */
+   the channel recedes and the note says why, but nothing is struck through,
+   because the user did not turn this off — it will come back on its own when
+   the solo clears.
+
+   THE RECEDING IS NOT OPACITY ON THE CHANNEL. It was, at 0.55, and that put a
+   ducked channel's note at 2.52:1 and its name at 2.79:1 against a 4.5:1 AA
+   floor — on up to five channels that are still live, still interactive, and
+   whose faders and M/S buttons still work. Press Solo and most of the mixer
+   became unreadable. The LEVEL recedes instead: the fader column carries the
+   "this one is quiet" signal, the border softens, the note stays italic, and
+   every word on the channel stays at the contrast it had. Undimmed those are
+   5.47:1 and 6.45:1. */
 .isDucked:not(.isMuted) {
+  border-color: var(--border-subtle);
+}
+
+.isDucked:not(.isMuted) .slot {
   opacity: 0.55;
+}
+
+/* Reaching for the fader brings it back, so the control you are holding is
+   never the dim one. */
+.isDucked:not(.isMuted) .slot:focus-within {
+  opacity: 1;
 }
 
 .isDucked:not(.isMuted) .note {
@@ -443,7 +472,7 @@
     outline-offset: 2px;
   }
 
-  .isDucked:not(.isMuted) {
+  .isDucked:not(.isMuted) .slot {
     opacity: 1; /* opacity is not a reliable signal here; the note carries it */
   }
 

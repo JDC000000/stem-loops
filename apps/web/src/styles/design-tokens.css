@@ -150,11 +150,32 @@
   /* ── Component: Touch target minimum ── */
   --touch-min: 44px;
 
+  /* ── Layout: the page gutter ──
+     Lives here, not in landing.css, because it is not a landing-page number:
+     it is the horizontal space every full-width page leaves at the viewport
+     edge, and anything laid out against the viewport has to be able to read
+     it. landing.css is imported ONLY by app/(landing)/layout.tsx and
+     app/not-found.tsx, so on any other route `var(--sl-gutter)` resolved to
+     nothing and each caller had to carry its own fallback literal — which is
+     how the mixer's width budget and the page that mounts it ended up as two
+     independent copies of "16px" in two files, agreeing by luck. */
+  --sl-gutter: 16px;
+
   /* ── Component: Waveform heights ── */
   --wf-height-sm:  52px;   /* mobile loop cards */
   --wf-height-md:  64px;   /* mobile results */
   --wf-height-lg:  80px;   /* desktop results */
   --wf-height-xl:  96px;   /* featured/hero waveform */
+}
+
+/* The gutter's one breakpoint, moved from landing.css with it so the token
+   resolves identically on every route rather than only inside the landing
+   group. This is the ONLY media query in this file; anything reading
+   --sl-gutter must therefore read it at the width it cares about. */
+@media (min-width: 760px) {
+  :root {
+    --sl-gutter: 32px;
+  }
 }
 
 /* ────────────────────────────────────────────────────

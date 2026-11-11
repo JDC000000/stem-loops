@@ -313,10 +313,13 @@ test('muted and ducked are different markup AND different copy', () => {
   assert.notEqual(noteFor(html, 'drums'), noteFor(html, 'guitar'));
   assert.equal(noteFor(html, 'drums'), 'Muted');
   assert.match(noteFor(html, 'guitar'), /soloed/i);
-  // and the stylesheet really gives them different treatments
+  // and the stylesheet really gives them different treatments. Ducking used to
+  // be `opacity` on the whole channel; it is now on the fader column only, so
+  // the words on a live ducked channel stay at full contrast.
   const css = read(MIXER_CSS);
   assert.match(css, /\.isMuted \.name\s*\{[^}]*line-through/);
-  assert.match(css, /\.isDucked:not\(\.isMuted\)\s*\{[^}]*opacity/);
+  assert.equal(declAt(css, NARROWEST, '.isDucked:not(.isMuted) .slot', 'opacity'), '0.55');
+  assert.equal(declAt(css, NARROWEST, '.isDucked:not(.isMuted) .note', 'font-style'), 'italic');
 });
 
 test('silenceReason names the state it was given and never recomputes solo', () => {
@@ -570,109 +573,180 @@ test('the mixer and each channel are labelled regions, and the legend is announc
   assert.match(html, /several stems can be soloed at once/);
 });
 
-// ─── CSS geometry, resolved rather than pattern-matched ──────────────────────
+// ─── CSS geometry, resolved at the viewport that actually matters ────────────
 //
 // The test this replaces matched `height: 40px` with a regex and passed while
 // the buttons rendered 19x40 and the rail overflowed by 30px at 360px. A regex
 // over a stylesheet cannot see a box, so these read the DECLARED VALUES out of
 // the CSS, resolve the tokens they reference, and do the width arithmetic.
 //
-// WHAT THAT IS AND IS NOT. It is not a measurement — nothing here lays out a
-// box, so a rule that overflows for a reason the arithmetic does not model
-// (a padded descendant, a scrollbar) still passes. It IS arithmetic over
-// values that are all READ, never restated: the page gutter out of
-// landing.css, the mixer's padding and border, the channel floor, the rail
-// gap, the fader column and the channel count. An earlier version hard-coded
-// the gutter and the border as `16` and `2` while claiming to track them, and
-// a reviewer widened the real gutter to 32px — the rail overflowed by 16px at
-// 360px, the sixth Solo button left the rail, and this file stayed green.
-// Every number below is resolved for that reason.
+// WHAT THAT IS AND IS NOT. It is not a measurement: nothing here lays out a
+// box, so an overflow caused by something the arithmetic does not model — a
+// padded descendant, a scrollbar — still passes. What it IS is arithmetic over
+// values that are every one of them READ, never restated, and read from the
+// CASCADE THAT APPLIES AT 360px rather than from the base cascade.
+//
+// Both halves of that sentence were learned the hard way. A first version
+// hard-coded the page gutter as `16` and the mixer border as `2` while
+// claiming to track them. A second version resolved them but threw every
+// `@media` block away, so a `@media (max-width: 759px)` override of the gutter
+// or the channel floor — the same idiom this stylesheet uses in the other
+// direction — was invisible, and the suite stayed green while the rail
+// overflowed by 16px and by 44px and the sixth channel's Solo button sat
+// outside the viewport entirely, unclickable.
 
-/** Drop every @media block (brace-balanced) so what is left is the base rules. */
-const baseRules = (css) => {
-  let out = '';
-  let i = 0;
-  for (;;) {
-    const at = css.indexOf('@media', i);
-    if (at === -1) return out + css.slice(i);
-    out += css.slice(i, at);
-    let depth = 0;
-    let j = css.indexOf('{', at);
-    for (; j < css.length; j += 1) {
-      if (css[j] === '{') depth += 1;
-      else if (css[j] === '}') {
-        depth -= 1;
-        if (depth === 0) {
-          j += 1;
-          break;
+const TOKENS_CSS = 'src/styles/design-tokens.css';
+
+/** The narrowest viewport the mixer promises to fit every channel in. */
+const NARROWEST = 360;
+
+/** Comments can contain braces; strip them before counting any. */
+const uncomment = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+
+/**
+ * Every style rule that applies at `width`, in source order, separated from
+ * the ones this file cannot evaluate.
+ *
+ * `@media` blocks are kept when their width conditions hold at `width` and
+ * dropped when they do not, so what comes back is the cascade that renders
+ * there. Anything whose condition cannot be evaluated here — a non-width
+ * `@media`, `@supports`, `@layer` — goes to `unevaluated` rather than being
+ * guessed at, and `declAt` fails loudly if one of those touches a value it was
+ * asked for. Failing closed is the point: a silent wrong answer is what put a
+ * launch-blocking layout defect through this gate twice.
+ */
+const DEFAULT_ENV = {
+  width: 360,
+  forcedColors: 'none',
+  reducedMotion: 'no-preference',
+  colorScheme: 'dark',
+};
+
+const rulesAt = (css, env) => {
+  const { width, forcedColors, reducedMotion, colorScheme } = { ...DEFAULT_ENV, ...env };
+  const applied = [];
+  const unevaluated = [];
+
+  /**
+   * true / false / null ("cannot tell") for one at-rule prelude in `env`.
+   * The non-width features are evaluated too rather than shrugged at, because
+   * "I cannot tell" on `forced-colors` would make this refuse to answer any
+   * question about a property that file also sets in a forced-colors block.
+   */
+  const holds = (prelude) => {
+    const WIDTH = /\(\s*(min|max)-width\s*:\s*([\d.]+)px\s*\)/g;
+    const FEATURE = /\(\s*(forced-colors|prefers-reduced-motion|prefers-color-scheme)\s*:\s*([a-z-]+)\s*\)/g;
+    const widths = [...prelude.matchAll(WIDTH)];
+    const features = [...prelude.matchAll(FEATURE)];
+    const leftover = prelude
+      .replace(WIDTH, '')
+      .replace(FEATURE, '')
+      .replace(/@media|\band\b|\bonly\b|\bscreen\b|\ball\b|[\s,]/g, '');
+    if (leftover.length > 0 || widths.length + features.length === 0) return null;
+    const env_ = {
+      'forced-colors': forcedColors,
+      'prefers-reduced-motion': reducedMotion,
+      'prefers-color-scheme': colorScheme,
+    };
+    return (
+      widths.every(([, kind, n]) => (kind === 'min' ? width >= Number(n) : width <= Number(n))) &&
+      features.every(([, name, want]) => env_[name] === want)
+    );
+  };
+
+  const walk = (text, state) => {
+    let i = 0;
+    for (;;) {
+      const brace = text.indexOf('{', i);
+      if (brace === -1) return;
+      const prelude = text.slice(i, brace).trim();
+      let depth = 0;
+      let j = brace;
+      for (; j < text.length; j += 1) {
+        if (text[j] === '{') depth += 1;
+        else if (text[j] === '}') {
+          depth -= 1;
+          if (depth === 0) break;
         }
       }
+      assert.ok(depth === 0, `unbalanced braces after \`${prelude.slice(0, 40)}\``);
+      const body = text.slice(brace + 1, j);
+      if (prelude.startsWith('@')) {
+        const verdict = prelude.startsWith('@media') ? holds(prelude) : null;
+        const next =
+          verdict === false || state === 'excluded'
+            ? 'excluded'
+            : verdict === true
+              ? state
+              : 'unknown';
+        walk(body, next);
+      } else if (state !== 'excluded') {
+        (state === 'applied' ? applied : unevaluated).push({
+          selectors: prelude.split(',').map((one) => one.trim()),
+          decls: body,
+        });
+      }
+      i = j + 1;
     }
-    i = j;
-  }
+  };
+
+  walk(uncomment(css), 'applied');
+  return { applied, unevaluated };
 };
 
 /**
- * The body of every `@media (<query>)` block, concatenated. Needed because a
- * lazy `[\s\S]*?` between `@media` and a selector will happily span OUT of the
- * block it matched and into the next one: moving `.toggles`' breakpoint to
- * 1400px left M and S stacked at every width below 1400 with the suite green.
+ * The winning value of `selector { prop }` at `width` — LAST declaration wins,
+ * the way the cascade resolves it, not the first one in the file. Only rules
+ * whose selector list contains `selector` exactly are consulted, so
+ * `.isMuted .name` never answers a question about `.name`.
  */
-const mediaRules = (css, query) => {
-  const needle = `@media (${query})`;
-  let out = '';
-  let i = 0;
-  for (;;) {
-    const at = css.indexOf(needle, i);
-    if (at === -1) return out;
-    let depth = 0;
-    let j = css.indexOf('{', at);
-    const start = j + 1;
-    for (; j < css.length; j += 1) {
-      if (css[j] === '{') depth += 1;
-      else if (css[j] === '}') {
-        depth -= 1;
-        if (depth === 0) break;
-      }
+const declAt = (css, width, selector, prop, { required = true, env = {} } = {}) => {
+  const { applied, unevaluated } = rulesAt(css, { ...env, width });
+  const winner = (rules) => {
+    let found = null;
+    for (const rule of rules) {
+      if (!rule.selectors.includes(selector)) continue;
+      const hits = [...rule.decls.matchAll(new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`, 'g'))];
+      if (hits.length > 0) found = hits[hits.length - 1][1].trim();
     }
-    out += `${css.slice(start, j)}\n`;
-    i = j + 1;
-  }
+    return found;
+  };
+  const blind = winner(unevaluated);
+  assert.equal(
+    blind,
+    null,
+    `\`${selector} { ${prop} }\` is set to \`${blind}\` inside an at-rule this test cannot ` +
+      `evaluate — teach rulesAt about it rather than trusting the base value`,
+  );
+  const value = winner(applied);
+  if (required) assert.ok(value !== null, `nothing declares \`${prop}\` for \`${selector}\` at ${width}px`);
+  return value;
 };
 
-const declIn = (block, selector, prop) => {
-  const rule = block.match(new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`));
-  assert.ok(rule, `no base rule for ${selector}`);
-  const found = rule[1].match(new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`, 'm'));
-  assert.ok(found, `${selector} declares no ${prop}`);
-  return found[1].trim();
-};
+/** The same lookup in forced-colors mode, where this stylesheet restates states. */
+const declForcedColors = (css, width, selector, prop, opts = {}) =>
+  declAt(css, width, selector, prop, { ...opts, env: { forcedColors: 'active' } });
 
-/** `12px` -> 12, `var(--space-2)` -> whatever design-tokens.css says it is. */
-const TOKENS = read('src/styles/design-tokens.css');
-const px = (value) => {
+/** `12px` -> 12; `var(--space-2)` -> whatever the tokens say AT THIS WIDTH. */
+const px = (value, width = NARROWEST) => {
   const direct = value.match(/^(-?[\d.]+)px$/);
   if (direct) return Number(direct[1]);
   const token = value.match(/^var\((--[a-z0-9-]+)\)$/);
-  assert.ok(token, `cannot resolve ${value} to px`);
-  const defined = TOKENS.match(new RegExp(`${token[1]}\\s*:\\s*(-?[\\d.]+)px`));
-  assert.ok(defined, `${token[1]} is not a px token`);
-  return Number(defined[1]);
+  assert.ok(token, `cannot resolve \`${value}\` to px`);
+  return px(declAt(read(TOKENS_CSS), width, ':root', token[1]), width);
 };
 
-/** The mobile page gutter, read out of landing.css rather than restated. */
-const pageGutter = () => px(declIn(baseRules(read(LANDING_CSS)), ':root', '--sl-gutter'));
-
-/** The narrowest viewport the mixer promises to fit six channels in. */
-const NARROWEST = 360;
+/** The page gutter, read from the tokens that are in scope on every route. */
+const pageGutter = (width = NARROWEST) => px(declAt(read(TOKENS_CSS), width, ':root', '--sl-gutter'), width);
 
 test('every channel fits at 360px, with each number resolved from the stylesheets', () => {
-  const base = baseRules(read(MIXER_CSS));
+  const css = read(MIXER_CSS);
+  const at = (selector, prop) => declAt(css, NARROWEST, selector, prop);
   const gutter = pageGutter();
-  const channelMin = px(declIn(base, '.channel', 'min-width'));
-  const railGap = px(declIn(base, '.rail', 'gap'));
-  const mixerPad = px(declIn(base, '.mixer', 'padding'));
-  const mixerBorder = px(declIn(base, '.mixer', 'border').split(/\s+/)[0]);
+  const channelMin = px(at('.channel', 'min-width'));
+  const railGap = px(at('.rail', 'gap'));
+  const mixerPad = px(at('.mixer', 'padding'));
+  const mixerBorder = px(at('.mixer', 'border').split(/\s+/)[0]);
   const channels = PLAYABLE_STEMS.length;
 
   // What a 360px viewport actually leaves the rail, inside the page gutter and
@@ -687,7 +761,7 @@ test('every channel fits at 360px, with each number resolved from the stylesheet
 
   // and the channel is still wide enough to hold the full 44px fader column
   const touch = px('var(--touch-min)');
-  assert.equal(px(declIn(base, '.fader', 'width')), touch);
+  assert.equal(px(at('.fader', 'width')), touch);
   assert.ok(
     channelMin >= touch + 2,
     `a ${channelMin}px channel cannot hold a ${touch}px fader plus its borders`,
@@ -699,37 +773,56 @@ test('stem names are not tracked out of their own channel on phones', () => {
   // At ~48px per channel, --tracking-wide made VOCALS need 48px of a 47px box
   // and it ellipsised to "VOCA…". Nothing here can measure a glyph, but the
   // tracking this depends on is a declared value and can be pinned.
-  assert.equal(declIn(baseRules(css), '.name', 'letter-spacing'), 'var(--tracking-normal)');
-  assert.equal(
-    declIn(mediaRules(css, 'min-width: 760px'), '.name', 'letter-spacing'),
-    'var(--tracking-wide)',
-  );
+  assert.equal(declAt(css, NARROWEST, '.name', 'letter-spacing'), 'var(--tracking-normal)');
+  assert.equal(declAt(css, 1024, '.name', 'letter-spacing'), 'var(--tracking-wide)');
+});
+
+test('ducking recedes the LEVEL, never the words: no opacity on the channel itself', () => {
+  const css = read(MIXER_CSS);
+  // `opacity: 0.55` on the channel put a ducked channel's note at 2.52:1 and
+  // its name at 2.79:1 against a 4.5:1 floor — on up to five channels that are
+  // still live and still interactive. Nothing may dim the channel as a whole.
+  for (const channelLevel of ['.isDucked', '.isDucked:not(.isMuted)']) {
+    assert.equal(
+      declAt(css, NARROWEST, channelLevel, 'opacity', { required: false }),
+      null,
+      `${channelLevel} dims the whole channel, text included`,
+    );
+  }
+  // the fader column carries the signal instead, and the note still says why
+  assert.equal(declAt(css, NARROWEST, '.isDucked:not(.isMuted) .slot', 'opacity'), '0.55');
+  assert.equal(declAt(css, NARROWEST, '.isDucked:not(.isMuted) .note', 'font-style'), 'italic');
+  // forced colours drop the tint, so the dimming is restated away there
+  assert.equal(declForcedColors(css, NARROWEST, '.isDucked:not(.isMuted) .slot', 'opacity'), '1');
 });
 
 test('M and S are real touch targets on phones: stacked, and --touch-min on both axes', () => {
   const css = read(MIXER_CSS);
-  const base = baseRules(css);
+  const narrow = (selector, prop) => declAt(css, NARROWEST, selector, prop);
   const touch = px('var(--touch-min)');
 
   // Stacked, so each button gets the channel's whole width rather than half of
   // it. Side by side in a ~49px channel they measured 19x40.
-  assert.equal(declIn(base, '.toggles', 'flex-direction'), 'column');
-  assert.equal(declIn(base, '.toggles', 'padding-inline'), '0');
-  assert.equal(px(declIn(base, '.toggle', 'min-height')), touch);
+  assert.equal(narrow('.toggles', 'flex-direction'), 'column');
+  assert.equal(narrow('.toggles', 'padding-inline'), '0');
+  assert.equal(px(narrow('.toggle', 'min-height')), touch);
   // min-height, not height: the box may grow but never shrink under the target.
-  assert.ok(!/\.toggle\s*\{[^}]*\bheight:\s*40px/.test(base), 'the 40px toggle is back');
+  assert.equal(declAt(css, NARROWEST, '.toggle', 'height', { required: false }), null);
 
   // border-box is what keeps `width: 100%` + padding from overflowing the rail.
-  assert.equal(declIn(base, '.note', 'box-sizing'), 'border-box');
-  assert.equal(declIn(base, '.toggles', 'box-sizing'), 'border-box');
+  assert.equal(narrow('.note', 'box-sizing'), 'border-box');
+  assert.equal(narrow('.toggles', 'box-sizing'), 'border-box');
 
-  // From 760px up there is width for a row again — asserted INSIDE the 760px
-  // block, so moving `.toggles` to a different breakpoint fails here instead
-  // of matching some other block's `flex-direction: row`.
-  const wide = mediaRules(css, 'min-width: 760px');
-  assert.ok(wide.length > 0, 'no 760px block at all');
-  assert.equal(declIn(wide, '.toggles', 'flex-direction'), 'row');
-  assert.equal(px(declIn(wide, '.toggle', 'height')), touch);
+  // From 760px up there is width for a row again — resolved AT 1024px, so a
+  // rule that leaves the breakpoint it is supposed to be in fails here rather
+  // than matching some other block's `flex-direction: row`. And it is still a
+  // row at exactly 760, the boundary.
+  for (const wide of [760, 1024]) {
+    assert.equal(declAt(css, wide, '.toggles', 'flex-direction'), 'row', `at ${wide}px`);
+    assert.equal(px(declAt(css, wide, '.toggle', 'height'), wide), touch, `at ${wide}px`);
+  }
+  // …and still stacked at 759, the width below it
+  assert.equal(declAt(css, 759, '.toggles', 'flex-direction'), 'column');
   assert.match(css, /touch-action:\s*none/);
 });
 

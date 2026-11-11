@@ -73,9 +73,15 @@
  * 6 stems, 300 s, 48 kHz mono, renderer process only, real Chromium:
  *
  *   HIGH-WATER MARK (VmHWM)                     BEFORE     AFTER    reps
- *     8 kHz WAV source, GC forced per stem      766-767   656-658      9
- *     8 kHz WAV source, no forced GC            764-766   658-713      6
- *     real Ogg/Opus 48 kHz (production format)  870-871   762-763      3
+ *     8 kHz WAV, gc() forced per stem           766-767   656-658    12+12
+ *     8 kHz WAV, NO forced gc()                 764-775   658-776     9+13
+ *     real Ogg/Opus 48 kHz (production format)  870-871   762-763      3+3
+ *
+ *   ⚠️ THE MIDDLE ROW IS BIMODAL AND BUYS NOTHING RELIABLY. With no forced
+ *   gc() the AFTER arm lands at base level about as often as it lands low —
+ *   775, 712, 712, 711, 776, 774 in one six-run block. There is no benefit to
+ *   claim on that row; read it as "no reliable benefit without forced GC".
+ *   Likely cause is GC scheduling on a shared box, which nobody controls.
  *
  *   SETTLED RSS, once reclaimed                 BEFORE     AFTER
  *     8 kHz WAV source                          480-484   482-484
@@ -86,7 +92,8 @@
  *
  * ⚠️ WHICH PART OF THE CHANGE BOUGHT THAT, measured rather than assumed, by
  * putting three deliberately mis-ordered variants through the same driver
- * (8 kHz WAV, GC per stem, interleaved with the real arms in one session):
+ * (8 kHz WAV, same-turn gc() per stem, interleaved with the real arms in one
+ * session):
  *
  *     no release at all (pre-2026-11-11)        766-767 MiB HWM
  *     release, but AFTER the allocation         657-658 MiB HWM
@@ -97,23 +104,50 @@
  * inside `decodeAudioData`, which is above every downmix variant, so the
  * ordering stops being visible in VmHWM.
  *
+ * ⚠️ AND THE ~110 MiB IS CONDITIONAL. IT IS NOT A FIXED SAVING. What the
+ * base arm pays for is the PREVIOUS stem's stereo buffer still being resident
+ * when the next decode runs — so the figure is entirely a question of whether
+ * the collector has got to it yet. One extra `gc()` is the whole difference:
+ *
+ *                               gc() in the SAME turn   gc() after a YIELD
+ *     no release (base)                 766 MiB               656 MiB
+ *     release (shipped)                 657 MiB               657 MiB
+ *
+ * A same-turn `gc()` cannot collect the buffer: the async frame and the
+ * pending promise result still pin it. Give the collector a turn of its own
+ * and base reaches the shipped figure on its own. The per-stem RSS trace says
+ * the same thing — 316/371/427/482/538/593 when each stereo is still resident,
+ * 207/262/317/372/427/482 once it is not.
+ *
+ * SO STATE THE BENEFIT PRECISELY, because the honest version is the useful
+ * one: against a lazy collector the release is worth ~110 MiB; against an
+ * eager one it is worth nothing; under real GC timing it is somewhere in
+ * 0..110 MiB and nobody gets to choose. What the change reliably buys is that
+ * the answer STOPS DEPENDING ON GC TIMING AT ALL — 657 in both columns. That
+ * is the durable property, and it is the same property WebKit bug 189337
+ * makes valuable on iOS, where the collector is the one that lags.
+ *
  * The order still earns its place, and it is worth being exact about what it
  * earns: it holds SEVEN whole-track buffers live at the busiest instant
  * instead of eight — one whole-track buffer, 57,600,000 B, less live PCM —
- * which is what the sampled figures 592 -> 548 are showing. On this box that does not convert into a lower
- * process peak. On an engine or device whose decode transient is smaller —
+ * which is what the sampled figures 592 -> 548 are showing. On this box that
+ * does not convert into a lower process peak, under either GC schedule. On an
+ * engine or device whose decode transient is smaller —
  * where the downmix instant IS the peak — it would. That last sentence is a
  * hypothesis; nobody has measured it.
  *
  * ⚠️ THE ~600 BAR IS NOT MET, BEFORE OR AFTER. The high-water mark is 656+
  * MiB on the synthetic source and 762+ MiB on the production Opus one. This
- * change lowers it by ~110 MiB and does not bring it under the bar. Anyone
+ * change lowers it by up to ~110 MiB (see the GC-timing table above — the
+ * figure is 0..110 depending on the collector) and does not bring it under the
+ * bar in any configuration measured. Anyone
  * quoting 548, or quoting the settled figure, is quoting a number that is not
  * the process peak — which is the mistake this comment exists to stop.
  *
  * WHAT STILL SETS THE MARK IS `decodeAudioData` ITSELF, not the downmix:
- * after this change the high-water mark still sits ~175 MiB above settled,
- * and no part of that is the mono buffer. Reducing it means changing how the
+ * after this change the high-water mark still sits ~174 MiB above settled on
+ * the WAV path (657-483) and ~183 MiB on the Opus one (762-579), and no part
+ * of either is the mono buffer. Reducing it means changing how the
  * decode happens, which is a separate piece of work nobody has scoped.
  *
  * The peak happens during LOAD, before a note plays: a device that survives
@@ -122,9 +156,9 @@
  * MEASUREMENT CAVEATS, because they bound what the table above licenses: one
  * headless Chromium on one Linux box; the Opus run holds all six encoded
  * buffers resident at once, which is what `load()` really does but which also
- * raises its settled figure; with no forced GC the AFTER figure is the noisier
- * of the two (one run in six landed at 658 rather than ~712); and nothing here
- * was measured on WebKit or on a real device.
+ * raises its settled figure; the no-forced-gc() row is bimodal rather than
+ * merely noisy, which is why no benefit is claimed on it; and nothing here was
+ * measured on WebKit or on a real device.
  *
  * What is left in the downmix — one stereo buffer alive beside five monos at
  * the last decode — is the LIVE-PCM floor for this architecture:
@@ -132,13 +166,14 @@
  * not to. It is a floor on PCM, not a prediction of VmHWM, which the table
  * above shows is far higher.
  *
- * WHY EAGER RELEASE AND NOT JUST DROPPING THE REFERENCE. The attribution
- * table is the evidence for something the iOS bug reports already implied:
- * handing the store back is not the same as making it collectable. WebKit bug
- * 189337 (open since 2018) can keep decoded audio resident for ~a minute after
- * the last reference is dropped, and the 766 -> 657 row here is Chromium
- * showing the same shape — a forced `gc()` between stems did NOT get that
- * memory back, an explicit transfer-detach did. `load()` is re-runnable by
+ * WHY EAGER RELEASE AND NOT JUST DROPPING THE REFERENCE. Handing the store
+ * back is not the same as making it collectable, and the gap between the two
+ * is exactly as wide as the collector's lag. A forced `gc()` in the SAME turn
+ * did not get that memory back (766); a `gc()` after a yield did (656); an
+ * explicit transfer-detach gets it back either way (657). Production forces
+ * neither, so the lag is whatever the engine decides that day — and on iOS,
+ * WebKit bug 189337 (open since 2018) can make it ~a minute. `load()` is
+ * re-runnable by
  * design via `loadId`, so a failed load plus a user retry could otherwise
  * stack two generations of PCM on exactly the path taken when memory is
  * already tight.

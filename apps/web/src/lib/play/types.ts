@@ -47,13 +47,13 @@ export type StemName = (typeof PLAYABLE_STEMS)[number];
  * A Web Audio AudioBuffer is always Float32, so PCM bytes are exactly
  *   stems x duration x sampleRate x channels x 4
  * with no slack. The mono downmix is the load-bearing saving, not the rate.
- * These are asserted, not asserted-by-comment: `apps/web/test/play-engine.test.mjs`
+ * These are asserted, not asserted-by-comment: `play-engine.test.mjs`
  * recomputes each one from the constants in this file and fails if they drift.
  *
  * MEASURED, not assumed — 6 stems x 300 s, SETTLED (all six monos resident):
  *   48 kHz stereo  691,200,000 B = 659.2 MiB PCM / 805 MiB RSS  fails
  *   48 kHz mono    345,600,000 B = 329.6 MiB PCM / 576 MiB RSS  SHIPPING
- *   24 kHz mono    172,800,000 B = 164.8 MiB PCM / 356 MiB RSS  documented fallback
+ *   24 kHz mono    172,800,000 B = 164.8 MiB PCM / 356 MiB RSS  fallback
  *
  * The PCM column is arithmetic and is asserted below. The RSS column is
  * INHERITED from the 2026-11-10 measurement and was taken a different way —
@@ -83,13 +83,26 @@ export type StemName = (typeof PLAYABLE_STEMS)[number];
  * renderer VmHWM, reset immediately before the stem loop, real Chromium:
  *
  *                                        before 2026-11-11   after    reps
- *     8 kHz WAV source, GC per stem         766-767 MiB    656-658      9
- *     8 kHz WAV source, no forced GC        764-766 MiB    658-713      6
- *     real Ogg/Opus 48 kHz (production)     870-871 MiB    762-763      3
+ *     8 kHz WAV, gc() forced per stem       766-767 MiB    656-658   12+12
+ *     8 kHz WAV, NO forced gc()             764-775 MiB    658-776    9+13
+ *     real Ogg/Opus 48 kHz (production)     870-871 MiB    762-763     3+3
  *
- * The decode-transient fix of 2026-11-11 lowered the high-water mark by
+ * ⚠️ The middle row is BIMODAL: with no forced gc() the after arm lands at
+ * base level about as often as it lands low (775, 712, 712, 711, 776, 774 in
+ * one block). Claim no benefit on that row.
+ *
+ * The decode-transient fix of 2026-11-11 lowered the high-water mark by up to
  * ~110 MiB — by releasing each spent channel's store on the spot instead of
- * leaving it to GC. It did NOT bring the mark under Jon's ~600 MiB bar
+ * leaving it to GC. UP TO, and the qualifier is the point: what base pays for
+ * is the previous stem's stereo buffer still being resident when the next
+ * decode runs, so the saving is exactly the collector's lag. A forced `gc()`
+ * in the same turn cannot collect it (base 766); a `gc()` after a yield can
+ * (base 656); the release gets it either way (657, both columns). So against
+ * a lazy collector the fix is worth ~110 MiB, against an eager one nothing,
+ * and under real GC timing somewhere in 0..110 that nobody controls. What it
+ * reliably buys is INDEPENDENCE FROM GC TIMING — which is the property that
+ * matters on iOS, where WebKit 189337 makes the collector the slow one.
+ * It did NOT bring the mark under Jon's ~600 MiB bar
  * (relaxed from 400 on 2026-11-10 so the reference track keeps full
  * bandwidth), and on the production Opus path the mark is ~762 MiB. What sets
  * it now is `decodeAudioData` itself, not the downmix: the mark still sits

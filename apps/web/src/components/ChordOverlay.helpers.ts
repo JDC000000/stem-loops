@@ -745,13 +745,31 @@ const FONT_PX_RE = /(?:^|\s)(\d+(?:\.\d+)?)px(?:\s|$)/;
  * measured, cannot take the font, or returns a non-positive width falls back to
  * the calibrated table rather than reporting a width it did not measure.
  *
- * KNOWN GAP: canvas 2D has no `font-variant-numeric`, and the chips declare
+ * KNOWN GAP 1: canvas 2D has no `font-variant-numeric`, and the chips declare
  * `tabular-nums`. Measured in Chromium on this font stack, canvas under-measures
  * digit-bearing labels by up to 1.656px at 16px ("G:7/5": 41.094 vs 42.750
- * rendered) -- always the unsafe direction. The `full` branch reserves 16px of
- * padding and the `tight` branch 2px against a delta that scales to ~1.04px at
- * 10px, so it is absorbed today. It is not fixable from here: there is no canvas
- * API for it.
+ * rendered) -- always the unsafe direction. Digit-driven but NOT per-digit: the
+ * delta runs -1.664 to +0.313 across the alphabet, so no per-character
+ * correction models it.
+ *
+ * `tight` absorbs it: CHIP_TIGHT_PAD_PX is 2px against a delta that scales to
+ * ~1.04px at 10px. `full` DOES NOT, and the earlier note here claiming its 16px
+ * of padding covered it was wrong: that 16px is SPENT on padding, not held as
+ * slack. `full` requires w >= labelPx_canvas + CHIP_FULL_PAD_PX and the chip
+ * then renders exactly CHIP_FULL_PAD_PX of padding, so the inner box is
+ * labelPx_canvas = labelPx_real - delta. Slack against delta is zero by
+ * construction, and a `full` chip landing within 1.66px of its threshold clips
+ * by up to 1.66px. Zero such chips at the current default, so it is residue --
+ * but it is residue for the true reason, not the comfortable one. Not fixable
+ * from here: there is no canvas API for it.
+ *
+ * KNOWN GAP 2: the read-back below checks the font SIZE only, never the family
+ * or the weight. A context that refused the shorthand but happened to hold a
+ * font of the right size and the wrong face would be believed. The realistic
+ * shape of that -- a context stuck at its `10px sans-serif` default while 10px
+ * is requested -- cannot arise here, because the only caller asks for
+ * CHIP_FONT_PX. Widening the guard to the whole normalised string would couple
+ * it to each engine's serialisation, which is a worse trade.
  */
 export function makeCanvasMeasurer(
   ctx: Measurable2DContext | null | undefined,

@@ -59,6 +59,8 @@ import {
   buildChordEdit,
   buildChordLabelEdit,
   chipBox,
+  CHIP_FULL_PAD_PX,
+  CHIP_TIGHT_FONT_PX,
   chipDensity,
   estimateLabelPx,
   makeCanvasMeasurer,
@@ -891,8 +893,20 @@ function renderChip(
         boxSizing: 'border-box',
         // Narrow chips drop their padding, then their label (they become
         // colour ticks); zooming in restores both.
-        padding: density === 'full' ? '0 0.5rem' : '0',
-        ...(density === 'tight' ? { fontSize: '0.625rem' } : null),
+        //
+        // THESE COME FROM THE CONSTANTS chipDensity DECIDES WITH, and must keep
+        // doing so. They were `'0 0.5rem'` and `'0.625rem'` -- numerically equal
+        // to CHIP_FULL_PAD_PX and CHIP_TIGHT_FONT_PX at a 16px root, but tied to
+        // them by nothing. The number that decides a label fits and the number
+        // that renders were four independent values in two files, and no test
+        // referenced the rendered pair. Measured: widening the padding literal
+        // alone to `0 1rem` clipped 20 desktop and 25 mobile chord names with
+        // all 1210 tests passing -- this PR's own defect, reintroduced, with a
+        // green suite. Written as one number each, that edit cannot be made.
+        // (The comment below this chip's styles announces a later polish PR;
+        // padding and font-size are the first things such a pass touches.)
+        padding: density === 'full' ? `0 ${CHIP_FULL_PAD_PX / 2}px` : '0',
+        ...(density === 'tight' ? { fontSize: `${CHIP_TIGHT_FONT_PX}px` } : null),
         borderRadius: density === 'tick' ? '2px' : '6px',
         ...(continuedRow !== null ? { opacity: 0.85, borderTopLeftRadius: 0, borderBottomLeftRadius: 0 } : null),
       }}

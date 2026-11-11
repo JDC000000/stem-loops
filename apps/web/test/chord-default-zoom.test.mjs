@@ -422,8 +422,14 @@ async function mountOverlay(dom, { containerPx, afterMount } = {}) {
     // background with the chip's element `opacity` (the component sets 0.85 on
     // continued-row chips, which fades text and background together towards the
     // page and so really does cut contrast). It does NOT walk the ancestor
-    // chain for an inherited background, because happy-dom resolves no cascade
-    // and the overlay's own ancestors declare none. `parseColor('transparent')`
+    // chain: happy-dom resolves no cascade, so an ancestor's background is not
+    // reachable from a chip's computed style here. One ancestor DOES declare
+    // one -- `[data-testid="chord-overlay"]` is `rgba(0,0,0,0.6)` -- so the
+    // earlier claim that the overlay's ancestors declare none was wrong.
+    // Ignoring it is safe in one direction only: compositing a chip over the
+    // near-black page instead of over that slightly lighter panel can only
+    // UNDERstate contrast on this palette, never overstate it. On a light
+    // palette the same reasoning would not hold. `parseColor('transparent')`
     // deliberately returns an alpha-0 colour rather than null so it composites
     // instead of being swapped for an opaque default.
     const pageBg = parseColor('#0b0d12');

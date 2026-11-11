@@ -42,13 +42,33 @@
 //
 // WHAT IS STILL NOT COVERED, stated plainly because it is the root cause of this whole class:
 // these gates read DOM TEXT and RAW SOURCE, and NEITHER OF THOSE IS WHAT THE READER READS.
-// The render pass closed the largest channel and the metadata pass closes the second. What
-// remains is copy on a branch the default render does not take, and CSS-generated content:
-// `.audience::after { content: " No account needed — start a job straight away."; }`
-// is invisible to both normalisations (it is not in the DOM) and to the raw ban list on the
-// .css file (the NBSP again), yet Chrome paints it in the hero directly under the H1. That is
-// NAMED RESIDUE, not a covered case: nothing on this page sets visible `content:`, and no
-// gate can cover every rendering channel.
+// The render pass closed the largest channel, the metadata pass the second, and the attribute
+// capture above the third. THREE CHANNELS REMAIN. An earlier version of this comment said
+// TWO, which was an overclaim of coverage in the one file whose whole purpose is to stop
+// overclaiming — the same defect as the raw-backstop sentence. It is corrected here rather
+// than quietly dropped, because a quiet edit is how a false claim survives.
+//
+//   1. COPY ON A BRANCH THE DEFAULT RENDER DOES NOT TAKE. Error states, and anything behind a
+//      handler. DemoProvider sets `no-data` in a useEffect and renderToStaticMarkup runs no
+//      effects, so that whole mode goes unrendered here.
+//   2. CSS-GENERATED CONTENT. `.audience::after { content: " No account needed — start a job
+//      straight away."; }` is not in the DOM, so both normalisations are blind, and the NBSP
+//      walks past the raw ban list on the .css file — yet Chrome paints it in the hero,
+//      directly under the H1. Demonstrated in Chrome.
+//   3. ATTRIBUTE TEXT OTHER THAN `aria-label`, `alt` AND `title` — `placeholder` or
+//      `aria-description`, say. This page renders none of those today, and the three that
+//      carry an accessible name are captured above, but the tag strip still discards the rest.
+//
+// Raw source remains a weak backstop over all three: it catches UNOBFUSCATED text only, and
+// any entity, wrap, markup or indirection walks straight past it.
+//
+// THE ENUMERATION IS BELIEVED COMPLETE. Walking the pipeline for a fourth channel finds none:
+// the render covers DOM text, the metadata pass covers the head, the capture above covers the
+// attributes that carry an accessible name, and anything left is one of (a) not rendered at
+// all, (b) not in the DOM, or (c) in the DOM but discarded by the normaliser. That is the
+// whole surface. All three are NAMED RESIDUE, not covered cases — no gate can cover every
+// rendering channel, and the point of naming them is that the next person need not rediscover
+// which ones are open.
 //
 // Two normalisations are returned, because evading one tends to walk into the other:
 //   textSpaced — every tag becomes a space. This is the human reading, and it is what kills
@@ -112,6 +132,15 @@ const decode = (s) => s
 const collapse = (s) => s.replace(/[\s   ]+/g, ' ').trim();
 const toText = (html, joiner) => collapse(decode(
   html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    // Attribute text is text. The tag strip below throws the WHOLE tag away, attributes and
+    // all, so an `aria-label` reached neither normalisation — and an `aria-label` OVERRIDES
+    // the element's text, so it is what a screen-reader user hears INSTEAD of the link.
+    // An `aria-label="sign-in page — no account needed, start a job straight away"` on the
+    // scope sheet's sign-in link announced the forbidden claim with this suite green at
+    // 926/906/0/20 (adversarial sweep round 5, 2026-11-11). Pulled out here, ahead of the
+    // strip. `alt` and `title` are included as the same kind of text; this page renders
+    // neither today.
+    .replace(/<[^>]*?\s(?:aria-label|alt|title)="([^"]*)"[^>]*>/gi, (_, v) => `${joiner}${v}${joiner}`)
     .replace(/<[^>]*>/g, joiner),
 ));
 

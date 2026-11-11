@@ -36,7 +36,25 @@ import { fileURLToPath } from 'node:url';
 import {
   CHIP_FONT_PX,
   CHIP_FULL_PAD_PX,
+  CHIP_GAP_PX,
+  CHIP_TIGHT_FONT_PX,
+  CHIP_TIGHT_PAD_PX,
+  CEILING_SLACK_PX,
   MAX_PX_PER_SEC,
+  MAX_TIMELINE_PX,
+  MAX_WRAP_ROWS,
+  READABLE_TIME_FRACTION,
+  chipContentPx,
+  densityCounts,
+  layoutRows,
+  ppsToSlider,
+  runContentPx,
+  segmentDensityCounts,
+  shortestRunSec,
+  sliderToPps,
+  timeWeightedRunSec,
+  widestLabelPx,
+  zoomCeilingPxPerSec,
   canvasFontString,
   chipBox,
   chipDensity,
@@ -79,6 +97,77 @@ const DESKTOP_WIDTHS = [
   { viewport: 1280, containerPx: 872 },
   { viewport: 1440, containerPx: 872 },
 ];
+
+// ---------------------------------------------------------------------------
+// THE ADVERSARIAL SHAPES. Neither was chosen by whoever wrote this fix.
+// ---------------------------------------------------------------------------
+//
+// The register's rule: if you picked the example yourself and it works, you
+// have tested nothing. So the two songs that drive the reachability gates both
+// come from somewhere else, with numbers published before this change existed:
+//
+//   BIMODAL   - #207's own Residue section, measured and reproduced by two
+//               reviewers: "60 x 4s verse + 55 x 0.4s bridge (115 chords,
+//               4:22): the median comes from the sparse half, so the default is
+//               19.396 px/sec and 55/115 chips (48%) are nameless at every zoom
+//               the slider reaches." That is the defect this file now gates.
+//   JITTER400 - #207's Scaling table, which is where the SECOND half of the
+//               defect was already visible and went unread: "400 chords / 3:33,
+//               jittered 0.32-0.69s | 80.000 | 50 full / 218 tight / 132 tick
+//               -- the short tail falls below `tight`." Those 132 were nameless
+//               AT MAXIMUM ZOOM and the table recorded it as scaling behaviour.
+//
+// Both are built from the fixture's own label alphabet, so `widest` is the same
+// `F#:min7` the real song has and the only thing that varies is the durations.
+const FIX_LABELS = [...new Set(PAYLOAD.segments.map((s) => s.label))];
+
+/** A song from [durationSec, count] blocks, cycling the fixture's chord names. */
+function songOf(blocks) {
+  const obs = [];
+  let t = 0;
+  let i = 0;
+  for (const [d, n] of blocks) {
+    for (let k = 0; k < n; k++) {
+      obs.push({ startSec: t, endSec: t + d, label: FIX_LABELS[i++ % FIX_LABELS.length], confidence: 1 });
+      t += d;
+    }
+  }
+  return observationsToRuns(obs);
+}
+
+/** The reviewer's shape: a sparse verse and a dense bridge. */
+const BIMODAL = songOf([[4, 60], [0.4, 55]]);
+/** The same two populations with FIVE chords moved across. */
+const BIMODAL_FLIPPED = songOf([[4, 55], [0.4, 60]]);
+/** #207's Scaling row: 400 chords over ~3:22, durations walked over 0.32-0.69s. */
+const JITTER400 = songOf(
+  Array.from({ length: 400 }, (_, i) => [0.32 + ((i * 97) % 38) / 100, 1]),
+);
+
+const ADVERSARIAL = [
+  ['bimodal 60x4.0s + 55x0.4s (reviewer)', BIMODAL],
+  ['bimodal flipped 55x4.0s + 60x0.4s', BIMODAL_FLIPPED],
+  ['jittered 400 x 0.32-0.69s (#207 table)', JITTER400],
+];
+
+/** The px/sec at which THIS run can print its own name at full size. */
+function ppsForFullName(run) {
+  const labelPx = estimateLabelPx(displayText(run), CHIP_FONT_PX);
+  return (labelPx + CHIP_FULL_PAD_PX + CHIP_GAP_PX) / (run.endSec - run.startSec);
+}
+/** ... and at the 10px `tight` size, which is the last size before no name. */
+function ppsForTightName(run) {
+  const labelPx = estimateLabelPx(displayText(run), CHIP_FONT_PX);
+  return ((labelPx * CHIP_TIGHT_FONT_PX) / CHIP_FONT_PX + CHIP_TIGHT_PAD_PX + CHIP_GAP_PX) / (run.endSec - run.startSec);
+}
+
+/** The job's own zoom ceiling for the strip, as ChordOverlay derives it. */
+function stripCeiling(runs) {
+  return zoomCeilingPxPerSec(runs, estimateLabelPx, {
+    durSec: durationSec(runs),
+    maxPaintedPx: MAX_TIMELINE_PX,
+  });
+}
 
 /** Exactly what ChordOverlay does for the strip: the default px/sec it lands on. */
 function defaultStripPps(containerPx) {
@@ -138,19 +227,75 @@ test('the OLD default (fit-the-whole-track) made every chord label unshowable', 
 });
 
 test('the default zoom comes from the widest chord name in THIS job, not a constant', () => {
-  // The derivation, recomputed here from the same inputs the helper uses.
-  const widest = Math.max(...RUNS.map((r) => estimateLabelPx(displayText(r), CHIP_FONT_PX)));
-  const durs = RUNS.map((r) => r.endSec - r.startSec).filter((d) => d > 0).sort((a, b) => a - b);
-  const medianDur = durs[Math.floor(durs.length / 2)];
-  const expected = (widest + CHIP_FULL_PAD_PX + 1) / medianDur;
+  // NOT a recomputation of the helper's own arithmetic. The previous version of
+  // this test rebuilt `(widest + pad + gap) / median` from the same inputs and
+  // asserted equality, which proves only that the code applied its own rule.
+  // These are properties of the ANSWER instead: it must respond to the label
+  // widths, respond to the run durations, and be in the units it claims.
+  const base = readablePxPerSec(RUNS, estimateLabelPx);
 
-  assert.ok(Math.abs(readablePxPerSec(RUNS, estimateLabelPx) - expected) < 1e-9);
-
-  // It really does depend on the data: widen the names and the zoom follows.
+  // Longer names -> wider zoom. The widest name is the numerator.
   const longerNames = RUNS.map((r) => ({ ...r, label: 'C#:minmaj7', kind: 'chord' }));
   assert.ok(
-    readablePxPerSec(longerNames, estimateLabelPx) > readablePxPerSec(RUNS, estimateLabelPx),
+    readablePxPerSec(longerNames, estimateLabelPx) > base,
     'a job whose chord names are longer must default to a wider zoom',
+  );
+  // Longer chords -> narrower zoom. The run duration is the denominator.
+  const slower = RUNS.map((r) => ({ ...r, startSec: r.startSec * 2, endSec: r.endSec * 2 }));
+  assert.ok(
+    readablePxPerSec(slower, estimateLabelPx) < base,
+    'a job whose chords last twice as long must default to half the zoom',
+  );
+  // And it is a px/sec that actually does the job it is named for: at this
+  // zoom a run of the length the statistic picked carries the longest name.
+  const picked = timeWeightedRunSec(
+    RUNS.map((r) => r.endSec - r.startSec),
+    READABLE_TIME_FRACTION,
+  );
+  const widest = widestLabelPx(RUNS, estimateLabelPx);
+  assert.equal(
+    chipDensity(chipContentPx(picked * base), widest),
+    'full',
+    'the default zoom does not make a run of the length it sized for readable',
+  );
+});
+
+test('the default statistic is duration-weighted, and that is what kills a 4x cliff', () => {
+  // THE DEFECT THIS REPLACES. The old statistic was the COUNT median, which on
+  // a song with two sections lands on whichever population has more chips --
+  // and jumps to the other one when a handful of chords move across. Modelled
+  // here as the old rule (written out, not imported) against the new one.
+  const countMedian = (runs) => {
+    const a = runs.map((r) => r.endSec - r.startSec).filter((d) => d > 0).sort((x, y) => x - y);
+    return a[Math.floor(a.length / 2)];
+  };
+  const oldRule = (runs) =>
+    clampPxPerSec(
+      (widestLabelPx(runs, estimateLabelPx) + CHIP_FULL_PAD_PX + CHIP_GAP_PX) / countMedian(runs),
+      fitPxPerSec(durationSec(runs), 872),
+    );
+
+  const a = oldRule(BIMODAL);
+  const b = oldRule(BIMODAL_FLIPPED);
+  assert.ok(
+    b / a > 3,
+    `the old count median was supposed to be unstable here: ${a.toFixed(3)} vs ${b.toFixed(3)}`,
+  );
+
+  // The new statistic returns the SAME answer for both mixes. Not "close":
+  // equal, because the duration-weighted median of these two populations is
+  // the same 4.0s run either way.
+  assert.equal(
+    readablePxPerSec(BIMODAL, estimateLabelPx),
+    readablePxPerSec(BIMODAL_FLIPPED, estimateLabelPx),
+    'moving five chords between sections must not move the default zoom',
+  );
+
+  // And the weighting is real, not a relabelling: on a song whose chip counts
+  // and whose time shares disagree, the two statistics differ.
+  assert.notEqual(
+    timeWeightedRunSec(BIMODAL.map((r) => r.endSec - r.startSec), READABLE_TIME_FRACTION),
+    countMedian(BIMODAL_FLIPPED),
   );
 });
 
@@ -159,17 +304,25 @@ test('at the default zoom the chips can show their names at every desktop width'
     const pps = defaultStripPps(containerPx);
     const d = densitiesAt(pps);
     const ticks = d.filter((x) => x === 'tick').length;
-    const widths = RUNS.map((r) => chipBox(r, pps).widthPx).sort((a, b) => a - b);
-    const median = widths[Math.floor(widths.length / 2)];
 
     assert.ok(
       ticks <= 1,
       `@${viewport}: ${ticks}/${RUNS.length} chips still cannot show a label at ${pps.toFixed(2)}px/sec`,
     );
-    // The median chip must carry its name at FULL size, not at the 10px fallback.
+    // HALF THE TRACK'S TIME, at full size. The bar used to be stated over the
+    // median CHIP, which is the statistic this PR moved away from, so asserting
+    // it would have pinned the old rule. The thing the new default promises is
+    // READABLE_TIME_FRACTION of the song's chord seconds in `full` chips --
+    // measured here by summing the durations of the runs that came out `full`.
+    const fullSec = RUNS.reduce(
+      (acc, r, i) => (d[i] === 'full' ? acc + (r.endSec - r.startSec) : acc),
+      0,
+    );
+    const totalSec = RUNS.reduce((acc, r) => acc + (r.endSec - r.startSec), 0);
     assert.ok(
-      median >= Math.max(...RUNS.map((r) => estimateLabelPx(displayText(r), CHIP_FONT_PX))) + CHIP_FULL_PAD_PX,
-      `@${viewport}: median chip is ${median.toFixed(1)}px, too narrow for the longest name`,
+      fullSec / totalSec >= READABLE_TIME_FRACTION,
+      `@${viewport}: only ${((100 * fullSec) / totalSec).toFixed(1)}% of the track's chord time ` +
+        `is in chips that fit their name at full size (want >= ${100 * READABLE_TIME_FRACTION}%)`,
     );
   }
 });
@@ -204,6 +357,257 @@ test('a sparse song still fits the strip; a dense song is capped, not run away',
   // The imported constant, not a literal that merely happens to equal it today.
   assert.equal(densePps, MAX_PX_PER_SEC);
   assert.ok(readablePxPerSec(dense, estimateLabelPx, MAX_PX_PER_SEC) <= MAX_PX_PER_SEC);
+});
+
+// ---------------------------------------------------------------------------
+// 1b. THE ZOOM CEILING: every chord in the job must be reachable
+// ---------------------------------------------------------------------------
+//
+// THE DEFECT THESE GATES EXIST FOR
+// --------------------------------
+// `MAX_PX_PER_SEC = 80` was the maximum zoom, and it was a bound on nothing --
+// 80px/sec is not a statement about any text. A chord needs
+// (labelPx + pad + gap) / durationSec px/sec to carry its name, so below about
+// 0.52s of run (one chord per beat at 115bpm) no zoom the slider could reach
+// would name it. On the reviewer's bimodal song that left 25 of 115 chords
+// with no readable name AT ANY ZOOM; on #207's own jittered-400 row it left 91.
+// The user could not get at them, and nothing said so.
+
+test('the OLD cap left chords that no zoom could name — the defect, reproduced', () => {
+  // Driven off the IMPORTED constant, so this reproduces the old ceiling rather
+  // than a literal 80 that merely equals it today.
+  for (const [name, runs] of ADVERSARIAL) {
+    const unreachable = runs.filter((r) => ppsForTightName(r) > MAX_PX_PER_SEC);
+    assert.ok(
+      unreachable.length > 0,
+      `${name}: expected the old cap to strand chords, found none — has the shape drifted?`,
+    );
+    // And it is not a rounding-margin case: they need multiples of the old cap.
+    const worst = Math.max(...runs.map(ppsForTightName));
+    assert.ok(
+      worst > MAX_PX_PER_SEC * 1.25,
+      `${name}: worst chord needs ${worst.toFixed(1)}px/sec against a ${MAX_PX_PER_SEC} cap`,
+    );
+  }
+});
+
+test('the derived ceiling names EVERY chord in the job, at full size', () => {
+  for (const [name, runs] of ADVERSARIAL.concat([['the real 3:33 fixture', RUNS]])) {
+    const ceiling = stripCeiling(runs);
+    // The requirement, built per-run from the exported geometry constants --
+    // NOT from zoomCeilingPxPerSec's own shortest-run shortcut. If the helper
+    // picked the wrong run, or dropped the gap, or used the wrong label, this
+    // maximum does not move with it.
+    const required = Math.max(...runs.map(ppsForFullName));
+    assert.ok(
+      ceiling >= required - 1e-9,
+      `${name}: ceiling ${ceiling.toFixed(3)} < ${required.toFixed(3)} px/sec needed by its shortest chord`,
+    );
+    // The consequence, counted over the real density function: nothing nameless.
+    const counts = densityCounts(runs, ceiling, estimateLabelPx);
+    assert.equal(
+      counts.tick,
+      0,
+      `${name}: ${counts.tick}/${runs.length} chords still have no name at the top of the slider`,
+    );
+    assert.equal(
+      counts.tight,
+      0,
+      `${name}: ${counts.tight} chords only reach the 10px size at the top of the slider`,
+    );
+  }
+});
+
+test('the ceiling leaves slack for the delta canvas cannot see', () => {
+  // FOUND IN CHROMIUM, NOT HERE. The ceiling puts the job's shortest run at
+  // exactly the `full` threshold for its longest name, and `full` has zero
+  // slack against the canvas measurer: canvas 2D has no
+  // `font-variant-numeric`, the chips declare `tabular-nums`, and canvas
+  // under-measures digit-bearing labels by up to 1.664px at 16px -- always in
+  // the unsafe direction (#207 measured it). At 193.965px/sec on the bimodal
+  // song, 4 of 115 `F#:min7` chips rendered with clientWidth 77 against
+  // scrollWidth 78: clipped by 1px at the one zoom that is supposed to be the
+  // readable end of the slider.
+  //
+  // So the headroom is asserted against that MEASURED delta, which is a number
+  // from outside this file, not against the constant that provides it.
+  const CANVAS_TABULAR_NUMS_DELTA_PX = 1.664; // Chromium, #207's residue table
+  assert.ok(
+    CEILING_SLACK_PX >= CANVAS_TABULAR_NUMS_DELTA_PX,
+    `CEILING_SLACK_PX=${CEILING_SLACK_PX} does not cover the ${CANVAS_TABULAR_NUMS_DELTA_PX}px canvas delta`,
+  );
+  for (const [name, runs] of ADVERSARIAL.concat([['fixture', RUNS]])) {
+    const ceiling = stripCeiling(runs);
+    // The widest name on the shortest run: the one chip that sits at the limit.
+    const content = chipContentPx(shortestRunSec(runs) * ceiling);
+    const headroom = content - CHIP_FULL_PAD_PX - widestLabelPx(runs, estimateLabelPx);
+    assert.ok(
+      headroom >= CANVAS_TABULAR_NUMS_DELTA_PX - 1e-9,
+      `${name}: only ${headroom.toFixed(3)}px of headroom at the ceiling, needs ${CANVAS_TABULAR_NUMS_DELTA_PX}px`,
+    );
+  }
+});
+
+test('the ceiling only ever ADDS zoom range — no job loses what it has today', () => {
+  // A fix that improves a metric by removing a capability is not a fix. A slow
+  // song's shortest run may need less than the old cap; the ceiling must not
+  // follow it down.
+  const slow = songOf([[12, 20]]);
+  assert.ok(
+    Math.max(...slow.map(ppsForFullName)) < MAX_PX_PER_SEC,
+    'the slow song is supposed to need less than the old cap',
+  );
+  for (const [, runs] of ADVERSARIAL.concat([['fixture', RUNS], ['slow', slow]])) {
+    assert.ok(
+      stripCeiling(runs) >= MAX_PX_PER_SEC,
+      `a job's zoom ceiling fell below MAX_PX_PER_SEC (${MAX_PX_PER_SEC})`,
+    );
+  }
+  // Degenerate input cannot produce a ceiling below the floor either.
+  assert.equal(zoomCeilingPxPerSec([], estimateLabelPx, { durSec: 10 }), MAX_PX_PER_SEC);
+  assert.equal(
+    zoomCeilingPxPerSec([{ startSec: 0, endSec: 0, label: 'C:maj', kind: 'chord' }], estimateLabelPx, { durSec: 0 }),
+    MAX_PX_PER_SEC,
+  );
+});
+
+test('the slider reaches the ceiling, and the ceiling is where it stops', () => {
+  // The ceiling is only a capability if the control gets there. Both ends, on
+  // the shape whose top end used to be unreachable.
+  const runs = BIMODAL;
+  const dur = durationSec(runs);
+  const minPps = fitPxPerSec(dur, 872);
+  const maxPps = stripCeiling(runs);
+  assert.ok(maxPps > MAX_PX_PER_SEC, 'this shape should raise its own ceiling');
+
+  assert.ok(Math.abs(sliderToPps(1, minPps, maxPps) - maxPps) < 1e-9);
+  assert.ok(Math.abs(ppsToSlider(maxPps, minPps, maxPps) - 1) < 1e-9);
+  assert.equal(sliderToPps(0, minPps, maxPps), minPps);
+  for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+    assert.ok(Math.abs(ppsToSlider(sliderToPps(t, minPps, maxPps), minPps, maxPps) - t) < 1e-9);
+  }
+  // And at the top of that slider the chords really are named.
+  assert.equal(densityCounts(runs, sliderToPps(1, minPps, maxPps), estimateLabelPx).tick, 0);
+});
+
+test('the painted-length budget binds on malformed data, and nothing else', () => {
+  // A single 5ms run would otherwise demand ~15,700px/sec and a 3.8M-px strip.
+  // The budget is a guard against data the 10fps detector cannot emit, so it
+  // must bind THERE and not on any of the real shapes.
+  const pathological = songOf([[0.005, 1], [3, 80]]);
+  const dur = durationSec(pathological);
+  const ceiling = stripCeiling(pathological);
+  assert.ok(
+    Math.max(...pathological.map(ppsForFullName)) > ceiling,
+    'the pathological run was supposed to out-demand the budget',
+  );
+  assert.ok(
+    dur * ceiling <= MAX_TIMELINE_PX + 1e-6,
+    `strip would paint ${(dur * ceiling).toFixed(0)}px against a ${MAX_TIMELINE_PX}px budget`,
+  );
+  // On every real shape the budget is slack, so the ceiling is the data's.
+  for (const [name, runs] of ADVERSARIAL.concat([['fixture', RUNS]])) {
+    const d = durationSec(runs);
+    assert.ok(
+      d * stripCeiling(runs) < MAX_TIMELINE_PX / 10,
+      `${name}: the budget is doing the deciding (${(d * stripCeiling(runs)).toFixed(0)}px)`,
+    );
+  }
+});
+
+test('the wrapped layout gets the same ceiling, bounded by rows of DOM', () => {
+  // The strip's chip count does not change with zoom; a wrapped row is created
+  // per rowSec, so here the ceiling really does buy DOM. Rows must stay inside
+  // the measured budget, and the phone must still reach every chord.
+  const rowWidthPx = Math.max(120, NARROW_CONTAINER_PX - GUTTER_PX);
+  for (const [name, runs] of ADVERSARIAL.concat([['pathological', songOf([[0.005, 1], [3, 80]])]])) {
+    const ceiling = zoomCeilingPxPerSec(runs, estimateLabelPx, {
+      durSec: durationSec(runs),
+      maxPaintedPx: Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx),
+    });
+    const rows = layoutRows(runs, rowWidthPx / ceiling, ceiling).length;
+    assert.ok(
+      rows <= MAX_WRAP_ROWS,
+      `${name}: ${rows} wrapped rows at the ceiling, over the ${MAX_WRAP_ROWS} budget`,
+    );
+    assert.ok(ceiling >= MAX_PX_PER_SEC, `${name}: the phone lost zoom range`);
+  }
+});
+
+test('the wrapped layout keeps SOME nameless chips at any zoom, and the ceiling cuts them', () => {
+  // WHAT THE CEILING DOES NOT PROMISE ON A PHONE, asserted so nobody reads the
+  // strip's guarantee as universal. `layoutRows` splits a run that crosses a
+  // row boundary and each piece is narrower than the run, so no finite zoom
+  // makes every PIECE readable. Counting runs instead of segments is what hid
+  // this: an earlier version of this gate asserted tick === 0 here and passed,
+  // while Chromium at 390px showed 21 nameless chips at the same zoom.
+  const rowWidthPx = Math.max(120, NARROW_CONTAINER_PX - GUTTER_PX);
+  const ceiling = zoomCeilingPxPerSec(BIMODAL, estimateLabelPx, {
+    durSec: durationSec(BIMODAL),
+    maxPaintedPx: Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx),
+  });
+  const segsAt = (pps) =>
+    segmentDensityCounts(BIMODAL, layoutRows(BIMODAL, rowWidthPx / pps, pps), estimateLabelPx);
+
+  // Counting runs would claim zero. Counting what renders does not.
+  assert.equal(densityCounts(BIMODAL, ceiling, estimateLabelPx).tick, 0);
+  assert.ok(
+    segsAt(ceiling).tick > 0,
+    'the wrapped layout is expected to keep split-run ticks; if this is now 0, strengthen the claim',
+  );
+
+  // What the ceiling DOES buy the phone: strictly fewer nameless chips than
+  // the old cap could reach, and strictly more readable ones.
+  const old = segsAt(MAX_PX_PER_SEC);
+  const now = segsAt(ceiling);
+  assert.ok(
+    now.tick < old.tick,
+    `the phone's ceiling did not reduce nameless chips: ${old.tick} -> ${now.tick}`,
+  );
+  assert.ok(now.full > old.full, `readable chips did not increase: ${old.full} -> ${now.full}`);
+  // And they stay a minority, which is the bar the wrapped layout already had.
+  const total = now.full + now.tight + now.tick;
+  assert.ok(now.tick < total * 0.25, `${now.tick}/${total} nameless on the phone at its ceiling`);
+});
+
+test('the default is still an overview — the ceiling was not reached by zooming in', () => {
+  // The cheap way to make "nameless chips" go to zero is to default to the
+  // ceiling, which would trade the whole timeline for four chords on screen.
+  // On the reviewer's shape the default must stay well below its own ceiling
+  // and still show a usable span of the song.
+  const dur = durationSec(BIMODAL);
+  const def = clampPxPerSec(
+    readablePxPerSec(BIMODAL, estimateLabelPx),
+    fitPxPerSec(dur, 872),
+    stripCeiling(BIMODAL),
+  );
+  assert.ok(def < stripCeiling(BIMODAL) / 4, `default ${def.toFixed(3)} is near its ceiling`);
+  assert.ok(872 / def > 30, `the default shows only ${(872 / def).toFixed(1)}s of a ${dur.toFixed(0)}s track`);
+  // And the time-coverage promise still holds on this shape, which is the
+  // reason the dense half is allowed to be ticks at the default at all.
+  const fullSec = BIMODAL.reduce(
+    (acc, r) =>
+      chipDensity(runContentPx(r, def), estimateLabelPx(displayText(r), CHIP_FONT_PX)) === 'full'
+        ? acc + (r.endSec - r.startSec)
+        : acc,
+    0,
+  );
+  assert.ok(fullSec / dur >= READABLE_TIME_FRACTION);
+});
+
+test('chipContentPx is the one rule for a chip width, gap included', () => {
+  // `renderChip` had a bare `widthPx - 1` while `fullChipPx` reserved
+  // CHIP_GAP_PX -- the last untied literal of the family #207 closed for the
+  // padding and the tight font size. One function now, so the number that
+  // decides a label fits and the number that sizes the box cannot drift.
+  assert.equal(chipContentPx(100), 100 - CHIP_GAP_PX);
+  assert.equal(chipContentPx(0), 1, 'a chip never has a non-positive content width');
+  assert.equal(runContentPx({ startSec: 1, endSec: 3 }, 50), 100 - CHIP_GAP_PX);
+  // The gap is really reserved by the fit rule: a box exactly one label wide
+  // plus padding is NOT full, because the gap is taken off it first.
+  const labelPx = estimateLabelPx('F#:min7', CHIP_FONT_PX);
+  assert.equal(chipDensity(chipContentPx(labelPx + CHIP_FULL_PAD_PX), labelPx), 'tight');
+  assert.equal(chipDensity(chipContentPx(labelPx + CHIP_FULL_PAD_PX + CHIP_GAP_PX), labelPx), 'full');
 });
 
 // ---------------------------------------------------------------------------
@@ -333,6 +737,33 @@ test('a measurer that under-reports moves the default zoom, and the gate sees it
 // 3. The render gate: nothing counted may be invisible
 // ---------------------------------------------------------------------------
 
+/**
+ * Drive a React controlled <input type="range"> the way a user would.
+ *
+ * WHY THIS IS NOT `el.value = x`. React 18 installs its own `value` setter on
+ * the input INSTANCE and uses it as a change tracker: assigning through it
+ * records the new value, so the `input` event that follows is judged a no-op
+ * and `onChange` is never called. Measured in this harness — three imperative
+ * assignments moved `el.value` and produced ZERO onChange calls.
+ *
+ * Two tests below used to set `.value` directly and assert on "the zoomed-out
+ * state". The zoom never moved: they were reading the DEFAULT view, and their
+ * assertions (`some tick chips exist`, `no tick chip carries text`) happen to
+ * hold there too, so they passed without exercising the thing they named. The
+ * native prototype setter bypasses the instance tracker, so React sees a real
+ * change — which is also what makes the ceiling gates able to fail.
+ */
+async function dragRange(dom, el, value) {
+  const nativeSet = Object.getOwnPropertyDescriptor(
+    dom.window.HTMLInputElement.prototype,
+    'value',
+  ).set;
+  await dom.act(() => {
+    nativeSet.call(el, String(value));
+    el.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+}
+
 /** rgb()/rgba()/named -> {r,g,b,a}. Returns null for a value we cannot read. */
 function parseColor(value) {
   if (!value) return null;
@@ -378,7 +809,7 @@ function contrast(fg, bg) {
  * injected the only way the component can take one: through the element's own
  * getBoundingClientRect, which is what its ResizeObserver effect reads.
  */
-async function mountOverlay(dom, { containerPx, afterMount } = {}) {
+async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } = {}) {
   const React = (await import('react')).default;
   const { ChordOverlay } = await loadChordOverlay();
   const w = dom.window;
@@ -405,7 +836,7 @@ async function mountOverlay(dom, { containerPx, afterMount } = {}) {
     if (u.includes('/play-chords')) {
       return { ok: true, status: 200, json: async () => ({ signed_url: '/signed', expires_in_sec: 60 }) };
     }
-    return { ok: true, status: 200, json: async () => PAYLOAD };
+    return { ok: true, status: 200, json: async () => payload };
   };
 
   try {
@@ -455,6 +886,7 @@ async function mountOverlay(dom, { containerPx, afterMount } = {}) {
       const labelPx = estimateLabelPx(text, CHIP_FONT_PX);
       return {
         density: chip.dataset.density,
+        testid: chip.dataset.testid,
         text,
         hasText: text.length > 0,
         color: cs.color,
@@ -464,7 +896,16 @@ async function mountOverlay(dom, { containerPx, afterMount } = {}) {
         contrast: contrast(fgPainted, bgPainted),
       };
     });
-    return { timeline, chips, rows };
+    const hint = dom.find('[data-testid="timeline-hint"]');
+    const namelessNode = dom.find('[data-testid="timeline-nameless"]');
+    return {
+      timeline,
+      chips,
+      rows,
+      renderedPps: Number(timeline.dataset.pxPerSec),
+      hintText: hint ? hint.textContent : '',
+      namelessText: namelessNode ? namelessNode.textContent : null,
+    };
   } finally {
     if (realDesc) Object.defineProperty(proto, 'getBoundingClientRect', realDesc);
     else delete proto.getBoundingClientRect;
@@ -518,10 +959,15 @@ test('at ANY zoom a chip either shows a readable label or carries no text at all
       afterMount: async (d) => {
         const slider = d.find('[data-testid="zoom-slider"]');
         assert.ok(slider, 'no zoom slider');
-        await d.act(() => {
-          slider.value = '0';
-          slider.dispatchEvent(new d.window.Event('input', { bubbles: true }));
-        });
+        await dragRange(d, slider, 0);
+        // Proof the drag landed: the component's own px/sec is now BELOW the
+        // default it mounted at. Without this the test reads the default view
+        // and its assertions hold there too, which is how it used to pass.
+        const moved = Number(d.find('[data-testid="chord-timeline"]').dataset.pxPerSec);
+        assert.ok(
+          moved < defaultStripPps(872) - 1,
+          `the slider did not move: still ${moved}px/sec at slider 0 (see dragRange)`,
+        );
       },
     });
 
@@ -548,10 +994,7 @@ test('a tick chip keeps its chord on an accessible name even with no visible tex
       containerPx: 872,
       afterMount: async (d) => {
         const slider = d.find('[data-testid="zoom-slider"]');
-        await d.act(() => {
-          slider.value = '0';
-          slider.dispatchEvent(new d.window.Event('input', { bubbles: true }));
-        });
+        await dragRange(d, slider, 0);
       },
     });
     const ticks = chips.filter((c) => c.dataset.density === 'tick');
@@ -563,6 +1006,155 @@ test('a tick chip keeps its chord on an accessible name even with no visible tex
     // And the first chord's real label is reachable there, not merely "a string".
     const first = chips[0].getAttribute('aria-label');
     assert.match(first, /C/, `first chip's accessible name was "${first}"`);
+    await dom.unmountAll();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3b. The render gate for the ceiling: the user can actually get there
+// ---------------------------------------------------------------------------
+//
+// The gates above are arithmetic over the exported functions. These drive the
+// real component's own zoom slider on the reviewer's bimodal song and count
+// what came out of the DOM, because "the ceiling is 196px/sec" and "the user
+// can read the bridge" are different claims and only the second one matters.
+
+/** The reviewer's bimodal song in the fixture's own on-the-wire shape. */
+const BIMODAL_PAYLOAD = {
+  segments: BIMODAL.map((r) => ({
+    start_sec: r.startSec,
+    end_sec: r.endSec,
+    label: r.label,
+    confidence: 1,
+  })),
+};
+
+test('bimodal song: the default names the verse and SAYS how many it cannot name', async () => {
+  await withDom(async (dom) => {
+    const { rows, namelessText, renderedPps } = await mountOverlay(dom, {
+      containerPx: 872,
+      payload: BIMODAL_PAYLOAD,
+    });
+    assert.equal(rows.length, BIMODAL.length);
+
+    // Counted out of the DOM, not out of densityCounts: the chips that
+    // rendered with no text node at all.
+    const domNameless = rows.filter((r) => !r.hasText);
+    assert.ok(
+      domNameless.length > 0,
+      'this song is supposed to have nameless chips at its default — shape drifted?',
+    );
+
+    // The hint line must report THAT number. A hint that says "0" or says
+    // nothing leaves the raised ceiling as a capability nobody is told about.
+    assert.ok(namelessText, 'no nameless-chord hint rendered on a song that has them');
+    const said = Number((namelessText.match(/(\d+)/) ?? [])[1]);
+    assert.equal(
+      said,
+      domNameless.length,
+      `the hint says ${said} chords are unnamed; ${domNameless.length} chips rendered without text`,
+    );
+    assert.match(namelessText, /zoom in/, 'the hint does not say the names are reachable');
+
+    // Nothing that DID render is invisible or in a box too small for it.
+    assert.deepEqual(rows.filter((r) => r.hasText && r.contrast < 1.05).map((r) => r.text), []);
+    assert.deepEqual(
+      rows.filter((r) => r.hasText && r.fitsDensity !== r.density).map((r) => `${r.text}@${r.widthPx}px`),
+      [],
+    );
+    // And every nameless chip still carries its chord where a reader can get it.
+    for (const c of [...dom.find('[data-testid="chord-timeline"]').querySelectorAll('[data-density="tick"]')]) {
+      assert.ok((c.getAttribute('aria-label') ?? '').length > 0);
+    }
+    assert.ok(renderedPps > 0 && renderedPps < stripCeiling(BIMODAL));
+    await dom.unmountAll();
+  });
+});
+
+test('bimodal song: driving the slider to the top names EVERY chord', async () => {
+  // THE CAPABILITY. Before this change the slider's top was 80px/sec and 25 of
+  // these 115 chords could not be named at it. The component is driven through
+  // its own control, so the ceiling has to be plumbed into sliderToPps, the
+  // clamp and the chip geometry for this to come out right.
+  await withDom(async (dom) => {
+    const { rows, renderedPps, namelessText } = await mountOverlay(dom, {
+      containerPx: 872,
+      payload: BIMODAL_PAYLOAD,
+      afterMount: async (d) => {
+        const slider = d.find('[data-testid="zoom-slider"]');
+        assert.ok(slider, 'no zoom slider');
+        assert.ok(!slider.disabled, 'the zoom slider is disabled on a song that needs it');
+        await dragRange(d, slider, 1000);
+      },
+    });
+
+    // It really went past the old cap, read off the component's own attribute.
+    assert.ok(
+      renderedPps > MAX_PX_PER_SEC,
+      `the slider topped out at ${renderedPps}px/sec, still at or below the old ${MAX_PX_PER_SEC} cap`,
+    );
+
+    const nameless = rows.filter((r) => !r.hasText);
+    assert.deepEqual(
+      nameless.map((r) => r.testid),
+      [],
+      `${nameless.length}/${rows.length} chords still have no name at the top of the slider`,
+    );
+    // Every one of them at FULL size, not the 10px fallback, and none of them
+    // in a box too small for the text it is painting.
+    assert.deepEqual(rows.filter((r) => r.density !== 'full').map((r) => `${r.text}:${r.density}`), []);
+    assert.deepEqual(
+      rows.filter((r) => r.fitsDensity !== r.density).map((r) => `${r.text}@${r.widthPx}px`),
+      [],
+    );
+    assert.deepEqual(rows.filter((r) => r.contrast < 3).map((r) => r.text), []);
+    // Nothing left to tell the user about.
+    assert.equal(namelessText, null, `the hint still reports unnamed chords: ${namelessText}`);
+    await dom.unmountAll();
+  });
+});
+
+test('bimodal song: the + button is live until the ceiling, then stops', async () => {
+  // At the old cap `+` went dead at 80px/sec while 25 chords were still
+  // nameless, which is the same defect wearing a different hat.
+  await withDom(async (dom) => {
+    await mountOverlay(dom, {
+      containerPx: 872,
+      payload: BIMODAL_PAYLOAD,
+      afterMount: async (d) => {
+        const plus = d.find('[data-testid="zoom-in"]');
+        assert.ok(!plus.disabled, '+ is dead at the default zoom');
+        // 1.5x per press from ~19.6px/sec reaches ~196px/sec in 6 presses.
+        for (let i = 0; i < 20 && !d.find('[data-testid="zoom-in"]').disabled; i++) {
+          const btn = d.find('[data-testid="zoom-in"]');
+          await d.act(() => btn.click());
+        }
+        const tl = d.find('[data-testid="chord-timeline"]');
+        const pps = Number(tl.dataset.pxPerSec);
+        assert.ok(
+          pps > MAX_PX_PER_SEC,
+          `+ went dead at ${pps}px/sec, at or below the old ${MAX_PX_PER_SEC} cap`,
+        );
+        assert.ok(
+          Math.abs(pps - stripCeiling(BIMODAL)) < 0.5,
+          `+ stopped at ${pps} rather than the job's ceiling ${stripCeiling(BIMODAL).toFixed(3)}`,
+        );
+        assert.equal(densityCounts(BIMODAL, pps, estimateLabelPx).tick, 0);
+      },
+    });
+    await dom.unmountAll();
+  });
+});
+
+test('the real fixture is unchanged in kind: no nameless-chord hint it does not need', async () => {
+  // #207's measured outcome on the real song must survive this change. One
+  // chip is nameless at the default there, so the hint appears and says 1.
+  await withDom(async (dom) => {
+    const { rows, namelessText } = await mountOverlay(dom, { containerPx: 872 });
+    const domNameless = rows.filter((r) => !r.hasText).length;
+    assert.ok(domNameless <= 1, `${domNameless} nameless chips on the real song's default`);
+    if (domNameless === 0) assert.equal(namelessText, null);
+    else assert.equal(Number((namelessText.match(/(\d+)/) ?? [])[1]), domNameless);
     await dom.unmountAll();
   });
 });

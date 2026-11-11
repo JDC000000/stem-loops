@@ -46,9 +46,21 @@ export interface ChordEdit {
 
 // Frames/sec used to derive startFrame/endFrame for worker observations.
 export const CHORDS_FRAMES_PER_SEC = 10;
-// Maximum horizontal scale of the timeline: pixels per second of audio. This is
-// the most-zoomed-in level; the default view is fit-to-width (see fitPxPerSec).
+// Default horizontal scale of the timeline: pixels per second of audio. Used as
+// the default argument of the geometry helpers below.
 export const PX_PER_SEC = 80;
+/**
+ * The FLOOR of the per-job zoom ceiling, and the cap on the MINIMUM zoom
+ * (fitPxPerSec). It is NOT the maximum zoom any more -- see
+ * zoomCeilingPxPerSec, which derives that from the job's own chord data.
+ *
+ * It used to be the maximum, and as a maximum it was underived: 80px/sec is
+ * not a statement about any text. The derivation in readablePxPerSec exceeds
+ * it whenever the typical run is under 0.982s, and a chord could not be read
+ * at ANY zoom the slider reached once its run fell under ~0.52s -- one chord
+ * per beat at 115bpm, which is ordinary music. Kept as the floor so that
+ * raising the ceiling can only ever ADD zoom range to a job, never remove it.
+ */
 export const MAX_PX_PER_SEC = PX_PER_SEC;
 // Below this container width the timeline switches from one horizontal strip to
 // wrapped rows (a phone cannot show a readable strip; see layoutRows).
@@ -822,11 +834,243 @@ export function chipDensity(widthPx: number, labelPx: number): 'full' | 'tight' 
   return 'tick';
 }
 
-/** Median of a numeric list (upper median for even lengths). Empty -> 0. */
-function median(xs: readonly number[]): number {
-  if (xs.length === 0) return 0;
-  const a = [...xs].sort((x, y) => x - y);
-  return a[Math.floor(a.length / 2)];
+/**
+ * Fraction of the track's chord TIME the default zoom must render at full size.
+ *
+ * 0.5 makes this the DURATION-WEIGHTED MEDIAN run, which is the same statistic
+ * the count-median was reaching for, measured against the thing the user
+ * actually spends: seconds of song, not number of chips.
+ *
+ * WHY WEIGHTED, AND WHY NOT A HIGHER FRACTION. Both answers are measurements,
+ * not taste. The headless table, 115-chord bimodal song (60 x 4.0s verse +
+ * 55 x 0.4s bridge):
+ *
+ *   fraction  default px/sec   full / tight / tick   window shown of 262s
+ *   0.5             19.648        60 /  0 /  55            44.4s
+ *   0.9             19.648        60 /  0 /  55            44.4s
+ *   0.95           196.484       114 /  1 /   0             4.4s
+ *
+ * Raising the fraction cannot improve that default until it crosses the whole
+ * sparse population at once, and then it collapses a 44s overview to 4.4s --
+ * the same cliff one notch further along. The dense half is made readable by
+ * RAISING THE CEILING (zoomCeilingPxPerSec), not by zooming the default in.
+ *
+ * What the weighting fixes is a 4x instability that has nothing to do with the
+ * fraction. Move FIVE chords from the sparse half to the dense half and the
+ * COUNT median jumps populations: default 19.648 -> 80.000 px/sec, a different
+ * product for a rounding-error change in the song. Weighted by time, both
+ * mixes return 19.648. A statistic that is a step function of the population
+ * mix is wrong wherever it happens to land.
+ */
+export const READABLE_TIME_FRACTION = 0.5;
+
+/**
+ * Total painted length of the timeline, in px, that the derived zoom ceiling
+ * may not exceed. The strip paints this as scroll width; the wrapped layout
+ * folds the SAME length into rows, so one budget bounds both (rows =
+ * paintedPx / rowWidthPx).
+ *
+ * MEASURED, not guessed. Chromium lays out a scroller of exact width, exact
+ * scrollWidth and exact last-child position up to 33,000,000px and saturates
+ * at 33,554,428px (2^25 - 4, LayoutUnit's limit), with build+layout flat at
+ * 24-31ms throughout -- so for the strip, nothing real bounds this short of
+ * the engine. 2,000,000px is 16x inside that, and on the 300s maximum track
+ * (MAX_TRACK_SEC) it allows 6,667px/sec, i.e. it only binds on runs under
+ * ~0.012s. The 10fps chord detector cannot emit one. It is a guard against
+ * malformed data, not a product limit.
+ */
+export const MAX_TIMELINE_PX = 2_000_000;
+
+/**
+ * Rows of DOM the wrapped layout may be zoomed into. Unlike the strip -- whose
+ * chip count is invariant in zoom -- a wrapped row is created per rowSec, so
+ * here node count really does grow with the ceiling.
+ *
+ * MEASURED in Chromium at 390x800, 3 nodes per row: build+layout is flat from
+ * the 73 rows today's cap produces (26.8ms) to 800 rows (31.5ms), then 2000
+ * rows costs 62.2ms and 7000 rows 238.3ms. 800 is the last row count that
+ * still costs what today's does.
+ */
+export const MAX_WRAP_ROWS = 800;
+
+/**
+ * Headroom the ZOOM CEILING adds on top of fullChipPx, in px at CHIP_FONT_PX.
+ *
+ * `full` has zero slack against the canvas measurer by construction (#207's
+ * residue): canvas 2D has no `font-variant-numeric`, the chips declare
+ * `tabular-nums`, and canvas therefore UNDER-measures digit-bearing labels by
+ * up to 1.664px at 16px -- always in the direction that declares text to fit
+ * when it does not. A chip sitting exactly at its `full` threshold clips by
+ * that much.
+ *
+ * The ceiling puts the job's SHORTEST run at exactly that threshold, so
+ * without this the top of the slider is the one zoom where the widest label is
+ * guaranteed to clip. MEASURED in Chromium at 193.965px/sec on the bimodal
+ * song: 4 of 115 `F#:min7` chips with clientWidth 77 against scrollWidth 78.
+ *
+ * 2px covers the 1.664px delta and the ~1px integer-rounding artifact of
+ * `clientWidth` that #207 also recorded. It is applied HERE and not in
+ * chipDensity on purpose: widening the fit rule itself would change what every
+ * chip renders as at every zoom, which is a behaviour change this does not
+ * need. This only buys slack at the far end of the slider.
+ */
+export const CEILING_SLACK_PX = 2;
+
+/**
+ * Duration-weighted quantile of run length: the longest `d` for which runs of
+ * at least `d` seconds account for `fraction` or more of the total time.
+ *
+ * At fraction 0.5 this is the duration-weighted median. Unlike a count median
+ * it is continuous in the population mix -- moving a few chips between two
+ * clusters moves the answer by those chips' share of the song, not from one
+ * cluster to the other.
+ */
+export function timeWeightedRunSec(durs: readonly number[], fraction: number): number {
+  const a = durs.filter((d) => Number.isFinite(d) && d > 0).sort((x, y) => y - x);
+  if (a.length === 0) return 0;
+  let total = 0;
+  for (const d of a) total += d;
+  const target = Math.min(1, Math.max(0, Number.isFinite(fraction) ? fraction : 0)) * total;
+  let acc = 0;
+  for (const d of a) {
+    acc += d;
+    if (acc >= target - 1e-12) return d;
+  }
+  return a[a.length - 1];
+}
+
+/** Widest measured label over the runs, at CHIP_FONT_PX. 0 for no runs. */
+export function widestLabelPx(
+  runs: readonly Pick<OverlayRun, 'kind' | 'label'>[],
+  measure: LabelMeasure = estimateLabelPx,
+): number {
+  let widest = 0;
+  for (const r of runs) {
+    const w = measure(displayText(r), CHIP_FONT_PX);
+    if (Number.isFinite(w) && w > widest) widest = w;
+  }
+  return widest;
+}
+
+/** Shortest run with a positive duration, in seconds. 0 when there is none. */
+export function shortestRunSec(runs: readonly Pick<OverlayRun, 'startSec' | 'endSec'>[]): number {
+  let min = Infinity;
+  for (const r of runs) {
+    const d = r.endSec - r.startSec;
+    if (Number.isFinite(d) && d > 0 && d < min) min = d;
+  }
+  return min === Infinity ? 0 : min;
+}
+
+/**
+ * THE MAXIMUM ZOOM, derived from this job's own chord data.
+ *
+ * What bounds how far in a user may zoom is what more zoom can BUY. Above the
+ * px/sec at which the job's SHORTEST run is wide enough for the job's LONGEST
+ * name at full size, another pixel per second reveals no chord name that was
+ * not already readable -- so that is the ceiling, and the 80px/sec constant it
+ * replaces was a bound on nothing.
+ *
+ * It is the mirror image of readablePxPerSec: same numerator, shortest run
+ * instead of the typical one. The default says "size the song I spend my time
+ * in"; the ceiling says "let me reach the fastest bar in the song".
+ *
+ *   floor   - MAX_PX_PER_SEC, so the ceiling can only ADD range to a job. A
+ *             slow song's shortest run may need less than 80px/sec; dropping
+ *             the ceiling to it would take away zoom the user has today, and
+ *             a fix that removes a capability is not a fix.
+ *   budget  - maxPaintedPx / durSec. See MAX_TIMELINE_PX and MAX_WRAP_ROWS;
+ *             binds only on data the detector cannot produce.
+ */
+export function zoomCeilingPxPerSec(
+  runs: readonly Pick<OverlayRun, 'startSec' | 'endSec' | 'kind' | 'label'>[],
+  measure: LabelMeasure = estimateLabelPx,
+  budget: { durSec?: number; maxPaintedPx?: number } = {},
+): number {
+  const shortest = shortestRunSec(runs);
+  const widest = widestLabelPx(runs, measure);
+  if (!(shortest > 0) || !(widest > 0)) return MAX_PX_PER_SEC;
+  const useful = (fullChipPx(widest) + CEILING_SLACK_PX) / shortest;
+  const paintedPx = budget.maxPaintedPx ?? MAX_TIMELINE_PX;
+  const durSec = budget.durSec ?? 0;
+  const bound = durSec > 0 && paintedPx > 0 ? paintedPx / durSec : Infinity;
+  return Math.max(MAX_PX_PER_SEC, Math.min(useful, Math.max(MAX_PX_PER_SEC, bound)));
+}
+
+/**
+ * The content width a chip of this box width actually gets: the box less the
+ * inter-chip gap. THE ONE RULE, used by renderChip to size the chip and by
+ * chipDensity's callers to decide what fits in it. It was a bare `1` in
+ * ChordOverlay.tsx against CHIP_GAP_PX in fullChipPx -- the same untied-literal
+ * shape #207 closed for the padding and the tight font size, and the last one
+ * of that family.
+ */
+export function chipContentPx(boxWidthPx: number): number {
+  return Math.max(1, boxWidthPx - CHIP_GAP_PX);
+}
+
+/** The same, from a run and a zoom. */
+export function runContentPx(
+  run: Pick<OverlayRun, 'startSec' | 'endSec'>,
+  pxPerSec: number,
+): number {
+  return chipContentPx(chipBox(run, pxPerSec).widthPx);
+}
+
+export interface DensityCounts {
+  full: number;
+  tight: number;
+  tick: number;
+}
+
+/**
+ * How many chips can show their name at each size at this zoom. `tick` is the
+ * count of chords the user cannot read -- what the hint line reports and what
+ * the gates count.
+ */
+export function densityCounts(
+  runs: readonly Pick<OverlayRun, 'startSec' | 'endSec' | 'kind' | 'label'>[],
+  pxPerSec: number,
+  measure: LabelMeasure = estimateLabelPx,
+): DensityCounts {
+  const out: DensityCounts = { full: 0, tight: 0, tick: 0 };
+  for (const r of runs) {
+    out[chipDensity(runContentPx(r, pxPerSec), measure(displayText(r), CHIP_FONT_PX))]++;
+  }
+  return out;
+}
+
+/**
+ * The same counts over the WRAPPED layout's row segments rather than over runs.
+ *
+ * WHY BOTH EXIST. On the strip a run is exactly one chip, so counting runs and
+ * counting chips are the same thing. In the wrapped layout `layoutRows` splits
+ * a run that crosses a row boundary, and each piece is NARROWER than the run:
+ * counting runs there over-states what the user can read and under-states how
+ * many nameless chips are on screen. Measured in Chromium at 390px on the
+ * jittered-400 song, the run-based count said 354 nameless where 379 chips
+ * rendered without a name.
+ *
+ * It also bounds what the zoom ceiling can promise. On the strip, the ceiling
+ * makes every chord readable. In the wrapped layout a boundary can fall
+ * anywhere inside a run, so no finite zoom guarantees every PIECE is readable
+ * -- which is inherent to wrapping, not to the ceiling, and is why the phone
+ * keeps a minority of ticks at any zoom.
+ */
+export function segmentDensityCounts(
+  runs: readonly Pick<OverlayRun, 'kind' | 'label'>[],
+  rows: readonly TimelineRow[],
+  measure: LabelMeasure = estimateLabelPx,
+): DensityCounts {
+  const out: DensityCounts = { full: 0, tight: 0, tick: 0 };
+  for (const row of rows) {
+    for (const seg of row.segments) {
+      const run = runs[seg.runIndex];
+      if (!run) continue;
+      out[chipDensity(chipContentPx(seg.widthPx), measure(displayText(run), CHIP_FONT_PX))]++;
+    }
+  }
+  return out;
 }
 
 /**
@@ -838,13 +1082,15 @@ function median(xs: readonly number[]): number {
  *
  *   widest  - max measured label width over the runs. Sizing to the widest
  *             name means no chip of typical length has to ellipsise.
- *   typical - the MEDIAN run duration. Sizing to the shortest run would let one
- *             0.2s passing chord dictate the zoom for the whole song; the
- *             median keeps half the chips fully readable by construction and
- *             degrades the rest through `tight` rather than off a cliff.
+ *   typical - the run length at which READABLE_TIME_FRACTION of the track's
+ *             chord TIME is in runs at least that long. Sizing to the shortest
+ *             run would let one 0.2s passing chord dictate the zoom for the
+ *             whole song. This was the count median, which collapses two
+ *             populations into one and jumps between them on a few chips; see
+ *             READABLE_TIME_FRACTION for the measured instability.
  *
  * The caller still clamps: never below fit-to-width (a short track should fill
- * the strip rather than leave it empty) and never above MAX_PX_PER_SEC.
+ * the strip rather than leave it empty) and never above the job's own ceiling.
  */
 export function readablePxPerSec(
   runs: readonly Pick<OverlayRun, 'startSec' | 'endSec' | 'kind' | 'label'>[],
@@ -852,15 +1098,13 @@ export function readablePxPerSec(
   maxPps: number = MAX_PX_PER_SEC,
 ): number {
   if (runs.length === 0) return maxPps;
-  let widest = 0;
+  const widest = widestLabelPx(runs, measure);
   const durs: number[] = [];
   for (const r of runs) {
-    const w = measure(displayText(r), CHIP_FONT_PX);
-    if (Number.isFinite(w) && w > widest) widest = w;
     const d = Math.max(0, r.endSec - r.startSec);
     if (d > 0) durs.push(d);
   }
-  const typical = median(durs);
+  const typical = timeWeightedRunSec(durs, READABLE_TIME_FRACTION);
   if (!(typical > 0) || !(widest > 0)) return maxPps;
   const need = fullChipPx(widest);
   return Math.min(maxPps, need / typical);

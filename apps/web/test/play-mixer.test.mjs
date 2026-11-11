@@ -21,7 +21,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
@@ -318,7 +318,14 @@ test('muted and ducked are different markup AND different copy', () => {
   // the words on a live ducked channel stay at full contrast.
   const css = read(MIXER_CSS);
   assert.match(css, /\.isMuted \.name\s*\{[^}]*line-through/);
-  assert.equal(declAt(css, NARROWEST, '.isDucked:not(.isMuted) .slot', 'opacity'), '0.55');
+  // `forced-colors` is pinned because this stylesheet restates the dimming
+  // there: unpinned, the lookup refuses rather than picking one side.
+  assert.equal(
+    declAt(css, NARROWEST, '.isDucked:not(.isMuted) .slot', 'opacity', {
+      env: { forcedColors: 'none' },
+    }),
+    '0.55',
+  );
   assert.equal(declAt(css, NARROWEST, '.isDucked:not(.isMuted) .note', 'font-style'), 'italic');
 });
 
@@ -581,10 +588,9 @@ test('the mixer and each channel are labelled regions, and the legend is announc
 // the CSS, resolve the tokens they reference, and do the width arithmetic.
 //
 // WHAT THAT IS AND IS NOT. It is not a measurement: nothing here lays out a
-// box, so an overflow caused by something the arithmetic does not model — a
-// padded descendant, a scrollbar — still passes. What it IS is arithmetic over
-// values that are every one of them READ, never restated, and read from the
-// CASCADE THAT APPLIES AT 360px rather than from the base cascade.
+// box. What it IS is arithmetic over values that are every one of them READ,
+// never restated, and read from the CASCADE THAT APPLIES AT 360px rather than
+// from the base cascade.
 //
 // Both halves of that sentence were learned the hard way. A first version
 // hard-coded the page gutter as `16` and the mixer border as `2` while
@@ -594,6 +600,61 @@ test('the mixer and each channel are labelled regions, and the legend is announc
 // direction — was invisible, and the suite stayed green while the rail
 // overflowed by 16px and by 44px and the sixth channel's Solo button sat
 // outside the viewport entirely, unclickable.
+//
+// ═══ WHAT THIS GATE CANNOT DO ════════════════════════════════════════════════
+//
+// Four review rounds have each defeated it the same way, so this list is kept
+// TRUE rather than reassuring. Two earlier versions of it were overclaims.
+//
+// 1. IT DOES NOT LAY OUT A BOX. This is the one limit that cannot be narrowed
+//    by any amount of work here, and it is load-bearing. A `padding: 0 12px`
+//    on `.toggles` rendered an M/S button at 22.66 x 44 — half the 44px
+//    minimum asserted two screens down — and every rail overflow ever
+//    demonstrated against this gate was invisible to the arithmetic. SO:
+//    ANY GEOMETRIC CLAIM MUST BE MEASURED IN REAL CHROME AT THE WIDTHS THAT
+//    MATTER AND THE NUMBERS RECORDED IN THE PR. The arithmetic's job is to
+//    fail when a DECLARED value moves; it is not evidence that a box fits.
+//
+// 2. IT DOES NOT COMPUTE SPECIFICITY. It REFUSES — it does not answer —
+//    whenever any rule in the cascade at this width, or in an at-rule it
+//    cannot evaluate, has a selector whose SUBJECT compound contains the one
+//    asked about and sets the property asked about or a relative of it. That
+//    is strictly wider than the previous claim, which fired only on a
+//    COMBINATOR plus an exact match among applied rules, and so missed
+//    `.channel[data-stem]`, `.channel.channel`, `.channel:is(…)`,
+//    `#x.channel` and anything at all inside `@supports`. Two narrowings are
+//    made and both are categorical, not heuristic: a pseudo-ELEMENT is a
+//    different box (`.fader::-webkit-slider-runnable-track { width }` cannot
+//    size `.fader`), and a rule gated on a transient interaction state
+//    (`:hover`, `:focus-within`, …) does not apply at rest. THE RESTING STATE
+//    IS THE ONLY STATE THESE LOOKUPS RESOLVE.
+//
+// 3. IT DOES NOT EVALUATE `@supports` OR `@layer`, AND REFUSES ON BOTH — now
+//    including a selector inside one that merely OUTRANKS the one asked
+//    about, not only one that matches it exactly. A statement at-rule
+//    (`@layer base;`, `@import …;`) is refused outright: it reorders the
+//    cascade and pulls in other files, and it used to be absorbed into the
+//    next rule's prelude, deleting that rule from the model altogether.
+//
+// 4. IT IS PROPERTY-EXACT, AND REFUSES RATHER THAN EXPANDING A SHORTHAND. If
+//    a selector declares both the property asked about and a relative of it
+//    (`padding` against `padding-inline`, `gap` against `row-gap`), the
+//    lookup fails. Expanding shorthands correctly is not a thing a regex can
+//    do, so it does not try.
+//
+// 5. IT READS ONE FILE AT A TIME AND MODELS NO CROSS-FILE SOURCE ORDER.
+//    `pageGutter()` is sound only because `--sl-gutter` has exactly one
+//    declaring file, so that invariant is ASSERTED below rather than assumed.
+//
+// 6. NO ENVIRONMENT AXIS HAS A DEFAULT. Every axis this stylesheet branches
+//    on is either pinned by the caller or evaluated at every value, and a
+//    disagreement between those values is a refusal. A previous version
+//    merely STATED `colorScheme: 'dark'`, and a `prefers-color-scheme: light`
+//    override of the channel floor passed while light mode overflowed by
+//    608px.
+//
+// Width, `!important` and comma-separated media lists ARE resolved, and the
+// resolver's own behaviour on each of these shapes is pinned by tests below.
 
 const TOKENS_CSS = 'src/styles/design-tokens.css';
 
@@ -604,60 +665,236 @@ const NARROWEST = 360;
 const uncomment = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
 
 /**
- * Every style rule that applies at `width`, in source order, separated from
- * the ones this file cannot evaluate.
- *
- * `@media` blocks are kept when their width conditions hold at `width` and
- * dropped when they do not, so what comes back is the cascade that renders
- * there. Anything whose condition cannot be evaluated here — a non-width
- * `@media`, `@supports`, `@layer` — goes to `unevaluated` rather than being
- * guessed at, and `declAt` fails loudly if one of those touches a value it was
- * asked for. Failing closed is the point: a silent wrong answer is what put a
- * launch-blocking layout defect through this gate twice.
+ * The environment axes this resolver knows how to enumerate. These are NOT
+ * defaults — nothing here states a value. An axis the stylesheet branches on
+ * is either PINNED by the caller or evaluated at EVERY value below, and a
+ * disagreement between those values is a refusal, not a pick. That is the
+ * fix for the last false green of round 4: a `DEFAULT_ENV` that merely
+ * *stated* `colorScheme: 'dark'` let a `@media (prefers-color-scheme: light)`
+ * override of the channel floor pass while light mode overflowed by 608px.
  */
-const DEFAULT_ENV = {
-  width: 360,
-  forcedColors: 'none',
-  reducedMotion: 'no-preference',
-  colorScheme: 'dark',
+const AXES = {
+  forcedColors: { feature: 'forced-colors', values: ['none', 'active'] },
+  reducedMotion: { feature: 'prefers-reduced-motion', values: ['no-preference', 'reduce'] },
+  colorScheme: { feature: 'prefers-color-scheme', values: ['light', 'dark'] },
 };
 
+/**
+ * Properties that can overwrite each other without sharing a name. The
+ * declaration lookup below is PROPERTY-EXACT, so a shorthand and its longhand
+ * are mutually invisible to it: `.toggles { padding-inline: 0 }` followed by
+ * `.toggles { padding: 0 12px }` left the gate reading `0` while Chrome laid
+ * the M/S button out at 22.66 x 44 — half the 44px minimum the same test
+ * asserts. Expanding shorthands correctly is not something a regex can do, so
+ * this does not try: if a selector declares the property asked about AND a
+ * relative of it, the lookup REFUSES. `border-radius` is deliberately not a
+ * relative of `border` — the `border` shorthand does not set it.
+ */
+const PROP_FAMILIES = [
+  ['padding', 'padding-inline', 'padding-block', 'padding-top', 'padding-right',
+    'padding-bottom', 'padding-left', 'padding-inline-start', 'padding-inline-end',
+    'padding-block-start', 'padding-block-end'],
+  ['margin', 'margin-inline', 'margin-block', 'margin-top', 'margin-right',
+    'margin-bottom', 'margin-left', 'margin-inline-start', 'margin-inline-end',
+    'margin-block-start', 'margin-block-end'],
+  ['border', 'border-width', 'border-style', 'border-color', 'border-top', 'border-right',
+    'border-bottom', 'border-left', 'border-inline', 'border-block',
+    'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+    'border-inline-width', 'border-block-width',
+    'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+    'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color'],
+  ['inset', 'top', 'right', 'bottom', 'left', 'inset-inline', 'inset-block'],
+  ['gap', 'row-gap', 'column-gap'],
+  ['flex', 'flex-grow', 'flex-shrink', 'flex-basis'],
+  ['flex-flow', 'flex-direction', 'flex-wrap'],
+  ['overflow', 'overflow-x', 'overflow-y'],
+  ['width', 'inline-size'],
+  ['height', 'block-size'],
+  ['min-width', 'min-inline-size'],
+  ['min-height', 'min-block-size'],
+  ['max-width', 'max-inline-size'],
+  ['max-height', 'max-block-size'],
+  ['font', 'font-style', 'font-weight', 'font-size', 'font-family', 'line-height'],
+  ['background', 'background-color', 'background-image'],
+  ['transition', 'transition-property', 'transition-duration'],
+];
+
+/** Every property that could overwrite `prop` without being spelled `prop`. */
+const relatives = (prop) => {
+  const out = new Set();
+  for (const family of PROP_FAMILIES) {
+    if (family.includes(prop)) for (const other of family) if (other !== prop) out.add(other);
+  }
+  return [...out];
+};
+
+/** `.a:hover .b` -> `.b`: the compound that picks the element being styled. */
+const subject = (selectorText) => selectorText.trim().split(/\s*[ >+~]\s*/).filter(Boolean).pop() ?? '';
+
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Pseudo-classes that describe a TRANSIENT INTERACTION STATE. A rule gated on
+ * one of these does not apply in the resting state, so it cannot be the rule
+ * that answers a resting-state question — `.slot:focus-within { opacity: 1 }`
+ * does not make the ducked slot's resting 0.55 wrong. Everything NOT on this
+ * list (`:is`, `:not`, `:nth-child`, an attribute, a second class, an id) is
+ * treated as outranking and refused. This narrowing, and the pseudo-ELEMENT
+ * one beside it, are the only two the override guard makes; the resting state
+ * is the only state these lookups claim to resolve. See the residue list.
+ */
+const PSEUDO_STATE =
+  /:(?:hover|focus-visible|focus-within|focus|active|target|visited|link|checked|disabled|enabled|indeterminate|placeholder-shown|user-invalid|user-valid|invalid|valid|default|read-only|read-write|open|popover-open|autofill)\b/g;
+
+/**
+ * Does `needle` appear in `hay` as a whole compound token rather than as the
+ * head of a longer identifier? `.toggle` must not match inside `.toggles`.
+ */
+const hasToken = (hay, needle) =>
+  new RegExp(`${esc(needle)}(?![A-Za-z0-9_-])`).test(hay);
+
+/**
+ * `prop: value` pairs out of one rule body, with `!important` modelled.
+ * Nesting is refused rather than mis-parsed: a `&`-nested block inside a rule
+ * would make this split a selector as if it were a declaration.
+ */
+const declarations = (decls, where) => {
+  assert.ok(
+    !decls.includes('{'),
+    `nested rules inside \`${where}\` are not modelled by this resolver; teach it or flatten the rule`,
+  );
+  const out = [];
+  let depth = 0;
+  let start = 0;
+  const push = (piece) => {
+    const text = piece.trim();
+    if (text.length === 0) return;
+    const colon = text.indexOf(':');
+    if (colon === -1) return;
+    const prop = text.slice(0, colon).trim();
+    let value = text.slice(colon + 1).trim();
+    const important = /!\s*important$/i.test(value);
+    if (important) value = value.replace(/!\s*important$/i, '').trim();
+    out.push({ prop, value, important });
+  };
+  for (let i = 0; i < decls.length; i += 1) {
+    const ch = decls[i];
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    else if (ch === ';' && depth === 0) {
+      push(decls.slice(start, i));
+      start = i + 1;
+    }
+  }
+  push(decls.slice(start));
+  return out;
+};
+
+/**
+ * Every style rule that applies at `width` in `env`, in source order,
+ * separated from the ones this file cannot evaluate.
+ *
+ * `@media` blocks are kept when their conditions hold and dropped when they do
+ * not, so what comes back is the cascade that renders there. Anything whose
+ * condition cannot be evaluated here goes to `unevaluated` rather than being
+ * guessed at, and the lookups below fail loudly if one of those touches a
+ * value they were asked for. Failing closed is the point: a silent wrong
+ * answer is what put a launch-blocking layout defect through this gate twice.
+ */
 const rulesAt = (css, env) => {
-  const { width, forcedColors, reducedMotion, colorScheme } = { ...DEFAULT_ENV, ...env };
+  const { width } = env;
   const applied = [];
   const unevaluated = [];
+  const feature = {
+    'forced-colors': env.forcedColors,
+    'prefers-reduced-motion': env.reducedMotion,
+    'prefers-color-scheme': env.colorScheme,
+  };
+
+  /** Split on commas that are not inside parentheses. */
+  const commaParts = (text) => {
+    const parts = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      if (text[i] === '(') depth += 1;
+      else if (text[i] === ')') depth -= 1;
+      else if (text[i] === ',' && depth === 0) {
+        parts.push(text.slice(start, i));
+        start = i + 1;
+      }
+    }
+    parts.push(text.slice(start));
+    return parts.map((one) => one.trim()).filter((one) => one.length > 0);
+  };
 
   /**
-   * true / false / null ("cannot tell") for one at-rule prelude in `env`.
-   * The non-width features are evaluated too rather than shrugged at, because
-   * "I cannot tell" on `forced-colors` would make this refuse to answer any
-   * question about a property that file also sets in a forced-colors block.
+   * true / false / null ("cannot tell") for ONE comma-free media query.
+   * `not`, range syntax (`400px <= width <= 800px`) and any feature not in
+   * AXES all leave something behind in `leftover` and answer null.
    */
-  const holds = (prelude) => {
+  const holdsOne = (query) => {
     const WIDTH = /\(\s*(min|max)-width\s*:\s*([\d.]+)px\s*\)/g;
     const FEATURE = /\(\s*(forced-colors|prefers-reduced-motion|prefers-color-scheme)\s*:\s*([a-z-]+)\s*\)/g;
-    const widths = [...prelude.matchAll(WIDTH)];
-    const features = [...prelude.matchAll(FEATURE)];
-    const leftover = prelude
+    const widths = [...query.matchAll(WIDTH)];
+    const features = [...query.matchAll(FEATURE)];
+    const leftover = query
       .replace(WIDTH, '')
       .replace(FEATURE, '')
-      .replace(/@media|\band\b|\bonly\b|\bscreen\b|\ball\b|[\s,]/g, '');
+      .replace(/\band\b|\bonly\b|\bscreen\b|\ball\b|\s/g, '');
     if (leftover.length > 0 || widths.length + features.length === 0) return null;
-    const env_ = {
-      'forced-colors': forcedColors,
-      'prefers-reduced-motion': reducedMotion,
-      'prefers-color-scheme': colorScheme,
-    };
+    for (const [, name] of features) {
+      assert.ok(
+        feature[name] !== undefined,
+        `\`${name}\` is an environment axis with no value in this lookup; add it to AXES`,
+      );
+    }
     return (
       widths.every(([, kind, n]) => (kind === 'min' ? width >= Number(n) : width <= Number(n))) &&
-      features.every(([, name, want]) => env_[name] === want)
+      features.every(([, name, want]) => feature[name] === want)
     );
+  };
+
+  /**
+   * A media prelude is a comma-separated LIST, and the list is an OR. The
+   * previous version stripped the commas and then ANDed the lot, which is the
+   * only one of round 4's six false greens that was a CONFIDENT WRONG ANSWER
+   * rather than a missed override: `@media (max-width: 400px), (min-width:
+   * 760px)` applies at 360px in Chrome and was evaluated as false here, so the
+   * 72px channel floor vanished and the sixth Solo button sat at x=400..470,
+   * outside the viewport, with the suite green.
+   */
+  const holds = (prelude) => {
+    const verdicts = commaParts(prelude.replace(/^@media\b/, '')).map(holdsOne);
+    if (verdicts.length === 0) return null;
+    if (verdicts.some((v) => v === true)) return true;
+    if (verdicts.every((v) => v === false)) return false;
+    return null;
   };
 
   const walk = (text, state) => {
     let i = 0;
     for (;;) {
       const brace = text.indexOf('{', i);
+      // A STATEMENT at-rule — `@layer base;`, `@import url(…);`, `@charset` —
+      // ends at a semicolon and has no block. The previous version looked only
+      // for the next `{`, so the statement was absorbed into the FOLLOWING
+      // rule's prelude, that prelude then started with `@`, and the rule it
+      // swallowed disappeared from `applied` and `unevaluated` alike. A lookup
+      // that expected `null` (`{ required: false }`) then read the absence as
+      // "nothing declares it" and passed. `@layer` and `@import` also change
+      // the cascade in ways nothing here models, so this refuses outright.
+      const semi = text.indexOf(';', i);
+      if (semi !== -1 && (brace === -1 || semi < brace)) {
+        const statement = text.slice(i, semi).trim();
+        assert.ok(
+          statement.length === 0,
+          `\`${statement.slice(0, 60)}\` is a statement at-rule; it changes the cascade in ways ` +
+            `this resolver does not model (layer order, cross-file source order). Teach it or remove it`,
+        );
+        i = semi + 1;
+        continue;
+      }
       if (brace === -1) return;
       const prelude = text.slice(i, brace).trim();
       let depth = 0;
@@ -683,7 +920,7 @@ const rulesAt = (css, env) => {
       } else if (state !== 'excluded') {
         (state === 'applied' ? applied : unevaluated).push({
           selectors: prelude.split(',').map((one) => one.trim()),
-          decls: body,
+          decls: declarations(body, prelude),
         });
       }
       i = j + 1;
@@ -695,40 +932,82 @@ const rulesAt = (css, env) => {
 };
 
 /**
- * The winning value of `selector { prop }` at `width` — LAST declaration wins,
- * the way the cascade resolves it, not the first one in the file. Only rules
- * whose selector list contains `selector` exactly are consulted, so
- * `.isMuted .name` never answers a question about `.name`.
+ * The winning value of `selector { prop }` in ONE resolved environment, or a
+ * loud failure if anything about the cascade there is beyond this resolver.
+ *
+ * Only rules whose selector list contains `selector` EXACTLY are consulted, so
+ * `.isMuted .name` never answers a question about `.name`. Everything that
+ * could make that exact match the wrong answer is a refusal:
+ *   - a selector that targets the same element through a longer compound,
+ *   - the same property under a different name (shorthand / longhand),
+ *   - any of the above inside an at-rule this file cannot evaluate.
  */
-const declAt = (css, width, selector, prop, { required = true, env = {} } = {}) => {
-  const { applied, unevaluated } = rulesAt(css, { ...env, width });
-  const winner = (rules) => {
-    let found = null;
+const declIn = (css, selector, prop, env) => {
+  const { applied, unevaluated } = rulesAt(css, env);
+
+  // ── refusal 1: a selector that outranks the one asked about ───────────────
+  //
+  // Widened in round 4 from `[ >+~]<selector>$` — a COMBINATOR plus an exact
+  // match, over `applied` only — which fired on `.mixer .channel` but was
+  // silent on `.channel[data-stem]`, `.channel.channel`, `#x.channel` and
+  // `.channel:is(…)`, every one of which outranks `.channel`, and silent on
+  // anything inside `@supports`. Now: any selector whose SUBJECT compound
+  // contains this one, in `applied` or `unevaluated`. A selector that the
+  // asked-for one CONTAINS is exempt, since `.slot` cannot outrank
+  // `.isDucked:not(.isMuted) .slot`.
+  const want = subject(selector);
+  for (const [state, rules] of [['applies', applied], ['may apply', unevaluated]]) {
+    for (const rule of rules) {
+      for (const one of rule.selectors) {
+        if (one === selector) continue;
+        // A pseudo-ELEMENT is a different box: `.fader::-webkit-slider-runnable-track
+        // { width }` sizes the generated track, never `.fader` itself.
+        if (subject(one).includes('::')) continue;
+        if (!hasToken(subject(one), want)) continue;
+        if (hasToken(selector, one)) continue; // weaker form of the same selector
+        const resting = one.replace(PSEUDO_STATE, '');
+        // the same element in an interaction state this lookup does not claim
+        if (resting === selector || hasToken(selector, resting)) continue;
+        const also = rule.decls.find((d) => d.prop === prop || relatives(prop).includes(d.prop));
+        assert.ok(
+          !also,
+          `\`${one}\` sets \`${also?.prop}\` and outranks \`${selector}\` (${state} here); this ` +
+            `lookup resolves selectors by exact match and would answer with the wrong value`,
+        );
+      }
+    }
+  }
+
+  // ── refusal 2: the same box sized through a different property name ───────
+  const kin = relatives(prop);
+  for (const rules of [applied, unevaluated]) {
     for (const rule of rules) {
       if (!rule.selectors.includes(selector)) continue;
-      const hits = [...rule.decls.matchAll(new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`, 'g'))];
-      if (hits.length > 0) found = hits[hits.length - 1][1].trim();
-    }
-    return found;
-  };
-  // A rule that targets the SAME element through a longer selector wins in the
-  // browser and is invisible to the exact-match lookup above — `.mixer
-  // .channel { min-width }` would leave this answering with the bare
-  // `.channel` value while the page used the other one. Same shape as reading
-  // the base cascade: a confident answer the browser would not use. Fail.
-  const KEY = new RegExp(`[ >+~]${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
-  for (const rule of applied) {
-    for (const one of rule.selectors) {
-      if (one === selector || !KEY.test(one)) continue;
-      const alsoSets = new RegExp(`(?:^|;)\\s*${prop}\\s*:`).test(rule.decls);
+      const sibling = rule.decls.find((d) => kin.includes(d.prop));
       assert.ok(
-        !alsoSets,
-        `\`${one}\` also sets \`${prop}\` and outranks \`${selector}\`; this lookup ` +
-          `resolves selectors by exact match and would answer with the wrong value`,
+        !sibling,
+        `\`${selector}\` declares both \`${prop}\` and \`${sibling?.prop}\`, which can overwrite ` +
+          `each other; this lookup is property-exact and cannot tell which wins`,
       );
     }
   }
 
+  /** Last declaration wins — except that any `!important` one beats all of them. */
+  const winner = (rules) => {
+    let normal = null;
+    let important = null;
+    for (const rule of rules) {
+      if (!rule.selectors.includes(selector)) continue;
+      for (const d of rule.decls) {
+        if (d.prop !== prop) continue;
+        if (d.important) important = d.value;
+        else normal = d.value;
+      }
+    }
+    return important ?? normal;
+  };
+
+  // ── refusal 3: the value is set inside an at-rule this file cannot judge ──
   const blind = winner(unevaluated);
   assert.equal(
     blind,
@@ -736,14 +1015,48 @@ const declAt = (css, width, selector, prop, { required = true, env = {} } = {}) 
     `\`${selector} { ${prop} }\` is set to \`${blind}\` inside an at-rule this test cannot ` +
       `evaluate — teach rulesAt about it rather than trusting the base value`,
   );
-  const value = winner(applied);
-  if (required) assert.ok(value !== null, `nothing declares \`${prop}\` for \`${selector}\` at ${width}px`);
-  return value;
+  return winner(applied);
+};
+
+/**
+ * `selector { prop }` at `width`, resolved over EVERY value of every
+ * environment axis the stylesheet branches on and that the caller has not
+ * pinned. Agreement is the answer; disagreement is a refusal that names both
+ * sides. Nothing is defaulted, so a stylesheet that grows a new axis cannot
+ * quietly keep answering with one side of it.
+ */
+const declAt = (css, width, selector, prop, { required = true, env = {} } = {}) => {
+  for (const key of Object.keys(env)) {
+    assert.ok(AXES[key], `\`${key}\` is not an environment axis this resolver knows`);
+  }
+  const text = uncomment(css);
+  const free = Object.entries(AXES).filter(
+    ([key, { feature }]) => env[key] === undefined && text.includes(`${feature}:`),
+  );
+  let combos = [{ ...env, width }];
+  for (const [key, { values }] of free) {
+    combos = combos.flatMap((base) => values.map((v) => ({ ...base, [key]: v })));
+  }
+  const seen = combos.map((combo) => ({ combo, value: declIn(css, selector, prop, combo) }));
+  const show = (c) => free.map(([key]) => `${AXES[key].feature}: ${c[key]}`).join(', ');
+  const first = seen[0];
+  for (const other of seen) {
+    assert.equal(
+      other.value,
+      first.value,
+      `\`${selector} { ${prop} }\` is \`${first.value}\` at (${show(first.combo)}) but ` +
+        `\`${other.value}\` at (${show(other.combo)}); pin the axis you mean, or fix the disagreement`,
+    );
+  }
+  if (required) {
+    assert.ok(first.value !== null, `nothing declares \`${prop}\` for \`${selector}\` at ${width}px`);
+  }
+  return first.value;
 };
 
 /** The same lookup in forced-colors mode, where this stylesheet restates states. */
 const declForcedColors = (css, width, selector, prop, opts = {}) =>
-  declAt(css, width, selector, prop, { ...opts, env: { forcedColors: 'active' } });
+  declAt(css, width, selector, prop, { ...opts, env: { ...opts.env, forcedColors: 'active' } });
 
 /** `12px` -> 12; `var(--space-2)` -> whatever the tokens say AT THIS WIDTH. */
 const px = (value, width = NARROWEST) => {
@@ -756,6 +1069,248 @@ const px = (value, width = NARROWEST) => {
 
 /** The page gutter, read from the tokens that are in scope on every route. */
 const pageGutter = (width = NARROWEST) => px(declAt(read(TOKENS_CSS), width, ':root', '--sl-gutter'), width);
+
+// ═══ The resolver's own gate ══════════════════════════════════════════════════
+//
+// Four review rounds have each defeated this gate the same way: it answered a
+// question about the cascade CONFIDENTLY and WRONGLY, and the suite stayed
+// green while Chrome overflowed. Round 1 was a hard-coded literal, round 2 the
+// base cascade instead of the 360px cascade, round 3 specificity, round 4 five
+// more variants of specificity plus one genuine mis-evaluation.
+//
+// So the resolver is pinned here by its OWN behaviour on inline stylesheets,
+// not only through the product CSS. Each case below is one of the shapes that
+// produced a false green, and the assertion is either the right answer or a
+// REFUSAL. A gate that refuses costs five minutes; a gate that answers wrongly
+// is the defect. Where closing a hole cleanly would need a real CSS engine,
+// this refuses on purpose and the residue list says so.
+
+/** `declAt` must throw, and the message must name the reason. */
+const refuses = (thunk, reason) =>
+  assert.throws(thunk, (err) => {
+    assert.match(err.message, reason);
+    return true;
+  });
+
+test('resolver: a comma-separated media prelude is an OR, not an AND', () => {
+  // THE CONFIDENT WRONG ANSWER. `holds()` stripped commas and then ANDed the
+  // condition list that Chrome ORs, so this block was judged false at 360px.
+  // In Chrome the 150px floor applies, six channels need 910px of 302px, and
+  // the sixth Solo button sat at x=400..470 — outside the viewport, where
+  // elementFromPoint returns nothing at all. This is the only one of round 4's
+  // six that is fixed rather than refused: the list is parsed and ORed.
+  const css = `
+    .channel { min-width: 46px; }
+    @media (max-width: 400px), (min-width: 760px) {
+      .channel { min-width: 150px; }
+    }`;
+  assert.equal(declAt(css, 360, '.channel', 'min-width'), '150px', 'the max-width arm');
+  assert.equal(declAt(css, 1024, '.channel', 'min-width'), '150px', 'the min-width arm');
+  assert.equal(declAt(css, 500, '.channel', 'min-width'), '46px', 'neither arm');
+  // and an OR where one arm is unevaluable still answers when another arm HOLDS
+  assert.equal(
+    declAt(`.a { gap: 1px } @media (min-width: 0px), (400px <= width) { .a { gap: 9px } }`, 360, '.a', 'gap'),
+    '9px',
+  );
+  // …but refuses when the only arms are false-or-unknown
+  refuses(
+    () => declAt(`.a { gap: 1px } @media (min-width: 900px), (400px <= width) { .a { gap: 9px } }`, 360, '.a', 'gap'),
+    /cannot\s+evaluate/,
+  );
+});
+
+test('resolver: `!important` beats a later ordinary declaration', () => {
+  // `winner()` took the last textual match and did not model `!important`, so
+  // an earlier `!important` floor was invisible. Fixed, not refused.
+  const css = `
+    .channel { min-width: 150px !important; }
+    .channel { min-width: 46px; }`;
+  assert.equal(declAt(css, 360, '.channel', 'min-width'), '150px');
+  // spacing and case are not load-bearing
+  assert.equal(declAt(`.a { gap: 9px !  IMPORTANT ; } .a { gap: 1px }`, 360, '.a', 'gap'), '9px');
+  // and the last `!important` wins over an earlier one
+  assert.equal(
+    declAt(`.a { gap: 2px !important } .a { gap: 9px !important } .a { gap: 1px }`, 360, '.a', 'gap'),
+    '9px',
+  );
+});
+
+test('resolver: refuses any selector that outranks the one asked about', () => {
+  // The old guard keyed on `[ >+~]<selector>$` — a COMBINATOR plus an exact
+  // match — so it caught `.mixer .channel` and was silent on every one of
+  // these, each of which outranks `.channel` and each of which rendered a
+  // 150px floor and a 608px overflow in Chrome with the suite green.
+  for (const outranks of [
+    '.channel[data-stem]',
+    '.channel.channel',
+    '.channel:is(.mixer)',
+    '#job .channel',
+    '.mixer .channel',
+    '.mixer > .channel',
+  ]) {
+    refuses(
+      () => declAt(`${outranks} { min-width: 150px; }\n.channel { min-width: 46px; }`, 360, '.channel', 'min-width'),
+      /outranks/,
+    );
+  }
+  // scanned in BOTH directions of source order, and for a RELATIVE of the
+  // property as well as the property itself
+  refuses(
+    () => declAt(`.channel { min-width: 46px } .channel[x] { min-inline-size: 150px }`, 360, '.channel', 'min-width'),
+    /outranks/,
+  );
+});
+
+test('resolver: refuses an outranking selector inside an at-rule it cannot evaluate', () => {
+  // The blind check over `unevaluated` was exact-match too, so a DESCENDANT
+  // selector inside `@supports` passed silently — the gate's stated claim that
+  // it "fails on @supports rather than evaluating it" was an overclaim.
+  refuses(
+    () =>
+      declAt(
+        `@supports (display: flex) { .mixer .channel { min-width: 150px; } }\n.channel { min-width: 46px; }`,
+        360,
+        '.channel',
+        'min-width',
+      ),
+    /outranks .*may apply/,
+  );
+  // the exact-match blind check still fires too
+  refuses(
+    () => declAt(`@supports (display: flex) { .channel { min-width: 150px } }\n.channel { min-width: 46px }`, 360, '.channel', 'min-width'),
+    /cannot\s+evaluate/,
+  );
+});
+
+test('resolver: refuses a shorthand and its longhand on the same selector', () => {
+  // THE LIVE RISK, not a hypothetical: this stylesheet already mixes both
+  // idioms (`.channel { padding: … }` against `.toggles { padding-inline: 0 }`).
+  // The declaration regex was property-exact, so `padding: 0 12px` after
+  // `padding-inline: 0` was invisible and Chrome laid the M/S button out at
+  // 22.66 x 44 — half the 44px minimum the touch-target test asserts.
+  // Expanding shorthands is not something a regex can do, so this refuses.
+  refuses(
+    () => declAt(`.toggles { padding-inline: 0 } .toggles { padding: 0 12px }`, 360, '.toggles', 'padding-inline'),
+    /declares both `padding-inline` and `padding`/,
+  );
+  // both directions, and the other families that matter to this stylesheet
+  refuses(() => declAt(`.a { padding: 4px; padding-left: 9px }`, 360, '.a', 'padding'), /declares both/);
+  refuses(() => declAt(`.a { gap: 2px; row-gap: 9px }`, 360, '.a', 'gap'), /declares both/);
+  refuses(() => declAt(`.a { border: 1px solid red; border-width: 9px }`, 360, '.a', 'border'), /declares both/);
+  refuses(() => declAt(`.a { width: 4px; inline-size: 9px }`, 360, '.a', 'width'), /declares both/);
+  refuses(() => declAt(`.a { flex-direction: row; flex-flow: column }`, 360, '.a', 'flex-direction'), /declares both/);
+  // `border-radius` is NOT a longhand of `border`, so this stylesheet's own
+  // `.mixer { border; border-radius }` must keep answering
+  assert.equal(declAt(`.a { border: 1px solid red; border-radius: 4px }`, 360, '.a', 'border'), '1px solid red');
+});
+
+test('resolver: no environment axis has a default; a disagreement is a refusal', () => {
+  // `DEFAULT_ENV` *stated* `colorScheme: 'dark'` — itself the opposite of a
+  // plain browser default — and nothing forced a test to consider the other
+  // value, so a `prefers-color-scheme: light` override of the channel floor
+  // passed while light mode overflowed by 608px and clipped the sixth Solo.
+  const css = `
+    .channel { min-width: 46px; }
+    @media (prefers-color-scheme: light) { .channel { min-width: 150px; } }`;
+  refuses(() => declAt(css, 360, '.channel', 'min-width'), /prefers-color-scheme: light.*prefers-color-scheme: dark/s);
+  // pinning the axis is how a test says which one it means
+  assert.equal(declAt(css, 360, '.channel', 'min-width', { env: { colorScheme: 'dark' } }), '46px');
+  assert.equal(declAt(css, 360, '.channel', 'min-width', { env: { colorScheme: 'light' } }), '150px');
+  // every axis, not just this one
+  for (const [feature, pin, other] of [
+    ['forced-colors: active', { forcedColors: 'none' }, { forcedColors: 'active' }],
+    ['prefers-reduced-motion: reduce', { reducedMotion: 'no-preference' }, { reducedMotion: 'reduce' }],
+  ]) {
+    const sheet = `.a { gap: 1px } @media (${feature}) { .a { gap: 9px } }`;
+    refuses(() => declAt(sheet, 360, '.a', 'gap'), /pin the axis you mean/);
+    assert.equal(declAt(sheet, 360, '.a', 'gap', { env: pin }), '1px');
+    assert.equal(declAt(sheet, 360, '.a', 'gap', { env: other }), '9px');
+  }
+  // an axis the stylesheet never branches on needs no pin
+  assert.equal(declAt(`.a { gap: 1px }`, 360, '.a', 'gap'), '1px');
+  // and a typo in a pin is a failure, not a silently ignored key
+  refuses(() => declAt(`.a { gap: 1px }`, 360, '.a', 'gap', { env: { colourScheme: 'dark' } }), /not an environment axis/);
+});
+
+test('resolver: refuses a statement at-rule rather than swallowing the next rule', () => {
+  // NEW HOLE, found in round 4 and never stated. `@layer base;` / `@import …;`
+  // end at a semicolon, and the walker only looked for the next `{`, so the
+  // statement was absorbed into the FOLLOWING rule's prelude; that prelude then
+  // began with `@`, and the rule it had swallowed vanished from `applied` AND
+  // `unevaluated` alike. A `{ required: false }` lookup read the absence as
+  // "nothing declares it" and passed — so `@layer base;` in front of
+  // `.isDucked { opacity: 0.55 }` would hide exactly the dimming that test
+  // forbids. `@layer` and `@import` also reorder the cascade and pull in other
+  // files, neither of which anything here models, so they are refused outright.
+  for (const statement of ['@layer base;', '@import url("x.css");', '@charset "utf-8";']) {
+    refuses(() => declAt(`${statement}\n.channel { min-width: 46px }`, 360, '.channel', 'min-width'), /statement at-rule/);
+    // including the direction that used to PASS: an absence read as a null
+    refuses(
+      () => declAt(`${statement}\n.isDucked { opacity: 0.55 }`, 360, '.isDucked', 'opacity', { required: false }),
+      /statement at-rule/,
+    );
+  }
+  // `@layer name { … }` with a block is still the ordinary unevaluated path
+  refuses(
+    () => declAt(`@layer base { .channel { min-width: 150px } }\n.channel { min-width: 46px }`, 360, '.channel', 'min-width'),
+    /cannot\s+evaluate/,
+  );
+});
+
+test('resolver: refuses CSS nesting rather than parsing a selector as a declaration', () => {
+  refuses(() => declAt(`.a { gap: 1px; &:hover { gap: 9px } }`, 360, '.a', 'gap'), /nested rules/);
+});
+
+test('resolver: the shapes that already failed closed still do', () => {
+  // Round 3 got these right and round 4 confirmed all four. They are pinned so
+  // the widening above cannot quietly turn one of them into an answer.
+  const cases = [
+    ['@media nested in @supports', `@supports (display: flex) { @media (min-width: 0px) { .channel { min-width: 150px } } }\n.channel { min-width: 46px }`],
+    ['range syntax', `@media (400px <= width <= 800px) { .channel { min-width: 150px } }\n.channel { min-width: 46px }`],
+    ['negated media query', `@media not all and (min-width: 760px) { .channel { min-width: 150px } }\n.channel { min-width: 46px }`],
+    ['an unknown media feature', `@media (orientation: portrait) { .channel { min-width: 150px } }\n.channel { min-width: 46px }`],
+  ];
+  for (const [what, css] of cases) {
+    refuses(() => declAt(css, 360, '.channel', 'min-width'), /cannot\s+evaluate/);
+    assert.ok(what);
+  }
+  // a `var()` FALLBACK CHAIN is not resolved either — `px()` refuses it
+  refuses(() => px('var(--a, var(--b, 16px))'), /cannot resolve/);
+  refuses(() => px('calc(16px + 2px)'), /cannot resolve/);
+});
+
+test('the page gutter is declared in exactly one file, which is what makes pageGutter() safe', () => {
+  // NEW HOLE, never stated: the resolver reads ONE FILE AT A TIME and models
+  // no cross-file source order. `pageGutter()` is sound today only because
+  // `--sl-gutter` has exactly one declaring file; a second declaration
+  // anywhere would make "last wins" depend on an import order this file cannot
+  // see, and the gate would answer confidently from whichever file it read.
+  // So the invariant is asserted rather than assumed.
+  const roots = ['src/styles', 'src/components', 'src/app'];
+  const files = [];
+  const walkDir = (rel) => {
+    let entries;
+    try {
+      entries = readdirSync(join(WEB, rel), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const next = `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walkDir(next);
+      else if (entry.name.endsWith('.css')) files.push(next);
+    }
+  };
+  for (const root of roots) walkDir(root);
+  assert.ok(files.length >= 3, `expected a real stylesheet tree, found ${files.length}`);
+  const declaring = files.filter((f) => /--sl-gutter\s*:/.test(read(f)));
+  assert.deepEqual(
+    declaring,
+    [TOKENS_CSS],
+    `--sl-gutter must be declared in exactly one file for pageGutter() to be resolvable ` +
+      `without cross-file source order, which this resolver does not model`,
+  );
+});
 
 test('every channel fits at 360px, with each number resolved from the stylesheets', () => {
   const css = read(MIXER_CSS);
@@ -808,7 +1363,14 @@ test('ducking recedes the LEVEL, never the words: no opacity on the channel itse
     );
   }
   // the fader column carries the signal instead, and the note still says why
-  assert.equal(declAt(css, NARROWEST, '.isDucked:not(.isMuted) .slot', 'opacity'), '0.55');
+  // `forced-colors` is pinned because this stylesheet restates the dimming
+  // there: unpinned, the lookup refuses rather than picking one side.
+  assert.equal(
+    declAt(css, NARROWEST, '.isDucked:not(.isMuted) .slot', 'opacity', {
+      env: { forcedColors: 'none' },
+    }),
+    '0.55',
+  );
   assert.equal(declAt(css, NARROWEST, '.isDucked:not(.isMuted) .note', 'font-style'), 'italic');
   // forced colours drop the tint, so the dimming is restated away there
   assert.equal(declForcedColors(css, NARROWEST, '.isDucked:not(.isMuted) .slot', 'opacity'), '1');

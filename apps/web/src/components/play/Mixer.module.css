@@ -45,10 +45,18 @@
    border, channel floor, gap and fader column — at the cascade that applies
    AT 360px, rather than restating any of them or reading the base cascade.
    It fails when one of them moves far enough to break the budget; a change
-   that still fits stays green, which is correct rather than lenient. What it
-   cannot do is lay out a box, so an overflow caused by something the
-   arithmetic does not model — a padded descendant, a scrollbar — would pass.
-   The rendered numbers were taken in Chrome at 360px and are in the PR. */
+   that still fits stays green, which is correct rather than lenient.
+
+   WHAT IT CANNOT DO IS LAY OUT A BOX, and that limit is permanent: an
+   overflow caused by anything the arithmetic does not model — a padded
+   descendant, a scrollbar, a shorthand it refuses to expand — is invisible to
+   it. So a green suite is NOT evidence that these boxes fit. Any change to
+   this budget must be MEASURED IN REAL CHROME at 360/390/414/759/760/1024 and
+   the numbers recorded in the PR; the gate's job is to fail when a declared
+   value moves, not to certify the layout. Everything else the gate cannot do
+   is listed at the top of the `CSS geometry` section of play-mixer.test.mjs,
+   and that list is kept true rather than reassuring. The rendered numbers for
+   the current budget were taken in Chrome at 360px and are in the PR. */
 .rail {
   display: flex;
   align-items: stretch;

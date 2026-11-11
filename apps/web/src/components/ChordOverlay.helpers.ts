@@ -140,9 +140,22 @@ export function markMonotoneRuns<T extends readonly Pick<OverlayRun, 'startSec' 
   return runs;
 }
 
-/** True if this exact array object carries the monotone-runs promise. */
+/**
+ * True if this exact array object carries the monotone-runs promise.
+ *
+ * An OWN-property check, deliberately. A plain `runs[MONOTONE_RUNS]` read walks
+ * the prototype chain, so one `Object.defineProperty(Array.prototype, ...)`
+ * anywhere in the page would mark EVERY array and put every run list back on
+ * the hint fast path — re-opening the defect this whole mechanism exists to
+ * close. Prototype pollution is needed to reach it, which makes it unlikely,
+ * but this is the one read the correctness argument rests on, so it does not
+ * get to be approximately right.
+ */
 export function hasMonotoneRunsMark(runs: readonly unknown[]): boolean {
-  return (runs as unknown as Record<symbol, unknown>)[MONOTONE_RUNS] === true;
+  return (
+    Object.prototype.hasOwnProperty.call(runs, MONOTONE_RUNS) &&
+    (runs as unknown as Record<symbol, unknown>)[MONOTONE_RUNS] === true
+  );
 }
 
 /**
@@ -162,6 +175,24 @@ export function runsAreMonotone(
 }
 
 /**
+ * The same audit for the FRAME spans, which are a separate claim about the same
+ * runs and were separately wrong before this PR. Split out rather than folded
+ * into `runsAreMonotone` because most callers hold runs typed as
+ * `Pick<OverlayRun, 'startSec' | 'endSec'>` and have no frames to check.
+ */
+export function runFramesAreMonotone(
+  runs: readonly Pick<OverlayRun, 'startFrame' | 'endFrame'>[],
+): boolean {
+  for (let i = 0; i < runs.length; i++) {
+    const r = runs[i];
+    if (!Number.isInteger(r.startFrame) || !Number.isInteger(r.endFrame)) return false;
+    if (r.endFrame < r.startFrame) return false;
+    if (i > 0 && r.startFrame < runs[i - 1].endFrame) return false;
+  }
+  return true;
+}
+
+/**
  * Convert worker observations (seconds, Harte strings) into renderable runs.
  * EVERY observation yields a run; none is dropped — not for lacking a class
  * index, and not for arriving out of order or overlapping its neighbour.
@@ -175,8 +206,19 @@ export function runsAreMonotone(
  *   3. clamp `endSec` to at least `startSec` (a backwards span becomes
  *      zero-length rather than negative);
  *   4. trim an overlap by pulling the EARLIER run's `endSec` back to the later
- *      run's `startSec` — the same policy the Klangio provider applies
- *      worker-side, so a repair here cannot disagree with one there.
+ *      run's `startSec` — the same TRIM DIRECTION as `_parse_klangio_response`
+ *      worker-side.
+ *
+ * The row policy deliberately does NOT match the worker's, and the difference
+ * is worth knowing before you reason across the two. Python DROPS a row with a
+ * bad shape, a non-finite time, `end <= 0`, `end <= start`, or a duplicate
+ * start; this function KEEPS and clamps all five, because by the time data
+ * reaches the browser the worker's artifact is the only copy and a user is
+ * better served by a chip in the wrong shape than by a hole in the timeline.
+ * Tie-breaking differs too: Python sorts stably on `start` alone, this sorts
+ * ties by `endSec`, so on equal starts the SHORTER run is the one that
+ * collapses. So `[[0,5,'C:maj'],[0,2,'G:maj']]` is one segment worker-side and
+ * two runs here, the second zero-length.
  *
  * A run that was entirely swallowed by its predecessor becomes zero-length,
  * which `covers` already treats as covering no instant: it still renders as a
@@ -184,9 +226,23 @@ export function runsAreMonotone(
  * marker both derive from these repaired seconds, so overlapping worker data
  * can no longer draw chips on top of each other either.
  *
- * `startFrame`/`endFrame` keep their existing derivation from the repaired
- * seconds, with `endFrame > startFrame` forced as before — the chord-edit
- * payload contract is unchanged.
+ * `startFrame`/`endFrame` are a faithful quantisation of the repaired seconds:
+ * `round(sec * CHORDS_FRAMES_PER_SEC)`, with `endFrame` floored at `startFrame`
+ * rather than at `startFrame + 1`. Because `round` is monotone and the repaired
+ * seconds satisfy `prev.endSec <= next.startSec`, that gives the frame spans the
+ * same invariant the seconds have — `runs[i].endFrame <= runs[i + 1].startFrame`
+ * for every pair — which the old `startFrame + 1` floor broke for any run
+ * shorter than half a frame, zero-length ones included: a run repaired to zero
+ * seconds still claimed one frame, and that frame sat inside its successor's.
+ *
+ * This drops the previous "every run occupies at least one frame" floor. Nothing
+ * reads these fields: `chord_edits` has no frame columns (migration 025 stores
+ * `start_sec`/`end_sec`), neither `/api/chord-edits` nor `edit-collector.ts`
+ * looks at them, and `onChordEdit` is unwired (see the header of
+ * ChordOverlay.tsx). The seconds are what the collector would carry, and the
+ * DB's `end_sec > start_sec` CHECK would reject a zero-length span there
+ * anyway. So the floor was buying a shape no consumer wanted, at the cost of a
+ * frame span that contradicted its own run.
  */
 export function observationsToRuns(obs: readonly ChordObservation[]): OverlayRun[] {
   const ordered = obs
@@ -209,13 +265,13 @@ export function observationsToRuns(obs: readonly ChordObservation[]): OverlayRun
     if (prev && prev.endSec > startSec) {
       prev.endSec = startSec;
       prev.endFrame = Math.max(
-        prev.startFrame + 1,
+        prev.startFrame,
         Math.round(startSec * CHORDS_FRAMES_PER_SEC),
       );
     }
 
     const startFrame = Math.max(0, Math.round(startSec * CHORDS_FRAMES_PER_SEC));
-    const endFrame = Math.max(startFrame + 1, Math.round(endSec * CHORDS_FRAMES_PER_SEC));
+    const endFrame = Math.max(startFrame, Math.round(endSec * CHORDS_FRAMES_PER_SEC));
     const kind = classifyLabel(o.label);
     out.push({
       startFrame,

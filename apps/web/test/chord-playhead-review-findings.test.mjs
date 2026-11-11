@@ -33,6 +33,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 
+import { collapseRuns } from '../src/chord/smoother.ts';
 import { fetchPlayChords } from '../src/chord/play-chords-loader.ts';
 import {
   activeRunIndex,
@@ -43,6 +44,7 @@ import {
   observationsToRuns,
   playheadGeometry,
   rulerTicks,
+  runFramesAreMonotone,
   runsAreMonotone,
   timelineWidthPx,
   PX_PER_SEC,
@@ -218,7 +220,7 @@ test('F2 repair: an overlap is resolved by trimming the EARLIER run, keeping bot
   // Frames are re-derived from the trimmed seconds: a chord-edit payload built
   // from this run must not claim frames the run no longer covers.
   assert.equal(runs[0].endFrame, 26);
-  assert.ok(runs[0].endFrame <= runs[1].startFrame, 'trimmed run still overlaps in frames');
+  assert.ok(runFramesAreMonotone(runs), 'trimmed run still overlaps in frames');
 });
 
 test('F2 repair: a run entirely swallowed by its predecessor becomes zero-length, not dropped', () => {
@@ -232,10 +234,34 @@ test('F2 repair: a run entirely swallowed by its predecessor becomes zero-length
   // chord, whatever hint points at it.
   const zeroIdx = runs.findIndex((r) => r.endSec === r.startSec);
   assert.ok(zeroIdx >= 0, 'nothing collapsed');
+  // THE FALSE GREEN this test used to coexist with. It asserted seconds only,
+  // so a run repaired to zero SECONDS could still claim one FRAME — and that
+  // frame sat inside its successor's span. On exactly this fixture the old code
+  // gave G sec=[2,2] frames=[20,21] inside A frames=[20,40].
+  assert.equal(runs[zeroIdx].endFrame, runs[zeroIdx].startFrame, 'zero seconds must mean zero frames');
+  assert.ok(runFramesAreMonotone(runs), 'a zero-length run claims a frame its successor owns');
+  assert.deepEqual(runs.map((r) => [r.startFrame, r.endFrame]), [[0, 20], [20, 20], [20, 40]]);
   for (const h of HINTS) {
     assert.notEqual(activeRunIndex(runs, runs[zeroIdx].startSec, h), zeroIdx);
     assert.equal(activeRunIndex(runs, 2, h), 2, `hint ${String(h)} changed the answer at t=2`);
   }
+});
+
+test('F2 repair: frame spans carry the same invariant as the seconds, sub-frame runs included', () => {
+  // The `startFrame + 1` floor broke this for ANY run shorter than half a
+  // frame, not just zero-length ones: [2.0, 2.02] rounded to frames [20, 20]
+  // but was floored to [20, 21], overlapping a successor starting at frame 20.
+  const runs = observationsToRuns([
+    obs('C:maj', 2.0, 2.02),
+    obs('G:maj', 2.02, 3),
+    obs('A:min', 3, 3.001),
+    obs('F:maj', 3.001, 4),
+  ]);
+  assert.ok(runsAreMonotone(runs));
+  assert.ok(runFramesAreMonotone(runs), 'a sub-frame run claims a frame its successor owns');
+  assert.deepEqual(runs.map((r) => [r.startFrame, r.endFrame]), [[20, 20], [20, 30], [30, 30], [30, 40]]);
+  // And on both real fixtures, where every run is comfortably multi-frame.
+  assert.ok(runFramesAreMonotone(OFF_GRID));
 });
 
 test('F2 repair: a negative or non-finite start is clamped, never propagated', () => {
@@ -246,6 +272,27 @@ test('F2 repair: a negative or non-finite start is clamped, never propagated', (
   const backwards = observationsToRuns([obs('C:maj', 5, 2)]);
   assert.equal(backwards[0].endSec, 5, 'a backwards span must collapse, not go negative');
   assert.ok(runsAreMonotone(backwards));
+});
+
+test('F2 repair: a non-finite END is clamped too, not just a non-finite start', () => {
+  // Mutation survivor the reviewer of this PR found: dropping the
+  // `Number.isFinite(o.endSec)` guard changed 92,356 / 200,000 fuzz datasets
+  // and NO test noticed, because the NaN test below only varies startSec.
+  // Unreachable through the loader (it rejects non-finite times) — this is
+  // defensive code, and defensive code with no test is just a comment.
+  for (const bad of [NaN, Infinity, -Infinity, undefined, null, '3']) {
+    const runs = observationsToRuns([
+      obs('C:maj', 1, bad),
+      obs('G:maj', 2, 3),
+    ]);
+    assert.equal(runs.length, 2, `a run was dropped for endSec=${String(bad)}`);
+    assert.ok(runsAreMonotone(runs), `endSec=${String(bad)} broke the seconds invariant`);
+    assert.ok(runFramesAreMonotone(runs), `endSec=${String(bad)} broke the frame invariant`);
+    for (const r of runs) {
+      assert.ok(Number.isFinite(r.startSec) && Number.isFinite(r.endSec), String(bad));
+      assert.ok(Number.isInteger(r.startFrame) && Number.isInteger(r.endFrame), String(bad));
+    }
+  }
 });
 
 test('F2 repair: a NaN start cannot break the ordering the sort cannot establish', () => {
@@ -276,6 +323,30 @@ test('F2 repair: observationsToRuns marks its output; a derived array does not c
   const frozen = Object.freeze([{ startSec: 0, endSec: 1 }]);
   assert.ok(!hasMonotoneRunsMark(markMonotoneRuns(frozen)));
   assert.equal(activeRunIndex(frozen, 0.5, 0), 0, 'an unmarkable array still answers correctly');
+});
+
+test('F2 mark: a polluted Array.prototype cannot forge the monotone promise', () => {
+  // The mark gate is the single read the whole correctness argument rests on.
+  // A plain `runs[SYM]` read goes through the prototype chain, so ONE
+  // Object.defineProperty on Array.prototype would mark every array in the
+  // page and put every run list back on the hint fast path.
+  const SYM = Symbol.for('stem-loops.chord.monotoneRuns');
+  const overlapping = [{ startSec: 0, endSec: 10 }, { startSec: 2, endSec: 3 }];
+  assert.ok(!hasMonotoneRunsMark(overlapping), 'unmarked to begin with');
+  Object.defineProperty(Array.prototype, SYM, { value: true, configurable: true });
+  try {
+    assert.ok(!hasMonotoneRunsMark([]), 'prototype pollution forged the mark');
+    assert.ok(!hasMonotoneRunsMark(overlapping), 'prototype pollution forged the mark');
+    // And the hint stays inert on that array, which is what actually matters.
+    for (const h of HINTS) {
+      assert.equal(activeRunIndex(overlapping, 2.5, h), activeRunIndex(overlapping, 2.5));
+    }
+    // A genuinely marked array still works — the gate is not just always-false.
+    assert.ok(hasMonotoneRunsMark(observationsToRuns([obs('C:maj', 0, 1)])));
+  } finally {
+    delete Array.prototype[SYM];
+  }
+  assert.ok(!hasMonotoneRunsMark([]), 'cleanup failed');
 });
 
 // ---------------------------------------------------------------------------
@@ -341,8 +412,11 @@ test('F2 hint purity: fuzz over hostile datasets — overlapping, unsorted, gapp
       [raw[i], raw[j]] = [raw[j], raw[i]];
     }
 
-    // Four shapes: the repaired pipeline, and the raw array sorted / unsorted /
-    // marked-by-hand (a caller that lies about the invariant it has).
+    // Three shapes: the repaired pipeline, and the raw array sorted and
+    // unsorted. Deliberately NOT a hand-marked liar — a forged mark puts the
+    // hint back in play by design, so it would fail the `diverged === 0`
+    // assertion below. That case is covered by its own tests instead (the
+    // lying-mark test above and the prototype-pollution test).
     const sorted = raw.map((o) => ({ startSec: o.startSec, endSec: o.endSec }))
       .sort((a, b) => a.startSec - b.startSec || a.endSec - b.endSec);
     const shapes = [
@@ -353,6 +427,12 @@ test('F2 hint purity: fuzz over hostile datasets — overlapping, unsorted, gapp
 
     for (const runs of shapes) {
       if (runs.length === 0) continue;
+      if (runs === shapes[0]) {
+        // Only the repaired shape makes any promise; the raw ones are hostile
+        // by construction and are here to prove the hint stays inert.
+        assert.ok(runsAreMonotone(runs), `dataset ${d}: repaired seconds not monotone`);
+        assert.ok(runFramesAreMonotone(runs), `dataset ${d}: repaired frames not monotone`);
+      }
       for (let i = 1; i < runs.length; i++) {
         if (runs[i].startSec < runs[i - 1].startSec) unsorted++;
         if (runs[i].startSec < runs[i - 1].endSec) overlapping++;
@@ -399,6 +479,54 @@ test('F2 hint purity: a marked array that is NOT monotone is a caller bug, and r
   assert.ok(!runsAreMonotone([{ startSec: 0, endSec: NaN }]));
   assert.ok(runsAreMonotone([]));
   assert.ok(runsAreMonotone([{ startSec: 0, endSec: 1 }, { startSec: 1, endSec: 2 }]));
+});
+
+test('F2 auditors: both auditors can actually FAIL \u2014 an auditor that cannot is a false green', () => {
+  // Found as a mutation survivor on this round: making runFramesAreMonotone
+  // return true unconditionally broke nothing, even though several tests and
+  // the fuzz lean on it. An assertion helper with no negative test is exactly
+  // the defect class this PR exists to close, so it gets the same treatment.
+  const fr = (startFrame, endFrame) => ({ startFrame, endFrame });
+  assert.ok(runFramesAreMonotone([]), 'empty is vacuously fine');
+  assert.ok(runFramesAreMonotone([fr(0, 10), fr(10, 20), fr(20, 20), fr(20, 30)]));
+  // Each way it must say no, one at a time.
+  assert.ok(!runFramesAreMonotone([fr(0, 10), fr(5, 20)]), 'overlapping frames accepted');
+  assert.ok(!runFramesAreMonotone([fr(10, 5)]), 'reversed frame span accepted');
+  assert.ok(!runFramesAreMonotone([fr(0, 10), fr(20, 30), fr(15, 40)]), 'unsorted frames accepted');
+  assert.ok(!runFramesAreMonotone([fr(0, 1.5)]), 'non-integer frame accepted');
+  assert.ok(!runFramesAreMonotone([fr(NaN, 1)]), 'NaN frame accepted');
+  // And the seconds auditor, symmetrically.
+  const sc = (startSec, endSec) => ({ startSec, endSec });
+  assert.ok(!runsAreMonotone([sc(0, 10), sc(5, 20)]), 'overlapping seconds accepted');
+  assert.ok(!runsAreMonotone([sc(10, 5)]), 'reversed second span accepted');
+  assert.ok(!runsAreMonotone([sc(0, 1), sc(5, 6), sc(2, 3)]), 'unsorted seconds accepted');
+  assert.ok(!runsAreMonotone([sc(0, Infinity)]), 'infinite second accepted');
+});
+
+test('F2 live path: collapseRuns really is monotone, and the component marks it', () => {
+  // Mutation survivor the reviewer found: nothing checked that the live
+  // tab-capture path marks its runs, NOR that the promise hand-written there
+  // is true. The mark is an assertion, so the thing it asserts needs a test.
+  for (const [classes, frameSec] of [
+    [[0, 0, 1, 1, 1, 2, 0], 0.1],
+    [[5], 0.1],
+    [[], 0.1],
+    [[3, 3, 3, 3], 1 / 30],
+    [Array.from({ length: 200 }, (_, i) => i % 7), 0.1],
+  ]) {
+    const collapsed = collapseRuns(classes, frameSec);
+    assert.ok(runsAreMonotone(collapsed), `collapseRuns(${classes.length} frames) is not monotone`);
+    assert.ok(runFramesAreMonotone(collapsed), `collapseRuns(${classes.length} frames) frames overlap`);
+  }
+  // Contiguity is the stronger property the component's comment relies on.
+  const c = collapseRuns([0, 0, 1, 2, 2, 2], 0.1);
+  for (let i = 1; i < c.length; i++) assert.equal(c[i].startSec, c[i - 1].endSec);
+  // And the component re-asserts the mark after the `.map` that drops it.
+  assert.match(
+    OVERLAY_TSX,
+    /const runs: OverlayRun\[\] = markMonotoneRuns\(\s*\n\s*collapseRuns\(classes, frameSec\)\.map\(/,
+    'the live path no longer marks its runs, so every frame pays a binary search',
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -479,6 +607,15 @@ test('F1 per-frame cost: the comment no longer claims more than the code does', 
 // ---------------------------------------------------------------------------
 // F3 — a zoom must not read as a manual scroll
 // ---------------------------------------------------------------------------
+//
+// BRITTLENESS, stated rather than discovered later: the F3 and F5 tests below
+// match SOURCE LITERALS in ChordOverlay.tsx. That is the only lever available
+// without jsdom, and it cuts both ways — a reformat (`prettier --write`) would
+// redden them without any behaviour changing, and a behaviour-preserving
+// rewrite that keeps the literals would keep them green. They are regression
+// tripwires on the shape of the code, not tests of the component. The F1 AST
+// test above is different in kind: it walks the TSX AST and fails on ANY
+// uncached call site, so it checks a property rather than a spelling.
 
 test('F3 zoom: recording the REQUESTED scrollLeft is what made a clamped zoom look manual', () => {
   // The mechanism, at the helper boundary. The scrollLeft setter clamps to

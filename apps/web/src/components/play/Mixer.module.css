@@ -78,6 +78,10 @@
     min-width: 72px;
     gap: var(--space-3);
   }
+
+  .name {
+    letter-spacing: var(--tracking-wide);
+  }
 }
 
 .head {
@@ -89,10 +93,14 @@
   width: 100%;
 }
 
+/* `--tracking-normal` on phones, not `--tracking-wide`: in a ~48px channel the
+   extra 0.5px per letter is the difference between VOCALS and "VOCA…", and a
+   legible label is worth more than the tracking at --text-sm. The wide
+   tracking comes back at 760px where there is room for it. */
 .name {
   font-size: var(--text-sm);
   font-weight: var(--weight-semibold);
-  letter-spacing: var(--tracking-wide);
+  letter-spacing: var(--tracking-normal);
   text-transform: uppercase;
   color: var(--stem, var(--text-secondary));
   max-width: 100%;

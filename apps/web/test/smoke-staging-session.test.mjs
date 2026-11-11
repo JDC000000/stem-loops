@@ -33,6 +33,14 @@
 //       in a thrown network error and in a non-JSON body, appears in no thrown
 //       message and in nothing written to stdout/stderr
 //   15. redactSecret unit behaviour, incl. the short-secret guard
+//   16. redirect: 'manual' on both calls, and a 3xx treated as an error
+//       (undici does NOT strip a custom `apikey` header across a cross-origin
+//       redirect, so following one would hand the next origin the key)
+//   17. the anon key is the apikey on the PUBLIC /verify call, with the
+//       service key as the fallback when no anon key is supplied
+//   18. LEAK PROOF, second pass: the sentinel as an object KEY (not just a
+//       value) and a res.text() that rejects -- the two shapes that leaked
+//       past the first version of this file
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -41,21 +49,25 @@ import { mintServiceRoleSession, redactSecret, SmokeSessionError } from '../../.
 
 const SB = 'https://ylzokjwnsraehmpclnkx.supabase.co';
 const EMAIL = 'smoke-test-1762800000000@stemloops.test';
-const KEY = 'sb_secret_unit_test_only_not_a_real_key';
+const KEY = 'FAKE-SERVICE-ROLE-KEY-FOR-UNIT-TESTS-ONLY';
+const ANON = 'FAKE-PUBLISHABLE-KEY-FOR-UNIT-TESTS-ONLY';
 
 const SESSION = {
-  access_token: 'eyJhbGciOiJIUzI1NiJ9.header.sig',
+  access_token: 'FAKE-ACCESS-TOKEN-FOR-UNIT-TESTS',
   token_type: 'bearer',
   expires_in: 3600,
   expires_at: 1762803600,
-  refresh_token: 'refresh-abc123',
+  refresh_token: 'FAKE-REFRESH-TOKEN-FOR-UNIT-TESTS',
   user: { id: '11111111-1111-1111-1111-111111111111', email: EMAIL },
 };
 
-const res = (status, body, { json = true } = {}) => ({
+const res = (status, body, { json = true, textRejects = null } = {}) => ({
   ok: status >= 200 && status < 300,
   status,
-  text: async () => (json ? JSON.stringify(body) : String(body)),
+  text: async () => {
+    if (textRejects) throw new Error(textRejects);
+    return json ? JSON.stringify(body) : String(body);
+  },
 });
 
 /** fetch stub that records calls and replays a scripted queue of responses. */
@@ -107,6 +119,10 @@ test('request shapes match the verified GoTrue endpoints', async () => {
   // so a hung socket must not silently eat the budget.
   for (const c of fetchImpl.calls) {
     assert.ok(c.init.signal instanceof AbortSignal, 'every request must carry an abort signal');
+    // undici strips Authorization cross-origin per spec but NOT a custom
+    // `apikey` header, so following a 30x off the Supabase host would hand the
+    // next origin the service-role key.
+    assert.equal(c.init.redirect, 'manual', 'every credential-bearing request must not follow redirects');
   }
 
   const [gen, ver] = fetchImpl.calls;
@@ -124,8 +140,11 @@ test('request shapes match the verified GoTrue endpoints', async () => {
   // verify.go:85 — token_hash must travel alone; email/token alongside it is a
   // 400 "Only the token_hash and type should be provided".
   assert.deepEqual(ver.body, { token_hash: 'hashed-tok', type: 'magiclink' });
+  // Least privilege: no anon key was supplied here, so the service key is the
+  // documented fallback (the gateway needs some apikey).
   assert.equal(ver.headers.apikey, KEY);
-  // No Authorization: GoTrue would read an aud claim off it (helpers.go:25).
+  // No Authorization on a public endpoint. (api.go:270 has no
+  // requireAuthentication; sending admin credentials there is gratuitous.)
   assert.equal(ver.headers.Authorization, undefined);
 });
 
@@ -274,7 +293,7 @@ test('a fetch rejection (network / timeout) is reported with its step', async ()
 
 // ------------------------------------------------------------- 14. LEAK PROOF
 test('no part of the service-role key can reach a thrown message or any log line', async () => {
-  const SENTINEL = 'sb_secret_SENTINEL_LEAK_CANARY_0123456789abcdef';
+  const SENTINEL = 'FAKE-KEY-SENTINEL-LEAK-CANARY-0123456789abcdef';
 
   // Every hostile shape at once: the key echoed inside a JSON error body, a
   // non-JSON body, and a thrown network error message (fetch implementations
@@ -361,6 +380,222 @@ test('the session module cannot log anything, and the broken password grant is g
   const envReads = [...smoke.matchAll(/process\.env\.SUPABASE_SERVICE_ROLE_KEY/g)].length;
   assert.equal(envReads, 1, 'expected exactly one process.env read of the service-role key');
   assert.ok(reads >= envReads);
+});
+
+// ------------------------------------- 16. redirects are refused, not followed
+test("both calls set redirect:'manual'", async () => {
+  const { fetchImpl, run } = mint([linkOk(), res(200, SESSION)]);
+  await run();
+  assert.deepEqual(fetchImpl.calls.map((c) => c.init.redirect), ['manual', 'manual']);
+});
+
+test('a 3xx from generate_link is an error naming the redirect, not a followed hop', async () => {
+  const { run } = mint([res(307, '', { json: false })]);
+  await assert.rejects(run, (e) => {
+    assert.ok(e instanceof SmokeSessionError);
+    assert.equal(e.step, 'generate_link');
+    assert.match(e.message, /returned a redirect \(HTTP 307\)/);
+    assert.match(e.message, /apikey/, 'should say why it was not followed');
+    assert.match(e.message, /SUPABASE_URL/);
+    return true;
+  });
+});
+
+test('a 3xx from verify is an error too', async () => {
+  const { fetchImpl, run } = mint([linkOk(), res(302, '', { json: false })]);
+  await assert.rejects(run, (e) => {
+    assert.equal(e.step, 'verify');
+    assert.match(e.message, /returned a redirect \(HTTP 302\)/);
+    return true;
+  });
+  assert.equal(fetchImpl.calls.length, 2);
+});
+
+// ------------------------------------------------ 17. least-privileged apikey
+test('the anon key is the apikey on the public /verify call', async () => {
+  const fetchImpl = stubFetch([linkOk(), res(200, SESSION)]);
+  await mintServiceRoleSession({ sbUrl: SB, serviceKey: KEY, anonKey: ANON, email: EMAIL, fetchImpl });
+  const [gen, ver] = fetchImpl.calls;
+  // Admin endpoint still gets the service role...
+  assert.equal(gen.headers.apikey, KEY);
+  assert.equal(gen.headers.Authorization, `Bearer ${KEY}`);
+  // ...and the public endpoint must NOT see it.
+  assert.equal(ver.headers.apikey, ANON);
+  assert.notEqual(ver.headers.apikey, KEY);
+  assert.equal(ver.headers.Authorization, undefined);
+});
+
+test('an empty anon key falls back to the service key so /verify still clears the gateway', async () => {
+  const fetchImpl = stubFetch([linkOk(), res(200, SESSION)]);
+  await mintServiceRoleSession({ sbUrl: SB, serviceKey: KEY, anonKey: '', email: EMAIL, fetchImpl });
+  assert.equal(fetchImpl.calls[1].headers.apikey, KEY);
+});
+
+// ------------------------------- 18. LEAK PROOF, the shapes that leaked before
+test('a credential used as an object KEY is redacted (not just as a value)', async () => {
+  // The first version of this file only ever planted the sentinel in response
+  // *values*. Object.keys(...).join() went into the message raw, so a body of
+  // {"<key>":1} printed the key straight into the CI log.
+  const SENTINEL = 'FAKE-KEY-KEYNAME-CANARY-0123456789abcdef';
+
+  for (const [label, queue, step] of [
+    ['generate_link', [() => res(200, { [SENTINEL]: 1, verification_type: 'magiclink' })], 'generate_link'],
+    ['verify', [linkOk(), () => res(200, { [SENTINEL]: 1 })], 'verify'],
+  ]) {
+    await assert.rejects(
+      () => mintServiceRoleSession({ sbUrl: SB, serviceKey: SENTINEL, email: EMAIL, fetchImpl: stubFetch(queue) }),
+      (e) => {
+        assert.equal(e.step, step, label);
+        assert.ok(!e.message.includes('KEYNAME_CANARY'), `${label}: key name leaked: ${e.message}`);
+        assert.ok(!String(e.stack).includes('KEYNAME_CANARY'), `${label}: key name leaked via stack`);
+        assert.match(e.message, /\[REDACTED\]/, `${label}: expected the redaction marker in the key list`);
+        return true;
+      },
+    );
+  }
+});
+
+test('a res.text() that rejects cannot leak, and keeps its step label', async () => {
+  // This one previously escaped as a bare unredacted Error: res.text() was
+  // awaited outside the try/catch, so it lost both the scrub and the step.
+  const SENTINEL = 'FAKE-KEY-TEXTFAIL-CANARY-0123456789abcdef';
+
+  for (const [queue, step] of [
+    [[() => res(200, null, { textRejects: `stream aborted while holding ${SENTINEL}` })], 'generate_link'],
+    [[linkOk(), () => res(200, null, { textRejects: `socket closed, apikey=${SENTINEL}` })], 'verify'],
+  ]) {
+    await assert.rejects(
+      () => mintServiceRoleSession({ sbUrl: SB, serviceKey: SENTINEL, email: EMAIL, fetchImpl: stubFetch(queue) }),
+      (e) => {
+        assert.ok(e instanceof SmokeSessionError, `expected SmokeSessionError, got ${e?.name}: ${e?.message}`);
+        assert.equal(e.step, step, 'the step label must survive a body-read failure');
+        assert.match(e.message, /could not read the response body/);
+        assert.ok(!e.message.includes('TEXTFAIL_CANARY'), `leaked: ${e.message}`);
+        assert.ok(!String(e.stack).includes('TEXTFAIL_CANARY'), 'leaked via stack');
+        assert.match(e.message, /\[REDACTED\]/);
+        return true;
+      },
+    );
+  }
+});
+
+test('the anon key is redacted from errors too, not only the service key', async () => {
+  const ANON_SENTINEL = 'FAKE-PUBLISHABLE-ANONCANARY-0123456789abcdef';
+  await assert.rejects(
+    () => mintServiceRoleSession({
+      sbUrl: SB, serviceKey: KEY, anonKey: ANON_SENTINEL, email: EMAIL,
+      fetchImpl: stubFetch([linkOk(), () => res(400, { msg: `bad apikey ${ANON_SENTINEL}` })]),
+    }),
+    (e) => {
+      assert.ok(!e.message.includes('ANONCANARY'), `anon key leaked: ${e.message}`);
+      return true;
+    },
+  );
+});
+
+test('every error is constructed in exactly one place, so redaction is structural', async () => {
+  // This is what makes "every string this module puts into an Error is
+  // scrubbed" a property of the code rather than a promise repeated at each
+  // call site -- and it is what kills the mutant that interpolates the key
+  // directly into a message.
+  const { readFileSync } = await import('node:fs');
+  const { join, dirname } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const root = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+  const src = readFileSync(join(root, 'scripts/lib/smoke_session.mjs'), 'utf8');
+  const code = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const sites = [...code.matchAll(/new SmokeSessionError\s*\(/g)].length;
+  assert.equal(sites, 1, `expected exactly one "new SmokeSessionError(" site, found ${sites}`);
+  assert.match(code, /const boom = \(step, msg\) => new SmokeSessionError\(step, scrub\(msg\)\)/);
+  // ...and no throw may sidestep it.
+  const throwsNotViaBoom = [...code.matchAll(/throw\s+(?!boom\b)/g)].length;
+  assert.equal(throwsNotViaBoom, 0, 'every throw must go through boom()');
+});
+
+test('a hostile body cannot flood the CI line through its key names', async () => {
+  // keysOf() passes Object.keys(...).join(',') through clean(), which caps it.
+  // Without that cap a response with hundreds of long key names would bury the
+  // one line a human reads in the step summary.
+  const fat = {};
+  for (let i = 0; i < 80; i++) fat[`k${String(i).padStart(3, '0')}_${'x'.repeat(120)}`] = 1;
+  const { run } = mint([res(200, fat)]);
+  await assert.rejects(run, (e) => {
+    assert.equal(e.step, 'generate_link');
+    assert.ok(e.message.length < 400, `message should be capped, was ${e.message.length} chars`);
+    return true;
+  });
+});
+
+// --- source-level guards for scripts/smoke_staging.mjs ----------------------
+// That script is a top-level-await program that runs on import and talks to the
+// live network, so it cannot be unit-tested here. These assertions are the only
+// mechanism available for its two security-relevant properties, and they are
+// what catches a future edit that quietly drops either one.
+
+test("smoke_staging.mjs: every credential-bearing helper sets redirect:'manual'", async () => {
+  const { readFileSync } = await import('node:fs');
+  const { join, dirname } = await import('node:path');
+  const { fileURLToPath: f } = await import('node:url');
+  const src = readFileSync(join(dirname(f(import.meta.url)), '../../..', 'scripts/smoke_staging.mjs'), 'utf8');
+
+  // sbAdmin sends apikey + Authorization with the service-role key; stripe
+  // sends the Stripe secret; authed sends the session cookie and the Vercel
+  // bypass secret. undici does not strip a custom header cross-origin.
+  for (const [name, re] of [
+    ['sbAdmin', /const sbAdmin = \(path, opts = \{\}\) =>[\s\S]{0,200}?redirect: 'manual'/],
+    ['stripe', /const stripe = \(path, \{[^}]*\} = \{\}\) =>[\s\S]{0,200}?redirect: 'manual'/],
+    ['authed', /const authed = \(extra = \{\}\) => \(\{ redirect: 'manual'/],
+  ]) {
+    assert.match(src, re, `${name} must set redirect: 'manual'`);
+  }
+  // And nothing may re-introduce an explicit 'follow' on those helpers.
+  assert.doesNotMatch(src, /const sbAdmin[\s\S]{0,200}?redirect: 'follow'/, "sbAdmin must not follow redirects");
+});
+
+test('smoke_staging.mjs: SUPABASE_URL host is pinned to the staging project', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { join, dirname } = await import('node:path');
+  const { fileURLToPath: f } = await import('node:url');
+  const src = readFileSync(join(dirname(f(import.meta.url)), '../../..', 'scripts/smoke_staging.mjs'), 'utf8');
+
+  // Mirrors the guard scripts/smoke_staging_sweep.mjs has always had. Without
+  // it, SUPABASE_URL could point at the production project while
+  // STAGING_BASE_URL still looked like staging, and step 9's user DELETE would
+  // land there.
+  assert.match(src, /const STAGING_SB_HOST = 'ylzokjwnsraehmpclnkx\.supabase\.co'/);
+  assert.match(src, /new URL\(SB_URL\)\.hostname/);
+  assert.match(
+    src,
+    /if \(SB_URL && SB_HOST !== STAGING_SB_HOST && process\.env\.SMOKE_ALLOW_PROD !== '1'\) \{/,
+    'the host guard must be live and gated only by the existing SMOKE_ALLOW_PROD escape hatch',
+  );
+  // It must actually abort, with the setup exit code.
+  const guard = src.slice(src.indexOf('if (SB_URL && SB_HOST !== STAGING_SB_HOST'));
+  assert.match(guard.slice(0, 500), /process\.exit\(2\)/, 'the host guard must exit 2');
+  // The production project ref must never be hard-coded as an allowed host.
+  assert.doesNotMatch(src, /qthrhamfljhifhfwvvwj/, 'the production Supabase ref must not appear');
+});
+
+test('this test file contains no literal that looks like a real credential', async () => {
+  // GitHub push protection blocked a push from this branch because the fake
+  // canaries used the real Supabase secret-key prefix. Redaction here is plain
+  // substring removal, so the shape of a test credential is irrelevant to what
+  // is being tested -- there is no reason to make one look real. Patterns are
+  // assembled from fragments so this assertion cannot match itself.
+  const { readFileSync } = await import('node:fs');
+  const { fileURLToPath: f } = await import('node:url');
+  const src = readFileSync(f(import.meta.url), 'utf8');
+  const forbidden = [
+    ['Supabase secret key', 'sb' + '_secret_'],
+    ['Supabase publishable key', 'sb' + '_publishable_'],
+    ['JWT', 'eyJ' + 'hbGciOi'],
+    ['Stripe test key', 'sk' + '_test_'],
+    ['Stripe live key', 'sk' + '_live_'],
+  ];
+  for (const [label, needle] of forbidden) {
+    const hits = src.split(needle).length - 1;
+    assert.equal(hits, 0, `${label}-shaped literal found in this file (${hits} occurrence(s)); use an obviously fake value`);
+  }
 });
 
 // ----------------------------------------------------------- 15. redactSecret

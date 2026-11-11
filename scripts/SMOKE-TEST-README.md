@@ -33,10 +33,18 @@ override path with `SMOKE_ENV_FILE`). Shell values win.
 | `STAGING_BASE_URL` | no | Default `https://stem-loops-staging.vercel.app` |
 | `VERCEL_AUTOMATION_BYPASS_SECRET` | only if staging has deployment protection | Vercel project > Settings > Deployment Protection |
 
-No anon/publishable key is needed. The app authenticates by `@supabase/ssr`
-cookie only, so the script still has to obtain a session as the test user, but
-it does that over the Admin API rather than a password grant (below). The
-service-role key must never be committed.
+The app authenticates by `@supabase/ssr` cookie only, so the script still has
+to obtain a session as the test user; it does that over the Admin API rather
+than a password grant (below). The service-role key must never be committed.
+
+`SUPABASE_ANON_KEY` is **optional for the script** but **still required by CI**:
+`.github/workflows/nightly-staging-smoke.yml` preflights the
+`STAGING_SUPABASE_ANON_KEY` secret (lines 93 and 99) and hard-fails the run if
+it is missing. That check was deliberately left in place, so **do not delete
+that secret on the strength of the word "optional" here** — the nightly would go
+red at preflight. The script uses the key only as the `apikey` on the public
+`/auth/v1/verify` call, to keep the service-role key off an unauthenticated
+endpoint; without it the service key is used there instead.
 
 ## How step 3b signs in (and why not a password grant)
 
@@ -47,18 +55,48 @@ repo conflated them:
    `verifyHcaptchaToken()` against `https://hcaptcha.com/siteverify` with
    `HCAPTCHA_SECRET_KEY`. Fails closed by design. Not what blocks sign-in here.
 2. **Supabase Auth's built-in captcha** — Dashboard > Authentication > Attack
-   Protection > Captcha protection. While that is on, *every*
-   `POST /auth/v1/token?grant_type=password` must carry a `captchaToken` or
-   GoTrue returns `400 captcha_failed` / `no captcha_token found`.
+   Protection > Captcha protection. While that is on, an **anonymous**
+   `POST /auth/v1/token?grant_type=password` (i.e. sent with only the
+   publishable key, as this script did) must carry a `captchaToken` or GoTrue
+   returns `400 captcha_failed` / `no captcha_token found`.
 
 Layer 2 is what broke `Nightly staging smoke` for five consecutive nights
 (Nov 7-10 2026, runs 42388723786 / 42499514523 / 42690172243 / 42863665335 /
 42887209202): step 3b failed and steps 4-8 all SKIPped, so the money path went
-unexercised. A script cannot solve a captcha, and that setting is legitimate
-production hardening, so the password grant is gone rather than the captcha.
+unexercised.
 
-Step 3b now mints the session with the service role, which admin endpoints
-accept and captcha does not gate:
+### Correction (2026-11-11): the password grant was *fixable*, not impossible
+
+An earlier version of this section claimed *every* password grant must carry a
+captcha token and that a script therefore could not sign in at all. **That is
+false.** GoTrue's captcha middleware skips the check outright when the request
+carries admin credentials — `internal/api/middleware.go:247-258`:
+
+```go
+func (a *API) verifyCaptcha(w http.ResponseWriter, req *http.Request) (context.Context, error) {
+    if !config.Security.Captcha.Enabled { return ctx, nil }
+    if _, err := a.requireAdminCredentials(w, req); err == nil {
+        // skip captcha validation if authorization header contains an admin role
+        return ctx, nil
+    }
+    ...
+```
+
+So adding `Authorization: Bearer <service-role key>` to the existing grant would
+also have worked, on all eight captcha-gated routes including `/token`. The
+Admin API path below is a **deliberate choice**, not the only option:
+
+- it is the documented, supported way to obtain a session as a user, rather than
+  leaning on a captcha-bypass side effect of sending admin credentials to an
+  endpoint meant for end users;
+- it needs no usable password on the smoke user at all;
+- it is unit-tested and mutation-checked (`apps/web/test/smoke-staging-session.test.mjs`).
+
+Neither option can be verified from a sandbox without egress to `*.supabase.co`,
+so the one-liner is not safer by virtue of being smaller.
+
+Step 3b mints the session with the service role, which admin endpoints accept
+and captcha does not gate:
 
 ```
 POST /auth/v1/admin/generate_link   { type: 'magiclink', email }
@@ -75,6 +113,32 @@ including a no-credential-leak test) are in
 `apps/web/test/smoke-staging-session.test.mjs`.
 
 **Do not disable Supabase's captcha protection to make this test pass.**
+
+### Why every credentialled request sets `redirect: 'manual'`
+
+`fetch` follows redirects by default. undici strips `Authorization` on a
+cross-origin hop (per the fetch spec) but **does not strip a custom header such
+as `apikey`** — so a 30x from the Supabase host to any other origin would hand
+that origin the service-role key, which bypasses RLS. Reproduced locally on
+Node v22.23.4 with two servers: with `redirect: 'follow'` the second origin
+received the full `apikey`; with `'manual'` the hop never happens.
+
+Every request that carries a credential therefore sets `redirect: 'manual'` and
+treats a 3xx as a failure: both calls in `scripts/lib/smoke_session.mjs`, plus
+`sbAdmin()`, `stripe()` and `authed()` in `scripts/smoke_staging.mjs`. The two
+that stay on `'follow'` carry no credential of ours and legitimately redirect:
+step 1's `GET /pricing` and the `GET` of a Stripe `checkout_url` in steps 7-8.
+
+### Host pinning
+
+`SUPABASE_URL`'s host is pinned to the staging project
+(`ylzokjwnsraehmpclnkx.supabase.co`) unless `SMOKE_ALLOW_PROD=1`, mirroring the
+guard `scripts/smoke_staging_sweep.mjs` has always had. Previously only
+`STAGING_BASE_URL` was checked, so `SUPABASE_URL` could point at the production
+project while the base URL still looked like staging — and every admin call,
+including step 9's user `DELETE`, would have landed there. A consequence: this
+script will not run against a local or self-hosted Supabase without
+`SMOKE_ALLOW_PROD=1`.
 
 ## Run
 

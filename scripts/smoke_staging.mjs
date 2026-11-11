@@ -10,12 +10,21 @@
 // Exit codes: 0 all PASS/SKIP, 1 any FAIL, 2 setup error (missing env).
 //
 // SAFETY: refuses to run against stem-loops.com unless SMOKE_ALLOW_PROD=1.
-// hCaptcha / Stripe card entry are NOT bypassed; those steps are reported SKIP.
+// Stripe card entry is NOT bypassed; that step is reported SKIP.
+//
+// Supabase Auth's built-in captcha protection (Dashboard > Authentication >
+// Attack Protection) stays ON. Step 3b mints its session through the Admin
+// API, which is not captcha-gated. NB: admin credentials also skip captcha on
+// the gated routes (GoTrue middleware.go:254-257), so the old password grant
+// was fixable too -- the Admin API is a choice, not the only option. See
+// scripts/lib/smoke_session.mjs for the reasoning and the endpoint shapes.
 
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { mintServiceRoleSession } from './lib/smoke_session.mjs';
 
 // ---------------------------------------------------------------- env loading
 const here = dirname(fileURLToPath(import.meta.url));
@@ -42,11 +51,30 @@ const normUrl = (u) => (u ? (/^https?:\/\//.test(u) ? u : `https://${u}`).replac
 const BASE = normUrl(process.env.STAGING_BASE_URL || 'https://stem-loops-staging.vercel.app');
 const SB_URL = normUrl(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL);
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+// OPTIONAL. Not used to sign in any more (that was the captcha-blocked
+// password grant). Step 3b passes it to mintServiceRoleSession purely as the
+// `apikey` on the PUBLIC /auth/v1/verify call, so the service-role key is not
+// sent to an unauthenticated endpoint. Absent, the service key is used there
+// instead and the test still works; present, it is the least-privileged key
+// that clears the Supabase gateway. The nightly workflow's preflight still
+// requires the STAGING_SUPABASE_ANON_KEY secret.
 const ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || '';
 const BYPASS = process.env.VERCEL_AUTOMATION_BYPASS_SECRET || '';
 
 const IS_PROD_TARGET = /^https:\/\/(www\.)?stem-loops\.com/.test(BASE);
+
+// The staging Supabase project. scripts/smoke_staging_sweep.mjs has pinned its
+// host since it was written; this script checked only STAGING_BASE_URL, so
+// SUPABASE_URL could be pointed at the production project while the base URL
+// still looked like staging -- and every admin call,
+// including the user DELETE in step 9, would have landed there. Closing that.
+// Honours the same SMOKE_ALLOW_PROD escape hatch as the two guards below, so
+// the documented prod path in scripts/SMOKE-TEST-README.md still works; CI
+// forces SMOKE_ALLOW_PROD empty and re-asserts it in the workflow.
+const STAGING_SB_HOST = 'ylzokjwnsraehmpclnkx.supabase.co';
+let SB_HOST = '';
+try { SB_HOST = new URL(SB_URL).hostname; } catch { /* reported below */ }
 
 // -------------------------------------------------------------------- results
 const results = []; // { n, name, status: PASS|FAIL|SKIP, detail }
@@ -88,15 +116,45 @@ async function http(url, { method = 'GET', headers = {}, body, redirect = 'follo
   return { status: res.status, text, json, url: res.url };
 }
 
+// Every request below that carries a credential uses redirect: 'manual'.
+// undici follows redirects by default, and while it strips `Authorization`
+// cross-origin per fetch spec it does NOT strip a custom header such as
+// `apikey`, so a 30x off the Supabase host would hand the next origin the
+// service-role key -- which bypasses RLS. Reproduced locally on Node v22.23.4
+// with two servers: redirect:'follow' delivered the full apikey to the second
+// origin; 'manual' never makes the hop. Callers already treat >= 300 as a
+// failure, so a redirect now surfaces as one instead of being followed.
+//
+// Two requests deliberately stay on 'follow', and the honest reasons are not
+// the ones an earlier version of this comment gave:
+//
+//   - Step 1's GET /pricing. It DOES carry a credential: the Vercel bypass
+//     secret defeats deployment protection. And it is NOT guaranteed
+//     same-origin -- step 1 itself looks for `vercel.com/sso-api` in the
+//     response, i.e. it EXPECTS a cross-origin redirect when protection is on,
+//     and with 'follow' the bypass header is forwarded to vercel.com. This is
+//     accepted rather than fixed: the destination is the secret's own issuer,
+//     and 'manual' would replace step 1's actionable "deployment protection is
+//     on. Set VERCEL_AUTOMATION_BYPASS_SECRET" with a bare HTTP 307.
+//   - The GET of a Stripe checkout_url in steps 7-8. This one genuinely
+//     carries no credential of ours and legitimately redirects.
+//
+// http()'s own default therefore stays 'follow'; every credentialled request
+// opts into 'manual' explicitly below.
 const sbAdmin = (path, opts = {}) =>
   http(`${SB_URL}${path}`, {
     ...opts,
+    // AFTER the spread: before it, a caller passing { redirect: 'follow' }
+    // would silently override the guard. No call site does, but a guard a
+    // caller can switch off is not a guard.
+    redirect: 'manual',
     headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, 'Content-Type': 'application/json', ...(opts.headers || {}) },
   });
 
 const stripe = (path, { method = 'GET', form } = {}) =>
   http(`https://api.stripe.com${path}`, {
     method,
+    redirect: 'manual',
     headers: { Authorization: `Bearer ${STRIPE_KEY}`, ...(form ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}) },
     body: form ? new URLSearchParams(form).toString() : undefined,
   });
@@ -125,7 +183,9 @@ Create ./.env.staging (gitignored) in the repo root:
   SUPABASE_URL=https://ylzokjwnsraehmpclnkx.supabase.co
   SUPABASE_SERVICE_ROLE_KEY=...   # Supabase dashboard > Project Settings > API > service_role
                                   #   (or: vercel env pull .env.staging --environment=preview)
-  SUPABASE_ANON_KEY=...           # same page, anon/publishable key (needed to sign in as the test user)
+                                  #   Also mints the test user's session (Admin API), so it is required.
+  SUPABASE_ANON_KEY=...           # optional: same page, publishable key. Used only as the apikey on the
+                                  #   public /auth/v1/verify call, to keep the service key off it.
   STRIPE_SECRET_KEY=sk_test_...   # Stripe sandbox > Developers > API keys (optional: enables session verification + cleanup)
 
 Or export the same variables in your shell / CI secrets.
@@ -138,6 +198,10 @@ console.log(`stem-loops staging smoke test
   env file: ${ENV_FILE && existsSync(ENV_FILE) ? ENV_FILE : '(none; using shell env only)'}
   stripe:   ${STRIPE_KEY ? STRIPE_KEY.slice(0, 8) + '...' : '(unset; Stripe verification will SKIP)'}`);
 
+if (SB_URL && SB_HOST !== STAGING_SB_HOST && process.env.SMOKE_ALLOW_PROD !== '1') {
+  console.error(`\nRefusing to run: SUPABASE_URL host is "${SB_HOST || '(unparseable)'}", expected ${STAGING_SB_HOST}. Set SMOKE_ALLOW_PROD=1 to override.`);
+  process.exit(2);
+}
 if (IS_PROD_TARGET && process.env.SMOKE_ALLOW_PROD !== '1') {
   console.error('\nRefusing to run against production (stem-loops.com). Set SMOKE_ALLOW_PROD=1 to override.');
   process.exit(2);
@@ -187,7 +251,6 @@ try {
   const missing = [];
   if (!SB_URL) missing.push('SUPABASE_URL');
   if (!SERVICE_KEY) missing.push('SUPABASE_SERVICE_ROLE_KEY');
-  if (!ANON_KEY) missing.push('SUPABASE_ANON_KEY');
   if (missing.length) {
     fail('3. Ephemeral user (setup)', `missing env: ${missing.join(', ')}${ENV_FILE ? '' : ' (.env.staging not found)'}`);
     printTable();
@@ -198,12 +261,17 @@ try {
 
 // ---- Steps 3-8 (authenticated), with guaranteed cleanup ----------------------
 const email = `smoke-test-${Date.now()}@stemloops.test`;
+// Still set on the created user (step 3 passes it to admin/users) so the
+// fixture matches a real signed-up account's shape. It is never used to sign
+// in any more -- step 3b mints the session over the Admin API instead.
 const password = randomBytes(18).toString('base64url') + 'aA1!';
 let userId = null;
 let stripeCustomerId = null;
 const stripeSessions = [];
 let cookie = null;
-const authed = (extra = {}) => ({ headers: { Cookie: cookie, Origin: BASE, ...extra } });
+// redirect: 'manual' -- these carry the session cookie and the Vercel bypass
+// secret; see the note above sbAdmin. Steps 4-8 already require HTTP 200.
+const authed = (extra = {}) => ({ redirect: 'manual', headers: { Cookie: cookie, Origin: BASE, ...extra } });
 
 try {
   // Step 3: create user via Admin API and verify it is readable
@@ -218,18 +286,37 @@ try {
     fail('3. Ephemeral user', e.message);
   }
 
-  // Step 3b: sign in with password to obtain a session (the app is cookie-auth only)
+  // Step 3b: mint a session for the test user (the app is cookie-auth only).
+  //
+  // NOT an anonymous password grant: POST /auth/v1/token?grant_type=password
+  // sent with only the publishable key is captcha-gated by Supabase Auth's
+  // Attack Protection setting, which is on in staging on purpose -- that is
+  // what broke this test for five nights. We generate a magic link with the
+  // service role and redeem its hashed_token at /auth/v1/verify, which returns
+  // the identical session shape. (Admin credentials would ALSO have skipped
+  // captcha on /token; see scripts/lib/smoke_session.mjs for why this path was
+  // chosen over that one-liner.)
   if (userId) {
     try {
-      const s = await http(`${SB_URL}/auth/v1/token?grant_type=password`, {
-        method: 'POST', headers: { apikey: ANON_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }),
+      // onNotice surfaces the anon-key fallback. Without it, a permanently
+      // rejected anon key would quietly use the service key on every run and
+      // nothing in the output would say the preference had stopped working.
+      const notices = [];
+      const session = await mintServiceRoleSession({
+        sbUrl: SB_URL,
+        serviceKey: SERVICE_KEY,
+        anonKey: ANON_KEY,
+        email,
+        onNotice: (m) => {
+          notices.push(m);
+          console.warn(`::warning title=Smoke session fell back to the service-role key::${m}`);
+        },
       });
-      if (s.status !== 200 || !s.json?.access_token) {
-        const captcha = /captcha/i.test(s.text);
-        throw new Error(`sign-in HTTP ${s.status}${captcha ? ' (hCaptcha required on Supabase Auth; manual step, not bypassed)' : ''}: ${s.text.slice(0, 120)}`);
-      }
-      cookie = sessionCookieHeader(s.json);
-      pass('3b. Sign in (session cookie)', 'password grant OK; @supabase/ssr cookie built');
+      cookie = sessionCookieHeader(session);
+      pass(
+        '3b. Sign in (session cookie)',
+        `admin generate_link + verify OK; @supabase/ssr cookie built${notices.length ? ' -- WITH FALLBACK: ' + notices.join(' ') : ''}`,
+      );
     } catch (e) {
       fail('3b. Sign in (session cookie)', e.message);
     }

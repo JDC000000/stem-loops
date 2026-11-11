@@ -80,7 +80,7 @@ alphabet: alphabet-generate
 # Run all tests
 test:
 	cd apps/worker && python3 -m pytest tests/ -v
-	pnpm --filter web test || true
+	pnpm --filter web test
 
 # Run linters
 lint:

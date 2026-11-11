@@ -65,10 +65,15 @@ function readStemBytes(bytes) {
   };
 }
 
-function fakeBuffer({ tag, channels, length, sampleRate, fill = null }) {
+function fakeBuffer({ tag, channels, length, sampleRate, fill = null, sharedStore = false }) {
   const data = [];
+  // `sharedStore` makes every channel a VIEW onto one ArrayBuffer. Detaching
+  // such a view would take bytes belonging to the sibling channels, so
+  // `releaseChannelData` must refuse it. Web Audio does not lay buffers out
+  // this way today, but the guard is only meaningful if something exercises it.
+  const store = sharedStore ? new ArrayBuffer(length * 4 * channels) : null;
   for (let c = 0; c < channels; c++) {
-    const a = new Float32Array(length);
+    const a = store ? new Float32Array(store, c * length * 4, length) : new Float32Array(length);
     if (fill) for (let i = 0; i < length; i++) a[i] = fill(c, i);
     data.push(a);
   }
@@ -210,11 +215,14 @@ class FakeAudioContext {
     /** Every buffer `decodeAudioData` handed back, so a test can inspect what
      *  the downmix did to it after the engine dropped its reference. */
     this.decodedBuffers = [];
+    /** One entry per `createBuffer`, snapshotting the decode it is downmixing. */
+    this.allocs = [];
     this.inFlightDecodes = 0;
     this.maxInFlightDecodes = 0;
     this.resumes = 0;
     this.closes = 0;
     this.lastDecodedTag = null;
+    this.sharedStore = !!opts.sharedStore;
   }
   get nodesCreated() {
     return this.gains.length + this.sources.length;
@@ -230,6 +238,26 @@ class FakeAudioContext {
     return s;
   }
   createBuffer(channels, length, sampleRate) {
+    // ── the ORDER probe ──────────────────────────────────────────────────
+    // Checking detachment AFTER `load()` returns cannot tell "released before
+    // the allocation" from "released after it", and the whole point of the
+    // fix is WHICH SIDE OF THIS CALL the releases happen on. So the state is
+    // snapshotted HERE, at the one instant that distinguishes them.
+    const d = this.decodedBuffers[this.decodedBuffers.length - 1];
+    const resident = d
+      ? Array.from({ length: d.numberOfChannels }, (_, c) => d.getChannelData(c).length > 0)
+      : null;
+    this.allocs.push({
+      tag: this.lastDecodedTag,
+      resident,
+      // Whole-track buffers alive at this instant: one per stem already
+      // decoded, plus each channel of the decode in flight that is still
+      // resident, plus the one being allocated right now. This is the number
+      // the PLAYBACK_SAMPLE_RATE comment calls the peak.
+      liveWholeTrackUnits: d
+        ? this.decodedBuffers.length - 1 + resident.filter(Boolean).length + 1
+        : null,
+    });
     this.events.push(`downmix:${this.lastDecodedTag}`);
     return fakeBuffer({ tag: this.lastDecodedTag, channels, length, sampleRate });
   }
@@ -257,6 +285,7 @@ class FakeAudioContext {
         sampleRate: h.rate,
         // channel 0 = 0.5, channel 1 = 1.0 -> a correct mono downmix is 0.75
         fill: (c) => (c + 1) * 0.5,
+        sharedStore: this.sharedStore,
       });
       this.decodedBuffers.push(decoded);
       return decoded;
@@ -1075,6 +1104,42 @@ test('the downmix averages the channels rather than dropping one', async () => {
 // ARITHMETIC the doc comment quotes. The MB figures themselves are a Chromium
 // measurement and are cited in the PR, not asserted here.
 
+test('the spent channels are released BEFORE the mono buffer is allocated', async () => {
+  // THE ORDER IS THE FIX. Releasing after the allocation frees the same bytes
+  // and leaves the same end state, so no after-the-fact assertion can tell the
+  // two apart — and three order-only regressions (allocate above the release;
+  // release everything last; the whole pre-fix alloc-first body with a
+  // trailing release) passed the entire suite before this test existed.
+  const { engine, ctx } = await loadedSix();
+  const c = ctx();
+  assert.equal(c.allocs.length, PLAYABLE_STEMS.length, 'one allocation per stereo stem');
+  for (const a of c.allocs) {
+    assert.deepEqual(
+      a.resident,
+      [true, false],
+      `${a.tag}: at the instant the mono buffer is allocated, channel 0 must still` +
+        ' hold the summed data and every other channel must ALREADY be released',
+    );
+  }
+  engine.dispose();
+});
+
+test('peak live whole-track buffers during load is stems + 1, not stems + 2', async () => {
+  // The number the PLAYBACK_SAMPLE_RATE comment budgets against, read off the
+  // engine rather than asserted as arithmetic on the test's own locals.
+  const { engine, ctx } = await loadedSix();
+  const c = ctx();
+  const peak = Math.max(...c.allocs.map((a) => a.liveWholeTrackUnits));
+  assert.equal(
+    peak,
+    PLAYABLE_STEMS.length + 1,
+    'five resident monos + one surviving decode channel + the buffer being allocated',
+  );
+  // and it is reached on the LAST stem, which is what makes it the peak
+  assert.equal(c.allocs[c.allocs.length - 1].liveWholeTrackUnits, peak);
+  engine.dispose();
+});
+
 test('the downmix releases every decoded channel rather than leaving it to GC', async () => {
   const { engine, ctx } = await loadedSix();
   const c = ctx();
@@ -1135,6 +1200,50 @@ test('the downmix is still correct where the host cannot release a channel', asy
   }
 });
 
+test('a channel that is a view onto a shared store is never detached', async () => {
+  // The byteOffset/byteLength guard. Detaching a sub-view would take bytes
+  // belonging to the sibling channels, so the release must decline and the
+  // downmix must still be right.
+  const { engine, ctx } = await loadedSix({ sharedStore: true });
+  const c = ctx();
+  for (const d of c.decodedBuffers) {
+    for (let ch = 0; ch < d.numberOfChannels; ch++) {
+      assert.ok(d.getChannelData(ch).length > 0, `${d.tag} ch${ch}: a shared store must survive`);
+    }
+  }
+  engine.play();
+  for (const live of c.live()) {
+    const mono = live.buffer.getChannelData(0);
+    assert.ok(Math.abs(mono[0] - 0.75) < 1e-6, `expected 0.75, got ${mono[0]}`);
+  }
+  engine.dispose();
+});
+
+test('a host whose structuredClone throws degrades to the old behaviour', async () => {
+  // The catch. A transfer the host refuses must be a no-op, not a load failure.
+  const saved = globalThis.structuredClone;
+  let calls = 0;
+  globalThis.structuredClone = () => {
+    calls++;
+    throw new DOMException('cannot transfer', 'DataCloneError');
+  };
+  try {
+    const { engine, ctx } = await loadedSix();
+    const c = ctx();
+    assert.ok(calls > 0, 'the engine must have attempted a transfer');
+    assert.equal(engine.getSnapshot().status, 'ready', 'a refused transfer is not a load failure');
+    engine.play();
+    for (const live of c.live()) {
+      const mono = live.buffer.getChannelData(0);
+      assert.equal(live.buffer.numberOfChannels, PLAYBACK_CHANNELS);
+      assert.ok(Math.abs(mono[0] - 0.75) < 1e-6, `expected 0.75, got ${mono[0]}`);
+    }
+    engine.dispose();
+  } finally {
+    globalThis.structuredClone = saved;
+  }
+});
+
 test('the PCM budget in the PLAYBACK_SAMPLE_RATE comment matches its own constants', () => {
   // Imported, never grepped: change a constant and this fails, which is the
   // only thing that keeps the doc comment honest.
@@ -1158,13 +1267,13 @@ test('the PCM budget in the PLAYBACK_SAMPLE_RATE comment matches its own constan
   assert.equal(Number((settled / 1e6).toFixed(1)), 345.6, 'the SAME bytes are 345.6 MB');
   assert.notEqual(Number((settled / MIB).toFixed(1)), Number((settled / 1e6).toFixed(1)));
 
-  // PEAK, not settled: five resident monos plus one stereo decode in flight.
-  const peakBuffers = stems - 1 + 2;
-  assert.equal(peakBuffers, stems + 1, 'peak is one whole-track buffer above settled');
+  // PEAK PCM during load. The buffer COUNT (stems + 1) is not asserted here —
+  // arithmetic on this test's own locals would prove nothing about the engine.
+  // It is measured off the engine in 'peak live whole-track buffers during
+  // load is stems + 1'; this only converts that count into bytes.
   const oneStem = pcm(PLAYBACK_CHANNELS, PLAYBACK_SAMPLE_RATE, MAX_TRACK_SEC, 1);
-  assert.equal(peakBuffers * oneStem, 403_200_000, 'peak PCM during load');
-  assert.equal(Number(((peakBuffers * oneStem) / MIB).toFixed(1)), 384.5, 'quoted as 384.5 MiB');
-  assert.equal(Number((peakBuffers / stems).toFixed(3)), 1.167, 'settled understates peak by 7/6');
+  assert.equal((stems + 1) * oneStem, 403_200_000, 'peak PCM during load');
+  assert.equal(Number((((stems + 1) * oneStem) / MIB).toFixed(1)), 384.5, 'quoted as 384.5 MiB');
 });
 
 test('an already-mono decode is used as-is, not copied', async () => {

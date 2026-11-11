@@ -1092,17 +1092,23 @@ test('the downmix averages the channels rather than dropping one', async () => {
 
 // ─── the decode transient (engine.ts MEMORY / types.ts PLAYBACK_SAMPLE_RATE) ──
 //
-// The settled figure is six whole-track mono buffers. The PEAK is seven,
-// because `decodeAudioData` hands back a STEREO buffer and the last one is
-// alive beside the five monos already decoded. It used to be EIGHT: the mono
-// destination was allocated while the stereo source was still live, which is a
-// +110 MB renderer-RSS transient DURING LOAD, measured in real Chromium.
+// Settled live PCM is six whole-track mono buffers. The LIVE-PCM PEAK is
+// seven, because `decodeAudioData` hands back a STEREO buffer and the last one
+// is alive beside the five monos already decoded. It used to be EIGHT: the
+// mono destination was allocated while the stereo source was still live.
 //
-// Node has no Web Audio and no RSS to measure, so these tests gate the
-// STRUCTURE that moved the number — the release happens, it happens on the
-// right buffers, and it never touches a buffer we are going to play — and the
-// ARITHMETIC the doc comment quotes. The MB figures themselves are a Chromium
-// measurement and are cited in the PR, not asserted here.
+// Two things these tests deliberately do NOT claim, because measurement said
+// otherwise (see MEMORY in engine.ts):
+//   - seven-vs-eight is a LIVE-PCM property. It did not move the renderer
+//     high-water mark on the box this was developed on.
+//   - the ~110 MiB that DID move the high-water mark came from releasing the
+//     spent stores eagerly at all, which the mis-ordered variants also do.
+//
+// Node has no Web Audio and no RSS to read, so what is gated here is the
+// STRUCTURE — the release happens, before the allocation, on the right
+// buffers, and never on a buffer we are going to play — plus the ARITHMETIC
+// the doc comment quotes. Every MiB figure is a Chromium measurement, cited in
+// the PR and in the doc comments, and is not asserted here.
 
 test('the spent channels are released BEFORE the mono buffer is allocated', async () => {
   // Releasing after the allocation frees the same bytes and leaves the same

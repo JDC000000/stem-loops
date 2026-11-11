@@ -99,8 +99,8 @@
  *
  * The order still earns its place, and it is worth being exact about what it
  * earns: it holds SEVEN whole-track buffers live at the busiest instant
- * instead of eight (57.6 MB less live PCM), which is what the sampled figures
- * 592 -> 548 are showing. On this box that does not convert into a lower
+ * instead of eight — one whole-track buffer, 57,600,000 B, less live PCM —
+ * which is what the sampled figures 592 -> 548 are showing. On this box that does not convert into a lower
  * process peak. On an engine or device whose decode transient is smaller —
  * where the downmix instant IS the peak — it would. That last sentence is a
  * hypothesis; nobody has measured it.

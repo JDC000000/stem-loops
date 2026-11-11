@@ -462,3 +462,115 @@ html:not(.js) .lanes, html:not(.js) .pipe-art, html:not(.js) #ab, html:not(.js) 
 .legal li { margin-top: var(--space-2); }
 .legal strong { color: var(--text-secondary); font-weight: 600; }
 .btn-field-full { flex: 1; }
+
+/* ── v6: the play-along reposition (Story 0, 2026-11-11) ───────────────────────────────
+   The page sells the player now. One new object — the player, drawn — plus a spec sheet.
+   No new palette and no new type family: the player art is built from the six --stem-*
+   hues the rest of the product already uses, and lime keeps its one job (the action). */
+
+/* the player, drawn: three bands, each beside the sentence that explains it. Same
+   160px | 1fr | 340px rhythm as .pipe-row, so the two sections read as one system — but
+   only from 1040px up, because that rhythm starves fixed-size ART in a way it does not
+   starve prose. See the measurement above the media query below. */
+.player { margin-top: var(--space-8); }
+.pl-bands { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border-default); }
+.pl-band { display: grid; grid-template-columns: 1fr; gap: var(--space-3); padding-block: var(--space-6); border-bottom: 1px solid var(--border-default); }
+.pl-band > * { min-width: 0; }
+.pl-band-name { font-size: var(--text-xl); font-weight: 600; color: var(--text-primary); line-height: 1.2; }
+.pl-band-text { color: var(--text-muted); max-width: 52ch; }
+/* MEASURED IN REAL CHROMIUM against a production `next build` + `next start`, 2026-11-11.
+   This rule used to start at 760px, and from there to about 1000px it destroyed the art —
+   iPad portrait (768px), split-view, and any desktop window under ~1000px:
+
+     width   .pl-rail   per channel   stem names        notes
+      759      647px        98.5px    all six fit       stacked, one column
+      760       52px         0.0px    all six clipped   13px rail overflow; .pl-loop width 0
+      780       72px         2.7px    all six clipped
+      800       92px         6.0px    all six clipped
+      860      152px        16.0px    all six clipped   1px rail overflow
+      900      192px        22.7px    four of six clipped
+     1024      316px        43.3px    all six fit
+
+   160px + 340px + two 32px gaps is 564px of FIXED width, so the middle track — the art —
+   took whatever was left: 52px shared between six channels at the breakpoint itself, with
+   the chord names rendering as one unreadable smear and the M/S toggles spilling outside
+   the dark rail. The transport collapsed the same way, overflowing by 34px with .pl-loop
+   at width 0, so the section loop — a thing the copy beside it promises — was invisible.
+
+   The art is not at fault: at 390px and at 1024px the same markup is excellent. The
+   breakpoint was. So the three-column rhythm now starts at 1040px, the page's own wide
+   breakpoint — the one .hero-grid, .faq and .take already switch at. Below it the band
+   stays stacked, which measures clean the whole way down to 360px.
+
+   DO NOT lower this without re-measuring in Chrome at 360, 390, 414, 559, 560, 759, 760,
+   780, 800, 860, 900, 1024, 1039, 1040 and 1280. A green test suite is not evidence that
+   these boxes fit; nothing in the suite can see a box. */
+@media (min-width: 1040px) {
+  .pl-band { grid-template-columns: 160px minmax(0, 1fr) minmax(0, 340px); gap: var(--space-8); align-items: center; }
+}
+.pl-cap-note { margin-top: var(--space-4); font-size: var(--text-md); line-height: 1.45; color: var(--text-label); max-width: 65ch; }
+
+/* band 1 — the chord ribbon, on the song's time axis */
+.pl-chords { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); height: 56px; background: var(--wf-bg); border-radius: var(--radius-sm); overflow: hidden; }
+.pl-chord { display: flex; align-items: center; justify-content: center; font-size: var(--text-xl); font-weight: 600; color: var(--text-muted); border-right: 1px solid var(--sl-grid); }
+.pl-chord:last-child { border-right: 0; }
+.pl-chord.is-now { background: var(--bg-selected); color: var(--text-primary); }
+.pl-playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--wf-playhead); }
+
+/* band 2 — the mixer rail. Vertical faders, because the real mixer's are vertical. */
+.pl-rail { display: flex; gap: var(--space-2); padding: var(--space-3) var(--space-2); background: var(--wf-bg); border-radius: var(--radius-sm); }
+.pl-ch { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: var(--space-2); }
+.pl-ch-name { font-size: var(--text-xs); letter-spacing: -0.02em; color: var(--stem); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-fader { position: relative; width: 6px; height: 72px; border-radius: var(--radius-full); background: var(--border-default); }
+.pl-fader-fill { position: absolute; left: 0; right: 0; bottom: 0; height: var(--lvl, 50%); border-radius: var(--radius-full); background: var(--stem); }
+.pl-cap { position: absolute; left: 50%; bottom: var(--lvl, 50%); width: 22px; height: 10px; transform: translate(-50%, 50%); border-radius: 2px; background: var(--text-secondary); }
+/* 2px inside a pair against the 8px between channels, so the row reads as six pairs
+   and not as one strip of twelve (caught at 360px in Chrome) */
+.pl-toggles { display: flex; gap: 2px; }
+.pl-tog { display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; border: 1px solid var(--border-default); border-radius: 2px; font-size: var(--text-xs); line-height: 1; color: var(--text-label); }
+.pl-tog.is-on { border-color: var(--stem); color: var(--text-primary); background: color-mix(in srgb, var(--stem) 24%, var(--wf-bg)); }
+/* a muted channel reads the way an off lane does elsewhere on the page */
+.pl-ch.is-muted .pl-fader-fill { background: color-mix(in srgb, var(--stem) 30%, var(--wf-bg)); }
+.pl-ch.is-muted .pl-ch-name { color: var(--text-label); text-decoration: line-through; }
+
+/* band 3 — the transport, with a named section on loop */
+.pl-transport { display: flex; align-items: center; gap: var(--space-3); height: 48px; padding-inline: var(--space-3); background: var(--wf-bg); border-radius: var(--radius-sm); }
+.pl-time { flex: none; font-size: var(--text-xs); color: var(--text-label); }
+.pl-track { position: relative; flex: 1; min-width: 0; height: 24px; }
+.pl-track::before, .pl-track::after { content: ''; position: absolute; top: 50%; height: 4px; margin-top: -2px; border-radius: var(--radius-full); }
+.pl-track::before { left: 0; right: 0; background: var(--border-default); }
+.pl-track::after { left: 0; width: 40%; background: var(--text-muted); }
+.pl-loop { position: absolute; top: 0; bottom: 0; left: 34%; right: 36%; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); background: var(--sl-region-fill); box-shadow: inset 2px 0 0 var(--text-secondary), inset -2px 0 0 var(--text-secondary); }
+.pl-loop-name { font-size: var(--text-xs); color: var(--text-secondary); }
+.pl-pos { position: absolute; top: -4px; bottom: -4px; left: 40%; width: 2px; background: var(--wf-playhead); }
+
+/* the scope sheet: rules, not cards. The "not yet" rows say so in words; the quieter
+   term is reinforcement, never the only signal. */
+.spec { margin-top: var(--space-8); max-width: var(--sl-reading); border-top: 1px solid var(--border-default); }
+.spec-row { display: grid; grid-template-columns: 1fr; gap: var(--space-1); padding-block: var(--space-4); border-bottom: 1px solid var(--border-default); }
+.spec-row dt { color: var(--text-primary); font-weight: 600; }
+.spec-row dd { margin: 0; color: var(--text-muted); max-width: 62ch; line-height: 1.5; }
+.spec-later dt { color: var(--text-muted); }
+.spec a { color: var(--text-primary); text-underline-offset: 4px; }
+@media (min-width: 560px) {
+  .spec-row { grid-template-columns: 172px minmax(0, 1fr); gap: var(--space-6); align-items: baseline; }
+}
+
+/* 360px, checked in Chrome: six stem names have to fit without an ellipsis, and the loop's
+   name has nowhere to sit clear of the playhead once the track is this short — so the name
+   goes and the band's own heading carries it. */
+@media (max-width: 559px) {
+  .pl-rail { gap: var(--space-1); padding-inline: var(--space-1); }
+  .pl-ch-name { font-size: 9px; }
+  .pl-toggles { gap: 1px; }
+  .pl-tog { width: 14px; }
+  .pl-loop-name { display: none; }
+  .pl-chord { font-size: var(--text-lg); }
+}
+
+/* forced colours: the UA drops the tints and insets, so restate the art's shapes */
+@media (forced-colors: active) {
+  .pl-chords, .pl-rail, .pl-transport { outline: 1px solid CanvasText; }
+  .pl-chord.is-now, .pl-tog.is-on, .pl-loop { outline: 2px solid Highlight; outline-offset: -2px; }
+  .pl-fader, .pl-fader-fill, .pl-cap, .pl-pos, .pl-playhead { forced-color-adjust: none; background: CanvasText; }
+}

@@ -104,7 +104,10 @@ export function ToolForm() {
       }
       const v = validateUpload(f.name, f.size);
       if (!v.ok) {
-        // keep the previous valid file (if any) and say why the new one was refused
+        // keep the previous valid file (if any) and say why this one did not pass the
+        // client-side name-and-size check. Nothing here gates on DURATION — see the
+        // landing's "Track length" row, and the ban list in test/landing-copy.test.mjs
+        // that now reads this file RAW, comments included.
         const code: ErrCode = v.error_code === 'UPLOAD_TOO_LARGE' ? 'large' : f.size <= 0 ? 'empty' : 'type';
         setErr({ code, suffix: file ? ` Still using ${file.name}.` : undefined });
         focusNext.current = file ? 'replace' : 'source';
@@ -279,7 +282,7 @@ export function ToolForm() {
     focusNext.current = 'source';
   }
 
-  const ctaLabel = phase.kind === 'busy' ? phase.label : phase.kind === 'failed' ? 'Try again' : 'Cut loops';
+  const ctaLabel = phase.kind === 'busy' ? phase.label : phase.kind === 'failed' ? 'Try again' : 'Separate and play';
   const errText = err ? ERR[err.code] : null;
   const formCls = ['tool', err ? 'is-invalid' : '', dragging ? 'is-dragging' : ''].filter(Boolean).join(' ');
 
@@ -490,13 +493,13 @@ export function ToolForm() {
                 <Ic name="done" />
                 Job started
               </p>
-              <p>Opening the job page. Loops appear there as each stage finishes.</p>
+              <p>Opening the job page. The player and your loops appear there as each stage finishes.</p>
               <div className="job-actions">
                 <a className="btn btn-secondary" href={`/jobs/${phase.jobId}`} ref={jobLinkRef}>
                   Open your job
                 </a>
                 <button type="button" className="btn btn-ghost" onClick={cutAnother}>
-                  Cut another song
+                  Start another song
                 </button>
               </div>
             </>

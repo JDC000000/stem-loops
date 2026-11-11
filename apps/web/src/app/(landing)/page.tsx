@@ -118,7 +118,7 @@ export default function HomePage() {
               </div>
               <div className="spec-row">
                 <dt>Track length</dt>
-                <dd>Up to {MAX_TRACK_MIN}&nbsp;minutes. Anything longer is refused rather than cut short.</dd>
+                <dd>Up to {MAX_TRACK_MIN}&nbsp;minutes. Longer tracks are not supported: the chord track and the player both stop there.</dd>
               </div>
               <div className="spec-row">
                 <dt>Where it runs</dt>
@@ -168,8 +168,8 @@ export default function HomePage() {
                     <dd>mp3, wav, m4a, aac, flac, ogg, opus, aiff, mp4, m4v, mov, webm</dd>
                     <dt>Max upload</dt>
                     <dd>200&nbsp;MB</dd>
-                    <dt>Max length</dt>
-                    <dd>{MAX_TRACK_MIN}&nbsp;minutes</dd>
+                    <dt>Supported length</dt>
+                    <dd>Up to {MAX_TRACK_MIN}&nbsp;minutes</dd>
                     <dt>Tempo</dt>
                     <dd>40–250 BPM</dd>
                   </dl>

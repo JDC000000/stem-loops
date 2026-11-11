@@ -7,7 +7,8 @@
 // Faithful to the real components on purpose:
 //  - faders are VERTICAL, because Mixer.tsx's are (components/play/Mixer.module.css).
 //  - mute AND solo, because the mixer has both.
-//  - the loop is a NAMED song section, because SectionLoop.tsx names regions.
+//  - the loop is a NAMED song section, title-cased exactly as nameRegions() renders it
+//    (lib/play/sections.ts -> titleCase), because SectionLoop.tsx names regions.
 //  - six stems in lane order, wearing the same --stem-* hues as everywhere else.
 // The chords and the fader positions are drawn, not measured — the caption says so.
 
@@ -66,7 +67,7 @@ function Transport() {
       <span className="pl-time mono">1:12</span>
       <div className="pl-track">
         <span className="pl-loop">
-          <span className="pl-loop-name mono">chorus</span>
+          <span className="pl-loop-name mono">Chorus</span>
         </span>
         <span className="pl-pos" />
       </div>

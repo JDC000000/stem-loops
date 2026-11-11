@@ -3,7 +3,7 @@
 // Stem loader tests (Track 2B). `fetch` is stubbed; no network.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadStems, StemLoadError, MAX_MANIFEST_REFRESHES } from '../src/lib/play/load-stems.ts';
+import { loadStems, StemLoadError, MAX_MANIFEST_REFRESHES, MAX_STEM_BYTES, MAX_IDLE_READS } from '../src/lib/play/load-stems.ts';
 import { PLAYABLE_STEMS } from '../src/lib/play/types.ts';
 
 const JOB = '11111111-2222-3333-4444-555555555555';
@@ -45,6 +45,7 @@ function makeFetch({ manifests, stem = (n) => new Response(bytesFor(n), { status
 }
 
 const names = (xs) => xs.map((x) => x.name ?? x);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test('happy path: 6/6 loaded, nothing missing, bytes match per stem', async () => {
   const { fn, calls } = makeFetch({ manifests: [json(manifest(PLAYABLE_STEMS))] });
@@ -138,8 +139,12 @@ test('all six 403 together: ONE shared refresh (single-flight), all recover', as
 
 test('retry is BOUNDED: perpetual 403 stops at 3 manifest calls (1 + 2 refreshes), stem goes missing', async () => {
   assert.equal(MAX_MANIFEST_REFRESHES, 2);
+  // A responder, not a single Response: a Response body is single-use, so
+  // reusing one object makes every refresh after the first fail with
+  // MANIFEST_INVALID. That used to be swallowed, and this test passed for the
+  // wrong reason — it was exercising a failing refresh, not a spent budget.
   const { fn, calls } = makeFetch({
-    manifests: [json(manifest(PLAYABLE_STEMS))],
+    manifests: [() => json(manifest(PLAYABLE_STEMS))],
     stem: (n) => (n === 'drums' ? new Response('x', { status: 403 }) : new Response(bytesFor(n), { status: 200 })),
   });
   const out = await loadStems(JOB, { fetch: fn });
@@ -148,9 +153,12 @@ test('retry is BOUNDED: perpetual 403 stops at 3 manifest calls (1 + 2 refreshes
   assert.equal(calls.stems.filter((c) => c.name === "drums").length, 3);
 });
 
-test('bounded even when ALL stems 403 forever (no retry storm)', async () => {
+// NB: bounded PER CALL only. There is no cross-call memory, so this is not a
+// retry-storm bound — 30 sequential all-403 loads make 90 manifest requests
+// against a 60/min/IP route. Honouring retryAfterSec is the caller's job.
+test('bounded within one call even when ALL stems 403 forever', async () => {
   const { fn, calls } = makeFetch({
-    manifests: [json(manifest(PLAYABLE_STEMS))],
+    manifests: [() => json(manifest(PLAYABLE_STEMS))], // fresh body per refresh
     stem: () => new Response('x', { status: 403 }),
   });
   const out = await loadStems(JOB, { fetch: fn });
@@ -158,6 +166,10 @@ test('bounded even when ALL stems 403 forever (no retry storm)', async () => {
   assert.equal(out.missing.length, 6);
   assert.equal(calls.manifest, 3);
   assert.ok(calls.stems.length <= 18);
+  // Every refresh SUCCEEDED here; the URLs simply stayed dead. So there is no
+  // nameable failure, and per the zero-source rule this returns rather than
+  // throws. Contrast the next test.
+  assert.equal(out.refreshFailure, null);
 });
 
 test('manifest 429 is distinguishable (RATE_LIMITED) and carries Retry-After; no stem fetched', async () => {
@@ -174,7 +186,7 @@ test('manifest 429 is distinguishable (RATE_LIMITED) and carries Retry-After; no
   assert.equal(calls.stems.length, 0);
 });
 
-test('429 on a REFRESH is fatal RATE_LIMITED, not a silent "stem missing"', async () => {
+test('429 on a REFRESH with no stem loaded throws RATE_LIMITED, not a silent "stem missing"', async () => {
   const { fn } = makeFetch({
     manifests: [json(manifest(PLAYABLE_STEMS)), json({ error_code: 'RATE_LIMITED' }, 429)],
     stem: () => new Response('x', { status: 403 }),
@@ -319,4 +331,693 @@ test('jobId is URL-encoded into the manifest path', async () => {
   };
   await loadStems('a/b?c', { fetch: fn });
   assert.equal(seen, '/api/jobs/a%2Fb%3Fc/stems');
+});
+
+// ── single-flight: the generation counter, specifically ───────────────────────
+// The `inflight` guard alone passes a test where all six stems 403 in the same
+// instant. These pin the OTHER guard: `generation`, which exists for the 403
+// that lands AFTER a refresh has already finished.
+
+test('generation counter: a 403 after the refresh completes reuses it — exactly 2 manifest calls', async () => {
+  // drums 403s at t=0 and starts the refresh; the refresh itself takes 60 ms.
+  //   bass 403s at t=30, DURING the refresh  -> joins the in-flight one.
+  // guitar 403s at t=120, AFTER it finished  -> must notice the generation has
+  //   moved past what it saw and retry on the fresh URL, NOT start a second
+  //   refresh. Deleting either `if (generation > seen) return` or
+  //   `generation += 1` makes this a 3rd manifest call.
+  const first403AtMs = { drums: 0, bass: 30, guitar: 120 };
+  let manifestIndex = 0;
+  let manifestsDone = 0;
+  const downloadedOn = [];
+  const { fn, calls } = makeFetch({
+    manifests: [
+      async () => {
+        const i = manifestIndex++;
+        if (i > 0) await sleep(60);
+        manifestsDone += 1;
+        return json(manifest(PLAYABLE_STEMS, {}, i));
+      },
+    ],
+    stem: async (n, gen) => {
+      if (gen === 0 && n in first403AtMs) {
+        await sleep(first403AtMs[n]);
+        return new Response('x', { status: 403 });
+      }
+      downloadedOn.push({ name: n, gen, manifestsDone });
+      return new Response(bytesFor(n), { status: 200 });
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.equal(out.sources.length, 6);
+  assert.deepEqual(out.missing, []);
+  assert.equal(calls.manifest, 2, 'the late 403 must reuse the finished refresh, not start another');
+  assert.deepEqual(calls.stems.filter((c) => c.name === 'guitar').map((c) => c.gen), [0, 1]);
+  for (const d of downloadedOn) {
+    if (d.manifestsDone >= 2) assert.equal(d.gen, 1, `${d.name} downloaded on a stale generation`);
+  }
+});
+
+// ── a failed REFRESH must not throw away stems that already downloaded ───────
+
+test('refresh 429 after 5 stems downloaded: 5/6 returned, 403 stem missing, rate limit surfaced', async () => {
+  // Story 5: the job expiring mid-load is exactly when a partial is worth most.
+  // The five good stems are still in flight when the 429 lands, so this also
+  // pins that we no longer abort siblings holding valid URLs.
+  const { fn, calls } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS)), json({ error_code: 'RATE_LIMITED' }, 429, { 'retry-after': '20' })],
+    stem: async (n) => {
+      if (n === 'other') return new Response('x', { status: 403 });
+      await sleep(20);
+      return new Response(bytesFor(n), { status: 200 });
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual(names(out.sources), PLAYABLE_STEMS.filter((s) => s !== 'other'));
+  assert.deepEqual(out.missing, ['other']);
+  assert.equal(out.refreshFailure?.code, 'RATE_LIMITED');
+  assert.equal(out.refreshFailure?.status, 429);
+  assert.equal(out.refreshFailure?.retryAfterSec, 20);
+  assert.equal(calls.manifest, 2, 'a route that just refused us is not asked again');
+  assert.deepEqual(
+    calls.stems.filter((c) => c.name === 'other').map((c) => c.gen),
+    [0],
+    'once the refresh is refused the dead URL must not be re-tried',
+  );
+});
+
+test('refresh 404 (job expired mid-load) also degrades rather than discarding good stems', async () => {
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS)), json({ error_code: 'NOT_FOUND' }, 404)],
+    stem: (n) => (n === 'keys' ? new Response('x', { status: 403 }) : new Response(bytesFor(n), { status: 200 })),
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.equal(out.sources.length, 5);
+  assert.deepEqual(out.missing, ['keys']);
+  assert.equal(out.refreshFailure?.code, 'NOT_FOUND');
+  assert.equal(out.refreshFailure?.status, 404);
+});
+
+test('refresh 429 with NOTHING downloaded still throws RATE_LIMITED and carries Retry-After', async () => {
+  // Zero sources is a failed load, not a degraded player: the caller needs the
+  // code to decide when to come back. Removing the throw makes this pass as an
+  // empty "success".
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS)), json({ error_code: 'RATE_LIMITED' }, 429, { 'retry-after': '45' })],
+    stem: () => new Response('x', { status: 403 }),
+  });
+  await assert.rejects(loadStems(JOB, { fetch: fn }), (e) => {
+    assert.ok(e instanceof StemLoadError);
+    assert.equal(e.code, 'RATE_LIMITED');
+    assert.equal(e.retryAfterSec, 45);
+    return true;
+  });
+});
+
+test('refreshFailure is null on a clean load and on an ordinarily degraded one', async () => {
+  const clean = makeFetch({ manifests: [json(manifest(PLAYABLE_STEMS))] });
+  assert.equal((await loadStems(JOB, { fetch: clean.fn })).refreshFailure, null);
+  const degraded = makeFetch({ manifests: [json(manifest(PLAYABLE_STEMS.filter((s) => s !== 'bass')))] });
+  const out = await loadStems(JOB, { fetch: degraded.fn });
+  assert.deepEqual(out.missing, ['bass']);
+  assert.equal(out.refreshFailure, null, 'a plain missing stem is not a refresh failure');
+});
+
+// ── byte bound ───────────────────────────────────────────────────────────────
+
+test('a stem declaring a Content-Length over MAX_STEM_BYTES is refused without draining the body', async () => {
+  // The stream is infinite: were the declared length ignored, the running count
+  // would have to pull ~16 MiB of it before bailing. undici pre-pulls exactly
+  // one chunk when it wraps a ReadableStream into a Response, before `loadStems`
+  // sees it at all, so 1 is the floor here — not 0.
+  const CHUNK = 1024 * 1024;
+  let chunksPulled = 0;
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) => {
+      if (n !== 'drums') return new Response(bytesFor(n), { status: 200 });
+      const body = new ReadableStream({
+        pull(c) {
+          chunksPulled += 1;
+          c.enqueue(new Uint8Array(CHUNK));
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-length': String(MAX_STEM_BYTES + 1) } });
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual(out.missing, ['drums']);
+  assert.equal(out.sources.length, 5);
+  assert.ok(chunksPulled <= 1, `read ${chunksPulled} MiB; the declared length alone must refuse it`);
+});
+
+test('a stem that lies about (or omits) Content-Length is cut off by the running byte count', async () => {
+  // 64 MB with no Content-Length at all: the only defence is counting as we read.
+  const CHUNK = 1024 * 1024;
+  let chunksPulled = 0;
+  let cancelled = false;
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) => {
+      if (n !== 'vocals') return new Response(bytesFor(n), { status: 200 });
+      const body = new ReadableStream({
+        pull(c) {
+          chunksPulled += 1;
+          if (chunksPulled > 64) return c.close();
+          c.enqueue(new Uint8Array(CHUNK).fill(7));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return new Response(body, { status: 200 }); // no content-length
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual(out.missing, ['vocals']);
+  assert.ok(out.sources.every((s) => s.bytes.byteLength <= MAX_STEM_BYTES));
+  // 16 MiB accumulate, the 17th crosses the cap and we cancel, plus undici's
+  // one-chunk prefetch = 18. The point is that it is ~17, not 64.
+  assert.ok(
+    chunksPulled <= MAX_STEM_BYTES / CHUNK + 4,
+    `stopped after ${chunksPulled} MiB; must bail at the cap, not read all 64`,
+  );
+  assert.ok(cancelled, 'the oversize transfer must be cancelled, not just ignored');
+});
+
+test('abort while a refresh is in flight: rejects ABORTED and starts no further manifest call', async () => {
+  const ac = new AbortController();
+  let manifestIndex = 0;
+  const { fn, calls } = makeFetch({
+    manifests: [
+      async () => {
+        const i = manifestIndex++;
+        if (i > 0) await sleep(200);
+        return json(manifest(PLAYABLE_STEMS, {}, i));
+      },
+    ],
+    stem: (n, gen) => (gen === 0 ? new Response('x', { status: 403 }) : new Response(bytesFor(n), { status: 200 })),
+  });
+  const p = loadStems(JOB, { fetch: fn, signal: ac.signal });
+  await sleep(30);
+  assert.equal(calls.manifest, 2, 'the refresh is in flight by now');
+  const stemsBefore = calls.stems.length;
+  ac.abort();
+  await assert.rejects(p, (e) => e instanceof StemLoadError && e.code === 'ABORTED');
+  await sleep(30);
+  assert.equal(calls.manifest, 2);
+  assert.equal(calls.stems.length, stemsBefore, 'no download starts after the abort');
+});
+
+test('a stem exactly at MAX_STEM_BYTES is accepted; one byte over is missing', async () => {
+  // Declared AND actual length are both at the boundary, so this pins `>` (not
+  // `>=`) on both gates.
+  for (const [size, expectOk] of [
+    [MAX_STEM_BYTES, true],
+    [MAX_STEM_BYTES + 1, false],
+  ]) {
+    const { fn } = makeFetch({
+      manifests: [json(manifest(PLAYABLE_STEMS))],
+      stem: (n) =>
+        n === 'bass'
+          ? new Response(new Uint8Array(size).fill(3), {
+              status: 200,
+              headers: { 'content-length': String(size) },
+            })
+          : new Response(bytesFor(n), { status: 200 }),
+    });
+    const out = await loadStems(JOB, { fetch: fn });
+    const bass = out.sources.find((s) => s.name === 'bass');
+    if (expectOk) {
+      assert.equal(bass?.bytes.byteLength, MAX_STEM_BYTES, 'the cap is inclusive');
+      assert.deepEqual(out.missing, []);
+    } else {
+      assert.equal(bass, undefined);
+      assert.deepEqual(out.missing, ['bass'], String(size));
+    }
+  }
+});
+
+test('a real-sized stem streamed in many chunks is reassembled byte-for-byte', async () => {
+  // The bounded reader rebuilds the body itself, so prove it does not corrupt or
+  // reorder it across chunk boundaries.
+  const payload = new Uint8Array(300_000).map((_, i) => (i * 31 + 7) & 0xff);
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) => {
+      if (n !== 'guitar') return new Response(bytesFor(n), { status: 200 });
+      let at = 0;
+      const body = new ReadableStream({
+        pull(c) {
+          if (at >= payload.length) return c.close();
+          c.enqueue(payload.slice(at, at + 7919));
+          at += 7919;
+        },
+      });
+      return new Response(body, { status: 200 });
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  const guitar = out.sources.find((s) => s.name === 'guitar');
+  assert.deepEqual(new Uint8Array(guitar.bytes), payload);
+});
+
+test('a fetch double with no readable body still gets the cap applied after the fact', async () => {
+  // jsdom shims and hand-rolled doubles return objects without `.body`.
+  const fn = async (url) => {
+    if (String(url).endsWith(MANIFEST_PATH)) return json(manifest(PLAYABLE_STEMS));
+    const big = String(url).includes('drums');
+    return { status: 200, ok: true, arrayBuffer: async () => new ArrayBuffer(big ? MAX_STEM_BYTES + 1 : 4) };
+  };
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual(out.missing, ['drums']);
+  assert.equal(out.sources.length, 5);
+});
+
+// ── a refresh failure of ANY kind is recorded, never swallowed ────────────────
+// Previously only 429/404 were. A refresh that 5xx'd, failed the network or
+// returned junk left `refreshFailure` null AND let the known-dead URL be
+// re-fetched for the rest of the budget.
+
+for (const [label, responder, code] of [
+  ['502', () => json({ error_code: 'STEM_LIST_FAILED' }, 502), 'MANIFEST_FAILED'],
+  ['network error', () => { throw new TypeError('network down'); }, 'MANIFEST_FAILED'],
+  ['invalid JSON', () => new Response('<html>', { status: 200 }), 'MANIFEST_INVALID'],
+  ['valid JSON, wrong shape', () => json({ nope: true }), 'MANIFEST_INVALID'],
+]) {
+  test(`refresh ${label}: 5/6 kept, cause named as ${code}, dead URL not re-fetched`, async () => {
+    let i = 0;
+    const { fn, calls } = makeFetch({
+      manifests: [
+        () => {
+          i += 1;
+          return i === 1 ? json(manifest(PLAYABLE_STEMS)) : responder();
+        },
+      ],
+      stem: (n) => (n === 'vocals' ? new Response('x', { status: 403 }) : new Response(bytesFor(n), { status: 200 })),
+    });
+    const out = await loadStems(JOB, { fetch: fn });
+    assert.equal(out.sources.length, 5, label);
+    assert.deepEqual(out.missing, ['vocals']);
+    assert.equal(out.refreshFailure?.code, code, label);
+    assert.equal(calls.manifest, 2, 'the failing route is not asked a second time');
+    assert.deepEqual(
+      calls.stems.filter((c) => c.name === 'vocals').map((c) => c.gen),
+      [0],
+      'the dead URL must not be re-fetched once the refresh has failed',
+    );
+  });
+}
+
+test('refresh 502 with NOTHING loaded throws MANIFEST_FAILED rather than returning an empty success', async () => {
+  let i = 0;
+  const { fn } = makeFetch({
+    manifests: [
+      () => {
+        i += 1;
+        return i === 1 ? json(manifest(PLAYABLE_STEMS)) : json({ error_code: 'STEM_LIST_FAILED' }, 502);
+      },
+    ],
+    stem: () => new Response('x', { status: 403 }),
+  });
+  await assert.rejects(loadStems(JOB, { fetch: fn }), (e) => {
+    assert.ok(e instanceof StemLoadError);
+    assert.equal(e.code, 'MANIFEST_FAILED');
+    return true;
+  });
+});
+
+// ── a stem-level 429 is a rate limit too, and must not report null ───────────
+
+test('a stem object answering 429: stem missing, but the rate limit is named with its Retry-After', async () => {
+  const { fn, calls } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) =>
+      n === 'keys'
+        ? new Response('slow down', { status: 429, headers: { 'retry-after': '12' } })
+        : new Response(bytesFor(n), { status: 200 }),
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.equal(out.sources.length, 5);
+  assert.deepEqual(out.missing, ['keys']);
+  assert.equal(out.refreshFailure?.code, 'RATE_LIMITED');
+  assert.equal(out.refreshFailure?.status, 429);
+  assert.equal(out.refreshFailure?.retryAfterSec, 12);
+  assert.equal(calls.manifest, 1, 'a stem 429 is not an expiry; it must not trigger a refresh');
+});
+
+test('all six stems 429: nothing loaded, so RATE_LIMITED is thrown', async () => {
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: () => new Response('x', { status: 429, headers: { 'retry-after': '7' } }),
+  });
+  await assert.rejects(loadStems(JOB, { fetch: fn }), (e) => {
+    assert.equal(e.code, 'RATE_LIMITED');
+    assert.equal(e.retryAfterSec, 7);
+    return true;
+  });
+});
+
+// ── the zero-source rule, both halves side by side ───────────────────────────
+
+test('zero sources with no nameable failure is a RETURNED result, not a throw', async () => {
+  // The manifest lists nothing: the encode produced no stems. A job state, not
+  // a load error. Pinned next to the throwing case so the rule cannot drift.
+  const { fn } = makeFetch({ manifests: [json(manifest([], { state: 'encode_failed' }))] });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual(out.sources, []);
+  assert.deepEqual(out.missing, [...PLAYABLE_STEMS]);
+  assert.equal(out.refreshFailure, null);
+});
+
+test('zero sources because every stem 404s is also a RETURNED result', async () => {
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: () => new Response('gone', { status: 404 }),
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual(out.sources, []);
+  assert.equal(out.missing.length, 6);
+  assert.equal(out.refreshFailure, null);
+});
+
+// ── byte bound: the branches the first sweep missed ──────────────────────────
+
+test('a bodyless fetch double returning 0 bytes is missing, not a zero-length source', async () => {
+  // The empty-body test above uses a real Response, which HAS a .body, so it
+  // only ever exercises the streaming path. This reaches the fallback branch.
+  const fn = async (url) => {
+    if (String(url).endsWith(MANIFEST_PATH)) return json(manifest(PLAYABLE_STEMS));
+    const empty = String(url).includes('other');
+    return { status: 200, ok: true, arrayBuffer: async () => new ArrayBuffer(empty ? 0 : 4) };
+  };
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual(out.missing, ['other']);
+  assert.equal(out.sources.length, 5);
+});
+
+test('the over-cap Content-Length gate cancels the body rather than abandoning it', async () => {
+  let cancelled = false;
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) => {
+      if (n !== 'drums') return new Response(bytesFor(n), { status: 200 });
+      const body = new ReadableStream({
+        pull(c) {
+          c.enqueue(new Uint8Array(1024));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-length': String(MAX_STEM_BYTES + 1) } });
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual(out.missing, ['drums']);
+  assert.ok(cancelled, 'the cheap gate must terminate the response, not just drop it');
+});
+
+test('a body LONGER than its Content-Length is refused rather than overrunning the buffer', async () => {
+  // The pre-sized path trusts Content-Length for sizing only. A sender that
+  // declares 1 KiB and then streams more is non-conformant; it must not be able
+  // to write past the buffer or smuggle bytes in.
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) => {
+      if (n !== 'bass') return new Response(bytesFor(n), { status: 200 });
+      let sent = 0;
+      const body = new ReadableStream({
+        pull(c) {
+          sent += 1;
+          if (sent > 40) return c.close();
+          c.enqueue(new Uint8Array(1024 * 1024).fill(5)); // 40 MiB behind a 1 KiB CL
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-length': '1024' } });
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual(out.missing, ['bass']);
+  assert.ok(out.sources.every((s) => s.bytes.byteLength <= MAX_STEM_BYTES));
+});
+
+test('a body SHORTER than its Content-Length yields exactly the bytes received', async () => {
+  const payload = new Uint8Array(5000).map((_, i) => (i * 13 + 1) & 0xff);
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) => {
+      if (n !== 'guitar') return new Response(bytesFor(n), { status: 200 });
+      const body = new ReadableStream({
+        start(c) {
+          c.enqueue(payload);
+          c.close();
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-length': '999999' } });
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  const guitar = out.sources.find((s) => s.name === 'guitar');
+  assert.equal(guitar.bytes.byteLength, 5000, 'not the 999999 the header claimed');
+  assert.deepEqual(new Uint8Array(guitar.bytes), payload);
+});
+
+test('malformed Content-Length headers never widen the cap', async () => {
+  // Each is paired with a 40 MiB body: whatever the header parses to, the
+  // running count is what must stop it.
+  for (const cl of ['-1', 'abc', '0', '1e99', '  16777216  ', '100, 100', '0x1000000', '']) {
+    const { fn } = makeFetch({
+      manifests: [json(manifest(PLAYABLE_STEMS))],
+      stem: (n) => {
+        if (n !== 'vocals') return new Response(bytesFor(n), { status: 200 });
+        let sent = 0;
+        const body = new ReadableStream({
+          pull(c) {
+            sent += 1;
+            if (sent > 40) return c.close();
+            c.enqueue(new Uint8Array(1024 * 1024).fill(9));
+          },
+        });
+        return new Response(body, { status: 200, headers: { 'content-length': cl } });
+      },
+    });
+    const out = await loadStems(JOB, { fetch: fn });
+    assert.deepEqual(out.missing, ['vocals'], `content-length: ${JSON.stringify(cl)}`);
+    assert.ok(
+      out.sources.every((s) => s.bytes.byteLength <= MAX_STEM_BYTES),
+      `content-length: ${JSON.stringify(cl)}`,
+    );
+  }
+});
+
+test('an endless stream of EMPTY chunks is abandoned instead of spinning forever', async () => {
+  // `total` never grows, so the byte cap cannot bound this; MAX_IDLE_READS does.
+  // Without the bound the read loop never yields and the whole test times out.
+  let reads = 0;
+  let cancelled = false;
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) => {
+      if (n !== 'keys') return new Response(bytesFor(n), { status: 200 });
+      const body = new ReadableStream({
+        pull(c) {
+          reads += 1;
+          c.enqueue(new Uint8Array(0));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return new Response(body, { status: 200 });
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual(out.missing, ['keys']);
+  assert.equal(out.sources.length, 5);
+  assert.ok(cancelled, 'the stalled transfer must be cancelled');
+  assert.ok(reads >= MAX_IDLE_READS, `only ${reads} reads; the bound should have been reached`);
+  assert.ok(reads < MAX_IDLE_READS * 4, `${reads} reads; must stop promptly at the bound`);
+});
+
+test('a timer still fires while a stem body is streaming (the read loop yields)', async () => {
+  // Guards the premise behind documenting AbortSignal.timeout as the caller's
+  // lever: if the read loop starved the event loop, no timeout could ever fire.
+  let ticked = false;
+  const t = setTimeout(() => {
+    ticked = true;
+  }, 5);
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) => {
+      if (n !== 'drums') return new Response(bytesFor(n), { status: 200 });
+      let sent = 0;
+      const body = new ReadableStream({
+        pull(c) {
+          sent += 1;
+          if (sent > 2000) return c.close();
+          c.enqueue(new Uint8Array(0)); // no progress, but bounded
+        },
+      });
+      return new Response(body, { status: 200 });
+    },
+  });
+  await loadStems(JOB, { fetch: fn });
+  clearTimeout(t);
+  assert.ok(ticked, 'the event loop was starved by the body read');
+});
+
+test('AbortSignal.timeout actually fires while a stem body is stalled on empty chunks', async () => {
+  // The whole point of yielding on the no-progress path: this is the mitigation
+  // the header documents, so it has to be real rather than aspirational.
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) => {
+      if (n !== 'bass') return new Response(bytesFor(n), { status: 200 });
+      const body = new ReadableStream({
+        pull(c) {
+          c.enqueue(new Uint8Array(0)); // endless, no progress
+        },
+      });
+      return new Response(body, { status: 200 });
+    },
+  });
+  const started = Date.now();
+  await assert.rejects(
+    loadStems(JOB, { fetch: fn, signal: AbortSignal.timeout(40) }),
+    (e) => e instanceof StemLoadError && e.code === 'ABORTED',
+  );
+  assert.ok(Date.now() - started < 4000, 'the timeout must interrupt the stall, not wait it out');
+});
+
+test('an over-declared body is refused CLEANLY — cancelled, not left to throw a RangeError', async () => {
+  // Without the explicit guard the oversized write throws RangeError and the
+  // stem still ends up missing, so the outcome alone cannot tell the two apart.
+  // The difference that matters is whether the transfer is terminated.
+  let cancelled = false;
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) => {
+      if (n !== 'bass') return new Response(bytesFor(n), { status: 200 });
+      const body = new ReadableStream({
+        pull(c) {
+          c.enqueue(new Uint8Array(4096).fill(5)); // endless, behind a 1 KiB CL
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-length': '1024' } });
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual(out.missing, ['bass']);
+  assert.ok(cancelled, 'an over-declared body must be cancelled, not abandoned mid-write');
+});
+
+test('a fractional Content-Length is treated as absent, not used for pre-sizing', async () => {
+  // `new Uint8Array(3.5)` does not throw — it silently truncates to 3. So a
+  // fractional length that got trusted would size the buffer short, the
+  // over-declared guard would then fire, and a perfectly good 10-byte stem
+  // would be dropped. A Content-Length we cannot use is treated as absent, and
+  // the body is bounded by MAX_STEM_BYTES alone.
+  const payload = new Uint8Array([11, 22, 33, 44, 55, 66, 77, 88, 99, 10]);
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) => {
+      if (n !== 'keys') return new Response(bytesFor(n), { status: 200 });
+      return new Response(payload, { status: 200, headers: { 'content-length': '3.5' } });
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual(out.missing, []);
+  const keys = out.sources.find((s) => s.name === 'keys');
+  assert.deepEqual(new Uint8Array(keys.bytes), payload);
+});
+
+test('a timer fires during a body of many small NON-empty chunks', async () => {
+  // The no-progress yield cannot cover this: these reads all make progress, so
+  // only the periodic yield keeps the event loop alive.
+  let ticked = false;
+  const t = setTimeout(() => {
+    ticked = true;
+  }, 5);
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) => {
+      if (n !== 'vocals') return new Response(bytesFor(n), { status: 200 });
+      let sent = 0;
+      const body = new ReadableStream({
+        pull(c) {
+          sent += 1;
+          if (sent > 8000) return c.close();
+          c.enqueue(new Uint8Array(1).fill(3)); // 1 byte at a time, from memory
+        },
+      });
+      return new Response(body, { status: 200 });
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  clearTimeout(t);
+  assert.equal(out.sources.find((s) => s.name === 'vocals').bytes.byteLength, 8000);
+  assert.ok(ticked, 'a progress-making read loop must still yield to the event loop');
+});
+
+test('empty chunks interspersed with real data do not abandon a body that is progressing', async () => {
+  // The idle counter has to reset on every real chunk, or a sender that emits
+  // more than MAX_IDLE_READS empty chunks IN TOTAL would be dropped despite
+  // delivering the whole stem.
+  const realChunks = 40;
+  const emptiesEach = Math.ceil((MAX_IDLE_READS * 2) / realChunks);
+  let sent = 0;
+  let emptied = 0;
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: (n) => {
+      if (n !== 'other') return new Response(bytesFor(n), { status: 200 });
+      let pending = 0;
+      const body = new ReadableStream({
+        pull(c) {
+          if (pending > 0) {
+            pending -= 1;
+            emptied += 1;
+            return c.enqueue(new Uint8Array(0));
+          }
+          if (sent >= realChunks) return c.close();
+          sent += 1;
+          pending = emptiesEach;
+          c.enqueue(new Uint8Array(10).fill(1));
+        },
+      });
+      return new Response(body, { status: 200 });
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.ok(emptied > MAX_IDLE_READS, `only ${emptied} empty chunks; the test must exceed the bound`);
+  assert.deepEqual(out.missing, [], 'a progressing body must not be dropped for interspersed empties');
+  assert.equal(out.sources.find((s) => s.name === 'other').bytes.byteLength, realChunks * 10);
+});
+
+test('a refresh that throws a non-StemLoadError is still recorded as MANIFEST_FAILED', async () => {
+  // Defensive branch: every throw inside fetchManifest builds a StemLoadError
+  // today, so this needs a response double that throws on property access.
+  let i = 0;
+  const fn = async (url, init) => {
+    if (init?.signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    url = String(url);
+    if (url.endsWith(MANIFEST_PATH)) {
+      i += 1;
+      if (i === 1) return json(manifest(PLAYABLE_STEMS));
+      return {
+        get status() {
+          throw new RangeError('exploding response double');
+        },
+      };
+    }
+    return url.includes('drums') ? new Response('x', { status: 403 }) : new Response(new Uint8Array([1, 2]), { status: 200 });
+  };
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.equal(out.sources.length, 5);
+  assert.deepEqual(out.missing, ['drums']);
+  assert.equal(out.refreshFailure?.code, 'MANIFEST_FAILED');
+  assert.equal(i, 2, 'the exploding route is not asked again');
 });

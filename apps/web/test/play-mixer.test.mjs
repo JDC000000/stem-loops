@@ -566,11 +566,104 @@ test('the mixer and each channel are labelled regions, and the legend is announc
   assert.match(html, /several stems can be soloed at once/);
 });
 
-test('hit targets are generous: 44px fader column, 40px+ toggles, and no scroll hijack', () => {
+// ─── CSS geometry, resolved rather than pattern-matched ──────────────────────
+//
+// The test this replaces matched `height: 40px` with a regex and passed while
+// the buttons rendered 19x40 and the rail overflowed by 30px at 360px. A regex
+// over a stylesheet cannot see a box, so these read the DECLARED VALUES out of
+// the CSS, resolve the tokens they reference, and do the width arithmetic. That
+// still is not a measurement — see the note at the top of this file — but it
+// fails when any one of the numbers the 360px layout depends on moves.
+
+/** Drop every @media block (brace-balanced) so what is left is the base rules. */
+const baseRules = (css) => {
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const at = css.indexOf('@media', i);
+    if (at === -1) return out + css.slice(i);
+    out += css.slice(i, at);
+    let depth = 0;
+    let j = css.indexOf('{', at);
+    for (; j < css.length; j += 1) {
+      if (css[j] === '{') depth += 1;
+      else if (css[j] === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          j += 1;
+          break;
+        }
+      }
+    }
+    i = j;
+  }
+};
+
+const declIn = (block, selector, prop) => {
+  const rule = block.match(new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`));
+  assert.ok(rule, `no base rule for ${selector}`);
+  const found = rule[1].match(new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`, 'm'));
+  assert.ok(found, `${selector} declares no ${prop}`);
+  return found[1].trim();
+};
+
+/** `12px` -> 12, `var(--space-2)` -> whatever design-tokens.css says it is. */
+const TOKENS = read('src/styles/design-tokens.css');
+const px = (value) => {
+  const direct = value.match(/^(-?[\d.]+)px$/);
+  if (direct) return Number(direct[1]);
+  const token = value.match(/^var\((--[a-z0-9-]+)\)$/);
+  assert.ok(token, `cannot resolve ${value} to px`);
+  const defined = TOKENS.match(new RegExp(`${token[1]}\\s*:\\s*(-?[\\d.]+)px`));
+  assert.ok(defined, `${token[1]} is not a px token`);
+  return Number(defined[1]);
+};
+
+test('all six channels fit at 360px: the declared widths add up with room to spare', () => {
+  const base = baseRules(read(MIXER_CSS));
+  const gutter = px('16px'); // --sl-gutter at mobile, landing.css
+  const channelMin = px(declIn(base, '.channel', 'min-width'));
+  const railGap = px(declIn(base, '.rail', 'gap'));
+  const mixerPad = px(declIn(base, '.mixer', 'padding'));
+
+  // What a 360px viewport actually leaves the rail, inside the page gutter and
+  // the mixer's own border and padding.
+  const available = 360 - 2 * gutter - 2 /* .mixer border */ - 2 * mixerPad;
+  const required = 6 * channelMin + 5 * railGap;
+  assert.ok(
+    required <= available,
+    `six channels need ${required}px but only ${available}px is available at 360px`,
+  );
+
+  // and the channel is still wide enough to hold the full 44px fader column
+  const touch = px('var(--touch-min)');
+  assert.equal(px(declIn(base, '.fader', 'width')), touch);
+  assert.ok(
+    channelMin >= touch + 2,
+    `a ${channelMin}px channel cannot hold a ${touch}px fader plus its borders`,
+  );
+});
+
+test('M and S are real touch targets on phones: stacked, and --touch-min on both axes', () => {
   const css = read(MIXER_CSS);
-  assert.match(css, /\.fader\s*\{[\s\S]*?width:\s*var\(--touch-min\)/);
-  assert.match(css, /\.toggle\s*\{[\s\S]*?height:\s*40px/);
-  assert.match(css, /height:\s*var\(--touch-min\)/); // >=760px
+  const base = baseRules(css);
+  const touch = px('var(--touch-min)');
+
+  // Stacked, so each button gets the channel's whole width rather than half of
+  // it. Side by side in a ~49px channel they measured 19x40.
+  assert.equal(declIn(base, '.toggles', 'flex-direction'), 'column');
+  assert.equal(declIn(base, '.toggles', 'padding-inline'), '0');
+  assert.equal(px(declIn(base, '.toggle', 'min-height')), touch);
+  // min-height, not height: the box may grow but never shrink under the target.
+  assert.ok(!/\.toggle\s*\{[^}]*\bheight:\s*40px/.test(base), 'the 40px toggle is back');
+
+  // border-box is what keeps `width: 100%` + padding from overflowing the rail.
+  assert.equal(declIn(base, '.note', 'box-sizing'), 'border-box');
+  assert.equal(declIn(base, '.toggles', 'box-sizing'), 'border-box');
+
+  // from 760px up there is width for a row again
+  assert.match(css, /@media \(min-width: 760px\)[\s\S]*?\.toggles\s*\{[^}]*flex-direction:\s*row/);
+  assert.match(css, /height:\s*var\(--touch-min\)/);
   assert.match(css, /touch-action:\s*none/);
 });
 
@@ -607,4 +700,211 @@ test('the component takes MixerProps and does not reach for the engine', () => {
   for (const forbidden of ['AudioContext', 'GainNode', 'PlayEngine', 'setGain(', 'getSnapshot', 'subscribe(']) {
     assert.ok(!code.includes(forbidden), `Mixer must not touch ${forbidden}`);
   }
+});
+
+// ═══ Review findings 3, 4 and 5 ══════════════════════════════════════════════
+//
+// These are the defects an independent review of #184 reproduced in a real
+// browser. Each one is asserted here on the code path that produced it: the
+// class list for 3 and 4 (computed at render, so renderToStaticMarkup really
+// does execute it) and the restore/write state machine for 5 (pure, so it runs
+// in full). The measured numbers behind them — the 360px boxes and the note's
+// contrast ratio — are in the PR description; this file cannot measure a box.
+
+test('an absent stem is ABSENT, not silenced: nothing is soloed, so nothing is ducked', () => {
+  const rows = Mixer.mixerRows([stem('drums')]);
+  const bass = rows.find((row) => row.stem.name === 'bass');
+  assert.equal(bass.present, false);
+  assert.equal(bass.disabled, true);
+  // `effectivelySilent: true` here made silenceReason answer 'solo-elsewhere'
+  // with nothing soloed, which dimmed the row to 0.55 and italicised its note.
+  assert.equal(bass.stem.effectivelySilent, false);
+  assert.equal(bass.silence, null);
+  assert.match(bass.unavailableReason, /no audio was loaded/);
+});
+
+test('a disabled channel is never ducked, so the sentence saying WHY stays readable', () => {
+  // The engine may well report an unavailable stem as silent. Nothing is soloed.
+  const html = render({
+    stems: [stem('drums'), stem('bass', { availability: 'encode_failed', effectivelySilent: true, gain: 0 })],
+    ...handlers(),
+  });
+  for (const name of ['bass', 'guitar']) { // bass: explicitly failed. guitar: absent.
+    const tag = channelTag(html, name);
+    assert.match(tag, /isDisabled/, `${name} should be disabled`);
+    assert.ok(!/isDucked/.test(tag), `${name} is dimmed to 0.55 while explaining itself`);
+  }
+  assert.match(noteFor(html, 'bass'), /failed to encode/);
+  assert.match(noteFor(html, 'guitar'), /no audio was loaded/);
+});
+
+test('a soloed stem the engine reports silent is lifted, and NOT dimmed as well', () => {
+  const html = render({
+    stems: [
+      stem('drums', { soloed: true, effectivelySilent: true }),
+      ...['bass', 'guitar', 'keys', 'vocals', 'other'].map((n) => stem(n)),
+    ],
+    ...handlers(),
+  });
+  const tag = channelTag(html, 'drums');
+  assert.match(tag, /isSoloed/);
+  assert.ok(!/isDucked/.test(tag), 'a channel cannot be lifted and dimmed at the same time');
+  assert.equal(noteFor(html, 'drums'), 'Silent'); // still named honestly
+});
+
+test('ducking still happens where it SHOULD: live, quiet because another stem is soloed', () => {
+  const html = render({
+    stems: withSilence([
+      stem('drums', { soloed: true }),
+      ...['bass', 'guitar', 'keys', 'vocals', 'other'].map((n) => stem(n)),
+    ]),
+    ...handlers(),
+  });
+  const bass = channelTag(html, 'bass');
+  assert.match(bass, /isDucked/, 'the solo-elsewhere treatment was deleted, not narrowed');
+  assert.equal(noteFor(html, 'bass'), 'Silent — another stem is soloed');
+  const drums = channelTag(html, 'drums');
+  assert.match(drums, /isSoloed/);
+  assert.ok(!/isDucked/.test(drums));
+});
+
+// ─── Finding 5: per-stem restore, and writes that cannot destroy memory ──────
+
+const remembered = (gain, over = {}) => ({ gain, muted: false, soloed: false, ...over });
+const rowsFor = (list) => Mixer.mixerRows(list);
+const loadingExcept = (ready) =>
+  rowsFor(
+    PLAYABLE_STEMS.map((n) => (ready.includes(n) ? stem(n) : stem(n, { availability: 'unavailable' }))),
+  );
+
+test('memory: a stem is restored the first time IT becomes ready, not once for the whole job', () => {
+  const memory = { drums: remembered(0.3), vocals: remembered(0.2) };
+  let state = Mixer.beginRestore(memory);
+
+  // ── drums is ready; the other five have not loaded yet ──
+  const loading = loadingExcept(['drums']);
+  const first = Mixer.planRestore(state, loading);
+  state = first.next;
+  assert.deepEqual(first.ops, [{ stem: 'drums', gain: 0.3 }]);
+
+  // The write that follows must not bank drums at its PRE-restore level, and
+  // must not drop vocals — this is the write that destroyed `vocals: 0.2`.
+  const w1 = Mixer.memoryWritePayload(state, loading);
+  const m1 = JSON.parse(w1.payload);
+  assert.equal(w1.changed, true);
+  assert.deepEqual(m1.drums, remembered(0.3));
+  assert.deepEqual(m1.vocals, remembered(0.2));
+  state = { ...state, memory: w1.memory, written: w1.payload };
+
+  // ── the engine applies the restore, and the rest arrive ready ──
+  const all = rowsFor([
+    stem('drums', { gain: 0.3 }),
+    ...['bass', 'guitar', 'keys', 'vocals', 'other'].map((n) => stem(n)),
+  ]);
+  const second = Mixer.planRestore(state, all);
+  state = second.next;
+  assert.deepEqual(second.ops, [{ stem: 'vocals', gain: 0.2 }], 'vocals was never restored');
+
+  const w2 = Mixer.memoryWritePayload(state, all);
+  const m2 = JSON.parse(w2.payload);
+  assert.equal(m2.drums.gain, 0.3);
+  assert.equal(m2.vocals.gain, 0.2, 'vocals was overwritten with its mount-time level');
+  assert.equal(m2.bass.gain, 0.8); // a stem with nothing remembered just records itself
+  state = { ...state, memory: w2.memory, written: w2.payload };
+
+  // ── and once it has all settled there is nothing left to push ──
+  const settled = rowsFor([
+    stem('drums', { gain: 0.3 }),
+    stem('vocals', { gain: 0.2 }),
+    ...['bass', 'guitar', 'keys', 'other'].map((n) => stem(n)),
+  ]);
+  assert.deepEqual(Mixer.planRestore(state, settled).ops, []);
+});
+
+test('memory: a stem that is not ready keeps its remembered level, whatever the snapshot says', () => {
+  const memory = { vocals: remembered(0.2) };
+  // vocals is PRESENT in the snapshot but unavailable, carrying a default gain.
+  const rows = rowsFor([stem('drums'), stem('vocals', { availability: 'unavailable', gain: 0.8 })]);
+  const { next } = Mixer.planRestore(Mixer.beginRestore(memory), rows);
+  const { payload } = Mixer.memoryWritePayload(next, rows);
+  assert.equal(JSON.parse(payload).vocals.gain, 0.2);
+});
+
+test('memory: once the engine has answered, the LIVE level is what gets written', () => {
+  // Otherwise "never clobber a restore" would also mean "never record a change".
+  const memory = { drums: remembered(0.3) };
+  let state = Mixer.beginRestore(memory);
+  state = Mixer.planRestore(state, loadingExcept(['drums'])).next;
+  // The engine answers with a value of its own — it clamped, or the user grabbed
+  // the fader before the restore landed. Either way that is now the truth.
+  const answered = rowsFor([stem('drums', { gain: 0.9 })]);
+  state = Mixer.planRestore(state, answered).next;
+  const { payload } = Mixer.memoryWritePayload(state, answered);
+  assert.equal(JSON.parse(payload).drums.gain, 0.9);
+});
+
+test('memory: a remembered mix that already matches pushes nothing and settles at once', () => {
+  const memory = { drums: remembered(0.8) };
+  const rows = rowsFor([stem('drums', { gain: 0.8 })]);
+  const { next, ops } = Mixer.planRestore(Mixer.beginRestore(memory), rows);
+  assert.deepEqual(ops, []);
+  // settled immediately, so the live value is authoritative on the very first write
+  assert.equal(JSON.parse(Mixer.memoryWritePayload(next, rows).payload).drums.gain, 0.8);
+});
+
+test('memory: mute and solo are restored too, not just the fader', () => {
+  const memory = { drums: remembered(0.5, { muted: true }), bass: remembered(0.8, { soloed: true }) };
+  const rows = rowsFor([stem('drums'), stem('bass')]);
+  const { ops } = Mixer.planRestore(Mixer.beginRestore(memory), rows);
+  assert.deepEqual(ops, [
+    { stem: 'drums', gain: 0.5, muted: true },
+    { stem: 'bass', soloed: true },
+  ]);
+});
+
+test('memory: the payload keys follow PLAYABLE_STEMS, so it compares as a string', () => {
+  const rows = rowsFor([...PLAYABLE_STEMS].reverse().map((n) => stem(n)));
+  const { next } = Mixer.planRestore(Mixer.beginRestore({}), rows);
+  const keys = Object.keys(JSON.parse(Mixer.memoryWritePayload(next, rows).payload));
+  assert.deepEqual(keys, [...PLAYABLE_STEMS]);
+});
+
+test('readMixerMemory: no window, no storage, no throw', () => {
+  assert.deepEqual(Mixer.readMixerMemory('any-job'), {});
+});
+
+test('memory: writes are skipped while nothing changes, and a NEW job always writes once', () => {
+  // The engine republishes every frame while playing, so an unchanged mix must
+  // not touch storage. But that cache belongs to one job: carried into the next
+  // job it swallowed the first write to the new key whenever the two mixes
+  // serialised identically, and the new job was then never remembered at all.
+  const rows = rowsFor(PLAYABLE_STEMS.map((n) => stem(n)));
+  let state = Mixer.planRestore(Mixer.beginRestore({}), rows).next;
+
+  const first = Mixer.memoryWritePayload(state, rows);
+  assert.equal(first.changed, true);
+  state = { ...state, memory: first.memory, written: first.payload };
+
+  // same snapshot, republished: nothing to write
+  assert.equal(Mixer.memoryWritePayload(state, rows).changed, false);
+
+  // a different job, byte-identical mix: still written, because the state is new
+  const nextJob = Mixer.planRestore(Mixer.beginRestore({}), rows).next;
+  const again = Mixer.memoryWritePayload(nextJob, rows);
+  assert.equal(again.payload, first.payload);
+  assert.equal(again.changed, true, 'a new job inherited the previous job\'s write cache');
+});
+
+test('memory: beginRestore is the only constructor, and it starts the write cache empty', () => {
+  assert.equal(Mixer.beginRestore({}).written, null);
+  assert.equal(Mixer.beginRestore({ drums: remembered(0.4) }).written, null);
+  // and planRestore carries it through rather than resetting it mid-job — on the
+  // step that pushes a restore as well as the step that has nothing to do.
+  const rows = rowsFor([stem('drums')]);
+  const idle = { ...Mixer.beginRestore({}), written: 'sentinel' };
+  assert.equal(Mixer.planRestore(idle, rows).next.written, 'sentinel');
+  const pushing = { ...Mixer.beginRestore({ drums: remembered(0.4) }), written: 'sentinel' };
+  const step = Mixer.planRestore(pushing, rows);
+  assert.deepEqual(step.ops, [{ stem: 'drums', gain: 0.4 }]); // this step really does push
+  assert.equal(step.next.written, 'sentinel', 'a restore step reset the write cache');
 });

@@ -28,19 +28,37 @@
   padding: var(--space-3);
 }
 
-/* Six channels share the width. Below ~360px the rail scrolls rather than
-   crushing the 44px fader hit areas. */
+/* Six channels share the width, and ALL SIX FIT AT 360px. The budget, on a
+   360px viewport inside the standard 16px page gutter:
+
+     360 - 32 (gutter) - 2 (.mixer border) - 24 (.mixer padding) = 302px
+     6 x 46px channels + 5 x 2px gaps                            = 286px
+
+   which leaves 16px of slack, so the channels sit at ~48px each and nothing
+   overflows. The `overflow-x` stays as the escape hatch BELOW 360px, where the
+   rail scrolls rather than crushing the 44px fader hit areas — but at 360px it
+   must never engage, because a horizontal scrollbar there cuts the sixth
+   channel's Solo button in half. The node:test that guards this re-does the
+   arithmetic above from these declared values — it cannot measure a box, so the
+   rendered numbers were taken in Chrome at 360px and are in the PR. */
 .rail {
   display: flex;
   align-items: stretch;
-  gap: var(--space-1);
+  gap: 2px;
   overflow-x: auto;
   scrollbar-width: thin;
 }
 
+@media (min-width: 760px) {
+  .rail {
+    gap: var(--space-1);
+  }
+}
+
 .channel {
   flex: 1 1 0;
-  min-width: 52px;
+  /* 44px (--touch-min, the fader's hit column) + 1px border each side. */
+  min-width: 46px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -207,18 +225,25 @@
 
 /* ── M / S ───────────────────────────────────────────────────────────────── */
 
+/* On phones M sits ABOVE S rather than beside it. Side by side, two buttons
+   splitting a ~49px channel measured 24x40px each — a chiclet, not a thumb
+   target. Stacked, each one is the full channel width by --touch-min tall, so
+   both axes clear 44px. From 760px up there is width to spare and they go back
+   to a row. */
 .toggles {
+  box-sizing: border-box; /* as .note: width 100% plus padding, stated locally */
   display: flex;
-  gap: var(--space-1);
+  flex-direction: column;
+  gap: 2px;
   width: 100%;
-  padding-inline: var(--space-1);
+  padding-inline: 0;
 }
 
 .toggle {
-  flex: 1 1 0;
+  flex: 0 0 auto;
   min-width: 0;
-  /* 40px on phones, 44px from tablet up: a thumb target, not a 20px chiclet */
-  height: 40px;
+  /* min-height, not height: the box may grow, never shrink below the target */
+  min-height: var(--touch-min);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -237,7 +262,14 @@
 }
 
 @media (min-width: 760px) {
+  .toggles {
+    flex-direction: row;
+    gap: var(--space-1);
+    padding-inline: var(--space-1);
+  }
+
   .toggle {
+    flex: 1 1 0;
     height: var(--touch-min);
   }
 }
@@ -280,6 +312,13 @@
 
 .note {
   margin: 0;
+  /* globals.css makes the whole app border-box, and this depends on it: under
+     content-box, `width: 100%` plus the padding below renders 4px WIDER than
+     the channel, and six of those push the rail past its own client width and
+     put a scrollbar back under the faders. Stated locally so the rail's width
+     budget does not rest on a reset two files away — `.fader` states its own
+     for the same reason. */
+  box-sizing: border-box;
   min-height: 2.4em; /* reserve the line so a state change does not reflow the rail */
   width: 100%;
   padding-inline: 2px;

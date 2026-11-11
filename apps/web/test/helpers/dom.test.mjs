@@ -848,6 +848,11 @@ test('a non-Error throw plus a leak still reaches the caller as the body\'s fail
       (error) => {
         assert.ok(error instanceof Error, 'the caller gets an Error it can read');
         assert.match(error.message, /THE REAL FAILURE \(string\)|: 42 /, 'the thrown value survives');
+        assert.match(
+          error.message,
+          /a non-Error value \((string|number)\)/,
+          'and the message says it was a primitive, not an unwritable Error',
+        );
         assert.match(error.message, /__nonErrorLeak was added/, 'and so does the teardown detail');
         assert.equal(error.cause, thrown, 'the original thrown value is reachable');
         return true;
@@ -882,6 +887,112 @@ test("a body error that already carries its own cause does not swallow the teard
   assert.equal(globalThis.__causeLeak, undefined);
 });
 
+test('prototypes reachable only from instances are watched too, not just window constructors', async () => {
+  // watchedPrototypes() enumerates own properties OF THE WINDOW, so it cannot see a
+  // class the window never exposes as a constructor. Measured: `window.Performance`,
+  // `window.DOMTokenList` and `window.DOMStringMap` are all undefined, yet all three
+  // prototypes are shared singletons a test can reach through an instance.
+  await withDom(async (dom) => {
+    for (const name of ['Performance', 'DOMTokenList', 'DOMStringMap']) {
+      assert.equal(typeof dom.window[name], 'undefined', `${name} is not a window constructor`);
+    }
+  });
+
+  const reach = {
+    'Performance.prototype': (dom) => Object.getPrototypeOf(dom.window.performance),
+    'DOMTokenList.prototype': (dom) => Object.getPrototypeOf(dom.document.createElement('div').classList),
+    'DOMStringMap.prototype': (dom) => Object.getPrototypeOf(dom.document.createElement('div').dataset),
+  };
+  for (const [label, get] of Object.entries(reach)) {
+    await assert.rejects(
+      withDom(async (dom) => { get(dom).__instanceProtoLeak = label; }),
+      new RegExp(`${label}\\.__instanceProtoLeak was added`),
+      `${label} pollution is reported`,
+    );
+    const residue = await withDom(async (dom) => get(dom).__instanceProtoLeak);
+    assert.equal(residue, undefined, `${label} carried no residue into the next call`);
+  }
+});
+
+test('[frame clock] faking Performance.prototype.now cannot corrupt a later test\'s frames', async () => {
+  // This is the sharp one. nextFrame() hands callbacks `window.performance.now()`, so
+  // a body that fakes that prototype method used to corrupt THE FRAME CLOCK this
+  // whole harness is built on — with no teardown complaint — and every later test's
+  // rAF callbacks silently received the fake. Patching a clock prototype is an
+  // ordinary way to make a playhead deterministic, so a real test will reach for it.
+  const FAKE = 123456;
+  await assert.rejects(
+    withDom(async (dom) => {
+      Object.getPrototypeOf(dom.window.performance).now = () => FAKE;
+      assert.equal(dom.window.performance.now(), FAKE, 'the fake works inside its own test');
+    }),
+    /Performance\.prototype\.now was modified/,
+  );
+
+  await withDom(async (dom) => {
+    assert.notEqual(dom.window.performance.now(), FAKE, 'the real clock is back');
+    let stamp;
+    dom.window.requestAnimationFrame((t) => { stamp = t; });
+    await dom.nextFrame();
+    assert.notEqual(stamp, FAKE, 'and the frame clock was not handed the fake');
+    assert.ok(stamp > 0 && Number.isFinite(stamp));
+  });
+});
+
+test('a static property on a shared constructor is reported and reverted', async () => {
+  // `window.Element` is module-level shared state exactly like Element.prototype is,
+  // and watching only `.prototype` left it leaking.
+  await assert.rejects(
+    withDom(async (dom) => { dom.window.Element.__staticLeak = 'yes'; }),
+    /^(?!.*prototype).*Element\.__staticLeak was added/s,
+  );
+  const residue = await withDom(async (dom) => dom.window.Element.__staticLeak);
+  assert.equal(residue, undefined);
+});
+
+test("a body error that cannot carry a cause still reaches the caller readable", async () => {
+  // `instanceof Error` was not enough. Assigning `.cause` ALSO throws in strict module
+  // code when the error is frozen, or when `cause` is already non-writable or
+  // accessor-only — and that TypeError replaced the body's failure, which is the
+  // original F2 defect wearing a different hat. It only bites when there is ALSO
+  // pollution, i.e. precisely the case this branch exists for.
+  const unattachable = [
+    ['frozen', () => Object.freeze(new Error('FROZEN REAL'))],
+    ['non-writable cause', () => Object.defineProperty(new Error('NONWRITABLE REAL'), 'cause', {
+      value: 'preset', writable: false, configurable: false,
+    })],
+    ['getter-only cause', () => Object.defineProperty(new Error('GETTERONLY REAL'), 'cause', {
+      get: () => 'preset', configurable: false,
+    })],
+  ];
+  for (const [label, make] of unattachable) {
+    const thrown = make();
+    await assert.rejects(
+      withDom(async () => {
+        globalThis.__unattachableLeak = 'yes';
+        throw thrown;
+      }),
+      (error) => {
+        assert.ok(error instanceof Error, `${label}: the caller gets a readable Error`);
+        assert.ok(
+          !/^Cannot (add property|assign to|set property)/.test(error.message),
+          `${label}: and not a bare TypeError from the cause assignment (got: ${error.message})`,
+        );
+        assert.match(error.message, new RegExp(thrown.message), `${label}: the body's failure survives`);
+        assert.match(
+          error.message,
+          /an Error that cannot carry a cause/,
+          `${label}: and the message says it was an Error, not a primitive`,
+        );
+        assert.match(error.message, /__unattachableLeak was added/, `${label}: with the teardown detail`);
+        assert.equal(error.cause, thrown, `${label}: the original error is reachable`);
+        return true;
+      },
+    );
+    assert.equal(globalThis.__unattachableLeak, undefined, `${label}: and the leak was reverted`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // 10. MUST BE LAST IN THIS FILE — see the "A THROWING EFFECT CLEANUP" note in
 //     dom.mjs. React 18.3.1 does not recover from a cleanup that throws out of
@@ -890,6 +1001,60 @@ test("a body error that already carries its own cause does not swallow the teard
 //     "Should not already be working." and a stack pointing only into React. The
 //     harness cannot repair that from outside, so the rule is positional.
 // ---------------------------------------------------------------------------
+
+test('after a throwing effect cleanup, every later withDom is refused — synchronously', () => {
+  // Child process: the refusal flag poisons the whole process by design, so this
+  // cannot be asserted in-file without taking the rest of the file down with it.
+  //
+  // The SYNCHRONOUS part is the load-bearing part. React 18.3.1 leaves react-dom's
+  // executionContext non-zero after a cleanup throws out of act(), which the harness
+  // cannot repair — and left unguarded the next withDom() either died with an
+  // inscrutable "Should not already be working." or, worse, was absorbed by a
+  // matcher-less `await assert.rejects(withDom(...))` and PASSED while asserting
+  // nothing. A rejected promise would still be absorbed; a throw raised before the
+  // promise exists cannot be.
+  const script = `
+    import assert from 'node:assert/strict';
+    import React from 'react';
+    import { withDom } from ${JSON.stringify(HARNESS)};
+
+    function Boom() {
+      React.useEffect(() => () => { throw new Error('audioCtx.close() of null'); }, []);
+      return React.createElement('div', null, 'boom');
+    }
+    let first = 'no-throw';
+    try {
+      await withDom(async (dom) => { await dom.mount(React.createElement(Boom)); });
+    } catch (e) { first = e.message; }
+    console.log('firstReportsTheCleanup=' + /effect cleanup threw during teardown/.test(first));
+
+    let refusal = 'no-throw';
+    try { withDom(async () => {}); } catch (e) { refusal = e.message; }
+    console.log('refusesSynchronously=' + (refusal !== 'no-throw'));
+    console.log('namesTheCause=' + /React effect cleanup/.test(refusal));
+    console.log('namesTheOffendingError=' + /audioCtx\\.close\\(\\) of null/.test(refusal));
+    console.log('namesTheRemedy=' + /END of the file/.test(refusal));
+
+    // The false green this closes: a matcher-less assert.rejects must NOT absorb it.
+    let absorbed = false;
+    try { await assert.rejects(withDom(async () => {})); absorbed = true; } catch {}
+    console.log('matcherlessRejectsAbsorbsIt=' + absorbed);
+  `;
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+    encoding: 'utf8',
+    cwd: fileURLToPath(new URL('../..', import.meta.url)),
+  });
+  assert.match(out, /^firstReportsTheCleanup=true$/m, 'the cleanup throw is still reported as itself');
+  assert.match(out, /^refusesSynchronously=true$/m, 'the next call is refused before a promise exists');
+  assert.match(out, /^namesTheCause=true$/m, 'and the refusal explains why');
+  assert.match(out, /^namesTheOffendingError=true$/m, 'and quotes the cleanup error that caused it');
+  assert.match(out, /^namesTheRemedy=true$/m, 'and says what to do about it');
+  assert.match(
+    out,
+    /^matcherlessRejectsAbsorbsIt=false$/m,
+    'a matcher-less assert.rejects cannot turn the refusal into a pass',
+  );
+});
 
 test('a throwing React effect cleanup at teardown fails the test instead of being swallowed', async () => {
   // This is the shape this codebase will have: `() => audioCtx.close()` where

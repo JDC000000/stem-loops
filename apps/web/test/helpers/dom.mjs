@@ -55,11 +55,28 @@
  *     class including `PointerEvent` and `KeyboardEvent`, `CSSStyleDeclaration`,
  *     `DOMRect`, `Window`) and 75 are rebuilt per window (`Document`, `EventTarget`,
  *     `DocumentFragment`, `MutationObserver`, `DOMParser`, `Text`, `Range`).
- *     The harness watches the prototype of ALL 375 — derived from the window, not a
- *     hardcoded list — and reverts pollution at teardown and fails the test. It
- *     still cannot give you per-window classes. An earlier hardcoded list of six
- *     left 369 unwatched, so `HTMLMediaElement.prototype.play = stub` was neither
- *     reported nor reverted and was still live in the next call.
+ *
+ *     The harness derives its watch list from the window instead of hardcoding one,
+ *     and reverts pollution at teardown and fails the test. It watches 681 objects:
+ *     342 prototypes and 339 constructor objects (the constructors because
+ *     `window.Element.__x = 1` is shared state exactly like the prototype, and it
+ *     leaked). 3,908 own properties in all, ~2.9ms per pass.
+ *
+ *     KNOW THE BOUNDARY, because it is smaller than "every shared prototype a test
+ *     can reach": the derivation enumerates own properties OF THE WINDOW, so it sees
+ *     only classes the window exposes as constructors. Prototypes reachable solely
+ *     from instances are invisible to it and have to be seeded by hand — three are
+ *     (`Performance` via `window.performance`, `DOMTokenList` via `el.classList`,
+ *     `DOMStringMap` via `el.dataset`), and if happy-dom adds a fourth, NOTHING HERE
+ *     WILL NOTICE. The seeded three are not a complete enumeration of that category;
+ *     they are the ones found by looking.
+ *
+ *     An earlier hardcoded list of six left 369 window classes unwatched, so
+ *     `HTMLMediaElement.prototype.play = stub` was neither reported nor reverted and
+ *     was still live in the next call. `Performance.prototype.now` was the same
+ *     defect one level further out, and worse: `nextFrame()` reads
+ *     `window.performance.now()`, so faking it corrupted the frame clock and every
+ *     later test's rAF callbacks silently received the fake.
  *   - GLOBALS are snapshotted by descriptor, string keys AND symbol keys, so
  *     `globalThis[Symbol.for('app.singleton')] = x` is reported and reverted like
  *     any other. ONE exemption, by name: `Symbol(undici.globalDispatcher.1)`, which
@@ -67,18 +84,27 @@
  *     plants that exact symbol is not reported. See HARNESS_OWNED_SYMBOLS: the
  *     exemption is defensive and currently INERT, because importing happy-dom
  *     already creates the symbol before any snapshot is taken.
- *   - A THROWING EFFECT CLEANUP POISONS THE REST OF ITS FILE, and the harness
- *     cannot stop it. React 18.3.1 does not recover from a cleanup that throws out
- *     of `act()`: react-dom's module-level `executionContext` is left non-zero (and
- *     React's `ReactCurrentActQueue.current` is left dirty — instrumented at 2
- *     entries, growing to 4 by the next React test). A LATER test in the same
- *     PROCESS that goes through the async act path then dies with
- *     "Should not already be working." and a stack pointing only into React.
- *     `executionContext` is a module-local with no internals handle, so this is not
- *     repairable from out here. THE RULE: a test that makes an effect cleanup throw
- *     goes LAST in its file, or in a file of its own. This harness's own suite
- *     follows it (see section 10 of dom.test.mjs) — appending one ordinary
- *     React-mounting test after that test was enough to make it fail.
+ *   - A THROWING EFFECT CLEANUP POISONS THE REST OF ITS FILE. React 18.3.1 does not
+ *     recover from a cleanup that throws out of `act()`: react-dom's module-level
+ *     `executionContext` is left non-zero (and React's `ReactCurrentActQueue.current`
+ *     is left dirty — instrumented at 2 entries, growing to 4 by the next React
+ *     test). `executionContext` is a module-local with no internals handle, so the
+ *     damage is NOT repairable from out here.
+ *
+ *     What the harness does instead is REFUSE. Teardown knows exactly when a cleanup
+ *     threw, so it sets a flag and every later withDom() in the process throws a
+ *     message naming the cause. The refusal is a SYNCHRONOUS throw, not a rejected
+ *     promise, and that distinction is the whole point: left as a rejection it was
+ *     absorbed by a matcher-less `await assert.rejects(withDom(...))` — which is
+ *     common — and that test PASSED while asserting nothing. Measured both ways: with
+ *     an async refusal the bad test still passes; with the sync throw it fails before
+ *     assert.rejects is ever called.
+ *
+ *     THE RULE STILL STANDS, because the flag explains the failure and the rule
+ *     prevents it: a test that makes an effect cleanup throw goes LAST in its file,
+ *     or in a file of its own. This harness's own suite follows it (section 10 of
+ *     dom.test.mjs) — appending one ordinary React-mounting test after that test was
+ *     enough to make it fail, against the harness as it stood before the flag.
  *   - These files are NOT type-checked. `apps/web/tsconfig.json` includes only
  *     TypeScript sources (.ts and .tsx), so nothing under `test/` enters the tsc
  *     program; the @typedef below is documentation, not a checked contract.
@@ -240,17 +266,44 @@ const GLOBAL_CHECK_IGNORES = new Set([...HARNESS_OWNED, ...HARNESS_OWNED_SYMBOLS
 function watchedPrototypes(window) {
   const seen = new Set();
   const found = [];
+  const add = (label, object) => {
+    if (object === null || object === undefined) return;
+    if (typeof object !== 'object' && typeof object !== 'function') return;
+    if (seen.has(object)) return;
+    seen.add(object);
+    found.push({ label, object });
+  };
+
   for (const [name, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(window))) {
     if (!('value' in descriptor)) continue;
     const value = descriptor.value;
     if (typeof value !== 'function') continue;
     if (!Object.prototype.hasOwnProperty.call(value, 'prototype')) continue;
-    const object = value.prototype;
-    if (object === null || typeof object !== 'object') continue;
-    if (seen.has(object)) continue;
-    seen.add(object);
-    found.push({ name, object });
+    if (value.prototype === null || typeof value.prototype !== 'object') continue;
+    add(`${name}.prototype`, value.prototype);
+    // The CONSTRUCTOR object too: `window.Element.__x = 1` is shared state exactly
+    // like the prototype is, and it leaked.
+    add(name, value);
   }
+
+  // Shared prototypes that are NOT reachable as window constructors, so the loop
+  // above provably cannot see them. Measured on happy-dom 21.0.4:
+  // `typeof window.Performance === 'undefined'`, same for DOMTokenList and
+  // DOMStringMap — they exist only as the prototypes of instances.
+  //
+  // `Performance.prototype.now` is the one that has to be here: nextFrame() reads
+  // `window.performance.now()`, so faking that method corrupts THE FRAME CLOCK this
+  // whole harness is built around, and every later test's rAF callbacks silently
+  // receive the fake. Demonstrated before this was added: a body setting
+  // `now = () => 123456` drew no teardown complaint, and the next call's frame
+  // callbacks were handed 123456. Patching a clock prototype is an ordinary thing to
+  // do in a transport/playhead product, which is what makes it worth closing.
+  const proto = (value) => (value === null || value === undefined ? null : Object.getPrototypeOf(value));
+  add('Performance.prototype', proto(window.performance));
+  const probe = window.document.createElement('div');
+  add('DOMTokenList.prototype', proto(probe.classList));
+  add('DOMStringMap.prototype', proto(probe.dataset));
+
   return found;
 }
 
@@ -288,6 +341,19 @@ export function codeForKey(key) {
 
 /** Re-entrancy guard: nested withDom would clobber the outer call's globals. */
 let active = false;
+
+/**
+ * Set once a React effect cleanup has thrown out of act(), which poisons the PROCESS.
+ *
+ * React 18.3.1 does not recover: react-dom's module-level `executionContext` is left
+ * non-zero, and it is a module-local with no internals handle, so the harness cannot
+ * repair it. What it CAN do is refuse to pretend otherwise. Left unguarded, the next
+ * withDom() in the file either dies with an inscrutable `Should not already be
+ * working.` and a stack pointing only into React, or — demonstrated — gets ABSORBED
+ * by a matcher-less `await assert.rejects(withDom(...))` and PASSES. That second one
+ * is a false green, which is why this is a guard and not just a comment.
+ */
+let reactPoisonedBy = null;
 
 const define = (key, value) =>
   Object.defineProperty(globalThis, key, {
@@ -385,7 +451,25 @@ function revertOwn(label, target, snapshot, ignore = new Set()) {
  * @param {{ url?: string, html?: string, realFrames?: boolean }} [options]
  * @returns {Promise<T>} whatever `body` returned
  */
-export async function withDom(body, options = {}) {
+export function withDom(body, options = {}) {
+  if (reactPoisonedBy) {
+    // SYNCHRONOUS throw, deliberately — this is the whole point of the guard. A
+    // rejected promise here would be absorbed by `await assert.rejects(withDom(...))`
+    // with no matcher, which is common, and that test would PASS. Throwing before a
+    // promise exists means assert.rejects is never even called.
+    throw new Error(
+      'withDom() cannot run: an earlier test in this file made a React effect cleanup ' +
+      `throw (${reactPoisonedBy}). That leaves react-dom's executionContext non-zero ` +
+      'for the whole process and is not repairable from here, so every later ' +
+      'withDom() in this file would be unreliable. Move that test to the END of the ' +
+      'file, or into a file of its own.',
+    );
+  }
+  return enterWithDom(body, options);
+}
+
+/** Separated so the poisoned guard above can throw synchronously. */
+async function enterWithDom(body, options) {
   if (active) {
     throw new Error(
       'withDom() is already active — nested calls would clobber the outer call\'s globals. ' +
@@ -452,9 +536,12 @@ async function runWithDom(body, options) {
 
   // Snapshot AFTER installing, so the diff at teardown attributes changes to the
   // body rather than to the harness's own footprint.
-  const globalsAfterInstall = describeOwn(globalThis);
+  // Prototypes first: reading window.performance and creating the probe element can
+  // initialise things lazily, and anything that lands on globalThis should be inside
+  // the globals snapshot rather than blamed on the body.
   const prototypesAfterInstall = watchedPrototypes(window)
-    .map(({ name, object }) => ({ name, object, snapshot: describeOwn(object) }));
+    .map(({ label, object }) => ({ label, object, snapshot: describeOwn(object) }));
+  const globalsAfterInstall = describeOwn(globalThis);
 
   /** host element -> React root, unmounted in reverse order at teardown. */
   const roots = new Map();
@@ -725,6 +812,8 @@ async function runWithDom(body, options) {
       await dom.unmountAll();
     } catch (error) {
       problems.push(`a React effect cleanup threw during teardown: ${error.message}`);
+      // Poisons the process from here on; see reactPoisonedBy.
+      reactPoisonedBy = error.message;
     }
   }
 
@@ -759,11 +848,11 @@ async function runWithDom(body, options) {
   } catch (error) {
     problems.push(`globalThis pollution check failed: ${error.message}`);
   }
-  for (const { name, object, snapshot } of prototypesAfterInstall) {
+  for (const { label, object, snapshot } of prototypesAfterInstall) {
     try {
-      problems.push(...revertOwn(`${name}.prototype`, object, snapshot));
+      problems.push(...revertOwn(label, object, snapshot));
     } catch (error) {
-      problems.push(`${name}.prototype pollution check failed: ${error.message}`);
+      problems.push(`${label} pollution check failed: ${error.message}`);
     }
   }
 
@@ -783,25 +872,39 @@ async function runWithDom(body, options) {
   if (bodyError) {
     if (problems.length) {
       const detail = `withDom() teardown also reported: ${problems.join('; ')}`;
-      if (bodyError instanceof Error) {
-        // APPEND, never `??=`. A body error built as `new Error(msg, { cause })` —
-        // increasingly common — already carries a cause, and `??=` silently DROPPED
-        // the teardown detail, so the leak went unreported in exactly the case this
-        // branch exists to handle. The body's own cause is kept, one level down.
+      // Attach the teardown detail to the body's error, and NEVER let that attempt
+      // become the failure the caller sees.
+      //
+      // APPEND, never `??=`. A body error built as `new Error(msg, { cause })` —
+      // increasingly common — already carries a cause, and `??=` silently DROPPED the
+      // teardown detail, so the leak went unreported in exactly the case this branch
+      // exists to handle. The body's own cause is kept, one level down.
+      //
+      // The try/catch is doing real work, and an `instanceof Error` test in front of
+      // it would be dead code: assigning `.cause` throws in strict module code for a
+      // primitive AND for a frozen error AND when `cause` is already non-writable or
+      // accessor-only. All four were demonstrated replacing the body's failure with a
+      // bare TypeError — the original F2 defect in four disguises. One catch covers
+      // every one of them; `instanceof` is still needed below, but only to word the
+      // message, and that wording is asserted.
+      let attached = false;
+      try {
         bodyError.cause = bodyError.cause === undefined
           ? new Error(detail)
           : new Error(detail, { cause: bodyError.cause });
-      } else {
-        // A non-Error throw cannot carry a cause: assigning to a primitive throws in
-        // strict module code, and that TypeError REPLACED the body's failure — the
-        // caller lost the real error entirely. Wrap instead, keeping the thrown value
-        // reachable as `.cause`. (A body that throws a non-Error and leaks nothing
-        // still propagates unchanged: this whole branch is inside `problems.length`.)
-        throw new Error(
-          `withDom(): body threw a non-Error value (${typeof bodyError}): ` +
-          `${String(bodyError)} — ${detail}`,
-          { cause: bodyError },
-        );
+        attached = true;
+      } catch {
+        // Falls through to the wrap.
+      }
+      if (!attached) {
+        // Keep the body's failure readable and reachable as `.cause`. (A body that
+        // throws and leaks NOTHING still propagates completely unchanged: this whole
+        // branch is inside `problems.length`.)
+        const what = bodyError instanceof Error
+          ? `an Error that cannot carry a cause (frozen, or 'cause' is non-writable ` +
+            `or accessor-only): ${bodyError.message}`
+          : `a non-Error value (${typeof bodyError}): ${String(bodyError)}`;
+        throw new Error(`withDom(): body threw ${what} — ${detail}`, { cause: bodyError });
       }
     }
     throw bodyError;

@@ -53,9 +53,14 @@ export default async function AccountPage() {
             <p style={{ margin: '0 0 4px', color: 'var(--text-primary)' }}>
               <strong>{ent.data.plan_code}</strong>
             </p>
+            {/* The quota used to render " (unlimited)" for any plan at or above
+                the 100000 sentinel, which was Pro and Studio. Migration 034
+                gives every plan a real monthly number (5 / 50 / 150), so no
+                plan is unlimited and that branch could only ever lie. Always
+                show used / quota, which is what checkMonthlyQuota() enforces. */}
             <p style={muted}>
-              Renews / ends: {fmt(ent.data.period_end)} · Jobs: {ent.data.jobs_used ?? 0}
-              {(ent.data.jobs_quota ?? 0) >= 100000 ? ' (unlimited)' : ` / ${ent.data.jobs_quota ?? '—'}`}
+              Renews / ends: {fmt(ent.data.period_end)} · Tracks this month: {ent.data.jobs_used ?? 0}
+              {` / ${ent.data.jobs_quota ?? '—'}`}
             </p>
           </>
         ) : (

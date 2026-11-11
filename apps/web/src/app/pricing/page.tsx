@@ -2,7 +2,6 @@ import type { Metadata } from 'next';
 import { db } from '@/lib/db';
 import { getUser } from '@/lib/auth/supabase';
 import BillingButton, { CreditPackCheckout, PackBuyButton } from '@/components/BillingButton';
-import { readTrial, TRIAL_SONG_CAP } from '@/lib/trial';
 
 export const metadata: Metadata = { title: 'Pricing', robots: { index: false, follow: false } };
 export const dynamic = 'force-dynamic';
@@ -27,10 +26,14 @@ type CreditPack = {
 };
 
 // Fallback if public.plans is unreachable, so the page still renders (TSD §1.2).
+// Must mirror migration 034_v3_pricing_model_truth.sql, which is the source of
+// truth for plan values. Kept in step by pricing-features-table.test.mjs, which
+// parses 034 and compares it to this array field by field — so a migration that
+// changes a plan value and leaves this stale fails the suite.
 const FALLBACK: Plan[] = [
-  { code: 'free', display_name: 'Free', price_cad_cents: 0, monthly_job_quota: 90, services: ['youtube', 'spotify', 'soundcloud'], export_stems: false, export_wav24: false },
-  { code: 'pro', display_name: 'Pro', price_cad_cents: 499, monthly_job_quota: 100000, services: [], export_stems: true, export_wav24: false },
-  { code: 'studio', display_name: 'Studio', price_cad_cents: 1200, monthly_job_quota: 100000, services: [], export_stems: true, export_wav24: true },
+  { code: 'free', display_name: 'Free', price_cad_cents: 0, monthly_job_quota: 5, services: ['youtube'], export_stems: false, export_wav24: false },
+  { code: 'pro', display_name: 'Pro', price_cad_cents: 499, monthly_job_quota: 50, services: [], export_stems: false, export_wav24: false },
+  { code: 'studio', display_name: 'Studio', price_cad_cents: 1200, monthly_job_quota: 150, services: [], export_stems: false, export_wav24: false },
 ];
 
 // Fallback for the one-time credit SKUs if public.credit_packs is unreachable.
@@ -99,14 +102,55 @@ const price = (c: number) => {
   if (c === 0) return '$0';
   return `$${(c / 100).toFixed(c % 100 ? 2 : 0)} CAD`;
 };
-const SERVICE_LABEL: Record<string, string> = { youtube: 'YouTube', spotify: 'Spotify', soundcloud: 'SoundCloud' };
+// Link-import services that are ACTUALLY IMPLEMENTED, and therefore the only
+// ones this page may name. Spotify and SoundCloud were listed here and carried
+// on the free plan row, so the page advertised both — neither has a downloader,
+// a route or an error code anywhere in the repo. Migration 034 drops them from
+// `plans.services`; this map is the second half of the same fix, so a row that
+// re-acquires an unbuilt service still cannot be advertised. An unrecognised
+// service is dropped, never printed raw: the old `?? s` fallback would have
+// rendered a bare "spotify" straight from the database.
+const SERVICE_LABEL: Record<string, string> = { youtube: 'YouTube' };
 
-function features(p: Plan): string[] {
+// `plans.monthly_job_quota` counts TRACKS CONVERTED TO PLAY-ALONG, and the
+// enforcement is checkMonthlyQuota() comparing entitlements.jobs_used against
+// it, rolled to the current calendar month. Both halves of that sentence are
+// stated here because the previous copy got both wrong: it said "3 songs per
+// day" (a daily period that nothing implements) for every plan under the
+// unlimited sentinel, so the number on the page was not the number in the
+// column and changing the column could not change the page.
+const QUOTA_PERIOD = 'month';
+
+/** The quota sentence, derived from the column rather than typed. */
+export function quotaLine(p: Plan): string {
+  const n = p.monthly_job_quota;
+  return `${n} ${n === 1 ? 'track' : 'tracks'} converted to play-along per ${QUOTA_PERIOD}`;
+}
+
+/** The feature bullets for one plan.
+ *
+ *  Every bullet must be something the app can deliver for THAT plan today:
+ *
+ *   - the quota sentence is read off the column (above);
+ *   - link import is named only for implemented services the row actually
+ *     carries, and its ABSENCE is not rendered as a bullet. The old code
+ *     pushed "File uploads only (no link import)" on the paid tiers, which
+ *     turned $4.99 into an advertised loss of a free-tier feature;
+ *   - 24-bit WAV loop download is listed for every plan because that is the
+ *     truth: worker/encoder/wav_encoder.py writes PCM_24 for all loops and the
+ *     landing page has always offered it with no account. It is a real feature
+ *     and NOT a paid differentiator, so it is not gated on export_wav24.
+ *
+ *  Deliberately absent: "Stem export". There is no stem-export route —
+ *  /api/jobs/[id]/stems serves Opus playback urls and says so, and
+ *  mintStemDownloadUrl() has no production caller. Migration 034 sets
+ *  export_stems false on every plan to match. */
+export function features(p: Plan): string[] {
   const out: string[] = [];
-  out.push(p.monthly_job_quota >= 100000 ? 'Unlimited own-file uploads' : '3 songs per day, no account needed');
-  out.push(p.services.length ? `Link import: ${p.services.map((s) => SERVICE_LABEL[s] ?? s).join(', ')}` : 'File uploads only (no link import)');
-  out.push(p.export_stems ? 'Stem export' : 'Loop export');
-  if (p.export_wav24) out.push('24-bit WAV export');
+  out.push(quotaLine(p));
+  const named = p.services.map((s) => SERVICE_LABEL[s]).filter((l): l is string => !!l);
+  if (named.length) out.push(`Link import: ${named.join(', ')}`);
+  out.push('Loop download — 24-bit WAV');
   return out;
 }
 
@@ -125,48 +169,24 @@ export default async function PricingPage() {
   // live in the same DB and typically degrade together.
   const degraded = plansDegraded || packsDegraded;
 
-  // V3-C10 banner: show the "first 3 songs free" prompt ONLY when the
-  // viewer could still start a trial — i.e. they have no trial_grants
-  // row. A signed-out viewer also sees it (CTA links to /trial, which
-  // redirects to /login first). A signed-in viewer with a row already,
-  // active or expired, sees no banner.
-  let showTrialBanner = !user; // signed-out always sees it
-  if (user) {
-    try {
-      const trial = await readTrial(user.user_id);
-      showTrialBanner = trial.present === false;
-    } catch {
-      // Degraded read: default to hidden rather than nudge a user who
-      // may already have used the trial. Pricing still renders.
-      showTrialBanner = false;
-    }
-  }
+  // The V3-C10 trial banner used to render here, directly above the Free card.
+  // It pitched a three-track signup offer to every signed-out viewer, while the
+  // Free card beside it offers five tracks a month and asks for no account at
+  // all: two different free amounts in one viewport, the smaller of them
+  // gated behind a signup. Removed rather than re-numbered, because the trial
+  // cap is enforced by a CHECK constraint in migration 013 and by the shared
+  // constant in lib/trial.ts, so making the banner agree with the Free tier
+  // would take a second migration to raise that cap -- for a nudge that now
+  // offers strictly less than doing nothing. The /trial route is untouched and
+  // still works for anyone who reaches it.
 
   return (
     <main style={{ minHeight: '100dvh', padding: '24px 16px', maxWidth: 960, margin: '0 auto', boxSizing: 'border-box' }}>
       <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Pricing</h1>
       <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>
-        Free forever for link import. Upgrade for unlimited own-file work and higher-quality exports.
+        Every plan converts tracks to play-along and downloads loops as 24-bit WAV. Plans differ in
+        how many tracks you can convert each month.
       </p>
-      {showTrialBanner && (
-        <a
-          href="/trial"
-          aria-label={`First ${TRIAL_SONG_CAP} songs free — start trial`}
-          style={{
-            display: 'block',
-            marginTop: 12,
-            padding: '12px 16px',
-            borderRadius: 10,
-            border: '1px solid var(--border-default, #333)',
-            background: 'var(--bg-card, #151515)',
-            color: 'var(--text-primary)',
-            textDecoration: 'none',
-            fontSize: 14,
-          }}
-        >
-          <strong>First {TRIAL_SONG_CAP} songs free with signup</strong> — start trial →
-        </a>
-      )}
       {degraded && (
         <p role="status" style={{ color: 'var(--text-muted)', fontSize: 13 }}>
           Showing standard pricing; live plan data is temporarily unavailable.

@@ -90,6 +90,13 @@ export interface StemState {
    *                             soloed ones play, however many there are
    *   - soloed AND muted      → still silent; mute wins
    *
+   * For a stem whose `availability` is NOT `'ready'`, this field follows the
+   * predicate above and nothing else — a missing stem is not automatically
+   * `effectivelySilent`. **The mixer must key its disabled state off
+   * `availability`, not off this field.** Mix calls targeting a non-ready stem
+   * are no-ops, because soloing a stem that was never produced would otherwise
+   * silence the entire mix.
+   *
    * ⚠️ The first version of this comment said "muted, or some OTHER stem is
    * soloed", which is wrong and was caught by an agent building against it.
    * Read literally, two soloed stems each see "some other stem is soloed" and
@@ -139,7 +146,15 @@ export interface EngineSnapshot {
  *    no-ops rather than throws. A UI must never need a status guard to be safe.
  */
 export interface PlayEngine {
-  load(input: StemSource[]): Promise<void>;
+  /**
+   * ⚠️ `readonly` is load-bearing. `LoadedStems.sources` is `readonly
+   * StemSource[]`, so a mutable parameter here makes the loader's own output
+   * un-passable: `TS4104: 'readonly StemSource[]' cannot be assigned to the
+   * mutable type 'StemSource[]'`. The first version of this contract had that
+   * bug — the two tracks it was written to connect could not actually connect,
+   * and it would have surfaced as a confusing error at page-assembly time.
+   */
+  load(input: readonly StemSource[]): Promise<void>;
   play(): void;
   pause(): void;
   /** Clamped to [0, durationSec]. Safe while paused. */
@@ -154,6 +169,15 @@ export interface PlayEngine {
   /** `null` clears the loop. Story 4.5. */
   setLoop(region: LoopRegion | null): void;
 
+  /**
+   * MUST keep object identity while nothing has changed. A snapshot derived
+   * from a running clock that returns a fresh object on every read sends
+   * `useSyncExternalStore` into a render loop. Quantise position before
+   * deciding whether anything changed.
+   *
+   * UI components poll this from `subscribe`; they must NOT run their own
+   * animation frame loop.
+   */
   getSnapshot(): EngineSnapshot;
   /** Returns an unsubscribe fn. Fires at least on every status change. */
   subscribe(listener: (s: EngineSnapshot) => void): () => void;
@@ -161,6 +185,39 @@ export interface PlayEngine {
   /** Releases AudioContext and buffers. Safe to call twice. */
   dispose(): void;
 }
+
+/**
+ * The vocabulary for `EngineSnapshot.error.code`. Shared here rather than owned
+ * by the implementation so a UI can switch on it without importing the engine.
+ */
+export const ENGINE_ERROR = {
+  /** No AudioContext available — an unsupported or blocked browser. */
+  NO_AUDIO: 'PLAY_NO_AUDIO',
+  /** `load()` was given nothing usable. */
+  NO_STEMS: 'PLAY_NO_STEMS',
+  /** Bytes arrived but `decodeAudioData` rejected every stem. */
+  DECODE_FAILED: 'PLAY_DECODE_FAILED',
+  /** Longer than `MAX_TRACK_SEC`. Refuse clearly; do not silently degrade. */
+  TRACK_TOO_LONG: 'PLAY_TRACK_TOO_LONG',
+} as const;
+
+export type EngineErrorCode = (typeof ENGINE_ERROR)[keyof typeof ENGINE_ERROR];
+
+/**
+ * How an engine is created.
+ *
+ * The contract declares the INTERFACE, not the constructor, so an
+ * implementation is free to expose a class, a factory, or both — but it must
+ * offer a factory with this shape so callers never depend on a class name.
+ * `createAudioContext` and `scheduleFrame` exist for injection in tests; a
+ * caller in the app passes nothing.
+ */
+export interface PlayEngineOptions {
+  readonly createAudioContext?: () => AudioContext;
+  readonly scheduleFrame?: (cb: () => void) => () => void;
+}
+
+export type CreatePlayEngine = (options?: PlayEngineOptions) => PlayEngine;
 
 /** One stem's bytes plus where they came from. Produced by the stem loader. */
 export interface StemSource {

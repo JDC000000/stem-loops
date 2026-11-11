@@ -22,9 +22,26 @@ export function SiteHeader({ showHistory = true, showSignIn = true }: { showHist
                 Job history
               </a>
             )}
-            {/* V3-J9: an account is required to download stems, so sign-in needs a way in
-                from the landing page. Sign-in itself works today; the sign-up tab
-                self-describes as unavailable until NEXT_PUBLIC_HCAPTCHA_SITE_KEY is set
+            {/* Sign-in needs a way in from the landing page because THE JOB PAGE
+                redirects: app/jobs/[id]/page.tsx:32-33 awaits getUser() and sends a
+                signed-out visitor to /login before the player, the faders or the
+                chords render.
+
+                Naming the right reason matters, because this comment used to give a
+                different one — it cited V3-J9 and the download path, in the present
+                tense, as if describing the code. It was not describing the code.
+                V3-J9 (TSD §12.9) is Jon's DECISION about a path that is still
+                UNBUILT: mintStemDownloadUrl (lib/stem-urls.ts:68) has no production
+                consumer, its only callers being its own contract test, and the
+                serving route under api/jobs/[id]/ makes ZERO getUser() calls. The
+                LINK is still owed to V3-J9, which lists "a sign-in affordance on the
+                landing page" among the agent deliverables; only the stated reason
+                was wrong. (The same wording survives in that route's own header. It
+                is deliberately left alone: it sits under an unresolved M-11 note
+                awaiting Jon's recorded acceptance.)
+
+                Sign-in itself works today; the sign-up tab self-describes as
+                unavailable until NEXT_PUBLIC_HCAPTCHA_SITE_KEY is set
                 (LoginForm.tsx), so this link never leads to a silently broken form. */}
             {showSignIn && (
               <a className="header-link" href="/login">

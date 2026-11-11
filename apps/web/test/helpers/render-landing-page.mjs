@@ -84,7 +84,11 @@ import ts from 'typescript';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = join(WEB, 'src');
-const ENTRY = join(SRC, 'app/(landing)/page.tsx');
+// The landing page's entry, kept as a named constant so `landingPage()` below behaves
+// exactly as it did before this module was generalised. Any page under src/ can now be
+// rendered by passing its src-relative path to `renderPage()`; nothing about the landing
+// path, the transpile, the normalisations or the metadata pass changed.
+const LANDING_ENTRY = 'app/(landing)/page.tsx';
 
 /** Resolve an import specifier the way the bundler's `@/` alias and extension search do. */
 const resolveSrc = (p) => {
@@ -100,7 +104,7 @@ const resolveSrc = (p) => {
  * COMPILER does the compiling; this only walks imports and rewrites specifiers. Bare
  * specifiers (react, next) are left alone so Node resolves them normally.
  */
-function build(outDir) {
+function build(outDir, entryAbs) {
   const emitted = new Map();
   const emit = (abs) => {
     if (emitted.has(abs)) return emitted.get(abs);
@@ -121,7 +125,7 @@ function build(outDir) {
     writeFileSync(out, js);
     return out;
   };
-  return { entry: emit(ENTRY), count: emitted.size };
+  return { entry: emit(entryAbs), count: emitted.size };
 }
 
 // React emits NBSP as a literal U+00A0 and, on this page, no entities at all — but decode the
@@ -152,19 +156,39 @@ const metaStrings = (v, out = []) => {
   return out;
 };
 
-let loaded;
+/** One rendered result per entry path, so a file asserting many times pays the cost once. */
+const cache = new Map();
+
 /**
- * `{ html, textSpaced, textTight, metaSpaced, metaTight, modules }` for the landing page,
- * rendered once per process. `html` is the markup, the two texts are the normalisations
- * described above, and the two meta* strings are those same normalisations applied to every
- * string in the page's exported `metadata` — joined with a pilcrow, so a banned phrase cannot
- * be assembled across two unrelated fields.
+ * `{ html, textSpaced, textTight, metaSpaced, metaTight, modules }` for ANY page under
+ * `src/`, named by its src-relative path (e.g. `app/(landing)/terms/page.tsx`), rendered
+ * once per process per path.
+ *
+ * `html` is the markup, the two texts are the normalisations described at the top of this
+ * file, and the two meta* strings are those same normalisations applied to every string in
+ * the page's exported `metadata` — joined with a pilcrow, so a banned phrase cannot be
+ * assembled across two unrelated fields.
+ *
+ * GENERALISED, NOT CHANGED. Before this, the entry was a module-level const and the only
+ * export was `landingPage()`. The entry is now an argument and `landingPage()` passes the
+ * same path it always used, so that function's behaviour — and `landing-copy.test.mjs`,
+ * which is the only caller and is being edited on another branch — is untouched. Every
+ * caveat in the header comment (the three uncovered rendering channels, the fail-open
+ * normalisations, metadata being unreachable from the markup) applies here unchanged,
+ * because this is the same code path with a different first module.
+ *
+ * REQUIREMENT ON THE PAGE: it must render under `renderToStaticMarkup`, i.e. be a sync
+ * component. An `async` server component returns a promise React cannot render, and a page
+ * that reads cookies or the database (`/pricing`, `/account`, `/jobs/[id]`) cannot be
+ * rendered here at all. Both legal pages are sync and read nothing, which is why they can
+ * be gated this way and those pages cannot.
  */
-export async function landingPage() {
-  if (loaded) return loaded;
-  const cache = join(WEB, 'node_modules/.cache');
-  mkdirSync(cache, { recursive: true });
-  const { entry, count } = build(mkdtempSync(join(cache, 'landing-page-')));
+export async function renderPage(relPath) {
+  const hit = cache.get(relPath);
+  if (hit) return hit;
+  const outRoot = join(WEB, 'node_modules/.cache');
+  mkdirSync(outRoot, { recursive: true });
+  const { entry, count } = build(mkdtempSync(join(outRoot, 'render-page-')), join(SRC, relPath));
 
   const React = (await import('react')).default;
   const { renderToStaticMarkup } = await import('react-dom/server');
@@ -173,9 +197,15 @@ export async function landingPage() {
   // `metadata` is a plain exported const on the module just imported. It is never rendered, so
   // it has to be read off the module — it cannot be scraped out of the markup.
   const meta = metaStrings(mod.metadata).join(' \u00b6 ');
-  loaded = {
+  const out = {
     html, textSpaced: toText(html, ' '), textTight: toText(html, ''),
     metaSpaced: toText(meta, ' '), metaTight: toText(meta, ''), modules: count,
   };
-  return loaded;
+  cache.set(relPath, out);
+  return out;
+}
+
+/** The landing page. Unchanged in behaviour; see `renderPage`. */
+export async function landingPage() {
+  return renderPage(LANDING_ENTRY);
 }

@@ -67,7 +67,8 @@ export default function HomePage() {
                 top — so you can turn your own part down and play it yourself.
               </p>
               <p className="audience">
-                Tracks up to {MAX_TRACK_MIN}&nbsp;minutes, in Chrome on the desktop. You need an account.
+                Tracks up to {MAX_TRACK_MIN}&nbsp;minutes, in Chrome on the desktop. Starting a job needs no account;
+                opening the player needs one.
               </p>
             </div>
             <ToolForm />
@@ -127,7 +128,9 @@ export default function HomePage() {
               <div className="spec-row">
                 <dt>Account</dt>
                 <dd>
-                  Required. Sign in with an email and a password, or ask for a one-time link by email, on the{' '}
+                  Needed to play, not to start. You can run a job signed out; the player, the chord track and the loops
+                  it leaves you all open only once you sign in — with an email and a password, or a one-time link by
+                  email, on the{' '}
                   <a href="/login">sign-in page</a>.
                 </dd>
               </div>
@@ -265,7 +268,9 @@ export default function HomePage() {
                 <details>
                   <summary>Do I need an account?</summary>
                   <p>
-                    Yes. You can sign in with an email and a password, or have a one-time link sent to your email, on the{' '}
+                    Not to start one. Running a job works signed out. You need one to open the player afterwards —
+                    that is where the stems, the chord track and the loops are — and you can sign in with an email and
+                    a password, or have a one-time link sent to your email, on the{' '}
                     <a href="/login">sign-in page</a>.
                   </p>
                 </details>

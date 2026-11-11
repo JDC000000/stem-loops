@@ -49,42 +49,58 @@ def upload_loop(job_id: str, stem: str, section: str, idx: int, local_path: str)
     return r2_key
 
 
-# V3-J2: the stem key prefix. Deliberately UNDER the `{job_id}/` prefix, because
-# cleanup.py's per-job retention delete is `delete_prefix(f"{job_id}/")` and
+# V3-J2 stem keys. Two artifacts per stem, in SEPARATE sub-prefixes:
+#
+#   <job_id>/_stems/play/<stem>.opus   playback  (TSD 12.2: Opus, 4-5 MB)
+#   <job_id>/_stems/dl/<stem>.wav      download  (TSD 12.2 + Jon: .wav)
+#
+# Separate sub-prefixes rather than two extensions in one directory, because the
+# reader lists the prefix and parses the stem name out of the key: with both
+# artifacts side by side, `vocals.opus` and `vocals.wav` would parse to the same
+# name and surface as a duplicate or an arbitrary winner.
+#
+# Both sit UNDER `<job_id>/`, and that is a correctness property, not a style
+# choice. cleanup.py's per-job delete is `delete_prefix(f"{job_id}/")` and its
 # `_job_id_of()` reads the FIRST path segment. `upload_play_chords` writes
-# `jobs/<id>/...` instead, so its first segment is the literal "jobs" and the
-# per-job delete MISSES it entirely — chord artifacts survive until the budget-
-# limited orphan sweep happens to catch them. Do not copy that layout here.
-# The leading underscore matches `_input.wav`: a non-loop artifact, so it can
-# never collide with `{job_id}/{stem}/...` loop keys.
-def stem_r2_key(job_id: str, stem: str) -> str:
-    """Deterministic key for a retained full-length stem.
+# `jobs/<id>/...`, whose first segment is the literal "jobs", so the per-job
+# delete MISSES it and it survives until the budget-limited orphan sweep happens
+# to catch it. Stems are far larger, so they must not repeat that.
+STEM_PLAY_EXT = "opus"
+STEM_DOWNLOAD_EXT = "wav"
 
-    Mirrored in apps/web/src/lib/r2.ts:stemR2Key — drift silently 404s the player,
-    which is exactly how the chord overlay's key drift would have failed. A test
-    pins both sides.
+
+def stem_play_r2_key(job_id: str, stem: str) -> str:
+    """Key for the Opus playback artifact. Mirrored in apps/web/src/lib/stem-keys.ts."""
+    return f"{job_id}/_stems/play/{stem}.{STEM_PLAY_EXT}"
+
+
+def stem_download_r2_key(job_id: str, stem: str) -> str:
+    """Key for the WAV download artifact. Mirrored in apps/web/src/lib/stem-keys.ts."""
+    return f"{job_id}/_stems/dl/{stem}.{STEM_DOWNLOAD_EXT}"
+
+
+def upload_stem(job_id: str, stem: str, local_path: str, kind: str) -> str:
+    """Upload one stem artifact and return its deterministic r2_key.
+
+    ``kind`` is "play" (Opus, streamed by the mixer) or "download" (WAV, handed to
+    a DAW). Keys are deterministic, so a reaper requeue overwrites in place rather
+    than accumulating duplicates.
     """
-    return f"{job_id}/_stems/{stem}.wav"
-
-
-def upload_stem(job_id: str, stem: str, local_path: str) -> str:
-    """Upload a full-length separated stem and return its deterministic r2_key.
-
-    Why this exists (V3-J2): htdemucs_6s produces six full-length stems, we cut
-    bar-length loops from them, and then THREW THE STEMS AWAY — `job_scope()`
-    rmtree'd the scratch dir at job end and nothing had copied them anywhere. The
-    play-along product needs per-stem volume faders, which is impossible without
-    the full-length audio, so the stems are now retained for the normal 24h window
-    alongside the loops they produced.
-    """
-    r2_key = stem_r2_key(job_id, stem)
+    if kind == "play":
+        r2_key = stem_play_r2_key(job_id, stem)
+        content_type = "audio/ogg"
+    elif kind == "download":
+        r2_key = stem_download_r2_key(job_id, stem)
+        content_type = "audio/wav"
+    else:
+        raise ValueError(f"unknown stem artifact kind: {kind!r}")
     _r2().upload_file(
         local_path,
         os.environ["R2_BUCKET_NAME"],
         r2_key,
-        ExtraArgs={"ContentType": "audio/wav"},
+        ExtraArgs={"ContentType": content_type},
     )
-    log_structured("INFO", "stem_uploaded", r2_key=r2_key, stem=stem)
+    log_structured("INFO", "stem_uploaded", r2_key=r2_key, stem=stem, kind=kind)
     return r2_key
 
 

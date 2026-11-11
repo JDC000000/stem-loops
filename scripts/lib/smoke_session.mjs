@@ -39,15 +39,19 @@
 //   - internal/api/api.go:403  POST /admin/generate_link, under the /admin
 //     group whose only middleware is requireAdminCredentials — no verifyCaptcha.
 //   - internal/api/api.go:270  Route("/verify") { Get, Post } — rate-limited
-//     only, no verifyCaptcha and no requireAuthentication. verifyCaptcha is
-//     attached ONLY to /signup, /recover, /resend, /magiclink, /otp, /token
-//     and /sso.
+//     only (limiterOpts.Verify), no verifyCaptcha and no requireAuthentication.
+//     The complete set of verifyCaptcha call sites in that file is lines 229
+//     (/signup), 256 (/recover), 259 (/resend), 262 (/magiclink), 265 (/otp),
+//     268 (/token), 329 (/passkeys/authentication/options) and 349 (/sso) —
+//     neither /verify nor anything under /admin is among them.
 //   - internal/api/mail.go:43  GenerateLinkResponse -> hashed_token,
 //     verification_type, action_link, email_otp, redirect_to + flattened user.
-//   - internal/api/mail.go:154 for type=magiclink on an existing user the hash
-//     is stored as a RecoveryToken, and
+//   - internal/api/mail.go:146-158 for type=magiclink on an existing user the
+//     hash is stored as a RecoveryToken (CreateOneTimeToken at :158), and
 //     internal/api/verify.go:662 type=magiclink looks that same token kind up,
 //     so the two halves agree.
+//   - internal/api/verify.go:310 verifyPost returns the session as JSON;
+//     :263 is the one non-session shape and it is email_change only.
 //   - internal/api/verify.go:85 token_hash must be sent ALONE: supplying email
 //     or token alongside it is rejected with "Only the token_hash and type
 //     should be provided".
@@ -148,8 +152,8 @@ export async function mintServiceRoleSession({ sbUrl, serviceKey, email, fetchIm
     );
   }
   // generate_link rewrites type magiclink -> signup when it had to create the
-  // user, and the token kind it stored follows that rewrite, so echo back what
-  // it tells us rather than assuming 'magiclink'.
+  // user (mail.go:79), and the token kind it stored follows that rewrite, so
+  // echo back what it tells us rather than assuming 'magiclink'.
   const verificationType = typeof link.verification_type === 'string' && link.verification_type
     ? link.verification_type
     : 'magiclink';

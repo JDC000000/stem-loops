@@ -643,11 +643,133 @@ export function rootHue(label: string): number | null {
   return f && f[0] < 12 ? f[0] * 30 : null;
 }
 
-/** What a chip of this pixel width can show. */
-export function chipDensity(widthPx: number): 'full' | 'tight' | 'tick' {
-  if (widthPx >= 34) return 'full';
-  if (widthPx >= 14) return 'tight';
+// ---------------------------------------------------------------------------
+// Chip text metrics
+// ---------------------------------------------------------------------------
+//
+// WHY THERE IS A TABLE HERE AND NOT A CONSTANT.
+//
+// chipDensity used to answer "can this chip show its label?" with two hardcoded
+// pixel thresholds (34 / 14) that were never derived from any label. At the
+// 16px the chips actually render at, "F#:min7" is 61.6px wide, so a chip could
+// be `full` (>= 34px) and still be unable to show a third of its own name --
+// and a chip below 14px was painted `color: transparent`, i.e. it kept a text
+// node the user could not see. Both bugs are the same mistake: deciding what
+// text fits without measuring text.
+//
+// The real measurement happens in the browser (ChordOverlay passes a canvas
+// `measureText` measurer). This table is the headless fallback and the unit of
+// account for the tests. Its advances were MEASURED, not guessed: Chromium
+// 1280x900 on the job page's own font stack (ui-sans-serif/system-ui, weight
+// 400, font-variant-numeric: tabular-nums) at 16px, via a hidden span. Summing
+// the table reproduces real Chromium widths to within 0.21px across the chord
+// alphabet ("C:maj" 42.859 vs 42.859, "C#:minmaj7" 90.719 vs 90.711,
+// "Ab:maj7/3" 78.531 vs 78.734).
+
+/** Font size chips render their label at (inherited; 1rem). */
+export const CHIP_FONT_PX = 16;
+/** Font size the `tight` density drops to (0.625rem). */
+export const CHIP_TIGHT_FONT_PX = 10;
+/** Horizontal padding a `full` chip spends on `padding: 0 0.5rem`. */
+export const CHIP_FULL_PAD_PX = 16;
+/** A `tight` chip has no padding; keep 2px so the glyphs are not flush to the edge. */
+export const CHIP_TIGHT_PAD_PX = 2;
+/** renderChip takes 1px off every chip so neighbours stay visually distinct. */
+export const CHIP_GAP_PX = 1;
+
+const ADVANCE_16PX: Readonly<Record<string, number>> = Object.freeze({
+  A: 11.25, B: 10.4688, C: 11.6875, D: 11.5469, E: 9.6172, F: 9.4453, G: 11.9375,
+  N: 12.0547, X: 10.9141,
+  a: 8.9844, b: 9.7969, d: 9.7969, g: 9.8125, i: 3.875, j: 3.875, m: 14.0156,
+  n: 9.4531, s: 8.4453, u: 9.4609, x: 8.7344,
+  '0': 10.375, '1': 10.375, '2': 10.375, '3': 10.375, '4': 10.375,
+  '5': 10.375, '6': 10.375, '7': 10.375, '8': 10.375, '9': 10.375,
+  ':': 4.2969, '#': 10.1328, '/': 5.7656, '.': 4.2969, '?': 8.1797,
+  '-': 10.375, '(': 6.25, ')': 6.25, ' ': 4.4453,
+});
+// Widest advance in the table: an unlisted glyph must never be UNDER-estimated,
+// or a label would be declared to fit when it does not.
+const WIDEST_ADVANCE_16PX = 14.0156;
+
+/** A measurer: the rendered width of `label` at `fontPx`, in CSS pixels. */
+export type LabelMeasure = (label: string, fontPx: number) => number;
+
+/**
+ * Headless fallback measurer. Linear in font size: Chromium's advances scale
+ * exactly with font-size for this stack (measured: every label's 10px width is
+ * 0.625x its 16px width, to 3dp).
+ */
+export function estimateLabelPx(label: string, fontPx: number = CHIP_FONT_PX): number {
+  if (!label) return 0;
+  let w = 0;
+  for (const ch of label) w += ADVANCE_16PX[ch] ?? WIDEST_ADVANCE_16PX;
+  return (w * fontPx) / CHIP_FONT_PX;
+}
+
+/** Chip width at which `label` fits at full size, padding and inter-chip gap included. */
+export function fullChipPx(labelPx: number): number {
+  return labelPx + CHIP_FULL_PAD_PX + CHIP_GAP_PX;
+}
+
+/**
+ * What a chip of this pixel width can show, decided by MEASURED text and not by
+ * a constant. `labelPx` is the label's width at CHIP_FONT_PX.
+ *
+ *   full  - the label fits at 16px with its padding.
+ *   tight - it fits at 10px (the `tight` branch's font size).
+ *   tick  - it does not fit at all. The chip is a colour block and renders NO
+ *           text node (see renderChip): a label the user cannot read must not
+ *           be in the DOM claiming otherwise. The full chord stays on the
+ *           chip's `aria-label`/`title`, where a reader can get at it.
+ */
+export function chipDensity(widthPx: number, labelPx: number): 'full' | 'tight' | 'tick' {
+  if (widthPx >= labelPx + CHIP_FULL_PAD_PX) return 'full';
+  if (widthPx >= (labelPx * CHIP_TIGHT_FONT_PX) / CHIP_FONT_PX + CHIP_TIGHT_PAD_PX) return 'tight';
   return 'tick';
+}
+
+/** Median of a numeric list (upper median for even lengths). Empty -> 0. */
+function median(xs: readonly number[]): number {
+  if (xs.length === 0) return 0;
+  const a = [...xs].sort((x, y) => x - y);
+  return a[Math.floor(a.length / 2)];
+}
+
+/**
+ * THE DEFAULT ZOOM for the horizontal strip.
+ *
+ * Derived from this job's own chord data, not from a constant: the px/sec at
+ * which a chord of TYPICAL length is wide enough to print the job's LONGEST
+ * chord name at full size.
+ *
+ *   widest  - max measured label width over the runs. Sizing to the widest
+ *             name means no chip of typical length has to ellipsise.
+ *   typical - the MEDIAN run duration. Sizing to the shortest run would let one
+ *             0.2s passing chord dictate the zoom for the whole song; the
+ *             median keeps half the chips fully readable by construction and
+ *             degrades the rest through `tight` rather than off a cliff.
+ *
+ * The caller still clamps: never below fit-to-width (a short track should fill
+ * the strip rather than leave it empty) and never above MAX_PX_PER_SEC.
+ */
+export function readablePxPerSec(
+  runs: readonly Pick<OverlayRun, 'startSec' | 'endSec' | 'kind' | 'label'>[],
+  measure: LabelMeasure = estimateLabelPx,
+  maxPps: number = MAX_PX_PER_SEC,
+): number {
+  if (runs.length === 0) return maxPps;
+  let widest = 0;
+  const durs: number[] = [];
+  for (const r of runs) {
+    const w = measure(displayText(r), CHIP_FONT_PX);
+    if (Number.isFinite(w) && w > widest) widest = w;
+    const d = Math.max(0, r.endSec - r.startSec);
+    if (d > 0) durs.push(d);
+  }
+  const typical = median(durs);
+  if (!(typical > 0) || !(widest > 0)) return maxPps;
+  const need = fullChipPx(widest);
+  return Math.min(maxPps, need / typical);
 }
 
 /** What the completed-job status area shows for each tri-state value. */

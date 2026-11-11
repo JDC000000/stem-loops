@@ -60,6 +60,10 @@ import {
   buildChordLabelEdit,
   chipBox,
   chipDensity,
+  estimateLabelPx,
+  readablePxPerSec,
+  CHIP_FONT_PX,
+  type LabelMeasure,
   chordAlternatives,
   classIndexOrNull,
   classifyLabel,
@@ -330,9 +334,53 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   const minPps = narrow
     ? Math.min(MAX_PX_PER_SEC, rowWidthPx / WRAP_MAX_ROW_SEC)
     : fitPxPerSec(dur, widthPx);
+  // Real text metrics for the chips, from the font the chips actually inherit.
+  // Built once per container element and memoised per (label, size); nothing
+  // here runs per frame. Falls back to the calibrated table when there is no
+  // canvas (SSR, happy-dom, a hardened browser that returns a null context).
+  const measureLabel = useMemo<LabelMeasure>(() => {
+    if (typeof document === 'undefined' || typeof window === 'undefined' || !wrapEl) {
+      return estimateLabelPx;
+    }
+    let ctx: CanvasRenderingContext2D | null = null;
+    try {
+      ctx = document.createElement('canvas').getContext('2d');
+    } catch {
+      ctx = null;
+    }
+    if (!ctx) return estimateLabelPx;
+    const cs = window.getComputedStyle(wrapEl);
+    const family = cs.fontFamily || 'sans-serif';
+    const weight = cs.fontWeight || '400';
+    const cache = new Map<string, number>();
+    return (label, fontPx) => {
+      const key = `${fontPx}|${label}`;
+      const hit = cache.get(key);
+      if (hit !== undefined) return hit;
+      ctx.font = `${weight} ${fontPx}px ${family}`;
+      const w = ctx.measureText(label).width;
+      // A browser that cannot measure must not silently report 0: that would
+      // declare every label to fit and bring the transparent-text bug back.
+      const px = Number.isFinite(w) && w > 0 ? w : estimateLabelPx(label, fontPx);
+      cache.set(key, px);
+      return px;
+    };
+  }, [wrapEl]);
+
+  // THE DEFAULT ZOOM. The strip used to default to fit-the-whole-track, which
+  // for a 3:33 track in a 904px container is 4.2px/sec -- every chip a 7px
+  // sliver, every chord name invisible. It now defaults to the zoom this job's
+  // own chord data needs to print its names (see readablePxPerSec), floored at
+  // fit-to-width so a short track still fills the strip. The wrapped (narrow)
+  // layout already derived its default from seconds-per-row and already read
+  // correctly; it is unchanged.
+  const readablePps = useMemo(
+    () => readablePxPerSec(state.runs, measureLabel),
+    [state.runs, measureLabel],
+  );
   const defaultPps = narrow
     ? clampPxPerSec(rowWidthPx / WRAP_DEFAULT_ROW_SEC, minPps)
-    : minPps;
+    : clampPxPerSec(readablePps, minPps);
   const pps = userPps === null ? defaultPps : clampPxPerSec(userPps, minPps);
   const chipH = narrow ? CHIP_H_WRAP : CHIP_H_STRIP;
 
@@ -413,9 +461,9 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
     () =>
       state.runs.map((run, idx) => {
         const box = chipBox(run, pps);
-        return renderChip(run, idx, box.leftPx, box.widthPx, chipH, null, setPopoverFor);
+        return renderChip(run, idx, box.leftPx, box.widthPx, chipH, null, setPopoverFor, measureLabel);
       }),
-    [state.runs, pps, chipH],
+    [state.runs, pps, chipH, measureLabel],
   );
 
   // The ruler and the timeline width are the other two things a frame used to
@@ -462,12 +510,13 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
                 chipH,
                 seg.continued ? ri : null,
                 setPopoverFor,
+                measureLabel,
               ),
             )}
           </div>
         </div>
       )),
-    [wrapped.rows, state.runs, rowWidthPx, chipH],
+    [wrapped.rows, state.runs, rowWidthPx, chipH, measureLabel],
   );
 
   // Keep the sounding chord visible — on chord change only. `playhead` is
@@ -609,7 +658,11 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
             disabled={userPps === null}
             onClick={() => setZoom(null)}
           >
-            {narrow ? 'Reset' : 'Fit'}
+            {/* Not 'Fit': the default is no longer whole-track, it is the zoom
+                this job's chord names need. Whole-track is still one drag of the
+                slider (or the - button) away, and the hint line below says which
+                of the two the user is looking at. */}
+            Reset
           </button>
         </div>
       ) : null}
@@ -817,9 +870,11 @@ function renderChip(
   heightPx: number,
   continuedRow: number | null,
   open: (v: { run: OverlayRun; idx: number }) => void,
+  measureLabel: LabelMeasure,
 ) {
   const w = Math.max(1, widthPx - 1); // 1px gap so adjacent chips stay distinct
-  const density = chipDensity(w);
+  const text = displayText(run);
+  const density = chipDensity(w, measureLabel(text, CHIP_FONT_PX));
   const hue = run.kind === 'chord' ? rootHue(run.label) : null;
   return (
     <button
@@ -843,7 +898,6 @@ function renderChip(
         // colour ticks); zooming in restores both.
         padding: density === 'full' ? '0 0.5rem' : '0',
         ...(density === 'tight' ? { fontSize: '0.625rem' } : null),
-        ...(density === 'tick' ? { color: 'transparent' } : null),
         borderRadius: density === 'tick' ? '2px' : '6px',
         ...(continuedRow !== null ? { opacity: 0.85, borderTopLeftRadius: 0, borderBottomLeftRadius: 0 } : null),
       }}
@@ -853,7 +907,13 @@ function renderChip(
       title={run.kind === 'chord' ? run.label : runAriaLabel(run)}
       aria-label={runAriaLabel(run)}
     >
-      {displayText(run)}
+      {/* A tick is too narrow for any legible size, so it renders as a colour
+          block with NO text node. It used to render the label at
+          `color: transparent`: in the DOM, satisfying every text-content
+          assertion, and invisible on screen. The chord is still on
+          `aria-label` and `title`, which is where an unreadable-but-present
+          label belongs. */}
+      {density === 'tick' ? null : text}
     </button>
   );
 }

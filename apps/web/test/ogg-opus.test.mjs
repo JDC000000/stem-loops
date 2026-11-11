@@ -30,9 +30,12 @@ import {
   MAX_PACKETS,
   MAX_DURATION_US,
   MAX_PACKET_BYTES,
+  MAX_HEADER_PACKET_BYTES,
   MAX_PACKET_DURATION_US,
   MAX_OUTPUT_GAIN_DB,
   MAX_GRANULE,
+  MAX_SEGMENTS,
+  GRANULE_SLACK_SAMPLES,
 } from '../src/lib/play/ogg-opus.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -602,4 +605,158 @@ test('a CONTINUED page with no pending packet discards the orphan fragment', () 
   const r = demuxOggOpus(bytes);
   assert.equal(r.packets.length, 1, 'the orphaned continuation must not become a packet');
   assert.deepEqual(r.packets[0].data, good);
+});
+
+// ---------- HARDENING: independent review of PR #177 (FINDINGS 5-7) ----------
+//
+// An independent reviewer re-scored the hardening above and found three defects the
+// author missed. These are that reviewer's proofs, rebuilt programmatically — same
+// rule as the cases above: a malicious file must be auditable in the diff.
+
+/**
+ * Lace one oversized packet across as many pages as it needs. A page's segment
+ * count is a single byte, so 255 segments (65,025 bytes) is the per-page ceiling
+ * and anything larger MUST continue onto a following page via the continued flag.
+ * Real cover art does exactly this, which is why the helper has to be page-aware.
+ */
+function lacePages(buf, { startSeq = 1, serial = 1 } = {}) {
+  const segs = [];
+  let o = 0;
+  while (buf.length - o >= 255) {
+    segs.push(buf.subarray(o, o + 255));
+    o += 255;
+  }
+  segs.push(buf.subarray(o)); // terminator: < 255 bytes, possibly empty
+  const pages = [];
+  let seq = startSeq;
+  for (let i = 0; i < segs.length; i += 255) {
+    pages.push(page({ segments: segs.slice(i, i + 255), seq: seq++, serial, continued: i > 0 }));
+  }
+  return { pages, nextSeq: seq };
+}
+
+/** An OpusTags block padded out to `bytes` total — i.e. one carrying cover art. */
+function bigOpusTags(bytes) {
+  const b = new Uint8Array(bytes);
+  b.set(new TextEncoder().encode('OpusTags'), 0);
+  return b;
+}
+
+test('a large but legitimate OpusTags (embedded cover art) is NOT refused as an attack', () => {
+  // FINDING 5. MAX_PACKET_BYTES was applied to EVERY packet, headers included. But
+  // 61,440 is the RFC 6716 ceiling on an AUDIO packet; OpusTags is a Vorbis-comment
+  // block whose commonest field is METADATA_BLOCK_PICTURE, a base64 cover image.
+  // A valid 100 KB OpusTags threw PACKET_TOO_LARGE before any audio was parsed.
+  const tags = bigOpusTags(100 * 1024);
+  const { pages, nextSeq } = lacePages(tags, { startSeq: 1 });
+  assert.ok(pages.length > 1, 'a 100 KB packet must span pages — otherwise this proves nothing');
+  assert.ok(tags.length > MAX_PACKET_BYTES, 'the tags must exceed the AUDIO cap to be a test');
+  const bytes = concat(
+    page({ segments: [opusHead({ channels: 1, preSkip: 0 })], bos: true, seq: 0 }),
+    ...pages,
+    page({ segments: [audioPacket(20)], granule: 960, seq: nextSeq, eos: true }),
+  );
+  const r = demuxOggOpus(bytes);
+  assert.equal(r.packets.length, 1, 'the audio after the big header must still be emitted');
+  assert.equal(r.durationSec, 0.02);
+  // And the header cap is still a cap, not the absence of one.
+  const err = caughtOggError(() => {
+    const huge = bigOpusTags(MAX_HEADER_PACKET_BYTES + 255);
+    const laced = lacePages(huge, { startSeq: 1 });
+    demuxOggOpus(
+      concat(
+        page({ segments: [opusHead({ channels: 1, preSkip: 0 })], bos: true, seq: 0 }),
+        ...laced.pages,
+      ),
+    );
+  });
+  assert.equal(err.code, 'HEADER_PACKET_TOO_LARGE');
+  assert.equal(MAX_HEADER_PACKET_BYTES, 1024 * 1024);
+});
+
+test('empty lacing values are bounded even though they emit no packet', () => {
+  // FINDING 6. A lacing value of 0 costs an attacker one byte, allocated a subarray
+  // view, and was NEVER counted against MAX_PACKETS — an empty segment completes an
+  // empty packet, which is discarded, so the packet cap could not see it. A 32 MiB
+  // file of 255 zero-lacing values per page measured 30,341,685 segments scanned in
+  // 1,162 ms on one synchronous call, returning 0 packets. The player demuxes six
+  // stems on the main thread.
+  const empty = Array.from({ length: 255 }, () => new Uint8Array(0));
+  const parts = [headerPages()];
+  let total = parts[0].length;
+  const pageBytes = page({ segments: empty, seq: 2 }).length;
+  let seq = 2;
+  while (total + pageBytes <= MAX_INPUT_BYTES) {
+    parts.push(page({ segments: empty, seq: seq++ }));
+    total += pageBytes;
+  }
+  const bytes = concat(...parts);
+  const segmentsInFile = (seq - 2) * 255;
+
+  const t0 = process.hrtime.bigint();
+  const err = caughtOggError(() => demuxOggOpus(bytes));
+  const elapsedMs = Number(process.hrtime.bigint() - t0) / 1e6;
+
+  assert.equal(err.code, 'TOO_MANY_SEGMENTS');
+  // The BOUND ON WORK is the assertion, not the clock: the demuxer may look at
+  // MAX_SEGMENTS entries out of the 30M the file carries, i.e. under 1% of them.
+  assert.ok(segmentsInFile > 30_000_000, `expected a 30M-segment file, built ${segmentsInFile}`);
+  assert.ok(
+    MAX_SEGMENTS < segmentsInFile / 100,
+    `the cap must stop the scan early: ${MAX_SEGMENTS} vs ${segmentsInFile} segments`,
+  );
+  // DERIVED, so the constant cannot drift into a round number that is also a lie.
+  assert.equal(MAX_SEGMENTS, MAX_PACKETS + Math.ceil(MAX_INPUT_BYTES / 255));
+  // Wall clock as a loose sanity ceiling only — 1,162 ms measured before the fix,
+  // ~10 ms after. Generous enough not to flake on a loaded CI box.
+  assert.ok(elapsedMs < 400, `scan took ${elapsedMs.toFixed(0)} ms, expected well under 400`);
+});
+
+test('a zero lacing value still TERMINATES a packet that is a multiple of 255 bytes', () => {
+  // Guards the fix above rather than proving the original defect: skipping empty
+  // segments must stay conditional on nothing being pending. A packet of exactly
+  // 255 bytes is laced as [255, 0] — the zero IS its terminator, and dropping it
+  // loses real audio. Mutating `len === 0 && pending.length === 0` to `len === 0`
+  // fails here, which is why the case exists.
+  const body = new Uint8Array(255);
+  body[0] = (19 << 3) | 0; // CELT 20 ms, code 0
+  const bytes = concat(
+    headerPages(),
+    page({ segments: [body, new Uint8Array(0)], granule: 960, seq: 2, eos: true }),
+  );
+  const r = demuxOggOpus(bytes);
+  assert.equal(r.packets.length, 1, 'the [255, 0] lacing must yield exactly one packet');
+  assert.equal(r.packets[0].data.length, 255);
+  assert.equal(r.durationSec, 0.02);
+});
+
+test('a granule far BELOW the packet sum is not trusted, and is not returned raw', () => {
+  // FINDING 7. The cross-check was ONE-SIDED: it rejected a granule that
+  // over-claimed but believed any granule that under-claimed. A granule of
+  // preSkip+1 over three 20 ms packets was reported as granuleTrusted with
+  // durationSec 0.000021 against 0.06 s of real audio, and finalGranule came back
+  // raw. A consumer clamps its whole timeline to that.
+  const preSkip = 312;
+  const bytes = concat(
+    headerPages({ preSkip }),
+    page({ segments: [audioPacket(20)], granule: 960, seq: 2 }),
+    page({ segments: [audioPacket(20)], granule: 1920, seq: 3 }),
+    page({ segments: [audioPacket(20)], granule: preSkip + 1, seq: 4, eos: true }),
+  );
+  const r = demuxOggOpus(bytes);
+  assert.equal(r.packets.length, 3);
+  assert.equal(r.granuleTrusted, false, 'an under-claiming granule must not be trusted');
+  // The absolute slack alone CANNOT catch this — the shortfall is inside it. Pin
+  // that, so nobody "simplifies" the proportional floor away.
+  const packetSumSamples = 3 * 960 + preSkip;
+  assert.ok(
+    packetSumSamples - (preSkip + 1) < GRANULE_SLACK_SAMPLES,
+    'this proof only bites via the proportional floor, not the 120 ms slack',
+  );
+  // Not merely flagged — not usable. 313 next to granuleTrusted:false only helps a
+  // consumer that remembers to read the second field.
+  assert.equal(r.finalGranule, 0, 'an untrusted granule must not be returned raw');
+  // And the fallback must be the packet sum less the pre-skip, not the lie.
+  assert.equal(r.durationSec, 0.0535);
+  assert.ok(r.durationSec > 0.05, `timeline collapsed to ${r.durationSec}`);
 });

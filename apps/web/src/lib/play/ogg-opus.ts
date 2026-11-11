@@ -94,6 +94,43 @@ export const MAX_PACKET_DURATION_US = 120_000;
 export const MAX_PACKET_BYTES = 61_440;
 
 /**
+ * Separate, larger cap for the two HEADER packets (OpusHead, OpusTags).
+ *
+ * WHY THIS IS NOT MAX_PACKET_BYTES: 61,440 is an RFC 6716 limit on an AUDIO packet
+ * — frames x 1275 bytes. OpusTags is not an Opus packet at all (RFC 7845 §5.2); it
+ * is a Vorbis-comment block, and the single most common comment in the wild is
+ * METADATA_BLOCK_PICTURE, a base64 cover image. Applying the audio cap to it
+ * rejected a perfectly valid file with embedded cover art as an attack: a 100 KB
+ * OpusTags threw PACKET_TOO_LARGE before any audio was parsed.
+ *
+ * WHY 1 MiB: large enough for a base64 cover image (a 700 KB JPEG encodes to
+ * ~950 KB), small enough that the heap stays bounded — there are at most TWO header
+ * packets per stream, so this allows 2 MiB per stem, 12 MiB across six, against the
+ * ~600 MB bar. The audio cap is what bounds the heap, and audio keeps 61,440.
+ */
+export const MAX_HEADER_PACKET_BYTES = 1024 * 1024;
+
+/**
+ * Hard cap on segment-table entries scanned across the whole file.
+ *
+ * The attack this answers: a lacing value of 0 costs an attacker ONE byte and was
+ * never counted against MAX_PACKETS, because an empty segment completes an empty
+ * packet which is discarded. A 32 MiB file of pages carrying 255 zero-lacing values
+ * each measured 30,341,685 segments scanned in 1,162 ms on a single synchronous
+ * call, returning 0 packets — and the player demuxes SIX stems on the main thread.
+ * MAX_PACKETS could not catch it: no packet was ever emitted.
+ *
+ * DERIVED, not a round number. Every segment in a well-formed stream is either the
+ * terminator of a packet or a 255-byte continuation of one:
+ *   - terminators are bounded by MAX_PACKETS (160,000);
+ *   - continuations each cost 255 bytes of input, so they are bounded by
+ *     MAX_INPUT_BYTES / 255 (131,587).
+ * The sum, 291,587, is therefore an upper bound on the segments any legitimate
+ * input can pay for, while the attack above is refused after ~1,144 pages.
+ */
+export const MAX_SEGMENTS = MAX_PACKETS + Math.ceil(MAX_INPUT_BYTES / 255);
+
+/**
  * Largest granule position we will believe. Above 2**53 a JS number can no longer
  * represent consecutive integers, so `granule - preSkip` silently stops being exact
  * — that is the real defect, and it is distinct from the sign-bit proof
@@ -107,8 +144,35 @@ export const MAX_GRANULE = 2 ** 53;
  * samples. A well-formed stream's final granule is <= the packet sum (end-trimming
  * only ever removes audio), so any excess is encoder rounding; one maximum-length
  * packet (120 ms = 5,760 samples) is a generous allowance.
+ *
+ * Used in BOTH directions — see MIN_GRANULE_COVERAGE for why the under-claim side
+ * needs a second, proportional term as well.
  */
 export const GRANULE_SLACK_SAMPLES = (MAX_PACKET_DURATION_US / 1e6) * OPUS_TIMEBASE_HZ;
+
+/**
+ * Smallest fraction of the parsed audio the final granule may account for.
+ *
+ * The cross-check used to be ONE-SIDED: it rejected a granule that over-claimed but
+ * believed any granule that under-claimed. A granule of preSkip+1 declared over
+ * three 20 ms packets was reported as granuleTrusted with durationSec 0.000021 for
+ * 0.06 s of real audio — a consumer clamps its whole timeline to that.
+ *
+ * WHY AN ABSOLUTE SLACK IS NOT ENOUGH: that attack's shortfall is 2,879 samples,
+ * which is INSIDE the 5,760-sample absolute allowance. On a short stream the
+ * absolute slack can exceed the whole stream, so it stops bounding anything.
+ *
+ * WHY NOT A TIGHTER ABSOLUTE RULE INSTEAD: end-trimming legitimately removes more
+ * than one packet. The real fixture (mono.opus, generated as exactly 1.234 s) has
+ * 63 packets summing to 1.26 s and a final granule 1,248 samples (26 ms) below the
+ * sum — more than its 20 ms last packet. So "at most one packet of trim" would
+ * refuse a real libopus file.
+ *
+ * The allowance is therefore min(absolute, proportional): 120 ms of trim on a long
+ * stream, never more than half the audio on a short one. mono.opus trims 2.1% and
+ * is trusted; the preSkip+1 attack claims 0.03% and is not.
+ */
+export const MIN_GRANULE_COVERAGE = 0.5;
 
 /**
  * Output gain is an int16 in 1/256 dB, so the field spans +-128 dB — a 2.5-million-
@@ -133,8 +197,10 @@ const OPUS_HEAD_MAGIC = [0x4f, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64] as cons
 export type OggOpusErrorCode =
   | 'INPUT_TOO_LARGE'
   | 'TOO_MANY_PACKETS'
+  | 'TOO_MANY_SEGMENTS'
   | 'DURATION_EXCEEDED'
   | 'PACKET_TOO_LARGE'
+  | 'HEADER_PACKET_TOO_LARGE'
   | 'PACKET_DURATION_ILLEGAL'
   | 'FIRST_PAGE_NOT_BOS'
   | 'BAD_CHANNEL_COUNT'
@@ -177,7 +243,14 @@ export type DemuxResult = {
   packets: OpusPacket[];
   /** Exact decoded duration in seconds: pre-skip AND end-trimming removed. */
   durationSec: number;
-  /** Final granule position — total samples at 48 kHz, pre-skip included. */
+  /**
+   * Final granule position — total samples at 48 kHz, pre-skip included.
+   *
+   * ZERO when `granuleTrusted` is false. A caller that reads this field directly
+   * must not be handed a number we have already decided is a lie: the previous
+   * version returned the attacker's value raw next to `granuleTrusted: false`,
+   * which only helps a consumer that remembers to check the second field.
+   */
   finalGranule: number;
   /** False when the granule was not believable and the packet sum was used. */
   granuleTrusted: boolean;
@@ -315,6 +388,7 @@ export function demuxOggOpus(input: Uint8Array): DemuxResult {
   let timestampUs = 0;
   let finalGranule = 0;
   let sawPage = false;
+  let segmentsScanned = 0;
 
   let off = 0;
   const dv = new DataView(input.buffer, input.byteOffset, input.byteLength);
@@ -336,6 +410,18 @@ export function demuxOggOpus(input: Uint8Array): DemuxResult {
     const segCount = input[off + 26];
     const segTableOff = off + 27;
     if (segTableOff + segCount > input.length) break;
+
+    // Counted HERE — before the payload-length sum below, which is itself one pass
+    // over the segment table and so is part of the work an attacker buys with
+    // zero-lacing values. Counted per page rather than per emitted packet because
+    // an empty segment emits nothing: MAX_PACKETS cannot see it at all.
+    segmentsScanned += segCount;
+    if (segmentsScanned > MAX_SEGMENTS) {
+      throw new OggOpusError(
+        'TOO_MANY_SEGMENTS',
+        `more than ${MAX_SEGMENTS} segment-table entries: a lacing value costs one byte and an empty one emits no packet, so this is the scan bound`,
+      );
+    }
 
     let payloadLen = 0;
     for (let i = 0; i < segCount; i++) payloadLen += input[segTableOff + i];
@@ -389,12 +475,29 @@ export function demuxOggOpus(input: Uint8Array): DemuxResult {
         continue;
       }
 
+      // A zero lacing value with nothing pending completes an EMPTY packet, which
+      // is discarded below. Skipping it here rather than there is not a tidy-up: it
+      // is the difference between allocating a Uint8Array view per attacker byte
+      // and allocating none. Kept narrow — `pending.length === 0` matters, because a
+      // zero segment WITH bytes pending is the terminator of a packet whose length
+      // is an exact multiple of 255, and dropping that would lose real audio.
+      if (len === 0 && pending.length === 0) continue;
+
       // Checked as `pending` GROWS, not after concatenating: an unbounded chain of
       // 255-byte continuation segments must not be assembled before it is refused.
-      if (pendingBytes + len > MAX_PACKET_BYTES) {
+      //
+      // Headers get their own, larger cap. 61,440 is the RFC 6716 ceiling on an
+      // AUDIO packet; OpusTags is a Vorbis-comment block that legitimately carries
+      // a base64 cover image, and applying the audio cap to it refused valid files.
+      // Audio keeps 61,440 — that is the cap that bounds the heap.
+      const isHeaderPacket = headerPacketsSeen < 2;
+      const byteCap = isHeaderPacket ? MAX_HEADER_PACKET_BYTES : MAX_PACKET_BYTES;
+      if (pendingBytes + len > byteCap) {
         throw new OggOpusError(
-          'PACKET_TOO_LARGE',
-          `packet exceeds ${MAX_PACKET_BYTES} bytes (RFC 6716 maximum)`,
+          isHeaderPacket ? 'HEADER_PACKET_TOO_LARGE' : 'PACKET_TOO_LARGE',
+          isHeaderPacket
+            ? `header packet exceeds ${byteCap} bytes`
+            : `packet exceeds ${byteCap} bytes (RFC 6716 maximum)`,
         );
       }
       pending.push(input.subarray(segStart, segStart + len));
@@ -486,15 +589,41 @@ export function demuxOggOpus(input: Uint8Array): DemuxResult {
   // lying — e.g. 1e9 samples (5.8 hours) declared over a single 20 ms packet, which
   // is a safe integer and so clears the 2**53 check above.
   //
+  // The cross-check is TWO-SIDED. Rejecting only over-claims left the opposite
+  // attack wide open: a granule of preSkip+1 across three 20 ms packets was
+  // trusted, and reported durationSec 0.000021 for 0.06 s of real audio. An
+  // under-claim is not the harmless direction — a consumer clamps its timeline to
+  // the duration it is given, so the short answer truncates the whole track.
+  //
+  // The under-claim allowance is min(absolute, proportional) — see
+  // MIN_GRANULE_COVERAGE. 120 ms of end-trim on a long stream, never more than half
+  // the audio on a short one, because on a short stream the absolute slack can
+  // exceed the entire stream and stops bounding anything.
+  //
   // Falls back to the packet sum if no usable granule was seen (a truncated file),
-  // if the granule is at or below the pre-skip, or if it fails the cross-check.
+  // if the granule is at or below the pre-skip, or if it fails either side.
   const preSkipUs = Math.round((head.preSkip / OPUS_TIMEBASE_HZ) * 1e6);
   const packetSumSamples = Math.round((timestampUs / 1e6) * OPUS_TIMEBASE_HZ) + head.preSkip;
+  const packetAudioSamples = packetSumSamples - head.preSkip;
+  const endTrimAllowance = Math.min(
+    GRANULE_SLACK_SAMPLES,
+    packetAudioSamples * (1 - MIN_GRANULE_COVERAGE),
+  );
   const granuleTrusted =
-    finalGranule > head.preSkip && finalGranule <= packetSumSamples + GRANULE_SLACK_SAMPLES;
+    finalGranule > head.preSkip &&
+    finalGranule <= packetSumSamples + GRANULE_SLACK_SAMPLES &&
+    finalGranule >= packetSumSamples - endTrimAllowance;
   const granuleUs = granuleTrusted
     ? Math.round(((finalGranule - head.preSkip) / OPUS_TIMEBASE_HZ) * 1e6)
     : null;
   const durationSec = Math.max(0, (granuleUs ?? timestampUs - preSkipUs) / 1e6);
-  return { head, packets, durationSec, finalGranule, granuleTrusted };
+  // An untrusted granule is reported as 0, never raw. `granuleTrusted` alone only
+  // protects a consumer that remembers to read it; 0 protects one that does not.
+  return {
+    head,
+    packets,
+    durationSec,
+    finalGranule: granuleTrusted ? finalGranule : 0,
+    granuleTrusted,
+  };
 }

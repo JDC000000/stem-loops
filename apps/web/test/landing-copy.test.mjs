@@ -23,12 +23,13 @@ const LANDING = [...walk(join(WEB, 'src/app/(landing)')), ...walk(join(WEB, 'src
  * on a page that had been reduced to a bare H1.
  *
  * THIS IS A REGEX STACK, AND A REGEX STACK IS WRONG IN BOTH DIRECTIONS. It is kept only with
- * its blast radius cut to the one direction where being wrong is SAFE, until #197's
- * single-pass scanner (apps/web/test/helpers/code-only.mjs) lands and this is deleted in
- * favour of `withoutComments`/`codeOnly`. That file is NOT reachable from this branch — it
- * exists only on #197, which is cleared but unmerged — and hand-rolling a second copy of a
- * scanner this repo has hit this defect class on seven times is exactly the mistake to avoid.
- * #199 must land after #197 regardless; this comment is the hand-off.
+ * its blast radius cut to the one direction where being wrong is SAFE, until it is deleted in
+ * favour of the single-pass scanner's `withoutComments`/`codeOnly`.
+ *
+ * STATUS 2026-11-11: #197 HAS merged, so apps/web/test/helpers/code-only.mjs IS now reachable
+ * — the precondition the earlier version of this comment was waiting on. Swapping this stack
+ * for it is a real change to the apparatus with its own blast radius, so it is NOT bundled
+ * into the account-copy fix; it is named residue and the next edit to this file should do it.
  *
  * OVER-inclusive: a `//` inside a string looks like a comment, so real code after it is
  * deleted. On a positive `assert.match` that can only make a gate FAIL on a page that is
@@ -41,7 +42,8 @@ const LANDING = [...walk(join(WEB, 'src/app/(landing)')), ...walk(join(WEB, 'src
  *
  * AND THE SAFETY ARGUMENT ABOVE HAS A PRECONDITION. Being wrong only in the false-RED
  * direction holds because every surviving positive gate over this text is a PREFIX or a
- * PRESENCE assertion (`^Required\.`, `/\bfaders?\b/`, `<dt>Tempo</dt>`), and deleting text
+ * PRESENCE assertion (`^Needed to play, not to start\.`, `/\bfaders?\b/`, `<dt>Tempo</dt>`),
+ * and deleting text
  * can only make those fail. If anyone later writes a positive gate over a WHOLE decommented
  * value — an equality, or a match anchored at both ends — that reasoning stops holding and
  * this must go. Whoever wires up `code-only.mjs` should delete it rather than extend it.
@@ -53,9 +55,19 @@ const decomment = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\
 /**
  * The page and the components it owns, with comments stripped. NOT the whole landing: /terms
  * and /privacy are legal copy on their own review path, so these gates deliberately do not
- * police them and must not be read as a site-wide guarantee. As of 2026-11-11 those two pages
- * say an account is optional, which is TRUE of the shipped system — they need revisiting when
- * Story 1.5 actually lands, not before.
+ * police them and must not be read as a site-wide guarantee.
+ *
+ * THEY ARE NOW OUT OF DATE, and the earlier version of this comment is the reason to say so
+ * here rather than quietly. It read: "those two pages say an account is optional, which is
+ * TRUE of the shipped system — they need revisiting when Story 1.5 actually lands, not
+ * before." Story 1.5 LANDED on 2026-11-11 (#197). Both pages still say "Loops are free and
+ * need no account" (/privacy) and "Cutting and downloading loops needs no account"
+ * (/terms) — but <LoopResults> renders ONLY inside /jobs/[id], which now redirects a
+ * signed-out visitor to /login. So reaching your loops does need an account, and those two
+ * sentences are false. Both also say an account is needed to DOWNLOAD the separated stems;
+ * there is no stem-download route in the app at all and mintStemDownloadUrl
+ * (src/lib/stem-urls.ts:68) has no production consumer. Fixing legal copy is a separate
+ * review path and is deliberately NOT in this commit — this is the hand-off.
  */
 const PAGE_AND_COMPONENTS = LANDING
   .filter(([f]) => !/\(landing\)\/(?:privacy|terms)\//.test(f))
@@ -148,6 +160,30 @@ const specRow = (dt) => {
   return m[1].replace(/<[^>]*>/g, ' ').replace(/[\s\u00a0]+/g, ' ').trim();
 };
 
+const flatten = (s) => s.replace(/<[^>]*>/g, ' ').replace(/[\s\u00a0]+/g, ' ').trim();
+const rxEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The hero's `.audience` line and one FAQ answer, both from the RENDERED page \u2014 the same
+ * reasoning as specRow.
+ *
+ * These exist because the first version of this gate asserted ONLY the scope row, and the
+ * two sentences the account-copy change actually rewrote had no positive assertion at all.
+ * An adversarial review reverted the FAQ answer BYTE-FOR-BYTE to the old false "Yes." and
+ * the suite stayed green at 16/16 \u2014 the change this file exists to hold could be undone
+ * without a red \u2014 and deleting both hero account sentences outright was green too.
+ */
+const audienceLine = () => {
+  const m = RENDER.html.match(/<p class="audience">([\s\S]*?)<\/p>/);
+  assert.ok(m, 'the rendered hero has no .audience line');
+  return flatten(m[1]);
+};
+const faqAnswer = (summary) => {
+  const m = RENDER.html.match(new RegExp(`<summary>${rxEscape(summary)}</summary>\\s*<p>([\\s\\S]*?)</p>`));
+  assert.ok(m, `the rendered FAQ has no "${summary}" entry`);
+  return flatten(m[1]);
+};
+
 test('no pre-tempo-fit numbers or never-true claims in the landing', () => {
   const banned = [
     /\b31\s*(?:&nbsp;|\\u00a0| )?ms/i, /\b62\s*(?:&nbsp;|\\u00a0| )?ms/i, /\b124\s*(?:&nbsp;|\\u00a0| )?ms/i,
@@ -164,15 +200,117 @@ test('the H1 stays "Paste a song. Play along."', () => {
 // ── Story 0 (2026-11-11): the landing sells the play-along product. These gates exist so
 // the loop-downloader positioning, and the binding facts it contradicted, cannot come back.
 
-test('the landing never claims "no account" — sign-in is required from launch (Story 1.5)', () => {
-  // Positive first — "Account: Optional — you can start a job straight away" passed the ban
-  // list on its own (adversarial sweep, 2026-11-11).
-  assert.match(specRow('Account'), /^Required\./);
-  const banned = [/no account/i, /without an account/i, /needs no account/i, /no accounts/i, /no sign.?up/i,
-    /account (?:is )?optional/i, /\boptional\b[^.]{0,20}account/i, /not required/i, /without signing in/i,
-    /no sign.?in/i, /start(?: a job)? (?:straight|right) away/i];
-  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
-  for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
+// POLARITY INVERTED 2026-11-11 (Jon: "make the copy true now, implement API enforcement
+// later"). This gate used to assert the OPPOSITE — `^Required\.` plus a ban list on /no
+// account/i — and it was built over five adversarial rounds to stop the page claiming
+// something untrue. The claim it was protecting turned out to BE the untrue one, so the
+// apparatus is kept whole and pointed the other way rather than deleted. Every mechanism the
+// five rounds bought survives: both normalisations, the metadata/OG pass, the attribute
+// capture and the pilcrow join, all via READ_AS.
+//
+// WHAT THE SYSTEM ACTUALLY DOES, verified against this tree (5806071) before the copy was
+// written — the whole point of the change was that the old copy was written ahead of the code:
+//   • POST /api/jobs runs a live anonymous INSERT: ANON_INSERT_SQL declared at route.ts:324,
+//     executed at :431 on the `user` ternary at :421. ZERO occurrences of `401` in the file.
+//     getUser() (lib/auth/supabase.ts:150) returns null when signed out, so that branch is the
+//     signed-out path, not dead code.
+//   • POST /api/uploads — the other half of the submit flow — also has zero `401` and no
+//     getUser() at all.
+//   • src/middleware.ts:28 states outright that it does not enforce auth.
+//   • ToolForm.tsx, the submit control on this page, has zero auth references.
+// So a signed-out visitor CAN start a job, and the page must not say otherwise.
+//
+// The other half is true and must stay sayable: /jobs/[id]/page.tsx:32-33 does `getUser()` +
+// `redirect('/login?return_to=…')` (Story 1.5, landed in #197), and that page is the only
+// thing that renders <Player> and <LoopResults>. So the player, the chord track AND the loops
+// need an account; starting does not. The bans below are therefore scoped to the START claim
+// and deliberately do NOT forbid saying an account is needed to PLAY.
+/**
+ * Claims are read SENTENCE BY SENTENCE so that a claim is seen together with its own
+ * negation, and the pilcrow is a boundary too so a phrase cannot be assembled across two
+ * unrelated `metadata` fields (or a negation borrowed from one).
+ *
+ * WHY: the first version of this gate matched "need an account to start" inside "You do NOT
+ * need an account to start a job". All four of the plainest TRUE phrasings went RED —
+ * "You do not need an account to start a job", "No account is required to start one.",
+ * "No sign-in required to start a job", "You don't need an account to start one." — while
+ * the shipped wording passed. A gate that forces one wording of a true fact is a defect, not
+ * a gate; the copy had been bent to fit the list.
+ */
+const CLAUSES = (t) => t.split(/(?<=[.!?;:])\s+|\s*¶\s*/);
+const NEGATED = /\b(?:no|not|never|without|none|nothing)\b|n['’]t/i;
+
+// (A) "an account is needed to START". Negation-aware: a clause that negates the claim is
+//     stating the truth and must pass. Scoped to STARTING, so "the player asks you to sign
+//     in" — which is true — is not banned.
+const REQUIRES_TO_START = [
+  /\byou need an account\s*[.!]/i,                 // unqualified; no negated form matches this
+  /required\.\s*sign in/i,                         // the old scope-sheet row, verbatim
+  /\bneeds? an account\b[^.;!?]{0,40}\b(?:to|before)\b[^.;!?]{0,25}\b(?:start|paste|submit|run|use|upload|get going)/i,
+  /\ban account\b[^.;!?]{0,25}\brequired\b[^.;!?]{0,40}\b(?:to|before)\b[^.;!?]{0,25}\b(?:start|paste|submit|run|use|upload)/i,
+  /\b(?:sign.?in|sign.?up|log ?in|logging in)\b[^.;!?]{0,25}\b(?:is )?required\b/i,
+  /\bmust\b[^.;!?]{0,25}\b(?:sign|log) in\b/i,
+  /\b(?:create|make|get|open)\b[^.;!?]{0,25}\b(?:free )?account\b[^.;!?]{0,35}\b(?:first|to (?:get )?start)/i,
+  /\b(?:sign|log) ?in\b[^.;!?]{0,25}\b(?:first|to start|to get started)\b/i,
+  /\b(?:form|input|tool|uploader|box)\b[^.;!?]{0,45}\bunlocks?\b/i,
+  /\bno (?:job|jobs|songs?) without an account\b/i,
+];
+
+// (B) the OPPOSITE falsehood: that the player, loops, chords or stems need no account. The
+//     /jobs/[id] page DOES redirect a signed-out visitor, so these are false. The negation
+//     IS the falsehood here, so these are deliberately NOT negation-guarded.
+const PLAY_NEEDS_NO_ACCOUNT = [
+  /\b(?:player|loops?|chords?|stems?|mixer)\b[^.;!?]{0,60}\b(?:without|no)\b[^.;!?]{0,25}\b(?:an )?(?:account|sign.?in|signing in)/i,
+  /\b(?:player|loops?|chords?|stems?|mixer)\b[^.;!?]{0,45}\bopens?\b[^.;!?]{0,25}\b(?:straight away|right away|signed out|for anyone|to anyone)/i,
+  /\b(?:open|opens|available|ready)\b[^.;!?]{0,25}\b(?:straight|right) away\b[^.;!?]{0,25}\b(?:for|to) anyone\b/i,
+  // Both orders, and SCOPED to the player/data. A bare /no sign.?in (?:needed|required)/
+  // also matched the TRUE "No sign-in required to start a job." — the same negation-blind
+  // mistake as family A, in the one list that cannot be negation-guarded.
+  /\b(?:player|loops?|chords?|stems?|mixer)\b[^.;!?]{0,70}\bno sign.?in (?:needed|required)\b/i,
+  /\bno sign.?in (?:needed|required)\b[^.;!?]{0,70}\b(?:player|loops?|chords?|stems?|mixer)\b/i,
+  /\b(?:download|downloads|play|plays)\b[^.;!?]{0,25}\bwithout (?:signing in|an account)\b/i,
+];
+
+// (C) the claim that the DATA is gated. Only the PAGE is: /jobs/[id]/page.tsx redirects, but
+//     api/jobs/[id], .../stems and .../play-chords have NO getUser() and NO 401 (the stems
+//     route header says "Deliberately NOT gated on sign-in"), and the job id is handed to the
+//     signed-out starter in the 201 body. The privacy page states this plainly; the landing
+//     must not contradict it. An earlier draft of this very row said the stems, chords and
+//     loops "all open only once you sign in", which is true of the pages and false of the data.
+const DATA_IS_GATED = [
+  /\b(?:stems?|loops?|chords?|audio|files?|tracks?)\b[^.;!?]{0,55}\b(?:only|just)\b[^.;!?]{0,35}\b(?:once|after|when|if) you (?:sign|log) in/i,
+  /\b(?:stems?|loops?|chords?|audio|files?)\b[^.;!?]{0,45}\b(?:are|is|stay|stays)\b[^.;!?]{0,20}\b(?:protected|secured|locked|gated|private|safe)\b/i,
+  /\bonly (?:you|signed.?in|logged.?in|account holders?)\b[^.;!?]{0,35}\b(?:can )?(?:see|access|open|fetch|download|play)\b/i,
+  /\b(?:sign.?in|an account|your account)\b[^.;!?]{0,25}\b(?:protects|secures|guards|keeps .{0,20}private)\b/i,
+];
+
+test('the landing never claims an account is required to START — nothing enforces one', () => {
+  // POSITIVE, on ALL THREE places the page speaks about accounts, each read from the RENDERED
+  // page. See audienceLine/faqAnswer above for why the hero and the FAQ are asserted now.
+  assert.match(audienceLine(), /Starting a job needs no account/);
+  assert.match(faqAnswer('Do I need an account?'), /^Not to start one\./);
+  assert.match(specRow('Account'), /^Needed to play, not to start\./);
+  // …and the row must still carry the half that IS true. `on the sign-in page` rather than a
+  // bare /sign in/i, which "no sign in needed" satisfies by containing the words.
+  assert.match(specRow('Account'), /on the sign-in page/i);
+
+  const check = (where, text) => {
+    for (const c of CLAUSES(text)) {
+      if (!NEGATED.test(c)) {
+        for (const re of REQUIRES_TO_START) {
+          assert.doesNotMatch(c, re, `${where} claims an account is needed to start — ${re} in ${JSON.stringify(c.slice(0, 110))}`);
+        }
+      }
+      for (const re of PLAY_NEEDS_NO_ACCOUNT) {
+        assert.doesNotMatch(c, re, `${where} claims the player needs no account — ${re} in ${JSON.stringify(c.slice(0, 110))}`);
+      }
+      for (const re of DATA_IS_GATED) {
+        assert.doesNotMatch(c, re, `${where} claims the DATA is gated, but only the page is — ${re} in ${JSON.stringify(c.slice(0, 110))}`);
+      }
+    }
+  };
+  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) check(file, src);
+  for (const [where, text] of READ_AS) check(where, text);
 });
 
 test('the landing shows no price, plan or paywall — there is no payment at launch', () => {

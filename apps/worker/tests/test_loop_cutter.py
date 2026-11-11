@@ -35,6 +35,12 @@ DB = os.environ.get("DATABASE_URL")
 # The exact statement loop_cutter.claim_and_cut uses. Duplicated here ON PURPOSE
 # so a test can drive it from an arbitrary connection; test_claim_sql_matches_the
 # _implementation below pins the two together, so this copy cannot drift silently.
+# How long worker B may wait on worker A's row lock before the gate calls it a
+# block. 3 s is ~1000x the millisecond a SKIP LOCKED claim actually takes, so it
+# cannot go red on a slow box, and it turns a missing clause into a fast red
+# instead of a hung CI job.
+LOCK_WAIT_TIMEOUT_MS = 3000
+
 CLAIM_SQL = """
                 UPDATE loop_requests
                    SET status='running', claimed_at=now(), updated_at=now()
@@ -305,10 +311,24 @@ def test_skip_locked_skips_rather_than_blocks():
         ).fetchone()
         assert str(locked[0]) == request_id
 
-        # Worker B: the real claim statement, on its own connection.
+        # Worker B: the real claim statement, on its own connection, under a
+        # statement_timeout. The timeout is the point: WITHOUT `SKIP LOCKED` this
+        # statement waits on A's row lock forever, and a gate that HANGS is worse
+        # than one that fails -- it stalls CI instead of going red. With the
+        # clause it returns in milliseconds. Mutation-checked: deleting
+        # `SKIP LOCKED` from the statement made this test red in 4.7 s; without
+        # the timeout the same mutant hung past 150 s.
         with psycopg.connect(DB) as b:
+            b.execute(f"SET statement_timeout = {LOCK_WAIT_TIMEOUT_MS}")
             t0 = time.monotonic()
-            got = b.execute(CLAIM_SQL).fetchone()
+            try:
+                got = b.execute(CLAIM_SQL).fetchone()
+            except psycopg.errors.QueryCanceled:
+                pytest.fail(
+                    "the claim statement BLOCKED on a row another worker holds for "
+                    f"over {LOCK_WAIT_TIMEOUT_MS} ms -- FOR UPDATE SKIP LOCKED is "
+                    "missing or ineffective, so two workers can take one request"
+                )
             elapsed = time.monotonic() - t0
             b.commit()
         assert got is None, "worker B claimed a row another worker holds"

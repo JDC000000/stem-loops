@@ -606,14 +606,37 @@ test('suspension round trip: play, user scrolls away, we back off, playback pass
 // The live page must keep working unchanged
 // ---------------------------------------------------------------------------
 
-test('the existing mount is untouched: jobs/[id]/page.tsx still passes jobId and nothing else', () => {
-  // The single most important regression signal for this change: positionSec
-  // is additive and optional, and the page that is live today must not have
-  // had to change. If someone makes positionSec required, or wires transport
-  // into this mount, this fails.
+test('the live mount now carries positionSec, and positionSec is still optional', () => {
+  // UPDATED BY THE SEAM PR. The original form of this test asserted that
+  // /jobs/[id] "still passes jobId and nothing else" — a SCOPING guard for
+  // PR #187, which landed `positionSec` as an additive, optional prop and
+  // deliberately did not wire it. The seam PR is the change that guard was
+  // waiting for: the engine now lives in components/play/Player.tsx, and the
+  // chord track is mounted there with the engine's own position. What the
+  // guard was really protecting — that `positionSec` stays OPTIONAL, and that
+  // ChordOverlay never grows a transport of its own — is kept below.
+  const player = readFileSync(
+    join(import.meta.dirname, '..', 'src/components/play/Player.tsx'),
+    'utf8',
+  );
+  assert.match(
+    player,
+    /<ChordOverlay\s+jobId=\{jobId\}\s+positionSec=\{chordPosition\}\s*\/>/,
+    'the chord playhead is not wired to the engine position',
+  );
+
+  // Still optional, with a null default: nothing else in the app is forced to
+  // pass it, and a mount without it renders exactly as it did before.
+  const overlay = readFileSync(
+    join(import.meta.dirname, '..', 'src/components/ChordOverlay.tsx'),
+    'utf8',
+  );
+  assert.match(overlay, /positionSec = null/, 'positionSec must keep its null default');
+
+  // The page itself no longer mounts the overlay — Player owns it, because
+  // only Player has the position to give it.
   const page = readFileSync(join(import.meta.dirname, '..', 'src/app/jobs/[id]/page.tsx'), 'utf8');
-  assert.match(page, /<ChordOverlay jobId=\{job\.id\} \/>/, 'the live mount changed shape');
-  assert.doesNotMatch(page, /positionSec/, 'transport must not be wired here by this PR');
+  assert.doesNotMatch(page, /<ChordOverlay/, 'the page must mount Player, not the overlay');
 });
 
 test('the zoom slider is still the zoom slider: the playhead adds no second range input', () => {

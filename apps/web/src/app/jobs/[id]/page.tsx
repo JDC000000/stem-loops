@@ -1,121 +1,36 @@
-'use client';
+// /jobs/[id] — the play-along page (V3 Story 1).
+//
+// STORY 1.5 — SIGN-IN IS REQUIRED. Jon, 2026-11-10: "Right from the start,
+// let's require sign in so we know who's using it." A signed-out visitor is
+// redirected to /login before any of the job body renders, so the player is
+// unreachable without an account.
+//
+// The gate is a verbatim copy of the ONE authenticated-page pattern this repo
+// already has — `await getUser()` then `redirect('/login?return_to=…')`, as in
+// src/app/account/page.tsx, src/app/account/delete/page.tsx and
+// src/app/trial/page.tsx. No new auth mechanism, and nothing under
+// src/app/auth/ or src/lib/auth/ is touched. (/history is NOT a precedent: its
+// own header says "Anonymous history page … No login.")
+//
+// That gate is why this file is a Server Component and the body lives in
+// ./JobView: `getUser()` reads cookies, which a client component cannot do,
+// and the polling loop cannot live in a server component. src/app/trial/
+// already pairs a gated server page with a colocated client child the same way.
+//
+// `force-dynamic` because the gate reads the session cookie on every request;
+// the same line appears for the same reason on /account and /trial.
 
-import { useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
-import type { Job } from '@stem-loops/types';
-import { ChordOverlay } from '@/components/ChordOverlay';
-import { JobProgress } from '@/components/JobProgress';
-import { LoopResults } from '@/components/LoopResults';
-import { formatExpiresIn } from '@/lib/retention';
+import type { Metadata } from 'next';
+import { redirect } from 'next/navigation';
+import { getUser } from '@/lib/auth/supabase';
+import JobView from './JobView';
 
-const POLL_MS = 2000;
-const TERMINAL = new Set(['done', 'failed']);
+export const metadata: Metadata = { title: 'Play along', robots: { index: false, follow: false } };
+export const dynamic = 'force-dynamic';
 
-export default function JobPage({ params }: { params: { id: string } }) {
-  const [job, setJob] = useState<Job | null>(null);
-  const [missing, setMissing] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+export default async function JobPage({ params }: { params: { id: string } }) {
+  const user = await getUser();
+  if (!user) redirect(`/login?return_to=${encodeURIComponent(`/jobs/${params.id}`)}`);
 
-  useEffect(() => {
-    let stopped = false;
-
-    async function poll() {
-      try {
-        const res = await fetch(`/api/jobs/${params.id}`, { cache: 'no-store' });
-        if (res.status === 404) {
-          if (!stopped) setMissing(true);
-          return;
-        }
-        const data = (await res.json()) as Job;
-        if (stopped) return;
-        setJob(data);
-        if (!TERMINAL.has(data.status)) timer.current = setTimeout(poll, POLL_MS);
-      } catch {
-        if (!stopped) timer.current = setTimeout(poll, POLL_MS * 2);
-      }
-    }
-
-    poll();
-    return () => {
-      stopped = true;
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, [params.id]);
-
-  const wrap: React.CSSProperties = {
-    maxWidth: 960,
-    margin: '0 auto',
-    padding: '48px 24px 96px',
-    fontFamily: 'var(--font-sans)',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: 28,
-  };
-
-  const back = (
-    <div style={{ width: '100%', maxWidth: 960 }}>
-      <Link href="/" className="jp-back" style={{ fontSize: 'var(--text-md)', textDecoration: 'none' }}>
-        ← New track
-      </Link>
-    </div>
-  );
-
-  return (
-    <main style={wrap}>
-      {back}
-      {missing ? (
-        <div style={{ width: '100%', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <h1 style={{ margin: 0, fontSize: 'var(--text-xl)', color: 'var(--text-primary)' }}>We couldn&apos;t find that job.</h1>
-          <p style={{ margin: 0, color: 'var(--text-muted)' }}>Files are deleted after 24 hours, so it may have expired.</p>
-        </div>
-      ) : !job ? (
-        <p style={{ color: 'var(--text-muted)' }}>Loading…</p>
-      ) : job.status === 'failed' ? (
-        <div
-          className="jp-failed"
-          style={{
-            width: '100%',
-            maxWidth: 560,
-            padding: '20px 24px',
-            borderRadius: 12,
-            background: 'var(--status-failed-bg)',
-          }}
-        >
-          <h1 style={{ margin: '0 0 8px', fontSize: 'var(--text-xl)' }}>Something went wrong</h1>
-          <p style={{ margin: 0 }}>
-            {job.error_message_user ?? 'This track could not be processed. Please try another file.'}
-          </p>
-          <Link href="/" className="jp-primary" style={{ marginTop: 16 }}>
-            Try another track →
-          </Link>
-        </div>
-      ) : job.status === 'done' ? (
-        <>
-          <LoopResults job={{ ...job, title: job.original_filename ?? undefined }} />
-          {/* Chord timeline for the finished job. Mounted only at status 'done':
-              the worker writes play.chords.json after the pipeline completes, and
-              the overlay itself renders loading / unavailable / empty states. */}
-          <section aria-label="Chords" style={{ width: '100%', maxWidth: 960 }}>
-            <h2 style={{ margin: '0 0 8px', fontSize: 'var(--text-lg, 18px)', color: 'var(--text-primary)' }}>
-              Chords
-            </h2>
-            <ChordOverlay jobId={job.id} />
-          </section>
-          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
-            Files are deleted after 24 hours.
-            {job.expires_at ? ` Yours expire ${formatExpiresIn(new Date(job.expires_at).getTime())}.` : ''}
-          </p>
-        </>
-      ) : (
-        <>
-          <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, textAlign: 'center' }}>
-            {job.original_filename ?? job.youtube_url ?? 'Your track'}
-          </h1>
-          <p style={{ margin: '-16px 0 0', color: 'var(--text-muted)' }}>Processing…</p>
-          <JobProgress job={job} />
-        </>
-      )}
-    </main>
-  );
+  return <JobView id={params.id} />;
 }

@@ -36,19 +36,91 @@ export type StemName = (typeof PLAYABLE_STEMS)[number];
 /**
  * 48 kHz, mono.
  *
- * MEASURED, not assumed — 6 stems x 300 s:
- *   48 kHz stereo  659 MB PCM / 805 MB RSS   fails
- *   48 kHz mono    329 MB PCM / 576 MB RSS   SHIPPING
- *   24 kHz mono    165 MB PCM / 356 MB RSS   documented fallback
- *
- * Jon relaxed the bar from 400 MB to ~600 MB on 2026-11-10 specifically so the
- * reference track keeps full bandwidth. 576 MB is only ~4% under that bar, so
- * MAX_TRACK_SEC below is a hard ceiling, not a suggestion.
+ * ⚠️ UNITS. Every figure in this comment is MiB (2²⁰ bytes), and every one of
+ * them used to be labelled "MB". They were never MB: the formula below yields
+ * BYTES, and these came from dividing bytes by 2²⁰. The RSS figures are MiB
+ * too — they are read from VmRSS, which the kernel reports in KiB — so MiB is
+ * the unit that keeps PCM and RSS comparable, and it is the unit Jon's ~600 bar
+ * was set against. The labels are fixed; no number below has changed meaning.
+ * 1 MiB = 1.048576 MB, so every figure here is ~4.8% LARGER stated in MB.
  *
  * A Web Audio AudioBuffer is always Float32, so PCM bytes are exactly
- *   duration x sampleRate x channels x 4
+ *   stems x duration x sampleRate x channels x 4
  * with no slack. The mono downmix is the load-bearing saving, not the rate.
- */
+ * These are asserted, not asserted-by-comment: `play-engine.test.mjs`
+ * recomputes each one from the constants in this file and fails if they drift.
+ *
+ * MEASURED, not assumed — 6 stems x 300 s, SETTLED (all six monos resident):
+ *   48 kHz stereo  691,200,000 B = 659.2 MiB PCM / 805 MiB RSS  fails
+ *   48 kHz mono    345,600,000 B = 329.6 MiB PCM / 576 MiB RSS  SHIPPING
+ *   24 kHz mono    172,800,000 B = 164.8 MiB PCM / 356 MiB RSS  fallback
+ *
+ * The PCM column is arithmetic and is asserted below. The RSS column is
+ * INHERITED from the 2026-11-10 measurement and was taken a different way —
+ * today's renderer-only figures for the 48 kHz mono row are 480-484 MiB
+ * settled, not 576. Treat the three RSS numbers above as that run's record,
+ * not as current, and prefer the table further down.
+ *
+ * ⚠️ PCM IS NOT RSS, AND SETTLED IS NOT PEAK. Three different quantities get
+ * quoted as if they were one number. They are not, and the only one that
+ * decides whether a tab survives is the last:
+ *
+ *   PCM         what the formula above computes. Live audio bytes, nothing else.
+ *   SETTLED RSS the process once the load is over and memory is reclaimed.
+ *   PEAK RSS    the process high-water mark (VmHWM) DURING the load. THIS ONE.
+ *
+ * `load()` decodes one stem at a time and `decodeAudioData` hands back a
+ * STEREO buffer, so at the last decode five mono buffers are already resident
+ * beside it: live PCM peaks at SEVEN whole-track mono buffers, not six. That
+ * count is not prose — `apps/web/test/play-engine.test.mjs` reads it off the
+ * engine in 'peak live whole-track buffers during load is stems + 1'.
+ *
+ *   6 stems, 48 kHz mono, 300 s        PCM
+ *     settled   6 x 57,600,000 B = 345,600,000 B = 329.6 MiB
+ *     peak      7 x 57,600,000 B = 403,200,000 B = 384.5 MiB   (+16.7%, = 7/6)
+ *
+ * ⚠️ BUT PCM IS THE SMALL PART, AND THE ~600 MiB BAR IS NOT MET. Measured
+ * renderer VmHWM, reset immediately before the stem loop, real Chromium:
+ *
+ *                                        before 2026-11-11   after    reps
+ *     8 kHz WAV, gc() forced per stem       766-767 MiB    656-658   12+12
+ *     8 kHz WAV, NO forced gc()             764-775 MiB    658-776    9+13
+ *     real Ogg/Opus 48 kHz (production)     870-871 MiB    762-763     3+3
+ *
+ * ⚠️ The middle row is BIMODAL: with no forced gc() the after arm lands at
+ * base level about as often as it lands low (775, 712, 712, 711, 776, 774 in
+ * one block). Claim no benefit on that row.
+ *
+ * The decode-transient fix of 2026-11-11 lowered the high-water mark by up to
+ * ~110 MiB — by releasing each spent channel's store on the spot instead of
+ * leaving it to GC. UP TO, and the qualifier is the point: what base pays for
+ * is the previous stem's stereo buffer still being resident when the next
+ * decode runs, so the saving is exactly the collector's lag. A forced `gc()`
+ * in the same turn cannot collect it (base 766); a `gc()` after a yield can
+ * (base 656); the release gets it either way (657, both columns). So against
+ * a lazy collector the fix is worth ~110 MiB, against an eager one nothing,
+ * and under real GC timing somewhere in 0..110 that nobody controls. What it
+ * reliably buys is INDEPENDENCE FROM GC TIMING — which is the property that
+ * matters on iOS, where WebKit 189337 makes the collector the slow one.
+ * It did NOT bring the mark under Jon's ~600 MiB bar
+ * (relaxed from 400 on 2026-11-10 so the reference track keeps full
+ * bandwidth), and on the production Opus path the mark is ~762 MiB. What sets
+ * it now is `decodeAudioData` itself, not the downmix: the mark still sits
+ * ~175 MiB above settled and none of that is the mono buffer.
+ *
+ * The seven-buffer PCM figure above is a LIVE-PCM property, not a VmHWM one.
+ * Variants that release late measure the same high-water mark as the shipped
+ * one while holding eight buffers live; the difference shows in sampled RSS
+ * (592 vs 548), not in the process peak. Do not read 384.5 MiB as a predictor
+ * of VmHWM — it is a floor, and a distant one.
+ *
+ * So MAX_TRACK_SEC below is a hard ceiling, and the bar is currently MISSED,
+ * not nearly met. Do not quote 548, 484 or 329.6 as "the peak" — 548 is the
+ * highest RSS SAMPLE anyone caught, which is a different and smaller thing
+ * than VmHWM, and quoting it is the exact mistake this comment exists to stop.
+ * Measured on one headless Chromium on one Linux box; not on WebKit, not on a
+ * device. See MEMORY in `./engine.ts` for the method and the caveats.
+  */
 export const PLAYBACK_SAMPLE_RATE = 48_000;
 export const PLAYBACK_CHANNELS = 1;
 

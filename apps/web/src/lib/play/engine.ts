@@ -43,13 +43,140 @@
  * start time.
  *
  * MEMORY. A real job gives six Opus stems of ~151 s, encoded stereo on the
- * wire. 6 × 300 s at 48 kHz STEREO is 659 MB of Float32 PCM and fails; mono is
- * 329 MB and ships. So the AudioContext is created AT `PLAYBACK_SAMPLE_RATE`
- * (which makes `decodeAudioData` resample for us) and each decoded buffer is
- * downmixed to mono immediately, one stem at a time, dropping the stereo
- * buffer before the next stem is decoded. Never decode the six in parallel:
- * that would hold six stereo buffers at once, which is the configuration that
- * was measured to fail.
+ * wire. 6 × 300 s at 48 kHz STEREO is 659 MiB of Float32 PCM and fails; mono
+ * is 329 MiB and ships. So the AudioContext is created AT
+ * `PLAYBACK_SAMPLE_RATE` (which makes `decodeAudioData` resample for us) and
+ * each decoded buffer is downmixed to mono immediately, one stem at a time,
+ * dropping the stereo buffer before the next stem is decoded. Never decode the
+ * six in parallel: that would hold six stereo buffers at once, which is the
+ * configuration that was measured to fail. (The parallel case is also WebKit
+ * bug 227636 — concurrent `decodeAudioData` is what jetsams iOS. The sequential
+ * `await`-per-stem loop below is that bug's documented mitigation.)
+ *
+ * ⚠️ THAT PARAGRAPH USED TO STOP THERE, AND IT WAS INCOMPLETE. Decoding
+ * sequentially stops six stereo buffers coexisting; it does NOT stop ONE stereo
+ * buffer coexisting with all the monos decoded before it. So `downmixToMono`
+ * below sums into the decoded buffer's own channel 0 rather than allocating a
+ * second full-length buffer beside the live stereo one, and releases each
+ * channel's backing store the moment it is spent.
+ *
+ * ⚠️ READ THE UNITS AND READ WHICH NUMBER IS WHICH. Everything below is
+ * MiB (2²⁰ B) — VmRSS and VmHWM are reported by the kernel in KiB. And there
+ * are TWO different measurements here, which earlier versions of this comment
+ * ran together:
+ *
+ *   SAMPLED RSS — /proc read 350 ms after each step of the load. It shows the
+ *   structure of the change but it CANNOT see a spike between samples.
+ *   HIGH-WATER MARK — VmHWM, reset via /proc/<renderer>/clear_refs=5 just
+ *   before the stem loop. This is the real process peak. Use this one.
+ *
+ * 6 stems, 300 s, 48 kHz mono, renderer process only, real Chromium:
+ *
+ *   HIGH-WATER MARK (VmHWM)                     BEFORE     AFTER    reps
+ *     8 kHz WAV, gc() forced per stem           766-767   656-658    12+12
+ *     8 kHz WAV, NO forced gc()                 764-775   658-776     9+13
+ *     real Ogg/Opus 48 kHz (production format)  870-871   762-763      3+3
+ *
+ *   ⚠️ THE MIDDLE ROW IS BIMODAL AND BUYS NOTHING RELIABLY. With no forced
+ *   gc() the AFTER arm lands at base level about as often as it lands low —
+ *   775, 712, 712, 711, 776, 774 in one six-run block. There is no benefit to
+ *   claim on that row; read it as "no reliable benefit without forced GC".
+ *   Likely cause is GC scheduling on a shared box, which nobody controls.
+ *
+ *   SETTLED RSS, once reclaimed                 BEFORE     AFTER
+ *     8 kHz WAV source                          480-484   482-484
+ *     real Ogg/Opus 48 kHz                      577-578   579-580
+ *
+ *   SAMPLED RSS, highest sample                 BEFORE     AFTER
+ *     8 kHz WAV source                              592       548
+ *
+ * ⚠️ WHICH PART OF THE CHANGE BOUGHT THAT, measured rather than assumed, by
+ * putting three deliberately mis-ordered variants through the same driver
+ * (8 kHz WAV, same-turn gc() per stem, interleaved with the real arms in one
+ * session):
+ *
+ *     no release at all (pre-2026-11-11)        766-767 MiB HWM
+ *     release, but AFTER the allocation         657-658 MiB HWM
+ *     release BEFORE the allocation (shipped)   656-658 MiB HWM
+ *
+ * So the ~110 MiB is bought by RELEASING EAGERLY AT ALL — not by the order.
+ * Once the stores are handed back on the spot, the high-water moment moves
+ * inside `decodeAudioData`, which is above every downmix variant, so the
+ * ordering stops being visible in VmHWM.
+ *
+ * ⚠️ AND THE ~110 MiB IS CONDITIONAL. IT IS NOT A FIXED SAVING. What the
+ * base arm pays for is the PREVIOUS stem's stereo buffer still being resident
+ * when the next decode runs — so the figure is entirely a question of whether
+ * the collector has got to it yet. One extra `gc()` is the whole difference:
+ *
+ *                               gc() in the SAME turn   gc() after a YIELD
+ *     no release (base)                 766 MiB               656 MiB
+ *     release (shipped)                 657 MiB               657 MiB
+ *
+ * A same-turn `gc()` cannot collect the buffer: the async frame and the
+ * pending promise result still pin it. Give the collector a turn of its own
+ * and base reaches the shipped figure on its own. The per-stem RSS trace says
+ * the same thing — 316/371/427/482/538/593 when each stereo is still resident,
+ * 207/262/317/372/427/482 once it is not.
+ *
+ * SO STATE THE BENEFIT PRECISELY, because the honest version is the useful
+ * one: against a lazy collector the release is worth ~110 MiB; against an
+ * eager one it is worth nothing; under real GC timing it is somewhere in
+ * 0..110 MiB and nobody gets to choose. What the change reliably buys is that
+ * the answer STOPS DEPENDING ON GC TIMING AT ALL — 657 in both columns. That
+ * is the durable property, and it is the same property WebKit bug 189337
+ * makes valuable on iOS, where the collector is the one that lags.
+ *
+ * The order still earns its place, and it is worth being exact about what it
+ * earns: it holds SEVEN whole-track buffers live at the busiest instant
+ * instead of eight — one whole-track buffer, 57,600,000 B, less live PCM —
+ * which is what the sampled figures 592 -> 548 are showing. On this box that
+ * does not convert into a lower process peak, under either GC schedule. On an
+ * engine or device whose decode transient is smaller —
+ * where the downmix instant IS the peak — it would. That last sentence is a
+ * hypothesis; nobody has measured it.
+ *
+ * ⚠️ THE ~600 BAR IS NOT MET, BEFORE OR AFTER. The high-water mark is 656+
+ * MiB on the synthetic source and 762+ MiB on the production Opus one. This
+ * change lowers it by up to ~110 MiB (see the GC-timing table above — the
+ * figure is 0..110 depending on the collector) and does not bring it under the
+ * bar in any configuration measured. Anyone
+ * quoting 548, or quoting the settled figure, is quoting a number that is not
+ * the process peak — which is the mistake this comment exists to stop.
+ *
+ * WHAT STILL SETS THE MARK IS `decodeAudioData` ITSELF, not the downmix:
+ * after this change the high-water mark still sits ~174 MiB above settled on
+ * the WAV path (657-483) and ~183 MiB on the Opus one (762-579), and no part
+ * of either is the mono buffer. Reducing it means changing how the
+ * decode happens, which is a separate piece of work nobody has scoped.
+ *
+ * The peak happens during LOAD, before a note plays: a device that survives
+ * steady-state playback can still die loading.
+ *
+ * MEASUREMENT CAVEATS, because they bound what the table above licenses: one
+ * headless Chromium on one Linux box; the Opus run holds all six encoded
+ * buffers resident at once, which is what `load()` really does but which also
+ * raises its settled figure; the no-forced-gc() row is bimodal rather than
+ * merely noisy, which is why no benefit is claimed on it; and nothing here was
+ * measured on WebKit or on a real device.
+ *
+ * What is left in the downmix — one stereo buffer alive beside five monos at
+ * the last decode — is the LIVE-PCM floor for this architecture:
+ * `decodeAudioData` gives us a stereo buffer and there is no API that asks it
+ * not to. It is a floor on PCM, not a prediction of VmHWM, which the table
+ * above shows is far higher.
+ *
+ * WHY EAGER RELEASE AND NOT JUST DROPPING THE REFERENCE. Handing the store
+ * back is not the same as making it collectable, and the gap between the two
+ * is exactly as wide as the collector's lag. A forced `gc()` in the SAME turn
+ * did not get that memory back (766); a `gc()` after a yield did (656); an
+ * explicit transfer-detach gets it back either way (657). Production forces
+ * neither, so the lag is whatever the engine decides that day — and on iOS,
+ * WebKit bug 189337 (open since 2018) can make it ~a minute. `load()` is
+ * re-runnable by
+ * design via `loadId`, so a failed load plus a user retry could otherwise
+ * stack two generations of PCM on exactly the path taken when memory is
+ * already tight.
  */
 
 import {
@@ -160,24 +287,82 @@ const defaultScheduleFrame: (cb: () => void) => FrameCanceller = (cb) => {
 };
 
 /**
- * Average all channels of a decoded buffer into a fresh mono buffer at the
- * context rate. The caller must drop its reference to `decoded` straight
- * afterwards — holding both is the 659 MB configuration that fails.
+ * Hand a spent channel's PCM back to the allocator NOW, instead of waiting for
+ * the decoded buffer to be collected.
  *
- * A single-channel decode is returned as-is: copying it would double peak
- * memory for no gain.
+ * A Web Audio channel is a plain `Float32Array` over its own whole
+ * `ArrayBuffer`, so transferring that store detaches it and frees the bytes
+ * synchronously. The clone is dropped unread; `structuredClone` with
+ * `transfer` moves the store rather than copying it, so this allocates nothing.
+ *
+ * Every guard here is a correctness guard, not decoration: a view that is a
+ * window onto a larger or shared store must not be detached, because detaching
+ * would take bytes that are not ours. Where any guard fails, or the host has no
+ * `structuredClone`, this is a NO-OP and the old GC-timed behaviour applies —
+ * the downmix is still correct, just not as cheap.
+ *
+ * ONLY ever called on a channel of a buffer we are about to drop. Never on a
+ * buffer that will be played: a detached channel reads back as zero samples.
+ */
+function releaseChannelData(data: Float32Array): void {
+  if (typeof structuredClone !== 'function') return;
+  const store: ArrayBufferLike = data.buffer;
+  if (!(store instanceof ArrayBuffer)) return;
+  if (data.byteOffset !== 0 || data.byteLength !== store.byteLength) return;
+  try {
+    structuredClone(store, { transfer: [store] });
+  } catch {
+    /* host refused the transfer; the GC path still applies */
+  }
+}
+
+/**
+ * Average all channels of a decoded buffer into a mono buffer at the context
+ * rate. `decoded` is CONSUMED: its channels are summed in place and then
+ * released, so the caller must drop its reference and must not read it again.
+ *
+ * Of the four steps, step 2 and step 4 — releasing at all — are what lowered
+ * the renderer high-water mark by ~110 MiB. Their POSITION relative to step 3
+ * does not move that mark on the box this was measured on; what it moves is
+ * the live PCM at the busiest instant, seven whole-track buffers instead of
+ * eight. Both claims are measured; see MEMORY at the top of this file, which
+ * also records that the mark is still above the ~600 bar afterwards.
+ *
+ * The order is gated by `the spent channels are released BEFORE the mono
+ * buffer is allocated` in play-engine.test.mjs — without that test, moving
+ * step 2 below step 3 frees the same bytes, leaves the same end state, and
+ * passes every other test:
+ *
+ *   1. sum into channel 0 IN PLACE   — no second full-length allocation while
+ *                                      every source channel is still resident
+ *   2. release channels 1..n         — frees them BEFORE step 3 asks for more
+ *   3. allocate the mono buffer, copy
+ *   4. release channel 0             — the last of the decode, freed on this
+ *                                      line rather than whenever GC gets to it
+ *
+ * Allocating the mono buffer first (as this used to) means one stereo buffer
+ * and one mono buffer are both live for the length of the loop. It is an
+ * allocation-ORDER bug, not a volume one: exactly the same bytes are read and
+ * written either way, and the end state is identical, which is precisely why
+ * no after-the-fact assertion can catch a regression here.
+ *
+ * A single-channel decode is returned as-is, UNRELEASED: it is the buffer we
+ * are going to play, and copying it would double peak memory for no gain.
  */
 function downmixToMono(ctx: AudioContext, decoded: AudioBuffer): AudioBuffer {
-  if (decoded.numberOfChannels <= PLAYBACK_CHANNELS) return decoded;
-  const mono = ctx.createBuffer(PLAYBACK_CHANNELS, decoded.length, decoded.sampleRate);
-  const out = mono.getChannelData(0);
   const channels = decoded.numberOfChannels;
-  for (let c = 0; c < channels; c++) {
-    const src = decoded.getChannelData(c);
-    if (c === 0) for (let i = 0; i < out.length; i++) out[i] = src[i];
-    else for (let i = 0; i < out.length; i++) out[i] += src[i];
-  }
-  if (channels > 1) for (let i = 0; i < out.length; i++) out[i] /= channels;
+  if (channels <= PLAYBACK_CHANNELS) return decoded;
+
+  const acc = decoded.getChannelData(0);
+  const rest: Float32Array[] = [];
+  for (let c = 1; c < channels; c++) rest.push(decoded.getChannelData(c));
+  for (const src of rest) for (let i = 0; i < acc.length; i++) acc[i] += src[i];
+  for (let i = 0; i < acc.length; i++) acc[i] /= channels;
+  for (const src of rest) releaseChannelData(src);
+
+  const mono = ctx.createBuffer(PLAYBACK_CHANNELS, decoded.length, decoded.sampleRate);
+  mono.getChannelData(0).set(acc);
+  releaseChannelData(acc);
   return mono;
 }
 
@@ -270,8 +455,10 @@ export class WebAudioPlayEngine implements PlayEngine {
         if (!decoded || decoded.length === 0) {
           availability = 'encode_failed';
         } else {
-          // One stem at a time: downmix, then let the stereo buffer go before
-          // the next decode allocates its own.
+          // One stem at a time, and `downmixToMono` CONSUMES `decoded`: the
+          // stereo channels are freed inside that call, not left for GC, so
+          // the next decode starts from the mono-only floor. `decoded` must
+          // not be read after this line.
           this.buffers.set(name, downmixToMono(ctx, decoded));
         }
       } catch {

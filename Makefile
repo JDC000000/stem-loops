@@ -1,4 +1,4 @@
-.PHONY: dev test-job types types-generate alphabet alphabet-generate test lint check-rls check-prices deploy-web deploy-worker migrate install help
+.PHONY: dev test-job types types-generate alphabet alphabet-generate test test-py test-web lint lint-py lint-web check-rls check-prices deploy-web deploy-worker migrate install help
 
 # Default target
 help:
@@ -77,15 +77,29 @@ alphabet: alphabet-generate
 	@git diff --exit-code $(ALPHABET_GENERATED) || (echo "ALPHABET DRIFT DETECTED: run 'make alphabet-generate' and commit the result" && exit 1)
 	@echo "Alphabet is in sync."
 
-# Run all tests
-test:
+# Run all tests. Split into a Python leg and a Node leg because they have
+# DIFFERENT preconditions: pytest needs the worker's Python deps, the web suite
+# needs node_modules. A worktree or fresh clone has the former and not the
+# latter, so a single aggregate target forces the pre-commit hook to gate both
+# legs on one probe -- which either blocks a commit on a missing web install or
+# skips a Python suite the machine can run perfectly well. The aggregates are
+# kept so anything that calls `make test` / `make lint` keeps working.
+test: test-py test-web
+
+test-py:
 	cd apps/worker && python3 -m pytest tests/ -v
+
+test-web:
 	pnpm --filter web test
 
 # Run linters
-lint:
+lint: lint-py lint-web
+
+lint-py:
 	cd apps/worker && python3 -m ruff check src/ tests/
 	cd apps/worker && python3 -m black --check src/ tests/
+
+lint-web:
 	pnpm --filter web lint
 
 # Deploy web to Vercel

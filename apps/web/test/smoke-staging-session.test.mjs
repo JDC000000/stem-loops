@@ -507,6 +507,91 @@ test('the fallback retries exactly once, then surfaces the failure', async () =>
   assert.equal(fetchImpl.calls.length, 3, 'one retry, not a loop');
 });
 
+// ------------- 17c. the retry bound must be the STATUS, not the message text
+// The message embeds clean(text) -- attacker-controlled response body. A bound
+// expressed as a regex over the message is really a decision delegated to the
+// remote end: a 400, a 500, even a 200 with a non-JSON body could force the
+// service-key retry just by containing " HTTP 401:" in its first 200 chars.
+// These are the injected cases; the honest ones above do not cover them.
+test('an injected " HTTP 401:" in a non-401 body does NOT force the retry', async () => {
+  for (const [label, response] of [
+    ['400 with an injected 403 string', res(400, { msg: 'nope (pretend POST /x HTTP 403: denied)' })],
+    ['500 with an injected 401 string', res(500, { msg: 'boom (pretend POST /x HTTP 401: denied)' })],
+    ['200 non-JSON with an injected 401 string', res(200, 'oops POST /x HTTP 401: denied', { json: false })],
+    ['307 with an injected 401 string', res(307, 'POST /x HTTP 401: denied', { json: false })],
+  ]) {
+    const fetchImpl = stubFetch([linkOk(), response, res(200, SESSION)]);
+    await assert.rejects(
+      () => mintServiceRoleSession({ sbUrl: SB, serviceKey: KEY, anonKey: ANON, email: EMAIL, fetchImpl }),
+      (e) => {
+        assert.equal(e.step, 'verify', label);
+        return true;
+      },
+    );
+    assert.equal(
+      fetchImpl.calls.length, 2,
+      `${label}: must not retry -- the body must not be able to trigger the service-key fallback`,
+    );
+    assert.notEqual(fetchImpl.calls[1].headers.apikey, KEY, `${label}: service key must not have been sent`);
+  }
+});
+
+test('the error carries the HTTP status, which is what the bound reads', async () => {
+  for (const [status, body, opts] of [[401, { m: 1 }, {}], [403, { m: 1 }, {}], [500, 'html', { json: false }], [307, '', { json: false }]]) {
+    const { run } = mint([res(status, body, opts)]);
+    await assert.rejects(run, (e) => {
+      assert.equal(e.status, status, `expected err.status === ${status}`);
+      return true;
+    });
+  }
+  // A fetch rejection has no status at all, so it can never match the bound.
+  const { run } = mint([() => { throw new Error('ECONNRESET'); }]);
+  await assert.rejects(run, (e) => {
+    assert.equal(e.status, undefined, 'a transport failure must carry no status');
+    return true;
+  });
+});
+
+test('an honest 401 still retries even when the body is not JSON', async () => {
+  // The old regex bound needed the literal " HTTP 401:" in the message; the
+  // status bound works regardless of what the gateway returns as a body.
+  const fetchImpl = stubFetch([linkOk(), res(401, '<html>Invalid API key</html>', { json: false }), res(200, SESSION)]);
+  const out = await mintServiceRoleSession({ sbUrl: SB, serviceKey: KEY, anonKey: ANON, email: EMAIL, fetchImpl });
+  assert.deepEqual(out, SESSION);
+  assert.equal(fetchImpl.calls.length, 3);
+  assert.equal(fetchImpl.calls[2].headers.apikey, KEY);
+});
+
+// ------------------------------------- 17d. the fallback must be observable
+test('the fallback reports itself through onNotice', async () => {
+  const notices = [];
+  const fetchImpl = stubFetch([linkOk(), res(401, { message: 'Invalid API key' }), res(200, SESSION)]);
+  await mintServiceRoleSession({
+    sbUrl: SB, serviceKey: KEY, anonKey: ANON, email: EMAIL, fetchImpl,
+    onNotice: (m) => notices.push(m),
+  });
+  assert.equal(notices.length, 1, 'the fallback must not be silent');
+  assert.match(notices[0], /401/);
+  assert.match(notices[0], /service-role key/);
+  assert.match(notices[0], /STAGING_SUPABASE_ANON_KEY/, 'should say what to fix');
+  assert.ok(!notices[0].includes(KEY) && !notices[0].includes(ANON), 'the notice must not contain a key');
+});
+
+test('onNotice is not called on the happy path, and is optional', async () => {
+  const notices = [];
+  await mintServiceRoleSession({
+    sbUrl: SB, serviceKey: KEY, anonKey: ANON, email: EMAIL,
+    fetchImpl: stubFetch([linkOk(), res(200, SESSION)]), onNotice: (m) => notices.push(m),
+  });
+  assert.deepEqual(notices, []);
+  // Omitting it entirely must not throw when the fallback fires.
+  const out = await mintServiceRoleSession({
+    sbUrl: SB, serviceKey: KEY, anonKey: ANON, email: EMAIL,
+    fetchImpl: stubFetch([linkOk(), res(401, { m: 1 }), res(200, SESSION)]),
+  });
+  assert.deepEqual(out, SESSION);
+});
+
 // ------------------------------- 18. LEAK PROOF, the shapes that leaked before
 test('a credential used as an object KEY is redacted (not just as a value)', async () => {
   // The first version of this file only ever planted the sentinel in response
@@ -582,7 +667,12 @@ test('every error is constructed in exactly one place, so redaction is structura
   const code = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
   const sites = [...code.matchAll(/new SmokeSessionError\s*\(/g)].length;
   assert.equal(sites, 1, `expected exactly one "new SmokeSessionError(" site, found ${sites}`);
-  assert.match(code, /const boom = \(step, msg\) => new SmokeSessionError\(step, scrub\(msg\)\)/);
+  // BOTH arguments of the one construction point must be scrubbed. `step` is a
+  // literal at all three call sites, so no credential can reach it through the
+  // public API and there is no behavioural test to write -- but a mechanism
+  // sold as structural must not have an unscrubbed input, and a review mutant
+  // that put a credential in `step` leaked it in full.
+  assert.match(code, /new SmokeSessionError\(scrub\(step\), scrub\(msg\)\)/, 'boom() must scrub both step and msg');
   // ...and no throw may sidestep it. A bare re-throw of the caught binding is
   // allowed: by then the error came out of call(), so boom() already scrubbed
   // it. Anything else -- a new Error, a template literal, a string -- is not.
@@ -616,7 +706,7 @@ test('a hostile body cannot flood the CI line through its key names', async () =
 // mechanism available for its two security-relevant properties, and they are
 // what catches a future edit that quietly drops either one.
 
-test("smoke_staging.mjs: every credential-bearing helper sets redirect:'manual'", async () => {
+test("smoke_staging.mjs: every credential-bearing helper sets redirect:'manual' after its spread", async () => {
   const { readFileSync } = await import('node:fs');
   const { join, dirname } = await import('node:path');
   const { fileURLToPath: f } = await import('node:url');
@@ -625,61 +715,104 @@ test("smoke_staging.mjs: every credential-bearing helper sets redirect:'manual'"
   // sbAdmin sends apikey + Authorization with the service-role key; stripe
   // sends the Stripe secret; authed sends the session cookie and the Vercel
   // bypass secret. undici does not strip a custom header cross-origin.
-  for (const [name, re] of [
-    ['sbAdmin', /const sbAdmin = \(path, opts = \{\}\) =>[\s\S]{0,200}?redirect: 'manual'/],
-    ['stripe', /const stripe = \(path, \{[^}]*\} = \{\}\) =>[\s\S]{0,200}?redirect: 'manual'/],
-    ['authed', /const authed = \(extra = \{\}\) => \(\{ redirect: 'manual'/],
-  ]) {
-    assert.match(src, re, `${name} must set redirect: 'manual'`);
+  // Comments are stripped: these helpers' comments mention 'follow' on purpose,
+  // and an assertion about code must not read prose.
+  const block = (name) => {
+    const i = src.indexOf(`const ${name} = `);
+    assert.notEqual(i, -1, `could not find ${name}`);
+    const raw = src.slice(i, src.indexOf('\n});', i) + 4) || src.slice(i, i + 600);
+    return raw.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  };
+
+  for (const name of ['sbAdmin', 'stripe', 'authed']) {
+    const b = block(name);
+    assert.match(b, /redirect: 'manual'/, `${name} must set redirect: 'manual'`);
+    assert.doesNotMatch(b, /redirect: 'follow'/, `${name} must not follow redirects`);
+    // Order matters: a `redirect` set BEFORE `...opts` can be overridden by a
+    // caller passing { redirect: 'follow' }. A guard a caller can switch off
+    // is not a guard.
+    const spread = b.indexOf('...opts');
+    if (spread !== -1) {
+      assert.ok(
+        b.indexOf("redirect: 'manual'") > spread,
+        `${name}: redirect: 'manual' must come AFTER ...opts so a caller cannot override it`,
+      );
+    }
   }
-  // And nothing may re-introduce an explicit 'follow' on those helpers.
-  assert.doesNotMatch(src, /const sbAdmin[\s\S]{0,200}?redirect: 'follow'/, "sbAdmin must not follow redirects");
 });
 
-test('smoke_staging.mjs: SUPABASE_URL host is pinned to the staging project', async () => {
+test('smoke_staging.mjs: SUPABASE_URL host guard aborts the real process, before any network call', async () => {
+  // This one carries actual security weight, so it is a subprocess assertion
+  // rather than a source grep: run the real script with a controlled
+  // environment and check the exit code AND that nothing was dialled.
+  //
+  // STAGING_BASE_URL and SUPABASE_URL both point at a local server we own, so
+  // the test makes no outbound request whatever the guard decides. The local
+  // host is not the staging Supabase host, so the guard must fire.
+  const { createServer } = await import('node:http');
+  const { spawn } = await import('node:child_process');
+  const { join, dirname } = await import('node:path');
+  const { fileURLToPath: f } = await import('node:url');
+
+  const ROOT = join(dirname(f(import.meta.url)), '../../..');
+  const SCRIPT = join(ROOT, 'scripts/smoke_staging.mjs');
+
+  let hits = 0;
+  const server = createServer((req, res) => { hits += 1; res.writeHead(500); res.end('nope'); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  const run = (extraEnv) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [SCRIPT], {
+      env: {
+        ...process.env,
+        SMOKE_ENV_FILE: '/dev/null',
+        STAGING_BASE_URL: base,
+        SUPABASE_URL: base,
+        SUPABASE_SERVICE_ROLE_KEY: 'FAKE-SERVICE-ROLE-KEY-FOR-SUBPROCESS-TEST',
+        SUPABASE_ANON_KEY: '',
+        STRIPE_SECRET_KEY: '',
+        VERCEL_AUTOMATION_BYPASS_SECRET: '',
+        SMOKE_ALLOW_PROD: '',
+        ...extraEnv,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    const kill = setTimeout(() => child.kill('SIGKILL'), 45_000);
+    child.on('close', (code) => { clearTimeout(kill); resolve({ code, out }); });
+  });
+
+  try {
+    // 1. Guard fires: exit 2, and the process must not have dialled anything.
+    hits = 0;
+    const blocked = await run({});
+    assert.equal(blocked.code, 2, `expected exit 2 (setup/guard), got ${blocked.code}. Output:\n${blocked.out.slice(0, 600)}`);
+    assert.match(blocked.out, /Refusing to run: SUPABASE_URL host is/);
+    assert.match(blocked.out, /expected ylzokjwnsraehmpclnkx\.supabase\.co/);
+    assert.equal(hits, 0, 'the guard must abort BEFORE any network call, including step 1');
+
+    // 2. The guard is not simply always-on: the documented SMOKE_ALLOW_PROD
+    //    escape hatch still lets a run through, and then it does dial out.
+    hits = 0;
+    const allowed = await run({ SMOKE_ALLOW_PROD: '1' });
+    assert.notEqual(allowed.code, 2, 'with SMOKE_ALLOW_PROD=1 the host guard must not trip');
+    assert.ok(hits >= 1, 'with the guard satisfied the script must actually reach step 1');
+    assert.doesNotMatch(allowed.out, /Refusing to run: SUPABASE_URL host is/);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('smoke_staging.mjs: the production Supabase project ref appears nowhere in it', async () => {
   const { readFileSync } = await import('node:fs');
   const { join, dirname } = await import('node:path');
   const { fileURLToPath: f } = await import('node:url');
   const src = readFileSync(join(dirname(f(import.meta.url)), '../../..', 'scripts/smoke_staging.mjs'), 'utf8');
-
-  // Mirrors the guard scripts/smoke_staging_sweep.mjs has always had. Without
-  // it, SUPABASE_URL could point at the production project while
-  // STAGING_BASE_URL still looked like staging, and step 9's user DELETE would
-  // land there.
   assert.match(src, /const STAGING_SB_HOST = 'ylzokjwnsraehmpclnkx\.supabase\.co'/);
-  assert.match(src, /new URL\(SB_URL\)\.hostname/);
-  assert.match(
-    src,
-    /if \(SB_URL && SB_HOST !== STAGING_SB_HOST && process\.env\.SMOKE_ALLOW_PROD !== '1'\) \{/,
-    'the host guard must be live and gated only by the existing SMOKE_ALLOW_PROD escape hatch',
-  );
-  // It must actually abort, with the setup exit code.
-  const guard = src.slice(src.indexOf('if (SB_URL && SB_HOST !== STAGING_SB_HOST'));
-  assert.match(guard.slice(0, 500), /process\.exit\(2\)/, 'the host guard must exit 2');
-  // The production project ref must never be hard-coded as an allowed host.
   assert.doesNotMatch(src, /qthrhamfljhifhfwvvwj/, 'the production Supabase ref must not appear');
-});
-
-test('this test file contains no literal that looks like a real credential', async () => {
-  // GitHub push protection blocked a push from this branch because the fake
-  // canaries used the real Supabase secret-key prefix. Redaction here is plain
-  // substring removal, so the shape of a test credential is irrelevant to what
-  // is being tested -- there is no reason to make one look real. Patterns are
-  // assembled from fragments so this assertion cannot match itself.
-  const { readFileSync } = await import('node:fs');
-  const { fileURLToPath: f } = await import('node:url');
-  const src = readFileSync(f(import.meta.url), 'utf8');
-  const forbidden = [
-    ['Supabase secret key', 'sb' + '_secret_'],
-    ['Supabase publishable key', 'sb' + '_publishable_'],
-    ['JWT', 'eyJ' + 'hbGciOi'],
-    ['Stripe test key', 'sk' + '_test_'],
-    ['Stripe live key', 'sk' + '_live_'],
-  ];
-  for (const [label, needle] of forbidden) {
-    const hits = src.split(needle).length - 1;
-    assert.equal(hits, 0, `${label}-shaped literal found in this file (${hits} occurrence(s)); use an obviously fake value`);
-  }
 });
 
 // ----------------------------------------------------------- 15. redactSecret

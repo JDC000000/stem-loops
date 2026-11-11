@@ -125,14 +125,29 @@ async function http(url, { method = 'GET', headers = {}, body, redirect = 'follo
 // origin; 'manual' never makes the hop. Callers already treat >= 300 as a
 // failure, so a redirect now surfaces as one instead of being followed.
 //
-// Deliberately NOT changed to 'manual': step 1's GET /pricing (must render,
-// carries only the Vercel bypass header, same-origin) and the GET of a Stripe
-// checkout_url in steps 7-8 (carries no credential of ours and legitimately
-// redirects). http()'s own default stays 'follow' for those two.
+// Two requests deliberately stay on 'follow', and the honest reasons are not
+// the ones an earlier version of this comment gave:
+//
+//   - Step 1's GET /pricing. It DOES carry a credential: the Vercel bypass
+//     secret defeats deployment protection. And it is NOT guaranteed
+//     same-origin -- step 1 itself looks for `vercel.com/sso-api` in the
+//     response, i.e. it EXPECTS a cross-origin redirect when protection is on,
+//     and with 'follow' the bypass header is forwarded to vercel.com. This is
+//     accepted rather than fixed: the destination is the secret's own issuer,
+//     and 'manual' would replace step 1's actionable "deployment protection is
+//     on. Set VERCEL_AUTOMATION_BYPASS_SECRET" with a bare HTTP 307.
+//   - The GET of a Stripe checkout_url in steps 7-8. This one genuinely
+//     carries no credential of ours and legitimately redirects.
+//
+// http()'s own default therefore stays 'follow'; every credentialled request
+// opts into 'manual' explicitly below.
 const sbAdmin = (path, opts = {}) =>
   http(`${SB_URL}${path}`, {
-    redirect: 'manual',
     ...opts,
+    // AFTER the spread: before it, a caller passing { redirect: 'follow' }
+    // would silently override the guard. No call site does, but a guard a
+    // caller can switch off is not a guard.
+    redirect: 'manual',
     headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, 'Content-Type': 'application/json', ...(opts.headers || {}) },
   });
 
@@ -283,9 +298,25 @@ try {
   // chosen over that one-liner.)
   if (userId) {
     try {
-      const session = await mintServiceRoleSession({ sbUrl: SB_URL, serviceKey: SERVICE_KEY, anonKey: ANON_KEY, email });
+      // onNotice surfaces the anon-key fallback. Without it, a permanently
+      // rejected anon key would quietly use the service key on every run and
+      // nothing in the output would say the preference had stopped working.
+      const notices = [];
+      const session = await mintServiceRoleSession({
+        sbUrl: SB_URL,
+        serviceKey: SERVICE_KEY,
+        anonKey: ANON_KEY,
+        email,
+        onNotice: (m) => {
+          notices.push(m);
+          console.warn(`::warning title=Smoke session fell back to the service-role key::${m}`);
+        },
+      });
       cookie = sessionCookieHeader(session);
-      pass('3b. Sign in (session cookie)', 'admin generate_link + verify OK; @supabase/ssr cookie built');
+      pass(
+        '3b. Sign in (session cookie)',
+        `admin generate_link + verify OK; @supabase/ssr cookie built${notices.length ? ' -- WITH FALLBACK: ' + notices.join(' ') : ''}`,
+      );
     } catch (e) {
       fail('3b. Sign in (session cookie)', e.message);
     }

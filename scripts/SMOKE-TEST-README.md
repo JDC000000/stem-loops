@@ -51,6 +51,18 @@ exactly once with the service-role key, so a stale anon secret cannot turn the
 nightly red. Any other `/verify` failure, including a real expired-token error,
 is reported as-is and never retried.
 
+The retry is bound to the **HTTP status**, never to the error message. The
+message embeds the response body, so a bound expressed as a pattern over the
+message would be a decision delegated to whatever the remote end returned — a
+400, a 500, even a 200 with a non-JSON body could force the service-key retry
+just by containing the right substring. That was a real defect and is fixed.
+
+When the fallback fires it is **announced**, not silent: the run prints a
+`::warning::` and step 3b's row reads `... -- WITH FALLBACK: ...`. Without that
+a permanently rejected anon key would quietly use the service key on every run
+and nothing would say the preference had stopped working. **If you see that
+warning, replace `STAGING_SUPABASE_ANON_KEY` with the modern publishable key.**
+
 ## How step 3b signs in (and why not a password grant)
 
 Two different hCaptcha layers exist in this product and earlier notes in this
@@ -128,11 +140,24 @@ that origin the service-role key, which bypasses RLS. Reproduced locally on
 Node v22.23.4 with two servers: with `redirect: 'follow'` the second origin
 received the full `apikey`; with `'manual'` the hop never happens.
 
-Every request that carries a credential therefore sets `redirect: 'manual'` and
-treats a 3xx as a failure: both calls in `scripts/lib/smoke_session.mjs`, plus
-`sbAdmin()`, `stripe()` and `authed()` in `scripts/smoke_staging.mjs`. The two
-that stay on `'follow'` carry no credential of ours and legitimately redirect:
-step 1's `GET /pricing` and the `GET` of a Stripe `checkout_url` in steps 7-8.
+Every request that carries a credential therefore sets `redirect: 'manual'`
+(after any spread, so a caller cannot override it) and treats a 3xx as a
+failure: both calls in `scripts/lib/smoke_session.mjs`, plus `sbAdmin()`,
+`stripe()` and `authed()` in `scripts/smoke_staging.mjs`.
+
+Two requests deliberately stay on `'follow'`, and the honest reasons are not
+the obvious ones:
+
+- **The `GET` of a Stripe `checkout_url`** (steps 7-8) carries no credential of
+  ours and legitimately redirects. Straightforward.
+- **Step 1's `GET /pricing`** does carry a credential — the Vercel bypass secret
+  defeats deployment protection — and it is *not* guaranteed same-origin: step 1
+  checks the response for `vercel.com/sso-api`, i.e. it expects a cross-origin
+  redirect when protection is on, and with `'follow'` the
+  `x-vercel-protection-bypass` header is forwarded to `vercel.com`. That is
+  **accepted, not overlooked**: the destination is the secret's own issuer, and
+  `'manual'` would replace step 1's actionable *"deployment protection is on.
+  Set VERCEL_AUTOMATION_BYPASS_SECRET"* with a bare `HTTP 307`.
 
 ### Host pinning
 

@@ -141,11 +141,17 @@ export class SmokeSessionError extends Error {
  *   (a legacy anon JWT may be disabled on the project).
  * @param {string}   o.email       The smoke user's email (must already exist).
  * @param {Function} [o.fetchImpl] Injectable fetch, for tests.
+ * @param {Function} [o.onNotice] Called with a human-readable string when
+ *   something happened that the run should surface but that is not a failure
+ *   -- currently only the anon-key fallback. This module writes nothing to
+ *   stdout/stderr itself (asserted by a test), so the caller decides how to
+ *   report it. Without this the fallback would be invisible: a permanently
+ *   rejected anon key would silently use the service key every single run.
  * @param {number}   [o.timeoutMs]
  * @returns {Promise<object>} The GoTrue session JSON (access_token, ...).
  * @throws {SmokeSessionError} Never containing any part of either key.
  */
-export async function mintServiceRoleSession({ sbUrl, serviceKey, anonKey = '', email, fetchImpl = fetch, timeoutMs = TIMEOUT_MS }) {
+export async function mintServiceRoleSession({ sbUrl, serviceKey, anonKey = '', email, fetchImpl = fetch, onNotice = () => {}, timeoutMs = TIMEOUT_MS }) {
   // Scrub BOTH credentials the module holds, not just the service key.
   const scrub = (t) => redactSecret(redactSecret(t, serviceKey), anonKey);
   // For untrusted text (response bodies, foreign error messages): scrub, then
@@ -154,7 +160,22 @@ export async function mintServiceRoleSession({ sbUrl, serviceKey, anonKey = '', 
   // The ONLY place this module constructs an error -- every throw below goes
   // through here, so no call site can leak a credential however it
   // interpolates. Declared before the guards so that is true without exception.
-  const boom = (step, msg) => new SmokeSessionError(step, scrub(msg));
+  //
+  // BOTH arguments are scrubbed. `step` is a literal at all three call sites
+  // today, so a credential cannot reach it through the public API -- but this
+  // mechanism is sold as structural, and an unscrubbed input to the one
+  // construction point is a hole in that claim rather than a live leak. A
+  // review mutant that put a credential in `step` leaked it in full.
+  //
+  // `status` is the HTTP status, attached so callers can branch on the STATUS
+  // rather than on the message. The message embeds `clean(text)`, i.e.
+  // attacker-controlled response body, so any decision made by matching the
+  // message is really a decision made by the remote end.
+  const boom = (step, msg, status) => {
+    const err = new SmokeSessionError(scrub(step), scrub(msg));
+    if (typeof status === 'number') err.status = status;
+    return err;
+  };
 
   // Fail closed. There is deliberately no fallback to an anonymous password
   // grant: that is exactly what captcha protection rejects, so falling back
@@ -190,20 +211,21 @@ export async function mintServiceRoleSession({ sbUrl, serviceKey, anonKey = '', 
     try {
       text = await res.text();
     } catch (e) {
-      throw boom(step, `POST ${path} HTTP ${res.status}: could not read the response body: ${clean(e?.message ?? e)}`);
+      throw boom(step, `POST ${path} HTTP ${res.status}: could not read the response body: ${clean(e?.message ?? e)}`, res.status);
     }
     if (res.status >= 300 && res.status < 400) {
       throw boom(
         step,
         `POST ${path} returned a redirect (HTTP ${res.status}). Not followed on purpose: a cross-origin hop `
           + 'would carry the apikey header with it. Check SUPABASE_URL.',
+        res.status,
       );
     }
     let json = null;
     try { json = JSON.parse(text); } catch { /* not JSON; reported below */ }
-    if (!res.ok) throw boom(step, `POST ${path} HTTP ${res.status}: ${clean(text) || '(empty body)'}`);
+    if (!res.ok) throw boom(step, `POST ${path} HTTP ${res.status}: ${clean(text) || '(empty body)'}`, res.status);
     if (json === null || typeof json !== 'object') {
-      throw boom(step, `POST ${path} HTTP ${res.status} returned non-JSON body: ${clean(text) || '(empty body)'}`);
+      throw boom(step, `POST ${path} HTTP ${res.status} returned non-JSON body: ${clean(text) || '(empty body)'}`, res.status);
     }
     return json;
   };
@@ -258,8 +280,24 @@ export async function mintServiceRoleSession({ sbUrl, serviceKey, anonKey = '', 
     // exactly once on that specific signal rather than failing the whole run
     // over a key choice. Any other error -- including a real token problem --
     // propagates untouched.
-    const gatewayRejectedTheKey = Boolean(anonKey) && e instanceof SmokeSessionError && / HTTP 40[13]:/.test(e.message);
+    //
+    // The test is on err.status, NOT on err.message. An earlier version
+    // matched / HTTP 40[13]:/ against the message, and the message embeds
+    // clean(text) -- the response body. So a 400, a 500, even a 200 with a
+    // non-JSON body could force the service-key retry just by containing the
+    // string " HTTP 401:" in its first 200 characters: the bound was "the
+    // message happens to contain that substring", which is the remote end's
+    // decision, not ours. A stated bound that does not hold is worse than a
+    // known exposure, so it is now the status or nothing.
+    const gatewayRejectedTheKey = Boolean(anonKey)
+      && e instanceof SmokeSessionError
+      && (e.status === 401 || e.status === 403);
     if (!gatewayRejectedTheKey) throw e;
+    onNotice(
+      'the publishable/anon key was rejected by the Supabase gateway (HTTP '
+        + `${e.status}); retried /auth/v1/verify with the service-role key. The anon key is probably a `
+        + 'disabled legacy JWT -- replace STAGING_SUPABASE_ANON_KEY with the modern publishable key.',
+    );
     session = await redeem(serviceKey);
   }
   if (typeof session.access_token !== 'string' || !session.access_token) {

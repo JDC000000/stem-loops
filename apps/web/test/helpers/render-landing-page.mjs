@@ -27,6 +27,29 @@
 // stripped misses what it deletes, raw misses what the compiler produces. Neither is sound
 // alone. The sound reading is the rendered one, and that is what this module produces.
 //
+// AND THE DOM IS NOT THE ONLY CHANNEL. `export const metadata` never reaches the DOM at all,
+// and it is the most-read copy on the site: the <meta name="description"> and the Open Graph
+// card, read in search results and link previews BEFORE anyone visits the page. A single
+// literal U+00A0 typed into the description template — what happens whenever copy is pasted
+// out of a design doc — put this on the built, served page:
+//
+//   <meta name="description" content="… No account needed — start a job straight away.">
+//
+// while the raw backstop saw `No account`, which `/no account/i` does not match. Suite
+// unchanged at 926/906/0/20 (adversarial sweep round 4, 2026-11-11). So `metadata` is
+// flattened and returned here too — which also covers OG_TITLE, OG_DESC and OG_ALT, the same
+// blind spot.
+//
+// WHAT IS STILL NOT COVERED, stated plainly because it is the root cause of this whole class:
+// these gates read DOM TEXT and RAW SOURCE, and NEITHER OF THOSE IS WHAT THE READER READS.
+// The render pass closed the largest channel and the metadata pass closes the second. What
+// remains is copy on a branch the default render does not take, and CSS-generated content:
+// `.audience::after { content: " No account needed — start a job straight away."; }`
+// is invisible to both normalisations (it is not in the DOM) and to the raw ban list on the
+// .css file (the NBSP again), yet Chrome paints it in the hero directly under the H1. That is
+// NAMED RESIDUE, not a covered case: nothing on this page sets visible `content:`, and no
+// gate can cover every rendering channel.
+//
 // Two normalisations are returned, because evading one tends to walk into the other:
 //   textSpaced — every tag becomes a space. This is the human reading, and it is what kills
 //                `No&nbsp;account` and a phrase wrapped across lines.
@@ -92,10 +115,21 @@ const toText = (html, joiner) => collapse(decode(
     .replace(/<[^>]*>/g, joiner),
 ));
 
+/** Every string anywhere in the page's exported `metadata`, however deeply nested. */
+const metaStrings = (v, out = []) => {
+  if (typeof v === 'string') out.push(v);
+  else if (Array.isArray(v)) for (const x of v) metaStrings(x, out);
+  else if (v && typeof v === 'object') for (const x of Object.values(v)) metaStrings(x, out);
+  return out;
+};
+
 let loaded;
 /**
- * `{ html, textSpaced, textTight, modules }` for the landing page, rendered once per process.
- * `html` is the markup; the two texts are the normalisations described above.
+ * `{ html, textSpaced, textTight, metaSpaced, metaTight, modules }` for the landing page,
+ * rendered once per process. `html` is the markup, the two texts are the normalisations
+ * described above, and the two meta* strings are those same normalisations applied to every
+ * string in the page's exported `metadata` — joined with a pilcrow, so a banned phrase cannot
+ * be assembled across two unrelated fields.
  */
 export async function landingPage() {
   if (loaded) return loaded;
@@ -105,8 +139,14 @@ export async function landingPage() {
 
   const React = (await import('react')).default;
   const { renderToStaticMarkup } = await import('react-dom/server');
-  const Page = (await import(pathToFileURL(entry).href)).default;
-  const html = renderToStaticMarkup(React.createElement(Page));
-  loaded = { html, textSpaced: toText(html, ' '), textTight: toText(html, ''), modules: count };
+  const mod = await import(pathToFileURL(entry).href);
+  const html = renderToStaticMarkup(React.createElement(mod.default));
+  // `metadata` is a plain exported const on the module just imported. It is never rendered, so
+  // it has to be read off the module — it cannot be scraped out of the markup.
+  const meta = metaStrings(mod.metadata).join(' \u00b6 ');
+  loaded = {
+    html, textSpaced: toText(html, ' '), textTight: toText(html, ''),
+    metaSpaced: toText(meta, ' '), metaTight: toText(meta, ''), modules: count,
+  };
   return loaded;
 }

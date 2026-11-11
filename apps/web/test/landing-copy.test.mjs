@@ -87,9 +87,17 @@ const PAGE = PAGE_AND_COMPONENTS.find(([f]) => f.endsWith('(landing)/page.tsx'))
  * const or template all do the same.
  *
  * So BOTH source forms are unsound, in different directions: stripped misses what it deletes,
- * raw misses what the compiler produces. Raw is kept only because it covers two things the
- * render cannot see — the `metadata` description, which never reaches the DOM, and copy on a
- * branch the default render does not take. The gate that actually decides is READ_AS.
+ * raw misses what the compiler produces.
+ *
+ * RAW IS A WEAK BACKSTOP, AND NOTHING MORE. An earlier version of this comment said it was
+ * kept "because it covers two things the render cannot see — the `metadata` description…".
+ * IT DOES NOT COVER THE METADATA, in exactly the way the sentence above admits: one literal
+ * U+00A0 in the description defeated it (FG7, round 4). Raw catches copy on a branch the
+ * default render does not take, and `metadata` before it was read directly — but ONLY against
+ * UNOBFUSCATED SOURCE. Any entity, wrap, markup or indirection walks straight past it.
+ * `metadata` is now read off the module in READ_AS and no longer depends on this at all.
+ *
+ * The gate that actually decides is READ_AS.
  */
 const RAW_PAGE_AND_COMPONENTS = LANDING.filter(([f]) => !/\(landing\)\/(?:privacy|terms)\//.test(f));
 
@@ -105,7 +113,18 @@ const RAW_PAGE_AND_COMPONENTS = LANDING.filter(([f]) => !/\(landing\)\/(?:privac
  * asserts against both; either matching is a failure.
  */
 const RENDER = await landingPage();
-const READ_AS = [['the rendered page', RENDER.textSpaced], ['the rendered page, markup removed', RENDER.textTight]];
+const READ_AS = [
+  ['the rendered page', RENDER.textSpaced],
+  ['the rendered page, markup removed', RENDER.textTight],
+  // The DOM is not the only channel. `metadata` never reaches it, and it is the most-read
+  // copy on the site — the <meta name="description"> and the Open Graph card, read in search
+  // results and link previews BEFORE anyone opens the page. One literal U+00A0 in the
+  // description template put "No account needed — start a job straight away." on the served
+  // page with this suite green at 926/906/0/20 (adversarial sweep round 4, 2026-11-11). These
+  // two rows also cover OG_TITLE, OG_DESC and OG_ALT, which were in the same blind spot.
+  ['the page metadata', RENDER.metaSpaced],
+  ['the page metadata, markup removed', RENDER.metaTight],
+];
 
 /** The one ceiling. Read from the module the player enforces, so the test cannot drift either. */
 const MAX_TRACK_SEC = Number(

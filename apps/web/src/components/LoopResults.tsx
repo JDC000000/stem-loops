@@ -41,6 +41,19 @@ export function LoopResults({ job }: { job: Job & { title?: string | null } }) {
           <p style={{ margin: '4px 0 0', color: 'var(--text-muted)' }}>
             {loops.length} loops · {job.bpm} BPM · {job.musical_key}
           </p>
+          {/* The loop downloader now has a page of its own (/loops), where any
+              song can be cut at 1, 2, 4 or 8 bars on request rather than only
+              at the bar length this job was started with. These results STAY
+              here: they are the worker's own cut, already made and already
+              paid for, and deleting the section to make a point about where
+              loops "belong" would take a working feature away from the job
+              page. The link is a plain route with no id and no fragment. */}
+          <p style={{ margin: '6px 0 0', color: 'var(--text-muted)', fontSize: 'var(--text-md)' }}>
+            Want other bar lengths?{' '}
+            <a href="/loops" style={{ color: 'var(--accent)' }}>
+              Cut this song on the loops page →
+            </a>
+          </p>
         </div>
         <button
           type="button"

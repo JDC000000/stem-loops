@@ -1,0 +1,282 @@
+/* /loops — the loop downloader's own page.
+ *
+ * Built on src/styles/design-tokens.css, which globals.css imports for every
+ * route, so this file defines colour nowhere: it only arranges. The stem hues
+ * come from stem-color.css via the `data-stem` attribute, exactly as
+ * loop-card.css does for the job page's cards.
+ *
+ * GEOMETRY IS UNGATED. There are no browser tests in this repo and happy-dom
+ * has no layout engine, so every length below is a design choice checked by
+ * eye, not a measurement any test can defend. The one rule that is not
+ * cosmetic is the 44px minimum on every control, which is the hit-target floor
+ * the rest of the app keeps.
+ */
+
+.lp-wrap {
+  max-width: 960px;
+  margin: 0 auto;
+  /* `--sl-gutter` lives in landing.css, which this route does not load, so the
+     fallback is load-bearing rather than belt-and-braces — the same situation
+     app/jobs/[id]/JobView.tsx documents at length. 16px is landing.css's own
+     base value, so this matches every other page at mobile widths. */
+  padding: 40px var(--sl-gutter, 16px) 96px;
+  font-family: var(--font-sans);
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.lp-h1 {
+  margin: 0;
+  font-size: var(--text-2xl);
+  color: var(--text-primary);
+}
+.lp-h2 {
+  margin: 0 0 12px;
+  font-size: var(--text-xl);
+  color: var(--text-primary);
+}
+.lp-h3 {
+  margin: 0 0 10px;
+  font-size: var(--text-lg);
+  color: var(--text-primary);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+}
+.lp-bank-meta,
+.lp-card-meta,
+.lp-song-clock {
+  color: var(--text-muted);
+  font-size: var(--text-base);
+  font-weight: var(--weight-normal);
+}
+
+.lp-head {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.lp-lede {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-lg);
+  line-height: var(--leading-snug);
+  max-width: 62ch;
+}
+.lp-note,
+.lp-provenance {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-md);
+  line-height: var(--leading-snug);
+  max-width: 68ch;
+}
+.lp-note strong {
+  color: var(--text-primary);
+}
+.lp-muted {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}
+.lp-meta {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-md);
+}
+.lp-error {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--status-failed-bg);
+  color: var(--text-primary);
+  font-size: var(--text-md);
+}
+.lp-link {
+  color: var(--accent);
+}
+
+/* ── song picker ─────────────────────────────────────────────────── */
+.lp-songs,
+.lp-job {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.lp-song-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lp-song {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+.lp-song:hover {
+  background: var(--bg-hover);
+}
+.lp-song[aria-pressed='true'] {
+  border-color: var(--border-strong);
+  background: var(--bg-selected);
+  color: var(--text-primary);
+}
+.lp-song-id {
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lp-paste {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lp-paste-label {
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}
+.lp-paste-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.lp-input {
+  flex: 1 1 240px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+/* ── controls ────────────────────────────────────────────────────── */
+.lp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.lp-primary,
+.lp-secondary {
+  min-height: 48px;
+  padding: 0 20px;
+  border-radius: 10px;
+  font-weight: var(--weight-bold);
+  cursor: pointer;
+}
+.lp-primary {
+  border: none;
+  background: var(--accent);
+  color: var(--text-inverse);
+}
+.lp-primary[disabled] {
+  cursor: progress;
+  opacity: 0.7;
+}
+.lp-secondary {
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-primary);
+}
+
+/* ── banks and cards ─────────────────────────────────────────────── */
+.lp-bank {
+  display: flex;
+  flex-direction: column;
+}
+.lp-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 560px) {
+  .lp-grid {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  }
+}
+
+.lp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--stem, var(--border-strong));
+  border-radius: 10px;
+  background: var(--bg-card);
+}
+.lp-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.lp-stem {
+  color: var(--text-primary);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  text-transform: capitalize;
+}
+
+.lp-wave {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 40px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--wf-bg);
+  overflow: hidden;
+}
+.lp-bar {
+  flex: 1 1 0;
+  min-width: 1px;
+  background: var(--stem, var(--wf-bar-idle));
+  border-radius: 1px;
+}
+
+.lp-download {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  text-decoration: none;
+}
+.lp-download-idle {
+  border-style: dashed;
+  border-color: var(--border-default);
+  color: var(--text-subtle);
+  font-weight: var(--weight-normal);
+}
+
+.lp-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}

@@ -25,9 +25,11 @@
 // is moved out from under one. "no routable page is left without chrome"
 // catches the fourth case, a NEW route added outside the covered subtrees.
 //
-// CONTROL. "the bar states plainly that there is no /loops route" must stay
-// GREEN. A gate that forbids a true statement is its own defect, so one gate
+// CONTROL. A gate that forbids a true statement is its own defect, so one gate
 // here asserts a true thing plainly and is expected to survive every mutant.
+// It used to be "there is no /loops route"; /loops now exists, so the control
+// has moved to a statement that is still plain and still true: every href this
+// bar emits resolves to a page that is actually in app/.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -55,6 +57,7 @@ const SIGNED_IN_ROUTES = [
   '/history',
   '/jobs/[id]',
   '/login',
+  '/loops',
   '/pricing',
   '/success',
   '/trial',
@@ -336,18 +339,28 @@ test('no routable page is left without chrome', async () => {
 // 5. CONTROL — a true statement, plainly made, that must stay green.
 // ═════════════════════════════════════════════════════════════════════════
 
-test('CONTROL: there is no /loops route, and the bar does not pretend there is', async () => {
+test('CONTROL: every item in the bar points at a page that exists', async () => {
   // This is the control mutant's home. It states something TRUE and plain:
-  // the repo has no app/loops directory, so the bar offers no loops item and
-  // links to no /loops URL. Every mutant in the table must leave this GREEN.
-  // A suite that cannot tolerate a true statement is testing its own phrasing,
-  // not the product.
-  assert.equal(existsSync(join(APP, 'loops')), false, 'a /loops route now exists — update the nav');
-
+  // every internal href this bar emits resolves to a page.tsx in app/. Every
+  // mutant in the table must leave it GREEN. A suite that cannot tolerate a
+  // true statement is testing its own phrasing, not the product.
+  //
+  // It replaces "there is no /loops route", which was true until this change
+  // and is now false. The replacement is the GENERAL form of what that one
+  // was guarding — a nav item must not be a link to a 404 — so it keeps
+  // working whatever the bar carries next.
+  const pageFor = (href) => {
+    if (href === '/') return join(APP, '(landing)', 'page.tsx');
+    return join(APP, ...href.replace(/^\//, '').split('/'), 'page.tsx');
+  };
   for (const user of [null, { user_id: 'u', email: 'a@b.c' }]) {
     const html = await chrome({ user });
-    assert.ok(!hrefs(html).some((h) => h === '/loops' || h.startsWith('/loops/')), html);
-    // The bar still gets the viewer somewhere real without it.
+    const internal = hrefs(html).filter((h) => h.startsWith('/'));
+    assert.ok(internal.length > 0, 'the bar emitted no links at all');
+    for (const href of internal) {
+      assert.ok(existsSync(pageFor(href)), `the bar links to ${href}, which has no page.tsx`);
+    }
+    // And it still gets the viewer back to the tool.
     assert.ok(hrefs(html).includes(TOOL));
   }
 });
@@ -452,7 +465,7 @@ test('every nav item is reachable once the menu is open', async () => {
 test('every signed-in layout opts its segment out of static rendering', async () => {
   const layouts = SIGNED_IN_ROUTES.flatMap(layoutChain);
   const unique = [...new Set(layouts)];
-  assert.equal(unique.length, 7, `expected 7 signed-in layouts, got: ${unique.join(', ')}`);
+  assert.equal(unique.length, 8, `expected 8 signed-in layouts, got: ${unique.join(', ')}`);
 
   const urls = compile(unique, {
     'next/navigation': navigationStub('/account'),

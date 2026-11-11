@@ -133,9 +133,34 @@ test('the signers never mint a zero, negative or non-finite TTL', async () => {
     await m.mintStemPlayUrl(JOB, 'drums', bad);
     assert.equal(globalThis.__su.signed[0].opts.expiresIn, 1, `expiresIn=${bad} must floor to 1`);
   }
-  globalThis.__su = { commands: [], signed: [] };
-  await m.mintStemPlayUrl(JOB, 'drums', Number.NaN);
-  assert.equal(globalThis.__su.signed[0].opts.expiresIn, 900, 'NaN takes the ceiling, never NaN');
+});
+
+test('a NON-FINITE TTL fails CLOSED to 1s, never open to the 900s ceiling', async () => {
+  // THE FIX (security round 2, F1). This branch used to return
+  // STEM_SIGNED_URL_TTL_SEC, i.e. a caller that handed the signer NaN or Infinity got
+  // the LONGEST lifetime the module permits. This function decides how long a bearer
+  // credential stays replayable; a non-number tells it nothing about how long that
+  // should be, and the ceiling is the most permissive possible answer to "unknown".
+  // Flipped to the 1s floor: always signable, never generous. The previous version of
+  // this test pinned 900, which is why the fail-open direction survived review once.
+  const m = await load();
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    globalThis.__su = { commands: [], signed: [] };
+    await m.mintStemPlayUrl(JOB, 'drums', bad);
+    assert.equal(
+      globalThis.__su.signed[0].opts.expiresIn,
+      1,
+      `expiresIn=${String(bad)} must fail closed to 1, not to the ceiling`,
+    );
+
+    globalThis.__su = { commands: [], signed: [] };
+    await m.mintStemDownloadUrl(JOB, 'bass', bad);
+    assert.equal(
+      globalThis.__su.signed[0].opts.expiresIn,
+      1,
+      `the WAV signer must fail closed too for expiresIn=${String(bad)}`,
+    );
+  }
 });
 
 test('the clamp is the module ceiling, not a number copied into the signer', async () => {

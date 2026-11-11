@@ -29,9 +29,12 @@ import {
  * route can legitimately compute 1s for a job on the edge of expiry.
  */
 function clampTtl(expiresIn: number): number {
-  // NaN/Infinity would survive Math.min and reach the presigner, so they take the
-  // ceiling rather than propagating.
-  if (!Number.isFinite(expiresIn)) return STEM_SIGNED_URL_TTL_SEC;
+  // NaN/Infinity would survive Math.min and reach the presigner, so they are caught
+  // here — and they FAIL CLOSED at the 1s floor, not open at the 900s ceiling. This
+  // function decides how long a bearer credential stays replayable, and a caller that
+  // hands it a non-number has told us nothing about how long that should be. The
+  // ceiling is the wrong answer to "unknown": it is the most permissive one.
+  if (!Number.isFinite(expiresIn)) return 1;
   return Math.max(1, Math.min(Math.floor(expiresIn), STEM_SIGNED_URL_TTL_SEC));
 }
 

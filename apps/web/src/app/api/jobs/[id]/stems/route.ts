@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import * as Sentry from '@sentry/nextjs';
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { db } from '@/lib/db';
 import { r2 } from '@/lib/r2';
+import { checkStemListRate } from '@/lib/admission';
+import { clientIpHashOf } from '@/lib/client-ip';
 import { mintStemPlayUrl } from '@/lib/stem-urls';
 import {
   PLAYABLE_STEMS,
@@ -13,6 +16,13 @@ import {
 } from '@/lib/stem-keys';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Verbatim from /api/uploads and /api/jobs. A throttled stems fetch is the same
+// event to a user as a throttled upload, so it gets the same words and the same
+// { error_code: 'RATE_LIMITED' } 429 body — not a new error contract for the client
+// to learn.
+const RATE_LIMIT_MSG =
+  "You're going a bit fast, or we're at capacity right now. Give it a minute and try again.";
 
 // This response body is a set of bearer credentials: each `signed_url` is a presigned
 // R2 GET that anyone holding the string can replay until it expires. Without this
@@ -55,7 +65,9 @@ function errLabel(e: unknown): string {
 //     is offline), so a credential could lack ListBucket in an environment where
 //     every offline test passes. A silent empty 200 would look exactly like "no
 //     stems". (Confirmed working in production 2026-11-10: a live done job returned
-//     200 with an empty list rather than an error.)
+//     200 with an empty list rather than an error.) This path is the one fault in
+//     this route that reaches Sentry — see the list-failure catch for where it
+//     surfaces and why its fingerprint is fixed.
 //
 // Deliberately NOT gated on sign-in. Playing along in the browser is the free launch
 // hook; it is the stem DOWNLOAD that requires an account (V3-J9).
@@ -66,15 +78,41 @@ function errLabel(e: unknown): string {
 // That is a larger exposure behind the same existing door, and a code comment is not
 // acceptance.
 //
-// ⚠️ SECOND RESIDUE, same status (M-11): this route has NO rate limit, though
-// lib/rate-limit.ts exists and other routes use it. Left as an owner decision rather
-// than added here — it changes who can reach a free, unauthenticated launch hook, and
-// the security round that raised it recorded it as acceptance, not as a fix.
-export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
+// RATE LIMIT (M-11 owner decision OD-B, now wired): per-IP, 60 requests/minute, via
+// checkStemListRate in lib/admission.ts — the same atomic check-and-record statement
+// /api/uploads uses, on a namespaced counter so playback and uploads do not share a
+// budget. It runs FIRST, before the job lookup and before the R2 list, because the
+// thing worth protecting is the billable Class A ListObjectsV2 and the connection
+// pool, and both sit behind it. See lib/admission.ts for why the number is 60 and not
+// the upload route's 10.
+export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   if (!UUID_RE.test(params.id)) {
     return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
   }
   try {
+    // ORDER MATTERS, and this is as early as a limiter can go. Above it is only the
+    // UUID shape test, which is free and does no I/O; below it are the two costs worth
+    // bounding — the job SELECT and the R2 ListObjectsV2, which is a BILLABLE Class A
+    // operation that nothing caches. Unthrottled, one leaked done-job UUID made both
+    // unbounded for whoever held it.
+    //
+    // HONEST LIMIT OF THIS GATE: the limiter is ITSELF a DB round trip, so an
+    // anonymous flood still reaches the connection pool — it just reaches it once per
+    // request instead of twice plus an R2 call, and a refused request costs no R2
+    // spend and never touches `jobs`. The reviewer's separate finding (a cheap gate
+    // before the DB query) is therefore blunted, not closed; closing it needs a
+    // non-DB-backed limiter, which is a different change than this one.
+    //
+    // Fails CLOSED by construction: a DB fault in here throws to the 500 handler
+    // below rather than returning "allowed".
+    const rate = await checkStemListRate(clientIpHashOf(request));
+    if (!rate.allowed) {
+      return NextResponse.json(
+        { error_code: rate.error_code, message: RATE_LIMIT_MSG },
+        { status: 429, headers: NO_STORE },
+      );
+    }
+
     // Same gate as GET /api/jobs/:id and the play-chords route.
     const jobRes = await db.query(
       `SELECT id::text AS id, status, expires_at FROM jobs WHERE id = $1 AND expires_at > now()`,
@@ -109,11 +147,14 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     // presignTtlSec also applied is subsumed by the 900s one.
     const remainingMs = new Date(job.expires_at).getTime() - Date.now();
     // The SQL gate already proved `expires_at > now()` in Postgres, so a non-finite
-    // value here is a driver/serialisation quirk rather than an expired job: fall
-    // back to the ceiling and let the 900s cap do the work.
-    const remainingSec = Number.isFinite(remainingMs)
-      ? Math.floor(remainingMs / 1000)
-      : STEM_SIGNED_URL_TTL_SEC;
+    // value here is a driver/serialisation quirk rather than an expired job — but it
+    // still FAILS CLOSED, at 1s rather than the 900s ceiling. This number is the
+    // lifetime of a bearer credential, and the one thing known about an unparseable
+    // `expires_at` is that the expiry it was supposed to bound is unknown; the safe
+    // direction for an unknown bound is the shortest signable URL, not the longest
+    // one. Not reachable today (`expires_at` is non-null and passed the gate), which
+    // is exactly why the default should not be the permissive one.
+    const remainingSec = Number.isFinite(remainingMs) ? Math.floor(remainingMs / 1000) : 1;
     const expiresIn = Math.min(STEM_SIGNED_URL_TTL_SEC, Math.max(1, remainingSec));
 
     // ONE list over the shared `_stems/` parent covers both artifact kinds, which is
@@ -128,16 +169,35 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
         })
       );
     } catch (listErr) {
-      // Deliberately NOT reported to Sentry, for the same reason the encode_failed
-      // note below gives: this route is UNAUTHENTICATED, and a capture here is
-      // amplifiable. The realistic trigger is a backend fault, not a one-off — a prod
-      // credential lacking ListBucket makes EVERY request for ANY valid done job
-      // throw, so the event rate is the request rate. There is no capture-side
-      // sampling, rate limit or dedupe in sentry.server.config.ts / sentry-options.ts
-      // to absorb that, so the quota is spent by whoever refreshes fastest and the
-      // real alert is buried. The 502 is still loud where loudness is cheap: the
-      // status code, and this log line — errLabel, not the error object, for the
-      // reason the 500 handler gives.
+      // WHERE THIS FAULT IS MEANT TO SURFACE: Sentry, as ONE issue group with the
+      // fixed fingerprint ['stems-route', 'STEM_LIST_FAILED']. That group is the
+      // thing to alert and write a runbook against; the Vercel function log line
+      // below is the per-request detail, not the signal.
+      //
+      // The amplification concern is real and is not answered by deleting this
+      // capture. The route is UNAUTHENTICATED, there is no capture-side sampling,
+      // rate limit or dedupe in sentry.server.config.ts / sentry-options.ts, and the
+      // realistic trigger is a backend fault rather than a one-off: a prod credential
+      // lacking ListBucket makes EVERY request for ANY valid done job throw, so the
+      // event rate is the request rate. The FINGERPRINT is what bounds the cost — an
+      // outage collapses into a single issue whose event counter rises, instead of a
+      // new issue per request burying the real alert. Dropping the capture bounds the
+      // Sentry cost to zero and the alerting coverage with it, which is the worse
+      // trade here: this is the web tier's first real network call to R2 (everything
+      // else only presigns, which is offline), so a missing ListBucket grant passes
+      // every offline test, breaks playback for every user at once, and would
+      // otherwise reach only console.error in Vercel logs that nothing drains.
+      // Both sibling unauthenticated job routes capture on their failure paths
+      // (jobs/[id], play-chords); this one is not special enough to be silent.
+      //
+      // captureMessage, not captureException: the thrown object is the R2 SDK's and
+      // carries $metadata / bucket names, for the reason the 500 handler gives, so
+      // only errLabel() travels.
+      Sentry.captureMessage('stems route: R2 list failed (STEM_LIST_FAILED)', {
+        level: 'error',
+        fingerprint: ['stems-route', 'STEM_LIST_FAILED'],
+        extra: { cause: errLabel(listErr) },
+      });
       console.error('GET /api/jobs/[id]/stems: R2 list failed:', errLabel(listErr));
       return NextResponse.json(
         { error_code: 'STEM_LIST_FAILED', message: 'Could not list stems' },
@@ -185,7 +245,10 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       { headers: NO_STORE },
     );
   } catch (err) {
-    // Also NOT reported to Sentry, and dropping it was chosen over throttling it.
+    // NOT reported to Sentry — unlike the 502 list-failure path above — and dropping
+    // it was chosen over throttling it. The difference is reach: the list-failure path
+    // needs a VALID, done job to be touched at all, so a fixed fingerprint bounds it;
+    // this handler does not.
     //
     // A throttle would have had to be an in-process, once-per-N-minutes guard with a
     // fixed fingerprint, and on Vercel "in-process" means per lambda instance: the
@@ -194,8 +257,10 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     // What makes dropping safe is that the amplification vector here needs no valid
     // job at all — the DB query runs before any job-existence check, so a flood of
     // random UUIDs reaches it, and pool exhaustion is itself the fault that would be
-    // captured, one event per request. The 500 status and this log line remain, and
-    // the DB-side fault surfaces in Supabase and Vercel telemetry regardless.
+    // captured, one event per request. A fingerprint would collapse the ISSUE count
+    // but not the EVENT count, and with no job gate in front of it the event count is
+    // whatever an anonymous caller chooses. The 500 status and this log line remain,
+    // and the DB-side fault surfaces in Supabase and Vercel telemetry regardless.
     //
     // NOT FIXED HERE, deliberately (scope): ordering a cheap existence check before
     // the DB query would blunt that pool-exhaustion vector at its source. Noted for

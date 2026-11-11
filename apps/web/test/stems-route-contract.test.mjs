@@ -25,6 +25,7 @@ const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(WEB, 'src/app/api/jobs/[id]/stems/route.ts');
 const KEYS = join(WEB, 'src/lib/stem-keys.ts');
 const RETENTION = join(WEB, 'src/lib/retention.ts');
+const ADMISSION = join(WEB, 'src/lib/admission.ts');
 
 const toJs = (src) =>
   ts.transpileModule(src, {
@@ -56,11 +57,11 @@ function dbStub({ rows, rowCount, dbThrows = false }) {
 }
 
 /** Records the prefix the route lists, and returns the keys the test supplies. */
-function r2Stub({ keys, listThrows = false }) {
+function r2Stub({ keys, listThrows = false, listErrMessage = 'AccessDenied: ListBucket' }) {
   return dataUrl(`
     export const r2 = { send: async (cmd) => {
       globalThis.__st.calls.push(['list', cmd.input.Prefix, cmd.input.MaxKeys]);
-      if (${listThrows}) throw new Error('AccessDenied: ListBucket');
+      if (${listThrows}) throw new Error(${JSON.stringify(listErrMessage)});
       return { Contents: ${JSON.stringify(keys)}.map((Key) => ({ Key, Size: 1 })) };
     } };
   `);
@@ -68,6 +69,21 @@ function r2Stub({ keys, listThrows = false }) {
 
 const s3Stub = () =>
   dataUrl(`export class ListObjectsV2Command { constructor(input) { this.input = input; } }`);
+
+/** Records the key the route hands the limiter, and whether it admitted (OD-B). */
+function admissionStub({ rateLimited = false } = {}) {
+  return dataUrl(`
+    export const checkStemListRate = async (key) => {
+      globalThis.__st.calls.push(['rate', key]);
+      return ${rateLimited}
+        ? { allowed: false, error_code: 'RATE_LIMITED' }
+        : { allowed: true, error_code: null };
+    };
+  `);
+}
+
+const clientIpStub = () =>
+  dataUrl(`export const clientIpHashOf = (req) => 'iphash-' + (req?.headers?.get?.('x-real-ip') ?? 'anon');`);
 
 /** Records (stem, ttl) per minted URL and returns a URL that embeds the KEY it signed. */
 const stemUrlsStub = () =>
@@ -83,7 +99,9 @@ const stemUrlsStub = () =>
 const sentryStub = () =>
   dataUrl(`
     export const captureException = (e, ctx) => globalThis.__st.sentry.push(['exception', String(e).slice(0,80), ctx]);
-    export const captureMessage = (m, lvl) => globalThis.__st.sentry.push(['message', m, lvl]);
+    // The 2nd arg is Sentry's CaptureContext (level/fingerprint/extra/tags), which is
+    // what the fingerprint assertions below land on.
+    export const captureMessage = (m, ctx) => globalThis.__st.sentry.push(['message', m, ctx]);
   `);
 
 const nextStub = () =>
@@ -105,15 +123,19 @@ async function loadRoute({
   expiresAt = null,
   rowCount = 1,
   listThrows = false,
+  listErrMessage = 'AccessDenied: ListBucket',
   dbThrows = false,
+  rateLimited = false,
 } = {}) {
   const expires = expiresAt ?? new Date(Date.now() + 24 * 3600 * 1000).toISOString();
   const rows = rowCount === 0 ? [] : [{ id: rowId, status, expires_at: expires }];
   let js = toJs(readFileSync(SRC, 'utf8'));
   js = js
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub({ rows, rowCount, dbThrows })}'`)
-    .replace(/from ['"]@\/lib\/r2['"]/g, `from '${r2Stub({ keys, listThrows })}'`)
+    .replace(/from ['"]@\/lib\/r2['"]/g, `from '${r2Stub({ keys, listThrows, listErrMessage })}'`)
     .replace(/from ['"]@\/lib\/stem-urls['"]/g, `from '${stemUrlsStub()}'`)
+    .replace(/from ['"]@\/lib\/admission['"]/g, `from '${admissionStub({ rateLimited })}'`)
+    .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${clientIpStub()}'`)
     // the REAL modules, inlined — the logic under test, not a stub of it
     .replace(/from ['"]@\/lib\/stem-keys['"]/g, `from '${dataUrl(toJs(readFileSync(KEYS, 'utf8')))}'`)
     .replace(/from ['"]@\/lib\/retention['"]/g, `from '${dataUrl(toJs(readFileSync(RETENTION, 'utf8')))}'`)
@@ -123,7 +145,8 @@ async function loadRoute({
   return await import(dataUrl(js) + '#' + Math.random());
 }
 
-const call = (mod, id = JOB) => mod.GET({}, { params: { id } });
+const call = (mod, id = JOB) =>
+  mod.GET({ headers: { get: () => null } }, { params: { id } });
 const listedPrefix = () => globalThis.__st.calls.find((c) => c[0] === 'list')?.[1];
 
 /** Swap console.error for a recorder; returns a restore fn. */
@@ -309,6 +332,24 @@ test('a job on the very edge of expiry still gets a signable TTL, never 0 or neg
   assert.ok(globalThis.__st.minted.every((m) => m.expiresIn === 1));
 });
 
+test('an unparseable expires_at fails CLOSED to a 1s TTL, not open to 900s', async () => {
+  // THE FIX (security round 2, F1). This branch used to return
+  // STEM_SIGNED_URL_TTL_SEC: a row whose `expires_at` did not parse produced the
+  // LONGEST TTL the route can mint. Not reachable today — the column is non-null and
+  // the row passed `expires_at > now()` — but the only thing a non-finite remaining
+  // lifetime establishes is that the bound is unknown, and the safe default for an
+  // unknown bound on a bearer credential is the shortest signable one.
+  const mod = await loadRoute({ keys: SIX.map(PLAY), expiresAt: 'not-a-timestamp' });
+  const res = await call(mod);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.expires_in_sec, 1, 'must fail closed to 1s, never to the 900s ceiling');
+  assert.ok(globalThis.__st.minted.length > 0, 'this test is only meaningful if URLs were minted');
+  assert.ok(
+    globalThis.__st.minted.every((m) => m.expiresIn === 1),
+    'the TTL actually signed must be the failed-closed one',
+  );
+});
+
 test('the R2 prefix comes from the DB row, not the request path', async () => {
   // UUID_RE is case-insensitive and Postgres uuid comparison is too, so an UPPERCASE
   // uuid in the URL passes the lookup. Building the prefix from params.id would then
@@ -346,32 +387,78 @@ test('an R2 list failure is a loud 502, never a silent empty 200', async () => {
   assert.ok(con.lines.length > 0, 'the fault must still reach the function log');
 });
 
-test('an R2 list failure reports NOTHING to Sentry', async () => {
-  // THE FIX (security round 1, −3). This route is UNAUTHENTICATED and there is no
-  // capture-side sampling, rate limit or dedupe in sentry.server.config.ts or
-  // sentry-options.ts. The realistic trigger for this path is a backend fault, not a
-  // one-off: a prod credential lacking ListBucket makes EVERY request for ANY valid
-  // done job throw, so the event rate equals the request rate and the Sentry quota
-  // goes to whoever refreshes fastest. An earlier version captured here, which
-  // contradicted this same route's own comment rejecting per-GET Sentry as
-  // amplifiable. The 502 and the log line carry the signal instead.
+const LIST_FAILED_FINGERPRINT = ['stems-route', 'STEM_LIST_FAILED'];
+
+test('an R2 list failure reports EXACTLY ONE fingerprinted Sentry message', async () => {
+  // THE FIX (security round 2, F3). Round 1 deleted this capture to close an
+  // amplification vector, which moved the cost from Sentry quota to alerting coverage
+  // rather than removing it: STEM_LIST_FAILED then appeared nowhere but console.error
+  // in Vercel logs — no alert, no runbook, no drain — while both sibling
+  // unauthenticated job routes still captured. The failure that matters is a prod
+  // credential losing ListBucket: every request 502s, the player breaks for everyone,
+  // and nobody is paged. Deletion was the wrong lever; the FIXED FINGERPRINT is the
+  // one that actually bounds the cost, because it collapses an outage into one issue
+  // group whose event counter rises rather than one issue per request.
+  //
+  // What this pins, and the mutations it kills: removing the capture again (0 events),
+  // using captureException (leaks the SDK error's $metadata), and dropping or
+  // computing the fingerprint (one issue group per distinct error string, which is
+  // the unbounded shape the deletion was trying to avoid).
   const mod = await loadRoute({ listThrows: true });
   const con = captureConsoleError();
   try {
     const res = await call(mod);
     assert.equal(res.status, 502);
+    assert.equal(res.body.error_code, 'STEM_LIST_FAILED');
   } finally {
     con.restore();
   }
-  assert.deepEqual(globalThis.__st.sentry, [], 'no Sentry event on the list-failure path');
+
+  assert.equal(globalThis.__st.sentry.length, 1, 'exactly one capture, never zero and never two');
+  const [kind, message, ctx] = globalThis.__st.sentry[0];
+  assert.equal(kind, 'message', 'captureMessage, not captureException: the Error carries $metadata');
+  assert.match(message, /STEM_LIST_FAILED/, 'the issue title must name the error code');
+  assert.ok(ctx, 'the capture must carry a CaptureContext');
+  assert.deepEqual(ctx.fingerprint, LIST_FAILED_FINGERPRINT, 'a FIXED fingerprint is what bounds the issue count');
+  assert.equal(ctx.level, 'error');
+  // errLabel, not the error object — same reason the 500 handler gives.
+  assert.equal(typeof ctx.extra?.cause, 'string', 'only the errLabel string may travel');
+  assert.doesNotMatch(JSON.stringify(ctx), /secret-metadata/);
 });
 
-test('the 500 handler reports NOTHING to Sentry either', async () => {
-  // Same amplification, worse reach: the DB query runs before any job-existence
-  // check, so a flood of random UUIDs reaches it without a valid job id, and pool
-  // exhaustion is itself the fault that would be captured — one event per request.
-  // Dropping it was chosen over an in-process throttle, which on Vercel multiplies
-  // by the lambda instance count under exactly the load it exists to bound.
+test('the list-failure fingerprint does not vary with the error, so an outage is ONE issue', async () => {
+  // The whole bound rests on this. If the fingerprint were derived from the thrown
+  // error (message, request id, attempt count), a credential outage would still open a
+  // new Sentry issue per distinct string and bury the alert — the exact cost round 1
+  // deleted the capture to avoid. Two different faults must land in one group.
+  const a = await loadRoute({ listThrows: true, listErrMessage: 'AccessDenied: ListBucket' });
+  const conA = captureConsoleError();
+  try { await call(a); } finally { conA.restore(); }
+  const fpA = globalThis.__st.sentry[0][2].fingerprint;
+
+  globalThis.__st = { calls: [], minted: [], sentry: [] };
+  const b = await loadRoute({ listThrows: true, listErrMessage: 'NetworkingError: ECONNRESET req-9f3c' });
+  const conB = captureConsoleError();
+  try { await call(b); } finally { conB.restore(); }
+  const fpB = globalThis.__st.sentry[0][2].fingerprint;
+
+  assert.deepEqual(fpA, fpB, 'the fingerprint must be fixed, not computed from the error');
+  assert.deepEqual(fpA, LIST_FAILED_FINGERPRINT);
+  for (const part of fpA) {
+    assert.doesNotMatch(part, /ECONNRESET|req-9f3c|AccessDenied/, 'no error detail may enter the fingerprint');
+  }
+});
+
+test('the 500 handler reports NOTHING to Sentry', async () => {
+  // Deliberately NOT symmetric with the 502 path above, and the asymmetry is the
+  // point. A fixed fingerprint bounds the ISSUE count, not the EVENT count; the 502
+  // path can only be reached with a VALID, done job, so its event count is bounded by
+  // real traffic, whereas the DB query here runs before any job-existence check, so a
+  // flood of random UUIDs reaches it with no valid job id at all and pool exhaustion
+  // is itself the fault that would be captured — one event per request, as many as an
+  // anonymous caller cares to send. Dropping it was chosen over an in-process
+  // throttle, which on Vercel multiplies by the lambda instance count under exactly
+  // the load it exists to bound.
   const mod = await loadRoute({ dbThrows: true });
   const con = captureConsoleError();
   try {
@@ -405,6 +492,132 @@ test('the 500 handler logs err.name and err.message, never the error object', as
   assert.match(joined, /SpecificTestError/, 'the error NAME must survive');
   assert.match(joined, /boom-the-message/, 'the error MESSAGE must survive');
   assert.doesNotMatch(joined, /secret-metadata/, 'no $metadata may be logged');
+});
+
+// ---------- rate limit (M-11 owner decision OD-B) ----------
+
+test('a rate-limited request is 429 RATE_LIMITED and never reaches the DB or R2', async () => {
+  // THE FIX (OD-B). Unthrottled, every request cost 1 DB query + 1 R2
+  // ListObjectsV2 — a BILLABLE Class A operation that nothing caches — + 6 signs, and
+  // a single leaked done-job UUID made all of that unbounded for whoever held it.
+  //
+  // The assertion that matters is not the status code but what did NOT happen: a
+  // refused request must spend no R2 money and must not touch `jobs`. A limiter wired
+  // in AFTER the lookup would still return 429 and still pay both costs, so this test
+  // pins the ORDER, which is the whole point of the gate.
+  const mod = await loadRoute({ keys: SIX.map(PLAY), rateLimited: true });
+  const res = await call(mod);
+  assert.equal(res.status, 429);
+  assert.equal(res.body.error_code, 'RATE_LIMITED', 'same error contract as /api/uploads');
+  assert.match(res.body.message, /going a bit fast/, 'same copy as the sibling throttled routes');
+
+  const kinds = globalThis.__st.calls.map((c) => c[0]);
+  assert.deepEqual(kinds, ['rate'], 'the limiter must be the ONLY thing that ran');
+  assert.equal(globalThis.__st.calls.find((c) => c[0] === 'query'), undefined, 'no DB job lookup');
+  assert.equal(listedPrefix(), undefined, 'no billable R2 ListObjectsV2');
+  assert.equal(globalThis.__st.minted.length, 0, 'no signed URLs minted');
+});
+
+test('the limiter runs BEFORE the job lookup on the admitted path too', async () => {
+  // Pins the ordering in the success case as well, so a refactor cannot quietly move
+  // the limiter below the DB query while leaving the 429 test green.
+  const mod = await loadRoute({ keys: SIX.map(PLAY) });
+  const res = await call(mod);
+  assert.equal(res.status, 200);
+  const kinds = globalThis.__st.calls.map((c) => c[0]);
+  assert.equal(kinds[0], 'rate', `the limiter must be first, got ${kinds.join(',')}`);
+  assert.ok(kinds.indexOf('rate') < kinds.indexOf('query'), 'limiter before the DB query');
+  assert.ok(kinds.indexOf('query') < kinds.indexOf('list'), 'DB query before the R2 list');
+});
+
+test('a malformed id is refused for free, without consuming rate-limit budget', async () => {
+  // The UUID shape test is the only thing above the limiter, deliberately: it does no
+  // I/O, so letting it run first means a typo'd bookmark cannot burn a real user's
+  // budget. If the limiter were moved above it, a 404 would cost a counter row.
+  const mod = await loadRoute({ rateLimited: false });
+  const res = await call(mod, 'not-a-uuid');
+  assert.equal(res.status, 404);
+  assert.deepEqual(globalThis.__st.calls, [], 'not even the limiter may run');
+});
+
+test('the limiter is keyed on the spoof-resistant IP hash, not on the job id', async () => {
+  // Keying on the job UUID would be useless: the attacker controls it, and a flood
+  // with one UUID is exactly the case this exists to bound.
+  const mod = await loadRoute({ keys: SIX.map(PLAY) });
+  await call(mod);
+  const key = globalThis.__st.calls.find((c) => c[0] === 'rate')[1];
+  assert.match(key, /^iphash-/, 'must come from clientIpHashOf(request)');
+  assert.doesNotMatch(key, new RegExp(JOB), 'the job id must not key the limiter');
+});
+
+test('the 429 does not let a shared cache keep the throttle response', async () => {
+  const mod = await loadRoute({ keys: SIX.map(PLAY), rateLimited: true });
+  const res = await call(mod);
+  const cc = res.headers['Cache-Control'] ?? res.headers['cache-control'];
+  assert.match(cc, /no-store/);
+});
+
+// The limiter module itself, loaded for real: the route test above stubs it, so
+// nothing else would notice if the stems counter shared the uploads budget.
+async function loadAdmission({ rowCount = 1 } = {}) {
+  const dbRec = dataUrl(`
+    export const db = { query: async (text, params) => {
+      globalThis.__ad.push({ text, params });
+      return { rows: [], rowCount: ${rowCount} };
+    } };
+  `);
+  const js = toJs(readFileSync(ADMISSION, 'utf8')).replace(
+    /from ['"]@\/lib\/db['"]/g,
+    `from '${dbRec}'`,
+  );
+  return await import(dataUrl(js) + '#' + Math.random());
+}
+
+test('checkStemListRate counts under a NAMESPACED key, so playback cannot eat the upload budget', async () => {
+  // The two limiters share upload_rate_events (no migration), so the key is what keeps
+  // the budgets independent. Without the prefix, a play-along session would spend the
+  // user's presign allowance and they could not start their next job — a self-inflicted
+  // outage that no route-level test would catch, because the route stubs the limiter.
+  globalThis.__ad = [];
+  const m = await loadAdmission();
+  await m.checkStemListRate('deadbeef');
+  await m.checkUploadRate('deadbeef');
+  const [stems, uploads] = globalThis.__ad;
+  assert.equal(stems.params[0], 'stems:deadbeef', 'the stems counter must be namespaced');
+  assert.equal(uploads.params[0], 'deadbeef', 'the uploads counter must stay UNPREFIXED');
+  assert.notEqual(stems.params[0], uploads.params[0], 'the two must never share a budget');
+  // Same proven atomic check-and-record statement, not a reinvented one.
+  assert.match(stems.text.replace(/\s+/g, ' '), /INSERT INTO upload_rate_events/);
+  assert.match(stems.text.replace(/\s+/g, ' '), /SELECT COUNT\(\*\) FROM upload_rate_events/);
+});
+
+test('checkStemListRate admits 60/min by default and is env-overridable', async () => {
+  // 60/min is chosen from the access pattern: one manifest fetch per job load, and a
+  // 900s TTL on what it returns, so a legitimate user opening a dozen jobs or sharing
+  // a NAT egress stays an order of magnitude clear. It must NOT inherit the upload
+  // route's 10/min, which gates expensive job CREATION.
+  globalThis.__ad = [];
+  delete process.env.STEM_LIST_RATE_LIMIT;
+  const m = await loadAdmission();
+  await m.checkStemListRate('ip');
+  assert.equal(globalThis.__ad[0].params[2], 60, 'default ceiling');
+  assert.equal(globalThis.__ad[0].params[1], 60_000, 'rolling 60s window');
+
+  globalThis.__ad = [];
+  process.env.STEM_LIST_RATE_LIMIT = '5';
+  const m2 = await loadAdmission();
+  await m2.checkStemListRate('ip');
+  assert.equal(globalThis.__ad[0].params[2], 5, 'tightenable without a deploy');
+  delete process.env.STEM_LIST_RATE_LIMIT;
+});
+
+test('checkStemListRate BLOCKS when the atomic insert records no row', async () => {
+  // The statement inserts only while under the cap, so rowCount 0 IS the refusal.
+  globalThis.__ad = [];
+  const m = await loadAdmission({ rowCount: 0 });
+  assert.deepEqual(await m.checkStemListRate('ip'), { allowed: false, error_code: 'RATE_LIMITED' });
+  const m2 = await loadAdmission({ rowCount: 1 });
+  assert.deepEqual(await m2.checkStemListRate('ip'), { allowed: true, error_code: null });
 });
 
 // ---------- Cache-Control (security round 1, −1) ----------

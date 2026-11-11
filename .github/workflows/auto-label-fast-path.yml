@@ -265,6 +265,54 @@ jobs:
             exit 0
           fi
 
+          # ── Phase 3: do not re-arm fast-path on a PR awaiting Jon ───────
+          # MEASURED DEFECT, 2026-11-10 (PR #176 timeline, four occurrences):
+          #   19:58:42  unlabeled  fast-path  by github-actions[bot]
+          #   19:58:45  labeled    fast-path  by stem-loops-automerge[bot]
+          #   20:44:12  unlabeled  fast-path  by github-actions[bot]
+          #   20:44:12  labeled    fast-path  by stem-loops-automerge[bot]   <- same second
+          #
+          # auto-merge.yml's stale-approval guard strips `fast-path` and
+          # `adversarial-reviewed` on every new commit, so a new commit has to
+          # earn its way through again. This workflow fires on the SAME
+          # `synchronize` event and re-applied the label within 0-3 seconds,
+          # every time. The guard was inert.
+          #
+          # Why that matters: the auto-merge gate is
+          #   rollback-safe AND green CI AND (adversarial-reviewed OR fast-path)
+          #   AND NOT needs-jon-approval
+          # so `fast-path` ALONE satisfies the review arm. Stripping it on a new
+          # commit is the only thing that forces a re-look, and re-arming it
+          # three seconds later removes that.
+          #
+          # A PR carrying `needs-jon-approval` is by definition one Jon must read.
+          # Re-arming its fast-path label buys nothing and erodes the guard, so we
+          # skip -- and clear any stale label, matching the early-exit branches
+          # above. Once Jon clears `needs-jon-approval`, the next synchronize
+          # re-evaluates the diff and applies the label legitimately.
+          #
+          # This is a PARTIAL mitigation. The general race -- guard and labeller
+          # both firing on `synchronize` -- still exists for PRs WITHOUT
+          # `needs-jon-approval`, and fixing that properly needs auto-merge.yml,
+          # which is a no-fly file for agents.
+          # FAIL CLOSED. `set -e` is suspended inside an `if` condition, so a
+          # failed API read would evaluate false and arm the label anyway --
+          # silence and success sharing an exit code, which is this project's
+          # house bug. Read first, capture the failure explicitly, and treat an
+          # unreadable label set exactly like `needs-jon-approval` being present.
+          labels=$(gh api "repos/$REPO/issues/$PR_NUM/labels" --jq '.[].name') \
+            || labels='__LABEL_READ_FAILED__'
+
+          if printf '%s\n' "$labels" | grep -qx -e 'needs-jon-approval' -e '__LABEL_READ_FAILED__'; then
+            if printf '%s\n' "$labels" | grep -qx '__LABEL_READ_FAILED__'; then
+              echo "::warning::Could not read labels for PR #$PR_NUM; refusing to arm fast-path."
+            else
+              echo "PR #$PR_NUM carries needs-jon-approval; not arming fast-path."
+            fi
+            gh pr edit "$PR_NUM" --repo "$REPO" --remove-label fast-path 2>/dev/null || true
+            exit 0
+          fi
+
           echo "All files match fast-path allowlist. Applying label."
           # Also apply rollback-safe since docs/tests/generated-types are
           # intrinsically revertable with git revert.

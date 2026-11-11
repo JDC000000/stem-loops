@@ -8,8 +8,8 @@
 # watching.
 #
 # The hook runs (in order, short-circuit on first failure):
-#   1. make lint                                   — ruff + black + web lint
-#   2. make test                                   — pytest + web tests
+#   1. make lint-py + make lint-web                — ruff + black, then eslint
+#   2. make test-py + make test-web                — pytest, then web tests
 #   3. pnpm --filter web typecheck                 — `tsc --noEmit`
 #   4. python3 -m compileall apps/training         — training syntax check
 #   5. repo-wide merge-conflict marker grep on staged diff
@@ -44,6 +44,14 @@ fail() {
 
 echo "pre-commit: R-1 checks starting."
 
+# Shared precondition for every Node leg: steps 1 and 2 each have one, and
+# step 3 is entirely one. A git worktree and a fresh clone have no
+# node_modules, so these legs cannot run there -- but the Python legs of steps
+# 1 and 2 CAN, and gating them on this would be a loss of local enforcement.
+r1_web_env() {
+  command -v pnpm >/dev/null 2>&1 && [ -d node_modules ]
+}
+
 # ─── 1. make lint ────────────────────────────────────────────────────────────
 # [1/5] make lint. Gated for the SAME reason step 2 is, and the omission was a
 # real defect: `make lint` runs `python3 -m ruff` and `python3 -m black`, so on
@@ -69,7 +77,7 @@ echo "pre-commit: [1/5] make lint"
 r1_lint_rc=0
 r1_lint_env || r1_lint_rc=$?
 if [ "$r1_lint_rc" = "0" ]; then
-  make lint >/tmp/precommit-lint.log 2>&1 || { cat /tmp/precommit-lint.log >&2; fail "make lint"; }
+  make lint-py >/tmp/precommit-lint-py.log 2>&1 || { cat /tmp/precommit-lint-py.log >&2; fail "make lint-py"; }
 else
   if [ "$r1_lint_rc" = "1" ]; then r1_missing="ruff"; else r1_missing="black"; fi
   echo "pre-commit: [1/5] SKIPPED -- python3 -m $r1_missing is not runnable in" >&2
@@ -79,7 +87,21 @@ else
   echo "pre-commit:       On python3 < 3.10 the pinned black cannot be installed at" >&2
   echo "pre-commit:       all; use 3.10+ if you want this step to run." >&2
   echo "pre-commit:       CI runs ruff and black, so lint IS enforced there." >&2
-  echo "pre-commit:       => Your commit is NOT lint-verified locally." >&2
+  echo "pre-commit:       => Your commit is NOT Python-lint-verified locally." >&2
+fi
+# Web leg of step 1, guarded SEPARATELY. `pnpm --filter web lint` is bare as of
+# the same change that made `pnpm --filter web test` bare, so without this
+# guard a worktree with no node_modules hard-fails here on the missing install
+# rather than on a real lint error -- blocking the commit with a misleading
+# message, which is the exact outcome step 2's probe exists to prevent.
+if r1_web_env; then
+  make lint-web >/tmp/precommit-lint-web.log 2>&1 || { cat /tmp/precommit-lint-web.log >&2; fail "make lint-web"; }
+else
+  echo "pre-commit: [1/5] web leg SKIPPED -- pnpm or node_modules missing." >&2
+  echo "pre-commit:       A worktree has no node_modules, so eslint cannot run" >&2
+  echo "pre-commit:       there. CI runs it (ci.yml:80), so web lint IS enforced" >&2
+  echo "pre-commit:       there. The Python leg above still ran." >&2
+  echo "pre-commit:       => Your commit is NOT web-lint-verified locally." >&2
 fi
 
 # ─── 2. make test ────────────────────────────────────────────────────────────
@@ -105,6 +127,14 @@ fi
 # step HARD-FAILS rather than skipping: noisy, but never a false green. A
 # skip here must only ever mean "this machine cannot run them", never "they
 # ran and passed".
+#
+# This probe covers the PYTHON leg only. An earlier revision of this fix added
+# `command -v pnpm && [ -d node_modules ]` here, which was wrong: it gated the
+# whole `make test` target -- pytest included -- on a web-only precondition, so
+# a missing node_modules skipped a Python suite the machine could run. That
+# broke this block's own stated invariant below. The web leg now has its own
+# guard, and `make test` is split into `test-py` and `test-web` so each leg can
+# be gated on the precondition that actually applies to it.
 r1_test_env() {
   python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null || return 1
   python3 -c 'import psycopg, httpx, soundfile, sentry_sdk, boto3, librosa' 2>/dev/null || return 2
@@ -114,7 +144,7 @@ echo "pre-commit: [2/5] make test"
 r1_env_rc=0
 r1_test_env || r1_env_rc=$?
 if [ "$r1_env_rc" = "0" ]; then
-  make test >/tmp/precommit-test.log 2>&1 || { cat /tmp/precommit-test.log >&2; fail "make test"; }
+  make test-py >/tmp/precommit-test-py.log 2>&1 || { cat /tmp/precommit-test-py.log >&2; fail "make test-py"; }
 elif [ "$r1_env_rc" = "1" ]; then
   echo "pre-commit: [2/5] SKIPPED -- python3 is $(python3 -V 2>&1), and the worker" >&2
   echo "pre-commit:       requires 3.11+ (datetime.UTC). CI runs 3.11+, so these" >&2
@@ -127,7 +157,17 @@ else
   echo "pre-commit:         pip install -r apps/worker/requirements.txt \\" >&2
   echo "pre-commit:           -c apps/worker/constraints-prod.txt" >&2
   echo "pre-commit:       CI installs them, so these tests DO run there." >&2
-  echo "pre-commit:       => Your commit is NOT test-verified locally." >&2
+  echo "pre-commit:       => Your commit is NOT pytest-verified locally." >&2
+fi
+# Web leg of step 2, guarded SEPARATELY for the same reason as step 1's.
+if r1_web_env; then
+  make test-web >/tmp/precommit-test-web.log 2>&1 || { cat /tmp/precommit-test-web.log >&2; fail "make test-web"; }
+else
+  echo "pre-commit: [2/5] web leg SKIPPED -- pnpm or node_modules missing." >&2
+  echo "pre-commit:       A worktree has no node_modules, so the web suite cannot" >&2
+  echo "pre-commit:       run there. CI runs it (ci.yml:134), so it IS enforced" >&2
+  echo "pre-commit:       there. The pytest leg above still ran." >&2
+  echo "pre-commit:       => Your commit is NOT web-test-verified locally." >&2
 fi
 
 # ─── 3. web typecheck ────────────────────────────────────────────────────────
@@ -145,7 +185,7 @@ fi
 # package.json left in the working tree by a half-applied branch switch -- i.e.
 # it was the wrong copy, found while investigating a wrong-copy problem (L35).
 echo "pre-commit: [3/5] pnpm --filter web typecheck"
-if command -v pnpm >/dev/null 2>&1 && [ -d node_modules ]; then
+if r1_web_env; then
   pnpm --filter web typecheck >/tmp/precommit-tsc.log 2>&1 || { cat /tmp/precommit-tsc.log >&2; fail "pnpm --filter web typecheck"; }
 else
   echo "pre-commit: [3/5] SKIPPED -- pnpm or node_modules missing." >&2

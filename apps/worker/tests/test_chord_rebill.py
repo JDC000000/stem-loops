@@ -410,7 +410,10 @@ def _orchestrate(monkeypatch: pytest.MonkeyPatch, *, extract_raises: Exception |
         got["chord_stems"] = set(stem_paths)
 
     monkeypatch.setattr(pipeline, "_maybe_run_chord_recognition", chords)
-    monkeypatch.setattr(pipeline, "encode_and_upload", lambda *a, **k: 0)
+    # Migration 033: the `uploading` stage now RECORDS loops and cuts none of
+    # them. `cut_recorded_loops` runs from loop_cutter's claim loop instead, so
+    # the pipeline path these tests walk never reaches it.
+    monkeypatch.setattr(pipeline, "record_loops", lambda *a, **k: 0)
     failed: list[tuple] = []
     monkeypatch.setattr(pipeline, "_fail", _async(lambda *a: failed.append(a)))
     monkeypatch.setattr(replicate_client, "_heartbeat", lambda *_: None)

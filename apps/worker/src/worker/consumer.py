@@ -7,6 +7,14 @@ poison job can never block the queue (it fails in isolation and the loop continu
 Redis, no sidecar. (pg-boss was evaluated in the S2 spike but never wired into the consume
 path and has been removed — see spikes/s2_pgboss/s2_decision.md; retry/attempt-cap + backoff
 live in reaper.py.)
+
+SECOND QUEUE (migration 033). Loop cutting is on demand: the pipeline records a
+`loops` row per loop and cuts nothing, and `loop_cutter.claim_and_cut` claims
+`loop_requests` rows the same way — `FOR UPDATE SKIP LOCKED` on its own table.
+The poll loop below drains BOTH. Jobs are tried first and a claimed job short-
+circuits the pass, so a backlog of loop requests can never delay a fresh upload:
+a user watching a progress bar is waiting on a job, while a cut request is
+already a background task from the moment it is made.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ from . import tmpdirs
 from .cleanup import sweep_expired
 from .errors import InternalError, StemLoopsError
 from .logger import log_structured
+from .loop_cutter import claim_and_cut
 from .pipeline import run_pipeline
 from .reaper import reap_stale_jobs
 
@@ -114,6 +123,16 @@ async def poll_loop() -> None:
         except Exception as e:  # noqa: BLE001 — DB blips must not kill the worker
             log_structured("ERROR", "consumer_loop_error", error=str(e)[:200])
             claimed = False
+        # Only when no job was waiting: a separation is what a user is watching a
+        # progress bar for, a loop cut is not. `claim_and_cut` isolates its own
+        # failures (it closes the request 'failed' and returns True), so the only
+        # thing that reaches here is a DB-level blip, handled like the one above.
+        if not claimed:
+            try:
+                claimed = await claim_and_cut()
+            except Exception as e:  # noqa: BLE001 — DB blips must not kill the worker
+                log_structured("ERROR", "loop_cutter_loop_error", error=str(e)[:200])
+                claimed = False
         if time.monotonic() - last_reap >= REAP_INTERVAL:
             await _safe_reap()
             last_reap = time.monotonic()

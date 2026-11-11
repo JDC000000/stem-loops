@@ -41,6 +41,8 @@ import {
   resolveAutoScroll,
 } from '../src/components/ChordOverlay.helpers.ts';
 
+import { codeOnly } from './helpers/code-only.mjs';
+
 // ---------------------------------------------------------------------------
 // Fixtures — the real artifact's shape
 // ---------------------------------------------------------------------------
@@ -606,14 +608,68 @@ test('suspension round trip: play, user scrolls away, we back off, playback pass
 // The live page must keep working unchanged
 // ---------------------------------------------------------------------------
 
-test('the existing mount is untouched: jobs/[id]/page.tsx still passes jobId and nothing else', () => {
-  // The single most important regression signal for this change: positionSec
-  // is additive and optional, and the page that is live today must not have
-  // had to change. If someone makes positionSec required, or wires transport
-  // into this mount, this fails.
-  const page = readFileSync(join(import.meta.dirname, '..', 'src/app/jobs/[id]/page.tsx'), 'utf8');
-  assert.match(page, /<ChordOverlay jobId=\{job\.id\} \/>/, 'the live mount changed shape');
-  assert.doesNotMatch(page, /positionSec/, 'transport must not be wired here by this PR');
+test('the live mount now carries positionSec, and positionSec is still optional', () => {
+  // UPDATED BY THE SEAM PR. The original form of this test asserted that
+  // /jobs/[id] "still passes jobId and nothing else" — a SCOPING guard for
+  // PR #187, which landed `positionSec` as an additive, optional prop and
+  // deliberately did not wire it. The seam PR is the change that guard was
+  // waiting for: the engine now lives in components/play/Player.tsx, and the
+  // chord track is mounted there with the engine's own position. What the
+  // guard was really protecting — that `positionSec` stays OPTIONAL, and that
+  // ChordOverlay never grows a transport of its own — is kept below.
+  const player = readFileSync(
+    join(import.meta.dirname, '..', 'src/components/play/Player.tsx'),
+    'utf8',
+  );
+  assert.match(
+    player,
+    /<ChordOverlay\s+jobId=\{jobId\}\s+positionSec=\{chordPosition\}\s*\/>/,
+    'the chord playhead is not wired to the engine position',
+  );
+
+  // Still optional, with a null default: nothing else in the app is forced to
+  // pass it, and a mount without it renders exactly as it did before.
+  const overlay = readFileSync(
+    join(import.meta.dirname, '..', 'src/components/ChordOverlay.tsx'),
+    'utf8',
+  );
+  assert.match(overlay, /positionSec = null/, 'positionSec must keep its null default');
+
+  // The job body must not mount a SECOND, position-less overlay beside the
+  // Player's. Checking page.tsx for this was vacuous — it is a Server
+  // Component that renders only <JobView/> and could not mount the overlay if
+  // it tried. JobView is the file that could reintroduce the original bug, so
+  // that is the file to hold to it.
+  //
+  // Comments AND literals are blanked before matching, and that is NOT
+  // incidental — this one assertion has been a false green twice:
+  //   round 2: read raw, JobView's own header comment names `<Player>` twice,
+  //            so deleting the real mount left this test 31/31 green;
+  //   round 3: with comments stripped but literals intact,
+  //            `<span title={'<Player jobId={job.id} … />'} />` satisfied the
+  //            tightened pattern with the mount deleted — and a `//` inside
+  //            `aria-label="chords//legacy"` deleted the rest of the line, so
+  //            the `doesNotMatch` below reported success WITHOUT CHECKING
+  //            while a real second position-less overlay was mounted.
+  // `codeOnly` is a single-pass scanner that closes both directions; see
+  // test/helpers/code-only.mjs for why reordering regexes could not.
+  //
+  // Both of these are now ALSO asserted on rendered output in
+  // test/job-page-render.test.mjs, which is the layer a source-text trick
+  // cannot reach at all. These stay as the cheap, fast guard.
+  const jobView = codeOnly(
+    readFileSync(join(import.meta.dirname, '..', 'src/app/jobs/[id]/JobView.tsx'), 'utf8'),
+  );
+  assert.doesNotMatch(
+    jobView,
+    /<ChordOverlay/,
+    'the job body mounts its own overlay again; only Player has a position to give it',
+  );
+  assert.match(
+    jobView,
+    /<Player\s+jobId=/,
+    'the job body stopped mounting the Player (code, not a comment that names it)',
+  );
 });
 
 test('the zoom slider is still the zoom slider: the playhead adds no second range input', () => {

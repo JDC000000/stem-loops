@@ -511,3 +511,227 @@ export function completedJobStatus(result: PlayChordsResult): CompletedJobStatus
         : { pill: 'JOB', message: null, showTimeline: true };
   }
 }
+
+// ---------------------------------------------------------------------------
+// Chord playhead (Story 3)
+// ---------------------------------------------------------------------------
+//
+// `positionSec` arrives at animation frequency, so everything here is pure,
+// allocation-free and better than O(n) per frame. The expensive part of the
+// render (159 chips on the reference track) is memoised in the component and
+// deliberately does NOT depend on the position — only the marker and the
+// highlight ring move. See the perf note on `activeRunIndex`.
+
+/**
+ * Interval convention: a run covers `[startSec, endSec)` — start inclusive,
+ * end exclusive.
+ *
+ * This is NOT a free choice. `ChordObservation` in play-chords-loader.ts
+ * documents the artifact that way ("Inclusive region start" / "Exclusive
+ * region end"), so the playhead inherits it. At the instant
+ * `t === runs[i].endSec === runs[i + 1].startSec`, run i + 1 is the one
+ * sounding. Exactly one run can therefore cover any instant, which is what
+ * lets the hinted fast path below agree with the binary search.
+ *
+ * A zero-length run (startSec === endSec) covers nothing, by construction.
+ */
+function covers(run: Pick<OverlayRun, 'startSec' | 'endSec'>, t: number): boolean {
+  return t >= run.startSec && t < run.endSec;
+}
+
+/**
+ * Index of the run sounding at `positionSec`, or -1 for "no chord is sounding".
+ *
+ * -1 is returned — and the component then draws NO marker — for every case
+ * where highlighting a chip would be a lie:
+ *   - `positionSec` is null (Story 3 criterion 6: not playing)
+ *   - NaN, Infinity or a non-number
+ *   - negative, or before the first run starts
+ *   - inside a gap between two runs (Klangio can leave them)
+ *   - at or past the end of the last run (including exactly `endSec`)
+ *
+ * PERFORMANCE. Called once per animation frame, so never a linear scan:
+ *   - `hint` (the previously active index) is probed first, then `hint + 1`.
+ *     Forward playback hits one of those two on essentially every frame, so
+ *     the steady-state cost is O(1) with no allocation.
+ *   - Otherwise a binary search over the time-sorted runs: O(log n).
+ *     159 runs => at most 8 comparisons.
+ *
+ * `hint` is a pure accelerator. Because runs do not overlap, at most one run
+ * covers any instant, so a stale, absent or hostile hint changes the cost and
+ * never the answer — asserted directly by the hint-equivalence test.
+ */
+export function activeRunIndex(
+  runs: readonly Pick<OverlayRun, 'startSec' | 'endSec'>[],
+  positionSec: number | null | undefined,
+  hint?: number | null,
+): number {
+  if (typeof positionSec !== 'number' || !Number.isFinite(positionSec) || positionSec < 0) return -1;
+  const n = runs.length;
+  if (n === 0) return -1;
+
+  // O(1): same chord as last frame, or the next one (forward playback).
+  if (typeof hint === 'number' && Number.isInteger(hint) && hint >= 0 && hint < n) {
+    if (covers(runs[hint], positionSec)) return hint;
+    const next = hint + 1;
+    if (next < n && covers(runs[next], positionSec)) return next;
+  }
+
+  // O(log n): last run whose startSec is at or before the position.
+  let lo = 0;
+  let hi = n - 1;
+  let cand = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (runs[mid].startSec <= positionSec) {
+      cand = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  // cand < 0: before the first run. Otherwise it is the only candidate that
+  // can cover the position — if it does not, we are in a gap or past the end.
+  return cand >= 0 && covers(runs[cand], positionSec) ? cand : -1;
+}
+
+export interface PlayheadGeometry {
+  /** The sounding run. */
+  runIndex: number;
+  /** Leading edge of the sounding chord, px. STEPPED — see below. */
+  leftPx: number;
+  /** Width of the sounding chord, px (the highlight ring). */
+  widthPx: number;
+}
+
+/**
+ * Where the marker sits, Chordify-style.
+ *
+ * Jon chose a marker that STEPS chord to chord over a continuously scrolling
+ * score (2026-11-10). So `leftPx` is the leading edge of the sounding chord —
+ * a function of the run, NOT of `positionSec`. It is constant for every
+ * position inside one run and jumps only at a chord change. Geometry comes
+ * from `chipBox`, the same primitive the chips use, so the marker cannot
+ * drift away from the chip it is marking.
+ *
+ * Returns null when nothing is sounding, which renders no marker at all.
+ */
+export function playheadGeometry(
+  runs: readonly Pick<OverlayRun, 'startSec' | 'endSec'>[],
+  runIndex: number,
+  pxPerSec = PX_PER_SEC,
+): PlayheadGeometry | null {
+  if (!Number.isInteger(runIndex) || runIndex < 0 || runIndex >= runs.length) return null;
+  const box = chipBox(runs[runIndex], pxPerSec);
+  return { runIndex, leftPx: box.leftPx, widthPx: box.widthPx };
+}
+
+/** Keep this much of the chord clear of either edge before scrolling. */
+export const PLAYHEAD_MARGIN_PX = 48;
+/**
+ * On a forward scroll, land the sounding chord this far into the view so the
+ * chords the user is about to play are the ones on screen. It also means one
+ * scroll buys several chords, so auto-scroll fires rarely.
+ */
+export const PLAYHEAD_LEAD_FRACTION = 0.35;
+/** scrollLeft can come back fractionally rounded; below this it is "unchanged". */
+export const SCROLL_MATCH_TOLERANCE_PX = 2;
+
+export interface ScrollViewport {
+  /** Leading edge of the sounding chord, px (PlayheadGeometry.leftPx). */
+  activeLeftPx: number;
+  /** Width of the sounding chord, px. */
+  activeWidthPx: number;
+  /** Current scroller position and size. */
+  scrollLeft: number;
+  clientWidth: number;
+  totalWidth: number;
+  /** True once the user has scrolled by hand and we have backed off. */
+  suspended: boolean;
+  marginPx?: number;
+  leadFraction?: number;
+}
+
+export interface AutoScrollDecision {
+  /** Where to scroll, or null to leave the scroller alone. */
+  scrollLeftTarget: number | null;
+  /** Suspension state AFTER this decision (auto-scroll re-engages by itself). */
+  suspended: boolean;
+}
+
+function clampScroll(target: number, clientWidth: number, totalWidth: number): number {
+  const max = Math.max(0, totalWidth - clientWidth);
+  return Math.min(max, Math.max(0, target));
+}
+
+/**
+ * Auto-scroll, and the rule for not fighting the user. Story 3 criterion 4.
+ *
+ * Not suspended: scroll only when the sounding chord has left the comfortable
+ * band (`marginPx` in from either edge). A forward scroll puts the chord
+ * `leadFraction` into the view; a backward one (after a seek) puts it
+ * `marginPx` from the left. A chord already inside the band scrolls nothing,
+ * so a steady view stays steady.
+ *
+ * Suspended: the user has scrolled by hand, so we stay out of the way — until
+ * playback leaves the visible range entirely, at which point following again
+ * is clearly what they want and suspension lifts itself. "A view that yanks
+ * itself back is worse than one that does not follow", so partial visibility
+ * is left alone: nothing moves while any part of the sounding chord is on
+ * screen.
+ */
+export function resolveAutoScroll(v: ScrollViewport): AutoScrollDecision {
+  const margin = v.marginPx ?? PLAYHEAD_MARGIN_PX;
+  const lead = v.leadFraction ?? PLAYHEAD_LEAD_FRACTION;
+  if (!(v.clientWidth > 0) || !(v.totalWidth > 0)) {
+    return { scrollLeftTarget: null, suspended: v.suspended };
+  }
+
+  const viewStart = v.scrollLeft;
+  const viewEnd = v.scrollLeft + v.clientWidth;
+  const chordStart = v.activeLeftPx;
+  const chordEnd = v.activeLeftPx + Math.max(0, v.activeWidthPx);
+
+  if (v.suspended) {
+    // Any overlap with the viewport at all => do not move.
+    const whollyOutside = chordEnd <= viewStart || chordStart >= viewEnd;
+    if (!whollyOutside) return { scrollLeftTarget: null, suspended: true };
+    // Playback has moved past what the user was looking at: re-engage.
+    const target = clampScroll(chordStart - v.clientWidth * lead, v.clientWidth, v.totalWidth);
+    return {
+      scrollLeftTarget: Math.abs(target - v.scrollLeft) <= SCROLL_MATCH_TOLERANCE_PX ? null : target,
+      suspended: false,
+    };
+  }
+
+  let target: number | null = null;
+  if (chordStart < viewStart + margin) {
+    target = chordStart - margin; // behind the view (seek backwards)
+  } else if (chordEnd > viewEnd - margin) {
+    target = chordStart - v.clientWidth * lead; // ahead of the view (normal play)
+  }
+  if (target === null) return { scrollLeftTarget: null, suspended: false };
+
+  const clamped = clampScroll(target, v.clientWidth, v.totalWidth);
+  return {
+    scrollLeftTarget: Math.abs(clamped - v.scrollLeft) <= SCROLL_MATCH_TOLERANCE_PX ? null : clamped,
+    suspended: false,
+  };
+}
+
+/**
+ * Did this scroll event come from the user rather than from us?
+ *
+ * The component records the scrollLeft it last set; anything further away than
+ * the tolerance was a hand (or wheel, or trackpad) scroll and suspends
+ * auto-scroll. Without this every programmatic scroll would read as a manual
+ * one and auto-scroll would switch itself off on the first chord change.
+ */
+export function isManualScroll(
+  observedLeft: number,
+  lastAutoLeft: number,
+  tolerancePx = SCROLL_MATCH_TOLERANCE_PX,
+): boolean {
+  if (!Number.isFinite(observedLeft) || !Number.isFinite(lastAutoLeft)) return false;
+  return Math.abs(observedLeft - lastAutoLeft) > tolerancePx;
+}

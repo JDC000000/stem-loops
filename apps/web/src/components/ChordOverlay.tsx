@@ -44,6 +44,7 @@ import {
   checkTabCaptureSupport,
   startTabCapture,
 } from '../chord/tab-capture.ts';
+import type { ChordPlayheadProps } from '../lib/play/types.ts';
 import {
   type ChordAlternative,
   type ChordEdit,
@@ -53,6 +54,7 @@ import {
   NARROW_BREAKPOINT_PX,
   WRAP_DEFAULT_ROW_SEC,
   WRAP_MAX_ROW_SEC,
+  activeRunIndex,
   alternativeText,
   buildChordEdit,
   buildChordLabelEdit,
@@ -67,9 +69,12 @@ import {
   durationSec,
   fitPxPerSec,
   formatTime,
+  isManualScroll,
   layoutRows,
   observationsToRuns,
+  playheadGeometry,
   ppsToSlider,
+  resolveAutoScroll,
   rootHue,
   rulerTicks,
   runAriaLabel,
@@ -84,8 +89,16 @@ const RULER_H = 20;
 const GUTTER_PX = 44; // row-time labels in the wrapped (narrow) layout
 const CHIP_H_STRIP = 36;
 const CHIP_H_WRAP = 44; // touch target
+const WRAP_ROW_GAP_PX = 6; // gap between wrapped rows; the playhead ring needs it
 
-export interface ChordOverlayProps {
+/**
+ * `Partial<ChordPlayheadProps>` is how Story 3's one new prop arrives, and the
+ * `Partial` is load-bearing: the existing mount in jobs/[id]/page.tsx passes
+ * `jobId` only, so `positionSec` MUST be optional or that page stops compiling.
+ * Extending the contract type rather than restating it means the compiler, not
+ * a comment, is what keeps this in step with lib/play/types.ts.
+ */
+export interface ChordOverlayProps extends Partial<ChordPlayheadProps> {
   onStart?: () => void;
   onStop?: () => void;
   /**
@@ -128,6 +141,9 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   onChordLabelEdit,
   modelUrl,
   jobId,
+  // Story 3. `null`/absent = not playing: no marker, no auto-scroll, and the
+  // timeline renders exactly as it did before this prop existed.
+  positionSec = null,
 }) => {
   const [state, setState] = useState<State>(INITIAL_STATE);
   const [popoverFor, setPopoverFor] = useState<{ run: OverlayRun; idx: number } | null>(null);
@@ -136,8 +152,16 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   const [wrapEl, setWrapEl] = useState<HTMLDivElement | null>(null);
   const [widthPx, setWidthPx] = useState(0);
   const [scrollInfo, setScrollInfo] = useState({ left: 0, client: 0, total: 0 });
+  // Story 3 criterion 4: set once the user scrolls by hand, so auto-scroll
+  // stops fighting them. It lifts itself again in the auto-scroll effect.
+  const [followSuspended, setFollowSuspended] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const centerSecRef = useRef<number | null>(null);
+  // The scrollLeft WE last set. Anything else is the user (see isManualScroll).
+  const lastAutoLeftRef = useRef(0);
+  // Last sounding chord, as an O(1) lookup hint. A cache only: activeRunIndex
+  // returns the same answer with a stale hint, an absent one or a hostile one.
+  const activeHintRef = useRef(-1);
   const sessionRef = useRef<ChordnetSession | null>(null);
   const captureRef = useRef<TabCapture | null>(null);
 
@@ -314,6 +338,13 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   const syncScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // A scroll we did not cause is the user taking over: back off (Story 3
+    // criterion 4). Every programmatic scroll records its target in
+    // lastAutoLeftRef first, so our own scrolls do not trip this.
+    if (isManualScroll(el.scrollLeft, lastAutoLeftRef.current)) {
+      lastAutoLeftRef.current = el.scrollLeft;
+      setFollowSuspended(true);
+    }
     setScrollInfo((p) =>
       p.left === el.scrollLeft && p.client === el.clientWidth && p.total === el.scrollWidth
         ? p
@@ -325,11 +356,102 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   useEffect(() => {
     const el = scrollRef.current;
     if (el && centerSecRef.current !== null) {
-      el.scrollLeft = Math.max(0, centerSecRef.current * pps - el.clientWidth / 2);
+      const next = Math.max(0, centerSecRef.current * pps - el.clientWidth / 2);
+      // Ours, not the user's — record it before assigning so the syncScroll
+      // below does not read a zoom as a manual scroll and suspend following.
+      lastAutoLeftRef.current = next;
+      el.scrollLeft = next;
       centerSecRef.current = null;
     }
     syncScroll();
   }, [pps, widthPx, state.runs, syncScroll]);
+
+  // ---- chord playhead (Story 3) -------------------------------------------
+  // `positionSec` changes at animation frequency, so this block is written so
+  // that a new position costs an O(1) lookup and moves two absolutely
+  // positioned <div>s. It must NOT cost 159 chip re-renders, which is why the
+  // chips below are memoised on geometry only and know nothing about position.
+  const activeIdx = activeRunIndex(state.runs, positionSec, activeHintRef.current);
+  // Only fires when the sounding chord CHANGES, not every frame.
+  useEffect(() => {
+    if (activeIdx >= 0) activeHintRef.current = activeIdx;
+  }, [activeIdx]);
+  // Stepped: a function of the run and the zoom, never of positionSec. Stable
+  // by reference between chord changes, so effects keyed on it stay quiet.
+  const playhead = useMemo(
+    () => playheadGeometry(state.runs, activeIdx, pps),
+    [state.runs, activeIdx, pps],
+  );
+  const activeRun = activeIdx >= 0 ? state.runs[activeIdx] : null;
+
+  // Chips, memoised WITHOUT the playhead. Reusing the same element references
+  // lets React bail out of the whole chip subtree when only the position has
+  // changed, so a frame costs the marker and nothing else.
+  const stripChips = useMemo(
+    () =>
+      state.runs.map((run, idx) => {
+        const box = chipBox(run, pps);
+        return renderChip(run, idx, box.leftPx, box.widthPx, chipH, null, setPopoverFor);
+      }),
+    [state.runs, pps, chipH],
+  );
+
+  // Wrapped (narrow) layout. `byRun` turns "which segments belong to run i"
+  // into an array index instead of a per-frame scan over every segment.
+  const wrapped = useMemo(() => {
+    const rows = layoutRows(state.runs, rowWidthPx / pps, pps);
+    const byRun: { rowIndex: number; leftPx: number; widthPx: number }[][] = state.runs.map(() => []);
+    rows.forEach((row, ri) => {
+      for (const seg of row.segments) {
+        byRun[seg.runIndex]?.push({ rowIndex: ri, leftPx: seg.leftPx, widthPx: seg.widthPx });
+      }
+    });
+    return { rows, byRun };
+  }, [state.runs, rowWidthPx, pps]);
+
+  const wrappedRows = useMemo(
+    () =>
+      wrapped.rows.map((row, ri) => (
+        <div key={ri} style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+          <span style={rowLabelStyle}>{formatTime(row.startSec)}</span>
+          <div style={{ position: 'relative', height: chipH, width: rowWidthPx, flex: 'none' }}>
+            {row.segments.map((seg) =>
+              renderChip(
+                state.runs[seg.runIndex],
+                seg.runIndex,
+                seg.leftPx,
+                seg.widthPx,
+                chipH,
+                seg.continued ? ri : null,
+                setPopoverFor,
+              ),
+            )}
+          </div>
+        </div>
+      )),
+    [wrapped.rows, state.runs, rowWidthPx, chipH],
+  );
+
+  // Keep the sounding chord visible — on chord change only. `playhead` is
+  // reference-stable within a chord, so this does not run per frame.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || narrow || !playhead) return;
+    const decision = resolveAutoScroll({
+      activeLeftPx: playhead.leftPx,
+      activeWidthPx: playhead.widthPx,
+      scrollLeft: el.scrollLeft,
+      clientWidth: el.clientWidth,
+      totalWidth: el.scrollWidth,
+      suspended: followSuspended,
+    });
+    if (decision.suspended !== followSuspended) setFollowSuspended(decision.suspended);
+    if (decision.scrollLeftTarget !== null) {
+      lastAutoLeftRef.current = decision.scrollLeftTarget;
+      el.scrollLeft = decision.scrollLeftTarget;
+      syncScroll();
+    }
+  }, [playhead, narrow, followSuspended, syncScroll]);
 
   const bannerMessage =
     !support.supported && support.message
@@ -464,18 +586,31 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
             <div style={emptyStyle}>Listening…</div>
           ) : null}
           {narrow ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }} data-testid="chord-rows">
-              {layoutRows(state.runs, rowWidthPx / pps, pps).map((row, ri) => (
-                <div key={ri} style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
-                  <span style={rowLabelStyle}>{formatTime(row.startSec)}</span>
-                  <div style={{ position: 'relative', height: chipH, width: rowWidthPx, flex: 'none' }}>
-                    {row.segments.map((seg) => {
-                      const run = state.runs[seg.runIndex];
-                      return renderChip(run, seg.runIndex, seg.leftPx, seg.widthPx, chipH, seg.continued ? ri : null, setPopoverFor);
-                    })}
-                  </div>
-                </div>
-              ))}
+            <div
+              style={{ position: 'relative', display: 'flex', flexDirection: 'column', gap: WRAP_ROW_GAP_PX }}
+              data-testid="chord-rows"
+            >
+              {wrappedRows}
+              {/* Playhead ring, drawn OUTSIDE the memoised rows so a chord
+                  change never re-renders a chip. A run split across rows gets
+                  a ring on each of its pieces. */}
+              {playhead
+                ? wrapped.byRun[playhead.runIndex]?.map((seg, i) => (
+                    <div
+                      key={`ph-${seg.rowIndex}-${i}`}
+                      data-testid="chord-playhead-ring"
+                      data-run-index={playhead.runIndex}
+                      aria-hidden="true"
+                      style={{
+                        ...playheadRingStyle,
+                        top: `${seg.rowIndex * (chipH + WRAP_ROW_GAP_PX)}px`,
+                        left: `${GUTTER_PX + seg.leftPx}px`,
+                        width: `${Math.max(2, seg.widthPx - 1)}px`,
+                        height: `${chipH}px`,
+                      }}
+                    />
+                  ))
+                : null}
             </div>
           ) : (
             <>
@@ -498,11 +633,36 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
                     ))}
                   </div>
                   <div style={{ position: 'absolute', top: RULER_H, left: 0, right: 0, height: chipH }}>
-                    {state.runs.map((run, idx) => {
-                      const box = chipBox(run, pps);
-                      return renderChip(run, idx, box.leftPx, box.widthPx, chipH, null, setPopoverFor);
-                    })}
+                    {stripChips}
                   </div>
+                  {/* The marker. Two nodes, outside the memoised chips: a line
+                      that STEPS to each chord change (Chordify, not a smooth
+                      score) and a ring round the chord being heard. Both are
+                      pointer-events:none, so nothing here is a control — the
+                      only control on this timeline is still the zoom slider. */}
+                  {playhead ? (
+                    <>
+                      <div
+                        data-testid="chord-playhead"
+                        data-run-index={playhead.runIndex}
+                        data-left-px={playhead.leftPx.toFixed(2)}
+                        aria-hidden="true"
+                        style={{ ...playheadLineStyle, left: `${playhead.leftPx}px`, height: RULER_H + chipH }}
+                      />
+                      <div
+                        data-testid="chord-playhead-ring"
+                        data-run-index={playhead.runIndex}
+                        aria-hidden="true"
+                        style={{
+                          ...playheadRingStyle,
+                          top: `${RULER_H}px`,
+                          left: `${playhead.leftPx}px`,
+                          width: `${Math.max(2, playhead.widthPx - 1)}px`,
+                          height: `${chipH}px`,
+                        }}
+                      />
+                    </>
+                  ) : null}
                 </div>
               </div>
               {scrollInfo.left > 1 ? <div style={{ ...fadeStyle, left: 0, background: 'linear-gradient(90deg, rgba(0,0,0,0.7), transparent)' }} aria-hidden="true" /> : null}
@@ -511,6 +671,28 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
               ) : null}
             </>
           )}
+          {/* Now-playing readout and the re-engage affordance. Deliberately
+              BELOW the timeline, nowhere near the zoom bar: the zoom slider
+              must not read as transport (Story 3 criterion 5). No aria-live —
+              a chord a second would make a screen reader unusable. */}
+          {playhead && activeRun ? (
+            <div style={playheadBarStyle} data-testid="playhead-bar">
+              <span style={nowChordStyle} data-testid="playhead-now" data-run-index={activeIdx}>
+                Now {displayText(activeRun)}
+              </span>
+              {!narrow && followSuspended ? (
+                <button
+                  type="button"
+                  style={followBtnStyle}
+                  data-testid="playhead-follow"
+                  onClick={() => setFollowSuspended(false)}
+                >
+                  Follow playback
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
           {state.runs.length > 0 ? (
             <div style={hintStyle} data-testid="timeline-hint">
               {narrow
@@ -730,6 +912,52 @@ const hintStyle: CSSProperties = {
   color: 'rgba(255,255,255,0.65)',
   fontSize: '0.75rem',
   paddingTop: 4,
+};
+// Playhead. Amber/pink, pointer-events:none, no border-radius on the line:
+// unmistakably an indicator and never a handle, so it cannot be confused with
+// the zoom slider (which stays blue, interactive, and in its own bar above).
+const PLAYHEAD_COLOR = '#f472b6';
+const playheadLineStyle: CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  width: 2,
+  background: PLAYHEAD_COLOR,
+  pointerEvents: 'none',
+  zIndex: 2,
+};
+const playheadRingStyle: CSSProperties = {
+  position: 'absolute',
+  boxSizing: 'border-box',
+  border: `2px solid ${PLAYHEAD_COLOR}`,
+  borderRadius: 6,
+  background: 'rgba(244,114,182,0.16)',
+  pointerEvents: 'none',
+  zIndex: 1,
+};
+const playheadBarStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '0.5rem',
+  paddingTop: 4,
+};
+const nowChordStyle: CSSProperties = {
+  background: 'rgba(244,114,182,0.18)',
+  border: `1px solid ${PLAYHEAD_COLOR}`,
+  color: '#fbcfe8',
+  padding: '0.125rem 0.5rem',
+  borderRadius: '999px',
+  fontSize: '0.75rem',
+  fontVariantNumeric: 'tabular-nums',
+  whiteSpace: 'nowrap',
+};
+const followBtnStyle: CSSProperties = {
+  background: 'transparent',
+  color: '#fbcfe8',
+  border: `1px solid ${PLAYHEAD_COLOR}`,
+  borderRadius: '6px',
+  padding: '0.125rem 0.5rem',
+  fontSize: '0.75rem',
+  cursor: 'pointer',
 };
 const rowLabelStyle: CSSProperties = {
   width: GUTTER_PX,

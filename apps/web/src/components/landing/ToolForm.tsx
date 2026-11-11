@@ -104,7 +104,10 @@ export function ToolForm() {
       }
       const v = validateUpload(f.name, f.size);
       if (!v.ok) {
-        // keep the previous valid file (if any) and say why the new one was refused
+        // keep the previous valid file (if any) and say why this one did not pass the
+        // client-side name-and-size check. Nothing here gates on DURATION — see the
+        // landing's "Track length" row, and the ban list in test/landing-copy.test.mjs
+        // that now reads this file RAW, comments included.
         const code: ErrCode = v.error_code === 'UPLOAD_TOO_LARGE' ? 'large' : f.size <= 0 ? 'empty' : 'type';
         setErr({ code, suffix: file ? ` Still using ${file.name}.` : undefined });
         focusNext.current = file ? 'replace' : 'source';

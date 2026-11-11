@@ -469,14 +469,43 @@ html:not(.js) .lanes, html:not(.js) .pipe-art, html:not(.js) #ab, html:not(.js) 
    hues the rest of the product already uses, and lime keeps its one job (the action). */
 
 /* the player, drawn: three bands, each beside the sentence that explains it. Same
-   160px | 1fr | 340px rhythm as .pipe-row, so the two sections read as one system. */
+   160px | 1fr | 340px rhythm as .pipe-row, so the two sections read as one system — but
+   only from 1040px up, because that rhythm starves fixed-size ART in a way it does not
+   starve prose. See the measurement above the media query below. */
 .player { margin-top: var(--space-8); }
 .pl-bands { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border-default); }
 .pl-band { display: grid; grid-template-columns: 1fr; gap: var(--space-3); padding-block: var(--space-6); border-bottom: 1px solid var(--border-default); }
 .pl-band > * { min-width: 0; }
 .pl-band-name { font-size: var(--text-xl); font-weight: 600; color: var(--text-primary); line-height: 1.2; }
 .pl-band-text { color: var(--text-muted); max-width: 52ch; }
-@media (min-width: 760px) {
+/* MEASURED IN REAL CHROMIUM against a production `next build` + `next start`, 2026-11-11.
+   This rule used to start at 760px, and from there to about 1000px it destroyed the art —
+   iPad portrait (768px), split-view, and any desktop window under ~1000px:
+
+     width   .pl-rail   per channel   stem names        notes
+      759      647px        98.5px    all six fit       stacked, one column
+      760       52px         0.0px    all six clipped   13px rail overflow; .pl-loop width 0
+      780       72px         2.7px    all six clipped
+      800       92px         6.0px    all six clipped
+      860      152px        16.0px    all six clipped   1px rail overflow
+      900      192px        22.7px    four of six clipped
+     1024      316px        43.3px    all six fit
+
+   160px + 340px + two 32px gaps is 564px of FIXED width, so the middle track — the art —
+   took whatever was left: 52px shared between six channels at the breakpoint itself, with
+   the chord names rendering as one unreadable smear and the M/S toggles spilling outside
+   the dark rail. The transport collapsed the same way, overflowing by 34px with .pl-loop
+   at width 0, so the section loop — a thing the copy beside it promises — was invisible.
+
+   The art is not at fault: at 390px and at 1024px the same markup is excellent. The
+   breakpoint was. So the three-column rhythm now starts at 1040px, the page's own wide
+   breakpoint — the one .hero-grid, .faq and .take already switch at. Below it the band
+   stays stacked, which measures clean the whole way down to 360px.
+
+   DO NOT lower this without re-measuring in Chrome at 360, 390, 414, 559, 560, 759, 760,
+   780, 800, 860, 900, 1024, 1039, 1040 and 1280. A green test suite is not evidence that
+   these boxes fit; nothing in the suite can see a box. */
+@media (min-width: 1040px) {
   .pl-band { grid-template-columns: 160px minmax(0, 1fr) minmax(0, 340px); gap: var(--space-8); align-items: center; }
 }
 .pl-cap-note { margin-top: var(--space-4); font-size: var(--text-md); line-height: 1.45; color: var(--text-label); max-width: 65ch; }

@@ -7,6 +7,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { playerArt } from './helpers/render-player-art.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const walk = (d) => readdirSync(d).flatMap((n) => { const p = join(d, n); return statSync(p).isDirectory() ? walk(p) : [p]; });
@@ -15,13 +16,29 @@ const LANDING = [...walk(join(WEB, 'src/app/(landing)')), ...walk(join(WEB, 'src
   .map((p) => [p.slice(WEB.length + 1), readFileSync(p, 'utf8')]);
 
 /**
- * Comments are not copy, and copy is not comments. Every positioning gate below runs over
- * COMMENT-STRIPPED source, because an adversarial sweep showed the previous gates could be
- * satisfied by a comment: delete every capability word from the visible page, drop
- * `// player faders mute solo chords` above the component, and the suite stayed green on a
- * page that had been reduced to a bare H1. Block comments go first; line comments only match
- * after start-of-line or whitespace, so `https://…` inside a string survives (the `//` there
- * is preceded by `:`).
+ * Comments are not copy. POSITIVE gates — the ones a comment could SATISFY — run over
+ * comment-stripped source: delete every capability word from the visible page, drop
+ * `// player faders mute solo chords` above the component, and an earlier suite stayed green
+ * on a page that had been reduced to a bare H1.
+ *
+ * THIS IS A REGEX STACK, AND A REGEX STACK IS WRONG IN BOTH DIRECTIONS. It is kept only with
+ * its blast radius cut to the one direction where being wrong is SAFE, until #197's
+ * single-pass scanner (apps/web/test/helpers/code-only.mjs) lands and this is deleted in
+ * favour of `withoutComments`/`codeOnly`. That file is NOT reachable from this branch — it
+ * exists only on #197, which is cleared but unmerged — and hand-rolling a second copy of a
+ * scanner this repo has hit this defect class on seven times is exactly the mistake to avoid.
+ * #199 must land after #197 regardless; this comment is the hand-off.
+ *
+ * OVER-inclusive: a `//` inside a string looks like a comment, so real code after it is
+ * deleted. On a positive `assert.match` that can only make a gate FAIL on a page that is
+ * actually fine — a false RED, which is loud and gets fixed. Tolerable, so it stays.
+ *
+ * UNDER-inclusive: a STRING literal is not a comment, so a literal can still SATISFY a
+ * positive gate. That is a false GREEN and is not tolerable. The one gate it was demonstrated
+ * against — the art-drift gate — therefore no longer reads source text at all; it asserts on
+ * RENDERED OUTPUT, which no literal can fake. See test/helpers/render-player-art.mjs.
+ *
+ * BAN LISTS DO NOT USE THIS AT ALL — see RAW_PAGE_AND_COMPONENTS.
  */
 const decomment = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/[^\n]*/g, '$1');
 
@@ -38,6 +55,25 @@ const PAGE_AND_COMPONENTS = LANDING
 
 /** page.tsx alone, comments stripped. */
 const PAGE = PAGE_AND_COMPONENTS.find(([f]) => f.endsWith('(landing)/page.tsx'))[1];
+
+/**
+ * The same files, RAW — nothing stripped. EVERY `doesNotMatch` ban list below reads this and
+ * never the stripped copy.
+ *
+ * Measured on this PR (adversarial sweep round 2, 2026-11-11): one legitimate
+ * `aria-label="scope // summary"` on the hero paragraph, with the copy on that same line
+ * changed to "No account needed — start a job straight away.", reduced the line to
+ * `<p className="audience" aria-label="scope ` before the ban list ran. Both /no account/i and
+ * /start(?: a job)? (?:straight|right) away/i returned false, and the gate REPORTED SUCCESS on
+ * a page rendering the exact sentence it forbids — tsc --noEmit exit 0, suite unchanged at
+ * 925/905/0/20.
+ *
+ * Stripping can only ever REMOVE text from a ban list's view, so a ban list that strips can
+ * only be weakened, never strengthened. Run raw, the worst case is a false RED when a banned
+ * phrase sits in a comment — and a comment on this page promising "no account" is something
+ * we want to hear about anyway.
+ */
+const RAW_PAGE_AND_COMPONENTS = LANDING.filter(([f]) => !/\(landing\)\/(?:privacy|terms)\//.test(f));
 
 /** The one ceiling. Read from the module the player enforces, so the test cannot drift either. */
 const MAX_TRACK_SEC = Number(
@@ -75,16 +111,16 @@ test('the landing never claims "no account" — sign-in is required from launch 
   const banned = [/no account/i, /without an account/i, /needs no account/i, /no accounts/i, /no sign.?up/i,
     /account (?:is )?optional/i, /\boptional\b[^.]{0,20}account/i, /not required/i, /without signing in/i,
     /no sign.?in/i, /start(?: a job)? (?:straight|right) away/i];
-  for (const [file, src] of PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
+  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
 });
 
 test('the landing shows no price, plan or paywall — there is no payment at launch', () => {
   const banned = [/\$\d/, /\bper month\b/i, /\/mo\b/, /\bfree forever\b/i, /\bupgrade\b/i, /\bpricing\b/i, /\bpaid plan/i, /\bcredits\b/i];
-  for (const [file, src] of PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
+  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
 });
 
 test('the landing never links to /pricing', () => {
-  for (const [file, src] of PAGE_AND_COMPONENTS) assert.doesNotMatch(src, /href="\/pricing/, `${file} links /pricing`);
+  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) assert.doesNotMatch(src, /href="\/pricing/, `${file} links /pricing`);
 });
 
 test('the landing claims no mobile or non-Chrome support (Story 5.3)', () => {
@@ -94,11 +130,15 @@ test('the landing claims no mobile or non-Chrome support (Story 5.3)', () => {
   assert.match(specRow('Where it runs'), /not supported yet/);
   const banned = [/works on (?:your |a )?(?:phone|mobile|ios|android|tablet|handset)/i, /\bany browser\b/i, /\bevery browser\b/i,
     /mobile.friendly/i, /runs? (?:fine |well |great )?on (?:a )?(?:tablet|handset|phone|mobile)/i, /(?:tablet|handset|phone)s? (?:too|as well)\b/i];
-  for (const [file, src] of PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
+  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
 });
 
 test('the landing says tempo and pitch are coming, and never implies we have them', () => {
-  const page = LANDING.find(([f]) => f.endsWith('(landing)/page.tsx'))[1];
+  // Comment-stripped, NOT raw. Wrapping the three spec-later rows — Tempo, Pitch and capo,
+  // Lyrics — in a JSX comment deletes all three from the rendered page, and reading raw source
+  // left this gate GREEN with every one of them gone (adversarial sweep round 2, 2026-11-11):
+  // tsc --noEmit exit 0, suite unchanged at 925/905/0/20.
+  const page = PAGE;
   // both gaps are named on the page
   assert.match(page, /<dt>Tempo<\/dt>/);
   assert.match(page, /<dt>Pitch and capo<\/dt>/);
@@ -110,7 +150,7 @@ test('the landing says tempo and pitch are coming, and never implies we have the
   }
   // and the marketing copy never offers either as something you can do today
   const banned = [/\byou can slow\b/i, /\bslow it down\b(?![^.]*\bnot\b)/i, /\bhalf speed\b/i, /\btranspose\b/i, /\bchange its key\b(?![^.]*\bnot\b)/i];
-  for (const [file, src] of PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
+  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
   // lyrics are out of scope (not "coming"), and the page says so in its own row
   const lyrics = page.match(/<dt>Lyrics<\/dt>\s*<dd>([^<]*)/);
   assert.ok(lyrics, 'no <dd> for the Lyrics row');
@@ -120,7 +160,7 @@ test('the landing says tempo and pitch are coming, and never implies we have the
 test('the landing invents no social proof — production has zero registered users', () => {
   const banned = [/\btestimonial/i, /\d[\d,.]*\s*(?:\+\s*)?(?:happy\s+)?(?:users|musicians|players|customers|members)\b/i,
     /\bloved by\b/i, /\btrusted by\b/i, /\bas seen (?:in|on)\b/i, /\b\d(?:\.\d)?\s*\/\s*5\b/, /\bstars?\b/i, /\breviews?\b/i, /\bjoin \d/i];
-  for (const [file, src] of PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
+  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
 });
 
 test('every minute figure on the page IS MAX_TRACK_MIN, not merely not-the-literal', () => {
@@ -138,7 +178,7 @@ test('every minute figure on the page IS MAX_TRACK_MIN, not merely not-the-liter
 
   // …and no literal minute figure, in digits or in words, anywhere in the marketing copy.
   const literal = /\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:&nbsp;|\\u00a0|\s)*minutes?\b/i;
-  for (const [file, src] of PAGE_AND_COMPONENTS) {
+  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) {
     // the "1–3 minutes" processing-time answer is a measured runtime, not the cap
     const withoutRuntime = src.replace(/about 1–3\s*minutes/g, '').replace(/3 min 7 s/g, '');
     assert.doesNotMatch(withoutRuntime, literal, `${file} hard-codes a minute figure`);
@@ -158,7 +198,7 @@ test('the page claims no submit-time length gate — nothing enforces one', () =
   // Klangio. An over-length track is accepted and separated at real cost, so the page must
   // not promise it is turned away at the door.
   const banned = [/\brefused\b/i, /\brejected\b/i, /\bturned away\b/i, /\bwon't be accepted\b/i, /\bwe'll stop you\b/i];
-  for (const [file, src] of PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} claims a gate that does not exist (${re})`);
+  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} claims a gate that does not exist (${re})`);
   assert.match(specRow('Track length'), /not supported/i);
 });
 
@@ -173,21 +213,43 @@ test('the page itself names the player, the faders, mute, solo, the chords and t
   }
 });
 
-test('the drawing shows what the copy claims — the art and the page cannot drift apart', () => {
+test('the drawing shows what the copy claims — the art and the page cannot drift apart', async () => {
   // The page says six faders with a mute and a solo, a chord track and a section loop. If
   // PlayerArt stops drawing any of that, the page is claiming something its own illustration
-  // contradicts — which stayed green until this gate existed (adversarial sweep, 2026-11-11).
-  const art = PAGE_AND_COMPONENTS.find(([f]) => f.endsWith('landing/PlayerArt.tsx'));
-  assert.ok(art, 'PlayerArt.tsx is missing');
-  const src = art[1];
-  assert.match(src, /STEM_ORDER\.map/, 'the rail must be built from STEM_ORDER, so it is six channels');
-  assert.match(src, />M</, 'the art must draw a mute toggle');
-  assert.match(src, />S</, 'the art must draw a solo toggle');
-  assert.match(src, /pl-fader/, 'the art must draw faders');
-  assert.match(src, /pl-chords/, 'the art must draw the chord ribbon');
-  assert.match(src, /pl-loop/, 'the art must draw the section loop');
+  // contradicts.
+  //
+  // This gate reads RENDERED HTML, not source text. Grepping the source let a dead
+  // `title="toggles: >M< mute, >S< solo"` attribute hold this green with BOTH TOGGLES DELETED
+  // from the component (adversarial sweep round 2, 2026-11-11): tsc --noEmit exit 0, suite
+  // unchanged at 925/905/0/20. Stripping comments would not have caught it, because a literal
+  // is not a comment. React escapes attribute values, so `>M<` can only reach the output as a
+  // real text node between real tags — a property no literal can fake and no scanner is needed
+  // to check.
+  const { html, STEM_ORDER } = await playerArt();
+
+  // six channels, and they are the REAL STEM_ORDER in order — not six of anything
+  const drawn = [...html.matchAll(/<div class="pl-ch[^"]*" data-stem="([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(STEM_ORDER.length, 6, 'STEM_ORDER is the six stems the page claims');
+  assert.deepEqual(drawn, STEM_ORDER, 'the rail must draw one channel per stem, in STEM_ORDER');
+
+  // a fader, a mute and a solo on EVERY channel, as real rendered nodes
+  const count = (re) => (html.match(re) ?? []).length;
+  assert.equal(count(/class="pl-fader"/g), STEM_ORDER.length, 'every channel must draw a fader');
+  assert.equal(count(/>M</g), STEM_ORDER.length, 'every channel must draw a mute toggle');
+  assert.equal(count(/>S</g), STEM_ORDER.length, 'every channel must draw a solo toggle');
+
+  // the chord ribbon, with chord names actually inside it
+  const ribbon = html.match(/<div class="pl-chords">([\s\S]*?)<\/div>/);
+  assert.ok(ribbon, 'the art must draw the chord ribbon');
+  assert.ok((ribbon[1].match(/class="pl-chord[^"]*"/g) ?? []).length >= 2, 'the chord ribbon must carry chord names');
+
+  // the section loop, and it must be a NAMED section, as SectionLoop.tsx renders one
+  assert.match(html, /class="pl-loop"/, 'the art must draw the section loop');
+  assert.match(html, /class="pl-loop-name[^"]*">[^<]+</, 'the section loop must be named');
+
   // and it must still say it is a drawing, not a recorded result
-  assert.match(src, /not a recorded result/i, 'the figcaption must keep its honesty note');
+  assert.match(html, /<figcaption[^>]*>[\s\S]*?not a recorded result[\s\S]*?<\/figcaption>/i,
+    'the figcaption must keep its honesty note');
 });
 
 test('drift is stated as a per-length upper bound, never zero', async () => {
@@ -201,6 +263,59 @@ test('drift is stated as a per-length upper bound, never zero', async () => {
     assert.ok(bound > 0, `bound for ${bars} bars must not be zero`);
     assert.ok(bound > ms, `bound ${bound} ms must exceed the measured ${ms} ms at ${bars} bars`);
   }
+});
+
+test('the player art gets its three-column layout only at the wide breakpoint (1040px)', () => {
+  // NOT a claim that the boxes fit — nothing in this suite can see a box. This gate holds the
+  // ONE number that was wrong, so the next person has to re-measure before changing it.
+  //
+  // `.pl-band`'s 160px | 1fr | 340px rhythm puts 564px of FIXED width in a three-column grid,
+  // so the middle track — the art — gets whatever is left. Introduced at 760px, that left 52px
+  // for six channels. Measured in real Chromium against a production `next build` +
+  // `next start`, 2026-11-11: at 760px the rail was 52px with 13px of overflow and every
+  // channel at 0px, all six stem names clipped to nothing, the transport overflowing by 34px
+  // and `.pl-loop` at width 0. It did not recover until about 1024px — the whole of iPad
+  // portrait, split-view and any desktop window under ~1000px.
+  //
+  // 1040px is the page's own wide breakpoint (.hero-grid, .faq, .take). Below it the band
+  // stacks, which measures clean down to 360px.
+  const css = readFileSync(join(WEB, 'src/styles/landing.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // Split into top-level text and @media blocks, so each rule knows the prelude it sits under.
+  const blocks = [];
+  for (let i = 0; i < css.length; ) {
+    const at = css.indexOf('@media', i);
+    if (at === -1) { blocks.push({ prelude: null, body: css.slice(i) }); break; }
+    blocks.push({ prelude: null, body: css.slice(i, at) });
+    const open = css.indexOf('{', at);
+    let depth = 1, j = open + 1;
+    while (j < css.length && depth > 0) { if (css[j] === '{') depth++; else if (css[j] === '}') depth--; j++; }
+    blocks.push({ prelude: css.slice(at + '@media'.length, open).trim(), body: css.slice(open + 1, j - 1) });
+    i = j;
+  }
+
+  const hits = [];
+  for (const b of blocks) {
+    for (const m of b.body.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!/(^|,)\s*\.pl-band\s*(,|$)/.test(m[1].trim())) continue;
+      const g = m[2].match(/grid-template-columns\s*:\s*([^;]+)/);
+      if (!g) continue;
+      const tracks = g[1].trim().replace(/minmax\([^)]*\)/g, 'T').split(/\s+/).filter(Boolean).length;
+      hits.push({ prelude: b.prelude, tracks, value: g[1].trim() });
+    }
+  }
+
+  assert.ok(hits.some((h) => h.tracks === 1), '.pl-band must still have a one-column default');
+  const multi = hits.filter((h) => h.tracks > 1);
+  assert.equal(multi.length, 1, `expected exactly one multi-column .pl-band rule, saw ${multi.length}`);
+  const min = multi[0].prelude && multi[0].prelude.match(/min-width\s*:\s*(\d+)px/);
+  assert.ok(min, `the multi-column .pl-band rule must sit under a min-width media query, not ${JSON.stringify(multi[0].prelude)}`);
+  assert.ok(
+    Number(min[1]) >= 1040,
+    `.pl-band gets ${multi[0].tracks} columns from ${min[1]}px. Below 1040px the art starves: ` +
+      'measured 0px per channel and all six stem names clipped at 760px in Chrome. Re-measure at ' +
+      '360/390/414/559/560/759/760/780/800/860/900/1024/1039/1040/1280 before lowering this.',
+  );
 });
 
 test('the landing reads the v3 demo set', () => {

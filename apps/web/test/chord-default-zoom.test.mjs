@@ -519,6 +519,24 @@ test('the wrapped layout gets the same ceiling, bounded by rows of DOM', () => {
   // The strip's chip count does not change with zoom; a wrapped row is created
   // per rowSec, so here the ceiling really does buy DOM. Rows must stay inside
   // the measured budget, and the phone must still reach every chord.
+  // THE NUMBER THIS IS JUDGED AGAINST IS NOT MAX_WRAP_ROWS. An earlier version
+  // asserted `rows <= MAX_WRAP_ROWS` with the constant imported, so both sides
+  // of the comparison moved together and the gate could not fail: raising
+  // MAX_WRAP_ROWS from 800 to 100_000 left the whole suite green with the
+  // pathological song at ~6,900 rows. Found by mutation testing, not by
+  // reading it.
+  //
+  // So the bar is the MEASURED cost boundary instead, which no edit to the
+  // constant moves: Chromium at 390x800, 3 nodes per row, build+layout is flat
+  // from the 73 rows today's cap produces (26.8ms) through 800 rows (31.5ms),
+  // then 2,000 rows costs 62.2ms -- roughly double -- and 7,000 rows 238.3ms.
+  const ROWS_WHERE_LAYOUT_COST_DOUBLES = 2000;
+  assert.ok(
+    MAX_WRAP_ROWS <= ROWS_WHERE_LAYOUT_COST_DOUBLES,
+    `MAX_WRAP_ROWS=${MAX_WRAP_ROWS} is at or past the row count where wrapped ` +
+      `layout cost doubles (${ROWS_WHERE_LAYOUT_COST_DOUBLES})`,
+  );
+
   const rowWidthPx = Math.max(120, NARROW_CONTAINER_PX - GUTTER_PX);
   for (const [name, runs] of ADVERSARIAL.concat([['pathological', songOf([[0.005, 1], [3, 80]])]])) {
     const ceiling = zoomCeilingPxPerSec(runs, estimateLabelPx, {
@@ -526,6 +544,11 @@ test('the wrapped layout gets the same ceiling, bounded by rows of DOM', () => {
       maxPaintedPx: Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx),
     });
     const rows = layoutRows(runs, rowWidthPx / ceiling, ceiling).length;
+    assert.ok(
+      rows <= ROWS_WHERE_LAYOUT_COST_DOUBLES,
+      `${name}: ${rows} wrapped rows at the ceiling, past the measured ` +
+        `${ROWS_WHERE_LAYOUT_COST_DOUBLES}-row cost cliff`,
+    );
     assert.ok(
       rows <= MAX_WRAP_ROWS,
       `${name}: ${rows} wrapped rows at the ceiling, over the ${MAX_WRAP_ROWS} budget`,

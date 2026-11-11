@@ -711,6 +711,24 @@ const declAt = (css, width, selector, prop, { required = true, env = {} } = {}) 
     }
     return found;
   };
+  // A rule that targets the SAME element through a longer selector wins in the
+  // browser and is invisible to the exact-match lookup above — `.mixer
+  // .channel { min-width }` would leave this answering with the bare
+  // `.channel` value while the page used the other one. Same shape as reading
+  // the base cascade: a confident answer the browser would not use. Fail.
+  const KEY = new RegExp(`[ >+~]${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+  for (const rule of applied) {
+    for (const one of rule.selectors) {
+      if (one === selector || !KEY.test(one)) continue;
+      const alsoSets = new RegExp(`(?:^|;)\\s*${prop}\\s*:`).test(rule.decls);
+      assert.ok(
+        !alsoSets,
+        `\`${one}\` also sets \`${prop}\` and outranks \`${selector}\`; this lookup ` +
+          `resolves selectors by exact match and would answer with the wrong value`,
+      );
+    }
+  }
+
   const blind = winner(unevaluated);
   assert.equal(
     blind,

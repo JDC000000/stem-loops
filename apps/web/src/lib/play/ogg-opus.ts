@@ -1,5 +1,25 @@
 // Ogg/Opus demuxer — V3-J2a (TSD §12.2a).
 //
+// ⚠️ STATUS 2026-11-11, recorded by the seam PR: THIS MODULE HAS NO PRODUCTION
+// IMPORTER. Its only importer is its own test. The seam that made the player
+// reachable audited every file in `lib/play/` and wired engine, loader,
+// sections, mixer, transport, section-loop and chord playhead; this one was
+// deliberately left out, and that is a decision rather than an oversight.
+//
+// The reason is in the next paragraph: this demuxer exists to feed a WebCodecs
+// `AudioDecoder`, which is TSD §3 Variant D. The shipped engine (engine.ts) is
+// NOT Variant D — the spike chose plain `decodeAudioData` plus a mono downmix,
+// measured at 329 MB against the ~600 MB bar Jon set on 2026-11-10, and Chrome
+// demuxes Ogg/Opus natively on that path. So the bridge this module was written
+// to build has no remaining gap to span.
+//
+// It is kept, not deleted, for two reasons: the 24 kHz fallback and any future
+// move back to WebCodecs would both need it, and it is 629 lines of bounded,
+// hostile-input-hardened parsing that is expensive to rewrite and cheap to
+// keep. It is Jon's call whether that is worth ~20% of the original
+// "3,193 lines, zero importers" problem staying open; flagged in PR #197 as
+// named residue so the decision is made rather than defaulted into.
+//
 // WHY THIS EXISTS. TSD §3 Variant D drives "a WebCodecs `AudioDecoder` per stem"
 // and holds each stem as "the Opus-encoded bytes". `AudioDecoder` does NOT demux:
 // it consumes `EncodedAudioChunk`s, i.e. raw Opus packets. Our playback artifact is

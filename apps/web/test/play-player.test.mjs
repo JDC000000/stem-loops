@@ -138,10 +138,47 @@ const {
   UNDECODABLE_MESSAGE,
   NO_STEMS_MESSAGE,
   GENERIC_LOAD_MESSAGE,
+  PlayerView,
+  chordPositionFor,
   degradedMessage,
   hasWebAudio,
   stemLoadMessage,
 } = Player;
+
+const noop = () => {};
+
+/** What the component holds before any engine exists. */
+const IDLE = Object.freeze({
+  status: 'idle',
+  positionSec: 0,
+  durationSec: 0,
+  stems: [],
+  loop: null,
+  degraded: null,
+  error: null,
+});
+
+/**
+ * Render the view directly with a phase and a snapshot. `Player` itself only
+ * leaves the `idle` phase from an effect, and `renderToStaticMarkup` never runs
+ * effects, so every phase below is unreachable through `Player` in node. This
+ * is what makes them assertable instead of grep-able.
+ */
+const renderView = (props) =>
+  renderToStaticMarkup(
+    React.createElement(PlayerView, {
+      jobId: 'job-1',
+      sections: [],
+      onPlay: noop,
+      onPause: noop,
+      onSeek: noop,
+      onGain: noop,
+      onMute: noop,
+      onSolo: noop,
+      onLoop: noop,
+      ...props,
+    }),
+  );
 
 const attr = (html, key) => html.match(new RegExp(`${key}="([^"]*)"`))?.[1] ?? null;
 
@@ -431,6 +468,168 @@ test('the loader-to-engine handoff survives a readonly sources array', async () 
   assert.equal(snap.degraded, null, 'all six stems were supplied, so nothing is degraded');
   assert.equal(snap.stems.length, PLAYABLE_STEMS.length);
   engine.dispose();
+});
+
+// ═══ Story 3.3 — a NUMBER must arrive, not just a prop ══════════════════════
+//
+// Review set `const chordPosition = null;` and all 939 tests stayed green: the
+// earlier tests proved the prop was WRITTEN, never that a position ARRIVED.
+// These drive a real engine and assert on the value the overlay is handed.
+
+const positionOf = (html) => {
+  const raw = attr(html, 'data-position');
+  return raw === null || raw === 'null' ? null : Number(raw);
+};
+
+test('a playing engine hands the chord track a real, non-null number', async () => {
+  const { engine, ctx } = await loadedEngine();
+  engine.play();
+  ctx().currentTime += 1.5;
+  const snapshot = engine.getSnapshot();
+  assert.equal(snapshot.status, 'playing');
+
+  const html = renderView({ phase: { kind: 'ready' }, snapshot });
+  const pos = positionOf(html);
+  assert.notEqual(pos, null, 'the chord playhead was handed null while the engine was playing');
+  assert.ok(Number.isFinite(pos), `expected a finite position, got ${pos}`);
+  assert.ok(pos > 0, `expected the position to have advanced, got ${pos}`);
+  engine.dispose();
+});
+
+test('the number the chord track gets ADVANCES as the engine clock advances', async () => {
+  const { engine, ctx } = await loadedEngine();
+  engine.play();
+  ctx().currentTime += 0.5;
+  const first = positionOf(renderView({ phase: { kind: 'ready' }, snapshot: engine.getSnapshot() }));
+  ctx().currentTime += 1;
+  const second = positionOf(renderView({ phase: { kind: 'ready' }, snapshot: engine.getSnapshot() }));
+  assert.ok(first !== null && second !== null, 'the playhead went null mid-playback');
+  assert.ok(second > first, `the playhead did not move: ${first} -> ${second}`);
+  // The clock moved a second, so the marker must have moved about a second.
+  assert.ok(Math.abs(second - first - 1) < 0.05, `expected ~1 s of travel, got ${second - first}`);
+  engine.dispose();
+});
+
+test('a loaded engine paused at the top passes 0, NOT null', async () => {
+  // `null` means "not playable" and blanks the marker. A ready engine sitting
+  // at 0 is playable, so the marker belongs on the first chord.
+  const { engine } = await loadedEngine();
+  const html = renderView({ phase: { kind: 'ready' }, snapshot: engine.getSnapshot() });
+  assert.equal(positionOf(html), 0);
+  assert.equal(attr(html, 'data-has-position'), 'true');
+  engine.dispose();
+});
+
+test('chordPositionFor: every non-playable state blanks the marker', async () => {
+  const { engine, ctx } = await loadedEngine();
+  engine.play();
+  ctx().currentTime += 1;
+  const playing = engine.getSnapshot();
+  assert.ok(chordPositionFor({ kind: 'ready' }, playing) > 0);
+  for (const phase of [
+    { kind: 'idle' },
+    { kind: 'loading' },
+    { kind: 'no-stems' },
+    { kind: 'unsupported', message: 'x' },
+    { kind: 'load-error', message: 'x' },
+  ]) {
+    assert.equal(chordPositionFor(phase, playing), null, `${phase.kind} should blank the marker`);
+  }
+  // An engine that errored is not playable either, even in the ready phase.
+  const errored = { ...playing, error: { code: 'PLAY_DECODE_FAILED', message: 'x' } };
+  assert.equal(chordPositionFor({ kind: 'ready' }, errored), null);
+  engine.dispose();
+});
+
+// ═══ Story 6.4 — the no-stems fallback actually renders ═════════════════════
+
+test('phase "no-stems" renders the fallback note and NO transport', async () => {
+  const html = renderView({ phase: { kind: 'no-stems' }, snapshot: IDLE });
+  assert.equal(attr(html, 'data-phase'), 'no-stems');
+  assert.match(html, /data-testid="player-banner"/);
+  assert.ok(html.includes(NO_STEMS_MESSAGE), 'the fallback note is missing');
+  // A transport here would be a dead control over audio that does not exist.
+  assert.doesNotMatch(html, /data-testid="transport"/);
+  assert.doesNotMatch(html, /aria-label="Stem mixer"/);
+  // The chord track survives the fallback — that is the rest of Story 6.4.
+  assert.match(html, /data-testid="chord-overlay"/);
+  assert.equal(positionOf(html), null);
+});
+
+test('phase "unsupported" renders the browser banner and no transport', async () => {
+  const html = renderView({
+    phase: { kind: 'unsupported', message: UNSUPPORTED_BROWSER_MESSAGE },
+    snapshot: IDLE,
+  });
+  assert.equal(attr(html, 'data-phase'), 'unsupported');
+  assert.ok(html.includes(UNSUPPORTED_BROWSER_MESSAGE));
+  assert.doesNotMatch(html, /data-testid="transport"/);
+  assert.match(html, /data-testid="chord-overlay"/);
+});
+
+// ═══ Story 5.1 — the degraded banner actually renders ═══════════════════════
+
+test('a degraded snapshot renders a banner NAMING the missing stems', async () => {
+  const { engine } = await loadedEngine();
+  await engine.load([
+    { name: 'drums', bytes: new ArrayBuffer(8) },
+    { name: 'bass', bytes: new ArrayBuffer(8) },
+  ]);
+  const snapshot = engine.getSnapshot();
+  const html = renderView({ phase: { kind: 'ready' }, snapshot });
+  assert.match(html, /data-testid="player-degraded"/, 'no degraded banner for a partial load');
+  for (const name of ['Guitar', 'Keys', 'Vocals', 'Other']) {
+    assert.ok(html.includes(name), `the banner does not name ${name}`);
+  }
+  // Story 5.1's other half: the rest still plays, so the transport stays.
+  assert.match(html, /data-testid="transport"/);
+  engine.dispose();
+});
+
+test('a complete snapshot renders NO degraded banner', async () => {
+  const { engine } = await loadedEngine();
+  const html = renderView({ phase: { kind: 'ready' }, snapshot: engine.getSnapshot() });
+  assert.doesNotMatch(html, /data-testid="player-degraded"/);
+  engine.dispose();
+});
+
+// ═══ Story 2.7 / 1.2 — the two mounts that carry the story ══════════════════
+
+test('Story 2.7: the Mixer mount carries jobId, which is its memory key', () => {
+  // The Mixer keys sessionStorage on `jobId` (mixerMemoryKey). Drop the prop
+  // and the component is purely props-driven: faders silently stop being
+  // remembered, with nothing else observable changing.
+  const src = read('src/components/play/Player.tsx');
+  assert.match(
+    src,
+    /<Mixer[^>]*\bjobId=\{jobId\}/,
+    'the Mixer lost jobId, so Story 2.7 memory is dead',
+  );
+});
+
+/** Source with comments stripped. Prose must not be able to pass or fail a test. */
+function codeOnly(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '') // block comments, incl. the file header
+    .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, '') // JSX comments
+    .replace(/^\s*\/\/.*$/gm, ''); // line comments
+}
+
+test('Story 1.2: the Player is mounted ABOVE LoopResults on the job page', () => {
+  // "Everybody uploading songs wants to see the player and toggle and play
+  // along" — the player is the primary view and the loop downloader is
+  // secondary. Swapping the two is invisible to every other test.
+  //
+  // COMMENTS ARE STRIPPED FIRST, and that is not incidental: the first version
+  // of this test used indexOf on the raw source and SURVIVED the swap, because
+  // JobView's header comment names `<Player>` before `<LoopResults>` in prose.
+  // It was measuring the documentation's word order, not the render order.
+  const view = codeOnly(read('src/app/jobs/[id]/JobView.tsx'));
+  const player = view.indexOf('<Player');
+  const loops = view.indexOf('<LoopResults');
+  assert.ok(player !== -1, 'JobView no longer mounts the Player at all');
+  assert.ok(loops !== -1, 'JobView no longer mounts LoopResults');
+  assert.ok(player < loops, 'LoopResults is above the Player — Story 1.2 is inverted');
 });
 
 test('a partial load reports exactly the missing stems, which is what Story 5.1 renders', async () => {

@@ -633,10 +633,21 @@ test('the live mount now carries positionSec, and positionSec is still optional'
   );
   assert.match(overlay, /positionSec = null/, 'positionSec must keep its null default');
 
-  // The page itself no longer mounts the overlay — Player owns it, because
-  // only Player has the position to give it.
-  const page = readFileSync(join(import.meta.dirname, '..', 'src/app/jobs/[id]/page.tsx'), 'utf8');
-  assert.doesNotMatch(page, /<ChordOverlay/, 'the page must mount Player, not the overlay');
+  // The job body must not mount a SECOND, position-less overlay beside the
+  // Player's. Checking page.tsx for this was vacuous — it is a Server
+  // Component that renders only <JobView/> and could not mount the overlay if
+  // it tried. JobView is the file that could reintroduce the original bug, so
+  // that is the file to hold to it.
+  const jobView = readFileSync(
+    join(import.meta.dirname, '..', 'src/app/jobs/[id]/JobView.tsx'),
+    'utf8',
+  );
+  assert.doesNotMatch(
+    jobView,
+    /<ChordOverlay/,
+    'the job body mounts its own overlay again; only Player has a position to give it',
+  );
+  assert.match(jobView, /<Player/, 'the job body stopped mounting the Player');
 });
 
 test('the zoom slider is still the zoom slider: the playhead adds no second range input', () => {

@@ -18,26 +18,43 @@
  * ── Why the engine is observed with subscribe + setState, not
  *    useSyncExternalStore ─────────────────────────────────────────────────────
  *
- * `useSyncExternalStore` re-reads `getSnapshot()` during render AND again in a
- * passive effect, and schedules another render whenever the two differ. The
- * engine's `positionSec` is derived from `AudioContext.currentTime` at the
- * moment it is read (engine.ts `livePosition()`), and `snapshotsEqual` treats
- * any movement of 10 ms or more as a change (`POSITION_EPSILON_SEC`). While
- * playing, a render pass and the effect that follows it are easily 10 ms apart,
- * so the post-commit check finds a different snapshot, renders again, and finds
- * a different snapshot again — a render loop clocked by React rather than by
- * the frame scheduler.
+ * ⚠️ CORRECTED 2026-11-11 after review MEASURED the thing this comment used to
+ * predict. The earlier version of this note claimed `useSyncExternalStore`
+ * would produce "a render loop clocked by React rather than by the frame
+ * scheduler". That is FALSE and was measured false: side by side against the
+ * same engine and the same stems, `subscribe` + `setState` rendered 54 times a
+ * second and `useSyncExternalStore` 55, a ratio of 1.02, with rAF at 60/s in
+ * both. React 18 coalesces the post-commit re-render into the next frame, so
+ * there is no runaway. A false prediction left in a comment invites the next
+ * maintainer to test it, find it false, and throw out a decision that is
+ * nonetheless correct — so here is the real reasoning.
  *
- * `subscribe` has no such read-check: the engine emits only from its own
- * rAF-driven frame loop and from a state change, and `emit()` is a no-op when
- * the rebuilt snapshot is identity-equal to the last one. React then bails out
- * of the re-render by `Object.is` for free. So the update rate is bounded by
- * the engine's clock, which is what we want.
+ * TWO REAL REASONS, neither of them throughput:
  *
- * (The engine does hold the identity property `useSyncExternalStore` requires —
- * `getSnapshot()` returns the SAME object while nothing has changed; that is
- * pinned by a test in test/play-player.test.mjs. The loop risk above is about
- * the clock, not about identity.)
+ * 1. React logs `Warning: The result of getSnapshot should be cached to avoid
+ *    an infinite loop` on every pass. The engine's `positionSec` comes from
+ *    `AudioContext.currentTime` at the moment it is read (engine.ts
+ *    `livePosition()`), and `snapshotsEqual` treats >=10 ms of movement as a
+ *    change (`POSITION_EPSILON_SEC`), so the render-time read and the
+ *    post-commit read legitimately differ while playing. The store is correct;
+ *    it simply does not satisfy the contract the warning polices, and a console
+ *    warning on every frame of playback is not shippable.
+ *
+ * 2. `useSyncExternalStore`'s actual guarantee is TEAR-SAFETY under concurrent
+ *    rendering — that two components reading the same store in one pass see one
+ *    consistent value. A clock-derived snapshot cannot provide that: two reads
+ *    microseconds apart are entitled to differ. So the guarantee is void here
+ *    whichever hook is used, and the API buys nothing. THIS TREE ACCEPTS
+ *    NON-TEAR-SAFETY: Transport, Mixer and ChordOverlay all read from the one
+ *    `snapshot` value captured once per render in this component, so they can
+ *    never disagree with each other even though the underlying clock moves.
+ *
+ * `subscribe` has no read-check at all: the engine emits only from its own
+ * rAF-driven frame loop and from a state change, `emit()` is a no-op when the
+ * rebuilt snapshot is identity-equal to the last one, and React then bails out
+ * of the re-render by `Object.is`. The engine does hold that identity property
+ * (`getSnapshot()` returns the SAME object while nothing has changed), pinned
+ * by tests in test/play-player.test.mjs.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -147,7 +164,7 @@ export function hasWebAudio(
 
 // ─── phases ──────────────────────────────────────────────────────────────────
 
-type Phase =
+export type Phase =
   /** Job not finished yet, or we have not started. */
   | { readonly kind: 'idle' }
   /** Story 5.3. */
@@ -157,6 +174,26 @@ type Phase =
   | { readonly kind: 'no-stems' }
   | { readonly kind: 'load-error'; readonly message: string }
   | { readonly kind: 'ready' };
+
+/**
+ * Story 3.3 — the one place the chord playhead's position is decided.
+ *
+ * Exported and kept free of hooks so `node:test` can drive it with a REAL
+ * engine snapshot. This matters: a review mutation set `chordPosition` to a
+ * constant `null` and every one of the 939 tests still passed, because the old
+ * tests proved only that the prop was WRITTEN, never that a number ever
+ * ARRIVED. The prop being present is not the feature; a moving number is.
+ *
+ * `null` means NOT PLAYABLE — no engine, an engine that failed, an unsupported
+ * browser, or a job with no stems. It does NOT mean "paused": a loaded engine
+ * sitting at 0 returns 0, so the marker sits on the first chord rather than
+ * vanishing.
+ */
+export function chordPositionFor(phase: Phase, snapshot: EngineSnapshot): number | null {
+  if (phase.kind !== 'ready') return null;
+  if (snapshot.error !== null) return null;
+  return Number.isFinite(snapshot.positionSec) ? snapshot.positionSec : null;
+}
 
 const IDLE_SNAPSHOT: EngineSnapshot = Object.freeze({
   status: 'idle',
@@ -264,22 +301,81 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
     [loops, snapshot.durationSec],
   );
 
+  return (
+    <PlayerView
+      jobId={jobId}
+      phase={phase}
+      snapshot={snapshot}
+      sections={sections}
+      onPlay={onPlay}
+      onPause={onPause}
+      onSeek={onSeek}
+      onGain={onGain}
+      onMute={onMute}
+      onSolo={onSolo}
+      onLoop={onLoop}
+    />
+  );
+}
+
+export interface PlayerViewProps {
+  readonly jobId: string;
+  readonly phase: Phase;
+  readonly snapshot: EngineSnapshot;
+  readonly sections: readonly LoopRegion[];
+  readonly onPlay: () => void;
+  readonly onPause: () => void;
+  readonly onSeek: (positionSec: number) => void;
+  readonly onGain: (stem: StemName, gain: number) => void;
+  readonly onMute: (stem: StemName, muted: boolean) => void;
+  readonly onSolo: (stem: StemName, soloed: boolean) => void;
+  readonly onLoop: (region: LoopRegion | null) => void;
+}
+
+/**
+ * The whole render, with no hooks and no engine — every phase is therefore
+ * reachable from `node:test`, which has no DOM and cannot run React effects.
+ *
+ * This split exists because of a review finding: four acceptance criteria
+ * (Story 1.2's ordering aside) could only be checked by reading source, and
+ * four mutations to them — including one that silenced the chord playhead —
+ * survived the entire suite. Phases other than `idle` are unreachable through
+ * `Player` in a server render, because `Player` only leaves `idle` from an
+ * effect. Driving `PlayerView` directly is what makes them assertable.
+ */
+export function PlayerView({
+  jobId,
+  phase,
+  snapshot,
+  sections,
+  onPlay,
+  onPause,
+  onSeek,
+  onGain,
+  onMute,
+  onSolo,
+  onLoop,
+}: PlayerViewProps) {
   const engineError = snapshot.error;
   const playable = phase.kind === 'ready' && engineError === null;
 
   // Story 3.3 / 3.4 — THE WIRING THAT WAS MISSING. The chord playhead reads the
-  // engine position and nothing else. `null` means "not playing": no marker, no
-  // auto-scroll, and the timeline renders exactly as it did before this prop
-  // existed, which is what every non-playable phase wants.
-  const chordPosition = playable ? snapshot.positionSec : null;
+  // engine position and nothing else. See `chordPositionFor`: `null` means NOT
+  // PLAYABLE, not "not playing" — a loaded engine paused at 0 passes 0, so the
+  // marker sits on the first chord instead of disappearing.
+  const chordPosition = chordPositionFor(phase, snapshot);
 
   const banner = (() => {
     if (phase.kind === 'unsupported') return { tone: 'notice' as const, text: phase.message };
     if (phase.kind === 'no-stems') return { tone: 'notice' as const, text: NO_STEMS_MESSAGE };
     if (phase.kind === 'load-error') return { tone: 'error' as const, text: phase.message };
     if (engineError) {
-      // Story 1.4: a track over the ceiling is refused with the engine's own
-      // sentence rather than crashing the page. DECODE_FAILED is the real
+      // NOT Story 1.4. Story 1.4 is "a track over 300 s is refused AT SUBMIT
+      // TIME with a message naming the limit", and submit is not built here —
+      // that is open work, not something this file satisfies. What this does is
+      // the weaker, honest thing the brief did ask for: a track that somehow
+      // reaches the engine over the ceiling surfaces `PLAY_TRACK_TOO_LONG`'s own
+      // sentence instead of taking the page down. DECODE_FAILED is the real
       // "this browser cannot play Opus" answer (Story 5.3).
       const text =
         engineError.code === 'PLAY_DECODE_FAILED' ? UNDECODABLE_MESSAGE : engineError.message;

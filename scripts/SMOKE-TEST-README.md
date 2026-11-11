@@ -44,7 +44,12 @@ it is missing. That check was deliberately left in place, so **do not delete
 that secret on the strength of the word "optional" here** — the nightly would go
 red at preflight. The script uses the key only as the `apikey` on the public
 `/auth/v1/verify` call, to keep the service-role key off an unauthenticated
-endpoint; without it the service key is used there instead.
+endpoint; without it the service key is used there instead. If the gateway
+rejects that key with 401/403 — which happens when the project's **legacy**
+anon JWT has been disabled, as the table below warns — the call is retried
+exactly once with the service-role key, so a stale anon secret cannot turn the
+nightly red. Any other `/verify` failure, including a real expired-token error,
+is reported as-is and never retried.
 
 ## How step 3b signs in (and why not a password grant)
 

@@ -136,8 +136,9 @@ export class SmokeSessionError extends Error {
  * @param {string}   o.serviceKey  process.env.SUPABASE_SERVICE_ROLE_KEY.
  * @param {string}   [o.anonKey]   Publishable/anon key. Used as the `apikey`
  *   on the PUBLIC /auth/v1/verify call so the service-role key is not sent to
- *   an unauthenticated endpoint. Falls back to the service key when absent
- *   (/verify needs some apikey to clear the Supabase gateway).
+ *   an unauthenticated endpoint. The service key is used instead when this is
+ *   absent, or once as a retry if the gateway rejects this key with 401/403
+ *   (a legacy anon JWT may be disabled on the project).
  * @param {string}   o.email       The smoke user's email (must already exist).
  * @param {Function} [o.fetchImpl] Injectable fetch, for tests.
  * @param {number}   [o.timeoutMs]
@@ -240,10 +241,27 @@ export async function mintServiceRoleSession({ sbUrl, serviceKey, anonKey = '', 
   //    privilege.)
   //
   //    token_hash must travel alone, per verify.go:85.
-  const session = await call('verify', '/auth/v1/verify', {
-    headers: { apikey: anonKey || serviceKey },
+  const redeem = (apikey) => call('verify', '/auth/v1/verify', {
+    headers: { apikey },
     body: { token_hash: hashedToken, type: verificationType },
   });
+
+  let session;
+  try {
+    session = await redeem(anonKey || serviceKey);
+  } catch (e) {
+    // Preferring the anon key must not become a new way for the nightly to
+    // fail. scripts/SMOKE-TEST-README.md warns that a LEGACY anon JWT may be
+    // disabled on the project, in which case the Supabase gateway rejects the
+    // call outright with 401/403 before GoTrue sees it. The service-role key
+    // is known-good here (generate_link just succeeded with it), so fall back
+    // exactly once on that specific signal rather than failing the whole run
+    // over a key choice. Any other error -- including a real token problem --
+    // propagates untouched.
+    const gatewayRejectedTheKey = Boolean(anonKey) && e instanceof SmokeSessionError && / HTTP 40[13]:/.test(e.message);
+    if (!gatewayRejectedTheKey) throw e;
+    session = await redeem(serviceKey);
+  }
   if (typeof session.access_token !== 'string' || !session.access_token) {
     throw boom(
       'verify',

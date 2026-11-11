@@ -38,6 +38,9 @@
 //       redirect, so following one would hand the next origin the key)
 //   17. the anon key is the apikey on the PUBLIC /verify call, with the
 //       service key as the fallback when no anon key is supplied
+//   17b. a gateway 401/403 on the anon key retries ONCE with the service key
+//       (a legacy anon JWT may be disabled), but a real token error is not
+//       retried and the retry never loops
 //   18. LEAK PROOF, second pass: the sentinel as an object KEY (not just a
 //       value) and a res.text() that rejects -- the two shapes that leaked
 //       past the first version of this file
@@ -431,6 +434,79 @@ test('an empty anon key falls back to the service key so /verify still clears th
   assert.equal(fetchImpl.calls[1].headers.apikey, KEY);
 });
 
+// ------------------------ 17b. the anon key must not become a new failure mode
+test('a gateway 401 on the anon key falls back once to the service key', async () => {
+  // SMOKE-TEST-README warns a LEGACY anon JWT may be disabled on the project,
+  // in which case the gateway rejects /verify before GoTrue sees it. Preferring
+  // the anon key must not turn that into a red nightly.
+  const fetchImpl = stubFetch([
+    linkOk(),
+    res(401, { message: 'Invalid API key' }),
+    res(200, SESSION),
+  ]);
+  const out = await mintServiceRoleSession({ sbUrl: SB, serviceKey: KEY, anonKey: ANON, email: EMAIL, fetchImpl });
+  assert.deepEqual(out, SESSION);
+  assert.equal(fetchImpl.calls.length, 3, 'expected generate_link + verify(anon) + verify(service)');
+  assert.equal(fetchImpl.calls[1].headers.apikey, ANON, 'first attempt uses the anon key');
+  assert.equal(fetchImpl.calls[2].headers.apikey, KEY, 'retry uses the service key');
+  assert.equal(fetchImpl.calls[2].url, `${SB}/auth/v1/verify`);
+  // The retry must still be a proper request, not a degraded one.
+  assert.equal(fetchImpl.calls[2].init.redirect, 'manual');
+  assert.equal(fetchImpl.calls[2].headers.Authorization, undefined);
+  assert.deepEqual(fetchImpl.calls[2].body, { token_hash: 'hashed-tok', type: 'magiclink' });
+});
+
+test('a 403 on the anon key also falls back', async () => {
+  const fetchImpl = stubFetch([linkOk(), res(403, { message: 'forbidden' }), res(200, SESSION)]);
+  await mintServiceRoleSession({ sbUrl: SB, serviceKey: KEY, anonKey: ANON, email: EMAIL, fetchImpl });
+  assert.equal(fetchImpl.calls.length, 3);
+});
+
+test('the fallback is narrow: a real token error does NOT get retried', async () => {
+  // An expired or already-used token is a genuine finding. Retrying it with a
+  // different apikey would only hide it behind a second identical failure.
+  const fetchImpl = stubFetch([linkOk(), res(400, { error_code: 'otp_expired', msg: 'Token has expired' })]);
+  await assert.rejects(
+    () => mintServiceRoleSession({ sbUrl: SB, serviceKey: KEY, anonKey: ANON, email: EMAIL, fetchImpl }),
+    (e) => {
+      assert.equal(e.step, 'verify');
+      assert.match(e.message, /otp_expired/);
+      return true;
+    },
+  );
+  assert.equal(fetchImpl.calls.length, 2, 'must not retry a non-401/403');
+});
+
+test('with no anon key there is nothing to fall back from, so a 401 is final', async () => {
+  const fetchImpl = stubFetch([linkOk(), res(401, { message: 'Invalid API key' })]);
+  await assert.rejects(
+    () => mintServiceRoleSession({ sbUrl: SB, serviceKey: KEY, anonKey: '', email: EMAIL, fetchImpl }),
+    (e) => {
+      assert.equal(e.step, 'verify');
+      assert.match(e.message, /HTTP 401/);
+      return true;
+    },
+  );
+  assert.equal(fetchImpl.calls.length, 2, 'must not retry when the service key was already used');
+});
+
+test('the fallback retries exactly once, then surfaces the failure', async () => {
+  const fetchImpl = stubFetch([
+    linkOk(),
+    res(401, { message: 'Invalid API key' }),
+    res(401, { message: 'Invalid API key' }),
+  ]);
+  await assert.rejects(
+    () => mintServiceRoleSession({ sbUrl: SB, serviceKey: KEY, anonKey: ANON, email: EMAIL, fetchImpl }),
+    (e) => {
+      assert.equal(e.step, 'verify');
+      assert.match(e.message, /HTTP 401/);
+      return true;
+    },
+  );
+  assert.equal(fetchImpl.calls.length, 3, 'one retry, not a loop');
+});
+
 // ------------------------------- 18. LEAK PROOF, the shapes that leaked before
 test('a credential used as an object KEY is redacted (not just as a value)', async () => {
   // The first version of this file only ever planted the sentinel in response
@@ -507,9 +583,17 @@ test('every error is constructed in exactly one place, so redaction is structura
   const sites = [...code.matchAll(/new SmokeSessionError\s*\(/g)].length;
   assert.equal(sites, 1, `expected exactly one "new SmokeSessionError(" site, found ${sites}`);
   assert.match(code, /const boom = \(step, msg\) => new SmokeSessionError\(step, scrub\(msg\)\)/);
-  // ...and no throw may sidestep it.
-  const throwsNotViaBoom = [...code.matchAll(/throw\s+(?!boom\b)/g)].length;
-  assert.equal(throwsNotViaBoom, 0, 'every throw must go through boom()');
+  // ...and no throw may sidestep it. A bare re-throw of the caught binding is
+  // allowed: by then the error came out of call(), so boom() already scrubbed
+  // it. Anything else -- a new Error, a template literal, a string -- is not.
+  const throws = [...code.matchAll(/throw\s+([^;]+);/g)].map((m) => m[1].trim());
+  assert.ok(throws.length >= 5, `expected to find the throws, found ${throws.length}`);
+  for (const t of throws) {
+    assert.ok(
+      t.startsWith('boom(') || t === 'e',
+      `throw must be boom(...) or a bare re-throw of the caught error, got: throw ${t.slice(0, 60)}`,
+    );
+  }
 });
 
 test('a hostile body cannot flood the CI line through its key names', async () => {

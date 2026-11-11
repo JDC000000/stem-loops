@@ -28,19 +28,53 @@
   padding: var(--space-3);
 }
 
-/* Six channels share the width. Below ~360px the rail scrolls rather than
-   crushing the 44px fader hit areas. */
+/* Six channels share the width, and ALL SIX FIT AT 360px. The budget, on a
+   360px viewport inside the standard 16px page gutter:
+
+     360 - 32 (gutter) - 2 (.mixer border) - 24 (.mixer padding) = 302px
+     6 x 46px channels + 5 x 2px gaps                            = 286px
+
+   which leaves 16px of slack, so the channels sit at ~48px each and nothing
+   overflows. The `overflow-x` stays as the escape hatch BELOW 360px, where the
+   rail scrolls rather than crushing the 44px fader hit areas — but at 360px it
+   must never engage, because a horizontal scrollbar there cuts the sixth
+   channel's Solo button in half.
+
+   The node:test that guards this resolves every number above out of the
+   stylesheets — the gutter from design-tokens.css, this file's padding,
+   border, channel floor, gap and fader column — at the cascade that applies
+   AT 360px, rather than restating any of them or reading the base cascade.
+   It fails when one of them moves far enough to break the budget; a change
+   that still fits stays green, which is correct rather than lenient.
+
+   WHAT IT CANNOT DO IS LAY OUT A BOX, and that limit is permanent: an
+   overflow caused by anything the arithmetic does not model — a padded
+   descendant, a scrollbar, a shorthand it refuses to expand — is invisible to
+   it. So a green suite is NOT evidence that these boxes fit. Any change to
+   this budget must be MEASURED IN REAL CHROME at 360/390/414/759/760/1024 and
+   the numbers recorded in the PR; the gate's job is to fail when a declared
+   value moves, not to certify the layout. Everything else the gate cannot do
+   is listed at the top of the `CSS geometry` section of play-mixer.test.mjs,
+   and that list is kept true rather than reassuring. The rendered numbers for
+   the current budget were taken in Chrome at 360px and are in the PR. */
 .rail {
   display: flex;
   align-items: stretch;
-  gap: var(--space-1);
+  gap: 2px;
   overflow-x: auto;
   scrollbar-width: thin;
 }
 
+@media (min-width: 760px) {
+  .rail {
+    gap: var(--space-1);
+  }
+}
+
 .channel {
   flex: 1 1 0;
-  min-width: 52px;
+  /* 44px (--touch-min, the fader's hit column) + 1px border each side. */
+  min-width: 46px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -71,16 +105,32 @@
   width: 100%;
 }
 
+/* `--tracking-normal` on phones, not `--tracking-wide`: in a ~48px channel the
+   extra 0.5px per letter is the difference between VOCALS and "VOCA…", and a
+   legible label is worth more than the tracking at --text-sm. The wide
+   tracking comes back at 760px, in the block BELOW this rule. */
 .name {
   font-size: var(--text-sm);
   font-weight: var(--weight-semibold);
-  letter-spacing: var(--tracking-wide);
+  letter-spacing: var(--tracking-normal);
   text-transform: uppercase;
   color: var(--stem, var(--text-secondary));
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A media query adds no specificity, so this has to come AFTER the rule it
+   overrides or it simply loses. It did not: the 760px `.name` block used to
+   sit above, and the wide tracking never applied at ANY width — measured
+   `letter-spacing: normal` at 1024px. The width test now resolves the cascade
+   at a given viewport instead of comparing blocks in isolation, which is what
+   caught it. */
+@media (min-width: 760px) {
+  .name {
+    letter-spacing: var(--tracking-wide);
+  }
 }
 
 .readout {
@@ -207,18 +257,27 @@
 
 /* ── M / S ───────────────────────────────────────────────────────────────── */
 
+/* On phones M sits ABOVE S rather than beside it. Side by side, two buttons
+   splitting a ~48px channel measured 19x40px each in Chrome at 360px — a
+   chiclet, not a thumb target. (The app is border-box via globals.css, so
+   `.toggles`' own padding came OUT of that width rather than being added to
+   it.) Stacked, each button is the full channel width by --touch-min tall, so
+   both axes clear 44px. From 760px up there is width to spare and they go back
+   to a row. */
 .toggles {
+  box-sizing: border-box; /* as .note: width 100% plus padding, stated locally */
   display: flex;
-  gap: var(--space-1);
+  flex-direction: column;
+  gap: 2px;
   width: 100%;
-  padding-inline: var(--space-1);
+  padding-inline: 0;
 }
 
 .toggle {
-  flex: 1 1 0;
+  flex: 0 0 auto;
   min-width: 0;
-  /* 40px on phones, 44px from tablet up: a thumb target, not a 20px chiclet */
-  height: 40px;
+  /* min-height, not height: the box may grow, never shrink below the target */
+  min-height: var(--touch-min);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -237,7 +296,14 @@
 }
 
 @media (min-width: 760px) {
+  .toggles {
+    flex-direction: row;
+    gap: var(--space-1);
+    padding-inline: var(--space-1);
+  }
+
   .toggle {
+    flex: 1 1 0;
     height: var(--touch-min);
   }
 }
@@ -280,6 +346,13 @@
 
 .note {
   margin: 0;
+  /* globals.css makes the whole app border-box, and this depends on it: under
+     content-box, `width: 100%` plus the padding below renders 4px WIDER than
+     the channel, and six of those push the rail past its own client width and
+     put a scrollbar back under the faders. Stated locally so the rail's width
+     budget does not rest on a reset two files away — `.fader` states its own
+     for the same reason. */
+  box-sizing: border-box;
   min-height: 2.4em; /* reserve the line so a state change does not reflow the rail */
   width: 100%;
   padding-inline: 2px;
@@ -304,11 +377,30 @@
 }
 
 /* Silent because something ELSE is soloed. Deliberately NOT the muted look:
-   the whole channel recedes and the note says why, but nothing is struck
-   through, because the user did not turn this off — it will come back on its
-   own when the solo clears. */
+   the channel recedes and the note says why, but nothing is struck through,
+   because the user did not turn this off — it will come back on its own when
+   the solo clears.
+
+   THE RECEDING IS NOT OPACITY ON THE CHANNEL. It was, at 0.55, and that put a
+   ducked channel's note at 2.52:1 and its name at 2.79:1 against a 4.5:1 AA
+   floor — on up to five channels that are still live, still interactive, and
+   whose faders and M/S buttons still work. Press Solo and most of the mixer
+   became unreadable. The LEVEL recedes instead: the fader column carries the
+   "this one is quiet" signal, the border softens, the note stays italic, and
+   every word on the channel stays at the contrast it had. Undimmed those are
+   5.47:1 and 6.45:1. */
 .isDucked:not(.isMuted) {
+  border-color: var(--border-subtle);
+}
+
+.isDucked:not(.isMuted) .slot {
   opacity: 0.55;
+}
+
+/* Reaching for the fader brings it back, so the control you are holding is
+   never the dim one. */
+.isDucked:not(.isMuted) .slot:focus-within {
+  opacity: 1;
 }
 
 .isDucked:not(.isMuted) .note {
@@ -388,7 +480,7 @@
     outline-offset: 2px;
   }
 
-  .isDucked:not(.isMuted) {
+  .isDucked:not(.isMuted) .slot {
     opacity: 1; /* opacity is not a reliable signal here; the note carries it */
   }
 

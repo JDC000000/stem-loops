@@ -21,7 +21,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
@@ -39,6 +39,10 @@ const toJs = (src, jsx = false) =>
 
 const MIXER_TSX = 'src/components/play/Mixer.tsx';
 const MIXER_CSS = 'src/components/play/Mixer.module.css';
+// The page gutter the mixer has to live inside is declared here, not in the
+// Mixer's own stylesheet, so the width test reads it from here rather than
+// restating it. See `pageGutter()` below.
+const LANDING_CSS = 'src/styles/landing.css';
 
 const cache = join(WEB, 'node_modules/.cache');
 mkdirSync(cache, { recursive: true });
@@ -309,10 +313,20 @@ test('muted and ducked are different markup AND different copy', () => {
   assert.notEqual(noteFor(html, 'drums'), noteFor(html, 'guitar'));
   assert.equal(noteFor(html, 'drums'), 'Muted');
   assert.match(noteFor(html, 'guitar'), /soloed/i);
-  // and the stylesheet really gives them different treatments
+  // and the stylesheet really gives them different treatments. Ducking used to
+  // be `opacity` on the whole channel; it is now on the fader column only, so
+  // the words on a live ducked channel stay at full contrast.
   const css = read(MIXER_CSS);
   assert.match(css, /\.isMuted \.name\s*\{[^}]*line-through/);
-  assert.match(css, /\.isDucked:not\(\.isMuted\)\s*\{[^}]*opacity/);
+  // `forced-colors` is pinned because this stylesheet restates the dimming
+  // there: unpinned, the lookup refuses rather than picking one side.
+  assert.equal(
+    declAt(css, NARROWEST, '.isDucked:not(.isMuted) .slot', 'opacity', {
+      env: { forcedColors: 'none' },
+    }),
+    '0.55',
+  );
+  assert.equal(declAt(css, NARROWEST, '.isDucked:not(.isMuted) .note', 'font-style'), 'italic');
 });
 
 test('silenceReason names the state it was given and never recomputes solo', () => {
@@ -566,11 +580,941 @@ test('the mixer and each channel are labelled regions, and the legend is announc
   assert.match(html, /several stems can be soloed at once/);
 });
 
-test('hit targets are generous: 44px fader column, 40px+ toggles, and no scroll hijack', () => {
+// ─── CSS geometry, resolved at the viewport that actually matters ────────────
+//
+// The test this replaces matched `height: 40px` with a regex and passed while
+// the buttons rendered 19x40 and the rail overflowed by 30px at 360px. A regex
+// over a stylesheet cannot see a box, so these read the DECLARED VALUES out of
+// the CSS, resolve the tokens they reference, and do the width arithmetic.
+//
+// WHAT THAT IS AND IS NOT. It is not a measurement: nothing here lays out a
+// box. What it IS is arithmetic over values that are every one of them READ,
+// never restated, and read from the CASCADE THAT APPLIES AT 360px rather than
+// from the base cascade.
+//
+// Both halves of that sentence were learned the hard way. A first version
+// hard-coded the page gutter as `16` and the mixer border as `2` while
+// claiming to track them. A second version resolved them but threw every
+// `@media` block away, so a `@media (max-width: 759px)` override of the gutter
+// or the channel floor — the same idiom this stylesheet uses in the other
+// direction — was invisible, and the suite stayed green while the rail
+// overflowed by 16px and by 44px and the sixth channel's Solo button sat
+// outside the viewport entirely, unclickable.
+//
+// ═══ WHAT THIS GATE CANNOT DO ════════════════════════════════════════════════
+//
+// Four review rounds have each defeated it the same way, so this list is kept
+// TRUE rather than reassuring. Two earlier versions of it were overclaims.
+//
+// 1. IT DOES NOT LAY OUT A BOX. This is the one limit that cannot be narrowed
+//    by any amount of work here, and it is load-bearing. A `padding: 0 12px`
+//    on `.toggles` rendered an M/S button at 22.66 x 44 — half the 44px
+//    minimum asserted two screens down — and every rail overflow ever
+//    demonstrated against this gate was invisible to the arithmetic. SO:
+//    ANY GEOMETRIC CLAIM MUST BE MEASURED IN REAL CHROME AT THE WIDTHS THAT
+//    MATTER AND THE NUMBERS RECORDED IN THE PR. The arithmetic's job is to
+//    fail when a DECLARED value moves; it is not evidence that a box fits.
+//
+// 2. IT DOES NOT COMPUTE SPECIFICITY. It REFUSES — it does not answer —
+//    whenever any rule in the cascade at this width, or in an at-rule it
+//    cannot evaluate, has a selector whose SUBJECT compound contains the one
+//    asked about and sets the property asked about or a relative of it. That
+//    is strictly wider than the previous claim, which fired only on a
+//    COMBINATOR plus an exact match among applied rules, and so missed
+//    `.channel[data-stem]`, `.channel.channel`, `.channel:is(…)`,
+//    `#x.channel` and anything at all inside `@supports`.
+//
+//    TWO EXEMPTIONS, BOTH NAMED IN FULL — the previous wording called them
+//    "categorical, not heuristic", which was true of their FORM and false of
+//    one of their CATEGORIES, and that framing is what stopped anyone looking
+//    at the membership for a round. So the membership is now stated, not
+//    characterised:
+//      (a) A pseudo-ELEMENT is a different box.
+//          `.fader::-webkit-slider-runnable-track { width }` cannot size
+//          `.fader`. Sound; nothing has defeated it. But a `::before` /
+//          `::after` box can still grow or overflow its PARENT, which is
+//          geometry and therefore limit 1's problem, not this guard's.
+//      (b) Exactly SIX pseudo-classes are exempt: `:hover`, `:focus`,
+//          `:focus-visible`, `:focus-within`, `:active`, `:target`. Each needs
+//          the user to be pointing at, typing into or navigating to the
+//          element. NOTHING ELSE IS EXEMPT — in particular `:disabled`,
+//          `:checked`, `:enabled`, `:valid`, `:invalid`, `:read-only`,
+//          `:placeholder-shown`, `:link`, `:visited`, `:open` and
+//          `:autofill` are RESTING states and are refused. This list held
+//          twenty-one until a reviewer shrank the disabled touch target to
+//          20px with `.toggle:disabled { min-height: 20px }` and the suite
+//          stayed 65/65 green. See PSEUDO_STATE.
+//
+//    THE RESTING STATE IS THE ONLY STATE THESE LOOKUPS RESOLVE, and after
+//    that fix they resolve it genuinely rather than nominally.
+//
+// 3. IT DOES NOT EVALUATE `@supports` OR `@layer`, AND REFUSES ON BOTH — now
+//    including a selector inside one that merely OUTRANKS the one asked
+//    about, not only one that matches it exactly. A statement at-rule
+//    (`@layer base;`, `@import …;`) is refused outright: it reorders the
+//    cascade and pulls in other files, and it used to be absorbed into the
+//    next rule's prelude, deleting that rule from the model altogether.
+//
+// 4. IT IS PROPERTY-EXACT, AND REFUSES RATHER THAN EXPANDING A SHORTHAND. If
+//    a selector declares both the property asked about and a relative of it
+//    (`padding` against `padding-inline`, `gap` against `row-gap`), the
+//    lookup fails. Expanding shorthands correctly is not a thing a regex can
+//    do, so it does not try.
+//
+// 5. IT READS ONE FILE AT A TIME AND MODELS NO CROSS-FILE SOURCE ORDER.
+//    `pageGutter()` is sound only because `--sl-gutter` has exactly one
+//    declaring file, so that invariant is ASSERTED below rather than assumed.
+//
+// 6. NO ENVIRONMENT AXIS HAS A DEFAULT. Every axis this stylesheet branches
+//    on is either pinned by the caller or evaluated at every value, and a
+//    disagreement between those values is a refusal. A previous version
+//    merely STATED `colorScheme: 'dark'`, and a `prefers-color-scheme: light`
+//    override of the channel floor passed while light mode overflowed by
+//    608px.
+//
+// Width, `!important` and comma-separated media lists ARE resolved, and the
+// resolver's own behaviour on each of these shapes is pinned by tests below.
+
+const TOKENS_CSS = 'src/styles/design-tokens.css';
+
+/** The narrowest viewport the mixer promises to fit every channel in. */
+const NARROWEST = 360;
+
+/** Comments can contain braces; strip them before counting any. */
+const uncomment = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+
+/**
+ * The environment axes this resolver knows how to enumerate. These are NOT
+ * defaults — nothing here states a value. An axis the stylesheet branches on
+ * is either PINNED by the caller or evaluated at EVERY value below, and a
+ * disagreement between those values is a refusal, not a pick. That is the
+ * fix for the last false green of round 4: a `DEFAULT_ENV` that merely
+ * *stated* `colorScheme: 'dark'` let a `@media (prefers-color-scheme: light)`
+ * override of the channel floor pass while light mode overflowed by 608px.
+ */
+const AXES = {
+  forcedColors: { feature: 'forced-colors', values: ['none', 'active'] },
+  reducedMotion: { feature: 'prefers-reduced-motion', values: ['no-preference', 'reduce'] },
+  colorScheme: { feature: 'prefers-color-scheme', values: ['light', 'dark'] },
+};
+
+/**
+ * Properties that can overwrite each other without sharing a name. The
+ * declaration lookup below is PROPERTY-EXACT, so a shorthand and its longhand
+ * are mutually invisible to it: `.toggles { padding-inline: 0 }` followed by
+ * `.toggles { padding: 0 12px }` left the gate reading `0` while Chrome laid
+ * the M/S button out at 22.66 x 44 — half the 44px minimum the same test
+ * asserts. Expanding shorthands correctly is not something a regex can do, so
+ * this does not try: if a selector declares the property asked about AND a
+ * relative of it, the lookup REFUSES. `border-radius` is deliberately not a
+ * relative of `border` — the `border` shorthand does not set it.
+ */
+const PROP_FAMILIES = [
+  ['padding', 'padding-inline', 'padding-block', 'padding-top', 'padding-right',
+    'padding-bottom', 'padding-left', 'padding-inline-start', 'padding-inline-end',
+    'padding-block-start', 'padding-block-end'],
+  ['margin', 'margin-inline', 'margin-block', 'margin-top', 'margin-right',
+    'margin-bottom', 'margin-left', 'margin-inline-start', 'margin-inline-end',
+    'margin-block-start', 'margin-block-end'],
+  ['border', 'border-width', 'border-style', 'border-color', 'border-top', 'border-right',
+    'border-bottom', 'border-left', 'border-inline', 'border-block',
+    'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+    'border-inline-width', 'border-block-width',
+    'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+    'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color'],
+  ['inset', 'top', 'right', 'bottom', 'left', 'inset-inline', 'inset-block'],
+  ['gap', 'row-gap', 'column-gap'],
+  ['flex', 'flex-grow', 'flex-shrink', 'flex-basis'],
+  ['flex-flow', 'flex-direction', 'flex-wrap'],
+  ['overflow', 'overflow-x', 'overflow-y'],
+  ['width', 'inline-size'],
+  ['height', 'block-size'],
+  ['min-width', 'min-inline-size'],
+  ['min-height', 'min-block-size'],
+  ['max-width', 'max-inline-size'],
+  ['max-height', 'max-block-size'],
+  ['font', 'font-style', 'font-weight', 'font-size', 'font-family', 'line-height'],
+  ['background', 'background-color', 'background-image'],
+  ['transition', 'transition-property', 'transition-duration'],
+];
+
+/** Every property that could overwrite `prop` without being spelled `prop`. */
+const relatives = (prop) => {
+  const out = new Set();
+  for (const family of PROP_FAMILIES) {
+    if (family.includes(prop)) for (const other of family) if (other !== prop) out.add(other);
+  }
+  return [...out];
+};
+
+/** `.a:hover .b` -> `.b`: the compound that picks the element being styled. */
+const subject = (selectorText) => selectorText.trim().split(/\s*[ >+~]\s*/).filter(Boolean).pop() ?? '';
+
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The SIX pseudo-classes the override guard exempts, exhaustively, and nothing
+ * else: `:hover`, `:focus`, `:focus-visible`, `:focus-within`, `:active`,
+ * `:target`. Every one of them requires the user to be pointing at, typing
+ * into, or navigating to the element, so a rule gated on one of them cannot be
+ * the rule that answers a RESTING-state question — `.slot:focus-within
+ * { opacity: 1 }` does not make the ducked slot's resting 0.55 wrong.
+ *
+ * THIS LIST USED TO HOLD TWENTY-ONE, AND THAT WAS A FALSE GREEN OF ITS OWN.
+ * Fifteen of the extras — `:disabled`, `:enabled`, `:checked`,
+ * `:indeterminate`, `:read-only`, `:read-write`, `:valid`, `:invalid`,
+ * `:default`, `:placeholder-shown`, `:link`, `:visited`, `:open`,
+ * `:popover-open`, `:autofill` — describe a RESTING state: a rule gated on one
+ * of them applies with nobody touching the page at all. `:disabled` is the one
+ * this component actively renders (`disabled: stem.availability !== 'ready'`,
+ * Mixer.tsx), and in the absent-stem case this file tests, FIFTEEN of the
+ * mixer's controls carry it at first paint. So `.toggle:disabled
+ * { min-height: 20px }` was exempted from the guard, resolved by nobody, and
+ * passed 65/65 while Chrome rendered a 20px-tall touch target on every
+ * disabled channel — against the 44px floor asserted a few screens down, whose
+ * own comment promises the box "may grow but never shrink under the target".
+ * `.fader:disabled { width: 10px }` did the same to the 44px fader column.
+ *
+ * The lesson is in the wording as much as the regex. The old comment called
+ * this a TRANSIENT-state exemption while the list exempted resting states, and
+ * the disclosure called it "categorical, not heuristic" — categorical in form,
+ * but the category was mislabelled, and that framing discouraged the scrutiny
+ * a heuristic would have invited. Anything NOT on this list of six — `:is`,
+ * `:not`, `:nth-child`, `:disabled`, an attribute, a second class, an id — is
+ * treated as outranking and REFUSED.
+ */
+const PSEUDO_STATE = /:(?:hover|focus-visible|focus-within|focus|active|target)\b/g;
+
+/**
+ * Does `needle` appear in `hay` as a whole compound token rather than as the
+ * head of a longer identifier? `.toggle` must not match inside `.toggles`.
+ */
+const hasToken = (hay, needle) =>
+  new RegExp(`${esc(needle)}(?![A-Za-z0-9_-])`).test(hay);
+
+/**
+ * `prop: value` pairs out of one rule body, with `!important` modelled.
+ * Nesting is refused rather than mis-parsed: a `&`-nested block inside a rule
+ * would make this split a selector as if it were a declaration.
+ */
+const declarations = (decls, where) => {
+  assert.ok(
+    !decls.includes('{'),
+    `nested rules inside \`${where}\` are not modelled by this resolver; teach it or flatten the rule`,
+  );
+  const out = [];
+  let depth = 0;
+  let start = 0;
+  const push = (piece) => {
+    const text = piece.trim();
+    if (text.length === 0) return;
+    const colon = text.indexOf(':');
+    if (colon === -1) return;
+    const prop = text.slice(0, colon).trim();
+    let value = text.slice(colon + 1).trim();
+    const important = /!\s*important$/i.test(value);
+    if (important) value = value.replace(/!\s*important$/i, '').trim();
+    out.push({ prop, value, important });
+  };
+  for (let i = 0; i < decls.length; i += 1) {
+    const ch = decls[i];
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    else if (ch === ';' && depth === 0) {
+      push(decls.slice(start, i));
+      start = i + 1;
+    }
+  }
+  push(decls.slice(start));
+  return out;
+};
+
+/**
+ * Every style rule that applies at `width` in `env`, in source order,
+ * separated from the ones this file cannot evaluate.
+ *
+ * `@media` blocks are kept when their conditions hold and dropped when they do
+ * not, so what comes back is the cascade that renders there. Anything whose
+ * condition cannot be evaluated here goes to `unevaluated` rather than being
+ * guessed at, and the lookups below fail loudly if one of those touches a
+ * value they were asked for. Failing closed is the point: a silent wrong
+ * answer is what put a launch-blocking layout defect through this gate twice.
+ */
+const rulesAt = (css, env) => {
+  const { width } = env;
+  const applied = [];
+  const unevaluated = [];
+  const feature = {
+    'forced-colors': env.forcedColors,
+    'prefers-reduced-motion': env.reducedMotion,
+    'prefers-color-scheme': env.colorScheme,
+  };
+
+  /** Split on commas that are not inside parentheses. */
+  const commaParts = (text) => {
+    const parts = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      if (text[i] === '(') depth += 1;
+      else if (text[i] === ')') depth -= 1;
+      else if (text[i] === ',' && depth === 0) {
+        parts.push(text.slice(start, i));
+        start = i + 1;
+      }
+    }
+    parts.push(text.slice(start));
+    return parts.map((one) => one.trim()).filter((one) => one.length > 0);
+  };
+
+  /**
+   * true / false / null ("cannot tell") for ONE comma-free media query.
+   * `not`, range syntax (`400px <= width <= 800px`) and any feature not in
+   * AXES all leave something behind in `leftover` and answer null.
+   */
+  const holdsOne = (query) => {
+    const WIDTH = /\(\s*(min|max)-width\s*:\s*([\d.]+)px\s*\)/g;
+    const FEATURE = /\(\s*(forced-colors|prefers-reduced-motion|prefers-color-scheme)\s*:\s*([a-z-]+)\s*\)/g;
+    const widths = [...query.matchAll(WIDTH)];
+    const features = [...query.matchAll(FEATURE)];
+    const leftover = query
+      .replace(WIDTH, '')
+      .replace(FEATURE, '')
+      .replace(/\band\b|\bonly\b|\bscreen\b|\ball\b|\s/g, '');
+    if (leftover.length > 0 || widths.length + features.length === 0) return null;
+    for (const [, name] of features) {
+      assert.ok(
+        feature[name] !== undefined,
+        `\`${name}\` is an environment axis with no value in this lookup; add it to AXES`,
+      );
+    }
+    return (
+      widths.every(([, kind, n]) => (kind === 'min' ? width >= Number(n) : width <= Number(n))) &&
+      features.every(([, name, want]) => feature[name] === want)
+    );
+  };
+
+  /**
+   * A media prelude is a comma-separated LIST, and the list is an OR. The
+   * previous version stripped the commas and then ANDed the lot, which is the
+   * only one of round 4's six false greens that was a CONFIDENT WRONG ANSWER
+   * rather than a missed override: `@media (max-width: 400px), (min-width:
+   * 760px)` applies at 360px in Chrome and was evaluated as false here, so the
+   * 72px channel floor vanished and the sixth Solo button sat at x=400..470,
+   * outside the viewport, with the suite green.
+   */
+  const holds = (prelude) => {
+    const verdicts = commaParts(prelude.replace(/^@media\b/, '')).map(holdsOne);
+    if (verdicts.length === 0) return null;
+    if (verdicts.some((v) => v === true)) return true;
+    if (verdicts.every((v) => v === false)) return false;
+    return null;
+  };
+
+  const walk = (text, state) => {
+    let i = 0;
+    for (;;) {
+      const brace = text.indexOf('{', i);
+      // A STATEMENT at-rule — `@layer base;`, `@import url(…);`, `@charset` —
+      // ends at a semicolon and has no block. The previous version looked only
+      // for the next `{`, so the statement was absorbed into the FOLLOWING
+      // rule's prelude, that prelude then started with `@`, and the rule it
+      // swallowed disappeared from `applied` and `unevaluated` alike. A lookup
+      // that expected `null` (`{ required: false }`) then read the absence as
+      // "nothing declares it" and passed. `@layer` and `@import` also change
+      // the cascade in ways nothing here models, so this refuses outright.
+      const semi = text.indexOf(';', i);
+      if (semi !== -1 && (brace === -1 || semi < brace)) {
+        const statement = text.slice(i, semi).trim();
+        assert.ok(
+          statement.length === 0,
+          `\`${statement.slice(0, 60)}\` is a statement at-rule; it changes the cascade in ways ` +
+            `this resolver does not model (layer order, cross-file source order). Teach it or remove it`,
+        );
+        i = semi + 1;
+        continue;
+      }
+      if (brace === -1) return;
+      const prelude = text.slice(i, brace).trim();
+      let depth = 0;
+      let j = brace;
+      for (; j < text.length; j += 1) {
+        if (text[j] === '{') depth += 1;
+        else if (text[j] === '}') {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      assert.ok(depth === 0, `unbalanced braces after \`${prelude.slice(0, 40)}\``);
+      const body = text.slice(brace + 1, j);
+      if (prelude.startsWith('@')) {
+        const verdict = prelude.startsWith('@media') ? holds(prelude) : null;
+        const next =
+          verdict === false || state === 'excluded'
+            ? 'excluded'
+            : verdict === true
+              ? state
+              : 'unknown';
+        walk(body, next);
+      } else if (state !== 'excluded') {
+        (state === 'applied' ? applied : unevaluated).push({
+          selectors: prelude.split(',').map((one) => one.trim()),
+          decls: declarations(body, prelude),
+        });
+      }
+      i = j + 1;
+    }
+  };
+
+  walk(uncomment(css), 'applied');
+  return { applied, unevaluated };
+};
+
+/**
+ * The winning value of `selector { prop }` in ONE resolved environment, or a
+ * loud failure if anything about the cascade there is beyond this resolver.
+ *
+ * Only rules whose selector list contains `selector` EXACTLY are consulted, so
+ * `.isMuted .name` never answers a question about `.name`. Everything that
+ * could make that exact match the wrong answer is a refusal:
+ *   - a selector that targets the same element through a longer compound,
+ *   - the same property under a different name (shorthand / longhand),
+ *   - any of the above inside an at-rule this file cannot evaluate.
+ */
+const declIn = (css, selector, prop, env) => {
+  const { applied, unevaluated } = rulesAt(css, env);
+
+  // ── refusal 1: a selector that outranks the one asked about ───────────────
+  //
+  // Widened in round 4 from `[ >+~]<selector>$` — a COMBINATOR plus an exact
+  // match, over `applied` only — which fired on `.mixer .channel` but was
+  // silent on `.channel[data-stem]`, `.channel.channel`, `#x.channel` and
+  // `.channel:is(…)`, every one of which outranks `.channel`, and silent on
+  // anything inside `@supports`. Now: any selector whose SUBJECT compound
+  // contains this one, in `applied` or `unevaluated`. A selector that the
+  // asked-for one CONTAINS is exempt, since `.slot` cannot outrank
+  // `.isDucked:not(.isMuted) .slot`.
+  const want = subject(selector);
+  for (const [state, rules] of [['applies', applied], ['may apply', unevaluated]]) {
+    for (const rule of rules) {
+      for (const one of rule.selectors) {
+        if (one === selector) continue;
+        // A pseudo-ELEMENT is a different box: `.fader::-webkit-slider-runnable-track
+        // { width }` sizes the generated track, never `.fader` itself.
+        if (subject(one).includes('::')) continue;
+        if (!hasToken(subject(one), want)) continue;
+        if (hasToken(selector, one)) continue; // weaker form of the same selector
+        const resting = one.replace(PSEUDO_STATE, '');
+        // the same element, reachable only while the user is pointing at,
+        // typing into or navigating to it — never at rest. A RESTING-state
+        // pseudo-class such as `:disabled` is NOT exempt; see PSEUDO_STATE.
+        if (resting === selector || hasToken(selector, resting)) continue;
+        const also = rule.decls.find((d) => d.prop === prop || relatives(prop).includes(d.prop));
+        assert.ok(
+          !also,
+          `\`${one}\` sets \`${also?.prop}\` and outranks \`${selector}\` (${state} here); this ` +
+            `lookup resolves selectors by exact match and would answer with the wrong value`,
+        );
+      }
+    }
+  }
+
+  // ── refusal 2: the same box sized through a different property name ───────
+  const kin = relatives(prop);
+  for (const rules of [applied, unevaluated]) {
+    for (const rule of rules) {
+      if (!rule.selectors.includes(selector)) continue;
+      const sibling = rule.decls.find((d) => kin.includes(d.prop));
+      assert.ok(
+        !sibling,
+        `\`${selector}\` declares both \`${prop}\` and \`${sibling?.prop}\`, which can overwrite ` +
+          `each other; this lookup is property-exact and cannot tell which wins`,
+      );
+    }
+  }
+
+  /** Last declaration wins — except that any `!important` one beats all of them. */
+  const winner = (rules) => {
+    let normal = null;
+    let important = null;
+    for (const rule of rules) {
+      if (!rule.selectors.includes(selector)) continue;
+      for (const d of rule.decls) {
+        if (d.prop !== prop) continue;
+        if (d.important) important = d.value;
+        else normal = d.value;
+      }
+    }
+    return important ?? normal;
+  };
+
+  // ── refusal 3: the value is set inside an at-rule this file cannot judge ──
+  const blind = winner(unevaluated);
+  assert.equal(
+    blind,
+    null,
+    `\`${selector} { ${prop} }\` is set to \`${blind}\` inside an at-rule this test cannot ` +
+      `evaluate — teach rulesAt about it rather than trusting the base value`,
+  );
+  return winner(applied);
+};
+
+/**
+ * `selector { prop }` at `width`, resolved over EVERY value of every
+ * environment axis the stylesheet branches on and that the caller has not
+ * pinned. Agreement is the answer; disagreement is a refusal that names both
+ * sides. Nothing is defaulted, so a stylesheet that grows a new axis cannot
+ * quietly keep answering with one side of it.
+ */
+const declAt = (css, width, selector, prop, { required = true, env = {} } = {}) => {
+  for (const key of Object.keys(env)) {
+    assert.ok(AXES[key], `\`${key}\` is not an environment axis this resolver knows`);
+  }
+  const text = uncomment(css);
+  const free = Object.entries(AXES).filter(
+    ([key, { feature }]) => env[key] === undefined && text.includes(`${feature}:`),
+  );
+  let combos = [{ ...env, width }];
+  for (const [key, { values }] of free) {
+    combos = combos.flatMap((base) => values.map((v) => ({ ...base, [key]: v })));
+  }
+  const seen = combos.map((combo) => ({ combo, value: declIn(css, selector, prop, combo) }));
+  const show = (c) => free.map(([key]) => `${AXES[key].feature}: ${c[key]}`).join(', ');
+  const first = seen[0];
+  for (const other of seen) {
+    assert.equal(
+      other.value,
+      first.value,
+      `\`${selector} { ${prop} }\` is \`${first.value}\` at (${show(first.combo)}) but ` +
+        `\`${other.value}\` at (${show(other.combo)}); pin the axis you mean, or fix the disagreement`,
+    );
+  }
+  if (required) {
+    assert.ok(first.value !== null, `nothing declares \`${prop}\` for \`${selector}\` at ${width}px`);
+  }
+  return first.value;
+};
+
+/** The same lookup in forced-colors mode, where this stylesheet restates states. */
+const declForcedColors = (css, width, selector, prop, opts = {}) =>
+  declAt(css, width, selector, prop, { ...opts, env: { ...opts.env, forcedColors: 'active' } });
+
+/** `12px` -> 12; `var(--space-2)` -> whatever the tokens say AT THIS WIDTH. */
+const px = (value, width = NARROWEST) => {
+  const direct = value.match(/^(-?[\d.]+)px$/);
+  if (direct) return Number(direct[1]);
+  const token = value.match(/^var\((--[a-z0-9-]+)\)$/);
+  assert.ok(token, `cannot resolve \`${value}\` to px`);
+  return px(declAt(read(TOKENS_CSS), width, ':root', token[1]), width);
+};
+
+/** The page gutter, read from the tokens that are in scope on every route. */
+const pageGutter = (width = NARROWEST) => px(declAt(read(TOKENS_CSS), width, ':root', '--sl-gutter'), width);
+
+// ═══ The resolver's own gate ══════════════════════════════════════════════════
+//
+// Four review rounds have each defeated this gate the same way: it answered a
+// question about the cascade CONFIDENTLY and WRONGLY, and the suite stayed
+// green while Chrome overflowed. Round 1 was a hard-coded literal, round 2 the
+// base cascade instead of the 360px cascade, round 3 specificity, round 4 five
+// more variants of specificity plus one genuine mis-evaluation.
+//
+// So the resolver is pinned here by its OWN behaviour on inline stylesheets,
+// not only through the product CSS. Each case below is one of the shapes that
+// produced a false green, and the assertion is either the right answer or a
+// REFUSAL. A gate that refuses costs five minutes; a gate that answers wrongly
+// is the defect. Where closing a hole cleanly would need a real CSS engine,
+// this refuses on purpose and the residue list says so.
+
+/** `declAt` must throw, and the message must name the reason. */
+const refuses = (thunk, reason) =>
+  assert.throws(thunk, (err) => {
+    assert.match(err.message, reason);
+    return true;
+  });
+
+test('resolver: a comma-separated media prelude is an OR, not an AND', () => {
+  // THE CONFIDENT WRONG ANSWER. `holds()` stripped commas and then ANDed the
+  // condition list that Chrome ORs, so this block was judged false at 360px.
+  // In Chrome the 150px floor applies, six channels need 910px of 302px, and
+  // the sixth Solo button sat at x=400..470 — outside the viewport, where
+  // elementFromPoint returns nothing at all. This is the only one of round 4's
+  // six that is fixed rather than refused: the list is parsed and ORed.
+  const css = `
+    .channel { min-width: 46px; }
+    @media (max-width: 400px), (min-width: 760px) {
+      .channel { min-width: 150px; }
+    }`;
+  assert.equal(declAt(css, 360, '.channel', 'min-width'), '150px', 'the max-width arm');
+  assert.equal(declAt(css, 1024, '.channel', 'min-width'), '150px', 'the min-width arm');
+  assert.equal(declAt(css, 500, '.channel', 'min-width'), '46px', 'neither arm');
+  // and an OR where one arm is unevaluable still answers when another arm HOLDS
+  assert.equal(
+    declAt(`.a { gap: 1px } @media (min-width: 0px), (400px <= width) { .a { gap: 9px } }`, 360, '.a', 'gap'),
+    '9px',
+  );
+  // …but refuses when the only arms are false-or-unknown
+  refuses(
+    () => declAt(`.a { gap: 1px } @media (min-width: 900px), (400px <= width) { .a { gap: 9px } }`, 360, '.a', 'gap'),
+    /cannot\s+evaluate/,
+  );
+});
+
+test('resolver: `!important` beats a later ordinary declaration', () => {
+  // `winner()` took the last textual match and did not model `!important`, so
+  // an earlier `!important` floor was invisible. Fixed, not refused.
+  const css = `
+    .channel { min-width: 150px !important; }
+    .channel { min-width: 46px; }`;
+  assert.equal(declAt(css, 360, '.channel', 'min-width'), '150px');
+  // spacing and case are not load-bearing
+  assert.equal(declAt(`.a { gap: 9px !  IMPORTANT ; } .a { gap: 1px }`, 360, '.a', 'gap'), '9px');
+  // and the last `!important` wins over an earlier one
+  assert.equal(
+    declAt(`.a { gap: 2px !important } .a { gap: 9px !important } .a { gap: 1px }`, 360, '.a', 'gap'),
+    '9px',
+  );
+});
+
+test('resolver: refuses any selector that outranks the one asked about', () => {
+  // The old guard keyed on `[ >+~]<selector>$` — a COMBINATOR plus an exact
+  // match — so it caught `.mixer .channel` and was silent on every one of
+  // these, each of which outranks `.channel` and each of which rendered a
+  // 150px floor and a 608px overflow in Chrome with the suite green.
+  for (const outranks of [
+    '.channel[data-stem]',
+    '.channel.channel',
+    '.channel:is(.mixer)',
+    '#job .channel',
+    '.mixer .channel',
+    '.mixer > .channel',
+  ]) {
+    refuses(
+      () => declAt(`${outranks} { min-width: 150px; }\n.channel { min-width: 46px; }`, 360, '.channel', 'min-width'),
+      /outranks/,
+    );
+  }
+  // scanned in BOTH directions of source order, and for a RELATIVE of the
+  // property as well as the property itself
+  refuses(
+    () => declAt(`.channel { min-width: 46px } .channel[x] { min-inline-size: 150px }`, 360, '.channel', 'min-width'),
+    /outranks/,
+  );
+});
+
+test('resolver: refuses an outranking selector inside an at-rule it cannot evaluate', () => {
+  // The blind check over `unevaluated` was exact-match too, so a DESCENDANT
+  // selector inside `@supports` passed silently — the gate's stated claim that
+  // it "fails on @supports rather than evaluating it" was an overclaim.
+  refuses(
+    () =>
+      declAt(
+        `@supports (display: flex) { .mixer .channel { min-width: 150px; } }\n.channel { min-width: 46px; }`,
+        360,
+        '.channel',
+        'min-width',
+      ),
+    /outranks .*may apply/,
+  );
+  // the exact-match blind check still fires too
+  refuses(
+    () => declAt(`@supports (display: flex) { .channel { min-width: 150px } }\n.channel { min-width: 46px }`, 360, '.channel', 'min-width'),
+    /cannot\s+evaluate/,
+  );
+});
+
+test('resolver: a RESTING-state pseudo-class outranks and is refused; only six are exempt', () => {
+  // THE SEVENTH VARIANT. `PSEUDO_STATE` listed twenty-one pseudo-classes and
+  // the guard stripped all of them, so `.toggle:disabled { min-height: 20px }`
+  // was treated as "a different interaction state" and left unresolved — a
+  // confident wrong answer, 65/65 green, while Chrome rendered the disabled
+  // M/S button 46.67 x 20.00 at rest with no interaction at all. Fifteen of
+  // the twenty-one describe a state that applies with nobody touching the
+  // page. `:disabled` is the one this component renders, on 15 controls at
+  // first paint in the absent-stem case (`disabled: stem.availability !==
+  // 'ready'`). The exemption was never forced by this stylesheet: its only
+  // `:disabled` rules set `cursor`, `color` and `border-color`.
+  //
+  // Both directions are pinned, so neither putting one back nor dropping one
+  // of the six can pass.
+  const RESTING = [
+    'disabled', 'enabled', 'checked', 'indeterminate', 'read-only', 'read-write',
+    'valid', 'invalid', 'default', 'placeholder-shown', 'link', 'visited',
+    'open', 'popover-open', 'autofill',
+  ];
+  for (const state of RESTING) {
+    refuses(
+      () => declAt(`.toggle:${state} { min-height: 20px }\n.toggle { min-height: 44px }`, 360, '.toggle', 'min-height'),
+      new RegExp(`\`\\.toggle:${state}\` sets \`min-height\` and outranks \`\\.toggle\``),
+    );
+  }
+  // …and the six that genuinely need the user to be pointing at, typing into
+  // or navigating to the element stay exempt, because this stylesheet really
+  // does restate the ducked slot under `:focus-within`.
+  const TRANSIENT = ['hover', 'focus', 'focus-visible', 'focus-within', 'active', 'target'];
+  for (const state of TRANSIENT) {
+    assert.equal(
+      declAt(`.toggle:${state} { min-height: 20px }\n.toggle { min-height: 44px }`, 360, '.toggle', 'min-height'),
+      '44px',
+      `:${state} is not a resting state and must stay exempt`,
+    );
+  }
+  // the list is exhaustive in the other direction too: a pseudo-class nobody
+  // thought about is treated as outranking rather than quietly exempted
+  refuses(
+    () => declAt(`.toggle:nth-child(2) { min-height: 20px }\n.toggle { min-height: 44px }`, 360, '.toggle', 'min-height'),
+    /outranks/,
+  );
+});
+
+test('resolver: the two disabled-state shrinks that defeated the touch-target floor', () => {
+  // B1 and B2 verbatim, against the properties whose assertions they defeated:
+  // `px(narrow('.toggle', 'min-height')) === touch` and
+  // `px(at('.fader', 'width')) === touch`. Measured in Chrome at 360px at rest:
+  // B1 gave a 20px-tall disabled M/S against the 44px floor (enabled stayed
+  // 44px), B2 a 10px-wide disabled fader column (enabled stayed 44px).
+  refuses(
+    () => declAt(`.toggle:disabled { min-height: 20px; }\n.toggle { min-height: var(--touch-min); }`, 360, '.toggle', 'min-height'),
+    /`\.toggle:disabled` sets `min-height` and outranks `\.toggle`/,
+  );
+  refuses(
+    () => declAt(`.fader:disabled { width: 10px; }\n.fader { width: var(--touch-min); }`, 360, '.fader', 'width'),
+    /`\.fader:disabled` sets `width` and outranks `\.fader`/,
+  );
+  // a pseudo-ELEMENT on the disabled state is still a different box, which is
+  // what this stylesheet actually uses `:disabled` for
+  assert.equal(
+    declAt(`.fader:disabled::-webkit-slider-thumb { width: 10px }\n.fader { width: 44px }`, 360, '.fader', 'width'),
+    '44px',
+  );
+  // and the real stylesheet's own `:disabled` rules set no geometry, so the
+  // narrowing costs it nothing
   const css = read(MIXER_CSS);
-  assert.match(css, /\.fader\s*\{[\s\S]*?width:\s*var\(--touch-min\)/);
-  assert.match(css, /\.toggle\s*\{[\s\S]*?height:\s*40px/);
-  assert.match(css, /height:\s*var\(--touch-min\)/); // >=760px
+  assert.equal(px(declAt(css, NARROWEST, '.fader', 'width')), px('var(--touch-min)'));
+  assert.equal(px(declAt(css, NARROWEST, '.toggle', 'min-height')), px('var(--touch-min)'));
+});
+
+test('resolver: refuses a shorthand and its longhand on the same selector', () => {
+  // THE LIVE RISK, not a hypothetical: this stylesheet already mixes both
+  // idioms (`.channel { padding: … }` against `.toggles { padding-inline: 0 }`).
+  // The declaration regex was property-exact, so `padding: 0 12px` after
+  // `padding-inline: 0` was invisible and Chrome laid the M/S button out at
+  // 22.66 x 44 — half the 44px minimum the touch-target test asserts.
+  // Expanding shorthands is not something a regex can do, so this refuses.
+  refuses(
+    () => declAt(`.toggles { padding-inline: 0 } .toggles { padding: 0 12px }`, 360, '.toggles', 'padding-inline'),
+    /declares both `padding-inline` and `padding`/,
+  );
+  // both directions, and the other families that matter to this stylesheet
+  refuses(() => declAt(`.a { padding: 4px; padding-left: 9px }`, 360, '.a', 'padding'), /declares both/);
+  refuses(() => declAt(`.a { gap: 2px; row-gap: 9px }`, 360, '.a', 'gap'), /declares both/);
+  refuses(() => declAt(`.a { border: 1px solid red; border-width: 9px }`, 360, '.a', 'border'), /declares both/);
+  refuses(() => declAt(`.a { width: 4px; inline-size: 9px }`, 360, '.a', 'width'), /declares both/);
+  refuses(() => declAt(`.a { flex-direction: row; flex-flow: column }`, 360, '.a', 'flex-direction'), /declares both/);
+  // `border-radius` is NOT a longhand of `border`, so this stylesheet's own
+  // `.mixer { border; border-radius }` must keep answering
+  assert.equal(declAt(`.a { border: 1px solid red; border-radius: 4px }`, 360, '.a', 'border'), '1px solid red');
+});
+
+test('resolver: no environment axis has a default; a disagreement is a refusal', () => {
+  // `DEFAULT_ENV` *stated* `colorScheme: 'dark'` — itself the opposite of a
+  // plain browser default — and nothing forced a test to consider the other
+  // value, so a `prefers-color-scheme: light` override of the channel floor
+  // passed while light mode overflowed by 608px and clipped the sixth Solo.
+  const css = `
+    .channel { min-width: 46px; }
+    @media (prefers-color-scheme: light) { .channel { min-width: 150px; } }`;
+  refuses(() => declAt(css, 360, '.channel', 'min-width'), /prefers-color-scheme: light.*prefers-color-scheme: dark/s);
+  // pinning the axis is how a test says which one it means
+  assert.equal(declAt(css, 360, '.channel', 'min-width', { env: { colorScheme: 'dark' } }), '46px');
+  assert.equal(declAt(css, 360, '.channel', 'min-width', { env: { colorScheme: 'light' } }), '150px');
+  // every axis, not just this one
+  for (const [feature, pin, other] of [
+    ['forced-colors: active', { forcedColors: 'none' }, { forcedColors: 'active' }],
+    ['prefers-reduced-motion: reduce', { reducedMotion: 'no-preference' }, { reducedMotion: 'reduce' }],
+  ]) {
+    const sheet = `.a { gap: 1px } @media (${feature}) { .a { gap: 9px } }`;
+    refuses(() => declAt(sheet, 360, '.a', 'gap'), /pin the axis you mean/);
+    assert.equal(declAt(sheet, 360, '.a', 'gap', { env: pin }), '1px');
+    assert.equal(declAt(sheet, 360, '.a', 'gap', { env: other }), '9px');
+  }
+  // an axis the stylesheet never branches on needs no pin
+  assert.equal(declAt(`.a { gap: 1px }`, 360, '.a', 'gap'), '1px');
+  // and a typo in a pin is a failure, not a silently ignored key
+  refuses(() => declAt(`.a { gap: 1px }`, 360, '.a', 'gap', { env: { colourScheme: 'dark' } }), /not an environment axis/);
+});
+
+test('resolver: refuses a statement at-rule rather than swallowing the next rule', () => {
+  // NEW HOLE, found in round 4 and never stated. `@layer base;` / `@import …;`
+  // end at a semicolon, and the walker only looked for the next `{`, so the
+  // statement was absorbed into the FOLLOWING rule's prelude; that prelude then
+  // began with `@`, and the rule it had swallowed vanished from `applied` AND
+  // `unevaluated` alike. A `{ required: false }` lookup read the absence as
+  // "nothing declares it" and passed — so `@layer base;` in front of
+  // `.isDucked { opacity: 0.55 }` would hide exactly the dimming that test
+  // forbids. `@layer` and `@import` also reorder the cascade and pull in other
+  // files, neither of which anything here models, so they are refused outright.
+  for (const statement of ['@layer base;', '@import url("x.css");', '@charset "utf-8";']) {
+    refuses(() => declAt(`${statement}\n.channel { min-width: 46px }`, 360, '.channel', 'min-width'), /statement at-rule/);
+    // including the direction that used to PASS: an absence read as a null
+    refuses(
+      () => declAt(`${statement}\n.isDucked { opacity: 0.55 }`, 360, '.isDucked', 'opacity', { required: false }),
+      /statement at-rule/,
+    );
+  }
+  // `@layer name { … }` with a block is still the ordinary unevaluated path
+  refuses(
+    () => declAt(`@layer base { .channel { min-width: 150px } }\n.channel { min-width: 46px }`, 360, '.channel', 'min-width'),
+    /cannot\s+evaluate/,
+  );
+});
+
+test('resolver: refuses CSS nesting rather than parsing a selector as a declaration', () => {
+  refuses(() => declAt(`.a { gap: 1px; &:hover { gap: 9px } }`, 360, '.a', 'gap'), /nested rules/);
+});
+
+test('resolver: the shapes that already failed closed still do', () => {
+  // Round 3 got these right and round 4 confirmed all four. They are pinned so
+  // the widening above cannot quietly turn one of them into an answer.
+  const cases = [
+    ['@media nested in @supports', `@supports (display: flex) { @media (min-width: 0px) { .channel { min-width: 150px } } }\n.channel { min-width: 46px }`],
+    ['range syntax', `@media (400px <= width <= 800px) { .channel { min-width: 150px } }\n.channel { min-width: 46px }`],
+    ['negated media query', `@media not all and (min-width: 760px) { .channel { min-width: 150px } }\n.channel { min-width: 46px }`],
+    ['an unknown media feature', `@media (orientation: portrait) { .channel { min-width: 150px } }\n.channel { min-width: 46px }`],
+  ];
+  for (const [what, css] of cases) {
+    refuses(() => declAt(css, 360, '.channel', 'min-width'), /cannot\s+evaluate/);
+    assert.ok(what);
+  }
+  // a `var()` FALLBACK CHAIN is not resolved either — `px()` refuses it
+  refuses(() => px('var(--a, var(--b, 16px))'), /cannot resolve/);
+  refuses(() => px('calc(16px + 2px)'), /cannot resolve/);
+});
+
+test('the page gutter is declared in exactly one file, which is what makes pageGutter() safe', () => {
+  // NEW HOLE, never stated: the resolver reads ONE FILE AT A TIME and models
+  // no cross-file source order. `pageGutter()` is sound today only because
+  // `--sl-gutter` has exactly one declaring file; a second declaration
+  // anywhere would make "last wins" depend on an import order this file cannot
+  // see, and the gate would answer confidently from whichever file it read.
+  // So the invariant is asserted rather than assumed.
+  const roots = ['src/styles', 'src/components', 'src/app'];
+  const files = [];
+  const walkDir = (rel) => {
+    let entries;
+    try {
+      entries = readdirSync(join(WEB, rel), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const next = `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walkDir(next);
+      else if (entry.name.endsWith('.css')) files.push(next);
+    }
+  };
+  for (const root of roots) walkDir(root);
+  assert.ok(files.length >= 3, `expected a real stylesheet tree, found ${files.length}`);
+  const declaring = files.filter((f) => /--sl-gutter\s*:/.test(read(f)));
+  assert.deepEqual(
+    declaring,
+    [TOKENS_CSS],
+    `--sl-gutter must be declared in exactly one file for pageGutter() to be resolvable ` +
+      `without cross-file source order, which this resolver does not model`,
+  );
+});
+
+test('every channel fits at 360px, with each number resolved from the stylesheets', () => {
+  const css = read(MIXER_CSS);
+  const at = (selector, prop) => declAt(css, NARROWEST, selector, prop);
+  const gutter = pageGutter();
+  const channelMin = px(at('.channel', 'min-width'));
+  const railGap = px(at('.rail', 'gap'));
+  const mixerPad = px(at('.mixer', 'padding'));
+  const mixerBorder = px(at('.mixer', 'border').split(/\s+/)[0]);
+  const channels = PLAYABLE_STEMS.length;
+
+  // What a 360px viewport actually leaves the rail, inside the page gutter and
+  // the mixer's own border and padding.
+  const available = NARROWEST - 2 * gutter - 2 * mixerBorder - 2 * mixerPad;
+  const required = channels * channelMin + (channels - 1) * railGap;
+  assert.ok(
+    required <= available,
+    `${channels} channels need ${required}px but only ${available}px is available at ` +
+      `${NARROWEST}px (gutter ${gutter}, border ${mixerBorder}, padding ${mixerPad})`,
+  );
+
+  // and the channel is still wide enough to hold the full 44px fader column
+  const touch = px('var(--touch-min)');
+  assert.equal(px(at('.fader', 'width')), touch);
+  assert.ok(
+    channelMin >= touch + 2,
+    `a ${channelMin}px channel cannot hold a ${touch}px fader plus its borders`,
+  );
+});
+
+test('stem names are not tracked out of their own channel on phones', () => {
+  const css = read(MIXER_CSS);
+  // At ~48px per channel, --tracking-wide made VOCALS need 48px of a 47px box
+  // and it ellipsised to "VOCA…". Nothing here can measure a glyph, but the
+  // tracking this depends on is a declared value and can be pinned.
+  assert.equal(declAt(css, NARROWEST, '.name', 'letter-spacing'), 'var(--tracking-normal)');
+  assert.equal(declAt(css, 1024, '.name', 'letter-spacing'), 'var(--tracking-wide)');
+});
+
+test('ducking recedes the LEVEL, never the words: no opacity on the channel itself', () => {
+  const css = read(MIXER_CSS);
+  // `opacity: 0.55` on the channel put a ducked channel's note at 2.52:1 and
+  // its name at 2.79:1 against a 4.5:1 floor — on up to five channels that are
+  // still live and still interactive. Nothing may dim the channel as a whole.
+  for (const channelLevel of ['.isDucked', '.isDucked:not(.isMuted)']) {
+    assert.equal(
+      declAt(css, NARROWEST, channelLevel, 'opacity', { required: false }),
+      null,
+      `${channelLevel} dims the whole channel, text included`,
+    );
+  }
+  // the fader column carries the signal instead, and the note still says why
+  // `forced-colors` is pinned because this stylesheet restates the dimming
+  // there: unpinned, the lookup refuses rather than picking one side.
+  assert.equal(
+    declAt(css, NARROWEST, '.isDucked:not(.isMuted) .slot', 'opacity', {
+      env: { forcedColors: 'none' },
+    }),
+    '0.55',
+  );
+  assert.equal(declAt(css, NARROWEST, '.isDucked:not(.isMuted) .note', 'font-style'), 'italic');
+  // forced colours drop the tint, so the dimming is restated away there
+  assert.equal(declForcedColors(css, NARROWEST, '.isDucked:not(.isMuted) .slot', 'opacity'), '1');
+});
+
+test('M and S are real touch targets on phones: stacked, and --touch-min on both axes', () => {
+  const css = read(MIXER_CSS);
+  const narrow = (selector, prop) => declAt(css, NARROWEST, selector, prop);
+  const touch = px('var(--touch-min)');
+
+  // Stacked, so each button gets the channel's whole width rather than half of
+  // it. Side by side in a ~49px channel they measured 19x40.
+  assert.equal(narrow('.toggles', 'flex-direction'), 'column');
+  assert.equal(narrow('.toggles', 'padding-inline'), '0');
+  assert.equal(px(narrow('.toggle', 'min-height')), touch);
+  // min-height, not height: the box may grow but never shrink under the target.
+  assert.equal(declAt(css, NARROWEST, '.toggle', 'height', { required: false }), null);
+
+  // border-box is what keeps `width: 100%` + padding from overflowing the rail.
+  assert.equal(narrow('.note', 'box-sizing'), 'border-box');
+  assert.equal(narrow('.toggles', 'box-sizing'), 'border-box');
+
+  // From 760px up there is width for a row again — resolved AT 1024px, so a
+  // rule that leaves the breakpoint it is supposed to be in fails here rather
+  // than matching some other block's `flex-direction: row`. And it is still a
+  // row at exactly 760, the boundary.
+  for (const wide of [760, 1024]) {
+    assert.equal(declAt(css, wide, '.toggles', 'flex-direction'), 'row', `at ${wide}px`);
+    assert.equal(px(declAt(css, wide, '.toggle', 'height'), wide), touch, `at ${wide}px`);
+  }
+  // …and still stacked at 759, the width below it
+  assert.equal(declAt(css, 759, '.toggles', 'flex-direction'), 'column');
   assert.match(css, /touch-action:\s*none/);
 });
 
@@ -607,4 +1551,283 @@ test('the component takes MixerProps and does not reach for the engine', () => {
   for (const forbidden of ['AudioContext', 'GainNode', 'PlayEngine', 'setGain(', 'getSnapshot', 'subscribe(']) {
     assert.ok(!code.includes(forbidden), `Mixer must not touch ${forbidden}`);
   }
+});
+
+// ═══ Review findings 3, 4 and 5 ══════════════════════════════════════════════
+//
+// These are the defects an independent review of #184 reproduced in a real
+// browser. Each one is asserted here on the code path that produced it: the
+// class list for 3 and 4 (computed at render, so renderToStaticMarkup really
+// does execute it) and the restore/write state machine for 5 (pure, so it runs
+// in full). The measured numbers behind them — the 360px boxes and the note's
+// contrast ratio — are in the PR description; this file cannot measure a box.
+
+test('an absent stem is ABSENT, not silenced: nothing is soloed, so nothing is ducked', () => {
+  const rows = Mixer.mixerRows([stem('drums')]);
+  const bass = rows.find((row) => row.stem.name === 'bass');
+  assert.equal(bass.present, false);
+  assert.equal(bass.disabled, true);
+  // `effectivelySilent: true` here made silenceReason answer 'solo-elsewhere'
+  // with nothing soloed, which dimmed the row to 0.55 and italicised its note.
+  assert.equal(bass.stem.effectivelySilent, false);
+  assert.equal(bass.silence, null);
+  assert.match(bass.unavailableReason, /no audio was loaded/);
+});
+
+test('a disabled channel is never ducked, so the sentence saying WHY stays readable', () => {
+  // The engine may well report an unavailable stem as silent. Nothing is soloed.
+  const html = render({
+    stems: [stem('drums'), stem('bass', { availability: 'encode_failed', effectivelySilent: true, gain: 0 })],
+    ...handlers(),
+  });
+  for (const name of ['bass', 'guitar']) { // bass: explicitly failed. guitar: absent.
+    const tag = channelTag(html, name);
+    assert.match(tag, /isDisabled/, `${name} should be disabled`);
+    assert.ok(!/isDucked/.test(tag), `${name} is dimmed to 0.55 while explaining itself`);
+  }
+  assert.match(noteFor(html, 'bass'), /failed to encode/);
+  assert.match(noteFor(html, 'guitar'), /no audio was loaded/);
+});
+
+test('a soloed stem the engine reports silent is lifted, and NOT dimmed as well', () => {
+  const html = render({
+    stems: [
+      stem('drums', { soloed: true, effectivelySilent: true }),
+      ...['bass', 'guitar', 'keys', 'vocals', 'other'].map((n) => stem(n)),
+    ],
+    ...handlers(),
+  });
+  const tag = channelTag(html, 'drums');
+  assert.match(tag, /isSoloed/);
+  assert.ok(!/isDucked/.test(tag), 'a channel cannot be lifted and dimmed at the same time');
+  assert.equal(noteFor(html, 'drums'), 'Silent'); // still named honestly
+});
+
+test('ducking still happens where it SHOULD: live, quiet because another stem is soloed', () => {
+  const html = render({
+    stems: withSilence([
+      stem('drums', { soloed: true }),
+      ...['bass', 'guitar', 'keys', 'vocals', 'other'].map((n) => stem(n)),
+    ]),
+    ...handlers(),
+  });
+  const bass = channelTag(html, 'bass');
+  assert.match(bass, /isDucked/, 'the solo-elsewhere treatment was deleted, not narrowed');
+  assert.equal(noteFor(html, 'bass'), 'Silent — another stem is soloed');
+  const drums = channelTag(html, 'drums');
+  assert.match(drums, /isSoloed/);
+  assert.ok(!/isDucked/.test(drums));
+});
+
+// ─── Finding 5: per-stem restore, and writes that cannot destroy memory ──────
+
+const remembered = (gain, over = {}) => ({ gain, muted: false, soloed: false, ...over });
+const rowsFor = (list) => Mixer.mixerRows(list);
+const loadingExcept = (ready) =>
+  rowsFor(
+    PLAYABLE_STEMS.map((n) => (ready.includes(n) ? stem(n) : stem(n, { availability: 'unavailable' }))),
+  );
+
+test('memory: a stem is restored the first time IT becomes ready, not once for the whole job', () => {
+  const memory = { drums: remembered(0.3), vocals: remembered(0.2) };
+  let state = Mixer.beginRestore(memory);
+
+  // ── drums is ready; the other five have not loaded yet ──
+  const loading = loadingExcept(['drums']);
+  const first = Mixer.planRestore(state, loading);
+  state = first.next;
+  assert.deepEqual(first.ops, [{ stem: 'drums', gain: 0.3 }]);
+
+  // The write that follows must not bank drums at its PRE-restore level, and
+  // must not drop vocals — this is the write that destroyed `vocals: 0.2`.
+  const w1 = Mixer.memoryWritePayload(state, loading);
+  const m1 = JSON.parse(w1.payload);
+  assert.equal(w1.changed, true);
+  assert.deepEqual(m1.drums, remembered(0.3));
+  assert.deepEqual(m1.vocals, remembered(0.2));
+  state = { ...state, memory: w1.memory, written: w1.payload };
+
+  // ── the engine applies the restore, and the rest arrive ready ──
+  const all = rowsFor([
+    stem('drums', { gain: 0.3 }),
+    ...['bass', 'guitar', 'keys', 'vocals', 'other'].map((n) => stem(n)),
+  ]);
+  const second = Mixer.planRestore(state, all);
+  state = second.next;
+  assert.deepEqual(second.ops, [{ stem: 'vocals', gain: 0.2 }], 'vocals was never restored');
+
+  const w2 = Mixer.memoryWritePayload(state, all);
+  const m2 = JSON.parse(w2.payload);
+  assert.equal(m2.drums.gain, 0.3);
+  assert.equal(m2.vocals.gain, 0.2, 'vocals was overwritten with its mount-time level');
+  assert.equal(m2.bass.gain, 0.8); // a stem with nothing remembered just records itself
+  state = { ...state, memory: w2.memory, written: w2.payload };
+
+  // ── and once it has all settled there is nothing left to push ──
+  const settled = rowsFor([
+    stem('drums', { gain: 0.3 }),
+    stem('vocals', { gain: 0.2 }),
+    ...['bass', 'guitar', 'keys', 'other'].map((n) => stem(n)),
+  ]);
+  assert.deepEqual(Mixer.planRestore(state, settled).ops, []);
+});
+
+test('memory: a pushed restore is not retired until the snapshot actually moves', () => {
+  // The mirror of "never retiring": retiring too EAGERLY is the data-loss
+  // direction. A slow engine republishes the PRE-restore snapshot before it has
+  // applied anything; if that retires the stem, its live (pre-restore) level is
+  // banked over the remembered one and the saved mix is gone.
+  const memory = { drums: remembered(0.3) };
+  let state = Mixer.beginRestore(memory);
+  const rows = rowsFor([stem('drums')]); // ready, still at its mount-time 0.8
+
+  const pushed = Mixer.planRestore(state, rows);
+  state = pushed.next;
+  assert.deepEqual(pushed.ops, [{ stem: 'drums', gain: 0.3 }]);
+
+  // the engine republishes the same snapshot, unchanged
+  const again = Mixer.planRestore(state, rows);
+  state = again.next;
+  assert.deepEqual(again.ops, [], 'the restore was pushed a second time');
+
+  const { payload } = Mixer.memoryWritePayload(state, rows);
+  assert.equal(
+    JSON.parse(payload).drums.gain,
+    0.3,
+    'the pre-restore 0.8 was banked over the remembered 0.3',
+  );
+
+  // and it DOES retire the moment the snapshot moves, even to a third value
+  const moved = Mixer.planRestore(state, rowsFor([stem('drums', { gain: 0.9 })]));
+  assert.equal(
+    JSON.parse(Mixer.memoryWritePayload(moved.next, rowsFor([stem('drums', { gain: 0.9 })])).payload)
+      .drums.gain,
+    0.9,
+  );
+});
+
+test('memory: a stem that is not ready keeps its remembered level, whatever the snapshot says', () => {
+  const memory = { vocals: remembered(0.2) };
+  // vocals is PRESENT in the snapshot but unavailable, carrying a default gain.
+  const rows = rowsFor([stem('drums'), stem('vocals', { availability: 'unavailable', gain: 0.8 })]);
+  const { next } = Mixer.planRestore(Mixer.beginRestore(memory), rows);
+  const { payload } = Mixer.memoryWritePayload(next, rows);
+  assert.equal(JSON.parse(payload).vocals.gain, 0.2);
+});
+
+test('memory: once the engine has answered, the LIVE level is what gets written', () => {
+  // Otherwise "never clobber a restore" would also mean "never record a change".
+  const memory = { drums: remembered(0.3) };
+  let state = Mixer.beginRestore(memory);
+  state = Mixer.planRestore(state, loadingExcept(['drums'])).next;
+  // The engine answers with a value of its own — it clamped, or the user grabbed
+  // the fader before the restore landed. Either way that is now the truth.
+  const answered = rowsFor([stem('drums', { gain: 0.9 })]);
+  state = Mixer.planRestore(state, answered).next;
+  const { payload } = Mixer.memoryWritePayload(state, answered);
+  assert.equal(JSON.parse(payload).drums.gain, 0.9);
+});
+
+test('memory: a remembered mix that already matches pushes nothing and settles at once', () => {
+  const memory = { drums: remembered(0.8) };
+  const rows = rowsFor([stem('drums', { gain: 0.8 })]);
+  const { next, ops } = Mixer.planRestore(Mixer.beginRestore(memory), rows);
+  assert.deepEqual(ops, []);
+  // settled immediately, so the live value is authoritative on the very first write
+  assert.equal(JSON.parse(Mixer.memoryWritePayload(next, rows).payload).drums.gain, 0.8);
+});
+
+test('memory: mute and solo are restored too, not just the fader', () => {
+  const memory = { drums: remembered(0.5, { muted: true }), bass: remembered(0.8, { soloed: true }) };
+  const rows = rowsFor([stem('drums'), stem('bass')]);
+  const { ops } = Mixer.planRestore(Mixer.beginRestore(memory), rows);
+  assert.deepEqual(ops, [
+    { stem: 'drums', gain: 0.5, muted: true },
+    { stem: 'bass', soloed: true },
+  ]);
+});
+
+test('memory: the payload keys follow PLAYABLE_STEMS, so it compares as a string', () => {
+  const rows = rowsFor([...PLAYABLE_STEMS].reverse().map((n) => stem(n)));
+  const { next } = Mixer.planRestore(Mixer.beginRestore({}), rows);
+  const keys = Object.keys(JSON.parse(Mixer.memoryWritePayload(next, rows).payload));
+  assert.deepEqual(keys, [...PLAYABLE_STEMS]);
+});
+
+test('readMixerMemory: no window, no storage, no throw', () => {
+  assert.deepEqual(Mixer.readMixerMemory('any-job'), {});
+});
+
+test('readMixerMemory: reads THIS job\'s key, and never throws on a hostile store', () => {
+  // No jsdom here, but `sessionStore()` only needs a `window` with a
+  // `sessionStorage` on it, so the real read path can be driven with a stub.
+  // Without this, stubbing the whole function to `return {}` passed.
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const withStore = (sessionStorage) => {
+    globalThis.window = { sessionStorage };
+  };
+  try {
+    const mix = { drums: { gain: 0.25, muted: false, soloed: true } };
+    let askedFor = null;
+    withStore({
+      getItem: (key) => {
+        askedFor = key;
+        return JSON.stringify(mix);
+      },
+    });
+    assert.deepEqual(Mixer.readMixerMemory('JOB-A'), mix);
+    assert.equal(askedFor, Mixer.mixerMemoryKey('JOB-A'), 'read the wrong job');
+
+    withStore({
+      getItem: () => {
+        throw new Error('blocked');
+      },
+    });
+    assert.deepEqual(Mixer.readMixerMemory('JOB-A'), {});
+
+    withStore({ getItem: () => 'not json {{{' });
+    assert.deepEqual(Mixer.readMixerMemory('JOB-A'), {});
+
+    withStore({ getItem: () => JSON.stringify({ drums: { gain: 'x' }, bass: { gain: 1e999 } }) });
+    assert.deepEqual(Mixer.readMixerMemory('JOB-A'), {});
+  } finally {
+    if (saved) Object.defineProperty(globalThis, 'window', saved);
+    else delete globalThis.window;
+  }
+});
+
+test('memory: writes are skipped while nothing changes, and a NEW job always writes once', () => {
+  // The engine republishes every frame while playing, so an unchanged mix must
+  // not touch storage. But that cache belongs to one job: carried into the next
+  // job it swallowed the first write to the new key whenever the two mixes
+  // serialised identically, and the new job was then never remembered at all.
+  const rows = rowsFor(PLAYABLE_STEMS.map((n) => stem(n)));
+  let state = Mixer.planRestore(Mixer.beginRestore({}), rows).next;
+
+  const first = Mixer.memoryWritePayload(state, rows);
+  assert.equal(first.changed, true);
+  state = { ...state, memory: first.memory, written: first.payload };
+
+  // same snapshot, republished: nothing to write
+  assert.equal(Mixer.memoryWritePayload(state, rows).changed, false);
+
+  // a different job, byte-identical mix: still written, because the state is new
+  const nextJob = Mixer.planRestore(Mixer.beginRestore({}), rows).next;
+  const again = Mixer.memoryWritePayload(nextJob, rows);
+  assert.equal(again.payload, first.payload);
+  assert.equal(again.changed, true, 'a new job inherited the previous job\'s write cache');
+});
+
+test('memory: beginRestore is the only constructor, and it starts the write cache empty', () => {
+  assert.equal(Mixer.beginRestore({}).written, null);
+  assert.equal(Mixer.beginRestore({ drums: remembered(0.4) }).written, null);
+  // and planRestore carries it through rather than resetting it mid-job — on the
+  // step that pushes a restore as well as the step that has nothing to do.
+  const rows = rowsFor([stem('drums')]);
+  const idle = { ...Mixer.beginRestore({}), written: 'sentinel' };
+  assert.equal(Mixer.planRestore(idle, rows).next.written, 'sentinel');
+  const pushing = { ...Mixer.beginRestore({ drums: remembered(0.4) }), written: 'sentinel' };
+  const step = Mixer.planRestore(pushing, rows);
+  assert.deepEqual(step.ops, [{ stem: 'drums', gain: 0.4 }]); // this step really does push
+  assert.equal(step.next.written, 'sentinel', 'a restore step reset the write cache');
 });

@@ -131,6 +131,16 @@ export interface MixerRow {
   readonly silence: SilenceReason | null;
 }
 
+/**
+ * A stem the snapshot never mentioned at all.
+ *
+ * `effectivelySilent` is FALSE here on purpose. "Silent" is a thing that
+ * happened to audio the user can reach; this stem has no audio and no controls,
+ * and `unavailableReason` is what says so. Claiming silence made
+ * `silenceReason` answer 'solo-elsewhere' with nothing soloed, which dressed
+ * every absent row up as "quiet because you soloed something" and dimmed the
+ * one sentence that explains the absence.
+ */
 function absentStem(name: StemName): StemState {
   return {
     name,
@@ -138,7 +148,7 @@ function absentStem(name: StemName): StemState {
     gain: 0,
     muted: false,
     soloed: false,
-    effectivelySilent: true,
+    effectivelySilent: false,
   };
 }
 
@@ -297,12 +307,133 @@ export function memoryRestoreOps(memory: MixerMemory, rows: readonly MixerRow[])
   return ops;
 }
 
+/**
+ * Story 2.7, per stem rather than per mount.
+ *
+ * A job's stems become ready one at a time. Restoring once, at the first moment
+ * ANY stem was ready, meant every stem that arrived later was never restored —
+ * and because the write effect opened as soon as that single restore had run,
+ * the next snapshot overwrote those stems' remembered levels with whatever
+ * placeholder state an unloaded channel happens to carry. A saved level was
+ * destroyed, in storage, permanently.
+ *
+ * So each stem travels: `pending` (remembered, not pushed yet) -> `awaiting`
+ * (pushed, waiting to see the engine answer) -> authoritative. Only an
+ * authoritative stem's live state is written; anything else keeps the value
+ * memory already holds, so a stem that has not loaded yet cannot be clobbered.
+ */
+export interface MixerMemoryState {
+  readonly memory: MixerMemory;
+  /** Remembered stems whose state has not been pushed to the engine yet. */
+  readonly pending: ReadonlySet<StemName>;
+  /** Pushed stems, against the snapshot signature they were pushed at. */
+  readonly awaiting: ReadonlyMap<StemName, string>;
+  /**
+   * The payload already in storage for this job, so a playing track that
+   * republishes 60 times a second does not write 60 times a second. It lives
+   * HERE, rather than in a ref beside the effect, so that a new job cannot
+   * inherit it: `beginRestore` is the only way to get a state, and it starts
+   * this at null. As a separate ref it was simply never reset, and the first
+   * write for a new job was swallowed whenever the two mixes serialised alike.
+   */
+  readonly written: string | null;
+}
+
+/** What a channel looks like right now, as one comparable string. */
+function stemSignature(stem: StemState): string {
+  return `${gainToPercent(stem.gain)}|${stem.muted ? 1 : 0}|${stem.soloed ? 1 : 0}`;
+}
+
+export function beginRestore(memory: MixerMemory): MixerMemoryState {
+  return {
+    memory,
+    pending: new Set(Object.keys(memory) as StemName[]),
+    awaiting: new Map(),
+    written: null,
+  };
+}
+
+/**
+ * One step: retire the stems the engine has answered on, then push the restore
+ * for any remembered stem that has just become ready. Pure — it returns the
+ * next state and the callbacks to make, and makes none itself.
+ */
+export function planRestore(
+  state: MixerMemoryState,
+  rows: readonly MixerRow[],
+): { readonly next: MixerMemoryState; readonly ops: RestoreOp[] } {
+  const pending = new Set(state.pending);
+  const awaiting = new Map(state.awaiting);
+
+  // A pushed stem becomes authoritative as soon as its snapshot moves at all —
+  // whether the engine took the value, clamped it to something else, or the
+  // user got to the fader first. Waiting for an exact match instead would pin
+  // the stem forever the moment the engine disagreed, and the user's own edits
+  // would then never be remembered.
+  for (const row of rows) {
+    const pushedAt = awaiting.get(row.stem.name);
+    if (pushedAt !== undefined && stemSignature(row.stem) !== pushedAt) {
+      awaiting.delete(row.stem.name);
+    }
+  }
+
+  const ready = rows.filter((row) => !row.disabled && pending.has(row.stem.name));
+  if (ready.length === 0) {
+    const unchanged = awaiting.size === state.awaiting.size;
+    return { next: unchanged ? state : { ...state, pending, awaiting }, ops: [] };
+  }
+
+  const ops = memoryRestoreOps(state.memory, ready);
+  const pushed = new Set(ops.map((op) => op.stem));
+  for (const row of ready) {
+    pending.delete(row.stem.name);
+    // Nothing to push means nothing to wait for: already authoritative.
+    if (pushed.has(row.stem.name)) awaiting.set(row.stem.name, stemSignature(row.stem));
+  }
+  return { next: { ...state, pending, awaiting }, ops };
+}
+
+/**
+ * What should be in storage for this snapshot. A stem contributes its LIVE
+ * state only when it is present, ready, and settled; otherwise its remembered
+ * entry is carried through untouched. Keys follow `PLAYABLE_STEMS`, so the
+ * payload is canonical and can be compared as a string.
+ */
+export function memoryWritePayload(
+  state: MixerMemoryState,
+  rows: readonly MixerRow[],
+): { readonly payload: string; readonly memory: MixerMemory; readonly changed: boolean } {
+  const settled = (name: StemName) => !state.pending.has(name) && !state.awaiting.has(name);
+  const live = snapshotMemory(
+    rows.filter((row) => row.present && !row.disabled && settled(row.stem.name)).map((row) => row.stem),
+  );
+  const merged: Record<string, RememberedChannel> = {};
+  for (const name of PLAYABLE_STEMS) {
+    const entry = live[name] ?? state.memory[name];
+    if (entry) merged[name] = entry;
+  }
+  const memory = merged as MixerMemory;
+  const payload = JSON.stringify(memory);
+  return { payload, memory, changed: payload !== state.written };
+}
+
 function sessionStore(): Storage | null {
   try {
     if (typeof window === 'undefined') return null;
     return window.sessionStorage ?? null;
   } catch {
     return null; // private mode / blocked storage
+  }
+}
+
+/** Whatever is remembered for this job, or `{}`. Never throws. */
+export function readMixerMemory(jobId: string): MixerMemory {
+  const store = sessionStore();
+  if (!store) return {};
+  try {
+    return parseMixerMemory(store.getItem(mixerMemoryKey(jobId)));
+  } catch {
+    return {}; // a getItem that throws is a blocked store, not a bad mix
   }
 }
 
@@ -351,7 +482,16 @@ const Channel = memo(function Channel({
     styles.channel,
     disabled ? styles.isDisabled : '',
     muted ? styles.isMuted : '',
-    silence === 'solo-elsewhere' || silence === 'silent' ? styles.isDucked : '',
+    // Ducking means "live, but quiet because of a solo somewhere else". Two
+    // channels must never get it:
+    //   - a DISABLED one: its note is the only thing telling the user why the
+    //     stem is missing, so it is the last text on screen that may be dimmed.
+    //   - a SOLOED one: the engine can report a soloed stem as silent too, and
+    //     dimming a channel that is simultaneously styled as lifted is a
+    //     contradiction for the user to resolve. The note already says 'Silent'.
+    !disabled && !soloed && (silence === 'solo-elsewhere' || silence === 'silent')
+      ? styles.isDucked
+      : '',
     soloed ? styles.isSoloed : '',
   ]
     .filter(Boolean)
@@ -491,22 +631,22 @@ export default function Mixer({ stems, onGain, onMute, onSolo, jobId }: MixerCom
     callbacks.current.onSolo(stem, next);
   }, []);
 
-  // ── Story 2.7: restore once per job, then keep writing ──
-  const restoredFor = useRef<string | null>(null);
+  // ── Story 2.7: restore each stem as it becomes ready, then keep writing ──
+  const book = useRef<{ jobId: string | null; state: MixerMemoryState }>({
+    jobId: null,
+    state: beginRestore({}),
+  });
 
   useEffect(() => {
-    if (!jobId || restoredFor.current === jobId) return;
-    if (!rows.some((row) => !row.disabled)) return; // nothing loaded yet; retry next snapshot
-    restoredFor.current = jobId;
-    const store = sessionStore();
-    if (!store) return;
-    let raw: string | null = null;
-    try {
-      raw = store.getItem(mixerMemoryKey(jobId));
-    } catch {
-      return;
+    if (!jobId) return;
+    // A new job inherits none of the previous job's bookkeeping, write cache
+    // included — `beginRestore` is the only constructor and it starts clean.
+    if (book.current.jobId !== jobId) {
+      book.current = { jobId, state: beginRestore(readMixerMemory(jobId)) };
     }
-    for (const op of memoryRestoreOps(parseMixerMemory(raw), rows)) {
+    const { next, ops } = planRestore(book.current.state, rows);
+    book.current.state = next;
+    for (const op of ops) {
       if (op.gain !== undefined) callbacks.current.onGain(op.stem, op.gain);
       if (op.muted !== undefined) callbacks.current.onMute(op.stem, op.muted);
       if (op.soloed !== undefined) callbacks.current.onSolo(op.stem, op.soloed);
@@ -517,16 +657,15 @@ export default function Mixer({ stems, onGain, onMute, onSolo, jobId }: MixerCom
   // a new array each time. Serialise first and only touch storage when the mix
   // has actually changed, so a playing track is not writing sessionStorage 60
   // times a second.
-  const lastWritten = useRef<string | null>(null);
-
   useEffect(() => {
-    if (!jobId || restoredFor.current !== jobId) return; // don't clobber memory before reading it
+    if (!jobId || book.current.jobId !== jobId) return; // memory not read yet
     const store = sessionStore();
     if (!store) return;
-    const present = rows.filter((row) => row.present).map((row) => row.stem);
-    const payload = JSON.stringify(snapshotMemory(present));
-    if (payload === lastWritten.current) return;
-    lastWritten.current = payload;
+    const { payload, memory, changed } = memoryWritePayload(book.current.state, rows);
+    if (!changed) return;
+    // Carry the merged result forward, so a stem that drops back to unavailable
+    // keeps its last known good level rather than the one it mounted with.
+    book.current.state = { ...book.current.state, memory, written: payload };
     try {
       store.setItem(mixerMemoryKey(jobId), payload);
     } catch {

@@ -44,6 +44,16 @@ jobs:
       - name: Deploy to Fly.io
         # --ha=false: this app must stay at ONE Machine (FOR UPDATE SKIP LOCKED makes
         # two safe, but min_machines_running is a floor and HA would add a second).
-        run: cd apps/worker && fly deploy --ha=false
+        #
+        # The binary is `flyctl`, NOT `fly`. setup-flyctl installs it as `flyctl`;
+        # `fly` is a convenience alias that exists in some local installs and does
+        # NOT exist on the runner. The workflow's first and only run died here with
+        # `fly: command not found` (exit 127) -- diagnosed 2026-11-10 against Fly's
+        # own CI guide, which uses `flyctl deploy`.
+        #
+        # --remote-only builds on Fly's builders instead of the runner, which is what
+        # Fly's guide recommends for CI and removes any dependency on the runner's
+        # Docker/buildx setup.
+        run: cd apps/worker && flyctl deploy --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

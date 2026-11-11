@@ -10,12 +10,20 @@
 // Exit codes: 0 all PASS/SKIP, 1 any FAIL, 2 setup error (missing env).
 //
 // SAFETY: refuses to run against stem-loops.com unless SMOKE_ALLOW_PROD=1.
-// hCaptcha / Stripe card entry are NOT bypassed; those steps are reported SKIP.
+// Stripe card entry is NOT bypassed; that step is reported SKIP.
+//
+// Supabase Auth's built-in captcha protection (Dashboard > Authentication >
+// Attack Protection) stays ON. It is not bypassed either: step 3b mints its
+// session through the Admin API, which is authenticated by the service-role
+// key and is not captcha-gated. See scripts/lib/smoke_session.mjs for the
+// endpoint shapes and where each was verified.
 
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { mintServiceRoleSession } from './lib/smoke_session.mjs';
 
 // ---------------------------------------------------------------- env loading
 const here = dirname(fileURLToPath(import.meta.url));
@@ -42,7 +50,9 @@ const normUrl = (u) => (u ? (/^https?:\/\//.test(u) ? u : `https://${u}`).replac
 const BASE = normUrl(process.env.STAGING_BASE_URL || 'https://stem-loops-staging.vercel.app');
 const SB_URL = normUrl(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL);
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+// No anon key: step 3b used to need it for the password grant, which Supabase
+// Auth captcha protection makes impossible. The Admin API path needs only the
+// service-role key.
 const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || '';
 const BYPASS = process.env.VERCEL_AUTOMATION_BYPASS_SECRET || '';
 
@@ -125,7 +135,7 @@ Create ./.env.staging (gitignored) in the repo root:
   SUPABASE_URL=https://ylzokjwnsraehmpclnkx.supabase.co
   SUPABASE_SERVICE_ROLE_KEY=...   # Supabase dashboard > Project Settings > API > service_role
                                   #   (or: vercel env pull .env.staging --environment=preview)
-  SUPABASE_ANON_KEY=...           # same page, anon/publishable key (needed to sign in as the test user)
+                                  #   Also mints the test user's session (Admin API), so it is required.
   STRIPE_SECRET_KEY=sk_test_...   # Stripe sandbox > Developers > API keys (optional: enables session verification + cleanup)
 
 Or export the same variables in your shell / CI secrets.
@@ -187,7 +197,6 @@ try {
   const missing = [];
   if (!SB_URL) missing.push('SUPABASE_URL');
   if (!SERVICE_KEY) missing.push('SUPABASE_SERVICE_ROLE_KEY');
-  if (!ANON_KEY) missing.push('SUPABASE_ANON_KEY');
   if (missing.length) {
     fail('3. Ephemeral user (setup)', `missing env: ${missing.join(', ')}${ENV_FILE ? '' : ' (.env.staging not found)'}`);
     printTable();
@@ -218,18 +227,19 @@ try {
     fail('3. Ephemeral user', e.message);
   }
 
-  // Step 3b: sign in with password to obtain a session (the app is cookie-auth only)
+  // Step 3b: mint a session for the test user (the app is cookie-auth only).
+  //
+  // NOT a password grant. POST /auth/v1/token?grant_type=password is
+  // captcha-gated by Supabase Auth's Attack Protection setting, which is on in
+  // staging on purpose, so a script can never satisfy it -- that is what broke
+  // this test for five nights. The Admin API is not captcha-gated, so we
+  // generate a magic link with the service role and redeem its hashed_token at
+  // /auth/v1/verify, which returns the identical session shape.
   if (userId) {
     try {
-      const s = await http(`${SB_URL}/auth/v1/token?grant_type=password`, {
-        method: 'POST', headers: { apikey: ANON_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }),
-      });
-      if (s.status !== 200 || !s.json?.access_token) {
-        const captcha = /captcha/i.test(s.text);
-        throw new Error(`sign-in HTTP ${s.status}${captcha ? ' (hCaptcha required on Supabase Auth; manual step, not bypassed)' : ''}: ${s.text.slice(0, 120)}`);
-      }
-      cookie = sessionCookieHeader(s.json);
-      pass('3b. Sign in (session cookie)', 'password grant OK; @supabase/ssr cookie built');
+      const session = await mintServiceRoleSession({ sbUrl: SB_URL, serviceKey: SERVICE_KEY, email });
+      cookie = sessionCookieHeader(session);
+      pass('3b. Sign in (session cookie)', 'admin generate_link + verify OK; @supabase/ssr cookie built');
     } catch (e) {
       fail('3b. Sign in (session cookie)', e.message);
     }

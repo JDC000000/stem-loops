@@ -43,13 +43,40 @@
  * start time.
  *
  * MEMORY. A real job gives six Opus stems of ~151 s, encoded stereo on the
- * wire. 6 × 300 s at 48 kHz STEREO is 659 MB of Float32 PCM and fails; mono is
- * 329 MB and ships. So the AudioContext is created AT `PLAYBACK_SAMPLE_RATE`
- * (which makes `decodeAudioData` resample for us) and each decoded buffer is
- * downmixed to mono immediately, one stem at a time, dropping the stereo
- * buffer before the next stem is decoded. Never decode the six in parallel:
- * that would hold six stereo buffers at once, which is the configuration that
- * was measured to fail.
+ * wire. 6 × 300 s at 48 kHz STEREO is 659 MiB of Float32 PCM and fails; mono
+ * is 329 MiB and ships. So the AudioContext is created AT
+ * `PLAYBACK_SAMPLE_RATE` (which makes `decodeAudioData` resample for us) and
+ * each decoded buffer is downmixed to mono immediately, one stem at a time,
+ * dropping the stereo buffer before the next stem is decoded. Never decode the
+ * six in parallel: that would hold six stereo buffers at once, which is the
+ * configuration that was measured to fail. (The parallel case is also WebKit
+ * bug 227636 — concurrent `decodeAudioData` is what jetsams iOS. The sequential
+ * `await`-per-stem loop below is that bug's documented mitigation.)
+ *
+ * ⚠️ THAT PARAGRAPH USED TO STOP THERE, AND IT WAS INCOMPLETE. Decoding
+ * sequentially stops six stereo buffers coexisting; it does NOT stop ONE stereo
+ * buffer coexisting with all the monos decoded before it. The settled figure is
+ * therefore not the peak, and the peak is what kills a tab:
+ *
+ *   6 stems, 48 kHz mono, 300 s — measured renderer RSS, real Chromium
+ *     settled (the number the docs used to quote)   482 MB
+ *     peak during load, BEFORE this fix             592 MB   (+110)
+ *     peak during load, AFTER this fix              547 MB   (+64)
+ *
+ * The peak happens during LOAD, before a note plays: a device that survives
+ * steady-state playback can still die loading. `downmixToMono` below is what
+ * moved it. It sums into the decoded buffer's own channel 0 instead of
+ * allocating a second full-length buffer alongside the live stereo one, and
+ * hands each finished channel's backing store back to the allocator the moment
+ * it is spent. What is left — one stereo buffer alive beside five monos at the
+ * last decode — is the floor for this architecture: `decodeAudioData` gives us
+ * a stereo buffer and there is no API that asks it not to.
+ *
+ * Releasing eagerly rather than waiting for GC also matters on iOS, where
+ * WebKit bug 189337 (open since 2018) can keep decoded audio resident for ~a
+ * minute after the last reference is dropped. `load()` is re-runnable by design
+ * via `loadId`, so a failed load plus a user retry could otherwise stack two
+ * generations of PCM on exactly the path taken when memory is already tight.
  */
 
 import {
@@ -160,24 +187,72 @@ const defaultScheduleFrame: (cb: () => void) => FrameCanceller = (cb) => {
 };
 
 /**
- * Average all channels of a decoded buffer into a fresh mono buffer at the
- * context rate. The caller must drop its reference to `decoded` straight
- * afterwards — holding both is the 659 MB configuration that fails.
+ * Hand a spent channel's PCM back to the allocator NOW, instead of waiting for
+ * the decoded buffer to be collected.
  *
- * A single-channel decode is returned as-is: copying it would double peak
- * memory for no gain.
+ * A Web Audio channel is a plain `Float32Array` over its own whole
+ * `ArrayBuffer`, so transferring that store detaches it and frees the bytes
+ * synchronously. The clone is dropped unread; `structuredClone` with
+ * `transfer` moves the store rather than copying it, so this allocates nothing.
+ *
+ * Every guard here is a correctness guard, not decoration: a view that is a
+ * window onto a larger or shared store must not be detached, because detaching
+ * would take bytes that are not ours. Where any guard fails, or the host has no
+ * `structuredClone`, this is a NO-OP and the old GC-timed behaviour applies —
+ * the downmix is still correct, just not as cheap.
+ *
+ * ONLY ever called on a channel of a buffer we are about to drop. Never on a
+ * buffer that will be played: a detached channel reads back as zero samples.
+ */
+function releaseChannelData(data: Float32Array): void {
+  if (typeof structuredClone !== 'function') return;
+  const store: ArrayBufferLike = data.buffer;
+  if (!(store instanceof ArrayBuffer)) return;
+  if (data.byteOffset !== 0 || data.byteLength !== store.byteLength) return;
+  try {
+    structuredClone(store, { transfer: [store] });
+  } catch {
+    /* host refused the transfer; the GC path still applies */
+  }
+}
+
+/**
+ * Average all channels of a decoded buffer into a mono buffer at the context
+ * rate. `decoded` is CONSUMED: its channels are summed in place and then
+ * released, so the caller must drop its reference and must not read it again.
+ *
+ * The order of the four steps is the whole point, and is what moved the
+ * measured peak from 592 MB to 547 MB (see MEMORY at the top of this file):
+ *
+ *   1. sum into channel 0 IN PLACE   — no second full-length allocation while
+ *                                      every source channel is still resident
+ *   2. release channels 1..n         — frees them BEFORE step 3 asks for more
+ *   3. allocate the mono buffer, copy
+ *   4. release channel 0             — the last of the decode, freed on this
+ *                                      line rather than whenever GC gets to it
+ *
+ * Allocating the mono buffer first (as this used to) means one stereo buffer
+ * and one mono buffer are both live for the length of the loop. That is the
+ * +110 MB transient, and it is an allocation-ORDER bug, not a volume one:
+ * exactly the same bytes are read and written either way.
+ *
+ * A single-channel decode is returned as-is, UNRELEASED: it is the buffer we
+ * are going to play, and copying it would double peak memory for no gain.
  */
 function downmixToMono(ctx: AudioContext, decoded: AudioBuffer): AudioBuffer {
-  if (decoded.numberOfChannels <= PLAYBACK_CHANNELS) return decoded;
-  const mono = ctx.createBuffer(PLAYBACK_CHANNELS, decoded.length, decoded.sampleRate);
-  const out = mono.getChannelData(0);
   const channels = decoded.numberOfChannels;
-  for (let c = 0; c < channels; c++) {
-    const src = decoded.getChannelData(c);
-    if (c === 0) for (let i = 0; i < out.length; i++) out[i] = src[i];
-    else for (let i = 0; i < out.length; i++) out[i] += src[i];
-  }
-  if (channels > 1) for (let i = 0; i < out.length; i++) out[i] /= channels;
+  if (channels <= PLAYBACK_CHANNELS) return decoded;
+
+  const acc = decoded.getChannelData(0);
+  const rest: Float32Array[] = [];
+  for (let c = 1; c < channels; c++) rest.push(decoded.getChannelData(c));
+  for (const src of rest) for (let i = 0; i < acc.length; i++) acc[i] += src[i];
+  for (let i = 0; i < acc.length; i++) acc[i] /= channels;
+  for (const src of rest) releaseChannelData(src);
+
+  const mono = ctx.createBuffer(PLAYBACK_CHANNELS, decoded.length, decoded.sampleRate);
+  mono.getChannelData(0).set(acc);
+  releaseChannelData(acc);
   return mono;
 }
 
@@ -270,8 +345,10 @@ export class WebAudioPlayEngine implements PlayEngine {
         if (!decoded || decoded.length === 0) {
           availability = 'encode_failed';
         } else {
-          // One stem at a time: downmix, then let the stereo buffer go before
-          // the next decode allocates its own.
+          // One stem at a time, and `downmixToMono` CONSUMES `decoded`: the
+          // stereo channels are freed inside that call, not left for GC, so
+          // the next decode starts from the mono-only floor. `decoded` must
+          // not be read after this line.
           this.buffers.set(name, downmixToMono(ctx, decoded));
         }
       } catch {

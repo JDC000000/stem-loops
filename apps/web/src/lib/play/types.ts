@@ -36,18 +36,47 @@ export type StemName = (typeof PLAYABLE_STEMS)[number];
 /**
  * 48 kHz, mono.
  *
- * MEASURED, not assumed — 6 stems x 300 s:
- *   48 kHz stereo  659 MB PCM / 805 MB RSS   fails
- *   48 kHz mono    329 MB PCM / 576 MB RSS   SHIPPING
- *   24 kHz mono    165 MB PCM / 356 MB RSS   documented fallback
- *
- * Jon relaxed the bar from 400 MB to ~600 MB on 2026-11-10 specifically so the
- * reference track keeps full bandwidth. 576 MB is only ~4% under that bar, so
- * MAX_TRACK_SEC below is a hard ceiling, not a suggestion.
+ * ⚠️ UNITS. Every figure in this comment is MiB (2²⁰ bytes), and every one of
+ * them used to be labelled "MB". They were never MB: the formula below yields
+ * BYTES, and these came from dividing bytes by 2²⁰. The RSS figures are MiB
+ * too — they are read from VmRSS, which the kernel reports in KiB — so MiB is
+ * the unit that keeps PCM and RSS comparable, and it is the unit Jon's ~600 bar
+ * was set against. The labels are fixed; no number below has changed meaning.
+ * 1 MiB = 1.048576 MB, so every figure here is ~4.8% LARGER stated in MB.
  *
  * A Web Audio AudioBuffer is always Float32, so PCM bytes are exactly
- *   duration x sampleRate x channels x 4
+ *   stems x duration x sampleRate x channels x 4
  * with no slack. The mono downmix is the load-bearing saving, not the rate.
+ * These are asserted, not asserted-by-comment: `apps/web/test/play-engine.test.mjs`
+ * recomputes each one from the constants in this file and fails if they drift.
+ *
+ * MEASURED, not assumed — 6 stems x 300 s, SETTLED (all six monos resident):
+ *   48 kHz stereo  691,200,000 B = 659.2 MiB PCM / 805 MiB RSS  fails
+ *   48 kHz mono    345,600,000 B = 329.6 MiB PCM / 576 MiB RSS  SHIPPING
+ *   24 kHz mono    172,800,000 B = 164.8 MiB PCM / 356 MiB RSS  documented fallback
+ *
+ * ⚠️ SETTLED IS NOT PEAK, AND PEAK IS WHAT KILLS A TAB. `load()` decodes one
+ * stem at a time, and `decodeAudioData` hands back a STEREO buffer. At the last
+ * decode, five mono buffers are already resident beside it — so live PCM peaks
+ * at SEVEN whole-track mono buffers, not six, and the peak lands during LOAD,
+ * before a note plays. 6 stems, 48 kHz mono, 300 s:
+ *
+ *   settled        6 x 57,600,000 B = 345,600,000 B = 329.6 MiB   482 MiB renderer RSS
+ *   peak           7 x 57,600,000 B = 403,200,000 B = 384.5 MiB   547 MiB renderer RSS
+ *
+ * so the settled figure understates peak PCM by exactly 7/6, i.e. +16.7%.
+ * Budget against 384.5, not 329.6.
+ *
+ * Before the decode-transient fix of 2026-11-11 the peak was EIGHT buffers
+ * (439.5 MiB PCM / 592 MiB renderer RSS) because the mono buffer was allocated
+ * while the stereo one was still live. Seven is the floor for this
+ * architecture: `decodeAudioData` materialises a stereo buffer and there is no
+ * API that asks it not to. See MEMORY in `./engine.ts`.
+ *
+ * Jon relaxed the bar from 400 to ~600 MiB on 2026-11-10 specifically so the
+ * reference track keeps full bandwidth. The measured peak of 547 MiB is ~9%
+ * under that bar — and 592 MiB was only ~1% under it — so MAX_TRACK_SEC below
+ * is a hard ceiling, not a suggestion.
  */
 export const PLAYBACK_SAMPLE_RATE = 48_000;
 export const PLAYBACK_CHANNELS = 1;

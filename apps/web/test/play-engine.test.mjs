@@ -23,7 +23,12 @@ import {
   WebAudioPlayEngine,
   createPlayEngine,
 } from '../src/lib/play/engine.ts';
-import { MAX_TRACK_SEC, PLAYABLE_STEMS, PLAYBACK_SAMPLE_RATE } from '../src/lib/play/types.ts';
+import {
+  MAX_TRACK_SEC,
+  PLAYABLE_STEMS,
+  PLAYBACK_CHANNELS,
+  PLAYBACK_SAMPLE_RATE,
+} from '../src/lib/play/types.ts';
 
 // ─── the fake, encoded-bytes side ────────────────────────────────────────────
 // Each "encoded stem" is a 24-byte header the fake decoder reads back, so a
@@ -202,6 +207,9 @@ class FakeAudioContext {
     this.automation = [];
     this.events = []; // ordered log: decode:<stem> / downmix:<stem>
     this.decodeCalls = [];
+    /** Every buffer `decodeAudioData` handed back, so a test can inspect what
+     *  the downmix did to it after the engine dropped its reference. */
+    this.decodedBuffers = [];
     this.inFlightDecodes = 0;
     this.maxInFlightDecodes = 0;
     this.resumes = 0;
@@ -242,7 +250,7 @@ class FakeAudioContext {
       } catch {
         /* already detached */
       }
-      return fakeBuffer({
+      const decoded = fakeBuffer({
         tag: h.name,
         channels: h.channels,
         length: Math.round(h.durationSec * h.rate),
@@ -250,6 +258,8 @@ class FakeAudioContext {
         // channel 0 = 0.5, channel 1 = 1.0 -> a correct mono downmix is 0.75
         fill: (c) => (c + 1) * 0.5,
       });
+      this.decodedBuffers.push(decoded);
+      return decoded;
     } finally {
       this.inFlightDecodes--;
     }
@@ -1049,6 +1059,112 @@ test('the downmix averages the channels rather than dropping one', async () => {
   assert.ok(Math.abs(mono[0] - 0.75) < 1e-6, `expected 0.75, got ${mono[0]}`);
   assert.ok(Math.abs(mono[mono.length - 1] - 0.75) < 1e-6);
   engine.dispose();
+});
+
+// ─── the decode transient (engine.ts MEMORY / types.ts PLAYBACK_SAMPLE_RATE) ──
+//
+// The settled figure is six whole-track mono buffers. The PEAK is seven,
+// because `decodeAudioData` hands back a STEREO buffer and the last one is
+// alive beside the five monos already decoded. It used to be EIGHT: the mono
+// destination was allocated while the stereo source was still live, which is a
+// +110 MB renderer-RSS transient DURING LOAD, measured in real Chromium.
+//
+// Node has no Web Audio and no RSS to measure, so these tests gate the
+// STRUCTURE that moved the number — the release happens, it happens on the
+// right buffers, and it never touches a buffer we are going to play — and the
+// ARITHMETIC the doc comment quotes. The MB figures themselves are a Chromium
+// measurement and are cited in the PR, not asserted here.
+
+test('the downmix releases every decoded channel rather than leaving it to GC', async () => {
+  const { engine, ctx } = await loadedSix();
+  const c = ctx();
+  assert.equal(c.decodedBuffers.length, PLAYABLE_STEMS.length);
+  for (const d of c.decodedBuffers) {
+    assert.equal(d.numberOfChannels, 2, `${d.tag} was decoded stereo`);
+    for (let ch = 0; ch < d.numberOfChannels; ch++) {
+      assert.equal(
+        d.getChannelData(ch).length,
+        0,
+        `${d.tag} channel ${ch} must be released inside the downmix, not left for GC`,
+      );
+    }
+  }
+  // ...and the buffer we actually play is untouched by that release.
+  engine.play();
+  for (const live of c.live()) {
+    assert.equal(live.buffer.numberOfChannels, PLAYBACK_CHANNELS);
+    assert.ok(live.buffer.getChannelData(0).length > 0, `${live.buffer.tag} must still hold PCM`);
+    assert.ok(Math.abs(live.buffer.getChannelData(0)[0] - 0.75) < 1e-6);
+  }
+  engine.dispose();
+});
+
+test('an already-mono decode is NEVER released — it is the buffer we play', async () => {
+  const { engine, ctx } = await loadedSix({}, { channels: 1 });
+  const c = ctx();
+  assert.equal(c.decodedBuffers.length, PLAYABLE_STEMS.length);
+  for (const d of c.decodedBuffers) {
+    assert.ok(d.getChannelData(0).length > 0, `${d.tag} is played as-is and must keep its PCM`);
+  }
+  engine.play();
+  const played = c.live().map((s) => s.buffer);
+  for (const b of played) assert.ok(c.decodedBuffers.includes(b), 'the decoded buffer IS the played buffer');
+  engine.dispose();
+});
+
+test('the downmix is still correct where the host cannot release a channel', async () => {
+  // `releaseChannelData` is an optimisation with a no-op fallback. Remove the
+  // only API it can use and the audio must be byte-for-byte what it was.
+  const saved = globalThis.structuredClone;
+  delete globalThis.structuredClone;
+  try {
+    const { engine, ctx } = await loadedSix();
+    const c = ctx();
+    engine.play();
+    for (const live of c.live()) {
+      const mono = live.buffer.getChannelData(0);
+      assert.equal(live.buffer.numberOfChannels, PLAYBACK_CHANNELS);
+      assert.ok(Math.abs(mono[0] - 0.75) < 1e-6, `expected 0.75, got ${mono[0]}`);
+      assert.ok(Math.abs(mono[mono.length - 1] - 0.75) < 1e-6);
+    }
+    // nothing was released, so the decoded buffers are merely unreferenced
+    for (const d of c.decodedBuffers) assert.ok(d.getChannelData(1).length > 0);
+    engine.dispose();
+  } finally {
+    globalThis.structuredClone = saved;
+  }
+});
+
+test('the PCM budget in the PLAYBACK_SAMPLE_RATE comment matches its own constants', () => {
+  // Imported, never grepped: change a constant and this fails, which is the
+  // only thing that keeps the doc comment honest.
+  const BYTES_PER_SAMPLE = 4; // AudioBuffer is always Float32
+  const MIB = 2 ** 20;
+  const stems = PLAYABLE_STEMS.length;
+  const pcm = (channels, rate = PLAYBACK_SAMPLE_RATE, dur = MAX_TRACK_SEC, n = stems) =>
+    n * dur * rate * channels * BYTES_PER_SAMPLE;
+
+  const settled = pcm(PLAYBACK_CHANNELS);
+  assert.equal(settled, 345_600_000, 'settled PCM, 6 x 300 s x 48 kHz mono');
+  assert.equal(Number((settled / MIB).toFixed(1)), 329.6, 'quoted as 329.6 MiB');
+  assert.equal(pcm(2), 691_200_000);
+  assert.equal(Number((pcm(2) / MIB).toFixed(1)), 659.2, 'quoted as 659.2 MiB');
+  assert.equal(pcm(PLAYBACK_CHANNELS, PLAYBACK_SAMPLE_RATE / 2), 172_800_000);
+  assert.equal(Number((pcm(PLAYBACK_CHANNELS, PLAYBACK_SAMPLE_RATE / 2) / MIB).toFixed(1)), 164.8);
+
+  // The unit error this comment used to carry: these are MiB, and MB is a
+  // DIFFERENT, larger-sounding number. Asserting both stops the two being
+  // confused again.
+  assert.equal(Number((settled / 1e6).toFixed(1)), 345.6, 'the SAME bytes are 345.6 MB');
+  assert.notEqual(Number((settled / MIB).toFixed(1)), Number((settled / 1e6).toFixed(1)));
+
+  // PEAK, not settled: five resident monos plus one stereo decode in flight.
+  const peakBuffers = stems - 1 + 2;
+  assert.equal(peakBuffers, stems + 1, 'peak is one whole-track buffer above settled');
+  const oneStem = pcm(PLAYBACK_CHANNELS, PLAYBACK_SAMPLE_RATE, MAX_TRACK_SEC, 1);
+  assert.equal(peakBuffers * oneStem, 403_200_000, 'peak PCM during load');
+  assert.equal(Number(((peakBuffers * oneStem) / MIB).toFixed(1)), 384.5, 'quoted as 384.5 MiB');
+  assert.equal(Number((peakBuffers / stems).toFixed(3)), 1.167, 'settled understates peak by 7/6');
 });
 
 test('an already-mono decode is used as-is, not copied', async () => {

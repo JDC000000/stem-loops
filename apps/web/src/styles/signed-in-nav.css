@@ -1,0 +1,165 @@
+/**
+ * stem-loops — persistent signed-in header (SignedInNav.tsx).
+ *
+ * Every class here is `sin-` prefixed and NOTHING on the landing page matches
+ * one, so loading this through globals.css changes no existing pixel. It is
+ * NOT in landing.css on purpose: that sheet is imported by
+ * app/(landing)/layout.tsx and so loads on four routes only, which is exactly
+ * why SiteHeader cannot be reused outside them.
+ *
+ * TOUCH TARGETS. Every interactive element is >= 44x44 CSS px in BOTH axes —
+ * WCAG 2.2 2.5.8 / the audit's bar. `min-height: 44px` alone is not enough for
+ * the icon-only toggle, which is why it carries `min-width` too. Measured in
+ * real Chromium at 390/768/1280/1440, not read off these declarations.
+ *
+ * CONTRAST. Nav text is --text-secondary #e0e0e0, which is 14.7:1 on the bar
+ * (#0d0d0d) and 12.9:1 on the active pill (#1c1c1f). The muted greys are
+ * deliberately NOT used here: #999 would be 6.8:1 on the bar but this is
+ * primary navigation, and the audit's failing examples were all muted text.
+ */
+
+.sin-bar {
+  background: var(--bg-page, #0d0d0d);
+  border-bottom: 1px solid var(--border-default, #2a2a2a);
+  width: 100%;
+}
+
+.sin-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 var(--sl-gutter, 16px);
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  /* wrap, so the mobile menu flows UNDER the bar instead of overlaying it.
+     No absolute positioning means no z-index fight with the job page's
+     sticky player and no chance of the menu sitting off-screen. */
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ── Wordmark ───────────────────────────────────────────── */
+.sin-wordmark {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 8px 0 0;
+  margin-right: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  color: var(--text-primary, #fff);
+}
+.sin-dash,
+.sin-loops {
+  color: var(--accent, #a3e635);
+}
+
+/* ── Nav items ──────────────────────────────────────────── */
+.sin-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sin-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 14px;
+  border-radius: 22px;
+  border: 1px solid transparent;
+  font-size: 14px;
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+  color: var(--text-secondary, #e0e0e0);
+}
+.sin-item:hover {
+  background: var(--bg-hover, #1a1a1a);
+  color: var(--text-primary, #fff);
+}
+.sin-item.sin-current {
+  background: #1c1c1f;
+  color: var(--accent, #a3e635);
+}
+.sin-item.sin-outlined {
+  border-color: var(--border-strong, #3a3a3a);
+  margin-left: 4px;
+}
+.sin-item:focus-visible,
+.sin-toggle:focus-visible {
+  outline: 2px solid var(--accent, #a3e635);
+  outline-offset: 2px;
+}
+
+/* ── Mobile toggle ──────────────────────────────────────── */
+.sin-toggle {
+  display: none;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border-strong, #3a3a3a);
+  border-radius: 10px;
+  cursor: pointer;
+}
+/* Three bars drawn from one box, so the button has no text to mis-size. */
+.sin-bars,
+.sin-bars::before,
+.sin-bars::after {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: var(--text-secondary, #e0e0e0);
+  border-radius: 1px;
+}
+.sin-bars {
+  position: relative;
+}
+.sin-bars::before,
+.sin-bars::after {
+  content: '';
+  position: absolute;
+  left: 0;
+}
+.sin-bars::before { top: -6px; }
+.sin-bars::after  { top: 6px; }
+
+/* ── Phone ──────────────────────────────────────────────── */
+@media (max-width: 759px) {
+  .sin-toggle {
+    display: inline-flex;
+  }
+  .sin-nav {
+    display: none;
+  }
+  .sin-nav.sin-open {
+    /* full row under the bar: stacked 48px rows, never a horizontal strip */
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    flex-basis: 100%;
+    gap: 2px;
+    padding: 4px 0 12px;
+    border-top: 1px solid var(--border-subtle, #1e1e1e);
+  }
+  .sin-nav.sin-open .sin-item {
+    min-height: 48px;
+    justify-content: flex-start;
+    border-radius: 10px;
+    padding: 0 12px;
+  }
+  .sin-nav.sin-open .sin-item.sin-outlined {
+    margin-left: 0;
+    margin-top: 4px;
+  }
+}

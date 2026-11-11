@@ -22,10 +22,28 @@ export function SiteHeader({ showHistory = true, showSignIn = true }: { showHist
                 Job history
               </a>
             )}
-            {/* V3-J9: an account is required to download stems, so sign-in needs a way in
-                from the landing page. Sign-in itself works today; the sign-up tab
-                self-describes as unavailable until NEXT_PUBLIC_HCAPTCHA_SITE_KEY is set
-                (LoginForm.tsx), so this link never leads to a silently broken form. */}
+            {/* Sign-in needs a way in from the landing page because THE JOB PAGE is
+                gated: app/jobs/[id]/page.tsx:32-33 awaits getUser() and redirects to
+                /login, so a visitor who starts a job is sent to the sign-in form
+                before the player, the faders or the chords render.
+
+                NOT because stem download is gated. This comment used to read "V3-J9: an
+                account is required to download stems", in the present tense, as a
+                description of the code. It is not one. V3-J9 (TSD §12.9) is Jon's
+                DECISION that stem download will require sign-up; the gate is unbuilt.
+                Measured on this tree: mintStemDownloadUrl (lib/stem-urls.ts:68) has no
+                production consumer at all — its only callers are its own contract test
+                — and api/jobs/[id]/stems/route.ts makes ZERO getUser() calls and says
+                in its own header that it is "Deliberately NOT gated on sign-in". The
+                sign-in LINK is still owed to V3-J9, which lists "a sign-in affordance
+                on the landing page" as an agent deliverable; only the stated reason was
+                wrong. (api/jobs/[id]/stems/route.ts:72-73 still carries the same claim
+                and is deliberately left alone — it sits under an unresolved M-11 note
+                that needs Jon's recorded acceptance.)
+
+                Sign-in itself works today; the sign-up tab self-describes as unavailable
+                until NEXT_PUBLIC_HCAPTCHA_SITE_KEY is set (LoginForm.tsx), so this link
+                never leads to a silently broken form. */}
             {showSignIn && (
               <a className="header-link" href="/login">
                 Sign in

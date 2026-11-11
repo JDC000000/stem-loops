@@ -71,6 +71,7 @@ import {
   formatTime,
   isManualScroll,
   layoutRows,
+  markMonotoneRuns,
   observationsToRuns,
   playheadGeometry,
   ppsToSlider,
@@ -232,15 +233,22 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           const logits = await sessionRef.current.runFrames(frames, nFrames);
           // Logits → Viterbi best-path class indices → run-length segments.
           const classes = smoothChordLogits(logits, nFrames);
-          const runs: OverlayRun[] = collapseRuns(classes, frameSec).map((r) => ({
-            startFrame: r.startFrame,
-            endFrame: r.endFrame,
-            startSec: r.startSec,
-            endSec: r.endSec,
-            label: r.label,
-            kind: classifyLabel(r.label),
-            chordClass: classIndexOrNull(r.label) ?? r.chordClass,
-          }));
+          // collapseRuns walks the frame array once and emits
+          // startSec = i * frameSec with endSec = the next run's startSec, so
+          // its output is sorted and contiguous by construction. `.map` makes a
+          // new array, which drops the mark, so re-assert it here — otherwise
+          // the live path pays a binary search every frame for nothing.
+          const runs: OverlayRun[] = markMonotoneRuns(
+            collapseRuns(classes, frameSec).map((r) => ({
+              startFrame: r.startFrame,
+              endFrame: r.endFrame,
+              startSec: r.startSec,
+              endSec: r.endSec,
+              label: r.label,
+              kind: classifyLabel(r.label),
+              chordClass: classIndexOrNull(r.label) ?? r.chordClass,
+            })),
+          );
           setState((s) => ({ ...s, runs }));
         } catch (err) {
           // eslint-disable-next-line no-console
@@ -312,7 +320,9 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
     return () => ro.disconnect();
   }, [wrapEl]);
 
-  const dur = durationSec(state.runs);
+  // O(n) over the runs, so memoised: `positionSec` changes every frame and
+  // must not re-walk 159 runs to re-derive a duration that cannot have moved.
+  const dur = useMemo(() => durationSec(state.runs), [state.runs]);
   const measured = widthPx > 0;
   const narrow = measured && widthPx < NARROW_BREAKPOINT_PX;
   const rowWidthPx = Math.max(120, widthPx - GUTTER_PX);
@@ -357,10 +367,14 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
     const el = scrollRef.current;
     if (el && centerSecRef.current !== null) {
       const next = Math.max(0, centerSecRef.current * pps - el.clientWidth / 2);
-      // Ours, not the user's — record it before assigning so the syncScroll
-      // below does not read a zoom as a manual scroll and suspend following.
-      lastAutoLeftRef.current = next;
+      // Ours, not the user's — so syncScroll below must not read this as a
+      // manual scroll. Record what the element ACTUALLY took, not what we
+      // asked for: the scrollLeft setter clamps to scrollWidth - clientWidth
+      // (CSSOM View), so zooming out while parked in the last half-screen
+      // lands short of `next`, and recording `next` would read that gap as the
+      // user taking over and silently suspend auto-follow.
       el.scrollLeft = next;
+      lastAutoLeftRef.current = el.scrollLeft;
       centerSecRef.current = null;
     }
     syncScroll();
@@ -383,10 +397,18 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
     [state.runs, activeIdx, pps],
   );
   const activeRun = activeIdx >= 0 ? state.runs[activeIdx] : null;
+  // "Playing" for LAYOUT purposes: a usable position arrived. Deliberately
+  // distinct from "a chord is sounding" — positionSec can legitimately sit in
+  // a gap Klangio left, and the Now-row must not vanish when it does.
+  const isPlaying =
+    typeof positionSec === 'number' && Number.isFinite(positionSec) && positionSec >= 0;
 
   // Chips, memoised WITHOUT the playhead. Reusing the same element references
   // lets React bail out of the whole chip subtree when only the position has
-  // changed, so a frame costs the marker and nothing else.
+  // changed. Together with the ruler and width memos below, that is what makes
+  // "a frame costs the marker" true: the per-frame render then allocates only
+  // the handful of control elements and the two marker <div>s, and touches
+  // nothing that is O(number of runs).
   const stripChips = useMemo(
     () =>
       state.runs.map((run, idx) => {
@@ -394,6 +416,22 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
         return renderChip(run, idx, box.leftPx, box.widthPx, chipH, null, setPopoverFor);
       }),
     [state.runs, pps, chipH],
+  );
+
+  // The ruler and the timeline width are the other two things a frame used to
+  // rebuild. Both are O(n) or O(ticks) and neither can be moved by
+  // `positionSec`, so both are memoised on the geometry that CAN move them.
+  // Without this the per-frame claim above was false: every frame re-walked
+  // the runs twice (durationSec, timelineWidthPx) and rebuilt every ruler tick.
+  const timelineTotalPx = useMemo(() => timelineWidthPx(state.runs, pps), [state.runs, pps]);
+  const rulerTickEls = useMemo(
+    () =>
+      rulerTicks(dur, pps).map((t) => (
+        <span key={t.sec} style={{ ...tickStyle, left: `${t.leftPx}px` }} data-testid={`tick-${t.sec}`}>
+          {t.label}
+        </span>
+      )),
+    [dur, pps],
   );
 
   // Wrapped (narrow) layout. `byRun` turns "which segments belong to run i"
@@ -447,8 +485,11 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
     });
     if (decision.suspended !== followSuspended) setFollowSuspended(decision.suspended);
     if (decision.scrollLeftTarget !== null) {
-      lastAutoLeftRef.current = decision.scrollLeftTarget;
+      // Same rule as the zoom effect: record what the element took. The target
+      // is already clamped against el.scrollWidth/clientWidth here, so this is
+      // belt-and-braces rather than a fix — one rule, no second convention.
       el.scrollLeft = decision.scrollLeftTarget;
+      lastAutoLeftRef.current = el.scrollLeft;
       syncScroll();
     }
   }, [playhead, narrow, followSuspended, syncScroll]);
@@ -624,13 +665,9 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
                 role="region"
                 aria-label="Chord timeline, scrolls horizontally"
               >
-                <div style={{ position: 'relative', width: `${timelineWidthPx(state.runs, pps)}px`, height: RULER_H + chipH }}>
+                <div style={{ position: 'relative', width: `${timelineTotalPx}px`, height: RULER_H + chipH }}>
                   <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: RULER_H, overflow: 'hidden' }} data-testid="time-ruler" aria-hidden="true">
-                    {rulerTicks(dur, pps).map((t) => (
-                      <span key={t.sec} style={{ ...tickStyle, left: `${t.leftPx}px` }} data-testid={`tick-${t.sec}`}>
-                        {t.label}
-                      </span>
-                    ))}
+                    {rulerTickEls}
                   </div>
                   <div style={{ position: 'absolute', top: RULER_H, left: 0, right: 0, height: chipH }}>
                     {stripChips}
@@ -675,10 +712,21 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
               BELOW the timeline, nowhere near the zoom bar: the zoom slider
               must not read as transport (Story 3 criterion 5). No aria-live —
               a chord a second would make a screen reader unusable. */}
-          {playhead && activeRun ? (
-            <div style={playheadBarStyle} data-testid="playhead-bar">
-              <span style={nowChordStyle} data-testid="playhead-now" data-run-index={activeIdx}>
-                Now {displayText(activeRun)}
+          {isPlaying ? (
+            <div style={playheadBarStyle} data-testid="playhead-bar" data-sounding={playhead && activeRun ? 'true' : 'false'}>
+              {/* Mounted for the whole of playback, not just while a chord is
+                  sounding, so the ~28px row cannot appear and disappear as
+                  playback crosses a gap between chords and shove the hint line
+                  (and everything under the timeline) up and down. The CHIP is
+                  what toggles; the row keeps its height. Still absent entirely
+                  when not playing, which is Story 3 criterion 6. */}
+              <span
+                style={{ ...nowChordStyle, visibility: playhead && activeRun ? 'visible' : 'hidden' }}
+                data-testid="playhead-now"
+                data-run-index={activeIdx}
+                aria-hidden={playhead && activeRun ? undefined : true}
+              >
+                Now {activeRun ? displayText(activeRun) : '\u2014'}
               </span>
               {!narrow && followSuspended ? (
                 <button

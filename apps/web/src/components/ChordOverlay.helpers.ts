@@ -85,25 +85,149 @@ export function runAriaLabel(run: Pick<OverlayRun, 'kind' | 'label'>): string {
   return `${run.label} \u2014 edit`;
 }
 
+// ---------------------------------------------------------------------------
+// The monotone-runs invariant
+// ---------------------------------------------------------------------------
+//
+// Several things in this file are only correct when the run list is sorted by
+// `startSec` and no two runs overlap: `activeRunIndex`'s binary search (a
+// binary search over an unsorted array is undefined by construction) and, with
+// it, the O(1) hint fast path. The invariant used to be an ASSUMPTION stated in
+// a comment. Nothing produced it: `toObservations` in play-chords-loader.ts
+// copies the worker's `segments` array through in wire order without sorting or
+// de-overlapping it, and the ChordSource contract in
+// apps/worker/src/worker/chord_source.py requires neither. (The Klangio
+// provider does repair its own rows today — see `_parse_klangio_response` —
+// but that is one provider's behaviour, not the contract the web is handed, and
+// `replicate` / `internal` are still unimplemented.)
+//
+// So the invariant is now PRODUCED, here, and carried on the array itself:
+//
+//   - `observationsToRuns` repairs its output into monotone, non-overlapping
+//     order and marks it.
+//   - `activeRunIndex` consults the `hint` ONLY on a marked array. On anything
+//     else the hint is ignored outright, so it cannot change the answer even
+//     for input that is not monotone at all.
+//
+// A marker on the array (rather than a per-call O(n) check) is what keeps the
+// per-frame cost at O(1): one property read, no element reads. Deriving a new
+// array (`.slice()`, `.filter()`, `.map()`) drops the mark, which costs the
+// fast path and never correctness. Build runs with `observationsToRuns`, or
+// call `markMonotoneRuns` when you have established the invariant yourself.
+
+// Symbol.for, not Symbol(): several tests in this repo load modules twice (via
+// transpile-to-data-URL), and a mark written by one module instance has to be
+// readable by the other, or the fast path silently dies under test only.
+const MONOTONE_RUNS = Symbol.for('stem-loops.chord.monotoneRuns');
+
+/**
+ * Assert, on the array, that it is sorted by `startSec` with no overlaps.
+ * Only call this when that is actually true — it is a promise, not a check.
+ */
+export function markMonotoneRuns<T extends readonly Pick<OverlayRun, 'startSec' | 'endSec'>[]>(
+  runs: T,
+): T {
+  try {
+    Object.defineProperty(runs, MONOTONE_RUNS, {
+      value: true,
+      enumerable: false,
+      configurable: true,
+    });
+  } catch {
+    // Frozen or otherwise sealed: no mark, so callers lose the fast path and
+    // keep the right answer. Never a throw on a render path.
+  }
+  return runs;
+}
+
+/** True if this exact array object carries the monotone-runs promise. */
+export function hasMonotoneRunsMark(runs: readonly unknown[]): boolean {
+  return (runs as unknown as Record<symbol, unknown>)[MONOTONE_RUNS] === true;
+}
+
+/**
+ * Verify the invariant by inspection. O(n) — for tests and assertions, NOT for
+ * the render path (that is what the mark is for).
+ */
+export function runsAreMonotone(
+  runs: readonly Pick<OverlayRun, 'startSec' | 'endSec'>[],
+): boolean {
+  for (let i = 0; i < runs.length; i++) {
+    const r = runs[i];
+    if (!Number.isFinite(r.startSec) || !Number.isFinite(r.endSec)) return false;
+    if (r.endSec < r.startSec) return false;
+    if (i > 0 && r.startSec < runs[i - 1].endSec) return false;
+  }
+  return true;
+}
+
 /**
  * Convert worker observations (seconds, Harte strings) into renderable runs.
- * EVERY observation yields a run; none is dropped for lacking a class index.
+ * EVERY observation yields a run; none is dropped — not for lacking a class
+ * index, and not for arriving out of order or overlapping its neighbour.
+ *
+ * REPAIR, in this order, so the result always satisfies the monotone-runs
+ * invariant above (and is marked as such):
+ *   1. sort by `startSec`, ties broken by `endSec` — stable, so equal spans
+ *      keep their wire order;
+ *   2. clamp a negative or non-finite `startSec` to 0, and a `startSec` that is
+ *      still behind its predecessor up to it;
+ *   3. clamp `endSec` to at least `startSec` (a backwards span becomes
+ *      zero-length rather than negative);
+ *   4. trim an overlap by pulling the EARLIER run's `endSec` back to the later
+ *      run's `startSec` — the same policy the Klangio provider applies
+ *      worker-side, so a repair here cannot disagree with one there.
+ *
+ * A run that was entirely swallowed by its predecessor becomes zero-length,
+ * which `covers` already treats as covering no instant: it still renders as a
+ * chip (nothing is dropped) but can never be the sounding chord. Chips and the
+ * marker both derive from these repaired seconds, so overlapping worker data
+ * can no longer draw chips on top of each other either.
+ *
+ * `startFrame`/`endFrame` keep their existing derivation from the repaired
+ * seconds, with `endFrame > startFrame` forced as before — the chord-edit
+ * payload contract is unchanged.
  */
 export function observationsToRuns(obs: readonly ChordObservation[]): OverlayRun[] {
-  return obs.map((o) => {
-    const startFrame = Math.max(0, Math.round(o.startSec * CHORDS_FRAMES_PER_SEC));
-    const endFrame = Math.max(startFrame + 1, Math.round(o.endSec * CHORDS_FRAMES_PER_SEC));
+  const ordered = obs
+    .map((o, i) => ({ o, i }))
+    .sort((a, b) => a.o.startSec - b.o.startSec || a.o.endSec - b.o.endSec || a.i - b.i)
+    .map((e) => e.o);
+
+  const out: OverlayRun[] = [];
+  for (const o of ordered) {
+    const prev = out.length > 0 ? out[out.length - 1] : null;
+    const floor = prev ? prev.startSec : 0;
+    const rawStart = Number.isFinite(o.startSec) ? o.startSec : 0;
+    const startSec = Math.max(floor, rawStart, 0);
+    const rawEnd = Number.isFinite(o.endSec) ? o.endSec : startSec;
+    const endSec = Math.max(startSec, rawEnd);
+    // Trim the predecessor rather than shifting this run: a chord's start time
+    // is the thing a player reads off the timeline, so it is the one we keep.
+    // Its frame span is re-derived from the trimmed seconds so the two never
+    // disagree in a chord-edit payload.
+    if (prev && prev.endSec > startSec) {
+      prev.endSec = startSec;
+      prev.endFrame = Math.max(
+        prev.startFrame + 1,
+        Math.round(startSec * CHORDS_FRAMES_PER_SEC),
+      );
+    }
+
+    const startFrame = Math.max(0, Math.round(startSec * CHORDS_FRAMES_PER_SEC));
+    const endFrame = Math.max(startFrame + 1, Math.round(endSec * CHORDS_FRAMES_PER_SEC));
     const kind = classifyLabel(o.label);
-    return {
+    out.push({
       startFrame,
       endFrame,
-      startSec: o.startSec,
-      endSec: o.endSec,
+      startSec,
+      endSec,
       label: o.label,
       kind,
       chordClass: kind === 'chord' ? classIndexOrNull(o.label) : null,
-    };
-  });
+    });
+  }
+  return markMonotoneRuns(out);
 }
 
 export interface ChipBox {
@@ -517,10 +641,11 @@ export function completedJobStatus(result: PlayChordsResult): CompletedJobStatus
 // ---------------------------------------------------------------------------
 //
 // `positionSec` arrives at animation frequency, so everything here is pure,
-// allocation-free and better than O(n) per frame. The expensive part of the
-// render (159 chips on the reference track) is memoised in the component and
-// deliberately does NOT depend on the position — only the marker and the
-// highlight ring move. See the perf note on `activeRunIndex`.
+// allocation-free and better than O(n) per frame. The position-independent
+// parts of the render — the 159 chips on the reference track, the time ruler,
+// the timeline width and the track duration — are all memoised in the
+// component, so a new position moves the marker and the highlight ring and
+// rebuilds nothing over the runs. See the perf note on `activeRunIndex`.
 
 /**
  * Interval convention: a run covers `[startSec, endSec)` — start inclusive,
@@ -550,6 +675,11 @@ function covers(run: Pick<OverlayRun, 'startSec' | 'endSec'>, t: number): boolea
  *   - inside a gap between two runs (Klangio can leave them)
  *   - at or past the end of the last run (including exactly `endSec`)
  *
+ * PRECONDITION. `runs` must be sorted by `startSec` with no overlaps — the
+ * monotone-runs invariant documented above. The binary search below is only
+ * defined on a sorted array, so this is a requirement of the function, not of
+ * the fast path. `observationsToRuns` and `collapseRuns` both produce it.
+ *
  * PERFORMANCE. Called once per animation frame, so never a linear scan:
  *   - `hint` (the previously active index) is probed first, then `hint + 1`.
  *     Forward playback hits one of those two on essentially every frame, so
@@ -557,9 +687,14 @@ function covers(run: Pick<OverlayRun, 'startSec' | 'endSec'>, t: number): boolea
  *   - Otherwise a binary search over the time-sorted runs: O(log n).
  *     159 runs => at most 8 comparisons.
  *
- * `hint` is a pure accelerator. Because runs do not overlap, at most one run
- * covers any instant, so a stale, absent or hostile hint changes the cost and
- * never the answer — asserted directly by the hint-equivalence test.
+ * `hint` is a pure accelerator, and the reason is NOT that runs happen to be
+ * well-formed — nothing upstream of the web guaranteed that, and a fuzz over
+ * 20,000 hostile datasets found 18,126 on which the hint changed the answer.
+ * It is because the hint is consulted ONLY on an array carrying the
+ * monotone-runs mark, where "at most one run covers any instant" is a produced
+ * fact rather than an assumption. On any other array the hint is ignored, so a
+ * stale, absent or hostile hint changes the cost and never the answer, whatever
+ * the data looks like. Both halves are asserted by the hint-equivalence tests.
  */
 export function activeRunIndex(
   runs: readonly Pick<OverlayRun, 'startSec' | 'endSec'>[],
@@ -570,8 +705,15 @@ export function activeRunIndex(
   const n = runs.length;
   if (n === 0) return -1;
 
-  // O(1): same chord as last frame, or the next one (forward playback).
-  if (typeof hint === 'number' && Number.isInteger(hint) && hint >= 0 && hint < n) {
+  // O(1): same chord as last frame, or the next one (forward playback). One
+  // property read gates it; an unmarked array falls through to the search.
+  if (
+    typeof hint === 'number' &&
+    Number.isInteger(hint) &&
+    hint >= 0 &&
+    hint < n &&
+    hasMonotoneRunsMark(runs)
+  ) {
     if (covers(runs[hint], positionSec)) return hint;
     const next = hint + 1;
     if (next < n && covers(runs[next], positionSec)) return next;

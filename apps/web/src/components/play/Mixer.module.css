@@ -38,9 +38,15 @@
    overflows. The `overflow-x` stays as the escape hatch BELOW 360px, where the
    rail scrolls rather than crushing the 44px fader hit areas — but at 360px it
    must never engage, because a horizontal scrollbar there cuts the sixth
-   channel's Solo button in half. The node:test that guards this re-does the
-   arithmetic above from these declared values — it cannot measure a box, so the
-   rendered numbers were taken in Chrome at 360px and are in the PR. */
+   channel's Solo button in half.
+
+   The node:test that guards this RESOLVES every number above out of the
+   stylesheets — the gutter from landing.css, this file's padding, border,
+   channel floor, gap and fader column — rather than restating any of them, so
+   moving one fails the test. What it still cannot do is lay out a box: an
+   overflow caused by something the arithmetic does not model (a padded
+   descendant, a scrollbar) would pass. The rendered numbers were taken in
+   Chrome at 360px and are in the PR. */
 .rail {
   display: flex;
   align-items: stretch;

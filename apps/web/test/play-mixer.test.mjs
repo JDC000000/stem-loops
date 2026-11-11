@@ -39,6 +39,10 @@ const toJs = (src, jsx = false) =>
 
 const MIXER_TSX = 'src/components/play/Mixer.tsx';
 const MIXER_CSS = 'src/components/play/Mixer.module.css';
+// The page gutter the mixer has to live inside is declared here, not in the
+// Mixer's own stylesheet, so the width test reads it from here rather than
+// restating it. See `pageGutter()` below.
+const LANDING_CSS = 'src/styles/landing.css';
 
 const cache = join(WEB, 'node_modules/.cache');
 mkdirSync(cache, { recursive: true });
@@ -571,9 +575,18 @@ test('the mixer and each channel are labelled regions, and the legend is announc
 // The test this replaces matched `height: 40px` with a regex and passed while
 // the buttons rendered 19x40 and the rail overflowed by 30px at 360px. A regex
 // over a stylesheet cannot see a box, so these read the DECLARED VALUES out of
-// the CSS, resolve the tokens they reference, and do the width arithmetic. That
-// still is not a measurement — see the note at the top of this file — but it
-// fails when any one of the numbers the 360px layout depends on moves.
+// the CSS, resolve the tokens they reference, and do the width arithmetic.
+//
+// WHAT THAT IS AND IS NOT. It is not a measurement — nothing here lays out a
+// box, so a rule that overflows for a reason the arithmetic does not model
+// (a padded descendant, a scrollbar) still passes. It IS arithmetic over
+// values that are all READ, never restated: the page gutter out of
+// landing.css, the mixer's padding and border, the channel floor, the rail
+// gap, the fader column and the channel count. An earlier version hard-coded
+// the gutter and the border as `16` and `2` while claiming to track them, and
+// a reviewer widened the real gutter to 32px — the rail overflowed by 16px at
+// 360px, the sixth Solo button left the rail, and this file stayed green.
+// Every number below is resolved for that reason.
 
 /** Drop every @media block (brace-balanced) so what is left is the base rules. */
 const baseRules = (css) => {
@@ -599,6 +612,34 @@ const baseRules = (css) => {
   }
 };
 
+/**
+ * The body of every `@media (<query>)` block, concatenated. Needed because a
+ * lazy `[\s\S]*?` between `@media` and a selector will happily span OUT of the
+ * block it matched and into the next one: moving `.toggles`' breakpoint to
+ * 1400px left M and S stacked at every width below 1400 with the suite green.
+ */
+const mediaRules = (css, query) => {
+  const needle = `@media (${query})`;
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const at = css.indexOf(needle, i);
+    if (at === -1) return out;
+    let depth = 0;
+    let j = css.indexOf('{', at);
+    const start = j + 1;
+    for (; j < css.length; j += 1) {
+      if (css[j] === '{') depth += 1;
+      else if (css[j] === '}') {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    out += `${css.slice(start, j)}\n`;
+    i = j + 1;
+  }
+};
+
 const declIn = (block, selector, prop) => {
   const rule = block.match(new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`));
   assert.ok(rule, `no base rule for ${selector}`);
@@ -619,20 +660,29 @@ const px = (value) => {
   return Number(defined[1]);
 };
 
-test('all six channels fit at 360px: the declared widths add up with room to spare', () => {
+/** The mobile page gutter, read out of landing.css rather than restated. */
+const pageGutter = () => px(declIn(baseRules(read(LANDING_CSS)), ':root', '--sl-gutter'));
+
+/** The narrowest viewport the mixer promises to fit six channels in. */
+const NARROWEST = 360;
+
+test('every channel fits at 360px, with each number resolved from the stylesheets', () => {
   const base = baseRules(read(MIXER_CSS));
-  const gutter = px('16px'); // --sl-gutter at mobile, landing.css
+  const gutter = pageGutter();
   const channelMin = px(declIn(base, '.channel', 'min-width'));
   const railGap = px(declIn(base, '.rail', 'gap'));
   const mixerPad = px(declIn(base, '.mixer', 'padding'));
+  const mixerBorder = px(declIn(base, '.mixer', 'border').split(/\s+/)[0]);
+  const channels = PLAYABLE_STEMS.length;
 
   // What a 360px viewport actually leaves the rail, inside the page gutter and
   // the mixer's own border and padding.
-  const available = 360 - 2 * gutter - 2 /* .mixer border */ - 2 * mixerPad;
-  const required = 6 * channelMin + 5 * railGap;
+  const available = NARROWEST - 2 * gutter - 2 * mixerBorder - 2 * mixerPad;
+  const required = channels * channelMin + (channels - 1) * railGap;
   assert.ok(
     required <= available,
-    `six channels need ${required}px but only ${available}px is available at 360px`,
+    `${channels} channels need ${required}px but only ${available}px is available at ` +
+      `${NARROWEST}px (gutter ${gutter}, border ${mixerBorder}, padding ${mixerPad})`,
   );
 
   // and the channel is still wide enough to hold the full 44px fader column
@@ -641,6 +691,18 @@ test('all six channels fit at 360px: the declared widths add up with room to spa
   assert.ok(
     channelMin >= touch + 2,
     `a ${channelMin}px channel cannot hold a ${touch}px fader plus its borders`,
+  );
+});
+
+test('stem names are not tracked out of their own channel on phones', () => {
+  const css = read(MIXER_CSS);
+  // At ~48px per channel, --tracking-wide made VOCALS need 48px of a 47px box
+  // and it ellipsised to "VOCA…". Nothing here can measure a glyph, but the
+  // tracking this depends on is a declared value and can be pinned.
+  assert.equal(declIn(baseRules(css), '.name', 'letter-spacing'), 'var(--tracking-normal)');
+  assert.equal(
+    declIn(mediaRules(css, 'min-width: 760px'), '.name', 'letter-spacing'),
+    'var(--tracking-wide)',
   );
 });
 
@@ -661,9 +723,13 @@ test('M and S are real touch targets on phones: stacked, and --touch-min on both
   assert.equal(declIn(base, '.note', 'box-sizing'), 'border-box');
   assert.equal(declIn(base, '.toggles', 'box-sizing'), 'border-box');
 
-  // from 760px up there is width for a row again
-  assert.match(css, /@media \(min-width: 760px\)[\s\S]*?\.toggles\s*\{[^}]*flex-direction:\s*row/);
-  assert.match(css, /height:\s*var\(--touch-min\)/);
+  // From 760px up there is width for a row again — asserted INSIDE the 760px
+  // block, so moving `.toggles` to a different breakpoint fails here instead
+  // of matching some other block's `flex-direction: row`.
+  const wide = mediaRules(css, 'min-width: 760px');
+  assert.ok(wide.length > 0, 'no 760px block at all');
+  assert.equal(declIn(wide, '.toggles', 'flex-direction'), 'row');
+  assert.equal(px(declIn(wide, '.toggle', 'height')), touch);
   assert.match(css, /touch-action:\s*none/);
 });
 
@@ -821,6 +887,40 @@ test('memory: a stem is restored the first time IT becomes ready, not once for t
   assert.deepEqual(Mixer.planRestore(state, settled).ops, []);
 });
 
+test('memory: a pushed restore is not retired until the snapshot actually moves', () => {
+  // The mirror of "never retiring": retiring too EAGERLY is the data-loss
+  // direction. A slow engine republishes the PRE-restore snapshot before it has
+  // applied anything; if that retires the stem, its live (pre-restore) level is
+  // banked over the remembered one and the saved mix is gone.
+  const memory = { drums: remembered(0.3) };
+  let state = Mixer.beginRestore(memory);
+  const rows = rowsFor([stem('drums')]); // ready, still at its mount-time 0.8
+
+  const pushed = Mixer.planRestore(state, rows);
+  state = pushed.next;
+  assert.deepEqual(pushed.ops, [{ stem: 'drums', gain: 0.3 }]);
+
+  // the engine republishes the same snapshot, unchanged
+  const again = Mixer.planRestore(state, rows);
+  state = again.next;
+  assert.deepEqual(again.ops, [], 'the restore was pushed a second time');
+
+  const { payload } = Mixer.memoryWritePayload(state, rows);
+  assert.equal(
+    JSON.parse(payload).drums.gain,
+    0.3,
+    'the pre-restore 0.8 was banked over the remembered 0.3',
+  );
+
+  // and it DOES retire the moment the snapshot moves, even to a third value
+  const moved = Mixer.planRestore(state, rowsFor([stem('drums', { gain: 0.9 })]));
+  assert.equal(
+    JSON.parse(Mixer.memoryWritePayload(moved.next, rowsFor([stem('drums', { gain: 0.9 })])).payload)
+      .drums.gain,
+    0.9,
+  );
+});
+
 test('memory: a stem that is not ready keeps its remembered level, whatever the snapshot says', () => {
   const memory = { vocals: remembered(0.2) };
   // vocals is PRESENT in the snapshot but unavailable, carrying a default gain.
@@ -871,6 +971,44 @@ test('memory: the payload keys follow PLAYABLE_STEMS, so it compares as a string
 
 test('readMixerMemory: no window, no storage, no throw', () => {
   assert.deepEqual(Mixer.readMixerMemory('any-job'), {});
+});
+
+test('readMixerMemory: reads THIS job\'s key, and never throws on a hostile store', () => {
+  // No jsdom here, but `sessionStore()` only needs a `window` with a
+  // `sessionStorage` on it, so the real read path can be driven with a stub.
+  // Without this, stubbing the whole function to `return {}` passed.
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const withStore = (sessionStorage) => {
+    globalThis.window = { sessionStorage };
+  };
+  try {
+    const mix = { drums: { gain: 0.25, muted: false, soloed: true } };
+    let askedFor = null;
+    withStore({
+      getItem: (key) => {
+        askedFor = key;
+        return JSON.stringify(mix);
+      },
+    });
+    assert.deepEqual(Mixer.readMixerMemory('JOB-A'), mix);
+    assert.equal(askedFor, Mixer.mixerMemoryKey('JOB-A'), 'read the wrong job');
+
+    withStore({
+      getItem: () => {
+        throw new Error('blocked');
+      },
+    });
+    assert.deepEqual(Mixer.readMixerMemory('JOB-A'), {});
+
+    withStore({ getItem: () => 'not json {{{' });
+    assert.deepEqual(Mixer.readMixerMemory('JOB-A'), {});
+
+    withStore({ getItem: () => JSON.stringify({ drums: { gain: 'x' }, bass: { gain: 1e999 } }) });
+    assert.deepEqual(Mixer.readMixerMemory('JOB-A'), {});
+  } finally {
+    if (saved) Object.defineProperty(globalThis, 'window', saved);
+    else delete globalThis.window;
+  }
 });
 
 test('memory: writes are skipped while nothing changes, and a NEW job always writes once', () => {

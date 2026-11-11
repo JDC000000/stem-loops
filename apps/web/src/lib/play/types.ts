@@ -88,11 +88,18 @@ export type StemName = (typeof PLAYABLE_STEMS)[number];
  *     real Ogg/Opus 48 kHz (production)     870-871 MiB    762-763      3
  *
  * The decode-transient fix of 2026-11-11 lowered the high-water mark by
- * ~110 MiB. It did NOT bring it under Jon's ~600 MiB bar (relaxed from 400 on
- * 2026-11-10 so the reference track keeps full bandwidth), and on the
- * production Opus path the mark is ~762 MiB. What sets it now is
- * `decodeAudioData` itself, not the downmix: the mark still sits ~175 MiB
- * above settled and none of that is the mono buffer.
+ * ~110 MiB — by releasing each spent channel's store on the spot instead of
+ * leaving it to GC. It did NOT bring the mark under Jon's ~600 MiB bar
+ * (relaxed from 400 on 2026-11-10 so the reference track keeps full
+ * bandwidth), and on the production Opus path the mark is ~762 MiB. What sets
+ * it now is `decodeAudioData` itself, not the downmix: the mark still sits
+ * ~175 MiB above settled and none of that is the mono buffer.
+ *
+ * The seven-buffer PCM figure above is a LIVE-PCM property, not a VmHWM one.
+ * Variants that release late measure the same high-water mark as the shipped
+ * one while holding eight buffers live; the difference shows in sampled RSS
+ * (592 vs 548), not in the process peak. Do not read 384.5 MiB as a predictor
+ * of VmHWM — it is a floor, and a distant one.
  *
  * So MAX_TRACK_SEC below is a hard ceiling, and the bar is currently MISSED,
  * not nearly met. Do not quote 548, 484 or 329.6 as "the peak" — 548 is the

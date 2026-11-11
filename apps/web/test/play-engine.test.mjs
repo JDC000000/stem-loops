@@ -1105,11 +1105,18 @@ test('the downmix averages the channels rather than dropping one', async () => {
 // measurement and are cited in the PR, not asserted here.
 
 test('the spent channels are released BEFORE the mono buffer is allocated', async () => {
-  // THE ORDER IS THE FIX. Releasing after the allocation frees the same bytes
-  // and leaves the same end state, so no after-the-fact assertion can tell the
-  // two apart — and three order-only regressions (allocate above the release;
-  // release everything last; the whole pre-fix alloc-first body with a
-  // trailing release) passed the entire suite before this test existed.
+  // Releasing after the allocation frees the same bytes and leaves the same
+  // end state, so no after-the-fact assertion can tell the two apart — three
+  // order-only regressions (allocate above the release; release everything
+  // last; the pre-fix alloc-first body with a trailing release) passed the
+  // entire suite before this test existed.
+  //
+  // What this gate is for, stated honestly: the order holds SEVEN whole-track
+  // buffers live at the busiest instant instead of eight. It was measured NOT
+  // to move the renderer high-water mark on the box this was developed on —
+  // that ~110 MiB came from releasing at all, which the mis-ordered variants
+  // also do. So this gate protects the live-PCM working set and the figure
+  // documented on PLAYBACK_SAMPLE_RATE, not a measured process-peak win.
   const { engine, ctx } = await loadedSix();
   const c = ctx();
   assert.equal(c.allocs.length, PLAYABLE_STEMS.length, 'one allocation per stereo stem');

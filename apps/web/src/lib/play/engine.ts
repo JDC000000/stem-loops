@@ -84,6 +84,27 @@
  *   SAMPLED RSS, highest sample                 BEFORE     AFTER
  *     8 kHz WAV source                              592       548
  *
+ * ⚠️ WHICH PART OF THE CHANGE BOUGHT THAT, measured rather than assumed, by
+ * putting three deliberately mis-ordered variants through the same driver
+ * (8 kHz WAV, GC per stem, interleaved with the real arms in one session):
+ *
+ *     no release at all (pre-2026-11-11)        766-767 MiB HWM
+ *     release, but AFTER the allocation         657-658 MiB HWM
+ *     release BEFORE the allocation (shipped)   656-658 MiB HWM
+ *
+ * So the ~110 MiB is bought by RELEASING EAGERLY AT ALL — not by the order.
+ * Once the stores are handed back on the spot, the high-water moment moves
+ * inside `decodeAudioData`, which is above both downmix variants, so the
+ * ordering stops being visible in VmHWM.
+ *
+ * The order still earns its place, and it is worth being exact about what it
+ * earns: it holds SEVEN whole-track buffers live at the busiest instant
+ * instead of eight (57.6 MB less live PCM), which is what the sampled figures
+ * 592 -> 548 are showing. On this box that does not convert into a lower
+ * process peak. On an engine or device whose decode transient is smaller —
+ * where the downmix instant IS the peak — it would. That last sentence is a
+ * hypothesis; nobody has measured it.
+ *
  * ⚠️ THE ~600 BAR IS NOT MET, BEFORE OR AFTER. The high-water mark is 656+
  * MiB on the synthetic source and 762+ MiB on the production Opus one. This
  * change lowers it by ~110 MiB and does not bring it under the bar. Anyone
@@ -258,12 +279,17 @@ function releaseChannelData(data: Float32Array): void {
  * rate. `decoded` is CONSUMED: its channels are summed in place and then
  * released, so the caller must drop its reference and must not read it again.
  *
- * The order of the four steps is the whole point. It is what lowered the
- * renderer high-water mark by ~110 MiB (see MEMORY at the top of this file;
- * the mark is still above the ~600 bar afterwards). The order is gated by
- * `the spent channels are released BEFORE the mono buffer is allocated` in
- * play-engine.test.mjs — without that test, moving step 2 below step 3 frees
- * the same bytes, leaves the same end state, and passes every other test:
+ * Of the four steps, step 2 and step 4 — releasing at all — are what lowered
+ * the renderer high-water mark by ~110 MiB. Their POSITION relative to step 3
+ * does not move that mark on the box this was measured on; what it moves is
+ * the live PCM at the busiest instant, seven whole-track buffers instead of
+ * eight. Both claims are measured; see MEMORY at the top of this file, which
+ * also records that the mark is still above the ~600 bar afterwards.
+ *
+ * The order is gated by `the spent channels are released BEFORE the mono
+ * buffer is allocated` in play-engine.test.mjs — without that test, moving
+ * step 2 below step 3 frees the same bytes, leaves the same end state, and
+ * passes every other test:
  *
  *   1. sum into channel 0 IN PLACE   — no second full-length allocation while
  *                                      every source channel is still resident

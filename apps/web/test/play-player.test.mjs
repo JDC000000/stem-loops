@@ -35,6 +35,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 
+import { codeOnly, withoutComments } from './helpers/code-only.mjs';
+
 import { WebAudioPlayEngine } from '../src/lib/play/engine.ts';
 import { PLAYABLE_STEMS } from '../src/lib/play/types.ts';
 
@@ -126,9 +128,35 @@ const playerJs = rewriteShared(toJs(read('src/components/play/Player.tsx'), true
   .replace(/from ['"]\.\/SectionLoop['"]/g, `from '${sectionLoopMod}'`);
 writeFileSync(join(dir, 'Player.mjs'), playerJs);
 
+// A second Player instance whose Mixer is a RECORDING STUB. The real Mixer
+// reads `jobId` only inside effects (sessionStorage restore/persist via
+// mixerMemoryKey), so it renders nothing derived from it and no amount of
+// server-rendering the real component can see whether the prop arrived. Round 3
+// exploited exactly that: `jobId` dropped from the live mount plus a
+// `<span data-prev={'<Mixer … jobId={jobId} />'} />` string literal satisfied
+// the source-text gate with per-job memory dead. Reflecting the prop into
+// markup makes it observable, and a string literal cannot reach markup.
+const mixerProbeMod = put(
+  'MixerProbe.mjs',
+  `import { createElement } from 'react';
+   export default function Mixer(props) {
+     return createElement('section', {
+       'aria-label': 'Stem mixer',
+       'data-testid': 'mixer-probe',
+       'data-job-id': String(props.jobId),
+       'data-has-job-id': String(Object.prototype.hasOwnProperty.call(props, 'jobId')),
+     });
+   }`,
+);
+writeFileSync(
+  join(dir, 'PlayerMixerProbe.mjs'),
+  playerJs.replace(new RegExp(`from '\\./${mixerMod.slice(2)}'`, 'g'), `from '${mixerProbeMod}'`),
+);
+
 const React = (await import('react')).default;
 const { renderToStaticMarkup } = await import('react-dom/server');
 const Player = await import(pathToFileURL(join(dir, 'Player.mjs')).href);
+const PlayerProbe = await import(pathToFileURL(join(dir, 'PlayerMixerProbe.mjs')).href);
 
 const render = (props) =>
   renderToStaticMarkup(React.createElement(Player.default, { jobId: 'job-1', ...props }));
@@ -662,26 +690,23 @@ test('a complete snapshot renders NO degraded banner', async () => {
 // ═══ Story 2.7 / 1.2 — the two mounts that carry the story ══════════════════
 
 /**
- * Source with ALL comments stripped. Prose must not be able to pass or fail a
- * test — every assertion in this section matches against code only.
+ * `codeOnly` now lives in test/helpers/code-only.mjs and is a single-pass
+ * scanner rather than a stack of `.replace()` calls. The regex stack that used
+ * to live here was broken in BOTH directions by round 3:
+ *   - a STRING literal containing the pattern satisfied a `match` gate
+ *     (`<span title={'<Player jobId={job.id} … />'} />` passed both mount gates
+ *     with the real mount deleted);
+ *   - a `//` inside a string deleted real code, so a `doesNotMatch` gate
+ *     passed blind.
+ * Reordering the rules only moves the hole — the helper's own comment shows
+ * both orderings losing real code on mirror-image inputs.
  *
- * Three rules, and the ORDER matters:
- *   1. whole-line `//` FIRST, so a commented-out line containing `/*` cannot
- *      open a bogus block for rule 2 and swallow real code after it;
- *   2. block comments, which also covers JSX `{/* … *\/}` (an earlier version
- *      had a separate JSX rule, but rule 2 always consumed the interior first,
- *      so that rule was dead code — the leftover `{ }` is inert);
- *   3. TRAILING `//`, the gap review exploited: the previous helper stripped
- *      whole-line comments only, so `const POLL_MS = 2000; // <Player renders
- *      before <LoopResults` defeated the ordering gate below. `[^:]` keeps
- *      `https://` and friends intact.
+ * These source-text gates are the SECONDARY layer. The primary answer for the
+ * mounts is test/job-page-render.test.mjs, which asserts on RENDERED OUTPUT: a
+ * string literal cannot put a mounted component into rendered HTML. What is
+ * kept here is what rendering cannot see — a commented-out mount, and a
+ * trailing `//` that fakes render order.
  */
-function codeOnly(src) {
-  return src
-    .replace(/^[ \t]*\/\/.*$/gm, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/(^|[^:])\/\/.*$/gm, '$1');
-}
 
 test('Story 2.7: the Mixer mount carries jobId, which is its memory key', () => {
   // The Mixer keys sessionStorage on `jobId` (mixerMemoryKey). Drop the prop
@@ -700,17 +725,110 @@ test('Story 2.7: the Mixer mount carries jobId, which is its memory key', () => 
   );
 });
 
-test('codeOnly strips whole-line, trailing and JSX comments, and spares URLs', () => {
-  // The helper above is load-bearing for three Story gates, so it is pinned
-  // directly rather than only through them.
-  assert.equal(codeOnly('  // gone\nkept();').trim(), 'kept();');
-  assert.equal(codeOnly('kept(); // gone').trim(), 'kept();');
-  assert.equal(codeOnly('/* gone\n gone */kept();').trim(), 'kept();');
+test('FG-3: Story 2.7 observed in RENDERED output, not in source text', () => {
+  // The round-3 false green this closes: `jobId` dropped from the live <Mixer>
+  // mount, with `<span data-prev={'<Mixer … jobId={jobId} />'} />` added to keep
+  // the source-text gate above green. 961/941/0/20, typecheck 0, lint 0, and
+  // per-job fader/mute/solo memory silently dead.
+  //
+  // Here the Mixer is a recording stub that reflects the prop into its markup,
+  // and the view is driven into `ready` so the mixer actually mounts. A string
+  // literal in the source cannot put `data-job-id` into rendered HTML.
+  const snapshot = Object.freeze({
+    ...IDLE,
+    status: 'paused',
+    durationSec: 30,
+    stems: PLAYABLE_STEMS.map((stem) => ({ stem, gain: 1, muted: false, solo: false })),
+  });
+  const html = renderToStaticMarkup(
+    React.createElement(PlayerProbe.PlayerView, {
+      jobId: 'job-probe-7',
+      sections: [],
+      phase: { kind: 'ready' },
+      snapshot,
+      onPlay: noop,
+      onPause: noop,
+      onSeek: noop,
+      onGain: noop,
+      onMute: noop,
+      onSolo: noop,
+      onLoop: noop,
+    }),
+  );
+  assert.match(html, /data-testid="mixer-probe"/, 'the Mixer did not mount in the ready phase');
+  assert.equal(
+    html.match(/data-testid="mixer-probe"[^>]*data-has-job-id="([^"]*)"/)?.[1],
+    'true',
+    'the <Mixer> mount does not pass jobId at all, so Story 2.7 memory is dead',
+  );
+  assert.equal(
+    html.match(/data-testid="mixer-probe"[^>]*data-job-id="([^"]*)"/)?.[1],
+    'job-probe-7',
+    'the <Mixer> mount passes the wrong jobId, so memory keys the wrong job',
+  );
+});
+
+test('codeOnly blanks comments AND literals, in both directions', () => {
+  // The helper is load-bearing for three Story gates, so it is pinned directly
+  // rather than only through them. Round 2's cases first.
+  assert.match(codeOnly('  // gone\nkept();'), /kept\(\)/);
+  assert.doesNotMatch(codeOnly('  // gone\nkept();'), /gone/);
+  assert.match(codeOnly('kept(); // gone'), /kept\(\)/);
+  assert.doesNotMatch(codeOnly('kept(); // gone'), /gone/);
+  assert.match(codeOnly('/* gone\n gone */kept();'), /kept\(\)/);
+  assert.doesNotMatch(codeOnly('/* gone\n gone */kept();'), /gone/);
   assert.doesNotMatch(codeOnly('const a = 1; // <Player'), /<Player/);
   assert.doesNotMatch(codeOnly('{/* <Mixer jobId={jobId} /> */}'), /<Mixer/);
   // A line comment must not be able to open a block that eats real code.
   assert.match(codeOnly('// /* not a comment\nkept();'), /kept\(\)/);
-  assert.match(codeOnly("const u = 'https://x.example/a';"), /https:\/\/x\.example/);
+
+  // ── round 3, UNDER-inclusive: a literal must not satisfy a `match` gate ──
+  assert.doesNotMatch(
+    codeOnly(`<span title={'<Player jobId={job.id} enabled />'} />`),
+    /<Player/,
+    'a string literal can still satisfy the mount gate',
+  );
+  assert.doesNotMatch(
+    codeOnly(`<span data-prev={'<Mixer stems={s} jobId={jobId} />'} />`),
+    /<Mixer/,
+    'a string literal can still satisfy Story 2.7',
+  );
+  assert.doesNotMatch(codeOnly('const t = `<Player jobId={x}`;'), /<Player/);
+  assert.doesNotMatch(codeOnly('const r = /<Player jobId=/;'), /<Player/);
+
+  // ── round 3, OVER-inclusive: a `//` in a string must not delete code ────
+  assert.match(
+    codeOnly('<section aria-label="chords//legacy"><ChordOverlay jobId={j} /></section>'),
+    /<ChordOverlay/,
+    'a `//` inside an attribute string still blinds the doesNotMatch gates',
+  );
+  // Both rule orderings of the old regex stack lost real code on one of these.
+  assert.match(codeOnly('const P = 1; // see /* the note\nREAL_A();\n/* r */\n'), /REAL_A/);
+  assert.match(codeOnly('/* note // end */ REAL_B();\n'), /REAL_B/);
+  assert.match(codeOnly(`const s = "a // b";\nREAL_C();`), /REAL_C/);
+  // A URL no longer leaks out of its string, but the statement around it must
+  // survive — that was the real point of the old `spares URLs` assertion.
+  const url = codeOnly(`const u = 'https://x.example/a';\nREAL_D();`);
+  assert.match(url, /const u =/);
+  assert.match(url, /REAL_D/);
+
+  // Length and newlines are preserved, so indexOf ordering keeps its meaning.
+  const sample = `a//b\n'c'\n/*d*/e`;
+  assert.equal(codeOnly(sample).length, sample.length);
+  assert.equal(codeOnly(sample).split('\n').length, sample.split('\n').length);
+});
+
+test('withoutComments keeps literals readable but still removes comments', () => {
+  // The gutter gate reads a string literal's VALUE, so it needs this variant.
+  // It must still be right about comments, which is the whole defect.
+  const src = `const wrap = { padding: '48px var(--sl-gutter, 16px) 96px' }; // note`;
+  const out = withoutComments(src);
+  assert.match(out, /var\(--sl-gutter, 16px\)/, 'the literal became unreadable');
+  assert.doesNotMatch(out, /note/, 'the trailing comment survived');
+  // A `//` inside a string is not a comment, so it must not eat what follows.
+  assert.match(withoutComments(`const s = "a // b";\nREAL();`), /REAL\(\)/);
+  // And a `/*` inside a line comment must not open a block.
+  assert.match(withoutComments('// /* not a comment\nREAL2();'), /REAL2\(\)/);
 });
 
 test('Story 1.2: the Player is mounted ABOVE LoopResults on the job page', () => {
@@ -743,7 +861,11 @@ test('the job page gutter is the token with a 16px fallback, never a literal', (
   // is a second padding declaration further down (the failed-job box), so the
   // unscoped form depended purely on declaration order: reordering the two
   // would have pointed this assertion at the wrong rule.
-  const view = codeOnly(read('src/app/jobs/[id]/JobView.tsx'));
+  // `withoutComments`, not `codeOnly`: this gate INSPECTS a string literal's
+  // value, so blanking literals would leave it unable to see the thing it
+  // exists to check. Comments are still removed, and correctly — a `//` inside
+  // a string no longer eats the rest of the line.
+  const view = withoutComments(read('src/app/jobs/[id]/JobView.tsx'));
   const wrap = view.match(/const wrap:[^=]*=\s*\{[\s\S]*?\n\s*\};/)?.[0];
   assert.ok(wrap, 'the page wrapper style object moved or was renamed');
   const padding = wrap.match(/padding:\s*'([^']+)'/)?.[1];

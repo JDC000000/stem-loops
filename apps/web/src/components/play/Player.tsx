@@ -220,7 +220,22 @@ export type Phase =
  * and `durationSec 0`, whose `play()` returns early — exactly the "dead control
  * over audio that does not exist" the no-stems test already forbids.
  *
- * Both call sites now derive from here, so they cannot drift again.
+ * Both call sites derive from here, and THE GUARANTEE THAT BUYS IS
+ * ONE-DIRECTIONAL. Stated precisely, because an earlier draft of this comment
+ * claimed they "cannot drift again" and review showed that is too strong:
+ * re-inlining a STRICTER predicate — `isPlayable(phase, snapshot) &&
+ * snapshot.stems.length > 0` — survives the whole suite with typecheck clean,
+ * and makes `playable` and `chordPositionFor` genuinely disagree.
+ *
+ * What this extraction does close is the LOOSENING direction, which is the
+ * dangerous one: dropping a condition here can no longer drop it from one call
+ * site only, and dropping it from both is caught by the `ready` + engine-error
+ * render case and the phase/error agreement test. A stricter re-inline is
+ * currently behaviour-equivalent — the state it would diverge on (ready, no
+ * error, zero stems) is UNREACHABLE, because `loadStems` returning
+ * `sources.length === 0` sets `phase = 'no-stems'` before `ready` (see ~286-293
+ * below) and a failing `engine.load` sets `snapshot.error`. So it is a latent
+ * inconsistency, not a live defect. Do not restate the guarantee as absolute.
  */
 export function isPlayable(phase: Phase, snapshot: EngineSnapshot): boolean {
   return phase.kind === 'ready' && snapshot.error === null;
@@ -394,7 +409,9 @@ export function PlayerView({
 }: PlayerViewProps) {
   const engineError = snapshot.error;
   // Derived, never re-stated: see `isPlayable`. Re-inlining this predicate is
-  // what let `playable` and `chordPositionFor` disagree.
+  // what let `playable` and `chordPositionFor` disagree. Note the guarantee is
+  // one-directional: a stricter re-inline still survives the suite (it is
+  // behaviour-equivalent today), so this is about the loosening direction.
   const playable = isPlayable(phase, snapshot);
 
   // Story 3.3 / 3.4 — THE WIRING THAT WAS MISSING. The chord playhead reads the

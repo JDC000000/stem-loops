@@ -41,6 +41,8 @@ import {
   resolveAutoScroll,
 } from '../src/components/ChordOverlay.helpers.ts';
 
+import { codeOnly } from './helpers/code-only.mjs';
+
 // ---------------------------------------------------------------------------
 // Fixtures — the real artifact's shape
 // ---------------------------------------------------------------------------
@@ -639,17 +641,23 @@ test('the live mount now carries positionSec, and positionSec is still optional'
   // it tried. JobView is the file that could reintroduce the original bug, so
   // that is the file to hold to it.
   //
-  // Comments are stripped before matching, and that is NOT incidental. Read
-  // raw, the `<Player` assertion below was a FALSE GREEN: JobView's own header
-  // comment contains the words `<Player>` twice, so deleting the real
-  // `<Player … />` mount from the file left this test 31/31 green. Prose must
-  // not be able to satisfy a structural assertion.
-  const strip = (src) =>
-    src
-      .replace(/^[ \t]*\/\/.*$/gm, '')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/(^|[^:])\/\/.*$/gm, '$1');
-  const jobView = strip(
+  // Comments AND literals are blanked before matching, and that is NOT
+  // incidental — this one assertion has been a false green twice:
+  //   round 2: read raw, JobView's own header comment names `<Player>` twice,
+  //            so deleting the real mount left this test 31/31 green;
+  //   round 3: with comments stripped but literals intact,
+  //            `<span title={'<Player jobId={job.id} … />'} />` satisfied the
+  //            tightened pattern with the mount deleted — and a `//` inside
+  //            `aria-label="chords//legacy"` deleted the rest of the line, so
+  //            the `doesNotMatch` below reported success WITHOUT CHECKING
+  //            while a real second position-less overlay was mounted.
+  // `codeOnly` is a single-pass scanner that closes both directions; see
+  // test/helpers/code-only.mjs for why reordering regexes could not.
+  //
+  // Both of these are now ALSO asserted on rendered output in
+  // test/job-page-render.test.mjs, which is the layer a source-text trick
+  // cannot reach at all. These stay as the cheap, fast guard.
+  const jobView = codeOnly(
     readFileSync(join(import.meta.dirname, '..', 'src/app/jobs/[id]/JobView.tsx'), 'utf8'),
   );
   assert.doesNotMatch(

@@ -30,6 +30,7 @@ from ..errors import (
     DownloadInvalidUrlError,
     DownloadTimeoutError,
     FetchPausedError,
+    LinkTooLongError,
     VideoBlocklistedError,
 )
 from ..logger import log_structured
@@ -55,8 +56,16 @@ def _outcome(exc: BaseException) -> str:
     return getattr(exc, "error_code", None) or "other_error"
 
 
-def download_audio(youtube_url: str, job_id: str | None = None) -> tuple[str, str]:
-    """Return (path_or_url, source) where source is 'ytdlp' (local path) or 'cobalt' (URL)."""
+def download_audio(
+    youtube_url: str, job_id: str | None = None, max_duration_sec: float | None = None
+) -> tuple[str, str]:
+    """Return (path_or_url, source) where source is 'ytdlp' (local path) or 'cobalt' (URL).
+
+    ``max_duration_sec`` is the product's one duration ceiling, supplied by the caller
+    (pipeline's ``_max_upload_duration_sec()``) rather than read here, so there is exactly
+    one knob and this module owns no second copy of the number. Passing ``None`` -- the
+    default, and what every pre-existing caller and test does -- skips gate 0c entirely.
+    """
     _ssrf_guard(youtube_url)
 
     # 0a. blocklist: refuse before any outbound call. An unreadable id is refused too, so a
@@ -79,6 +88,30 @@ def download_audio(youtube_url: str, job_id: str | None = None) -> tuple[str, st
     # could otherwise make the gate check A while yt-dlp/Cobalt fetch B.
     # From here down, `youtube_url` is only used for logging; never for a fetch.
     fetch_url = fetch_gates.canonical_watch_url(video_id)
+
+    # 0c. duration gate. Applied to the LINK, from metadata, before one byte is fetched and
+    # therefore long before Replicate is handed anything. It sits HERE, above the fetcher
+    # loop, rather than inside ytdlp_client, for two reasons: it then covers the Cobalt leg
+    # as well as the yt-dlp leg, and it runs once instead of once per retry attempt.
+    #
+    # It is a SAVER, not the enforcement: probe_duration_sec returns None on any hiccup and
+    # an unknown length proceeds to the real fetch. What enforces the ceiling is
+    # pipeline._enforce_link_duration, which measures the file we end up holding. Same
+    # two-layer shape the upload path already uses (header reading, then the decoded WAV).
+    if max_duration_sec is not None:
+        declared = ytdlp_client.probe_duration_sec(fetch_url)
+        if declared is not None and declared > max_duration_sec:
+            log_structured(
+                "INFO",
+                "fetch_refused_too_long",
+                job_id=job_id,
+                duration_sec=round(declared, 1),
+                max_sec=max_duration_sec,
+            )
+            raise LinkTooLongError(
+                f"link duration {declared}s exceeds {max_duration_sec:g}s",
+                max_seconds=max_duration_sec,
+            )
 
     attempt_no = 0
     last_exc: Exception | None = None

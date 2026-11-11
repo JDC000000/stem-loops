@@ -41,6 +41,7 @@ from .encoder.wav_encoder import encode_24bit, waveform_peaks
 from .errors import (
     DownloadBlockedError,
     InternalError,
+    LinkTooLongError,
     SeparationFailedError,
     StemLoopsError,
     UploadInvalidError,
@@ -230,6 +231,42 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
     if decoded is not None and decoded > max_sec:
         raise _too_long(decoded)
     return upload_input(job_id, wav)
+
+
+def _enforce_link_duration(job_id: str, path: str) -> None:
+    """Refuse an over-length LINK track, measured on the file we hold, before Replicate.
+
+    This is the enforcing half of the link path's duration ceiling. The downloader's gate 0c
+    reads the length from yt-dlp metadata and saves the whole download when it can, but it
+    fails open by design, so it cannot be what makes the ceiling real.
+
+    Deliberately the SAME two calls the upload path makes -- ``_max_upload_duration_sec()``
+    and ``_probe_duration_sec()`` -- so a link and an upload cannot end up judged by
+    different numbers or different measuring code.
+
+    MEASURABILITY: yt-dlp runs with ``--audio-format wav``, so the staged file is a WAV and
+    ``_probe_duration_sec`` reads it through soundfile, a pip dependency that carries its own
+    libsndfile. No ffprobe binary is involved, which matters because CI's only ffmpeg comes
+    from imageio-ffmpeg and that wheel ships ffmpeg alone. An unmeasurable file logs and
+    proceeds, matching the upload path's own stance on audio it cannot measure.
+    """
+    max_sec = _max_upload_duration_sec()
+    measured = _probe_duration_sec(path)
+    if measured is None:
+        log_structured("WARN", "link_duration_unmeasured", job_id=job_id, max_sec=max_sec)
+        return
+    if measured > max_sec:
+        log_structured(
+            "INFO",
+            "link_rejected_too_long",
+            job_id=job_id,
+            duration_sec=round(measured, 1),
+            max_sec=max_sec,
+        )
+        raise LinkTooLongError(
+            f"link duration {measured}s exceeds MAX_UPLOAD_DURATION_SEC={max_sec:g}",
+            max_seconds=max_sec,
+        )
 
 
 def _update_job_tags(job_id: str, tags: dict) -> None:
@@ -1151,7 +1188,9 @@ async def _run_pipeline(job_id: str) -> None:
             # path (STUB_MODE is not set in prod env). Defense-in-depth behind route.ts.
             if os.environ.get("ALLOW_YOUTUBE_INPUT", "").lower() != "true":
                 raise DownloadBlockedError("YouTube ingestion is disabled pre-launch")
-            dl_result, _source = await asyncio.to_thread(download_audio, url, job_id)
+            dl_result, _source = await asyncio.to_thread(
+                download_audio, url, job_id, _max_upload_duration_sec()
+            )
             # R2 fix (found in staging E2E test — T12 was never actually run before):
             # Cobalt's success path returns an already-public stream URL (Replicate can
             # fetch it directly), but yt-dlp's success path returns a LOCAL file path
@@ -1160,8 +1199,19 @@ async def _run_pipeline(job_id: str) -> None:
             # cannot read a local path"). Stage local results to R2 exactly like the
             # override_file/upload paths already do; leave an already-a-URL result alone.
             if _source == "ytdlp":
+                # The ceiling, enforced on the bytes themselves and BEFORE submit_or_reattach
+                # below, i.e. before a single billed GPU-second. Until this call existed the
+                # link path had no duration check anywhere: _max_upload_duration_sec() had
+                # exactly one caller and it was on the upload path.
+                await asyncio.to_thread(_enforce_link_duration, job_id, dl_result)
                 audio_src = await asyncio.to_thread(upload_input, job_id, dl_result)
             else:
+                # Cobalt returns a public tunnel URL and no local bytes, so there is nothing
+                # here to measure; gate 0c's metadata reading is the only ceiling that leg
+                # gets. Cobalt is reached only after yt-dlp has exhausted its attempts AND
+                # the fetch_cobalt kill-switch scope has been released (engaged by default),
+                # so this is a narrow, logged residue rather than the usual path.
+                log_structured("WARN", "link_duration_unenforced_source", job_id=job_id)
                 audio_src = dl_result
         await emit_event(job_id, "downloading", "completed", pct=100)
 

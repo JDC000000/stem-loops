@@ -1,0 +1,95 @@
+/* SectionLoop: consumes the global tokens from src/styles/design-tokens.css (no new ones). */
+.root {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+
+.list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.chip,
+.clear {
+  min-height: 44px; /* touch target, PRD mobile rule */
+  padding: 0 var(--space-4);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--radius-md, 10px);
+  white-space: nowrap;
+}
+
+.chip:hover,
+.clear:hover:not(:disabled) {
+  color: var(--text-secondary);
+  border-color: var(--text-muted);
+}
+
+.chip:focus-visible,
+.clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.time {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-subtle);
+}
+
+/* Active: colour AND a text badge AND a heavier border, so it never rides on hue alone. */
+.chip[aria-pressed='true'] {
+  color: var(--text-primary);
+  background: var(--accent-muted);
+  border-color: var(--accent);
+  border-width: 2px;
+}
+
+.chip[aria-pressed='true'] .time {
+  color: var(--text-secondary);
+}
+
+.badge {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent-text);
+  background: var(--accent);
+  border-radius: var(--radius-sm, 6px);
+  padding: 2px 6px;
+}
+
+.clear:disabled {
+  color: var(--text-disabled);
+  border-color: var(--border-default);
+  cursor: not-allowed;
+}
+
+.status {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--text-base);
+  color: var(--text-muted);
+}
+
+@media (forced-colors: active) {
+  .chip[aria-pressed='true'] { border-color: Highlight; outline: 2px solid Highlight; }
+  .badge { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+}

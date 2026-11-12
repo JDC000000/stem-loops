@@ -319,13 +319,21 @@ def test_deleting_an_engaged_row_releases_the_brake_after_the_ttl(
 #       END-TO-END BEHAVIOUR only below BLOCKED_FOR_S: a blocked reader is still waiting after
 #       3.5 s and answers 'fetch_global' once the lock clears. It is a wall-clock test.
 #
-#   NOT COVERED BY ANY TEST: a client-side bound longer than BLOCKED_FOR_S (3.5 s). Measured
-#       round 4: a client-side cancel at 4.0 s around the SELECT leaves every test in this file
-#       green, yet the gate returns None (fetch allowed) after about 4.0 s on a 6 s lock (4.016 s
-#       reported by the reviewer, 4.012 s reproduced). The GUC probe cannot see it (the server is
-#       never asked for a timer) and the wall-clock test stops watching at 3.5 s. This file does
-#       not close that and does not pretend to; a longer wall-clock wait would be another timer to
-#       tune, not a proof of "unbounded".
+#   NOT COVERED BY ANY TEST: a client-side bound longer than BLOCKED_FOR_S (3.5 s). Measured at
+#       39a6d7d, PostgreSQL 16.15, NOSUPERUSER NOBYPASSRLS member of stemloops_app, fetch_global
+#       engaged, cold cache, ACCESS EXCLUSIVE held 6 s (temporary patch of _read_switches, not
+#       committed): a client-side cancel at 4.0 s around the SELECT (a daemon thread waiting on an
+#       Event, then conn.cancel()) left all 40 tests in this file passing, and fetch_paused()
+#       returned None (fetch allowed) after 4.014, 4.020 and 4.013 s in three runs. The form of
+#       the patch matters: the same bound written as threading.Timer(4.0, conn.cancel) fails 7
+#       tests in this file, but only incidentally (fake connections with no .cancel, tests that
+#       replace threading.Timer), not because any of them observes a client-side bound. An
+#       earlier note here recorded 4.016 s "reported by the reviewer" and 4.012 s "reproduced" at
+#       a round-4 head; neither was re-observed, and the figures above replace them. The GUC
+#       probe cannot see a client-side bound (the server is never asked for a timer) and the
+#       wall-clock test stops watching at 3.5 s. This file does not close that and does not
+#       pretend to; a longer wall-clock wait would be another timer to tune, not a proof of
+#       "unbounded".
 BLOCKED_FOR_S = 3.5  # longer than the 2 s cap an earlier revision of this PR put on the read
 # (a client-side bound of 4 s or more passes everything below: see the section comment above)
 
@@ -811,9 +819,13 @@ BLOCKED_ID = "dQw4w9WgXcQ"  # the id in URL
 
 
 def test_a_shadow_blocklist_does_not_bypass_a_takedown(as_worker, restricted_url, monkeypatch):
-    """is_blocklisted is the one FAIL-CLOSED path and it logged nothing when bypassed. Measured
-    before the fix: control (no shadow) True; with an empty shadow blocklist False, and
-    download_audio went on to call the fetcher with the blocklisted id."""
+    """is_blocklisted is the one FAIL-CLOSED path and it logged nothing when bypassed. Measured at
+    39a6d7d, PostgreSQL 16.15, with is_blocklisted temporarily reverted to the unqualified
+    `FROM blocklist` (the form at eadcf8e; 05042e8 qualified it): control (no shadow) True; with an
+    empty shadow blocklist False, and download_audio went on to call the fetcher with the
+    blocklisted id (this test fails on that revert at its first assertion after the shadow is
+    created). With the qualified read at 39a6d7d: True, VideoBlocklistedError, fetcher not called.
+    """
     as_worker.execute(
         "INSERT INTO public.blocklist(video_id, reason) VALUES (%s, 'takedown') "
         "ON CONFLICT DO NOTHING",

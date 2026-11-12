@@ -24,4 +24,6 @@ ruff>=0.4.0
 black>=24.4.0
 pytest>=8.2.0
 pytest-asyncio>=0.23.0
+# S3 server for tests/real_r2.py: the retention tests run r2_uploader's REAL deleters against it.
+moto[s3,server]>=5.0.0
 imageio-ffmpeg>=0.5.1  # local-dev ffmpeg fallback (Docker image ships system ffmpeg)

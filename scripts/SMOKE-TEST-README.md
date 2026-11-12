@@ -11,7 +11,7 @@ staging (Vercel + Supabase + Stripe BC sandbox). Zero npm dependencies (Node 18+
 | 2 | Pricing page shows Pro $4.99 CAD, Studio $12 CAD, and the 20/60/180 credit packs | PASS/FAIL |
 | 3 | Create `smoke-test-<ts>@stemloops.test` via Supabase Admin API, confirm it exists; 3b mint its session via the Admin API (`admin/generate_link` + `verify`) and build the `@supabase/ssr` session cookie | PASS/FAIL |
 | 4 | `POST /api/users/me/trial/grant` twice | PASS/FAIL |
-| 5 | `GET /api/entitlements` -> `plan_code: free`, youtube/spotify/soundcloud | PASS/FAIL |
+| 5 | `GET /api/entitlements` -> `plan_code: free`, `services: [youtube]`, `jobs_quota: 5` | PASS/FAIL |
 | 6 | `GET /api/billing/credits/balance` -> `credits_remaining: 0` | PASS/FAIL |
 | 7 | `POST /api/billing/checkout {pack_code:'credits_20'}` -> `checkout_url`, GET it for 200 | PASS/FAIL, card submit SKIP |
 | 8 | `POST /api/billing/checkout {plan_code:'pro'}` -> same | PASS/FAIL, card submit SKIP |
@@ -202,3 +202,26 @@ Not recommended without review. Set `STAGING_BASE_URL=https://stem-loops.com`,
 the prod `SUPABASE_URL` / keys, a live `STRIPE_SECRET_KEY`, and `SMOKE_ALLOW_PROD=1`
 (the script refuses otherwise). Checkout steps create real live-mode sessions
 (expired and the customer deleted at cleanup).
+
+## Plan catalog the smoke test expects (migration 034, 2026-11-11)
+
+Step 5 pins the free plan against `034_v3_pricing_model_truth.sql`, which is the
+source of truth for plan values. If step 5 fails on `services` or `jobs_quota`,
+the target environment is on the pre-034 catalog — apply migrations, do not
+loosen the assertion.
+
+| code | tracks / month | price | `services` | `export_stems` | `export_wav24` |
+|---|---|---|---|---|---|
+| `free` | 5 | $0 | `{youtube}` | false | false |
+| `pro` | 50 | $4.99 CAD | `{}` | false | false |
+| `studio` | 150 | $12 CAD | `{}` | false | false |
+
+Two notes for anyone extending this file:
+
+- **Spotify and SoundCloud are not in `services` and must not be re-added.**
+  Neither has an implementation anywhere in the repo. Step 5 now fails if either
+  reappears, because the pricing page derives its advertised link-import list
+  from this column.
+- **Both export flags are false on every plan**, so there is nothing for a smoke
+  test to assert about stem export: no stem-export route exists, and 24-bit WAV
+  loops are available on every tier rather than being a paid differentiator.

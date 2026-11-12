@@ -56,8 +56,14 @@ export type EntitlementAction =
   | 'start_job_spotify'   // service=spotify ingest (free tier only)
   | 'start_job_soundcloud'// service=soundcloud ingest (free tier only)
   | 'start_job_upload'    // own-file upload (any tier; consumes credit on free + no-plan)
-  | 'export_stems'        // export full stems .zip (pro+)
-  | 'export_wav24';       // export 24-bit WAV (studio only)
+  // Both export actions are DENIED on every plan as of migration 034, which
+  // sets plans.export_stems and plans.export_wav24 false across the catalog.
+  // Neither action has a production caller — nothing in src/app or src/lib
+  // asks for either — so this is a contract kept for when the features exist,
+  // not a live gate. See the two cases below.
+  | 'export_stems'        // full-stems .zip — NOT IMPLEMENTED, no route exists
+  | 'export_wav24';       // 24-bit WAV as a PAID extra — not a differentiator;
+                          // every tier already gets 24-bit WAV loops
 
 // ---------------------------------------------------------------------------
 // Shape returned when enforceEntitlement is permissive (allowed:true) and
@@ -389,13 +395,19 @@ export async function enforceEntitlement(
       }
       throw new EntitlementError('CREDIT_BALANCE_INSUFFICIENT');
     }
+    // Still data-driven — the flag is read, not hardcoded — so these cases
+    // start allowing the moment a plan row sets the flag and a route exists to
+    // honour it. Migration 034 sets both flags false on all three plans, so
+    // today both always deny. The deny reasons say WHY, because "not in plan"
+    // read as a plan-configuration problem when the real cause is that the
+    // capability was never built.
     case 'export_stems': {
       if (snap.export.stems) return { allowed: true, snapshot: snap };
-      throw new EntitlementError('ENTITLEMENT_UNAVAILABLE', 'stems export not in plan');
+      throw new EntitlementError('ENTITLEMENT_UNAVAILABLE', 'stems export not built: no stem-export route exists');
     }
     case 'export_wav24': {
       if (snap.export.wav24) return { allowed: true, snapshot: snap };
-      throw new EntitlementError('ENTITLEMENT_UNAVAILABLE', 'wav24 export not in plan');
+      throw new EntitlementError('ENTITLEMENT_UNAVAILABLE', 'wav24 is not a paid gate: every plan gets 24-bit WAV loops');
     }
     default: {
       // Exhaustiveness guard; if a new action lands, TS forces an update here.

@@ -282,9 +282,15 @@ def test_down_migration_round_trip(conn):
     every reused database and test_m1_authenticated_insert_policy_removed
     failed from the second run on). Extending the list a fourth time would be
     the same mistake: any migration after 025 that touches chord_edits has to be
-    remembered here. "Re-apply every later migration" is not an option either:
-    028 and 033 contain bare CREATE POLICY and are not re-runnable. A rollback
-    has no list to maintain. The guard against this class is
+    remembered here. Deriving the list from the migrations directory would not
+    fix the class either: it would still rest on every later migration staying
+    re-runnable, and nothing enforces that. (028 and 033 are in fact idempotent
+    today -- every CREATE POLICY in them is either preceded by DROP POLICY IF
+    EXISTS or sits inside a guarded DO block, and 028 says so in its own header
+    -- but that is how they happen to be written, not a property the suite can
+    rely on.) A rollback needs no list at all: Postgres DDL is transactional, so
+    the schema afterwards equals the schema before by construction, whatever
+    later migrations do. The guard against this class is
     test_zz_schema_matches_fresh_migration.py.
     """
     down = (MIGRATIONS / "down" / "025_v3_chord_edits_down.sql").read_text()

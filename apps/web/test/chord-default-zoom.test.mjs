@@ -1236,6 +1236,13 @@ const STYLE_ELEMENT_PROPS = new Set([
   'scrollbar-width', 'scrollbar-color', 'height', 'background', 'border-radius', 'border', 'background-clip',
 ]);
 
+/** The border each chip kind declares (chordChip: none; the outlines are restChipStyle / unknownChipStyle). */
+const CHIP_BORDER_BY_KIND = {
+  chord: 'none',
+  none: '1px dashed rgba(255,255,255,0.5)',
+  unknown: '1px dotted #fbbf24',
+};
+
 /** Every violation of the allowlist for the mounted chips; [] when the font channels are closed. */
 function fontChannelViolations(dom, chips) {
   const out = [];
@@ -1247,7 +1254,22 @@ function fontChannelViolations(dom, chips) {
     const { names, reactStyle, reactReadable } = declaredProps(chip);
     if (!reactReadable) out.push(`${id}: React props unreadable (the gate would see only happy-dom's serialisation)`);
     for (const n of names) if (!CHIP_DECLARES.has(n)) out.push(`${id}: declares ${n}, which a chip may not`);
-    // The one allowed property that moves glyph advances: its value is tied.
+    // THE ONE ALLOWED PROPERTY THAT MOVES GLYPH ADVANCES: its value is tied.
+    //
+    // THE PIN, RECORDED HONESTLY. Chord names are pinned to px on purpose. The cost:
+    // a reader who enlarges their browser's default text size gets WHOLE names at a
+    // FIXED size, not enlarged names -- chord names do not follow their text setting.
+    // That was accepted as a stopgap (Jon, 2026-11-12) because the alternative was
+    // enlarged names that clip, with no code change anywhere.
+    // THE PIN DOES NOT SHIELD A BROWSER MINIMUM FONT SIZE. A minimum of 14 overrides
+    // the 10px `tight` size at render time, so the tight chips come out wider than the
+    // width that decided they fit: 9 of them clipped by up to 7.44px (a figure reported
+    // to this PR, NOT re-measured by this gate -- nothing in this file can measure it,
+    // because happy-dom resolves no browser setting). That case is OPEN, not handled.
+    // THE REAL FIX BELONGS TO THE CHORD SIZING PASS AND IS AN ACCEPTANCE CRITERION OF
+    // IT, not a nicety: read the computed font size, measure at THAT size, render at
+    // it. Until then this assertion proves only that the declared size is the measured
+    // size; it says nothing about the size the browser actually uses.
     const density = chip.dataset.density;
     const want = `${density === 'tight' ? CHIP_TIGHT_FONT_PX : CHIP_FONT_PX}px`;
     if (chip.style.fontSize !== want) out.push(`${id}: font-size is "${chip.style.fontSize}", want "${want}" for a ${density} chip`);
@@ -1256,6 +1278,29 @@ function fontChannelViolations(dom, chips) {
     if (reactStyle && reactStyle.boxSizing !== 'border-box') out.push(`${id}: boxSizing is "${reactStyle.boxSizing}"`);
     const wantPad = density === 'full' ? `0 ${CHIP_FULL_PAD_PX / 2}px` : '0';
     if (reactStyle && reactStyle.padding !== wantPad) out.push(`${id}: padding is "${reactStyle.padding}", want "${wantPad}"`);
+    // BORDER, tied the way padding is: a border is box space taken from the content
+    // width the measurer decided with (a 4px one clipped 7 chips 6px at the ceiling
+    // while `border` was on the allowlist with its value unchecked). A chord chip has
+    // none. The rest/unknown kinds carry the outline their style objects declare, which
+    // is the disclosed N.C. residue (a 1px outline is 2px the measurer does not
+    // subtract); it is pinned to that exact value, not waved through.
+    const wantBorder = CHIP_BORDER_BY_KIND[chip.dataset.kind];
+    if (wantBorder === undefined) out.push(`${id}: kind "${chip.dataset.kind}" has no tied border`);
+    else if (reactStyle && reactStyle.border !== wantBorder) out.push(`${id}: border is "${reactStyle.border}", want "${wantBorder}" for kind "${chip.dataset.kind}"`);
+    // NOTHING GOES INSIDE A CHIP BUT TEXT. The walk above goes UP; this goes DOWN. A
+    // wrapper around the label (a <span> with letterSpacing/fontWeight, even a bare <b>)
+    // changes glyph advances below the chip, where no chip-level or ancestor-level
+    // declaration check can see it. Measured in Chromium: a styled span clipped 7 chips
+    // 16.078px at the ceiling, a bare <b> 2.0px, both with this gate green.
+    // This FORBIDS wrapping a chord label in any element -- including a legitimate one
+    // (e.g. a span for an accidental glyph or a lang/aria affordance). That is the point:
+    // such an edit must come through here, with its width measured, not around it.
+    if (chip.childElementCount !== 0) {
+      out.push(`${id}: has ${chip.childElementCount} child element(s) (<${[...chip.children].map((c) => c.tagName.toLowerCase()).join('>, <')}>); a chip may hold only a text node`);
+    }
+    for (const node of chip.childNodes) {
+      if (node.nodeType !== 3) out.push(`${id}: has a non-text child node (type ${node.nodeType})`);
+    }
     const chipCls = (chip.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
     for (const c of chipCls) if (!ALLOWED_CLASSES.has(c)) out.push(`${id}: carries class "${c}"`);
 

@@ -104,21 +104,33 @@ def owner_patterns(text: str) -> list[str]:
     return out
 
 
-def sample_path(pattern: str) -> str:
-    """A concrete repo path that the CODEOWNERS pattern matches.
+def sample_paths(pattern: str) -> list[str]:
+    """Concrete repo paths that the CODEOWNERS pattern matches — ALL of them
+    that matter, not one.
 
     CODEOWNERS globbing is gitignore-like. Only the shapes this repo actually
     uses are handled, and anything else raises rather than being guessed at —
     a wrong sample would make this gate assert the wrong thing.
+
+    ⚠️ THE DEPTH CASE, which an earlier version of this gate missed and an
+    independent scorer found. A pattern containing NO slash matches at ANY
+    depth, so `AGENTS.md` owns `docs/AGENTS.md` too — while a regex term of
+    `^AGENTS\\.md$` matches only the root copy. Generating a single root sample
+    made this gate report `ok` on exactly that GAP. So a slashless pattern gets
+    a nested sample as well, and the gate is only as good as the samples it
+    thinks to try: that is this function's whole risk surface.
     """
     if pattern.endswith("/**"):
-        return pattern[:-3] + "/_sample.ts"
+        return [pattern[:-3] + "/_sample.ts"]
     if "*" in pattern:
         # the one real case: apps/worker/migrations/*_v3_commercial*.sql
         head, _, tail = pattern.partition("*")
         mid, _, ext = tail.rpartition("*")
-        return f"{head}013{mid}{ext}"
-    return pattern
+        return [f"{head}013{mid}{ext}"]
+    if "/" not in pattern:
+        # unanchored: owned at the root AND at any depth
+        return [pattern, f"docs/{pattern}", f"apps/web/{pattern}"]
+    return [pattern]
 
 
 def claims(pattern: str, path: str) -> bool:
@@ -128,6 +140,9 @@ def claims(pattern: str, path: str) -> bool:
     if "*" in pattern:
         rx = "^" + re.escape(pattern).replace(r"\*", "[^/]*") + "$"
         return re.match(rx, path) is not None
+    if "/" not in pattern:
+        # unanchored: matches at any depth
+        return path == pattern or path.endswith("/" + pattern)
     return path == pattern
 
 
@@ -186,24 +201,30 @@ def main() -> int:
 
     problems: list[str] = []
 
-    # 2a — GAP: every owned pattern must be covered by the regex.
+    # 2a — GAP: every owned pattern must be covered by the regex, at every
+    # depth the pattern reaches.
     for pat in patterns:
         try:
-            sample = sample_path(pat)
+            samples = sample_paths(pat)
         except Exception as exc:  # noqa: BLE001
             problems.append(f"GAP?  cannot synthesise a sample for {pat!r}: {exc}")
             continue
-        if not rx.search(sample):
-            problems.append(
-                f"GAP   .github/CODEOWNERS owns {pat!r} but the workflow regex does not "
-                f"match {sample!r}. A PR touching it would merge without Jon."
-            )
+        for sample in samples:
+            if not rx.search(sample):
+                problems.append(
+                    f"GAP   .github/CODEOWNERS owns {pat!r} but the workflow regex does "
+                    f"not match {sample!r}. A PR touching it would merge without Jon."
+                )
 
     # 2b — LEAK: every regex term must be backed by an owned pattern.
     terms = [t for t in lab_re[2:-1].split("|") if t]
     for term in terms:
+        # Turn a regex term back into one concrete path it blocks. `(.*/)?` is
+        # the "at any depth" prefix that mirrors a slashless CODEOWNERS
+        # pattern, so the root form is the representative probe.
         probe = (
-            term.replace("\\.", ".")
+            term.replace("(.*/)?", "")
+            .replace("\\.", ".")
             .replace("[^/]*", "013_x")
             .replace("$", "")
             .lstrip("^")

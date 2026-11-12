@@ -170,29 +170,48 @@ jobs:
 
           # ── THE APPROVAL VERDICT IS COMPUTED HERE, NOT READ FROM A LABEL ──
           #
-          # `needs-jon-approval` is applied by SEPARATE workflows
-          # (auto-label-codeowners.yml, auto-label-fast-path.yml), so it can
-          # arrive AFTER this job has already merged. It did:
+          # `needs-jon-approval` is applied by a SEPARATE workflow
+          # (auto-label-codeowners.yml), so this job's label check is only as
+          # good as whatever applied the label, and only as timely.
           #
-          #   2026-11-10 19:10:08Z  labeled rollback-safe
-          #   2026-11-10 19:13:05Z  merged                      <- PR #174
-          #   2026-11-10 19:13:41Z  labeled needs-jon-approval  <- 36s too late
+          # ⚠️ CORRECTED 2026-11-12. An earlier version of this comment, and of
+          # the handover it came from, justified this change with PR #174 as a
+          # lost race:
           #
-          # PR #174 reached v3/main without the approval the system itself had
-          # determined was required, while this file described that label as a
-          # "hard stop regardless". A gate that depends on a label arriving
-          # first is not a gate.
+          #   19:10:08Z labeled rollback-safe / 19:13:05Z merged
+          #   19:13:41Z labeled needs-jon-approval   <- "36 seconds too late"
           #
-          # This repo had already diagnosed the class and already carried the
-          # cure, in auto-label-fast-path.yml's own words:
+          # THAT STORY IS FALSE and was checked only after it had been written
+          # down twice. #174's seven files are stem-keys/stem-urls/pipeline/
+          # r2_uploader and their tests. NONE matches the CODEOWNERS set, the
+          # labeller completed `success` at 19:10:08Z and CORRECTLY applied
+          # nothing, and the 19:13:41Z label was applied by hand, after the
+          # merge, by an agent (`actor=JDC000000`,
+          # `performed_via_github_app=claude`). It was a post-hoc judgement,
+          # not a workflow losing a race, and `codeowners_block()` below would
+          # return ALLOW on #174 — correctly.
           #
-          #   "That is a race between two workflows on the same PR.
-          #    The deny list needs no race to win."
+          # WHAT #174 ACTUALLY SHOWS is the other hole: the bot applied
+          # `fast-path` AND `rollback-safe` to it at 19:10:08Z and merged it on
+          # the fast-path arm with no review. That is `auto-label-fast-path.yml`
+          # behaving as written (it applies both for allowlisted paths), and it
+          # was narrowed for product code by the session-12 allowlist
+          # withdrawal. **This change does not address it.**
           #
-          # Its `deny_re` is computed inline from the diff at the moment of
-          # decision, and it is the only one of the three gates that held
-          # through session 12. We copy that property: read the PR's own file
-          # list NOW and apply the CODEOWNERS path set ourselves.
+          # SO WHY STILL DO THIS. Not for #174. The honest case is narrower and
+          # it stands on its own:
+          #
+          #   * The label check cannot act on information the labeller did not
+          #     have. Computing from the diff at the moment of decision cannot
+          #     be stale, cannot be out of order, and cannot be absent.
+          #   * It is the property `auto-label-fast-path.yml` already relies on
+          #     for its `deny_re` — "the deny list needs no race to win" — and
+          #     that deny list is the one gate that held all through session 12.
+          #   * It is defence in depth on the money paths, which is where this
+          #     project's risk tolerance is near zero.
+          #
+          # That is a smaller claim than the one this comment used to make, and
+          # it is the one the evidence supports.
           #
           # The label check further down STAYS. A human or a labeller setting
           # it is still a hard stop. It is simply no longer the only thing
@@ -206,16 +225,31 @@ jobs:
           # .github/CODEOWNERS. There are now THREE copies of this path set;
           # scripts/check_codeowners_drift.py fails CI if they diverge, so do
           # not hand-sync them and hope.
-          CO_RE='^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|AGENTS\.md$)'
+          CO_RE='^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$)'
 
           BLOCK_REASON=""
           # Sets BLOCK_REASON and returns 0 when the PR must go to Jon.
           # Returns 1 only when the diff was read AND touched no owned path.
           codeowners_block() {
-            local pr="$1" changed owned
-            changed=$(gh api --paginate "repos/$REPO/pulls/$pr/files?per_page=100" --jq '.[].filename' || true)
+            local pr="$1" changed owned rc
+            # `|| true` here was a REAL HOLE, found by an independent scorer:
+            # with `--paginate`, a run that returns page 1 and THEN fails exits
+            # non-zero having already printed rows, so `|| true` discarded the
+            # failure and a PARTIAL file list was treated as the whole diff.
+            # Measured: a stub printing one allowed path then exiting 1 returned
+            # ALLOW. The empty-response case failed closed; the partial one did
+            # not, which is the worse half, because a CODEOWNERS path could sit
+            # on the page that never arrived.
+            set +e
+            changed=$(gh api --paginate "repos/$REPO/pulls/$pr/files?per_page=100" --jq '.[].filename')
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              BLOCK_REASON="reading the file list for PR #$pr exited $rc - the diff may be PARTIAL, so refusing rather than guessing"
+              return 0
+            fi
             if [ -z "$changed" ]; then
-              BLOCK_REASON="could not read the file list for PR #$pr - refusing rather than guessing"
+              BLOCK_REASON="the file list for PR #$pr came back empty - refusing rather than guessing"
               return 0
             fi
             owned=$(printf '%s\n' "$changed" | grep -E "$CO_RE" || true)

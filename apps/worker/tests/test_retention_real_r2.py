@@ -130,9 +130,11 @@ def test_expired_job_loses_every_prefixed_shape_even_when_its_objects_are_young(
 
 @pytest.mark.xfail(
     strict=False,
-    reason="shape 7 (jobs/<id>/play.chords.json) is not under `<id>/`, so main's per-job "
-    "delete misses it until the age-based orphan pass reaches it. PR #214 fixes this; "
-    "delete this marker when it lands.",
+    reason="REMOVE THIS MARKER WHEN PR #214 LANDS. Shape 7 (jobs/<id>/play.chords.json) is "
+    "not under `<id>/`, so main's per-job delete misses it until the age-based orphan pass "
+    "reaches it; #214 fixes that. Non-strict so #214's own CI does not go red on XPASS, "
+    "which means that once #214 is in, this test passes forever asserting nothing unless "
+    "someone deletes this decorator.",
 )
 def test_expired_job_loses_its_chords_object_even_when_young(r2, tmp_path):
     async def scenario():

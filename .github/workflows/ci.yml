@@ -124,7 +124,8 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - name: Install Python deps
-        run: pip install -r apps/worker/requirements.txt -c apps/worker/constraints-prod.txt
+        # requirements-dev.txt holds moto, which tests/real_r2.py needs (not in the prod image).
+        run: pip install -r apps/worker/requirements.txt -r apps/worker/requirements-dev.txt -c apps/worker/constraints-prod.txt
       - name: Apply migrations (001-007)
         run: cd apps/worker && PYTHONPATH=src python -m worker.migrate
       - name: pytest

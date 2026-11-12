@@ -1,0 +1,15 @@
+# Test-only dependencies. NOT installed into the production worker image (Dockerfile
+# installs requirements.txt only). Install with the same constraints as the main file:
+#   pip install -r requirements.txt -r requirements-dev.txt -c constraints-prod.txt
+# (`make install` and the CI "Tests" job do this.)
+#
+# WHY THIS SPLIT EXISTS, AND WHY IT IS PARTIAL. moto is a library whose whole purpose is
+# to impersonate AWS S3; it does not belong in the process that talks to real R2, so it
+# lives here. But ruff, black, pytest and pytest-asyncio are ALSO test/dev tools and are
+# still in requirements.txt, hence in the production image. That is pre-existing debt,
+# deliberately not moved in the PR that introduced this file (moving them risks the image
+# build). Move them here when someone can verify a worker image build.
+#
+# tests/real_r2.py needs moto to run the retention sweep against a real S3 server. Without
+# it those tests SKIP locally with a named reason, and FAIL when CI=true.
+moto[s3,server]>=5.0.0

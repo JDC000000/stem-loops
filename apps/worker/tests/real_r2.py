@@ -32,11 +32,30 @@ import socket
 import urllib.request
 from datetime import UTC, datetime, timedelta
 
-# A hard import, deliberately: NOT `pytest.importorskip`. A skipped retention test is
-# the failure mode this file exists to remove.
-from moto.server import ThreadedMotoServer  # noqa: I001
+import pytest
 
 from worker.storage import r2_uploader
+
+# moto lives in requirements-dev.txt, not the production image. When it is missing:
+#   * under CI (GitHub Actions sets CI=true) the test FAILS, loudly: a silent skip is the
+#     failure mode this file exists to remove;
+#   * anywhere else it SKIPS with a reason that says what to install.
+MOTO_MISSING = (
+    "moto is not installed, so the retention tests that run r2_uploader's REAL deleters "
+    "cannot run. Install it: cd apps/worker && pip install -r requirements.txt "
+    "-r requirements-dev.txt -c constraints-prod.txt"
+)
+
+
+def _require_moto():
+    try:
+        from moto.server import ThreadedMotoServer
+    except ImportError:
+        if os.environ.get("CI"):
+            pytest.fail("CI=true but " + MOTO_MISSING, pytrace=False)
+        pytest.skip(MOTO_MISSING)
+    return ThreadedMotoServer
+
 
 BUCKET = "retention-real-r2-test"
 
@@ -54,11 +73,12 @@ class RealR2:
 
     def __init__(self, monkeypatch):
         self._mp = monkeypatch
-        self._server: ThreadedMotoServer | None = None
+        self._server = None
         self.client = None
         self.endpoint = ""
 
     def __enter__(self) -> RealR2:
+        ThreadedMotoServer = _require_moto()
         port = _free_port()
         self.endpoint = f"http://127.0.0.1:{port}"
         self._server = ThreadedMotoServer(ip_address="127.0.0.1", port=port, verbose=False)

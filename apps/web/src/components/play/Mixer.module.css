@@ -28,53 +28,113 @@
   padding: var(--space-3);
 }
 
-/* Six channels share the width, and ALL SIX FIT AT 360px. The budget, on a
-   360px viewport inside the standard 16px page gutter:
+/* The outline entry for the control surface. `aria-label` on the section names
+   the region; this is what a heading-navigating keyboard user finds, and it is
+   real text in the page rather than a label only a screen reader can reach. */
+.heading {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-normal);
+  color: var(--text-primary);
+}
 
-     360 - 32 (gutter) - 2 (.mixer border) - 24 (.mixer padding) = 302px
-     6 x 46px channels + 5 x 2px gaps                            = 286px
+/* ── the rail: a grid, six across or three ───────────────────────────────────
+   WHY A GRID AND NOT SIX FLEX ITEMS. Flexed, the six channels shared whatever
+   width there was and `overflow-x: auto` was the escape hatch when that got too
+   small. Measured in Chromium on the shipped component, a channel is 53.66px at
+   a 390px viewport: the 44px fader hit column with ~5px either side, and M and
+   S as 53.66x44 chiclets. Three across is 109.33px per channel at the same
+   viewport, which is the same six channels with room for the control.
 
-   which leaves 16px of slack, so the channels sit at ~48px each and nothing
-   overflows. The `overflow-x` stays as the escape hatch BELOW 360px, where the
-   rail scrolls rather than crushing the 44px fader hit areas — but at 360px it
-   must never engage, because a horizontal scrollbar there cuts the sixth
-   channel's Solo button in half.
+   NOTHING IS DROPPED BY THE CHANGE. All six channels, both toggles, the fader,
+   the readout and the per-channel note are present at every width; the sixth
+   channel is simply on a second row below 402px instead of off the side of a
+   horizontal scroller. The `overflow-x` escape hatch is gone because the layout
+   can no longer overflow (the numbers are below), and a scroll container there
+   clipped the 2px focus ring at 2px offset on the outermost channels.
 
-   The node:test that guards this resolves every number above out of the
-   stylesheets — the gutter from design-tokens.css, this file's padding,
-   border, channel floor, gap and fader column — at the cascade that applies
-   AT 360px, rather than restating any of them or reading the base cascade.
-   It fails when one of them moves far enough to break the budget; a change
-   that still fits stays green, which is correct rather than lenient.
+   WHERE 360px COMES FROM -- re-derived against THIS app's box and THIS app's
+   type, not the design canvas's. The mixer's content width is a pure function
+   of the viewport here, because nothing between the viewport and the rail is
+   variable:
 
-   WHAT IT CANNOT DO IS LAY OUT A BOX, and that limit is permanent: an
-   overflow caused by anything the arithmetic does not model — a padded
-   descendant, a scrollbar, a shorthand it refuses to expand — is invisible to
-   it. So a green suite is NOT evidence that these boxes fit. Any change to
-   this budget must be MEASURED IN REAL CHROME at 360/390/414/759/760/1024 and
-   the numbers recorded in the PR; the gate's job is to fail when a declared
-   value moves, not to certify the layout. Everything else the gate cannot do
-   is listed at the top of the `CSS geometry` section of play-mixer.test.mjs,
-   and that list is kept true rather than reassuring. The rendered numbers for
-   the current budget were taken in Chrome at 360px and are in the PR. */
+     content = min(960, vw)            JobView's `main` is maxWidth: 960
+             - 2 * --sl-gutter         16px at :root, 32px from 760px up
+             - 2 * 1px                 .mixer's border
+             - 2 * var(--space-3)      .mixer's padding
+
+   Hand-measured in Chromium, which agrees exactly: 262px at a 320px viewport,
+   302px at 360, 332px at 390, 678px at 768, 870px at both 1280 and 1440. (The
+   design brief's 872/680 for desktop and tablet are the PADDING box -- they
+   leave out .mixer's two 1px borders. The rail gets the content box.)
+
+   The binding floor is the LABEL, not the fader. Measured in real Inter at
+   --text-sm / --weight-semibold / uppercase, "VOCALS" is the widest of the six
+   and needs 45.25px at the phone cascade (--tracking-normal) and 48.25px from
+   760px up (--tracking-wide). Rounded up to a 48px channel floor, which also
+   clears the other floor in one number -- the 44px fader hit column plus the
+   channel's two 1px borders is 46px.
+
+   Six across therefore needs 6 * 48 + 5 * 2 = 298px of content, which is a
+   356px viewport. The switch is at 360, the next clean width above it: there
+   the content is 302px and each of six channels is 48.67px, so the widest label
+   has 3.4px to spare and the fader column has 2.67px.
+
+   THE CANVAS'S OWN THRESHOLD DOES NOT PORT, and copying it would have been a
+   regression rather than a near miss. The canvas switched to three across below
+   344px of container, derived against its own type. Against this app's boxes
+   that fires at 390 and at 375 -- the two commonest phone widths -- and three
+   across costs a second row: measured, the mixer went from 388px to 707px tall
+   at 390, the document from 1164px to 1483px, and the first mute button moved
+   from 185px inside the viewport to 106px above it when the chord block is
+   scrolled to the top. That is the metric the rail was supposed to improve,
+   moving the wrong way. The threshold is the measured label floor instead.
+
+   A media query, not a container query: the mapping above is exact, and the
+   resolver that gates this stylesheet can evaluate `@media` and REFUSES on
+   `@container` (which is correct of it, and would leave this ungated). If the
+   mixer is ever nested in a column narrower than the page, this has to become a
+   container query and the numbers above have to be re-measured.
+
+   WHAT NO TEST HERE CAN DO IS LAY OUT A BOX. The widths above were hand-
+   measured in Chromium at 320/360/375/390/414/768/1280/1440 and are recorded in
+   the PR; the gate in play-mixer.test.mjs compares DECLARED values against the
+   measured label floor and refuses to recompute either from the other. A green
+   suite is not evidence that these boxes fit. */
 .rail {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   align-items: stretch;
-  gap: 2px;
-  overflow-x: auto;
-  scrollbar-width: thin;
+  /* Row then column, as ONE property. Declaring `row-gap` and `column-gap`
+     separately makes the cascade resolver in play-mixer.test.mjs refuse the
+     lookup -- it is property-exact and will not guess which of two relatives
+     wins -- so the width budget could not be gated at all. The row gap only
+     does anything below 360, where the six channels are on two rows. */
+  gap: var(--space-2) 2px;
+}
+
+/* Below 360px of viewport six channels can no longer hold a full stem name, so
+   the same six go three across on two rows -- 86px per channel at 320 instead
+   of a horizontal scroller. Full names either way: DR / BA / GT is not a label.
+   This is the width at which the old flex rail started scrolling sideways. */
+@media (max-width: 359px) {
+  .rail {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (min-width: 760px) {
   .rail {
-    gap: var(--space-1);
+    gap: var(--space-2) var(--space-1);
   }
 }
 
 .channel {
-  flex: 1 1 0;
-  /* 44px (--touch-min, the fader's hit column) + 1px border each side. */
-  min-width: 46px;
+  /* A grid item: the track sizing is the rail's business now, so there is no
+     flex basis and no width floor here to disagree with it. `minmax(0, 1fr)` in
+     the rail is what keeps a long note from pushing a column wide. */
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -91,7 +151,6 @@
 
 @media (min-width: 760px) {
   .channel {
-    min-width: 72px;
     gap: var(--space-3);
   }
 }
@@ -143,11 +202,45 @@
 /* ── the fader ───────────────────────────────────────────────────────────── */
 
 .slot {
+  position: relative; /* the envelope's containing block */
   display: flex;
   align-items: center;
   justify-content: center;
   height: 132px;
   width: 100%;
+}
+
+/* ── the stem's own envelope, behind the fader ────────────────────────────────
+   Bar heights arrive as `--mx-bar` custom properties from Mixer.tsx; the
+   `height` below is the stylesheet's, and there is deliberately no inline
+   `height` for it to lose to. Decorative: `aria-hidden` in the markup, and
+   `pointer-events: none` so the 44px fader column is still the only thing in
+   the slot that takes a pointer. */
+.wave {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  pointer-events: none;
+  /* A guard, not a crutch: the bar count is derived to fit the narrowest slot,
+     and this means a later change to the type scale or the gutter can only ever
+     crop a decorative figure instead of spilling it into the next channel. The
+     fader is this element's SIBLING, so nothing here clips its focus ring. */
+  overflow: hidden;
+}
+
+.wave > span {
+  flex: 1 1 0;
+  min-width: 1px;
+  /* 8px, so ENVELOPE_BARS bars plus their gaps span the WIDEST slot exactly
+     (139.66px at 1280/1440) rather than floating in the middle of it. The bar
+     count is derived against the NARROWEST slot; see ENVELOPE_BARS. */
+  max-width: 8px;
+  height: var(--mx-bar, 40%);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--stem, var(--text-secondary)) 34%, transparent);
 }
 
 @media (min-width: 760px) {
@@ -156,9 +249,30 @@
   }
 }
 
+/* Three across (below 360px) puts the fader in an 86px column at 320 instead of
+   a 46px one, so it is a far easier grab across than it was and some of the
+   height that narrowness was paying for can come back. 108px still clears
+   --touch-min on the long axis by 64px. Below 360 is the only width where the
+   second row costs real page height, and this buys back 48px of it.
+
+   THIS BLOCK HAS TO SIT HERE, below `.slot`'s own declaration, and the first
+   draft of it did not -- it was up with the rail's own breakpoint, above the
+   base rule, where a media query adds no specificity and simply loses. Measured
+   in Chromium: the mixer stayed 707px tall at 320 with the rule present. This
+   file has already been bitten by the same thing once (see the note on `.name`
+   and --tracking-wide below), which is why the measurement, not the reading,
+   is what is trusted here. */
+@media (max-width: 359px) {
+  .slot {
+    height: 108px;
+  }
+}
+
 .fader {
   /* a 44px-wide touch column over a 6px painted track */
   box-sizing: border-box;
+  position: relative;
+  z-index: 1; /* over the envelope, which is absolutely positioned behind it */
   width: var(--touch-min);
   height: 100%;
   margin: 0;
@@ -167,7 +281,34 @@
   cursor: ns-resize;
   touch-action: none; /* a vertical drag must not scroll the page instead */
 
-  -webkit-appearance: slider-vertical; /* older WebKit */
+  /* `appearance: none`, NOT `-webkit-appearance: slider-vertical`.
+     ──────────────────────────────────────────────────────────────────────────
+     This file declared `slider-vertical` and then declared a 32x14 thumb, a
+     two-stop track gradient, a hover thumb and a disabled thumb underneath it.
+     NONE OF THEM EVER PAINTED. `::-webkit-slider-thumb` and
+     `::-webkit-slider-runnable-track` only take author styles when the control
+     is NOT drawing its native widget, and `slider-vertical` is a native widget.
+
+     Measured in Chromium 153, before this change:
+       getComputedStyle(fader, '::-webkit-slider-thumb')
+         -> width 44px, height 176px, background rgba(0,0,0,0), border-radius 0
+       declared                     -> 32x14, --text-secondary, --radius-sm
+     and a screenshot at 1440 shows the UA's default BLUE CIRCLE on all six
+     channels. On a dark channel strip whose north star is Moises, the main
+     control of the component was an unstyled browser default.
+
+     The orientation comes from `writing-mode` instead, which is the standard
+     mechanism (Chrome 130+, Firefox 129+, Safari 17.4+) and is what the three
+     browsers agree on; `orient="vertical"` in Mixer.tsx still covers older
+     Firefox. THE TRADE, stated rather than buried: Safari below 17.4 had
+     `slider-vertical` and now gets a HORIZONTAL fader. It is still a real range
+     input with the same min/max/step, the same keyboard behaviour, the same
+     44px hit column and the same painted level -- it lies down rather than
+     disappearing, and every modern browser gets the control that was designed.
+     A rotate() hack is still NOT used: it moves the hit area away from the
+     painted control, which is what a guitarist reaching by feel is bitten by. */
+  appearance: none;
+  -webkit-appearance: none;
   writing-mode: vertical-lr; /* the standard */
   direction: rtl; /* zero at the bottom */
 }
@@ -197,7 +338,7 @@
   width: 32px;
   height: 14px;
   margin-left: -13px; /* centre the cap over the 6px track */
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: var(--text-secondary);
   border: 1px solid var(--bg-page);
   box-shadow: var(--shadow-card);
@@ -234,7 +375,7 @@
 .fader::-moz-range-thumb {
   width: 32px;
   height: 14px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: var(--text-secondary);
   border: 1px solid var(--bg-page);
 }
@@ -257,13 +398,18 @@
 
 /* ── M / S ───────────────────────────────────────────────────────────────── */
 
-/* On phones M sits ABOVE S rather than beside it. Side by side, two buttons
+/* M sits ABOVE S at EVERY width, not only on phones. Side by side, two buttons
    splitting a ~48px channel measured 19x40px each in Chrome at 360px — a
    chiclet, not a thumb target. (The app is border-box via globals.css, so
    `.toggles`' own padding came OUT of that width rather than being added to
    it.) Stacked, each button is the full channel width by --touch-min tall, so
-   both axes clear 44px. From 760px up there is width to spare and they go back
-   to a row. */
+   both axes clear 44px.
+
+   It used to go back to a row from 760px up. One arrangement at every width is
+   worth more than the saved height: the pair is a thing you reach for without
+   looking, and M being above S on a phone and beside it on a laptop is two
+   layouts to learn for one control. Stacked at 1280/1440 each button is
+   141.66 x 44px, hand-measured in Chromium. */
 .toggles {
   box-sizing: border-box; /* as .note: width 100% plus padding, stated locally */
   display: flex;
@@ -297,14 +443,7 @@
 
 @media (min-width: 760px) {
   .toggles {
-    flex-direction: row;
     gap: var(--space-1);
-    padding-inline: var(--space-1);
-  }
-
-  .toggle {
-    flex: 1 1 0;
-    height: var(--touch-min);
   }
 }
 
@@ -376,6 +515,41 @@
   color: var(--status-failed);
 }
 
+/* ── a muted stem DIMS; it does not vanish ───────────────────────────────────
+   Before this, pressing M struck the name through and reddened the note and
+   left the fader column and the envelope at full strength — so a muted guitar
+   still showed a full-strength pink column, which reads as "sounding".
+
+   The column and the envelope both drop to 26% of the stem's own hue over the
+   channel's surface. Three things that matters for:
+     - the stem is still IDENTIFIABLE: it is still guitar's hue, not a generic
+       grey, so a muted channel is not anonymous;
+     - the LEVEL is still readable: the gradient stop stays at `--mx-fill`, so
+       you can see where the fader is set while it is silenced, and know what
+       you are coming back to when you unmute;
+     - nothing is hidden. The dimming is on the painted column and the
+       decorative figure only. No text is dimmed by it, which is the rule the
+       ducked state already had to learn the hard way.
+
+   `--bg-surface` is the channel's own background, so the mix is over the colour
+   actually behind it rather than a literal near-black. */
+.isMuted .fader::-webkit-slider-runnable-track {
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--stem, var(--text-secondary)) 26%, var(--bg-surface)) 0
+      var(--mx-fill, 0%),
+    var(--bg-elevated) var(--mx-fill, 0%) 100%
+  );
+}
+
+.isMuted .fader::-moz-range-progress {
+  background: color-mix(in srgb, var(--stem, var(--text-secondary)) 26%, var(--bg-surface));
+}
+
+.isMuted .wave > span {
+  background: color-mix(in srgb, var(--stem, var(--text-secondary)) 26%, var(--bg-surface));
+}
+
 /* Silent because something ELSE is soloed. Deliberately NOT the muted look:
    the channel recedes and the note says why, but nothing is struck through,
    because the user did not turn this off — it will come back on its own when
@@ -394,6 +568,10 @@
 }
 
 .isDucked:not(.isMuted) .slot {
+  /* The envelope lives in the slot, so this one declaration now recedes the
+     column AND the figure together — which is what "quiet because something
+     else is soloed" should look like. Still nothing but the slot: every word on
+     the channel keeps the contrast it had. */
   opacity: 0.55;
 }
 
@@ -431,12 +609,26 @@
 /* ── legend ──────────────────────────────────────────────────────────────── */
 
 .legend {
+  /* `position: relative` so `.srOnly` below has a positioned ancestor. An
+     absolutely positioned visually-hidden span whose containing block is the
+     INITIAL containing block escapes its parent's clip and can contribute to
+     the root's scrolling area -- measured elsewhere in this project as an
+     unexplained ~871px of phantom document scroll that cost an agent a day and
+     a reverted fix. `html, body { overflow: hidden }` does not fix it; it
+     removes the scrollbar, not the scroll. One line, no visual change. */
+  position: relative;
   margin: 0;
   text-align: center;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   letter-spacing: var(--tracking-wide);
-  color: var(--text-subtle);
+  /* `--text-subtle` measured 3.15:1 on this card in Chromium, compositing the
+     full ancestor chain -- a 1.4.3 failure that shipped. It is --text-xs, so it
+     needs 4.5:1, not 3:1. `--text-muted` measures 6.43:1 on the same box. The
+     legend is the key to M and S; it is not decoration that may fall below the
+     floor. (Ratios only, no hex: the token gate below reads this file's raw
+     source, comments included, and a colour literal in prose fails it.) */
+  color: var(--text-muted);
 }
 
 .srOnly {
@@ -482,6 +674,13 @@
 
   .isDucked:not(.isMuted) .slot {
     opacity: 1; /* opacity is not a reliable signal here; the note carries it */
+  }
+
+  /* The envelope is a colour tint with no role beyond atmosphere, and in forced
+     colours it would render as a block of CanvasText behind the control. It
+     stands down; the fader, the readout and the note all still say the level. */
+  .wave {
+    display: none;
   }
 
   .fader::-webkit-slider-runnable-track {

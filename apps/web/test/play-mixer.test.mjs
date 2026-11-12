@@ -1424,32 +1424,85 @@ test('the page gutter is declared in exactly one file, which is what makes pageG
   );
 });
 
-test('every channel fits at 360px, with each number resolved from the stylesheets', () => {
+// The widest stem label, MEASURED IN CHROMIUM in real Inter at --text-sm /
+// --weight-semibold / uppercase, and written down here as a literal. It is the
+// one number in the budget below that does NOT come from the stylesheets, and
+// that is the point: a gate that resolves every term from the same source it is
+// checking proves only that the source agrees with itself.
+//
+//   "VOCALS", --tracking-normal (the phone cascade) -> 45.25px
+//   "VOCALS", --tracking-wide   (from 760px up)     -> 48.25px
+//
+// 48 is the ceiling of the wider of the two, and it also clears the OTHER floor
+// in one number: the 44px fader hit column plus the channel's two 1px borders.
+const LABEL_FLOOR_PX = 48;
+
+test('six channels fit at 360px and three fit below it, against the measured label floor', () => {
   const css = read(MIXER_CSS);
-  const at = (selector, prop) => declAt(css, NARROWEST, selector, prop);
-  const gutter = pageGutter();
-  const channelMin = px(at('.channel', 'min-width'));
-  const railGap = px(at('.rail', 'gap'));
-  const mixerPad = px(at('.mixer', 'padding'));
-  const mixerBorder = px(at('.mixer', 'border').split(/\s+/)[0]);
+  const at = (selector, prop, width = NARROWEST) => declAt(css, width, selector, prop);
   const channels = PLAYABLE_STEMS.length;
 
-  // What a 360px viewport actually leaves the rail, inside the page gutter and
-  // the mixer's own border and padding.
+  // The rail is a grid now, so the column count is the thing to read and the
+  // channel has no width floor of its own to disagree with it.
+  const cols = (width) => {
+    const value = at('.rail', 'grid-template-columns', width);
+    const m = value.match(/^repeat\(\s*(\d+)\s*,/);
+    assert.ok(m, `cannot read a column count from \`${value}\``);
+    return Number(m[1]);
+  };
+  assert.equal(cols(NARROWEST), channels, 'six across at 360');
+  assert.equal(cols(1024), channels, 'six across on a laptop');
+  assert.equal(cols(320), 3, 'three across below 360, not a horizontal scroller');
+
+  // …and all six are still rendered at that width. Three across is a second
+  // row, never five channels and a scrollbar.
+  const html = render({ stems: allReady(), onGain() {}, onMute() {}, onSolo() {} });
+  for (const name of PLAYABLE_STEMS) {
+    assert.match(html, new RegExp(`data-stem="${name}"`), `${name} is not rendered`);
+  }
+
+  // What a 360px viewport leaves the rail, inside the page gutter and the
+  // mixer's own border and padding. Every term resolved at 360.
+  const gutter = pageGutter();
+  const mixerPad = px(at('.mixer', 'padding'));
+  const mixerBorder = px(at('.mixer', 'border').split(/\s+/)[0]);
+  // `gap` is `<row> <column>`; the column gap is what the width budget spends.
+  const columnGap = (width) => {
+    const parts = at('.rail', 'gap', width).trim().split(/\s+/);
+    assert.equal(parts.length, 2, `expected \`gap: <row> <column>\`, got \`${parts.join(' ')}\``);
+    return px(parts[1], width);
+  };
+  const colGap = columnGap(NARROWEST);
   const available = NARROWEST - 2 * gutter - 2 * mixerBorder - 2 * mixerPad;
-  const required = channels * channelMin + (channels - 1) * railGap;
+  const required = channels * LABEL_FLOOR_PX + (channels - 1) * colGap;
   assert.ok(
     required <= available,
-    `${channels} channels need ${required}px but only ${available}px is available at ` +
-      `${NARROWEST}px (gutter ${gutter}, border ${mixerBorder}, padding ${mixerPad})`,
+    `${channels} channels need ${required}px (${LABEL_FLOOR_PX}px each, measured) but only ` +
+      `${available}px is available at ${NARROWEST}px ` +
+      `(gutter ${gutter}, border ${mixerBorder}, padding ${mixerPad}, column-gap ${colGap})`,
   );
+
+  // Below the breakpoint, three across has to fit the NARROWEST phone we claim
+  // to support. 320px viewport, same chain.
+  const narrowAvail = 320 - 2 * pageGutter(320) - 2 * mixerBorder - 2 * px(at('.mixer', 'padding', 320));
+  const narrowReq = 3 * LABEL_FLOOR_PX + 2 * columnGap(320);
+  assert.ok(narrowReq <= narrowAvail, `three channels need ${narrowReq}px of ${narrowAvail}px at 320px`);
 
   // and the channel is still wide enough to hold the full 44px fader column
   const touch = px('var(--touch-min)');
   assert.equal(px(at('.fader', 'width')), touch);
   assert.ok(
-    channelMin >= touch + 2,
-    `a ${channelMin}px channel cannot hold a ${touch}px fader plus its borders`,
+    LABEL_FLOOR_PX >= touch + 2,
+    `a ${LABEL_FLOOR_PX}px channel cannot hold a ${touch}px fader plus its borders`,
+  );
+
+  // THE BREAKPOINT ITSELF. Stated as a literal so moving it is deliberate, and
+  // checked against the budget above rather than against itself: at 360 six
+  // channels must fit, and the rule must hand over to three BELOW that.
+  assert.match(
+    css,
+    /@media \(max-width: 359px\)/,
+    'the three-across rule must hand over immediately below 360',
   );
 });
 
@@ -1460,6 +1513,46 @@ test('stem names are not tracked out of their own channel on phones', () => {
   // tracking this depends on is a declared value and can be pinned.
   assert.equal(declAt(css, NARROWEST, '.name', 'letter-spacing'), 'var(--tracking-normal)');
   assert.equal(declAt(css, 1024, '.name', 'letter-spacing'), 'var(--tracking-wide)');
+});
+
+test('a muted stem DIMS and still shows its level; it does not vanish and is not anonymised', () => {
+  // Found by mutation: deleting the dimming rule left the suite green while a
+  // muted guitar rendered at full-strength teal, identical to an unmuted stem
+  // (verified in Chromium, not inferred -- `color(srgb 0.18 0.77 0.71 / 0.34)`
+  // with the rule gone against `color(srgb 0.096 0.249 0.235)` with it).
+  const css = read(MIXER_CSS);
+  const at = (selector, prop) => declAt(css, NARROWEST, selector, prop);
+
+  // 1. the figure dims, and dims to the STEM'S OWN hue -- a muted channel is
+  //    still identifiably guitar rather than a generic grey box
+  const wave = at('.isMuted .wave > span', 'background');
+  assert.match(wave, /color-mix\(/, 'a muted stem must be dimmed, not left at full strength');
+  assert.match(wave, /var\(--stem/, 'and must keep its own hue, so the channel is not anonymous');
+
+  // 2. the painted column dims the same way…
+  const track = at('.isMuted .fader::-webkit-slider-runnable-track', 'background');
+  assert.match(track, /color-mix\(/);
+  assert.match(track, /var\(--stem/);
+
+  // 3. …but the LEVEL survives the dimming. This is the substantive property:
+  //    the gradient stop is still the live value, so a user can read where the
+  //    fader is set while it is silenced and know what unmuting returns to.
+  //    A rule that dimmed by painting the whole track one flat colour would
+  //    pass 1 and 2 and fail here.
+  const stops = track.match(/var\(--mx-fill[^)]*\)/g) ?? [];
+  assert.equal(stops.length, 2, `the muted track must still be a two-stop gradient at --mx-fill`);
+  assert.equal(at('.isMuted .fader::-moz-range-progress', 'background').includes('color-mix('), true);
+
+  // 4. and nothing that dims a muted channel may touch its TEXT. The note turns
+  //    red and the name is struck through; neither is faded, and no opacity is
+  //    put on the channel.
+  for (const selector of ['.isMuted', '.isMuted .name', '.isMuted .note']) {
+    assert.equal(
+      declAt(css, NARROWEST, selector, 'opacity', { required: false }),
+      null,
+      `${selector} fades text that still has to be read`,
+    );
+  }
 });
 
 test('ducking recedes the LEVEL, never the words: no opacity on the channel itself', () => {
@@ -1488,7 +1581,7 @@ test('ducking recedes the LEVEL, never the words: no opacity on the channel itse
   assert.equal(declForcedColors(css, NARROWEST, '.isDucked:not(.isMuted) .slot', 'opacity'), '1');
 });
 
-test('M and S are real touch targets on phones: stacked, and --touch-min on both axes', () => {
+test('M and S are real touch targets at EVERY width: stacked, and --touch-min on both axes', () => {
   const css = read(MIXER_CSS);
   const narrow = (selector, prop) => declAt(css, NARROWEST, selector, prop);
   const touch = px('var(--touch-min)');
@@ -1505,16 +1598,21 @@ test('M and S are real touch targets on phones: stacked, and --touch-min on both
   assert.equal(narrow('.note', 'box-sizing'), 'border-box');
   assert.equal(narrow('.toggles', 'box-sizing'), 'border-box');
 
-  // From 760px up there is width for a row again — resolved AT 1024px, so a
-  // rule that leaves the breakpoint it is supposed to be in fails here rather
-  // than matching some other block's `flex-direction: row`. And it is still a
-  // row at exactly 760, the boundary.
-  for (const wide of [760, 1024]) {
-    assert.equal(declAt(css, wide, '.toggles', 'flex-direction'), 'row', `at ${wide}px`);
-    assert.equal(px(declAt(css, wide, '.toggle', 'height'), wide), touch, `at ${wide}px`);
+  // ONE ARRANGEMENT AT EVERY WIDTH. These used to go back to a row from 760px
+  // up, which is two layouts to learn for a pair you reach for without looking.
+  // Resolved AT each width, so a rule that leaves the block it is supposed to
+  // be in fails here rather than matching some other block's declaration.
+  // Stacked at 1280/1440 each button is 141.66 x 44px, hand-measured in
+  // Chromium -- there is no width problem to solve by lying them down.
+  for (const width of [320, 359, 360, 759, 760, 1024, 1440]) {
+    assert.equal(declAt(css, width, '.toggles', 'flex-direction'), 'column', `at ${width}px`);
+    assert.equal(
+      declAt(css, width, '.toggle', 'height', { required: false }),
+      null,
+      `a fixed height at ${width}px can shrink the target below ${touch}px`,
+    );
+    assert.equal(px(declAt(css, width, '.toggle', 'min-height'), width), touch, `at ${width}px`);
   }
-  // …and still stacked at 759, the width below it
-  assert.equal(declAt(css, 759, '.toggles', 'flex-direction'), 'column');
   assert.match(css, /touch-action:\s*none/);
 });
 

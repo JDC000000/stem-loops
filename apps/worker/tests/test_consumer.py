@@ -18,6 +18,19 @@ DB = os.environ.get("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
 
 
+@pytest.fixture(autouse=True)
+def _spend_brake_released():
+    """`claim_and_run` refuses to claim unless the `spend_global` row EXISTS and is released
+    (migration 034, fail-closed). Other suites DELETE rows from kill_switches
+    (test_fetch_gates_db.py clears every scope but fetch_cobalt), so this test must not depend
+    on the order the files run in."""
+    with psycopg.connect(DB) as c:
+        c.execute(
+            "INSERT INTO kill_switches(scope, enabled) VALUES ('spend_global', false) "
+            "ON CONFLICT (scope) DO UPDATE SET enabled = false"
+        )
+
+
 async def _insert_queued(url: str) -> str:
     job_id = str(uuid.uuid4())
     async with await psycopg.AsyncConnection.connect(DB) as conn:

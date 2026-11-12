@@ -32,6 +32,7 @@ from .logger import log_structured
 from .loop_cutter import claim_and_cut, reap_stale_requests
 from .pipeline import run_pipeline
 from .reaper import reap_stale_jobs
+from .spend_gate import brake_state
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 POLL_INTERVAL = 2  # seconds
@@ -43,7 +44,15 @@ CLEANUP_INTERVAL = int(os.environ.get("RETENTION_SWEEP_SECONDS", "900"))
 
 
 async def claim_and_run() -> bool:
-    """Claim one queued job and run it. Returns True if a job was claimed."""
+    """Claim one queued job and run it. Returns True if a job was claimed.
+
+    SPEND BRAKE (migration 034, worker/spend_gate.py). Checked HERE, before anything is
+    claimed: while `spend_global` is engaged, or unreadable, or absent, no job leaves `queued`,
+    nothing is spent, and the job resumes when the brake is released. This is the only place the
+    brake is consulted; both input paths and both paid providers sit behind a claimed job.
+    """
+    if (await brake_state(DATABASE_URL)).engaged:
+        return False
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
         row = await (await conn.execute("""
                 UPDATE jobs SET status='downloading', updated_at=now()

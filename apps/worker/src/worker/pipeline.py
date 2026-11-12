@@ -2,9 +2,16 @@
 label → encode → upload.
 
 Structure:
-  * The audio CORE (`extract_and_tag` + `encode_and_upload`, composed as
-    `process_stems`) is pure/sync and runs against any set of local stem WAVs —
-    so it is fixture-testable end-to-end (extract→upload) with no YouTube/Replicate.
+  * The audio CORE (`extract_and_tag` + `record_loops` + `cut_recorded_loops`,
+    composed as `process_stems`) is pure/sync and runs against any set of local
+    stem WAVs — so it is fixture-testable end-to-end with no YouTube/Replicate.
+  * LOOP CUTTING IS ON DEMAND (migration 033). The live pipeline runs
+    `extract_and_tag` then `record_loops`, which writes a `loops` row per loop and
+    cuts no bytes. `cut_recorded_loops` — seamless join, 24-bit encode, R2 PUT,
+    800-point peaks — runs from `loop_cutter`'s claim loop when a `loop_requests`
+    row says a user asked. The play-along player is unaffected: it derives its
+    section regions from `loops.section_label/start_sec/end_sec`, which
+    `record_loops` writes in full.
   * `run_pipeline` is the async orchestrator. download_audio (Cobalt+yt-dlp, gated
     on the S1 bake-off) and Replicate separation (live in P2-12+) PRODUCE the stem
     WAVs, then hand off to the core. Heavy sync work runs in a thread so the
@@ -27,6 +34,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import librosa
+import numpy as np
 import psycopg
 import sentry_sdk
 from psycopg.types.json import Json
@@ -53,8 +61,10 @@ from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
 from .storage.r2_uploader import (
     download_object,
+    loop_r2_key,
     upload_input,
     upload_loop,
+    upload_loop_to_key,
     upload_play_chords,
     upload_stem,
 )
@@ -292,6 +302,22 @@ def _insert_loop(row: tuple) -> None:
         c.commit()
 
 
+def _mark_loop_cut(loop_id: str, peaks: list[float]) -> None:
+    """Close out one loop: its bytes are in R2 at the key the row already names.
+
+    Only the cut-related columns move. `start_sec`, `end_sec` and `section_label`
+    are deliberately NOT written here: the play-along player derives its section
+    regions from exactly those three columns (apps/web/src/lib/play/sections.ts),
+    so a cut must never be able to shift a section boundary under a listener.
+    """
+    with _db() as c:
+        c.execute(
+            "UPDATE loops SET waveform_peaks=%s, cut_at=now() WHERE id=%s",
+            (Json(peaks), loop_id),
+        )
+        c.commit()
+
+
 # ----------------------------- audio core (sync) -----------------------------
 def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     """Load ref stem, detect bpm/key, extract loops, classify energy + label sections."""
@@ -318,10 +344,26 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     return loops, tags, seg_label, seg_energy
 
 
-def encode_and_upload(
-    job_id, loops, tags, seg_label, seg_energy, bars, sr=44100, title=None
-) -> int:
-    """Per loop: seamless seam → 24-bit encode → R2 upload → loops row. Returns count."""
+def record_loops(job_id, loops, tags, seg_label, seg_energy, bars, title=None) -> int:
+    """Describe every loop in the DB WITHOUT cutting a single byte. Returns count.
+
+    This is the eager half of the on-demand split (migration 033). It writes the
+    musical description — stem, section, energy, start/end, start bar, bar count,
+    BPM, key, filename — and the r2_key the WAV *will* have, with `cut_at` and
+    `waveform_peaks` left NULL.
+
+    WHY THIS IS THE RIGHT LINE TO DRAW. `apps/web/src/lib/play/sections.ts`
+    derives the play-along player's section-loop regions from these rows, and its
+    own row view reads exactly `section_label`, `start_sec` and `end_sec`. Those
+    three are all written here. What it never reads — r2_key's object,
+    waveform_peaks, duration_ms, signed_url — is what the expensive half produces.
+    So the player is served in full by this function alone, and nothing in its
+    data path changes: same table, same columns, same query.
+
+    Costs nothing but one INSERT per loop: no seamless join, no PCM_24 write, no
+    800-point peaks, no R2 PUT. Measured per loop on the removed work: 27.9 ms of
+    CPU, 2,116,844 B of R2 and 16,667 B of jsonb.
+    """
     bar = 4 * 60.0 / tags["bpm"]
     duration_ms = int(bars * bar * 1000)
     # Loops inherit the job-level BPM/key (computed once from the reference stem).
@@ -333,25 +375,20 @@ def encode_and_upload(
     # Song-title prefix (QA §4.4) so a downloaded/zipped loop reads like its track, not a
     # UUID. Falls back to the job id (e.g. the fixture path / YouTube) when there's no title.
     name_base = title or job_id
-    tmpdir = tmpdirs.mkdtemp(prefix="sl_loops_")
-
-    def _one(item) -> int:
-        # Runs in a worker thread: seamless → 24-bit encode → R2 upload → DB row.
-        # Each call uses its own DB connection; the R2 client is a shared singleton.
-        idx, loop = item
-        loop_id = str(uuid.uuid4())
-        audio = seamless_apply(loop["audio"], sr)
-        out_path = os.path.join(tmpdir, f"{loop_id}.wav")
-        encode_24bit(audio, sr, out_path)
-        peaks = waveform_peaks(audio)
+    n = 0
+    for idx, loop in enumerate(loops):
         seg = (loop["start_sec"], loop["end_sec"])
         section = seg_label.get(seg, "verse")
         energy = seg_energy.get(seg, "mid")
-        r2_key = upload_loop(job_id, loop["stem"], section, idx, out_path)
+        # The key is a pure function of the row, so it can be named before the
+        # bytes exist — and it is the UNIQUE (job_id, r2_key) target the cutter
+        # later lands on. `bars` is in it: see r2_uploader.loop_r2_key for the
+        # overwrite bug that omitting it caused.
+        r2_key = loop_r2_key(job_id, loop["stem"], bars, section, idx)
         fname = f"{name_base}_{loop['stem']}_{bpm}bpm_{key_slug}_{section}_{idx:04d}.wav"
         _insert_loop(
             (
-                loop_id,
+                str(uuid.uuid4()),
                 job_id,
                 loop["stem"],
                 section,
@@ -365,19 +402,93 @@ def encode_and_upload(
                 r2_key,
                 fname,
                 duration_ms,
-                Json(peaks),
+                None,  # waveform_peaks — produced by the cut, not by the description
             )
         )
+        n += 1
+    log_structured("INFO", "loops_recorded", job_id=job_id, loops=n, cut=False)
+    return n
+
+
+def cut_recorded_loops(job_id, stem_paths, sr=44100) -> int:
+    """Cut every UNCUT loop row of a job out of the full-length stem WAVs.
+
+    The expensive half, run only when someone asks (`loop_requests`). For each
+    row with `cut_at IS NULL`: slice [start_sec, end_sec) out of that stem's
+    full-length WAV, seamless-join the seam, 24-bit encode, PUT to the row's own
+    `r2_key`, then stamp `waveform_peaks` + `cut_at`.
+
+    THERE IS ONLY ONE CUTTING IMPLEMENTATION, AND THIS IS IT. The eager
+    composition (`process_stems`, used by the fixture CI job) and the on-demand
+    claim loop (`loop_cutter`) both call this function with a stem->WAV-path
+    dict, so the two cannot drift apart. The sample arithmetic is copied from
+    `extract_loops` on purpose — `int(round(start_sec * sr))` and a
+    `round(loop_dur * sr)`-sample window — so a row cut here is byte-identical to
+    what the eager cut used to produce. `tests/test_loop_cutter.py` pins that.
+
+    Returns the number of loops cut.
+    """
+    rows = _fetch_uncut_loops(job_id)
+    if not rows:
+        return 0
+    tmpdir = tmpdirs.mkdtemp(prefix="sl_loopcut_")
+    # One librosa decode per stem, reused by every row of that stem. Decoding
+    # per row would re-read a 300 s WAV up to ten times.
+    cache: dict[str, np.ndarray] = {}
+
+    def _stem_audio(stem: str):
+        if stem not in cache:
+            path = stem_paths.get(stem)
+            if not path or not os.path.exists(path):
+                return None
+            y, _ = librosa.load(path, sr=sr, mono=False)
+            if y.ndim == 1:
+                y = y[np.newaxis, :]
+            cache[stem] = y
+        return cache[stem]
+
+    def _one(row) -> int:
+        loop_id, stem, start_sec, end_sec, r2_key = row
+        y = _stem_audio(stem)
+        if y is None:
+            log_structured("WARN", "loop_cut_skipped_no_stem", job_id=job_id, stem=stem)
+            return 0
+        s = int(round(float(start_sec) * sr))
+        n_samp = int(round((float(end_sec) - float(start_sec)) * sr))
+        chunk = y[:, s : s + n_samp]
+        if chunk.shape[1] < int(n_samp * 0.9):
+            log_structured("WARN", "loop_cut_skipped_short", job_id=job_id, stem=stem)
+            return 0
+        audio = seamless_apply(chunk, sr)
+        out_path = os.path.join(tmpdir, f"{loop_id}.wav")
+        encode_24bit(audio, sr, out_path)
+        peaks = waveform_peaks(audio)
+        # The row already names its key; uploading to it makes the row true. A
+        # re-run of a failed request overwrites in place rather than duplicating.
+        upload_loop_to_key(str(r2_key), out_path)
+        _mark_loop_cut(loop_id, peaks)
         return 1
 
     # Parallelize the network-bound upload work — the dominant cost at scale.
     # Configurable so a small (2-core) Fly VM can cap concurrency: 8 CPU-bound encode
     # threads there give no throughput gain (GIL) and multiply peak memory (a live
     # encode buffer per thread), which contributed to OOM on full-length tracks.
-    # Default 8 keeps Option A's behaviour unchanged.
+    # Default 8 keeps the pre-033 behaviour unchanged.
     workers = int(os.environ.get("LOOP_ENCODE_WORKERS", "8"))
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        return sum(ex.map(_one, enumerate(loops)))
+        cut = sum(ex.map(_one, rows))
+    log_structured("INFO", "loops_cut", job_id=job_id, loops=cut, requested=len(rows))
+    return cut
+
+
+def _fetch_uncut_loops(job_id: str) -> list[tuple]:
+    """(id, stem, start_sec, end_sec, r2_key) for every row of a job not yet cut."""
+    with _db() as c:
+        return c.execute(
+            "SELECT id, stem, start_sec, end_sec, r2_key FROM loops "
+            "WHERE job_id=%s AND cut_at IS NULL ORDER BY stem, start_sec",
+            (job_id,),
+        ).fetchall()
 
 
 # The canonical htdemucs_6s stem set. ALL SIX are retained for the mixer,
@@ -558,11 +669,20 @@ def retain_stems(job_id, stem_paths) -> dict:
 
 
 def process_stems(job_id, stem_paths, requested_stems, bars, sr=44100) -> int:
-    """Full audio core: extract+tag then encode+upload. Returns loops created."""
+    """Extract + tag + RECORD + CUT, all in one pass. Returns loops cut.
+
+    NOT what the live pipeline does any more — `_run_pipeline` stops after
+    `record_loops` and the cut waits for a `loop_requests` row (migration 033).
+    This composition is kept because it is the fixture / Gate-2 end-to-end path
+    (`tests/test_pipeline_fixtures.py`): it exercises extract → record → cut →
+    R2 → DB against a real Postgres and MinIO in one call, which is still the
+    only test that proves the whole audio core agrees with itself.
+    """
     loops, tags, seg_label, seg_energy = extract_and_tag(
         job_id, stem_paths, requested_stems, bars, sr
     )
-    return encode_and_upload(job_id, loops, tags, seg_label, seg_energy, bars, sr)
+    record_loops(job_id, loops, tags, seg_label, seg_energy, bars)
+    return cut_recorded_loops(job_id, stem_paths, sr)
 
 
 # --------------------------- Y1.1: chord recognition ----------------------------
@@ -1068,7 +1188,13 @@ def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
     """Phase-1 STUB: write fake loops to the DB AND upload a tiny silent 24-bit WAV
     to each loop's r2_key (via upload_loop → same key scheme + audio/wav content-type
     as production), so the full offline loop (upload → stub → DOWNLOAD) actually
-    returns real bytes without Replicate. The signed GET must not 404."""
+    returns real bytes without Replicate. The signed GET must not 404.
+
+    These rows are written with `cut_at = now()`, unlike the live pipeline's: the
+    bytes really are in R2 by then, and `cut_at IS NULL` is what makes the API
+    withhold a signed URL (migration 033). A stub row left uncut would make the
+    offline download path 404 — which is the exact thing this function exists to
+    prevent."""
     bpm, key = 120.0, "C major"
     stems = list(requested_stems) if requested_stems else ["drums", "bass", "vocals", "other"]
     sections = ["intro", "verse", "chorus", "bridge", "outro"]
@@ -1083,10 +1209,10 @@ def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
                 end = start + bars * bar_sec
                 section = sections[i % len(sections)]
                 # Default to upload_loop's key scheme even if the upload is skipped.
-                r2_key = f"{job_id}/{stem}/{section}_{i:04d}.wav"
+                r2_key = loop_r2_key(job_id, stem, bars, section, i)
                 if placeholder:
                     try:
-                        r2_key = upload_loop(job_id, stem, section, i, placeholder)
+                        r2_key = upload_loop(job_id, stem, bars, section, i, placeholder)
                     except (
                         Exception
                     ) as exc:  # noqa: BLE001 — no R2 (pure-DB test): skip, don't crash
@@ -1096,8 +1222,8 @@ def _insert_stub_loops(job_id: str, requested_stems, bars: int) -> int:
                     """
                     INSERT INTO loops(id, job_id, stem, section_label, energy_class, start_sec,
                         end_sec, start_bar, bar_count, bpm, musical_key, r2_key, filename,
-                        duration_ms, waveform_peaks)
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        duration_ms, waveform_peaks, cut_at)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
                     ON CONFLICT(job_id, r2_key) DO NOTHING
                     """,
                     (
@@ -1276,8 +1402,21 @@ async def _run_pipeline(job_id: str) -> None:
 
         await set_status(job_id, "uploading")
         await emit_event(job_id, "uploading", "started", pct=90)
+        # ON-DEMAND LOOP CUTTING (migration 033). This stage DESCRIBES every loop
+        # and cuts NONE of them. The 24-bit encode and the R2 PUT happen only when
+        # a `loop_requests` row says someone asked — Jon, 2026-11-11: "only do the
+        # processing work to create loops when the user asks for the loops to be
+        # created."
+        #
+        # The play-along player is NOT degraded by this. It derives its section
+        # regions from `loops.section_label / start_sec / end_sec`
+        # (apps/web/src/lib/play/sections.ts), all three of which `record_loops`
+        # writes. The stage keeps its name because `job_events.stage` is
+        # CHECK-constrained to the four V2 stages (002_job_events.sql) and the
+        # full-length stems ARE still uploaded below — that is what the mixer
+        # streams, and it stays eager.
         count = await asyncio.to_thread(
-            encode_and_upload,
+            record_loops,
             job_id,
             loops,
             tags,

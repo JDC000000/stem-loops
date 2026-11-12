@@ -40,13 +40,23 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
 
     const loopsRes = await db.query(
       `SELECT id, job_id, stem, section_label, energy_class, start_sec, end_sec, start_bar,
-              bar_count, bpm, musical_key, r2_key, filename, duration_ms, waveform_peaks, created_at
+              bar_count, bpm, musical_key, r2_key, filename, duration_ms, waveform_peaks,
+              cut_at, created_at
        FROM loops WHERE job_id = $1 ORDER BY stem, start_sec`,
       [params.id]
     );
 
+    // Migration 033: a loop row with `cut_at = null` is DESCRIBED but not CUT —
+    // the pipeline records every loop and encodes none of them until a user asks
+    // (`POST /api/jobs/:id/loops`). Its `r2_key` names where the WAV *will* live,
+    // so signing it would hand the client a URL that 404s, which the UI cannot
+    // tell from an expired job. An uncut row therefore carries `signed_url: null`
+    // and nothing else about it changes — the play-along player reads only
+    // `section_label` / `start_sec` / `end_sec` (lib/play/sections.ts) and is
+    // served in full by an uncut row.
     const loops = await Promise.all(
       loopsRes.rows.map(async (l) => {
+        if (l.cut_at === null || l.cut_at === undefined) return { ...l, signed_url: null };
         let signed_url: string | null = null;
         try {
           signed_url = await mintSignedUrl(l.r2_key, l.filename, urlTtlSec);

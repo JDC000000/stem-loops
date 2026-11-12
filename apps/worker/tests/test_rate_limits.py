@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -49,6 +50,25 @@ UNLIMITED = 100_000
 # The catalog migration 034_v3_pricing_model_truth.sql installs. Jon's approved
 # 2026-11-11 model, metered on tracks converted to play-along per month.
 APPROVED_QUOTAS = {"free": 5, "pro": 50, "studio": 150}
+
+# export_stems as migration 037_v3_studio_stem_export.sql leaves it (on top of
+# 034): Studio only. Jon's 2026-11-12 tiering -- $12 = stem export, $4.99 = none.
+APPROVED_EXPORT_STEMS = {"free": False, "pro": False, "studio": True}
+
+# The one route that delivers export_stems. A plan may advertise the flag only
+# while this file exists AND gates on it (test_no_plan_advertises_an_unbuilt_export).
+DOWNLOAD_ROUTE = (
+    Path(__file__).resolve().parents[3]
+    / "apps"
+    / "web"
+    / "src"
+    / "app"
+    / "api"
+    / "jobs"
+    / "[id]"
+    / "download"
+    / "route.ts"
+)
 
 # Must match BURST_LIMIT_PER_USER / BURST_WINDOW_MS in rate-limit.ts.
 BURST_LIMIT = 3
@@ -212,14 +232,38 @@ def test_plan_quotas_match_migration_034(conn):
 
 
 def test_no_plan_advertises_an_unbuilt_export(conn):
-    """Migration 034 sets export_stems and export_wav24 false on every plan:
-    there is no stem-export route, and 24-bit WAV loops are available on every
-    tier rather than being a paid differentiator. A plan row flipping either
-    back to true would make /pricing advertise a capability the app lacks."""
+    """A plan may advertise an export only if a gated route enforces it.
+
+    export_stems: migration 037 sets it true on studio ONLY (Jon, 2026-11-12:
+    the $12 tier gets stem export, free and $4.99 pro do not). That is allowed
+    because GET /api/jobs/[id]/download exists and refuses to sign the stem WAV
+    unless enforceEntitlement('export_stems', ...) allows it. The route check
+    below reads the source, so deleting the route or dropping its gate while a
+    plan still advertises the flag turns this red -- which is the invariant,
+    rather than "every flag false", which stopped being true with 037.
+
+    export_wav24: false on every plan (034). 24-bit WAV loops are available on
+    every tier, so the flag can only overstate what a paid plan adds."""
     cur = conn.execute("SELECT code, export_stems, export_wav24 FROM public.plans ORDER BY code")
-    for code, stems, wav24 in cur.fetchall():
-        assert stems is False, f"{code}.export_stems is true but no stem-export route exists"
+    rows = {code: (stems, wav24) for code, stems, wav24 in cur.fetchall()}
+    stems_by_plan = {code: rows.get(code, (None, None))[0] for code in APPROVED_EXPORT_STEMS}
+    assert (
+        stems_by_plan == APPROVED_EXPORT_STEMS
+    ), f"export_stems drifted from the approved tiering: {stems_by_plan} != {APPROVED_EXPORT_STEMS}"
+    for code, (_stems, wav24) in rows.items():
         assert wav24 is False, f"{code}.export_wav24 is true but every tier gets 24-bit WAV"
+
+    advertised = sorted(code for code, (stems, _) in rows.items() if stems)
+    if advertised:
+        assert DOWNLOAD_ROUTE.is_file(), (
+            f"{advertised} advertise export_stems but the gated download route "
+            f"{DOWNLOAD_ROUTE} does not exist"
+        )
+        src = DOWNLOAD_ROUTE.read_text(encoding="utf-8")
+        assert "enforceEntitlement('export_stems'" in src, (
+            f"{advertised} advertise export_stems but {DOWNLOAD_ROUTE.name} does not call "
+            "enforceEntitlement('export_stems', ...): the capability would be ungated"
+        )
 
 
 def test_no_plan_lists_an_unimplemented_service(conn):

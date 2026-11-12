@@ -35,8 +35,11 @@ function bad(error_code: string, message: string, status: number): NextResponse 
 //                advertised "Loop export" (pricing/page.tsx features()), so closing it is a
 //                product decision, not a gate to add silently; see the PR description.
 //
-// ENTITLEMENT MAPPING (plans table as PR #210's migration 034 sets it:
-//   free {stems:f}, pro {stems:f}, studio {stems:t}; wav24 is false everywhere)
+// ENTITLEMENT MAPPING (plans table as migration 037 leaves it, on top of 034:
+//   free {stems:f}, pro {stems:f}, studio {stems:t}; wav24 is false everywhere).
+//   037 ships in the same PR as this route, so the flag never advertises a
+//   capability that is not deployed; apps/worker/tests/test_rate_limits.py
+//   ::test_no_plan_advertises_an_unbuilt_export pins the pairing.
 //   Owner's tiering: "$4.99 = no stem export ... / $12 = stem exports". The route gates
 //   on `export_stems` ALONE. It must not also require `export_wav24`: that flag is false on
 //   every plan, so requiring it would lock out the one tier this route exists to serve.

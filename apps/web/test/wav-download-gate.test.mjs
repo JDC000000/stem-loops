@@ -9,7 +9,7 @@
 // What is REAL here: the download route, lib/billing/entitlements.ts (its plan lookup,
 // effectivePlanCode and enforceEntitlement all run), lib/stem-keys.ts, and — for the
 // sharing property — the real stems and play-chords routes. What is stubbed is the edge:
-// Postgres (answers by SQL text, with the plans table seeded as migration 034),
+// Postgres (answers by SQL text, with the plans table seeded as 034 + 037 leave it),
 // R2/S3, getUser, and next/server.
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -32,8 +32,10 @@ const OWNER = 'user-owner';
 const STRANGER = 'user-stranger';
 const SIX = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'];
 
-// The tiering as PR #210's migration 034 sets it (owner decision, 2026-11-12):
-// stems on Studio only, wav24 on nobody. Fixture data, not read from the migration.
+// The tiering as migration 037 leaves it on top of 034 (owner decision, 2026-11-12):
+// stems on Studio only, wav24 on nobody. Fixture data, not read from the migration;
+// pricing-features-table.test.mjs is the test that parses 034 + 037.
+const STEMS_DENIAL = 'stem export is included in Studio only';
 const PLANS = {
   free: { code: 'free', monthly_job_quota: 5, services: ['youtube'], export_stems: false, export_wav24: false },
   pro: { code: 'pro', monthly_job_quota: 50, services: [], export_stems: false, export_wav24: false },
@@ -295,7 +297,7 @@ test('SHARING: playback is also open to a FREE signed-in stranger (entitlement i
 // ───────────── 4. the tier mapping: Free 402, Pro 402, Studio signed URL ─────────────
 
 for (const [plan, wantStems, wantWav] of [['free', false, false], ['pro', false, false], ['studio', true, false]]) {
-  test(`mapping: ${plan} -> export_stems=${wantStems}, export_wav24=${wantWav} (real enforceEntitlement over the 034 flags)`, async () => {
+  test(`mapping: ${plan} -> export_stems=${wantStems}, export_wav24=${wantWav} (real enforceEntitlement over the 034 + 037 flags)`, async () => {
     arrange({ plan });
     const ent = await import(entitlementsUrl);
     ent._resetEntitlementCacheForTests();
@@ -320,11 +322,12 @@ for (const [plan, status] of [['free', 402], ['pro', 402], ['studio', 200]]) {
   });
 }
 
-test('PRO ($4.99: no stem export) is refused with 402 and the denial names stems, not a plan', async () => {
+test('PRO ($4.99: no stem export) is refused with 402 and the denial names the plan that includes it, not the caller\'s', async () => {
   arrange({ plan: 'pro' });
   const res = await download(await loadDownload());
   assert.equal(res.status, 402);
-  assert.match(res.body.message, /stems/);
+  assert.equal(res.body.message, STEMS_DENIAL);
+  assert.ok(!/\bpro\b/i.test(res.body.message), 'the caller\'s own plan is not echoed');
   assert.deepEqual(Object.keys(res.body).sort(), ['error_code', 'message']);
   assert.deepEqual(globalThis.__st.minted, []);
 });
@@ -344,6 +347,6 @@ test('wav24 alone does not open the route: stems=false, wav24=true is refused (n
   globalThis.__st.planPatch = { export_stems: false, export_wav24: true };
   const res = await download(await loadDownload());
   assert.equal(res.status, 402);
-  assert.match(res.body.message, /stems/);
+  assert.equal(res.body.message, STEMS_DENIAL);
   assert.deepEqual(globalThis.__st.minted, []);
 });

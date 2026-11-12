@@ -56,12 +56,12 @@ export type EntitlementAction =
   | 'start_job_spotify'   // service=spotify ingest (free tier only)
   | 'start_job_soundcloud'// service=soundcloud ingest (free tier only)
   | 'start_job_upload'    // own-file upload (any tier; consumes credit on free + no-plan)
-  // Both export actions are DENIED on every plan as of migration 034, which
-  // sets plans.export_stems and plans.export_wav24 false across the catalog.
-  // Neither action has a production caller — nothing in src/app or src/lib
-  // asks for either — so this is a contract kept for when the features exist,
-  // not a live gate. See the two cases below.
-  | 'export_stems'        // full-stems .zip — NOT IMPLEMENTED, no route exists
+  // export_stems is a LIVE gate: GET /api/jobs/[id]/download calls it before
+  // signing a full-length stem WAV. Migration 037 sets plans.export_stems true
+  // on studio only (free and pro false). export_wav24 is false on every plan
+  // (migration 034) and has no production caller — a contract kept, not a
+  // live gate. See the two cases below.
+  | 'export_stems'        // full-length stem WAV download — Studio only
   | 'export_wav24';       // 24-bit WAV as a PAID extra — not a differentiator;
                           // every tier already gets 24-bit WAV loops
 
@@ -395,15 +395,15 @@ export async function enforceEntitlement(
       }
       throw new EntitlementError('CREDIT_BALANCE_INSUFFICIENT');
     }
-    // Still data-driven — the flag is read, not hardcoded — so these cases
-    // start allowing the moment a plan row sets the flag and a route exists to
-    // honour it. Migration 034 sets both flags false on all three plans, so
-    // today both always deny. The deny reasons say WHY, because "not in plan"
-    // read as a plan-configuration problem when the real cause is that the
-    // capability was never built.
+    // Data-driven — the flag is read, not hardcoded. export_stems is true on
+    // studio only (migration 037) and is enforced by the /download route, so
+    // its denial names the plan that includes it. export_wav24 is false on
+    // every plan (migration 034), so it always denies, and its reason says WHY:
+    // "not in plan" would read as a plan-configuration problem when the real
+    // cause is that it is not a paid feature at all.
     case 'export_stems': {
       if (snap.export.stems) return { allowed: true, snapshot: snap };
-      throw new EntitlementError('ENTITLEMENT_UNAVAILABLE', 'stems export not built: no stem-export route exists');
+      throw new EntitlementError('ENTITLEMENT_UNAVAILABLE', 'stem export is included in Studio only');
     }
     case 'export_wav24': {
       if (snap.export.wav24) return { allowed: true, snapshot: snap };

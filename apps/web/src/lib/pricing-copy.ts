@@ -22,8 +22,8 @@
 // true of every plan.
 //
 // Gated by `apps/web/test/pricing-features-table.test.mjs`, which checks the
-// output against migration 034 AND against a ban list of capabilities the repo
-// does not contain.
+// output against migrations 034 + 037 AND against a ban list of capabilities a
+// buyer cannot actually reach in the app.
 
 /** The plan fields the copy needs. Structurally satisfied by the page's `Plan`
  *  and by a row from `public.plans`. */
@@ -68,10 +68,13 @@ export function quotaLine(p: PlanCopyInput): string {
  *     landing page has always offered it with no account. It is a real feature
  *     and NOT a paid differentiator, so it is not gated on export_wav24.
  *
- *  Deliberately absent: "Stem export". There is no stem-export route —
- *  /api/jobs/[id]/stems serves Opus playback urls and says so, and
- *  mintStemDownloadUrl() has no production caller. Migration 034 sets
- *  export_stems false on every plan to match. */
+ *  Deliberately absent, for now: "Stem export". Migration 037 sets
+ *  export_stems true on Studio and GET /api/jobs/[id]/download enforces it,
+ *  but nothing in the UI calls that route yet, so a Studio buyer would have
+ *  no way to find the feature the bullet promised. The bullet ships with the
+ *  download button: when that lands, gate a "Stem export" bullet on
+ *  p.export_stems here AND change "turning export flags on cannot add a
+ *  bullet" in pricing-features-table.test.mjs in the same change. */
 export function features(p: PlanCopyInput): string[] {
   const out: string[] = [];
   out.push(quotaLine(p));

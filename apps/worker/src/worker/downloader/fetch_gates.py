@@ -100,15 +100,19 @@ def _read_switches() -> list[tuple[str, bool]]:
 
     This gate fails OPEN for fetch_global/fetch_youtube, so a read that gives up turns "the
     table is locked / the database is slow" into "the brake is released": with fetch_global=true,
-    a cold cache and an ACCESS EXCLUSIVE lock held for 3 s, a 2 s statement timeout fetched after
-    about 2 s where an unbounded read waited and then braked.
+    a cold cache and an ACCESS EXCLUSIVE lock held for 3 s, the bounded read of d739cf7 (a 2 s
+    SET LOCAL statement_timeout) returned None (fetch allowed) after 2.008 s. The unbounded read
+    this module has now waits out the lock and answers 'fetch_global' (figures below).
 
     "No timeout in the code" is not "no timeout in the session". A role, a database or a
     cluster-wide default can carry statement_timeout / lock_timeout (Supabase documents a global
-    default for every role without its own), and a session inherits it. Measured on the round-2
-    head with the table locked 6 s: ALTER ROLE ... SET statement_timeout = '2s', ALTER ROLE ...
-    SET lock_timeout = '2s' and ALTER DATABASE ... SET statement_timeout = '2s' each returned
-    None (fetch allowed) after about 2.0 s. So they are set to 0 here, for THIS TRANSACTION ONLY
+    default for every role without its own), and a session inherits it. Measured at eadcf8e (the
+    round-2 head, before any SET LOCAL existed), one setting at a time, table locked 6 s:
+    ALTER ROLE ... SET statement_timeout = '2s' -> None after 2.004 s; ALTER ROLE ... SET
+    lock_timeout = '2s' -> None after 2.014 s; ALTER DATABASE ... SET statement_timeout = '2s' ->
+    None after 2.009 s. At THIS head, with all three set together and the table locked 6 s, the
+    read answered 'fetch_global' after 6.002 s. So the timers are set to 0 here, for THIS
+    TRANSACTION ONLY
     (SET LOCAL: it dies with the transaction, so it cannot leak into a pooled connection the way
     a plain SET would; it is also why these are separate statements in the read's own transaction
     and not a connection option). The set is statement_timeout, lock_timeout,
@@ -127,17 +131,22 @@ def _read_switches() -> list[tuple[str, bool]]:
     on a cold cache, fail open.
 
     RESIDUAL, measured, not closed: the idle timer is inherited from BEGIN until the SET LOCAL
-    runs, so a role value of the order of a millisecond can still fire in that gap. That is why
-    it is the FIRST SET LOCAL (the fake-connection test pins the order): each statement before
-    it is another idle gap in which it can fire.
+    runs, so a role value of the order of a millisecond can still fire in that gap. Measured at
+    this head with ALTER ROLE ... SET idle_in_transaction_session_timeout = '1ms' and 200 cold
+    reads (cache reset before each, table not locked): 19 returned None (fetch allowed) in one
+    run and 17 in another; at 05042e8, before the timer was cleared, 44 of 200. That is why it
+    is the FIRST SET LOCAL (the fake-connection test pins the order): each statement before it
+    is another idle gap in which it can fire.
 
     CONSEQUENCE, stated plainly: with these timers off, a locked table stalls the worker for as
     long as the lock lasts, and "the lock" includes queue time: a reader queues behind a pending
     DDL statement that is itself waiting on an idle transaction, and nothing in THIS read bounds
-    that (the other session's own timers might). Measured:
-    ACCESS EXCLUSIVE held 150 s -> fetch_paused() = 'fetch_global' after 150.001 s, with a second
-    thread blocked 148.004 s behind _lock. That is the deliberate trade: stall and answer
-    correctly rather than release a pulled brake. The stall is not silent: _refresh_if_stale logs
+    that (the other session's own timers might). Measured at this head, as a NOSUPERUSER
+    NOBYPASSRLS member of stemloops_app, PostgreSQL 16.15, fetch_global=true, cold cache:
+    ACCESS EXCLUSIVE held 25 s -> fetch_paused() = 'fetch_global' after 25.002 s, with a second
+    thread started 2 s later blocked 23.001 s behind _lock. 25 s is the longest hold run; the
+    wait is however long the lock lasts, and nothing longer was tried. Not run on PostgreSQL 17.
+    That is the deliberate trade: stall and answer correctly rather than release a pulled brake. The stall is not silent: _refresh_if_stale logs
     kill_switch_read_slow while it waits. A bounded read only becomes safe once a missing or
     unreadable row counts as engaged (the fail-closed change, out of scope here).
 
@@ -151,8 +160,10 @@ def _read_switches() -> list[tuple[str, bool]]:
 
     `public.` is explicit: an unqualified name resolves through search_path, whose first entry
     "$user" is the LOGIN role's name, so a schema with that name holding its own kill_switches
-    would silently replace this table (measured: it made the gate fetch with fetch_global=true
-    and log nothing).
+    would silently replace this table. Measured at d739cf7 (unqualified read), with a schema named
+    for the login role holding its own kill_switches that has only a fetch_cobalt row, and
+    fetch_global=true in public: fetch_paused() returned None (fetch allowed) and logged nothing.
+    At this head the same setup returns 'fetch_global'.
     """
     with _connect() as conn:
         # Same (implicit) transaction as the SELECT below: psycopg opens it on first execute.
@@ -197,8 +208,10 @@ def _refresh_if_stale() -> None:
         # purpose. With `slow.start()` inside the read's own `try`, a thread that cannot start
         # ("can't start new thread" at a thread or memory limit) was handled as a FAILED READ and
         # returned before the table was ever queried: with fetch_global engaged, a healthy
-        # database and a cold cache, fetch_paused() answered None (fetch allowed). Measured:
-        # 0.000 s, no query. A failure to start the timer must cost the log line and nothing else.
+        # database and a cold cache, fetch_paused() answered None (fetch allowed). Measured at 05042e8
+        # (before the fix) with Timer.start patched to raise: None after 0.0 s, no query; at this
+        # head the same patch returns 'fetch_global'. A failure to start the timer must cost the
+        # log line and nothing else.
         try:
             slow.start()
         except Exception as exc:  # noqa: BLE001 — the read below must still run

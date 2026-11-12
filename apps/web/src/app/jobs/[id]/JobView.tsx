@@ -151,15 +151,39 @@ export default function JobView({ id }: { id: string }) {
   // claim a truncation this branch does not show. An inline literal is what
   // made the drift invisible to both sides, so the number is gone.
   //
-  // ⚠️ THE FALLBACK IS LOAD-BEARING, not belt-and-braces. `--sl-gutter` is
-  // defined in src/styles/landing.css, which is imported ONLY by
-  // app/(landing)/layout.tsx and app/not-found.tsx. This route is not in the
-  // (landing) group, so the token is NOT in scope here. A bare
-  // `var(--sl-gutter)` would be invalid at computed-value time and take the
-  // WHOLE shorthand down with it — padding would compute to 0 and the 48px top
-  // and 96px bottom would vanish too. `16px` is landing.css's own base value,
-  // so this renders identically to every other page at mobile widths and
-  // automatically picks up the token if this route is ever brought into scope.
+  // THE TOKEN IS IN SCOPE AND THE FALLBACK IS DEAD. What stood here claimed the
+  // opposite — that `--sl-gutter` lived only in src/styles/landing.css, that
+  // this route is outside the (landing) group so the token was "NOT in scope",
+  // and that the `16px` was therefore "LOAD-BEARING". All three were false:
+  //   • `--sl-gutter` is declared at `:root` in src/styles/design-tokens.css,
+  //     which src/app/globals.css imports and src/app/layout.tsx imports — so
+  //     it resolves on every route, this one included.
+  //   • It is 16px at :root and 32px above the 760px breakpoint, so a desktop
+  //     job page gets a 32px gutter, not 16px. The fallback value was not even
+  //     the right number for the widths it was supposed to cover.
+  //   • landing.css:28 says outright that the token lives in design-tokens.css.
+  // Believing that comment is what put the wrong container widths (904/712
+  // instead of the real 872/680) in #207's evidence table, twice.
+  //
+  // WHY THE FALLBACK STAYS ANYWAY, which is a different claim from the one
+  // above. It is dead code — the token resolves, so nothing reads it — but it
+  // is deliberate dead code: play-player.test.mjs's
+  // "the gutter token is in scope on this route" gate pins all three links of
+  // the import chain AND pins this fallback, on the reasoning that an
+  // unresolvable `var()` is invalid at computed-value time and would take the
+  // whole padding shorthand down with it, 48px top and 96px bottom included,
+  // rather than degrade. That decision is recorded there, so it is not
+  // re-litigated here.
+  //
+  // ONE THING THAT DECISION DID NOT HAVE, for whoever picks it up: the
+  // fallback's VALUE is wrong for most of the widths it would cover. If the
+  // chain ever broke, this page would render a 16px gutter at every width,
+  // including the desktop widths where the token is 32px — so it is not a
+  // faithful degradation, it is a different layout that happens not to crash.
+  // The alternative reading is that there is no silent-failure mode to guard
+  // at all: the only way the token stops resolving is globals.css dropping
+  // design-tokens.css, which takes every colour, font and spacing token on the
+  // page with it and is loud. Left as it is, and flagged.
   const wrap: React.CSSProperties = {
     maxWidth: 960,
     margin: '0 auto',

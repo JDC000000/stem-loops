@@ -615,10 +615,21 @@ def test_migration_does_not_fail_on_a_preexisting_bad_row_and_leaves_the_check_n
 
 
 def test_migration_seeds_the_brake_released_and_validates_the_check_on_a_clean_table(admin):
-    row = admin.execute(
-        "SELECT enabled FROM public.kill_switches WHERE scope='spend_global'"
-    ).fetchone()
-    assert row == (False,)
-    assert admin.execute(
-        "SELECT convalidated FROM pg_constraint WHERE conname='kill_switches_scope_known'"
-    ).fetchone() == (True,)
+    """What 035 itself writes on a database that has no `spend_global` row (production at 034).
+
+    The `admin` fixture has already upserted the row released, so reading it here proved nothing
+    about the migration: a 035 that seeded the brake ENGAGED passed (mutant, round 4). Engaged at
+    seed would stall every beta job the moment the worker deploys. So: delete the row, apply 035
+    from disk, and read what IT wrote."""
+    admin.execute("BEGIN")  # rolled back; the fixture's released row comes back with it
+    try:
+        admin.execute("DELETE FROM public.kill_switches WHERE scope='spend_global'")
+        _run_035(admin)
+        assert admin.execute(
+            "SELECT enabled, set_by FROM public.kill_switches WHERE scope='spend_global'"
+        ).fetchone() == (False, "migration 035")
+        assert admin.execute(
+            "SELECT convalidated FROM pg_constraint WHERE conname='kill_switches_scope_known'"
+        ).fetchone() == (True,)
+    finally:
+        admin.execute("ROLLBACK")

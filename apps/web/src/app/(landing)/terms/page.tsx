@@ -1,6 +1,15 @@
 import type { Metadata } from 'next';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import { CONTACT_LABEL, CONTACT_URL, LEGAL_UPDATED } from '@/components/landing/legal';
+import { MAX_TRACK_SEC } from '@/lib/play/types';
+
+// Read from the one ceiling, exactly as the landing page does, rather than typed as a word.
+// A legal page is the worst place to carry a number that a single env change can falsify, and
+// MAX_UPLOAD_DURATION_SEC can be retuned on the worker without touching any of this code.
+// Deriving it means the figure here can only ever be wrong together with the figure the
+// player enforces -- and test/legal-terms-copy.test.mjs compares the rendered figure to this
+// constant and to the worker's own default, so a drift between the three fails there.
+const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
 export const metadata: Metadata = {
   title: 'Terms',
@@ -31,7 +40,10 @@ export default function TermsPage() {
 
             <h2>What it can and cannot do</h2>
             <ul>
-              <li>Tracks up to 5 minutes. Longer tracks are not accepted.</li>
+              <li>
+                Tracks up to {MAX_TRACK_MIN}&nbsp;minutes. Longer tracks are not supported: the chord track and the
+                player both stop there.
+              </li>
               <li>Chrome, on a desktop or laptop. Other browsers and phones are not supported yet.</li>
               <li>
                 The chords are an <strong>estimate made from the audio</strong>, not a transcription anyone checked. Trust your

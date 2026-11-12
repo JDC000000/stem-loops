@@ -46,9 +46,19 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
     headline: "You've used all your free songs this month.",
     action: 'Your allowance resets at the start of next month.',
   },
+  // The action line used to read "Paste a link into the free tier (3/day)".
+  // There has never been a 3/day limit anywhere in the system: the free
+  // allowance is plans.monthly_job_quota, enforced per CALENDAR MONTH by
+  // checkMonthlyQuota(), and migration 034 sets it to 5. A number and a period
+  // that are both wrong are worse than no number, and any figure hardcoded
+  // here goes stale the next time the catalog is re-priced — so this copy now
+  // names the tier and the place the real number is shown, and nothing else.
   PAID_LINK_INGEST_DISALLOWED: {
-    headline: 'Credits and Pro only work with files you upload.',
-    action: 'Paste a link into the free tier (3/day) instead, or upload your file.',
+    // Also named Studio: enforceEntitlement() throws this for plan_code 'pro'
+    // AND 'studio', but the headline listed only Pro, so a Studio subscriber
+    // hit an error that did not mention their plan.
+    headline: 'Credits, Pro and Studio only work with files you upload.',
+    action: 'Upload your file instead, or use link import on the free tier — see /pricing for the monthly allowance.',
   },
   PROMO_INVALID: {
     headline: "That promo code isn't valid.",

@@ -63,6 +63,18 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+      - name: Fast-path allowlist gate
+        # Runs FIRST, before any linter, because it is a governance check and a
+        # failure here means a PR could skip adversarial review entirely.
+        #
+        # `Lint` is in the v3/main ruleset's required_status_checks, so putting
+        # this step here is what makes the check BLOCKING. Standing orders: a
+        # gate that is not required is advice, not a gate.
+        #
+        # Stdlib only -- no pip install needed, so it cannot be skipped by a
+        # dependency failure.
+        run: python3 scripts/check_fast_path_allowlist.py
+
       - name: Install Python deps
         # Pinned via the prod constraints so a new ruff/black release can't turn main red.
         run: pip install ruff black -c apps/worker/constraints-prod.txt
@@ -99,6 +111,11 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
+    # Bounded, because a hung test is otherwise a 6-hour runner (the default) rather than a
+    # red check: this job has no pytest-timeout. The real-R2 tests start an in-process S3
+    # server, and a server that cannot bind used to wait for ever. The suite takes about two
+    # minutes of pytest locally; 30 leaves room for installs and a slow runner.
+    timeout-minutes: 30
     # Postgres so the DB-backed tests (retention sweep, migration 007, consumer) actually
     # run instead of skipping for lack of DATABASE_URL.
     services:
@@ -124,7 +141,8 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - name: Install Python deps
-        run: pip install -r apps/worker/requirements.txt -c apps/worker/constraints-prod.txt
+        # requirements-dev.txt holds moto, which tests/real_r2.py needs (not in the prod image).
+        run: pip install -r apps/worker/requirements.txt -r apps/worker/requirements-dev.txt -c apps/worker/constraints-prod.txt
       - name: Apply migrations (001-007)
         run: cd apps/worker && PYTHONPATH=src python -m worker.migrate
       - name: pytest
@@ -205,7 +223,10 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - name: Install Python deps
-        run: pip install -r apps/worker/requirements.txt -c apps/worker/constraints-prod.txt
+        # requirements-dev.txt holds moto, which tests/real_r2.py needs. Without it the
+        # retention tests FAIL under CI=true by design, so this job went red on its
+        # first real use. Mirrors the `test:` job at line ~145.
+        run: pip install -r apps/worker/requirements.txt -r apps/worker/requirements-dev.txt -c apps/worker/constraints-prod.txt
       - name: Apply migrations (001-007)
         run: cd apps/worker && PYTHONPATH=src python -m worker.migrate
       - name: pytest

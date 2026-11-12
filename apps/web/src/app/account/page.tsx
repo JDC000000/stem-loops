@@ -53,9 +53,25 @@ export default async function AccountPage() {
             <p style={{ margin: '0 0 4px', color: 'var(--text-primary)' }}>
               <strong>{ent.data.plan_code}</strong>
             </p>
+            {/* Two independent fixes meet on this line, and both are needed.
+
+                LABEL (#233): "Monthly allowance used", not "Tracks this month".
+                jobs_used counts units of the MONTHLY ALLOWANCE spent, and since
+                #233 a credit-funded upload no longer spends one -- so for a
+                credit buyer this numerator stays 0 however many tracks they
+                convert. Called "Tracks this month" it would lie to exactly the
+                users who paid. Credits spent are shown in the Credits section.
+                NOT renamed on the wire: jobs_used is a public field of
+                GET /api/entitlements. A true per-month track count needs its
+                own COUNT(*) over jobs -- scoped in #233's PR body.
+
+                NO "(unlimited)" BRANCH (#210): migration 034 gives every plan a
+                real monthly number (5 / 50 / 150), so no plan reaches the
+                100000 sentinel and that branch could only ever lie. Always
+                show used / quota, which is what checkMonthlyQuota() enforces. */}
             <p style={muted}>
-              Renews / ends: {fmt(ent.data.period_end)} · Jobs: {ent.data.jobs_used ?? 0}
-              {(ent.data.jobs_quota ?? 0) >= 100000 ? ' (unlimited)' : ` / ${ent.data.jobs_quota ?? '—'}`}
+              Renews / ends: {fmt(ent.data.period_end)} · Monthly allowance used: {ent.data.jobs_used ?? 0}
+              {` / ${ent.data.jobs_quota ?? '—'}`}
             </p>
           </>
         ) : (

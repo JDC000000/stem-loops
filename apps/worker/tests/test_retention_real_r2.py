@@ -5,26 +5,51 @@ for an in-memory fake, so `r2_uploader`'s boto3 deleters ran in no test. Here
 `cleanup.sweep_expired()` runs against a real S3 server (moto, over HTTP, see
 `tests/real_r2.py`).
 
-WHAT IS STUBBED, exhaustively. Round 2 of this file said "NOTHING in `cleanup` patched"
-while its fixture patched `cleanup.DATABASE_URL`, which hid a mutant that made every sweep
-fail to connect. The complete list:
+WHAT IS NOT THE PRODUCTION PATH. This list has been wrong twice, so read its
+history before trusting it. Round 2 said "NOTHING in `cleanup` patched" while its fixture
+patched `cleanup.DATABASE_URL`, which hid a mutant that made every sweep fail to connect.
+Round 3 replaced that with "WHAT IS STUBBED, exhaustively ... The complete list" and then
+omitted the caller, the proxy and region environment, `_r2.cache_clear()`, the back-dating
+through moto's internals, and named a fixture (`_backoff_clock`) that does not exist while
+saying "TWO" retry tests for the three that use it. No list in a docstring can be made
+correct by assertion, so this one is enumerated by reading every `setattr`, `setenv`,
+`delenv`, assignment and `cache_clear` in this file and `tests/real_r2.py`, and the claims
+that matter are held by mutants instead: `tests/mutation/manifest.py` lists each one with the
+test that must kill it, and `tests/mutation/run_mutants.py` runs them.
 
-  * the process environment: `RealR2` points `R2_*` at a loopback moto server, and
-    `DATABASE_URL` is whatever the run was started with. `cleanup.DATABASE_URL` itself is
-    NOT patched; it is the value `cleanup.py` read from that variable at import.
-  * `cleanup.time`, in the TWO retry tests only (`_backoff_clock`): replaced by an object
-    whose `monotonic()` is the real clock plus an offset the test advances, so the 15-minute
-    backoff can elapse in zero real seconds. `cleanup.time` is only used for the sweep's
-    budget deadline and the backoff.
+  * THE CALLER. Every test here calls `cleanup.sweep_expired()` itself. `main.serve()` and
+    `consumer.poll_loop()` are not involved in this file (the poll_loop chain is the last test
+    in `test_consumer_sweep_wiring.py`).
+  * the process environment, set through `monkeypatch` by `RealR2` and restored on exit:
+    `R2_ENDPOINT_URL` (a loopback moto server), `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`
+    ("testing"), `R2_BUCKET_NAME`, `AWS_DEFAULT_REGION=us-east-1`; the six proxy variables
+    are deleted and `NO_PROXY` / `no_proxy` set to `*` (the sandbox routes HTTP through a
+    proxy that a loopback server must bypass). `DATABASE_URL` is whatever the run was started
+    with, and must be LOCAL (`real_r2.require_database`). `cleanup.DATABASE_URL` itself is NOT
+    patched; it is the value `cleanup.py` read from that variable at import.
+  * `r2_uploader._r2.cache_clear()`, on entering and leaving `RealR2`. `_r2` caches its boto3
+    client; production never clears it.
+  * moto's in-process backend. S3 has no API to back-date an object, so `RealR2.age_many`
+    assigns `s3_backends[...].buckets[BUCKET].keys[key].last_modified` directly and then
+    reads every age back through the real list call; `POST /moto-api/reset` empties the
+    bucket before each test.
+  * `cleanup.time`, replaced by a `SimpleNamespace` whose only attribute is `monotonic`
+    (the real clock plus an offset the test advances), so the 15-minute backoff can elapse
+    in zero real seconds. It is replaced in the FOUR tests that request the `backoff_clock`
+    fixture (the three retry tests and the anonymise-path test), through that fixture.
+    `cleanup` uses `time` only for the sweep's budget deadline and the backoff.
+  * `cleanup._failed.clear()`, before and after every test that uses the `r2` fixture. It is
+    module-state reset, not a stub, and no test uses it to simulate time passing.
   * the fault-injection tests wrap `delete_object` / `delete_objects` on the exact boto3
     client instance `r2_uploader._r2()` returns (`_inject_delete_failure`); everything
     else on that client, and all of `delete_prefix` / `delete_objects`, is the production
     code, meeting a real `ClientError`.
-  * `tmpdirs.sweep_stale` is real everywhere in this file. `tmpdirs.WORK_ROOT` is pointed
-    at a temp dir in the one test about scratch dirs; elsewhere `sweep_expired` scans the
-    machine's real scratch root, as in production.
-  * `cleanup._failed.clear()` resets module state between tests; it is not a stub, and
-    the retry tests do not use it to simulate time passing.
+  * `tmpdirs.WORK_ROOT`, pointed at a temp dir in the one test about scratch dirs;
+    elsewhere `sweep_expired` scans the machine's real scratch root, as in production.
+    `tmpdirs.sweep_stale` is real everywhere in this file.
+  * SEEDING. Job rows are inserted with SQL, not through any API, and the key shapes the
+    worker has no function for (1 and 3) and shape 2's tracked key are literals typed in
+    `real_r2.job_footprint`.
 
 Three properties make these tests able to fail, and each is deliberate:
 
@@ -36,13 +61,17 @@ Three properties make these tests able to fail, and each is deliberate:
     delete and the test cannot tell. (A credit-charged job's shell row is never
     deleted, so the orphan pass can NEVER repair it -- see the ledger test.)
   * A live job's seven objects are asserted to SURVIVE, so "delete everything" is not
-    a passing implementation either.
+    a passing implementation either. That job's id differs from the expired one's in its
+    last hex digit only (`NEIGHBOUR_ID`), so a delete prefix cut short at any length is not
+    one either.
 
 Shape 7 (`jobs/<id>/play.chords.json`) is the one the per-job delete misses until PR #214
 adds `r2_uploader.job_object_prefixes`. It is handled by `assert_chords_gone_or_xfail`,
 called LAST in a test after shapes 1-6 were asserted gone with plain `assert`s: it xfails
 only while that function is absent and FAILS once it exists. There is deliberately no
-`xfail` marker; that function's docstring says what the marker hid.
+`xfail` marker; that function's docstring says what the marker hid. MERGE OBLIGATION: whichever
+of PR #214 and this PR lands second deletes that xfail branch (see `assert_chords_gone_or_xfail`
+for why the probe cannot be made rename-proof).
 """
 
 from __future__ import annotations
@@ -63,18 +92,22 @@ from tests.real_r2 import (
     assert_chords_gone_or_xfail,
     job_footprint,
     require_database,
-    skip_or_fail,
 )
 from worker import cleanup
-
-DB = os.environ.get("DATABASE_URL")
 
 
 @pytest.fixture(autouse=True)
 def _database():
     # A developer with no database gets a clean skip; under CI=true a missing database is
-    # a FAILURE, because a skipped retention gate is a gate that did not run.
+    # a FAILURE, because a skipped retention gate is a gate that did not run. A database
+    # that is not LOCAL is refused the same way (see `require_database`): these tests run
+    # the real destructive sweep.
     require_database()
+
+
+def _connect():
+    """EVERY connection in this file is opened here, so none can bypass the locality guard."""
+    return psycopg.connect(require_database())
 
 
 LEDGER_EMAIL = "test-retention-real-r2-%@example.com"
@@ -88,11 +121,16 @@ def r2(monkeypatch):
     cleanup._failed.clear()
 
 
-def _insert_job(age_hours: float, status: str = "done", user_id=None, charged=False) -> str:
+def _insert_job(
+    age_hours: float, status: str = "done", user_id=None, charged=False, job_id=None
+) -> str:
     """A job `age_hours` old. `charged` makes it an upload job with a credit_consumption
-    row (the ledger refuses a charge against any other input_kind)."""
-    job_id = str(uuid.uuid4())
-    with psycopg.connect(DB) as c:
+    row (the ledger refuses a charge against any other input_kind). `job_id` pins the id
+    (default: random); a pinned id is deleted first so the helper can be re-run on one
+    database."""
+    job_id = job_id or str(uuid.uuid4())
+    with _connect() as c:
+        c.execute("DELETE FROM public.jobs WHERE id = %s", (job_id,))
         c.execute(
             "INSERT INTO public.jobs (id, input_kind, youtube_url, upload_r2_key, status, "
             "  user_id, loop_length_bars, requested_stems, client_ip_hash, client_fingerprint, "
@@ -122,7 +160,7 @@ def _insert_job(age_hours: float, status: str = "done", user_id=None, charged=Fa
 
 
 def _row(job_id: str):
-    with psycopg.connect(DB) as c:
+    with _connect() as c:
         return c.execute(
             "SELECT client_ip_hash, title FROM public.jobs WHERE id=%s", (job_id,)
         ).fetchone()
@@ -138,17 +176,33 @@ def _survivors(r2: RealR2, shapes: dict[str, str], *, skip: tuple[str, ...] = ()
     return [name for name, key in shapes.items() if key in left and name not in skip]
 
 
+# A live job whose id differs from the expired one's in its LAST hex digit only. The expired
+# job's delete prefix is "<EXPIRED>/", so any truncation of that prefix to 1..35 characters
+# also matches every one of the live job's keys. With two random uuid4s, `Prefix=prefix[:2]`
+# survived the full suite (it matches 1/256 of the other jobs' audio per swept job) and
+# `prefix[:1]` was a coin flip on the 1-in-16 chance the first digits agreed (round 3's
+# reviewer, 4 runs: killed once). The pair is deterministic so the outcome cannot depend on it.
+EXPIRED_ID = "5eeded00-0000-4000-8000-00000000000a"
+NEIGHBOUR_ID = "5eeded00-0000-4000-8000-00000000000b"
+assert EXPIRED_ID[:-1] == NEIGHBOUR_ID[:-1] and EXPIRED_ID != NEIGHBOUR_ID
+
+
 def test_expired_job_loses_every_prefixed_shape_even_when_its_objects_are_young(r2, tmp_path):
     """The per-job delete itself, with the age backstop unable to help.
 
-    Kills: `delete_prefix` deleting nothing; the sweep deleting only `<id>/_input*`.
+    Kills: `delete_prefix` deleting nothing; the sweep deleting only `<id>/_input*`; the
+    delete prefix truncated to ANY length from 1 to 35 characters (`Prefix=prefix[:1]`,
+    `[:2]`, `[:4]`, `[:8]`: each deletes a live neighbour's audio). Only dropping the
+    trailing slash (`prefix[:36]`, i.e. `<id>` with no `/`) is equivalent here: no other
+    uuid starts with these 36 characters.
     The job expired an hour ago but its objects are 1 h old (an on-demand cut, or a
     separation that finished late), so the orphan pass -- which needs > 24 h -- is inert.
+    The live job is the DETERMINISTIC `NEIGHBOUR_ID`, one hex digit from the expired one.
     """
 
     async def scenario():
-        expired = _insert_job(25)
-        live = _insert_job(1)
+        expired = _insert_job(25, job_id=EXPIRED_ID)
+        live = _insert_job(1, job_id=NEIGHBOUR_ID)
         exp_shapes = job_footprint(expired, str(tmp_path))
         live_shapes = job_footprint(live, str(tmp_path))
         _age_all(r2, exp_shapes, 1.0)
@@ -193,8 +247,7 @@ def test_expired_job_loses_its_chords_object_even_when_young(r2, tmp_path):
 
 @pytest.fixture
 def ledger_user():
-    if not any(h in (DB or "") for h in ("127.0.0.1", "localhost")):
-        skip_or_fail("DATABASE_URL is not local, and this test inserts into auth.users")
+    require_database()  # also inserts into auth.users: local databases only
 
     def purge(c):
         c.rollback()
@@ -206,7 +259,7 @@ def ledger_user():
         c.commit()
 
     uid = uuid.uuid4()
-    with psycopg.connect(DB) as c:
+    with _connect() as c:
         purge(c)
         c.execute(
             "INSERT INTO auth.users (id, email, aud, role, encrypted_password, "
@@ -601,12 +654,20 @@ def test_a_failed_r2_delete_never_anonymises_a_credit_charged_shell(
 def test_repeated_failures_back_off_exponentially_then_report_stuck_and_clear_on_success(
     r2, tmp_path, monkeypatch, backoff_clock, capsys
 ):
-    """900 s, then 1800 s, then 3600 s; the third consecutive failure is `stuck`; success
-    forgets the job.
+    """Four consecutive failures, each interval pinned from BOTH sides: 900 s, 1800 s,
+    3600 s, 7200 s. The third consecutive failure is `stuck`; the fourth is retried like
+    the others; success forgets the job.
 
-    Kills: removing `_failed.pop` on success (the job stays counted as `stuck` for the life
-    of the process -- measured on round 2: full suite unchanged); a backoff that does not
-    double; `_record_failure` never escalating to `retention_r2_delete_stuck`.
+    Every interval is bracketed (nothing happens `interval - 1` s after the failure, a retry
+    happens `interval + 1` s after it), so no backoff is pinned only from one side.
+    Kills: removing `_failed.pop` on the DELETE path (the job stays counted as `stuck` for
+    the life of the process -- measured on round 2: full suite unchanged); a backoff that
+    does not double; a third backoff of 1800 s (`MAX_BACKOFF_SECONDS = 1800`, or an exponent
+    capped at 1; both survived round 3, which stopped at the third failure); a backoff
+    that becomes infinite after the third failure (`_backoff_seconds` returning `inf` for
+    `failures > 3`: an R2 outage lasting four attempts, 1 h 45 m, would skip the job until
+    the process restarts); a skip list that permanently includes any job with more than
+    three failures; `_record_failure` never escalating to `retention_r2_delete_stuck`.
     """
 
     async def scenario():
@@ -615,7 +676,7 @@ def test_repeated_failures_back_off_exponentially_then_report_stuck_and_clear_on
         _age_all(r2, shapes, 1.0)
         state = _inject_delete_failure(monkeypatch, r2, "/bass/intro_0010.wav")
 
-        res = await cleanup.sweep_expired()  # failure 1
+        res = await cleanup.sweep_expired()  # failure 1, now backed off for 900 s
         assert state["hits"] == 1 and cleanup._failed[expired][0] == 1 and res["stuck"] == 0
 
         backoff_clock.advance(FIRST_BACKOFF_SEC + 1)
@@ -628,17 +689,74 @@ def test_repeated_failures_back_off_exponentially_then_report_stuck_and_clear_on
 
         backoff_clock.advance(2)
         capsys.readouterr()
-        res = await cleanup.sweep_expired()  # failure 3
+        res = await cleanup.sweep_expired()  # failure 3, now backed off for 3600 s
         assert state["hits"] == 3 and cleanup._failed[expired][0] == 3
         assert res["stuck"] == 1, f"three consecutive failures must count as stuck: {res}"
         assert "retention_r2_delete_stuck" in capsys.readouterr().err
 
+        backoff_clock.advance(4 * FIRST_BACKOFF_SEC - 1)
+        await cleanup.sweep_expired()
+        assert state["hits"] == 3, "retried inside the third (3600 s) backoff"
+
+        backoff_clock.advance(2)
+        res = await cleanup.sweep_expired()  # failure 4, now backed off for 7200 s
+        assert state["hits"] == 4 and cleanup._failed[expired][0] == 4, (
+            f"not retried {4 * FIRST_BACKOFF_SEC + 1}s after the third failure: the third "
+            f"backoff is shorter or longer than 3600 s (delete attempts that failed: {state['hits']})"
+        )
+        assert res["stuck"] == 1
+
+        backoff_clock.advance(8 * FIRST_BACKOFF_SEC - 1)
+        await cleanup.sweep_expired()
+        assert state["hits"] == 4, "retried inside the fourth (7200 s) backoff"
+
+        # R2 is healthy again and the fourth interval has elapsed: a job that has failed more
+        # than three times must still be retried, or its audio outlives the promise for good.
+        state["on"] = False
+        backoff_clock.advance(2)
+        res = await cleanup.sweep_expired()
+        assert _row(expired) is None and res["jobs"] == 1, (
+            "a job that failed four times was never retried after its fourth backoff: it is "
+            f"skipped for ever (sweep result {res})"
+        )
+        assert res["stuck"] == 0, f"a job that finally succeeded is still counted stuck: {res}"
+        assert expired not in cleanup._failed
+
+    asyncio.run(scenario())
+
+
+def test_a_credit_charged_shell_that_finally_succeeds_is_forgotten_not_counted_stuck(
+    r2, tmp_path, ledger_user, monkeypatch, backoff_clock
+):
+    """The ANONYMISE path's own `_failed.pop` (the delete path has another, covered by the
+    test above). A ledger-bound job that failed three times and is then anonymised must stop
+    being counted `stuck`; without the pop it is reported stuck until the process restarts,
+    although its audio is gone and its shell is done.
+
+    Kills: removing `_failed.pop(job_id, None)` after `_anonymise_job`.
+    """
+
+    async def scenario():
+        charged = _insert_job(26, user_id=ledger_user, charged=True)
+        shapes = job_footprint(charged, str(tmp_path))
+        _age_all(r2, shapes, 25.0)
+        state = _inject_delete_failure(monkeypatch, r2, "/bass/intro_0010.wav")
+
+        for hits, wait in enumerate((0, FIRST_BACKOFF_SEC + 1, 2 * FIRST_BACKOFF_SEC + 1), 1):
+            backoff_clock.advance(wait)
+            res = await cleanup.sweep_expired()
+            assert state["hits"] == hits
+        assert res["stuck"] == 1 and cleanup._failed[charged][0] == 3, "fixture: stuck"
+
         state["on"] = False
         backoff_clock.advance(4 * FIRST_BACKOFF_SEC + 1)
         res = await cleanup.sweep_expired()
-        assert _row(expired) is None and res["jobs"] == 1
-        assert res["stuck"] == 0, f"a job that finally succeeded is still counted stuck: {res}"
-        assert expired not in cleanup._failed
+
+        row = _row(charged)
+        assert row is not None and row[0] == cleanup.PURGED_MARKER, "must be an anonymised shell"
+        assert res["anonymised"] == 1
+        assert res["stuck"] == 0, f"an anonymised shell is still counted stuck: {res}"
+        assert charged not in cleanup._failed
 
     asyncio.run(scenario())
 

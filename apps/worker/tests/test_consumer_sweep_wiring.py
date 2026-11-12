@@ -25,8 +25,8 @@ more than it did:
     `cleanup.DATABASE_URL` alone: the sweep connects with whatever `cleanup.py` read from
     the `DATABASE_URL` environment variable, so reading a different variable name there
     makes every sweep log `retention_sweep_error` and delete nothing (round 2 patched that
-    attribute and could not see it). What the chain test DOES stub is listed in its own
-    docstring, and it is the whole list.
+    attribute and could not see it). What the chain test does NOT run as production does is
+    listed in its own docstring; that list said it was "exhaustive" in round 3 and was not.
 
 The cadence tests need no database and no S3, so they also run in the no-DB baseline that
 silently skips ~170 other tests. The chain test needs both.
@@ -288,7 +288,13 @@ def test_poll_loop_startup_sweep_removes_an_expired_jobs_objects_from_real_r2(
     """The real `poll_loop` -> the real `_safe_sweep` -> WHATEVER `consumer.py` bound
     `sweep_expired` to -> the real R2 deleters, against a real S3 server and Postgres.
 
-    WHAT IS STUBBED, exhaustively (everything else is the production code path):
+    WHAT IS NOT THE PRODUCTION PATH. Round 3 headed this list "WHAT IS STUBBED, exhaustively
+    (everything else is the production code path)"; it omitted the items marked (r4). It is
+    now enumerated from the code, and the claims that matter are held by mutants
+    (`tests/mutation/manifest.py`), not by this list:
+      * THE CALLER (r4). `main.py` runs `asyncio.gather(server.serve(), poll_loop())`; this
+        test calls `asyncio.run(consumer.poll_loop())` itself, so `main.serve()` is not run
+        and nothing here notices `main.py` ceasing to start the loop;
       * `consumer.time` (replaced by a fake monotonic clock) and `asyncio.sleep` (a fake
         that advances it; `consumer.asyncio` IS the asyncio module, so this one is
         process-wide for the test) -- so `poll_loop` runs in zero real time;
@@ -296,9 +302,16 @@ def test_poll_loop_startup_sweep_removes_an_expired_jobs_objects_from_real_r2(
         and `consumer.claim_and_cut` -- there is no queue to claim from;
       * `tmpdirs.sweep_stale`, replaced by a no-op. That module is shared, so it is inert
         inside `cleanup.sweep_expired` too: nothing here tests the local scratch-dir pass.
-      * the process environment: `RealR2` sets the `R2_*` variables to a loopback moto
-        server (the product reads them per call), and `DATABASE_URL` is whatever the test
-        run was started with.
+      * the process environment (r4: the list was partial): `RealR2` sets `R2_ENDPOINT_URL`
+        (a loopback moto server), the two keys, `R2_BUCKET_NAME` and `AWS_DEFAULT_REGION`,
+        deletes the six proxy variables and sets `NO_PROXY`/`no_proxy` to `*` (the product
+        reads these per call); `DATABASE_URL` is whatever the run was started with and must
+        be local (`require_database`);
+      * (r4) `r2_uploader._r2.cache_clear()` on entering and leaving `RealR2`;
+      * (r4) `cleanup._failed.clear()` before and after (module state reset);
+      * (r4) the object ages are set through moto's in-process backend, not an S3 API (see
+        `RealR2.age_many`), and the job row is inserted with SQL;
+      * (r4) shapes 1 and 3 of the footprint are typed literals, and so is shape 2's key.
     NOT stubbed: `consumer.sweep_expired` (`sweep=None`), `cleanup.DATABASE_URL` (the
     sweep connects with the value `cleanup.py` itself read from the environment), the
     per-job delete, `r2_uploader`'s boto3 helpers, the SQL.

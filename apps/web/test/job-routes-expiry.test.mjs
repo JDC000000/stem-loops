@@ -1,8 +1,8 @@
 // Run: pnpm --filter web test
 //
 // The 24-hour promise on the READ side: an expired job must 404 on every job route
-// even if the worker's sweep has not reached it yet, and no signed URL may outlive the
-// job it points into.
+// even if the worker's sweep has not reached it yet; and, on two routes, the TTL of a signed
+// URL is checked against what is left of the job (see "WHAT IS NOT BOUNDED" below).
 //
 // WHY THIS FILE EXISTS. The existing job-route tests stub `@/lib/db` by dispatching on a
 // SUBSTRING of the query text (`t.includes('FROM jobs')`), which returns its row whatever
@@ -19,9 +19,36 @@
 //   * The signer is the REAL one (lib/r2.ts, lib/stem-urls.ts with the real AWS SDK
 //     presigner, offline SigV4). TTLs are read back out of the minted URL's
 //     `X-Amz-Expires`, which is what a caller actually receives.
-// Only the network edges are faked: the database, the R2 LIST call, Sentry, next/server,
-// the admission limiter (a DB-backed counter that is not what is under test) and, for the
-// loops route, `getUser` (every fixture job is anonymous, `user_id` NULL).
+// WHAT IS NOT THE PRODUCTION PATH. Round 3 said "Only the network edges are faked" and then
+// listed them; `@/lib/client-ip` was also stubbed and was not listed. Enumerated from the
+// code in `loadRoutes`:
+//   * the database (`@/lib/db`) is the fake above;
+//   * the R2 LIST call: `r2.send` is overwritten so the stems route's ListObjectsV2 reads
+//     `store.objects` (presigning, which the TTL assertions read, never touches the network);
+//   * `@sentry/nextjs` (no-ops) and `next/server` (a minimal NextResponse.json);
+//   * `@/lib/admission` (`checkStemListRate` always allows; a DB-backed counter, imported by
+//     the stems route), `@/lib/client-ip` (`clientIpHashOf` returns the literal 'iphash';
+//     imported by the stems route), and `@/lib/auth/supabase` (`getUser` returns null; imported
+//     by the loops route, every fixture job being anonymous);
+//   * the process environment: `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`, `R2_ACCESS_KEY_ID` and
+//     `R2_SECRET_ACCESS_KEY` are set to dummy values at module load and `MINIO_ENDPOINT` is
+//     deleted, so the real signer produces an offline SigV4 URL for a fake account;
+//   * the module graph is rewired by regex on the transpiled TypeScript (`wire`): bare
+//     specifiers for the AWS SDK are resolved here, and `@/lib/*` imports point at data: URLs.
+//     `retention.ts`, `r2.ts`, `stem-keys.ts` and `stem-urls.ts` are the real files.
+// The claims that matter are held by mutants (apps/worker/tests/mutation/manifest.py lists the
+// web ones), not by this list.
+//
+// WHAT IS NOT BOUNDED. "No signed URL may outlive the job it points into" is NOT a property
+// this file establishes, and it is not true of the code:
+//   * /api/jobs/:id and /stems are tested against a LIVE job (2 h) and a job with 90 s left.
+//     /api/jobs/:id's TTL has a 60 s floor (`presignTtlSec` in lib/retention.ts), so a job
+//     with less than 60 s left gets a URL that outlives it; no test here has such a job
+//     (for /stems either, so its behaviour under 60 s is untested).
+//   * /play-chords mints a fixed 300 s URL (`PLAY_CHORDS_SIGNED_URL_TTL_SEC`) whatever the
+//     job has left. It is checked only against a job with 2 h left, where 300 s is shorter.
+//     A job with 90 s left would get a URL good for 300 s.
+// Both are product behaviour; this PR is tests only, so they are recorded here, not fixed.
 //
 // FOUR job routes carry the `expires_at > now()` predicate and all four are covered here:
 // /api/jobs/:id, /stems, /play-chords and /loops (GET and POST share one `authorize`).

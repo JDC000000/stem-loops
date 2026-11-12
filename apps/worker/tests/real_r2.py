@@ -34,6 +34,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from tests.db_guard import (  # noqa: F401  (re-exported for the tests)
+    database_url_problem,
+    refuse_unless_local,
+    skip_or_fail,
+)
 from worker.storage import r2_uploader
 
 # moto lives in requirements-dev.txt, not the production image. When it is missing:
@@ -85,23 +90,27 @@ def start_bounded(server, deadline_sec: float = SERVER_START_DEADLINE_SEC) -> No
         )
 
 
-def skip_or_fail(reason: str) -> None:
-    """A precondition is missing: SKIP locally, FAIL under CI.
-
-    Under GitHub Actions (`CI=true`) a skipped test is a gate that silently did not run,
-    which is the failure mode these tests exist to remove. Locally a developer without a
-    database or without moto still gets a clean skip with the reason.
-    """
-    if os.environ.get("CI"):
-        pytest.fail("CI=true but " + reason, pytrace=False)
-    pytest.skip(reason)
-
-
 def require_database() -> str:
-    """The `DATABASE_URL` these tests need, or skip (local) / fail (CI) with the reason."""
+    """The LOCAL `DATABASE_URL` these tests need, or skip (local) / fail (CI) with the reason.
+
+    THIS IS THE CHOKEPOINT for every DB-backed test in the retention files, and it must stay
+    one: those tests run the real destructive sweep SQL (DELETE FROM jobs, anonymising
+    charged job shells, DELETE FROM upload_rate_events) against whatever database it
+    returns. Only R2 is a fake (moto). Round 3 guarded just the one fixture that inserts
+    into `auth.users`, so a developer whose shell exports a production `DATABASE_URL` would
+    have run the sweep against production. A non-local URL is therefore REFUSED here:
+    skipped locally, failed under CI, never connected to.
+
+    Two values are checked, because the sweep connects with the one `cleanup.py` read at
+    import, not with the variable as it is now: `os.environ["DATABASE_URL"]` and
+    `cleanup.DATABASE_URL`. CI's `postgresql://stemloops:...@localhost:5432/stemloops` passes.
+    """
     url = os.environ.get("DATABASE_URL")
     if not url:
         skip_or_fail("DATABASE_URL is not set, so the DB-backed retention tests cannot run")
+    from worker import cleanup
+
+    refuse_unless_local(("DATABASE_URL", url), ("cleanup.DATABASE_URL", cleanup.DATABASE_URL))
     return url
 
 
@@ -222,13 +231,18 @@ class RealR2:
 def job_footprint(job_id: str, tmp_dir: str) -> dict[str, str]:
     """Write every key shape a job can own, and return {shape name: key}.
 
-    Shapes 2, 4, 5, 6 and 7 are written by CALLING the real `r2_uploader` write
-    functions, so the key is whatever production would have produced, not a string this
-    test typed. (Shape 4 is the on-demand cutter's path, `upload_loop`; shape 7 is
-    `upload_play_chords`.) Shape 1 is written by the browser straight to R2 via a
-    presigned PUT (`api/uploads/route.ts`) and shape 3 is the pre-#211 loop key that
-    production rows still hold, so neither has a worker function: they are literals,
-    copied from the brief's enumeration.
+    Every shape but 1 and 3 is written by CALLING the real `r2_uploader` write function. The
+    KEY this function returns for it is what production produced for shapes 4, 5, 6 and 7
+    (`upload_loop`, `upload_stem` twice, `upload_play_chords`). It is NOT so for shape 2:
+    `upload_input` returns a presigned URL, not the key, so the key tracked for shape 2 is a
+    string this test typed (`<id>/_input.wav`). If `upload_input` moved its key, the object
+    would land elsewhere and `RealR2.age` would fail on the typed one (a crash, not a
+    clean assertion), so the drift is seen, but the key is not "whatever production would have
+    produced". (Round 3 of this docstring said it was.) Shape 4 is the on-demand cutter's
+    path, `upload_loop`; shape 7 is `upload_play_chords`. Shape 1 is written by the browser
+    straight to R2 via a presigned PUT (`api/uploads/route.ts`) and shape 3 is the pre-#211
+    loop key that production rows still hold, so neither has a worker function: they are
+    literals, copied from the brief's enumeration.
 
       1  <id>/_input.<ext>                          browser presigned PUT
       2  <id>/_input.wav                            upload_input
@@ -309,10 +323,19 @@ def assert_chords_gone_or_xfail(r2: RealR2, shapes: dict[str, str]) -> None:
     reports a silent XPASS under a different mutant. This one can only fire when the
     chords key is the sole survivor.
 
-    THE PROBE IS COUPLED TO A NAME. If #214 is reworked so that `job_object_prefixes` is
-    renamed, this reads "fix absent" and the xfail returns. The module-level
-    `FIX_PROBE` is the one place to change, and `test_real_r2_harness.py` pins both
-    branches so that neither can rot unseen.
+    THE PROBE IS COUPLED TO A NAME, AND A RENAME IS NOT SEEN. If #214 is reworked so that
+    `job_object_prefixes` is renamed (a reviewer renamed it to `job_r2_prefixes` AND regressed
+    it), this reads "fix absent", the xfail returns, and the suite reports
+    `1 failed, 38 passed, 2 xfailed` with a message that falsely says the fix is absent.
+    `test_real_r2_harness.py` parametrises on `FIX_PROBE` itself, so it pins both branches of
+    THIS helper for the current name and cannot see a rename. (Round 3 of this docstring said
+    the pins stop either branch "rotting unseen"; the rename case rots unseen.)
+
+    No in-test detector can fix that: a regressed fix and an absent one are behaviourally
+    identical, so the marker has to come from outside the behaviour. THE REMEDY IS A MERGE
+    OBLIGATION, NOT CODE: whichever of #214 and this PR lands SECOND deletes this xfail branch
+    (the `pytest.xfail(...)` below, `per_job_delete_covers_the_chords_namespace`, `FIX_PROBE`
+    and the three harness tests that pin them), leaving a plain assertion that shape 7 is gone.
     """
     key = shapes[CHORDS_SHAPE]
     if key not in r2.all_keys():
@@ -327,5 +350,9 @@ def assert_chords_gone_or_xfail(r2: RealR2, shapes: dict[str, str]) -> None:
     pytest.xfail(
         f"{key!r} survived the per-job delete: r2_uploader has no `{FIX_PROBE}`, so "
         "`delete_prefix(f'{job_id}/')` does not reach the `jobs/` namespace (PR #214 adds "
-        "it). Shapes 1-6 were asserted gone."
+        "it). Shapes 1-6 were asserted gone. IF #214 IS ALREADY MERGED, THIS MESSAGE IS "
+        f"WRONG: it renamed `{FIX_PROBE}` (this probe cannot see a rename, and the chords "
+        "key then survives for a REAL reason), or regressed it. Either way the obligation "
+        "stands: whichever of #214 and #224 landed second must delete this xfail branch "
+        "(real_r2.assert_chords_gone_or_xfail)."
     )

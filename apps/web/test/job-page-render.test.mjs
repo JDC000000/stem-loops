@@ -41,6 +41,16 @@
 // test/play-mixer.test.mjs): transpile the real `JobView.tsx` into
 // node_modules/.cache and point its import specifiers at stubs.
 //
+// ⚠️ WHAT THIS FILE DOES NOT COVER, stated because round 1 of #229 let it be
+// mistaken for coverage: the POLLING EFFECT. The react shim below makes
+// `useEffect` a no-op and seeds `useState` positionally, so `poll()` is never
+// executed here and a mutation that guts the effect body — never show the
+// unreachable panel, reset the failure count every poll — passes every
+// assertion in this file. The effect is covered behaviourally in
+// test/job-view-poll.test.mjs (real React, real effect, stubbed fetch, virtual
+// clock). This file covers what each STATE renders as; that one covers how a
+// state is REACHED. Both are needed.
+//
 // `JobView` reaches its `done` branch only from an effect, and
 // `renderToStaticMarkup` never runs effects, so `job` would stay `null` and the
 // component would render "Loading…" forever. The `react` shim below therefore

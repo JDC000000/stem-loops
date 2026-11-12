@@ -1099,6 +1099,14 @@ test('load-error renders as an ALERT; "Try again" appears only when the failure 
 });
 
 test('Player wires the three outcomes: it reads zeroSourceReason and reports only the browser-side ones', () => {
+  // ⚠️ THIS IS A SOURCE-TEXT GATE AND IT IS NOT THE COVERAGE. Review mutated
+  // the effect so that every zero-stem outcome collapsed back into the calm
+  // "no stems" note while BOTH regexes below still matched, and the whole
+  // suite stayed green: a regex proves a call is WRITTEN, never that its
+  // answer is USED. The behavioural coverage is test/play-player-effect.mjs —
+  // the real effect mounted over a stubbed fetch, asserting the rendered
+  // banner. This gate is kept because it still catches a commented-out call,
+  // which rendering does not speak to; it is a second layer, not the first.
   const src = codeOnly(read('src/components/play/Player.tsx'));
   assert.match(src, /zeroSourceReason\(loaded\)/);
   assert.match(src, /reportStemFetchFailure\(reason, loaded\.stemFailures\)/);

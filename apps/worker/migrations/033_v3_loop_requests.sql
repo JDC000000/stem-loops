@@ -88,6 +88,39 @@ ALTER TABLE public.loops ADD COLUMN IF NOT EXISTS cut_at timestamptz;
 COMMENT ON COLUMN public.loops.cut_at IS
   'When the WAV at r2_key was encoded and uploaded. NULL = described by the eager pass but not cut; the API mints no signed URL for such a row.';
 
+-- EVERY ROW THAT ALREADY EXISTS IS CUT. Backfill it, or the new column lies
+-- about the entire pre-033 table.
+--
+--   The eager pipeline uploaded a loop's WAV BEFORE it INSERTed the row, so an
+--   existing `loops` row is proof its object is in R2. A bare ADD COLUMN leaves
+--   every one of them NULL, which this file defines as "described, not cut", and
+--   two things act on that the moment the migration lands:
+--     * `apps/web/src/app/api/jobs/[id]/route.ts` returns `signed_url: null` for
+--       an uncut row, so every download link for every job still inside its 24h
+--       window dies at cutover;
+--     * `down/033`'s first statement is `DELETE FROM public.loops WHERE cut_at
+--       IS NULL`, so a rollback would delete the whole table -- and with it the
+--       play-along player's section regions, which `lib/play/sections.ts`
+--       derives from exactly these rows.
+--
+--   `created_at` is the honest value: `loops.created_at` is timestamptz NOT NULL
+--   DEFAULT now() (003_loops.sql, unaltered since), so no row escapes the
+--   predicate and nothing needs coalescing. It is the INSERT's own timestamp,
+--   which the eager pass took moments after the upload it followed.
+--
+--   PLACEMENT. After the ADD COLUMN, because the column has to exist; and
+--   before `loops_uncut_idx`, because that index is partial ON `cut_at IS NULL`
+--   -- built first it would index every existing row and then have every entry
+--   deleted again by this UPDATE, where built second it is created directly over
+--   the true pending set (empty, on a table the eager pass filled). Nothing
+--   below this point touches `loops` at all; §2 onward is the new
+--   `loop_requests` table, so this is the only window where order matters.
+--
+--   Gated by tests/test_033_cut_at_backfill.py, which applies ...→032, seeds a
+--   row the way the pre-033 pipeline wrote it, applies this file, and asserts
+--   both that the row is cut and that it survives `down/033`.
+UPDATE public.loops SET cut_at = created_at WHERE cut_at IS NULL;
+
 -- The cutter claims work with "the uncut rows of this job". Partial, so it
 -- indexes only the pending tail and costs nothing once a job is fully cut.
 CREATE INDEX IF NOT EXISTS loops_uncut_idx

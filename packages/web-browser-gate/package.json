@@ -2,11 +2,12 @@
   "name": "@stem-loops/web-browser-gate",
   "version": "0.1.0",
   "private": true,
-  "description": "Real-Chromium gates for apps/web. Kept out of apps/web so that adding esbuild/playwright does not re-resolve apps/web's own peer set (see README in test file header).",
+  "description": "Real-Chromium gates for apps/web. Lives in its own workspace package so that adding esbuild/playwright does not re-resolve apps/web's own peer set (adding esbuild to apps/web dropped @sentry/nextjs's webpack peer from pnpm-lock.yaml).",
   "scripts": {
     "test": "node --experimental-strip-types --test test/*.test.mjs"
   },
   "devDependencies": {
+    "@fontsource/inter": "5.2.5",
     "esbuild": "0.25.12",
     "playwright": "1.63.0"
   }

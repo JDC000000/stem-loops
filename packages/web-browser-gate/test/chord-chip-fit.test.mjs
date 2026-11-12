@@ -46,6 +46,8 @@
 //   CHORD_GATE_SRC   path of an apps/web checkout to bundle (default: this one).
 //                    Used to point the gate at another tree, e.g. a PR head.
 //   CHORD_GATE_LOG   set to 1 to print the per-pass table on success as well.
+//   CHORD_GATE_FONT  `system` skips the pinned font and uses whatever Chromium
+//                    resolves on this machine. For investigation only; see FONT.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -100,6 +102,32 @@ export const TOLERANCE_PX = 0.25;
 // constant when the component budgets the border; the gate then holds
 // every chip to TOLERANCE_PX.
 export const NON_CHORD_BORDER_ALLOWANCE_PX = 2;
+
+// ---------------------------------------------------------------------------
+// FONT
+// ---------------------------------------------------------------------------
+// Whether a chord name fits depends on the font. The component's fit decision
+// is made with a canvas measurer that cannot see font-variant-numeric,
+// letter-spacing or OpenType features, so a defect of that class (tabular digits
+// were one: `C:11` rendered 7.4px wider than it was measured, up to 15.2px
+// across the alphabet) only exists in a font whose digits are proportional.
+// The first CI run of this gate used the runner's ambient font, DejaVu Sans
+// (whose digits are already tabular), and PASSED on `v3/main` where the same
+// gate in Inter fails 7 of 9 -- a gate that is green for the wrong font is
+// vacuous for that whole class. So the page pins Inter (@fontsource/inter,
+// version-pinned in this package's lockfile entry, OFL) via @font-face and
+// forces it with `* { font-family: GateInter !important }`; the gate then
+// asserts, via CDP, that Chromium actually painted the chips in Inter. The
+// component still reads its family off the element it renders in, exactly as in
+// production; only the environment's font is fixed. Inter is what a user whose
+// system font is Inter-like gets; it is not a claim about every user's font.
+const PIN_FONT = process.env.CHORD_GATE_FONT !== 'system';
+const FONT_DIR = join(dirname(require.resolve('@fontsource/inter/package.json')), 'files');
+const FONT_FILES = { 400: 'inter-latin-400-normal.woff2', 500: 'inter-latin-500-normal.woff2', 600: 'inter-latin-600-normal.woff2', 700: 'inter-latin-700-normal.woff2' };
+const FONT_CSS =
+  Object.keys(FONT_FILES)
+    .map((w) => `@font-face{font-family:GateInter;font-weight:${w};font-style:normal;src:url(/font-${w}.woff2) format('woff2')}`)
+    .join('') + '*{font-family:GateInter,sans-serif !important}';
 
 // Viewports. 1280 and 390 are the two where PR #212 round 3's figures differed
 // most (13 chips clipped at 1280, 29 at 390 for one and the same mutation).
@@ -344,11 +372,25 @@ for (const width of VIEWPORTS) {
               body:
                 '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
                 '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-                '<link rel="stylesheet" href="/out.css"></head><body>' +
+                '<link rel="stylesheet" href="/out.css">' +
+                (PIN_FONT ? `<style>${FONT_CSS}</style>` : '') +
+                '</head><body>' +
                 '<main style="max-width:960px;margin:0 auto;padding:48px var(--sl-gutter,16px) 96px;' +
                 'font-family:var(--font-sans)"><div id="root"></div></main>' +
-                '<script src="/out.js"></script></body></html>',
+                // Load the fonts BEFORE the bundle runs: the component's measurer
+                // reads canvas widths once per container, and a measurement taken
+                // before the webfont arrives is a fallback-font measurement.
+                '<script>(' +
+                (PIN_FONT
+                  ? "Promise.all([400,500,600,700].map(function(w){return document.fonts.load(w+' 16px GateInter')}))"
+                  : 'Promise.resolve()') +
+                ").then(function(){var s=document.createElement('script');s.src='/out.js';document.body.appendChild(s)})</script>" +
+                '</body></html>',
             });
+          if (PIN_FONT && /^\/font-(\d+)\.woff2$/.test(u.pathname)) {
+            const w = /^\/font-(\d+)\.woff2$/.exec(u.pathname)[1];
+            return route.fulfill({ contentType: 'font/woff2', body: readFileSync(join(FONT_DIR, FONT_FILES[w])) });
+          }
           if (u.pathname === '/out.js')
             return route.fulfill({ contentType: 'text/javascript', body: built.js });
           if (u.pathname === '/out.css')
@@ -392,6 +434,12 @@ for (const width of VIEWPORTS) {
               .map((f) => `${f.familyName}x${f.glyphCount}`)
               .join(',')
           : 'no full-density chip';
+        if (PIN_FONT)
+          assert.match(
+            font,
+            /^Inter/,
+            `the pinned font did not paint the chips (platform fonts: ${font}); every width below would be for the wrong font`,
+          );
 
         const failures = [];
         let worstChord = { px: -Infinity, desc: '' };

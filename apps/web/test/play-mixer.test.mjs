@@ -187,34 +187,106 @@ test('each fader is a real continuous range input, 0..100 step 1 (not a binary t
   }
 });
 
-test('faders are vertical: orient attribute present, and the stylesheet sets writing-mode', () => {
+test('faders are vertical: orient="vertical" on all six, and the stylesheet DECLARES writing-mode + direction', () => {
   const html = render({ stems: allReady(), ...handlers() });
   assert.equal(faders(html).filter((f) => f.includes('orient="vertical"')).length, 6);
-  // EFFECTIVE css, scoped to the `.fader` rule. This block used to assert
-  // `-webkit-appearance: slider-vertical` against RAW text, and was satisfied
-  // by a comment explaining that `slider-vertical` had been deliberately
-  // removed. `slider-vertical` is a NATIVE widget: declared on a range input
-  // it stops `::-webkit-slider-thumb` taking author styles, so the 32x14 thumb
-  // below it never painted in any shipping browser (measured in Chromium).
+  // What this proves is that the declarations are PRESENT in the winning
+  // cascade of Mixer.module.css. It does not prove Chromium lays the control
+  // out vertically; nothing in this suite measures a box.
   const css = read(MIXER_CSS);
-  const effective = uncomment(css);
   assert.equal(declAt(css, NARROWEST, '.fader', 'writing-mode'), 'vertical-lr');
   assert.equal(declAt(css, NARROWEST, '.fader', 'direction'), 'rtl'); // zero at the bottom
-  // THE REGRESSION GUARD. Fails on the code that shipped the bug (which
-  // declared `-webkit-appearance: slider-vertical` on `.fader`), passes on the
-  // fix, and cannot be satisfied by a comment.
-  assert.doesNotMatch(effective, /slider-vertical/, 'a native slider widget disables the custom thumb');
-  // THE POSITIVE FORM. The custom thumb can only paint if the control is not
-  // drawing its native widget, in BOTH spellings.
+  assert.doesNotMatch(uncomment(css), /transform:\s*rotate/i); // hit area must follow the paint
+});
+
+test('fader thumb-paint guard: no native appearance can be declared, and the thumb box is non-degenerate (Mixer.module.css + src/**/*.css; NOT the built cascade)', () => {
+  // THE BUG THIS GUARDS. Base declared `-webkit-appearance: slider-vertical`
+  // on `.fader`, which is a NATIVE widget; `::-webkit-slider-thumb` only takes
+  // author styles when the control is not drawing one. Measured in Chromium
+  // 153 on the real stylesheets and the real Mixer.tsx markup: base thumb node
+  // 16x16, 0 px of the author colour, ~167 px of UA blue; fixed thumb node
+  // 32x14, 356 px of author colour. The designed thumb had never painted.
+  //
+  // WHAT THIS TEST CAN SEE, and nothing more:
+  //   (a) every `appearance`-family and `all` declaration in Mixer.module.css,
+  //       enumerated in any @media/@supports block and any case, must be one
+  //       of the four pairs in ALLOWED_NATIVE. This is an allowlist, not a
+  //       check of one selector, so `.slot input { appearance: auto }`, an
+  //       upper-case `-WEBKIT-APPEARANCE: Slider-Vertical` and a capitalised
+  //       `Appearance: auto` are refused wherever they sit in that file;
+  //   (b) in every OTHER stylesheet under src/, a HEURISTIC: an appearance /
+  //       `all` declaration other than `none` whose selector names no class or
+  //       id (so it could match a range input by tag, attribute or `*`) is
+  //       refused. Selector SPECIFICITY and ORDER across files are not modelled,
+  //       and `@layer`, `<style>` tags, inline style on elements this file is
+  //       not shown, and third-party CSS are invisible to it;
+  //   (c) the thumb declares a width and height that parse to px and exceed the
+  //       6px track it rides, is not `display: none`/`visibility: hidden`, and
+  //       is not `opacity: 0`. The floor is a judgement (a cap no bigger than
+  //       its track is not a cap), not the designed 32x14. It will not notice
+  //       9px, `transform: scale(0)`, `clip-path`, a transparent `background`,
+  //       or a thumb coloured like its track.
+  // WHAT IT CANNOT SEE: whether the thumb PAINTS. This repo has no browser
+  // test, so that is established only by measuring in Chromium (see the PR
+  // description), and no gate here defends the measurement.
+  const css = read(MIXER_CSS);
+  const effective = uncomment(css);
+
+  // (a) the allowlist
+  const ALLOWED_NATIVE = [
+    ['.fader', '-webkit-appearance', 'none'],
+    ['.fader', 'appearance', 'none'],
+    ['.fader::-webkit-slider-thumb', '-webkit-appearance', 'none'],
+    ['.fader::-webkit-slider-thumb', 'appearance', 'none'],
+  ];
+  const found = nativeWidgetDecls(effective).map((d) => [d.selector, d.prop, d.value]);
+  const key = (rows) => rows.map((r) => r.join(' | ')).sort();
+  assert.deepEqual(
+    key(found),
+    key(ALLOWED_NATIVE),
+    'appearance/all declarations in Mixer.module.css must be exactly the allowlist: ' +
+      'each of these four, once, and nothing else (a native widget disables the custom thumb)',
+  );
+  assert.doesNotMatch(effective, /slider-vertical/i, 'a native slider widget disables the custom thumb');
+  // The component itself must not smuggle one in either.
+  assert.doesNotMatch(uncommentTs(read(MIXER_TSX)), /appearance/i, 'Mixer.tsx must not set appearance');
+  for (const f of faders(render({ stems: allReady(), ...handlers() }))) {
+    assert.doesNotMatch(f, /appearance|\ball\s*:/i, `inline style on a fader: ${f}`);
+  }
+  // The cascade agrees with the enumeration (order and @media are resolved here).
   assert.equal(declAt(css, NARROWEST, '.fader', 'appearance'), 'none');
   assert.equal(declAt(css, NARROWEST, '.fader', '-webkit-appearance'), 'none');
-  // COHERENCE. The custom thumb has a declared box to paint, and does not
-  // itself opt back into a native appearance.
   assert.equal(declAt(css, NARROWEST, '.fader::-webkit-slider-thumb', 'appearance'), 'none');
   assert.equal(declAt(css, NARROWEST, '.fader::-webkit-slider-thumb', '-webkit-appearance'), 'none');
-  assert.ok(declAt(css, NARROWEST, '.fader::-webkit-slider-thumb', 'width'), 'thumb has a width');
-  assert.ok(declAt(css, NARROWEST, '.fader::-webkit-slider-thumb', 'height'), 'thumb has a height');
-  assert.doesNotMatch(effective, /transform:\s*rotate/); // hit area must follow the paint
+
+  // (b) the other stylesheets
+  const offenders = [];
+  for (const file of cssFilesUnder(join(WEB, 'src'))) {
+    if (file === join(WEB, MIXER_CSS)) continue;
+    for (const d of nativeWidgetDecls(uncomment(readFileSync(file, 'utf8')))) {
+      if (d.value === 'none') continue;
+      const reachable = d.selector.split(',').some((one) => !/[.#]/.test(subject(one.trim())));
+      if (reachable) offenders.push(`${file.slice(WEB.length + 1)}: ${d.selector} { ${d.prop}: ${d.value} }`);
+    }
+  }
+  assert.deepEqual(offenders, [], 'a tag/attribute/universal selector restores a native widget on range inputs');
+
+  // (c) the thumb's own box
+  const THUMB = '.fader::-webkit-slider-thumb';
+  const track = px(declAt(css, NARROWEST, '.fader::-webkit-slider-runnable-track', 'width'));
+  assert.ok(track > 0, 'the track has a width to compare the thumb against');
+  assert.ok(px(declAt(css, NARROWEST, THUMB, 'width')) > track, 'thumb width must exceed the track width');
+  assert.ok(px(declAt(css, NARROWEST, THUMB, 'height')) > track, 'thumb height must exceed the track width');
+  assert.notEqual(declAt(css, NARROWEST, THUMB, 'display', { required: false }), 'none', 'thumb is display:none');
+  assert.ok(
+    !['hidden', 'collapse'].includes(declAt(css, NARROWEST, THUMB, 'visibility', { required: false })),
+    'thumb is visibility:hidden',
+  );
+  const opacity = declAt(css, NARROWEST, THUMB, 'opacity', { required: false });
+  if (opacity !== null) {
+    assert.match(opacity, /^[\d.]+%?$/, `cannot resolve thumb opacity \`${opacity}\``);
+    assert.ok(parseFloat(opacity) > 0, 'thumb is opacity:0');
+  }
 });
 
 test('gain of exactly 0 and exactly 1 render as 0% and 100%', () => {
@@ -748,13 +820,44 @@ const uncomment = (css) => {
  * real parser. A regex cannot do this: `//` inside a string, a template or JSX
  * text (`https://...`, `don't`) is not a comment, and `/*` inside a regex
  * literal is not either. Newlines are kept so line numbers still line up.
+ *
+ * TWO GUARDS, each closing a measured hole:
+ *  - It THROWS on any syntactic diagnostic. The scanner below trusts the AST,
+ *    and on source the parser could not read (`const v = <any>window; // DEAD`
+ *    is not valid TSX) the AST is arbitrary, so a comment could survive as
+ *    "code" and satisfy a presence assertion. Failing loudly is the only sound
+ *    answer; it used to be shielded only because the one file it was given had
+ *    to transpile for the suite to run at all.
+ *  - A comment range that STARTS inside a JsxText node is dropped. JSX text is
+ *    text, so `<p>{a}// LIVE\n{b}</p>` renders "// LIVE" in React. The trailing-
+ *    comment scan from the end of `{a}` (and from the `>` of `<p>`) cannot know
+ *    the next token is JSX text, reported `// LIVE` as a comment, and this
+ *    function blanked live text. The AST can tell, so it is asked.
+ *
+ * WHAT IT STILL CANNOT DO: it does not evaluate anything. A string that is
+ * built at run time, an `eval`, or markup produced by a function it is not
+ * shown is invisible to a source-text assertion, with or without comments.
  */
 const uncommentTs = (src) => {
+  const { diagnostics } = ts.transpileModule(src, {
+    fileName: 'x.tsx',
+    reportDiagnostics: true,
+    compilerOptions: { jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+  });
+  assert.equal(
+    diagnostics?.length ?? 0,
+    0,
+    `uncommentTs: the source does not parse as TSX, so its comments cannot be located reliably: ` +
+      (diagnostics ?? []).map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n')).join('; '),
+  );
   const sf = ts.createSourceFile('x.tsx', src, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
   const ranges = new Map();
+  const jsxText = [];
   const visit = (node) => {
     for (const child of node.getChildren(sf)) {
-      if (child.kind !== ts.SyntaxKind.JsxText) {
+      if (child.kind === ts.SyntaxKind.JsxText) {
+        jsxText.push([child.getFullStart(), child.getEnd()]);
+      } else {
         const pos = child.getFullStart();
         for (const r of ts.getLeadingCommentRanges(src, pos) ?? []) ranges.set(r.pos, r.end);
         for (const r of ts.getTrailingCommentRanges(src, child.getEnd()) ?? []) ranges.set(r.pos, r.end);
@@ -763,8 +866,12 @@ const uncommentTs = (src) => {
     }
   };
   visit(sf);
+  // by where it STARTS: the scan reports `// FIRST</p>;` as one comment running
+  // to the end of the line, which overshoots the text node it began in.
+  const startsInJsxText = (pos) => jsxText.some(([a, b]) => pos >= a && pos < b);
   let out = src;
   for (const [pos, end] of [...ranges].sort((a, b) => b[0] - a[0])) {
+    if (startsInJsxText(pos)) continue;
     out = out.slice(0, pos) + out.slice(pos, end).replace(/[^\n]/g, ' ') + out.slice(end);
   }
   return out;
@@ -897,10 +1004,23 @@ const declarations = (decls, where) => {
     if (text.length === 0) return;
     const colon = text.indexOf(':');
     if (colon === -1) return;
-    const prop = text.slice(0, colon).trim();
+    // CSS property names and KEYWORD values are ASCII case-insensitive, and
+    // Next's cssnano-simple leaves `-WEBKIT-APPEARANCE: Slider-Vertical` as
+    // written, so Chromium honours it (measured: computed `slider-vertical`).
+    // This used to compare them case-sensitively, which let `Appearance: auto`
+    // and the upper-case native-widget declaration past every lookup. Folded:
+    // property names (except `--custom` ones, which ARE case-sensitive) and
+    // values that are a bare keyword. Everything else keeps its case: a value
+    // such as `var(--Foo)`, a quoted string, a url() or a font name is not a
+    // keyword. A bare CUSTOM IDENT (an animation or grid-area name) is
+    // case-sensitive in CSS and is folded here too; nothing in this file reads
+    // one, and folding only ever makes two names look EQUAL, never different.
+    const rawProp = text.slice(0, colon).trim();
+    const prop = rawProp.startsWith('--') ? rawProp : rawProp.toLowerCase();
     let value = text.slice(colon + 1).trim();
     const important = /!\s*important$/i.test(value);
     if (important) value = value.replace(/!\s*important$/i, '').trim();
+    if (/^[A-Za-z][A-Za-z-]*$/.test(value)) value = value.toLowerCase();
     out.push({ prop, value, important });
   };
   for (let i = 0; i < decls.length; i += 1) {
@@ -1182,12 +1302,58 @@ const declAt = (css, width, selector, prop, { required = true, env = {} } = {}) 
   return first.value;
 };
 
+/**
+ * Every `appearance` / `-webkit-appearance` / `-moz-appearance` / `all`
+ * declaration in already-uncommented CSS, with the selector of the block that
+ * holds it, whatever @media / @supports it sits in and however it is cased.
+ * Deliberately NOT built on `rulesAt`: that drops blocks whose media condition
+ * is false at one width, and an allowlist must see every block that can apply
+ * at ANY width. Found by scanning for the property, then walking back to the
+ * innermost unmatched `{`, so nested blocks cannot hide one.
+ */
+const nativeWidgetDecls = (text) => {
+  const out = [];
+  const re = /(?<=^|[;{}\s])((?:-[a-z]+-)?appearance|all)\s*:\s*([^;{}]*)/gi;
+  for (const m of text.matchAll(re)) {
+    let depth = 0;
+    let open = -1;
+    for (let j = m.index - 1; j >= 0; j -= 1) {
+      if (text[j] === '}') depth += 1;
+      else if (text[j] === '{') {
+        if (depth === 0) {
+          open = j;
+          break;
+        }
+        depth -= 1;
+      }
+    }
+    if (open === -1) continue; // not inside a block: not a declaration
+    let start = open;
+    while (start > 0 && !';{}'.includes(text[start - 1])) start -= 1;
+    const selector = text.slice(start, open).trim().replace(/\s+/g, ' ');
+    out.push({
+      selector,
+      prop: m[1].toLowerCase(),
+      value: m[2].replace(/!\s*important\s*$/i, '').trim().toLowerCase(),
+    });
+  }
+  return out;
+};
+
+/** Every `.css` file under `root`, recursively. */
+const cssFilesUnder = (root) =>
+  readdirSync(root, { withFileTypes: true }).flatMap((e) => {
+    const p = join(root, e.name);
+    return e.isDirectory() ? cssFilesUnder(p) : e.name.endsWith('.css') ? [p] : [];
+  });
+
 /** The same lookup in forced-colors mode, where this stylesheet restates states. */
 const declForcedColors = (css, width, selector, prop, opts = {}) =>
   declAt(css, width, selector, prop, { ...opts, env: { ...opts.env, forcedColors: 'active' } });
 
 /** `12px` -> 12; `var(--space-2)` -> whatever the tokens say AT THIS WIDTH. */
 const px = (value, width = NARROWEST) => {
+  if (value === '0') return 0; // the one unitless length
   const direct = value.match(/^(-?[\d.]+)px$/);
   if (direct) return Number(direct[1]);
   const token = value.match(/^var\((--[a-z0-9-]+)\)$/);
@@ -1751,6 +1917,40 @@ test('uncommentTs: blanks // and /* */ comments but not `//` in strings, templat
   assert.match(out, /"http:\/\/example\.com"/);
   assert.match(out, /`\/\/not a comment/);
   assert.match(out, /see http:\/\/x\.test, don't \/\/ panic/);
+});
+
+test('uncommentTs: THROWS on source the parser cannot read, instead of guessing at its comments', () => {
+  assert.throws(() => uncommentTs('const v = <any>window; // DEAD'), /does not parse as TSX/);
+  assert.throws(() => uncommentTs('const = ;'), /does not parse as TSX/);
+});
+
+test('uncommentTs: text after a JSX expression or tag is TEXT, even when it starts with `//`', () => {
+  const live = uncommentTs('export const X = () => <p>{a}// LIVE\n{b}</p>;');
+  assert.match(live, /\{a\}\/\/ LIVE/, 'React renders this text; it is not a comment');
+  assert.match(uncommentTs('export const X = () => <p>// FIRST</p>;'), /\/\/ FIRST/);
+  assert.match(uncommentTs('export const X = () => <p>{a} /* LIVE */</p>;'), /\/\* LIVE \*\//);
+  const dead = uncommentTs('export const X = () => <p>{a /* DEAD */}{/* DEAD2 */}</p>; // DEAD3');
+  assert.doesNotMatch(dead, /DEAD/);
+});
+
+test('declarations / nativeWidgetDecls: CSS is case-insensitive, and the allowlist enumeration sees every block', () => {
+  // The two upper-case spellings Next's cssnano-simple leaves as written.
+  const upper = '.a { appearance: none; -WEBKIT-APPEARANCE: Slider-Vertical; }';
+  assert.equal(declAt(upper, 360, '.a', '-webkit-appearance'), 'slider-vertical');
+  assert.equal(declAt('.a { appearance: none; Appearance: AUTO; }', 360, '.a', 'appearance'), 'auto');
+  // `--Custom` properties ARE case-sensitive and must not be folded.
+  assert.equal(declAt('.a { --Foo: 1px; --foo: 2px; }', 360, '.a', '--Foo'), '1px');
+  assert.equal(declAt('.a { width: var(--Foo); }', 360, '.a', 'width'), 'var(--Foo)');
+  // enumerated: in any media block, nested, any case, `!important`, `all`, and a selector list
+  const rows = nativeWidgetDecls(
+    '.a { appearance: none } @media (min-width: 9999px) { .b input { -Webkit-Appearance: Auto !IMPORTANT } }' +
+      ' .c, .d { all: revert } .e { color: red } .f::after { content: "x" }',
+  );
+  assert.deepEqual(
+    rows.map((r) => `${r.selector} | ${r.prop} | ${r.value}`),
+    ['.a | appearance | none', '.b input | -webkit-appearance | auto', '.c, .d | all | revert'],
+  );
+  assert.deepEqual(nativeWidgetDecls('.a { transition: all 1s; --x-all: 1; } .all:hover { color: red }'), []);
 });
 
 // ═══ Design-system coupling ══════════════════════════════════════════════════

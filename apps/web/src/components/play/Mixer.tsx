@@ -75,6 +75,86 @@ export function stemLabel(stem: StemName): string {
   return stem.charAt(0).toUpperCase() + stem.slice(1);
 }
 
+// ─── the per-stem envelope ───────────────────────────────────────────────────
+
+/**
+ * Round 3's complaint about this surface was "six faders floating in a card
+ * with nothing between them -- Moises puts a waveform behind every stem; this
+ * puts air". Measured on the shipped component before this change: a channel is
+ * 141.66px wide at 1280/1440 and carries a 6px painted track, so ~96% of each
+ * column was empty. The envelope fills it.
+ *
+ * It is DECORATIVE and says so (`aria-hidden`): it is a visual stand-in for the
+ * stem's shape, not a measurement of this track's audio, and nothing is claimed
+ * about it in text. What it must be is STABLE and PER-SONG -- the same job and
+ * stem always draw the same figure, and two jobs never draw the same one, so
+ * the mixer does not look like the same picture for every upload.
+ *
+ * Derived from a string seed rather than `Math.random()` because this renders
+ * on the server too: a random envelope would differ between the server and the
+ * client pass and React would log a hydration mismatch.
+ */
+/**
+ * 16, derived against the NARROWEST slot this component actually gets, not
+ * picked for looks. The bars are flex items with a 1px floor and a 1px gap, so
+ * N bars need at least 2N - 1 px before anything can shrink. The narrowest slot
+ * is the six-across phone case at a 360px viewport: a 48.66px channel less its
+ * two 1px borders is 46.66px, hand-measured in Chromium, which caps N at 23.
+ *
+ * 28 was the design canvas's count and it does not port: 28 bars need 55px, so
+ * the figure overflowed its column by 3.17px at 360, 1.92px at 375 and 0.67px
+ * at 390 -- measured, each one spilling into the neighbouring channel.
+ *
+ * At the widest slot (a 141.66px channel at 1280/1440, so 139.66px) 16 bars at
+ * the 8px cap plus 15px of gaps span 139.66px, so the figure fills the column
+ * at desktop instead of floating in the middle of it.
+ */
+export const ENVELOPE_BARS = 16;
+/** Never a flat line at either end: a quiet stem still has to read as audio. */
+export const ENVELOPE_MIN_PCT = 14;
+export const ENVELOPE_MAX_PCT = 96;
+
+/** FNV-1a. Small, stable across engines, and good enough to decorrelate names. */
+function envelopeSeed(key: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < key.length; i += 1) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0) || 1; // xorshift is a fixed point at 0, so never seed 0
+}
+
+/**
+ * Bar heights as whole percentages of the fader slot, for one (song, stem).
+ *
+ * Noise alone looked like noise rather than music, so each bar is noise under a
+ * slow per-stem shape: the shape gives the figure a contour a listener reads as
+ * an arrangement, the noise keeps neighbouring bars from stepping evenly.
+ */
+export function stemEnvelope(
+  songKey: string,
+  stem: StemName,
+  bars: number = ENVELOPE_BARS,
+): number[] {
+  let state = envelopeSeed(`${songKey}/${stem}`);
+  const lobes = 1 + (state % 3); // 1..3 humps, per song+stem
+  const span = ENVELOPE_MAX_PCT - ENVELOPE_MIN_PCT;
+  const out: number[] = [];
+  for (let i = 0; i < bars; i += 1) {
+    // xorshift32
+    state ^= (state << 13) >>> 0;
+    state >>>= 0;
+    state ^= state >>> 17;
+    state ^= (state << 5) >>> 0;
+    state >>>= 0;
+    const noise = state / 0xffffffff;
+    const shape = 0.5 + 0.5 * Math.sin(((i + 0.5) / bars) * Math.PI * lobes);
+    const unit = Math.min(1, Math.max(0, 0.45 * noise + 0.55 * shape));
+    out.push(Math.round(ENVELOPE_MIN_PCT + unit * span));
+  }
+  return out;
+}
+
 /**
  * Why a stem is silent, as a user would describe it. Derived from the state we
  * were GIVEN — this does not recompute solo.
@@ -449,6 +529,8 @@ const VERTICAL_ATTR = { orient: 'vertical' } as unknown as { orient?: string };
 interface ChannelProps {
   readonly stem: StemName;
   readonly percent: number;
+  /** Whole percentages, from `stemEnvelope`. Decorative; see that function. */
+  readonly envelope: readonly number[];
   readonly muted: boolean;
   readonly soloed: boolean;
   readonly disabled: boolean;
@@ -463,6 +545,7 @@ interface ChannelProps {
 const Channel = memo(function Channel({
   stem,
   percent,
+  envelope,
   muted,
   soloed,
   disabled,
@@ -507,6 +590,22 @@ const Channel = memo(function Channel({
       </div>
 
       <div className={styles.slot}>
+        {/* Behind the fader, not beside it: the track is painted opaque over
+            its middle 6px, so the figure reads as the stem's own shape without
+            anything sitting on top of text. Decorative, so it is hidden from
+            assistive tech and takes no pointer events -- there was never
+            anything to click here, so nothing is taken away by that. */}
+        <div className={styles.wave} aria-hidden="true" data-testid={`mixer-envelope-${stem}`}>
+          {envelope.map((height, i) => (
+            // Only a custom PROPERTY is set inline; the height itself is a
+            // stylesheet rule reading it. An inline `height` would beat the
+            // stylesheet and there deliberately is not one.
+            <span
+              key={`${stem}-bar-${i}`}
+              style={{ '--mx-bar': `${height}%` } as React.CSSProperties}
+            />
+          ))}
+        </div>
         <input
           {...VERTICAL_ATTR}
           id={faderId}
@@ -577,6 +676,16 @@ export interface MixerComponentProps extends MixerProps {
 
 export default function Mixer({ stems, onGain, onMute, onSolo, jobId }: MixerComponentProps) {
   const rows = useMemo(() => mixerRows(stems), [stems]);
+
+  // One figure per stem, for THIS song. Memoised on the song key alone, so a
+  // fader move -- which produces a new `stems` array every frame while playing
+  // -- never recomputes it and never re-renders a channel for it.
+  const songKey = jobId ?? 'no-job';
+  const envelopes = useMemo(() => {
+    const out = {} as Record<StemName, number[]>;
+    for (const name of PLAYABLE_STEMS) out[name] = stemEnvelope(songKey, name);
+    return out;
+  }, [songKey]);
 
   // Latest callbacks behind a ref, so the handlers below stay referentially
   // stable and `Channel`'s memo actually bites.
@@ -677,6 +786,12 @@ export default function Mixer({ stems, onGain, onMute, onSolo, jobId }: MixerCom
 
   return (
     <section className={styles.mixer} aria-label="Stem mixer">
+      {/* A six-channel control surface was an unlabelled region in the document
+          outline: `aria-label` names it for a screen reader that has already
+          landed on it, but nothing put it in the heading list a keyboard user
+          navigates by. The `aria-label` stays as the region's name (it is the
+          more specific of the two) and this is the outline entry. */}
+      <h2 className={styles.heading}>Mixer</h2>
       <div className={styles.rail}>
         {rows.map((row) => {
           const held = draft[row.stem.name];
@@ -685,6 +800,7 @@ export default function Mixer({ stems, onGain, onMute, onSolo, jobId }: MixerCom
               key={row.stem.name}
               stem={row.stem.name}
               percent={gainToPercent(held !== undefined ? held : row.stem.gain)}
+              envelope={envelopes[row.stem.name]}
               muted={row.stem.muted}
               soloed={row.stem.soloed}
               disabled={row.disabled}

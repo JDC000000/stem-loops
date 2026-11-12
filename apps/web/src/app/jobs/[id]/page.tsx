@@ -2,8 +2,18 @@
 //
 // STORY 1.5 — SIGN-IN IS REQUIRED. Jon, 2026-11-10: "Right from the start,
 // let's require sign in so we know who's using it." A signed-out visitor is
-// redirected to /login before any of the job body renders, so the player is
+// redirected to /login before any of the job body renders, so THIS PAGE is
 // unreachable without an account.
+//
+// THAT REDIRECT IS NOT AN AUTHORISATION BOUNDARY. It guards the HTML page and
+// nothing behind it. GET /api/jobs/:id, /api/jobs/:id/stems and
+// /api/jobs/:id/play-chords never call getUser(): anyone holding a job's link
+// can fetch its metadata, a presigned URL per stem and the chord file with no
+// account at all. That is disclosed to users in the "Links to jobs" section of
+// the privacy page, and the stems route header records it as residue awaiting
+// the owner's acceptance. Only /api/jobs/:id/loops checks ownership (a job with
+// a user_id is readable by that user alone). Do not read this page's redirect
+// as protecting the data.
 //
 // The gate is a verbatim copy of the ONE authenticated-page pattern this repo
 // already has — `await getUser()` then `redirect('/login?return_to=…')`, as in

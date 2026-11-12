@@ -12,7 +12,8 @@
 #   - docs/**
 #   - *.md (anywhere)
 #   - packages/types/src/generated.ts
-#   - scripts/**           (T3, 2026-11-05 — minus the deny list below)
+#   (REMOVED 2026-11-12, session 13 — see "Why scripts/ left the allowlist":)
+#   - scripts/**           (T3, 2026-11-05 — WITHDRAWN; admit by NAME, never by directory)
 #   - apps/training/**     (re-added 2026-11-05 alongside #117, which added the
 #                          `training-tests` CI job it depends on)
 #   (REMOVED 2026-11-11, session 12 — see "Why implementation left the
@@ -107,13 +108,27 @@
 #   only by a human or a reviewing agent, per the labelling protocol.
 #
 # NOTE, left deliberately unchanged and flagged rather than fixed quietly:
-#   `scripts/` and `apps/training/` are still on the allowlist. scripts/ is
-#   narrowed by the deny list (safe_merge.sh, check_*.py) but still admits
-#   other executable scripts by fast path; apps/training/ still contains
-#   tests, covered by the separate training-tests CI job. Both are arguable
-#   on the same grounds as the above. They are NOT changed here because this
-#   PR is scoped to the category that demonstrably caused #216, and widening
-#   it would make the diff harder to review — which would be ironic.
+#   `apps/training/` is still on the allowlist: it still contains tests,
+#   covered by the separate training-tests CI job. Arguable on the same
+#   grounds as the above, and NOT changed here. (`scripts/` was flagged in
+#   this same note and is withdrawn in the next section.)
+#
+# ── Why scripts/ left the allowlist (2026-11-12, session 13) ─────────────
+#
+# The deny list ENUMERATED two filenames (safe_merge.sh, check_*.py) where the
+# honest statement is "scripts in this repo are safety machinery, with a few
+# inert exceptions". That is enumeration where a class was meant. Everything
+# the enumeration did not name rode the `scripts/` allow term straight through:
+# scripts/smoke_staging.mjs is the staging smoke gate (it decides whether the
+# money path is healthy) and fast-pathed, as did smoke_staging_sweep.mjs, which
+# DELETES leaked staging users, and any script not yet written. A weakened gate
+# is invisible by construction, so this is the same hole #219 closed for tests.
+#
+# Default is to admit NO script. If one is genuinely inert and worth it,
+# re-admit it BY NAME in allow_re and say why in the PR. The behavioural rows
+# in scripts/check_fast_path_allowlist.py pin the class, not the filenames.
+# The two deny_re script terms are now redundant with this; they are left in
+# place as defence in depth and so the codeowners-drift copies need no edit.
 #
 # ── Why implementation left the allowlist (2026-11-11, session 12) ───────
 #
@@ -332,7 +347,7 @@ jobs:
           # ── Phase 2: ALLOW list. ALL files must match one of these ───────
           # Grouped: docs dir | any-dir markdown | per-app tests dir |
           # web __tests__ under src | generated types | training tree |
-          # scripts (minus the denies above).
+          # NO scripts: withdrawn 2026-11-12, see "Why scripts/ left the allowlist".
           #
           # apps/training/** — the T3 justification (no production surface:
           # the worker Docker context is apps/worker, so apps/training never
@@ -345,8 +360,9 @@ jobs:
           # Do not re-add this line in a PR that does not also carry a
           # working training-tests job. See the header for why.
           #
-          # scripts/** added same date: removed from CODEOWNERS by the T1
-          # trim, and the safety-critical members are caught by deny_re.
+          # scripts/** WITHDRAWN 2026-11-12: it was added 2026-11-05 on the
+          # theory that deny_re catches the safety-critical members, but deny_re
+          # named two filenames, not the class. See the header.
           # ── L2.3 (2026-11-05): widened to application source ──
           #
           # Added: apps/web/src/ and apps/worker/src/ — the change that moves
@@ -365,7 +381,7 @@ jobs:
           # ci.yml. Nothing built apps/web before it, so widening to
           # apps/web/src/ without it would have let a broken production build
           # auto-merge. Add `Web build` to the ruleset's required contexts.
-          allow_re='^(docs/|.+\.md$|packages/types/src/generated\.ts$|apps/training/|scripts/|fixtures/)'
+          allow_re='^(docs/|.+\.md$|packages/types/src/generated\.ts$|apps/training/|fixtures/)'
 
           # fixtures/ added 2026-11-06: shared Python<->TypeScript test data
           # (e.g. fixtures/contracts/harte-labels.json, play-chords.golden.json).

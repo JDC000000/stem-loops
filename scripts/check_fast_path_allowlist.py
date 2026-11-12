@@ -79,6 +79,17 @@ CASES: list[tuple[str, bool, str]] = [
     ("scripts/check_codeowners_drift.py", False, "deny list: a checker"),
     ("scripts/check_fast_path_allowlist.py", False, "deny list: THIS checker must not fast-path itself"),
     (".githooks/pre-commit", False, "deny list: hooks enforce R-1"),
+    # ---- REFUSED: scripts/ is a CLASS of safety machinery, not two filenames --
+    # The deny list names scripts/safe_merge.sh and scripts/check_*.py; every other
+    # script used to ride the allowlist's `scripts/` term straight through. These
+    # rows pin the CLASS, so a script nobody has written yet is refused too.
+    ("scripts/smoke_staging.mjs", False,
+     "the staging smoke gate: a gate in scripts/ is still a gate"),
+    ("scripts/smoke_staging_sweep.mjs", False,
+     "deletes leaked staging users: destructive, not inert"),
+    ("scripts/some_new_helper.sh", False,
+     "scripts/ is not inert; admit by name, not by directory"),
+    ("scripts/lib/anything.py", False, "a nested script is still a script"),
     # ---- REFUSED: money and context ---------------------------------------
     ("apps/web/src/lib/billing/credits.ts", False, "deny list: billing"),
     ("apps/web/src/app/api/entitlements/route.ts", False, "deny list: entitlements"),

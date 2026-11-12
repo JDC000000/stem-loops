@@ -46,7 +46,10 @@
 --     the data is the fix: a service that cannot run cannot be listed.
 --     YouTube stays because YouTube link ingest is real and shipping.
 --
---  3. export_stems: pro true -> false, studio true -> false.
+--  3. export_stems: pro true -> false. STUDIO STAYS TRUE (Jon, 2026-11-12):
+--     the $12 tier is differentiated by stem export plus a larger quota;
+--     the $4.99 tier by quota alone. The gated download route (#230) is
+--     what delivers it -- it must gate on export_stems, not on both flags.
 --
 --     There is no stem-export route. /api/jobs/[id]/stems serves Opus
 --     PLAYBACK urls for the mixer and says so in its own header comment;
@@ -114,7 +117,7 @@ INSERT INTO public.plans
 VALUES
   ('free',   'Free',      0,   5,  ARRAY['youtube']::text[], false, false, true),
   ('pro',    'Pro',     499,  50,  ARRAY[]::text[],          false, false, true),
-  ('studio', 'Studio', 1200, 150,  ARRAY[]::text[],          false, false, true)
+  ('studio', 'Studio', 1200, 150,  ARRAY[]::text[],          true,  false, true)
 ON CONFLICT (code) DO UPDATE SET
   display_name      = EXCLUDED.display_name,
   price_cad_cents   = EXCLUDED.price_cad_cents,

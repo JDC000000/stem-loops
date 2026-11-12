@@ -13,9 +13,37 @@ WHAT IT CHECKS
 --------------
 Builds a scratch database, applies every migration to it with the real runner,
 and compares ``pg_dump --schema-only`` of it with ``pg_dump --schema-only`` of
-the database under test. Schema only: rows are ignored (other tests own their
-data cleanup). Any CREATE POLICY / CHECK / GRANT / function / index difference
-fails the test and is printed as a unified diff.
+the database under test. Any difference in what ``pg_dump -s`` of ONE database
+prints fails the test and is shown as a unified diff: tables and columns,
+constraints, indexes, views, functions and triggers, RLS enablement and
+policies, extensions, and the GRANT / REVOKE / ALTER DEFAULT PRIVILEGES
+statements on objects INSIDE the database (tables, sequences, functions,
+schemas).
+
+WHAT IT CANNOT SEE (do not read a green tick as covering these)
+----------------------------------------------------------------
+Roles are cluster-global, and ``pg_dump -s`` of one database cannot emit them
+(they come from ``pg_dumpall --globals-only``). The scratch database lives in
+the SAME cluster and so shares the very same roles; comparing the two could not
+see a difference even in principle. Each of these was drifted by hand and the
+guard stayed green:
+
+  1. role attributes       (ALTER ROLE ... BYPASSRLS / CREATEDB / SUPERUSER ...)
+  2. role connection limit (ALTER ROLE ... CONNECTION LIMIT)
+  3. role memberships      (GRANT <role> TO <role>; a GRANT, but not on an object)
+  4. role GUCs             (ALTER ROLE ... SET ...)
+  5. role-in-database GUCs (ALTER ROLE ... IN DATABASE ... SET ...)
+  6. database GUCs         (ALTER DATABASE ... SET ...)
+  7. database ACL          (GRANT / REVOKE CONNECT ON DATABASE ...)
+  8. seeded row data, edited (UPDATE of a migration-seeded plans / credit_packs row)
+  9. seeded row data, deleted
+
+So "any GRANT difference fails" is true only of grants on objects inside the
+database. Role-level and database-level state, and every row, are unchecked
+here. Catching them needs a before/after snapshot of the cluster globals taken
+at session start (a session-scoped fixture in conftest.py) or a second cluster
+to compare against; neither exists yet. Rows are also ignored by design (other
+tests own their data cleanup).
 
 ORDER (read this before moving or renaming the file)
 ----------------------------------------------------
@@ -27,7 +55,8 @@ named later than this one would escape the guard.
 
 SCOPE
 -----
-Verified against PostgreSQL 16 only. pg_dump must be at least the server's
+Verified against PostgreSQL 16 only (CI runs postgres:16; production is 17.6, so
+anything version-sensitive here is unproven against production). pg_dump must be at least the server's
 version; the ``\\restrict`` / ``\\unrestrict`` lines newer pg_dump releases emit
 carry a random token per dump and are stripped before comparing.
 """
@@ -47,11 +76,28 @@ import pytest
 from psycopg.conninfo import make_conninfo
 
 import worker.migrate as migrate
+from tests.test_chord_edits_schema import _not_local, _skip_or_fail
 
 DB = os.environ.get("DATABASE_URL")
-pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
-if DB and not any(h in DB for h in ("127.0.0.1", "localhost")):
-    pytestmark = pytest.mark.skip(reason="creates and drops a scratch database; local only")
+
+
+@pytest.fixture(autouse=True)
+def _require_local_database() -> None:
+    """Skip locally, FAIL under CI=true, unless DATABASE_URL is set and provably local.
+
+    This test CREATEs and DROPs a database, so a non-local URL is a safety refusal, and a
+    refusal that returns green in CI is a guard that did not run. (Shares its helpers with
+    test_chord_edits_schema.py until PR #224's ``tests/db_guard.py`` lands.)
+    """
+    if not DB:
+        _skip_or_fail("DATABASE_URL not set")
+    problem = _not_local(DB)
+    if problem:
+        _skip_or_fail(
+            f"DATABASE_URL is not provably local ({problem}); this test creates and "
+            "drops a scratch database"
+        )
+
 
 # Random per-dump token (pg_dump >= 16.10 / 17.6); not part of the schema.
 _RESTRICT = re.compile(r"^\\(un)?restrict .*$", re.MULTILINE)
@@ -60,12 +106,10 @@ _RESTRICT = re.compile(r"^\\(un)?restrict .*$", re.MULTILINE)
 def _dump(dsn: str) -> list[str]:
     pg_dump = shutil.which("pg_dump")
     if pg_dump is None:
-        msg = "pg_dump not on PATH; the schema-equality guard cannot run"
         # In CI a missing tool must be red, not a quiet skip: a guard that skips
         # is a green tick that checked nothing.
-        if os.environ.get("CI"):
-            pytest.fail(msg)
-        pytest.skip(msg)
+        _skip_or_fail("pg_dump not on PATH; the schema-equality guard cannot run")
+        raise AssertionError("unreachable")
     out = subprocess.run(
         [pg_dump, "--schema-only", f"--dbname={dsn}"],
         check=True,

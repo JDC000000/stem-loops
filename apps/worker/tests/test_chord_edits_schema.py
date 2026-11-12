@@ -4,12 +4,14 @@ Covers: all three CHECK constraints reject bad shapes, the training-data index
 exists, the append-only REVOKE on stemloops_app holds, and the down-migration
 round trip works. Mirrors test_credit_adjustments_schema.py (023).
 
-Requires a real local Postgres with migrations applied through 025; skipped
-without DATABASE_URL, refused on non-local hosts (INSERTs into auth.users).
+Requires a real local Postgres with migrations applied through 025. Without
+DATABASE_URL, or with a non-local one (INSERTs into auth.users), the tests skip
+locally and FAIL under CI=true.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import uuid
 from pathlib import Path
@@ -19,11 +21,58 @@ import psycopg
 import pytest
 
 DB = os.environ.get("DATABASE_URL")
-pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
-if DB and not any(h in DB for h in ("127.0.0.1", "localhost")):
-    pytestmark = pytest.mark.skip(
-        reason="025 tests INSERT into auth.users; local throwaway DB only"
-    )
+
+
+def _skip_or_fail(reason: str) -> None:
+    """SKIP locally, FAIL under CI (`CI=true`): a skip that encodes a safety decision is a
+    gate that did not run, and a green skip is indistinguishable from a pass.
+
+    Same contract as ``tests/db_guard.py::skip_or_fail`` in PR #224 (not merged yet, so it
+    cannot be imported). When #224 lands its autouse fixture in ``conftest.py`` covers this
+    module; delete this helper and the fixture below then.
+    """
+    if os.environ.get("CI"):
+        pytest.fail("CI=true but " + reason, pytrace=False)
+    pytest.skip(reason)
+
+
+def _not_local(url: str) -> str | None:
+    """Why `url` may reach a database that is not this machine, or None. Compares the HOSTS
+    libpq will actually use (parsed by libpq), never the URL text: a substring test accepts
+    ``postgres://u@prod.example.com/db?application_name=localhost``."""
+    from psycopg.conninfo import conninfo_to_dict
+
+    try:
+        info = conninfo_to_dict(url)
+    except Exception as e:  # noqa: BLE001 -- unparseable is not provably local
+        return f"it does not parse as a libpq connection string ({type(e).__name__})"
+    if info.get("service"):
+        return "it names a pg_service.conf service, whose host cannot be checked here"
+    for key, env in (("host", "PGHOST"), ("hostaddr", "PGHOSTADDR")):
+        for h in (info.get(key) or os.environ.get(env) or "").split(","):
+            h = h.strip()
+            if h in ("", "localhost") or h.startswith("/"):
+                continue
+            try:
+                if ipaddress.ip_address(h).is_loopback:
+                    continue
+            except ValueError:
+                pass
+            return f"its {key} {h!r} is not this machine"
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _require_local_database() -> None:
+    if not DB:
+        _skip_or_fail("DATABASE_URL not set")
+    problem = _not_local(DB)
+    if problem:
+        _skip_or_fail(
+            f"DATABASE_URL is not provably local ({problem}); these tests INSERT into "
+            "auth.users and run committed DDL. Point it at a throwaway local Postgres"
+        )
+
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations"
 EMAIL_LIKE = "test-chord-edits-%@example.com"

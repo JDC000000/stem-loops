@@ -84,6 +84,48 @@ const OBSERVATIONS = PAYLOAD.segments.map((s) => ({
 const RUNS = observationsToRuns(OBSERVATIONS);
 const DUR = durationSec(RUNS);
 
+// ---------------------------------------------------------------------------
+// THE MEASURER THE GATES USE IS THE ONE THE PRODUCT USES
+// ---------------------------------------------------------------------------
+//
+// Every geometry gate in this file used to compute label widths with
+// `estimateLabelPx` (the headless table) while ChordOverlay sizes both the zoom
+// ceiling and chipDensity with `makeCanvasMeasurer`. Two instruments, and they
+// disagreed in the unsafe direction: every px/sec figure here sat ~1.27% above
+// what production derives, and a slack constant sized from a 13-label sample
+// was applied to an alphabet of thousands.
+//
+// So the gates now call `makeCanvasMeasurer` itself -- the code that runs in
+// every browser -- over a 2D context that serves what Chromium's canvas
+// `measureText` actually returned. Node has no canvas, so those widths are
+// PINNED, measured in Chromium 1280x900 on the job page's own font stack
+// (-apple-system ... sans-serif -> Inter 4.000, weight 400, 16px, confirmed
+// with CDP CSS.getPlatformFontsForNode, isCustomFont false). They are canvas
+// numbers, not DOM numbers, which is the point. A label the table does not hold
+// would make makeCanvasMeasurer fall back to the headless table SILENTLY (it
+// swallows a bad width by design), so the context records every label it is
+// asked for that it cannot serve, and the last test in the file fails on any.
+const CHROMIUM_CANVAS_16PX = {
+  'A:min': 42.9922, 'A:min7': 52.0469, 'Bb:maj': 51.75, 'C:maj': 43.1719,
+  'C:maj6': 53.0938, 'C#:minmaj7': 89.7031, 'D:min7': 52.5547, 'E:min': 41.5703,
+  'F:maj': 40.9297, 'F:maj7': 49.9844, 'F#:min7': 60.5859, 'G:7': 25.6016,
+  'G:7/5': 41.0938, 'Ab:maj7/3': 77.0234, 'N.C.': 32.2578, '?': 8.1797,
+};
+const UNPINNED_LABELS = new Set();
+const PROD_CTX = {
+  font: '',
+  measureText(text) {
+    if (text === '') return { width: 0 }; // what canvas returns for ''
+    const w = CHROMIUM_CANVAS_16PX[text];
+    if (w === undefined) UNPINNED_LABELS.add(text);
+    return { width: w === undefined ? NaN : w };
+  },
+};
+const PROD_MEASURE = makeCanvasMeasurer(PROD_CTX, {
+  fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+  fontWeight: '400',
+});
+
 // The container widths the job page actually gives the overlay, MEASURED in
 // Chromium. JobView's wrap is `maxWidth: 960` with `padding: 48px
 // var(--sl-gutter, 16px) 96px`, and --sl-gutter is 16px at :root but 32px above
@@ -152,18 +194,18 @@ const ADVERSARIAL = [
 
 /** The px/sec at which THIS run can print its own name at full size. */
 function ppsForFullName(run) {
-  const labelPx = estimateLabelPx(displayText(run), CHIP_FONT_PX);
+  const labelPx = PROD_MEASURE(displayText(run), CHIP_FONT_PX);
   return (labelPx + CHIP_FULL_PAD_PX + CHIP_GAP_PX) / (run.endSec - run.startSec);
 }
 /** ... and at the 10px `tight` size, which is the last size before no name. */
 function ppsForTightName(run) {
-  const labelPx = estimateLabelPx(displayText(run), CHIP_FONT_PX);
+  const labelPx = PROD_MEASURE(displayText(run), CHIP_FONT_PX);
   return ((labelPx * CHIP_TIGHT_FONT_PX) / CHIP_FONT_PX + CHIP_TIGHT_PAD_PX + CHIP_GAP_PX) / (run.endSec - run.startSec);
 }
 
 /** The job's own zoom ceiling for the strip, as ChordOverlay derives it. */
 function stripCeiling(runs) {
-  return zoomCeilingPxPerSec(runs, estimateLabelPx, {
+  return zoomCeilingPxPerSec(runs, PROD_MEASURE, {
     durSec: durationSec(runs),
     maxPaintedPx: MAX_TIMELINE_PX,
   });
@@ -172,14 +214,14 @@ function stripCeiling(runs) {
 /** Exactly what ChordOverlay does for the strip: the default px/sec it lands on. */
 function defaultStripPps(containerPx) {
   const fit = fitPxPerSec(DUR, containerPx);
-  return clampPxPerSec(readablePxPerSec(RUNS, estimateLabelPx), fit);
+  return clampPxPerSec(readablePxPerSec(RUNS, PROD_MEASURE), fit);
 }
 
 /** Density of every chip at a given zoom, exactly as renderChip derives it. */
 function densitiesAt(pps) {
   return RUNS.map((run) => {
     const w = Math.max(1, chipBox(run, pps).widthPx - 1);
-    return chipDensity(w, estimateLabelPx(displayText(run), CHIP_FONT_PX));
+    return chipDensity(w, PROD_MEASURE(displayText(run), CHIP_FONT_PX));
   });
 }
 
@@ -187,28 +229,29 @@ function densitiesAt(pps) {
 // 1. The default zoom is derived from the data, not from a constant
 // ---------------------------------------------------------------------------
 
-test('the headless label measurer agrees with Chromium', () => {
+test('the headless table and the canvas measurer both agree with Chromium', () => {
   // Pinned against real measurements on the job page's own font stack
-  // (ui-sans-serif/system-ui, weight 400, 16px, tabular-nums), Chromium
-  // 1280x900. If this drifts, every width below is measuring the wrong thing.
-  const CHROMIUM_16PX = {
-    'C:maj': 42.859,
-    'G:7': 26.609,
-    'F#:min7': 61.594,
-    'C#:minmaj7': 90.719,
-    'Ab:maj7/3': 78.531,
-    'N.C.': 32.344,
-    '?': 8.188,
-  };
-  for (const [label, real] of Object.entries(CHROMIUM_16PX)) {
-    const got = estimateLabelPx(label, CHIP_FONT_PX);
+  // (-apple-system ... sans-serif -> Inter 4.000, weight 400, 16px), Chromium
+  // 1280x900. These are the widths of the SHIPPED chip (proportional digits),
+  // canvas measureText and DOM span alike: they agree to 0.008px over all 7,754
+  // labels of the real alphabet, which is the property this PR depends on.
+  // If this drifts, every width below is measuring the wrong thing.
+  //
+  // Two instruments are checked against the same pins: the headless table the
+  // component falls back to, and the production canvas measurer (through its
+  // real factory) over a context serving the canvas numbers.
+  for (const [label, real] of Object.entries(CHROMIUM_CANVAS_16PX)) {
+    const table = estimateLabelPx(label, CHIP_FONT_PX);
+    // Asymmetric on purpose: a table that UNDER-estimates declares text to fit
+    // when it does not; one that over-estimates only costs a little zoom.
     assert.ok(
-      Math.abs(got - real) <= 0.5,
-      `${label}: estimate ${got.toFixed(3)}px vs Chromium ${real}px`,
+      table - real >= -0.05 && table - real <= 1,
+      `${label}: headless table ${table.toFixed(3)}px vs Chromium ${real}px`,
     );
+    assert.equal(PROD_MEASURE(label, CHIP_FONT_PX), real, `${label}: production measurer`);
   }
-  // And it scales linearly with font size, which is how the `tight` branch is judged.
-  assert.ok(Math.abs(estimateLabelPx('F#:min7', 10) - 61.594 * 0.625) < 0.01);
+  // And the table scales linearly with font size, which is how `tight` is judged.
+  assert.ok(Math.abs(estimateLabelPx('F#:min7', 10) - 60.594 * 0.625) < 0.2);
 });
 
 test('the OLD default (fit-the-whole-track) made every chord label unshowable', () => {
@@ -232,18 +275,18 @@ test('the default zoom comes from the widest chord name in THIS job, not a const
   // asserted equality, which proves only that the code applied its own rule.
   // These are properties of the ANSWER instead: it must respond to the label
   // widths, respond to the run durations, and be in the units it claims.
-  const base = readablePxPerSec(RUNS, estimateLabelPx);
+  const base = readablePxPerSec(RUNS, PROD_MEASURE);
 
   // Longer names -> wider zoom. The widest name is the numerator.
   const longerNames = RUNS.map((r) => ({ ...r, label: 'C#:minmaj7', kind: 'chord' }));
   assert.ok(
-    readablePxPerSec(longerNames, estimateLabelPx) > base,
+    readablePxPerSec(longerNames, PROD_MEASURE) > base,
     'a job whose chord names are longer must default to a wider zoom',
   );
   // Longer chords -> narrower zoom. The run duration is the denominator.
   const slower = RUNS.map((r) => ({ ...r, startSec: r.startSec * 2, endSec: r.endSec * 2 }));
   assert.ok(
-    readablePxPerSec(slower, estimateLabelPx) < base,
+    readablePxPerSec(slower, PROD_MEASURE) < base,
     'a job whose chords last twice as long must default to half the zoom',
   );
   // And it is a px/sec that actually does the job it is named for: at this
@@ -252,7 +295,7 @@ test('the default zoom comes from the widest chord name in THIS job, not a const
     RUNS.map((r) => r.endSec - r.startSec),
     READABLE_TIME_FRACTION,
   );
-  const widest = widestLabelPx(RUNS, estimateLabelPx);
+  const widest = widestLabelPx(RUNS, PROD_MEASURE);
   assert.equal(
     chipDensity(chipContentPx(picked * base), widest),
     'full',
@@ -271,7 +314,7 @@ test('the default statistic is duration-weighted, and that is what kills a 4x cl
   };
   const oldRule = (runs) =>
     clampPxPerSec(
-      (widestLabelPx(runs, estimateLabelPx) + CHIP_FULL_PAD_PX + CHIP_GAP_PX) / countMedian(runs),
+      (widestLabelPx(runs, PROD_MEASURE) + CHIP_FULL_PAD_PX + CHIP_GAP_PX) / countMedian(runs),
       fitPxPerSec(durationSec(runs), 872),
     );
 
@@ -286,8 +329,8 @@ test('the default statistic is duration-weighted, and that is what kills a 4x cl
   // equal, because the duration-weighted median of these two populations is
   // the same 4.0s run either way.
   assert.equal(
-    readablePxPerSec(BIMODAL, estimateLabelPx),
-    readablePxPerSec(BIMODAL_FLIPPED, estimateLabelPx),
+    readablePxPerSec(BIMODAL, PROD_MEASURE),
+    readablePxPerSec(BIMODAL_FLIPPED, PROD_MEASURE),
     'moving five chords between sections must not move the default zoom',
   );
 
@@ -339,8 +382,8 @@ test('a sparse song still fits the strip; a dense song is capped, not run away',
     })),
   );
   const fit = fitPxPerSec(durationSec(sparse), 904);
-  assert.ok(readablePxPerSec(sparse, estimateLabelPx) < fit);
-  assert.equal(clampPxPerSec(readablePxPerSec(sparse, estimateLabelPx), fit), fit);
+  assert.ok(readablePxPerSec(sparse, PROD_MEASURE) < fit);
+  assert.equal(clampPxPerSec(readablePxPerSec(sparse, PROD_MEASURE), fit), fit);
 
   // 400 chords over the same 3:33: the derivation wants far more than the
   // maximum zoom, and must be capped there rather than returning Infinity.
@@ -352,11 +395,11 @@ test('a sparse song still fits the strip; a dense song is capped, not run away',
       confidence: 1,
     })),
   );
-  const densePps = readablePxPerSec(dense, estimateLabelPx);
+  const densePps = readablePxPerSec(dense, PROD_MEASURE);
   assert.ok(Number.isFinite(densePps));
   // The imported constant, not a literal that merely happens to equal it today.
   assert.equal(densePps, MAX_PX_PER_SEC);
-  assert.ok(readablePxPerSec(dense, estimateLabelPx, MAX_PX_PER_SEC) <= MAX_PX_PER_SEC);
+  assert.ok(readablePxPerSec(dense, PROD_MEASURE, MAX_PX_PER_SEC) <= MAX_PX_PER_SEC);
 });
 
 // ---------------------------------------------------------------------------
@@ -404,7 +447,7 @@ test('the derived ceiling names EVERY chord in the job, at full size', () => {
       `${name}: ceiling ${ceiling.toFixed(3)} < ${required.toFixed(3)} px/sec needed by its shortest chord`,
     );
     // The consequence, counted over the real density function: nothing nameless.
-    const counts = densityCounts(runs, ceiling, estimateLabelPx);
+    const counts = densityCounts(runs, ceiling, PROD_MEASURE);
     assert.equal(
       counts.tick,
       0,
@@ -418,32 +461,24 @@ test('the derived ceiling names EVERY chord in the job, at full size', () => {
   }
 });
 
-test('the ceiling leaves slack for the delta canvas cannot see', () => {
-  // FOUND IN CHROMIUM, NOT HERE. The ceiling puts the job's shortest run at
-  // exactly the `full` threshold for its longest name, and `full` has zero
-  // slack against the canvas measurer: canvas 2D has no
-  // `font-variant-numeric`, the chips declare `tabular-nums`, and canvas
-  // under-measures digit-bearing labels by up to 1.664px at 16px -- always in
-  // the unsafe direction (#207 measured it). At 193.965px/sec on the bimodal
-  // song, 4 of 115 `F#:min7` chips rendered with clientWidth 77 against
-  // scrollWidth 78: clipped by 1px at the one zoom that is supposed to be the
-  // readable end of the slider.
-  //
-  // So the headroom is asserted against that MEASURED delta, which is a number
-  // from outside this file, not against the constant that provides it.
-  const CANVAS_TABULAR_NUMS_DELTA_PX = 1.664; // Chromium, #207's residue table
-  assert.ok(
-    CEILING_SLACK_PX >= CANVAS_TABULAR_NUMS_DELTA_PX,
-    `CEILING_SLACK_PX=${CEILING_SLACK_PX} does not cover the ${CANVAS_TABULAR_NUMS_DELTA_PX}px canvas delta`,
-  );
+test('the ceiling keeps the one pixel of slack clientWidth rounding needs', () => {
+  // WHAT THIS REPLACED. It asserted CEILING_SLACK_PX >= 1.664, "the delta canvas
+  // cannot see", a figure taken from a 13-label sample. Over the real alphabet
+  // that delta was up to 15.164px (C:11 alone 7.4px), so the assertion passed
+  // while 24 chips at the ceiling were clipped by 13px. The disagreement is now
+  // removed at its cause (chips carry no tabular digits; see the render gate
+  // below), so what is left for the slack to cover is the ~1px integer
+  // rounding of clientWidth that #207 recorded -- a number from outside this file.
+  const CLIENTWIDTH_ROUNDING_PX = 1;
+  assert.ok(CEILING_SLACK_PX >= CLIENTWIDTH_ROUNDING_PX);
   for (const [name, runs] of ADVERSARIAL.concat([['fixture', RUNS]])) {
     const ceiling = stripCeiling(runs);
     // The widest name on the shortest run: the one chip that sits at the limit.
     const content = chipContentPx(shortestRunSec(runs) * ceiling);
-    const headroom = content - CHIP_FULL_PAD_PX - widestLabelPx(runs, estimateLabelPx);
+    const headroom = content - CHIP_FULL_PAD_PX - widestLabelPx(runs, PROD_MEASURE);
     assert.ok(
-      headroom >= CANVAS_TABULAR_NUMS_DELTA_PX - 1e-9,
-      `${name}: only ${headroom.toFixed(3)}px of headroom at the ceiling, needs ${CANVAS_TABULAR_NUMS_DELTA_PX}px`,
+      headroom >= CLIENTWIDTH_ROUNDING_PX - 1e-9,
+      `${name}: only ${headroom.toFixed(3)}px of headroom at the ceiling, needs ${CLIENTWIDTH_ROUNDING_PX}px`,
     );
   }
 });
@@ -464,9 +499,9 @@ test('the ceiling only ever ADDS zoom range — no job loses what it has today',
     );
   }
   // Degenerate input cannot produce a ceiling below the floor either.
-  assert.equal(zoomCeilingPxPerSec([], estimateLabelPx, { durSec: 10 }), MAX_PX_PER_SEC);
+  assert.equal(zoomCeilingPxPerSec([], PROD_MEASURE, { durSec: 10 }), MAX_PX_PER_SEC);
   assert.equal(
-    zoomCeilingPxPerSec([{ startSec: 0, endSec: 0, label: 'C:maj', kind: 'chord' }], estimateLabelPx, { durSec: 0 }),
+    zoomCeilingPxPerSec([{ startSec: 0, endSec: 0, label: 'C:maj', kind: 'chord' }], PROD_MEASURE, { durSec: 0 }),
     MAX_PX_PER_SEC,
   );
 });
@@ -487,7 +522,7 @@ test('the slider reaches the ceiling, and the ceiling is where it stops', () => 
     assert.ok(Math.abs(ppsToSlider(sliderToPps(t, minPps, maxPps), minPps, maxPps) - t) < 1e-9);
   }
   // And at the top of that slider the chords really are named.
-  assert.equal(densityCounts(runs, sliderToPps(1, minPps, maxPps), estimateLabelPx).tick, 0);
+  assert.equal(densityCounts(runs, sliderToPps(1, minPps, maxPps), PROD_MEASURE).tick, 0);
 });
 
 test('the painted-length budget binds on malformed data, and nothing else', () => {
@@ -539,7 +574,7 @@ test('the wrapped layout gets the same ceiling, bounded by rows of DOM', () => {
 
   const rowWidthPx = Math.max(120, NARROW_CONTAINER_PX - GUTTER_PX);
   for (const [name, runs] of ADVERSARIAL.concat([['pathological', songOf([[0.005, 1], [3, 80]])]])) {
-    const ceiling = zoomCeilingPxPerSec(runs, estimateLabelPx, {
+    const ceiling = zoomCeilingPxPerSec(runs, PROD_MEASURE, {
       durSec: durationSec(runs),
       maxPaintedPx: Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx),
     });
@@ -565,15 +600,15 @@ test('the wrapped layout keeps SOME nameless chips at any zoom, and the ceiling 
   // this: an earlier version of this gate asserted tick === 0 here and passed,
   // while Chromium at 390px showed 21 nameless chips at the same zoom.
   const rowWidthPx = Math.max(120, NARROW_CONTAINER_PX - GUTTER_PX);
-  const ceiling = zoomCeilingPxPerSec(BIMODAL, estimateLabelPx, {
+  const ceiling = zoomCeilingPxPerSec(BIMODAL, PROD_MEASURE, {
     durSec: durationSec(BIMODAL),
     maxPaintedPx: Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx),
   });
   const segsAt = (pps) =>
-    segmentDensityCounts(BIMODAL, layoutRows(BIMODAL, rowWidthPx / pps, pps), estimateLabelPx);
+    segmentDensityCounts(BIMODAL, layoutRows(BIMODAL, rowWidthPx / pps, pps), PROD_MEASURE);
 
   // Counting runs would claim zero. Counting what renders does not.
-  assert.equal(densityCounts(BIMODAL, ceiling, estimateLabelPx).tick, 0);
+  assert.equal(densityCounts(BIMODAL, ceiling, PROD_MEASURE).tick, 0);
   assert.ok(
     segsAt(ceiling).tick > 0,
     'the wrapped layout is expected to keep split-run ticks; if this is now 0, strengthen the claim',
@@ -600,7 +635,7 @@ test('the default is still an overview — the ceiling was not reached by zoomin
   // and still show a usable span of the song.
   const dur = durationSec(BIMODAL);
   const def = clampPxPerSec(
-    readablePxPerSec(BIMODAL, estimateLabelPx),
+    readablePxPerSec(BIMODAL, PROD_MEASURE),
     fitPxPerSec(dur, 872),
     stripCeiling(BIMODAL),
   );
@@ -610,7 +645,7 @@ test('the default is still an overview — the ceiling was not reached by zoomin
   // reason the dense half is allowed to be ticks at the default at all.
   const fullSec = BIMODAL.reduce(
     (acc, r) =>
-      chipDensity(runContentPx(r, def), estimateLabelPx(displayText(r), CHIP_FONT_PX)) === 'full'
+      chipDensity(runContentPx(r, def), PROD_MEASURE(displayText(r), CHIP_FONT_PX)) === 'full'
         ? acc + (r.endSec - r.startSec)
         : acc,
     0,
@@ -628,7 +663,7 @@ test('chipContentPx is the one rule for a chip width, gap included', () => {
   assert.equal(runContentPx({ startSec: 1, endSec: 3 }, 50), 100 - CHIP_GAP_PX);
   // The gap is really reserved by the fit rule: a box exactly one label wide
   // plus padding is NOT full, because the gap is taken off it first.
-  const labelPx = estimateLabelPx('F#:min7', CHIP_FONT_PX);
+  const labelPx = PROD_MEASURE('F#:min7', CHIP_FONT_PX);
   assert.equal(chipDensity(chipContentPx(labelPx + CHIP_FULL_PAD_PX), labelPx), 'tight');
   assert.equal(chipDensity(chipContentPx(labelPx + CHIP_FULL_PAD_PX + CHIP_GAP_PX), labelPx), 'full');
 });
@@ -751,7 +786,7 @@ test('a measurer that under-reports moves the default zoom, and the gate sees it
   // And at that zoom the chips demonstrably cannot carry their names.
   const clipped = RUNS.filter((run) => {
     const w = Math.max(1, chipBox(run, badPps).widthPx - 1);
-    return chipDensity(w, estimateLabelPx(displayText(run), CHIP_FONT_PX)) !== 'full';
+    return chipDensity(w, PROD_MEASURE(displayText(run), CHIP_FONT_PX)) !== 'full';
   }).length;
   assert.ok(clipped > RUNS.length * 0.9, `${clipped}/${RUNS.length} chips clipped at the bad zoom`);
 });
@@ -906,7 +941,7 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
       // through the real density function with the real label. A chip that
       // paints readable text in a box too small for it is still a failure.
       const declaredW = parseFloat(chip.style.width) || 0;
-      const labelPx = estimateLabelPx(text, CHIP_FONT_PX);
+      const labelPx = PROD_MEASURE(text, CHIP_FONT_PX);
       return {
         density: chip.dataset.density,
         testid: chip.dataset.testid,
@@ -936,6 +971,35 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
     else delete globalThis.fetch;
   }
 }
+
+test('no chord chip declares a font feature that canvas measureText cannot express', async () => {
+  // THE CROSS-ARTIFACT GATE for the measurer mismatch. The component sizes the
+  // zoom ceiling and every chip's density with canvas measureText, which has no
+  // `font-variant-numeric`. If a chip RENDERS tabular digits, its DOM width is
+  // wider than the width that decided it fits: measured in Chromium, up to
+  // 15.164px over the real alphabet, "C:11" alone 7.4px, with 24 chips clipped
+  // by 13px at the ceiling while every number in this file said 0 nameless.
+  //
+  // This reads the RENDERED chip's style from the mounted component, not the
+  // source text, so a comment, a string or a differently spelled declaration
+  // cannot satisfy it and cannot hide it. The ruler and the time readouts are
+  // deliberately not asserted on: nothing sizes them with the measurer.
+  await withDom(async (dom) => {
+    await mountOverlay(dom, { containerPx: 872 });
+    const chips = [...dom.find('[data-testid="chord-timeline"]').querySelectorAll('[data-testid^="chord-chip-"]')];
+    assert.ok(chips.length >= 100, `only ${chips.length} chips mounted; the gate would be vacuous`);
+    const offenders = chips.filter((chip) => {
+      const declared = `${chip.style.fontVariantNumeric ?? ''} ${chip.getAttribute('style') ?? ''}`;
+      return /(tabular|slashed|oldstyle|lining|diagonal|ordinal|stacked)/i.test(declared);
+    });
+    assert.deepEqual(
+      offenders.map((c) => `${c.dataset.testid}: ${c.getAttribute('style')}`),
+      [],
+      'a chip declares a numeric font feature canvas cannot measure',
+    );
+    await dom.unmountAll();
+  });
+});
 
 test('default view: every chord chip on the timeline shows a READABLE label', async () => {
   await withDom(async (dom) => {
@@ -1162,7 +1226,7 @@ test('bimodal song: the + button is live until the ceiling, then stops', async (
           Math.abs(pps - stripCeiling(BIMODAL)) < 0.5,
           `+ stopped at ${pps} rather than the job's ceiling ${stripCeiling(BIMODAL).toFixed(3)}`,
         );
-        assert.equal(densityCounts(BIMODAL, pps, estimateLabelPx).tick, 0);
+        assert.equal(densityCounts(BIMODAL, pps, PROD_MEASURE).tick, 0);
       },
     });
     await dom.unmountAll();
@@ -1210,7 +1274,7 @@ test('the narrow default puts chord names on the phone, not ticks', () => {
 
   const ticks = RUNS.filter((run) => {
     const w = Math.max(1, chipBox(run, pps).widthPx - 1);
-    return chipDensity(w, estimateLabelPx(displayText(run), CHIP_FONT_PX)) === 'tick';
+    return chipDensity(w, PROD_MEASURE(displayText(run), CHIP_FONT_PX)) === 'tick';
   }).length;
   assert.ok(
     ticks <= 2,
@@ -1247,4 +1311,11 @@ test('wrapped render: nothing on the phone timeline is invisible or mis-sized', 
     );
     await dom.unmountAll();
   });
+});
+
+test('every label the geometry gates measured was pinned (no silent fallback)', () => {
+  // makeCanvasMeasurer swallows an unusable width and returns the headless
+  // table's instead, by design. Without this, a gate fed a label outside
+  // CHROMIUM_CANVAS_16PX would run on the estimate and look identical to green.
+  assert.deepEqual([...UNPINNED_LABELS], [], 'a gate measured a label with no pinned Chromium canvas width');
 });

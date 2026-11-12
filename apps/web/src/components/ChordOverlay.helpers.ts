@@ -672,11 +672,13 @@ export function rootHue(label: string): number | null {
 // The real measurement happens in the browser (ChordOverlay passes a canvas
 // `measureText` measurer). This table is the headless fallback and the unit of
 // account for the tests. Its advances were MEASURED, not guessed: Chromium
-// 1280x900 on the job page's own font stack (ui-sans-serif/system-ui, weight
-// 400, font-variant-numeric: tabular-nums) at 16px, via a hidden span. Summing
-// the table reproduces real Chromium widths to within 0.21px across the chord
-// alphabet ("C:maj" 42.859 vs 42.859, "C#:minmaj7" 90.719 vs 90.711,
-// "Ab:maj7/3" 78.531 vs 78.734).
+// 1280x900 on the job page's own font stack (-apple-system ... sans-serif,
+// weight 400, proportional digits -- the chips declare no font-variant-numeric)
+// at 16px, via a hidden span. Re-measured against every one of the 7,754 labels
+// of the real alphabet: the table is never more than 0.008px under the DOM
+// width (the digit, ':' '.' '-' '(' ')' and space advances changed when the
+// chips dropped tabular digits; the earlier table was tabular-calibrated and
+// under-estimated 170 labels by up to 0.32px against the shipped chip).
 
 /** Font size chips render their label at (inherited; 1rem). */
 export const CHIP_FONT_PX = 16;
@@ -694,10 +696,10 @@ const ADVANCE_16PX: Readonly<Record<string, number>> = Object.freeze({
   N: 12.0547, X: 10.9141,
   a: 8.9844, b: 9.7969, d: 9.7969, g: 9.8125, i: 3.875, j: 3.875, m: 14.0156,
   n: 9.4531, s: 8.4453, u: 9.4609, x: 8.7344,
-  '0': 10.375, '1': 10.375, '2': 10.375, '3': 10.375, '4': 10.375,
-  '5': 10.375, '6': 10.375, '7': 10.375, '8': 10.375, '9': 10.375,
-  ':': 4.2969, '#': 10.1328, '/': 5.7656, '.': 4.2969, '?': 8.1797,
-  '-': 10.375, '(': 6.25, ')': 6.25, ' ': 4.4453,
+  '0': 10.0938, '1': 6.5156, '2': 9.7656, '3': 9.8906, '4': 10.3438,
+  '5': 9.7344, '6': 9.9219, '7': 9.0625, '8': 9.9063, '9': 9.9219,
+  ':': 4.6094, '#': 10.1328, '/': 5.7656, '.': 4.6094, '?': 8.1797,
+  '-': 7.3594, '(': 5.8438, ')': 5.8438, ' ': 4.5,
 });
 // Widest advance in the table: an unlisted glyph must never be UNDER-estimated,
 // or a label would be declared to fit when it does not.
@@ -757,23 +759,16 @@ const FONT_PX_RE = /(?:^|\s)(\d+(?:\.\d+)?)px(?:\s|$)/;
  * measured, cannot take the font, or returns a non-positive width falls back to
  * the calibrated table rather than reporting a width it did not measure.
  *
- * KNOWN GAP 1: canvas 2D has no `font-variant-numeric`, and the chips declare
- * `tabular-nums`. Measured in Chromium on this font stack, canvas under-measures
- * digit-bearing labels by up to 1.656px at 16px ("G:7/5": 41.094 vs 42.750
- * rendered) -- always the unsafe direction. Digit-driven but NOT per-digit: the
- * delta runs -1.664 to +0.313 across the alphabet, so no per-character
- * correction models it.
- *
- * `tight` absorbs it: CHIP_TIGHT_PAD_PX is 2px against a delta that scales to
- * ~1.04px at 10px. `full` DOES NOT, and the earlier note here claiming its 16px
- * of padding covered it was wrong: that 16px is SPENT on padding, not held as
- * slack. `full` requires w >= labelPx_canvas + CHIP_FULL_PAD_PX and the chip
- * then renders exactly CHIP_FULL_PAD_PX of padding, so the inner box is
- * labelPx_canvas = labelPx_real - delta. Slack against delta is zero by
- * construction, and a `full` chip landing within 1.66px of its threshold clips
- * by up to 1.66px. Zero such chips at the current default, so it is residue --
- * but it is residue for the true reason, not the comfortable one. Not fixable
- * from here: there is no canvas API for it.
+ * KNOWN GAP 1 (CLOSED, and the way it closed matters): canvas 2D has no
+ * `font-variant-numeric`, so while the chips declared `tabular-nums` the canvas
+ * under-measured every digit-bearing label -- always in the unsafe direction.
+ * Measured in Chromium over the whole alphabet (every root spelling x 24
+ * qualities x every bass spelling, 7,754 labels): up to 15.164px at 16px
+ * ("C#:11/11"), 7.4px for "C:11" alone. An earlier note here put the worst case
+ * at 1.656px, from a 13-label fixture. It was closed by REMOVING the cause, not
+ * by padding for it: the chips no longer declare tabular digits, and canvas and
+ * DOM now agree to 0.008px at 16px across all 7,754 labels. Anything that puts a
+ * font feature on a chip which canvas cannot express re-opens this.
  *
  * KNOWN GAP 2: the read-back below checks the font SIZE only, never the family
  * or the weight. A context that refused the shorthand but happened to hold a
@@ -896,23 +891,23 @@ export const MAX_WRAP_ROWS = 800;
 /**
  * Headroom the ZOOM CEILING adds on top of fullChipPx, in px at CHIP_FONT_PX.
  *
- * `full` has zero slack against the canvas measurer by construction (#207's
- * residue): canvas 2D has no `font-variant-numeric`, the chips declare
- * `tabular-nums`, and canvas therefore UNDER-measures digit-bearing labels by
- * up to 1.664px at 16px -- always in the direction that declares text to fit
- * when it does not. A chip sitting exactly at its `full` threshold clips by
- * that much.
+ * `full` has zero slack against the canvas measurer by construction: it
+ * requires w >= labelPx_canvas + CHIP_FULL_PAD_PX and the chip then renders
+ * exactly that much padding. The ceiling puts the job's SHORTEST run at exactly
+ * that threshold, so without headroom the top of the slider is the one zoom
+ * where the widest label sits on the edge of clipping.
  *
- * The ceiling puts the job's SHORTEST run at exactly that threshold, so
- * without this the top of the slider is the one zoom where the widest label is
- * guaranteed to clip. MEASURED in Chromium at 193.965px/sec on the bimodal
- * song: 4 of 115 `F#:min7` chips with clientWidth 77 against scrollWidth 78.
+ * What the 2px has to cover is the ~1px integer-rounding artifact of
+ * `clientWidth` (recorded in #207) plus the canvas-vs-DOM disagreement. That
+ * disagreement is NOT a constant to be sized from a sample: while the chips
+ * declared tabular digits it was up to 15.164px over the real alphabet, and a
+ * 2px slack sized from 13 labels covered none of it. The fix was to take the
+ * tabular digits off the chips (see chipStyle), after which it is 0.008px at
+ * 16px over all 7,754 labels. The slack is therefore small BECAUSE the two
+ * measurers agree, and stays honest only while they do.
  *
- * 2px covers the 1.664px delta and the ~1px integer-rounding artifact of
- * `clientWidth` that #207 also recorded. It is applied HERE and not in
- * chipDensity on purpose: widening the fit rule itself would change what every
- * chip renders as at every zoom, which is a behaviour change this does not
- * need. This only buys slack at the far end of the slider.
+ * It is applied HERE and not in chipDensity on purpose: widening the fit rule
+ * itself would change what every chip renders as at every zoom.
  */
 export const CEILING_SLACK_PX = 2;
 

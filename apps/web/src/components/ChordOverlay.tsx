@@ -1170,7 +1170,14 @@ const chipStyle: CSSProperties = {
   borderRadius: '6px',
   cursor: 'pointer',
   whiteSpace: 'nowrap',
-  fontVariantNumeric: 'tabular-nums',
+  // Deliberately NO fontVariantNumeric here. Canvas 2D has no
+  // font-variant-numeric, and the zoom ceiling and chipDensity size chips with
+  // a canvas measurer. A chip that renders tabular digits is wider than the
+  // width that decided it fits (measured in Chromium: C:11 by 7.4px, up to
+  // 15.2px across the alphabet), so it clips. Proportional digits make the
+  // canvas width and the rendered width agree to within 0.01px at 16px.
+  // The ruler and the time readouts keep tabular digits; they are not sized
+  // by the measurer.
 };
 // N (no chord): muted, dashed outline. X (unknown): amber, dotted outline.
 const restChipStyle: CSSProperties = {

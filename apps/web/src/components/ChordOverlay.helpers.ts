@@ -672,17 +672,50 @@ export function rootHue(label: string): number | null {
 // The real measurement happens in the browser (ChordOverlay passes a canvas
 // `measureText` measurer). This table is the headless fallback and the unit of
 // account for the tests. Its advances were MEASURED, not guessed: Chromium
-// 1280x900 on the job page's own font stack (-apple-system ... sans-serif,
-// weight 400, proportional digits -- the chips declare no font-variant-numeric)
-// at 16px, via a hidden span. Re-measured against every one of the 7,754 labels
-// of the real alphabet: the table is never more than 0.008px under the DOM
-// width (the digit, ':' '.' '-' '(' ')' and space advances changed when the
-// chips dropped tabular digits; the earlier table was tabular-calibrated and
-// under-estimated 170 labels by up to 0.32px against the shipped chip).
+// 1280x900 on the chips' own font stack (ui-sans-serif, system-ui,
+// -apple-system, "Segoe UI", Roboto, sans-serif -> Inter 4.000, weight 400,
+// proportional digits -- the chips declare no font-variant-numeric) at 16px,
+// via a hidden span.
+//
+// RE-MEASURED over every label the Harte grammar can produce (21 roots x (no
+// quality + 24 qualities) x (no bass + b/#/natural x degrees 1..13), plus
+// "N.C." and "?": 21,002 labels, built from HARTE_QUALITIES in the gate file).
+// Against the DOM width of the label (canvas measureText is within 0.0078px of
+// the DOM over the same 21,002):
+//   - BEFORE this change the table was up to 0.1094px UNDER (the 34 bare-root
+//     slash labels such as "A/6": the 'A' + '/' pair is wider than the sum of
+//     its advances). ESTIMATE_PAD_PX below covers that: it is now never under,
+//     by at least 0.0156px, over the whole alphabet.
+//   - BEFORE this change it was up to 5.33px OVER ("A:hdim7/b11", and 4.79px
+//     for "A#:hdim7/11"), because 'h' -- used only by "hdim7" -- was the one
+//     glyph of the grammar the table lacked and an unlisted glyph is charged
+//     the widest advance. With 'h' the worst over-estimate is 1.31px
+//     ("D/b13"). "N.C." is over by 0.82, "A:min" by 0.33, "?" by 0.12; an
+//     earlier note that put the worst case at "N.C. 0.70, A:min 0.21" left the
+//     hdim7 labels out.
+// The table holds exactly the glyphs the grammar and "N.C." / "?" use. Glyphs
+// nothing renders (space, '-', '(', ')', 'x', 'X') used to sit in it, defended
+// by no label: mutating them left the suite green. They are gone, so every
+// entry is load-bearing, and a glyph outside the grammar costs the safe
+// (widest) estimate instead of a stale number. The gate file enumerates the
+// grammar and fails on a missing or an unused glyph.
 
-/** Font size chips render their label at (inherited; 1rem). */
+/**
+ * Font size chips render their label at, DECLARED on every chip in px by
+ * renderChip. It used to be inherited (1rem), which tied nothing: the measurer
+ * assumed 16 while the chip rendered at whatever the browser's default font
+ * size was. A user who had enlarged their text (Chromium
+ * --blink-settings=defaultFontSize=20) got chips 25% wider than the width that
+ * decided they fit: 21 chips clipped 13.2px at the zoom ceiling of the
+ * bimodal song, 29 clipped 15.2px at its default, with no code change at all.
+ *
+ * It is now one number used by the measurer AND the declaration. CHANGING IT
+ * is the sizing pass's job, and it is not a one-line edit: the pinned canvas
+ * widths in test/chord-default-zoom.test.mjs are 16px measurements and a test
+ * there fails loudly until they are re-measured at the new size.
+ */
 export const CHIP_FONT_PX = 16;
-/** Font size the `tight` density drops to (0.625rem). */
+/** Font size the `tight` density drops to, declared in px by renderChip. */
 export const CHIP_TIGHT_FONT_PX = 10;
 /** Horizontal padding a `full` chip spends on `padding: 0 0.5rem`. */
 export const CHIP_FULL_PAD_PX = 16;
@@ -691,19 +724,29 @@ export const CHIP_TIGHT_PAD_PX = 2;
 /** renderChip takes 1px off every chip so neighbours stay visually distinct. */
 export const CHIP_GAP_PX = 1;
 
-const ADVANCE_16PX: Readonly<Record<string, number>> = Object.freeze({
+export const ADVANCE_16PX: Readonly<Record<string, number>> = Object.freeze({
   A: 11.25, B: 10.4688, C: 11.6875, D: 11.5469, E: 9.6172, F: 9.4453, G: 11.9375,
-  N: 12.0547, X: 10.9141,
-  a: 8.9844, b: 9.7969, d: 9.7969, g: 9.8125, i: 3.875, j: 3.875, m: 14.0156,
-  n: 9.4531, s: 8.4453, u: 9.4609, x: 8.7344,
+  N: 12.0547,
+  a: 8.9844, b: 9.7969, d: 9.7969, g: 9.8125, h: 9.4609, i: 3.875, j: 3.875, m: 14.0156,
+  n: 9.4531, s: 8.4453, u: 9.4609,
   '0': 10.0938, '1': 6.5156, '2': 9.7656, '3': 9.8906, '4': 10.3438,
   '5': 9.7344, '6': 9.9219, '7': 9.0625, '8': 9.9063, '9': 9.9219,
   ':': 4.6094, '#': 10.1328, '/': 5.7656, '.': 4.6094, '?': 8.1797,
-  '-': 7.3594, '(': 5.8438, ')': 5.8438, ' ': 4.5,
 });
+/**
+ * Added to every estimate, in px at 16px. The sum of per-glyph advances is
+ * 0.1094px short of the DOM width for the 34 labels that start "A/" (the pair
+ * is wider than its parts); 0.125 is the next step above that. It makes "the
+ * table never under-estimates" TRUE for the whole alphabet rather than true for
+ * the fixture, at the price of ~0.1% on a width that is only ever used when
+ * there is no canvas.
+ */
+export const ESTIMATE_PAD_PX = 0.125;
 // Widest advance in the table: an unlisted glyph must never be UNDER-estimated,
 // or a label would be declared to fit when it does not.
 const WIDEST_ADVANCE_16PX = 14.0156;
+/** The size ADVANCE_16PX was measured at. Independent of CHIP_FONT_PX on purpose. */
+const TABLE_FONT_PX = 16;
 
 /** A measurer: the rendered width of `label` at `fontPx`, in CSS pixels. */
 export type LabelMeasure = (label: string, fontPx: number) => number;
@@ -715,9 +758,11 @@ export type LabelMeasure = (label: string, fontPx: number) => number;
  */
 export function estimateLabelPx(label: string, fontPx: number = CHIP_FONT_PX): number {
   if (!label) return 0;
-  let w = 0;
+  let w = ESTIMATE_PAD_PX;
   for (const ch of label) w += ADVANCE_16PX[ch] ?? WIDEST_ADVANCE_16PX;
-  return (w * fontPx) / CHIP_FONT_PX;
+  // The table is a 16px measurement, so it scales from 16 and not from
+  // CHIP_FONT_PX: changing the constant must not silently re-scale the table.
+  return (w * fontPx) / TABLE_FONT_PX;
 }
 
 /**
@@ -763,12 +808,14 @@ const FONT_PX_RE = /(?:^|\s)(\d+(?:\.\d+)?)px(?:\s|$)/;
  * `font-variant-numeric`, so while the chips declared `tabular-nums` the canvas
  * under-measured every digit-bearing label -- always in the unsafe direction.
  * Measured in Chromium over the whole alphabet (every root spelling x 24
- * qualities x every bass spelling, 7,754 labels): up to 15.164px at 16px
- * ("C#:11/11"), 7.4px for "C:11" alone. An earlier note here put the worst case
- * at 1.656px, from a 13-label fixture. It was closed by REMOVING the cause, not
- * by padding for it: the chips no longer declare tabular digits, and canvas and
- * DOM now agree to 0.008px at 16px across all 7,754 labels. Anything that puts a
- * font feature on a chip which canvas cannot express re-opens this.
+ * qualities x every bass spelling): up to 15.164px at 16px ("C#:11/11"), 7.4px
+ * for "C:11" alone. An earlier note here put the worst case at 1.656px, from a
+ * 13-label fixture. It was closed by REMOVING the cause, not by padding for it:
+ * the chips no longer declare tabular digits, and canvas and DOM now agree to
+ * 0.0078px at 16px across all 21,002 labels of the grammar (see the table's
+ * header). Anything that puts a font feature on a chip OR ON AN ANCESTOR that
+ * canvas cannot express re-opens this; the gate file allowlists what a chip and
+ * every element above it may declare, and fails on anything else.
  *
  * KNOWN GAP 2: the read-back below checks the font SIZE only, never the family
  * or the weight. A context that refused the shorthand but happened to hold a
@@ -902,9 +949,15 @@ export const MAX_WRAP_ROWS = 800;
  * disagreement is NOT a constant to be sized from a sample: while the chips
  * declared tabular digits it was up to 15.164px over the real alphabet, and a
  * 2px slack sized from 13 labels covered none of it. The fix was to take the
- * tabular digits off the chips (see chipStyle), after which it is 0.008px at
- * 16px over all 7,754 labels. The slack is therefore small BECAUSE the two
+ * tabular digits off the chips (see chipStyle), after which it is 0.0078px at
+ * 16px over all 21,002 labels. The slack is therefore small BECAUSE the two
  * measurers agree, and stays honest only while they do.
+ *
+ * WHAT IS AND IS NOT DEFENDED. The gate file defends `>= 1px` (the clientWidth
+ * rounding) plus the 0.0078px measured disagreement, i.e. anything from about
+ * 1.01 up. The value 2 is that floor plus roughly a pixel of unmeasured
+ * margin; 1.9 and 1.5 would pass every test and be equally correct. A test
+ * that pinned 2 would only pin a number, so none does.
  *
  * It is applied HERE and not in chipDensity on purpose: widening the fit rule
  * itself would change what every chip renders as at every zoom.

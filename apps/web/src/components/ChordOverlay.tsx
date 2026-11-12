@@ -343,8 +343,10 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   const minPps = narrow
     ? Math.min(MAX_PX_PER_SEC, rowWidthPx / WRAP_MAX_ROW_SEC)
     : fitPxPerSec(dur, widthPx);
-  // Real text metrics for the chips, from the font the chips actually inherit.
-  // Built once per container element and memoised per (label, size); nothing
+  // Real text metrics for the chips: FAMILY and WEIGHT are read off the element
+  // the chips inherit them from; the SIZE is not read, it is declared (every
+  // chip carries an inline px font size, see renderChip). Built once per
+  // container element and memoised per (label, size); nothing
   // here runs per frame. Falls back to the calibrated table when there is no
   // canvas (SSR, happy-dom, a hardened browser that returns a null context).
   // The measuring itself lives in makeCanvasMeasurer (a pure, exported factory
@@ -980,7 +982,19 @@ function renderChip(
         // (The comment below this chip's styles announces a later polish PR;
         // padding and font-size are the first things such a pass touches.)
         padding: density === 'full' ? `0 ${CHIP_FULL_PAD_PX / 2}px` : '0',
-        ...(density === 'tight' ? { fontSize: `${CHIP_TIGHT_FONT_PX}px` } : null),
+        // EVERY chip declares its font size, in px, from the constants the
+        // measurer and chipDensity use. Only `tight` used to, and `full`
+        // INHERITED (1rem) while the measurer assumed CHIP_FONT_PX: a browser
+        // whose default font size is 20px rendered every full chip 25% wider
+        // than the width that decided it fit, with no code change anywhere
+        // (measured: 21 chips clipped 13.2px at the ceiling, 29 clipped 15.2px
+        // at the default). A px size the browser cannot re-base makes the size
+        // that is measured and the size that renders one number. The cost is
+        // that chord names no longer follow the user's default font size; the
+        // sizing pass should do that on purpose (scale CHIP_FONT_PX, measure at
+        // the scaled size) rather than by inheritance.
+        // A tick has no text node, so its size is moot; it gets the full one.
+        fontSize: `${density === 'tight' ? CHIP_TIGHT_FONT_PX : CHIP_FONT_PX}px`,
         borderRadius: density === 'tick' ? '2px' : '6px',
         ...(continuedRow !== null ? { opacity: 0.85, borderTopLeftRadius: 0, borderBottomLeftRadius: 0 } : null),
       }}
@@ -1170,14 +1184,19 @@ const chipStyle: CSSProperties = {
   borderRadius: '6px',
   cursor: 'pointer',
   whiteSpace: 'nowrap',
-  // Deliberately NO fontVariantNumeric here. Canvas 2D has no
-  // font-variant-numeric, and the zoom ceiling and chipDensity size chips with
-  // a canvas measurer. A chip that renders tabular digits is wider than the
-  // width that decided it fits (measured in Chromium: C:11 by 7.4px, up to
-  // 15.2px across the alphabet), so it clips. Proportional digits make the
-  // canvas width and the rendered width agree to within 0.01px at 16px.
-  // The ruler and the time readouts keep tabular digits; they are not sized
-  // by the measurer.
+  // Deliberately NO font property here, and none on any element above a chip
+  // (the container's fontFamily is the one the measurer reads). Canvas 2D has
+  // no font-variant-numeric, no font-feature-settings, no letter-spacing, and
+  // it is told one size and one weight: the zoom ceiling and chipDensity size
+  // chips with that canvas measurer. A chip that renders tabular digits is
+  // wider than the width that decided it fits (measured in Chromium: C:11 by
+  // 7.4px, up to 15.2px across the alphabet), so it clips; so does a heavier
+  // weight, a larger size or any tracking. Proportional digits make the canvas
+  // width and the rendered width agree to within 0.01px at 16px.
+  // test/chord-default-zoom.test.mjs ALLOWLISTS what a chip and each of its
+  // ancestors may declare, so a font property here fails the suite whatever it
+  // is spelled. The ruler and the time readouts keep tabular digits; they are
+  // not sized by the measurer.
 };
 // N (no chord): muted, dashed outline. X (unknown): amber, dotted outline.
 const restChipStyle: CSSProperties = {

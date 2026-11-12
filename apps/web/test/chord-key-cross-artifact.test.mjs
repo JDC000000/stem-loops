@@ -95,22 +95,82 @@ function pyCodeOnly(src) {
 }
 
 /**
- * Pull the chord key's f-string template out of Python CODE (docstrings already blanked).
- * Returns the template with `{job_id}` left intact.
+ * Pull the chord key's template out of Python CODE (docstrings already blanked).
+ * Returns the template with `{job_id}` left intact, e.g. `jobs/{job_id}/play.chords.json`.
  *
- * Requires EXACTLY ONE match. Zero is a failure, not a skip — mutation rule 2. If the
- * worker is refactored so the key is built some other way, this gate must go red and be
- * rewritten, not quietly stop checking.
+ * TWO FORMS ARE ACCEPTED, and the second one is why this function was rewritten.
+ *
+ *   A. a direct literal f-string:
+ *        r2_key = f"jobs/{job_id}/play.chords.json"
+ *
+ *   B. composed from a module constant (PR #214's refactor):
+ *        CHORDS_TOP_PREFIX = "jobs/"
+ *        return f"{CHORDS_TOP_PREFIX}{job_id}/play.chords.json"
+ *
+ * ⚠️ WHY. The first version of this gate accepted form A only, and required exactly one
+ * match with zero as a hard failure — deliberately, so a refactor could not make the gate
+ * quietly stop checking. That worked EXACTLY as designed and the consequence is worth
+ * recording: this gate merged to `v3/main`, and the very next CI run on the open PR #214
+ * went red with `found 0`, because #214 had refactored the key into `CHORDS_TOP_PREFIX` +
+ * `play_chords_r2_key()` — which is the single-source-of-truth improvement that PR's own
+ * reviewer had asked for. **The gate was right and the PR was right, and the gate still
+ * broke it.**
+ *
+ * So the lesson is not "loosen the assertion". It is that a gate reading one spelling of a
+ * literal is coupled to that spelling. Resolving the constant reads the VALUE the worker
+ * actually composes, which is the thing the TypeScript side has to match, and is robust to
+ * either shape.
+ *
+ * Zero matches across BOTH forms is still a hard failure, and both forms present at once
+ * is also a failure — two ways to build one key is the ambiguity this gate exists to stop.
  */
 function pyChordKeyTemplate(code) {
-  const re = /f"(jobs\/\{job_id\}\/[A-Za-z0-9_.]+)"/g;
-  const hits = [...code.matchAll(re)].map((m) => m[1]);
+  // Form A — a literal f-string whose first segment is spelled out.
+  //
+  // The `+` is load-bearing and was a `*` for one broken revision. With `*` the prefix is
+  // optional, so this also matched `f"{job_id}/_input.wav"` — the input-upload key, which
+  // has NO top-level prefix — giving two hits and a confusing "more than one" failure on a
+  // tree where nothing was wrong. Requiring AT LEAST ONE prefix segment is the exact
+  // discriminator: a prefixed key is by definition in a second top-level namespace, and
+  // `{job_id}/...` keys are in the first.
+  //
+  // A consequence worth stating: if a SECOND prefixed key is ever added, this goes red with
+  // two hits. That is correct, not a nuisance — `job_object_prefixes()` in cleanup.py must
+  // list every top-level prefix a job owns, and a new one that nobody added there leaks
+  // past the per-job retention sweep. That is the exact bug PR #214 exists to fix.
+  const literal = [...code.matchAll(/f"((?:[A-Za-z0-9_.-]+\/)+\{job_id\}\/[A-Za-z0-9_.]+)"/g)].map(
+    (m) => m[1],
+  );
+
+  // Form B — an f-string whose first segment is a module constant, resolved from its
+  // own assignment in the same file. Only a plain string literal is resolved; anything
+  // computed is left unresolved and therefore reported, not guessed at.
+  const composed = [];
+  for (const m of code.matchAll(/f"\{([A-Z_][A-Z0-9_]*)\}\{job_id\}\/([A-Za-z0-9_.]+)"/g)) {
+    const [, constName, tail] = m;
+    const assign = [
+      ...code.matchAll(new RegExp(`^${constName}\\s*=\\s*"([^"\\n]*)"`, "gm")),
+    ].map((a) => a[1]);
+    assert.equal(
+      assign.length,
+      1,
+      `the chord key is composed from \`${constName}\`, but r2_uploader.py's CODE has ` +
+        `${assign.length} plain-string assignments to it (expected exactly 1): ` +
+        `${JSON.stringify(assign)}. This gate resolves only a literal constant; if it is now ` +
+        `computed, rewrite the gate rather than deleting it.`,
+    );
+    composed.push(`${assign[0]}{job_id}/${tail}`);
+  }
+
+  const hits = [...literal, ...composed];
   assert.equal(
     hits.length,
     1,
-    `expected exactly ONE f-string chord key in r2_uploader.py's CODE, found ${hits.length}: ` +
-      `${JSON.stringify(hits)}. Zero means the key is no longer built as a literal f-string ` +
-      `and this gate has stopped checking anything — rewrite it rather than deleting it.`,
+    `expected exactly ONE chord key in r2_uploader.py's CODE, found ${hits.length}: ` +
+      `${JSON.stringify(hits)} (form A literals: ${JSON.stringify(literal)}; form B ` +
+      `composed: ${JSON.stringify(composed)}). Zero means the key is built some way this ` +
+      `gate cannot read — REWRITE IT, do not delete it. More than one means there are two ` +
+      `ways to build one key, which is the drift this gate exists to catch.`,
   );
   return hits[0];
 }

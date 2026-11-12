@@ -1222,6 +1222,25 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
 //      green found in rounds 1-3 was found by a reviewer launching Chromium by
 //      hand, which CI never does. It belongs to the chord sizing story as an
 //      ACCEPTANCE CRITERION, not here.
+//   4. THE ANCESTOR INLINE VALUE CHANNEL. ANCESTOR_DECLARES is a NAME allowlist;
+//      NO ancestor value is read. The key inventory below covers only a CHIP's
+//      inline style. Measured in real Chromium (fixture song, 1280 viewport, strip
+//      layout), each with this file at 38/38 and the suite at 1315 / 1295 / 0 / 20:
+//        - chip band `top: RULER_H` -> `top: RULER_H + 60` (ChordOverlay.tsx:784):
+//          15 of 15 chips in view sit OUTSIDE the scroller (chip top 223, scroller
+//          box [139, 207], overflowY hidden). The screenshot shows the ruler and NO
+//          chips. This is round 3's `top: 60` one element up.
+//        - strip inner `height: RULER_H + chipH` -> `height: RULER_H` (:780): the
+//          scroller box shrinks to [139, 175] while chips span 163-199, leaving a
+//          ~12px colour sliver per chip and NO readable label.
+//        - timeline `visibility: measured ? 'visible' : 'hidden'` -> `'hidden'`
+//          (:732): computed visibility is not 'visible' for 15/15 chips at 1280 and
+//          114/114 at 390; Playwright's visible-wait timed out with 107 chips attached.
+//      The first two are STRIP-ONLY: at 390 (wrapped layout) they have no effect.
+//      These are the same user-visible failures this gate set out to close
+//      (chips cropped or off-screen), reached by editing the SAME LINES the chord
+//      sizing pass will touch. Not tied here by decision: widening the diff would
+//      reopen the review loop. NOT closed here; belongs to the browser gate.
 //
 // GATED-KEY INVENTORY (what a chip's inline style is held to), as of round 4:
 //   tied by VALUE:     fontSize (both channels); height, top (both channels, to the
@@ -1231,6 +1250,7 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
 //   NAME-allowlisted:  left, position, overflow, textOverflow, borderRadius and its
 //                      two longhands (borderTopLeftRadius, borderBottomLeftRadius),
 //                      cursor -- any value passes
+//   ANCESTORS:         names only (ANCESTOR_DECLARES); no value is read (item 4 above)
 // A test title in this file is a claim about THIS list. If a property is not above
 // as tied, no test here guards its value.
 //
@@ -1337,7 +1357,13 @@ function fontChannelViolations(dom, chips) {
     // `top: 60` put all 15 chips below the scroller box, none visible.
     // NOT tied to a literal 36 / 44: CHIP_H_STRIP and CHIP_H_WRAP are not exported
     // and are meant to move. Changing the container's height moves both together;
-    // changing only the chip's does not pass. Both channels are read.
+    // changing only the chip's inline height does not pass. Both inline channels
+    // are read. QUALIFICATIONS: (a) this is inline-only: through the STYLESHEET it
+    // is false -- `.co-scroll button{height:9px !important}` leaves this file at
+    // 38/38 and in Chromium gives chip0H 9 with textTallerThanChip 15/15 at 1280.
+    // That is disclosed channel 1, not a new channel. (b) A CONSISTENT shrink of
+    // chipH (container and chip changed together) is not caught BY DESIGN; the tie
+    // is to the container, not to a size. That belongs to the browser gate.
     const parentStyle = chip.parentElement ? declaredProps(chip.parentElement).reactStyle : null;
     const wantHeight = parentStyle ? normPx(parentStyle.height) : undefined;
     if (wantHeight === undefined) out.push(`${id}: its parent declares no height, so the chip's height has nothing to be tied to`);
@@ -1397,7 +1423,10 @@ function fontChannelViolations(dom, chips) {
       if (el === root) break;
     }
   }
-  // The overlay's own <style>: selectors under .co-scroll, scrollbar properties only.
+  // The overlay's own <style>: selectors must be under .co-scroll, and declared
+  // property NAMES must be in STYLE_ELEMENT_PROPS (scrollbar-*, border, height,
+  // background, border-radius, background-clip). Names only: no value is read
+  // (disclosure item 1 in the header).
   for (const st of root.querySelectorAll('style')) {
     for (const rule of st.textContent.split('}')) {
       const brace = rule.indexOf('{');
@@ -1526,7 +1555,7 @@ test('default view: every chip has a visible declared colour, and a declared wid
   });
 });
 
-test('at ANY zoom a chip either shows a readable label or carries no text at all', async () => {
+test('at any zoom: a tick chip carries no text, and every chip with text has a declared colour contrasting >= 1.05 (declared values only, not rendered visibility)', async () => {
   // The invariant the `color: transparent` branch broke. Driving the zoom
   // slider to 0 reproduces the old default exactly, so this covers the state
   // the user used to land in as well as the one they land in now.

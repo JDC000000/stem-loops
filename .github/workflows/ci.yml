@@ -66,6 +66,17 @@ jobs:
       - name: Install Python deps
         # Pinned via the prod constraints so a new ruff/black release can't turn main red.
         run: pip install ruff black -c apps/worker/constraints-prod.txt
+      - name: CODEOWNERS path set agrees across its three copies
+        # The set of paths needing Jon's approval is written down three times:
+        # .github/CODEOWNERS, auto-label-codeowners.yml (applies the label) and
+        # auto-merge.yml's CO_RE (computes the verdict inline so a merge cannot
+        # win a race against the labeller — PR #174 merged 36s before its label
+        # arrived). A third copy with no gate on it would trade one silent
+        # failure for another, so this is wired into Lint, which is a REQUIRED
+        # context. A gate that is not in CI is a documented-but-inert control,
+        # and this repo has been bitten by several.
+        # Exit codes: 0 ok · 1 drift · 2 attempted-and-failed · 3 not-attempted.
+        run: python scripts/check_codeowners_drift.py
       - name: ruff check
         run: cd apps/worker && python -m ruff check src/ tests/
       - name: black check

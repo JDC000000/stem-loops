@@ -168,8 +168,71 @@ jobs:
           emit() { printf 'proceed=%s\npr=%s\nsha=%s\nref=%s\n' "$1" "${2:-}" "${3:-}" "${4:-}" >> "$GITHUB_OUTPUT"; }
           skip() { echo "::notice::auto-merge (post-CI) not merging: $1"; emit false; exit 0; }
 
-          # pull_request_target: the job `if` already applied the label gate.
+          # ── THE APPROVAL VERDICT IS COMPUTED HERE, NOT READ FROM A LABEL ──
+          #
+          # `needs-jon-approval` is applied by SEPARATE workflows
+          # (auto-label-codeowners.yml, auto-label-fast-path.yml), so it can
+          # arrive AFTER this job has already merged. It did:
+          #
+          #   2026-11-10 19:10:08Z  labeled rollback-safe
+          #   2026-11-10 19:13:05Z  merged                      <- PR #174
+          #   2026-11-10 19:13:41Z  labeled needs-jon-approval  <- 36s too late
+          #
+          # PR #174 reached v3/main without the approval the system itself had
+          # determined was required, while this file described that label as a
+          # "hard stop regardless". A gate that depends on a label arriving
+          # first is not a gate.
+          #
+          # This repo had already diagnosed the class and already carried the
+          # cure, in auto-label-fast-path.yml's own words:
+          #
+          #   "That is a race between two workflows on the same PR.
+          #    The deny list needs no race to win."
+          #
+          # Its `deny_re` is computed inline from the diff at the moment of
+          # decision, and it is the only one of the three gates that held
+          # through session 12. We copy that property: read the PR's own file
+          # list NOW and apply the CODEOWNERS path set ourselves.
+          #
+          # The label check further down STAYS. A human or a labeller setting
+          # it is still a hard stop. It is simply no longer the only thing
+          # between a money-touching diff and a merge.
+          #
+          # FAILS CLOSED: if the file list cannot be read, we refuse rather
+          # than guess. Silence and success must never share an exit code.
+          #
+          # Keep CO_RE byte-identical to the alternation in
+          # auto-label-codeowners.yml, and covering every entry in
+          # .github/CODEOWNERS. There are now THREE copies of this path set;
+          # scripts/check_codeowners_drift.py fails CI if they diverge, so do
+          # not hand-sync them and hope.
+          CO_RE='^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|AGENTS\.md$)'
+
+          BLOCK_REASON=""
+          # Sets BLOCK_REASON and returns 0 when the PR must go to Jon.
+          # Returns 1 only when the diff was read AND touched no owned path.
+          codeowners_block() {
+            local pr="$1" changed owned
+            changed=$(gh api --paginate "repos/$REPO/pulls/$pr/files?per_page=100" --jq '.[].filename' || true)
+            if [ -z "$changed" ]; then
+              BLOCK_REASON="could not read the file list for PR #$pr - refusing rather than guessing"
+              return 0
+            fi
+            owned=$(printf '%s\n' "$changed" | grep -E "$CO_RE" || true)
+            if [ -n "$owned" ]; then
+              printf '%s\n' "$owned" | sed 's|^|::notice::auto-merge: CODEOWNERS path touched - |'
+              BLOCK_REASON="PR #$pr touches a CODEOWNERS path, so it needs Jon whether or not the label has arrived (computed inline from the diff, not read from a label)"
+              return 0
+            fi
+            return 1
+          }
+
+          # pull_request_target: the job `if` applied the LABEL gate only, so
+          # the computed verdict has to run here too. This early return was
+          # itself half the hole - the `labeled` event path never reached any
+          # of the live re-reads below.
           if [ "$EVENT_NAME" != "workflow_run" ]; then
+            if codeowners_block "$EV_PR"; then skip "$BLOCK_REASON"; fi
             emit true "$EV_PR" "$EV_SHA" "$EV_REF"
             exit 0
           fi
@@ -202,6 +265,13 @@ jobs:
 
           # Same gate as the job `if`, evaluated on live labels.
           has() { jq -e --arg l "$1" 'any(.labels[]; .name == $l)' <<<"$PR_JSON" > /dev/null; }
+          # The computed verdict, on the post-CI path. Runs BEFORE the label
+          # check so the log names the owned file rather than only the label.
+          if codeowners_block "$PR"; then skip "$BLOCK_REASON"; fi
+
+          # The label remains a hard stop in its own right: a human or a
+          # labeller setting it still refuses the merge, even on a diff whose
+          # paths CO_RE does not cover.
           if has needs-jon-approval; then skip "needs-jon-approval is set"; fi
 
           # Stale-approval race. drop-stale-review removes adversarial-reviewed

@@ -117,7 +117,7 @@ INSERT INTO public.plans
 VALUES
   ('free',   'Free',      0,   5,  ARRAY['youtube']::text[], false, false, true),
   ('pro',    'Pro',     499,  50,  ARRAY[]::text[],          false, false, true),
-  ('studio', 'Studio', 1200, 150,  ARRAY[]::text[],          true,  false, true)
+  ('studio', 'Studio', 1200, 150,  ARRAY[]::text[],          false, false, true)
 ON CONFLICT (code) DO UPDATE SET
   display_name      = EXCLUDED.display_name,
   price_cad_cents   = EXCLUDED.price_cad_cents,

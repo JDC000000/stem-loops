@@ -37,7 +37,7 @@ type CreditPack = {
 const FALLBACK: Plan[] = [
   { code: 'free', display_name: 'Free', price_cad_cents: 0, monthly_job_quota: 5, services: ['youtube'], export_stems: false, export_wav24: false },
   { code: 'pro', display_name: 'Pro', price_cad_cents: 499, monthly_job_quota: 50, services: [], export_stems: false, export_wav24: false },
-  { code: 'studio', display_name: 'Studio', price_cad_cents: 1200, monthly_job_quota: 150, services: [], export_stems: true, export_wav24: false },
+  { code: 'studio', display_name: 'Studio', price_cad_cents: 1200, monthly_job_quota: 150, services: [], export_stems: false, export_wav24: false },
 ];
 
 // Fallback for the one-time credit SKUs if public.credit_packs is unreachable.

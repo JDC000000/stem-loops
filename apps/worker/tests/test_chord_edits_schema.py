@@ -57,7 +57,7 @@ def _cleanup(c: Any) -> None:
     c.commit()
 
 
-def _user(conn: Any, tag: str) -> uuid.UUID:
+def _user(conn: Any, tag: str, *, commit: bool = True) -> uuid.UUID:
     uid = uuid.uuid4()
     conn.execute(
         "INSERT INTO auth.users (id, email, aud, role, encrypted_password, "
@@ -65,11 +65,12 @@ def _user(conn: Any, tag: str) -> uuid.UUID:
         "VALUES (%s, %s, 'authenticated', 'authenticated', 'x', now(), now(), now())",
         (uid, f"test-chord-edits-{tag}@example.com"),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return uid
 
 
-def _job(conn: Any, uid: uuid.UUID) -> uuid.UUID:
+def _job(conn: Any, uid: uuid.UUID, *, commit: bool = True) -> uuid.UUID:
     jid = uuid.uuid4()
     conn.execute(
         "INSERT INTO public.jobs (id, youtube_url, status, client_ip_hash, "
@@ -77,7 +78,8 @@ def _job(conn: Any, uid: uuid.UUID) -> uuid.UUID:
         "VALUES (%s, 'https://example.test/x', 'done', 'h', '', %s, 8)",
         (jid, uid),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return jid
 
 
@@ -265,35 +267,48 @@ def test_m1_authenticated_insert_policy_removed(conn):
 
 
 def test_down_migration_round_trip(conn):
-    """Down drops the table; re-applying 025 restores it."""
+    """025's down drops the table; 025's up restores it. Nothing is committed.
+
+    The whole round trip runs inside ONE transaction that is always rolled back
+    (Postgres DDL is transactional), so the database after this test is exactly
+    the database before it, by construction.
+
+    Why not commit and re-apply? This test used to commit the down and then
+    re-apply a hand-kept list of later migrations in `finally`. That list was
+    wrong three times, each fix adding the one migration whose symptom someone
+    had just tripped over: 026 (its constraints), 029 (the Harte CHECK), and
+    then 027 was found missing (it DROPs two policies and REVOKEs anon/
+    authenticated, so after the round trip 025's up left those policies back on
+    every reused database and test_m1_authenticated_insert_policy_removed
+    failed from the second run on). Extending the list a fourth time would be
+    the same mistake: any migration after 025 that touches chord_edits has to be
+    remembered here. "Re-apply every later migration" is not an option either:
+    028 and 033 contain bare CREATE POLICY and are not re-runnable. A rollback
+    has no list to maintain. The guard against this class is
+    test_zz_schema_matches_fresh_migration.py.
+    """
     down = (MIGRATIONS / "down" / "025_v3_chord_edits_down.sql").read_text()
     up = (MIGRATIONS / "025_v3_chord_edits.sql").read_text()
-    up_026 = (MIGRATIONS / "026_chord_edits_length_checks.sql").read_text()
-    up_029 = (MIGRATIONS / "029_v3_chord_edits_harte_slash.sql").read_text()
     try:
         conn.execute(down)
-        conn.commit()
         exists = conn.execute("SELECT to_regclass('public.chord_edits')").fetchone()
         assert exists is not None and exists[0] is None
+        conn.execute(up)
+        exists = conn.execute("SELECT to_regclass('public.chord_edits')").fetchone()
+        assert exists is not None and exists[0] is not None
+        # 025's own invariant is live again after the up: its Harte CHECK rejects
+        # junk. (This is 025's constraint; 029 replaces it and is deliberately
+        # not re-applied - nothing here is committed.) commit=False: the helpers
+        # must not commit the round trip.
+        uid = _user(conn, "rt", commit=False)
+        jid = _job(conn, uid, commit=False)
+        with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_valid_harte"):
+            _insert(conn, uid, jid, corrected="not_a_chord")
     finally:
         conn.rollback()
-        conn.execute(up)
-        # Re-apply 026 too so subsequent 026 tests run against the full
-        # constraint set (025's down drops the table + all constraints
-        # incl. 026's; the up only restores 025's half).
-        conn.execute(up_026)
-        # ...and 029, which replaces 025's Harte CHECK. Without this the round trip leaves the
-        # database on 025's `[a-z0-9]+` constraint for every test that runs after it (found by
-        # test_harte_cross_layer.py, the first test to exercise the 029 constraint).
-        conn.execute(up_029)
-        conn.commit()
+    # The rollback really did restore the committed schema (down was never committed).
     exists = conn.execute("SELECT to_regclass('public.chord_edits')").fetchone()
     assert exists is not None and exists[0] is not None
-    # Re-check an invariant after the round trip — the Harte regex is still live.
-    uid = _user(conn, "rt")
-    jid = _job(conn, uid)
-    with pytest.raises(psycopg.errors.CheckViolation):
-        _insert(conn, uid, jid, corrected="not_a_chord")
     conn.rollback()
 
 

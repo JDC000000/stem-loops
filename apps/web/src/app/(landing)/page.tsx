@@ -129,9 +129,10 @@ export default function HomePage() {
                 <dt>Account</dt>
                 <dd>
                   Needed to play, not to start. You can run a job signed out; the player, where the stems, chords and
-                  loops are shown, asks you to sign in — with an email and a password, or a one-time link by email, on
-                  the{' '}
-                  <a href="/login">sign-in page</a>.
+                  loops are shown, asks you to sign in. If you are new, you create an account with an email and a
+                  password on the{' '}
+                  <a href="/login">sign-in page</a>. The one-time link by email only signs you back in to an account
+                  that already exists; it does not create one.
                 </dd>
               </div>
               <div className="spec-row spec-later">
@@ -269,9 +270,10 @@ export default function HomePage() {
                   <summary>Do I need an account?</summary>
                   <p>
                     Not to start one. Running a job works signed out. The player asks you to sign in — that is where
-                    the stems, the chord track and the loops are shown — with an email and a password, or a one-time
-                    link sent to your email, on the{' '}
-                    <a href="/login">sign-in page</a>.
+                    the stems, the chord track and the loops are shown. If you are new, you create an account with an
+                    email and a password on the{' '}
+                    <a href="/login">sign-in page</a>. A one-time link sent to your email only signs you back in to an
+                    account that already exists; it does not create one.
                   </p>
                 </details>
                 <details>

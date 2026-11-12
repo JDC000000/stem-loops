@@ -52,3 +52,25 @@ test('no ?error renders no alert', () => {
 test('signup form tells the user the rule the server enforces', () => {
   assert.match(render({ initialMode: 'signup' }), /At least 10 characters, with a letter and a digit/);
 });
+
+// Front door. The one-time link is sent with shouldCreateUser:false, so it only works for an
+// account that already exists. The form must say so, and must not say it per-address.
+test('the one-time-link button carries a note that it is for existing accounts', () => {
+  const html = render({});
+  const i = html.indexOf('Send me a one-time login link');
+  assert.ok(i > -1, 'button rendered');
+  assert.match(html.slice(i, i + 600), /already (?:have|created)|existing account/i);
+});
+
+test('sign-in mode offers Create account as a full button, not only a small text link', () => {
+  const html = render({});
+  assert.match(html, /<button type="button"[^>]*>New here\? Create an account<\/button>/);
+  const btn = html.match(/<button type="button"([^>]*)>New here\? Create an account<\/button>/)[1];
+  assert.match(btn, /width:100%/);
+});
+
+test('a visitor bounced from a job is pointed at both paths; a bare /login is not', () => {
+  assert.match(render({ returnTo: '/jobs/abc-123' }), /Sign in to open your player\. If you are new, create an account\./);
+  assert.doesNotMatch(render({}), /open your player/);
+  assert.doesNotMatch(render({ returnTo: '/pricing' }), /open your player/);
+});

@@ -119,7 +119,12 @@ test('valid token -> verifies (with client IP) then calls Supabase signUp', asyn
   assert.equal(new URLSearchParams(verifyCalls[0].init.body).get('remoteip'), '203.0.113.9');
   assert.equal(globalThis.__signUpCalls.length, 1);
   assert.equal(globalThis.__signUpCalls[0].email, 'alice@example.com');
-  assert.match(globalThis.__signUpCalls[0].options.emailRedirectTo, /^https:\/\/stem-loops\.com\/login\?return_to=/);
+  // The confirmation link must land on the SERVER callback, not /login: /login only reacts to a
+  // successful SIGNED_IN, so a failed PKCE exchange (link opened on another device) showed a
+  // blank form. /auth/callback turns that failure into /login?error=auth_callback_failed.
+  const redirect = new URL(globalThis.__signUpCalls[0].options.emailRedirectTo);
+  assert.equal(redirect.origin + redirect.pathname, 'https://stem-loops.com/auth/callback');
+  assert.equal(redirect.searchParams.get('next'), '/pricing');
 });
 
 // Bug 4: the server is authoritative for password rules.

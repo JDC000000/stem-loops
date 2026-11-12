@@ -565,3 +565,14 @@ test('the landing reads the v3 demo set', () => {
   assert.match(cfg, /'assets-v3\/'/);
   assert.match(cfg, /lucky_ticket_drums_102\.0bpm_G_minor_verse_0006\.wav/);
 });
+
+// Front door: the one-time email link is sent with shouldCreateUser:false (lib/auth/magic-link.ts),
+// so for a first-time visitor it sends nothing. The landing must not sell it as a way IN.
+test('the landing says the one-time link signs you back in to an existing account, and a new visitor creates one', () => {
+  for (const [where, text] of [['spec row', specRow('Account')], ['FAQ', faqAnswer('Do I need an account?')]]) {
+    assert.doesNotMatch(text, /or a one-time link/i, `${where} still offers the link as an alternative way in`);
+    assert.match(text, /create an account/i, `${where} does not tell a new visitor to create an account`);
+    assert.match(text, /one-time link[^.]*\balready exists?\b/i, `${where} does not say the link is for an existing account`);
+    assert.match(text, /on the sign-in page/i, `${where} lost the pointer to the sign-in page`);
+  }
+});

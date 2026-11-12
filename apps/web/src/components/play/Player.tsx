@@ -77,7 +77,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ChordOverlay } from '@/components/ChordOverlay';
 import { createPlayEngine } from '@/lib/play/engine';
-import { StemLoadError, loadStems, type StemLoadErrorCode } from '@/lib/play/load-stems';
+import {
+  StemLoadError,
+  loadStems,
+  zeroSourceReason,
+  type StemLoadErrorCode,
+  type ZeroSourceReason,
+} from '@/lib/play/load-stems';
+import { reportStemFetchFailure } from '@/lib/play/report-failure';
 import { deriveSections, type SectionLoopRow } from '@/lib/play/sections';
 import type {
   EngineSnapshot,
@@ -112,25 +119,110 @@ export const UNDECODABLE_MESSAGE =
   'This browser could not decode this track’s audio. ' +
   'Use Chrome on a desktop or laptop. Your loops are still available below.';
 
-/** Story 6.4 — a pre-V3-J2 job legitimately has no retained stems. Not an error. */
+/**
+ * Story 6.4 — nothing was stored for this job (`state: 'unavailable'`). Not an
+ * error. Deliberately says nothing about WHY: the old wording ("it was processed
+ * before play-along audio was kept") asserted a cause that is true of a legacy job
+ * and false of a fresh one, and the route cannot tell the two apart.
+ */
 export const NO_STEMS_MESSAGE =
-  'Play along is not available for this track — it was processed before ' +
-  'play-along audio was kept. Your loops are below, as usual.';
+  'Play along is not available for this track — no play-along audio was kept for it. ' +
+  'Your loops are below, as usual.';
+
+/**
+ * `state: 'encode_failed'` — the stems were separated and uploaded for download,
+ * and converting them for playback failed. A fault, not a fallback, and NOT a
+ * reload-fixes-it one: it will answer the same until the track is submitted again.
+ */
+export const ENCODE_FAILED_MESSAGE =
+  'We separated this track but could not prepare its audio for play along. ' +
+  'Your loops are below and still work. Submitting the track again is the way to retry.';
+
+/** Stems were offered and the browser never got a response (CORS / CSP / offline). */
+export const FETCH_NETWORK_MESSAGE =
+  'Your browser could not reach the storage that holds this track’s audio, so play along ' +
+  'cannot start. Check your connection and try again. If it keeps happening on a working ' +
+  'connection, the fault is on our side. Your loops are below.';
+
+/** Stems were offered and storage answered with an error status. */
+export const FETCH_HTTP_MESSAGE =
+  'Our storage would not hand over this track’s audio files, so play along cannot start. ' +
+  'Try again in a moment. Your loops are below.';
+
+/** Stems were offered, storage answered 200, and the bytes were unusable. */
+export const FETCH_BODY_MESSAGE =
+  'This track’s audio files arrived empty or incomplete, so play along cannot start. ' +
+  'Try again. Your loops are below.';
 
 export const GENERIC_LOAD_MESSAGE =
   'We could not load the audio for this track. Reload the page to try again.';
+
+/**
+ * The manifest request never produced a response at all — `fetch` rejected.
+ * Offline, DNS, a CSP block. The only case where the user's own connection is a
+ * reasonable thing to ask them about.
+ */
+export const MANIFEST_UNREACHABLE_MESSAGE =
+  'We could not reach our servers to start play along. Check your connection and try again.';
+
+/**
+ * The manifest request DID get a response, and it was an error status.
+ *
+ * `MANIFEST_FAILED` used to be one sentence for both, which made the 5xx case a
+ * lie: `/api/jobs/:id/stems` answering 500 (INTERNAL_ERROR) or 502
+ * (STEM_LIST_FAILED, its own deliberately-loud R2-list fault) told the user to
+ * check their wifi for a fault that is entirely ours. The status is carried on
+ * `StemLoadError.status`, so the split costs nothing but saying it.
+ */
+export const MANIFEST_SERVER_ERROR_MESSAGE =
+  'Our server could not start play along for this track. This is on our side, not your connection. ' +
+  'Try again in a moment — your loops are below and still work.';
 
 const LOAD_MESSAGES: Record<StemLoadErrorCode, string> = {
   RATE_LIMITED:
     "You're going a bit fast, or we're at capacity right now. Give it a minute and reload.",
   NOT_FOUND: 'This track is no longer available — files are deleted after 24 hours.',
-  MANIFEST_FAILED: GENERIC_LOAD_MESSAGE,
+  MANIFEST_FAILED: MANIFEST_UNREACHABLE_MESSAGE,
   MANIFEST_INVALID: GENERIC_LOAD_MESSAGE,
   ABORTED: GENERIC_LOAD_MESSAGE,
 };
 
-export function stemLoadMessage(code: StemLoadErrorCode): string {
+/** Codes where trying again can help. NOT_FOUND cannot; RATE_LIMITED needs time first. */
+const RETRYABLE_CODES: ReadonlySet<StemLoadErrorCode> = new Set<StemLoadErrorCode>(['MANIFEST_FAILED', 'MANIFEST_INVALID']);
+
+/**
+ * `status` is `StemLoadError.status`: the status of the response the loader got,
+ * or `undefined` when there was no response (the loader only sets it where one
+ * existed — see `fetchManifest`). THAT is the split, not a status range: "did a
+ * server answer us?" is the only question whose answer we actually know, and a
+ * 403 from a misconfigured edge is no more the user's connection than a 500 is.
+ */
+export function stemLoadMessage(code: StemLoadErrorCode, status?: number): string {
+  if (code === 'MANIFEST_FAILED') {
+    return typeof status === 'number' ? MANIFEST_SERVER_ERROR_MESSAGE : MANIFEST_UNREACHABLE_MESSAGE;
+  }
   return LOAD_MESSAGES[code] ?? GENERIC_LOAD_MESSAGE;
+}
+
+/**
+ * What to tell the user when a load RETURNED no playable stem. One reason, one
+ * sentence; `null` means "the calm Story 6.4 fallback, not an error".
+ */
+export function zeroSourceNotice(
+  reason: ZeroSourceReason,
+): { readonly message: string; readonly retryable: boolean } | null {
+  switch (reason) {
+    case 'ENCODE_FAILED':
+      return { message: ENCODE_FAILED_MESSAGE, retryable: false };
+    case 'FETCH_NETWORK':
+      return { message: FETCH_NETWORK_MESSAGE, retryable: true };
+    case 'FETCH_HTTP':
+      return { message: FETCH_HTTP_MESSAGE, retryable: true };
+    case 'FETCH_BODY':
+      return { message: FETCH_BODY_MESSAGE, retryable: true };
+    default:
+      return null;
+  }
 }
 
 /** Title case for prose. Matches Mixer's `stemLabel`, duplicated rather than imported
@@ -188,7 +280,7 @@ export type Phase =
   | { readonly kind: 'loading' }
   /** Story 6.4 — fall back to loops; NOT an error. */
   | { readonly kind: 'no-stems' }
-  | { readonly kind: 'load-error'; readonly message: string }
+  | { readonly kind: 'load-error'; readonly message: string; readonly retryable?: boolean }
   | { readonly kind: 'ready' };
 
 /**
@@ -274,6 +366,8 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const [snapshot, setSnapshot] = useState<EngineSnapshot>(IDLE_SNAPSHOT);
   const engineRef = useRef<PlayEngine | null>(null);
+  // Bumped by "Try again"; re-runs the load effect below.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!enabled) {
@@ -299,12 +393,22 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
         const loaded = await loadStems(jobId, { signal: controller.signal });
         if (cancelled) return;
         if (loaded.sources.length === 0) {
-          // Story 6.4. `loadStems` reports "no stems" the same way for a
-          // pre-V3-J2 job (the route answers 200 with `state: 'unavailable'`)
-          // and for a job whose encoder failed. Both are "no playable audio",
-          // and the brief is explicit that this is the FALLBACK trigger, not
-          // an error: show the loops, say one calm sentence, and stop.
-          setPhase({ kind: 'no-stems' });
+          // No playable stem, and no thrown error. The reasons are NOT the same
+          // and used to be collapsed into one sentence ("processed before
+          // play-along audio was kept"), false for a fresh job: see
+          // `zeroSourceReason` for the five of them.
+          const reason = zeroSourceReason(loaded);
+          const notice = zeroSourceNotice(reason);
+          if (notice === null) {
+            // Story 6.4: nothing stored. The brief is explicit that this is the
+            // FALLBACK trigger, not an error: show the loops and stop.
+            setPhase({ kind: 'no-stems' });
+            return;
+          }
+          if (reason === 'FETCH_NETWORK' || reason === 'FETCH_HTTP' || reason === 'FETCH_BODY') {
+            reportStemFetchFailure(reason, loaded.stemFailures);
+          }
+          setPhase({ kind: 'load-error', message: notice.message, retryable: notice.retryable });
           return;
         }
         // `LoadedStems.sources` is `readonly StemSource[]`; `PlayEngine.load`
@@ -318,10 +422,14 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
         if (cancelled) return;
         if (e instanceof StemLoadError) {
           if (e.code === 'ABORTED') return;
-          setPhase({ kind: 'load-error', message: stemLoadMessage(e.code) });
+          setPhase({
+            kind: 'load-error',
+            message: stemLoadMessage(e.code, e.status),
+            retryable: RETRYABLE_CODES.has(e.code),
+          });
           return;
         }
-        setPhase({ kind: 'load-error', message: GENERIC_LOAD_MESSAGE });
+        setPhase({ kind: 'load-error', message: GENERIC_LOAD_MESSAGE, retryable: true });
       }
     })();
 
@@ -333,7 +441,7 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
       engineRef.current = null;
       setSnapshot(IDLE_SNAPSHOT);
     };
-  }, [enabled, jobId]);
+  }, [enabled, jobId, attempt]);
 
   // Callbacks go through the ref, so they are referentially stable for the
   // lifetime of the component. Mixer's `Channel` memo and Transport's latest-ref
@@ -346,6 +454,7 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
   const onMute = useCallback((stem: StemName, muted: boolean) => engineRef.current?.setMute(stem, muted), []);
   const onSolo = useCallback((stem: StemName, soloed: boolean) => engineRef.current?.setSolo(stem, soloed), []);
   const onLoop = useCallback((region: LoopRegion | null) => engineRef.current?.setLoop(region), []);
+  const onRetry = useCallback(() => setAttempt((n) => n + 1), []);
 
   const sections = useMemo(
     () => deriveSections(loops ?? null, { durationSec: snapshot.durationSec }),
@@ -365,6 +474,7 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
       onMute={onMute}
       onSolo={onSolo}
       onLoop={onLoop}
+      onRetry={onRetry}
     />
   );
 }
@@ -381,6 +491,8 @@ export interface PlayerViewProps {
   readonly onMute: (stem: StemName, muted: boolean) => void;
   readonly onSolo: (stem: StemName, soloed: boolean) => void;
   readonly onLoop: (region: LoopRegion | null) => void;
+  /** Offered only on a `load-error` the loader marked retryable. */
+  readonly onRetry?: () => void;
 }
 
 /**
@@ -406,6 +518,7 @@ export function PlayerView({
   onMute,
   onSolo,
   onLoop,
+  onRetry,
 }: PlayerViewProps) {
   const engineError = snapshot.error;
   // Derived, never re-stated: see `isPlayable`. Re-inlining this predicate is
@@ -460,6 +573,12 @@ export function PlayerView({
         >
           {banner.text}
         </p>
+      ) : null}
+
+      {phase.kind === 'load-error' && phase.retryable && onRetry ? (
+        <button type="button" className={styles.retry} onClick={onRetry} data-testid="player-retry">
+          Try again
+        </button>
       ) : null}
 
       {playable ? (

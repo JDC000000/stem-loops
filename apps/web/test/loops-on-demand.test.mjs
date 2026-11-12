@@ -114,6 +114,46 @@ test('sections.ts reads NONE of the columns the on-demand split defers', async (
 
 const JOB_ROUTE = join(WEB, 'src/app/api/jobs/[id]/route.ts');
 
+/**
+ * The loops mock EXECUTES the query's WHERE clause instead of ignoring it.
+ *
+ * It used to return the configured rows for any text containing 'FROM loops',
+ * so it could not tell a filtering route from a non-filtering one. Adding
+ * `AND cut_at IS NOT NULL` to the route's loops SELECT therefore left the whole
+ * web suite byte-identically green (1266/1246/0/20) while the play-along player
+ * lost every section region: a fresh job's rows are ALL uncut, so the filter
+ * returns nothing and `deriveSections` gets an empty array.
+ *
+ * Why this is read off the WHERE clause and not the whole statement: `cut_at` is
+ * a legitimate member of the SELECT list — the route needs the column in order
+ * to decide about signed URLs — so "the query mentions cut_at" is true of the
+ * CORRECT route and cannot be the signal. Only the text after the first WHERE is
+ * considered.
+ *
+ * And why this is not the fragment-assertion trap in another costume: nothing
+ * here asserts on SQL text. This function only decides what a fake database
+ * hands back; the gates below then assert on the rows the route returns and on
+ * the regions the real `deriveSections` derives from them. A comment or a
+ * rephrasing cannot satisfy that, because only an actually-unfiltered row set
+ * produces the regions. The default is also loud, not permissive: a `cut_at`
+ * predicate shape this mock does not model THROWS, so an unmodelled filter is a
+ * red test rather than a silent pass.
+ */
+export function loopsMatching(sql, rows) {
+  const m = /\bWHERE\b([\s\S]*)$/i.exec(String(sql));
+  const where = (m ? m[1] : '').replace(/\s+/g, ' ');
+  if (!/cut_at/i.test(where)) return rows;
+  const isCut = (r) => r.cut_at !== null && r.cut_at !== undefined;
+  if (/cut_at IS NOT NULL/i.test(where)) return rows.filter(isCut);
+  if (/cut_at IS NULL/i.test(where)) return rows.filter((r) => !isCut(r));
+  throw new Error(`the loops mock cannot honour this cut_at predicate: ${where.trim()}`);
+}
+// Reached from inside the generated mock module, which cannot see this scope.
+// Kept out of the generated source on purpose: a regex written inside a template
+// literal has its `\s` and `\b` eaten as string escapes before it is ever a
+// regex, which is its own silent-failure story.
+globalThis.__loopsMatching = loopsMatching;
+
 async function loadJobRoute(loops) {
   globalThis.__minted = [];
   let js = toJs(readFileSync(JOB_ROUTE, 'utf8'));
@@ -126,7 +166,10 @@ async function loadJobRoute(loops) {
           const t = String(text);
           if (t.includes('FROM jobs')) return { rows: [{ id: 'j', expires_at: '2099-01-01T00:00:00Z', bpm: 120, musical_key: 'C major' }], rowCount: 1 };
           if (t.includes('FROM job_events')) return { rows: [], rowCount: 0 };
-          if (t.includes('FROM loops')) return { rows: loops, rowCount: loops.length };
+          if (t.includes('FROM loops')) {
+            const rows = globalThis.__loopsMatching(t, loops);
+            return { rows, rowCount: rows.length };
+          }
           return { rows: [], rowCount: 0 };
         } };
       `)}'`,
@@ -178,9 +221,46 @@ test('GET /api/jobs/:id mints a signed URL for cut rows and NOT for uncut ones',
 });
 
 test('GET /api/jobs/:id still returns every row, cut or not — the player needs them all', async () => {
+  // This bites now that the db mock executes the WHERE clause (`loopsMatching`
+  // above). Before that it could not: the mock returned both rows whatever the
+  // route asked for, so a route that filtered on `cut_at` passed here.
   const { GET } = await loadJobRoute([loopRow('a', false), loopRow('b', false)]);
   const res = await GET({}, { params: { id: '11111111-1111-4111-8111-111111111111' } });
   assert.equal(res.body.loops.length, 2, 'uncut rows must not be filtered out of the response');
+  assert.deepEqual(globalThis.__minted, []);
+});
+
+test('the rows GET /api/jobs/:id hands back still yield EVERY section region', async () => {
+  // The guarantee at the level where the row set is actually chosen. It is well
+  // defended one level down — a mutant inside `sections.ts` is killed by 34
+  // tests — and the route's SELECT is what decides which rows `deriveSections`
+  // ever sees, so a filter there loses the player's regions without any gate in
+  // `sections.ts` noticing.
+  //
+  // 18 rows, 6 stems x 3 sections, EVERY ONE UNCUT: exactly what a freshly
+  // finished job has after 033, when nobody has asked for the loops yet.
+  const fresh = rowsFor({ cut: false });
+  const { GET } = await loadJobRoute(fresh);
+  const res = await GET({}, { params: { id: '11111111-1111-4111-8111-111111111111' } });
+
+  assert.equal(res.status, 200);
+
+  // The REAL deriveSections over the REAL response, not a restatement of the
+  // route's SQL. Expectations are hand-written, not recomputed. Asserted FIRST
+  // so that a route which drops rows fails as the user-visible loss it is —
+  // sections missing from the player — rather than as a row-count mismatch.
+  const { deriveSections } = await loadSections();
+  assert.deepEqual(
+    deriveSections(res.body.loops, { durationSec: 40 }),
+    [
+      { startSec: 0, endSec: 8, label: 'intro' },
+      { startSec: 8, endSec: 24, label: 'verse' },
+      { startSec: 24, endSec: 40, label: 'chorus' },
+    ],
+    'the play-along player lost section regions: GET /api/jobs/:id is not handing back every loop row',
+  );
+  assert.equal(res.body.loops.length, 18, 'the player must receive all 18 uncut rows');
+  // Nothing was signed, so the regions came from genuinely uncut rows.
   assert.deepEqual(globalThis.__minted, []);
 });
 

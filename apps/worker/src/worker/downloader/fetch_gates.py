@@ -27,6 +27,10 @@ from ..errors import DownloadBlockedError
 from ..logger import log_structured
 
 KILL_SWITCH_TTL_S = 30.0
+# Per-statement cap on the gate read. connect_timeout is 3 s; 2 s keeps connect+query under
+# ~5 s worst case while a read of a handful of rows takes milliseconds. Without it a lock
+# on the table blocks the read indefinitely (8.0 s measured by QA).
+KILL_SWITCH_STATEMENT_TIMEOUT_MS = 2000
 SCOPE_FETCH_GLOBAL = "fetch_global"
 SCOPE_FETCH_YOUTUBE = "fetch_youtube"
 SCOPE_FETCH_COBALT = "fetch_cobalt"
@@ -84,36 +88,84 @@ def reset_cache() -> None:
         _cache_at = None
 
 
+def _read_switches() -> list[tuple[str, bool]]:
+    """One bounded read of the table. Runs WITHOUT `_lock` held (see is_engaged)."""
+    with _connect() as conn:
+        # SET LOCAL (not a startup `options=` parameter, which a transaction-mode pooler
+        # such as Supavisor/pgbouncer can reject): it applies to this transaction only.
+        conn.execute(f"SET LOCAL statement_timeout = {int(KILL_SWITCH_STATEMENT_TIMEOUT_MS)}")
+        return conn.execute("SELECT scope, enabled FROM kill_switches").fetchall()
+
+
+def _needs_refresh(now: float) -> bool:
+    return _cache_at is None or now - _cache_at >= KILL_SWITCH_TTL_S
+
+
 def _refresh_if_stale() -> None:
+    """Refresh the cache if older than the TTL. Must be called WITHOUT `_lock` held: the
+    database call is made unlocked so a slow read cannot serialise every caller."""
     global _cache_at
     now = time.monotonic()
-    if _cache_at is not None and now - _cache_at < KILL_SWITCH_TTL_S:
-        return
+    with _lock:
+        if not _needs_refresh(now):
+            return
     try:
-        with _connect() as conn:
-            rows = conn.execute("SELECT scope, enabled FROM kill_switches").fetchall()
+        rows = _read_switches()
+    except Exception as exc:  # noqa: BLE001 — a timeout (QueryCanceled) lands here too
+        log_structured("WARN", "kill_switch_read_failed", error=str(exc)[:120])
+        # KNOWN WEAKNESS - deliberately NOT fixed here: after a failed read we keep serving the
+        # cached value INDEFINITELY, so a role that has lost SELECT freezes the switches at
+        # whatever they last were. Bounding the cache's age does NOT fix that. is_engaged()
+        # falls back to `scope in _DEFAULT_ENGAGED`, so dropping the cache turns
+        # fetch_global/fetch_youtube into "not engaged": a stale NOT-engaged value is
+        # unchanged, and a stale ENGAGED value (a brake an operator pulled on purpose) would be
+        # RELEASED. The real fix is for a missing/unreadable row to count as ENGAGED for these
+        # scopes (fail closed). That needs a migration seeding the rows and carries a
+        # deploy-ordering hazard: the migration must land BEFORE the worker deploys or every
+        # link job stops (this project already had a ~2 h outage from exactly that coupling).
+        # (fetch_cobalt is the one scope where expiry would only ever TIGHTEN: a stale released
+        # cobalt would revert to engaged. Not worth a scope-specific ceiling on its own.)
+        # Out of scope for this change; see kill_switch_table_empty below for the diagnostic.
+        return
+    if not rows:
+        # A successful read of ZERO rows. Production's table has a fetch_cobalt row, so
+        # this is not the normal state: it can mean the table was emptied, OR that this
+        # role cannot see the rows (a missing grant under RLS, a dropped policy, or a
+        # shadowing schema), in which case a real engaged switch is invisible.
+        log_structured(
+            "ERROR",
+            "kill_switch_table_empty",
+            detail="kill_switches returned 0 rows; may be empty OR unreadable by this "
+            "role (permissions/RLS/search_path) - engaged switches may be invisible",
+        )
+    with _lock:
         _cache.clear()
         _cache.update({scope: bool(enabled) for scope, enabled in rows})
         _cache_at = now
-    except Exception as exc:  # noqa: BLE001 — keep serving the last known state
-        log_structured("WARN", "kill_switch_read_failed", error=str(exc)[:120])
-        # Do not stamp _cache_at on a failure with no data, so the next call retries; with a
-        # stale copy we keep it and also retry on the next call (cheap: 3 s connect timeout).
 
 
-def is_engaged(scope: str) -> bool:
-    """True if the switch for `scope` is engaged (capability stopped)."""
+def _decide(scope: str) -> bool:
+    """The switch's state from the cache alone (no I/O)."""
     with _lock:
-        _refresh_if_stale()
         if scope in _cache:
             return _cache[scope]
         return scope in _DEFAULT_ENGAGED
 
 
+def is_engaged(scope: str) -> bool:
+    """True if the switch for `scope` is engaged (capability stopped)."""
+    _refresh_if_stale()
+    return _decide(scope)
+
+
 def fetch_paused() -> str | None:
     """Return the engaged YouTube-fetch scope (global first) or None."""
+    # One refresh for the whole call, not one per scope: while reads are failing nothing is
+    # stamped, so a per-scope refresh would pay the failing read (up to the statement timeout)
+    # twice per call.
+    _refresh_if_stale()
     for scope in (SCOPE_FETCH_GLOBAL, SCOPE_FETCH_YOUTUBE):
-        if is_engaged(scope):
+        if _decide(scope):
             return scope
     return None
 

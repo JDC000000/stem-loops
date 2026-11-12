@@ -68,9 +68,11 @@ def start_bounded(server, deadline_sec: float = SERVER_START_DEADLINE_SEC) -> No
 
     moto's `ThreadedMotoServer.start()` binds inside a worker thread and then waits on an
     event that only the success path sets. If the bind raises (port taken, address
-    refused), the thread dies, nothing sets the event, and `start()` waits for ever: with
-    no pytest-timeout and no `timeout-minutes` on the CI job, that is a stuck run, not a
-    red one. Measured on moto 5.2.5 against a port already in use.
+    refused), the thread dies, nothing sets the event, and `start()` waits for ever. There
+    is no pytest-timeout, so this deadline is what turns the hang into a red test at the
+    point of failure; the CI Tests job's `timeout-minutes: 30` (added in this PR) is only
+    the outer bound, and a 30-minute cancel is a worse failure to read than a named one.
+    Measured on moto 5.2.5 against a port already in use.
     """
     t = threading.Thread(target=server.start, daemon=True, name="moto-start")
     t.start()
@@ -275,23 +277,55 @@ def job_footprint(job_id: str, tmp_dir: str) -> dict[str, str]:
 # deleted by `delete_prefix(f"{job_id}/")`.
 CHORDS_SHAPE = "7 play chords   jobs/<id>/play.chords.json"
 
+# The capability PR #214 adds: the list of prefixes the per-job delete walks
+# (`{job_id}/` AND `jobs/{job_id}/`). Its presence is how this module knows the fix is in.
+FIX_PROBE = "job_object_prefixes"
+
+
+def per_job_delete_covers_the_chords_namespace() -> bool:
+    """True once the code under test has PR #214's per-job prefix list (a CAPABILITY probe)."""
+    return hasattr(r2_uploader, FIX_PROBE)
+
 
 def assert_chords_gone_or_xfail(r2: RealR2, shapes: dict[str, str]) -> None:
-    """The ONE place shape 7 is allowed to be missing, and only until PR #214 lands.
+    """Shape 7 must be gone. It may xfail ONLY while the fix that deletes it is absent.
 
     Call it LAST in a test, after shapes 1-6 have been asserted gone with plain `assert`s,
     so everything else the test claims has already been proven by the time it can xfail.
+
+    THE XFAIL IS KEYED ON A CAPABILITY, not on the outcome. `r2_uploader` either has
+    `job_object_prefixes` (PR #214 is in) or it does not:
+
+      * fix absent  -> a surviving chords key is the KNOWN gap: `pytest.xfail`.
+      * fix present -> a surviving chords key is a REGRESSION of that fix: `pytest.fail`.
+        Round 2 keyed the xfail on the outcome alone, so with #214 applied and then
+        regressed (`job_object_prefixes` returning only `(f"{job_id}/",)`) the suite stayed
+        green at 18 passed / 2 xfailed, with a message still saying "until PR #214 lands".
+        That made the xfail a permanent escape hatch.
 
     Why imperative `pytest.xfail()` and not a `@pytest.mark.xfail` on the test: the marker
     swallows EVERY failure in the test body, including a broken harness or a sweep that
     deleted nothing, and reports XFAIL for all of them (measured); non-strict, it also
     reports a silent XPASS under a different mutant. This one can only fire when the
-    chords key is the sole survivor. And it needs no marker to remove: once #214 deletes
-    `jobs/<id>/play.chords.json` the test simply passes, asserting shape 7 for real.
+    chords key is the sole survivor.
+
+    THE PROBE IS COUPLED TO A NAME. If #214 is reworked so that `job_object_prefixes` is
+    renamed, this reads "fix absent" and the xfail returns. The module-level
+    `FIX_PROBE` is the one place to change, and `test_real_r2_harness.py` pins both
+    branches so that neither can rot unseen.
     """
     key = shapes[CHORDS_SHAPE]
-    if key in r2.all_keys():
-        pytest.xfail(
-            f"{key!r} survived the per-job delete: `delete_prefix(f'{{job_id}}/')` does not "
-            "reach the `jobs/` namespace until PR #214 lands. Shapes 1-6 were asserted gone."
+    if key not in r2.all_keys():
+        return
+    if per_job_delete_covers_the_chords_namespace():
+        pytest.fail(
+            f"{key!r} survived the per-job delete although r2_uploader.{FIX_PROBE} exists, "
+            "i.e. PR #214's fix is in the code under test and it has REGRESSED. Shapes 1-6 "
+            "were asserted gone.",
+            pytrace=False,
         )
+    pytest.xfail(
+        f"{key!r} survived the per-job delete: r2_uploader has no `{FIX_PROBE}`, so "
+        "`delete_prefix(f'{job_id}/')` does not reach the `jobs/` namespace (PR #214 adds "
+        "it). Shapes 1-6 were asserted gone."
+    )

@@ -21,7 +21,12 @@ more than it did:
     with the literal 900 (and the env override with another literal), so the value cannot
     drift with the code under test.
   * The CHAIN test is the only one that leaves `consumer.sweep_expired` ALONE. It is the
-    one that fails when the binding is not the real sweep.
+    one that fails when the binding is not the real sweep. It ALSO leaves
+    `cleanup.DATABASE_URL` alone: the sweep connects with whatever `cleanup.py` read from
+    the `DATABASE_URL` environment variable, so reading a different variable name there
+    makes every sweep log `retention_sweep_error` and delete nothing (round 2 patched that
+    attribute and could not see it). What the chain test DOES stub is listed in its own
+    docstring, and it is the whole list.
 
 The cadence tests need no database and no S3, so they also run in the no-DB baseline that
 silently skips ~170 other tests. The chain test needs both.
@@ -33,6 +38,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import time
 import types
 import uuid
 
@@ -60,7 +66,13 @@ class _Clock:
 
 
 def _drive_poll_loop(
-    monkeypatch, *, run_for: float, sweep=None, claim_seconds: float | None = None, claim_cap=20000
+    monkeypatch,
+    *,
+    run_for: float,
+    sweep=None,
+    claim_seconds: float | None = None,
+    claim_cap=20000,
+    real_tmp_sweep: bool = False,
 ) -> _Clock:
     """Run the real `poll_loop` on a fake clock until `run_for` fake seconds have passed.
 
@@ -68,13 +80,17 @@ def _drive_poll_loop(
     returning one (so a stub can timestamp its calls). With `sweep=None` NOTHING is
     installed and `consumer.sweep_expired` stays exactly what `consumer.py` bound it to.
 
+    `real_tmp_sweep=True` leaves `tmpdirs.sweep_stale` as production has it (the default
+    stubs it to a no-op, which also hides any change to who calls it).
+
     `claim_seconds=None` models an idle worker (nothing to claim, so it sleeps).
     `claim_seconds=N` models a BUSY one: every claim succeeds and takes N fake seconds, so
     the loop never sleeps.
 
-    Real: `poll_loop`, `_safe_sweep`, the interval arithmetic. Stubbed: the clock, the
-    sleep, `tmpdirs.sweep_stale` (a module shared with `cleanup`, so it is inert there too),
-    the two reapers and the two claimers.
+    Real: `poll_loop`, `_safe_sweep`, the interval arithmetic. Stubbed: `consumer.time` (the
+    clock), `asyncio.sleep`, `tmpdirs.sweep_stale` (a module shared with `cleanup`, so it is
+    inert there too, unless `real_tmp_sweep`), the two reapers and the two claimers -- and
+    `consumer.sweep_expired` itself whenever `sweep` is given.
     """
     clock = _Clock()
     # `consumer.time` is the module; give consumer a stub with only the clock it reads.
@@ -83,7 +99,8 @@ def _drive_poll_loop(
         if not asyncio.iscoroutinefunction(sweep):
             sweep = sweep(clock)
         monkeypatch.setattr(consumer, "sweep_expired", sweep)
-    monkeypatch.setattr(consumer.tmpdirs, "sweep_stale", lambda: 0)
+    if not real_tmp_sweep:
+        monkeypatch.setattr(consumer.tmpdirs, "sweep_stale", lambda: 0)
 
     async def reap_jobs():
         return 0
@@ -125,6 +142,31 @@ def _drive_poll_loop(
     with pytest.raises(_Stop):
         asyncio.run(consumer.poll_loop())
     return clock
+
+
+def test_poll_loop_removes_stale_scratch_dirs_at_startup_itself(monkeypatch, tmp_path):
+    """`poll_loop`'s OWN startup call to `tmpdirs.sweep_stale` (user audio left on local disk
+    by a crashed job), not the one inside `sweep_expired`, which is stubbed out here so it
+    cannot mask this one. Every other test in this file stubs `sweep_stale`, so deleting
+    that call from `poll_loop` left the whole suite green (measured, round 3).
+
+    Stubbed: as `_drive_poll_loop` lists, plus `consumer.sweep_expired` (a recorder) and
+    `tmpdirs.WORK_ROOT` (pointed at a temp dir). `tmpdirs.sweep_stale` is real.
+    """
+    root = tmp_path / "work"
+    stale, fresh = root / "sl_crashed", root / "sl_running"
+    for d in (stale, fresh):
+        d.mkdir(parents=True)
+        (d / "audio.wav").write_bytes(b"x")
+    long_ago = time.time() - 25 * 3600
+    os.utime(stale, (long_ago, long_ago))
+    monkeypatch.setattr(consumer.tmpdirs, "WORK_ROOT", str(root))
+    sweeps: list[float] = []
+
+    _drive_poll_loop(monkeypatch, run_for=10, sweep=_recording_sweep(sweeps), real_tmp_sweep=True)
+
+    assert not stale.exists(), "poll_loop did not sweep a 25 h-old scratch dir at startup"
+    assert fresh.exists(), "poll_loop swept a scratch dir of a job that may still be running"
 
 
 def _recording_sweep(sweeps: list[float]):
@@ -246,12 +288,26 @@ def test_poll_loop_startup_sweep_removes_an_expired_jobs_objects_from_real_r2(
     """The real `poll_loop` -> the real `_safe_sweep` -> WHATEVER `consumer.py` bound
     `sweep_expired` to -> the real R2 deleters, against a real S3 server and Postgres.
 
-    `consumer.sweep_expired` is NOT patched here (`sweep=None`), so this fails if
-    `consumer.py` binds that name to anything that does not sweep -- which no cadence test
-    can see. What IS stubbed: the clock and sleep, the reapers and claimers, and
-    `tmpdirs.sweep_stale`. Objects are 1 h old so the age-based orphan pass is inert and
-    only the per-job delete can remove them. Shape 7 (chords) is excluded here and
-    asserted by the tests in `test_retention_real_r2.py`.
+    WHAT IS STUBBED, exhaustively (everything else is the production code path):
+      * `consumer.time` (replaced by a fake monotonic clock) and `asyncio.sleep` (a fake
+        that advances it; `consumer.asyncio` IS the asyncio module, so this one is
+        process-wide for the test) -- so `poll_loop` runs in zero real time;
+      * `consumer.reap_stale_jobs`, `consumer.reap_stale_requests`, `consumer.claim_and_run`
+        and `consumer.claim_and_cut` -- there is no queue to claim from;
+      * `tmpdirs.sweep_stale`, replaced by a no-op. That module is shared, so it is inert
+        inside `cleanup.sweep_expired` too: nothing here tests the local scratch-dir pass.
+      * the process environment: `RealR2` sets the `R2_*` variables to a loopback moto
+        server (the product reads them per call), and `DATABASE_URL` is whatever the test
+        run was started with.
+    NOT stubbed: `consumer.sweep_expired` (`sweep=None`), `cleanup.DATABASE_URL` (the
+    sweep connects with the value `cleanup.py` itself read from the environment), the
+    per-job delete, `r2_uploader`'s boto3 helpers, the SQL.
+
+    So it fails if `consumer.py` binds `sweep_expired` to anything that does not sweep
+    (which no cadence test can see) and if `cleanup.py` stops reading `DATABASE_URL`.
+    Objects are 1 h old so the age-based orphan pass is inert and only the per-job delete
+    can remove them. Shape 7 (chords) is excluded here and asserted by the tests in
+    `test_retention_real_r2.py`.
     """
     import psycopg
 
@@ -259,8 +315,7 @@ def test_poll_loop_startup_sweep_removes_an_expired_jobs_objects_from_real_r2(
     from worker import cleanup
 
     db = require_database()
-    monkeypatch.setattr(cleanup, "DATABASE_URL", db)
-    cleanup._failed.clear()
+    cleanup._failed.clear()  # module state, not a stub: no earlier test's backoff may skip our job
     job = str(uuid.uuid4())
     with psycopg.connect(db) as c:
         c.execute(

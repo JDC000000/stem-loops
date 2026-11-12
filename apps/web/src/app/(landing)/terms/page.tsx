@@ -41,8 +41,8 @@ export default function TermsPage() {
             <h2>What it can and cannot do</h2>
             <ul>
               <li>
-                Tracks up to {MAX_TRACK_MIN}&nbsp;minutes. Longer tracks are not accepted: the chord track and the
-                player both stop there, so a longer one is refused before separation runs.
+                Tracks up to {MAX_TRACK_MIN}&nbsp;minutes. Longer tracks are not supported: the chord track and the
+                player both stop there.
               </li>
               <li>Chrome, on a desktop or laptop. Other browsers and phones are not supported yet.</li>
               <li>

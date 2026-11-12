@@ -50,6 +50,7 @@ from .errors import (
     DownloadBlockedError,
     InternalError,
     LinkTooLongError,
+    LinkUnmeasurableError,
     SeparationFailedError,
     StemLoopsError,
     UploadInvalidError,
@@ -244,7 +245,7 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
 
 
 def _enforce_link_duration(job_id: str, path: str) -> None:
-    """Refuse an over-length LINK track, measured on the file we hold, before Replicate.
+    """Refuse an over-length OR unmeasurable LINK track, on the file we hold, before Replicate.
 
     This is the enforcing half of the link path's duration ceiling. The downloader's gate 0c
     reads the length from yt-dlp metadata and saves the whole download when it can, but it
@@ -254,17 +255,22 @@ def _enforce_link_duration(job_id: str, path: str) -> None:
     and ``_probe_duration_sec()`` -- so a link and an upload cannot end up judged by
     different numbers or different measuring code.
 
-    MEASURABILITY: yt-dlp runs with ``--audio-format wav``, so the staged file is a WAV and
-    ``_probe_duration_sec`` reads it through soundfile, a pip dependency that carries its own
-    libsndfile. No ffprobe binary is involved, which matters because CI's only ffmpeg comes
-    from imageio-ffmpeg and that wheel ships ffmpeg alone. An unmeasurable file logs and
-    proceeds, matching the upload path's own stance on audio it cannot measure.
+    FAILS CLOSED. If the staged file cannot be measured, this raises ``LinkUnmeasurableError``
+    rather than proceeding. That is NOT the upload path's stance, although an earlier version
+    of this docstring said it was: the upload path's fail-open on an unmeasurable file is
+    bounded by ``ffmpeg -t cap+1`` (see ``_prepare_upload_source``), so whatever it hands on
+    is at most cap+1 seconds long. Nothing bounds a link's file. yt-dlp's output is
+    unbounded, so "could not measure" would otherwise mean "billed for any length". We
+    produced this WAV ourselves (``--audio-format wav``) and soundfile reads every WAV, so
+    refusing an unreadable one costs no legitimate job.
     """
     max_sec = _max_upload_duration_sec()
     measured = _probe_duration_sec(path)
     if measured is None:
-        log_structured("WARN", "link_duration_unmeasured", job_id=job_id, max_sec=max_sec)
-        return
+        log_structured("WARN", "link_rejected_unmeasurable", job_id=job_id, max_sec=max_sec)
+        raise LinkUnmeasurableError(
+            f"link duration could not be measured against MAX_UPLOAD_DURATION_SEC={max_sec:g}"
+        )
     if measured > max_sec:
         log_structured(
             "INFO",
@@ -1333,17 +1339,11 @@ async def _run_pipeline(job_id: str) -> None:
                 audio_src = await asyncio.to_thread(upload_input, job_id, dl_result)
             else:
                 # Cobalt returns a public tunnel URL and no local bytes, so there is nothing
-                # here to measure; gate 0c's metadata reading is the only ceiling that leg
-                # gets, and that gate fails open. So on THIS leg an over-length link whose
-                # metadata could not be read still buys a full billed separation.
-                #
-                # How often that happens is NOT knowable from this file. Cobalt is reached
-                # only after yt-dlp exhausts its attempts and `fetch_gates.cobalt_allowed()`
-                # returns True, and while SCOPE_FETCH_COBALT is in `_DEFAULT_ENGAGED` -- i.e.
-                # off unless opted in -- `is_engaged` consults a DB-backed cache first, so a
-                # row in the kill-switch table releases it with no code change and nothing
-                # here can see whether production holds such a row. Treat the width of this
-                # residue as unverified rather than narrow.
+                # here to measure. The ceiling for this leg is therefore enforced UPSTREAM, in
+                # download_audio: it only tries Cobalt when gate 0c READ the video's length
+                # and found it at or under the cap (and it raised before here if over). An
+                # unreadable length never reaches this arm. If a future change lets an
+                # unverified length through, this line is the only trace it leaves.
                 log_structured("WARN", "link_duration_unenforced_source", job_id=job_id)
                 audio_src = dl_result
         await emit_event(job_id, "downloading", "completed", pct=100)

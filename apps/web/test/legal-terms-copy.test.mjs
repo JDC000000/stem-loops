@@ -113,16 +113,36 @@ test('terms: the duration figure is the one ceiling, in all four places that car
   );
 });
 
-test('terms: "not accepted" — every input path reaches its duration gate before the first billed call', async () => {
-  // The claim IS asserted as a fragment here — and that is not the mistake this test
-  // replaced. The mistake was asserting it ALONE, with the reason it was true living only in
-  // a comment. Asserted beside the code facts below, the two can no longer drift: delete the
-  // enforcement and this test fails on the code, not on the wording, so the sentence can
-  // never again be pinned in place while the thing it describes is gone. Changing the policy
-  // is still possible, it just has to come through here deliberately rather than by a page
-  // edit nothing checks.
-  assertSays(assert, await renderPage(TERMS), 'Longer tracks are not accepted', 'terms');
+test('terms: the sentence states what holds at any cap, and does not promise a refusal', async () => {
+  const page = await renderPage(TERMS);
+  // "supported", not "accepted", and no "refused before separation runs". An earlier cut said
+  // the latter, unconditionally, and it was false three ways: (a) for a link whose length
+  // could not be read the run still reached Replicate (fixed in the worker since, but the
+  // sentence was written before it was); (b) for ANY track between 5 and 10 minutes if the
+  // worker's cap is the old 600, because the figure on this page is the WEB constant while
+  // the worker reads MAX_UPLOAD_DURATION_SEC from the Fly environment; (c) it describes a
+  // refusal at "separation" when the job has already been accepted, 201, and a signed-in
+  // free user's trial song consumed. Nothing in this suite can read Fly, so the page says
+  // only what the player and the chord track guarantee on their own.
+  assertSays(assert, page, 'Longer tracks are not supported', 'terms');
+  for (const text of [page.textSpaced, page.textTight]) {
+    assert.doesNotMatch(
+      text,
+      /refused\s*before\s*separation|longer\s*tracks\s*are\s*not\s*accepted/i,
+      'a claim about WHEN the worker refuses depends on a Fly env var no test can read',
+    );
+  }
+});
 
+test('terms: the worker source places each input path\'s duration gate before the first billed call (static)', async () => {
+  // WHAT THIS CHECKS, SO IT IS NOT READ AS MORE: that, in comment-stripped worker source, the
+  // names of the gates occur before `submit_or_reattach` in `_run_pipeline`, and that the
+  // Cobalt leg of the downloader is conditioned on a verified length. It is an ordering fact
+  // about SOURCE TEXT. It cannot see a gate that fails open, and an earlier version of this
+  // test, titled "every input path reaches its duration gate", stayed green while two paths
+  // (unknown metadata plus an unmeasurable file; unknown metadata plus Cobalt) reached
+  // Replicate with no gate at all. The behaviour is asserted where it can run, against the
+  // real chain and a real database, in apps/worker/tests/test_link_money_path_e2e.py.
   const pipeline = workerCode('pipeline.py');
 
   // `submit_or_reattach` is the first call on this path that spends money. Everything that
@@ -142,16 +162,21 @@ test('terms: "not accepted" — every input path reaches its duration gate befor
   );
   assert.match(
     beforeSpend, /_enforce_link_duration/,
-    'the LINK path no longer passes a duration gate before Replicate is called, so ' +
-      '"Longer tracks are not accepted" is false again for a pasted link',
+    'the LINK path no longer passes a duration gate before Replicate is called',
+  );
+
+  // The Cobalt leg returns a URL and no bytes, so it has no file to measure afterwards; it is
+  // only safe behind a length that gate 0c actually READ.
+  const downloader = workerCode('downloader/__init__.py');
+  assert.match(
+    downloader, /not\s+cobalt_unverifiable\s+and\s+fetch_gates\.cobalt_allowed\(\)/,
+    'the Cobalt leg is no longer conditioned on a verified length',
   );
 
   // Both paths must be judged by the SAME accessor. One caller is the state that made the
   // sentence false. FOUR matches: the definition, plus THREE call sites —
   // _prepare_upload_source, _enforce_link_duration, and the cap handed to download_audio
-  // that arms gate 0c. An earlier cut of this comment said "two call sites" and set the
-  // threshold at 3; that one unit of slack was exactly enough for a reviewer to delete the
-  // download_audio argument, leave gate 0c inert in production, and stay green.
+  // that arms gate 0c.
   const uses = pipeline.match(/_max_upload_duration_sec\(\)/g) ?? [];
   assert.ok(
     uses.length >= 4,
@@ -159,10 +184,9 @@ test('terms: "not accepted" — every input path reaches its duration gate befor
       'has lost its cap, gate 0c has been left unarmed, or a second link-only ceiling exists',
   );
 
-  assert.ok(
-    existsSync(join(WORKER, 'tests/test_link_duration_cap.py')),
-    'the test that actually exercises the link refusal has been deleted',
-  );
+  for (const f of ['test_link_duration_cap.py', 'test_link_money_path_e2e.py']) {
+    assert.ok(existsSync(join(WORKER, 'tests', f)), `${f}, which exercises the link refusal, has been deleted`);
+  }
 });
 
 test('terms and the landing state the same thing about length', async () => {

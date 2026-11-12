@@ -94,10 +94,12 @@ def download_audio(
     # loop, rather than inside ytdlp_client, for two reasons: it then covers the Cobalt leg
     # as well as the yt-dlp leg, and it runs once instead of once per retry attempt.
     #
-    # It is a SAVER, not the enforcement: probe_duration_sec returns None on any hiccup and
-    # an unknown length proceeds to the real fetch. What enforces the ceiling is
-    # pipeline._enforce_link_duration, which measures the file we end up holding. Same
-    # two-layer shape the upload path already uses (header reading, then the decoded WAV).
+    # An unreadable length (``declared is None``) lets the yt-dlp leg proceed: that leg
+    # downloads a file we then MEASURE (pipeline._enforce_link_duration, which fails closed).
+    # It does NOT let the Cobalt leg proceed: Cobalt hands back a URL and no bytes, so there
+    # is nothing to measure afterwards and this reading is the only ceiling that leg can have.
+    # Cobalt is therefore tried only when ``declared`` is a number at or under the cap.
+    declared: float | None = None
     if max_duration_sec is not None:
         declared = ytdlp_client.probe_duration_sec(fetch_url)
         if declared is not None and declared > max_duration_sec:
@@ -161,7 +163,10 @@ def download_audio(
         return path, "ytdlp"
 
     # 2b. Cobalt: only behind kill-switch scope fetch_cobalt (default engaged = skipped).
-    if fetch_gates.cobalt_allowed():
+    cobalt_unverifiable = max_duration_sec is not None and declared is None
+    if cobalt_unverifiable:
+        log_structured("WARN", "cobalt_skipped_length_unknown", job_id=job_id)
+    if not cobalt_unverifiable and fetch_gates.cobalt_allowed():
         attempt_no += 1
         t0 = time.monotonic()
         try:

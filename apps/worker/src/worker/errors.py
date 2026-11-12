@@ -165,6 +165,20 @@ class InternalError(StemLoopsError):
     user_message = "Something went wrong on our end. We've logged it — please try again."
 
 
+class LinkUnmeasurableError(InternalError):
+    """A fetched link track whose length could not be read, so the duration cap cannot be applied.
+
+    Same ``error_code`` as its parent (no taxonomy expansion; the FetchPausedError precedent).
+    Raised by ``pipeline._enforce_link_duration`` BEFORE the file is staged or handed to
+    Replicate: a length we cannot read is a length we cannot show to be under the ceiling.
+    """
+
+    user_message = (
+        "We couldn't check how long that video is, so we didn't process it. "
+        "Try another link, or upload the audio file instead."
+    )
+
+
 _ALL_ERROR_CLASSES = [
     DownloadBlockedError,
     DownloadTimeoutError,

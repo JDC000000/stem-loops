@@ -3,9 +3,15 @@ import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { mintSignedUrl } from '@/lib/r2';
 import { presignTtlSec } from '@/lib/retention';
+import { mayReadJob } from '@/lib/job-access';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// OWNERSHIP: a job with a user_id is readable only by that user; an anonymous job
+// (user_id NULL) is readable by anyone holding its id. See lib/job-access.ts. A denied
+// caller gets the same 404 as a missing job. `user_id` is read to decide that and is
+// NEVER copied into the response.
+//
 // GET /api/jobs/:id — status + events + loops, read straight from Postgres.
 // Each loop gets a FRESHLY minted signed URL on every read (PRD §8 anti-goal #4), valid for
 // at most the job's remaining life (24h retention; the worker deletes the objects after
@@ -20,7 +26,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
   }
   try {
     const jobRes = await db.query(
-      `SELECT id, input_kind, youtube_url, upload_r2_key, original_filename, requested_stems,
+      `SELECT user_id, id, input_kind, youtube_url, upload_r2_key, original_filename, requested_stems,
               loop_length_bars, status, error_code, error_message_user, bpm, musical_key,
               created_at, updated_at, expires_at
        FROM jobs WHERE id = $1 AND expires_at > now()`,
@@ -29,7 +35,10 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     if (jobRes.rowCount === 0) {
       return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
     }
-    const job = jobRes.rows[0];
+    const { user_id: ownerId, ...job } = jobRes.rows[0];
+    if (!(await mayReadJob(ownerId))) {
+      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+    }
     const urlTtlSec = presignTtlSec(job.expires_at);
 
     const eventsRes = await db.query(
@@ -68,7 +77,12 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       })
     );
 
-    return NextResponse.json({ ...job, events: eventsRes.rows, loops });
+    // Carries one presigned R2 URL per cut loop and varies by who is signed in, so no
+    // shared cache may keep it and the browser may not write it to disk.
+    return NextResponse.json(
+      { ...job, events: eventsRes.rows, loops },
+      { headers: { 'Cache-Control': 'private, no-store' } },
+    );
   } catch (err) {
     Sentry.captureException(err);
     console.error(`GET /api/jobs/${params.id} error:`, err);

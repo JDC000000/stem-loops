@@ -4,6 +4,7 @@ import { ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { db } from '@/lib/db';
 import { r2 } from '@/lib/r2';
 import { checkStemListRate } from '@/lib/admission';
+import { mayReadJob } from '@/lib/job-access';
 import { clientIpHashOf } from '@/lib/client-ip';
 import { mintStemPlayUrl } from '@/lib/stem-urls';
 import {
@@ -69,8 +70,10 @@ function errLabel(e: unknown): string {
 //     this route that reaches Sentry — see the list-failure catch for where it
 //     surfaces and why its fingerprint is fixed.
 //
-// Deliberately NOT gated on sign-in. Playing along in the browser is the free launch
-// hook; it is the stem DOWNLOAD that requires an account (V3-J9).
+// OWNERSHIP (lib/job-access.ts): a job with a user_id is served to that user only; an
+// anonymous job (user_id NULL, started without an account) is served to anyone holding
+// its id. A denied caller gets the 404 a missing job gets. Anonymous playback stays
+// open because starting a job needs no account; the stem DOWNLOAD requires one (V3-J9).
 //
 // ⚠️ RESIDUE REQUIRING JON'S RECORDED ACCEPTANCE (M-11): as with every other job
 // route, the job UUID is the only credential, and the privacy notice says so. But
@@ -115,13 +118,17 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
     // Same gate as GET /api/jobs/:id and the play-chords route.
     const jobRes = await db.query(
-      `SELECT id::text AS id, status, expires_at FROM jobs WHERE id = $1 AND expires_at > now()`,
+      `SELECT id::text AS id, user_id, status, expires_at FROM jobs WHERE id = $1 AND expires_at > now()`,
       [params.id]
     );
     if (jobRes.rowCount === 0) {
       return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
     }
     const job = jobRes.rows[0];
+    // Ownership BEFORE the status check, so a non-owner cannot learn a job's state.
+    if (!(await mayReadJob(job.user_id))) {
+      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+    }
     if (job.status !== 'done') {
       return NextResponse.json({ error_code: 'NOT_READY', message: 'Job not yet complete' }, { status: 404 });
     }

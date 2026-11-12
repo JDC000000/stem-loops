@@ -184,6 +184,9 @@ async function loadJobRoute(loops) {
       /from ['"]@\/lib\/retention['"]/g,
       `from '${dataUrl(`export const presignTtlSec = () => 900;`)}'`,
     )
+    // Ownership is not what this file tests (test/job-access-routes.test.mjs runs the REAL helper);
+    // here it is stubbed open so this file's own subject stays isolated.
+    .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl(`export const mayReadJob = async () => true;`)}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${dataUrl(`export const captureException = () => {};`)}'`)
     .replace(
       /from ['"]next\/server['"]/g,

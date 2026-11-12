@@ -36,9 +36,51 @@ def _r2():
     )
 
 
-def upload_loop(job_id: str, stem: str, section: str, idx: int, local_path: str) -> str:
-    """Upload a loop WAV and return its deterministic r2_key."""
-    r2_key = f"{job_id}/{stem}/{section}_{idx:04d}.wav"
+# Loop keys.
+#
+# ⚠️ DATA-LOSS BUG THIS FIXES. Until 2026-11-11 the key was
+#     f"{job_id}/{stem}/{section}_{idx:04d}.wav"
+# with NO BAR COUNT in it. `loops` has UNIQUE (job_id, r2_key) and the insert is
+# ON CONFLICT DO NOTHING, so the moment anything cut a SECOND bar length for one
+# job, the 4-bar and the 8-bar loop of the same stem/section/index produced the
+# SAME key: the R2 object was silently overwritten and the row silently dropped.
+# Nothing hit it while every job was cut at exactly one bar length. On-demand
+# cutting makes the key an upsert target (see pipeline.record_loops), so the key
+# must now name everything that distinguishes the bytes it points at.
+#
+# The bar count goes in the FILENAME segment, not as a new path level, and that
+# is deliberate:
+#   * Segment 1 stays the job id. cleanup.py's per-job delete is
+#     `delete_prefix(f"{job_id}/")` and its `_job_id_of()` reads the FIRST path
+#     segment, so retention still sweeps these.
+#   * Segment 2 stays the stem, so the key shape is unchanged for anything that
+#     reads it positionally.
+#   * It cannot be mistaken for a stem artifact: `stem_name_from_*` /
+#     `stemNameFrom` require the full `/_stems/play/` or `/_stems/dl/` marker
+#     and reject a remainder containing `/`.
+#
+# EXISTING PRODUCTION ROWS ARE NOT TOUCHED AND MUST NOT BE. A row's `r2_key` is
+# stored, and both the worker and `GET /api/jobs/:id` sign the STORED value --
+# neither reconstructs a key from parts at read time. So a pre-033 row keeps its
+# old key, its object still sits at that old key, and the signed URL still
+# resolves. Rewriting old rows to the new scheme is what WOULD orphan their
+# objects, which is why this is a write-path change only.
+def loop_r2_key(job_id: str, stem: str, bars: int, section: str, idx: int) -> str:
+    """The deterministic key for one loop. Pure: no network, no R2 client.
+
+    Split out from `upload_loop` because the eager pass now records a loop row
+    BEFORE any byte exists, and needs to name where the object will live.
+    """
+    return f"{job_id}/{stem}/{bars}bar_{section}_{idx:04d}.wav"
+
+
+def upload_loop_to_key(r2_key: str, local_path: str) -> str:
+    """Upload a loop WAV to a key that already exists in a `loops` row.
+
+    The on-demand cutter's path: the row was written first (with its key) and the
+    bytes arrive later, so the key is read from the row rather than rebuilt. That
+    also makes a retried request an overwrite-in-place instead of a duplicate.
+    """
     _r2().upload_file(
         local_path,
         os.environ["R2_BUCKET_NAME"],
@@ -47,6 +89,11 @@ def upload_loop(job_id: str, stem: str, section: str, idx: int, local_path: str)
     )
     log_structured("INFO", "loop_uploaded", r2_key=r2_key)
     return r2_key
+
+
+def upload_loop(job_id: str, stem: str, bars: int, section: str, idx: int, local_path: str) -> str:
+    """Upload a loop WAV and return its deterministic r2_key."""
+    return upload_loop_to_key(loop_r2_key(job_id, stem, bars, section, idx), local_path)
 
 
 # V3-J2 stem keys. Two artifacts per stem, in SEPARATE sub-prefixes:

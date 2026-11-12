@@ -52,7 +52,7 @@ jobs:
           #   2 apps/worker/src/worker/billing/  6 .github/workflows/
           #   3 apps/web/src/app/api/billing/    7 .github/CODEOWNERS
           #   4 apps/web/src/app/api/entitlements/  8 AGENTS.md
-          if echo "$changed" | grep -qE '^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|AGENTS\.md$)'; then
+          if echo "$changed" | grep -qE '^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$)'; then
             echo "PR touches a CODEOWNERS path. Applying needs-jon-approval label."
             gh pr edit "$PR_NUM" --repo "$REPO" --add-label needs-jon-approval
           else

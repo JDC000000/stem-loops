@@ -11,16 +11,18 @@
 # Fast-path allowlist (every changed file must match ONE of these):
 #   - docs/**
 #   - *.md (anywhere)
-#   - apps/*/tests/**
-#   - apps/web/src/**/__tests__/**
 #   - packages/types/src/generated.ts
-#   - scripts/**           (T3, 2026-11-05 — minus the deny list below)
+#   (REMOVED 2026-11-12, session 13 — see "Why scripts/ left the allowlist":)
+#   - scripts/**           (T3, 2026-11-05 — WITHDRAWN; admit by NAME, never by directory)
 #   - apps/training/**     (re-added 2026-11-05 alongside #117, which added the
 #                          `training-tests` CI job it depends on)
 #   (REMOVED 2026-11-11, session 12 — see "Why implementation left the
 #    allowlist" below:)
 #   - apps/web/src/**      (L2.3, 2026-11-05 — WITHDRAWN)
 #   - apps/worker/src/**   (L2.3, 2026-11-05 — WITHDRAWN)
+#   (REMOVED 2026-11-12, session 13 — see "Why TESTS left the allowlist":)
+#   - apps/*/tests/**              (WITHDRAWN)
+#   - apps/web/src/**/__tests__/** (WITHDRAWN)
 #   - fixtures/**         (2026-11-06 — root only; shared test data, not executable)
 #
 # Deny list — evaluated first, always wins:
@@ -35,8 +37,98 @@
 #     - apps/web/src/app/api/entitlements/
 #     - apps/worker/src/worker/billing/
 #     - apps/worker/migrations/*_v3_commercial*.sql
-#     - AGENTS.md
+#     - AGENTS.md  (AT ANY DEPTH -- see the depth note below)
 #
+#   THE DEPTH NOTE, found 2026-11-12 by scripts/check_fast_path_allowlist.py on
+#   its very first run, and pre-existing before this PR:
+#     deny_re is anchored with ^, so the term `AGENTS\.md$` matched ONLY the
+#     root copy. `.github/CODEOWNERS` has no leading slash on its AGENTS.md
+#     line, which in CODEOWNERS globbing means ANY DEPTH -- so docs/AGENTS.md
+#     requires Jon's approval, while allow_re's `.+\.md$` term admitted it to
+#     the fast path. A PR editing docs/AGENTS.md would have merged with no
+#     review. The term is now `(.*/)?AGENTS\.md$`.
+#     This is the SAME depth bug that was fixed in the two CODEOWNERS
+#     alternations the same day; it had a third copy here that nobody checked.
+#
+#
+# ── Why TESTS left the allowlist (2026-11-12, session 13) ────────────────
+#
+# A TEST FILE IS SAFETY MACHINERY. This workflow already knows that: the DENY
+# list refuses scripts/check_*.py and .githooks/ for the stated reason that
+# "a change here could weaken a gate and ship that weakening in one action".
+# That sentence describes a test file exactly. Tests were nevertheless on the
+# ALLOW list, so a PR that changed nothing but a gate was auto-labelled and
+# merged without review. This change applies this file's own deny-list
+# principle to the one category it had missed. It is not a new policy.
+#
+# WHAT HAPPENED, with SHAs so nobody has to take this on trust:
+#
+#   PR #216 added apps/web/test/chord-key-cross-artifact.test.mjs — a new
+#   cross-artifact gate, and nothing else. It matched `apps/[^/]+/tests?/`,
+#   was auto-labelled fast-path + rollback-safe by this workflow, and merged
+#   to v3/main as 22f92ee in 3m17s with NO human and NO adversarial review.
+#
+#   That gate accepted exactly one spelling of the chord R2 key and treated
+#   zero matches as a hard failure (on purpose). PR #214 then refactored the
+#   worker to compose that key from a CHORDS_TOP_PREFIX constant — which is
+#   the single-source-of-truth improvement #214's OWN reviewer had asked for
+#   — and #214's CI went red on a strictly better tree. A correct PR was
+#   blocked by an unreviewed gate.
+#
+#   The header's premise for the fast path is that "the allowlisted paths
+#   cannot carry security-adjacent changes". #216 falsified it. A test is the
+#   single highest-leverage place to put a mistake, because a weakened or
+#   wrong gate is INVISIBLE BY CONSTRUCTION: the suite goes green either way.
+#   This repo has shipped that defect class seven times in nine PRs.
+#
+# THE COST, stated plainly: a test-only PR now needs a review before it can
+# merge. That cost is the entire point. A gate nobody read is not a gate.
+#
+# WHY rollback-safe LEFT THIS WORKFLOW, which is a SEPARATE defect:
+#
+#   This workflow used to apply rollback-safe alongside fast-path, reasoning
+#   that docs/tests/generated-types are "intrinsically revertable". Two
+#   things are wrong with that.
+#
+#   1. It is decorative on the fast path. auto-merge.yml:146-152 arms a merge
+#      on `fast-path` ALONE (given no needs-jon-approval). So stripping
+#      rollback-safe would NOT have stopped #216, and any remediation aimed
+#      at that label was aimed at the wrong label.
+#
+#   2. It leaks into the STANDARD path, and this is the real hole.
+#      auto-merge.yml:213 states that "rollback-safe is not dropped on push,
+#      so presence is enough" — the stale-approval guard drops
+#      adversarial-reviewed and fast-path on a new commit but NOT
+#      rollback-safe. So a bot-applied, never-expiring rollback-safe is a
+#      permanent free HALF of the standard rollback-safe + adversarial-
+#      reviewed gate, granted to any PR that ever matched the allowlist.
+#
+#   rollback-safe is supposed to mean a reviewer judged the change revertable.
+#   A bot applying it to everything destroys that signal. It is now applied
+#   only by a human or a reviewing agent, per the labelling protocol.
+#
+# NOTE, left deliberately unchanged and flagged rather than fixed quietly:
+#   `apps/training/` is still on the allowlist: it still contains tests,
+#   covered by the separate training-tests CI job. Arguable on the same
+#   grounds as the above, and NOT changed here. (`scripts/` was flagged in
+#   this same note and is withdrawn in the next section.)
+#
+# ── Why scripts/ left the allowlist (2026-11-12, session 13) ─────────────
+#
+# The deny list ENUMERATED two filenames (safe_merge.sh, check_*.py) where the
+# honest statement is "scripts in this repo are safety machinery, with a few
+# inert exceptions". That is enumeration where a class was meant. Everything
+# the enumeration did not name rode the `scripts/` allow term straight through:
+# scripts/smoke_staging.mjs is the staging smoke gate (it decides whether the
+# money path is healthy) and fast-pathed, as did smoke_staging_sweep.mjs, which
+# DELETES leaked staging users, and any script not yet written. A weakened gate
+# is invisible by construction, so this is the same hole #219 closed for tests.
+#
+# Default is to admit NO script. If one is genuinely inert and worth it,
+# re-admit it BY NAME in allow_re and say why in the PR. The behavioural rows
+# in scripts/check_fast_path_allowlist.py pin the class, not the filenames.
+# The two deny_re script terms are now redundant with this; they are left in
+# place as defence in depth and so the codeowners-drift copies need no edit.
 #
 # ── Why implementation left the allowlist (2026-11-11, session 12) ───────
 #
@@ -243,7 +335,7 @@ jobs:
           #     it is a CODEOWNERS path AND it matches the allowlist's own
           #     `.+\.md$` term, so it was reachable by fast-path before this
           #     change and protected only by the label race.
-          deny_re='^(scripts/safe_merge\.sh$|scripts/check_[^/]*\.py$|\.githooks/|apps/web/src/lib/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/src/worker/billing/|apps/web/src/middleware\.ts$|apps/web/src/app/auth/|apps/web/src/lib/auth/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|AGENTS\.md$)'
+          deny_re='^(scripts/safe_merge\.sh$|scripts/check_[^/]*\.py$|\.githooks/|apps/web/src/lib/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/src/worker/billing/|apps/web/src/middleware\.ts$|apps/web/src/app/auth/|apps/web/src/lib/auth/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|(.*/)?AGENTS\.md$)'
           denied=$(echo "$changed" | grep -E "$deny_re" || true)
           if [ -n "$denied" ]; then
             echo "Safety-critical paths touched; fast-path refused:"
@@ -255,7 +347,7 @@ jobs:
           # ── Phase 2: ALLOW list. ALL files must match one of these ───────
           # Grouped: docs dir | any-dir markdown | per-app tests dir |
           # web __tests__ under src | generated types | training tree |
-          # scripts (minus the denies above).
+          # NO scripts: withdrawn 2026-11-12, see "Why scripts/ left the allowlist".
           #
           # apps/training/** — the T3 justification (no production surface:
           # the worker Docker context is apps/worker, so apps/training never
@@ -268,8 +360,9 @@ jobs:
           # Do not re-add this line in a PR that does not also carry a
           # working training-tests job. See the header for why.
           #
-          # scripts/** added same date: removed from CODEOWNERS by the T1
-          # trim, and the safety-critical members are caught by deny_re.
+          # scripts/** WITHDRAWN 2026-11-12: it was added 2026-11-05 on the
+          # theory that deny_re catches the safety-critical members, but deny_re
+          # named two filenames, not the class. See the header.
           # ── L2.3 (2026-11-05): widened to application source ──
           #
           # Added: apps/web/src/ and apps/worker/src/ — the change that moves
@@ -288,7 +381,7 @@ jobs:
           # ci.yml. Nothing built apps/web before it, so widening to
           # apps/web/src/ without it would have let a broken production build
           # auto-merge. Add `Web build` to the ruleset's required contexts.
-          allow_re='^(docs/|.+\.md$|apps/[^/]+/tests?/|apps/web/src/.+/__tests__/|packages/types/src/generated\.ts$|apps/training/|scripts/|fixtures/)'
+          allow_re='^(docs/|.+\.md$|packages/types/src/generated\.ts$|apps/training/|fixtures/)'
 
           # fixtures/ added 2026-11-06: shared Python<->TypeScript test data
           # (e.g. fixtures/contracts/harte-labels.json, play-chords.golden.json).
@@ -376,7 +469,12 @@ jobs:
           fi
 
           echo "All files match fast-path allowlist. Applying label."
-          # Also apply rollback-safe since docs/tests/generated-types are
-          # intrinsically revertable with git revert.
-          gh pr edit "$PR_NUM" --repo "$REPO" \
-            --add-label fast-path --add-label rollback-safe
+          # ONLY fast-path. This workflow deliberately does NOT apply
+          # rollback-safe any more; see "Why rollback-safe left this
+          # workflow" in the header. `fast-path` alone already arms
+          # auto-merge.yml (see its lines 146-152), so nothing is lost by
+          # dropping it -- and a bot-applied rollback-safe is NEVER dropped
+          # on push (auto-merge.yml:213 relies on that), which made it a
+          # permanent free half of the STANDARD gate on every PR that ever
+          # touched the allowlist.
+          gh pr edit "$PR_NUM" --repo "$REPO" --add-label fast-path

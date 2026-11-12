@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Job, Loop } from '@stem-loops/types';
 import { LoopCard } from '@/components/LoopCard';
 import { downloadLoopPack } from '@/lib/zipLoops';
@@ -8,26 +8,105 @@ import { downloadLoopPack } from '@/lib/zipLoops';
 // Stable stem order for the filter tabs (guitar is first-class, never 'piano').
 const STEM_ORDER = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
 
-export function LoopResults({ job }: { job: Job & { title?: string | null } }) {
-  const loops = useMemo(
-    () => (job.loops ?? []) as Array<Loop & { signed_url?: string | null }>,
-    [job.loops],
-  );
+/** How often to re-poll while a cut is running, in ms. */
+export const CUT_POLL_MS = 2500;
+
+type LoopRow = Loop & { signed_url?: string | null };
+
+/** A loop whose WAV exists in R2. Migration 033: `cut_at` null means described, not cut. */
+export function isCut(loop: Pick<LoopRow, 'cut_at'>): boolean {
+  return loop.cut_at !== null && loop.cut_at !== undefined;
+}
+
+export interface LoopResultsDeps {
+  /** POST /api/jobs/:id/loops — ask for the cut. */
+  requestCut: (jobId: string) => Promise<void>;
+  /** Re-read the job so freshly cut rows (and their signed URLs) arrive. */
+  refresh: () => Promise<void>;
+  /** Download-all. Injectable so a test need not drive a real Blob/anchor. */
+  zip: typeof downloadLoopPack;
+}
+
+const defaultDeps: LoopResultsDeps = {
+  requestCut: async (jobId) => {
+    const res = await fetch(`/api/jobs/${jobId}/loops`, { method: 'POST' });
+    if (!res.ok) throw new Error(`cut request failed: ${res.status}`);
+  },
+  // The job page owns the poll loop; a plain reload is the one refresh this
+  // component can perform without reaching into it.
+  refresh: async () => {
+    window.location.reload();
+  },
+  zip: downloadLoopPack,
+};
+
+export function LoopResults({
+  job,
+  deps = defaultDeps,
+}: {
+  job: Job & { title?: string | null };
+  deps?: LoopResultsDeps;
+}) {
+  const loops = useMemo(() => (job.loops ?? []) as LoopRow[], [job.loops]);
   const [stem, setStem] = useState<string>('all');
   const [zipping, setZipping] = useState(false);
+  const [cutting, setCutting] = useState(false);
+  const [cutError, setCutError] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Migration 033: the worker records every loop and encodes none of them, so a
+  // job can be `done` with a full set of rows and nothing yet in R2. Only a cut
+  // row has bytes to offer; an uncut one has no signed URL (the API withholds
+  // it) and must not be presented as a download.
+  const cutLoops = useMemo(() => loops.filter(isCut), [loops]);
+  const pending = loops.length - cutLoops.length;
 
   const stems = useMemo(() => {
-    const present = new Set(loops.map((l) => l.stem));
+    const present = new Set(cutLoops.map((l) => l.stem));
     return STEM_ORDER.filter((s) => present.has(s));
-  }, [loops]);
+  }, [cutLoops]);
 
-  const shown = stem === 'all' ? loops : loops.filter((l) => l.stem === stem);
+  const shown = stem === 'all' ? cutLoops : cutLoops.filter((l) => l.stem === stem);
   const title = job.title || 'stem-loops';
+
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+
+  // Once a cut is running, nothing pushes the finished rows here — poll until
+  // the refresh brings them in. `pending` reaching 0 ends it via the re-render.
+  useEffect(() => {
+    if (!cutting || pending === 0) return;
+    timer.current = setTimeout(() => {
+      void deps.refresh();
+    }, CUT_POLL_MS);
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, [cutting, pending, deps]);
+
+  useEffect(() => {
+    if (pending === 0) setCutting(false);
+  }, [pending]);
+
+  const onCut = useCallback(async () => {
+    setCutError(null);
+    setCutting(true);
+    try {
+      await deps.requestCut(job.id);
+    } catch {
+      setCutting(false);
+      setCutError('Could not start the cut. Try again.');
+    }
+  }, [deps, job.id]);
 
   async function onZip() {
     setZipping(true);
     try {
-      await downloadLoopPack(loops, title);
+      await deps.zip(cutLoops, title);
     } finally {
       setZipping(false);
     }
@@ -37,46 +116,82 @@ export function LoopResults({ job }: { job: Job & { title?: string | null } }) {
     <section className="loop-results" style={{ width: '100%', maxWidth: 960 }}>
       <header style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 24, color: 'var(--text-primary)' }}>Loops ready</h1>
+          <h1 style={{ margin: 0, fontSize: 24, color: 'var(--text-primary)' }}>
+            {cutLoops.length ? 'Loops ready' : 'Loops'}
+          </h1>
           <p style={{ margin: '4px 0 0', color: 'var(--text-muted)' }}>
-            {loops.length} loops · {job.bpm} BPM · {job.musical_key}
+            {cutLoops.length ? `${cutLoops.length} loops · ` : ''}
+            {job.bpm} BPM · {job.musical_key}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onZip}
-          disabled={zipping || !loops.length}
-          aria-busy={zipping}
-          className="jp-primary"
-          style={{
-            minHeight: 48, padding: '0 18px', fontWeight: 700,
-            border: 'none', borderRadius: 10,
-          }}
-        >
-          {zipping ? 'Zipping…' : '⬇ Download All (ZIP)'}
-        </button>
+        {pending > 0 ? (
+          <button
+            type="button"
+            onClick={onCut}
+            disabled={cutting}
+            aria-busy={cutting}
+            className="jp-primary"
+            data-testid="cut-loops"
+            style={{
+              minHeight: 48, padding: '0 18px', fontWeight: 700,
+              border: 'none', borderRadius: 10,
+            }}
+          >
+            {cutting ? 'Cutting…' : `✂ Cut ${pending} loops`}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onZip}
+            disabled={zipping || !cutLoops.length}
+            aria-busy={zipping}
+            className="jp-primary"
+            data-testid="zip-loops"
+            style={{
+              minHeight: 48, padding: '0 18px', fontWeight: 700,
+              border: 'none', borderRadius: 10,
+            }}
+          >
+            {zipping ? 'Zipping…' : '⬇ Download All (ZIP)'}
+          </button>
+        )}
       </header>
+
+      {pending > 0 && (
+        <p data-testid="cut-explainer" style={{ margin: '12px 0 0', color: 'var(--text-muted)', fontSize: 14 }}>
+          {cutting
+            ? `Cutting ${pending} 24-bit WAVs from this song's stems. This takes a moment.`
+            : `This song has ${pending} loops mapped out. The 24-bit WAVs are made when you ask for them, so nothing is encoded until you press the button.`}
+        </p>
+      )}
+      {cutError && (
+        <p role="alert" data-testid="cut-error" style={{ margin: '12px 0 0', color: 'var(--danger, #e5484d)', fontSize: 14 }}>
+          {cutError}
+        </p>
+      )}
 
       {/* Stem filter tabs — guitar shown as its own column alongside the rest. Each stem
           filter wears its stem hue (stem-color.css); the chosen one is aria-pressed. */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '16px 0' }}>
-        {['all', ...stems].map((s) => (
-          <button
-            key={s}
-            type="button"
-            className="jp-filter"
-            data-stem={s === 'all' ? undefined : s}
-            aria-pressed={stem === s}
-            onClick={() => setStem(s)}
-            style={{
-              minHeight: 44, padding: '0 14px', textTransform: 'capitalize', cursor: 'pointer',
-              borderRadius: 999, fontSize: 14,
-            }}
-          >
-            {s}
-          </button>
-        ))}
-      </div>
+      {cutLoops.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '16px 0' }}>
+          {['all', ...stems].map((s) => (
+            <button
+              key={s}
+              type="button"
+              className="jp-filter"
+              data-stem={s === 'all' ? undefined : s}
+              aria-pressed={stem === s}
+              onClick={() => setStem(s)}
+              style={{
+                minHeight: 44, padding: '0 14px', textTransform: 'capitalize', cursor: 'pointer',
+                borderRadius: 999, fontSize: 14,
+              }}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div
         className="loop-grid"

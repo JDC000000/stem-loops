@@ -98,6 +98,11 @@ class Loop(BaseModel):
     duration_ms: int | None = None
     waveform_peaks: list[float] | None = None
     signed_url: str | None = None  # freshly minted on every GET /api/jobs/:id read
+    # Migration 033: when the WAV at r2_key was encoded and uploaded. NULL means the
+    # loop is DESCRIBED but not CUT -- the eager pipeline records every loop and cuts
+    # none of them, so `signed_url` stays null for such a row (a URL to an object that
+    # does not exist is a 404 the client cannot tell from an expired job).
+    cut_at: datetime | None = None
     created_at: datetime
 
 

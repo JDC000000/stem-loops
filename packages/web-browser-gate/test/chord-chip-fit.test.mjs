@@ -352,7 +352,14 @@ let built;
 
 test('Chromium launches and the real ChordOverlay bundles', async () => {
   built = await bundle();
-  browser = await chromium.launch();
+  // Text rendering is pinned as well as the font. On the first CI run the same
+  // pinned Inter measured integer widths (worst 5.0000px) where a developer
+  // machine measured fractional ones (8.4688px): the runner's fontconfig turned
+  // hinting on, which rounds glyph advances to whole pixels. Users on macOS and
+  // Windows get unhinted, subpixel-positioned text, so that is what is pinned.
+  browser = await chromium.launch({
+    args: ['--font-render-hinting=none', '--enable-font-subpixel-positioning'],
+  });
   assert.ok(browser.isConnected(), 'chromium did not launch');
 });
 

@@ -1,0 +1,13 @@
+{
+  "name": "@stem-loops/web-browser-gate",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Real-Chromium gates for apps/web. Kept out of apps/web so that adding esbuild/playwright does not re-resolve apps/web's own peer set (see README in test file header).",
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "playwright": "1.63.0"
+  }
+}

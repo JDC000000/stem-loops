@@ -63,6 +63,18 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+      - name: Fast-path allowlist gate
+        # Runs FIRST, before any linter, because it is a governance check and a
+        # failure here means a PR could skip adversarial review entirely.
+        #
+        # `Lint` is in the v3/main ruleset's required_status_checks, so putting
+        # this step here is what makes the check BLOCKING. Standing orders: a
+        # gate that is not required is advice, not a gate.
+        #
+        # Stdlib only -- no pip install needed, so it cannot be skipped by a
+        # dependency failure.
+        run: python3 scripts/check_fast_path_allowlist.py
+
       - name: Install Python deps
         # Pinned via the prod constraints so a new ruff/black release can't turn main red.
         run: pip install ruff black -c apps/worker/constraints-prod.txt

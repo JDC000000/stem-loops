@@ -158,6 +158,77 @@ jobs:
       - name: Node tests
         run: pnpm test
 
+  worker-tests-pg17:
+    # WHY THIS JOB EXISTS, and why it is not just a line in `test:`
+    # -------------------------------------------------------------
+    # Production runs PostgreSQL 17.6 (recorded in
+    # apps/worker/tests/fixtures/supabase_prelude.sql, read from the live
+    # project). Every Postgres service in this file is 16. So the worker has
+    # shipped statements that NO test and NO CI job has ever sent to a server of
+    # the version that will run them. The concrete case is the kill-switch gate:
+    # `SET LOCAL transaction_timeout = 0` is gated on server_version >= 170000,
+    # which means the branch that executes in production is exactly the branch
+    # that has never executed anywhere else. On 16 it is skipped; on 17 it is
+    # the live path.
+    #
+    # This is a SEPARATE job rather than a matrix leg on `test:` because "Tests"
+    # is a REQUIRED status check on v3/main (ruleset 26478884). Adding a matrix
+    # there renames the context to "Tests (…)", the required "Tests" context
+    # then never reports, and every open PR blocks forever. A new, non-required
+    # job cannot do that. Promote it to required once it has been green for a
+    # few runs — that is the owner's call, not an agent's.
+    #
+    # DRIFT WARNING: the Python setup below mirrors the `test:` job. Duplicated
+    # step lists drifting apart is this repo's documented house bug. Keep the
+    # two in step, or replace both with a composite action.
+    name: "Worker tests (PG 17 = production parity)"
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: stemloops
+          POSTGRES_PASSWORD: stemloops
+          POSTGRES_DB: stemloops
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    env:
+      DATABASE_URL: postgresql://stemloops:stemloops@localhost:5432/stemloops
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert the server really is 17 before trusting a green result
+        # A job that silently ran 16 would report parity it never tested. This
+        # is the non-vacuity check the house convention asks for.
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          VER=$(PGPASSWORD=stemloops psql -h localhost -U stemloops -d stemloops -tAc "SHOW server_version_num")
+          echo "server_version_num=$VER"
+          if [ "$VER" -lt 170000 ]; then
+            echo "::error::expected PostgreSQL >= 17, got $VER. This job asserts production parity; a lower version makes every result below meaningless."
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Python deps
+        run: pip install -r apps/worker/requirements.txt -c apps/worker/constraints-prod.txt
+      - name: Apply migrations (001-007)
+        run: cd apps/worker && PYTHONPATH=src python -m worker.migrate
+      - name: pytest
+        run: cd apps/worker && python -m pytest tests/ -v
+        env:
+          STUB_MODE: "true"
+          R2_ACCESS_KEY_ID: test
+          R2_SECRET_ACCESS_KEY: test
+          R2_ENDPOINT: http://localhost:9000
+          R2_BUCKET_NAME: test-bucket
+
   fixture-pipeline:
     name: Fixture pipeline (stub)
     runs-on: ubuntu-latest
@@ -506,8 +577,14 @@ jobs:
 
 
   supabase-prelude-migrations:
-    name: Migrations on a Supabase-like Postgres
+    name: Migrations on a Supabase-like Postgres (PG ${{ matrix.pg }})
     runs-on: ubuntu-latest
+    strategy:
+      # Both legs always run. A 17 failure must not hide the 16 result, and a 16
+      # failure must not hide 17 — 17 is the version production actually runs.
+      fail-fast: false
+      matrix:
+        pg: ['16', '17']
     # AGENTS.md §11 M-3 asked for this job by name.
     #
     # Every other migration step in this file runs as a SUPERUSER against bare
@@ -521,12 +598,20 @@ jobs:
     # like Supabase's `postgres`: NOSUPERUSER, owns the database, no CREATE on
     # `auth`.
     #
-    # Image is postgres:16 for consistency with the other jobs in this file;
-    # the calibration project is PG 17.11. Nothing this job exercises differs
-    # between 16 and 17, but if that stops being true, calibrate against 17.
+    # VERSIONS — PRODUCTION RUNS PostgreSQL 17.6. That number is not a guess:
+    # apps/worker/tests/fixtures/supabase_prelude.sql records it as read from the
+    # live project (qthrhamfljhifhfwvvwj), and the rehearsal project is 17.11.
+    #
+    # Until this matrix existed, every migration in this repo was validated ONLY
+    # on 16, while this job's own comment asserted that "nothing this job
+    # exercises differs between 16 and 17" — an assertion no test could fail,
+    # which is this project's house bug wearing the costume of its own cure. The
+    # matrix below runs both, so that claim is now measured instead of stated.
+    # 16 is kept because every other job in this file still uses it; 17 is the
+    # leg that must be green before a migration reaches production.
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:${{ matrix.pg }}-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

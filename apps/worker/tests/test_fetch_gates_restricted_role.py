@@ -320,9 +320,9 @@ def test_deleting_an_engaged_row_releases_the_brake_after_the_ttl(
 #       3.5 s and answers 'fetch_global' once the lock clears. It is a wall-clock test.
 #
 #   NOT COVERED BY ANY TEST: a client-side bound longer than BLOCKED_FOR_S (3.5 s). Measured
-#       round 4: wrapping the SELECT in threading.Timer(4.0, conn.cancel) leaves this whole file
-#       green (31 passed) and the full worker suite green (873 / 1 / 1), yet the gate returns None
-#       (fetch allowed) after 4.016 s on a 6 s lock. The GUC probe cannot see it (the server is
+#       round 4: a client-side cancel at 4.0 s around the SELECT leaves every test in this file
+#       green, yet the gate returns None (fetch allowed) after about 4.0 s on a 6 s lock (4.016 s
+#       reported by the reviewer, 4.012 s reproduced). The GUC probe cannot see it (the server is
 #       never asked for a timer) and the wall-clock test stops watching at 3.5 s. This file does
 #       not close that and does not pretend to; a longer wall-clock wait would be another timer to
 #       tune, not a proof of "unbounded".

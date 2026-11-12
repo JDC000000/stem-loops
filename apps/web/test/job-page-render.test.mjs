@@ -41,6 +41,16 @@
 // test/play-mixer.test.mjs): transpile the real `JobView.tsx` into
 // node_modules/.cache and point its import specifiers at stubs.
 //
+// ⚠️ WHAT THIS FILE DOES NOT COVER, stated because round 1 of #229 let it be
+// mistaken for coverage: the POLLING EFFECT. The react shim below makes
+// `useEffect` a no-op and seeds `useState` positionally, so `poll()` is never
+// executed here and a mutation that guts the effect body — never show the
+// unreachable panel, reset the failure count every poll — passes every
+// assertion in this file. The effect is covered behaviourally in
+// test/job-view-poll.test.mjs (real React, real effect, stubbed fetch, virtual
+// clock). This file covers what each STATE renders as; that one covers how a
+// state is REACHED. Both are needed.
+//
 // `JobView` reaches its `done` branch only from an effect, and
 // `renderToStaticMarkup` never runs effects, so `job` would stay `null` and the
 // component would render "Loading…" forever. The `react` shim below therefore
@@ -160,6 +170,10 @@ const chordOverlayMod = put(
    export default ChordOverlay;`,
 );
 
+// The REAL job-poll module (pure; no I/O at import). JobView's polling policy
+// lives there, and a stub of it would test the stub.
+const jobPollMod = put('job-poll.mjs', toJs(read('src/lib/job-poll.ts')));
+
 const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   // bare 'react' only — 'react/jsx-runtime' must stay real
   .replace(/from ['"]react['"]/g, `from '${reactShim}'`)
@@ -168,6 +182,7 @@ const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]@\/components\/JobProgress['"]/g, `from '${jobProgressMod}'`)
   .replace(/from ['"]next\/link['"]/g, `from '${linkMod}'`)
   .replace(/from ['"]@\/lib\/retention['"]/g, `from '${retentionMod}'`)
+  .replace(/from ['"]@\/lib\/job-poll['"]/g, `from '${jobPollMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordOverlayMod}'`);
 writeFileSync(join(dir, 'JobView.mjs'), jobViewJs);
 
@@ -197,11 +212,14 @@ const DONE_JOB = Object.freeze({
   ]),
 });
 
-/** Render the real JobView with `job` seeded, so the `done` branch is reached. */
-function renderJob(job = DONE_JOB) {
+/**
+ * Render the real JobView with `job` seeded, so the `done` branch is reached.
+ * `trouble` seeds the third `useState` (the terminal-state slot).
+ */
+function renderJob(job = DONE_JOB, trouble = undefined) {
   globalThis.__playerProps = null;
   globalThis.__loopResultsProps = null;
-  shim.__seed([job, false]);
+  shim.__seed([job, false, trouble]);
   return renderToStaticMarkup(React.createElement(JobView, { id: job ? job.id : 'x' }));
 }
 
@@ -309,4 +327,86 @@ test('a processing job renders progress and mounts no player', () => {
   const html = renderJob({ ...DONE_JOB, status: 'running' });
   assert.match(html, /data-testid="job-progress"/);
   assert.doesNotMatch(html, /data-testid="player"/, 'an unfinished job must not mount a player');
+});
+
+// ═══ the page has a terminal state: it no longer says "Processing…" forever ═══
+
+const QUEUED_JOB = Object.freeze({
+  id: 'job-render-2',
+  status: 'queued',
+  original_filename: 'slow.mp3',
+  events: [],
+  loops: [],
+  updated_at: '2026-11-12T10:00:00Z',
+});
+
+test('stalled QUEUED job: says so, offers Check again and a way out, and shows no progress bar', () => {
+  const html = renderJob(QUEUED_JOB, { kind: 'stalled', stall: 'queued' });
+  assert.match(html, /data-testid="job-stalled"/);
+  assert.match(html, /role="alert"/);
+  assert.match(html, /waiting in line for more than 90 minutes/);
+  assert.match(html, />Check again</);
+  assert.match(html, /href="\/"[^>]*>Try another track/);
+  assert.doesNotMatch(html, /data-testid="job-progress"/, 'a progress bar over a stalled job is the lie');
+  assert.doesNotMatch(html, /Processing…/);
+});
+
+test('stalled ACTIVE job names the reaper-derived window, not the queue one', () => {
+  const html = renderJob({ ...QUEUED_JOB, status: 'separating' }, { kind: 'stalled', stall: 'active' });
+  assert.match(html, /stopped making progress more than 11 minutes ago/);
+  assert.doesNotMatch(html, /waiting in line/);
+});
+
+test('unreachable: says the page cannot get an update, offers Try again, no progress, no "Processing…"', () => {
+  const html = renderJob(QUEUED_JOB, { kind: 'unreachable', status: null });
+  assert.match(html, /data-testid="job-unreachable"/);
+  assert.match(html, /role="alert"/);
+  assert.match(html, />Try again</);
+  assert.doesNotMatch(html, /data-testid="job-progress"/);
+  assert.doesNotMatch(html, /Processing…/);
+  // and it must not claim the TRACK failed: we do not know that
+  assert.doesNotMatch(html, /Something went wrong|could not be processed/i);
+});
+
+test('unreachable copy splits by status: a 500 is OUR fault, not the user\'s connection', () => {
+  // "Check your connection" for a 500 is a lie about the user's own network: our
+  // server answered, it just answered badly. The two sentences must differ, and
+  // the server one must not send the user to their router.
+  const offline = renderJob(QUEUED_JOB, { kind: 'unreachable', status: null });
+  const server = renderJob(QUEUED_JOB, { kind: 'unreachable', status: 500 });
+  assert.match(offline, /Check your connection/, 'a real network failure may say so');
+  assert.doesNotMatch(server, /Check your connection/, 'a 500 must not blame the user\'s connection');
+  assert.match(server, /not your connection/);
+  assert.match(server, /\(500\)/, 'the status the server actually gave is not shown');
+  assert.match(renderJob(QUEUED_JOB, { kind: 'unreachable', status: 502 }), /\(502\)/);
+  // both are still the same panel, with the same way out
+  for (const html of [offline, server]) {
+    assert.match(html, /data-testid="job-unreachable"/);
+    assert.match(html, />Try again</);
+  }
+});
+
+test('unreachable with no job at all (first poll never succeeded) is still the terminal panel, not "Loading…"', () => {
+  const html = renderJob(null, { kind: 'unreachable', status: null });
+  assert.match(html, /data-testid="job-unreachable"/);
+  assert.doesNotMatch(html, /Loading…/);
+});
+
+test('a healthy in-flight job still renders progress (the new branches do not swallow it)', () => {
+  const html = renderJob({ ...QUEUED_JOB, status: 'separating' });
+  assert.match(html, /Processing…/);
+  assert.match(html, /data-testid="job-progress"/);
+  assert.doesNotMatch(html, /job-stalled|job-unreachable/);
+});
+
+test('a done job is never replaced by a terminal-trouble panel', () => {
+  const html = renderJob(DONE_JOB, { kind: 'unreachable', status: null });
+  assert.match(html, /data-testid="player"/);
+  assert.doesNotMatch(html, /job-unreachable/);
+});
+
+test('JobView no longer stores a response body it did not check: no bare `setJob(data)` after `res.json()`', () => {
+  const src = read('src/app/jobs/[id]/JobView.tsx');
+  assert.doesNotMatch(src, /\(await res\.json\(\)\) as Job/);
+  assert.match(src, /readPoll\(/);
 });

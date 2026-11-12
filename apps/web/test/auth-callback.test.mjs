@@ -211,3 +211,89 @@ test('GET /auth/callback — Supabase error_code=otp_expired (no code) -> auth_l
   assert.equal(res.headers.get('location'), 'https://stem-loops.com/login?error=auth_link_expired');
   assert.equal(globalThis.__exchangeCalls.length, 0);
 });
+
+// ── failure paths keep the destination, and a failed SIGNUP link says the right thing ──────────
+//
+// Round-2 review of the front-door PR: signup confirmation was moved onto this route so a failed
+// PKCE exchange stops rendering a blank form. The replacement dropped `next` (a visitor bounced
+// from /jobs/<id> lost the job) and told them to "request a new link" -- but the account already
+// exists, nothing in the app requests a confirmation link, and signing up again with a taken
+// address is Blocker A's shape. So: a distinct code for a failed signup link, and `next` is carried
+// as return_to on every failure that had one.
+const LOGIN = 'https://stem-loops.com/login';
+const loc = (res) => res.headers.get('location');
+
+test('signup link, exchange REJECTED, next=/jobs/abc-123 -> auth_signup_link_failed, destination kept', async () => {
+  const mod = await loadRoute({ exchangeResult: { error: { name: 'AuthApiError', message: 'pkce verifier missing' } } });
+  const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?type=signup&code=c1&next=' + encodeURIComponent('/jobs/abc-123')));
+  assert.equal(res.status, 307);
+  assert.equal(loc(res), `${LOGIN}?error=auth_signup_link_failed&return_to=%2Fjobs%2Fabc-123`);
+  assert.equal(globalThis.__sentryCaptures.length, 1, 'still reported');
+});
+
+test('signup link, exchange THROWS -> same code, destination kept', async () => {
+  const mod = await loadRoute({ throws: true });
+  const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?type=signup&code=c1&next=' + encodeURIComponent('/jobs/abc-123')));
+  assert.equal(loc(res), `${LOGIN}?error=auth_signup_link_failed&return_to=%2Fjobs%2Fabc-123`);
+  assert.equal(globalThis.__sentryCaptures.length, 1);
+});
+
+test('signup link with a destination that has & and ? -> return_to is one encoded value', async () => {
+  const mod = await loadRoute({ exchangeResult: { error: { message: 'x' } } });
+  const next = '/pricing?a=1&b=2';
+  const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?type=signup&code=c1&next=' + encodeURIComponent(next)));
+  const u = new URL(loc(res));
+  assert.deepEqual([...u.searchParams.keys()], ['error', 'return_to']);
+  assert.equal(u.searchParams.get('return_to'), next);
+});
+
+test('hostile next on a failed signup link -> return_to falls back to /account, never leaves the origin', async () => {
+  const mod = await loadRoute({ exchangeResult: { error: { message: 'x' } } });
+  for (const evil of ['//evil.com', '/\\evil.com', '/\t/evil.com', '/\r/evil.com', 'https://evil.com', 'javascript:alert(1)']) {
+    const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?type=signup&code=c1&next=' + encodeURIComponent(evil)));
+    const u = new URL(loc(res));
+    assert.equal(u.origin + u.pathname, LOGIN, JSON.stringify(evil));
+    assert.equal(u.searchParams.get('error'), 'auth_signup_link_failed', JSON.stringify(evil));
+    assert.equal(u.searchParams.get('return_to'), '/account', JSON.stringify(evil));
+  }
+});
+
+test('duplicate next params: the first one wins and is sanitised', async () => {
+  const mod = await loadRoute({ exchangeResult: { error: null } });
+  const ok = await mod.GET(makeReq('https://stem-loops.com/auth/callback?code=c&next=/pricing&next=//evil.com'));
+  assert.equal(loc(ok), 'https://stem-loops.com/pricing');
+  const bad = await mod.GET(makeReq('https://stem-loops.com/auth/callback?code=c&next=//evil.com&next=/pricing'));
+  assert.equal(loc(bad), 'https://stem-loops.com/account');
+});
+
+test('a failed RECOVERY link is NOT told "your account was created": it keeps auth_callback_failed', async () => {
+  // type=recovery (LoginForm.recoveryUrl, reset-password-request): the person asked for a reset and
+  // has not got one, so "request a new link" is exactly right for them.
+  const mod = await loadRoute({ exchangeResult: { error: { message: 'x' } } });
+  const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?type=recovery&code=c1&next=' + encodeURIComponent('/account/reset-password')));
+  assert.equal(loc(res), `${LOGIN}?error=auth_callback_failed&return_to=%2Faccount%2Freset-password`);
+});
+
+test('a failed link of unknown type is not assumed to be a signup link', async () => {
+  const mod = await loadRoute({ exchangeResult: { error: { message: 'x' } } });
+  for (const q of ['', '&type=magiclink', '&type=Signup', '&type=signup%20']) {
+    const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?code=c1' + q));
+    assert.equal(loc(res), `${LOGIN}?error=auth_callback_failed`, q);
+  }
+});
+
+test('no code / otp_expired keep their codes and now carry next too', async () => {
+  const mod = await loadRoute();
+  const next = encodeURIComponent('/jobs/abc-123');
+  const expired = await mod.GET(makeReq(`https://stem-loops.com/auth/callback?type=signup&error_code=otp_expired&next=${next}`));
+  assert.equal(loc(expired), `${LOGIN}?error=auth_link_expired&return_to=%2Fjobs%2Fabc-123`);
+  const nocode = await mod.GET(makeReq(`https://stem-loops.com/auth/callback?type=signup&next=${next}`));
+  assert.equal(loc(nocode), `${LOGIN}?error=auth_callback_failed&return_to=%2Fjobs%2Fabc-123`);
+  assert.equal(globalThis.__exchangeCalls.length, 0);
+});
+
+test('a successful signup exchange still lands on next', async () => {
+  const mod = await loadRoute({ exchangeResult: { error: null } });
+  const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?type=signup&code=c1&next=' + encodeURIComponent('/jobs/abc-123')));
+  assert.equal(loc(res), 'https://stem-loops.com/jobs/abc-123');
+});

@@ -199,7 +199,7 @@ test('faders are vertical: orient="vertical" on all six, and the stylesheet DECL
   assert.doesNotMatch(uncomment(css), /transform:\s*rotate/i); // hit area must follow the paint
 });
 
-test('fader thumb-paint guard: no native appearance can be declared, and the thumb box is non-degenerate (Mixer.module.css + src/**/*.css; NOT the built cascade)', () => {
+test('fader thumb-paint guard: no native appearance can be declared, and the thumb declares a px box larger than its track with no max-size cap (Mixer.module.css + src/**/*.css; NOT the built cascade, NOT a browser)', () => {
   // THE BUG THIS GUARDS. Base declared `-webkit-appearance: slider-vertical`
   // on `.fader`, which is a NATIVE widget; `::-webkit-slider-thumb` only takes
   // author styles when the control is not drawing one. Measured in Chromium
@@ -210,25 +210,46 @@ test('fader thumb-paint guard: no native appearance can be declared, and the thu
   // WHAT THIS TEST CAN SEE, and nothing more:
   //   (a) every `appearance`-family and `all` declaration in Mixer.module.css,
   //       enumerated in any @media/@supports block and any case, must be one
-  //       of the four pairs in ALLOWED_NATIVE. This is an allowlist, not a
-  //       check of one selector, so `.slot input { appearance: auto }`, an
-  //       upper-case `-WEBKIT-APPEARANCE: Slider-Vertical` and a capitalised
-  //       `Appearance: auto` are refused wherever they sit in that file;
-  //   (b) in every OTHER stylesheet under src/, a HEURISTIC: an appearance /
-  //       `all` declaration other than `none` whose selector names no class or
-  //       id (so it could match a range input by tag, attribute or `*`) is
-  //       refused. Selector SPECIFICITY and ORDER across files are not modelled,
-  //       and `@layer`, `<style>` tags, inline style on elements this file is
-  //       not shown, and third-party CSS are invisible to it;
+  //       of the four pairs in ALLOWED_NATIVE, AND none of them may sit inside
+  //       an at-rule (@media, @supports, @layer...). The second half is what
+  //       covers desktop: the cascade check below is evaluated at ONE width,
+  //       so `appearance: none` moved into `@media (max-width: 400px)` passed
+  //       it at 360 while 1440 got `appearance: auto` and a 16x16 UA thumb
+  //       (measured). Sampling more widths would be strictly weaker (a
+  //       `max-width: 1500px` evades it), so the placement is refused instead.
+  //       An allowlist, not a check of one selector, so `.slot input {
+  //       appearance: auto }`, an upper-case `-WEBKIT-APPEARANCE:
+  //       Slider-Vertical` and a capitalised `Appearance: auto` are refused
+  //       wherever they sit in that file;
+  //   (b) in every OTHER stylesheet under src/, ANY `appearance`/`all`
+  //       declaration whose value is not `none` is refused. There is no
+  //       selector heuristic: an earlier class/id test was fooled by the `.`
+  //       inside `input[type="range"]:not(.native)`. There are none today, so
+  //       this costs nothing. Selector specificity and ORDER across files are
+  //       not modelled, and `@layer`, `<style>` tags, inline style on elements
+  //       this file is not shown, and third-party CSS are invisible to it;
   //   (c) the thumb declares a width and height that parse to px and exceed the
-  //       6px track it rides, is not `display: none`/`visibility: hidden`, and
-  //       is not `opacity: 0`. The floor is a judgement (a cap no bigger than
-  //       its track is not a cap), not the designed 32x14. It will not notice
-  //       9px, `transform: scale(0)`, `clip-path`, a transparent `background`,
-  //       or a thumb coloured like its track.
-  // WHAT IT CANNOT SEE: whether the thumb PAINTS. This repo has no browser
-  // test, so that is established only by measuring in Chromium (see the PR
-  // description), and no gate here defends the measurement.
+  //       6px track it rides, declares no `max-width`/`max-height` (a 0 cap
+  //       leaves a 2x2 thumb that paints nothing), is not `display: none`/
+  //       `visibility: hidden`, and is not `opacity: 0`. The size floor is a
+  //       judgement (a cap no bigger than its track is not a cap), not the
+  //       designed 32x14;
+  //   (d) Mixer.module.css contains no backslash after comment-stripping, so a
+  //       CSS escape in a property name (`appea\72 ance: auto`), which the text
+  //       scan cannot decode, cannot be used to hide a declaration.
+  // WHAT IT CANNOT SEE, stated plainly:
+  //   * WHETHER THE THUMB PAINTS. THERE IS NO BROWSER TEST ANYWHERE IN THIS
+  //     REPO, so geometry is ungated by construction (test/helpers/dom.mjs
+  //     says layout is unreachable). Every assertion here reads declared CSS
+  //     text; none renders anything. That the fix works was established once,
+  //     by hand, in Chromium (see the PR description), and nothing here
+  //     defends that measurement. This test is a tripwire for known mutation
+  //     shapes, NOT proof the thumb paints. Review rounds keep finding new
+  //     shapes because a text gate can only enumerate them; only a real-browser
+  //     test ends that regress.
+  //   * a thumb of 7x7 or 9x9 (it exceeds the 6px floor and paints ~21px or
+  //     less), `transform: scale(0)`, `clip-path`, a transparent `background`,
+  //     or a thumb coloured like its track.
   const css = read(MIXER_CSS);
   const effective = uncomment(css);
 
@@ -247,13 +268,20 @@ test('fader thumb-paint guard: no native appearance can be declared, and the thu
     'appearance/all declarations in Mixer.module.css must be exactly the allowlist: ' +
       'each of these four, once, and nothing else (a native widget disables the custom thumb)',
   );
+  assert.deepEqual(
+    nativeWidgetDecls(effective).filter((d) => d.atRule !== null).map((d) => `${d.atRule} { ${d.selector} { ${d.prop} } }`),
+    [],
+    'an allowlisted appearance declaration sits inside an at-rule, so it is not applied at every width',
+  );
   assert.doesNotMatch(effective, /slider-vertical/i, 'a native slider widget disables the custom thumb');
+  assert.doesNotMatch(effective, /\\/, 'a backslash (CSS escape) can spell a property name this text scan cannot decode');
   // The component itself must not smuggle one in either.
   assert.doesNotMatch(uncommentTs(read(MIXER_TSX)), /appearance/i, 'Mixer.tsx must not set appearance');
   for (const f of faders(render({ stems: allReady(), ...handlers() }))) {
     assert.doesNotMatch(f, /appearance|\ball\s*:/i, `inline style on a fader: ${f}`);
   }
-  // The cascade agrees with the enumeration (order and @media are resolved here).
+  // Order and @media are resolved here AT NARROWEST (360px) ONLY. Desktop is
+  // covered by the no-at-rule assertion above, not by this.
   assert.equal(declAt(css, NARROWEST, '.fader', 'appearance'), 'none');
   assert.equal(declAt(css, NARROWEST, '.fader', '-webkit-appearance'), 'none');
   assert.equal(declAt(css, NARROWEST, '.fader::-webkit-slider-thumb', 'appearance'), 'none');
@@ -265,11 +293,10 @@ test('fader thumb-paint guard: no native appearance can be declared, and the thu
     if (file === join(WEB, MIXER_CSS)) continue;
     for (const d of nativeWidgetDecls(uncomment(readFileSync(file, 'utf8')))) {
       if (d.value === 'none') continue;
-      const reachable = d.selector.split(',').some((one) => !/[.#]/.test(subject(one.trim())));
-      if (reachable) offenders.push(`${file.slice(WEB.length + 1)}: ${d.selector} { ${d.prop}: ${d.value} }`);
+      offenders.push(`${file.slice(WEB.length + 1)}: ${d.selector} { ${d.prop}: ${d.value} }`);
     }
   }
-  assert.deepEqual(offenders, [], 'a tag/attribute/universal selector restores a native widget on range inputs');
+  assert.deepEqual(offenders, [], 'no other stylesheet may declare a non-none appearance/all (any selector shape can reach a range input)');
 
   // (c) the thumb's own box
   const THUMB = '.fader::-webkit-slider-thumb';
@@ -277,6 +304,8 @@ test('fader thumb-paint guard: no native appearance can be declared, and the thu
   assert.ok(track > 0, 'the track has a width to compare the thumb against');
   assert.ok(px(declAt(css, NARROWEST, THUMB, 'width')) > track, 'thumb width must exceed the track width');
   assert.ok(px(declAt(css, NARROWEST, THUMB, 'height')) > track, 'thumb height must exceed the track width');
+  assert.equal(declAt(css, NARROWEST, THUMB, 'max-width', { required: false }), null, 'thumb declares max-width');
+  assert.equal(declAt(css, NARROWEST, THUMB, 'max-height', { required: false }), null, 'thumb declares max-height');
   assert.notEqual(declAt(css, NARROWEST, THUMB, 'display', { required: false }), 'none', 'thumb is display:none');
   assert.ok(
     !['hidden', 'collapse'].includes(declAt(css, NARROWEST, THUMB, 'visibility', { required: false })),
@@ -1305,7 +1334,7 @@ const declAt = (css, width, selector, prop, { required = true, env = {} } = {}) 
 /**
  * Every `appearance` / `-webkit-appearance` / `-moz-appearance` / `all`
  * declaration in already-uncommented CSS, with the selector of the block that
- * holds it, whatever @media / @supports it sits in and however it is cased.
+ * holds it, and `atRule`: the outermost enclosing at-rule prelude (or null), whatever @media / @supports it sits in and however it is cased.
  * Deliberately NOT built on `rulesAt`: that drops blocks whose media condition
  * is false at one width, and an allowlist must see every block that can apply
  * at ANY width. Found by scanning for the property, then walking back to the
@@ -1331,7 +1360,25 @@ const nativeWidgetDecls = (text) => {
     let start = open;
     while (start > 0 && !';{}'.includes(text[start - 1])) start -= 1;
     const selector = text.slice(start, open).trim().replace(/\s+/g, ' ');
+    // The OUTERMOST enclosing at-rule prelude, or null when the block sits
+    // directly at the top level (so it applies at every width).
+    let atRule = null;
+    let d2 = 0;
+    for (let j = open - 1; j >= 0; j -= 1) {
+      if (text[j] === '}') d2 += 1;
+      else if (text[j] === '{') {
+        if (d2 > 0) {
+          d2 -= 1;
+          continue;
+        }
+        let s2 = j;
+        while (s2 > 0 && !';{}'.includes(text[s2 - 1])) s2 -= 1;
+        const prelude = text.slice(s2, j).trim().replace(/\s+/g, ' ');
+        if (prelude.startsWith('@')) atRule = prelude;
+      }
+    }
     out.push({
+      atRule,
       selector,
       prop: m[1].toLowerCase(),
       value: m[2].replace(/!\s*important\s*$/i, '').trim().toLowerCase(),
@@ -1951,6 +1998,14 @@ test('declarations / nativeWidgetDecls: CSS is case-insensitive, and the allowli
     ['.a | appearance | none', '.b input | -webkit-appearance | auto', '.c, .d | all | revert'],
   );
   assert.deepEqual(nativeWidgetDecls('.a { transition: all 1s; --x-all: 1; } .all:hover { color: red }'), []);
+  // at-rule nesting is reported, however deep, and top-level blocks report null
+  assert.deepEqual(
+    nativeWidgetDecls(
+      '.t { appearance: none } @media (max-width: 400px) { .f { appearance: none } }' +
+        ' @supports (x: y) { @media print { .g { all: unset } } } .u { appearance: none }',
+    ).map((r) => r.atRule),
+    [null, '@media (max-width: 400px)', '@supports (x: y)', null],
+  );
 });
 
 // ═══ Design-system coupling ══════════════════════════════════════════════════

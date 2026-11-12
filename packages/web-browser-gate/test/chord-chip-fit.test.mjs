@@ -74,19 +74,27 @@ const LOG = process.env.CHORD_GATE_LOG === '1';
 // even though the glyphs would still fit inside the padding (screenshot-verified
 // on the N.C. chip: it paints "N...." not "N.C.").
 //
-//   0.25 px.
-//   Floor: layout is in 1/64 px units (0.015625). The worst protrusion on
-//          UNMODIFIED chord chips across all viewports, datasets and zoom stops
-//          is 0.0156 px, i.e. one LayoutUnit (PR #212 round 3 saw the same 1/64
-//          residue on 5 chips). 0.25 is 16x that, so rounding cannot flap it,
-//          and it should not move with the installed font: the residue is
-//          layout-unit rounding, not glyph shape.
-//   Ceiling: the smallest real defect this gate was built to see is a bare <b>
-//          around the label, 2.0 px at the ceiling. 0.25 is 8x below it.
-//   Between: anything from 0.25 px to 2 px is a real, if small, truncation, and
-//          is reported.
-// The measurements behind these two numbers are in the PR body.
-export const TOLERANCE_PX = 0.25;
+//   0.02 px.  Layout is in 1/64 px units (LayoutUnit, 0.015625 px): 0.02 is
+//   above ONE unit and below TWO.
+//   Floor:   worst protrusion on UNMODIFIED chord chips across all viewports,
+//            datasets and zoom stops is 0.0156 px, one LayoutUnit.
+//   Ceiling: there is NO gap between "fits" and "clipped" above that unit.
+//            Round 1 of this PR set 0.25 and argued a ceiling from "bare <b>
+//            overflows by at least 1.734 px"; that figure came from printing
+//            the three worst chips. A reviewer's full dump of the bare-<b>
+//            mutant has 1,220 chord chips protruding in a CONTINUUM from
+//            0.0156 px to 5.0938 px, 157 of them at or below 0.25 px, and
+//            screenshots of the ones between 0.047 and 0.219 px all paint an
+//            ellipsis ("D:aug" at 0.047 px paints "D:a..."). A mutant that adds
+//            0.1 px of padding per side passed the 0.25 gate 10/10 while
+//            Chromium painted "C:m..." for "C:maj6" (0.147 px), "A..." for
+//            "A:5" (0.225 px). Measured threshold at which Chromium starts to
+//            ellipsize: between 0.022 px (paints in full) and 0.038 px (paints
+//            "G#:minmaj7/..."). So the tolerance is the layout-unit floor, not
+//            a number with headroom: anything the browser can see is a failure.
+// If this ever flaps on a clean tree, the finding is that the residue moved,
+// not that the constant should be widened back: say so, with the figure.
+export const TOLERANCE_PX = 0.02;
 
 // KNOWN DEFECT, NOT A TOLERANCE. `N.C.` and `?` chips (kind none / unknown)
 // carry a 1px border on each side (restChipStyle / unknownChipStyle), and the
@@ -96,12 +104,25 @@ export const TOLERANCE_PX = 0.25;
 // "N.C."). Found by this gate on PR #212's head at 360px, slider 250/1000, chip
 // 48.641px wide: text 32.266px in a 30.641px content box (1.625px over).
 // This is a real, visible defect and it is NOT fixed here (this PR changes no
-// product code). The gate allows exactly the two declared border widths for
-// those two kinds and nothing else, still FAILS on anything bigger, and prints
-// every chip it is excusing so the number cannot quietly grow. Delete this
-// constant when the component budgets the border; the gate then holds
-// every chip to TOLERANCE_PX.
+// product code). The worst figure seen anywhere is 2.0156 px: two 1px borders
+// plus one LayoutUnit. The allowance applies ONLY to a chip whose kind AND text
+// are exactly ('none','N.C.') or ('unknown','?'): those texts are constants of
+// the product, so a real chord cannot inherit the excuse through product logic,
+// and a regression on such a chip that changes its text (or any other chip's
+// kind) is held to TOLERANCE_PX like everything else. Every chip it excuses is
+// printed (`# KNOWN DEFECT`). Delete this constant when the component budgets
+// the border.
 export const NON_CHORD_BORDER_ALLOWANCE_PX = 2;
+const EXCUSED_TEXT = { none: 'N.C.', unknown: '?' };
+
+// INVISIBLE TEXT. A name that is present, correctly sized, and painted at
+// opacity 0 or `color: transparent` fits perfectly and shows nothing (the
+// component used to render ticks that way). Rendering proves presence, not
+// visibility, so each measured chip must also be visible, have a non-zero text
+// box, and paint with effective alpha (text colour alpha x the product of every
+// ancestor's opacity) of at least MIN_PAINT_ALPHA. This is a "is it painted at
+// all" floor, NOT a contrast check: it does not know the background.
+export const MIN_PAINT_ALPHA = 0.4;
 
 // ---------------------------------------------------------------------------
 // FONT
@@ -113,21 +134,36 @@ export const NON_CHORD_BORDER_ALLOWANCE_PX = 2;
 // across the alphabet) only exists in a font whose digits are proportional.
 // The first CI run of this gate used the runner's ambient font, DejaVu Sans
 // (whose digits are already tabular), and PASSED on `v3/main` where the same
-// gate in Inter fails 7 of 9 -- a gate that is green for the wrong font is
+// gate in Inter fails 7 of 10 tests -- a gate that is green for the wrong font is
 // vacuous for that whole class. So the page pins Inter (@fontsource/inter,
-// version-pinned in this package's lockfile entry, OFL) via @font-face and
-// forces it with `* { font-family: GateInter !important }`; the gate then
-// asserts, via CDP, that Chromium actually painted the chips in Inter. The
-// component still reads its family off the element it renders in, exactly as in
-// production; only the environment's font is fixed. Inter is what a user whose
-// system font is Inter-like gets; it is not a claim about every user's font.
+// version-pinned in this package's lockfile entry, OFL) via @font-face.
+//
+// WHERE IT IS PINNED IS THE POINT. Round 1 forced it with
+// `* { font-family: GateInter !important }`, which overrode EVERY element,
+// chips included, so any non-!important family a defect set on a chip (a
+// stylesheet `button{font-family:ui-monospace}`, a `chipStyle` fontFamily, an
+// effect doing `b.style.fontFamily`) was erased before it was measured: five
+// such mutants were 10/10 green here while 39 names clipped in the system font.
+// Now ONLY the overlay container (`chord-overlay`, which sets its own
+// `fontFamily` inline and is what the chips and the canvas measurer inherit
+// from) is pinned, so the chips inherit exactly as they do in production, and
+// the gate ASSERTS, on EVERY measured chip, that the computed family is the
+// pinned one (or, with CHORD_GATE_FONT=system, the container's own) and that the
+// computed font-style is `normal`. The pin ships no italic face and globals.css
+// sets `font-synthesis:none`, so an italic chip would paint upright Inter at the
+// same width and fit; the per-chip style assertion is what sees it. The CDP
+// check additionally asserts that Inter actually painted a chip. Inter is what a
+// user whose system font is Inter-like gets; it is not a claim about every
+// user's font.
 const PIN_FONT = process.env.CHORD_GATE_FONT !== 'system';
 const FONT_DIR = join(dirname(require.resolve('@fontsource/inter/package.json')), 'files');
 const FONT_FILES = { 400: 'inter-latin-400-normal.woff2', 500: 'inter-latin-500-normal.woff2', 600: 'inter-latin-600-normal.woff2', 700: 'inter-latin-700-normal.woff2' };
 const FONT_CSS =
   Object.keys(FONT_FILES)
     .map((w) => `@font-face{font-family:GateInter;font-weight:${w};font-style:normal;src:url(/font-${w}.woff2) format('woff2')}`)
-    .join('') + '*{font-family:GateInter,sans-serif !important}';
+    .join('') + '[data-testid="chord-overlay"]{font-family:GateInter,sans-serif !important}';
+// What getComputedStyle(chip).fontFamily reads when the pin is inherited intact.
+const PINNED_FAMILY = 'GateInter, sans-serif';
 
 // Viewports. 1280 and 390 are the two where PR #212 round 3's figures differed
 // most (13 chips clipped at 1280, 29 at 390 for one and the same mutation).
@@ -249,9 +285,28 @@ function measureInPage() {
   const chips = [...tl.querySelectorAll('[data-testid^="chord-chip-"]')];
   const px = (v) => parseFloat(v) || 0;
   const rows = [];
+  const overlayFamily = getComputedStyle(document.querySelector('[data-testid="chord-overlay"]')).fontFamily;
+  let primaryChips = 0;
+  let ticks = 0;
+  let emptyNonTick = 0;
+  const alphaOf = (col) => {
+    const m = /^rgba?\(([^)]*)\)$/.exec(col);
+    if (!m) return 1;
+    const parts = m[1].split(/[ ,/]+/).filter(Boolean);
+    return parts.length > 3 ? Number(parts[3]) : 1;
+  };
   for (const c of chips) {
-    if (!c.textContent) continue; // a tick has no text node: nothing to clip
+    if (/^chord-chip-\d+$/.test(c.dataset.testid)) primaryChips++;
+    if (c.dataset.density === 'tick') ticks++;
+    if (!c.textContent) {
+      // a tick has no text node: nothing to clip. A chip that CLAIMS to be
+      // full/tight but has no text is a different thing -- a name that vanished.
+      if (c.dataset.density !== 'tick') emptyNonTick++;
+      continue;
+    }
     const cs = getComputedStyle(c);
+    let opacity = 1;
+    for (let e = c; e; e = e.parentElement) opacity *= Number(getComputedStyle(e).opacity);
     const r = c.getBoundingClientRect();
     const contentL = r.left + px(cs.borderLeftWidth) + px(cs.paddingLeft);
     const contentR = r.right - px(cs.borderRightWidth) - px(cs.paddingRight);
@@ -260,6 +315,21 @@ function measureInPage() {
     const range = document.createRange();
     range.selectNodeContents(c);
     const t = range.getBoundingClientRect(); // union of every text box in the chip
+    // For the two excusable non-chord chips only: how wide the same text is in a
+    // bare span carrying the chip's OWN font properties. A chip whose text is
+    // wider than that (a <b>, a span with letter-spacing, a heavier weight) has
+    // a regression that is not the known border defect, and gets no excuse.
+    let probeW = null;
+    if ((c.dataset.kind === 'none' && c.textContent === 'N.C.') || (c.dataset.kind === 'unknown' && c.textContent === '?')) {
+      const sp = document.createElement('span');
+      sp.textContent = c.textContent;
+      for (const k of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontVariantNumeric', 'fontFeatureSettings', 'fontKerning', 'letterSpacing', 'wordSpacing', 'textTransform'])
+        sp.style[k] = cs[k];
+      sp.style.cssText += ';position:absolute;left:0;top:0;white-space:nowrap;visibility:hidden';
+      c.parentElement.appendChild(sp);
+      probeW = sp.getBoundingClientRect().width;
+      sp.remove();
+    }
     // The vertical clip edge of the strip: the scroller hides overflow-y.
     const scroller = c.closest('.co-scroll') || tl;
     const s = scroller.getBoundingClientRect();
@@ -280,6 +350,12 @@ function measureInPage() {
       scrollerOverBottom: t.bottom - s.bottom,
       scrollerOverTop: s.top - t.top,
       scrollOver: c.scrollWidth - c.clientWidth,
+      probeW,
+      fontFamily: cs.fontFamily,
+      fontStyle: cs.fontStyle,
+      visibility: cs.visibility,
+      display: cs.display,
+      paintAlpha: alphaOf(cs.color) * opacity,
     });
   }
   const slider = document.querySelector('[data-testid="zoom-slider"]');
@@ -288,6 +364,10 @@ function measureInPage() {
     layout: tl.dataset.layout,
     sliderValue: slider ? slider.value : null,
     totalChips: chips.length,
+    primaryChips,
+    ticks,
+    emptyNonTick,
+    overlayFamily,
     rows,
   };
 }
@@ -425,9 +505,9 @@ for (const width of VIEWPORTS) {
           { timeout: 30000 },
         );
 
-        // Which font actually painted the chips. Recorded, not asserted: the
-        // claim is "text fits in THIS browser's font", and the reader needs to
-        // know which font that was.
+        // Which font actually painted the chips. Recorded here (and asserted,
+        // in pinned mode, below): the claim is "text fits in THIS browser's font",
+        // and the reader needs to know which font that was.
         const cdp = await page.context().newCDPSession(page);
         await cdp.send('DOM.enable');
         await cdp.send('CSS.enable');
@@ -441,14 +521,9 @@ for (const width of VIEWPORTS) {
               .map((f) => `${f.familyName}x${f.glyphCount}`)
               .join(',')
           : 'no full-density chip';
-        if (PIN_FONT)
-          assert.match(
-            font,
-            /^Inter/,
-            `the pinned font did not paint the chips (platform fonts: ${font}); every width below would be for the wrong font`,
-          );
-
         const failures = [];
+        const styleFailures = [];
+        const countFailures = [];
         let worstChord = { px: -Infinity, desc: '' };
         let worstNonChord = { px: -Infinity, desc: '' };
         const excused = [];
@@ -463,14 +538,45 @@ for (const width of VIEWPORTS) {
           if (stop === 1000)
             assert.ok(
               m.rows.length > 0,
-              `no chip with a text node was measured at the zoom ceiling (${m.totalChips} chips) @ ${ctx} -- a gate that measured nothing proves nothing`,
+              `GATE-FAIL no chip with a text node was measured at the zoom ceiling (${m.totalChips} chips) @ ${ctx} -- a gate that measured nothing proves nothing`,
             );
+          // THE GATE MUST HAVE LOOKED AT THE DATASET. A mutant that makes most
+          // names disappear used to leave the four alphabet tests green (text
+          // chips 10,524 -> 6,077): fewer chips measured is fewer chances to
+          // fail. So the count is checked against the data, not against itself.
+          //  * every segment has exactly one primary chip, at every zoom;
+          //  * a chip that claims to be full/tight has its name (a vanished
+          //    name is not a tick).
+          // (Not asserted: "no ticks at the ceiling". On v3/main the ceiling is
+          // 80 px/s and 1,018 short chips are legitimately ticks there; that is
+          // product behaviour, not this gate's business.)
+          if (m.primaryChips !== ds.payload.segments.length)
+            countFailures.push(`${m.primaryChips} primary chips for ${ds.payload.segments.length} segments @ ${ctx}`);
+          if (m.emptyNonTick > 0)
+            countFailures.push(`${m.emptyNonTick} chip(s) claim a full/tight density but have no text @ ${ctx}`);
           perPass.push(`${stop === null ? 'default' : stop}:${m.rows.length}/${m.totalChips}`);
           measuredTotal += m.rows.length;
           for (const row of m.rows) {
             const w = worstOf(row);
-            const nonChord = row.kind === 'none' || row.kind === 'unknown';
+            // Excused ONLY if kind AND text are the product's own constants.
+            // ... AND only if its text is as wide as that text is in the chip's
+            // own font (see probeW): the known defect is a missing border
+            // budget, which does not change the width of the text.
+            const nonChord =
+              EXCUSED_TEXT[row.kind] !== undefined &&
+              row.text === EXCUSED_TEXT[row.kind] &&
+              row.probeW !== null &&
+              Math.abs(row.textW - row.probeW) <= TOLERANCE_PX;
             const allow = TOLERANCE_PX + (nonChord ? NON_CHORD_BORDER_ALLOWANCE_PX : 0);
+            const wantFamily = PIN_FONT ? PINNED_FAMILY : m.overlayFamily;
+            if (row.fontFamily !== wantFamily)
+              styleFailures.push(`${row.id} "${row.text}" font-family is [${row.fontFamily}], want [${wantFamily}] (inherited from the overlay) @ ${ctx}`);
+            if (row.fontStyle !== 'normal')
+              styleFailures.push(`${row.id} "${row.text}" font-style is [${row.fontStyle}], want normal (no italic face is shipped, so an italic chip would measure as upright) @ ${ctx}`);
+            if (row.visibility !== 'visible' || row.display === 'none' || row.textW <= 0 || row.textH <= 0)
+              styleFailures.push(`${row.id} "${row.text}" is not painted (visibility ${row.visibility}, display ${row.display}, text box ${row.textW}x${row.textH}) @ ${ctx}`);
+            else if (row.paintAlpha < MIN_PAINT_ALPHA)
+              styleFailures.push(`${row.id} "${row.text}" is painted at effective alpha ${row.paintAlpha.toFixed(3)} < ${MIN_PAINT_ALPHA} (colour alpha x ancestor opacity) @ ${ctx}`);
             if (!nonChord && w.px > worstChord.px) worstChord = { px: w.px, desc: describeRow(row, ctx) };
             if (nonChord && w.px > worstNonChord.px) worstNonChord = { px: w.px, desc: describeRow(row, ctx) };
             if (w.px > allow) failures.push({ row, ctx, px: w.px });
@@ -489,11 +595,32 @@ for (const width of VIEWPORTS) {
               `clipped=${failures.length} excused=${excused.length}\n   worst chord: ${worstChord.desc}`,
           );
         assert.deepEqual(pageErrors, [], 'the page threw');
+        if (countFailures.length)
+          assert.fail(
+            `GATE-FAIL the gate did not look at the dataset (${countFailures.length} finding(s)):\n` +
+              countFailures.slice(0, 8).map((l) => '  ' + l).join('\n'),
+          );
+        if (styleFailures.length)
+          assert.fail(
+            `GATE-FAIL ${styleFailures.length} chip measurement(s) are not of the chip as it ships (font/style/visibility), ` +
+              `so the widths measured are not trustworthy. First ${Math.min(8, styleFailures.length)}:\n` +
+              styleFailures.slice(0, 8).map((l) => '  ' + l).join('\n'),
+          );
+        // Checked AFTER the dataset and per-chip style findings, which say what is
+        // actually wrong; a chip whose name vanished has no platform font at all
+        // and used to be reported here as a font problem.
+        if (PIN_FONT)
+          assert.match(
+            font,
+            /^Inter/,
+            `GATE-FAIL the pinned font did not paint the chips (platform fonts: ${font}); every width below would be for the wrong font`,
+          );
+
         if (failures.length) {
           failures.sort((a, b) => b.px - a.px);
           const lines = failures.slice(0, 12).map((f) => '  ' + describeRow(f.row, f.ctx));
           assert.fail(
-            `${failures.length} chord chip(s) have text sticking out of the chip by more than ${TOLERANCE_PX}px ` +
+            `GATE-FAIL ${failures.length} chord chip(s) have text sticking out of the chip by more than ${TOLERANCE_PX}px ` +
               `(font: ${font}). Worst ${Math.min(12, failures.length)}:\n${lines.join('\n')}`,
           );
         }

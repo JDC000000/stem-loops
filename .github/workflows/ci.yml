@@ -509,6 +509,13 @@ jobs:
     # nothing. No path filter, on purpose: a required check that does not run
     # for some PRs waits forever.
     #
+    # MERGE ORDER (a transition, not a steady state): this job is RED on any tree
+    # that lacks PR #212's chip-fit fixes, `v3/main` included -- correctly. So
+    # (1) merge #212, (2) rebase this PR onto it, (3) see this job GREEN in CI
+    # for the first time, (4) add the check to the ruleset in that same sitting.
+    # Merged before #212 and left non-required it is red on every PR, the
+    # permanently-red-smoke pattern; required before #212 it blocks every PR.
+    #
     # Chromium: pinned to the Playwright version in pnpm-lock.yaml (1.63.0 ->
     # Chromium build 1243). `playwright install` MUST be the repo's own copy
     # (pnpm exec), never a global or `npx playwright@latest`, or the browser it

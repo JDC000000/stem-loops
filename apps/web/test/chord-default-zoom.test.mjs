@@ -1180,8 +1180,11 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
 //     because that is where the measurer READS the family from; between the wrap
 //     and the chip it is invisible to the measurer and therefore forbidden.
 //   - nothing may carry a class but `co-scroll`, and the one <style> the overlay
-//     renders may declare only scrollbar properties, so a stylesheet cannot
-//     carry what an inline style may not.
+//     renders is checked by PROPERTY NAME against STYLE_ELEMENT_PROPS (and its
+//     selector only by `startsWith('.co-scroll')`). That list is NOT scrollbar-only
+//     and no value is read: it allowlists `border`, `height`, `background` and
+//     `border-radius` by name, so a stylesheet CAN carry a value an inline style
+//     may not (`.co-scroll button{border:4px solid transparent !important}` passes).
 // A property the allowlist does not know FAILS, with its name, and the fix is a
 // deliberate edit here -- which is where a reviewer sees it -- not a keyword.
 //
@@ -1189,10 +1192,49 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
 // (`__reactProps$...`.style) carry every key the component wrote, including the
 // vendor-prefixed and unknown ones happy-dom's `style` setter DROPS
 // (`WebkitTextSizeAdjust` and `fontSmooth` serialise to nothing). The serialised
-// `style` attribute carries what actually landed on the element, including
-// anything an effect set imperatively through a ref. The gate takes the union.
+// `style` attribute carries what actually landed on the element, so a PROPERTY
+// NAME an effect set imperatively through a ref (`el.style.x = ...`) is seen.
+// That is true of NAMES and not of VALUES: only `fontSize` is value-checked on
+// both channels. `height` and `top` are value-tied on both too (see below);
+// `padding`, `border`, `boxSizing` and `whiteSpace` are value-tied on the React
+// channel ONLY, so an effect that sets `chip.style.padding = '0 14px'` or
+// `chip.style.border = '4px solid transparent'` passes. The gate takes the union
+// of names; it does not take the union of values.
 //
-// WHAT IT CANNOT SEE, stated so it is not read as more: happy-dom resolves no
+// WHAT THIS GATE DOES NOT COVER -- read this before concluding a property is safe.
+//
+//   1. THE STYLESHEET VALUE CHANNEL. The overlay's <style> is checked by property
+//      name only. Round 3 (Chromium): adding `.co-scroll button{border:4px solid
+//      transparent !important}` to SCROLLBAR_CSS left the suite green and clipped
+//      13 chips (worst 5.266px at 1280); a selector variant reached 29 chips /
+//      7.734px at 390. NOT closed here.
+//   2. THE IMPERATIVE VALUE CHANNEL. Values set through a ref (`chip.style.*`) are
+//      read only for `fontSize`. Round 3: an effect setting `padding = '0 14px'`
+//      clipped 44 chips (worst 22.500px at 1280; 68 / 25.203px at 390); the same
+//      with `border = '4px solid transparent'` clipped 13 / 5.266px (29 / 7.734px
+//      at 390). NOT closed here.
+//   3. ANYTHING THAT DEPENDS ON RENDERED TEXT WIDTH. happy-dom cannot measure
+//      rendered text: `getBoundingClientRect` is 0 and nothing here lays out a
+//      glyph. Fit is decided by the PRODUCTION MEASURER over pinned canvas widths,
+//      which is a model of the browser, not the browser. Closing this needs a
+//      REAL-BROWSER WIDTH GATE (mount the overlay in Chromium, compare each chip's
+//      scrollWidth to its clientWidth). THIS REPO DOES NOT HAVE ONE. Every false
+//      green found in rounds 1-3 was found by a reviewer launching Chromium by
+//      hand, which CI never does. It belongs to the chord sizing story as an
+//      ACCEPTANCE CRITERION, not here.
+//
+// GATED-KEY INVENTORY (what a chip's inline style is held to), as of round 4:
+//   tied by VALUE:     fontSize (both channels); height, top (both channels, to the
+//                      chip's container); padding, border, boxSizing, whiteSpace
+//                      (React channel only)
+//   checked elsewhere: width, color, opacity, background (other tests in this file)
+//   NAME-allowlisted:  left, position, overflow, textOverflow, borderRadius and its
+//                      two longhands (borderTopLeftRadius, borderBottomLeftRadius),
+//                      cursor -- any value passes
+// A test title in this file is a claim about THIS list. If a property is not above
+// as tied, no test here guards its value.
+//
+// ALSO: happy-dom resolves no
 // cascade, so a rule in a stylesheet outside this component (globals.css's
 // `button { font: inherit }`, a browser setting, a user stylesheet) is
 // invisible here. The sizes that matter are measured in real Chromium and
@@ -1201,6 +1243,13 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
 
 // Custom properties (`--x`) keep their spelling; everything else, vendor prefixes included, is camelCased.
 const kebabToCamel = (n) => (n.startsWith('--') ? n : n.replace(/-([a-z])/g, (_m, c) => c.toUpperCase()));
+
+/** A CSS length as one comparable string: 36 and '36px' agree; 0, '0' and '0px' agree; absent stays undefined. */
+function normPx(v) {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (typeof v === 'number') return `${v}px`;
+  return /^-?0+(\.0+)?(px)?$/.test(String(v).trim()) ? '0px' : String(v).trim();
+}
 
 /** Everything an element declares inline, camelCased, from both channels. */
 function declaredProps(el) {
@@ -1278,6 +1327,26 @@ function fontChannelViolations(dom, chips) {
     if (reactStyle && reactStyle.boxSizing !== 'border-box') out.push(`${id}: boxSizing is "${reactStyle.boxSizing}"`);
     const wantPad = density === 'full' ? `0 ${CHIP_FULL_PAD_PX / 2}px` : '0';
     if (reactStyle && reactStyle.padding !== wantPad) out.push(`${id}: padding is "${reactStyle.padding}", want "${wantPad}"`);
+    // HEIGHT AND TOP, tied the way padding is: to a value the chip does not choose
+    // for itself. A chip FILLS ITS ROW CONTAINER: `top` is 0 and `height` is the
+    // height its parent declares (the strip's chip band and each wrapped row are
+    // both sized `chipH`; the chip is handed the same number). The sizing pass will
+    // edit exactly these values, so an accidental edit is likely, not adversarial.
+    // Measured in Chromium before this check existed, both with the suite green:
+    // `height: heightPx / 4` cropped every label (15/15 at 1280, 114/114 at 390);
+    // `top: 60` put all 15 chips below the scroller box, none visible.
+    // NOT tied to a literal 36 / 44: CHIP_H_STRIP and CHIP_H_WRAP are not exported
+    // and are meant to move. Changing the container's height moves both together;
+    // changing only the chip's does not pass. Both channels are read.
+    const parentStyle = chip.parentElement ? declaredProps(chip.parentElement).reactStyle : null;
+    const wantHeight = parentStyle ? normPx(parentStyle.height) : undefined;
+    if (wantHeight === undefined) out.push(`${id}: its parent declares no height, so the chip's height has nothing to be tied to`);
+    else {
+      if (normPx(chip.style.height) !== wantHeight) out.push(`${id}: height is "${chip.style.height}", want its container's "${wantHeight}"`);
+      if (reactStyle && normPx(reactStyle.height) !== wantHeight) out.push(`${id}: React height is "${reactStyle.height}", want its container's "${wantHeight}"`);
+    }
+    if (normPx(chip.style.top) !== '0px') out.push(`${id}: top is "${chip.style.top}", want "0" (the chip fills its row container)`);
+    if (reactStyle && normPx(reactStyle.top) !== '0px') out.push(`${id}: React top is "${reactStyle.top}", want "0" (the chip fills its row container)`);
     // BORDER, tied the way padding is: a border is box space taken from the content
     // width the measurer decided with (a 4px one clipped 7 chips 6px at the ceiling
     // while `border` was on the allowlist with its value unchecked). A chord chip has
@@ -1414,7 +1483,7 @@ test('the allowlist gate meets every density and every kind, so it is not a vacu
   });
 });
 
-test('default view: every chord chip on the timeline shows a READABLE label', async () => {
+test('default view: every chip has a visible declared colour, and a declared width and font size that fit its label under the production measurer', async () => {
   await withDom(async (dom) => {
     const { rows } = await mountOverlay(dom, { containerPx: 872 });
 
@@ -1707,7 +1776,7 @@ test('the narrow default puts chord names on the phone, not ticks', () => {
   assert.ok(pps > minPps, `the narrow default collapsed onto its minimum (${pps} vs ${minPps})`);
 });
 
-test('wrapped render: nothing on the phone timeline is invisible or mis-sized', async () => {
+test('wrapped render: no phone chip has an invisible declared colour or a declared width or font size too small for its label (measurer-based, not rendered)', async () => {
   await withDom(async (dom) => {
     const { rows } = await mountOverlay(dom, { containerPx: NARROW_CONTAINER_PX });
     const timeline = dom.find('[data-testid="chord-timeline"]');

@@ -122,6 +122,14 @@ const CHROMIUM_CANVAS_16PX = {
   // that tabular digits widened by up to 15px.
   'A/6': 27.0391, 'A#:hdim7/11': 90.7656, 'Ab:hdim7/b11': 99.6875,
   'C:11': 29.3125, 'C#:11/11': 58.2266, 'Bb:add11/b3': 91.9141,
+  // Added with round 6. Eight advance-table entries ('0' '2' '4' '8' '9' 'g'
+  // 's' 'u') appeared in NO label above, so their values were defended by
+  // nothing while a comment in the helpers called every entry load-bearing:
+  // setting '9' (or 's') to 1.0 left the suite green with 'C:maj9' estimated
+  // at 44.3px against 53.1px in Chromium. Measured in Chromium 1280x900 on
+  // the same stack, canvas and a DOM span, 16px.
+  'C:maj9': 53.0938, 'G:sus4': 53.2344, 'D:sus2': 52.2656, 'B:9/10': 47.3672,
+  'Eb:aug7/8': 77.0,
 };
 // The SAME labels measured a second way: a hidden <span> in the DOM, which is
 // what the chip actually is. A canvas pin is only as good as whoever typed it;
@@ -136,6 +144,8 @@ const CHROMIUM_DOM_16PX = {
   'G:7/5': 41.0938, 'Ab:maj7/3': 77.0313, 'N.C.': 32.2656, '?': 8.1875,
   'A/6': 27.0469, 'A#:hdim7/11': 90.7656, 'Ab:hdim7/b11': 99.6875,
   'C:11': 29.3125, 'C#:11/11': 58.2344, 'Bb:add11/b3': 91.9219,
+  'C:maj9': 53.0938, 'G:sus4': 53.2344, 'D:sus2': 52.2656, 'B:9/10': 47.375,
+  'Eb:aug7/8': 77.0,
 };
 // The pins above are 16px measurements. CHIP_FONT_PX is asserted equal to this
 // in its own test, so changing the constant fails by NAME instead of letting
@@ -1014,13 +1024,99 @@ function parseFontPx(value) {
   return NaN;
 }
 
+// ---------------------------------------------------------------------------
+// THE CANVAS THE COMPONENT ACTUALLY ASKS FOR
+// ---------------------------------------------------------------------------
+//
+// ROOT CAUSE OF ROUND 6. happy-dom's getContext('2d') is null, so the mounted
+// component ALWAYS took ChordOverlay's `estimateLabelPx` fallback and the
+// `makeCanvasMeasurer(ctx, { fontFamily: cs.fontFamily, fontWeight:
+// cs.fontWeight })` call it makes in every real browser ran in no test. The
+// "production measurer" in the titles below was PROD_MEASURE: a factory
+// exercised by the tests themselves over a context the tests supplied, never by
+// the component. Eight mutants survived at an unchanged count, the worst
+// replacing `cs.fontFamily` with 'serif' (31 chips clipped in Chromium, the
+// worst by 5.656px; suite green).
+//
+// So the component is now mounted with a 2D context. `getContext` is patched on
+// the prototype that owns it (restored in mountOverlay's finally, which the
+// harness's pollution check requires) and returns a context that
+//   - records every font string the component assigned (`fonts`) and every
+//     (font, text) it was asked to measure (`measured`), so a test can assert
+//     WHAT FONT the component told canvas to measure with;
+//   - serves a width only through `widthOf`, which receives the weight, size
+//     and family it parsed out of that string.
+// Its default `widthOf` is the Chromium-pinned model: it serves the pins ONLY
+// for the family the overlay container declares and for weight 400, and
+// otherwise answers NaN (the measurer then falls back to the table, and the
+// font lands in BAD_FONTS, which the last test in the file reports).
+/** Half a unit in happy-dom's 4th decimal, doubled: the most a serialised px length can read low. */
+const STYLE_PX_EPS = 1e-4;
+const CANVAS_FONT_RE = /^(\S+) (\d+(?:\.\d+)?)px (.+)$/;
+
+/** The family ChordOverlay's container declares, read off the live element. */
+function overlayFamily(w) {
+  const el = w.document.querySelector('[data-testid="chord-overlay"]');
+  return el ? el.style.fontFamily : '';
+}
+
+function pinnedWidthOf(w) {
+  return (text, px, { weight, family, font }) => {
+    if (text === '') return 0;
+    if ((weight !== '400' && weight !== 'normal') || family !== overlayFamily(w)) {
+      BAD_FONTS.add(font);
+      return NaN;
+    }
+    const pin = CHROMIUM_CANVAS_16PX[text];
+    if (pin === undefined) UNPINNED_LABELS.add(text);
+    return pin === undefined ? NaN : (pin * px) / PIN_FONT_PX;
+  };
+}
+
+function installCanvas(dom, widthOf) {
+  const w = dom.window;
+  const proto = w.HTMLCanvasElement.prototype;
+  const desc = Object.getOwnPropertyDescriptor(proto, 'getContext');
+  const rec = { contexts: 0, fonts: [], measured: [] };
+  const serve = widthOf ?? pinnedWidthOf(w);
+  proto.getContext = function getContext(kind) {
+    if (kind !== '2d') return null;
+    rec.contexts += 1;
+    let font = '10px sans-serif';
+    return {
+      get font() { return font; },
+      // Canvas IGNORES a shorthand it cannot parse and keeps the old value.
+      set font(v) {
+        if (/(?:^|\s)\d+(?:\.\d+)?px(?:\s|$)/.test(String(v))) {
+          font = String(v);
+          rec.fonts.push(font);
+        }
+      },
+      measureText(text) {
+        const m = CANVAS_FONT_RE.exec(font);
+        rec.measured.push({ font, text });
+        if (!m) return { width: NaN };
+        return { width: serve(text, Number(m[2]), { weight: m[1], family: m[3], font }) };
+      },
+    };
+  };
+  rec.restore = () => {
+    if (desc) Object.defineProperty(proto, 'getContext', desc);
+    else delete proto.getContext;
+  };
+  return rec;
+}
+
 /**
  * Mount the real component at a given container width and read every chip in
  * the timeline container. happy-dom has no layout, so the container width is
  * injected the only way the component can take one: through the element's own
  * getBoundingClientRect, which is what its ResizeObserver effect reads.
  */
-async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } = {}) {
+async function mountOverlay(
+  dom,
+  { containerPx, afterMount, beforeMount, payload = PAYLOAD, widthOf } = {},
+) {
   const React = (await import('react')).default;
   const { ChordOverlay } = await loadChordOverlay();
   const w = dom.window;
@@ -1042,6 +1138,9 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
     }
     return realRect.call(this);
   };
+  // The component is mounted WITH a 2D context, as in every real browser, so
+  // the measurer it builds is the canvas one and not the headless fallback.
+  const canvas = installCanvas(dom, widthOf);
   globalThis.fetch = async (url) => {
     const u = String(url);
     if (u.includes('/play-chords')) {
@@ -1051,6 +1150,7 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
   };
 
   try {
+    if (beforeMount) await beforeMount(dom);
     await dom.mount(React.createElement(ChordOverlay, { jobId: 'fixture-job' }));
     await dom.act();
     if (afterMount) await afterMount(dom);
@@ -1094,6 +1194,13 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
       // through the real density function with the real label. A chip that
       // paints readable text in a box too small for it is still a failure.
       const declaredW = parseFloat(chip.style.width) || 0;
+      // happy-dom serialises a px length to 4 decimals (measured: it turns
+      // '76.58590000000001px' into '76.5859px'), so a width that sits exactly on
+      // a threshold reads back up to 5e-5 low. The component decides density
+      // from the unrounded number. Only visible once the component runs the
+      // canvas measurer: the pinned F#:min7 is 60.5859, and the default zoom is
+      // derived to make that chip exactly label + padding wide.
+      const declaredWFit = declaredW + STYLE_PX_EPS;
       const labelPx = PROD_MEASURE(text, CHIP_FONT_PX);
       // ... and again at the size the CHIP ITSELF declares, read off the element
       // and not from a constant: a chip that renders at a size other than the
@@ -1107,9 +1214,9 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
           : !Number.isFinite(fontPx)
             ? false
             : chipDensityNow === 'full'
-              ? declaredW >= PROD_MEASURE(text, fontPx) + CHIP_FULL_PAD_PX
+              ? declaredWFit >= PROD_MEASURE(text, fontPx) + CHIP_FULL_PAD_PX
               : chipDensityNow === 'tight'
-                ? declaredW >= PROD_MEASURE(text, fontPx) + CHIP_TIGHT_PAD_PX
+                ? declaredWFit >= PROD_MEASURE(text, fontPx) + CHIP_TIGHT_PAD_PX
                 : false;
       return {
         fontPx,
@@ -1121,7 +1228,7 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
         color: cs.color,
         opacity: o,
         widthPx: declaredW,
-        fitsDensity: text.length === 0 ? null : chipDensity(declaredW, labelPx),
+        fitsDensity: text.length === 0 ? null : chipDensity(declaredWFit, labelPx),
         contrast: contrast(fgPainted, bgPainted),
       };
     });
@@ -1134,8 +1241,10 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
       renderedPps: Number(timeline.dataset.pxPerSec),
       hintText: hint ? hint.textContent : '',
       namelessText: namelessNode ? namelessNode.textContent : null,
+      canvas,
     };
   } finally {
+    canvas.restore();
     if (realDesc) Object.defineProperty(proto, 'getBoundingClientRect', realDesc);
     else delete proto.getBoundingClientRect;
     if (hadFetch) globalThis.fetch = realFetch;
@@ -1771,6 +1880,16 @@ test('bimodal song: the + button is live until the ceiling, then stops', async (
           `+ stopped at ${pps} rather than the job's ceiling ${stripCeiling(BIMODAL).toFixed(3)}`,
         );
         assert.equal(densityCounts(BIMODAL, pps, PROD_MEASURE).tick, 0);
+        // THE HALF THIS TEST'S TITLE PROMISES AND ITS BODY DID NOT CHECK. The
+        // loop above stops when `+` is disabled OR after 20 presses; with
+        // `disabled={!measured}` (or `canZoomFurther` always true) it ran all 20
+        // presses, parked on the clamp, and every assertion above still held.
+        // Round 6 mutants T6d and T6f survived exactly there.
+        assert.equal(
+          d.find('[data-testid="zoom-in"]').disabled,
+          true,
+          '+ is still enabled at the zoom ceiling: it is live but can go nowhere',
+        );
       },
     });
     await dom.unmountAll();
@@ -1860,6 +1979,210 @@ test('wrapped render: no phone chip has an invisible declared colour or a declar
     );
     await dom.unmountAll();
   });
+});
+
+// ---------------------------------------------------------------------------
+// 5. ROUND 6: the wiring the mounted component does in every real browser
+// ---------------------------------------------------------------------------
+
+test("the component measures with the container's own font: its family and weight reach canvas", async () => {
+  // Kills C2 (`fontFamily: cs.fontFamily` -> 'serif'; 31 chips clipped in
+  // Chromium) and its weight twin. The weight is made non-default on purpose:
+  // the container declares a family but no weight, so a body weight of 700 is
+  // inherited down to the timeline and must come out the other end.
+  await withDom(async (dom) => {
+    const widthOf = (text, px) => (text === '' ? 0 : estimateLabelPx(text, px));
+    const { canvas, timeline } = await mountOverlay(dom, {
+      containerPx: 872,
+      widthOf,
+      beforeMount: (d) => {
+        d.window.document.body.style.fontWeight = '700';
+      },
+    });
+    const family = dom.window.document.querySelector('[data-testid="chord-overlay"]').style.fontFamily;
+    assert.ok(family.length > 0, 'the overlay container declares no font family');
+    // The chips inherit from this element's ancestors, so this is the family
+    // they render in -- read off the DOM, not typed here.
+    assert.equal(dom.window.getComputedStyle(timeline).fontFamily, family);
+    assert.equal(dom.window.getComputedStyle(timeline).fontWeight, '700');
+
+    assert.ok(canvas.contexts >= 1, 'the component never asked for a 2D context, so it measured with the table');
+    assert.ok(canvas.fonts.length > 0, 'the component never set a canvas font');
+    assert.ok(canvas.measured.length > 0, 'the component never measured a label on the canvas');
+    const wrong = [...new Set(canvas.fonts)].filter((f) => {
+      const m = CANVAS_FONT_RE.exec(f);
+      return !m || m[1] !== '700' || m[3] !== family;
+    });
+    assert.deepEqual(wrong, [], 'canvas was told to measure in a font the chips do not render in');
+    // ... and at the declared chip size, not an inherited or default one.
+    assert.ok(
+      canvas.fonts.some((f) => Number(CANVAS_FONT_RE.exec(f)?.[2]) === CHIP_FONT_PX),
+      `no canvas font at CHIP_FONT_PX (${CHIP_FONT_PX}px): ${[...new Set(canvas.fonts)].join(' | ')}`,
+    );
+    await dom.unmountAll();
+  });
+});
+
+test("the zoom ceiling is derived from the component's canvas measurer, not from the headless table", async () => {
+  // Kills T4 (`zoomCeilingPxPerSec(state.runs, measureLabel, ...)` ->
+  // `estimateLabelPx`). With no canvas the two were the SAME function, so the
+  // mutant was unobservable. Here canvas serves a face 1.4x wider than the
+  // table's, so a ceiling taken from the table is 30% off and says so.
+  await withDom(async (dom) => {
+    const SKEW = 1.4;
+    const widthOf = (text, px, f) =>
+      text === '' ? 0 : f.family === overlayFamily(dom.window) ? SKEW * estimateLabelPx(text, px) : NaN;
+    const budget = { durSec: durationSec(BIMODAL), maxPaintedPx: MAX_TIMELINE_PX };
+    const want = zoomCeilingPxPerSec(BIMODAL, (l, px) => SKEW * estimateLabelPx(l, px), budget);
+    const table = zoomCeilingPxPerSec(BIMODAL, estimateLabelPx, budget);
+    assert.ok(want > table * 1.1, `the probe cannot tell the two measurers apart: ${want} vs ${table}`);
+    assert.ok(want > MAX_PX_PER_SEC, 'the ceiling must be above the floor for this to be a derivation');
+
+    const { renderedPps } = await mountOverlay(dom, {
+      containerPx: 872,
+      payload: BIMODAL_PAYLOAD,
+      widthOf,
+      afterMount: async (d) => {
+        await dragRange(d, d.find('[data-testid="zoom-slider"]'), 1000);
+      },
+    });
+    assert.ok(
+      Math.abs(renderedPps - want) <= 0.001,
+      `the slider tops out at ${renderedPps}px/sec; the canvas-derived ceiling is ${want.toFixed(3)} ` +
+        `(the table's would be ${table.toFixed(3)})`,
+    );
+    await dom.unmountAll();
+  });
+});
+
+/** What the wrapped layout shows the user right now, read out of the DOM. */
+function wrappedSnapshot(d) {
+  const tl = d.find('[data-testid="chord-timeline"]');
+  const chips = [...tl.querySelectorAll('[data-testid^="chord-chip-"]')];
+  const note = d.find('[data-testid="timeline-nameless"]');
+  return {
+    layout: tl.dataset.layout,
+    pps: Number(tl.dataset.pxPerSec),
+    chips: chips.length,
+    // CHIPS with no text node: what is on screen, not what a helper counted.
+    bare: chips.filter((c) => c.textContent.length === 0).length,
+    said: note ? Number((note.textContent.match(/(\d+)/) ?? [])[1]) : null,
+    noteText: note ? note.textContent : null,
+    plusDisabled: d.find('[data-testid="zoom-in"]').disabled,
+    minusDisabled: d.find('[data-testid="zoom-out"]')?.disabled,
+  };
+}
+
+test('wrapped layout: the hint counts the chips on screen, and at the ceiling it stops promising more zoom and + is dead', async () => {
+  // Kills T9 (hint count reverted from segments to runs), T6f (`canZoomFurther`
+  // never goes false) and T6d (`+` ignores the ceiling). The PR text says this
+  // number "has to be the one on screen"; the mutant said 383 where 408 chips
+  // had no text, and at the ceiling said nothing while 70 had no name.
+  await withDom(async (dom) => {
+    const snap = {};
+    await mountOverlay(dom, {
+      containerPx: NARROW_CONTAINER_PX,
+      payload: BIMODAL_PAYLOAD,
+      afterMount: async (d) => {
+        snap.def = wrappedSnapshot(d);
+        await dragRange(d, d.find('[data-testid="zoom-slider"]'), 1000);
+        snap.top = wrappedSnapshot(d);
+      },
+    });
+    const { def, top } = snap;
+    assert.equal(def.layout, 'wrapped');
+    assert.equal(top.layout, 'wrapped');
+
+    // At the default: the hint number IS the number of textless chips, and the
+    // names are still reachable by zooming.
+    assert.ok(def.bare > 0, 'this song is supposed to have nameless chips at the phone default');
+    assert.equal(def.said, def.bare, `hint says ${def.said}; ${def.bare}/${def.chips} chips rendered without text`);
+    assert.match(def.noteText, /zoom in to read them/);
+    assert.equal(def.plusDisabled, false, '+ is dead at the default zoom');
+
+    // At the ceiling.
+    const rowWidthPx = Math.max(120, NARROW_CONTAINER_PX - GUTTER_PX);
+    const ceiling = zoomCeilingPxPerSec(BIMODAL, PROD_MEASURE, {
+      durSec: durationSec(BIMODAL),
+      maxPaintedPx: Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx),
+    });
+    assert.ok(Math.abs(top.pps - ceiling) <= 0.001, `slider top ${top.pps} vs ceiling ${ceiling.toFixed(3)}`);
+    assert.ok(
+      top.bare > 0,
+      'the phone keeps nameless row-crossing chips at the ceiling; if this is 0 the case under test is gone',
+    );
+    assert.equal(top.said, top.bare, `hint says ${top.said}; ${top.bare}/${top.chips} chips rendered without text`);
+    assert.doesNotMatch(
+      top.noteText,
+      /zoom in/,
+      'the hint still tells the user to zoom in at the ceiling, where there is nowhere to go',
+    );
+    assert.equal(top.plusDisabled, true, '+ is enabled at the ceiling');
+    assert.equal(top.minusDisabled, false, '- should be live at the ceiling');
+    await dom.unmountAll();
+  });
+});
+
+test("wrapped layout: the DOM-row budget reaches the component's zoom ceiling", async () => {
+  // Kills T7 (`MAX_WRAP_ROWS * rowWidthPx` dropped from the component). The
+  // helper-level test above recomputes the budget itself, so it cannot see
+  // whether ChordOverlay passes it. This song's data would take the ceiling
+  // far past the row budget -- 20 chords of 20ms make every name need ~4,000
+  // px/sec over a 300s track -- so only the budget holds the phone to ~800
+  // rows of DOM.
+  await withDom(async (dom) => {
+    const runs = songOf([[0.02, 20], [299.6, 1]]);
+    const payload = {
+      segments: runs.map((r) => ({ start_sec: r.startSec, end_sec: r.endSec, label: r.label, confidence: 1 })),
+    };
+    const rowWidthPx = Math.max(120, NARROW_CONTAINER_PX - GUTTER_PX);
+    const durSec = durationSec(runs);
+    const budgeted = zoomCeilingPxPerSec(runs, PROD_MEASURE, {
+      durSec,
+      maxPaintedPx: Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx),
+    });
+    const unbudgeted = zoomCeilingPxPerSec(runs, PROD_MEASURE, { durSec, maxPaintedPx: MAX_TIMELINE_PX });
+    assert.ok(unbudgeted > budgeted * 2, `the row budget does not bind on this song (${budgeted} vs ${unbudgeted})`);
+    assert.ok(budgeted > MAX_PX_PER_SEC);
+
+    const seen = {};
+    await mountOverlay(dom, {
+      containerPx: NARROW_CONTAINER_PX,
+      payload,
+      afterMount: async (d) => {
+        await dragRange(d, d.find('[data-testid="zoom-slider"]'), 1000);
+        const tl = d.find('[data-testid="chord-timeline"]');
+        seen.layout = tl.dataset.layout;
+        seen.pps = Number(tl.dataset.pxPerSec);
+        // One row-time <span> per wrapped row (the hint's own spans carry a testid).
+        seen.domRows = [...tl.querySelectorAll('span')].filter((x) => !x.hasAttribute('data-testid')).length;
+        seen.helperRows = layoutRows(runs, rowWidthPx / seen.pps, seen.pps).length;
+      },
+    });
+    assert.equal(seen.layout, 'wrapped');
+    assert.ok(Math.abs(seen.pps - budgeted) <= 0.001, `slider top ${seen.pps}px/sec vs the budgeted ceiling ${budgeted.toFixed(3)}`);
+    assert.equal(seen.domRows, seen.helperRows, 'the row-count probe is not counting rows');
+    assert.ok(
+      seen.domRows <= MAX_WRAP_ROWS,
+      `${seen.domRows} wrapped rows are in the DOM at the ceiling (budget ${MAX_WRAP_ROWS})`,
+    );
+    await dom.unmountAll();
+  });
+});
+
+test('every advance-table entry is guarded by at least one pinned Chromium label', () => {
+  // The helpers' comment calls every table entry load-bearing. It is only true
+  // if some pinned label uses the glyph: `0 2 4 8 9 g s u` appeared in none, so
+  // setting '9' or 's' to 1.0 (round 6 mutants H8a, H8b) left the suite green
+  // with 'C:maj9' estimated 8.8px short of Chromium. The width comparison in
+  // 'the headless table and the canvas measurer both agree with Chromium' is
+  // what bites once a pinned label carries the glyph.
+  const pinned = new Set(Object.keys(CHROMIUM_CANVAS_16PX).join(''));
+  assert.deepEqual(
+    Object.keys(ADVANCE_16PX).filter((g) => !pinned.has(g)).sort(),
+    [],
+    'an advance-table glyph appears in no pinned label, so its value is defended by nothing',
+  );
 });
 
 test('every label the geometry gates measured was pinned (no silent fallback)', () => {

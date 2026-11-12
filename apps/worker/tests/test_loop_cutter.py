@@ -256,21 +256,39 @@ def test_claim_sql_matches_the_implementation():
 
 # ───────────────────── contention gates (real Postgres) ─────────────────────
 
-BYSTANDERS = 20
+BYSTANDERS = 20  # queued loop_requests; the other statuses below are one each
+
+# (status, how stale its claim is). `stale` is older than the reaper's window, `fresh` is not.
+_OTHER_BYSTANDERS = (
+    ("running", "stale"),
+    ("running", "fresh"),
+    ("done", None),
+    ("failed", None),
+)
 
 
 @pytest.fixture
 def bystander_requests():
-    """Twenty queued `loop_requests` in PUBLIC that no test in this module created.
+    """Real-shaped rows in PUBLIC that no test in this module created, in EVERY status.
 
-    They are the OLDEST rows in the table, so any statement that is not confined to
-    this module's own data (the blanket `DELETE`, the oldest-first claim, the
-    `UPDATE ... WHERE status IN (...)`) lands on them first. Teardown asserts every
-    one is still there, still queued and unclaimed, then deletes them by id --
-    only ever rows this fixture inserted.
+    Twenty `queued` loop_requests plus one each of stale `running`, fresh `running`,
+    `done` and `failed`; one uncut `loops` row on the `done` job; and the `jobs` row
+    behind each request. All are older than anything a test makes, so a statement that is
+    not confined to this module's own data (the blanket `DELETE`, the oldest-first claim,
+    `UPDATE ... WHERE status IN ('queued','running')`, the reaper's `running` -> `failed`)
+    lands on them first.
+
+    Teardown compares WHOLE ROWS (`row::text`, every column) of all three tables against a
+    snapshot taken at seed time, the way `test_cleanup.py`'s `bystander_job` compares the
+    row it seeded -- not a count filtered to the state we expect to find. A row that was
+    deleted, re-statused, re-claimed or otherwise touched fails it, whatever its status.
+    Then it deletes by id: only ever rows this fixture inserted.
+
+    NOT covered: rows in public that this fixture did not seed (e.g. other jobs), and any
+    column that changes only in a way `row::text` renders identically.
     """
     with psycopg.connect(_BASE_DB) as c:  # type: ignore[arg-type]
-        rows = c.execute(
+        queued = c.execute(
             """WITH j AS (
                    INSERT INTO public.jobs(id, youtube_url, requested_stems, loop_length_bars,
                                            status, client_ip_hash, client_fingerprint)
@@ -283,23 +301,69 @@ def bystander_requests():
                RETURNING id, job_id""",
             (BYSTANDERS,),
         ).fetchall()
+        request_ids = [r[0] for r in queued]
+        job_ids = [r[1] for r in queued]
+        loop_ids: list = []
+        for n, (status, staleness) in enumerate(_OTHER_BYSTANDERS):
+            jid = c.execute(
+                """INSERT INTO public.jobs(id, youtube_url, requested_stems, loop_length_bars,
+                                           status, client_ip_hash, client_fingerprint)
+                   VALUES(gen_random_uuid(), 'https://bystander.invalid/' || %s, ARRAY['drums'], 4,
+                          'done', 'bystander', 'bystander') RETURNING id""",
+                (f"{status}-{n}",),
+            ).fetchone()[0]
+            claimed = {
+                "stale": f"now() - make_interval(secs => {loop_cutter.STALE_SECONDS * 10})",
+                "fresh": "now()",
+                None: "NULL",
+            }[staleness]
+            rid = c.execute(
+                f"""INSERT INTO public.loop_requests(job_id, status, claimed_at, created_at)
+                    VALUES(%s, %s, {claimed}, now() - interval '1 year') RETURNING id""",
+                (jid, status),
+            ).fetchone()[0]
+            request_ids.append(rid)
+            job_ids.append(jid)
+            if status == "done":  # an uncut loop: cut_at IS NULL, on a job that has a request
+                loop_ids.append(
+                    c.execute(
+                        """INSERT INTO public.loops(id, job_id, stem, section_label, energy_class,
+                                                    start_sec, end_sec, start_bar, bar_count,
+                                                    r2_key, filename)
+                           VALUES(gen_random_uuid(), %s, 'drums', 'verse', 'mid', 1.5, 9.5, 0, 4,
+                                  %s, 'bystander.wav') RETURNING id""",
+                        (jid, f"bystander/{jid}.wav"),
+                    ).fetchone()[0]
+                )
+        owned = (
+            ("loop_requests", request_ids),
+            ("loops", loop_ids),
+            ("jobs", job_ids),
+        )
+
+        def snapshot(conn):
+            return {
+                t: conn.execute(
+                    f"SELECT id, x::text FROM public.{t} x WHERE id = ANY(%s) ORDER BY id", (ids,)
+                ).fetchall()
+                for t, ids in owned
+            }
+
+        before = snapshot(c)
         c.commit()
-    request_ids = [r[0] for r in rows]
-    job_ids = [r[1] for r in rows]
     try:
-        yield request_ids
+        yield request_ids[:BYSTANDERS]
     finally:
         with psycopg.connect(_BASE_DB) as c:  # type: ignore[arg-type]
-            survivors = c.execute(
-                "SELECT count(*) FROM public.loop_requests "
-                "WHERE id = ANY(%s) AND status = 'queued' AND claimed_at IS NULL",
-                (request_ids,),
-            ).fetchone()[0]
-            c.execute("DELETE FROM public.jobs WHERE id = ANY(%s)", (job_ids,))
+            after = snapshot(c)
+            c.execute("DELETE FROM public.jobs WHERE id = ANY(%s)", (job_ids,))  # cascades
             c.commit()
-        assert survivors == BYSTANDERS, (
-            f"{BYSTANDERS - survivors} of {BYSTANDERS} bystander loop_requests were deleted or "
-            "changed by a test in this module"
+        changed = {
+            t: sorted(set(before[t]) ^ set(after[t])) for t in before if before[t] != after[t]
+        }
+        assert not changed, (
+            "bystander rows (loop_requests in every status, an uncut loop, their jobs) were "
+            f"deleted or changed by a test in this module: {changed}"
         )
 
 
@@ -327,9 +391,13 @@ def scratch_db(bystander_requests, monkeypatch):
     these tests: they hold locks across SECOND live connections and the code under test
     opens and commits its own. A private schema is the one confinement all of them fit.
 
-    The tables are `CREATE TABLE ... (LIKE public.<t> INCLUDING ALL)`, so columns,
-    defaults, CHECKs and the partial unique `loop_requests_live_idx` are the real ones as
-    migrated, not a hand-copied imitation that could drift. `search_path` is the scratch
+    The tables are `CREATE TABLE ... (LIKE public.<t> INCLUDING ALL)`, which copies
+    columns, defaults, CHECKs and indexes -- but NOT foreign keys, RLS or grants. So the
+    columns, defaults and CHECKs track the migrated tables, and the partial unique index is
+    a RENAMED COPY of `loop_requests_live_idx` (Postgres gives the clone its own index
+    names, e.g. `loop_requests_job_id_idx`), not the original. The `job_id` foreign keys
+    are HAND-ADDED below (ON DELETE CASCADE to the scratch `jobs`), so they can drift from
+    the migration, and the scratch tables carry no RLS or grants. `search_path` is the scratch
     schema ALONE: a table this fixture failed to clone raises "relation does not exist"
     instead of quietly resolving to `public`.
     """

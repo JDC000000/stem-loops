@@ -10,7 +10,8 @@ import { getUser } from '@/lib/auth/supabase';
 import {
   checkBurstLimit,
   checkMonthlyQuota,
-  incrementJobsUsed,
+  bumpJobsUsed,
+  rollPeriodIfStale,
 } from '@/lib/billing/rate-limit';
 import {
   getEntitlementSnapshot,
@@ -198,8 +199,29 @@ export async function POST(request: NextRequest) {
               // exists (check_credit_decrement trigger looks it up). DB-level
               // advisory lock + conditional INSERT — not the 30 s cache.
               // Throws CREDIT_BALANCE_INSUFFICIENT -> tx rolls back the job.
+              //
+              // ── Period bookkeeping, then metering. Two concerns, two calls.
+              //
+              // rollPeriodIfStale() runs on EVERY authed upload, whatever
+              // funded it. rate-limit.ts is the only period roller an account
+              // without an active subscription ever gets, and every quota gate
+              // reads a jobs_used that is only meaningful inside that period
+              // while sitting UPSTREAM of this tx. So a job that skips the
+              // roll leaves the period stale, and a stale period plus a
+              // spent allowance is a refusal no later request can clear.
+              await rollPeriodIfStale(client, user.user_id);
+              //
+              // One job, one debit. A credit-funded job is metered by the
+              // credit ledger and must NOT also spend a unit of the monthly
+              // allowance: checkMonthlyQuota() waives the quota while credits
+              // remain (review M1), so the extra unit was invisible until the
+              // credits ran out and the allowance they never touched was gone.
+              // Scope note: "one job, one debit" is enforced here, on the
+              // authed UPLOAD branch. The link-ingest branches below still
+              // debit a trial song AND an allowance unit; that path is gated
+              // shut by ALLOW_YOUTUBE_INPUT and is not touched by this PR.
               if (chargeCredit) await consumeCreditInTx(client, user.user_id, jobId);
-              await incrementJobsUsed(client, user.user_id);
+              else await bumpJobsUsed(client, user.user_id);
             }
             return r;
           })
@@ -376,7 +398,7 @@ export async function POST(request: NextRequest) {
               // roll back the whole tx — trial song is NOT burned.
               throw RATE_SENTINEL;
             }
-            await incrementJobsUsed(client, user.user_id);
+            await bumpJobsUsed(client, user.user_id);
             return { consumed: true as const };
           });
           if (outcome.consumed) {
@@ -436,7 +458,7 @@ export async function POST(request: NextRequest) {
             AUTHED_INSERT_SQL,
             [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT, user.user_id],
           );
-          if (r.rowCount) await incrementJobsUsed(client, user.user_id);
+          if (r.rowCount) await bumpJobsUsed(client, user.user_id);
           return r;
         })
       : await db.query(

@@ -3,7 +3,7 @@
 // Stem loader tests (Track 2B). `fetch` is stubbed; no network.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadStems, StemLoadError, MAX_MANIFEST_REFRESHES, MAX_STEM_BYTES, MAX_IDLE_READS } from '../src/lib/play/load-stems.ts';
+import { loadStems, zeroSourceReason, StemLoadError, MAX_MANIFEST_REFRESHES, MAX_STEM_BYTES, MAX_IDLE_READS } from '../src/lib/play/load-stems.ts';
 import { PLAYABLE_STEMS } from '../src/lib/play/types.ts';
 
 const JOB = '11111111-2222-3333-4444-555555555555';
@@ -1020,4 +1020,122 @@ test('a refresh that throws a non-StemLoadError is still recorded as MANIFEST_FA
   assert.deepEqual(out.missing, ['drums']);
   assert.equal(out.refreshFailure?.code, 'MANIFEST_FAILED');
   assert.equal(i, 2, 'the exploding route is not asked again');
+});
+
+// ── first-run honesty: WHY did nothing play? ─────────────────────────────────
+// Before this, `parseManifest` dropped the route's `state` and every failed
+// stem download was a bare `return null`, so an encoder failure, a legacy job and
+// a browser that could not reach storage (a missing R2 CORS rule) all came back
+// as the same `{ sources: [], refreshFailure: null }` and the UI told all three
+// "processed before play-along audio was kept".
+
+const ZERO = { sources: [], manifestState: null, stemFailures: { listed: 0, network: 0, http: 0, body: 0 } };
+
+test('manifestState carries the route\'s own state through, and an unknown one is null', async () => {
+  for (const state of ['ready', 'partial', 'unavailable', 'encode_failed']) {
+    const { fn } = makeFetch({ manifests: [json(manifest([], { state }))] });
+    assert.equal((await loadStems(JOB, { fetch: fn })).manifestState, state);
+  }
+  for (const state of ['exploded', 7, null, undefined, '__proto__']) {
+    const { fn } = makeFetch({ manifests: [json(manifest([], { state }))] });
+    assert.equal((await loadStems(JOB, { fetch: fn })).manifestState, null, `state ${String(state)}`);
+  }
+});
+
+test('manifestState is the REFRESHED manifest\'s, not the first one\'s', async () => {
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS, { state: 'ready' })), json(manifest(PLAYABLE_STEMS, { state: 'partial' }, 1))],
+    stem: (n, gen) => (gen === 0 ? new Response('x', { status: 403 }) : new Response(bytesFor(n), { status: 200 })),
+  });
+  assert.equal((await loadStems(JOB, { fetch: fn })).manifestState, 'partial');
+});
+
+test('encode_failed manifest -> ENCODE_FAILED, not the legacy "no stems"', async () => {
+  const { fn } = makeFetch({ manifests: [json(manifest([], { state: 'encode_failed' }))] });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.equal(zeroSourceReason(out), 'ENCODE_FAILED');
+  const legacy = makeFetch({ manifests: [json(manifest([], { state: 'unavailable' }))] });
+  assert.equal(zeroSourceReason(await loadStems(JOB, { fetch: legacy.fn })), 'NO_STEMS');
+});
+
+test('every stem GET rejecting at the network level (what a missing R2 CORS rule looks like) -> FETCH_NETWORK', async () => {
+  const { fn } = makeFetch({
+    manifests: [json(manifest(PLAYABLE_STEMS))],
+    stem: () => {
+      throw new TypeError('Failed to fetch');
+    },
+  });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual(out.sources, []);
+  assert.equal(out.refreshFailure, null, 'still a returned result: the zero-source rule is unchanged');
+  assert.equal(out.stemFailures.listed, 6);
+  assert.equal(out.stemFailures.network, 6);
+  assert.equal(out.stemFailures.http, 0);
+  assert.equal(zeroSourceReason(out), 'FETCH_NETWORK');
+  // manifest said `ready`: delivery outranks the job state.
+  assert.equal(out.manifestState, 'ready');
+});
+
+test('stemFailures carries origins and counts, never a path, query or signature', async () => {
+  const signed = PLAYABLE_STEMS.map((s) => ({
+    stem: s,
+    signed_url: `https://acct.r2.example/bucket/job/${s}.opus?X-Amz-Signature=SECRET&X-Amz-Credential=AKIA`,
+  }));
+  const { fn } = makeFetch({ manifests: [json({ stems: signed, state: 'ready' })] });
+  const out = await loadStems(JOB, {
+    fetch: async (url, init) => {
+      if (String(url).endsWith(MANIFEST_PATH)) return fn(url, init);
+      throw new TypeError('Failed to fetch');
+    },
+  });
+  assert.deepEqual(out.stemFailures.storageOrigins, ['https://acct.r2.example']);
+  const dump = JSON.stringify(out.stemFailures);
+  for (const leak of ['SECRET', 'AKIA', 'X-Amz', '.opus', '?', '/bucket']) {
+    assert.ok(!dump.includes(leak), `stemFailures leaked ${leak}`);
+  }
+});
+
+test('storage answering 404 for every stem -> FETCH_HTTP with the status; 403 past the refresh budget too', async () => {
+  const a = makeFetch({ manifests: [json(manifest(PLAYABLE_STEMS))], stem: () => new Response('gone', { status: 404 }) });
+  const o = await loadStems(JOB, { fetch: a.fn });
+  assert.equal(zeroSourceReason(o), 'FETCH_HTTP');
+  assert.deepEqual(o.stemFailures.httpStatuses, [404]);
+  assert.equal(o.stemFailures.http, 6);
+
+  // a function responder: a Response body can be read once, and a 403 refreshes the manifest
+  const b = makeFetch({ manifests: [() => json(manifest(PLAYABLE_STEMS))], stem: () => new Response('no', { status: 403 }) });
+  const o2 = await loadStems(JOB, { fetch: b.fn });
+  assert.equal(zeroSourceReason(o2), 'FETCH_HTTP');
+  assert.deepEqual(o2.stemFailures.httpStatuses, [403]);
+});
+
+test('200 with an empty body for every stem -> FETCH_BODY', async () => {
+  const { fn } = makeFetch({ manifests: [json(manifest(PLAYABLE_STEMS))], stem: () => new Response(new Uint8Array(0), { status: 200 }) });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.equal(zeroSourceReason(out), 'FETCH_BODY');
+  assert.equal(out.stemFailures.body, 6);
+});
+
+test('a clean load has zero failures and reads PLAYABLE', async () => {
+  const { fn } = makeFetch({ manifests: [json(manifest(PLAYABLE_STEMS))] });
+  const out = await loadStems(JOB, { fetch: fn });
+  assert.deepEqual([out.stemFailures.network, out.stemFailures.http, out.stemFailures.body], [0, 0, 0]);
+  assert.equal(zeroSourceReason(out), 'PLAYABLE');
+});
+
+test('zeroSourceReason: precedence table', () => {
+  const f = (o) => ({ ...ZERO.stemFailures, ...o });
+  const r = (o) => zeroSourceReason({ ...ZERO, ...o });
+  assert.equal(r({}), 'NO_STEMS');
+  assert.equal(r({ manifestState: 'unavailable' }), 'NO_STEMS');
+  assert.equal(r({ manifestState: 'encode_failed' }), 'ENCODE_FAILED');
+  assert.equal(r({ manifestState: 'ready', stemFailures: f({ listed: 6, network: 6 }) }), 'FETCH_NETWORK');
+  assert.equal(r({ stemFailures: f({ listed: 6, http: 6 }) }), 'FETCH_HTTP');
+  assert.equal(r({ stemFailures: f({ listed: 6, body: 6 }) }), 'FETCH_BODY');
+  // mixed: the browser-level failure is the one an owner must act on
+  assert.equal(r({ stemFailures: f({ listed: 6, network: 3, http: 3 }) }), 'FETCH_NETWORK');
+  // failures with NOTHING offered cannot be a delivery fault
+  assert.equal(r({ stemFailures: f({ listed: 0, network: 2 }) }), 'NO_STEMS');
+  // anything playable wins over everything
+  assert.equal(r({ sources: [{ name: 'drums', bytes: new ArrayBuffer(1) }], manifestState: 'encode_failed' }), 'PLAYABLE');
 });

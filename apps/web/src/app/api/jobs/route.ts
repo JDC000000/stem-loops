@@ -198,8 +198,14 @@ export async function POST(request: NextRequest) {
               // exists (check_credit_decrement trigger looks it up). DB-level
               // advisory lock + conditional INSERT — not the 30 s cache.
               // Throws CREDIT_BALANCE_INSUFFICIENT -> tx rolls back the job.
+              //
+              // One job, one debit. A credit-funded job is metered by the
+              // credit ledger and must NOT also spend a unit of the monthly
+              // allowance: checkMonthlyQuota() waives the quota while credits
+              // remain (review M1), so the extra unit was invisible until the
+              // credits ran out and the allowance they never touched was gone.
               if (chargeCredit) await consumeCreditInTx(client, user.user_id, jobId);
-              await incrementJobsUsed(client, user.user_id);
+              else await incrementJobsUsed(client, user.user_id);
             }
             return r;
           })

@@ -169,6 +169,13 @@ export async function POST(request: NextRequest) {
       const clientIpHash = clientIpHashOf(request);
       const adm = await checkAdmission(clientIpHash);
       if (!adm.allowed) {
+        // B8: global capacity is NOT the client's fault — 503 + Retry-After and its own copy.
+        if (adm.error_code === 'AT_CAPACITY') {
+          return NextResponse.json(
+            { error_code: adm.error_code, message: adm.message },
+            { status: 503, headers: { 'Retry-After': String(adm.retry_after_s) } },
+          );
+        }
         return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
       }
 
@@ -342,6 +349,13 @@ export async function POST(request: NextRequest) {
     const clientIpHash = clientIpHashOf(request);
     const adm = await checkAdmission(clientIpHash);
     if (!adm.allowed) {
+      // B8: global capacity is NOT the client's fault — 503 + Retry-After and its own copy.
+      if (adm.error_code === 'AT_CAPACITY') {
+        return NextResponse.json(
+          { error_code: adm.error_code, message: adm.message },
+          { status: 503, headers: { 'Retry-After': String(adm.retry_after_s) } },
+        );
+      }
       return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
     }
 

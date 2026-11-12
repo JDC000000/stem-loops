@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import * as Sentry from '@sentry/nextjs';
 import { presignPut } from '@/lib/r2';
 import { validateUpload, MAX_UPLOAD_BYTES } from '@/lib/upload';
-import { checkUploadRate } from '@/lib/admission';
+import { checkGlobalCapacity, checkUploadRate } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
 
 const RATE_LIMIT_MSG =
@@ -36,6 +36,20 @@ export async function POST(request: NextRequest) {
     const adm = await checkUploadRate(clientIpHashOf(request));
     if (!adm.allowed) {
       return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
+    }
+
+    // B8 / product-plan 4.5: if the site is already at its global in-flight cap, say so
+    // NOW, before the browser spends minutes PUTting up to 200 MB to R2 only for
+    // POST /api/jobs to refuse it. Advisory: the queue can still fill between presign and
+    // job creation, and POST /api/jobs re-checks (checkAdmission) authoritatively. Runs
+    // AFTER the per-IP presign throttle so a flood can't turn this COUNT into an
+    // unthrottled query.
+    const cap = await checkGlobalCapacity();
+    if (!cap.allowed && cap.error_code === 'AT_CAPACITY') {
+      return NextResponse.json(
+        { error_code: cap.error_code, message: cap.message },
+        { status: 503, headers: { 'Retry-After': String(cap.retry_after_s) } },
+      );
     }
 
     const v = validateUpload(filename, size);

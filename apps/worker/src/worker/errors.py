@@ -103,6 +103,14 @@ class UploadTooLargeError(StemLoopsError):
     user_message = "That file is too large. The maximum upload size is 200 MB."
 
 
+def _human_limit(max_seconds: float) -> str:
+    """``300.0`` -> ``"5 minutes"``; ``60.0`` -> ``"1 minute"``; ``30.0`` -> ``"30 seconds"``."""
+    minutes = max_seconds / 60.0
+    if minutes < 1:
+        return f"{max_seconds:g} seconds"
+    return f"{minutes:g} minute" + ("" if minutes == 1 else "s")
+
+
 class UploadTooLongError(StemLoopsError):
     """Upload exceeds the worker's duration cap (``MAX_UPLOAD_DURATION_SEC``).
 
@@ -112,22 +120,63 @@ class UploadTooLongError(StemLoopsError):
 
     error_code = "UPLOAD_TOO_LONG"
     user_message = "That track is too long. Trim it to a shorter length and upload it again."
+    # The with-a-limit wording. A subclass overrides only the SENTENCE; the number is always
+    # formatted by _human_limit from the cap in force, so no subclass can reintroduce a
+    # hard-coded figure here.
+    limit_template = (
+        "That track is too long. The maximum length is {limit}. Trim it and upload it again."
+    )
 
     def __init__(self, detail: str | None = None, *, max_seconds: float | None = None):
         super().__init__(detail)
+        self.max_seconds = max_seconds
         if max_seconds is not None:
-            minutes = max_seconds / 60.0
-            shown = f"{minutes:g}" if minutes >= 1 else f"{max_seconds:g} seconds"
-            unit = "" if minutes < 1 else (" minute" if minutes == 1 else " minutes")
-            self.user_message = (
-                f"That track is too long. The maximum length is {shown}{unit}. "
-                "Trim it and upload it again."
-            )
+            self.user_message = self.limit_template.format(limit=_human_limit(max_seconds))
+
+
+class LinkTooLongError(UploadTooLongError):
+    """A LINKED video longer than the same duration ceiling the upload path enforces.
+
+    Same ``error_code`` as its parent -- still one of the typed classes, no taxonomy
+    expansion -- following the FetchPausedError / LiveStreamNotSupportedError /
+    VideoBlocklistedError precedent above. Only the wording differs: there is nothing to
+    "trim and upload again" when the input was a URL, so the message offers the two things
+    the user can actually do.
+
+    Raised before ANY download byte or Replicate GPU-second is spent (downloader gate 0c
+    for the pre-fetch metadata reading, pipeline._enforce_link_duration for the staged
+    file). Before this existed the link path had no duration cap at all: the job was
+    accepted, a full separation was billed per GPU-second on the whole length, the chord
+    overlay became a `too_long` tombstone, and the player then refused to open the track.
+    """
+
+    user_message = (
+        "That video is too long. Pick a shorter one, or trim the audio "
+        "and upload the file instead."
+    )
+    limit_template = (
+        "That video is too long. The maximum length is {limit}. "
+        "Pick a shorter one, or trim the audio and upload the file instead."
+    )
 
 
 class InternalError(StemLoopsError):
     error_code = "INTERNAL_ERROR"
     user_message = "Something went wrong on our end. We've logged it — please try again."
+
+
+class LinkUnmeasurableError(InternalError):
+    """A fetched link track whose length could not be read, so the duration cap cannot be applied.
+
+    Same ``error_code`` as its parent (no taxonomy expansion; the FetchPausedError precedent).
+    Raised by ``pipeline._enforce_link_duration`` BEFORE the file is staged or handed to
+    Replicate: a length we cannot read is a length we cannot show to be under the ceiling.
+    """
+
+    user_message = (
+        "We couldn't check how long that video is, so we didn't process it. "
+        "Try another link, or upload the audio file instead."
+    )
 
 
 _ALL_ERROR_CLASSES = [

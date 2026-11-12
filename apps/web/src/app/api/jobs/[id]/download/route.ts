@@ -35,12 +35,12 @@ function bad(error_code: string, message: string, status: number): NextResponse 
 //                advertised "Loop export" (pricing/page.tsx features()), so closing it is a
 //                product decision, not a gate to add silently; see the PR description.
 //
-// ENTITLEMENT MAPPING (plans table: free {stems:f, wav24:f}, pro {t,f}, studio {t,t})
-//   The route calls enforceEntitlement for BOTH `export_stems` and `export_wav24`, in that
-//   order, and signs only if both pass. Today that means Studio only. `export_stems` is
-//   checked as well as `export_wav24` so that a plan row with wav24 = true and stems =
-//   false (an inconsistent edit to `plans`) fails closed instead of selling a
-//   24-bit WAV to a plan that has no stem export.
+// ENTITLEMENT MAPPING (plans table as PR #210's migration 034 sets it:
+//   free {stems:f}, pro {stems:f}, studio {stems:t}; wav24 is false everywhere)
+//   Owner's tiering: "$4.99 = no stem export ... / $12 = stem exports". The route gates
+//   on `export_stems` ALONE. It must not also require `export_wav24`: that flag is false on
+//   every plan, so requiring it would lock out the one tier this route exists to serve.
+//   Free -> 402, Pro -> 402, Studio -> signed URL.
 //
 // AUTH. `getUser()` (not `getSession()`), as ../loops/route.ts: a forged cookie must not
 // pass an entitlement check. Signed out -> 401 before the job is looked up, so an anonymous
@@ -80,7 +80,6 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
     try {
       await enforceEntitlement('export_stems', user.user_id);
-      await enforceEntitlement('export_wav24', user.user_id);
     } catch (err) {
       if (err instanceof EntitlementError) {
         return bad(err.code, err.message, err.status);

@@ -1,14 +1,15 @@
 // Run: pnpm --filter web test
 //
 // The paid export gate: GET /api/jobs/:id/download signs the full-length stem WAV
-// (`_stems/dl/<stem>.wav`) only for a caller whose plan carries BOTH `export_stems` and
-// `export_wav24` (today: Studio), while Opus playback and the chord artifact stay open.
+// (`_stems/dl/<stem>.wav`) only for a caller whose plan carries `export_stems` (today:
+// Studio), while Opus playback and the chord artifact stay open. `export_wav24` is NOT
+// consulted: the owner's tiering is "$4.99 = no stem export, $12 = stem export".
 // TSD §12.2 is the Opus/WAV split this gate sits on.
 //
 // What is REAL here: the download route, lib/billing/entitlements.ts (its plan lookup,
 // effectivePlanCode and enforceEntitlement all run), lib/stem-keys.ts, and — for the
 // sharing property — the real stems and play-chords routes. What is stubbed is the edge:
-// Postgres (answers by SQL text, with the plans table seeded EXACTLY as migration 014),
+// Postgres (answers by SQL text, with the plans table seeded as migration 034),
 // R2/S3, getUser, and next/server.
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -31,11 +32,12 @@ const OWNER = 'user-owner';
 const STRANGER = 'user-stranger';
 const SIX = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'];
 
-// Migration 014_v3_seed_plans.sql, verbatim flags.
+// The tiering as PR #210's migration 034 sets it (owner decision, 2026-11-12):
+// stems on Studio only, wav24 on nobody. Fixture data, not read from the migration.
 const PLANS = {
-  free: { code: 'free', monthly_job_quota: 90, services: ['youtube', 'spotify', 'soundcloud'], export_stems: false, export_wav24: false },
-  pro: { code: 'pro', monthly_job_quota: 100000, services: [], export_stems: true, export_wav24: false },
-  studio: { code: 'studio', monthly_job_quota: 100000, services: [], export_stems: true, export_wav24: true },
+  free: { code: 'free', monthly_job_quota: 5, services: ['youtube'], export_stems: false, export_wav24: false },
+  pro: { code: 'pro', monthly_job_quota: 50, services: [], export_stems: false, export_wav24: false },
+  studio: { code: 'studio', monthly_job_quota: 150, services: [], export_stems: true, export_wav24: false },
 };
 
 const nextStub = dataUrl(`
@@ -138,7 +140,7 @@ const loadChords = () => loadRoute('src/app/api/jobs/[id]/play-chords/route.ts')
 
 const download = (mod, stem = 'drums', id = JOB) =>
   mod.GET({ url: `https://stem-loops.test/api/jobs/${id}/download${stem === null ? '' : `?stem=${stem}`}` }, { params: { id } });
-const plain = (id = JOB) => ({ url: 'https://x.test/', headers: { get: () => null } });
+const plain = () => ({ url: 'https://x.test/', headers: { get: () => null } });
 
 /** state: who is calling, which plan they are on, and what the job looks like. */
 function arrange({ user = OWNER, plan = 'free', jobUser = OWNER, status = 'done', noJob = false, hasDl = true } = {}) {
@@ -164,9 +166,9 @@ beforeEach(async () => {
   arrange();
 });
 
-// ───────────── 1. a Studio user gets a signed 24-bit WAV URL ─────────────
+// ───────────── 1. a Studio user gets a signed stem WAV URL ─────────────
 
-test('Studio owner gets a signed WAV URL for the dl/ artifact, with a download filename', async () => {
+test('Studio owner (export_stems true, export_wav24 FALSE) gets a signed WAV URL for the dl/ artifact, with a download filename', async () => {
   arrange({ plan: 'studio' });
   const res = await download(await loadDownload(), 'vocals');
   assert.equal(res.status, 200);
@@ -207,6 +209,7 @@ test('a denial does not leak plan state: body is exactly {error_code, message}',
   arrange({ plan: 'free' });
   const res = await download(await loadDownload());
   assert.deepEqual(Object.keys(res.body).sort(), ['error_code', 'message']);
+  assert.equal(res.headers['Cache-Control'], 'private, no-store', 'denials are not cacheable either');
   const blob = JSON.stringify(res.body);
   for (const secret of [OWNER, 'free', 'plan_code', 'jobs_used', 'period_end', 'credits']) {
     assert.ok(!blob.includes(secret), `denial body must not contain ${secret}: ${blob}`);
@@ -289,10 +292,10 @@ test('SHARING: playback is also open to a FREE signed-in stranger (entitlement i
   assert.ok(!globalThis.__st.sql.some((s) => /entitlements|plans/.test(s)));
 });
 
-// ───────────── 4. the tier mapping: Free none, Pro stems-not-WAV, Studio both ─────────────
+// ───────────── 4. the tier mapping: Free 402, Pro 402, Studio signed URL ─────────────
 
-for (const [plan, wantStems, wantWav] of [['free', false, false], ['pro', true, false], ['studio', true, true]]) {
-  test(`mapping: ${plan} -> export_stems=${wantStems}, export_wav24=${wantWav} (real enforceEntitlement over migration-014 flags)`, async () => {
+for (const [plan, wantStems, wantWav] of [['free', false, false], ['pro', false, false], ['studio', true, false]]) {
+  test(`mapping: ${plan} -> export_stems=${wantStems}, export_wav24=${wantWav} (real enforceEntitlement over the 034 flags)`, async () => {
     arrange({ plan });
     const ent = await import(entitlementsUrl);
     ent._resetEntitlementCacheForTests();
@@ -307,20 +310,36 @@ for (const [plan, wantStems, wantWav] of [['free', false, false], ['pro', true, 
   });
 }
 
-test('PRO (stems yes, wav24 no) is refused the WAV download: 402, nothing signed', async () => {
+for (const [plan, status] of [['free', 402], ['pro', 402], ['studio', 200]]) {
+  test(`tier table through the route: ${plan} -> ${status}`, async () => {
+    arrange({ plan });
+    const res = await download(await loadDownload());
+    assert.equal(res.status, status);
+    assert.equal(res.body.signed_url !== undefined, status === 200);
+    assert.equal(globalThis.__st.minted.length, status === 200 ? 1 : 0);
+  });
+}
+
+test('PRO ($4.99: no stem export) is refused with 402 and the denial names stems, not a plan', async () => {
   arrange({ plan: 'pro' });
-  const ent = await import(entitlementsUrl);
-  ent._resetEntitlementCacheForTests();
   const res = await download(await loadDownload());
   assert.equal(res.status, 402);
-  assert.match(res.body.message, /wav24/);
+  assert.match(res.body.message, /stems/);
+  assert.deepEqual(Object.keys(res.body).sort(), ['error_code', 'message']);
   assert.deepEqual(globalThis.__st.minted, []);
 });
 
+test('export_wav24 is irrelevant: a plan with stems=true, wav24=false is served (kills a re-added wav24 check)', async () => {
+  arrange({ plan: 'pro' });
+  globalThis.__st.planPatch = { export_stems: true, export_wav24: false };
+  const res = await download(await loadDownload());
+  assert.equal(res.status, 200);
+  assert.equal(globalThis.__st.minted.length, 1);
+});
 
-test('an inconsistent plan row (wav24 true, stems false) fails CLOSED: both flags are required', async () => {
-  // Kills the mutation that drops the export_stems check — with the real migration-014 rows
-  // that check is redundant (every wav24 plan also has stems), so only a patched row can see it.
+test('wav24 alone does not open the route: stems=false, wav24=true is refused (no OR-logic)', async () => {
+  // Pins the other direction: export_stems is THE gate. A row that carries only
+  // wav24 (an inconsistent edit to `plans`) must not become a way in.
   arrange({ plan: 'studio' });
   globalThis.__st.planPatch = { export_stems: false, export_wav24: true };
   const res = await download(await loadDownload());

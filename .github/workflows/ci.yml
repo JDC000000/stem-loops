@@ -223,7 +223,10 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - name: Install Python deps
-        run: pip install -r apps/worker/requirements.txt -c apps/worker/constraints-prod.txt
+        # requirements-dev.txt holds moto, which tests/real_r2.py needs. Without it the
+        # retention tests FAIL under CI=true by design, so this job went red on its
+        # first real use. Mirrors the `test:` job at line ~145.
+        run: pip install -r apps/worker/requirements.txt -r apps/worker/requirements-dev.txt -c apps/worker/constraints-prod.txt
       - name: Apply migrations (001-007)
         run: cd apps/worker && PYTHONPATH=src python -m worker.migrate
       - name: pytest

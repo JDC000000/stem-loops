@@ -30,6 +30,7 @@ import {
   BACKOFF_POLL_MS,
   POLL_MS,
   QUEUED_STALL_MS,
+  SLOW_POLL_MS,
   nextPollStep,
   readPoll,
   type PollOutcome,
@@ -39,12 +40,18 @@ import {
 const TERMINAL = new Set(['done', 'failed']);
 
 /**
- * The page's terminal states for a job that is not done and not failed.
+ * What the page SAYS about a job that is not done and not failed. Neither of
+ * these stops the poll — see the effect below.
  * `unreachable`: the poll itself keeps failing (5xx, network, not-a-job body).
+ *   `status` is the last response's status, or `null` when `fetch` itself
+ *   rejected; the copy differs, because "check your connection" is false when
+ *   our own server answered 500.
  * `stalled`: the poll works, and the job has gone quiet for longer than the
  * pipeline's own timeouts and the reaper's window explain (see lib/job-poll.ts).
  */
-type Trouble = { readonly kind: 'unreachable' } | { readonly kind: 'stalled'; readonly stall: Stall };
+type Trouble =
+  | { readonly kind: 'unreachable'; readonly status: number | null }
+  | { readonly kind: 'stalled'; readonly stall: Stall };
 
 const minutes = (ms: number) => Math.round(ms / 60000);
 
@@ -92,15 +99,26 @@ export default function JobView({ id }: { id: string }) {
           timer.current = setTimeout(poll, BACKOFF_POLL_MS);
           return;
         case 'unreachable':
-          setTrouble({ kind: 'unreachable' });
+          // SAY SO, DO NOT STOP. Returning here is what made a five-minute
+          // outage permanent: the panel stayed up until the user clicked, where
+          // the version before this feature self-healed. The slow poll is the
+          // path back that does not need a click.
+          setTrouble({ kind: 'unreachable', status: step.status });
+          timer.current = setTimeout(poll, SLOW_POLL_MS);
           return;
         case 'terminal':
           setJob(step.job);
           setTrouble(null);
           return;
         case 'stalled':
+          // SAY SO, DO NOT STOP. Returning here lost a legitimately slow job:
+          // queued behind another and finishing later, the page said "nothing
+          // has picked it up" and then never looked again, so the finished
+          // track never appeared. `terminal` and `continue` below clear the
+          // panel, so a late finish both renders AND retracts the claim.
           setJob(step.job);
           setTrouble({ kind: 'stalled', stall: step.stall });
+          timer.current = setTimeout(poll, SLOW_POLL_MS);
           return;
         case 'continue':
           setJob(step.job);
@@ -178,8 +196,12 @@ export default function JobView({ id }: { id: string }) {
         >
           <h1 style={{ margin: '0 0 8px', fontSize: 'var(--text-xl)' }}>We can&apos;t get an update right now</h1>
           <p style={{ margin: 0 }}>
-            This page couldn&apos;t reach the server for the last few tries, so we don&apos;t know where your track is.
-            It may well be fine. Check your connection and try again.
+            {trouble.status === null
+              ? "This page couldn't reach the server for the last few tries, so we don't know where your track is. " +
+                'It may well be fine. Check your connection and try again.'
+              : `Our server answered the last few tries with an error (${trouble.status}), so we don't know where your ` +
+                'track is. It may well be fine, and this is our fault, not your connection. ' +
+                'We are still checking in the background.'}
           </p>
           <button
             type="button"

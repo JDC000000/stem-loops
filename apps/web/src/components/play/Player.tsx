@@ -157,9 +157,26 @@ export const FETCH_BODY_MESSAGE =
 export const GENERIC_LOAD_MESSAGE =
   'We could not load the audio for this track. Reload the page to try again.';
 
-/** The manifest request itself failed (our own server, same origin). */
+/**
+ * The manifest request never produced a response at all — `fetch` rejected.
+ * Offline, DNS, a CSP block. The only case where the user's own connection is a
+ * reasonable thing to ask them about.
+ */
 export const MANIFEST_UNREACHABLE_MESSAGE =
   'We could not reach our servers to start play along. Check your connection and try again.';
+
+/**
+ * The manifest request DID get a response, and it was an error status.
+ *
+ * `MANIFEST_FAILED` used to be one sentence for both, which made the 5xx case a
+ * lie: `/api/jobs/:id/stems` answering 500 (INTERNAL_ERROR) or 502
+ * (STEM_LIST_FAILED, its own deliberately-loud R2-list fault) told the user to
+ * check their wifi for a fault that is entirely ours. The status is carried on
+ * `StemLoadError.status`, so the split costs nothing but saying it.
+ */
+export const MANIFEST_SERVER_ERROR_MESSAGE =
+  'Our server could not start play along for this track. This is on our side, not your connection. ' +
+  'Try again in a moment — your loops are below and still work.';
 
 const LOAD_MESSAGES: Record<StemLoadErrorCode, string> = {
   RATE_LIMITED:
@@ -173,7 +190,17 @@ const LOAD_MESSAGES: Record<StemLoadErrorCode, string> = {
 /** Codes where trying again can help. NOT_FOUND cannot; RATE_LIMITED needs time first. */
 const RETRYABLE_CODES: ReadonlySet<StemLoadErrorCode> = new Set<StemLoadErrorCode>(['MANIFEST_FAILED', 'MANIFEST_INVALID']);
 
-export function stemLoadMessage(code: StemLoadErrorCode): string {
+/**
+ * `status` is `StemLoadError.status`: the status of the response the loader got,
+ * or `undefined` when there was no response (the loader only sets it where one
+ * existed — see `fetchManifest`). THAT is the split, not a status range: "did a
+ * server answer us?" is the only question whose answer we actually know, and a
+ * 403 from a misconfigured edge is no more the user's connection than a 500 is.
+ */
+export function stemLoadMessage(code: StemLoadErrorCode, status?: number): string {
+  if (code === 'MANIFEST_FAILED') {
+    return typeof status === 'number' ? MANIFEST_SERVER_ERROR_MESSAGE : MANIFEST_UNREACHABLE_MESSAGE;
+  }
   return LOAD_MESSAGES[code] ?? GENERIC_LOAD_MESSAGE;
 }
 
@@ -397,7 +424,7 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
           if (e.code === 'ABORTED') return;
           setPhase({
             kind: 'load-error',
-            message: stemLoadMessage(e.code),
+            message: stemLoadMessage(e.code, e.status),
             retryable: RETRYABLE_CODES.has(e.code),
           });
           return;

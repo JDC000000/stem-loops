@@ -12,6 +12,7 @@ import {
   MAX_CONSECUTIVE_FAILURES,
   POLL_MS,
   QUEUED_STALL_MS,
+  SLOW_POLL_MS,
   jobStall,
   nextPollStep,
   readPoll,
@@ -71,12 +72,15 @@ test('a real job parses, and the SERVER clock comes from the Date header when pr
 
 // ── jobStall: thresholds and their provenance ────────────────────────────────
 
-test('thresholds: ACTIVE = 300*2^(2-1)+60 s = 660 s, QUEUED = 20 min', () => {
+test('thresholds: ACTIVE = 300*2^(2-1)+60 s = 660 s, QUEUED = 90 min', () => {
   assert.equal(ACTIVE_STALL_MS, 660_000);
-  assert.equal(QUEUED_STALL_MS, 1_200_000);
+  // 90 min, derived in test/job-stall-derivation.test.mjs against the DEPLOYED
+  // worker config. Stated as a literal here too, so a change to the derivation
+  // that happens to still compile cannot move the user-visible number silently.
+  assert.equal(QUEUED_STALL_MS, 5_400_000);
 });
 
-test('QUEUED stalls just past 20 min, not before', () => {
+test('QUEUED stalls just past the threshold, not before', () => {
   assert.equal(jobStall({ status: 'queued', updated_at: ago(QUEUED_STALL_MS - 1000) }, NOW), null);
   assert.equal(jobStall({ status: 'queued', updated_at: ago(QUEUED_STALL_MS + 1000) }, NOW), 'queued');
 });
@@ -153,15 +157,29 @@ test('terminal statuses stop; missing stops; a healthy job continues', () => {
   assert.equal(nextPollStep(okJob({ status: 'separating' }), 0, NOW).action, 'continue');
 });
 
-test('a queued job with no worker: continues until 20 min, then STALLS (the "Queued 0%" forever case)', () => {
-  assert.equal(nextPollStep(okJob({ status: 'queued', updated_at: ago(19 * MIN) }), 0, NOW).action, 'continue');
-  const s = nextPollStep(okJob({ status: 'queued', updated_at: ago(21 * MIN) }), 0, NOW);
+test('a queued job with no worker: continues until 90 min, then STALLS (the "Queued 0%" forever case)', () => {
+  assert.equal(nextPollStep(okJob({ status: 'queued', updated_at: ago(89 * MIN) }), 0, NOW).action, 'continue');
+  const s = nextPollStep(okJob({ status: 'queued', updated_at: ago(91 * MIN) }), 0, NOW);
   assert.equal(s.action, 'stalled');
   assert.equal(s.stall, 'queued');
 });
 
+test('THE BETA BLOCKER: a job queued behind ONE other job is healthy, not stalled', () => {
+  // The first version of this feature derived 885 s from replicate_client.py's
+  // CODE DEFAULT of 55 s and called anything past 20 min stalled. The deployed
+  // REPLICATE_DEADLINE is 300 (apps/worker/fly.toml), so one job ahead can
+  // legitimately hold the single worker for 74 min, and on a ten-tester beta
+  // queueing behind one job is the NORMAL case. Every minute here must be
+  // "continue", or the panel is asserting "nothing has picked it up" about a
+  // job that is being worked on right now.
+  for (const min of [5, 19, 21, 30, 45, 60, 74, 88]) {
+    const step = nextPollStep(okJob({ status: 'queued', updated_at: ago(min * MIN) }), 0, NOW);
+    assert.equal(step.action, 'continue', `a job queued ${min} min is NOT stalled`);
+  }
+});
+
 test('the server clock wins over a wrong client clock; the client clock is the fallback', () => {
-  const stale = { ...JOB, status: 'queued', updated_at: ago(30 * MIN) };
+  const stale = { ...JOB, status: 'queued', updated_at: ago(100 * MIN) };
   // client clock 2 days behind would see the job as "from the future" -> never stalled
   const behind = NOW - 2 * 24 * 60 * MIN;
   assert.equal(nextPollStep({ kind: 'job', job: stale, serverNowMs: NOW }, 0, behind).action, 'stalled');
@@ -169,7 +187,74 @@ test('the server clock wins over a wrong client clock; the client clock is the f
   assert.equal(nextPollStep({ kind: 'job', job: stale, serverNowMs: null }, 0, NOW).action, 'stalled');
 });
 
-test('poll cadence is unchanged: 2 s, 4 s after a failure', () => {
+test('poll cadence: 2 s, 4 s after a failure, 30 s once a panel is up', () => {
   assert.equal(POLL_MS, 2000);
   assert.equal(BACKOFF_POLL_MS, 4000);
+  // The slow poll is what makes `stalled` and `unreachable` panels rather than
+  // stops. A mutant that deletes it is killed by test/job-view-poll.test.mjs;
+  // this pins the number so it cannot drift to something unusable (a 30-minute
+  // slow poll would be a stop with extra steps).
+  assert.equal(SLOW_POLL_MS, 30_000);
+  assert.ok(SLOW_POLL_MS >= POLL_MS, 'the slow poll must be slower than the healthy one');
+  assert.ok(SLOW_POLL_MS <= 60_000, 'a slow poll over a minute is a stop with extra steps');
+});
+
+// ── the failure budget, pinned as a literal ──────────────────────────────────
+
+test('MAX_CONSECUTIVE_FAILURES is 5 — the loops above count it, so the constant itself needs pinning', () => {
+  // Every sequence test in this file iterates to MAX_CONSECUTIVE_FAILURES, so
+  // raising it to 50 keeps them all green while the user stares at a blank
+  // "Processing…" for 200 s instead of 16 s. The literal is the only thing that
+  // catches that.
+  assert.equal(MAX_CONSECUTIVE_FAILURES, 5);
+  // Stated as behaviour as well: exactly four retries, then the panel.
+  let f = 0;
+  const actions = [];
+  for (let i = 0; i < 6; i++) {
+    const step = nextPollStep(ERR, f, NOW);
+    actions.push(step.action);
+    f = step.failures;
+  }
+  assert.deepEqual(actions, ['retry', 'retry', 'retry', 'retry', 'unreachable', 'unreachable']);
+});
+
+// ── "unreachable" is not a synonym for 500 ───────────────────────────────────
+
+test('ANY failed poll counts toward unreachable, not only a 500', () => {
+  // A mutant that fires `unreachable` only on `status === 500` survives every
+  // sequence test above, because they all use a 500. These do not.
+  const kinds = [
+    { kind: 'error', status: null, what: 'fetch rejected (offline / DNS / CORS)' },
+    { kind: 'error', status: 502, what: 'bad gateway' },
+    { kind: 'error', status: 503, what: 'service unavailable' },
+    { kind: 'error', status: 429, what: 'rate limited' },
+    { kind: 'error', status: 200, what: '200 whose body is not a job' },
+  ];
+  for (const { what, ...outcome } of kinds) {
+    let f = 0;
+    for (let i = 1; i < MAX_CONSECUTIVE_FAILURES; i++) {
+      const step = nextPollStep(outcome, f, NOW);
+      assert.equal(step.action, 'retry', `${what}: failure ${i}`);
+      f = step.failures;
+    }
+    const last = nextPollStep(outcome, f, NOW);
+    assert.equal(last.action, 'unreachable', what);
+    assert.equal(last.status, outcome.status, `${what}: the status must reach the UI`);
+  }
+});
+
+test('the failing status reaches the step, so the panel can stop saying "check your connection" to a 500', () => {
+  assert.equal(nextPollStep({ kind: 'error', status: 500 }, 0, NOW).status, 500);
+  assert.equal(nextPollStep({ kind: 'error', status: null }, 0, NOW).status, null);
+});
+
+// ── the exact boundary, so `>` cannot become `>=` ────────────────────────────
+
+test('the stall comparison is strictly greater-than: AT the threshold a job is still healthy', () => {
+  // `>` -> `>=` is a one-millisecond mutation that no other test in this file
+  // can see, because they all probe a second either side.
+  assert.equal(jobStall({ status: 'queued', updated_at: ago(QUEUED_STALL_MS) }, NOW), null, 'queued, exactly at');
+  assert.equal(jobStall({ status: 'queued', updated_at: ago(QUEUED_STALL_MS + 1) }, NOW), 'queued', 'queued, 1 ms past');
+  assert.equal(jobStall({ status: 'separating', updated_at: ago(ACTIVE_STALL_MS) }, NOW), null, 'active, exactly at');
+  assert.equal(jobStall({ status: 'separating', updated_at: ago(ACTIVE_STALL_MS + 1) }, NOW), 'active', 'active, 1 ms past');
 });

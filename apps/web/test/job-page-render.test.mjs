@@ -334,7 +334,7 @@ test('stalled QUEUED job: says so, offers Check again and a way out, and shows n
   const html = renderJob(QUEUED_JOB, { kind: 'stalled', stall: 'queued' });
   assert.match(html, /data-testid="job-stalled"/);
   assert.match(html, /role="alert"/);
-  assert.match(html, /waiting in line for more than 20 minutes/);
+  assert.match(html, /waiting in line for more than 90 minutes/);
   assert.match(html, />Check again</);
   assert.match(html, /href="\/"[^>]*>Try another track/);
   assert.doesNotMatch(html, /data-testid="job-progress"/, 'a progress bar over a stalled job is the lie');
@@ -348,7 +348,7 @@ test('stalled ACTIVE job names the reaper-derived window, not the queue one', ()
 });
 
 test('unreachable: says the page cannot get an update, offers Try again, no progress, no "Processing…"', () => {
-  const html = renderJob(QUEUED_JOB, { kind: 'unreachable' });
+  const html = renderJob(QUEUED_JOB, { kind: 'unreachable', status: null });
   assert.match(html, /data-testid="job-unreachable"/);
   assert.match(html, /role="alert"/);
   assert.match(html, />Try again</);
@@ -358,8 +358,26 @@ test('unreachable: says the page cannot get an update, offers Try again, no prog
   assert.doesNotMatch(html, /Something went wrong|could not be processed/i);
 });
 
+test('unreachable copy splits by status: a 500 is OUR fault, not the user\'s connection', () => {
+  // "Check your connection" for a 500 is a lie about the user's own network: our
+  // server answered, it just answered badly. The two sentences must differ, and
+  // the server one must not send the user to their router.
+  const offline = renderJob(QUEUED_JOB, { kind: 'unreachable', status: null });
+  const server = renderJob(QUEUED_JOB, { kind: 'unreachable', status: 500 });
+  assert.match(offline, /Check your connection/, 'a real network failure may say so');
+  assert.doesNotMatch(server, /Check your connection/, 'a 500 must not blame the user\'s connection');
+  assert.match(server, /not your connection/);
+  assert.match(server, /\(500\)/, 'the status the server actually gave is not shown');
+  assert.match(renderJob(QUEUED_JOB, { kind: 'unreachable', status: 502 }), /\(502\)/);
+  // both are still the same panel, with the same way out
+  for (const html of [offline, server]) {
+    assert.match(html, /data-testid="job-unreachable"/);
+    assert.match(html, />Try again</);
+  }
+});
+
 test('unreachable with no job at all (first poll never succeeded) is still the terminal panel, not "Loading…"', () => {
-  const html = renderJob(null, { kind: 'unreachable' });
+  const html = renderJob(null, { kind: 'unreachable', status: null });
   assert.match(html, /data-testid="job-unreachable"/);
   assert.doesNotMatch(html, /Loading…/);
 });
@@ -372,7 +390,7 @@ test('a healthy in-flight job still renders progress (the new branches do not sw
 });
 
 test('a done job is never replaced by a terminal-trouble panel', () => {
-  const html = renderJob(DONE_JOB, { kind: 'unreachable' });
+  const html = renderJob(DONE_JOB, { kind: 'unreachable', status: null });
   assert.match(html, /data-testid="player"/);
   assert.doesNotMatch(html, /job-unreachable/);
 });

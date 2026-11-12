@@ -21,16 +21,22 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import time
 import uuid
 
 import psycopg
 import pytest
+from psycopg.conninfo import make_conninfo
 
 from worker import loop_cutter, pipeline
 from worker.storage.r2_uploader import loop_r2_key
 
-DB = os.environ.get("DATABASE_URL")
+# The URL as inherited. `DB` below is re-pointed at a private schema per DB test (see
+# `scratch_db`); this one is only ever used to create/drop that schema and to seed and
+# check the bystander rows.
+_BASE_DB = os.environ.get("DATABASE_URL")
+DB = _BASE_DB
 
 # The exact statement loop_cutter.claim_and_cut uses. Duplicated here ON PURPOSE
 # so a test can drive it from an arbitrary connection; test_claim_sql_matches_the
@@ -250,25 +256,112 @@ def test_claim_sql_matches_the_implementation():
 
 # ───────────────────── contention gates (real Postgres) ─────────────────────
 
-needs_db = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
+BYSTANDERS = 20
 
 
-@pytest.fixture(autouse=True)
-def _drain_queue():
-    """Start every DB test from an empty queue.
+@pytest.fixture
+def bystander_requests():
+    """Twenty queued `loop_requests` in PUBLIC that no test in this module created.
 
-    `claim_and_cut` takes the OLDEST queued request across ALL jobs -- which is
-    correct, and which makes these tests order-dependent without this: a row left
-    behind by an earlier test gets claimed instead of the one under test, and the
-    assertion fails against a request nobody looked at. Found exactly that way.
+    They are the OLDEST rows in the table, so any statement that is not confined to
+    this module's own data (the blanket `DELETE`, the oldest-first claim, the
+    `UPDATE ... WHERE status IN (...)`) lands on them first. Teardown asserts every
+    one is still there, still queued and unclaimed, then deletes them by id --
+    only ever rows this fixture inserted.
     """
-    if not DB:
-        yield
-        return
-    with psycopg.connect(DB) as c:
-        c.execute("DELETE FROM loop_requests")
+    with psycopg.connect(_BASE_DB) as c:  # type: ignore[arg-type]
+        rows = c.execute(
+            """WITH j AS (
+                   INSERT INTO public.jobs(id, youtube_url, requested_stems, loop_length_bars,
+                                           status, client_ip_hash, client_fingerprint)
+                   SELECT gen_random_uuid(), 'https://bystander.invalid/' || g, ARRAY['drums'], 4,
+                          'done', 'bystander', 'bystander'
+                     FROM generate_series(1, %s) g
+                   RETURNING id)
+               INSERT INTO public.loop_requests(job_id, status, created_at)
+               SELECT id, 'queued', now() - interval '1 year' FROM j
+               RETURNING id, job_id""",
+            (BYSTANDERS,),
+        ).fetchall()
         c.commit()
-    yield
+    request_ids = [r[0] for r in rows]
+    job_ids = [r[1] for r in rows]
+    try:
+        yield request_ids
+    finally:
+        with psycopg.connect(_BASE_DB) as c:  # type: ignore[arg-type]
+            survivors = c.execute(
+                "SELECT count(*) FROM public.loop_requests "
+                "WHERE id = ANY(%s) AND status = 'queued' AND claimed_at IS NULL",
+                (request_ids,),
+            ).fetchone()[0]
+            c.execute("DELETE FROM public.jobs WHERE id = ANY(%s)", (job_ids,))
+            c.commit()
+        assert survivors == BYSTANDERS, (
+            f"{BYSTANDERS - survivors} of {BYSTANDERS} bystander loop_requests were deleted or "
+            "changed by a test in this module"
+        )
+
+
+def needs_db(fn):
+    """Mark a test as DB-backed: skipped without DATABASE_URL, and handed the scratch
+    schema. Opt-in, so the pure key-format tests above never open a connection."""
+    fn = pytest.mark.usefixtures("scratch_db")(fn)
+    return pytest.mark.skipif(not _BASE_DB, reason="DATABASE_URL not set")(fn)
+
+
+_TABLES = ("jobs", "loops", "loop_requests")
+
+
+@pytest.fixture
+def scratch_db(bystander_requests, monkeypatch):
+    """Run each DB test against its OWN private schema, dropped afterwards.
+
+    WHY A SCHEMA AND NOT "delete only my rows". The cutter is global by design:
+    `claim_and_cut` takes the OLDEST queued request of ALL jobs, `reap_stale_requests`
+    reaps every stale 'running' row, and one test below blanket-UPDATEs every live
+    request. With a bystander queued row in the table, deleting only this module's rows
+    would still leave the production code claiming (and mutating) the bystander, and the
+    claim-order assertions would fail against a request nobody looked at. A per-run
+    marker cannot help for the same reason, and a rolled-back transaction cannot span
+    these tests: they hold locks across SECOND live connections and the code under test
+    opens and commits its own. A private schema is the one confinement all of them fit.
+
+    The tables are `CREATE TABLE ... (LIKE public.<t> INCLUDING ALL)`, so columns,
+    defaults, CHECKs and the partial unique `loop_requests_live_idx` are the real ones as
+    migrated, not a hand-copied imitation that could drift. `search_path` is the scratch
+    schema ALONE: a table this fixture failed to clone raises "relation does not exist"
+    instead of quietly resolving to `public`.
+    """
+    schema = f"lc_test_{uuid.uuid4().hex[:12]}"  # fresh per test, so DROP below is ours alone
+    scoped = make_conninfo(_BASE_DB, options=f"-c search_path={schema}")
+    with psycopg.connect(_BASE_DB, autocommit=True) as admin:  # type: ignore[arg-type]
+        admin.execute(f'CREATE SCHEMA "{schema}"')
+        try:
+            for t in _TABLES:
+                admin.execute(f'CREATE TABLE "{schema}".{t} (LIKE public.{t} INCLUDING ALL)')
+            for t in ("loops", "loop_requests"):
+                admin.execute(
+                    f'ALTER TABLE "{schema}".{t} ADD FOREIGN KEY (job_id) '
+                    f'REFERENCES "{schema}".jobs(id) ON DELETE CASCADE'
+                )
+            # Fail closed: if the server ignored `options` (a pooler can), refuse to run
+            # rather than let every statement below land on public.
+            with psycopg.connect(scoped) as probe:
+                resolved = probe.execute(
+                    "SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE c.oid = to_regclass('loop_requests')"
+                ).fetchone()
+            assert resolved == (schema,), (
+                f"search_path did not take effect (loop_requests resolved to {resolved!r}); "
+                "refusing to run against public"
+            )
+            monkeypatch.setattr(sys.modules[__name__], "DB", scoped)
+            monkeypatch.setattr(loop_cutter, "DATABASE_URL", scoped)
+            monkeypatch.setattr(pipeline, "DATABASE_URL", scoped)
+            yield schema
+        finally:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
 
 def _job() -> str:
@@ -591,3 +684,45 @@ def test_the_reaper_leaves_queued_and_terminal_requests_alone():
             )
             c.commit()
     assert asyncio.run(loop_cutter.reap_stale_requests()) == 0
+
+
+@needs_db
+def test_loop_requests_this_module_did_not_create_are_left_alone(bystander_requests, monkeypatch):
+    """The non-vacuity gate for the whole module.
+
+    `bystander_requests` put twenty queued rows -- older than anything a test makes -- in
+    PUBLIC before this body started. Production `claim_and_cut` is global by design (it
+    takes the OLDEST queued request of ALL jobs), so if the suite were not confined to
+    its own data this test would claim a bystander instead of the request it just made.
+    """
+    with psycopg.connect(_BASE_DB) as c:  # type: ignore[arg-type]
+        present = c.execute(
+            "SELECT count(*) FROM public.loop_requests WHERE id = ANY(%s) AND status='queued'",
+            (bystander_requests,),
+        ).fetchone()[0]
+    assert present == BYSTANDERS, (
+        f"only {present} of {BYSTANDERS} bystander rows were still queued when the test body "
+        "began: something that runs before every test deleted or changed the others"
+    )
+
+    own = _request(_job())
+
+    async def fake_cut(_job_id: str) -> int:
+        return 1
+
+    monkeypatch.setattr(loop_cutter, "_cut_request", fake_cut)
+    assert asyncio.run(loop_cutter.claim_and_cut()) is True
+    with psycopg.connect(DB) as c:  # type: ignore[arg-type]
+        assert (
+            c.execute("SELECT status FROM loop_requests WHERE id=%s", (own,)).fetchone()[0]
+            == "done"
+        )
+    assert asyncio.run(loop_cutter.reap_stale_requests()) == 0
+
+    with psycopg.connect(_BASE_DB) as c:  # type: ignore[arg-type]
+        untouched = c.execute(
+            "SELECT count(*) FROM public.loop_requests "
+            "WHERE id = ANY(%s) AND status='queued' AND claimed_at IS NULL",
+            (bystander_requests,),
+        ).fetchone()[0]
+    assert untouched == BYSTANDERS

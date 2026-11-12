@@ -4,9 +4,12 @@ Runs against DATABASE_URL (skips cleanly otherwise). R2 is replaced by an in-mem
 """
 
 import asyncio
+import contextlib
 import os
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import psycopg
 import pytest
@@ -53,6 +56,45 @@ def r2(monkeypatch):
     monkeypatch.setattr(cleanup, "list_objects_older_than", fake.list_older)
     monkeypatch.setattr(cleanup, "delete_objects", fake.delete_objects)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def bystander_job():
+    """A job this module did not create: created 2 days ago with 30-day retention.
+
+    That is the shape a paid tier with a longer window (claude/tiered-retention-plan)
+    produces. Migration 007's UPDATE is unscoped by design -- `WHERE expires_at >
+    created_at + 24h` -- so anything that APPLIES it to the session database resets this
+    row to created_at + 24h (a day in the past), and the production sweep then selects it
+    and deletes its audio from R2. Teardown asserts the row is exactly as seeded, then
+    deletes it by id (only ever this fixture's own row).
+    """
+    jid = str(uuid.uuid4())
+    with psycopg.connect(DB) as c:  # type: ignore[arg-type]
+        c.execute(
+            """INSERT INTO jobs(id, youtube_url, requested_stems, loop_length_bars, status,
+                                client_ip_hash, client_fingerprint, created_at, expires_at)
+               VALUES(%s,'https://bystander.invalid/paid',%s,4,'done','bystander','bystander',
+                      now() - interval '2 days', now() - interval '2 days' + interval '30 days')""",
+            (jid, ["drums"]),
+        )
+        before = c.execute(
+            "SELECT created_at, expires_at, status FROM jobs WHERE id=%s", (jid,)
+        ).fetchone()
+        c.commit()
+    try:
+        yield jid
+    finally:
+        with psycopg.connect(DB) as c:  # type: ignore[arg-type]
+            after = c.execute(
+                "SELECT created_at, expires_at, status FROM jobs WHERE id=%s", (jid,)
+            ).fetchone()
+            c.execute("DELETE FROM jobs WHERE id=%s", (jid,))
+            c.commit()
+        assert after == before, (
+            "the bystander job (30-day retention) was changed or deleted by a test in this "
+            f"module: was {before}, now {after}"
+        )
 
 
 async def _insert_job(age_hours: float, status: str = "done") -> str:
@@ -191,38 +233,79 @@ def test_budget_stops_the_sweep_early(r2, monkeypatch):
     asyncio.run(scenario())
 
 
-def test_migration_007_default_is_24h_and_shortens_existing_rows():
-    async def scenario():
-        mig_path = os.path.join(
-            os.path.dirname(__file__), "..", "migrations", "007_retention_24h.sql"
-        )
-        with open(mig_path) as f:
-            mig = f.read()
-        async with await psycopg.AsyncConnection.connect(DB) as conn:
-            await conn.execute(mig)  # idempotent: safe to re-apply
-            jid = str(uuid.uuid4())
-            await conn.execute(
-                "INSERT INTO jobs(id,youtube_url,requested_stems,loop_length_bars,client_ip_hash)"
-                " VALUES(%s,'u',%s,4,'t')",
-                (jid, ["drums"]),
-            )
-            row = await (
-                await conn.execute("SELECT expires_at - created_at FROM jobs WHERE id=%s", (jid,))
-            ).fetchone()
-            assert row[0] == timedelta(hours=24)
-            # A legacy 7-day row gets shortened; a row already shorter is left alone.
-            await conn.execute(
-                "UPDATE jobs SET expires_at = created_at + interval '7 days' WHERE id=%s", (jid,)
-            )
-            await conn.execute(mig)
-            row = await (
-                await conn.execute("SELECT expires_at - created_at FROM jobs WHERE id=%s", (jid,))
-            ).fetchone()
-            assert row[0] == timedelta(hours=24)
-            await conn.execute("DELETE FROM jobs WHERE id=%s", (jid,))
-            await conn.commit()
+MIGRATION_007 = os.path.join(os.path.dirname(__file__), "..", "migrations", "007_retention_24h.sql")
 
-    asyncio.run(scenario())
+
+@contextlib.contextmanager
+def _rolled_back_session() -> Iterator[Any]:
+    """One connection, one transaction, ALWAYS rolled back (the pattern of
+    test_033_cut_at_backfill._session).
+
+    Deliberately not `with psycopg.connect(...)`, whose context manager COMMITS on a clean
+    exit. Migration 007 is an unscoped UPDATE on `jobs`; this is what lets a test apply it
+    without it being able to touch any row but the ones the test is looking at.
+    """
+    conn = psycopg.connect(DB)  # type: ignore[arg-type]
+    try:
+        conn.execute("SET statement_timeout = 30000")
+        conn.execute("SET lock_timeout = 30000")
+        yield conn
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def _apply_migration_007_and_check(conn: Any) -> None:
+    """Assert 007's effect on a row of our own. Never commits: the caller rolls back."""
+    with open(MIGRATION_007) as f:
+        mig = f.read()
+    conn.execute(mig)  # idempotent: safe to re-apply
+    jid = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO jobs(id,youtube_url,requested_stems,loop_length_bars,client_ip_hash)"
+        " VALUES(%s,'u',%s,4,'t')",
+        (jid, ["drums"]),
+    )
+    row = conn.execute("SELECT expires_at - created_at FROM jobs WHERE id=%s", (jid,)).fetchone()
+    assert row[0] == timedelta(hours=24)
+    # A legacy 7-day row gets shortened; a row already shorter is left alone.
+    conn.execute("UPDATE jobs SET expires_at = created_at + interval '7 days' WHERE id=%s", (jid,))
+    conn.execute(mig)
+    row = conn.execute("SELECT expires_at - created_at FROM jobs WHERE id=%s", (jid,)).fetchone()
+    assert row[0] == timedelta(hours=24)
+
+
+def test_migration_007_default_is_24h_and_shortens_existing_rows():
+    # Migration 007's UPDATE is unscoped on purpose (a one-time retention migration must
+    # reach every row), so this test must not be able to COMMIT it. Everything happens in
+    # a transaction that is always rolled back: the migration, the default change and our
+    # rows all vanish, and no other job in the session database is touched.
+    with _rolled_back_session() as conn:
+        _apply_migration_007_and_check(conn)
+
+
+def test_migration_007_reaches_other_jobs_so_only_the_rollback_protects_them(bystander_job):
+    """The non-vacuity gate for the test above. The migration really is unscoped: inside
+    the transaction it DOES shorten a 30-day job this test never created, so the only
+    reason that job is still 30 days afterwards is the rollback. (If 007 were ever scoped,
+    or the bystander stopped matching its WHERE, the first assert says so rather than
+    letting the survival check pass for nothing.)"""
+    with _rolled_back_session() as conn:
+        _apply_migration_007_and_check(conn)
+        inside = conn.execute(
+            "SELECT expires_at - created_at FROM jobs WHERE id=%s", (bystander_job,)
+        ).fetchone()
+        assert inside is not None and inside[0] == timedelta(hours=24), (
+            "precondition: 007 should shorten the 30-day bystander INSIDE the transaction; "
+            f"got {inside}"
+        )
+    with psycopg.connect(DB) as c:  # type: ignore[arg-type]
+        after = c.execute(
+            "SELECT expires_at - created_at FROM jobs WHERE id=%s", (bystander_job,)
+        ).fetchone()
+    assert after is not None and after[0] == timedelta(
+        days=30
+    ), f"the bystander's retention changed and was committed: {after}"
 
 
 # --------------------------------------------------------------------------------------

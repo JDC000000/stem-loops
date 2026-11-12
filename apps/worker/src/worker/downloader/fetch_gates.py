@@ -116,26 +116,38 @@ def _read_switches() -> list[tuple[str, bool]]:
     fires BETWEEN statements, so it is the one timer that can cancel a read that is not
     running) and, on a server that has it (PostgreSQL 17+), transaction_timeout. The last is
     gated on conn.info.server_version because naming a GUC an older server does not know is an
-    ERROR, and an error here fails open: on 16 it is never sent. Only PostgreSQL 16 was
-    available to test, so the 17+ branch is pinned by a fake connection (the statement is
-    issued at 170000 and not at 169999), NOT by a real PostgreSQL 17 accepting it.
+    ERROR, and an error here fails open: on 16 it is never sent.
+
+    UNTESTED WHERE IT RUNS. Production is PostgreSQL 17.6 (tests/fixtures/supabase_prelude.sql),
+    so the 17+ branch is the ONLY branch that executes in production, and
+    `SET LOCAL transaction_timeout = 0` has never been sent to a real PostgreSQL 17 server. Every
+    CI database and the box this was written on are PostgreSQL 16, where that branch cannot run.
+    It is pinned only by a fake connection (the statement is issued at 170000 and not at
+    169999). If a real 17 rejected the statement, every gate read in production would error and,
+    on a cold cache, fail open.
 
     RESIDUAL, measured, not closed: the idle timer is inherited from BEGIN until the SET LOCAL
-    runs, so a role value of the order of a millisecond can still fire in that gap.
+    runs, so a role value of the order of a millisecond can still fire in that gap. That is why
+    it is the FIRST SET LOCAL (the fake-connection test pins the order): each statement before
+    it is another idle gap in which it can fire.
 
-    CONSEQUENCE, stated plainly: with both timers off, a locked table stalls the worker for as
+    CONSEQUENCE, stated plainly: with these timers off, a locked table stalls the worker for as
     long as the lock lasts, and "the lock" includes queue time: a reader queues behind a pending
-    DDL statement that is itself waiting on an idle transaction, and nothing bounds that. Measured:
+    DDL statement that is itself waiting on an idle transaction, and nothing in THIS read bounds
+    that (the other session's own timers might). Measured:
     ACCESS EXCLUSIVE held 150 s -> fetch_paused() = 'fetch_global' after 150.001 s, with a second
     thread blocked 148.004 s behind _lock. That is the deliberate trade: stall and answer
     correctly rather than release a pulled brake. The stall is not silent: _refresh_if_stale logs
     kill_switch_read_slow while it waits. A bounded read only becomes safe once a missing or
     unreadable row counts as engaged (the fail-closed change, out of scope here).
 
-    Not covered: a network partition (no server-side timer applies; the OS TCP timeouts do), any
-    timer this does not name, and ANY CLIENT-SIDE bound (a Timer that calls conn.cancel(), a
-    socket timeout, a wrapper that abandons the read): none of the tests observes one, so a
-    client-side cancel above the 3.5 s the wall-clock test waits is covered by nothing.
+    NOT EXHAUSTIVE, AND NOT TRYING TO BE: the policy is fail-open, so ANY read error on a cold
+    cache releases the brake for fetch_global/fetch_youtube, whatever its cause. This function
+    clears the timers named above and nothing else; closing the class is the fail-closed change
+    (out of scope here). Of the two legs, only CONNECT is bounded (connect_timeout=3, which
+    pre-dates this PR; its value is neither relied on nor tested here). The READ has no
+    client-side bound, so a partition mid-read waits on the OS TCP timeouts. No test observes a
+    client-side bound on the read: one above the 3.5 s the wall-clock test waits passes them all.
 
     `public.` is explicit: an unqualified name resolves through search_path, whose first entry
     "$user" is the LOGIN role's name, so a schema with that name holding its own kill_switches

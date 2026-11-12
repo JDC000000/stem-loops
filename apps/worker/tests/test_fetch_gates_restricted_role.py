@@ -492,6 +492,10 @@ def test_transaction_timeout_is_cleared_only_where_the_server_has_it(
     ):
         assert always in sent, sent
     assert "kill_switches" in sent[-1], sent  # every reset precedes the SELECT
+    # The idle timer fires BETWEEN statements and is inherited from BEGIN until this SET LOCAL
+    # runs, so every statement sent before it is another idle gap it can fire in (see the
+    # RESIDUAL note in _read_switches). It must therefore be the first statement sent.
+    assert sent[0] == "SET LOCAL idle_in_transaction_session_timeout = 0", sent
 
 
 @pytest.mark.parametrize(

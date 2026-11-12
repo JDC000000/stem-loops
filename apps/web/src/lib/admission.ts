@@ -1,15 +1,51 @@
 import { db } from '@/lib/db';
+import { ERROR_COPY } from '@/lib/error-copy';
 
 // Admission control (PRD draft-2 hardening): three gates run BEFORE a job row is
 // inserted or enqueued, so abuse and runaway spend are stopped at the door. The
 // spend ceiling defends the <$30/mo Replicate hard cap.
 export type AdmissionResult =
   | { allowed: true; error_code: null }
-  | { allowed: false; error_code: 'RATE_LIMITED' };
+  | { allowed: false; error_code: 'RATE_LIMITED' }
+  // B8: the GLOBAL in-flight cap is a different refusal from the per-client limit. The
+  // user did nothing wrong — other people's songs fill the queue — so it gets its own
+  // code, its own copy, and the HTTP layer answers 503 + Retry-After rather than 429.
+  | { allowed: false; error_code: 'AT_CAPACITY'; retry_after_s: number; message: string };
 
 export const RATE_WINDOW_MS = 60_000;
 export const RATE_LIMIT = 5; // per-client jobs per minute
-const MAX_IN_FLIGHT = 20; // global in-flight cap
+
+// Global in-flight cap (B8). Default UNCHANGED at 20; ADMISSION_MAX_IN_FLIGHT overrides
+// it so the cap can be raised or lowered without a deploy-time code change (e.g. when a
+// second worker Machine is added). Anything that is not a plain positive integer falls
+// back to the default and is logged ONCE per process — a typo must never turn into
+// "cap = NaN" (every comparison false → no cap at all) or "cap = 0" (refuse everyone).
+export const DEFAULT_MAX_IN_FLIGHT = 20;
+let warnedBadMaxInFlight = false;
+export function maxInFlight(): number {
+  const raw = process.env.ADMISSION_MAX_IN_FLIGHT;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_MAX_IN_FLIGHT;
+  const t = raw.trim();
+  const n = /^[0-9]+$/.test(t) ? Number(t) : NaN;
+  if (Number.isSafeInteger(n) && n > 0) return n;
+  if (!warnedBadMaxInFlight) {
+    warnedBadMaxInFlight = true;
+    console.warn(
+      `[admission] ADMISSION_MAX_IN_FLIGHT=${JSON.stringify(raw)} is not a positive integer; ` +
+        `using the default ${DEFAULT_MAX_IN_FLIGHT}.`,
+    );
+  }
+  return DEFAULT_MAX_IN_FLIGHT;
+}
+
+// Retry-After for an AT_CAPACITY refusal, in seconds. The worker is SERIAL (one Fly
+// Machine, consumer.py poll_loop claims LIMIT 1 and runs it to completion), so a slot
+// frees exactly when one job finishes. A typical job takes ~1–3 minutes end to end (the
+// landing's own measured note: a 3:34 song took about 1–3 minutes), so the expected wait
+// for the next free slot is about one job's duration. 120 s is the middle of that range:
+// shorter would invite retries that land on a still-full queue, longer would turn people
+// away for longer than the queue actually needs. It matches the copy ("a few minutes").
+export const AT_CAPACITY_RETRY_AFTER_S = 120;
 const dailySpendCeilingUsd = () => parseFloat(process.env.REPLICATE_SPEND_CEILING_USD ?? '10');
 
 // Per-client presign minting cap for POST /api/uploads (security review BLOCKER #2).
@@ -53,6 +89,27 @@ const IN_FLIGHT_STATUSES = ['queued', 'downloading', 'separating', 'extracting',
 
 const BLOCKED: AdmissionResult = { allowed: false, error_code: 'RATE_LIMITED' };
 const ALLOWED: AdmissionResult = { allowed: true, error_code: null };
+const AT_CAPACITY: AdmissionResult = {
+  allowed: false,
+  error_code: 'AT_CAPACITY',
+  retry_after_s: AT_CAPACITY_RETRY_AFTER_S,
+  message: `${ERROR_COPY.AT_CAPACITY.headline} ${ERROR_COPY.AT_CAPACITY.action}`,
+};
+
+/**
+ * Global in-flight cap on its own (B8). Used by checkAdmission() below AND by
+ * POST /api/uploads before it mints a presigned PUT, so a visitor is told the site is
+ * full BEFORE they spend minutes uploading a file, not after (product-plan item 4.5).
+ * Counts every job in a non-terminal status with no age bound: the worker is serial and
+ * the reaper deliberately never touches `queued`, so a long queue is real load, not rot.
+ */
+export async function checkGlobalCapacity(): Promise<AdmissionResult> {
+  const inFlight = await db.query(
+    `SELECT COUNT(*)::int AS count FROM jobs WHERE status = ANY($1)`,
+    [IN_FLIGHT_STATUSES],
+  );
+  return inFlight.rows[0].count >= maxInFlight() ? AT_CAPACITY : ALLOWED;
+}
 
 export async function checkAdmission(clientIpHash: string): Promise<AdmissionResult> {
   // 1. Per-client rolling window (parameterized interval — no SQL string interpolation).
@@ -64,12 +121,10 @@ export async function checkAdmission(clientIpHash: string): Promise<AdmissionRes
   );
   if (recent.rows[0].count >= RATE_LIMIT) return BLOCKED;
 
-  // 2. Global in-flight cap.
-  const inFlight = await db.query(
-    `SELECT COUNT(*)::int AS count FROM jobs WHERE status = ANY($1)`,
-    [IN_FLIGHT_STATUSES],
-  );
-  if (inFlight.rows[0].count >= MAX_IN_FLIGHT) return BLOCKED;
+  // 2. Global in-flight cap — AT_CAPACITY, not RATE_LIMITED (B8): this refusal is about
+  //    everyone else's jobs, so it must not tell this client they went too fast.
+  const capacity = await checkGlobalCapacity();
+  if (!capacity.allowed) return capacity;
 
   // 3. Rolling 24h Replicate spend ceiling (cost_usd persisted to job_events.detail by the
   //    real pipeline in P2-12+; until then this sums to 0 and never trips in normal flow).

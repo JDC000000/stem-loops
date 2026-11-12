@@ -12,6 +12,13 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
   UPLOAD_FAILED: { headline: "We separated your stems but couldn't save them.", action: 'Please retry.' },
   RATE_LIMITED: { headline: "We're busy or you've hit the limit.", action: 'Wait a moment and try again.' },
   INTERNAL_ERROR: { headline: "Something went wrong on our end. We've logged it.", action: 'Please try again.' },
+  // B8: the GLOBAL in-flight cap (admission.ts checkGlobalCapacity). Distinct from
+  // RATE_LIMITED because it is not about this visitor at all — other people's songs fill
+  // the queue. Returned as 503 + Retry-After: 120, which is what "a few minutes" means.
+  AT_CAPACITY: {
+    headline: "We're at capacity right now.",
+    action: "It's not something you did — we're working through other people's songs. Please try again in a few minutes.",
+  },
 
   // V3 billing codes (TSD §3.6)
   CHECKOUT_FAILED: {

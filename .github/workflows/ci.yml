@@ -585,6 +585,62 @@ jobs:
           NEXT_TELEMETRY_DISABLED: "1"
 
 
+  chord-chip-browser-gate:
+    name: Chord chip fit (real Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The chord overlay is the product's differentiator and its gate in
+    # apps/web/test/chord-default-zoom.test.mjs runs in happy-dom, which has no
+    # layout engine and cannot see a clipped chord name. This job renders the
+    # real ChordOverlay in real Chromium and measures every chip.
+    # Source: packages/web-browser-gate/test/chord-chip-fit.test.mjs.
+    #
+    # *** NOT YET A REQUIRED STATUS CHECK. *** The v3/main ruleset lists its
+    # required contexts by name and only the repo owner can edit it. Until
+    # "Chord chip fit (real Chromium)" is added there this job reports but blocks
+    # nothing. No path filter, on purpose: a required check that does not run
+    # for some PRs waits forever.
+    #
+    # MERGE ORDER (a transition, not a steady state): this job is RED on any tree
+    # that lacks PR #212's chip-fit fixes, `v3/main` included -- correctly. So
+    # (1) merge #212, (2) rebase this PR onto it, (3) see this job GREEN in CI
+    # for the first time, (4) add the check to the ruleset in that same sitting.
+    # Merged before #212 and left non-required it is red on every PR, the
+    # permanently-red-smoke pattern; required before #212 it blocks every PR.
+    #
+    # Chromium: pinned to the Playwright version in pnpm-lock.yaml (1.63.0 ->
+    # Chromium build 1243). `playwright install` MUST be the repo's own copy
+    # (pnpm exec), never a global or `npx playwright@latest`, or the browser it
+    # downloads will not be the one the pinned library launches.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      - name: Resolve pinned Playwright version
+        id: pw
+        run: echo "version=$(pnpm --filter @stem-loops/web-browser-gate exec node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: pw-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.pw.outputs.version }}
+      - name: Install Chromium and its system libraries
+        # --with-deps also installs the OS libraries and fonts Chromium needs
+        # (apt). The browser download is skipped on a cache hit; the apt step is
+        # not cacheable and is most of the cost.
+        run: pnpm --filter @stem-loops/web-browser-gate exec playwright install --with-deps chromium
+      - name: Chord chips fit (real Chromium)
+        run: pnpm --filter @stem-loops/web-browser-gate test
+        env:
+          CHORD_GATE_LOG: "1"
+
+
   supabase-prelude-migrations:
     name: Migrations on a Supabase-like Postgres (PG ${{ matrix.pg }})
     runs-on: ubuntu-latest

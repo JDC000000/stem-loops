@@ -915,6 +915,43 @@ async function runWithDom(body, options) {
   return result;
 }
 
+/**
+ * Set a form control's value the way a user's keystroke or drag does, so a REACT
+ * CONTROLLED INPUT notices, then fire the bubbling `input` event React listens for.
+ *
+ * WHY THIS EXISTS. React installs its own `value` property on every controlled
+ * input instance and tracks the last value it saw. `el.value = x` goes through that
+ * instance setter, which updates the tracker, so the following `input` event is
+ * judged "no change" and `onChange` / `onInput` NEVER FIRES. Measured on this repo:
+ * three assignments, zero `onChange` calls. Two merged gates drove a zoom slider
+ * that way and drove nothing. The fix is to call the PROTOTYPE's setter, which
+ * writes the DOM value without touching React's tracker.
+ *
+ * Call it inside `dom.act(async () => { ... })`, and ALWAYS assert that the handler
+ * you are testing actually ran -- a green test that never reached the handler is
+ * the failure this helper exists to prevent. There is deliberately NO fallback to
+ * `el.value = x`: if the prototype setter cannot be found this throws.
+ *
+ * @param {HTMLInputElement | HTMLTextAreaElement} el
+ * @param {string | number} value
+ * @returns {Event} the dispatched input event
+ */
+export function setNativeValue(el, value) {
+  const view = el?.ownerDocument?.defaultView;
+  const Ctor = el instanceof view?.HTMLTextAreaElement ? view.HTMLTextAreaElement : view?.HTMLInputElement;
+  const setter = Ctor && Object.getOwnPropertyDescriptor(Ctor.prototype, 'value')?.set;
+  if (typeof setter !== 'function') {
+    throw new Error('setNativeValue(): no prototype `value` setter found; refusing to fall back to `el.value =`');
+  }
+  setter.call(el, String(value));
+  if (el.value !== String(value)) {
+    throw new Error(`setNativeValue(): wrote ${JSON.stringify(String(value))} but the control reads ${JSON.stringify(el.value)}`);
+  }
+  const event = new view.Event('input', { bubbles: true });
+  el.dispatchEvent(event);
+  return event;
+}
+
 /** True while a withDom() body is running. Exposed for the harness's own tests. */
 export const domIsActive = () => active;
 

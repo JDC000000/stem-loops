@@ -9,14 +9,16 @@ Failure policy (decided here, stated once):
     needs the same DB anyway; an outage of the switch table must not take every link job down).
   * fetch_cobalt: FAILS CLOSED, and a missing row counts as engaged (Cobalt is opt-in).
   * blocklist: FAILS CLOSED (a takedown must not be bypassed by a transient DB error).
-  * the kill-switch read has NO server-side timer (see _read_switches): a locked table stalls the
-    worker and then answers correctly, rather than giving up and releasing a pulled brake.
+  * the kill-switch read clears the four server-side timers it could inherit (see _read_switches):
+    a locked table stalls the worker and then answers correctly, rather than giving up and
+    releasing a pulled brake. What is NOT bounded either way is stated there.
   * every table is named `public.<table>`: the first search_path entry is "$user", the LOGIN role.
   * attempt logging never raises.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
@@ -94,7 +96,7 @@ def reset_cache() -> None:
 
 
 def _read_switches() -> list[tuple[str, bool]]:
-    """One read of the table, with NO server-side timer of any kind.
+    """One read of the table, with none of the server-side timers this module knows of.
 
     This gate fails OPEN for fetch_global/fetch_youtube, so a read that gives up turns "the
     table is locked / the database is slow" into "the brake is released": with fetch_global=true,
@@ -106,10 +108,20 @@ def _read_switches() -> list[tuple[str, bool]]:
     default for every role without its own), and a session inherits it. Measured on the round-2
     head with the table locked 6 s: ALTER ROLE ... SET statement_timeout = '2s', ALTER ROLE ...
     SET lock_timeout = '2s' and ALTER DATABASE ... SET statement_timeout = '2s' each returned
-    None (fetch allowed) after about 2.0 s. So both are set to 0 here, for THIS TRANSACTION ONLY
+    None (fetch allowed) after about 2.0 s. So they are set to 0 here, for THIS TRANSACTION ONLY
     (SET LOCAL: it dies with the transaction, so it cannot leak into a pooled connection the way
-    a plain SET would; it is also why this is two statements in the read's own transaction and
-    not a connection option).
+    a plain SET would; it is also why these are separate statements in the read's own transaction
+    and not a connection option). The set is statement_timeout, lock_timeout,
+    idle_in_transaction_session_timeout (round 4: a role value of 1 ms released the brake; it
+    fires BETWEEN statements, so it is the one timer that can cancel a read that is not
+    running) and, on a server that has it (PostgreSQL 17+), transaction_timeout. The last is
+    gated on conn.info.server_version because naming a GUC an older server does not know is an
+    ERROR, and an error here fails open: on 16 it is never sent. Only PostgreSQL 16 was
+    available to test, so the 17+ branch is pinned by a fake connection (the statement is
+    issued at 170000 and not at 169999), NOT by a real PostgreSQL 17 accepting it.
+
+    RESIDUAL, measured, not closed: the idle timer is inherited from BEGIN until the SET LOCAL
+    runs, so a role value of the order of a millisecond can still fire in that gap.
 
     CONSEQUENCE, stated plainly: with both timers off, a locked table stalls the worker for as
     long as the lock lasts, and "the lock" includes queue time: a reader queues behind a pending
@@ -120,9 +132,10 @@ def _read_switches() -> list[tuple[str, bool]]:
     kill_switch_read_slow while it waits. A bounded read only becomes safe once a missing or
     unreadable row counts as engaged (the fail-closed change, out of scope here).
 
-    Not covered: a network partition (no server-side timer applies; the OS TCP timeouts do), and
-    any timer this does not name (e.g. transaction_timeout, PostgreSQL 17+; not set here because
-    naming it on an older server is an error, and an error here fails open).
+    Not covered: a network partition (no server-side timer applies; the OS TCP timeouts do), any
+    timer this does not name, and ANY CLIENT-SIDE bound (a Timer that calls conn.cancel(), a
+    socket timeout, a wrapper that abandons the read): none of the tests observes one, so a
+    client-side cancel above the 3.5 s the wall-clock test waits is covered by nothing.
 
     `public.` is explicit: an unqualified name resolves through search_path, whose first entry
     "$user" is the LOGIN role's name, so a schema with that name holding its own kill_switches
@@ -131,8 +144,11 @@ def _read_switches() -> list[tuple[str, bool]]:
     """
     with _connect() as conn:
         # Same (implicit) transaction as the SELECT below: psycopg opens it on first execute.
+        conn.execute("SET LOCAL idle_in_transaction_session_timeout = 0")
         conn.execute("SET LOCAL statement_timeout = 0")
         conn.execute("SET LOCAL lock_timeout = 0")
+        if conn.info.server_version >= 170000:  # the GUC does not exist before 17: an error
+            conn.execute("SET LOCAL transaction_timeout = 0")
         return conn.execute("SELECT scope, enabled FROM public.kill_switches").fetchall()
 
 
@@ -165,8 +181,18 @@ def _refresh_if_stale() -> None:
             },
         )
         slow.daemon = True
+        # The log timer is a convenience; the READ is the gate. They are in SEPARATE try blocks on
+        # purpose. With `slow.start()` inside the read's own `try`, a thread that cannot start
+        # ("can't start new thread" at a thread or memory limit) was handled as a FAILED READ and
+        # returned before the table was ever queried: with fetch_global engaged, a healthy
+        # database and a cold cache, fetch_paused() answered None (fetch allowed). Measured:
+        # 0.000 s, no query. A failure to start the timer must cost the log line and nothing else.
         try:
-            slow.start()  # inside the try: failing to start a log timer must not raise to callers
+            slow.start()
+        except Exception as exc:  # noqa: BLE001 — the read below must still run
+            with contextlib.suppress(Exception):  # even a dead stderr must not skip the read
+                log_structured("WARN", "kill_switch_slow_timer_unavailable", error=str(exc)[:120])
+        try:
             rows = _read_switches()
         except Exception as exc:  # noqa: BLE001 — keep serving the last known state
             log_structured("WARN", "kill_switch_read_failed", error=str(exc)[:120])

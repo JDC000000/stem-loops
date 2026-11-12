@@ -304,21 +304,30 @@ def test_deleting_an_engaged_row_releases_the_brake_after_the_ttl(
 
 
 # 5 ------------------------------------------------------------------------------------------
-# NO server-side timer on the gate read. This gate fails OPEN for fetch_global/fetch_youtube, so a
-# read that gives up converts a locked table into a released brake. WHICH TEST COVERS WHAT:
+# The gate read and what bounds it. This gate fails OPEN for fetch_global/fetch_youtube, so a read
+# that gives up converts a locked table into a released brake. WHICH TEST COVERS WHAT, and what
+# nothing covers:
 #
-#   test_the_gate_read_runs_with_no_server_side_timer   covers the PROPERTY, for ANY timer value:
-#       it asks the read's OWN transaction for current_setting(statement_timeout / lock_timeout),
-#       so a finite timer fails it whether it was written into the code (2 s, 4 s, 10 s...) or
-#       INHERITED from the role or the database (ALTER ROLE/DATABASE ... SET). It also proves the
-#       reset is transaction-scoped (SET LOCAL, not SET): the timers are back to the inherited
-#       values once the read's connection is done.
+#   test_the_gate_read_runs_with_no_server_side_timer   covers ONE property: the server-side
+#       GUCs statement_timeout, lock_timeout and idle_in_transaction_session_timeout (plus
+#       transaction_timeout on PostgreSQL 17+, which this box cannot run) are 0 in the read's OWN
+#       transaction at the moment of the SELECT, whether the code or the role/database default
+#       tried to set them. It asks the server (current_setting), so a comment or string cannot
+#       satisfy it. It also proves the reset is transaction-scoped (SET LOCAL, not SET).
+#       It does NOT observe a CLIENT-SIDE bound.
 #   test_a_locked_table_delays_an_engaged_global_brake_it_does_not_release_it   covers the
-#       END-TO-END BEHAVIOUR only below BLOCKED_FOR_S: a blocked reader keeps waiting and answers
-#       'fetch_global' once the lock clears. It is a wall-clock test, so a code timeout LONGER
-#       than BLOCKED_FOR_S passes it (measured on the previous revision: 4 s and 10 s both left it
-#       green). It is NOT what claims "no timer"; the test above is.
+#       END-TO-END BEHAVIOUR only below BLOCKED_FOR_S: a blocked reader is still waiting after
+#       3.5 s and answers 'fetch_global' once the lock clears. It is a wall-clock test.
+#
+#   NOT COVERED BY ANY TEST: a client-side bound longer than BLOCKED_FOR_S (3.5 s). Measured
+#       round 4: wrapping the SELECT in threading.Timer(4.0, conn.cancel) leaves this whole file
+#       green (31 passed) and the full worker suite green (873 / 1 / 1), yet the gate returns None
+#       (fetch allowed) after 4.016 s on a 6 s lock. The GUC probe cannot see it (the server is
+#       never asked for a timer) and the wall-clock test stops watching at 3.5 s. This file does
+#       not close that and does not pretend to; a longer wall-clock wait would be another timer to
+#       tune, not a proof of "unbounded".
 BLOCKED_FOR_S = 3.5  # longer than the 2 s cap an earlier revision of this PR put on the read
+# (a client-side bound of 4 s or more passes everything below: see the section comment above)
 
 
 def _wait_until_a_reader_is_blocked_on_the_lock(admin, timeout_s: float = 10.0) -> None:
@@ -354,7 +363,19 @@ def _inherited(admin, setting):
         admin.execute(f"ALTER {target} RESET {guc}")
 
 
-_TIMERS_SQL = "SELECT current_setting('statement_timeout'), current_setting('lock_timeout')"
+# The server-side timers the gate read must run without. transaction_timeout exists only on
+# PostgreSQL 17+ (naming it earlier is an error), so it is observed only where it exists.
+_TIMER_GUCS = ("statement_timeout", "lock_timeout", "idle_in_transaction_session_timeout")
+_PG17 = 170000
+
+
+def _timer_gucs(server_version: int) -> tuple:
+    return _TIMER_GUCS + (("transaction_timeout",) if server_version >= _PG17 else ())
+
+
+def _timers_sql(server_version: int) -> str:
+    return "SELECT " + ", ".join(f"current_setting('{g}')" for g in _timer_gucs(server_version))
+
 
 # (level, guc, value) or None. Each inherited case is verified to be in force before it is used.
 INHERITED = [
@@ -363,6 +384,15 @@ INHERITED = [
     pytest.param(("ROLE", "lock_timeout", "2s"), id="role-lock_timeout-2s"),
     pytest.param(("DATABASE", "statement_timeout", "2s"), id="database-statement_timeout-2s"),
     pytest.param(("DATABASE", "lock_timeout", "2s"), id="database-lock_timeout-2s"),
+    # '1h', not a few ms: this test checks what the SESSION INHERITS at the SELECT, and an
+    # idle timer small enough to fire would kill the test's own connections between statements.
+    pytest.param(
+        ("ROLE", "idle_in_transaction_session_timeout", "1h"), id="role-idle_in_transaction-1h"
+    ),
+    pytest.param(
+        ("DATABASE", "idle_in_transaction_session_timeout", "1h"),
+        id="database-idle_in_transaction-1h",
+    ),
 ]
 
 
@@ -372,13 +402,19 @@ def test_the_gate_read_runs_with_no_server_side_timer(
 ):
     """Behavioural, not a source grep: route the gate's OWN `_connect()` through a
     psycopg.Connection subclass that, immediately before the kill_switches SELECT, asks THAT
-    transaction for its timers. A comment or a string containing `SET LOCAL` cannot satisfy this;
-    a finite timer of any size, in the code or inherited, cannot pass it."""
+    transaction for its server-side timers (statement_timeout, lock_timeout,
+    idle_in_transaction_session_timeout, and transaction_timeout where the server has it). A
+    comment or a string containing `SET LOCAL` cannot satisfy this; a server-side timer of any
+    size, written into the code or inherited from the role or database, cannot pass it.
+
+    SCOPE: these GUCs and nothing else. A CLIENT-SIDE bound (a Timer calling conn.cancel(), a
+    socket timeout) never reaches the server as a setting, so this test cannot see one."""
     seen: dict = {"in_read": [], "after": []}
 
     class Probe(psycopg.Connection):
         def _timers(self) -> tuple:
-            return tuple(psycopg.Connection.execute(self, _TIMERS_SQL).fetchone())
+            sql = _timers_sql(self.info.server_version)
+            return tuple(psycopg.Connection.execute(self, sql).fetchone())
 
         def execute(self, query, params=None, **kw):
             if "kill_switches" in str(query):
@@ -393,22 +429,69 @@ def test_the_gate_read_runs_with_no_server_side_timer(
 
     with _inherited(as_worker, setting):
         with psycopg.connect(restricted_url) as plain:  # positive control: the timer IS inherited
-            inherited = tuple(plain.execute(_TIMERS_SQL).fetchone())
-        assert (inherited == ("0", "0")) == (setting is None), inherited
+            version = plain.info.server_version
+            gucs = _timer_gucs(version)
+            inherited = tuple(plain.execute(_timers_sql(version)).fetchone())
+        zeros = ("0",) * len(gucs)
+        assert (inherited == zeros) == (setting is None), inherited
         if setting is not None:
-            assert inherited[0 if setting[1] == "statement_timeout" else 1] == setting[2]
+            assert inherited[gucs.index(setting[1])] == setting[2], inherited
 
         monkeypatch.setattr(fetch_gates, "psycopg", types.SimpleNamespace(connect=Probe.connect))
         fetch_gates.reset_cache()
         fetch_gates.fetch_paused()
 
-    assert seen["in_read"] == [("0", "0")], (
-        f"the gate read ran under a server-side timer (statement_timeout, lock_timeout): "
-        f"{seen['in_read']}; this session inherits {inherited}"
+    assert seen["in_read"] == [zeros], (
+        f"the gate read ran under a server-side timer {gucs}: {seen['in_read']}; "
+        f"this session inherits {inherited}"
     )
     # SET LOCAL, not SET: once the read is done the connection is back to what it inherited, so
     # nothing leaks into a pooled connection's next user.
     assert seen["after"] == [inherited], f"the timer reset leaked past the transaction: {seen}"
+
+
+class _FakeConn:
+    """Records the statements the gate sends. NOT a database: it pins which statements are SENT
+    for a given server_version. That a real PostgreSQL 17 accepts and honours
+    `SET LOCAL transaction_timeout = 0` is NOT tested anywhere (only 16 was available)."""
+
+    def __init__(self, server_version: int, sent: list):
+        self.info = types.SimpleNamespace(server_version=server_version)
+        self._sent = sent
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        self._sent.append(query)
+        return types.SimpleNamespace(fetchall=lambda: [("fetch_global", True)])
+
+
+@pytest.mark.parametrize(
+    "version, sends_it",
+    [(160015, False), (169999, False), (170000, True), (170004, True)],
+)
+def test_transaction_timeout_is_cleared_only_where_the_server_has_it(
+    monkeypatch, version, sends_it
+):
+    """Naming transaction_timeout on PostgreSQL 16 is an ERROR, and an error in the gate read
+    fails OPEN. So it must be sent at 170000 and above and never below. On this box the 16 side
+    is also covered by the probe test above against a real server (ungating it would error there
+    and release the brake); the 17 side is covered ONLY by this recording fake."""
+    sent: list = []
+    monkeypatch.setattr(fetch_gates, "_connect", lambda: _FakeConn(version, sent))
+    assert fetch_gates._read_switches() == [("fetch_global", True)]
+    assert ("SET LOCAL transaction_timeout = 0" in sent) is sends_it, sent
+    for always in (
+        "SET LOCAL statement_timeout = 0",
+        "SET LOCAL lock_timeout = 0",
+        "SET LOCAL idle_in_transaction_session_timeout = 0",
+    ):
+        assert always in sent, sent
+    assert "kill_switches" in sent[-1], sent  # every reset precedes the SELECT
 
 
 @pytest.mark.parametrize(
@@ -491,6 +574,70 @@ def test_a_stalled_read_says_so_while_it_waits_and_when_it_resumes(as_worker, mo
     assert len(resumed) == 1 and resumed[0]["detail"]["waited_s"] >= 1.5, after
     assert not _named(after, "kill_switch_read_slow")  # one line per stalled read, not a stream
     assert not _named(after, "kill_switch_read_failed")
+
+
+def _no_thread(*_a, **_k):
+    raise RuntimeError("can't start new thread")  # what CPython raises at a thread/memory limit
+
+
+@pytest.mark.parametrize(
+    "fault, log_also_fails",
+    [
+        pytest.param(_no_thread, False, id="RuntimeError-cant-start-new-thread"),
+        pytest.param(MemoryError("out of memory"), False, id="MemoryError"),
+        pytest.param(_no_thread, True, id="RuntimeError-and-the-log-line-fails-too"),
+    ],
+)
+def test_a_log_timer_that_cannot_start_does_not_skip_the_read(
+    as_worker, monkeypatch, capsys, fault, log_also_fails
+):
+    """The slow-read log timer is a convenience; the read is the gate. Round 3 started the timer
+    INSIDE the read's try, so a thread that could not start was handled as a FAILED READ and the
+    table was never queried: fetch_global engaged, database healthy, cold cache, and
+    fetch_paused() answered None (fetch allowed) after 0.000 s. The brake was released by the
+    mitigation meant to make the stall visible. Must hold: the read still runs and answers."""
+    as_worker.execute("INSERT INTO kill_switches(scope, enabled) VALUES ('fetch_global', true)")
+    fetch_gates.reset_cache()
+
+    # Positive control: the fault is in force, i.e. a Timer really cannot start here.
+    def boom(self):
+        if isinstance(fault, BaseException):
+            raise fault
+        fault()
+
+    monkeypatch.setattr(threading.Timer, "start", boom)
+    with pytest.raises((RuntimeError, MemoryError)):
+        threading.Timer(60, lambda: None).start()
+
+    if log_also_fails:
+        real_log = fetch_gates.log_structured
+
+        def log(level, event, **kw):
+            if event == "kill_switch_slow_timer_unavailable":
+                raise OSError("stderr is gone")
+            return real_log(level, event, **kw)
+
+        monkeypatch.setattr(fetch_gates, "log_structured", log)
+
+    reads = {"n": 0}
+    real_read = fetch_gates._read_switches
+
+    def counted():
+        reads["n"] += 1
+        return real_read()
+
+    monkeypatch.setattr(fetch_gates, "_read_switches", counted)
+    capsys.readouterr()
+
+    assert fetch_gates.fetch_paused() == "fetch_global", (
+        "a log timer that could not start released an engaged brake "
+        f"(table reads performed: {reads['n']})"
+    )
+    assert reads["n"] == 1, "the table was never queried"
+    ev = _events(capsys)
+    assert not _named(ev, "kill_switch_read_failed"), "a healthy read was reported as failed"
+    if not log_also_fails:
+        assert len(_named(ev, "kill_switch_slow_timer_unavailable")) == 1, ev
 
 
 # Unknown scopes. `scope` is free text with no CHECK (migration 008).

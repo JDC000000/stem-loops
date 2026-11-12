@@ -138,7 +138,8 @@ function rateLimitStub({ burst = false, quota = false } = {}) {
       globalThis.__calls.push({ fn: 'checkMonthlyQuota', userId });
       return cfg.quota ? { kind: 'quota_exceeded', resets_at: '2099-01-01T00:00:00Z' } : null;
     };
-    export const incrementJobsUsed = async () => {};
+    export const bumpJobsUsed = async () => {};
+    export const rollPeriodIfStale = async () => {};
     export const BURST_WINDOW_MS = 60000;
     export const BURST_LIMIT_PER_USER = 3;
     export const UNLIMITED_QUOTA_SENTINEL = 100000;

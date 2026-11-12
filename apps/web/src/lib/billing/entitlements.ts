@@ -183,6 +183,34 @@ type TrialGrantRow = { songs_used: number; expires_at: string };
  *  period ahead by the time the renewal fails. */
 export const PAST_DUE_GRACE_MS = 7 * 24 * 3600 * 1000;
 
+/** Has the stored billing period already ended?
+ *
+ *  Load-bearing, and shared on purpose. `entitlements.jobs_used` is only
+ *  meaningful WITHIN the period `period_start`/`period_end` describe, and the
+ *  only code that rolls that period forward (rollPeriodIfStale / bumpJobsUsed
+ *  in rate-limit.ts) runs inside the jobs-INSERT tx — i.e. DOWNSTREAM of every
+ *  gate. So a gate that refuses on a `jobs_used` belonging to a period that is
+ *  over refuses forever: nothing upstream of it can ever refresh the counter it
+ *  is reading.
+ *
+ *  That deadlock was real. `checkMonthlyQuota()` had this escape and
+ *  `enforceEntitlement()`'s free branch did not, and `enforceEntitlement()`
+ *  runs first — so a free account that reached quota and then stopped bumping
+ *  the counter (which is exactly what a credit-funded account does) was locked
+ *  out permanently, and told its allowance "resets at the start of next month"
+ *  when next month had already arrived (adversarial review of #233, Finding A).
+ *  Exported and called by both gates so they cannot drift apart again.
+ *
+ *  A null or unparseable `period_end` is NOT stale: there is no period to be
+ *  past (no entitlements row, or a degraded read), and `jobs_used` defaults to
+ *  0 in that case anyway. This keeps the exact semantics the inline check in
+ *  checkMonthlyQuota() had. */
+export function isPeriodStale(periodEnd: string | null, now: number = Date.now()): boolean {
+  if (periodEnd === null) return false;
+  const end = Date.parse(periodEnd);
+  return Number.isFinite(end) && end <= now;
+}
+
 /** Which plan the user is ENTITLED to right now, as opposed to what the
  *  entitlements row says. The row is only ever written upward by the webhook,
  *  so it is not trusted on its own:
@@ -353,6 +381,11 @@ export async function enforceEntitlement(
       // counter this reads is the one incrementJobsUsed() writes in the jobs
       // INSERT tx, and checkMonthlyQuota() re-checks it on the same request.
       if (!billingEnforced()) {
+        // Stale period: the same escape checkMonthlyQuota() has (rate-limit.ts).
+        // Without it this gate refuses on a jobs_used that belongs to a period
+        // which has ended, and because the period roller runs downstream of
+        // here the refusal can never clear itself. See isPeriodStale().
+        if (isPeriodStale(snap.period_end)) return { allowed: true, snapshot: snap };
         if (snap.jobs_used < snap.jobs_quota) return { allowed: true, snapshot: snap };
         // The message, not just the code: /api/jobs returns it verbatim and the
         // landing form renders `json.message`, so a bare code would reach the

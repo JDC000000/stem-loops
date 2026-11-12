@@ -441,8 +441,11 @@ function routeStubs({ planCode, credits, quotaDenied = false }) {
         globalThis.__q.push({ fn: 'checkMonthlyQuota' });
         return cfg.quotaDenied ? { kind: 'quota_exceeded', resets_at: '2099-01-01T00:00:00Z' } : null;
       };
-      export const incrementJobsUsed = async (_c, userId) => {
+      export const bumpJobsUsed = async (_c, userId) => {
         globalThis.__q.push({ fn: 'incrementJobsUsed', userId });
+      };
+      export const rollPeriodIfStale = async (_c, userId) => {
+        globalThis.__q.push({ fn: 'rollPeriodIfStale', userId });
       };
       export const BURST_WINDOW_MS = 60000;
       export const BURST_LIMIT_PER_USER = 3;

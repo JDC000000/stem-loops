@@ -190,11 +190,31 @@ test('each fader is a real continuous range input, 0..100 step 1 (not a binary t
 test('faders are vertical: orient attribute present, and the stylesheet sets writing-mode', () => {
   const html = render({ stems: allReady(), ...handlers() });
   assert.equal(faders(html).filter((f) => f.includes('orient="vertical"')).length, 6);
+  // EFFECTIVE css, scoped to the `.fader` rule. This block used to assert
+  // `-webkit-appearance: slider-vertical` against RAW text, and was satisfied
+  // by a comment explaining that `slider-vertical` had been deliberately
+  // removed. `slider-vertical` is a NATIVE widget: declared on a range input
+  // it stops `::-webkit-slider-thumb` taking author styles, so the 32x14 thumb
+  // below it never painted in any shipping browser (measured in Chromium).
   const css = read(MIXER_CSS);
-  assert.match(css, /writing-mode:\s*vertical-lr/);
-  assert.match(css, /-webkit-appearance:\s*slider-vertical/);
-  assert.match(css, /direction:\s*rtl/); // zero at the bottom
-  assert.doesNotMatch(css, /transform:\s*rotate/); // hit area must follow the paint
+  const effective = uncomment(css);
+  assert.equal(declAt(css, NARROWEST, '.fader', 'writing-mode'), 'vertical-lr');
+  assert.equal(declAt(css, NARROWEST, '.fader', 'direction'), 'rtl'); // zero at the bottom
+  // THE REGRESSION GUARD. Fails on the code that shipped the bug (which
+  // declared `-webkit-appearance: slider-vertical` on `.fader`), passes on the
+  // fix, and cannot be satisfied by a comment.
+  assert.doesNotMatch(effective, /slider-vertical/, 'a native slider widget disables the custom thumb');
+  // THE POSITIVE FORM. The custom thumb can only paint if the control is not
+  // drawing its native widget, in BOTH spellings.
+  assert.equal(declAt(css, NARROWEST, '.fader', 'appearance'), 'none');
+  assert.equal(declAt(css, NARROWEST, '.fader', '-webkit-appearance'), 'none');
+  // COHERENCE. The custom thumb has a declared box to paint, and does not
+  // itself opt back into a native appearance.
+  assert.equal(declAt(css, NARROWEST, '.fader::-webkit-slider-thumb', 'appearance'), 'none');
+  assert.equal(declAt(css, NARROWEST, '.fader::-webkit-slider-thumb', '-webkit-appearance'), 'none');
+  assert.ok(declAt(css, NARROWEST, '.fader::-webkit-slider-thumb', 'width'), 'thumb has a width');
+  assert.ok(declAt(css, NARROWEST, '.fader::-webkit-slider-thumb', 'height'), 'thumb has a height');
+  assert.doesNotMatch(effective, /transform:\s*rotate/); // hit area must follow the paint
 });
 
 test('gain of exactly 0 and exactly 1 render as 0% and 100%', () => {
@@ -317,7 +337,7 @@ test('muted and ducked are different markup AND different copy', () => {
   // be `opacity` on the whole channel; it is now on the fader column only, so
   // the words on a live ducked channel stay at full contrast.
   const css = read(MIXER_CSS);
-  assert.match(css, /\.isMuted \.name\s*\{[^}]*line-through/);
+  assert.match(declAt(css, NARROWEST, '.isMuted .name', 'text-decoration'), /line-through/);
   // `forced-colors` is pinned because this stylesheet restates the dimming
   // there: unpinned, the lookup refuses rather than picking one side.
   assert.equal(
@@ -415,7 +435,7 @@ test('coalescer clamps on the way in, so the engine never sees an out-of-range g
 });
 
 test('children are keyed by stem name, never by index, and the mixer does not remount on change', () => {
-  const src = read(MIXER_TSX);
+  const src = uncommentTs(read(MIXER_TSX));
   assert.match(src, /key=\{row\.stem\.name\}/);
   assert.doesNotMatch(src, /key=\{\s*(i|idx|index)\s*\}/);
   // the one gain path into the engine goes through the coalescer
@@ -680,8 +700,75 @@ const TOKENS_CSS = 'src/styles/design-tokens.css';
 /** The narrowest viewport the mixer promises to fit every channel in. */
 const NARROWEST = 360;
 
-/** Comments can contain braces; strip them before counting any. */
-const uncomment = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+/**
+ * The EFFECTIVE text of a stylesheet: comments blanked, everything else kept.
+ *
+ * This used to be `css.replace(/\/\*[\s\S]*?\*\//g, '')`, which is unsound in
+ * four measured ways: (1) an UNTERMINATED `/*` is left in as live text, but CSS
+ * Syntax runs it to end of file, so a comment-blind assertion could still be
+ * satisfied by it; (2) a `/*` inside a string (`content: "/*"`) opened a
+ * "comment" that swallowed real rules up to the next `*\/`; (3) the same inside
+ * an unquoted `url(...)`; (4) deleting rather than blanking fused `a/**\/b`
+ * into `ab` and threw away line numbers. This is a scanner, not a regex:
+ * strings and unquoted url() are opaque, an unterminated comment runs to EOF,
+ * and every comment character except a newline becomes a space so that
+ * columns and line numbers still point at the real file.
+ */
+const uncomment = (css) => {
+  let out = '';
+  let i = 0;
+  const blank = (text) => text.replace(/[^\n]/g, ' ');
+  while (i < css.length) {
+    const c = css[i];
+    if (c === '/' && css[i + 1] === '*') {
+      const close = css.indexOf('*/', i + 2);
+      const stop = close === -1 ? css.length : close + 2;
+      out += blank(css.slice(i, stop));
+      i = stop;
+    } else if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < css.length && css[j] !== c && css[j] !== '\n') j += css[j] === '\\' ? 2 : 1;
+      out += css.slice(i, j + 1);
+      i = j + 1;
+    } else if (/^url\(\s*[^\s"')]/i.test(css.slice(i, i + 12))) {
+      const close = css.indexOf(')', i);
+      const stop = close === -1 ? css.length : close + 1;
+      out += css.slice(i, stop);
+      i = stop;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out;
+};
+
+/**
+ * The EFFECTIVE text of a TS/TSX source: every comment blanked, found by the
+ * real parser. A regex cannot do this: `//` inside a string, a template or JSX
+ * text (`https://...`, `don't`) is not a comment, and `/*` inside a regex
+ * literal is not either. Newlines are kept so line numbers still line up.
+ */
+const uncommentTs = (src) => {
+  const sf = ts.createSourceFile('x.tsx', src, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
+  const ranges = new Map();
+  const visit = (node) => {
+    for (const child of node.getChildren(sf)) {
+      if (child.kind !== ts.SyntaxKind.JsxText) {
+        const pos = child.getFullStart();
+        for (const r of ts.getLeadingCommentRanges(src, pos) ?? []) ranges.set(r.pos, r.end);
+        for (const r of ts.getTrailingCommentRanges(src, child.getEnd()) ?? []) ranges.set(r.pos, r.end);
+      }
+      visit(child);
+    }
+  };
+  visit(sf);
+  let out = src;
+  for (const [pos, end] of [...ranges].sort((a, b) => b[0] - a[0])) {
+    out = out.slice(0, pos) + out.slice(pos, end).replace(/[^\n]/g, ' ') + out.slice(end);
+  }
+  return out;
+};
 
 /**
  * The environment axes this resolver knows how to enumerate. These are NOT
@@ -1415,7 +1502,7 @@ test('the page gutter is declared in exactly one file, which is what makes pageG
   };
   for (const root of roots) walkDir(root);
   assert.ok(files.length >= 3, `expected a real stylesheet tree, found ${files.length}`);
-  const declaring = files.filter((f) => /--sl-gutter\s*:/.test(read(f)));
+  const declaring = files.filter((f) => /--sl-gutter\s*:/.test(uncomment(read(f))));
   assert.deepEqual(
     declaring,
     [TOKENS_CSS],
@@ -1500,7 +1587,7 @@ test('six channels fit at 360px and three fit below it, against the measured lab
   // checked against the budget above rather than against itself: at 360 six
   // channels must fit, and the rule must hand over to three BELOW that.
   assert.match(
-    css,
+    uncomment(css),
     /@media \(max-width: 359px\)/,
     'the three-across rule must hand over immediately below 360',
   );
@@ -1613,21 +1700,71 @@ test('M and S are real touch targets at EVERY width: stacked, and --touch-min on
     );
     assert.equal(px(declAt(css, width, '.toggle', 'min-height'), width), touch, `at ${width}px`);
   }
-  assert.match(css, /touch-action:\s*none/);
+  assert.equal(declAt(css, NARROWEST, '.fader', 'touch-action'), 'none');
+});
+
+// ═══ The comment-stripping instruments, pinned ══════════════════════════════
+//
+// Every source-text gate in this file is only as good as these two functions,
+// and `uncomment` used to be a one-line regex with four holes. Each case below
+// is a shape that regex got wrong.
+
+test('uncomment: blanks comments, keeps code, strings and line numbers', () => {
+  const css = 'a { x: 1; } /* slider-vertical\n  still comment */ b { y: 2; }';
+  const out = uncomment(css);
+  assert.equal(out.length, css.length, 'columns are preserved');
+  assert.equal(out.split('\n').length, css.split('\n').length, 'line numbers are preserved');
+  assert.doesNotMatch(out, /slider-vertical|still/);
+  assert.match(out, /a \{ x: 1; \}\s+b \{ y: 2; \}/);
+});
+
+test('uncomment: an UNTERMINATED comment runs to end of file, as CSS Syntax says', () => {
+  const out = uncomment('a { x: 1; }\n/* appearance: slider-vertical;\n.b { c: d; }');
+  assert.doesNotMatch(out, /slider-vertical/, 'the old regex left this live');
+  assert.doesNotMatch(out, /\.b/);
+  assert.match(out, /a \{ x: 1; \}/);
+});
+
+test('uncomment: `/*` inside a string or an unquoted url() is not a comment', () => {
+  const inString = uncomment('a { content: "/*"; } .real { appearance: none; } /* gone */');
+  assert.match(inString, /\.real \{ appearance: none; \}/, 'the old regex swallowed this rule');
+  assert.doesNotMatch(inString, /gone/);
+  const inUrl = uncomment('a { background: url(x/*y*/z.png); } .after { w: 1; }');
+  assert.match(inUrl, /url\(x\/\*y\*\/z\.png\)/);
+  assert.match(inUrl, /\.after/);
+});
+
+test('uncomment: a comment between tokens does not fuse them', () => {
+  assert.doesNotMatch(uncomment('a/**/b { x: 1 }'), /\bab\b/);
+});
+
+test('uncommentTs: blanks // and /* */ comments but not `//` in strings, templates or JSX text', () => {
+  const src = [
+    'const a = "http://example.com"; // slider-vertical in a line comment',
+    'const b = `//not a comment ${a}`;',
+    '/* block with key={i} */',
+    'export const X = () => <p>see http://x.test, don\'t // panic{/* jsx comment key={i} */}</p>;',
+  ].join('\n');
+  const out = uncommentTs(src);
+  assert.equal(out.length, src.length);
+  assert.doesNotMatch(out, /slider-vertical|block with|jsx comment/);
+  assert.match(out, /"http:\/\/example\.com"/);
+  assert.match(out, /`\/\/not a comment/);
+  assert.match(out, /see http:\/\/x\.test, don't \/\/ panic/);
 });
 
 // ═══ Design-system coupling ══════════════════════════════════════════════════
 
 test('every styles.* the component uses is defined in Mixer.module.css', () => {
-  const used = new Set([...read(MIXER_TSX).matchAll(/styles\.([A-Za-z0-9_]+)/g)].map((m) => m[1]));
-  const css = read(MIXER_CSS);
+  const used = new Set([...uncommentTs(read(MIXER_TSX)).matchAll(/styles\.([A-Za-z0-9_]+)/g)].map((m) => m[1]));
+  const css = uncomment(read(MIXER_CSS));
   const defined = new Set([...css.matchAll(/\.([A-Za-z][A-Za-z0-9_]*)/g)].map((m) => m[1]));
   assert.ok(used.size >= 10, `expected a real class list, got ${used.size}`);
   for (const name of used) assert.ok(defined.has(name), `styles.${name} has no CSS rule`);
 });
 
 test('the stylesheet reuses the locked tokens and invents no second palette', () => {
-  const css = read(MIXER_CSS);
+  const css = uncomment(read(MIXER_CSS));
   for (const token of ['--stem', '--bg-card', '--text-secondary', '--touch-min', '--radius-md', '--space-2', '--accent', '--status-failed']) {
     assert.ok(css.includes(`var(${token}`), `expected ${token}`);
   }
@@ -1640,11 +1777,10 @@ test('the stylesheet reuses the locked tokens and invents no second palette', ()
 });
 
 test('the component takes MixerProps and does not reach for the engine', () => {
-  const src = read(MIXER_TSX);
-  assert.match(src, /type MixerProps/);
-  assert.match(src, /effectivelySilent/); // renders from it
   // scan the CODE, not the prose: the header comment legitimately names these.
-  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const code = uncommentTs(read(MIXER_TSX));
+  assert.match(code, /type MixerProps/);
+  assert.match(code, /effectivelySilent/); // renders from it
   assert.ok(code.includes('MixerProps'), 'comment stripping ate the code');
   for (const forbidden of ['AudioContext', 'GainNode', 'PlayEngine', 'setGain(', 'getSnapshot', 'subscribe(']) {
     assert.ok(!code.includes(forbidden), `Mixer must not touch ${forbidden}`);

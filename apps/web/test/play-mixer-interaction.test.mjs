@@ -23,7 +23,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 
-import { withDom } from './helpers/dom.mjs';
+import { withDom, setNativeValue } from './helpers/dom.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => readFileSync(join(WEB, p), 'utf8');
@@ -88,14 +88,15 @@ async function mounted(dom, props = {}) {
   return { host, calls };
 }
 
-/** Set a range input's value and fire the event React listens for. */
+/**
+ * Set a range input's value and fire the event React listens for. Uses the
+ * shared `setNativeValue`: a plain `input.value = x` is a no-op to a React 18
+ * controlled input, so `onChange` would never fire and the test would drive
+ * nothing. Callers assert the handler ran (see `calls`).
+ */
 async function setFader(dom, input, percent) {
   await dom.act(async () => {
-    const proto = Object.getPrototypeOf(input);
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-    if (setter) setter.call(input, String(percent));
-    else input.value = String(percent);
-    input.dispatchEvent(new input.ownerDocument.defaultView.Event('input', { bubbles: true }));
+    setNativeValue(input, percent);
   });
 }
 
@@ -117,6 +118,31 @@ test('a fader move reaches onGain, with the stem and the level the user chose', 
     assert.equal(name, PLAYABLE_STEMS[0]);
     // 30% of the 0..1 range the engine speaks, not the 0..100 the slider does
     assert.ok(Math.abs(gain - 0.3) < 1e-9, `expected 0.3, got ${gain}`);
+  });
+});
+
+test('CANARY: a plain `el.value = x` drives nothing, setNativeValue drives the handler', async () => {
+  // The reason `setNativeValue` exists, as a gate. React 18 installs its own
+  // `value` setter on a controlled input, so assigning through it and firing
+  // `input` is judged "no change" and `onChange` never runs. If this ever
+  // starts failing on the FIRST half, React or happy-dom changed and the helper's
+  // header is stale; if it fails on the SECOND, the helper is broken.
+  await withDom(async (dom) => {
+    const { calls } = await mounted(dom);
+    const fader = dom.findAll('input[type="range"]')[0];
+
+    await dom.act(async () => {
+      fader.value = '33';
+      fader.dispatchEvent(new fader.ownerDocument.defaultView.Event('input', { bubbles: true }));
+    });
+    await dom.nextFrame();
+    assert.deepEqual(calls.gain, [], 'a plain assignment never reached onChange (the trap)');
+
+    await setFader(dom, fader, 66);
+    await dom.nextFrame();
+    assert.equal(calls.gain.length, 1, 'the native setter reached onChange');
+    assert.equal(calls.gain[0][0], PLAYABLE_STEMS[0]);
+    assert.ok(Math.abs(calls.gain[0][1] - 0.66) < 1e-9, `expected 0.66, got ${calls.gain[0][1]}`);
   });
 });
 

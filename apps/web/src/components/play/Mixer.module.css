@@ -7,13 +7,13 @@
  * the same rule the results page and the landing lanes use, and lime keeps its
  * one job (the primary action and the focus ring).
  *
- * Vertical range inputs, three ways, because no single mechanism covers the
+ * Vertical range inputs, two ways, because no single mechanism covers the
  * browsers we ship to:
  *   - `writing-mode: vertical-lr` + `direction: rtl`  — the standard, Chrome
  *     130+/Firefox 129+/Safari 17.4+, min at the bottom.
- *   - `-webkit-appearance: slider-vertical`            — older Safari/Chrome.
  *   - `orient="vertical"` (set in Mixer.tsx)           — older Firefox.
- * The three agree on direction (max at the top). A rotate() hack is NOT used:
+ * The native vertical-slider widget is deliberately NOT used: see `.fader`.
+ * The two agree on direction (max at the top). A rotate() hack is NOT used:
  * it moves the hit area away from the painted control, which is exactly the
  * thing a guitarist reaching for a fader by feel would be bitten by.
  */
@@ -289,13 +289,15 @@
      `::-webkit-slider-runnable-track` only take author styles when the control
      is NOT drawing its native widget, and `slider-vertical` is a native widget.
 
-     Measured in Chromium 153, before this change:
-       getComputedStyle(fader, '::-webkit-slider-thumb')
-         -> width 44px, height 176px, background rgba(0,0,0,0), border-radius 0
-       declared                     -> 32x14, --text-secondary, --radius-sm
-     and a screenshot at 1440 shows the UA's default BLUE CIRCLE on all six
-     channels. On a dark channel strip whose north star is Moises, the main
-     control of the component was an unstyled browser default.
+     Measured in Chromium 153 by counting painted pixels in a screenshot of a
+     range input with a 32x14 author thumb: with `-webkit-appearance: none` the
+     author thumb paints 448 px (32x14 exactly); with the native vertical
+     value it paints 0 px and the UA default control paints instead. A
+     screenshot at 1440 showed the UA's default BLUE CIRCLE on all six channels.
+     (`getComputedStyle(fader, '::-webkit-slider-thumb')` is NOT evidence here:
+     it reports the input's own 44x176 box in both cases.) On a dark channel
+     strip whose north star is Moises, the main control of the component was an
+     unstyled browser default.
 
      The orientation comes from `writing-mode` instead, which is the standard
      mechanism (Chrome 130+, Firefox 129+, Safari 17.4+) and is what the three

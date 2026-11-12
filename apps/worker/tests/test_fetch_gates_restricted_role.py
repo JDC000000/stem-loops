@@ -629,7 +629,11 @@ def test_a_log_timer_that_cannot_start_does_not_skip_the_read(
     monkeypatch.setattr(fetch_gates, "_read_switches", counted)
     capsys.readouterr()
 
-    assert fetch_gates.fetch_paused() == "fetch_global", (
+    try:
+        result = fetch_gates.fetch_paused()
+    except Exception as exc:  # noqa: BLE001 — a raise out of the gate is a named failure too
+        pytest.fail(f"fetch_paused() raised {exc!r} instead of answering (reads: {reads['n']})")
+    assert result == "fetch_global", (
         "a log timer that could not start released an engaged brake "
         f"(table reads performed: {reads['n']})"
     )

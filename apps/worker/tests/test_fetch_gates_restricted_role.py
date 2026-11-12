@@ -1,11 +1,18 @@
-"""Kill-switch read as the role production actually uses: NOSUPERUSER, subject to grants + RLS.
+"""Kill-switch read through a NOSUPERUSER role that is a MEMBER of the production role.
 
 Why this file exists. CI connects as POSTGRES_USER `stemloops`, the container SUPERUSER, which
 bypasses both table grants and row-level security. `test_fetch_gates_db.py` therefore cannot
 see a missing GRANT or a dropped policy: the read just works. Here the worker reads through
-`ks_probe`, a NOSUPERUSER NOBYPASSRLS login role that is a member of `stemloops_app` (the role
+`ks_probe`, a NOSUPERUSER NOBYPASSRLS login role that is a MEMBER of `stemloops_app` (the role
 migration 011 grants CRUD to and attaches the `stemloops_app_all` policy to), so the grants and
 the policy are in the path. A superuser connection (`admin`) is used only to arrange state.
+
+WHAT MEMBERSHIP DOES AND DOES NOT REPRODUCE. `ks_probe` is not `stemloops_app`: production's
+worker logs in AS `stemloops_app` (migration 011 says it exists there as LOGIN; not verified from
+here). Membership is faithful for GRANTs and RLS policies, which are inherited. It is NOT
+faithful for anything keyed to the LOGIN role's NAME, because `"$user"` in search_path resolves
+to the login role: a schema named `stemloops_app` is invisible to `ks_probe`, whose `$user` is
+`ks_probe`. That is why the schema-shadowing test names its schema after `ks_probe`.
 
 It also drives `fetch_youtube` through the REAL database read. `test_fetch_chain.py` fakes
 `fetch_paused()` and parametrizes the scope name through the fake, so the string "fetch_youtube"
@@ -23,24 +30,37 @@ import time
 
 import psycopg
 import pytest
-from psycopg.conninfo import make_conninfo
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from worker import downloader
 from worker.downloader import fetch_gates
 from worker.errors import FetchPausedError
 
+
+def _is_local(dsn: str) -> bool:
+    """True only if every host in the DSN is loopback or a unix socket. Parsed, not substring-
+    matched: `postgresql://u:localhost@db.example.com/x` contains "localhost" and is remote."""
+    hosts = [h for h in (conninfo_to_dict(dsn).get("host") or "").split(",") if h]
+    return all(h in ("localhost", "127.0.0.1", "::1") or h.startswith("/") for h in hosts)
+
+
 DB = os.environ.get("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
-if DB and not any(h in DB for h in ("127.0.0.1", "localhost")):
+if DB and not _is_local(DB):
+    if os.environ.get("CI"):
+        # A silent skip here would drop all of these tests the day CI's database hostname stops
+        # being loopback. In CI that must be loud: fail collection.
+        raise RuntimeError(
+            "test_fetch_gates_restricted_role.py: DATABASE_URL is not loopback but CI is set; "
+            "these tests alter roles/grants/policies and would be silently skipped. Point CI at "
+            "a loopback database or change this guard on purpose."
+        )
     pytestmark = pytest.mark.skip(reason="alters roles/grants/policies; local DB only")
 
 ROLE = "ks_probe"
 ROLE_PW = "ks_probe_pw"  # throwaway local role; never a real credential
 URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 JOB = "11111111-1111-1111-1111-111111111111"
-# The cap the gate read is meant to have. Pinned HERE as a literal (not imported) so that a
-# missing/renamed constant fails an assertion instead of crashing the test with AttributeError.
-TIMEOUT_S = 2.0
 
 
 def _events(capsys) -> list[dict]:
@@ -59,11 +79,19 @@ def _named(events: list[dict], name: str) -> list[dict]:
     return [e for e in events if e["event"] == name]
 
 
+def _drop_role(c) -> None:
+    """DROP OWNED BY first: a plain DROP ROLE fails with DependentObjectsStillExist while the
+    role still holds the CONNECT grant (and owns any schema a shadow test left behind)."""
+    if c.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (ROLE,)).fetchone():
+        c.execute(f"DROP OWNED BY {ROLE}")
+        c.execute(f"DROP ROLE {ROLE}")
+
+
 @pytest.fixture(scope="module")
 def restricted_url():
     """Create the NOSUPERUSER role once and hand back a conninfo string for it."""
     with psycopg.connect(DB, autocommit=True) as c:
-        c.execute(f"DROP ROLE IF EXISTS {ROLE}")  # a leftover from an aborted run
+        _drop_role(c)  # a leftover from an aborted run still holds a CONNECT grant
         c.execute(
             f"CREATE ROLE {ROLE} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE "
             f"PASSWORD '{ROLE_PW}'"
@@ -79,8 +107,7 @@ def restricted_url():
         ).fetchone() == (False, False)
     yield url
     with psycopg.connect(DB, autocommit=True) as c:
-        c.execute(f"DROP OWNED BY {ROLE}")
-        c.execute(f"DROP ROLE {ROLE}")
+        _drop_role(c)
 
 
 @pytest.fixture
@@ -109,7 +136,7 @@ def admin():
 
 @pytest.fixture
 def as_worker(restricted_url, admin, monkeypatch):
-    """Point the gate at the restricted role (what the Fly worker's DATABASE_URL is)."""
+    """Point the gate at the restricted role: a MEMBER of the role the Fly worker logs in as."""
     monkeypatch.setenv("DATABASE_URL", restricted_url)
     fetch_gates.reset_cache()
     return admin
@@ -148,6 +175,23 @@ def test_revoked_select_with_an_engaged_global_row_fails_open_and_warns(as_worke
     assert warns, "a failed gate read must log kill_switch_read_failed"
     assert all(w["level"] == "WARN" for w in warns)
     assert "permission denied" in warns[0]["detail"]["error"]
+
+
+def test_one_failed_read_is_retried_by_the_next_call(as_worker, capsys):
+    """A failed read must not be stamped as a refresh. If it were, ONE blip would keep an
+    engaged brake off for a whole TTL (30 s) after the table became readable again."""
+    as_worker.execute("INSERT INTO kill_switches(scope, enabled) VALUES ('fetch_global', true)")
+    as_worker.execute("REVOKE SELECT ON kill_switches FROM stemloops_app")
+    fetch_gates.reset_cache()
+    capsys.readouterr()
+
+    assert fetch_gates.fetch_paused() is None  # the blip: cold cache, read fails, fails open
+    # ONE failing read for the whole call (not one per scope), and it was logged.
+    assert len(_named(_events(capsys), "kill_switch_read_failed")) == 1
+
+    as_worker.execute("GRANT SELECT ON kill_switches TO stemloops_app")  # the database recovers
+    # No time advances. The very next call must read again and see the engaged row.
+    assert fetch_gates.fetch_paused() == "fetch_global"
 
 
 def test_stale_engaged_cache_keeps_blocking_however_long_reads_keep_failing(
@@ -253,68 +297,160 @@ def test_deleting_an_engaged_row_releases_the_brake_after_the_ttl(
 
 
 # 5 ------------------------------------------------------------------------------------------
-def test_statement_timeout_constant_is_two_seconds():
-    assert getattr(fetch_gates, "KILL_SWITCH_STATEMENT_TIMEOUT_MS", None) == int(TIMEOUT_S * 1000)
+# A locked table. The gate read has NO statement timeout: with a cold cache and an engaged
+# fetch_global row, a bounded read that gave up would release the brake (fail open).
+BLOCKED_FOR_S = 3.5  # longer than the 2 s cap an earlier revision of this PR put on the read
 
 
-def _hold_exclusive_lock(release_after_s: float):
-    """Hold ACCESS EXCLUSIVE on kill_switches from a second connection; a timer releases it so
-    that a regression makes the test FAIL on elapsed time instead of hanging."""
+def _wait_until_a_reader_is_blocked_on_the_lock(admin, timeout_s: float = 10.0) -> None:
+    """Block until a backend is waiting on a heavyweight lock in a kill_switches query, so the
+    test knows the gate's read has really reached the lock (not failed to connect)."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        row = admin.execute(
+            "SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
+            "AND query ILIKE '%kill_switches%' AND pid <> pg_backend_pid()"
+        ).fetchone()
+        if row:
+            return
+        time.sleep(0.05)
+    pytest.fail("the gate's read never blocked on the table lock")
+
+
+def test_a_locked_table_delays_an_engaged_global_brake_it_does_not_release_it(as_worker, capsys):
+    """fetch_global is ENGAGED in the table and the cache is cold. An operator holds ACCESS
+    EXCLUSIVE on the table. The gate must still be waiting after BLOCKED_FOR_S, and once the
+    lock clears it must report the brake. With a 2 s statement timeout it returned None
+    (fetch allowed) after ~2 s: a slow table turned into a released brake."""
+    as_worker.execute("INSERT INTO kill_switches(scope, enabled) VALUES ('fetch_global', true)")
+    fetch_gates.reset_cache()
+    capsys.readouterr()
+
     holder = psycopg.connect(DB)
     holder.execute("LOCK TABLE kill_switches IN ACCESS EXCLUSIVE MODE")
-    released = threading.Event()
+    out: dict = {}
 
-    def release():
-        if not released.is_set():
-            released.set()
-            holder.rollback()
-            holder.close()
+    def call() -> None:
+        out["result"] = fetch_gates.fetch_paused()
 
-    timer = threading.Timer(release_after_s, release)
-    timer.start()
-    return release, timer
-
-
-def test_gate_read_is_bounded_by_the_statement_timeout_when_the_table_is_locked(as_worker, capsys):
-    release, timer = _hold_exclusive_lock(release_after_s=8.0)
+    caller = threading.Thread(target=call)
     try:
+        caller.start()
+        _wait_until_a_reader_is_blocked_on_the_lock(as_worker)
+        time.sleep(BLOCKED_FOR_S)
+        still_waiting = caller.is_alive()
+    finally:
+        holder.rollback()  # always release, so a regression fails instead of hanging
+        holder.close()
+        caller.join(20)
+
+    assert still_waiting, f"gate gave up on a locked table within {BLOCKED_FOR_S}s: {out}"
+    assert not caller.is_alive(), "gate did not return after the lock was released"
+    assert out["result"] == "fetch_global"
+    assert not _named(_events(capsys), "kill_switch_read_failed")
+
+
+# 6 ------------------------------------------------------------------------------------------
+# Concurrency of the refresh. The consumer runs one job at a time today, so these pin the
+# structure rather than a live hazard: ONE read in flight at a time, and a reset wins.
+def test_concurrent_cold_callers_share_one_read_and_one_log_line(as_worker, monkeypatch, capsys):
+    as_worker.execute("DROP POLICY stemloops_app_all ON kill_switches")  # zero rows -> logs
+    fetch_gates.reset_cache()
+    capsys.readouterr()
+
+    real = fetch_gates._read_switches
+    seen = {"calls": 0, "live": 0, "max_live": 0}
+    guard = threading.Lock()
+
+    def spy():
+        with guard:
+            seen["calls"] += 1
+            seen["live"] += 1
+            seen["max_live"] = max(seen["max_live"], seen["live"])
+        try:
+            time.sleep(0.3)  # keep the read open long enough for the others to arrive
+            return real()
+        finally:
+            with guard:
+                seen["live"] -= 1
+
+    monkeypatch.setattr(fetch_gates, "_read_switches", spy)
+    n = 12
+    barrier = threading.Barrier(n)
+    results: list = []
+
+    def call() -> None:
+        barrier.wait()
+        results.append(fetch_gates.fetch_paused())
+
+    threads = [threading.Thread(target=call) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+
+    assert results == [None] * n
+    assert seen["calls"] == 1, f"{seen['calls']} reads for {n} simultaneous cold callers"
+    assert seen["max_live"] == 1
+    assert len(_named(_events(capsys), "kill_switch_table_empty")) == 1
+
+
+def test_a_reset_during_an_in_flight_read_is_not_overwritten_by_it(as_worker, monkeypatch):
+    as_worker.execute("INSERT INTO kill_switches(scope, enabled) VALUES ('fetch_global', true)")
+    fetch_gates.reset_cache()
+    real = fetch_gates._read_switches
+    snapshot_taken = threading.Event()
+    release = threading.Event()
+
+    def slow():
+        rows = real()  # the snapshot predates the reset below
+        snapshot_taken.set()
+        release.wait(10)
+        return rows
+
+    monkeypatch.setattr(fetch_gates, "_read_switches", slow)
+    reader = threading.Thread(target=fetch_gates.fetch_paused)
+    reader.start()
+    assert snapshot_taken.wait(10)
+    resetter = threading.Thread(target=fetch_gates.reset_cache)
+    resetter.start()
+    time.sleep(0.3)  # let the reset run if it is going to run now
+    release.set()
+    reader.join(10)
+    resetter.join(10)
+
+    assert (
+        fetch_gates._cache_at is None and fetch_gates._cache == {}
+    ), "an in-flight read repopulated the cache from its pre-reset snapshot"
+
+
+# 7 ------------------------------------------------------------------------------------------
+# Schema shadowing. `"$user"` in search_path is the LOGIN role, so the shadow is named after
+# ks_probe (the login role). A schema named `stemloops_app` would NOT shadow for a member role.
+def test_a_schema_named_after_the_login_role_does_not_shadow_the_gate_table(
+    as_worker, restricted_url, capsys
+):
+    as_worker.execute("INSERT INTO kill_switches(scope, enabled) VALUES ('fetch_global', true)")
+    as_worker.execute(f"CREATE SCHEMA {ROLE} AUTHORIZATION {ROLE}")
+    try:
+        as_worker.execute(
+            f"CREATE TABLE {ROLE}.kill_switches (LIKE public.kill_switches INCLUDING DEFAULTS)"
+        )
+        as_worker.execute(f"ALTER TABLE {ROLE}.kill_switches OWNER TO {ROLE}")
+        as_worker.execute(
+            f"INSERT INTO {ROLE}.kill_switches(scope, enabled) VALUES ('fetch_cobalt', false)"
+        )
+
+        # Positive control: an UNQUALIFIED name really does resolve to the shadow for this role,
+        # otherwise the assertion below would hold for any broken setup.
+        with psycopg.connect(restricted_url) as r:
+            assert r.execute("SELECT scope FROM kill_switches").fetchall() == [("fetch_cobalt",)]
+
+        fetch_gates.reset_cache()
         capsys.readouterr()
-        t0 = time.monotonic()
-        result = fetch_gates.fetch_paused()
-        elapsed = time.monotonic() - t0
+        assert fetch_gates.fetch_paused() == "fetch_global"
+        # The shadow holds a row, so it reads as non-empty: the zero-row diagnostic would not
+        # have fired. The `public.` qualification is the only thing that closes this.
+        assert not _named(_events(capsys), "kill_switch_table_empty")
     finally:
-        timer.cancel()
-        release()
-
-    assert result is None  # fail open for global/youtube with nothing cached
-    # ONE refresh per fetch_paused() call: ~2.0 s of timeout + connect, never 4 s (two reads).
-    assert TIMEOUT_S - 0.2 <= elapsed < TIMEOUT_S + 1.0, f"returned after {elapsed:.2f}s"
-    warns = _named(_events(capsys), "kill_switch_read_failed")
-    assert warns and "statement timeout" in warns[0]["detail"]["error"]
-
-
-def test_a_slow_gate_read_does_not_serialise_a_second_caller(as_worker):
-    release, timer = _hold_exclusive_lock(release_after_s=8.0)
-    done: dict[str, float] = {}
-
-    def call(name: str) -> None:
-        fetch_gates.fetch_paused()
-        done[name] = time.monotonic() - t0
-
-    try:
-        t0 = time.monotonic()
-        a = threading.Thread(target=call, args=("a",))
-        a.start()
-        time.sleep(0.5)  # B arrives while A's read is blocked on the lock
-        b = threading.Thread(target=call, args=("b",))
-        b.start()
-        a.join(15)
-        b.join(15)
-    finally:
-        timer.cancel()
-        release()
-
-    assert set(done) == {"a", "b"}, f"threads did not finish: {done}"
-    # Parallel: A ends ~2.0 s, B (arrived 0.5 s later) ends ~2.5 s. Serialised behind A's
-    # lock, B could not even start its own read until ~2.0 s and would end ~4.0 s.
-    assert done["b"] < TIMEOUT_S + 0.5 + 0.7, f"B finished at {done['b']:.2f}s: serialised behind A"
+        as_worker.execute(f"DROP SCHEMA IF EXISTS {ROLE} CASCADE")

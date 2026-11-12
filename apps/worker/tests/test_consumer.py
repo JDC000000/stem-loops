@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
 @pytest.fixture(autouse=True)
 def _spend_brake_released():
     """`claim_and_run` refuses to claim unless the `spend_global` row EXISTS and is released
-    (migration 034, fail-closed). Other suites DELETE rows from kill_switches
+    (migration 035, fail-closed). Other suites DELETE rows from kill_switches
     (test_fetch_gates_db.py clears every scope but fetch_cobalt), so this test must not depend
     on the order the files run in."""
     with psycopg.connect(DB) as c:

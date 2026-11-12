@@ -11,7 +11,7 @@ exactly one `spend_global` row and its `enabled` is FALSE. EVERYTHING else is EN
 
     row enabled = true                       -> engaged  (reason: switch_engaged)
     no row                                   -> engaged  (reason: row_absent)
-        covers: migration 034 not applied yet, RLS policy dropped on the table
+        covers: migration 035 not applied yet, RLS policy dropped on the table
         (the read succeeds and returns zero rows), row deleted by hand
     any error reading it                     -> engaged  (reason: read_failed)
         covers: REVOKE SELECT, statement_timeout, lock_timeout, connect failure
@@ -30,7 +30,7 @@ THE READ ITSELF IS BOUNDED so a held lock cannot hang the poll loop (the reaper 
 retention sweep run in the same loop): connect_timeout, a server-side statement_timeout and
 lock_timeout inside the read's own transaction, and an outer asyncio wall-clock bound.
 
-PRE-MIGRATION WINDOW. If the worker is deployed before migration 034, the row is absent, so
+PRE-MIGRATION WINDOW. If the worker is deployed before migration 035, the row is absent, so
 the brake reads ENGAGED: the consumer does not crash, spends nothing, and claims nothing until
 the migration is applied (jobs stay `queued`). That is deliberate and is why the deploy order
 is migration first. It is indistinguishable, from here, from "RLS hid the row", and that

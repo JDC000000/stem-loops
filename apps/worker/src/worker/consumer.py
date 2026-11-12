@@ -46,7 +46,7 @@ CLEANUP_INTERVAL = int(os.environ.get("RETENTION_SWEEP_SECONDS", "900"))
 async def claim_and_run() -> bool:
     """Claim one queued job and run it. Returns True if a job was claimed.
 
-    SPEND BRAKE (migration 034, worker/spend_gate.py). Checked HERE, before anything is
+    SPEND BRAKE (migration 035, worker/spend_gate.py). Checked HERE, before anything is
     claimed: while `spend_global` is engaged, or unreadable, or absent, no job leaves `queued`,
     nothing is spent, and the job resumes when the brake is released. This is the only place the
     brake is consulted; both input paths and both paid providers sit behind a claimed job.

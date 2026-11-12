@@ -62,7 +62,7 @@ if DB and not _is_local(DB):
 ROLE = "sg_probe"
 ROLE_PW = "sg_probe_pw"  # throwaway local role; never a real credential
 FP = "spend-gate-test"  # client_fingerprint on every job this file inserts (scoped cleanup)
-MIGRATION_034 = os.path.join(MIGRATIONS_DIR, "034_v3_spend_global_brake.sql")
+MIGRATION_035 = os.path.join(MIGRATIONS_DIR, "035_v3_spend_global_brake.sql")
 
 
 # ------------------------------------------------------------------------------ helpers
@@ -144,7 +144,7 @@ def admin():
         c.execute("DELETE FROM public.jobs WHERE client_fingerprint = %s", (FP,))
         c.execute(_DELETE_OWN_SCOPES)
         _restore_switch_acls(c)
-        _set_brake(c, False)  # the state migration 034 leaves: row present, released
+        _set_brake(c, False)  # the state migration 035 leaves: row present, released
         spend_gate.reset_log_state()
         try:
             yield c
@@ -453,7 +453,7 @@ def test_a_shadow_kill_switches_in_the_login_roles_schema_cannot_release_the_bra
 def test_pre_migration_world_does_not_crash_and_claims_nothing(
     as_worker, spy_pipeline, http, capsys
 ):
-    """Worker deployed BEFORE migration 034: no spend_global row. The call returns (no exception
+    """Worker deployed BEFORE migration 035: no spend_global row. The call returns (no exception
     escapes), the job stays queued, nothing is spent, and the log says why."""
     jid = _new_job(as_worker)
     as_worker.execute("DELETE FROM public.kill_switches WHERE scope = 'spend_global'")
@@ -571,8 +571,8 @@ def test_scope_check_accepts_every_documented_scope(admin, good):
         admin.execute("ROLLBACK")
 
 
-def _run_034(c) -> None:
-    with open(MIGRATION_034) as f:
+def _run_035(c) -> None:
+    with open(MIGRATION_035) as f:
         for stmt in split_sql_statements(f.read()):
             c.execute(stmt)
 
@@ -582,7 +582,7 @@ def test_migration_is_idempotent_and_never_releases_an_engaged_brake(admin):
     try:
         _set_brake(admin, True)  # operator engaged it
         for _ in range(2):
-            _run_034(admin)  # re-applied twice
+            _run_035(admin)  # re-applied twice
         assert admin.execute(
             "SELECT enabled FROM public.kill_switches WHERE scope='spend_global'"
         ).fetchone() == (True,)
@@ -600,7 +600,7 @@ def test_migration_does_not_fail_on_a_preexisting_bad_row_and_leaves_the_check_n
     try:
         admin.execute("ALTER TABLE public.kill_switches DROP CONSTRAINT kill_switches_scope_known")
         admin.execute("INSERT INTO public.kill_switches(scope, enabled) VALUES ('global', true)")
-        _run_034(admin)  # must not raise
+        _run_035(admin)  # must not raise
         assert admin.execute(
             "SELECT convalidated FROM pg_constraint WHERE conname='kill_switches_scope_known'"
         ).fetchone() == (False,)

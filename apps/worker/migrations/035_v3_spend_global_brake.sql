@@ -1,8 +1,8 @@
--- 034_v3_spend_global_brake.sql — the `spend_global` brake, and a CHECK on kill_switches.scope.
+-- 035_v3_spend_global_brake.sql — the `spend_global` brake, and a CHECK on kill_switches.scope.
 --
 -- ============================ DEPLOY ORDER (READ FIRST) ============================
 --   1. APPLY THIS MIGRATION.            (`make migrate` against production)
---   2. CONFIRM it is recorded:          SELECT 1 FROM _migrations WHERE filename = '034_v3_spend_global_brake.sql';
+--   2. CONFIRM it is recorded:          SELECT 1 FROM _migrations WHERE filename = '035_v3_spend_global_brake.sql';
 --                                       SELECT enabled FROM kill_switches WHERE scope='spend_global';  -- one row, f
 --   3. ONLY THEN DEPLOY THE WORKER.     (`make deploy-worker`)
 --
@@ -51,14 +51,14 @@
 -- enforced for new writes). A pre-existing bad row is a switch that has been doing nothing.
 --
 -- Idempotent: ON CONFLICT DO NOTHING (an engaged row is NOT reset to released by a re-run) /
--- guarded DO blocks. Down: migrations/down/034_v3_spend_global_brake_down.sql.
+-- guarded DO blocks. Down: migrations/down/035_v3_spend_global_brake_down.sql.
 
 -- 1. Seed the brake RELEASED. DO NOTHING on conflict: re-running must never release a
 --    brake an operator engaged.
 INSERT INTO public.kill_switches (scope, enabled, reason, set_by)
 VALUES ('spend_global', false,
         'spend brake: released. Set enabled = true to stop claiming jobs; a missing row is treated as engaged.',
-        'migration 034')
+        'migration 035')
 ON CONFLICT (scope) DO NOTHING;
 
 -- 2. The scope CHECK.
@@ -99,4 +99,4 @@ BEGIN
 END $$;
 
 COMMENT ON CONSTRAINT kill_switches_scope_known ON public.kill_switches IS
-  'scope must be one of the documented switches; a typo used to be accepted and silently do nothing (migration 034).';
+  'scope must be one of the documented switches; a typo used to be accepted and silently do nothing (migration 035).';

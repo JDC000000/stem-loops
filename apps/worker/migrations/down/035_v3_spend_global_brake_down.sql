@@ -1,4 +1,4 @@
--- 034_v3_spend_global_brake_down.sql — reverse of 034. Run by hand only; the runner globs
+-- 035_v3_spend_global_brake_down.sql — reverse of 035. Run by hand only; the runner globs
 -- migrations/*.sql and never descends into down/.
 --
 -- ORDER IS THE REVERSE OF THE DEPLOY: roll the WORKER back first, then run this.

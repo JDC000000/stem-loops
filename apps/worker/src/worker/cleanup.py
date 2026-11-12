@@ -90,8 +90,16 @@ def _job_id_of(key: str) -> str:
     classified it as an orphan EVEN WHILE THE JOB WAS ALIVE — the dangerous direction.
     A job past expires_at but still processing is held back by INFLIGHT_GRACE (1 hour),
     and one in failure backoff for up to MAX_BACKOFF_SECONDS (6 hours), yet its chord
-    file became orphan-eligible the moment it aged past RETENTION_SECONDS. So the overlay
-    could lose its chords hours before the job itself was swept.
+    file became orphan-eligible the moment it aged past RETENTION_SECONDS. So the chord
+    file could be deleted while the job row was still being retained.
+
+    That is NOT user-visible with default settings: an object is orphan-eligible only
+    once older than RETENTION_SECONDS (24h) and expires_at = created_at + 24h, while the
+    web's play-chords route serves only `expires_at > now()`, so the overlay could never
+    have been handed that file. The one reader that does run after expiry is
+    `_existing_play_chords` on a reaper requeue of a still-held job; an early delete there
+    costs one chord regeneration (and possibly one billed Klangio request), not a user-visible
+    loss.
     """
     k = key.lower()
     if k.startswith(CHORDS_TOP_PREFIX):

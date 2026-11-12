@@ -149,25 +149,42 @@ def test_expired_job_chord_file_is_deleted_by_the_per_job_sweep(r2):
 def test_live_job_chord_file_survives_the_sweep(r2):
     """The negative, and the direction that is unrecoverable. Deleting too much is worse.
 
-    `in_flight` is PAST expires_at but held back by INFLIGHT_GRACE, and its chord file is
-    old enough for the orphan sweep. Because `_job_id_of` used to read "jobs" as the job
-    id, no row could match and the orphan sweep deleted that file up to an hour before the
-    job itself was swept — a live job losing its chords.
+    Two properties, in ONE pass so each is tested next to the other:
+
+    1. `in_flight` is PAST expires_at but held back by INFLIGHT_GRACE, and its chord file is
+       old enough for the orphan sweep. Because `_job_id_of` used to read "jobs" as the job
+       id, no row could match and the orphan sweep deleted that file up to an hour before the
+       job itself was swept — a live job losing its chords.
+    2. BLAST RADIUS. An EXPIRED job is swept in the same pass, so the per-job delete runs
+       while live jobs' chord files sit under the same `jobs/` top prefix. Without it, a
+       `job_object_prefixes` that leaked the bare `jobs/` prefix deleted every live chord
+       file and the suite stayed green, because no other test put an expired job and a
+       live job's chord in one pass.
     """
 
     async def scenario():
         fresh = await _insert_job(1)
         in_flight = await _insert_job(24.5, status="separating")  # 30 min past expiry
+        expired = await _insert_job(25)  # swept in THIS pass, next to the live chord files
         r2.put(f"jobs/{fresh}/play.chords.json", 1)
         r2.put(f"{fresh}/_input.wav", 1)
         r2.put(f"jobs/{in_flight}/play.chords.json", 25)  # aged, but the job is ALIVE
-        await cleanup.sweep_expired()
+        r2.put(f"{in_flight}/_input.wav", 25)
+        r2.put(f"{expired}/_input.wav", 25)
+        r2.put(f"jobs/{expired}/play.chords.json", 0.0)  # fresh: only the per-job sweep reaches it
+        res = await cleanup.sweep_expired()
+        assert not await _exists(expired), "the expired job must actually have been swept"
+        assert not [k for k in r2.objs if expired in k], "the expired job's objects must go"
+        assert res["orphan_objects"] == 0, "the orphan sweep must not be what deleted anything"
         assert await _exists(fresh) and await _exists(in_flight)
-        assert f"jobs/{fresh}/play.chords.json" in r2.objs
+        assert (
+            f"jobs/{fresh}/play.chords.json" in r2.objs
+        ), "sweeping an expired job deleted a LIVE job's chord file (blast radius)"
         assert f"{fresh}/_input.wav" in r2.objs
         assert (
             f"jobs/{in_flight}/play.chords.json" in r2.objs
-        ), "a live job's chord file must not be reaped as an orphan"
+        ), "a live job's chord file must not be reaped as an orphan or by a sibling's sweep"
+        assert f"{in_flight}/_input.wav" in r2.objs
 
     asyncio.run(scenario())
 
@@ -443,6 +460,10 @@ def test_credit_charged_job_is_anonymised_and_later_jobs_still_swept(r2, ledger_
         orphan = str(uuid.uuid4())
         for j in [ledger_job, *later]:
             r2.put(f"{j}/_input.wav", 48)
+        # The chord artifact of the LEDGER-BOUND job. FRESH, so the orphan sweep cannot be what
+        # removes it: only the per-job delete, which must run BEFORE the row delete raises
+        # ForeignKeyViolation. These are the paying jobs and the only ones that become shells.
+        r2.put(f"jobs/{ledger_job}/play.chords.json", 0.0)
         r2.put(f"{orphan}/_input.mp3", 40)  # orphan sweep only runs if the job sweep returns
         async with await psycopg.AsyncConnection.connect(DB) as conn:
             await conn.execute(
@@ -461,7 +482,10 @@ def test_credit_charged_job_is_anonymised_and_later_jobs_still_swept(r2, ledger_
         assert res["jobs"] == 3 and res["anonymised"] == 1
 
         # The ledger job is kept as an anonymised shell; its R2 objects are gone.
-        assert not [k for k in r2.objs if k.startswith(ledger_job)]
+        # `in`, not startswith: the chord key is `jobs/<id>/...`, which starts with "jobs/".
+        assert not [
+            k for k in r2.objs if ledger_job in k
+        ], "a credit-charged job's objects (incl. its chord file) must be gone"
         row = _job_row(c, ledger_job)
         assert row is not None, "ledger FK target must survive"
         yt, key, fname, title, bpm, iph, fp, status, user = row

@@ -1241,6 +1241,31 @@ async function mountOverlay(dom, { containerPx, afterMount, payload = PAYLOAD } 
 //      (chips cropped or off-screen), reached by editing the SAME LINES the chord
 //      sizing pass will touch. Not tied here by decision: widening the diff would
 //      reopen the review loop. NOT closed here; belongs to the browser gate.
+//   5. EVERYTHING ELSE. THIS LIST IS NOT AN INVENTORY OF THE GAPS AND CANNOT BE.
+//      Stated positively, which is the only honest form: THIS GATE READS INLINE
+//      STYLE PROPERTY NAMES, THE TIED VALUES LISTED BELOW, AND CLASS NAMES.
+//      NOTHING ELSE ABOUT AN ELEMENT OR ITS NEIGHBOURS IS READ.
+//      Items 1-4 are worked examples, not a boundary.
+//
+//      This item exists because enumerating gaps does not terminate. Round 4
+//      disclosed three channels; round 5's reviewer immediately found a fourth
+//      FAMILY that no allowlist covers at all -- HTML ATTRIBUTES. Measured in
+//      Chromium with this file at 38/38 and the suite at 1315 / 1295 / 0 / 20:
+//      a `hidden` attribute on the chip <button> gives `display: none` on 107/107
+//      chips at 1280 and 133/133 at 390; the same attribute on the chord-timeline
+//      div zero-boxes 107/107 at both widths. After attributes come overlapping
+//      siblings, DOM order, a portal, `inert`. Each is a true finding; none of
+//      them converges.
+//
+//      So the rule "an unnamed ungated channel is a block" was RETIRED here, on
+//      the reviewer's recommendation and with the orchestrator's agreement. It
+//      assumed enumeration was achievable. It is not, and a gate whose header
+//      claims a complete list of its blind spots is making the same kind of false
+//      claim this round exists to remove.
+//
+//      WHAT ACTUALLY CLOSES THESE: a real-browser gate that asserts each chip is
+//      visible, inside its scroller, and unclipped. That closes all five at once,
+//      because a browser does not care which channel moved the pixels.
 //
 // GATED-KEY INVENTORY (what a chip's inline style is held to), as of round 4:
 //   tied by VALUE:     fontSize (both channels); height, top (both channels, to the

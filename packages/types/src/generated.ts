@@ -30,6 +30,7 @@ export interface Loop {
   duration_ms?: number | null;
   waveform_peaks?: number[] | null;
   signed_url?: string | null;
+  cut_at?: string | null;
   created_at: string;
 }
 

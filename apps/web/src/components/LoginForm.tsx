@@ -146,6 +146,16 @@ export default function LoginForm({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <h1 style={{ fontSize: 26, margin: 0, color: 'var(--text-primary)' }}>{title}</h1>
 
+      {/* /login cannot tell a new visitor from a returning one whose session lapsed: both are
+          sent here from /jobs/[id] with the same return_to. So say both paths; never guess.
+          Not when a ?error= is showing: that message already says what to do, and "if you are new,
+          create an account" beside "your account was created" would invite a second signup. */}
+      {mode === 'signin' && !initialError && dest.startsWith('/jobs/') && (
+        <p style={{ margin: 0, fontSize: 14, color: 'var(--text-secondary)' }}>
+          Sign in to open your player. If you are new, create an account.
+        </p>
+      )}
+
       <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, color: 'var(--text-secondary)', fontSize: 14 }}>
           Email
@@ -195,7 +205,6 @@ export default function LoginForm({
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 8px', fontSize: 14, color: 'var(--text-muted)' }}>
         {mode === 'signin' && (
           <>
-            <button type="button" style={linkBtn} onClick={() => setMode('signup')}>Create account</button>
             <button type="button" style={linkBtn} onClick={() => setMode('reset')}>Forgot password?</button>
           </>
         )}
@@ -207,12 +216,23 @@ export default function LoginForm({
         )}
       </div>
 
+      {mode === 'signin' && (
+        <button type="button" onClick={() => setMode('signup')}
+          style={{ ...btn, border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)' }}>
+          New here? Create an account
+        </button>
+      )}
+
       <hr style={{ border: 0, borderTop: '1px solid var(--border-subtle, #333)', width: '100%', margin: '4px 0' }} />
 
       <button type="button" onClick={magicLink} disabled={busy}
         style={{ ...btn, border: '1px solid var(--border-default, #444)', background: 'transparent', color: 'var(--text-primary)' }}>
         Send me a one-time login link
       </button>
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>
+        The one-time link signs you in to an account you already have. It does not create one.
+        {mode === 'signin' && ' New here? Use Create account.'}
+      </p>
       <button type="button" onClick={google} disabled={busy}
         style={{ ...btn, border: '1px solid var(--border-default, #444)', background: 'transparent', color: 'var(--text-primary)' }}>
         Continue with Google

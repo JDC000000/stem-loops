@@ -125,6 +125,48 @@ test('valid token -> verifies (with client IP) then calls Supabase signUp', asyn
   const redirect = new URL(globalThis.__signUpCalls[0].options.emailRedirectTo);
   assert.equal(redirect.origin + redirect.pathname, 'https://stem-loops.com/auth/callback');
   assert.equal(redirect.searchParams.get('next'), '/pricing');
+  // `type=signup` is how /auth/callback tells this link from a recovery one when the exchange fails.
+  assert.equal(redirect.searchParams.get('type'), 'signup');
+});
+
+// The destination rides in the confirmation link's query string, so it has to survive as ONE
+// value. The first version of this suite only ever sent '/pricing', which has nothing to encode:
+// dropping encodeURIComponent from `next=${dest}` stayed green while a destination containing
+// '&', '?' or '#' was silently truncated or split into extra parameters. Hostile values go through
+// the same door: whatever the sanitiser lets through is what lands in `next`, and nothing else
+// may land there.
+const redirectFor = async (return_to) => {
+  stubHcaptcha({ success: true });
+  const { POST } = await loadRoute();
+  const res = await POST(makeReq({ ...valid, hcaptcha_token: 'good', return_to }));
+  assert.equal(res.status, 200, String(return_to));
+  return globalThis.__signUpCalls.at(-1).options.emailRedirectTo;
+};
+
+test('confirmation link carries return_to as a single, encoded `next`: awkward and hostile values', async () => {
+  const cases = [
+    // [return_to sent by the client, `next` the link must carry]
+    ['/pricing?a=1&b=2', '/pricing?a=1&b=2'],          // '&' must not split into a second param
+    ['/jobs/abc-123?x=1&next=//evil.com', '/jobs/abc-123?x=1&next=//evil.com'], // nested next stays inside the value
+    ['/pricing#frag', '/pricing#frag'],                 // '#' must not become the link's own fragment
+    ['/search?q=a b', '/search?q=a b'],
+    ['//evil.com', '/account'],
+    ['/\\evil.com', '/account'],
+    ['/\t/evil.com', '/account'],
+    ['/\r/evil.com', '/account'],
+    ['https://evil.com', '/account'],
+    ['javascript:alert(1)', '/account'],
+  ];
+  for (const [sent, expected] of cases) {
+    const link = await redirectFor(sent);
+    const u = new URL(link);
+    assert.equal(u.origin + u.pathname, 'https://stem-loops.com/auth/callback', JSON.stringify(sent));
+    assert.deepEqual([...u.searchParams.keys()], ['type', 'next'], `${JSON.stringify(sent)}: extra or split params in ${link}`);
+    assert.equal(u.searchParams.get('next'), expected, JSON.stringify(sent));
+    assert.equal(u.hash, '', `${JSON.stringify(sent)}: the destination leaked into the link's fragment`);
+    assert.ok(link.endsWith('&next=' + encodeURIComponent(expected)), `${JSON.stringify(sent)}: next is not percent-encoded in ${link}`);
+    globalThis.__signUpCalls.length = 0;
+  }
 });
 
 // Bug 4: the server is authoritative for password rules.

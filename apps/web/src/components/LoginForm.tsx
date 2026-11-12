@@ -147,8 +147,10 @@ export default function LoginForm({
       <h1 style={{ fontSize: 26, margin: 0, color: 'var(--text-primary)' }}>{title}</h1>
 
       {/* /login cannot tell a new visitor from a returning one whose session lapsed: both are
-          sent here from /jobs/[id] with the same return_to. So say both paths; never guess. */}
-      {mode === 'signin' && dest.startsWith('/jobs/') && (
+          sent here from /jobs/[id] with the same return_to. So say both paths; never guess.
+          Not when a ?error= is showing: that message already says what to do, and "if you are new,
+          create an account" beside "your account was created" would invite a second signup. */}
+      {mode === 'signin' && !initialError && dest.startsWith('/jobs/') && (
         <p style={{ margin: 0, fontSize: 14, color: 'var(--text-secondary)' }}>
           Sign in to open your player. If you are new, create an account.
         </p>

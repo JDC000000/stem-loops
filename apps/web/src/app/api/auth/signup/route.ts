@@ -59,9 +59,10 @@ export async function POST(request: NextRequest) {
   // Through the server callback, not /login: /login only reacts to a successful
   // SIGNED_IN, so a failed PKCE exchange (link opened in a different browser than
   // the one that signed up) left a blank form. /auth/callback redirects failures
-  // to /login?error=auth_callback_failed, which renders LOGIN_ERROR_COPY.
+  // to /login?error=..., which renders LOGIN_ERROR_COPY. `type=signup` is what lets the
+  // callback tell this link from a password-recovery one when the exchange fails.
   const emailRedirectTo = new URL(
-    `/auth/callback?next=${encodeURIComponent(dest)}`,
+    `/auth/callback?type=signup&next=${encodeURIComponent(dest)}`,
     request.nextUrl.origin,
   ).toString();
 

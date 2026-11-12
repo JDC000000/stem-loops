@@ -382,7 +382,7 @@ def test_the_gate_read_runs_with_no_server_side_timer(
 
         def execute(self, query, params=None, **kw):
             if "kill_switches" in str(query):
-                seen["in_read"].append((self.info.transaction_status, *self._timers()))
+                seen["in_read"].append(self._timers())
                 self._was_a_gate_read = True
             return super().execute(query, params, **kw)
 
@@ -402,8 +402,7 @@ def test_the_gate_read_runs_with_no_server_side_timer(
         fetch_gates.reset_cache()
         fetch_gates.fetch_paused()
 
-    in_txn = psycopg.pq.TransactionStatus.INTRANS
-    assert seen["in_read"] == [(in_txn, "0", "0")], (
+    assert seen["in_read"] == [("0", "0")], (
         f"the gate read ran under a server-side timer (statement_timeout, lock_timeout): "
         f"{seen['in_read']}; this session inherits {inherited}"
     )

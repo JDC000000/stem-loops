@@ -2,6 +2,10 @@ import type { Metadata } from 'next';
 import { db } from '@/lib/db';
 import { getUser } from '@/lib/auth/supabase';
 import BillingButton, { CreditPackCheckout, PackBuyButton } from '@/components/BillingButton';
+// The feature bullets live in their own module: a Next.js App Router page may
+// only export a fixed set of fields, so exporting features()/quotaLine() from
+// here passed `tsc --noEmit` but failed `next build`.
+import { features } from '@/lib/pricing-copy';
 
 export const metadata: Metadata = { title: 'Pricing', robots: { index: false, follow: false } };
 export const dynamic = 'force-dynamic';
@@ -102,58 +106,6 @@ const price = (c: number) => {
   if (c === 0) return '$0';
   return `$${(c / 100).toFixed(c % 100 ? 2 : 0)} CAD`;
 };
-// Link-import services that are ACTUALLY IMPLEMENTED, and therefore the only
-// ones this page may name. Spotify and SoundCloud were listed here and carried
-// on the free plan row, so the page advertised both — neither has a downloader,
-// a route or an error code anywhere in the repo. Migration 034 drops them from
-// `plans.services`; this map is the second half of the same fix, so a row that
-// re-acquires an unbuilt service still cannot be advertised. An unrecognised
-// service is dropped, never printed raw: the old `?? s` fallback would have
-// rendered a bare "spotify" straight from the database.
-const SERVICE_LABEL: Record<string, string> = { youtube: 'YouTube' };
-
-// `plans.monthly_job_quota` counts TRACKS CONVERTED TO PLAY-ALONG, and the
-// enforcement is checkMonthlyQuota() comparing entitlements.jobs_used against
-// it, rolled to the current calendar month. Both halves of that sentence are
-// stated here because the previous copy got both wrong: it said "3 songs per
-// day" (a daily period that nothing implements) for every plan under the
-// unlimited sentinel, so the number on the page was not the number in the
-// column and changing the column could not change the page.
-const QUOTA_PERIOD = 'month';
-
-/** The quota sentence, derived from the column rather than typed. */
-export function quotaLine(p: Plan): string {
-  const n = p.monthly_job_quota;
-  return `${n} ${n === 1 ? 'track' : 'tracks'} converted to play-along per ${QUOTA_PERIOD}`;
-}
-
-/** The feature bullets for one plan.
- *
- *  Every bullet must be something the app can deliver for THAT plan today:
- *
- *   - the quota sentence is read off the column (above);
- *   - link import is named only for implemented services the row actually
- *     carries, and its ABSENCE is not rendered as a bullet. The old code
- *     pushed "File uploads only (no link import)" on the paid tiers, which
- *     turned $4.99 into an advertised loss of a free-tier feature;
- *   - 24-bit WAV loop download is listed for every plan because that is the
- *     truth: worker/encoder/wav_encoder.py writes PCM_24 for all loops and the
- *     landing page has always offered it with no account. It is a real feature
- *     and NOT a paid differentiator, so it is not gated on export_wav24.
- *
- *  Deliberately absent: "Stem export". There is no stem-export route —
- *  /api/jobs/[id]/stems serves Opus playback urls and says so, and
- *  mintStemDownloadUrl() has no production caller. Migration 034 sets
- *  export_stems false on every plan to match. */
-export function features(p: Plan): string[] {
-  const out: string[] = [];
-  out.push(quotaLine(p));
-  const named = p.services.map((s) => SERVICE_LABEL[s]).filter((l): l is string => !!l);
-  if (named.length) out.push(`Link import: ${named.join(', ')}`);
-  out.push('Loop download — 24-bit WAV');
-  return out;
-}
-
 const card = {
   border: '1px solid var(--border-default, #333)', borderRadius: 12, padding: 20,
   background: 'var(--bg-card, #151515)', display: 'flex', flexDirection: 'column' as const, gap: 12,

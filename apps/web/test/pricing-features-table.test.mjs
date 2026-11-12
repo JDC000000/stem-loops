@@ -57,18 +57,29 @@ const PAGE = join(WEB, 'src/app/pricing/page.tsx');
 const MIGRATION = join(REPO, 'apps/worker/migrations/034_v3_pricing_model_truth.sql');
 
 // ---------------------------------------------------------------------------
-// Load features() / quotaLine() out of the server component.
+// Load features() / quotaLine().
 //
-// page.tsx is an async server component importing next, @/lib/db, @/lib/auth
-// and a client component. Transpiling and importing the whole module would
-// drag all of that in, so the two pure exports are sliced out and compiled on
-// their own. The slice is anchored on the exported declarations themselves, and
-// the anchors are asserted to occur EXACTLY ONCE — if page.tsx is refactored so
-// the slice no longer finds them, this file fails loudly rather than silently
-// testing a stale copy of the logic.
+// They live in src/lib/pricing-copy.ts rather than in the page: a Next.js App
+// Router page may only export a fixed set of fields, so exporting them from
+// page.tsx compiled under `tsc --noEmit` and then failed `next build` with
+// `"quotaLine" is not a valid Page export field`. The module is transpiled and
+// imported directly here — no next, no @/lib/db, no client component.
+//
+// page.tsx is still read as text further down, to check that it uses this
+// module and that its FALLBACK catalog has not drifted from the migration.
 // ---------------------------------------------------------------------------
+const COPY = join(WEB, 'src/lib/pricing-copy.ts');
 const pageSrc = readFileSync(PAGE, 'utf8');
 
+const copyJs = ts.transpileModule(readFileSync(COPY, 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const { features, quotaLine } = await import(
+  'data:text/javascript;base64,' + Buffer.from(copyJs).toString('base64')
+);
+
+/** Slice a region of a source file, asserting the anchors are unambiguous.
+ *  An anchor that stopped matching would otherwise silently test nothing. */
 function sliceOnce(src, startAnchor, endAnchor) {
   const nStart = src.split(startAnchor).length - 1;
   const nEnd = src.split(endAnchor).length - 1;
@@ -80,21 +91,13 @@ function sliceOnce(src, startAnchor, endAnchor) {
   return src.slice(a, b);
 }
 
-const SERVICE_LABEL_DECL = 'const SERVICE_LABEL: Record<string, string>';
-const QUOTA_PERIOD_DECL = "const QUOTA_PERIOD = 'month';";
-const FEATURES_END = 'const card = {';
-
-// Everything from SERVICE_LABEL through the end of features().
-const logic = sliceOnce(pageSrc, SERVICE_LABEL_DECL, FEATURES_END);
-assert.ok(logic.includes(QUOTA_PERIOD_DECL), 'the slice must contain the QUOTA_PERIOD declaration');
-assert.ok(logic.includes('export function features'), 'the slice must contain features()');
-
-const js = ts.transpileModule(`type Plan = any;\n${logic}`, {
-  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-}).outputText;
-const { features, quotaLine } = await import(
-  'data:text/javascript;base64,' + Buffer.from(js).toString('base64')
-);
+test('the pricing page renders its bullets from this module', () => {
+  // Without this, the page could keep a private copy of features() and every
+  // assertion below would be testing a module nobody renders.
+  assert.match(pageSrc, /from '@\/lib\/pricing-copy'/);
+  assert.match(pageSrc, /\{features\(p\)\.map\(/);
+  assert.doesNotMatch(pageSrc, /function features\s*\(/, 'page must not define its own features()');
+});
 
 // ---------------------------------------------------------------------------
 // The plan catalog, parsed out of migration 034 — the source of truth.

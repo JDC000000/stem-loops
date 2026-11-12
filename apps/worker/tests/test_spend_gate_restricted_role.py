@@ -281,6 +281,10 @@ def test_engaged_brake_stops_an_UPLOAD_job_reaching_replicate_even_with_both_fet
     """The measured problem, end to end through the REAL pipeline. fetch_global and fetch_youtube
     are both engaged (the two switches that existed) and the job is an upload: before the brake
     existed this submitted POST /v1/predictions x1. Only the R2 download edge is faked."""
+    # CI sets STUB_MODE=true for the whole worker suite; `_run_pipeline` then short-circuits into
+    # the stub and never reaches Replicate, so the released half saw 0 POSTs (red in CI, green
+    # locally) and the engaged half's "0 POSTs" was vacuous. Same fix as test_chord_rebill.py.
+    monkeypatch.delenv("STUB_MODE", raising=False)
     monkeypatch.setenv("REPLICATE_API_TOKEN", "test-not-a-secret")
     monkeypatch.setattr(
         pipeline, "_prepare_upload_source", lambda job_id, key: "https://example.invalid/a.wav"

@@ -20,7 +20,12 @@
 //     presigner, offline SigV4). TTLs are read back out of the minted URL's
 //     `X-Amz-Expires`, which is what a caller actually receives.
 // Only the network edges are faked: the database, the R2 LIST call, Sentry, next/server,
-// and the admission limiter (a DB-backed counter that is not what is under test).
+// the admission limiter (a DB-backed counter that is not what is under test) and, for the
+// loops route, `getUser` (every fixture job is anonymous, `user_id` NULL).
+//
+// FOUR job routes carry the `expires_at > now()` predicate and all four are covered here:
+// /api/jobs/:id, /stems, /play-chords and /loops (GET and POST share one `authorize`).
+// Round 1 covered three; deleting the predicate from /loops left the suite green.
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -64,6 +69,8 @@ function evaluate(table, where, params, rows, now, unmodelled) {
       out = out.filter((r) => String(r[col]).toLowerCase() === want);
     } else if (table === 'jobs' && /^expires_at > now\(\)$/i.test(c)) {
       out = out.filter((r) => new Date(r.expires_at).getTime() > now);
+    } else if (table === 'loops' && /^cut_at IS NULL$/i.test(c)) {
+      out = out.filter((r) => r.cut_at == null);
     } else {
       const msg = `fake db cannot evaluate ${table} predicate: ${c}`;
       unmodelled.push(msg);
@@ -77,7 +84,7 @@ function makeDb(store) {
   return {
     query: async (text, params = []) => {
       const sql = String(text).replace(/\s+/g, ' ').trim();
-      const m = /\bFROM (jobs|job_events|loops) WHERE (.*?)(?: ORDER BY .*)?$/i.exec(sql);
+      const m = /\bFROM (jobs|job_events|loops|loop_requests) WHERE (.*?)(?: ORDER BY .*)?$/i.exec(sql);
       if (!m) {
         const msg = `fake db cannot parse: ${sql}`;
         store.unmodelled.push(msg);
@@ -85,6 +92,13 @@ function makeDb(store) {
       }
       const table = m[1].toLowerCase();
       const rows = evaluate(table, m[2], params, store[table], Date.now(), store.unmodelled);
+      // The two aggregate shapes the loops route issues; anything else returns whole rows.
+      if (/^SELECT COUNT\(\*\)::int AS count FROM loops /i.test(sql)) {
+        return { rows: [{ count: rows.length }], rowCount: 1 };
+      }
+      if (/^SELECT COUNT\(\*\)::int AS total, COUNT\(cut_at\)::int AS cut FROM loops /i.test(sql)) {
+        return { rows: [{ total: rows.length, cut: rows.filter((r) => r.cut_at != null).length }], rowCount: 1 };
+      }
       return { rows: rows.map((r) => ({ ...r })), rowCount: rows.length };
     },
   };
@@ -129,6 +143,7 @@ async function loadRoutes() {
     `export const checkStemListRate = async () => ({ allowed: true, error_code: null });`,
   );
   const clientIp = dataUrl(`export const clientIpHashOf = () => 'iphash';`);
+  const supabaseAuth = dataUrl(`export const getUser = async () => null;`);
   const wire = (js) =>
     js
       .replace(/from ['"]next\/server['"]/g, `from '${next}'`)
@@ -140,6 +155,7 @@ async function loadRoutes() {
       .replace(/from ['"]@\/lib\/stem-urls['"]/g, `from '${stemUrls}'`)
       .replace(/from ['"]@\/lib\/admission['"]/g, `from '${admission}'`)
       .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${clientIp}'`)
+      .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${supabaseAuth}'`)
       .replace(/from ['"]@aws-sdk\/client-s3['"]/g, `from '${resolveBare('@aws-sdk/client-s3')}'`);
   const load = (file) => import(dataUrl(wire(toJs(file))) + '#' + Math.random());
   const r2Mod = await import(r2);
@@ -154,6 +170,7 @@ async function loadRoutes() {
     job: await load('src/app/api/jobs/[id]/route.ts'),
     stems: await load('src/app/api/jobs/[id]/stems/route.ts'),
     chords: await load('src/app/api/jobs/[id]/play-chords/route.ts'),
+    loops: await load('src/app/api/jobs/[id]/loops/route.ts'),
   };
 }
 
@@ -167,6 +184,7 @@ function addJob(id, expiresInMs, status = 'done') {
   store.jobs.push({
     id,
     status,
+    user_id: null,
     input_kind: 'youtube',
     youtube_url: 'https://y/x',
     upload_r2_key: null,
@@ -203,7 +221,7 @@ const call = (route, id) => route.GET({}, { params: { id } });
 const ttlOf = (url) => Number(new URL(url).searchParams.get('X-Amz-Expires'));
 
 beforeEach(async () => {
-  store = { jobs: [], job_events: [], loops: [], objects: [], listed: [], unmodelled: [] };
+  store = { jobs: [], job_events: [], loops: [], loop_requests: [], objects: [], listed: [], unmodelled: [] };
   globalThis.__expiryStore = store;
   globalThis.__expiryDb = makeDb(store);
   routes ??= await loadRoutes();
@@ -295,6 +313,37 @@ test('GET /api/jobs/:id/play-chords: a live job gets a URL whose real TTL matche
   assert.equal(res.status, 200);
   assert.equal(ttlOf(res.body.signed_url), res.body.expires_in_sec);
   assert.equal(res.body.expires_in_sec, 300);
+});
+
+// ─────────────────────── /api/jobs/:id/loops (GET and POST) ───────────────────────
+
+test('GET /api/jobs/:id/loops: an EXPIRED job is a 404 and reports nothing about its loops', async () => {
+  assert.ok(store.loops.some((l) => l.job_id === EXPIRED), 'fixture: the expired job still has loop rows');
+  const res = await call(routes.loops, EXPIRED);
+  assert.equal(res.status, 404, `expired job answered ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
+  assert.equal(res.body.error_code, 'NOT_FOUND');
+  assert.equal(res.body.loops_total, undefined, 'loop counts of an expired job were served');
+});
+
+test('GET /api/jobs/:id/loops: a live job is 200 with its counts (the predicate lets live rows through)', async () => {
+  const res = await call(routes.loops, LIVE);
+  assert.equal(res.status, 200, JSON.stringify(res.body).slice(0, 200));
+  assert.equal(res.body.loops_total, 1);
+  assert.equal(res.body.loops_cut, 1);
+  assert.equal(res.body.loops_pending, 0);
+});
+
+test('POST /api/jobs/:id/loops: an EXPIRED job is a 404 and queues no cut', async () => {
+  const res = await routes.loops.POST({}, { params: { id: EXPIRED } });
+  assert.equal(res.status, 404, `expired job answered ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
+  assert.equal(res.body.error_code, 'NOT_FOUND');
+  assert.deepEqual(store.loop_requests, [], 'a cut was queued against an expired job');
+});
+
+test('POST /api/jobs/:id/loops: a live job with every loop already cut is an idempotent 200', async () => {
+  const res = await routes.loops.POST({}, { params: { id: LIVE } });
+  assert.equal(res.status, 200, JSON.stringify(res.body).slice(0, 200));
+  assert.equal(res.body.loops_pending, 0);
 });
 
 // ───────────────── the fake database itself must be able to say no ─────────────────

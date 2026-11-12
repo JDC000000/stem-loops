@@ -14,7 +14,7 @@ This module gives a test a bucket on a `moto` S3 server reachable over HTTP, wit
 env the real `r2_uploader._r2()` reads pointed at it, so `cleanup.sweep_expired()` runs
 the genuine helpers against genuine S3 semantics (listing, pagination, delete).
 
-NOTHING HERE CAN REACH CLOUDFLARE. The endpoint is a loopback port this module opened,
+NOTHING HERE CAN REACH CLOUDFLARE. The endpoint is a loopback port moto bound itself,
 the credentials are the literal string "testing", and `RealR2.__enter__` refuses to
 continue unless the boto3 client the product code will use reports a 127.0.0.1 endpoint.
 
@@ -28,7 +28,7 @@ turns the tests red instead of silently seeding every object as brand new.
 from __future__ import annotations
 
 import os
-import socket
+import threading
 import urllib.request
 from datetime import UTC, datetime, timedelta
 
@@ -51,9 +51,7 @@ def _require_moto():
     try:
         from moto.server import ThreadedMotoServer
     except ImportError:
-        if os.environ.get("CI"):
-            pytest.fail("CI=true but " + MOTO_MISSING, pytrace=False)
-        pytest.skip(MOTO_MISSING)
+        skip_or_fail(MOTO_MISSING)
     return ThreadedMotoServer
 
 
@@ -62,10 +60,47 @@ BUCKET = "retention-real-r2-test"
 _PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy")
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+SERVER_START_DEADLINE_SEC = 30.0
+
+
+def start_bounded(server, deadline_sec: float = SERVER_START_DEADLINE_SEC) -> None:
+    """`server.start()`, but a failure to bind FAILS the test instead of hanging forever.
+
+    moto's `ThreadedMotoServer.start()` binds inside a worker thread and then waits on an
+    event that only the success path sets. If the bind raises (port taken, address
+    refused), the thread dies, nothing sets the event, and `start()` waits for ever: with
+    no pytest-timeout and no `timeout-minutes` on the CI job, that is a stuck run, not a
+    red one. Measured on moto 5.2.5 against a port already in use.
+    """
+    t = threading.Thread(target=server.start, daemon=True, name="moto-start")
+    t.start()
+    t.join(deadline_sec)
+    if t.is_alive():
+        pytest.fail(
+            f"the moto S3 server did not come up within {deadline_sec:.0f}s (its bind most "
+            "likely failed inside moto's worker thread, which then waits for ever).",
+            pytrace=False,
+        )
+
+
+def skip_or_fail(reason: str) -> None:
+    """A precondition is missing: SKIP locally, FAIL under CI.
+
+    Under GitHub Actions (`CI=true`) a skipped test is a gate that silently did not run,
+    which is the failure mode these tests exist to remove. Locally a developer without a
+    database or without moto still gets a clean skip with the reason.
+    """
+    if os.environ.get("CI"):
+        pytest.fail("CI=true but " + reason, pytrace=False)
+    pytest.skip(reason)
+
+
+def require_database() -> str:
+    """The `DATABASE_URL` these tests need, or skip (local) / fail (CI) with the reason."""
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        skip_or_fail("DATABASE_URL is not set, so the DB-backed retention tests cannot run")
+    return url
 
 
 class RealR2:
@@ -79,10 +114,12 @@ class RealR2:
 
     def __enter__(self) -> RealR2:
         ThreadedMotoServer = _require_moto()
-        port = _free_port()
-        self.endpoint = f"http://127.0.0.1:{port}"
-        self._server = ThreadedMotoServer(ip_address="127.0.0.1", port=port, verbose=False)
-        self._server.start()
+        # port=0: the kernel picks a free port AT BIND TIME, so there is no window between
+        # "find a free port" and "bind it" for another process to take it.
+        self._server = ThreadedMotoServer(ip_address="127.0.0.1", port=0, verbose=False)
+        start_bounded(self._server)
+        host, port = self._server.get_host_and_port()
+        self.endpoint = f"http://{host}:{port}"
 
         mp = self._mp
         mp.setenv("R2_ENDPOINT_URL", self.endpoint)
@@ -131,7 +168,11 @@ class RealR2:
 
     def age(self, key: str, age_hours: float) -> None:
         """Make an existing object `age_hours` old, and PROVE it through the real list API."""
-        if not age_hours:
+        self.age_many([key], age_hours)
+
+    def age_many(self, keys: list[str], age_hours: float) -> None:
+        """Back-date every key in `keys` at once, then PROVE each through one real listing."""
+        if not age_hours or not keys:
             return
         from moto.s3.models import s3_backends
 
@@ -145,15 +186,18 @@ class RealR2:
                 break
         assert bucket is not None, "moto backend has no test bucket; its internals moved"
         # moto stores a naive UTC datetime.
-        bucket.keys[key].last_modified = datetime.now(UTC).replace(tzinfo=None) - timedelta(
-            hours=age_hours
-        )
-        seen = self.last_modified(key)
-        got_hours = (datetime.now(UTC) - seen).total_seconds() / 3600
-        assert abs(got_hours - age_hours) < 0.05, (
-            f"back-dating {key!r} to {age_hours}h did not take: the real list call reports "
-            f"{got_hours:.3f}h. Every 'old' object in this test would be seeded as new."
-        )
+        stamp = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=age_hours)
+        for key in keys:
+            bucket.keys[key].last_modified = stamp
+        seen = self.listing()
+        now = datetime.now(UTC)
+        for key in keys:
+            got_hours = (now - seen[key]).total_seconds() / 3600
+            assert abs(got_hours - age_hours) < 0.05, (
+                f"back-dating {key!r} to {age_hours}h did not take: the real list call "
+                f"reports {got_hours:.3f}h. Every 'old' object in this test would be seeded "
+                "as new."
+            )
 
     # ------------------------------------------------------------------ reading
 
@@ -164,14 +208,13 @@ class RealR2:
             out.update(o["Key"] for o in page.get("Contents", []))
         return out
 
-    def last_modified(self, key: str) -> datetime:
-        for page in self.client.get_paginator("list_objects_v2").paginate(
-            Bucket=BUCKET, Prefix=key
-        ):
+    def listing(self) -> dict[str, datetime]:
+        """{key: LastModified} for every key, read through the real paginator."""
+        out: dict[str, datetime] = {}
+        for page in self.client.get_paginator("list_objects_v2").paginate(Bucket=BUCKET):
             for obj in page.get("Contents", []):
-                if obj["Key"] == key:
-                    return obj["LastModified"]
-        raise AssertionError(f"{key!r} is not in the bucket")
+                out[obj["Key"]] = obj["LastModified"]
+        return out
 
 
 def job_footprint(job_id: str, tmp_dir: str) -> dict[str, str]:
@@ -231,3 +274,24 @@ def job_footprint(job_id: str, tmp_dir: str) -> dict[str, str]:
 # Shape 7 is the one main's per-job delete does not reach (PR #214). Everything else is
 # deleted by `delete_prefix(f"{job_id}/")`.
 CHORDS_SHAPE = "7 play chords   jobs/<id>/play.chords.json"
+
+
+def assert_chords_gone_or_xfail(r2: RealR2, shapes: dict[str, str]) -> None:
+    """The ONE place shape 7 is allowed to be missing, and only until PR #214 lands.
+
+    Call it LAST in a test, after shapes 1-6 have been asserted gone with plain `assert`s,
+    so everything else the test claims has already been proven by the time it can xfail.
+
+    Why imperative `pytest.xfail()` and not a `@pytest.mark.xfail` on the test: the marker
+    swallows EVERY failure in the test body, including a broken harness or a sweep that
+    deleted nothing, and reports XFAIL for all of them (measured); non-strict, it also
+    reports a silent XPASS under a different mutant. This one can only fire when the
+    chords key is the sole survivor. And it needs no marker to remove: once #214 deletes
+    `jobs/<id>/play.chords.json` the test simply passes, asserting shape 7 for real.
+    """
+    key = shapes[CHORDS_SHAPE]
+    if key in r2.all_keys():
+        pytest.xfail(
+            f"{key!r} survived the per-job delete: `delete_prefix(f'{{job_id}}/')` does not "
+            "reach the `jobs/` namespace until PR #214 lands. Shapes 1-6 were asserted gone."
+        )

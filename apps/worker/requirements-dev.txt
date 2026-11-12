@@ -12,4 +12,17 @@
 #
 # tests/real_r2.py needs moto to run the retention sweep against a real S3 server. Without
 # it those tests SKIP locally with a named reason, and FAIL when CI=true.
-moto[s3,server]>=5.0.0
+#
+# WHY moto IS PINNED EXACTLY, unlike the floors in requirements.txt. This is a REQUIRED
+# check, and the harness reaches into moto's internals to back-date an object (S3 has no
+# API for that): `s3_backends[...].buckets[...].keys[key].last_modified`. A moto release
+# that moves them would turn `Tests` red on every PR, with no change on the PR to blame.
+# It would be red, not silently green (real_r2.RealR2.age reads each age back through the
+# real list call), but red on everyone is still an outage. Bump it on purpose, in a PR
+# that runs the retention tests.
+#
+# WHAT THE PIN DOES NOT COVER. moto's own dependencies (Flask, Werkzeug, responses,
+# cryptography, ...: 38 further packages in a clean dry run) still resolve to whatever is
+# newest, because constraints-prod.txt describes the production image and moto is not in
+# it. Freezing those needs a separate constraints file generated from a known-good install.
+moto[s3,server]==5.2.5

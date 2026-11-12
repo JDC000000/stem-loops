@@ -16,6 +16,11 @@ Three properties make these tests able to fail, and each is deliberate:
     deleted, so the orphan pass can NEVER repair it -- see the ledger test.)
   * A live job's seven objects are asserted to SURVIVE, so "delete everything" is not
     a passing implementation either.
+
+Shape 7 (`jobs/<id>/play.chords.json`) is the one the per-job delete misses until PR #214.
+It is handled by `assert_chords_gone_or_xfail`, called LAST in a test after shapes 1-6 were
+asserted gone with plain `assert`s. There is deliberately no `xfail` marker: see that
+function's docstring for what the marker hid.
 """
 
 from __future__ import annotations
@@ -26,12 +31,27 @@ import uuid
 
 import psycopg
 import pytest
+from botocore.exceptions import ClientError
 
-from tests.real_r2 import CHORDS_SHAPE, RealR2, job_footprint
+from tests.real_r2 import (
+    CHORDS_SHAPE,
+    RealR2,
+    assert_chords_gone_or_xfail,
+    job_footprint,
+    require_database,
+    skip_or_fail,
+)
 from worker import cleanup
 
 DB = os.environ.get("DATABASE_URL")
-pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
+
+
+@pytest.fixture(autouse=True)
+def _database():
+    # A developer with no database gets a clean skip; under CI=true a missing database is
+    # a FAILURE, because a skipped retention gate is a gate that did not run.
+    require_database()
+
 
 LEDGER_EMAIL = "test-retention-real-r2-%@example.com"
 
@@ -128,21 +148,21 @@ def test_expired_job_loses_every_prefixed_shape_even_when_its_objects_are_young(
     asyncio.run(scenario())
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="REMOVE THIS MARKER WHEN PR #214 LANDS. Shape 7 (jobs/<id>/play.chords.json) is "
-    "not under `<id>/`, so main's per-job delete misses it until the age-based orphan pass "
-    "reaches it; #214 fixes that. Non-strict so #214's own CI does not go red on XPASS, "
-    "which means that once #214 is in, this test passes forever asserting nothing unless "
-    "someone deletes this decorator.",
-)
 def test_expired_job_loses_its_chords_object_even_when_young(r2, tmp_path):
+    """Shapes 1-6 are asserted gone HARD; only the chords key may xfail, and only until #214."""
+
     async def scenario():
         expired = _insert_job(25)
         shapes = job_footprint(expired, str(tmp_path))
         _age_all(r2, shapes, 1.0)
+        assert shapes[CHORDS_SHAPE] in r2.all_keys(), "fixture: the chords object was seeded"
+
         await cleanup.sweep_expired()
-        assert shapes[CHORDS_SHAPE] not in r2.all_keys()
+
+        assert _row(expired) is None, "the expired job's row must be deleted"
+        left = _survivors(r2, shapes, skip=(CHORDS_SHAPE,))
+        assert not left, f"shapes 1-6 of an expired job survived the sweep: {left}"
+        assert_chords_gone_or_xfail(r2, shapes)
 
     asyncio.run(scenario())
 
@@ -150,7 +170,7 @@ def test_expired_job_loses_its_chords_object_even_when_young(r2, tmp_path):
 @pytest.fixture
 def ledger_user():
     if not any(h in (DB or "") for h in ("127.0.0.1", "localhost")):
-        pytest.skip("inserts into auth.users; local throwaway DB only")
+        skip_or_fail("DATABASE_URL is not local, and this test inserts into auth.users")
 
     def purge(c):
         c.rollback()
@@ -240,3 +260,227 @@ def test_delete_prefix_pages_through_more_than_one_listing_page(r2):
 
     assert r2_uploader.delete_prefix(f"{job}/") == 1001
     assert r2.all_keys() == {f"{sibling}/_input.wav"}
+
+
+def test_credit_charged_shell_loses_its_chords_object_even_when_young(r2, tmp_path, ledger_user):
+    """Shapes 1-6 are asserted gone HARD; only the chords key may xfail, and only until #214.
+
+    Objects are 1 h old on purpose. At 25 h the orphan pass removes the chords object of a
+    shell too -- but only because `_job_id_of('jobs/<id>/...')` is the literal "jobs", which
+    is never a live job id, so the pass treats every old chords object as an orphan (the
+    same behaviour #214 says deletes a LIVE job's file). That is the wrong reason to pass.
+    With a young object only the per-job delete can help, and a shell has no row left for
+    any later sweep to revisit it by.
+    """
+
+    async def scenario():
+        charged = _insert_job(26, user_id=ledger_user, charged=True)
+        shapes = job_footprint(charged, str(tmp_path))
+        _age_all(r2, shapes, 1.0)
+        assert shapes[CHORDS_SHAPE] in r2.all_keys(), "fixture: the chords object was seeded"
+
+        await cleanup.sweep_expired()
+        await cleanup.sweep_expired()  # a shell is never re-selected: a second pass cannot help
+
+        row = _row(charged)
+        assert row is not None and row[0] == cleanup.PURGED_MARKER, "must be an anonymised shell"
+        left = _survivors(r2, shapes, skip=(CHORDS_SHAPE,))
+        assert not left, f"shapes 1-6 of a credit-charged shell survived: {left}"
+        assert_chords_gone_or_xfail(r2, shapes)
+
+    asyncio.run(scenario())
+
+
+# --------------------------------------------------------------- job status filter
+
+
+def test_failed_jobs_are_swept_and_inflight_jobs_wait_out_their_grace(r2, tmp_path):
+    """`status IN ('done','failed') OR expires_at < now() - INFLIGHT_GRACE`.
+
+    Every case here is 30 minutes past expiry unless stated, so only the STATUS decides.
+    Kills: dropping 'failed' from the status list (a failed job's audio would then outlive
+    its 24 hours until it was an hour stale), and dropping or loosening the in-flight grace
+    (a sibling worker's sweep would delete a job that is still being separated).
+    """
+
+    async def scenario():
+        failed = _insert_job(24.5, status="failed")
+        done = _insert_job(24.5, status="done")
+        inflight_fresh = _insert_job(24.5, status="separating")  # 30 min past: inside the grace
+        inflight_stale = _insert_job(26, status="separating")  # 2 h past: outside it
+        footprints = {}
+        for name, jid in (
+            ("failed", failed),
+            ("done", done),
+            ("inflight_fresh", inflight_fresh),
+            ("inflight_stale", inflight_stale),
+        ):
+            footprints[name] = job_footprint(jid, str(tmp_path))
+            _age_all(r2, footprints[name], 1.0)  # the age backstop cannot help
+
+        res = await cleanup.sweep_expired()
+
+        assert res["jobs"] >= 3, f"expected failed, done and stale in-flight swept: {res}"
+        for name, jid in (("failed", failed), ("done", done), ("inflight_stale", inflight_stale)):
+            assert _row(jid) is None, f"the {name} job's row must be deleted"
+            left = _survivors(r2, footprints[name], skip=(CHORDS_SHAPE,))
+            assert not left, f"the {name} job's objects survived the sweep: {left}"
+        assert _row(inflight_fresh) is not None, "an in-flight job inside the grace was deleted"
+        assert {k for k in r2.all_keys() if inflight_fresh in k} == set(
+            footprints["inflight_fresh"].values()
+        ), "an in-flight job inside the grace lost objects"
+
+    asyncio.run(scenario())
+
+
+# ------------------------------------------------------- the orphan backstop's paging
+
+
+def _put_many(r2: RealR2, keys: list[str]) -> None:
+    for key in keys:
+        r2.client.put_object(Bucket=os.environ["R2_BUCKET_NAME"], Key=key, Body=b"x")
+
+
+def test_orphan_backstop_is_not_blind_past_the_first_1000_keys_of_the_bucket(r2):
+    """The age filter runs on every page, not just the first.
+
+    1000 YOUNG keys sort before one OLD orphan, so the old key is on page 2 of the listing.
+    Kills: `list_objects_older_than` returning after the first page, which leaves the
+    backstop unable to see anything past the first 1000 keys in a real bucket.
+    """
+    young_job, old_orphan = str(uuid.uuid4()), "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    _put_many(r2, [f"{young_job}/s/{i:04d}.wav" for i in range(1000)])
+    r2.put(f"{old_orphan}/_input.mp3", 30)
+
+    async def scenario():
+        res = await cleanup.sweep_expired()
+        assert res["orphan_objects"] == 1, f"the old orphan on page 2 was not found: {res}"
+
+    asyncio.run(scenario())
+    left = r2.all_keys()
+    assert f"{old_orphan}/_input.mp3" not in left
+    assert len([k for k in left if k.startswith(young_job)]) == 1000, "young objects were deleted"
+
+
+def test_list_objects_older_than_collects_across_pages_and_honours_its_limit(r2):
+    from datetime import UTC, datetime, timedelta
+
+    from worker.storage import r2_uploader
+
+    job = str(uuid.uuid4())
+    keys = [f"{job}/s/{i:04d}.wav" for i in range(1001)]
+    _put_many(r2, keys)
+    r2.age_many(keys, 30)
+    cutoff = datetime.now(UTC) - timedelta(hours=24)
+
+    assert sorted(r2_uploader.list_objects_older_than(cutoff, 2000)) == sorted(keys)
+    assert len(r2_uploader.list_objects_older_than(cutoff, 1500)) == 1001
+    assert len(r2_uploader.list_objects_older_than(cutoff, 5)) == 5
+    assert r2_uploader.list_objects_older_than(datetime.now(UTC) - timedelta(hours=48), 2000) == []
+
+
+# ------------------------------------------------- a failing delete must not look done
+
+
+def _inject_delete_failure(monkeypatch, r2: RealR2, doomed: str) -> dict:
+    """Make the REAL boto3 client's `delete_object` raise for keys ending `doomed`.
+
+    The patch sits on the exact client instance `r2_uploader._r2()` returns, so
+    `delete_prefix` runs unmodified and meets a genuine botocore `ClientError`.
+    """
+    state = {"on": True, "hits": 0}
+    real = r2.client.delete_object
+
+    def flaky(**kwargs):
+        if state["on"] and kwargs["Key"].endswith(doomed):
+            state["hits"] += 1
+            raise ClientError(
+                {
+                    "Error": {"Code": "InternalError", "Message": "injected by the test"},
+                    "ResponseMetadata": {"HTTPStatusCode": 500},
+                },
+                "DeleteObject",
+            )
+        return real(**kwargs)
+
+    monkeypatch.setattr(r2.client, "delete_object", flaky)
+    return state
+
+
+def test_delete_prefix_raises_when_one_delete_fails_and_does_not_report_success(r2, monkeypatch):
+    """Kills: `delete_prefix` swallowing `delete_object` errors. It documents that it
+    raises so its caller keeps the DB row; a version that returns a count instead lets the
+    caller believe the job is gone."""
+    from worker.storage import r2_uploader
+
+    job = str(uuid.uuid4())
+    keys = [f"{job}/s/{i}.wav" for i in range(5)]
+    _put_many(r2, keys)
+    state = _inject_delete_failure(monkeypatch, r2, "/2.wav")
+
+    with pytest.raises(ClientError):
+        r2_uploader.delete_prefix(f"{job}/")
+
+    assert state["hits"] == 1
+    assert f"{job}/s/2.wav" in r2.all_keys(), "the key whose delete failed must still exist"
+
+
+def test_a_failed_r2_delete_keeps_the_expired_jobs_row_so_the_next_sweep_retries(
+    r2, tmp_path, monkeypatch
+):
+    async def scenario():
+        expired = _insert_job(25)
+        shapes = job_footprint(expired, str(tmp_path))
+        _age_all(r2, shapes, 1.0)
+        doomed = f"{expired}/bass/intro_0010.wav"
+        assert doomed in shapes.values(), "fixture: the key we make fail is one of the seven"
+        state = _inject_delete_failure(monkeypatch, r2, "/bass/intro_0010.wav")
+
+        await cleanup.sweep_expired()
+
+        assert state["hits"] == 1
+        assert _row(expired) is not None, "the row was deleted although an R2 delete failed"
+        assert expired in cleanup._failed, "the failure must be recorded for backoff"
+        assert doomed in r2.all_keys(), "the object whose delete failed has vanished?"
+
+        state["on"] = False
+        cleanup._failed.clear()  # stand-in for the 15-minute backoff elapsing
+        await cleanup.sweep_expired()
+        assert _row(expired) is None, "the retry did not delete the row"
+        assert not _survivors(r2, shapes, skip=(CHORDS_SHAPE,)), "the retry left objects behind"
+
+    asyncio.run(scenario())
+
+
+def test_a_failed_r2_delete_never_anonymises_a_credit_charged_shell(
+    r2, tmp_path, ledger_user, monkeypatch
+):
+    """The case that cannot be repaired afterwards: once a ledger-bound job is anonymised
+    its row is never re-selected, and the orphan pass sees a live row, so an object whose
+    delete was swallowed is never revisited. The shell must stay un-anonymised until every
+    delete has succeeded."""
+
+    async def scenario():
+        charged = _insert_job(26, user_id=ledger_user, charged=True)
+        shapes = job_footprint(charged, str(tmp_path))
+        _age_all(r2, shapes, 25.0)
+        state = _inject_delete_failure(monkeypatch, r2, "/bass/intro_0010.wav")
+
+        await cleanup.sweep_expired()
+
+        assert state["hits"] == 1
+        row = _row(charged)
+        assert row is not None and row[0] != cleanup.PURGED_MARKER, (
+            "a shell was anonymised after an R2 delete failed: the failed object is now "
+            "unreachable by every later sweep"
+        )
+        assert row[1] == "My Title", "the shell lost its title although R2 still holds its audio"
+
+        state["on"] = False
+        cleanup._failed.clear()
+        await cleanup.sweep_expired()
+        row = _row(charged)
+        assert row is not None and row[0] == cleanup.PURGED_MARKER
+        assert not _survivors(r2, shapes, skip=(CHORDS_SHAPE,))
+
+    asyncio.run(scenario())

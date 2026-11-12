@@ -99,6 +99,11 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
+    # Bounded, because a hung test is otherwise a 6-hour runner (the default) rather than a
+    # red check: this job has no pytest-timeout. The real-R2 tests start an in-process S3
+    # server, and a server that cannot bind used to wait for ever. The suite takes about two
+    # minutes of pytest locally; 30 leaves room for installs and a slow runner.
+    timeout-minutes: 30
     # Postgres so the DB-backed tests (retention sweep, migration 007, consumer) actually
     # run instead of skipping for lack of DATABASE_URL.
     services:

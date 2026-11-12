@@ -54,7 +54,10 @@ export default function PrivacyPage() {
             </ul>
 
             <h2>How long</h2>
-            <p>Uploaded files, fetched audio, stems, loops and the job’s own row are deleted after 24 hours.</p>
+            <p>
+              Uploaded files, fetched audio, stems, loops, the estimated chord track and the job’s own row are
+              deleted after 24 hours.
+            </p>
             <p>
               Account details are not on that clock, because an account has to outlive a job to be useful. They stay until you
               delete the account, which you can do yourself from your <a href="/account">account page</a> at any time, or by

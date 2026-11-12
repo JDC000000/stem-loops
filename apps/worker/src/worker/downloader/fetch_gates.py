@@ -9,6 +9,9 @@ Failure policy (decided here, stated once):
     needs the same DB anyway; an outage of the switch table must not take every link job down).
   * fetch_cobalt: FAILS CLOSED, and a missing row counts as engaged (Cobalt is opt-in).
   * blocklist: FAILS CLOSED (a takedown must not be bypassed by a transient DB error).
+  * the kill-switch read has NO server-side timer (see _read_switches): a locked table stalls the
+    worker and then answers correctly, rather than giving up and releasing a pulled brake.
+  * every table is named `public.<table>`: the first search_path entry is "$user", the LOGIN role.
   * attempt logging never raises.
 """
 
@@ -27,11 +30,17 @@ from ..errors import DownloadBlockedError
 from ..logger import log_structured
 
 KILL_SWITCH_TTL_S = 30.0
+# A gate read still waiting after this long logs one WARN (it does NOT stop waiting; see
+# _refresh_if_stale). Short enough that an operator sees why the consumer went quiet.
+KILL_SWITCH_READ_SLOW_S = 5.0
 SCOPE_FETCH_GLOBAL = "fetch_global"
 SCOPE_FETCH_YOUTUBE = "fetch_youtube"
 SCOPE_FETCH_COBALT = "fetch_cobalt"
 # Scopes that are opt-in: no row (or an unreadable table) means "engaged".
 _DEFAULT_ENGAGED = frozenset({SCOPE_FETCH_COBALT})
+# The only scopes this worker reads. `scope` is free text (migration 008: no CHECK), so a row
+# spelled any other way is never consulted; see the kill_switch_unknown_scope WARN.
+_KNOWN_SCOPES = frozenset({SCOPE_FETCH_GLOBAL, SCOPE_FETCH_YOUTUBE, SCOPE_FETCH_COBALT})
 
 _VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 _WATCH_PATH = re.compile(r"^/(?:shorts|embed|live|v|e)/([A-Za-z0-9_-]{11})(?:[/?#]|$)")
@@ -85,17 +94,35 @@ def reset_cache() -> None:
 
 
 def _read_switches() -> list[tuple[str, bool]]:
-    """One read of the table.
+    """One read of the table, with NO server-side timer of any kind.
 
-    NO statement timeout, on purpose. This gate fails OPEN for fetch_global/fetch_youtube, so a
-    bounded read that gives up turns "the table is locked / the database is slow" into "the
-    brake is released": with fetch_global=true, a cold cache and an ACCESS EXCLUSIVE lock held
-    for 3 s, a 2 s statement timeout fetched after about 2 s where an unbounded read waited and
-    then braked (see test_a_locked_table_delays_an_engaged_global_brake_it_does_not_release_it).
-    The cost of waiting is that the consumer, which runs one job at a time, stalls for as long
-    as the lock lasts. A bounded read only becomes safe once a missing/unreadable row counts as
-    engaged (see _refresh_if_stale); until then a timer here would just be a way to open the
-    brake. A network partition is not bounded by a server-side statement timeout either way.
+    This gate fails OPEN for fetch_global/fetch_youtube, so a read that gives up turns "the
+    table is locked / the database is slow" into "the brake is released": with fetch_global=true,
+    a cold cache and an ACCESS EXCLUSIVE lock held for 3 s, a 2 s statement timeout fetched after
+    about 2 s where an unbounded read waited and then braked.
+
+    "No timeout in the code" is not "no timeout in the session". A role, a database or a
+    cluster-wide default can carry statement_timeout / lock_timeout (Supabase documents a global
+    default for every role without its own), and a session inherits it. Measured on the round-2
+    head with the table locked 6 s: ALTER ROLE ... SET statement_timeout = '2s', ALTER ROLE ...
+    SET lock_timeout = '2s' and ALTER DATABASE ... SET statement_timeout = '2s' each returned
+    None (fetch allowed) after about 2.0 s. So both are set to 0 here, for THIS TRANSACTION ONLY
+    (SET LOCAL: it dies with the transaction, so it cannot leak into a pooled connection the way
+    a plain SET would; it is also why this is two statements in the read's own transaction and
+    not a connection option).
+
+    CONSEQUENCE, stated plainly: with both timers off, a locked table stalls the worker for as
+    long as the lock lasts, and "the lock" includes queue time: a reader queues behind a pending
+    DDL statement that is itself waiting on an idle transaction, and nothing bounds that. Measured:
+    ACCESS EXCLUSIVE held 150 s -> fetch_paused() = 'fetch_global' after 150.001 s, with a second
+    thread blocked 148.004 s behind _lock. That is the deliberate trade: stall and answer
+    correctly rather than release a pulled brake. The stall is not silent: _refresh_if_stale logs
+    kill_switch_read_slow while it waits. A bounded read only becomes safe once a missing or
+    unreadable row counts as engaged (the fail-closed change, out of scope here).
+
+    Not covered: a network partition (no server-side timer applies; the OS TCP timeouts do), and
+    any timer this does not name (e.g. transaction_timeout, PostgreSQL 17+; not set here because
+    naming it on an older server is an error, and an error here fails open).
 
     `public.` is explicit: an unqualified name resolves through search_path, whose first entry
     "$user" is the LOGIN role's name, so a schema with that name holding its own kill_switches
@@ -103,6 +130,9 @@ def _read_switches() -> list[tuple[str, bool]]:
     and log nothing).
     """
     with _connect() as conn:
+        # Same (implicit) transaction as the SELECT below: psycopg opens it on first execute.
+        conn.execute("SET LOCAL statement_timeout = 0")
+        conn.execute("SET LOCAL lock_timeout = 0")
         return conn.execute("SELECT scope, enabled FROM public.kill_switches").fetchall()
 
 
@@ -120,7 +150,23 @@ def _refresh_if_stale() -> None:
         now = time.monotonic()
         if _cache_at is not None and now - _cache_at < KILL_SWITCH_TTL_S:
             return
+        # The read has no timeout (see _read_switches), so a locked table silences the worker for
+        # as long as the lock lasts. Say so while it is happening, not only afterwards: a timer
+        # that only LOGS (it never cancels or bounds the read) and is cancelled in `finally`.
+        started = time.monotonic()
+        slow = threading.Timer(
+            KILL_SWITCH_READ_SLOW_S,
+            log_structured,
+            args=("WARN", "kill_switch_read_slow"),
+            kwargs={
+                "waited_at_least_s": KILL_SWITCH_READ_SLOW_S,
+                "detail": "still reading kill_switches; the table may be locked. Not giving up: "
+                "a read that gives up would release a pulled brake (fail open)",
+            },
+        )
+        slow.daemon = True
         try:
+            slow.start()  # inside the try: failing to start a log timer must not raise to callers
             rows = _read_switches()
         except Exception as exc:  # noqa: BLE001 — keep serving the last known state
             log_structured("WARN", "kill_switch_read_failed", error=str(exc)[:120])
@@ -140,6 +186,11 @@ def _refresh_if_stale() -> None:
             # migration must land BEFORE the worker deploys or every link job stops (this
             # project already had a ~2 h outage from exactly that coupling).
             return
+        finally:
+            slow.cancel()
+        waited = time.monotonic() - started
+        if waited >= KILL_SWITCH_READ_SLOW_S:
+            log_structured("WARN", "kill_switch_read_resumed", waited_s=round(waited, 3))
         if not rows:
             # A successful read of ZERO rows. Production's table has a fetch_cobalt row, so
             # this is not the normal state: it can mean the table was emptied, OR that this
@@ -153,6 +204,25 @@ def _refresh_if_stale() -> None:
                 "kill_switch_table_empty",
                 detail="kill_switches returned 0 rows; may be empty OR unreadable by this "
                 "role (permissions/RLS) - engaged switches may be invisible",
+            )
+        # `scope` is free text with no CHECK, so 'Fetch_Global', 'fetch_global ' (trailing space),
+        # 'fetch-global' or 'global' are all accepted by the table, never match a constant above,
+        # and make a non-empty read that changes no decision and logs nothing: an operator typo
+        # would be silent. Name every scope this worker does not read. It rides the refresh, so
+        # it is at most once per TTL. It also names scopes migration 008 documents but this
+        # worker does not consume (fetch_spotify, serve_mix_first, payments_r): true for those
+        # too, since setting them has no effect here.
+        unread = sorted({str(scope) for scope, _ in rows} - _KNOWN_SCOPES)
+        if unread:
+            log_structured(
+                "WARN",
+                "kill_switch_unknown_scope",
+                scopes=[sc[:64] for sc in unread[:20]],
+                count=len(unread),
+                detail="kill_switches holds scope(s) this worker never reads (typo? wrong case, "
+                "stray space, '-' for '_'?); only "
+                + ", ".join(sorted(_KNOWN_SCOPES))
+                + " are consulted, so these rows change nothing",
             )
         _cache.clear()
         _cache.update({scope: bool(enabled) for scope, enabled in rows})
@@ -192,7 +262,9 @@ def is_blocklisted(video_id: str) -> bool:
     try:
         with _connect() as conn:
             return (
-                conn.execute("SELECT 1 FROM blocklist WHERE video_id=%s", (video_id,)).fetchone()
+                conn.execute(
+                    "SELECT 1 FROM public.blocklist WHERE video_id=%s", (video_id,)
+                ).fetchone()
                 is not None
             )
     except Exception as exc:  # noqa: BLE001
@@ -230,7 +302,7 @@ def log_attempt(
     try:
         with _connect() as conn:
             conn.execute(
-                "INSERT INTO fetch_attempts (job_id, attempt, path, exit_session_hash, "
+                "INSERT INTO public.fetch_attempts (job_id, attempt, path, exit_session_hash, "
                 "outcome_class, ms_first_byte, ms_total, bytes, ytdlp_version, video_hash) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (

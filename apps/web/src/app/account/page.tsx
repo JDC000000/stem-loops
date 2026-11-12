@@ -53,8 +53,21 @@ export default async function AccountPage() {
             <p style={{ margin: '0 0 4px', color: 'var(--text-primary)' }}>
               <strong>{ent.data.plan_code}</strong>
             </p>
+            {/* "Jobs" was the wrong word and is now a wrong NUMBER.
+                jobs_used counts units of the MONTHLY ALLOWANCE spent — and a
+                credit-funded upload no longer spends one (#233), so for a
+                credit buyer this numerator is 0 however many tracks they
+                actually converted. Labelled "Jobs", that reads as a track
+                count and lies; labelled as the allowance, it is exactly true.
+                Credits spent are already shown in the Credits section below.
+                NOT renamed on the wire: jobs_used is a public field of
+                GET /api/entitlements and renaming it is a breaking change —
+                see the PR body for the scoped follow-up. A real "tracks this
+                month" figure would need its own count over the jobs table;
+                shipping jobs_used under that label would be #229's defect
+                class (a display that does not tell the truth). */}
             <p style={muted}>
-              Renews / ends: {fmt(ent.data.period_end)} · Jobs: {ent.data.jobs_used ?? 0}
+              Renews / ends: {fmt(ent.data.period_end)} · Monthly allowance used: {ent.data.jobs_used ?? 0}
               {(ent.data.jobs_quota ?? 0) >= 100000 ? ' (unlimited)' : ` / ${ent.data.jobs_quota ?? '—'}`}
             </p>
           </>

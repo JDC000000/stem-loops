@@ -130,6 +130,10 @@ test('terms: "not accepted" — every input path reaches its duration gate befor
   // is `_run_pipeline` up to that call.
   const run = pipeline.slice(pipeline.indexOf('async def _run_pipeline'));
   assert.ok(run, '_run_pipeline is gone — this gate no longer reads anything');
+  // Without this line the gate below can go vacuous while staying green: if the name stops
+  // appearing — renamed, wrapped, moved behind a helper — `indexOf` returns -1, `slice(0, -1)`
+  // keeps almost the whole function, and "X occurs before the billed call" becomes "X occurs".
+  assert.ok(run.includes('submit_or_reattach'), 'the billed call is no longer in _run_pipeline');
   const beforeSpend = run.slice(0, run.indexOf('submit_or_reattach'));
 
   assert.match(
@@ -143,12 +147,16 @@ test('terms: "not accepted" — every input path reaches its duration gate befor
   );
 
   // Both paths must be judged by the SAME accessor. One caller is the state that made the
-  // sentence false: three matches here are the definition plus the two call sites.
+  // sentence false. FOUR matches: the definition, plus THREE call sites —
+  // _prepare_upload_source, _enforce_link_duration, and the cap handed to download_audio
+  // that arms gate 0c. An earlier cut of this comment said "two call sites" and set the
+  // threshold at 3; that one unit of slack was exactly enough for a reviewer to delete the
+  // download_audio argument, leave gate 0c inert in production, and stay green.
   const uses = pipeline.match(/_max_upload_duration_sec\(\)/g) ?? [];
   assert.ok(
-    uses.length >= 3,
-    `_max_upload_duration_sec() is used ${uses.length} time(s); one path has lost its cap ` +
-      'or a second, link-only ceiling has been introduced',
+    uses.length >= 4,
+    `_max_upload_duration_sec() is used ${uses.length} time(s), expected at least 4; a path ` +
+      'has lost its cap, gate 0c has been left unarmed, or a second link-only ceiling exists',
   );
 
   assert.ok(

@@ -1334,9 +1334,16 @@ async def _run_pipeline(job_id: str) -> None:
             else:
                 # Cobalt returns a public tunnel URL and no local bytes, so there is nothing
                 # here to measure; gate 0c's metadata reading is the only ceiling that leg
-                # gets. Cobalt is reached only after yt-dlp has exhausted its attempts AND
-                # the fetch_cobalt kill-switch scope has been released (engaged by default),
-                # so this is a narrow, logged residue rather than the usual path.
+                # gets, and that gate fails open. So on THIS leg an over-length link whose
+                # metadata could not be read still buys a full billed separation.
+                #
+                # How often that happens is NOT knowable from this file. Cobalt is reached
+                # only after yt-dlp exhausts its attempts and `fetch_gates.cobalt_allowed()`
+                # returns True, and while SCOPE_FETCH_COBALT is in `_DEFAULT_ENGAGED` -- i.e.
+                # off unless opted in -- `is_engaged` consults a DB-backed cache first, so a
+                # row in the kill-switch table releases it with no code change and nothing
+                # here can see whether production holds such a row. Treat the width of this
+                # residue as unverified rather than narrow.
                 log_structured("WARN", "link_duration_unenforced_source", job_id=job_id)
                 audio_src = dl_result
         await emit_event(job_id, "downloading", "completed", pct=100)

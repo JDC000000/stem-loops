@@ -23,6 +23,16 @@ MAX_TRACKER_BPM = 250
 MAX_LOOPS_PER_STEM = 10  # cap per stem (>=5 distributed) to stay in the <60s p90 budget
 
 
+class NoReliableBeatError(ExtractionFailedError):
+    """The beat guard's refusal, typed apart from the length guards (B5, Jon 2026-11-13).
+
+    A beatless or rubato track has stems and chords worth delivering; only loops need a
+    beat. The pipeline catches THIS subclass and finishes the job `done` with 0 loops.
+    Too-short / no-loop-fits stay plain ExtractionFailedError and still fail the job.
+    It is still an ExtractionFailedError, so any caller that does not opt in fails as before.
+    """
+
+
 def extract_loops(
     stem_paths: dict[str, str],
     bpm: float,
@@ -50,7 +60,7 @@ def extract_loops(
         or grid.tracker_bpm < MIN_TRACKER_BPM
         or grid.tracker_bpm > MAX_TRACKER_BPM
     ):
-        raise ExtractionFailedError(
+        raise NoReliableBeatError(
             f"No reliable beat (tempo={grid.tracker_bpm:.1f}, beats={grid.tracked_beats})"
         )
     bar = grid.bar

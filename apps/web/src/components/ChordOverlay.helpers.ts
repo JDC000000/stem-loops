@@ -16,6 +16,8 @@ import type {
   ChordUnavailableReason,
   PlayChordsResult,
 } from '../chord/play-chords-loader.ts';
+import { MAX_TRACK_SEC } from '../lib/play/types.ts';
+const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
 /** What a span means musically. 'none' = N (no chord), 'unknown' = X. */
 export type RunKind = 'chord' | 'none' | 'unknown';
@@ -1161,7 +1163,7 @@ export function readablePxPerSec(
 /** What the completed-job status area shows for each tri-state value. */
 export interface CompletedJobStatus {
   /** Short pill text. */
-  pill: 'LOADING' | 'JOB' | 'UNAVAILABLE';
+  pill: 'Loading' | 'Ready' | 'Unavailable';
   /** Human sentence; null when the chip timeline alone is the answer. */
   message: string | null;
   /** Whether the chip timeline should render at all. */
@@ -1172,7 +1174,7 @@ export interface CompletedJobStatus {
 export function unavailableMessage(reason: ChordUnavailableReason): string {
   switch (reason) {
     case 'too_long':
-      return 'Chords aren\u2019t available for this track: chord detection supports tracks up to 5 minutes. Your stems and loops are unaffected.';
+      return `Chords aren\u2019t available for this track: chord detection supports tracks up to ${MAX_TRACK_MIN} minutes. Your stems and loops are unaffected.`;
     case 'too_short':
       return 'Chords aren\u2019t available for this track: it\u2019s too short for chord detection. Your stems and loops are unaffected.';
     case 'provider_failed':
@@ -1180,27 +1182,27 @@ export function unavailableMessage(reason: ChordUnavailableReason): string {
       // before the at-cap change, for the monthly Klangio cap. Neither is about the song,
       // and "failed for this track" invited a re-upload that spends a credit for the
       // same result, so the copy says where the problem is and that re-uploading won't fix it.
-      return 'Chord detection didn\u2019t return a result for this track. This is usually on our side rather than your song, so uploading it again won\u2019t help right now. Your stems and loops are unaffected.';
+      return 'Chord detection didn\u2019t return a result for this track. This is usually on our end rather than your song, so uploading it again won\u2019t help right now. Your stems and loops are unaffected.';
     case 'not_attempted':
       return 'Chord detection wasn\u2019t run for this track.';
     case 'load_failed':
       return 'We couldn\u2019t load the chords. Refresh the page to try again.';
     default:
       // No artifact and no recorded reason. Don't guess a cause.
-      return 'No chords are available for this track. Chord detection works on tracks up to 5 minutes and can fail on others. Your stems and loops are unaffected.';
+      return `No chords are available for this track. Chord detection works on tracks up to ${MAX_TRACK_MIN} minutes and can fail on others. Your stems and loops are unaffected.`;
   }
 }
 
 export function completedJobStatus(result: PlayChordsResult): CompletedJobStatus {
   switch (result.status) {
     case 'loading':
-      return { pill: 'LOADING', message: 'Loading chords\u2026', showTimeline: false };
+      return { pill: 'Loading', message: 'Loading chords\u2026', showTimeline: false };
     case 'unavailable':
-      return { pill: 'UNAVAILABLE', message: unavailableMessage(result.reason), showTimeline: false };
+      return { pill: 'Unavailable', message: unavailableMessage(result.reason), showTimeline: false };
     case 'ready':
       return result.observations.length === 0
-        ? { pill: 'JOB', message: 'No chords were detected in this track.', showTimeline: false }
-        : { pill: 'JOB', message: null, showTimeline: true };
+        ? { pill: 'Ready', message: 'No chords were detected in this track.', showTimeline: false }
+        : { pill: 'Ready', message: null, showTimeline: true };
   }
 }
 

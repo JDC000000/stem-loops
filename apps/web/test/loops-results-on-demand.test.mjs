@@ -206,7 +206,7 @@ test('a failed request surfaces an alert and leaves the button pressable again',
     assert.equal(alert.getAttribute('role'), 'alert');
     const button = dom.find('[data-testid="cut-loops"]');
     assert.equal(button.disabled, false, 'a failure must not leave the button dead');
-    assert.match(button.textContent, /Cut 1 loops/);
+    assert.match(button.textContent, /Cut 1 loop(?!s)/);
     await dom.unmountAll();
   });
 });
@@ -423,7 +423,7 @@ test('RV3 the deadline: polling stops, says so, and the button is pressable agai
       assert.ok(alert, 'the deadline must say so');
       assert.match(alert.textContent, /longer than expected/);
       assert.equal(cutBtn(dom).disabled, false, 'not stuck on Cutting…');
-      assert.match(cutBtn(dom).textContent, /Cut 1 loops/);
+      assert.match(cutBtn(dom).textContent, /Cut 1 loop(?!s)/);
       // second attempt restarts the clock
       await dom.act(() => cutBtn(dom).click());
       assert.ok(!dom.find('[data-testid="cut-error"]'));

@@ -152,6 +152,16 @@ for (const [name, file] of Object.entries(ROUTES)) {
     assert.equal(res.status, 200, 'the anonymous start flow would break');
   });
 
+  // Reviewer probe (merge gate): the signed-out first-run flow. An anonymous upload is
+  // played AFTER sign-in, and nothing attaches the job to the account, so the caller is
+  // signed in and the job is still user_id NULL.
+  test(`${name}: an ANONYMOUS job is readable by a SIGNED-IN caller (upload, then sign in, then play)`, async () => {
+    globalThis.__sec.job = jobRow(null);
+    globalThis.__sec.user = { user_id: OTHER, email: 'o@example.com' };
+    const res = await call(await loadRoute(file));
+    assert.equal(res.status, 200, 'the first-run flow (anonymous upload, sign in, play) would break');
+  });
+
   test(`${name}: a denial is byte-identical to a missing job (no existence oracle)`, async () => {
     globalThis.__sec.job = jobRow(OWNER);
     globalThis.__sec.user = null;
@@ -185,4 +195,19 @@ test('a denied caller on an owned job learns nothing about its state (404, not N
     const res = await call(await loadRoute(f));
     assert.equal(res.body.error_code, 'NOT_FOUND', `${f} leaked job state to a non-owner`);
   }
+});
+
+// Reviewer probe (merge gate): the helper's own fail-closed claim. The route tests above
+// only check that the SELECT text names user_id; `ownerId == null` passed all of them.
+test('mayReadJob: a row with NO user_id column (undefined) is denied to everyone; only a literal null is anonymous', async () => {
+  const access = await import(
+    dataUrl(toJs('src/lib/job-access.ts').replace(/from ['"]@\/lib\/auth\/supabase['"]/, `from '${getUserStub}'`)) + '#' + Math.random()
+  );
+  globalThis.__sec.user = null;
+  assert.equal(await access.mayReadJob(undefined), false, 'a dropped column opened the job to a signed-out caller');
+  assert.equal(await access.mayReadJob(null), true);
+  globalThis.__sec.user = { user_id: OWNER, email: 'a@example.com' };
+  assert.equal(await access.mayReadJob(undefined), false, 'a dropped column opened the job to a signed-in caller');
+  assert.equal(await access.mayReadJob(OWNER), true);
+  assert.equal(await access.mayReadJob(OTHER), false);
 });

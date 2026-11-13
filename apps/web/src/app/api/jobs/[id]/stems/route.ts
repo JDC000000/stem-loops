@@ -76,7 +76,8 @@ function errLabel(e: unknown): string {
 // open because starting a job needs no account; the stem DOWNLOAD requires one (V3-J9).
 //
 // ⚠️ RESIDUE REQUIRING JON'S RECORDED ACCEPTANCE (M-11): as with every other job
-// route, the job UUID is the only credential, and the privacy notice says so. But
+// route, for an ANONYMOUS job the job UUID is the only credential, and the privacy
+// notice says so (an owned job is gated by OWNERSHIP above). But
 // six full-length stems reconstruct the WHOLE track where a 4-bar loop does not.
 // That is a larger exposure behind the same existing door, and a code comment is not
 // acceptance.

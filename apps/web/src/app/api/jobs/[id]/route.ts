@@ -4,14 +4,19 @@ import { db } from '@/lib/db';
 import { mintSignedUrl } from '@/lib/r2';
 import { presignTtlSec } from '@/lib/retention';
 import { mayReadJob } from '@/lib/job-access';
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 // OWNERSHIP: a job with a user_id is readable only by that user; an anonymous job
 // (user_id NULL) is readable by anyone holding its id. See lib/job-access.ts. A denied
 // caller gets the same 404 as a missing job. `user_id` is read to decide that and is
-// NEVER copied into the response.
-//
+// NEVER copied into the response. The body therefore also varies by who is signed in,
+// which is a second reason for NO_STORE below.
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// The body carries a freshly minted signed URL per cut loop (a bearer credential valid for
+// up to the job's remaining life). Same rule as ../stems and ../play-chords (#185): never
+// let a shared cache store it, which Next's default `public, max-age=0, must-revalidate` permits.
+const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
+
 // GET /api/jobs/:id — status + events + loops, read straight from Postgres.
 // Each loop gets a FRESHLY minted signed URL on every read (PRD §8 anti-goal #4), valid for
 // at most the job's remaining life (24h retention; the worker deletes the objects after
@@ -77,12 +82,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       })
     );
 
-    // Carries one presigned R2 URL per cut loop and varies by who is signed in, so no
-    // shared cache may keep it and the browser may not write it to disk.
-    return NextResponse.json(
-      { ...job, events: eventsRes.rows, loops },
-      { headers: { 'Cache-Control': 'private, no-store' } },
-    );
+    return NextResponse.json({ ...job, events: eventsRes.rows, loops }, { headers: NO_STORE });
   } catch (err) {
     Sentry.captureException(err);
     console.error(`GET /api/jobs/${params.id} error:`, err);

@@ -23,6 +23,7 @@ import {
 } from '@/lib/billing/entitlements';
 import { consumeTrialInTx } from '@/lib/trial';
 import { consumeCreditInTx } from '@/lib/billing/credits';
+import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
 const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
@@ -43,6 +44,12 @@ const RATE_LIMIT_MSG =
 // request cannot leak a trial song (the trial UPDATE commits in its own tx;
 // if we then rejected for admission we would have already spent a song).
 export async function POST(request: NextRequest) {
+  // CSRF: same-origin browser requests only (src/lib/same-origin.ts). First,
+  // before the body is read or any quota, trial or credit is touched.
+  const originRefusal = crossOriginRefusal(request);
+  if (originRefusal) {
+    return NextResponse.json({ error_code: BAD_ORIGIN, message: originRefusal }, { status: 403 });
+  }
   try {
     let body: unknown;
     try {

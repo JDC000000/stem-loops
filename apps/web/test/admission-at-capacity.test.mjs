@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, SAME_ORIGIN_HEADERS } from './helpers/same-origin.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = (p) => join(WEB, 'src', p);
@@ -105,6 +106,7 @@ const wire = (js) =>
     .replace(/from ['"]@\/lib\/billing\/credits['"]/g, `from '${stub.credits}'`)
     .replace(/from ['"]@\/lib\/trial['"]/g, `from '${stub.trial}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${stub.sentry}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${stub.next}'`);
 
 const admission = await import(ADMISSION);
@@ -119,7 +121,7 @@ const freshAdmission = () => import(ADMISSION + '#fresh' + ++fresh);
 const JOB = 'aaaaaaaa-aaaa-aaaa-aaaa-000000000001';
 const call = async (route, body) => {
   try {
-    const r = await route.POST({ json: async () => body, headers: new Headers() });
+    const r = await route.POST({ json: async () => body, headers: new Headers(SAME_ORIGIN_HEADERS) });
     return { status: r.status, headers: r.headers, body: await r.json() };
   } catch (e) {
     return { status: 0, headers: new Headers(), body: { thrown: String(e) } };

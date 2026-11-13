@@ -28,6 +28,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginHeaders } from './helpers/same-origin.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(WEB, 'src/app/api/users/me/claim-jobs/route.ts');
@@ -88,6 +89,7 @@ async function loadRoute({ user, scriptedTxResults = [], maxClaimedJobs }) {
   js = js
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub(scriptedTxResults)}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
@@ -95,6 +97,7 @@ async function loadRoute({ user, scriptedTxResults = [], maxClaimedJobs }) {
 function makeReq(body) {
   return {
     json: async () => body,
+    headers: sameOriginHeaders(),
   };
 }
 

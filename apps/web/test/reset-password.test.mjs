@@ -21,6 +21,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginHeaders } from './helpers/same-origin.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REQ_SRC = join(WEB, 'src/app/api/auth/reset-password-request/route.ts');
@@ -98,6 +99,7 @@ function supabaseStub({ resetResult = { error: null }, updateResult = { error: n
 async function loadRoute(src, opts) {
   let js = toJs(readFileSync(src, 'utf8'));
   js = js
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub()}'`)
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${supabaseStub(opts)}'`)
@@ -111,6 +113,7 @@ function makeReq(url, body) {
   return {
     nextUrl: new URL(url),
     json: async () => body,
+    headers: sameOriginHeaders(),
   };
 }
 

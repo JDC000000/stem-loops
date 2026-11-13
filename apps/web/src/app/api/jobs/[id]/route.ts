@@ -6,6 +6,11 @@ import { presignTtlSec } from '@/lib/retention';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// The body carries a freshly minted signed URL per cut loop (a bearer credential valid for
+// up to the job's remaining life). Same rule as ../stems and ../play-chords (#185): never
+// let a shared cache store it, which Next's default `public, max-age=0, must-revalidate` permits.
+const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
+
 // GET /api/jobs/:id — status + events + loops, read straight from Postgres.
 // Each loop gets a FRESHLY minted signed URL on every read (PRD §8 anti-goal #4), valid for
 // at most the job's remaining life (24h retention; the worker deletes the objects after
@@ -68,7 +73,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       })
     );
 
-    return NextResponse.json({ ...job, events: eventsRes.rows, loops });
+    return NextResponse.json({ ...job, events: eventsRes.rows, loops }, { headers: NO_STORE });
   } catch (err) {
     Sentry.captureException(err);
     console.error(`GET /api/jobs/${params.id} error:`, err);

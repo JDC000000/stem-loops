@@ -108,7 +108,7 @@ export const billingEnforced = (): boolean => process.env.BILLING_ENFORCED === '
  *  allowance. Must stay equal to ERROR_COPY.FREE_MONTHLY_QUOTA_EXHAUSTED's
  *  headline + action (asserted in billing-free-upload-quota.test.mjs). */
 export const FREE_QUOTA_EXHAUSTED_MESSAGE =
-  "You've used all your free songs this month. Your allowance resets at the start of next month.";
+  "You've used all your free tracks this month. Your allowance resets at the start of next month.";
 
 // ---------------------------------------------------------------------------
 // In-memory cache. 30-second TTL per TSD §1.7. Module-level Map; serverless

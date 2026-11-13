@@ -19,7 +19,7 @@ export default function GlobalError({ reset }: { error: Error; reset: () => void
       </button>
       {/* a way out if trying again fails too (the same back link as the job pages) */}
       <a href="/" className="jp-back" style={{ alignSelf: 'flex-start', fontSize: 'var(--text-md)', textDecoration: 'none' }}>
-        ← New track
+        Start a new song →
       </a>
     </main>
   );

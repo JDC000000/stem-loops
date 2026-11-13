@@ -19,7 +19,7 @@ export default async function DeleteAccountPage() {
       </p>
       <p style={{ color: 'var(--text-primary)', marginBottom: 4 }}>What will be deleted:</p>
       <ul style={{ color: 'var(--text-secondary)', marginTop: 0, paddingLeft: 20, lineHeight: 1.6 }}>
-        <li>Your sign-in account (email, password and linked Google login)</li>
+        <li>Your sign-in account (email, password and Google sign-in)</li>
         <li>Your usage history and job history</li>
         <li>Your remaining credit balance and credit purchase records. Unused credits are not refunded.</li>
         <li>Any active subscription, which is cancelled immediately</li>

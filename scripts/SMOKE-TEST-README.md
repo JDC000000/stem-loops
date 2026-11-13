@@ -203,7 +203,7 @@ the prod `SUPABASE_URL` / keys, a live `STRIPE_SECRET_KEY`, and `SMOKE_ALLOW_PRO
 (the script refuses otherwise). Checkout steps create real live-mode sessions
 (expired and the customer deleted at cleanup).
 
-## Plan catalog the smoke test expects (migration 034, 2026-11-11)
+## Plan catalog the smoke test expects (migrations 034 + 037)
 
 Step 5 pins the free plan against `034_v3_pricing_model_truth.sql`, which is the
 source of truth for plan values. If step 5 fails on `services` or `jobs_quota`,
@@ -214,7 +214,7 @@ loosen the assertion.
 |---|---|---|---|---|---|
 | `free` | 5 | $0 | `{youtube}` | false | false |
 | `pro` | 50 | $4.99 CAD | `{}` | false | false |
-| `studio` | 150 | $12 CAD | `{}` | false | false |
+| `studio` | 150 | $12 CAD | `{}` | **true** (037) | false |
 
 Two notes for anyone extending this file:
 
@@ -222,6 +222,7 @@ Two notes for anyone extending this file:
   Neither has an implementation anywhere in the repo. Step 5 now fails if either
   reappears, because the pricing page derives its advertised link-import list
   from this column.
-- **Both export flags are false on every plan**, so there is nothing for a smoke
-  test to assert about stem export: no stem-export route exists, and 24-bit WAV
-  loops are available on every tier rather than being a paid differentiator.
+- **`export_stems` is true on Studio only** (migration 037, 2026-11-12), enforced
+  by `GET /api/jobs/[id]/download`; this smoke test does not exercise that route.
+  **`export_wav24` is false on every plan**: 24-bit WAV loops are available on
+  every tier rather than being a paid differentiator.

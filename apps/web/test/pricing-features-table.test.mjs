@@ -34,8 +34,8 @@
 //
 //  (2) The bullets match WHAT THE APP CAN DELIVER. A page can be perfectly
 //      faithful to its database and still lie, which is exactly what happened:
-//      plans.export_stems was true, features() rendered it honestly, and no
-//      stem-export route has ever existed. So there is a ban list keyed to
+//      plans.export_stems was true, features() rendered it honestly, and at
+//      the time no stem-export route existed. So there is a ban list keyed to
 //      capabilities that are absent from the repo, and it is applied to the
 //      RENDERED BULLETS for every plan row shape, including deliberately
 //      hostile rows that set every flag true.
@@ -55,6 +55,7 @@ const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = join(WEB, '..', '..');
 const PAGE = join(WEB, 'src/app/pricing/page.tsx');
 const MIGRATION = join(REPO, 'apps/worker/migrations/034_v3_pricing_model_truth.sql');
+const MIGRATION_037 = join(REPO, 'apps/worker/migrations/037_v3_studio_stem_export.sql');
 
 // ---------------------------------------------------------------------------
 // Load features() / quotaLine().
@@ -129,11 +130,51 @@ function planFromMigration(code) {
   };
 }
 
-const PLANS = {
+const PLANS_034 = {
   free: planFromMigration('free'),
   pro: planFromMigration('pro'),
   studio: planFromMigration('studio'),
 };
+
+// Migration 037 then flips ONE flag with a plain UPDATE (studio export_stems
+// -> true). The effective catalog is 034's rows with 037's UPDATEs applied on
+// top, in the order the runner applies them. Parsed, not retyped, for the same
+// reason as above. Comments are stripped first so the prose in 037's header
+// cannot be mistaken for a statement; the parse must find at least one UPDATE
+// and must account for every UPDATE in the file, so a reworded 037 cannot
+// silently become a no-op here.
+const migration037Sql = readFileSync(MIGRATION_037, 'utf8').replace(/--[^\n]*/g, '');
+const UPDATE_RE =
+  /UPDATE\s+public\.plans\s+SET\s+(export_stems|export_wav24)\s*=\s*(true|false)\s+WHERE\s+code\s*=\s*'(\w+)'\s*;/g;
+const updates037 = [...migration037Sql.matchAll(UPDATE_RE)].map((m) => ({
+  column: m[1], value: m[2] === 'true', code: m[3],
+}));
+const PLANS = structuredClone(PLANS_034);
+for (const u of updates037) {
+  assert.ok(PLANS[u.code], `037 updates unknown plan '${u.code}'`);
+  PLANS[u.code][u.column] = u.value;
+}
+
+test('migration 037 is parsed completely: every UPDATE in it was applied above', () => {
+  const statements = (migration037Sql.match(/\bUPDATE\b/gi) ?? []).length;
+  assert.ok(updates037.length > 0, '037 must carry an UPDATE this parser can read');
+  assert.equal(updates037.length, statements,
+    `037 has ${statements} UPDATE statement(s) but only ${updates037.length} matched the parser`);
+});
+
+test('effective catalog (034 + 037): stem export on Studio only, 24-bit WAV export on nobody', () => {
+  // Jon, 2026-11-12: $12 Studio gets stem export, $4.99 Pro and Free do not.
+  // Literals on purpose, as in (0) below.
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(PLANS).map(([c, p]) => [c, p.export_stems])),
+    { free: false, pro: false, studio: true },
+  );
+  for (const [code, p] of Object.entries(PLANS)) {
+    assert.equal(p.export_wav24, false, `${code}.export_wav24`);
+  }
+  // And 037 really is what moved it: 034 alone left Studio false.
+  assert.equal(PLANS_034.studio.export_stems, false);
+});
 
 // ---------------------------------------------------------------------------
 // (0) The approved model, pinned. These are Jon's decided numbers, so they are
@@ -159,7 +200,7 @@ test('no plan sits at or above the retired unlimited sentinel', () => {
   }
 });
 
-test("the page's FALLBACK array matches migration 034 field for field", () => {
+test("the page's FALLBACK array matches migrations 034 + 037 field for field", () => {
   // The degraded-mode fallback is a second copy of the catalog. When it drifts,
   // a Postgres outage silently serves the OLD prices — the failure mode is
   // invisible precisely when nobody is watching.
@@ -267,8 +308,8 @@ test('a plan with no implemented service claims no link import, and no loss', ()
 // Each entry: [regex, why this claim is not deliverable today].
 const UNDELIVERABLE = [
   [/\bstem export\b/i,
-   'no stem-export route exists: /api/jobs/[id]/stems serves Opus playback urls, and mintStemDownloadUrl() has no production caller'],
-  [/\bexport (?:your |the )?stems\b/i, 'same — there is no stems download path'],
+   'the gated API route exists (GET /api/jobs/[id]/download, Studio only) but nothing in the UI calls it, so a buyer could not find it; add the bullet in the change that ships the download button'],
+  [/\bexport (?:your |the )?stems\b/i, 'same — no UI surfaces the stem download'],
   [/\bstems?\s*\.?\s*zip\b/i, 'nothing in the repo produces a stems archive'],
   [/\bunlimited\b/i,
    'every plan carries a finite monthly_job_quota and checkMonthlyQuota() enforces it'],
@@ -306,9 +347,11 @@ for (const [label, row] of ROWS) {
 }
 
 test('turning export flags on cannot add a bullet', () => {
-  // The flags are false in the catalog; this proves the page does not merely
-  // happen to be quiet because of the data. If a future change re-gates copy
-  // on these flags, the paid tiers start claiming the absent features again.
+  // export_stems is true on Studio (037) and the route that honours it exists,
+  // but no UI calls that route yet, so the bullets stay flag-blind on purpose:
+  // the bullet ships with the download button, not with the API. This proves
+  // the page is quiet by construction, not because of the data. When the button
+  // lands, change features() AND this test together.
   const base = features(PLANS.pro);
   assert.deepEqual(features({ ...PLANS.pro, export_stems: true }), base);
   assert.deepEqual(features({ ...PLANS.pro, export_wav24: true }), base);

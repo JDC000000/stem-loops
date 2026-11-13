@@ -283,3 +283,75 @@ test('isCut treats a missing cut_at the same as an explicit null', async () => {
   assert.equal(isCut({ cut_at: undefined }), false);
   assert.equal(isCut({ cut_at: '2026-11-11T00:00:00.000Z' }), true);
 });
+
+// ═══ W4 overnight browser journey j1 (2026-11-12): the cut's progress poll ════
+// The default `refresh` was `window.location.reload()`, every CUT_POLL_MS while a
+// cut ran. A reload resets `cutting` to false, so when it landed mid-cut (the worker
+// had written 13 of 24 rows) the page came back showing "Loops ready · 13 loops"
+// next to "✂ Cut 11 loops", stopped polling, and never showed the other 11, although
+// the worker finished them 3 s later. It also re-fetched all six stems every 2.5 s.
+// The component now takes the refreshed rows from `refresh(jobId)` and keeps polling
+// until nothing is pending, with no reload.
+
+test('cut progress: refreshed rows arrive in place, the cut stays busy until all are cut, then the download view', async () => {
+  const { LoopResults } = await loadLoopResults();
+  const before = [loop('a', 'drums', false), loop('b', 'bass', false)];
+  const partial = [loop('a', 'drums', true), loop('b', 'bass', false)];
+  const done = [loop('a', 'drums', true), loop('b', 'bass', true)];
+  const replies = [partial, done];
+  const asked = [];
+  const deps = {
+    requestCut: async () => {},
+    refresh: async (jobId) => {
+      asked.push(jobId);
+      return replies.shift() ?? done;
+    },
+    zip: async () => {},
+  };
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopResults, { job: job(before), deps }));
+    await dom.act(() => dom.find('[data-testid="cut-loops"]').click());
+
+    await dom.advance(2600);
+    assert.equal(asked[0], '33333333-3333-4333-8333-333333333333', 'refresh must be asked for THIS job');
+    assert.equal(dom.findAll('[data-testid="loop-card"]').length, 1, 'the first cut row must appear without a reload');
+    const busy = dom.find('[data-testid="cut-loops"]');
+    assert.ok(busy, 'one loop is still pending');
+    assert.match(busy.textContent, /Cutting…/, 'a half-finished cut must still read as cutting, not offer "Cut 1 loops"');
+
+    await dom.advance(2600);
+    assert.equal(dom.findAll('[data-testid="loop-card"]').length, 2);
+    assert.equal(dom.find('[data-testid="cut-loops"]'), null);
+    assert.ok(dom.find('[data-testid="zip-loops"]'), 'all cut: the download view returns');
+    await dom.unmountAll();
+  });
+});
+
+test('cut progress: a refresh that returns the same rows keeps polling (no stall on an unchanged count)', async () => {
+  const { LoopResults } = await loadLoopResults();
+  const before = [loop('a', 'drums', false)];
+  let n = 0;
+  const deps = {
+    requestCut: async () => {},
+    refresh: async () => {
+      n += 1;
+      return n < 3 ? before : [loop('a', 'drums', true)];
+    },
+    zip: async () => {},
+  };
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopResults, { job: job(before), deps }));
+    await dom.act(() => dom.find('[data-testid="cut-loops"]').click());
+    for (let i = 0; i < 4; i++) await dom.advance(2600);
+    assert.ok(n >= 3, `refresh was asked ${n} times; an unchanged reply must not end the poll`);
+    assert.equal(dom.findAll('[data-testid="loop-card"]').length, 1);
+    await dom.unmountAll();
+  });
+});
+
+test('the default refresh reads GET /api/jobs/:id and never reloads the page', () => {
+  const src = readFileSync(join(WEB, 'src/components/LoopResults.tsx'), 'utf8');
+  const code = src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.doesNotMatch(code, /location\.reload\s*\(/, 'a reload resets the cut state mid-cut');
+  assert.match(code, /fetch\(\s*`\/api\/jobs\/\$\{jobId\}`/);
+});

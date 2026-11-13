@@ -100,7 +100,7 @@ export default function ResetPasswordRequestForm() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <h1 style={{ fontSize: 26, margin: 0, color: 'var(--text-primary)' }}>Reset password</h1>
       <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: 14 }}>
-        Enter your email and we&apos;ll send you a link to set a new password.
+        Enter your email and we’ll send you a link to set a new password.
       </p>
 
       <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

@@ -18,12 +18,12 @@ export function renderWelcome(vars: WelcomeVars = {}): RenderedEmail {
     `
       <h1 style="font-size:20px;margin:0 0 12px;">Welcome to stem-loops</h1>
       <p style="font-size:15px;line-height:1.5;margin:0 0 16px;">
-        Thanks for signing up. You can now separate any YouTube track into
-        clean stems and loop-ready bars.
+        Thanks for subscribing. Upload a song and it opens in the player: six
+        stems on faders, with a chord track to play along to.
       </p>
       <p style="font-size:15px;line-height:1.5;margin:0 0 20px;">
-        Head to your account to start a job, or check the plan options if you
-        need more throughput.
+        Your plan and monthly allowance are on your account page. To start,
+        upload a song on the stem-loops.com home page.
       </p>
       <p style="margin:0 0 24px;">
         <a href="${base}/account"
@@ -39,7 +39,7 @@ export function renderWelcome(vars: WelcomeVars = {}): RenderedEmail {
         Reply to this email if anything goes sideways &mdash; a human reads it.
       </p>
     `,
-    'Welcome to stem-loops — get started with your first stem separation.',
+    'Welcome to stem-loops. Upload a song to open it in the player.',
   );
   return { subject, html };
 }

@@ -255,7 +255,7 @@ test('subscription-changed: subject reflects plan and status', async () => {
     status: 'canceled',
     period_end: new Date('2027-02-01T00:00:00Z'),
   });
-  assert.match(canceled.subject, /Studio plan was canceled/i);
+  assert.match(canceled.subject, /Studio plan was cancelled/i);
   assert.match(canceled.html, /2027-02-01/);
 });
 

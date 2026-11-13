@@ -728,3 +728,76 @@ test('isPeriodStale: only a parseable period_end in the past is stale', () => {
   assert.equal(ent.isPeriodStale('2026-12-01T00:00:00Z', now), false);
   assert.equal(ent.isPeriodStale('2026-11-12T00:00:00Z', now), true, 'period_end <= now, as in the SQL');
 });
+
+// ---------------------------------------------------------------------------
+// 8. F2 (W2, 2026-11-12; #236 review defect 5): the ORDINARY allowance path
+//    must not overshoot the free quota.
+//
+// The gates (enforceEntitlement + checkMonthlyQuota) read a snapshot that is
+// cached for 30 s. A free user at 4/5 with no credits sends three uploads
+// inside that window: every one of them sees jobs_used = 4 and passes. The
+// uncapped bumpJobsUsed() then landed the account on 7/5 (reproduced on the
+// local stack: 3x 201, jobs_used 7). The cap must be evaluated where the
+// counter is written, under the quota lock, in the jobs-insert tx — the same
+// capped bump #236 added for the lost-last-credit fallback.
+//
+// These tests post WITHOUT resetting the cache between requests, which is the
+// whole point: it is the stale snapshot that lets them through the gates.
+// ---------------------------------------------------------------------------
+async function runInsideOneCacheWindow(n) {
+  ent._resetEntitlementCacheForTests();
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(await post());
+  return out;
+}
+
+test('F2: free 4/5, no credits, 3 uploads inside one cache window -> 201 then 402 x2; ends at 5/5, one job', async () => {
+  seed({ plan: 'free', credits: 0, jobsUsed: 4 });
+  const rs = await runInsideOneCacheWindow(3);
+  assert.deepEqual(rs.map((r) => r.status), [201, 402, 402]);
+  for (const r of rs.slice(1)) {
+    assert.equal(r.body.error_code, 'FREE_MONTHLY_QUOTA_EXHAUSTED');
+    assert.equal(r.body.message, ent.FREE_QUOTA_EXHAUSTED_MESSAGE);
+  }
+  assert.deepEqual(ledger(), { credits: 0, jobs_used: 5, jobs: 1 }, 'never past the quota');
+  assert.deepEqual(f().jobs.map((j) => j.id), [rs[0].jobId], 'a refused upload leaves no job row');
+});
+
+test('F2: free 0/5, six uploads inside one cache window -> exactly five served', async () => {
+  seed({ plan: 'free', credits: 0, jobsUsed: 0 });
+  const rs = await runInsideOneCacheWindow(6);
+  assert.deepEqual(rs.map((r) => r.status), [201, 201, 201, 201, 201, 402]);
+  assert.deepEqual(ledger(), { credits: 0, jobs_used: 5, jobs: 5 });
+});
+
+test('F2: the capped bump runs under the per-(user, period) quota lock (roll + bump)', async () => {
+  seed({ plan: 'free', credits: 0, jobsUsed: 4 });
+  await runInsideOneCacheWindow(1);
+  assert.deepEqual(quotaLocks(), [USER, USER], 'roll takes it, then the capped bump takes it');
+  const last = f().sql.filter((s) => /^INSERT INTO entitlements/.test(s));
+  assert.equal(last.length, 1);
+});
+
+test('F2: free, no entitlements row yet -> 201 and the row is seeded at 1 (capped insert still seeds)', async () => {
+  seed({ plan: 'free', credits: 0, jobsUsed: null });
+  const [r] = await run(1);
+  assert.equal(r.status, 201);
+  assert.deepEqual(ledger(), { credits: 0, jobs_used: 1, jobs: 1 });
+});
+
+test('F2: stale period at 5/5, no credits -> roll then capped bump serves it at 1/5', async () => {
+  seed({ plan: 'free', credits: 0, jobsUsed: 5, periodStart: STALE_START, periodEnd: STALE_END });
+  const rs = await runInsideOneCacheWindow(2);
+  assert.deepEqual(rs.map((r) => r.status), [201, 201]);
+  assert.deepEqual(ledger(), { credits: 0, jobs_used: 2, jobs: 2 });
+});
+
+for (const plan of ['pro', 'studio']) {
+  test(`F2 scope: ${plan} keeps the ordinary metered bump (not the free cap)`, async () => {
+    // Out of scope for this fix; pinned so the free cap is not applied to subscribers by accident.
+    seed({ plan, credits: 0, jobsUsed: 7 });
+    const rs = await runInsideOneCacheWindow(2);
+    assert.deepEqual(rs.map((r) => r.status), [201, 201]);
+    assert.equal(ledger().jobs_used, 9);
+  });
+}

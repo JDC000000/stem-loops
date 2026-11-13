@@ -60,6 +60,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginHeaders } from './helpers/same-origin.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = (p) => join(WEB, 'src', p);
@@ -321,6 +322,7 @@ const ROUTE = dataUrl(
     .replace(/from ['"]@\/lib\/youtube-url['"]/g, `from '${stub.ytUrl}'`)
     .replace(/from ['"]@\/lib\/upload['"]/g, `from '${stub.upload}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${stub.sentry}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${stub.next}'`),
 );
 const route = await import(ROUTE);
@@ -338,7 +340,7 @@ const post = async () => {
   try {
     const r = await route.POST({
       json: async () => ({ jobId: id, uploadKey: `${id}/_input.mp3`, loop_length_bars: 4 }),
-      headers: new Map(),
+      headers: sameOriginHeaders(),
     });
     return { status: r.status, body: await r.json(), jobId: id };
   } catch (err) {

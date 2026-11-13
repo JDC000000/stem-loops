@@ -317,6 +317,7 @@ const ROUTE = dataUrl(
     .replace(/from ['"]@\/lib\/billing\/credits['"]/g, `from '${CREDITS}'`)
     .replace(/from ['"]@\/lib\/billing\/rate-limit['"]/g, `from '${RATE}'`)
     .replace(/from ['"]@\/lib\/admission['"]/g, `from '${stub.admission}'`)
+    .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${dataUrl(read('lib/error-copy.ts'))}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub}'`)
     .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${stub.clientIp}'`)
     .replace(/from ['"]@\/lib\/youtube-url['"]/g, `from '${stub.ytUrl}'`)

@@ -183,7 +183,7 @@ export default function LoginForm({
             onError={() => setCaptchaToken(null)} />
         ) : (
           <p role="alert" style={{ color: 'var(--status-failed, #f66)', margin: 0, fontSize: 14 }}>
-            Sign-up is temporarily unavailable because the bot check is not configured.
+            Sign-up is unavailable right now.
             Existing users can still sign in. Please try again later.
           </p>
         ))}
@@ -227,7 +227,7 @@ export default function LoginForm({
 
       <button type="button" onClick={magicLink} disabled={busy}
         style={{ ...btn, border: '1px solid var(--border-default, #444)', background: 'transparent', color: 'var(--text-primary)' }}>
-        Send me a one-time login link
+        Email me a one-time link
       </button>
       <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>
         The one-time link signs you in to an account you already have. It does not create one.

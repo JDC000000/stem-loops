@@ -29,6 +29,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginHeaders } from './helpers/same-origin.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = join(WEB, '../..');
@@ -425,7 +426,7 @@ function routeStubs({ planCode, credits, quotaDenied = false }) {
         return { allowed: true, snapshot: snap };
       };
       export const invalidateEntitlement = () => {};
-      export const billingEnforced = () => process.env.BILLING_ENFORCED === 'true';
+      export const FREE_QUOTA_EXHAUSTED_MESSAGE = 'stub'; export const billingEnforced = () => process.env.BILLING_ENFORCED === 'true';
     `),
     credits: dataUrl(`
       globalThis.__q = globalThis.__q || [];
@@ -441,8 +442,14 @@ function routeStubs({ planCode, credits, quotaDenied = false }) {
         globalThis.__q.push({ fn: 'checkMonthlyQuota' });
         return cfg.quotaDenied ? { kind: 'quota_exceeded', resets_at: '2099-01-01T00:00:00Z' } : null;
       };
+      // Both bumpers record as 'incrementJobsUsed' (so every "a refused job must not be
+      // counted" assertion covers both); \`capped\` says which one ran (F2).
+      export const bumpJobsUsedWithinQuota = async (_c, userId, quota) => {
+        globalThis.__q.push({ fn: 'incrementJobsUsed', userId, capped: true, quota });
+        return true;
+      };
       export const bumpJobsUsed = async (_c, userId) => {
-        globalThis.__q.push({ fn: 'incrementJobsUsed', userId });
+        globalThis.__q.push({ fn: 'incrementJobsUsed', userId, capped: false });
       };
       export const rollPeriodIfStale = async (_c, userId) => {
         globalThis.__q.push({ fn: 'rollPeriodIfStale', userId });
@@ -503,18 +510,20 @@ async function loadRoute(opts) {
     .replace(/from ['"]@\/lib\/billing\/credits['"]/g, `from '${s.credits}'`)
     .replace(/from ['"]@\/lib\/billing\/rate-limit['"]/g, `from '${s.rate}'`)
     .replace(/from ['"]@\/lib\/admission['"]/g, `from '${s.admission}'`)
+    .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${dataUrl(toJs(readFileSync(join(WEB, 'src/lib/error-copy.ts'), 'utf8')))}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${s.db}'`)
     .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${s.clientIp}'`)
     .replace(/from ['"]@\/lib\/youtube-url['"]/g, `from '${s.ytUrl}'`)
     .replace(/from ['"]@\/lib\/upload['"]/g, `from '${s.upload}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${s.sentry}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${s.next}'`);
   return import(dataUrl(js) + '#' + Math.random());
 }
 
 const uploadReq = () => ({
   json: async () => ({ jobId: JOB_ID, uploadKey: `${JOB_ID}/_input.mp3`, loop_length_bars: 4 }),
-  headers: new Map(),
+  headers: sameOriginHeaders(),
 });
 
 test('route, switch OFF: free 0-credit upload returns 201, charges nothing, counts the job', async () => {
@@ -531,6 +540,9 @@ test('route, switch OFF: free 0-credit upload returns 201, charges nothing, coun
   const inc = q.filter((c) => c.fn === 'incrementJobsUsed');
   assert.equal(inc.length, 1, 'jobs_used must move exactly once — the bound is the counter');
   assert.equal(inc[0].userId, USER);
+  // F2: a free, quota-funded upload must use the CAPPED bump, with the plan's quota as the cap.
+  assert.equal(inc[0].capped, true, 'free allowance must be metered by bumpJobsUsedWithinQuota');
+  assert.ok(inc[0].quota > 0, 'the cap passed must be the plan quota');
   // And it must happen inside the insert tx, after the jobs row.
   const insertIdx = q.findIndex((c) => c.fn === 'db.tx.query' && /INSERT INTO jobs/.test(c.sql));
   assert.ok(insertIdx >= 0, 'the job must be inserted in a tx');
@@ -582,6 +594,11 @@ for (const planCode of ['pro', 'studio']) {
     assert.equal(res.status, 201);
     assert.equal(globalThis.__q.find((c) => c.fn === 'consumeCredit'), undefined);
     assert.equal(globalThis.__q.filter((c) => c.fn === 'incrementJobsUsed').length, 1);
+    assert.equal(
+      globalThis.__q.find((c) => c.fn === 'incrementJobsUsed').capped,
+      false,
+      'subscribers keep the ordinary metered bump (F2 is free-only)',
+    );
   });
 }
 

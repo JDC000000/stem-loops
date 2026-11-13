@@ -27,6 +27,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginHeaders } from './helpers/same-origin.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(WEB, 'src/app/api/jobs/route.ts');
@@ -111,7 +112,7 @@ function entitlementsStub({ planCode = 'free', enforce = { allow: true }, credit
     export const invalidateEntitlement = () => {};
     // Mirrors the real entitlements.ts export: read at CALL time, never
     // captured at module load, so a test can flip it around a single POST.
-    export const billingEnforced = () => process.env.BILLING_ENFORCED === 'true';
+    export const FREE_QUOTA_EXHAUSTED_MESSAGE = 'stub'; export const billingEnforced = () => process.env.BILLING_ENFORCED === 'true';
   `);
 }
 
@@ -138,7 +139,7 @@ function rateLimitStub({ burst = false, quota = false } = {}) {
       globalThis.__calls.push({ fn: 'checkMonthlyQuota', userId });
       return cfg.quota ? { kind: 'quota_exceeded', resets_at: '2099-01-01T00:00:00Z' } : null;
     };
-    export const bumpJobsUsed = async () => {};
+    export const bumpJobsUsedWithinQuota = async () => true; export const bumpJobsUsed = async () => {};
     export const rollPeriodIfStale = async () => {};
     export const BURST_WINDOW_MS = 60000;
     export const BURST_LIMIT_PER_USER = 3;
@@ -232,11 +233,13 @@ async function loadRoute({
     .replace(/from ['"]@\/lib\/billing\/credits['"]/g, `from '${creditsStub()}'`)
     .replace(/from ['"]@\/lib\/billing\/rate-limit['"]/g, `from '${rateLimitStub(rateLimit ?? {})}'`)
     .replace(/from ['"]@\/lib\/admission['"]/g, `from '${admissionStub(admission ?? {})}'`)
+    .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${dataUrl(toJs(readFileSync(join(WEB, 'src/lib/error-copy.ts'), 'utf8')))}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub()}'`)
     .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${clientIpStub()}'`)
     .replace(/from ['"]@\/lib\/youtube-url['"]/g, `from '${youtubeUrlStub()}'`)
     .replace(/from ['"]@\/lib\/upload['"]/g, `from '${uploadStub()}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub()}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
@@ -244,7 +247,7 @@ async function loadRoute({
 function makeReq(body) {
   return {
     json: async () => body,
-    headers: new Map(),
+    headers: sameOriginHeaders(),
   };
 }
 
@@ -439,11 +442,13 @@ async function loadRouteWithDb({
     .replace(/from ['"]@\/lib\/billing\/credits['"]/g, `from '${creditsStub()}'`)
     .replace(/from ['"]@\/lib\/billing\/rate-limit['"]/g, `from '${rateLimitStub(rateLimit ?? {})}'`)
     .replace(/from ['"]@\/lib\/admission['"]/g, `from '${admissionStub(admission ?? {})}'`)
+    .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${dataUrl(toJs(readFileSync(join(WEB, 'src/lib/error-copy.ts'), 'utf8')))}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbSource}'`)
     .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${clientIpStub()}'`)
     .replace(/from ['"]@\/lib\/youtube-url['"]/g, `from '${youtubeUrlStub()}'`)
     .replace(/from ['"]@\/lib\/upload['"]/g, `from '${uploadStub()}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub()}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
@@ -546,5 +551,27 @@ for (const plan of ['pro', 'studio']) {
     const res = await mod.POST(makeReq({ jobId: JOB_ID, uploadKey: UPLOAD_KEY, loop_length_bars: 4 }));
     assert.equal(res.status, 201);
     assert.equal(globalThis.__calls.find((c) => c.fn === 'consumeCredit'), undefined);
+  });
+}
+
+// W1 overnight QA (2026-11-12, P2): a valid-JSON non-object body (`null`, `[]`,
+// `"str"`, a number) fell through as `{}` to the link branch and came back as a
+// 403 "YouTube" refusal. It is a client error: 400 INVALID_REQUEST, and no
+// entitlement, trial, credit or quota work happens.
+for (const [label, body] of [['null', null], ['array', []], ['array with an object', [{ url: 'https://youtu.be/dQw4w9WgXcQ' }]], ['string', 'str'], ['number', 1e308], ['boolean', true]]) {
+  test(`POST /api/jobs — 400 INVALID_REQUEST for a ${label} JSON body, nothing charged`, async () => {
+    delete process.env.ALLOW_YOUTUBE_INPUT; // production posture: link input off (W1 saw the 403 here)
+    try {
+      const mod = await loadRoute({ user: USER, entitlements: { planCode: 'free' } });
+      const res = await mod.POST(makeReq(body));
+      assert.equal(res.status, 400);
+      assert.equal(res.body.error_code, 'INVALID_REQUEST');
+      const fns = globalThis.__calls.map((c) => c.fn);
+      for (const fn of ['consumeTrial', 'enforceEntitlement', 'consumeCredit', 'checkBurstLimit', 'checkMonthlyQuota']) {
+        assert.ok(!fns.includes(fn), `${fn} must not run for a non-object body (calls: ${fns.join(',')})`);
+      }
+    } finally {
+      delete process.env.ALLOW_YOUTUBE_INPUT;
+    }
   });
 }

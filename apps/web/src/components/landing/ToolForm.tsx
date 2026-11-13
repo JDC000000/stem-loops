@@ -36,6 +36,7 @@ type ErrCode = keyof typeof ERR;
 
 const STAGES = ['sending', 'downloading', 'separating', 'extracting', 'uploading'] as const;
 type Stage = (typeof STAGES)[number];
+const STAGE_TEXT: Record<Stage, string> = { sending: 'Sending', downloading: 'Fetching', separating: 'Separating', extracting: 'Finding bars', uploading: 'Saving' };
 
 type Phase =
   | { kind: 'idle' }
@@ -60,7 +61,7 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
     throw new ApiError('We couldn’t reach stem-loops. Check your connection and try again.');
   }
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(json.message ?? 'Something went wrong on our side. Please try again.');
+  if (!res.ok) throw new ApiError(json.message ?? 'Something went wrong on our end. Please try again.');
   return json as T;
 }
 
@@ -467,7 +468,7 @@ export function ToolForm() {
           <p className="error" id="stems-error" role="alert" hidden={!showStemsErr}>
             <Ic name="alert" />
             <span>
-              <strong>Pick at least one stem.</strong> Tap any stem above.
+              <strong>Pick at least one stem.</strong> Choose any stem above.
             </span>
           </p>
         </fieldset>
@@ -510,7 +511,7 @@ export function ToolForm() {
             const cls = [i < cur || i <= doneIdx ? 'is-done' : '', i === cur ? 'is-now' : ''].filter(Boolean).join(' ');
             return (
               <li key={s} data-stage={s} className={cls || undefined} hidden={s === 'sending' && !isFile}>
-                {s[0].toUpperCase() + s.slice(1)}
+                {STAGE_TEXT[s]}
               </li>
             );
           })}
@@ -536,13 +537,13 @@ export function ToolForm() {
                 <Ic name="done" />
                 Job started
               </p>
-              <p>Opening the job page. The player and your loops appear there as each stage finishes.</p>
+              <p>Opening the job page. The player opens there when the last stage finishes.</p>
               <div className="job-actions">
                 <a className="btn btn-secondary" href={`/jobs/${phase.jobId}`} ref={jobLinkRef}>
                   Open your job
                 </a>
                 <button type="button" className="btn btn-ghost" onClick={cutAnother}>
-                  Start another song
+                  Start a new song
                 </button>
               </div>
             </>

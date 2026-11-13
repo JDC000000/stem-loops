@@ -20,11 +20,11 @@ export default async function SuccessPage({
     <main style={{ minHeight: '100dvh', padding: '24px 16px', maxWidth: 560, margin: '0 auto', boxSizing: 'border-box' }}>
       {user ? (
         <>
-          <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Thanks!</h1>
+          <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Thank you</h1>
           <p style={{ color: 'var(--text-secondary)' }}>
             {credits
-              ? `Your ${credits} credits are active.`
-              : 'Your credits/subscription is active.'}
+              ? `Your ${credits} credits appear on your account once the payment is confirmed.`
+              : 'Your purchase appears on your account once the payment is confirmed.'}
           </p>
           {balance?.ok ? (
             <p style={{ color: 'var(--text-primary)', fontSize: 18 }}>
@@ -41,7 +41,7 @@ export default async function SuccessPage({
         </>
       ) : (
         <>
-          <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Thanks!</h1>
+          <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Thank you</h1>
           <p style={{ color: 'var(--text-secondary)' }}>Sign in to see your purchase.</p>
           <a href="/login?return_to=/account" style={{ color: 'var(--accent)' }}>Sign in</a>
         </>

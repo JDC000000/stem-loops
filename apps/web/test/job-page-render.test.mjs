@@ -346,7 +346,7 @@ test('stalled QUEUED job: says so, offers Check again and a way out, and shows n
   assert.match(html, /role="alert"/);
   assert.match(html, /waiting in line for more than 90 minutes/);
   assert.match(html, />Check again</);
-  assert.match(html, /href="\/"[^>]*>Try another track/);
+  assert.match(html, /href="\/"[^>]*>Start a new song/);
   assert.doesNotMatch(html, /data-testid="job-progress"/, 'a progress bar over a stalled job is the lie');
   assert.doesNotMatch(html, /Processing…/);
 });

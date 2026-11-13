@@ -59,6 +59,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { WEB, dataUrl } from './helpers/billing-harness.mjs';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginReq } from './helpers/same-origin.mjs';
 
 const toJs = (file) =>
   ts.transpileModule(readFileSync(join(WEB, file), 'utf8'), {
@@ -173,6 +174,7 @@ async function loadRoutes() {
   const supabaseAuth = dataUrl(`export const getUser = async () => null;`);
   const wire = (js) =>
     js
+      .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
       .replace(/from ['"]next\/server['"]/g, `from '${next}'`)
       .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentry}'`)
       .replace(/from ['"]@\/lib\/db['"]/g, `from '${db}'`)
@@ -361,14 +363,14 @@ test('GET /api/jobs/:id/loops: a live job is 200 with its counts (the predicate 
 });
 
 test('POST /api/jobs/:id/loops: an EXPIRED job is a 404 and queues no cut', async () => {
-  const res = await routes.loops.POST({}, { params: { id: EXPIRED } });
+  const res = await routes.loops.POST(sameOriginReq(), { params: { id: EXPIRED } });
   assert.equal(res.status, 404, `expired job answered ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
   assert.equal(res.body.error_code, 'NOT_FOUND');
   assert.deepEqual(store.loop_requests, [], 'a cut was queued against an expired job');
 });
 
 test('POST /api/jobs/:id/loops: a live job with every loop already cut is an idempotent 200', async () => {
-  const res = await routes.loops.POST({}, { params: { id: LIVE } });
+  const res = await routes.loops.POST(sameOriginReq(), { params: { id: LIVE } });
   assert.equal(res.status, 200, JSON.stringify(res.body).slice(0, 200));
   assert.equal(res.body.loops_pending, 0);
 });
@@ -381,4 +383,21 @@ test('the fake database filters on expires_at (it is not a substring dispatcher)
   assert.equal((await q('SELECT id FROM jobs WHERE id = $1')).rowCount, 1);
   await assert.rejects(() => q('SELECT id FROM jobs WHERE id = $1 AND expires_at > now() - 1'), /cannot evaluate/);
   store.unmodelled.length = 0; // that rejection was the point of the assertion above
+});
+
+// ───────────── Cache-Control on every response that carries a signed URL ─────────────
+// #185 made play-chords `private, no-store` after production showed Next's default
+// `public, max-age=0, must-revalidate` (a shared cache may STORE that and replay it).
+// GET /api/jobs/:id signs every cut loop WAV for up to the job's remaining life (≈24 h,
+// far longer than the 900 s stem URLs) and was left on the default. W1 overnight QA,
+// 2026-11-12: live response on the local stack had 24 signed loop URLs, X-Amz-Expires
+// 86276, and no Cache-Control header at all.
+test('every GET that returns a signed URL sends Cache-Control: private, no-store', async () => {
+  for (const [name, route] of [['job', routes.job], ['stems', routes.stems], ['play-chords', routes.chords]]) {
+    const res = await call(route, LIVE);
+    assert.equal(res.status, 200, `${name}: ${res.status}`);
+    assert.ok(JSON.stringify(res.body).includes('X-Amz-Signature'), `${name}: fixture should carry a signed URL`);
+    const cc = res.headers?.['Cache-Control'] ?? res.headers?.['cache-control'];
+    assert.equal(cc, 'private, no-store', `${name}: Cache-Control was ${JSON.stringify(cc)}`);
+  }
 });

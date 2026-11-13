@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginHeaders } from './helpers/same-origin.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(WEB, 'src/app/api/jobs/route.ts');
@@ -89,7 +90,7 @@ function entitlementsStub({ planCode = 'free', enforce = { allow: true } } = {})
     export const invalidateEntitlement = () => {};
     // route.ts imports this to decide whether a free upload is on the credit
     // path or the monthly-quota path. Same call-time read as the real module.
-    export const billingEnforced = () => process.env.BILLING_ENFORCED === 'true';
+    export const FREE_QUOTA_EXHAUSTED_MESSAGE = 'stub'; export const billingEnforced = () => process.env.BILLING_ENFORCED === 'true';
   `);
 }
 
@@ -116,7 +117,7 @@ function rateLimitStub({ burst = false, quota = false } = {}) {
       globalThis.__calls.push({ fn: 'checkMonthlyQuota', userId });
       return cfg.quota ? { kind: 'quota_exceeded', resets_at: '2099-01-01T00:00:00Z' } : null;
     };
-    export const bumpJobsUsed = async () => {};
+    export const bumpJobsUsedWithinQuota = async () => true; export const bumpJobsUsed = async () => {};
     export const rollPeriodIfStale = async () => {};
     export const BURST_WINDOW_MS = 60000;
     export const BURST_LIMIT_PER_USER = 3;
@@ -210,11 +211,13 @@ async function loadRoute({
     .replace(/from ['"]@\/lib\/billing\/credits['"]/g, `from '${creditsStub()}'`)
     .replace(/from ['"]@\/lib\/billing\/rate-limit['"]/g, `from '${rateLimitStub(rateLimit ?? {})}'`)
     .replace(/from ['"]@\/lib\/admission['"]/g, `from '${admissionStub(admission ?? {})}'`)
+    .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${dataUrl(toJs(readFileSync(join(WEB, 'src/lib/error-copy.ts'), 'utf8')))}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub()}'`)
     .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${clientIpStub()}'`)
     .replace(/from ['"]@\/lib\/youtube-url['"]/g, `from '${youtubeUrlStub()}'`)
     .replace(/from ['"]@\/lib\/upload['"]/g, `from '${uploadStub()}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub()}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
@@ -222,7 +225,7 @@ async function loadRoute({
 function makeReq(body) {
   return {
     json: async () => body,
-    headers: new Map(),
+    headers: sameOriginHeaders(),
   };
 }
 

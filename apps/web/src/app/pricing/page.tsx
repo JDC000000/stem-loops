@@ -138,8 +138,8 @@ export default async function PricingPage() {
     <main style={{ minHeight: '100dvh', padding: '24px 16px', maxWidth: 960, margin: '0 auto', boxSizing: 'border-box' }}>
       <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Pricing</h1>
       <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>
-        Every plan converts tracks to play-along and downloads loops as 24-bit WAV. Plans differ in
-        how many tracks you can convert each month.
+        Every plan opens your tracks in the player and lets you download loops as 24-bit WAV. Plans differ in
+        how many tracks you can add each month.
       </p>
       {degraded && (
         <p role="status" style={{ color: 'var(--text-muted)', fontSize: 13 }}>
@@ -179,7 +179,7 @@ export default async function PricingPage() {
       </div>
 
       <h2 style={{ fontSize: 22, marginTop: 32, color: 'var(--text-primary)' }}>Credits</h2>
-      <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>One-time packs. Credits never expire.</p>
+      <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>One-time packs. On the Free plan, each credit covers one uploaded track. Credits never expire.</p>
       <CreditPackCheckout returnTo="/pricing">
       <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(min(200px, 100%), 1fr))' }}>
         {packs.map((c) => (
@@ -188,14 +188,11 @@ export default async function PricingPage() {
             <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>
               {priceCad(c.price_cad_cents)}
             </div>
-            <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-              Never expires · one-time purchase
-            </div>
             {user ? (
-              <PackBuyButton packCode={c.pack_code} label="Buy Credits" />
+              <PackBuyButton packCode={c.pack_code} label="Buy credits" />
             ) : (
               <a href="/login?return_to=/pricing" style={{ minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: 'var(--btn-primary-bg, var(--accent))', color: 'var(--btn-primary-text, #000)', textDecoration: 'none', fontWeight: 600 }}>
-                Buy Credits
+                Buy credits
               </a>
             )}
           </section>

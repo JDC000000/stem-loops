@@ -204,10 +204,23 @@ test('completedJobStatus unavailable-too-long: tells the user the 5 minute limit
   assert.equal(s.showTimeline, false);
 });
 
-test('completedJobStatus unavailable-provider-failed: says detection failed, never LOADING', () => {
+test('completedJobStatus unavailable-provider-failed: says detection did not return, never LOADING', () => {
   const s = completedJobStatus({ status: 'unavailable', reason: 'provider_failed' });
   assert.equal(s.pill, 'UNAVAILABLE');
-  assert.match(s.message, /failed/);
+  assert.match(s.message, /didn\u2019t return a result/);
+});
+
+// W4 overnight browser journey j3 (2026-11-12): with KLANGIO_MONTHLY_CAP reached, the
+// worker (602d0ce) writes a `provider_failed` tombstone without sending any request, and
+// the player said "Chord detection failed for this track." Klangio 5xx / FAILED / junk
+// bodies land on the same reason (W3 E01-E05). None of those is about the song, and
+// blaming the track invites a re-upload that spends another credit for the same result.
+test('provider_failed copy does not pin the failure on the track, and does not invite a re-upload', () => {
+  const m = unavailableMessage('provider_failed');
+  assert.doesNotMatch(m, /failed for this track/i);
+  assert.match(m, /rather than your song/);
+  assert.match(m, /uploading it again won\u2019t help/);
+  assert.match(m, /stems and loops are unaffected/);
 });
 
 test('unavailableMessage: every reason has distinct non-empty copy; unknown does not guess a cause', () => {

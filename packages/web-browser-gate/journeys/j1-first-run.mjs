@@ -103,6 +103,11 @@ export default async function run() {
     const cutOk = await cards.first().waitFor({ state: 'visible', timeout: 180_000 }).then(() => true, () => false);
     const cutErr = await page.locator('[data-testid="cut-error"]').innerText().catch(() => '');
     j.check('loops appear after the cut', cutOk, cutOk ? `${await cards.count()} loop cards` : `none; error="${cutErr}"`);
+    // Every mapped loop must arrive, and the page must leave the "cut" state on its own.
+    const total = Number((await page.locator('h1:has-text("Loops")').locator('xpath=..').innerText().catch(() => '')).match(/(\d+) loops/)?.[1] ?? 0) || null;
+    const allIn = await page.locator('[data-testid="zip-loops"]').waitFor({ timeout: 90_000 }).then(() => true, () => false);
+    const header = (await page.locator('.loop-results header').innerText().catch(() => '')).replace(/\s+/g, ' ');
+    j.check('the whole cut lands without a manual reload (download view returns, no "Cut N loops" left)', allIn, `${await cards.count()} cards; header="${header}"`);
     await j.shot(page, 'loops');
 
     const playBtn = cards.first().locator('.play-btn');
@@ -118,11 +123,17 @@ export default async function run() {
     j.check('loop WAV link returns a RIFF/WAVE file', resp?.status() === 200 && body.subarray(0, 4).toString() === 'RIFF' && body.subarray(8, 12).toString() === 'WAVE', `status=${resp?.status()} bytes=${body.length}`);
     const dl = await Promise.all([page.waitForEvent('download', { timeout: 15_000 }), a.click()]).then(([d]) => d, () => null);
     j.check('clicking "⬇ WAV" starts a browser download', !!dl, dl ? dl.suggestedFilename() : 'no download event');
+    j.check('the job page is still there after the WAV click (no navigation away)', /\/jobs\//.test(page.url()), page.url().slice(0, 120));
 
     const zip = page.locator('[data-testid="zip-loops"]');
     const zt0 = Date.now();
     const zdl = await Promise.all([page.waitForEvent('download', { timeout: 120_000 }), zip.click()]).then(([d]) => d, () => null);
-    j.check('"Download All (ZIP)" produces a .zip', !!zdl && /\.zip$/.test(zdl.suggestedFilename()), zdl ? `${zdl.suggestedFilename()} after ${Math.round((Date.now() - zt0) / 1000)} s` : `no download in 120 s; button="${await zip.innerText().catch(() => '')}"`);
+    j.check('"Download All (ZIP)" produces a .zip', !!zdl && /\.zip$/.test(zdl.suggestedFilename()), zdl ? `${zdl.suggestedFilename()} after ${Math.round((Date.now() - zt0) / 1000)} s` : `no download in 120 s; url=${page.url().slice(0, 80)} zipButtons=${await zip.count()} button="${await zip.innerText({ timeout: 2000 }).catch(() => '')}"`);
+    if (!zdl) await j.shot(page, 'zip-failed');
+    // the account page lists this job; a tester recognises it by its file name
+    await page.goto('/account');
+    const recent = (await page.locator('section[aria-label="Recent jobs"]').innerText().catch(() => '')).replace(/\s+/g, ' ');
+    j.check('account "Recent jobs" lists the upload by its file name (not its id)', recent.includes('w4-song') || /\.mp3/.test(recent), recent.slice(0, 200));
     j.note(`job ${jobId}, user ${user.user_id}`);
   } catch (e) {
     j.step('journey aborted', 'fail', String(e).slice(0, 400));

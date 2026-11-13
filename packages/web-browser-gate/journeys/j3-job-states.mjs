@@ -85,14 +85,29 @@ export default async function run() {
     await j.shot(page, 'failed-separation');
     stack('ctl', JSON.stringify({ status: 'succeeded' }));
 
+    // ── partial: provider returns 5 of 6 stems ──────────────────────────────
+    stack('ctl', JSON.stringify({ output: 'five' }));
+    await uploadViaLanding(page, j);
+    const pReady = await page.locator('[data-testid="player"][data-phase="ready"]').waitFor({ timeout: 180_000 }).then(() => true, () => false);
+    const degraded = await page.locator('[data-testid="player-degraded"]').innerText().catch(() => '');
+    const chans = await page.locator('section[aria-label="Stem mixer"] input[type="range"]:not([disabled])').count();
+    j.check('partial (5 stems): player loads, says a stem is missing, 5 faders live', pReady && degraded.length > 0 && chans === 5, `ready=${pReady} live faders=${chans} notice="${degraded}"`);
+    await j.shot(page, 'partial-five-stems');
+    stack('ctl', JSON.stringify({ output: 'fixed' }));
+
     // ── Klangio at cap: tombstone copy ──────────────────────────────────────
     stack('worker', 'KLANGIO_MONTHLY_CAP=1');
     const cid = await uploadViaLanding(page, j);
     const done = await page.locator('[data-testid="player"]').waitFor({ timeout: 180_000 }).then(() => true, () => false);
-    const msg = await page.locator('[data-testid="completed-job-message"]').innerText({ timeout: 30_000 }).catch(() => '');
+    // the message starts as "Loading chords…"; wait for the settled state
+    await page.waitForFunction(() => {
+      const t = document.querySelector('[data-testid="completed-job-message"]')?.textContent ?? '';
+      return t && !/Loading chords/.test(t);
+    }, null, { timeout: 30_000 }).catch(() => {});
+    const msg = await page.locator('[data-testid="completed-job-message"]').innerText().catch(() => '');
     j.check('at cap: job still finishes with a player', done, cid);
     j.step('at cap: chord-area copy', 'info', msg);
-    j.check('at cap: chord copy does not blame the track ("failed for this track")', !/failed for this track/i.test(msg), msg);
+    j.check('at cap: chord copy does not blame the track ("failed for this track")', msg.length > 0 && !/Loading chords/.test(msg) && !/failed for this track/i.test(msg), msg || '(no message)');
     await j.shot(page, 'klangio-at-cap');
   } catch (e) {
     j.step('journey aborted', 'fail', String(e).slice(0, 400));

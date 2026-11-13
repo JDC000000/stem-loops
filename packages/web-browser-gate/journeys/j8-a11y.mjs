@@ -66,7 +66,7 @@ export default async function run() {
     // keyboard-only file pick: Enter on "Choose a file" opens the native chooser
     await page.locator('#file-btn').focus();
     const chooser = await Promise.all([page.waitForEvent('filechooser', { timeout: 15_000 }), page.keyboard.press('Enter')]).then(([c]) => c, () => null);
-    j.check('upload form: Enter on "Choose a file" opens the file chooser', !!chooser, '');
+    j.check('upload form: Enter on "Choose a file" opens the file chooser', !!chooser, chooser ? '' : `no chooser; focused=${await page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName)}`);
     if (chooser) await chooser.setFiles(process.env.JOURNEY_AUDIO);
     else await page.locator('#file').setInputFiles(process.env.JOURNEY_AUDIO); // keep going: the rest of the journey does not depend on the chooser
     await page.waitForFunction(() => document.querySelector('#cta-label')?.textContent === 'Separate and play', null, { timeout: 15_000 });

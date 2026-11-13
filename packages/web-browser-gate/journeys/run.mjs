@@ -51,6 +51,9 @@ for (const id of selected) {
   } catch (e) {
     results.push({ id, verdict: 'FAIL', steps: [{ name: 'crashed', status: 'fail', detail: String(e) }] });
   }
+  // A fresh browser per journey: after j7's touch/mobile contexts, j8's file-chooser
+  // interception stopped firing in the same browser (reproduced j7→j8; j8 alone passes).
+  await closeBrowser();
 }
 await closeBrowser();
 

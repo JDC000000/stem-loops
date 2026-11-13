@@ -4,16 +4,24 @@ import { getUser } from '@/lib/auth/supabase';
 import { db } from '@/lib/db';
 import { serverGet, type CreditsBalance, type Entitlements } from '@/lib/billing/server-fetch';
 import BillingButton from '@/components/BillingButton';
+import { jobLabel } from '@/lib/job-label';
 
 export const metadata: Metadata = { title: 'Account', robots: { index: false, follow: false } };
 export const dynamic = 'force-dynamic';
 
-type JobRow = { id: string; title: string | null; status: string; created_at: string };
+type JobRow = {
+  id: string;
+  title: string | null;
+  original_filename: string | null;
+  youtube_url: string | null;
+  status: string;
+  created_at: string;
+};
 
 async function recentJobs(userId: string): Promise<JobRow[] | null> {
   try {
     const r = await db.query(
-      `SELECT id, title, status, created_at FROM public.jobs
+      `SELECT id, title, original_filename, youtube_url, status, created_at FROM public.jobs
         WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20`,
       [userId],
     );
@@ -121,7 +129,7 @@ export default async function AccountPage() {
             {jobs.map((j) => (
               <li key={j.id}>
                 <a href={`/jobs/${j.id}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, minHeight: 44, alignItems: 'center', textDecoration: 'none', color: 'var(--text-primary)' }}>
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{j.title || j.id}</span>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{jobLabel(j)}</span>
                   <span style={{ ...muted, whiteSpace: 'nowrap' }}>{j.status} · {fmt(j.created_at)}</span>
                 </a>
               </li>

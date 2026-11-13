@@ -569,10 +569,11 @@ async function loadAdmission({ rowCount = 1 } = {}) {
       return { rows: [], rowCount: ${rowCount} };
     } };
   `);
-  const js = toJs(readFileSync(ADMISSION, 'utf8')).replace(
-    /from ['"]@\/lib\/db['"]/g,
-    `from '${dbRec}'`,
-  );
+  // admission.ts imports the AT_CAPACITY copy from error-copy.ts (B8); load the real map.
+  const errorCopy = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/error-copy.ts'), 'utf8')));
+  const js = toJs(readFileSync(ADMISSION, 'utf8'))
+    .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbRec}'`)
+    .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${errorCopy}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
 

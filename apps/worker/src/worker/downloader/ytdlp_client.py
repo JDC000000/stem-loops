@@ -142,6 +142,39 @@ def _reject_if_live(youtube_url: str, proxy: str) -> None:
         raise LiveStreamNotSupportedError("is_live=True")
 
 
+def probe_duration_sec(youtube_url: str, proxy: str | None = None) -> float | None:
+    """Length in seconds from yt-dlp's METADATA, downloading nothing.
+
+    Same ``--simulate`` mechanism ``_reject_if_live`` above already uses, and cheap for the
+    same reason: under SABR it is the MEDIA request that 403s from a datacenter IP while the
+    metadata resolve still succeeds (see yt-session/fly.toml), so a duration reading is
+    usually available even where a byte fetch is not.
+
+    Returns ``None`` when the length cannot be read -- probe error, timeout, yt-dlp's ``NA``,
+    or a non-finite/non-positive value. ``None`` means UNKNOWN and must never be treated as
+    "short enough": the enforcing measurement is taken on the staged file
+    (``pipeline._enforce_link_duration``), on bytes we hold.
+    """
+    cmd = [sys.executable, "-m", "yt_dlp", "--simulate", "--no-warnings", "--print", "duration"]
+    if proxy is None:
+        proxy = _sticky_proxy_url()
+    if proxy:
+        cmd += ["--proxy", proxy]
+    cmd.append(youtube_url)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        return None
+    if r.returncode != 0:
+        return None
+    lines = r.stdout.strip().splitlines()
+    try:
+        value = float(lines[0].strip()) if lines else 0.0
+    except ValueError:
+        return None
+    return value if 0 < value < float("inf") else None
+
+
 def fetch_audio_file(youtube_url: str) -> str:
     """Download audio via yt-dlp; return a local .wav path or raise a typed error."""
     # One sticky-session proxy string for this WHOLE attempt (live-check + the actual

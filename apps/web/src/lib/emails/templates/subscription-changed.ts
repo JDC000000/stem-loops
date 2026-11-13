@@ -13,6 +13,15 @@ export interface SubscriptionChangedVars {
   siteBase?: string;
 }
 
+const STATUS_LABEL: Record<string, string> = {
+  active: 'Active',
+  trialing: 'Trial',
+  past_due: 'Payment overdue',
+  canceled: 'Cancelled',
+  incomplete: 'Payment incomplete',
+  paused: 'Paused',
+};
+
 function planLabel(code: PlanCode): string {
   switch (code) {
     case 'pro':
@@ -45,8 +54,8 @@ function statusHeadline(status: SubscriptionStatus, plan: string, periodEnd: str
       };
     case 'canceled':
       return {
-        subject: `Your stem-loops ${plan} plan was canceled`,
-        lead: `Your ${plan} plan has been canceled. You'll keep access until ${periodEnd || 'the end of your paid period'}.`,
+        subject: `Your stem-loops ${plan} plan was cancelled`,
+        lead: `Your ${plan} plan has been cancelled. You'll keep access until ${periodEnd || 'the end of your paid period'}.`,
       };
     case 'incomplete':
       // Stripe's 'unpaid' and 'incomplete_expired' are remapped to
@@ -65,7 +74,7 @@ function statusHeadline(status: SubscriptionStatus, plan: string, periodEnd: str
     default:
       return {
         subject: `Your stem-loops ${plan} plan was updated`,
-        lead: `We've updated your ${plan} plan. Current status: ${status}.`,
+        lead: `We've updated your ${plan} plan. Current status: ${STATUS_LABEL[status] ?? status}.`,
       };
   }
 }
@@ -88,7 +97,7 @@ export function renderSubscriptionChanged(vars: SubscriptionChangedVars): Render
         </tr>
         <tr>
           <td style="color:#666;padding:4px 16px 4px 0;">Status</td>
-          <td style="padding:4px 0;"><strong>${escapeHtml(vars.status)}</strong></td>
+          <td style="padding:4px 0;"><strong>${escapeHtml(STATUS_LABEL[vars.status] ?? vars.status)}</strong></td>
         </tr>
         ${
           periodEnd
@@ -109,7 +118,7 @@ export function renderSubscriptionChanged(vars: SubscriptionChangedVars): Render
         Questions? Reply to this email.
       </p>
     `,
-    `${plan} plan status: ${vars.status}`,
+    `${plan} plan: ${STATUS_LABEL[vars.status] ?? vars.status}`,
   );
   return { subject, html };
 }

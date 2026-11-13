@@ -90,7 +90,7 @@ const BANDS = [
   {
     name: 'Section loop',
     art: <Transport />,
-    text: 'Mark a verse, a chorus or a stretch you choose, and it repeats until you have it.',
+    text: 'Pick a detected section, such as a verse or a chorus, and it repeats until you have it.',
   },
 ];
 

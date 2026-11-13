@@ -84,7 +84,7 @@ export default function ResetPasswordRequestForm() {
         <h1 style={{ fontSize: 26, margin: 0, color: 'var(--text-primary)' }}>Check your email</h1>
         <p role="status" style={{ color: 'var(--text-secondary)', margin: 0 }}>
           If an account exists for <strong>{email}</strong>, a reset link is on its way.
-          Open the link on this device to continue.
+          Open the link in this browser to continue.
         </p>
         <p style={{ color: 'var(--text-muted)', fontSize: 14, margin: 0 }}>
           Can&apos;t find the email? Check your spam folder.

@@ -12,6 +12,13 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
   UPLOAD_FAILED: { headline: "We separated your stems but couldn't save them.", action: 'Please retry.' },
   RATE_LIMITED: { headline: "We're busy or you've hit the limit.", action: 'Wait a moment and try again.' },
   INTERNAL_ERROR: { headline: "Something went wrong on our end. We've logged it.", action: 'Please try again.' },
+  // B8: the GLOBAL in-flight cap (admission.ts checkGlobalCapacity). Distinct from
+  // RATE_LIMITED because it is not about this visitor at all — other people's songs fill
+  // the queue. Returned as 503 + Retry-After: 120, which is what "a few minutes" means.
+  AT_CAPACITY: {
+    headline: "We're at capacity right now.",
+    action: "It's not something you did — we're working through other people's songs. Please try again in a few minutes.",
+  },
 
   // V3 billing codes (TSD §3.6)
   CHECKOUT_FAILED: {
@@ -35,20 +42,30 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
     action: 'Head back to pricing and pick a plan.',
   },
   TRIAL_EXHAUSTED: {
-    headline: "You've used all 3 songs in your free trial.",
+    headline: "You've used all the tracks in your free trial.",
     action: 'Pick a plan or buy a credit pack to keep going.',
   },
   CREDIT_BALANCE_INSUFFICIENT: {
     headline: "You're out of credits.",
-    action: 'Buy a pack of credits to process more songs.',
+    action: 'Buy a credit pack to add more tracks.',
   },
   FREE_MONTHLY_QUOTA_EXHAUSTED: {
-    headline: "You've used all your free songs this month.",
+    headline: "You've used all your free tracks this month.",
     action: 'Your allowance resets at the start of next month.',
   },
+  // The action line used to read "Paste a link into the free tier (3/day)".
+  // There has never been a 3/day limit anywhere in the system: the free
+  // allowance is plans.monthly_job_quota, enforced per CALENDAR MONTH by
+  // checkMonthlyQuota(), and migration 034 sets it to 5. A number and a period
+  // that are both wrong are worse than no number, and any figure hardcoded
+  // here goes stale the next time the catalog is re-priced — so this copy now
+  // names the tier and the place the real number is shown, and nothing else.
   PAID_LINK_INGEST_DISALLOWED: {
-    headline: 'Credits and Pro only work with files you upload.',
-    action: 'Paste a link into the free tier (3/day) instead, or upload your file.',
+    // Also named Studio: enforceEntitlement() throws this for plan_code 'pro'
+    // AND 'studio', but the headline listed only Pro, so a Studio subscriber
+    // hit an error that did not mention their plan.
+    headline: 'Credits, Pro and Studio only work with files you upload.',
+    action: 'Upload the audio file instead. YouTube links work on the Free plan.',
   },
   PROMO_INVALID: {
     headline: "That promo code isn't valid.",
@@ -61,3 +78,12 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
 };
 
 export const DEFAULT_ERROR = ERROR_COPY.INTERNAL_ERROR;
+
+/** The sentence a user sees for an entitlement refusal. Never the thrown message: that can be a bare code or database text. */
+export function entitlementMessage(code: string, detail?: string): string {
+  if (code === 'ENTITLEMENT_UNAVAILABLE' && detail === 'quota exhausted') {
+    return 'You’ve used this month’s allowance on your plan. Your account page shows when the period ends.';
+  }
+  const c = ERROR_COPY[code] ?? DEFAULT_ERROR;
+  return c.action ? `${c.headline} ${c.action}` : c.headline;
+}

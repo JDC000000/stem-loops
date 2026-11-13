@@ -4,10 +4,12 @@ The route itself lives in apps/web (Next.js); this test exercises the SQL
 contract the route depends on against a real Postgres. The route uses
 two gates, each checked against a real DB:
 
-  (A) Monthly quota: entitlements.jobs_used vs plans.monthly_job_quota,
-      with plans.monthly_job_quota >= 100000 treated as unlimited
-      (apps/web/src/lib/billing/rate-limit.ts UNLIMITED_QUOTA_SENTINEL,
-      which must match migration 014 Pro/Studio seed values).
+  (A) Monthly quota: entitlements.jobs_used vs plans.monthly_job_quota.
+      rate-limit.ts still carries UNLIMITED_QUOTA_SENTINEL (100000) and
+      short-circuits at or above it, but as of migration 034 NO PLAN
+      REACHES IT -- free 5, pro 50, studio 150 -- so every plan is really
+      metered and the sentinel branch is unreachable. These tests assert
+      that, rather than the "pro is unlimited" invariant they used to.
 
   (B) Per-user burst: at most 3 rows in public.usage_events with
       kind='job_start_attempt' per 60s window per user_id.
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -38,9 +41,34 @@ if DB and not any(h in DB for h in ("127.0.0.1", "localhost")):
     )
 
 
-# Must match UNLIMITED_QUOTA_SENTINEL in apps/web/src/lib/billing/rate-limit.ts
-# and the Pro/Studio quota value in migration 014.
+# Must match UNLIMITED_QUOTA_SENTINEL in apps/web/src/lib/billing/rate-limit.ts.
+# Retained because the route still applies it, but migration 034 put every plan
+# BELOW it on purpose: an unmetered paid tier is an open-ended cost liability.
+# test_plan_quotas_match_migration_034 asserts it stays unreachable.
 UNLIMITED = 100_000
+
+# The catalog migration 034_v3_pricing_model_truth.sql installs. Jon's approved
+# 2026-11-11 model, metered on tracks converted to play-along per month.
+APPROVED_QUOTAS = {"free": 5, "pro": 50, "studio": 150}
+
+# export_stems as migration 037_v3_studio_stem_export.sql leaves it (on top of
+# 034): Studio only. Jon's 2026-11-12 tiering -- $12 = stem export, $4.99 = none.
+APPROVED_EXPORT_STEMS = {"free": False, "pro": False, "studio": True}
+
+# The one route that delivers export_stems. A plan may advertise the flag only
+# while this file exists AND gates on it (test_no_plan_advertises_an_unbuilt_export).
+DOWNLOAD_ROUTE = (
+    Path(__file__).resolve().parents[3]
+    / "apps"
+    / "web"
+    / "src"
+    / "app"
+    / "api"
+    / "jobs"
+    / "[id]"
+    / "download"
+    / "route.ts"
+)
 
 # Must match BURST_LIMIT_PER_USER / BURST_WINDOW_MS in rate-limit.ts.
 BURST_LIMIT = 3
@@ -109,6 +137,22 @@ WHERE e.user_id = %s
 """
 
 
+def _plan_quota(conn: Any, code: str) -> int:
+    """The plan's real quota, read from the DB the migrations built.
+
+    The boundary tests below derive their jobs_used from this rather than
+    hardcoding 89/90, which is what broke them when the catalog was
+    re-priced. The VALUE itself is pinned separately, against literals, in
+    test_plan_quotas_match_migration_034 -- so this is not circular: one
+    test asserts what the number is, the others assert how the gate behaves
+    at its boundary.
+    """
+    cur = conn.execute("SELECT monthly_job_quota FROM public.plans WHERE code = %s", (code,))
+    row = cur.fetchone()
+    assert row is not None, f"plan {code} missing from public.plans"
+    return int(row[0])
+
+
 def _is_over_quota(conn: Any, user_id: uuid.UUID) -> bool:
     cur = conn.execute(QUOTA_DENIED_SQL, (UNLIMITED, user_id))
     row = cur.fetchone()
@@ -120,24 +164,26 @@ def _is_over_quota(conn: Any, user_id: uuid.UUID) -> bool:
 
 
 def test_free_quota_at_zero_allowed(conn):
-    """0/90 → not over quota; the route allows the insert."""
+    """0 used → not over quota; the route allows the insert."""
     user_id = _insert_auth_user(conn, "test-ratelimit-q0@example.com")
     _set_entitlement(conn, user_id, "free", jobs_used=0)
     assert _is_over_quota(conn, user_id) is False
 
 
 def test_free_quota_one_below_cap_allowed(conn):
-    """89/90 → still under quota; route allows the 90th insert."""
-    user_id = _insert_auth_user(conn, "test-ratelimit-q89@example.com")
-    _set_entitlement(conn, user_id, "free", jobs_used=89)
+    """quota-1 used → still under; route allows the last insert."""
+    quota = _plan_quota(conn, "free")
+    user_id = _insert_auth_user(conn, "test-ratelimit-qunder@example.com")
+    _set_entitlement(conn, user_id, "free", jobs_used=quota - 1)
     assert _is_over_quota(conn, user_id) is False
 
 
 def test_free_quota_at_cap_denied(conn):
-    """90/90 → over quota; route returns 402 quota_exceeded. resets_at is
-    the user's period_end (ISO8601 in the JSON body)."""
-    user_id = _insert_auth_user(conn, "test-ratelimit-q90@example.com")
-    _set_entitlement(conn, user_id, "free", jobs_used=90)
+    """quota/quota → over quota; route returns 402 quota_exceeded. resets_at
+    is the user's period_end (ISO8601 in the JSON body)."""
+    quota = _plan_quota(conn, "free")
+    user_id = _insert_auth_user(conn, "test-ratelimit-qcap@example.com")
+    _set_entitlement(conn, user_id, "free", jobs_used=quota)
     assert _is_over_quota(conn, user_id) is True
     # resets_at comes from entitlements.period_end — must be present.
     cur = conn.execute(
@@ -148,29 +194,88 @@ def test_free_quota_at_cap_denied(conn):
     assert row is not None and row[0] is not None
 
 
-def test_unlimited_plan_never_hits_quota(conn):
-    """Pro/Studio sentinel (100000) → the gate skips, however high jobs_used
-    climbs. Verifies the route won't 402 a paying user."""
-    user_id = _insert_auth_user(conn, "test-ratelimit-unlim@example.com")
-    _set_entitlement(conn, user_id, "pro", jobs_used=99_999)
-    # Plan quota IS the sentinel, so monthly_job_quota < UNLIMITED is FALSE
-    # and the gate returns FALSE regardless of jobs_used.
-    assert _is_over_quota(conn, user_id) is False
-    # Push well past — still allowed.
-    _set_entitlement(conn, user_id, "pro", jobs_used=UNLIMITED + 10)
-    assert _is_over_quota(conn, user_id) is False
+@pytest.mark.parametrize("code", ["pro", "studio"])
+def test_paid_plans_are_really_metered(conn, code):
+    """The invariant this REPLACES was "Pro/Studio never hit quota", which
+    held because both sat on the 100000 sentinel. Migration 034 retired that:
+    an unmetered paid tier is an open-ended cost liability against a real
+    per-job Replicate spend. So the paid gate must now actually bite at the
+    plan's own boundary -- allowed one below, denied at it."""
+    quota = _plan_quota(conn, code)
+    assert quota < UNLIMITED, f"{code} is back on the unlimited sentinel"
+    user_id = _insert_auth_user(conn, f"test-ratelimit-{code}@example.com")
+    _set_entitlement(conn, user_id, code, jobs_used=quota - 1)
+    assert _is_over_quota(conn, user_id) is False, f"{code} denied below its quota"
+    _set_entitlement(conn, user_id, code, jobs_used=quota)
+    assert _is_over_quota(conn, user_id) is True, f"{code} not gated AT its quota"
 
 
-def test_pro_plan_quota_matches_seed(conn):
-    """Guard against a future migration changing Pro/Studio off-sentinel —
-    that would silently gate every Pro user at a low number."""
+def test_plan_quotas_match_migration_034(conn):
+    """Pins the approved catalog against literals, so a migration that moves a
+    quota has to come here and say so. This is the test that makes the
+    boundary tests above non-circular: they read the quota from the DB, this
+    one asserts what that number must be.
+
+    It also guards the direction the OLD version of this test guarded, from
+    the other side: a future migration putting a plan back at or above the
+    sentinel would make that plan silently unmetered again."""
     cur = conn.execute(
         "SELECT code, monthly_job_quota FROM public.plans "
-        "WHERE code IN ('pro', 'studio') ORDER BY code"
+        "WHERE code IN ('free', 'pro', 'studio') ORDER BY code"
     )
     rows = dict(cur.fetchall())
-    assert rows["pro"] >= UNLIMITED, "pro below the unlimited sentinel"
-    assert rows["studio"] >= UNLIMITED, "studio below the unlimited sentinel"
+    assert (
+        rows == APPROVED_QUOTAS
+    ), f"plan quotas drifted from the approved model: {rows} != {APPROVED_QUOTAS}"
+    for code, quota in rows.items():
+        assert 0 < quota < UNLIMITED, f"{code} quota {quota} is not a real bound"
+
+
+def test_no_plan_advertises_an_unbuilt_export(conn):
+    """A plan may advertise an export only if a gated route enforces it.
+
+    export_stems: migration 037 sets it true on studio ONLY (Jon, 2026-11-12:
+    the $12 tier gets stem export, free and $4.99 pro do not). That is allowed
+    because GET /api/jobs/[id]/download exists and refuses to sign the stem WAV
+    unless enforceEntitlement('export_stems', ...) allows it. The route check
+    below reads the source, so deleting the route or dropping its gate while a
+    plan still advertises the flag turns this red -- which is the invariant,
+    rather than "every flag false", which stopped being true with 037.
+
+    export_wav24: false on every plan (034). 24-bit WAV loops are available on
+    every tier, so the flag can only overstate what a paid plan adds."""
+    cur = conn.execute("SELECT code, export_stems, export_wav24 FROM public.plans ORDER BY code")
+    rows = {code: (stems, wav24) for code, stems, wav24 in cur.fetchall()}
+    stems_by_plan = {code: rows.get(code, (None, None))[0] for code in APPROVED_EXPORT_STEMS}
+    assert (
+        stems_by_plan == APPROVED_EXPORT_STEMS
+    ), f"export_stems drifted from the approved tiering: {stems_by_plan} != {APPROVED_EXPORT_STEMS}"
+    for code, (_stems, wav24) in rows.items():
+        assert wav24 is False, f"{code}.export_wav24 is true but every tier gets 24-bit WAV"
+
+    advertised = sorted(code for code, (stems, _) in rows.items() if stems)
+    if advertised:
+        assert DOWNLOAD_ROUTE.is_file(), (
+            f"{advertised} advertise export_stems but the gated download route "
+            f"{DOWNLOAD_ROUTE} does not exist"
+        )
+        src = DOWNLOAD_ROUTE.read_text(encoding="utf-8")
+        assert "enforceEntitlement('export_stems'" in src, (
+            f"{advertised} advertise export_stems but {DOWNLOAD_ROUTE.name} does not call "
+            "enforceEntitlement('export_stems', ...): the capability would be ungated"
+        )
+
+
+def test_no_plan_lists_an_unimplemented_service(conn):
+    """Spotify and SoundCloud have no downloader, route or error code anywhere
+    in the repo. They were on the free plan row, so /pricing advertised both.
+    Migration 034 removed them; this stops them coming back."""
+    cur = conn.execute("SELECT code, services FROM public.plans ORDER BY code")
+    for code, services in cur.fetchall():
+        for bad in ("spotify", "soundcloud"):
+            assert bad not in (
+                services or []
+            ), f"{code}.services lists {bad!r}, which has no implementation"
 
 
 # -- (B) Burst limit -----------------------------------------------------

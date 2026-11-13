@@ -82,6 +82,12 @@ async function billingButtonStub() {
   `);
 }
 
+// The real src/lib/pricing-copy.ts, transpiled to a data URL. Not a stub: it has
+// no imports of its own, so it needs nothing rewritten.
+function pricingCopyModule() {
+  return dataUrl(toJs(readFileSync(join(WEB, 'src/lib/pricing-copy.ts'), 'utf8')));
+}
+
 async function loadPricing({ user = null, plans = null, packs = null, throwPlans = false, throwPacks = false } = {}) {
   globalThis.__pricingQueries = [];
   // Resolve `react` to its absolute file:// URL so the data-URL module can
@@ -95,7 +101,13 @@ async function loadPricing({ user = null, plans = null, packs = null, throwPlans
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub({ plans, packs, throwPlans, throwPacks })}'`)
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
     .replace(/from ['"]@\/lib\/trial['"]/g, `from '${trialStub()}'`)
-    .replace(/from ['"]@\/components\/BillingButton['"]/g, `from '${await billingButtonStub()}'`);
+    .replace(/from ['"]@\/components\/BillingButton['"]/g, `from '${await billingButtonStub()}'`)
+    // The feature bullets moved to src/lib/pricing-copy.ts: a Next.js App Router
+    // page may only export a fixed set of fields, so the page cannot export
+    // features()/quotaLine() itself. Inline the REAL module rather than a stub —
+    // these tests render the page, and stubbing the bullets would make the
+    // rendered output stop being the page's own.
+    .replace(/from ['"]@\/lib\/pricing-copy['"]/g, `from '${pricingCopyModule()}'`);
   // Cache-bust so successive tests get fresh module state.
   return await import(dataUrl(js) + '#' + Math.random());
 }

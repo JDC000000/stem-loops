@@ -106,6 +106,12 @@ export async function POST(req: NextRequest) {
   } catch {
     return badRequest('CLAIM_JOBS_INVALID', 'Body must be JSON.');
   }
+  // Valid JSON that is not an object (`null`, an array, a string, a number)
+  // used to throw on `body.client_fingerprint` below and surface as a 500
+  // (W1 overnight QA, 2026-11-12, P2). It is a client error.
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return badRequest('CLAIM_JOBS_INVALID', 'Body must be a JSON object.');
+  }
   const fingerprintRaw = typeof body.client_fingerprint === 'string' ? body.client_fingerprint.trim() : '';
   if (
     fingerprintRaw.length < MIN_FINGERPRINT_LEN ||

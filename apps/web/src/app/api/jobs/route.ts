@@ -54,7 +54,17 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    const bodyObj = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+    // Valid JSON that is not an object (`null`, an array, a string, a number)
+    // used to fall through as `{}` to the link branch and come back as a 403
+    // "YouTube" refusal (W1 overnight QA, 2026-11-12, P2). It is a client
+    // error: same 400 as malformed JSON, before auth, quota, trial or credit.
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json(
+        { error_code: 'INVALID_REQUEST', message: 'Request body must be a JSON object.' },
+        { status: 400 }
+      );
+    }
+    const bodyObj = body as Record<string, unknown>;
 
     const user = await getUser();
 

@@ -117,6 +117,7 @@ export async function POST(request: NextRequest) {
       // for free-tier) BEFORE spending Replicate budget.
       let chargeCredit = false;
       let allowanceQuota = 0;
+      let freeAllowance = false;
       if (user) {
         try {
           const { snapshot: entSnap } = await enforceEntitlement('start_job_upload', user.user_id);
@@ -135,6 +136,10 @@ export async function POST(request: NextRequest) {
             entSnap.plan_code !== 'pro' &&
             entSnap.plan_code !== 'studio' &&
             (billingEnforced() || entSnap.credits_remaining > 0);
+          // F2: a non-subscriber job NOT charged a credit is funded by the free
+          // monthly allowance, and its cap is enforced where the counter is
+          // written (below), not only by the 30 s-cached gates above.
+          freeAllowance = entSnap.plan_code !== 'pro' && entSnap.plan_code !== 'studio';
         } catch (err) {
           if (err instanceof EntitlementError) {
             return NextResponse.json(
@@ -265,7 +270,18 @@ export async function POST(request: NextRequest) {
                     throw new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', FREE_QUOTA_EXHAUSTED_MESSAGE);
                   }
                 }
+              } else if (freeAllowance) {
+                // F2 (#236 review defect 5): a free, quota-funded upload. The
+                // gates above read a snapshot cached for up to 30 s, so every
+                // request inside that window sees the same jobs_used and passes
+                // (4/5 + three uploads landed on 7/5). The cap is therefore
+                // checked HERE, under the quota lock in the jobs-insert tx;
+                // refusing throws, the tx rolls back, and no job row exists.
+                if (!(await bumpJobsUsedWithinQuota(client, user.user_id, allowanceQuota))) {
+                  throw new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', FREE_QUOTA_EXHAUSTED_MESSAGE);
+                }
               } else {
+                // Pro / Studio: metered as before (out of scope for F2).
                 await bumpJobsUsed(client, user.user_id);
               }
             }

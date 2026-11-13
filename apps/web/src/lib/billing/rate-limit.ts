@@ -114,10 +114,11 @@ export async function checkBurstLimit(userId: string): Promise<BurstDenial | nul
  *  carrying resets_at when jobs_used >= monthly_job_quota.
  *
  *  Uses the entitlement snapshot's 30-second cache. That is a soft overcount
- *  risk — up to ~30 s of concurrent bursts can read a stale jobs_used — but
- *  the subsequent per-(user, period) advisory lock + UPSERT in
- *  bumpJobsUsed() is the hard boundary; this check is the cheap 402
- *  short-circuit that avoids reaching the DB on the hot path. */
+ *  risk — up to ~30 s of concurrent bursts can read a stale jobs_used. For a
+ *  FREE upload the hard boundary is bumpJobsUsedWithinQuota() under the
+ *  per-(user, period) advisory lock in the jobs-insert tx (F2: the uncapped
+ *  bumpJobsUsed() is NOT a boundary — it let 4/5 land on 7/5). This check is
+ *  the cheap 402 short-circuit that avoids reaching the DB on the hot path. */
 export async function checkMonthlyQuota(userId: string): Promise<QuotaDenial | null> {
   const snap = await getEntitlementSnapshot(userId);
   // Pro / Studio sentinel: do not gate.
@@ -215,13 +216,16 @@ export async function rollPeriodIfStale(
 /** Spend one unit of the monthly allowance ONLY while the account is under
  *  `quota`; returns false (nothing written) when it is not.
  *
- *  For the one caller that reaches the allowance WITHOUT a gate having
- *  checked it: the billing-off upload whose cached snapshot said "holds a
- *  credit" (so enforceEntitlement and checkMonthlyQuota both waived the
- *  quota) but whose credit INSERT then found the ledger empty — the last
- *  credit was spent by a concurrent request or inside the 30 s cache TTL.
+ *  Two callers in POST /api/jobs (upload), both funded by the FREE allowance:
+ *   1. the billing-off upload whose cached snapshot said "holds a credit" (so
+ *      enforceEntitlement and checkMonthlyQuota both waived the quota) but
+ *      whose credit INSERT then found the ledger empty — the last credit was
+ *      spent by a concurrent request or inside the 30 s cache TTL (#236);
+ *   2. every ordinary free, quota-funded upload (F2): the gates checked the
+ *      quota, but against a snapshot up to 30 s old, so concurrent or rapid
+ *      uploads all saw the same jobs_used and passed.
  *  The cap is evaluated here, under the quota lock and in the jobs-insert tx,
- *  so the fallback cannot overshoot the allowance. Call after
+ *  so neither path can overshoot the allowance. Call after
  *  rollPeriodIfStale() in the same tx, so the row it bumps is current. */
 export async function bumpJobsUsedWithinQuota(
   client: QuotaTxClient,

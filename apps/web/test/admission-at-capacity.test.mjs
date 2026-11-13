@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, SAME_ORIGIN_HEADERS } from './helpers/same-origin.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = (p) => join(WEB, 'src', p);
@@ -76,11 +77,11 @@ const stub = {
   r2: dataUrl(`export const presignPut = async (key) => { globalThis.__b8.presigned.push(key); return 'https://r2.example/put'; };`),
   rate: dataUrl(`
     export const checkBurstLimit = async () => null; export const checkMonthlyQuota = async () => null;
-    export const bumpJobsUsed = async () => {}; export const rollPeriodIfStale = async () => {};`),
+    export const bumpJobsUsedWithinQuota = async () => true; export const bumpJobsUsed = async () => {}; export const rollPeriodIfStale = async () => {};`),
   ent: dataUrl(`
     export class EntitlementError extends Error {}
     export const getEntitlementSnapshot = async () => ({}); export const enforceEntitlement = async () => ({});
-    export const billingEnforced = () => false;`),
+    export const FREE_QUOTA_EXHAUSTED_MESSAGE = 'stub'; export const billingEnforced = () => false;`),
   trial: dataUrl(`export const consumeTrialInTx = async () => ({ ok: false });`),
   credits: dataUrl(`export const consumeCreditInTx = async () => {};`),
 };
@@ -94,6 +95,7 @@ const ADMISSION = dataUrl(ADMISSION_JS);
 const wire = (js) =>
   js
     .replace(/from ['"]@\/lib\/admission['"]/g, `from '${ADMISSION}'`)
+    .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${ERRCOPY}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub}'`)
     .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${stub.clientIp}'`)
     .replace(/from ['"]@\/lib\/youtube-url['"]/g, `from '${stub.ytUrl}'`)
@@ -105,6 +107,7 @@ const wire = (js) =>
     .replace(/from ['"]@\/lib\/billing\/credits['"]/g, `from '${stub.credits}'`)
     .replace(/from ['"]@\/lib\/trial['"]/g, `from '${stub.trial}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${stub.sentry}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${stub.next}'`);
 
 const admission = await import(ADMISSION);
@@ -119,7 +122,7 @@ const freshAdmission = () => import(ADMISSION + '#fresh' + ++fresh);
 const JOB = 'aaaaaaaa-aaaa-aaaa-aaaa-000000000001';
 const call = async (route, body) => {
   try {
-    const r = await route.POST({ json: async () => body, headers: new Headers() });
+    const r = await route.POST({ json: async () => body, headers: new Headers(SAME_ORIGIN_HEADERS) });
     return { status: r.status, headers: r.headers, body: await r.json() };
   } catch (e) {
     return { status: 0, headers: new Headers(), body: { thrown: String(e) } };

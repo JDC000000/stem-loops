@@ -12,7 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { renderPage } from './helpers/render-landing-page.mjs';
-import { assertNoBannedClaims, assertSays, section, PROCESSORS } from './legal-copy-shared.mjs';
+import { assertNoBannedClaims, assertSays, section, phrase, PROCESSORS } from './legal-copy-shared.mjs';
 
 const PRIVACY = 'app/(landing)/privacy/page.tsx';
 
@@ -58,6 +58,22 @@ test('privacy: the job-link fragments are the un-overstated ones', async () => {
   assertSays(assert, page, 'with no account at all', 'privacy');
   assertSays(assert, page, 'can be opened only by your account', 'privacy');
   assertSays(assert, page, 'cannot be recalled once issued', 'privacy');
+});
+
+test('privacy: the 24-hour deletion sentence names the chord track, as a whole sentence', async () => {
+  const page = await renderPage(PRIVACY);
+  // PIN THE SENTENCE, not a fragment. The next test asserts only 'deleted after 24 hours',
+  // which survives deleting "the estimated chord track" — the clause PR #214 made true by
+  // sweeping jobs/<id>/play.chords.json with the rest. A fragment-presence assertion is not a
+  // gate. Scoped to the "How long" section and ^/$-anchored on BOTH normalisations, so a
+  // sentence that merely contains these words elsewhere, or one with the clause removed,
+  // does not satisfy it. The 'i' flag is dropped: casing is part of the sentence.
+  const how = section(page, 'How long', 'Account details are not');
+  const sentence =
+    'How long Uploaded files, fetched audio, stems, loops, the estimated chord track and the job\u2019s own row are deleted after 24 hours.';
+  const re = new RegExp(`^${phrase(sentence).source}\\s*$`);
+  assert.match(how.textSpaced.trim(), re, 'privacy (tags\u2192space): the 24-hour sentence changed');
+  assert.match(how.textTight.trim(), re, 'privacy (tags\u2192nothing): the 24-hour sentence changed');
 });
 
 test('privacy: a fragment of each known 24-hour survivor is still present', async () => {

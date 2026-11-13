@@ -314,14 +314,19 @@ test('the landing never claims an account is required to START — nothing enfor
 });
 
 test('the landing shows no price, plan or paywall — there is no payment at launch', () => {
-  const banned = [/\$\d/, /\bper month\b/i, /\/mo\b/, /\bfree forever\b/i, /\bupgrade\b/i, /\bpricing\b/i, /\bpaid plan/i, /\bcredits\b/i];
+  // F31 (Jon, 2026-11-13): one link to /pricing is allowed (see the next test), so the word
+  // "pricing" is banned everywhere except inside that href. Prices and plan names stay banned.
+  const banned = [/\$\d/, /\bper month\b/i, /\/mo\b/, /\bfree forever\b/i, /\bupgrade\b/i, /(?<!href="\/)\bpricing\b/i, /\bpaid plan/i, /\bcredits\b/i,
+    /\bPro\b/, /\bStudio\b/, /\bFree plan\b/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
   for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
 });
 
-test('the landing never links to /pricing', () => {
-  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) assert.doesNotMatch(src, /href="\/pricing/, `${file} links /pricing`);
-  assert.doesNotMatch(RENDER.html, /href="\/pricing/, 'the rendered page links /pricing');
+test('the landing links to /pricing exactly once (F31, Jon 2026-11-13)', () => {
+  let inSource = 0;
+  for (const [, src] of RAW_PAGE_AND_COMPONENTS) inSource += (src.match(/href="\/pricing/g) ?? []).length;
+  assert.equal(inSource, 1, 'the landing source must carry exactly one /pricing link');
+  assert.equal((RENDER.html.match(/href="\/pricing/g) ?? []).length, 1, 'the rendered page must carry exactly one /pricing link');
 });
 
 test('the landing claims no mobile or non-Chrome support (Story 5.3)', () => {

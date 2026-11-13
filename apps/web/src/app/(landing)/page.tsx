@@ -63,7 +63,7 @@ export default function HomePage() {
                 <span className="h1-line">Paste a song.</span> <span className="h1-line">Play along.</span>
               </h1>
               <p className="lead">
-                stem-loops splits a track into six stems, each with a fader, mute and solo, and runs a chord track over the
+                We split the song into six stems, each with a fader, mute and solo, and run a chord track over the
                 top — so you can turn your own part down and play it yourself.
               </p>
               <p className="audience">
@@ -102,7 +102,10 @@ export default function HomePage() {
           <div className="container">
             <div className="reading">
               <h2 id="scope-h">What it does, and what it does not do yet</h2>
-              <p className="body-lg">The whole list, so none of it is a surprise once you are inside.</p>
+              <p className="body-lg">
+                The whole list, so none of it is a surprise once you are inside.{' '}
+                <a href="/pricing">See the monthly track limits →</a>
+              </p>
             </div>
             <dl className="spec">
               <div className="spec-row">
@@ -316,7 +319,7 @@ export default function HomePage() {
                 <details id="faq-files">
                   <summary>What happens to my files?</summary>
                   <p>
-                    Your link or file goes to our storage, and the audio goes to Replicate to run Demucs. Sources, stems and
+                    Your link or file goes to our storage, and the audio goes to Replicate to split it and to Klangio to estimate the chords. Sources, stems and
                     loops are deleted after 24 hours. Anyone with a job’s link can open it, so don’t pass it around. More in
                     the <a href="/privacy">privacy notice</a>.
                   </p>
@@ -326,7 +329,7 @@ export default function HomePage() {
                   <p>
                     It depends on the source audio. Splitting a song doesn’t change who owns it. If it’s yours, or you hold the rights,
                     use the loops as you like. If it’s someone else’s recording, you need clearance before you release anything.
-                    stem-loops doesn’t grant rights and can’t clear a sample. The demo drums file on this page is different: it is free
+                    We don’t grant rights and can’t clear a sample. The demo drums file on this page is different: it is free
                     to use in your own music (credit to Lucky Ticket by Jon Cartwright is appreciated).
                   </p>
                 </details>

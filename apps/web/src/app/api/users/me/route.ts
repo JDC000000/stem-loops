@@ -142,6 +142,20 @@ export async function DELETE(req: NextRequest) {
           throw e;
         }
 
+        // Expire the user's live jobs. Without this, deleting auth.users runs the
+        // FK's ON DELETE SET NULL on jobs.user_id and every live job (audio, stems,
+        // loops; up to 24 h) becomes an ANONYMOUS job: any link holder may then cut
+        // its loops and any Studio account may sign its full-length WAVs, neither
+        // of which the owner's job allowed. Every job route treats
+        // expires_at <= now() as gone (404), and the worker's retention sweep
+        // deletes the objects (cleanup.py, keyed on expires_at). Inside this tx so
+        // a failed Stripe cancel below leaves the jobs exactly as they were.
+        await client.query(
+          `UPDATE public.jobs SET expires_at = now()
+            WHERE user_id = $1::uuid AND expires_at > now()`,
+          [user.user_id],
+        );
+
         for (const row of subs.rows) {
           try {
             await provider.cancelSubscription(row.provider_subscription_id, false);

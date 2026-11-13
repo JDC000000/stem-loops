@@ -76,11 +76,11 @@ const stub = {
   r2: dataUrl(`export const presignPut = async (key) => { globalThis.__b8.presigned.push(key); return 'https://r2.example/put'; };`),
   rate: dataUrl(`
     export const checkBurstLimit = async () => null; export const checkMonthlyQuota = async () => null;
-    export const bumpJobsUsed = async () => {}; export const rollPeriodIfStale = async () => {};`),
+    export const bumpJobsUsedWithinQuota = async () => true; export const bumpJobsUsed = async () => {}; export const rollPeriodIfStale = async () => {};`),
   ent: dataUrl(`
     export class EntitlementError extends Error {}
     export const getEntitlementSnapshot = async () => ({}); export const enforceEntitlement = async () => ({});
-    export const billingEnforced = () => false;`),
+    export const FREE_QUOTA_EXHAUSTED_MESSAGE = 'stub'; export const billingEnforced = () => false;`),
   trial: dataUrl(`export const consumeTrialInTx = async () => ({ ok: false });`),
   credits: dataUrl(`export const consumeCreditInTx = async () => {};`),
 };

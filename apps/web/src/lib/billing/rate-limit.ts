@@ -212,6 +212,40 @@ export async function rollPeriodIfStale(
   );
 }
 
+/** Spend one unit of the monthly allowance ONLY while the account is under
+ *  `quota`; returns false (nothing written) when it is not.
+ *
+ *  For the one caller that reaches the allowance WITHOUT a gate having
+ *  checked it: the billing-off upload whose cached snapshot said "holds a
+ *  credit" (so enforceEntitlement and checkMonthlyQuota both waived the
+ *  quota) but whose credit INSERT then found the ledger empty — the last
+ *  credit was spent by a concurrent request or inside the 30 s cache TTL.
+ *  The cap is evaluated here, under the quota lock and in the jobs-insert tx,
+ *  so the fallback cannot overshoot the allowance. Call after
+ *  rollPeriodIfStale() in the same tx, so the row it bumps is current. */
+export async function bumpJobsUsedWithinQuota(
+  client: QuotaTxClient,
+  userId: string,
+  quota: number,
+): Promise<boolean> {
+  if (!(quota > 0)) return false; // a zero allowance has no unit to spend
+  await takeQuotaLock(client, userId);
+  const r = await client.query(
+    `INSERT INTO entitlements (user_id, plan_code, period_start, period_end, jobs_used)
+     VALUES (
+       $1::uuid,
+       'free',
+       date_trunc('month', now()),
+       date_trunc('month', now()) + interval '1 month',
+       1
+     )
+     ON CONFLICT (user_id) DO UPDATE SET jobs_used = entitlements.jobs_used + 1 WHERE entitlements.jobs_used < $2
+     RETURNING jobs_used`,
+    [userId, quota],
+  );
+  return (r.rowCount ?? 0) > 0;
+}
+
 /** Spend one unit of the monthly allowance.
  *
  *  CALL THIS ONLY WHEN THE MONTHLY ALLOWANCE IS WHAT FUNDS THE JOB. A

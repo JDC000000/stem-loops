@@ -172,6 +172,10 @@ async function loadRoutes() {
   );
   const clientIp = dataUrl(`export const clientIpHashOf = () => 'iphash';`);
   const supabaseAuth = dataUrl(`export const getUser = async () => null;`);
+  // SEC-1 (#220): the REAL ownership helper over the same getUser stub (every fixture job is anonymous).
+  const jobAccess = dataUrl(
+    toJs('src/lib/job-access.ts').replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${supabaseAuth}'`),
+  );
   const wire = (js) =>
     js
       .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
@@ -185,6 +189,7 @@ async function loadRoutes() {
       .replace(/from ['"]@\/lib\/admission['"]/g, `from '${admission}'`)
       .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${clientIp}'`)
       .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${supabaseAuth}'`)
+      .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${jobAccess}'`)
       .replace(/from ['"]@aws-sdk\/client-s3['"]/g, `from '${resolveBare('@aws-sdk/client-s3')}'`);
   const load = (file) => import(dataUrl(wire(toJs(file))) + '#' + Math.random());
   const r2Mod = await import(r2);
@@ -383,4 +388,21 @@ test('the fake database filters on expires_at (it is not a substring dispatcher)
   assert.equal((await q('SELECT id FROM jobs WHERE id = $1')).rowCount, 1);
   await assert.rejects(() => q('SELECT id FROM jobs WHERE id = $1 AND expires_at > now() - 1'), /cannot evaluate/);
   store.unmodelled.length = 0; // that rejection was the point of the assertion above
+});
+
+// ───────────── Cache-Control on every response that carries a signed URL ─────────────
+// #185 made play-chords `private, no-store` after production showed Next's default
+// `public, max-age=0, must-revalidate` (a shared cache may STORE that and replay it).
+// GET /api/jobs/:id signs every cut loop WAV for up to the job's remaining life (≈24 h,
+// far longer than the 900 s stem URLs) and was left on the default. W1 overnight QA,
+// 2026-11-12: live response on the local stack had 24 signed loop URLs, X-Amz-Expires
+// 86276, and no Cache-Control header at all.
+test('every GET that returns a signed URL sends Cache-Control: private, no-store', async () => {
+  for (const [name, route] of [['job', routes.job], ['stems', routes.stems], ['play-chords', routes.chords]]) {
+    const res = await call(route, LIVE);
+    assert.equal(res.status, 200, `${name}: ${res.status}`);
+    assert.ok(JSON.stringify(res.body).includes('X-Amz-Signature'), `${name}: fixture should carry a signed URL`);
+    const cc = res.headers?.['Cache-Control'] ?? res.headers?.['cache-control'];
+    assert.equal(cc, 'private, no-store', `${name}: Cache-Control was ${JSON.stringify(cc)}`);
+  }
 });

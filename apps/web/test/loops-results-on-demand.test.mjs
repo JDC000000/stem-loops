@@ -130,7 +130,7 @@ test('nothing is requested on mount, and the cut happens only on the click', asy
     assert.deepEqual(calls.requestCut, [], 'a cut was requested without anyone asking');
     assert.equal(calls.zip, 0);
     assert.equal(dom.findAll('[data-testid="loop-card"]').length, 0, 'uncut loops must not render as downloads');
-    assert.equal(dom.find('[data-testid="zip-loops"]'), null, 'nothing to download yet');
+    assert.ok(!dom.find('[data-testid="zip-loops"]'), 'nothing to download yet');
 
     const button = dom.find('[data-testid="cut-loops"]');
     assert.ok(button, 'there is no way to ask for the cut');
@@ -222,8 +222,8 @@ test('once every loop is cut the download view returns, unchanged', async () => 
   await withDom(async (dom) => {
     await dom.mount(React.createElement(LoopResults, { job: job(loops), deps }));
 
-    assert.equal(dom.find('[data-testid="cut-loops"]'), null, 'nothing left to cut');
-    assert.equal(dom.find('[data-testid="cut-explainer"]'), null);
+    assert.ok(!dom.find('[data-testid="cut-loops"]'), 'nothing left to cut');
+    assert.ok(!dom.find('[data-testid="cut-explainer"]'));
     const cards = dom.findAll('[data-testid="loop-card"]');
     assert.equal(cards.length, 3);
     // Every rendered card has a usable URL — the point of gating on cut_at.
@@ -321,7 +321,7 @@ test('cut progress: refreshed rows arrive in place, the cut stays busy until all
 
     await dom.advance(2600);
     assert.equal(dom.findAll('[data-testid="loop-card"]').length, 2);
-    assert.equal(dom.find('[data-testid="cut-loops"]'), null);
+    assert.ok(!dom.find('[data-testid="cut-loops"]'));
     assert.ok(dom.find('[data-testid="zip-loops"]'), 'all cut: the download view returns');
     await dom.unmountAll();
   });
@@ -352,6 +352,199 @@ test('cut progress: a refresh that returns the same rows keeps polling (no stall
 test('the default refresh reads GET /api/jobs/:id and never reloads the page', () => {
   const src = readFileSync(join(WEB, 'src/components/LoopResults.tsx'), 'utf8');
   const code = src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-  assert.doesNotMatch(code, /location\.reload\s*\(/, 'a reload resets the cut state mid-cut');
+  assert.doesNotMatch(code, /location\.(reload|assign|replace)\s*\(|location\.href\s*=/, 'a reload or navigation resets the cut state mid-cut');
   assert.match(code, /fetch\(\s*`\/api\/jobs\/\$\{jobId\}`/);
+});
+
+// ═══ From the independent M-9 review of #247 (Fable): RV1–RV7 pin the default refresh, the deadline, error retries, cadence and unmount cleanup. ═══
+const ID = '33333333-3333-4333-8333-333333333333';
+const cutBtn = (dom) => dom.find('[data-testid="cut-loops"]');
+
+test('RV1 a rejected refresh is retried and the cut still completes', async () => {
+  const { LoopResults } = await loadLoopResults();
+  const before = [loop('a', 'drums', false)];
+  let n = 0;
+  const deps = { requestCut: async () => {}, zip: async () => {},
+    refresh: async () => { n += 1; if (n === 1) throw new Error('network'); return [loop('a', 'drums', true)]; } };
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopResults, { job: job(before), deps }));
+    await dom.act(() => cutBtn(dom).click());
+    await dom.advance(2600);
+    assert.equal(n, 1);
+    assert.match(cutBtn(dom).textContent, /Cutting…/, 'still cutting after a failed read');
+    assert.ok(!dom.find('[data-testid="cut-error"]'));
+    await dom.advance(2600);
+    assert.equal(n, 2, 'a rejected read must be retried');
+    assert.ok(!cutBtn(dom));
+    assert.ok(dom.find('[data-testid="zip-loops"]'));
+    await dom.unmountAll();
+  });
+});
+
+test('RV2 an unreadable (null) reply is retried and the cut still completes', async () => {
+  const { LoopResults } = await loadLoopResults();
+  const before = [loop('a', 'drums', false)];
+  let n = 0;
+  const deps = { requestCut: async () => {}, zip: async () => {},
+    refresh: async () => { n += 1; return n === 1 ? null : [loop('a', 'drums', true)]; } };
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopResults, { job: job(before), deps }));
+    await dom.act(() => cutBtn(dom).click());
+    await dom.advance(2600);
+    await dom.advance(2600);
+    assert.equal(n, 2, 'a null reply must be retried');
+    assert.ok(dom.find('[data-testid="zip-loops"]'));
+    await dom.unmountAll();
+  });
+});
+
+test('RV3 the deadline: polling stops, says so, and the button is pressable again; a second click polls again', async () => {
+  const { LoopResults, CUT_POLL_MAX_MS } = await loadLoopResults();
+  const before = [loop('a', 'drums', false)];
+  let n = 0;
+  const deps = { requestCut: async () => {}, zip: async () => {}, refresh: async () => { n += 1; return before; } };
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  try {
+    await withDom(async (dom) => {
+      await dom.mount(React.createElement(LoopResults, { job: job(before), deps }));
+      await dom.act(() => cutBtn(dom).click());
+      await dom.advance(2600);
+      assert.equal(n, 1);
+      assert.ok(!dom.find('[data-testid="cut-error"]'), 'no deadline message before the deadline');
+      skew = CUT_POLL_MAX_MS + 1000;
+      await dom.advance(2600); // the tick that was already scheduled runs, then the deadline is seen
+      const at = n;
+      await dom.advance(2600);
+      await dom.advance(2600);
+      assert.equal(n, at, `polling must stop at the deadline (went ${at} -> ${n})`);
+      const alert = dom.find('[data-testid="cut-error"]');
+      assert.ok(alert, 'the deadline must say so');
+      assert.match(alert.textContent, /longer than expected/);
+      assert.equal(cutBtn(dom).disabled, false, 'not stuck on Cutting…');
+      assert.match(cutBtn(dom).textContent, /Cut 1 loops/);
+      // second attempt restarts the clock
+      await dom.act(() => cutBtn(dom).click());
+      assert.ok(!dom.find('[data-testid="cut-error"]'));
+      await dom.advance(2600);
+      assert.equal(n, at + 1, 'a second click polls again');
+      assert.match(cutBtn(dom).textContent, /Cutting…/);
+      await dom.unmountAll();
+    });
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('RV4 unmount mid-cut: no refresh is asked afterwards', async () => {
+  const { LoopResults } = await loadLoopResults();
+  const before = [loop('a', 'drums', false)];
+  let n = 0;
+  const deps = { requestCut: async () => {}, zip: async () => {}, refresh: async () => { n += 1; return before; } };
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopResults, { job: job(before), deps }));
+    await dom.act(() => cutBtn(dom).click());
+    await dom.advance(2600);
+    assert.equal(n, 1);
+    await dom.unmountAll();
+    await new Promise((r) => setTimeout(r, 5400));
+    assert.equal(n, 1, `refresh was asked ${n - 1} more time(s) after unmount`);
+  });
+});
+
+test('RV5 poll cadence: one refresh per CUT_POLL_MS, not a tight loop and not doubled', async () => {
+  const { LoopResults } = await loadLoopResults();
+  const before = [loop('a', 'drums', false)];
+  let n = 0;
+  const deps = { requestCut: async () => {}, zip: async () => {}, refresh: async () => { n += 1; return before; } };
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopResults, { job: job(before), deps }));
+    await dom.act(() => cutBtn(dom).click());
+    await dom.advance(2000);
+    assert.equal(n, 0, 'no refresh before CUT_POLL_MS');
+    // one advance per act(): state set inside act() is flushed only when it ends
+    for (let i = 0; i < 3; i++) await dom.advance(2600);
+    assert.equal(n, 3, 'exactly one refresh per poll period');
+    await dom.unmountAll();
+  });
+});
+
+async function withDefaultDeps(responder, body) {
+  const realFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => { calls.push({ url: String(url), init }); return responder(String(url), init, calls); };
+  try { await body(calls); } finally { globalThis.fetch = realFetch; }
+}
+const json = (status, obj) => ({ ok: status >= 200 && status < 300, status, json: async () => obj });
+
+test('RV6 DEFAULT deps: the cut completes in place from GET /api/jobs/:id, no navigation of any kind', async () => {
+  const { LoopResults } = await loadLoopResults();
+  const before = [loop('a', 'drums', false), loop('b', 'bass', false)];
+  const partial = [loop('a', 'drums', true), loop('b', 'bass', false)];
+  const done = [loop('a', 'drums', true), loop('b', 'bass', true)];
+  let gets = 0;
+  await withDefaultDeps((url, init) => {
+    if (init?.method === 'POST') return json(202, {});
+    gets += 1;
+    return json(200, { id: ID, status: 'done', loops: gets === 1 ? partial : done });
+  }, async (calls) => {
+    await withDom(async (dom) => {
+      let nav = 0;
+      const loc = dom.window.location;
+      const saved = {};
+      for (const k of ['reload', 'assign', 'replace']) {
+        saved[k] = Object.getOwnPropertyDescriptor(loc, k);
+        Object.defineProperty(loc, k, { value: () => { nav += 1; }, configurable: true, writable: true });
+      }
+      try {
+        await dom.mount(React.createElement(LoopResults, { job: job(before) }));
+        await dom.act(() => cutBtn(dom).click());
+        assert.equal(calls[0].url, `/api/jobs/${ID}/loops`);
+        assert.equal(calls[0].init.method, 'POST');
+        await dom.advance(2600);
+        assert.equal(calls[1].url, `/api/jobs/${ID}`);
+        assert.equal(calls[1].init?.cache, 'no-store', 'the poll read must not be served from cache');
+        assert.equal(dom.findAll('[data-testid="loop-card"]').length, 1, 'default refresh must deliver the rows');
+        assert.match(cutBtn(dom).textContent, /Cutting…/);
+        await dom.advance(2600);
+        assert.equal(dom.findAll('[data-testid="loop-card"]').length, 2);
+        assert.ok(dom.find('[data-testid="zip-loops"]'));
+        assert.equal(nav, 0, 'the page must not reload/navigate during a cut');
+        await dom.unmountAll();
+      } finally {
+        for (const k of ['reload', 'assign', 'replace']) {
+          if (saved[k]) Object.defineProperty(loc, k, saved[k]); else delete loc[k];
+        }
+      }
+    });
+  });
+});
+
+test('RV7 DEFAULT deps: a 500, then a non-JSON body, then a 200 — keeps polling and finishes', async () => {
+  const { LoopResults } = await loadLoopResults();
+  const before = [loop('a', 'drums', false)];
+  let gets = 0;
+  await withDefaultDeps((url, init) => {
+    if (init?.method === 'POST') return json(202, {});
+    gets += 1;
+    if (gets === 1) return json(500, { error_code: 'INTERNAL_ERROR' });
+    if (gets === 2) return { ok: true, status: 200, json: async () => { throw new SyntaxError('bad json'); } };
+    return json(200, { loops: [loop('a', 'drums', true)] });
+  }, async () => {
+    await withDom(async (dom) => {
+      await dom.mount(React.createElement(LoopResults, { job: job(before) }));
+      await dom.act(() => cutBtn(dom).click());
+      await dom.advance(2600);
+      assert.match(cutBtn(dom).textContent, /Cutting…/);
+      assert.equal(dom.findAll('[data-testid="loop-card"]').length, 0);
+      await dom.advance(2600);
+      assert.match(cutBtn(dom).textContent, /Cutting…/);
+      await dom.advance(2600);
+      assert.equal(gets, 3);
+      assert.ok(dom.find('[data-testid="zip-loops"]'));
+      assert.ok(!dom.find('[data-testid="cut-error"]'));
+      await dom.unmountAll();
+    });
+  });
 });

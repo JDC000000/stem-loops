@@ -7,7 +7,13 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
   DOWNLOAD_INVALID_URL: { headline: "That doesn't look like a YouTube link.", action: 'Paste a full youtube.com or youtu.be URL.' },
   DOWNLOAD_AGE_RESTRICTED: { headline: "This video is age-restricted and can't be processed.", action: '' },
   DOWNLOAD_PRIVATE: { headline: 'This video is private or unavailable.', action: '' },
-  SEPARATION_FAILED: { headline: 'Stem separation failed for this track.', action: 'Try a different song.' },
+  // Raised for provider-side failures: Replicate answering `failed`, the poll budget
+  // running out, a cancelled prediction. None of those is about the song, and "Try a
+  // different song" sent people away from a track that would work on a retry.
+  SEPARATION_FAILED: {
+    headline: 'Stem separation didn\u2019t finish.',
+    action: 'That was a problem on our side, not your song. Please try the same track again in a few minutes.',
+  },
   EXTRACTION_FAILED: { headline: "We couldn't find clean loops in this audio.", action: 'It may be too short or beatless.' },
   UPLOAD_FAILED: { headline: "We separated your stems but couldn't save them.", action: 'Please retry.' },
   RATE_LIMITED: { headline: "We're busy or you've hit the limit.", action: 'Wait a moment and try again.' },
@@ -78,3 +84,17 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
 };
 
 export const DEFAULT_ERROR = ERROR_COPY.INTERNAL_ERROR;
+
+/**
+ * The sentence in a failed job's box on /jobs/[id]. This map wins when it knows the
+ * code; the worker's stored `error_message_user` is the fallback for codes it does not
+ * (UPLOAD_INVALID, UPLOAD_TOO_LONG with its limit, …), and a generic line after that.
+ * Before this, the page rendered the worker's sentence verbatim, so a copy fix here
+ * never reached the one page where a failed job is shown.
+ */
+export function failedJobMessage(job: { error_code?: string | null; error_message_user?: string | null }): string {
+  const code = job.error_code ?? '';
+  const copy = Object.prototype.hasOwnProperty.call(ERROR_COPY, code) ? ERROR_COPY[code] : null;
+  if (copy) return [copy.headline, copy.action].filter(Boolean).join(' ');
+  return job.error_message_user ?? 'This track could not be processed. Please try another file.';
+}

@@ -173,6 +173,8 @@ const chordOverlayMod = put(
 // The REAL job-poll module (pure; no I/O at import). JobView's polling policy
 // lives there, and a stub of it would test the stub.
 const jobPollMod = put('job-poll.mjs', toJs(read('src/lib/job-poll.ts')));
+// The REAL error-copy module (pure data): the failed box's words are under test.
+const errorCopyMod = put('error-copy.mjs', toJs(read('src/lib/error-copy.ts')));
 
 const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   // bare 'react' only — 'react/jsx-runtime' must stay real
@@ -183,6 +185,7 @@ const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]next\/link['"]/g, `from '${linkMod}'`)
   .replace(/from ['"]@\/lib\/retention['"]/g, `from '${retentionMod}'`)
   .replace(/from ['"]@\/lib\/job-poll['"]/g, `from '${jobPollMod}'`)
+  .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${errorCopyMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordOverlayMod}'`);
 writeFileSync(join(dir, 'JobView.mjs'), jobViewJs);
 
@@ -321,6 +324,32 @@ test('a failed job renders its own box and mounts no player', () => {
   const html = renderJob({ ...DONE_JOB, status: 'failed', error_message_user: 'nope' });
   assert.match(html, /Something went wrong/);
   assert.doesNotMatch(html, /data-testid="player"/, 'a failed job must not mount a player');
+});
+
+// W4 overnight browser journey j3 (2026-11-12): with the Replicate mock answering
+// `failed` — a provider outage, nothing to do with the song — the failed box read
+// "Stem separation failed for this track. Try a different song." That is the worker's
+// stored sentence (errors.py), rendered verbatim, and it sends the user off to change
+// songs over our outage. The box must speak from the web's ERROR_COPY map by code.
+const WORKER_SEPARATION_SENTENCE = 'Stem separation failed for this track. Try a different song.';
+
+test('failed SEPARATION_FAILED job: copy says it was our side, not the song, and does not send them to another song', () => {
+  const html = renderJob({ ...DONE_JOB, status: 'failed', error_code: 'SEPARATION_FAILED', error_message_user: WORKER_SEPARATION_SENTENCE });
+  assert.match(html, /Something went wrong/);
+  assert.doesNotMatch(html, /different song/i, 'a provider outage must not tell the user to change songs');
+  assert.doesNotMatch(html, /failed for this track/i, 'a provider outage must not be pinned on the track');
+  assert.match(html, /not your song/i);
+});
+
+test('failed job with a code the web map does not know: the worker\'s sentence is still shown', () => {
+  const msg = 'That track is too long. Trim it to a shorter length and upload it again.';
+  const html = renderJob({ ...DONE_JOB, status: 'failed', error_code: 'UPLOAD_TOO_LONG', error_message_user: msg });
+  assert.match(html, /That track is too long\./);
+});
+
+test('failed job with neither a known code nor a stored sentence: the generic fallback', () => {
+  const html = renderJob({ ...DONE_JOB, status: 'failed', error_code: null, error_message_user: null });
+  assert.match(html, /This track could not be processed\./);
 });
 
 test('a processing job renders progress and mounts no player', () => {

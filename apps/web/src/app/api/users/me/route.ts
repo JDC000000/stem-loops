@@ -66,6 +66,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { deleteAuthUser, getUser } from '@/lib/auth/supabase';
 import { getBillingProvider } from '@/lib/billing';
 import { db } from '@/lib/db';
+import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -88,32 +89,19 @@ function isAlreadyCanceled(e: unknown): boolean {
 }
 
 export async function DELETE(req: NextRequest) {
-  const user = await getUser();
-  if (!user) return err(401, 'UNAUTHENTICATED', 'Sign in to delete your account.');
-
   // Destructive endpoint — require a same-origin browser request. DELETE verb
   // alone isn't a sufficient CSRF barrier (fetch can issue it cross-origin
   // when the server returns permissive CORS on a preflight), so we require
   // both an Origin header AND host-match. Missing Origin → 403 (fails closed;
   // non-browser clients that want to delete accounts must use the admin path).
   // Literal 'null' Origin (sandboxed iframe, data: URL) also rejected.
-  const origin = req.headers?.get?.('origin');
-  const host = req.headers?.get?.('host');
-  if (!origin || origin === 'null' || !host) {
-    return err(403, 'BAD_ORIGIN', 'Cross-origin or non-browser request refused.');
-  }
-  let originHost = '';
-  try {
-    originHost = new URL(origin).host;
-  } catch {
-    return err(403, 'BAD_ORIGIN', 'Malformed Origin header.');
-  }
-  // Normalize both sides: strip default ports (:443 for https, :80 for http)
-  // so a proxy that forwards `Host: x.com:443` doesn't 403 legitimate users.
-  const normalize = (h: string) => h.replace(/:(443|80)$/, '');
-  if (normalize(originHost) !== normalize(host)) {
-    return err(403, 'BAD_ORIGIN', 'Cross-origin request refused.');
-  }
+  // The rule lives in src/lib/same-origin.ts, shared with the POST routes,
+  // and like them it now runs FIRST, before the session lookup.
+  const originRefusal = crossOriginRefusal(req);
+  if (originRefusal) return err(403, BAD_ORIGIN, originRefusal);
+
+  const user = await getUser();
+  if (!user) return err(401, 'UNAUTHENTICATED', 'Sign in to delete your account.');
 
   let body: { confirm_email?: unknown };
   try {
@@ -153,6 +141,20 @@ export async function DELETE(req: NextRequest) {
           );
           throw e;
         }
+
+        // Expire the user's live jobs. Without this, deleting auth.users runs the
+        // FK's ON DELETE SET NULL on jobs.user_id and every live job (audio, stems,
+        // loops; up to 24 h) becomes an ANONYMOUS job: any link holder may then cut
+        // its loops and any Studio account may sign its full-length WAVs, neither
+        // of which the owner's job allowed. Every job route treats
+        // expires_at <= now() as gone (404), and the worker's retention sweep
+        // deletes the objects (cleanup.py, keyed on expires_at). Inside this tx so
+        // a failed Stripe cancel below leaves the jobs exactly as they were.
+        await client.query(
+          `UPDATE public.jobs SET expires_at = now()
+            WHERE user_id = $1::uuid AND expires_at > now()`,
+          [user.user_id],
+        );
 
         for (const row of subs.rows) {
           try {

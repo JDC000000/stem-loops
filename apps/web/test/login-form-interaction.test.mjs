@@ -1,7 +1,7 @@
 // LoginForm, MOUNTED AND CLICKED (happy-dom via test/helpers/dom.mjs, real React effects and
 // events). login-form.test.mjs renders to static markup and says so: it sees first paint only.
 //
-// WHY THIS FILE EXISTS. The "New here? Create an account" button is the only visible way into
+// WHY THIS FILE EXISTS. The "New here? Create account" button is the only visible way into
 // account creation now that the one-time link no longer is. An adversarial review made it
 // `disabled`, and separately pointed its handler at setMode('reset'): both stayed green, because
 // the markup of a working button and a dead one is identical in a string match. Every
@@ -35,10 +35,10 @@ test('CANARY: pressing a sibling control changes the heading (so a heading asser
   });
 });
 
-test('"New here? Create an account" is enabled and pressing it shows the signup form', async () => {
+test('"New here? Create account" is enabled and pressing it shows the signup form', async () => {
   await withDom(async (dom) => {
     await mountForm(dom);
-    const btn = buttonByText(dom, 'New here? Create an account');
+    const btn = buttonByText(dom, 'New here? Create account');
     assert.ok(btn, 'the button is rendered in sign-in mode');
     assert.equal(btn.hasAttribute('disabled'), false, 'the button has a disabled attribute');
     assert.equal(btn.disabled, false);
@@ -52,7 +52,7 @@ test('"New here? Create an account" is enabled and pressing it shows the signup 
     assert.equal(pw.getAttribute('autocomplete'), 'new-password');
     assert.equal(pw.getAttribute('minlength'), '10');
     assert.match(dom.find('form').textContent, /At least 10 characters, with a letter and a digit/);
-    assert.equal(buttonByText(dom, 'New here? Create an account'), undefined, 'the entry button leaves once used');
+    assert.equal(buttonByText(dom, 'New here? Create account'), undefined, 'the entry button leaves once used');
     assert.ok(buttonByText(dom, 'Already have an account? Sign in'), 'and the way back is offered');
   });
 });
@@ -61,7 +61,7 @@ test('a visitor bounced from a job can reach the signup form from the sign-in sc
   await withDom(async (dom) => {
     await mountForm(dom, { returnTo: '/jobs/abc-123' });
     assert.match(dom.find('h1').parentElement.textContent, /Sign in to open your player\. If you are new, create an account\./);
-    await press(dom, buttonByText(dom, 'New here? Create an account'), 'New here? Create an account');
+    await press(dom, buttonByText(dom, 'New here? Create account'), 'New here? Create account');
     assert.equal(heading(dom), 'Create account');
     assert.doesNotMatch(dom.find('h1').parentElement.textContent, /open your player/);
   });
@@ -70,9 +70,9 @@ test('a visitor bounced from a job can reach the signup form from the sign-in sc
 test('signup mode and back: the way in and out both work', async () => {
   await withDom(async (dom) => {
     await mountForm(dom);
-    await press(dom, buttonByText(dom, 'New here? Create an account'), 'New here? Create an account');
+    await press(dom, buttonByText(dom, 'New here? Create account'), 'New here? Create account');
     await press(dom, buttonByText(dom, 'Already have an account? Sign in'), 'Already have an account? Sign in');
     assert.equal(heading(dom), 'Sign in');
-    assert.ok(buttonByText(dom, 'New here? Create an account'));
+    assert.ok(buttonByText(dom, 'New here? Create account'));
   });
 });

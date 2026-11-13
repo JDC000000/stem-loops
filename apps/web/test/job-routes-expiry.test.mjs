@@ -172,6 +172,10 @@ async function loadRoutes() {
   );
   const clientIp = dataUrl(`export const clientIpHashOf = () => 'iphash';`);
   const supabaseAuth = dataUrl(`export const getUser = async () => null;`);
+  // SEC-1 (#220): the REAL ownership helper over the same getUser stub (every fixture job is anonymous).
+  const jobAccess = dataUrl(
+    toJs('src/lib/job-access.ts').replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${supabaseAuth}'`),
+  );
   const wire = (js) =>
     js
       .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
@@ -185,6 +189,7 @@ async function loadRoutes() {
       .replace(/from ['"]@\/lib\/admission['"]/g, `from '${admission}'`)
       .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${clientIp}'`)
       .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${supabaseAuth}'`)
+      .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${jobAccess}'`)
       .replace(/from ['"]@aws-sdk\/client-s3['"]/g, `from '${resolveBare('@aws-sdk/client-s3')}'`);
   const load = (file) => import(dataUrl(wire(toJs(file))) + '#' + Math.random());
   const r2Mod = await import(r2);

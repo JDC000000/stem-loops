@@ -382,3 +382,20 @@ test('the fake database filters on expires_at (it is not a substring dispatcher)
   await assert.rejects(() => q('SELECT id FROM jobs WHERE id = $1 AND expires_at > now() - 1'), /cannot evaluate/);
   store.unmodelled.length = 0; // that rejection was the point of the assertion above
 });
+
+// ───────────── Cache-Control on every response that carries a signed URL ─────────────
+// #185 made play-chords `private, no-store` after production showed Next's default
+// `public, max-age=0, must-revalidate` (a shared cache may STORE that and replay it).
+// GET /api/jobs/:id signs every cut loop WAV for up to the job's remaining life (≈24 h,
+// far longer than the 900 s stem URLs) and was left on the default. W1 overnight QA,
+// 2026-11-12: live response on the local stack had 24 signed loop URLs, X-Amz-Expires
+// 86276, and no Cache-Control header at all.
+test('every GET that returns a signed URL sends Cache-Control: private, no-store', async () => {
+  for (const [name, route] of [['job', routes.job], ['stems', routes.stems], ['play-chords', routes.chords]]) {
+    const res = await call(route, LIVE);
+    assert.equal(res.status, 200, `${name}: ${res.status}`);
+    assert.ok(JSON.stringify(res.body).includes('X-Amz-Signature'), `${name}: fixture should carry a signed URL`);
+    const cc = res.headers?.['Cache-Control'] ?? res.headers?.['cache-control'];
+    assert.equal(cc, 'private, no-store', `${name}: Cache-Control was ${JSON.stringify(cc)}`);
+  }
+});

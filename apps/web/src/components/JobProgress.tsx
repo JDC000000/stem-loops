@@ -29,10 +29,10 @@ function stemKey(stems: string[], tint: boolean): string {
 
 const STAGE_LABEL: Record<string, string> = {
   queued: 'Queued',
-  downloading: 'Downloading audio',
+  downloading: 'Fetching audio',
   separating: 'Separating stems',
-  extracting: 'Extracting loops',
-  uploading: 'Uploading',
+  extracting: 'Finding bars and sections',
+  uploading: 'Saving stems',
   done: 'Done',
 };
 

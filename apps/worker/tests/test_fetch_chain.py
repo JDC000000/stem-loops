@@ -129,7 +129,7 @@ def test_kill_switch_engaged_refuses_before_any_fetch(rig, scope):
     with pytest.raises(FetchPausedError) as ei:
         downloader.download_audio(URL, JOB)
     assert ei.value.error_code == "DOWNLOAD_BLOCKED"
-    assert "Drop your own audio file" in ei.value.user_message
+    assert "Upload the audio file" in ei.value.user_message
     assert rig.calls == ["blocklist", "kill_switch"]
     assert rig.attempts == []
 

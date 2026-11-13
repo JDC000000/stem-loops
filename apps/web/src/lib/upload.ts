@@ -56,7 +56,9 @@ export type UploadValidation =
 
 export function validateUpload(filename: string, size: number): UploadValidation {
   const ext = extOf(filename);
-  if (!ext || !(ext in ACCEPTED_TYPES)) {
+  // Own keys only: `in` also matched Object.prototype names (`a.constructor`,
+  // `a.__proto__`), which were then presigned with a non-string content type.
+  if (!ext || !Object.hasOwn(ACCEPTED_TYPES, ext)) {
     return {
       ok: false,
       error_code: 'UPLOAD_INVALID',

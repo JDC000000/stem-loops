@@ -61,7 +61,17 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    const bodyObj = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+    // Valid JSON that is not an object (`null`, an array, a string, a number)
+    // used to fall through as `{}` to the link branch and come back as a 403
+    // "YouTube" refusal (W1 overnight QA, 2026-11-12, P2). It is a client
+    // error: same 400 as malformed JSON, before auth, quota, trial or credit.
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json(
+        { error_code: 'INVALID_REQUEST', message: 'Request body must be a JSON object.' },
+        { status: 400 }
+      );
+    }
+    const bodyObj = body as Record<string, unknown>;
 
     const user = await getUser();
 
@@ -114,6 +124,7 @@ export async function POST(request: NextRequest) {
       // for free-tier) BEFORE spending Replicate budget.
       let chargeCredit = false;
       let allowanceQuota = 0;
+      let freeAllowance = false;
       if (user) {
         try {
           const { snapshot: entSnap } = await enforceEntitlement('start_job_upload', user.user_id);
@@ -132,6 +143,10 @@ export async function POST(request: NextRequest) {
             entSnap.plan_code !== 'pro' &&
             entSnap.plan_code !== 'studio' &&
             (billingEnforced() || entSnap.credits_remaining > 0);
+          // F2: a non-subscriber job NOT charged a credit is funded by the free
+          // monthly allowance, and its cap is enforced where the counter is
+          // written (below), not only by the 30 s-cached gates above.
+          freeAllowance = entSnap.plan_code !== 'pro' && entSnap.plan_code !== 'studio';
         } catch (err) {
           if (err instanceof EntitlementError) {
             return NextResponse.json(
@@ -262,7 +277,18 @@ export async function POST(request: NextRequest) {
                     throw new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', FREE_QUOTA_EXHAUSTED_MESSAGE);
                   }
                 }
+              } else if (freeAllowance) {
+                // F2 (#236 review defect 5): a free, quota-funded upload. The
+                // gates above read a snapshot cached for up to 30 s, so every
+                // request inside that window sees the same jobs_used and passes
+                // (4/5 + three uploads landed on 7/5). The cap is therefore
+                // checked HERE, under the quota lock in the jobs-insert tx;
+                // refusing throws, the tx rolls back, and no job row exists.
+                if (!(await bumpJobsUsedWithinQuota(client, user.user_id, allowanceQuota))) {
+                  throw new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', FREE_QUOTA_EXHAUSTED_MESSAGE);
+                }
               } else {
+                // Pro / Studio: metered as before (out of scope for F2).
                 await bumpJobsUsed(client, user.user_id);
               }
             }

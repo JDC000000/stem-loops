@@ -551,3 +551,25 @@ for (const plan of ['pro', 'studio']) {
     assert.equal(globalThis.__calls.find((c) => c.fn === 'consumeCredit'), undefined);
   });
 }
+
+// W1 overnight QA (2026-11-12, P2): a valid-JSON non-object body (`null`, `[]`,
+// `"str"`, a number) fell through as `{}` to the link branch and came back as a
+// 403 "YouTube" refusal. It is a client error: 400 INVALID_REQUEST, and no
+// entitlement, trial, credit or quota work happens.
+for (const [label, body] of [['null', null], ['array', []], ['array with an object', [{ url: 'https://youtu.be/dQw4w9WgXcQ' }]], ['string', 'str'], ['number', 1e308], ['boolean', true]]) {
+  test(`POST /api/jobs — 400 INVALID_REQUEST for a ${label} JSON body, nothing charged`, async () => {
+    delete process.env.ALLOW_YOUTUBE_INPUT; // production posture: link input off (W1 saw the 403 here)
+    try {
+      const mod = await loadRoute({ user: USER, entitlements: { planCode: 'free' } });
+      const res = await mod.POST(makeReq(body));
+      assert.equal(res.status, 400);
+      assert.equal(res.body.error_code, 'INVALID_REQUEST');
+      const fns = globalThis.__calls.map((c) => c.fn);
+      for (const fn of ['consumeTrial', 'enforceEntitlement', 'consumeCredit', 'checkBurstLimit', 'checkMonthlyQuota']) {
+        assert.ok(!fns.includes(fn), `${fn} must not run for a non-object body (calls: ${fns.join(',')})`);
+      }
+    } finally {
+      delete process.env.ALLOW_YOUTUBE_INPUT;
+    }
+  });
+}

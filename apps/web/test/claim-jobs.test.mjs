@@ -284,3 +284,18 @@ test('POST /api/users/me/claim-jobs — ceiling without remainder: truncated=fal
   );
   assert.equal(truncInsert, undefined, 'no truncation row on exact-fit ceiling');
 });
+
+// W1 overnight QA (2026-11-12, P2): `null` as the JSON body was a 500 (TypeError
+// on body.client_fingerprint). Any valid-JSON non-object is a client error.
+for (const [label, body] of [['null', null], ['array', []], ['string', 'str'], ['number', 1], ['boolean', true]]) {
+  test(`POST /api/users/me/claim-jobs — 400 CLAIM_JOBS_INVALID for a ${label} JSON body, no DB`, async () => {
+    const mod = await loadRoute({
+      user: { user_id: '11111111-1111-1111-1111-111111111111', email: 'a@b.co' },
+    });
+    globalThis.__claimJobsCalls = []; // the stub module is cached across loads
+    const res = await mod.POST(makeReq(body));
+    assert.equal(res.status, 400);
+    assert.equal(res.body.code, 'CLAIM_JOBS_INVALID');
+    assert.equal(globalThis.__claimJobsCalls.length, 0);
+  });
+}

@@ -10,6 +10,8 @@ const STEM_ORDER = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
 
 /** How often to re-poll while a cut is running, in ms. */
 export const CUT_POLL_MS = 2500;
+/** Stop polling a cut that has not finished after this long, and say so. */
+export const CUT_POLL_MAX_MS = 10 * 60 * 1000;
 
 type LoopRow = Loop & { signed_url?: string | null };
 
@@ -21,8 +23,11 @@ export function isCut(loop: Pick<LoopRow, 'cut_at'>): boolean {
 export interface LoopResultsDeps {
   /** POST /api/jobs/:id/loops — ask for the cut. */
   requestCut: (jobId: string) => Promise<void>;
-  /** Re-read the job so freshly cut rows (and their signed URLs) arrive. */
-  refresh: () => Promise<void>;
+  /**
+   * Re-read this job's loop rows so freshly cut ones (and their signed URLs) arrive.
+   * Returns the rows, or nothing when it could not read them (the poll just tries again).
+   */
+  refresh: (jobId: string) => Promise<LoopRow[] | null | void>;
   /** Download-all. Injectable so a test need not drive a real Blob/anchor. */
   zip: typeof downloadLoopPack;
 }
@@ -32,10 +37,15 @@ const defaultDeps: LoopResultsDeps = {
     const res = await fetch(`/api/jobs/${jobId}/loops`, { method: 'POST' });
     if (!res.ok) throw new Error(`cut request failed: ${res.status}`);
   },
-  // The job page owns the poll loop; a plain reload is the one refresh this
-  // component can perform without reaching into it.
-  refresh: async () => {
-    window.location.reload();
+  // NOT a page reload. A reload reset `cutting` mid-cut, so the page came back
+  // showing part of the set beside a "Cut N loops" button and stopped polling (W4
+  // browser journey j1), and it re-fetched every stem each time. The job page's own
+  // poll has stopped (the job is `done`), so this component reads the rows itself.
+  refresh: async (jobId) => {
+    const res = await fetch(`/api/jobs/${jobId}`, { cache: 'no-store' });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as { loops?: unknown } | null;
+    return Array.isArray(body?.loops) ? (body.loops as LoopRow[]) : null;
   },
   zip: downloadLoopPack,
 };
@@ -47,7 +57,13 @@ export function LoopResults({
   job: Job & { title?: string | null };
   deps?: LoopResultsDeps;
 }) {
-  const loops = useMemo(() => (job.loops ?? []) as LoopRow[], [job.loops]);
+  // Rows read by the cut poll win over the props once there are any.
+  const [fresh, setFresh] = useState<LoopRow[] | null>(null);
+  const loops = useMemo(() => (fresh ?? job.loops ?? []) as LoopRow[], [fresh, job.loops]);
+  // Bumped after every refresh, so a reply with an unchanged pending count still
+  // schedules the next poll (the effect would otherwise not re-run).
+  const [pollTick, setPollTick] = useState(0);
+  const cutStarted = useRef<number | null>(null);
   const [stem, setStem] = useState<string>('all');
   const [zipping, setZipping] = useState(false);
   const [cutting, setCutting] = useState(false);
@@ -80,13 +96,26 @@ export function LoopResults({
   // the refresh brings them in. `pending` reaching 0 ends it via the re-render.
   useEffect(() => {
     if (!cutting || pending === 0) return;
-    timer.current = setTimeout(() => {
-      void deps.refresh();
+    if (cutStarted.current !== null && Date.now() - cutStarted.current > CUT_POLL_MAX_MS) {
+      setCutting(false);
+      setCutError('The cut is taking longer than expected. Refresh the page to check on it.');
+      return;
+    }
+    let live = true;
+    timer.current = setTimeout(async () => {
+      try {
+        const rows = await deps.refresh(job.id);
+        if (live && rows) setFresh(rows);
+      } catch {
+        /* a failed read is retried on the next tick */
+      }
+      if (live) setPollTick((n) => n + 1);
     }, CUT_POLL_MS);
     return () => {
+      live = false;
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [cutting, pending, deps]);
+  }, [cutting, pending, deps, job.id, pollTick]);
 
   useEffect(() => {
     if (pending === 0) setCutting(false);
@@ -95,6 +124,7 @@ export function LoopResults({
   const onCut = useCallback(async () => {
     setCutError(null);
     setCutting(true);
+    cutStarted.current = Date.now();
     try {
       await deps.requestCut(job.id);
     } catch {

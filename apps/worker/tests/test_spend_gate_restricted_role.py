@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
 import uuid
 
@@ -425,6 +426,36 @@ def test_a_read_that_never_answers_is_cut_off_by_the_wall_clock_bound(
     t0 = time.monotonic()
     assert _claim() is False
     assert time.monotonic() - t0 < 2
+    assert _status(as_worker, jid) == "queued" and spy_pipeline == [] and http == []
+    ev = _named(_events(capsys), "spend_brake_engaged")
+    assert ev and ev[0]["detail"]["reason"] == "read_timeout"
+
+
+def test_the_default_wall_clock_bound_is_seconds_not_minutes(
+    as_worker, spy_pipeline, http, monkeypatch, capsys
+):
+    """The SHIPPED WALL_TIMEOUT_S, not a monkeypatched one, cuts off a read that never answers.
+
+    Mutation sweep 2026-11-12 (W6): every bounded-read test above either patches WALL_TIMEOUT_S
+    or only compares against it, so `WALL_TIMEOUT_S = 5.0` -> `600.0` passed the whole suite.
+    With that default one network black hole after connect stalls the poll loop (and with it
+    the reaper and the retention sweep, which run in the same loop) for ten minutes per claim
+    attempt. Costs about WALL_TIMEOUT_S (5 s) of wall time."""
+    jid = _new_job(as_worker)
+
+    async def hang(dsn):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(spend_gate, "_read", hang)
+    capsys.readouterr()
+    out: list[bool] = []
+    t = threading.Thread(target=lambda: out.append(_claim()), daemon=True)
+    t0 = time.monotonic()
+    t.start()
+    t.join(timeout=10)  # a mutant default must FAIL here, not hang the suite for minutes
+    elapsed = time.monotonic() - t0
+    assert not t.is_alive(), f"a hung read was still blocking the claim after {elapsed:.1f}s"
+    assert out == [False]
     assert _status(as_worker, jid) == "queued" and spy_pipeline == [] and http == []
     ev = _named(_events(capsys), "spend_brake_engaged")
     assert ev and ev[0]["detail"]["reason"] == "read_timeout"

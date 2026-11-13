@@ -219,7 +219,7 @@ export default function LoginForm({
       {mode === 'signin' && (
         <button type="button" onClick={() => setMode('signup')}
           style={{ ...btn, border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)' }}>
-          New here? Create an account
+          New here? Create account
         </button>
       )}
 

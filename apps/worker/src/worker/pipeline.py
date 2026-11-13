@@ -49,6 +49,8 @@ from .encoder.wav_encoder import encode_24bit, waveform_peaks
 from .errors import (
     DownloadBlockedError,
     InternalError,
+    LinkTooLongError,
+    LinkUnmeasurableError,
     SeparationFailedError,
     StemLoopsError,
     UploadInvalidError,
@@ -240,6 +242,47 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
     if decoded is not None and decoded > max_sec:
         raise _too_long(decoded)
     return upload_input(job_id, wav)
+
+
+def _enforce_link_duration(job_id: str, path: str) -> None:
+    """Refuse an over-length OR unmeasurable LINK track, on the file we hold, before Replicate.
+
+    This is the enforcing half of the link path's duration ceiling. The downloader's gate 0c
+    reads the length from yt-dlp metadata and saves the whole download when it can, but it
+    fails open by design, so it cannot be what makes the ceiling real.
+
+    Deliberately the SAME two calls the upload path makes -- ``_max_upload_duration_sec()``
+    and ``_probe_duration_sec()`` -- so a link and an upload cannot end up judged by
+    different numbers or different measuring code.
+
+    FAILS CLOSED. If the staged file cannot be measured, this raises ``LinkUnmeasurableError``
+    rather than proceeding. That is NOT the upload path's stance, although an earlier version
+    of this docstring said it was: the upload path's fail-open on an unmeasurable file is
+    bounded by ``ffmpeg -t cap+1`` (see ``_prepare_upload_source``), so whatever it hands on
+    is at most cap+1 seconds long. Nothing bounds a link's file. yt-dlp's output is
+    unbounded, so "could not measure" would otherwise mean "billed for any length". We
+    produced this WAV ourselves (``--audio-format wav``) and soundfile reads every WAV, so
+    refusing an unreadable one costs no legitimate job.
+    """
+    max_sec = _max_upload_duration_sec()
+    measured = _probe_duration_sec(path)
+    if measured is None:
+        log_structured("WARN", "link_rejected_unmeasurable", job_id=job_id, max_sec=max_sec)
+        raise LinkUnmeasurableError(
+            f"link duration could not be measured against MAX_UPLOAD_DURATION_SEC={max_sec:g}"
+        )
+    if measured > max_sec:
+        log_structured(
+            "INFO",
+            "link_rejected_too_long",
+            job_id=job_id,
+            duration_sec=round(measured, 1),
+            max_sec=max_sec,
+        )
+        raise LinkTooLongError(
+            f"link duration {measured}s exceeds MAX_UPLOAD_DURATION_SEC={max_sec:g}",
+            max_seconds=max_sec,
+        )
 
 
 def _update_job_tags(job_id: str, tags: dict) -> None:
@@ -1277,7 +1320,9 @@ async def _run_pipeline(job_id: str) -> None:
             # path (STUB_MODE is not set in prod env). Defense-in-depth behind route.ts.
             if os.environ.get("ALLOW_YOUTUBE_INPUT", "").lower() != "true":
                 raise DownloadBlockedError("YouTube ingestion is disabled pre-launch")
-            dl_result, _source = await asyncio.to_thread(download_audio, url, job_id)
+            dl_result, _source = await asyncio.to_thread(
+                download_audio, url, job_id, _max_upload_duration_sec()
+            )
             # R2 fix (found in staging E2E test — T12 was never actually run before):
             # Cobalt's success path returns an already-public stream URL (Replicate can
             # fetch it directly), but yt-dlp's success path returns a LOCAL file path
@@ -1286,8 +1331,20 @@ async def _run_pipeline(job_id: str) -> None:
             # cannot read a local path"). Stage local results to R2 exactly like the
             # override_file/upload paths already do; leave an already-a-URL result alone.
             if _source == "ytdlp":
+                # The ceiling, enforced on the bytes themselves and BEFORE submit_or_reattach
+                # below, i.e. before a single billed GPU-second. Until this call existed the
+                # link path had no duration check anywhere: _max_upload_duration_sec() had
+                # exactly one caller and it was on the upload path.
+                await asyncio.to_thread(_enforce_link_duration, job_id, dl_result)
                 audio_src = await asyncio.to_thread(upload_input, job_id, dl_result)
             else:
+                # Cobalt returns a public tunnel URL and no local bytes, so there is nothing
+                # here to measure. The ceiling for this leg is therefore enforced UPSTREAM, in
+                # download_audio: it only tries Cobalt when gate 0c READ the video's length
+                # and found it at or under the cap (and it raised before here if over). An
+                # unreadable length never reaches this arm. If a future change lets an
+                # unverified length through, this line is the only trace it leaves.
+                log_structured("WARN", "link_duration_unenforced_source", job_id=job_id)
                 audio_src = dl_result
         await emit_event(job_id, "downloading", "completed", pct=100)
 

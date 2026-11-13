@@ -104,14 +104,21 @@ const chordMod = put(
    export default ChordOverlay;`,
 );
 
-// load-stems stub: never called in a server render, but the module must exist
-// and must export the error class Player narrows on.
+// load-stems: the REAL module (it does no I/O at import time; `loadStems` is
+// never called in a server render). It used to be a stub, which stopped being
+// possible when Player began importing `zeroSourceReason` from it: a stub of a
+// pure classifier would test the stub.
 const loadStemsMod = put(
   'load-stems.mjs',
-  `export class StemLoadError extends Error {
-     constructor(code, message, extra = {}) { super(message); this.name = 'StemLoadError'; this.code = code; Object.assign(this, extra); }
-   }
-   export async function loadStems() { return { sources: [], missing: [] }; }`,
+  toJs(read('src/lib/play/load-stems.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
+);
+
+// report-failure stub: records what Player WOULD send to Sentry, sends nothing.
+const reportMod = put(
+  'report-failure.mjs',
+  `export function reportStemFetchFailure(reason, summary) {
+     (globalThis.__stemFetchReports ??= []).push({ reason, summary });
+   }`,
 );
 
 const engineMod = put(
@@ -123,6 +130,7 @@ const playerJs = rewriteShared(toJs(read('src/components/play/Player.tsx'), true
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordMod}'`)
   .replace(/from ['"]@\/lib\/play\/engine['"]/g, `from '${engineMod}'`)
   .replace(/from ['"]@\/lib\/play\/load-stems['"]/g, `from '${loadStemsMod}'`)
+  .replace(/from ['"]@\/lib\/play\/report-failure['"]/g, `from '${reportMod}'`)
   .replace(/from ['"]\.\/Mixer['"]/g, `from '${mixerMod}'`)
   .replace(/from ['"]\.\/Transport['"]/g, `from '${transportMod}'`)
   .replace(/from ['"]\.\/SectionLoop['"]/g, `from '${sectionLoopMod}'`);
@@ -157,6 +165,7 @@ const React = (await import('react')).default;
 const { renderToStaticMarkup } = await import('react-dom/server');
 const Player = await import(pathToFileURL(join(dir, 'Player.mjs')).href);
 const PlayerProbe = await import(pathToFileURL(join(dir, 'PlayerMixerProbe.mjs')).href);
+const Loader = await import(pathToFileURL(join(dir, 'load-stems.mjs')).href);
 
 const render = (props) =>
   renderToStaticMarkup(React.createElement(Player.default, { jobId: 'job-1', ...props }));
@@ -165,6 +174,12 @@ const {
   UNSUPPORTED_BROWSER_MESSAGE,
   UNDECODABLE_MESSAGE,
   NO_STEMS_MESSAGE,
+  ENCODE_FAILED_MESSAGE,
+  FETCH_NETWORK_MESSAGE,
+  FETCH_HTTP_MESSAGE,
+  FETCH_BODY_MESSAGE,
+  MANIFEST_UNREACHABLE_MESSAGE,
+  zeroSourceNotice,
   GENERIC_LOAD_MESSAGE,
   PlayerView,
   chordPositionFor,
@@ -986,4 +1001,116 @@ test('a partial load reports exactly the missing stems, which is what Story 5.1 
   assert.deepEqual([...(snap.degraded?.missing ?? [])], ['guitar', 'keys', 'vocals', 'other']);
   assert.match(degradedMessage(snap.degraded.missing), /^Guitar, Keys, Vocals and Other are not available/);
   engine.dispose();
+});
+
+// ═══ first-run honesty: the sentence matches what happened ═══════════════════
+// The defect: a fresh job whose encoder FAILED, a browser that could not reach
+// storage, and a legacy job with nothing stored all rendered "it was processed
+// before play-along audio was kept". These drive the REAL loader with a fake
+// fetch, through the same two pure functions the effect calls, and assert the
+// words a user would read.
+
+const JOB_ID = '11111111-2222-3333-4444-555555555555';
+const mjson = (b) => new Response(JSON.stringify(b), { status: 200, headers: { 'content-type': 'application/json' } });
+const six = ['vocals', 'drums', 'bass', 'other', 'guitar', 'keys'];
+const offered = six.map((s) => ({ stem: s, signed_url: `https://acct.r2.example/${s}.opus?X-Amz-Signature=zzz` }));
+async function noticeFor({ manifest, stem }) {
+  const out = await Loader.loadStems(JOB_ID, {
+    fetch: async (url) => (String(url).startsWith('/api/') ? mjson(manifest) : stem(url)),
+  });
+  return { out, reason: Loader.zeroSourceReason(out), notice: zeroSourceNotice(Loader.zeroSourceReason(out)) };
+}
+
+test('a fresh job whose encoder failed does NOT get the "processed before" sentence', async () => {
+  const { reason, notice } = await noticeFor({ manifest: { stems: [], state: 'encode_failed' } });
+  assert.equal(reason, 'ENCODE_FAILED');
+  assert.equal(notice.message, ENCODE_FAILED_MESSAGE);
+  assert.equal(notice.retryable, false, 'a reload does not re-encode: do not offer it as the cure');
+  assert.doesNotMatch(notice.message, /processed before|aged|old|24 hours|no longer/i);
+  assert.match(notice.message, /could not prepare/i);
+});
+
+test('a browser that cannot reach storage (CORS-shaped) gets a network sentence, retryable', async () => {
+  const { reason, notice } = await noticeFor({
+    manifest: { stems: offered, state: 'ready' },
+    stem: () => {
+      throw new TypeError('Failed to fetch');
+    },
+  });
+  assert.equal(reason, 'FETCH_NETWORK');
+  assert.equal(notice.message, FETCH_NETWORK_MESSAGE);
+  assert.equal(notice.retryable, true);
+  assert.doesNotMatch(notice.message, /processed before/i);
+});
+
+test('a legacy job (nothing stored) is the one that keeps the calm fallback, and it asserts no cause', async () => {
+  const { reason, notice } = await noticeFor({ manifest: { stems: [], state: 'unavailable' } });
+  assert.equal(reason, 'NO_STEMS');
+  assert.equal(notice, null, 'null = the Story 6.4 note, not an error');
+  assert.doesNotMatch(NO_STEMS_MESSAGE, /processed before|aged|expired|old /i);
+});
+
+test('the five outcomes read as five different sentences', () => {
+  const msgs = [
+    zeroSourceNotice('ENCODE_FAILED').message,
+    zeroSourceNotice('FETCH_NETWORK').message,
+    zeroSourceNotice('FETCH_HTTP').message,
+    zeroSourceNotice('FETCH_BODY').message,
+    NO_STEMS_MESSAGE,
+  ];
+  assert.equal(new Set(msgs).size, 5);
+  assert.equal(zeroSourceNotice('NO_STEMS'), null);
+  assert.equal(zeroSourceNotice('PLAYABLE'), null);
+  assert.ok(FETCH_HTTP_MESSAGE && FETCH_BODY_MESSAGE);
+});
+
+test('a failed manifest request says the SERVER was unreachable, not that audio is missing', () => {
+  assert.equal(stemLoadMessage('MANIFEST_FAILED'), MANIFEST_UNREACHABLE_MESSAGE);
+  assert.notEqual(stemLoadMessage('MANIFEST_FAILED'), GENERIC_LOAD_MESSAGE);
+});
+
+test('load-error renders as an ALERT; "Try again" appears only when the failure is retryable', () => {
+  const retry = renderView({
+    phase: { kind: 'load-error', message: FETCH_NETWORK_MESSAGE, retryable: true },
+    snapshot: IDLE,
+    onRetry: noop,
+  });
+  assert.match(retry, /role="alert"/);
+  assert.ok(retry.includes(FETCH_NETWORK_MESSAGE));
+  assert.match(retry, /data-testid="player-retry"/);
+  assert.match(retry, />Try again</);
+
+  const noRetry = renderView({
+    phase: { kind: 'load-error', message: ENCODE_FAILED_MESSAGE, retryable: false },
+    snapshot: IDLE,
+    onRetry: noop,
+  });
+  assert.match(noRetry, /role="alert"/);
+  assert.doesNotMatch(noRetry, /player-retry/);
+
+  // not offered over the calm fallback either
+  const calm = renderView({ phase: { kind: 'no-stems' }, snapshot: IDLE, onRetry: noop });
+  assert.doesNotMatch(calm, /player-retry/);
+  // retryable but no handler wired: no dead button
+  const dead = renderView({ phase: { kind: 'load-error', message: 'x', retryable: true }, snapshot: IDLE });
+  assert.doesNotMatch(dead, /player-retry/);
+  // the chord track survives every one of them
+  assert.match(retry, /data-testid="chord-overlay"/);
+});
+
+test('Player wires the three outcomes: it reads zeroSourceReason and reports only the browser-side ones', () => {
+  // ⚠️ THIS IS A SOURCE-TEXT GATE AND IT IS NOT THE COVERAGE. Review mutated
+  // the effect so that every zero-stem outcome collapsed back into the calm
+  // "no stems" note while BOTH regexes below still matched, and the whole
+  // suite stayed green: a regex proves a call is WRITTEN, never that its
+  // answer is USED. The behavioural coverage is test/play-player-effect.mjs —
+  // the real effect mounted over a stubbed fetch, asserting the rendered
+  // banner. This gate is kept because it still catches a commented-out call,
+  // which rendering does not speak to; it is a second layer, not the first.
+  const src = codeOnly(read('src/components/play/Player.tsx'));
+  assert.match(src, /zeroSourceReason\(loaded\)/);
+  assert.match(src, /reportStemFetchFailure\(reason, loaded\.stemFailures\)/);
+  // ENCODE_FAILED must never reach the reporter (worker reports it once per job;
+  // a refetch by anyone holding the UUID would otherwise mint events)
+  assert.doesNotMatch(src, /reportStemFetchFailure\([^)]*ENCODE/);
 });

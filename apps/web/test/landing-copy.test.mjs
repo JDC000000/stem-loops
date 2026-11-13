@@ -314,14 +314,19 @@ test('the landing never claims an account is required to START — nothing enfor
 });
 
 test('the landing shows no price, plan or paywall — there is no payment at launch', () => {
-  const banned = [/\$\d/, /\bper month\b/i, /\/mo\b/, /\bfree forever\b/i, /\bupgrade\b/i, /\bpricing\b/i, /\bpaid plan/i, /\bcredits\b/i];
+  // F31 (Jon, 2026-11-13): one link to /pricing is allowed (see the next test), so the word
+  // "pricing" is banned everywhere except inside that href. Prices and plan names stay banned.
+  const banned = [/\$\d/, /\bper month\b/i, /\/mo\b/, /\bfree forever\b/i, /\bupgrade\b/i, /(?<!href="\/)\bpricing\b/i, /\bpaid plan/i, /\bcredits\b/i,
+    /\bPro\b/, /\bStudio\b/, /\bFree plan\b/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
   for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
 });
 
-test('the landing never links to /pricing', () => {
-  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) assert.doesNotMatch(src, /href="\/pricing/, `${file} links /pricing`);
-  assert.doesNotMatch(RENDER.html, /href="\/pricing/, 'the rendered page links /pricing');
+test('the landing links to /pricing exactly once (F31, Jon 2026-11-13)', () => {
+  let inSource = 0;
+  for (const [, src] of RAW_PAGE_AND_COMPONENTS) inSource += (src.match(/href="\/pricing/g) ?? []).length;
+  assert.equal(inSource, 1, 'the landing source must carry exactly one /pricing link');
+  assert.equal((RENDER.html.match(/href="\/pricing/g) ?? []).length, 1, 'the rendered page must carry exactly one /pricing link');
 });
 
 test('the landing claims no mobile or non-Chrome support (Story 5.3)', () => {
@@ -564,4 +569,59 @@ test('the landing reads the v3 demo set', () => {
   assert.match(cfg, /'demo-assets-v3\/'/);
   assert.match(cfg, /'assets-v3\/'/);
   assert.match(cfg, /lucky_ticket_drums_102\.0bpm_G_minor_verse_0006\.wav/);
+});
+
+// Front door: the one-time email link is sent with shouldCreateUser:false (lib/auth/magic-link.ts),
+// so for a first-time visitor it sends nothing. The landing must not sell it as a way IN.
+//
+// HOW THIS IS PINNED, and why both halves. The first version asserted substrings
+// (/create an account/, /one-time link[^.]*already exists/, /on the sign-in page/). An adversarial
+// review rewrote both blocks to say the OPPOSITE ("you do not have to create an account ... just
+// ask for the one-time link, which works whether or not an account already exists, and creates one
+// for you") and every one of those substrings still matched: suite green, copy wrong.
+//   1. EXACT SENTENCES. The two claims that matter are asserted whole, as rendered. An inversion
+//      has to delete or reword one of them, so it goes red. Surrounding prose may still change.
+//   2. BANNED PHRASES. A sentence can also be left alone and contradicted next to it. The ban list
+//      names the words an inversion needs ("creates one", "no need", "do not have to", "whether or
+//      not"). Anyone who loosens (1) to a pattern is still stopped by (2).
+// The anti-enumeration rule is unaffected: none of this copy depends on the address.
+const tidy = (s) => s.replace(/\s+([.,;:])/g, '$1'); // flatten() leaves "page ." where a link closes
+const ACCOUNT_CLAIM = 'If you are new, you create an account on the sign-in page.';
+const ONE_TIME_LINK_CLAIMS = {
+  'spec row': 'The one-time link by email only signs you back in to an account that already exists; it does not create one.',
+  FAQ: 'A one-time link sent to your email only signs you back in to an account that already exists; it does not create one.',
+};
+const ACCOUNT_COPY_INVERSIONS = [
+  /\bcreates (?:one|an account|your account|it)\b/i,
+  /\bno need to (?:create|sign up|register)\b/i,
+  /\b(?:do not|don't|does not|doesn't) have to (?:create|sign up|register)\b/i,
+  /\bwhether or not\b/i,
+  /\bjust (?:ask|request|use|send)\b/i,
+];
+
+test('the landing says a new visitor creates an account, and the one-time link only signs an existing one back in', () => {
+  const blocks = { 'spec row': specRow('Account'), FAQ: faqAnswer('Do I need an account?') };
+  for (const [where, raw] of Object.entries(blocks)) {
+    const text = tidy(raw);
+    assert.doesNotMatch(text, /or a one-time link/i, `${where} still offers the link as an alternative way in`);
+    assert.ok(text.includes(ACCOUNT_CLAIM), `${where} lost the sentence "${ACCOUNT_CLAIM}"\n  got: ${text}`);
+    assert.ok(
+      text.includes(ONE_TIME_LINK_CLAIMS[where]),
+      `${where} lost the sentence "${ONE_TIME_LINK_CLAIMS[where]}"\n  got: ${text}`,
+    );
+    for (const re of ACCOUNT_COPY_INVERSIONS) assert.doesNotMatch(text, re, `${where} says the opposite (${re})`);
+  }
+});
+
+test('CANARY: the inversion ban list still matches the wording it exists to stop', () => {
+  const inverted = [
+    'If you are new, you do not have to create an account; just ask for the one-time link by email, which works whether or not an account already exists, and creates one for you.',
+    'There is no need to create an account.',
+    'The one-time link creates one for you.',
+  ].join(' ');
+  for (const re of ACCOUNT_COPY_INVERSIONS) assert.match(inverted, re, `${re} no longer matches any inversion`);
+  // ...and does not match the true copy, or the gate above could never pass.
+  for (const re of ACCOUNT_COPY_INVERSIONS) {
+    assert.doesNotMatch([ACCOUNT_CLAIM, ...Object.values(ONE_TIME_LINK_CLAIMS)].join(' '), re);
+  }
 });

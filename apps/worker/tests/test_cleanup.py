@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 import pytest
 
+from tests.db_guard import refuse_unless_local
 from worker import cleanup
 
 DB = os.environ.get("DATABASE_URL")
@@ -46,6 +47,9 @@ class FakeR2:
 
 @pytest.fixture
 def r2(monkeypatch):
+    # The sweep below really runs against DB: a non-local one is refused (round 4; the file
+    # skipped only when the variable was UNSET, so a production URL ran).
+    refuse_unless_local(("DATABASE_URL", DB))
     fake = FakeR2()
     monkeypatch.setattr(cleanup, "DATABASE_URL", DB)
     cleanup._failed.clear()
@@ -404,8 +408,8 @@ def _purge_ledger_fixtures(c) -> None:
 
 @pytest.fixture
 def ledger_db():
-    if not any(h in (DB or "") for h in ("127.0.0.1", "localhost")):
-        pytest.skip("inserts into auth.users; local throwaway DB only")
+    # inserts into auth.users; local throwaway DB only (parsed host, not a substring)
+    refuse_unless_local(("DATABASE_URL", DB))
     with psycopg.connect(DB) as c:
         _purge_ledger_fixtures(c)
         yield c

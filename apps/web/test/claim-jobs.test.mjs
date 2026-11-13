@@ -28,6 +28,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginHeaders } from './helpers/same-origin.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(WEB, 'src/app/api/users/me/claim-jobs/route.ts');
@@ -88,6 +89,7 @@ async function loadRoute({ user, scriptedTxResults = [], maxClaimedJobs }) {
   js = js
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub(scriptedTxResults)}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
@@ -95,6 +97,7 @@ async function loadRoute({ user, scriptedTxResults = [], maxClaimedJobs }) {
 function makeReq(body) {
   return {
     json: async () => body,
+    headers: sameOriginHeaders(),
   };
 }
 
@@ -281,3 +284,18 @@ test('POST /api/users/me/claim-jobs — ceiling without remainder: truncated=fal
   );
   assert.equal(truncInsert, undefined, 'no truncation row on exact-fit ceiling');
 });
+
+// W1 overnight QA (2026-11-12, P2): `null` as the JSON body was a 500 (TypeError
+// on body.client_fingerprint). Any valid-JSON non-object is a client error.
+for (const [label, body] of [['null', null], ['array', []], ['string', 'str'], ['number', 1], ['boolean', true]]) {
+  test(`POST /api/users/me/claim-jobs — 400 CLAIM_JOBS_INVALID for a ${label} JSON body, no DB`, async () => {
+    const mod = await loadRoute({
+      user: { user_id: '11111111-1111-1111-1111-111111111111', email: 'a@b.co' },
+    });
+    globalThis.__claimJobsCalls = []; // the stub module is cached across loads
+    const res = await mod.POST(makeReq(body));
+    assert.equal(res.status, 400);
+    assert.equal(res.body.code, 'CLAIM_JOBS_INVALID');
+    assert.equal(globalThis.__claimJobsCalls.length, 0);
+  });
+}

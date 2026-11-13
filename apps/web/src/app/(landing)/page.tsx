@@ -34,7 +34,7 @@ const OG_ALT =
 export const metadata: Metadata = {
   title: { absolute: 'stem-loops: play along with any song, stem by stem' },
   description:
-    `Split a song into six stems with faders, mute and solo, and a chord track that moves with the song. Loop any section. Tracks up to ${MAX_TRACK_MIN} minutes, in Chrome on the desktop.`,
+    `Split a song into six stems with faders, mute and solo, and a chord track that moves with the song. Loop a detected section. Tracks up to ${MAX_TRACK_MIN} minutes, in Chrome on the desktop.`,
   alternates: { canonical: '/' },
   openGraph: {
     type: 'website',
@@ -63,7 +63,7 @@ export default function HomePage() {
                 <span className="h1-line">Paste a song.</span> <span className="h1-line">Play along.</span>
               </h1>
               <p className="lead">
-                stem-loops splits a track into six stems with real faders, mute and solo, and runs a chord track over the
+                We split the song into six stems, each with a fader, mute and solo, and run a chord track over the
                 top — so you can turn your own part down and play it yourself.
               </p>
               <p className="audience">
@@ -83,7 +83,7 @@ export default function HomePage() {
               <h2 id="play-h">What playing along looks like</h2>
               <p className="body-lg">
                 When a job finishes it opens a player in the same tab: the chords across the top, the six stems on faders
-                underneath, and a loop you can drop on any section of the song.
+                underneath, and a loop you can drop on any detected section of the song.
               </p>
             </div>
             <PlayerArt />
@@ -91,7 +91,7 @@ export default function HomePage() {
               <p className="again-text">Try it on a song you are learning.</p>
               <ToInputLink className="btn btn-primary btn-again">
                 <Ic name="up" />
-                Go to the input
+                Paste a song
               </ToInputLink>
             </div>
           </div>
@@ -102,7 +102,10 @@ export default function HomePage() {
           <div className="container">
             <div className="reading">
               <h2 id="scope-h">What it does, and what it does not do yet</h2>
-              <p className="body-lg">The whole list, so none of it is a surprise once you are inside.</p>
+              <p className="body-lg">
+                The whole list, so none of it is a surprise once you are inside.{' '}
+                <a href="/pricing">See the monthly track limits →</a>
+              </p>
             </div>
             <dl className="spec">
               <div className="spec-row">
@@ -129,9 +132,9 @@ export default function HomePage() {
                 <dt>Account</dt>
                 <dd>
                   Needed to play, not to start. You can run a job signed out; the player, where the stems, chords and
-                  loops are shown, asks you to sign in — with an email and a password, or a one-time link by email, on
-                  the{' '}
-                  <a href="/login">sign-in page</a>.
+                  loops are shown, asks you to sign in. If you are new, you create an account on the{' '}
+                  <a href="/login">sign-in page</a>. The one-time link by email only signs you back in to an account
+                  that already exists; it does not create one.
                 </dd>
               </div>
               <div className="spec-row spec-later">
@@ -201,8 +204,8 @@ export default function HomePage() {
                 </div>
                 <div className="pipe-text">
                   <p>
-                    The stems load into the player with the chord track over them. The same job also cuts bar-length loops
-                    from each stem, which is what the art beside this shows.
+                    The stems load into the player with the chord track over them. Each stem also gets bar-length loops:
+                    press Cut below the player to save them as WAV files. The art beside this shows one.
                   </p>
                   <dl className="kv">
                     <dt>Player</dt>
@@ -215,7 +218,7 @@ export default function HomePage() {
                 </div>
               </li>
             </ol>
-            <p className="pipe-foot">While it runs, the job page shows each stage: downloading, separating, extracting, uploading.</p>
+            <p className="pipe-foot">While it runs, the job page shows each stage: fetching, separating, finding bars, saving.</p>
           </div>
         </section>
 
@@ -225,8 +228,8 @@ export default function HomePage() {
             <div className="reading">
               <h2 id="out-h">You can still take the loops home</h2>
               <p className="body-lg">
-                Every job cuts bar-length loops as well, for anyone who came here to build a sample folder rather than to
-                practise. This is the 8&#8209;bar drums loop from our example song, unchanged, as you would download it:
+                Every song also gets bar-length loops, for anyone who came here to build a sample folder rather than to
+                practise. Press Cut below the player to make the WAV files. This is the 8&#8209;bar drums loop from our example song, unchanged, as you would download it:
                 one 24&#8209;bit WAV per loop, named by stem, BPM, key estimate, section and number.
               </p>
             </div>
@@ -262,16 +265,16 @@ export default function HomePage() {
                   <p>
                     A player, in your browser, with the song’s six stems on their own faders and a chord track running
                     above them. Mute the guitar and play the guitar part; solo the bass to work it out; loop the chorus
-                    until it sticks. The same job also leaves you a folder of bar-length loops to download.
+                    until it sticks. You also get bar-length loops from each stem to cut and download.
                   </p>
                 </details>
                 <details>
                   <summary>Do I need an account?</summary>
                   <p>
                     Not to start one. Running a job works signed out. The player asks you to sign in — that is where
-                    the stems, the chord track and the loops are shown — with an email and a password, or a one-time
-                    link sent to your email, on the{' '}
-                    <a href="/login">sign-in page</a>.
+                    the stems, the chord track and the loops are shown. If you are new, you create an account on the{' '}
+                    <a href="/login">sign-in page</a>. A one-time link sent to your email only signs you back in to an
+                    account that already exists; it does not create one.
                   </p>
                 </details>
                 <details>
@@ -302,7 +305,7 @@ export default function HomePage() {
                 <details>
                   <summary>How long does it take?</summary>
                   <p>
-                    Our 3:34 example song took about 1–3 minutes (51 s to 3 min 7 s across four runs on 9 Oct 2026). Longer
+                    Our 3:34 example song took about 1–3 minutes (0:51 to 3:07 across four runs on 9 October 2026). Longer
                     tracks and a busy queue take longer. The job page shows each stage as it runs, with a timer.
                   </p>
                 </details>
@@ -316,7 +319,7 @@ export default function HomePage() {
                 <details id="faq-files">
                   <summary>What happens to my files?</summary>
                   <p>
-                    Your link or file goes to our storage, and the audio goes to Replicate to run Demucs. Sources, stems and
+                    Your link or file goes to our storage, and the audio goes to Replicate to split it and to Klangio to estimate the chords. Sources, stems and
                     loops are deleted after 24 hours. Anyone with a job’s link can open it, so don’t pass it around. More in
                     the <a href="/privacy">privacy notice</a>.
                   </p>
@@ -326,7 +329,7 @@ export default function HomePage() {
                   <p>
                     It depends on the source audio. Splitting a song doesn’t change who owns it. If it’s yours, or you hold the rights,
                     use the loops as you like. If it’s someone else’s recording, you need clearance before you release anything.
-                    stem-loops doesn’t grant rights and can’t clear a sample. The demo drums file on this page is different: it is free
+                    We don’t grant rights and can’t clear a sample. The demo drums file on this page is different: it is free
                     to use in your own music (credit to Lucky Ticket by Jon Cartwright is appreciated).
                   </p>
                 </details>

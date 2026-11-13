@@ -49,7 +49,7 @@ export default function PrivacyPage() {
               </li>
               <li>
                 <strong>Your recent jobs.</strong> Your browser keeps a list of your recent job IDs (local storage plus a small
-                signed cookie, both dropped after 24 hours) so the Job history page works. It is not used for anything else.
+                signed cookie; each job id is dropped once its job is deleted, and the cookie expires 24 hours after your last job) so the Job history page works. It is not used for anything else.
               </li>
             </ul>
 

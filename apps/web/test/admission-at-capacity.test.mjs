@@ -95,6 +95,7 @@ const ADMISSION = dataUrl(ADMISSION_JS);
 const wire = (js) =>
   js
     .replace(/from ['"]@\/lib\/admission['"]/g, `from '${ADMISSION}'`)
+    .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${ERRCOPY}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub}'`)
     .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${stub.clientIp}'`)
     .replace(/from ['"]@\/lib\/youtube-url['"]/g, `from '${stub.ytUrl}'`)

@@ -7,6 +7,7 @@ import { clientIpHashOf } from '@/lib/client-ip';
 import { canonicalizeYoutubeUrl } from '@/lib/youtube-url';
 import { isValidUploadKey } from '@/lib/upload';
 import { getUser } from '@/lib/auth/supabase';
+import { entitlementMessage } from '@/lib/error-copy';
 import {
   checkBurstLimit,
   checkMonthlyQuota,
@@ -150,7 +151,7 @@ export async function POST(request: NextRequest) {
         } catch (err) {
           if (err instanceof EntitlementError) {
             return NextResponse.json(
-              { error_code: err.code, message: err.message },
+              { error_code: err.code, message: entitlementMessage(err.code, err.message) },
               { status: err.status },
             );
           }
@@ -308,7 +309,7 @@ export async function POST(request: NextRequest) {
         // Lost the race for the last credit (M3): tx already rolled back.
         if (err instanceof EntitlementError) {
           return NextResponse.json(
-            { error_code: err.code, message: err.message },
+            { error_code: err.code, message: entitlementMessage(err.code, err.message) },
             { status: err.status },
           );
         }
@@ -390,7 +391,7 @@ export async function POST(request: NextRequest) {
         if (err instanceof EntitlementError) {
           if (err.code === 'PAID_LINK_INGEST_DISALLOWED') {
             return NextResponse.json(
-              { error_code: err.code, message: err.message },
+              { error_code: err.code, message: entitlementMessage(err.code, err.message) },
               { status: err.status },
             );
           }

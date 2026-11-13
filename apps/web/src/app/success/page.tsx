@@ -41,7 +41,7 @@ export default async function SuccessPage({
         </>
       ) : (
         <>
-          <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Thank you</h1>
+          <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Your purchase</h1>
           <p style={{ color: 'var(--text-secondary)' }}>Sign in to see your purchase.</p>
           <a href="/login?return_to=/account" style={{ color: 'var(--accent)' }}>Sign in</a>
         </>

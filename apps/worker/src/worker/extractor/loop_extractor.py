@@ -16,6 +16,10 @@ from .phrase_boundary import detect_boundaries
 
 VALID_BARS = {1, 2, 4, 8}
 MIN_BARS = 8
+# Beat guard tempo window (tracker BPM). The upload path derives its pre-separation length
+# floor from MIN_BARS and MAX_TRACKER_BPM (pipeline._min_usable_upload_sec), so keep them here.
+MIN_TRACKER_BPM = 40
+MAX_TRACKER_BPM = 250
 MAX_LOOPS_PER_STEM = 10  # cap per stem (>=5 distributed) to stay in the <60s p90 budget
 
 
@@ -50,7 +54,12 @@ def extract_loops(
         grid = estimate_beat_grid(y_ref, sr, bpm=bpm if bpm and bpm > 0 else None)
 
     # Beat guard — reject beatless / wildly off-tempo audio (before any division by bpm).
-    if grid.bpm <= 0 or grid.tracked_beats < 4 or grid.tracker_bpm < 40 or grid.tracker_bpm > 250:
+    if (
+        grid.bpm <= 0
+        or grid.tracked_beats < 4
+        or grid.tracker_bpm < MIN_TRACKER_BPM
+        or grid.tracker_bpm > MAX_TRACKER_BPM
+    ):
         raise NoReliableBeatError(
             f"No reliable beat (tempo={grid.tracker_bpm:.1f}, beats={grid.tracked_beats})"
         )

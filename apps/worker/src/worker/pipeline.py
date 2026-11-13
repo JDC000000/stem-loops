@@ -40,7 +40,7 @@ import sentry_sdk
 from psycopg.types.json import Json
 
 from . import tmpdirs
-from .chord_source import ChordSubmitUncertain
+from .chord_source import ChordQuotaExceeded, ChordSubmitUncertain
 from .classifier.energy_classifier import classify_energy
 from .classifier.section_labeler import label_sections
 from .downloader import download_audio
@@ -48,6 +48,7 @@ from .dsp.seamless import apply as seamless_apply
 from .encoder.wav_encoder import encode_24bit, waveform_peaks
 from .errors import (
     DownloadBlockedError,
+    ExtractionFailedError,
     InternalError,
     LinkTooLongError,
     LinkUnmeasurableError,
@@ -56,6 +57,7 @@ from .errors import (
     UploadInvalidError,
     UploadTooLongError,
 )
+from .extractor import loop_extractor
 from .extractor.beat_grid import estimate_beat_grid
 from .extractor.loop_extractor import NoReliableBeatError, extract_loops
 from .logger import log_structured
@@ -172,6 +174,57 @@ def _ffmpeg_decode_timeout_sec() -> float:
     return _env_positive_float("FFMPEG_DECODE_TIMEOUT_SEC", FFMPEG_DECODE_TIMEOUT_SEC_DEFAULT)
 
 
+# Peak at or below 2 LSB of 16-bit PCM = digital silence (the decode target is pcm_s16le).
+SILENCE_PEAK_MAX = 2
+
+
+def _min_usable_upload_sec() -> float:
+    """Shortest input that could EVER pass the extractor's guard: MIN_BARS bars of 4 beats at
+    the fastest tempo it accepts. Anything shorter fails EXTRACTION_FAILED after separation."""
+    return loop_extractor.MIN_BARS * 4 * 60.0 / loop_extractor.MAX_TRACKER_BPM
+
+
+def _wav_peak_s16(path: str) -> int:
+    """Max |sample| of a pcm_s16le WAV, read in chunks (a 300 s stereo WAV is ~53 MB)."""
+    import wave  # noqa: PLC0415
+
+    peak = 0
+    with wave.open(path, "rb") as w:
+        while True:
+            buf = w.readframes(1 << 16)
+            if not buf:
+                break
+            a = np.frombuffer(buf, dtype="<i2")
+            if a.size:
+                peak = max(peak, int(np.abs(a.astype(np.int32)).max()))
+    return peak
+
+
+def _reject_unusable_upload(job_id: str, wav: str, decoded_sec: float | None) -> None:
+    """TRIAGE 4.7: refuse, BEFORE the paid Replicate call, input the extractor can only reject.
+
+    Until this check a 1 s clip, a 5 s clip or minutes of silence were separated (billed GPU
+    seconds) and then failed EXTRACTION_FAILED in extract_loops' beat/length guard. Both tests
+    here are deterministic consequences of that guard, so nothing it would accept is refused.
+    """
+    floor = _min_usable_upload_sec()
+    if decoded_sec is not None and decoded_sec < floor:
+        log_structured(
+            "INFO",
+            "upload_rejected_unusable",
+            job_id=job_id,
+            reason="too_short",
+            duration_sec=round(decoded_sec, 2),
+            min_sec=round(floor, 2),
+        )
+        raise ExtractionFailedError(
+            f"upload is {decoded_sec:.2f}s; under {floor:.2f}s no loop can be cut"
+        )
+    if _wav_peak_s16(wav) <= SILENCE_PEAK_MAX:
+        log_structured("INFO", "upload_rejected_unusable", job_id=job_id, reason="digital_silence")
+        raise ExtractionFailedError("upload is digital silence")
+
+
 def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
     """Upload-input path: pull the uploaded file from R2, ffmpeg-normalize ANY
     audio/video container to a 44.1k stereo WAV, re-stage it, and return a
@@ -241,6 +294,7 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
     decoded = _probe_duration_sec(wav)
     if decoded is not None and decoded > max_sec:
         raise _too_long(decoded)
+    _reject_unusable_upload(job_id, wav, decoded)
     return upload_input(job_id, wav)
 
 
@@ -1071,6 +1125,15 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             stem=stem_name,
             r2_key=r2_key,
         )
+    except ChordQuotaExceeded as exc:
+        # Klangio monthly cap (klangio._reserve_quota) or a 402: NO request was sent for this
+        # track, so do not tell the user detection "failed for this track" -- that invites a
+        # retry that costs another credit and hits the same cap until the cycle resets.
+        # 'not_attempted' is the truthful existing reason. Ops still see it: ERROR
+        # klangio_quota (provider), this WARN, and Sentry.
+        log_structured("WARN", "chords_skipped_quota", job_id=job_id, error=str(exc)[:200])
+        sentry_sdk.capture_exception(exc)
+        _write_chords_tombstone(job_id, "not_attempted")
     except ChordSubmitUncertain as exc:
         # A previous run may already have paid for this job but lost the id: skip rather than
         # risk a second $0.20. Tombstone reason stays one the web loader maps.

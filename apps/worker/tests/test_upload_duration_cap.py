@@ -142,8 +142,10 @@ def test_within_limit_passes_through(
     staged, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source, uploaded = staged
-    source["path"] = _wav(tmp_path / "ok.wav", 2.0)
-    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
+    # 9 s under a 10 s cap: must also clear the pre-separation "too short to ever cut a loop"
+    # floor (pipeline._min_usable_upload_sec, 7.68 s), which refuses a 2 s clip before Replicate.
+    source["path"] = _wav(tmp_path / "ok.wav", 9.0)
+    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "10")
     assert pipeline._prepare_upload_source("j3", "uploads/k") == "https://presigned"
     assert len(uploaded) == 1
 

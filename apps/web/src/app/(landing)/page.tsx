@@ -27,7 +27,7 @@ import { MAX_TRACK_SEC } from '@/lib/play/types';
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
 const OG_TITLE = 'Paste a song. Play along.';
-const OG_DESC = 'Six stems with faders, mute and solo, and a chord track that moves with the song. Loop a section until you have it.';
+const OG_DESC = 'Six stems with faders, mute and solo, and a chord track that moves with the song. Loop a detected section until you have it.';
 const OG_ALT =
   'Four chord names, Gm, E flat, B flat and F, above six mixer channels for drums, bass, vocals, guitar, keys and other, with the guitar fader pulled down and muted, under the headline Paste a song. Play along.';
 
@@ -83,7 +83,7 @@ export default function HomePage() {
               <h2 id="play-h">What playing along looks like</h2>
               <p className="body-lg">
                 When a job finishes it opens a player in the same tab: the chords across the top, the six stems on faders
-                underneath, and a loop you can drop on any detected section of the song.
+                underneath, and a loop you can set on any detected section of the song.
               </p>
             </div>
             <PlayerArt />
@@ -118,7 +118,11 @@ export default function HomePage() {
               </div>
               <div className="spec-row">
                 <dt>Looping</dt>
-                <dd>Pick a section of the song and it repeats.</dd>
+                <dd>Pick a detected section of the song and it repeats.</dd>
+              </div>
+              <div className="spec-row">
+                <dt>Loop files</dt>
+                <dd>Bars are counted from the first detected beat, not from bar 1, so a loop can start a beat early. Nudge it in your DAW if you need the downbeat.</dd>
               </div>
               <div className="spec-row">
                 <dt>Track length</dt>

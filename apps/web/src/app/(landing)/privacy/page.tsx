@@ -131,7 +131,7 @@ export default function PrivacyPage() {
 
             <h2>Contact</h2>
             <p>
-              stem-loops is run by Jon Cartwright. Questions or deletion requests: email{' '}
+              Jon Cartwright runs stem-loops. Questions or deletion requests: email{' '}
               <a href={CONTACT_URL}>{CONTACT_LABEL}</a>. See also the <a href="/terms">terms</a>.
             </p>
           </div>

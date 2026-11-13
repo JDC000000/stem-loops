@@ -57,7 +57,7 @@ from .errors import (
     UploadTooLongError,
 )
 from .extractor.beat_grid import estimate_beat_grid
-from .extractor.loop_extractor import extract_loops
+from .extractor.loop_extractor import NoReliableBeatError, extract_loops
 from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
 from .storage.r2_uploader import (
@@ -339,9 +339,19 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     # length and where loops start, so all three agree.
     grid = estimate_beat_grid(y_ref, sr)
     tags = detect_bpm_and_key(y_ref, sr, grid=grid)
+    try:
+        loops = list(extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars, grid=grid))
+    except NoReliableBeatError as exc:
+        # B5 (Jon, 2026-11-13): a beatless or rubato track finishes `done` with its stems
+        # and chords and 0 loops, instead of failing the whole job. Only the BEAT guard
+        # lands here; too-short / no-loop-fits still raise ExtractionFailedError. The
+        # tracker's tempo is exactly what the guard just refused to trust, so no BPM is
+        # recorded (NULL) rather than a number nothing was cut to.
+        log_structured("INFO", "extract_no_reliable_beat", job_id=job_id, detail=str(exc)[:200])
+        tags = {**tags, "bpm": None}
+        _update_job_tags(job_id, tags)
+        return [], tags, {}, {}
     _update_job_tags(job_id, tags)
-
-    loops = list(extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars, grid=grid))
     segs = sorted({(loop["start_sec"], loop["end_sec"]) for loop in loops})
     energies = classify_energy(y_ref, sr, segs)
     sections = label_sections(segs, energies)
@@ -370,6 +380,10 @@ def record_loops(job_id, loops, tags, seg_label, seg_energy, bars, title=None) -
     800-point peaks, no R2 PUT. Measured per loop on the removed work: 27.9 ms of
     CPU, 2,116,844 B of R2 and 16,667 B of jsonb.
     """
+    if not loops:
+        # B5: a beatless job has no loops and a NULL bpm; the bar arithmetic below
+        # divides by bpm, so nothing past here may run for it.
+        return 0
     bar = 4 * 60.0 / tags["bpm"]
     duration_ms = int(bars * bar * 1000)
     # Loops inherit the job-level BPM/key (computed once from the reference stem).
@@ -1390,8 +1404,9 @@ async def _run_pipeline(job_id: str) -> None:
             extract_and_tag, job_id, stem_paths, requested_stems, bars
         )
         # Y1.1: Chord recognition (feature-flagged). Runs AFTER extract_and_tag succeeds: a
-        # beatless / too-short track fails the job there, and must do so BEFORE the $0.20
-        # Klangio request is made, not after. Default provider
+        # too-short track fails the job there, and must do so BEFORE the $0.20 Klangio
+        # request is made, not after. A beatless / rubato track does NOT fail there (B5):
+        # it returns 0 loops and its chords ARE run, because stems + chords is what it gets. Default provider
         # per the Y1 decision record is 'klangio'. Set CHORDS_PROVIDER='' to
         # DISABLE — useful for fixture / Gate-2 runs that must not call the
         # provider. Failures here NEVER fail the pipeline: chords are an optional
@@ -1405,7 +1420,14 @@ async def _run_pipeline(job_id: str) -> None:
                 _maybe_run_chord_recognition, job_id, stem_paths, requested_stems
             )
 
-        await emit_event(job_id, "extracting", "completed", pct=100)
+        await emit_event(
+            job_id,
+            "extracting",
+            "completed",
+            pct=100,
+            # B5: say WHY there are no loops, so the job page can explain it.
+            detail=None if loops else {"loops": 0, "reason": "no_reliable_beat"},
+        )
 
         await set_status(job_id, "uploading")
         await emit_event(job_id, "uploading", "started", pct=90)

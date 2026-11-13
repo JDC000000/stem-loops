@@ -1176,7 +1176,11 @@ export function unavailableMessage(reason: ChordUnavailableReason): string {
     case 'too_short':
       return 'Chords aren\u2019t available for this track: it\u2019s too short for chord detection. Your stems and loops are unaffected.';
     case 'provider_failed':
-      return 'Chord detection failed for this track. Your stems and loops are unaffected.';
+      // Written for a provider error (5xx, FAILED, an unreadable body) AND, on workers
+      // before the at-cap change, for the monthly Klangio cap. Neither is about the song,
+      // and "failed for this track" invited a re-upload that spends a credit for the
+      // same result, so the copy says where the problem is and that re-uploading won't fix it.
+      return 'Chord detection didn\u2019t return a result for this track. This is usually on our side rather than your song, so uploading it again won\u2019t help right now. Your stems and loops are unaffected.';
     case 'not_attempted':
       return 'Chord detection wasn\u2019t run for this track.';
     case 'load_failed':

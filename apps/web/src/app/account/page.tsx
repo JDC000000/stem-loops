@@ -59,7 +59,7 @@ export default async function AccountPage() {
         {ent.ok ? (
           <>
             <p style={{ margin: '0 0 4px', color: 'var(--text-primary)' }}>
-              <strong>{ent.data.plan_code}</strong>
+              <strong>{({ free: 'Free', pro: 'Pro', studio: 'Studio' } as Record<string, string>)[ent.data.plan_code] ?? ent.data.plan_code}</strong>
             </p>
             {/* Two independent fixes meet on this line, and both are needed.
 
@@ -78,8 +78,8 @@ export default async function AccountPage() {
                 100000 sentinel and that branch could only ever lie. Always
                 show used / quota, which is what checkMonthlyQuota() enforces. */}
             <p style={muted}>
-              Renews / ends: {fmt(ent.data.period_end)} · Monthly allowance used: {ent.data.jobs_used ?? 0}
-              {` / ${ent.data.jobs_quota ?? '—'}`}
+              Period ends: {fmt(ent.data.period_end)} · Monthly allowance used: {ent.data.jobs_used ?? 0}
+              {` of ${ent.data.jobs_quota ?? '—'}`}
             </p>
           </>
         ) : (
@@ -123,14 +123,14 @@ export default async function AccountPage() {
         {jobs === null ? (
           <p style={muted}>Jobs are temporarily unavailable.</p>
         ) : jobs.length === 0 ? (
-          <p style={muted}>No jobs yet. <a href="/">Extract some loops</a></p>
+          <p style={muted}>No jobs yet. <a href="/">Start a new song →</a></p>
         ) : (
           <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
             {jobs.map((j) => (
               <li key={j.id}>
                 <a href={`/jobs/${j.id}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, minHeight: 44, alignItems: 'center', textDecoration: 'none', color: 'var(--text-primary)' }}>
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{jobLabel(j)}</span>
-                  <span style={{ ...muted, whiteSpace: 'nowrap' }}>{j.status} · {fmt(j.created_at)}</span>
+                  <span style={{ ...muted, whiteSpace: 'nowrap' }}>{({ done: 'Done', failed: 'Failed' } as Record<string, string>)[j.status] ?? 'In progress'} · {fmt(j.created_at)}</span>
                 </a>
               </li>
             ))}

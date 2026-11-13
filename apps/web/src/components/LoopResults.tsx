@@ -146,11 +146,11 @@ export function LoopResults({
     <section className="loop-results" style={{ width: '100%', maxWidth: 960 }}>
       <header style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 24, color: 'var(--text-primary)' }}>
+          <h2 style={{ margin: 0, fontSize: 24, color: 'var(--text-primary)' }}>
             {cutLoops.length ? 'Loops ready' : 'Loops'}
-          </h1>
+          </h2>
           <p style={{ margin: '4px 0 0', color: 'var(--text-muted)' }}>
-            {cutLoops.length ? `${cutLoops.length} loops · ` : ''}
+            {cutLoops.length ? `${cutLoops.length} ${cutLoops.length === 1 ? 'loop' : 'loops'} · ` : ''}
             {job.bpm} BPM · {job.musical_key}
           </p>
         </div>
@@ -167,7 +167,7 @@ export function LoopResults({
               border: 'none', borderRadius: 10,
             }}
           >
-            {cutting ? 'Cutting…' : `✂ Cut ${pending} loops`}
+            {cutting ? 'Cutting…' : `Cut ${pending} ${pending === 1 ? 'loop' : 'loops'}`}
           </button>
         ) : (
           <button
@@ -182,7 +182,7 @@ export function LoopResults({
               border: 'none', borderRadius: 10,
             }}
           >
-            {zipping ? 'Zipping…' : '⬇ Download All (ZIP)'}
+            {zipping ? 'Zipping…' : 'Download all (ZIP)'}
           </button>
         )}
       </header>
@@ -190,8 +190,8 @@ export function LoopResults({
       {pending > 0 && (
         <p data-testid="cut-explainer" style={{ margin: '12px 0 0', color: 'var(--text-muted)', fontSize: 14 }}>
           {cutting
-            ? `Cutting ${pending} 24-bit WAVs from this song's stems. This takes a moment.`
-            : `This song has ${pending} loops mapped out. The 24-bit WAVs are made when you ask for them, so nothing is encoded until you press the button.`}
+            ? `Cutting ${pending} 24-bit ${pending === 1 ? 'WAV' : 'WAVs'} from this song’s stems. This takes a moment.`
+            : `${pending} ${pending === 1 ? 'loop is' : 'loops are'} ready to cut. Press the button to make 24-bit WAVs you can download.`}
         </p>
       )}
       {cutError && (

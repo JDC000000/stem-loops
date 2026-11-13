@@ -177,7 +177,7 @@ test('buildChordEdit: tolerates a run with no class index', () => {
 // ---- completed-job tri-state rendering (what the user sees) -----------------
 test('completedJobStatus loading: LOADING pill + loading message, no timeline', () => {
   const s = completedJobStatus({ status: 'loading' });
-  assert.equal(s.pill, 'LOADING');
+  assert.equal(s.pill, 'Loading');
   assert.match(s.message, /Loading chords/);
   assert.equal(s.showTimeline, false);
 });
@@ -187,26 +187,26 @@ test('completedJobStatus ready with chords: JOB pill, timeline, no message', () 
     status: 'ready',
     observations: [{ startSec: 0, endSec: 2, label: 'C:maj', confidence: 1 }],
   });
-  assert.deepEqual(s, { pill: 'JOB', message: null, showTimeline: true });
+  assert.deepEqual(s, { pill: 'Ready', message: null, showTimeline: true });
 });
 
 test('completedJobStatus ready with zero chords: says so instead of an empty box', () => {
   const s = completedJobStatus({ status: 'ready', observations: [] });
-  assert.equal(s.pill, 'JOB');
+  assert.equal(s.pill, 'Ready');
   assert.match(s.message, /No chords were detected/);
   assert.equal(s.showTimeline, false);
 });
 
 test('completedJobStatus unavailable-too-long: tells the user the 5 minute limit', () => {
   const s = completedJobStatus({ status: 'unavailable', reason: 'too_long' });
-  assert.equal(s.pill, 'UNAVAILABLE');
+  assert.equal(s.pill, 'Unavailable');
   assert.match(s.message, /up to 5 minutes/);
   assert.equal(s.showTimeline, false);
 });
 
 test('completedJobStatus unavailable-provider-failed: says detection did not return, never LOADING', () => {
   const s = completedJobStatus({ status: 'unavailable', reason: 'provider_failed' });
-  assert.equal(s.pill, 'UNAVAILABLE');
+  assert.equal(s.pill, 'Unavailable');
   assert.match(s.message, /didn\u2019t return a result/);
 });
 

@@ -329,7 +329,7 @@ export async function POST(request: NextRequest) {
     // — it can't be reached from the UI, but this blocks a direct API call too.
     if (process.env.ALLOW_YOUTUBE_INPUT !== 'true') {
       return NextResponse.json(
-        { error_code: 'DOWNLOAD_INVALID_URL', message: 'YouTube input is not available yet.' },
+        { error_code: 'DOWNLOAD_INVALID_URL', message: 'YouTube links are paused right now. Upload the audio file instead.' },
         { status: 403 }
       );
     }
@@ -350,7 +350,7 @@ export async function POST(request: NextRequest) {
     const canonicalUrl = canonicalizeYoutubeUrl(url);
     if (!canonicalUrl) {
       return NextResponse.json(
-        { error_code: 'DOWNLOAD_INVALID_URL', message: 'That doesn’t look like a YouTube video link. Paste a full youtube.com or youtu.be URL.' },
+        { error_code: 'DOWNLOAD_INVALID_URL', message: 'That doesn’t look like a YouTube video link. Paste a full youtube.com or youtu.be link.' },
         { status: 400 }
       );
     }
@@ -553,6 +553,6 @@ export async function POST(request: NextRequest) {
     // onRequestError hook. Report it to Sentry explicitly, or it just vanishes.
     Sentry.captureException(err);
     console.error('POST /api/jobs error:', err);
-    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Something went wrong on our end. Please try again.' }, { status: 500 });
   }
 }

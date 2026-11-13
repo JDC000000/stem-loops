@@ -310,7 +310,7 @@ test('`encode_failed` is a FAULT with its own sentence, not the calm note', asyn
       assert.equal(p.phase(), 'load-error', 'an encode failure is being rendered as "no stems were kept"');
       assert.equal(p.banner(), ENCODE_FAILED_MESSAGE);
       assert.notEqual(p.banner(), NO_STEMS_MESSAGE);
-      assert.match(p.banner(), /Submitting the track again/, 'the user is not told how to retry');
+      assert.match(p.banner(), /add the track again/, 'the user is not told how to retry');
       assert.equal(p.retry(), null, 'a reload cannot fix an encode failure, so no retry is offered');
       assert.deepEqual(p.reports(), [], 'the worker reports encode failures once per job, not per page view');
       // the banner is an alert, not a status pill
@@ -413,7 +413,7 @@ test('a manifest 500 says a SERVER error — not "check your connection", which 
       assert.equal(p.phase(), 'load-error');
       assert.equal(p.banner(), MANIFEST_SERVER_ERROR_MESSAGE);
       assert.doesNotMatch(p.banner(), /Check your connection/, "a 500 was blamed on the user's connection");
-      assert.match(p.banner(), /on our side/);
+      assert.match(p.banner(), /on our end/);
       assert.ok(p.retry(), 'a 5xx is worth retrying');
     },
   );

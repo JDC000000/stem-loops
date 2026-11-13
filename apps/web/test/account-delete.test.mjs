@@ -165,6 +165,7 @@ test('DELETE /api/users/me — happy path: cancels Stripe, deletes auth user, au
     if (c[0] === 'tx') return `tx:${c[1]}`;
     if (c[0] !== 'query') return c[0];
     if (/INSERT/.test(c[1])) return 'query:audit';
+    if (/UPDATE\s+public\.jobs\b/.test(c[1])) return 'query:jobs_expire';
     if (/UPDATE/.test(c[1])) return 'query:tombstone';
     if (/delete_chord_edits_for_user/.test(c[1])) return 'query:chord_edits_erase';
     return 'query:select';
@@ -307,4 +308,48 @@ test('DELETE /api/users/me — tolerates users.deleted_at column absent (42703)'
   assert.equal(res.status, 204, 'tolerance path: tombstone attempt swallows 42703 and continues');
   assert.ok(names().includes('deleteAuthUser'));
   assert.equal(auditInserts().length, 1);
+});
+
+// W1 overnight 2026-11-12: deleting the account used to leave the user's live jobs
+// (audio, stems, loops; up to 24 h) in place with user_id flipped to NULL by the
+// FK's ON DELETE SET NULL. An ownerless job is the ANONYMOUS posture: any link
+// holder may then cut its loops and any Studio account may sign its full-length
+// WAVs, which the owner's own job never allowed. The deletion page promises the
+// job history goes. The route must expire the user's jobs (every job route treats
+// expires_at <= now() as gone; the worker's sweep then removes the objects) and
+// must do it INSIDE the erase transaction, so a failed Stripe cancel leaves them.
+const jobsExpiry = () =>
+  globalThis.__ad.calls.filter((c) => c[0] === 'query' && /UPDATE\s+public\.jobs\b/i.test(c[1]));
+
+test('DELETE /api/users/me — expires the user\'s live jobs inside the erase tx, before deleteAuthUser', async () => {
+  const mod = await loadRoute({ subIds: ['sub_a'] });
+  const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
+  assert.equal(res.status, 204);
+
+  const exp = jobsExpiry();
+  assert.equal(exp.length, 1, 'expected exactly one UPDATE public.jobs (expire the user\'s jobs)');
+  assert.match(exp[0][1], /SET\s+expires_at\s*=\s*now\(\)/i);
+  assert.match(exp[0][1], /WHERE\s+user_id\s*=\s*\$1::uuid/i);
+  assert.match(exp[0][1], /expires_at\s*>\s*now\(\)/i, 'only live jobs; an already-expired one keeps its expiry');
+  assert.deepEqual(exp[0][2], [USER.user_id]);
+
+  const calls = globalThis.__ad.calls;
+  const idx = (pred) => calls.findIndex(pred);
+  const iExp = idx((c) => c[0] === 'query' && /UPDATE\s+public\.jobs\b/i.test(c[1]));
+  const iBegin = idx((c) => c[0] === 'tx' && c[1] === 'begin');
+  const iCommit = idx((c) => c[0] === 'tx' && c[1] === 'commit');
+  const iDel = idx((c) => c[0] === 'deleteAuthUser');
+  assert.ok(iBegin < iExp && iExp < iCommit, 'job expiry must be inside the erase transaction');
+  assert.ok(iExp < iDel, 'job expiry must happen before the auth user (and the FK SET NULL) goes');
+});
+
+test('DELETE /api/users/me — Stripe failure rolls back the job expiry too (jobs stay live, 502)', async () => {
+  const mod = await loadRoute({ subIds: ['sub_a'], cancelError: { code: 'api_error', statusCode: 500 } });
+  const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
+  assert.equal(res.status, 502);
+  const calls = globalThis.__ad.calls;
+  const iExp = calls.findIndex((c) => c[0] === 'query' && /UPDATE\s+public\.jobs\b/i.test(c[1]));
+  const iRollback = calls.findIndex((c) => c[0] === 'tx' && c[1] === 'rollback');
+  assert.ok(iExp >= 0 && iRollback > iExp, 'the expiry ran inside the tx that rolled back');
+  assert.ok(!calls.some((c) => c[0] === 'deleteAuthUser'));
 });

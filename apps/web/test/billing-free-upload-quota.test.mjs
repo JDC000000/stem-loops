@@ -510,6 +510,7 @@ async function loadRoute(opts) {
     .replace(/from ['"]@\/lib\/billing\/credits['"]/g, `from '${s.credits}'`)
     .replace(/from ['"]@\/lib\/billing\/rate-limit['"]/g, `from '${s.rate}'`)
     .replace(/from ['"]@\/lib\/admission['"]/g, `from '${s.admission}'`)
+    .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${dataUrl(toJs(readFileSync(join(WEB, 'src/lib/error-copy.ts'), 'utf8')))}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${s.db}'`)
     .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${s.clientIp}'`)
     .replace(/from ['"]@\/lib\/youtube-url['"]/g, `from '${s.ytUrl}'`)

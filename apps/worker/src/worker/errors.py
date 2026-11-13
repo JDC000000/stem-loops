@@ -39,13 +39,13 @@ class FetchPausedError(DownloadBlockedError):
     Same error_code as its parent (still one of the typed classes); the message keeps the
     drop-a-file path in front of the user."""
 
-    user_message = "YouTube links are paused right now. Drop your own audio file instead."
+    user_message = "YouTube links are paused right now. Upload the audio file instead."
 
 
 class DownloadInvalidUrlError(StemLoopsError):
     error_code = "DOWNLOAD_INVALID_URL"
     user_message = (
-        "That doesn't look like a YouTube link. Paste a full youtube.com or youtu.be URL."
+        "That doesn't look like a YouTube link. Paste a full youtube.com or youtu.be link."
     )
 
 
@@ -60,7 +60,7 @@ class LiveStreamNotSupportedError(DownloadInvalidUrlError):
 
 class DownloadAgeRestrictedError(StemLoopsError):
     error_code = "DOWNLOAD_AGE_RESTRICTED"
-    user_message = "This video is age-restricted and can't be processed."
+    user_message = "This video is age-restricted, so we can't use it."
 
 
 class DownloadPrivateError(StemLoopsError):
@@ -72,7 +72,7 @@ class VideoBlocklistedError(DownloadPrivateError):
     """SL21 blocklist hit (takedown / rightsholder / manual): refused before any fetch.
     Same error_code as DOWNLOAD_PRIVATE; the message is deliberately neutral."""
 
-    user_message = "This video isn't available here. You can drop your own audio file instead."
+    user_message = "This video isn't available here. You can upload your own audio file instead."
 
 
 class SeparationFailedError(StemLoopsError):
@@ -82,19 +82,21 @@ class SeparationFailedError(StemLoopsError):
 
 class ExtractionFailedError(StemLoopsError):
     error_code = "EXTRACTION_FAILED"
-    user_message = "We couldn't find clean loops in this audio (it may be too short or beatless)."
+    user_message = (
+        "This track is too short or has no steady beat. Try a longer track with a clear beat."
+    )
 
 
 class UploadFailedError(StemLoopsError):
     error_code = "UPLOAD_FAILED"
-    user_message = "We separated your stems but couldn't save them. Please retry."
+    user_message = "We separated your stems but couldn't save them. Add the track again to retry."
 
 
 class UploadInvalidError(StemLoopsError):
     error_code = "UPLOAD_INVALID"
     user_message = (
-        "That file type isn't supported. Upload an audio or video file "
-        "(mp3, wav, m4a, flac, ogg, aac, or mp4/mov)."
+        "We couldn't read that file. Upload an audio or video file, "
+        "such as mp3, wav, m4a, flac or mp4."
     )
 
 

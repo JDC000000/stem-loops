@@ -233,10 +233,12 @@ const EXPECTED = {
   ],
   pro: [
     '50 tracks converted to play-along per month',
+    'Works with audio files you upload',
     'Loop download — 24-bit WAV',
   ],
   studio: [
     '150 tracks converted to play-along per month',
+    'Works with audio files you upload',
     'Loop download — 24-bit WAV',
   ],
 };
@@ -294,6 +296,7 @@ test('a plan with no implemented service claims no link import, and no loss', ()
   const bullets = features({ ...PLANS.pro, services: ['spotify'] });
   assert.deepEqual(bullets, [
     '50 tracks converted to play-along per month',
+    'Works with audio files you upload',
     'Loop download — 24-bit WAV',
   ]);
   // And specifically NOT the old negative bullet, which advertised paying

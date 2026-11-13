@@ -60,7 +60,8 @@ export function quotaLine(p: PlanCopyInput): string {
  *
  *   - the quota sentence is read off the column (above);
  *   - link import is named only for implemented services the row actually
- *     carries, and its ABSENCE is not rendered as a bullet. The old code
+ *     carries. Its ABSENCE is rendered only as the neutral 'Works with audio
+ *     files you upload' (audit F14), never as a loss. The old code
  *     pushed "File uploads only (no link import)" on the paid tiers, which
  *     turned $4.99 into an advertised loss of a free-tier feature;
  *   - 24-bit WAV loop download is listed for every plan because that is the
@@ -80,6 +81,9 @@ export function features(p: PlanCopyInput): string[] {
   out.push(quotaLine(p));
   const named = p.services.map((s) => SERVICE_LABEL[s]).filter((l): l is string => !!l);
   if (named.length) out.push(`Link import: ${named.join(', ')}`);
+  // No implemented link service (Pro and Studio today): say what the plan works on, neutrally.
+  // Never a negative bullet: pricing-features-table.test.mjs bans "uploads only".
+  else out.push('Works with audio files you upload');
   out.push('Loop download — 24-bit WAV');
   return out;
 }

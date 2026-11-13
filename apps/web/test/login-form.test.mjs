@@ -87,7 +87,7 @@ test('the one-time-link note never says the link creates an account', () => {
 });
 
 const createButton = (html) =>
-  strip(html).match(/<button type="button"([^>]*)>New here\? Create an account<\/button>/);
+  strip(html).match(/<button type="button"([^>]*)>New here\? Create account<\/button>/);
 
 test('sign-in mode offers Create account as a full-width button that is not disabled', () => {
   const m = createButton(render({}));

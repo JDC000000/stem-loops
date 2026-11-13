@@ -2,4 +2,4 @@
 export const CONTACT_EMAIL = 'joncartwright00@gmail.com';
 export const CONTACT_URL = `mailto:${CONTACT_EMAIL}`;
 export const CONTACT_LABEL = CONTACT_EMAIL;
-export const LEGAL_UPDATED = '10 November 2026';
+export const LEGAL_UPDATED = '13 November 2026';

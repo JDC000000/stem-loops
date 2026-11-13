@@ -12,7 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { renderPage } from './helpers/render-landing-page.mjs';
-import { assertNoBannedClaims, assertSays, section, PROCESSORS } from './legal-copy-shared.mjs';
+import { assertNoBannedClaims, assertSays, section, phrase, PROCESSORS } from './legal-copy-shared.mjs';
 
 const PRIVACY = 'app/(landing)/privacy/page.tsx';
 
@@ -47,18 +47,33 @@ test('privacy: the job-link fragments are the un-overstated ones', async () => {
   const page = await renderPage(PRIVACY);
   // THIS TEST USED TO PIN THE FALSE VERSION. It required the words "and an account", which
   // made a true sentence un-shippable until the gate was changed — the worst shape a gate
-  // can take. What is actually true:
-  //   - src/app/jobs/[id]/page.tsx:32-33 redirects a signed-out visitor. That is the PAGE.
-  //   - src/app/api/jobs/[id]/route.ts, .../stems/route.ts and .../play-chords/route.ts
-  //     contain ZERO getUser() calls between them. The stems route returns one presigned R2
-  //     URL per stem to anyone holding the UUID, behind an IP rate limit and nothing else,
-  //     and its header names a leaked UUID as the threat.
-  //   - A job is not owner-scoped either: the SELECT has no user_id filter, the web tier
-  //     connects as stemloops_app, and `jobs` carries no auth.uid() policy
-  //     (apps/worker/migrations/009_rls_catchup.sql:22-24).
-  // So the link IS the credential, and "and an account" is banned above.
-  assertSays(assert, page, 'A job\u2019s link is the only thing protecting it', 'privacy');
+  // can take. What is actually true (SEC-1, src/lib/job-access.ts):
+  //   - src/app/jobs/[id]/page.tsx redirects a signed-out visitor. That is the PAGE only.
+  //   - api/jobs/[id], .../stems and .../play-chords enforce OWNERSHIP: a job with a user_id
+  //     is served to that user alone (404 otherwise). A job with user_id NULL (started
+  //     without an account) has no owner, so its link is its only credential.
+  //   - Presigned file URLs already handed out cannot be recalled, and last up to 24 hours.
+  // test/job-access-routes.test.mjs runs the real routes; this test pins what the page SAYS.
+  assertSays(assert, page, 'protected only by its link', 'privacy');
   assertSays(assert, page, 'with no account at all', 'privacy');
+  assertSays(assert, page, 'can be opened only by your account', 'privacy');
+  assertSays(assert, page, 'cannot be recalled once issued', 'privacy');
+});
+
+test('privacy: the 24-hour deletion sentence names the chord track, as a whole sentence', async () => {
+  const page = await renderPage(PRIVACY);
+  // PIN THE SENTENCE, not a fragment. The next test asserts only 'deleted after 24 hours',
+  // which survives deleting "the estimated chord track" — the clause PR #214 made true by
+  // sweeping jobs/<id>/play.chords.json with the rest. A fragment-presence assertion is not a
+  // gate. Scoped to the "How long" section and ^/$-anchored on BOTH normalisations, so a
+  // sentence that merely contains these words elsewhere, or one with the clause removed,
+  // does not satisfy it. The 'i' flag is dropped: casing is part of the sentence.
+  const how = section(page, 'How long', 'Account details are not');
+  const sentence =
+    'How long Uploaded files, fetched audio, stems, loops, the estimated chord track and the job\u2019s own row are deleted after 24 hours.';
+  const re = new RegExp(`^${phrase(sentence).source}\\s*$`);
+  assert.match(how.textSpaced.trim(), re, 'privacy (tags\u2192space): the 24-hour sentence changed');
+  assert.match(how.textTight.trim(), re, 'privacy (tags\u2192nothing): the 24-hour sentence changed');
 });
 
 test('privacy: a fragment of each known 24-hour survivor is still present', async () => {

@@ -40,7 +40,7 @@ import sentry_sdk
 from psycopg.types.json import Json
 
 from . import tmpdirs
-from .chord_source import ChordSubmitUncertain
+from .chord_source import ChordQuotaExceeded, ChordSubmitUncertain
 from .classifier.energy_classifier import classify_energy
 from .classifier.section_labeler import label_sections
 from .downloader import download_audio
@@ -1057,6 +1057,15 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             stem=stem_name,
             r2_key=r2_key,
         )
+    except ChordQuotaExceeded as exc:
+        # Klangio monthly cap (klangio._reserve_quota) or a 402: NO request was sent for this
+        # track, so do not tell the user detection "failed for this track" -- that invites a
+        # retry that costs another credit and hits the same cap until the cycle resets.
+        # 'not_attempted' is the truthful existing reason. Ops still see it: ERROR
+        # klangio_quota (provider), this WARN, and Sentry.
+        log_structured("WARN", "chords_skipped_quota", job_id=job_id, error=str(exc)[:200])
+        sentry_sdk.capture_exception(exc)
+        _write_chords_tombstone(job_id, "not_attempted")
     except ChordSubmitUncertain as exc:
         # A previous run may already have paid for this job but lost the id: skip rather than
         # risk a second $0.20. Tombstone reason stays one the web loader maps.

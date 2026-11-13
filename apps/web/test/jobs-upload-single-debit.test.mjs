@@ -257,7 +257,11 @@ const dbStub = dataUrl(`
     }
     if (/FROM v_credit_balance/.test(s)) return ok([{ credits_remaining: balance(params[0]) }]);
     if (/FROM trial_grants/.test(s)) return ok();
-    if (/FROM plans/.test(s)) return ok(PLANS[params[0]] ? [PLANS[params[0]]] : []);
+    if (/FROM plans/.test(s)) {
+      // A test may override the plan rows (e.g. a zero-quota fixture); default = PLANS.
+      const P = f.plans ?? PLANS;
+      return ok(P[params[0]] ? [P[params[0]]] : []);
+    }
     throw new Error('fake db: unrecognised SQL: ' + s.slice(0, 120));
   }
 
@@ -347,7 +351,7 @@ const post = async () => {
  *  the balance is derived, as in production. */
 function seed({
   plan = 'free', credits = 0, jobsUsed = 0, billing = false,
-  periodStart = CUR_START, periodEnd = CUR_END, ipWindow = 0,
+  periodStart = CUR_START, periodEnd = CUR_END, ipWindow = 0, plans = undefined,
 }) {
   globalThis.__fake = {
     users: [USER],
@@ -363,6 +367,7 @@ function seed({
     consumption: [],
     jobs: [], locks: [], bumps: [], rolls: [], sql: [],
     ipWindow,
+    plans,
   };
   if (billing) process.env.BILLING_ENFORCED = 'true';
   else delete process.env.BILLING_ENFORCED;
@@ -519,6 +524,45 @@ test('billing off: last credit spent, next upload inside the cache TTL -> allowa
   const b = await post(); // same cache window: the HTTP repro, 1 s apart
   assert.deepEqual([a.status, b.status], [201, 201], JSON.stringify(b.body));
   assert.deepEqual(ledger(), { credits: 0, jobs_used: 1, jobs: 2 });
+});
+
+// Review of #236 (M-9): pin the fallback's upper boundary, its lock, and the
+// zero-quota guard, each of which a mutant of the fix got past.
+test('billing off: lost the last-credit race at quota-1 -> the LAST allowance unit serves it; the next is refused', async () => {
+  seed({ plan: 'free', credits: 1, jobsUsed: 4 }); // free quota 5: exactly one unit left
+  await ent.getEntitlementSnapshot(USER);
+  f().consumption.push({ user_id: USER, job_id: OTHER_JOB });
+  const a = await post();
+  assert.equal(a.status, 201, `expected 201, got ${a.status} ${JSON.stringify(a.body)}`);
+  assert.deepEqual(ledger(), { credits: 0, jobs_used: 5, jobs: 1 });
+  const b = await post(); // same cache window: snapshot still says 1 credit
+  assert.equal(b.status, 402);
+  assert.equal(b.body.error_code, 'FREE_MONTHLY_QUOTA_EXHAUSTED');
+  assert.deepEqual(ledger(), { credits: 0, jobs_used: 5, jobs: 1 }, 'the refusal debits nothing');
+});
+
+test('billing off: the allowance fallback takes the per-(user, period) quota lock', async () => {
+  seed({ plan: 'free', credits: 1, jobsUsed: 0 });
+  await ent.getEntitlementSnapshot(USER);
+  f().consumption.push({ user_id: USER, job_id: OTHER_JOB });
+  const r = await post();
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  // rollPeriodIfStale() takes it once; the capped bump must take it again.
+  assert.deepEqual(quotaLocks(), [USER, USER]);
+});
+
+test('billing off: zero-quota plan, no entitlements row -> the fallback refuses rather than seed jobs_used = 1', async () => {
+  seed({
+    plan: 'free', credits: 1, jobsUsed: null,
+    plans: { ...PLANS, free: { ...PLANS.free, monthly_job_quota: 0 } },
+  });
+  await ent.getEntitlementSnapshot(USER);
+  f().consumption.push({ user_id: USER, job_id: OTHER_JOB });
+  const r = await post();
+  assert.equal(r.status, 402, JSON.stringify(r.body));
+  assert.equal(r.body.error_code, 'FREE_MONTHLY_QUOTA_EXHAUSTED');
+  assert.deepEqual(Object.keys(f().ents), [], 'no quota row brought into existence');
+  assert.deepEqual(ledger(), { credits: 0, jobs_used: 0, jobs: 0 });
 });
 
 test('billing enforced, free, 0 credits: refused, nothing debited', async () => {

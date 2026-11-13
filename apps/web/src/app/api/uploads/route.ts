@@ -68,6 +68,6 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     Sentry.captureException(err);
     console.error('POST /api/uploads error:', err);
-    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Something went wrong on our end. Please try again.' }, { status: 500 });
   }
 }

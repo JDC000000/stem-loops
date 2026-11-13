@@ -1466,6 +1466,34 @@ async def _run_pipeline(job_id: str) -> None:
         raise
 
 
+# Failures that are OUR fault (provider outage, our storage, an unanticipated exception):
+# the credit the web route debited for this job is returned. See _REFUND_SQL.
+_OUR_FAULT_CODES = ("SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR")
+_REFUND_PROVIDER = "worker_job_failed"
+# One credit back for a failed credit-funded job when either
+#   * the failure is ours (_OUR_FAULT_CODES), or
+#   * no paid provider call was made (replicate_prediction_id IS NULL: a corrupt, empty or
+#     over-length upload rejected before separation) -- nothing was spent, so this cannot be
+#     farmed.
+# NOT refunded: an input-caused failure AFTER paid separation (EXTRACTION_FAILED on a
+# beatless / too-short track); refunding that would make Replicate spend free to trigger.
+# Idempotent: credit_adjustments is UNIQUE (provider, provider_event_id) and the job id is
+# the event id, so a reaper rerun that fails again cannot refund twice. Only jobs with a
+# credit_consumption row are touched (quota-funded and anonymous jobs spent no credit).
+# reason='adjustment' (positive delta) so it can never collide with Stripe 'refund'
+# clawbacks, which are negative and keyed by charge.
+_REFUND_SQL = """
+INSERT INTO credit_adjustments (user_id, credits_delta, reason, provider, provider_event_id)
+SELECT cc.user_id, 1, 'adjustment', %(provider)s, cc.job_id::text
+  FROM credit_consumption cc
+  JOIN jobs j ON j.id = cc.job_id
+ WHERE cc.job_id = %(job_id)s
+   AND (%(our_fault)s OR j.replicate_prediction_id IS NULL)
+ON CONFLICT (provider, provider_event_id) DO NOTHING
+RETURNING user_id
+"""
+
+
 async def _fail(job_id: str, error_code: str, user_message: str) -> None:
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
         await conn.execute(
@@ -1473,3 +1501,22 @@ async def _fail(job_id: str, error_code: str, user_message: str) -> None:
             (error_code, user_message, job_id),
         )
         await conn.commit()
+    try:
+        async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+            cur = await conn.execute(
+                _REFUND_SQL,
+                {
+                    "provider": _REFUND_PROVIDER,
+                    "job_id": job_id,
+                    "our_fault": error_code in _OUR_FAULT_CODES,
+                },
+            )
+            refunded = await cur.fetchone()
+            await conn.commit()
+        if refunded:
+            log_structured(
+                "INFO", "credit_refunded_failed_job", job_id=job_id, error_code=error_code
+            )
+    except Exception as exc:  # noqa: BLE001 — a refund problem must never mask the failure
+        log_structured("ERROR", "credit_refund_failed", job_id=job_id, error=str(exc)[:200])
+        sentry_sdk.capture_exception(exc)

@@ -11,6 +11,7 @@ import {
   checkBurstLimit,
   checkMonthlyQuota,
   bumpJobsUsed,
+  bumpJobsUsedWithinQuota,
   rollPeriodIfStale,
 } from '@/lib/billing/rate-limit';
 import {
@@ -18,6 +19,7 @@ import {
   enforceEntitlement,
   EntitlementError,
   billingEnforced,
+  FREE_QUOTA_EXHAUSTED_MESSAGE,
 } from '@/lib/billing/entitlements';
 import { consumeTrialInTx } from '@/lib/trial';
 import { consumeCreditInTx } from '@/lib/billing/credits';
@@ -104,9 +106,11 @@ export async function POST(request: NextRequest) {
       // users enforce the upload entitlement (Pro/Studio quota, or credits
       // for free-tier) BEFORE spending Replicate budget.
       let chargeCredit = false;
+      let allowanceQuota = 0;
       if (user) {
         try {
           const { snapshot: entSnap } = await enforceEntitlement('start_job_upload', user.user_id);
+          allowanceQuota = entSnap.jobs_quota;
           // Pro/Studio are unlimited (quota-metered); everyone else who got
           // past the gate is on the credit path and is charged below.
           //
@@ -227,8 +231,33 @@ export async function POST(request: NextRequest) {
               // authed UPLOAD branch. The link-ingest branches below still
               // debit a trial song AND an allowance unit; that path is gated
               // shut by ALLOW_YOUTUBE_INPUT and is not touched by this PR.
-              if (chargeCredit) await consumeCreditInTx(client, user.user_id, jobId);
-              else await bumpJobsUsed(client, user.user_id);
+              if (chargeCredit) {
+                try {
+                  await consumeCreditInTx(client, user.user_id, jobId);
+                } catch (err) {
+                  // chargeCredit came from a snapshot that may be up to 30 s
+                  // old. With billing NOT enforced, an account whose last
+                  // credit went to a concurrent request (or to its previous
+                  // upload inside the cache TTL) still has its monthly
+                  // allowance, and no credit can be bought — refusing here is
+                  // the very defect the predicate above exists to prevent.
+                  // Fall back to the allowance, capped under the quota lock
+                  // (the gates waived the quota because of the credit, so the
+                  // cap MUST be checked here). Billing enforced: unchanged.
+                  if (
+                    billingEnforced() ||
+                    !(err instanceof EntitlementError) ||
+                    err.code !== 'CREDIT_BALANCE_INSUFFICIENT'
+                  ) {
+                    throw err;
+                  }
+                  if (!(await bumpJobsUsedWithinQuota(client, user.user_id, allowanceQuota))) {
+                    throw new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', FREE_QUOTA_EXHAUSTED_MESSAGE);
+                  }
+                }
+              } else {
+                await bumpJobsUsed(client, user.user_id);
+              }
             }
             return r;
           })

@@ -111,7 +111,7 @@ function entitlementsStub({ planCode = 'free', enforce = { allow: true }, credit
     export const invalidateEntitlement = () => {};
     // Mirrors the real entitlements.ts export: read at CALL time, never
     // captured at module load, so a test can flip it around a single POST.
-    export const billingEnforced = () => process.env.BILLING_ENFORCED === 'true';
+    export const FREE_QUOTA_EXHAUSTED_MESSAGE = 'stub'; export const billingEnforced = () => process.env.BILLING_ENFORCED === 'true';
   `);
 }
 
@@ -138,7 +138,7 @@ function rateLimitStub({ burst = false, quota = false } = {}) {
       globalThis.__calls.push({ fn: 'checkMonthlyQuota', userId });
       return cfg.quota ? { kind: 'quota_exceeded', resets_at: '2099-01-01T00:00:00Z' } : null;
     };
-    export const bumpJobsUsed = async () => {};
+    export const bumpJobsUsedWithinQuota = async () => true; export const bumpJobsUsed = async () => {};
     export const rollPeriodIfStale = async () => {};
     export const BURST_WINDOW_MS = 60000;
     export const BURST_LIMIT_PER_USER = 3;

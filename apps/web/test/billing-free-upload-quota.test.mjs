@@ -425,7 +425,7 @@ function routeStubs({ planCode, credits, quotaDenied = false }) {
         return { allowed: true, snapshot: snap };
       };
       export const invalidateEntitlement = () => {};
-      export const billingEnforced = () => process.env.BILLING_ENFORCED === 'true';
+      export const FREE_QUOTA_EXHAUSTED_MESSAGE = 'stub'; export const billingEnforced = () => process.env.BILLING_ENFORCED === 'true';
     `),
     credits: dataUrl(`
       globalThis.__q = globalThis.__q || [];
@@ -441,7 +441,7 @@ function routeStubs({ planCode, credits, quotaDenied = false }) {
         globalThis.__q.push({ fn: 'checkMonthlyQuota' });
         return cfg.quotaDenied ? { kind: 'quota_exceeded', resets_at: '2099-01-01T00:00:00Z' } : null;
       };
-      export const bumpJobsUsed = async (_c, userId) => {
+      export const bumpJobsUsedWithinQuota = async () => true; export const bumpJobsUsed = async (_c, userId) => {
         globalThis.__q.push({ fn: 'incrementJobsUsed', userId });
       };
       export const rollPeriodIfStale = async (_c, userId) => {

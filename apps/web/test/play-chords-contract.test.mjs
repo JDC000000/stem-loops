@@ -54,6 +54,9 @@ async function loadRoute() {
     .replace(/from ['"]next\/server['"]/, `from '${next}'`)
     .replace(/import \* as Sentry from ['"]@sentry\/nextjs['"]/, `import * as Sentry from '${sentry}'`)
     .replace(/from ['"]@\/lib\/db['"]/, `from '${db}'`)
+    // Ownership is not what this file tests (test/job-access-routes.test.mjs runs the REAL helper);
+    // here it is stubbed open so this file's own subject stays isolated.
+    .replace(/from ['"]@\/lib\/job-access['"]/, `from '${dataUrl(`export const mayReadJob = async () => true;`)}'`)
     .replace(/from ['"]@\/lib\/r2['"]/, `from '${r2}'`);
   return import(dataUrl(js) + '#' + Math.random());
 }

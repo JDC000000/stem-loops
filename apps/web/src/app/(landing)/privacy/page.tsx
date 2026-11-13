@@ -124,9 +124,13 @@ export default function PrivacyPage() {
 
             <h2>Links to jobs</h2>
             <p>
-              A job’s link is the only thing protecting it. The player page asks you to sign in, but that gate is on the page
-              alone — the job’s audio and stems can be fetched by anyone holding the link, with no account at all, until the
-              job is deleted. So don’t share a link you want to keep private.
+              A job you start without an account is protected only by its link: anyone holding the link can fetch its audio
+              and stems, with no account at all, until the job is deleted. So don’t share a link you want to keep private.
+            </p>
+            <p>
+              A job you start while signed in can be opened only by your account. For anyone else, its link behaves as if
+              the job did not exist. The file links we hand out for a job last up to 24 hours and cannot be recalled once
+              issued, so a file link that someone already has keeps working until it expires.
             </p>
 
             <h2>Contact</h2>

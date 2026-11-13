@@ -56,6 +56,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getUser } from '@/lib/auth/supabase';
 import { db } from '@/lib/db';
+import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -92,6 +93,11 @@ function badRequest(code: string, message: string) {
 }
 
 export async function POST(req: NextRequest) {
+  // CSRF: same-origin browser requests only (src/lib/same-origin.ts).
+  const originRefusal = crossOriginRefusal(req);
+  if (originRefusal) {
+    return NextResponse.json({ error: originRefusal, code: BAD_ORIGIN }, { status: 403 });
+  }
   const user = await getUser();
   if (!user) {
     return NextResponse.json(

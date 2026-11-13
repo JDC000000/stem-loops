@@ -59,6 +59,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { WEB, dataUrl } from './helpers/billing-harness.mjs';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginReq } from './helpers/same-origin.mjs';
 
 const toJs = (file) =>
   ts.transpileModule(readFileSync(join(WEB, file), 'utf8'), {
@@ -173,6 +174,7 @@ async function loadRoutes() {
   const supabaseAuth = dataUrl(`export const getUser = async () => null;`);
   const wire = (js) =>
     js
+      .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
       .replace(/from ['"]next\/server['"]/g, `from '${next}'`)
       .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentry}'`)
       .replace(/from ['"]@\/lib\/db['"]/g, `from '${db}'`)
@@ -361,14 +363,14 @@ test('GET /api/jobs/:id/loops: a live job is 200 with its counts (the predicate 
 });
 
 test('POST /api/jobs/:id/loops: an EXPIRED job is a 404 and queues no cut', async () => {
-  const res = await routes.loops.POST({}, { params: { id: EXPIRED } });
+  const res = await routes.loops.POST(sameOriginReq(), { params: { id: EXPIRED } });
   assert.equal(res.status, 404, `expired job answered ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
   assert.equal(res.body.error_code, 'NOT_FOUND');
   assert.deepEqual(store.loop_requests, [], 'a cut was queued against an expired job');
 });
 
 test('POST /api/jobs/:id/loops: a live job with every loop already cut is an idempotent 200', async () => {
-  const res = await routes.loops.POST({}, { params: { id: LIVE } });
+  const res = await routes.loops.POST(sameOriginReq(), { params: { id: LIVE } });
   assert.equal(res.status, 200, JSON.stringify(res.body).slice(0, 200));
   assert.equal(res.body.loops_pending, 0);
 });

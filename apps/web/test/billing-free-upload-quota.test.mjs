@@ -29,6 +29,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginHeaders } from './helpers/same-origin.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = join(WEB, '../..');
@@ -508,13 +509,14 @@ async function loadRoute(opts) {
     .replace(/from ['"]@\/lib\/youtube-url['"]/g, `from '${s.ytUrl}'`)
     .replace(/from ['"]@\/lib\/upload['"]/g, `from '${s.upload}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${s.sentry}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${s.next}'`);
   return import(dataUrl(js) + '#' + Math.random());
 }
 
 const uploadReq = () => ({
   json: async () => ({ jobId: JOB_ID, uploadKey: `${JOB_ID}/_input.mp3`, loop_length_bars: 4 }),
-  headers: new Map(),
+  headers: sameOriginHeaders(),
 });
 
 test('route, switch OFF: free 0-credit upload returns 201, charges nothing, counts the job', async () => {

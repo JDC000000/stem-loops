@@ -32,7 +32,7 @@ RESULT = [[0.0, 2.0, "C:maj"], [2.0, 4.0, "G:7"]]
 DB = os.environ.get("DATABASE_URL")
 # jobs.id is a uuid column. Fixed (not random) so a failure names its scenario. Anything that
 # reaches a real DB statement (CI sets DATABASE_URL) rejects a non-uuid id like "job-ok".
-JOB_BEATLESS = "00000000-0000-4000-8000-0000000b0001"  # beatless track: extract fails
+JOB_BEATLESS = "00000000-0000-4000-8000-0000000b0001"  # extract fails (too short; a beatless track no longer fails, B5)
 JOB_OK = "00000000-0000-4000-8000-0000000b0002"  # chords run after extract
 JOB_OFF = "00000000-0000-4000-8000-0000000b0003"  # CHORDS_PROVIDER unset
 _DB_OK = bool(DB) and any(h in (DB or "") for h in ("127.0.0.1", "localhost"))
@@ -384,7 +384,7 @@ def _orchestrate(monkeypatch: pytest.MonkeyPatch, *, extract_raises: Exception |
     monkeypatch.setattr(pipeline, "_fetch_job", lambda _j: row)
     monkeypatch.setattr(pipeline, "set_status", _async(lambda *a, **k: None))
     monkeypatch.setattr(pipeline, "emit_event", _async(lambda *a, **k: None))
-    monkeypatch.setattr(pipeline, "_prepare_upload_source", lambda *a: "https://audio")
+    monkeypatch.setattr(pipeline, "_prepare_upload_source", lambda *a: ("https://audio", None))
     monkeypatch.setattr(pipeline, "submit_or_reattach", lambda *a: "pred")
     urls = {n: f"https://cdn/{n}.wav" for n in REAL_6S_STEMS}
     monkeypatch.setattr(pipeline, "poll_until_done", lambda *a: (urls, 0.1))
@@ -427,7 +427,7 @@ def _async(fn):
     return run
 
 
-def test_beatless_track_fails_before_any_chord_request(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failed_extract_fails_before_any_chord_request(monkeypatch: pytest.MonkeyPatch) -> None:
     from worker.errors import ExtractionFailedError
 
     monkeypatch.setenv("CHORDS_PROVIDER", "klangio")
@@ -478,7 +478,7 @@ def test_chords_disabled_still_fetches_all_six_stems_for_the_mixer(
     `_chords_enabled()` early return is stubbed out. An assertion on `calls` here
     would be testing the stub. (I tried it; it failed, correctly.) The no-spend
     guarantees live in this file's own `test_single_harmonic_stem_spends_nothing`
-    and `test_beatless_track_fails_before_any_chord_request`.
+    and `test_failed_extract_fails_before_any_chord_request`.
     """
     monkeypatch.setenv("CHORDS_PROVIDER", "")
     _, got, _, asyncio = _orchestrate(monkeypatch, extract_raises=None)

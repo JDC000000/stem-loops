@@ -22,19 +22,20 @@ import type { Metadata } from 'next';
 import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
 import { MAX_TRACK_SEC } from '@/lib/play/types';
 
-// Story 1.4: tracks are capped. The copy says the cap in minutes, derived from the same
-// constant the player enforces, so the two can never drift apart.
+// Story 1.4 (revised 2026-11-14): any song is accepted and its FIRST MAX_TRACK_MIN minutes are
+// used — a longer track is trimmed on our end and still converted. The copy says the figure in minutes,
+// derived from the same constant the player enforces, so the two can never drift apart.
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
 const OG_TITLE = 'Paste a song. Play along.';
-const OG_DESC = 'Six stems with faders, mute and solo, and a chord track that moves with the song. Loop a section until you have it.';
+const OG_DESC = 'Six stems with faders, mute and solo, and a chord track that moves with the song. Loop a detected section until you have it.';
 const OG_ALT =
   'Four chord names, Gm, E flat, B flat and F, above six mixer channels for drums, bass, vocals, guitar, keys and other, with the guitar fader pulled down and muted, under the headline Paste a song. Play along.';
 
 export const metadata: Metadata = {
   title: { absolute: 'stem-loops: play along with any song, stem by stem' },
   description:
-    `Split a song into six stems with faders, mute and solo, and a chord track that moves with the song. Loop any section. Tracks up to ${MAX_TRACK_MIN} minutes, in Chrome on the desktop.`,
+    `Split a song into six stems with faders, mute and solo, and a chord track that moves with the song. Loop a detected section. Uses the first ${MAX_TRACK_MIN} minutes of any song, in Chrome on the desktop.`,
   alternates: { canonical: '/' },
   openGraph: {
     type: 'website',
@@ -63,11 +64,11 @@ export default function HomePage() {
                 <span className="h1-line">Paste a song.</span> <span className="h1-line">Play along.</span>
               </h1>
               <p className="lead">
-                stem-loops splits a track into six stems with real faders, mute and solo, and runs a chord track over the
+                We split the song into six stems, each with a fader, mute and solo, and run a chord track over the
                 top — so you can turn your own part down and play it yourself.
               </p>
               <p className="audience">
-                Tracks up to {MAX_TRACK_MIN}&nbsp;minutes, in Chrome on the desktop. Starting a job needs no account;
+                Uses the first {MAX_TRACK_MIN}&nbsp;minutes of any song, in Chrome on the desktop. Starting a job needs no account;
                 opening the player needs one.
               </p>
             </div>
@@ -83,7 +84,7 @@ export default function HomePage() {
               <h2 id="play-h">What playing along looks like</h2>
               <p className="body-lg">
                 When a job finishes it opens a player in the same tab: the chords across the top, the six stems on faders
-                underneath, and a loop you can drop on any section of the song.
+                underneath, and a loop you can set on any detected section of the song.
               </p>
             </div>
             <PlayerArt />
@@ -91,7 +92,7 @@ export default function HomePage() {
               <p className="again-text">Try it on a song you are learning.</p>
               <ToInputLink className="btn btn-primary btn-again">
                 <Ic name="up" />
-                Go to the input
+                Paste a song
               </ToInputLink>
             </div>
           </div>
@@ -102,7 +103,10 @@ export default function HomePage() {
           <div className="container">
             <div className="reading">
               <h2 id="scope-h">What it does, and what it does not do yet</h2>
-              <p className="body-lg">The whole list, so none of it is a surprise once you are inside.</p>
+              <p className="body-lg">
+                The whole list, so none of it is a surprise once you are inside.{' '}
+                <a href="/pricing">See the monthly track limits →</a>
+              </p>
             </div>
             <dl className="spec">
               <div className="spec-row">
@@ -115,11 +119,15 @@ export default function HomePage() {
               </div>
               <div className="spec-row">
                 <dt>Looping</dt>
-                <dd>Pick a section of the song and it repeats.</dd>
+                <dd>Pick a detected section of the song and it repeats.</dd>
+              </div>
+              <div className="spec-row">
+                <dt>Loop files</dt>
+                <dd>Bars are counted from the first detected beat, not from bar 1, so a loop can start a beat early. Nudge it in your DAW if you need the downbeat.</dd>
               </div>
               <div className="spec-row">
                 <dt>Track length</dt>
-                <dd>Up to {MAX_TRACK_MIN}&nbsp;minutes. Longer tracks are not supported: the chord track and the player both stop there.</dd>
+                <dd>The first {MAX_TRACK_MIN}&nbsp;minutes of any song. A longer track is trimmed on our end to its first {MAX_TRACK_MIN}&nbsp;minutes, which is where the chord track and the player both stop.</dd>
               </div>
               <div className="spec-row">
                 <dt>Where it runs</dt>
@@ -171,8 +179,8 @@ export default function HomePage() {
                     <dd>mp3, wav, m4a, aac, flac, ogg, opus, aiff, mp4, m4v, mov, webm</dd>
                     <dt>Max upload</dt>
                     <dd>200&nbsp;MB</dd>
-                    <dt>Supported length</dt>
-                    <dd>Up to {MAX_TRACK_MIN}&nbsp;minutes</dd>
+                    <dt>Length used</dt>
+                    <dd>The first {MAX_TRACK_MIN}&nbsp;minutes</dd>
                     <dt>Tempo</dt>
                     <dd>40–250 BPM</dd>
                   </dl>
@@ -201,8 +209,8 @@ export default function HomePage() {
                 </div>
                 <div className="pipe-text">
                   <p>
-                    The stems load into the player with the chord track over them. The same job also cuts bar-length loops
-                    from each stem, which is what the art beside this shows.
+                    The stems load into the player with the chord track over them. Each stem also gets bar-length loops:
+                    press Cut below the player to save them as WAV files. The art beside this shows one.
                   </p>
                   <dl className="kv">
                     <dt>Player</dt>
@@ -215,7 +223,7 @@ export default function HomePage() {
                 </div>
               </li>
             </ol>
-            <p className="pipe-foot">While it runs, the job page shows each stage: downloading, separating, extracting, uploading.</p>
+            <p className="pipe-foot">While it runs, the job page shows each stage: fetching, separating, finding bars, saving.</p>
           </div>
         </section>
 
@@ -225,8 +233,8 @@ export default function HomePage() {
             <div className="reading">
               <h2 id="out-h">You can still take the loops home</h2>
               <p className="body-lg">
-                Every job cuts bar-length loops as well, for anyone who came here to build a sample folder rather than to
-                practise. This is the 8&#8209;bar drums loop from our example song, unchanged, as you would download it:
+                Every song also gets bar-length loops, for anyone who came here to build a sample folder rather than to
+                practise. Press Cut below the player to make the WAV files. This is the 8&#8209;bar drums loop from our example song, unchanged, as you would download it:
                 one 24&#8209;bit WAV per loop, named by stem, BPM, key estimate, section and number.
               </p>
             </div>
@@ -262,7 +270,7 @@ export default function HomePage() {
                   <p>
                     A player, in your browser, with the song’s six stems on their own faders and a chord track running
                     above them. Mute the guitar and play the guitar part; solo the bass to work it out; loop the chorus
-                    until it sticks. The same job also leaves you a folder of bar-length loops to download.
+                    until it sticks. You also get bar-length loops from each stem to cut and download.
                   </p>
                 </details>
                 <details>
@@ -302,7 +310,7 @@ export default function HomePage() {
                 <details>
                   <summary>How long does it take?</summary>
                   <p>
-                    Our 3:34 example song took about 1–3 minutes (51 s to 3 min 7 s across four runs on 9 Oct 2026). Longer
+                    Our 3:34 example song took about 1–3 minutes (0:51 to 3:07 across four runs on 9 October 2026). Longer
                     tracks and a busy queue take longer. The job page shows each stage as it runs, with a timer.
                   </p>
                 </details>
@@ -316,7 +324,7 @@ export default function HomePage() {
                 <details id="faq-files">
                   <summary>What happens to my files?</summary>
                   <p>
-                    Your link or file goes to our storage, and the audio goes to Replicate to run Demucs. Sources, stems and
+                    Your link or file goes to our storage, and the audio goes to Replicate to split it and to Klangio to estimate the chords. Sources, stems and
                     loops are deleted after 24 hours. Anyone with a job’s link can open it, so don’t pass it around. More in
                     the <a href="/privacy">privacy notice</a>.
                   </p>
@@ -326,7 +334,7 @@ export default function HomePage() {
                   <p>
                     It depends on the source audio. Splitting a song doesn’t change who owns it. If it’s yours, or you hold the rights,
                     use the loops as you like. If it’s someone else’s recording, you need clearance before you release anything.
-                    stem-loops doesn’t grant rights and can’t clear a sample. The demo drums file on this page is different: it is free
+                    We don’t grant rights and can’t clear a sample. The demo drums file on this page is different: it is free
                     to use in your own music (credit to Lucky Ticket by Jon Cartwright is appreciated).
                   </p>
                 </details>

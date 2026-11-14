@@ -17,11 +17,16 @@
 // `vocals.opus` and `vocals.wav` would collapse to one name and surface as a
 // duplicate or an arbitrary winner.
 //
-// ⚠️ Both sit under `<jobId>/`, and that is a correctness property. cleanup.py's
-// per-job delete is `delete_prefix(f"{job_id}/")` and its `_job_id_of()` reads the
-// FIRST path segment. `play.chords.json` is written as `jobs/<id>/...`, whose first
-// segment is the literal "jobs", so the per-job delete misses it and it survives
-// until the budget-limited orphan sweep happens to catch it. Stems are far larger.
+// ⚠️ Both sit under `<jobId>/`, and that is a correctness property — it is the
+// prefix the retention sweep is built around. `play.chords.json` is the ONE exception
+// (`jobs/<id>/...`), and that exception WAS a live retention leak: cleanup.py's per-job
+// delete was `delete_prefix(f"{job_id}/")` alone, so it missed the chord file on every
+// job, and `_job_id_of()` read the first segment as the job id — the literal "jobs" — so
+// the orphan sweep could not match it to its job row and reaped it even while the job
+// was ALIVE. Both are fixed: the sweep now walks
+// `r2_uploader.job_object_prefixes(job_id)`, which lists both top-level prefixes.
+// ANY NEW top-level prefix must be added there, or it leaks the same way. Keeping stems
+// under `<jobId>/` is still the right default, and they are far larger.
 
 // Signed-URL lifetime CEILING for a stem, in seconds.
 //

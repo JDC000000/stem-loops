@@ -82,7 +82,11 @@ test('terms: the account-rule fragments are still present', async () => {
 //     both input paths reach their duration gate before the first billed call;
 //   • the two PAGES are compared to each other, because the live contradiction that exposed
 //     all of this was `/` saying one thing while `/terms`, the legal page, said another.
-// The behavioural half — that the refusal actually fires — cannot run here, because this
+// REVISED 2026-11-14 (Jon): a long song is no longer refused; the worker TRIMS every input to
+// its first MAX_UPLOAD_DURATION_SEC seconds and the job proceeds. The page now says exactly that
+// ("We use the first 5 minutes of any song ... trimmed on our end"), and the ordering gate below
+// asserts the TRIM, not a refusal, sits before the first billed call.
+// The behavioural half — that the trim actually holds — cannot run here, because this
 // suite is node:test and the pipeline is Python. It lives in
 // apps/worker/tests/test_link_duration_cap.py, which drives `_run_pipeline` on a link job
 // with an over-length staged WAV and asserts `submit_or_reattach` is never called. Its
@@ -95,7 +99,7 @@ test('terms: the duration figure is the one ceiling, in all four places that car
   // (1) The page, against the IMPORTED constant. Not a hard-coded '5': if MAX_TRACK_SEC
   //     moves and the page does not, the expected string moves with the constant and this
   //     fails — which is the drift a numeric gate written as source text cannot see.
-  assertSays(assert, page, `Tracks up to ${minutes} minutes`, 'terms');
+  assertSays(assert, page, `We use the first ${minutes} minutes of any song`, 'terms');
 
   // (2) and (3) The worker's two ceilings, read from pipeline.py. The page promises a length
   //     the WORKER has to enforce, so the page's number is only true while the worker agrees.
@@ -105,7 +109,7 @@ test('terms: the duration figure is the one ceiling, in all four places that car
   const pipeline = workerCode('pipeline.py');
   assert.equal(
     pyConst(pipeline, 'MAX_UPLOAD_DURATION_SEC_DEFAULT'), MAX_TRACK_SEC,
-    'the worker would separate a track longer than /terms says it accepts',
+    'the worker would separate more of a track than /terms says it uses',
   );
   assert.equal(
     pyConst(pipeline, 'CHORDS_MAX_AUDIO_SEC_DEFAULT'), MAX_TRACK_SEC,
@@ -115,6 +119,9 @@ test('terms: the duration figure is the one ceiling, in all four places that car
 
 test('terms: the sentence states what holds at any cap, and does not promise a refusal', async () => {
   const page = await renderPage(TERMS);
+  // 2026-11-14: the truth is now a TRIM. "Longer tracks are not supported" was replaced because
+  // a longer track IS now converted -- its first part is.
+  assertSays(assert, page, 'A longer track is trimmed on our end', 'terms');
   // "supported", not "accepted", and no "refused before separation runs". An earlier cut said
   // the latter, unconditionally, and it was false three ways: (a) for a link whose length
   // could not be read the run still reached Replicate (fixed in the worker since, but the
@@ -124,11 +131,10 @@ test('terms: the sentence states what holds at any cap, and does not promise a r
   // refusal at "separation" when the job has already been accepted, 201, and a signed-in
   // free user's trial song consumed. Nothing in this suite can read Fly, so the page says
   // only what the player and the chord track guarantee on their own.
-  assertSays(assert, page, 'Longer tracks are not supported', 'terms');
   for (const text of [page.textSpaced, page.textTight]) {
     assert.doesNotMatch(
       text,
-      /refused\s*before\s*separation|longer\s*tracks\s*are\s*not\s*accepted/i,
+      /refused\s*before\s*separation|longer\s*tracks\s*are\s*not\s*(?:accepted|supported)|on\s*our\s*side/i,
       'a claim about WHEN the worker refuses depends on a Fly env var no test can read',
     );
   }
@@ -158,11 +164,11 @@ test('terms: the worker source places each input path\'s duration gate before th
 
   assert.match(
     beforeSpend, /_prepare_upload_source/,
-    'the upload path no longer passes its duration gate before Replicate is called',
+    'the upload path no longer passes its trim before Replicate is called',
   );
   assert.match(
-    beforeSpend, /_enforce_link_duration/,
-    'the LINK path no longer passes a duration gate before Replicate is called',
+    beforeSpend, /_trim_link_source/,
+    'the LINK path no longer passes its trim before Replicate is called',
   );
 
   // The Cobalt leg returns a URL and no bytes, so it has no file to measure afterwards; it is
@@ -172,10 +178,20 @@ test('terms: the worker source places each input path\'s duration gate before th
     downloader, /not\s+cobalt_unverifiable\s+and\s+fetch_gates\.cobalt_allowed\(\)/,
     'the Cobalt leg is no longer conditioned on a verified length',
   );
+  // …and "verified" now has to mean READ AND WITHIN THE CAP. Gate 0c used to raise for a long
+  // video, so Cobalt never saw one; now that 0c lets a long video through to be trimmed,
+  // Cobalt -- which cannot be trimmed -- must be skipped for it explicitly.
+  assert.match(
+    downloader, /cobalt_unverifiable\s*=\s*max_duration_sec\s+is\s+not\s+None\s+and\s*\(\s*declared\s+is\s+None\s+or\s+declared\s*>\s*max_duration_sec\s*\)/,
+    'the Cobalt leg is no longer skipped for a video longer than the cap',
+  );
+  // Neither path raises a too-long error any more (codes stay defined for old rows).
+  assert.doesNotMatch(pipeline + downloader, /raise\s+(?:LinkTooLongError|UploadTooLongError)\b/,
+    'a length refusal is back; long songs are trimmed, not refused');
 
-  // Both paths must be judged by the SAME accessor. One caller is the state that made the
+  // Both paths must be cut by the SAME accessor. One caller is the state that made the
   // sentence false. FOUR matches: the definition, plus THREE call sites —
-  // _prepare_upload_source, _enforce_link_duration, and the cap handed to download_audio
+  // _prepare_upload_source, _trim_link_source, and the cap handed to download_audio
   // that arms gate 0c.
   const uses = pipeline.match(/_max_upload_duration_sec\(\)/g) ?? [];
   assert.ok(
@@ -185,7 +201,7 @@ test('terms: the worker source places each input path\'s duration gate before th
   );
 
   for (const f of ['test_link_duration_cap.py', 'test_link_money_path_e2e.py']) {
-    assert.ok(existsSync(join(WORKER, 'tests', f)), `${f}, which exercises the link refusal, has been deleted`);
+    assert.ok(existsSync(join(WORKER, 'tests', f)), `${f}, which exercises the link trim, has been deleted`);
   }
 });
 
@@ -195,8 +211,9 @@ test('terms and the landing state the same thing about length', async () => {
   // never compared, so the contradiction sat in public across two pages.
   const minutes = Math.floor(MAX_TRACK_SEC / 60);
   for (const [label, page] of [['terms', await renderPage(TERMS)], ['landing', await landingPage()]]) {
-    assertSays(assert, page, `up to ${minutes} minutes`, label);
-    assertSays(assert, page, 'the chord track and the player both stop there', label);
+    assertSays(assert, page, `the first ${minutes} minutes of any song`, label);
+    assertSays(assert, page, 'trimmed on our end', label);
+    assertSays(assert, page, 'the chord track and the player both stop', label);
   }
 });
 
@@ -205,13 +222,13 @@ test('terms: the stripper itself is checked, so the two gates above cannot go va
   // the comments. Checked on a fixture rather than on pipeline.py, so rewording a real
   // comment cannot break it and a broken stripper cannot hide behind one.
   const fixture = [
-    'x = 1  # _enforce_link_duration',
-    'y = "_enforce_link_duration"',
-    "z = '_enforce_link_duration'",
-    '"""_enforce_link_duration"""',
-    'def _enforce_link_duration(a):',
+    'x = 1  # _trim_link_source',
+    'y = "_trim_link_source"',
+    "z = '_trim_link_source'",
+    '"""_trim_link_source"""',
+    'def _trim_link_source(a):',
   ].join('\n');
-  const hits = pythonCodeOnly(fixture).match(/_enforce_link_duration/g) ?? [];
+  const hits = pythonCodeOnly(fixture).match(/_trim_link_source/g) ?? [];
   assert.equal(hits.length, 1, 'the stripper left a comment, a string or a docstring standing');
 });
 

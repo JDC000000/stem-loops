@@ -95,6 +95,9 @@ const chordOverlayMod = put(
    export default ChordOverlay;`,
 );
 const jobPollMod = put('job-poll.mjs', toJs(read('src/lib/job-poll.ts')));
+const errorCopyMod = put('error-copy.mjs', toJs(read('src/lib/error-copy.ts')));
+// The REAL input-trim module (pure): the job page's "Using the first 5:00" line.
+const inputTrimMod = put('input-trim.mjs', toJs(read('src/lib/input-trim.ts')));
 
 const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]@\/components\/play\/Player['"]/g, `from '${playerMod}'`)
@@ -103,6 +106,8 @@ const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]next\/link['"]/g, `from '${linkMod}'`)
   .replace(/from ['"]@\/lib\/retention['"]/g, `from '${retentionMod}'`)
   .replace(/from ['"]@\/lib\/job-poll['"]/g, `from '${jobPollMod}'`)
+  .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${errorCopyMod}'`)
+  .replace(/from ['"]@\/lib\/input-trim['"]/g, `from '${inputTrimMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordOverlayMod}'`);
 writeFileSync(join(dir, 'JobView.mjs'), jobViewJs);
 

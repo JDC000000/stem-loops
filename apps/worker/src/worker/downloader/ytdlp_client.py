@@ -153,7 +153,7 @@ def probe_duration_sec(youtube_url: str, proxy: str | None = None) -> float | No
     Returns ``None`` when the length cannot be read -- probe error, timeout, yt-dlp's ``NA``,
     or a non-finite/non-positive value. ``None`` means UNKNOWN and must never be treated as
     "short enough": the enforcing measurement is taken on the staged file
-    (``pipeline._enforce_link_duration``), on bytes we hold.
+    (``pipeline._trim_link_source``, which cuts to the cap), on bytes we hold.
     """
     cmd = [sys.executable, "-m", "yt_dlp", "--simulate", "--no-warnings", "--print", "duration"]
     if proxy is None:

@@ -29,8 +29,8 @@ export default function TermsPage() {
 
             <h2>The service</h2>
             <p>
-              stem-loops splits a song into six stems and plays them back in your browser, with a fader, a mute and a solo on
-              each, and an estimated chord track running above them. The same job also cuts bar-length loops you can download.
+              We split a song into six stems and play them back in your browser, with a fader, a mute and a solo on
+              each, and an estimated chord track running above them. The same job also finds bar-length loops you can cut and download.
               Free to use at the moment. Paid plans and credits exist but are not required.
             </p>
             <p>
@@ -41,8 +41,8 @@ export default function TermsPage() {
             <h2>What it can and cannot do</h2>
             <ul>
               <li>
-                Tracks up to {MAX_TRACK_MIN}&nbsp;minutes. Longer tracks are not supported: the chord track and the
-                player both stop there.
+                We use the first {MAX_TRACK_MIN}&nbsp;minutes of any song. A longer track is trimmed on our end to its
+                first {MAX_TRACK_MIN}&nbsp;minutes, which is where the chord track and the player both stop.
               </li>
               <li>Chrome, on a desktop or laptop. Other browsers and phones are not supported yet.</li>
               <li>
@@ -63,7 +63,7 @@ export default function TermsPage() {
                 terms and copyright law.
               </li>
               <li>
-                Splitting a song doesn’t change who owns it. stem-loops grants no rights in your audio, the stems, or the loops
+                Splitting a song doesn’t change who owns it. We grant no rights in your audio, the stems, or the loops
                 made from it, and can’t clear samples for you.
               </li>
             </ul>
@@ -88,14 +88,14 @@ export default function TermsPage() {
 
             <h2>No warranty</h2>
             <p>
-              stem-loops is provided “as is”, without warranties of any kind. Results can be imperfect, and the service may be
+              We provide stem-loops “as is”, without warranties of any kind. Results can be imperfect, and the service may be
               unavailable or change at any time. To the extent the law allows, we are not liable for any loss arising from using
               it.
             </p>
 
             <h2>Changes and contact</h2>
             <p>
-              stem-loops is run by Jon Cartwright. We may update these terms; the date above shows the latest version. Questions,
+              Jon Cartwright runs stem-loops. We may update these terms; the date above shows the latest version. Questions,
               or a copyright complaint about content on the service: email <a href={CONTACT_URL}>{CONTACT_LABEL}</a>. See also
               the <a href="/privacy">privacy notice</a>.
             </p>

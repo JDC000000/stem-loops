@@ -127,7 +127,7 @@ export const UNDECODABLE_MESSAGE =
  */
 export const NO_STEMS_MESSAGE =
   'Play along is not available for this track — no play-along audio was kept for it. ' +
-  'Your loops are below, as usual.';
+  'Your loops are below.';
 
 /**
  * `state: 'encode_failed'` — the stems were separated and uploaded for download,
@@ -136,13 +136,13 @@ export const NO_STEMS_MESSAGE =
  */
 export const ENCODE_FAILED_MESSAGE =
   'We separated this track but could not prepare its audio for play along. ' +
-  'Your loops are below and still work. Submitting the track again is the way to retry.';
+  'Your loops are below. To retry, add the track again on the home page. It counts as a new track.';
 
 /** Stems were offered and the browser never got a response (CORS / CSP / offline). */
 export const FETCH_NETWORK_MESSAGE =
   'Your browser could not reach the storage that holds this track’s audio, so play along ' +
   'cannot start. Check your connection and try again. If it keeps happening on a working ' +
-  'connection, the fault is on our side. Your loops are below.';
+  'connection, the fault is on our end. Your loops are below.';
 
 /** Stems were offered and storage answered with an error status. */
 export const FETCH_HTTP_MESSAGE =
@@ -175,8 +175,8 @@ export const MANIFEST_UNREACHABLE_MESSAGE =
  * `StemLoadError.status`, so the split costs nothing but saying it.
  */
 export const MANIFEST_SERVER_ERROR_MESSAGE =
-  'Our server could not start play along for this track. This is on our side, not your connection. ' +
-  'Try again in a moment — your loops are below and still work.';
+  'Our server could not start play along for this track. This is on our end, not your connection. ' +
+  'Try again in a moment. Your loops are below.';
 
 const LOAD_MESSAGES: Record<StemLoadErrorCode, string> = {
   RATE_LIMITED:
@@ -538,10 +538,9 @@ export function PlayerView({
     if (phase.kind === 'no-stems') return { tone: 'notice' as const, text: NO_STEMS_MESSAGE };
     if (phase.kind === 'load-error') return { tone: 'error' as const, text: phase.message };
     if (engineError) {
-      // NOT Story 1.4. Story 1.4 is "a track over 300 s is refused AT SUBMIT
-      // TIME with a message naming the limit", and submit is not built here —
-      // that is open work, not something this file satisfies. What this does is
-      // the weaker, honest thing the brief did ask for: a track that somehow
+      // NOT Story 1.4. Story 1.4 (revised 2026-11-14) is "a track over 300 s is
+      // trimmed by the worker to its first 300 s", so nothing over the ceiling
+      // should reach the engine. This is the safety net: a track that somehow
       // reaches the engine over the ceiling surfaces `PLAY_TRACK_TOO_LONG`'s own
       // sentence instead of taking the page down. DECODE_FAILED is the real
       // "this browser cannot play Opus" answer (Story 5.3).

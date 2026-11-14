@@ -314,14 +314,19 @@ test('the landing never claims an account is required to START — nothing enfor
 });
 
 test('the landing shows no price, plan or paywall — there is no payment at launch', () => {
-  const banned = [/\$\d/, /\bper month\b/i, /\/mo\b/, /\bfree forever\b/i, /\bupgrade\b/i, /\bpricing\b/i, /\bpaid plan/i, /\bcredits\b/i];
+  // F31 (Jon, 2026-11-13): one link to /pricing is allowed (see the next test), so the word
+  // "pricing" is banned everywhere except inside that href. Prices and plan names stay banned.
+  const banned = [/\$\d/, /\bper month\b/i, /\/mo\b/, /\bfree forever\b/i, /\bupgrade\b/i, /(?<!href="\/)\bpricing\b/i, /\bpaid plan/i, /\bcredits\b/i,
+    /\bPro\b/, /\bStudio\b/, /\bFree plan\b/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
   for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
 });
 
-test('the landing never links to /pricing', () => {
-  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) assert.doesNotMatch(src, /href="\/pricing/, `${file} links /pricing`);
-  assert.doesNotMatch(RENDER.html, /href="\/pricing/, 'the rendered page links /pricing');
+test('the landing links to /pricing exactly once (F31, Jon 2026-11-13)', () => {
+  let inSource = 0;
+  for (const [, src] of RAW_PAGE_AND_COMPONENTS) inSource += (src.match(/href="\/pricing/g) ?? []).length;
+  assert.equal(inSource, 1, 'the landing source must carry exactly one /pricing link');
+  assert.equal((RENDER.html.match(/href="\/pricing/g) ?? []).length, 1, 'the rendered page must carry exactly one /pricing link');
 });
 
 test('the landing claims no mobile or non-Chrome support (Story 5.3)', () => {
@@ -402,15 +407,24 @@ test('the page renders <PlayerArt /> — the one object the play section is buil
     'the rendered page must carry the six-channel mixer rail');
 });
 
-test('the page claims no submit-time length gate — nothing enforces one', () => {
-  // F4: the web layer caps BYTES only (200 MB) and the worker's MAX_UPLOAD_DURATION_SEC
-  // defaults to 600 s, not 300. The 300 s ceiling lives in the player's engine and in
-  // Klangio. An over-length track is accepted and separated at real cost, so the page must
-  // not promise it is turned away at the door.
-  const banned = [/\brefused\b/i, /\brejected\b/i, /\bturned away\b/i, /\bwon't be accepted\b/i, /\bwe'll stop you\b/i];
+test('the page claims no submit-time length gate — a long song is trimmed, not refused', () => {
+  // 2026-11-14 (Jon): "If a song is more than 5 minutes, it should still be converted to a play
+  // along, but it just [processes the first] 5 minutes." The worker trims every input to its
+  // first MAX_UPLOAD_DURATION_SEC seconds, so nothing is turned away for length and the page
+  // must not say anything is.
+  const banned = [/\brefused\b/i, /\brejected\b/i, /\bturned away\b/i, /\bwon't be accepted\b/i, /\bwe'll stop you\b/i,
+    /\bnot supported\b[^.]*\blonger\b/i, /\blonger tracks are not\b/i, /-minute limit/i, /choose a shorter song/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} claims a gate that does not exist (${re})`);
   for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} claims a gate that does not exist (${re})`);
-  assert.match(specRow('Track length'), /not supported/i);
+  assert.match(specRow('Track length'), new RegExp(`^The first ${MAX_TRACK_MIN} minutes of any song\\.`));
+  assert.match(specRow('Track length'), /trimmed on our end/);
+  assert.doesNotMatch(specRow('Track length'), /on our side/i, '"on our side" is on the brand-tone avoid list');
+});
+
+test('the form carries the pre-submit trim note slot, empty until a long file is picked', () => {
+  // lib/upload-duration.ts words the note; ToolForm shows it under the picked file. Rendered
+  // with no file, the slot exists and is hidden, so the landing never shows it by default.
+  assert.match(RENDER.html, /<p class="hint" id="picked-notice" data-testid="trim-notice" hidden="">/);
 });
 
 test('the page itself names the player, the faders, mute, solo, the chords and the loop', () => {

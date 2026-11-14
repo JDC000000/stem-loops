@@ -62,7 +62,7 @@ test('signup form tells the user the rule the server enforces', () => {
 // Interaction (clicking the buttons) is in login-form-interaction.test.mjs.
 const strip = (html) => html.replace(/<!-- -->/g, ''); // React's SSR text-node separators
 const noteAfterLink = (html) => {
-  const m = strip(html).match(/Send me a one-time login link<\/button><p[^>]*>(.*?)<\/p>/);
+  const m = strip(html).match(/Email me a one-time link<\/button><p[^>]*>(.*?)<\/p>/);
   assert.ok(m, 'the one-time-link button is followed by a note');
   return m[1];
 };
@@ -87,7 +87,7 @@ test('the one-time-link note never says the link creates an account', () => {
 });
 
 const createButton = (html) =>
-  strip(html).match(/<button type="button"([^>]*)>New here\? Create an account<\/button>/);
+  strip(html).match(/<button type="button"([^>]*)>New here\? Create account<\/button>/);
 
 test('sign-in mode offers Create account as a full-width button that is not disabled', () => {
   const m = createButton(render({}));

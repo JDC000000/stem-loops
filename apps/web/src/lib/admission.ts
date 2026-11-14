@@ -46,7 +46,30 @@ export function maxInFlight(): number {
 // shorter would invite retries that land on a still-full queue, longer would turn people
 // away for longer than the queue actually needs. It matches the copy ("a few minutes").
 export const AT_CAPACITY_RETRY_AFTER_S = 120;
-const dailySpendCeilingUsd = () => parseFloat(process.env.REPLICATE_SPEND_CEILING_USD ?? '10');
+
+// Rolling 24h Replicate spend ceiling, in USD. Default 10; REPLICATE_SPEND_CEILING_USD
+// overrides it. Guarded exactly like ADMISSION_MAX_IN_FLIGHT above: anything that is not a
+// plain positive decimal ("ten", "$10", "1e3", "0", "-5") falls back to the default and is
+// logged ONCE per process. It must never fail OPEN: a bare parseFloat turned a typo into
+// NaN, `total >= NaN` is always false, and the ceiling silently stopped tripping.
+// Blank / unset is the silent default.
+export const DEFAULT_SPEND_CEILING_USD = 10;
+let warnedBadSpendCeiling = false;
+export function spendCeilingUsd(): number {
+  const raw = process.env.REPLICATE_SPEND_CEILING_USD;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_SPEND_CEILING_USD;
+  const t = raw.trim();
+  const n = /^[0-9]+(\.[0-9]+)?$/.test(t) ? Number(t) : NaN;
+  if (Number.isFinite(n) && n > 0) return n;
+  if (!warnedBadSpendCeiling) {
+    warnedBadSpendCeiling = true;
+    console.warn(
+      `[admission] REPLICATE_SPEND_CEILING_USD=${JSON.stringify(raw)} is not a positive number; ` +
+        `using the default ${DEFAULT_SPEND_CEILING_USD}.`,
+    );
+  }
+  return DEFAULT_SPEND_CEILING_USD;
+}
 
 // Per-client presign minting cap for POST /api/uploads (security review BLOCKER #2).
 // checkAdmission() can't cover this: it counts `jobs` rows, but an upload flood never
@@ -133,7 +156,7 @@ export async function checkAdmission(clientIpHash: string): Promise<AdmissionRes
      FROM job_events
      WHERE created_at >= NOW() - INTERVAL '24 hours'`,
   );
-  if (parseFloat(spend.rows[0].total) >= dailySpendCeilingUsd()) return BLOCKED;
+  if (parseFloat(spend.rows[0].total) >= spendCeilingUsd()) return BLOCKED;
 
   return ALLOWED;
 }

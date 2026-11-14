@@ -1,0 +1,125 @@
+{
+  "run": "2026-11-14, next dev (local), Playwright 1.63 + Chrome for Testing 153",
+  "rows": [
+    {
+      "name": "landing",
+      "path": "/",
+      "viewport": "360x740 @2x, touch, isMobile",
+      "clientWidth": 360,
+      "scrollWidth": 360,
+      "elementsPastViewport": [],
+      "overflow": false,
+      "screenshot": "landing-360.png"
+    },
+    {
+      "name": "sign-in",
+      "path": "/login",
+      "viewport": "360x740 @2x, touch, isMobile",
+      "clientWidth": 360,
+      "scrollWidth": 360,
+      "elementsPastViewport": [],
+      "overflow": false,
+      "screenshot": "sign-in-360.png"
+    },
+    {
+      "name": "history-empty",
+      "path": "/history",
+      "viewport": "360x740 @2x, touch, isMobile",
+      "clientWidth": 360,
+      "scrollWidth": 360,
+      "elementsPastViewport": [],
+      "overflow": false,
+      "screenshot": "history-empty-360.png"
+    },
+    {
+      "name": "history-entries",
+      "path": "/history",
+      "viewport": "360x740 @2x, touch, isMobile",
+      "clientWidth": 360,
+      "scrollWidth": 360,
+      "elementsPastViewport": [],
+      "overflow": false,
+      "screenshot": "history-entries-360.png"
+    },
+    {
+      "name": "account",
+      "path": "/account",
+      "viewport": "360x740 @2x, touch, isMobile",
+      "clientWidth": 360,
+      "scrollWidth": 360,
+      "elementsPastViewport": [],
+      "overflow": false,
+      "screenshot": "account-360.png"
+    },
+    {
+      "name": "account-nav-open",
+      "path": "/account",
+      "viewport": "360x740 @2x, touch, isMobile",
+      "clientWidth": 360,
+      "scrollWidth": 360,
+      "elementsPastViewport": [],
+      "overflow": false,
+      "screenshot": "account-nav-open-360.png"
+    },
+    {
+      "name": "job-progress",
+      "path": "/jobs/00000000-0000-4000-8000-000000000360",
+      "viewport": "360x740 @2x, touch, isMobile",
+      "clientWidth": 360,
+      "scrollWidth": 360,
+      "elementsPastViewport": [],
+      "overflow": false,
+      "screenshot": "job-progress-360.png"
+    },
+    {
+      "name": "job-done-player-unsupported",
+      "path": "/jobs/00000000-0000-4000-8000-000000000360",
+      "viewport": "360x740 @2x, touch, isMobile",
+      "clientWidth": 360,
+      "scrollWidth": 360,
+      "elementsPastViewport": [],
+      "overflow": false,
+      "screenshot": "job-done-player-unsupported-360.png"
+    },
+    {
+      "name": "pricing",
+      "path": "/pricing",
+      "viewport": "360x740 @2x, touch, isMobile",
+      "clientWidth": 360,
+      "scrollWidth": 360,
+      "elementsPastViewport": [],
+      "overflow": false,
+      "screenshot": "pricing-360.png"
+    },
+    {
+      "name": "terms",
+      "path": "/terms",
+      "viewport": "360x740 @2x, touch, isMobile",
+      "clientWidth": 360,
+      "scrollWidth": 360,
+      "elementsPastViewport": [],
+      "overflow": false,
+      "screenshot": "terms-360.png"
+    },
+    {
+      "name": "privacy",
+      "path": "/privacy",
+      "viewport": "360x740 @2x, touch, isMobile",
+      "clientWidth": 360,
+      "scrollWidth": 360,
+      "elementsPastViewport": [],
+      "overflow": false,
+      "screenshot": "privacy-360.png"
+    },
+    {
+      "name": "not-found",
+      "path": "/no-such-page",
+      "viewport": "360x740 @2x, touch, isMobile",
+      "clientWidth": 360,
+      "scrollWidth": 360,
+      "elementsPastViewport": [],
+      "overflow": false,
+      "screenshot": "not-found-360.png"
+    }
+  ]
+}

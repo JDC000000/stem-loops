@@ -1,4 +1,14 @@
-/* SectionLoop: consumes the global tokens from src/styles/design-tokens.css (no new ones). */
+/* SectionLoop: consumes the global tokens from src/styles/design-tokens.css (no new ones).
+
+   Sizes (Story 4.8, brand book v2.2 A15/A16, approved 2026-11-14):
+   - a section chip is a button: 4px corners (--radius-md), and at least 44px
+     tall; it is 48px here, the brand book's field/primary height, because the
+     sections are the targets a player aims at to loop a chorus;
+   - the section name is 16px (--text-lg, the book's size for buttons and chips);
+   - mono labels (the time range and the "Looping" badge) are at least 12px.
+     The app has no 12px token (--text-12 is landing-only, M22), so it is a
+     literal here.
+   Measured in real Chromium by packages/web-browser-gate/test/player-text-size.test.mjs. */
 .root {
   display: flex;
   flex-wrap: wrap;
@@ -19,19 +29,19 @@
 
 .chip,
 .clear {
-  min-height: 44px; /* touch target, PRD mobile rule */
+  min-height: 48px; /* touch target: >= 44px (A16); 48px = --h-field */
   padding: 0 var(--space-4);
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
   cursor: pointer;
   font: inherit;
-  font-size: var(--text-md);
+  font-size: var(--text-lg);
   font-weight: var(--weight-semibold);
   color: var(--text-muted);
   background: var(--bg-elevated);
   border: 1.5px solid var(--border-strong);
-  border-radius: var(--radius-md, 10px);
+  border-radius: var(--radius-md, 4px);
   white-space: nowrap;
 }
 
@@ -49,7 +59,7 @@
 
 .time {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: 12px; /* A15: mono labels >= 12px */
   color: var(--text-subtle);
 }
 
@@ -67,7 +77,7 @@
 
 .badge {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: 12px; /* A15: mono labels and tags >= 12px */
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--accent-text);

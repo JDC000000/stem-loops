@@ -497,7 +497,10 @@
   min-height: 2.4em; /* reserve the line so a state change does not reflow the rail */
   width: 100%;
   padding-inline: 2px;
-  font-size: var(--text-xs);
+  /* --text-sm (11px), not --text-xs: the note is a sentence ("Not separated"),
+     and brand book v2.2 A15 keeps 10px for the mixer readout and drawn art
+     only. */
+  font-size: var(--text-sm);
   line-height: var(--leading-snug);
   text-align: center;
   color: var(--text-label, var(--text-muted));
@@ -622,10 +625,12 @@
   margin: 0;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  /* 12px, not --text-xs: a mono label (brand book v2.2 A15, mono labels and
+     tags >= 12px). The app has no 12px token yet (M22). */
+  font-size: 12px;
   letter-spacing: var(--tracking-wide);
   /* `--text-subtle` measured 3.15:1 on this card in Chromium, compositing the
-     full ancestor chain -- a 1.4.3 failure that shipped. It is --text-xs, so it
+     full ancestor chain -- a 1.4.3 failure that shipped. It is small text, so it
      needs 4.5:1, not 3:1. `--text-muted` measures 6.43:1 on the same box. The
      legend is the key to M and S; it is not decoration that may fall below the
      floor. (Ratios only, no hex: the token gate below reads this file's raw

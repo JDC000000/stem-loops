@@ -61,6 +61,7 @@ import {
   chipBox,
   CHIP_FULL_PAD_PX,
   CHIP_TIGHT_FONT_PX,
+  CURRENT_CHORD_FONT_PX,
   chipContentPx,
   chipDensity,
   densityCounts,
@@ -838,7 +839,13 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
                 data-run-index={activeIdx}
                 aria-hidden={playhead && activeRun ? undefined : true}
               >
-                Now {activeRun ? displayText(activeRun) : '\u2014'}
+                {/* Story 3.7 / A11: the CURRENT chord is the largest text in
+                    the chord track. "Now" is a small label; the name is
+                    CURRENT_CHORD_FONT_PX. textContent stays "Now <name>". */}
+                <span style={nowLabelStyle}>Now</span>{' '}
+                <span style={nowNameStyle} data-testid="playhead-now-name">
+                  {activeRun ? displayText(activeRun) : '\u2014'}
+                </span>
               </span>
               {!narrow && followSuspended ? (
                 <button
@@ -1145,15 +1152,30 @@ const playheadBarStyle: CSSProperties = {
   gap: '0.5rem',
   paddingTop: 4,
 };
+// The "Now" readout: the current chord at reading size (Story 3.7, brand book
+// v2.2 A11: >= 20px, weight 600). Sizes are px on purpose, like the chips: the
+// real-Chromium gate measures what renders, and a px size is what it measures.
+// Colours unchanged (a token/colour pass is a separate PR).
 const nowChordStyle: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'baseline',
+  gap: 8,
   background: 'rgba(244,114,182,0.18)',
   border: `1px solid ${PLAYHEAD_COLOR}`,
   color: '#fbcfe8',
-  padding: '0.125rem 0.5rem',
-  borderRadius: '999px',
-  fontSize: '0.75rem',
-  fontVariantNumeric: 'tabular-nums',
+  padding: '2px 12px',
+  borderRadius: '6px',
   whiteSpace: 'nowrap',
+};
+const nowLabelStyle: CSSProperties = {
+  fontSize: '14px',
+  fontWeight: 500,
+};
+const nowNameStyle: CSSProperties = {
+  fontSize: `${CURRENT_CHORD_FONT_PX}px`,
+  fontWeight: 600,
+  lineHeight: 1.25,
+  color: '#fff',
 };
 const followBtnStyle: CSSProperties = {
   background: 'transparent',

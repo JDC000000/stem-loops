@@ -22,6 +22,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { INPUT_TRIM_URL, INPUT_TRIM_IMPORT_RE } from './helpers/input-trim.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const toJs = (file) =>
@@ -74,6 +75,7 @@ async function loadRoute(file) {
   const js = toJs(file)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub}'`)
     .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${access}'`)
+    .replace(INPUT_TRIM_IMPORT_RE, `from '${INPUT_TRIM_URL}'`)
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${getUserStub}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub}'`)

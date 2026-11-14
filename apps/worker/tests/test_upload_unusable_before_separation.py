@@ -92,7 +92,7 @@ def test_digital_silence_is_refused_before_replicate(staged, tmp_path: Path) -> 
 def test_normal_short_track_still_reaches_replicate(staged, tmp_path: Path) -> None:
     source, uploaded = staged
     source["path"] = _wav(tmp_path / "ok.wav", 20.0)
-    assert pipeline._prepare_upload_source(JOB, f"{JOB}/_input.wav") == "https://presigned"
+    assert pipeline._prepare_upload_source(JOB, f"{JOB}/_input.wav") == ("https://presigned", None)
     assert len(uploaded) == 1
 
 
@@ -112,4 +112,4 @@ def test_quiet_but_not_silent_track_still_reaches_replicate(staged, tmp_path: Pa
         w.setframerate(SR)
         w.writeframes(quiet)
     source["path"] = p
-    assert pipeline._prepare_upload_source(JOB, f"{JOB}/_input.wav") == "https://presigned"
+    assert pipeline._prepare_upload_source(JOB, f"{JOB}/_input.wav") == ("https://presigned", None)

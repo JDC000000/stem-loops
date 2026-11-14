@@ -50,12 +50,10 @@ from .errors import (
     DownloadBlockedError,
     ExtractionFailedError,
     InternalError,
-    LinkTooLongError,
     LinkUnmeasurableError,
     SeparationFailedError,
     StemLoopsError,
     UploadInvalidError,
-    UploadTooLongError,
 )
 from .extractor import loop_extractor
 from .extractor.beat_grid import estimate_beat_grid
@@ -120,35 +118,43 @@ def _ffmpeg_bin() -> str:
         raise InternalError(f"ffmpeg unavailable: {exc}") from exc
 
 
-# Longest upload (seconds) we will separate. ONE knob, read at call time so it can be
-# tuned with an env change instead of a deploy.
+# How much of a track (seconds) we separate: the FIRST this-many seconds. ONE knob, read at
+# call time so it can be tuned with an env change instead of a deploy.
+#
+# TRIM, NOT REFUSE (Jon, 2026-11-14): "If a song is more than 5 minutes, it should still be
+# converted to a play along, but it just [processes the first] 5 minutes of the song." Until
+# then a track over this length failed UPLOAD_TOO_LONG. Now both input paths cut it to its
+# first MAX_UPLOAD_DURATION_SEC seconds on bytes we hold, and the job proceeds:
+#   * upload: the ffmpeg normalise step decodes with ``-t cap`` (``_prepare_upload_source``);
+#   * link:   the staged yt-dlp WAV is cut with ``ffmpeg -t cap`` (``_trim_link_source``);
+#   * Cobalt: hands back a URL and no bytes, so it CANNOT be trimmed and is only tried when
+#     gate 0c read a length at or under the cap (downloader/__init__.py).
+# The trim is recorded on the ``downloading``/``completed`` job event as
+# ``{"trimmed": true, "source_sec": X, "used_sec": N}`` and surfaced on the job page.
 #
 # 300 s (5 min), and deliberately the SAME number as every other ceiling in the product:
 # CHORDS_MAX_AUDIO_SEC below, KLANGIO_MAX_AUDIO_SEC in the provider, MAX_TRACK_SEC in the
 # web player (apps/web/src/lib/play/types.ts) and the landing copy, which is fed from that
-# constant. If one of them moves, move all of them.
-#
-# It was 600 s until 2026-11-11, which was not a number anyone chose for this pipeline --
-# it predates the Gate-0 playback spike, whose shipping decision table already fixed the
-# product ceiling at 300 s "to agree with KLANGIO_MAX_AUDIO_SEC" (Jon, 2026-11-10). Nothing
-# wired that decision into this file. A 301-600 s upload therefore did three bad things:
-#   * The PLAYER would not open it. engine.ts refuses above MAX_TRACK_SEC (300 s) -- and it
-#     checks only AFTER decoding and downmixing all six stems, so a 600 s track first
-#     allocates 6 x 600 x 48000 x 4 bytes = ~659 MiB of PCM on the visitor's machine. The
-#     spike measured that same byte count at 805 MB RSS and REJECTED it against a ~600 MB
-#     bar. So the user pays the memory peak and still gets an error instead of a player.
-#   * The CHORD overlay was always absent: chords cap at CHORDS_MAX_AUDIO_SEC = 300 s, so
-#     the step below writes a `too_long` tombstone. Chords are the headline feature.
+# constant. If one of them moves, move all of them. Why it is 300 and not more:
+#   * The PLAYER refuses above MAX_TRACK_SEC (300 s), and only AFTER decoding and downmixing
+#     all six stems: 6 x 600 x 48000 x 4 bytes = ~659 MiB of PCM for a 600 s track, which the
+#     Gate-0 spike measured at 805 MB RSS and rejected against a ~600 MB bar.
+#   * CHORDS cap at CHORDS_MAX_AUDIO_SEC = 300 s; over it the overlay is a `too_long`
+#     tombstone. Trimming to the same number means a trimmed track still gets chords.
 #   * Replicate separation is billed per GPU-second ($0.0014/s, replicate_client) and the
-#     predict time scales with audio length, so all of that was paid for in real money.
+#     predict time scales with audio length; trimming caps the spend per job.
 #
-# The web layer now ALSO probes duration at admission, but that probe runs in the browser,
-# fails open when it cannot measure, and is therefore a spend-and-UX guard only. THIS is
-# the enforcement: it runs server-side on bytes we hold, before Replicate is ever called.
+# The web layer probes duration at admission only to TELL the visitor a long track will be
+# trimmed; it runs in the browser and is never the limit. THIS is the limit: it runs
+# server-side on bytes we hold, before Replicate is ever called, and fails closed.
 MAX_UPLOAD_DURATION_SEC_DEFAULT = 300.0
 # Wall-clock budget for the ffmpeg normalise step. A pathological/hostile file must not
 # hold the worker thread (and its heartbeat-less job) indefinitely.
 FFMPEG_DECODE_TIMEOUT_SEC_DEFAULT = 120.0
+# ffmpeg's `-t` lands on a sample/frame boundary, and soundfile reports duration as
+# frames / rate, so a cut at exactly the cap can read a hair either side of it. Anything
+# more than this past the cap means `-t` did not hold, and the job fails closed.
+TRIM_TOLERANCE_SEC = 0.05
 
 
 def _env_positive_float(name: str, default: float) -> float:
@@ -225,16 +231,38 @@ def _reject_unusable_upload(job_id: str, wav: str, decoded_sec: float | None) ->
         raise ExtractionFailedError("upload is digital silence")
 
 
-def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
-    """Upload-input path: pull the uploaded file from R2, ffmpeg-normalize ANY
-    audio/video container to a 44.1k stereo WAV, re-stage it, and return a
-    presigned URL for Replicate. Uniform decoding means every accepted format
-    (mp3/m4a/flac/ogg/mp4/mov/…) reaches separation identically.
+def _trim_detail(
+    job_id: str, path_kind: str, source_sec: float | None, used_sec: float | None, max_sec: float
+) -> dict:
+    """The ``job_events.detail`` payload for a trimmed input, logged as it is built.
 
-    Enforces the duration cap (``MAX_UPLOAD_DURATION_SEC``) HERE, before the returned URL
-    is ever handed to Replicate: a header probe rejects an over-length file before decoding
-    it, the decode itself is bounded (``-t cap+1`` so a lying/missing header cannot expand
-    into a multi-GB WAV, plus a wall-clock timeout), and the decoded WAV is re-measured.
+    ``source_sec`` is ``None`` when the original length could not be read (a header that
+    says nothing); ``used_sec`` falls back to the cap when the output could not be measured.
+    """
+    used = round(used_sec if used_sec is not None else max_sec, 1)
+    source = None if source_sec is None else round(source_sec, 1)
+    log_structured(
+        "INFO",
+        "input_trimmed",
+        job_id=job_id,
+        input_kind=path_kind,
+        source_sec=source,
+        used_sec=used,
+        max_sec=max_sec,
+    )
+    return {"trimmed": True, "source_sec": source, "used_sec": used}
+
+
+def _prepare_upload_source(job_id: str, upload_r2_key: str) -> tuple[str, dict | None]:
+    """Upload-input path: pull the uploaded file from R2, ffmpeg-normalize ANY
+    audio/video container to a 44.1k stereo WAV of AT MOST ``MAX_UPLOAD_DURATION_SEC``
+    seconds, re-stage it, and return ``(presigned_url, trim_detail)``.
+
+    A longer file is TRIMMED to its first ``MAX_UPLOAD_DURATION_SEC`` seconds rather than
+    refused (Jon, 2026-11-14). The bound is the decode itself (``-t cap``), so a lying or
+    missing header cannot expand into a longer WAV; the decoded WAV is then re-measured and
+    anything past the cap fails closed. ``trim_detail`` is ``None`` for an untouched track,
+    else ``{"trimmed": True, "source_sec": X | None, "used_sec": N}``.
     """
     max_sec = _max_upload_duration_sec()
     tmpdir = tmpdirs.mkdtemp(prefix="sl_upload_")
@@ -242,22 +270,7 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
     wav = os.path.join(tmpdir, "input.wav")
     download_object(upload_r2_key, raw)
 
-    def _too_long(seconds: float | None) -> UploadTooLongError:
-        log_structured(
-            "INFO",
-            "upload_rejected_too_long",
-            job_id=job_id,
-            duration_sec=None if seconds is None else round(seconds, 1),
-            max_sec=max_sec,
-        )
-        return UploadTooLongError(
-            f"upload duration {seconds}s exceeds MAX_UPLOAD_DURATION_SEC={max_sec:g}",
-            max_seconds=max_sec,
-        )
-
     declared = _probe_duration_sec(raw)
-    if declared is not None and declared > max_sec:
-        raise _too_long(declared)
 
     try:
         proc = subprocess.run(
@@ -275,9 +288,9 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
                 "44100",
                 "-c:a",
                 "pcm_s16le",
-                # Output cap: one second past the limit is enough to prove "too long".
+                # The trim: only the first `max_sec` seconds are ever decoded into the WAV.
                 "-t",
-                f"{max_sec + 1:.3f}",
+                f"{max_sec:.3f}",
                 wav,
             ],
             capture_output=True,
@@ -292,51 +305,88 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
         # A file that ffmpeg can't decode is a bad/unsupported upload, not our fault.
         raise UploadInvalidError(f"ffmpeg decode failed: {proc.stderr[:200]}")
     decoded = _probe_duration_sec(wav)
-    if decoded is not None and decoded > max_sec:
-        raise _too_long(decoded)
+    if decoded is not None and decoded > max_sec + TRIM_TOLERANCE_SEC:
+        # `-t` did not hold. Never hand Replicate more than the cap: fail closed.
+        raise InternalError(f"decoded upload is {decoded}s, past the {max_sec:g}s trim")
     _reject_unusable_upload(job_id, wav, decoded)
-    return upload_input(job_id, wav)
+
+    trim: dict | None = None
+    if declared is not None and declared > max_sec:
+        trim = _trim_detail(job_id, "upload", declared, decoded, max_sec)
+    elif (
+        decoded is not None
+        and decoded >= max_sec - TRIM_TOLERANCE_SEC
+        and (declared is None or declared < max_sec - TRIM_TOLERANCE_SEC)
+    ):
+        # The decode ran into the cap but the header did not say the file was that long
+        # (missing or lying header): it was trimmed, from a length we cannot state.
+        trim = _trim_detail(job_id, "upload", None, decoded, max_sec)
+    return upload_input(job_id, wav), trim
 
 
-def _enforce_link_duration(job_id: str, path: str) -> None:
-    """Refuse an over-length OR unmeasurable LINK track, on the file we hold, before Replicate.
+def _trim_link_source(job_id: str, path: str) -> tuple[str, dict | None]:
+    """Cut a fetched LINK track to its first ``MAX_UPLOAD_DURATION_SEC`` seconds, on bytes we
+    hold, before it is staged for Replicate. Returns ``(path_to_stage, trim_detail)``.
 
-    This is the enforcing half of the link path's duration ceiling. The downloader's gate 0c
-    reads the length from yt-dlp metadata and saves the whole download when it can, but it
-    fails open by design, so it cannot be what makes the ceiling real.
+    * Measured at or under the cap: returned UNTOUCHED (same path, ``None``).
+    * Measured over the cap, or not measurable: re-encoded with ``ffmpeg -t cap`` into a new
+      WAV, which is then measured. That output is what gets staged.
 
-    Deliberately the SAME two calls the upload path makes -- ``_max_upload_duration_sec()``
-    and ``_probe_duration_sec()`` -- so a link and an upload cannot end up judged by
-    different numbers or different measuring code.
+    FAILS CLOSED. If ffmpeg cannot read the file, or its output cannot be measured, or the
+    output is somehow past the cap, this raises ``LinkUnmeasurableError`` and nothing reaches
+    Replicate. yt-dlp's output is unbounded, so "could not trim" must never mean "billed for
+    any length".
 
-    FAILS CLOSED. If the staged file cannot be measured, this raises ``LinkUnmeasurableError``
-    rather than proceeding. That is NOT the upload path's stance, although an earlier version
-    of this docstring said it was: the upload path's fail-open on an unmeasurable file is
-    bounded by ``ffmpeg -t cap+1`` (see ``_prepare_upload_source``), so whatever it hands on
-    is at most cap+1 seconds long. Nothing bounds a link's file. yt-dlp's output is
-    unbounded, so "could not measure" would otherwise mean "billed for any length". We
-    produced this WAV ourselves (``--audio-format wav``) and soundfile reads every WAV, so
-    refusing an unreadable one costs no legitimate job.
+    Deliberately the SAME accessor (``_max_upload_duration_sec()``) and the same measuring
+    code (``_probe_duration_sec()``) as the upload path, so a link and an upload cannot end up
+    cut to different lengths.
     """
     max_sec = _max_upload_duration_sec()
     measured = _probe_duration_sec(path)
-    if measured is None:
-        log_structured("WARN", "link_rejected_unmeasurable", job_id=job_id, max_sec=max_sec)
+    if measured is not None and measured <= max_sec:
+        return path, None
+
+    out = os.path.join(tmpdirs.mkdtemp(prefix="sl_linktrim_"), "trimmed.wav")
+    try:
+        proc = subprocess.run(
+            [
+                _ffmpeg_bin(),
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                path,
+                "-vn",
+                "-c:a",
+                "pcm_s16le",
+                "-t",
+                f"{max_sec:.3f}",
+                out,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_ffmpeg_decode_timeout_sec(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        log_structured("WARN", "link_trim_failed", job_id=job_id, reason="timeout")
         raise LinkUnmeasurableError(
-            f"link duration could not be measured against MAX_UPLOAD_DURATION_SEC={max_sec:g}"
+            f"link trim exceeded {_ffmpeg_decode_timeout_sec():g}s timeout"
+        ) from exc
+    if proc.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
+        log_structured("WARN", "link_trim_failed", job_id=job_id, reason="ffmpeg")
+        raise LinkUnmeasurableError(f"link trim failed: {proc.stderr[:200]}")
+    used = _probe_duration_sec(out)
+    if used is None or used > max_sec + TRIM_TOLERANCE_SEC:
+        log_structured("WARN", "link_trim_failed", job_id=job_id, reason="unmeasurable_output")
+        raise LinkUnmeasurableError(
+            f"trimmed link measured {used!r}, cannot show it is within {max_sec:g}s"
         )
-    if measured > max_sec:
-        log_structured(
-            "INFO",
-            "link_rejected_too_long",
-            job_id=job_id,
-            duration_sec=round(measured, 1),
-            max_sec=max_sec,
-        )
-        raise LinkTooLongError(
-            f"link duration {measured}s exceeds MAX_UPLOAD_DURATION_SEC={max_sec:g}",
-            max_seconds=max_sec,
-        )
+    if measured is None and used < max_sec - TRIM_TOLERANCE_SEC:
+        # The original could not be measured but turned out shorter than the cap: nothing
+        # was cut, so there is nothing to tell the user. Stage the re-encoded (readable) copy.
+        return out, None
+    return out, _trim_detail(job_id, "youtube", measured, used, max_sec)
 
 
 def _update_job_tags(job_id: str, tags: dict) -> None:
@@ -1371,6 +1421,7 @@ async def _run_pipeline(job_id: str) -> None:
 
         await set_status(job_id, "downloading")
         await emit_event(job_id, "downloading", "started", pct=0)
+        trim: dict | None = None
         override_url = os.environ.get("STEMLOOPS_AUDIO_URL")
         override_file = os.environ.get("STEMLOOPS_AUDIO_FILE")
         if override_url:
@@ -1387,7 +1438,7 @@ async def _run_pipeline(job_id: str) -> None:
         elif input_kind == "upload":
             # V2 PRIMARY input: user-uploaded file already in R2. Normalize it to WAV
             # and hand Replicate a presigned URL. No YouTube dependency.
-            audio_src = await asyncio.to_thread(_prepare_upload_source, job_id, upload_r2_key)
+            audio_src, trim = await asyncio.to_thread(_prepare_upload_source, job_id, upload_r2_key)
             _source = "upload"
             log_structured("INFO", "audio_source_upload", job_id=job_id)
         else:
@@ -1408,22 +1459,24 @@ async def _run_pipeline(job_id: str) -> None:
             # cannot read a local path"). Stage local results to R2 exactly like the
             # override_file/upload paths already do; leave an already-a-URL result alone.
             if _source == "ytdlp":
-                # The ceiling, enforced on the bytes themselves and BEFORE submit_or_reattach
-                # below, i.e. before a single billed GPU-second. Until this call existed the
-                # link path had no duration check anywhere: _max_upload_duration_sec() had
-                # exactly one caller and it was on the upload path.
-                await asyncio.to_thread(_enforce_link_duration, job_id, dl_result)
-                audio_src = await asyncio.to_thread(upload_input, job_id, dl_result)
+                # The ceiling, applied to the bytes themselves and BEFORE submit_or_reattach
+                # below, i.e. before a single billed GPU-second: a track over the cap is cut
+                # to its first MAX_UPLOAD_DURATION_SEC seconds, and one that cannot be cut or
+                # measured fails closed (LinkUnmeasurableError).
+                staged, trim = await asyncio.to_thread(_trim_link_source, job_id, dl_result)
+                audio_src = await asyncio.to_thread(upload_input, job_id, staged)
             else:
                 # Cobalt returns a public tunnel URL and no local bytes, so there is nothing
-                # here to measure. The ceiling for this leg is therefore enforced UPSTREAM, in
-                # download_audio: it only tries Cobalt when gate 0c READ the video's length
-                # and found it at or under the cap (and it raised before here if over). An
-                # unreadable length never reaches this arm. If a future change lets an
-                # unverified length through, this line is the only trace it leaves.
+                # here to measure OR to trim. The ceiling for this leg is therefore enforced
+                # UPSTREAM, in download_audio: it only tries Cobalt when gate 0c READ the
+                # video's length and found it at or under the cap. An unreadable or
+                # over-cap length never reaches this arm (yt-dlp is the only leg that can
+                # trim). If a future change lets one through, this line is the only trace.
                 log_structured("WARN", "link_duration_unenforced_source", job_id=job_id)
                 audio_src = dl_result
-        await emit_event(job_id, "downloading", "completed", pct=100)
+        # `trim` is None for an untouched track (detail stays NULL, as before), else
+        # {"trimmed": True, "source_sec": X, "used_sec": N}; GET /api/jobs/:id reads it.
+        await emit_event(job_id, "downloading", "completed", pct=100, detail=trim)
 
         await set_status(job_id, "separating")
         await emit_event(job_id, "separating", "started", pct=15)

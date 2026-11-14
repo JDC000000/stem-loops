@@ -175,6 +175,8 @@ const chordOverlayMod = put(
 const jobPollMod = put('job-poll.mjs', toJs(read('src/lib/job-poll.ts')));
 // The REAL error-copy module (pure data): the failed box's words are under test.
 const errorCopyMod = put('error-copy.mjs', toJs(read('src/lib/error-copy.ts')));
+// The REAL input-trim module (pure): the job page's "Using the first 5:00" line.
+const inputTrimMod = put('input-trim.mjs', toJs(read('src/lib/input-trim.ts')));
 
 const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   // bare 'react' only — 'react/jsx-runtime' must stay real
@@ -186,6 +188,7 @@ const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]@\/lib\/retention['"]/g, `from '${retentionMod}'`)
   .replace(/from ['"]@\/lib\/job-poll['"]/g, `from '${jobPollMod}'`)
   .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${errorCopyMod}'`)
+  .replace(/from ['"]@\/lib\/input-trim['"]/g, `from '${inputTrimMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordOverlayMod}'`);
 writeFileSync(join(dir, 'JobView.mjs'), jobViewJs);
 
@@ -499,4 +502,30 @@ test('JobView no longer stores a response body it did not check: no bare `setJob
   const src = read('src/app/jobs/[id]/JobView.tsx');
   assert.doesNotMatch(src, /\(await res\.json\(\)\) as Job/);
   assert.match(src, /readPoll\(/);
+});
+
+// ── input trim (2026-11-14): a long track is cut to its first 5:00, and the page says so ──
+test('a trimmed done job renders "Using the first 5:00 of a 6:12 track." before the player', () => {
+  const html = renderJob({ ...DONE_JOB, input_trim_used_sec: 300, input_trim_source_sec: 372 });
+  assert.match(html, /data-testid="trim-note"[^>]*>Using the first 5:00 of a 6:12 track\.</);
+  assert.ok(
+    html.indexOf('data-testid="trim-note"') < html.indexOf('data-testid="player"'),
+    'the trim note must sit above the player',
+  );
+});
+
+test('a trimmed job whose original length is unknown still says it was trimmed', () => {
+  const html = renderJob({ ...DONE_JOB, input_trim_used_sec: 300, input_trim_source_sec: null });
+  assert.match(html, /Using the first 5:00 of this track\./);
+});
+
+test('a trimmed job still processing shows the note too', () => {
+  const html = renderJob({ ...DONE_JOB, status: 'separating', input_trim_used_sec: 300, input_trim_source_sec: 612 });
+  assert.match(html, /Using the first 5:00 of a 10:12 track\./);
+});
+
+test('an untouched job renders no trim note', () => {
+  for (const job of [DONE_JOB, { ...DONE_JOB, input_trim_used_sec: null, input_trim_source_sec: null }]) {
+    assert.doesNotMatch(renderJob(job), /trim-note|Using the first/);
+  }
 });

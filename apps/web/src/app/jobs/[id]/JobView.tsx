@@ -26,6 +26,7 @@ import { LoopResults } from '@/components/LoopResults';
 import Player from '@/components/play/Player';
 import { formatExpiresIn } from '@/lib/retention';
 import { failedJobMessage } from '@/lib/error-copy';
+import { jobTrimNote } from '@/lib/input-trim';
 import {
   ACTIVE_STALL_MS,
   BACKOFF_POLL_MS,
@@ -266,6 +267,7 @@ export default function JobView({ id }: { id: string }) {
           {/* Story 1.2 — the player is the PRIMARY view. Jon: "Everybody
               uploading songs wants to see the player and toggle and play
               along." The loop downloader is secondary and sits below it. */}
+          <TrimNote job={job} />
           <Player jobId={job.id} loops={job.loops} enabled />
           <LoopResults job={{ ...job, title: job.original_filename ?? undefined }} />
           <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
@@ -310,9 +312,25 @@ export default function JobView({ id }: { id: string }) {
             {job.original_filename ?? job.youtube_url ?? 'Your track'}
           </h1>
           <p style={{ margin: '-16px 0 0', color: 'var(--text-muted)' }}>Processing…</p>
+          <TrimNote job={job} />
           <JobProgress job={job} />
         </>
       )}
     </main>
+  );
+}
+
+/**
+ * One line telling the visitor their track was trimmed, e.g. "Using the first 5:00 of a 6:12
+ * track." Renders nothing for a track that was not (lib/input-trim.ts; the worker records the
+ * trim on the downloading/completed job event and GET /api/jobs/:id exposes it).
+ */
+function TrimNote({ job }: { job: Job }) {
+  const note = jobTrimNote(job);
+  if (!note) return null;
+  return (
+    <p data-testid="trim-note" style={{ margin: 0, color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
+      {note}
+    </p>
   );
 }

@@ -128,6 +128,10 @@ export const PLAYBACK_CHANNELS = 1;
  * 300 s hard ceiling. Story 1.4, approved by Jon 2026-11-10: refuse clearly
  * above this rather than silently degrading quality.
  *
+ * Revised 2026-11-14 (Jon): a longer SONG is no longer refused — the worker trims
+ * every input to its first MAX_UPLOAD_DURATION_SEC (= this) seconds, so a track
+ * should never reach the player over it. The engine's check stays as the safety net.
+ *
  * Deliberately equal to the worker's KLANGIO_MAX_AUDIO_SEC so that chords and
  * playback share ONE product ceiling. If either moves, move both.
  */

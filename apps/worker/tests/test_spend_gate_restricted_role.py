@@ -288,7 +288,9 @@ def test_engaged_brake_stops_an_UPLOAD_job_reaching_replicate_even_with_both_fet
     monkeypatch.delenv("STUB_MODE", raising=False)
     monkeypatch.setenv("REPLICATE_API_TOKEN", "test-not-a-secret")
     monkeypatch.setattr(
-        pipeline, "_prepare_upload_source", lambda job_id, key: "https://example.invalid/a.wav"
+        pipeline,
+        "_prepare_upload_source",
+        lambda job_id, key: ("https://example.invalid/a.wav", None),
     )
     as_worker.execute(
         "INSERT INTO public.kill_switches(scope, enabled) VALUES ('fetch_global', true),"

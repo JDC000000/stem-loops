@@ -41,8 +41,8 @@ export default function TermsPage() {
             <h2>What it can and cannot do</h2>
             <ul>
               <li>
-                Tracks up to {MAX_TRACK_MIN}&nbsp;minutes. Longer tracks are not supported: the chord track and the
-                player both stop there.
+                We use the first {MAX_TRACK_MIN}&nbsp;minutes of any song. A longer track is trimmed on our end to its
+                first {MAX_TRACK_MIN}&nbsp;minutes, which is where the chord track and the player both stop.
               </li>
               <li>Chrome, on a desktop or laptop. Other browsers and phones are not supported yet.</li>
               <li>

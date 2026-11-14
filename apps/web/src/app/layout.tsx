@@ -6,7 +6,7 @@ import { MAX_TRACK_SEC } from '@/lib/play/types';
 export const metadata: Metadata = {
   metadataBase: new URL('https://stem-loops.com'),
   title: { default: 'stem-loops', template: '%s · stem-loops' },
-  description: `Split a song into six stems with faders and a chord track, and play along. Tracks up to ${Math.floor(MAX_TRACK_SEC / 60)} minutes, in Chrome on the desktop.`,
+  description: `Split a song into six stems with faders and a chord track, and play along. Uses the first ${Math.floor(MAX_TRACK_SEC / 60)} minutes of any song, in Chrome on the desktop.`,
   applicationName: 'stem-loops',
   icons: {
     icon: [

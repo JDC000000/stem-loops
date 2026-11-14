@@ -22,8 +22,9 @@ import type { Metadata } from 'next';
 import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
 import { MAX_TRACK_SEC } from '@/lib/play/types';
 
-// Story 1.4: tracks are capped. The copy says the cap in minutes, derived from the same
-// constant the player enforces, so the two can never drift apart.
+// Story 1.4 (revised 2026-11-14): any song is accepted and its FIRST MAX_TRACK_MIN minutes are
+// used — a longer track is trimmed on our end and still converted. The copy says the figure in minutes,
+// derived from the same constant the player enforces, so the two can never drift apart.
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
 const OG_TITLE = 'Paste a song. Play along.';
@@ -34,7 +35,7 @@ const OG_ALT =
 export const metadata: Metadata = {
   title: { absolute: 'stem-loops: play along with any song, stem by stem' },
   description:
-    `Split a song into six stems with faders, mute and solo, and a chord track that moves with the song. Loop a detected section. Tracks up to ${MAX_TRACK_MIN} minutes, in Chrome on the desktop.`,
+    `Split a song into six stems with faders, mute and solo, and a chord track that moves with the song. Loop a detected section. Uses the first ${MAX_TRACK_MIN} minutes of any song, in Chrome on the desktop.`,
   alternates: { canonical: '/' },
   openGraph: {
     type: 'website',
@@ -67,7 +68,7 @@ export default function HomePage() {
                 top — so you can turn your own part down and play it yourself.
               </p>
               <p className="audience">
-                Tracks up to {MAX_TRACK_MIN}&nbsp;minutes, in Chrome on the desktop. Starting a job needs no account;
+                Uses the first {MAX_TRACK_MIN}&nbsp;minutes of any song, in Chrome on the desktop. Starting a job needs no account;
                 opening the player needs one.
               </p>
             </div>
@@ -126,7 +127,7 @@ export default function HomePage() {
               </div>
               <div className="spec-row">
                 <dt>Track length</dt>
-                <dd>Up to {MAX_TRACK_MIN}&nbsp;minutes. Longer tracks are not supported: the chord track and the player both stop there.</dd>
+                <dd>The first {MAX_TRACK_MIN}&nbsp;minutes of any song. A longer track is trimmed on our end to its first {MAX_TRACK_MIN}&nbsp;minutes, which is where the chord track and the player both stop.</dd>
               </div>
               <div className="spec-row">
                 <dt>Where it runs</dt>
@@ -178,8 +179,8 @@ export default function HomePage() {
                     <dd>mp3, wav, m4a, aac, flac, ogg, opus, aiff, mp4, m4v, mov, webm</dd>
                     <dt>Max upload</dt>
                     <dd>200&nbsp;MB</dd>
-                    <dt>Supported length</dt>
-                    <dd>Up to {MAX_TRACK_MIN}&nbsp;minutes</dd>
+                    <dt>Length used</dt>
+                    <dd>The first {MAX_TRACK_MIN}&nbsp;minutes</dd>
                     <dt>Tempo</dt>
                     <dd>40–250 BPM</dd>
                   </dl>

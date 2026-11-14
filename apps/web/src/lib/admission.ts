@@ -1,16 +1,22 @@
 import { db } from '@/lib/db';
-import { ERROR_COPY } from '@/lib/error-copy';
+import { ERROR_COPY, RATE_LIMITED_PER_CLIENT_MSG, RATE_LIMITED_SPEND_CEILING_MSG } from '@/lib/error-copy';
 
 // Admission control (PRD draft-2 hardening): three gates run BEFORE a job row is
 // inserted or enqueued, so abuse and runaway spend are stopped at the door. The
 // spend ceiling defends the <$30/mo Replicate hard cap.
 export type AdmissionResult =
   | { allowed: true; error_code: null }
-  | { allowed: false; error_code: 'RATE_LIMITED' }
+  // F72 (copy audit v1.3.1): one code, two causes. `reason` says which gate refused and
+  // `message` is the sentence for that cause, so a user who did nothing wrong (the site-wide
+  // spend ceiling) is never told they went too fast. The wire contract is unchanged: the
+  // HTTP layer still answers 429 { error_code: 'RATE_LIMITED', message }.
+  | { allowed: false; error_code: 'RATE_LIMITED'; reason: RateLimitReason; message: string }
   // B8: the GLOBAL in-flight cap is a different refusal from the per-client limit. The
   // user did nothing wrong — other people's songs fill the queue — so it gets its own
   // code, its own copy, and the HTTP layer answers 503 + Retry-After rather than 429.
   | { allowed: false; error_code: 'AT_CAPACITY'; retry_after_s: number; message: string };
+
+export type RateLimitReason = 'per_client' | 'spend_ceiling';
 
 export const RATE_WINDOW_MS = 60_000;
 export const RATE_LIMIT = 5; // per-client jobs per minute
@@ -110,7 +116,18 @@ const stemListRateKey = (clientIpHash: string) => `stems:${clientIpHash}`;
 
 const IN_FLIGHT_STATUSES = ['queued', 'downloading', 'separating', 'extracting', 'uploading'];
 
-const BLOCKED: AdmissionResult = { allowed: false, error_code: 'RATE_LIMITED' };
+const BLOCKED: AdmissionResult = {
+  allowed: false,
+  error_code: 'RATE_LIMITED',
+  reason: 'per_client',
+  message: RATE_LIMITED_PER_CLIENT_MSG,
+};
+const SPEND_CEILING: AdmissionResult = {
+  allowed: false,
+  error_code: 'RATE_LIMITED',
+  reason: 'spend_ceiling',
+  message: RATE_LIMITED_SPEND_CEILING_MSG,
+};
 const ALLOWED: AdmissionResult = { allowed: true, error_code: null };
 const AT_CAPACITY: AdmissionResult = {
   allowed: false,
@@ -156,7 +173,7 @@ export async function checkAdmission(clientIpHash: string): Promise<AdmissionRes
      FROM job_events
      WHERE created_at >= NOW() - INTERVAL '24 hours'`,
   );
-  if (parseFloat(spend.rows[0].total) >= spendCeilingUsd()) return BLOCKED;
+  if (parseFloat(spend.rows[0].total) >= spendCeilingUsd()) return SPEND_CEILING;
 
   return ALLOWED;
 }

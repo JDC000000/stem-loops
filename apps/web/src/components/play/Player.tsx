@@ -180,7 +180,8 @@ export const MANIFEST_SERVER_ERROR_MESSAGE =
 
 const LOAD_MESSAGES: Record<StemLoadErrorCode, string> = {
   RATE_LIMITED:
-    "You're going a bit fast, or we're at capacity right now. Give it a minute and reload.",
+    // F72: the stems manifest is throttled per client only (checkStemListRate); capacity is a separate code.
+    "You're sending requests too fast. Wait a minute and reload.",
   NOT_FOUND: 'This track is no longer available — files are deleted after 24 hours.',
   MANIFEST_FAILED: MANIFEST_UNREACHABLE_MESSAGE,
   MANIFEST_INVALID: GENERIC_LOAD_MESSAGE,

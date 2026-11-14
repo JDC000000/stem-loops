@@ -234,7 +234,7 @@ export default function HomePage() {
               <h2 id="out-h">You can still take the loops home</h2>
               <p className="body-lg">
                 Every song also gets bar-length loops, for anyone who came here to build a sample folder rather than to
-                practise. Press Cut below the player to make the WAV files. This is the 8&#8209;bar drums loop from our example song, unchanged, as you would download it:
+                practise. Open Download loops, pick the song and press Cut to make the WAV files. This is the 8&#8209;bar drums loop from our example song, unchanged, as you would download it:
                 one 24&#8209;bit WAV per loop, named by stem, BPM, key estimate, section and number.
               </p>
             </div>

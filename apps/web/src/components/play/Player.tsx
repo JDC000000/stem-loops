@@ -112,12 +112,12 @@ import styles from './Player.module.css';
  */
 export const UNSUPPORTED_BROWSER_MESSAGE =
   'Play along needs the Web Audio API, which this browser does not provide. ' +
-  'Use Chrome on a desktop or laptop. Your loops are still available below.';
+  'Use Chrome on a desktop or laptop. Your loops are still on the Download loops page.';
 
 /** Story 5.3, reached when every stem decoded to nothing (ENGINE_ERROR.DECODE_FAILED). */
 export const UNDECODABLE_MESSAGE =
   'This browser could not decode this track’s audio. ' +
-  'Use Chrome on a desktop or laptop. Your loops are still available below.';
+  'Use Chrome on a desktop or laptop. Your loops are still on the Download loops page.';
 
 /**
  * Story 6.4 — nothing was stored for this job (`state: 'unavailable'`). Not an
@@ -127,7 +127,7 @@ export const UNDECODABLE_MESSAGE =
  */
 export const NO_STEMS_MESSAGE =
   'Play along is not available for this track — no play-along audio was kept for it. ' +
-  'Your loops are below.';
+  'Your loops are on the Download loops page.';
 
 /**
  * `state: 'encode_failed'` — the stems were separated and uploaded for download,
@@ -136,23 +136,23 @@ export const NO_STEMS_MESSAGE =
  */
 export const ENCODE_FAILED_MESSAGE =
   'We separated this track but could not prepare its audio for play along. ' +
-  'Your loops are below. To retry, add the track again on the home page. It counts as a new track.';
+  'Your loops are on the Download loops page. To retry, add the track again on the home page. It counts as a new track.';
 
 /** Stems were offered and the browser never got a response (CORS / CSP / offline). */
 export const FETCH_NETWORK_MESSAGE =
   'Your browser could not reach the storage that holds this track’s audio, so play along ' +
   'cannot start. Check your connection and try again. If it keeps happening on a working ' +
-  'connection, the fault is on our end. Your loops are below.';
+  'connection, the fault is on our end. Your loops are on the Download loops page.';
 
 /** Stems were offered and storage answered with an error status. */
 export const FETCH_HTTP_MESSAGE =
   'Our storage would not hand over this track’s audio files, so play along cannot start. ' +
-  'Try again in a moment. Your loops are below.';
+  'Try again in a moment. Your loops are on the Download loops page.';
 
 /** Stems were offered, storage answered 200, and the bytes were unusable. */
 export const FETCH_BODY_MESSAGE =
   'This track’s audio files arrived empty or incomplete, so play along cannot start. ' +
-  'Try again. Your loops are below.';
+  'Try again. Your loops are on the Download loops page.';
 
 export const GENERIC_LOAD_MESSAGE =
   'We could not load the audio for this track. Reload the page to try again.';
@@ -176,7 +176,7 @@ export const MANIFEST_UNREACHABLE_MESSAGE =
  */
 export const MANIFEST_SERVER_ERROR_MESSAGE =
   'Our server could not start play along for this track. This is on our end, not your connection. ' +
-  'Try again in a moment. Your loops are below.';
+  'Try again in a moment. Your loops are on the Download loops page.';
 
 const LOAD_MESSAGES: Record<StemLoadErrorCode, string> = {
   RATE_LIMITED:

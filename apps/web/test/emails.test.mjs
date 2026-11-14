@@ -116,6 +116,20 @@ test('sendEmail: reply_to comes from EMAIL_REPLY_TO, and is omitted when unset (
   }
 });
 
+// E9 (emails v1.2 §2.5): the plain-text part goes out as Resend `text`, and
+// is omitted (not sent empty) when a caller has none.
+test('sendEmail: passes the plain-text part as `text`, omitted when absent (E9)', async () => {
+  setEnv();
+  let calls = mockFetch([{ status: 200, json: { id: 'em_t' } }]);
+  let { sendEmail } = await loadResend();
+  await sendEmail({ to: 'a@b.com', subject: 's', html: '<p>h</p>', text: 'stem-loops\n\nh', tag: 'welcome', idempotencyKey: 'k' });
+  assert.equal(JSON.parse(calls[0].init.body).text, 'stem-loops\n\nh');
+  calls = mockFetch([{ status: 200, json: { id: 'em_t2' } }]);
+  ({ sendEmail } = await loadResend());
+  await sendEmail({ to: 'a@b.com', subject: 's', html: '<p>h</p>', tag: 'welcome', idempotencyKey: 'k' });
+  assert.equal('text' in JSON.parse(calls[0].init.body), false);
+});
+
 // PR #38 Lens A follow-up: every send carries an Idempotency-Key header so
 // a retried-after-timeout send cannot double-deliver.
 test('sendEmail: sets Idempotency-Key header from idempotencyKey (PR #38 Lens A)', async () => {
@@ -251,7 +265,9 @@ const sharedUrl = dataUrl(
   toJs(readFileSync(join(WEB, 'src/lib/emails/templates/shared.ts'), 'utf8')),
 );
 
-test('welcome template is deterministic and links to /account and /pricing', async () => {
+// D3 (emails v1.2 R2): the subscriber welcome is a service email, so the
+// "/pricing" link is gone. The /account pin holds.
+test('welcome template is deterministic, links to /account and not to /pricing (D3)', async () => {
   const { renderWelcome } = await loadTemplate('welcome');
   const a = renderWelcome();
   const b = renderWelcome();
@@ -259,7 +275,7 @@ test('welcome template is deterministic and links to /account and /pricing', asy
   assert.equal(a.html, b.html);
   assert.equal(a.subject, 'Welcome to stem-loops');
   assert.match(a.html, /https:\/\/stem-loops\.com\/account/);
-  assert.match(a.html, /https:\/\/stem-loops\.com\/pricing/);
+  assert.doesNotMatch(a.html, /\/pricing/);
 });
 
 test('subscription-changed: subject reflects plan and status', async () => {
@@ -272,18 +288,29 @@ test('subscription-changed: subject reflects plan and status', async () => {
   assert.match(active.subject, /Pro plan is active/i);
   assert.match(active.html, /2027-01-15/);
 
-  const canceled = renderSubscriptionChanged({
+});
+
+// The cancelled pins moved with the copy: R6 (plan ended) is its own template
+// now (emails v1.2 R6). `now` is injected and after period_end, so the ended
+// date is period_end and the /2027-02-01/ pin holds.
+test('plan-ended: subject reflects plan, ended date is pinned (was subscription-changed canceled)', async () => {
+  const { renderPlanEnded } = await loadTemplate('plan-ended');
+  const canceled = renderPlanEnded({
     plan_code: 'studio',
-    status: 'canceled',
     period_end: new Date('2027-02-01T00:00:00Z'),
+    now: new Date('2027-02-02T00:00:00Z'),
   });
   assert.match(canceled.subject, /Studio plan was cancelled/i);
   assert.match(canceled.html, /2027-02-01/);
+  // E1: an ended plan must never promise continued access.
+  assert.doesNotMatch(canceled.html, /keep access until/i);
+  assert.doesNotMatch(canceled.text, /keep access until/i);
 });
 
 test('subscription-changed: output is deterministic for a fixed input', async () => {
   const { renderSubscriptionChanged } = await loadTemplate('subscription-changed');
-  const input = { plan_code: 'pro', status: 'past_due', period_end: '2027-03-01T00:00:00Z' };
+  // past_due has no R4 copy any more (R7 owns it); paused is the stand-in.
+  const input = { plan_code: 'pro', status: 'paused', period_end: '2027-03-01T00:00:00Z' };
   const a = renderSubscriptionChanged(input);
   const b = renderSubscriptionChanged(input);
   assert.equal(a.html, b.html);

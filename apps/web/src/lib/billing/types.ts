@@ -117,12 +117,28 @@ export type BillingEvent =
       providerSubscriptionId: string;
       providerCustomerId?: string | null;
       invoice: BillingInvoice;
+      /** Stripe invoice.billing_reason: 'subscription_create' labels the first
+       *  invoice "Pro plan", 'subscription_cycle' a "Pro plan renewal" (E4). */
+      billingReason?: string | null;
     }
   | {
       type: 'invoice_payment_failed';
       userId: string;
       providerSubscriptionId: string;
       providerCustomerId?: string | null;
+      /** Fields below feed the R7 payment-failed email (emails v1.2 §3 R7). */
+      providerInvoiceId?: string | null;
+      /** invoice.attempt_count; part of the R7 idempotency key. */
+      attemptCount?: number | null;
+      /** invoice.next_payment_attempt, or null when none is scheduled. */
+      nextPaymentAttempt?: Date | null;
+      /** The subscription line's period.start: the period the failed charge
+       *  is for. R7's grace date is this + PAST_DUE_GRACE_MS. */
+      periodStart?: Date | null;
+      /** invoice.billing_reason. R7 is sent only for subscription_cycle and
+       *  subscription_update; a failed first payment (subscription_create)
+       *  sends nothing. */
+      billingReason?: string | null;
     }
   | {
       type: 'dispute_created';

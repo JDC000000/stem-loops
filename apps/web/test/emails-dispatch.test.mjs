@@ -38,13 +38,24 @@ function dbStub({ initialWelcomedAt = null, email = 'u@example.com' } = {}) {
     globalThis.__db = {
       welcomed_at: cfg.initialWelcomedAt,
       email: cfg.email,
+      deleted: false,
+      quotas: { free: 5, pro: 50, studio: 150 },
       queries: [],
     };
     export const db = {
       query: async (text, params) => {
         globalThis.__db.queries.push({ text, params });
         if (/SELECT email FROM users/i.test(text)) {
+          // Emulates the SQL: a tombstoned user matches only a query that
+          // does NOT filter on deleted_at (E7).
+          if (globalThis.__db.deleted && /deleted_at IS NULL/i.test(text)) {
+            return { rows: [], rowCount: 0 };
+          }
           return { rows: [{ email: globalThis.__db.email }], rowCount: 1 };
+        }
+        if (/SELECT monthly_job_quota FROM plans WHERE code/i.test(text)) {
+          const q = globalThis.__db.quotas[params[0]];
+          return q === undefined ? { rows: [], rowCount: 0 } : { rows: [{ monthly_job_quota: q }], rowCount: 1 };
         }
         if (/SELECT welcomed_at FROM users/i.test(text)) {
           return { rows: [{ welcomed_at: globalThis.__db.welcomed_at }], rowCount: 1 };
@@ -75,25 +86,35 @@ function resendStub({ ok = true } = {}) {
 
 // Template stubs: deterministic subject/html so assertions can match.
 function templatesStub() {
-  const welcome = dataUrl(`
-    export const renderWelcome = () => ({ subject: 'Welcome', html: '<p>hi</p>' });
-  `);
-  const sub = dataUrl(`
-    export const renderSubscriptionChanged = (vars) => ({
-      subject: 'Sub ' + vars.status, html: '<p>sub</p>',
-    });
-  `);
   const receipt = dataUrl(`
-    export const renderReceipt = (vars) => ({ subject: 'Receipt', html: '<p>r</p>' });
+    export const renderReceipt = (vars) => ({ subject: 'Receipt', html: '<p>r</p>', text: 'r', vars });
   `);
-  return { welcome, sub, receipt };
+  // The v1.2 template stubs record the vars they were rendered with, so tests can see what the
+  // dispatcher computed (quota, grace date, on_free).
+  const echo = (fn) => dataUrl(`
+    export const ${fn} = (vars) => {
+      (globalThis.__rendered ??= []).push({ fn: '${fn}', vars });
+      return { subject: '${fn}', html: '<p>${fn}</p>', text: '${fn} text' };
+    };
+  `);
+  return {
+    welcome: echo('renderWelcome'),
+    sub: echo('renderSubscriptionChanged'),
+    receipt,
+    ending: echo('renderPlanEnding'),
+    ended: echo('renderPlanEnded'),
+    failed: echo('renderPaymentFailed'),
+  };
 }
+
+const entitlementsStub = dataUrl(`export const PAST_DUE_GRACE_MS = 7 * 24 * 3600 * 1000;`);
 
 // Erase the ambient billing-types import at transpile time.
 const billingTypesStub = dataUrl(`export {};`);
 
 async function loadDispatch({ db = {}, resend = {} } = {}) {
   globalThis.__sent = [];
+  globalThis.__rendered = [];
   const dbCfg = { initialWelcomedAt: null, email: 'u@example.com', ...db };
   const templates = templatesStub();
   let js = toJs(readFileSync(SRC, 'utf8'));
@@ -103,7 +124,11 @@ async function loadDispatch({ db = {}, resend = {} } = {}) {
     .replace(/from ['"]\.\/resend['"]/g, `from '${resendStub(resend)}'`)
     .replace(/from ['"]\.\/templates\/welcome['"]/g, `from '${templates.welcome}'`)
     .replace(/from ['"]\.\/templates\/subscription-changed['"]/g, `from '${templates.sub}'`)
-    .replace(/from ['"]\.\/templates\/receipt['"]/g, `from '${templates.receipt}'`);
+    .replace(/from ['"]\.\/templates\/receipt['"]/g, `from '${templates.receipt}'`)
+    .replace(/from ['"]\.\/templates\/plan-ending['"]/g, `from '${templates.ending}'`)
+    .replace(/from ['"]\.\/templates\/plan-ended['"]/g, `from '${templates.ended}'`)
+    .replace(/from ['"]\.\/templates\/payment-failed['"]/g, `from '${templates.failed}'`)
+    .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${entitlementsStub}'`);
   const mod = await import(dataUrl(js) + '#' + Math.random());
   // The ./resend and @/lib/db stubs are cached by data-URL across tests
   // (Node module cache), so their top-level `globalThis.__sent = []` and
@@ -114,6 +139,8 @@ async function loadDispatch({ db = {}, resend = {} } = {}) {
   globalThis.__db = {
     welcomed_at: dbCfg.initialWelcomedAt,
     email: dbCfg.email,
+    deleted: !!dbCfg.deleted,
+    quotas: { free: 5, pro: 50, studio: 150 },
     queries: [],
   };
   return mod;
@@ -165,7 +192,10 @@ test('sendWelcomeIfFirstTime: does NOT mark welcomed_at on a failed Resend send'
   assert.equal(globalThis.__sent.length, 2, 'failed send leaves user eligible for retry');
 });
 
-test('sendSubscriptionChanged: idempotency key is sub-changed:<sub_id>:<status>', async () => {
+// emails v1.2 §2.7 changes this pin: the plan is now in the key, so a
+// Pro -> Studio switch under the same subscription id is not deduped by
+// Resend as a repeat of the earlier "active" send.
+test('sendSubscriptionChanged: idempotency key is sub-changed:<sub_id>:<status>:<plan>', async () => {
   const mod = await loadDispatch();
   await mod.sendSubscriptionChanged(USER, {
     plan_code: 'pro',
@@ -177,8 +207,8 @@ test('sendSubscriptionChanged: idempotency key is sub-changed:<sub_id>:<status>'
   assert.equal(globalThis.__sent[0].tag, 'subscription-changed');
   assert.equal(
     globalThis.__sent[0].idempotencyKey,
-    'sub-changed:sub_abc123:active',
-    'sub-changed key folds status in so a plan change under the same sub id gets its own send',
+    'sub-changed:sub_abc123:active:pro',
+    'sub-changed key folds status and plan in so a plan change under the same sub id gets its own send',
   );
 });
 
@@ -207,4 +237,109 @@ test('sendReceipt (credit): idempotency key is receipt-credit:<charge_id>', asyn
   });
   assert.equal(globalThis.__sent.length, 1);
   assert.equal(globalThis.__sent[0].idempotencyKey, 'receipt-credit:ch_777');
+});
+
+// ── emails v1.2 (EM-1, EM-2) ────────────────────────────────────────────
+
+// E7: a user whose deleted_at is stamped gets no email, whatever the sender.
+test('emailForUser: a deleted user (deleted_at set) receives nothing (E7)', async () => {
+  const mod = await loadDispatch({ db: { deleted: true } });
+  assert.equal(await mod.sendWelcomeIfFirstTime(USER, { plan_code: 'pro' }), false);
+  await mod.sendSubscriptionChanged(USER, {
+    plan_code: 'pro', status: 'active', period_end: null, provider_subscription_id: 'sub_1',
+  });
+  await mod.sendPlanEnded(USER, {
+    plan_code: 'pro', period_end: null, provider_subscription_id: 'sub_1', on_free: true,
+  });
+  await mod.sendReceipt(USER, {
+    amount_cad_cents: 1, plan_or_pack_label: 'x', invoice_url: null,
+    receipt_source: { kind: 'credit', provider_charge_id: 'ch_1' },
+  });
+  assert.equal(globalThis.__sent.length, 0);
+  const q = globalThis.__db.queries.find((x) => /SELECT email FROM users/.test(x.text));
+  assert.match(q.text, /AND deleted_at IS NULL/);
+});
+
+test('every dispatcher passes the plain-text part through to sendEmail (E9)', async () => {
+  const mod = await loadDispatch();
+  await mod.sendWelcomeIfFirstTime(USER, { plan_code: 'pro', period_end: '2027-01-15T00:00:00Z' });
+  await mod.sendSubscriptionChanged(USER, { plan_code: 'pro', status: 'paused', period_end: null, provider_subscription_id: 's' });
+  await mod.sendPlanEnding(USER, { plan_code: 'pro', period_end: '2027-01-15T00:00:00Z', provider_subscription_id: 's' });
+  await mod.sendPlanEnded(USER, { plan_code: 'pro', period_end: null, provider_subscription_id: 's', on_free: true });
+  await mod.sendPaymentFailed(USER, { plan_code: 'pro', period_start: '2026-11-13T00:00:00Z', next_attempt: null, provider_invoice_id: 'in_1', attempt_count: 1 });
+  await mod.sendReceipt(USER, { amount_cad_cents: 1, plan_or_pack_label: 'x', invoice_url: null, receipt_source: { kind: 'credit', provider_charge_id: 'c' } });
+  assert.equal(globalThis.__sent.length, 6);
+  for (const m of globalThis.__sent) assert.ok(typeof m.text === 'string' && m.text.length > 0, `${m.tag} has text`);
+});
+
+test('sendWelcomeIfFirstTime: returns true only when it sent; passes plan, renewal and quota (R2)', async () => {
+  const mod = await loadDispatch();
+  assert.equal(await mod.sendWelcomeIfFirstTime(USER, { plan_code: 'studio', period_end: '2027-01-15T00:00:00Z' }), true);
+  assert.equal(await mod.sendWelcomeIfFirstTime(USER, { plan_code: 'studio' }), false, 'already welcomed');
+  assert.equal(globalThis.__sent[0].html, '<p>renderWelcome</p>');
+  assert.deepEqual(globalThis.__rendered[0].vars, {
+    plan_code: 'studio', period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 150,
+  });
+  const quotaQ = globalThis.__db.queries.find((x) => /FROM plans/.test(x.text));
+  assert.deepEqual(quotaQ.params, ['studio']);
+});
+
+test('sendWelcomeIfFirstTime: a failed send returns false', async () => {
+  const mod = await loadDispatch({ resend: { ok: false } });
+  assert.equal(await mod.sendWelcomeIfFirstTime(USER, { plan_code: 'pro' }), false);
+});
+
+test('sendPlanEnding (R5): key plan-ending:<sub_id>:<period_end ISO>, tag plan-ending', async () => {
+  const mod = await loadDispatch();
+  await mod.sendPlanEnding(USER, { plan_code: 'pro', period_end: '2027-01-15T00:00:00Z', provider_subscription_id: 'sub_abc' });
+  assert.equal(globalThis.__sent[0].tag, 'plan-ending');
+  assert.equal(globalThis.__sent[0].idempotencyKey, 'plan-ending:sub_abc:2027-01-15T00:00:00.000Z');
+});
+
+test('sendPlanEnded (R6): keeps the sub-changed:<sub_id>:canceled key shape', async () => {
+  const mod = await loadDispatch();
+  await mod.sendPlanEnded(USER, { plan_code: 'studio', period_end: null, provider_subscription_id: 'sub_abc', on_free: true });
+  assert.equal(globalThis.__sent[0].tag, 'subscription-changed');
+  assert.equal(globalThis.__sent[0].idempotencyKey, 'sub-changed:sub_abc:canceled');
+});
+
+test('sendPaymentFailed (R7): key payment-failed:<invoice>:<attempt>; skipped without a period start', async () => {
+  const mod = await loadDispatch();
+  await mod.sendPaymentFailed(USER, { plan_code: 'pro', period_start: '2026-11-13T00:00:00Z', next_attempt: null, provider_invoice_id: 'in_9', attempt_count: 2 });
+  await mod.sendPaymentFailed(USER, { plan_code: 'pro', period_start: '2026-11-13T00:00:00Z', next_attempt: null, provider_invoice_id: 'in_9', attempt_count: 3 });
+  assert.deepEqual(globalThis.__sent.map((m) => m.idempotencyKey), ['payment-failed:in_9:2', 'payment-failed:in_9:3']);
+  assert.equal(globalThis.__sent[0].tag, 'payment-failed');
+  const orig = console.warn; console.warn = () => {};
+  try {
+    await mod.sendPaymentFailed(USER, { plan_code: 'pro', period_start: 'garbage', next_attempt: null, provider_invoice_id: 'in_x', attempt_count: 1 });
+  } finally { console.warn = orig; }
+  assert.equal(globalThis.__sent.length, 2, 'no send without a usable period start');
+});
+
+test('sendPaymentFailed: grace_end is period start + PAST_DUE_GRACE_MS (7 days)', async () => {
+  const mod = await loadDispatch();
+  await mod.sendPaymentFailed(USER, { plan_code: 'pro', period_start: '2026-11-13T00:00:00Z', next_attempt: '2026-11-16T00:00:00Z', provider_invoice_id: 'in_1', attempt_count: 1, now: new Date('2026-11-14T00:00:00Z') });
+  const v = globalThis.__rendered.find((r) => r.fn === 'renderPaymentFailed').vars;
+  assert.equal(new Date(v.grace_end).toISOString(), '2026-11-20T00:00:00.000Z');
+  assert.equal(new Date(v.now).toISOString(), '2026-11-14T00:00:00.000Z');
+});
+
+test('sendPlanEnded: reads the Free quota only when the account is on Free', async () => {
+  const mod = await loadDispatch();
+  await mod.sendPlanEnded(USER, { plan_code: 'pro', period_end: null, provider_subscription_id: 's1', on_free: true });
+  await mod.sendPlanEnded(USER, { plan_code: 'pro', period_end: null, provider_subscription_id: 's2', on_free: false });
+  const [a, b] = globalThis.__rendered.filter((r) => r.fn === 'renderPlanEnded').map((r) => r.vars);
+  assert.equal(a.free_quota, 5);
+  assert.equal(a.on_free, true);
+  assert.equal(b.free_quota, null);
+  assert.equal(b.on_free, false);
+});
+
+test('sendSubscriptionChanged: passes switch, resume and quota to the template', async () => {
+  const mod = await loadDispatch();
+  await mod.sendSubscriptionChanged(USER, { plan_code: 'studio', status: 'active', period_end: null, provider_subscription_id: 's', previous_plan_code: 'pro' });
+  const v = globalThis.__rendered[0].vars;
+  assert.equal(v.previous_plan_code, 'pro');
+  assert.equal(v.resumed, false);
+  assert.equal(v.monthly_job_quota, 150);
 });

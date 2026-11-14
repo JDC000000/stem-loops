@@ -1,124 +1,119 @@
-// Subscription-changed email — V3-M2 (TSD §M).
-// Triggered on checkout.session.completed (mode=subscription),
-// customer.subscription.updated, and customer.subscription.deleted.
+// R4 — Plan changed (emails v1.2 §3 R4; service email).
+//
+// Sent only for a real change the user should hear about:
+//   - active        a re-subscriber (no stored row, or a stored `incomplete`
+//                   row) whose plan is now active, when R2 did not go out
+//   - switched      Pro <-> Studio while active
+//   - paused        the subscription became paused
+//   - active again  paused or past_due -> active
+// NOT sent for a renewal (R3 covers it), `incomplete`, `past_due` (R7),
+// `cancel_at_period_end` (R5) or `canceled` (R6, plan-ended.ts). The webhook
+// decides which case applies; see subscriptionChangeCase() in dispatch.ts.
 
-import type { PlanCode, SubscriptionStatus } from '@/lib/billing/types';
-import { escapeHtml, formatDateUtc, shell, type RenderedEmail } from './shared';
+import type { PlanCode } from '@/lib/billing/types';
+import {
+  detailRows,
+  detailText,
+  footerFor,
+  formatDateProse,
+  formatDateUtc,
+  h1,
+  p,
+  plainText,
+  planLabel,
+  shell,
+  siteBaseOf,
+  type DetailRow,
+  type RenderedEmail,
+} from './shared';
+
+/** The statuses R4 has copy for. past_due, incomplete and canceled have none. */
+export type SubscriptionChangedStatus = 'active' | 'trialing' | 'paused';
 
 export interface SubscriptionChangedVars {
   plan_code: PlanCode;
-  status: SubscriptionStatus;
-  /** Current period end — ISO string or Date. Required for most statuses. */
+  status: SubscriptionChangedStatus;
+  /** Current period end: the renewal date while active. */
   period_end: Date | string | null;
+  /** Set only for a Pro <-> Studio switch; never read from a missing row. */
+  previous_plan_code?: PlanCode | null;
+  /** True when the plan came back from paused or past_due. */
+  resumed?: boolean;
+  /** plans.monthly_job_quota for plan_code. */
+  monthly_job_quota?: number | null;
   siteBase?: string;
 }
 
-const STATUS_LABEL: Record<string, string> = {
+const STATUS_LABEL: Record<SubscriptionChangedStatus, string> = {
   active: 'Active',
   trialing: 'Trial',
-  past_due: 'Payment overdue',
-  canceled: 'Cancelled',
-  incomplete: 'Payment incomplete',
   paused: 'Paused',
 };
 
-function planLabel(code: PlanCode): string {
-  switch (code) {
-    case 'pro':
-      return 'Pro';
-    case 'studio':
-      return 'Studio';
-    case 'free':
-      return 'Free';
-    default:
-      return code;
-  }
+/** "It covers 50 tracks a month and renews on 15 January 2027." or ''. */
+function coverage(quota: number | null | undefined, periodEnd: Date | string | null): string {
+  const parts: string[] = [];
+  if (typeof quota === 'number' && quota > 0) parts.push(`covers ${quota} tracks a month`);
+  const renews = formatDateProse(periodEnd);
+  if (renews) parts.push(`renews on ${renews}`);
+  return parts.length ? `It ${parts.join(' and ')}.` : '';
 }
 
-/** Human one-liner for the status — drives subject + lead paragraph. */
-function statusHeadline(status: SubscriptionStatus, plan: string, periodEnd: string): {
+function copyFor(vars: SubscriptionChangedVars, plan: string): {
   subject: string;
+  headline: string;
   lead: string;
 } {
-  switch (status) {
-    case 'active':
-    case 'trialing':
-      return {
-        subject: `Your stem-loops ${plan} plan is active`,
-        lead: `Your ${plan} plan is active. Renews ${periodEnd || 'at the end of your period'}.`,
-      };
-    case 'past_due':
-      return {
-        subject: `Payment problem on your stem-loops ${plan} plan`,
-        lead: `We couldn't charge your card for the latest ${plan} renewal. We'll retry automatically — please update your card in the billing portal if it keeps failing.`,
-      };
-    case 'canceled':
-      return {
-        subject: `Your stem-loops ${plan} plan was cancelled`,
-        lead: `Your ${plan} plan has been cancelled. You'll keep access until ${periodEnd || 'the end of your paid period'}.`,
-      };
-    case 'incomplete':
-      // Stripe's 'unpaid' and 'incomplete_expired' are remapped to
-      // 'past_due' and 'canceled' respectively at the provider boundary
-      // (_mapStripeStatus in providers/stripe.ts), so they can never
-      // reach this switch — do not re-add them.
-      return {
-        subject: `Your stem-loops ${plan} plan needs attention`,
-        lead: `Your ${plan} subscription couldn't complete payment. Reopen your checkout or update your card to finish.`,
-      };
-    case 'paused':
-      return {
-        subject: `Your stem-loops ${plan} plan is paused`,
-        lead: `Your ${plan} plan is paused. Resume it any time from the billing portal.`,
-      };
-    default:
-      return {
-        subject: `Your stem-loops ${plan} plan was updated`,
-        lead: `We've updated your ${plan} plan. Current status: ${STATUS_LABEL[status] ?? status}.`,
-      };
+  const cover = coverage(vars.monthly_job_quota, vars.period_end);
+  const withCover = (s: string) => (cover ? `${s} ${cover}` : s);
+
+  if (vars.status === 'paused') {
+    return {
+      subject: `Your stem-loops ${plan} plan is paused`,
+      headline: `Your ${plan} plan is paused`,
+      lead: `Your ${plan} plan is paused, so your account uses the Free plan’s allowance until it resumes.`,
+    };
   }
+  const previous = vars.previous_plan_code;
+  if (previous && previous !== vars.plan_code) {
+    return {
+      subject: `Your stem-loops plan is now ${plan}`,
+      headline: `Your plan is now ${plan}`,
+      lead: withCover(`Your plan changed from ${planLabel(previous)} to ${plan}.`),
+    };
+  }
+  return {
+    subject: `Your stem-loops ${plan} plan is active`,
+    headline: `Your ${plan} plan is active`,
+    lead: withCover(vars.resumed ? `Your ${plan} plan is active again.` : `Your ${plan} plan is active.`),
+  };
 }
 
 export function renderSubscriptionChanged(vars: SubscriptionChangedVars): RenderedEmail {
-  const base = (vars.siteBase ?? 'https://stem-loops.com').replace(/\/+$/, '');
+  const base = siteBaseOf(vars.siteBase);
   const plan = planLabel(vars.plan_code);
-  const periodEnd = formatDateUtc(vars.period_end);
-  const { subject, lead } = statusHeadline(vars.status, plan, periodEnd);
+  const statusLabel = STATUS_LABEL[vars.status] ?? 'Updated';
+  const { subject, headline, lead } = copyFor(vars, plan);
 
-  const html = shell(
-    `
-      <h1 style="font-size:20px;margin:0 0 12px;">${escapeHtml(subject)}</h1>
-      <p style="font-size:15px;line-height:1.5;margin:0 0 16px;">${escapeHtml(lead)}</p>
-      <table role="presentation" cellpadding="0" cellspacing="0"
-             style="font-size:14px;margin:0 0 20px;border-collapse:collapse;">
-        <tr>
-          <td style="color:#666;padding:4px 16px 4px 0;">Plan</td>
-          <td style="padding:4px 0;"><strong>${escapeHtml(plan)}</strong></td>
-        </tr>
-        <tr>
-          <td style="color:#666;padding:4px 16px 4px 0;">Status</td>
-          <td style="padding:4px 0;"><strong>${escapeHtml(STATUS_LABEL[vars.status] ?? vars.status)}</strong></td>
-        </tr>
-        ${
-          periodEnd
-            ? `<tr>
-          <td style="color:#666;padding:4px 16px 4px 0;">Period end</td>
-          <td style="padding:4px 0;"><strong>${escapeHtml(periodEnd)}</strong></td>
-        </tr>`
-            : ''
-        }
-      </table>
-      <p style="margin:0 0 24px;">
-        <a href="${base}/account"
-           style="display:inline-block;background:#111;color:#fff;text-decoration:none;padding:10px 16px;border-radius:6px;font-size:14px;">
-          Manage subscription
-        </a>
-      </p>
-      <p style="font-size:13px;color:#777;line-height:1.5;margin:0;">
-        Questions? Reply to this email.
-      </p>
-    `,
-    `${plan} plan: ${STATUS_LABEL[vars.status] ?? vars.status}`,
-  );
-  return { subject, html };
+  const rows: DetailRow[] = [
+    { label: 'Plan', value: plan },
+    { label: 'Status', value: statusLabel },
+  ];
+  const renews = formatDateUtc(vars.period_end);
+  if (renews && vars.status !== 'paused') rows.push({ label: 'Renews', value: renews });
+
+  const cta = { label: 'Manage your plan', url: `${base}/account` };
+  const footer = footerFor('service');
+  const preheader = `${plan} plan: ${statusLabel}`;
+
+  const html = shell({
+    subject,
+    preheader,
+    bodyHtml: [h1(headline), p(lead), detailRows(rows)].join('\n'),
+    cta,
+    footer,
+    siteBase: base,
+  });
+  const text = plainText({ paragraphs: [lead, detailText(rows)], cta, footer });
+  return { subject, html, text };
 }

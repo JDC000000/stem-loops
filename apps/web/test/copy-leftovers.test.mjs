@@ -54,7 +54,8 @@ const metaDescription = (rel) => {
   return m[1].replace(/\$\{[^}]*\}/g, String(MAX_TRACK_MIN));
 };
 
-for (const rel of ['app/(landing)/page.tsx', 'app/layout.tsx']) {
+// The landing description now comes from the SEO page registry (#271), entry '/'.
+for (const rel of ['lib/seo/pages.ts', 'app/layout.tsx']) {
   test(`A-02: ${rel} meta description fits a search snippet (<= 160 characters)`, () => {
     const d = metaDescription(rel);
     assert.ok(d.length <= 160, `${d.length} characters: ${JSON.stringify(d)}`);

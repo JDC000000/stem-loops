@@ -1,45 +1,77 @@
-// Welcome email — V3-M1 (TSD §M).
-// Trigger: first-time customer completing Checkout (mode=subscription), sent
-// from the billing webhook. See V3-M-emails.md for why we don't send on auth
-// signup in Phase 1a.
+// R2 — Welcome, subscriber (emails v1.2 §3 R2; service email).
+// Trigger: the first subscription_upserted with status active or trialing,
+// guarded by users.welcomed_at (migration 019). See dispatch.ts.
+//
+// A service email: no pricing link and no prompt to buy (D3, §2.8).
 
-import { shell, type RenderedEmail } from './shared';
+import type { PlanCode } from '@/lib/billing/types';
+import {
+  footerFor,
+  formatDateProse,
+  h1,
+  link,
+  p,
+  pHtml,
+  plainText,
+  planLabel,
+  shell,
+  siteBaseOf,
+  type RenderedEmail,
+} from './shared';
 
 export interface WelcomeVars {
-  // Nothing variable in the copy yet; keep the shape so future variants can
-  // thread in e.g. a first name without a template churn.
+  plan_code?: PlanCode | null;
+  /** The subscription's current_period_end: the renewal date. */
+  period_end?: Date | string | null;
+  /** plans.monthly_job_quota for plan_code (Pro 50, Studio 150; migration 034). */
+  monthly_job_quota?: number | null;
   siteBase?: string;
 }
 
+const NB = ' ';
+
+/** "Your Pro plan is active, covers 50 tracks a month and renews on 15 January 2027." */
+function planSentence(vars: WelcomeVars): string {
+  const plan = vars.plan_code ? `${planLabel(vars.plan_code)} plan` : 'plan';
+  const parts: string[] = [];
+  if (typeof vars.monthly_job_quota === 'number' && vars.monthly_job_quota > 0) {
+    parts.push(`covers ${vars.monthly_job_quota} tracks a month`);
+  }
+  const renews = formatDateProse(vars.period_end);
+  if (renews) parts.push(`renews on ${renews}`);
+  if (parts.length === 0) return `Your ${plan} is active.`;
+  if (parts.length === 1) return `Your ${plan} is active and ${parts[0]}.`;
+  return `Your ${plan} is active, ${parts[0]} and ${parts[1]}.`;
+}
+
 export function renderWelcome(vars: WelcomeVars = {}): RenderedEmail {
-  const base = (vars.siteBase ?? 'https://stem-loops.com').replace(/\/+$/, '');
+  const base = siteBaseOf(vars.siteBase);
   const subject = 'Welcome to stem-loops';
-  const html = shell(
-    `
-      <h1 style="font-size:20px;margin:0 0 12px;">Welcome to stem-loops</h1>
-      <p style="font-size:15px;line-height:1.5;margin:0 0 16px;">
-        Thanks for subscribing. Upload a song and it opens in the player: six
-        stems on faders, with a chord track to play along to.
-      </p>
-      <p style="font-size:15px;line-height:1.5;margin:0 0 20px;">
-        Your plan and monthly allowance are on your account page. To start,
-        upload a song on the stem-loops.com home page.
-      </p>
-      <p style="margin:0 0 24px;">
-        <a href="${base}/account"
-           style="display:inline-block;background:#111;color:#fff;text-decoration:none;padding:10px 16px;border-radius:6px;font-size:14px;margin-right:8px;">
-          Go to your account
-        </a>
-        <a href="${base}/pricing"
-           style="display:inline-block;background:#f0f0f0;color:#111;text-decoration:none;padding:10px 16px;border-radius:6px;font-size:14px;">
-          See pricing
-        </a>
-      </p>
-      <p style="font-size:14px;color:#555;line-height:1.5;margin:0;">
-        Reply to this email if anything goes sideways &mdash; a human reads it.
-      </p>
-    `,
-    'Welcome to stem-loops. Upload a song to open it in the player.',
-  );
-  return { subject, html };
+  const plan = vars.plan_code ? planLabel(vars.plan_code) : '';
+  const preheader = plan
+    ? `Your ${plan} plan is active. Upload a song to start.`
+    : 'Your plan is active. Upload a song to start.';
+  const lead = `Thanks for subscribing. ${planSentence(vars)}`;
+  const how =
+    'Upload a song and it opens in the player: six stems on faders, with a chord track to play along to. Pro and Studio work with audio files you upload.';
+  // #270: songs over 5 minutes are trimmed to their first 5 minutes, not refused.
+  const limits = `Songs longer than 5${NB}minutes use the first 5${NB}minutes, and files are deleted 24${NB}hours after the job starts.`;
+  const cta = { label: 'Upload a song', url: `${base}/` };
+  const footer = footerFor('service');
+
+  const bodyHtml = [
+    h1('Welcome to stem-loops'),
+    p(lead),
+    p(how),
+    p(limits),
+    pHtml(`Your plan is on your ${link(`${base}/account`, 'account page')}.`),
+  ].join('\n');
+
+  const html = shell({ subject, preheader, bodyHtml, cta, footer, siteBase: base });
+  const text = plainText({
+    paragraphs: [lead, how, limits, `Your plan is on your account page: ${base}/account`],
+    cta,
+    footer,
+  });
+  return { subject, html, text };
 }

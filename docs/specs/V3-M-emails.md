@@ -13,46 +13,63 @@ account owner's verified address, which is acceptable for Phase 1a bring-up.
 
 ## Triggers → templates (abstracted)
 
-The billing webhook translates provider events (Stripe today, Paddle later)
-into `BillingEvent`s (see `apps/web/src/lib/billing/types.ts`). Each is
-mapped to zero, one, or two emails. All sends are best-effort — the
-dispatcher is wrapped in `emailBestEffort(...)` so a Resend outage or a
-template bug can NEVER cause Stripe to retry the webhook.
+Copy and rules: emails v1.2 (Project doc `claude/emails-v1.2-2026-11-13.md`),
+IDs R2–R7 below. The billing webhook translates provider events (Stripe today,
+Paddle later) into `BillingEvent`s (see `apps/web/src/lib/billing/types.ts`).
+Each event sends at most one change email (plus R2 the first time a plan is
+active), chosen by comparing the stored `subscriptions` row (read before the
+upsert) with the event. All sends are
+best-effort: the dispatcher is wrapped in `emailBestEffort(...)` so a Resend
+outage or a template bug can NEVER cause Stripe to retry the webhook.
 
-| Abstracted event | Stripe event(s) | Emails sent | Template |
+| Abstracted event | Stripe event(s) | Email | Template |
 | --- | --- | --- | --- |
-| `subscription_upserted` | `customer.subscription.created`, `customer.subscription.updated` | welcome (first-time only) + subscription-changed | `welcome.ts`, `subscription-changed.ts` |
-| `subscription_canceled` | `customer.subscription.deleted` | subscription-changed (status=`canceled`) | `subscription-changed.ts` |
-| `credit_purchase_completed` | `checkout.session.completed` (mode=payment) | receipt | `receipt.ts` |
-| `invoice_paid` | `invoice.paid` | receipt | `receipt.ts` |
+| `subscription_upserted`, status `active`/`trialing`, user never welcomed | `customer.subscription.created` / `.updated` | R2 welcome (once per user, `users.welcomed_at`); never on `incomplete` | `welcome.ts` |
+| `subscription_upserted`, no stored row or stored `incomplete`, now active, R2 not sent in this event | same | R4 "Your Pro plan is active" (a re-subscriber) | `subscription-changed.ts` |
+| `subscription_upserted`, `cancel_at_period_end` false → true | `customer.subscription.updated` (portal cancel) | R5 plan ending ("ends on …", access until period end) | `plan-ending.ts` |
+| `subscription_upserted`, plan changed while active | same | R4 "Your plan is now Studio" | `subscription-changed.ts` |
+| `subscription_upserted`, became `paused` / paused or past_due → `active` | same | R4 "paused" / "active again" | `subscription-changed.ts` |
+| `subscription_upserted`, anything else (renewal, `incomplete`, `past_due`, `canceled`) | same | none | — |
+| `subscription_canceled` for a stored plan that was not `incomplete` | `customer.subscription.deleted` | R6 plan ended (access has ended; the handler downgrades) | `plan-ended.ts` |
+| `invoice_payment_failed` with `billing_reason` `subscription_cycle` or `subscription_update`, stored row matched | `invoice.payment_failed` | R7 payment failed (grace date = period start + 7 days) | `payment-failed.ts` |
+| `invoice_payment_failed` with `subscription_create` (declined card at Checkout) | same | none | — |
+| `credit_purchase_completed` | `checkout.session.completed` (mode=payment) | R3 receipt (credit pack) | `receipt.ts` |
+| `invoice_paid` | `invoice.paid` | R3 receipt; "Pro plan" for `subscription_create`, "Pro plan renewal" for `subscription_cycle` | `receipt.ts` |
 
-Note on "first subscription → welcome + sub-changed": the task brief lists
-the trigger as `checkout.session.completed` where mode=subscription. In the
-Stripe provider adapter, the mode=subscription Checkout session is NOT
-emitted as a first-class `BillingEvent` — it is the companion
-`customer.subscription.created` that hits the webhook as `subscription_
-upserted` and that we hook. Same user-visible behaviour, one source of truth.
+Note on "first subscription": the mode=subscription Checkout session is NOT
+emitted as a first-class `BillingEvent` — the companion
+`customer.subscription.created` (and any `.updated`) arrives as
+`subscription_upserted`. A first subscription sends R2 + R3 only.
+
+`emailForUser` skips users whose `deleted_at` is set, so a webhook that lands
+while an account is being deleted sends nothing.
 
 ## Variables per template
 
-| Template | File | Required variables |
+| Template | File | Variables |
 | --- | --- | --- |
-| welcome | `apps/web/src/lib/emails/templates/welcome.ts` | — (uses only siteBase; no per-user data today, see `WelcomeVars` for expansion shape) |
-| subscription-changed | `apps/web/src/lib/emails/templates/subscription-changed.ts` | `plan_code` (`free`/`pro`/`studio`), `status` (SubscriptionStatus union), `period_end` (Date \| ISO string \| null) |
-| receipt | `apps/web/src/lib/emails/templates/receipt.ts` | `amount_cad_cents` (int), `plan_or_pack_label` (string), `invoice_url` (string \| null) |
+| R2 welcome | `templates/welcome.ts` | `plan_code`, `period_end`, `monthly_job_quota` (from `plans`; clause omitted when unknown) |
+| R3 receipt | `templates/receipt.ts` | `amount_cad_cents`, `plan_or_pack_label`, `invoice_url \| null`, `kind` (`credit_pack` / `subscription`), `paid_on` |
+| R4 plan changed | `templates/subscription-changed.ts` | `plan_code`, `status` (`active` / `trialing` / `paused`), `period_end`, `previous_plan_code`, `resumed`, `monthly_job_quota` |
+| R5 plan ending | `templates/plan-ending.ts` | `plan_code`, `period_end`, `undo_available` (D4a; default false) |
+| R6 plan ended | `templates/plan-ended.ts` | `plan_code`, `period_end`, `now`, `on_free`, `free_quota` |
+| R7 payment failed | `templates/payment-failed.ts` | `plan_code`, `grace_end`, `now`, `next_attempt` |
 
-Each template exports a `render…` function returning `{subject, html}` and
-is pure — same input renders the same bytes (see `test/emails.test.mjs`
-"deterministic for a fixed input").
+Each template exports a `render…` function returning `{subject, html, text}`
+and is pure: the same input renders the same bytes (`now` is injected). The
+shell is the dark one from emails v1.2 §2.4; lime is used only on the single
+CTA. The footer comes from `footerFor(kind)`; its "Reply if something doesn't
+work" line is rendered only when `EMAIL_REPLY_TO` is set.
 
 ## Welcome idempotency
 
-A `users.welcomed_at timestamptz` column is read + written by
-`sendWelcomeIfFirstTime`. The column is **not** created by this PR — adding
-a migration from an email-only patch is out of scope. Behaviour when the
-column is absent: every `subscription_upserted` event sends a welcome.
-Phase 1b: ship migration `0XX_users_welcomed_at.sql` and this file becomes
-authoritative.
+`users.welcomed_at timestamptz` is read and written by
+`sendWelcomeIfFirstTime`. The column exists: migration
+`019_v3_users_welcomed_at.sql` (with its `down/` file) created it. (An earlier
+version of this file said the column was "not created by this PR"; that was
+true of the Phase 1a PR and is no longer the state of the repo — emails v1.2
+E11.) The `catch` in `shouldSendWelcome` still degrades to "send" on a DB
+that predates 019, for local bring-up only.
 
 ## Why not send welcome from auth signup?
 
@@ -87,8 +104,11 @@ is the entire contract this module has with the rest of V3.
 ## Files
 
 - `apps/web/src/lib/emails/resend.ts` — HTTP client + retry policy
-- `apps/web/src/lib/emails/dispatch.ts` — `sendWelcomeIfFirstTime` / `sendSubscriptionChanged` / `sendReceipt`
-- `apps/web/src/lib/emails/templates/shared.ts` — escape, URL guard, CAD formatter, HTML shell
-- `apps/web/src/lib/emails/templates/{welcome,subscription-changed,receipt}.ts`
+- `apps/web/src/lib/emails/dispatch.ts` — `sendWelcomeIfFirstTime` / `sendSubscriptionChanged` / `sendPlanEnding` / `sendPlanEnded` / `sendPaymentFailed` / `sendReceipt`
+- `apps/web/src/lib/emails/templates/shared.ts` — escape, URL guard, CAD and date formatters, dark HTML shell, plain-text builder, `footerFor`
+- `apps/web/src/lib/emails/templates/{welcome,receipt,subscription-changed,plan-ending,plan-ended,payment-failed}.ts`
 - `apps/web/src/app/api/billing/webhook/route.ts` — call-sites inside `handleBillingEvent`
-- `apps/web/test/emails.test.mjs` — fetch mock + retry assertions + template determinism
+- `apps/web/test/emails.test.mjs` — fetch mock + retry assertions + template pins
+- `apps/web/test/emails-v12-templates.test.mjs` — subject, lead, plain text and footer for every template
+- `apps/web/test/emails-dispatch.test.mjs` — idempotency keys, deleted-user skip
+- `apps/web/test/webhook-subscription-emails.test.mjs` — which Stripe event sends which email

@@ -26,10 +26,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getBillingProvider, type BillingEvent, type BillingSubscription } from '@/lib/billing';
+import type { BillingSubscriptionChange } from '@/lib/billing/types';
 import { db } from '@/lib/db';
 import { invalidateEntitlement } from '@/lib/billing/entitlements';
 import { computeProRataClawback } from '@/lib/billing/prorata';
 import {
+  sendPaymentFailed,
+  sendPlanEnded,
+  sendPlanEnding,
   sendReceipt,
   sendSubscriptionChanged,
   sendWelcomeIfFirstTime,
@@ -116,6 +120,130 @@ async function emailBestEffort(label: string, work: () => Promise<void>): Promis
       err instanceof Error ? err.message : err,
     );
   }
+}
+
+/** A subscription's state before an event: status, plan, cancel flag. */
+type StoredSub = { status: string; plan_code: string; cancel_at_period_end: boolean };
+
+/** The state BEFORE a subscription_upserted, derived from the event itself
+ *  (Stripe `previous_attributes`), never from our stored row. Why: the stored
+ *  row is overwritten by the upsert, so if a later step in this handler throws
+ *  and Stripe retries, a stored-row comparison sees "no change" and the email
+ *  is lost for good (PR #272 review B2). The event is identical on every
+ *  retry, so the same email is derived every time, and the per-transition
+ *  Resend idempotency key stops a second send. Emails go out only after every
+ *  DB write in the handler, so a delivery that already sent also returned 200.
+ *  null = a new subscription (customer.subscription.created). */
+function previousFromEvent(
+  previous: BillingSubscriptionChange | null | undefined,
+  now: { status: string; plan_code: string; cancel_at_period_end: boolean },
+): StoredSub | null {
+  if (previous === null) return null;
+  const p = previous ?? {};
+  return {
+    status: p.status ?? now.status,
+    plan_code: p.planCode ?? now.plan_code,
+    cancel_at_period_end: p.cancelAtPeriodEnd ?? now.cancel_at_period_end,
+  };
+}
+
+/** Read the stored row for a subscription before subscription_canceled
+ *  changes it. A failed read returns { known: false }: an email must never
+ *  be a reason for Stripe to retry a fulfilment. */
+async function readStoredSub(
+  providerName: string,
+  providerSubscriptionId: string,
+): Promise<{ known: boolean; row: StoredSub | null }> {
+  try {
+    const res = await db.query<StoredSub>(
+      `SELECT status, plan_code, cancel_at_period_end FROM subscriptions
+        WHERE provider = $1 AND provider_subscription_id = $2`,
+      [providerName, providerSubscriptionId],
+    );
+    return { known: true, row: res.rows[0] ?? null };
+  } catch (err) {
+    console.error('[webhook] stored subscription read failed:', err instanceof Error ? err.message : err);
+    return { known: false, row: null };
+  }
+}
+
+type SubEmailCase =
+  | { kind: 'active'; resumed: boolean }
+  | { kind: 'switched'; previous: 'pro' | 'studio' }
+  | { kind: 'paused' }
+  | { kind: 'ending' }
+  | null;
+
+/** Which email (if any) a subscription_upserted sends, beyond R2
+ *  (emails v1.2 §3 R4; fixes E2 and E3):
+ *    R4 "active"       no stored row, or a stored `incomplete` row, now
+ *                      active/trialing, and R2 did not go out in this event
+ *                      (a re-subscriber who was welcomed before);
+ *    R5 "ending"       cancel_at_period_end went false -> true;
+ *    R4 "switched"     plan changed while active;
+ *    R4 "paused"       status became paused;
+ *    R4 "active again" paused or past_due -> active;
+ *    otherwise nothing: a renewal (R3 covers it), `incomplete`, `past_due`
+ *    (R7), `canceled` (R6), or a first activation that R2 already covered. */
+function subscriptionEmailCase(
+  prev: StoredSub | null,
+  next: { status: string; planCode: 'pro' | 'studio'; cancelAtPeriodEnd: boolean },
+  welcomeSent: boolean,
+): SubEmailCase {
+  const nowActive = next.status === 'active' || next.status === 'trialing';
+  if ((!prev || prev.status === 'incomplete') && nowActive) {
+    return welcomeSent || next.cancelAtPeriodEnd ? null : { kind: 'active', resumed: false };
+  }
+  if (!prev) return null;
+  if (!prev.cancel_at_period_end && next.cancelAtPeriodEnd && nowActive) return { kind: 'ending' };
+  if (
+    next.status === 'active' &&
+    prev.plan_code !== next.planCode &&
+    (prev.plan_code === 'pro' || prev.plan_code === 'studio')
+  ) {
+    return { kind: 'switched', previous: prev.plan_code };
+  }
+  if (next.status === 'paused' && prev.status !== 'paused') return { kind: 'paused' };
+  if (next.status === 'active' && (prev.status === 'paused' || prev.status === 'past_due')) {
+    return { kind: 'active', resumed: true };
+  }
+  return null;
+}
+
+/** True when this user's welcome (R2) was already sent for THIS
+ *  subscription: users.welcomed_at is at or after the subscription's
+ *  creation. A redelivered first-activation event (Stripe can deliver an
+ *  event more than once) then re-derives "first activation" with
+ *  welcomeSent=false, because the first delivery already set welcomed_at;
+ *  without this check it would send R4 "Your plan is active" right after the
+ *  welcome, under a different Resend key (PR #272 review-2 B3). A re-subscriber
+ *  welcomed before this subscription existed still gets R4. Unknown (no
+ *  creation time, read failed) counts as welcomed: a missed R4 is harmless,
+ *  R3 confirms the plan anyway, while a duplicate is visible. */
+async function welcomedForSubscription(userId: string, createdAt: Date | null | undefined): Promise<boolean> {
+  if (!createdAt) return true;
+  try {
+    const res = await db.query<{ welcomed_at: Date | string | null }>(
+      'SELECT welcomed_at FROM users WHERE id = $1',
+      [userId],
+    );
+    const w = res.rows[0]?.welcomed_at;
+    if (!w) return false;
+    return new Date(w).getTime() >= createdAt.getTime();
+  } catch (err) {
+    console.error('[webhook] welcomed_at read failed:', err instanceof Error ? err.message : err);
+    return true;
+  }
+}
+
+/** True when some subscription of the user's still entitles them. */
+async function hasLiveSubscription(userId: string): Promise<boolean> {
+  const res = await db.query(
+    `SELECT 1 FROM subscriptions
+      WHERE user_id = $1 AND status IN ('active','trialing','past_due') LIMIT 1`,
+    [userId],
+  );
+  return (res.rowCount ?? res.rows.length) > 0;
 }
 
 /** Thrown when money was taken but we cannot tell whose it is. The route turns
@@ -392,6 +520,7 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
           amount_cad_cents: evt.amountCents,
           plan_or_pack_label: `${credits} credits`,
           invoice_url: null,
+          paid_on: new Date(),
           receipt_source: { kind: 'credit', provider_charge_id: evt.providerChargeId },
         }),
       );
@@ -452,17 +581,56 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       );
       await upsertEntitlementFromSubscription(subUserId, evt.subscription);
       invalidateEntitlement(subUserId);
-      // V3-M1 + V3-M2 — welcome (first-time only) + subscription-changed.
-      // Welcome is idempotent via users.welcomed_at (see dispatch.ts).
-      await emailBestEffort('welcome:first_time', () =>
-        sendWelcomeIfFirstTime(subUserId),
+      // Emails (emails v1.2 R2, R4, R5). R2, the welcome, goes out only once
+      // the plan is actually active or trialing: never on `incomplete`, which
+      // grants nothing (E3). It is idempotent via users.welcomed_at.
+      const sub = evt.subscription;
+      const nowActive = sub.status === 'active' || sub.status === 'trialing';
+      let welcomeSent = false;
+      if (nowActive) {
+        await emailBestEffort('welcome:first_time', async () => {
+          welcomeSent = await sendWelcomeIfFirstTime(subUserId, {
+            plan_code: planCode,
+            period_end: sub.currentPeriodEnd,
+          });
+        });
+      }
+      const before = previousFromEvent(evt.previous, {
+        status: sub.status,
+        plan_code: planCode,
+        cancel_at_period_end: sub.cancelAtPeriodEnd,
+      });
+      const change = subscriptionEmailCase(
+        before,
+        { status: sub.status, planCode, cancelAtPeriodEnd: sub.cancelAtPeriodEnd },
+        welcomeSent,
       );
-      await emailBestEffort('subscription_changed:upsert', () =>
+      if (!change) return;
+      if (
+        change.kind === 'active' &&
+        !change.resumed &&
+        (await welcomedForSubscription(subUserId, sub.createdAt))
+      ) {
+        return;
+      }
+      if (change.kind === 'ending') {
+        await emailBestEffort('plan_ending', () =>
+          sendPlanEnding(subUserId, {
+            plan_code: planCode,
+            period_end: sub.currentPeriodEnd,
+            provider_subscription_id: sub.providerSubscriptionId,
+          }),
+        );
+        return;
+      }
+      await emailBestEffort(`subscription_changed:${change.kind}`, () =>
         sendSubscriptionChanged(subUserId, {
-          plan_code: evt.subscription.planCode,
-          status: evt.subscription.status,
-          period_end: evt.subscription.currentPeriodEnd,
-          provider_subscription_id: evt.subscription.providerSubscriptionId,
+          plan_code: planCode,
+          status: change.kind === 'paused' ? 'paused' : sub.status === 'trialing' ? 'trialing' : 'active',
+          period_end: sub.currentPeriodEnd,
+          provider_subscription_id: sub.providerSubscriptionId,
+          previous_plan_code: change.kind === 'switched' ? change.previous : null,
+          resumed: change.kind === 'active' ? change.resumed : false,
         }),
       );
       return;
@@ -473,6 +641,7 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       // customer.subscription.deleted when the paid period has ended (or on an
       // immediate cancel), so access ends now. readSnapshot also gates on
       // subscription status, so a stale 'pro' row can never outlive this.
+      const stored = await readStoredSub(providerName, evt.providerSubscriptionId);
       const res = await db.query<{ user_id: string; plan_code: 'pro' | 'studio'; current_period_end: Date }>(
         `UPDATE subscriptions
             SET status = 'canceled', cancel_at_period_end = true, updated_at = now()
@@ -491,16 +660,33 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         await downgradeEntitlementIfUnentitled(userId);
         invalidateEntitlement(userId);
       }
-      // V3-M2 — subscription-changed (canceled).
-      if (userId) {
-        await emailBestEffort('subscription_changed:canceled', () =>
-          sendSubscriptionChanged(userId, {
-            plan_code: row?.plan_code ?? 'pro',
-            status: 'canceled',
-            period_end: row?.current_period_end ?? null,
+      // R6, plan ended (emails v1.2; fixes E1). Sent only when we know which
+      // plan ended (a stored row) and it was a plan the user actually had:
+      // not when Stripe says the subscription was never paid (status
+      // incomplete / incomplete_expired on the event), and not when our row
+      // was still `incomplete` (invoice_payment_failed no longer flips an
+      // incomplete row to past_due, so that status survives; review B1).
+      // A stored `canceled` is NOT skipped: that is what a Stripe retry after
+      // a partial failure of this handler sees, and skipping it would lose
+      // the email (review B2). A repeat send is stopped by the
+      // sub-changed:<id>:canceled Resend key. The old code guessed 'pro' when
+      // the row was missing and told the user they would keep access.
+      if (
+        userId &&
+        row &&
+        stored.known &&
+        !evt.neverPaid &&
+        stored.row?.status !== 'incomplete'
+      ) {
+        await emailBestEffort('plan_ended', async () => {
+          const stillEntitled = await hasLiveSubscription(userId);
+          await sendPlanEnded(userId, {
+            plan_code: row.plan_code,
+            period_end: row.current_period_end ?? null,
             provider_subscription_id: evt.providerSubscriptionId,
-          }),
-        );
+            on_free: !stillEntitled,
+          });
+        });
       }
       return;
     }
@@ -535,7 +721,10 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         const provider = getBillingProvider();
         const sub = await provider.getSubscription(evt.providerSubscriptionId);
         await upsertEntitlementFromSubscription(userId, sub);
-        planLabel = `${({ pro: 'Pro', studio: 'Studio' } as Record<string, string>)[sub.planCode] ?? sub.planCode} plan renewal`;
+        // E4: only a cycle invoice is a "renewal". The first invoice
+        // (subscription_create) and anything else is labelled "<Plan> plan".
+        const planName = ({ pro: 'Pro', studio: 'Studio' } as Record<string, string>)[sub.planCode] ?? sub.planCode;
+        planLabel = evt.billingReason === 'subscription_cycle' ? `${planName} plan renewal` : `${planName} plan`;
       } catch (err) {
         // B2 (credit-ledger review 2026-11-03): do NOT swallow. A 200 here
         // tells Stripe not to retry, so entitlements.period_end never
@@ -553,6 +742,7 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
           amount_cad_cents: evt.invoice.amountCents,
           plan_or_pack_label: planLabel,
           invoice_url: evt.invoice.hostedInvoiceUrl,
+          paid_on: evt.invoice.paidAt,
           receipt_source: { kind: 'subscription', invoice_id: evt.invoice.providerInvoiceId },
         }),
       );
@@ -563,14 +753,47 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       // Flip the subscription to past_due. Access continues for the grace
       // window (PAST_DUE_GRACE_MS, applied by readSnapshot) and then drops to
       // free; the entitlement row itself is left alone.
-      const res = await db.query<{ user_id: string }>(
+      const res = await db.query<{
+        user_id: string;
+        plan_code: 'pro' | 'studio';
+        current_period_start: Date | string | null;
+      }>(
         `UPDATE subscriptions SET status = 'past_due', updated_at = now()
           WHERE provider = $1 AND provider_subscription_id = $2
-          RETURNING user_id`,
+            AND status NOT IN ('incomplete', 'canceled')
+          RETURNING user_id, plan_code, current_period_start`,
         [providerName, evt.providerSubscriptionId],
       );
-      const failedUser = res.rows[0]?.user_id ?? evt.userId;
+      const failedRow = res.rows[0];
+      const failedUser = failedRow?.user_id ?? evt.userId;
       if (failedUser) invalidateEntitlement(failedUser);
+      // R7, payment failed (emails v1.2; fixes E5). Only for a RENEWAL
+      // (billing_reason subscription_cycle), and only when a paid
+      // subscription matched the UPDATE above. A failed FIRST payment
+      // (subscription_create) sends nothing and, since the UPDATE skips
+      // `incomplete` rows, no longer turns a never-paid subscription into
+      // past_due (review B1). subscription_update is excluded too: the copy
+      // says "renewal", and a proration invoice's line period starts at the
+      // change, not at the cycle start the grace window counts from (M-a).
+      const reason = evt.billingReason ?? null;
+      if (reason !== 'subscription_cycle') {
+        console.info(
+          `[webhook] invoice_payment_failed ${evt.providerInvoiceId ?? '?'}: no email (billing_reason=${reason ?? 'none'})`,
+        );
+        return;
+      }
+      if (!failedRow || !evt.providerInvoiceId) return;
+      const periodStart = evt.periodStart ?? failedRow.current_period_start;
+      if (!periodStart) return;
+      await emailBestEffort('payment_failed', () =>
+        sendPaymentFailed(failedRow.user_id, {
+          plan_code: failedRow.plan_code,
+          period_start: periodStart,
+          next_attempt: evt.nextPaymentAttempt ?? null,
+          provider_invoice_id: evt.providerInvoiceId as string,
+          attempt_count: evt.attemptCount ?? 0,
+        }),
+      );
       return;
     }
 

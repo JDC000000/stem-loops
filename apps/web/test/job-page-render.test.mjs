@@ -408,12 +408,12 @@ test('failed job: no raw error code ever reaches the box, for any code the map o
 test('failed job whose code is an Object.prototype key: the worker sentence, never inherited map lookups', () => {
   for (const code of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf']) {
     assert.equal(failedBoxText(failed(code, 'Worker sentence.')), 'Worker sentence.', code);
-    assert.equal(failedBoxText(failed(code, null)), 'We couldn’t finish this track. Try another file.', code);
+    assert.equal(failedBoxText(failed(code, null)), "We couldn't finish this track. Try another file.", code);
   }
 });
 
 test('failed job with neither a known code nor a stored sentence: the generic fallback', () => {
-  assert.equal(failedBoxText(failed(null, null)), 'We couldn’t finish this track. Try another file.');
+  assert.equal(failedBoxText(failed(null, null)), "We couldn't finish this track. Try another file.");
 });
 
 test('a processing job renders progress and mounts no player', () => {
@@ -458,7 +458,7 @@ test('unreachable: says the page cannot get an update, offers Try again, no prog
   assert.doesNotMatch(html, /data-testid="job-progress"/);
   assert.doesNotMatch(html, /Processing…/);
   // and it must not claim the TRACK failed: we do not know that
-  assert.doesNotMatch(html, /Something went wrong|couldn’t finish this track/i);
+  assert.doesNotMatch(html, /Something went wrong|couldn['’]t finish this track/i);
 });
 
 test('unreachable copy splits by status: a 500 is OUR fault, not the user\'s connection', () => {

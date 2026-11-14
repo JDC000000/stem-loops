@@ -4,7 +4,8 @@
   "private": true,
   "description": "Real-Chromium gates for apps/web. Lives in its own workspace package so that adding esbuild/playwright does not re-resolve apps/web's own peer set (adding esbuild to apps/web dropped @sentry/nextjs's webpack peer from pnpm-lock.yaml).",
   "scripts": {
-    "test": "node --experimental-strip-types --test test/*.test.mjs"
+    "test": "node --experimental-strip-types --test test/*.test.mjs",
+    "journeys": "node journeys/run.mjs"
   },
   "devDependencies": {
     "@fontsource/inter": "5.2.5",

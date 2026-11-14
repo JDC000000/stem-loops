@@ -105,9 +105,11 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "sweep_deletes_only_input",
-        CL,
-        'delete_prefix, f"{job_id}/")',
-        'delete_prefix, f"{job_id}/_input")',
+        R2,
+        # Re-anchored for #214: the sweep walks job_object_prefixes(job_id), so the job's
+        # own prefix is now spelled here rather than at the delete_prefix call in cleanup.py.
+        'return (f"{job_id}/", f"{CHORDS_TOP_PREFIX}{job_id}/")',
+        'return (f"{job_id}/_input", f"{CHORDS_TOP_PREFIX}{job_id}/")',
         (T_EVERY, T_CHARGED),
         "PR body, What: the sweep deletes only `<id>/_input*` (round 1).",
     ),
@@ -452,7 +454,8 @@ MUTANTS: tuple[Mutant, ...] = (
     Mutant(
         "r2_delete_removed_from_sweep",
         CL,
-        'await asyncio.to_thread(delete_prefix, f"{job_id}/")',
+        # Re-anchored for #214: the R2-first delete is now one call per job_object_prefixes entry.
+        "await asyncio.to_thread(delete_prefix, prefix)",
         "pass",
         (T_CHAIN,),
         "Round 3 body: R2-first delete removed.",

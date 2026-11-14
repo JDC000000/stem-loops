@@ -40,7 +40,7 @@ import sentry_sdk
 from psycopg.types.json import Json
 
 from . import tmpdirs
-from .chord_source import ChordSubmitUncertain
+from .chord_source import ChordQuotaExceeded, ChordSubmitUncertain
 from .classifier.energy_classifier import classify_energy
 from .classifier.section_labeler import label_sections
 from .downloader import download_audio
@@ -48,6 +48,7 @@ from .dsp.seamless import apply as seamless_apply
 from .encoder.wav_encoder import encode_24bit, waveform_peaks
 from .errors import (
     DownloadBlockedError,
+    ExtractionFailedError,
     InternalError,
     LinkTooLongError,
     LinkUnmeasurableError,
@@ -56,8 +57,9 @@ from .errors import (
     UploadInvalidError,
     UploadTooLongError,
 )
+from .extractor import loop_extractor
 from .extractor.beat_grid import estimate_beat_grid
-from .extractor.loop_extractor import extract_loops
+from .extractor.loop_extractor import NoReliableBeatError, extract_loops
 from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
 from .storage.r2_uploader import (
@@ -172,6 +174,57 @@ def _ffmpeg_decode_timeout_sec() -> float:
     return _env_positive_float("FFMPEG_DECODE_TIMEOUT_SEC", FFMPEG_DECODE_TIMEOUT_SEC_DEFAULT)
 
 
+# Peak at or below 2 LSB of 16-bit PCM = digital silence (the decode target is pcm_s16le).
+SILENCE_PEAK_MAX = 2
+
+
+def _min_usable_upload_sec() -> float:
+    """Shortest input that could EVER pass the extractor's guard: MIN_BARS bars of 4 beats at
+    the fastest tempo it accepts. Anything shorter fails EXTRACTION_FAILED after separation."""
+    return loop_extractor.MIN_BARS * 4 * 60.0 / loop_extractor.MAX_TRACKER_BPM
+
+
+def _wav_peak_s16(path: str) -> int:
+    """Max |sample| of a pcm_s16le WAV, read in chunks (a 300 s stereo WAV is ~53 MB)."""
+    import wave  # noqa: PLC0415
+
+    peak = 0
+    with wave.open(path, "rb") as w:
+        while True:
+            buf = w.readframes(1 << 16)
+            if not buf:
+                break
+            a = np.frombuffer(buf, dtype="<i2")
+            if a.size:
+                peak = max(peak, int(np.abs(a.astype(np.int32)).max()))
+    return peak
+
+
+def _reject_unusable_upload(job_id: str, wav: str, decoded_sec: float | None) -> None:
+    """TRIAGE 4.7: refuse, BEFORE the paid Replicate call, input the extractor can only reject.
+
+    Until this check a 1 s clip, a 5 s clip or minutes of silence were separated (billed GPU
+    seconds) and then failed EXTRACTION_FAILED in extract_loops' beat/length guard. Both tests
+    here are deterministic consequences of that guard, so nothing it would accept is refused.
+    """
+    floor = _min_usable_upload_sec()
+    if decoded_sec is not None and decoded_sec < floor:
+        log_structured(
+            "INFO",
+            "upload_rejected_unusable",
+            job_id=job_id,
+            reason="too_short",
+            duration_sec=round(decoded_sec, 2),
+            min_sec=round(floor, 2),
+        )
+        raise ExtractionFailedError(
+            f"upload is {decoded_sec:.2f}s; under {floor:.2f}s no loop can be cut"
+        )
+    if _wav_peak_s16(wav) <= SILENCE_PEAK_MAX:
+        log_structured("INFO", "upload_rejected_unusable", job_id=job_id, reason="digital_silence")
+        raise ExtractionFailedError("upload is digital silence")
+
+
 def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
     """Upload-input path: pull the uploaded file from R2, ffmpeg-normalize ANY
     audio/video container to a 44.1k stereo WAV, re-stage it, and return a
@@ -241,6 +294,7 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
     decoded = _probe_duration_sec(wav)
     if decoded is not None and decoded > max_sec:
         raise _too_long(decoded)
+    _reject_unusable_upload(job_id, wav, decoded)
     return upload_input(job_id, wav)
 
 
@@ -339,9 +393,19 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     # length and where loops start, so all three agree.
     grid = estimate_beat_grid(y_ref, sr)
     tags = detect_bpm_and_key(y_ref, sr, grid=grid)
+    try:
+        loops = list(extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars, grid=grid))
+    except NoReliableBeatError as exc:
+        # B5 (Jon, 2026-11-13): a beatless or rubato track finishes `done` with its stems
+        # and chords and 0 loops, instead of failing the whole job. Only the BEAT guard
+        # lands here; too-short / no-loop-fits still raise ExtractionFailedError. The
+        # tracker's tempo is exactly what the guard just refused to trust, so no BPM is
+        # recorded (NULL) rather than a number nothing was cut to.
+        log_structured("INFO", "extract_no_reliable_beat", job_id=job_id, detail=str(exc)[:200])
+        tags = {**tags, "bpm": None}
+        _update_job_tags(job_id, tags)
+        return [], tags, {}, {}
     _update_job_tags(job_id, tags)
-
-    loops = list(extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars, grid=grid))
     segs = sorted({(loop["start_sec"], loop["end_sec"]) for loop in loops})
     energies = classify_energy(y_ref, sr, segs)
     sections = label_sections(segs, energies)
@@ -370,6 +434,10 @@ def record_loops(job_id, loops, tags, seg_label, seg_energy, bars, title=None) -
     800-point peaks, no R2 PUT. Measured per loop on the removed work: 27.9 ms of
     CPU, 2,116,844 B of R2 and 16,667 B of jsonb.
     """
+    if not loops:
+        # B5: a beatless job has no loops and a NULL bpm; the bar arithmetic below
+        # divides by bpm, so nothing past here may run for it.
+        return 0
     bar = 4 * 60.0 / tags["bpm"]
     duration_ms = int(bars * bar * 1000)
     # Loops inherit the job-level BPM/key (computed once from the reference stem).
@@ -1057,6 +1125,15 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             stem=stem_name,
             r2_key=r2_key,
         )
+    except ChordQuotaExceeded as exc:
+        # Klangio monthly cap (klangio._reserve_quota) or a 402: NO request was sent for this
+        # track, so do not tell the user detection "failed for this track" -- that invites a
+        # retry that costs another credit and hits the same cap until the cycle resets.
+        # 'not_attempted' is the truthful existing reason. Ops still see it: ERROR
+        # klangio_quota (provider), this WARN, and Sentry.
+        log_structured("WARN", "chords_skipped_quota", job_id=job_id, error=str(exc)[:200])
+        sentry_sdk.capture_exception(exc)
+        _write_chords_tombstone(job_id, "not_attempted")
     except ChordSubmitUncertain as exc:
         # A previous run may already have paid for this job but lost the id: skip rather than
         # risk a second $0.20. Tombstone reason stays one the web loader maps.
@@ -1390,8 +1467,9 @@ async def _run_pipeline(job_id: str) -> None:
             extract_and_tag, job_id, stem_paths, requested_stems, bars
         )
         # Y1.1: Chord recognition (feature-flagged). Runs AFTER extract_and_tag succeeds: a
-        # beatless / too-short track fails the job there, and must do so BEFORE the $0.20
-        # Klangio request is made, not after. Default provider
+        # too-short track fails the job there, and must do so BEFORE the $0.20 Klangio
+        # request is made, not after. A beatless / rubato track does NOT fail there (B5):
+        # it returns 0 loops and its chords ARE run, because stems + chords is what it gets. Default provider
         # per the Y1 decision record is 'klangio'. Set CHORDS_PROVIDER='' to
         # DISABLE — useful for fixture / Gate-2 runs that must not call the
         # provider. Failures here NEVER fail the pipeline: chords are an optional
@@ -1405,7 +1483,14 @@ async def _run_pipeline(job_id: str) -> None:
                 _maybe_run_chord_recognition, job_id, stem_paths, requested_stems
             )
 
-        await emit_event(job_id, "extracting", "completed", pct=100)
+        await emit_event(
+            job_id,
+            "extracting",
+            "completed",
+            pct=100,
+            # B5: say WHY there are no loops, so the job page can explain it.
+            detail=None if loops else {"loops": 0, "reason": "no_reliable_beat"},
+        )
 
         await set_status(job_id, "uploading")
         await emit_event(job_id, "uploading", "started", pct=90)
@@ -1466,6 +1551,34 @@ async def _run_pipeline(job_id: str) -> None:
         raise
 
 
+# Failures that are OUR fault (provider outage, our storage, an unanticipated exception):
+# the credit the web route debited for this job is returned. See _REFUND_SQL.
+_OUR_FAULT_CODES = ("SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR")
+_REFUND_PROVIDER = "worker_job_failed"
+# One credit back for a failed credit-funded job when either
+#   * the failure is ours (_OUR_FAULT_CODES), or
+#   * no paid provider call was made (replicate_prediction_id IS NULL: a corrupt, empty or
+#     over-length upload rejected before separation) -- nothing was spent, so this cannot be
+#     farmed.
+# NOT refunded: an input-caused failure AFTER paid separation (EXTRACTION_FAILED on a
+# beatless / too-short track); refunding that would make Replicate spend free to trigger.
+# Idempotent: credit_adjustments is UNIQUE (provider, provider_event_id) and the job id is
+# the event id, so a reaper rerun that fails again cannot refund twice. Only jobs with a
+# credit_consumption row are touched (quota-funded and anonymous jobs spent no credit).
+# reason='adjustment' (positive delta) so it can never collide with Stripe 'refund'
+# clawbacks, which are negative and keyed by charge.
+_REFUND_SQL = """
+INSERT INTO credit_adjustments (user_id, credits_delta, reason, provider, provider_event_id)
+SELECT cc.user_id, 1, 'adjustment', %(provider)s, cc.job_id::text
+  FROM credit_consumption cc
+  JOIN jobs j ON j.id = cc.job_id
+ WHERE cc.job_id = %(job_id)s
+   AND (%(our_fault)s OR j.replicate_prediction_id IS NULL)
+ON CONFLICT (provider, provider_event_id) DO NOTHING
+RETURNING user_id
+"""
+
+
 async def _fail(job_id: str, error_code: str, user_message: str) -> None:
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
         await conn.execute(
@@ -1473,3 +1586,22 @@ async def _fail(job_id: str, error_code: str, user_message: str) -> None:
             (error_code, user_message, job_id),
         )
         await conn.commit()
+    try:
+        async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+            cur = await conn.execute(
+                _REFUND_SQL,
+                {
+                    "provider": _REFUND_PROVIDER,
+                    "job_id": job_id,
+                    "our_fault": error_code in _OUR_FAULT_CODES,
+                },
+            )
+            refunded = await cur.fetchone()
+            await conn.commit()
+        if refunded:
+            log_structured(
+                "INFO", "credit_refunded_failed_job", job_id=job_id, error_code=error_code
+            )
+    except Exception as exc:  # noqa: BLE001 — a refund problem must never mask the failure
+        log_structured("ERROR", "credit_refund_failed", job_id=job_id, error=str(exc)[:200])
+        sentry_sdk.capture_exception(exc)

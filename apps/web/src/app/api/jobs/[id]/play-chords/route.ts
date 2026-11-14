@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { mintPlayChordsSignedUrl, PLAY_CHORDS_SIGNED_URL_TTL_SEC } from '@/lib/r2';
+import { mayReadJob } from '@/lib/job-access';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -29,10 +30,15 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     // extra round trip doubles the API latency; on a cold-cache miss the browser
     // just gets a 404 from R2 directly and the loader returns null.
     const jobRes = await db.query(
-      `SELECT id, status FROM jobs WHERE id = $1 AND expires_at > now()`,
+      `SELECT id, user_id, status FROM jobs WHERE id = $1 AND expires_at > now()`,
       [params.id]
     );
     if (jobRes.rowCount === 0) {
+      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+    }
+    // Ownership first (lib/job-access.ts): an owned job is served to its owner only, an
+    // anonymous one to anyone holding the id. Same 404 as a missing job.
+    if (!(await mayReadJob(jobRes.rows[0].user_id))) {
       return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
     }
     // Only completed jobs will have a play.chords.json — surface a 404 for

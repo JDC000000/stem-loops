@@ -23,7 +23,7 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
             onClick={reset}
             style={{
               minHeight: 48, fontSize: 16, fontWeight: 600, color: '#0d0d0d',
-              background: '#a3e635', border: 'none', borderRadius: 10, cursor: 'pointer',
+              background: '#a3e635', border: 'none', borderRadius: 4, cursor: 'pointer',
             }}
           >
             Try again

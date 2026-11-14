@@ -33,7 +33,7 @@ async function recentJobs(userId: string): Promise<JobRow[] | null> {
 
 const fmt = (d?: string | null) => (d ? new Date(d).toISOString().slice(0, 10) : '—');
 const section = {
-  border: '1px solid var(--border-default, #333)', borderRadius: 12, padding: 16,
+  border: '1px solid var(--border-default, #333)', borderRadius: 'var(--radius-lg)', padding: 16,
   background: 'var(--bg-card, #151515)', marginTop: 16,
 };
 const h2 = { margin: '0 0 8px', fontSize: 18, color: 'var(--text-primary)' };
@@ -51,7 +51,7 @@ export default async function AccountPage() {
 
   return (
     <main style={{ minHeight: '100dvh', padding: '24px 16px', maxWidth: 720, margin: '0 auto', boxSizing: 'border-box' }}>
-      <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Account</h1>
+      <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, color: 'var(--text-primary)' }}>Account</h1>
       <p style={{ ...muted, overflowWrap: 'anywhere' }}>{user.display_name ? `${user.display_name} · ` : ''}{user.email}</p>
 
       <section style={section} aria-label="Plan">

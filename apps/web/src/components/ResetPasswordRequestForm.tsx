@@ -6,31 +6,11 @@
 // registered (anti-enumeration — matches the server policy).
 
 import { useState, type FormEvent } from 'react';
+import { fieldStyle, buttonBase, primaryButton } from '@/lib/ui/form-styles';
 import { validateEmail } from '@/lib/auth/password-rules';
 
-const input = {
-  width: '100%',
-  minHeight: 44,
-  padding: '0 12px',
-  borderRadius: 8,
-  fontSize: 16,
-  border: '1px solid var(--border-default, #444)',
-  background: 'var(--bg-surface, #151515)',
-  color: 'var(--text-primary)',
-  boxSizing: 'border-box' as const,
-};
-const btn = {
-  width: '100%',
-  minHeight: 44,
-  padding: '0 16px',
-  borderRadius: 8,
-  fontWeight: 600,
-  cursor: 'pointer',
-  border: 'none',
-  background: 'var(--btn-primary-bg, var(--accent))',
-  color: 'var(--btn-primary-text, #000)',
-  boxSizing: 'border-box' as const,
-};
+const input = fieldStyle;
+const btn = { ...buttonBase, ...primaryButton };
 
 // Text links need a 44px tap target; inline-flex centres the label.
 const linkStyle = {
@@ -81,7 +61,7 @@ export default function ResetPasswordRequestForm() {
   if (sent) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <h1 style={{ fontSize: 26, margin: 0, color: 'var(--text-primary)' }}>Check your email</h1>
+        <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, color: 'var(--text-primary)' }}>Check your email</h1>
         <p role="status" style={{ color: 'var(--text-secondary)', margin: 0 }}>
           If an account exists for <strong>{email}</strong>, a reset link is on its way.
           Open the link in this browser to continue.
@@ -98,7 +78,7 @@ export default function ResetPasswordRequestForm() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <h1 style={{ fontSize: 26, margin: 0, color: 'var(--text-primary)' }}>Reset password</h1>
+      <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, color: 'var(--text-primary)' }}>Reset password</h1>
       <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: 14 }}>
         Enter your email and we’ll send you a link to set a new password.
       </p>

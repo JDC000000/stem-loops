@@ -7,24 +7,14 @@ import { sanitizeReturnTo } from '@/lib/auth/return-to';
 import { PASSWORD_MIN_LENGTH, validatePassword } from '@/lib/auth/password-rules';
 import { loginErrorMessage } from '@/lib/auth/login-errors';
 import { sendMagicLink } from '@/lib/auth/magic-link';
+import { fieldStyle, buttonBase, primaryButton, secondaryButton, textButton } from '@/lib/ui/form-styles';
 
 type Mode = 'signin' | 'signup' | 'reset';
 
-const input = {
-  width: '100%', minHeight: 44, padding: '0 12px', borderRadius: 8, fontSize: 16,
-  border: '1px solid var(--border-default, #444)', background: 'var(--bg-surface, #151515)',
-  color: 'var(--text-primary)', boxSizing: 'border-box' as const,
-};
-const btn = {
-  width: '100%', minHeight: 44, padding: '0 16px', borderRadius: 8, fontWeight: 600, cursor: 'pointer',
-  boxSizing: 'border-box' as const,
-};
-const linkBtn = {
-  background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer',
-  textDecoration: 'underline', font: 'inherit',
-  // 44px tap target (was ~17px); inline-flex keeps the text vertically centred.
-  minHeight: 44, padding: '0 8px', display: 'inline-flex', alignItems: 'center',
-};
+const input = fieldStyle;
+const btn = buttonBase;
+// White underlined text actions with a 44px tap target, never lime (brand book §7.10).
+const linkBtn = textButton;
 
 export default function LoginForm({
   returnTo, initialError, initialMode = 'signin',
@@ -144,7 +134,7 @@ export default function LoginForm({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <h1 style={{ fontSize: 26, margin: 0, color: 'var(--text-primary)' }}>{title}</h1>
+      <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, color: 'var(--text-primary)' }}>{title}</h1>
 
       {/* /login cannot tell a new visitor from a returning one whose session lapsed: both are
           sent here from /jobs/[id] with the same return_to. So say both paths; never guess.
@@ -194,7 +184,7 @@ export default function LoginForm({
           </p>
         )}
         <button type="submit" disabled={busy || (mode === 'signup' && !captchaToken)}
-          style={{ ...btn, border: 'none', background: 'var(--btn-primary-bg, var(--accent))', color: 'var(--btn-primary-text, #000)' }}>
+          style={{ ...btn, ...primaryButton }}>
           {busy ? 'Working…' : mode === 'signup' ? 'Create account' : mode === 'reset' ? 'Send reset link' : 'Sign in'}
         </button>
       </form>
@@ -218,7 +208,7 @@ export default function LoginForm({
 
       {mode === 'signin' && (
         <button type="button" onClick={() => setMode('signup')}
-          style={{ ...btn, border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)' }}>
+          style={{ ...btn, ...secondaryButton }}>
           New here? Create account
         </button>
       )}
@@ -226,7 +216,7 @@ export default function LoginForm({
       <hr style={{ border: 0, borderTop: '1px solid var(--border-subtle, #333)', width: '100%', margin: '4px 0' }} />
 
       <button type="button" onClick={magicLink} disabled={busy}
-        style={{ ...btn, border: '1px solid var(--border-default, #444)', background: 'transparent', color: 'var(--text-primary)' }}>
+        style={{ ...btn, ...secondaryButton }}>
         Email me a one-time link
       </button>
       <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>
@@ -234,7 +224,7 @@ export default function LoginForm({
         {mode === 'signin' && ' New here? Use Create account.'}
       </p>
       <button type="button" onClick={google} disabled={busy}
-        style={{ ...btn, border: '1px solid var(--border-default, #444)', background: 'transparent', color: 'var(--text-primary)' }}>
+        style={{ ...btn, ...secondaryButton }}>
         Continue with Google
       </button>
     </div>

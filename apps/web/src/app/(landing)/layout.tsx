@@ -1,18 +1,8 @@
-import localFont from 'next/font/local';
 import { IconSprite } from '@/components/landing/Icons';
 import '@/styles/landing.css';
 import '@/styles/landing-color.css';
 
-// Self-hosted JetBrains Mono, variable weight, latin subset (40 KB), used for the small
-// mono labels only; the page text uses the system sans.
-const jetbrainsMono = localFont({
-  src: './fonts/jetbrains-mono-latin-wght-normal.woff2',
-  weight: '100 800',
-  style: 'normal',
-  display: 'swap',
-  variable: '--font-jbm',
-  fallback: ['ui-monospace', 'SF Mono', 'Consolas', 'monospace'],
-});
+// JetBrains Mono is loaded app-wide by app/layout.tsx (it sets --font-jbm on <html>).
 
 const INLINE_BOOT =
   "document.documentElement.classList.add('js');" +
@@ -23,7 +13,7 @@ const INLINE_BOOT =
 // navigation so it never follows the user there.
 export default function LandingLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className={`sl-root ${jetbrainsMono.variable}`}>
+    <div className="sl-root">
       {/* Inline, before any markup: (1) mark JS so JS-only parts (lanes, players) show without a
           flash; (2) never let the tool form do a native GET submit (a tap before hydration would
           reload the page as /?source=… and lose the input). React's onSubmit still runs. */}

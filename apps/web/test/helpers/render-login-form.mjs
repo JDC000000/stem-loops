@@ -33,6 +33,7 @@ async function build() {
   const returnTo = lib('return-to.mjs', 'src/lib/auth/return-to.ts');
   const errors = lib('login-errors.mjs', 'src/lib/auth/login-errors.ts');
   const magic = lib('magic-link.mjs', 'src/lib/auth/magic-link.ts');
+  const formStyles = lib('form-styles.mjs', 'src/lib/ui/form-styles.ts');
   // Inert client: the mount effect subscribes to auth changes and must not throw; anything a
   // test has not scripted (signInWithPassword, ...) is simply absent and surfaces inline.
   const supabase = put('supabase.mjs',
@@ -45,7 +46,8 @@ async function build() {
     .replace(/from ['"]@\/lib\/auth\/return-to['"]/g, `from '${returnTo}'`)
     .replace(/from ['"]@\/lib\/auth\/password-rules['"]/g, `from '${rules}'`)
     .replace(/from ['"]@\/lib\/auth\/login-errors['"]/g, `from '${errors}'`)
-    .replace(/from ['"]@\/lib\/auth\/magic-link['"]/g, `from '${magic}'`);
+    .replace(/from ['"]@\/lib\/auth\/magic-link['"]/g, `from '${magic}'`)
+    .replace(/from ['"]@\/lib\/ui\/form-styles['"]/g, `from '${formStyles}'`);
   const file = join(dir, 'LoginForm.mjs');
   writeFileSync(file, js);
 

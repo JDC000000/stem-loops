@@ -30,7 +30,7 @@ const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 const OG_TITLE = 'Paste a song. Play along.';
 const OG_DESC = 'Six stems with faders, mute and solo, and a chord track that moves with the song. Loop a detected section until you have it.';
 const OG_ALT =
-  'Four chord names, Gm, E flat, B flat and F, above six mixer channels for drums, bass, vocals, guitar, keys and other, with the guitar fader pulled down and muted, under the headline Paste a song. Play along.';
+  'Four chord names, Gm, E flat, B flat and F, above six mixer channels for drums, bass, guitar, keys, vocals and other, with the guitar fader pulled down and muted, under the headline Paste a song. Play along.';
 
 export const metadata: Metadata = {
   title: { absolute: 'stem-loops: play along with any song, stem by stem' },
@@ -111,7 +111,7 @@ export default function HomePage() {
             <dl className="spec">
               <div className="spec-row">
                 <dt>Stems</dt>
-                <dd>Six — drums, bass, vocals, guitar, keys and other. Every one has its own fader, a mute and a solo.</dd>
+                <dd>Six — drums, bass, guitar, keys, vocals and other. Every one has its own fader, a mute and a solo.</dd>
               </div>
               <div className="spec-row">
                 <dt>Chords</dt>
@@ -192,7 +192,7 @@ export default function HomePage() {
                   <PipeStemsArt />
                 </div>
                 <div className="pipe-text">
-                  <p>Demucs splits it into drums, bass, vocals, guitar, keys and other — the six channels of the mixer.</p>
+                  <p>Demucs splits it into drums, bass, guitar, keys, vocals and other — the six channels of the mixer.</p>
                   <dl className="kv">
                     <dt>Stems</dt>
                     <dd>6, pick any</dd>

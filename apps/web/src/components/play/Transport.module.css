@@ -1,6 +1,7 @@
 /* Play-along transport. Tokens only (src/styles/design-tokens.css); no new palette.
-   Deliberately unlike the ChordOverlay zoom slider (native range, blue): this is a
-   tall custom bar with an accent fill and a round thumb. */
+   A tall custom bar with a neutral fill and a white round thumb. Lime is kept for the Play
+   button (the player's primary action) and the focus ring; progress is never lime
+   (brand book A5, M8). Fill #e0e0e0 on the #1e1e1e rail is 13.71:1. */
 
 .root {
   display: flex;
@@ -35,7 +36,7 @@
 .play:disabled {
   cursor: not-allowed;
   background: transparent;
-  border-color: var(--border-strong);
+  border-color: var(--border-control);
   color: var(--text-muted);
 }
 
@@ -65,7 +66,7 @@
 .fill {
   position: absolute;
   inset: 0 auto 0 0;
-  background: var(--accent);
+  background: var(--text-secondary);
   border-radius: var(--radius-full);
   pointer-events: none;
 }
@@ -76,7 +77,7 @@
   height: 16px;
   margin: -8px 0 0 -8px;
   background: var(--text-primary);
-  border: 2px solid var(--accent);
+  border: 2px solid var(--bg-card);   /* a dark ring keeps the white thumb distinct from the fill */
   border-radius: var(--radius-full);
   pointer-events: none;
 }

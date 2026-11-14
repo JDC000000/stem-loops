@@ -12,16 +12,15 @@
  * the icon-only toggle, which is why it carries `min-width` too. Measured in
  * real Chromium at 390/768/1280/1440, not read off these declarations.
  *
- * CONTRAST, measured in Chromium against the composited background.
+ * CONTRAST (WCAG 2.x, 8-bit sRGB; brand book v2.2 App. C).
  *   - resting nav text  --text-secondary #e0e0e0 on the bar #0d0d0d  14.72:1
  *   - wordmark          --text-primary   #ffffff on the bar #0d0d0d  19.44:1
- *   - ACTIVE pill       --accent         #a3e635 on #1c1c1f          11.27:1
- * The active pill sets `color: var(--accent)`, so #e0e0e0 never sits on
- * #1c1c1f — an earlier version of this comment quoted a 12.9:1 figure for a
- * pairing the stylesheet cannot produce. The muted greys are deliberately NOT
- * used here: #999 is 6.8:1 on the bar, which passes, but this is primary
- * navigation. (For the record, the audit's failing items failed on SIZE, not
- * contrast: --text-muted is #999999, and #71717a appears nowhere in this repo.)
+ *   - CURRENT item      --text-primary   #ffffff on --bg-selected #222222  15.91:1
+ *   - control edges     --border-control #737373 on the bar #0d0d0d   4.10:1 (1.4.11)
+ * The current item is white on the selected grey, not lime: lime is kept for the
+ * primary action, the wordmark dash and the focus ring (brand book A5, M8).
+ * The muted greys are deliberately NOT used here: #999 is 6.8:1 on the bar,
+ * which passes, but this is primary navigation.
  */
 
 .sin-bar {
@@ -44,23 +43,27 @@
   gap: 8px;
 }
 
-/* ── Wordmark ───────────────────────────────────────────── */
+/* ── Wordmark: the §2 wordmark, the same as the landing header (brand book M3) ──
+   Sans, 20px, bold, -0.02em; "stem" and "loops" white, and ONLY the dash lime. */
 .sin-wordmark {
   display: inline-flex;
   align-items: center;
-  min-height: 44px;
+  min-height: var(--h-control);
   padding: 0 8px 0 0;
   margin-right: auto;
-  font-family: var(--font-mono, monospace);
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-family: var(--font-sans);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.02em;
   text-decoration: none;
-  color: var(--text-primary, #fff);
+  color: var(--text-primary);
 }
-.sin-dash,
+.sin-dash {
+  color: var(--accent);
+  padding-inline: 1px;
+}
 .sin-loops {
-  color: var(--accent, #a3e635);
+  color: var(--text-primary);
 }
 
 /* ── Nav items ──────────────────────────────────────────── */
@@ -77,7 +80,7 @@
   min-height: 44px;
   min-width: 44px;
   padding: 0 14px;
-  border-radius: 22px;
+  border-radius: var(--radius-full);
   border: 1px solid transparent;
   font-size: 14px;
   line-height: 1;
@@ -90,11 +93,11 @@
   color: var(--text-primary, #fff);
 }
 .sin-item.sin-current {
-  background: #1c1c1f;
-  color: var(--accent, #a3e635);
+  background: var(--bg-selected);
+  color: var(--text-primary);
 }
 .sin-item.sin-outlined {
-  border-color: var(--border-strong, #3a3a3a);
+  border-color: var(--border-control);
   margin-left: 4px;
 }
 .sin-item:focus-visible,
@@ -114,8 +117,8 @@
   align-items: center;
   justify-content: center;
   background: transparent;
-  border: 1px solid var(--border-strong, #3a3a3a);
-  border-radius: 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 /* Three bars drawn from one box, so the button has no text to mis-size. */
@@ -161,11 +164,19 @@
   .sin-nav.sin-open .sin-item {
     min-height: 48px;
     justify-content: flex-start;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     padding: 0 12px;
   }
   .sin-nav.sin-open .sin-item.sin-outlined {
     margin-left: 0;
     margin-top: 4px;
+  }
+}
+
+/* Forced colours drop the selected fill, so the current item keeps a system-colour edge
+   (aria-current carries it for assistive technology either way). */
+@media (forced-colors: active) {
+  .sin-item.sin-current {
+    border-color: Highlight;
   }
 }

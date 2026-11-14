@@ -384,7 +384,7 @@ def _orchestrate(monkeypatch: pytest.MonkeyPatch, *, extract_raises: Exception |
     monkeypatch.setattr(pipeline, "_fetch_job", lambda _j: row)
     monkeypatch.setattr(pipeline, "set_status", _async(lambda *a, **k: None))
     monkeypatch.setattr(pipeline, "emit_event", _async(lambda *a, **k: None))
-    monkeypatch.setattr(pipeline, "_prepare_upload_source", lambda *a: "https://audio")
+    monkeypatch.setattr(pipeline, "_prepare_upload_source", lambda *a: ("https://audio", None))
     monkeypatch.setattr(pipeline, "submit_or_reattach", lambda *a: "pred")
     urls = {n: f"https://cdn/{n}.wav" for n in REAL_6S_STEMS}
     monkeypatch.setattr(pipeline, "poll_until_done", lambda *a: (urls, 0.1))

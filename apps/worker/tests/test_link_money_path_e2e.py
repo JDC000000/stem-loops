@@ -9,7 +9,7 @@ BETWEEN gates, so this file does, and asserts the ORDER of every costly step.
 
 What is real: ``_run_pipeline``, ``download_audio``, ``fetch_gates`` (blocklist and the
 kill-switch table, in Postgres), ``_fetch_job`` / ``set_status`` / ``emit_event`` / ``_fail``
-(a seeded ``jobs`` row), ``_enforce_link_duration`` and ``_probe_duration_sec`` on a real WAV
+(a seeded ``jobs`` row), ``_trim_link_source`` (real ffmpeg) and ``_probe_duration_sec`` on a real WAV
 written frame-by-frame with the stdlib. What is stubbed is the network only: the yt-dlp
 metadata probe and byte fetch, Cobalt, the R2 upload and the Replicate submit.
 
@@ -35,8 +35,8 @@ import pytest
 
 from worker import downloader, pipeline
 from worker.errors import (
+    DownloadBlockedError,
     DownloadTimeoutError,
-    LinkTooLongError,
     LinkUnmeasurableError,
     SeparationFailedError,
 )
@@ -110,11 +110,14 @@ def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "fetch_audio_url",
         lambda _u: calls.append("cobalt_fetch") or state["cobalt"],
     )
-    monkeypatch.setattr(
-        pipeline,
-        "upload_input",
-        lambda _j, _p: calls.append("R2_STAGE") or "https://r2.example/in.wav",
-    )
+    staged: list[str] = []
+
+    def stage(_j, p):
+        calls.append("R2_STAGE")
+        staged.append(p)
+        return "https://r2.example/in.wav"
+
+    monkeypatch.setattr(pipeline, "upload_input", stage)
 
     def submit(_j, src):
         calls.append(f"REPLICATE_SUBMIT({src})")
@@ -150,6 +153,15 @@ def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
                 "SELECT status, error_code, error_message_user FROM jobs WHERE id=%s", (job_id,)
             ).fetchone()
 
+    def download_completed_detail():
+        with psycopg.connect(url_with_timeouts) as c:
+            row = c.execute(
+                "SELECT detail FROM job_events WHERE job_id=%s AND stage='downloading' "
+                "AND phase='completed' ORDER BY created_at DESC LIMIT 1",
+                (job_id,),
+            ).fetchone()
+            return None if row is None else row[0]
+
     class Rig:
         pass
 
@@ -162,6 +174,8 @@ def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         release_cobalt,
     )
     r.tmp = tmp_path
+    r.staged = staged
+    r.download_completed_detail = download_completed_detail
     yield r
     release_cobalt(False)  # restore the migration's default: Cobalt engaged (off)
     with psycopg.connect(url_with_timeouts) as c:
@@ -170,20 +184,46 @@ def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     downloader.fetch_gates.reset_cache()
 
 
-def test_case_c_unknown_metadata_and_a_612s_file_never_reaches_r2_or_replicate(rig):
-    """C: probe cannot read a length; yt-dlp fetches a 10:12 WAV. Layer 2 refuses it."""
+def _wav_secs(path: str) -> float:
+    with wave.open(path, "rb") as w:
+        return w.getnframes() / w.getframerate()
+
+
+def test_case_c_unknown_metadata_and_a_612s_file_is_trimmed_to_300_before_replicate(rig):
+    """C, under the 2026-11-14 requirement: a 10:12 WAV is no longer refused. What is staged
+    for Replicate is the first 300 s, and the job event records the trim."""
     rig.state["probe"] = None
     rig.state["fetch"] = [_silent_wav(rig.tmp / "long.wav", 612)]
     exc = rig.run()
-    assert isinstance(exc, LinkTooLongError), (type(exc), rig.calls)
-    assert rig.calls == ["probe", "ytdlp_fetch"], rig.calls
-    status, code, msg = rig.job_row()
-    assert (status, code) == ("failed", "UPLOAD_TOO_LONG")
-    assert "5 minutes" in msg
+    assert isinstance(exc, SeparationFailedError), (type(exc), rig.calls)
+    assert rig.calls == [
+        "probe",
+        "ytdlp_fetch",
+        "R2_STAGE",
+        "REPLICATE_SUBMIT(https://r2.example/in.wav)",
+    ], rig.calls
+    assert _wav_secs(rig.staged[0]) <= 300.0 + pipeline.TRIM_TOLERANCE_SEC
+    assert rig.download_completed_detail() == {
+        "trimmed": True,
+        "source_sec": 612.0,
+        "used_sec": 300.0,
+    }
+
+
+def test_case_h_long_metadata_yt_dlp_exhausted_cobalt_released_never_reaches_replicate(rig):
+    """H (new with the trim): gate 0c no longer raises for a 612 s reading, so the Cobalt arm
+    is now REACHABLE with a long video. Cobalt cannot be trimmed; it must be skipped."""
+    rig.release_cobalt(True)
+    rig.state["probe"] = 612.0
+    rig.state["fetch"] = [DownloadBlockedError("b1"), DownloadBlockedError("b2")]
+    exc = rig.run()
+    assert isinstance(exc, DownloadBlockedError), (type(exc), rig.calls)
+    assert rig.calls == ["probe", "ytdlp_fetch", "ytdlp_fetch"], rig.calls
+    assert "cobalt_fetch" not in rig.calls
 
 
 def test_case_e_unknown_metadata_and_an_unmeasurable_file_is_refused_not_billed(rig):
-    """E: this reached REPLICATE_SUBMIT before the fix (``_enforce_link_duration`` failed open)."""
+    """E: unknown metadata and a file ffmpeg cannot cut: fails closed, nothing billed."""
     junk = rig.tmp / "junk.wav"
     junk.write_bytes(b"this is not audio")
     rig.state["probe"] = None
@@ -228,7 +268,7 @@ def test_case_g_cobalt_with_a_verified_short_length_is_still_served(rig):
 
 
 def test_exactly_at_the_cap_is_accepted_through_the_whole_chain(rig):
-    """Metadata says 300 and the file measures 300.0 at the 300 s default: nothing refuses."""
+    """Metadata says 300 and the file measures 300.0 at the 300 s default: nothing is cut."""
     rig.state["probe"] = 300.0
     rig.state["fetch"] = [_silent_wav(rig.tmp / "exact.wav", 300)]
     exc = rig.run()
@@ -239,3 +279,5 @@ def test_exactly_at_the_cap_is_accepted_through_the_whole_chain(rig):
         "R2_STAGE",
         "REPLICATE_SUBMIT(https://r2.example/in.wav)",
     ], rig.calls
+    assert rig.staged == [str(rig.tmp / "exact.wav")]  # staged as fetched
+    assert rig.download_completed_detail() is None

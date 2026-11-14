@@ -27,6 +27,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginReq } from './helpers/same-origin.mjs';
+import { INPUT_TRIM_URL, INPUT_TRIM_IMPORT_RE } from './helpers/input-trim.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -190,6 +191,7 @@ async function loadJobRoute(loops) {
     .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl(`export const mayReadJob = async () => true;`)}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${dataUrl(`export const captureException = () => {};`)}'`)
     .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
+    .replace(INPUT_TRIM_IMPORT_RE, `from '${INPUT_TRIM_URL}'`)
     .replace(
       /from ['"]next\/server['"]/g,
       `from '${dataUrl(`

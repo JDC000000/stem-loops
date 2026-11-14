@@ -1,7 +1,23 @@
 # TSD-V3-DELTA: Stem-Loops V3 (commercial layer + Play engine + Spotify + fetch) — delta over the pinned TSD
 
-Author: SL-V3 architect lane. Date: 2026-11-11 (v1.8 amendment pass — the plan catalog re-priced on tracks-converted-to-play-along, and every plan flag that advertised an unbuilt capability cleared; see Changelog below). Previous: 2026-11-10 (v1.7 amendment pass — corrections to v1.5/v1.6 after an adversarial review scored them 48/100, plus Jon's .wav and 3-free-stems decisions). Status: DRAFT for Jon's review.
+Author: SL-V3 architect lane. Date: 2026-11-14 (**v1.9** amendment: V3-J4 revised — a song over 5 minutes is TRIMMED to its first 5 minutes, not refused; see the v1.8 → v1.9 Changelog and §12.5). Previous: 2026-11-11 (v1.8 amendment pass — the plan catalog re-priced on tracks-converted-to-play-along, and every plan flag that advertised an unbuilt capability cleared; see Changelog below). Previous: 2026-11-10 (v1.7 amendment pass — corrections to v1.5/v1.6 after an adversarial review scored them 48/100, plus Jon's .wav and 3-free-stems decisions). Status: DRAFT for Jon's review.
 This document EXTENDS the pinned TSD at `stem-loops-handoff/07-roadmap/TSD.md` (SL21-tsd, commit c3f6a911 of `stem-loops`). It is a DELTA only — anything the pinned TSD covers (job state machine, kill switches, blocklist, fetch chain, loops/export, R2 layout, migrations 001–012) is NOT restated here, only cross-referenced by section number (e.g. `TSD §3.1`). All new requirement IDs are prefixed **V3-**; new tests prefixed **T-V3-**. Pinned reqs use their existing IDs (R-A0, R-X2, etc.).
+
+---
+
+## Changelog — v1.8 → v1.9 (2026-11-14 — long songs are trimmed to their first 5 minutes, not refused)
+
+Source: **Jon, 2026-11-14 07:40 PT** — *"If a song is more than 5 minutes, it should still be converted to a play along, but it just [processes the first] 5 minutes of the song. Fix this. Update all production requirements."*
+
+| § | Change | Source |
+|---|---|---|
+| §0 Header | v1.8 → **v1.9** | this amendment |
+| **§12.5** | **V3-J4 REVISED: trim, not refuse.** The 300 s ceiling stays (`MAX_UPLOAD_DURATION_SEC` = `MAX_TRACK_SEC` = `CHORDS_MAX_AUDIO_SEC` = `KLANGIO_MAX_AUDIO_SEC`), but an input longer than it is **cut to its first 300 s** on bytes the worker holds and the job proceeds. `UPLOAD_TOO_LONG` is no longer raised for length | Jon 2026-11-14 |
+| **§12.5** | The trim is recorded on the `downloading`/`completed` job event (`detail = {"trimmed": true, "source_sec": X, "used_sec": N}`; no migration) and shown on the job page: *"Using the first 5:00 of a 6:12 track."* | this amendment |
+| **§12.5** | Browser admission probe: no longer declines a >5 min file; shows *"This track is longer than 5 minutes — we'll use the first 5 minutes."* before submit | Jon 2026-11-14 |
+| **§12.5** | Cobalt (URL, no bytes, cannot be trimmed) is tried only when gate 0c **read** a length at or under the cap — unknown **or long** → skipped | this amendment |
+| **§13 table** | V3-J4 row restored as **LAUNCH — trim to first 300 s** | this amendment |
+| Copy | Landing, `/terms`, root metadata: *"Tracks up to 5 minutes"* → *"Uses the first 5 minutes of any song"*; *"Longer tracks are not supported"* → *"A longer track is trimmed on our end to its first 5 minutes"* | Jon 2026-11-14 |
 
 ---
 
@@ -271,6 +287,42 @@ v1.7's other three corrections stand unchanged and are not disturbed: the tombst
 minutes". A browser-side duration probe at admission declines the obvious case before the
 upload and the spend; it **fails open** and is a spend-and-UX guard only — the worker cap
 remains the enforcement.
+
+#### ✂ REVISED in v1.9 (2026-11-14) — trim to the first 5 minutes, do not refuse
+
+> 🟢 **V3-J4 now reads: every song is converted; a song longer than 5 minutes is converted
+> from its first 5 minutes.** Jon, 2026-11-14: *"If a song is more than 5 minutes, it should
+> still be converted to a play along, but it just [processes the first] 5 minutes of the song."*
+> The v1.8 text above is kept as the record; where it says *refuse* / *declines*, this governs.
+
+**What stays.** The 300 s ceiling and its reasons (player PCM memory budget, `MAX_TRACK_SEC`;
+Klangio ≤ 300 s; Replicate cost per GPU-second). One knob, `MAX_UPLOAD_DURATION_SEC` (default
+300), is now the **trim length**. The player's `MAX_TRACK_SEC` check stays as a safety net.
+Billing is unchanged (one job = one credit). Chords are unaffected: a trimmed input is ≤ 300 s.
+
+**Requirements (all enforced in the worker, on bytes it holds, before Replicate is called):**
+
+| ID | Requirement | Where |
+|---|---|---|
+| V3-J4.1 | An **upload** longer than the cap is decoded with `ffmpeg -t <cap>`; the WAV handed to Replicate is ≤ cap. Corrupt / empty / silent / too-short / size guards unchanged | `pipeline._prepare_upload_source` |
+| V3-J4.2 | A **link** longer than the cap is fetched by yt-dlp and cut with `ffmpeg -t <cap>`; the output is re-measured and the job **fails closed** (`LinkUnmeasurableError`, `INTERNAL_ERROR`) if it cannot be cut or measured. A link at or under the cap is staged untouched | `pipeline._trim_link_source` |
+| V3-J4.3 | **Cobalt** returns a URL and no bytes, so it cannot be trimmed: it is tried only when gate 0c read a length **at or under** the cap. Unknown or long → skipped; the yt-dlp error stands | `downloader.download_audio` |
+| V3-J4.4 | Gate 0c **refuses nothing**. It reads the length for the Cobalt decision and logs `fetch_will_trim` | `downloader.download_audio` |
+| V3-J4.5 | A trimmed job records `{"trimmed": true, "source_sec": X \| null, "used_sec": N}` on its `downloading`/`completed` event; `GET /api/jobs/:id` exposes it as `input_trim_used_sec` / `input_trim_source_sec` (event `detail` itself is never sent to the browser) and the job page shows *"Using the first 5:00 of a 6:12 track."* | `pipeline._run_pipeline`, `api/jobs/[id]/route.ts`, `lib/input-trim.ts` |
+| V3-J4.6 | The browser probe never declines; for a measured >5 min file it shows *"This track is longer than 5 minutes — we'll use the first 5 minutes."* before submit. Unmeasurable → no note | `lib/upload-duration.ts`, `ToolForm.tsx` |
+| V3-J4.7 | `UPLOAD_TOO_LONG` / `LinkTooLongError` stay **defined** (old rows, web error-copy map) but are **not raised** for length | `errors.py` |
+
+**Design choice — download then trim, not `--download-sections`.** yt-dlp's section download
+hands the IP-bound googlevideo URL to an ffmpeg sub-download; the sticky-session proxy fix in
+`ytdlp_client` exists because a media request on a different exit IP 403s. The full fetch is
+the leg already proven through the proxy. **Residual:** a very long video (an hour+) is
+fetched in full and may hit the yt-dlp timeout → `DOWNLOAD_TIMEOUT` (typed; the user is offered
+upload). Previously gate 0c refused it with `UPLOAD_TOO_LONG` before fetching.
+
+**Tests:** `apps/worker/tests/test_link_duration_cap.py`, `test_upload_duration_cap.py`,
+`test_link_money_path_e2e.py` (DB); `apps/web/test/job-input-trim.test.mjs`,
+`src/lib/upload-duration.test.mjs`, `test/job-page-render.test.mjs`, `test/landing-copy.test.mjs`,
+`test/legal-terms-copy.test.mjs`.
 
 ### 12.6 V3-J7 — the fetch path must actually work (NEW in v1.7) — **THE LAUNCH BLOCKER**
 
@@ -1165,7 +1217,7 @@ Three surfaces, read in this priority order (first non-null wins), cached 30 s:
 | **V3-J1** | **LAUNCH** | Jon performs the full journey — YouTube link → stems → play along with a per-stem fader and a synced chord timeline — on a real song with his own guitar, and confirms it. **A green test suite is explicitly NOT a pass** | **owner acceptance**, not CI |
 | **V3-J2** | **LAUNCH** | 6 full-length Opus stems retained and reachable by short-TTL signed URL for a real job id; **a `.wav` per stem downloadable**; all bound by the existing 24-hour expiry | T-V3-J2 |
 | **V3-J3** | **LAUNCH** | The chord under the playhead is the chord being heard, within a stated and measured tolerance. ⚠️ **Tolerance number, test id and clock source are still UNSPECIFIED** — see §11 | T-V3-J3 |
-| ~~**V3-J4**~~ | ~~LAUNCH~~ | **WITHDRAWN v1.7** — premise false; existing 600 s upload cap and 300 s chord gate are already correct. See §12.5 | — |
+| **V3-J4** | **LAUNCH** | **REVISED v1.9:** any song is converted; one longer than 300 s is trimmed to its first 300 s (upload and link), Replicate never receives more than 300 s, and the job page says *"Using the first 5:00 of a M:SS track."* (v1.7 withdrew it; v1.8 reinstated it as a refusal.) See §12.5 | T-V3-J4: `test_link_duration_cap.py`, `test_upload_duration_cap.py`, `test_link_money_path_e2e.py`, `job-input-trim.test.mjs` |
 | **V3-J5** | **LAUNCH** | Chrome/Edge desktop pass V3-J1. Unsupported browsers show a feature-detected banner, never a failing button | T-V3-J5 |
 | **V3-J6** | — | **ID RETIRED in v1.7** to avoid collision: v1.6 used V3-J6 for the Dec-5 deadline, now **V3-J8** | — |
 | **V3-J7** | **LAUNCH — BLOCKER** | Three different public YouTube links reach `done`. **Currently 0%** — two measured failures 2026-11-10. ⚠️ Depends on an external purchase (residential proxy), not on code | T-V3-J7 |

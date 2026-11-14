@@ -60,6 +60,7 @@ import { join } from 'node:path';
 import ts from 'typescript';
 import { WEB, dataUrl } from './helpers/billing-harness.mjs';
 import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginReq } from './helpers/same-origin.mjs';
+import { INPUT_TRIM_URL, INPUT_TRIM_IMPORT_RE } from './helpers/input-trim.mjs';
 
 const toJs = (file) =>
   ts.transpileModule(readFileSync(join(WEB, file), 'utf8'), {
@@ -190,6 +191,7 @@ async function loadRoutes() {
       .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${clientIp}'`)
       .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${supabaseAuth}'`)
       .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${jobAccess}'`)
+      .replace(INPUT_TRIM_IMPORT_RE, `from '${INPUT_TRIM_URL}'`)
       .replace(/from ['"]@aws-sdk\/client-s3['"]/g, `from '${resolveBare('@aws-sdk/client-s3')}'`);
   const load = (file) => import(dataUrl(wire(toJs(file))) + '#' + Math.random());
   const r2Mod = await import(r2);

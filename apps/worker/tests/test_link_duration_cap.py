@@ -1,22 +1,20 @@
-"""Link (YouTube) duration cap: an over-length video is refused before any spend.
+"""Link (YouTube) duration cap: an over-length video is TRIMMED to its first N seconds.
 
-WHY THIS FILE EXISTS. ``_max_upload_duration_sec()`` had exactly ONE caller --
-``_prepare_upload_source`` -- so the 300 s ceiling was enforced on the upload path and
-NOWHERE on the link path. A linked 10-minute video was accepted, a full Replicate
-separation was billed per GPU-second over its whole length ($0.0014/s, replicate_client),
-the chord overlay was replaced by a ``too_long`` tombstone, and only then did the browser
-player refuse to open it (engine.ts, MAX_TRACK_SEC). The user waited through a paid
-separation to be told no.
+HISTORY. Until 2026-11-14 a linked video longer than ``MAX_UPLOAD_DURATION_SEC`` (300 s)
+failed ``UPLOAD_TOO_LONG``: gate 0c refused it from metadata and
+``pipeline._enforce_link_duration`` refused the staged file. Jon, 2026-11-14: "If a song is
+more than 5 minutes, it should still be converted to a play along, but it just [processes
+the first] 5 minutes of the song." So the ceiling stays, but it now CUTS instead of refusing.
 
-WHAT IS ASSERTED, AND HOW. Every length here is produced independently of the code under
-test: a WAV of N seconds is written frame by frame with the stdlib ``wave`` module, and the
-metadata readings are literal numbers handed to a stub. No assertion re-derives a duration
-with ``_probe_duration_sec`` and then checks the code against that -- which would only prove
-the code applied its own arithmetic to its own measurement.
+WHAT MUST STILL HOLD (the money path): Replicate is never handed more than N seconds.
+  * yt-dlp leg: the staged file is cut with ``ffmpeg -t N`` on bytes we hold
+    (``pipeline._trim_link_source``), re-measured, and fails CLOSED if it cannot be.
+  * Cobalt leg: returns a URL and no bytes, so it cannot be trimmed. It is tried only when
+    gate 0c READ a length at or under N -- never for an unknown or a long video.
 
-The two layers are tested separately because they fail differently:
-  * downloader gate 0c reads yt-dlp metadata and FAILS OPEN (a saver, not the enforcement);
-  * ``pipeline._enforce_link_duration`` measures the staged file and is the enforcement.
+Every length here is produced independently of the code under test: a WAV of N seconds is
+written frame by frame with the stdlib ``wave`` module, and the output length is read back
+with the stdlib too (``_wav_secs``), not with ``_probe_duration_sec``.
 """
 
 from __future__ import annotations
@@ -59,97 +57,159 @@ def _wav(path: Path, secs: float, sr: int = 8000) -> Path:
     return path
 
 
-# ----------------------- layer 2: the enforcement, on bytes we hold -----------------------
+def _wav_secs(path: str) -> float:
+    """Length of a PCM WAV read with the stdlib -- independent of the code under test."""
+    with wave.open(path, "rb") as w:
+        return w.getnframes() / w.getframerate()
 
 
-def test_over_length_staged_file_is_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+# ----------------------- layer 2: the trim, on bytes we hold -----------------------
+
+
+def test_over_length_staged_file_is_trimmed_not_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
-    with pytest.raises(LinkTooLongError) as ei:
-        pipeline._enforce_link_duration(JOB, str(_wav(tmp_path / "long.wav", 5.0)))
-    assert ei.value.error_code == "UPLOAD_TOO_LONG"
+    src = str(_wav(tmp_path / "long.wav", 5.0))
+    out, detail = pipeline._trim_link_source(JOB, src)
+    assert out != src  # a NEW file is staged; the long original is never handed on
+    assert _wav_secs(out) == pytest.approx(3.0, abs=0.01)
+    assert _wav_secs(out) <= 3.0 + pipeline.TRIM_TOLERANCE_SEC
+    assert detail == {"trimmed": True, "source_sec": 5.0, "used_sec": 3.0}
 
 
-def test_within_length_staged_file_passes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_within_length_staged_file_is_untouched(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
-    assert pipeline._enforce_link_duration(JOB, str(_wav(tmp_path / "ok.wav", 2.0))) is None
+    src = str(_wav(tmp_path / "ok.wav", 2.0))
+    boom = MagicMock(side_effect=AssertionError("must not re-encode a track within the cap"))
+    monkeypatch.setattr(pipeline, "_ffmpeg_bin", boom)
+    assert pipeline._trim_link_source(JOB, src) == (src, None)
+    boom.assert_not_called()
+
+
+def test_exactly_at_the_cap_is_untouched(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """300.0 s at a 300.0 s cap is NOT trimmed: the same strict ``>`` the player makes."""
+    monkeypatch.delenv("MAX_UPLOAD_DURATION_SEC", raising=False)
+    monkeypatch.setattr(pipeline, "_probe_duration_sec", lambda _p: 300.0)
+    monkeypatch.setattr(pipeline, "_ffmpeg_bin", MagicMock(side_effect=AssertionError("cut")))
+    assert pipeline._trim_link_source(JOB, "/tmp/never-read.wav") == ("/tmp/never-read.wav", None)
 
 
 @pytest.mark.parametrize("measured", [300.5, 301.0, 450.0, 612.0, 3600.0, 86400.0])
-def test_the_shipped_default_refuses_at_every_magnitude(
-    monkeypatch: pytest.MonkeyPatch, measured: float
+def test_the_shipped_default_trims_at_every_magnitude(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, measured: float
 ):
-    """At the 300 s DEFAULT, with the env var cleared, and across three orders of magnitude.
-
-    Every other refusal test in this file runs at a 3 s cap against a 5 s track -- 1.67x --
-    so until this existed, nothing here could tell "the cap enforces" apart from "the cap
-    enforces at test-shaped magnitudes". A reviewer landed exactly that: conditioning the
-    refusal on ``max_sec < measured <= max_sec * 2`` kept all 20 tests green while a 612 s
-    video at the 300 s default returned WITHOUT raising and went on to submit_or_reattach.
-    612 s is the 10:12 track from the report that opened this, and it is 2.04x the cap, so
-    the one magnitude the incident actually used was the one nothing covered.
-
-    Ratios here are 1.002x, 1.003x, 1.5x, 2.04x, 12x and 288x. No window, threshold or
-    plausibility heuristic survives all six.
-    """
+    """At the 300 s DEFAULT, across ratios 1.002x .. 288x, the ffmpeg cut is ALWAYS run, with
+    ``-t 300``. No window or plausibility heuristic survives all six (the bug class a reviewer
+    landed on the refusal version of this test)."""
     monkeypatch.delenv("MAX_UPLOAD_DURATION_SEC", raising=False)
     assert pipeline._max_upload_duration_sec() == 300.0, "the shipped default moved"
-    monkeypatch.setattr(pipeline, "_probe_duration_sec", lambda _p: measured)
-    with pytest.raises(LinkTooLongError):
-        pipeline._enforce_link_duration(JOB, "/tmp/never-read.wav")
+    real_probe = pipeline._probe_duration_sec
+    monkeypatch.setattr(
+        pipeline,
+        "_probe_duration_sec",
+        lambda p: measured if p.endswith("long.wav") else real_probe(p),
+    )
+    seen: list[list[str]] = []
+
+    def fake_ffmpeg(cmd, **kw):
+        seen.append(cmd)
+        _wav(Path(cmd[-1]), 300.0, sr=200)  # what a correct `-t 300` produces
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_ffmpeg)
+    out, detail = pipeline._trim_link_source(JOB, str(tmp_path / "long.wav"))
+    assert len(seen) == 1
+    assert seen[0][seen[0].index("-t") + 1] == "300.000"
+    assert detail == {"trimmed": True, "source_sec": round(measured, 1), "used_sec": 300.0}
 
 
-def test_exactly_at_the_cap_is_accepted(monkeypatch: pytest.MonkeyPatch):
-    """Pins the comparison, which the magnitude tests above cannot see.
-
-    300.0 s at a 300.0 s cap is ACCEPTED -- ``measured > max_sec``, the same strict
-    comparison the browser player makes (``duration > MAX_TRACK_SEC``, engine.ts). Flipping
-    either to ``>=`` would reject a track the other still plays.
-    """
-    monkeypatch.delenv("MAX_UPLOAD_DURATION_SEC", raising=False)
-    monkeypatch.setattr(pipeline, "_probe_duration_sec", lambda _p: 300.0)
-    assert pipeline._enforce_link_duration(JOB, "/tmp/never-read.wav") is None
-
-
-def test_the_link_cap_is_the_upload_cap_and_moves_with_it(
+def test_the_link_trim_is_the_upload_cap_and_moves_with_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    """The anti-drift assertion: ONE knob governs both inputs.
-
-    A 5 s track is refused at a 3 s cap and accepted at a 30 s cap, with nothing changed but
-    ``MAX_UPLOAD_DURATION_SEC`` -- the upload path's own env var. A second, link-only ceiling
-    (the obvious way to re-break this) would leave one of these two halves failing.
-    """
+    """ONE knob governs both inputs: a 5 s track is cut at a 3 s cap, untouched at 30 s."""
     staged = str(_wav(tmp_path / "five.wav", 5.0))
     monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
-    with pytest.raises(LinkTooLongError):
-        pipeline._enforce_link_duration(JOB, staged)
+    out, detail = pipeline._trim_link_source(JOB, staged)
+    assert detail is not None and _wav_secs(out) == pytest.approx(3.0, abs=0.01)
     monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "30")
-    assert pipeline._enforce_link_duration(JOB, staged) is None
+    assert pipeline._trim_link_source(JOB, staged) == (staged, None)
 
 
-def test_unmeasurable_staged_file_is_refused_not_waved_through(
+def test_unreadable_staged_file_fails_closed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture
 ):
-    """Fail CLOSED. This used to be pinned the other way ("proceeds and says so").
-
-    The old justification was that the upload path also proceeds on an unmeasurable file. It
-    does, but only because ``_prepare_upload_source`` decodes with ``-t cap+1``, which bounds
-    whatever it hands on. A link's file has no such bound, so "could not measure" meant
-    "billed for any length" -- and the WAV is one we produced ourselves, so refusing it
-    costs no legitimate job. Reviewer's case E: unknown metadata, unmeasurable file, and the
-    run reached Replicate.
-    """
+    """Unmeasurable AND un-cuttable: refused, typed, nothing handed on (reviewer's case E)."""
     monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
     junk = tmp_path / "unreadable.wav"
     junk.write_bytes(b"not audio at all")
     # NOT stubbing _probe_duration_sec: soundfile really cannot read these bytes.
     assert pipeline._probe_duration_sec(str(junk)) is None
     with pytest.raises(LinkUnmeasurableError) as ei:
-        pipeline._enforce_link_duration(JOB, str(junk))
+        pipeline._trim_link_source(JOB, str(junk))
     assert ei.value.error_code == "INTERNAL_ERROR"  # typed, no new code
-    assert "link_rejected_unmeasurable" in capsys.readouterr().err
-    # The parent's "something went wrong on our end" is not what a linker needs to hear.
-    assert "couldn't check how long" in ei.value.user_message
+    assert "link_trim_failed" in capsys.readouterr().err
+    assert "couldn't read the audio" in ei.value.user_message
+
+
+def test_unmeasurable_but_decodable_original_is_cut_and_measured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A file whose length cannot be read up front is still bounded: it is cut with -t, the
+    OUTPUT is measured, and a long one is reported as trimmed from an unknown length."""
+    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
+    src = str(_wav(tmp_path / "hidden.wav", 5.0))
+    real_probe = pipeline._probe_duration_sec
+    monkeypatch.setattr(
+        pipeline, "_probe_duration_sec", lambda p: None if p == src else real_probe(p)
+    )
+    out, detail = pipeline._trim_link_source(JOB, src)
+    assert _wav_secs(out) == pytest.approx(3.0, abs=0.01)
+    assert detail == {"trimmed": True, "source_sec": None, "used_sec": 3.0}
+
+
+def test_unmeasurable_short_original_is_not_reported_as_trimmed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
+    src = str(_wav(tmp_path / "hidden_short.wav", 2.0))
+    real_probe = pipeline._probe_duration_sec
+    monkeypatch.setattr(
+        pipeline, "_probe_duration_sec", lambda p: None if p == src else real_probe(p)
+    )
+    out, detail = pipeline._trim_link_source(JOB, src)
+    assert detail is None
+    assert _wav_secs(out) == pytest.approx(2.0, abs=0.01)
+
+
+def test_a_cut_that_did_not_hold_fails_closed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """If ffmpeg ignored `-t` the output would be over the cap; that must never be staged."""
+    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
+    src = str(_wav(tmp_path / "long.wav", 5.0))
+
+    def ignores_t(cmd, **kw):
+        _wav(Path(cmd[-1]), 5.0)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(pipeline.subprocess, "run", ignores_t)
+    with pytest.raises(LinkUnmeasurableError):
+        pipeline._trim_link_source(JOB, src)
+
+
+def test_the_trim_has_a_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
+    monkeypatch.setenv("FFMPEG_DECODE_TIMEOUT_SEC", "7")
+    src = str(_wav(tmp_path / "long.wav", 5.0))
+    seen: dict = {}
+
+    def hang(cmd, **kw):
+        seen.update(kw)
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 0))
+
+    monkeypatch.setattr(pipeline.subprocess, "run", hang)
+    with pytest.raises(LinkUnmeasurableError, match="timeout"):
+        pipeline._trim_link_source(JOB, src)
+    assert seen["timeout"] == 7.0
 
 
 # ------------------------ layer 1: gate 0c, before a byte is fetched ------------------------
@@ -178,18 +238,13 @@ def chain(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.parametrize("declared", [300.5, 612.0, 3600.0, 86400.0])
-def test_gate_0c_refuses_from_metadata_without_fetching(
+def test_gate_0c_no_longer_refuses_a_long_video(
     chain, monkeypatch: pytest.MonkeyPatch, declared: float
 ):
-    """At the shipped 300 s ceiling, across magnitudes, for the same reason as layer 2.
-
-    612 s is the figure from the report that opened this: a 10:12 video.
-    """
+    """The new requirement at the gate: a long link is FETCHED (then trimmed), not refused."""
     monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: declared)
-    with pytest.raises(LinkTooLongError) as ei:
-        downloader.download_audio(URL, JOB, 300.0)
-    assert "5 minutes" in ei.value.user_message
-    assert chain == []  # neither fetcher ran: no download, no proxy traffic, no spend
+    assert downloader.download_audio(URL, JOB, 300.0) == ("/tmp/a.wav", "ytdlp")
+    assert chain == ["ytdlp"]
 
 
 def test_gate_0c_lets_a_short_video_through(chain, monkeypatch: pytest.MonkeyPatch):
@@ -198,43 +253,9 @@ def test_gate_0c_lets_a_short_video_through(chain, monkeypatch: pytest.MonkeyPat
     assert chain == ["ytdlp"]
 
 
-def test_gate_0c_fails_open_on_an_unreadable_length(chain, monkeypatch: pytest.MonkeyPatch):
-    """None means UNKNOWN. The fetch proceeds and layer 2 does the refusing."""
+def test_gate_0c_proceeds_on_an_unreadable_length(chain, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: None)
     assert downloader.download_audio(URL, JOB, 300.0) == ("/tmp/a.wav", "ytdlp")
-    assert chain == ["ytdlp"]
-
-
-def test_gate_0c_message_names_the_cap_in_force_not_five_minutes(
-    chain, monkeypatch: pytest.MonkeyPatch
-):
-    """The figure in the refusal comes from the cap in force, not a literal.
-
-    The parametrized refusal test above only ever runs at 300 s, where a hard-coded
-    ``max_seconds=300.0`` is indistinguishable from the right answer. At a 600 s cap with a
-    700 s video, that mutant told the user "maximum length is 5 minutes".
-    """
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: 700.0)
-    with pytest.raises(LinkTooLongError) as ei:
-        downloader.download_audio(URL, JOB, 600.0)
-    assert "10 minutes" in ei.value.user_message
-    assert "5 minutes" not in ei.value.user_message
-    assert ei.value.max_seconds == 600.0
-    assert chain == []
-
-
-@pytest.mark.parametrize("cap", [300.0, 600.0])
-def test_gate_0c_accepts_a_video_whose_metadata_says_exactly_the_cap(
-    chain, monkeypatch: pytest.MonkeyPatch, cap: float
-):
-    """Pins the comparison. YouTube reports INTEGER seconds, so a 5:00 video reads exactly 300.
-
-    ``>`` -> ``>=`` would refuse every video whose length equals the cap -- an ordinary
-    input, not an edge nobody sends -- and it is the same strict comparison layer 2 and the
-    browser player make, so the three must agree.
-    """
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: cap)
-    assert downloader.download_audio(URL, JOB, cap) == ("/tmp/a.wav", "ytdlp")
     assert chain == ["ytdlp"]
 
 
@@ -251,26 +272,37 @@ def _ytdlp_always_blocked(chain, monkeypatch: pytest.MonkeyPatch):
 
 
 def test_cobalt_is_not_tried_when_the_length_is_unknown(chain, monkeypatch: pytest.MonkeyPatch):
-    """Reviewer's case F: unknown metadata, yt-dlp exhausted, Cobalt released.
-
-    Cobalt returns a URL and no bytes, so layer 2 can never measure it: gate 0c's reading is
-    the ONLY ceiling that leg can have. With no reading it must not run at all, or an
-    over-length video is handed straight to Replicate.
-    """
+    """Cobalt returns a URL and no bytes: with no reading it could hand Replicate any length."""
     _ytdlp_always_blocked(chain, monkeypatch)
     monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: None)
     with pytest.raises(DownloadBlockedError):
         downloader.download_audio(URL, JOB, 300.0)
     assert chain == ["ytdlp", "ytdlp"]
-    assert "cobalt" not in chain
 
 
-def test_cobalt_is_tried_when_the_length_was_read_and_is_under_the_cap(
-    chain, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("declared", [300.5, 612.0, 3600.0])
+def test_cobalt_cannot_bypass_the_trim_for_a_long_video(
+    chain, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, declared: float
 ):
-    """The other half: the gate closes the unknown case without disabling Cobalt outright."""
+    """THE BYPASS THIS CHANGE COULD HAVE OPENED. Gate 0c used to raise for a long video, so
+    the Cobalt arm was never reached with one. Now that 0c lets it through, Cobalt -- whose
+    URL nothing downstream can trim -- must be skipped explicitly, or a 10-minute video goes
+    straight to Replicate whenever yt-dlp is blocked."""
     _ytdlp_always_blocked(chain, monkeypatch)
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: 120.0)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: declared)
+    with pytest.raises(DownloadBlockedError):
+        downloader.download_audio(URL, JOB, 300.0)
+    assert chain == ["ytdlp", "ytdlp"]
+    assert "cobalt" not in chain
+    assert "cobalt_skipped_cannot_trim" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("declared", [120.0, 300.0])
+def test_cobalt_is_tried_when_the_length_was_read_and_is_within_the_cap(
+    chain, monkeypatch: pytest.MonkeyPatch, declared: float
+):
+    _ytdlp_always_blocked(chain, monkeypatch)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: declared)
     assert downloader.download_audio(URL, JOB, 300.0) == ("https://tunnel", "cobalt")
     assert chain == ["ytdlp", "ytdlp", "cobalt"]
 
@@ -284,59 +316,125 @@ def test_cobalt_is_still_tried_for_a_caller_that_passes_no_cap(
 
 
 def test_no_cap_passed_means_no_probe_at_all(chain, monkeypatch: pytest.MonkeyPatch):
-    """Every pre-existing caller passes no cap; none of them should gain a subprocess.
-
-    READ THIS WITH ``test_the_pipeline_arms_gate_0c_with_the_cap_in_force`` BELOW. On its own
-    this test AFFIRMS the configuration in which gate 0c does nothing: it says the capless
-    path is well-behaved, which is true and is also exactly the state a reviewer produced by
-    deleting ``_max_upload_duration_sec()`` from the pipeline's ``download_audio`` call --
-    all green, gate 0c permanently inert in production. A test that blesses the disabled
-    configuration needs a companion asserting production never selects it. That companion is
-    the next test; neither is sufficient alone.
-    """
+    """Read with the next test: the capless path is well-behaved, AND production never takes it."""
     probed = MagicMock(side_effect=AssertionError("must not probe without a cap"))
     monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", probed)
     assert downloader.download_audio(URL, JOB) == ("/tmp/a.wav", "ytdlp")
     probed.assert_not_called()
 
 
+def _pipeline_link_rig(monkeypatch: pytest.MonkeyPatch, fake_download, events: list, staged: list):
+    monkeypatch.delenv("STUB_MODE", raising=False)
+    monkeypatch.setenv("ALLOW_YOUTUBE_INPUT", "true")
+    monkeypatch.setattr(pipeline, "download_audio", fake_download)
+    monkeypatch.setattr(
+        pipeline, "upload_input", lambda _j, p: staged.append(p) or "https://presigned"
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "submit_or_reattach",
+        MagicMock(side_effect=SeparationFailedError("sentinel: reached the billed call")),
+    )
+    monkeypatch.setattr(
+        pipeline, "_fetch_job", lambda _j: (URL, ["drums"], 4, "youtube", None, None)
+    )
+
+    async def noop(*a, **k):
+        return None
+
+    async def record_event(job_id, stage, phase, pct=None, detail=None):
+        events.append((stage, phase, detail))
+
+    monkeypatch.setattr(pipeline, "set_status", noop)
+    monkeypatch.setattr(pipeline, "emit_event", record_event)
+    monkeypatch.setattr(pipeline, "_fail", noop)
+
+
 def test_the_pipeline_arms_gate_0c_with_the_cap_in_force(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    """The pipeline must HAND the cap down, or gate 0c is dead code in production.
+    """The pipeline must HAND the cap down, or Cobalt's only ceiling is dead in production.
 
-    Nothing caught the deletion of that one argument: the cap defaults to ``None``, gate 0c
-    skips itself, and layer 2 still blocked Replicate, so the suite stayed green while the
-    claim of "no download, no proxy traffic, no R2 staging" became false -- an arbitrarily
-    long video would be fetched in full before anything refused it.
-
-    The expected figure is a LITERAL, set through the environment here. Comparing against a
-    second call to ``_max_upload_duration_sec()`` would only prove the code applied its own
-    function to its own environment, which is the self-consistency trap: that comparison
-    passes just as happily when the argument is dropped and both sides read ``None``.
-
-    Reaching ``submit_or_reattach`` at all is the second half of the assertion: a 1 s track
-    is accepted, so arming the gate does not break the ordinary path.
+    The expected figure is a LITERAL set through the environment; comparing it to a second
+    call of ``_max_upload_duration_sec()`` would pass just as happily with the argument dropped.
     """
-    monkeypatch.delenv("STUB_MODE", raising=False)
-    monkeypatch.setenv("ALLOW_YOUTUBE_INPUT", "true")
     monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "137")  # not 300: a number only this test sets
-
     seen: dict = {}
 
     def fake_download(_url, _job, cap=None):
         seen["cap"] = cap
         return str(_wav(tmp_path / "one_second.wav", 1.0)), "ytdlp"
 
-    monkeypatch.setattr(pipeline, "download_audio", fake_download)
-    monkeypatch.setattr(pipeline, "upload_input", lambda _j, _p: "https://presigned")
-    # A typed error from the first billed call stops the run exactly there, and reaching it
-    # proves the short track was accepted rather than refused by the newly armed gate.
+    events: list = []
+    staged: list = []
+    _pipeline_link_rig(monkeypatch, fake_download, events, staged)
+    with pytest.raises(SeparationFailedError, match="sentinel"):
+        asyncio.run(pipeline._run_pipeline(JOB))
+    assert seen["cap"] == 137.0
+    # A short track is staged as fetched and its completion event carries no trim detail.
+    assert staged == [str(tmp_path / "one_second.wav")]
+    assert ("downloading", "completed", None) in events
+
+
+def test_over_length_link_is_trimmed_and_reaches_replicate_with_at_most_n_seconds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """The whole pipeline on a link job: a 5 s video at a 3 s cap is NOT failed; the file
+    staged for Replicate is the cut one, at most 3 s, and the job event records the trim."""
+    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
+    long_src = str(_wav(tmp_path / "ten_minutes_in_spirit.wav", 5.0))
+
+    def fake_download(_url, _job, cap=None):
+        return long_src, "ytdlp"
+
+    events: list = []
+    staged: list = []
+    _pipeline_link_rig(monkeypatch, fake_download, events, staged)
+    with pytest.raises(SeparationFailedError, match="sentinel"):
+        asyncio.run(pipeline._run_pipeline(JOB))
+    pipeline.submit_or_reattach.assert_called_once_with(JOB, "https://presigned")
+    assert len(staged) == 1 and staged[0] != long_src
+    assert _wav_secs(staged[0]) <= 3.0 + pipeline.TRIM_TOLERANCE_SEC
+    assert (
+        "downloading",
+        "completed",
+        {"trimmed": True, "source_sec": 5.0, "used_sec": 3.0},
+    ) in events
+
+
+def test_pipeline_cobalt_arm_hands_the_url_on_only_after_a_length_was_verified(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Drives the Cobalt arm with the REAL download_audio: a READ 120 s length may use it."""
+    monkeypatch.delenv("STUB_MODE", raising=False)
+    monkeypatch.setenv("ALLOW_YOUTUBE_INPUT", "true")
+    monkeypatch.delenv("MAX_UPLOAD_DURATION_SEC", raising=False)
+    calls: list[str] = []
+    monkeypatch.setattr(downloader.fetch_gates, "is_blocklisted", lambda _v: False)
+    monkeypatch.setattr(downloader.fetch_gates, "fetch_paused", lambda: None)
+    monkeypatch.setattr(downloader.fetch_gates, "cobalt_allowed", lambda: True)
+    monkeypatch.setattr(downloader.fetch_gates, "log_attempt", lambda **kw: None)
+    monkeypatch.setattr(downloader.fetch_gates, "ytdlp_version", lambda: "test")
+    monkeypatch.setattr(downloader, "YTDLP_RETRY_DELAY_S", 0.0)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: 120.0)
+
+    def blocked(_u):
+        calls.append("ytdlp_fetch")
+        raise DownloadBlockedError("test: blocked")
+
+    monkeypatch.setattr(downloader.ytdlp_client, "fetch_audio_file", blocked)
     monkeypatch.setattr(
-        pipeline,
-        "submit_or_reattach",
-        MagicMock(side_effect=SeparationFailedError("sentinel: reached the billed call")),
+        downloader.cobalt_client,
+        "fetch_audio_url",
+        lambda u: calls.append("cobalt_fetch") or "https://tunnel.example/a.mp3",
     )
+    monkeypatch.setattr(pipeline, "upload_input", lambda *a: calls.append("R2_STAGE") or "x")
+
+    def submit(job_id, src):
+        calls.append(f"REPLICATE_SUBMIT({src})")
+        raise SeparationFailedError("sentinel: reached the billed call")
+
+    monkeypatch.setattr(pipeline, "submit_or_reattach", submit)
     monkeypatch.setattr(
         pipeline, "_fetch_job", lambda _j: (URL, ["drums"], 4, "youtube", None, None)
     )
@@ -350,11 +448,58 @@ def test_the_pipeline_arms_gate_0c_with_the_cap_in_force(
 
     with pytest.raises(SeparationFailedError, match="sentinel"):
         asyncio.run(pipeline._run_pipeline(JOB))
+    assert calls == [
+        "ytdlp_fetch",
+        "ytdlp_fetch",
+        "cobalt_fetch",
+        "REPLICATE_SUBMIT(https://tunnel.example/a.mp3)",
+    ]
 
-    assert seen["cap"] == 137.0, (
-        f"gate 0c was handed {seen['cap']!r}; None means the pre-fetch ceiling is inert in "
-        "production and an over-length video is downloaded in full before anything refuses it"
+
+def test_pipeline_long_video_with_yt_dlp_blocked_never_reaches_replicate_via_cobalt(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The end-to-end form of the Cobalt bypass: REAL download_audio, a 612 s reading, yt-dlp
+    blocked twice, Cobalt released. Replicate must see nothing."""
+    monkeypatch.delenv("STUB_MODE", raising=False)
+    monkeypatch.setenv("ALLOW_YOUTUBE_INPUT", "true")
+    monkeypatch.delenv("MAX_UPLOAD_DURATION_SEC", raising=False)
+    calls: list[str] = []
+    monkeypatch.setattr(downloader.fetch_gates, "is_blocklisted", lambda _v: False)
+    monkeypatch.setattr(downloader.fetch_gates, "fetch_paused", lambda: None)
+    monkeypatch.setattr(downloader.fetch_gates, "cobalt_allowed", lambda: True)
+    monkeypatch.setattr(downloader.fetch_gates, "log_attempt", lambda **kw: None)
+    monkeypatch.setattr(downloader.fetch_gates, "ytdlp_version", lambda: "test")
+    monkeypatch.setattr(downloader, "YTDLP_RETRY_DELAY_S", 0.0)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: 612.0)
+
+    def blocked(_u):
+        calls.append("ytdlp_fetch")
+        raise DownloadBlockedError("test: blocked")
+
+    monkeypatch.setattr(downloader.ytdlp_client, "fetch_audio_file", blocked)
+    monkeypatch.setattr(
+        downloader.cobalt_client,
+        "fetch_audio_url",
+        lambda u: calls.append("cobalt_fetch") or "https://tunnel.example/a.mp3",
     )
+    submitted = MagicMock(side_effect=AssertionError("Replicate must not be called"))
+    monkeypatch.setattr(pipeline, "submit_or_reattach", submitted)
+    monkeypatch.setattr(
+        pipeline, "_fetch_job", lambda _j: (URL, ["drums"], 4, "youtube", None, None)
+    )
+
+    async def noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(pipeline, "set_status", noop)
+    monkeypatch.setattr(pipeline, "emit_event", noop)
+    monkeypatch.setattr(pipeline, "_fail", noop)
+
+    with pytest.raises(DownloadBlockedError):
+        asyncio.run(pipeline._run_pipeline(JOB))
+    submitted.assert_not_called()
+    assert calls == ["ytdlp_fetch", "ytdlp_fetch"]
 
 
 # ------------------------------ the metadata reader itself ------------------------------
@@ -409,140 +554,23 @@ def test_probe_timeout_is_unknown_not_short(monkeypatch: pytest.MonkeyPatch):
     assert ytdlp_client.probe_duration_sec(URL) is None
 
 
-# ----------------------------- the message, and the whole run -----------------------------
+# --------------------- the retired codes stay defined (old rows, copy map) ---------------------
 
 
-def test_message_names_the_cap_and_does_not_tell_a_linker_to_re_upload():
+def test_the_too_long_codes_stay_defined_for_old_rows():
     assert LinkTooLongError.error_code == "UPLOAD_TOO_LONG"
     assert "UPLOAD_TOO_LONG" in ALL_ERROR_CODES
     assert issubclass(LinkTooLongError, UploadTooLongError)
-    msg = LinkTooLongError(max_seconds=300.0).user_message
-    assert "5 minutes" in msg
-    assert "too long" in msg
-    # The parent's wording ("Trim it and upload it again") is nonsense for a pasted URL.
-    assert "upload it again" not in msg
-    assert "10 minutes" in LinkTooLongError(max_seconds=600.0).user_message
-    assert "30 seconds" in LinkTooLongError(max_seconds=30.0).user_message
+    assert "5 minutes" in LinkTooLongError(max_seconds=300.0).user_message
 
 
-def test_over_length_link_reaches_no_paid_provider(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """The whole pipeline on a link job: Replicate sees ZERO requests and the job fails typed.
+def test_nothing_in_the_worker_raises_a_too_long_error_any_more():
+    """Item 6 of the change: the codes are defined but no code path raises them for length."""
+    import inspect
 
-    This is the regression that matters. ``submit_or_reattach`` is the first billed call on
-    this path, and it is replaced with a landmine: if the refusal ever moves to after it, or
-    disappears, this test reports a call that must never happen rather than a copy fragment.
-    """
-    from worker import replicate_client
+    from worker import downloader as dl_pkg
 
-    # CI sets STUB_MODE=true; _run_pipeline would then skip the real path (and every duration
-    # gate on it) and write fake loops instead.
-    monkeypatch.delenv("STUB_MODE", raising=False)
-    monkeypatch.setenv("ALLOW_YOUTUBE_INPUT", "true")
-    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
-    monkeypatch.setenv("REPLICATE_API_TOKEN", "r8_test")
-
-    staged = str(_wav(tmp_path / "ten_minutes_in_spirit.wav", 5.0))
-    # Gate 0c is deliberately blinded (metadata unreadable) so that this test exercises the
-    # ENFORCEMENT on the staged file rather than the saver in front of it.
-    handed: dict = {}
-
-    def fake_download(_url, _job, cap=None):
-        handed["cap"] = cap
-        return staged, "ytdlp"
-
-    monkeypatch.setattr(pipeline, "download_audio", fake_download)
-    uploaded: list[str] = []
-    monkeypatch.setattr(pipeline, "upload_input", lambda j, p: uploaded.append(p) or "https://x")
-
-    submitted = MagicMock(side_effect=AssertionError("Replicate must not be called"))
-    monkeypatch.setattr(pipeline, "submit_or_reattach", submitted)
-    monkeypatch.setattr(replicate_client.httpx, "post", submitted)
-
-    row = (URL, ["drums"], 4, "youtube", None, None)
-    monkeypatch.setattr(pipeline, "_fetch_job", lambda _j: row)
-
-    async def noop(*a, **k):
-        return None
-
-    failed: list[tuple] = []
-
-    async def record_fail(*a):
-        failed.append(a)
-
-    monkeypatch.setattr(pipeline, "set_status", noop)
-    monkeypatch.setattr(pipeline, "emit_event", noop)
-    monkeypatch.setattr(pipeline, "_fail", record_fail)
-
-    with pytest.raises(LinkTooLongError):
-        asyncio.run(pipeline._run_pipeline(JOB))
-
-    submitted.assert_not_called()
-    assert uploaded == []  # not even staged to R2: refused before upload_input
-    # The cap was not merely discarded on the way down: gate 0c was armed with the cap in
-    # force, so the metadata reading in front of the fetch was live for this job too.
-    assert handed["cap"] == 3.0
-    assert failed and failed[0][1] == "UPLOAD_TOO_LONG"
-    assert failed[0][2] == LinkTooLongError(max_seconds=3.0).user_message
-    assert "3 seconds" in failed[0][2]
-
-
-def test_pipeline_cobalt_arm_hands_the_url_on_only_after_a_length_was_verified(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """Drives the ``else`` (Cobalt) arm of ``_run_pipeline``, which no test reached before.
-
-    ``download_audio`` is the REAL one; only its network edges are stubbed (yt-dlp blocked
-    twice, a metadata reading of 120 s, Cobalt releasing a tunnel URL). The URL then reaches
-    ``submit_or_reattach`` unmeasured -- by design, because gate 0c read 120 s -- and the
-    arm logs that it did so. The companion
-    ``test_cobalt_is_not_tried_when_the_length_is_unknown`` is what stops the same run
-    happening with NO reading.
-    """
-    monkeypatch.delenv("STUB_MODE", raising=False)
-    monkeypatch.setenv("ALLOW_YOUTUBE_INPUT", "true")
-    monkeypatch.delenv("MAX_UPLOAD_DURATION_SEC", raising=False)
-    calls: list[str] = []
-    monkeypatch.setattr(downloader.fetch_gates, "is_blocklisted", lambda _v: False)
-    monkeypatch.setattr(downloader.fetch_gates, "fetch_paused", lambda: None)
-    monkeypatch.setattr(downloader.fetch_gates, "cobalt_allowed", lambda: True)
-    monkeypatch.setattr(downloader.fetch_gates, "log_attempt", lambda **kw: None)
-    monkeypatch.setattr(downloader.fetch_gates, "ytdlp_version", lambda: "test")
-    monkeypatch.setattr(downloader, "YTDLP_RETRY_DELAY_S", 0.0)
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: 120.0)
-
-    def blocked(_u):
-        calls.append("ytdlp_fetch")
-        raise DownloadBlockedError("test: blocked")
-
-    monkeypatch.setattr(downloader.ytdlp_client, "fetch_audio_file", blocked)
-    monkeypatch.setattr(
-        downloader.cobalt_client,
-        "fetch_audio_url",
-        lambda u: calls.append("cobalt_fetch") or "https://tunnel.example/a.mp3",
-    )
-    monkeypatch.setattr(pipeline, "upload_input", lambda *a: calls.append("R2_STAGE") or "x")
-
-    def submit(job_id, src):
-        calls.append(f"REPLICATE_SUBMIT({src})")
-        raise SeparationFailedError("sentinel: reached the billed call")
-
-    monkeypatch.setattr(pipeline, "submit_or_reattach", submit)
-    monkeypatch.setattr(
-        pipeline, "_fetch_job", lambda _j: (URL, ["drums"], 4, "youtube", None, None)
-    )
-
-    async def noop(*a, **k):
-        return None
-
-    monkeypatch.setattr(pipeline, "set_status", noop)
-    monkeypatch.setattr(pipeline, "emit_event", noop)
-    monkeypatch.setattr(pipeline, "_fail", noop)
-
-    with pytest.raises(SeparationFailedError, match="sentinel"):
-        asyncio.run(pipeline._run_pipeline(JOB))
-    assert calls == [
-        "ytdlp_fetch",
-        "ytdlp_fetch",
-        "cobalt_fetch",
-        "REPLICATE_SUBMIT(https://tunnel.example/a.mp3)",
-    ]
+    for mod in (pipeline, dl_pkg, ytdlp_client):
+        src = inspect.getsource(mod)
+        assert "raise LinkTooLongError" not in src, mod.__name__
+        assert "raise UploadTooLongError" not in src, mod.__name__

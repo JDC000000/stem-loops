@@ -116,8 +116,12 @@ def _human_limit(max_seconds: float) -> str:
 class UploadTooLongError(StemLoopsError):
     """Upload exceeds the worker's duration cap (``MAX_UPLOAD_DURATION_SEC``).
 
-    Raised before any paid call (Replicate separation, Klangio). The message is built from
-    the cap actually in force so a tuned env var never leaves a stale number in the UI.
+    NO LONGER RAISED FOR LENGTH (2026-11-14). Jon: a song over 5 minutes "should still be
+    converted to a play along" -- both input paths now TRIM to the first
+    ``MAX_UPLOAD_DURATION_SEC`` seconds instead of refusing (pipeline._prepare_upload_source,
+    pipeline._trim_link_source). The class and its ``UPLOAD_TOO_LONG`` code stay defined:
+    jobs failed before the change still carry the code, and the web error-copy map renders
+    it. The message is built from the cap in force so a tuned env var never goes stale.
     """
 
     error_code = "UPLOAD_TOO_LONG"
@@ -145,11 +149,9 @@ class LinkTooLongError(UploadTooLongError):
     "trim and upload again" when the input was a URL, so the message offers the two things
     the user can actually do.
 
-    Raised before ANY download byte or Replicate GPU-second is spent (downloader gate 0c
-    for the pre-fetch metadata reading, pipeline._enforce_link_duration for the staged
-    file). Before this existed the link path had no duration cap at all: the job was
-    accepted, a full separation was billed per GPU-second on the whole length, the chord
-    overlay became a `too_long` tombstone, and the player then refused to open the track.
+    NO LONGER RAISED (2026-11-14): a long linked video is trimmed to its first
+    ``MAX_UPLOAD_DURATION_SEC`` seconds (``pipeline._trim_link_source``), not refused. Kept,
+    like its parent, for rows failed before the change and for the error-copy map.
     """
 
     user_message = (
@@ -168,15 +170,16 @@ class InternalError(StemLoopsError):
 
 
 class LinkUnmeasurableError(InternalError):
-    """A fetched link track whose length could not be read, so the duration cap cannot be applied.
+    """A fetched link track that could not be trimmed to, or shown to be within, the cap.
 
     Same ``error_code`` as its parent (no taxonomy expansion; the FetchPausedError precedent).
-    Raised by ``pipeline._enforce_link_duration`` BEFORE the file is staged or handed to
-    Replicate: a length we cannot read is a length we cannot show to be under the ceiling.
+    Raised by ``pipeline._trim_link_source`` BEFORE the file is staged or handed to
+    Replicate: if ffmpeg cannot cut the file, or the cut cannot be measured, we cannot show
+    Replicate is handed at most ``MAX_UPLOAD_DURATION_SEC`` seconds, so nothing is handed on.
     """
 
     user_message = (
-        "We couldn't check how long that video is, so we didn't process it. "
+        "We couldn't read the audio in that video, so we didn't process it. "
         "Try another link, or upload the audio file instead."
     )
 

@@ -130,7 +130,7 @@ def _drive(monkeypatch, extract):
             )
         ),
     )
-    monkeypatch.setattr(pipeline, "_prepare_upload_source", lambda *a: "https://audio")
+    monkeypatch.setattr(pipeline, "_prepare_upload_source", lambda *a: ("https://audio", None))
     monkeypatch.setattr(pipeline, "submit_or_reattach", lambda *a: "pred")
     urls = {n: f"https://cdn/{n}.wav" for n in SIX}
     monkeypatch.setattr(pipeline, "poll_until_done", lambda *a: (urls, 0.1))

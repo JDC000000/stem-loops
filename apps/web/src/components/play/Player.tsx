@@ -538,10 +538,9 @@ export function PlayerView({
     if (phase.kind === 'no-stems') return { tone: 'notice' as const, text: NO_STEMS_MESSAGE };
     if (phase.kind === 'load-error') return { tone: 'error' as const, text: phase.message };
     if (engineError) {
-      // NOT Story 1.4. Story 1.4 is "a track over 300 s is refused AT SUBMIT
-      // TIME with a message naming the limit", and submit is not built here —
-      // that is open work, not something this file satisfies. What this does is
-      // the weaker, honest thing the brief did ask for: a track that somehow
+      // NOT Story 1.4. Story 1.4 (revised 2026-11-14) is "a track over 300 s is
+      // trimmed by the worker to its first 300 s", so nothing over the ceiling
+      // should reach the engine. This is the safety net: a track that somehow
       // reaches the engine over the ceiling surfaces `PLAY_TRACK_TOO_LONG`'s own
       // sentence instead of taking the page down. DECODE_FAILED is the real
       // "this browser cannot play Opus" answer (Story 5.3).

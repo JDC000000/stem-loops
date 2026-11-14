@@ -4,6 +4,7 @@ import { db } from '@/lib/db';
 import { mintSignedUrl } from '@/lib/r2';
 import { presignTtlSec } from '@/lib/retention';
 import { mayReadJob } from '@/lib/job-access';
+import { inputTrimFromEvents } from '@/lib/input-trim';
 // OWNERSHIP: a job with a user_id is readable only by that user; an anonymous job
 // (user_id NULL) is readable by anyone holding its id. See lib/job-access.ts. A denied
 // caller gets the same 404 as a missing job. `user_id` is read to decide that and is
@@ -46,11 +47,19 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     }
     const urlTtlSec = presignTtlSec(job.expires_at);
 
+    // `detail` is read ONLY to find the input trim (lib/input-trim.ts) and is then dropped
+    // from every event: on other events it carries `cost_usd`, which never goes to a browser.
     const eventsRes = await db.query(
-      `SELECT id, job_id, stage, phase, pct, duration_ms, created_at
+      `SELECT id, job_id, stage, phase, pct, duration_ms, detail, created_at
        FROM job_events WHERE job_id = $1 ORDER BY created_at ASC`,
       [params.id]
     );
+    const trim = inputTrimFromEvents(eventsRes.rows);
+    const events = eventsRes.rows.map((e: Record<string, unknown>) => {
+      const rest = { ...e };
+      delete rest.detail;
+      return rest;
+    });
 
     const loopsRes = await db.query(
       `SELECT id, job_id, stem, section_label, energy_class, start_sec, end_sec, start_bar,
@@ -82,7 +91,16 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       })
     );
 
-    return NextResponse.json({ ...job, events: eventsRes.rows, loops }, { headers: NO_STORE });
+    return NextResponse.json(
+      {
+        ...job,
+        input_trim_used_sec: trim?.usedSec ?? null,
+        input_trim_source_sec: trim?.sourceSec ?? null,
+        events,
+        loops,
+      },
+      { headers: NO_STORE }
+    );
   } catch (err) {
     Sentry.captureException(err);
     console.error(`GET /api/jobs/${params.id} error:`, err);

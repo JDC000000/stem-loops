@@ -407,15 +407,24 @@ test('the page renders <PlayerArt /> — the one object the play section is buil
     'the rendered page must carry the six-channel mixer rail');
 });
 
-test('the page claims no submit-time length gate — nothing enforces one', () => {
-  // F4: the web layer caps BYTES only (200 MB) and the worker's MAX_UPLOAD_DURATION_SEC
-  // defaults to 600 s, not 300. The 300 s ceiling lives in the player's engine and in
-  // Klangio. An over-length track is accepted and separated at real cost, so the page must
-  // not promise it is turned away at the door.
-  const banned = [/\brefused\b/i, /\brejected\b/i, /\bturned away\b/i, /\bwon't be accepted\b/i, /\bwe'll stop you\b/i];
+test('the page claims no submit-time length gate — a long song is trimmed, not refused', () => {
+  // 2026-11-14 (Jon): "If a song is more than 5 minutes, it should still be converted to a play
+  // along, but it just [processes the first] 5 minutes." The worker trims every input to its
+  // first MAX_UPLOAD_DURATION_SEC seconds, so nothing is turned away for length and the page
+  // must not say anything is.
+  const banned = [/\brefused\b/i, /\brejected\b/i, /\bturned away\b/i, /\bwon't be accepted\b/i, /\bwe'll stop you\b/i,
+    /\bnot supported\b[^.]*\blonger\b/i, /\blonger tracks are not\b/i, /-minute limit/i, /choose a shorter song/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} claims a gate that does not exist (${re})`);
   for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} claims a gate that does not exist (${re})`);
-  assert.match(specRow('Track length'), /not supported/i);
+  assert.match(specRow('Track length'), new RegExp(`^The first ${MAX_TRACK_MIN} minutes of any song\\.`));
+  assert.match(specRow('Track length'), /trimmed on our end/);
+  assert.doesNotMatch(specRow('Track length'), /on our side/i, '"on our side" is on the brand-tone avoid list');
+});
+
+test('the form carries the pre-submit trim note slot, empty until a long file is picked', () => {
+  // lib/upload-duration.ts words the note; ToolForm shows it under the picked file. Rendered
+  // with no file, the slot exists and is hidden, so the landing never shows it by default.
+  assert.match(RENDER.html, /<p class="hint" id="picked-notice" data-testid="trim-notice" hidden="">/);
 });
 
 test('the page itself names the player, the faders, mute, solo, the chords and the loop', () => {

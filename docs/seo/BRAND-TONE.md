@@ -132,9 +132,9 @@ If Jon chooses "Stem Loops", change every instance in one PR, including the pinn
 | Term | Rule |
 |---|---|
 | **song** | What the user brings: "Paste a song", "Start a new song". |
-| **track** | Limits, specs and billing: "Tracks up to 5 minutes", "5 tracks a month", "free tracks this month". |
+| **track** | Limits, specs and billing: "Uses the first 5 minutes of any song", "5 tracks a month", "free tracks this month". |
 | **job** | The processing record. Use it in the UI ("Job history", "job page") and in the landing page's account and stage explanations (pinned: "Starting a job needs no account", `landing-copy.test.mjs:290`). Never in benefit copy. |
-| **stems** | Lowercase, including stem names: drums, bass, vocals, guitar, keys, other. |
+| **stems** | Lowercase, including stem names: drums, bass, guitar, keys, vocals, other (Story 2.1 order). |
 | **player**, **play along** | The noun is lowercase. The nav label is "Play along". Use "play-along" only as an adjective. |
 | **chord track**, **chords** | Lowercase. Symbols as shown: Gm, E♭. Pair with "estimate" on first mention in marketing copy. |
 | **section loop** | Looping a detected section. |
@@ -262,7 +262,7 @@ Every "after" follows §2–§5 and appears in COPY-AUDIT v1.3.1.
 |---|---|---|---|
 | 1 | `lib/emails/templates/welcome.ts:21-22` (F01) | "Thanks for signing up. You can now separate any YouTube track into clean stems and loop-ready bars." | "Thanks for subscribing. Upload a song and it opens in the player: six stems on faders, with a chord track to play along to." |
 | 2 | `components/landing/PlayerArt.tsx:93` (F03) | "Mark a verse, a chorus or a stretch you choose, and it repeats until you have it." | "Pick a detected section, such as a verse or a chorus, and it repeats until you have it." |
-| 3 | `app/layout.tsx:8` (F07) | "Split a song into stems and 1, 2, 4 or 8-bar loops at the detected BPM, as 24-bit WAV. Free, no account." | "Split a song into six stems with faders and a chord track, and play along. Tracks up to 5 minutes, in Chrome on the desktop." (minutes derived from `MAX_TRACK_SEC`) |
+| 3 | `app/layout.tsx:8` (F07) | "Split a song into stems and 1, 2, 4 or 8-bar loops at the detected BPM, as 24-bit WAV. Free, no account." | "Split a song into six stems with faders and a chord track, and play along. Uses the first 5 minutes of any song, in Chrome on the desktop." (#270; minutes derived from `MAX_TRACK_SEC`) |
 | 4 | `app/history/page.tsx:23` (F25) | "No jobs yet. Extract some loops →" | "No jobs yet. Start a new song →" |
 | 5 | Landing form, from `lib/billing/entitlements.ts:357` (F13) | "We couldn’t start that job. PAID_LINK_INGEST_DISALLOWED" | "We couldn’t start that job. Credits, Pro and Studio only work with files you upload. Upload the audio file instead. YouTube links work on the Free plan." |
 | 6 | `components/LoopResults.tsx:170,185` (F27, F47) | "✂ Cut 1 loops" · "⬇ Download All (ZIP)" | "Cut 1 loop" · "Download all (ZIP)" |

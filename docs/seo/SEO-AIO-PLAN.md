@@ -33,7 +33,7 @@
 
 **Changes in v1.4**
 - **R4-M1:** a new test in `test/llms-txt.test.mjs`, "ENTITY_LIMITS states the five brand limits, with the player cap as its only minute figure". It imports `MAX_TRACK_SEC` from `src/lib/play/types.ts`, then asserts:
-  - the text contains `up to ${floor(MAX_TRACK_SEC/60)} minutes`;
+  - the text contains `up to ${floor(MAX_TRACK_SEC/60)} minutes` (superseded in v1.7.1 by #270: now `uses the first ${MAX_TRACK_MIN} minutes of any song`);
   - that figure is the only minute figure;
   - the text contains "Chrome on the desktop", "after 24 hours", "account to open the player" and "rights to the audio".
 - **Mutant runs:** each mutant made the new test fail by assertion (`AssertionError`, 1 pass and 1 fail in the file); `site.ts` was restored after each (checked with `cmp`), and the file then gave 2 pass, 0 fail:
@@ -1203,7 +1203,7 @@ stem-loops detects sections from the audio. Use them as a starting map, not a ru
 
 **2. Solo your part**
 
-Every stem has a fader, a mute and a solo. Solo the stem for your instrument (drums, bass, vocals, guitar or keys) and listen to the section you marked. Parts that disappear in a full mix, such as a bass line under a loud guitar or a keyboard pad, become easy to follow.
+Every stem has a fader, a mute and a solo. Solo the stem for your instrument (drums, bass, guitar, keys or vocals) and listen to the section you marked. Parts that disappear in a full mix, such as a bass line under a loud guitar or a keyboard pad, become easy to follow.
 
 Expect some bleed. In dense passages you will hear traces of other instruments in a stem. If something sounds out of place, solo the neighbouring stem to see where it belongs. Six stems means guitar and keys have their own channels, but parts that share a range can still overlap. A piano and a synth both land in keys, for example.
 

@@ -347,10 +347,10 @@ index a4ac9ee..53e4221 100644
  };
 diff --git apps/web/test/jsonld.test.mjs apps/web/test/jsonld.test.mjs
 new file mode 100644
-index 0000000..b01decc
+index 0000000..3dc74bb
 --- /dev/null
 +++ apps/web/test/jsonld.test.mjs
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,79 @@
 +// SEO-05: the home page's one JSON-LD block, rendered through the landing render helper.
 +import { test } from 'node:test';
 +import assert from 'node:assert/strict';
@@ -411,6 +411,24 @@ index 0000000..b01decc
 +    assert.doesNotMatch(text, /\btracks up to\b/i, `${where} says "tracks up to"`);
 +  }
 +  assert.ok(pageFor('/').description.includes(`Uses the first ${MAX_TRACK_MIN} minutes of any song.`));
++});
++
++test('JsonLd escapes every "<" so a string in the data can never close the script tag', async () => {
++  // Pins the `.replace(/</g, '\\u003c')` in components/seo/JsonLd.tsx (Opus review of #271: the one
++  // surviving mutant). Without it, "</script><script>…" in any field would end the block early.
++  const React = (await import('react')).default;
++  const { renderToStaticMarkup } = await import('react-dom/server');
++  const [url] = compile(['components/seo/JsonLd.tsx']);
++  const { JsonLd } = await import(url);
++  const evil = '</script><script>alert(1)</script><!--';
++  const html = renderToStaticMarkup(React.createElement(JsonLd, { data: { name: evil } }));
++  const inner = html.match(/^<script type="application\/ld\+json">([\s\S]*)<\/script>$/);
++  assert.ok(inner, `exactly one script element, closed once at the end: ${html}`);
++  assert.doesNotMatch(inner[1], /</, 'no raw "<" inside the block');
++  assert.ok(inner[1].includes('\\u003c/script>'), '"<" is serialised as \\u003c');
++  assert.equal(JSON.parse(inner[1]).name, evil, 'the escaped JSON still parses back to the original string');
++  // and the real home block carries no raw "<" either
++  assert.doesNotMatch(blocks[0], /</);
 +});
 diff --git apps/web/test/llms-txt.test.mjs apps/web/test/llms-txt.test.mjs
 new file mode 100644

@@ -1,3 +1,5 @@
+> **SUPERSEDED.** This is v1.0, kept only because `SEO-AIO-PLAN.md` (v1.7.1) cites its guide outlines and panel prompts. Its facts and wording are stale: where it says "tracks up to 5 minutes" read "uses the first 5 minutes of any song" (#270), and list stems as drums, bass, guitar, keys, vocals, other (Story 2.1). `SEO-AIO-PLAN.md` wins on any conflict.
+
 # stem-loops: SEO and AI-search plan
 
 **v1.0, 2026-11-13.** Written for Jon's brief of 10:31 PT, 2026-11-13. Updated at 10:35 for Jon's ruling: **Moises, Chordify and Yousician are the primary benchmark.** Songsterr, Ultimate Guitar, LALAL.AI, Fadr, Capo and Transcribe! are secondary.

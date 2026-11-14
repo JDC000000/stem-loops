@@ -59,3 +59,21 @@ test('#270: a longer song is trimmed, not refused, so no SEO text says "up to N 
   }
   assert.ok(pageFor('/').description.includes(`Uses the first ${MAX_TRACK_MIN} minutes of any song.`));
 });
+
+test('JsonLd escapes every "<" so a string in the data can never close the script tag', async () => {
+  // Pins the `.replace(/</g, '\\u003c')` in components/seo/JsonLd.tsx (Opus review of #271: the one
+  // surviving mutant). Without it, "</script><script>…" in any field would end the block early.
+  const React = (await import('react')).default;
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const [url] = compile(['components/seo/JsonLd.tsx']);
+  const { JsonLd } = await import(url);
+  const evil = '</script><script>alert(1)</script><!--';
+  const html = renderToStaticMarkup(React.createElement(JsonLd, { data: { name: evil } }));
+  const inner = html.match(/^<script type="application\/ld\+json">([\s\S]*)<\/script>$/);
+  assert.ok(inner, `exactly one script element, closed once at the end: ${html}`);
+  assert.doesNotMatch(inner[1], /</, 'no raw "<" inside the block');
+  assert.ok(inner[1].includes('\\u003c/script>'), '"<" is serialised as \\u003c');
+  assert.equal(JSON.parse(inner[1]).name, evil, 'the escaped JSON still parses back to the original string');
+  // and the real home block carries no raw "<" either
+  assert.doesNotMatch(blocks[0], /</);
+});

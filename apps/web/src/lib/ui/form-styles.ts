@@ -37,11 +37,25 @@ export const primaryButton: CSSProperties = {
   color: 'var(--text-inverse)',
 };
 
-/** Every other button: a visible control edge (4.10:1 on the page), no lime. */
+/** Every other button: a visible control edge (4.10:1 on the page), no lime, weight 500 (§5). */
 export const secondaryButton: CSSProperties = {
   border: '1.5px solid var(--border-control)',
   background: 'transparent',
   color: 'var(--text-secondary)',
+  fontWeight: 500,
+};
+
+/**
+ * The second step of a gated funnel ("New here? Create account" beside "Sign in"). Still a
+ * secondary button (no lime, A5), but louder than the alternatives below it by non-colour
+ * cues: a #e0e0e0 edge (14.72:1 on the page, vs 4.10:1 for --border-control), white text and
+ * weight 600. One per view.
+ */
+export const secondaryEmphasisButton: CSSProperties = {
+  border: '1.5px solid var(--text-secondary)',
+  background: 'transparent',
+  color: 'var(--text-primary)',
+  fontWeight: 600,
 };
 
 /** An inline text action: white, underlined, with a 44px tap target. */

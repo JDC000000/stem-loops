@@ -99,8 +99,10 @@ test('A4/M21: --status-failed is #ff5f5f and its tint is the same hue', () => {
 });
 
 // ── A9 / M5 / M20: small text and control edges meet their floors ───────────────
+const SURFACES = ['--bg-page', '--bg-nav', '--bg-surface', '--bg-card', '--bg-elevated', '--bg-selected'];
+
 test('A9: --text-label passes 4.5:1 on every surface; --text-subtle is never small text', () => {
-  for (const bg of ['--bg-page', '--bg-surface', '--bg-card', '--bg-elevated']) {
+  for (const bg of SURFACES) {
     assert.ok(ratio(tok('--text-label'), tok(bg)) >= 4.5, `--text-label on ${bg} ${ratio(tok('--text-label'), tok(bg)).toFixed(2)}:1`);
   }
   assert.ok(ratio(tok('--text-subtle'), tok('--bg-page')) < 4.5, 'if --text-subtle ever passes, this rule can relax');
@@ -111,7 +113,7 @@ test('A9: --text-label passes 4.5:1 on every surface; --text-subtle is never sma
 });
 
 test('M20: --border-control is >= 3:1 on every surface a control sits on, and controls use it', () => {
-  for (const bg of ['--bg-page', '--bg-surface', '--bg-card', '--bg-elevated']) {
+  for (const bg of SURFACES) {
     assert.ok(ratio(tok('--border-control'), tok(bg)) >= 3, `--border-control on ${bg} ${ratio(tok('--border-control'), tok(bg)).toFixed(2)}:1`);
   }
   for (const weak of ['--border-strong', '--border-default']) assert.ok(ratio(tok(weak), tok('--bg-page')) < 3, `${weak} is not a control edge`);
@@ -124,12 +126,21 @@ test('M20: --border-control is >= 3:1 on every surface a control sits on, and co
   assert.match(uncomment(read('src/components/play/Player.module.css')), /\.retry\s*\{[^}]*border:\s*1\.5px solid var\(--border-control\)/);
 });
 
+// the body of one exported style object in form-styles.ts
+const FORM_STYLES = uncomment(read('src/lib/ui/form-styles.ts')).replace(/\/\/.*$/gm, '');
+const styleObj = (name) => {
+  const m = FORM_STYLES.match(new RegExp(`export const ${name}: CSSProperties = \\{([^}]*)\\}`));
+  assert.ok(m, `form-styles.ts exports ${name}`);
+  return m[1];
+};
+
 test('M27: the auth and account forms share one 48px field on --bg-elevated with a control edge', () => {
-  const s = read('src/lib/ui/form-styles.ts');
-  assert.match(s, /minHeight:\s*'var\(--h-field\)'/);
-  assert.match(s, /border:\s*'1\.5px solid var\(--border-control\)'/);
-  assert.match(s, /background:\s*'var\(--bg-elevated\)'/);
-  assert.match(s, /borderRadius:\s*'var\(--radius-md\)'/);
+  const field = styleObj('fieldStyle');
+  assert.match(field, /minHeight:\s*'var\(--h-field\)'/);
+  assert.match(field, /border:\s*'1\.5px solid var\(--border-control\)'/, 'the field edge is the 1.5px control edge');
+  assert.match(field, /background:\s*'var\(--bg-elevated\)'/);
+  assert.match(field, /borderRadius:\s*'var\(--radius-md\)'/);
+  assert.doesNotMatch(field, /outline/, 'the field keeps the global focus ring');
   for (const f of ['LoginForm', 'ResetPasswordRequestForm', 'ResetPasswordSetForm', 'DeleteAccountForm']) {
     const src = read(`src/components/${f}.tsx`);
     assert.match(src, /from '@\/lib\/ui\/form-styles'/, `${f} uses the shared field`);
@@ -220,4 +231,79 @@ test('M12/M23/M24/M25: no off-palette reds, no capitalised stem names, 44px dism
   assert.doesNotMatch(read('src/components/FlashBanner.tsx'), /minHeight:\s*32|minWidth:\s*32/);
   assert.doesNotMatch(uncomment(read('src/styles/stem-color.css')), /border-radius:\s*10px/);
   assert.doesNotMatch(uncomment(read('src/styles/signed-in-nav.css')), /border-radius:\s*(10|22)px/);
+});
+
+// ── Review follow-ups (PR #275): button hierarchy, lime in CSS, nav current, touch tokens ──
+test('A5/§7.1: one lime button; secondaries have a control edge; the sign-up step is emphasised without lime', () => {
+  assert.match(styleObj('primaryButton'), /background:\s*'var\(--accent\)'/);
+  const secondary = styleObj('secondaryButton');
+  assert.match(secondary, /border:\s*'1\.5px solid var\(--border-control\)'/, 'secondary edge is --border-control');
+  assert.match(secondary, /fontWeight:\s*500/, 'secondary buttons are weight 500 (§5)');
+  const emph = styleObj('secondaryEmphasisButton');
+  const edge = emph.match(/border:\s*'1\.5px solid var\((--[\w-]+)\)'/);
+  assert.ok(edge, 'the emphasised secondary has a 1.5px token edge');
+  assert.ok(ratio(tok(edge[1]), tok('--bg-page')) > ratio(tok('--border-control'), tok('--bg-page')),
+    'the emphasised edge is stronger than the secondary edge');
+  assert.match(emph, /fontWeight:\s*600/, 'and heavier than the secondary');
+  for (const name of ['secondaryButton', 'secondaryEmphasisButton', 'fieldStyle', 'textButton']) {
+    assert.doesNotMatch(styleObj(name), /accent/, `${name} is not lime`);
+  }
+  const login = read('src/components/LoginForm.tsx');
+  assert.match(login, /secondaryEmphasisButton \}\}>\s*New here\? Create account/, '"Create account" is the emphasised secondary');
+  assert.equal(login.match(/\.\.\.primaryButton/g).length, 1, 'one lime button on the login view');
+  for (const f of CODE_FILES.filter((p) => /\.tsx?$/.test(p))) {
+    assert.doesNotMatch(uncomment(readFileSync(f, 'utf8')), /\bborder\w*:\s*['`][^'`]*var\(--accent/, `${relative(WEB, f)}: lime edge`);
+  }
+});
+
+test('A5: in CSS, lime is only a focus outline, a primary fill or the wordmark dash', () => {
+  const LIME = /var\(--accent(-hover|-active)?\s*[,)]|#a3e635/i;
+  const PRIMARY = /^\.(play|btn-primary|jp-primary)\b/;
+  const DASH = /^\.(wm-dash|sin-dash)$/;
+  for (const f of CSS_FILES.filter((p) => !p.endsWith('design-tokens.css'))) {
+    const css = uncomment(readFileSync(f, 'utf8')).replace(/var\(--stem,\s*var\(--accent\)\)/g, 'var(--stem)');
+    for (const [, sel, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const selector = sel.trim().replace(/\s+/g, ' ');
+      for (const decl of body.split(';')) {
+        const m = decl.match(/^\s*([\w-]+)\s*:(.*)$/s);
+        if (!m || !LIME.test(m[2])) continue;
+        const prop = m[1];
+        const ok = (prop.startsWith('outline') && selector.includes(':focus-visible'))
+          || (prop.startsWith('background') && PRIMARY.test(selector))
+          || (prop === 'color' && DASH.test(selector));
+        assert.ok(ok, `${relative(WEB, f)}: "${selector} { ${prop} }" is lime (A5: focus, primary fill, wordmark dash only)`);
+      }
+    }
+  }
+});
+
+test('F1: the current nav item has a >= 3:1 edge and weight, plus aria-current', () => {
+  const nav = uncomment(read('src/styles/signed-in-nav.css'));
+  const rules = [...nav.matchAll(/\.sin-item\.sin-current\s*\{([^}]*)\}/g)].map((m) => m[1]).join(';');
+  const edge = rules.match(/border-color:\s*var\((--[\w-]+)\)/);
+  assert.ok(edge, 'the current item draws an edge');
+  for (const bg of ['--bg-page', '--bg-selected']) {
+    assert.ok(ratio(tok(edge[1]), tok(bg)) >= 3, `current edge on ${bg} ${ratio(tok(edge[1]), tok(bg)).toFixed(2)}:1`);
+  }
+  assert.match(rules, /font-weight:\s*var\(--weight-semibold\)/);
+  // the current rule comes after .sin-outlined, so the outlined Account item takes it too
+  assert.ok(nav.lastIndexOf('.sin-item.sin-current') > nav.indexOf('.sin-item.sin-outlined'));
+  assert.match(read('src/components/chrome/SignedInNav.tsx'), /'aria-current':\s*'page'/);
+});
+
+test('M25: touch tokens are >= 44px (fields 48px) and the dismiss uses them', () => {
+  const px = (name) => { const m = TOKENS.match(new RegExp(`${name}:\\s*(\\d+)px`)); assert.ok(m, `${name} in px`); return +m[1]; };
+  assert.ok(px('--touch-min') >= 44, '--touch-min');
+  assert.ok(px('--h-control') >= 44, '--h-control');
+  assert.ok(px('--h-field') >= 48, '--h-field');
+  const dismiss = read('src/components/FlashBanner.tsx');
+  assert.match(dismiss, /minHeight:\s*'var\(--touch-min\)'/);
+  assert.match(dismiss, /minWidth:\s*'var\(--touch-min\)'/);
+  assert.match(styleObj('buttonBase'), /minHeight:\s*'var\(--h-control\)'/);
+});
+
+test('M12: loop-card buttons take the button radius', () => {
+  const card = uncomment(read('src/styles/loop-card.css'));
+  const btns = card.match(/\.play-btn,\s*\.btn-download-wav,\s*\.action-row button,\s*\.action-row a\s*\{([^}]*)\}/)[1];
+  assert.match(btns, /border-radius:\s*var\(--radius-md\)/);
 });

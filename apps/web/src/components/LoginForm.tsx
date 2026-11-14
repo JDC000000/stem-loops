@@ -7,9 +7,10 @@ import { sanitizeReturnTo } from '@/lib/auth/return-to';
 import { PASSWORD_MIN_LENGTH, validatePassword } from '@/lib/auth/password-rules';
 import { loginErrorMessage } from '@/lib/auth/login-errors';
 import { sendMagicLink } from '@/lib/auth/magic-link';
-import { fieldStyle, buttonBase, primaryButton, secondaryButton, textButton } from '@/lib/ui/form-styles';
+import { fieldStyle, buttonBase, primaryButton, secondaryButton, secondaryEmphasisButton, textButton } from '@/lib/ui/form-styles';
 
 type Mode = 'signin' | 'signup' | 'reset';
+type BusyAction = Mode | 'magic' | 'google';
 
 const input = fieldStyle;
 const btn = buttonBase;
@@ -23,7 +24,11 @@ export default function LoginForm({
   const [mode, setMode] = useState<Mode>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
+  // F57 (copy audit v1.3.1): which action is in flight, not just "something is". Every
+  // button stays disabled while any action runs, but only the pressed one changes its label,
+  // so the label never names a different action than the one running.
+  const [busyAction, setBusyAction] = useState<BusyAction | null>(null);
+  const busy = busyAction !== null;
   const [error, setError] = useState<string | null>(loginErrorMessage(initialError));
   const [notice, setNotice] = useState<string | null>(null);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
@@ -58,8 +63,8 @@ export default function LoginForm({
     return () => unsub?.();
   }, [dest]);
 
-  async function run(fn: () => Promise<string | null>) {
-    setBusy(true);
+  async function run(action: BusyAction, fn: () => Promise<string | null>) {
+    setBusyAction(action);
     setError(null);
     setNotice(null);
     try {
@@ -68,7 +73,7 @@ export default function LoginForm({
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
@@ -81,7 +86,7 @@ export default function LoginForm({
       const pwError = validatePassword(password);
       if (pwError) { setError(pwError); return; }
     }
-    void run(async () => {
+    void run(mode, async () => {
       const supabase = createBrowserClient();
       if (mode === 'reset') {
         const { error: err } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: recoveryUrl() });
@@ -115,13 +120,13 @@ export default function LoginForm({
 
   function magicLink() {
     if (!email) { setError('Enter your email first.'); return; }
-    void run(async () => {
+    void run('magic', async () => {
       return sendMagicLink(createBrowserClient(), email, callbackUrl());
     });
   }
 
   function google() {
-    void run(async () => {
+    void run('google', async () => {
       const { error: err } = await createBrowserClient().auth.signInWithOAuth({
         provider: 'google', options: { redirectTo: callbackUrl() },
       });
@@ -185,7 +190,10 @@ export default function LoginForm({
         )}
         <button type="submit" disabled={busy || (mode === 'signup' && !captchaToken)}
           style={{ ...btn, ...primaryButton }}>
-          {busy ? 'Working…' : mode === 'signup' ? 'Create account' : mode === 'reset' ? 'Send reset link' : 'Sign in'}
+          {busyAction === 'signup' ? 'Creating account…'
+            : busyAction === 'reset' ? 'Sending reset link…'
+              : busyAction === 'signin' ? 'Signing in…'
+                : mode === 'signup' ? 'Create account' : mode === 'reset' ? 'Send reset link' : 'Sign in'}
         </button>
       </form>
 
@@ -208,7 +216,7 @@ export default function LoginForm({
 
       {mode === 'signin' && (
         <button type="button" onClick={() => setMode('signup')}
-          style={{ ...btn, ...secondaryButton }}>
+          style={{ ...btn, ...secondaryEmphasisButton }}>
           New here? Create account
         </button>
       )}
@@ -217,7 +225,7 @@ export default function LoginForm({
 
       <button type="button" onClick={magicLink} disabled={busy}
         style={{ ...btn, ...secondaryButton }}>
-        Email me a one-time link
+        {busyAction === 'magic' ? 'Sending link…' : 'Email me a one-time link'}
       </button>
       <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>
         The one-time link signs you in to an account you already have. It does not create one.
@@ -225,7 +233,7 @@ export default function LoginForm({
       </p>
       <button type="button" onClick={google} disabled={busy}
         style={{ ...btn, ...secondaryButton }}>
-        Continue with Google
+        {busyAction === 'google' ? 'Opening Google…' : 'Continue with Google'}
       </button>
     </div>
   );

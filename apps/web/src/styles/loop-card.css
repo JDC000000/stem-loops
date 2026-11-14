@@ -65,7 +65,7 @@
   justify-content: center;
   gap: 6px;
   padding: 0 14px;
-  border-radius: var(--radius-sm, 2px);
+  border-radius: var(--radius-md); /* buttons take --radius-md (brand book §6, M12) */
   cursor: pointer;
   touch-action: manipulation;
   font-size: 14px; /* was --text-sm (11px), under the 12px floor */

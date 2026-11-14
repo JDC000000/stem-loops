@@ -57,7 +57,13 @@ const ADMISSION = dataUrl(
 const { checkAdmission } = await import(ADMISSION);
 
 const ALLOWED = { allowed: true, error_code: null };
-const BLOCKED = { allowed: false, error_code: 'RATE_LIMITED' };
+// F72: the spend ceiling is RATE_LIMITED with its own reason and its own sentence.
+const BLOCKED = {
+  allowed: false,
+  error_code: 'RATE_LIMITED',
+  reason: 'spend_ceiling',
+  message: "We've reached today's processing limit on our end. It's not something you did. Please try again later.",
+};
 const admit = (total) => {
   globalThis.__spend.total = total;
   return checkAdmission('iphash').catch((e) => ({ thrown: String(e) }));

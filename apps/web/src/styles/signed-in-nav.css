@@ -100,6 +100,14 @@
   border-color: var(--border-control);
   margin-left: 4px;
 }
+/* The current item needs a cue beyond the #222 fill (1.22:1 on the bar): a #e0e0e0 edge
+   (14.72:1 on the bar, 12.05:1 on the fill, >= 3:1 for 1.4.11) and weight 600. It sits after
+   .sin-outlined so the Account item takes it too when current. aria-current="page" is set in
+   SignedInNav.tsx for assistive technology. */
+.sin-item.sin-current {
+  border-color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+}
 .sin-item:focus-visible,
 .sin-toggle:focus-visible {
   outline: 2px solid var(--accent, #a3e635);

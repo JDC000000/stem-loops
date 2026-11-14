@@ -1,7 +1,7 @@
 /* Play-along transport. Tokens only (src/styles/design-tokens.css); no new palette.
    A tall custom bar with a neutral fill and a white round thumb. Lime is kept for the Play
    button (the player's primary action) and the focus ring; progress is never lime
-   (brand book A5, M8). Fill #e0e0e0 on the #1e1e1e rail is 13.71:1. */
+   (brand book A5, M8). Fill #e0e0e0 on the #1e1e1e rail is 12.63:1. */
 
 .root {
   display: flex;

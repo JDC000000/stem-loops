@@ -403,7 +403,52 @@ try {
       fail(label, e.message);
     }
   };
-  await checkout('7. Checkout: credits_20', { pack_code: 'credits_20' }, { mode: 'payment', cents: 500 });
+  // Step 7: the credit-pack BOT GATE. This deliberately does NOT attempt a
+  // purchase, because it CANNOT succeed from a script and never could.
+  //
+  // apps/web/src/app/api/billing/checkout/route.ts:126-140 (V3-C1):
+  //   "credit-pack purchases require a solved hCaptcha challenge. Subscription
+  //    checkout (plan_code) is NOT gated - authenticated + rate limited already."
+  //
+  // So a scripted pack checkout returns 400 BOT_CHALLENGE_FAILED by DESIGN, and
+  // the old step 7 asserted a 200. It had therefore failed every night since the
+  // gate shipped, for a reason no change to this repo could ever fix.
+  //
+  // A smoke that is red every night for a structural reason is WORSE THAN NO
+  // SMOKE: it trains everyone to ignore the alarm. It did. On 2026-11-11 this
+  // run was 11 PASS / 1 FAIL / 1 SKIP and nobody had read the 11.
+  //
+  // So assert the thing that IS checkable and actually matters: THE GATE IS
+  // ARMED. A 200 here would mean credit packs can be bought with no bot
+  // challenge at all, which is the V3-C1 control silently disabled - and
+  // nothing else in this repo tests it.
+  if (needAuth('7. Credit-pack bot gate armed')) {
+    try {
+      const r = await http(`${BASE}/api/billing/checkout`, {
+        method: 'POST',
+        ...authed({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ pack_code: 'credits_20' }),
+      });
+      if (r.status === 200) {
+        throw new Error(
+          `pack checkout SUCCEEDED with no hCaptcha token (HTTP 200). The V3-C1 bot ` +
+          `gate is DISARMED: credit packs can be bought by a script. See ` +
+          `api/billing/checkout/route.ts:131-140. body=${r.text.slice(0, 160)}`,
+        );
+      }
+      if (r.status !== 400 || r.json?.code !== 'BOT_CHALLENGE_FAILED') {
+        throw new Error(
+          `expected HTTP 400 BOT_CHALLENGE_FAILED, got HTTP ${r.status} ` +
+          `code=${r.json?.code} body=${r.text.slice(0, 160)}`,
+        );
+      }
+      pass('7. Credit-pack bot gate armed', 'unsolved pack checkout correctly refused: 400 BOT_CHALLENGE_FAILED');
+      skip('7. Checkout: credits_20 (purchase)', 'manual step: hCaptcha challenge not scriptable (V3-C1)');
+    } catch (e) {
+      fail('7. Credit-pack bot gate armed', e.message);
+    }
+  }
+
   await checkout('8. Checkout: pro', { plan_code: 'pro' }, { mode: 'subscription', cents: 499 });
 } catch (e) {
   fail('Unexpected error', e.stack || e.message);

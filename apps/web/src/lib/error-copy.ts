@@ -11,8 +11,8 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
   // running out, a cancelled prediction. None of those is about the song, and "Try a
   // different song" sent people away from a track that would work on a retry.
   SEPARATION_FAILED: {
-    headline: 'Stem separation didn\u2019t finish.',
-    action: 'That was a problem on our side, not your song. Please try the same track again in a few minutes.',
+    headline: "Stem separation didn't finish.",
+    action: 'That was a problem on our end, not your song. Add the same track again in a few minutes.',
   },
   EXTRACTION_FAILED: { headline: "We couldn't find clean loops in this audio.", action: 'It may be too short or beatless.' },
   UPLOAD_FAILED: { headline: "We separated your stems but couldn't save them.", action: 'Please retry.' },
@@ -95,15 +95,29 @@ export function entitlementMessage(code: string, detail?: string): string {
 }
 
 /**
- * The sentence in a failed job's box on /jobs/[id]. This map wins when it knows the
- * code; the worker's stored `error_message_user` is the fallback for codes it does not
- * (UPLOAD_INVALID, UPLOAD_TOO_LONG with its limit, …), and a generic line after that.
- * Before this, the page rendered the worker's sentence verbatim, so a copy fix here
- * never reached the one page where a failed job is shown.
+ * Codes whose failed-job sentence comes from ERROR_COPY instead of the worker's stored
+ * `error_message_user`. Deliberately an allow-list of one. The worker has subclasses that
+ * share a parent's code but carry a more accurate sentence of their own (FetchPausedError,
+ * LiveStreamNotSupportedError, VideoBlocklistedError, LinkUnmeasurableError, the reaper's
+ * poison message), and copy-audit v1.3 (#262) edited the worker strings, not this map.
+ * Letting the map win for every code it knows would replace all of those with older text.
+ * Add a code here only after its ERROR_COPY entry is audited and no subclass shares it.
+ */
+const FAILED_JOB_COPY_OVERRIDES: ReadonlySet<string> = new Set(['SEPARATION_FAILED']);
+
+export const FAILED_JOB_FALLBACK = 'We couldn’t finish this track. Try another file.';
+
+/**
+ * The sentence in a failed job's box on /jobs/[id]. For SEPARATION_FAILED (a provider
+ * outage, not the song) the web map's sentence wins over the worker's "Try a different
+ * song". Every other code shows the worker's stored sentence, then a generic line.
+ * Never includes the error code itself.
  */
 export function failedJobMessage(job: { error_code?: string | null; error_message_user?: string | null }): string {
   const code = job.error_code ?? '';
-  const copy = Object.prototype.hasOwnProperty.call(ERROR_COPY, code) ? ERROR_COPY[code] : null;
-  if (copy) return [copy.headline, copy.action].filter(Boolean).join(' ');
-  return job.error_message_user ?? 'We couldn’t finish this track. Try another file.';
+  if (FAILED_JOB_COPY_OVERRIDES.has(code)) {
+    const copy = ERROR_COPY[code];
+    return [copy.headline, copy.action].filter(Boolean).join(' ');
+  }
+  return job.error_message_user ?? FAILED_JOB_FALLBACK;
 }

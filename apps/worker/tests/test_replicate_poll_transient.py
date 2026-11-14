@@ -304,7 +304,7 @@ def test_transient_exhaustion_on_every_attempt_fails_the_job_and_reaches_sentry(
     monkeypatch.setattr(pipeline, "_fetch_job", lambda _j: row)
     monkeypatch.setattr(pipeline, "set_status", _async(lambda *_a: None))
     monkeypatch.setattr(pipeline, "emit_event", _async(lambda *_a, **_k: None))
-    monkeypatch.setattr(pipeline, "_prepare_upload_source", lambda *a: "https://audio")
+    monkeypatch.setattr(pipeline, "_prepare_upload_source", lambda *a: ("https://audio", None))
     monkeypatch.setattr(pipeline, "submit_or_reattach", lambda *a: "pred")
     monkeypatch.setattr(pipeline, "SEPARATION_MAX_ATTEMPTS", 2)
 

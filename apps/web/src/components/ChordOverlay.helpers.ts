@@ -68,7 +68,12 @@ export const MAX_PX_PER_SEC = PX_PER_SEC;
 // wrapped rows (a phone cannot show a readable strip; see layoutRows).
 export const NARROW_BREAKPOINT_PX = 560;
 // Wrapped view: seconds of audio per row at the default and the two extremes.
-export const WRAP_DEFAULT_ROW_SEC = 8;
+// The default is 7, not 8, since the `tight` chord size went from 10px to 11px
+// (brand book A15): at 8s per row the larger tight names left 5 of the 3:33
+// song's 107 chords nameless at a 390px phone's default; at 7s it is 1
+// (test/chord-default-zoom.test.mjs, "the narrow default puts chord names on
+// the phone"). Phone only: the desktop strip does not read this constant.
+export const WRAP_DEFAULT_ROW_SEC = 7;
 export const WRAP_MAX_ROW_SEC = 16;
 
 /** Classify a Harte label: N -> 'none', X (or empty/blank) -> 'unknown'. */
@@ -717,8 +722,28 @@ export function rootHue(label: string): number | null {
  * there fails loudly until they are re-measured at the new size.
  */
 export const CHIP_FONT_PX = 16;
-/** Font size the `tight` density drops to, declared in px by renderChip. */
-export const CHIP_TIGHT_FONT_PX = 10;
+/**
+ * Font size the `tight` density drops to, declared in px by renderChip.
+ *
+ * 11, not 10 (brand book v2.2 A15, approved by Jon 2026-11-14): readable text
+ * in the player is at least 11px, and 10px is for the mixer readout and drawn
+ * art only, "never for a sentence". A chord name is the most-read text on the
+ * page (Story 3.7), so it may not sit below the floor. The real-Chromium gate
+ * (packages/web-browser-gate) measures every rendered chip against that floor.
+ */
+export const CHIP_TIGHT_FONT_PX = 11;
+/**
+ * Font size of the CURRENT chord's name in the "Now" readout under the
+ * timeline (Story 3.7, brand book v2.2 A11: at least 20px, weight 600).
+ *
+ * 24, not the 20px floor, because the floor is a minimum read at arm's length
+ * with an instrument in hand and 24 is the next step on the type scale
+ * (`--text-2xl`). The readout is not inside a chip, so this number does NOT
+ * feed the chip measurer, chipDensity or the zoom ceiling: changing it moves no
+ * chip. The upcoming chords stay in the chips at CHIP_FONT_PX / CHIP_TIGHT_FONT_PX.
+ * Measured in real Chromium by packages/web-browser-gate/test/player-text-size.test.mjs.
+ */
+export const CURRENT_CHORD_FONT_PX = 24;
 /** Horizontal padding a `full` chip spends on `padding: 0 0.5rem`. */
 export const CHIP_FULL_PAD_PX = 16;
 /** A `tight` chip has no padding; keep 2px so the glyphs are not flush to the edge. */
@@ -866,7 +891,7 @@ export function fullChipPx(labelPx: number): number {
  * a constant. `labelPx` is the label's width at CHIP_FONT_PX.
  *
  *   full  - the label fits at 16px with its padding.
- *   tight - it fits at 10px (the `tight` branch's font size).
+ *   tight - it fits at CHIP_TIGHT_FONT_PX (11px; the `tight` branch's font size).
  *   tick  - it does not fit at all. The chip is a colour block and renders NO
  *           text node (see renderChip): a label the user cannot read must not
  *           be in the DOM claiming otherwise. The full chord stays on the

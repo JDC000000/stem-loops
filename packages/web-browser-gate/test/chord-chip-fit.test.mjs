@@ -424,6 +424,7 @@ function measureInPage(arg) {
       probeW,
       fontFamily: cs.fontFamily,
       fontStyle: cs.fontStyle,
+      fontPx: px(cs.fontSize),
       visibility: cs.visibility,
       display: cs.display,
       paintAlpha: alphaOf(cs.color) * opacity,
@@ -533,10 +534,13 @@ async function setSlider(page, thousandths) {
 // UNJUSTIFIED_SPARE_PX to spare.
 //
 //  * LEGIBLE_PX is the GATE's own statement of "the smallest chord name worth
-//    showing", not read from the component. It equals the size the component's
-//    `tight` density uses today (10px); if the product shrinks it, ticks the
-//    product now calls justified stay justified here (the rule gets weaker, not
-//    wrong) and someone should look at this constant.
+//    showing", not read from the component. It is the brand book's minimum
+//    for readable text (v2.2 A15, approved 2026-11-14: 11px), which is also the
+//    size the component's `tight` density uses since then (it was 10px). If the
+//    product shrinks it, ticks the product now calls justified stay justified
+//    here (the rule gets weaker, not wrong) and someone should look at this
+//    constant. The same number is also a FLOOR on every rendered chip (A15):
+//    see the `fontPx` check in the per-chip loop.
 //  * UNJUSTIFIED_SPARE_PX is the margin. The component keeps its own few pixels
 //    of margin before it will print a `tight` name (and decides on a canvas
 //    measure of the 16px label scaled to 10px, which is not exactly the width
@@ -549,7 +553,7 @@ async function setSlider(page, thousandths) {
 //    the constant is that plus about two pixels. A mutant that demotes names to
 //    ticks is therefore seen only when the demoted name would have fit with
 //    5 px or more to spare: a tick that gives up a name by less is NOT covered.
-export const LEGIBLE_PX = 10;
+export const LEGIBLE_PX = 11;
 export const UNJUSTIFIED_SPARE_PX = 5;
 const CONST_LABELS = { none: 'N.C.', unknown: '?' };
 
@@ -953,6 +957,9 @@ for (const width of VIEWPORTS) {
             const wantFamily = PIN_FONT ? PINNED_FAMILY : m.overlayFamily;
             if (row.fontFamily !== wantFamily)
               styleFailures.push(`${row.id} "${row.text}" font-family is [${row.fontFamily}], want [${wantFamily}] (inherited from the overlay) @ ${ctx}`);
+            // A15: no chord name renders below the brand book's text floor.
+            if (row.fontPx + TOLERANCE_PX < LEGIBLE_PX)
+              styleFailures.push(`${row.id} "${row.text}" [${row.density}] renders at ${row.fontPx}px, below the ${LEGIBLE_PX}px text floor (brand book A15) @ ${ctx}`);
             if (row.fontStyle !== 'normal')
               styleFailures.push(`${row.id} "${row.text}" font-style is [${row.fontStyle}], want normal @ ${ctx}`);
             if (row.visibility !== 'visible' || row.display === 'none' || row.textW <= 0 || row.textH <= 0)

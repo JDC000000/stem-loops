@@ -46,7 +46,7 @@ const dbStub = dataUrl(`
       return ok([{ count: f.inFlight }]);
     }
     if (/FROM job_events WHERE created_at >= NOW\\(\\) - INTERVAL '24 hours'/.test(s))
-      return ok([{ total: '0' }]);
+      return ok([{ total: f.spend ?? '0' }]);
     if (/^INSERT INTO upload_rate_events/.test(s))
       return f.uploadAllowed ? ok([{ id: 1 }]) : { rows: [], rowCount: 0 };
     if (/^INSERT INTO jobs/.test(s)) { f.inserted.push(params[0]); return ok([{ id: params[0] }]); }
@@ -169,9 +169,14 @@ test('the cap boundary is unchanged: 19 in flight is admitted, 20 is refused (de
   assert.equal((await admission.checkAdmission('iphash')).error_code, 'AT_CAPACITY');
 });
 
-test('per-client limit still returns exactly { allowed:false, error_code:"RATE_LIMITED" }', async () => {
+test('per-client limit returns exactly RATE_LIMITED with reason per_client and its own sentence (F72)', async () => {
   globalThis.__b8.recent = 5;
-  assert.deepEqual(await admission.checkAdmission('iphash'), { allowed: false, error_code: 'RATE_LIMITED' });
+  assert.deepEqual(await admission.checkAdmission('iphash'), {
+    allowed: false,
+    error_code: 'RATE_LIMITED',
+    reason: 'per_client',
+    message: "You're sending requests too fast. Wait a minute and try again.",
+  });
   globalThis.__b8.recent = 4;
   assert.deepEqual(await admission.checkAdmission('iphash'), { allowed: true, error_code: null });
 });
@@ -259,13 +264,50 @@ test('POST /api/jobs (link) at global capacity → same 503 contract', async () 
   assert.deepEqual(globalThis.__b8.inserted, []);
 });
 
-test('POST /api/jobs per-client limit is still 429 RATE_LIMITED with the old copy and no Retry-After', async () => {
+test('POST /api/jobs per-client limit is still 429 RATE_LIMITED, with the per-client copy (F72) and no Retry-After', async () => {
   globalThis.__b8.recent = 5;
   const res = await postUploadJob();
   assert.equal(res.status, 429);
   assert.equal(res.body.error_code, 'RATE_LIMITED');
-  assert.equal(res.body.message, "You're going a bit fast, or we're at capacity right now. Give it a minute and try again.");
+  assert.equal(res.body.message, "You're sending requests too fast. Wait a minute and try again.");
   assert.equal(res.headers.get('Retry-After'), null);
+});
+
+// F72 (copy audit v1.3.1): RATE_LIMITED had one sentence for two causes. The spend ceiling
+// is site-wide, so it must not tell this visitor they went too fast, and the per-client
+// sentence must not claim the site is at capacity.
+test('POST /api/jobs over the spend ceiling → 429 RATE_LIMITED with the spend-ceiling copy, no job row', async () => {
+  for (const post of [postUploadJob, postLinkJob]) {
+    process.env.ALLOW_YOUTUBE_INPUT = 'true';
+    globalThis.__b8.spend = '1000';
+    globalThis.__b8.inserted = [];
+    const res = await post();
+    assert.equal(res.status, 429);
+    assert.equal(res.body.error_code, 'RATE_LIMITED', 'the wire code is unchanged');
+    assert.equal(res.body.message, "We've reached today's processing limit on our end. It's not something you did. Please try again later.");
+    assert.doesNotMatch(res.body.message, /too fast|going a bit fast/i, 'the ceiling is not the user going fast');
+    assert.match(res.body.message, /on our end/);
+    assert.deepEqual(globalThis.__b8.inserted, [], 'refused before the INSERT');
+  }
+});
+
+test('the two RATE_LIMITED causes read differently, and neither borrows the other\'s reason', async () => {
+  globalThis.__b8.recent = 5;
+  const perClient = await postUploadJob();
+  globalThis.__b8.recent = 0;
+  globalThis.__b8.spend = '1000';
+  const ceiling = await postUploadJob();
+  assert.notEqual(perClient.body.message, ceiling.body.message);
+  assert.doesNotMatch(perClient.body.message, /capacity|busy|limit on our end/i, 'per-client copy must not blame load');
+  assert.match(perClient.body.message, /too fast/);
+});
+
+test('POST /api/uploads per-client throttle → 429 with the per-client copy', async () => {
+  globalThis.__b8.uploadAllowed = false;
+  const res = await presign();
+  assert.equal(res.status, 429);
+  assert.equal(res.body.error_code, 'RATE_LIMITED');
+  assert.equal(res.body.message, "You're sending requests too fast. Wait a minute and try again.");
 });
 
 test('POST /api/jobs under both limits still creates the job (201)', async () => {

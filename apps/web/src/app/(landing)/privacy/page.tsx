@@ -1,12 +1,11 @@
 import type { Metadata } from 'next';
+import { pageMetadata } from '@/lib/seo/meta';
+import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import { CONTACT_LABEL, CONTACT_URL, LEGAL_UPDATED } from '@/components/landing/legal';
 
-export const metadata: Metadata = {
-  title: 'Privacy',
-  description: 'What stem-loops stores, for how long, and who processes it.',
-  alternates: { canonical: '/privacy' },
-};
+// SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
+export const metadata: Metadata = pageMetadata(pageFor('/privacy')!);
 
 export default function PrivacyPage() {
   return (

@@ -1490,9 +1490,11 @@ async def _run_pipeline(job_id: str) -> None:
                 stem_urls, sep_cost = await asyncio.to_thread(poll_until_done, job_id, pred_id)
                 break
             except SeparationTimeout as exc:
+                reason = getattr(exc, "failure_reason", "poll_deadline")
                 if attempt >= SEPARATION_MAX_ATTEMPTS:
                     raise SeparationFailedError(
-                        f"separation exceeded its time budget after {attempt} attempts"
+                        f"separation exceeded its time budget after {attempt} attempts",
+                        failure_reason=reason,
                     ) from exc
                 log_structured(
                     "WARN",
@@ -1500,6 +1502,7 @@ async def _run_pipeline(job_id: str) -> None:
                     job_id=job_id,
                     attempt=attempt,
                     pred_id=pred_id,
+                    reason=reason,
                 )
         # Chord recognition needs the harmonic stems whether or not the user toggled them as
         # loop output (deselecting guitar/keys must not leave only the `other` residue).
@@ -1589,9 +1592,11 @@ async def _run_pipeline(job_id: str) -> None:
         )
 
     except StemLoopsError as exc:
-        # Deliberately NOT sent to Sentry: these are the designed, typed error paths
-        # (DOWNLOAD_BLOCKED, DOWNLOAD_TIMEOUT, etc.) working exactly as intended —
-        # reporting every one would just be noise the sentry-triage job has to filter.
+        # User/input-caused typed errors (DOWNLOAD_BLOCKED, UPLOAD_TOO_LONG, etc.) are the
+        # designed paths working as intended and are NOT sent to Sentry - that would be noise.
+        # OUR-fault codes (provider outage, our storage) ARE reported, at warning level:
+        # 2026-11-14 two Replicate-502 SEPARATION_FAILED jobs never reached Sentry at all.
+        _report_our_fault(exc)
         await _fail(job_id, exc.error_code, exc.user_message)
         raise
     except Exception as exc:  # noqa: BLE001 — surface as typed INTERNAL_ERROR
@@ -1608,6 +1613,25 @@ async def _run_pipeline(job_id: str) -> None:
 # the credit the web route debited for this job is returned. See _REFUND_SQL.
 _OUR_FAULT_CODES = ("SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR")
 _REFUND_PROVIDER = "worker_job_failed"
+
+
+def _report_our_fault(exc: StemLoopsError) -> None:
+    """Send an our-fault typed failure to Sentry at warning level. Tags are low-cardinality
+    only (error_code, failure_reason such as 'poll_http_502'): no job ids, prediction ids or
+    URLs. No-op for user/input-caused codes, and if SENTRY_DSN is unset (sdk not initialised).
+    Never raises: reporting must not mask the failure being reported."""
+    if exc.error_code not in _OUR_FAULT_CODES:
+        return
+    tags = {"error_code": exc.error_code}
+    reason = getattr(exc, "failure_reason", None)
+    if reason:
+        tags["failure_reason"] = str(reason)[:64]
+    try:
+        sentry_sdk.capture_exception(exc, level="warning", tags=tags)
+    except Exception as report_exc:  # noqa: BLE001
+        log_structured("WARN", "sentry_report_failed", error=str(report_exc)[:120])
+
+
 # One credit back for a failed credit-funded job when either
 #   * the failure is ours (_OUR_FAULT_CODES), or
 #   * no paid provider call was made (replicate_prediction_id IS NULL: a corrupt, empty or

@@ -186,6 +186,14 @@ def test_retry_after_never_sleeps_past_the_poll_deadline(env, monkeypatch):
     assert fake.cancels == []
 
 
+def test_retry_after_zero_does_not_busy_loop(env, monkeypatch):
+    clock, _ = env
+    fake = _install(monkeypatch, [(429, {"Retry-After": "0"}), OK_DONE])
+    rc.poll_until_done("job-1", "pred-1")
+    assert clock.sleeps == [2.0], "Retry-After below the base backoff is floored at 2 s"
+    assert fake.cancels == []
+
+
 def test_retry_after_http_date_is_parsed():
     when = datetime.now(UTC) + timedelta(seconds=30)
     resp = httpx.Response(429, headers={"Retry-After": format_datetime(when, usegmt=True)})
@@ -318,3 +326,12 @@ def test_transient_exhaustion_on_every_attempt_fails_the_job_and_reaches_sentry(
         "error_code": "SEPARATION_FAILED",
         "failure_reason": "poll_transient_exhausted",
     }
+
+
+def test_sentry_failure_never_masks_the_job_failure(monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("sentry transport down")
+
+    monkeypatch.setattr(pipeline.sentry_sdk, "capture_exception", boom)
+    # Must not raise: reporting may never hide the failure being reported.
+    pipeline._report_our_fault(SeparationFailedError("x", failure_reason="poll_http_502"))

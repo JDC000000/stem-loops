@@ -17,6 +17,7 @@ import {
   type BillingPortalResult,
   type BillingProvider,
   type BillingSubscription,
+  type BillingSubscriptionChange,
   type PackCode,
   type PlanCode,
   type SubscriptionStatus,
@@ -120,6 +121,32 @@ function _invoiceSubId(invoice: Stripe.Invoice): string | undefined {
   const parent = (invoice as unknown as { parent?: { type?: string; subscription_details?: { subscription?: string } } }).parent;
   if (parent?.type === 'subscription_details') return parent.subscription_details?.subscription;
   return undefined;
+}
+
+// The subscription fields a customer.subscription.updated event reports as
+// changed (event.data.previous_attributes). Only fields Stripe lists are set;
+// an unknown status or price is dropped rather than guessed.
+function _previousAttributes(data: { previous_attributes?: unknown }): BillingSubscriptionChange {
+  const prev = (data.previous_attributes ?? {}) as {
+    status?: unknown;
+    cancel_at_period_end?: unknown;
+    items?: { data?: Array<{ price?: { id?: unknown } }> };
+  };
+  const out: BillingSubscriptionChange = {};
+  if (typeof prev.status === 'string') {
+    try {
+      out.status = _mapStripeStatus(prev.status as Stripe.Subscription.Status);
+    } catch {
+      // Unknown previous status: leave it out.
+    }
+  }
+  if (typeof prev.cancel_at_period_end === 'boolean') out.cancelAtPeriodEnd = prev.cancel_at_period_end;
+  const priceId = prev.items?.data?.[0]?.price?.id;
+  if (typeof priceId === 'string') {
+    const plan = priceIdToPlan(priceId);
+    if (plan) out.planCode = plan;
+  }
+  return out;
 }
 
 // Start of the period a subscription invoice charges for: the subscription
@@ -473,10 +500,19 @@ export class StripeProvider implements BillingProvider {
             userId,
             providerSubscriptionId: sub.id,
             providerCustomerId: _customerId(sub.customer),
+            neverPaid: sub.status === 'incomplete' || sub.status === 'incomplete_expired',
           };
         }
         try {
-          return { type: 'subscription_upserted', userId, subscription: subFromStripe(sub) };
+          return {
+            type: 'subscription_upserted',
+            userId,
+            subscription: subFromStripe(sub),
+            previous:
+              event.type === 'customer.subscription.created'
+                ? null
+                : _previousAttributes(event.data as { previous_attributes?: unknown }),
+          };
         } catch (err) {
           // HIGH #2: unknown price_id must NOT silently downgrade to pro.
           // Mark unhandled so the webhook route logs it and the operator sees

@@ -5,7 +5,7 @@ import { db } from '@/lib/db';
 import { serverGet, type CreditsBalance, type Entitlements } from '@/lib/billing/server-fetch';
 import BillingButton from '@/components/BillingButton';
 import { jobLabel } from '@/lib/job-label';
-import { hasBillingCustomer, showManageSubscription } from '@/lib/billing/portal-eligibility';
+import { hasPortalSubscription, showManageSubscription } from '@/lib/billing/portal-eligibility';
 
 export const metadata: Metadata = { title: 'Account', robots: { index: false, follow: false } };
 export const dynamic = 'force-dynamic';
@@ -48,10 +48,10 @@ export default async function AccountPage() {
     serverGet<Entitlements>('/api/entitlements'),
     serverGet<CreditsBalance>('/api/billing/credits/balance'),
     recentJobs(user.user_id),
-    hasBillingCustomer(user.user_id),
+    hasPortalSubscription(user.user_id),
   ]);
   const showPortal = showManageSubscription({
-    hasBillingCustomer: billingCustomer,
+    hasPortalSubscription: billingCustomer,
     planCode: ent.ok ? ent.data.plan_code : null,
   });
 
@@ -91,10 +91,12 @@ export default async function AccountPage() {
         ) : (
           <p style={muted}>Plan details are temporarily unavailable.</p>
         )}
-        {/* The portal needs a customers_billing row, and that is the test
-            (E6): a paused, incomplete or lapsed past_due subscriber reads as
-            'free' here but still needs the portal to fix their card, which is
-            where the billing emails send them. */}
+        {/* Shown to anyone with a paid-at-least-once subscription and a
+            customers_billing row for the current provider (E6): a paused or
+            lapsed past_due subscriber reads as 'free' here but still needs
+            the portal to fix their card, which is where the billing emails
+            send them. Not shown for an abandoned Checkout or credit-only
+            buyer. See lib/billing/portal-eligibility.ts. */}
         {showPortal && (
           <div style={{ maxWidth: 260, marginTop: 8 }}>
             <BillingButton label="Manage subscription" endpoint="/api/billing/portal" returnTo="/account" primary={false} />

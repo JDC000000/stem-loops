@@ -29,6 +29,8 @@ export const PRICE = {
   credits_180: 'price_test_c180',
 };
 
+const assert = (ok, msg) => { if (!ok) throw new Error('fakeDb: ' + msg); };
+
 const toJs = (src) =>
   ts.transpileModule(src, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
@@ -92,14 +94,17 @@ export function sign(event) {
 }
 
 let _evt = 0;
-export const envelope = (type, object) => ({
+/** A Stripe event. `previous` becomes data.previous_attributes, which a real
+ *  customer.subscription.updated carries for the fields that changed; the
+ *  route derives R4/R5 from it (PR #272 review B2). */
+export const envelope = (type, object, previous) => ({
   id: `evt_test_${++_evt}`,
   object: 'event',
   api_version: '2026-10-28.endive',
   created: 1_800_000_000,
   livemode: false,
   type,
-  data: { object },
+  data: previous ? { object, previous_attributes: previous } : { object },
 });
 
 // ---- Stripe object fixtures (shape of a real 2026-10-28 payload) ----------
@@ -184,6 +189,10 @@ export function makeState() {
     invalidated: [],
     // Every email dispatcher call the route makes: { fn, userId, vars }.
     emails: [],
+    // Fault injection: [{ re, times }]. A statement matching `re` throws
+    // (after any earlier statements in the handler took effect) `times`
+    // times, to model a partial failure that Stripe then retries.
+    failures: [],
   };
 }
 
@@ -191,6 +200,8 @@ export function fakeDb(state) {
   const query = async (sql, p = []) => {
     const q = sql.replace(/\s+/g, ' ');
     const r = (rows) => ({ rows, rowCount: rows.length });
+    const f = (state.failures ?? []).find((x) => x.times > 0 && x.re.test(q));
+    if (f) { f.times -= 1; throw new Error('fakeDb: injected failure: ' + q.slice(0, 60)); }
     if (/pg_advisory_xact_lock/.test(q)) return r([]);
     if (/^SELECT 1 FROM users WHERE id/.test(q)) return r(state.users.filter((u) => u.id === p[0]).map(() => ({})));
     if (/^SELECT email FROM auth\.users/.test(q)) return r([]);
@@ -228,7 +239,10 @@ export function fakeDb(state) {
       return r(rows.map((s) => ({ user_id: s.user_id, plan_code: s.plan_code, current_period_end: s.current_period_end })));
     }
     if (/^UPDATE subscriptions SET status = 'past_due'/.test(q)) {
-      const rows = state.subscriptions.filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1]);
+      // Mirrors `AND status NOT IN ('incomplete', 'canceled')` (review B1).
+      assert(/AND status NOT IN \('incomplete', 'canceled'\)/.test(q), 'past_due UPDATE must skip incomplete/canceled');
+      const rows = state.subscriptions.filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1]
+        && !['incomplete', 'canceled'].includes(s.status));
       rows.forEach((s) => { s.status = 'past_due'; });
       return r(rows.map((s) => ({ user_id: s.user_id, plan_code: s.plan_code, current_period_start: s.current_period_start })));
     }

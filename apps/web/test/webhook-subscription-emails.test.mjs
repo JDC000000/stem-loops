@@ -5,6 +5,11 @@
 // dispatchers replaced by recorders (test/helpers/billing-harness.mjs). The
 // sequences are built from the same fixture shapes as the fulfilment tests;
 // they are not a recorded live Checkout (none is available in this repo).
+//
+// customer.subscription.updated carries data.previous_attributes, as Stripe
+// sends it: R4/R5 are derived from the EVENT, not from our stored row, so a
+// Stripe retry after a partial failure re-derives the same email (PR #272
+// review B2). An update with no previous_attributes is "nothing changed".
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,7 +26,9 @@ const quiet = async (fn) => {
   console.error = console.warn = console.info = () => {};
   try { return await fn(); } finally { Object.assign(console, o); }
 };
-const send = (type, obj) => quiet(() => deliver(route, envelope(type, obj)));
+const send = (type, obj, prev) => quiet(() => deliver(route, envelope(type, obj, prev)));
+const update = (obj, prev) => send('customer.subscription.updated', obj, prev);
+const proItems = { data: [{ price: { id: PRICE.pro } }] };
 const fns = () => state.emails.map((e) => e.fn);
 const sub = (over = {}) => subscriptionFixture({ metadata: { user_id: USER }, ...over });
 const studio = (over = {}) => sub({
@@ -42,7 +49,7 @@ beforeEach(async () => {
 test('first Checkout: incomplete -> active -> invoice.paid sends exactly R2 + R3 ("Pro plan")', async () => {
   await send('customer.subscription.created', sub({ status: 'incomplete' }));
   assert.deepEqual(fns(), [], 'nothing while incomplete');
-  await send('customer.subscription.updated', sub({ status: 'active' }));
+  await update(sub({ status: 'active' }), { status: 'incomplete' });
   h.subs.sub_test_1 = sub();
   await send('invoice.paid', invoiceFixture({ billing_reason: 'subscription_create' }));
   assert.deepEqual(fns(), ['sendWelcomeIfFirstTime', 'sendReceipt']);
@@ -79,7 +86,7 @@ test('renewal: an unchanged update sends nothing; invoice.paid(subscription_cycl
 test('Pro -> Studio while active: R4 "switched" with the previous plan', async () => {
   await send('customer.subscription.created', sub());
   state.emails.length = 0;
-  await send('customer.subscription.updated', studio());
+  await update(studio(), { items: proItems });
   assert.deepEqual(fns(), ['sendSubscriptionChanged']);
   const v = state.emails[0].vars;
   assert.equal(v.plan_code, 'studio');
@@ -90,20 +97,20 @@ test('Pro -> Studio while active: R4 "switched" with the previous plan', async (
 test('portal cancellation (cancel_at_period_end -> true) sends R5, never "active, renews" (E2)', async () => {
   await send('customer.subscription.created', sub());
   state.emails.length = 0;
-  await send('customer.subscription.updated', sub({ cancel_at_period_end: true }));
+  await update(sub({ cancel_at_period_end: true }), { cancel_at_period_end: false });
   assert.deepEqual(fns(), ['sendPlanEnding']);
   assert.equal(state.emails[0].vars.plan_code, 'pro');
   assert.ok(state.emails[0].vars.period_end instanceof Date);
-  // A repeat of the same state sends nothing more.
-  await send('customer.subscription.updated', sub({ cancel_at_period_end: true }));
+  // A later update that does not touch cancel_at_period_end sends nothing.
+  await update(sub({ cancel_at_period_end: true }), { metadata: {} });
   assert.deepEqual(fns(), ['sendPlanEnding']);
 });
 
 test('paused then resumed: R4 "paused", then R4 "active again"', async () => {
   await send('customer.subscription.created', sub());
   state.emails.length = 0;
-  await send('customer.subscription.updated', sub({ status: 'paused' }));
-  await send('customer.subscription.updated', sub({ status: 'active' }));
+  await update(sub({ status: 'paused' }), { status: 'active' });
+  await update(sub({ status: 'active' }), { status: 'paused' });
   assert.deepEqual(fns(), ['sendSubscriptionChanged', 'sendSubscriptionChanged']);
   assert.equal(state.emails[0].vars.status, 'paused');
   assert.equal(state.emails[1].vars.status, 'active');
@@ -113,14 +120,24 @@ test('paused then resumed: R4 "paused", then R4 "active again"', async () => {
 test('past_due on the subscription sends nothing on upsert (R7 owns it)', async () => {
   await send('customer.subscription.created', sub());
   state.emails.length = 0;
-  await send('customer.subscription.updated', sub({ status: 'past_due' }));
+  await update(sub({ status: 'past_due' }), { status: 'active' });
   assert.deepEqual(fns(), []);
+});
+
+test('past_due -> active (card fixed): R4 "active again"', async () => {
+  await send('customer.subscription.created', sub());
+  await update(sub({ status: 'past_due' }), { status: 'active' });
+  state.emails.length = 0;
+  await update(sub(), { status: 'past_due' });
+  assert.deepEqual(fns(), ['sendSubscriptionChanged']);
+  assert.equal(state.emails[0].vars.status, 'active');
+  assert.equal(state.emails[0].vars.resumed, true);
 });
 
 test('re-subscriber (welcomed before, new subscription id): R4 "active" once, no R2', async () => {
   state.users[0].welcomed_at = '2026-01-01';
   await send('customer.subscription.created', sub({ id: 'sub_test_2' }));
-  await send('customer.subscription.updated', sub({ id: 'sub_test_2' }));
+  await update(sub({ id: 'sub_test_2' }), { metadata: {} });
   assert.deepEqual(fns(), ['sendSubscriptionChanged']);
   assert.equal(state.emails[0].vars.resumed, false);
   assert.equal(state.emails[0].vars.provider_subscription_id, 'sub_test_2');
@@ -129,8 +146,53 @@ test('re-subscriber (welcomed before, new subscription id): R4 "active" once, no
 test('stored incomplete -> active: R4 "active" only when R2 did not go out', async () => {
   state.users[0].welcomed_at = '2026-01-01';
   await send('customer.subscription.created', sub({ status: 'incomplete' }));
-  await send('customer.subscription.updated', sub());
+  await update(sub(), { status: 'incomplete' });
   assert.deepEqual(fns(), ['sendSubscriptionChanged']);
+});
+
+// ── Retry after a partial failure (review B2) ──────────────────────────
+// The first delivery writes the subscription row, then a later statement
+// throws: 500, Stripe retries the SAME event. A stored-row comparison would
+// now see "no change" and lose the email; the event-derived one does not.
+
+test('R5 survives a Stripe retry after the entitlement write failed', async () => {
+  await send('customer.subscription.created', sub());
+  state.emails.length = 0;
+  state.failures.push({ re: /^INSERT INTO entitlements/, times: 1 });
+  const evt = envelope('customer.subscription.updated', sub({ cancel_at_period_end: true }), { cancel_at_period_end: false });
+  const first = await quiet(() => deliver(route, evt));
+  assert.equal(first.status, 500, 'partial failure is retried by Stripe');
+  assert.equal(state.subscriptions[0].cancel_at_period_end, true, 'row already overwritten');
+  assert.deepEqual(fns(), [], 'no email before every DB write succeeded');
+  const retry = await quiet(() => deliver(route, evt));
+  assert.equal(retry.status, 200);
+  assert.deepEqual(fns(), ['sendPlanEnding']);
+});
+
+test('R6 survives a Stripe retry after the entitlement downgrade failed', async () => {
+  await send('customer.subscription.created', studio());
+  state.emails.length = 0;
+  state.failures.push({ re: /^UPDATE entitlements SET plan_code = 'free'/, times: 1 });
+  const evt = envelope('customer.subscription.deleted', studio({ status: 'canceled' }));
+  const first = await quiet(() => deliver(route, evt));
+  assert.equal(first.status, 500);
+  assert.equal(state.subscriptions[0].status, 'canceled', 'row already canceled');
+  assert.deepEqual(fns(), []);
+  const retry = await quiet(() => deliver(route, evt));
+  assert.equal(retry.status, 200);
+  assert.deepEqual(fns(), ['sendPlanEnded']);
+  assert.equal(state.emails[0].vars.plan_code, 'studio');
+  assert.equal(state.emails[0].vars.on_free, true);
+});
+
+test('R6 retry with the row already stored as canceled still sends (key dedupes)', async () => {
+  await send('customer.subscription.created', sub());
+  await send('customer.subscription.deleted', sub({ status: 'canceled' }));
+  assert.equal(state.subscriptions[0].status, 'canceled');
+  state.emails.length = 0;
+  await send('customer.subscription.deleted', sub({ status: 'canceled' }));
+  assert.deepEqual(fns(), ['sendPlanEnded'], 'the sub-changed:<id>:canceled Resend key stops a second real send');
+  assert.equal(state.emails[0].vars.provider_subscription_id, 'sub_test_1');
 });
 
 // ── Plan ended (E1) ────────────────────────────────────────────────────
@@ -157,6 +219,28 @@ test('subscription.deleted while another subscription still entitles: R6 says no
 
 test('subscription.deleted for a never-paid (incomplete) subscription: no R6', async () => {
   await send('customer.subscription.created', sub({ status: 'incomplete' }));
+  await send('customer.subscription.deleted', sub({ status: 'canceled' }));
+  assert.deepEqual(fns(), []);
+});
+
+// ADV-A/B (adversarial review), through the real StripeProvider mapping.
+test('ADV-A: Stripe expires an unpaid Checkout (incomplete_expired): no R6, even with no stored row status', async () => {
+  await send('customer.subscription.created', sub({ status: 'incomplete' }));
+  // Our row lost its incomplete status somehow (e.g. an old past_due flip):
+  // the event's own status still says never paid.
+  state.subscriptions[0].status = 'past_due';
+  await send('customer.subscription.deleted', sub({ status: 'incomplete_expired' }));
+  assert.deepEqual(fns(), []);
+  assert.equal(state.subscriptions[0].status, 'canceled');
+});
+
+test('ADV-B: declined first payment does not flip incomplete to past_due, so the later expiry sends nothing', async () => {
+  await send('customer.subscription.created', sub({ status: 'incomplete' }));
+  await send('invoice.payment_failed', invoiceFixture({ billing_reason: 'subscription_create', attempt_count: 1 }));
+  assert.equal(state.subscriptions[0].status, 'incomplete', 'B1: UPDATE skips incomplete');
+  await send('invoice.payment_failed', invoiceFixture({ billing_reason: 'subscription_cycle', attempt_count: 1 }));
+  assert.equal(state.subscriptions[0].status, 'incomplete');
+  // Stripe reports the deletion with status canceled (not incomplete_expired).
   await send('customer.subscription.deleted', sub({ status: 'canceled' }));
   assert.deepEqual(fns(), []);
 });
@@ -197,7 +281,7 @@ test('renewal payment failed: R7 with the invoice period start, attempt and next
 test('payment failed without invoice lines: R7 falls back to the stored period start', async () => {
   await send('customer.subscription.created', sub());
   state.emails.length = 0;
-  await send('invoice.payment_failed', invoiceFixture({ billing_reason: 'subscription_update', attempt_count: 1 }));
+  await send('invoice.payment_failed', invoiceFixture({ billing_reason: 'subscription_cycle', attempt_count: 1 }));
   assert.deepEqual(fns(), ['sendPaymentFailed']);
   assert.equal(state.emails[0].vars.next_attempt, null);
   assert.ok(state.emails[0].vars.period_start instanceof Date);
@@ -210,5 +294,7 @@ test('payment failed with no stored subscription, or no/unknown billing_reason: 
   state.emails.length = 0;
   await send('invoice.payment_failed', invoiceFixture({ attempt_count: 1 }));
   await send('invoice.payment_failed', invoiceFixture({ billing_reason: 'manual', attempt_count: 1 }));
+  // A mid-period plan change's proration invoice is not a "renewal" (M-a).
+  await send('invoice.payment_failed', invoiceFixture({ billing_reason: 'subscription_update', attempt_count: 1 }));
   assert.deepEqual(fns(), []);
 });

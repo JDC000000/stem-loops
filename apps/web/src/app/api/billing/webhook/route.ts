@@ -26,6 +26,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getBillingProvider, type BillingEvent, type BillingSubscription } from '@/lib/billing';
+import type { BillingSubscriptionChange } from '@/lib/billing/types';
 import { db } from '@/lib/db';
 import { invalidateEntitlement } from '@/lib/billing/entitlements';
 import { computeProRataClawback } from '@/lib/billing/prorata';
@@ -121,13 +122,34 @@ async function emailBestEffort(label: string, work: () => Promise<void>): Promis
   }
 }
 
-/** The stored subscription row before this event's upsert/update. */
+/** A subscription's state before an event: status, plan, cancel flag. */
 type StoredSub = { status: string; plan_code: string; cancel_at_period_end: boolean };
 
-/** Read the stored row for a subscription BEFORE this event changes it, so the
- *  email branching can compare old and new (emails v1.2 §3 R4). A failed read
- *  returns { known: false } and the caller sends no change email: an email
- *  must never be a reason for Stripe to retry a fulfilment. */
+/** The state BEFORE a subscription_upserted, derived from the event itself
+ *  (Stripe `previous_attributes`), never from our stored row. Why: the stored
+ *  row is overwritten by the upsert, so if a later step in this handler throws
+ *  and Stripe retries, a stored-row comparison sees "no change" and the email
+ *  is lost for good (PR #272 review B2). The event is identical on every
+ *  retry, so the same email is derived every time, and the per-transition
+ *  Resend idempotency key stops a second send. Emails go out only after every
+ *  DB write in the handler, so a delivery that already sent also returned 200.
+ *  null = a new subscription (customer.subscription.created). */
+function previousFromEvent(
+  previous: BillingSubscriptionChange | null | undefined,
+  now: { status: string; plan_code: string; cancel_at_period_end: boolean },
+): StoredSub | null {
+  if (previous === null) return null;
+  const p = previous ?? {};
+  return {
+    status: p.status ?? now.status,
+    plan_code: p.planCode ?? now.plan_code,
+    cancel_at_period_end: p.cancelAtPeriodEnd ?? now.cancel_at_period_end,
+  };
+}
+
+/** Read the stored row for a subscription before subscription_canceled
+ *  changes it. A failed read returns { known: false }: an email must never
+ *  be a reason for Stripe to retry a fulfilment. */
 async function readStoredSub(
   providerName: string,
   providerSubscriptionId: string,
@@ -508,8 +530,6 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
          ON CONFLICT (user_id, provider) DO NOTHING`,
         [subUserId, providerName, evt.subscription.providerCustomerId],
       );
-      // The row as it was before this event, for the email branching below.
-      const stored = await readStoredSub(providerName, evt.subscription.providerSubscriptionId);
       await db.query(
         `INSERT INTO subscriptions
            (user_id, provider, provider_subscription_id, plan_code, status,
@@ -549,9 +569,13 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
           });
         });
       }
-      if (!stored.known) return;
+      const before = previousFromEvent(evt.previous, {
+        status: sub.status,
+        plan_code: planCode,
+        cancel_at_period_end: sub.cancelAtPeriodEnd,
+      });
       const change = subscriptionEmailCase(
-        stored.row,
+        before,
         { status: sub.status, planCode, cancelAtPeriodEnd: sub.cancelAtPeriodEnd },
         welcomeSent,
       );
@@ -604,20 +628,22 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         invalidateEntitlement(userId);
       }
       // R6, plan ended (emails v1.2; fixes E1). Sent only when we know which
-      // plan ended (a stored row) and it was a plan the user actually had: a
-      // subscription that was still `incomplete` never granted anything, and
-      // one already stored as `canceled` was ended by an earlier event (for
-      // example Stripe's incomplete_expired, mapped to canceled, which never
-      // granted a plan either). The old code guessed 'pro' when the row was
-      // missing and told the user they would keep access until period end.
-      const prevStatus = stored.row?.status;
+      // plan ended (a stored row) and it was a plan the user actually had:
+      // not when Stripe says the subscription was never paid (status
+      // incomplete / incomplete_expired on the event), and not when our row
+      // was still `incomplete` (invoice_payment_failed no longer flips an
+      // incomplete row to past_due, so that status survives; review B1).
+      // A stored `canceled` is NOT skipped: that is what a Stripe retry after
+      // a partial failure of this handler sees, and skipping it would lose
+      // the email (review B2). A repeat send is stopped by the
+      // sub-changed:<id>:canceled Resend key. The old code guessed 'pro' when
+      // the row was missing and told the user they would keep access.
       if (
         userId &&
         row &&
         stored.known &&
-        prevStatus !== undefined &&
-        prevStatus !== 'incomplete' &&
-        prevStatus !== 'canceled'
+        !evt.neverPaid &&
+        stored.row?.status !== 'incomplete'
       ) {
         await emailBestEffort('plan_ended', async () => {
           const stillEntitled = await hasLiveSubscription(userId);
@@ -701,18 +727,23 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       }>(
         `UPDATE subscriptions SET status = 'past_due', updated_at = now()
           WHERE provider = $1 AND provider_subscription_id = $2
+            AND status NOT IN ('incomplete', 'canceled')
           RETURNING user_id, plan_code, current_period_start`,
         [providerName, evt.providerSubscriptionId],
       );
       const failedRow = res.rows[0];
       const failedUser = failedRow?.user_id ?? evt.userId;
       if (failedUser) invalidateEntitlement(failedUser);
-      // R7, payment failed (emails v1.2; fixes E5). Only for a renewal or a
-      // mid-period plan change, and only when a stored subscription matched.
-      // A failed FIRST payment (subscription_create) sends nothing: the user
-      // is still in Checkout and never had the plan.
+      // R7, payment failed (emails v1.2; fixes E5). Only for a RENEWAL
+      // (billing_reason subscription_cycle), and only when a paid
+      // subscription matched the UPDATE above. A failed FIRST payment
+      // (subscription_create) sends nothing and, since the UPDATE skips
+      // `incomplete` rows, no longer turns a never-paid subscription into
+      // past_due (review B1). subscription_update is excluded too: the copy
+      // says "renewal", and a proration invoice's line period starts at the
+      // change, not at the cycle start the grace window counts from (M-a).
       const reason = evt.billingReason ?? null;
-      if (reason !== 'subscription_cycle' && reason !== 'subscription_update') {
+      if (reason !== 'subscription_cycle') {
         console.info(
           `[webhook] invoice_payment_failed ${evt.providerInvoiceId ?? '?'}: no email (billing_reason=${reason ?? 'none'})`,
         );

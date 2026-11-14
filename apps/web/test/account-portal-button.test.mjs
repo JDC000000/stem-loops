@@ -1,8 +1,10 @@
-// E6 (emails v1.2 R4 account-page fix): "Manage subscription" shows for
-// anyone with a customers_billing row, not only for a paid effective plan.
-// A paused, incomplete or lapsed past_due subscriber reads as 'free' through
-// effectivePlanCode but is exactly who R4 "paused" and R7 "Update your card"
-// send to /account.
+// E6 (emails v1.2 R4 account-page fix), narrowed by PR #272 review M-b:
+// "Manage subscription" shows for anyone with a subscription that got past
+// `incomplete` (paid at least once) and a customers_billing row for the
+// current provider, not only for a paid effective plan. A paused or lapsed
+// past_due subscriber reads as 'free' through effectivePlanCode but is
+// exactly who R4 "paused" and R7 "Update your card" send to /account. An
+// abandoned Checkout or a credit-only buyer does not see it.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,43 +28,49 @@ const mod = await import(
   )
 );
 
-test('paused, incomplete and lapsed past_due users with a billing row all see the button', () => {
-  // Each of these reads as plan 'free' on the account page.
-  for (const who of ['paused', 'incomplete', 'past_due after grace']) {
+test('paused and lapsed past_due subscribers see the button even though the plan reads free', () => {
+  for (const who of ['paused', 'past_due after grace']) {
     assert.equal(
-      mod.showManageSubscription({ hasBillingCustomer: true, planCode: 'free' }),
+      mod.showManageSubscription({ hasPortalSubscription: true, planCode: 'free' }),
       true,
       who,
     );
   }
 });
 
-test('no billing row: no button, whatever the plan reads', () => {
-  assert.equal(mod.showManageSubscription({ hasBillingCustomer: false, planCode: 'free' }), false);
-  assert.equal(mod.showManageSubscription({ hasBillingCustomer: false, planCode: 'pro' }), false);
+test('no portal subscription (abandoned Checkout, credit-only): no button, whatever the plan reads', () => {
+  assert.equal(mod.showManageSubscription({ hasPortalSubscription: false, planCode: 'free' }), false);
+  assert.equal(mod.showManageSubscription({ hasPortalSubscription: false, planCode: 'pro' }), false);
 });
 
-test('billing read failed: fall back to the old paid-plan rule', () => {
-  assert.equal(mod.showManageSubscription({ hasBillingCustomer: null, planCode: 'pro' }), true);
-  assert.equal(mod.showManageSubscription({ hasBillingCustomer: null, planCode: 'free' }), false);
-  assert.equal(mod.showManageSubscription({ hasBillingCustomer: null, planCode: null }), false);
+test('read failed: fall back to the old paid-plan rule', () => {
+  assert.equal(mod.showManageSubscription({ hasPortalSubscription: null, planCode: 'pro' }), true);
+  assert.equal(mod.showManageSubscription({ hasPortalSubscription: null, planCode: 'free' }), false);
+  assert.equal(mod.showManageSubscription({ hasPortalSubscription: null, planCode: null }), false);
 });
 
-test('hasBillingCustomer: row -> true, none -> false, error -> null', async () => {
+test('hasPortalSubscription: joins customers_billing on the same provider, skips incomplete', async () => {
   const seen = [];
   globalThis.__portalDb = async (sql, p) => { seen.push({ sql, p }); return { rows: [{}], rowCount: 1 }; };
-  assert.equal(await mod.hasBillingCustomer('u1'), true);
-  assert.match(seen[0].sql, /FROM customers_billing WHERE user_id = \$1/);
-  assert.deepEqual(seen[0].p, ['u1']);
+  assert.equal(await mod.hasPortalSubscription('u1', 'stripe'), true);
+  const q = seen[0].sql.replace(/\s+/g, ' ');
+  assert.match(q, /FROM subscriptions s JOIN customers_billing c ON c\.user_id = s\.user_id AND c\.provider = s\.provider/);
+  assert.match(q, /s\.provider = \$2 AND s\.status <> 'incomplete'/);
+  assert.deepEqual(seen[0].p, ['u1', 'stripe']);
   globalThis.__portalDb = async () => ({ rows: [], rowCount: 0 });
-  assert.equal(await mod.hasBillingCustomer('u1'), false);
+  assert.equal(await mod.hasPortalSubscription('u1', 'stripe'), false);
   globalThis.__portalDb = async () => { throw new Error('down'); };
-  assert.equal(await mod.hasBillingCustomer('u1'), null);
+  assert.equal(await mod.hasPortalSubscription('u1', 'stripe'), null);
+});
+
+test('billingProviderName follows BILLING_PROVIDER, default stripe', () => {
+  assert.equal(mod.billingProviderName({}), 'stripe');
+  assert.equal(mod.billingProviderName({ BILLING_PROVIDER: 'Paddle' }), 'paddle');
 });
 
 test('account page gates the portal button on showManageSubscription, not plan_code', () => {
   const src = readFileSync(join(WEB, 'src/app/account/page.tsx'), 'utf8');
-  assert.match(src, /hasBillingCustomer\(user\.user_id\)/);
+  assert.match(src, /hasPortalSubscription\(user\.user_id\)/);
   assert.match(src, /\{showPortal && \(/);
   assert.doesNotMatch(src, /ent\.data\.plan_code !== 'free' && \(/);
 });

@@ -68,6 +68,13 @@ export interface BillingSubscription {
   cancelAtPeriodEnd: boolean;
 }
 
+/** Fields of a subscription an update event reports as changed. */
+export interface BillingSubscriptionChange {
+  status?: SubscriptionStatus;
+  planCode?: PlanCode;
+  cancelAtPeriodEnd?: boolean;
+}
+
 export interface BillingInvoice {
   providerInvoiceId: string;
   amountCents: number;
@@ -104,12 +111,24 @@ export type BillingEvent =
       type: 'subscription_upserted';
       userId: string;
       subscription: BillingSubscription;
+      /**
+       * What the event itself says changed (Stripe `data.previous_attributes`).
+       * null for customer.subscription.created (a new subscription). For an
+       * update, a field is present only if Stripe reports it changed.
+       * Billing emails derive the transition from this, NOT from our stored
+       * row, so a Stripe retry after a partial failure re-derives the same
+       * email (emails v1.2 R4/R5; PR #272 review B2).
+       */
+      previous?: BillingSubscriptionChange | null;
     }
   | {
       type: 'subscription_canceled';
       userId: string;
       providerSubscriptionId: string;
       providerCustomerId?: string | null;
+      /** True when Stripe ended a subscription that was never paid
+       *  (status incomplete / incomplete_expired). No plan-ended email. */
+      neverPaid?: boolean;
     }
   | {
       type: 'invoice_paid';

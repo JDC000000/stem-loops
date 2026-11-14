@@ -66,7 +66,10 @@ function dbStub(subIds, errors = {}) {
       tx: async (fn) => {
         globalThis.__ad.calls.push(['tx', 'begin']);
         try {
-          const r = await fn({ query: run });
+          // Statements issued on the TRANSACTION's client are also noted in __ad.txq, so a test
+          // can tell them from a pool query (db.query) made while the tx is open: that one runs
+          // on another connection, commits at once and is NOT rolled back with the tx.
+          const r = await fn({ query: (text, params) => { (globalThis.__ad.txq ??= []).push(text); return run(text, params); } });
           globalThis.__ad.calls.push(['tx', 'commit']);
           return r;
         } catch (e) {
@@ -354,4 +357,22 @@ test('DELETE /api/users/me — Stripe failure rolls back the job expiry too (job
   const iRollback = calls.findIndex((c) => c[0] === 'tx' && c[1] === 'rollback');
   assert.ok(iExp >= 0 && iRollback > iExp, 'the expiry ran inside the tx that rolled back');
   assert.ok(!calls.some((c) => c[0] === 'deleteAuthUser'));
+});
+
+// Reviewer probes (merge gate, #241). Two mutants passed the two tests above:
+//   - the UPDATE issued with `db.query` instead of the tx client (it then commits on its own
+//     connection and a failed Stripe cancel does NOT bring the jobs back), and
+//   - `SET expires_at = now() + interval '24 hours'` (the jobs are extended, not expired).
+test('DELETE /api/users/me — the job expiry runs on the TRANSACTION client, and is exactly "expire now"', async () => {
+  const mod = await loadRoute({ subIds: ['sub_a'], cancelError: { code: 'api_error', statusCode: 500 } });
+  const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
+  assert.equal(res.status, 502);
+  const norm = (t) => t.replace(/\s+/g, ' ').trim();
+  const inTx = (globalThis.__ad.txq ?? []).map(norm).filter((t) => /UPDATE public\.jobs/.test(t));
+  assert.deepEqual(
+    inTx,
+    ['UPDATE public.jobs SET expires_at = now() WHERE user_id = $1::uuid AND expires_at > now()'],
+    'the expiry must be issued on the tx client (so ROLLBACK undoes it) and must set expires_at to now(), nothing later',
+  );
+  assert.equal(jobsExpiry().length, 1, 'and it is the only jobs UPDATE, pool or tx');
 });

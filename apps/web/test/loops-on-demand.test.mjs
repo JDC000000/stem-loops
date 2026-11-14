@@ -26,6 +26,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginReq } from './helpers/same-origin.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -184,7 +185,11 @@ async function loadJobRoute(loops) {
       /from ['"]@\/lib\/retention['"]/g,
       `from '${dataUrl(`export const presignTtlSec = () => 900;`)}'`,
     )
+    // Ownership is not what this file tests (test/job-access-routes.test.mjs runs the REAL helper);
+    // here it is stubbed open so this file's own subject stays isolated.
+    .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl(`export const mayReadJob = async () => true;`)}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${dataUrl(`export const captureException = () => {};`)}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(
       /from ['"]next\/server['"]/g,
       `from '${dataUrl(`
@@ -301,6 +306,7 @@ async function loadLoopsRoute({ job, user = null, uncut = 3, insertThrows = null
       `from '${dataUrl(`export const getUser = async () => (${JSON.stringify(user)});`)}'`,
     )
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${dataUrl(`export const captureException = () => {};`)}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(
       /from ['"]next\/server['"]/g,
       `from '${dataUrl(`
@@ -316,7 +322,7 @@ const doneJob = (user_id = null) => ({ user_id, status: 'done' });
 
 test('POST queues a request for an anonymous job and reports what is pending', async () => {
   const { POST } = await loadLoopsRoute({ user: null, job: doneJob(null), uncut: 60 });
-  const res = await POST({}, { params: { id: OK_ID } });
+  const res = await POST(sameOriginReq(), { params: { id: OK_ID } });
   assert.equal(res.status, 202);
   assert.equal(res.body.status, 'queued');
   assert.equal(res.body.loops_pending, 60);
@@ -326,7 +332,7 @@ test('POST queues a request for an anonymous job and reports what is pending', a
 
 test('POST on another user\'s job is a 404 and writes NOTHING', async () => {
   const { POST } = await loadLoopsRoute({ user: { user_id: 'someone-else' }, job: doneJob('the-owner'), uncut: 60 });
-  const res = await POST({}, { params: { id: OK_ID } });
+  const res = await POST(sameOriginReq(), { params: { id: OK_ID } });
   assert.equal(res.status, 404);
   assert.equal(res.body.error_code, 'NOT_FOUND');
   // 404 not 403: a 403 would confirm the job exists.
@@ -339,7 +345,7 @@ test('POST on another user\'s job is a 404 and writes NOTHING', async () => {
 
 test('POST on your OWN job is allowed and records you as the requester', async () => {
   const { POST } = await loadLoopsRoute({ user: { user_id: 'the-owner' }, job: doneJob('the-owner'), uncut: 12 });
-  const res = await POST({}, { params: { id: OK_ID } });
+  const res = await POST(sameOriginReq(), { params: { id: OK_ID } });
   assert.equal(res.status, 202);
   const insert = globalThis.__sql.find((c) => c.t.includes('INSERT INTO loop_requests'));
   assert.deepEqual(insert.params, [OK_ID, 'the-owner']);
@@ -355,7 +361,7 @@ test('POST while a cut is already live returns the live request, not a duplicate
     insertThrows: '23505',
     live: { id: 'req-live', status: 'running', created_at: 'then' },
   });
-  const res = await POST({}, { params: { id: OK_ID } });
+  const res = await POST(sameOriginReq(), { params: { id: OK_ID } });
   assert.equal(res.status, 200);
   assert.equal(res.body.already_requested, true);
   assert.equal(res.body.request.id, 'req-live');
@@ -364,21 +370,21 @@ test('POST while a cut is already live returns the live request, not a duplicate
 
 test('POST rethrows a non-unique DB error as a 500 rather than swallowing it', async () => {
   const { POST } = await loadLoopsRoute({ user: null, job: doneJob(null), uncut: 60, insertThrows: '23503' });
-  const res = await POST({}, { params: { id: OK_ID } });
+  const res = await POST(sameOriginReq(), { params: { id: OK_ID } });
   assert.equal(res.status, 500);
   assert.equal(res.body.error_code, 'INTERNAL_ERROR');
 });
 
 test('POST on a job that is still processing is a 409, not a queued request', async () => {
   const { POST } = await loadLoopsRoute({ user: null, job: { user_id: null, status: 'separating' }, uncut: 0 });
-  const res = await POST({}, { params: { id: OK_ID } });
+  const res = await POST(sameOriginReq(), { params: { id: OK_ID } });
   assert.equal(res.status, 409);
   assert.equal(res.body.error_code, 'LOOPS_NOT_READY');
 });
 
 test('POST when everything is already cut is an idempotent success', async () => {
   const { POST } = await loadLoopsRoute({ user: null, job: doneJob(null), uncut: 0 });
-  const res = await POST({}, { params: { id: OK_ID } });
+  const res = await POST(sameOriginReq(), { params: { id: OK_ID } });
   assert.equal(res.status, 200);
   assert.equal(res.body.loops_pending, 0);
   assert.equal(res.body.request, null);
@@ -390,7 +396,7 @@ test('POST when everything is already cut is an idempotent success', async () =>
 
 test('POST with a shape-invalid id is a 404 and never touches the database', async () => {
   const { POST } = await loadLoopsRoute({ user: null, job: doneJob(null) });
-  const res = await POST({}, { params: { id: 'not-a-uuid' } });
+  const res = await POST(sameOriginReq(), { params: { id: 'not-a-uuid' } });
   assert.equal(res.status, 404);
   assert.deepEqual(globalThis.__sql, []);
 });

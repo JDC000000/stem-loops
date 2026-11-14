@@ -199,7 +199,7 @@ export default function JobView({ id }: { id: string }) {
   const back = (
     <div style={{ width: '100%', maxWidth: 960 }}>
       <Link href="/" className="jp-back" style={{ fontSize: 'var(--text-md)', textDecoration: 'none' }}>
-        ← New track
+        Start a new song →
       </Link>
     </div>
   );
@@ -258,7 +258,7 @@ export default function JobView({ id }: { id: string }) {
             {failedJobMessage(job)}
           </p>
           <Link href="/" className="jp-primary" style={{ marginTop: 16 }}>
-            Try another track →
+            Start a new song
           </Link>
         </div>
       ) : job.status === 'done' ? (
@@ -300,7 +300,7 @@ export default function JobView({ id }: { id: string }) {
               Check again
             </button>
             <Link href="/" className="jp-back" style={{ fontSize: 'var(--text-md)' }}>
-              Try another track →
+              Start a new song →
             </Link>
           </div>
         </div>

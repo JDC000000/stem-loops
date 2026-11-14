@@ -1,11 +1,12 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import FlashBanner from '@/components/FlashBanner';
+import { MAX_TRACK_SEC } from '@/lib/play/types';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://stem-loops.com'),
   title: { default: 'stem-loops', template: '%s · stem-loops' },
-  description: 'Split a song into stems and 1, 2, 4 or 8-bar loops at the detected BPM, as 24-bit WAV. Free, no account.',
+  description: `Split a song into six stems with faders and a chord track, and play along. Tracks up to ${Math.floor(MAX_TRACK_SEC / 60)} minutes, in Chrome on the desktop.`,
   applicationName: 'stem-loops',
   icons: {
     icon: [

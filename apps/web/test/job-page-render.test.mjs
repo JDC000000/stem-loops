@@ -349,7 +349,7 @@ test('failed job with a code the web map does not know: the worker\'s sentence i
 
 test('failed job with neither a known code nor a stored sentence: the generic fallback', () => {
   const html = renderJob({ ...DONE_JOB, status: 'failed', error_code: null, error_message_user: null });
-  assert.match(html, /This track could not be processed\./);
+  assert.match(html, /We couldn’t finish this track\./);
 });
 
 test('a processing job renders progress and mounts no player', () => {
@@ -375,7 +375,7 @@ test('stalled QUEUED job: says so, offers Check again and a way out, and shows n
   assert.match(html, /role="alert"/);
   assert.match(html, /waiting in line for more than 90 minutes/);
   assert.match(html, />Check again</);
-  assert.match(html, /href="\/"[^>]*>Try another track/);
+  assert.match(html, /href="\/"[^>]*>Start a new song/);
   assert.doesNotMatch(html, /data-testid="job-progress"/, 'a progress bar over a stalled job is the lie');
   assert.doesNotMatch(html, /Processing…/);
 });
@@ -394,7 +394,7 @@ test('unreachable: says the page cannot get an update, offers Try again, no prog
   assert.doesNotMatch(html, /data-testid="job-progress"/);
   assert.doesNotMatch(html, /Processing…/);
   // and it must not claim the TRACK failed: we do not know that
-  assert.doesNotMatch(html, /Something went wrong|could not be processed/i);
+  assert.doesNotMatch(html, /Something went wrong|couldn’t finish this track/i);
 });
 
 test('unreachable copy splits by status: a 500 is OUR fault, not the user\'s connection', () => {

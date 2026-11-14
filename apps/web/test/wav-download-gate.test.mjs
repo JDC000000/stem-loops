@@ -119,11 +119,17 @@ const entitlementsUrl = (() => {
   return dataUrl(js);
 })();
 
+const jobAccessUrl = dataUrl(
+  toJs(readFileSync(P('src/lib/job-access.ts'), 'utf8')).replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub}'`),
+);
+
 async function loadRoute(rel) {
   let js = toJs(readFileSync(P(rel), 'utf8'));
   js = js
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub}'`)
     .replace(/from ['"]@\/lib\/r2['"]/g, `from '${r2Stub}'`)
+    // SEC-1 (#220): the REAL ownership helper, over this file's getUser stub.
+    .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${jobAccessUrl}'`)
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${entitlementsUrl}'`)
     .replace(/from ['"]@\/lib\/stem-urls['"]/g, `from '${stemUrlsStub}'`)
@@ -293,6 +299,20 @@ test('SHARING: playback is also open to a FREE signed-in stranger (entitlement i
   assert.equal(res.status, 200);
   assert.ok(!globalThis.__st.sql.some((s) => /entitlements|plans/.test(s)));
 });
+
+// SEC-1 (#220), reviewer probes: playback of an OWNED job is the owner's alone.
+for (const [name, load] of [['stems', () => loadStems()], ['play-chords', () => loadChords()]]) {
+  test(`OWNED job: ${name} is 404 for a signed-in stranger and for a signed-out caller, 200 for the owner`, async () => {
+    arrange({ user: STRANGER, plan: 'studio', jobUser: OWNER });
+    assert.equal((await (await load()).GET(plain(), { params: { id: JOB } })).status, 404);
+    assert.deepEqual(globalThis.__st.minted, []);
+    arrange({ user: null, jobUser: OWNER });
+    assert.equal((await (await load()).GET(plain(), { params: { id: JOB } })).status, 404);
+    assert.deepEqual(globalThis.__st.minted, []);
+    arrange({ user: OWNER, jobUser: OWNER });
+    assert.equal((await (await load()).GET(plain(), { params: { id: JOB } })).status, 200);
+  });
+}
 
 // ───────────── 4. the tier mapping: Free 402, Pro 402, Studio signed URL ─────────────
 

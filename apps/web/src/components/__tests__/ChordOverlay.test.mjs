@@ -37,6 +37,7 @@ import {
   formatTime,
   estimateLabelPx,
   CHIP_FONT_PX,
+  CHIP_TIGHT_FONT_PX,
   CHIP_FULL_PAD_PX,
 } from '../ChordOverlay.helpers.ts';
 import { chordLabel } from '../../chord/alphabet.ts';
@@ -390,13 +391,21 @@ test('chipDensity: judged against the MEASURED label, not against a constant', (
 
   assert.equal(chipDensity(long + CHIP_FULL_PAD_PX, long), 'full');
   assert.equal(chipDensity(long + CHIP_FULL_PAD_PX - 1, long), 'tight');
-  assert.equal(chipDensity(long * 0.625 + 2, long), 'tight');
-  assert.equal(chipDensity(long * 0.625 + 1, long), 'tick');
+  // The tight threshold: the label scaled to the tight size, plus its 2px pad.
+  // The scale is read from the constants (it was a literal 0.625 = 10/16 until
+  // the tight size became 11px under brand book A15).
+  const tightScale = CHIP_TIGHT_FONT_PX / CHIP_FONT_PX;
+  assert.equal(chipDensity(long * tightScale + 2, long), 'tight');
+  assert.equal(chipDensity(long * tightScale + 1, long), 'tick');
 
   // Same chip width, different label: the short name fits where the long one does not.
   const w = short + CHIP_FULL_PAD_PX;
   assert.equal(chipDensity(w, short), 'full');
-  assert.equal(chipDensity(w, long), 'tight');
+  // Not full. Which smaller density it gets depends on the tight size: with an
+  // 11px tight size (A15) "F#:min7" needs 44.4px and this 42.6px chip is a tick;
+  // at the old 10px it was tight. Either way it is decided by the label.
+  assert.notEqual(chipDensity(w, long), 'full');
+  assert.equal(chipDensity(w, long), w >= long * tightScale + 2 ? 'tight' : 'tick');
 
   // The old constants, held against a real label, were wrong in both directions.
   assert.notEqual(chipDensity(34, long), 'full');

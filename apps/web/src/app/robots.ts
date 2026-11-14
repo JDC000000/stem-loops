@@ -34,6 +34,7 @@ export const SEARCH_BOT_DISALLOW = ['/api/', '/jobs/'];
 
 export default function robots(): MetadataRoute.Robots {
   return {
+    sitemap: 'https://stem-loops.com/sitemap.xml',
     rules: [
       { userAgent: '*', allow: '/' },
       ...SEARCH_BOT_USER_AGENTS.map((userAgent) => ({

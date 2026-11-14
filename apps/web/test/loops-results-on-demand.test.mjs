@@ -64,7 +64,13 @@ async function loadLoopResults() {
       },
     })
     .outputText.replace(/from ['"]@\/components\/LoopCard['"]/g, `from '${cardUrl}'`)
-    .replace(/from ['"]@\/lib\/zipLoops['"]/g, `from '${zipUrl}'`);
+    .replace(/from ['"]@\/lib\/zipLoops['"]/g, `from '${zipUrl}'`)
+    // The 24-hour window (lib/loops/availability.ts) is the REAL module: it is
+    // erasable TS with only a relative .ts import, so node's type stripping loads it.
+    .replace(
+      /from ['"]@\/lib\/loops\/availability['"]/g,
+      `from '${pathToFileURL(join(WEB, 'src/lib/loops/availability.ts')).href}'`,
+    );
 
   const out = join(outDir, 'LoopResults.mjs');
   writeFileSync(out, js);
@@ -546,5 +552,101 @@ test('RV7 DEFAULT deps: a 500, then a non-JSON body, then a 200 — keeps pollin
       assert.ok(!dom.find('[data-testid="cut-error"]'));
       await dom.unmountAll();
     });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// THE 24-HOUR WINDOW (Jon, 2026-11-14): loops can be requested only within 24
+// hours of the job; after that the control is DISABLED with a plain
+// explanation. Every expiry below is a literal ISO time against a literal
+// clock, never recomputed with the module's own helpers.
+// ═════════════════════════════════════════════════════════════════════════
+
+const NOW = Date.parse('2026-11-14T12:00:00.000Z');
+const atNow = () => NOW;
+
+test('24h: a job past expires_at shows Cut DISABLED with the plain reason, and a click requests nothing', async () => {
+  const { LoopResults } = await loadLoopResults();
+  const { calls, deps } = counters();
+  const loops = [loop('a', 'drums', false), loop('b', 'bass', false)];
+  const expired = { ...job(loops), expires_at: '2026-11-14T11:59:00.000Z' }; // one minute ago
+
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopResults, { job: expired, deps, now: atNow }));
+    const btn = dom.find('[data-testid="cut-loops"]');
+    assert.ok(btn, 'the control must stay on screen, disabled, not vanish');
+    assert.equal(btn.disabled, true, 'an expired job offered a live Cut button');
+    assert.equal(btn.getAttribute('aria-describedby'), 'cut-closed');
+
+    const why = dom.find('#cut-closed');
+    assert.ok(why, 'no explanation beside the disabled control');
+    assert.equal(why.getAttribute('data-reason'), 'expired');
+    assert.match(why.textContent, /within 24 hours/);
+    assert.match(why.textContent, /on our end/);
+    assert.ok(!dom.find('[data-testid="cut-explainer"]'), 'the "ready to cut" line must not sit beside a disabled button');
+
+    await dom.act(() => btn.click());
+    assert.deepEqual(calls.requestCut, [], 'a disabled Cut still sent a request');
+  });
+});
+
+test('24h: one minute BEFORE expires_at the Cut control is live and the click requests the cut', async () => {
+  const { LoopResults } = await loadLoopResults();
+  const { calls, deps } = counters();
+  const loops = [loop('a', 'drums', false)];
+  const live = { ...job(loops), expires_at: '2026-11-14T12:01:00.000Z' };
+
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopResults, { job: live, deps, now: atNow }));
+    const btn = dom.find('[data-testid="cut-loops"]');
+    assert.equal(btn.disabled, false);
+    assert.ok(!dom.find('#cut-closed'));
+    await dom.act(() => btn.click());
+    assert.deepEqual(calls.requestCut, [live.id]);
+  });
+});
+
+test('24h: an expired job whose loops were all cut cannot zip dead links, and says why', async () => {
+  const { LoopResults } = await loadLoopResults();
+  const { calls, deps } = counters();
+  const loops = [loop('a', 'drums', true)];
+  const expired = { ...job(loops), expires_at: '2026-11-13T12:00:00.000Z' };
+
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopResults, { job: expired, deps, now: atNow }));
+    const zip = dom.find('[data-testid="zip-loops"]');
+    assert.equal(zip.disabled, true);
+    assert.equal(dom.find('#cut-closed')?.getAttribute('data-reason'), 'expired');
+    await dom.act(() => zip.click());
+    assert.equal(calls.zip, 0);
+  });
+});
+
+test('Story 6.7: closed="no_stems" disables Cut with its own reason, inside the window', async () => {
+  const { LoopResults } = await loadLoopResults();
+  const { calls, deps } = counters();
+  const loops = [loop('a', 'drums', false), loop('b', 'bass', true)];
+  const live = { ...job(loops), expires_at: '2026-11-15T00:00:00.000Z' };
+
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopResults, { job: live, deps, now: atNow, closed: 'no_stems' }));
+    const btn = dom.find('[data-testid="cut-loops"]');
+    assert.equal(btn.disabled, true);
+    assert.equal(dom.find('#cut-closed')?.getAttribute('data-reason'), 'no_stems');
+    // The loop that WAS cut is still offered — a graceful fallback, not a blank.
+    assert.equal(dom.findAll('[data-testid="loop-card"]').length, 1);
+    await dom.act(() => btn.click());
+    assert.deepEqual(calls.requestCut, []);
+  });
+});
+
+test('stem filters follow the Story 2.1 order: drums, bass, guitar, keys, vocals, other', async () => {
+  const { LoopResults } = await loadLoopResults();
+  const { deps } = counters();
+  const loops = ['other', 'vocals', 'keys', 'guitar', 'bass', 'drums'].map((s, i) => loop(`l${i}`, s, true));
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopResults, { job: job(loops), deps }));
+    const tabs = dom.findAll('button.jp-filter').map((b) => b.textContent.trim());
+    assert.deepEqual(tabs, ['all', 'drums', 'bass', 'guitar', 'keys', 'vocals', 'other']);
   });
 });

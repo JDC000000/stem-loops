@@ -114,9 +114,9 @@ available stems; `chords_complete` also carries `stem`. Alert if
 - **Audio length bounds:** must be **> 5 s** and **<= 300 s**
   (`KLANGIO_MIN_AUDIO_SEC` / `KLANGIO_MAX_AUDIO_SEC`). Both are checked locally
   (via `soundfile`) *before* the POST because a rejected request still consumes
-  quota; unreadable audio also fails closed without a request. The pipeline currently runs this on
-  the instrumental stem of whatever length the user uploaded; stretched
-  tracks will need to be chunked in a follow-up.
+  quota; unreadable audio also fails closed without a request. Since 2026-11-14 every input is
+  trimmed by the worker to its first `MAX_UPLOAD_DURATION_SEC` (300 s) before separation, so the
+  stems this runs on are at most 300 s; chunking longer audio is no longer needed for launch.
 - **Confidence:** Klangio does not publish per-segment confidence. We set
   `1.0` and flag a TODO in-code to derive one from strum-gap width in
   Y1.2.
@@ -303,7 +303,7 @@ web loader maps `reason` to a specific message:
 
 | reason | written when |
 |--------|--------------|
-| `too_long` | probed duration > `CHORDS_MAX_AUDIO_SEC` (no provider call, no ffmpeg mix) |
+| `too_long` | probed duration > `CHORDS_MAX_AUDIO_SEC` (no provider call, no ffmpeg mix). Since 2026-11-14 inputs are trimmed to `MAX_UPLOAD_DURATION_SEC` (= 300 s), so this only fires if that knob is raised above `CHORDS_MAX_AUDIO_SEC`, or on jobs from before the change |
 | `provider_failed` | the provider/quota step raised after we tried |
 | `not_attempted` | no harmonic stem to analyse |
 
@@ -318,3 +318,8 @@ currently surfaces as `provider_failed`.
 - Long-file chunking for tracks over 300s.
 - mir_eval ground-truth .lab files for the 20-song set.
 - CI job to re-run the eval set on a nightly schedule.
+
+---
+
+_Changelog — 2026-11-14: input trim (long songs cut to their first 300 s, not refused) noted
+under "Audio length bounds" and the `too_long` tombstone row._

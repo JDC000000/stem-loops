@@ -40,7 +40,7 @@ import sentry_sdk
 from psycopg.types.json import Json
 
 from . import tmpdirs
-from .chord_source import ChordSubmitUncertain
+from .chord_source import ChordQuotaExceeded, ChordSubmitUncertain
 from .classifier.energy_classifier import classify_energy
 from .classifier.section_labeler import label_sections
 from .downloader import download_audio
@@ -48,14 +48,16 @@ from .dsp.seamless import apply as seamless_apply
 from .encoder.wav_encoder import encode_24bit, waveform_peaks
 from .errors import (
     DownloadBlockedError,
+    ExtractionFailedError,
     InternalError,
+    LinkUnmeasurableError,
     SeparationFailedError,
     StemLoopsError,
     UploadInvalidError,
-    UploadTooLongError,
 )
+from .extractor import loop_extractor
 from .extractor.beat_grid import estimate_beat_grid
-from .extractor.loop_extractor import extract_loops
+from .extractor.loop_extractor import NoReliableBeatError, extract_loops
 from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
 from .storage.r2_uploader import (
@@ -116,35 +118,43 @@ def _ffmpeg_bin() -> str:
         raise InternalError(f"ffmpeg unavailable: {exc}") from exc
 
 
-# Longest upload (seconds) we will separate. ONE knob, read at call time so it can be
-# tuned with an env change instead of a deploy.
+# How much of a track (seconds) we separate: the FIRST this-many seconds. ONE knob, read at
+# call time so it can be tuned with an env change instead of a deploy.
+#
+# TRIM, NOT REFUSE (Jon, 2026-11-14): "If a song is more than 5 minutes, it should still be
+# converted to a play along, but it just [processes the first] 5 minutes of the song." Until
+# then a track over this length failed UPLOAD_TOO_LONG. Now both input paths cut it to its
+# first MAX_UPLOAD_DURATION_SEC seconds on bytes we hold, and the job proceeds:
+#   * upload: the ffmpeg normalise step decodes with ``-t cap`` (``_prepare_upload_source``);
+#   * link:   the staged yt-dlp WAV is cut with ``ffmpeg -t cap`` (``_trim_link_source``);
+#   * Cobalt: hands back a URL and no bytes, so it CANNOT be trimmed and is only tried when
+#     gate 0c read a length at or under the cap (downloader/__init__.py).
+# The trim is recorded on the ``downloading``/``completed`` job event as
+# ``{"trimmed": true, "source_sec": X, "used_sec": N}`` and surfaced on the job page.
 #
 # 300 s (5 min), and deliberately the SAME number as every other ceiling in the product:
 # CHORDS_MAX_AUDIO_SEC below, KLANGIO_MAX_AUDIO_SEC in the provider, MAX_TRACK_SEC in the
 # web player (apps/web/src/lib/play/types.ts) and the landing copy, which is fed from that
-# constant. If one of them moves, move all of them.
-#
-# It was 600 s until 2026-11-11, which was not a number anyone chose for this pipeline --
-# it predates the Gate-0 playback spike, whose shipping decision table already fixed the
-# product ceiling at 300 s "to agree with KLANGIO_MAX_AUDIO_SEC" (Jon, 2026-11-10). Nothing
-# wired that decision into this file. A 301-600 s upload therefore did three bad things:
-#   * The PLAYER would not open it. engine.ts refuses above MAX_TRACK_SEC (300 s) -- and it
-#     checks only AFTER decoding and downmixing all six stems, so a 600 s track first
-#     allocates 6 x 600 x 48000 x 4 bytes = ~659 MiB of PCM on the visitor's machine. The
-#     spike measured that same byte count at 805 MB RSS and REJECTED it against a ~600 MB
-#     bar. So the user pays the memory peak and still gets an error instead of a player.
-#   * The CHORD overlay was always absent: chords cap at CHORDS_MAX_AUDIO_SEC = 300 s, so
-#     the step below writes a `too_long` tombstone. Chords are the headline feature.
+# constant. If one of them moves, move all of them. Why it is 300 and not more:
+#   * The PLAYER refuses above MAX_TRACK_SEC (300 s), and only AFTER decoding and downmixing
+#     all six stems: 6 x 600 x 48000 x 4 bytes = ~659 MiB of PCM for a 600 s track, which the
+#     Gate-0 spike measured at 805 MB RSS and rejected against a ~600 MB bar.
+#   * CHORDS cap at CHORDS_MAX_AUDIO_SEC = 300 s; over it the overlay is a `too_long`
+#     tombstone. Trimming to the same number means a trimmed track still gets chords.
 #   * Replicate separation is billed per GPU-second ($0.0014/s, replicate_client) and the
-#     predict time scales with audio length, so all of that was paid for in real money.
+#     predict time scales with audio length; trimming caps the spend per job.
 #
-# The web layer now ALSO probes duration at admission, but that probe runs in the browser,
-# fails open when it cannot measure, and is therefore a spend-and-UX guard only. THIS is
-# the enforcement: it runs server-side on bytes we hold, before Replicate is ever called.
+# The web layer probes duration at admission only to TELL the visitor a long track will be
+# trimmed; it runs in the browser and is never the limit. THIS is the limit: it runs
+# server-side on bytes we hold, before Replicate is ever called, and fails closed.
 MAX_UPLOAD_DURATION_SEC_DEFAULT = 300.0
 # Wall-clock budget for the ffmpeg normalise step. A pathological/hostile file must not
 # hold the worker thread (and its heartbeat-less job) indefinitely.
 FFMPEG_DECODE_TIMEOUT_SEC_DEFAULT = 120.0
+# ffmpeg's `-t` lands on a sample/frame boundary, and soundfile reports duration as
+# frames / rate, so a cut at exactly the cap can read a hair either side of it. Anything
+# more than this past the cap means `-t` did not hold, and the job fails closed.
+TRIM_TOLERANCE_SEC = 0.05
 
 
 def _env_positive_float(name: str, default: float) -> float:
@@ -170,16 +180,89 @@ def _ffmpeg_decode_timeout_sec() -> float:
     return _env_positive_float("FFMPEG_DECODE_TIMEOUT_SEC", FFMPEG_DECODE_TIMEOUT_SEC_DEFAULT)
 
 
-def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
-    """Upload-input path: pull the uploaded file from R2, ffmpeg-normalize ANY
-    audio/video container to a 44.1k stereo WAV, re-stage it, and return a
-    presigned URL for Replicate. Uniform decoding means every accepted format
-    (mp3/m4a/flac/ogg/mp4/mov/…) reaches separation identically.
+# Peak at or below 2 LSB of 16-bit PCM = digital silence (the decode target is pcm_s16le).
+SILENCE_PEAK_MAX = 2
 
-    Enforces the duration cap (``MAX_UPLOAD_DURATION_SEC``) HERE, before the returned URL
-    is ever handed to Replicate: a header probe rejects an over-length file before decoding
-    it, the decode itself is bounded (``-t cap+1`` so a lying/missing header cannot expand
-    into a multi-GB WAV, plus a wall-clock timeout), and the decoded WAV is re-measured.
+
+def _min_usable_upload_sec() -> float:
+    """Shortest input that could EVER pass the extractor's guard: MIN_BARS bars of 4 beats at
+    the fastest tempo it accepts. Anything shorter fails EXTRACTION_FAILED after separation."""
+    return loop_extractor.MIN_BARS * 4 * 60.0 / loop_extractor.MAX_TRACKER_BPM
+
+
+def _wav_peak_s16(path: str) -> int:
+    """Max |sample| of a pcm_s16le WAV, read in chunks (a 300 s stereo WAV is ~53 MB)."""
+    import wave  # noqa: PLC0415
+
+    peak = 0
+    with wave.open(path, "rb") as w:
+        while True:
+            buf = w.readframes(1 << 16)
+            if not buf:
+                break
+            a = np.frombuffer(buf, dtype="<i2")
+            if a.size:
+                peak = max(peak, int(np.abs(a.astype(np.int32)).max()))
+    return peak
+
+
+def _reject_unusable_upload(job_id: str, wav: str, decoded_sec: float | None) -> None:
+    """TRIAGE 4.7: refuse, BEFORE the paid Replicate call, input the extractor can only reject.
+
+    Until this check a 1 s clip, a 5 s clip or minutes of silence were separated (billed GPU
+    seconds) and then failed EXTRACTION_FAILED in extract_loops' beat/length guard. Both tests
+    here are deterministic consequences of that guard, so nothing it would accept is refused.
+    """
+    floor = _min_usable_upload_sec()
+    if decoded_sec is not None and decoded_sec < floor:
+        log_structured(
+            "INFO",
+            "upload_rejected_unusable",
+            job_id=job_id,
+            reason="too_short",
+            duration_sec=round(decoded_sec, 2),
+            min_sec=round(floor, 2),
+        )
+        raise ExtractionFailedError(
+            f"upload is {decoded_sec:.2f}s; under {floor:.2f}s no loop can be cut"
+        )
+    if _wav_peak_s16(wav) <= SILENCE_PEAK_MAX:
+        log_structured("INFO", "upload_rejected_unusable", job_id=job_id, reason="digital_silence")
+        raise ExtractionFailedError("upload is digital silence")
+
+
+def _trim_detail(
+    job_id: str, path_kind: str, source_sec: float | None, used_sec: float | None, max_sec: float
+) -> dict:
+    """The ``job_events.detail`` payload for a trimmed input, logged as it is built.
+
+    ``source_sec`` is ``None`` when the original length could not be read (a header that
+    says nothing); ``used_sec`` falls back to the cap when the output could not be measured.
+    """
+    used = round(used_sec if used_sec is not None else max_sec, 1)
+    source = None if source_sec is None else round(source_sec, 1)
+    log_structured(
+        "INFO",
+        "input_trimmed",
+        job_id=job_id,
+        input_kind=path_kind,
+        source_sec=source,
+        used_sec=used,
+        max_sec=max_sec,
+    )
+    return {"trimmed": True, "source_sec": source, "used_sec": used}
+
+
+def _prepare_upload_source(job_id: str, upload_r2_key: str) -> tuple[str, dict | None]:
+    """Upload-input path: pull the uploaded file from R2, ffmpeg-normalize ANY
+    audio/video container to a 44.1k stereo WAV of AT MOST ``MAX_UPLOAD_DURATION_SEC``
+    seconds, re-stage it, and return ``(presigned_url, trim_detail)``.
+
+    A longer file is TRIMMED to its first ``MAX_UPLOAD_DURATION_SEC`` seconds rather than
+    refused (Jon, 2026-11-14). The bound is the decode itself (``-t cap``), so a lying or
+    missing header cannot expand into a longer WAV; the decoded WAV is then re-measured and
+    anything past the cap fails closed. ``trim_detail`` is ``None`` for an untouched track,
+    else ``{"trimmed": True, "source_sec": X | None, "used_sec": N}``.
     """
     max_sec = _max_upload_duration_sec()
     tmpdir = tmpdirs.mkdtemp(prefix="sl_upload_")
@@ -187,22 +270,7 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
     wav = os.path.join(tmpdir, "input.wav")
     download_object(upload_r2_key, raw)
 
-    def _too_long(seconds: float | None) -> UploadTooLongError:
-        log_structured(
-            "INFO",
-            "upload_rejected_too_long",
-            job_id=job_id,
-            duration_sec=None if seconds is None else round(seconds, 1),
-            max_sec=max_sec,
-        )
-        return UploadTooLongError(
-            f"upload duration {seconds}s exceeds MAX_UPLOAD_DURATION_SEC={max_sec:g}",
-            max_seconds=max_sec,
-        )
-
     declared = _probe_duration_sec(raw)
-    if declared is not None and declared > max_sec:
-        raise _too_long(declared)
 
     try:
         proc = subprocess.run(
@@ -220,9 +288,9 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
                 "44100",
                 "-c:a",
                 "pcm_s16le",
-                # Output cap: one second past the limit is enough to prove "too long".
+                # The trim: only the first `max_sec` seconds are ever decoded into the WAV.
                 "-t",
-                f"{max_sec + 1:.3f}",
+                f"{max_sec:.3f}",
                 wav,
             ],
             capture_output=True,
@@ -237,9 +305,88 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> str:
         # A file that ffmpeg can't decode is a bad/unsupported upload, not our fault.
         raise UploadInvalidError(f"ffmpeg decode failed: {proc.stderr[:200]}")
     decoded = _probe_duration_sec(wav)
-    if decoded is not None and decoded > max_sec:
-        raise _too_long(decoded)
-    return upload_input(job_id, wav)
+    if decoded is not None and decoded > max_sec + TRIM_TOLERANCE_SEC:
+        # `-t` did not hold. Never hand Replicate more than the cap: fail closed.
+        raise InternalError(f"decoded upload is {decoded}s, past the {max_sec:g}s trim")
+    _reject_unusable_upload(job_id, wav, decoded)
+
+    trim: dict | None = None
+    if declared is not None and declared > max_sec:
+        trim = _trim_detail(job_id, "upload", declared, decoded, max_sec)
+    elif (
+        decoded is not None
+        and decoded >= max_sec - TRIM_TOLERANCE_SEC
+        and (declared is None or declared < max_sec - TRIM_TOLERANCE_SEC)
+    ):
+        # The decode ran into the cap but the header did not say the file was that long
+        # (missing or lying header): it was trimmed, from a length we cannot state.
+        trim = _trim_detail(job_id, "upload", None, decoded, max_sec)
+    return upload_input(job_id, wav), trim
+
+
+def _trim_link_source(job_id: str, path: str) -> tuple[str, dict | None]:
+    """Cut a fetched LINK track to its first ``MAX_UPLOAD_DURATION_SEC`` seconds, on bytes we
+    hold, before it is staged for Replicate. Returns ``(path_to_stage, trim_detail)``.
+
+    * Measured at or under the cap: returned UNTOUCHED (same path, ``None``).
+    * Measured over the cap, or not measurable: re-encoded with ``ffmpeg -t cap`` into a new
+      WAV, which is then measured. That output is what gets staged.
+
+    FAILS CLOSED. If ffmpeg cannot read the file, or its output cannot be measured, or the
+    output is somehow past the cap, this raises ``LinkUnmeasurableError`` and nothing reaches
+    Replicate. yt-dlp's output is unbounded, so "could not trim" must never mean "billed for
+    any length".
+
+    Deliberately the SAME accessor (``_max_upload_duration_sec()``) and the same measuring
+    code (``_probe_duration_sec()``) as the upload path, so a link and an upload cannot end up
+    cut to different lengths.
+    """
+    max_sec = _max_upload_duration_sec()
+    measured = _probe_duration_sec(path)
+    if measured is not None and measured <= max_sec:
+        return path, None
+
+    out = os.path.join(tmpdirs.mkdtemp(prefix="sl_linktrim_"), "trimmed.wav")
+    try:
+        proc = subprocess.run(
+            [
+                _ffmpeg_bin(),
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                path,
+                "-vn",
+                "-c:a",
+                "pcm_s16le",
+                "-t",
+                f"{max_sec:.3f}",
+                out,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_ffmpeg_decode_timeout_sec(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        log_structured("WARN", "link_trim_failed", job_id=job_id, reason="timeout")
+        raise LinkUnmeasurableError(
+            f"link trim exceeded {_ffmpeg_decode_timeout_sec():g}s timeout"
+        ) from exc
+    if proc.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
+        log_structured("WARN", "link_trim_failed", job_id=job_id, reason="ffmpeg")
+        raise LinkUnmeasurableError(f"link trim failed: {proc.stderr[:200]}")
+    used = _probe_duration_sec(out)
+    if used is None or used > max_sec + TRIM_TOLERANCE_SEC:
+        log_structured("WARN", "link_trim_failed", job_id=job_id, reason="unmeasurable_output")
+        raise LinkUnmeasurableError(
+            f"trimmed link measured {used!r}, cannot show it is within {max_sec:g}s"
+        )
+    if measured is None and used < max_sec - TRIM_TOLERANCE_SEC:
+        # The original could not be measured but turned out shorter than the cap: nothing
+        # was cut, so there is nothing to tell the user. Stage the re-encoded (readable) copy.
+        return out, None
+    return out, _trim_detail(job_id, "youtube", measured, used, max_sec)
 
 
 def _update_job_tags(job_id: str, tags: dict) -> None:
@@ -296,9 +443,19 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     # length and where loops start, so all three agree.
     grid = estimate_beat_grid(y_ref, sr)
     tags = detect_bpm_and_key(y_ref, sr, grid=grid)
+    try:
+        loops = list(extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars, grid=grid))
+    except NoReliableBeatError as exc:
+        # B5 (Jon, 2026-11-13): a beatless or rubato track finishes `done` with its stems
+        # and chords and 0 loops, instead of failing the whole job. Only the BEAT guard
+        # lands here; too-short / no-loop-fits still raise ExtractionFailedError. The
+        # tracker's tempo is exactly what the guard just refused to trust, so no BPM is
+        # recorded (NULL) rather than a number nothing was cut to.
+        log_structured("INFO", "extract_no_reliable_beat", job_id=job_id, detail=str(exc)[:200])
+        tags = {**tags, "bpm": None}
+        _update_job_tags(job_id, tags)
+        return [], tags, {}, {}
     _update_job_tags(job_id, tags)
-
-    loops = list(extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars, grid=grid))
     segs = sorted({(loop["start_sec"], loop["end_sec"]) for loop in loops})
     energies = classify_energy(y_ref, sr, segs)
     sections = label_sections(segs, energies)
@@ -327,6 +484,10 @@ def record_loops(job_id, loops, tags, seg_label, seg_energy, bars, title=None) -
     800-point peaks, no R2 PUT. Measured per loop on the removed work: 27.9 ms of
     CPU, 2,116,844 B of R2 and 16,667 B of jsonb.
     """
+    if not loops:
+        # B5: a beatless job has no loops and a NULL bpm; the bar arithmetic below
+        # divides by bpm, so nothing past here may run for it.
+        return 0
     bar = 4 * 60.0 / tags["bpm"]
     duration_ms = int(bars * bar * 1000)
     # Loops inherit the job-level BPM/key (computed once from the reference stem).
@@ -1014,6 +1175,15 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             stem=stem_name,
             r2_key=r2_key,
         )
+    except ChordQuotaExceeded as exc:
+        # Klangio monthly cap (klangio._reserve_quota) or a 402: NO request was sent for this
+        # track, so do not tell the user detection "failed for this track" -- that invites a
+        # retry that costs another credit and hits the same cap until the cycle resets.
+        # 'not_attempted' is the truthful existing reason. Ops still see it: ERROR
+        # klangio_quota (provider), this WARN, and Sentry.
+        log_structured("WARN", "chords_skipped_quota", job_id=job_id, error=str(exc)[:200])
+        sentry_sdk.capture_exception(exc)
+        _write_chords_tombstone(job_id, "not_attempted")
     except ChordSubmitUncertain as exc:
         # A previous run may already have paid for this job but lost the id: skip rather than
         # risk a second $0.20. Tombstone reason stays one the web loader maps.
@@ -1251,6 +1421,7 @@ async def _run_pipeline(job_id: str) -> None:
 
         await set_status(job_id, "downloading")
         await emit_event(job_id, "downloading", "started", pct=0)
+        trim: dict | None = None
         override_url = os.environ.get("STEMLOOPS_AUDIO_URL")
         override_file = os.environ.get("STEMLOOPS_AUDIO_FILE")
         if override_url:
@@ -1267,7 +1438,7 @@ async def _run_pipeline(job_id: str) -> None:
         elif input_kind == "upload":
             # V2 PRIMARY input: user-uploaded file already in R2. Normalize it to WAV
             # and hand Replicate a presigned URL. No YouTube dependency.
-            audio_src = await asyncio.to_thread(_prepare_upload_source, job_id, upload_r2_key)
+            audio_src, trim = await asyncio.to_thread(_prepare_upload_source, job_id, upload_r2_key)
             _source = "upload"
             log_structured("INFO", "audio_source_upload", job_id=job_id)
         else:
@@ -1277,7 +1448,9 @@ async def _run_pipeline(job_id: str) -> None:
             # path (STUB_MODE is not set in prod env). Defense-in-depth behind route.ts.
             if os.environ.get("ALLOW_YOUTUBE_INPUT", "").lower() != "true":
                 raise DownloadBlockedError("YouTube ingestion is disabled pre-launch")
-            dl_result, _source = await asyncio.to_thread(download_audio, url, job_id)
+            dl_result, _source = await asyncio.to_thread(
+                download_audio, url, job_id, _max_upload_duration_sec()
+            )
             # R2 fix (found in staging E2E test — T12 was never actually run before):
             # Cobalt's success path returns an already-public stream URL (Replicate can
             # fetch it directly), but yt-dlp's success path returns a LOCAL file path
@@ -1286,10 +1459,24 @@ async def _run_pipeline(job_id: str) -> None:
             # cannot read a local path"). Stage local results to R2 exactly like the
             # override_file/upload paths already do; leave an already-a-URL result alone.
             if _source == "ytdlp":
-                audio_src = await asyncio.to_thread(upload_input, job_id, dl_result)
+                # The ceiling, applied to the bytes themselves and BEFORE submit_or_reattach
+                # below, i.e. before a single billed GPU-second: a track over the cap is cut
+                # to its first MAX_UPLOAD_DURATION_SEC seconds, and one that cannot be cut or
+                # measured fails closed (LinkUnmeasurableError).
+                staged, trim = await asyncio.to_thread(_trim_link_source, job_id, dl_result)
+                audio_src = await asyncio.to_thread(upload_input, job_id, staged)
             else:
+                # Cobalt returns a public tunnel URL and no local bytes, so there is nothing
+                # here to measure OR to trim. The ceiling for this leg is therefore enforced
+                # UPSTREAM, in download_audio: it only tries Cobalt when gate 0c READ the
+                # video's length and found it at or under the cap. An unreadable or
+                # over-cap length never reaches this arm (yt-dlp is the only leg that can
+                # trim). If a future change lets one through, this line is the only trace.
+                log_structured("WARN", "link_duration_unenforced_source", job_id=job_id)
                 audio_src = dl_result
-        await emit_event(job_id, "downloading", "completed", pct=100)
+        # `trim` is None for an untouched track (detail stays NULL, as before), else
+        # {"trimmed": True, "source_sec": X, "used_sec": N}; GET /api/jobs/:id reads it.
+        await emit_event(job_id, "downloading", "completed", pct=100, detail=trim)
 
         await set_status(job_id, "separating")
         await emit_event(job_id, "separating", "started", pct=15)
@@ -1303,9 +1490,11 @@ async def _run_pipeline(job_id: str) -> None:
                 stem_urls, sep_cost = await asyncio.to_thread(poll_until_done, job_id, pred_id)
                 break
             except SeparationTimeout as exc:
+                reason = getattr(exc, "failure_reason", "poll_deadline")
                 if attempt >= SEPARATION_MAX_ATTEMPTS:
                     raise SeparationFailedError(
-                        f"separation exceeded its time budget after {attempt} attempts"
+                        f"separation exceeded its time budget after {attempt} attempts",
+                        failure_reason=reason,
                     ) from exc
                 log_structured(
                     "WARN",
@@ -1313,6 +1502,7 @@ async def _run_pipeline(job_id: str) -> None:
                     job_id=job_id,
                     attempt=attempt,
                     pred_id=pred_id,
+                    reason=reason,
                 )
         # Chord recognition needs the harmonic stems whether or not the user toggled them as
         # loop output (deselecting guitar/keys must not leave only the `other` residue).
@@ -1333,8 +1523,9 @@ async def _run_pipeline(job_id: str) -> None:
             extract_and_tag, job_id, stem_paths, requested_stems, bars
         )
         # Y1.1: Chord recognition (feature-flagged). Runs AFTER extract_and_tag succeeds: a
-        # beatless / too-short track fails the job there, and must do so BEFORE the $0.20
-        # Klangio request is made, not after. Default provider
+        # too-short track fails the job there, and must do so BEFORE the $0.20 Klangio
+        # request is made, not after. A beatless / rubato track does NOT fail there (B5):
+        # it returns 0 loops and its chords ARE run, because stems + chords is what it gets. Default provider
         # per the Y1 decision record is 'klangio'. Set CHORDS_PROVIDER='' to
         # DISABLE — useful for fixture / Gate-2 runs that must not call the
         # provider. Failures here NEVER fail the pipeline: chords are an optional
@@ -1348,7 +1539,14 @@ async def _run_pipeline(job_id: str) -> None:
                 _maybe_run_chord_recognition, job_id, stem_paths, requested_stems
             )
 
-        await emit_event(job_id, "extracting", "completed", pct=100)
+        await emit_event(
+            job_id,
+            "extracting",
+            "completed",
+            pct=100,
+            # B5: say WHY there are no loops, so the job page can explain it.
+            detail=None if loops else {"loops": 0, "reason": "no_reliable_beat"},
+        )
 
         await set_status(job_id, "uploading")
         await emit_event(job_id, "uploading", "started", pct=90)
@@ -1394,9 +1592,11 @@ async def _run_pipeline(job_id: str) -> None:
         )
 
     except StemLoopsError as exc:
-        # Deliberately NOT sent to Sentry: these are the designed, typed error paths
-        # (DOWNLOAD_BLOCKED, DOWNLOAD_TIMEOUT, etc.) working exactly as intended —
-        # reporting every one would just be noise the sentry-triage job has to filter.
+        # User/input-caused typed errors (DOWNLOAD_BLOCKED, UPLOAD_TOO_LONG, etc.) are the
+        # designed paths working as intended and are NOT sent to Sentry - that would be noise.
+        # OUR-fault codes (provider outage, our storage) ARE reported, at warning level:
+        # 2026-11-14 two Replicate-502 SEPARATION_FAILED jobs never reached Sentry at all.
+        _report_our_fault(exc)
         await _fail(job_id, exc.error_code, exc.user_message)
         raise
     except Exception as exc:  # noqa: BLE001 — surface as typed INTERNAL_ERROR
@@ -1409,6 +1609,53 @@ async def _run_pipeline(job_id: str) -> None:
         raise
 
 
+# Failures that are OUR fault (provider outage, our storage, an unanticipated exception):
+# the credit the web route debited for this job is returned. See _REFUND_SQL.
+_OUR_FAULT_CODES = ("SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR")
+_REFUND_PROVIDER = "worker_job_failed"
+
+
+def _report_our_fault(exc: StemLoopsError) -> None:
+    """Send an our-fault typed failure to Sentry at warning level. Tags are low-cardinality
+    only (error_code, failure_reason such as 'poll_http_502'): no job ids, prediction ids or
+    URLs. No-op for user/input-caused codes, and if SENTRY_DSN is unset (sdk not initialised).
+    Never raises: reporting must not mask the failure being reported."""
+    if exc.error_code not in _OUR_FAULT_CODES:
+        return
+    tags = {"error_code": exc.error_code}
+    reason = getattr(exc, "failure_reason", None)
+    if reason:
+        tags["failure_reason"] = str(reason)[:64]
+    try:
+        sentry_sdk.capture_exception(exc, level="warning", tags=tags)
+    except Exception as report_exc:  # noqa: BLE001
+        log_structured("WARN", "sentry_report_failed", error=str(report_exc)[:120])
+
+
+# One credit back for a failed credit-funded job when either
+#   * the failure is ours (_OUR_FAULT_CODES), or
+#   * no paid provider call was made (replicate_prediction_id IS NULL: a corrupt, empty or
+#     over-length upload rejected before separation) -- nothing was spent, so this cannot be
+#     farmed.
+# NOT refunded: an input-caused failure AFTER paid separation (EXTRACTION_FAILED on a
+# beatless / too-short track); refunding that would make Replicate spend free to trigger.
+# Idempotent: credit_adjustments is UNIQUE (provider, provider_event_id) and the job id is
+# the event id, so a reaper rerun that fails again cannot refund twice. Only jobs with a
+# credit_consumption row are touched (quota-funded and anonymous jobs spent no credit).
+# reason='adjustment' (positive delta) so it can never collide with Stripe 'refund'
+# clawbacks, which are negative and keyed by charge.
+_REFUND_SQL = """
+INSERT INTO credit_adjustments (user_id, credits_delta, reason, provider, provider_event_id)
+SELECT cc.user_id, 1, 'adjustment', %(provider)s, cc.job_id::text
+  FROM credit_consumption cc
+  JOIN jobs j ON j.id = cc.job_id
+ WHERE cc.job_id = %(job_id)s
+   AND (%(our_fault)s OR j.replicate_prediction_id IS NULL)
+ON CONFLICT (provider, provider_event_id) DO NOTHING
+RETURNING user_id
+"""
+
+
 async def _fail(job_id: str, error_code: str, user_message: str) -> None:
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
         await conn.execute(
@@ -1416,3 +1663,22 @@ async def _fail(job_id: str, error_code: str, user_message: str) -> None:
             (error_code, user_message, job_id),
         )
         await conn.commit()
+    try:
+        async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+            cur = await conn.execute(
+                _REFUND_SQL,
+                {
+                    "provider": _REFUND_PROVIDER,
+                    "job_id": job_id,
+                    "our_fault": error_code in _OUR_FAULT_CODES,
+                },
+            )
+            refunded = await cur.fetchone()
+            await conn.commit()
+        if refunded:
+            log_structured(
+                "INFO", "credit_refunded_failed_job", job_id=job_id, error_code=error_code
+            )
+    except Exception as exc:  # noqa: BLE001 — a refund problem must never mask the failure
+        log_structured("ERROR", "credit_refund_failed", job_id=job_id, error=str(exc)[:200])
+        sentry_sdk.capture_exception(exc)

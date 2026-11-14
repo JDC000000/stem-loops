@@ -49,12 +49,15 @@ export default function PrivacyPage() {
               </li>
               <li>
                 <strong>Your recent jobs.</strong> Your browser keeps a list of your recent job IDs (local storage plus a small
-                signed cookie, both dropped after 24 hours) so the Job history page works. It is not used for anything else.
+                signed cookie; each job id is dropped once its job is deleted, and the cookie expires 24 hours after your last job) so the Job history page works. It is not used for anything else.
               </li>
             </ul>
 
             <h2>How long</h2>
-            <p>Uploaded files, fetched audio, stems, loops and the job’s own row are deleted after 24 hours.</p>
+            <p>
+              Uploaded files, fetched audio, stems, loops, the estimated chord track and the job’s own row are
+              deleted after 24 hours.
+            </p>
             <p>
               Account details are not on that clock, because an account has to outlive a job to be useful. They stay until you
               delete the account, which you can do yourself from your <a href="/account">account page</a> at any time, or by
@@ -124,14 +127,18 @@ export default function PrivacyPage() {
 
             <h2>Links to jobs</h2>
             <p>
-              A job’s link is the only thing protecting it. The player page asks you to sign in, but that gate is on the page
-              alone — the job’s audio and stems can be fetched by anyone holding the link, with no account at all, until the
-              job is deleted. So don’t share a link you want to keep private.
+              A job you start without an account is protected only by its link: anyone holding the link can fetch its audio
+              and stems, with no account at all, until the job is deleted. So don’t share a link you want to keep private.
+            </p>
+            <p>
+              A job you start while signed in can be opened only by your account. For anyone else, its link behaves as if
+              the job did not exist. The file links we hand out for a job last up to 24 hours and cannot be recalled once
+              issued, so a file link that someone already has keeps working until it expires.
             </p>
 
             <h2>Contact</h2>
             <p>
-              stem-loops is run by Jon Cartwright. Questions or deletion requests: email{' '}
+              Jon Cartwright runs stem-loops. Questions or deletion requests: email{' '}
               <a href={CONTACT_URL}>{CONTACT_LABEL}</a>. See also the <a href="/terms">terms</a>.
             </p>
           </div>

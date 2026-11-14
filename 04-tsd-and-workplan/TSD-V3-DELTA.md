@@ -1,7 +1,67 @@
 # TSD-V3-DELTA: Stem-Loops V3 (commercial layer + Play engine + Spotify + fetch) — delta over the pinned TSD
 
-Author: SL-V3 architect lane. Date: 2026-11-10 (v1.7 amendment pass — corrections to v1.5/v1.6 after an adversarial review scored them 48/100, plus Jon's .wav and 3-free-stems decisions; see Changelog below). Status: DRAFT for Jon's review.
+Author: SL-V3 architect lane. Date: 2026-11-14 (**v1.9** amendment: V3-J4 revised — a song over 5 minutes is TRIMMED to its first 5 minutes, not refused; see the v1.8 → v1.9 Changelog and §12.5). Previous: 2026-11-11 (v1.8 amendment pass — the plan catalog re-priced on tracks-converted-to-play-along, and every plan flag that advertised an unbuilt capability cleared; see Changelog below). Previous: 2026-11-10 (v1.7 amendment pass — corrections to v1.5/v1.6 after an adversarial review scored them 48/100, plus Jon's .wav and 3-free-stems decisions). Status: DRAFT for Jon's review.
 This document EXTENDS the pinned TSD at `stem-loops-handoff/07-roadmap/TSD.md` (SL21-tsd, commit c3f6a911 of `stem-loops`). It is a DELTA only — anything the pinned TSD covers (job state machine, kill switches, blocklist, fetch chain, loops/export, R2 layout, migrations 001–012) is NOT restated here, only cross-referenced by section number (e.g. `TSD §3.1`). All new requirement IDs are prefixed **V3-**; new tests prefixed **T-V3-**. Pinned reqs use their existing IDs (R-A0, R-X2, etc.).
+
+---
+
+## Changelog — v1.8 → v1.9 (2026-11-14 — long songs are trimmed to their first 5 minutes, not refused)
+
+Source: **Jon, 2026-11-14 07:40 PT** — *"If a song is more than 5 minutes, it should still be converted to a play along, but it just [processes the first] 5 minutes of the song. Fix this. Update all production requirements."*
+
+| § | Change | Source |
+|---|---|---|
+| §0 Header | v1.8 → **v1.9** | this amendment |
+| **§12.5** | **V3-J4 REVISED: trim, not refuse.** The 300 s ceiling stays (`MAX_UPLOAD_DURATION_SEC` = `MAX_TRACK_SEC` = `CHORDS_MAX_AUDIO_SEC` = `KLANGIO_MAX_AUDIO_SEC`), but an input longer than it is **cut to its first 300 s** on bytes the worker holds and the job proceeds. `UPLOAD_TOO_LONG` is no longer raised for length | Jon 2026-11-14 |
+| **§12.5** | The trim is recorded on the `downloading`/`completed` job event (`detail = {"trimmed": true, "source_sec": X, "used_sec": N}`; no migration) and shown on the job page: *"Using the first 5:00 of a 6:12 track."* | this amendment |
+| **§12.5** | Browser admission probe: no longer declines a >5 min file; shows *"This track is longer than 5 minutes — we'll use the first 5 minutes."* before submit | Jon 2026-11-14 |
+| **§12.5** | Cobalt (URL, no bytes, cannot be trimmed) is tried only when gate 0c **read** a length at or under the cap — unknown **or long** → skipped | this amendment |
+| **§13 table** | V3-J4 row restored as **LAUNCH — trim to first 300 s** | this amendment |
+| Copy | Landing, `/terms`, root metadata: *"Tracks up to 5 minutes"* → *"Uses the first 5 minutes of any song"*; *"Longer tracks are not supported"* → *"A longer track is trimmed on our end to its first 5 minutes"* | Jon 2026-11-14 |
+
+---
+
+## Changelog — v1.7 → v1.8 (2026-11-11 — the plan catalog re-priced, and the unbuildable flags cleared)
+
+Source: **Jon's approved pricing model, 2026-11-11**, metered on *tracks converted to play-along* — his words: *"we should revise pricing for numbers of tracks converted to playalong."* Implemented by **migration `034_v3_pricing_model_truth.sql`**, which from here is the **source of truth for plan values**; `014_v3_seed_plans.sql` is left unedited as the historical record (append-only, §11 Merge Safety Rule (b)).
+
+### The approved model
+
+| code | tracks / month | price | link import |
+|---|---|---|---|
+| `free` | **5** | $0 | YouTube — **unchanged, see O-8** |
+| `pro` | **50** | $4.99 CAD | none — **unchanged, see O-8** |
+| `studio` | **150** | $12 CAD | none — **unchanged, see O-8** |
+
+Credits (20 for $5) are unchanged and still live in `public.credit_packs` (migration 020).
+
+| § | Change | Source |
+|---|---|---|
+| §0 Header | v1.7 → **v1.8** | this amendment |
+| **§1.2** | Plan table **REPLACED**. Free *"3 songs/day"* → **5 tracks/month**; Pro *"Unlimited own-file processing"* → **50 tracks/month**; Studio → **150 tracks/month** | Jon 2026-11-11 |
+| **§1.2** | **"Unlimited" is retired as a concept.** No plan is unlimited. The `100000` values Pro and Studio carried were a sentinel that `rate-limit.ts` short-circuits on, i.e. an unmetered paid tier against a real per-job cost | Jon 2026-11-11 |
+| **§1.2b (NEW)** | Names the metered unit, the enforcement path, and migration 034 as the source of truth | this amendment |
+| **§1.3** | `export_stems` is **false on every plan**. There is no stem-export route — `/api/jobs/[id]/stems` serves Opus **playback** urls and says so, and `mintStemDownloadUrl()` has no production caller. This **supersedes the v1.7 "3 free downloads, then paid" amendment**, which specified an allowance against a feature that does not exist | measured against the repo, 2026-11-11 |
+| **§1.3** | `export_wav24` is **false on every plan**. Loops *are* 24-bit WAV (`worker/encoder/wav_encoder.py` writes `PCM_24`) — for **every** tier, with no account, as the landing page has always advertised. So it is a real feature and a **false differentiator** | measured against the repo, 2026-11-11 |
+| **§1.3** | Error copy corrected. `PAID_LINK_INGEST_DISALLOWED` told users to *"Paste a link into the free tier (3/day)"* — **no 3/day limit has ever been implemented**; the allowance is `plans.monthly_job_quota` per calendar month. Its headline also omitted Studio, which the guard also refuses | measured against the repo, 2026-11-11 |
+| **§1.2 / `plans.services`** | **Spotify and SoundCloud removed from the free plan row.** Neither has a downloader, a route or an error code anywhere in the repo, and the pricing page advertised both purely because the column listed them | measured against the repo, 2026-11-11 |
+| **§11** | **NEW O-8** — the one item in the approved model that is *not* implemented here, because it reverses §1.2a | this amendment |
+
+### What this amendment does NOT do, and why — **O-8, for Jon**
+
+Jon's approved model gives **Pro and Studio YouTube link import** and takes it **off Free**. **That is not implemented.** `plans.services` is left `{}` on the paid tiers and `{youtube}` on free. The reason is not reluctance to follow the decision; it is that the decision as written cannot be delivered by a data change, and shipping the data change alone would produce a *new* false page:
+
+1. **`services` does not gate link ingest.** `enforceEntitlement()` refuses it for `pro`/`studio` **by plan code, before it ever reads `services`**. Writing `ARRAY['youtube']` would make /pricing advertise an import the API answers with a **400**.
+2. **Nor would clearing free's `services` disable it.** The link branch of `POST /api/jobs` acts on **only** `PAID_LINK_INGEST_DISALLOWED` and deliberately ignores every other entitlement outcome, and anonymous callers skip the guard entirely. Free link import would keep working while the page said it did not.
+3. **Making either true means reversing §1.2a** — the rule this document calls **NON-NEGOTIABLE**, whose stated rationale is that it *"moves adversarial-review Lens B (CAP, 84/100) above 90"* by keeping **payment-processor underwriting** clean: *"The processor sees a software product that accepts audio uploads and sells credits."* Monetising the YouTube-sourced path is the exposure that separation exists to remove. **v1.5 amended the stems half of §1.2a and explicitly left this half standing: *"The paid/free separation rule itself is NOT otherwise amended and must be revisited when Stripe lands."*** This is that moment, and it is a legal and product decision for Jon, recorded as his — the convention v1.5 set when it reversed a legal-risk mitigation.
+
+**What Jon decides:** whether to reverse the §1.2a link-ingest separation for paid tiers. If yes, it is its own change — `entitlements.ts`, the two test files that assert the current rule (`paid-link-ingest-disallowed.test.mjs`, `jobs-link-paid-blocked.test.mjs`), the error-code semantics, and a recorded §1.2a override. Nothing in this amendment blocks it.
+
+### The cost numbers the margins rest on — **state this caveat wherever a margin is stated**
+
+Measured read-only from production 2026-11-11: **median Replicate spend $0.0288 USD per job, mean $0.0298, max $0.0446, over 4 jobs.** That is a **4-job sample** and it measures **Replicate only** — **Klangio, R2 storage and egress, Vercel and Fly are unmeasured.** Every margin implied by $4.99/50 or $12/150 inherits both limits.
+
+Items intentionally UNCHANGED in v1.8: §1.1, §1.2a (see O-8), §1.4–§1.9, §2, §3, §4, §5, §6, §7, §8, §9, §10, §12. Credits SKUs unchanged. No schema DDL moves — 034 is pure DML on `public.plans` plus three column comments.
 
 ---
 
@@ -227,6 +287,42 @@ v1.7's other three corrections stand unchanged and are not disturbed: the tombst
 minutes". A browser-side duration probe at admission declines the obvious case before the
 upload and the spend; it **fails open** and is a spend-and-UX guard only — the worker cap
 remains the enforcement.
+
+#### ✂ REVISED in v1.9 (2026-11-14) — trim to the first 5 minutes, do not refuse
+
+> 🟢 **V3-J4 now reads: every song is converted; a song longer than 5 minutes is converted
+> from its first 5 minutes.** Jon, 2026-11-14: *"If a song is more than 5 minutes, it should
+> still be converted to a play along, but it just [processes the first] 5 minutes of the song."*
+> The v1.8 text above is kept as the record; where it says *refuse* / *declines*, this governs.
+
+**What stays.** The 300 s ceiling and its reasons (player PCM memory budget, `MAX_TRACK_SEC`;
+Klangio ≤ 300 s; Replicate cost per GPU-second). One knob, `MAX_UPLOAD_DURATION_SEC` (default
+300), is now the **trim length**. The player's `MAX_TRACK_SEC` check stays as a safety net.
+Billing is unchanged (one job = one credit). Chords are unaffected: a trimmed input is ≤ 300 s.
+
+**Requirements (all enforced in the worker, on bytes it holds, before Replicate is called):**
+
+| ID | Requirement | Where |
+|---|---|---|
+| V3-J4.1 | An **upload** longer than the cap is decoded with `ffmpeg -t <cap>`; the WAV handed to Replicate is ≤ cap. Corrupt / empty / silent / too-short / size guards unchanged | `pipeline._prepare_upload_source` |
+| V3-J4.2 | A **link** longer than the cap is fetched by yt-dlp and cut with `ffmpeg -t <cap>`; the output is re-measured and the job **fails closed** (`LinkUnmeasurableError`, `INTERNAL_ERROR`) if it cannot be cut or measured. A link at or under the cap is staged untouched | `pipeline._trim_link_source` |
+| V3-J4.3 | **Cobalt** returns a URL and no bytes, so it cannot be trimmed: it is tried only when gate 0c read a length **at or under** the cap. Unknown or long → skipped; the yt-dlp error stands | `downloader.download_audio` |
+| V3-J4.4 | Gate 0c **refuses nothing**. It reads the length for the Cobalt decision and logs `fetch_will_trim` | `downloader.download_audio` |
+| V3-J4.5 | A trimmed job records `{"trimmed": true, "source_sec": X \| null, "used_sec": N}` on its `downloading`/`completed` event; `GET /api/jobs/:id` exposes it as `input_trim_used_sec` / `input_trim_source_sec` (event `detail` itself is never sent to the browser) and the job page shows *"Using the first 5:00 of a 6:12 track."* | `pipeline._run_pipeline`, `api/jobs/[id]/route.ts`, `lib/input-trim.ts` |
+| V3-J4.6 | The browser probe never declines; for a measured >5 min file it shows *"This track is longer than 5 minutes — we'll use the first 5 minutes."* before submit. Unmeasurable → no note | `lib/upload-duration.ts`, `ToolForm.tsx` |
+| V3-J4.7 | `UPLOAD_TOO_LONG` / `LinkTooLongError` stay **defined** (old rows, web error-copy map) but are **not raised** for length | `errors.py` |
+
+**Design choice — download then trim, not `--download-sections`.** yt-dlp's section download
+hands the IP-bound googlevideo URL to an ffmpeg sub-download; the sticky-session proxy fix in
+`ytdlp_client` exists because a media request on a different exit IP 403s. The full fetch is
+the leg already proven through the proxy. **Residual:** a very long video (an hour+) is
+fetched in full and may hit the yt-dlp timeout → `DOWNLOAD_TIMEOUT` (typed; the user is offered
+upload). Previously gate 0c refused it with `UPLOAD_TOO_LONG` before fetching.
+
+**Tests:** `apps/worker/tests/test_link_duration_cap.py`, `test_upload_duration_cap.py`,
+`test_link_money_path_e2e.py` (DB); `apps/web/test/job-input-trim.test.mjs`,
+`src/lib/upload-duration.test.mjs`, `test/job-page-render.test.mjs`, `test/landing-copy.test.mjs`,
+`test/legal-terms-copy.test.mjs`.
 
 ### 12.6 V3-J7 — the fetch path must actually work (NEW in v1.7) — **THE LAUNCH BLOCKER**
 
@@ -463,22 +559,37 @@ Pinned reqs that this doc leaves untouched: R-A0, R-A1, R-A2, R-A4, R-B1, R-B2, 
   - **hCaptcha** on `/signup` and on the credits-purchase form (`apps/web/src/components/HCaptcha.tsx` + `HCAPTCHA_SITE_KEY` + `HCAPTCHA_SECRET_KEY` env);
   - **Per-IP rate limit** on `/api/billing/checkout` (3/5min) and `/api/users/me/claim-jobs` (10/day) via existing M5 pattern.
 
-### 1.2 Plan tiers / SKUs (V3-C2) — **REPLACED per Jon 2026-11-02T22:45 (credits model LOCKED)**
+### 1.2 Plan tiers / SKUs (V3-C2) — **RE-PRICED per Jon 2026-11-11 (v1.8); credits model still LOCKED per Jon 2026-11-02T22:45**
 
 | Tier | What | Price | Payment surface | Processor touches link-ingest? |
 |---|---|---|---|---|
-| **Free (forever)** | Link + file ingest, **3 songs/day**, device-fingerprint rate limited, no account needed | $0 | — | **NO** (free tier is zero-processor exposure) |
+| **Free** | Link + file ingest, **5 tracks converted to play-along / month**, device-fingerprint rate limited, no account needed | $0 | — | **NO** (free tier is zero-processor exposure) |
 | **Credits (PRIMARY SKU)** | **20 songs $5** / **60 songs $12** / **180 songs $30**. Never expire. One-time charges. StemSplit-style model. | $5 / $12 / $30 | Stripe one-time Checkout | **NO** — own-file only |
-| **Pro Monthly** (secondary) | Unlimited own-file processing, chord/section cache per account, promo codes work here | $4.99/mo | Stripe recurring + Portal | **NO** — own-file only |
-| **Studio** | Recording, higher rate limits, priority queue | $12/mo | Stripe recurring + Portal | **NO** — own-file only |
+| **Pro Monthly** (secondary) | **50 tracks converted to play-along / month**, chord/section cache per account, promo codes work here | $4.99/mo | Stripe recurring + Portal | **NO** — own-file only (see **O-8**) |
+| **Studio** | **150 tracks converted to play-along / month**, recording, higher rate limits, priority queue | $12/mo | Stripe recurring + Portal | **NO** — own-file only (see **O-8**) |
 
 Plan→feature mapping is in a `plans` table (DB-driven; not hard-coded) so adding/pricing a plan is a row insert, not a deploy. (Patreon "Founding Supporter" bridge tier removed per Jon 2026-11-03 — V3 relies solely on Stripe + Paddle adapter for monetization.)
+
+### 1.2b The metered unit, and where plan values live (v1.8)
+
+**The metered unit is one track converted to play-along.** It is counted by `public.plans.monthly_job_quota` and enforced by `checkMonthlyQuota()` in `apps/web/src/lib/billing/rate-limit.ts`, which compares `entitlements.jobs_used` against that column and rolls on `period_end` — a **calendar month**. No daily cap exists anywhere in the system; every document that said "3/day" or "3 songs per day" was describing something that was never built.
+
+**Source of truth for plan values: `apps/worker/migrations/034_v3_pricing_model_truth.sql`.** `014_v3_seed_plans.sql` seeded the catalog and is retained unedited as the historical record; 034 applies after it and wins. Both insert all three rows idempotently (`ON CONFLICT (code) DO UPDATE`), so a fresh database lands the full catalog — contrary to a reading that only `free` is ever seeded, which `013` seeds **deliberately and minimally** (a self-contained `ON CONFLICT DO NOTHING` row) purely so the `handle_new_user` trigger's FK into `plans(code)` cannot fail if 013 is applied before 014.
+
+**Two flags are false on every plan and must stay false until the features exist:**
+
+| flag | why false |
+|---|---|
+| `export_stems` | No stem-export route exists. `/api/jobs/[id]/stems` serves **Opus playback** urls, and `mintStemDownloadUrl()` has no production caller. |
+| `export_wav24` | Loops are already 24-bit WAV for **every** tier, free and anonymous included. A paid flag here can only overstate what a paid plan adds. 24-bit WAV loop download is named on all three tiers in the UI, which is the truth. |
+
+The pricing page derives its bullets from these columns, and `apps/web/test/pricing-features-table.test.mjs` asserts the rendered bullets against both the migration **and** a ban list of capabilities absent from the repo. Before it, the whole feature table was unasserted: a mutant renaming a bullet shipped with the suite green.
 
 ### 1.2a Critical processor-exposure rule — **NON-NEGOTIABLE** (per adversarial review Lens B 84→90+)
 
 **The paid tiers (Credits, Pro Monthly, Studio) NEVER touch the YouTube / Spotify / SoundCloud link-ingest path. Link ingest lives in the free tier forever.** (Patreon tier removed per Jon 2026-11-03.) This is the structural separation that keeps paid-tier processor underwriting clean:
 
-- Any paid-tier action (credit decrement, Pro-gated feature, Studio queue priority) is gated on `input_kind='upload'`. The entitlement guard (§1.3) returns `PAID_LINK_INGEST_DISALLOWED` 400 if a paid-tier user attempts a link URL — the fallback is to use their free-tier 3 songs/day allowance instead (same anonymous rate-limit cohort).
+- Any paid-tier action (credit decrement, Pro-gated feature, Studio queue priority) is gated on `input_kind='upload'`. The entitlement guard (§1.3) returns `PAID_LINK_INGEST_DISALLOWED` 400 if a paid-tier user attempts a link URL — the fallback is to use the free-tier allowance instead (same anonymous rate-limit cohort). ⟲ **v1.8:** that allowance is **5 tracks / calendar month** (`plans.monthly_job_quota`), not the "3 songs/day" this line used to claim. The separation rule itself is unchanged — see **O-8**.
 - The DB enforces this: `credit_purchases` ledger decrements only on `job_completed WHERE input_kind='upload'`. A trigger (`check_credit_decrement`) rejects any attempted debit against a link-ingest job.
 - Link ingest telemetry (`fetch_attempts`, Sentry breadcrumbs) carries NO `user_id` even when a logged-in user triggers it — the row is anonymous (`client_ip_hash` only). The free-tier RL cohort rules apply.
 - **Rationale**: this is what moves adversarial-review Lens B (CAP, 84/100) above 90. The processor sees a software product that accepts audio uploads and sells credits — the merchant description in §1.1 remains truthful. The YouTube-link path is a free, no-processor-touch experience.
@@ -489,21 +600,22 @@ Price points LOCKED per Jon 2026-11-02T22:45. The $4.99 / $12 numbers are no lon
 
 Every billable action goes through a single server-side guard: `enforceEntitlement(userId, action, context)`.
 - Actions and when they are checked:
-  - `create_job`: at `POST /api/jobs` (TSD §3.1), before admission and after the kill-switch gate. On free tier, blocks on `jobs_today >= 3` (device-fingerprint + IP cohort). On paid tier with `input_kind='upload'`, blocks on `credits_remaining <= 0` AND no active Pro/Studio subscription.
-  - **`check_processor_separation`** (new): if the request carries `user_id` with ANY active paid entitlement (credits balance > 0, Pro, or Studio) AND `input_kind != 'upload'`, the guard either (a) routes the request to the anonymous free-tier cohort (preferred — transparent) or (b) returns `PAID_LINK_INGEST_DISALLOWED` 400 if the user has already used their 3 free songs today. This is the enforcement half of §1.2a. (Patreon-mapped entitlement check removed per Jon 2026-11-03.)
+  - `create_job`: at `POST /api/jobs` (TSD §3.1), before admission and after the kill-switch gate. On free tier, blocks on the monthly quota (`plans.monthly_job_quota`, **5** as of v1.8) via `checkMonthlyQuota()` — **not** a `jobs_today >= 3` daily cap, which was never implemented. On paid tier with `input_kind='upload'`, blocks on `credits_remaining <= 0` AND no active Pro/Studio subscription.
+  - **`check_processor_separation`** (new): if the request carries `user_id` with ANY active paid entitlement (credits balance > 0, Pro, or Studio) AND `input_kind != 'upload'`, the guard either (a) routes the request to the anonymous free-tier cohort (preferred — transparent) or (b) returns `PAID_LINK_INGEST_DISALLOWED` 400. ⟲ **v1.8:** the "3 free songs today" condition described a daily cap that was never built; the real gate is the monthly quota. This is the enforcement half of §1.2a. (Patreon-mapped entitlement check removed per Jon 2026-11-03.)
   - `fetch_service:<name>`: inside `create_job`, discriminated by host (`youtube | spotify | soundcloud`). All services available on free tier (link ingest is free tier only). Apple/Tidal remain Phase 4 trigger-based.
-  - `export_stems`: at the signed-URL mint path (TSD §3.2 `GET /api/jobs/:id`). Free gets `mix` only; Credits/Pro/Studio get stems (if the job was `input_kind='upload'`); Studio gets WAV 24-bit.
+  - `export_stems`: **DENIED ON EVERY PLAN as of v1.8 (2026-11-11).** `plans.export_stems` is false across the catalog per migration 034, because **no stem-export route exists** — `/api/jobs/[id]/stems` serves Opus **playback** urls and documents that in its own header, and `mintStemDownloadUrl()` has **no production caller**. The guard is still data-driven, so it starts allowing the moment a plan row sets the flag and a route exists to honour it. ⚠️ **This supersedes the v1.7 amendment below**, which specified a 3-download allowance against a feature that has never been built; the allowance cannot be "3 free then paid" when it is 0 and unbuildable. `export_wav24` is likewise false everywhere: loops are 24-bit WAV for every tier already.
+    > ⟲ **Superseded 2026-11-11 (v1.8).** Retained verbatim because this document records decisions rather than rewriting them:
     > 🟡 **AMENDED 2026-11-10 (v1.7), per Jon: "stem download = 3 free then move to paid once stripe is integrated."** So at launch `export_stems` is **not** a hard paid gate — it is a **3-download allowance, then paid**. This resolves the contradiction the M-9 review found between this line and §12.2 (v1.6 had specified a free per-stem download outright, which would have given away the paid tiers' differentiator). Two constraints carried forward: the `input_kind='upload'` restriction **no longer applies** (Jon's link-path override, v1.5 §5.4), and **`.wav` is the download format** (Jon). ⚠️ **Open:** the allowance needs an identity, and the launch path is anonymous — see §11.
   - `play_access`: at `GET /api/jobs/:id` when `play` block is requested.
 - Guard order: kill switch → **processor separation** → entitlement → rate limit → admission (per TSD §3.1 M5 pattern). Guard runs in the request handler, not in the client, and is covered by T-V3-C3 (mutant: remove the guard → test must fail).
 - `enforceEntitlement` returns a typed denial reason that maps to a user copy entry in `apps/web/src/lib/error-copy.ts`:
-  - `FREE_DAILY_LIMIT` 402 → "You've used your 3 free songs today. Try again tomorrow, or upload your own file with credits."
+  - ~~`FREE_DAILY_LIMIT` 402 → "You've used your 3 free songs today."~~ **NOT IMPLEMENTED and never was** — there is no daily cap and no such code in `error-copy.ts`. The real monthly denial is a 402 from `checkMonthlyQuota()` carrying `resets_at`.
   - `CREDIT_BALANCE_INSUFFICIENT` 402 → "You're out of credits. Buy 20 for $5, 60 for $12, or 180 for $30."
-  - `PAID_LINK_INGEST_DISALLOWED` 400 → "Credits and Pro only work with files you upload. Paste a link into the free tier (3/day) instead."
-  - `PLAN_EXPORT_UNAVAILABLE` 402 → "Stem export is on Credits, Pro, and Studio."
+  - `PAID_LINK_INGEST_DISALLOWED` 400 → **CORRECTED v1.8** → "Credits, Pro and Studio only work with files you upload." / "Upload your file instead, or use link import on the free tier — see /pricing for the monthly allowance." The old copy promised a **"(3/day)"** allowance that has never existed, and its headline omitted **Studio**, which the guard also refuses.
+  - ~~`PLAN_EXPORT_UNAVAILABLE` 402 → "Stem export is on Credits, Pro, and Studio."~~ **WITHDRAWN v1.8** — no stem-export route exists, so no plan can offer it. `enforceEntitlement('export_stems')` denies on every plan with `ENTITLEMENT_UNAVAILABLE`.
   - `SUB_PAST_DUE` 402 → "Your subscription needs attention. Open the billing portal."
   - `TRIAL_EXHAUSTED` 402 → "You've used your 3 trial songs. Buy credits to continue — $5 for 20."
-- HTTP 402 Payment Required is used across the board; the body includes `upgrade_url` from the current Stripe Checkout session (credits-pack checkout for free, Pro for Credits users wanting unlimited).
+- HTTP 402 Payment Required is used across the board; the body includes `upgrade_url` from the current Stripe Checkout session (credits-pack checkout for free, Pro for Credits users wanting a larger monthly allowance — **no tier is unlimited as of v1.8**).
 
 ### 1.4 Usage metering & rate limiting per tier (V3-C4)
 - Metering model: an append-only `usage_events` table (DDL §2.3) counts billable facts (`job_created`, `job_completed`, `export_minted`, `play_opened`, etc.). The counter is derived (`COUNT(*) WHERE user_id=$1 AND kind='job_created' AND created_at >= period_start`), not stored, so a double-count bug can be corrected by replay.
@@ -875,8 +987,8 @@ Scope: Spotify link → canonical track metadata (artist, title, duration, ISRC 
 - Daily report `v_isrc_sources` (MV): count of ISRC hits by source. Any day where MusicBrainz hit-rate < 70% triggers a Sentry warning (points to a UA-blocking or rate issue).
 
 ### 4.3 Entitlement + match card UX
-- Phase 1a: **link ingest is free-tier only (§1.2a)**. There is no "Spotify is Pro-only" entitlement check — Spotify link ingest is part of the free tier's 3/day. The guard check is `check_processor_separation` (§1.3), not `fetch_service:spotify`.
-- Match card (`MatchCard.tsx`, TSD-P1-18) adds a "Buy credits to run this through our Studio engine" footer when the user has used their 3 free songs and the match is high-confidence (A/B behind flag `V3_MATCH_UPSELL`).
+- Phase 1a: **link ingest is free-tier only (§1.2a)**. There is no "Spotify is Pro-only" entitlement check — Spotify link ingest would be part of the free tier's monthly allowance. ⟲ **v1.8:** Spotify has **no implementation at all** — no downloader, route or error code — and has been removed from `plans.services`, so it is no longer advertised on /pricing. The guard check is `check_processor_separation` (§1.3), not `fetch_service:spotify`.
+- Match card (`MatchCard.tsx`, TSD-P1-18) adds a "Buy credits to run this through our Studio engine" footer when the user has exhausted their monthly allowance and the match is high-confidence (A/B behind flag `V3_MATCH_UPSELL`).
 
 ### 4.4 Open items from PRD §2 that this delta resolves
 - "ISRC via Spotify Web API" — **REVERSED** (V3 §4.1). Primary is MusicBrainz; Spotify Web API gated behind env flag + legal review.
@@ -946,7 +1058,7 @@ Order (V3 unchanged from pinned, modulo branch α dropping the proxy):
   - **Safari (desktop and iOS)** — no `getDisplayMedia` for tab audio on Safari 17; iOS Safari has no `getDisplayMedia` API at all. Mobile Chrome/Edge likewise.
   - **UX:** on an unsupported browser, feature-detect at page load and **do not render the "start chord overlay" button**; instead render an inline banner — "Chrome or Edge required to enable the chord overlay. Your browser does not support tab-audio capture." — pointing to a short help page. Never surface a click-through button that would fail silently.
 - Reqs: V3-Y1 pass bar = chord detection median latency < 500 ms end-to-end on 2020 4-core laptop Chrome; chord accuracy within 2% of the **server-side chord-recognition provider** (Klangio bridge → ChordNet 2E1D student per PR-Y1.1 / PR-Y1.4; decision record v1.3) on the 20-song eval set.
-- Entitlement: no credit charge, no Pro requirement. Free-tier daily cap applies (3/day).
+- Entitlement: no credit charge, no Pro requirement. The free-tier **monthly** quota applies (5 tracks / month as of v1.8) — there is no daily cap.
 
 ### 5.5 Vercel REST uploader footgun (NOTE — Control Room answers)
 `evidence/health-check/vercel-deploy.mjs` currently **hard-codes `NEXT_PUBLIC_ALLOW_YOUTUBE_INPUT=true`**. This is a V3 pre-deploy footgun: a V3 deploy must not re-enable or override that env from a baseline script. **Fix before any V3 deploy script merges.** Phase 1a entry pre-work item for the operator. (D-1 open question is RESOLVED separately: YouTube input IS intentionally ON in prod since 2026-07-18; the fix is to the RESTORE doc wording in `08-runbooks.md` §5, not to the deployed state.)
@@ -1105,7 +1217,7 @@ Three surfaces, read in this priority order (first non-null wins), cached 30 s:
 | **V3-J1** | **LAUNCH** | Jon performs the full journey — YouTube link → stems → play along with a per-stem fader and a synced chord timeline — on a real song with his own guitar, and confirms it. **A green test suite is explicitly NOT a pass** | **owner acceptance**, not CI |
 | **V3-J2** | **LAUNCH** | 6 full-length Opus stems retained and reachable by short-TTL signed URL for a real job id; **a `.wav` per stem downloadable**; all bound by the existing 24-hour expiry | T-V3-J2 |
 | **V3-J3** | **LAUNCH** | The chord under the playhead is the chord being heard, within a stated and measured tolerance. ⚠️ **Tolerance number, test id and clock source are still UNSPECIFIED** — see §11 | T-V3-J3 |
-| ~~**V3-J4**~~ | ~~LAUNCH~~ | **WITHDRAWN v1.7** — premise false; existing 600 s upload cap and 300 s chord gate are already correct. See §12.5 | — |
+| **V3-J4** | **LAUNCH** | **REVISED v1.9:** any song is converted; one longer than 300 s is trimmed to its first 300 s (upload and link), Replicate never receives more than 300 s, and the job page says *"Using the first 5:00 of a M:SS track."* (v1.7 withdrew it; v1.8 reinstated it as a refusal.) See §12.5 | T-V3-J4: `test_link_duration_cap.py`, `test_upload_duration_cap.py`, `test_link_money_path_e2e.py`, `job-input-trim.test.mjs` |
 | **V3-J5** | **LAUNCH** | Chrome/Edge desktop pass V3-J1. Unsupported browsers show a feature-detected banner, never a failing button | T-V3-J5 |
 | **V3-J6** | — | **ID RETIRED in v1.7** to avoid collision: v1.6 used V3-J6 for the Dec-5 deadline, now **V3-J8** | — |
 | **V3-J7** | **LAUNCH — BLOCKER** | Three different public YouTube links reach `done`. **Currently 0%** — two measured failures 2026-11-10. ⚠️ Depends on an external purchase (residential proxy), not on code | T-V3-J7 |
@@ -1142,6 +1254,8 @@ Three surfaces, read in this priority order (first non-null wins), cached 30 s:
 | **O-5** | **§12.3's sync tolerance is unspecified** — no number, no test id, no clock source (§3.1's `startFrame` vs `AudioContext.currentTime`) | V3-J3 is stated but not yet actionable |
 | **O-6** | **COOP/COEP for `SharedArrayBuffer`.** §3.1's engine requires it; this document has zero mentions of COOP, COEP or `crossOriginIsolated`, and cross-origin isolation interacts with R2 signed URLs, hCaptcha, Stripe and Sentry embeds | Could block the engine late. Raised by the M-9 review |
 | **O-7** | **Opus container, bitrate and demuxer are unspecified.** WebCodecs needs demuxed packets | V3-J2 is not fully actionable without it |
+| **O-8** | **Reverse the §1.2a link-ingest separation for paid tiers?** Jon's 2026-11-11 pricing model gives Pro/Studio YouTube link import and takes it off Free. Not implemented in v1.8 — see that changelog. §1.2a calls the separation **NON-NEGOTIABLE** and credits it with moving adversarial-review Lens B from 84 to 90+ by keeping **payment-processor underwriting** clean; v1.5 reversed only the stems half and said this half *"must be revisited when Stripe lands."* | **Blocks the link-import row of the approved pricing table.** Until it is decided, /pricing names link import on Free only — which is what the code actually does |
+| **O-9** | **Re-price review trigger: at 10 users OR 100 song sessions** (Jon, 2026-11-11: *"lets review this once we have 10 users OR 100 song sessions to get real cost per song from"*). Baseline 2026-11-11: **1 user, 5 jobs (4 done)**. SQL to check is in the PR body and in `claude/pricing-review-trigger-2026-11-11.md` | The approved margins rest on a **4-job, Replicate-only** cost sample |
 
 
 Items 1–6 below are the only remaining open items for Jon after the 2026-11-02T22:45 lock-in pass. Everything else in v1.0 that was open has been decided (processor, auth, pricing model, DMCA deferral, Variant Y promotion, Spotify ISRC chain). Numbered for clean reference:

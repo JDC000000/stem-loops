@@ -17,6 +17,11 @@
 //                                  sandbox, which is acceptable for Phase
 //                                  1a bring-up).
 // Override with RESEND_FROM env if a different address is required.
+//
+// Reply-to: EMAIL_REPLY_TO, when set, becomes the Resend `reply_to`, so the
+// "Reply to this email" lines in welcome, receipt and subscription-changed
+// reach a person (audit F20). Unset or blank: no reply_to is sent. No
+// default address is coded here on purpose.
 
 import * as Sentry from '@sentry/nextjs';
 
@@ -86,12 +91,14 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
     return { ok: false, error: msg };
   }
 
+  const replyTo = process.env.EMAIL_REPLY_TO?.trim();
   const payload = {
     from: getFromAddress(),
     to: input.to,
     subject: input.subject,
     html: input.html,
     tags: [{ name: 'template', value: input.tag }],
+    ...(replyTo ? { reply_to: replyTo } : {}),
   };
 
   const body = JSON.stringify(payload);

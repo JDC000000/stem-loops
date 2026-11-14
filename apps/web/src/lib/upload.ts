@@ -56,11 +56,13 @@ export type UploadValidation =
 
 export function validateUpload(filename: string, size: number): UploadValidation {
   const ext = extOf(filename);
-  if (!ext || !(ext in ACCEPTED_TYPES)) {
+  // Own keys only: `in` also matched Object.prototype names (`a.constructor`,
+  // `a.__proto__`), which were then presigned with a non-string content type.
+  if (!ext || !Object.hasOwn(ACCEPTED_TYPES, ext)) {
     return {
       ok: false,
       error_code: 'UPLOAD_INVALID',
-      message: 'Unsupported file type. Upload an audio or video file (mp3, wav, m4a, flac, ogg, mp4, mov).',
+      message: 'Unsupported file type. Upload mp3, wav, m4a, aac, flac, ogg, opus, aiff, mp4, m4v, mov or webm.',
     };
   }
   if (!size || size <= 0) {

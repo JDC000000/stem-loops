@@ -84,7 +84,7 @@ export default function ResetPasswordRequestForm() {
         <h1 style={{ fontSize: 26, margin: 0, color: 'var(--text-primary)' }}>Check your email</h1>
         <p role="status" style={{ color: 'var(--text-secondary)', margin: 0 }}>
           If an account exists for <strong>{email}</strong>, a reset link is on its way.
-          Open the link on this device to continue.
+          Open the link in this browser to continue.
         </p>
         <p style={{ color: 'var(--text-muted)', fontSize: 14, margin: 0 }}>
           Can&apos;t find the email? Check your spam folder.
@@ -100,7 +100,7 @@ export default function ResetPasswordRequestForm() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <h1 style={{ fontSize: 26, margin: 0, color: 'var(--text-primary)' }}>Reset password</h1>
       <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: 14 }}>
-        Enter your email and we&apos;ll send you a link to set a new password.
+        Enter your email and we’ll send you a link to set a new password.
       </p>
 
       <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

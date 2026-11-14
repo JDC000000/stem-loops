@@ -217,6 +217,40 @@ export interface StemRefreshFailure {
  */
 export interface LoadStemsResult extends LoadedStems {
   readonly refreshFailure: StemRefreshFailure | null;
+  /**
+   * The route's own `state` (stems/route.ts, computed from what is in R2), or
+   * `null` when the manifest carried none / one this build does not know. It used
+   * to be DROPPED by `parseManifest`, so a job whose encoder failed (`encode_failed`)
+   * and a job that predates play-along (`unavailable`) both arrived at the UI as
+   * "no stems" and got the same, for the first of them false, sentence.
+   */
+  readonly manifestState: StemManifestState | null;
+  /**
+   * How the per-stem downloads failed, as counts. Never a URL: a stem URL carries
+   * a presigned signature. `network` is the browser-level rejection (`fetch`
+   * throwing a TypeError) and is what a missing R2 CORS rule, a CSP `connect-src`
+   * block and being offline all look like from here; the three cannot be told
+   * apart in JS, which is why it is reported rather than guessed at.
+   */
+  readonly stemFailures: StemFailureSummary;
+}
+
+export type StemManifestState = 'ready' | 'partial' | 'unavailable' | 'encode_failed';
+const MANIFEST_STATES: ReadonlySet<string> = new Set(['ready', 'partial', 'unavailable', 'encode_failed']);
+
+export interface StemFailureSummary {
+  /** Stems the manifest offered a URL for. */
+  readonly listed: number;
+  /** `fetch` rejected: CORS / CSP / offline / DNS. No HTTP response existed. */
+  readonly network: number;
+  /** Stems whose download answered a non-OK status (403 after the refresh budget, 404, 5xx...). */
+  readonly http: number;
+  /** Distinct statuses seen, sorted. */
+  readonly httpStatuses: readonly number[];
+  /** Answered 200 but the body was empty, over the cap, or the transfer broke. */
+  readonly body: number;
+  /** Origins only (scheme + host) of the URLs that were offered: no path, no query, no signature. */
+  readonly storageOrigins: readonly string[];
 }
 
 export interface LoadStemsOptions {
@@ -229,8 +263,12 @@ export interface LoadStemsOptions {
 
 const STEM_SET: ReadonlySet<string> = new Set(PLAYABLE_STEMS);
 
-/** Manifest -> stem/url map. Unknown names, duplicates (first wins) and bad URLs are dropped. */
-function parseManifest(body: unknown): Map<StemName, string> {
+/**
+ * Manifest -> stem/url map plus the route's `state`. Unknown names, duplicates
+ * (first wins) and bad URLs are dropped; an unknown or absent `state` is `null`,
+ * never a guess.
+ */
+function parseManifest(body: unknown): { urls: Map<StemName, string>; state: StemManifestState | null } {
   if (typeof body !== 'object' || body === null || !Array.isArray((body as { stems?: unknown }).stems)) {
     throw new StemLoadError('MANIFEST_INVALID', 'Stems manifest has an unexpected shape');
   }
@@ -242,7 +280,10 @@ function parseManifest(body: unknown): Map<StemName, string> {
     if (typeof signed_url !== 'string' || !/^https?:\/\/\S+$/i.test(signed_url)) continue;
     if (!urls.has(stem as StemName)) urls.set(stem as StemName, signed_url);
   }
-  return urls;
+  const rawState = (body as { state?: unknown }).state;
+  const state =
+    typeof rawState === 'string' && MANIFEST_STATES.has(rawState) ? (rawState as StemManifestState) : null;
+  return { urls, state };
 }
 
 /**
@@ -361,7 +402,7 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
 
   const manifestUrl = `${opts.baseUrl ?? ''}/api/jobs/${encodeURIComponent(jobId)}/stems`;
 
-  async function fetchManifest(): Promise<Map<StemName, string>> {
+  async function fetchManifest(): Promise<{ urls: Map<StemName, string>; state: StemManifestState | null }> {
     let res: Response;
     try {
       res = await doFetch(manifestUrl, { signal: ctl.signal, cache: 'no-store' });
@@ -389,7 +430,9 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
   }
 
   try {
-    let current = await fetchManifest();
+    const first = await fetchManifest();
+    let current = first.urls;
+    let manifestState = first.state;
     let generation = 0;
     let refreshes = 0;
     let inflight: Promise<void> | null = null;
@@ -416,7 +459,9 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
       refreshes += 1;
       inflight = (async () => {
         try {
-          current = await fetchManifest();
+          const next = await fetchManifest();
+          current = next.urls;
+          manifestState = next.state;
         } catch (e) {
           // EVERY refresh failure is recorded, not just 429/404. A refresh that
           // 5xxs, fails the network or returns junk leaves the old URLs in
@@ -442,6 +487,13 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
       return inflight;
     }
 
+    // Counts only, and never a URL (presigned signature). Feeds `stemFailures`.
+    const fail = { network: 0, http: 0, body: 0, statuses: new Set<number>() };
+    const failHttp = (status: number) => {
+      fail.http += 1;
+      fail.statuses.add(status);
+    };
+
     const download = async (stem: StemName): Promise<ArrayBuffer | null> => {
       let seen = generation;
       for (let attempt = 0; attempt <= MAX_MANIFEST_REFRESHES; attempt++) {
@@ -451,11 +503,17 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
         try {
           res = await doFetch(url, { signal: ctl.signal });
         } catch {
-          return null; // network error; aborts are re-checked by the caller
+          // Network-level rejection: no HTTP response existed. A browser reports a
+          // CORS or CSP block exactly like this. An abort is not a failure.
+          if (!ctl.signal.aborted) fail.network += 1;
+          return null; // aborts are re-checked by the caller
         }
         if (res.status === 403) {
           await refresh(seen);
-          if (refreshFail.current || ctl.signal.aborted) return null;
+          if (refreshFail.current || ctl.signal.aborted) {
+            if (!ctl.signal.aborted) failHttp(403);
+            return null;
+          }
           seen = generation;
           continue;
         }
@@ -473,13 +531,20 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
           );
           return null;
         }
-        if (!res.ok) return null; // 404 etc: same as a missing stem
+        if (!res.ok) {
+          failHttp(res.status); // 404 etc: same as a missing stem
+          return null;
+        }
         try {
-          return await readBoundedBody(res);
+          const body = await readBoundedBody(res);
+          if (body === null) fail.body += 1;
+          return body;
         } catch {
+          if (!ctl.signal.aborted) fail.body += 1;
           return null; // truncated transfer, body already consumed, etc.
         }
       }
+      failHttp(403);
       return null; // refresh budget spent while still 403
     }
 
@@ -509,12 +574,29 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
     //     `engine.ts` maps it to PLAY_NO_STEMS.
     const failed = refreshFail.current;
     if (failed && sources.length === 0) throw failed;
+    const origins = new Set<string>();
+    current.forEach((u) => {
+      try {
+        origins.add(new URL(u).origin);
+      } catch {
+        /* parseManifest already required http(s); nothing to record */
+      }
+    });
     return {
       sources,
       missing,
       refreshFailure: failed
         ? { code: failed.code, message: failed.message, status: failed.status, retryAfterSec: failed.retryAfterSec }
         : null,
+      manifestState,
+      stemFailures: {
+        listed: current.size,
+        network: fail.network,
+        http: fail.http,
+        httpStatuses: Array.from(fail.statuses).sort((a, b) => a - b),
+        body: fail.body,
+        storageOrigins: Array.from(origins).sort(),
+      },
     };
   } catch (e) {
     throwIfAborted();
@@ -522,4 +604,48 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
   } finally {
     outer?.removeEventListener('abort', onAbort);
   }
+}
+
+/**
+ * WHY a load that produced no playable stem produced none. Pure, so the UI copy
+ * and the reporting decision are driven from one answer and can be tested without
+ * a DOM. Only meaningful when `sources.length === 0` (it is exported for the
+ * caller that has already checked that); a result with sources is `'PLAYABLE'`.
+ *
+ *  - `ENCODE_FAILED`  the route saw WAVs but no Opus: the encoder failed. The
+ *                     worker has already reported it once per job.
+ *  - `FETCH_NETWORK`  the manifest listed stems and the browser could not even
+ *                     reach storage (no HTTP response for any of them). The
+ *                     signature of a missing R2 CORS rule, a CSP block, or being
+ *                     offline. This is an ENVIRONMENT fault and nothing server
+ *                     side has seen it, so it is the one worth reporting.
+ *  - `FETCH_HTTP`     stems were offered and storage answered with an error.
+ *  - `FETCH_BODY`     stems were offered, storage answered 200, the body was
+ *                     unusable.
+ *  - `NO_STEMS`       nothing was stored for this job (`unavailable`), or the
+ *                     server gave no state this build understands.
+ */
+export type ZeroSourceReason =
+  | 'PLAYABLE'
+  | 'ENCODE_FAILED'
+  | 'FETCH_NETWORK'
+  | 'FETCH_HTTP'
+  | 'FETCH_BODY'
+  | 'NO_STEMS';
+
+export function zeroSourceReason(
+  r: Pick<LoadStemsResult, 'sources' | 'manifestState' | 'stemFailures'>,
+): ZeroSourceReason {
+  if (r.sources.length > 0) return 'PLAYABLE';
+  if (r.manifestState === 'encode_failed') return 'ENCODE_FAILED';
+  const f = r.stemFailures;
+  // Offered stems that could not be fetched outrank the manifest's own `state`:
+  // `ready` + six failed downloads is a delivery fault, not a job state.
+  if (f.listed > 0) {
+    // Mixed failures name the browser-level one: it is the one an owner must act on.
+    if (f.network > 0) return 'FETCH_NETWORK';
+    if (f.http > 0) return 'FETCH_HTTP';
+    if (f.body > 0) return 'FETCH_BODY';
+  }
+  return 'NO_STEMS';
 }

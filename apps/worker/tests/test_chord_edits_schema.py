@@ -4,12 +4,14 @@ Covers: all three CHECK constraints reject bad shapes, the training-data index
 exists, the append-only REVOKE on stemloops_app holds, and the down-migration
 round trip works. Mirrors test_credit_adjustments_schema.py (023).
 
-Requires a real local Postgres with migrations applied through 025; skipped
-without DATABASE_URL, refused on non-local hosts (INSERTs into auth.users).
+Requires a real local Postgres with migrations applied through 025. Without
+DATABASE_URL, or with a non-local one (INSERTs into auth.users), the tests skip
+locally and FAIL under CI=true.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import uuid
 from pathlib import Path
@@ -19,11 +21,58 @@ import psycopg
 import pytest
 
 DB = os.environ.get("DATABASE_URL")
-pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
-if DB and not any(h in DB for h in ("127.0.0.1", "localhost")):
-    pytestmark = pytest.mark.skip(
-        reason="025 tests INSERT into auth.users; local throwaway DB only"
-    )
+
+
+def _skip_or_fail(reason: str) -> None:
+    """SKIP locally, FAIL under CI (`CI=true`): a skip that encodes a safety decision is a
+    gate that did not run, and a green skip is indistinguishable from a pass.
+
+    Same contract as ``tests/db_guard.py::skip_or_fail`` in PR #224 (not merged yet, so it
+    cannot be imported). When #224 lands its autouse fixture in ``conftest.py`` covers this
+    module; delete this helper and the fixture below then.
+    """
+    if os.environ.get("CI"):
+        pytest.fail("CI=true but " + reason, pytrace=False)
+    pytest.skip(reason)
+
+
+def _not_local(url: str) -> str | None:
+    """Why `url` may reach a database that is not this machine, or None. Compares the HOSTS
+    libpq will actually use (parsed by libpq), never the URL text: a substring test accepts
+    ``postgres://u@prod.example.com/db?application_name=localhost``."""
+    from psycopg.conninfo import conninfo_to_dict
+
+    try:
+        info = conninfo_to_dict(url)
+    except Exception as e:  # noqa: BLE001 -- unparseable is not provably local
+        return f"it does not parse as a libpq connection string ({type(e).__name__})"
+    if info.get("service"):
+        return "it names a pg_service.conf service, whose host cannot be checked here"
+    for key, env in (("host", "PGHOST"), ("hostaddr", "PGHOSTADDR")):
+        for h in (info.get(key) or os.environ.get(env) or "").split(","):
+            h = h.strip()
+            if h in ("", "localhost") or h.startswith("/"):
+                continue
+            try:
+                if ipaddress.ip_address(h).is_loopback:
+                    continue
+            except ValueError:
+                pass
+            return f"its {key} {h!r} is not this machine"
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _require_local_database() -> None:
+    if not DB:
+        _skip_or_fail("DATABASE_URL not set")
+    problem = _not_local(DB)
+    if problem:
+        _skip_or_fail(
+            f"DATABASE_URL is not provably local ({problem}); these tests INSERT into "
+            "auth.users and run committed DDL. Point it at a throwaway local Postgres"
+        )
+
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations"
 EMAIL_LIKE = "test-chord-edits-%@example.com"
@@ -57,7 +106,7 @@ def _cleanup(c: Any) -> None:
     c.commit()
 
 
-def _user(conn: Any, tag: str) -> uuid.UUID:
+def _user(conn: Any, tag: str, *, commit: bool = True) -> uuid.UUID:
     uid = uuid.uuid4()
     conn.execute(
         "INSERT INTO auth.users (id, email, aud, role, encrypted_password, "
@@ -65,11 +114,12 @@ def _user(conn: Any, tag: str) -> uuid.UUID:
         "VALUES (%s, %s, 'authenticated', 'authenticated', 'x', now(), now(), now())",
         (uid, f"test-chord-edits-{tag}@example.com"),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return uid
 
 
-def _job(conn: Any, uid: uuid.UUID) -> uuid.UUID:
+def _job(conn: Any, uid: uuid.UUID, *, commit: bool = True) -> uuid.UUID:
     jid = uuid.uuid4()
     conn.execute(
         "INSERT INTO public.jobs (id, youtube_url, status, client_ip_hash, "
@@ -77,7 +127,8 @@ def _job(conn: Any, uid: uuid.UUID) -> uuid.UUID:
         "VALUES (%s, 'https://example.test/x', 'done', 'h', '', %s, 8)",
         (jid, uid),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return jid
 
 
@@ -265,35 +316,54 @@ def test_m1_authenticated_insert_policy_removed(conn):
 
 
 def test_down_migration_round_trip(conn):
-    """Down drops the table; re-applying 025 restores it."""
+    """025's down drops the table; 025's up restores it. Nothing is committed.
+
+    The whole round trip runs inside ONE transaction that is always rolled back
+    (Postgres DDL is transactional), so the database after this test is exactly
+    the database before it, by construction.
+
+    Why not commit and re-apply? This test used to commit the down and then
+    re-apply a hand-kept list of later migrations in `finally`. That list was
+    wrong three times, each fix adding the one migration whose symptom someone
+    had just tripped over: 026 (its constraints), 029 (the Harte CHECK), and
+    then 027 was found missing (it DROPs two policies and REVOKEs anon/
+    authenticated, so after the round trip 025's up left those policies back on
+    every reused database and test_m1_authenticated_insert_policy_removed
+    failed from the second run on). Extending the list a fourth time would be
+    the same mistake: any migration after 025 that touches chord_edits has to be
+    remembered here. Deriving the list from the migrations directory would not
+    fix the class either: it would still rest on every later migration staying
+    re-runnable, and nothing enforces that. (028 and 033 are in fact idempotent
+    today -- every CREATE POLICY in them is either preceded by DROP POLICY IF
+    EXISTS or sits inside a guarded DO block, and 028 says so in its own header
+    -- but that is how they happen to be written, not a property the suite can
+    rely on.) A rollback needs no list at all: Postgres DDL is transactional, so
+    the schema afterwards equals the schema before by construction, whatever
+    later migrations do. The guard against this class is
+    test_zz_schema_matches_fresh_migration.py.
+    """
     down = (MIGRATIONS / "down" / "025_v3_chord_edits_down.sql").read_text()
     up = (MIGRATIONS / "025_v3_chord_edits.sql").read_text()
-    up_026 = (MIGRATIONS / "026_chord_edits_length_checks.sql").read_text()
-    up_029 = (MIGRATIONS / "029_v3_chord_edits_harte_slash.sql").read_text()
     try:
         conn.execute(down)
-        conn.commit()
         exists = conn.execute("SELECT to_regclass('public.chord_edits')").fetchone()
         assert exists is not None and exists[0] is None
+        conn.execute(up)
+        exists = conn.execute("SELECT to_regclass('public.chord_edits')").fetchone()
+        assert exists is not None and exists[0] is not None
+        # 025's own invariant is live again after the up: its Harte CHECK rejects
+        # junk. (This is 025's constraint; 029 replaces it and is deliberately
+        # not re-applied - nothing here is committed.) commit=False: the helpers
+        # must not commit the round trip.
+        uid = _user(conn, "rt", commit=False)
+        jid = _job(conn, uid, commit=False)
+        with pytest.raises(psycopg.errors.CheckViolation, match="chord_edits_valid_harte"):
+            _insert(conn, uid, jid, corrected="not_a_chord")
     finally:
         conn.rollback()
-        conn.execute(up)
-        # Re-apply 026 too so subsequent 026 tests run against the full
-        # constraint set (025's down drops the table + all constraints
-        # incl. 026's; the up only restores 025's half).
-        conn.execute(up_026)
-        # ...and 029, which replaces 025's Harte CHECK. Without this the round trip leaves the
-        # database on 025's `[a-z0-9]+` constraint for every test that runs after it (found by
-        # test_harte_cross_layer.py, the first test to exercise the 029 constraint).
-        conn.execute(up_029)
-        conn.commit()
+    # The rollback really did restore the committed schema (down was never committed).
     exists = conn.execute("SELECT to_regclass('public.chord_edits')").fetchone()
     assert exists is not None and exists[0] is not None
-    # Re-check an invariant after the round trip — the Harte regex is still live.
-    uid = _user(conn, "rt")
-    jid = _job(conn, uid)
-    with pytest.raises(psycopg.errors.CheckViolation):
-        _insert(conn, uid, jid, corrected="not_a_chord")
     conn.rollback()
 
 

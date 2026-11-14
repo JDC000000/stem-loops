@@ -67,12 +67,12 @@ export function SiteFooter({ onLanding = false }: { onLanding?: boolean }) {
         {onLanding ? (
           <ToInputLink className="back-top">
             <Ic name="up" />
-            Go to the input
+            Paste a song
           </ToInputLink>
         ) : (
           <a className="back-top" href="/">
             <Ic name="up" />
-            Back to stem-loops
+            Go to the home page
           </a>
         )}
       </div>

@@ -698,3 +698,35 @@ def test_loader_reasons_match_what_worker_writes() -> None:
     src = loader.read_text()
     for reason in ("too_long", "provider_failed", "not_attempted"):
         assert f"v === '{reason}'" in src
+
+
+# ----------------------------- Klangio monthly cap (overnight QA W3) -----------------------------
+def test_chord_hook_at_monthly_cap_does_not_blame_the_track(
+    stem_paths: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At KLANGIO_MONTHLY_CAP the request is never sent (klangio._reserve_quota raises
+    ChordQuotaExceeded). 602d0ce wrote reason='provider_failed', which the page renders as
+    "Chord detection failed for this track." A tester retries; each retry spends another
+    credit and fails the same way until the cycle resets (overnight W3 cases F01/F02).
+    The truthful existing reason is 'not_attempted' ("Chord detection wasn't run for this
+    track."). Still logged as a failure for ops (chords_skipped_quota + Sentry)."""
+    from worker.chord_source import ChordQuotaExceeded
+
+    monkeypatch.setenv("CHORDS_PROVIDER", "klangio")
+    monkeypatch.setenv("R2_BUCKET_NAME", "test-bucket")
+    fake_provider = MagicMock()
+    fake_provider.recognize.side_effect = ChordQuotaExceeded("Klangio monthly cap reached (22/1)")
+    fake_r2 = MagicMock()
+    with (
+        patch("worker.chord_source.get_chord_source", return_value=fake_provider),
+        patch("worker.storage.r2_uploader._r2", return_value=fake_r2),
+    ):
+        pipeline._maybe_run_chord_recognition("job-at-cap", stem_paths, ["keys"])
+
+    fake_r2.put_object.assert_called_once()
+    body = json.loads(fake_r2.put_object.call_args.kwargs["Body"])
+    assert body["status"] == "unavailable"
+    assert (
+        body["reason"] == "not_attempted"
+    ), f"at the Klangio cap the tombstone says {body['reason']!r}: the page blames the track"

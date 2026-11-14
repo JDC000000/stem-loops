@@ -16,13 +16,12 @@ const jetbrainsMono = localFont({
   fallback: ['ui-monospace', 'SF Mono', 'Consolas', 'monospace'],
 });
 
-// The title Next's default 404 already used, so the words are unchanged.
+// Our own title; the root layout's template appends " · stem-loops".
 export const metadata: Metadata = {
-  title: { absolute: '404: This page could not be found.' },
+  title: 'Page not found',
 };
 
-// Branded 404 inside the app chrome. Words are only those the site's error pages already use
-// (Next's 404 text and the job pages' "New track" link), with one link home.
+// Branded 404 inside the app chrome, with one link home: "Start a new song", the label the job pages use.
 export default function NotFound() {
   return (
     <div className={`sl-root ${jetbrainsMono.variable}`}>
@@ -31,10 +30,10 @@ export default function NotFound() {
       <main id="main" className="nf">
         <div className="container">
           <p className="mono nf-code">404</p>
-          <h1>This page could not be found.</h1>
+          <h1>We can’t find that page.</h1>
           <a className="btn btn-primary nf-home" href="/">
             <Ic name="up" className="nf-back" />
-            New track
+            Start a new song
           </a>
         </div>
       </main>

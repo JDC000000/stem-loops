@@ -49,10 +49,11 @@ export const BANNED = [
   ],
   [
     // Shipped in the first cut of this PR and caught in review. It overstates the
-    // protection: /api/jobs/[id], /api/jobs/[id]/stems and /api/jobs/[id]/play-chords
-    // NEVER call getUser(). Only the HTML page redirects. A job UUID alone reaches the
-    // audio and a presigned R2 URL per stem, with no account anywhere in the path — the
-    // stems route's own header names a leaked UUID as the threat it is guarding.
+    // protection. HISTORY: when this was written, /api/jobs/[id], .../stems and
+    // .../play-chords never called getUser() and a job UUID alone reached the audio. They
+    // now enforce ownership for jobs that have a user_id (src/lib/job-access.ts), but an
+    // ANONYMOUS job (user_id NULL) is still link-only, so "a link and an account" is still
+    // not the gate: it is the link for anonymous jobs, the account for owned ones.
     'a job link plus an account is the gate — the gate is on the PAGE only, not on the files',
     /link\s*and\s*an\s*account/i,
   ],

@@ -119,7 +119,7 @@ migrate:
 # Install all dependencies
 install:
 	pnpm install
-	cd apps/worker && pip install -r requirements.txt -c constraints-prod.txt
+	cd apps/worker && pip install -r requirements.txt -r requirements-dev.txt -c constraints-prod.txt
 
 # Assert every table in migrations/*.sql has RLS + a CREATE POLICY (SL-B26 #1).
 check-rls:

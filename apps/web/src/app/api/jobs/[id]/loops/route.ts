@@ -29,6 +29,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { getUser } from '@/lib/auth/supabase';
+import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -81,9 +82,13 @@ async function authorize(jobId: string): Promise<Authorized | Denied> {
 }
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: { id: string } },
 ): Promise<NextResponse> {
+  // CSRF: same-origin browser requests only (src/lib/same-origin.ts). A cut
+  // spends worker time, so a foreign page must not be able to trigger one.
+  const originRefusal = crossOriginRefusal(request);
+  if (originRefusal) return bad(BAD_ORIGIN, originRefusal, 403);
   try {
     const auth = await authorize(params.id);
     if (auth.denied) return auth.denied;

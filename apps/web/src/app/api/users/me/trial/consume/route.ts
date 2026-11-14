@@ -17,22 +17,32 @@
 //   200 { ok: true,  songs_remaining, expires_at }
 //   200 { ok: false, reason: 'no_grant' | 'expired' | 'exhausted' }
 //   401 when unauthenticated.
+//   403 BAD_ORIGIN when not a same-origin browser request (CSRF guard).
 //   429 when the burst limit trips.
 //
 // Auth: required. Advisory-lock on hashtext('trial_consume:' || user_id)
 // is taken inside consumeTrial().
 
-import { NextResponse } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 import { getUser } from '@/lib/auth/supabase';
 import { consumeTrial } from '@/lib/trial';
 import { checkBurstLimit } from '@/lib/billing/rate-limit';
+import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const NO_STORE = { 'Cache-Control': 'no-store' } as const;
 
-export async function POST() {
+export async function POST(req: NextRequest) {
+  // CSRF: same-origin browser requests only (src/lib/same-origin.ts).
+  const originRefusal = crossOriginRefusal(req);
+  if (originRefusal) {
+    return NextResponse.json(
+      { error: originRefusal, code: BAD_ORIGIN },
+      { status: 403, headers: NO_STORE },
+    );
+  }
   const user = await getUser();
   if (!user) {
     return NextResponse.json(

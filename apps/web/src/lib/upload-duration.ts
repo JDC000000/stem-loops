@@ -1,36 +1,34 @@
 /**
- * Duration probe at admission — a SPEND-AND-UX GUARD, NOT A SECURITY BOUNDARY.
+ * Duration probe at admission — a HEADS-UP, NOT A LIMIT AND NOT A REFUSAL.
  *
  * WHAT THIS IS
  * ------------
+ * Since 2026-11-14 any song is accepted, and a track longer than the cap is TRIMMED by the
+ * worker to its first `MAX_UPLOAD_DURATION_SEC` seconds (Jon: "If a song is more than 5
+ * minutes, it should still be converted to a play along, but it just [processes the first]
+ * 5 minutes of the song"). Before that, this probe declined a >5 min file in the browser.
+ *
+ * Now it only lets the form TELL the visitor, before they submit, that a long track will be
+ * trimmed: "This track is longer than 5 minutes — we'll use the first 5 minutes." The file
+ * is never removed and submit is never blocked by the result.
+ *
  * `validateUpload` (upload.ts) is given a filename and a byte count, because that is all
  * POST /api/uploads ever receives: the browser PUTs the bytes straight to R2 on a
- * presigned URL, so no server of ours holds them at admission time. 200 MB of bytes is
- * ~3.5 h of 128 kbps mp3, which is no bound at all on how long a track is.
- *
- * So the browser measures the one thing only the browser can measure for free — the
- * duration in the file it already has in memory — and declines the obvious case BEFORE
- * the bytes are uploaded to R2 and before a paid Replicate separation is started.
+ * presigned URL. So the browser measures the one thing only it can measure for free — the
+ * duration in the file it already has in memory.
  *
  * WHAT THIS IS NOT
  * ----------------
- * This runs in the visitor's browser. Anything a browser measures, a browser can be made
- * to lie about, and POST /api/uploads can be called directly with no browser at all. This
- * check is therefore WORTH NOTHING as a limit, and nothing downstream may assume it ran.
+ * This runs in the visitor's browser and can be made to lie. THE TRIM IS
+ * `MAX_UPLOAD_DURATION_SEC` IN THE WORKER (apps/worker/src/worker/pipeline.py), which decodes
+ * with `ffmpeg -t cap` server-side before anything is handed to Replicate. Nothing here
+ * changes what the worker does.
  *
- * THE LIMIT IS `MAX_UPLOAD_DURATION_SEC` IN THE WORKER
- * (apps/worker/src/worker/pipeline.py), which probes the raw header and re-probes the
- * decoded WAV, server-side, before the URL is handed to Replicate. That is the enforcement
- * and it is unchanged by anything in this file.
- *
- * WHICH IS WHY IT FAILS OPEN
- * --------------------------
- * A browser that cannot measure a container it still accepts for upload (flac and aiff in
- * particular are patchy), a file whose header reports `Infinity` or `NaN`, a slow decode,
- * a blocked object URL — every one of those resolves `null` and the upload PROCEEDS. A
- * guard that is not the limit must never be the thing that turns away a legitimate track;
- * the worker will catch a real over-length file either way, and the cost of a false
- * refusal here is a user who cannot use the product at all.
+ * WHICH IS WHY IT FAILS QUIET
+ * ---------------------------
+ * A browser that cannot measure a container (flac and aiff are patchy), a header reporting
+ * `Infinity` or `NaN`, a slow decode, a blocked object URL — every one of those resolves
+ * `null`, and the form simply shows no note. The worker trims either way.
  */
 import { MAX_UPLOAD_DURATION_SEC } from './upload.ts';
 
@@ -38,24 +36,36 @@ import { MAX_UPLOAD_DURATION_SEC } from './upload.ts';
 export const PROBE_TIMEOUT_MS = 10_000;
 
 export type DurationVerdict =
-  /** Measured and within the cap, or not measurable at all (see FAIL OPEN above). */
-  | { ok: true; reason: 'within_cap' | 'unmeasured' }
-  /** Measured, and longer than the cap. */
-  | { ok: false; reason: 'too_long'; seconds: number };
+  /** Measured and within the cap, or not measurable at all: nothing to say. */
+  | { trim: false; reason: 'within_cap' | 'unmeasured' }
+  /** Measured, and longer than the cap: the worker will use only the first part. */
+  | { trim: true; reason: 'over_cap'; seconds: number };
 
 /**
- * The gate, as a pure function of the probed duration. Separated from the probe itself so
- * it is testable without a DOM — node:test has no browser media stack — and so the rule
- * is one expression rather than something spread through a React callback.
+ * The verdict, as a pure function of the probed duration. Separated from the probe itself so
+ * it is testable without a DOM — node:test has no browser media stack.
  *
- * `null` means "the probe could not measure this", and is a PASS.
+ * It never refuses: there is no `ok: false`. `null` means "the probe could not measure this".
  */
 export function durationVerdict(seconds: number | null): DurationVerdict {
   if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) {
-    return { ok: true, reason: 'unmeasured' };
+    return { trim: false, reason: 'unmeasured' };
   }
-  if (seconds > MAX_UPLOAD_DURATION_SEC) return { ok: false, reason: 'too_long', seconds };
-  return { ok: true, reason: 'within_cap' };
+  // Strict `>`, the same comparison the worker and the player make: exactly 5:00 is not trimmed.
+  if (seconds > MAX_UPLOAD_DURATION_SEC) return { trim: true, reason: 'over_cap', seconds };
+  return { trim: false, reason: 'within_cap' };
+}
+
+/** Whole minutes in the cap, fed from the one ceiling rather than typed as a figure. */
+export const MAX_UPLOAD_MIN = Math.round(MAX_UPLOAD_DURATION_SEC / 60);
+
+/**
+ * The pre-submit note for a verdict, or null when there is nothing to say.
+ * "This track is longer than 5 minutes — we'll use the first 5 minutes."
+ */
+export function trimNotice(verdict: DurationVerdict): string | null {
+  if (!verdict.trim) return null;
+  return `This track is longer than ${MAX_UPLOAD_MIN} minutes \u2014 we\u2019ll use the first ${MAX_UPLOAD_MIN} minutes.`;
 }
 
 /** Browser bits the probe needs, injectable so the fail-open paths are testable. */
@@ -83,7 +93,7 @@ function defaultDeps(): ProbeDeps | null {
  *
  * NEVER REJECTS AND NEVER THROWS. Every failure — unsupported container, decode error,
  * timeout, no DOM (SSR), a thrown `createObjectURL` — resolves `null`, which
- * `durationVerdict` reads as a pass.
+ * `durationVerdict` reads as "nothing to say".
  *
  * Uses an <audio> element with `preload='metadata'`, which reads the container header
  * only; it does not decode the audio and does not need Web Audio. An ffprobe-style

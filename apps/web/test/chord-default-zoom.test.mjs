@@ -34,9 +34,28 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  ADVANCE_16PX,
   CHIP_FONT_PX,
   CHIP_FULL_PAD_PX,
+  CHIP_GAP_PX,
+  CHIP_TIGHT_FONT_PX,
+  CHIP_TIGHT_PAD_PX,
+  CEILING_SLACK_PX,
   MAX_PX_PER_SEC,
+  MAX_TIMELINE_PX,
+  MAX_WRAP_ROWS,
+  READABLE_TIME_FRACTION,
+  chipContentPx,
+  densityCounts,
+  layoutRows,
+  ppsToSlider,
+  runContentPx,
+  segmentDensityCounts,
+  shortestRunSec,
+  sliderToPps,
+  timeWeightedRunSec,
+  widestLabelPx,
+  zoomCeilingPxPerSec,
   canvasFontString,
   chipBox,
   chipDensity,
@@ -52,6 +71,7 @@ import {
   observationsToRuns,
   readablePxPerSec,
 } from '../src/components/ChordOverlay.helpers.ts';
+import { HARTE_QUALITIES, HARTE_RE } from '../src/chord/harte.ts';
 import { withDom } from './helpers/dom.mjs';
 import { loadChordOverlay } from './helpers/load-chord-overlay.mjs';
 
@@ -65,6 +85,103 @@ const OBSERVATIONS = PAYLOAD.segments.map((s) => ({
 }));
 const RUNS = observationsToRuns(OBSERVATIONS);
 const DUR = durationSec(RUNS);
+
+// ---------------------------------------------------------------------------
+// THE MEASURER THE GATES USE IS THE ONE THE PRODUCT USES
+// ---------------------------------------------------------------------------
+//
+// Every geometry gate in this file used to compute label widths with
+// `estimateLabelPx` (the headless table) while ChordOverlay sizes both the zoom
+// ceiling and chipDensity with `makeCanvasMeasurer`. Two instruments, and they
+// disagreed in the unsafe direction: every px/sec figure here sat ~1.27% above
+// what production derives, and a slack constant sized from a 13-label sample
+// was applied to an alphabet of thousands.
+//
+// So the gates now call `makeCanvasMeasurer` itself -- the code that runs in
+// every browser -- over a 2D context that serves what Chromium's canvas
+// `measureText` actually returned. Node has no canvas, so those widths are
+// PINNED, measured in Chromium 1280x900 on the CHIPS' font stack -- the one
+// ChordOverlay's containerStyle declares and the chips inherit through
+// `button { font: inherit }` (ui-sans-serif, system-ui, -apple-system,
+// "Segoe UI", Roboto, sans-serif), NOT the globals.css body stack (an earlier
+// note here said it was). Both resolve to Inter 4.000 on the box that measured
+// them, weight 400, 16px, confirmed with CDP CSS.getPlatformFontsForNode,
+// isCustomFont false. They are canvas
+// numbers, not DOM numbers, which is the point. A label the table does not hold
+// would make makeCanvasMeasurer fall back to the headless table SILENTLY (it
+// swallows a bad width by design), so the context records every label it is
+// asked for that it cannot serve, and the last test in the file fails on any.
+const CHROMIUM_CANVAS_16PX = {
+  'A:min': 42.9922, 'A:min7': 52.0469, 'Bb:maj': 51.75, 'C:maj': 43.1719,
+  'C:maj6': 53.0938, 'C#:minmaj7': 89.7031, 'D:min7': 52.5547, 'E:min': 41.5703,
+  'F:maj': 40.9297, 'F:maj7': 49.9844, 'F#:min7': 60.5859, 'G:7': 25.6016,
+  'G:7/5': 41.0938, 'Ab:maj7/3': 77.0234, 'N.C.': 32.2578, '?': 8.1797,
+  // Added with the table fix. Each is a label the table got wrong before it:
+  // 'A/6' (bare root + slash, the table was 0.1094px UNDER), the two hdim7
+  // labels ('h' was missing, 4.79 / 5.33px OVER) and the digit-heavy labels
+  // that tabular digits widened by up to 15px.
+  'A/6': 27.0391, 'A#:hdim7/11': 90.7656, 'Ab:hdim7/b11': 99.6875,
+  'C:11': 29.3125, 'C#:11/11': 58.2266, 'Bb:add11/b3': 91.9141,
+  // Added with round 6. Eight advance-table entries ('0' '2' '4' '8' '9' 'g'
+  // 's' 'u') appeared in NO label above, so their values were defended by
+  // nothing while a comment in the helpers called every entry load-bearing:
+  // setting '9' (or 's') to 1.0 left the suite green with 'C:maj9' estimated
+  // at 44.3px against 53.1px in Chromium. Measured in Chromium 1280x900 on
+  // the same stack, canvas and a DOM span, 16px.
+  'C:maj9': 53.0938, 'G:sus4': 53.2344, 'D:sus2': 52.2656, 'B:9/10': 47.3672,
+  'Eb:aug7/8': 77.0,
+};
+// The SAME labels measured a second way: a hidden <span> in the DOM, which is
+// what the chip actually is. A canvas pin is only as good as whoever typed it;
+// one that sits 0.9px low is invisible to the table comparison (which tolerates
+// a 1px over-estimate) and quietly lowers every ceiling derived from it.
+// Canvas and DOM agree to 0.0078px over all 21,002 labels of the grammar, so
+// two numbers that disagree by more than 1/64px mean one of them is wrong.
+const CHROMIUM_DOM_16PX = {
+  'A:min': 43.0, 'A:min7': 52.0469, 'Bb:maj': 51.75, 'C:maj': 43.1719,
+  'C:maj6': 53.0938, 'C#:minmaj7': 89.7031, 'D:min7': 52.5625, 'E:min': 41.5781,
+  'F:maj': 40.9375, 'F:maj7': 49.9844, 'F#:min7': 60.5938, 'G:7': 25.6094,
+  'G:7/5': 41.0938, 'Ab:maj7/3': 77.0313, 'N.C.': 32.2656, '?': 8.1875,
+  'A/6': 27.0469, 'A#:hdim7/11': 90.7656, 'Ab:hdim7/b11': 99.6875,
+  'C:11': 29.3125, 'C#:11/11': 58.2344, 'Bb:add11/b3': 91.9219,
+  'C:maj9': 53.0938, 'G:sus4': 53.2344, 'D:sus2': 52.2656, 'B:9/10': 47.375,
+  'Eb:aug7/8': 77.0,
+};
+// The pins above are 16px measurements. CHIP_FONT_PX is asserted equal to this
+// in its own test, so changing the constant fails by NAME instead of letting
+// every gate run on widths that belong to a different size.
+const PIN_FONT_PX = 16;
+const PROD_FONT_FAMILY = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+const UNPINNED_LABELS = new Set();
+// Font strings the measurer set that this context could not serve.
+const BAD_FONTS = new Set();
+// WHAT THIS CONTEXT MODELS. It used to ignore `ctx.font` and hand back the 16px
+// pin for any request, so if CHIP_FONT_PX ever moved every geometry gate in
+// this file would have measured 16px widths against a different rendered size
+// and stayed green. Now it reads the font the measurer assigned, refuses one it
+// cannot serve (no px size, wrong weight, wrong family) and scales the pin by
+// size/16 -- the same linearity estimateLabelPx relies on (measured: a label's
+// 10px width is 0.625x its 16px width to 3dp). A request for a size it cannot
+// serve answers NaN, which makeCanvasMeasurer turns into the table fallback,
+// which the last test in the file reports.
+const PROD_CTX = {
+  font: '',
+  measureText(text) {
+    if (text === '') return { width: 0 }; // what canvas returns for ''
+    const m = /^(\d+) (\d+(?:\.\d+)?)px (.+)$/.exec(String(this.font));
+    if (!m || m[1] !== '400' || m[3] !== PROD_FONT_FAMILY) {
+      BAD_FONTS.add(String(this.font));
+      return { width: NaN };
+    }
+    const w = CHROMIUM_CANVAS_16PX[text];
+    if (w === undefined) UNPINNED_LABELS.add(text);
+    return { width: w === undefined ? NaN : (w * Number(m[2])) / PIN_FONT_PX };
+  },
+};
+const PROD_MEASURE = makeCanvasMeasurer(PROD_CTX, {
+  fontFamily: PROD_FONT_FAMILY,
+  fontWeight: '400',
+});
 
 // The container widths the job page actually gives the overlay, MEASURED in
 // Chromium. JobView's wrap is `maxWidth: 960` with `padding: 48px
@@ -80,17 +197,88 @@ const DESKTOP_WIDTHS = [
   { viewport: 1440, containerPx: 872 },
 ];
 
+// ---------------------------------------------------------------------------
+// THE ADVERSARIAL SHAPES. Neither was chosen by whoever wrote this fix.
+// ---------------------------------------------------------------------------
+//
+// The register's rule: if you picked the example yourself and it works, you
+// have tested nothing. So the two songs that drive the reachability gates both
+// come from somewhere else, with numbers published before this change existed:
+//
+//   BIMODAL   - #207's own Residue section, measured and reproduced by two
+//               reviewers: "60 x 4s verse + 55 x 0.4s bridge (115 chords,
+//               4:22): the median comes from the sparse half, so the default is
+//               19.396 px/sec and 55/115 chips (48%) are nameless at every zoom
+//               the slider reaches." That is the defect this file now gates.
+//   JITTER400 - #207's Scaling table, which is where the SECOND half of the
+//               defect was already visible and went unread: "400 chords / 3:33,
+//               jittered 0.32-0.69s | 80.000 | 50 full / 218 tight / 132 tick
+//               -- the short tail falls below `tight`." Those 132 were nameless
+//               AT MAXIMUM ZOOM and the table recorded it as scaling behaviour.
+//
+// Both are built from the fixture's own label alphabet, so `widest` is the same
+// `F#:min7` the real song has and the only thing that varies is the durations.
+const FIX_LABELS = [...new Set(PAYLOAD.segments.map((s) => s.label))];
+
+/** A song from [durationSec, count] blocks, cycling the fixture's chord names. */
+function songOf(blocks) {
+  const obs = [];
+  let t = 0;
+  let i = 0;
+  for (const [d, n] of blocks) {
+    for (let k = 0; k < n; k++) {
+      obs.push({ startSec: t, endSec: t + d, label: FIX_LABELS[i++ % FIX_LABELS.length], confidence: 1 });
+      t += d;
+    }
+  }
+  return observationsToRuns(obs);
+}
+
+/** The reviewer's shape: a sparse verse and a dense bridge. */
+const BIMODAL = songOf([[4, 60], [0.4, 55]]);
+/** The same two populations with FIVE chords moved across. */
+const BIMODAL_FLIPPED = songOf([[4, 55], [0.4, 60]]);
+/** #207's Scaling row: 400 chords over ~3:22, durations walked over 0.32-0.69s. */
+const JITTER400 = songOf(
+  Array.from({ length: 400 }, (_, i) => [0.32 + ((i * 97) % 38) / 100, 1]),
+);
+
+const ADVERSARIAL = [
+  ['bimodal 60x4.0s + 55x0.4s (reviewer)', BIMODAL],
+  ['bimodal flipped 55x4.0s + 60x0.4s', BIMODAL_FLIPPED],
+  ['jittered 400 x 0.32-0.69s (#207 table)', JITTER400],
+];
+
+/** The px/sec at which THIS run can print its own name at full size. */
+function ppsForFullName(run) {
+  const labelPx = PROD_MEASURE(displayText(run), CHIP_FONT_PX);
+  return (labelPx + CHIP_FULL_PAD_PX + CHIP_GAP_PX) / (run.endSec - run.startSec);
+}
+/** ... and at the 10px `tight` size, which is the last size before no name. */
+function ppsForTightName(run) {
+  const labelPx = PROD_MEASURE(displayText(run), CHIP_FONT_PX);
+  return ((labelPx * CHIP_TIGHT_FONT_PX) / CHIP_FONT_PX + CHIP_TIGHT_PAD_PX + CHIP_GAP_PX) / (run.endSec - run.startSec);
+}
+
+/** The job's own zoom ceiling for the strip, as ChordOverlay derives it. */
+function stripCeiling(runs) {
+  return zoomCeilingPxPerSec(runs, PROD_MEASURE, {
+    durSec: durationSec(runs),
+    maxPaintedPx: MAX_TIMELINE_PX,
+  });
+}
+
 /** Exactly what ChordOverlay does for the strip: the default px/sec it lands on. */
 function defaultStripPps(containerPx) {
   const fit = fitPxPerSec(DUR, containerPx);
-  return clampPxPerSec(readablePxPerSec(RUNS, estimateLabelPx), fit);
+  return clampPxPerSec(readablePxPerSec(RUNS, PROD_MEASURE), fit);
 }
 
 /** Density of every chip at a given zoom, exactly as renderChip derives it. */
 function densitiesAt(pps) {
   return RUNS.map((run) => {
     const w = Math.max(1, chipBox(run, pps).widthPx - 1);
-    return chipDensity(w, estimateLabelPx(displayText(run), CHIP_FONT_PX));
+    return chipDensity(w, PROD_MEASURE(displayText(run), CHIP_FONT_PX));
   });
 }
 
@@ -98,28 +286,114 @@ function densitiesAt(pps) {
 // 1. The default zoom is derived from the data, not from a constant
 // ---------------------------------------------------------------------------
 
-test('the headless label measurer agrees with Chromium', () => {
-  // Pinned against real measurements on the job page's own font stack
-  // (ui-sans-serif/system-ui, weight 400, 16px, tabular-nums), Chromium
-  // 1280x900. If this drifts, every width below is measuring the wrong thing.
-  const CHROMIUM_16PX = {
-    'C:maj': 42.859,
-    'G:7': 26.609,
-    'F#:min7': 61.594,
-    'C#:minmaj7': 90.719,
-    'Ab:maj7/3': 78.531,
-    'N.C.': 32.344,
-    '?': 8.188,
-  };
-  for (const [label, real] of Object.entries(CHROMIUM_16PX)) {
-    const got = estimateLabelPx(label, CHIP_FONT_PX);
+test('the headless table and the canvas measurer both agree with Chromium', () => {
+  // Pinned against real measurements on the chips' own font stack (see the
+  // block comment above: ui-sans-serif ... sans-serif -> Inter 4.000, weight
+  // 400, 16px), Chromium 1280x900. These are the widths of the SHIPPED chip
+  // (proportional digits), canvas measureText and DOM span alike: they agree to
+  // 0.0078px over all 21,002 labels of the grammar, which is the property this
+  // PR depends on. If this drifts, every width below is measuring the wrong
+  // thing.
+  //
+  // Three instruments are checked against each other: the headless table the
+  // component falls back to, the production canvas measurer (through its real
+  // factory) over a context serving the canvas numbers, and a DOM-span number
+  // for the same label. The DOM column is what makes a mistyped CANVAS pin
+  // visible: the table comparison alone tolerates 1px of over-estimate, so a
+  // pin 0.9px low passed it while lowering every ceiling derived from it.
+  for (const [label, real] of Object.entries(CHROMIUM_CANVAS_16PX)) {
+    const dom = CHROMIUM_DOM_16PX[label];
+    assert.ok(dom !== undefined, `${label}: has a canvas pin but no DOM pin`);
     assert.ok(
-      Math.abs(got - real) <= 0.5,
-      `${label}: estimate ${got.toFixed(3)}px vs Chromium ${real}px`,
+      Math.abs(real - dom) <= 1 / 64 + 1e-9,
+      `${label}: canvas pin ${real}px vs DOM pin ${dom}px -- one of the two is mistyped`,
     );
+    const table = estimateLabelPx(label, PIN_FONT_PX);
+    // The table must NEVER sit under the DOM width (that declares text to fit
+    // when it does not); over-estimating only costs a little zoom, and by no
+    // more than a pixel for any label pinned here.
+    assert.ok(
+      table - dom >= 0 && table - dom <= 1,
+      `${label}: headless table ${table.toFixed(3)}px vs Chromium DOM ${dom}px`,
+    );
+    assert.equal(PROD_MEASURE(label, PIN_FONT_PX), real, `${label}: production measurer`);
   }
-  // And it scales linearly with font size, which is how the `tight` branch is judged.
-  assert.ok(Math.abs(estimateLabelPx('F#:min7', 10) - 61.594 * 0.625) < 0.01);
+  assert.deepEqual(
+    Object.keys(CHROMIUM_DOM_16PX).sort(),
+    Object.keys(CHROMIUM_CANVAS_16PX).sort(),
+    'a DOM pin without a canvas pin (or the reverse)',
+  );
+  // And the table scales linearly with font size, which is how `tight` is judged.
+  assert.ok(Math.abs(estimateLabelPx('F#:min7', 10) - 60.594 * 0.625) < 0.2);
+});
+
+test('the pins are 16px measurements, so CHIP_FONT_PX may not move without re-measuring them', () => {
+  // THE LATENT TRAP THIS CLOSES. The pins are canvas widths at 16px, and the
+  // sizing pass will want to change CHIP_FONT_PX. PROD_CTX used to ignore the
+  // font the measurer set and serve the 16px pin for any size, so every
+  // geometry gate would have kept measuring 16px widths against a different
+  // rendered size and stayed green. It now scales the pin by size/16, which is
+  // right only while canvas advances stay linear in size at the new size AND
+  // still agree with the DOM there -- neither of which was measured. So a
+  // different CHIP_FONT_PX fails HERE, by name, until someone re-pins both
+  // columns at the new size and moves PIN_FONT_PX.
+  assert.equal(
+    CHIP_FONT_PX,
+    PIN_FONT_PX,
+    `CHIP_FONT_PX is ${CHIP_FONT_PX} but CHROMIUM_CANVAS_16PX / CHROMIUM_DOM_16PX were measured at ${PIN_FONT_PX}px: ` +
+      're-measure both at the new size (canvas AND a DOM span), then update PIN_FONT_PX',
+  );
+});
+
+test('the pinned canvas context honours the font it is given', () => {
+  // The context is the instrument every geometry gate reads through, so it gets
+  // its own gate. Ask it for other sizes: the answer must follow the size.
+  const spec = { fontFamily: PROD_FONT_FAMILY, fontWeight: '400' };
+  const fresh = makeCanvasMeasurer(PROD_CTX, spec);
+  const at16 = fresh('F#:min7', 16);
+  assert.equal(at16, CHROMIUM_CANVAS_16PX['F#:min7']);
+  assert.ok(Math.abs(fresh('F#:min7', 10) - at16 * 0.625) < 1e-9, 'a 10px request must not be served the 16px pin');
+  assert.ok(Math.abs(fresh('F#:min7', 20) - at16 * 1.25) < 1e-9, 'a 20px request must not be served the 16px pin');
+  assert.ok(fresh('F#:min7', 20) > fresh('F#:min7', 16) && fresh('F#:min7', 16) > fresh('F#:min7', 10));
+  // A weight or family the pins were not measured at is refused, not served.
+  const wrongFamily = makeCanvasMeasurer(PROD_CTX, { fontFamily: 'serif', fontWeight: '400' });
+  const wrongWeight = makeCanvasMeasurer(PROD_CTX, { fontFamily: PROD_FONT_FAMILY, fontWeight: '700' });
+  const kept = [...BAD_FONTS];
+  BAD_FONTS.clear();
+  assert.equal(wrongFamily('G:7', 16), estimateLabelPx('G:7', 16), 'a wrong family must fall back, not be served the pin');
+  assert.equal(wrongWeight('G:7', 16), estimateLabelPx('G:7', 16), 'a wrong weight must fall back, not be served the pin');
+  assert.equal(BAD_FONTS.size, 2, 'the context did not record the fonts it refused');
+  // The two probes above were deliberate; forget them (and keep what the other
+  // gates recorded) so the final test only reports a REAL gate that measured at
+  // a font the pins cannot serve.
+  BAD_FONTS.clear();
+  for (const f of kept) BAD_FONTS.add(f);
+});
+
+test('the advance table holds exactly the glyphs the Harte grammar renders', () => {
+  // The grammar, from the real source (harte.ts is the TS mirror of the worker's
+  // HARTE_RE): 21 roots x (no quality + 24 qualities) x (no bass + b/#/natural
+  // x degrees 1..13), plus what displayText draws for N and X. Built here,
+  // not typed, so a new quality adds its glyphs to the requirement.
+  const roots = [];
+  for (const l of 'ABCDEFG') for (const a of ['', '#', 'b']) roots.push(l + a);
+  const bass = [''];
+  for (let d = 1; d <= 13; d++) for (const a of ['', 'b', '#']) bass.push(`/${a}${d}`);
+  const labels = [];
+  for (const r of roots) for (const q of ['', ...HARTE_QUALITIES.map((x) => `:${x}`)]) for (const b of bass) labels.push(r + q + b);
+  assert.equal(labels.length, 21 * 25 * 40);
+  assert.ok(labels.every((l) => HARTE_RE.test(l)), 'the generated alphabet is wider than the grammar');
+  const used = new Set([...labels.join(''), ...displayText({ kind: 'none', label: 'N' }), ...displayText({ kind: 'unknown', label: 'X' })]);
+  const have = new Set(Object.keys(ADVANCE_16PX));
+  // A glyph the table lacks is charged the WIDEST advance: safe, but it made
+  // every hdim7 label up to 5.33px too wide for months ('h' was the one).
+  assert.deepEqual([...used].filter((g) => !have.has(g)).sort(), [], 'a glyph the grammar renders has no advance in the table');
+  // An entry nothing renders is defended by no label: mutating the space, '-',
+  // '(' and ')' entries to 1.5 left the whole suite green.
+  assert.deepEqual([...have].filter((g) => !used.has(g)).sort(), [], 'the table has an advance for a glyph nothing renders');
+  for (const l of FIX_LABELS) {
+    assert.ok([...l].every((g) => have.has(g)), `fixture label ${l} uses a glyph outside the table`);
+  }
 });
 
 test('the OLD default (fit-the-whole-track) made every chord label unshowable', () => {
@@ -138,19 +412,75 @@ test('the OLD default (fit-the-whole-track) made every chord label unshowable', 
 });
 
 test('the default zoom comes from the widest chord name in THIS job, not a constant', () => {
-  // The derivation, recomputed here from the same inputs the helper uses.
-  const widest = Math.max(...RUNS.map((r) => estimateLabelPx(displayText(r), CHIP_FONT_PX)));
-  const durs = RUNS.map((r) => r.endSec - r.startSec).filter((d) => d > 0).sort((a, b) => a - b);
-  const medianDur = durs[Math.floor(durs.length / 2)];
-  const expected = (widest + CHIP_FULL_PAD_PX + 1) / medianDur;
+  // NOT a recomputation of the helper's own arithmetic. The previous version of
+  // this test rebuilt `(widest + pad + gap) / median` from the same inputs and
+  // asserted equality, which proves only that the code applied its own rule.
+  // These are properties of the ANSWER instead: it must respond to the label
+  // widths, respond to the run durations, and be in the units it claims.
+  const base = readablePxPerSec(RUNS, PROD_MEASURE);
 
-  assert.ok(Math.abs(readablePxPerSec(RUNS, estimateLabelPx) - expected) < 1e-9);
-
-  // It really does depend on the data: widen the names and the zoom follows.
+  // Longer names -> wider zoom. The widest name is the numerator.
   const longerNames = RUNS.map((r) => ({ ...r, label: 'C#:minmaj7', kind: 'chord' }));
   assert.ok(
-    readablePxPerSec(longerNames, estimateLabelPx) > readablePxPerSec(RUNS, estimateLabelPx),
+    readablePxPerSec(longerNames, PROD_MEASURE) > base,
     'a job whose chord names are longer must default to a wider zoom',
+  );
+  // Longer chords -> narrower zoom. The run duration is the denominator.
+  const slower = RUNS.map((r) => ({ ...r, startSec: r.startSec * 2, endSec: r.endSec * 2 }));
+  assert.ok(
+    readablePxPerSec(slower, PROD_MEASURE) < base,
+    'a job whose chords last twice as long must default to half the zoom',
+  );
+  // And it is a px/sec that actually does the job it is named for: at this
+  // zoom a run of the length the statistic picked carries the longest name.
+  const picked = timeWeightedRunSec(
+    RUNS.map((r) => r.endSec - r.startSec),
+    READABLE_TIME_FRACTION,
+  );
+  const widest = widestLabelPx(RUNS, PROD_MEASURE);
+  assert.equal(
+    chipDensity(chipContentPx(picked * base), widest),
+    'full',
+    'the default zoom does not make a run of the length it sized for readable',
+  );
+});
+
+test('the default statistic is duration-weighted, and that is what kills a 4x cliff', () => {
+  // THE DEFECT THIS REPLACES. The old statistic was the COUNT median, which on
+  // a song with two sections lands on whichever population has more chips --
+  // and jumps to the other one when a handful of chords move across. Modelled
+  // here as the old rule (written out, not imported) against the new one.
+  const countMedian = (runs) => {
+    const a = runs.map((r) => r.endSec - r.startSec).filter((d) => d > 0).sort((x, y) => x - y);
+    return a[Math.floor(a.length / 2)];
+  };
+  const oldRule = (runs) =>
+    clampPxPerSec(
+      (widestLabelPx(runs, PROD_MEASURE) + CHIP_FULL_PAD_PX + CHIP_GAP_PX) / countMedian(runs),
+      fitPxPerSec(durationSec(runs), 872),
+    );
+
+  const a = oldRule(BIMODAL);
+  const b = oldRule(BIMODAL_FLIPPED);
+  assert.ok(
+    b / a > 3,
+    `the old count median was supposed to be unstable here: ${a.toFixed(3)} vs ${b.toFixed(3)}`,
+  );
+
+  // The new statistic returns the SAME answer for both mixes. Not "close":
+  // equal, because the duration-weighted median of these two populations is
+  // the same 4.0s run either way.
+  assert.equal(
+    readablePxPerSec(BIMODAL, PROD_MEASURE),
+    readablePxPerSec(BIMODAL_FLIPPED, PROD_MEASURE),
+    'moving five chords between sections must not move the default zoom',
+  );
+
+  // And the weighting is real, not a relabelling: on a song whose chip counts
+  // and whose time shares disagree, the two statistics differ.
+  assert.notEqual(
+    timeWeightedRunSec(BIMODAL.map((r) => r.endSec - r.startSec), READABLE_TIME_FRACTION),
+    countMedian(BIMODAL_FLIPPED),
   );
 });
 
@@ -159,17 +489,25 @@ test('at the default zoom the chips can show their names at every desktop width'
     const pps = defaultStripPps(containerPx);
     const d = densitiesAt(pps);
     const ticks = d.filter((x) => x === 'tick').length;
-    const widths = RUNS.map((r) => chipBox(r, pps).widthPx).sort((a, b) => a - b);
-    const median = widths[Math.floor(widths.length / 2)];
 
     assert.ok(
       ticks <= 1,
       `@${viewport}: ${ticks}/${RUNS.length} chips still cannot show a label at ${pps.toFixed(2)}px/sec`,
     );
-    // The median chip must carry its name at FULL size, not at the 10px fallback.
+    // HALF THE TRACK'S TIME, at full size. The bar used to be stated over the
+    // median CHIP, which is the statistic this PR moved away from, so asserting
+    // it would have pinned the old rule. The thing the new default promises is
+    // READABLE_TIME_FRACTION of the song's chord seconds in `full` chips --
+    // measured here by summing the durations of the runs that came out `full`.
+    const fullSec = RUNS.reduce(
+      (acc, r, i) => (d[i] === 'full' ? acc + (r.endSec - r.startSec) : acc),
+      0,
+    );
+    const totalSec = RUNS.reduce((acc, r) => acc + (r.endSec - r.startSec), 0);
     assert.ok(
-      median >= Math.max(...RUNS.map((r) => estimateLabelPx(displayText(r), CHIP_FONT_PX))) + CHIP_FULL_PAD_PX,
-      `@${viewport}: median chip is ${median.toFixed(1)}px, too narrow for the longest name`,
+      fullSec / totalSec >= READABLE_TIME_FRACTION,
+      `@${viewport}: only ${((100 * fullSec) / totalSec).toFixed(1)}% of the track's chord time ` +
+        `is in chips that fit their name at full size (want >= ${100 * READABLE_TIME_FRACTION}%)`,
     );
   }
 });
@@ -186,8 +524,8 @@ test('a sparse song still fits the strip; a dense song is capped, not run away',
     })),
   );
   const fit = fitPxPerSec(durationSec(sparse), 904);
-  assert.ok(readablePxPerSec(sparse, estimateLabelPx) < fit);
-  assert.equal(clampPxPerSec(readablePxPerSec(sparse, estimateLabelPx), fit), fit);
+  assert.ok(readablePxPerSec(sparse, PROD_MEASURE) < fit);
+  assert.equal(clampPxPerSec(readablePxPerSec(sparse, PROD_MEASURE), fit), fit);
 
   // 400 chords over the same 3:33: the derivation wants far more than the
   // maximum zoom, and must be capped there rather than returning Infinity.
@@ -199,11 +537,284 @@ test('a sparse song still fits the strip; a dense song is capped, not run away',
       confidence: 1,
     })),
   );
-  const densePps = readablePxPerSec(dense, estimateLabelPx);
+  const densePps = readablePxPerSec(dense, PROD_MEASURE);
   assert.ok(Number.isFinite(densePps));
   // The imported constant, not a literal that merely happens to equal it today.
   assert.equal(densePps, MAX_PX_PER_SEC);
-  assert.ok(readablePxPerSec(dense, estimateLabelPx, MAX_PX_PER_SEC) <= MAX_PX_PER_SEC);
+  assert.ok(readablePxPerSec(dense, PROD_MEASURE, MAX_PX_PER_SEC) <= MAX_PX_PER_SEC);
+});
+
+// ---------------------------------------------------------------------------
+// 1b. THE ZOOM CEILING: every chord in the job must be reachable
+// ---------------------------------------------------------------------------
+//
+// THE DEFECT THESE GATES EXIST FOR
+// --------------------------------
+// `MAX_PX_PER_SEC = 80` was the maximum zoom, and it was a bound on nothing --
+// 80px/sec is not a statement about any text. A chord needs
+// (labelPx + pad + gap) / durationSec px/sec to carry its name, so below about
+// 0.52s of run (one chord per beat at 115bpm) no zoom the slider could reach
+// would name it. On the reviewer's bimodal song that left 25 of 115 chords
+// with no readable name AT ANY ZOOM; on #207's own jittered-400 row it left 91.
+// The user could not get at them, and nothing said so.
+
+test('the OLD cap left chords that no zoom could name — the defect, reproduced', () => {
+  // Driven off the IMPORTED constant, so this reproduces the old ceiling rather
+  // than a literal 80 that merely equals it today.
+  for (const [name, runs] of ADVERSARIAL) {
+    const unreachable = runs.filter((r) => ppsForTightName(r) > MAX_PX_PER_SEC);
+    assert.ok(
+      unreachable.length > 0,
+      `${name}: expected the old cap to strand chords, found none — has the shape drifted?`,
+    );
+    // And it is not a rounding-margin case: they need multiples of the old cap.
+    const worst = Math.max(...runs.map(ppsForTightName));
+    assert.ok(
+      worst > MAX_PX_PER_SEC * 1.25,
+      `${name}: worst chord needs ${worst.toFixed(1)}px/sec against a ${MAX_PX_PER_SEC} cap`,
+    );
+  }
+});
+
+test('the derived ceiling names EVERY chord in the job, at full size', () => {
+  for (const [name, runs] of ADVERSARIAL.concat([['the real 3:33 fixture', RUNS]])) {
+    const ceiling = stripCeiling(runs);
+    // The requirement, built per-run from the exported geometry constants --
+    // NOT from zoomCeilingPxPerSec's own shortest-run shortcut. If the helper
+    // picked the wrong run, or dropped the gap, or used the wrong label, this
+    // maximum does not move with it.
+    const required = Math.max(...runs.map(ppsForFullName));
+    assert.ok(
+      ceiling >= required - 1e-9,
+      `${name}: ceiling ${ceiling.toFixed(3)} < ${required.toFixed(3)} px/sec needed by its shortest chord`,
+    );
+    // The consequence, counted over the real density function: nothing nameless.
+    const counts = densityCounts(runs, ceiling, PROD_MEASURE);
+    assert.equal(
+      counts.tick,
+      0,
+      `${name}: ${counts.tick}/${runs.length} chords still have no name at the top of the slider`,
+    );
+    assert.equal(
+      counts.tight,
+      0,
+      `${name}: ${counts.tight} chords only reach the 10px size at the top of the slider`,
+    );
+  }
+});
+
+test('the ceiling keeps the one pixel of slack clientWidth rounding needs', () => {
+  // WHAT THIS REPLACED. It asserted CEILING_SLACK_PX >= 1.664, "the delta canvas
+  // cannot see", a figure taken from a 13-label sample. Over the real alphabet
+  // that delta was up to 15.164px (C:11 alone 7.4px), so the assertion passed
+  // while 24 chips at the ceiling were clipped by 13px. The disagreement is now
+  // removed at its cause (chips carry no tabular digits; see the render gate
+  // below), so what is left for the slack to cover is the ~1px integer
+  // rounding of clientWidth that #207 recorded -- a number from outside this file.
+  //
+  // WHAT THIS DEFENDS, EXACTLY. Only `CEILING_SLACK_PX >= 1` (the rounding
+  // artifact) -- and in fact only that plus the 0.0078px canvas-vs-DOM
+  // disagreement, so anything from about 1.01 up. The shipped value is 2.
+  // Mutated to 1, 1.9 or 1.5 this file stays green, and that is deliberate
+  // rather than an oversight: nothing measured says 2 beats 1.9, so no test
+  // pretends to. Mutated to 0.5 it goes red, here.
+  const CLIENTWIDTH_ROUNDING_PX = 1;
+  assert.ok(CEILING_SLACK_PX >= CLIENTWIDTH_ROUNDING_PX);
+  for (const [name, runs] of ADVERSARIAL.concat([['fixture', RUNS]])) {
+    const ceiling = stripCeiling(runs);
+    // The widest name on the shortest run: the one chip that sits at the limit.
+    const content = chipContentPx(shortestRunSec(runs) * ceiling);
+    const headroom = content - CHIP_FULL_PAD_PX - widestLabelPx(runs, PROD_MEASURE);
+    assert.ok(
+      headroom >= CLIENTWIDTH_ROUNDING_PX - 1e-9,
+      `${name}: only ${headroom.toFixed(3)}px of headroom at the ceiling, needs ${CLIENTWIDTH_ROUNDING_PX}px`,
+    );
+  }
+});
+
+test('the ceiling only ever ADDS zoom range — no job loses what it has today', () => {
+  // A fix that improves a metric by removing a capability is not a fix. A slow
+  // song's shortest run may need less than the old cap; the ceiling must not
+  // follow it down.
+  const slow = songOf([[12, 20]]);
+  assert.ok(
+    Math.max(...slow.map(ppsForFullName)) < MAX_PX_PER_SEC,
+    'the slow song is supposed to need less than the old cap',
+  );
+  for (const [, runs] of ADVERSARIAL.concat([['fixture', RUNS], ['slow', slow]])) {
+    assert.ok(
+      stripCeiling(runs) >= MAX_PX_PER_SEC,
+      `a job's zoom ceiling fell below MAX_PX_PER_SEC (${MAX_PX_PER_SEC})`,
+    );
+  }
+  // Degenerate input cannot produce a ceiling below the floor either.
+  assert.equal(zoomCeilingPxPerSec([], PROD_MEASURE, { durSec: 10 }), MAX_PX_PER_SEC);
+  assert.equal(
+    zoomCeilingPxPerSec([{ startSec: 0, endSec: 0, label: 'C:maj', kind: 'chord' }], PROD_MEASURE, { durSec: 0 }),
+    MAX_PX_PER_SEC,
+  );
+});
+
+test('the slider reaches the ceiling, and the ceiling is where it stops', () => {
+  // The ceiling is only a capability if the control gets there. Both ends, on
+  // the shape whose top end used to be unreachable.
+  const runs = BIMODAL;
+  const dur = durationSec(runs);
+  const minPps = fitPxPerSec(dur, 872);
+  const maxPps = stripCeiling(runs);
+  assert.ok(maxPps > MAX_PX_PER_SEC, 'this shape should raise its own ceiling');
+
+  assert.ok(Math.abs(sliderToPps(1, minPps, maxPps) - maxPps) < 1e-9);
+  assert.ok(Math.abs(ppsToSlider(maxPps, minPps, maxPps) - 1) < 1e-9);
+  assert.equal(sliderToPps(0, minPps, maxPps), minPps);
+  for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+    assert.ok(Math.abs(ppsToSlider(sliderToPps(t, minPps, maxPps), minPps, maxPps) - t) < 1e-9);
+  }
+  // And at the top of that slider the chords really are named.
+  assert.equal(densityCounts(runs, sliderToPps(1, minPps, maxPps), PROD_MEASURE).tick, 0);
+});
+
+test('the painted-length budget binds on malformed data, and nothing else', () => {
+  // A single 5ms run would otherwise demand ~15,700px/sec and a 3.8M-px strip.
+  // The budget is a guard against data the 10fps detector cannot emit, so it
+  // must bind THERE and not on any of the real shapes.
+  const pathological = songOf([[0.005, 1], [3, 80]]);
+  const dur = durationSec(pathological);
+  const ceiling = stripCeiling(pathological);
+  assert.ok(
+    Math.max(...pathological.map(ppsForFullName)) > ceiling,
+    'the pathological run was supposed to out-demand the budget',
+  );
+  assert.ok(
+    dur * ceiling <= MAX_TIMELINE_PX + 1e-6,
+    `strip would paint ${(dur * ceiling).toFixed(0)}px against a ${MAX_TIMELINE_PX}px budget`,
+  );
+  // On every real shape the budget is slack, so the ceiling is the data's.
+  for (const [name, runs] of ADVERSARIAL.concat([['fixture', RUNS]])) {
+    const d = durationSec(runs);
+    assert.ok(
+      d * stripCeiling(runs) < MAX_TIMELINE_PX / 10,
+      `${name}: the budget is doing the deciding (${(d * stripCeiling(runs)).toFixed(0)}px)`,
+    );
+  }
+});
+
+test('the wrapped layout gets the same ceiling, bounded by rows of DOM', () => {
+  // The strip's chip count does not change with zoom; a wrapped row is created
+  // per rowSec, so here the ceiling really does buy DOM. Rows must stay inside
+  // the measured budget, and the phone must still reach every chord.
+  // THE NUMBER THIS IS JUDGED AGAINST IS NOT MAX_WRAP_ROWS. An earlier version
+  // asserted `rows <= MAX_WRAP_ROWS` with the constant imported, so both sides
+  // of the comparison moved together and the gate could not fail: raising
+  // MAX_WRAP_ROWS from 800 to 100_000 left the whole suite green with the
+  // pathological song at ~6,900 rows. Found by mutation testing, not by
+  // reading it.
+  //
+  // So the bar is the MEASURED cost boundary instead, which no edit to the
+  // constant moves: Chromium at 390x800, 3 nodes per row, build+layout is flat
+  // from the 73 rows today's cap produces (26.8ms) through 800 rows (31.5ms),
+  // then 2,000 rows costs 62.2ms -- roughly double -- and 7,000 rows 238.3ms.
+  const ROWS_WHERE_LAYOUT_COST_DOUBLES = 2000;
+  assert.ok(
+    MAX_WRAP_ROWS <= ROWS_WHERE_LAYOUT_COST_DOUBLES,
+    `MAX_WRAP_ROWS=${MAX_WRAP_ROWS} is at or past the row count where wrapped ` +
+      `layout cost doubles (${ROWS_WHERE_LAYOUT_COST_DOUBLES})`,
+  );
+
+  const rowWidthPx = Math.max(120, NARROW_CONTAINER_PX - GUTTER_PX);
+  for (const [name, runs] of ADVERSARIAL.concat([['pathological', songOf([[0.005, 1], [3, 80]])]])) {
+    const ceiling = zoomCeilingPxPerSec(runs, PROD_MEASURE, {
+      durSec: durationSec(runs),
+      maxPaintedPx: Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx),
+    });
+    const rows = layoutRows(runs, rowWidthPx / ceiling, ceiling).length;
+    assert.ok(
+      rows <= ROWS_WHERE_LAYOUT_COST_DOUBLES,
+      `${name}: ${rows} wrapped rows at the ceiling, past the measured ` +
+        `${ROWS_WHERE_LAYOUT_COST_DOUBLES}-row cost cliff`,
+    );
+    assert.ok(
+      rows <= MAX_WRAP_ROWS,
+      `${name}: ${rows} wrapped rows at the ceiling, over the ${MAX_WRAP_ROWS} budget`,
+    );
+    assert.ok(ceiling >= MAX_PX_PER_SEC, `${name}: the phone lost zoom range`);
+  }
+});
+
+test('the wrapped layout keeps SOME nameless chips at any zoom, and the ceiling cuts them', () => {
+  // WHAT THE CEILING DOES NOT PROMISE ON A PHONE, asserted so nobody reads the
+  // strip's guarantee as universal. `layoutRows` splits a run that crosses a
+  // row boundary and each piece is narrower than the run, so no finite zoom
+  // makes every PIECE readable. Counting runs instead of segments is what hid
+  // this: an earlier version of this gate asserted tick === 0 here and passed,
+  // while Chromium at 390px showed 21 nameless chips at the same zoom.
+  const rowWidthPx = Math.max(120, NARROW_CONTAINER_PX - GUTTER_PX);
+  const ceiling = zoomCeilingPxPerSec(BIMODAL, PROD_MEASURE, {
+    durSec: durationSec(BIMODAL),
+    maxPaintedPx: Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx),
+  });
+  const segsAt = (pps) =>
+    segmentDensityCounts(BIMODAL, layoutRows(BIMODAL, rowWidthPx / pps, pps), PROD_MEASURE);
+
+  // Counting runs would claim zero. Counting what renders does not.
+  assert.equal(densityCounts(BIMODAL, ceiling, PROD_MEASURE).tick, 0);
+  assert.ok(
+    segsAt(ceiling).tick > 0,
+    'the wrapped layout is expected to keep split-run ticks; if this is now 0, strengthen the claim',
+  );
+
+  // What the ceiling DOES buy the phone: strictly fewer nameless chips than
+  // the old cap could reach, and strictly more readable ones.
+  const old = segsAt(MAX_PX_PER_SEC);
+  const now = segsAt(ceiling);
+  assert.ok(
+    now.tick < old.tick,
+    `the phone's ceiling did not reduce nameless chips: ${old.tick} -> ${now.tick}`,
+  );
+  assert.ok(now.full > old.full, `readable chips did not increase: ${old.full} -> ${now.full}`);
+  // And they stay a minority, which is the bar the wrapped layout already had.
+  const total = now.full + now.tight + now.tick;
+  assert.ok(now.tick < total * 0.25, `${now.tick}/${total} nameless on the phone at its ceiling`);
+});
+
+test('the default is still an overview — the ceiling was not reached by zooming in', () => {
+  // The cheap way to make "nameless chips" go to zero is to default to the
+  // ceiling, which would trade the whole timeline for four chords on screen.
+  // On the reviewer's shape the default must stay well below its own ceiling
+  // and still show a usable span of the song.
+  const dur = durationSec(BIMODAL);
+  const def = clampPxPerSec(
+    readablePxPerSec(BIMODAL, PROD_MEASURE),
+    fitPxPerSec(dur, 872),
+    stripCeiling(BIMODAL),
+  );
+  assert.ok(def < stripCeiling(BIMODAL) / 4, `default ${def.toFixed(3)} is near its ceiling`);
+  assert.ok(872 / def > 30, `the default shows only ${(872 / def).toFixed(1)}s of a ${dur.toFixed(0)}s track`);
+  // And the time-coverage promise still holds on this shape, which is the
+  // reason the dense half is allowed to be ticks at the default at all.
+  const fullSec = BIMODAL.reduce(
+    (acc, r) =>
+      chipDensity(runContentPx(r, def), PROD_MEASURE(displayText(r), CHIP_FONT_PX)) === 'full'
+        ? acc + (r.endSec - r.startSec)
+        : acc,
+    0,
+  );
+  assert.ok(fullSec / dur >= READABLE_TIME_FRACTION);
+});
+
+test('chipContentPx is the one rule for a chip width, gap included', () => {
+  // `renderChip` had a bare `widthPx - 1` while `fullChipPx` reserved
+  // CHIP_GAP_PX -- the last untied literal of the family #207 closed for the
+  // padding and the tight font size. One function now, so the number that
+  // decides a label fits and the number that sizes the box cannot drift.
+  assert.equal(chipContentPx(100), 100 - CHIP_GAP_PX);
+  assert.equal(chipContentPx(0), 1, 'a chip never has a non-positive content width');
+  assert.equal(runContentPx({ startSec: 1, endSec: 3 }, 50), 100 - CHIP_GAP_PX);
+  // The gap is really reserved by the fit rule: a box exactly one label wide
+  // plus padding is NOT full, because the gap is taken off it first.
+  const labelPx = PROD_MEASURE('F#:min7', CHIP_FONT_PX);
+  assert.equal(chipDensity(chipContentPx(labelPx + CHIP_FULL_PAD_PX), labelPx), 'tight');
+  assert.equal(chipDensity(chipContentPx(labelPx + CHIP_FULL_PAD_PX + CHIP_GAP_PX), labelPx), 'full');
 });
 
 // ---------------------------------------------------------------------------
@@ -324,7 +935,7 @@ test('a measurer that under-reports moves the default zoom, and the gate sees it
   // And at that zoom the chips demonstrably cannot carry their names.
   const clipped = RUNS.filter((run) => {
     const w = Math.max(1, chipBox(run, badPps).widthPx - 1);
-    return chipDensity(w, estimateLabelPx(displayText(run), CHIP_FONT_PX)) !== 'full';
+    return chipDensity(w, PROD_MEASURE(displayText(run), CHIP_FONT_PX)) !== 'full';
   }).length;
   assert.ok(clipped > RUNS.length * 0.9, `${clipped}/${RUNS.length} chips clipped at the bad zoom`);
 });
@@ -332,6 +943,33 @@ test('a measurer that under-reports moves the default zoom, and the gate sees it
 // ---------------------------------------------------------------------------
 // 3. The render gate: nothing counted may be invisible
 // ---------------------------------------------------------------------------
+
+/**
+ * Drive a React controlled <input type="range"> the way a user would.
+ *
+ * WHY THIS IS NOT `el.value = x`. React 18 installs its own `value` setter on
+ * the input INSTANCE and uses it as a change tracker: assigning through it
+ * records the new value, so the `input` event that follows is judged a no-op
+ * and `onChange` is never called. Measured in this harness — three imperative
+ * assignments moved `el.value` and produced ZERO onChange calls.
+ *
+ * Two tests below used to set `.value` directly and assert on "the zoomed-out
+ * state". The zoom never moved: they were reading the DEFAULT view, and their
+ * assertions (`some tick chips exist`, `no tick chip carries text`) happen to
+ * hold there too, so they passed without exercising the thing they named. The
+ * native prototype setter bypasses the instance tracker, so React sees a real
+ * change — which is also what makes the ceiling gates able to fail.
+ */
+async function dragRange(dom, el, value) {
+  const nativeSet = Object.getOwnPropertyDescriptor(
+    dom.window.HTMLInputElement.prototype,
+    'value',
+  ).set;
+  await dom.act(() => {
+    nativeSet.call(el, String(value));
+    el.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+}
 
 /** rgb()/rgba()/named -> {r,g,b,a}. Returns null for a value we cannot read. */
 function parseColor(value) {
@@ -373,12 +1011,112 @@ function contrast(fg, bg) {
 }
 
 /**
+ * A chip's declared font size in px. `rem` is resolved against a 16px root (the
+ * harness has none); anything else, and nothing at all, is NaN -- which every
+ * caller treats as "this chip does not say what size it renders at".
+ */
+function parseFontPx(value) {
+  const v = String(value ?? '').trim();
+  const px = /^(\d+(?:\.\d+)?)px$/.exec(v);
+  if (px) return Number(px[1]);
+  const rem = /^(\d+(?:\.\d+)?)rem$/.exec(v);
+  if (rem) return Number(rem[1]) * 16;
+  return NaN;
+}
+
+// ---------------------------------------------------------------------------
+// THE CANVAS THE COMPONENT ACTUALLY ASKS FOR
+// ---------------------------------------------------------------------------
+//
+// ROOT CAUSE OF ROUND 6. happy-dom's getContext('2d') is null, so the mounted
+// component ALWAYS took ChordOverlay's `estimateLabelPx` fallback and the
+// `makeCanvasMeasurer(ctx, { fontFamily: cs.fontFamily, fontWeight:
+// cs.fontWeight })` call it makes in every real browser ran in no test. The
+// "production measurer" in the titles below was PROD_MEASURE: a factory
+// exercised by the tests themselves over a context the tests supplied, never by
+// the component. Eight mutants survived at an unchanged count, the worst
+// replacing `cs.fontFamily` with 'serif' (31 chips clipped in Chromium, the
+// worst by 5.656px; suite green).
+//
+// So the component is now mounted with a 2D context. `getContext` is patched on
+// the prototype that owns it (restored in mountOverlay's finally, which the
+// harness's pollution check requires) and returns a context that
+//   - records every font string the component assigned (`fonts`) and every
+//     (font, text) it was asked to measure (`measured`), so a test can assert
+//     WHAT FONT the component told canvas to measure with;
+//   - serves a width only through `widthOf`, which receives the weight, size
+//     and family it parsed out of that string.
+// Its default `widthOf` is the Chromium-pinned model: it serves the pins ONLY
+// for the family the overlay container declares and for weight 400, and
+// otherwise answers NaN (the measurer then falls back to the table, and the
+// font lands in BAD_FONTS, which the last test in the file reports).
+/** Half a unit in happy-dom's 4th decimal, doubled: the most a serialised px length can read low. */
+const STYLE_PX_EPS = 1e-4;
+const CANVAS_FONT_RE = /^(\S+) (\d+(?:\.\d+)?)px (.+)$/;
+
+/** The family ChordOverlay's container declares, read off the live element. */
+function overlayFamily(w) {
+  const el = w.document.querySelector('[data-testid="chord-overlay"]');
+  return el ? el.style.fontFamily : '';
+}
+
+function pinnedWidthOf(w) {
+  return (text, px, { weight, family, font }) => {
+    if (text === '') return 0;
+    if ((weight !== '400' && weight !== 'normal') || family !== overlayFamily(w)) {
+      BAD_FONTS.add(font);
+      return NaN;
+    }
+    const pin = CHROMIUM_CANVAS_16PX[text];
+    if (pin === undefined) UNPINNED_LABELS.add(text);
+    return pin === undefined ? NaN : (pin * px) / PIN_FONT_PX;
+  };
+}
+
+function installCanvas(dom, widthOf) {
+  const w = dom.window;
+  const proto = w.HTMLCanvasElement.prototype;
+  const desc = Object.getOwnPropertyDescriptor(proto, 'getContext');
+  const rec = { contexts: 0, fonts: [], measured: [] };
+  const serve = widthOf ?? pinnedWidthOf(w);
+  proto.getContext = function getContext(kind) {
+    if (kind !== '2d') return null;
+    rec.contexts += 1;
+    let font = '10px sans-serif';
+    return {
+      get font() { return font; },
+      // Canvas IGNORES a shorthand it cannot parse and keeps the old value.
+      set font(v) {
+        if (/(?:^|\s)\d+(?:\.\d+)?px(?:\s|$)/.test(String(v))) {
+          font = String(v);
+          rec.fonts.push(font);
+        }
+      },
+      measureText(text) {
+        const m = CANVAS_FONT_RE.exec(font);
+        rec.measured.push({ font, text });
+        if (!m) return { width: NaN };
+        return { width: serve(text, Number(m[2]), { weight: m[1], family: m[3], font }) };
+      },
+    };
+  };
+  rec.restore = () => {
+    if (desc) Object.defineProperty(proto, 'getContext', desc);
+    else delete proto.getContext;
+  };
+  return rec;
+}
+
+/**
  * Mount the real component at a given container width and read every chip in
  * the timeline container. happy-dom has no layout, so the container width is
  * injected the only way the component can take one: through the element's own
  * getBoundingClientRect, which is what its ResizeObserver effect reads.
  */
-async function mountOverlay(dom, { containerPx, afterMount } = {}) {
+async function mountOverlay(
+  dom,
+  { containerPx, afterMount, beforeMount, payload = PAYLOAD, widthOf } = {},
+) {
   const React = (await import('react')).default;
   const { ChordOverlay } = await loadChordOverlay();
   const w = dom.window;
@@ -400,15 +1138,19 @@ async function mountOverlay(dom, { containerPx, afterMount } = {}) {
     }
     return realRect.call(this);
   };
+  // The component is mounted WITH a 2D context, as in every real browser, so
+  // the measurer it builds is the canvas one and not the headless fallback.
+  const canvas = installCanvas(dom, widthOf);
   globalThis.fetch = async (url) => {
     const u = String(url);
     if (u.includes('/play-chords')) {
       return { ok: true, status: 200, json: async () => ({ signed_url: '/signed', expires_in_sec: 60 }) };
     }
-    return { ok: true, status: 200, json: async () => PAYLOAD };
+    return { ok: true, status: 200, json: async () => payload };
   };
 
   try {
+    if (beforeMount) await beforeMount(dom);
     await dom.mount(React.createElement(ChordOverlay, { jobId: 'fixture-job' }));
     await dom.act();
     if (afterMount) await afterMount(dom);
@@ -452,20 +1194,57 @@ async function mountOverlay(dom, { containerPx, afterMount } = {}) {
       // through the real density function with the real label. A chip that
       // paints readable text in a box too small for it is still a failure.
       const declaredW = parseFloat(chip.style.width) || 0;
-      const labelPx = estimateLabelPx(text, CHIP_FONT_PX);
+      // happy-dom serialises a px length to 4 decimals (measured: it turns
+      // '76.58590000000001px' into '76.5859px'), so a width that sits exactly on
+      // a threshold reads back up to 5e-5 low. The component decides density
+      // from the unrounded number. Only visible once the component runs the
+      // canvas measurer: the pinned F#:min7 is 60.5859, and the default zoom is
+      // derived to make that chip exactly label + padding wide.
+      const declaredWFit = declaredW + STYLE_PX_EPS;
+      const labelPx = PROD_MEASURE(text, CHIP_FONT_PX);
+      // ... and again at the size the CHIP ITSELF declares, read off the element
+      // and not from a constant: a chip that renders at a size other than the
+      // one the measurer was asked about cannot hide behind the constant. An
+      // undeclared or unparseable size is NaN and counts as not fitting.
+      const fontPx = parseFontPx(chip.style.fontSize);
+      const chipDensityNow = chip.dataset.density;
+      const fitsAtDeclaredSize =
+        text.length === 0
+          ? null
+          : !Number.isFinite(fontPx)
+            ? false
+            : chipDensityNow === 'full'
+              ? declaredWFit >= PROD_MEASURE(text, fontPx) + CHIP_FULL_PAD_PX
+              : chipDensityNow === 'tight'
+                ? declaredWFit >= PROD_MEASURE(text, fontPx) + CHIP_TIGHT_PAD_PX
+                : false;
       return {
+        fontPx,
+        fitsAtDeclaredSize,
         density: chip.dataset.density,
+        testid: chip.dataset.testid,
         text,
         hasText: text.length > 0,
         color: cs.color,
         opacity: o,
         widthPx: declaredW,
-        fitsDensity: text.length === 0 ? null : chipDensity(declaredW, labelPx),
+        fitsDensity: text.length === 0 ? null : chipDensity(declaredWFit, labelPx),
         contrast: contrast(fgPainted, bgPainted),
       };
     });
-    return { timeline, chips, rows };
+    const hint = dom.find('[data-testid="timeline-hint"]');
+    const namelessNode = dom.find('[data-testid="timeline-nameless"]');
+    return {
+      timeline,
+      chips,
+      rows,
+      renderedPps: Number(timeline.dataset.pxPerSec),
+      hintText: hint ? hint.textContent : '',
+      namelessText: namelessNode ? namelessNode.textContent : null,
+      canvas,
+    };
   } finally {
+    canvas.restore();
     if (realDesc) Object.defineProperty(proto, 'getBoundingClientRect', realDesc);
     else delete proto.getBoundingClientRect;
     if (hadFetch) globalThis.fetch = realFetch;
@@ -473,7 +1252,401 @@ async function mountOverlay(dom, { containerPx, afterMount } = {}) {
   }
 }
 
-test('default view: every chord chip on the timeline shows a READABLE label', async () => {
+// ---------------------------------------------------------------------------
+// 3a. THE FONT-CHANNEL ALLOWLIST
+// ---------------------------------------------------------------------------
+//
+// THE PROPERTY. The zoom ceiling and every chip's density are decided with a
+// canvas measurer that is told ONE size, ONE weight and ONE family. A chip is
+// as wide as that measurement says only if nothing else changes the advances of
+// its glyphs. Canvas cannot express font-variant-numeric, font-feature-settings,
+// letter-spacing, word-spacing, a different weight or size, kerning,
+// text-transform, zoom -- and the list is open: a new spelling tomorrow is not
+// on any list written today.
+//
+// WHAT THIS REPLACED. A test titled "no chord chip declares a font feature that
+// canvas cannot express" whose comment claimed "a differently spelled
+// declaration cannot satisfy it and cannot hide it", and whose body was a regex
+// of SEVEN KEYWORDS over the chip's own inline style. Measured against the real
+// component in Chromium, each of these left that file at 33/33 green while chips
+// clipped:
+//   fontFeatureSettings: '"tnum"' on a chip          7 clipped 5.92px at the ceiling
+//   fontVariantNumeric on the CONTAINER (the parent)  7 clipped 5.92px
+//   fontSize: '1.25rem' on a chip                    21 clipped 13.16px
+//   fontWeight: 700 + letterSpacing on a chip         7 clipped 10.8px
+// The first is a spelling the regex did not list; the second is a property on an
+// ANCESTOR, which a chip-only read cannot see; the rest are not "numeric
+// features" at all.
+//
+// WHAT THIS DOES INSTEAD. It ENUMERATES what is permitted and fails on anything
+// else, on every element from a chip up to the overlay root:
+//   - a CHIP may declare exactly CHIP_DECLARES. The only one of those that
+//     changes glyph advances is `fontSize`, and its VALUE is checked against the
+//     constants the measurer and chipDensity use (CHIP_FONT_PX, or
+//     CHIP_TIGHT_FONT_PX for a tight chip), imported, not retyped.
+//   - an ANCESTOR may declare exactly ANCESTOR_DECLARES (layout and paint only).
+//     `fontFamily` is additionally permitted on the measured wrap and above,
+//     because that is where the measurer READS the family from; between the wrap
+//     and the chip it is invisible to the measurer and therefore forbidden.
+//   - nothing may carry a class but `co-scroll`, and the one <style> the overlay
+//     renders is checked by PROPERTY NAME against STYLE_ELEMENT_PROPS (and its
+//     selector only by `startsWith('.co-scroll')`). That list is NOT scrollbar-only
+//     and no value is read: it allowlists `border`, `height`, `background` and
+//     `border-radius` by name, so a stylesheet CAN carry a value an inline style
+//     may not (`.co-scroll button{border:4px solid transparent !important}` passes).
+// A property the allowlist does not know FAILS, with its name, and the fix is a
+// deliberate edit here -- which is where a reviewer sees it -- not a keyword.
+//
+// TWO CHANNELS, because each misses something. React's own props
+// (`__reactProps$...`.style) carry every key the component wrote, including the
+// vendor-prefixed and unknown ones happy-dom's `style` setter DROPS
+// (`WebkitTextSizeAdjust` and `fontSmooth` serialise to nothing). The serialised
+// `style` attribute carries what actually landed on the element, so a PROPERTY
+// NAME an effect set imperatively through a ref (`el.style.x = ...`) is seen.
+// That is true of NAMES and not of VALUES: only `fontSize` is value-checked on
+// both channels. `height` and `top` are value-tied on both too (see below);
+// `padding`, `border`, `boxSizing` and `whiteSpace` are value-tied on the React
+// channel ONLY, so an effect that sets `chip.style.padding = '0 14px'` or
+// `chip.style.border = '4px solid transparent'` passes. The gate takes the union
+// of names; it does not take the union of values.
+//
+// WHAT THIS GATE DOES NOT COVER -- read this before concluding a property is safe.
+//
+//   1. THE STYLESHEET VALUE CHANNEL. The overlay's <style> is checked by property
+//      name only. Round 3 (Chromium): adding `.co-scroll button{border:4px solid
+//      transparent !important}` to SCROLLBAR_CSS left the suite green and clipped
+//      13 chips (worst 5.266px at 1280); a selector variant reached 29 chips /
+//      7.734px at 390. NOT closed here.
+//   2. THE IMPERATIVE VALUE CHANNEL. Values set through a ref (`chip.style.*`) are
+//      read only for `fontSize`. Round 3: an effect setting `padding = '0 14px'`
+//      clipped 44 chips (worst 22.500px at 1280; 68 / 25.203px at 390); the same
+//      with `border = '4px solid transparent'` clipped 13 / 5.266px (29 / 7.734px
+//      at 390). NOT closed here.
+//   3. ANYTHING THAT DEPENDS ON RENDERED TEXT WIDTH. happy-dom cannot measure
+//      rendered text: `getBoundingClientRect` is 0 and nothing here lays out a
+//      glyph. Fit is decided by the PRODUCTION MEASURER over pinned canvas widths,
+//      which is a model of the browser, not the browser. Closing this needs a
+//      REAL-BROWSER WIDTH GATE (mount the overlay in Chromium, compare each chip's
+//      scrollWidth to its clientWidth). THIS REPO DOES NOT HAVE ONE. Every false
+//      green found in rounds 1-3 was found by a reviewer launching Chromium by
+//      hand, which CI never does. It belongs to the chord sizing story as an
+//      ACCEPTANCE CRITERION, not here.
+//   4. THE ANCESTOR INLINE VALUE CHANNEL. ANCESTOR_DECLARES is a NAME allowlist;
+//      NO ancestor value is read. The key inventory below covers only a CHIP's
+//      inline style. Measured in real Chromium (fixture song, 1280 viewport, strip
+//      layout), each with this file at 38/38 and the suite at 1315 / 1295 / 0 / 20:
+//        - chip band `top: RULER_H` -> `top: RULER_H + 60` (ChordOverlay.tsx:784):
+//          15 of 15 chips in view sit OUTSIDE the scroller (chip top 223, scroller
+//          box [139, 207], overflowY hidden). The screenshot shows the ruler and NO
+//          chips. This is round 3's `top: 60` one element up.
+//        - strip inner `height: RULER_H + chipH` -> `height: RULER_H` (:780): the
+//          scroller box shrinks to [139, 175] while chips span 163-199, leaving a
+//          ~12px colour sliver per chip and NO readable label.
+//        - timeline `visibility: measured ? 'visible' : 'hidden'` -> `'hidden'`
+//          (:732): computed visibility is not 'visible' for 15/15 chips at 1280 and
+//          114/114 at 390; Playwright's visible-wait timed out with 107 chips attached.
+//      The first two are STRIP-ONLY: at 390 (wrapped layout) they have no effect.
+//      These are the same user-visible failures this gate set out to close
+//      (chips cropped or off-screen), reached by editing the SAME LINES the chord
+//      sizing pass will touch. Not tied here by decision: widening the diff would
+//      reopen the review loop. NOT closed here; belongs to the browser gate.
+//   5. EVERYTHING ELSE. THIS LIST IS NOT AN INVENTORY OF THE GAPS AND CANNOT BE.
+//      Stated positively, which is the only honest form: THIS GATE READS INLINE
+//      STYLE PROPERTY NAMES, THE TIED VALUES LISTED BELOW, AND CLASS NAMES.
+//      NOTHING ELSE ABOUT AN ELEMENT OR ITS NEIGHBOURS IS READ.
+//      Items 1-4 are worked examples, not a boundary.
+//
+//      This item exists because enumerating gaps does not terminate. Round 4
+//      disclosed three channels; round 5's reviewer immediately found a fourth
+//      FAMILY that no allowlist covers at all -- HTML ATTRIBUTES. Measured in
+//      Chromium with this file at 38/38 and the suite at 1315 / 1295 / 0 / 20:
+//      a `hidden` attribute on the chip <button> gives `display: none` on 107/107
+//      chips at 1280 and 133/133 at 390; the same attribute on the chord-timeline
+//      div zero-boxes 107/107 at both widths. After attributes come overlapping
+//      siblings, DOM order, a portal, `inert`. Each is a true finding; none of
+//      them converges.
+//
+//      So the rule "an unnamed ungated channel is a block" was RETIRED here, on
+//      the reviewer's recommendation and with the orchestrator's agreement. It
+//      assumed enumeration was achievable. It is not, and a gate whose header
+//      claims a complete list of its blind spots is making the same kind of false
+//      claim this round exists to remove.
+//
+//      WHAT ACTUALLY CLOSES THESE: a real-browser gate that asserts each chip is
+//      visible, inside its scroller, and unclipped. That closes all five at once,
+//      because a browser does not care which channel moved the pixels.
+//
+// GATED-KEY INVENTORY (what a chip's inline style is held to), as of round 4:
+//   tied by VALUE:     fontSize (both channels); height, top (both channels, to the
+//                      chip's container); padding, border, boxSizing, whiteSpace
+//                      (React channel only)
+//   checked elsewhere: width, color, opacity, background (other tests in this file)
+//   NAME-allowlisted:  left, position, overflow, textOverflow, borderRadius and its
+//                      two longhands (borderTopLeftRadius, borderBottomLeftRadius),
+//                      cursor -- any value passes
+//   ANCESTORS:         names only (ANCESTOR_DECLARES); no value is read (item 4 above)
+// A test title in this file is a claim about THIS list. If a property is not above
+// as tied, no test here guards its value.
+//
+// ALSO: happy-dom resolves no
+// cascade, so a rule in a stylesheet outside this component (globals.css's
+// `button { font: inherit }`, a browser setting, a user stylesheet) is
+// invisible here. The sizes that matter are measured in real Chromium and
+// recorded in the PR; the declared px size is what stops the browser's default
+// font size reaching the chips at all.
+
+// Custom properties (`--x`) keep their spelling; everything else, vendor prefixes included, is camelCased.
+const kebabToCamel = (n) => (n.startsWith('--') ? n : n.replace(/-([a-z])/g, (_m, c) => c.toUpperCase()));
+
+/** A CSS length as one comparable string: 36 and '36px' agree; 0, '0' and '0px' agree; absent stays undefined. */
+function normPx(v) {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (typeof v === 'number') return `${v}px`;
+  return /^-?0+(\.0+)?(px)?$/.test(String(v).trim()) ? '0px' : String(v).trim();
+}
+
+/** Everything an element declares inline, camelCased, from both channels. */
+function declaredProps(el) {
+  const names = new Set();
+  const reactKey = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
+  const rs = reactKey ? el[reactKey].style : undefined;
+  if (rs && typeof rs === 'object') for (const k of Object.keys(rs)) names.add(k);
+  for (const decl of (el.getAttribute('style') ?? '').split(';')) {
+    const i = decl.indexOf(':');
+    if (i > 0) names.add(kebabToCamel(decl.slice(0, i).trim()));
+  }
+  return { names, reactStyle: rs && typeof rs === 'object' ? rs : null, reactReadable: Boolean(reactKey) };
+}
+
+/** What a chip (a <button> on the timeline) may declare. Nothing here but fontSize touches glyph advances. */
+const CHIP_DECLARES = new Set([
+  'background', 'border', 'borderRadius', 'borderTopLeftRadius', 'borderBottomLeftRadius',
+  'boxSizing', 'color', 'cursor', 'fontSize', 'height', 'left', 'opacity', 'overflow',
+  'padding', 'position', 'textOverflow', 'top', 'whiteSpace', 'width',
+]);
+/** What any element BETWEEN the overlay root and a chip may declare: layout and paint, no text properties. */
+const ANCESTOR_DECLARES = new Set([
+  'alignItems', 'background', 'borderRadius', 'color', 'display', 'flex', 'flexBasis', 'flexDirection',
+  'flexGrow', 'flexShrink', 'gap',
+  'height', 'left', 'minHeight', 'overflowX', 'overflowY', 'padding', 'position', 'right', 'top',
+  'visibility', 'width',
+]);
+/** Permitted only on the measured wrap and above: it is where the measurer reads the family from. */
+const MEASURED_TIER_EXTRA = new Set(['fontFamily']);
+const ALLOWED_CLASSES = new Set(['co-scroll']);
+/** The declarations the overlay's own <style> may contain. */
+const STYLE_ELEMENT_PROPS = new Set([
+  'scrollbar-width', 'scrollbar-color', 'height', 'background', 'border-radius', 'border', 'background-clip',
+]);
+
+/** The border each chip kind declares (chordChip: none; the outlines are restChipStyle / unknownChipStyle). */
+const CHIP_BORDER_BY_KIND = {
+  chord: 'none',
+  none: '1px dashed rgba(255,255,255,0.5)',
+  unknown: '1px dotted #fbbf24',
+};
+
+/** Every violation of the allowlist for the mounted chips; [] when the font channels are closed. */
+function fontChannelViolations(dom, chips) {
+  const out = [];
+  const root = dom.find('[data-testid="chord-overlay"]');
+  if (!root) return ['no [data-testid="chord-overlay"] root: the ancestor walk has nothing to stop at'];
+  const seenAncestors = new Set();
+  for (const chip of chips) {
+    const id = chip.dataset.testid;
+    const { names, reactStyle, reactReadable } = declaredProps(chip);
+    if (!reactReadable) out.push(`${id}: React props unreadable (the gate would see only happy-dom's serialisation)`);
+    for (const n of names) if (!CHIP_DECLARES.has(n)) out.push(`${id}: declares ${n}, which a chip may not`);
+    // THE ONE ALLOWED PROPERTY THAT MOVES GLYPH ADVANCES: its value is tied.
+    //
+    // THE PIN, RECORDED HONESTLY. Chord names are pinned to px on purpose. The cost:
+    // a reader who enlarges their browser's default text size gets WHOLE names at a
+    // FIXED size, not enlarged names -- chord names do not follow their text setting.
+    // That was accepted as a stopgap (Jon, 2026-11-12) because the alternative was
+    // enlarged names that clip, with no code change anywhere.
+    // THE PIN DOES NOT SHIELD A BROWSER MINIMUM FONT SIZE. A minimum of 14 overrides
+    // the 10px `tight` size at render time, so the tight chips come out wider than the
+    // width that decided they fit: 9 of them clipped by up to 7.44px (a figure reported
+    // to this PR, NOT re-measured by this gate -- nothing in this file can measure it,
+    // because happy-dom resolves no browser setting). That case is OPEN, not handled.
+    // THE REAL FIX BELONGS TO THE CHORD SIZING PASS AND IS AN ACCEPTANCE CRITERION OF
+    // IT, not a nicety: read the computed font size, measure at THAT size, render at
+    // it. Until then this assertion proves only that the declared size is the measured
+    // size; it says nothing about the size the browser actually uses.
+    const density = chip.dataset.density;
+    const want = `${density === 'tight' ? CHIP_TIGHT_FONT_PX : CHIP_FONT_PX}px`;
+    if (chip.style.fontSize !== want) out.push(`${id}: font-size is "${chip.style.fontSize}", want "${want}" for a ${density} chip`);
+    if (reactStyle && reactStyle.fontSize !== want) out.push(`${id}: React fontSize is "${reactStyle.fontSize}", want "${want}"`);
+    if (reactStyle && reactStyle.whiteSpace !== 'nowrap') out.push(`${id}: whiteSpace is "${reactStyle.whiteSpace}", want "nowrap"`);
+    if (reactStyle && reactStyle.boxSizing !== 'border-box') out.push(`${id}: boxSizing is "${reactStyle.boxSizing}"`);
+    const wantPad = density === 'full' ? `0 ${CHIP_FULL_PAD_PX / 2}px` : '0';
+    if (reactStyle && reactStyle.padding !== wantPad) out.push(`${id}: padding is "${reactStyle.padding}", want "${wantPad}"`);
+    // HEIGHT AND TOP, tied the way padding is: to a value the chip does not choose
+    // for itself. A chip FILLS ITS ROW CONTAINER: `top` is 0 and `height` is the
+    // height its parent declares (the strip's chip band and each wrapped row are
+    // both sized `chipH`; the chip is handed the same number). The sizing pass will
+    // edit exactly these values, so an accidental edit is likely, not adversarial.
+    // Measured in Chromium before this check existed, both with the suite green:
+    // `height: heightPx / 4` cropped every label (15/15 at 1280, 114/114 at 390);
+    // `top: 60` put all 15 chips below the scroller box, none visible.
+    // NOT tied to a literal 36 / 44: CHIP_H_STRIP and CHIP_H_WRAP are not exported
+    // and are meant to move. Changing the container's height moves both together;
+    // changing only the chip's inline height does not pass. Both inline channels
+    // are read. QUALIFICATIONS: (a) this is inline-only: through the STYLESHEET it
+    // is false -- `.co-scroll button{height:9px !important}` leaves this file at
+    // 38/38 and in Chromium gives chip0H 9 with textTallerThanChip 15/15 at 1280.
+    // That is disclosed channel 1, not a new channel. (b) A CONSISTENT shrink of
+    // chipH (container and chip changed together) is not caught BY DESIGN; the tie
+    // is to the container, not to a size. That belongs to the browser gate.
+    const parentStyle = chip.parentElement ? declaredProps(chip.parentElement).reactStyle : null;
+    const wantHeight = parentStyle ? normPx(parentStyle.height) : undefined;
+    if (wantHeight === undefined) out.push(`${id}: its parent declares no height, so the chip's height has nothing to be tied to`);
+    else {
+      if (normPx(chip.style.height) !== wantHeight) out.push(`${id}: height is "${chip.style.height}", want its container's "${wantHeight}"`);
+      if (reactStyle && normPx(reactStyle.height) !== wantHeight) out.push(`${id}: React height is "${reactStyle.height}", want its container's "${wantHeight}"`);
+    }
+    if (normPx(chip.style.top) !== '0px') out.push(`${id}: top is "${chip.style.top}", want "0" (the chip fills its row container)`);
+    if (reactStyle && normPx(reactStyle.top) !== '0px') out.push(`${id}: React top is "${reactStyle.top}", want "0" (the chip fills its row container)`);
+    // BORDER, tied the way padding is: a border is box space taken from the content
+    // width the measurer decided with (a 4px one clipped 7 chips 6px at the ceiling
+    // while `border` was on the allowlist with its value unchecked). A chord chip has
+    // none. The rest/unknown kinds carry the outline their style objects declare, which
+    // is the disclosed N.C. residue (a 1px outline is 2px the measurer does not
+    // subtract); it is pinned to that exact value, not waved through.
+    const wantBorder = CHIP_BORDER_BY_KIND[chip.dataset.kind];
+    if (wantBorder === undefined) out.push(`${id}: kind "${chip.dataset.kind}" has no tied border`);
+    else if (reactStyle && reactStyle.border !== wantBorder) out.push(`${id}: border is "${reactStyle.border}", want "${wantBorder}" for kind "${chip.dataset.kind}"`);
+    // NOTHING GOES INSIDE A CHIP BUT TEXT. The walk above goes UP; this goes DOWN. A
+    // wrapper around the label (a <span> with letterSpacing/fontWeight, even a bare <b>)
+    // changes glyph advances below the chip, where no chip-level or ancestor-level
+    // declaration check can see it. Measured in Chromium: a styled span clipped 7 chips
+    // 16.078px at the ceiling, a bare <b> 2.0px, both with this gate green.
+    // This FORBIDS wrapping a chord label in any element -- including a legitimate one
+    // (e.g. a span for an accidental glyph or a lang/aria affordance). That is the point:
+    // such an edit must come through here, with its width measured, not around it.
+    if (chip.childElementCount !== 0) {
+      out.push(`${id}: has ${chip.childElementCount} child element(s) (<${[...chip.children].map((c) => c.tagName.toLowerCase()).join('>, <')}>); a chip may hold only a text node`);
+    }
+    for (const node of chip.childNodes) {
+      if (node.nodeType !== 3) out.push(`${id}: has a non-text child node (type ${node.nodeType})`);
+    }
+    const chipCls = (chip.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
+    for (const c of chipCls) if (!ALLOWED_CLASSES.has(c)) out.push(`${id}: carries class "${c}"`);
+
+    // Walk UP to the root. `tier` flips to "measured" at the wrap and stays.
+    let tier = 'unmeasured';
+    for (let el = chip.parentElement; el; el = el.parentElement) {
+      if (el.dataset?.testid === 'chord-timeline') tier = 'measured';
+      if (!seenAncestors.has(el)) {
+        seenAncestors.add(el);
+        const label = el.dataset?.testid ?? `<${el.tagName.toLowerCase()}>`;
+        const p = declaredProps(el);
+        const allowed = tier === 'measured' ? new Set([...ANCESTOR_DECLARES, ...MEASURED_TIER_EXTRA]) : ANCESTOR_DECLARES;
+        for (const n of p.names) {
+          if (!allowed.has(n)) {
+            out.push(
+              `${label} (${tier}): declares ${n}` +
+                (n === 'fontFamily' ? ' between the measured wrap and the chip, where the measurer cannot read it' : ''),
+            );
+          }
+        }
+        for (const c of (el.getAttribute('class') ?? '').split(/\s+/).filter(Boolean)) {
+          if (!ALLOWED_CLASSES.has(c)) out.push(`${label}: carries class "${c}"`);
+        }
+      }
+      if (el === root) break;
+    }
+  }
+  // The overlay's own <style>: selectors must be under .co-scroll, and declared
+  // property NAMES must be in STYLE_ELEMENT_PROPS (scrollbar-*, border, height,
+  // background, border-radius, background-clip). Names only: no value is read
+  // (disclosure item 1 in the header).
+  for (const st of root.querySelectorAll('style')) {
+    for (const rule of st.textContent.split('}')) {
+      const brace = rule.indexOf('{');
+      if (brace < 0) continue;
+      const selector = rule.slice(0, brace).trim();
+      if (!selector.startsWith('.co-scroll')) out.push(`<style>: selector "${selector}" is not under .co-scroll`);
+      for (const decl of rule.slice(brace + 1).split(';')) {
+        const i = decl.indexOf(':');
+        if (i <= 0) continue;
+        const prop = decl.slice(0, i).trim();
+        if (!STYLE_ELEMENT_PROPS.has(prop)) out.push(`<style>: "${selector}" declares ${prop}`);
+      }
+    }
+  }
+  return [...new Set(out)];
+}
+
+/** N and X chips are the rest/unknown styles; the fixture has none of them in strip view. */
+const ALL_KINDS_PAYLOAD = {
+  segments: [
+    ...PAYLOAD.segments,
+    { start_sec: 213.0, end_sec: 214.5, label: 'N', confidence: 1 },
+    { start_sec: 214.5, end_sec: 216.0, label: 'X', confidence: 1 },
+    { start_sec: 216.0, end_sec: 218.0, label: 'A#:hdim7/11', confidence: 1 },
+  ],
+};
+
+test('the allowlist reader sees a font property however it is spelled and wherever it was declared', async () => {
+  // A check that cannot fail has not checked. Feed the reader the spellings the
+  // old keyword regex missed, plus ones happy-dom's style setter drops, and
+  // confirm each comes out as a name the allowlist will reject.
+  await withDom(async (dom) => {
+    const d = dom.window.document;
+    const el = d.createElement('button');
+    el.setAttribute(
+      'style',
+      'font-feature-settings: "tnum"; letter-spacing: .02em; font: 700 20px serif; -webkit-text-size-adjust: 120%; --x: 1; font-variant-numeric: var(--x)',
+    );
+    const { names } = declaredProps(el);
+    for (const n of ['fontFeatureSettings', 'letterSpacing', 'font', 'WebkitTextSizeAdjust', '--x', 'fontVariantNumeric']) {
+      assert.ok(names.has(n), `the reader did not surface ${n}: ${[...names].join(', ')}`);
+      assert.ok(!CHIP_DECLARES.has(n) && !ANCESTOR_DECLARES.has(n), `${n} is on an allowlist`);
+    }
+    // And the one font property a chip IS allowed is still the only one.
+    assert.deepEqual([...CHIP_DECLARES].filter((n) => /^font|^letter|^word|^text(?!Overflow)|^zoom|^transform/i.test(n)), ['fontSize']);
+    assert.deepEqual([...ANCESTOR_DECLARES].filter((n) => /^font|^letter|^word|^text|^zoom|^transform/i.test(n)), []);
+  });
+});
+
+test('no chord chip, and nothing above one, declares a property that can change glyph advances', async () => {
+  const cases = [
+    ['strip, default zoom', { containerPx: 872 }, 'strip'],
+    ['strip, zoomed all the way out (ticks)', {
+      containerPx: 872,
+      afterMount: async (d) => dragRange(d, d.find('[data-testid="zoom-slider"]'), 0),
+    }, 'strip'],
+    ['strip, every chip kind (chord, none, unknown)', { containerPx: 872, payload: ALL_KINDS_PAYLOAD }, 'strip'],
+    ['wrapped (phone)', { containerPx: NARROW_CONTAINER_PX }, 'wrapped'],
+    ['wrapped, every chip kind', { containerPx: NARROW_CONTAINER_PX, payload: ALL_KINDS_PAYLOAD }, 'wrapped'],
+  ];
+  for (const [name, opts, layout] of cases) {
+    await withDom(async (dom) => {
+      const { chips, timeline } = await mountOverlay(dom, opts);
+      assert.equal(timeline.dataset.layout, layout, `${name}: wrong layout, the case would not test what it names`);
+      assert.ok(chips.length >= 100, `${name}: only ${chips.length} chips mounted; the gate would be vacuous`);
+      assert.deepEqual(fontChannelViolations(dom, chips), [], `${name}: a font-affecting declaration reached a chip`);
+      await dom.unmountAll();
+    });
+  }
+});
+
+test('the allowlist gate meets every density and every kind, so it is not a vacuous pass', async () => {
+  await withDom(async (dom) => {
+    const { chips } = await mountOverlay(dom, { containerPx: 872, payload: ALL_KINDS_PAYLOAD });
+    const seen = new Set(chips.map((c) => `${c.dataset.kind}/${c.dataset.density}`));
+    for (const want of ['chord/full', 'chord/tight', 'none/full', 'unknown/full']) {
+      assert.ok(seen.has(want), `no ${want} chip mounted (saw ${[...seen].sort().join(', ')})`);
+    }
+    // The tied size is not one value: full and tight chips differ, and tick chips carry the full one.
+    const sizes = new Set(chips.map((c) => c.style.fontSize));
+    assert.deepEqual([...sizes].sort(), [`${CHIP_TIGHT_FONT_PX}px`, `${CHIP_FONT_PX}px`].sort());
+    await dom.unmountAll();
+  });
+});
+
+test('default view: every chip has a visible declared colour, and a declared width and font size that fit its label under the production measurer', async () => {
   await withDom(async (dom) => {
     const { rows } = await mountOverlay(dom, { containerPx: 872 });
 
@@ -504,11 +1677,19 @@ test('default view: every chord chip on the timeline shows a READABLE label', as
     );
     const notFull = rows.filter((r) => r.hasText && r.fitsDensity === 'tick');
     assert.deepEqual(notFull.map((r) => r.text), [], 'a chip has text in a box too small for any size');
+    // And again at the size each CHIP DECLARES (read off the element, measured
+    // by the production measurer at that size). The two checks above ask about
+    // CHIP_FONT_PX; a chip rendering at any other size answers this one.
+    assert.deepEqual(
+      rows.filter((r) => r.hasText && !r.fitsAtDeclaredSize).map((r) => `${r.text}: ${r.widthPx}px box, font ${r.fontPx}px`),
+      [],
+      'a chip\'s text is wider than its box at the font size the chip itself declares',
+    );
     await dom.unmountAll();
   });
 });
 
-test('at ANY zoom a chip either shows a readable label or carries no text at all', async () => {
+test('at any zoom: a tick chip carries no text, and every chip with text has a declared colour contrasting >= 1.05 (declared values only, not rendered visibility)', async () => {
   // The invariant the `color: transparent` branch broke. Driving the zoom
   // slider to 0 reproduces the old default exactly, so this covers the state
   // the user used to land in as well as the one they land in now.
@@ -518,10 +1699,15 @@ test('at ANY zoom a chip either shows a readable label or carries no text at all
       afterMount: async (d) => {
         const slider = d.find('[data-testid="zoom-slider"]');
         assert.ok(slider, 'no zoom slider');
-        await d.act(() => {
-          slider.value = '0';
-          slider.dispatchEvent(new d.window.Event('input', { bubbles: true }));
-        });
+        await dragRange(d, slider, 0);
+        // Proof the drag landed: the component's own px/sec is now BELOW the
+        // default it mounted at. Without this the test reads the default view
+        // and its assertions hold there too, which is how it used to pass.
+        const moved = Number(d.find('[data-testid="chord-timeline"]').dataset.pxPerSec);
+        assert.ok(
+          moved < defaultStripPps(872) - 1,
+          `the slider did not move: still ${moved}px/sec at slider 0 (see dragRange)`,
+        );
       },
     });
 
@@ -548,10 +1734,7 @@ test('a tick chip keeps its chord on an accessible name even with no visible tex
       containerPx: 872,
       afterMount: async (d) => {
         const slider = d.find('[data-testid="zoom-slider"]');
-        await d.act(() => {
-          slider.value = '0';
-          slider.dispatchEvent(new d.window.Event('input', { bubbles: true }));
-        });
+        await dragRange(d, slider, 0);
       },
     });
     const ticks = chips.filter((c) => c.dataset.density === 'tick');
@@ -563,6 +1746,165 @@ test('a tick chip keeps its chord on an accessible name even with no visible tex
     // And the first chord's real label is reachable there, not merely "a string".
     const first = chips[0].getAttribute('aria-label');
     assert.match(first, /C/, `first chip's accessible name was "${first}"`);
+    await dom.unmountAll();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3b. The render gate for the ceiling: the user can actually get there
+// ---------------------------------------------------------------------------
+//
+// The gates above are arithmetic over the exported functions. These drive the
+// real component's own zoom slider on the reviewer's bimodal song and count
+// what came out of the DOM, because "the ceiling is 196px/sec" and "the user
+// can read the bridge" are different claims and only the second one matters.
+
+/** The reviewer's bimodal song in the fixture's own on-the-wire shape. */
+const BIMODAL_PAYLOAD = {
+  segments: BIMODAL.map((r) => ({
+    start_sec: r.startSec,
+    end_sec: r.endSec,
+    label: r.label,
+    confidence: 1,
+  })),
+};
+
+test('bimodal song: the default names the verse and SAYS how many it cannot name', async () => {
+  await withDom(async (dom) => {
+    const { rows, namelessText, renderedPps } = await mountOverlay(dom, {
+      containerPx: 872,
+      payload: BIMODAL_PAYLOAD,
+    });
+    assert.equal(rows.length, BIMODAL.length);
+
+    // Counted out of the DOM, not out of densityCounts: the chips that
+    // rendered with no text node at all.
+    const domNameless = rows.filter((r) => !r.hasText);
+    assert.ok(
+      domNameless.length > 0,
+      'this song is supposed to have nameless chips at its default — shape drifted?',
+    );
+
+    // The hint line must report THAT number. A hint that says "0" or says
+    // nothing leaves the raised ceiling as a capability nobody is told about.
+    assert.ok(namelessText, 'no nameless-chord hint rendered on a song that has them');
+    const said = Number((namelessText.match(/(\d+)/) ?? [])[1]);
+    assert.equal(
+      said,
+      domNameless.length,
+      `the hint says ${said} chords are unnamed; ${domNameless.length} chips rendered without text`,
+    );
+    assert.match(namelessText, /zoom in/, 'the hint does not say the names are reachable');
+
+    // Nothing that DID render is invisible or in a box too small for it.
+    assert.deepEqual(rows.filter((r) => r.hasText && r.contrast < 1.05).map((r) => r.text), []);
+    assert.deepEqual(
+      rows.filter((r) => r.hasText && r.fitsDensity !== r.density).map((r) => `${r.text}@${r.widthPx}px`),
+      [],
+    );
+    // And every nameless chip still carries its chord where a reader can get it.
+    for (const c of [...dom.find('[data-testid="chord-timeline"]').querySelectorAll('[data-density="tick"]')]) {
+      assert.ok((c.getAttribute('aria-label') ?? '').length > 0);
+    }
+    assert.ok(renderedPps > 0 && renderedPps < stripCeiling(BIMODAL));
+    await dom.unmountAll();
+  });
+});
+
+test('bimodal song: driving the slider to the top names EVERY chord', async () => {
+  // THE CAPABILITY. Before this change the slider's top was 80px/sec and 25 of
+  // these 115 chords could not be named at it. The component is driven through
+  // its own control, so the ceiling has to be plumbed into sliderToPps, the
+  // clamp and the chip geometry for this to come out right.
+  await withDom(async (dom) => {
+    const { rows, renderedPps, namelessText } = await mountOverlay(dom, {
+      containerPx: 872,
+      payload: BIMODAL_PAYLOAD,
+      afterMount: async (d) => {
+        const slider = d.find('[data-testid="zoom-slider"]');
+        assert.ok(slider, 'no zoom slider');
+        assert.ok(!slider.disabled, 'the zoom slider is disabled on a song that needs it');
+        await dragRange(d, slider, 1000);
+      },
+    });
+
+    // It really went past the old cap, read off the component's own attribute.
+    assert.ok(
+      renderedPps > MAX_PX_PER_SEC,
+      `the slider topped out at ${renderedPps}px/sec, still at or below the old ${MAX_PX_PER_SEC} cap`,
+    );
+
+    const nameless = rows.filter((r) => !r.hasText);
+    assert.deepEqual(
+      nameless.map((r) => r.testid),
+      [],
+      `${nameless.length}/${rows.length} chords still have no name at the top of the slider`,
+    );
+    // Every one of them at FULL size, not the 10px fallback, and none of them
+    // in a box too small for the text it is painting.
+    assert.deepEqual(rows.filter((r) => r.density !== 'full').map((r) => `${r.text}:${r.density}`), []);
+    assert.deepEqual(
+      rows.filter((r) => r.fitsDensity !== r.density).map((r) => `${r.text}@${r.widthPx}px`),
+      [],
+    );
+    assert.deepEqual(rows.filter((r) => r.contrast < 3).map((r) => r.text), []);
+    // Nothing left to tell the user about.
+    assert.equal(namelessText, null, `the hint still reports unnamed chords: ${namelessText}`);
+    await dom.unmountAll();
+  });
+});
+
+test('bimodal song: the + button is live until the ceiling, then stops', async () => {
+  // At the old cap `+` went dead at 80px/sec while 25 chords were still
+  // nameless, which is the same defect wearing a different hat.
+  await withDom(async (dom) => {
+    await mountOverlay(dom, {
+      containerPx: 872,
+      payload: BIMODAL_PAYLOAD,
+      afterMount: async (d) => {
+        const plus = d.find('[data-testid="zoom-in"]');
+        assert.ok(!plus.disabled, '+ is dead at the default zoom');
+        // 1.5x per press from ~19.6px/sec reaches ~196px/sec in 6 presses.
+        for (let i = 0; i < 20 && !d.find('[data-testid="zoom-in"]').disabled; i++) {
+          const btn = d.find('[data-testid="zoom-in"]');
+          await d.act(() => btn.click());
+        }
+        const tl = d.find('[data-testid="chord-timeline"]');
+        const pps = Number(tl.dataset.pxPerSec);
+        assert.ok(
+          pps > MAX_PX_PER_SEC,
+          `+ went dead at ${pps}px/sec, at or below the old ${MAX_PX_PER_SEC} cap`,
+        );
+        assert.ok(
+          Math.abs(pps - stripCeiling(BIMODAL)) < 0.5,
+          `+ stopped at ${pps} rather than the job's ceiling ${stripCeiling(BIMODAL).toFixed(3)}`,
+        );
+        assert.equal(densityCounts(BIMODAL, pps, PROD_MEASURE).tick, 0);
+        // THE HALF THIS TEST'S TITLE PROMISES AND ITS BODY DID NOT CHECK. The
+        // loop above stops when `+` is disabled OR after 20 presses; with
+        // `disabled={!measured}` (or `canZoomFurther` always true) it ran all 20
+        // presses, parked on the clamp, and every assertion above still held.
+        // Round 6 mutants T6d and T6f survived exactly there.
+        assert.equal(
+          d.find('[data-testid="zoom-in"]').disabled,
+          true,
+          '+ is still enabled at the zoom ceiling: it is live but can go nowhere',
+        );
+      },
+    });
+    await dom.unmountAll();
+  });
+});
+
+test('the real fixture is unchanged in kind: no nameless-chord hint it does not need', async () => {
+  // #207's measured outcome on the real song must survive this change. One
+  // chip is nameless at the default there, so the hint appears and says 1.
+  await withDom(async (dom) => {
+    const { rows, namelessText } = await mountOverlay(dom, { containerPx: 872 });
+    const domNameless = rows.filter((r) => !r.hasText).length;
+    assert.ok(domNameless <= 1, `${domNameless} nameless chips on the real song's default`);
+    if (domNameless === 0) assert.equal(namelessText, null);
+    else assert.equal(Number((namelessText.match(/(\d+)/) ?? [])[1]), domNameless);
     await dom.unmountAll();
   });
 });
@@ -595,7 +1937,7 @@ test('the narrow default puts chord names on the phone, not ticks', () => {
 
   const ticks = RUNS.filter((run) => {
     const w = Math.max(1, chipBox(run, pps).widthPx - 1);
-    return chipDensity(w, estimateLabelPx(displayText(run), CHIP_FONT_PX)) === 'tick';
+    return chipDensity(w, PROD_MEASURE(displayText(run), CHIP_FONT_PX)) === 'tick';
   }).length;
   assert.ok(
     ticks <= 2,
@@ -607,7 +1949,7 @@ test('the narrow default puts chord names on the phone, not ticks', () => {
   assert.ok(pps > minPps, `the narrow default collapsed onto its minimum (${pps} vs ${minPps})`);
 });
 
-test('wrapped render: nothing on the phone timeline is invisible or mis-sized', async () => {
+test('wrapped render: no phone chip has an invisible declared colour or a declared width or font size too small for its label (measurer-based, not rendered)', async () => {
   await withDom(async (dom) => {
     const { rows } = await mountOverlay(dom, { containerPx: NARROW_CONTAINER_PX });
     const timeline = dom.find('[data-testid="chord-timeline"]');
@@ -624,6 +1966,11 @@ test('wrapped render: nothing on the phone timeline is invisible or mis-sized', 
       [],
       'a chip on the phone has text in a box too small for any size',
     );
+    assert.deepEqual(
+      rows.filter((r) => r.hasText && !r.fitsAtDeclaredSize).map((r) => `${r.text}: ${r.widthPx}px box, font ${r.fontPx}px`),
+      [],
+      'a chip on the phone is wider than its box at the font size it declares',
+    );
     // Nameless ticks are legitimate on a phone, but they must stay a minority.
     const named = rows.filter((r) => r.hasText).length;
     assert.ok(
@@ -632,4 +1979,218 @@ test('wrapped render: nothing on the phone timeline is invisible or mis-sized', 
     );
     await dom.unmountAll();
   });
+});
+
+// ---------------------------------------------------------------------------
+// 5. ROUND 6: the wiring the mounted component does in every real browser
+// ---------------------------------------------------------------------------
+
+test("the component measures with the container's own font: its family and weight reach canvas", async () => {
+  // Kills C2 (`fontFamily: cs.fontFamily` -> 'serif'; 31 chips clipped in
+  // Chromium) and its weight twin. The weight is made non-default on purpose:
+  // the container declares a family but no weight, so a body weight of 700 is
+  // inherited down to the timeline and must come out the other end.
+  await withDom(async (dom) => {
+    const widthOf = (text, px) => (text === '' ? 0 : estimateLabelPx(text, px));
+    const { canvas, timeline } = await mountOverlay(dom, {
+      containerPx: 872,
+      widthOf,
+      beforeMount: (d) => {
+        d.window.document.body.style.fontWeight = '700';
+      },
+    });
+    const family = dom.window.document.querySelector('[data-testid="chord-overlay"]').style.fontFamily;
+    assert.ok(family.length > 0, 'the overlay container declares no font family');
+    // The chips inherit from this element's ancestors, so this is the family
+    // they render in -- read off the DOM, not typed here.
+    assert.equal(dom.window.getComputedStyle(timeline).fontFamily, family);
+    assert.equal(dom.window.getComputedStyle(timeline).fontWeight, '700');
+
+    assert.ok(canvas.contexts >= 1, 'the component never asked for a 2D context, so it measured with the table');
+    assert.ok(canvas.fonts.length > 0, 'the component never set a canvas font');
+    assert.ok(canvas.measured.length > 0, 'the component never measured a label on the canvas');
+    const wrong = [...new Set(canvas.fonts)].filter((f) => {
+      const m = CANVAS_FONT_RE.exec(f);
+      return !m || m[1] !== '700' || m[3] !== family;
+    });
+    assert.deepEqual(wrong, [], 'canvas was told to measure in a font the chips do not render in');
+    // ... and at the declared chip size, not an inherited or default one.
+    assert.ok(
+      canvas.fonts.some((f) => Number(CANVAS_FONT_RE.exec(f)?.[2]) === CHIP_FONT_PX),
+      `no canvas font at CHIP_FONT_PX (${CHIP_FONT_PX}px): ${[...new Set(canvas.fonts)].join(' | ')}`,
+    );
+    await dom.unmountAll();
+  });
+});
+
+test("the zoom ceiling is derived from the component's canvas measurer, not from the headless table", async () => {
+  // Kills T4 (`zoomCeilingPxPerSec(state.runs, measureLabel, ...)` ->
+  // `estimateLabelPx`). With no canvas the two were the SAME function, so the
+  // mutant was unobservable. Here canvas serves a face 1.4x wider than the
+  // table's, so a ceiling taken from the table is 30% off and says so.
+  await withDom(async (dom) => {
+    const SKEW = 1.4;
+    const widthOf = (text, px, f) =>
+      text === '' ? 0 : f.family === overlayFamily(dom.window) ? SKEW * estimateLabelPx(text, px) : NaN;
+    const budget = { durSec: durationSec(BIMODAL), maxPaintedPx: MAX_TIMELINE_PX };
+    const want = zoomCeilingPxPerSec(BIMODAL, (l, px) => SKEW * estimateLabelPx(l, px), budget);
+    const table = zoomCeilingPxPerSec(BIMODAL, estimateLabelPx, budget);
+    assert.ok(want > table * 1.1, `the probe cannot tell the two measurers apart: ${want} vs ${table}`);
+    assert.ok(want > MAX_PX_PER_SEC, 'the ceiling must be above the floor for this to be a derivation');
+
+    const { renderedPps } = await mountOverlay(dom, {
+      containerPx: 872,
+      payload: BIMODAL_PAYLOAD,
+      widthOf,
+      afterMount: async (d) => {
+        await dragRange(d, d.find('[data-testid="zoom-slider"]'), 1000);
+      },
+    });
+    assert.ok(
+      Math.abs(renderedPps - want) <= 0.001,
+      `the slider tops out at ${renderedPps}px/sec; the canvas-derived ceiling is ${want.toFixed(3)} ` +
+        `(the table's would be ${table.toFixed(3)})`,
+    );
+    await dom.unmountAll();
+  });
+});
+
+/** What the wrapped layout shows the user right now, read out of the DOM. */
+function wrappedSnapshot(d) {
+  const tl = d.find('[data-testid="chord-timeline"]');
+  const chips = [...tl.querySelectorAll('[data-testid^="chord-chip-"]')];
+  const note = d.find('[data-testid="timeline-nameless"]');
+  return {
+    layout: tl.dataset.layout,
+    pps: Number(tl.dataset.pxPerSec),
+    chips: chips.length,
+    // CHIPS with no text node: what is on screen, not what a helper counted.
+    bare: chips.filter((c) => c.textContent.length === 0).length,
+    said: note ? Number((note.textContent.match(/(\d+)/) ?? [])[1]) : null,
+    noteText: note ? note.textContent : null,
+    plusDisabled: d.find('[data-testid="zoom-in"]').disabled,
+    minusDisabled: d.find('[data-testid="zoom-out"]')?.disabled,
+  };
+}
+
+test('wrapped layout: the hint counts the chips on screen, and at the ceiling it stops promising more zoom and + is dead', async () => {
+  // Kills T9 (hint count reverted from segments to runs), T6f (`canZoomFurther`
+  // never goes false) and T6d (`+` ignores the ceiling). The PR text says this
+  // number "has to be the one on screen"; the mutant said 383 where 408 chips
+  // had no text, and at the ceiling said nothing while 70 had no name.
+  await withDom(async (dom) => {
+    const snap = {};
+    await mountOverlay(dom, {
+      containerPx: NARROW_CONTAINER_PX,
+      payload: BIMODAL_PAYLOAD,
+      afterMount: async (d) => {
+        snap.def = wrappedSnapshot(d);
+        await dragRange(d, d.find('[data-testid="zoom-slider"]'), 1000);
+        snap.top = wrappedSnapshot(d);
+      },
+    });
+    const { def, top } = snap;
+    assert.equal(def.layout, 'wrapped');
+    assert.equal(top.layout, 'wrapped');
+
+    // At the default: the hint number IS the number of textless chips, and the
+    // names are still reachable by zooming.
+    assert.ok(def.bare > 0, 'this song is supposed to have nameless chips at the phone default');
+    assert.equal(def.said, def.bare, `hint says ${def.said}; ${def.bare}/${def.chips} chips rendered without text`);
+    assert.match(def.noteText, /zoom in to read them/);
+    assert.equal(def.plusDisabled, false, '+ is dead at the default zoom');
+
+    // At the ceiling.
+    const rowWidthPx = Math.max(120, NARROW_CONTAINER_PX - GUTTER_PX);
+    const ceiling = zoomCeilingPxPerSec(BIMODAL, PROD_MEASURE, {
+      durSec: durationSec(BIMODAL),
+      maxPaintedPx: Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx),
+    });
+    assert.ok(Math.abs(top.pps - ceiling) <= 0.001, `slider top ${top.pps} vs ceiling ${ceiling.toFixed(3)}`);
+    assert.ok(
+      top.bare > 0,
+      'the phone keeps nameless row-crossing chips at the ceiling; if this is 0 the case under test is gone',
+    );
+    assert.equal(top.said, top.bare, `hint says ${top.said}; ${top.bare}/${top.chips} chips rendered without text`);
+    assert.doesNotMatch(
+      top.noteText,
+      /zoom in/,
+      'the hint still tells the user to zoom in at the ceiling, where there is nowhere to go',
+    );
+    assert.equal(top.plusDisabled, true, '+ is enabled at the ceiling');
+    assert.equal(top.minusDisabled, false, '- should be live at the ceiling');
+    await dom.unmountAll();
+  });
+});
+
+test("wrapped layout: the DOM-row budget reaches the component's zoom ceiling", async () => {
+  // Kills T7 (`MAX_WRAP_ROWS * rowWidthPx` dropped from the component). The
+  // helper-level test above recomputes the budget itself, so it cannot see
+  // whether ChordOverlay passes it. This song's data would take the ceiling
+  // far past the row budget -- 20 chords of 20ms make every name need ~4,000
+  // px/sec over a 300s track -- so only the budget holds the phone to ~800
+  // rows of DOM.
+  await withDom(async (dom) => {
+    const runs = songOf([[0.02, 20], [299.6, 1]]);
+    const payload = {
+      segments: runs.map((r) => ({ start_sec: r.startSec, end_sec: r.endSec, label: r.label, confidence: 1 })),
+    };
+    const rowWidthPx = Math.max(120, NARROW_CONTAINER_PX - GUTTER_PX);
+    const durSec = durationSec(runs);
+    const budgeted = zoomCeilingPxPerSec(runs, PROD_MEASURE, {
+      durSec,
+      maxPaintedPx: Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx),
+    });
+    const unbudgeted = zoomCeilingPxPerSec(runs, PROD_MEASURE, { durSec, maxPaintedPx: MAX_TIMELINE_PX });
+    assert.ok(unbudgeted > budgeted * 2, `the row budget does not bind on this song (${budgeted} vs ${unbudgeted})`);
+    assert.ok(budgeted > MAX_PX_PER_SEC);
+
+    const seen = {};
+    await mountOverlay(dom, {
+      containerPx: NARROW_CONTAINER_PX,
+      payload,
+      afterMount: async (d) => {
+        await dragRange(d, d.find('[data-testid="zoom-slider"]'), 1000);
+        const tl = d.find('[data-testid="chord-timeline"]');
+        seen.layout = tl.dataset.layout;
+        seen.pps = Number(tl.dataset.pxPerSec);
+        // One row-time <span> per wrapped row (the hint's own spans carry a testid).
+        seen.domRows = [...tl.querySelectorAll('span')].filter((x) => !x.hasAttribute('data-testid')).length;
+        seen.helperRows = layoutRows(runs, rowWidthPx / seen.pps, seen.pps).length;
+      },
+    });
+    assert.equal(seen.layout, 'wrapped');
+    assert.ok(Math.abs(seen.pps - budgeted) <= 0.001, `slider top ${seen.pps}px/sec vs the budgeted ceiling ${budgeted.toFixed(3)}`);
+    assert.equal(seen.domRows, seen.helperRows, 'the row-count probe is not counting rows');
+    assert.ok(
+      seen.domRows <= MAX_WRAP_ROWS,
+      `${seen.domRows} wrapped rows are in the DOM at the ceiling (budget ${MAX_WRAP_ROWS})`,
+    );
+    await dom.unmountAll();
+  });
+});
+
+test('every advance-table entry is guarded by at least one pinned Chromium label', () => {
+  // The helpers' comment calls every table entry load-bearing. It is only true
+  // if some pinned label uses the glyph: `0 2 4 8 9 g s u` appeared in none, so
+  // setting '9' or 's' to 1.0 (round 6 mutants H8a, H8b) left the suite green
+  // with 'C:maj9' estimated 8.8px short of Chromium. The width comparison in
+  // 'the headless table and the canvas measurer both agree with Chromium' is
+  // what bites once a pinned label carries the glyph.
+  const pinned = new Set(Object.keys(CHROMIUM_CANVAS_16PX).join(''));
+  assert.deepEqual(
+    Object.keys(ADVANCE_16PX).filter((g) => !pinned.has(g)).sort(),
+    [],
+    'an advance-table glyph appears in no pinned label, so its value is defended by nothing',
+  );
+});
+
+test('every label the geometry gates measured was pinned (no silent fallback)', () => {
+  // makeCanvasMeasurer swallows an unusable width and returns the headless
+  // table's instead, by design. Without this, a gate fed a label outside
+  // CHROMIUM_CANVAS_16PX would run on the estimate and look identical to green.
+  assert.deepEqual([...UNPINNED_LABELS], [], 'a gate measured a label with no pinned Chromium canvas width');
+  // And none was measured at a font the pins cannot serve (the wrong size
+  // string, weight or family): that too falls back to the table silently.
+  assert.deepEqual([...BAD_FONTS], [], 'a gate measured with a font the pinned context could not serve');
 });

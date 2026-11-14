@@ -344,9 +344,17 @@ try {
     try {
       const r = await http(`${BASE}/api/entitlements`, authed());
       const svc = r.json?.services ?? [];
-      const miss = ['youtube', 'spotify', 'soundcloud'].filter((s) => !svc.includes(s));
+      // Only 'youtube' is asserted. Spotify and SoundCloud were in this list and
+      // on the free plan row, but neither has ever had a downloader, a route or an
+      // error code — migration 034 removes them from plans.services, so requiring
+      // them here would fail the nightly smoke against a CORRECTED catalog.
+      const miss = ['youtube'].filter((s) => !svc.includes(s));
+      // And the quota the page now derives its copy from has to be the real one.
+      const quota = r.json?.jobs_quota;
       if (r.status !== 200 || r.json?.plan_code !== 'free' || miss.length) throw new Error(`HTTP ${r.status} plan_code=${r.json?.plan_code} missing_services=[${miss}] body=${r.text.slice(0, 120)}`);
-      pass('5. Entitlements', `plan_code=free services=[${svc}] trial_songs_remaining=${r.json.trial_songs_remaining}`);
+      if (svc.includes('spotify') || svc.includes('soundcloud')) throw new Error(`free plan still lists an unimplemented service: [${svc}] — migration 034 not applied?`);
+      if (quota !== 5) throw new Error(`free jobs_quota=${quota}, expected 5 (migration 034) — catalog is stale`);
+      pass('5. Entitlements', `plan_code=free services=[${svc}] jobs_quota=${quota} trial_songs_remaining=${r.json.trial_songs_remaining}`);
     } catch (e) {
       fail('5. Entitlements', e.message);
     }

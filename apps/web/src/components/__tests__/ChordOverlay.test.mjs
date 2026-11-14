@@ -177,7 +177,7 @@ test('buildChordEdit: tolerates a run with no class index', () => {
 // ---- completed-job tri-state rendering (what the user sees) -----------------
 test('completedJobStatus loading: LOADING pill + loading message, no timeline', () => {
   const s = completedJobStatus({ status: 'loading' });
-  assert.equal(s.pill, 'LOADING');
+  assert.equal(s.pill, 'Loading');
   assert.match(s.message, /Loading chords/);
   assert.equal(s.showTimeline, false);
 });
@@ -187,27 +187,40 @@ test('completedJobStatus ready with chords: JOB pill, timeline, no message', () 
     status: 'ready',
     observations: [{ startSec: 0, endSec: 2, label: 'C:maj', confidence: 1 }],
   });
-  assert.deepEqual(s, { pill: 'JOB', message: null, showTimeline: true });
+  assert.deepEqual(s, { pill: 'Ready', message: null, showTimeline: true });
 });
 
 test('completedJobStatus ready with zero chords: says so instead of an empty box', () => {
   const s = completedJobStatus({ status: 'ready', observations: [] });
-  assert.equal(s.pill, 'JOB');
+  assert.equal(s.pill, 'Ready');
   assert.match(s.message, /No chords were detected/);
   assert.equal(s.showTimeline, false);
 });
 
 test('completedJobStatus unavailable-too-long: tells the user the 5 minute limit', () => {
   const s = completedJobStatus({ status: 'unavailable', reason: 'too_long' });
-  assert.equal(s.pill, 'UNAVAILABLE');
+  assert.equal(s.pill, 'Unavailable');
   assert.match(s.message, /up to 5 minutes/);
   assert.equal(s.showTimeline, false);
 });
 
-test('completedJobStatus unavailable-provider-failed: says detection failed, never LOADING', () => {
+test('completedJobStatus unavailable-provider-failed: says detection did not return, never LOADING', () => {
   const s = completedJobStatus({ status: 'unavailable', reason: 'provider_failed' });
-  assert.equal(s.pill, 'UNAVAILABLE');
-  assert.match(s.message, /failed/);
+  assert.equal(s.pill, 'Unavailable');
+  assert.match(s.message, /didn\u2019t return a result/);
+});
+
+// W4 overnight browser journey j3 (2026-11-12): with KLANGIO_MONTHLY_CAP reached, the
+// worker (602d0ce) writes a `provider_failed` tombstone without sending any request, and
+// the player said "Chord detection failed for this track." Klangio 5xx / FAILED / junk
+// bodies land on the same reason (W3 E01-E05). None of those is about the song, and
+// blaming the track invites a re-upload that spends another credit for the same result.
+test('provider_failed copy does not pin the failure on the track, and does not invite a re-upload', () => {
+  const m = unavailableMessage('provider_failed');
+  assert.doesNotMatch(m, /failed for this track/i);
+  assert.match(m, /rather than your song/);
+  assert.match(m, /uploading it again won\u2019t help/);
+  assert.match(m, /stems and loops are unaffected/);
 });
 
 test('unavailableMessage: every reason has distinct non-empty copy; unknown does not guess a cause', () => {

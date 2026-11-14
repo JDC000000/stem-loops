@@ -390,7 +390,7 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       await emailBestEffort('receipt:credit_purchase', () =>
         sendReceipt(payerId, {
           amount_cad_cents: evt.amountCents,
-          plan_or_pack_label: `${credits} credits (${evt.packCode})`,
+          plan_or_pack_label: `${credits} credits`,
           invoice_url: null,
           receipt_source: { kind: 'credit', provider_charge_id: evt.providerChargeId },
         }),
@@ -535,7 +535,7 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         const provider = getBillingProvider();
         const sub = await provider.getSubscription(evt.providerSubscriptionId);
         await upsertEntitlementFromSubscription(userId, sub);
-        planLabel = `${sub.planCode} plan renewal`;
+        planLabel = `${({ pro: 'Pro', studio: 'Studio' } as Record<string, string>)[sub.planCode] ?? sub.planCode} plan renewal`;
       } catch (err) {
         // B2 (credit-ledger review 2026-11-03): do NOT swallow. A 200 here
         // tells Stripe not to retry, so entitlements.period_end never

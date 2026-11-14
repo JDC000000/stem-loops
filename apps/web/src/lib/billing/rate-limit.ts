@@ -15,12 +15,27 @@
 // /api/uploads — this file does nothing for requests without user_id.
 //
 // The quota counter must stay in step with the real jobs insert, so
-// incrementJobsUsed() runs inside the same tx as the INSERT INTO jobs,
+// bumpJobsUsed() runs inside the same tx as the INSERT INTO jobs,
 // guarded by a per-(user,period) advisory lock. Advisory locks taken
 // with pg_advisory_xact_lock release automatically at COMMIT/ROLLBACK.
+//
+// TWO CONCERNS, TWO FUNCTIONS (adversarial review of #233, Finding A). The
+// old incrementJobsUsed() did two unrelated jobs in one UPSERT: it rolled
+// period_start/period_end forward when they were stale, and it metered one
+// unit of the monthly allowance. That was invisible until a caller needed one
+// without the other. A credit-funded upload must NOT spend an allowance unit
+// — but it must still roll a stale period, because this file is the only
+// place in the repo that ever rolls it, and every quota gate sits upstream of
+// it. Gating the whole UPSERT on "is this quota-funded?" therefore traded a
+// double debit for a permanent lockout. So:
+//
+//   rollPeriodIfStale()  period bookkeeping only — call on EVERY authed job,
+//                        whatever funded it.
+//   bumpJobsUsed()       metering only — call only when the job is funded by
+//                        the monthly allowance.
 
 import { db } from '@/lib/db';
-import { getEntitlementSnapshot } from './entitlements';
+import { getEntitlementSnapshot, isPeriodStale } from './entitlements';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -99,10 +114,11 @@ export async function checkBurstLimit(userId: string): Promise<BurstDenial | nul
  *  carrying resets_at when jobs_used >= monthly_job_quota.
  *
  *  Uses the entitlement snapshot's 30-second cache. That is a soft overcount
- *  risk — up to ~30 s of concurrent bursts can read a stale jobs_used — but
- *  the subsequent per-(user, period) advisory lock + UPSERT in
- *  incrementJobsUsed() is the hard boundary; this check is the cheap 402
- *  short-circuit that avoids reaching the DB on the hot path. */
+ *  risk — up to ~30 s of concurrent bursts can read a stale jobs_used. For a
+ *  FREE upload the hard boundary is bumpJobsUsedWithinQuota() under the
+ *  per-(user, period) advisory lock in the jobs-insert tx (F2: the uncapped
+ *  bumpJobsUsed() is NOT a boundary — it let 4/5 land on 7/5). This check is
+ *  the cheap 402 short-circuit that avoids reaching the DB on the hot path. */
 export async function checkMonthlyQuota(userId: string): Promise<QuotaDenial | null> {
   const snap = await getEntitlementSnapshot(userId);
   // Pro / Studio sentinel: do not gate.
@@ -114,11 +130,11 @@ export async function checkMonthlyQuota(userId: string): Promise<QuotaDenial | n
   if (snap.plan_code === 'free' && snap.credits_remaining > 0) return null;
   // Period rollover (PR #33 round-2 fix #3): if the current wall-clock time is
   // past the user's period_end, the stored jobs_used belongs to a stale period
-  // and the gate should allow — incrementJobsUsed() will reset the counter and
-  // roll period_start/period_end forward in the same tx as the jobs INSERT.
-  if (snap.period_end !== null && Date.parse(snap.period_end) <= Date.now()) {
-    return null;
-  }
+  // and the gate should allow — rollPeriodIfStale() resets the counter and
+  // rolls period_start/period_end forward in the same tx as the jobs INSERT.
+  // Shared predicate: enforceEntitlement()'s free branch calls the same
+  // function, so the two gates cannot disagree about staleness again.
+  if (isPeriodStale(snap.period_end)) return null;
   if (snap.jobs_used < snap.jobs_quota) return null;
   // period_end can be null in degraded reads; return an empty string rather
   // than crash — caller surfaces resets_at verbatim in the 402 body.
@@ -126,10 +142,119 @@ export async function checkMonthlyQuota(userId: string): Promise<QuotaDenial | n
 }
 
 // ---------------------------------------------------------------------------
-// Atomic counter bump — call this inside the jobs-insert tx.
+// Period roll + atomic counter bump — both run inside the jobs-insert tx.
 // ---------------------------------------------------------------------------
 
-/** Take the per-(user,period_start) advisory lock and bump jobs_used by 1.
+/** The client shape both writers need: anything with a pg-style .query(). */
+type QuotaTxClient = {
+  query: <R extends Record<string, unknown> = Record<string, unknown>>(
+    text: string,
+    params?: unknown[],
+  ) => Promise<{ rows: R[]; rowCount: number | null }>;
+};
+
+/** Per-(user, period_start) advisory lock.
+ *
+ *  Keeps two concurrent inserts from reading the same jobs_used and both
+ *  writing jobs_used+1 (double-count). Scope is (user, period) so a period
+ *  rollover does not block. period_start is read via a subselect; when the
+ *  row does not exist yet the COALESCE collapses to '' and the lock is still
+ *  per-user. pg_advisory_xact_lock releases at COMMIT/ROLLBACK.
+ *
+ *  Both writers below take it, so when a quota-funded job calls both, the
+ *  roller takes the key for the OLD period and the bumper the key for the NEW
+ *  one. That is intentional: a concurrent tx blocked on the old key sees the
+ *  rolled row when it is released, finds nothing to roll, and then serialises
+ *  against the bumper on the new key. Acquisition order is always
+ *  roll-then-bump, so there is no lock-ordering cycle. */
+async function takeQuotaLock(client: QuotaTxClient, userId: string): Promise<void> {
+  await client.query(
+    `SELECT pg_advisory_xact_lock(hashtext(
+       $1 || ':' || $2::text || ':' ||
+       COALESCE((SELECT period_start::text FROM entitlements WHERE user_id = $2::uuid), '')
+     ))`,
+    [QUOTA_LOCK_TAG, userId],
+  );
+}
+
+/** Roll period_start/period_end forward when the stored period has ended, and
+ *  reset the allowance counter to 0 for the new period.
+ *
+ *  CALL THIS ON EVERY AUTHED JOB, WHATEVER FUNDED IT. It is the only period
+ *  roller in the repo for an account with no active subscription (the billing
+ *  webhook's upsertEntitlementFromSubscription() returns early unless the
+ *  subscription is active/trialing, and a free user who merely bought credits
+ *  only ever writes credit_purchases). Every quota gate reads a counter that
+ *  is only meaningful inside the period this function maintains, and every
+ *  gate runs upstream of it — so a job that skips the roll leaves the account
+ *  one step closer to a refusal that cannot clear itself.
+ *
+ *  Metering is deliberately NOT here: jobs_used lands on 0, not 1. A
+ *  quota-funded job calls bumpJobsUsed() straight after and ends on 1, which
+ *  is byte-for-byte the state the old single UPSERT produced.
+ *
+ *  Conditional UPDATE, not an UPSERT, on purpose: a user with no entitlements
+ *  row has no period to roll (period_end is NULL, jobs_used reads as 0, no
+ *  gate can refuse them), and a credit-funded job must not bring a quota
+ *  counter into existence. 0 rows updated is the normal, correct outcome. */
+export async function rollPeriodIfStale(
+  client: QuotaTxClient,
+  userId: string,
+): Promise<void> {
+  await takeQuotaLock(client, userId);
+  await client.query(
+    `UPDATE entitlements
+        SET jobs_used    = 0,
+            period_start = date_trunc('month', now()),
+            period_end   = date_trunc('month', now()) + interval '1 month'
+      WHERE user_id = $1::uuid
+        AND period_end <= now()`,
+    [userId],
+  );
+}
+
+/** Spend one unit of the monthly allowance ONLY while the account is under
+ *  `quota`; returns false (nothing written) when it is not.
+ *
+ *  Two callers in POST /api/jobs (upload), both funded by the FREE allowance:
+ *   1. the billing-off upload whose cached snapshot said "holds a credit" (so
+ *      enforceEntitlement and checkMonthlyQuota both waived the quota) but
+ *      whose credit INSERT then found the ledger empty — the last credit was
+ *      spent by a concurrent request or inside the 30 s cache TTL (#236);
+ *   2. every ordinary free, quota-funded upload (F2): the gates checked the
+ *      quota, but against a snapshot up to 30 s old, so concurrent or rapid
+ *      uploads all saw the same jobs_used and passed.
+ *  The cap is evaluated here, under the quota lock and in the jobs-insert tx,
+ *  so neither path can overshoot the allowance. Call after
+ *  rollPeriodIfStale() in the same tx, so the row it bumps is current. */
+export async function bumpJobsUsedWithinQuota(
+  client: QuotaTxClient,
+  userId: string,
+  quota: number,
+): Promise<boolean> {
+  if (!(quota > 0)) return false; // a zero allowance has no unit to spend
+  await takeQuotaLock(client, userId);
+  const r = await client.query(
+    `INSERT INTO entitlements (user_id, plan_code, period_start, period_end, jobs_used)
+     VALUES (
+       $1::uuid,
+       'free',
+       date_trunc('month', now()),
+       date_trunc('month', now()) + interval '1 month',
+       1
+     )
+     ON CONFLICT (user_id) DO UPDATE SET jobs_used = entitlements.jobs_used + 1 WHERE entitlements.jobs_used < $2
+     RETURNING jobs_used`,
+    [userId, quota],
+  );
+  return (r.rowCount ?? 0) > 0;
+}
+
+/** Spend one unit of the monthly allowance.
+ *
+ *  CALL THIS ONLY WHEN THE MONTHLY ALLOWANCE IS WHAT FUNDS THE JOB. A
+ *  credit-funded job is metered by the credit ledger (credits.ts) and must not
+ *  also come through here — that was the double debit this PR removes.
  *
  *  Three outcomes handled atomically inside the caller's tx:
  *    (a) Entitlement row missing (signup trigger has not fired yet, or the
@@ -140,36 +265,22 @@ export async function checkMonthlyQuota(userId: string): Promise<QuotaDenial | n
  *        review fix #2).
  *    (b) Entitlement row present, period still current: bump jobs_used by 1.
  *    (c) Entitlement row present, period stale (NOW() > period_end): reset
- *        jobs_used to 1 and roll period_start/period_end forward to the
- *        current calendar month (PR #33 round-2 review fix #3).
+ *        jobs_used to 1 and roll the period forward. rollPeriodIfStale() has
+ *        normally already done this a statement earlier, so these CASE arms
+ *        are belt-and-braces — kept so that bumpJobsUsed() remains correct on
+ *        its own for the callers that do not pair it with the roller (the
+ *        link-ingest branches of /api/jobs).
  *
  *  Unlimited plans: we still count for analytics, but the gate in
  *  checkMonthlyQuota short-circuits via UNLIMITED_QUOTA_SENTINEL.
  *
  *  Must be called on the SAME transaction as the INSERT INTO jobs so a
  *  rollback of the insert also rolls back the count. */
-export async function incrementJobsUsed(
-  client: {
-    query: <R extends Record<string, unknown> = Record<string, unknown>>(
-      text: string,
-      params?: unknown[],
-    ) => Promise<{ rows: R[]; rowCount: number | null }>;
-  },
+export async function bumpJobsUsed(
+  client: QuotaTxClient,
   userId: string,
 ): Promise<void> {
-  // Per-(user, period_start) advisory lock keeps two concurrent inserts
-  // from reading the same jobs_used and both writing jobs_used+1 (double-
-  // count). Scope is (user, period) so a period rollover does not block.
-  // period_start is read via a subselect; when the row does not exist yet
-  // (case a above) the COALESCE collapses to '' and the lock is still
-  // per-user.
-  await client.query(
-    `SELECT pg_advisory_xact_lock(hashtext(
-       $1 || ':' || $2::text || ':' ||
-       COALESCE((SELECT period_start::text FROM entitlements WHERE user_id = $2::uuid), '')
-     ))`,
-    [QUOTA_LOCK_TAG, userId],
-  );
+  await takeQuotaLock(client, userId);
   // UPSERT handles all three cases in one statement:
   //   - ON CONFLICT DO UPDATE always fires because user_id is PRIMARY KEY.
   //   - When the row is new, the VALUES clause seeds it with 'free',

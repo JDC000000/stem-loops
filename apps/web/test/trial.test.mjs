@@ -22,6 +22,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginReq } from './helpers/same-origin.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const GRANT_SRC = join(WEB, 'src/app/api/users/me/trial/grant/route.ts');
@@ -84,6 +85,7 @@ async function loadGrantRoute({ user, trial }) {
   js = js
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
     .replace(/from ['"]@\/lib\/trial['"]/g, `from '${trialStub(trial ?? {})}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
@@ -118,6 +120,7 @@ async function loadConsumeRoute({ user, trial, burst } = {}) {
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
     .replace(/from ['"]@\/lib\/trial['"]/g, `from '${trialStub(trial ?? {})}'`)
     .replace(/from ['"]@\/lib\/billing\/rate-limit['"]/g, `from '${burstStub(burst ?? {})}'`)
+    .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
@@ -132,7 +135,7 @@ test('POST /api/users/me/trial/grant — 401 when unauthenticated', async () => 
     user: null,
     trial: { grantResult: { granted: true, songs_remaining: 3, expires_at: EXPIRY, expired: false } },
   });
-  const res = await mod.POST();
+  const res = await mod.POST(sameOriginReq());
   assert.equal(res.status, 401);
   assert.equal(res.body.code, 'UNAUTHENTICATED');
   assert.equal(globalThis.__trialCalls.grant, 0, 'grantTrial must not be called on 401');
@@ -144,7 +147,7 @@ test('POST /api/users/me/trial/grant — fresh grant returns granted:true', asyn
     user: USER,
     trial: { grantResult: { granted: true, songs_remaining: 3, expires_at: EXPIRY, expired: false } },
   });
-  const res = await mod.POST();
+  const res = await mod.POST(sameOriginReq());
   assert.equal(res.status, 200);
   assert.equal(res.body.granted, true);
   assert.equal(res.body.songs_remaining, 3);
@@ -159,7 +162,7 @@ test('POST /api/users/me/trial/grant — idempotent re-call returns granted:fals
     user: USER,
     trial: { grantResult: { granted: false, songs_remaining: 1, expires_at: EXPIRY, expired: false } },
   });
-  const res = await mod.POST();
+  const res = await mod.POST(sameOriginReq());
   assert.equal(res.status, 200);
   assert.equal(res.body.granted, false, 'second call must report granted:false');
   assert.equal(res.body.songs_remaining, 1, 'existing songs_remaining must pass through');
@@ -170,7 +173,7 @@ test('POST /api/users/me/trial/grant — 503 when DB throws', async () => {
     user: USER,
     trial: { throwOnGrant: true },
   });
-  const res = await mod.POST();
+  const res = await mod.POST(sameOriginReq());
   assert.equal(res.status, 503);
   assert.equal(res.body.code, 'TRIAL_UNAVAILABLE');
 });
@@ -182,7 +185,7 @@ test('POST /api/users/me/trial/consume — 401 when unauthenticated', async () =
     user: null,
     trial: { consumeResult: { ok: true, songs_remaining: 2, expires_at: EXPIRY } },
   });
-  const res = await mod.POST();
+  const res = await mod.POST(sameOriginReq());
   assert.equal(res.status, 401);
   assert.equal(res.body.code, 'UNAUTHENTICATED');
   assert.equal(globalThis.__trialCalls.consume, 0);
@@ -193,7 +196,7 @@ test('POST /api/users/me/trial/consume — ok:true happy path', async () => {
     user: USER,
     trial: { consumeResult: { ok: true, songs_remaining: 2, expires_at: EXPIRY } },
   });
-  const res = await mod.POST();
+  const res = await mod.POST(sameOriginReq());
   assert.equal(res.status, 200);
   assert.equal(res.body.ok, true);
   assert.equal(res.body.songs_remaining, 2);
@@ -207,7 +210,7 @@ for (const reason of ['no_grant', 'expired', 'exhausted']) {
       user: USER,
       trial: { consumeResult: { ok: false, reason } },
     });
-    const res = await mod.POST();
+    const res = await mod.POST(sameOriginReq());
     assert.equal(res.status, 200);
     assert.equal(res.body.ok, false);
     assert.equal(res.body.reason, reason);
@@ -219,7 +222,7 @@ test('POST /api/users/me/trial/consume — 503 when DB throws', async () => {
     user: USER,
     trial: { throwOnConsume: true },
   });
-  const res = await mod.POST();
+  const res = await mod.POST(sameOriginReq());
   assert.equal(res.status, 503);
   assert.equal(res.body.code, 'TRIAL_UNAVAILABLE');
 });
@@ -233,7 +236,7 @@ test('POST /api/users/me/trial/consume — 429 when burst limit trips (round-2 F
     trial: { consumeResult: { ok: true, songs_remaining: 2, expires_at: EXPIRY } },
     burst: { limited: true },
   });
-  const res = await mod.POST();
+  const res = await mod.POST(sameOriginReq());
   assert.equal(res.status, 429);
   assert.equal(res.body.code, 'rate_limit_burst');
   assert.equal(res.headers.get('Retry-After'), '60');
@@ -247,7 +250,7 @@ test('POST /api/users/me/trial/consume — burst check runs before consume (roun
     trial: { consumeResult: { ok: true, songs_remaining: 2, expires_at: EXPIRY } },
     burst: { limited: false },
   });
-  const res = await mod.POST();
+  const res = await mod.POST(sameOriginReq());
   assert.equal(res.status, 200);
   assert.equal(globalThis.__burstCalls, 1, 'burst check runs even on the happy path');
   assert.equal(globalThis.__burstLastUser, USER.user_id);

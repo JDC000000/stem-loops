@@ -57,6 +57,18 @@
   font-size: var(--text-md, 15px);
 }
 
+.retry {
+  align-self: flex-start;
+  padding: var(--space-2, 8px) var(--space-4, 16px);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md, 10px);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-md, 15px);
+  cursor: pointer;
+}
+
 .chords {
   min-width: 0;
 }

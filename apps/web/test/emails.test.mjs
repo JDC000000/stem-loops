@@ -94,6 +94,28 @@ test('sendEmail: posts to Resend API with Bearer auth and JSON body', async () =
   assert.deepEqual(body.tags, [{ name: 'template', value: 'welcome' }]);
 });
 
+// Audit F20: the reply-to comes from EMAIL_REPLY_TO and is omitted when that is unset or
+// blank, so no address is ever invented.
+test('sendEmail: reply_to comes from EMAIL_REPLY_TO, and is omitted when unset (F20)', async () => {
+  const send = async () => {
+    const calls = mockFetch([{ status: 200, json: { id: 'em_rt' } }]);
+    const { sendEmail } = await loadResend();
+    await sendEmail({ to: 'a@b.com', subject: 's', html: 'h', tag: 'welcome', idempotencyKey: 'k' });
+    return JSON.parse(calls[0].init.body);
+  };
+  setEnv();
+  try {
+    delete process.env.EMAIL_REPLY_TO;
+    assert.equal('reply_to' in (await send()), false, 'unset: no reply_to');
+    process.env.EMAIL_REPLY_TO = '   ';
+    assert.equal('reply_to' in (await send()), false, 'blank: no reply_to');
+    process.env.EMAIL_REPLY_TO = ' help@example.com ';
+    assert.equal((await send()).reply_to, 'help@example.com');
+  } finally {
+    delete process.env.EMAIL_REPLY_TO;
+  }
+});
+
 // PR #38 Lens A follow-up: every send carries an Idempotency-Key header so
 // a retried-after-timeout send cannot double-deliver.
 test('sendEmail: sets Idempotency-Key header from idempotencyKey (PR #38 Lens A)', async () => {
@@ -255,7 +277,7 @@ test('subscription-changed: subject reflects plan and status', async () => {
     status: 'canceled',
     period_end: new Date('2027-02-01T00:00:00Z'),
   });
-  assert.match(canceled.subject, /Studio plan was canceled/i);
+  assert.match(canceled.subject, /Studio plan was cancelled/i);
   assert.match(canceled.html, /2027-02-01/);
 });
 

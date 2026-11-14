@@ -11,8 +11,9 @@ piano→keys here before they leave this module.
 Live Replicate calls land in P2-12+; P2-11 exercises this with mocks only.
 
 Spend safety (this module owns it, because pipeline.py only sees a successful return):
-  * A prediction we abandon (poll budget exhausted, HTTP/transport error) is CANCELLED on
-    Replicate, otherwise it keeps running and billing for nothing.
+  * A prediction we abandon (poll budget exhausted, non-429 4xx on the poll) is CANCELLED on
+    Replicate, otherwise it keeps running and billing for nothing. A transient poll failure
+    (5xx / 429 / transport) is retried, never a reason to cancel on its own.
   * Whatever a prediction actually cost is written ONCE to job_events.detail.cost_usd (which
     the 24h spend ceiling sums) - on success, on failure/cancel and on abandonment - keyed by
     prediction id, so a reaper rerun can never add a second event for the same spend.
@@ -24,6 +25,7 @@ import os
 import re
 import time
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 
 import httpx
@@ -38,7 +40,15 @@ class SeparationTimeout(Exception):
     """Poll deadline hit while the Replicate prediction is STILL running — RETRYABLE.
     The prediction keeps executing server-side, so re-polling the same prediction_id
     (idempotent re-attach: no second prediction, no double charge) can still succeed.
-    Distinct from SeparationFailedError, which is a terminal Replicate failure/cancel."""
+    Distinct from SeparationFailedError, which is a terminal Replicate failure/cancel.
+
+    Also raised when Replicate's poll GET keeps failing transiently (5xx / 429 / transport)
+    for longer than POLL_TRANSIENT_BUDGET_S: we cannot see the prediction, but nothing says it
+    failed, so it is re-polled rather than cancelled. failure_reason says which case it was."""
+
+    def __init__(self, message: str, *, failure_reason: str = "poll_deadline"):
+        super().__init__(message)
+        self.failure_reason = failure_reason
 
 
 API = "https://api.replicate.com/v1"
@@ -47,6 +57,16 @@ API = "https://api.replicate.com/v1"
 # completes instead of spuriously failing mid-audition. Overridable via REPLICATE_DEADLINE.
 HARD_DEADLINE = int(os.environ.get("REPLICATE_DEADLINE", "55"))
 POLL_INTERVAL = 2
+# Transient poll failures (GET /predictions/{id} -> 5xx, 429, or a transport error) are retried
+# with exponential backoff 2, 4, 8, 8... s, and the counter resets after any successful poll.
+# Prod 2026-11-14: Replicate 502s arrive in bursts of several seconds; the old one-retry rule
+# cancelled two healthy predictions. 20 s of UNBROKEN failures (about 5 GETs on the backoff
+# schedule) outlasts those bursts with margin while leaving most of the 55 s HARD_DEADLINE;
+# past it the poll ends as a retryable SeparationTimeout (pipeline re-polls the SAME
+# prediction), never as a terminal failure. Overridable via REPLICATE_POLL_TRANSIENT_BUDGET.
+POLL_BACKOFF_BASE = 2.0
+POLL_BACKOFF_CAP = 8.0
+POLL_TRANSIENT_BUDGET_S = float(os.environ.get("REPLICATE_POLL_TRANSIENT_BUDGET", "20"))
 # During the (up to HARD_DEADLINE-long) separation poll, bump jobs.updated_at so the
 # orphan reaper (reaper.py) can tell a LIVE separation apart from a worker that died
 # mid-job. Must be << REAPER_STALE_SECONDS (default 300s).
@@ -397,42 +417,118 @@ def _poll_budget_spent(pred_id: str, pred: dict | None) -> bool:
     return False
 
 
+def _is_transient_status(code: int) -> bool:
+    """5xx and 429 on a poll GET say nothing about the prediction itself: retry, don't cancel."""
+    return code == 429 or code >= 500
+
+
+def _retry_after_s(resp) -> float | None:
+    """Seconds from a Retry-After header (delta-seconds or HTTP-date), else None."""
+    headers = getattr(resp, "headers", None) or {}
+    raw = headers.get("Retry-After") or headers.get("retry-after")
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        try:
+            when = parsedate_to_datetime(str(raw))
+        except (TypeError, ValueError, IndexError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        value = (when - datetime.now(UTC)).total_seconds()
+    return max(0.0, value)
+
+
 def poll_until_done(job_id: str, pred_id: str, progress_cb=None) -> tuple[dict, float]:
     """Poll a prediction until it succeeds/fails. Returns ({stem: url} (piano→keys), cost_usd).
 
     cost_usd is the spend NOT YET persisted to job_events (see record_prediction_cost): the
     cost itself is booked here, once, so callers that also emit it (pipeline.py) add 0.0 rather
-    than a duplicate. Abandoning the prediction cancels it on Replicate."""
+    than a duplicate. Abandoning the prediction cancels it on Replicate.
+
+    A poll GET that fails transiently (5xx, 429, transport) is retried with backoff; an unbroken
+    run longer than POLL_TRANSIENT_BUDGET_S ends this poll as a retryable SeparationTimeout,
+    exactly like the deadline. A non-429 4xx is terminal (cancel + SeparationFailedError)."""
     deadline = time.monotonic() + HARD_DEADLINE
     last_hb = time.monotonic()
-    retries = 0
+    transient_n = 0  # consecutive transient failures in the CURRENT run; reset on success
+    transient_since: float | None = None
     pred: dict | None = None
     while time.monotonic() < deadline:
         if time.monotonic() - last_hb >= HEARTBEAT_SECONDS:
             _heartbeat(job_id)
             last_hb = time.monotonic()
+        transient: str | None = None
+        retry_after: float | None = None
         try:
             r = httpx.get(f"{API}/predictions/{pred_id}", headers=_headers(), timeout=15)
             r.raise_for_status()
             pred = r.json()
         except httpx.HTTPStatusError as e:
-            if e.response.status_code >= 500 and retries < 1:
-                retries += 1
-                time.sleep(POLL_INTERVAL)
-                continue
-            won = _abandon(job_id, pred_id, f"poll_http_{e.response.status_code}", pred)
-            if won is None:
-                raise SeparationFailedError(f"Replicate HTTP {e.response.status_code}") from e
-            pred = won
+            code = e.response.status_code
+            if _is_transient_status(code):
+                transient = f"poll_http_{code}"
+                if code == 429:
+                    retry_after = _retry_after_s(e.response)
+            else:
+                reason = f"poll_http_{code}"
+                won = _abandon(job_id, pred_id, reason, pred)
+                if won is None:
+                    raise SeparationFailedError(
+                        f"Replicate HTTP {code}", failure_reason=reason
+                    ) from e
+                pred = won
         except httpx.TransportError as e:
-            if retries < 1:
-                retries += 1
-                time.sleep(POLL_INTERVAL)
-                continue
-            won = _abandon(job_id, pred_id, "poll_transport_error", pred)
-            if won is None:
-                raise SeparationFailedError("Replicate unreachable while polling") from e
-            pred = won
+            transient = "poll_transport_error"
+            log_structured(
+                "WARN", "replicate_poll_transport_error", pred_id=pred_id, error=str(e)[:120]
+            )
+
+        if transient is not None:
+            now = time.monotonic()
+            transient_n += 1
+            if transient_since is None:
+                transient_since = now
+            run_s = now - transient_since
+            if run_s >= POLL_TRANSIENT_BUDGET_S:
+                log_structured(
+                    "WARN",
+                    "replicate_poll_transient_exhausted",
+                    job_id=job_id,
+                    pred_id=pred_id,
+                    reason=transient,
+                    consecutive=transient_n,
+                    run_s=round(run_s, 1),
+                )
+                break
+            backoff = min(POLL_BACKOFF_BASE * 2 ** (transient_n - 1), POLL_BACKOFF_CAP)
+            # Retry-After: 0 (or tiny) must not turn into a busy loop of GETs.
+            wait = max(retry_after, POLL_BACKOFF_BASE) if retry_after is not None else backoff
+            wait = max(0.0, min(wait, deadline - now))
+            log_structured(
+                "WARN",
+                "replicate_poll_transient_retry",
+                job_id=job_id,
+                pred_id=pred_id,
+                reason=transient,
+                consecutive=transient_n,
+                wait_s=round(wait, 2),
+                retry_after_s=retry_after,
+            )
+            time.sleep(wait)
+            continue
+        if transient_n:
+            log_structured(
+                "INFO",
+                "replicate_poll_recovered",
+                job_id=job_id,
+                pred_id=pred_id,
+                after_failures=transient_n,
+            )
+            transient_n = 0
+            transient_since = None
 
         status = pred.get("status")
         if progress_cb and status == "processing":
@@ -459,11 +555,16 @@ def poll_until_done(job_id: str, pred_id: str, progress_cb=None) -> tuple[dict, 
             # Replicate bills a failed run for the time it ran: book it before raising.
             record_prediction_cost(job_id, pred_id, _spend_usd(pred), f"prediction_{status}")
             _timeouts.pop(pred_id, None)
-            raise SeparationFailedError(str(pred.get("error", "unknown")))
+            raise SeparationFailedError(
+                str(pred.get("error", "unknown")), failure_reason=f"prediction_{status}"
+            )
         time.sleep(POLL_INTERVAL)
 
-    # Deadline hit but the prediction is still 'processing' (not failed). Retryable while the
-    # retry budget lasts; once it is spent the prediction is CANCELLED so it stops billing.
+    # Deadline hit (or the poll GET kept failing transiently) and the prediction was not seen to
+    # fail. Retryable while the retry budget lasts; once it is spent the prediction is
+    # CANCELLED so it stops billing. A transient outage spends the budget like a slow run does,
+    # so a long Replicate outage still ends in a cancel + terminal failure, just not on attempt 1.
+    end_reason = "poll_transient_exhausted" if transient_n else "poll_deadline"
     if _poll_budget_spent(pred_id, pred):
         _timeouts.pop(pred_id, None)
         won = _abandon(job_id, pred_id, "poll_budget_exhausted", pred)
@@ -473,6 +574,10 @@ def poll_until_done(job_id: str, pred_id: str, progress_cb=None) -> tuple[dict, 
                 _book_success(job_id, pred_id, won), 4
             )
         raise SeparationFailedError(
-            f"separation exceeded its time budget; prediction {pred_id} cancelled"
+            f"separation exceeded its time budget ({end_reason}); prediction cancelled",
+            failure_reason="poll_budget_exhausted",
         )
-    raise SeparationTimeout(f"poll deadline {HARD_DEADLINE}s exceeded; prediction still running")
+    raise SeparationTimeout(
+        f"poll ended ({end_reason}) after up to {HARD_DEADLINE}s; prediction still running",
+        failure_reason=end_reason,
+    )

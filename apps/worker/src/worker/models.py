@@ -134,6 +134,13 @@ class Job(BaseModel):
     created_at: datetime
     updated_at: datetime
     expires_at: datetime
+    # Input trim (2026-11-14): a track longer than MAX_UPLOAD_DURATION_SEC is cut to its first
+    # MAX_UPLOAD_DURATION_SEC seconds instead of refused. Read from the downloading/completed
+    # job_events.detail ({"trimmed": true, "source_sec": X, "used_sec": N}); no migration.
+    # `input_trim_used_sec` is non-null exactly when the input was trimmed;
+    # `input_trim_source_sec` is the original length, or null when it could not be read.
+    input_trim_used_sec: float | None = None
+    input_trim_source_sec: float | None = None
     events: list[JobEvent] = []
     loops: list[Loop] = []
 

@@ -7,19 +7,24 @@ import { clientIpHashOf } from '@/lib/client-ip';
 import { canonicalizeYoutubeUrl } from '@/lib/youtube-url';
 import { isValidUploadKey } from '@/lib/upload';
 import { getUser } from '@/lib/auth/supabase';
+import { entitlementMessage } from '@/lib/error-copy';
 import {
   checkBurstLimit,
   checkMonthlyQuota,
-  incrementJobsUsed,
+  bumpJobsUsed,
+  bumpJobsUsedWithinQuota,
+  rollPeriodIfStale,
 } from '@/lib/billing/rate-limit';
 import {
   getEntitlementSnapshot,
   enforceEntitlement,
   EntitlementError,
   billingEnforced,
+  FREE_QUOTA_EXHAUSTED_MESSAGE,
 } from '@/lib/billing/entitlements';
 import { consumeTrialInTx } from '@/lib/trial';
 import { consumeCreditInTx } from '@/lib/billing/credits';
+import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
 const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
@@ -40,6 +45,12 @@ const RATE_LIMIT_MSG =
 // request cannot leak a trial song (the trial UPDATE commits in its own tx;
 // if we then rejected for admission we would have already spent a song).
 export async function POST(request: NextRequest) {
+  // CSRF: same-origin browser requests only (src/lib/same-origin.ts). First,
+  // before the body is read or any quota, trial or credit is touched.
+  const originRefusal = crossOriginRefusal(request);
+  if (originRefusal) {
+    return NextResponse.json({ error_code: BAD_ORIGIN, message: originRefusal }, { status: 403 });
+  }
   try {
     let body: unknown;
     try {
@@ -51,7 +62,17 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    const bodyObj = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+    // Valid JSON that is not an object (`null`, an array, a string, a number)
+    // used to fall through as `{}` to the link branch and come back as a 403
+    // "YouTube" refusal (W1 overnight QA, 2026-11-12, P2). It is a client
+    // error: same 400 as malformed JSON, before auth, quota, trial or credit.
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json(
+        { error_code: 'INVALID_REQUEST', message: 'Request body must be a JSON object.' },
+        { status: 400 }
+      );
+    }
+    const bodyObj = body as Record<string, unknown>;
 
     const user = await getUser();
 
@@ -103,9 +124,12 @@ export async function POST(request: NextRequest) {
       // users enforce the upload entitlement (Pro/Studio quota, or credits
       // for free-tier) BEFORE spending Replicate budget.
       let chargeCredit = false;
+      let allowanceQuota = 0;
+      let freeAllowance = false;
       if (user) {
         try {
           const { snapshot: entSnap } = await enforceEntitlement('start_job_upload', user.user_id);
+          allowanceQuota = entSnap.jobs_quota;
           // Pro/Studio are unlimited (quota-metered); everyone else who got
           // past the gate is on the credit path and is charged below.
           //
@@ -120,10 +144,14 @@ export async function POST(request: NextRequest) {
             entSnap.plan_code !== 'pro' &&
             entSnap.plan_code !== 'studio' &&
             (billingEnforced() || entSnap.credits_remaining > 0);
+          // F2: a non-subscriber job NOT charged a credit is funded by the free
+          // monthly allowance, and its cap is enforced where the counter is
+          // written (below), not only by the 30 s-cached gates above.
+          freeAllowance = entSnap.plan_code !== 'pro' && entSnap.plan_code !== 'studio';
         } catch (err) {
           if (err instanceof EntitlementError) {
             return NextResponse.json(
-              { error_code: err.code, message: err.message },
+              { error_code: err.code, message: entitlementMessage(err.code, err.message) },
               { status: err.status },
             );
           }
@@ -168,6 +196,13 @@ export async function POST(request: NextRequest) {
       const clientIpHash = clientIpHashOf(request);
       const adm = await checkAdmission(clientIpHash);
       if (!adm.allowed) {
+        // B8: global capacity is NOT the client's fault — 503 + Retry-After and its own copy.
+        if (adm.error_code === 'AT_CAPACITY') {
+          return NextResponse.json(
+            { error_code: adm.error_code, message: adm.message },
+            { status: 503, headers: { 'Retry-After': String(adm.retry_after_s) } },
+          );
+        }
         return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
       }
 
@@ -198,8 +233,65 @@ export async function POST(request: NextRequest) {
               // exists (check_credit_decrement trigger looks it up). DB-level
               // advisory lock + conditional INSERT — not the 30 s cache.
               // Throws CREDIT_BALANCE_INSUFFICIENT -> tx rolls back the job.
-              if (chargeCredit) await consumeCreditInTx(client, user.user_id, jobId);
-              await incrementJobsUsed(client, user.user_id);
+              //
+              // ── Period bookkeeping, then metering. Two concerns, two calls.
+              //
+              // rollPeriodIfStale() runs on EVERY authed upload, whatever
+              // funded it. rate-limit.ts is the only period roller an account
+              // without an active subscription ever gets, and every quota gate
+              // reads a jobs_used that is only meaningful inside that period
+              // while sitting UPSTREAM of this tx. So a job that skips the
+              // roll leaves the period stale, and a stale period plus a
+              // spent allowance is a refusal no later request can clear.
+              await rollPeriodIfStale(client, user.user_id);
+              //
+              // One job, one debit. A credit-funded job is metered by the
+              // credit ledger and must NOT also spend a unit of the monthly
+              // allowance: checkMonthlyQuota() waives the quota while credits
+              // remain (review M1), so the extra unit was invisible until the
+              // credits ran out and the allowance they never touched was gone.
+              // Scope note: "one job, one debit" is enforced here, on the
+              // authed UPLOAD branch. The link-ingest branches below still
+              // debit a trial song AND an allowance unit; that path is gated
+              // shut by ALLOW_YOUTUBE_INPUT and is not touched by this PR.
+              if (chargeCredit) {
+                try {
+                  await consumeCreditInTx(client, user.user_id, jobId);
+                } catch (err) {
+                  // chargeCredit came from a snapshot that may be up to 30 s
+                  // old. With billing NOT enforced, an account whose last
+                  // credit went to a concurrent request (or to its previous
+                  // upload inside the cache TTL) still has its monthly
+                  // allowance, and no credit can be bought — refusing here is
+                  // the very defect the predicate above exists to prevent.
+                  // Fall back to the allowance, capped under the quota lock
+                  // (the gates waived the quota because of the credit, so the
+                  // cap MUST be checked here). Billing enforced: unchanged.
+                  if (
+                    billingEnforced() ||
+                    !(err instanceof EntitlementError) ||
+                    err.code !== 'CREDIT_BALANCE_INSUFFICIENT'
+                  ) {
+                    throw err;
+                  }
+                  if (!(await bumpJobsUsedWithinQuota(client, user.user_id, allowanceQuota))) {
+                    throw new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', FREE_QUOTA_EXHAUSTED_MESSAGE);
+                  }
+                }
+              } else if (freeAllowance) {
+                // F2 (#236 review defect 5): a free, quota-funded upload. The
+                // gates above read a snapshot cached for up to 30 s, so every
+                // request inside that window sees the same jobs_used and passes
+                // (4/5 + three uploads landed on 7/5). The cap is therefore
+                // checked HERE, under the quota lock in the jobs-insert tx;
+                // refusing throws, the tx rolls back, and no job row exists.
+                if (!(await bumpJobsUsedWithinQuota(client, user.user_id, allowanceQuota))) {
+                  throw new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', FREE_QUOTA_EXHAUSTED_MESSAGE);
+                }
+              } else {
+                // Pro / Studio: metered as before (out of scope for F2).
+                await bumpJobsUsed(client, user.user_id);
+              }
             }
             return r;
           })
@@ -217,7 +309,7 @@ export async function POST(request: NextRequest) {
         // Lost the race for the last credit (M3): tx already rolled back.
         if (err instanceof EntitlementError) {
           return NextResponse.json(
-            { error_code: err.code, message: err.message },
+            { error_code: err.code, message: entitlementMessage(err.code, err.message) },
             { status: err.status },
           );
         }
@@ -237,7 +329,7 @@ export async function POST(request: NextRequest) {
     // — it can't be reached from the UI, but this blocks a direct API call too.
     if (process.env.ALLOW_YOUTUBE_INPUT !== 'true') {
       return NextResponse.json(
-        { error_code: 'DOWNLOAD_INVALID_URL', message: 'YouTube input is not available yet.' },
+        { error_code: 'DOWNLOAD_INVALID_URL', message: 'YouTube links are paused right now. Upload the audio file instead.' },
         { status: 403 }
       );
     }
@@ -258,7 +350,7 @@ export async function POST(request: NextRequest) {
     const canonicalUrl = canonicalizeYoutubeUrl(url);
     if (!canonicalUrl) {
       return NextResponse.json(
-        { error_code: 'DOWNLOAD_INVALID_URL', message: 'That doesn’t look like a YouTube video link. Paste a full youtube.com or youtu.be URL.' },
+        { error_code: 'DOWNLOAD_INVALID_URL', message: 'That doesn’t look like a YouTube video link. Paste a full youtube.com or youtu.be link.' },
         { status: 400 }
       );
     }
@@ -299,7 +391,7 @@ export async function POST(request: NextRequest) {
         if (err instanceof EntitlementError) {
           if (err.code === 'PAID_LINK_INGEST_DISALLOWED') {
             return NextResponse.json(
-              { error_code: err.code, message: err.message },
+              { error_code: err.code, message: entitlementMessage(err.code, err.message) },
               { status: err.status },
             );
           }
@@ -320,6 +412,13 @@ export async function POST(request: NextRequest) {
     const clientIpHash = clientIpHashOf(request);
     const adm = await checkAdmission(clientIpHash);
     if (!adm.allowed) {
+      // B8: global capacity is NOT the client's fault — 503 + Retry-After and its own copy.
+      if (adm.error_code === 'AT_CAPACITY') {
+        return NextResponse.json(
+          { error_code: adm.error_code, message: adm.message },
+          { status: 503, headers: { 'Retry-After': String(adm.retry_after_s) } },
+        );
+      }
       return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
     }
 
@@ -376,7 +475,7 @@ export async function POST(request: NextRequest) {
               // roll back the whole tx — trial song is NOT burned.
               throw RATE_SENTINEL;
             }
-            await incrementJobsUsed(client, user.user_id);
+            await bumpJobsUsed(client, user.user_id);
             return { consumed: true as const };
           });
           if (outcome.consumed) {
@@ -436,7 +535,7 @@ export async function POST(request: NextRequest) {
             AUTHED_INSERT_SQL,
             [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT, user.user_id],
           );
-          if (r.rowCount) await incrementJobsUsed(client, user.user_id);
+          if (r.rowCount) await bumpJobsUsed(client, user.user_id);
           return r;
         })
       : await db.query(
@@ -454,6 +553,6 @@ export async function POST(request: NextRequest) {
     // onRequestError hook. Report it to Sentry explicitly, or it just vanishes.
     Sentry.captureException(err);
     console.error('POST /api/jobs error:', err);
-    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Something went wrong on our end. Please try again.' }, { status: 500 });
   }
 }

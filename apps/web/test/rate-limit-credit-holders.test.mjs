@@ -24,7 +24,12 @@ const PERIOD_END = new Date(Date.now() + 15 * 86_400_000).toISOString();
 
 async function loadCheck(snap) {
   const entStub = dataUrl(
-    `export const getEntitlementSnapshot = async () => (${JSON.stringify(snap)});`,
+    `export const getEntitlementSnapshot = async () => (${JSON.stringify(snap)});\n` +
+      // checkMonthlyQuota() now shares its stale-period predicate with
+      // enforceEntitlement() instead of inlining it, so the stub has to
+      // provide it. Same semantics as the inline check it replaced.
+      `export const isPeriodStale = (pe, now = Date.now()) =>
+         pe !== null && Number.isFinite(Date.parse(pe)) && Date.parse(pe) <= now;`,
   );
   const dbStub = dataUrl(`export const db = { tx: async () => { throw new Error('unused'); } };`);
   const js = toJs(readFileSync(SRC, 'utf8'))

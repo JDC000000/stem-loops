@@ -107,11 +107,14 @@ def upload_loop(job_id: str, stem: str, bars: int, section: str, idx: int, local
 # name and surface as a duplicate or an arbitrary winner.
 #
 # Both sit UNDER `<job_id>/`, and that is a correctness property, not a style
-# choice. cleanup.py's per-job delete is `delete_prefix(f"{job_id}/")` and its
-# `_job_id_of()` reads the FIRST path segment. `upload_play_chords` writes
-# `jobs/<id>/...`, whose first segment is the literal "jobs", so the per-job
-# delete MISSES it and it survives until the budget-limited orphan sweep happens
-# to catch it. Stems are far larger, so they must not repeat that.
+# choice: it is the prefix the bulk of the retention sweep is built around. The
+# chord artifact does NOT (`upload_play_chords` writes `jobs/<id>/...`), and for
+# months that meant the per-job retention delete — `delete_prefix(f"{job_id}/")`
+# alone — MISSED it on every single job, leaving it to the budget-capped orphan
+# sweep. `job_object_prefixes()` below is now the single list of prefixes the
+# sweep walks, so the leak is closed; a NEW top-level prefix must be added there
+# or it will leak the same way. Keeping stems under `<job_id>/` is still the
+# right default, and they are far larger.
 STEM_PLAY_EXT = "opus"
 STEM_DOWNLOAD_EXT = "wav"
 
@@ -167,16 +170,45 @@ def download_object(r2_key: str, local_path: str) -> str:
     return local_path
 
 
+# The ONE named top-level prefix in the bucket. Everything the pipeline writes is
+# `<job_id>/...` EXCEPT the Y1 chord artifact, which lives under this prefix.
+CHORDS_TOP_PREFIX = "jobs/"
+
+
+def play_chords_r2_key(job_id: str) -> str:
+    """Key for the Y1 chord artifact. Mirrored in apps/web/src/lib/r2.ts:playChordsR2Key."""
+    return f"{CHORDS_TOP_PREFIX}{job_id}/play.chords.json"
+
+
+def job_object_prefixes(job_id: str) -> tuple[str, ...]:
+    """EVERY R2 prefix one job's objects can live under.
+
+    cleanup.py's per-job retention delete walks this list, so this is the single
+    place that decides what "a job's R2 footprint" means. It deliberately returns
+    PREFIXES and not keys: the sweep must delete whatever is actually there, not
+    only the objects it can name.
+
+    The second entry is why this function exists. The sweep deleted `{job_id}/`
+    and nothing else, so `jobs/<job_id>/play.chords.json` escaped the per-job
+    delete on every job and survived until `_sweep_orphaned_objects` — bucket-wide,
+    age-based, best-effort and capped at MAX_ORPHANS_PER_SWEEP — happened to reach it.
+    """
+    return (f"{job_id}/", f"{CHORDS_TOP_PREFIX}{job_id}/")
+
+
 def upload_play_chords(job_id: str, body: bytes) -> str:
     """Upload the Y1 ``play.chords.json`` artifact for a job and return its r2_key.
 
-    Deterministic key ``jobs/<job_id>/play.chords.json`` so a retried job
-    overwrites in place. Content-Type is ``application/json`` and Cache-Control
+    Deterministic key ``jobs/<job_id>/play.chords.json`` (``play_chords_r2_key``)
+    so a retried job overwrites in place. The ``jobs/`` top-level prefix is the
+    one exception to the ``<job_id>/...`` layout, which is why it must appear in
+    ``job_object_prefixes`` for the retention sweep to reach it.
+    Content-Type is ``application/json`` and Cache-Control
     is ``private, max-age=0`` — the artifact is user-scoped (served through a
     short-TTL signed URL) and the browser should re-fetch on every job view so
     a re-run picks up fresh chord data without a stale-cache hit.
     """
-    r2_key = f"jobs/{job_id}/play.chords.json"
+    r2_key = play_chords_r2_key(job_id)
     _r2().put_object(
         Bucket=os.environ["R2_BUCKET_NAME"],
         Key=r2_key,

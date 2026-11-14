@@ -48,10 +48,12 @@ test('the two artifacts live in DIFFERENT sub-prefixes', () => {
 });
 
 test('both keys sit UNDER the job prefix, so retention covers them', () => {
-  // The property that matters. cleanup.py deletes with delete_prefix(f"{job_id}/")
-  // and _job_id_of() reads the FIRST path segment. play.chords.json is written as
-  // `jobs/<id>/...`, whose first segment is the literal "jobs", so the per-job
-  // delete MISSES it. Stems are ~50 MB each and six per job.
+  // The property that matters: `<jobId>/` is the prefix the retention sweep is built
+  // around. play.chords.json is written as `jobs/<id>/...` and that exception leaked
+  // — the per-job delete was delete_prefix(f"{job_id}/") alone and missed it on every
+  // job. cleanup.py now walks r2_uploader.job_object_prefixes(job_id), which lists both;
+  // a stem under a NEW top-level prefix would need the same, so keep them here.
+  // Stems are ~50 MB each and six per job.
   for (const stem of PLAYABLE_STEMS) {
     for (const key of [stemPlayR2Key(JOB, stem), stemDownloadR2Key(JOB, stem)]) {
       assert.equal(key.split('/', 1)[0], JOB, `${key}: first segment must be the job id`);

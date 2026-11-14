@@ -61,7 +61,13 @@ import {
   chipBox,
   CHIP_FULL_PAD_PX,
   CHIP_TIGHT_FONT_PX,
+  chipContentPx,
   chipDensity,
+  densityCounts,
+  segmentDensityCounts,
+  zoomCeilingPxPerSec,
+  MAX_TIMELINE_PX,
+  MAX_WRAP_ROWS,
   estimateLabelPx,
   makeCanvasMeasurer,
   readablePxPerSec,
@@ -337,8 +343,10 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   const minPps = narrow
     ? Math.min(MAX_PX_PER_SEC, rowWidthPx / WRAP_MAX_ROW_SEC)
     : fitPxPerSec(dur, widthPx);
-  // Real text metrics for the chips, from the font the chips actually inherit.
-  // Built once per container element and memoised per (label, size); nothing
+  // Real text metrics for the chips: FAMILY and WEIGHT are read off the element
+  // the chips inherit them from; the SIZE is not read, it is declared (every
+  // chip carries an inline px font size, see renderChip). Built once per
+  // container element and memoised per (label, size); nothing
   // here runs per frame. Falls back to the calibrated table when there is no
   // canvas (SSR, happy-dom, a hardened browser that returns a null context).
   // The measuring itself lives in makeCanvasMeasurer (a pure, exported factory
@@ -371,14 +379,55 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   // fit-to-width so a short track still fills the strip. The wrapped (narrow)
   // layout already derived its default from seconds-per-row and already read
   // correctly; it is unchanged.
+  //
+  // NOTE THE MISSING THIRD ARGUMENT, because it is deliberate and it is the one
+  // place MAX_PX_PER_SEC still decides a default. `readablePxPerSec` caps its
+  // own answer at MAX_PX_PER_SEC, so the DEFAULT never goes above 80px/sec even
+  // where the derivation asks for more, while the CEILING below does. The two
+  // caps answer different questions: the ceiling is "how far may the user
+  // reach", which must be derived from the text or chords become unreadable
+  // forever; the default is "how much of the song does the first view show",
+  // which is a product choice and not a claim about any text.
+  //
+  // What that costs, measured: on a song at one chord per beat at 160bpm (533
+  // runs of 0.375s) the derivation wants 214.9px/sec and the default stays at
+  // 80, where 246 of 533 chords are nameless. They are all REACHABLE now and
+  // the hint line says so, which is the difference this PR is about -- but the
+  // default on such a song is still worse than the rule would make it. Left
+  // deliberately: lifting it would default a dense song to a ~4s window, which
+  // is a separate decision about the first view and wants its own measurement.
   const readablePps = useMemo(
     () => readablePxPerSec(state.runs, measureLabel),
     [state.runs, measureLabel],
   );
+
+  // THE MAXIMUM ZOOM. Was the bare MAX_PX_PER_SEC constant, which bounded
+  // nothing: a chord whose run is under ~0.52s (one per beat at 115bpm) could
+  // not be read at ANY zoom the slider reached, so on a song with real dynamic
+  // range between its sections nearly half the chords had no name and no way
+  // to get one. It is now derived from the job's chord data -- the zoom at
+  // which even the SHORTEST run carries the LONGEST name at full size -- and
+  // floored at MAX_PX_PER_SEC so a job can only gain range, never lose it.
+  //
+  // The wrapped layout folds the same painted length into rows instead of
+  // scrolling it, and a row is DOM, so it gets the tighter of the two budgets.
+  const maxPps = useMemo(
+    () =>
+      zoomCeilingPxPerSec(state.runs, measureLabel, {
+        durSec: dur,
+        maxPaintedPx: narrow
+          ? Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx)
+          : MAX_TIMELINE_PX,
+      }),
+    [state.runs, measureLabel, dur, narrow, rowWidthPx],
+  );
+
   const defaultPps = narrow
-    ? clampPxPerSec(rowWidthPx / WRAP_DEFAULT_ROW_SEC, minPps)
-    : clampPxPerSec(readablePps, minPps);
-  const pps = userPps === null ? defaultPps : clampPxPerSec(userPps, minPps);
+    ? clampPxPerSec(rowWidthPx / WRAP_DEFAULT_ROW_SEC, minPps, maxPps)
+    : clampPxPerSec(readablePps, minPps, maxPps);
+  const pps = userPps === null ? defaultPps : clampPxPerSec(userPps, minPps, maxPps);
+
+  const canZoomFurther = pps < maxPps * 0.999;
   const chipH = narrow ? CHIP_H_WRAP : CHIP_H_STRIP;
 
   const setZoom = useCallback(
@@ -491,6 +540,19 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
     });
     return { rows, byRun };
   }, [state.runs, rowWidthPx, pps]);
+
+  // CHIPS the user cannot read at this zoom -- not RUNS. The wrapped layout
+  // splits a run that crosses a row boundary and each piece is narrower than
+  // the run, so the run-based count is wrong there: measured in Chromium at
+  // 390px on a 400-chord song it said 354 where 379 chips rendered nameless.
+  // This number is shown to the user, so it has to be the one on screen.
+  const nameless = useMemo(
+    () =>
+      narrow
+        ? segmentDensityCounts(state.runs, wrapped.rows, measureLabel).tick
+        : densityCounts(state.runs, pps, measureLabel).tick,
+    [narrow, state.runs, wrapped.rows, pps, measureLabel],
+  );
 
   const wrappedRows = useMemo(
     () =>
@@ -623,7 +685,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
             aria-label="Zoom out"
             data-testid="zoom-out"
             disabled={!measured || pps <= minPps * 1.001}
-            onClick={() => setZoom(clampPxPerSec(pps / 1.5, minPps))}
+            onClick={() => setZoom(clampPxPerSec(pps / 1.5, minPps, maxPps))}
           >
             {'−'}
           </button>
@@ -631,20 +693,20 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
             type="range"
             min={0}
             max={1000}
-            value={Math.round(ppsToSlider(pps, minPps) * 1000)}
-            disabled={!measured || minPps >= MAX_PX_PER_SEC}
+            value={Math.round(ppsToSlider(pps, minPps, maxPps) * 1000)}
+            disabled={!measured || minPps >= maxPps}
             aria-label="Timeline zoom"
             data-testid="zoom-slider"
             style={{ flex: 1, minWidth: 80, accentColor: '#60a5fa' }}
-            onChange={(e) => setZoom(sliderToPps(Number(e.target.value) / 1000, minPps))}
+            onChange={(e) => setZoom(sliderToPps(Number(e.target.value) / 1000, minPps, maxPps))}
           />
           <button
             type="button"
             style={zoomBtnStyle}
             aria-label="Zoom in"
             data-testid="zoom-in"
-            disabled={!measured || pps >= MAX_PX_PER_SEC * 0.999}
-            onClick={() => setZoom(clampPxPerSec(pps * 1.5, minPps))}
+            disabled={!measured || !canZoomFurther}
+            onClick={() => setZoom(clampPxPerSec(pps * 1.5, minPps, maxPps))}
           >
             +
           </button>
@@ -798,6 +860,16 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
                 : scrollInfo.total - scrollInfo.client > 1
                   ? `Showing ${formatTime(scrollInfo.left / pps)}–${formatTime((scrollInfo.left + scrollInfo.client) / pps)} of ${formatTime(dur)} · scroll sideways or zoom out`
                   : `Whole track (${formatTime(dur)}) shown · zoom in for detail`}
+              {/* The chords that are too short to name AT THIS ZOOM, and
+                  whether zooming in reaches them. Without this the raised
+                  ceiling is a capability nothing tells the user about: the
+                  chips in a fast bridge are colour blocks, and a colour block
+                  does not advertise that it has a name one drag away. */}
+              {nameless > 0 ? (
+                <span data-testid="timeline-nameless">
+                  {` · ${nameless} too short to name here${canZoomFurther ? ' · zoom in to read them' : ''}`}
+                </span>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -869,7 +941,11 @@ function renderChip(
   open: (v: { run: OverlayRun; idx: number }) => void,
   measureLabel: LabelMeasure,
 ) {
-  const w = Math.max(1, widthPx - 1); // 1px gap so adjacent chips stay distinct
+  // CHIP_GAP_PX, not a bare 1: fullChipPx reserves this same gap when deciding
+  // a label fits, so the number that decides and the number that renders are
+  // one value. It was the last untied literal of the family #207 closed for
+  // padding and font-size.
+  const w = chipContentPx(widthPx);
   const text = displayText(run);
   const density = chipDensity(w, measureLabel(text, CHIP_FONT_PX));
   const hue = run.kind === 'chord' ? rootHue(run.label) : null;
@@ -906,7 +982,19 @@ function renderChip(
         // (The comment below this chip's styles announces a later polish PR;
         // padding and font-size are the first things such a pass touches.)
         padding: density === 'full' ? `0 ${CHIP_FULL_PAD_PX / 2}px` : '0',
-        ...(density === 'tight' ? { fontSize: `${CHIP_TIGHT_FONT_PX}px` } : null),
+        // EVERY chip declares its font size, in px, from the constants the
+        // measurer and chipDensity use. Only `tight` used to, and `full`
+        // INHERITED (1rem) while the measurer assumed CHIP_FONT_PX: a browser
+        // whose default font size is 20px rendered every full chip 25% wider
+        // than the width that decided it fit, with no code change anywhere
+        // (measured: 21 chips clipped 13.2px at the ceiling, 29 clipped 15.2px
+        // at the default). A px size the browser cannot re-base makes the size
+        // that is measured and the size that renders one number. The cost is
+        // that chord names no longer follow the user's default font size; the
+        // sizing pass should do that on purpose (scale CHIP_FONT_PX, measure at
+        // the scaled size) rather than by inheritance.
+        // A tick has no text node, so its size is moot; it gets the full one.
+        fontSize: `${density === 'tight' ? CHIP_TIGHT_FONT_PX : CHIP_FONT_PX}px`,
         borderRadius: density === 'tick' ? '2px' : '6px',
         ...(continuedRow !== null ? { opacity: 0.85, borderTopLeftRadius: 0, borderBottomLeftRadius: 0 } : null),
       }}
@@ -1096,7 +1184,19 @@ const chipStyle: CSSProperties = {
   borderRadius: '6px',
   cursor: 'pointer',
   whiteSpace: 'nowrap',
-  fontVariantNumeric: 'tabular-nums',
+  // Deliberately NO font property here, and none on any element above a chip
+  // (the container's fontFamily is the one the measurer reads). Canvas 2D has
+  // no font-variant-numeric, no font-feature-settings, no letter-spacing, and
+  // it is told one size and one weight: the zoom ceiling and chipDensity size
+  // chips with that canvas measurer. A chip that renders tabular digits is
+  // wider than the width that decided it fits (measured in Chromium: C:11 by
+  // 7.4px, up to 15.2px across the alphabet), so it clips; so does a heavier
+  // weight, a larger size or any tracking. Proportional digits make the canvas
+  // width and the rendered width agree to within 0.01px at 16px.
+  // test/chord-default-zoom.test.mjs ALLOWLISTS what a chip and each of its
+  // ancestors may declare, so a font property here fails the suite whatever it
+  // is spelled. The ruler and the time readouts keep tabular digits; they are
+  // not sized by the measurer.
 };
 // N (no chord): muted, dashed outline. X (unknown): amber, dotted outline.
 const restChipStyle: CSSProperties = {

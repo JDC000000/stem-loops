@@ -155,7 +155,10 @@ else
   echo "pre-commit:       in $(command -v python3). A worktree or fresh clone has" >&2
   echo "pre-commit:       none. Install them the way CI does:" >&2
   echo "pre-commit:         pip install -r apps/worker/requirements.txt \\" >&2
+  echo "pre-commit:           -r apps/worker/requirements-dev.txt \\" >&2
   echo "pre-commit:           -c apps/worker/constraints-prod.txt" >&2
+  echo "pre-commit:       (requirements-dev.txt is moto; without it the real-R2" >&2
+  echo "pre-commit:       retention tests SKIP here, and FAIL in CI.)" >&2
   echo "pre-commit:       CI installs them, so these tests DO run there." >&2
   echo "pre-commit:       => Your commit is NOT pytest-verified locally." >&2
 fi

@@ -1,5 +1,6 @@
 /**
- * The admission duration guard.
+ * The admission duration probe — since 2026-11-14 a HEADS-UP, never a refusal: a track over
+ * the cap is kept and trimmed by the worker to its first MAX_UPLOAD_DURATION_SEC seconds.
  *
  * Every assertion here reads an EXPORTED VALUE or calls an exported function. None of it
  * matches on source text: this repo has been bitten seven times by a gate a comment, a
@@ -11,7 +12,7 @@ import assert from 'node:assert/strict';
 
 import { MAX_UPLOAD_DURATION_SEC } from './upload.ts';
 import { MAX_TRACK_SEC } from './play/types.ts';
-import { durationVerdict, probeDurationSec, PROBE_TIMEOUT_MS } from './upload-duration.ts';
+import { durationVerdict, probeDurationSec, PROBE_TIMEOUT_MS, trimNotice, MAX_UPLOAD_MIN } from './upload-duration.ts';
 
 test('the upload cap IS the player ceiling — one number, compared as values', () => {
   // Not `=== 300`. That passes just as happily when BOTH have drifted together to 600,
@@ -23,28 +24,39 @@ test('the upload cap IS the player ceiling — one number, compared as values', 
   assert.equal(MAX_UPLOAD_DURATION_SEC, 300);
 });
 
-test('durationVerdict declines only what it has MEASURED to be over the cap', () => {
+test('durationVerdict never refuses: a measured long track is flagged for TRIM, not declined', () => {
   const over = durationVerdict(MAX_UPLOAD_DURATION_SEC + 0.5);
-  assert.equal(over.ok, false);
-  assert.equal(over.reason, 'too_long');
+  assert.equal(over.trim, true);
+  assert.equal(over.reason, 'over_cap');
   assert.equal(over.seconds, MAX_UPLOAD_DURATION_SEC + 0.5);
-});
-
-test('the boundary is inclusive — exactly the cap passes', () => {
-  // A track of exactly MAX_UPLOAD_DURATION_SEC is inside the promise, and the worker uses
-  // `> max_sec` too. An off-by-one here would turn away a legitimate 5:00 song.
-  assert.deepEqual(durationVerdict(MAX_UPLOAD_DURATION_SEC), { ok: true, reason: 'within_cap' });
-  assert.deepEqual(durationVerdict(MAX_UPLOAD_DURATION_SEC - 0.001), { ok: true, reason: 'within_cap' });
-  assert.deepEqual(durationVerdict(1), { ok: true, reason: 'within_cap' });
-});
-
-test('IT FAILS OPEN: anything unmeasurable passes, and says it was unmeasured', () => {
-  // This is the whole safety argument for putting a check in the browser at all. A client
-  // probe is not a boundary, so the ONLY acceptable failure direction is to let the file
-  // through and leave it to the worker's MAX_UPLOAD_DURATION_SEC.
-  for (const v of [null, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1]) {
-    assert.deepEqual(durationVerdict(v), { ok: true, reason: 'unmeasured' }, `durationVerdict(${v}) must pass`);
+  // There is no refusal shape any more — the old `ok: false` must not come back.
+  for (const v of [MAX_UPLOAD_DURATION_SEC + 0.5, 3600, 86400, 1, null]) {
+    assert.equal('ok' in durationVerdict(v), false, `durationVerdict(${v}) still carries a refusal flag`);
   }
+});
+
+test('the boundary — exactly the cap is NOT trimmed', () => {
+  // The worker and the player both compare with `>`, so a 5:00 song is used whole.
+  assert.deepEqual(durationVerdict(MAX_UPLOAD_DURATION_SEC), { trim: false, reason: 'within_cap' });
+  assert.deepEqual(durationVerdict(MAX_UPLOAD_DURATION_SEC - 0.001), { trim: false, reason: 'within_cap' });
+  assert.deepEqual(durationVerdict(1), { trim: false, reason: 'within_cap' });
+});
+
+test('anything unmeasurable says nothing (the worker trims anyway)', () => {
+  for (const v of [null, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1]) {
+    assert.deepEqual(durationVerdict(v), { trim: false, reason: 'unmeasured' }, `durationVerdict(${v})`);
+  }
+});
+
+test('the pre-submit note: shown only for a long track, and names the cap from the constant', () => {
+  assert.equal(MAX_UPLOAD_MIN, 5);
+  assert.equal(
+    trimNotice(durationVerdict(372)),
+    'This track is longer than 5 minutes \u2014 we\u2019ll use the first 5 minutes.',
+  );
+  assert.equal(trimNotice(durationVerdict(MAX_UPLOAD_DURATION_SEC)), null);
+  assert.equal(trimNotice(durationVerdict(120)), null);
+  assert.equal(trimNotice(durationVerdict(null)), null);
 });
 
 // ── probeDurationSec: the browser half, through its injected seam ────────────────────────
@@ -92,13 +104,14 @@ test('a measurable file yields its duration, and the object URL is released', as
   assert.deepEqual(revoked, ['blob:fake'], 'the probe leaked its object URL');
 });
 
-test('a 6-minute file measures over the cap, and the two halves agree', async () => {
+test('a 6-minute file measures over the cap, and the two halves agree: trim, with a note', async () => {
   // The end-to-end property, as far as it can be reached without a browser: a real
-  // over-length track measures, and the verdict on that measurement declines it.
+  // over-length track measures, and the verdict on that measurement is TRIM, not refuse.
   const { opts } = deps({ duration: 360 });
   const measured = await probeDurationSec(BLOB, opts);
   assert.equal(measured, 360);
-  assert.equal(durationVerdict(measured).ok, false);
+  assert.equal(durationVerdict(measured).trim, true);
+  assert.match(trimNotice(durationVerdict(measured)), /we\u2019ll use the first 5 minutes/);
 });
 
 test('an undecodable file resolves null rather than failing the upload', async () => {

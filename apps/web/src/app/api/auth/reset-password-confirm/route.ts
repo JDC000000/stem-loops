@@ -17,11 +17,21 @@ import { NextResponse, type NextRequest } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { createServerClient, getUser } from '@/lib/auth/supabase';
 import { validatePassword } from '@/lib/auth/password-rules';
+import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(request: NextRequest) {
+  // CSRF: same-origin browser requests only (src/lib/same-origin.ts). A
+  // foreign page must not be able to set a signed-in user's password.
+  const originRefusal = crossOriginRefusal(request);
+  if (originRefusal) {
+    return NextResponse.json(
+      { ok: false, error_code: BAD_ORIGIN, message: originRefusal },
+      { status: 403, headers: { 'Cache-Control': 'no-store' } },
+    );
+  }
   const body = await request.json().catch(() => null);
   const passwordError = validatePassword(body?.password);
   if (passwordError) {

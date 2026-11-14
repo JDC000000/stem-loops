@@ -136,6 +136,9 @@ async function loadRoute({
     .replace(/from ['"]@\/lib\/stem-urls['"]/g, `from '${stemUrlsStub()}'`)
     .replace(/from ['"]@\/lib\/admission['"]/g, `from '${admissionStub({ rateLimited })}'`)
     .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${clientIpStub()}'`)
+    // Ownership is not what this file tests (test/job-access-routes.test.mjs runs the REAL helper);
+    // here it is stubbed open so this file's own subject stays isolated.
+    .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl(`export const mayReadJob = async () => true;`)}'`)
     // the REAL modules, inlined — the logic under test, not a stub of it
     .replace(/from ['"]@\/lib\/stem-keys['"]/g, `from '${dataUrl(toJs(readFileSync(KEYS, 'utf8')))}'`)
     .replace(/from ['"]@\/lib\/retention['"]/g, `from '${dataUrl(toJs(readFileSync(RETENTION, 'utf8')))}'`)
@@ -566,10 +569,11 @@ async function loadAdmission({ rowCount = 1 } = {}) {
       return { rows: [], rowCount: ${rowCount} };
     } };
   `);
-  const js = toJs(readFileSync(ADMISSION, 'utf8')).replace(
-    /from ['"]@\/lib\/db['"]/g,
-    `from '${dbRec}'`,
-  );
+  // admission.ts imports the AT_CAPACITY copy from error-copy.ts (B8); load the real map.
+  const errorCopy = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/error-copy.ts'), 'utf8')));
+  const js = toJs(readFileSync(ADMISSION, 'utf8'))
+    .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbRec}'`)
+    .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${errorCopy}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
 

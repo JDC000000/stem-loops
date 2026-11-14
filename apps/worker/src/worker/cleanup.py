@@ -4,10 +4,16 @@ Product promise: "Files are deleted after 24 hours." Each job carries expires_at
 (created_at + 24h, migration 007) and this sweep — run every RETENTION_SWEEP_SECONDS
 (default 15 min) from the consumer loop — is what actually enforces it:
 
-  1. For every job past expires_at: delete its R2 objects (everything under `{job_id}/`:
-     the uploaded source `_input.*` and all loop WAVs), THEN delete the DB row (loops +
-     job_events cascade). R2 goes first so a failed R2 delete leaves the row in place and
-     the next sweep retries; the reverse order would orphan the files forever.
+  1. For every job past expires_at: delete its R2 objects — EVERY prefix in
+     `r2_uploader.job_object_prefixes(job_id)`, which is `{job_id}/` (the uploaded source
+     `_input.*`, the stems and all loop WAVs) AND `jobs/{job_id}/` (the chord artifact).
+     THEN delete the DB row (loops + job_events cascade). R2 goes first so a failed R2
+     delete leaves the row in place and the next sweep retries; the reverse order would
+     orphan the files forever.
+     This used to delete `{job_id}/` alone, so `jobs/<job_id>/play.chords.json` escaped
+     the per-job sweep on EVERY job and only died if the best-effort orphan sweep below
+     happened to reach it. Chord data is derived from the user's audio and /privacy
+     promises it goes with the rest at 24h, so that was a live retention leak.
      A job that is referenced by the append-only credit ledger (credit_consumption is
      ON DELETE RESTRICT, chord_edits has no cascade) CANNOT be deleted. It is ANONYMISED
      instead: every user-identifying / content column is blanked and the shell row is kept
@@ -34,7 +40,13 @@ from psycopg import errors as pg_errors
 
 from . import tmpdirs
 from .logger import log_structured
-from .storage.r2_uploader import delete_objects, delete_prefix, list_objects_older_than
+from .storage.r2_uploader import (
+    CHORDS_TOP_PREFIX,
+    delete_objects,
+    delete_prefix,
+    job_object_prefixes,
+    list_objects_older_than,
+)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 # Job/file lifetime. DB expires_at defaults to the same 24h (migration 007); this value
@@ -67,7 +79,32 @@ PURGED_MARKER = "purged"
 
 
 def _job_id_of(key: str) -> str:
-    return key.split("/", 1)[0].lower()
+    """The job id an R2 key belongs to, or "" if it names no job.
+
+    Keys have TWO top-level shapes — `<job_id>/...` for everything the pipeline writes,
+    and `jobs/<job_id>/...` (r2_uploader.CHORDS_TOP_PREFIX) for the chord artifact — so
+    the first path segment is NOT always the job id.
+
+    Reading it blindly returned the literal "jobs" for every chord key. That is not a
+    uuid, so `_sweep_orphaned_objects` could never match a chord file to its job row and
+    classified it as an orphan EVEN WHILE THE JOB WAS ALIVE — the dangerous direction.
+    A job past expires_at but still processing is held back by INFLIGHT_GRACE (1 hour),
+    and one in failure backoff for up to MAX_BACKOFF_SECONDS (6 hours), yet its chord
+    file became orphan-eligible the moment it aged past RETENTION_SECONDS. So the chord
+    file could be deleted while the job row was still being retained.
+
+    That is NOT user-visible with default settings: an object is orphan-eligible only
+    once older than RETENTION_SECONDS (24h) and expires_at = created_at + 24h, while the
+    web's play-chords route serves only `expires_at > now()`, so the overlay could never
+    have been handed that file. The one reader that does run after expiry is
+    `_existing_play_chords` on a reaper requeue of a still-held job; an early delete there
+    costs one chord regeneration (and possibly one billed Klangio request), not a user-visible
+    loss.
+    """
+    k = key.lower()
+    if k.startswith(CHORDS_TOP_PREFIX):
+        k = k[len(CHORDS_TOP_PREFIX) :]
+    return k.split("/", 1)[0]
 
 
 def _is_uuid(s: str) -> bool:
@@ -141,8 +178,10 @@ async def _sweep_expired_jobs(conn, deadline: float) -> tuple[int, int, int]:
             )
             break
         try:
-            # R2 first; if this raises the DB row stays and a later sweep retries.
-            await asyncio.to_thread(delete_prefix, f"{job_id}/")
+            # R2 first; if ANY prefix raises the DB row stays and a later sweep retries
+            # the whole footprint. Partial progress is safe — delete_prefix is idempotent.
+            for prefix in job_object_prefixes(job_id):
+                await asyncio.to_thread(delete_prefix, prefix)
         except Exception as e:  # noqa: BLE001 — one bad job must not block the rest
             _record_failure(job_id, "retention_r2_delete_failed", e)
             continue
@@ -173,7 +212,18 @@ async def _sweep_expired_jobs(conn, deadline: float) -> tuple[int, int, int]:
 
 
 async def _sweep_orphaned_objects(conn) -> int:
-    """Delete R2 objects past the retention window that have no job row."""
+    """Delete R2 objects past the retention window that belong to no LIVE job.
+
+    "Live" means a job row that is not an anonymised shell: a shell's content was already
+    deleted and the row only outlives retention to anchor the credit ledger, so an aged
+    object still under its prefix is garbage. Shells are excluded from _sweep_expired_jobs
+    and never re-swept, so if this pass treated them as live those objects would be kept
+    for ever.
+
+    Best-effort and capped at MAX_ORPHANS_PER_SWEEP. It is the BACKSTOP, not the retention
+    mechanism — anything a job owns must be deleted by _sweep_expired_jobs, whose prefix
+    list (job_object_prefixes) is what makes that true.
+    """
     cutoff = datetime.now(UTC) - timedelta(seconds=RETENTION_SECONDS)
     keys = await asyncio.to_thread(list_objects_older_than, cutoff, MAX_ORPHANS_PER_SWEEP)
     if not keys:
@@ -184,7 +234,16 @@ async def _sweep_orphaned_objects(conn) -> int:
     if candidates:
         found = await (
             await conn.execute(
-                "SELECT id::text FROM jobs WHERE id = ANY(%s::uuid[])", (candidates,)
+                # A purged shell (see _anonymise_job) is NOT live for this purpose. Its
+                # content was deleted and the row survives only to anchor the credit
+                # ledger, so anything still under its prefix is garbage the retention
+                # promise already covers. Counting it as live would keep those objects
+                # FOREVER — which is exactly what fixing _job_id_of would otherwise do to
+                # the chord file of every ledger-bound job purged before that fix, since
+                # those shells are excluded from _sweep_expired_jobs and never re-swept.
+                "SELECT id::text FROM jobs WHERE id = ANY(%s::uuid[]) "
+                "  AND client_ip_hash <> %s",
+                (candidates, PURGED_MARKER),
             )
         ).fetchall()
         live = {r[0] for r in found}

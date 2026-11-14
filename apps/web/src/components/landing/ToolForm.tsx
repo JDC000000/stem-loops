@@ -5,8 +5,8 @@
 // → PUT straight to R2 (putToR2, with its retries) → POST /api/jobs; link → POST /api/jobs.
 // Validation, rate limits, admission and error codes all stay server-side in those routes.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ACCEPT_ATTR, MAX_UPLOAD_DURATION_SEC, validateUpload } from '@/lib/upload';
-import { durationVerdict, probeDurationSec } from '@/lib/upload-duration';
+import { ACCEPT_ATTR, validateUpload } from '@/lib/upload';
+import { durationVerdict, probeDurationSec, trimNotice } from '@/lib/upload-duration';
 import { putToR2 } from '@/lib/upload-client';
 import { canonicalizeYoutubeUrl, youtubeUrlProblem } from '@/lib/youtube-url';
 import { addToHistory } from '@/lib/history';
@@ -14,10 +14,6 @@ import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
 import { useDemo } from './DemoProvider';
 import { BAR_OPTIONS, STEM_ORDER } from './demo-data';
 import { Ic } from './Icons';
-
-// Fed from the one ceiling (MAX_TRACK_SEC, via MAX_UPLOAD_DURATION_SEC) rather than typed
-// as a figure, so the copy here cannot drift from the cap the worker enforces.
-const MAX_UPLOAD_MIN = Math.round(MAX_UPLOAD_DURATION_SEC / 60);
 
 const ERR = {
   empty_input: ['Add a song first.', 'Paste a YouTube link or choose a file.'],
@@ -30,12 +26,12 @@ const ERR = {
   type: ['We can’t use that file type.', 'Choose mp3, wav, m4a, aac, flac, ogg, opus, aiff, mp4, m4v, mov or webm.'],
   empty: ['That file is empty.', 'Choose a different one.'],
   large: ['That file is over the 200 MB limit.', 'Export a shorter or compressed version (mp3 or m4a) and try again.'],
-  long: [`That track is over the ${MAX_UPLOAD_MIN}-minute limit.`, 'Trim it, or choose a shorter song, and try again.'],
 } as const;
 type ErrCode = keyof typeof ERR;
 
 const STAGES = ['sending', 'downloading', 'separating', 'extracting', 'uploading'] as const;
 type Stage = (typeof STAGES)[number];
+const STAGE_TEXT: Record<Stage, string> = { sending: 'Sending', downloading: 'Fetching', separating: 'Separating', extracting: 'Finding bars', uploading: 'Saving' };
 
 type Phase =
   | { kind: 'idle' }
@@ -60,7 +56,7 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
     throw new ApiError('We couldn’t reach stem-loops. Check your connection and try again.');
   }
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(json.message ?? 'Something went wrong on our side. Please try again.');
+  if (!res.ok) throw new ApiError(json.message ?? 'Something went wrong on our end. Please try again.');
   return json as T;
 }
 
@@ -86,6 +82,9 @@ export function ToolForm() {
   const [narrow, setNarrow] = useState(false);
   // True while the admission duration probe is in flight for the current pick.
   const [checking, setChecking] = useState(false);
+  // The pre-submit trim note for the current pick (lib/upload-duration.ts `trimNotice`), or
+  // null. A heads-up only: the worker does the trimming, and submit is never blocked.
+  const [notice, setNotice] = useState<string | null>(null);
   // Monotonic pick counter: only the newest pick may write state when its probe resolves.
   const pickSeq = useRef(0);
   const busy = phase.kind === 'busy';
@@ -110,6 +109,7 @@ export function ToolForm() {
       if (fileRef.current) fileRef.current.value = '';
       if (!f) {
         setFileState(null);
+        setNotice(null);
         return;
       }
       const v = validateUpload(f.name, f.size);
@@ -126,6 +126,7 @@ export function ToolForm() {
       // few ms that takes, so a quick click cannot start a job on an unmeasured file.
       const seq = ++pickSeq.current;
       setFileState(f);
+      setNotice(null);
       setText('');
       setLive(`File chosen: ${f.name}, ${fmtSize(f.size)}`);
       focusNext.current = 'replace';
@@ -138,15 +139,13 @@ export function ToolForm() {
       }
       // A newer pick landed while this one was being measured: that pick owns the state.
       if (seq !== pickSeq.current) return;
-      if (!verdict.ok) {
-        // SPEND-AND-UX GUARD ONLY, never a limit — see the header of lib/upload-duration.ts.
-        // It runs in the browser, it fails open whenever it cannot measure, and the worker's
-        // MAX_UPLOAD_DURATION_SEC is what actually holds. Declining here just saves the
-        // visitor an upload and a paid separation that ends in a player they cannot open.
-        setFileState(null);
-        setErr({ code: 'long' });
-        setLive('That track is too long.');
-        focusNext.current = 'source';
+      // A long track is KEPT (2026-11-14): the worker trims it to its first
+      // MAX_UPLOAD_DURATION_SEC seconds. This only says so before submit — see the header of
+      // lib/upload-duration.ts. An unmeasurable file shows nothing; the worker trims anyway.
+      const note = trimNotice(verdict);
+      if (note) {
+        setNotice(note);
+        setLive(note);
       }
     },
     [busy, file, resetJob],
@@ -413,6 +412,9 @@ export function ToolForm() {
             <Ic name="x" />
           </button>
         </div>
+        <p className="hint" id="picked-notice" data-testid="trim-notice" hidden={!(file && notice)}>
+          {file && notice ? notice : ''}
+        </p>
         <p className="sr-only" id="picked-live" aria-live="polite">{live}</p>
         <p className="hint" id="source-help">
           {YOUTUBE_INPUT_ENABLED
@@ -467,7 +469,7 @@ export function ToolForm() {
           <p className="error" id="stems-error" role="alert" hidden={!showStemsErr}>
             <Ic name="alert" />
             <span>
-              <strong>Pick at least one stem.</strong> Tap any stem above.
+              <strong>Pick at least one stem.</strong> Choose any stem above.
             </span>
           </p>
         </fieldset>
@@ -510,7 +512,7 @@ export function ToolForm() {
             const cls = [i < cur || i <= doneIdx ? 'is-done' : '', i === cur ? 'is-now' : ''].filter(Boolean).join(' ');
             return (
               <li key={s} data-stage={s} className={cls || undefined} hidden={s === 'sending' && !isFile}>
-                {s[0].toUpperCase() + s.slice(1)}
+                {STAGE_TEXT[s]}
               </li>
             );
           })}
@@ -536,13 +538,13 @@ export function ToolForm() {
                 <Ic name="done" />
                 Job started
               </p>
-              <p>Opening the job page. The player and your loops appear there as each stage finishes.</p>
+              <p>Opening the job page. The player opens there when the last stage finishes.</p>
               <div className="job-actions">
                 <a className="btn btn-secondary" href={`/jobs/${phase.jobId}`} ref={jobLinkRef}>
                   Open your job
                 </a>
                 <button type="button" className="btn btn-ghost" onClick={cutAnother}>
-                  Start another song
+                  Start a new song
                 </button>
               </div>
             </>

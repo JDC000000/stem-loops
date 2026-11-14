@@ -1,4 +1,6 @@
 import type { Metadata } from 'next';
+import { pageMetadata } from '@/lib/seo/meta';
+import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import { CONTACT_LABEL, CONTACT_URL, LEGAL_UPDATED } from '@/components/landing/legal';
 import { MAX_TRACK_SEC } from '@/lib/play/types';
@@ -11,11 +13,8 @@ import { MAX_TRACK_SEC } from '@/lib/play/types';
 // constant and to the worker's own default, so a drift between the three fails there.
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
-export const metadata: Metadata = {
-  title: 'Terms',
-  description: 'The short terms for using stem-loops.',
-  alternates: { canonical: '/terms' },
-};
+// SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
+export const metadata: Metadata = pageMetadata(pageFor('/terms')!);
 
 export default function TermsPage() {
   return (

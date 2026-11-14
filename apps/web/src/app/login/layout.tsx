@@ -1,6 +1,10 @@
 // Signed-in chrome for /login. See app/account/layout.tsx for why the bar is
 // mounted as one small layout per subtree rather than one route group.
+import type { Metadata } from 'next';
 import SignedInChrome from '@/components/chrome/SignedInChrome';
+
+// SEO-02: a sign-in form is not a search result.
+export const metadata: Metadata = { robots: { index: false, follow: false } };
 
 // The bar is session-aware, so this segment must never be prerendered: a
 // static render would bake `signedIn: false` into the HTML and show a cached

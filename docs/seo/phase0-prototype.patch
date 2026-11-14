@@ -1,0 +1,598 @@
+diff --git apps/web/src/app/(landing)/page.tsx apps/web/src/app/(landing)/page.tsx
+index 1fe4fa0..eaab4d5 100644
+--- apps/web/src/app/(landing)/page.tsx
++++ apps/web/src/app/(landing)/page.tsx
+@@ -21,6 +21,9 @@ import { Ic } from '@/components/landing/Icons';
+ import type { Metadata } from 'next';
+ import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
+ import { MAX_TRACK_SEC } from '@/lib/play/types';
++import { JsonLd } from '@/components/seo/JsonLd';
++import { homeGraph } from '@/lib/seo/jsonld';
++import { pageFor } from '@/lib/seo/pages';
+ 
+ // Story 1.4 (revised 2026-11-14): any song is accepted and its FIRST MAX_TRACK_MIN minutes are
+ // used — a longer track is trimmed on our end and still converted. The copy says the figure in minutes,
+@@ -34,12 +37,13 @@ const OG_ALT =
+ 
+ export const metadata: Metadata = {
+   title: { absolute: 'stem-loops: play along with any song, stem by stem' },
+-  description:
+-    `Split a song into six stems with faders, mute and solo, and a chord track that moves with the song. Loop a detected section. Uses the first ${MAX_TRACK_MIN} minutes of any song, in Chrome on the desktop.`,
++  // One source: the registry entry for '/' (lib/seo/pages.ts), built from MAX_TRACK_MIN.
++  description: pageFor('/')!.description,
+   alternates: { canonical: '/' },
+   openGraph: {
+     type: 'website',
+     siteName: 'stem-loops',
++    locale: 'en_CA',
+     url: '/',
+     title: OG_TITLE,
+     description: OG_DESC,
+@@ -51,6 +55,7 @@ export const metadata: Metadata = {
+ export default function HomePage() {
+   return (
+     <DemoProvider>
++      <JsonLd data={homeGraph()} />
+       <a className="skip" href="#tool">
+         Skip to the tool
+       </a>
+diff --git apps/web/src/app/(landing)/privacy/page.tsx apps/web/src/app/(landing)/privacy/page.tsx
+index c2c2c00..2a663c7 100644
+--- apps/web/src/app/(landing)/privacy/page.tsx
++++ apps/web/src/app/(landing)/privacy/page.tsx
+@@ -1,12 +1,11 @@
+ import type { Metadata } from 'next';
++import { pageMetadata } from '@/lib/seo/meta';
++import { pageFor } from '@/lib/seo/pages';
+ import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
+ import { CONTACT_LABEL, CONTACT_URL, LEGAL_UPDATED } from '@/components/landing/legal';
+ 
+-export const metadata: Metadata = {
+-  title: 'Privacy',
+-  description: 'What stem-loops stores, for how long, and who processes it.',
+-  alternates: { canonical: '/privacy' },
+-};
++// SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
++export const metadata: Metadata = pageMetadata(pageFor('/privacy')!);
+ 
+ export default function PrivacyPage() {
+   return (
+diff --git apps/web/src/app/(landing)/terms/page.tsx apps/web/src/app/(landing)/terms/page.tsx
+index b0d1eea..7e3d648 100644
+--- apps/web/src/app/(landing)/terms/page.tsx
++++ apps/web/src/app/(landing)/terms/page.tsx
+@@ -1,4 +1,6 @@
+ import type { Metadata } from 'next';
++import { pageMetadata } from '@/lib/seo/meta';
++import { pageFor } from '@/lib/seo/pages';
+ import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
+ import { CONTACT_LABEL, CONTACT_URL, LEGAL_UPDATED } from '@/components/landing/legal';
+ import { MAX_TRACK_SEC } from '@/lib/play/types';
+@@ -11,11 +13,8 @@ import { MAX_TRACK_SEC } from '@/lib/play/types';
+ // constant and to the worker's own default, so a drift between the three fails there.
+ const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
+ 
+-export const metadata: Metadata = {
+-  title: 'Terms',
+-  description: 'The short terms for using stem-loops.',
+-  alternates: { canonical: '/terms' },
+-};
++// SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
++export const metadata: Metadata = pageMetadata(pageFor('/terms')!);
+ 
+ export default function TermsPage() {
+   return (
+diff --git apps/web/src/app/account/layout.tsx apps/web/src/app/account/layout.tsx
+index 3d8dd73..fa445cf 100644
+--- apps/web/src/app/account/layout.tsx
++++ apps/web/src/app/account/layout.tsx
+@@ -32,8 +32,12 @@
+ // SiteHeader, and global-error replaces the <html> element, so a layout above
+ // it does not apply). test/signed-in-nav.test.mjs enumerates app/ and fails on
+ // any routable page outside this set.
++import type { Metadata } from 'next';
+ import SignedInChrome from '@/components/chrome/SignedInChrome';
+ 
++// SEO-02: covers /account/delete and /account/reset-password, which set no robots of their own.
++export const metadata: Metadata = { robots: { index: false, follow: false } };
++
+ // The bar is session-aware, so this segment must never be prerendered: a
+ // static render would bake `signedIn: false` into the HTML and show a cached
+ // "Sign in" to a signed-in visitor. Next does NOT infer this on its own here
+diff --git apps/web/src/app/history/layout.tsx apps/web/src/app/history/layout.tsx
+index dd0a0c6..66127ac 100644
+--- apps/web/src/app/history/layout.tsx
++++ apps/web/src/app/history/layout.tsx
+@@ -3,7 +3,7 @@
+ import type { Metadata } from 'next';
+ import SignedInChrome from '@/components/chrome/SignedInChrome';
+ 
+-export const metadata: Metadata = { title: 'Job history' };
++export const metadata: Metadata = { title: 'Job history', robots: { index: false, follow: false } };
+ 
+ // The bar is session-aware, so this segment must never be prerendered: a
+ // static render would bake `signedIn: false` into the HTML and show a cached
+diff --git apps/web/src/app/llms.txt/route.ts apps/web/src/app/llms.txt/route.ts
+new file mode 100644
+index 0000000..8cd16c8
+--- /dev/null
++++ apps/web/src/app/llms.txt/route.ts
+@@ -0,0 +1,8 @@
++// SEO-07. Google ignores llms.txt; it is cheap and derived from the registry.
++import { llmsText } from '../../lib/seo/llms.ts';
++
++export const dynamic = 'force-static';
++
++export function GET() {
++  return new Response(llmsText(), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
++}
+diff --git apps/web/src/app/login/layout.tsx apps/web/src/app/login/layout.tsx
+index ef89e8d..4af6ddf 100644
+--- apps/web/src/app/login/layout.tsx
++++ apps/web/src/app/login/layout.tsx
+@@ -1,7 +1,11 @@
+ // Signed-in chrome for /login. See app/account/layout.tsx for why the bar is
+ // mounted as one small layout per subtree rather than one route group.
++import type { Metadata } from 'next';
+ import SignedInChrome from '@/components/chrome/SignedInChrome';
+ 
++// SEO-02: a sign-in form is not a search result.
++export const metadata: Metadata = { robots: { index: false, follow: false } };
++
+ // The bar is session-aware, so this segment must never be prerendered: a
+ // static render would bake `signedIn: false` into the HTML and show a cached
+ // "Sign in" to a signed-in visitor. Next does NOT infer this on its own here
+diff --git apps/web/src/app/robots.ts apps/web/src/app/robots.ts
+index 316e3dd..31e9ceb 100644
+--- apps/web/src/app/robots.ts
++++ apps/web/src/app/robots.ts
+@@ -34,6 +34,7 @@ export const SEARCH_BOT_DISALLOW = ['/api/', '/jobs/'];
+ 
+ export default function robots(): MetadataRoute.Robots {
+   return {
++    sitemap: 'https://stem-loops.com/sitemap.xml',
+     rules: [
+       { userAgent: '*', allow: '/' },
+       ...SEARCH_BOT_USER_AGENTS.map((userAgent) => ({
+diff --git apps/web/src/app/sitemap.ts apps/web/src/app/sitemap.ts
+new file mode 100644
+index 0000000..722045e
+--- /dev/null
++++ apps/web/src/app/sitemap.ts
+@@ -0,0 +1,8 @@
++// SEO-01. Built from the page registry; nothing else is listed.
++import type { MetadataRoute } from 'next';
++import { publishedPages } from '../lib/seo/pages.ts';
++import { SITE_URL } from '../lib/seo/site.ts';
++
++export default function sitemap(): MetadataRoute.Sitemap {
++  return publishedPages().map((p) => ({ url: `${SITE_URL}${p.path === '/' ? '/' : p.path}`, lastModified: p.lastModified }));
++}
+diff --git apps/web/src/components/seo/JsonLd.tsx apps/web/src/components/seo/JsonLd.tsx
+new file mode 100644
+index 0000000..8d2b7fd
+--- /dev/null
++++ apps/web/src/components/seo/JsonLd.tsx
+@@ -0,0 +1,5 @@
++// SEO-05. Server component. A JSON-LD script is not executed, so the CSP does not apply to it.
++export function JsonLd({ data }: { data: object }) {
++  const json = JSON.stringify(data).replace(/</g, '\\u003c'); // a string can never close the tag
++  return <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: json }} />;
++}
+diff --git apps/web/src/lib/seo/jsonld.ts apps/web/src/lib/seo/jsonld.ts
+new file mode 100644
+index 0000000..20e2ee2
+--- /dev/null
++++ apps/web/src/lib/seo/jsonld.ts
+@@ -0,0 +1,46 @@
++// SEO-05. Never add aggregateRating or review: there are none, and the landing bans social proof.
++import { ENTITY_ONE_LINER, MAX_TRACK_MIN, OG_IMAGE, SAME_AS, SITE_URL } from './site.ts';
++import { pageFor } from './pages.ts';
++
++const ORG = `${SITE_URL}/#org`;
++const APP = `${SITE_URL}/#app`;
++const JON = `${SITE_URL}/about#jon`;
++
++export function homeGraph() {
++  const about = pageFor('/about');
++  const withPerson = Boolean(about && about.published); // M9: no Person URL until /about is live
++  const org: Record<string, unknown> = {
++    '@type': 'Organization', '@id': ORG, name: 'stem-loops', url: `${SITE_URL}/`,
++    logo: { '@type': 'ImageObject', url: `${SITE_URL}/apple-touch-icon.png` },
++    ...(withPerson ? { founder: { '@id': JON } } : {}),
++    ...(SAME_AS.length ? { sameAs: SAME_AS } : {}),
++  };
++  const app: Record<string, unknown> = {
++    '@type': 'WebApplication', '@id': APP, name: 'stem-loops', url: `${SITE_URL}/`,
++    description: ENTITY_ONE_LINER,
++    applicationCategory: 'MultimediaApplication', applicationSubCategory: 'Music practice',
++    operatingSystem: 'Windows, macOS, ChromeOS, Linux (desktop)',
++    browserRequirements: 'Requires Google Chrome on a desktop or laptop computer.',
++    inLanguage: 'en', isAccessibleForFree: true,
++    featureList: [
++      'Six stems: drums, bass, guitar, keys, vocals and other',
++      'A fader, mute and solo on every stem',
++      'A chord track estimated from the audio',
++      'Looping of a detected section',
++      'Bar-length loops from each stem as 24-bit WAV files',
++      `Uses the first ${MAX_TRACK_MIN} minutes of any song`,
++      'Files deleted after 24 hours',
++    ],
++    offers: { '@type': 'Offer', price: '0', priceCurrency: 'CAD', category: 'free' },
++    image: `${SITE_URL}${OG_IMAGE}`,
++    publisher: { '@id': ORG },
++    ...(withPerson ? { creator: { '@id': JON } } : {}),
++  };
++  const graph: Record<string, unknown>[] = [
++    org,
++    { '@type': 'WebSite', '@id': `${SITE_URL}/#website`, url: `${SITE_URL}/`, name: 'stem-loops', inLanguage: 'en', publisher: { '@id': ORG } },
++    app,
++  ];
++  if (withPerson) graph.push({ '@type': 'Person', '@id': JON, name: 'Jon Cartwright', url: `${SITE_URL}/about` });
++  return { '@context': 'https://schema.org', '@graph': graph };
++}
+diff --git apps/web/src/lib/seo/llms.ts apps/web/src/lib/seo/llms.ts
+new file mode 100644
+index 0000000..3b91f0a
+--- /dev/null
++++ apps/web/src/lib/seo/llms.ts
+@@ -0,0 +1,17 @@
++// SEO-07 body builder (kept out of route.ts: a route file may export only route fields).
++import { publishedPages } from './pages.ts';
++import { ENTITY_LIMITS, ENTITY_ONE_LINER, SITE_URL } from './site.ts';
++
++
++export function llmsText(): string {
++  const lines = [
++    '# stem-loops', '', `> ${ENTITY_ONE_LINER}`, '',
++    `${ENTITY_LIMITS} The six stems are drums, bass, guitar, keys, vocals and other; each has a fader, mute and solo. ` +
++      'The chord track is an estimate made from the audio, not a transcription. Tempo and pitch change are not available yet. ' +
++      'There are no lyrics. Bar-length loops from each stem can be downloaded as 24-bit WAV files.',
++    '', 'stem-loops is not a sample pack and not the RNA stem-loop structure.', '', '## Pages',
++    ...publishedPages().filter((p) => p.llms).map((p) => `- [${p.title}](${SITE_URL}${p.path === '/' ? '/' : p.path}): ${p.description}`),
++    '',
++  ];
++  return lines.join('\n');
++}
+diff --git apps/web/src/lib/seo/meta.ts apps/web/src/lib/seo/meta.ts
+new file mode 100644
+index 0000000..5f08116
+--- /dev/null
++++ apps/web/src/lib/seo/meta.ts
+@@ -0,0 +1,19 @@
++// SEO-06. Every public page builds its metadata here. openGraph and twitter are COMPLETE objects:
++// Next merges metadata shallowly, so a page that sets `openGraph` replaces the root one whole.
++import type { Metadata } from 'next';
++import { OG_IMAGE, SITE_NAME } from './site.ts';
++import type { PublicPage } from './pages.ts';
++
++export function pageMetadata(p: PublicPage): Metadata {
++  return {
++    title: p.absoluteTitle ? { absolute: p.title } : p.title,
++    description: p.description,
++    alternates: { canonical: p.path },
++    openGraph: {
++      siteName: SITE_NAME, locale: 'en_CA', images: [{ url: OG_IMAGE, width: 1200, height: 630 }],
++      title: p.title, description: p.description, url: p.path, type: p.section === 'guide' ? 'article' : 'website',
++    },
++    twitter: { card: 'summary_large_image', title: p.title, description: p.description, images: [OG_IMAGE] },
++    ...(p.published ? {} : { robots: { index: false, follow: false } }),
++  };
++}
+diff --git apps/web/src/lib/seo/pages.ts apps/web/src/lib/seo/pages.ts
+new file mode 100644
+index 0000000..d682108
+--- /dev/null
++++ apps/web/src/lib/seo/pages.ts
+@@ -0,0 +1,27 @@
++// SEO-04. The one list of public, indexable pages. Feeds sitemap.ts, llms.txt, jsonld.ts and the tests.
++import { MAX_TRACK_MIN } from './site.ts';
++
++export type PageSection = 'home' | 'product' | 'practice' | 'compare' | 'guide' | 'trust' | 'legal';
++export type PublicPage = {
++  path: string;          // '/', '/privacy'; no trailing slash except the root
++  title: string;         // the <title> text; `absolute` when it already names stem-loops
++  absoluteTitle?: boolean;
++  description: string;   // ≤ 155 characters
++  section: PageSection;
++  lastModified: string;  // ISO date, edited by hand when the copy changes
++  llms: boolean;         // listed in /llms.txt
++  published: boolean;    // false: notFound() in production, noindex on previews, absent from sitemap/llms
++};
++
++export const PUBLIC_PAGES: PublicPage[] = [
++  { path: '/', title: 'stem-loops: play along with any song, stem by stem', absoluteTitle: true,
++    description: `Six stems with faders, mute and solo, a chord track and section loops. Play along in Chrome on the desktop. Uses the first ${MAX_TRACK_MIN} minutes of any song.`,
++    section: 'home', lastModified: '2026-11-14', llms: true, published: true },
++  { path: '/privacy', title: 'Privacy', description: 'What stem-loops stores, for how long, and who processes it.',
++    section: 'legal', lastModified: '2026-11-13', llms: true, published: true },
++  { path: '/terms', title: 'Terms', description: 'The short terms for using stem-loops.',
++    section: 'legal', lastModified: '2026-11-14', llms: false, published: true },
++];
++
++export const publishedPages = () => PUBLIC_PAGES.filter((p) => p.published);
++export const pageFor = (path: string) => PUBLIC_PAGES.find((p) => p.path === path);
+diff --git apps/web/src/lib/seo/site.ts apps/web/src/lib/seo/site.ts
+new file mode 100644
+index 0000000..a147d6b
+--- /dev/null
++++ apps/web/src/lib/seo/site.ts
+@@ -0,0 +1,15 @@
++// SEO-04. Imports use relative paths WITH the .ts extension so `node --experimental-strip-types`
++// can load this module straight from a test (node does not resolve the `@/` alias).
++import { MAX_TRACK_SEC } from '../play/types.ts';
++
++export const SITE_URL = 'https://stem-loops.com';
++export const SITE_NAME = 'stem-loops';
++export const OG_IMAGE = '/og-image-v4.png';
++export const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
++export const ENTITY_ONE_LINER =
++  'stem-loops is a browser play-along tool: add a song and it opens in a player with six stems on faders, a chord track and section loops.';
++export const ENTITY_LIMITS =
++  `It runs in Chrome on the desktop, uses the first ${MAX_TRACK_MIN} minutes of any song and deletes files after 24 hours. ` +
++  'You need an account to open the player, and the rights to the audio you add.';
++// Filled only when each profile exists and returns 200 (SEO-22). Never list a profile that does not exist.
++export const SAME_AS: string[] = [];
+diff --git apps/web/src/middleware.ts apps/web/src/middleware.ts
+index a4ac9ee..53e4221 100644
+--- apps/web/src/middleware.ts
++++ apps/web/src/middleware.ts
+@@ -239,6 +239,6 @@ export async function middleware(request: NextRequest) {
+ // a fresh session.
+ export const config = {
+   matcher: [
+-    '/((?!_next/static|_next/image|robots\\.txt|sitemap\\.xml|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
++    '/((?!_next/static|_next/image|robots\\.txt|sitemap\\.xml|llms\\.txt|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
+   ],
+ };
+diff --git apps/web/test/jsonld.test.mjs apps/web/test/jsonld.test.mjs
+new file mode 100644
+index 0000000..b01decc
+--- /dev/null
++++ apps/web/test/jsonld.test.mjs
+@@ -0,0 +1,61 @@
++// SEO-05: the home page's one JSON-LD block, rendered through the landing render helper.
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { renderPage } from './helpers/render-landing-page.mjs';
++import { compile } from './helpers/render-chrome.mjs';
++import { ENTITY_ONE_LINER, MAX_TRACK_MIN } from '../src/lib/seo/site.ts';
++import { pageFor } from '../src/lib/seo/pages.ts';
++import { MAX_TRACK_SEC } from '../src/lib/play/types.ts';
++
++const page = await renderPage('app/(landing)/page.tsx');
++const blocks = [...page.html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)].map((m) => m[1]);
++
++test('exactly one JSON-LD block, and it parses', () => {
++  assert.equal(blocks.length, 1);
++  JSON.parse(blocks[0]);
++});
++
++test('entity facts come from the shared constants', () => {
++  const g = JSON.parse(blocks[0])['@graph'];
++  const app = g.find((n) => n['@type'] === 'WebApplication');
++  assert.equal(app.description, ENTITY_ONE_LINER);
++  assert.ok(app.featureList.includes(`Uses the first ${MAX_TRACK_MIN} minutes of any song`));
++  // Story 2.1 stem order, everywhere.
++  assert.ok(app.featureList.includes('Six stems: drums, bass, guitar, keys, vocals and other'));
++  assert.ok(app.featureList.includes('Files deleted after 24 hours'));
++  assert.match(app.browserRequirements, /Chrome on a desktop/);
++  assert.equal(app.offers.price, '0');
++  assert.match(ENTITY_ONE_LINER, /\bsix stems\b/);
++});
++
++test('no ratings or reviews, no YouTube, no empty sameAs, no Person until /about is published', () => {
++  const raw = blocks[0];
++  assert.doesNotMatch(raw, /aggregateRating|"review"|ratingValue/);
++  assert.doesNotMatch(raw, /youtube/i);
++  assert.doesNotMatch(raw, /"sameAs":\[\]/);
++  const about = pageFor('/about');
++  if (!about?.published) assert.doesNotMatch(raw, /"Person"|about#jon/);
++});
++
++test('the home meta description is the registry entry for "/" (one source, built from MAX_TRACK_MIN)', async () => {
++  const [url] = compile(['app/(landing)/page.tsx']);
++  const mod = await import(url);
++  assert.equal(mod.metadata.description, pageFor('/').description);
++  assert.ok(pageFor('/').description.includes(`${MAX_TRACK_MIN} minutes`));
++});
++
++test('the SEO minute figure is the player cap', () => {
++  assert.equal(MAX_TRACK_MIN, Math.floor(MAX_TRACK_SEC / 60));
++  assert.ok(pageFor('/').description.includes(`${Math.floor(MAX_TRACK_SEC / 60)} minutes`));
++});
++
++test('#270: a longer song is trimmed, not refused, so no SEO text says "up to N minutes"', () => {
++  // 2026-11-14 (Jon): songs over the cap are trimmed to their first MAX_TRACK_MIN minutes. "Up to"
++  // reads as a ceiling that turns longer songs away; the SEO copy matches the landing instead.
++  const texts = [['JSON-LD', blocks[0]], ...['/', '/privacy', '/terms'].map((p) => [`registry ${p}`, pageFor(p).description])];
++  for (const [where, text] of texts) {
++    assert.doesNotMatch(text, /\bup to\s+\d+\s*minutes?\b/i, `${where} says "up to N minutes"`);
++    assert.doesNotMatch(text, /\btracks up to\b/i, `${where} says "tracks up to"`);
++  }
++  assert.ok(pageFor('/').description.includes(`Uses the first ${MAX_TRACK_MIN} minutes of any song.`));
++});
+diff --git apps/web/test/llms-txt.test.mjs apps/web/test/llms-txt.test.mjs
+new file mode 100644
+index 0000000..79e5a94
+--- /dev/null
++++ apps/web/test/llms-txt.test.mjs
+@@ -0,0 +1,39 @@
++// SEO-07: /llms.txt is plain text built from the registry.
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { GET } from '../src/app/llms.txt/route.ts';
++import { ENTITY_LIMITS, ENTITY_ONE_LINER } from '../src/lib/seo/site.ts';
++import { PUBLIC_PAGES } from '../src/lib/seo/pages.ts';
++import { MAX_TRACK_SEC } from '../src/lib/play/types.ts';
++
++test('llms.txt: text/plain, entity sentence, limits, one line per listed page', async () => {
++  const res = GET();
++  assert.match(res.headers.get('content-type'), /^text\/plain/);
++  const body = await res.text();
++  assert.ok(body.startsWith('# stem-loops\n'));
++  assert.ok(body.includes(ENTITY_ONE_LINER));
++  assert.ok(body.includes(ENTITY_LIMITS));
++  assert.ok(body.includes('Tempo and pitch change are not available yet.'));
++  const listed = PUBLIC_PAGES.filter((p) => p.published && p.llms).length;
++  assert.equal(body.split('\n').filter((l) => l.startsWith('- [')).length, listed);
++});
++
++test('ENTITY_LIMITS states the five brand limits, with the player cap as its only minute figure', () => {
++  const cap = Math.floor(MAX_TRACK_SEC / 60);
++  assert.ok(ENTITY_LIMITS.includes(`uses the first ${cap} minutes of any song`));
++  assert.doesNotMatch(ENTITY_LIMITS, /\bup to\s+\d+\s*minutes?\b/i, '#270: longer songs are trimmed, not refused');
++  assert.deepEqual([...ENTITY_LIMITS.matchAll(/(\d+)\s*minutes?/g)].map((m) => Number(m[1])), [cap]);
++  assert.match(ENTITY_LIMITS, /Chrome on the desktop/);
++  assert.match(ENTITY_LIMITS, /after 24 hours/);
++  assert.match(ENTITY_LIMITS, /account to open the player/);
++  assert.match(ENTITY_LIMITS, /rights to the audio/);
++});
++
++test('entity text keeps the brand truth rules: no platform, no downbeat or speed promise, chords are an estimate', async () => {
++  const body = await GET().text();
++  for (const [where, text] of [['ENTITY_ONE_LINER', ENTITY_ONE_LINER], ['ENTITY_LIMITS', ENTITY_LIMITS], ['llms.txt', body]]) {
++    for (const re of [/youtube/i, /downbeat/i, /under\s+60\s+seconds/i, /no account needed/i, /\bup to\s+\d+\s*minutes?\b/i, /\brefused\b/i]) assert.doesNotMatch(text, re, `${where} matches ${re}`);
++  }
++  assert.ok(body.includes('The chord track is an estimate made from the audio, not a transcription.'));
++  assert.ok(body.includes('The six stems are drums, bass, guitar, keys, vocals and other'), 'Story 2.1 stem order');
++});
+diff --git apps/web/test/noindex-app-routes.test.mjs apps/web/test/noindex-app-routes.test.mjs
+new file mode 100644
+index 0000000..8fab353
+--- /dev/null
++++ apps/web/test/noindex-app-routes.test.mjs
+@@ -0,0 +1,28 @@
++// SEO-02: app routes are noindex.
++// The three layouts SEO-02 changes are EXECUTED: .tsx with @/ imports goes through the repo's
++// compile() helper, with SignedInChrome stubbed (it is on the helper's allowlist; only `metadata`
++// is read). The four pages that were already noindex pull in server-only modules (next/headers,
++// the DB), so they are held by a source check instead.
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { join, dirname } from 'node:path';
++import { fileURLToPath } from 'node:url';
++import { compile } from './helpers/render-chrome.mjs';
++
++const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
++const STUBS = { '@/components/chrome/SignedInChrome': 'export default function SignedInChrome() { return null; }' };
++
++for (const f of ['app/login/layout.tsx', 'app/history/layout.tsx', 'app/account/layout.tsx']) {
++  test(`${f}: metadata.robots.index === false`, async () => {
++    const [url] = compile([f], STUBS);
++    const mod = await import(url);
++    assert.equal(mod.metadata?.robots?.index, false);
++  });
++}
++
++for (const f of ['app/account/page.tsx', 'app/success/page.tsx', 'app/pricing/page.tsx', 'app/jobs/[id]/page.tsx']) {
++  test(`${f}: still declares noindex`, () => {
++    assert.match(readFileSync(join(SRC, f), 'utf8'), /robots:\s*\{\s*index:\s*false/);
++  });
++}
+diff --git apps/web/test/seo-pages.test.mjs apps/web/test/seo-pages.test.mjs
+new file mode 100644
+index 0000000..95eb545
+--- /dev/null
++++ apps/web/test/seo-pages.test.mjs
+@@ -0,0 +1,70 @@
++// SEO-04 / SEO-06: the page registry and the metadata it produces.
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { existsSync, readdirSync, readFileSync } from 'node:fs';
++import { join, dirname } from 'node:path';
++import { fileURLToPath } from 'node:url';
++import { PUBLIC_PAGES } from '../src/lib/seo/pages.ts';
++import { pageMetadata } from '../src/lib/seo/meta.ts';
++import { compile } from './helpers/render-chrome.mjs';
++
++const APP = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'app');
++const BANNED = [/!/, /\bclick/i, /\bdrop\b/i, /\bhover/i, /\bextract/i, /\baccurate\b/i, /\bperfect\b/i, /studio-quality/i, /\binstantly\b/i, /\bunlimited\b/i, /youtube/i];
++
++// Every page.tsx under app/, as its URL path (route groups dropped) and its src-relative file.
++function routes() {
++  const out = [];
++  (function walk(dir, url, rel) {
++    for (const e of readdirSync(dir, { withFileTypes: true })) {
++      if (e.isDirectory()) {
++        const group = /^\(.*\)$/.test(e.name);
++        walk(join(dir, e.name), group ? url : `${url}/${e.name}`, `${rel}/${e.name}`);
++      } else if (e.name === 'page.tsx') out.push({ url: url || '/', file: `app${rel}/page.tsx` });
++    }
++  })(APP, '', '');
++  return out;
++}
++
++test('registry: unique paths and titles, descriptions within 155 and free of banned words', () => {
++  assert.equal(new Set(PUBLIC_PAGES.map((p) => p.path)).size, PUBLIC_PAGES.length);
++  assert.equal(new Set(PUBLIC_PAGES.map((p) => p.title)).size, PUBLIC_PAGES.length);
++  for (const p of PUBLIC_PAGES) {
++    assert.match(p.path, /^\/(?:[a-z0-9-]+(?:\/[a-z0-9-]+)*)?$/, p.path);
++    assert.ok(p.description.length <= 155, `${p.path}: ${p.description.length} characters`);
++    for (const re of BANNED) assert.doesNotMatch(`${p.title} ${p.description}`, re, `${p.path} matches ${re}`);
++  }
++});
++
++test('registry: every published path has a page (a static page.tsx, or a slug its generateStaticParams returns)', async () => {
++  const all = routes();
++  for (const p of PUBLIC_PAGES.filter((x) => x.published)) {
++    if (all.some((r) => r.url === p.path)) continue;
++    const parent = p.path.slice(0, p.path.lastIndexOf('/'));
++    const slug = p.path.slice(p.path.lastIndexOf('/') + 1);
++    const dyn = all.find((r) => r.url.startsWith(`${parent}/[`) && r.url.split('/').length === p.path.split('/').length);
++    assert.ok(dyn, `${p.path}: no page.tsx and no dynamic segment under ${parent}`);
++    const [url] = compile([dyn.file.replace(/^app/, 'app')]);
++    const mod = await import(url);
++    assert.equal(typeof mod.generateStaticParams, 'function', `${dyn.file} has no generateStaticParams`);
++    const params = await mod.generateStaticParams();
++    assert.ok(params.some((o) => Object.values(o).includes(slug)), `${p.path}: slug not returned by ${dyn.file}`);
++  }
++});
++
++test('pageMetadata: complete Open Graph and Twitter on every page (Next merges shallowly)', () => {
++  for (const p of PUBLIC_PAGES) {
++    const m = pageMetadata(p);
++    assert.equal(m.openGraph.images.length, 1, p.path);
++    assert.equal(m.openGraph.siteName, 'stem-loops', p.path);
++    assert.equal(m.twitter.card, 'summary_large_image', p.path);
++    assert.equal(m.alternates.canonical, p.path);
++    if (!p.published) assert.equal(m.robots.index, false, p.path);
++  }
++});
++
++test('pages.ts: every minute figure in a description comes from ${MAX_TRACK_MIN}', () => {
++  const src = readFileSync(join(APP, '..', 'lib', 'seo', 'pages.ts'), 'utf8').replaceAll('${MAX_TRACK_MIN} minutes', '');
++  // The landing test's literal-minute pattern (landing-copy.test.mjs), applied to the registry source.
++  const literal = /\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:&nbsp;|\\u00a0|\s)*minutes?\b/i;
++  assert.doesNotMatch(src, literal);
++});
+diff --git apps/web/test/sitemap.test.mjs apps/web/test/sitemap.test.mjs
+new file mode 100644
+index 0000000..e41b2cf
+--- /dev/null
++++ apps/web/test/sitemap.test.mjs
+@@ -0,0 +1,23 @@
++// SEO-01: sitemap.xml lists exactly the published registry pages and nothing private.
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import sitemap from '../src/app/sitemap.ts';
++import robots from '../src/app/robots.ts';
++import { PUBLIC_PAGES } from '../src/lib/seo/pages.ts';
++
++const EXCLUDED = ['/login', '/history', '/account', '/trial', '/success', '/pricing', '/jobs/', '/api/'];
++
++test('sitemap: absolute, unique, published only, no app routes', () => {
++  const urls = sitemap().map((e) => e.url);
++  assert.equal(new Set(urls).size, urls.length);
++  assert.equal(urls.length, PUBLIC_PAGES.filter((p) => p.published).length);
++  for (const u of urls) {
++    assert.match(u, /^https:\/\/stem-loops\.com\//);
++    const path = u.replace('https://stem-loops.com', '');
++    for (const x of EXCLUDED) assert.ok(!path.startsWith(x), `${u} is excluded`);
++  }
++});
++
++test('robots.txt names the sitemap', () => {
++  assert.equal(robots().sitemap, 'https://stem-loops.com/sitemap.xml');
++});

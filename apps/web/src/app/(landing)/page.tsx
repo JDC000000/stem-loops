@@ -21,6 +21,9 @@ import { Ic } from '@/components/landing/Icons';
 import type { Metadata } from 'next';
 import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
 import { MAX_TRACK_SEC } from '@/lib/play/types';
+import { JsonLd } from '@/components/seo/JsonLd';
+import { homeGraph } from '@/lib/seo/jsonld';
+import { pageFor } from '@/lib/seo/pages';
 
 // Story 1.4 (revised 2026-11-14): any song is accepted and its FIRST MAX_TRACK_MIN minutes are
 // used — a longer track is trimmed on our end and still converted. The copy says the figure in minutes,
@@ -34,12 +37,13 @@ const OG_ALT =
 
 export const metadata: Metadata = {
   title: { absolute: 'stem-loops: play along with any song, stem by stem' },
-  description:
-    `Split a song into six stems with faders, mute and solo, and a chord track that moves with the song. Loop a detected section. Uses the first ${MAX_TRACK_MIN} minutes of any song, in Chrome on the desktop.`,
+  // One source: the registry entry for '/' (lib/seo/pages.ts), built from MAX_TRACK_MIN.
+  description: pageFor('/')!.description,
   alternates: { canonical: '/' },
   openGraph: {
     type: 'website',
     siteName: 'stem-loops',
+    locale: 'en_CA',
     url: '/',
     title: OG_TITLE,
     description: OG_DESC,
@@ -51,6 +55,7 @@ export const metadata: Metadata = {
 export default function HomePage() {
   return (
     <DemoProvider>
+      <JsonLd data={homeGraph()} />
       <a className="skip" href="#tool">
         Skip to the tool
       </a>

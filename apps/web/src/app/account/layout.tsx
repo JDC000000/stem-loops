@@ -32,7 +32,11 @@
 // SiteHeader, and global-error replaces the <html> element, so a layout above
 // it does not apply). test/signed-in-nav.test.mjs enumerates app/ and fails on
 // any routable page outside this set.
+import type { Metadata } from 'next';
 import SignedInChrome from '@/components/chrome/SignedInChrome';
+
+// SEO-02: covers /account/delete and /account/reset-password, which set no robots of their own.
+export const metadata: Metadata = { robots: { index: false, follow: false } };
 
 // The bar is session-aware, so this segment must never be prerendered: a
 // static render would bake `signedIn: false` into the HTML and show a cached

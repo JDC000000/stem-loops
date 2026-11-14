@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mobile player memory harness</title>
+<script src="engine.bundle.js"></script>
+<script>
+// Drives the REAL production engine (apps/web/src/lib/play/engine.ts, bundled
+// unchanged by measure.mjs). The only thing varied is the AudioContext sample
+// rate, injected through the engine's own `createAudioContext` option.
+const STEMS = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'];
+window.fetchStems = async (dur) => {
+  window.__bytes = [];
+  for (const name of STEMS) {
+    const r = await fetch(`audio/${dur}/${name}.opus`);
+    window.__bytes.push({ name, bytes: await r.arrayBuffer() });
+  }
+  return window.__bytes.reduce((n, s) => n + s.bytes.byteLength, 0);
+};
+window.runLoad = async (rate) => {
+  const engine = SL.createPlayEngine({
+    createAudioContext: () => new AudioContext({ sampleRate: rate }),
+  });
+  window.__engine = engine;
+  const t0 = performance.now();
+  await engine.load(window.__bytes);
+  const ms = performance.now() - t0;
+  const s = engine.getSnapshot();
+  return { ms, status: s.status, durationSec: s.durationSec, error: s.error && s.error.code,
+           stems: s.stems.filter((x) => x.availability === 'ready').length };
+};
+window.env = () => ({
+  ua: navigator.userAgent, w: innerWidth, h: innerHeight, dpr: devicePixelRatio,
+  deviceMemory: navigator.deviceMemory ?? null,
+  coarse: matchMedia('(pointer: coarse)').matches,
+  hoverNone: matchMedia('(hover: none)').matches,
+  anyFine: matchMedia('(any-pointer: fine)').matches,
+  uaDataMobile: navigator.userAgentData ? navigator.userAgentData.mobile : null,
+  maxTouch: navigator.maxTouchPoints,
+});
+</script>

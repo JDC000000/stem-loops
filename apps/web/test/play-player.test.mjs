@@ -126,7 +126,11 @@ const engineMod = put(
   toJs(read('src/lib/play/engine.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
 );
 
+// device-support (Story 8.3): the REAL module, pure, no I/O at import time.
+const deviceSupportMod = put('device-support.mjs', toJs(read('src/lib/play/device-support.ts')));
+
 const playerJs = rewriteShared(toJs(read('src/components/play/Player.tsx'), true))
+  .replace(/from ['"]@\/lib\/play\/device-support['"]/g, `from '${deviceSupportMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordMod}'`)
   .replace(/from ['"]@\/lib\/play\/engine['"]/g, `from '${engineMod}'`)
   .replace(/from ['"]@\/lib\/play\/load-stems['"]/g, `from '${loadStemsMod}'`)

@@ -35,7 +35,7 @@ if (!process.env.JOURNEY_AUDIO || !existsSync(process.env.JOURNEY_AUDIO)) {
   execFileSync('ffmpeg', [
     '-loglevel', 'error', '-y',
     '-f', 'lavfi', '-i', "aevalsrc='0.8*sin(2*PI*55*t)*exp(-30*mod(t,0.5))':d=40:s=44100",
-    '-f', 'lavfi', '-i', "aevalsrc='0.3*sin(2*PI*65.41*t)*(mod(t,2)<1.6)':d=40:s=44100",
+    '-f', 'lavfi', '-i', "aevalsrc='0.3*sin(2*PI*65.41*t)*lt(mod(t,2),1.6)':d=40:s=44100",
     '-f', 'lavfi', '-i', "aevalsrc='0.12*(sin(2*PI*261.63*t)+sin(2*PI*329.63*t)+sin(2*PI*392*t))':d=40:s=44100",
     '-filter_complex', 'amix=inputs=3:normalize=0', '-ac', '2', '-b:a', '192k', out,
   ]);

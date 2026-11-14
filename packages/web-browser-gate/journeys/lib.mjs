@@ -27,6 +27,7 @@ import { chromium } from 'playwright';
 
 export const BASE = process.env.JOURNEY_BASE_URL ?? 'http://127.0.0.1:3104';
 export const EVIDENCE = process.env.JOURNEY_EVIDENCE_DIR ?? join(process.cwd(), 'journey-evidence');
+// Read at call time (uploadViaLanding): run.mjs may generate the file after this module loads.
 export const AUDIO = process.env.JOURNEY_AUDIO ?? '';
 
 function assertLoopback(url, what) {
@@ -197,7 +198,7 @@ export class Journey {
 }
 
 /** Upload AUDIO through the landing page's real file input and wait for the job page. Returns the job id. */
-export async function uploadViaLanding(page, j, audioPath = AUDIO, { expectJobPage = true } = {}) {
+export async function uploadViaLanding(page, j, audioPath = process.env.JOURNEY_AUDIO, { expectJobPage = true } = {}) {
   await page.goto('/');
   await page.locator('#file').setInputFiles(audioPath);
   await page.locator('#picked-name').waitFor({ state: 'visible', timeout: 10_000 });

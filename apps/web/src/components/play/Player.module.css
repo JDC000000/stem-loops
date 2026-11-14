@@ -72,3 +72,64 @@
 .chords {
   min-width: 0;
 }
+
+/* Story 8.3 — the device "not yet" state. A calm notice, not an alarm: same
+   surface as .notice, with a heading and one action. Sizes respect the brand
+   book's floors (A15: readable text >= 11px; touch targets >= 44px). */
+.device {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  padding: var(--space-4, 16px);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md, 4px);
+  background: var(--bg-elevated);
+  min-width: 0;
+}
+
+.deviceTitle {
+  margin: 0;
+  font-size: var(--text-lg, 16px);
+  font-weight: var(--weight-semibold, 600);
+  line-height: var(--leading-snug, 1.4);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.deviceBody {
+  margin: 0;
+  font-size: var(--text-md, 14px);
+  line-height: var(--leading-normal, 1.6);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.deviceActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2, 8px) var(--space-3, 12px);
+}
+
+.deviceButton {
+  min-height: var(--touch-min, 44px);
+  padding: 0 var(--space-4, 16px);
+  border: 1px solid var(--border-control, #737373);
+  border-radius: var(--radius-md, 4px);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-md, 14px);
+  font-weight: var(--weight-semibold, 600);
+  cursor: pointer;
+}
+
+.deviceButton:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.deviceCopyState {
+  font-size: var(--text-md, 14px);
+  color: var(--text-muted);
+}

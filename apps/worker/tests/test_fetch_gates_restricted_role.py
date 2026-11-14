@@ -59,6 +59,28 @@ if DB and not _is_local(DB):
         )
     pytestmark = pytest.mark.skip(reason="alters roles/grants/policies; local DB only")
 
+# Migration 035's CHECK, verbatim, so the fixture can restore it after a test removes it.
+_VALID_SCOPES = (
+    "fetch_global",
+    "fetch_youtube",
+    "fetch_spotify",
+    "fetch_cobalt",
+    "serve_mix_first",
+    "payments_r",
+    "spend_global",
+)
+_VALID_SCOPES_SQL = ", ".join(f"'{s}'" for s in _VALID_SCOPES)
+_ADD_SCOPE_CHECK = (
+    "ALTER TABLE kill_switches ADD CONSTRAINT kill_switches_scope_known "
+    f"CHECK (scope IN ({_VALID_SCOPES_SQL}))"
+)
+# Dropping the constraint drops its comment; test_zz_schema_matches_fresh_migration checks both.
+_SCOPE_CHECK_COMMENT = (
+    "COMMENT ON CONSTRAINT kill_switches_scope_known ON public.kill_switches IS "
+    "'scope must be one of the documented switches; a typo used to be accepted and silently "
+    "do nothing (migration 035).'"
+)
+
 ROLE = "ks_probe"
 ROLE_PW = "ks_probe_pw"  # throwaway local role; never a real credential
 URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -125,7 +147,14 @@ def admin():
         try:
             yield c
         finally:
-            # Put back exactly what migration 011 installs, whatever the test did.
+            # Put back exactly what migrations 011 and 035 install, whatever the test did.
+            c.execute(f"DELETE FROM kill_switches WHERE scope NOT IN ({_VALID_SCOPES_SQL})")
+            c.execute(
+                "ALTER TABLE kill_switches DROP CONSTRAINT IF EXISTS kill_switches_scope_known"
+            )
+            c.execute(_ADD_SCOPE_CHECK)
+            c.execute("ALTER TABLE kill_switches VALIDATE CONSTRAINT kill_switches_scope_known")
+            c.execute(_SCOPE_CHECK_COMMENT)
             c.execute("ALTER TABLE kill_switches ENABLE ROW LEVEL SECURITY")
             c.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON kill_switches TO stemloops_app")
             c.execute("DROP POLICY IF EXISTS stemloops_app_all ON kill_switches")
@@ -656,15 +685,31 @@ def test_a_log_timer_that_cannot_start_does_not_skip_the_read(
         assert len(_named(ev, "kill_switch_slow_timer_unavailable")) == 1, ev
 
 
-# Unknown scopes. `scope` is free text with no CHECK (migration 008).
+# Unknown scopes. `scope` was free text until migration 035 added CHECK
+# kill_switches_scope_known. 035 VALIDATEs it only when no row violates it; otherwise it leaves
+# the CHECK NOT VALID and raises a WARNING, so pre-035 typo rows can still be in the table. These
+# tests build exactly that state (drop the CHECK, write the legacy rows, re-add it NOT VALID).
 TYPOS = ["Fetch_Global", "fetch_global ", "fetch-global", "global", "fetch_all"]
+
+
+def _legacy_rows(admin, scopes) -> None:
+    """Rows written before migration 035, left behind a NOT VALID CHECK (035's warning path)."""
+    admin.execute("ALTER TABLE kill_switches DROP CONSTRAINT kill_switches_scope_known")
+    for scope in scopes:
+        admin.execute("INSERT INTO kill_switches(scope, enabled) VALUES (%s, true)", (scope,))
+    admin.execute(_ADD_SCOPE_CHECK + " NOT VALID")
+
+
+def test_control_migration_035_refuses_a_new_misspelled_scope(as_worker):
+    with pytest.raises(psycopg.errors.CheckViolation):
+        as_worker.execute("INSERT INTO kill_switches(scope, enabled) VALUES ('Fetch_Global', true)")
 
 
 @pytest.mark.parametrize("scope", TYPOS, ids=[repr(t) for t in TYPOS])
 def test_an_engaged_row_under_a_mistyped_scope_pauses_nothing_and_is_named_in_a_warn(
     as_worker, capsys, scope
 ):
-    as_worker.execute("INSERT INTO kill_switches(scope, enabled) VALUES (%s, true)", (scope,))
+    _legacy_rows(as_worker, [scope])
     fetch_gates.reset_cache()
     capsys.readouterr()
 
@@ -681,8 +726,7 @@ def test_an_engaged_row_under_a_mistyped_scope_pauses_nothing_and_is_named_in_a_
 def test_unknown_scopes_are_all_named_once_per_ttl_and_known_ones_never(
     as_worker, monkeypatch, capsys
 ):
-    for scope in TYPOS:
-        as_worker.execute("INSERT INTO kill_switches(scope, enabled) VALUES (%s, true)", (scope,))
+    _legacy_rows(as_worker, TYPOS)
     as_worker.execute("INSERT INTO kill_switches(scope, enabled) VALUES ('fetch_youtube', false)")
     fetch_gates.reset_cache()
     capsys.readouterr()

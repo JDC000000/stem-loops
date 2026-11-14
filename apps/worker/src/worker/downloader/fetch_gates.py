@@ -40,8 +40,9 @@ SCOPE_FETCH_YOUTUBE = "fetch_youtube"
 SCOPE_FETCH_COBALT = "fetch_cobalt"
 # Scopes that are opt-in: no row (or an unreadable table) means "engaged".
 _DEFAULT_ENGAGED = frozenset({SCOPE_FETCH_COBALT})
-# The only scopes this worker reads. `scope` is free text (migration 008: no CHECK), so a row
-# spelled any other way is never consulted; see the kill_switch_unknown_scope WARN.
+# The only scopes this worker reads. Migration 035 added CHECK kill_switches_scope_known, so a
+# new misspelled row is refused at write time. Rows written before 035 survive where 035 had to
+# leave that CHECK NOT VALID; such a row is never consulted; see the kill_switch_unknown_scope WARN.
 _KNOWN_SCOPES = frozenset({SCOPE_FETCH_GLOBAL, SCOPE_FETCH_YOUTUBE, SCOPE_FETCH_COBALT})
 
 _VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
@@ -256,13 +257,15 @@ def _refresh_if_stale() -> None:
                 detail="kill_switches returned 0 rows; may be empty OR unreadable by this "
                 "role (permissions/RLS) - engaged switches may be invisible",
             )
-        # `scope` is free text with no CHECK, so 'Fetch_Global', 'fetch_global ' (trailing space),
-        # 'fetch-global' or 'global' are all accepted by the table, never match a constant above,
-        # and make a non-empty read that changes no decision and logs nothing: an operator typo
-        # would be silent. Name every scope this worker does not read. It rides the refresh, so
-        # it is at most once per TTL. It also names scopes migration 008 documents but this
-        # worker does not consume (fetch_spotify, serve_mix_first, payments_r): true for those
-        # too, since setting them has no effect here.
+        # Before migration 035 `scope` was free text, so 'Fetch_Global', 'fetch_global ' (trailing
+        # space), 'fetch-global' or 'global' were all accepted, never match a constant above, and
+        # make a non-empty read that changes no decision and logs nothing: an operator typo would
+        # be silent. 035's CHECK refuses new ones, but leaves itself NOT VALID (with a WARNING)
+        # when such rows already exist, so they can still be here. Name every scope this worker
+        # does not read. It rides the refresh, so
+        # it is at most once per TTL. It also names valid scopes this module does not consume
+        # (fetch_spotify, serve_mix_first, payments_r, and spend_global, which the spend gate
+        # reads, not this one): true for those too, since setting them has no effect here.
         unread = sorted({str(scope) for scope, _ in rows} - _KNOWN_SCOPES)
         if unread:
             log_structured(

@@ -3,7 +3,7 @@
 import type { Metadata } from 'next';
 import SignedInChrome from '@/components/chrome/SignedInChrome';
 
-export const metadata: Metadata = { title: 'Job history' };
+export const metadata: Metadata = { title: 'Job history', robots: { index: false, follow: false } };
 
 // The bar is session-aware, so this segment must never be prerendered: a
 // static render would bake `signedIn: false` into the HTML and show a cached

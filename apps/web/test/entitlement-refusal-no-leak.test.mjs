@@ -69,7 +69,7 @@ const expected = (code) => {
 };
 const DEFAULT_SENTENCE = `${copy.DEFAULT_ERROR.headline} ${copy.DEFAULT_ERROR.action}`;
 const OVER_QUOTA_SENTENCE =
-  'You’ve used this month’s allowance on your plan. Your account page shows when the period ends.';
+  "You've used this month's allowance on your plan. Your account page shows when the period ends.";
 
 function assertNoLeak(message, detail, label) {
   assert.equal(typeof message, 'string', `${label}: message is a string`);

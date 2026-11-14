@@ -25,6 +25,7 @@ import { JobProgress } from '@/components/JobProgress';
 import { LoopResults } from '@/components/LoopResults';
 import Player from '@/components/play/Player';
 import { formatExpiresIn } from '@/lib/retention';
+import { failedJobMessage } from '@/lib/error-copy';
 import {
   ACTIVE_STALL_MS,
   BACKOFF_POLL_MS,
@@ -254,7 +255,7 @@ export default function JobView({ id }: { id: string }) {
         >
           <h1 style={{ margin: '0 0 8px', fontSize: 'var(--text-xl)' }}>Something went wrong</h1>
           <p style={{ margin: 0 }}>
-            {job.error_message_user ?? 'We couldn’t finish this track. Try another file.'}
+            {failedJobMessage(job)}
           </p>
           <Link href="/" className="jp-primary" style={{ marginTop: 16 }}>
             Start a new song

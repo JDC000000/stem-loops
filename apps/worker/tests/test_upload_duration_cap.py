@@ -1,4 +1,8 @@
-"""Upload duration cap: over-length audio is rejected BEFORE any paid call.
+"""Upload duration cap: over-length audio is TRIMMED to its first N seconds before any paid call.
+
+Until 2026-11-14 an upload over ``MAX_UPLOAD_DURATION_SEC`` failed ``UPLOAD_TOO_LONG``. Jon:
+a song over 5 minutes "should still be converted to a play along" using its first 5
+minutes. The decode now runs with ``-t N``; what reaches Replicate is still at most N s.
 
 The web layer only caps bytes (``MAX_UPLOAD_BYTES = 200 MB`` in apps/web/src/lib/upload.ts,
 roughly 3.5 h of 128 kbps mp3), which says nothing about Replicate GPU-seconds or Klangio.
@@ -18,12 +22,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tests.test_chord_rebill import FakeKlangioServer
 from worker import pipeline
-from worker.errors import ALL_ERROR_CODES, UploadInvalidError, UploadTooLongError
+from worker.errors import (
+    ALL_ERROR_CODES,
+    InternalError,
+    SeparationFailedError,
+    UploadInvalidError,
+    UploadTooLongError,
+)
 
 # jobs.id is a uuid column; a non-uuid id fails at the first real DB statement.
-JOB_LONG = "00000000-0000-4000-8000-0000000c0001"  # 5 s upload against a 3 s cap
+JOB_LONG = "00000000-0000-4000-8000-0000000c0001"  # 12 s upload against a 9 s cap
 
 
 def _wav(path: Path, secs: float, sr: int = 8000) -> Path:
@@ -83,6 +92,7 @@ def test_upload_cap_is_not_looser_than_the_chord_cap(monkeypatch: pytest.MonkeyP
 
 
 def test_error_code_is_registered_and_message_names_the_limit() -> None:
+    # No longer raised for length (2026-11-14), but still defined: old failed rows carry it.
     assert "UPLOAD_TOO_LONG" in ALL_ERROR_CODES
     err = UploadTooLongError("x", max_seconds=600.0)
     assert err.error_code == "UPLOAD_TOO_LONG"
@@ -94,58 +104,110 @@ def test_error_code_is_registered_and_message_names_the_limit() -> None:
     assert "Trim" in UploadTooLongError().user_message  # no-limit default still actionable
 
 
-def test_over_limit_is_rejected_from_the_header_without_decoding(
+def _wav_secs(path: str) -> float:
+    """Stdlib read-back of a PCM WAV's length -- independent of the code under test."""
+    with wave.open(path, "rb") as w:
+        return w.getnframes() / w.getframerate()
+
+
+def test_over_limit_is_trimmed_not_refused(
     staged, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source, uploaded = staged
-    source["path"] = _wav(tmp_path / "long.wav", 5.0)
-    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
-    boom = MagicMock(side_effect=AssertionError("must not decode an over-length upload"))
-    monkeypatch.setattr(pipeline, "_ffmpeg_bin", boom)
-    with pytest.raises(UploadTooLongError) as ei:
-        pipeline._prepare_upload_source("j1", "uploads/k")
-    assert ei.value.error_code == "UPLOAD_TOO_LONG"
-    boom.assert_not_called()
-    assert uploaded == []
+    # 12 s at a 9 s cap: the trimmed 9 s still clears the 7.68 s "too short" floor.
+    source["path"] = _wav(tmp_path / "long.wav", 12.0)
+    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "9")
+    url, trim = pipeline._prepare_upload_source("j1", "uploads/k")
+    assert url == "https://presigned"
+    assert len(uploaded) == 1
+    assert _wav_secs(uploaded[0]) == pytest.approx(9.0, abs=0.01)
+    assert _wav_secs(uploaded[0]) <= 9.0 + pipeline.TRIM_TOLERANCE_SEC
+    assert trim == {"trimmed": True, "source_sec": 12.0, "used_sec": 9.0}
 
 
-def test_lying_header_is_caught_after_a_bounded_decode(
+def test_the_decode_is_bounded_at_the_cap_not_cap_plus_one(
     staged, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Header says nothing (probe -> None), so the decode runs, capped at cap+1 s; the decoded
-    file is then measured and rejected, and was never allowed to grow past the bound."""
+    """Header says nothing (probe -> None), so only the decode bounds it: exactly `-t cap`.
+    The trim is still reported, from an unknown original length."""
     source, uploaded = staged
-    source["path"] = _wav(tmp_path / "long.wav", 8.0)
-    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
+    source["path"] = _wav(tmp_path / "long.wav", 14.0)
+    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "9")
     real_probe = pipeline._probe_duration_sec
     monkeypatch.setattr(
         pipeline,
         "_probe_duration_sec",
         lambda p: None if p.endswith("raw_input") else real_probe(p),
     )
-    decoded: list[float] = []
+    seen: list[list[str]] = []
     real_run = subprocess.run
 
     def spy(cmd, **kw):
-        out = real_run(cmd, **kw)
-        decoded.append(real_probe(cmd[-1]))
-        return out
+        seen.append(cmd)
+        return real_run(cmd, **kw)
 
     monkeypatch.setattr(pipeline.subprocess, "run", spy)
-    with pytest.raises(UploadTooLongError):
-        pipeline._prepare_upload_source("j2", "uploads/k")
-    assert decoded and decoded[0] == pytest.approx(4.0, abs=0.1)  # cap + 1 s, not 8 s
+    _url, trim = pipeline._prepare_upload_source("j2", "uploads/k")
+    assert seen[0][seen[0].index("-t") + 1] == "9.000"
+    assert _wav_secs(uploaded[0]) == pytest.approx(9.0, abs=0.01)  # cap, not 14 s
+    assert trim == {"trimmed": True, "source_sec": None, "used_sec": 9.0}
+
+
+def test_a_decode_that_ignored_the_trim_fails_closed(
+    staged, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """If ffmpeg ever produced more than the cap, it must not be staged for Replicate."""
+    source, uploaded = staged
+    source["path"] = _wav(tmp_path / "long.wav", 12.0)
+    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "9")
+
+    def ignores_t(cmd, **kw):
+        _wav(Path(cmd[-1]), 12.0)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(pipeline.subprocess, "run", ignores_t)
+    with pytest.raises(InternalError):
+        pipeline._prepare_upload_source("j2b", "uploads/k")
     assert uploaded == []
+
+
+@pytest.mark.parametrize("declared", [300.5, 612.0, 3600.0])
+def test_the_shipped_default_trims_at_300(
+    staged, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, declared: float
+) -> None:
+    source, uploaded = staged
+    source["path"] = _wav(tmp_path / "long.wav", 1.0)
+    monkeypatch.delenv("MAX_UPLOAD_DURATION_SEC", raising=False)
+    monkeypatch.setattr(
+        pipeline,
+        "_probe_duration_sec",
+        lambda p: declared if p.endswith("raw_input") else 300.0,
+    )
+    monkeypatch.setattr(pipeline, "_reject_unusable_upload", lambda *a: None)
+    seen: list[list[str]] = []
+
+    def fake_ffmpeg(cmd, **kw):
+        seen.append(cmd)
+        Path(cmd[-1]).write_bytes(b"x")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_ffmpeg)
+    _url, trim = pipeline._prepare_upload_source("j2c", "uploads/k")
+    assert seen[0][seen[0].index("-t") + 1] == "300.000"
+    assert trim == {"trimmed": True, "source_sec": round(declared, 1), "used_sec": 300.0}
 
 
 def test_within_limit_passes_through(
     staged, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source, uploaded = staged
-    source["path"] = _wav(tmp_path / "ok.wav", 2.0)
-    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
-    assert pipeline._prepare_upload_source("j3", "uploads/k") == "https://presigned"
+    # 9 s under a 10 s cap: must also clear the pre-separation "too short to ever cut a loop"
+    # floor (pipeline._min_usable_upload_sec, 7.68 s), which refuses a 2 s clip before Replicate.
+    source["path"] = _wav(tmp_path / "ok.wav", 9.0)
+    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "10")
+    assert pipeline._prepare_upload_source("j3", "uploads/k") == ("https://presigned", None)
     assert len(uploaded) == 1
+    assert _wav_secs(uploaded[0]) == pytest.approx(9.0, abs=0.01)  # untouched length
 
 
 def test_ffmpeg_decode_has_a_timeout(
@@ -168,48 +230,43 @@ def test_ffmpeg_decode_has_a_timeout(
     assert pipeline._ffmpeg_decode_timeout_sec() == 120.0
 
 
-def test_over_length_upload_reaches_no_paid_provider(
+def test_over_length_upload_is_trimmed_and_the_job_event_says_so(
     staged, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Full pipeline: Replicate and Klangio both see ZERO requests, job fails UPLOAD_TOO_LONG
-    with the user-facing message."""
-    from worker import replicate_client
-
-    source, _ = staged
-    # CI sets STUB_MODE=true; _run_pipeline would then skip the real path (and the duration gate)
-    # entirely and write fake loops to Postgres instead.
+    """Full pipeline: a 12 s upload at a 9 s cap is NOT failed. It reaches the first billed
+    call with a staged WAV of at most 9 s, and downloading/completed carries the trim."""
+    source, uploaded = staged
+    # CI sets STUB_MODE=true; _run_pipeline would then skip the real path entirely.
     monkeypatch.delenv("STUB_MODE", raising=False)
-    source["path"] = _wav(tmp_path / "long.wav", 5.0)
-    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
-    monkeypatch.setenv("CHORDS_PROVIDER", "klangio")
-    monkeypatch.setenv("KLANGIO_API_KEY", "kl-test")
-    monkeypatch.setenv("REPLICATE_API_TOKEN", "r8_test")
-    klangio = FakeKlangioServer()
-    klangio.install(monkeypatch)
-    replicate_posts = MagicMock(side_effect=AssertionError("Replicate must not be called"))
-    monkeypatch.setattr(replicate_client.httpx, "post", replicate_posts)
-    monkeypatch.setattr(replicate_client, "get_prediction_id", lambda _j: None)
-
+    source["path"] = _wav(tmp_path / "long.wav", 12.0)
+    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "9")
+    monkeypatch.setattr(
+        pipeline,
+        "submit_or_reattach",
+        MagicMock(side_effect=SeparationFailedError("sentinel: reached the billed call")),
+    )
     row = ("", ["drums"], 4, "upload", "uploads/k", "long.mp3")
     monkeypatch.setattr(pipeline, "_fetch_job", lambda _j: row)
 
     async def noop(*a, **k):
         return None
 
-    failed: list[tuple] = []
+    events: list[tuple] = []
 
-    async def record_fail(*a):
-        failed.append(a)
+    async def record_event(job_id, stage, phase, pct=None, detail=None):
+        events.append((stage, phase, detail))
 
     monkeypatch.setattr(pipeline, "set_status", noop)
-    monkeypatch.setattr(pipeline, "emit_event", noop)
-    monkeypatch.setattr(pipeline, "_fail", record_fail)
+    monkeypatch.setattr(pipeline, "emit_event", record_event)
+    monkeypatch.setattr(pipeline, "_fail", noop)
 
-    with pytest.raises(UploadTooLongError):
+    with pytest.raises(SeparationFailedError, match="sentinel"):
         asyncio.run(pipeline._run_pipeline(JOB_LONG))
 
-    assert klangio.requests == []
-    replicate_posts.assert_not_called()
-    assert failed and failed[0][1] == "UPLOAD_TOO_LONG"
-    assert failed[0][2] == UploadTooLongError(max_seconds=3.0).user_message
-    assert "too long" in failed[0][2] and "3 seconds" in failed[0][2]
+    pipeline.submit_or_reattach.assert_called_once_with(JOB_LONG, "https://presigned")
+    assert _wav_secs(uploaded[0]) <= 9.0 + pipeline.TRIM_TOLERANCE_SEC
+    assert (
+        "downloading",
+        "completed",
+        {"trimmed": True, "source_sec": 12.0, "used_sec": 9.0},
+    ) in events

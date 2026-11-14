@@ -3,8 +3,20 @@ import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { mintSignedUrl } from '@/lib/r2';
 import { presignTtlSec } from '@/lib/retention';
+import { mayReadJob } from '@/lib/job-access';
+import { inputTrimFromEvents } from '@/lib/input-trim';
+// OWNERSHIP: a job with a user_id is readable only by that user; an anonymous job
+// (user_id NULL) is readable by anyone holding its id. See lib/job-access.ts. A denied
+// caller gets the same 404 as a missing job. `user_id` is read to decide that and is
+// NEVER copied into the response. The body therefore also varies by who is signed in,
+// which is a second reason for NO_STORE below.
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// The body carries a freshly minted signed URL per cut loop (a bearer credential valid for
+// up to the job's remaining life). Same rule as ../stems and ../play-chords (#185): never
+// let a shared cache store it, which Next's default `public, max-age=0, must-revalidate` permits.
+const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
 
 // GET /api/jobs/:id — status + events + loops, read straight from Postgres.
 // Each loop gets a FRESHLY minted signed URL on every read (PRD §8 anti-goal #4), valid for
@@ -20,7 +32,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
   }
   try {
     const jobRes = await db.query(
-      `SELECT id, input_kind, youtube_url, upload_r2_key, original_filename, requested_stems,
+      `SELECT user_id, id, input_kind, youtube_url, upload_r2_key, original_filename, requested_stems,
               loop_length_bars, status, error_code, error_message_user, bpm, musical_key,
               created_at, updated_at, expires_at
        FROM jobs WHERE id = $1 AND expires_at > now()`,
@@ -29,14 +41,25 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     if (jobRes.rowCount === 0) {
       return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
     }
-    const job = jobRes.rows[0];
+    const { user_id: ownerId, ...job } = jobRes.rows[0];
+    if (!(await mayReadJob(ownerId))) {
+      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+    }
     const urlTtlSec = presignTtlSec(job.expires_at);
 
+    // `detail` is read ONLY to find the input trim (lib/input-trim.ts) and is then dropped
+    // from every event: on other events it carries `cost_usd`, which never goes to a browser.
     const eventsRes = await db.query(
-      `SELECT id, job_id, stage, phase, pct, duration_ms, created_at
+      `SELECT id, job_id, stage, phase, pct, duration_ms, detail, created_at
        FROM job_events WHERE job_id = $1 ORDER BY created_at ASC`,
       [params.id]
     );
+    const trim = inputTrimFromEvents(eventsRes.rows);
+    const events = eventsRes.rows.map((e: Record<string, unknown>) => {
+      const rest = { ...e };
+      delete rest.detail;
+      return rest;
+    });
 
     const loopsRes = await db.query(
       `SELECT id, job_id, stem, section_label, energy_class, start_sec, end_sec, start_bar,
@@ -68,7 +91,16 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       })
     );
 
-    return NextResponse.json({ ...job, events: eventsRes.rows, loops });
+    return NextResponse.json(
+      {
+        ...job,
+        input_trim_used_sec: trim?.usedSec ?? null,
+        input_trim_source_sec: trim?.sourceSec ?? null,
+        events,
+        loops,
+      },
+      { headers: NO_STORE }
+    );
   } catch (err) {
     Sentry.captureException(err);
     console.error(`GET /api/jobs/${params.id} error:`, err);

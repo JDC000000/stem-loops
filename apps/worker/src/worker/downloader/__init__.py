@@ -55,8 +55,21 @@ def _outcome(exc: BaseException) -> str:
     return getattr(exc, "error_code", None) or "other_error"
 
 
-def download_audio(youtube_url: str, job_id: str | None = None) -> tuple[str, str]:
-    """Return (path_or_url, source) where source is 'ytdlp' (local path) or 'cobalt' (URL)."""
+def download_audio(
+    youtube_url: str, job_id: str | None = None, max_duration_sec: float | None = None
+) -> tuple[str, str]:
+    """Return (path_or_url, source) where source is 'ytdlp' (local path) or 'cobalt' (URL).
+
+    ``max_duration_sec`` is the product's one duration ceiling -- the TRIM length -- supplied
+    by the caller (pipeline's ``_max_upload_duration_sec()``) rather than read here, so there
+    is exactly one knob and this module owns no second copy of the number. Passing ``None``
+    -- the default, and what every pre-existing caller and test does -- skips gate 0c
+    entirely.
+
+    A video LONGER than the ceiling is no longer refused here (Jon, 2026-11-14: long songs
+    are trimmed to their first ``max_duration_sec`` seconds, not turned away). The yt-dlp leg
+    downloads it and ``pipeline._trim_link_source`` cuts it on bytes we hold.
+    """
     _ssrf_guard(youtube_url)
 
     # 0a. blocklist: refuse before any outbound call. An unreadable id is refused too, so a
@@ -79,6 +92,32 @@ def download_audio(youtube_url: str, job_id: str | None = None) -> tuple[str, st
     # could otherwise make the gate check A while yt-dlp/Cobalt fetch B.
     # From here down, `youtube_url` is only used for logging; never for a fetch.
     fetch_url = fetch_gates.canonical_watch_url(video_id)
+
+    # 0c. duration reading. Taken from metadata, before one byte is fetched, ONCE (not once
+    # per retry attempt), and above the fetcher loop so it governs the Cobalt leg too.
+    #
+    # It refuses NOTHING. A long video is fetched in full by yt-dlp and trimmed on the bytes
+    # we hold (pipeline._trim_link_source, which fails closed). Why not fetch only the first
+    # N seconds with `--download-sections`: that hands the IP-bound googlevideo URL to an
+    # ffmpeg sub-download, and the sticky-session proxy fix in ytdlp_client exists because a
+    # media request landing on a different exit IP 403s. A full fetch is the leg already
+    # proven through the proxy; the bytes are ~1 MB/min at 128 kbps.
+    #
+    # What the reading DOES decide is Cobalt. Cobalt hands back a URL and no bytes, so there
+    # is nothing to trim and nothing to measure afterwards: this reading is the only ceiling
+    # that leg can have. Cobalt is therefore tried only when ``declared`` is a number at or
+    # under the cap -- never for an unreadable length and never for a long video.
+    declared: float | None = None
+    if max_duration_sec is not None:
+        declared = ytdlp_client.probe_duration_sec(fetch_url)
+        if declared is not None and declared > max_duration_sec:
+            log_structured(
+                "INFO",
+                "fetch_will_trim",
+                job_id=job_id,
+                duration_sec=round(declared, 1),
+                max_sec=max_duration_sec,
+            )
 
     attempt_no = 0
     last_exc: Exception | None = None
@@ -128,7 +167,19 @@ def download_audio(youtube_url: str, job_id: str | None = None) -> tuple[str, st
         return path, "ytdlp"
 
     # 2b. Cobalt: only behind kill-switch scope fetch_cobalt (default engaged = skipped).
-    if fetch_gates.cobalt_allowed():
+    # Cobalt cannot be trimmed, so it may only serve a length that was READ and is within
+    # the cap. Unknown -> skipped; over the cap -> skipped (yt-dlp was the only leg that could
+    # have served it, and its typed error stands).
+    cobalt_unverifiable = max_duration_sec is not None and (
+        declared is None or declared > max_duration_sec
+    )
+    if cobalt_unverifiable:
+        log_structured(
+            "WARN",
+            "cobalt_skipped_length_unknown" if declared is None else "cobalt_skipped_cannot_trim",
+            job_id=job_id,
+        )
+    if not cobalt_unverifiable and fetch_gates.cobalt_allowed():
         attempt_no += 1
         t0 = time.monotonic()
         try:

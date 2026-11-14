@@ -10,10 +10,39 @@
 // channels that remain uncovered.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderPage } from './helpers/render-landing-page.mjs';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { landingPage, renderPage } from './helpers/render-landing-page.mjs';
 import { assertNoBannedClaims, assertSays } from './legal-copy-shared.mjs';
+import { MAX_TRACK_SEC } from '../src/lib/play/types.ts';
 
 const TERMS = 'app/(landing)/terms/page.tsx';
+const WORKER = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'worker');
+
+/**
+ * Python with its docstrings, its string literals and its `#` comments removed, so that an
+ * assertion about what the worker DOES cannot be satisfied by prose about what it does.
+ *
+ * Order matters: triple-quoted blocks first (a docstring may contain a `#`), then
+ * single-line strings (a string may contain a `#`), then comments. Crude on purpose -- it
+ * backs presence checks, not a parse -- and `the stripper itself is checked` below proves it
+ * is actually removing those three things rather than silently returning the source intact.
+ */
+const pythonCodeOnly = (src) =>
+  src
+    .replace(/'''[\s\S]*?'''|"""[\s\S]*?"""/g, ' ')
+    .replace(/'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"/g, ' ')
+    .replace(/#[^\n]*/g, ' ');
+
+const workerCode = (rel) => pythonCodeOnly(readFileSync(join(WORKER, 'src/worker', rel), 'utf8'));
+
+/** The literal assigned to a module-level Python constant, as a number. */
+const pyConst = (code, name) => {
+  const m = code.match(new RegExp(`^${name}\\s*=\\s*([\\d.]+)`, 'm'));
+  assert.ok(m, `${name} is no longer a module-level literal in the worker`);
+  return Number(m[1]);
+};
 
 test('terms: the four banned sentences match nothing in text or metadata', async () => {
   assertNoBannedClaims(assert, await renderPage(TERMS), 'terms');
@@ -29,21 +58,178 @@ test('terms: the account-rule fragments are still present', async () => {
   assertSays(assert, page, 'You need an account to open the player', 'terms');
 });
 
-test('terms: the duration fragments are the un-overstated ones', async () => {
+// ─────────────────────────── the duration claim ───────────────────────────
+//
+// WHAT WAS HERE BEFORE, AND WHY IT WAS THE WRONG SHAPE.
+// This was two `assertSays` calls — 'Tracks up to 5 minutes' and 'Longer tracks are not
+// accepted' — with a comment arguing that both were true. The comment's own argument named
+// two paths, the browser probe in src/lib/upload-duration.ts and the worker's re-probe, and
+// BOTH of those are the UPLOAD path. The link path is a third path and it was never checked:
+// `_max_upload_duration_sec()` had exactly ONE caller in the whole worker, inside
+// `_prepare_upload_source`, and `grep -rn duration src/worker/downloader/` returned nothing.
+// So a pasted 10-minute YouTube link was accepted, separated on Replicate at $0.0014 the
+// GPU-second over its full length, given a `too_long` chord tombstone, and only then refused
+// by the player. 'Longer tracks are not accepted' was false, and because the gate asserted
+// the fragment's PRESENCE, correcting the page to the truth turned the suite red. The gate
+// did not merely miss the falsehood; it held it in place.
+//
+// A fragment's presence says nothing about whether the sentence containing it is true. These
+// three tests read the code the sentence depends on instead:
+//   • the FIGURE is imported from the constant and compared, and the worker's own two
+//     ceilings are read out of pipeline.py and compared to it, so no single env var, page
+//     edit or worker edit can move one of the four without failing here;
+//   • the REFUSAL is asserted as an ordering fact over comment-stripped worker source —
+//     both input paths reach their duration gate before the first billed call;
+//   • the two PAGES are compared to each other, because the live contradiction that exposed
+//     all of this was `/` saying one thing while `/terms`, the legal page, said another.
+// REVISED 2026-11-14 (Jon): a long song is no longer refused; the worker TRIMS every input to
+// its first MAX_UPLOAD_DURATION_SEC seconds and the job proceeds. The page now says exactly that
+// ("We use the first 5 minutes of any song ... trimmed on our end"), and the ordering gate below
+// asserts the TRIM, not a refusal, sits before the first billed call.
+// The behavioural half — that the trim actually holds — cannot run here, because this
+// suite is node:test and the pipeline is Python. It lives in
+// apps/worker/tests/test_link_duration_cap.py, which drives `_run_pipeline` on a link job
+// with an over-length staged WAV and asserts `submit_or_reattach` is never called. Its
+// existence is asserted below so that deleting it is not a silent way back to a green suite.
+
+test('terms: the duration figure is the one ceiling, in all four places that carry it', async () => {
   const page = await renderPage(TERMS);
-  // Both halves are now true, and they became true at different times — which is why they
-  // are asserted separately rather than as one sentence.
-  //
-  // The NUMBER: src/lib/play/types.ts:62 MAX_TRACK_SEC = 300, and the worker's
-  // MAX_UPLOAD_DURATION_SEC_DEFAULT = 300.0 (apps/worker/src/worker/pipeline.py:134).
-  assertSays(assert, page, 'Tracks up to 5 minutes', 'terms');
-  // WHERE IT BITES, stated WITHOUT overclaiming. #202 (merged 2026-11-11 17:21:34Z, 0167553)
-  // added a browser probe in src/lib/upload-duration.ts, but that file's own header is blunt
-  // that it FAILS OPEN: an unmeasurable container (it names flac and aiff), a header
-  // reporting NaN/Infinity, a slow decode, or a direct call to POST /api/uploads with no
-  // browser at all — every one of those proceeds and is refused later, by the worker. So
-  // "refused when you submit them" was overstated; "not accepted" is true of both paths.
-  assertSays(assert, page, 'Longer tracks are not accepted', 'terms');
+  const minutes = Math.floor(MAX_TRACK_SEC / 60);
+
+  // (1) The page, against the IMPORTED constant. Not a hard-coded '5': if MAX_TRACK_SEC
+  //     moves and the page does not, the expected string moves with the constant and this
+  //     fails — which is the drift a numeric gate written as source text cannot see.
+  assertSays(assert, page, `We use the first ${minutes} minutes of any song`, 'terms');
+
+  // (2) and (3) The worker's two ceilings, read from pipeline.py. The page promises a length
+  //     the WORKER has to enforce, so the page's number is only true while the worker agrees.
+  //     U6: MAX_UPLOAD_DURATION_SEC is a Fly env var, and nothing in any test suite can read
+  //     Fly's environment — this pins the DEFAULT the code ships with, which is the most a
+  //     test can do and is stated as exactly that in the PR that added it.
+  const pipeline = workerCode('pipeline.py');
+  assert.equal(
+    pyConst(pipeline, 'MAX_UPLOAD_DURATION_SEC_DEFAULT'), MAX_TRACK_SEC,
+    'the worker would separate more of a track than /terms says it uses',
+  );
+  assert.equal(
+    pyConst(pipeline, 'CHORDS_MAX_AUDIO_SEC_DEFAULT'), MAX_TRACK_SEC,
+    'the page says the chord track stops at the same length; it no longer does',
+  );
+});
+
+test('terms: the sentence states what holds at any cap, and does not promise a refusal', async () => {
+  const page = await renderPage(TERMS);
+  // 2026-11-14: the truth is now a TRIM. "Longer tracks are not supported" was replaced because
+  // a longer track IS now converted -- its first part is.
+  assertSays(assert, page, 'A longer track is trimmed on our end', 'terms');
+  // "supported", not "accepted", and no "refused before separation runs". An earlier cut said
+  // the latter, unconditionally, and it was false three ways: (a) for a link whose length
+  // could not be read the run still reached Replicate (fixed in the worker since, but the
+  // sentence was written before it was); (b) for ANY track between 5 and 10 minutes if the
+  // worker's cap is the old 600, because the figure on this page is the WEB constant while
+  // the worker reads MAX_UPLOAD_DURATION_SEC from the Fly environment; (c) it describes a
+  // refusal at "separation" when the job has already been accepted, 201, and a signed-in
+  // free user's trial song consumed. Nothing in this suite can read Fly, so the page says
+  // only what the player and the chord track guarantee on their own.
+  for (const text of [page.textSpaced, page.textTight]) {
+    assert.doesNotMatch(
+      text,
+      /refused\s*before\s*separation|longer\s*tracks\s*are\s*not\s*(?:accepted|supported)|on\s*our\s*side/i,
+      'a claim about WHEN the worker refuses depends on a Fly env var no test can read',
+    );
+  }
+});
+
+test('terms: the worker source places each input path\'s duration gate before the first billed call (static)', async () => {
+  // WHAT THIS CHECKS, SO IT IS NOT READ AS MORE: that, in comment-stripped worker source, the
+  // names of the gates occur before `submit_or_reattach` in `_run_pipeline`, and that the
+  // Cobalt leg of the downloader is conditioned on a verified length. It is an ordering fact
+  // about SOURCE TEXT. It cannot see a gate that fails open, and an earlier version of this
+  // test, titled "every input path reaches its duration gate", stayed green while two paths
+  // (unknown metadata plus an unmeasurable file; unknown metadata plus Cobalt) reached
+  // Replicate with no gate at all. The behaviour is asserted where it can run, against the
+  // real chain and a real database, in apps/worker/tests/test_link_money_path_e2e.py.
+  const pipeline = workerCode('pipeline.py');
+
+  // `submit_or_reattach` is the first call on this path that spends money. Everything that
+  // can refuse an over-length input has to be upstream of it, so the window to assert over
+  // is `_run_pipeline` up to that call.
+  const run = pipeline.slice(pipeline.indexOf('async def _run_pipeline'));
+  assert.ok(run, '_run_pipeline is gone — this gate no longer reads anything');
+  // Without this line the gate below can go vacuous while staying green: if the name stops
+  // appearing — renamed, wrapped, moved behind a helper — `indexOf` returns -1, `slice(0, -1)`
+  // keeps almost the whole function, and "X occurs before the billed call" becomes "X occurs".
+  assert.ok(run.includes('submit_or_reattach'), 'the billed call is no longer in _run_pipeline');
+  const beforeSpend = run.slice(0, run.indexOf('submit_or_reattach'));
+
+  assert.match(
+    beforeSpend, /_prepare_upload_source/,
+    'the upload path no longer passes its trim before Replicate is called',
+  );
+  assert.match(
+    beforeSpend, /_trim_link_source/,
+    'the LINK path no longer passes its trim before Replicate is called',
+  );
+
+  // The Cobalt leg returns a URL and no bytes, so it has no file to measure afterwards; it is
+  // only safe behind a length that gate 0c actually READ.
+  const downloader = workerCode('downloader/__init__.py');
+  assert.match(
+    downloader, /not\s+cobalt_unverifiable\s+and\s+fetch_gates\.cobalt_allowed\(\)/,
+    'the Cobalt leg is no longer conditioned on a verified length',
+  );
+  // …and "verified" now has to mean READ AND WITHIN THE CAP. Gate 0c used to raise for a long
+  // video, so Cobalt never saw one; now that 0c lets a long video through to be trimmed,
+  // Cobalt -- which cannot be trimmed -- must be skipped for it explicitly.
+  assert.match(
+    downloader, /cobalt_unverifiable\s*=\s*max_duration_sec\s+is\s+not\s+None\s+and\s*\(\s*declared\s+is\s+None\s+or\s+declared\s*>\s*max_duration_sec\s*\)/,
+    'the Cobalt leg is no longer skipped for a video longer than the cap',
+  );
+  // Neither path raises a too-long error any more (codes stay defined for old rows).
+  assert.doesNotMatch(pipeline + downloader, /raise\s+(?:LinkTooLongError|UploadTooLongError)\b/,
+    'a length refusal is back; long songs are trimmed, not refused');
+
+  // Both paths must be cut by the SAME accessor. One caller is the state that made the
+  // sentence false. FOUR matches: the definition, plus THREE call sites —
+  // _prepare_upload_source, _trim_link_source, and the cap handed to download_audio
+  // that arms gate 0c.
+  const uses = pipeline.match(/_max_upload_duration_sec\(\)/g) ?? [];
+  assert.ok(
+    uses.length >= 4,
+    `_max_upload_duration_sec() is used ${uses.length} time(s), expected at least 4; a path ` +
+      'has lost its cap, gate 0c has been left unarmed, or a second link-only ceiling exists',
+  );
+
+  for (const f of ['test_link_duration_cap.py', 'test_link_money_path_e2e.py']) {
+    assert.ok(existsSync(join(WORKER, 'tests', f)), `${f}, which exercises the link trim, has been deleted`);
+  }
+});
+
+test('terms and the landing state the same thing about length', async () => {
+  // U1: `/` already said "not supported: the chord track and the player both stop there"
+  // while `/terms` said "not accepted" full stop. One of the two was false and they were
+  // never compared, so the contradiction sat in public across two pages.
+  const minutes = Math.floor(MAX_TRACK_SEC / 60);
+  for (const [label, page] of [['terms', await renderPage(TERMS)], ['landing', await landingPage()]]) {
+    assertSays(assert, page, `the first ${minutes} minutes of any song`, label);
+    assertSays(assert, page, 'trimmed on our end', label);
+    assertSays(assert, page, 'the chord track and the player both stop', label);
+  }
+});
+
+test('terms: the stripper itself is checked, so the two gates above cannot go vacuous', () => {
+  // A presence check over "code" is worth nothing if the thing it searches still contains
+  // the comments. Checked on a fixture rather than on pipeline.py, so rewording a real
+  // comment cannot break it and a broken stripper cannot hide behind one.
+  const fixture = [
+    'x = 1  # _trim_link_source',
+    'y = "_trim_link_source"',
+    "z = '_trim_link_source'",
+    '"""_trim_link_source"""',
+    'def _trim_link_source(a):',
+  ].join('\n');
+  const hits = pythonCodeOnly(fixture).match(/_trim_link_source/g) ?? [];
+  assert.equal(hits.length, 1, 'the stripper left a comment, a string or a docstring standing');
 });
 
 test('terms: a fragment of each known 24-hour survivor is still present', async () => {

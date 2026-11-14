@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 import pytest
 
+from tests.db_guard import refuse_unless_local
 from worker import cleanup
 
 DB = os.environ.get("DATABASE_URL")
@@ -46,6 +47,9 @@ class FakeR2:
 
 @pytest.fixture
 def r2(monkeypatch):
+    # The sweep below really runs against DB: a non-local one is refused (round 4; the file
+    # skipped only when the variable was UNSET, so a production URL ran).
+    refuse_unless_local(("DATABASE_URL", DB))
     fake = FakeR2()
     monkeypatch.setattr(cleanup, "DATABASE_URL", DB)
     cleanup._failed.clear()
@@ -91,6 +95,162 @@ def test_expired_job_loses_r2_objects_and_row(r2):
         assert await _exists(fresh)
         assert not [k for k in r2.objs if k.startswith(old)]
         assert len([k for k in r2.objs if k.startswith(fresh)]) == 2
+
+    asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------------------
+# The chord artifact is the ONE object a job writes outside `{job_id}/`: r2_uploader's
+# `upload_play_chords` puts it at `jobs/<job_id>/play.chords.json`. The per-job delete was
+# `delete_prefix(f"{job_id}/")` alone, so it missed that key on EVERY job and the file only
+# died if the capped, best-effort orphan sweep happened to reach it.
+#
+# Every key below is written as a LITERAL, never via job_object_prefixes() or
+# play_chords_r2_key(). A test that rebuilds the key with the same function the code used
+# proves only that the code applied its own rule; these assert the on-the-wire path.
+# --------------------------------------------------------------------------------------
+
+
+def test_job_id_of_resolves_the_job_under_the_named_prefix():
+    """`jobs/<id>/...` must resolve to <id>, not to the literal "jobs"."""
+    jid = "1f0c3a74-5b21-4e9c-8d10-77aa2b5e6c31"
+    assert cleanup._job_id_of(f"{jid}/_input.wav") == jid
+    assert cleanup._job_id_of(f"{jid}/_stems/play/drums.opus") == jid
+    assert cleanup._job_id_of(f"{jid}/drums/a_0000.wav") == jid
+    # The defect: this returned "jobs" and no job row could ever match it.
+    assert cleanup._job_id_of(f"jobs/{jid}/play.chords.json") == jid
+    assert cleanup._job_id_of(f"JOBS/{jid.upper()}/play.chords.json") == jid
+    # Not a job at all: still "no live job owns this", so the orphan sweep may reap it.
+    assert cleanup._job_id_of("not-a-uuid/stray.bin") == "not-a-uuid"
+    assert cleanup._job_id_of("jobs/") == ""
+    assert cleanup._job_id_of("jobs/stray.bin") == "stray.bin"
+
+
+def test_expired_job_chord_file_is_deleted_by_the_per_job_sweep(r2):
+    """The leak. Asserts the OBJECT is gone, not that a prefix string appears in the source.
+
+    The chord file is seeded YOUNG against an EXPIRED job, so it is NOT orphan-eligible
+    (list_objects_older_than skips it) and `orphan_objects == 0` proves it. The only thing
+    that can delete it is the per-job sweep — which is exactly what was broken.
+    """
+
+    async def scenario():
+        job = await _insert_job(25)
+        r2.put(f"{job}/_input.wav", 25)
+        r2.put(f"{job}/_stems/play/drums.opus", 25)
+        r2.put(f"jobs/{job}/play.chords.json", 0.0)  # fresh: orphan sweep cannot see it
+        res = await cleanup.sweep_expired()
+        assert not await _exists(job)
+        assert res["orphan_objects"] == 0, "the orphan sweep must not be what deleted it"
+        assert (
+            f"jobs/{job}/play.chords.json" not in r2.objs
+        ), "the chord artifact escaped the per-job retention delete"
+        assert not [k for k in r2.objs if job in k], "nothing of this job may survive"
+
+    asyncio.run(scenario())
+
+
+def test_live_job_chord_file_survives_the_sweep(r2):
+    """The negative, and the direction that is unrecoverable. Deleting too much is worse.
+
+    Two properties, in ONE pass so each is tested next to the other:
+
+    1. `in_flight` is PAST expires_at but held back by INFLIGHT_GRACE, and its chord file is
+       old enough for the orphan sweep. Because `_job_id_of` used to read "jobs" as the job
+       id, no row could match and the orphan sweep deleted that file up to an hour before the
+       job itself was swept — a live job losing its chords.
+    2. BLAST RADIUS. An EXPIRED job is swept in the same pass, so the per-job delete runs
+       while live jobs' chord files sit under the same `jobs/` top prefix. Without it, a
+       `job_object_prefixes` that leaked the bare `jobs/` prefix deleted every live chord
+       file and the suite stayed green, because no other test put an expired job and a
+       live job's chord in one pass.
+    """
+
+    async def scenario():
+        fresh = await _insert_job(1)
+        in_flight = await _insert_job(24.5, status="separating")  # 30 min past expiry
+        expired = await _insert_job(25)  # swept in THIS pass, next to the live chord files
+        r2.put(f"jobs/{fresh}/play.chords.json", 1)
+        r2.put(f"{fresh}/_input.wav", 1)
+        r2.put(f"jobs/{in_flight}/play.chords.json", 25)  # aged, but the job is ALIVE
+        r2.put(f"{in_flight}/_input.wav", 25)
+        r2.put(f"{expired}/_input.wav", 25)
+        r2.put(f"jobs/{expired}/play.chords.json", 0.0)  # fresh: only the per-job sweep reaches it
+        res = await cleanup.sweep_expired()
+        assert not await _exists(expired), "the expired job must actually have been swept"
+        assert not [k for k in r2.objs if expired in k], "the expired job's objects must go"
+        assert res["orphan_objects"] == 0, "the orphan sweep must not be what deleted anything"
+        assert await _exists(fresh) and await _exists(in_flight)
+        assert (
+            f"jobs/{fresh}/play.chords.json" in r2.objs
+        ), "sweeping an expired job deleted a LIVE job's chord file (blast radius)"
+        assert f"{fresh}/_input.wav" in r2.objs
+        assert (
+            f"jobs/{in_flight}/play.chords.json" in r2.objs
+        ), "a live job's chord file must not be reaped as an orphan or by a sibling's sweep"
+        assert f"{in_flight}/_input.wav" in r2.objs
+
+    asyncio.run(scenario())
+
+
+def test_orphaned_chord_file_with_no_job_row_is_still_reaped(r2):
+    """Fixing `_job_id_of` must not turn the backstop off for a genuinely dead job."""
+
+    async def scenario():
+        gone = str(uuid.uuid4())  # job row never existed / already deleted
+        r2.put(f"jobs/{gone}/play.chords.json", 30)
+        res = await cleanup.sweep_expired()
+        assert res["orphan_objects"] >= 1
+        assert f"jobs/{gone}/play.chords.json" not in r2.objs
+
+    asyncio.run(scenario())
+
+
+def test_purged_shell_stragglers_are_reaped_not_kept_for_ever(r2):
+    """A shell row must not make its leftover objects immortal.
+
+    Second-order consequence of fixing `_job_id_of`. An anonymised shell (_anonymise_job)
+    keeps its row for ever to anchor the credit ledger and is excluded from
+    _sweep_expired_jobs, so it is never re-swept. Once `jobs/<id>/...` resolves to <id>,
+    treating that shell as a live job would keep its chord file FOREVER — strictly worse
+    than the bug being fixed. The orphan sweep therefore does not count a shell as live.
+    """
+
+    async def scenario():
+        shell = await _insert_job(48)
+        async with await psycopg.AsyncConnection.connect(DB) as conn:
+            await conn.execute(
+                "UPDATE jobs SET client_ip_hash=%s, client_fingerprint=%s WHERE id=%s",
+                (cleanup.PURGED_MARKER, cleanup.PURGED_MARKER, shell),
+            )
+            await conn.commit()
+        r2.put(f"jobs/{shell}/play.chords.json", 48)
+        r2.put(f"{shell}/_input.wav", 48)
+        res = await cleanup.sweep_expired()
+        assert await _exists(shell), "the ledger's FK target must survive"
+        assert res["anonymised"] == 0, "a shell is never re-anonymised"
+        assert f"jobs/{shell}/play.chords.json" not in r2.objs
+        assert f"{shell}/_input.wav" not in r2.objs
+
+    asyncio.run(scenario())
+
+
+def test_r2_failure_on_the_chord_prefix_keeps_the_row_for_retry(r2):
+    """A half-done footprint must not lose the row — the DB row is the retry handle."""
+
+    async def scenario():
+        old = await _insert_job(30)
+        r2.put(f"{old}/_input.wav", 30)
+        r2.put(f"jobs/{old}/play.chords.json", 30)
+        r2.fail_prefix = f"jobs/{old}/"  # the SECOND prefix fails
+        await cleanup.sweep_expired()
+        assert await _exists(old), "row must survive a failed chord-prefix delete"
+        assert f"jobs/{old}/play.chords.json" in r2.objs
+        r2.fail_prefix = None
+        cleanup._failed[old] = (cleanup._failed[old][0], 0.0)  # backoff elapsed
+        await cleanup.sweep_expired()
+        assert not await _exists(old)
+        assert not [k for k in r2.objs if old in k]
 
     asyncio.run(scenario())
 
@@ -248,8 +408,8 @@ def _purge_ledger_fixtures(c) -> None:
 
 @pytest.fixture
 def ledger_db():
-    if not any(h in (DB or "") for h in ("127.0.0.1", "localhost")):
-        pytest.skip("inserts into auth.users; local throwaway DB only")
+    # inserts into auth.users; local throwaway DB only (parsed host, not a substring)
+    refuse_unless_local(("DATABASE_URL", DB))
     with psycopg.connect(DB) as c:
         _purge_ledger_fixtures(c)
         yield c
@@ -304,6 +464,10 @@ def test_credit_charged_job_is_anonymised_and_later_jobs_still_swept(r2, ledger_
         orphan = str(uuid.uuid4())
         for j in [ledger_job, *later]:
             r2.put(f"{j}/_input.wav", 48)
+        # The chord artifact of the LEDGER-BOUND job. FRESH, so the orphan sweep cannot be what
+        # removes it: only the per-job delete, which must run BEFORE the row delete raises
+        # ForeignKeyViolation. These are the paying jobs and the only ones that become shells.
+        r2.put(f"jobs/{ledger_job}/play.chords.json", 0.0)
         r2.put(f"{orphan}/_input.mp3", 40)  # orphan sweep only runs if the job sweep returns
         async with await psycopg.AsyncConnection.connect(DB) as conn:
             await conn.execute(
@@ -322,7 +486,10 @@ def test_credit_charged_job_is_anonymised_and_later_jobs_still_swept(r2, ledger_
         assert res["jobs"] == 3 and res["anonymised"] == 1
 
         # The ledger job is kept as an anonymised shell; its R2 objects are gone.
-        assert not [k for k in r2.objs if k.startswith(ledger_job)]
+        # `in`, not startswith: the chord key is `jobs/<id>/...`, which starts with "jobs/".
+        assert not [
+            k for k in r2.objs if ledger_job in k
+        ], "a credit-charged job's objects (incl. its chord file) must be gone"
         row = _job_row(c, ledger_job)
         assert row is not None, "ledger FK target must survive"
         yt, key, fname, title, bpm, iph, fp, status, user = row
@@ -387,9 +554,22 @@ def test_anonymised_shell_is_not_reselected_so_it_cannot_starve_the_batch(
         monkeypatch.setattr(cleanup, "MAX_JOBS_PER_SWEEP", 1)
         first = await cleanup.sweep_expired()
         assert first["anonymised"] == 1 and await _exists(newer)
-        r2.put(f"{ledger_job}/late.wav", 48)  # would reappear in delete_prefix if re-selected
+        # Direct evidence: the prefixes pass 2 actually asked R2 to delete.
+        #
+        # This used to seed an aged `{ledger_job}/late.wav` and assert it SURVIVED. That
+        # inference no longer holds, and it should not: an aged object under a purged shell
+        # is content retention already promised to delete, and _sweep_orphaned_objects now
+        # reaps it (a shell is not a live job). The property this test wants is that the JOB
+        # sweep does not re-select the shell, so assert that directly instead of inferring it
+        # from a leak.
+        attempted: list[str] = []
+        real = cleanup.delete_prefix
+        monkeypatch.setattr(cleanup, "delete_prefix", lambda p: (attempted.append(p), real(p))[1])
         second = await cleanup.sweep_expired()
         assert second["jobs"] == 1 and not await _exists(newer), "pass 2 reaches the newer job"
-        assert any(k.startswith(ledger_job) for k in r2.objs), "shell was not swept a second time"
+        assert second["anonymised"] == 0
+        assert not [
+            p for p in attempted if ledger_job in p
+        ], "pass 2 must not re-sweep the anonymised shell"
 
     asyncio.run(scenario())

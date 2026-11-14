@@ -21,6 +21,9 @@ import { Ic } from '@/components/landing/Icons';
 import type { Metadata } from 'next';
 import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
 import { MAX_TRACK_SEC } from '@/lib/play/types';
+import { JsonLd } from '@/components/seo/JsonLd';
+import { homeGraph } from '@/lib/seo/jsonld';
+import { pageFor } from '@/lib/seo/pages';
 
 // Story 1.4 (revised 2026-11-14): any song is accepted and its FIRST MAX_TRACK_MIN minutes are
 // used — a longer track is trimmed on our end and still converted. The copy says the figure in minutes,
@@ -34,12 +37,13 @@ const OG_ALT =
 
 export const metadata: Metadata = {
   title: { absolute: 'stem-loops: play along with any song, stem by stem' },
-  description:
-    `Split a song into six stems with faders, mute and solo, and a chord track that moves with the song. Loop a detected section. Uses the first ${MAX_TRACK_MIN} minutes of any song, in Chrome on the desktop.`,
+  // One source: the registry entry for '/' (lib/seo/pages.ts), built from MAX_TRACK_MIN.
+  description: pageFor('/')!.description,
   alternates: { canonical: '/' },
   openGraph: {
     type: 'website',
     siteName: 'stem-loops',
+    locale: 'en_CA',
     url: '/',
     title: OG_TITLE,
     description: OG_DESC,
@@ -51,6 +55,7 @@ export const metadata: Metadata = {
 export default function HomePage() {
   return (
     <DemoProvider>
+      <JsonLd data={homeGraph()} />
       <a className="skip" href="#tool">
         Skip to the tool
       </a>
@@ -209,8 +214,8 @@ export default function HomePage() {
                 </div>
                 <div className="pipe-text">
                   <p>
-                    The stems load into the player with the chord track over them. Each stem also gets bar-length loops:
-                    press Cut below the player to save them as WAV files. The art beside this shows one.
+                    The stems load into the player with the chord track over them. Each stem also gets bar-length loops,
+                    which you can save as WAV files. The art beside this shows one.
                   </p>
                   <dl className="kv">
                     <dt>Player</dt>
@@ -325,7 +330,7 @@ export default function HomePage() {
                   <summary>What happens to my files?</summary>
                   <p>
                     Your link or file goes to our storage, and the audio goes to Replicate to split it and to Klangio to estimate the chords. Sources, stems and
-                    loops are deleted after 24 hours. Anyone with a job’s link can open it, so don’t pass it around. More in
+                    loops are deleted after 24 hours. Anyone holding the link to a job you start without an account can fetch its audio and stems, so don’t pass that link around. A job you start while signed in opens only for your account. More in
                     the <a href="/privacy">privacy notice</a>.
                   </p>
                 </details>

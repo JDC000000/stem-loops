@@ -7,7 +7,7 @@ import { clientIpHashOf } from '@/lib/client-ip';
 import { canonicalizeYoutubeUrl } from '@/lib/youtube-url';
 import { isValidUploadKey } from '@/lib/upload';
 import { getUser } from '@/lib/auth/supabase';
-import { entitlementMessage } from '@/lib/error-copy';
+import { entitlementMessage, RATE_LIMITED_PER_CLIENT_MSG } from '@/lib/error-copy';
 import {
   checkBurstLimit,
   checkMonthlyQuota,
@@ -30,8 +30,9 @@ const VALID_BARS = new Set([1, 2, 4, 8]);
 const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
 const VALID_STEMS = new Set(DEFAULT_STEMS);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const RATE_LIMIT_MSG =
-  "You're going a bit fast, or we're at capacity right now. Give it a minute and try again.";
+// F72: the atomic INSERT's per-IP WHERE is the per-client limit, so a 0-row insert gets
+// that sentence. checkAdmission's refusals carry their own cause-specific `message`.
+const RATE_LIMIT_MSG = RATE_LIMITED_PER_CLIENT_MSG;
 
 // POST /api/jobs — create a job. Two input kinds:
 //   • upload  (V2 PRIMARY): body { jobId, uploadKey, filename?, stems?, loop_length_bars? }
@@ -203,7 +204,7 @@ export async function POST(request: NextRequest) {
             { status: 503, headers: { 'Retry-After': String(adm.retry_after_s) } },
           );
         }
-        return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
+        return NextResponse.json({ error_code: adm.error_code, message: adm.message }, { status: 429 });
       }
 
       // Atomic per-IP rate enforcement (QA P0/P1): the count and the insert are ONE
@@ -419,7 +420,7 @@ export async function POST(request: NextRequest) {
           { status: 503, headers: { 'Retry-After': String(adm.retry_after_s) } },
         );
       }
-      return NextResponse.json({ error_code: adm.error_code, message: RATE_LIMIT_MSG }, { status: 429 });
+      return NextResponse.json({ error_code: adm.error_code, message: adm.message }, { status: 429 });
     }
 
     const id = randomUUID();

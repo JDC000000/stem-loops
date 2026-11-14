@@ -22,8 +22,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // event to a user as a throttled upload, so it gets the same words and the same
 // { error_code: 'RATE_LIMITED' } 429 body — not a new error contract for the client
 // to learn.
-const RATE_LIMIT_MSG =
-  "You're going a bit fast, or we're at capacity right now. Give it a minute and try again.";
+// F72: checkStemListRate is a per-client limit only, so this is error-copy.ts's
+// RATE_LIMITED_PER_CLIENT_MSG, kept as a literal so the route has no extra import;
+// test/copy-leftovers.test.mjs pins the two equal.
+const RATE_LIMIT_MSG = "You're sending requests too fast. Wait a minute and try again.";
 
 // This response body is a set of bearer credentials: each `signed_url` is a presigned
 // R2 GET that anyone holding the string can replay until it expires. Without this

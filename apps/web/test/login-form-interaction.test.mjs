@@ -76,3 +76,32 @@ test('signup mode and back: the way in and out both work', async () => {
     assert.ok(buttonByText(dom, 'New here? Create account'));
   });
 });
+
+// F57 (copy audit v1.3.1): one shared `busy` flag made the submit button read "Working…" while
+// the Google or one-time-link action ran. Now only the pressed control changes its label, and
+// every control is still disabled until the action settles.
+test('F57: while Google sign-in is in flight only its button changes label; the rest are disabled, not relabelled', async () => {
+  let release;
+  globalThis.__loginStub = { oauth: () => new Promise((r) => { release = () => r({ error: null }); }) };
+  try {
+    await withDom(async (dom) => {
+      await mountForm(dom);
+      await press(dom, buttonByText(dom, 'Continue with Google'), 'Continue with Google');
+      const google = buttonByText(dom, 'Opening Google…');
+      assert.ok(google, 'the pressed button says what it is doing');
+      assert.equal(google.disabled, true);
+      const submit = dom.find('button[type="submit"]');
+      assert.equal(submit.textContent, 'Sign in', 'the submit button does not claim to be working');
+      assert.equal(submit.disabled, true, 'but it is disabled while another action runs');
+      const magic = buttonByText(dom, 'Email me a one-time link');
+      assert.ok(magic, 'the one-time-link button keeps its label');
+      assert.equal(magic.disabled, true);
+      assert.equal(dom.findAll('button').some((b) => /Working/.test(b.textContent)), false, 'no generic "Working…"');
+      await dom.act(async () => { release(); });
+      assert.ok(buttonByText(dom, 'Continue with Google'), 'the label returns when the action settles');
+      assert.equal(dom.find('button[type="submit"]').disabled, false);
+    });
+  } finally {
+    delete globalThis.__loginStub;
+  }
+});

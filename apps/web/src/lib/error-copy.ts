@@ -85,10 +85,19 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
 
 export const DEFAULT_ERROR = ERROR_COPY.INTERNAL_ERROR;
 
+// F72 (copy audit v1.3.1): RATE_LIMITED has two causes, and each gets its own sentence.
+// Per-client: this visitor started jobs, uploads or stem fetches too quickly (lib/admission.ts
+// gate 1, checkUploadRate, checkStemListRate, and the atomic INSERT's per-IP WHERE).
+export const RATE_LIMITED_PER_CLIENT_MSG = "You're sending requests too fast. Wait a minute and try again.";
+// Spend ceiling: the rolling 24h processing budget for the whole site is used up (gate 3).
+// Not about this visitor, so it must not say they went too fast.
+export const RATE_LIMITED_SPEND_CEILING_MSG =
+  "We've reached today's processing limit on our end. It's not something you did. Please try again later.";
+
 /** The sentence a user sees for an entitlement refusal. Never the thrown message: that can be a bare code or database text. */
 export function entitlementMessage(code: string, detail?: string): string {
   if (code === 'ENTITLEMENT_UNAVAILABLE' && detail === 'quota exhausted') {
-    return 'You’ve used this month’s allowance on your plan. Your account page shows when the period ends.';
+    return "You've used this month's allowance on your plan. Your account page shows when the period ends.";
   }
   const c = ERROR_COPY[code] ?? DEFAULT_ERROR;
   return c.action ? `${c.headline} ${c.action}` : c.headline;
@@ -105,7 +114,7 @@ export function entitlementMessage(code: string, detail?: string): string {
  */
 const FAILED_JOB_COPY_OVERRIDES: ReadonlySet<string> = new Set(['SEPARATION_FAILED']);
 
-export const FAILED_JOB_FALLBACK = 'We couldn’t finish this track. Try another file.';
+export const FAILED_JOB_FALLBACK = "We couldn't finish this track. Try another file.";
 
 /**
  * The sentence in a failed job's box on /jobs/[id]. For SEPARATION_FAILED (a provider

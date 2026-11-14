@@ -466,7 +466,7 @@ test('a manifest 404 is "gone", a 429 is "too fast", and neither offers a retry 
   await mountPlayer(
     router(() => ({ status: 429, retryAfter: 30 })),
     async (p) => {
-      assert.match(p.banner(), /going a bit fast|at capacity/);
+      assert.match(p.banner(), /sending requests too fast\. Wait a minute and reload\./);
       assert.equal(p.retry(), null, 'retrying immediately is the wrong answer to a rate limit');
     },
   );

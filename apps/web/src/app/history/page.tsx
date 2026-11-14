@@ -14,13 +14,13 @@ export default function HistoryPage() {
 
   return (
     <main style={{ minHeight: '100dvh', padding: 24, maxWidth: 640, margin: '0 auto' }}>
-      <h1 style={{ color: 'var(--text-primary)', fontSize: 26 }}>Job history</h1>
+      <h1 style={{ color: 'var(--text-primary)', fontSize: 'var(--text-2xl)' }}>Job history</h1>
       <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>
         Files are deleted after 24 hours.
       </p>
       {entries.length === 0 ? (
         <p style={{ color: 'var(--text-muted)' }}>
-          No jobs yet. <a href="/" style={{ color: 'var(--accent)' }}>Start a new song →</a>
+          No jobs yet. <a href="/">Start a new song →</a>
         </p>
       ) : (
         <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -31,7 +31,7 @@ export default function HistoryPage() {
                 className="jp-row"
                 style={{
                   display: 'flex', minHeight: 48, alignItems: 'center', padding: '0 14px',
-                  borderRadius: 8, textDecoration: 'none',
+                  borderRadius: 'var(--radius-md)', textDecoration: 'none',
                   fontFamily: 'var(--font-mono, monospace)', fontSize: 13,
                   justifyContent: 'space-between', gap: 12,
                 }}

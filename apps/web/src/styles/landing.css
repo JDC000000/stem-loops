@@ -1,36 +1,14 @@
 /* stem-loops landing (ported from documents/stem-loops-landing/prototype/css/landing.css, v5).
-   Tokens come from design-tokens.css (operator-locked). NEW tokens are prefixed --sl-.
-   Lime has one job: the primary-action fill (plus the wordmark "loops" and the focus ring). */
+   Tokens come from design-tokens.css (operator-locked). Lime has three jobs only: the
+   primary-action fill, the wordmark dash and the focus ring. */
 
-/* JetBrains Mono (variable, latin subset) is self-hosted via next/font/local in
-   app/(landing)/layout.tsx, which sets --font-jbm on .sl-root. */
-.sl-root { --font-mono: var(--font-jbm), 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace; }
-
+/* Every token (colour, type, size, layout, motion, lane art) is declared in design-tokens.css,
+   the one token file, which every route loads through globals.css. JetBrains Mono is loaded
+   app-wide by app/layout.tsx. Only the demo's two runtime state variables live here. */
 :root {
-  --border-control: #737373;       /* 3.52:1 on #1e1e1e, 4.10:1 on #0d0d0d (1.4.11) */
-  --text-label: #8a8a8a;           /* 5.63:1 on #1e1e1e */
-  --text-12: 12px;
-  --text-display: clamp(34px, 1.6vw + 28px, 48px);
-  --text-h2: clamp(22px, 1.5vw + 10.4px, 32px);
-  --h-control: 44px;
-  --h-field: 48px;
-  --sl-ease: cubic-bezier(.2, .8, .2, 1);
-  --sl-dur-1: 160ms;
-  --sl-dur-2: 240ms;
-  --sl-lane-h: 44px;
-  --sl-lane-label-w: 84px;
-  --sl-lane-peak: #8a8a8a;         /* context (outside the cut) */
-  --sl-loop-peak: #e0e0e0;         /* inside the cut */
-  --sl-region-fill: rgba(255, 255, 255, .05);
-  --sl-grid: #2a2a2a;
-  --sl-container: 1200px;
-  --sl-reading: 720px;
-  /* --sl-gutter lives in design-tokens.css: it is read off this page too. */
-  --sl-section: 64px;
   --region: 50%; /* 4 of 8 bars: the default loop length */
   --ph: 0;
 }
-@media (min-width: 760px) { :root { --sl-lane-label-w: 112px; --sl-lane-h: 48px; --sl-section: 96px; } }
 
 *, *::before, *::after { box-sizing: border-box; }
 * { font-synthesis: none; }
@@ -59,7 +37,6 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .site-header { height: var(--nav-height); background: var(--bg-nav); border-bottom: 1px solid var(--border-default); }
 .header-row { height: 100%; display: flex; align-items: center; justify-content: space-between; }
 .wordmark { font-size: var(--text-xl); font-weight: 700; letter-spacing: -0.02em; text-decoration: none; color: var(--text-primary); display: inline-flex; align-items: center; min-height: var(--h-control); }
-.wm-loops { color: var(--accent); }
 .header-nav { display: flex; align-items: center; gap: var(--space-1); }
 .header-link { color: var(--text-secondary); font-size: var(--text-md); text-decoration: none; min-height: var(--h-control); display: inline-flex; align-items: center; padding-inline: var(--space-2); border-radius: var(--radius-md); }
 /* Pull only the last link's padding flush to the container edge; applying this to every
@@ -327,7 +304,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .example-label { font-size: var(--text-md); font-weight: 600; color: var(--text-primary); }
 .lanes-title { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 .tok { white-space: nowrap; }
-.btn-ghost-play { height: var(--h-control); padding-inline: var(--space-3); background: transparent; border-color: var(--border-default); color: var(--text-secondary); font-size: var(--text-md); }
+.btn-ghost-play { height: var(--h-control); padding-inline: var(--space-3); background: transparent; border-color: var(--border-control); color: var(--text-secondary); font-size: var(--text-md); }
 .btn-ghost-play:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-control); }
 .btn-ghost-play[aria-pressed="true"] { background: var(--bg-selected); color: var(--text-primary); }
 .lanes-foot span { white-space: nowrap; }
@@ -449,7 +426,7 @@ html:not(.js) .lanes, html:not(.js) .pipe-art, html:not(.js) #ab, html:not(.js) 
 @media (max-width: 759px) { .drop-hint { display: none; } }
 /* review r5 design m4: one primary-button height */
 .btn-again { height: var(--h-field); }
-/* the global `a { color: accent }` must not paint body links lime (lime = primary action) */
+/* body links: white and underlined, never lime (lime = primary action; brand book §7.10) */
 .faq details a, .legal a { color: var(--text-primary); text-underline-offset: 4px; }
 .btn-dl[aria-busy="true"] { cursor: progress; }
 /* /terms and /privacy */

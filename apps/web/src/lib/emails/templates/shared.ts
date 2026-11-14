@@ -46,7 +46,9 @@ export function formatDateUtc(input: Date | string | null | undefined): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** Wrap body HTML in a plain, dark-neutral shell. Readable in both themes. */
+/** Wrap body HTML in a plain, light shell. Readable in both themes. The wordmark is all
+ *  #0d0d0d on light backgrounds: lime on white is 1.51:1, so the dash is dropped, never
+ *  darkened (brand book v2.2 §2, A7). */
 export function shell(bodyHtml: string, preheader?: string): string {
   const pre = preheader
     ? `<div style="display:none;max-height:0;overflow:hidden;">${escapeHtml(preheader)}</div>`
@@ -64,7 +66,7 @@ export function shell(bodyHtml: string, preheader?: string): string {
         <td align="center">
           <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;padding:28px;max-width:560px;">
             <tr><td>
-              <div style="font-size:14px;color:#666;margin-bottom:16px;">stem-loops</div>
+              <div style="font-size:14px;font-weight:700;color:#0d0d0d;margin-bottom:16px;">stem-loops</div>
               ${bodyHtml}
               <hr style="border:none;border-top:1px solid #eee;margin:24px 0;" />
               <div style="font-size:12px;color:#888;">

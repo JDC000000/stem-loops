@@ -6,7 +6,8 @@ import { LoopCard } from '@/components/LoopCard';
 import { downloadLoopPack } from '@/lib/zipLoops';
 
 // Stable stem order for the filter tabs (guitar is first-class, never 'piano').
-const STEM_ORDER = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
+// THE stem order, the mixer's (Story 2.1; brand book A3). test/brand-tokens.test.mjs pins it.
+const STEM_ORDER = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'];
 
 /** How often to re-poll while a cut is running, in ms. */
 export const CUT_POLL_MS = 2500;
@@ -164,7 +165,7 @@ export function LoopResults({
             data-testid="cut-loops"
             style={{
               minHeight: 48, padding: '0 18px', fontWeight: 700,
-              border: 'none', borderRadius: 10,
+              border: 'none', borderRadius: 'var(--radius-md)',
             }}
           >
             {cutting ? 'Cutting…' : `Cut ${pending} ${pending === 1 ? 'loop' : 'loops'}`}
@@ -179,7 +180,7 @@ export function LoopResults({
             data-testid="zip-loops"
             style={{
               minHeight: 48, padding: '0 18px', fontWeight: 700,
-              border: 'none', borderRadius: 10,
+              border: 'none', borderRadius: 'var(--radius-md)',
             }}
           >
             {zipping ? 'Zipping…' : 'Download all (ZIP)'}
@@ -195,7 +196,7 @@ export function LoopResults({
         </p>
       )}
       {cutError && (
-        <p role="alert" data-testid="cut-error" style={{ margin: '12px 0 0', color: 'var(--danger, #e5484d)', fontSize: 14 }}>
+        <p role="alert" data-testid="cut-error" style={{ margin: '12px 0 0', color: 'var(--status-failed)', fontSize: 14 }}>
           {cutError}
         </p>
       )}
@@ -213,8 +214,8 @@ export function LoopResults({
               aria-pressed={stem === s}
               onClick={() => setStem(s)}
               style={{
-                minHeight: 44, padding: '0 14px', textTransform: 'capitalize', cursor: 'pointer',
-                borderRadius: 999, fontSize: 14,
+                minHeight: 44, padding: '0 14px', cursor: 'pointer',
+                borderRadius: 'var(--radius-full)', fontSize: 14,
               }}
             >
               {s}

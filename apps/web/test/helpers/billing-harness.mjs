@@ -117,6 +117,7 @@ export const subscriptionFixture = (over = {}) => ({
   customer: 'cus_test_1',
   status: 'active',
   cancel_at_period_end: false,
+  created: PERIOD_START,
   metadata: {},
   items: {
     object: 'list',
@@ -203,6 +204,8 @@ export function fakeDb(state) {
     const f = (state.failures ?? []).find((x) => x.times > 0 && x.re.test(q));
     if (f) { f.times -= 1; throw new Error('fakeDb: injected failure: ' + q.slice(0, 60)); }
     if (/pg_advisory_xact_lock/.test(q)) return r([]);
+    if (/^SELECT welcomed_at FROM users WHERE id = \$1/.test(q))
+      return r(state.users.filter((u) => u.id === p[0]).map((u) => ({ welcomed_at: u.welcomed_at ? new Date(u.welcomed_at) : null })));
     if (/^SELECT 1 FROM users WHERE id/.test(q)) return r(state.users.filter((u) => u.id === p[0]).map(() => ({})));
     if (/^SELECT email FROM auth\.users/.test(q)) return r([]);
     if (/^SELECT id FROM users WHERE email/.test(q)) return r(state.users.filter((u) => u.email === p[0]).map((u) => ({ id: u.id })));
@@ -311,7 +314,7 @@ export async function loadWebhookRoute(provider, state) {
       const st = globalThis.__routeState;
       const u = st.users.find((x) => x.id === userId);
       if (u?.welcomed_at) return false;
-      if (u) u.welcomed_at = 'now';
+      if (u) u.welcomed_at = new Date().toISOString();
       st.emails?.push({ fn: 'sendWelcomeIfFirstTime', userId, vars });
       return true;
     };

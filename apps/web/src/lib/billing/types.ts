@@ -66,6 +66,9 @@ export interface BillingSubscription {
   currentPeriodStart: Date | null;
   currentPeriodEnd: Date | null;
   cancelAtPeriodEnd: boolean;
+  /** When the provider created the subscription (Stripe `created`). Used to
+   *  tell a redelivered first activation from a re-subscription (B3). */
+  createdAt?: Date | null;
 }
 
 /** Fields of a subscription an update event reports as changed. */

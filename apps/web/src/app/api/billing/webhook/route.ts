@@ -210,6 +210,32 @@ function subscriptionEmailCase(
   return null;
 }
 
+/** True when this user's welcome (R2) was already sent for THIS
+ *  subscription: users.welcomed_at is at or after the subscription's
+ *  creation. A redelivered first-activation event (Stripe can deliver an
+ *  event more than once) then re-derives "first activation" with
+ *  welcomeSent=false, because the first delivery already set welcomed_at;
+ *  without this check it would send R4 "Your plan is active" right after the
+ *  welcome, under a different Resend key (PR #272 review-2 B3). A re-subscriber
+ *  welcomed before this subscription existed still gets R4. Unknown (no
+ *  creation time, read failed) counts as welcomed: a missed R4 is harmless,
+ *  R3 confirms the plan anyway, while a duplicate is visible. */
+async function welcomedForSubscription(userId: string, createdAt: Date | null | undefined): Promise<boolean> {
+  if (!createdAt) return true;
+  try {
+    const res = await db.query<{ welcomed_at: Date | string | null }>(
+      'SELECT welcomed_at FROM users WHERE id = $1',
+      [userId],
+    );
+    const w = res.rows[0]?.welcomed_at;
+    if (!w) return false;
+    return new Date(w).getTime() >= createdAt.getTime();
+  } catch (err) {
+    console.error('[webhook] welcomed_at read failed:', err instanceof Error ? err.message : err);
+    return true;
+  }
+}
+
 /** True when some subscription of the user's still entitles them. */
 async function hasLiveSubscription(userId: string): Promise<boolean> {
   const res = await db.query(
@@ -580,6 +606,13 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         welcomeSent,
       );
       if (!change) return;
+      if (
+        change.kind === 'active' &&
+        !change.resumed &&
+        (await welcomedForSubscription(subUserId, sub.createdAt))
+      ) {
+        return;
+      }
       if (change.kind === 'ending') {
         await emailBestEffort('plan_ending', () =>
           sendPlanEnding(subUserId, {

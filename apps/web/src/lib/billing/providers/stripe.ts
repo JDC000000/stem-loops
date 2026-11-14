@@ -292,6 +292,7 @@ function subFromStripe(sub: Stripe.Subscription): BillingSubscription {
       ? new Date(firstItem.current_period_end * 1000)
       : null,
     cancelAtPeriodEnd: sub.cancel_at_period_end,
+    createdAt: typeof sub.created === 'number' ? new Date(sub.created * 1000) : null,
   };
 }
 

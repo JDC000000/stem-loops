@@ -150,6 +150,42 @@ test('stored incomplete -> active: R4 "active" only when R2 did not go out', asy
   assert.deepEqual(fns(), ['sendSubscriptionChanged']);
 });
 
+// ── Stripe redelivers the same event (review-2 B3) ────────────────────
+// Stripe can deliver one event more than once. The welcome went out on the
+// first delivery; the redelivery must not add R4 "Your plan is active".
+
+test('B3: the same created(active) event delivered twice sends exactly one email (R2)', async () => {
+  const evt = envelope('customer.subscription.created', sub());
+  await quiet(() => deliver(route, evt));
+  const again = await quiet(() => deliver(route, evt));
+  assert.equal(again.status, 200);
+  assert.deepEqual(fns(), ['sendWelcomeIfFirstTime']);
+});
+
+test('B3: the same updated(incomplete -> active) event delivered twice sends exactly one email (R2)', async () => {
+  await send('customer.subscription.created', sub({ status: 'incomplete' }));
+  const evt = envelope('customer.subscription.updated', sub(), { status: 'incomplete' });
+  await quiet(() => deliver(route, evt));
+  const again = await quiet(() => deliver(route, evt));
+  assert.equal(again.status, 200);
+  assert.deepEqual(fns(), ['sendWelcomeIfFirstTime']);
+});
+
+test('B3: a re-subscriber welcomed before this subscription existed still gets R4 once per delivery key', async () => {
+  state.users[0].welcomed_at = '2026-01-01T00:00:00Z';
+  const evt = envelope('customer.subscription.created', sub({ id: 'sub_test_2' }));
+  await quiet(() => deliver(route, evt));
+  assert.deepEqual(fns(), ['sendSubscriptionChanged']);
+  // A redelivery reuses sub-changed:sub_test_2:active:pro, so Resend
+  // drops it within 24h (see PR body for the residual past 24h).
+});
+
+test('B3: a re-subscription created after the welcome still gets R4', async () => {
+  state.users[0].welcomed_at = new Date((subscriptionFixture().created - 86400) * 1000).toISOString();
+  await send('customer.subscription.created', sub({ id: 'sub_test_3' }));
+  assert.deepEqual(fns(), ['sendSubscriptionChanged']);
+});
+
 // ── Retry after a partial failure (review B2) ──────────────────────────
 // The first delivery writes the subscription row, then a later statement
 // throws: 500, Stripe retries the SAME event. A stored-row comparison would

@@ -32,7 +32,14 @@ export type SignedInNavProps = {
   signedIn: boolean;
 };
 
-type Item = { label: string; href: string; match: (p: string) => boolean; outlined?: true };
+type Item = {
+  label: string;
+  href: string;
+  match: (p: string) => boolean;
+  outlined?: true;
+  /** Set on the two product items: the tag shown beside the wordmark. */
+  product?: string;
+};
 
 export default function SignedInNav({ signedIn }: SignedInNavProps) {
   // usePathname returns null outside a router (and in renderToStaticMarkup).
@@ -40,36 +47,53 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
   const pathname = usePathname() ?? '';
   const [open, setOpen] = useState(false);
 
-  // WHY THERE IS NO "DOWNLOAD LOOPS" ITEM YET. Jon asked for the loops as a
-  // SEPARATE secondary product page. There is no such route: the loops render
-  // in LoopResults, inside the `job.status === 'done'` branch of the job page,
-  // so the only thing a nav item could point at today is a fragment on a URL
-  // that (a) needs a job id the bar does not have, and (b) has no such anchor
-  // at all while a job is processing, failed or expired. Two differently
-  // labelled items resolving to one page teaches the reader that the labels do
-  // not mean what they say, so the item lands with /loops itself, as its own
-  // piece of work. The dead-end defect this bar exists to close is closed
-  // without it.
+  // Story 7.2: the tool, Download loops, Job history and Account, in the
+  // order the design canvas shows (kept from PR #208).
+  //
+  // "Download loops" was withheld until there was a page behind it: the loops
+  // used to render inside the job page's `done` branch, so the only target was
+  // a fragment on a URL this bar has no id for. /loops is now a real page that
+  // takes no job id (it has its own song picker), so the item is a plain link
+  // to a page that is always there. Still true and still gated: no href here
+  // may be job-specific, and none may point at a fragment.
   //
   // "Play along" goes to the tool rather than to a specific job for the reason
   // set out in SignedInChrome: a per-browser cookie cannot answer "which job is
   // THIS user's" and must not be asked to.
+  //
+  // Signed out, the bar still offers Download loops: /loops redirects to
+  // sign-in and comes back (Story 7.5, the signed-out state is designed too).
   const items: Item[] = [
-    { label: 'Play along', href: '/', match: (p) => p.startsWith('/jobs/') },
+    { label: 'Play along', href: '/', match: (p) => p.startsWith('/jobs/'), product: 'Play along' },
+    { label: 'Download loops', href: '/loops', match: (p) => p === '/loops' || p.startsWith('/loops/'), product: 'Loops' },
     { label: 'Job history', href: '/history', match: (p) => p === '/history' },
     signedIn
       ? { label: 'Account', href: '/account', match: (p) => p.startsWith('/account'), outlined: true }
       : { label: 'Sign in', href: '/login', match: (p) => p === '/login', outlined: true },
   ];
 
+  // Story 7.4: say which product you are in. The current pill already does on
+  // a wide screen, but below 760px the items are folded into the menu, so the
+  // only thing on screen is the wordmark. A short tag beside it carries the
+  // product at every width. Off a product page there is no tag: /history and
+  // /account belong to neither.
+  const product = items.find((it) => it.product && it.match(pathname))?.product ?? null;
+
   return (
     <header className="sin-bar">
       <div className="sin-inner">
-        <a className="sin-wordmark" href="/" aria-label="stem-loops, home">
-          <span>stem</span>
-          <span className="sin-dash">-</span>
-          <span className="sin-loops">loops</span>
-        </a>
+        <div className="sin-brand">
+          <a className="sin-wordmark" href="/" aria-label="stem-loops, home">
+            <span>stem</span>
+            <span className="sin-dash">-</span>
+            <span className="sin-loops">loops</span>
+          </a>
+          {product && (
+            <span className="sin-product" data-testid="sin-product">
+              {product}
+            </span>
+          )}
+        </div>
 
         <button
           type="button"

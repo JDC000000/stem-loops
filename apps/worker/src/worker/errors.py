@@ -16,8 +16,15 @@ class StemLoopsError(Exception):
     error_code: str = "INTERNAL_ERROR"
     user_message: str = "Something went wrong on our end. We've logged it — please try again."
 
-    def __init__(self, detail: str | None = None):
+    # Short machine-readable cause (e.g. 'poll_http_502', 'poll_budget_exhausted'), the same
+    # string written to job_events.detail.reason. Server-side only: used as a Sentry tag,
+    # never shown to the user. None when the raiser has nothing more specific than the code.
+    failure_reason: str | None = None
+
+    def __init__(self, detail: str | None = None, *, failure_reason: str | None = None):
         self.detail = detail
+        if failure_reason is not None:
+            self.failure_reason = failure_reason
         super().__init__(detail or self.user_message)
 
 

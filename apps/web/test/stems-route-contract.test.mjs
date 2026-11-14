@@ -512,7 +512,7 @@ test('a rate-limited request is 429 RATE_LIMITED and never reaches the DB or R2'
   const res = await call(mod);
   assert.equal(res.status, 429);
   assert.equal(res.body.error_code, 'RATE_LIMITED', 'same error contract as /api/uploads');
-  assert.match(res.body.message, /going a bit fast/, 'same copy as the sibling throttled routes');
+  assert.equal(res.body.message, "You're sending requests too fast. Wait a minute and try again.", 'same per-client copy as the sibling throttled routes (F72)');
 
   const kinds = globalThis.__st.calls.map((c) => c[0]);
   assert.deepEqual(kinds, ['rate'], 'the limiter must be the ONLY thing that ran');
@@ -619,7 +619,12 @@ test('checkStemListRate BLOCKS when the atomic insert records no row', async () 
   // The statement inserts only while under the cap, so rowCount 0 IS the refusal.
   globalThis.__ad = [];
   const m = await loadAdmission({ rowCount: 0 });
-  assert.deepEqual(await m.checkStemListRate('ip'), { allowed: false, error_code: 'RATE_LIMITED' });
+  assert.deepEqual(await m.checkStemListRate('ip'), {
+    allowed: false,
+    error_code: 'RATE_LIMITED',
+    reason: 'per_client',
+    message: "You're sending requests too fast. Wait a minute and try again.",
+  });
   const m2 = await loadAdmission({ rowCount: 1 });
   assert.deepEqual(await m2.checkStemListRate('ip'), { allowed: true, error_code: null });
 });

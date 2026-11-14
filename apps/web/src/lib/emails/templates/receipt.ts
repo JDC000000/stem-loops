@@ -1,16 +1,28 @@
-// Receipt email — V3-M3 (TSD §M).
+// R3 — Receipt (emails v1.2 §3 R3; service email).
 // Triggered on:
 //   - checkout.session.completed (mode=payment)   — one-time credit pack
-//   - invoice.paid                                — subscription renewal
+//   - invoice.paid                                — subscription invoice
 //
 // The hosted Stripe invoice URL is the authoritative receipt for tax; this
-// email is a convenience nudge pointing at it.
+// email is a record pointing at it. One button: "View invoice" when there is
+// an invoice URL, otherwise "Go to your account". No pack prices, no
+// "buy more" line (§2.8).
 
 import {
-  escapeHtml,
+  detailRows,
+  detailText,
+  footerFor,
   formatCadCents,
+  formatDateUtc,
+  h1,
+  link,
+  p,
+  pHtml,
+  plainText,
   safeUrl,
   shell,
+  siteBaseOf,
+  type DetailRow,
   type RenderedEmail,
 } from './shared';
 
@@ -18,65 +30,54 @@ export interface ReceiptVars {
   amount_cad_cents: number;
   plan_or_pack_label: string;
   invoice_url: string | null;
+  /** What was bought. The credits sentence is shown only for a credit pack. */
+  kind?: 'credit_pack' | 'subscription';
+  /** When the payment was made; rendered as an ISO date row when set. */
+  paid_on?: Date | string | null;
   siteBase?: string;
 }
 
 export function renderReceipt(vars: ReceiptVars): RenderedEmail {
-  const base = (vars.siteBase ?? 'https://stem-loops.com').replace(/\/+$/, '');
+  const base = siteBaseOf(vars.siteBase);
   const amount = formatCadCents(vars.amount_cad_cents);
   const label = vars.plan_or_pack_label;
   const invoiceUrl = safeUrl(vars.invoice_url);
-
-  // PR #38 Lens B: safeUrl() rejects non-http(s) schemes, but a URL still
-  // allowed by safeUrl can contain a `"` and break out of the href attribute
-  // once interpolated. Attribute-escape the URL (and the /account base URL)
-  // before use. escapeHtml covers &<>"'; that is sufficient for an HTML
-  // double-quoted attribute value.
-  const invoiceHref = escapeHtml(invoiceUrl);
-  const accountHref = escapeHtml(`${base}/account`);
+  const hasInvoice = invoiceUrl !== '#';
+  const accountUrl = `${base}/account`;
 
   const subject = `Receipt from stem-loops — ${amount}`;
-  const html = shell(
-    `
-      <h1 style="font-size:20px;margin:0 0 12px;">Thanks for your payment</h1>
-      <p style="font-size:15px;line-height:1.5;margin:0 0 16px;">
-        Here's the summary.${invoiceUrl !== '#' ? ' Your invoice is on the Stripe page linked below.' : ''}
-      </p>
-      <table role="presentation" cellpadding="0" cellspacing="0"
-             style="font-size:14px;margin:0 0 20px;border-collapse:collapse;">
-        <tr>
-          <td style="color:#666;padding:4px 16px 4px 0;">Item</td>
-          <td style="padding:4px 0;"><strong>${escapeHtml(label)}</strong></td>
-        </tr>
-        <tr>
-          <td style="color:#666;padding:4px 16px 4px 0;">Amount</td>
-          <td style="padding:4px 0;"><strong>${escapeHtml(amount)}</strong></td>
-        </tr>
-      </table>
-      ${
-        invoiceUrl !== '#'
-          ? `<p style="margin:0 0 24px;">
-          <a href="${invoiceHref}"
-             style="display:inline-block;background:#111;color:#fff;text-decoration:none;padding:10px 16px;border-radius:6px;font-size:14px;margin-right:8px;">
-            View invoice
-          </a>
-          <a href="${accountHref}"
-             style="display:inline-block;background:#f0f0f0;color:#111;text-decoration:none;padding:10px 16px;border-radius:6px;font-size:14px;">
-            Go to your account
-          </a>
-        </p>`
-          : `<p style="margin:0 0 24px;">
-          <a href="${accountHref}"
-             style="display:inline-block;background:#111;color:#fff;text-decoration:none;padding:10px 16px;border-radius:6px;font-size:14px;">
-            Go to your account
-          </a>
-        </p>`
-      }
-      <p style="font-size:13px;color:#777;line-height:1.5;margin:0;">
-        Keep this email for your records. Reply with any questions.
-      </p>
-    `,
-    `Receipt for ${label} — ${amount}`,
-  );
-  return { subject, html };
+  const preheader = `Receipt for ${label} — ${amount}`;
+  const lead = 'We received your payment. Here is the summary.';
+
+  const rows: DetailRow[] = [
+    { label: 'Item', value: label },
+    { label: 'Amount', value: amount },
+  ];
+  const paidOn = formatDateUtc(vars.paid_on);
+  if (paidOn) rows.push({ label: 'Date', value: paidOn });
+
+  let note = '';
+  if (vars.kind === 'credit_pack') {
+    note = 'Credits never expire. Each one covers one uploaded track on the Free plan.';
+  } else if (hasInvoice) {
+    note = 'Your invoice is on the Stripe page linked below.';
+  }
+
+  const cta = hasInvoice
+    ? { label: 'View invoice', url: invoiceUrl }
+    : { label: 'Go to your account', url: accountUrl };
+  const footer = footerFor('records');
+
+  const bodyParts = [h1('Thanks for your payment'), p(lead), detailRows(rows)];
+  if (note) bodyParts.push(p(note));
+  if (hasInvoice) {
+    // Secondary destination is an underlined link, never a second button.
+    bodyParts.push(pHtml(`Your plan and credits are on your ${link(accountUrl, 'account page')}.`));
+  }
+  const html = shell({ subject, preheader, bodyHtml: bodyParts.join('\n'), cta, footer, siteBase: base });
+
+  const paragraphs = [lead, detailText(rows), note];
+  if (hasInvoice) paragraphs.push(`Your account: ${accountUrl}`);
+  const text = plainText({ paragraphs, cta, footer });
+  return { subject, html, text };
 }

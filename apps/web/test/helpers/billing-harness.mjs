@@ -182,6 +182,8 @@ export function makeState() {
     usage: [],
     promo: [],
     invalidated: [],
+    // Every email dispatcher call the route makes: { fn, userId, vars }.
+    emails: [],
   };
 }
 
@@ -204,6 +206,12 @@ export function fakeDb(state) {
         state.customers_billing.push({ user_id: p[0], provider: p[1], provider_customer_id: p[2] });
       return r([]);
     }
+    if (/^SELECT status, plan_code, cancel_at_period_end FROM subscriptions WHERE provider = \$1 AND provider_subscription_id = \$2/.test(q))
+      return r(state.subscriptions
+        .filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1])
+        .map((s) => ({ status: s.status, plan_code: s.plan_code, cancel_at_period_end: s.cancel_at_period_end })));
+    if (/^SELECT 1 FROM subscriptions WHERE user_id = \$1 AND status IN \('active','trialing','past_due'\) LIMIT 1/.test(q))
+      return r(state.subscriptions.filter((s) => s.user_id === p[0] && ['active', 'trialing', 'past_due'].includes(s.status)).slice(0, 1).map(() => ({})));
     if (/^SELECT user_id FROM subscriptions WHERE provider = \$1 AND provider_subscription_id/.test(q))
       return r(state.subscriptions.filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1]).map((s) => ({ user_id: s.user_id })));
     if (/^INSERT INTO subscriptions/.test(q)) {
@@ -222,7 +230,7 @@ export function fakeDb(state) {
     if (/^UPDATE subscriptions SET status = 'past_due'/.test(q)) {
       const rows = state.subscriptions.filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1]);
       rows.forEach((s) => { s.status = 'past_due'; });
-      return r(rows.map((s) => ({ user_id: s.user_id })));
+      return r(rows.map((s) => ({ user_id: s.user_id, plan_code: s.plan_code, current_period_start: s.current_period_start })));
     }
     if (/^INSERT INTO entitlements/.test(q)) {
       const [user_id, plan_code, period_start, period_end] = p;
@@ -279,10 +287,25 @@ export async function loadWebhookRoute(provider, state) {
     tx: (...a) => globalThis.__routeDb.tx(...a),
   };`);
   const ent = dataUrl(`export const invalidateEntitlement = (u) => { globalThis.__routeState.invalidated.push(u); };`);
+  // Recording email stubs. sendWelcomeIfFirstTime mirrors the real
+  // welcomed_at guard (per user, once) and returns whether it "sent".
   const em = dataUrl(`
-    export const sendWelcomeIfFirstTime = async () => {};
-    export const sendSubscriptionChanged = async () => {};
-    export const sendReceipt = async () => {};
+    const rec = (fn) => async (userId, vars) => {
+      globalThis.__routeState.emails?.push({ fn, userId, vars });
+    };
+    export const sendWelcomeIfFirstTime = async (userId, vars) => {
+      const st = globalThis.__routeState;
+      const u = st.users.find((x) => x.id === userId);
+      if (u?.welcomed_at) return false;
+      if (u) u.welcomed_at = 'now';
+      st.emails?.push({ fn: 'sendWelcomeIfFirstTime', userId, vars });
+      return true;
+    };
+    export const sendSubscriptionChanged = rec('sendSubscriptionChanged');
+    export const sendPlanEnding = rec('sendPlanEnding');
+    export const sendPlanEnded = rec('sendPlanEnded');
+    export const sendPaymentFailed = rec('sendPaymentFailed');
+    export const sendReceipt = rec('sendReceipt');
   `);
   const next = dataUrl(`
     export class NextResponse {

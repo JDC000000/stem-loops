@@ -122,6 +122,19 @@ function _invoiceSubId(invoice: Stripe.Invoice): string | undefined {
   return undefined;
 }
 
+// Start of the period a subscription invoice charges for: the subscription
+// line's period.start (InvoiceLineItem.parent.type 'subscription_item_details'
+// in 2026-03-25.dahlia+), falling back to the first line. Used by R7, so a
+// failed renewal that arrives before customer.subscription.updated still gets
+// the right grace date. Null when the payload carries no lines.
+function _invoiceSubscriptionPeriodStart(invoice: Stripe.Invoice): Date | null {
+  const lines = invoice.lines?.data ?? [];
+  const subLine =
+    lines.find((l) => l.parent?.type === 'subscription_item_details') ?? lines[0];
+  const start = subLine?.period?.start;
+  return typeof start === 'number' && start > 0 ? new Date(start * 1000) : null;
+}
+
 // user_id for an invoice: invoice.metadata is empty on subscription invoices;
 // newer API versions carry the subscription's metadata under
 // invoice.parent.subscription_details.metadata. Empty string when neither has
@@ -428,6 +441,7 @@ export class StripeProvider implements BillingProvider {
               : null,
             hostedInvoiceUrl: invoice.hosted_invoice_url ?? null,
           },
+          billingReason: invoice.billing_reason ?? null,
         };
       }
       case 'invoice.payment_failed': {
@@ -439,6 +453,13 @@ export class StripeProvider implements BillingProvider {
           userId: _invoiceUserId(invoice),
           providerCustomerId: _customerId(invoice.customer),
           providerSubscriptionId: sub,
+          providerInvoiceId: invoice.id ?? null,
+          attemptCount: typeof invoice.attempt_count === 'number' ? invoice.attempt_count : null,
+          nextPaymentAttempt: invoice.next_payment_attempt
+            ? new Date(invoice.next_payment_attempt * 1000)
+            : null,
+          periodStart: _invoiceSubscriptionPeriodStart(invoice),
+          billingReason: invoice.billing_reason ?? null,
         };
       }
       case 'customer.subscription.created':

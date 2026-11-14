@@ -19,9 +19,10 @@
 // Override with RESEND_FROM env if a different address is required.
 //
 // Reply-to: EMAIL_REPLY_TO, when set, becomes the Resend `reply_to`, so the
-// "Reply to this email" lines in welcome, receipt and subscription-changed
-// reach a person (audit F20). Unset or blank: no reply_to is sent. No
-// default address is coded here on purpose.
+// footer's "Reply if something doesn't work" line reaches a person (audit
+// F20). Unset or blank: no reply_to is sent, and footerFor() in
+// templates/shared.ts drops the reply line on the same test (E10). No default
+// address is coded here on purpose.
 
 import * as Sentry from '@sentry/nextjs';
 
@@ -33,6 +34,11 @@ export interface SendEmailInput {
   to: string;
   subject: string;
   html: string;
+  /**
+   * Plain-text part (emails v1.2 §2.5, E9). Every template renders one; it is
+   * optional here only so a caller without one still sends HTML.
+   */
+  text?: string;
   /** Resend tag (shows up in the dashboard). Use template name. */
   tag: string;
   /**
@@ -97,6 +103,7 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
     to: input.to,
     subject: input.subject,
     html: input.html,
+    ...(input.text ? { text: input.text } : {}),
     tags: [{ name: 'template', value: input.tag }],
     ...(replyTo ? { reply_to: replyTo } : {}),
   };

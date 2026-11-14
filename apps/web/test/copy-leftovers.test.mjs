@@ -64,15 +64,19 @@ for (const rel of ['lib/seo/pages.ts', 'app/layout.tsx']) {
   });
 }
 
-// ── CA-8 / A-05, A-07: "Press Cut below the player" is said once ───────────────────────
+// ── CA-8 / A-05, A-07: the Cut instruction is said once, and it is true ───────────────
+// Since #277 the job page shows no loops (Story 6.1): they live on /loops, reached by the
+// "Download loops" nav item. So "press Cut below the player" is now FALSE and must not
+// come back; the one instruction points at the Download loops page.
 
-test('A-05/A-07: the page tells you to press Cut below the player exactly once', () => {
+test('A-05/A-07: the page tells you where to press Cut exactly once, and never "below the player"', () => {
   for (const text of [RENDER.textSpaced, RENDER.textTight]) {
-    assert.equal((text.match(/press Cut below the player/gi) ?? []).length, 1, 'said once, in the loops section');
+    assert.equal((text.match(/below the player/gi) ?? []).length, 0, 'the job page no longer shows loops (#277)');
+    assert.equal((text.match(/press Cut/gi) ?? []).length, 1, 'said once, in the loops section');
   }
   const loops = RENDER.html.match(/<section[^>]*id="loops"[\s\S]*?<\/section>/);
   assert.ok(loops, 'the rendered page has a #loops section');
-  assert.match(flatten(loops[0]), /Press Cut below the player to make the WAV files\./);
+  assert.match(flatten(loops[0]), /Open Download loops, pick the song and press Cut to make the WAV files\./);
 });
 
 // ── CA-9 / D-03: error-copy.ts is a straight-quote file ─────────────────────────────────

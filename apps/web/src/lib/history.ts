@@ -37,6 +37,19 @@ export function getHistoryEntries(now: number = Date.now()): HistoryEntry[] {
   return readRaw().filter((e) => now - e.at < RETENTION_MS);
 }
 
+/**
+ * Every stored entry, newest first, INCLUDING ones past the retention window.
+ *
+ * For /loops only. Jon (2026-11-14): a song older than 24 hours is still listed
+ * there, with its Cut control disabled and a plain explanation, rather than
+ * silently vanishing. /history keeps using getHistoryEntries. Old entries still
+ * fall out on the next addToHistory, which writes back live entries only.
+ */
+export function getStoredHistoryEntries(): HistoryEntry[] {
+  if (typeof window === 'undefined') return [];
+  return readRaw().sort((a, b) => b.at - a.at);
+}
+
 export function getHistory(): string[] {
   return getHistoryEntries().map((e) => e.id);
 }

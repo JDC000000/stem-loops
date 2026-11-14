@@ -10,8 +10,10 @@
  * the precedent of a colocated client child beside a gated server page.
  *
  * What changed relative to the pre-seam version, and why:
- *   - Story 1.2: `<Player>` is mounted FIRST for a `done` job. The player is the
- *     primary view; `<LoopResults>` stays, below it.
+ *   - Story 1.2: `<Player>` is the view for a `done` job.
+ *   - Story 6.1 (2026-11-14): the job page does NOT show loops. `<LoopResults>`
+ *     moved to /loops, the loop downloader's own page; this page links there
+ *     with the job preselected (`/loops?job=<id>`).
  *   - The standalone `<section aria-label="Chords">` moved INTO `<Player>`, so
  *     the chord track can be given `positionSec` from the engine snapshot
  *     (Story 3.4). Mounting it here could not do that — the engine lives in
@@ -22,7 +24,6 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { Job } from '@stem-loops/types';
 import { JobProgress } from '@/components/JobProgress';
-import { LoopResults } from '@/components/LoopResults';
 import Player from '@/components/play/Player';
 import { formatExpiresIn } from '@/lib/retention';
 import { failedJobMessage } from '@/lib/error-copy';
@@ -266,10 +267,18 @@ export default function JobView({ id }: { id: string }) {
         <>
           {/* Story 1.2 — the player is the PRIMARY view. Jon: "Everybody
               uploading songs wants to see the player and toggle and play
-              along." The loop downloader is secondary and sits below it. */}
+              along." Story 6.1 — the loops are their own product page now;
+              this page shows none and links there instead. */}
           <TrimNote job={job} />
           <Player jobId={job.id} loops={job.loops} enabled />
-          <LoopResults job={{ ...job, title: job.original_filename ?? undefined }} />
+          <p data-testid="loops-link" style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 'var(--text-md, 14px)' }}>
+            Want this song as bar-length WAV loops?{' '}
+            <Link href={`/loops?job=${job.id}`} className="jp-back"
+              style={{ fontSize: 'var(--text-md, 14px)', display: 'inline-block', padding: '12px 0', margin: '-12px 0' }}
+            >
+              Download loops →
+            </Link>
+          </p>
           <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
             Files are deleted after 24 hours.
             {job.expires_at ? ` Yours expire ${formatExpiresIn(new Date(job.expires_at).getTime())}.` : ''}

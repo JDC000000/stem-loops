@@ -850,21 +850,16 @@ test('withoutComments keeps literals readable but still removes comments', () =>
   assert.match(withoutComments('// /* not a comment\nREAL2();'), /REAL2\(\)/);
 });
 
-test('Story 1.2: the Player is mounted ABOVE LoopResults on the job page', () => {
-  // "Everybody uploading songs wants to see the player and toggle and play
-  // along" — the player is the primary view and the loop downloader is
-  // secondary. Swapping the two is invisible to every other test.
-  //
-  // COMMENTS ARE STRIPPED FIRST, and that is not incidental: the first version
-  // of this test used indexOf on the raw source and SURVIVED the swap, because
-  // JobView's header comment names `<Player>` before `<LoopResults>` in prose.
-  // It was measuring the documentation's word order, not the render order.
+test('Story 6.1: the job page mounts the Player and no LoopResults', () => {
+  // Story 1.2 made the player the primary view with the loops below it; Story
+  // 6.1 (v3.0) then moved the loops to their own page, /loops. COMMENTS ARE
+  // STRIPPED FIRST: JobView's header names <LoopResults> in prose, and a raw
+  // indexOf once measured the documentation instead of the code. The rendered
+  // form of this gate is in test/job-page-render.test.mjs.
   const view = codeOnly(read('src/app/jobs/[id]/JobView.tsx'));
-  const player = view.indexOf('<Player');
-  const loops = view.indexOf('<LoopResults');
-  assert.ok(player !== -1, 'JobView no longer mounts the Player at all');
-  assert.ok(loops !== -1, 'JobView no longer mounts LoopResults');
-  assert.ok(player < loops, 'LoopResults is above the Player — Story 1.2 is inverted');
+  assert.ok(view.indexOf('<Player') !== -1, 'JobView no longer mounts the Player at all');
+  assert.equal(view.indexOf('<LoopResults'), -1, 'JobView mounts LoopResults again (Story 6.1)');
+  assert.equal(view.indexOf("from '@/components/LoopResults'"), -1, 'JobView imports LoopResults again');
 });
 
 // ═══ the page gutter the mixer budgeted against ═════════════════════════════

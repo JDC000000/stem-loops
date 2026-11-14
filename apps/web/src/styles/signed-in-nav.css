@@ -50,7 +50,6 @@
   align-items: center;
   min-height: 44px;
   padding: 0 8px 0 0;
-  margin-right: auto;
   font-family: var(--font-mono, monospace);
   font-size: 16px;
   font-weight: 600;
@@ -61,6 +60,28 @@
 .sin-dash,
 .sin-loops {
   color: var(--accent, #a3e635);
+}
+
+/* Wordmark + product tag (Story 7.4). The group, not the wordmark, takes the
+   free space, so the tag sits beside the wordmark at every width. */
+.sin-brand {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-right: auto;
+}
+.sin-product {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border-default, #2a2a2a);
+  border-radius: 999px;
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--text-secondary, #e0e0e0);
 }
 
 /* ── Nav items ──────────────────────────────────────────── */

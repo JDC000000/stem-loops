@@ -80,8 +80,8 @@ export default async function run() {
     const failed = await page.locator('.jp-failed').waitFor({ timeout: 120_000 }).then(() => true, () => false);
     const tf = await panelText(page);
     const code = sql(`SELECT coalesce(error_code,'') FROM jobs WHERE id='${fid}'`);
-    j.check('failed: failed panel shown with a way out', failed && /Something went wrong/.test(tf) && /Try another track/.test(tf), `${code}: ${tf.slice(0, 250)}`);
-    j.check('failed (provider outage, SEPARATION_FAILED): copy does not tell the user to change songs', !/different song|another file/i.test(tf.replace(/Try another track →/, '')), tf.slice(0, 250));
+    j.check('failed: failed panel shown with a way out', failed && /Something went wrong/.test(tf) && /Start a new song/.test(tf), `${code}: ${tf.slice(0, 250)}`);
+    j.check('failed (provider outage, SEPARATION_FAILED): copy does not tell the user to change songs', !/different song|another file/i.test(tf.replace(/Start a new song( →)?/g, '')), tf.slice(0, 250));
     await j.shot(page, 'failed-separation');
     stack('ctl', JSON.stringify({ status: 'succeeded' }));
 

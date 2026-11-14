@@ -15,7 +15,7 @@ export default async function run() {
     let t = (await j.text(page, 'account-fresh')).replace(/\s+/g, ' ');
     await j.shot(page, 'account-fresh');
     j.check('shows the signed-in email', t.includes(user.email), user.email);
-    j.check('plan section shows "Monthly allowance used: 0 / 5" for a free user', /Monthly allowance used: 0 \/ 5/.test(t), (t.match(/Plan.{0,120}/) ?? [''])[0]);
+    j.check('plan section shows "Monthly allowance used: 0 of 5" for a free user', /Monthly allowance used: 0 of 5/.test(t), (t.match(/Plan.{0,120}/) ?? [''])[0]);
     j.check('credits section shows 0 remaining', /Credits 0 remaining/.test(t), (t.match(/Credits.{0,60}/) ?? [''])[0]);
 
     // the beta credit path: credit_adjustments manual_grant

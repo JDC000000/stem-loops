@@ -650,3 +650,30 @@ test('stem filters follow the Story 2.1 order: drums, bass, guitar, keys, vocals
     assert.deepEqual(tabs, ['all', 'drums', 'bass', 'guitar', 'keys', 'vocals', 'other']);
   });
 });
+
+test('M6: even if the disabled Cut handler is invoked directly, an expired job sends no request', async () => {
+  // A disabled <button> swallows clicks, so the handler's own guard is invisible to a
+  // click test. It is the second line of defence (a CSS or attribute regression could
+  // re-enable the button), so it is exercised here by calling React's onClick directly.
+  const { LoopResults } = await loadLoopResults();
+  const { calls, deps } = counters();
+  const expired = { ...job([loop('a', 'drums', false)]), expires_at: '2026-11-14T11:00:00.000Z' };
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopResults, { job: expired, deps, now: atNow }));
+    const btn = dom.find('[data-testid="cut-loops"]');
+    const key = Object.keys(btn).find((k) => k.startsWith('__reactProps$'));
+    assert.ok(key, 'React props are not reachable on the node; this gate would be vacuous');
+    await dom.act(async () => {
+      await btn[key].onClick();
+    });
+    assert.deepEqual(calls.requestCut, [], 'the handler sent a cut for an expired job');
+    // Control: the same direct call on a LIVE job does request, so the gate discriminates.
+    const live = { ...expired, expires_at: '2026-11-15T11:00:00.000Z' };
+    const host = await dom.mount(React.createElement(LoopResults, { job: live, deps, now: atNow }));
+    const liveBtn = host.querySelector('[data-testid="cut-loops"]');
+    await dom.act(async () => {
+      await liveBtn[key].onClick();
+    });
+    assert.deepEqual(calls.requestCut, [live.id]);
+  });
+});

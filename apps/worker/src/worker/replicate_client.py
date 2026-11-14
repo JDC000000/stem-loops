@@ -504,7 +504,8 @@ def poll_until_done(job_id: str, pred_id: str, progress_cb=None) -> tuple[dict, 
                 )
                 break
             backoff = min(POLL_BACKOFF_BASE * 2 ** (transient_n - 1), POLL_BACKOFF_CAP)
-            wait = retry_after if retry_after is not None else backoff
+            # Retry-After: 0 (or tiny) must not turn into a busy loop of GETs.
+            wait = max(retry_after, POLL_BACKOFF_BASE) if retry_after is not None else backoff
             wait = max(0.0, min(wait, deadline - now))
             log_structured(
                 "WARN",
@@ -573,7 +574,7 @@ def poll_until_done(job_id: str, pred_id: str, progress_cb=None) -> tuple[dict, 
                 _book_success(job_id, pred_id, won), 4
             )
         raise SeparationFailedError(
-            f"separation exceeded its time budget ({end_reason}); prediction {pred_id} cancelled",
+            f"separation exceeded its time budget ({end_reason}); prediction cancelled",
             failure_reason="poll_budget_exhausted",
         )
     raise SeparationTimeout(

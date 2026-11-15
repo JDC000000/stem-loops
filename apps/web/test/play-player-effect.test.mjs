@@ -101,7 +101,12 @@ const engineMod = put(
   toJs(read('src/lib/play/engine.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
 );
 
+// device-support (Story 8.3): the REAL module. Under happy-dom no pointer media
+// query matches and deviceMemory is absent, so the rule offers the player.
+const deviceSupportMod = put('device-support.mjs', toJs(read('src/lib/play/device-support.ts')));
+
 const playerJs = rewriteShared(toJs(read('src/components/play/Player.tsx'), true))
+  .replace(/from ['"]@\/lib\/play\/device-support['"]/g, `from '${deviceSupportMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordMod}'`)
   .replace(/from ['"]@\/lib\/play\/engine['"]/g, `from '${engineMod}'`)
   .replace(/from ['"]@\/lib\/play\/load-stems['"]/g, `from '${loadStemsMod}'`)
@@ -201,7 +206,7 @@ const router = (onManifest, onStem = () => ({ status: 404 })) => (href, n) =>
   isManifest(href) ? onManifest(href, n) : onStem(href, n);
 
 /** Mount the real Player and hand the body the rendered page. */
-async function mountPlayer(server, body, props = {}) {
+async function mountPlayer(server, body, props = {}, setup = null) {
   return withDom(async (dom) => {
     serve = server;
     requests = [];
@@ -209,6 +214,8 @@ async function mountPlayer(server, body, props = {}) {
     const realSetTimeout = globalThis.setTimeout;
     const settle = () => dom.act(() => new Promise((r) => realSetTimeout(r, 0)));
 
+    // Story 8.3 tests: adjust the freshly-installed window before the effect runs.
+    const undo = setup ? setup() : null;
     const host = await dom.mount(React.createElement(Player.default, { jobId: JOB, enabled: true, ...props }));
     // the load is async: drain the fetch -> json -> stem GETs -> setState chain
     await settle();
@@ -239,7 +246,11 @@ async function mountPlayer(server, body, props = {}) {
         await settle();
       },
     };
-    return body(api);
+    try {
+      return await body(api);
+    } finally {
+      undo?.();
+    }
   });
 }
 
@@ -533,3 +544,32 @@ test('unmounting mid-load aborts it: the load never lands on an unmounted compon
     },
   );
 });
+
+// ═══ Story 8.3 — a phone never reaches the network or the engine ════════════
+
+test('a touch-only device gets the device state, and NOTHING is fetched or constructed', async () => {
+  await mountPlayerOnTouchOnly(async (p) => {
+    assert.equal(p.phase(), 'device-unsupported');
+    assert.ok(p.dom.find('[data-testid="player-device-unsupported"]'), 'no device state rendered');
+    assert.equal(p.requests.length, 0, `fetched: ${p.requests.join(', ')}`);
+    assert.equal(p.banner(), null, 'the device state is not an error banner');
+  });
+});
+
+test('?player=force skips the device rule (and only that) so a real phone can be measured', async () => {
+  await mountPlayerOnTouchOnly(async (p) => {
+    assert.notEqual(p.phase(), 'device-unsupported');
+    assert.ok(p.requests.some(isManifest), 'the forced load did not ask for the manifest');
+  }, '?player=force');
+});
+
+async function mountPlayerOnTouchOnly(body, search = '') {
+  await mountPlayer(router(() => ({ status: 500 })), body, {}, () => {
+    const real = globalThis.matchMedia;
+    globalThis.matchMedia = (q) => ({ matches: q === '(pointer: coarse)', media: q, addEventListener() {}, removeEventListener() {} });
+    if (search) globalThis.history.replaceState(null, '', search);
+    return () => {
+      globalThis.matchMedia = real;
+    };
+  });
+}

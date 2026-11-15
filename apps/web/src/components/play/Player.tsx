@@ -76,6 +76,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ChordOverlay } from '@/components/ChordOverlay';
+import {
+  COPY_LINK_DONE,
+  COPY_LINK_FAILED,
+  COPY_LINK_LABEL,
+  DEVICE_UNSUPPORTED_BODY,
+  DEVICE_UNSUPPORTED_STILL_WORKS,
+  DEVICE_UNSUPPORTED_TITLE,
+  deviceBlockReason,
+  playerForced,
+  readDeviceSignals,
+  type DeviceBlockReason,
+} from '@/lib/play/device-support';
 import { createPlayEngine } from '@/lib/play/engine';
 import {
   StemLoadError,
@@ -112,12 +124,12 @@ import styles from './Player.module.css';
  */
 export const UNSUPPORTED_BROWSER_MESSAGE =
   'Play along needs the Web Audio API, which this browser does not provide. ' +
-  'Use Chrome on a desktop or laptop. Your loops are still available below.';
+  'Use Chrome on a desktop or laptop. Your loops are still on the Download loops page.';
 
 /** Story 5.3, reached when every stem decoded to nothing (ENGINE_ERROR.DECODE_FAILED). */
 export const UNDECODABLE_MESSAGE =
   'This browser could not decode this track’s audio. ' +
-  'Use Chrome on a desktop or laptop. Your loops are still available below.';
+  'Use Chrome on a desktop or laptop. Your loops are still on the Download loops page.';
 
 /**
  * Story 6.4 — nothing was stored for this job (`state: 'unavailable'`). Not an
@@ -127,7 +139,7 @@ export const UNDECODABLE_MESSAGE =
  */
 export const NO_STEMS_MESSAGE =
   'Play along is not available for this track — no play-along audio was kept for it. ' +
-  'Your loops are below.';
+  'Your loops are on the Download loops page.';
 
 /**
  * `state: 'encode_failed'` — the stems were separated and uploaded for download,
@@ -136,23 +148,23 @@ export const NO_STEMS_MESSAGE =
  */
 export const ENCODE_FAILED_MESSAGE =
   'We separated this track but could not prepare its audio for play along. ' +
-  'Your loops are below. To retry, add the track again on the home page. It counts as a new track.';
+  'Your loops are on the Download loops page. To retry, add the track again on the home page. It counts as a new track.';
 
 /** Stems were offered and the browser never got a response (CORS / CSP / offline). */
 export const FETCH_NETWORK_MESSAGE =
   'Your browser could not reach the storage that holds this track’s audio, so play along ' +
   'cannot start. Check your connection and try again. If it keeps happening on a working ' +
-  'connection, the fault is on our end. Your loops are below.';
+  'connection, the fault is on our end. Your loops are on the Download loops page.';
 
 /** Stems were offered and storage answered with an error status. */
 export const FETCH_HTTP_MESSAGE =
   'Our storage would not hand over this track’s audio files, so play along cannot start. ' +
-  'Try again in a moment. Your loops are below.';
+  'Try again in a moment. Your loops are on the Download loops page.';
 
 /** Stems were offered, storage answered 200, and the bytes were unusable. */
 export const FETCH_BODY_MESSAGE =
   'This track’s audio files arrived empty or incomplete, so play along cannot start. ' +
-  'Try again. Your loops are below.';
+  'Try again. Your loops are on the Download loops page.';
 
 export const GENERIC_LOAD_MESSAGE =
   'We could not load the audio for this track. Reload the page to try again.';
@@ -176,7 +188,7 @@ export const MANIFEST_UNREACHABLE_MESSAGE =
  */
 export const MANIFEST_SERVER_ERROR_MESSAGE =
   'Our server could not start play along for this track. This is on our end, not your connection. ' +
-  'Try again in a moment. Your loops are below.';
+  'Try again in a moment. Your loops are on the Download loops page.';
 
 const LOAD_MESSAGES: Record<StemLoadErrorCode, string> = {
   RATE_LIMITED:
@@ -278,6 +290,12 @@ export type Phase =
   | { readonly kind: 'idle' }
   /** Story 5.3. */
   | { readonly kind: 'unsupported'; readonly message: string }
+  /**
+   * Story 8.3 — a phone, a touch-only tablet or a low-memory device. Web Audio
+   * exists, but the six-stem load has never been measured on such a device, so
+   * nothing is fetched or decoded. See src/lib/play/device-support.ts.
+   */
+  | { readonly kind: 'device-unsupported'; readonly reason: DeviceBlockReason }
   | { readonly kind: 'loading' }
   /** Story 6.4 — fall back to loops; NOT an error. */
   | { readonly kind: 'no-stems' }
@@ -377,6 +395,15 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
     }
     if (!hasWebAudio(globalThis as Parameters<typeof hasWebAudio>[0])) {
       setPhase({ kind: 'unsupported', message: UNSUPPORTED_BROWSER_MESSAGE });
+      return;
+    }
+    // Story 8.3. Checked BEFORE an engine exists, so a blocked device never
+    // allocates an AudioContext or downloads a byte of audio.
+    // `?player=force` skips it, so the question can be measured on a real phone.
+    const forced = playerForced(globalThis.location?.search);
+    const blocked = forced ? null : deviceBlockReason(readDeviceSignals(globalThis));
+    if (blocked) {
+      setPhase({ kind: 'device-unsupported', reason: blocked });
       return;
     }
 
@@ -575,6 +602,8 @@ export function PlayerView({
         </p>
       ) : null}
 
+      {phase.kind === 'device-unsupported' ? <DeviceUnsupported reason={phase.reason} /> : null}
+
       {phase.kind === 'load-error' && phase.retryable && onRetry ? (
         <button type="button" className={styles.retry} onClick={onRetry} data-testid="player-retry">
           Try again
@@ -621,5 +650,48 @@ export function PlayerView({
         <ChordOverlay jobId={jobId} positionSec={chordPosition} />
       </div>
     </section>
+  );
+}
+
+/**
+ * Story 8.3 — the designed "not on this device yet" state. Not an error: the
+ * tone is the calm notice, the heading says what is needed, the body says why
+ * with the measured number, and the one action helps the user get to a
+ * desktop (copy the link to send to themselves). The chord track stays
+ * mounted below it, as in every other phase.
+ */
+export function DeviceUnsupported({ reason }: { readonly reason: DeviceBlockReason }) {
+  const [copy, setCopy] = useState<'idle' | 'done' | 'failed'>('idle');
+  const onCopy = useCallback(() => {
+    const href = globalThis.location?.href;
+    const clip = globalThis.navigator?.clipboard;
+    if (!href || !clip || typeof clip.writeText !== 'function') {
+      setCopy('failed');
+      return;
+    }
+    clip.writeText(href).then(
+      () => setCopy('done'),
+      () => setCopy('failed'),
+    );
+  }, []);
+  return (
+    <div
+      className={styles.device}
+      role="status"
+      data-testid="player-device-unsupported"
+      data-reason={reason}
+    >
+      <h2 className={styles.deviceTitle}>{DEVICE_UNSUPPORTED_TITLE}</h2>
+      <p className={styles.deviceBody}>{DEVICE_UNSUPPORTED_BODY[reason]}</p>
+      <p className={styles.deviceBody}>{DEVICE_UNSUPPORTED_STILL_WORKS}</p>
+      <div className={styles.deviceActions}>
+        <button type="button" className={styles.deviceButton} onClick={onCopy} data-testid="player-copy-link">
+          {COPY_LINK_LABEL}
+        </button>
+        <span className={styles.deviceCopyState} aria-live="polite">
+          {copy === 'done' ? COPY_LINK_DONE : copy === 'failed' ? COPY_LINK_FAILED : ''}
+        </span>
+      </div>
+    </div>
   );
 }

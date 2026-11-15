@@ -3,7 +3,8 @@
 // (documents/stem-loops-landing/prototype/CHANGELOG.md).
 import { DEMO_BEFORE_PEAKS_URL, DEMO_DATA_BASE } from '@/lib/public-config';
 
-export const STEM_ORDER = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'] as const;
+// THE stem order, the mixer's (Story 2.1; brand book A3). test/brand-tokens.test.mjs pins it.
+export const STEM_ORDER = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'] as const;
 export type StemName = (typeof STEM_ORDER)[number];
 export const BAR_OPTIONS = [1, 2, 4, 8] as const;
 export type SetKey = '1bar' | '2bar' | '4bar' | '8bar';

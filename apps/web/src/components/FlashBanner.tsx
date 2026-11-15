@@ -32,7 +32,7 @@ export default function FlashBanner() {
       role="status"
       style={{
         position: 'fixed', top: 12, left: '50%', transform: 'translateX(-50%)',
-        maxWidth: 'calc(100vw - 32px)', padding: '10px 16px', borderRadius: 8, zIndex: 1000,
+        maxWidth: 'calc(100vw - 32px)', padding: '10px 16px', borderRadius: 'var(--radius-md)', zIndex: 1000,
         background: 'var(--bg-card, #151515)', color: 'var(--text-primary)',
         border: '1px solid var(--border-default, #444)', fontSize: 14,
         display: 'flex', gap: 12, alignItems: 'center',
@@ -43,7 +43,8 @@ export default function FlashBanner() {
         type="button"
         aria-label="Dismiss"
         onClick={() => setMsg(null)}
-        style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', minHeight: 32, minWidth: 32 }}
+        // 44 x 44 touch target (brand book §8, M25); it was 32 x 32
+        style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', minHeight: 'var(--touch-min)', minWidth: 'var(--touch-min)' }}
       >
         ×
       </button>

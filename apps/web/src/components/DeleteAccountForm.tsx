@@ -6,18 +6,9 @@
 import { useState, type FormEvent } from 'react';
 import { createBrowserClient } from '@/lib/auth/supabase';
 import { clearBufferedEdits } from '@/chord/edit-collector';
+import { fieldStyle, buttonBase } from '@/lib/ui/form-styles';
 
-const input = {
-  width: '100%',
-  minHeight: 44,
-  padding: '0 12px',
-  borderRadius: 8,
-  fontSize: 16,
-  border: '1px solid var(--border-default, #444)',
-  background: 'var(--bg-surface, #151515)',
-  color: 'var(--text-primary)',
-  boxSizing: 'border-box' as const,
-};
+const input = fieldStyle;
 
 export default function DeleteAccountForm({ email }: { email: string }) {
   const [typed, setTyped] = useState('');
@@ -85,14 +76,12 @@ export default function DeleteAccountForm({ email }: { email: string }) {
         type="submit"
         disabled={!matches || busy}
         style={{
-          width: '100%',
-          minHeight: 44,
-          padding: '0 16px',
-          borderRadius: 8,
-          fontWeight: 600,
+          ...buttonBase,
+          // the failed red from the token file, not an off-palette red (brand book M23):
+          // #0d0d0d on #ff5f5f is 6.53:1 (white on it would be 2.98:1)
           border: 'none',
-          background: '#c62828',
-          color: '#fff',
+          background: 'var(--status-failed)',
+          color: 'var(--text-inverse)',
           cursor: !matches || busy ? 'not-allowed' : 'pointer',
           opacity: !matches || busy ? 0.5 : 1,
           boxSizing: 'border-box',

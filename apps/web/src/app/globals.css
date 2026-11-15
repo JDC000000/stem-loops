@@ -21,13 +21,16 @@ body {
   padding: 0;
   background: var(--bg-page);
   color: var(--text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans);
   /* No horizontal scroll on mobile (375px first-class). */
   overflow-x: hidden;
 }
 
+/* Links are white and underlined, never lime: lime is the primary action, the wordmark dash
+   and the focus ring only (brand book §7.10, M19). */
 a {
-  color: var(--accent);
+  color: var(--text-primary);
+  text-underline-offset: 4px;
 }
 
 /* Type baseline (design-standards 4): form controls use the page face and size instead of the

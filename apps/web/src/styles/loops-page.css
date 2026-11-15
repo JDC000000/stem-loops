@@ -67,7 +67,10 @@
   line-height: var(--leading-snug);
 }
 .lp-link {
-  color: var(--accent);
+  /* text links are white and underlined, never lime (brand book §7.10, A5, M19) */
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-offset: 4px;
   /* inline links get a real hit area without changing the line box */
   display: inline-block;
   min-height: 44px;

@@ -1,11 +1,11 @@
 /* Colour option A: "Stem spectrum", stem colour as data (landing, /terms, /privacy).
-   The stem tokens (--stem-*, --stem, --sl-stem-strip) live in stem-color.css,
-   shared with the job and history pages. Each stem's hue appears wherever that stem appears:
+   The stem tokens (--stem-*, --sl-stem-strip) live in design-tokens.css and the
+   [data-stem] mapping in stem-color.css, shared with the job and history pages. Each stem's hue appears wherever that stem appears:
    the stem chips, the example lanes, the Separate stage, the drums file and the A/B drums
    wave. Everything that is not a stem stays monochrome. Large stem fills rest at 85% hue on
    the plate and go to full hue while they sound, so lime stays the brightest thing on screen.
    The results-page --wf-* tokens are not touched: the landing art reads its own --sl-* tokens.
-   Ratios are measured in the running page (documents/stem-loops-color/PLATFORM-A.md). */
+   Ratios are WCAG 2.x on 8-bit sRGB (brand book v2.2, Appendix C). */
 
 /* ── shell: the stem key as a quiet 1px rule under the header (overlays the existing 1px
    border, so no box changes), only on the page that has the tool: on /terms, /privacy and the
@@ -28,8 +28,8 @@
   #tool:has(input[name="stem"][value="other"]:not(:checked)) { --k-other: var(--border-default); }
   #options-toggle {
     background-image: linear-gradient(90deg,
-      var(--k-drums) 0 16.666%, var(--k-bass) 0 33.333%, var(--k-vocals) 0 50%,
-      var(--k-guitar) 0 66.666%, var(--k-keys) 0 83.333%, var(--k-other) 0 100%);
+      var(--k-drums) 0 16.666%, var(--k-bass) 0 33.333%, var(--k-guitar) 0 50%,
+      var(--k-keys) 0 66.666%, var(--k-vocals) 0 83.333%, var(--k-other) 0 100%);
     background-repeat: no-repeat;
     background-size: 100% 3px;
     background-position: 0 100%;

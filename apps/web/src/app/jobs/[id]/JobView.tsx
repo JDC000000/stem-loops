@@ -64,7 +64,7 @@ const actionButton: React.CSSProperties = {
   minHeight: 48,
   padding: '0 18px',
   border: 0,
-  borderRadius: 10,
+  borderRadius: 'var(--radius-md)',
   fontWeight: 700,
 };
 
@@ -219,7 +219,7 @@ export default function JobView({ id }: { id: string }) {
           className="jp-failed"
           role="alert"
           data-testid="job-unreachable"
-          style={{ width: '100%', maxWidth: 560, padding: '20px 24px', borderRadius: 12, background: 'var(--status-failed-bg)' }}
+          style={{ width: '100%', maxWidth: 560, padding: '20px 24px', borderRadius: 'var(--radius-lg)', background: 'var(--status-failed-bg)' }}
         >
           <h1 style={{ margin: '0 0 8px', fontSize: 'var(--text-xl)' }}>We can&apos;t get an update right now</h1>
           <p style={{ margin: 0 }}>
@@ -251,7 +251,7 @@ export default function JobView({ id }: { id: string }) {
             width: '100%',
             maxWidth: 560,
             padding: '20px 24px',
-            borderRadius: 12,
+            borderRadius: 'var(--radius-lg)',
             background: 'var(--status-failed-bg)',
           }}
         >
@@ -289,7 +289,7 @@ export default function JobView({ id }: { id: string }) {
           className="jp-failed"
           role="alert"
           data-testid="job-stalled"
-          style={{ width: '100%', maxWidth: 560, padding: '20px 24px', borderRadius: 12, background: 'var(--status-failed-bg)' }}
+          style={{ width: '100%', maxWidth: 560, padding: '20px 24px', borderRadius: 'var(--radius-lg)', background: 'var(--status-failed-bg)' }}
         >
           <h1 style={{ margin: '0 0 8px', fontSize: 'var(--text-xl)' }}>This is taking too long</h1>
           <p style={{ margin: 0 }}>

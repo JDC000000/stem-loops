@@ -12,7 +12,7 @@ import {
 } from '@/lib/loops/availability';
 
 // Stable stem order for the filter tabs (guitar is first-class, never 'piano').
-// Story 2.1 order, which Jon set for every stem list on 2026-11-14.
+// THE stem order, the mixer's (Story 2.1; brand book A3). test/brand-tokens.test.mjs pins it.
 const STEM_ORDER = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'];
 
 /** How often the 24-hour window is re-checked while the page is open, in ms. */
@@ -200,7 +200,7 @@ export function LoopResults({
             data-testid="cut-loops"
             style={{
               minHeight: 48, padding: '0 18px', fontWeight: 700,
-              border: 'none', borderRadius: 10,
+              border: 'none', borderRadius: 'var(--radius-md)',
             }}
           >
             {cutting ? 'Cutting…' : `Cut ${pending} ${pending === 1 ? 'loop' : 'loops'}`}
@@ -216,7 +216,7 @@ export function LoopResults({
             data-testid="zip-loops"
             style={{
               minHeight: 48, padding: '0 18px', fontWeight: 700,
-              border: 'none', borderRadius: 10,
+              border: 'none', borderRadius: 'var(--radius-md)',
             }}
           >
             {zipping ? 'Zipping…' : 'Download all (ZIP)'}
@@ -243,7 +243,7 @@ export function LoopResults({
         </p>
       )}
       {cutError && (
-        <p role="alert" data-testid="cut-error" style={{ margin: '12px 0 0', color: 'var(--danger, #e5484d)', fontSize: 14 }}>
+        <p role="alert" data-testid="cut-error" style={{ margin: '12px 0 0', color: 'var(--status-failed)', fontSize: 14 }}>
           {cutError}
         </p>
       )}
@@ -261,8 +261,8 @@ export function LoopResults({
               aria-pressed={stem === s}
               onClick={() => setStem(s)}
               style={{
-                minHeight: 44, padding: '0 14px', textTransform: 'capitalize', cursor: 'pointer',
-                borderRadius: 999, fontSize: 14,
+                minHeight: 44, padding: '0 14px', cursor: 'pointer',
+                borderRadius: 'var(--radius-full)', fontSize: 14,
               }}
             >
               {s}

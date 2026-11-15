@@ -50,7 +50,7 @@
 //     A job with 90 s left would get a URL good for 300 s.
 // Both are product behaviour; this PR is tests only, so they are recorded here, not fixed.
 //
-// FOUR job routes carry the `expires_at > now()` predicate and all four are covered here:
+// FOUR job routes carry the expiry predicate (since 2026-11-15 `${JOB_RETAINED_UNTIL_SQL} > now()`, was `expires_at > now()`) and all four are covered here:
 // /api/jobs/:id, /stems, /play-chords and /loops (GET and POST share one `authorize`).
 // Round 1 covered three; deleting the predicate from /loops left the suite green.
 import { test, beforeEach, afterEach } from 'node:test';
@@ -84,6 +84,20 @@ delete process.env.MINIO_ENDPOINT;
  * throw into a 500, so a throw alone shows up as "expected 404, got 500" -- a failure,
  * but one that does not say WHY. afterEach asserts `unmodelled` is empty with the SQL.
  */
+// Paid-plan retention (2026-11-15): every job route's expiry predicate is now
+// `${JOB_RETAINED_UNTIL_SQL} > now()` (lib/retention.ts), a correlated subquery over
+// subscriptions that no fake can honestly evaluate. The fake therefore recognises EXACTLY
+// that constant -- read from the real module, not retyped -- and swaps it for a token
+// before splitting on AND. Every fixture job here is ANONYMOUS (user_id NULL), for which the
+// real expression is exactly `expires_at` (no owner, no subscription), so the token is
+// evaluated as `expires_at`. The paid branches are run against a real Postgres by
+// apps/worker/tests/test_paid_retention.py, which executes this same constant.
+// Anything else that is not modelled still records-and-throws, so dropping or rewriting the
+// predicate is a red test, as before.
+const RETAINED = '__RETAINED_UNTIL__';
+let RETAINED_SQL = null; // set in loadRoutes from the real module
+const tokenise = (sql) => (RETAINED_SQL ? sql.split(RETAINED_SQL).join(RETAINED) : sql);
+
 function evaluate(table, where, params, rows, now, unmodelled) {
   const conjuncts = where
     .replace(/\s+/g, ' ')
@@ -96,8 +110,11 @@ function evaluate(table, where, params, rows, now, unmodelled) {
       const col = m[1].toLowerCase();
       const want = String(params[Number(m[2]) - 1]).toLowerCase();
       out = out.filter((r) => String(r[col]).toLowerCase() === want);
-    } else if (table === 'jobs' && /^expires_at > now\(\)$/i.test(c)) {
-      out = out.filter((r) => new Date(r.expires_at).getTime() > now);
+    } else if (table === 'jobs' && c === `${RETAINED} > now()`) {
+      out = out.filter((r) => {
+        if (r.user_id !== null) throw new Error('fake db models JOB_RETAINED_UNTIL_SQL for anonymous jobs only');
+        return new Date(r.expires_at).getTime() > now;
+      });
     } else if (table === 'loops' && /^cut_at IS NULL$/i.test(c)) {
       out = out.filter((r) => r.cut_at == null);
     } else {
@@ -112,7 +129,7 @@ function evaluate(table, where, params, rows, now, unmodelled) {
 function makeDb(store) {
   return {
     query: async (text, params = []) => {
-      const sql = String(text).replace(/\s+/g, ' ').trim();
+      const sql = tokenise(String(text).replace(/\s+/g, ' ').trim());
       const m = /\bFROM (jobs|job_events|loops|loop_requests) WHERE (.*?)(?: ORDER BY .*)?$/i.exec(sql);
       if (!m) {
         const msg = `fake db cannot parse: ${sql}`;
@@ -138,6 +155,8 @@ function makeDb(store) {
 let routes;
 async function loadRoutes() {
   const retention = dataUrl(toJs('src/lib/retention.ts'));
+  RETAINED_SQL = (await import(retention)).JOB_RETAINED_UNTIL_SQL.replace(/\s+/g, ' ').trim();
+  assert.ok(RETAINED_SQL.length > 0, 'lib/retention.ts must export JOB_RETAINED_UNTIL_SQL');
   const r2 = dataUrl(
     toJs('src/lib/r2.ts')
       .replace(/from ['"]@aws-sdk\/client-s3['"]/, `from '${resolveBare('@aws-sdk/client-s3')}'`)
@@ -384,11 +403,14 @@ test('POST /api/jobs/:id/loops: a live job with every loop already cut is an ide
 
 // ───────────────── the fake database itself must be able to say no ─────────────────
 
-test('the fake database filters on expires_at (it is not a substring dispatcher)', async () => {
+test('the fake database filters on the retention predicate (it is not a substring dispatcher)', async () => {
   const q = (sql) => globalThis.__expiryDb.query(sql, [EXPIRED]);
-  assert.equal((await q('SELECT id FROM jobs WHERE id = $1 AND expires_at > now()')).rowCount, 0);
+  assert.equal((await q(`SELECT id FROM jobs WHERE id = $1 AND ${RETAINED_SQL} > now()`)).rowCount, 0);
   assert.equal((await q('SELECT id FROM jobs WHERE id = $1')).rowCount, 1);
-  await assert.rejects(() => q('SELECT id FROM jobs WHERE id = $1 AND expires_at > now() - 1'), /cannot evaluate/);
+  // The bare 24 h predicate is no longer what any route issues: it is unmodelled, so a route
+  // that regressed to it (and so deleted every subscriber's library from view) goes red.
+  await assert.rejects(() => q('SELECT id FROM jobs WHERE id = $1 AND expires_at > now()'), /cannot evaluate/);
+  await assert.rejects(() => q(`SELECT id FROM jobs WHERE id = $1 AND ${RETAINED_SQL} > now() - 1`), /cannot evaluate/);
   store.unmodelled.length = 0; // that rejection was the point of the assertion above
 });
 

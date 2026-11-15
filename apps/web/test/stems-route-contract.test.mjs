@@ -657,7 +657,13 @@ test('the job lookup is gated on expires_at, not just on id', async () => {
   const q = globalThis.__st.calls.find((c) => c[0] === 'query');
   assert.ok(q, 'the route must query for the job');
   const sql = q[1].replace(/\s+/g, ' ');
-  assert.match(sql, /expires_at\s*>\s*now\(\)/i, 'the expiry gate must be in the SQL');
+  // Since 2026-11-15 the gate is the per-plan retention rule, the SAME text the worker's sweep
+  // deletes on (lib/retention.ts JOB_RETAINED_UNTIL_SQL; real-Postgres semantics in
+  // apps/worker/tests/test_paid_retention.py). Pinned as the exact constant, not a fragment.
+  const { JOB_RETAINED_UNTIL_SQL } = await import(dataUrl(toJs(readFileSync(RETENTION, 'utf8'))));
+  const retained = JOB_RETAINED_UNTIL_SQL.replace(/\s+/g, ' ');
+  assert.ok(sql.includes(`AND ${retained} > now()`), 'the retention gate must be in the SQL');
+  assert.ok(sql.includes(`${retained} AS expires_at`), 'the URL TTL must be bounded by the retention deadline');
   assert.match(sql, /FROM jobs/i);
   assert.deepEqual(q[2], [JOB], 'the id must be a bound parameter, never interpolated');
 });

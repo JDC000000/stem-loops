@@ -184,7 +184,7 @@ async function loadJobRoute(loops) {
     )
     .replace(
       /from ['"]@\/lib\/retention['"]/g,
-      `from '${dataUrl(`export const presignTtlSec = () => 900;`)}'`,
+      `from '${dataUrl(`export const presignTtlSec = () => 900; export const JOB_RETAINED_UNTIL_SQL = 'expires_at';`)}'`,
     )
     // Ownership is not what this file tests (test/job-access-routes.test.mjs runs the REAL helper);
     // here it is stubbed open so this file's own subject stays isolated.
@@ -309,6 +309,8 @@ async function loadLoopsRoute({ job, user = null, uncut = 3, insertThrows = null
     )
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${dataUrl(`export const captureException = () => {};`)}'`)
     .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
+    // The REAL retention module: the job lookup's predicate is JOB_RETAINED_UNTIL_SQL.
+    .replace(/from ['"]@\/lib\/retention['"]/g, `from '${dataUrl(toJs(readFileSync(join(WEB, 'src/lib/retention.ts'), 'utf8')))}'`)
     .replace(
       /from ['"]next\/server['"]/g,
       `from '${dataUrl(`

@@ -1,10 +1,13 @@
-"""Retention sweep (T33) — delete user content 24 hours after the job was created.
+"""Retention sweep (T33) — delete user content when its retention ends.
 
-Product promise: "Files are deleted after 24 hours." Each job carries expires_at
-(created_at + 24h, migration 007) and this sweep — run every RETENTION_SWEEP_SECONDS
-(default 15 min) from the consumer loop — is what actually enforces it:
+Product promise (Jon, 2026-11-15): Free = deleted 24 hours after the job was created.
+Pro and Studio = kept while the subscription is effective, plus 30 days' grace after it
+stops being effective, then deleted the normal way. Each job carries expires_at
+(created_at + 24h, migration 007); a job's REAL end of retention is RETAINED_UNTIL_SQL
+below, which is expires_at pushed later by its owner's paid plan. This sweep — run every
+RETENTION_SWEEP_SECONDS (default 15 min) from the consumer loop — is what enforces it:
 
-  1. For every job past expires_at: delete its R2 objects — EVERY prefix in
+  1. For every job past RETAINED_UNTIL_SQL: delete its R2 objects — EVERY prefix in
      `r2_uploader.job_object_prefixes(job_id)`, which is `{job_id}/` (the uploaded source
      `_input.*`, the stems and all loop WAVs) AND `jobs/{job_id}/` (the chord artifact).
      THEN delete the DB row (loops + job_events cascade). R2 goes first so a failed R2
@@ -23,8 +26,10 @@ Product promise: "Files are deleted after 24 hours." Each job carries expires_at
   3. upload_rate_events are ephemeral per-IP rate markers (not user content); pruned on a
      short window.
 
-The R2 bucket lifecycle rule (configure_r2_lifecycle.py, 2 days — R2 lifecycle is
-day-granular) is only the belt-and-braces backstop if this sweep is down.
+The R2 bucket lifecycle rule (configure_r2_lifecycle.py) USED to be a whole-bucket 2-day
+backstop. A whole-bucket age rule cannot coexist with paid retention (it would delete a
+subscriber's library on day 2 while the job row says "kept"), so that script no longer sets
+an expiration by default; this sweep is the retention mechanism. See that script.
 """
 
 from __future__ import annotations
@@ -70,6 +75,55 @@ INFLIGHT_GRACE = "1 hour"
 _failed: dict[str, tuple[int, float]] = {}
 STUCK_AFTER_FAILURES = 3
 MAX_BACKOFF_SECONDS = 6 * 3600
+# ---------------------------------------------------------------------------------------
+# Paid-plan retention (Jon, 2026-11-15): "Pro and Studio = kept WHILE SUBSCRIBED, plus 30
+# days' grace after the subscription ends. Users build a LIBRARY of songs."
+#
+# MECHANISM: computed at READ time from the subscriptions table, never written onto jobs.
+# Nothing has to fire for it to be right: no webhook has to extend expires_at, no backfill
+# has to run, a comp subscription inserted by hand works the moment it exists, and a
+# downgrade takes effect on the next sweep / request without a write. The web routes use
+# the SAME expression (apps/web/src/lib/retention.ts, JOB_RETAINED_UNTIL_SQL; pinned
+# identical by tests/test_paid_retention.py), so "kept" means the same thing to the
+# sweep that deletes and the routes that serve.
+#
+# A job's retention ends at GREATEST(expires_at, paid_until + 30 days) where paid_until is
+# the latest moment any of the owner's Pro/Studio subscriptions was (or will be) effective,
+# with the same semantics as effectivePlanCode() in apps/web/src/lib/billing/entitlements.ts:
+#   active / trialing   -> current_period_end
+#   past_due            -> current_period_start + 7 days   (PAST_DUE_GRACE_MS)
+#   canceled / paused   -> LEAST(current_period_end, updated_at): when it stopped. The
+#                          webhook stamps updated_at when it records the cancel; LEAST caps
+#                          a later touch of the row at the end of the paid period.
+#   incomplete          -> never paid, never retains.
+# and it applies only when
+#   * the job has an owner (anonymous jobs are always 24 h),
+#   * the job was created while (or before) that plan was effective — a job made AFTER the
+#     plan ended is a Free job and gets Free's exact 24 h,
+#   * the job was not killed: account deletion sets expires_at = created_at (see DELETE
+#     /api/users/me), and expires_at <= created_at turns paid retention off for good,
+#   * the job is not an anonymised shell (its content is already gone).
+# Every term is a finite timestamp, so every job is eventually deleted.
+# ---------------------------------------------------------------------------------------
+PAID_RETENTION_GRACE = "30 days"
+# = PAST_DUE_GRACE_MS (7 days) in apps/web/src/lib/billing/entitlements.ts.
+PAST_DUE_GRACE = "7 days"
+RETAINED_UNTIL_SQL = (
+    "GREATEST(jobs.expires_at, ("
+    f"SELECT MAX(p.paid_until) + interval '{PAID_RETENTION_GRACE}' FROM ("
+    "SELECT CASE"
+    " WHEN s.status IN ('active','trialing') THEN s.current_period_end"
+    f" WHEN s.status = 'past_due' THEN s.current_period_start + interval '{PAST_DUE_GRACE}'"
+    " WHEN s.status IN ('canceled','paused') THEN LEAST(s.current_period_end, s.updated_at)"
+    " END AS paid_until"
+    " FROM public.subscriptions s"
+    " WHERE s.user_id = jobs.user_id AND s.plan_code IN ('pro','studio')"
+    ") p"
+    " WHERE p.paid_until >= jobs.created_at"
+    " AND jobs.expires_at > jobs.created_at"
+    " AND jobs.client_ip_hash <> 'purged'"
+    "))"
+)
 # Written to client_ip_hash / client_fingerprint of an anonymised job shell. Real values are
 # hex digests so this cannot collide, and it is how the sweep recognises a shell it has already
 # processed (otherwise the oldest ledger-bound jobs would be re-selected forever and, with the
@@ -160,8 +214,11 @@ async def _sweep_expired_jobs(conn, deadline: float) -> tuple[int, int, int]:
     skip = [jid for jid, (_n, until) in _failed.items() if until > now]
     rows = await (
         await conn.execute(
+            # expires_at < now() is the cheap index-backed prefilter; RETAINED_UNTIL_SQL is the
+            # rule. A paid owner's job is past its 24 h expires_at and still retained.
             "SELECT id::text FROM jobs "
             "WHERE expires_at < now() "
+            f"  AND {RETAINED_UNTIL_SQL} < now() "
             f"  AND (status IN ('done','failed') OR expires_at < now() - interval '{INFLIGHT_GRACE}') "
             "  AND client_ip_hash <> %s "
             "  AND NOT (id::text = ANY(%s)) "

@@ -78,6 +78,11 @@ export default function TermsPage() {
               Your files, stems, loops and job details are deleted after 24 hours — download what you want to keep.
             </p>
             <p>
+              That is the Free plan, and every job started without an account. On Pro and Studio, the songs in your account
+              are kept as your library while your subscription is active, and for 30 days after it ends; then they are
+              deleted the same way. A song you start after your plan has ended is deleted after 24 hours.
+            </p>
+            <p>
               Some things outlive that: your account, until you delete it; a stripped-down shell of any job that charged a
               credit, so purchases stay accounted for; any chord corrections you saved, which are kept until you delete your
               account; and counters and diagnostics that hold no audio, file names or links. The{' '}

@@ -444,6 +444,15 @@ MUTANTS: tuple[Mutant, ...] = (
         "Round 3 body: `WHERE expires_at < now() + 30 h`.",
     ),
     Mutant(
+        "paid_retention_rule_removed_from_sweep",
+        CL,
+        'f"  AND {RETAINED_UNTIL_SQL} < now() "',
+        '""',
+        ("tests/test_paid_retention.py::test_sweep_applies_the_rule_to_every_case",),
+        "Paid-plan retention (2026-11-15): without the rule in the sweep's WHERE, a subscriber's "
+        "library is deleted at 24 h.",
+    ),
+    Mutant(
         "orphan_error_log_removed",
         CL,
         'log_structured("ERROR", "retention_orphan_sweep_failed", error=str(e)[:200])',
@@ -588,34 +597,35 @@ MUTANTS: tuple[Mutant, ...] = (
             f"web_{name}_expiry_predicate_removed",
             f"src/app/api/jobs/{path}",
             anchor,
-            anchor.replace(" AND expires_at > now()", ""),
+            anchor.replace(" AND ${JOB_RETAINED_UNTIL_SQL} > now()", ""),
             (f"test/job-routes-expiry.test.mjs::{test}",),
-            f"PR body, `job-routes-expiry.test.mjs`: dropping `AND expires_at > now()` from {name}.",
+            f"PR body, `job-routes-expiry.test.mjs`: dropping the retention predicate from {name} "
+            "(re-anchored 2026-11-15: `expires_at > now()` became `${JOB_RETAINED_UNTIL_SQL} > now()`).",
             suite="web",
         )
         for name, path, anchor, test in (
             (
                 "job",
                 "[id]/route.ts",
-                "FROM jobs WHERE id = $1 AND expires_at > now()`",
+                "FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`",
                 "GET /api/jobs/:id: an EXPIRED job",
             ),
             (
                 "stems",
                 "[id]/stems/route.ts",
-                "FROM jobs WHERE id = $1 AND expires_at > now()`",
+                "FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`",
                 "GET /api/jobs/:id/stems: an EXPIRED",
             ),
             (
                 "play_chords",
                 "[id]/play-chords/route.ts",
-                "FROM jobs WHERE id = $1 AND expires_at > now()`",
+                "FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`",
                 "GET /api/jobs/:id/play-chords: an EXPIRED",
             ),
             (
                 "loops",
                 "[id]/loops/route.ts",
-                "FROM jobs WHERE id = $1 AND expires_at > now()`",
+                "FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`",
                 "GET /api/jobs/:id/loops: an EXPIRED",
             ),
         )

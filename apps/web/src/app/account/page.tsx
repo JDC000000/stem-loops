@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { getUser } from '@/lib/auth/supabase';
 import { db } from '@/lib/db';
+import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { serverGet, type CreditsBalance, type Entitlements } from '@/lib/billing/server-fetch';
 import BillingButton from '@/components/BillingButton';
 import { jobLabel } from '@/lib/job-label';
@@ -22,8 +23,9 @@ type JobRow = {
 async function recentJobs(userId: string): Promise<JobRow[] | null> {
   try {
     const r = await db.query(
-      `SELECT id, title, original_filename, youtube_url, status, created_at FROM public.jobs
-        WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20`,
+      // Only songs that still exist (lib/retention.ts): a deleted one would link to a 404.
+      `SELECT id, title, original_filename, youtube_url, status, created_at FROM jobs
+        WHERE user_id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now() ORDER BY created_at DESC LIMIT 20`,
       [userId],
     );
     return r.rows as JobRow[];

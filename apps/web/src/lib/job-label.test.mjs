@@ -30,7 +30,7 @@ test('link job falls back to its URL, and the id is the last resort', () => {
 
 test('account page selects original_filename and labels rows with jobLabel', () => {
   const src = readFileSync(PAGE, 'utf8');
-  const select = /SELECT([\s\S]*?)FROM public\.jobs/.exec(src);
+  const select = /SELECT([\s\S]*?)FROM (?:public\.)?jobs/.exec(src);
   assert.ok(select, 'recentJobs SELECT not found');
   assert.match(select[1], /\boriginal_filename\b/);
   assert.match(src, /\{jobLabel\(j\)\}/);

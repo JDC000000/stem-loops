@@ -634,3 +634,9 @@ test('CANARY: the inversion ban list still matches the wording it exists to stop
     assert.doesNotMatch([ACCOUNT_CLAIM, ...Object.values(ONE_TIME_LINK_CLAIMS)].join(' '), re);
   }
 });
+
+test('FAQ: files are deleted after 24 hours, and a subscription keeps a library for 30 days after (2026-11-15)', () => {
+  const a = faqAnswer('What happens to my files?');
+  assert.match(a, /Sources, stems and loops are deleted after 24 hours\./);
+  assert.match(a, /With a subscription, the songs in your account are kept as a library while you subscribe, and for 30 days after it ends\./);
+});

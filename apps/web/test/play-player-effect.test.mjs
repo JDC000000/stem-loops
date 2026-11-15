@@ -101,12 +101,18 @@ const engineMod = put(
   toJs(read('src/lib/play/engine.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
 );
 
-// device-support (Story 8.3): the REAL module. Under happy-dom no pointer media
-// query matches and deviceMemory is absent, so the rule offers the player.
-const deviceSupportMod = put('device-support.mjs', toJs(read('src/lib/play/device-support.ts')));
+// device-support (Story 8): the REAL module. Under happy-dom no pointer media
+// query matches and deviceMemory is absent, so the rule picks the desktop path.
+const deviceSupportMod = put(
+  'device-support.mjs',
+  toJs(read('src/lib/play/device-support.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
+);
+// background-audio (Story 8, phones): the REAL module; every browser object is passed in.
+const backgroundAudioMod = put('background-audio.mjs', toJs(read('src/lib/play/background-audio.ts')));
 
 const playerJs = rewriteShared(toJs(read('src/components/play/Player.tsx'), true))
   .replace(/from ['"]@\/lib\/play\/device-support['"]/g, `from '${deviceSupportMod}'`)
+  .replace(/from ['"]@\/lib\/play\/background-audio['"]/g, `from '${backgroundAudioMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordMod}'`)
   .replace(/from ['"]@\/lib\/play\/engine['"]/g, `from '${engineMod}'`)
   .replace(/from ['"]@\/lib\/play\/load-stems['"]/g, `from '${loadStemsMod}'`)
@@ -143,11 +149,15 @@ const {
 // EXISTS, and no scenario here reaches `engine.load`, so a bare class is enough.
 
 class FakeAudioContext {
-  constructor() {
+  constructor(opts) {
+    // Recorded, then refused: the rate the engine ASKED for is the observable
+    // (Story 8: phones ask for the light rate), and no scenario needs audio.
+    globalThis.__audioContextRates.push(opts?.sampleRate);
     throw new Error('no scenario in this file may construct an AudioContext');
   }
 }
 globalThis.AudioContext = FakeAudioContext;
+globalThis.__audioContextRates = [];
 // Declared here, not inside a test: the harness fails a body that ADDS a
 // global, so the array has to exist before the first withDom() snapshot.
 globalThis.__stemFetchReports = [];
@@ -211,6 +221,7 @@ async function mountPlayer(server, body, props = {}, setup = null) {
     serve = server;
     requests = [];
     globalThis.__stemFetchReports.length = 0;
+    globalThis.__audioContextRates.length = 0;
     const realSetTimeout = globalThis.setTimeout;
     const settle = () => dom.act(() => new Promise((r) => realSetTimeout(r, 0)));
 
@@ -545,29 +556,71 @@ test('unmounting mid-load aborts it: the load never lands on an unmounted compon
   );
 });
 
-// ═══ Story 8.3 — a phone never reaches the network or the engine ════════════
+// ═══ Story 8 — a phone is NOT blocked; it loads, at the light rate ═══════════
 
-test('a touch-only device gets the device state, and NOTHING is fetched or constructed', async () => {
+const sixStems = () =>
+  router(() => ({ body: manifest('ready') }), () => ({ status: 200, bytes: sixBytes() }));
+
+test('a touch-only phone is not blocked: it fetches the manifest and all six stems, like desktop', async () => {
   await mountPlayerOnTouchOnly(async (p) => {
-    assert.equal(p.phase(), 'device-unsupported');
-    assert.ok(p.dom.find('[data-testid="player-device-unsupported"]'), 'no device state rendered');
-    assert.equal(p.requests.length, 0, `fetched: ${p.requests.join(', ')}`);
-    assert.equal(p.banner(), null, 'the device state is not an error banner');
+    assert.notEqual(p.phase(), 'device-unsupported');
+    assert.equal(p.dom.find('[data-testid="player-device-unsupported"]'), null);
+    assert.ok(p.requests.some(isManifest), 'the phone never asked for the manifest');
+    assert.equal(p.requests.filter((h) => !isManifest(h)).length, PLAYABLE_STEMS.length, 'six stem GETs');
+  }, sixStems());
+});
+
+test('the phone asks the engine for the light rate first; desktop asks for 48 kHz only', async () => {
+  await mountPlayerOnTouchOnly(async () => {
+    // The fake refuses every context, so the engine's one retry at 48 kHz shows too.
+    assert.deepEqual(globalThis.__audioContextRates, [24000, 48000]);
+  }, sixStems());
+  await mountPlayer(sixStems(), async () => {
+    assert.deepEqual(globalThis.__audioContextRates, [48000]);
   });
 });
 
-test('?player=force skips the device rule (and only that) so a real phone can be measured', async () => {
-  await mountPlayerOnTouchOnly(async (p) => {
-    assert.notEqual(p.phase(), 'device-unsupported');
-    assert.ok(p.requests.some(isManifest), 'the forced load did not ask for the manifest');
-  }, '?player=force');
+test('lock-screen controls: Player installs Media Session handlers that drive the transport, and removes them on unmount', async () => {
+  const ms = {
+    metadata: undefined,
+    playbackState: 'none',
+    handlers: {},
+    setActionHandler(a, h) {
+      this.handlers[a] = h;
+    },
+    setPositionState() {},
+  };
+  await mountPlayer(
+    router(() => ({ body: manifest('unavailable', []) })),
+    async (p) => {
+      for (const a of ['play', 'pause', 'stop', 'seekto', 'seekbackward', 'seekforward']) {
+        assert.equal(typeof ms.handlers[a], 'function', `${a} handler missing`);
+      }
+      // No engine is loaded in this scenario: the handlers must be safe no-ops, never throws.
+      assert.doesNotThrow(() => ms.handlers.play({}));
+      assert.doesNotThrow(() => ms.handlers.seekto({ seekTime: 3 }));
+      await p.dom.unmountAll();
+      await p.settle();
+      for (const a of ['play', 'pause', 'stop', 'seekto', 'seekbackward', 'seekforward']) {
+        assert.equal(ms.handlers[a], null, `${a} handler left behind after unmount`);
+      }
+      assert.equal(ms.playbackState, 'none');
+    },
+    { title: 'Song.mp3' },
+    () => {
+      const nav = globalThis.navigator;
+      Object.defineProperty(nav, 'mediaSession', { value: ms, configurable: true });
+      return () => {
+        delete nav.mediaSession;
+      };
+    },
+  );
 });
 
-async function mountPlayerOnTouchOnly(body, search = '') {
-  await mountPlayer(router(() => ({ status: 500 })), body, {}, () => {
+async function mountPlayerOnTouchOnly(body, server = router(() => ({ status: 500 }))) {
+  await mountPlayer(server, body, {}, () => {
     const real = globalThis.matchMedia;
     globalThis.matchMedia = (q) => ({ matches: q === '(pointer: coarse)', media: q, addEventListener() {}, removeEventListener() {} });
-    if (search) globalThis.history.replaceState(null, '', search);
     return () => {
       globalThis.matchMedia = real;
     };

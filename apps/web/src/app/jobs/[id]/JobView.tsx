@@ -270,7 +270,7 @@ export default function JobView({ id }: { id: string }) {
               along." Story 6.1 — the loops are their own product page now;
               this page shows none and links there instead. */}
           <TrimNote job={job} />
-          <Player jobId={job.id} loops={job.loops} enabled />
+          <Player jobId={job.id} loops={job.loops} enabled title={job.original_filename ?? null} />
           <p data-testid="loops-link" style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 'var(--text-md, 14px)' }}>
             Want this song as bar-length WAV loops?{' '}
             <Link href={`/loops?job=${job.id}`} className="jp-back"

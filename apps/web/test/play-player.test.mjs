@@ -127,10 +127,16 @@ const engineMod = put(
 );
 
 // device-support (Story 8.3): the REAL module, pure, no I/O at import time.
-const deviceSupportMod = put('device-support.mjs', toJs(read('src/lib/play/device-support.ts')));
+const deviceSupportMod = put(
+  'device-support.mjs',
+  toJs(read('src/lib/play/device-support.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
+);
+// background-audio (Story 8, phones): the REAL module; every browser object is passed in.
+const backgroundAudioMod = put('background-audio.mjs', toJs(read('src/lib/play/background-audio.ts')));
 
 const playerJs = rewriteShared(toJs(read('src/components/play/Player.tsx'), true))
   .replace(/from ['"]@\/lib\/play\/device-support['"]/g, `from '${deviceSupportMod}'`)
+  .replace(/from ['"]@\/lib\/play\/background-audio['"]/g, `from '${backgroundAudioMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordMod}'`)
   .replace(/from ['"]@\/lib\/play\/engine['"]/g, `from '${engineMod}'`)
   .replace(/from ['"]@\/lib\/play\/load-stems['"]/g, `from '${loadStemsMod}'`)
@@ -315,7 +321,7 @@ test('degradedMessage ignores junk entries rather than printing "undefined"', ()
 
 // The words that appear in src/chord/tab-capture.ts's unsupported messages.
 // Every one of them is false for this player: nothing here captures a tab, and
-// Edge is not launch scope (Chrome desktop is).
+// Edge is not named because it is not what we test against (Chrome is).
 const TAB_CAPTURE_WORDS = [
   'tab capture',
   'tab-audio',
@@ -343,11 +349,13 @@ test('the unsupported-browser copy is not byte-identical to any tab-capture mess
   }
 });
 
-test('the unsupported-browser copy names Chrome desktop and points at the loops', () => {
+test('the unsupported-browser copy names Chrome, points at the loops, and does not send phones to a desktop', () => {
+  // Story 8 (Jon, 2026-11-15): the player runs on phones. A phone user reading
+  // either message must not be told the fix is a desktop or laptop.
   for (const message of [UNSUPPORTED_BROWSER_MESSAGE, UNDECODABLE_MESSAGE]) {
     assert.match(message, /Chrome/);
-    assert.match(message, /desktop|laptop/);
     assert.match(message, /loops/);
+    assert.doesNotMatch(message, /desktop|laptop|not supported|700|\bMB\b/i);
   }
 });
 

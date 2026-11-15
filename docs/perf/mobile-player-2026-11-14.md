@@ -1,6 +1,47 @@
 # Mobile player: memory and decode measurement (Story 8.3)
 
-**Date:** 2026-11-14 · **Branch:** `feat/mobile-player-state` · **Raw data:** [`mobile-player-2026-11-14.results.json`](./mobile-player-2026-11-14.results.json) · **Harness:** [`scripts/perf/mobile-player/`](../../scripts/perf/mobile-player/)
+**Date:** 2026-11-14, updated 2026-11-15 · **Raw data:** [`mobile-player-2026-11-14.results.json`](./mobile-player-2026-11-14.results.json) (original), [`mobile-player-2026-11-15.results.json`](./mobile-player-2026-11-15.results.json) (this update) · **Harness:** [`scripts/perf/mobile-player/`](../../scripts/perf/mobile-player/)
+
+## 2026-11-15 update: phones now get the player, with lighter audio
+
+Jon (2026-11-15): the product must work on phones. PR #276's "Play along needs a desktop or laptop" card is gone. The same device rule now picks a **light decode** instead of a block: phones, touch-only tablets and devices reporting under 4 GB decode every stem at **24 kHz mono** (`LIGHT_DECODE_SAMPLE_RATE`, `apps/web/src/lib/play/device-support.ts`). Desktop is unchanged at 48 kHz mono. On the light path the mix also goes through a MediaStream into an `<audio playsinline>` element (`background-audio.ts`), so that is the route measured below.
+
+**Method change.** The harness now bundles the production engine, device rule and output route (`scripts/perf/mobile-player/entry.ts`) and, by default, lets the **device rule pick the rate and route in-page** (`rate = auto`), so each phone row is what production does on that emulated device, not a hand-injected rate. After the load it **plays for 8 s** through the device's real route and records RSS while playing. The peak is now `max(VmHWM, highest 25 ms VmRSS sample during the load)`: on this run a whole-session VmHWM once read lower than the load's own, which means something (most likely Chrome's own memory instrumentation) also writes `clear_refs`, so VmHWM alone is not trusted. Same host class as before: 2 vCPU, 8 GiB, no swap, other agents building in parallel (2.5–4.1 GiB free per run, recorded per row).
+
+Renderer process only, MiB. min–max (median), 3 fresh-browser runs per row. **24 runs, 0 crashes, every run reached `ready` with 6/6 stems, and every run's audio clock advanced ~7.95 s in 8 s of playback.**
+
+| Profile | Song (s) | Rate | Chosen by | Output route | Decode (ms) | **Load peak (MiB)** | Settled (MiB) | While playing (MiB) |
+|---|---|---|---|---|---|---|---|---|
+| Desktop Chrome | 300 | 48 kHz | device rule | `ctx.destination` | 14,235–17,290 | **722–723 (723)** | 489–490 | 489–490 |
+| Desktop Chrome | 120 | 48 kHz | device rule | `ctx.destination` | 4,120–5,706 | **454–456 (454)** | 273–275 | 274–276 |
+| Pixel 7 (emulated) | 300 | 24 kHz | device rule (`mobile`) | `<audio>` via MediaStream | 9,382–14,309 | **562–589 (589)** | 326–329 | 327–330 |
+| Pixel 7 (emulated) | 120 | 24 kHz | device rule (`mobile`) | `<audio>` via MediaStream | 3,166–3,632 | **320–337 (336)** | 212 | 213 |
+| iPhone 14 (emulated on Chromium) | 300 | 24 kHz | device rule (`mobile`) | `<audio>` via MediaStream | 8,798–12,459 | **535–592 (564)** | 329–332 | 330–333 |
+| iPhone 14 (emulated on Chromium) | 120 | 24 kHz | device rule (`mobile`) | `<audio>` via MediaStream | 3,078–3,356 | **333–340 (339)** | 214–215 | 216 |
+| Pixel 7 (emulated), comparison arm | 300 | 22.05 kHz | forced | `<audio>` via MediaStream | 11,141–12,596 | **548–575 (573)** | 313–315 | 315–316 |
+| Pixel 7 (emulated), comparison arm | 120 | 22.05 kHz | forced | `<audio>` via MediaStream | 3,429–4,721 | **321–342 (321)** | 209–210 | 210–211 |
+
+What this licenses:
+
+- **At 300 s, 6 stems, the phone path peaks at 535–592 MiB and settles at ~330 MiB: under the 700 MiB bar on every run.** The **< 500 MiB target is not met** at 300 s. At 120 s the phone path peaks at 320–340 MiB.
+- **The peak is still `decodeAudioData`'s transient**, not PCM: 24 kHz halves the PCM (164.8 MiB) but the load peak only falls by ~130–160 MiB, as engine.ts MEMORY predicts. Getting under 500 at 300 s needs a different decode (streaming / chunked, e.g. the existing `ogg-opus.ts` demuxer feeding WebCodecs), which Jon has scheduled as a later upgrade.
+- **22.05 kHz buys ~15 MiB at the median over 24 kHz**, inside run-to-run noise, for a lower audio ceiling (11 vs 12 kHz). 24 kHz ships.
+- **The media-element route adds nothing measurable** while playing (RSS while playing ≈ settled + 1–3 MiB), and in headless Chromium it held (`routed: true` after 8 s, clock advancing).
+- **Desktop did not move**: 723 MiB peak / 490 settled at 300 s, identical to the 2026-11-14 run, because the desktop path is byte-for-byte the old one.
+
+Caveats, as binding as the numbers:
+
+- **Emulation is not a phone.** Device emulation changes viewport, UA, touch and pointer media queries. It does not change the memory limit, CPU, codec path or tab-discard policy. These are desktop-Chromium figures for the code path a phone takes.
+- **Safari / WebKit was not measured at all.** The "iPhone 14" row is Chromium wearing an iPhone's viewport. iOS Safari decodes Ogg/Opus through a different path (and older iOS versions cannot decode Ogg/Opus at all; the player then shows its "could not decode" message).
+- **Background playback (screen off, app switch, lock-screen controls) cannot be measured here.** Headless Chromium has no screen to lock and no app to switch to. Only the route itself was exercised.
+- **Decode times are relative only** (shared, loaded 2-vCPU host). 24 kHz was faster than 48 kHz on this run and slower on the 2026-11-14 run; do not read anything into the direction.
+- **Synthetic audio** (pink noise + sine, 64 kb/s Opus); engine.ts records a higher peak on a real track's stems at 48 kHz (~762 MiB).
+
+To re-run: `PLAYWRIGHT_MODULE=<path to playwright> node scripts/perf/mobile-player/measure.mjs --reps 3 --out results.json` (defaults to the matrix above; `--arms "Profile=auto|<rate>;…"`, `--durs`, `--play-sec` override it).
+
+---
+
+## 2026-11-14 (original measurement; the decision it fed is superseded)
 
 ## Summary
 
@@ -10,7 +51,7 @@
 - **A 120 s song at 48 kHz peaks at about 390 MiB.** That is lower than 300 s at 24 kHz. Song length is the bigger lever.
 - **Decode wall time on this host was 17–24 s at 300 s/48 kHz, and 24 kHz was *slower* (22–33 s).** The resample to 24 kHz costs CPU. These times were taken on a 2-core VM shared with other build jobs (load average 12–18), so treat them as relative, not absolute.
 - **Nothing in this PR changes the engine, `PLAYBACK_SAMPLE_RATE` or `MAX_TRACK_SEC`.** The 24 kHz arm is driven by injecting the context rate through the engine's existing `createAudioContext` option.
-- **Decision for Jon (not taken here):** whether to (a) keep phones on the "not yet" state shipped in this PR, (b) measure on a real phone first (method below, using `?player=force`), or (c) adopt one of the levers (24 kHz, a lower length cap on phones, fewer stems, or streaming decode).
+- **Decision for Jon (not taken here):** whether to (a) keep phones on the "not yet" state shipped in this PR, (b) measure on a real phone first (method below, using `?player=force`), or (c) adopt one of the levers (24 kHz, a lower length cap on phones, fewer stems, or streaming decode). **Taken 2026-11-15: (c), 24 kHz mono on phones, no block; see the update above.**
 
 ## Results
 
@@ -64,7 +105,7 @@ To re-run: `node scripts/perf/mobile-player/measure.mjs --reps 3 --out results.j
 - **The audio is synthetic.** Real stems may decode to a different transient. engine.ts measured ~762 MiB peak on a real track's Opus stems.
 - **`navigator.deviceMemory` reported 8 in every profile.** Emulation passes the host's value through, capped at 8. That is why the device rule in this PR does not rely on memory alone (see below).
 
-## The shipped answer while 8.3 is open: a designed "not yet" state
+## The answer shipped on 2026-11-14 (SUPERSEDED 2026-11-15: no block; the same rule now selects the light decode, and `?player=force` is removed)
 
 [`apps/web/src/lib/play/device-support.ts`](../../apps/web/src/lib/play/device-support.ts) holds the rule. The first match wins:
 

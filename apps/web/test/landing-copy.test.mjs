@@ -329,13 +329,19 @@ test('the landing links to /pricing exactly once (F31, Jon 2026-11-13)', () => {
   assert.equal((RENDER.html.match(/href="\/pricing/g) ?? []).length, 1, 'the rendered page must carry exactly one /pricing link');
 });
 
-test('the landing claims no mobile or non-Chrome support (Story 5.3)', () => {
-  // Positive first: the row has to SAY the scope. A ban list alone let "Chrome, and it runs
-  // fine on a tablet or a handset too" through (adversarial sweep, 2026-11-11).
-  assert.match(specRow('Where it runs'), /^Chrome, on a desktop\./);
-  assert.match(specRow('Where it runs'), /not supported yet/);
-  const banned = [/works on (?:your |a )?(?:phone|mobile|ios|android|tablet|handset)/i, /\bany browser\b/i, /\bevery browser\b/i,
-    /mobile.friendly/i, /runs? (?:fine |well |great )?on (?:a )?(?:tablet|handset|phone|mobile)/i, /(?:tablet|handset|phone)s? (?:too|as well)\b/i];
+test('the landing states the device scope truthfully: tested on desktop Chrome, phones new with lighter audio (Story 8)', () => {
+  // Jon 2026-11-15: the product must work on phones, so "phones are not supported" is now false.
+  // Positive first: the row has to SAY the scope, including what is NOT yet known. The ban list
+  // still stops over-claiming (no "works great on any phone", no "every browser").
+  const row = specRow('Where it runs');
+  assert.match(row, /^Chrome on a computer, which is what it is built and tested on\./);
+  assert.match(row, /Phones get lighter audio/);
+  assert.match(row, /Phone support is new/);
+  assert.match(row, /other browsers are not tested yet/);
+  assert.doesNotMatch(row, /not supported/);
+  const banned = [/works (?:great |fine |perfectly )?on (?:any|every|all) (?:phone|mobile|device)/i, /\bany browser\b/i, /\bevery browser\b/i,
+    /mobile.friendly/i, /runs? (?:fine |well |great )on (?:a )?(?:tablet|handset|phone|mobile)/i, /phones are not supported/i,
+    /desktop only/i, /needs a desktop/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
   for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
 });

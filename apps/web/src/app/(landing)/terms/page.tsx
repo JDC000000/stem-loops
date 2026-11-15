@@ -43,7 +43,10 @@ export default function TermsPage() {
                 We use the first {MAX_TRACK_MIN}&nbsp;minutes of any song. A longer track is trimmed on our end to its
                 first {MAX_TRACK_MIN}&nbsp;minutes, which is where the chord track and the player both stop.
               </li>
-              <li>Chrome, on a desktop or laptop. Other browsers and phones are not supported yet.</li>
+              <li>
+                Built and tested in Chrome on a computer. On a phone the player loads lighter audio (mono, 24&nbsp;kHz).
+                Phone support is new, and other browsers are not tested yet.
+              </li>
               <li>
                 The chords are an <strong>estimate made from the audio</strong>, not a transcription anyone checked. Trust your
                 ears over the screen.

@@ -22,8 +22,9 @@ type AnyPage = any;
 //
 //   1. Open https://stem-loops.com in Safari.
 //   2. Navigate to the chord overlay beta surface.
-//   3. Confirm a banner appears reading "Live chord overlay is desktop-only"
-//      (text pinned in tab-capture.ts :: checkTabCaptureSupport).
+//   3. Confirm a banner appears saying the live chord overlay needs Chrome or
+//      Edge on a computer, and that Play along works on the phone
+//      (text pinned in tab-capture.ts :: PHONE_TAB_CAPTURE_MESSAGE).
 //   4. Confirm the "Start live overlay" button is disabled — iOS Safari
 //      users must not be able to mash a broken button.
 //   5. Confirm no AudioContext is created and no getDisplayMedia prompt
@@ -41,11 +42,11 @@ describeSkip('iOS Safari — manual QA stub (Playwright not yet installed)', () 
     return;
   }
 
-  testFn('shows desktop-only banner on iPhone', async ({ page }: { page: AnyPage }) => {
+  testFn('shows the feature-scoped phone banner on iPhone', async ({ page }: { page: AnyPage }) => {
     await page.goto('/chord');
     const banner = page.getByTestId('unsupported-banner');
     await expectFn(banner).toBeVisible();
-    await expectFn(banner).toContainText(/desktop/i);
+    await expectFn(banner).toContainText(/Chrome or Edge on a computer/);
   });
 
   testFn('start button is disabled', async ({ page }: { page: AnyPage }) => {

@@ -9,13 +9,17 @@
 //   - Chrome + Edge desktop: audio-only tab capture works.
 //   - Firefox: `getDisplayMedia` on audio drops silently on some builds.
 //     Earlier plan was "warn + attempt"; TSD §5.4 now says BLOCK on Firefox.
-//   - iOS Safari: `getDisplayMedia` is not implemented; block with a clear
-//     "desktop only" banner.
+//   - Phones and tablets (iOS, iPadOS, Android): no mobile browser can share
+//     a tab's audio (`getDisplayMedia` is missing or video-only). Block THIS feature with a
+//     banner that says so — and only this feature: the rest of the product,
+//     including Play along, works on phones (#278). Never word it as if the
+//     whole app were desktop-only.
 //   - Desktop Safari: audio-only tab capture is unsupported; block.
 
 export type UnsupportedReason =
   | 'firefox'
   | 'ios-safari'
+  | 'android'
   | 'safari-desktop'
   | 'no-display-media'
   | 'no-audio-worklet';
@@ -51,9 +55,19 @@ export interface TabCapture {
 }
 
 /**
+ * Banner for phones and tablets (iPhone, iPad including iPad-as-Mac, and
+ * Android). True for THIS feature only: sharing tab audio needs Chrome or Edge
+ * on a computer. It must not read as "the product is desktop-only"; Play along
+ * works on phones and tablets (Jon, 2026-11-15).
+ */
+export const PHONE_TAB_CAPTURE_MESSAGE =
+  "The live chord overlay listens to another browser tab, and phone and tablet browsers can't share a tab's audio. " +
+  'To use it, open stem-loops in Chrome or Edge on a computer. Play along works on your phone or tablet.';
+
+/**
  * Feature-detect the browser. The brief requires:
  *   - Firefox → show "Chrome/Edge required" banner
- *   - iOS Safari → show "desktop only" banner
+ *   - iOS / Android → explain that THIS feature needs Chrome or Edge on a computer
  *   - Desktop Safari → block (audio-only tab capture unsupported)
  */
 export function checkTabCaptureSupport(
@@ -70,8 +84,16 @@ export function checkTabCaptureSupport(
     return {
       supported: false,
       reason: 'ios-safari',
-      message:
-        'Live chord overlay is desktop-only. Open stem-loops in Chrome or Edge on a laptop or desktop.',
+      message: PHONE_TAB_CAPTURE_MESSAGE,
+    };
+  }
+  // Android (Chrome, Firefox, Samsung Internet): no tab-audio sharing either.
+  // Checked before Firefox so Firefox on Android gets the phone message.
+  if (/android/.test(uaLower)) {
+    return {
+      supported: false,
+      reason: 'android',
+      message: PHONE_TAB_CAPTURE_MESSAGE,
     };
   }
   // Firefox — TSD §5.4 block clause.
@@ -101,7 +123,8 @@ export function checkTabCaptureSupport(
     return {
       supported: false,
       reason: 'no-display-media',
-      message: 'This browser does not support screen capture.',
+      message:
+        "This browser can't share a tab's audio, which the live chord overlay needs. Use Chrome or Edge on a computer.",
     };
   }
   return { supported: true };

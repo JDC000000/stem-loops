@@ -133,15 +133,30 @@ export function phoneSlotLabel(run: Pick<OverlayRun, 'kind' | 'label'>, beats: n
 }
 
 /**
+ * NO TOTAL IN TRIPLE TIME (S5 on #281; Jon, 2026-11-16: "No total when
+ * unsure"). The beat data carries no meter, so a 3-pulse cycle is 3/4 OR 6/8
+ * counted in eighths, and the two overlap at every tempo the grid accepts
+ * (6/8 eighths run ~80-270 pulses/min; 3/4 quarters ~40-200). Tempo cannot
+ * tell them apart, and there is no other signal. A total in a 6/8 song counts
+ * half-bars ("Bar n/80" for 40 bars), so 3-beat bars show only their number:
+ * "Bar 12", "Verse · bar 3", "Bar 3, Verse: G, D". 4/4 keeps "n/N".
+ */
+export function showsBarTotal(model: Pick<PhoneModel, 'mode' | 'beatsPerBar'>): boolean {
+  return model.mode === 'bars' && model.beatsPerBar === 4;
+}
+
+/**
  * Accessible name of a bar: its place and its chords in order, in the visible
- * spelling ("Bar 3 of 16, Chorus 2: G7, Bb").
+ * spelling ("Bar 3 of 16, Chorus 2: G7, Bb"; "Bar 3, Chorus 2: G7, Bb" in
+ * triple time, see showsBarTotal).
  */
 export function phoneBarLabel(model: PhoneModel, runs: readonly Pick<OverlayRun, 'kind' | 'label'>[], cell: number): string {
   const c = model.cells[cell];
   if (!c) return '';
   const sec = c.section >= 0 ? model.sections[c.section]?.name ?? null : null;
   const chords = c.slots.map((s) => leadSheetSymbol(runs[s.runIndex])).join(', ');
-  return `Bar ${c.numberInSection} of ${c.countInSection}${sec ? `, ${sec}` : ''}: ${chords}`;
+  const of = showsBarTotal(model) ? ` of ${c.countInSection}` : '';
+  return `Bar ${c.numberInSection}${of}${sec ? `, ${sec}` : ''}: ${chords}`;
 }
 
 function fmtBeats(b: number): string {
@@ -617,13 +632,16 @@ export function beatInCell(cell: Pick<PhoneCell, 'startSec' | 'endSec'>, t: numb
   return Math.min(beatsPerBar - 1, Math.max(0, Math.floor((t - cell.startSec) / beat + 1e-9)));
 }
 
-/** "Chorus 2 · bar 3/16" (bars), "Chorus 2" (sequence), "Bar 2/3" before the first section. */
+/**
+ * "Chorus 2 · bar 3/16" (4/4 bars), "Chorus 2 · bar 3" (triple time: no total,
+ * see showsBarTotal), "Chorus 2" (sequence), "Bar 2/3" before the first section.
+ */
 export function positionLabel(model: PhoneModel, cell: number): string {
   const c = model.cells[cell];
   if (!c) return 'Now';
   const name = c.section >= 0 ? model.sections[c.section]?.name ?? null : null;
   if (model.mode === 'sequence') return name ?? 'Now';
-  const pos = `bar ${c.numberInSection}/${c.countInSection}`;
+  const pos = showsBarTotal(model) ? `bar ${c.numberInSection}/${c.countInSection}` : `bar ${c.numberInSection}`;
   return name ? `${name} · ${pos}` : pos[0].toUpperCase() + pos.slice(1);
 }
 

@@ -97,7 +97,7 @@ import {
   type ZeroSourceReason,
 } from '@/lib/play/load-stems';
 import { reportStemFetchFailure } from '@/lib/play/report-failure';
-import { deriveSections, type SectionLoopRow } from '@/lib/play/sections';
+import { type BeatGrid, beatGridFromLoops, deriveSections, type SectionLoopRow } from '@/lib/play/sections';
 import type {
   EngineSnapshot,
   LoopRegion,
@@ -488,6 +488,8 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
     () => deriveSections(loops ?? null, { durationSec: snapshot.durationSec }),
     [loops, snapshot.durationSec],
   );
+  // Phone chord view: bars from the job's tempo (the loops rows carry it).
+  const beatGrid = useMemo(() => beatGridFromLoops(loops ?? null), [loops]);
 
   return (
     <PlayerView
@@ -495,6 +497,7 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
       phase={phase}
       snapshot={snapshot}
       sections={sections}
+      beatGrid={beatGrid}
       onPlay={onPlay}
       onPause={onPause}
       onSeek={onSeek}
@@ -512,6 +515,8 @@ export interface PlayerViewProps {
   readonly phase: Phase;
   readonly snapshot: EngineSnapshot;
   readonly sections: readonly LoopRegion[];
+  /** The job's beat grid, for the phone chord view's bars. */
+  readonly beatGrid?: BeatGrid | null;
   readonly onPlay: () => void;
   readonly onPause: () => void;
   readonly onSeek: (positionSec: number) => void;
@@ -539,6 +544,7 @@ export function PlayerView({
   phase,
   snapshot,
   sections,
+  beatGrid = null,
   onPlay,
   onPause,
   onSeek,
@@ -647,7 +653,7 @@ export function PlayerView({
           states, which is Story 3.6. */}
       <div className={styles.chords}>
         <h2 className={styles.subtitle}>Chords</h2>
-        <ChordOverlay jobId={jobId} positionSec={chordPosition} />
+        <ChordOverlay jobId={jobId} positionSec={chordPosition} beatGrid={beatGrid} sections={sections} />
       </div>
     </section>
   );

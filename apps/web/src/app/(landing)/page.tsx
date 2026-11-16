@@ -1,7 +1,12 @@
 // stem-loops home. v6 (2026-11-11): repositioned onto the play-along product — Story 0 of
-// claude/user-stories-play-along-2026-11-10.md, approved by Jon. The page used to sell the
-// loop downloader; the player is the product now and the loops are the second thing, kept
-// but moved below the fold (Story 6, "a distant second").
+// claude/user-stories-play-along-2026-11-10.md, approved by Jon.
+//
+// v7 (2026-11-15): this is the PLAY ALONG product page and nothing else. Jon: "stem downloads
+// would be removed from the play along section. It's just up on the top nav ... a full separate
+// product ... on a separate user page." The loops section, the loop-file spec row and the loop
+// lines in the pipeline and FAQ moved to the Download loops page's own intro (/loops,
+// components/loops/LoopsIntro.tsx); the top nav names both products on every page.
+// test/two-products-nav.test.mjs fails if loop-download selling comes back here.
 //
 // Every capability claim here maps to a row of the approved launch table. The gaps — tempo,
 // pitch, lyrics — are stated on the page on purpose, because they are the first thing anyone
@@ -14,7 +19,7 @@
 import { DemoProvider } from '@/components/landing/DemoProvider';
 import { ToolForm } from '@/components/landing/ToolForm';
 import { Lanes } from '@/components/landing/Lanes';
-import { AbCompare, DemoWavDownload, PipeCutArt, PipeSongArt, PipeStemsArt, ToInputLink } from '@/components/landing/DemoArt';
+import { AbCompare, PipeSongArt, PipeStemsArt, ToInputLink } from '@/components/landing/DemoArt';
 import { PlayerArt } from '@/components/landing/PlayerArt';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import { Ic } from '@/components/landing/Icons';
@@ -127,10 +132,6 @@ export default function HomePage() {
                 <dd>Pick a detected section of the song and it repeats.</dd>
               </div>
               <div className="spec-row">
-                <dt>Loop files</dt>
-                <dd>Bars are counted from the first detected beat, not from bar 1, so a loop can start a beat early. Nudge it in your DAW if you need the downbeat.</dd>
-              </div>
-              <div className="spec-row">
                 <dt>Track length</dt>
                 <dd>The first {MAX_TRACK_MIN}&nbsp;minutes of any song. A longer track is trimmed on our end to its first {MAX_TRACK_MIN}&nbsp;minutes, which is where the chord track and the player both stop.</dd>
               </div>
@@ -141,8 +142,8 @@ export default function HomePage() {
               <div className="spec-row">
                 <dt>Account</dt>
                 <dd>
-                  Needed to play, not to start. You can run a job signed out; the player, where the stems, chords and
-                  loops are shown, asks you to sign in. If you are new, you create an account on the{' '}
+                  Needed to play, not to start. You can run a job signed out; the player, where the stems and chords
+                  are shown, asks you to sign in. If you are new, you create an account on the{' '}
                   <a href="/login">sign-in page</a>. The one-time link by email only signs you back in to an account
                   that already exists; it does not create one.
                 </dd>
@@ -209,21 +210,18 @@ export default function HomePage() {
               <li className="pipe-row">
                 <p className="pipe-name">Play</p>
                 <div className="pipe-art">
-                  <PipeCutArt />
-                  <p className="mono pipe-meta">drums · 8 bars · the loop file below</p>
+                  <AbCompare />
                 </div>
                 <div className="pipe-text">
                   <p>
-                    The stems load into the player with the chord track over them. Each stem also gets bar-length loops,
-                    which you can save as WAV files. The art beside this shows one.
+                    The stems load into the player with the chord track over them. Pull your part down, solo the one you are
+                    learning, or loop a section until it sticks.
                   </p>
                   <dl className="kv">
                     <dt>Player</dt>
                     <dd>6 faders, mute, solo, section loop</dd>
-                    <dt>Loops</dt>
-                    <dd>1, 2, 4 or 8 bars, up to 10 per stem</dd>
-                    <dt>Loop files</dt>
-                    <dd>24-bit WAV, 44.1&nbsp;kHz</dd>
+                    <dt>Chords</dt>
+                    <dd>An estimate, kept in time with the song</dd>
                   </dl>
                 </div>
               </li>
@@ -232,39 +230,7 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* 5. THE LOOPS: the second product, kept and demoted (Story 6) */}
-        <section className="section" id="loops" aria-labelledby="out-h">
-          <div className="container">
-            <div className="reading">
-              <h2 id="out-h">You can still take the loops home</h2>
-              <p className="body-lg">
-                Every song also gets bar-length loops, for anyone who came here to build a sample folder rather than to
-                practise. Open Download loops, pick the song and press Cut to make the WAV files. This is the 8&#8209;bar drums loop from our example song, unchanged, as you would download it:
-                one 24&#8209;bit WAV per loop, named by stem, BPM, key estimate, section and number.
-              </p>
-            </div>
-            <div className="take">
-              <div className="file-card">
-                <div className="file-text">
-                  <p className="file-name">
-                    lucky_<wbr />ticket_<wbr /><span className="fn-stem" data-stem="drums">drums</span>_<wbr />102.0bpm_<wbr />G_<wbr />minor_<wbr />verse_<wbr />0006.wav
-                  </p>
-                  <p className="mono file-meta">
-                    <span className="tok">24&#8209;bit WAV ·</span> <span className="tok">44.1&nbsp;kHz ·</span>{' '}
-                    <span className="tok">stereo ·</span> <span className="tok">8&nbsp;bars ·</span>{' '}
-                    <span className="tok">18.82&nbsp;s ·</span> <span className="tok">4.8&nbsp;MB</span>
-                  </p>
-                  <p className="file-note">The key in the name is the tool’s estimate; another run of this song said G# minor.</p>
-                </div>
-                <DemoWavDownload />
-                <p className="licence">Free to use in your own music. Credit appreciated: Lucky Ticket by Jon Cartwright.</p>
-              </div>
-              <AbCompare />
-            </div>
-          </div>
-        </section>
-
-        {/* 6. FAQ */}
+        {/* 5. FAQ */}
         <section className="section" id="faq" aria-labelledby="faq-h">
           <div className="container">
             <h2 id="faq-h">Questions</h2>
@@ -275,14 +241,14 @@ export default function HomePage() {
                   <p>
                     A player, in your browser, with the song’s six stems on their own faders and a chord track running
                     above them. Mute the guitar and play the guitar part; solo the bass to work it out; loop the chorus
-                    until it sticks. You also get bar-length loops from each stem to cut and download.
+                    until it sticks.
                   </p>
                 </details>
                 <details>
                   <summary>Do I need an account?</summary>
                   <p>
                     Not to start one. Running a job works signed out. The player asks you to sign in — that is where
-                    the stems, the chord track and the loops are shown. If you are new, you create an account on the{' '}
+                    the stems and the chord track are shown. If you are new, you create an account on the{' '}
                     <a href="/login">sign-in page</a>. A one-time link sent to your email only signs you back in to an
                     account that already exists; it does not create one.
                   </p>
@@ -324,7 +290,8 @@ export default function HomePage() {
                   <summary>How clean is the split?</summary>
                   <p>
                     Not perfect. Dense passages can leave a little bleed from other instruments in a stem. The
-                    before-and-after above is a 4-bar MP3 crop of the tool’s real output, so you can judge for yourself.
+                    before-and-after in “From one song to a player” is a 4-bar MP3 crop of the tool’s real output, so you
+                    can judge for yourself.
                   </p>
                 </details>
                 <details id="faq-files">
@@ -336,12 +303,11 @@ export default function HomePage() {
                   </p>
                 </details>
                 <details>
-                  <summary>Can I use the loops commercially?</summary>
+                  <summary>Can I use the stems in my own music?</summary>
                   <p>
-                    It depends on the source audio. Splitting a song doesn’t change who owns it. If it’s yours, or you hold the rights,
-                    use the loops as you like. If it’s someone else’s recording, you need clearance before you release anything.
-                    We don’t grant rights and can’t clear a sample. The demo drums file on this page is different: it is free
-                    to use in your own music (credit to Lucky Ticket by Jon Cartwright is appreciated).
+                    It depends on the source audio. Splitting a song doesn’t change who owns it. If it’s yours, or you hold the
+                    rights, use it as you like. If it’s someone else’s recording, practising along to it is one thing; releasing
+                    anything made from it needs clearance first. We don’t grant rights and can’t clear a sample.
                   </p>
                 </details>
                 <details>

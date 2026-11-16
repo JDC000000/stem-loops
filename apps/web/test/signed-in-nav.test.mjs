@@ -188,6 +188,7 @@ test('the icon-only menu toggle carries aria-label and aria-expanded', async () 
 
 test('exactly one item is aria-current="page", and it is the right one', async () => {
   for (const [path, label] of [
+    ['/', 'Play along'],
     ['/account', 'Account'],
     ['/account/delete', 'Account'],
     ['/history', 'Job history'],
@@ -355,7 +356,8 @@ test('CONTROL: every internal href the bar emits resolves to a real page in app/
   for (const user of [null, { user_id: 'u', email: 'a@b.c' }]) {
     for (const path of ['/account', '/loops', `/jobs/${JOB_A}`]) {
       const html = await chrome({ user, path });
-      for (const h of hrefs(html)) {
+      // A query (Sign in on /loops carries ?return_to) does not change which page it is.
+      for (const h of hrefs(html).map((x) => x.split('?')[0])) {
         assert.ok(existsSync(pageFor(h)), `the bar links to ${h}, which has no page.tsx`);
       }
     }
@@ -372,8 +374,10 @@ const productTag = (html) =>
 
 test('Story 7.4: the bar names the product you are in, at every width (not only via the folded menu)', async () => {
   for (const [path, tag] of [
+    ['/', 'Play along'],
     [`/jobs/${JOB_A}`, 'Play along'],
-    ['/loops', 'Loops'],
+    // The tag carries the nav's own label (2026-11-15), not a shorter alias.
+    ['/loops', 'Download loops'],
     ['/account', null],
     ['/history', null],
     ['/pricing', null],

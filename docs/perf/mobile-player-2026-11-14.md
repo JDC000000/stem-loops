@@ -37,6 +37,26 @@ Caveats, as binding as the numbers:
 - **Decode times are relative only** (shared, loaded 2-vCPU host). 24 kHz was faster than 48 kHz on this run and slower on the 2026-11-14 run; do not read anything into the direction.
 - **Synthetic audio** (pink noise + sine, 64 kb/s Opus); engine.ts records a higher peak on a real track's stems at 48 kHz (~762 MiB).
 
+### Chord sync on the phone route (latency)
+
+The chord playhead follows the AudioContext clock, which is RENDER time. On desktop the audio leaves through `ctx.destination`, and the engine is unchanged (no compensation, as before). On the phone route the audio takes one more hop, MediaStream → `<audio>` → that element's own output sink, so the chords would run early by that much.
+
+**Measured in Chromium** (`scripts/perf/mobile-player/latency.mjs`, raw data [`mobile-player-2026-11-15.latency.json`](./mobile-player-2026-11-15.latency.json)). The setup is the production route (24 kHz context → bus → MediaStreamDestination → `<audio playsinline>` playing). A second context taps the same stream with an AudioWorklet that timestamps a scheduled 0.9-amplitude click. Both render clocks are mapped to `performance.now()`. The result is 10 reps × 2 emulated profiles × 2 rates.
+
+| Profile | Rate | MediaStream hop, min–max (median) ms | `outputLatency` / `baseLatency` reported |
+|---|---|---|---|
+| Pixel 7 (emulated) | 24 kHz | 11.6–27.8 (17.5) | 32 ms / 10 ms |
+| Pixel 7 (emulated) | 48 kHz | 10.3–24.5 (19.9) | 32 ms / 10 ms |
+| iPhone 14 (emulated on Chromium) | 24 kHz | 16.8–30.5 (17.2) | 32 ms / 10 ms |
+| iPhone 14 (emulated on Chromium) | 48 kHz | 13.3–22.3 (20.6) | 32 ms / 10 ms |
+
+**Compensation shipped** (`routeLatencySec`, `background-audio.ts`). While playing on the phone route, the chord position is the engine position minus (`ROUTE_TRANSPORT_LATENCY_SEC` = **18 ms**, the measured median, plus the context's `outputLatency`, falling back to `baseLatency`, then to 0), capped at 0.5 s. In this Chromium that is about **50 ms**. The value is recomputed on every play, so a route that fell back to `ctx.destination` gets 0. Paused or ended positions are not shifted. Desktop gets 0.
+
+What is not known:
+
+- **The `<audio>` element's own sink latency is not exposed to JS.** The context's `outputLatency` stands in for it (same device, same output). The ±quantum mapping error of the method is about 3–5 ms.
+- **iOS / WebKit is not measured at all.** WebKit's MediaStream-to-element path and its `outputLatency` support may differ: Safari reports `outputLatency` only on recent versions, so older ones get 18 ms plus `baseLatency`. Bluetooth headphones add 100–250 ms that no API reports reliably. If the chords look early or late on a real phone, the next step is a measured per-platform default.
+
 To re-run: `PLAYWRIGHT_MODULE=<path to playwright> node scripts/perf/mobile-player/measure.mjs --reps 3 --out results.json` (defaults to the matrix above; `--arms "Profile=auto|<rate>;…"`, `--durs`, `--play-sec` override it).
 
 ---

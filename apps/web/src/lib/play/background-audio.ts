@@ -245,6 +245,41 @@ export function createBackgroundOutput(
   };
 }
 
+// ─── 1b. chord-clock compensation for the route ─────────────────────────────
+
+/**
+ * Extra delay the MediaStream → `<audio>` hop adds before the element's own
+ * sink, in seconds. MEASURED in Chromium (scripts/perf/mobile-player/latency.mjs,
+ * docs/perf/mobile-player-2026-11-14.md "Chord sync on the phone route"):
+ * a click rendered by the 24 kHz player context reached a second context
+ * through the same MediaStream 10-31 ms later, median ~17-20 ms over 40 reps.
+ * Used as the default because no API reports it. iOS/WebKit: NOT measured.
+ */
+export const ROUTE_TRANSPORT_LATENCY_SEC = 0.018;
+
+/** Any estimate above this is treated as nonsense and capped. */
+export const MAX_ROUTE_LATENCY_SEC = 0.5;
+
+export interface LatencySource {
+  readonly outputLatency?: number;
+  readonly baseLatency?: number;
+}
+
+/**
+ * How far the chord clock (the AudioContext's render time) runs AHEAD of what
+ * the listener hears on the phone route: the measured MediaStream hop plus the
+ * output sink's latency. The element's sink latency is not exposed to JS, so the
+ * context's own `outputLatency` (same device, same output) stands in for it,
+ * falling back to `baseLatency`, then to nothing. `routed: false` (desktop, or a
+ * route that fell back to ctx.destination) is 0: desktop is unchanged.
+ */
+export function routeLatencySec(src: LatencySource | null | undefined, routed: boolean): number {
+  if (!routed) return 0;
+  const pos = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0;
+  const sink = pos(src?.outputLatency) ? src!.outputLatency! : pos(src?.baseLatency) ? src!.baseLatency! : 0;
+  return Math.min(ROUTE_TRANSPORT_LATENCY_SEC + sink, MAX_ROUTE_LATENCY_SEC);
+}
+
 // ─── 2. audio session ────────────────────────────────────────────────────────
 
 /** Safari 16.4+: mark this page's audio as music playback. Returns whether it was set. */

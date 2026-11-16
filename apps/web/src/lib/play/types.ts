@@ -239,6 +239,8 @@ export interface PlayEngine {
    * Optional so existing fakes stay valid; the Web Audio engine implements it.
    */
   resumeAudio?(): void;
+  /** The AudioContext's reported `outputLatency` / `baseLatency`, or null. Optional for fakes. */
+  audioLatency?(): { outputLatency?: number; baseLatency?: number } | null;
 
   /** Releases AudioContext and buffers. Safe to call twice. */
   dispose(): void;

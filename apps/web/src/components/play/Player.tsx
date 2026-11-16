@@ -78,6 +78,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChordOverlay } from '@/components/ChordOverlay';
 import {
   createBackgroundOutput,
+  routeLatencySec,
   setPlaybackAudioSession,
   wireAudioResume,
   wireMediaSession,
@@ -351,9 +352,17 @@ export function isPlayable(phase: Phase, snapshot: EngineSnapshot): boolean {
   return phase.kind === 'ready' && snapshot.error === null;
 }
 
-export function chordPositionFor(phase: Phase, snapshot: EngineSnapshot): number | null {
+export function chordPositionFor(phase: Phase, snapshot: EngineSnapshot, latencySec = 0): number | null {
   if (!isPlayable(phase, snapshot)) return null;
-  return Number.isFinite(snapshot.positionSec) ? snapshot.positionSec : null;
+  if (!Number.isFinite(snapshot.positionSec)) return null;
+  // Story 8 — on the phone route the engine clock runs ahead of what is heard
+  // by `latencySec` (routeLatencySec in background-audio.ts). Only WHILE
+  // PLAYING: a paused or ended position is where the audio stopped, not ahead
+  // of it. Desktop passes 0, so its behaviour is exactly the old one.
+  if (snapshot.status === 'playing' && Number.isFinite(latencySec) && latencySec > 0) {
+    return Math.max(0, snapshot.positionSec - latencySec);
+  }
+  return snapshot.positionSec;
 }
 
 const IDLE_SNAPSHOT: EngineSnapshot = Object.freeze({
@@ -391,6 +400,8 @@ export default function Player({ jobId, loops, enabled = true, title }: PlayerPr
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const [snapshot, setSnapshot] = useState<EngineSnapshot>(IDLE_SNAPSHOT);
   const [lightAudio, setLightAudio] = useState(false);
+  /** Seconds the chord clock is held back on the phone route; 0 on desktop. */
+  const [chordLatencySec, setChordLatencySec] = useState(0);
   const engineRef = useRef<PlayEngine | null>(null);
   /** The phone output route; null on the desktop path. */
   const outputRef = useRef<BackgroundOutput | null>(null);
@@ -458,6 +469,9 @@ export default function Player({ jobId, loops, enabled = true, title }: PlayerPr
       media?.update(s);
       const playing = s.status === 'playing';
       if (wasPlaying && !playing) output?.pause(); // ended, failed or paused
+      // Re-read on every start: the route can fall back to ctx.destination
+      // (then 0), and outputLatency is only meaningful once audio runs.
+      if (playing && !wasPlaying) setChordLatencySec(routeLatencySec(engine.audioLatency?.(), !!output?.routed));
       wasPlaying = playing;
     });
     setSnapshot(engine.getSnapshot());
@@ -567,6 +581,7 @@ export default function Player({ jobId, loops, enabled = true, title }: PlayerPr
       snapshot={snapshot}
       sections={sections}
       lightAudio={lightAudio}
+      chordLatencySec={chordLatencySec}
       onPlay={onPlay}
       onPause={onPause}
       onSeek={onSeek}
@@ -586,6 +601,8 @@ export interface PlayerViewProps {
   readonly sections: readonly LoopRegion[];
   /** True on the phone / low-memory path: shows LIGHT_AUDIO_NOTE once the player is up. */
   readonly lightAudio?: boolean;
+  /** Phone route only: how far to hold the chord playhead behind the engine clock while playing. */
+  readonly chordLatencySec?: number;
   readonly onPlay: () => void;
   readonly onPause: () => void;
   readonly onSeek: (positionSec: number) => void;
@@ -614,6 +631,7 @@ export function PlayerView({
   snapshot,
   sections,
   lightAudio = false,
+  chordLatencySec = 0,
   onPlay,
   onPause,
   onSeek,
@@ -634,7 +652,7 @@ export function PlayerView({
   // engine position and nothing else. See `chordPositionFor`: `null` means NOT
   // PLAYABLE, not "not playing" — a loaded engine paused at 0 passes 0, so the
   // marker sits on the first chord instead of disappearing.
-  const chordPosition = chordPositionFor(phase, snapshot);
+  const chordPosition = chordPositionFor(phase, snapshot, chordLatencySec);
 
   const banner = (() => {
     if (phase.kind === 'unsupported') return { tone: 'notice' as const, text: phase.message };

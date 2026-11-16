@@ -1121,3 +1121,18 @@ test('Player wires the three outcomes: it reads zeroSourceReason and reports onl
   // a refetch by anyone holding the UUID would otherwise mint events)
   assert.doesNotMatch(src, /reportStemFetchFailure\([^)]*ENCODE/);
 });
+
+test('chordPositionFor: a route latency holds the marker back while playing only, floored at 0 (Story 8)', () => {
+  const base = { stems: [], loop: null, degraded: null, error: null, durationSec: 120 };
+  const ready = { kind: 'ready' };
+  assert.equal(chordPositionFor(ready, { ...base, status: 'playing', positionSec: 10 }, 0.05), 10 - 0.05);
+  assert.equal(chordPositionFor(ready, { ...base, status: 'playing', positionSec: 0.02 }, 0.05), 0);
+  for (const status of ['ready', 'ended']) {
+    assert.equal(chordPositionFor(ready, { ...base, status, positionSec: 10 }, 0.05), 10, status);
+  }
+  // default (desktop) is the old behaviour
+  assert.equal(chordPositionFor(ready, { ...base, status: 'playing', positionSec: 10 }), 10);
+  for (const bad of [NaN, -1, Infinity]) {
+    assert.equal(chordPositionFor(ready, { ...base, status: 'playing', positionSec: 10 }, bad), 10, String(bad));
+  }
+});

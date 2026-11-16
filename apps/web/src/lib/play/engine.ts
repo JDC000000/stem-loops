@@ -594,6 +594,13 @@ export class WebAudioPlayEngine implements PlayEngine {
     }
   }
 
+  /** The context's reported latencies, for chord-clock compensation; null without a context. */
+  audioLatency(): { outputLatency?: number; baseLatency?: number } | null {
+    const ctx = this.ctx as (AudioContext & { outputLatency?: number }) | null;
+    if (!ctx || this.disposed) return null;
+    return { outputLatency: ctx.outputLatency, baseLatency: ctx.baseLatency };
+  }
+
   // ── transport ──────────────────────────────────────────────────────────────
 
   play(): void {

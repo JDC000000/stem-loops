@@ -18,7 +18,10 @@ import {
   POSITION_DRIFT_SEC,
   RESUME_DOC_EVENTS,
   RESUME_WIN_EVENTS,
+  MAX_ROUTE_LATENCY_SEC,
+  ROUTE_TRANSPORT_LATENCY_SEC,
   createBackgroundOutput,
+  routeLatencySec,
   playbackStateFor,
   setPlaybackAudioSession,
   wireAudioResume,
@@ -420,4 +423,21 @@ test('resume hooks: visible again, pageshow, focus and any tap all resume; hidde
 test('resume hooks: no document / window is fine', () => {
   assert.doesNotThrow(() => wireAudioResume(null, () => {})());
   assert.doesNotThrow(() => wireAudioResume({}, () => {})());
+});
+
+// ═══ 1b. chord-clock compensation ════════════════════════════════════════════
+
+test('routeLatencySec: 0 when not routed (desktop, or a route that fell back)', () => {
+  assert.equal(routeLatencySec({ outputLatency: 0.04, baseLatency: 0.01 }, false), 0);
+});
+
+test('routeLatencySec: measured MediaStream hop + outputLatency, else baseLatency, else the hop alone', () => {
+  assert.ok(ROUTE_TRANSPORT_LATENCY_SEC >= 0.01 && ROUTE_TRANSPORT_LATENCY_SEC <= 0.031, 'default within the measured 10-31 ms');
+  assert.equal(routeLatencySec({ outputLatency: 0.032, baseLatency: 0.01 }, true), ROUTE_TRANSPORT_LATENCY_SEC + 0.032);
+  assert.equal(routeLatencySec({ outputLatency: 0, baseLatency: 0.01 }, true), ROUTE_TRANSPORT_LATENCY_SEC + 0.01);
+  assert.equal(routeLatencySec({ baseLatency: 0.01 }, true), ROUTE_TRANSPORT_LATENCY_SEC + 0.01);
+  for (const src of [{}, null, undefined, { outputLatency: NaN, baseLatency: -1 }]) {
+    assert.equal(routeLatencySec(src, true), ROUTE_TRANSPORT_LATENCY_SEC);
+  }
+  assert.equal(routeLatencySec({ outputLatency: 9 }, true), MAX_ROUTE_LATENCY_SEC, 'nonsense is capped');
 });

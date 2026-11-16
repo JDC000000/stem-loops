@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>route latency harness</title>
+<script>
+// Measures the EXTRA delay the phone output route adds: a click rendered by
+// the player's context (24 kHz, like the light path) goes ctxA -> bus ->
+// MediaStreamAudioDestinationNode -> <audio> (the production route), and the
+// SAME stream is tapped by a second context's AudioWorklet that timestamps the
+// click's arrival. Both contexts' currentTime are render-thread clocks, mapped
+// onto performance.now(), so the difference is MediaStream transport delay.
+// What JS cannot see: the <audio> element's own sink buffering after that.
+const WORKLET = `
+class Detect extends AudioWorkletProcessor {
+  constructor() { super(); this.done = false; }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch && !this.done) for (let i = 0; i < ch.length; i++) if (Math.abs(ch[i]) > 0.5) {
+      this.done = true; this.port.postMessage(currentTime + i / sampleRate); break;
+    }
+    return true;
+  }
+}
+registerProcessor('detect', Detect);`;
+const pair = (ctx) => { const a = performance.now(); const t = ctx.currentTime; const b = performance.now(); return { perf: (a + b) / 2, t }; };
+window.measure = async (rate, reps) => {
+  const out = [];
+  for (let r = 0; r < reps; r++) {
+    const A = new AudioContext({ sampleRate: rate });
+    const B = new AudioContext();
+    await B.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' })));
+    const bus = A.createGain();
+    const dest = A.createMediaStreamDestination();
+    bus.connect(dest);
+    const el = new Audio(); el.playsInline = true; el.srcObject = dest.stream;
+    await el.play();
+    const tap = B.createMediaStreamSource(dest.stream);
+    const det = new AudioWorkletNode(B, 'detect');
+    tap.connect(det); det.connect(B.destination);
+    await A.resume(); await B.resume();
+    await new Promise((res) => setTimeout(res, 500)); // let both clocks run
+    const click = A.createBuffer(1, Math.round(rate * 0.01), rate);
+    click.getChannelData(0).fill(0.9);
+    const src = A.createBufferSource(); src.buffer = click; src.connect(bus);
+    const when = A.currentTime + 0.2;
+    src.start(when);
+    const got = new Promise((res) => (det.port.onmessage = (e) => res(e.data)));
+    const arrivedB = await Promise.race([got, new Promise((res) => setTimeout(() => res(null), 3000))]);
+    const pa = pair(A), pb = pair(B);
+    const r0 = { outputLatencyA: A.outputLatency ?? null, baseLatencyA: A.baseLatency ?? null,
+                 outputLatencyB: B.outputLatency ?? null, baseLatencyB: B.baseLatency ?? null };
+    if (arrivedB == null) { out.push({ ...r0, error: 'no click detected' }); }
+    else {
+      const sentPerf = pa.perf + (when - pa.t) * 1000;
+      const arrivedPerf = pb.perf + (arrivedB - pb.t) * 1000;
+      out.push({ ...r0, transportMs: +(arrivedPerf - sentPerf).toFixed(2), elPaused: el.paused });
+    }
+    el.pause(); await A.close(); await B.close();
+  }
+  return out;
+};
+</script>

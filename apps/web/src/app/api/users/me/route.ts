@@ -142,17 +142,25 @@ export async function DELETE(req: NextRequest) {
           throw e;
         }
 
-        // Expire the user's live jobs. Without this, deleting auth.users runs the
-        // FK's ON DELETE SET NULL on jobs.user_id and every live job (audio, stems,
-        // loops; up to 24 h) becomes an ANONYMOUS job: any link holder may then cut
-        // its loops and any Studio account may sign its full-length WAVs, neither
-        // of which the owner's job allowed. Every job route treats
-        // expires_at <= now() as gone (404), and the worker's retention sweep
-        // deletes the objects (cleanup.py, keyed on expires_at). Inside this tx so
-        // a failed Stripe cancel below leaves the jobs exactly as they were.
+        // Kill the user's jobs. Without this, deleting auth.users runs the FK's
+        // ON DELETE SET NULL on jobs.user_id and every live job (audio, stems,
+        // loops) becomes an ANONYMOUS job: any link holder may then cut its loops
+        // and any Studio account may sign its full-length WAVs, neither of which
+        // the owner's job allowed. Inside this tx so a failed Stripe cancel below
+        // leaves the jobs exactly as they were.
+        //
+        // expires_at = created_at, not now(): a Pro/Studio library is retained
+        // PAST expires_at by the owner's subscription (JOB_RETAINED_UNTIL_SQL in
+        // lib/retention.ts), and the cancel below only reaches the subscriptions
+        // row later, via the webhook, which then starts 30 days' grace. The
+        // retention rule ignores the subscription for any job whose expires_at is
+        // <= created_at, so this turns paid retention off for good AND puts the
+        // job in the past for every route (404) and for the worker's sweep, which
+        // deletes the objects. LEAST() never extends a job; the WHERE skips jobs
+        // already killed, so a retried deletion changes nothing.
         await client.query(
-          `UPDATE public.jobs SET expires_at = now()
-            WHERE user_id = $1::uuid AND expires_at > now()`,
+          `UPDATE public.jobs SET expires_at = LEAST(expires_at, created_at)
+            WHERE user_id = $1::uuid AND expires_at > created_at`,
           [user.user_id],
         );
 

@@ -1,24 +1,28 @@
 // When a song's loops can still be asked for, and what to say when they cannot.
 //
-// JON, 2026-11-14: loops can be requested only within 24 hours of the job. After
-// that the control is DISABLED with a plain explanation. No retention change.
+// JON, 2026-11-14: loops can be requested only while the song is retained. After
+// that the control is DISABLED with a plain explanation.
+// JON, 2026-11-15: retention is per plan — Free 24 hours; Pro and Studio while
+// subscribed plus 30 days (lib/retention.ts). So the window is per plan too.
 //
-// Why 24 hours and not some other number: the on-demand cut (migration 033,
+// Why the window IS the retention window: the on-demand cut (migration 033,
 // worker/loop_cutter.py) slices the retained stem WAVs, and those are deleted
-// with everything else when the job expires (jobs.expires_at = created_at + 24h,
-// migration 007; lib/retention.ts). There is nothing to cut from after that, so
-// the window IS the retention window. It is read from RETENTION_MS rather than
-// restated, so a retention change moves this with it.
+// with everything else when the job's retention ends. There is nothing to cut
+// from after that. The job routes return that end AS `expires_at`
+// (JOB_RETAINED_UNTIL_SQL), so `expiresAtMs` below is already per plan; the
+// `createdAtMs + LOOPS_WINDOW_MS` fallback is Free's 24 hours, read from
+// RETENTION_MS rather than restated.
 //
 // The SERVER already refuses: POST /api/jobs/:id/loops selects with
-// `expires_at > now()` and answers 404 past it. This module is the UI half — it
-// decides when to show the button disabled instead of letting a press fail.
+// `${JOB_RETAINED_UNTIL_SQL} > now()` and answers 404 past it. This module is the
+// UI half — it decides when to show the button disabled instead of letting a
+// press fail.
 //
 // Erasable-syntax only, and no `@/` imports, so node's type stripping can run
 // its tests directly (test/loops-page.test.mjs).
 import { RETENTION_MS } from '../retention.ts';
 
-/** How long after a song is split its loops can be cut. Same as retention, by design. */
+/** How long after a FREE song is split its loops can be cut. Same as Free retention, by design. */
 export const LOOPS_WINDOW_MS = RETENTION_MS;
 
 /** Why the Cut control is off. `null` means it is on. */
@@ -30,10 +34,10 @@ export type LoopsClosedReason = 'expired' | 'not_found' | 'no_stems';
  */
 export const LOOPS_CLOSED_COPY: Readonly<Record<LoopsClosedReason, string>> = {
   expired:
-    'Loops can only be cut within 24 hours of splitting a song. This song is older than that, so its audio has been deleted on our end. ' +
-    'To get its loops, start the song again. It counts as a new track.',
+    'Loops can only be cut while a song is kept: within 24 hours of splitting it on Free, or while it is in your Pro or Studio library. ' +
+    'This song is past that, so its audio has been deleted on our end. To get its loops, start the song again. It counts as a new track.',
   not_found:
-    'We could not find that song. Songs are deleted 24 hours after they are split, so it may be older than that, or the link may be wrong. ' +
+    'We could not find that song. On Free, songs are deleted 24 hours after they are split, so it may be older than that, or the link may be wrong. ' +
     'To get its loops, start the song again. It counts as a new track.',
   no_stems:
     'This song’s stems were not kept, so its loops cannot be cut. To get its loops, start the song again. It counts as a new track.',

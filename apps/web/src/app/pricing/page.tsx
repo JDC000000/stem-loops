@@ -139,7 +139,7 @@ export default async function PricingPage() {
       <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Pricing</h1>
       <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>
         Every plan opens your tracks in the player and lets you download loops as 24-bit WAV. Plans differ in
-        how many tracks you can add each month.
+        how many tracks you can add each month, and in how long your songs are kept.
       </p>
       {degraded && (
         <p role="status" style={{ color: 'var(--text-muted)', fontSize: 13 }}>

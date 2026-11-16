@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { mintSignedUrl } from '@/lib/r2';
-import { presignTtlSec } from '@/lib/retention';
+import { JOB_RETAINED_UNTIL_SQL, presignTtlSec } from '@/lib/retention';
 import { mayReadJob } from '@/lib/job-access';
 import { inputTrimFromEvents } from '@/lib/input-trim';
 // OWNERSHIP: a job with a user_id is readable only by that user; an anonymous job
@@ -20,8 +20,9 @@ const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
 
 // GET /api/jobs/:id — status + events + loops, read straight from Postgres.
 // Each loop gets a FRESHLY minted signed URL on every read (PRD §8 anti-goal #4), valid for
-// at most the job's remaining life (24h retention; the worker deletes the objects after
-// expires_at). Past expires_at the job is treated as gone even if the sweep hasn't run yet.
+// at most the job's remaining life, capped at 24h. "Remaining life" is JOB_RETAINED_UNTIL_SQL
+// (24h for Free, longer for a Pro/Studio owner; lib/retention.ts), returned AS expires_at.
+// Past it the job is treated as gone even if the sweep hasn't run yet.
 export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
   // A shape-invalid id (mistyped/truncated bookmark) would otherwise hit Postgres's
   // uuid-cast error → generic 500, which the client poll loop treats as non-terminal
@@ -34,8 +35,8 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     const jobRes = await db.query(
       `SELECT user_id, id, input_kind, youtube_url, upload_r2_key, original_filename, requested_stems,
               loop_length_bars, status, error_code, error_message_user, bpm, musical_key,
-              created_at, updated_at, expires_at
-       FROM jobs WHERE id = $1 AND expires_at > now()`,
+              created_at, updated_at, ${JOB_RETAINED_UNTIL_SQL} AS expires_at
+       FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
       [params.id]
     );
     if (jobRes.rowCount === 0) {

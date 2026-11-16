@@ -64,6 +64,7 @@ async function loadLoopsView() {
     .outputText.replace(/from ['"]@\/components\/LoopResults['"]/g, `from '${resultsUrl}'`)
     .replace(/from ['"]@\/lib\/history['"]/g, `from '${historyUrl}'`)
     .replace(/from ['"]@\/lib\/retention['"]/g, `from '${real('src/lib/retention.ts')}'`)
+    .replace(/from ['"]@\/lib\/job-label['"]/g, `from '${real('src/lib/job-label.ts')}'`)
     .replace(/from ['"]@\/lib\/loops\/availability['"]/g, `from '${real('src/lib/loops/availability.ts')}'`);
   // Guard: an import this loader does not know about would fail to resolve and
   // the suite would die before saying why. Name it instead.
@@ -334,5 +335,91 @@ test('a failed read offers Try again, and Try again really fetches again', async
     await settle(dom);
     assert.equal(calls.fetchJob.length, 2);
     assert.ok(dom.find('[data-testid="loop-results"]'));
+  });
+});
+
+// ── Paid-plan library (Jon, 2026-11-15) ───────────────────────────────────
+// Pro and Studio keep songs while subscribed + 30 days, so the loops window is per plan. The
+// list merges this browser's history with GET /api/library (owner-scoped server-side); a
+// library entry carries the SERVER's deadline, which is what decides open/closed.
+const PAID_OLD = 'cccccccc-3333-4333-8333-333333333333'; // split 10 days ago, kept by the plan
+const libraryDeps = (base, lib) => ({ ...base, listLibrary: async () => lib });
+
+test('library: a subscriber\'s song older than 24 hours is listed OPEN, by the server deadline', async () => {
+  const LoopsView = await loadLoopsView();
+  const { deps } = harness({ songs: SONGS });
+  const lib = {
+    kind: 'ok',
+    songs: [{ id: PAID_OLD, at: NOW - 10 * 24 * HOUR, expiresAtMs: NOW + 40 * 24 * HOUR, label: 'my-song.mp3' }],
+  };
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopsView, { deps: libraryDeps(deps, lib) }));
+    await settle(dom);
+    const rows = dom.findAll('[data-testid="lp-song"]');
+    assert.equal(rows.length, 3, 'library + browser entries, merged');
+    const paid = rows.find((r) => r.textContent.includes('my-song.mp3'));
+    assert.ok(paid, 'the library entry is labelled by its file name');
+    assert.equal(paid.getAttribute('data-open'), 'true');
+    assert.match(paid.textContent, /loops close in 40 days/);
+    // Free's browser-only old song keeps its 24-hour clock.
+    const old = rows.find((r) => r.textContent.includes(OLD.slice(0, 8)));
+    assert.equal(old.getAttribute('data-open'), 'false');
+  });
+});
+
+test('library: picking a subscriber\'s old song FETCHES it (no 24 h short-circuit)', async () => {
+  const LoopsView = await loadLoopsView();
+  const { calls, deps } = harness({
+    songs: [],
+    jobs: { [PAID_OLD]: { kind: 'ok', job: { ...doneJob(PAID_OLD, [loopRow('a', false)]), expires_at: new Date(NOW + 40 * 24 * HOUR).toISOString() } } },
+  });
+  const lib = { kind: 'ok', songs: [{ id: PAID_OLD, at: NOW - 10 * 24 * HOUR, expiresAtMs: NOW + 40 * 24 * HOUR }] };
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopsView, { deps: libraryDeps(deps, lib) }));
+    await settle(dom);
+    await dom.act(() => dom.findAll('[data-testid="lp-song"]')[0].click());
+    await settle(dom);
+    assert.deepEqual(calls.fetchJob, [PAID_OLD]);
+    assert.ok(!dom.find('[data-testid="lp-closed"]'), 'a retained song must not be shown closed');
+  });
+});
+
+test('library: when the library cannot be read, an old browser entry is asked of the server, not closed', async () => {
+  const LoopsView = await loadLoopsView();
+  const { calls, deps } = harness({ songs: SONGS });
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopsView, { deps: libraryDeps(deps, { kind: 'error' }) }));
+    await settle(dom);
+    await dom.act(() => dom.findAll('[data-testid="lp-song"]')[1].click());
+    await settle(dom);
+    assert.deepEqual(calls.fetchJob, [OLD], 'the server decides when the 24 h clock may be a subscriber\'s');
+  });
+});
+
+test('library: signed out behaves exactly as before (old browser song closed without a request)', async () => {
+  const LoopsView = await loadLoopsView();
+  const { calls, deps } = harness({ songs: SONGS });
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopsView, { deps: libraryDeps(deps, { kind: 'signed_out' }) }));
+    await settle(dom);
+    await dom.act(() => dom.findAll('[data-testid="lp-song"]')[1].click());
+    await settle(dom);
+    assert.deepEqual(calls.fetchJob, []);
+    assert.equal(dom.find('[data-testid="lp-closed"]')?.getAttribute('data-reason'), 'expired');
+  });
+});
+
+test('copy: the page states Free\'s exact 24 hours and the paid library, per plan', async () => {
+  const LoopsView = await loadLoopsView();
+  const { deps } = harness();
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(LoopsView, { deps }));
+    await settle(dom);
+    const note = dom.find('[data-testid="lp-window-note"]').textContent.replace(/\s+/g, ' ');
+    assert.match(note, /On Free that is 24 hours after you split it\./);
+    assert.match(note, /On Pro and Studio it is as long as the song is in your library\./);
+    const foot = dom.find('.lp-foot').textContent.replace(/\s+/g, ' ');
+    assert.match(foot, /On Free, songs, stems and loops are deleted 24 hours after a song is split/);
+    assert.match(foot, /On Pro and Studio they stay in your library while you are subscribed, and for 30 days after\./);
   });
 });

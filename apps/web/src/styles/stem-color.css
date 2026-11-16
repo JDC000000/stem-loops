@@ -22,12 +22,20 @@
 
 /* back link and the history rows */
 .jp-back { color: var(--text-muted); transition: color var(--sl-dur-1) var(--sl-ease);
-  /* 44px hit area (--touch-min) without moving the line. .jp-back is a STANDALONE
-     link on the job page and the error boundary ("Start a new song \2192"), not a link
-     inside a sentence, so the 44px bar applies to it and the design-standards 11
-     inline exception does not. Vertical padding on an inline box does not grow the
-     line box, so the taller hit area costs no layout; j7 measured 123x24 before. */
-  padding-block: 14px; }
+  /* 44px hit area (--touch-min). .jp-back is a STANDALONE link on the job page and
+     on the error boundary ("Start a new song \2192"), not a link inside a sentence, so
+     the 44px bar applies to it and the design-standards 11 inline exception does not.
+     j7 measured 123x24 before.
+
+     BOTH declarations are needed, because .jp-back is not always an inline box:
+       - inline (JobView's back row): vertical padding does not grow the line box, and
+         vertical margin on an inline box is ignored, so the hit area is free;
+       - a FLEX ITEM (error.tsx, and the stalled panel's row in JobView), where the
+         element blockifies: there padding DOES grow the item -- 26px to 46px, which
+         grew the error boundary's <main> by 20px -- and the negative block margin is
+         what takes the outer box back to the 26px it occupied before.
+     Measured in Chromium at 390 and 360 in all three uses; see the j7 note. */
+  padding-block: 14px; margin-block: -10px; }
 .jp-back:hover { color: var(--text-primary); text-decoration: underline; text-underline-offset: 4px; }
 .jp-row { background: var(--bg-card); border: 1px solid var(--border-default); color: var(--text-secondary);
   transition: border-color var(--sl-dur-1) var(--sl-ease), background var(--sl-dur-1) var(--sl-ease); }

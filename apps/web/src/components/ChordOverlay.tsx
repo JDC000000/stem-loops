@@ -756,7 +756,11 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
             // height: the 44px touch bar (--touch-min). An unsized range input is
             // about 16px tall, which j7 measured at 146x16 (390) and 116x16 (360);
             // Chromium keeps the track centred, so only the hit area grows.
-            style={{ flex: 1, minWidth: 80, height: 44, accentColor: '#60a5fa' }}
+            // marginBlock: 0 is load-bearing, not tidying. Chromium's UA sheet gives
+            // this control `margin: 2px`, so height alone makes the flex line 48px and
+            // pushes everything below the chord timeline down 4px at every width,
+            // desktop included (measured; `margin-block: 0` puts the bar back at 44).
+            style={{ flex: 1, minWidth: 80, height: 'var(--touch-min, 44px)', marginBlock: 0, accentColor: '#60a5fa' }}
             onChange={(e) => setZoom(sliderToPps(Number(e.target.value) / 1000, minPps, maxPps))}
           />
           <button

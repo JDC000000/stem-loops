@@ -13,6 +13,11 @@
 //     standard says the same (src/styles/loops-page.css: "inline links inside running
 //     text keep the line box (the 44px hit area is for standalone links)"), and
 //     .jp-back, a STANDALONE link, is sized to 44 px, not exempted.
+//     The exception is kept as narrow as the evidence: <p> and <dd>, the two elements
+//     the app actually writes running text in, and only while the link is still an
+//     inline box. Without that last condition the exception would also swallow a
+//     button-shaped link (inline-block or flex) that happens to sit inside a
+//     paragraph — which is a standalone control and must meet 44 px.
 //
 //  2. CHORD CELLS — the chord timeline's chips ([data-testid^="chord-chip-"]) and the
 //     phone chord grid's slots ([data-testid^="phone-slot-"]). Their WIDTH is a drawing
@@ -40,12 +45,25 @@ const MEASURE = () => {
   const hscroll = document.documentElement.scrollWidth - window.innerWidth;
   const small = [];
   const chordCells = [];
+  const inlineExempt = [];
+  let examined = 0;
   for (const el of document.querySelectorAll('main button, main a[href], main input:not([type="hidden"]), main select, main [role="slider"], main [role="button"], header button, header a[href]')) {
     if (!vis(el)) continue;
-    // WCAG 2.5.8 inline exception: a link inside a sentence is sized by the line of text.
-    // Running text is <p>, and also the <dd>/<li>/<dt> the app writes prose in (carve-out 1).
-    const prose = el.closest('p,dd,li,dt,figcaption,blockquote');
-    if (el.matches('a') && prose && prose.textContent.trim().length > el.textContent.trim().length + 10) continue;
+    // WCAG 2.5.8 inline exception: a link inside a sentence is sized by the line of
+    // text (carve-out 1). Three conditions, all required, and the third is what keeps
+    // the exception from swallowing a standalone control that merely sits in prose:
+    // the element must still BE an inline box, so a button-shaped link (inline-block,
+    // flex, grid, block) is measured against 44x44 however it is nested.
+    const prose = el.closest('p,dd');
+    if (
+      el.matches('a') &&
+      prose &&
+      prose.textContent.trim().length > el.textContent.trim().length + 10 &&
+      getComputedStyle(el).display === 'inline'
+    ) {
+      inlineExempt.push((el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 24));
+      continue;
+    }
     // a native checkbox/radio inside a <label> is sized by its label
     const target = (el.matches('input[type="checkbox"],input[type="radio"],input[type="file"]') && el.closest('label')) || el;
     const r = target.getBoundingClientRect();
@@ -55,6 +73,7 @@ const MEASURE = () => {
       chordCells.push({ name: (el.getAttribute('aria-label') || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 24), w: Math.round(r.width), h: Math.round(r.height) });
       continue;
     }
+    examined += 1;
     if (r.width < 44 || r.height < 44) {
       const name = (el.getAttribute('aria-label') || el.textContent || el.getAttribute('name') || el.tagName).trim().replace(/\s+/g, ' ').slice(0, 40);
       small.push(`${name} ${Math.round(r.width)}×${Math.round(r.height)}`);
@@ -65,14 +84,27 @@ const MEASURE = () => {
     const cs = getComputedStyle(el);
     return { font: parseFloat(cs.fontSize), clipped: el.scrollWidth > el.clientWidth + 1, w: Math.round(el.getBoundingClientRect().width), label: el.textContent.trim() };
   });
-  return { hscroll, small, wide, chips, chordCells };
+  return { hscroll, small, wide, chips, chordCells, inlineExempt, examined };
 };
 
 async function checkView(j, page, tag, { chips = false } = {}) {
   const m = await page.evaluate(MEASURE);
   await j.shot(page, tag);
   j.check(`${tag}: no horizontal scroll`, m.hscroll <= 0, `overflow=${m.hscroll}px ${m.wide.join('; ')}`);
-  j.check(`${tag}: interactive controls ≥ 44×44`, m.small.length === 0, m.small.length ? `${m.small.length} under 44: ${m.small.slice(0, 12).join(' | ')}` : 'all ≥ 44');
+  // `m.examined` is reported and REQUIRED to be > 0: "all ≥ 44" and "nothing was
+  // looked at" are the same sentence otherwise, and a selector that stops matching
+  // (a renamed role, a page that did not render) would turn this gate green while
+  // measuring nothing. Same bar the chord gate in this package holds itself to
+  // ("'0 clipped' cannot be the result of '0 looked at'").
+  j.check(
+    `${tag}: interactive controls ≥ 44×44`,
+    m.examined > 0 && m.small.length === 0,
+    `${m.examined} controls measured` +
+      (m.inlineExempt.length ? `, ${m.inlineExempt.length} inline-exempt (${m.inlineExempt.slice(0, 4).join(', ')})` : '') +
+      (m.chordCells.length ? `, ${m.chordCells.length} chord cells checked separately` : '') +
+      (m.examined === 0 ? ' — NOTHING MEASURED, so this says nothing about the page' : '') +
+      (m.small.length ? `; ${m.small.length} under 44: ${m.small.slice(0, 12).join(' | ')}` : '; all ≥ 44'),
+  );
   if (m.chordCells.length) {
     const short = m.chordCells.filter((c) => c.h < 44);
     const narrowest = m.chordCells.reduce((a, b) => (b.w < a.w ? b : a));

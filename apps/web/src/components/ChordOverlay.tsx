@@ -62,6 +62,7 @@ import {
   lineIndexOfCell,
   nextChord,
   nextLineIndex,
+  phoneBarLabel,
   phoneSlotLabel,
   positionLabel,
 } from './ChordPhone.helpers.ts';
@@ -1385,14 +1386,18 @@ const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ mode
       {box.cells.map((cb) => {
         const cell = model.cells[cb.cell];
         const isCur = cb.cell === currentCell;
-        const sec = cell.section >= 0 ? model.sections[cell.section]?.name ?? null : null;
+        // Bars mode: each bar is a group NAMED with its place and its chords in
+        // order ("Bar 3 of 16, Chorus 2: G7, Bb"), and the chord buttons are
+        // INSIDE it, so a screen reader hears which chords share a bar.
+        // Sequence mode has no bars to group.
         return (
           <div
             key={cb.cell}
-            role="group"
-            aria-label={bars ? `Bar ${cell.numberInSection} of ${cell.countInSection}${sec ? `, ${sec}` : ''}` : undefined}
+            role={bars ? 'group' : undefined}
+            aria-label={bars ? phoneBarLabel(model, runs, cb.cell) : undefined}
             aria-current={isCur ? 'true' : undefined}
             data-testid={`phone-cell-${cb.cell}`}
+            data-cell={cb.cell}
             data-current={isCur ? 'true' : undefined}
             data-slots={cell.slots.length}
             data-stacked={cb.stacked ? 'true' : undefined}
@@ -1414,57 +1419,55 @@ const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ mode
                 {cell.numberInSection}
               </span>
             ) : null}
+            {cb.slots.map((sb, i) => {
+              const run = runs[sb.runIndex];
+              const slot = cell.slots[i];
+              const isCurSlot = isCur && sb.runIndex === activeIdx;
+              return (
+                <button
+                  type="button"
+                  key={sb.runIndex}
+                  data-testid={`phone-slot-${sb.runIndex}`}
+                  data-cell={cb.cell}
+                  data-run-index={sb.runIndex}
+                  data-current={isCurSlot ? 'true' : undefined}
+                  aria-current={isCurSlot ? 'true' : undefined}
+                  aria-label={phoneSlotLabel(run, slot.beats)}
+                  title={run.label}
+                  onClick={() => onOpen({ run, idx: sb.runIndex })}
+                  style={{
+                    position: 'absolute',
+                    left: sb.x - cb.x,
+                    top: sb.y - cb.y,
+                    width: sb.w,
+                    height: sb.h,
+                    border: run.kind === 'none' ? '1px dashed rgba(255,255,255,0.6)' : 'none',
+                    borderRadius: 4,
+                    background: phoneSlotBg(run, isCurSlot),
+                    color: run.kind === 'none' ? 'rgba(255,255,255,0.85)' : '#fff',
+                    padding: `0 ${PHONE_SLOT_PAD_PX}px`,
+                    boxSizing: 'border-box',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    textAlign: 'center',
+                    fontSize: sb.fontPx,
+                    lineHeight: sb.wrap ? 1.05 : 1.2,
+                    fontWeight: isCurSlot ? 700 : 600,
+                    whiteSpace: sb.wrap ? 'normal' : 'nowrap',
+                    overflowWrap: sb.wrap ? 'anywhere' : undefined,
+                    overflow: 'hidden',
+                    cursor: 'pointer',
+                    boxShadow: isCurSlot ? `inset 0 0 0 2px ${PLAYHEAD_COLOR}` : undefined,
+                  }}
+                >
+                  {sb.text}
+                </button>
+              );
+            })}
           </div>
         );
       })}
-      {box.cells.flatMap((cb) =>
-        cb.slots.map((sb, i) => {
-          const run = runs[sb.runIndex];
-          const slot = model.cells[cb.cell].slots[i];
-          const isCur = cb.cell === currentCell && sb.runIndex === activeIdx;
-          return (
-            <button
-              type="button"
-              key={`${cb.cell}-${sb.runIndex}`}
-              data-testid={`phone-slot-${sb.runIndex}`}
-              data-cell={cb.cell}
-              data-run-index={sb.runIndex}
-              data-current={isCur ? 'true' : undefined}
-              aria-current={isCur ? 'true' : undefined}
-              aria-label={phoneSlotLabel(run, slot.beats)}
-              title={run.label}
-              onClick={() => onOpen({ run, idx: sb.runIndex })}
-              style={{
-                position: 'absolute',
-                left: sb.x,
-                top: sb.y,
-                width: sb.w,
-                height: sb.h,
-                border: run.kind === 'none' ? '1px dashed rgba(255,255,255,0.6)' : 'none',
-                borderRadius: 4,
-                background: phoneSlotBg(run, isCur),
-                color: run.kind === 'none' ? 'rgba(255,255,255,0.85)' : '#fff',
-                padding: `0 ${PHONE_SLOT_PAD_PX}px`,
-                boxSizing: 'border-box',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                textAlign: 'center',
-                fontSize: sb.fontPx,
-                lineHeight: sb.wrap ? 1.05 : 1.2,
-                fontWeight: isCur ? 700 : 600,
-                whiteSpace: sb.wrap ? 'normal' : 'nowrap',
-                overflowWrap: sb.wrap ? 'anywhere' : undefined,
-                overflow: 'hidden',
-                cursor: 'pointer',
-                boxShadow: isCur ? `inset 0 0 0 2px ${PLAYHEAD_COLOR}` : undefined,
-              }}
-            >
-              {sb.text}
-            </button>
-          );
-        }),
-      )}
     </div>
   );
 });
@@ -1490,6 +1493,11 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
   const cell = cur >= 0 ? model.cells[cur] : null;
   const beat = bars && cell && positionSec !== null ? beatInCell(cell, positionSec) : -1;
   const count = bars && cell && nx ? beatsUntil(cell, nx.inSec) : null;
+  const nowText = nowRun ? leadSheetSymbol(nowRun) : '\u2014';
+  const nextText = nextRun ? leadSheetSymbol(nextRun) : '';
+  const whenText = nx ? `${nx.wraps ? 'Loops back' : 'Next'}${count !== null ? ` in ${count} beat${count === 1 ? '' : 's'}` : ''}` : '';
+  // The Now name is fitted to the room Next leaves (card is padded 12 + 1px border).
+  const fit = fitNowName(nowText, widthPx - 2 * 13, nx ? Math.max(nameWidthPx(whenText, 13, 1.05), nameWidthPx(nextText, NEXT_PX, 1.12)) : 0);
   return (
     <div data-testid="phone-chords" data-mode={model.mode} data-reason={model.reason} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={focusCardStyle}>
@@ -1510,20 +1518,23 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
             </span>
           ) : null}
         </div>
-        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, marginTop: 4 }}>
+        <div style={{ display: 'flex', flexWrap: fit.nextBelow ? 'wrap' : 'nowrap', alignItems: 'flex-end', justifyContent: 'space-between', columnGap: NOW_NEXT_GAP_PX, rowGap: 4, marginTop: 4 }}>
           <span data-testid="playhead-now" data-run-index={activeIdx} style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-            <span data-testid="playhead-now-name" style={{ fontSize: NOW_PX, fontWeight: 700, lineHeight: 1.1, color: '#fff', whiteSpace: 'nowrap' }}>
-              {nowRun ? leadSheetSymbol(nowRun) : '—'}
+            <span data-testid="playhead-now-name" data-fit={fit.how} style={{ fontSize: fit.px, fontWeight: 700, lineHeight: 1.1, color: '#fff', whiteSpace: 'nowrap' }}>
+              {fit.lines.map((l, i) => (
+                <span key={i} style={{ display: 'block' }}>
+                  {l}
+                </span>
+              ))}
             </span>
           </span>
           {nextRun && nx ? (
-            <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', minWidth: 0 }} data-testid="phone-next" data-run-index={nx.runIndex} data-wraps={nx.wraps ? 'true' : undefined}>
-              <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.85)' }} data-testid="phone-next-when">
-                {nx.wraps ? 'Loop back to' : 'Next'}
-                {count !== null ? ` in ${count} beat${count === 1 ? '' : 's'}` : ''}
+            <span style={{ display: 'flex', flexDirection: 'column', alignItems: fit.nextBelow ? 'flex-start' : 'flex-end', flex: 'none', ...(fit.nextBelow ? { width: '100%' } : null) }} data-testid="phone-next" data-run-index={nx.runIndex} data-wraps={nx.wraps ? 'true' : undefined}>
+              <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.85)', whiteSpace: 'nowrap' }} data-testid="phone-next-when">
+                {whenText}
               </span>
               <span style={{ fontSize: NEXT_PX, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap' }} data-testid="phone-next-name">
-                {leadSheetSymbol(nextRun)}
+                {nextText}
               </span>
             </span>
           ) : null}
@@ -1540,6 +1551,33 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
 };
 
 const PHONE_SLOT_PAD_PX = SLOT_PAD_PX;
+const NOW_NEXT_GAP_PX = 12;
+/** Now name sizes, largest first; the card never goes below 28px (A11 asks >= 20). */
+const NOW_SIZES = [NOW_PX, 40, 36, 32, 28];
+/** Bold text width from the headless advance table, widened by `factor` (conservative). */
+function nameWidthPx(text: string, px: number, factor: number): number {
+  return text ? estimateLabelPx(text, px) * factor : 0;
+}
+/**
+ * Fit the Now name beside Next so the two NEVER overlap: the largest size that
+ * fits on one line; then, at 28px, the slash bass on a second line ("C#m7b5" /
+ * "/G#"); then Next moves to its own row below. The real-Chromium gate checks
+ * the two boxes never intersect.
+ */
+function fitNowName(text: string, innerPx: number, nextPx: number): { px: number; lines: string[]; nextBelow: boolean; how: string } {
+  const room = innerPx - (nextPx > 0 ? nextPx + NOW_NEXT_GAP_PX : 0);
+  const w = (t: string, px: number) => nameWidthPx(t, px, 1.15);
+  for (const px of NOW_SIZES) if (w(text, px) <= room) return { px, lines: [text], nextBelow: false, how: `one-line-${px}` };
+  const min = NOW_SIZES[NOW_SIZES.length - 1];
+  const slash = text.indexOf('/');
+  if (slash > 0) {
+    const lines = [text.slice(0, slash), text.slice(slash)];
+    if (Math.max(...lines.map((l) => w(l, min))) <= room) return { px: min, lines, nextBelow: false, how: 'two-line' };
+  }
+  for (const px of NOW_SIZES) if (w(text, px) <= innerPx) return { px, lines: [text], nextBelow: true, how: `next-below-${px}` };
+  return { px: min, lines: slash > 0 ? [text.slice(0, slash), text.slice(slash)] : [text], nextBelow: true, how: 'next-below-min' };
+}
+
 const barNumberStyle: CSSProperties = {
   position: 'absolute',
   top: 1,

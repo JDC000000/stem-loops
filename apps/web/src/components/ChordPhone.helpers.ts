@@ -28,8 +28,16 @@ export const MIN_SLOT_BEATS = 0.5;
 export const BEAT_TOLERANCE = 0.2;
 /** Bars mode needs at least this fraction of chord-time to start on a beat. */
 export const MIN_FIT_FRACTION = 0.7;
-/** ... and the downbeat phase to beat the runner-up by this factor (an odd meter spreads the votes). */
+/**
+ * ... and the bar structure to be clear: chord-time starting on beats 1+3 must
+ * beat chord-time on beats 2+4 (or the other way round) by this factor. Beats
+ * are paired because a 4/4 song with TWO chords in every bar votes equally for
+ * beat 1 and beat 3; that is a half-bar ambiguity, not an odd meter. An odd
+ * meter (3/4 read as 4/4) or one chord per beat spreads the votes over all four.
+ */
 export const MIN_DOWNBEAT_MARGIN = 1.5;
+/** Inside the winning pair, beat 1 must beat beat 3 by this much to be chosen on votes alone. */
+export const HALF_BAR_MARGIN = 1.2;
 /** ... and at least this many chord changes to judge by. */
 export const MIN_CHANGES = 4;
 /** Safety bound on the number of bars built (5 min at 260 bpm is 325 bars). */
@@ -97,6 +105,18 @@ export function phoneSlotLabel(run: Pick<OverlayRun, 'kind' | 'label'>, beats: n
   const what = run.kind === 'none' ? ' (no chord)' : run.kind === 'unknown' ? ' (unknown chord)' : sym !== run.label ? ` (${run.label})` : '';
   const held = beats === null ? '' : `, ${fmtBeats(beats)} beat${Math.abs(beats - 1) < 0.05 ? '' : 's'}`;
   return `${sym}${what}${held} — edit`;
+}
+
+/**
+ * Accessible name of a bar: its place and its chords in order, in the visible
+ * spelling ("Bar 3 of 16, Chorus 2: G7, Bb").
+ */
+export function phoneBarLabel(model: PhoneModel, runs: readonly Pick<OverlayRun, 'kind' | 'label'>[], cell: number): string {
+  const c = model.cells[cell];
+  if (!c) return '';
+  const sec = c.section >= 0 ? model.sections[c.section]?.name ?? null : null;
+  const chords = c.slots.map((s) => leadSheetSymbol(runs[s.runIndex])).join(', ');
+  return `Bar ${c.numberInSection} of ${c.countInSection}${sec ? `, ${sec}` : ''}: ${chords}`;
 }
 
 function fmtBeats(b: number): string {
@@ -235,16 +255,24 @@ export function downbeatVotes(
   sections: readonly PhoneSection[],
   grid: BeatGrid,
   durSec: number,
-): { phase: number; scores: number[]; aligned: number; total: number; changes: number } {
+): { phase: number; scores: number[]; pairs: [number, number]; halfBarTie: boolean; aligned: number; total: number; changes: number } {
   const scores = new Array<number>(BEATS_PER_BAR).fill(0);
   let aligned = 0;
   let total = 0;
   let changes = 0;
-  if (!(grid.beatSec > 0)) return { phase: 0, scores, aligned, total, changes };
+  let firstPhase = -1;
+  if (!(grid.beatSec > 0)) return { phase: 0, scores, pairs: [0, 0], halfBarTie: false, aligned, total, changes };
   const segs = segmentsFor(sections, grid, durSec);
-  for (let i = 1; i < runs.length; i++) {
+  for (let i = 0; i < runs.length; i++) {
     const r = runs[i];
     if (r.kind === 'none') continue;
+    if (firstPhase < 0) {
+      // The first chord after silence: the tie-breaker for a half-bar ambiguity.
+      const seg0 = segAt(segs, r.startSec);
+      const b0 = (r.startSec - seg0.anchor) / seg0.beat;
+      firstPhase = Math.abs(b0 - Math.round(b0)) <= BEAT_TOLERANCE ? ((Math.round(b0) % BEATS_PER_BAR) + BEATS_PER_BAR) % BEATS_PER_BAR : 0;
+    }
+    if (i === 0) continue;
     const d = Math.max(0, r.endSec - r.startSec);
     changes++;
     total += d;
@@ -255,17 +283,27 @@ export function downbeatVotes(
     aligned += d;
     scores[((nearest % BEATS_PER_BAR) + BEATS_PER_BAR) % BEATS_PER_BAR] += d;
   }
-  let phase = 0;
-  for (let p = 1; p < BEATS_PER_BAR; p++) if (scores[p] > scores[phase] + 1e-9) phase = p;
-  return { phase, scores, aligned, total, changes };
+  const pairs: [number, number] = [scores[0] + scores[2], scores[1] + scores[3]];
+  const q = pairs[1] > pairs[0] + 1e-9 ? 1 : 0;
+  const a = scores[q];
+  const b = scores[q + 2];
+  let phase: number;
+  let halfBarTie = false;
+  if (a >= HALF_BAR_MARGIN * b && a > 0) phase = q;
+  else if (b >= HALF_BAR_MARGIN * a && b > 0) phase = q + 2;
+  else {
+    halfBarTie = true;
+    phase = firstPhase === q || firstPhase === q + 2 ? firstPhase : q;
+  }
+  return { phase, scores, pairs, halfBarTie, aligned, total, changes };
 }
 
 /** Does the grid fit the chords well enough to draw bars? */
 export function gridFit(votes: ReturnType<typeof downbeatVotes>): PhoneModel['reason'] {
   if (votes.changes < MIN_CHANGES || !(votes.total > 0)) return 'few-changes';
   if (votes.aligned / votes.total < MIN_FIT_FRACTION) return 'poor-fit';
-  const sorted = [...votes.scores].sort((a, b) => b - a);
-  if (sorted[0] < MIN_DOWNBEAT_MARGIN * sorted[1]) return 'meter';
+  const [hi, lo] = [...votes.pairs].sort((a, b) => b - a);
+  if (hi < MIN_DOWNBEAT_MARGIN * lo) return 'meter';
   return 'ok';
 }
 

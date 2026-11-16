@@ -44,11 +44,24 @@ All three reviewers chose **C** as the right design, but **C as first built fail
 | ARIA | `aria-current` is set on the current bar and on the current chord. Each bar is `role=group`, labelled "Bar 3 of 16, Chorus 2". A chord's accessible name **starts with its visible text** ("Em7 (E:min7), 2 beats — edit"). There is no `aria-live`. |
 | Tests | There are 21 unit tests for the new helpers in `ChordPhone.helpers.ts` and `beatGridFromLoops`. The Chromium gate covers the sweep, the loop, the gap, no tempo and 3/4. All **27 mutants** were each seen to fail it, including the 8 that survived the old gate. The #212 chip-fit gate and the #274 size gate are unchanged and green. |
 
+## Re-review at `1c09f22` (combined Opus review 4): 87 / 86 / 87, FAIL on 3 blockers, now fixed
+| Blocker | Fix |
+|---|---|
+| **A song with two chords in EVERY bar fell back to the plain list**, which is exactly Jon's complaint. The downbeat test read the beat 1 / beat 3 tie as an odd meter. | The test now **pairs beats**: it compares chord-time starting on beats 1+3 with beats 2+4, and requires a 1.5× margin. A tie inside the winning pair is a half-bar ambiguity, not an odd meter, and it is settled by the first chord after silence. The sequence fallback is now used only when the grid itself is unreliable: no tempo, a poor fit, an even spread over all four beats (3/4 or one chord per beat), or too few changes. A new Chromium case runs a 48-bar song with 2+2 in every bar: it shows the bar grid, and every bar names both chords. |
+| **A long Now name ran over Next** (C#m7b5/G#). | The Now name is fitted to the room Next leaves. It steps down 44 → 40 → 36 → 32 → 28px. If it still does not fit, the slash bass goes on a second line ("C#m7b5" / "/G#"). If that still does not fit, Next moves to its own row. A new gate asserts the Now box never intersects any Next box, and that Now stays at 28px or more. It runs on a song made of long names at both widths. |
+| **Bar groups were empty for screen readers.** | The chord buttons are now **inside** their bar's `role=group`. The group's name lists its chords in order, in the visible spelling ("Bar 3 of 8, Bridge: G7, Bb"). The gate checks, for every chord on screen, that the chord is inside its own bar's group and that the label lists the group's chords. |
+| Should-fix: "Loop back to in 1 beat" | The label now reads "Loops back in 1 beat", with the chord below it. |
+
+Tests: 23 unit tests. The gate grew to 14 Chromium tests. All 32 mutants (the earlier 27 plus 5 for these blockers) were each seen to fail it. This revision has not been re-scored by the reviewers yet.
+
 Not done (should-fix, not must-fix):
 - tap-to-seek, with editing on a long press;
 - folding "All chords" behind a disclosure on phones;
 - ping-pong rows, so the current bar never moves on screen;
-- per-bar section labels for sections that start mid-bar (the edges snap to the nearest bar line).
+- per-bar section labels for sections that start mid-bar (the edges snap to the nearest bar line);
+- 3/4 songs whose chords change only every 4 bars still fit a 4/4 grid;
+- at 360px a line can switch between 1×4 and 2×2 as it pages;
+- 1.5% tempo drift falls back to the sequence.
 
 ## Desktop
 Desktop is unchanged. The phone view renders only under `NARROW_BREAKPOINT_PX` (560px). Review 3 diffed the desktop DOM against the base at 1280px and 820px, and it was identical.

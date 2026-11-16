@@ -96,7 +96,12 @@ function truthAt(t, segs = FIX.segments) {
 }
 function barTag(k) {
   const sec = SEC_FIRST_BAR.findLastIndex((b) => b <= k);
-  return `Bar ${k - SEC_FIRST_BAR[sec] + 1} of ${SEC_BARS[sec]}, ${NAMES[sec]}`;
+  // The bar's chords in order: every segment holding at least half a beat of it.
+  const bs = DOWN + k * BAR;
+  const chords = FIX.segments
+    .filter((s) => Math.min(s.end_sec, bs + BAR) - Math.max(s.start_sec, bs) >= 0.5 * BEAT)
+    .map((s) => spell(s.label));
+  return `Bar ${k - SEC_FIRST_BAR[sec] + 1} of ${SEC_BARS[sec]}, ${NAMES[sec]}: ${chords.join(', ')}`;
 }
 
 const snapAt = (positionSec, loop = null) => ({
@@ -243,7 +248,18 @@ function measure() {
         if (t.left < er.left - 0.02 || t.right > er.right + 0.02 || t.top < er.top - 0.02 || t.bottom > er.bottom + 0.02) clippedBy.push(e.tagName);
       }
     }
-    out.now = { text: name.textContent, fontPx: px(cs.fontSize), weight: Number(cs.fontWeight), h: t.height, inX: t.left >= -0.02 && t.right <= innerWidth + 0.02, clippedBy };
+    const nx = root.querySelector('[data-testid="phone-next"]');
+    let overlap = null;
+    if (nx) {
+      // Every box Next paints (label and chord) against the Now name's text box.
+      for (const el of [nx, ...nx.querySelectorAll('*')]) {
+        const r = el.getBoundingClientRect();
+        const ix = Math.min(t.right, r.right) - Math.max(t.left, r.left);
+        const iy = Math.min(t.bottom, r.bottom) - Math.max(t.top, r.top);
+        if (ix > 0.5 && iy > 0.5) overlap = `${el.dataset.testid ?? el.tagName} ${ix.toFixed(1)}x${iy.toFixed(1)}px`;
+      }
+    }
+    out.now = { text: name.textContent, fontPx: px(cs.fontSize), weight: Number(cs.fontWeight), h: t.height, inX: t.left >= -0.02 && t.right <= innerWidth + 0.02, clippedBy, overlap, fit: name.dataset.fit };
   }
   out.position = root.querySelector('[data-testid="phone-position"]')?.textContent ?? null;
   out.beat = root.querySelector('[data-testid="phone-beats"]')?.dataset.beat ?? null;
@@ -254,9 +270,15 @@ function measure() {
   out.curSlots = [...root.querySelectorAll('button[aria-current="true"]')].map((b) => ({ title: b.title, cell: `phone-cell-${b.dataset.cell}` }));
   out.lineCur = [...root.querySelectorAll('[data-testid="phone-line-current"] [role="group"]')].map((c) => c.getAttribute('aria-label'));
   out.lineNextFirst = root.querySelector('[data-testid="phone-line-next"] [role="group"]')?.getAttribute('aria-label') ?? null;
+  out.groups = [];
+  for (const g of root.querySelectorAll('[role="group"]')) {
+    out.groups.push({ cell: g.dataset.cell, label: g.getAttribute('aria-label') ?? '', texts: [...g.querySelectorAll('button')].map((b) => b.textContent) });
+  }
   for (const b of root.querySelectorAll('[data-testid="phone-line-current"] button, [data-testid="phone-line-next"] button')) {
     const r = b.getBoundingClientRect();
     out.slots.push({
+      groupCell: b.closest('[role="group"]')?.dataset.cell ?? null,
+      cell: b.dataset.cell,
       title: b.title,
       text: b.textContent,
       aria: b.getAttribute('aria-label') ?? '',
@@ -278,6 +300,13 @@ function measure() {
 
 function checkSlots(m, f, ctx) {
   if (m.slots.length === 0) f.push(`no chord slots in the lines @ ${ctx}`);
+  if (m.mode === 'bars') {
+    for (const s of m.slots) if (s.groupCell !== s.cell) f.push(`chord ${s.title} is not inside its bar's group (in ${s.groupCell}, belongs to ${s.cell}) @ ${ctx}`);
+    for (const g of m.groups) {
+      if (g.texts.length === 0) f.push(`bar group "${g.label}" holds no chord buttons @ ${ctx}`);
+      if (!g.label.endsWith(`: ${g.texts.join(', ')}`)) f.push(`bar group "${g.label}" does not name its chords [${g.texts.join(', ')}] in order @ ${ctx}`);
+    }
+  }
   for (const s of m.slots) {
     const want = s.title in SPELL ? SPELL[s.title] : null;
     if (!s.text) f.push(`slot ${s.title} renders NO NAME @ ${ctx}`);
@@ -301,6 +330,8 @@ function checkNow(m, f, ctx, wantText) {
   if (m.now.fontPx < NOW_MIN_PX || m.now.h < NOW_MIN_PX) f.push(`Now ${m.now.fontPx}px / box ${m.now.h.toFixed(1)}px < ${NOW_MIN_PX} @ ${ctx}`);
   if (m.now.weight < 600) f.push(`Now weight ${m.now.weight} @ ${ctx}`);
   if (!m.now.inX || m.now.clippedBy.length) f.push(`Now off screen or clipped (${JSON.stringify(m.now)}) @ ${ctx}`);
+  if (m.now.fontPx < 28) f.push(`Now "${m.now.text}" shrank to ${m.now.fontPx}px < 28px @ ${ctx}`);
+  if (m.now.overlap) f.push(`Now "${m.now.text}" (${m.now.fit}) overlaps Next: ${m.now.overlap} @ ${ctx}`);
 }
 
 const fail = (f, n = 25) => f.length && assert.fail(`GATE-FAIL ${f.length} finding(s):\n  ${f.slice(0, n).join('\n  ')}`);
@@ -381,13 +412,13 @@ for (const vp of [[390, 844], [360, 800]]) {
       const atStart = FIX.segments.find((s) => s.start_sec <= loop.startSec + 1e-3 && loop.startSec + 1e-3 < s.end_sec);
       if (!m.next?.wraps) f.push(`Next does not follow the loop (${JSON.stringify(m.next)})`);
       if (m.next?.name !== spell(atStart.label)) f.push(`Next "${m.next?.name}", want the loop-start chord "${spell(atStart.label)}"`);
-      if (!m.next?.when.startsWith('Loop back to')) f.push(`Next says "${m.next?.when}"`);
-      if (m.lineNextFirst !== `Bar 1 of 16, Chorus 2`) f.push(`next line starts "${m.lineNextFirst}", want the loop's first bar`);
+      if (!m.next?.when.startsWith('Loops back in')) f.push(`Next says "${m.next?.when}"`);
+      if (m.lineNextFirst !== barTag(SEC_FIRST_BAR[si])) f.push(`next line starts "${m.lineNextFirst}", want the loop's first bar`);
       // Without the loop, the same position looks ahead into the bridge.
       await moveTo(page, t, null);
       const m2 = await page.evaluate(measure);
       if (m2.next?.wraps) f.push('Next wraps with no loop');
-      if (m2.lineNextFirst !== 'Bar 1 of 8, Bridge') f.push(`unlooped next line "${m2.lineNextFirst}"`);
+      if (m2.lineNextFirst !== barTag(SEC_FIRST_BAR[NAMES.indexOf('Bridge')])) f.push(`unlooped next line "${m2.lineNextFirst}"`);
       assert.deepEqual(errors, []);
       fail(f);
     } finally {
@@ -434,6 +465,84 @@ for (const vp of [[390, 844], [360, 800]]) {
         checkNow(m, f, ctxs, spell(heard.label));
         checkSlots(m, f, ctxs);
       }
+      assert.deepEqual(errors, []);
+      fail(f);
+    } finally {
+      await ctx.close();
+    }
+  });
+}
+
+// Synthetic songs: bars of [label, beats], on a grid that starts on the first chord.
+function synth(bars, bpm) {
+  const beat = 60 / bpm;
+  const segments = [];
+  let b = 0;
+  for (const bar of bars)
+    for (const [label, beats] of bar) {
+      const prev = segments.at(-1);
+      const s = 0.5 + b * beat;
+      b += beats;
+      if (prev && prev.label === label) prev.end_sec = 0.5 + b * beat;
+      else segments.push({ start_sec: s, end_sec: 0.5 + b * beat, label, confidence: 1 });
+    }
+  return { payload: { segments, duration_sec: segments.at(-1).end_sec + 0.5 }, grid: { beatSec: beat, anchorSec: 0.5, measured: true }, beat };
+}
+
+for (const vp of [[390, 844], [360, 800]]) {
+  test(`phone chords @ ${vp[0]}x${vp[1]}: two chords in EVERY bar -> the bar grid, every split bar names both`, async () => {
+    const prog = [[['C:maj', 2], ['A:min', 2]], [['F:maj', 2], ['G:maj', 2]], [['E:min7', 2], ['A:min7', 2]], [['D:min7', 2], ['G:7', 2]]];
+    const bars = Array.from({ length: 48 }, (_, k) => prog[k % 4]);
+    const { payload, grid, beat } = synth(bars, 92);
+    const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections: [], payload });
+    try {
+      const f = [];
+      let splitSeen = 0;
+      for (let k = 0; k < 48; k += 2) {
+        const t = 0.5 + (k * 4 + 2.4) * beat;
+        await moveTo(page, t);
+        const m = await page.evaluate(measure);
+        const ctxs = `${vp.join('x')} 2+2 bar#${k}`;
+        if (m.mode !== 'bars') { f.push(`mode ${m.mode} (${m.reason}): a song with two chords in every bar fell back to a list @ ${ctxs}`); break; }
+        for (const g of m.groups) {
+          if (g.texts.length !== 2) f.push(`bar "${g.label}" holds ${g.texts.length} chords, want 2 @ ${ctxs}`);
+          else splitSeen++;
+        }
+        const want = prog[k % 4].map(([l]) => SPELL[l]);
+        const cur = m.groups.find((g) => g.label.startsWith(`Bar ${k + 1} of 48:`));
+        if (!cur || cur.texts.join() !== want.join()) f.push(`bar ${k + 1} shows [${cur?.texts}], want [${want}] @ ${ctxs}`);
+        if (m.beat !== '3') f.push(`beat dot ${m.beat}, want 3 @ ${ctxs}`);
+        checkNow(m, f, ctxs, SPELL[prog[k % 4][1][0]]);
+        checkSlots(m, f, ctxs);
+      }
+      if (splitSeen < 100) f.push(`only ${splitSeen} split bars checked`);
+      assert.deepEqual(errors, []);
+      fail(f);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  test(`phone chords @ ${vp[0]}x${vp[1]}: long current and next names never overlap on the Now card`, async () => {
+    const LONG = { 'C#:hdim7/5': 'C#m7b5/G#', 'F#:7/3': 'F#7/A#', 'B:hdim7/b5': 'Bm7b5/F', 'E:7/3': 'E7/G#', 'A:min(9)': 'A:min(9)', 'D:minmaj7/5': 'Dm(maj7)/A' };
+    Object.assign(SPELL, LONG);
+    const labels = Object.keys(LONG);
+    const bars = Array.from({ length: 24 }, (_, k) => [[labels[k % labels.length], 2], [labels[(k + 1) % labels.length], 2]]);
+    const { payload, grid, beat } = synth(bars, 80);
+    const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections: [], payload });
+    try {
+      const f = [];
+      const fits = new Set();
+      for (let i = 0; i < 48; i++) {
+        const t = 0.5 + (i * 2 + 0.5) * beat;
+        await moveTo(page, t);
+        const m = await page.evaluate(measure);
+        const heard = payload.segments.find((s) => s.start_sec <= t && t < s.end_sec);
+        checkNow(m, f, `${vp.join('x')} long t=${t.toFixed(2)}`, LONG[heard.label]);
+        if (m.now?.fit) fits.add(m.now.fit.replace(/-\d+$/, ''));
+        checkSlots(m, f, `${vp.join('x')} long t=${t.toFixed(2)}`);
+      }
+      if (!fits.has('two-line') && !fits.has('next-below')) f.push(`no position needed the long-name fallback (fits: ${[...fits]})`);
       assert.deepEqual(errors, []);
       fail(f);
     } finally {

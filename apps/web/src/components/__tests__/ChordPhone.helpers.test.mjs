@@ -24,6 +24,7 @@ import {
   nextChord,
   nearestCellStart,
   nextLineIndex,
+  phoneBarLabel,
   phoneSections,
   phoneSlotLabel,
   positionLabel,
@@ -96,6 +97,15 @@ test('beatGridFromLoops: bpm and earliest start, numeric strings, guards', () =>
   assert.equal(beatGridFromLoops([{ bpm: 300, start_sec: 1 }]), null);
   assert.equal(beatGridFromLoops([{ bpm: 30, start_sec: 1 }]), null);
   assert.deepEqual(beatGridFromLoops([{ bpm: 120 }]), { beatSec: 0.5, anchorSec: 0, measured: true });
+});
+
+test('phoneBarLabel names the bar and its chords in order, in the visible spelling', () => {
+  const ci = MODEL.cells.findIndex((c) => c.slots.map((s) => RUNS[s.runIndex].label).join() === 'G:7,Bb:maj');
+  const c = MODEL.cells[ci];
+  assert.equal(phoneBarLabel(MODEL, RUNS, ci), `Bar ${c.numberInSection} of ${c.countInSection}, Bridge: G7, Bb`);
+  const four = MODEL.cells.findIndex((x) => x.slots.length === 4);
+  assert.match(phoneBarLabel(MODEL, RUNS, four), /^Bar \d+ of 8, Outro: Dm7, G7, C#m7b5\/G#, C$/);
+  assert.equal(phoneBarLabel(MODEL, RUNS, 99999), '');
 });
 
 test('phoneSections: sorted, clamped, numbered like nameRegions, overlaps dropped', () => {
@@ -294,6 +304,28 @@ test('one chord per beat (no downbeat evidence) -> sequence; too few changes -> 
   assert.equal(buildPhoneModel(w.runs, w.grid, [], w.dur).mode, 'sequence');
   const few = song([[['C:maj', 4]], [['G:maj', 4]], [['C:maj', 4]]]);
   assert.equal(buildPhoneModel(few.runs, few.grid, [], few.dur).reason, 'few-changes');
+});
+
+test('two chords in EVERY bar -> bars with split cells (half-bar tie is not an odd meter)', () => {
+  // Jon's case. Beat 1 and beat 3 get equal votes; the first chord after the
+  // silence (on beat 1) settles which is the downbeat.
+  const bars = [];
+  const prog = [[['C:maj', 2], ['A:min', 2]], [['F:maj', 2], ['G:maj', 2]], [['E:min7', 2], ['A:min7', 2]], [['D:min7', 2], ['G:7', 2]]];
+  for (let k = 0; k < 48; k++) bars.push(prog[k % 4]);
+  const w = song(bars, { bpm: 92 });
+  const votes = downbeatVotes(w.runs, [], w.grid, w.dur);
+  assert.equal(votes.halfBarTie, true);
+  assert.equal(votes.phase, 0);
+  const m = buildPhoneModel(w.runs, w.grid, [], w.dur);
+  assert.equal(m.mode, 'bars', `fell back: ${m.reason}`);
+  assert.equal(m.cells.length, 48);
+  for (const c of m.cells) assert.equal(c.slots.length, 2, 'every bar is one cell holding its two chords');
+  assert.equal(w.runs[m.cells[0].slots[0].runIndex].label, 'C:maj');
+  assert.equal(w.runs[m.cells[0].slots[1].runIndex].label, 'A:min');
+  // Same song starting on the half-bar (a 2-beat pickup): the first chord still decides.
+  const pick = song([[['G:7', 2]], ...bars], { bpm: 92 });
+  const mp = buildPhoneModel(pick.runs, pick.grid, [], pick.dur);
+  assert.equal(mp.mode, 'bars');
 });
 
 test('tempo drift is bounded by re-anchoring at each section', () => {

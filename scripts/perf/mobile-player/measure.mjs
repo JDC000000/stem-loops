@@ -31,7 +31,7 @@ const { chromium, devices } = req(process.env.PLAYWRIGHT_MODULE ?? 'playwright')
 // ── 1. audio: six stereo Ogg/Opus stems per duration, ~64 kb/s like production ──
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'slmob-'));
 const STEMS = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'];
-const DURS = [300, 120];
+const DURS = String(opt('durs', '300,120')).split(',').map(Number);
 for (const d of DURS) {
   fs.mkdirSync(path.join(work, 'audio', String(d)), { recursive: true });
   STEMS.forEach((s, i) => {
@@ -47,7 +47,7 @@ for (const d of DURS) {
 const esbuild = req(req.resolve('esbuild', { paths: [path.join(repo, 'apps/web'), repo,
   ...fs.readdirSync(path.join(repo, 'node_modules/.pnpm')).filter((d) => d.startsWith('esbuild@'))
     .map((d) => path.join(repo, 'node_modules/.pnpm', d, 'node_modules'))] }));
-esbuild.buildSync({ entryPoints: [path.join(repo, 'apps/web/src/lib/play/engine.ts')], bundle: true,
+esbuild.buildSync({ entryPoints: [path.join(here, 'entry.ts')], bundle: true,
   format: 'iife', globalName: 'SL', outfile: path.join(work, 'engine.bundle.js'), target: 'es2020', logLevel: 'error' });
 fs.copyFileSync(path.join(here, 'harness.html'), path.join(work, 'index.html'));
 
@@ -65,16 +65,23 @@ const status = (pid) => Object.fromEntries(fs.readFileSync(`/proc/${pid}/status`
   .filter((l) => /^Vm(HWM|RSS)/.test(l)).map((l) => [l.split(':')[0], Number(l.split(/\s+/)[1]) / 1024]));
 const resetHwm = (pid) => fs.writeFileSync(`/proc/${pid}/clear_refs`, '5');
 
-const PROFILES = {
+const ALL_PROFILES = {
   'Desktop Chrome (baseline)': { viewport: { width: 1280, height: 800 } },
   'Pixel 7 (emulated)': devices['Pixel 7'],
   'iPhone 14 (emulated on Chromium)': (({ defaultBrowserType, ...d }) => d)(devices['iPhone 14']),
 };
-const RATES = [48000, 24000];
+// --arms "Profile name=auto|<rate>;..." — `auto` lets the PRODUCTION device rule
+// pick the rate and the output route in-page (see harness.html). Default: the
+// 2026-11-15 matrix (desktop and both phones on auto, plus a 22.05 kHz arm).
+const ARMS = (opt('arms', 'Desktop Chrome (baseline)=auto;Pixel 7 (emulated)=auto;Pixel 7 (emulated)=22050;iPhone 14 (emulated on Chromium)=auto'))
+  .split(';').filter(Boolean).map((a) => { const [p, r] = a.split('='); return [p, r === 'auto' ? null : Number(r)]; });
+const PLAY_SEC = Number(opt('play-sec', 8));
 
 const rows = [];
-for (const [profile, desc] of Object.entries(PROFILES)) {
-  for (const dur of DURS) for (const rate of RATES) for (let rep = 0; rep < REPS; rep++) {
+for (const [profile, rate] of ARMS) {
+  const desc = ALL_PROFILES[profile];
+  if (!desc) throw new Error(`unknown profile ${profile}`);
+  for (const dur of DURS) for (let rep = 0; rep < REPS; rep++) {
     const availMiB = Math.round(Number(fs.readFileSync('/proc/meminfo', 'utf8').match(/MemAvailable:\s+(\d+)/)[1]) / 1024);
     let browser;
     try {
@@ -96,17 +103,33 @@ for (const [profile, desc] of Object.entries(PROFILES)) {
     await page.evaluate(() => window.gc && window.gc());
     const before = status(pid);
     resetHwm(pid);
+    // Independent cross-check on VmHWM: sample VmRSS every 25 ms during the load.
+    // Chrome's own memory instrumentation can write clear_refs too (observed: a
+    // whole-session VmHWM read LOWER than the load's), so the reported peak is
+    // max(VmHWM, highest sample) and both are kept in the row.
+    let sampledPeak = 0;
+    const sampler = setInterval(() => { try { sampledPeak = Math.max(sampledPeak, status(pid).VmRSS); } catch {} }, 25);
     const res = await page.evaluate((r) => window.runLoad(r), rate);
-    const hwm = status(pid).VmHWM;
+    clearInterval(sampler);
+    const hwmRaw = status(pid).VmHWM;
+    const hwm = Math.max(hwmRaw, sampledPeak);
     await page.waitForTimeout(1500);
     await page.evaluate(() => window.gc && window.gc());
     await page.waitForTimeout(500);
     const settled = status(pid).VmRSS;
+    // Then PLAY through the device's real output route and take the peak again,
+    // across the whole session (load + play), plus RSS while still playing.
+    let playPeak = 0;
+    const playSampler = setInterval(() => { try { playPeak = Math.max(playPeak, status(pid).VmRSS); } catch {} }, 50);
+    const play = PLAY_SEC > 0 ? await page.evaluate((sec) => window.runPlay(sec), PLAY_SEC) : null;
+    clearInterval(playSampler);
+    const playing = play ? { ...play, rssPeakWhilePlayingMiB: Math.round(playPeak) } : null;
     const m = Object.fromEntries((await pcdp.send('Performance.getMetrics')).metrics.map((x) => [x.name, x.value]));
-    const pcmMiB = (6 * dur * rate * 4) / 2 ** 20;
-    const row = { profile, dur, rate, rep, decodeMs: Math.round(res.ms), status: res.status, error: res.error,
+    const pcmMiB = (6 * dur * res.ctxRate * 4) / 2 ** 20;
+    const row = { profile, dur, rate: res.ctxRate, rateSource: rate === null ? 'device rule' : 'forced', reason: res.reason,
+      routed: res.routed, playing, decodeMs: Math.round(res.ms), status: res.status, error: res.error,
       stemsReady: res.stems, encodedMiB: +(encodedBytes / 2 ** 20).toFixed(1), pcmMiB: +pcmMiB.toFixed(1),
-      rssBeforeMiB: Math.round(before.VmRSS), hwmMiB: Math.round(hwm), settledMiB: Math.round(settled),
+      rssBeforeMiB: Math.round(before.VmRSS), hwmMiB: Math.round(hwm), vmHwmMiB: Math.round(hwmRaw), sampledPeakMiB: Math.round(sampledPeak), settledMiB: Math.round(settled),
       jsHeapUsedMiB: +(m.JSHeapUsedSize / 2 ** 20).toFixed(1), env };
     rows.push(row);
     row.hostAvailMiB = availMiB;
@@ -114,7 +137,7 @@ for (const [profile, desc] of Object.entries(PROFILES)) {
     } catch (e) {
       // A renderer crash (e.g. the kernel OOM killer) is a RESULT, not a harness
       // failure: record it with the host's free memory and carry on.
-      const row = { profile, dur, rate, rep, crashed: String(e.message ?? e).split('\n')[0], hostAvailMiB: availMiB };
+      const row = { profile, dur, rate: rate ?? 'auto', rep, crashed: String(e.message ?? e).split('\n')[0], hostAvailMiB: availMiB };
       rows.push(row);
       console.log(JSON.stringify(row));
     }

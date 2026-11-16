@@ -1,12 +1,15 @@
-// Story 8.3 — the device rule (src/lib/play/device-support.ts) and the
-// rendering of the designed "not on this device yet" state in Player.
+// Story 8 — the device rule (src/lib/play/device-support.ts).
+//
+// Until 2026-11-15 this rule BLOCKED phones (PR #276). Jon: the product must
+// work on phones. The same rule now selects the LIGHT decode (24 kHz mono) and
+// the background-capable output route; nothing is blocked except a browser
+// with no Web Audio at all. These tests pin: the rule (unchanged matching),
+// the sample-rate choice it drives, that the block card is gone, and that
+// Player wires the profile into the engine.
 //
 // The rule is pure, so it is driven directly with signal objects, and through
 // `readDeviceSignals` with fake browser globals shaped like what the Playwright
 // device emulations report (Pixel 7, iPhone 14, desktop Chrome, a touch laptop).
-// The rendering half reuses the transpile-and-server-render harness that
-// test/play-player.test.mjs uses (no jsdom; React effects do not run), driving
-// `PlayerView` and `DeviceUnsupported` directly.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,25 +19,24 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 
 import {
-  DEVICE_UNSUPPORTED_BODY,
-  DEVICE_UNSUPPORTED_STILL_WORKS,
-  DEVICE_UNSUPPORTED_TITLE,
-  COPY_LINK_LABEL,
+  LIGHT_AUDIO_NOTE,
+  LIGHT_DECODE_SAMPLE_RATE,
   MIN_DEVICE_MEMORY_GB,
-  deviceBlockReason,
-  playerForced,
+  constrainedReason as deviceBlockReason,
+  playbackProfile,
   readDeviceSignals,
 } from '../src/lib/play/device-support.ts';
+import { PLAYBACK_SAMPLE_RATE } from '../src/lib/play/types.ts';
 
 // ═══ the rule ════════════════════════════════════════════════════════════════
 
 const DESKTOP = { coarsePointer: false, anyFinePointer: true, deviceMemoryGb: 8, maxTouchPoints: 0, screenShortSide: 900 };
 
-test('desktop Chrome is offered the player', () => {
+test('desktop Chrome keeps the desktop path', () => {
   assert.equal(deviceBlockReason(DESKTOP), null);
 });
 
-test('a narrow desktop window is NOT blocked: viewport width is not a signal', () => {
+test('a narrow desktop window is NOT light: viewport width is not a signal', () => {
   // readDeviceSignals never even reads innerWidth; a 360px desktop window has
   // the same signals as a full one.
   assert.equal(deviceBlockReason({ ...DESKTOP }), null);
@@ -42,29 +44,29 @@ test('a narrow desktop window is NOT blocked: viewport width is not a signal', (
   assert.doesNotMatch(src.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''), /innerWidth|userAgent\b(?!Data)/);
 });
 
-test('Chromium UA-CH mobile=true blocks with reason "mobile", whatever else is reported', () => {
+test('Chromium UA-CH mobile=true selects the light path with reason "mobile", whatever else is reported', () => {
   assert.equal(deviceBlockReason({ ...DESKTOP, uaDataMobile: true }), 'mobile');
 });
 
-test('a touch-only device (coarse primary pointer, no fine pointer anywhere) is blocked', () => {
+test('a touch-only device (coarse primary pointer, no fine pointer anywhere) takes the light path', () => {
   assert.equal(
     deviceBlockReason({ coarsePointer: true, anyFinePointer: false, deviceMemoryGb: 8 }),
     'touch-only',
   );
 });
 
-test('a touch laptop (coarse primary, but a trackpad is a fine pointer) is offered the player', () => {
+test('a touch laptop (coarse primary, but a trackpad is a fine pointer) keeps the desktop path', () => {
   assert.equal(deviceBlockReason({ coarsePointer: true, anyFinePointer: true, deviceMemoryGb: 8 }), null);
 });
 
-test(`reported device memory below ${MIN_DEVICE_MEMORY_GB} GB blocks with reason "low-memory"`, () => {
+test(`reported device memory below ${MIN_DEVICE_MEMORY_GB} GB selects the light path with reason "low-memory"`, () => {
   for (const gb of [0.25, 0.5, 1, 2]) {
     assert.equal(deviceBlockReason({ ...DESKTOP, deviceMemoryGb: gb }), 'low-memory', `${gb} GB`);
   }
   for (const gb of [4, 8]) assert.equal(deviceBlockReason({ ...DESKTOP, deviceMemoryGb: gb }), null, `${gb} GB`);
 });
 
-test('unknown signals never block (no deviceMemory, no matchMedia, no touch)', () => {
+test('unknown signals never select the light path (no deviceMemory, no matchMedia, no touch)', () => {
   assert.equal(deviceBlockReason({}), null);
   assert.equal(deviceBlockReason(null), null);
   assert.equal(deviceBlockReason(undefined), null);
@@ -103,14 +105,14 @@ const fakeScope = ({ coarse, fine, mobile, memory, touch, screen }) => ({
 // What the Playwright emulations report (measured in this PR's harness; see
 // docs/perf/mobile-player-2026-11-14.md). Emulation reports the HOST's
 // deviceMemory, so the touch rule is what catches them, not memory.
-test('Pixel 7 emulation is blocked', () => {
+test('Pixel 7 emulation takes the light path', () => {
   const s = readDeviceSignals(
     fakeScope({ coarse: true, fine: false, mobile: true, memory: 8, touch: 5, screen: { width: 412, height: 915 } }),
   );
   assert.equal(deviceBlockReason(s), 'mobile');
 });
 
-test('iPhone 14 (Safari: no UA-CH, no deviceMemory) is blocked by the touch rule', () => {
+test('iPhone 14 (Safari: no UA-CH, no deviceMemory) takes the light path by the touch rule', () => {
   const s = readDeviceSignals(
     fakeScope({ coarse: true, fine: false, touch: 5, screen: { width: 390, height: 844 } }),
   );
@@ -119,7 +121,7 @@ test('iPhone 14 (Safari: no UA-CH, no deviceMemory) is blocked by the touch rule
   assert.equal(deviceBlockReason(s), 'touch-only');
 });
 
-test('desktop Chrome global is offered the player', () => {
+test('desktop Chrome global keeps the desktop path', () => {
   const s = readDeviceSignals(
     fakeScope({ coarse: false, fine: true, mobile: false, memory: 8, touch: 0, screen: { width: 1920, height: 1080 } }),
   );
@@ -133,46 +135,65 @@ test('readDeviceSignals survives a hostile or empty global', () => {
   assert.equal(deviceBlockReason(readDeviceSignals(throwing)), null);
 });
 
-test('?player=force is the only override, and only with that exact value', () => {
-  assert.equal(playerForced('?player=force'), true);
-  assert.equal(playerForced('?a=1&player=force'), true);
-  assert.equal(playerForced('?player=1'), false);
-  assert.equal(playerForced('?player=FORCE'), false);
-  assert.equal(playerForced(''), false);
-  assert.equal(playerForced(undefined), false);
+
+
+// ═══ the sample-rate choice the rule drives ═════════════════════════════════
+
+test('the light decode is 22.05-24 kHz, and desktop keeps the 48 kHz path', () => {
+  assert.ok(LIGHT_DECODE_SAMPLE_RATE >= 22050 && LIGHT_DECODE_SAMPLE_RATE <= 24000, String(LIGHT_DECODE_SAMPLE_RATE));
+  assert.equal(PLAYBACK_SAMPLE_RATE, 48000);
 });
 
-// ═══ copy (brand book v2.2 §3) ══════════════════════════════════════════════
-
-const ALL_COPY = [DEVICE_UNSUPPORTED_TITLE, DEVICE_UNSUPPORTED_STILL_WORKS, COPY_LINK_LABEL, ...Object.values(DEVICE_UNSUPPORTED_BODY)];
-
-test('the device copy names Chrome on a desktop or laptop as the next step, for every reason', () => {
-  for (const [reason, body] of Object.entries(DEVICE_UNSUPPORTED_BODY)) {
-    assert.match(body, /Chrome on a desktop or laptop/, reason);
-  }
-  assert.match(DEVICE_UNSUPPORTED_TITLE, /desktop or laptop for now/);
-});
-
-test('the device copy follows the brand rules: no hype, no "click"/"hover", no "coming soon", no all caps', () => {
-  for (const s of ALL_COPY) {
-    assert.doesNotMatch(s, /!/, s);
-    assert.doesNotMatch(s, /\b(click|hover|coming soon|on our side|unsupported|log in)\b/i, s);
-    assert.doesNotMatch(s, /\b[A-Z]{4,}\b/, s);
-    // "play-along" is the adjective only; the title uses the noun.
-    assert.doesNotMatch(s, /Play-along needs/, s);
+test('playbackProfile: every constrained reason gets the light rate AND the background route', () => {
+  for (const s of [
+    { ...DESKTOP, uaDataMobile: true },
+    { coarsePointer: true, anyFinePointer: false },
+    { ...DESKTOP, deviceMemoryGb: 2 },
+    { maxTouchPoints: 5, screenShortSide: 390 },
+  ]) {
+    const p = playbackProfile(s);
+    assert.notEqual(p.reason, null, JSON.stringify(s));
+    assert.equal(p.decodeSampleRate, LIGHT_DECODE_SAMPLE_RATE);
+    assert.equal(p.backgroundOutput, true);
   }
 });
 
-test('the device copy does not reuse the tab-capture wording', () => {
-  for (const s of ALL_COPY) {
-    for (const w of ['tab capture', 'tab-audio', 'tab audio', 'screen capture', 'chord overlay', 'Edge']) {
-      assert.ok(!s.toLowerCase().includes(w.toLowerCase()), `${w} in ${s}`);
-    }
+test('playbackProfile: desktop, a touch laptop and unknown signals keep 48 kHz and ctx.destination', () => {
+  for (const s of [DESKTOP, { coarsePointer: true, anyFinePointer: true, deviceMemoryGb: 8 }, {}, null, undefined]) {
+    assert.deepEqual(playbackProfile(s), { reason: null, decodeSampleRate: PLAYBACK_SAMPLE_RATE, backgroundOutput: false });
   }
 });
 
-test('the heading is at most 10 words (errors context, brand book §3.4)', () => {
-  assert.ok(DEVICE_UNSUPPORTED_TITLE.split(/\s+/).length <= 10);
+test('the light rate is what the engine actually decodes at (context created at that rate)', async () => {
+  const { createPlayEngine } = await import('../src/lib/play/engine.ts');
+  const rates = [];
+  const engine = createPlayEngine({
+    decodeSampleRate: playbackProfile({ coarsePointer: true, anyFinePointer: false }).decodeSampleRate,
+    createAudioContext: ({ sampleRate }) => {
+      rates.push(sampleRate);
+      throw new Error('stop here');
+    },
+  });
+  await engine.load([{ name: 'drums', bytes: new ArrayBuffer(8) }]);
+  // first the light rate; refused, so ONE retry at the desktop rate — never "no audio" for a rate refusal
+  assert.deepEqual(rates, [LIGHT_DECODE_SAMPLE_RATE, PLAYBACK_SAMPLE_RATE]);
+  assert.equal(engine.getSnapshot().error?.code, 'PLAY_NO_AUDIO');
+});
+
+// ═══ copy ═══════════════════════════════════════════════════════════════════
+
+test('the light-audio note says what changed, and makes no memory or device-size claim', () => {
+  assert.match(LIGHT_AUDIO_NOTE, /mono, 24 kHz/);
+  assert.ok(LIGHT_AUDIO_NOTE.includes(String(LIGHT_DECODE_SAMPLE_RATE / 1000)), 'rate in the copy matches the constant');
+  assert.doesNotMatch(LIGHT_AUDIO_NOTE, /\bMB\b|\bGB\b|700|desktop|laptop|not supported|for now/i);
+  assert.doesNotMatch(LIGHT_AUDIO_NOTE, /!|\b(click|hover|on our side)\b/i);
+});
+
+test('the old block copy is gone from the module, and so is ?player=force', () => {
+  const src = read('src/lib/play/device-support.ts').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+  assert.doesNotMatch(src, /DEVICE_UNSUPPORTED|needs a desktop or laptop|700 MB|playerForced|FORCE_PLAYER/);
+  const player = read('src/components/play/Player.tsx').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+  assert.doesNotMatch(player, /device-unsupported|DeviceUnsupported|playerForced|location\?\.search/);
 });
 
 // ═══ rendering ══════════════════════════════════════════════════════════════
@@ -190,13 +211,15 @@ const put = (name, code) => (writeFileSync(join(dir, name), code), './' + name);
 
 const typesMod = put('types.mjs', toJs(read('src/lib/play/types.ts')));
 const cssMod = put('styles.mjs', 'export default new Proxy({}, { get: (_t, k) => (typeof k === "string" ? k : undefined) });');
-const deviceMod = put('device-support.mjs', toJs(read('src/lib/play/device-support.ts')));
+const deviceMod = put('device-support.mjs', toJs(read('src/lib/play/device-support.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`));
+const bgMod = put('background-audio.mjs', toJs(read('src/lib/play/background-audio.ts')));
 const sectionsMod = put('sections.mjs', toJs(read('src/lib/play/sections.ts')).replace(/from ['"]\.\/types['"]/g, `from '${typesMod}'`));
 const shared = (js) =>
   js
     .replace(/from ['"]@\/lib\/play\/types['"]/g, `from '${typesMod}'`)
     .replace(/from ['"]@\/lib\/play\/sections['"]/g, `from '${sectionsMod}'`)
     .replace(/from ['"]@\/lib\/play\/device-support['"]/g, `from '${deviceMod}'`)
+    .replace(/from ['"]@\/lib\/play\/background-audio['"]/g, `from '${bgMod}'`)
     .replace(/from ['"][^'"]*\.module\.css['"]/g, `from '${cssMod}'`);
 const stub = (name, body) => put(name, body);
 const chordMod = stub('chord.mjs', `import { createElement } from 'react'; export const ChordOverlay = () => createElement('div', { 'data-testid': 'chord-overlay' });`);
@@ -221,62 +244,55 @@ const { renderToStaticMarkup } = await import('react-dom/server');
 const Player = await import(pathToFileURL(join(dir, 'Player.mjs')).href);
 const noop = () => {};
 const IDLE = { status: 'idle', positionSec: 0, durationSec: 0, stems: [], loop: null, degraded: null, error: null };
-const view = (phase) =>
+const READY = { ...IDLE, status: 'ready', durationSec: 120 };
+const view = (phase, extra = {}) =>
   renderToStaticMarkup(
     React.createElement(Player.PlayerView, {
-      jobId: 'job-1', phase, snapshot: IDLE, sections: [],
+      jobId: 'job-1', phase, snapshot: phase.kind === 'ready' ? READY : IDLE, sections: [], ...extra,
       onPlay: noop, onPause: noop, onSeek: noop, onGain: noop, onMute: noop, onSolo: noop, onLoop: noop,
     }),
   );
 const decode = (html) => html.replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&');
 
-for (const reason of ['mobile', 'touch-only', 'low-memory']) {
-  test(`phase device-unsupported (${reason}) renders the designed state, the chord track, and no player controls`, () => {
-    const html = decode(view({ kind: 'device-unsupported', reason }));
-    assert.match(html, /data-phase="device-unsupported"/);
-    assert.match(html, new RegExp(`data-testid="player-device-unsupported" data-reason="${reason}"`));
-    assert.ok(html.includes(DEVICE_UNSUPPORTED_TITLE), 'title');
-    assert.ok(html.includes(DEVICE_UNSUPPORTED_BODY[reason]), 'reason-specific body');
-    assert.ok(html.includes(DEVICE_UNSUPPORTED_STILL_WORKS), 'what still works');
-    assert.match(html, /data-testid="player-copy-link"[^>]*>Copy the link</);
-    assert.match(html, /<h2[^>]*>Play along needs a desktop or laptop for now<\/h2>/, 'a real heading');
-    assert.match(html, /data-testid="chord-overlay"/, 'chord track stays mounted');
-    for (const id of ['transport', 'mixer', 'sectionloop', 'player-banner', 'player-retry']) {
-      assert.doesNotMatch(html, new RegExp(`data-testid="${id}"`), `${id} must not render`);
-    }
-    // Not an alarm: status, not alert.
-    assert.doesNotMatch(html, /role="alert"/);
-  });
-}
 
-test('other phases never render the device state', () => {
-  for (const phase of [{ kind: 'idle' }, { kind: 'loading' }, { kind: 'no-stems' }, { kind: 'unsupported', message: 'x' }]) {
-    assert.doesNotMatch(view(phase), /player-device-unsupported/, phase.kind);
+test('the light path renders the note above a working player; desktop does not', () => {
+  const light = decode(view({ kind: 'ready' }, { lightAudio: true }));
+  assert.ok(light.includes(LIGHT_AUDIO_NOTE));
+  assert.match(light, /data-testid="player-light-audio"/);
+  assert.match(light, /data-testid="transport"/, 'the player itself is there');
+  assert.match(light, /data-testid="mixer"/);
+  assert.doesNotMatch(light, /role="alert"/, 'a note, not an error');
+  const desktop = decode(view({ kind: 'ready' }));
+  assert.doesNotMatch(desktop, /player-light-audio/);
+  assert.match(desktop, /data-testid="transport"/);
+});
+
+test('the note is not shown before the player is playable (loading, errors)', () => {
+  for (const phase of [{ kind: 'idle' }, { kind: 'loading' }, { kind: 'no-stems' }, { kind: 'load-error', message: 'x' }]) {
+    assert.doesNotMatch(view(phase, { lightAudio: true }), /player-light-audio/, phase.kind);
   }
 });
 
-test('a device-unsupported phase is not playable and gives the chord track no position', () => {
-  const phase = { kind: 'device-unsupported', reason: 'mobile' };
-  assert.equal(Player.isPlayable(phase, IDLE), false);
-  assert.equal(Player.chordPositionFor(phase, IDLE), null);
+test('no phase renders a device block any more', () => {
+  for (const phase of [{ kind: 'idle' }, { kind: 'loading' }, { kind: 'ready' }, { kind: 'no-stems' }]) {
+    assert.doesNotMatch(view(phase, { lightAudio: true }), /device-unsupported|desktop or laptop/, phase.kind);
+  }
 });
 
-test('Player checks the device BEFORE creating an engine, after the Web Audio check, and honours ?player=force', () => {
+test('Player: Web Audio check first, then the profile feeds the engine its rate and output', () => {
   const src = read('src/components/play/Player.tsx').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
   const effect = src.slice(src.indexOf('useEffect(() => {'));
   const iWebAudio = effect.indexOf('hasWebAudio(');
-  const iDevice = effect.indexOf('deviceBlockReason(readDeviceSignals(');
+  const iProfile = effect.indexOf('playbackProfile(readDeviceSignals(globalThis))');
   const iEngine = effect.indexOf('createPlayEngine(');
-  assert.ok(iWebAudio > 0 && iDevice > iWebAudio && iEngine > iDevice, `order ${iWebAudio} ${iDevice} ${iEngine}`);
-  assert.match(effect.slice(iWebAudio, iEngine), /playerForced\(globalThis\.location\?\.search\)/);
-  assert.match(effect.slice(iDevice, iEngine), /setPhase\(\{ kind: 'device-unsupported', reason: blocked \}\);\s*return;/);
+  assert.ok(iWebAudio > 0 && iProfile > iWebAudio && iEngine > iProfile, `order ${iWebAudio} ${iProfile} ${iEngine}`);
+  const engineCall = effect.slice(iEngine, effect.indexOf('});', iEngine));
+  assert.match(engineCall, /decodeSampleRate: profile\.decodeSampleRate/);
+  assert.match(engineCall, /createOutput: output\.createOutput/);
+  assert.match(effect.slice(iProfile, iEngine), /profile\.backgroundOutput\s*\?\s*createBackgroundOutput\(/);
 });
 
-test('the CSS gives the copy button a 44px touch target and text at or above the 11px floor', () => {
+test('the removed device-state CSS left no dead selectors behind', () => {
   const css = read('src/components/play/Player.module.css');
-  const block = (sel) => css.slice(css.indexOf(`.${sel} {`), css.indexOf('}', css.indexOf(`.${sel} {`)));
-  assert.match(block('deviceButton'), /min-height: var\(--touch-min, 44px\)/);
-  for (const sel of ['deviceTitle', 'deviceBody', 'deviceButton', 'deviceCopyState']) {
-    assert.doesNotMatch(block(sel), /--text-(xs|sm)\b/, `${sel} uses a size below the body floor`);
-  }
+  assert.doesNotMatch(css, /\.device(Title|Body|Actions|Button|CopyState)?\s*\{/);
 });

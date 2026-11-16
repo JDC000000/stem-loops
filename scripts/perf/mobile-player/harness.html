@@ -16,9 +16,18 @@ window.fetchStems = async (dur) => {
   }
   return window.__bytes.reduce((n, s) => n + s.bytes.byteLength, 0);
 };
+// `rate` null = what PRODUCTION picks on this device: the real device rule
+// (device-support.ts) reads this page's signals, and its profile chooses the
+// decode rate and whether the mix goes through the background <audio> route.
+// A number forces that rate (comparison arms only), keeping the device's route.
 window.runLoad = async (rate) => {
+  const profile = SL.playbackProfile(SL.readDeviceSignals(window));
+  const output = profile.backgroundOutput ? SL.createBackgroundOutput(document) : null;
+  window.__output = output;
+  window.__profile = profile;
   const engine = SL.createPlayEngine({
-    createAudioContext: () => new AudioContext({ sampleRate: rate }),
+    decodeSampleRate: rate ?? profile.decodeSampleRate,
+    ...(output ? { createOutput: output.createOutput } : {}),
   });
   window.__engine = engine;
   const t0 = performance.now();
@@ -26,7 +35,22 @@ window.runLoad = async (rate) => {
   const ms = performance.now() - t0;
   const s = engine.getSnapshot();
   return { ms, status: s.status, durationSec: s.durationSec, error: s.error && s.error.code,
-           stems: s.stems.filter((x) => x.availability === 'ready').length };
+           stems: s.stems.filter((x) => x.availability === 'ready').length,
+           ctxRate: engine.sampleRate, reason: profile.reason, routed: !!(output && output.routed) };
+};
+// Play for `sec` seconds the way the Player does (element first, then engine),
+// then report whether audio time advanced and the route held.
+window.runPlay = async (sec) => {
+  const e = window.__engine;
+  window.__output?.play();
+  e.play();
+  const p0 = e.getSnapshot().positionSec;
+  await new Promise((r) => setTimeout(r, sec * 1000));
+  const s = e.getSnapshot();
+  const out = { status: s.status, advancedSec: s.positionSec - p0, routed: !!(window.__output && window.__output.routed) };
+  e.pause();
+  window.__output?.pause();
+  return out;
 };
 window.env = () => ({
   ua: navigator.userAgent, w: innerWidth, h: innerHeight, dpr: devicePixelRatio,

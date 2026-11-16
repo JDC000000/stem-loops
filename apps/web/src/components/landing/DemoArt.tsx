@@ -135,8 +135,8 @@ export function AbCompare() {
           </>
         ) : (
           <>
-            The first 4 bars of the drums file above, against the original mix at the same spot (MP3 preview). It loops in
-            time: under {driftBoundMs(4)}&nbsp;ms drift per 4&#8209;bar repeat. Expect a little bleed on dense mixes.
+            The drums stem against the original mix, 4 bars from our example song (MP3 preview). It repeats in time:
+            under {driftBoundMs(4)}&nbsp;ms drift per 4&#8209;bar repeat. Expect a little bleed on dense mixes.
           </>
         )}
       </p>

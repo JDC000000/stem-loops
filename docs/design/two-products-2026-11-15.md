@@ -46,10 +46,19 @@ Script: `scripts/design/nav-audit.mjs`. Signed-in cells used the same local, nev
   - Fixes G4.
 - **SEO (#271 rules).** `/loops` is added to the page registry as a published product page, so it appears in the sitemap and llms.txt. Its metadata comes from that registry entry: indexable, canonical `/loops`. The app routes keep their `noindex`. Fixes G7.
 
-## 4. Not done here, and why
+## 4. Review round 1 changes (IA 84, conversion/a11y 92)
 
-- **"Loop length" in the Play along form, and the hero example's loop captions (G9).** The form's choice is stored on the job (`loop_length_bars`), and the pipeline records the loops at that length (migration 033). Removing the picker from Play along means moving it to /loops, and that needs the loop cutter to accept a length when the request is made. That is a worker change. Until then, both items are fenced as named exceptions in `test/two-products-nav.test.mjs`. The test goes red if the exceptions grow, and also if they are removed without the list shrinking to match.
-- **Retention wording on the landing FAQ ("deleted after 24 hours").** This is owned by the parallel retention-copy PR.
+- **B1:** the Play along form no longer shows a "Loop length" picker or any "N-bar loops" text, and it no longer sends `loop_length_bars`, so the API's default of 4 bars applies. No worker change was needed. The only remaining exception in the landing ban list is the hero's example lanes, whose measured captions are part of the demo-asset contract.
+- **B2:** the /loops intro now says that loops are 4 bars, fixed when the song is split. It no longer claims a choice of length.
+- **Should-fixes:**
+  - The /loops intro's retention line now depends on the plan: 24 hours on Free; on Pro and Studio, kept while you subscribe and for 30 days after it ends. The wording matches PR #279.
+  - The intro now states the 5-minute rule.
+  - The A/B caption on the landing is reworded so it no longer points at a file card that was removed.
+  - The nav's "Sign in" on /loops now keeps the return path back to /loops.
+  - Escape now closes the phone menu and returns focus to the toggle.
+  - The signed-out /loops intro now has a footer.
+  - A new test checks that the static pages keep the "Account" hint.
+- **Still open:** the hero's example lanes are still captioned around the loop cut, and the landing FAQ's "deleted after 24 hours" belongs to PR #279.
 
 ## 5. Screens
 

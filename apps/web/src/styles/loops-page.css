@@ -360,3 +360,17 @@
   align-items: center;
   text-decoration: none;
 }
+.lp-foot-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 24px;
+}
+.lp-intro-foot {
+  max-width: 960px;
+  margin: -64px auto 0;
+  padding: 16px var(--sl-gutter, 16px) 48px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 24px;
+}

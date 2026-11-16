@@ -30,7 +30,7 @@
 // WHY A CLIENT COMPONENT: marking the current page needs the pathname and the
 // phone menu needs state; both are view concerns.
 import { usePathname } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export type SignedInNavProps = {
   /**
@@ -73,6 +73,26 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
   }, [signedIn]);
   const showAccount = signedIn ?? hinted;
 
+  // Escape closes the phone menu and hands focus back to the toggle (WAI-ARIA disclosure
+  // pattern), so a keyboard user is never left inside a menu they cannot see the end of.
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      toggleRef.current?.focus();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  // Sign in from the Download loops page comes back to it, as the page's own button does. Only
+  // there: elsewhere the login page's default landing is the right one, and no other item may
+  // carry a query (test/signed-in-nav.test.mjs).
+  const onLoops = pathname === '/loops';
+  const signInHref = onLoops ? `/login?return_to=${encodeURIComponent('/loops')}` : '/login';
+
   // Story 7.2: the tool, Download loops, Job history and Account, in the
   // order the design canvas shows (kept from PR #208).
   //
@@ -98,7 +118,7 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
     { label: 'Job history', href: '/history', match: (p) => p === '/history' },
     showAccount
       ? { label: 'Account', href: '/account', match: (p) => p.startsWith('/account'), outlined: true }
-      : { label: 'Sign in', href: '/login', match: (p) => p === '/login', outlined: true },
+      : { label: 'Sign in', href: signInHref, match: (p) => p === '/login', outlined: true },
   ];
 
   // Story 7.4: say which product you are in. The current pill already does on
@@ -127,6 +147,7 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
         <button
           type="button"
           className="sin-toggle"
+          ref={toggleRef}
           aria-label={open ? 'Close menu' : 'Open menu'}
           aria-expanded={open}
           aria-controls="sin-menu"

@@ -91,13 +91,11 @@ test('the marketing footer lists the two products as peers', async () => {
 // The ban list reads the landing's <main> as rendered, in both normalisations. The header and
 // footer are outside <main> and are ALLOWED to name Download loops: that is the point.
 //
-// TWO FROZEN EXCEPTIONS, stated rather than hidden. Inside the hero, the tool form's "Loop
-// length" picker and the example lanes still frame themselves around the loop cut. Both are
-// wired to job creation: the job's `loop_length_bars` is chosen in the form and the pipeline
-// records loops at that length (migration 033), so removing the picker from Play along means
-// moving the choice to /loops, which needs the cutter to take a length at request time — a
-// worker change, out of this PR's scope and tracked in the PR body as the follow-up. The
-// exception is pinned to exactly those two elements, so it cannot quietly grow.
+// ONE FROZEN EXCEPTION, stated rather than hidden: the hero's example lanes, whose measured
+// captions (drift, beat alignment) are the demo-asset contract and describe the loop cut. The
+// tool form's "Loop length" picker and its "N-bar loops" summary are GONE (review of #280, B1):
+// the form sends no length and the API's default of 4 bars applies. The exception is pinned to
+// exactly that one element, so it cannot quietly grow.
 const SELLING = [
   /\bdownload(?:ing)?\s+(?:the\s+)?loops?\b/i,
   /\bloop\s+files?\b/i,
@@ -122,7 +120,7 @@ async function landingMainWithoutExceptions() {
     holder.innerHTML = html;
     const main = holder.querySelector('main');
     assert.ok(main, 'the landing has no <main>');
-    for (const sel of ['#length-group', '#options-summary', '#readout', 'section.lanes']) {
+    for (const sel of ['section.lanes']) {
       for (const el of main.querySelectorAll(sel)) {
         removed.push(sel);
         el.remove();
@@ -146,11 +144,27 @@ test('the landing body sells no loop or stem downloads (outside the two frozen e
   assert.ok(!/class="file-card"/.test(html), 'the loop file card is back on the landing');
 });
 
-test('the frozen exceptions are exactly the loop-length picker and the example lanes, and nothing else', async () => {
+test('the frozen exception is exactly the example lanes, and nothing else', async () => {
   const removed = await landingMainWithoutExceptions();
-  // Each selector matched exactly once: if the picker or the lanes are removed by the follow-up,
-  // this goes red and the exception list must shrink with it.
-  assert.deepEqual([...removed].sort(), ['#length-group', '#options-summary', '#readout', 'section.lanes'].sort());
+  // Matched exactly once: if the lanes are reworked, this goes red and the list shrinks.
+  assert.deepEqual([...removed], ['section.lanes']);
+});
+
+test('B1: the Play along form neither shows nor sends a loop length', async () => {
+  const { html } = await landingPage();
+  const form = html.match(/<form\b[^>]*id="tool"[\s\S]*?<\/form>/)?.[0];
+  assert.ok(form, 'no tool form');
+  const text = form.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+  assert.doesNotMatch(text, /loop length|\bbar loops\b|-bar loops|\b[1248]\s*bars?\b|per stem/i, text);
+  assert.ok(!/id="length-group"|name="bars"/.test(form), 'the loop-length control is back');
+  // And the POST bodies: the source is the only place the request shape lives (a client
+  // handler never runs under renderToStaticMarkup), comments stripped.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../src/components/landing/ToolForm.tsx', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  assert.doesNotMatch(src, /loop_length_bars/, 'ToolForm still sends a loop length');
+  assert.doesNotMatch(src, /\bsetBars\b|BAR_OPTIONS/, 'ToolForm still offers a loop length');
 });
 
 test('CANARY: the selling ban list matches the copy it exists to keep off the landing', () => {
@@ -187,9 +201,24 @@ test('/loops intro: names the product, links sign-in with a return path to /loop
   assert.equal(cta.href.replace(/&amp;/g, '&'), '/login?return_to=%2Floops');
   assert.ok(l.some((x) => x.href === '/' && /Play along/.test(x.text)), 'no way to Play along from the intro');
   // It says what the product is and the truths that moved off the landing.
-  for (const re of [/24-bit WAV/, /44\.1/, /up to 10 loops per stem/, /within 24 hours of splitting the song/, /Nudge it in\s+your DAW/, /need clearance/, /separate tool from Play along/i]) {
-    assert.match(html.replace(/&nbsp;/g, ' ').replace(/\s+/g, ' '), re);
+  const flat = html.replace(/&nbsp;|\u00a0/g, ' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+  for (const re of [/24-bit WAV/, /44\.1/, /\b4 bars, up to 10 loops per stem/, /fixed when the song is split/, /Nudge it in your DAW/, /need clearance/, /separate tool from Play along/i]) {
+    assert.match(flat, re);
   }
+  // B2: no claim of a length choice the cutter does not offer.
+  assert.doesNotMatch(flat, /1, 2, 4 or 8|choose its loops|pick (?:a|the) length/i);
+  // S2: the 5-minute rule, from the player cap.
+  const { MAX_TRACK_SEC } = await import('../src/lib/play/types.ts');
+  assert.match(flat, new RegExp(`first ${Math.floor(MAX_TRACK_SEC / 60)} minutes of the song`));
+  assert.doesNotMatch(flat, /\bup to \d+ minutes\b|\brefused\b/i);
+  // S1: plan-aware retention, worded as PR #279's landing FAQ.
+  const when = html.match(/data-testid="loops-intro-retention"[^>]*>([\s\S]*?)<\/dd>/)[1].replace(/\s+/g, ' ');
+  assert.match(when, /On Free, that is 24 hours from splitting it\./);
+  assert.match(when, /kept as a library while you subscribe, and for 30 days after it ends\./);
+  // N5: an indexable product page has the site's footer links.
+  const foot = html.match(/<footer[^>]*data-testid="loops-intro-footer"[\s\S]*?<\/footer>/)?.[0] ?? '';
+  assert.deepEqual(links(foot).map((x) => x.href), ['/', '/loops', '/terms', '/privacy']);
+  assert.ok(!/<main[\s\S]*<footer[\s\S]*<\/main>/.test(html), 'the footer belongs outside <main>');
   // A signed-out page shows no song, no job and no API wiring.
   assert.doesNotMatch(html, /\/api\//);
   assert.doesNotMatch(html, /\/jobs\//);
@@ -263,4 +292,56 @@ test('a server-resolved session always wins over the cookie hint', async () => {
   });
   const html = await toMarkup(React.createElement(Nav, { signedIn: true }));
   assert.equal(navItems(html).at(-1), 'Account');
+});
+
+// ═══ 7. Review of #280: the hint is really wired, the menu closes, sign-in comes back ══════
+
+test('N1: SiteHeader (what every static page renders) shows "Account" from a session cookie', async () => {
+  const [url] = compile(['components/landing/SiteChrome.tsx'], { 'next/navigation': navigationStub('/terms') });
+  const { SiteHeader } = await import(`${url}?${Math.random()}`);
+  for (const [cookie, want] of [
+    [null, 'Sign in'],
+    ['sb-ref-auth-token=x', 'Account'],
+  ]) {
+    await withDom(async (dom) => {
+      if (cookie) dom.window.document.cookie = cookie;
+      await dom.mount(React.createElement(SiteHeader));
+      assert.equal(dom.findAll('a.sin-item').at(-1).textContent.trim(), want, `cookie=${cookie}`);
+    });
+  }
+});
+
+test('N1: the static pages stay static — no session read, no dynamic export', async () => {
+  const { readFileSync } = await import('node:fs');
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  for (const f of ['app/(landing)/layout.tsx', 'app/(landing)/page.tsx', 'app/(landing)/terms/page.tsx', 'app/(landing)/privacy/page.tsx', 'app/not-found.tsx', 'components/landing/SiteChrome.tsx']) {
+    const src = strip(readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8'));
+    assert.doesNotMatch(src, /SignedInChrome|@\/lib\/auth|next\/headers|export const dynamic/, `${f} reads the session or opts out of static rendering`);
+  }
+});
+
+test('N2: Escape closes the phone menu and returns focus to the toggle', async () => {
+  const { default: Nav } = await navModule('/');
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(Nav, { signedIn: null }));
+    const toggle = dom.find('.sin-toggle');
+    await dom.act(() => toggle.click());
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+    await dom.act(() => dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false', 'Escape did not close the menu');
+    assert.ok(!dom.find('#sin-menu').className.includes('sin-open'));
+    assert.equal(dom.window.document.activeElement, toggle, 'focus did not return to the toggle');
+    // Another key does nothing.
+    await dom.act(() => toggle.click());
+    await dom.act(() => dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'a', bubbles: true })));
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  });
+});
+
+test('N3: on /loops the nav Sign in returns to /loops; elsewhere it is plain /login', async () => {
+  const { default: OnLoops } = await navModule('/loops');
+  const l = links(await toMarkup(React.createElement(OnLoops, { signedIn: false })));
+  assert.equal(l.find((x) => x.text === 'Sign in').href.replace(/&amp;/g, '&'), '/login?return_to=%2Floops');
+  const { default: OnTerms } = await navModule('/terms');
+  assert.equal(links(await toMarkup(React.createElement(OnTerms, { signedIn: false }))).find((x) => x.text === 'Sign in').href, '/login');
 });

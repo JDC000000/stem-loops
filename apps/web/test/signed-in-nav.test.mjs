@@ -356,7 +356,8 @@ test('CONTROL: every internal href the bar emits resolves to a real page in app/
   for (const user of [null, { user_id: 'u', email: 'a@b.c' }]) {
     for (const path of ['/account', '/loops', `/jobs/${JOB_A}`]) {
       const html = await chrome({ user, path });
-      for (const h of hrefs(html)) {
+      // A query (Sign in on /loops carries ?return_to) does not change which page it is.
+      for (const h of hrefs(html).map((x) => x.split('?')[0])) {
         assert.ok(existsSync(pageFor(h)), `the bar links to ${h}, which has no page.tsx`);
       }
     }

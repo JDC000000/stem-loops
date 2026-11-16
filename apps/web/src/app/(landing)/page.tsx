@@ -316,7 +316,8 @@ export default function HomePage() {
                     <p>
                       Yes, with public videos on youtube.com or youtu.be, including Shorts and YouTube Music links. Playlists,
                       private, age-restricted and live videos don’t work. YouTube sometimes blocks automated fetches; if it does,
-                      try again in a few minutes or upload the file.
+                      try again in a few minutes or upload the file. Links work with or without a subscription. With one, a linked song
+                      counts toward your monthly tracks, just like an upload, and stays in your library.
                     </p>
                   ) : (
                     <p>Not right now: YouTube links are paused. Upload the audio or video file instead.</p>

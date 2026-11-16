@@ -92,7 +92,8 @@ export function features(p: PlanCopyInput): string[] {
   out.push(quotaLine(p));
   const named = p.services.map((s) => SERVICE_LABEL[s]).filter((l): l is string => !!l);
   if (named.length) out.push(`Link import: ${named.join(', ')}`);
-  // No implemented link service (Pro and Studio today): say what the plan works on, neutrally.
+  // No implemented link service (no plan since 039 gave Pro and Studio YouTube): say what
+  // the plan works on, neutrally.
   // Never a negative bullet: pricing-features-table.test.mjs bans "uploads only".
   else out.push('Works with audio files you upload');
   out.push('Loop download — 24-bit WAV');

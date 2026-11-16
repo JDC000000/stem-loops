@@ -162,7 +162,8 @@ export function Lanes() {
             <div className="gridlines">
               {ruler?.barsX.slice(1).map((b) => <span key={b.i} style={{ left: b.x }} />)}
             </div>
-            <div className="bracket" />
+            {/* No loop bracket (2026-11-15, PR #280 follow-up): this is the Play along page, and the
+                bracketed loop region belonged to the loop-download pitch, now on /loops. */}
             <div className="playhead" />
           </div>
         </div>

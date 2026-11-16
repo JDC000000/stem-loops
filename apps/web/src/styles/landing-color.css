@@ -11,8 +11,8 @@
    border, so no box changes), only on the page that has the tool: on /terms, /privacy and the
    404 no stem is on the page, so the key would be ornament (D2-7). The labelled key is on the
    options summary (phones). ── */
-.site-header { position: relative; }
-.sl-root:has(#tool) .site-header::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--sl-stem-strip); opacity: .7; pointer-events: none; }
+.sl-root .sin-bar { position: relative; }
+.sl-root:has(#tool) .sin-bar::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--sl-stem-strip); opacity: .7; pointer-events: none; }
 
 /* ── phones: the collapsed options summary carries the stem key, built from the live choice.
    A stem that is turned off drops to a grey segment, so the key is data, not decoration.

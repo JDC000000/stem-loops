@@ -29,6 +29,7 @@ async function loadPage(user) {
     `export const redirect = (u) => { const e = new Error('NEXT_REDIRECT:' + u); e.digest = 'NEXT_REDIRECT'; e.url = u; throw e; };`,
   );
   const view = put('view.mjs', `export default function LoopsView() { return null; }`);
+  const intro = put('intro.mjs', `export default function LoopsIntro() { return null; }`);
   const src = readFileSync(join(WEB, 'src/app/loops/page.tsx'), 'utf8');
   assert.equal((src.match(/^import '@\/styles\/loops-page\.css';$/gm) ?? []).length, 1, 'the stylesheet import moved');
   const js = ts
@@ -38,6 +39,7 @@ async function loadPage(user) {
     .outputText.replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${auth}'`)
     .replace(/from ['"]next\/navigation['"]/g, `from '${nav}'`)
     .replace(/from ['"]\.\/LoopsView['"]/g, `from '${view}'`)
+    .replace(/from ['"]@\/components\/loops\/LoopsIntro['"]/g, `from '${intro}'`)
     .replace(
       /from ['"]@\/lib\/loops\/availability['"]/g,
       `from '${pathToFileURL(join(WEB, 'src/lib/loops/availability.ts')).href}'`,
@@ -60,9 +62,15 @@ const redirectOf = async (fn) => {
   return null;
 };
 
-test('M10: signed OUT, /loops redirects to sign-in and comes back to /loops', async () => {
+// 2026-11-15: bare /loops signed out is the Download loops PRODUCT PAGE (the top nav offers it
+// on every page, the landing included), not a bounce to sign-in. Its sign-in button carries the
+// return path instead — asserted in test/two-products-nav.test.mjs on the rendered intro.
+test('M10: signed OUT, bare /loops renders the product intro — no redirect, no LoopsView', async () => {
   const Page = await loadPage(null);
-  assert.equal(await redirectOf(() => Page({ searchParams: {} })), `/login?return_to=${encodeURIComponent('/loops')}`);
+  assert.equal(await redirectOf(() => Page({ searchParams: {} })), null);
+  const el = await Page({ searchParams: {} });
+  assert.equal(el.type.name, 'LoopsIntro', 'a signed-out visitor must never get the signed-in body');
+  assert.equal((await Page({})).type.name, 'LoopsIntro');
 });
 
 test('M10: signed OUT with ?job, the return trip keeps the song', async () => {
@@ -87,7 +95,10 @@ test('M11: a ?job that is not exactly a uuid never reaches the view or the retur
   for (const bad of [`${ID}x`, `x${ID}`, `/jobs/${ID}`, '//evil.example', 'not-a-job', [ID, 'x'].join('&job=')]) {
     const el = await signedIn({ searchParams: { job: bad } });
     assert.equal(el.props.initialJobId, null, `accepted ?job=${bad}`);
-    assert.equal(await redirectOf(() => signedOut({ searchParams: { job: bad } })), `/login?return_to=${encodeURIComponent('/loops')}`);
+    // A bad ?job is dropped, so signed out it is just bare /loops: the intro, never a redirect
+    // that carries the bad value.
+    assert.equal(await redirectOf(() => signedOut({ searchParams: { job: bad } })), null);
+    assert.equal((await signedOut({ searchParams: { job: bad } })).type.name, 'LoopsIntro');
   }
   // An array (?job=a&job=b) uses the first value, and only if it is a uuid.
   assert.equal((await signedIn({ searchParams: { job: [ID, 'x'] } })).props.initialJobId, ID);

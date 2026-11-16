@@ -6,11 +6,19 @@
 // request" half shipped in #211 (migration 033); this is the page half. The job
 // page (/jobs/[id]) no longer shows loops; it links here.
 //
-// SIGN-IN IS REQUIRED, by the one authenticated-page pattern in this repo
-// (app/jobs/[id]/page.tsx): `await getUser()` then
-// `redirect('/login?return_to=…')`. As there, the redirect protects the page
-// only; the authorisation boundary is on the API routes the body calls
-// (/api/jobs/:id, /api/jobs/:id/loops, /api/jobs/:id/stems).
+// SIGNED OUT (2026-11-15): bare /loops is now the Download loops PRODUCT PAGE
+// (components/loops/LoopsIntro.tsx) — the top nav offers this product on every
+// page, the landing included, so a signed-out visitor arriving here gets told
+// what it is, with sign-in one click on and a return path back. The intro reads
+// no job and calls no API.
+//
+// SIGNED OUT WITH ?job=<id>: still redirected to sign-in, by the one
+// authenticated-page pattern in this repo (app/jobs/[id]/page.tsx):
+// `await getUser()` then `redirect('/login?return_to=…')`. That link comes from
+// a job page, so the visitor already knows the product and wants that song.
+// As there, the redirect protects the page only; the authorisation boundary is
+// on the API routes the body calls (/api/jobs/:id, /api/jobs/:id/loops,
+// /api/jobs/:id/stems).
 //
 // `?job=<id>` preselects a song (the job page's "Download loops" link uses it).
 // Anything that is not a uuid is ignored rather than passed to the client.
@@ -19,6 +27,7 @@ import { redirect } from 'next/navigation';
 import { getUser } from '@/lib/auth/supabase';
 import { jobIdFrom } from '@/lib/loops/availability';
 import LoopsView from './LoopsView';
+import LoopsIntro from '@/components/loops/LoopsIntro';
 // Imported HERE rather than inside LoopsView so the client component's module
 // graph is TypeScript only and can be compiled into node by the tests. Next
 // bundles a global stylesheet imported from a page the same way. (Same choice
@@ -39,8 +48,8 @@ export default async function LoopsPage({
 
   const user = await getUser();
   if (!user) {
-    const back = jobId ? `/loops?job=${jobId}` : '/loops';
-    redirect(`/login?return_to=${encodeURIComponent(back)}`);
+    if (!jobId) return <LoopsIntro />;
+    redirect(`/login?return_to=${encodeURIComponent(`/loops?job=${jobId}`)}`);
   }
 
   return <LoopsView initialJobId={jobId} />;

@@ -54,12 +54,20 @@ All three reviewers chose **C** as the right design, but **C as first built fail
 
 Tests: 23 unit tests. The gate grew to 14 Chromium tests. All 32 mutants (the earlier 27 plus 5 for these blockers) were each seen to fail it. This revision has not been re-scored by the reviewers yet.
 
+## Final re-review at `e441c6e` (review 5): 92 / 88 / 88, FAIL on one regression, now fixed
+| Blocker | Fix |
+|---|---|
+| **N1:** after the half-bar change, a 3/4 song that changes chord every 2 bars was drawn as 4/4. It showed invented "C \| Am" bars, "bar 1/3" and 4 beat dots. | **Meter is now tested first.** The view checks whether on-beat chord-time falls on one phase of a 3-beat cycle (`MAX_TRIPLE_SHARE` 0.6). The beat count runs across sections, so the worker's 4-beat section lines do not scramble it. If chord changes fall into a 3-beat cycle, the song is 3/4, 6/8 counted in eighths, or ambiguous (a change every 12 beats fits both), and the view shows the plain list. Only after that does the 4/4 beats-1+3 against 2+4 test run. This also fixes the old should-fix "3/4 changing every 4 bars fits 4/4". |
+
+**New tests:** unit tests for 3/4 every 2 bars, 3/4 every 4 bars, 6/8 every 1 and 2 bars, a 3/4 song cut into 4-beat worker sections, and 4/4 at 2+2 and at 1 per bar (both still get bars). Chromium cases at 390 and 360 for 3/4 every 2 bars, 3/4 every bar and 6/8 in eighths (all show the sequence, with no dots and no splits), and 4/4 with 2 changes per bar (grid, both chords named). Mutants seen to fail: meter check removed, beat count restarted per section, the old tie rule, and the tie choosing beat 3.
+
+**Limit:** 6/8 tracked at the dotted-quarter beat (2 beats per bar) cannot be told apart from 4/4 with two chords per bar using chord timing alone.
+
 Not done (should-fix, not must-fix):
 - tap-to-seek, with editing on a long press;
 - folding "All chords" behind a disclosure on phones;
 - ping-pong rows, so the current bar never moves on screen;
 - per-bar section labels for sections that start mid-bar (the edges snap to the nearest bar line);
-- 3/4 songs whose chords change only every 4 bars still fit a 4/4 grid;
 - at 360px a line can switch between 1×4 and 2×2 as it pages;
 - 1.5% tempo drift falls back to the sequence.
 

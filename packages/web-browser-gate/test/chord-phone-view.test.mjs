@@ -571,6 +571,50 @@ test('phone chords @ 360x800: a 3/4 song on a correct beat is not drawn as 4/4 b
   }
 });
 
+// Meter: the 4/4 bar grid must never be drawn over another meter (review 5 N1).
+const WALTZ = ['C:maj', 'A:min', 'F:maj', 'G:7', 'E:min7', 'A:min', 'D:min7', 'G:7'];
+const METER_CASES = [
+  { name: '3/4, a change every 2 bars', bpm: 96, beats: 6, n: 32, want: 'sequence' },
+  { name: '3/4, a change every bar', bpm: 96, beats: 3, n: 48, want: 'sequence' },
+  { name: '6/8 counted in eighths, a change every bar', bpm: 180, beats: 6, n: 40, want: 'sequence' },
+  { name: '4/4, two changes every bar', bpm: 96, beats: 2, n: 96, want: 'bars' },
+];
+for (const vp of [[390, 844], [360, 800]]) {
+  for (const mc of METER_CASES) {
+    test(`phone chords @ ${vp[0]}x${vp[1]}: ${mc.name} -> ${mc.want}`, async () => {
+      const bars = Array.from({ length: mc.n }, (_, k) => [[WALTZ[k % WALTZ.length], mc.beats]]);
+      const { payload, grid, beat } = synth(bars, mc.bpm);
+      const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections: [], payload });
+      try {
+        const f = [];
+        for (let k = 1; k < mc.n; k += 5) {
+          const t = 0.5 + (k * mc.beats + 0.4) * beat;
+          await moveTo(page, t);
+          const m = await page.evaluate(measure);
+          const ctxs = `${vp.join('x')} ${mc.name} t=${t.toFixed(2)}`;
+          if (m.mode !== mc.want) f.push(`drawn as ${m.mode} (${m.reason}), want ${mc.want} @ ${ctxs}`);
+          if (mc.want === 'sequence') {
+            if (m.beat !== null || m.dots.length) f.push(`beat dots on a non-4/4 song @ ${ctxs}`);
+            if (m.cellsMulti) f.push(`${m.cellsMulti} invented split bars @ ${ctxs}`);
+            if (/bar/i.test(m.position ?? '')) f.push(`position "${m.position}" claims a bar @ ${ctxs}`);
+            if (m.next && m.next.when !== 'Next') f.push(`"${m.next.when}" counts beats on a non-4/4 song @ ${ctxs}`);
+          } else {
+            // 4/4 with two chords per bar: every bar on screen holds two named chords.
+            for (const g of m.groups) if (g.texts.length !== 2) f.push(`bar "${g.label}" holds ${g.texts.length} chords @ ${ctxs}`);
+          }
+          const heard = payload.segments.find((x) => x.start_sec <= t && t < x.end_sec);
+          checkNow(m, f, ctxs, SPELL[heard.label]);
+          checkSlots(m, f, ctxs);
+        }
+        assert.deepEqual(errors, []);
+        fail(f);
+      } finally {
+        await ctx.close();
+      }
+    });
+  }
+}
+
 test('teardown', async () => {
   if (browser) await browser.close();
 });

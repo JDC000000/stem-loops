@@ -36,6 +36,12 @@ export const MIN_FIT_FRACTION = 0.7;
  * meter (3/4 read as 4/4) or one chord per beat spreads the votes over all four.
  */
 export const MIN_DOWNBEAT_MARGIN = 1.5;
+/**
+ * Meter test, run BEFORE the 4/4 test: if this share of on-beat chord-time
+ * falls on one phase of a 3-beat cycle, the song is in 3 (or ambiguous) and is
+ * not drawn as 4/4 bars. A 4/4 song spreads it evenly (~1/3 per phase).
+ */
+export const MAX_TRIPLE_SHARE = 0.6;
 /** Inside the winning pair, beat 1 must beat beat 3 by this much to be chosen on votes alone. */
 export const HALF_BAR_MARGIN = 1.2;
 /** ... and at least this many chord changes to judge by. */
@@ -202,11 +208,19 @@ export interface PhoneModel {
   readonly lines: readonly PhoneLine[];
 }
 
-interface Seg { start: number; end: number; anchor: number; section: number; beat: number }
+interface Seg {
+  start: number;
+  end: number;
+  anchor: number;
+  section: number;
+  beat: number;
+  /** Beat number of `anchor`, counted from the grid's first beat across sections (for meter tests). */
+  index0: number;
+}
 
 /** Time spans each with its own beat anchor: one per section, plus the stretch before the first. */
 function segmentsFor(sections: readonly PhoneSection[], grid: BeatGrid, durSec: number): Seg[] {
-  if (sections.length === 0) return [{ start: 0, end: durSec, anchor: grid.anchorSec, section: -1, beat: grid.beatSec }];
+  if (sections.length === 0) return [{ start: 0, end: durSec, anchor: grid.anchorSec, section: -1, beat: grid.beatSec, index0: 0 }];
   // A section start is a worker-snapped beat, so it is the anchor, EXCEPT one
   // clamped to 0 (music from the very top): that takes the grid's own beat.
   const anchorOf = (t: number) => {
@@ -227,10 +241,14 @@ function segmentsFor(sections: readonly PhoneSection[], grid: BeatGrid, durSec: 
     const b = n >= 1 ? span / n : grid.beatSec;
     return Math.abs(b / grid.beatSec - 1) <= 0.06 ? b : grid.beatSec;
   };
-  if (sections[0].startSec > 0) segs.push({ start: 0, end: sections[0].startSec, anchor: a0, section: -1, beat: localBeat(0) });
+  // Beat numbers carried from section to section in whole local beats, so a
+  // drifting tempo does not scramble a beat count taken modulo the meter.
+  const index0: number[] = [Math.round((a0 - grid.anchorSec) / grid.beatSec)];
+  for (let i = 1; i < anchors.length; i++) index0.push(index0[i - 1] + Math.round((anchors[i] - anchors[i - 1]) / localBeat(i - 1)));
+  if (sections[0].startSec > 0) segs.push({ start: 0, end: sections[0].startSec, anchor: a0, section: -1, beat: localBeat(0), index0: index0[0] });
   sections.forEach((s, i) => {
     const end = i + 1 < sections.length ? sections[i + 1].startSec : durSec;
-    segs.push({ start: s.startSec, end, anchor: anchors[i], section: i, beat: localBeat(i) });
+    segs.push({ start: s.startSec, end, anchor: anchors[i], section: i, beat: localBeat(i), index0: index0[i] });
   });
   return segs;
 }
@@ -255,13 +273,14 @@ export function downbeatVotes(
   sections: readonly PhoneSection[],
   grid: BeatGrid,
   durSec: number,
-): { phase: number; scores: number[]; pairs: [number, number]; halfBarTie: boolean; aligned: number; total: number; changes: number } {
+): { phase: number; scores: number[]; pairs: [number, number]; triple: number; halfBarTie: boolean; aligned: number; total: number; changes: number } {
   const scores = new Array<number>(BEATS_PER_BAR).fill(0);
+  const scores3 = [0, 0, 0];
   let aligned = 0;
   let total = 0;
   let changes = 0;
   let firstPhase = -1;
-  if (!(grid.beatSec > 0)) return { phase: 0, scores, pairs: [0, 0], halfBarTie: false, aligned, total, changes };
+  if (!(grid.beatSec > 0)) return { phase: 0, scores, pairs: [0, 0], triple: 0, halfBarTie: false, aligned, total, changes };
   const segs = segmentsFor(sections, grid, durSec);
   for (let i = 0; i < runs.length; i++) {
     const r = runs[i];
@@ -282,7 +301,12 @@ export function downbeatVotes(
     if (Math.abs(beats - nearest) > BEAT_TOLERANCE) continue;
     aligned += d;
     scores[((nearest % BEATS_PER_BAR) + BEATS_PER_BAR) % BEATS_PER_BAR] += d;
+    const g = seg.index0 + nearest;
+    scores3[((g % 3) + 3) % 3] += d;
   }
+  // Share of on-beat chord-time on ONE phase of a 3-beat cycle: high for 3/4
+  // (and 6/8 counted in eighths) whatever the change rate, ~1/3 for 4/4.
+  const triple = aligned > 0 ? Math.max(...scores3) / aligned : 0;
   const pairs: [number, number] = [scores[0] + scores[2], scores[1] + scores[3]];
   const q = pairs[1] > pairs[0] + 1e-9 ? 1 : 0;
   const a = scores[q];
@@ -295,13 +319,18 @@ export function downbeatVotes(
     halfBarTie = true;
     phase = firstPhase === q || firstPhase === q + 2 ? firstPhase : q;
   }
-  return { phase, scores, pairs, halfBarTie, aligned, total, changes };
+  return { phase, scores, pairs, triple, halfBarTie, aligned, total, changes };
 }
 
 /** Does the grid fit the chords well enough to draw bars? */
 export function gridFit(votes: ReturnType<typeof downbeatVotes>): PhoneModel['reason'] {
   if (votes.changes < MIN_CHANGES || !(votes.total > 0)) return 'few-changes';
   if (votes.aligned / votes.total < MIN_FIT_FRACTION) return 'poor-fit';
+  // METER FIRST. Changes that fall into a 3-beat cycle mean 3/4 or 6/8, or a
+  // 4/4 grid we cannot tell from one (a change every 12 beats fits both): the
+  // grid cannot be trusted to draw 4-beat bars, so no bars. Only then the
+  // 4/4 test: beats 1+3 against 2+4 (two chords in every bar passes here).
+  if (votes.triple >= MAX_TRIPLE_SHARE) return 'meter';
   const [hi, lo] = [...votes.pairs].sort((a, b) => b - a);
   if (hi < MIN_DOWNBEAT_MARGIN * lo) return 'meter';
   return 'ok';

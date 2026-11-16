@@ -25,9 +25,10 @@
 // is moved out from under one. "no routable page is left without chrome"
 // catches the fourth case, a NEW route added outside the covered subtrees.
 //
-// CONTROL. "the bar states plainly that there is no /loops route" must stay
-// GREEN. A gate that forbids a true statement is its own defect, so one gate
-// here asserts a true thing plainly and is expected to survive every mutant.
+// CONTROL. "every internal href the bar emits resolves to a page.tsx in app/"
+// must stay GREEN. It replaced the old control ("there is no /loops route")
+// when /loops landed (Story 6): that statement became false, so the gate moved
+// to the general form of what it was guarding.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -55,6 +56,7 @@ const SIGNED_IN_ROUTES = [
   '/history',
   '/jobs/[id]',
   '/login',
+  '/loops',
   '/pricing',
   '/success',
   '/trial',
@@ -131,32 +133,35 @@ test('the bar carries every item it claims to', async () => {
   const by = (t) => l.find((x) => x.text === t);
   assert.ok(l.some((x) => x.href === TOOL), 'wordmark must link to the tool');
   assert.equal(by('Play along')?.href, TOOL);
+  assert.equal(by('Download loops')?.href, '/loops');
   assert.equal(by('Job history')?.href, '/history');
   assert.equal(by('Account')?.href, '/account');
-  // Exactly these four, in this order. A fifth item added without a gate — the
-  // loops item in particular — turns this red rather than sliding in.
+  // Exactly these, in this order (Story 7.2; the design canvas order). An item
+  // added without a gate turns this red rather than sliding in.
   // Link TEXT, in document order — the wordmark reads "stem-loops"; its
   // accessible name ("stem-loops, home") is asserted separately above.
   assert.deepEqual(l.map((x) => x.text).filter(Boolean), [
     'stem-loops',
     'Play along',
+    'Download loops',
     'Job history',
     'Account',
   ]);
 });
 
-test('no loops item ships until /loops does, and nothing points at a fragment', async () => {
-  // Jon asked for the loops as a SEPARATE page. There is none: LoopResults
-  // renders inside the job page's `done` branch, so a "Download loops" item
-  // could only ever be a fragment on a URL this bar has no id for — and no
-  // anchor at all while a job is processing, failed or expired. The item lands
-  // with /loops. This gate fails if it is reintroduced before then.
-  for (const user of [null, { user_id: 'u1', email: 'a@b.c' }]) {
+test('"Download loops" (Jon\'s label) goes to /loops in every session state, never a fragment or a job', async () => {
+  // The item was withheld while the loops lived inside the job page, where the
+  // only target was a fragment on a URL this bar has no id for. /loops takes no
+  // id. What stays forbidden is the old defect: a `#loops` fragment, or an href
+  // tied to one job.
+  for (const user of [null, { user_id: 'u1', email: 'a@b.c' }, 'throws']) {
     const html = await chrome({ user });
-    const texts = links(html).map((x) => x.text);
-    assert.ok(!texts.includes('Download loops'), texts.join(' | '));
-    assert.ok(!texts.includes('Song loops'), texts.join(' | '));
-    assert.ok(!hrefs(html).some((h) => h.includes('#loops')), hrefs(html).join(' | '));
+    const l = links(html);
+    assert.equal(l.filter((x) => x.text === 'Download loops').length, 1, l.map((x) => x.text).join(' | '));
+    assert.equal(l.find((x) => x.text === 'Download loops').href, '/loops');
+    assert.ok(!l.some((x) => x.text === 'Song loops'), 'the unsettled alternative label shipped');
+    assert.ok(!hrefs(html).some((h) => h.includes('#')), hrefs(html).join(' | '));
+    assert.ok(!hrefs(html).some((h) => h.includes('?')), hrefs(html).join(' | '));
   }
 });
 
@@ -183,10 +188,12 @@ test('the icon-only menu toggle carries aria-label and aria-expanded', async () 
 
 test('exactly one item is aria-current="page", and it is the right one', async () => {
   for (const [path, label] of [
+    ['/', 'Play along'],
     ['/account', 'Account'],
     ['/account/delete', 'Account'],
     ['/history', 'Job history'],
     [`/jobs/${JOB_A}`, 'Play along'],
+    ['/loops', 'Download loops'],
   ]) {
     const html = await chrome({ user: { user_id: 'u', email: 'a@b.c' }, path });
     const marked = [...html.matchAll(/<a\b[^>]*aria-current="page"[^>]*>([\s\S]*?)<\/a>/g)].map(
@@ -336,20 +343,63 @@ test('no routable page is left without chrome', async () => {
 // 5. CONTROL — a true statement, plainly made, that must stay green.
 // ═════════════════════════════════════════════════════════════════════════
 
-test('CONTROL: there is no /loops route, and the bar does not pretend there is', async () => {
-  // This is the control mutant's home. It states something TRUE and plain:
-  // the repo has no app/loops directory, so the bar offers no loops item and
-  // links to no /loops URL. Every mutant in the table must leave this GREEN.
-  // A suite that cannot tolerate a true statement is testing its own phrasing,
-  // not the product.
-  assert.equal(existsSync(join(APP, 'loops')), false, 'a /loops route now exists — update the nav');
-
+test('CONTROL: every internal href the bar emits resolves to a real page in app/', async () => {
+  // The old control asserted "there is no /loops route". That became false the
+  // day /loops landed, so it moved to the general form of what it guarded:
+  // the bar cannot tell a live href from a dead one (which is how a `#loops`
+  // fragment once shipped), so the filesystem is asked instead.
+  assert.ok(existsSync(join(APP, 'loops', 'page.tsx')), 'Download loops points at a page that does not exist');
+  const pageFor = (href) =>
+    href === '/'
+      ? join(APP, '(landing)', 'page.tsx')
+      : join(APP, ...href.split('/').filter(Boolean), 'page.tsx');
   for (const user of [null, { user_id: 'u', email: 'a@b.c' }]) {
-    const html = await chrome({ user });
-    assert.ok(!hrefs(html).some((h) => h === '/loops' || h.startsWith('/loops/')), html);
-    // The bar still gets the viewer somewhere real without it.
-    assert.ok(hrefs(html).includes(TOOL));
+    for (const path of ['/account', '/loops', `/jobs/${JOB_A}`]) {
+      const html = await chrome({ user, path });
+      // A query (Sign in on /loops carries ?return_to) does not change which page it is.
+      for (const h of hrefs(html).map((x) => x.split('?')[0])) {
+        assert.ok(existsSync(pageFor(h)), `the bar links to ${h}, which has no page.tsx`);
+      }
+    }
   }
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// 5b. STORY 7 — which product you are in, and the way back from Account.
+// ═════════════════════════════════════════════════════════════════════════
+
+/** The product tag beside the wordmark, or null. */
+const productTag = (html) =>
+  html.match(/data-testid="sin-product"[^>]*>([\s\S]*?)<\/span>/)?.[1].trim() ?? null;
+
+test('Story 7.4: the bar names the product you are in, at every width (not only via the folded menu)', async () => {
+  for (const [path, tag] of [
+    ['/', 'Play along'],
+    [`/jobs/${JOB_A}`, 'Play along'],
+    // The tag carries the nav's own label (2026-11-15), not a shorter alias.
+    ['/loops', 'Download loops'],
+    ['/account', null],
+    ['/history', null],
+    ['/pricing', null],
+  ]) {
+    for (const user of [null, { user_id: 'u', email: 'a@b.c' }]) {
+      const html = await chrome({ user, path });
+      assert.equal(productTag(html), tag, `at ${path}`);
+    }
+  }
+  // The tag lives OUTSIDE #sin-menu, which is display:none below 760px until
+  // opened — inside it, a phone user would never see it.
+  const html = await chrome({ user: null, path: '/loops' });
+  const menu = html.match(/<nav\b[^>]*id="sin-menu"[\s\S]*?<\/nav>/)[0];
+  assert.ok(!menu.includes('sin-product'), 'the product tag is inside the collapsible menu');
+  assert.ok(html.indexOf('sin-product') < html.indexOf('sin-toggle'));
+});
+
+test('Story 7.3: from Account, both products are one visible click away', async () => {
+  const html = await chrome({ user: { user_id: 'u', email: 'a@b.c' }, path: '/account' });
+  const l = links(html);
+  assert.equal(l.find((x) => x.text === 'Play along')?.href, TOOL);
+  assert.equal(l.find((x) => x.text === 'Download loops')?.href, '/loops');
 });
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -429,7 +479,7 @@ test('every nav item is reachable once the menu is open', async () => {
     await dom.act(() => toggle.click());
 
     const items = dom.findAll('#sin-menu.sin-open a.sin-item').map((a) => a.textContent.trim());
-    assert.deepEqual(items, ['Play along', 'Job history', 'Sign in']);
+    assert.deepEqual(items, ['Play along', 'Download loops', 'Job history', 'Sign in']);
   });
 });
 
@@ -452,7 +502,7 @@ test('every nav item is reachable once the menu is open', async () => {
 test('every signed-in layout opts its segment out of static rendering', async () => {
   const layouts = SIGNED_IN_ROUTES.flatMap(layoutChain);
   const unique = [...new Set(layouts)];
-  assert.equal(unique.length, 7, `expected 7 signed-in layouts, got: ${unique.join(', ')}`);
+  assert.equal(unique.length, 8, `expected 8 signed-in layouts, got: ${unique.join(', ')}`);
 
   const urls = compile(unique, {
     'next/navigation': navigationStub('/account'),

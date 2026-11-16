@@ -676,7 +676,10 @@ test('F5 layout: the Now row is mounted for all of playback, and only the chip t
   // between chords unmounted a ~28px row and shoved everything below it.
   assert.match(
     OVERLAY_TSX,
-    /\{isPlaying \? \(\s*<div style=\{playheadBarStyle\} data-testid="playhead-bar"/,
+    // `&& !showPhone`: under the phone breakpoint the phone chord view owns
+    // the current chord (its Now card is always mounted), so this row is not
+    // rendered there at all; elsewhere it is mounted for all of playback.
+    /\{isPlaying && !showPhone \? \(\s*<div style=\{playheadBarStyle\} data-testid="playhead-bar"/,
     'the Now row is no longer mounted for the whole of playback',
   );
   assert.doesNotMatch(

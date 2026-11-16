@@ -1,8 +1,8 @@
 // The server half of the signed-in header: it reads the session, the nav
 // renders it.
 //
-// MOUNTED BY: app/{account,jobs,history,login,pricing,success,trial}/layout.tsx
-// — seven one-line layouts, one per signed-in subtree. See the comment in
+// MOUNTED BY: app/{account,jobs,history,login,loops,pricing,success,trial}/layout.tsx
+// — eight one-line layouts, one per signed-in subtree. See the comment in
 // app/account/layout.tsx for why a layout per subtree rather than one route
 // group, and test/signed-in-nav.test.mjs for the gate that fails when a
 // routable page appears outside that set.
@@ -51,7 +51,7 @@ export default async function SignedInChrome() {
     // assumed: with it in place /history still prerendered as ○, because
     // @supabase/ssr reads the cookie jar behind its own error handling and no
     // DynamicServerError ever reaches here. That is why every one of these
-    // seven layouts declares `dynamic = 'force-dynamic'` instead of relying on
+    // eight layouts declares `dynamic = 'force-dynamic'` instead of relying on
     // Next inferring it. A statically prerendered segment would bake
     // `signedIn: false` into the HTML and serve a signed-in visitor a cached
     // "Sign in" bar.

@@ -233,6 +233,16 @@ export interface PlayEngine {
   getSnapshot(): EngineSnapshot;
   /** Returns an unsubscribe fn. Fires at least on every status change. */
   subscribe(listener: (s: EngineSnapshot) => void): () => void;
+  /**
+   * Resume a suspended / interrupted AudioContext while playing, without
+   * touching the transport (phones: screen wake, app switch back, a tap).
+   * Optional so existing fakes stay valid; the Web Audio engine implements it.
+   */
+  resumeAudio?(): void;
+  /** The AudioContext's reported `outputLatency` / `baseLatency`, or null. Optional for fakes. */
+  audioLatency?(): { outputLatency?: number; baseLatency?: number } | null;
+  /** Subscribe to AudioContext state changes; returns an unsubscribe fn. Optional for fakes. */
+  onAudioStateChange?(cb: (state: string) => void): () => void;
 
   /** Releases AudioContext and buffers. Safe to call twice. */
   dispose(): void;

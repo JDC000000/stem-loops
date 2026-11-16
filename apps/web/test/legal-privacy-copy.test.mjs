@@ -69,8 +69,14 @@ test('privacy: the 24-hour deletion sentence names the chord track, as a whole s
   // sentence that merely contains these words elsewhere, or one with the clause removed,
   // does not satisfy it. The 'i' flag is dropped: casing is part of the sentence.
   const how = section(page, 'How long', 'Account details are not');
+  // 2026-11-15 (Jon): the 24 h sentence now names WHO it applies to, and the paid library
+  // follows it. Pinned whole, both paragraphs, so dropping Free's exactness or the paid
+  // grace terms is a red test. The rule itself: lib/retention.ts JOB_RETAINED_UNTIL_SQL.
   const sentence =
-    'How long Uploaded files, fetched audio, stems, loops, the estimated chord track and the job\u2019s own row are deleted after 24 hours.';
+    'How long Uploaded files, fetched audio, stems, loops, the estimated chord track and the job\u2019s own row are deleted after 24 hours. ' +
+    'That is the Free plan, and every job started without an account. On Pro and Studio, the songs in your account are kept instead, as your library: ' +
+    'while your subscription is active (including up to 7 days while a failed renewal payment is retried), and for 30 days after it ends. ' +
+    'Then they are deleted the same way. A song you start after your plan has ended is deleted after 24 hours.';
   const re = new RegExp(`^${phrase(sentence).source}\\s*$`);
   assert.match(how.textSpaced.trim(), re, 'privacy (tags\u2192space): the 24-hour sentence changed');
   assert.match(how.textTight.trim(), re, 'privacy (tags\u2192nothing): the 24-hour sentence changed');

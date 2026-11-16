@@ -2,8 +2,13 @@
 
 DELETE /api/users/me runs one statement inside its erase-and-cancel transaction:
 
-    UPDATE public.jobs SET expires_at = now()
-     WHERE user_id = $1::uuid AND expires_at > now()
+    UPDATE public.jobs SET expires_at = LEAST(expires_at, created_at)
+     WHERE user_id = $1::uuid AND expires_at > created_at
+
+(2026-11-15: was `SET expires_at = now() ... AND expires_at > now()`. A Pro/Studio library is
+retained PAST expires_at by the owner's subscription; the retention rule ignores the subscription
+once expires_at <= created_at, so setting it to created_at kills paid retention too. See
+test_paid_retention.py::test_account_deletion_statement_kills_a_paid_library.)
 
 The web tests (apps/web/test/account-delete.test.mjs) stub the database, so they can check
 the statement's text, binding and placement but not what it DOES to rows. These tests run
@@ -12,7 +17,7 @@ local Postgres, AS stemloops_app (the production web role; RLS on), and pin:
 
   1. every live job of the deleting user is expired (expires_at <= now(), which every job
      route treats as gone), whatever its status;
-  2. that user's already-expired job keeps its original expiry (expire, never extend);
+  2. that user's already-killed job keeps its original expiry (expire, never extend);
   3. other users' jobs and anonymous jobs are untouched, to the microsecond;
   4. it is idempotent: a second run (a retried deletion) updates nothing and changes nothing.
 
@@ -150,8 +155,8 @@ def test_route_statement_is_the_one_under_test():
     """Guard: the statement this file runs is read from route.ts, not copied."""
     sql = " ".join(_route_expiry_sql().split())
     assert (
-        sql
-        == "UPDATE public.jobs SET expires_at = now() WHERE user_id = %s::uuid AND expires_at > now()"
+        sql == "UPDATE public.jobs SET expires_at = LEAST(expires_at, created_at) "
+        "WHERE user_id = %s::uuid AND expires_at > created_at"
     )
 
 

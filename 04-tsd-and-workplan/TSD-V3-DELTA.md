@@ -1,7 +1,29 @@
 # TSD-V3-DELTA: Stem-Loops V3 (commercial layer + Play engine + Spotify + fetch) — delta over the pinned TSD
 
-Author: SL-V3 architect lane. Date: 2026-11-14 (**v1.9** amendment: V3-J4 revised — a song over 5 minutes is TRIMMED to its first 5 minutes, not refused; see the v1.8 → v1.9 Changelog and §12.5). Previous: 2026-11-11 (v1.8 amendment pass — the plan catalog re-priced on tracks-converted-to-play-along, and every plan flag that advertised an unbuilt capability cleared; see Changelog below). Previous: 2026-11-10 (v1.7 amendment pass — corrections to v1.5/v1.6 after an adversarial review scored them 48/100, plus Jon's .wav and 3-free-stems decisions). Status: DRAFT for Jon's review.
+Author: SL-V3 architect lane. Date: 2026-11-16 (**v1.10** amendment: §1.2a link-ingest separation **REVERSED by Jon** — Pro and Studio may paste YouTube links, metered like uploads and kept in their library; O-8 closed; see the v1.9 → v1.10 Changelog). Previous: 2026-11-14 (v1.9 amendment: V3-J4 revised — a song over 5 minutes is TRIMMED to its first 5 minutes, not refused; see the v1.8 → v1.9 Changelog and §12.5). Previous: 2026-11-11 (v1.8 amendment pass — the plan catalog re-priced on tracks-converted-to-play-along, and every plan flag that advertised an unbuilt capability cleared; see Changelog below). Previous: 2026-11-10 (v1.7 amendment pass — corrections to v1.5/v1.6 after an adversarial review scored them 48/100, plus Jon's .wav and 3-free-stems decisions). Status: DRAFT for Jon's review.
 This document EXTENDS the pinned TSD at `stem-loops-handoff/07-roadmap/TSD.md` (SL21-tsd, commit c3f6a911 of `stem-loops`). It is a DELTA only — anything the pinned TSD covers (job state machine, kill switches, blocklist, fetch chain, loops/export, R2 layout, migrations 001–012) is NOT restated here, only cross-referenced by section number (e.g. `TSD §3.1`). All new requirement IDs are prefixed **V3-**; new tests prefixed **T-V3-**. Pinned reqs use their existing IDs (R-A0, R-X2, etc.).
+
+---
+
+## Changelog — v1.9 → v1.10 (2026-11-16 — §1.2a link-ingest separation REVERSED; O-8 closed)
+
+Source: **Jon, Mon 2026-11-16** — drop the §1.2a "processor separation" rule for everyone ("Drop the rule"). Pro and Studio may paste YouTube links; paid link jobs are kept in the account's library under the paid retention rule (#279), and count against the plan's monthly quota (Pro 50 / Studio 150) exactly like uploads. Free keeps YouTube links (5/month, 24 h). **Reason:** paid plans build a **library of songs**, and most songs people want to play along to arrive as links, not files — an upload-only paid tier could not hold them. This is the owner accepting the processor-underwriting exposure §1.2a was written to remove, recorded as his decision in the same way v1.5 recorded the stems half.
+
+| § | Change | Source |
+|---|---|---|
+| §0 Header | v1.9 → **v1.10** | this amendment |
+| **§1.2a** | **REVERSED.** The rule text below is kept, struck by a banner, as the audit trail — not an instruction. Paid tiers MAY use link ingest | Jon 2026-11-16 |
+| **§1.3 guard** | `enforceEntitlement('start_job_<link>')` no longer refuses `pro`/`studio` by plan code. A paid plan may ingest a link iff **its `plans.services` row lists the service** and `jobs_used < monthly_job_quota` — the `start_job_upload` predicate. Refusals: `ENTITLEMENT_UNAVAILABLE` (`'service not in plan'` / `'quota exhausted'`, 402). `POST /api/jobs` returns every refusal to a subscriber; free/trial outcomes are still ignored there and the existing gates decide | this amendment |
+| **§1.3 error codes** | `PAID_LINK_INGEST_DISALLOWED` is **thrown on no user path**. The code and its 400 status are kept so a stored `error_code` or an old client still resolves; its copy no longer says paid plans are upload-only | this amendment |
+| **§1.2 / `plans.services`** | **Migration `039_v3_paid_plans_youtube_links.sql`**: `UPDATE plans SET services = ARRAY['youtube'] WHERE code IN ('pro','studio')`. The gate is data-driven, so code deployed before 039 is applied **refuses** paid links (copy: *"YouTube links aren't switched on for your plan yet."*) instead of granting what the catalog and /pricing do not say; the down file re-closes it with no deploy | this amendment |
+| **§1.4 metering** | One job, one debit. Paid link job: `bumpJobsUsed()` once in the jobs-INSERT tx, same as a paid upload; never a trial song, never the free allowance. Free link job outside the trial: one unit of the free allowance, **capped in the tx** (`bumpJobsUsedWithinQuota`) | this amendment |
+| **Credits** | **Credits are not spent on link jobs, and a free account holding credits is capped at the free allowance (5/month) for links.** This is **a separate decision by Jon, 2026-11-16, widget answer "Cap at 5/month"** — not part of his "Drop the rule" answer, which covered paid plans only. It was raised by the author and by adversarial review 1 of #282 (MUST-1). Before v1.10 that account's link jobs were **uncapped and uncharged**: `checkMonthlyQuota()` waives the quota while credits remain (a waiver meant for credit-funded uploads). The in-tx cap closes that. The `check_credit_decrement` trigger (013) still accepts `input_kind='upload'` only and is unchanged. At the cap, a credit holder is told *"You've used this month's free YouTube links. Your credits still work: upload the audio file instead."* | Jon 2026-11-16 ("Cap at 5/month") |
+| **§1.4 metering** | Paid link jobs call `rollPeriodIfStale()` before `bumpJobsUsed()`, the same sequence as a paid upload (review 1 of #282, SHOULD-1) | this amendment |
+| **Follow-up, not in v1.10** | **No `jobs_used` refund on a failed job** — for links OR uploads, paid or free (the worker's `_REFUND_SQL` refunds credits only). Link jobs fail more often for reasons on our end (YouTube blocking fetches), so a Pro user can lose units to our failures. Decision for Jon | review 1 of #282, SHOULD-3 |
+| Copy | /pricing: Pro and Studio cards render *"Link import: YouTube"* from the column (and the degraded-mode fallback mirrors 039). Landing FAQ: links work on every plan; on Pro and Studio a linked song counts toward the monthly tracks and stays in the library | Jon 2026-11-16 |
+| **§11 O-8** | **CLOSED — decided: reverse.** | Jon 2026-11-16 |
+
+Items intentionally UNCHANGED in v1.10: the credit_consumption trigger, the trial path (link-only, still debits a trial song and an allowance unit), retention (#279 keys on the subscription, not `input_kind`, so paid link jobs are kept with no change), anonymous link ingest.
 
 ---
 
@@ -32,6 +54,8 @@ Source: **Jon's approved pricing model, 2026-11-11**, metered on *tracks convert
 | `free` | **5** | $0 | YouTube — **unchanged, see O-8** |
 | `pro` | **50** | $4.99 CAD | none — **unchanged, see O-8** |
 | `studio` | **150** | $12 CAD | none — **unchanged, see O-8** |
+
+> ⟲ **v1.10 (2026-11-16):** O-8 decided — Pro and Studio now carry YouTube link import (migration 039); Free keeps it. The table above is the v1.8 record.
 
 Credits (20 for $5) are unchanged and still live in `public.credit_packs` (migration 020).
 
@@ -565,8 +589,8 @@ Pinned reqs that this doc leaves untouched: R-A0, R-A1, R-A2, R-A4, R-B1, R-B2, 
 |---|---|---|---|---|
 | **Free** | Link + file ingest, **5 tracks converted to play-along / month**, device-fingerprint rate limited, no account needed | $0 | — | **NO** (free tier is zero-processor exposure) |
 | **Credits (PRIMARY SKU)** | **20 songs $5** / **60 songs $12** / **180 songs $30**. Never expire. One-time charges. StemSplit-style model. | $5 / $12 / $30 | Stripe one-time Checkout | **NO** — own-file only |
-| **Pro Monthly** (secondary) | **50 tracks converted to play-along / month**, chord/section cache per account, promo codes work here | $4.99/mo | Stripe recurring + Portal | **NO** — own-file only (see **O-8**) |
-| **Studio** | **150 tracks converted to play-along / month**, recording, higher rate limits, priority queue | $12/mo | Stripe recurring + Portal | **NO** — own-file only (see **O-8**) |
+| **Pro Monthly** (secondary) | **50 tracks converted to play-along / month**, chord/section cache per account, promo codes work here | $4.99/mo | Stripe recurring + Portal | ~~**NO** — own-file only (see **O-8**)~~ ⟲ **v1.10: YES** — YouTube links, counted against the 50 |
+| **Studio** | **150 tracks converted to play-along / month**, recording, higher rate limits, priority queue | $12/mo | Stripe recurring + Portal | ~~**NO** — own-file only (see **O-8**)~~ ⟲ **v1.10: YES** — YouTube links, counted against the 150 |
 
 Plan→feature mapping is in a `plans` table (DB-driven; not hard-coded) so adding/pricing a plan is a row insert, not a deploy. (Patreon "Founding Supporter" bridge tier removed per Jon 2026-11-03 — V3 relies solely on Stripe + Paddle adapter for monetization.)
 
@@ -586,6 +610,8 @@ Plan→feature mapping is in a `plans` table (DB-driven; not hard-coded) so addi
 The pricing page derives its bullets from these columns, and `apps/web/test/pricing-features-table.test.mjs` asserts the rendered bullets against both the migration **and** a ban list of capabilities absent from the repo. Before it, the whole feature table was unasserted: a mutant renaming a bullet shipped with the suite green.
 
 ### 1.2a Critical processor-exposure rule — **NON-NEGOTIABLE** (per adversarial review Lens B 84→90+)
+
+> 🔴 **REVERSED BY JON, 2026-11-16 — DO NOT FOLLOW THIS SECTION.** Pro and Studio may paste YouTube links. Paid link jobs are metered against the plan's monthly quota exactly like uploads and kept in the account's library under the paid retention rule (#279). **Reason:** paid plans build a library of songs, and most of those songs arrive as links. The exposure this section removed is **accepted by the owner**. What still holds: credits are spent on uploads only (`check_credit_decrement`, unchanged). Free credit holders' links are capped at the free allowance — a separate decision, Jon 2026-11-16 "Cap at 5/month" (see the changelog Credits row). The text below is preserved as the audit trail, not an instruction — see the v1.9 → v1.10 Changelog.
 
 **The paid tiers (Credits, Pro Monthly, Studio) NEVER touch the YouTube / Spotify / SoundCloud link-ingest path. Link ingest lives in the free tier forever.** (Patreon tier removed per Jon 2026-11-03.) This is the structural separation that keeps paid-tier processor underwriting clean:
 
@@ -1255,6 +1281,7 @@ Three surfaces, read in this priority order (first non-null wins), cached 30 s:
 | **O-6** | **COOP/COEP for `SharedArrayBuffer`.** §3.1's engine requires it; this document has zero mentions of COOP, COEP or `crossOriginIsolated`, and cross-origin isolation interacts with R2 signed URLs, hCaptcha, Stripe and Sentry embeds | Could block the engine late. Raised by the M-9 review |
 | **O-7** | **Opus container, bitrate and demuxer are unspecified.** WebCodecs needs demuxed packets | V3-J2 is not fully actionable without it |
 | **O-8** | **Reverse the §1.2a link-ingest separation for paid tiers?** Jon's 2026-11-11 pricing model gives Pro/Studio YouTube link import and takes it off Free. Not implemented in v1.8 — see that changelog. §1.2a calls the separation **NON-NEGOTIABLE** and credits it with moving adversarial-review Lens B from 84 to 90+ by keeping **payment-processor underwriting** clean; v1.5 reversed only the stems half and said this half *"must be revisited when Stripe lands."* | **Blocks the link-import row of the approved pricing table.** Until it is decided, /pricing names link import on Free only — which is what the code actually does |
+| **O-8 ✅** | **CLOSED 2026-11-16 — REVERSED by Jon.** Pro and Studio get YouTube link import (migration 039; data-driven gate in `entitlements.ts`); paid link jobs metered like uploads and kept in the library; credits stay upload-only. Reason: a library of linked songs on paid plans. See v1.9 → v1.10 | Resolved |
 | **O-9** | **Re-price review trigger: at 10 users OR 100 song sessions** (Jon, 2026-11-11: *"lets review this once we have 10 users OR 100 song sessions to get real cost per song from"*). Baseline 2026-11-11: **1 user, 5 jobs (4 done)**. SQL to check is in the PR body and in `claude/pricing-review-trigger-2026-11-11.md` | The approved margins rest on a **4-job, Replicate-only** cost sample |
 
 

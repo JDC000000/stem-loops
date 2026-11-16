@@ -15,7 +15,8 @@ const STAGE_BANDS: Record<string, [number, number]> = {
 const STEM_STAGES = new Set(['separating', 'extracting', 'uploading', 'done']);
 
 // The stems the user asked for, in the lane order the rest of the site uses.
-const STEM_ORDER = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
+// THE stem order, the mixer's (Story 2.1; brand book A3). test/brand-tokens.test.mjs pins it.
+const STEM_ORDER = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'];
 
 // One equal segment per requested stem: a 22% tint for the track, full hue for the fill.
 function stemKey(stems: string[], tint: boolean): string {
@@ -69,7 +70,7 @@ export function JobProgress({ job }: { job: Job }) {
 
   return (
     <div style={{ width: '100%', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)', fontSize: 15 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)', fontSize: 'var(--text-md)' }}>
         <span>
           <span aria-live="polite">{label}</span>
           {startedAt && job.status !== 'done' ? `… ${elapsed}s` : ''}
@@ -83,11 +84,11 @@ export function JobProgress({ job }: { job: Job }) {
         aria-valuemax={100}
         aria-valuenow={pct}
         className="jp-progress"
-        style={{ ...keyVars, width: '100%', height: 10, borderRadius: 999, overflow: 'hidden' }}
+        style={{ ...keyVars, width: '100%', height: 10, borderRadius: 'var(--radius-full)', overflow: 'hidden' }}
       >
         <div
           className={`jp-progress-fill${STEM_STAGES.has(job.status) ? ' is-stems' : ''}`}
-          style={{ width: `${pct}%`, height: '100%', borderRadius: 999 }}
+          style={{ width: `${pct}%`, height: '100%', borderRadius: 'var(--radius-full)' }}
         />
       </div>
     </div>

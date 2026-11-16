@@ -10,8 +10,10 @@
  * the precedent of a colocated client child beside a gated server page.
  *
  * What changed relative to the pre-seam version, and why:
- *   - Story 1.2: `<Player>` is mounted FIRST for a `done` job. The player is the
- *     primary view; `<LoopResults>` stays, below it.
+ *   - Story 1.2: `<Player>` is the view for a `done` job.
+ *   - Story 6.1 (2026-11-14): the job page does NOT show loops. `<LoopResults>`
+ *     moved to /loops, the loop downloader's own page; this page links there
+ *     with the job preselected (`/loops?job=<id>`).
  *   - The standalone `<section aria-label="Chords">` moved INTO `<Player>`, so
  *     the chord track can be given `positionSec` from the engine snapshot
  *     (Story 3.4). Mounting it here could not do that — the engine lives in
@@ -22,7 +24,6 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { Job } from '@stem-loops/types';
 import { JobProgress } from '@/components/JobProgress';
-import { LoopResults } from '@/components/LoopResults';
 import Player from '@/components/play/Player';
 import { formatExpiresIn } from '@/lib/retention';
 import { failedJobMessage } from '@/lib/error-copy';
@@ -63,7 +64,7 @@ const actionButton: React.CSSProperties = {
   minHeight: 48,
   padding: '0 18px',
   border: 0,
-  borderRadius: 10,
+  borderRadius: 'var(--radius-md)',
   fontWeight: 700,
 };
 
@@ -211,14 +212,14 @@ export default function JobView({ id }: { id: string }) {
       {missing ? (
         <div style={{ width: '100%', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <h1 style={{ margin: 0, fontSize: 'var(--text-xl)', color: 'var(--text-primary)' }}>We couldn&apos;t find that job.</h1>
-          <p style={{ margin: 0, color: 'var(--text-muted)' }}>Files are deleted after 24 hours, so it may have expired.</p>
+          <p style={{ margin: 0, color: 'var(--text-muted)' }}>On Free, files are deleted after 24 hours, so it may have expired.</p>
         </div>
       ) : trouble?.kind === 'unreachable' && !(job && TERMINAL.has(job.status)) ? (
         <div
           className="jp-failed"
           role="alert"
           data-testid="job-unreachable"
-          style={{ width: '100%', maxWidth: 560, padding: '20px 24px', borderRadius: 12, background: 'var(--status-failed-bg)' }}
+          style={{ width: '100%', maxWidth: 560, padding: '20px 24px', borderRadius: 'var(--radius-lg)', background: 'var(--status-failed-bg)' }}
         >
           <h1 style={{ margin: '0 0 8px', fontSize: 'var(--text-xl)' }}>We can&apos;t get an update right now</h1>
           <p style={{ margin: 0 }}>
@@ -250,7 +251,7 @@ export default function JobView({ id }: { id: string }) {
             width: '100%',
             maxWidth: 560,
             padding: '20px 24px',
-            borderRadius: 12,
+            borderRadius: 'var(--radius-lg)',
             background: 'var(--status-failed-bg)',
           }}
         >
@@ -266,13 +267,23 @@ export default function JobView({ id }: { id: string }) {
         <>
           {/* Story 1.2 — the player is the PRIMARY view. Jon: "Everybody
               uploading songs wants to see the player and toggle and play
-              along." The loop downloader is secondary and sits below it. */}
+              along." Story 6.1 — the loops are their own product page now;
+              this page shows none and links there instead. */}
           <TrimNote job={job} />
-          <Player jobId={job.id} loops={job.loops} enabled />
-          <LoopResults job={{ ...job, title: job.original_filename ?? undefined }} />
+          <Player jobId={job.id} loops={job.loops} enabled title={job.original_filename ?? null} />
+          <p data-testid="loops-link" style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 'var(--text-md, 14px)' }}>
+            Want this song as bar-length WAV loops?{' '}
+            <Link href={`/loops?job=${job.id}`} className="jp-back"
+              style={{ fontSize: 'var(--text-md, 14px)', display: 'inline-block', padding: '12px 0', margin: '-12px 0' }}
+            >
+              Download loops →
+            </Link>
+          </p>
           <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
-            Files are deleted after 24 hours.
-            {job.expires_at ? ` Yours expire ${formatExpiresIn(new Date(job.expires_at).getTime())}.` : ''}
+            {/* job.expires_at is the song's real deletion time (JOB_RETAINED_UNTIL_SQL):
+                24 hours on Free, later for a Pro/Studio library (lib/retention.ts). */}
+            On Free, files are deleted after 24 hours; on Pro and Studio they stay in your library.
+            {job.expires_at ? ` This song is deleted ${formatExpiresIn(new Date(job.expires_at).getTime())}.` : ''}
           </p>
         </>
       ) : trouble?.kind === 'stalled' ? (
@@ -280,7 +291,7 @@ export default function JobView({ id }: { id: string }) {
           className="jp-failed"
           role="alert"
           data-testid="job-stalled"
-          style={{ width: '100%', maxWidth: 560, padding: '20px 24px', borderRadius: 12, background: 'var(--status-failed-bg)' }}
+          style={{ width: '100%', maxWidth: 560, padding: '20px 24px', borderRadius: 'var(--radius-lg)', background: 'var(--status-failed-bg)' }}
         >
           <h1 style={{ margin: '0 0 8px', fontSize: 'var(--text-xl)' }}>This is taking too long</h1>
           <p style={{ margin: 0 }}>

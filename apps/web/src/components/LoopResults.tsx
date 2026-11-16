@@ -4,9 +4,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Job, Loop } from '@stem-loops/types';
 import { LoopCard } from '@/components/LoopCard';
 import { downloadLoopPack } from '@/lib/zipLoops';
+import {
+  LOOPS_CLOSED_COPY,
+  expiresAtMsOf,
+  loopsWindowOpen,
+  type LoopsClosedReason,
+} from '@/lib/loops/availability';
 
 // Stable stem order for the filter tabs (guitar is first-class, never 'piano').
-const STEM_ORDER = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
+// THE stem order, the mixer's (Story 2.1; brand book A3). test/brand-tokens.test.mjs pins it.
+const STEM_ORDER = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'];
+
+/** How often the 24-hour window is re-checked while the page is open, in ms. */
+export const WINDOW_CHECK_MS = 30 * 1000;
 
 /** How often to re-poll while a cut is running, in ms. */
 export const CUT_POLL_MS = 2500;
@@ -53,9 +63,20 @@ const defaultDeps: LoopResultsDeps = {
 export function LoopResults({
   job,
   deps = defaultDeps,
+  closed = null,
+  now = Date.now,
 }: {
   job: Job & { title?: string | null };
   deps?: LoopResultsDeps;
+  /**
+   * A reason the Cut control must be off that the CALLER knows and this
+   * component cannot (e.g. the job kept no stems). The 24-hour window is
+   * checked here, from `job.expires_at`, so a page left open past it turns off
+   * by itself.
+   */
+  closed?: LoopsClosedReason | null;
+  /** Clock seam for tests. */
+  now?: () => number;
 }) {
   // Rows read by the cut poll win over the props once there are any.
   const [fresh, setFresh] = useState<LoopRow[] | null>(null);
@@ -69,6 +90,19 @@ export function LoopResults({
   const [cutting, setCutting] = useState(false);
   const [cutError, setCutError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Jon, 2026-11-14: loops can be requested only within 24 hours of the job.
+  // Re-checked on a slow tick so a page left open across the line disables
+  // itself instead of offering a press the server will refuse.
+  const expiresAtMs = expiresAtMsOf(job.expires_at);
+  const [windowOpen, setWindowOpen] = useState(() => loopsWindowOpen({ expiresAtMs }, now()));
+  useEffect(() => {
+    setWindowOpen(loopsWindowOpen({ expiresAtMs }, now()));
+    if (expiresAtMs === null) return;
+    const id = setInterval(() => setWindowOpen(loopsWindowOpen({ expiresAtMs }, now())), WINDOW_CHECK_MS);
+    return () => clearInterval(id);
+  }, [expiresAtMs, now]);
+  const closedReason: LoopsClosedReason | null = closed ?? (windowOpen ? null : 'expired');
 
   // Migration 033: the worker records every loop and encodes none of them, so a
   // job can be `done` with a full set of rows and nothing yet in R2. Only a cut
@@ -122,6 +156,7 @@ export function LoopResults({
   }, [pending]);
 
   const onCut = useCallback(async () => {
+    if (closedReason) return;
     setCutError(null);
     setCutting(true);
     cutStarted.current = Date.now();
@@ -131,7 +166,7 @@ export function LoopResults({
       setCutting(false);
       setCutError('Could not start the cut. Try again.');
     }
-  }, [deps, job.id]);
+  }, [deps, job.id, closedReason]);
 
   async function onZip() {
     setZipping(true);
@@ -158,13 +193,14 @@ export function LoopResults({
           <button
             type="button"
             onClick={onCut}
-            disabled={cutting}
+            disabled={cutting || closedReason !== null}
             aria-busy={cutting}
+            aria-describedby={closedReason ? 'cut-closed' : undefined}
             className="jp-primary"
             data-testid="cut-loops"
             style={{
               minHeight: 48, padding: '0 18px', fontWeight: 700,
-              border: 'none', borderRadius: 10,
+              border: 'none', borderRadius: 'var(--radius-md)',
             }}
           >
             {cutting ? 'Cutting…' : `Cut ${pending} ${pending === 1 ? 'loop' : 'loops'}`}
@@ -173,13 +209,14 @@ export function LoopResults({
           <button
             type="button"
             onClick={onZip}
-            disabled={zipping || !cutLoops.length}
+            disabled={zipping || !cutLoops.length || closedReason === 'expired'}
+            aria-describedby={closedReason === 'expired' ? 'cut-closed' : undefined}
             aria-busy={zipping}
             className="jp-primary"
             data-testid="zip-loops"
             style={{
               minHeight: 48, padding: '0 18px', fontWeight: 700,
-              border: 'none', borderRadius: 10,
+              border: 'none', borderRadius: 'var(--radius-md)',
             }}
           >
             {zipping ? 'Zipping…' : 'Download all (ZIP)'}
@@ -187,7 +224,18 @@ export function LoopResults({
         )}
       </header>
 
-      {pending > 0 && (
+      {closedReason && (pending > 0 || closedReason === 'expired') && (
+        <p
+          id="cut-closed"
+          role="status"
+          data-testid="cut-closed"
+          data-reason={closedReason}
+          style={{ margin: '12px 0 0', color: 'var(--text-secondary)', fontSize: 14, maxWidth: '68ch' }}
+        >
+          {LOOPS_CLOSED_COPY[closedReason]}
+        </p>
+      )}
+      {pending > 0 && !closedReason && (
         <p data-testid="cut-explainer" style={{ margin: '12px 0 0', color: 'var(--text-muted)', fontSize: 14 }}>
           {cutting
             ? `Cutting ${pending} 24-bit ${pending === 1 ? 'WAV' : 'WAVs'} from this song’s stems. This takes a moment.`
@@ -195,7 +243,7 @@ export function LoopResults({
         </p>
       )}
       {cutError && (
-        <p role="alert" data-testid="cut-error" style={{ margin: '12px 0 0', color: 'var(--danger, #e5484d)', fontSize: 14 }}>
+        <p role="alert" data-testid="cut-error" style={{ margin: '12px 0 0', color: 'var(--status-failed)', fontSize: 14 }}>
           {cutError}
         </p>
       )}
@@ -213,8 +261,8 @@ export function LoopResults({
               aria-pressed={stem === s}
               onClick={() => setStem(s)}
               style={{
-                minHeight: 44, padding: '0 14px', textTransform: 'capitalize', cursor: 'pointer',
-                borderRadius: 999, fontSize: 14,
+                minHeight: 44, padding: '0 14px', cursor: 'pointer',
+                borderRadius: 'var(--radius-full)', fontSize: 14,
               }}
             >
               {s}

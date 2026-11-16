@@ -29,6 +29,8 @@ export const PRICE = {
   credits_180: 'price_test_c180',
 };
 
+const assert = (ok, msg) => { if (!ok) throw new Error('fakeDb: ' + msg); };
+
 const toJs = (src) =>
   ts.transpileModule(src, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
@@ -92,14 +94,17 @@ export function sign(event) {
 }
 
 let _evt = 0;
-export const envelope = (type, object) => ({
+/** A Stripe event. `previous` becomes data.previous_attributes, which a real
+ *  customer.subscription.updated carries for the fields that changed; the
+ *  route derives R4/R5 from it (PR #272 review B2). */
+export const envelope = (type, object, previous) => ({
   id: `evt_test_${++_evt}`,
   object: 'event',
   api_version: '2026-10-28.endive',
   created: 1_800_000_000,
   livemode: false,
   type,
-  data: { object },
+  data: previous ? { object, previous_attributes: previous } : { object },
 });
 
 // ---- Stripe object fixtures (shape of a real 2026-10-28 payload) ----------
@@ -112,6 +117,7 @@ export const subscriptionFixture = (over = {}) => ({
   customer: 'cus_test_1',
   status: 'active',
   cancel_at_period_end: false,
+  created: PERIOD_START,
   metadata: {},
   items: {
     object: 'list',
@@ -182,6 +188,12 @@ export function makeState() {
     usage: [],
     promo: [],
     invalidated: [],
+    // Every email dispatcher call the route makes: { fn, userId, vars }.
+    emails: [],
+    // Fault injection: [{ re, times }]. A statement matching `re` throws
+    // (after any earlier statements in the handler took effect) `times`
+    // times, to model a partial failure that Stripe then retries.
+    failures: [],
   };
 }
 
@@ -189,7 +201,11 @@ export function fakeDb(state) {
   const query = async (sql, p = []) => {
     const q = sql.replace(/\s+/g, ' ');
     const r = (rows) => ({ rows, rowCount: rows.length });
+    const f = (state.failures ?? []).find((x) => x.times > 0 && x.re.test(q));
+    if (f) { f.times -= 1; throw new Error('fakeDb: injected failure: ' + q.slice(0, 60)); }
     if (/pg_advisory_xact_lock/.test(q)) return r([]);
+    if (/^SELECT welcomed_at FROM users WHERE id = \$1/.test(q))
+      return r(state.users.filter((u) => u.id === p[0]).map((u) => ({ welcomed_at: u.welcomed_at ? new Date(u.welcomed_at) : null })));
     if (/^SELECT 1 FROM users WHERE id/.test(q)) return r(state.users.filter((u) => u.id === p[0]).map(() => ({})));
     if (/^SELECT email FROM auth\.users/.test(q)) return r([]);
     if (/^SELECT id FROM users WHERE email/.test(q)) return r(state.users.filter((u) => u.email === p[0]).map((u) => ({ id: u.id })));
@@ -204,6 +220,12 @@ export function fakeDb(state) {
         state.customers_billing.push({ user_id: p[0], provider: p[1], provider_customer_id: p[2] });
       return r([]);
     }
+    if (/^SELECT status, plan_code, cancel_at_period_end FROM subscriptions WHERE provider = \$1 AND provider_subscription_id = \$2/.test(q))
+      return r(state.subscriptions
+        .filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1])
+        .map((s) => ({ status: s.status, plan_code: s.plan_code, cancel_at_period_end: s.cancel_at_period_end })));
+    if (/^SELECT 1 FROM subscriptions WHERE user_id = \$1 AND status IN \('active','trialing','past_due'\) LIMIT 1/.test(q))
+      return r(state.subscriptions.filter((s) => s.user_id === p[0] && ['active', 'trialing', 'past_due'].includes(s.status)).slice(0, 1).map(() => ({})));
     if (/^SELECT user_id FROM subscriptions WHERE provider = \$1 AND provider_subscription_id/.test(q))
       return r(state.subscriptions.filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1]).map((s) => ({ user_id: s.user_id })));
     if (/^INSERT INTO subscriptions/.test(q)) {
@@ -220,9 +242,12 @@ export function fakeDb(state) {
       return r(rows.map((s) => ({ user_id: s.user_id, plan_code: s.plan_code, current_period_end: s.current_period_end })));
     }
     if (/^UPDATE subscriptions SET status = 'past_due'/.test(q)) {
-      const rows = state.subscriptions.filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1]);
+      // Mirrors `AND status NOT IN ('incomplete', 'canceled')` (review B1).
+      assert(/AND status NOT IN \('incomplete', 'canceled'\)/.test(q), 'past_due UPDATE must skip incomplete/canceled');
+      const rows = state.subscriptions.filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1]
+        && !['incomplete', 'canceled'].includes(s.status));
       rows.forEach((s) => { s.status = 'past_due'; });
-      return r(rows.map((s) => ({ user_id: s.user_id })));
+      return r(rows.map((s) => ({ user_id: s.user_id, plan_code: s.plan_code, current_period_start: s.current_period_start })));
     }
     if (/^INSERT INTO entitlements/.test(q)) {
       const [user_id, plan_code, period_start, period_end] = p;
@@ -279,10 +304,25 @@ export async function loadWebhookRoute(provider, state) {
     tx: (...a) => globalThis.__routeDb.tx(...a),
   };`);
   const ent = dataUrl(`export const invalidateEntitlement = (u) => { globalThis.__routeState.invalidated.push(u); };`);
+  // Recording email stubs. sendWelcomeIfFirstTime mirrors the real
+  // welcomed_at guard (per user, once) and returns whether it "sent".
   const em = dataUrl(`
-    export const sendWelcomeIfFirstTime = async () => {};
-    export const sendSubscriptionChanged = async () => {};
-    export const sendReceipt = async () => {};
+    const rec = (fn) => async (userId, vars) => {
+      globalThis.__routeState.emails?.push({ fn, userId, vars });
+    };
+    export const sendWelcomeIfFirstTime = async (userId, vars) => {
+      const st = globalThis.__routeState;
+      const u = st.users.find((x) => x.id === userId);
+      if (u?.welcomed_at) return false;
+      if (u) u.welcomed_at = new Date().toISOString();
+      st.emails?.push({ fn: 'sendWelcomeIfFirstTime', userId, vars });
+      return true;
+    };
+    export const sendSubscriptionChanged = rec('sendSubscriptionChanged');
+    export const sendPlanEnding = rec('sendPlanEnding');
+    export const sendPlanEnded = rec('sendPlanEnded');
+    export const sendPaymentFailed = rec('sendPaymentFailed');
+    export const sendReceipt = rec('sendReceipt');
   `);
   const next = dataUrl(`
     export class NextResponse {

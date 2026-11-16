@@ -41,7 +41,10 @@ export class EntitlementError extends Error {
     this.code = code;
     // 402 Payment Required — consistent across billing-gated denials; the
     // response body carries the specific error_code for copy lookup.
-    // PAID_LINK_INGEST_DISALLOWED is a 400 per TSD §1.2a (not a payment problem).
+    // PAID_LINK_INGEST_DISALLOWED is a 400 (not a payment problem). It is no
+    // longer thrown on any user path — TSD-V3-DELTA §1.2a was REVERSED by Jon
+    // on 2026-11-16 — and the code is kept only so a stored error_code or an
+    // old client still resolves to copy.
     this.status = code === 'PAID_LINK_INGEST_DISALLOWED' ? 400 : 402;
     this.errorCopyKey = code;
   }
@@ -52,9 +55,11 @@ export class EntitlementError extends Error {
 // ---------------------------------------------------------------------------
 
 export type EntitlementAction =
-  | 'start_job_youtube'   // service=youtube ingest (free tier only; §1.2a)
-  | 'start_job_spotify'   // service=spotify ingest (free tier only)
-  | 'start_job_soundcloud'// service=soundcloud ingest (free tier only)
+  // Link ingest: allowed on any plan whose plans.services lists the service
+  // (free since 034; pro/studio from 039 — §1.2a REVERSED 2026-11-16).
+  | 'start_job_youtube'   // service=youtube ingest
+  | 'start_job_spotify'   // service=spotify ingest (no plan lists it; unbuilt)
+  | 'start_job_soundcloud'// service=soundcloud ingest (no plan lists it; unbuilt)
   | 'start_job_upload'    // own-file upload (any tier; consumes credit on free + no-plan)
   // export_stems is a LIVE gate: GET /api/jobs/[id]/download calls it before
   // signing a full-length stem WAV. Migration 037 sets plans.export_stems true
@@ -352,11 +357,33 @@ export async function enforceEntitlement(
     case 'start_job_spotify':
     case 'start_job_soundcloud': {
       const service = action.replace('start_job_', '');
-      // §1.2a processor separation: Pro/Studio are upload-only products.
+      // TSD-V3-DELTA §1.2a "processor separation" (Pro/Studio upload-only) was
+      // REVERSED by Jon on 2026-11-16: paid plans may paste links too, so their
+      // library can hold linked songs. Two rules replace the old plan-code
+      // refusal, and both make a paid link job behave like a paid upload:
+      //
+      //  1. DATA-DRIVEN, not plan-code-driven. A paid plan may ingest a link
+      //     only when ITS plans.services row lists the service. Migration 039
+      //     writes ARRAY['youtube'] on pro/studio; until it is applied the row
+      //     still says [] and the link is refused here, honestly, instead of the
+      //     code granting something the catalog (and /pricing, which renders
+      //     the same column) does not yet say. Deploy-before-migrate is
+      //     therefore safe, and a down-migration closes the door again with no
+      //     deploy. The refusal is FINAL for paid plans: POST /api/jobs returns
+      //     every entitlement refusal for a subscriber (see its link branch).
+      //
+      //  2. Same quota as uploads. The predicate below is the start_job_upload
+      //     one for pro/studio, character for character; the counter it reads is
+      //     the one bumpJobsUsed() writes once per job in the jobs-INSERT tx.
+      //     A paid account never reaches the trial or free-allowance paths.
       if (snap.plan_code === 'pro' || snap.plan_code === 'studio') {
-        throw new EntitlementError('PAID_LINK_INGEST_DISALLOWED');
+        if (!snap.services.includes(service)) {
+          throw new EntitlementError('ENTITLEMENT_UNAVAILABLE', 'service not in plan');
+        }
+        if (snap.jobs_used < snap.jobs_quota) return { allowed: true, snapshot: snap };
+        throw new EntitlementError('ENTITLEMENT_UNAVAILABLE', 'quota exhausted');
       }
-      // Link-ingest is free-tier only (§1.2a processor separation).
+      // Free / no-plan: unchanged.
       if (snap.services.includes(service)) return { allowed: true, snapshot: snap };
       // Not in the plan's services — if the user has an active trial, allow.
       if (snap.trial_songs_remaining !== null && snap.trial_songs_remaining > 0) {

@@ -23,7 +23,8 @@ test('ENTITY_LIMITS states the five brand limits, with the player cap as its onl
   assert.ok(ENTITY_LIMITS.includes(`uses the first ${cap} minutes of any song`));
   assert.doesNotMatch(ENTITY_LIMITS, /\bup to\s+\d+\s*minutes?\b/i, '#270: longer songs are trimmed, not refused');
   assert.deepEqual([...ENTITY_LIMITS.matchAll(/(\d+)\s*minutes?/g)].map((m) => Number(m[1])), [cap]);
-  assert.match(ENTITY_LIMITS, /Chrome on the desktop/);
+  assert.match(ENTITY_LIMITS, /Chrome on a computer/);
+  assert.match(ENTITY_LIMITS, /lighter audio on phones/);
   assert.match(ENTITY_LIMITS, /after 24 hours/);
   assert.match(ENTITY_LIMITS, /account to open the player/);
   assert.match(ENTITY_LIMITS, /rights to the audio/);

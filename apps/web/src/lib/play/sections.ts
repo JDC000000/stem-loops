@@ -210,3 +210,44 @@ export function nameRegions(regions: readonly LoopRegion[]): NamedRegion[] {
     return { region, name: (total.get(l) ?? 0) > 1 ? `${titleCase(l)} ${n}` : titleCase(l) };
   });
 }
+
+// ---------------------------------------------------------------------------
+// Beat grid (phone chord view)
+// ---------------------------------------------------------------------------
+// The job's beat grid, for the phone chord view's bars (ChordOverlay). The
+// loops rows carry the job's `bpm`, and every loop `start_sec` is snapped to a
+// detected beat (apps/worker/src/worker/extractor/beat_grid.py).
+
+/** The worker's tempo guard range, widened a little; outside it the bpm is not believed. */
+export const MIN_GRID_BPM = 40;
+export const MAX_GRID_BPM = 260;
+
+export interface BeatGrid {
+  /** Seconds per beat. */
+  readonly beatSec: number;
+  /** Time of any one beat, seconds (the grid's phase). */
+  readonly anchorSec: number;
+  /** True when the grid came from the job's measured tempo; false for the pseudo-bar fallback. */
+  readonly measured: boolean;
+}
+
+/**
+ * The job's beat grid from its `loops` rows (`bpm`, `start_sec`; both may be
+ * node-pg numeric strings). Null when there is no believable tempo.
+ */
+export function beatGridFromLoops(
+  rows: readonly { readonly bpm?: unknown; readonly start_sec?: unknown }[] | null | undefined,
+): BeatGrid | null {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  let bpm = NaN;
+  let anchor = Infinity;
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue;
+    const b = toSec(r.bpm);
+    if (!Number.isFinite(bpm) && Number.isFinite(b) && b >= MIN_GRID_BPM && b <= MAX_GRID_BPM) bpm = b;
+    const s = toSec(r.start_sec);
+    if (Number.isFinite(s) && s >= 0 && s < anchor) anchor = s;
+  }
+  if (!Number.isFinite(bpm)) return null;
+  return { beatSec: 60 / bpm, anchorSec: Number.isFinite(anchor) ? anchor : 0, measured: true };
+}

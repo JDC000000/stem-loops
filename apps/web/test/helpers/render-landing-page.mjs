@@ -115,7 +115,16 @@ function build(outDir, entryAbs) {
         module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022,
         ...(abs.endsWith('.tsx') ? { jsx: ts.JsxEmit.ReactJSX } : {}),
       },
-    }).outputText.replace(/(\bfrom\s*|\bimport\s*)(['"])([^'"]+)\2/g, (whole, kw, q, spec) => {
+    }).outputText
+      // A side-effect stylesheet import (`import '@/styles/x.css'`) is bundler-only and carries
+      // no logic or copy; node cannot load it. Dropped so pages that import CSS (the 404) render.
+      .replace(/^import\s+(['"])[^'"]+\.css\1;?\s*$/gm, '')
+      .replace(/(\bfrom\s*|\bimport\s*)(['"])([^'"]+)\2/g, (whole, kw, q, spec) => {
+      // `next/navigation` has no `exports` map, so node's ESM resolver needs the file name.
+      // The shared top nav (components/chrome/SignedInNav.tsx) is the first landing module to
+      // import it (usePathname); in renderToStaticMarkup it returns null, as in production SSR
+      // outside a router, so no stub is needed.
+      if (spec === 'next/navigation') return `${kw}${q}next/navigation.js${q}`;
       const target = spec.startsWith('@/') ? resolveSrc(join(SRC, spec.slice(2)))
         : spec.startsWith('.') ? resolveSrc(join(dirname(abs), spec))
         : null;

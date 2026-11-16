@@ -118,7 +118,7 @@ async function loadRoute() {
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub}'`)
     .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl('export const mayReadJob = async () => true;')}'`)
     .replace(INPUT_TRIM_IMPORT_RE, `from '${INPUT_TRIM_URL}'`)
-    .replace(/from ['"]@\/lib\/retention['"]/g, `from '${dataUrl('export const presignTtlSec = () => 900;')}'`)
+    .replace(/from ['"]@\/lib\/retention['"]/g, `from '${dataUrl("export const presignTtlSec = () => 900; export const JOB_RETAINED_UNTIL_SQL = 'expires_at';")}'`)
     .replace(/from ['"]@\/lib\/r2['"]/g, `from '${dataUrl("export const mintSignedUrl = async (k) => 'https://signed/' + k;")}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${dataUrl('export const captureException = () => {};')}'`)
     .replace(

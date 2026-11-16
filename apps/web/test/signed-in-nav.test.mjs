@@ -188,6 +188,7 @@ test('the icon-only menu toggle carries aria-label and aria-expanded', async () 
 
 test('exactly one item is aria-current="page", and it is the right one', async () => {
   for (const [path, label] of [
+    ['/', 'Play along'],
     ['/account', 'Account'],
     ['/account/delete', 'Account'],
     ['/history', 'Job history'],
@@ -372,8 +373,10 @@ const productTag = (html) =>
 
 test('Story 7.4: the bar names the product you are in, at every width (not only via the folded menu)', async () => {
   for (const [path, tag] of [
+    ['/', 'Play along'],
     [`/jobs/${JOB_A}`, 'Play along'],
-    ['/loops', 'Loops'],
+    // The tag carries the nav's own label (2026-11-15), not a shorter alias.
+    ['/loops', 'Download loops'],
     ['/account', null],
     ['/history', null],
     ['/pricing', null],

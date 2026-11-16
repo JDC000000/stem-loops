@@ -85,6 +85,10 @@ export function compile(entries, stubs = {}) {
       })
       .outputText.replace(/(\bfrom\s*|\bimport\s*)(['"])([^'"]+)\2/g, (whole, kw, q, spec) => {
         if (stubUrl[spec]) return `${kw}${q}${stubUrl[spec]}${q}`;
+        // Unstubbed, `next/navigation` needs its file name under node's ESM resolver (the package
+        // has no `exports` map). Reached from the landing page since its header became the
+        // shared top nav (2026-11-15).
+        if (spec === 'next/navigation') return `${kw}${q}next/navigation.js${q}`;
         const target = spec.startsWith('@/')
           ? resolveSrc(join(SRC, spec.slice(2)))
           : spec.startsWith('.')

@@ -410,6 +410,18 @@ export class WebAudioPlayEngine implements PlayEngine {
   private ctx: AudioContext | null = null;
   /** Where every GainNode connects. Created once with the context. */
   private output: AudioNode | null = null;
+  /** `onAudioStateChange` subscribers; fired on the context's 'statechange'. */
+  private readonly audioStateListeners = new Set<(state: string) => void>();
+  private readonly onCtxStateChange = () => {
+    const state = String(this.ctx?.state ?? 'closed');
+    for (const l of Array.from(this.audioStateListeners)) {
+      try {
+        l(state);
+      } catch {
+        /* a listener's failure is not the engine's */
+      }
+    }
+  };
   private readonly buffers = new Map<StemName, AudioBuffer>();
   /** Created once per ready stem in `load()`. Never recreated — invariant 2. */
   private readonly gains = new Map<StemName, GainNode>();
@@ -487,6 +499,14 @@ export class WebAudioPlayEngine implements PlayEngine {
     if (this.ctx !== ctx) {
       this.ctx = ctx;
       this.output = this.openOutput(ctx);
+      try {
+        (ctx as { addEventListener?: (t: string, cb: () => void) => void }).addEventListener?.(
+          'statechange',
+          this.onCtxStateChange,
+        );
+      } catch {
+        /* an engine without the event still works; callers also re-sample */
+      }
     }
 
     for (const name of PLAYABLE_STEMS) {
@@ -592,6 +612,19 @@ export class WebAudioPlayEngine implements PlayEngine {
     } catch {
       /* the next gesture will try again */
     }
+  }
+
+  /**
+   * Called with the context's new state whenever it changes ('running' after a
+   * resume, 'interrupted' on iOS, …). Returns an unsubscribe fn. Used to
+   * re-read `outputLatency`, which Chromium reports as 0 until the context runs.
+   */
+  onAudioStateChange(cb: (state: string) => void): () => void {
+    if (typeof cb !== 'function' || this.disposed) return () => {};
+    this.audioStateListeners.add(cb);
+    return () => {
+      this.audioStateListeners.delete(cb);
+    };
   }
 
   /** The context's reported latencies, for chord-clock compensation; null without a context. */
@@ -777,6 +810,15 @@ export class WebAudioPlayEngine implements PlayEngine {
     this.missing = [];
     this.error = null;
     const ctx = this.ctx;
+    try {
+      (ctx as { removeEventListener?: (t: string, cb: () => void) => void } | null)?.removeEventListener?.(
+        'statechange',
+        this.onCtxStateChange,
+      );
+    } catch {
+      /* ignore */
+    }
+    this.audioStateListeners.clear();
     this.ctx = null;
     this.output = null;
     this.snapshot = IDLE_SNAPSHOT;

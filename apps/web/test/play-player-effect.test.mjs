@@ -141,6 +141,7 @@ const {
   MANIFEST_UNREACHABLE_MESSAGE,
   MANIFEST_SERVER_ERROR_MESSAGE,
   GENERIC_LOAD_MESSAGE,
+  LATENCY_RESAMPLE_MS,
   stemLoadMessage,
 } = Player;
 
@@ -159,12 +160,20 @@ function workingContext(opts) {
     setValueAtTime() {}, cancelScheduledValues() {}, linearRampToValueAtTime() {}, setTargetAtTime() {}, cancelAndHoldAtTime() {},
   });
   const node = (kind) => ({ kind, connect(n) { return n; }, disconnect() {} });
+  // `__fakeStart`: 'running' (default) or 'suspended' / 'suspended-silent' —
+  // a FRESH page, where the first tap finds the context suspended and Chromium
+  // reports outputLatency 0 until it runs. 'silent' = no statechange event.
+  const fresh = globalThis.__fakeStart !== 'running';
+  const stateListeners = [];
   const ctx = {
     sampleRate: opts?.sampleRate ?? 48000,
     currentTime: 1,
-    state: 'running',
-    outputLatency: 0.032,
+    state: fresh ? 'suspended' : 'running',
+    outputLatency: fresh ? 0 : 0.032,
     baseLatency: 0.01,
+    addEventListener(t, cb) { if (t === 'statechange' && globalThis.__fakeStart !== 'suspended-silent') stateListeners.push(cb); },
+    removeEventListener(t, cb) { const i = stateListeners.indexOf(cb); if (i >= 0) stateListeners.splice(i, 1); },
+    stateListeners,
     destination: node('destination'),
     sources: [],
     createGain() { return { ...node('gain'), gain: param() }; },
@@ -180,7 +189,17 @@ function workingContext(opts) {
     },
     createBuffer(c, length, sampleRate) { return fakeBuf(length, sampleRate); },
     async decodeAudioData() { return fakeBuf(120 * ctx.sampleRate, ctx.sampleRate); },
-    resume() { log.push('ctx.resume'); return Promise.resolve(); },
+    resume() {
+      log.push('ctx.resume');
+      // Like a browser: the context starts running AFTER the tap, and only then
+      // reports its real output latency.
+      return Promise.resolve().then(() => {
+        if (ctx.state === 'running') return;
+        ctx.state = 'running';
+        ctx.outputLatency = 0.032;
+        for (const cb of stateListeners.slice()) cb();
+      });
+    },
     close() { return Promise.resolve(); },
   };
   globalThis.__audioContexts.push(ctx);
@@ -201,6 +220,7 @@ class FakeAudioContext {
 globalThis.AudioContext = FakeAudioContext;
 globalThis.__audioContextRates = [];
 globalThis.__audioMode = 'throw';
+globalThis.__fakeStart = 'running';
 globalThis.__audioLog = [];
 globalThis.__audioContexts = [];
 // Declared here, not inside a test: the harness fails a body that ADDS a
@@ -672,7 +692,7 @@ test('lock-screen controls: Player installs Media Session handlers that drive th
 
 const RESUME_EVENTS = ['visibilitychange', 'pointerdown', 'touchend', 'pageshow', 'focus'];
 
-async function mountRoute({ phone = true } = {}, body) {
+async function mountRoute({ phone = true, start = 'running' } = {}, body) {
   const ms = {
     metadata: undefined, playbackState: 'none', handlers: {},
     setActionHandler(a, h) { this.handlers[a] = h; }, setPositionState() {},
@@ -692,6 +712,7 @@ async function mountRoute({ phone = true } = {}, body) {
     await body({ ...p, ms, el, live, ctx: () => globalThis.__audioContexts.at(-1) });
   }, { title: 'Song.mp3' }, () => {
     globalThis.__audioMode = 'fake';
+    globalThis.__fakeStart = start;
     const doc = globalThis.document;
     const win = globalThis.window;
     const nav = globalThis.navigator;
@@ -716,6 +737,7 @@ async function mountRoute({ phone = true } = {}, body) {
     const unspyWin = spy('window', win);
     return () => {
       globalThis.__audioMode = 'throw';
+      globalThis.__fakeStart = 'running';
       globalThis.matchMedia = realMM;
       delete nav.mediaSession;
       delete doc.createElement;
@@ -798,6 +820,38 @@ test('chord sync: on the phone route the chord clock is held back by routeLatenc
     await p.dom.act(async () => p.ms.handlers.pause({}));
     await p.settle();
     assert.equal(chordPos(p), 10);
+  });
+});
+
+test('chord sync, fresh page (review #278 B1): first play from a SUSPENDED context uses the latency it reports once RUNNING', async () => {
+  await mountRoute({ phone: true, start: 'suspended' }, async (p) => {
+    assert.equal(p.ctx().state, 'suspended');
+    assert.equal(p.ctx().outputLatency, 0, 'fixture: a fresh context reports 0');
+    tapPlay(p);
+    await p.settle();
+    await p.settle();
+    assert.equal(p.ctx().state, 'running');
+    await p.dom.act(async () => p.ms.handlers.seekto({ seekTime: 10 }));
+    await p.settle();
+    const expected = 10 - (ROUTE_TRANSPORT_LATENCY_SEC + 0.032);
+    assert.ok(Math.abs(chordPos(p) - expected) < 1e-9, `first play compensated ${10 - chordPos(p)} s, expected ${10 - expected}`);
+    assert.equal(p.ctx().stateListeners.length, 1, 'statechange listener attached once');
+    await p.dom.unmountAll();
+    await p.settle();
+    assert.equal(p.ctx().stateListeners.length, 0, 'statechange listener left behind after unmount');
+  });
+});
+
+test('chord sync, fresh page with NO statechange event: the timed re-sample still picks up the running latency', async () => {
+  await mountRoute({ phone: true, start: 'suspended-silent' }, async (p) => {
+    tapPlay(p);
+    await p.settle();
+    await p.dom.act(async () => p.ms.handlers.seekto({ seekTime: 10 }));
+    await p.settle();
+    await p.dom.act(() => new Promise((r) => setTimeout(r, LATENCY_RESAMPLE_MS[0] + 100)));
+    await p.settle();
+    const expected = 10 - (ROUTE_TRANSPORT_LATENCY_SEC + 0.032);
+    assert.ok(Math.abs(chordPos(p) - expected) < 1e-9, `after re-sample compensated ${10 - chordPos(p)} s, expected ${10 - expected}`);
   });
 });
 

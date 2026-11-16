@@ -241,6 +241,8 @@ export interface PlayEngine {
   resumeAudio?(): void;
   /** The AudioContext's reported `outputLatency` / `baseLatency`, or null. Optional for fakes. */
   audioLatency?(): { outputLatency?: number; baseLatency?: number } | null;
+  /** Subscribe to AudioContext state changes; returns an unsubscribe fn. Optional for fakes. */
+  onAudioStateChange?(cb: (state: string) => void): () => void;
 
   /** Releases AudioContext and buffers. Safe to call twice. */
   dispose(): void;

@@ -50,7 +50,7 @@ The chord playhead follows the AudioContext clock, which is RENDER time. On desk
 | iPhone 14 (emulated on Chromium) | 24 kHz | 16.8–30.5 (17.2) | 32 ms / 10 ms |
 | iPhone 14 (emulated on Chromium) | 48 kHz | 13.3–22.3 (20.6) | 32 ms / 10 ms |
 
-**Compensation shipped** (`routeLatencySec`, `background-audio.ts`). While playing on the phone route, the chord position is the engine position minus (`ROUTE_TRANSPORT_LATENCY_SEC` = **18 ms**, the measured median, plus the context's `outputLatency`, falling back to `baseLatency`, then to 0), capped at 0.5 s. In this Chromium that is about **50 ms**. The value is recomputed on every play, so a route that fell back to `ctx.destination` gets 0. Paused or ended positions are not shifted. Desktop gets 0.
+**Compensation shipped** (`routeLatencySec`, `background-audio.ts`). While playing on the phone route, the chord position is the engine position minus (`ROUTE_TRANSPORT_LATENCY_SEC` = **18 ms**, the measured median, plus the context's `outputLatency`, falling back to `baseLatency`, then to 0), capped at 0.5 s. In this Chromium that is about **50 ms**. The value is recomputed on every play. It is also recomputed when the context's `statechange` reaches `running`, and re-sampled 250 ms and 1 s after each start. That matters because on a fresh page the first tap finds the context `suspended`, and Chromium reports `outputLatency` = 0 until it runs (review #278 round 2). A route that fell back to `ctx.destination` gets 0. Paused or ended positions are not shifted. Desktop gets 0.
 
 What is not known:
 

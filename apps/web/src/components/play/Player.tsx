@@ -395,6 +395,11 @@ export interface PlayerProps {
 export const MEDIA_ARTWORK_URL = '/apple-touch-icon.png';
 export const MEDIA_ARTIST = 'stem-loops';
 export const MEDIA_FALLBACK_TITLE = 'Your track';
+/**
+ * When to re-read the route latency after a start, in ms. Chromium was probed
+ * reporting outputLatency 0 in the tap and 0.032 by +200 ms after a resume.
+ */
+export const LATENCY_RESAMPLE_MS = [250, 1000] as const;
 
 export default function Player({ jobId, loops, enabled = true, title }: PlayerProps) {
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
@@ -461,6 +466,25 @@ export default function Player({ jobId, loops, enabled = true, title }: PlayerPr
       },
     );
 
+    // Chord-clock compensation for the phone route. Read on the playing edge,
+    // and READ AGAIN once the context is actually running: on a fresh page the
+    // first tap finds it 'suspended', and Chromium reports outputLatency = 0
+    // until it runs (review #278 round 2). So: on 'statechange' to running, and
+    // re-sampled shortly after each start (also catches a route that fell back
+    // to ctx.destination after an async play() refusal).
+    const refreshLatency = () => {
+      if (engine.getSnapshot().status !== 'playing') return;
+      setChordLatencySec(routeLatencySec(engine.audioLatency?.(), !!output?.routed));
+    };
+    const unsubscribeState = engine.onAudioStateChange?.((state) => {
+      if (state === 'running') refreshLatency();
+    });
+    let resample: ReturnType<typeof setTimeout>[] = [];
+    const clearResample = () => {
+      for (const t of resample) clearTimeout(t);
+      resample = [];
+    };
+
     // Engine → element and lock screen. In the subscription rather than a React
     // effect so a `playing → ended` edge is seen exactly as the engine emits it.
     let wasPlaying = false;
@@ -469,9 +493,16 @@ export default function Player({ jobId, loops, enabled = true, title }: PlayerPr
       media?.update(s);
       const playing = s.status === 'playing';
       if (wasPlaying && !playing) output?.pause(); // ended, failed or paused
-      // Re-read on every start: the route can fall back to ctx.destination
-      // (then 0), and outputLatency is only meaningful once audio runs.
-      if (playing && !wasPlaying) setChordLatencySec(routeLatencySec(engine.audioLatency?.(), !!output?.routed));
+      // Re-read on every start (and again later, see refreshLatency): the route
+      // can fall back to ctx.destination (then 0), and outputLatency is only
+      // meaningful once the context runs.
+      if (playing && !wasPlaying) {
+        refreshLatency();
+        if (output) {
+          clearResample();
+          resample = LATENCY_RESAMPLE_MS.map((ms) => setTimeout(refreshLatency, ms));
+        }
+      }
       wasPlaying = playing;
     });
     setSnapshot(engine.getSnapshot());
@@ -537,6 +568,8 @@ export default function Player({ jobId, loops, enabled = true, title }: PlayerPr
       cancelled = true;
       controller.abort();
       stopResume();
+      clearResample();
+      unsubscribeState?.();
       unsubscribe();
       media?.dispose();
       engine.dispose();

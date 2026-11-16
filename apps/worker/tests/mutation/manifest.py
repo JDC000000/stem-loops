@@ -49,7 +49,9 @@ class Mutant:
 CL = "src/worker/cleanup.py"
 R2 = "src/worker/storage/r2_uploader.py"
 CO = "src/worker/consumer.py"
+HL = "src/worker/health.py"
 
+_HE = "tests/test_health.py::"
 _R = "tests/test_retention_real_r2.py::"
 _W = "tests/test_consumer_sweep_wiring.py::"
 _H = "tests/test_real_r2_harness.py::"
@@ -599,6 +601,19 @@ MUTANTS: tuple[Mutant, ...] = (
         "Round 4, Task 1 (widened): without the conftest guard the pre-existing DB tests that "
         "are not in test_cleanup.py connect.",
     ),
+    # ------------------------------------------ /health reports Sentry (PR #284, round 1)
+    Mutant(
+        "health_sentry_ignores_transport",
+        HL,
+        'return "on" if client.is_active() and client.transport is not None else "off"',
+        'return "on" if client.is_active() else "off"',
+        (_HE + "test_sentry_off_when_init_ran_without_a_usable_dsn",),
+        "PR #284 and health.py's docstring: `transport is not None` is the half that does the "
+        "work. Without it a client that init() built with no usable DSN — is_active() True, "
+        'transport None, every event dropped — reports `"sentry": "on"`, which is the false '
+        "green the field exists to prevent. The killer unsets SENTRY_DSN itself, so this is "
+        "killed whether or not the environment exports one.",
+    ),
     # ------------------------------------------------------------------------------ web
     *(
         Mutant(
@@ -704,6 +719,19 @@ SURVIVORS: tuple[Survivor, ...] = (
         "no retention sweep would ever run and the whole suite stays green. Run with `--full` "
         "(this survives the FULL worker suite, not just the retention files). Closing it needs "
         "a test of `main.py`'s startup, which is outside a tests-only change to retention.",
+    ),
+    Survivor(
+        "health_sentry_ignores_is_active",
+        HL,
+        'return "on" if client.is_active() and client.transport is not None else "off"',
+        'return "on" if client.transport is not None else "off"',
+        ("tests/test_health.py",),
+        "EQUIVALENT IN PRACTICE on sentry-sdk 2.66-2.75: the only client whose `is_active()` is "
+        "False is `NonRecordingClient`, and it also has `transport is None`, so the conjunct "
+        "changes no outcome today. It is kept as defence against an SDK that separates the two, "
+        "and recorded here rather than claimed in prose: the runner FAILS if this mutant ever "
+        "dies, which is the signal that a new SDK made `is_active()` load-bearing and that "
+        "health.py's docstring must stop calling it redundant.",
     ),
     Survivor(
         "inflight_grace_56_minutes",

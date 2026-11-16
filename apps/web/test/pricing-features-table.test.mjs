@@ -56,6 +56,7 @@ const REPO = join(WEB, '..', '..');
 const PAGE = join(WEB, 'src/app/pricing/page.tsx');
 const MIGRATION = join(REPO, 'apps/worker/migrations/034_v3_pricing_model_truth.sql');
 const MIGRATION_037 = join(REPO, 'apps/worker/migrations/037_v3_studio_stem_export.sql');
+const MIGRATION_039 = join(REPO, 'apps/worker/migrations/039_v3_paid_plans_youtube_links.sql');
 
 // ---------------------------------------------------------------------------
 // Load features() / quotaLine().
@@ -155,6 +156,42 @@ for (const u of updates037) {
   PLANS[u.code][u.column] = u.value;
 }
 
+// Migration 039 (Jon, 2026-11-16 — TSD-V3-DELTA §1.2a REVERSED) gives Pro and
+// Studio YouTube link import: one UPDATE of plans.services. Parsed, not
+// retyped, and fully accounted for, exactly like 037.
+const migration039Sql = readFileSync(MIGRATION_039, 'utf8').replace(/--[^\n]*/g, '');
+const SERVICES_RE =
+  /UPDATE\s+public\.plans\s+SET\s+services\s*=\s*ARRAY\[([^\]]*)\]::text\[\]\s+WHERE\s+code\s+IN\s*\(([^)]*)\)\s*;/g;
+const updates039 = [...migration039Sql.matchAll(SERVICES_RE)].map((m) => ({
+  services: m[1].split(',').map((x) => x.trim().replace(/^'|'$/g, '')).filter(Boolean),
+  codes: m[2].split(',').map((x) => x.trim().replace(/^'|'$/g, '')).filter(Boolean),
+}));
+for (const u of updates039) {
+  for (const code of u.codes) {
+    assert.ok(PLANS[code], `039 updates unknown plan '${code}'`);
+    PLANS[code].services = [...u.services];
+  }
+}
+
+test('migration 039 is parsed completely: every UPDATE in it was applied above', () => {
+  const statements = (migration039Sql.match(/\bUPDATE\b/gi) ?? []).length;
+  assert.ok(updates039.length > 0, '039 must carry an UPDATE this parser can read');
+  assert.equal(updates039.length, statements,
+    `039 has ${statements} UPDATE statement(s) but only ${updates039.length} matched the parser`);
+});
+
+test('effective catalog (034 + 037 + 039): YouTube link import on every plan', () => {
+  // Jon, 2026-11-16: Pro and Studio may paste YouTube links; Free keeps them.
+  // Literals on purpose.
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(PLANS).map(([c, p]) => [c, p.services])),
+    { free: ['youtube'], pro: ['youtube'], studio: ['youtube'] },
+  );
+  // And 039 really is what moved it: 034 alone left Pro and Studio empty.
+  assert.deepEqual(PLANS_034.pro.services, []);
+  assert.deepEqual(PLANS_034.studio.services, []);
+});
+
 test('migration 037 is parsed completely: every UPDATE in it was applied above', () => {
   const statements = (migration037Sql.match(/\bUPDATE\b/gi) ?? []).length;
   assert.ok(updates037.length > 0, '037 must carry an UPDATE this parser can read');
@@ -200,7 +237,7 @@ test('no plan sits at or above the retired unlimited sentinel', () => {
   }
 });
 
-test("the page's FALLBACK array matches migrations 034 + 037 field for field", () => {
+test("the page's FALLBACK array matches migrations 034 + 037 + 039 field for field", () => {
   // The degraded-mode fallback is a second copy of the catalog. When it drifts,
   // a Postgres outage silently serves the OLD prices — the failure mode is
   // invisible precisely when nobody is watching.
@@ -217,6 +254,8 @@ test("the page's FALLBACK array matches migrations 034 + 037 field for field", (
       `FALLBACK ${code} export_stems must be ${p.export_stems}: ${txt}`);
     assert.match(txt, new RegExp(`export_wav24: ${p.export_wav24}\\b`),
       `FALLBACK ${code} export_wav24 must be ${p.export_wav24}: ${txt}`);
+    const svc = `services: [${p.services.map((x) => `'${x}'`).join(', ')}]`;
+    assert.ok(txt.includes(svc), `FALLBACK ${code} must carry ${svc}: ${txt}`);
   }
 });
 
@@ -235,14 +274,15 @@ const EXPECTED = {
   ],
   pro: [
     '50 tracks converted to play-along per month',
-    'Works with audio files you upload',
+    // Jon, 2026-11-16 (migration 039): paid plans paste YouTube links too.
+    'Link import: YouTube',
     'Loop download — 24-bit WAV',
     // Jon, 2026-11-15: paid plans keep songs while subscribed + 30 days' grace.
     'Song library: kept while you subscribe, plus 30 days',
   ],
   studio: [
     '150 tracks converted to play-along per month',
-    'Works with audio files you upload',
+    'Link import: YouTube',
     'Loop download — 24-bit WAV',
     'Song library: kept while you subscribe, plus 30 days',
   ],

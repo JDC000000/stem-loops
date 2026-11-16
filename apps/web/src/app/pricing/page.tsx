@@ -32,14 +32,15 @@ type CreditPack = {
 // Fallback if public.plans is unreachable, so the page still renders (TSD §1.2).
 // Must mirror the catalog the migration chain leaves: 034_v3_pricing_model_truth.sql
 // for every value, with 037_v3_studio_stem_export.sql's override on top (studio
-// export_stems true). Kept in step by pricing-features-table.test.mjs, which
-// parses 034, applies 037's UPDATE, and compares the result to this array field
-// by field — so a migration that changes a plan value and leaves this stale
-// fails the suite.
+// export_stems true) and 039_v3_paid_plans_youtube_links.sql's (pro/studio
+// services ['youtube']). Kept in step by pricing-features-table.test.mjs, which
+// parses 034, applies 037's and 039's UPDATEs, and compares the result to this
+// array field by field — so a migration that changes a plan value and leaves
+// this stale fails the suite.
 const FALLBACK: Plan[] = [
   { code: 'free', display_name: 'Free', price_cad_cents: 0, monthly_job_quota: 5, services: ['youtube'], export_stems: false, export_wav24: false },
-  { code: 'pro', display_name: 'Pro', price_cad_cents: 499, monthly_job_quota: 50, services: [], export_stems: false, export_wav24: false },
-  { code: 'studio', display_name: 'Studio', price_cad_cents: 1200, monthly_job_quota: 150, services: [], export_stems: true, export_wav24: false },
+  { code: 'pro', display_name: 'Pro', price_cad_cents: 499, monthly_job_quota: 50, services: ['youtube'], export_stems: false, export_wav24: false },
+  { code: 'studio', display_name: 'Studio', price_cad_cents: 1200, monthly_job_quota: 150, services: ['youtube'], export_stems: true, export_wav24: false },
 ];
 
 // Fallback for the one-time credit SKUs if public.credit_packs is unreachable.

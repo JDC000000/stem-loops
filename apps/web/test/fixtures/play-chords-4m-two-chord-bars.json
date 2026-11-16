@@ -1,0 +1,820 @@
+{
+ "segments": [
+  {
+   "start_sec": 0.0,
+   "end_sec": 1.025,
+   "label": "N",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 1.025,
+   "end_sec": 3.513,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 3.513,
+   "end_sec": 6.001,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 6.001,
+   "end_sec": 7.286,
+   "label": "A:min",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 7.286,
+   "end_sec": 8.495,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 8.495,
+   "end_sec": 13.516,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 13.516,
+   "end_sec": 15.994,
+   "label": "A:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 15.994,
+   "end_sec": 17.276,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 17.276,
+   "end_sec": 18.493,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 18.493,
+   "end_sec": 23.495,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 23.495,
+   "end_sec": 25.996,
+   "label": "A:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 25.996,
+   "end_sec": 27.27,
+   "label": "D:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 27.27,
+   "end_sec": 28.548,
+   "label": "G:7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 28.548,
+   "end_sec": 33.506,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 33.506,
+   "end_sec": 36.034,
+   "label": "A:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 36.034,
+   "end_sec": 37.306,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 37.306,
+   "end_sec": 38.53,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 38.53,
+   "end_sec": 43.558,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 43.558,
+   "end_sec": 45.993,
+   "label": "A:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 45.993,
+   "end_sec": 47.3,
+   "label": "D:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 47.3,
+   "end_sec": 48.51,
+   "label": "G:7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 48.51,
+   "end_sec": 51.0,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 51.0,
+   "end_sec": 53.498,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 53.498,
+   "end_sec": 56.012,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 56.012,
+   "end_sec": 57.297,
+   "label": "E:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 57.297,
+   "end_sec": 58.503,
+   "label": "A:min",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 58.503,
+   "end_sec": 59.781,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 59.781,
+   "end_sec": 61.035,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 61.035,
+   "end_sec": 63.516,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 63.516,
+   "end_sec": 66.028,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 66.028,
+   "end_sec": 67.244,
+   "label": "C:maj/3",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 67.244,
+   "end_sec": 68.494,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 68.494,
+   "end_sec": 71.004,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 71.004,
+   "end_sec": 73.538,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 73.538,
+   "end_sec": 76.02,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 76.02,
+   "end_sec": 77.262,
+   "label": "E:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 77.262,
+   "end_sec": 78.531,
+   "label": "A:min",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 78.531,
+   "end_sec": 79.772,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 79.772,
+   "end_sec": 81.011,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 81.011,
+   "end_sec": 83.546,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 83.546,
+   "end_sec": 86.039,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 86.039,
+   "end_sec": 87.257,
+   "label": "C:maj/3",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 87.257,
+   "end_sec": 88.53,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 88.53,
+   "end_sec": 91.027,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 91.027,
+   "end_sec": 93.551,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 93.551,
+   "end_sec": 96.041,
+   "label": "A:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 96.041,
+   "end_sec": 97.26,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 97.26,
+   "end_sec": 98.559,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 98.559,
+   "end_sec": 103.519,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 103.519,
+   "end_sec": 106.043,
+   "label": "A:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 106.043,
+   "end_sec": 107.251,
+   "label": "D:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 107.251,
+   "end_sec": 108.524,
+   "label": "G:7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 108.524,
+   "end_sec": 113.537,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 113.537,
+   "end_sec": 116.044,
+   "label": "A:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 116.044,
+   "end_sec": 117.28,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 117.28,
+   "end_sec": 118.551,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 118.551,
+   "end_sec": 123.539,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 123.539,
+   "end_sec": 126.032,
+   "label": "A:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 126.032,
+   "end_sec": 127.281,
+   "label": "D:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 127.281,
+   "end_sec": 128.522,
+   "label": "G:7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 128.522,
+   "end_sec": 131.049,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 131.049,
+   "end_sec": 133.556,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 133.556,
+   "end_sec": 136.023,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 136.023,
+   "end_sec": 137.286,
+   "label": "E:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 137.286,
+   "end_sec": 138.494,
+   "label": "A:min",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 138.494,
+   "end_sec": 139.789,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 139.789,
+   "end_sec": 141.035,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 141.035,
+   "end_sec": 143.56,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 143.56,
+   "end_sec": 146.048,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 146.048,
+   "end_sec": 147.26,
+   "label": "C:maj/3",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 147.26,
+   "end_sec": 148.517,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 148.517,
+   "end_sec": 151.037,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 151.037,
+   "end_sec": 153.492,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 153.492,
+   "end_sec": 156.022,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 156.022,
+   "end_sec": 157.252,
+   "label": "E:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 157.252,
+   "end_sec": 158.498,
+   "label": "A:min",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 158.498,
+   "end_sec": 159.744,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 159.744,
+   "end_sec": 161.044,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 161.044,
+   "end_sec": 163.499,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 163.499,
+   "end_sec": 166.007,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 166.007,
+   "end_sec": 167.267,
+   "label": "C:maj/3",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 167.267,
+   "end_sec": 168.551,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 168.551,
+   "end_sec": 170.996,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 170.996,
+   "end_sec": 176.028,
+   "label": "A:min",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 176.028,
+   "end_sec": 178.552,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 178.552,
+   "end_sec": 181.047,
+   "label": "G:7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 181.047,
+   "end_sec": 183.55,
+   "label": "A:min",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 183.55,
+   "end_sec": 186.009,
+   "label": "E:min",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 186.009,
+   "end_sec": 187.269,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 187.269,
+   "end_sec": 188.515,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 188.515,
+   "end_sec": 190.427,
+   "label": "G:7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 190.427,
+   "end_sec": 191.057,
+   "label": "Bb:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 191.057,
+   "end_sec": 193.501,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 193.501,
+   "end_sec": 196.002,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 196.002,
+   "end_sec": 197.256,
+   "label": "E:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 197.256,
+   "end_sec": 198.506,
+   "label": "A:min",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 198.506,
+   "end_sec": 199.774,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 199.774,
+   "end_sec": 201.031,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 201.031,
+   "end_sec": 203.508,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 203.508,
+   "end_sec": 205.99,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 205.99,
+   "end_sec": 207.269,
+   "label": "C:maj/3",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 207.269,
+   "end_sec": 208.516,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 208.516,
+   "end_sec": 211.03,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 211.03,
+   "end_sec": 213.557,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 213.557,
+   "end_sec": 216.038,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 216.038,
+   "end_sec": 217.276,
+   "label": "E:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 217.276,
+   "end_sec": 218.533,
+   "label": "A:min",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 218.533,
+   "end_sec": 219.787,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 219.787,
+   "end_sec": 220.994,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 220.994,
+   "end_sec": 223.553,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 223.553,
+   "end_sec": 226.045,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 226.045,
+   "end_sec": 227.301,
+   "label": "C:maj/3",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 227.301,
+   "end_sec": 228.546,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 228.546,
+   "end_sec": 231.017,
+   "label": "G:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 231.017,
+   "end_sec": 233.518,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 233.518,
+   "end_sec": 235.997,
+   "label": "G:maj/3",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 235.997,
+   "end_sec": 237.284,
+   "label": "A:min",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 237.284,
+   "end_sec": 238.494,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 238.494,
+   "end_sec": 239.12,
+   "label": "D:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 239.12,
+   "end_sec": 239.755,
+   "label": "G:7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 239.755,
+   "end_sec": 240.376,
+   "label": "C#:hdim7/5",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 240.376,
+   "end_sec": 243.494,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 243.494,
+   "end_sec": 245.99,
+   "label": "G:maj/3",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 245.99,
+   "end_sec": 247.251,
+   "label": "A:min",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 247.251,
+   "end_sec": 248.497,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 248.497,
+   "end_sec": 251.025,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 251.025,
+   "end_sec": 251.525,
+   "label": "N",
+   "confidence": 1.0
+  }
+ ],
+ "key": "C:major",
+ "provider": "fixture",
+ "provider_version": "m3-chords-2",
+ "duration_sec": 251.525,
+ "model_ms": 1,
+ "_fixture": {
+  "note": "Synthetic 4:12 song for the phone chord view: 96 bpm 4/4, 100 bars, two-chord bars (2+2, 3+1 G7|Bb), one 4-chord turnaround bar with a long name (Dm7 G7 C#m7b5/G# C), +-35 ms boundary jitter, bar 1 on the SECOND detected beat. Sections start where the worker puts them: on its own 4-beat lines counted from the first beat (anchor_sec), i.e. ONE BEAT BEFORE each true downbeat, as loops rows would. Not used by the loader; tests pass bpm/anchor as a beat grid the way Player derives it from loops rows. The bridge opens with A:min HELD over two bars (one run in two cells of one line).",
+  "bpm": 96,
+  "anchor_sec": 0.4,
+  "first_downbeat_sec": 1.025,
+  "bars": 100,
+  "sections": [
+   {
+    "startSec": 0.4,
+    "endSec": 10.4,
+    "label": "intro"
+   },
+   {
+    "startSec": 10.4,
+    "endSec": 50.4,
+    "label": "verse"
+   },
+   {
+    "startSec": 50.4,
+    "endSec": 90.4,
+    "label": "chorus"
+   },
+   {
+    "startSec": 90.4,
+    "endSec": 130.4,
+    "label": "verse"
+   },
+   {
+    "startSec": 130.4,
+    "endSec": 170.4,
+    "label": "chorus"
+   },
+   {
+    "startSec": 170.4,
+    "endSec": 190.4,
+    "label": "bridge"
+   },
+   {
+    "startSec": 190.4,
+    "endSec": 230.4,
+    "label": "chorus"
+   },
+   {
+    "startSec": 230.4,
+    "endSec": 251.025,
+    "label": "outro"
+   }
+  ]
+ }
+}

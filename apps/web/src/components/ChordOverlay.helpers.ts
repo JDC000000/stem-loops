@@ -17,6 +17,7 @@ import type {
   PlayChordsResult,
 } from '../chord/play-chords-loader.ts';
 import { MAX_TRACK_SEC } from '../lib/play/types.ts';
+
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
 /** What a span means musically. 'none' = N (no chord), 'unknown' = X. */

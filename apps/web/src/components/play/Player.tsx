@@ -95,7 +95,7 @@ import {
   type ZeroSourceReason,
 } from '@/lib/play/load-stems';
 import { reportStemFetchFailure } from '@/lib/play/report-failure';
-import { deriveSections, type SectionLoopRow } from '@/lib/play/sections';
+import { type BeatGrid, beatGridFromLoops, deriveSections, type SectionLoopRow } from '@/lib/play/sections';
 import type {
   EngineSnapshot,
   LoopRegion,
@@ -606,6 +606,8 @@ export default function Player({ jobId, loops, enabled = true, title }: PlayerPr
     () => deriveSections(loops ?? null, { durationSec: snapshot.durationSec }),
     [loops, snapshot.durationSec],
   );
+  // Phone chord view: bars from the job's tempo (the loops rows carry it).
+  const beatGrid = useMemo(() => beatGridFromLoops(loops ?? null), [loops]);
 
   return (
     <PlayerView
@@ -613,6 +615,7 @@ export default function Player({ jobId, loops, enabled = true, title }: PlayerPr
       phase={phase}
       snapshot={snapshot}
       sections={sections}
+      beatGrid={beatGrid}
       lightAudio={lightAudio}
       chordLatencySec={chordLatencySec}
       onPlay={onPlay}
@@ -632,6 +635,8 @@ export interface PlayerViewProps {
   readonly phase: Phase;
   readonly snapshot: EngineSnapshot;
   readonly sections: readonly LoopRegion[];
+  /** The job's beat grid, for the phone chord view's bars. */
+  readonly beatGrid?: BeatGrid | null;
   /** True on the phone / low-memory path: shows LIGHT_AUDIO_NOTE once the player is up. */
   readonly lightAudio?: boolean;
   /** Phone route only: how far to hold the chord playhead behind the engine clock while playing. */
@@ -663,6 +668,7 @@ export function PlayerView({
   phase,
   snapshot,
   sections,
+  beatGrid = null,
   lightAudio = false,
   chordLatencySec = 0,
   onPlay,
@@ -777,7 +783,13 @@ export function PlayerView({
           states, which is Story 3.6. */}
       <div className={styles.chords}>
         <h2 className={styles.subtitle}>Chords</h2>
-        <ChordOverlay jobId={jobId} positionSec={chordPosition} />
+        <ChordOverlay
+          jobId={jobId}
+          positionSec={chordPosition}
+          beatGrid={beatGrid}
+          sections={sections}
+          loop={snapshot.loop}
+        />
       </div>
     </section>
   );

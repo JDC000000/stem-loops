@@ -273,8 +273,13 @@ export default function JobView({ id }: { id: string }) {
           <Player jobId={job.id} loops={job.loops} enabled title={job.original_filename ?? null} />
           <p data-testid="loops-link" style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 'var(--text-md, 14px)' }}>
             Want this song as bar-length WAV loops?{' '}
+            {/* inline-block, so it is NOT sized by the line: it is a standalone CTA
+                and owes the full 44px (--touch-min). 12px of padding left it at
+                118x40, which j7 caught on the player at 390 and 360; 15px clears 44
+                with a cushion for font metrics, and the equal negative margin keeps
+                the paragraph's line box exactly where it was. */}
             <Link href={`/loops?job=${job.id}`} className="jp-back"
-              style={{ fontSize: 'var(--text-md, 14px)', display: 'inline-block', padding: '12px 0', margin: '-12px 0' }}
+              style={{ fontSize: 'var(--text-md, 14px)', display: 'inline-block', padding: '15px 0', margin: '-15px 0' }}
             >
               Download loops →
             </Link>

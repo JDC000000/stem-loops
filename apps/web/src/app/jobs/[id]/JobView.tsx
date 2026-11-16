@@ -212,7 +212,7 @@ export default function JobView({ id }: { id: string }) {
       {missing ? (
         <div style={{ width: '100%', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <h1 style={{ margin: 0, fontSize: 'var(--text-xl)', color: 'var(--text-primary)' }}>We couldn&apos;t find that job.</h1>
-          <p style={{ margin: 0, color: 'var(--text-muted)' }}>Files are deleted after 24 hours, so it may have expired.</p>
+          <p style={{ margin: 0, color: 'var(--text-muted)' }}>On Free, files are deleted after 24 hours, so it may have expired.</p>
         </div>
       ) : trouble?.kind === 'unreachable' && !(job && TERMINAL.has(job.status)) ? (
         <div
@@ -280,8 +280,10 @@ export default function JobView({ id }: { id: string }) {
             </Link>
           </p>
           <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
-            Files are deleted after 24 hours.
-            {job.expires_at ? ` Yours expire ${formatExpiresIn(new Date(job.expires_at).getTime())}.` : ''}
+            {/* job.expires_at is the song's real deletion time (JOB_RETAINED_UNTIL_SQL):
+                24 hours on Free, later for a Pro/Studio library (lib/retention.ts). */}
+            On Free, files are deleted after 24 hours; on Pro and Studio they stay in your library.
+            {job.expires_at ? ` This song is deleted ${formatExpiresIn(new Date(job.expires_at).getTime())}.` : ''}
           </p>
         </>
       ) : trouble?.kind === 'stalled' ? (

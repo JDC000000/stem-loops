@@ -309,3 +309,21 @@ test('R7 payment failed: in grace vs after grace; null next attempt omits the ro
   assert.match(after.html, /Update your card to get Pro back\./);
   assert.doesNotMatch(inGrace.text + after.text, /retry|automatically/i, 'no promise that depends on Stripe settings');
 });
+
+// ── Paid-plan library retention (2026-11-15) ───────────────────────────
+test('library retention: welcome no longer promises 24 h deletion to a subscriber', () => {
+  const out = renderWelcome({ plan_code: 'pro', period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 50 });
+  assert.doesNotMatch(out.text + out.html, /deleted 24.hours/i);
+  assert.match(out.text.replace(/ /g, ' '), /Your songs stay in your library while you are subscribed, and for 30 days after your plan ends\./);
+});
+
+test('library retention: R5 names the 30 days after the end date; R6 says 30 more days, Free 24 h', () => {
+  const ending = renderPlanEnding({ plan_code: 'studio', period_end: '2027-01-15T00:00:00Z' });
+  assert.match(ending.text, /Your songs stay in your library for 30 days after 15 January 2027, then they are deleted\./);
+  assert.match(ending.html, /Your songs stay in your library for 30 days after 15 January 2027/);
+  const ended = renderPlanEnded({ plan_code: 'pro', period_end: null, now: '2026-11-14T00:00:00Z', free_quota: 5 });
+  assert.match(ended.text, /Songs already in your library are kept for 30 more days, then deleted\. Songs you start on the Free plan are deleted after 24 hours\./);
+  assert.match(ended.html, /Songs already in your library are kept for 30 more days/);
+  const other = renderPlanEnded({ plan_code: 'pro', period_end: null, now: '2026-11-14T00:00:00Z', on_free: false });
+  assert.doesNotMatch(other.text + other.html, /30 more days/, 'still entitled by another plan: the library is not on a clock');
+});

@@ -9,7 +9,8 @@ export const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 export const ENTITY_ONE_LINER =
   'stem-loops is a browser play-along tool: add a song and it opens in a player with six stems on faders, a chord track and section loops.';
 export const ENTITY_LIMITS =
-  `It is built and tested in Chrome on a computer and loads lighter audio on phones, uses the first ${MAX_TRACK_MIN} minutes of any song and deletes files after 24 hours. ` +
+  `It is built and tested in Chrome on a computer and loads lighter audio on phones, uses the first ${MAX_TRACK_MIN} minutes of any song and, on the Free plan, deletes files after 24 hours ` +
+  '(Pro and Studio keep a song library while subscribed, plus 30 days). ' +
   'You need an account to open the player, and the rights to the audio you add.';
 // Filled only when each profile exists and returns 200 (SEO-22). Never list a profile that does not exist.
 export const SAME_AS: string[] = [];

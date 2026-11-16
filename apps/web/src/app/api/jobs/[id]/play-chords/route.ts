@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
+import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { mintPlayChordsSignedUrl, PLAY_CHORDS_SIGNED_URL_TTL_SEC } from '@/lib/r2';
 import { mayReadJob } from '@/lib/job-access';
 
@@ -30,7 +31,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     // extra round trip doubles the API latency; on a cold-cache miss the browser
     // just gets a 404 from R2 directly and the loader returns null.
     const jobRes = await db.query(
-      `SELECT id, user_id, status FROM jobs WHERE id = $1 AND expires_at > now()`,
+      `SELECT id, user_id, status FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
       [params.id]
     );
     if (jobRes.rowCount === 0) {

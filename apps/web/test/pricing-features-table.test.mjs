@@ -230,16 +230,21 @@ const EXPECTED = {
     '5 tracks converted to play-along per month',
     'Link import: YouTube',
     'Loop download — 24-bit WAV',
+    // Jon, 2026-11-15: Free keeps its exact 24-hour promise.
+    'Songs deleted after 24 hours',
   ],
   pro: [
     '50 tracks converted to play-along per month',
     'Works with audio files you upload',
     'Loop download — 24-bit WAV',
+    // Jon, 2026-11-15: paid plans keep songs while subscribed + 30 days' grace.
+    'Song library: kept while you subscribe, plus 30 days',
   ],
   studio: [
     '150 tracks converted to play-along per month',
     'Works with audio files you upload',
     'Loop download — 24-bit WAV',
+    'Song library: kept while you subscribe, plus 30 days',
   ],
 };
 
@@ -298,6 +303,7 @@ test('a plan with no implemented service claims no link import, and no loss', ()
     '50 tracks converted to play-along per month',
     'Works with audio files you upload',
     'Loop download — 24-bit WAV',
+    'Song library: kept while you subscribe, plus 30 days',
   ]);
   // And specifically NOT the old negative bullet, which advertised paying
   // $4.99 as giving up a feature the free tier has.

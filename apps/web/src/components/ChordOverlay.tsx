@@ -753,7 +753,10 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
             disabled={!measured || minPps >= maxPps}
             aria-label="Timeline zoom"
             data-testid="zoom-slider"
-            style={{ flex: 1, minWidth: 80, accentColor: '#60a5fa' }}
+            // height: the 44px touch bar (--touch-min). An unsized range input is
+            // about 16px tall, which j7 measured at 146x16 (390) and 116x16 (360);
+            // Chromium keeps the track centred, so only the hit area grows.
+            style={{ flex: 1, minWidth: 80, height: 44, accentColor: '#60a5fa' }}
             onChange={(e) => setZoom(sliderToPps(Number(e.target.value) / 1000, minPps, maxPps))}
           />
           <button

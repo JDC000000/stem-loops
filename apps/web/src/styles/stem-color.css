@@ -22,8 +22,12 @@
 
 /* back link and the history rows */
 .jp-back { color: var(--text-muted); transition: color var(--sl-dur-1) var(--sl-ease);
-  /* 24px+ hit area on an inline link without moving the line (design-standards 11) */
-  padding-block: 4px; }
+  /* 44px hit area (--touch-min) without moving the line. .jp-back is a STANDALONE
+     link on the job page and the error boundary ("Start a new song \2192"), not a link
+     inside a sentence, so the 44px bar applies to it and the design-standards 11
+     inline exception does not. Vertical padding on an inline box does not grow the
+     line box, so the taller hit area costs no layout; j7 measured 123x24 before. */
+  padding-block: 14px; }
 .jp-back:hover { color: var(--text-primary); text-decoration: underline; text-underline-offset: 4px; }
 .jp-row { background: var(--bg-card); border: 1px solid var(--border-default); color: var(--text-secondary);
   transition: border-color var(--sl-dur-1) var(--sl-ease), background var(--sl-dur-1) var(--sl-ease); }

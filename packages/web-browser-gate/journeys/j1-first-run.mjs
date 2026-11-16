@@ -94,7 +94,22 @@ export default async function run() {
     await page.locator('[data-testid="transport-play"]').click().catch(() => {});
     await j.shot(page, 'player-after-mixer');
 
-    // Loops — on-demand cut
+    // Loops — on-demand cut.
+    // Story 6.1 / PR #280 moved the loops OFF the job page: they are their own
+    // product now, at /loops with the job preselected, and the job page carries
+    // one link there. The cut, the cards, the WAV and the ZIP are the same
+    // <LoopResults> as before, mounted by /loops instead. So this journey
+    // follows the link a user would follow, and then runs the same checks.
+    const toLoops = page.locator('[data-testid="loops-link"] a');
+    const hasLink = await toLoops.first().isVisible().catch(() => false);
+    j.check('the job page links to this song\'s loops ("Download loops →")', hasLink,
+      hasLink ? `${(await toLoops.first().innerText()).replace(/\s+/g, ' ')} → ${await toLoops.first().getAttribute('href')}` : 'missing');
+    if (hasLink) await toLoops.first().click();
+    else await page.goto(`/loops?job=${jobId}`);
+    await page.waitForURL(/\/loops\b/, { timeout: 30_000 }).catch(() => {});
+    await page.locator('[data-testid="lp-job"]').waitFor({ timeout: 30_000 }).catch(() => {});
+    j.check('the loops page opens on this song', /\/loops/.test(page.url()) && page.url().includes(jobId), page.url().slice(0, 120));
+
     const cut = page.locator('[data-testid="cut-loops"]');
     const hasCut = await cut.isVisible().catch(() => false);
     if (!j.check('"Cut N loops" button offered', hasCut, hasCut ? await cut.innerText() : 'missing')) throw new Error('no cut button');
@@ -104,7 +119,9 @@ export default async function run() {
     const cutErr = await page.locator('[data-testid="cut-error"]').innerText().catch(() => '');
     j.check('loops appear after the cut', cutOk, cutOk ? `${await cards.count()} loop cards` : `none; error="${cutErr}"`);
     // Every mapped loop must arrive, and the page must leave the "cut" state on its own.
-    const total = Number((await page.locator('h1:has-text("Loops")').locator('xpath=..').innerText().catch(() => '')).match(/(\d+) loops/)?.[1] ?? 0) || null;
+    // (The loop-count read off `h1:has-text("Loops")` is gone: <LoopResults> is a
+    // section of /loops now, so its heading is the h2 below, and the count is in
+    // `header` already.)
     const allIn = await page.locator('[data-testid="zip-loops"]').waitFor({ timeout: 90_000 }).then(() => true, () => false);
     const header = (await page.locator('.loop-results header').innerText().catch(() => '')).replace(/\s+/g, ' ');
     j.check('the whole cut lands without a manual reload (download view returns, no "Cut N loops" left)', allIn, `${await cards.count()} cards; header="${header}"`);
@@ -123,7 +140,7 @@ export default async function run() {
     j.check('loop WAV link returns a RIFF/WAVE file', resp?.status() === 200 && body.subarray(0, 4).toString() === 'RIFF' && body.subarray(8, 12).toString() === 'WAVE', `status=${resp?.status()} bytes=${body.length}`);
     const dl = await Promise.all([page.waitForEvent('download', { timeout: 15_000 }), a.click()]).then(([d]) => d, () => null);
     j.check('clicking "⬇ WAV" starts a browser download', !!dl, dl ? dl.suggestedFilename() : 'no download event');
-    j.check('the job page is still there after the WAV click (no navigation away)', /\/jobs\//.test(page.url()), page.url().slice(0, 120));
+    j.check('the loops page is still there after the WAV click (no navigation away)', /\/loops/.test(page.url()), page.url().slice(0, 120));
 
     const zip = page.locator('[data-testid="zip-loops"]');
     const zt0 = Date.now();

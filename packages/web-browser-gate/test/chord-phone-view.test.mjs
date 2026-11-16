@@ -24,13 +24,13 @@
 //  GAP: in a gap in the chord data, Next is the next chord after the playhead.
 //  NO GRID: a plain chord sequence; no beat dots, no beat counts, no bar
 //   numbers, no split cells; names still >= 14px and never blank.
-//  METER: 3/4 gets 3-beat bars and 6/8-in-eighths gets ONE bar of six pulses
-//   (6 dots, bar n/N counted in 6/8 bars, the song's own chords per bar, split
-//   bars); an uncertain meter gets the plain list; 4/4 with two chords per bar
-//   keeps 4-beat bars.
-//  BAR TOTAL: for 3/4, 4/4 and 6/8, walking every bar of the song, the N in
-//   "Bar n/N" equals the number of distinct bars rendered, and equals the
-//   song's real bar count (a 40-bar 6/8 song reads /40, not /80).
+//  METER: 3/4 and 6/8-in-eighths get 3-beat bars (3 dots, "Bar n" with NO
+//   total, the song's own chords per bar, split bars); an uncertain meter gets
+//   the plain list; 4/4 with two chords per bar keeps 4-beat bars and "n/N".
+//  BAR TOTAL (S5 on #281; Jon: "No total when unsure"): walking every bar,
+//   4/4 shows "Bar n/N" with N = the distinct bars rendered; triple time (3/4
+//   or 6/8, unknowable from the data) at 120, 150 and 180 shows "Bar n" and
+//   "Bar n, ..." names with no total, on 3-beat cells on the downbeats.
 //  #212: the "All chords" list below keeps one primary chip per segment.
 // It FAILS (never skips) when Chromium or the page is missing.
 
@@ -569,16 +569,15 @@ for (const vp of [[390, 844], [360, 800]]) {
 
 
 // Meter (reviews 5 and 6): 4/4 bars are never drawn over another meter; a
-// confident 3-beat cycle gets 3-beat bars (6/8 counted in eighths: one bar of
-// six pulses, two groups of three); an uncertain meter gets the plain list.
+// confident 3-beat cycle gets 3-beat bars (6/8 counted in eighths: two bars of
+// three); an uncertain meter gets the plain list.
 const WALTZ = ['C:maj', 'A:min', 'F:maj', 'G:7', 'E:min7', 'A:min', 'D:min7', 'G:7'];
 const METER_CASES = [
   { name: '3/4, a change every bar', bpm: 96, n: 48, bar: (k) => [[WALTZ[k % 8], 3]], want: 3 },
   { name: '3/4, a change every 2 bars', bpm: 96, n: 32, bar: (k) => [[WALTZ[k % 8], 6]], want: 3 },
   { name: '3/4, 2+1 in every bar (downbeat not confirmed)', bpm: 96, n: 40, bar: (k) => [[WALTZ[k % 8], 2], [WALTZ[(k + 3) % 8], 1]], want: 'sequence' },
   { name: '3/4, 1+2 in every bar (downbeat not confirmed)', bpm: 96, n: 41, bar: (k) => [[WALTZ[k % 8], 1], [WALTZ[(k + 3) % 8], 2]], want: 'sequence' },
-  { name: '6/8 counted in eighths, a change every bar', bpm: 180, n: 40, bar: (k) => [[WALTZ[k % 8], 6]], want: 6 },
-  { name: '6/8 counted in eighths, two chords in every bar (3+3)', bpm: 180, n: 40, bar: (k) => [[WALTZ[k % 8], 3], [WALTZ[(k + 3) % 8], 3]], want: 6 },
+  { name: '6/8 counted in eighths, a change every bar', bpm: 180, n: 40, bar: (k) => [[WALTZ[k % 8], 6]], want: 3 },
   { name: '3/4 alternating 2+1 and 1+2 (uncertain)', bpm: 96, n: 40, bar: (k) => (k % 2 ? [[WALTZ[k % 8], 1], [WALTZ[(k + 3) % 8], 2]] : [[WALTZ[k % 8], 2], [WALTZ[(k + 3) % 8], 1]]), want: 'sequence' },
   { name: '3/4, a change every 4 bars (fits 4/4 too)', bpm: 96, n: 20, bar: (k) => [[WALTZ[k % 8], 12]], want: 'sequence' },
   { name: '4/4, two changes every bar', bpm: 96, n: 48, bar: (k) => [[WALTZ[(2 * k) % 8], 2], [WALTZ[(2 * k + 1) % 8], 2]], want: 4 },
@@ -612,7 +611,9 @@ for (const vp of [[390, 844], [360, 800]]) {
           if (m.mode !== 'bars' || m.beatsPerBar !== String(m3)) { f.push(`drawn as ${m.mode}/${m.beatsPerBar} (${m.reason}), want ${m3}-beat bars @ ${ctxs}`); continue; }
           const k = Math.floor((t - 0.5) / (m3 * beat) + 1e-9);
           const nBars = totalBeats / m3;
-          if (m.position !== `Bar ${k + 1}/${nBars}`) f.push(`position "${m.position}", want "Bar ${k + 1}/${nBars}" @ ${ctxs}`);
+          // Triple time shows no total (3/4 vs 6/8 is unknowable); 4/4 does.
+          const wantPos = m3 === 3 ? `Bar ${k + 1}` : `Bar ${k + 1}/${nBars}`;
+          if (m.position !== wantPos) f.push(`position "${m.position}", want "${wantPos}" @ ${ctxs}`);
           if (m.dots.length !== m3) f.push(`${m.dots.length} beat dots, want ${m3} @ ${ctxs}`);
           const wantBeat = Math.floor((t - 0.5 - k * m3 * beat) / beat + 1e-9) + 1;
           if (m.beat !== String(wantBeat)) f.push(`beat ${m.beat}, want ${wantBeat} @ ${ctxs}`);
@@ -635,51 +636,63 @@ for (const vp of [[390, 844], [360, 800]]) {
   }
 }
 
-// BAR TOTAL (S5, #281 review): "Bar n/N" must count the same unit the grid
-// draws. Walk EVERY bar of the song (mid-bar), collect every bar the view
-// renders (bar-number heads and "Bar n of N" group names) and the position
-// line; N must equal the distinct bars rendered and the song's real bar count.
+// BAR TOTAL: walk EVERY bar (mid-bar). 4/4: the N in "Bar n/N" and "Bar n of
+// N" equals the distinct bars rendered and the song's bar count. Triple time:
+// no total anywhere, 3 dots, 3-beat cells on the downbeats (v3/main layout).
 const BAR_TOTAL_CASES = [
-  { name: '3/4, a change every bar', bpm: 96, n: 48, m: 3, bar: (k) => [[WALTZ[k % 8], 3]] },
-  { name: '4/4, one change every bar', bpm: 96, n: 32, m: 4, bar: (k) => [[WALTZ[k % 8], 4]] },
-  { name: '4/4, two changes every bar', bpm: 96, n: 32, m: 4, bar: (k) => [[WALTZ[(2 * k) % 8], 2], [WALTZ[(2 * k + 1) % 8], 2]] },
-  { name: '6/8 in eighths, a change every bar', bpm: 180, n: 40, m: 6, bar: (k) => [[WALTZ[k % 8], 6]] },
-  { name: '6/8 in eighths, two chords in every bar (3+3)', bpm: 180, n: 40, m: 6, bar: (k) => [[WALTZ[k % 8], 3], [WALTZ[(k + 3) % 8], 3]] },
+  { name: '4/4, one change every bar', bpm: 96, n: 32, m: 4, total: 32, bar: (k) => [[WALTZ[k % 8], 4]] },
+  { name: '4/4, two changes every bar @180', bpm: 180, n: 32, m: 4, total: 32, bar: (k) => [[WALTZ[(2 * k) % 8], 2], [WALTZ[(2 * k + 1) % 8], 2]] },
+  ...[120, 150, 180].flatMap((bpm) => [
+    { name: `3/4, a change every bar @${bpm}`, bpm, n: 48, m: 3, total: null, bar: (k) => [[WALTZ[k % 8], 3]] },
+    { name: `6/8 in eighths, a change every bar @${bpm}`, bpm, n: 40, m: 3, total: null, bar: (k) => [[WALTZ[k % 8], 6]] },
+  ]),
 ];
 for (const vp of [[390, 844], [360, 800]]) {
   for (const bc of BAR_TOTAL_CASES) {
-    test(`phone chords @ ${vp[0]}x${vp[1]}: ${bc.name} -> "Bar n/N" total equals the bars rendered (${bc.n})`, async () => {
+    test(`phone chords @ ${vp[0]}x${vp[1]}: ${bc.name} -> ${bc.total ? `"Bar n/${bc.total}" = bars rendered` : 'no bar total, 3-beat cells'}`, async () => {
       const bars = Array.from({ length: bc.n }, (_, k) => bc.bar(k));
       const { payload, grid, beat } = synth(bars, bc.bpm);
+      const cells = (bars.flat().reduce((a, [, b]) => a + b, 0)) / bc.m;
       const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections: [], payload });
       try {
         const f = [];
         const rendered = new Set();
         const totals = new Set();
-        for (let k = 0; k < bc.n; k++) {
+        for (let k = 0; k < cells; k++) {
           const t = 0.5 + (k * bc.m + bc.m / 2 + 0.1) * beat;
           await moveTo(page, t);
           const m = await page.evaluate(measure);
-          const ctxs = `${vp.join('x')} ${bc.name} bar ${k + 1}`;
+          const ctxs = `${vp.join('x')} ${bc.name} cell ${k + 1}`;
           if (m.mode !== 'bars' || m.beatsPerBar !== String(bc.m)) { f.push(`drawn as ${m.mode}/${m.beatsPerBar}, want ${bc.m}-beat bars @ ${ctxs}`); continue; }
           if (m.dots.length !== bc.m) f.push(`${m.dots.length} beat dots, want ${bc.m} @ ${ctxs}`);
-          const pm = /^Bar (\d+)\/(\d+)$/.exec(m.position ?? '');
-          if (!pm) { f.push(`position "${m.position}" is not "Bar n/N" @ ${ctxs}`); continue; }
-          if (Number(pm[1]) !== k + 1) f.push(`position "${m.position}", want bar ${k + 1} @ ${ctxs}`);
-          totals.add(Number(pm[2]));
+          const want = bc.total ? `Bar ${k + 1}/${bc.total}` : `Bar ${k + 1}`;
+          if (m.position !== want) f.push(`position "${m.position}", want "${want}" @ ${ctxs}`);
+          const pm = /^Bar \d+\/(\d+)$/.exec(m.position ?? '');
+          if (pm) totals.add(Number(pm[1]));
           for (const g of m.groups) {
-            const gm = /^Bar (\d+) of (\d+)/.exec(g.label);
-            if (!gm) { f.push(`bar group "${g.label}" is not "Bar n of N" @ ${ctxs}`); continue; }
+            const gm = /^Bar (\d+)( of (\d+))?[,:]/.exec(g.label);
+            if (!gm) { f.push(`bar group "${g.label}" is not "Bar n..." @ ${ctxs}`); continue; }
             rendered.add(Number(gm[1]));
-            totals.add(Number(gm[2]));
+            if (gm[3]) totals.add(Number(gm[3]));
+            if (!bc.total && gm[2]) f.push(`triple-time bar group "${g.label}" shows a total @ ${ctxs}`);
+          }
+          for (const s of m.slots) {
+            const len = s.barEnd - s.barStart;
+            if (Math.abs(len - bc.m * beat) > 0.01) f.push(`bar ${s.barStart}-${s.barEnd}s is ${(len / beat).toFixed(2)} beats, want ${bc.m} @ ${ctxs}`);
+            const q = (s.barStart - 0.5) / (bc.m * beat);
+            if (Math.abs(q - Math.round(q)) > 0.01) f.push(`bar at ${s.barStart}s is off the downbeat @ ${ctxs}`);
           }
           for (const b of m.barNumbers) rendered.add(Number(b.text));
         }
         assert.deepEqual(errors, []);
         fail(f);
-        assert.deepEqual([...totals], [bc.n], `label totals ${[...totals]} must all be the song's ${bc.n} bars`);
-        assert.equal(rendered.size, bc.n, `rendered ${rendered.size} distinct bars, the label says ${[...totals]}`);
-        assert.equal(Math.max(...rendered), bc.n, 'the last rendered bar number is the label total');
+        assert.equal(rendered.size, cells, `rendered ${rendered.size} distinct bars, want ${cells}`);
+        if (bc.total) {
+          assert.deepEqual([...totals], [bc.total], `label totals ${[...totals]} must all be ${bc.total}`);
+          assert.equal(rendered.size, bc.total, 'the label total equals the bars rendered');
+        } else {
+          assert.deepEqual([...totals], [], `triple time showed totals ${[...totals]}`);
+        }
       } finally {
         await ctx.close();
       }

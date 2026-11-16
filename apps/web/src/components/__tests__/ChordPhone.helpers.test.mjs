@@ -10,8 +10,8 @@ import { join } from 'node:path';
 import { activeRunIndex, observationsToRuns } from '../ChordOverlay.helpers.ts';
 import {
   BEATS_PER_BAR,
-  MIN_EIGHTH_BPM_FOR_68,
   NAME_MIN_PX,
+  showsBarTotal,
   beatInCell,
   beatsUntil,
   buildPhoneModel,
@@ -284,8 +284,9 @@ test('3/4: an UNAMBIGUOUS 3-beat cycle (changes only on the bar line) draws 3-be
   for (const [what, bars] of [
     ['a change every bar', Array.from({ length: 48 }, (_, k) => [[WP[k % 8], 3]])],
     ['a change every 2 bars', Array.from({ length: 32 }, (_, k) => [[WP[k % 8], 6]])],
+    ['6/8 counted in eighths (two bars of three)', Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 6]])],
   ]) {
-    const w = waltz(bars, 96);
+    const w = waltz(bars, what.startsWith('6/8') ? 180 : 96);
     const v = downbeatVotes(w.runs, [], w.grid, w.dur);
     assert.deepEqual(meterFit(v), { reason: 'ok', beatsPerBar: 3 }, what);
     const m = buildPhoneModel(w.runs, w.grid, [], w.dur);
@@ -299,51 +300,94 @@ test('3/4: an UNAMBIGUOUS 3-beat cycle (changes only on the bar line) draws 3-be
     }
     const ci = cellIndexAt(m, 0.5 + (3 * 5 + 1.2) * beat);
     assert.equal(beatInCell(m.cells[ci], 0.5 + (3 * 5 + 1.2) * beat, 3), 1);
-    assert.equal(positionLabel(m, ci), `Bar ${m.cells[ci].numberInSection}/${m.cells.length}`);
+    // Triple time: no total (3/4 vs 6/8 is unknowable from the data).
+    assert.equal(positionLabel(m, ci), `Bar ${m.cells[ci].numberInSection}`);
   }
 });
 
-// S5 (#281 review): 6/8 counted in eighths was drawn as two 3-beat bars per
-// 6/8 bar, so a 40-bar song read "Bar n/80". It is now one bar of six pulses,
-// and n/N count 6/8 bars, the same unit as the cells.
-test('6/8 counted in eighths: one cell per 6/8 bar, "Bar n/N" counts 6/8 bars', () => {
-  for (const [what, bars] of [
-    ['a change every bar', Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 6]])],
-    ['two chords in every bar (3+3)', Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 3], [WP[(k + 3) % 8], 3]])],
-    ['mostly one chord, every 4th bar split', Array.from({ length: 40 }, (_, k) => (k % 4 === 3 ? [[WP[k % 8], 3], [WP[(k + 3) % 8], 3]] : [[WP[k % 8], 6]]))],
-  ]) {
-    const w = waltz(bars, 180);
-    const v = downbeatVotes(w.runs, [], w.grid, w.dur);
-    assert.deepEqual(meterFit(v), { reason: 'ok', beatsPerBar: 6 }, what);
-    const m = buildPhoneModel(w.runs, w.grid, [], w.dur);
-    assert.equal(m.mode, 'bars', what);
-    assert.equal(m.beatsPerBar, 6, what);
-    assert.equal(m.cells.length, 40, `${what}: one cell per 6/8 bar`);
-    const beat = w.grid.beatSec;
-    m.cells.forEach((c, i) => {
-      assert.ok(Math.abs(c.startSec - (0.5 + 6 * i * beat)) < 1e-6, `${what}: bar ${i + 1} starts at ${c.startSec}, off the 6/8 downbeat`);
-      assert.equal(c.numberInSection, i + 1);
-      assert.equal(c.countInSection, 40);
-      assert.ok(Math.abs(c.slots.reduce((a, s) => a + s.beats, 0) - 6) < 0.05, `${what}: a bar does not hold 6 pulses`);
-      assert.deepEqual(c.slots.map((s) => w.runs[s.runIndex].label), bars[i].map(([l]) => l).filter((l, j, arr) => j === 0 || l !== arr[j - 1]), `${what}: bar ${i + 1} chords`);
-    });
-    const t = 0.5 + (6 * 5 + 4.2) * beat;
-    const ci = cellIndexAt(m, t);
-    assert.equal(ci, 5);
-    assert.equal(beatInCell(m.cells[ci], t, 6), 4);
-    assert.equal(positionLabel(m, ci), 'Bar 6/40');
-  }
+// ---------------------------------------------------------------------------
+// No total when unsure (S5 on #281; Jon 2026-11-16). A 3-pulse cycle is 3/4 or
+// 6/8-in-eighths at every tempo the grid accepts, so triple time shows "Bar n"
+// with no "/N", and the layout stays the 3-beat cells of v3/main (no 6/8 guess).
+// ---------------------------------------------------------------------------
+const noTotal = (m, runs, what) => {
+  m.cells.forEach((c, i) => {
+    const p = positionLabel(m, i);
+    assert.doesNotMatch(p, /\//, `${what}: position "${p}" shows a total`);
+    assert.doesNotMatch(phoneBarLabel(m, runs, i).replace(/:.*$/, ''), / of /, `${what}: bar name shows a total`);
+  });
+};
+for (const bpm of [120, 150, 180]) {
+  test(`triple time @${bpm}: 3/4 and 6/8-in-eighths both keep 3-beat cells and show NO bar total`, () => {
+    for (const [what, bars, nCells] of [
+      ['3/4, a change every bar', Array.from({ length: 48 }, (_, k) => [[WP[k % 8], 3]]), 48],
+      ['6/8 in eighths, a change every bar', Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 6]]), 80],
+      ['6/8 in eighths, 3+3', Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 3], [WP[(k + 3) % 8], 3]]), 80],
+    ]) {
+      const w = waltz(bars, bpm);
+      const m = buildPhoneModel(w.runs, w.grid, [], w.dur);
+      assert.equal(m.mode, 'bars', what);
+      assert.equal(m.beatsPerBar, 3, `${what}: no 6/8 guess from tempo`);
+      assert.equal(showsBarTotal(m), false);
+      assert.equal(m.cells.length, nCells, what);
+      const beat = w.grid.beatSec;
+      m.cells.forEach((c, i) => {
+        assert.ok(Math.abs(c.startSec - (0.5 + 3 * i * beat)) < 1e-6, `${what}: cell ${i + 1} off the 3-beat grid`);
+        assert.ok(Math.abs(c.endSec - c.startSec - 3 * beat) < 1e-6, `${what}: cell ${i + 1} is not 3 beats`);
+      });
+      assert.equal(positionLabel(m, 11), 'Bar 12');
+      assert.match(phoneBarLabel(m, w.runs, 11), /^Bar 12: /);
+      noTotal(m, w.runs, `${what} @${bpm}`);
+    }
+  });
+}
+
+test('triple time in sections: "Verse · bar 3", never "bar 3/N"; 4/4 in sections keeps "bar 3/16"', () => {
+  const w = waltz(Array.from({ length: 32 }, (_, k) => [[WP[k % 8], 6]]), 138);
+  const beat = w.grid.beatSec;
+  const sections = [];
+  for (let b = 0; b < 32 * 6; b += 48) sections.push({ startSec: 0.5 + b * beat, endSec: 0.5 + (b + 48) * beat, label: 'verse' });
+  const m = buildPhoneModel(w.runs, w.grid, sections, w.dur);
+  assert.equal(m.beatsPerBar, 3);
+  assert.equal(positionLabel(m, 2), 'Verse 1 · bar 3');
+  noTotal(m, w.runs, 'sectioned 6/8 @138');
+  assert.equal(positionLabel(MODEL, cellIndexAt(MODEL, MODEL.cells.find((c) => c.numberInSection === 3 && MODEL.sections[c.section]?.name === 'Chorus 2').startSec)), 'Chorus 2 · bar 3/16');
 });
 
-test('3/4 below the 6/8 pulse threshold keeps 3-beat bars; at it, pairs of 3 become one 6/8 bar', () => {
-  const bars = Array.from({ length: 48 }, (_, k) => [[WP[k % 8], 3]]);
-  const slow = waltz(bars, MIN_EIGHTH_BPM_FOR_68 - 1);
-  assert.equal(buildPhoneModel(slow.runs, slow.grid, [], slow.dur).beatsPerBar, 3);
-  const fast = waltz(bars, MIN_EIGHTH_BPM_FOR_68);
-  const m = buildPhoneModel(fast.runs, fast.grid, [], fast.dur);
-  assert.equal(m.beatsPerBar, 6);
-  assert.equal(m.cells.length, 24);
-  assert.equal(positionLabel(m, 0), 'Bar 1/24');
+test('4/4 keeps its total: "Bar n/N" with N = the cells drawn', () => {
+  const s4 = song(Array.from({ length: 32 }, (_, k) => [[WP[k % 8], 4]]), { bpm: 180 });
+  const m = buildPhoneModel(s4.runs, s4.grid, [], s4.dur);
+  assert.equal(m.beatsPerBar, 4);
+  assert.equal(showsBarTotal(m), true);
+  assert.equal(m.cells.length, 32);
+  assert.equal(positionLabel(m, 11), 'Bar 12/32');
+  assert.match(phoneBarLabel(m, s4.runs, 11), /^Bar 12 of 32: /);
+  assert.equal(showsBarTotal({ mode: 'sequence', beatsPerBar: 4 }), false);
+});
+
+test('pickups: bar starts land on the downbeats, the pickup is bar 1, labels carry no total', () => {
+  // 6/8 in eighths at 180 with a 3-pulse Em pickup, then 40 bars of 6.
+  const p68 = waltz([[['E:min', 3]], ...Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 6]])], 180);
+  const m68 = buildPhoneModel(p68.runs, p68.grid, [], p68.dur);
+  assert.equal(m68.beatsPerBar, 3);
+  assert.equal(m68.cells.length, 81);
+  const b68 = p68.grid.beatSec;
+  m68.cells.forEach((c, i) => assert.ok(Math.abs(c.startSec - (0.5 + 3 * i * b68)) < 1e-6, `6/8 pickup: cell ${i + 1} at ${c.startSec}`));
+  assert.equal(positionLabel(m68, 0), 'Bar 1');
+  assert.equal(positionLabel(m68, 80), 'Bar 81');
+  assert.equal(phoneBarLabel(m68, p68.runs, 0), 'Bar 1: Em');
+  // 3/4 at 96 with a 1-beat pickup: bars start one beat after the first chord.
+  const p34 = waltz([[['E:min', 1]], ...Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 3]])], 96);
+  const m34 = buildPhoneModel(p34.runs, p34.grid, [], p34.dur);
+  assert.equal(m34.beatsPerBar, 3);
+  const b34 = p34.grid.beatSec;
+  const real = m34.cells.filter((c) => c.startSec >= 0.5 + b34 - 1e-6);
+  assert.equal(real.length, 40);
+  real.forEach((c, i) => assert.ok(Math.abs(c.startSec - (0.5 + b34 + 3 * i * b34)) < 1e-6, `3/4 pickup: bar at ${c.startSec} off the downbeat`));
+  assert.equal(m34.cells.length, 41, 'the pickup is a bar of its own');
+  assert.equal(positionLabel(m34, 0), 'Bar 1');
+  assert.equal(positionLabel(m34, 40), 'Bar 41');
+  noTotal(m34, p34.runs, '3/4 pickup');
 });
 
 test('3/4 in worker sections (4-beat lines): the beat count is carried, bars stay on the waltz downbeat', () => {

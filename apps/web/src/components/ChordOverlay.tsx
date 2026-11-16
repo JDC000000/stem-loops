@@ -1515,8 +1515,7 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
                   key={b}
                   data-testid="phone-beat-dot"
                   data-on={b === beat ? 'true' : undefined}
-                  // 6/8: one bar, two groups of three (a wider gap before pulse 4).
-                  style={{ width: 10, height: 10, borderRadius: 5, marginLeft: model.beatsPerBar === 6 && b === 3 ? 6 : undefined, background: b === beat ? PLAYHEAD_COLOR : 'rgba(255,255,255,0.5)' }}
+                  style={{ width: 10, height: 10, borderRadius: 5, background: b === beat ? PLAYHEAD_COLOR : 'rgba(255,255,255,0.5)' }}
                 />
               ))}
             </span>

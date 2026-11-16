@@ -52,7 +52,8 @@ test('support check: Firefox is blocked with branded message', () => {
 function assertPhoneScopedMessage(message) {
   assert.match(message, /live chord overlay/i, 'names the feature');
   assert.match(message, /Chrome or Edge on a computer/, 'says what it needs');
-  assert.match(message, /Play along works on your phone/, 'says the product works on phones');
+  assert.match(message, /Play along works on your phone or tablet/, 'says the product works on phones and tablets');
+  assert.match(message, /phone and tablet browsers/, 'covers tablets, not just phones');
   assert.doesNotMatch(message, /desktop[ -]only|laptop or desktop|desktop or laptop/i);
 }
 

@@ -9,8 +9,8 @@
 //   - Chrome + Edge desktop: audio-only tab capture works.
 //   - Firefox: `getDisplayMedia` on audio drops silently on some builds.
 //     Earlier plan was "warn + attempt"; TSD §5.4 now says BLOCK on Firefox.
-//   - Phones (iOS, Android): no mobile browser can share a tab's audio
-//     (`getDisplayMedia` is missing or video-only). Block THIS feature with a
+//   - Phones and tablets (iOS, iPadOS, Android): no mobile browser can share
+//     a tab's audio (`getDisplayMedia` is missing or video-only). Block THIS feature with a
 //     banner that says so — and only this feature: the rest of the product,
 //     including Play along, works on phones (#278). Never word it as if the
 //     whole app were desktop-only.
@@ -55,13 +55,14 @@ export interface TabCapture {
 }
 
 /**
- * Banner for phones. True for THIS feature only: sharing tab audio needs Chrome
- * or Edge on a computer. It must not read as "the product is desktop-only";
- * Play along works on phones (Jon, 2026-11-15).
+ * Banner for phones and tablets (iPhone, iPad including iPad-as-Mac, and
+ * Android). True for THIS feature only: sharing tab audio needs Chrome or Edge
+ * on a computer. It must not read as "the product is desktop-only"; Play along
+ * works on phones and tablets (Jon, 2026-11-15).
  */
 export const PHONE_TAB_CAPTURE_MESSAGE =
-  "The live chord overlay listens to another browser tab, and phone browsers can't share a tab's audio. " +
-  'To use it, open stem-loops in Chrome or Edge on a computer. Play along works on your phone.';
+  "The live chord overlay listens to another browser tab, and phone and tablet browsers can't share a tab's audio. " +
+  'To use it, open stem-loops in Chrome or Edge on a computer. Play along works on your phone or tablet.';
 
 /**
  * Feature-detect the browser. The brief requires:

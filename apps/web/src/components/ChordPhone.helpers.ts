@@ -3,8 +3,7 @@
 // tested: src/components/__tests__/ChordPhone.helpers.test.mjs.
 //
 // THE MODEL. The view shows "cells" in "lines" of up to four:
-//   * mode 'bars': a cell is one bar (4/4, 3/4, or 6/8 counted in eighths:
-//     six pulses, dots in two groups of three, numbered by the 6/8 bar). Bars are laid on the job's measured
+//   * mode 'bars': a cell is one 4/4 bar. Bars are laid on the job's measured
 //     beat grid (loops rows: bpm + beat-snapped start_sec), RE-ANCHORED at every
 //     song section (each section starts on a worker-snapped beat), so tempo drift
 //     is bounded to one section. Bar 1 is chosen from the chords (downbeatPhase).
@@ -46,7 +45,7 @@ export const MIN_DOWNBEAT_MARGIN = 1.5;
  */
 export const MAX_TRIPLE_SHARE = 0.45;
 /**
- * 3/4 (and 6/8 counted in eighths; see MIN_EIGHTH_BPM_FOR_68): at least this
+ * 3/4 (and 6/8 counted in eighths, drawn as two bars of three): at least this
  * share of on-beat chord-time on ONE phase of the 3-beat cycle, beating the
  * next phase by TRIPLE_MARGIN, and NOT also explained by a 4-beat cycle (a
  * change every 12 beats fits both; that is ambiguous and stays a list).
@@ -62,18 +61,6 @@ export const MAX_QUAD_FOR_34 = 0.6;
  * the view shows the plain list rather than guess a downbeat.
  */
 export const MIN_TRIPLE_CHANGES_FOR_34 = 0.95;
-/**
- * 6/8 counted in eighths (S5, #281 review): a confident 3-beat cycle whose
- * pulse is at least this fast is read as the EIGHTHS of a 6/8 bar, so one bar
- * is six pulses, drawn as one cell with its beat dots in two groups of three,
- * and "Bar n/N" counts 6/8 bars (a 40-bar 6/8 song reads "Bar n/40", not
- * "/80"). The beat data carries no meter, so tempo is the only signal: below
- * this a 3-beat cycle stays 3/4 (dotted-quarter pulses of 6/8 are 40-90 bpm,
- * so their eighths are 120-270; 3/4 waltzes are mostly under 150). A 3/4 song
- * at 150 bpm or faster is drawn as pairs of bars: the numbers halve, the chords
- * per bar stay true.
- */
-export const MIN_EIGHTH_BPM_FOR_68 = 150;
 /** Inside the winning pair, beat 1 must beat beat 3 by this much to be chosen on votes alone. */
 export const HALF_BAR_MARGIN = 1.2;
 /** ... and at least this many chord changes to judge by. */
@@ -146,15 +133,30 @@ export function phoneSlotLabel(run: Pick<OverlayRun, 'kind' | 'label'>, beats: n
 }
 
 /**
+ * NO TOTAL IN TRIPLE TIME (S5 on #281; Jon, 2026-11-16: "No total when
+ * unsure"). The beat data carries no meter, so a 3-pulse cycle is 3/4 OR 6/8
+ * counted in eighths, and the two overlap at every tempo the grid accepts
+ * (6/8 eighths run ~80-270 pulses/min; 3/4 quarters ~40-200). Tempo cannot
+ * tell them apart, and there is no other signal. A total in a 6/8 song counts
+ * half-bars ("Bar n/80" for 40 bars), so 3-beat bars show only their number:
+ * "Bar 12", "Verse · bar 3", "Bar 3, Verse: G, D". 4/4 keeps "n/N".
+ */
+export function showsBarTotal(model: Pick<PhoneModel, 'mode' | 'beatsPerBar'>): boolean {
+  return model.mode === 'bars' && model.beatsPerBar === 4;
+}
+
+/**
  * Accessible name of a bar: its place and its chords in order, in the visible
- * spelling ("Bar 3 of 16, Chorus 2: G7, Bb").
+ * spelling ("Bar 3 of 16, Chorus 2: G7, Bb"; "Bar 3, Chorus 2: G7, Bb" in
+ * triple time, see showsBarTotal).
  */
 export function phoneBarLabel(model: PhoneModel, runs: readonly Pick<OverlayRun, 'kind' | 'label'>[], cell: number): string {
   const c = model.cells[cell];
   if (!c) return '';
   const sec = c.section >= 0 ? model.sections[c.section]?.name ?? null : null;
   const chords = c.slots.map((s) => leadSheetSymbol(runs[s.runIndex])).join(', ');
-  return `Bar ${c.numberInSection} of ${c.countInSection}${sec ? `, ${sec}` : ''}: ${chords}`;
+  const of = showsBarTotal(model) ? ` of ${c.countInSection}` : '';
+  return `Bar ${c.numberInSection}${of}${sec ? `, ${sec}` : ''}: ${chords}`;
 }
 
 function fmtBeats(b: number): string {
@@ -233,11 +235,8 @@ export interface PhoneLine {
 
 export interface PhoneModel {
   readonly mode: 'bars' | 'sequence';
-  /**
-   * Beats in a bar: 4 (4/4), 3 (3/4) or 6 (6/8 counted in eighths: one bar, two
-   * groups of three). 4 in sequence mode (unused there).
-   */
-  readonly beatsPerBar: 3 | 4 | 6;
+  /** Beats in a bar: 4 (4/4) or 3 (3/4, 6/8 in eighths). 4 in sequence mode (unused there). */
+  readonly beatsPerBar: 3 | 4;
   /** Why bars mode was not used (sequence only). */
   readonly reason: 'ok' | 'no-grid' | 'poor-fit' | 'meter' | 'few-changes' | 'too-many';
   readonly sections: readonly PhoneSection[];
@@ -310,18 +309,16 @@ export function downbeatVotes(
   sections: readonly PhoneSection[],
   grid: BeatGrid,
   durSec: number,
-): { phase: number; phase3: number; phase6: number; beatSec: number; triplePhaseChanges: number; scores: number[]; scores3: number[]; pairs: [number, number]; triple: number; quad: number; halfBarTie: boolean; aligned: number; total: number; changes: number } {
+): { phase: number; phase3: number; triplePhaseChanges: number; scores: number[]; scores3: number[]; pairs: [number, number]; triple: number; quad: number; halfBarTie: boolean; aligned: number; total: number; changes: number } {
   const scores = new Array<number>(BEATS_PER_BAR).fill(0);
   const scores3 = [0, 0, 0];
   const counts3 = [0, 0, 0];
-  const counts6 = [0, 0, 0, 0, 0, 0];
-  let firstG = -1;
   let alignedCount = 0;
   let aligned = 0;
   let total = 0;
   let changes = 0;
   let firstPhase = -1;
-  if (!(grid.beatSec > 0)) return { phase: 0, phase3: 0, phase6: 0, beatSec: grid.beatSec, triplePhaseChanges: 0, scores, scores3, pairs: [0, 0], triple: 0, quad: 0, halfBarTie: false, aligned, total, changes };
+  if (!(grid.beatSec > 0)) return { phase: 0, phase3: 0, triplePhaseChanges: 0, scores, scores3, pairs: [0, 0], triple: 0, quad: 0, halfBarTie: false, aligned, total, changes };
   const segs = segmentsFor(sections, grid, durSec);
   for (let i = 0; i < runs.length; i++) {
     const r = runs[i];
@@ -331,7 +328,6 @@ export function downbeatVotes(
       const seg0 = segAt(segs, r.startSec);
       const b0 = (r.startSec - seg0.anchor) / seg0.beat;
       firstPhase = Math.abs(b0 - Math.round(b0)) <= BEAT_TOLERANCE ? ((Math.round(b0) % BEATS_PER_BAR) + BEATS_PER_BAR) % BEATS_PER_BAR : 0;
-      if (Math.abs(b0 - Math.round(b0)) <= BEAT_TOLERANCE) firstG = seg0.index0 + Math.round(b0);
     }
     if (i === 0) continue;
     const d = Math.max(0, r.endSec - r.startSec);
@@ -346,7 +342,6 @@ export function downbeatVotes(
     const g = seg.index0 + nearest;
     scores3[((g % 3) + 3) % 3] += d;
     counts3[((g % 3) + 3) % 3] += 1;
-    counts6[((g % 6) + 6) % 6] += 1;
     alignedCount += 1;
   }
   // Share of on-beat chord-time on ONE phase of a 3-beat cycle: high for 3/4
@@ -356,15 +351,6 @@ export function downbeatVotes(
   let phase3 = 0;
   for (let k = 1; k < 3; k++) if (counts3[k] > counts3[phase3]) phase3 = k;
   const triplePhaseChanges = alignedCount > 0 ? counts3[phase3] / alignedCount : 0;
-  // 6/8 in eighths: which of the two pulses on the 3-cycle's phase (phase3 or
-  // phase3 + 3) starts the 6/8 bar. More changes on one = its downbeat; a tie
-  // (two chords in every bar) goes to the first chord, like the 4/4 half bar.
-  const [p6a, p6b] = [phase3, phase3 + 3];
-  const first6 = firstG >= 0 ? ((firstG % 6) + 6) % 6 : -1;
-  const phase6 =
-    counts6[p6a] >= HALF_BAR_MARGIN * counts6[p6b] && counts6[p6a] > 0 ? p6a
-      : counts6[p6b] >= HALF_BAR_MARGIN * counts6[p6a] && counts6[p6b] > 0 ? p6b
-        : first6 === p6b ? p6b : p6a;
   const pairs: [number, number] = [scores[0] + scores[2], scores[1] + scores[3]];
   const q = pairs[1] > pairs[0] + 1e-9 ? 1 : 0;
   const a = scores[q];
@@ -377,7 +363,7 @@ export function downbeatVotes(
     halfBarTie = true;
     phase = firstPhase === q || firstPhase === q + 2 ? firstPhase : q;
   }
-  return { phase, phase3, phase6, beatSec: grid.beatSec, triplePhaseChanges, scores, scores3, pairs, triple, quad, halfBarTie, aligned, total, changes };
+  return { phase, phase3, triplePhaseChanges, scores, scores3, pairs, triple, quad, halfBarTie, aligned, total, changes };
 }
 
 /**
@@ -388,12 +374,11 @@ export function downbeatVotes(
  * alike) draws no bars; only then the 4/4 test, beats 1+3 against 2+4 (two
  * chords in every bar passes it).
  */
-export function meterFit(votes: ReturnType<typeof downbeatVotes>): { reason: PhoneModel['reason']; beatsPerBar: 3 | 4 | 6 } {
+export function meterFit(votes: ReturnType<typeof downbeatVotes>): { reason: PhoneModel['reason']; beatsPerBar: 3 | 4 } {
   const no = (reason: PhoneModel['reason']) => ({ reason, beatsPerBar: 4 as const });
   if (votes.changes < MIN_CHANGES || !(votes.total > 0)) return no('few-changes');
   if (votes.aligned / votes.total < MIN_FIT_FRACTION) return no('poor-fit');
-  if (votes.triplePhaseChanges >= MIN_TRIPLE_CHANGES_FOR_34 && votes.quad <= MAX_QUAD_FOR_34)
-    return { reason: 'ok', beatsPerBar: votes.beatSec > 0 && votes.beatSec <= 60 / MIN_EIGHTH_BPM_FOR_68 + 1e-9 ? 6 : 3 };
+  if (votes.triplePhaseChanges >= MIN_TRIPLE_CHANGES_FOR_34 && votes.quad <= MAX_QUAD_FOR_34) return { reason: 'ok', beatsPerBar: 3 };
   if (votes.triple >= MAX_TRIPLE_SHARE) return no('meter');
   const [hi, lo] = [...votes.pairs].sort((a, b) => b - a);
   if (hi < MIN_DOWNBEAT_MARGIN * lo) return no('meter');
@@ -472,10 +457,9 @@ export function buildPhoneModel(
   const bar = beat * m;
   // Each segment's first bar line: the downbeat nearest its anchor. In 4/4 the
   // phase is relative to the section anchor (the worker's 4-beat lines); in
-  // 3/4 (and 6/8) it is a phase of the beat count carried across sections.
+  // 3/4 it is a phase of the beat count carried across sections.
   const segs = segmentsFor(sections, grid, durSec);
-  const offsetOf = (s: Seg) =>
-    m === 4 ? votes.phase : m === 6 ? (((votes.phase6 - s.index0) % 6) + 6) % 6 : (((votes.phase3 - s.index0) % 3) + 3) % 3;
+  const offsetOf = (s: Seg) => (m === 4 ? votes.phase : (((votes.phase3 - s.index0) % 3) + 3) % 3);
   const lineOf = (s: Seg) => {
     const o = offsetOf(s);
     return o <= m / 2 ? s.anchor + o * s.beat : s.anchor + (o - m) * s.beat;
@@ -648,13 +632,16 @@ export function beatInCell(cell: Pick<PhoneCell, 'startSec' | 'endSec'>, t: numb
   return Math.min(beatsPerBar - 1, Math.max(0, Math.floor((t - cell.startSec) / beat + 1e-9)));
 }
 
-/** "Chorus 2 · bar 3/16" (bars), "Chorus 2" (sequence), "Bar 2/3" before the first section. */
+/**
+ * "Chorus 2 · bar 3/16" (4/4 bars), "Chorus 2 · bar 3" (triple time: no total,
+ * see showsBarTotal), "Chorus 2" (sequence), "Bar 2/3" before the first section.
+ */
 export function positionLabel(model: PhoneModel, cell: number): string {
   const c = model.cells[cell];
   if (!c) return 'Now';
   const name = c.section >= 0 ? model.sections[c.section]?.name ?? null : null;
   if (model.mode === 'sequence') return name ?? 'Now';
-  const pos = `bar ${c.numberInSection}/${c.countInSection}`;
+  const pos = showsBarTotal(model) ? `bar ${c.numberInSection}/${c.countInSection}` : `bar ${c.numberInSection}`;
   return name ? `${name} · ${pos}` : pos[0].toUpperCase() + pos.slice(1);
 }
 

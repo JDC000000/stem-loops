@@ -24,9 +24,13 @@
 //  GAP: in a gap in the chord data, Next is the next chord after the playhead.
 //  NO GRID: a plain chord sequence; no beat dots, no beat counts, no bar
 //   numbers, no split cells; names still >= 14px and never blank.
-//  METER: 3/4 and 6/8-in-eighths get 3-beat bars (3 dots, bar n/N, the song's
-//   own chords per bar, split bars); an uncertain meter gets the plain list;
-//   4/4 with two chords per bar keeps 4-beat bars.
+//  METER: 3/4 gets 3-beat bars and 6/8-in-eighths gets ONE bar of six pulses
+//   (6 dots, bar n/N counted in 6/8 bars, the song's own chords per bar, split
+//   bars); an uncertain meter gets the plain list; 4/4 with two chords per bar
+//   keeps 4-beat bars.
+//  BAR TOTAL: for 3/4, 4/4 and 6/8, walking every bar of the song, the N in
+//   "Bar n/N" equals the number of distinct bars rendered, and equals the
+//   song's real bar count (a 40-bar 6/8 song reads /40, not /80).
 //  #212: the "All chords" list below keeps one primary chip per segment.
 // It FAILS (never skips) when Chromium or the page is missing.
 
@@ -565,15 +569,16 @@ for (const vp of [[390, 844], [360, 800]]) {
 
 
 // Meter (reviews 5 and 6): 4/4 bars are never drawn over another meter; a
-// confident 3-beat cycle gets 3-beat bars (6/8 counted in eighths: two bars of
-// three); an uncertain meter gets the plain list.
+// confident 3-beat cycle gets 3-beat bars (6/8 counted in eighths: one bar of
+// six pulses, two groups of three); an uncertain meter gets the plain list.
 const WALTZ = ['C:maj', 'A:min', 'F:maj', 'G:7', 'E:min7', 'A:min', 'D:min7', 'G:7'];
 const METER_CASES = [
   { name: '3/4, a change every bar', bpm: 96, n: 48, bar: (k) => [[WALTZ[k % 8], 3]], want: 3 },
   { name: '3/4, a change every 2 bars', bpm: 96, n: 32, bar: (k) => [[WALTZ[k % 8], 6]], want: 3 },
   { name: '3/4, 2+1 in every bar (downbeat not confirmed)', bpm: 96, n: 40, bar: (k) => [[WALTZ[k % 8], 2], [WALTZ[(k + 3) % 8], 1]], want: 'sequence' },
   { name: '3/4, 1+2 in every bar (downbeat not confirmed)', bpm: 96, n: 41, bar: (k) => [[WALTZ[k % 8], 1], [WALTZ[(k + 3) % 8], 2]], want: 'sequence' },
-  { name: '6/8 counted in eighths, a change every bar', bpm: 180, n: 40, bar: (k) => [[WALTZ[k % 8], 6]], want: 3 },
+  { name: '6/8 counted in eighths, a change every bar', bpm: 180, n: 40, bar: (k) => [[WALTZ[k % 8], 6]], want: 6 },
+  { name: '6/8 counted in eighths, two chords in every bar (3+3)', bpm: 180, n: 40, bar: (k) => [[WALTZ[k % 8], 3], [WALTZ[(k + 3) % 8], 3]], want: 6 },
   { name: '3/4 alternating 2+1 and 1+2 (uncertain)', bpm: 96, n: 40, bar: (k) => (k % 2 ? [[WALTZ[k % 8], 1], [WALTZ[(k + 3) % 8], 2]] : [[WALTZ[k % 8], 2], [WALTZ[(k + 3) % 8], 1]]), want: 'sequence' },
   { name: '3/4, a change every 4 bars (fits 4/4 too)', bpm: 96, n: 20, bar: (k) => [[WALTZ[k % 8], 12]], want: 'sequence' },
   { name: '4/4, two changes every bar', bpm: 96, n: 48, bar: (k) => [[WALTZ[(2 * k) % 8], 2], [WALTZ[(2 * k + 1) % 8], 2]], want: 4 },
@@ -623,6 +628,58 @@ for (const vp of [[390, 844], [360, 800]]) {
         if (mc.want !== 'sequence' && checked < 20) f.push(`only ${checked} positions checked`);
         assert.deepEqual(errors, []);
         fail(f);
+      } finally {
+        await ctx.close();
+      }
+    });
+  }
+}
+
+// BAR TOTAL (S5, #281 review): "Bar n/N" must count the same unit the grid
+// draws. Walk EVERY bar of the song (mid-bar), collect every bar the view
+// renders (bar-number heads and "Bar n of N" group names) and the position
+// line; N must equal the distinct bars rendered and the song's real bar count.
+const BAR_TOTAL_CASES = [
+  { name: '3/4, a change every bar', bpm: 96, n: 48, m: 3, bar: (k) => [[WALTZ[k % 8], 3]] },
+  { name: '4/4, one change every bar', bpm: 96, n: 32, m: 4, bar: (k) => [[WALTZ[k % 8], 4]] },
+  { name: '4/4, two changes every bar', bpm: 96, n: 32, m: 4, bar: (k) => [[WALTZ[(2 * k) % 8], 2], [WALTZ[(2 * k + 1) % 8], 2]] },
+  { name: '6/8 in eighths, a change every bar', bpm: 180, n: 40, m: 6, bar: (k) => [[WALTZ[k % 8], 6]] },
+  { name: '6/8 in eighths, two chords in every bar (3+3)', bpm: 180, n: 40, m: 6, bar: (k) => [[WALTZ[k % 8], 3], [WALTZ[(k + 3) % 8], 3]] },
+];
+for (const vp of [[390, 844], [360, 800]]) {
+  for (const bc of BAR_TOTAL_CASES) {
+    test(`phone chords @ ${vp[0]}x${vp[1]}: ${bc.name} -> "Bar n/N" total equals the bars rendered (${bc.n})`, async () => {
+      const bars = Array.from({ length: bc.n }, (_, k) => bc.bar(k));
+      const { payload, grid, beat } = synth(bars, bc.bpm);
+      const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections: [], payload });
+      try {
+        const f = [];
+        const rendered = new Set();
+        const totals = new Set();
+        for (let k = 0; k < bc.n; k++) {
+          const t = 0.5 + (k * bc.m + bc.m / 2 + 0.1) * beat;
+          await moveTo(page, t);
+          const m = await page.evaluate(measure);
+          const ctxs = `${vp.join('x')} ${bc.name} bar ${k + 1}`;
+          if (m.mode !== 'bars' || m.beatsPerBar !== String(bc.m)) { f.push(`drawn as ${m.mode}/${m.beatsPerBar}, want ${bc.m}-beat bars @ ${ctxs}`); continue; }
+          if (m.dots.length !== bc.m) f.push(`${m.dots.length} beat dots, want ${bc.m} @ ${ctxs}`);
+          const pm = /^Bar (\d+)\/(\d+)$/.exec(m.position ?? '');
+          if (!pm) { f.push(`position "${m.position}" is not "Bar n/N" @ ${ctxs}`); continue; }
+          if (Number(pm[1]) !== k + 1) f.push(`position "${m.position}", want bar ${k + 1} @ ${ctxs}`);
+          totals.add(Number(pm[2]));
+          for (const g of m.groups) {
+            const gm = /^Bar (\d+) of (\d+)/.exec(g.label);
+            if (!gm) { f.push(`bar group "${g.label}" is not "Bar n of N" @ ${ctxs}`); continue; }
+            rendered.add(Number(gm[1]));
+            totals.add(Number(gm[2]));
+          }
+          for (const b of m.barNumbers) rendered.add(Number(b.text));
+        }
+        assert.deepEqual(errors, []);
+        fail(f);
+        assert.deepEqual([...totals], [bc.n], `label totals ${[...totals]} must all be the song's ${bc.n} bars`);
+        assert.equal(rendered.size, bc.n, `rendered ${rendered.size} distinct bars, the label says ${[...totals]}`);
+        assert.equal(Math.max(...rendered), bc.n, 'the last rendered bar number is the label total');
       } finally {
         await ctx.close();
       }

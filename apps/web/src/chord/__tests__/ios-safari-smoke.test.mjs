@@ -96,7 +96,8 @@ test('iOS Safari: feature detection blocks tab capture gracefully', () => {
   const r = checkTabCaptureSupport(IOS_UA);
   assert.equal(r.supported, false);
   assert.equal(r.reason, 'ios-safari');
-  assert.match(r.message, /desktop/i);
+  assert.match(r.message, /Chrome or Edge on a computer/);
+  assert.doesNotMatch(r.message, /desktop[ -]only/i);
 });
 
 test('iOS Safari: startTabCapture throws UnsupportedBrowserError, not a raw DOMException', async () => {

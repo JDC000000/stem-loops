@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { activeRunIndex, observationsToRuns } from '../ChordOverlay.helpers.ts';
 import {
   BEATS_PER_BAR,
+  MIN_EIGHTH_BPM_FOR_68,
   NAME_MIN_PX,
   beatInCell,
   beatsUntil,
@@ -283,9 +284,8 @@ test('3/4: an UNAMBIGUOUS 3-beat cycle (changes only on the bar line) draws 3-be
   for (const [what, bars] of [
     ['a change every bar', Array.from({ length: 48 }, (_, k) => [[WP[k % 8], 3]])],
     ['a change every 2 bars', Array.from({ length: 32 }, (_, k) => [[WP[k % 8], 6]])],
-    ['6/8 counted in eighths (two bars of three)', Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 6]])],
   ]) {
-    const w = waltz(bars, what.startsWith('6/8') ? 180 : 96);
+    const w = waltz(bars, 96);
     const v = downbeatVotes(w.runs, [], w.grid, w.dur);
     assert.deepEqual(meterFit(v), { reason: 'ok', beatsPerBar: 3 }, what);
     const m = buildPhoneModel(w.runs, w.grid, [], w.dur);
@@ -301,6 +301,49 @@ test('3/4: an UNAMBIGUOUS 3-beat cycle (changes only on the bar line) draws 3-be
     assert.equal(beatInCell(m.cells[ci], 0.5 + (3 * 5 + 1.2) * beat, 3), 1);
     assert.equal(positionLabel(m, ci), `Bar ${m.cells[ci].numberInSection}/${m.cells.length}`);
   }
+});
+
+// S5 (#281 review): 6/8 counted in eighths was drawn as two 3-beat bars per
+// 6/8 bar, so a 40-bar song read "Bar n/80". It is now one bar of six pulses,
+// and n/N count 6/8 bars, the same unit as the cells.
+test('6/8 counted in eighths: one cell per 6/8 bar, "Bar n/N" counts 6/8 bars', () => {
+  for (const [what, bars] of [
+    ['a change every bar', Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 6]])],
+    ['two chords in every bar (3+3)', Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 3], [WP[(k + 3) % 8], 3]])],
+    ['mostly one chord, every 4th bar split', Array.from({ length: 40 }, (_, k) => (k % 4 === 3 ? [[WP[k % 8], 3], [WP[(k + 3) % 8], 3]] : [[WP[k % 8], 6]]))],
+  ]) {
+    const w = waltz(bars, 180);
+    const v = downbeatVotes(w.runs, [], w.grid, w.dur);
+    assert.deepEqual(meterFit(v), { reason: 'ok', beatsPerBar: 6 }, what);
+    const m = buildPhoneModel(w.runs, w.grid, [], w.dur);
+    assert.equal(m.mode, 'bars', what);
+    assert.equal(m.beatsPerBar, 6, what);
+    assert.equal(m.cells.length, 40, `${what}: one cell per 6/8 bar`);
+    const beat = w.grid.beatSec;
+    m.cells.forEach((c, i) => {
+      assert.ok(Math.abs(c.startSec - (0.5 + 6 * i * beat)) < 1e-6, `${what}: bar ${i + 1} starts at ${c.startSec}, off the 6/8 downbeat`);
+      assert.equal(c.numberInSection, i + 1);
+      assert.equal(c.countInSection, 40);
+      assert.ok(Math.abs(c.slots.reduce((a, s) => a + s.beats, 0) - 6) < 0.05, `${what}: a bar does not hold 6 pulses`);
+      assert.deepEqual(c.slots.map((s) => w.runs[s.runIndex].label), bars[i].map(([l]) => l).filter((l, j, arr) => j === 0 || l !== arr[j - 1]), `${what}: bar ${i + 1} chords`);
+    });
+    const t = 0.5 + (6 * 5 + 4.2) * beat;
+    const ci = cellIndexAt(m, t);
+    assert.equal(ci, 5);
+    assert.equal(beatInCell(m.cells[ci], t, 6), 4);
+    assert.equal(positionLabel(m, ci), 'Bar 6/40');
+  }
+});
+
+test('3/4 below the 6/8 pulse threshold keeps 3-beat bars; at it, pairs of 3 become one 6/8 bar', () => {
+  const bars = Array.from({ length: 48 }, (_, k) => [[WP[k % 8], 3]]);
+  const slow = waltz(bars, MIN_EIGHTH_BPM_FOR_68 - 1);
+  assert.equal(buildPhoneModel(slow.runs, slow.grid, [], slow.dur).beatsPerBar, 3);
+  const fast = waltz(bars, MIN_EIGHTH_BPM_FOR_68);
+  const m = buildPhoneModel(fast.runs, fast.grid, [], fast.dur);
+  assert.equal(m.beatsPerBar, 6);
+  assert.equal(m.cells.length, 24);
+  assert.equal(positionLabel(m, 0), 'Bar 1/24');
 });
 
 test('3/4 in worker sections (4-beat lines): the beat count is carried, bars stay on the waltz downbeat', () => {

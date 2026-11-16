@@ -302,6 +302,13 @@ def world(conn, r2):
     _sub(c, two, "active", -5 * DAY, 25 * DAY)
     w["latest_effective_sub_wins"] = (_job(c, two, 100 * DAY), True)
 
+    # Two QUALIFYING subscriptions (both effective after the job was made): the LATEST end
+    # decides. Under MIN the canceled one (grace ended 10 days ago) would delete the library.
+    both = _user(c, "two-qualifying")
+    _sub(c, both, "canceled", -70 * DAY, -40 * DAY, updated=-40 * DAY)
+    _sub(c, both, "active", -10 * DAY, 20 * DAY)
+    w["two_qualifying_subs_latest_wins"] = (_job(c, both, 100 * DAY), True)
+
     owner = _user(c, "comp-owner")
     _sub(
         c,
@@ -423,3 +430,64 @@ def test_account_deletion_statement_kills_a_paid_library(conn):
     assert conn.execute(stmt.replace("$1", "%s"), (u,)).rowcount == 0, "idempotent"
     conn.commit()
     conn.execute("RESET ROLE")
+
+
+def _claim_sql() -> str:
+    """The claim UPDATE exactly as POST /api/users/me/claim-jobs issues it."""
+    route = (
+        Path(__file__).resolve().parents[2] / "web/src/app/api/users/me/claim-jobs/route.ts"
+    ).read_text()
+    (stmt,) = re.findall(r"`(\s*UPDATE\s+public\.jobs\b[^`]*)`", route)
+    return re.sub(r"\$(\d)", "%s", stmt)
+
+
+def _anon_job(c: Any, age: timedelta, fp: str) -> str:
+    jid = _job(c, None, age)
+    c.execute("UPDATE public.jobs SET client_fingerprint = %s WHERE id = %s", (fp, jid))
+    return jid
+
+
+@needs_db
+def test_claim_refuses_a_job_already_past_its_24_hours(conn):
+    """An anonymous job past 24 h but not yet swept cannot be claimed back to life."""
+    u = _user(conn, "claim-expired")
+    _sub(conn, u, "active", -1 * DAY, 29 * DAY)
+    fp = f"fp-paidret-{uuid.uuid4().hex}"
+    old = _anon_job(conn, 25 * HOUR, fp)
+    conn.commit()
+    n = conn.execute(_claim_sql(), (u, fp, [PROBE], 1000)).rowcount
+    conn.commit()
+    assert n == 0
+    assert conn.execute("SELECT user_id FROM jobs WHERE id = %s", (old,)).fetchone() == (None,)
+    assert _web_kept(conn, [old]) == set()
+
+
+@needs_db
+def test_a_claimed_anonymous_job_keeps_its_24_hours_for_a_paid_owner(conn, r2):
+    """Started without an account -> /privacy promises 24 h, even after a Pro user claims it."""
+    u = _user(conn, "claim-live")
+    _sub(conn, u, "active", -1 * DAY, 29 * DAY, plan="studio")
+    fp = f"fp-paidret-{uuid.uuid4().hex}"
+    jid = _anon_job(conn, 2 * HOUR, fp)
+    own = _job(conn, u, 2 * HOUR)  # control: started signed in
+    conn.commit()
+    assert conn.execute(_claim_sql(), (u, fp, [PROBE], 1000)).rowcount == 1
+    conn.commit()
+    assert conn.execute("SELECT user_id FROM jobs WHERE id = %s", (jid,)).fetchone() == (u,)
+    (until,) = conn.execute(
+        f"SELECT {_web_sql()} - created_at FROM jobs WHERE id = %s", (jid,)
+    ).fetchone()
+    assert until <= DAY + timedelta(seconds=1), f"claimed job kept for {until}"
+    # Time passes: both jobs are now 25 h old.
+    conn.execute(
+        "UPDATE public.jobs SET created_at = created_at - interval '23 hours', "
+        "expires_at = expires_at - interval '23 hours' WHERE id = ANY(%s::uuid[])",
+        ([jid, own],),
+    )
+    conn.commit()
+    r2.put(f"{jid}/_input.wav", 25 * HOUR)
+    r2.put(f"{own}/_input.wav", 25 * HOUR)
+    _sweep_until_quiet()
+    assert not _exists(conn, jid), "a claimed anonymous job must be deleted at created_at + 24 h"
+    assert not [k for k in r2.objs if jid in k]
+    assert _exists(conn, own), "the owner's own signed-in job is library"

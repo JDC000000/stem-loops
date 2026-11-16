@@ -93,15 +93,18 @@ MAX_BACKOFF_SECONDS = 6 * 3600
 #   active / trialing   -> current_period_end
 #   past_due            -> current_period_start + 7 days   (PAST_DUE_GRACE_MS)
 #   canceled / paused   -> LEAST(current_period_end, updated_at): when it stopped. The
-#                          webhook stamps updated_at when it records the cancel; LEAST caps
-#                          a later touch of the row at the end of the paid period.
+#                          webhook stamps updated_at when it records the cancel. A later
+#                          touch of the row bumps updated_at and CAN extend this, but only
+#                          up to current_period_end (bounded, never forever).
 #   incomplete          -> never paid, never retains.
 # and it applies only when
 #   * the job has an owner (anonymous jobs are always 24 h),
 #   * the job was created while (or before) that plan was effective — a job made AFTER the
 #     plan ended is a Free job and gets Free's exact 24 h,
-#   * the job was not killed: account deletion sets expires_at = created_at (see DELETE
-#     /api/users/me), and expires_at <= created_at turns paid retention off for good,
+#   * the job was STARTED under its owner's account: its expires_at is still the untouched
+#     INSERT default, exactly created_at + 24 h (both defaults read one now()). Account
+#     deletion sets expires_at = created_at and claim-jobs adds 1 microsecond, so a killed
+#     job and a job started WITHOUT an account (later claimed) both stay on the 24 h clock,
 #   * the job is not an anonymised shell (its content is already gone).
 # Every term is a finite timestamp, so every job is eventually deleted.
 # ---------------------------------------------------------------------------------------
@@ -120,7 +123,7 @@ RETAINED_UNTIL_SQL = (
     " WHERE s.user_id = jobs.user_id AND s.plan_code IN ('pro','studio')"
     ") p"
     " WHERE p.paid_until >= jobs.created_at"
-    " AND jobs.expires_at > jobs.created_at"
+    " AND jobs.expires_at = jobs.created_at + interval '24 hours'"
     " AND jobs.client_ip_hash <> 'purged'"
     "))"
 )

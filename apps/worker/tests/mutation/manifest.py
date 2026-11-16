@@ -453,6 +453,14 @@ MUTANTS: tuple[Mutant, ...] = (
         "library is deleted at 24 h.",
     ),
     Mutant(
+        "paid_retention_max_to_min",
+        CL,
+        "SELECT MAX(p.paid_until)",
+        "SELECT MIN(p.paid_until)",
+        ("tests/test_paid_retention.py::test_sweep_applies_the_rule_to_every_case",),
+        "Review of #279: with two qualifying subscriptions the LATEST end must decide.",
+    ),
+    Mutant(
         "orphan_error_log_removed",
         CL,
         'log_structured("ERROR", "retention_orphan_sweep_failed", error=str(e)[:200])',

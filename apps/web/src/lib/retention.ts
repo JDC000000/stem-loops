@@ -28,8 +28,13 @@ export const PAID_RETENTION_GRACE_DAYS = 30;
  *   (PAST_DUE_GRACE_MS); canceled / paused -> LEAST(current_period_end, updated_at), when it
  *   stopped; incomplete -> nothing. Then + 30 days. It applies only to an owned job created
  *   on or before paid_until (a job made after the plan ended is a Free job: 24 h exactly),
- *   that was not killed by account deletion (expires_at <= created_at) and is not an
- *   anonymised shell. Computed at read time: no webhook or backfill has to run for it.
+ *   whose expires_at is still the untouched INSERT default (created_at + 24 h, exact: both
+ *   defaults read one now()) — i.e. the job was STARTED under its owner's account. Account
+ *   deletion (expires_at = created_at) and claim-jobs (expires_at + 1 µs; a job started
+ *   without an account keeps its 24 h) both move a row off that default — and that is not
+ *   an anonymised shell. NOTE: a later UPDATE of a canceled subscription row bumps
+ *   updated_at, which can push LEAST(current_period_end, updated_at) later, up to
+ *   current_period_end; bounded, never forever. Computed at read time: no webhook or backfill has to run for it.
  *
  * DO NOT EDIT WITHOUT apps/worker/src/worker/cleanup.py RETAINED_UNTIL_SQL.
  */
@@ -45,7 +50,7 @@ export const JOB_RETAINED_UNTIL_SQL =
   " WHERE s.user_id = jobs.user_id AND s.plan_code IN ('pro','studio')" +
   ") p" +
   " WHERE p.paid_until >= jobs.created_at" +
-  " AND jobs.expires_at > jobs.created_at" +
+  " AND jobs.expires_at = jobs.created_at + interval '24 hours'" +
   " AND jobs.client_ip_hash <> 'purged'" +
   "))";
 

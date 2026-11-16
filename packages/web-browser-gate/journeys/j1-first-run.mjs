@@ -107,13 +107,19 @@ export default async function run() {
     if (hasLink) await toLoops.first().click();
     else await page.goto(`/loops?job=${jobId}`);
     await page.waitForURL(/\/loops\b/, { timeout: 30_000 }).catch(() => {});
+    // /loops fetches the job client-side, so its section is mounted as `loading`
+    // first and the cut button is not there for the first frames. Wait for the
+    // section to leave `loading`, and then for the button itself.
     await page.locator('[data-testid="lp-job"]').waitFor({ timeout: 30_000 }).catch(() => {});
-    j.check('the loops page opens on this song', /\/loops/.test(page.url()) && page.url().includes(jobId), page.url().slice(0, 120));
+    await page.locator('[data-testid="lp-job"]:not([data-view="loading"])').waitFor({ timeout: 60_000 }).catch(() => {});
+    j.check('the loops page opens on this song', /\/loops/.test(page.url()) && page.url().includes(jobId),
+      `${page.url().slice(0, 120)} view=${await page.getAttribute('[data-testid="lp-job"]', 'data-view').catch(() => '(none)')}`);
 
     const cut = page.locator('[data-testid="cut-loops"]');
-    const hasCut = await cut.isVisible().catch(() => false);
-    if (!j.check('"Cut N loops" button offered', hasCut, hasCut ? await cut.innerText() : 'missing')) throw new Error('no cut button');
-    await cut.click();
+    const hasCut = await cut.first().waitFor({ state: 'visible', timeout: 60_000 }).then(() => true, () => false);
+    if (!j.check('"Cut N loops" button offered', hasCut,
+      hasCut ? await cut.first().innerText() : `missing; view=${await page.getAttribute('[data-testid="lp-job"]', 'data-view').catch(() => '(none)')} text="${(await page.locator('[data-testid="lp-job"]').innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 200)}"`)) throw new Error('no cut button');
+    await cut.first().click();
     const cards = page.locator('.loop-card');
     const cutOk = await cards.first().waitFor({ state: 'visible', timeout: 180_000 }).then(() => true, () => false);
     const cutErr = await page.locator('[data-testid="cut-error"]').innerText().catch(() => '');

@@ -285,6 +285,12 @@ for (const plan of ['pro', 'studio']) {
     assert.equal(enf.action, 'start_job_youtube');
     assert.equal(inserts(calls), 1, 'one jobs row');
     assert.equal(count(calls, 'bumpJobsUsed'), 1, 'one paid quota unit');
+    // SHOULD-1 (review of #282): period bookkeeping before metering, as the
+    // paid upload does — and in that order.
+    assert.equal(count(calls, 'rollPeriodIfStale'), 1, 'paid link rolls a stale period, like a paid upload');
+    const roll = calls.findIndex((c) => c.fn === 'rollPeriodIfStale');
+    const bump = calls.findIndex((c) => c.fn === 'bumpJobsUsed');
+    assert.ok(roll !== -1 && roll < bump, 'roll before bump');
     assert.equal(count(calls, 'bumpJobsUsedWithinQuota'), 0, 'never the free allowance');
     assert.equal(count(calls, 'consumeTrial'), 0, 'never a trial song');
     assert.equal(count(calls, 'consumeCredit'), 0, 'never a credit');
@@ -301,6 +307,17 @@ for (const plan of ['pro', 'studio']) {
     assert.equal(count(calls, 'bumpJobsUsed'), 1);
     assert.equal(count(calls, 'bumpJobsUsedWithinQuota'), 0);
     assert.equal(count(calls, 'consumeCredit'), 0);
+    assert.equal(count(calls, 'rollPeriodIfStale'), 1);
+  });
+
+  test(`${plan}: link and upload make the SAME metering calls (parity pin)`, async () => {
+    const METER = ['rollPeriodIfStale', 'bumpJobsUsed', 'bumpJobsUsedWithinQuota', 'consumeCredit', 'consumeTrial'];
+    const seq = (calls) => calls.filter((c) => METER.includes(c.fn)).map((c) => c.fn);
+    const link = (await postLink({ user: USER, ent: { planCode: plan } })).calls;
+    const mod = await loadRoute({ user: USER, entitlements: { planCode: plan } });
+    await mod.POST(makeReq({ jobId: JOB_ID, uploadKey: UPLOAD_KEY, loop_length_bars: 4 }));
+    assert.deepEqual(seq(link), seq(globalThis.__calls));
+    assert.deepEqual(seq(link), ['rollPeriodIfStale', 'bumpJobsUsed']);
   });
 
   test(`${plan}: quota exhausted -> 402 ENTITLEMENT_UNAVAILABLE with the allowance sentence, nothing spent`, async () => {
@@ -368,18 +385,32 @@ test('free holding credits, no trial -> free allowance (capped), NO credit spent
   assert.equal(count(calls, 'bumpJobsUsedWithinQuota'), 1);
 });
 
-test('free (incl. credit holder) with the allowance spent under the lock -> 402 FREE_MONTHLY_QUOTA_EXHAUSTED', async () => {
-  for (const credits of [0, 7]) {
-    const { res } = await postLink({
-      user: USER,
-      ent: { planCode: 'free', credits },
-      trial: NO_TRIAL,
-      rateLimit: { withinQuota: false },
-    });
-    assert.equal(res.status, 402, `credits=${credits}`);
-    assert.equal(res.body.error_code, 'FREE_MONTHLY_QUOTA_EXHAUSTED');
-    assert.equal(res.body.message, "You've used all your free tracks this month. Your allowance resets at the start of next month.");
-  }
+test('free, no credits, allowance spent under the lock -> 402 FREE_MONTHLY_QUOTA_EXHAUSTED, plain copy', async () => {
+  const { res } = await postLink({
+    user: USER,
+    ent: { planCode: 'free', credits: 0 },
+    trial: NO_TRIAL,
+    rateLimit: { withinQuota: false },
+  });
+  assert.equal(res.status, 402);
+  assert.equal(res.body.error_code, 'FREE_MONTHLY_QUOTA_EXHAUSTED');
+  assert.equal(res.body.message, "You've used all your free tracks this month. Your allowance resets at the start of next month.");
+});
+
+// Jon, 2026-11-16 ("Cap at 5/month"): credit holders stay capped on links, and
+// the refusal points them at what their credits do buy (SHOULD-2, review of #282).
+test('free credit holder at the link cap -> 402, copy says credits still work on uploads, no leak', async () => {
+  const { res, calls } = await postLink({
+    user: USER,
+    ent: { planCode: 'free', credits: 7 },
+    trial: NO_TRIAL,
+    rateLimit: { withinQuota: false },
+  });
+  assert.equal(res.status, 402);
+  assert.equal(res.body.error_code, 'FREE_MONTHLY_QUOTA_EXHAUSTED');
+  assert.equal(res.body.message, "You've used this month's free YouTube links. Your credits still work: upload the audio file instead.");
+  assert.doesNotMatch(res.body.message, /[A-Z]{2,}_[A-Z_]+|link cap reached|credits held/);
+  assert.equal(count(calls, 'consumeCredit'), 0, 'still no credit spent on a link');
 });
 
 test('free, gate refusal is ignored (existing fall-through behaviour holds)', async () => {

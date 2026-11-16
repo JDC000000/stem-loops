@@ -94,6 +94,14 @@ export const RATE_LIMITED_SPEND_CEILING_MSG =
 export const SERVICE_NOT_IN_PLAN_MSG =
   "YouTube links aren't switched on for your plan yet. Upload the audio file instead, or try again later.";
 
+/** Internal detail (never shown) marking a free credit holder who has spent the
+ *  free monthly allowance on YouTube links. Credits fund uploads only (013
+ *  trigger), and Jon capped links at the free allowance (2026-11-16, "Cap at
+ *  5/month"), so the copy points them at the thing their credits do buy. */
+export const LINK_CAP_CREDITS_DETAIL = 'link cap reached, credits held';
+export const LINK_CAP_CREDITS_MSG =
+  "You've used this month's free YouTube links. Your credits still work: upload the audio file instead.";
+
 /** The sentence a user sees for an entitlement refusal. Never the thrown message: that can be a bare code or database text. */
 export function entitlementMessage(code: string, detail?: string): string {
   if (code === 'ENTITLEMENT_UNAVAILABLE' && detail === 'quota exhausted') {
@@ -105,6 +113,9 @@ export function entitlementMessage(code: string, detail?: string): string {
   // "couldn't verify your plan" sentence.
   if (code === 'ENTITLEMENT_UNAVAILABLE' && detail === 'service not in plan') {
     return SERVICE_NOT_IN_PLAN_MSG;
+  }
+  if (code === 'FREE_MONTHLY_QUOTA_EXHAUSTED' && detail === LINK_CAP_CREDITS_DETAIL) {
+    return LINK_CAP_CREDITS_MSG;
   }
   const c = ERROR_COPY[code] ?? DEFAULT_ERROR;
   return c.action ? `${c.headline} ${c.action}` : c.headline;

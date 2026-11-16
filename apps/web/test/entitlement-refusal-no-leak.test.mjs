@@ -90,6 +90,7 @@ for (const code of ENTITLEMENT_CODES) {
       // The one keyed special case in INTERNAL_DETAILS ('service not in plan'
       // under ENTITLEMENT_UNAVAILABLE) has its own sentence, pinned below.
       if (code === 'ENTITLEMENT_UNAVAILABLE' && detail === 'service not in plan') continue;
+      if (code === 'FREE_MONTHLY_QUOTA_EXHAUSTED' && detail === copy.LINK_CAP_CREDITS_DETAIL) continue;
       const msg = copy.entitlementMessage(code, detail);
       assertNoLeak(msg, detail, `${code} / ${JSON.stringify(detail)}`);
       assert.equal(msg, expected(code), `${code} with detail ${JSON.stringify(detail)}`);
@@ -125,6 +126,14 @@ test('entitlementMessage: paid link before migration 039 ("service not in plan")
   assert.notEqual(msg, expected('ENTITLEMENT_UNAVAILABLE'));
   assertNoLeak(msg, 'service not in plan', 'service not in plan');
   assert.equal(copy.entitlementMessage('PLAN_NOT_FOUND', 'service not in plan'), expected('PLAN_NOT_FOUND'));
+});
+
+test('entitlementMessage: free credit holder at the link cap gets the "credits still work" sentence, keyed on code + detail', () => {
+  const msg = copy.entitlementMessage('FREE_MONTHLY_QUOTA_EXHAUSTED', copy.LINK_CAP_CREDITS_DETAIL);
+  assert.equal(msg, "You've used this month's free YouTube links. Your credits still work: upload the audio file instead.");
+  assertNoLeak(msg, copy.LINK_CAP_CREDITS_DETAIL, 'link cap credits');
+  assert.equal(copy.entitlementMessage('FREE_MONTHLY_QUOTA_EXHAUSTED', 'anything else'), expected('FREE_MONTHLY_QUOTA_EXHAUSTED'));
+  assert.equal(copy.entitlementMessage('ENTITLEMENT_UNAVAILABLE', copy.LINK_CAP_CREDITS_DETAIL), expected('ENTITLEMENT_UNAVAILABLE'));
 });
 
 // ---------------------------------------------------------------------------

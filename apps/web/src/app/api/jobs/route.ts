@@ -7,7 +7,7 @@ import { clientIpHashOf } from '@/lib/client-ip';
 import { canonicalizeYoutubeUrl } from '@/lib/youtube-url';
 import { isValidUploadKey } from '@/lib/upload';
 import { getUser } from '@/lib/auth/supabase';
-import { entitlementMessage, RATE_LIMITED_PER_CLIENT_MSG } from '@/lib/error-copy';
+import { entitlementMessage, RATE_LIMITED_PER_CLIENT_MSG, LINK_CAP_CREDITS_DETAIL } from '@/lib/error-copy';
 import {
   checkBurstLimit,
   checkMonthlyQuota,
@@ -468,6 +468,7 @@ export async function POST(request: NextRequest) {
     // migration 013) and never waive the allowance for one — see below.
     let linkPaid = false;
     let linkQuota = 0;
+    let linkCreditHolder = false;
     if (user) {
       let subscribed = false;
       try {
@@ -475,6 +476,7 @@ export async function POST(request: NextRequest) {
         subscribed = snap.plan_code === 'pro' || snap.plan_code === 'studio';
         linkPaid = subscribed;
         linkQuota = snap.jobs_quota;
+        linkCreditHolder = !subscribed && snap.credits_remaining > 0;
       } catch {
         // Fail restrictive: treat as not-subscribed and let the existing
         // gates decide (same stance enforceEntitlement takes on DB error).
@@ -574,13 +576,21 @@ export async function POST(request: NextRequest) {
               [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT, user.user_id],
             );
             if (r.rowCount) {
+              // Period bookkeeping first, on EVERY authed link job whatever funds
+              // it — the same call the paid upload makes (rate-limit.ts: "CALL
+              // THIS ON EVERY AUTHED JOB"). Without it a paid link in the
+              // past_due grace window keeps adding to the old period's counter.
+              await rollPeriodIfStale(client, user.user_id);
               if (linkPaid) {
                 await bumpJobsUsed(client, user.user_id);
-              } else {
-                await rollPeriodIfStale(client, user.user_id);
-                if (!(await bumpJobsUsedWithinQuota(client, user.user_id, linkQuota))) {
-                  throw new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', FREE_QUOTA_EXHAUSTED_MESSAGE);
-                }
+              } else if (!(await bumpJobsUsedWithinQuota(client, user.user_id, linkQuota))) {
+                // Jon, 2026-11-16 ("Cap at 5/month"): a free account holding
+                // credits is capped at the free allowance for links too, and
+                // credits are not spent on links. Tell that account its credits
+                // still work on uploads instead of "all your free tracks".
+                throw linkCreditHolder
+                  ? new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', LINK_CAP_CREDITS_DETAIL)
+                  : new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', FREE_QUOTA_EXHAUSTED_MESSAGE);
               }
             }
             return r;

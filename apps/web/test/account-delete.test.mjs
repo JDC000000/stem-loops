@@ -333,9 +333,12 @@ test('DELETE /api/users/me — expires the user\'s live jobs inside the erase tx
 
   const exp = jobsExpiry();
   assert.equal(exp.length, 1, 'expected exactly one UPDATE public.jobs (expire the user\'s jobs)');
-  assert.match(exp[0][1], /SET\s+expires_at\s*=\s*now\(\)/i);
+  // 2026-11-15: expires_at = created_at, not now(). A Pro/Studio library is retained PAST
+  // expires_at by the subscription (lib/retention.ts JOB_RETAINED_UNTIL_SQL), which ignores
+  // the subscription once expires_at <= created_at; so this kills paid retention too.
+  assert.match(exp[0][1], /SET\s+expires_at\s*=\s*LEAST\(expires_at,\s*created_at\)/i);
   assert.match(exp[0][1], /WHERE\s+user_id\s*=\s*\$1::uuid/i);
-  assert.match(exp[0][1], /expires_at\s*>\s*now\(\)/i, 'only live jobs; an already-expired one keeps its expiry');
+  assert.match(exp[0][1], /expires_at\s*>\s*created_at/i, 'every not-yet-killed job, including a paid one past its 24 h');
   assert.deepEqual(exp[0][2], [USER.user_id]);
 
   const calls = globalThis.__ad.calls;
@@ -371,8 +374,8 @@ test('DELETE /api/users/me — the job expiry runs on the TRANSACTION client, an
   const inTx = (globalThis.__ad.txq ?? []).map(norm).filter((t) => /UPDATE public\.jobs/.test(t));
   assert.deepEqual(
     inTx,
-    ['UPDATE public.jobs SET expires_at = now() WHERE user_id = $1::uuid AND expires_at > now()'],
-    'the expiry must be issued on the tx client (so ROLLBACK undoes it) and must set expires_at to now(), nothing later',
+    ['UPDATE public.jobs SET expires_at = LEAST(expires_at, created_at) WHERE user_id = $1::uuid AND expires_at > created_at'],
+    'the expiry must be issued on the tx client (so ROLLBACK undoes it) and must set expires_at to created_at, never later',
   );
   assert.equal(jobsExpiry().length, 1, 'and it is the only jobs UPDATE, pool or tx');
 });

@@ -189,12 +189,25 @@ export async function POST(req: NextRequest) {
       // retry is idempotent (previously-claimed rows stay put) and so
       // we never clobber a row that belongs to another user even if
       // the fingerprint/ip_hash pair happened to match.
+      //
+      // RETENTION (2026-11-15). A job started WITHOUT an account keeps the
+      // 24-hour promise (/privacy: "every job started without an account"),
+      // even once a Pro/Studio user claims it:
+      //   * `expires_at > now()` — a job already past its 24 h (merely not yet
+      //     swept) is gone and cannot be claimed back to life;
+      //   * `expires_at + 1 microsecond` moves the row OFF the untouched
+      //     default (expires_at = created_at + 24 h), which is what the paid
+      //     retention rule requires (lib/retention.ts JOB_RETAINED_UNTIL_SQL).
+      //     So a claimed job is owned (opens only for this account) but is
+      //     still deleted at created_at + 24 h, never kept as library.
       const updateRes = await client.query<{ id: string }>(
         `UPDATE public.jobs
-            SET user_id = $1::uuid
+            SET user_id = $1::uuid,
+                expires_at = expires_at + interval '1 microsecond'
           WHERE id IN (
             SELECT id FROM public.jobs
              WHERE user_id IS NULL
+               AND expires_at > now()
                AND client_fingerprint = $2
                AND client_ip_hash = ANY($3::text[])
              ORDER BY created_at DESC
@@ -215,6 +228,7 @@ export async function POST(req: NextRequest) {
         const remainingRes = await client.query<{ n: string }>(
           `SELECT COUNT(*)::text AS n FROM public.jobs
             WHERE user_id IS NULL
+              AND expires_at > now()
               AND client_fingerprint = $1
               AND client_ip_hash = ANY($2::text[])`,
           [fingerprintRaw, ipHashes],

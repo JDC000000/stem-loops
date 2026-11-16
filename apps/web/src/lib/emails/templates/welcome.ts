@@ -55,7 +55,8 @@ export function renderWelcome(vars: WelcomeVars = {}): RenderedEmail {
   const how =
     'Upload a song and it opens in the player: six stems on faders, with a chord track to play along to. Pro and Studio work with audio files you upload.';
   // #270: songs over 5 minutes are trimmed to their first 5 minutes, not refused.
-  const limits = `Songs longer than 5${NB}minutes use the first 5${NB}minutes, and files are deleted 24${NB}hours after the job starts.`;
+  // Paid-plan retention (Jon, 2026-11-15; lib/retention.ts). This email goes to subscribers only.
+  const limits = `Songs longer than 5${NB}minutes use the first 5${NB}minutes. Your songs stay in your library while you are subscribed, and for 30${NB}days after your plan ends.`;
   const cta = { label: 'Upload a song', url: `${base}/` };
   const footer = footerFor('service');
 

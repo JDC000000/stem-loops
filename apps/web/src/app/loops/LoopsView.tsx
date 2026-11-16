@@ -26,10 +26,19 @@
  * per-browser history store. None of that applies here: the nav links to
  * /loops with no id, and the viewer picks a song explicitly.
  *
- * THE 24-HOUR RULE (Jon, 2026-11-14). Loops can be requested only within 24
- * hours of the job. Older songs stay in the list, marked closed, and selecting
+ * THE WINDOW (Jon, 2026-11-14, amended 2026-11-15). Loops can be requested
+ * only while the song is retained: 24 hours on Free (and for any song started
+ * without an account); while subscribed plus 30 days on Pro and Studio
+ * (lib/retention.ts). Older songs stay in the list, marked closed, and selecting
  * one shows a disabled Cut control with a plain explanation
- * (lib/loops/availability.ts). No retention change.
+ * (lib/loops/availability.ts).
+ *
+ * WHERE THE LIST COMES FROM. This browser's history (localStorage, last 20, 24 h)
+ * MERGED with the signed-in user's library (GET /api/library, owner-scoped on the
+ * server). A library entry carries the server's real deadline (`expiresAtMs`), so
+ * a subscriber's song older than 24 hours is listed open. A browser-only entry
+ * keeps the 24-hour clock: if the user is signed in and it is not in their
+ * library, it is not theirs to keep (anonymous) or it is already deleted.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -37,9 +46,11 @@ import type { Job } from '@stem-loops/types';
 import { LoopResults } from '@/components/LoopResults';
 import { getStoredHistoryEntries } from '@/lib/history';
 import { formatExpiresIn } from '@/lib/retention';
+import { jobLabel } from '@/lib/job-label';
 import {
   LOOPS_CLOSED_COPY,
   LOOPS_WINDOW_MS,
+  expiresAtMsOf,
   jobIdFrom,
   loopsWindowOpen,
   type LoopsClosedReason,
@@ -49,6 +60,24 @@ import {
 export interface SongEntry {
   readonly id: string;
   readonly at: number;
+  /** The server's end of retention (library entries only). Absent: `at` + 24 h. */
+  readonly expiresAtMs?: number | null;
+  /** A human name (library entries only). Absent: the short id. */
+  readonly label?: string | null;
+}
+
+/** What reading the signed-in library came back with. */
+export type LibraryRead =
+  | { readonly kind: 'ok'; readonly songs: SongEntry[] }
+  | { readonly kind: 'signed_out' }
+  | { readonly kind: 'error' };
+
+/** Library entries first (they carry the real deadline), then browser-only ones; newest first. */
+export function mergeSongs(local: SongEntry[], library: SongEntry[]): SongEntry[] {
+  const byId = new Map<string, SongEntry>();
+  for (const s of library) byId.set(s.id, s);
+  for (const s of local) if (!byId.has(s.id)) byId.set(s.id, s);
+  return Array.from(byId.values()).sort((a, b) => b.at - a.at);
 }
 
 type LoadedJob = Job & { original_filename?: string | null };
@@ -65,6 +94,8 @@ export type StemsState = 'ready' | 'partial' | 'unavailable' | 'encode_failed' |
 /** Everything this page reaches outside itself, so a test can count the calls. */
 export interface LoopsViewDeps {
   listSongs(): SongEntry[];
+  /** The signed-in user's library. Optional: absent behaves as signed out. */
+  listLibrary?(signal?: AbortSignal): Promise<LibraryRead>;
   fetchJob(id: string, signal?: AbortSignal): Promise<JobFetch>;
   fetchStemsState(id: string, signal?: AbortSignal): Promise<StemsState>;
   /** Keep the address bar on /loops?job=<id> so the view can be bookmarked. */
@@ -74,6 +105,17 @@ export interface LoopsViewDeps {
 
 export const productionDeps: LoopsViewDeps = {
   listSongs: () => getStoredHistoryEntries(),
+  listLibrary: async (signal) => {
+    try {
+      const res = await fetch('/api/library', { cache: 'no-store', signal });
+      if (res.status === 401) return { kind: 'signed_out' };
+      if (!res.ok) return { kind: 'error' };
+      const body = (await res.json()) as { songs?: LibrarySongWire[] };
+      return { kind: 'ok', songs: (body.songs ?? []).map(songFromLibrary) };
+    } catch {
+      return { kind: 'error' };
+    }
+  },
   fetchJob: async (id, signal) => {
     try {
       const res = await fetch(`/api/jobs/${id}`, { cache: 'no-store', signal });
@@ -104,6 +146,29 @@ export const productionDeps: LoopsViewDeps = {
   },
   now: () => Date.now(),
 };
+
+/** The fields of GET /api/library's rows this page reads. */
+type LibrarySongWire = {
+  id: string;
+  title?: string | null;
+  original_filename?: string | null;
+  youtube_url?: string | null;
+  created_at: string;
+  expires_at: string;
+};
+
+export function songFromLibrary(r: LibrarySongWire): SongEntry {
+  return {
+    id: r.id,
+    at: new Date(r.created_at).getTime(),
+    expiresAtMs: expiresAtMsOf(r.expires_at),
+    label: jobLabel(r),
+  };
+}
+
+/** When a listed song's loops close: the server's deadline, else 24 h from `at`. */
+const closesAt = (s: SongEntry) =>
+  typeof s.expiresAtMs === 'number' && Number.isFinite(s.expiresAtMs) ? s.expiresAtMs : s.at + LOOPS_WINDOW_MS;
 
 type View =
   | { readonly kind: 'none' }
@@ -140,11 +205,27 @@ export default function LoopsView({
   const [pasteError, setPasteError] = useState(false);
   const [view, setView] = useState<View>(initialJobId ? { kind: 'loading' } : { kind: 'none' });
   const [attempt, setAttempt] = useState(0);
+  const [libraryKind, setLibraryKind] = useState<LibraryRead['kind']>('signed_out');
 
   // localStorage only exists in the browser, so it is read in an effect, the
-  // same shape as app/history/page.tsx.
+  // same shape as app/history/page.tsx. The library is merged in when it answers.
   useEffect(() => {
-    setSongs(deps.listSongs());
+    const local = deps.listSongs();
+    if (!deps.listLibrary) {
+      setSongs(local);
+      return;
+    }
+    const ac = new AbortController();
+    let live = true;
+    deps.listLibrary(ac.signal).then((lib) => {
+      if (!live) return;
+      setLibraryKind(lib.kind);
+      setSongs(lib.kind === 'ok' ? mergeSongs(local, lib.songs) : local);
+    });
+    return () => {
+      live = false;
+      ac.abort();
+    };
   }, [deps]);
 
   const pick = useCallback(
@@ -163,9 +244,13 @@ export default function LoopsView({
     // Wait for the list: it is what tells an old song from a mistyped link.
     if (songs === null) return;
     // A song this browser KNOWS is past the window is closed without a request:
-    // the API would answer 404 and say less than we already know.
+    // the API would answer 404 and say less than we already know. Not when the
+    // library could not be read: a browser-only entry's 24 h clock is then not
+    // authoritative (it may be a subscriber's song), so the server decides.
     const known = songs.find((s) => s.id === jobId);
-    if (known && !loopsWindowOpen({ createdAtMs: known.at }, deps.now())) {
+    const authoritative =
+      known !== undefined && (typeof known.expiresAtMs === 'number' || libraryKind !== 'error');
+    if (known && authoritative && !loopsWindowOpen({ expiresAtMs: known.expiresAtMs, createdAtMs: known.at }, deps.now())) {
       setView({ kind: 'closed', reason: 'expired' });
       return;
     }
@@ -202,7 +287,7 @@ export default function LoopsView({
       live = false;
       ac.abort();
     };
-  }, [jobId, songs, deps, attempt]);
+  }, [jobId, songs, deps, attempt, libraryKind]);
 
   const now = deps.now();
   const list = songs ?? [];
@@ -216,8 +301,9 @@ export default function LoopsView({
           section and number.
         </p>
         <p className="lp-note" data-testid="lp-window-note">
-          <strong>Loops are cut only when you ask, within 24 hours of splitting the song.</strong> After that the
-          song&apos;s audio is deleted on our end and there is nothing left to cut from.
+          <strong>Loops are cut only when you ask, while the song is kept.</strong> On Free that is 24 hours after
+          you split it. On Pro and Studio it is as long as the song is in your library. After that the song&apos;s
+          audio is deleted on our end and there is nothing left to cut from.
         </p>
       </header>
 
@@ -235,7 +321,7 @@ export default function LoopsView({
         ) : (
           <ul className="lp-song-list" data-testid="lp-song-list">
             {list.map((s) => {
-              const open = loopsWindowOpen({ createdAtMs: s.at }, now);
+              const open = loopsWindowOpen({ expiresAtMs: s.expiresAtMs, createdAtMs: s.at }, now);
               return (
                 <li key={s.id}>
                   <button
@@ -246,10 +332,10 @@ export default function LoopsView({
                     aria-pressed={jobId === s.id}
                     onClick={() => pick(s.id)}
                   >
-                    <span className="lp-song-id">{shortId(s.id)}</span>
+                    <span className="lp-song-id">{s.label || shortId(s.id)}</span>
                     <span className="lp-song-when">split {ago(now - s.at)}</span>
                     <span className={`lp-song-clock${open ? '' : ' lp-song-closed'}`}>
-                      {open ? `loops close ${formatExpiresIn(s.at + LOOPS_WINDOW_MS, now)}` : 'loops closed'}
+                      {open ? `loops close ${formatExpiresIn(closesAt(s), now)}` : 'loops closed'}
                     </span>
                   </button>
                 </li>
@@ -369,7 +455,8 @@ export default function LoopsView({
 
       <footer className="lp-foot">
         <p className="lp-muted">
-          Songs, stems and loops are deleted 24 hours after a song is split, so download what you want to keep.
+          On Free, songs, stems and loops are deleted 24 hours after a song is split, so download what you want to
+          keep. On Pro and Studio they stay in your library while you are subscribed, and for 30 days after.
           Splitting a song does not change who owns it; see the{' '}
           <a href="/terms" className="lp-link">
             terms

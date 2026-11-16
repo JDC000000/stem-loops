@@ -113,13 +113,16 @@ def _insert_anon_job(
     return job_id
 
 
-# The SQL the route actually runs, parameterized for the test.
+# The SQL the route actually runs, parameterized for the test. (2026-11-15: + the retention
+# guards; test_paid_retention.py runs the statement read from route.ts itself.)
 CLAIM_SQL = """
 UPDATE public.jobs
-   SET user_id = %s
+   SET user_id = %s,
+       expires_at = expires_at + interval '1 microsecond'
  WHERE id IN (
    SELECT id FROM public.jobs
     WHERE user_id IS NULL
+      AND expires_at > now()
       AND client_fingerprint = %s
       AND client_ip_hash = ANY(%s::text[])
     ORDER BY created_at DESC

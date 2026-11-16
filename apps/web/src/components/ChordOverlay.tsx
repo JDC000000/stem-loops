@@ -50,7 +50,6 @@ import {
   type BeatGrid,
   type LineBox,
   type PhoneModel,
-  BEATS_PER_BAR,
   CELL_HEAD_PX,
   SLOT_PAD_PX,
   beatInCell,
@@ -1491,15 +1490,15 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
   const nx = nextChord(runs, positionSec, activeIdx, loop);
   const nextRun = nx ? runs[nx.runIndex] : null;
   const cell = cur >= 0 ? model.cells[cur] : null;
-  const beat = bars && cell && positionSec !== null ? beatInCell(cell, positionSec) : -1;
-  const count = bars && cell && nx ? beatsUntil(cell, nx.inSec) : null;
+  const beat = bars && cell && positionSec !== null ? beatInCell(cell, positionSec, model.beatsPerBar) : -1;
+  const count = bars && cell && nx ? beatsUntil(cell, nx.inSec, model.beatsPerBar) : null;
   const nowText = nowRun ? leadSheetSymbol(nowRun) : '\u2014';
   const nextText = nextRun ? leadSheetSymbol(nextRun) : '';
   const whenText = nx ? `${nx.wraps ? 'Loops back' : 'Next'}${count !== null ? ` in ${count} beat${count === 1 ? '' : 's'}` : ''}` : '';
   // The Now name is fitted to the room Next leaves (card is padded 12 + 1px border).
   const fit = fitNowName(nowText, widthPx - 2 * 13, nx ? Math.max(nameWidthPx(whenText, 13, 1.05), nameWidthPx(nextText, NEXT_PX, 1.12)) : 0);
   return (
-    <div data-testid="phone-chords" data-mode={model.mode} data-reason={model.reason} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div data-testid="phone-chords" data-mode={model.mode} data-beats-per-bar={model.beatsPerBar} data-reason={model.reason} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={focusCardStyle}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 20 }}>
           <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.85)' }} data-testid="phone-position">
@@ -1507,7 +1506,7 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
           </span>
           {beat >= 0 ? (
             <span aria-hidden="true" style={{ display: 'flex', gap: 6 }} data-testid="phone-beats" data-beat={beat + 1}>
-              {Array.from({ length: BEATS_PER_BAR }, (_, b) => (
+              {Array.from({ length: model.beatsPerBar }, (_, b) => (
                 <span
                   key={b}
                   data-testid="phone-beat-dot"

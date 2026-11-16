@@ -20,8 +20,10 @@ import type { BeatGrid } from '../lib/play/sections.ts';
 
 export type { BeatGrid };
 
-/** 4/4. The worker's grid is 4-beat bars too (pipeline.py: bar_sec = 4 * 60 / bpm). */
+/** 4/4, the default. The worker's grid is 4-beat bars too (pipeline.py: bar_sec = 4 * 60 / bpm). */
 export const BEATS_PER_BAR = 4;
+/** Bars per line in the view (whatever the meter). */
+export const LINE_CELLS = 4;
 /** A chord that touches a bar for less than this many beats is not drawn in that bar (timing jitter). */
 export const MIN_SLOT_BEATS = 0.5;
 /** A chord change within this many beats of a beat line counts as "on" it. */
@@ -41,7 +43,16 @@ export const MIN_DOWNBEAT_MARGIN = 1.5;
  * falls on one phase of a 3-beat cycle, the song is in 3 (or ambiguous) and is
  * not drawn as 4/4 bars. A 4/4 song spreads it evenly (~1/3 per phase).
  */
-export const MAX_TRIPLE_SHARE = 0.6;
+export const MAX_TRIPLE_SHARE = 0.45;
+/**
+ * 3/4 (and 6/8 counted in eighths, drawn as two bars of three): at least this
+ * share of on-beat chord-time on ONE phase of the 3-beat cycle, beating the
+ * next phase by TRIPLE_MARGIN, and NOT also explained by a 4-beat cycle (a
+ * change every 12 beats fits both; that is ambiguous and stays a list).
+ */
+export const MIN_TRIPLE_FOR_34 = 0.6;
+export const TRIPLE_MARGIN = 1.5;
+export const MAX_QUAD_FOR_34 = 0.6;
 /** Inside the winning pair, beat 1 must beat beat 3 by this much to be chosen on votes alone. */
 export const HALF_BAR_MARGIN = 1.2;
 /** ... and at least this many chord changes to judge by. */
@@ -201,6 +212,8 @@ export interface PhoneLine {
 
 export interface PhoneModel {
   readonly mode: 'bars' | 'sequence';
+  /** Beats in a bar: 4 (4/4) or 3 (3/4, 6/8 in eighths). 4 in sequence mode (unused there). */
+  readonly beatsPerBar: 3 | 4;
   /** Why bars mode was not used (sequence only). */
   readonly reason: 'ok' | 'no-grid' | 'poor-fit' | 'meter' | 'few-changes' | 'too-many';
   readonly sections: readonly PhoneSection[];
@@ -273,14 +286,14 @@ export function downbeatVotes(
   sections: readonly PhoneSection[],
   grid: BeatGrid,
   durSec: number,
-): { phase: number; scores: number[]; pairs: [number, number]; triple: number; halfBarTie: boolean; aligned: number; total: number; changes: number } {
+): { phase: number; phase3: number; scores: number[]; scores3: number[]; pairs: [number, number]; triple: number; quad: number; halfBarTie: boolean; aligned: number; total: number; changes: number } {
   const scores = new Array<number>(BEATS_PER_BAR).fill(0);
   const scores3 = [0, 0, 0];
   let aligned = 0;
   let total = 0;
   let changes = 0;
   let firstPhase = -1;
-  if (!(grid.beatSec > 0)) return { phase: 0, scores, pairs: [0, 0], triple: 0, halfBarTie: false, aligned, total, changes };
+  if (!(grid.beatSec > 0)) return { phase: 0, phase3: 0, scores, scores3, pairs: [0, 0], triple: 0, quad: 0, halfBarTie: false, aligned, total, changes };
   const segs = segmentsFor(sections, grid, durSec);
   for (let i = 0; i < runs.length; i++) {
     const r = runs[i];
@@ -307,6 +320,9 @@ export function downbeatVotes(
   // Share of on-beat chord-time on ONE phase of a 3-beat cycle: high for 3/4
   // (and 6/8 counted in eighths) whatever the change rate, ~1/3 for 4/4.
   const triple = aligned > 0 ? Math.max(...scores3) / aligned : 0;
+  const quad = aligned > 0 ? Math.max(...scores) / aligned : 0;
+  let phase3 = 0;
+  for (let k = 1; k < 3; k++) if (scores3[k] > scores3[phase3] + 1e-9) phase3 = k;
   const pairs: [number, number] = [scores[0] + scores[2], scores[1] + scores[3]];
   const q = pairs[1] > pairs[0] + 1e-9 ? 1 : 0;
   const a = scores[q];
@@ -319,21 +335,31 @@ export function downbeatVotes(
     halfBarTie = true;
     phase = firstPhase === q || firstPhase === q + 2 ? firstPhase : q;
   }
-  return { phase, scores, pairs, triple, halfBarTie, aligned, total, changes };
+  return { phase, phase3, scores, scores3, pairs, triple, quad, halfBarTie, aligned, total, changes };
 }
 
-/** Does the grid fit the chords well enough to draw bars? */
-export function gridFit(votes: ReturnType<typeof downbeatVotes>): PhoneModel['reason'] {
-  if (votes.changes < MIN_CHANGES || !(votes.total > 0)) return 'few-changes';
-  if (votes.aligned / votes.total < MIN_FIT_FRACTION) return 'poor-fit';
-  // METER FIRST. Changes that fall into a 3-beat cycle mean 3/4 or 6/8, or a
-  // 4/4 grid we cannot tell from one (a change every 12 beats fits both): the
-  // grid cannot be trusted to draw 4-beat bars, so no bars. Only then the
-  // 4/4 test: beats 1+3 against 2+4 (two chords in every bar passes here).
-  if (votes.triple >= MAX_TRIPLE_SHARE) return 'meter';
+/**
+ * Does the grid fit the chords well enough to draw bars, and in which meter?
+ * METER FIRST: a confident 3-beat cycle draws 3/4 bars; any other sign of a
+ * 3-beat cycle (an uncertain band, or a 12-beat cycle that fits 3/4 and 4/4
+ * alike) draws no bars; only then the 4/4 test, beats 1+3 against 2+4 (two
+ * chords in every bar passes it).
+ */
+export function meterFit(votes: ReturnType<typeof downbeatVotes>): { reason: PhoneModel['reason']; beatsPerBar: 3 | 4 } {
+  const no = (reason: PhoneModel['reason']) => ({ reason, beatsPerBar: 4 as const });
+  if (votes.changes < MIN_CHANGES || !(votes.total > 0)) return no('few-changes');
+  if (votes.aligned / votes.total < MIN_FIT_FRACTION) return no('poor-fit');
+  const s3 = [...votes.scores3].sort((a, b) => b - a).map((x) => x / votes.aligned);
+  if (s3[0] >= MIN_TRIPLE_FOR_34 && s3[0] >= TRIPLE_MARGIN * s3[1] && votes.quad <= MAX_QUAD_FOR_34) return { reason: 'ok', beatsPerBar: 3 };
+  if (votes.triple >= MAX_TRIPLE_SHARE) return no('meter');
   const [hi, lo] = [...votes.pairs].sort((a, b) => b - a);
-  if (hi < MIN_DOWNBEAT_MARGIN * lo) return 'meter';
-  return 'ok';
+  if (hi < MIN_DOWNBEAT_MARGIN * lo) return no('meter');
+  return { reason: 'ok', beatsPerBar: 4 };
+}
+
+/** meterFit's verdict alone. */
+export function gridFit(votes: ReturnType<typeof downbeatVotes>): PhoneModel['reason'] {
+  return meterFit(votes).reason;
 }
 
 function linesFor(cells: readonly PhoneCell[]): PhoneLine[] {
@@ -341,7 +367,7 @@ function linesFor(cells: readonly PhoneCell[]): PhoneLine[] {
   let cur: number[] = [];
   let sec = Number.NaN;
   cells.forEach((c, i) => {
-    if (c.section !== sec || cur.length === BEATS_PER_BAR) {
+    if (c.section !== sec || cur.length === LINE_CELLS) {
       if (cur.length) lines.push({ cells: cur, section: sec });
       cur = [];
       sec = c.section;
@@ -378,7 +404,7 @@ function sequenceModel(
     .filter(({ r }) => r.endSec > r.startSec)
     .map(({ r, i }) => ({ startSec: r.startSec, endSec: r.endSec, slots: [{ runIndex: i, beats: null, share: 1, held: false }], section: secAt(r.startSec) }));
   const cells = numberCells(raw);
-  return { mode: 'sequence', reason, sections, cells, lines: linesFor(cells) };
+  return { mode: 'sequence', beatsPerBar: 4, reason, sections, cells, lines: linesFor(cells) };
 }
 
 /**
@@ -392,18 +418,24 @@ export function buildPhoneModel(
   durSec: number,
 ): PhoneModel {
   const sections = phoneSections(regions, durSec);
-  if (runs.length === 0 || !(durSec > 0)) return { mode: 'sequence', reason: 'few-changes', sections, cells: [], lines: [] };
+  if (runs.length === 0 || !(durSec > 0)) return { mode: 'sequence', beatsPerBar: 4, reason: 'few-changes', sections, cells: [], lines: [] };
   if (!grid || !grid.measured || !(grid.beatSec > 0) || !Number.isFinite(grid.beatSec)) return sequenceModel(runs, sections, 'no-grid');
   const votes = downbeatVotes(runs, sections, grid, durSec);
-  const fit = gridFit(votes);
-  if (fit !== 'ok') return sequenceModel(runs, sections, fit);
+  const fit = meterFit(votes);
+  if (fit.reason !== 'ok') return sequenceModel(runs, sections, fit.reason);
+  const m = fit.beatsPerBar;
 
   const beat = grid.beatSec;
-  const bar = beat * BEATS_PER_BAR;
-  const p = votes.phase;
-  // Each segment's first bar line: the downbeat nearest its anchor.
+  const bar = beat * m;
+  // Each segment's first bar line: the downbeat nearest its anchor. In 4/4 the
+  // phase is relative to the section anchor (the worker's 4-beat lines); in
+  // 3/4 it is a phase of the beat count carried across sections.
   const segs = segmentsFor(sections, grid, durSec);
-  const lineOf = (s: Seg) => (p <= BEATS_PER_BAR / 2 ? s.anchor + p * s.beat : s.anchor + (p - BEATS_PER_BAR) * s.beat);
+  const offsetOf = (s: Seg) => (m === 4 ? votes.phase : (((votes.phase3 - s.index0) % 3) + 3) % 3);
+  const lineOf = (s: Seg) => {
+    const o = offsetOf(s);
+    return o <= m / 2 ? s.anchor + o * s.beat : s.anchor + (o - m) * s.beat;
+  };
   const raw: { startSec: number; endSec: number; slots: PhoneSlot[]; section: number }[] = [];
   segs.forEach((s, k) => {
     const from = s.section === -1 && k === 0 && sections.length > 0 ? 0 : lineOf(s);
@@ -426,7 +458,7 @@ export function buildPhoneModel(
     const span = to - from;
     if (!(span > 0)) return;
     const last = k + 1 >= segs.length;
-    const segBar = s.beat * BEATS_PER_BAR;
+    const segBar = s.beat * m;
     const n = last ? Math.max(1, Math.ceil(span / segBar - 1e-6)) : Math.max(1, Math.round(span / segBar));
     // Inside a section the bars share its span evenly: drift is absorbed per section.
     const len = last ? segBar : span / n;
@@ -455,12 +487,12 @@ export function buildPhoneModel(
       if (e > s) touches.push({ c, overlap: e - s, start: s });
     }
     if (touches.length === 0) return;
-    let keep = touches.filter((t) => t.overlap / ((raw[t.c].endSec - raw[t.c].startSec) / BEATS_PER_BAR) >= MIN_SLOT_BEATS);
+    let keep = touches.filter((t) => t.overlap / ((raw[t.c].endSec - raw[t.c].startSec) / m) >= MIN_SLOT_BEATS);
     if (keep.length === 0) keep = [touches.reduce((a, b) => (b.overlap > a.overlap ? b : a))];
     for (const t of keep) {
       const cell = raw[t.c];
       const len = cell.endSec - cell.startSec;
-      cell.slots.push({ runIndex: i, beats: (t.overlap / len) * BEATS_PER_BAR, share: t.overlap / len, held: r.startSec < cell.startSec - 1e-6 });
+      cell.slots.push({ runIndex: i, beats: (t.overlap / len) * m, share: t.overlap / len, held: r.startSec < cell.startSec - 1e-6 });
     }
   });
   for (const c of raw) {
@@ -477,7 +509,7 @@ export function buildPhoneModel(
   let tail = raw.length;
   while (tail > lead && onlyN(raw[tail - 1])) tail--;
   const cells = numberCells(raw.slice(lead, tail).filter((c) => c.slots.length > 0));
-  return { mode: 'bars', reason: 'ok', sections, cells, lines: linesFor(cells) };
+  return { mode: 'bars', beatsPerBar: m, reason: 'ok', sections, cells, lines: linesFor(cells) };
 }
 
 /** The cell being played: the last cell that starts at or before `t`; -1 before the first. */
@@ -559,17 +591,17 @@ export function nextChord(
 }
 
 /** Beats until `inSec` from now in `cell` (bars mode), at least 1. */
-export function beatsUntil(cell: Pick<PhoneCell, 'startSec' | 'endSec'>, inSec: number): number {
-  const beat = (cell.endSec - cell.startSec) / BEATS_PER_BAR;
+export function beatsUntil(cell: Pick<PhoneCell, 'startSec' | 'endSec'>, inSec: number, beatsPerBar: number = BEATS_PER_BAR): number {
+  const beat = (cell.endSec - cell.startSec) / beatsPerBar;
   if (!(beat > 0)) return 1;
   return Math.max(1, Math.ceil(inSec / beat - 0.05));
 }
 
 /** 0-based beat of the bar at `t`. */
-export function beatInCell(cell: Pick<PhoneCell, 'startSec' | 'endSec'>, t: number): number {
-  const beat = (cell.endSec - cell.startSec) / BEATS_PER_BAR;
+export function beatInCell(cell: Pick<PhoneCell, 'startSec' | 'endSec'>, t: number, beatsPerBar: number = BEATS_PER_BAR): number {
+  const beat = (cell.endSec - cell.startSec) / beatsPerBar;
   if (!(beat > 0)) return 0;
-  return Math.min(BEATS_PER_BAR - 1, Math.max(0, Math.floor((t - cell.startSec) / beat + 1e-9)));
+  return Math.min(beatsPerBar - 1, Math.max(0, Math.floor((t - cell.startSec) / beat + 1e-9)));
 }
 
 /** "Chorus 2 · bar 3/16" (bars), "Chorus 2" (sequence), "Bar 2/3" before the first section. */
@@ -695,5 +727,5 @@ export function layoutLine(
     }
     return { h: y + rowH, rows: rows >= 2 ? 2 : 1, cells: boxes };
   };
-  return attempt(BEATS_PER_BAR, false) ?? attempt(2, false) ?? (attempt(2, true) as LineBox);
+  return attempt(LINE_CELLS, false) ?? attempt(2, false) ?? (attempt(2, true) as LineBox);
 }

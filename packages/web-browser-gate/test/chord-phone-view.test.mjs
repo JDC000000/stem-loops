@@ -22,8 +22,11 @@
 //  LOOP: near the end of a looped section, Next is the chord at the loop start
 //   ("Loop back to") and the next line is the loop's first line.
 //  GAP: in a gap in the chord data, Next is the next chord after the playhead.
-//  NO GRID / 3/4: a plain chord sequence; no beat dots, no beat counts, no bar
+//  NO GRID: a plain chord sequence; no beat dots, no beat counts, no bar
 //   numbers, no split cells; names still >= 14px and never blank.
+//  METER: 3/4 and 6/8-in-eighths get 3-beat bars (3 dots, bar n/N, the song's
+//   own chords per bar, split bars); an uncertain meter gets the plain list;
+//   4/4 with two chords per bar keeps 4-beat bars.
 //  #212: the "All chords" list below keeps one primary chip per segment.
 // It FAILS (never skips) when Chromium or the page is missing.
 
@@ -232,7 +235,7 @@ function measure() {
     return ratio(over(parse(getComputedStyle(el).color), bg), bg);
   };
   const root = document.querySelector('[data-testid="phone-chords"]');
-  const out = { mode: root?.dataset.mode, reason: root?.dataset.reason, now: null, position: null, beat: null, dots: [], next: null, curCells: [], curSlots: [], lineCur: [], lineNextFirst: null, slots: [], barNumbers: [], live: 0, primaries: 0, cellsMulti: 0 };
+  const out = { mode: root?.dataset.mode, beatsPerBar: root?.dataset.beatsPerBar, reason: root?.dataset.reason, now: null, position: null, beat: null, dots: [], next: null, curCells: [], curSlots: [], lineCur: [], lineNextFirst: null, slots: [], barNumbers: [], live: 0, primaries: 0, cellsMulti: 0 };
   if (!root) return out;
   const name = root.querySelector('[data-testid="playhead-now-name"]');
   if (name) {
@@ -551,61 +554,63 @@ for (const vp of [[390, 844], [360, 800]]) {
   });
 }
 
-test('phone chords @ 360x800: a 3/4 song on a correct beat is not drawn as 4/4 bars', async () => {
-  const beat = 60 / 90;
-  const prog = ['C:maj', 'A:min', 'F:maj', 'G:7', 'E:min7', 'A:min', 'D:min7', 'G:7'];
-  const segments = [];
-  for (let k = 0; k < 60; k++) segments.push({ start_sec: 0.5 + 3 * k * beat, end_sec: 0.5 + 3 * (k + 1) * beat, label: prog[k % prog.length], confidence: 1 });
-  const payload = { segments, duration_sec: segments.at(-1).end_sec + 0.5 };
-  const { ctx, page, errors } = await open(browser, built, [360, 800], { pos: 40, grid: { beatSec: beat, anchorSec: 0.5, measured: true }, sections: [], payload });
-  try {
-    const m = await page.evaluate(measure);
-    const f = [];
-    if (m.mode !== 'sequence') f.push(`3/4 song drawn in ${m.mode} mode (${m.reason})`);
-    if (m.beat !== null) f.push('beat dots on a 3/4 song');
-    checkSlots(m, f, '3/4');
-    assert.deepEqual(errors, []);
-    fail(f);
-  } finally {
-    await ctx.close();
-  }
-});
 
-// Meter: the 4/4 bar grid must never be drawn over another meter (review 5 N1).
+// Meter (reviews 5 and 6): 4/4 bars are never drawn over another meter; a
+// confident 3-beat cycle gets 3-beat bars (6/8 counted in eighths: two bars of
+// three); an uncertain meter gets the plain list.
 const WALTZ = ['C:maj', 'A:min', 'F:maj', 'G:7', 'E:min7', 'A:min', 'D:min7', 'G:7'];
 const METER_CASES = [
-  { name: '3/4, a change every 2 bars', bpm: 96, beats: 6, n: 32, want: 'sequence' },
-  { name: '3/4, a change every bar', bpm: 96, beats: 3, n: 48, want: 'sequence' },
-  { name: '6/8 counted in eighths, a change every bar', bpm: 180, beats: 6, n: 40, want: 'sequence' },
-  { name: '4/4, two changes every bar', bpm: 96, beats: 2, n: 96, want: 'bars' },
+  { name: '3/4, a change every bar', bpm: 96, n: 48, bar: (k) => [[WALTZ[k % 8], 3]], want: 3 },
+  { name: '3/4, a change every 2 bars', bpm: 96, n: 32, bar: (k) => [[WALTZ[k % 8], 6]], want: 3 },
+  { name: '3/4, 2+1 in every bar', bpm: 96, n: 40, bar: (k) => [[WALTZ[k % 8], 2], [WALTZ[(k + 3) % 8], 1]], want: 3 },
+  { name: '6/8 counted in eighths, a change every bar', bpm: 180, n: 40, bar: (k) => [[WALTZ[k % 8], 6]], want: 3 },
+  { name: '3/4 alternating 2+1 and 1+2 (uncertain)', bpm: 96, n: 40, bar: (k) => (k % 2 ? [[WALTZ[k % 8], 1], [WALTZ[(k + 3) % 8], 2]] : [[WALTZ[k % 8], 2], [WALTZ[(k + 3) % 8], 1]]), want: 'sequence' },
+  { name: '3/4, a change every 4 bars (fits 4/4 too)', bpm: 96, n: 20, bar: (k) => [[WALTZ[k % 8], 12]], want: 'sequence' },
+  { name: '4/4, two changes every bar', bpm: 96, n: 48, bar: (k) => [[WALTZ[(2 * k) % 8], 2], [WALTZ[(2 * k + 1) % 8], 2]], want: 4 },
 ];
 for (const vp of [[390, 844], [360, 800]]) {
   for (const mc of METER_CASES) {
-    test(`phone chords @ ${vp[0]}x${vp[1]}: ${mc.name} -> ${mc.want}`, async () => {
-      const bars = Array.from({ length: mc.n }, (_, k) => [[WALTZ[k % WALTZ.length], mc.beats]]);
+    test(`phone chords @ ${vp[0]}x${vp[1]}: ${mc.name} -> ${mc.want === 'sequence' ? 'plain list' : `${mc.want}-beat bars`}`, async () => {
+      const bars = Array.from({ length: mc.n }, (_, k) => mc.bar(k));
       const { payload, grid, beat } = synth(bars, mc.bpm);
+      const totalBeats = bars.flat().reduce((a, [, b]) => a + b, 0);
       const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections: [], payload });
       try {
         const f = [];
-        for (let k = 1; k < mc.n; k += 5) {
-          const t = 0.5 + (k * mc.beats + 0.4) * beat;
+        let checked = 0;
+        for (let i = 0; i < 24; i++) {
+          const t = 0.5 + ((i * 7.3) % (totalBeats - 2) + 0.4) * beat;
           await moveTo(page, t);
           const m = await page.evaluate(measure);
           const ctxs = `${vp.join('x')} ${mc.name} t=${t.toFixed(2)}`;
-          if (m.mode !== mc.want) f.push(`drawn as ${m.mode} (${m.reason}), want ${mc.want} @ ${ctxs}`);
-          if (mc.want === 'sequence') {
-            if (m.beat !== null || m.dots.length) f.push(`beat dots on a non-4/4 song @ ${ctxs}`);
-            if (m.cellsMulti) f.push(`${m.cellsMulti} invented split bars @ ${ctxs}`);
-            if (/bar/i.test(m.position ?? '')) f.push(`position "${m.position}" claims a bar @ ${ctxs}`);
-            if (m.next && m.next.when !== 'Next') f.push(`"${m.next.when}" counts beats on a non-4/4 song @ ${ctxs}`);
-          } else {
-            // 4/4 with two chords per bar: every bar on screen holds two named chords.
-            for (const g of m.groups) if (g.texts.length !== 2) f.push(`bar "${g.label}" holds ${g.texts.length} chords @ ${ctxs}`);
-          }
           const heard = payload.segments.find((x) => x.start_sec <= t && t < x.end_sec);
           checkNow(m, f, ctxs, SPELL[heard.label]);
           checkSlots(m, f, ctxs);
+          if (mc.want === 'sequence') {
+            if (m.mode !== 'sequence') f.push(`drawn as ${m.mode}/${m.beatsPerBar}, want the plain list @ ${ctxs}`);
+            if (m.beat !== null || m.dots.length) f.push(`beat dots with an uncertain meter @ ${ctxs}`);
+            if (m.cellsMulti) f.push(`${m.cellsMulti} invented split bars @ ${ctxs}`);
+            if (/bar/i.test(m.position ?? '')) f.push(`position "${m.position}" claims a bar @ ${ctxs}`);
+            continue;
+          }
+          const m3 = mc.want;
+          if (m.mode !== 'bars' || m.beatsPerBar !== String(m3)) { f.push(`drawn as ${m.mode}/${m.beatsPerBar} (${m.reason}), want ${m3}-beat bars @ ${ctxs}`); continue; }
+          const k = Math.floor((t - 0.5) / (m3 * beat) + 1e-9);
+          const nBars = totalBeats / m3;
+          if (m.position !== `Bar ${k + 1}/${nBars}`) f.push(`position "${m.position}", want "Bar ${k + 1}/${nBars}" @ ${ctxs}`);
+          if (m.dots.length !== m3) f.push(`${m.dots.length} beat dots, want ${m3} @ ${ctxs}`);
+          const wantBeat = Math.floor((t - 0.5 - k * m3 * beat) / beat + 1e-9) + 1;
+          if (m.beat !== String(wantBeat)) f.push(`beat ${m.beat}, want ${wantBeat} @ ${ctxs}`);
+          // Every bar on screen holds exactly the chords of that bar of the song.
+          for (const g of m.groups) {
+            const n = Number(/^Bar (\d+)/.exec(g.label)?.[1]);
+            const bs = 0.5 + (n - 1) * m3 * beat;
+            const want = payload.segments.filter((x) => Math.min(x.end_sec, bs + m3 * beat) - Math.max(x.start_sec, bs) >= 0.5 * beat).map((x) => SPELL[x.label]);
+            if (g.texts.join() !== want.join()) f.push(`bar ${n} shows [${g.texts}], want [${want}] @ ${ctxs}`);
+          }
+          checked++;
         }
+        if (mc.want !== 'sequence' && checked < 20) f.push(`only ${checked} positions checked`);
         assert.deepEqual(errors, []);
         fail(f);
       } finally {

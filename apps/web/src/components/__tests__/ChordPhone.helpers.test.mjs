@@ -17,6 +17,7 @@ import {
   cellIndexAt,
   downbeatVotes,
   gridFit,
+  meterFit,
   layoutLine,
   leadSheetSymbol,
   lineIndexOfCell,
@@ -274,50 +275,72 @@ test('no grid -> sequence: one cell per chord, no beats', () => {
   assert.equal(buildPhoneModel(RUNS, { ...GRID, beatSec: NaN }, SECTIONS, DUR).mode, 'sequence');
 });
 
-test('3/4 waltz on a correct 90 bpm beat -> sequence (meter), not fake 4/4 bars', () => {
-  const bars = [];
-  const prog = ['C:maj', 'A:min', 'F:maj', 'G:7', 'E:min7', 'A:min', 'D:min7', 'G:7'];
-  for (let k = 0; k < 48; k++) bars.push([[prog[k % prog.length], 3]]);
-  const w = song(bars, { bpm: 90 });
-  const m = buildPhoneModel(w.runs, w.grid, [], w.dur);
-  assert.equal(m.mode, 'sequence');
-  assert.equal(m.reason, 'meter');
-});
+/** Bars of 3/4 as [label, beats] lists, on a grid whose first beat is the first chord. */
+const waltz = (bars, bpm = 96) => song(bars, { bpm });
+const WP = ['C:maj', 'A:min', 'F:maj', 'G:7', 'E:min7', 'A:min', 'D:min7', 'G:7'];
 
-test('meter first: 3/4 changing every 2 or 4 bars, and 6/8 in eighths, are never drawn as 4/4', () => {
-  // Review 5 N1: a change every 6 beats lands on 4/4 phases 0,2,0,2, which the
-  // half-bar rule alone would accept and draw as invented "C | Am" bars.
-  const prog = ['C:maj', 'A:min', 'F:maj', 'G:7', 'E:min7', 'A:min', 'D:min7', 'G:7'];
-  for (const [what, beats, n] of [['3/4 every 2 bars', 6, 32], ['3/4 every 4 bars', 12, 20], ['6/8 every bar (eighth beat)', 6, 40], ['6/8 every 2 bars', 12, 20]]) {
-    const w = song(Array.from({ length: n }, (_, k) => [[prog[k % prog.length], beats]]), { bpm: what.startsWith('6/8') ? 180 : 96 });
+test('3/4: a confident 3-beat cycle draws 3-beat bars on the true downbeats', () => {
+  for (const [what, bars] of [
+    ['a change every bar', Array.from({ length: 48 }, (_, k) => [[WP[k % 8], 3]])],
+    ['a change every 2 bars', Array.from({ length: 32 }, (_, k) => [[WP[k % 8], 6]])],
+    ['2+1 in every bar', Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 2], [WP[(k + 3) % 8], 1]])],
+    ['6/8 counted in eighths (two bars of three)', Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 6]])],
+  ]) {
+    const w = waltz(bars, what.startsWith('6/8') ? 180 : 96);
     const v = downbeatVotes(w.runs, [], w.grid, w.dur);
-    assert.ok(v.triple >= 0.6, `${what}: triple share ${v.triple}`);
+    assert.deepEqual(meterFit(v), { reason: 'ok', beatsPerBar: 3 }, what);
     const m = buildPhoneModel(w.runs, w.grid, [], w.dur);
-    assert.equal(m.mode, 'sequence', `${what} drawn as ${m.mode}`);
-    assert.equal(m.reason, 'meter', what);
-  }
-  // ... while 4/4 with two chords per bar, one per bar, and one per two bars keeps its bars.
-  for (const [what, bar] of [['2+2', [['C:maj', 2], ['A:min', 2]]], ['1 per bar', [['C:maj', 4]]]]) {
-    const bars = Array.from({ length: 32 }, (_, k) => bar.map(([, b], j) => [prog[(k * bar.length + j) % prog.length], b]));
-    const w = song(bars, { bpm: 100 });
-    const v = downbeatVotes(w.runs, [], w.grid, w.dur);
-    assert.ok(v.triple < 0.6, `${what}: triple share ${v.triple}`);
-    assert.equal(buildPhoneModel(w.runs, w.grid, [], w.dur).mode, 'bars', what);
+    assert.equal(m.mode, 'bars', what);
+    assert.equal(m.beatsPerBar, 3, what);
+    const beat = w.grid.beatSec;
+    for (const c of m.cells) {
+      const k = (c.startSec - 0.5) / (3 * beat);
+      assert.ok(Math.abs(k - Math.round(k)) < 1e-6, `${what}: bar at ${c.startSec} is off the 3/4 downbeats`);
+      assert.ok(Math.abs(c.slots.reduce((a, s) => a + s.beats, 0) - 3) < 0.05, `${what}: a bar does not hold 3 beats`);
+    }
+    if (what.startsWith('2+1')) {
+      for (const c of m.cells.slice(0, -1)) assert.deepEqual(c.slots.map((s) => Math.round(s.beats)), [2, 1], 'the 2+1 bars split');
+    }
+    const ci = cellIndexAt(m, 0.5 + (3 * 5 + 1.2) * beat);
+    assert.equal(beatInCell(m.cells[ci], 0.5 + (3 * 5 + 1.2) * beat, 3), 1);
+    assert.equal(positionLabel(m, ci), `Bar ${m.cells[ci].numberInSection}/${m.cells.length}`);
   }
 });
 
-test('meter: a 3/4 song cut into worker sections (on 4-beat lines) is still read as 3/4', () => {
-  // The worker groups beats in 4s whatever the meter, so its sections start on
-  // beats 0, 16, 32 ... Counting a 3-beat cycle from each section's own start
-  // would scramble it; the beat count is carried across sections instead.
-  const prog = ['C:maj', 'A:min', 'F:maj', 'G:7'];
-  const w = song(Array.from({ length: 32 }, (_, k) => [[prog[k % 4], 6]]), { bpm: 96 });
-  const beat = 60 / 96;
+test('3/4 in worker sections (4-beat lines): the beat count is carried, bars stay on the waltz downbeat', () => {
+  const w = waltz(Array.from({ length: 32 }, (_, k) => [[WP[k % 8], 6]]));
+  const beat = w.grid.beatSec;
   const sections = [];
   for (let b = 0; b < 32 * 6; b += 16) sections.push({ startSec: 0.5 + b * beat, endSec: 0.5 + (b + 16) * beat, label: 'verse' });
-  const v = downbeatVotes(w.runs, phoneSections(sections, w.dur), w.grid, w.dur);
-  assert.ok(v.triple >= 0.6, `triple share ${v.triple}`);
-  assert.equal(buildPhoneModel(w.runs, w.grid, sections, w.dur).mode, 'sequence');
+  const m = buildPhoneModel(w.runs, w.grid, sections, w.dur);
+  assert.equal(m.mode, 'bars');
+  assert.equal(m.beatsPerBar, 3);
+  for (const c of m.cells) {
+    const k = (c.startSec - 0.5) / (3 * beat);
+    assert.ok(Math.abs(k - Math.round(k)) < 1e-6, `bar at ${c.startSec} is off the waltz downbeat`);
+  }
+});
+
+test('meter uncertain -> plain list: 12-beat cycles, and 3/4 alternating 2+1 / 1+2 (review 5 S1)', () => {
+  for (const [what, bars] of [
+    ['3/4 every 4 bars', Array.from({ length: 20 }, (_, k) => [[WP[k % 8], 12]])],
+    ['4/4 every 3 bars', Array.from({ length: 20 }, (_, k) => [[WP[k % 8], 12]])],
+    ['3/4 alternating 2+1 and 1+2', Array.from({ length: 40 }, (_, k) => (k % 2 ? [[WP[k % 8], 1], [WP[(k + 3) % 8], 2]] : [[WP[k % 8], 2], [WP[(k + 3) % 8], 1]]))],
+  ]) {
+    const w = waltz(bars);
+    const m = buildPhoneModel(w.runs, w.grid, [], w.dur);
+    assert.equal(m.mode, 'sequence', `${what} drawn as ${m.mode}/${m.beatsPerBar}`);
+    assert.equal(m.reason, 'meter', what);
+  }
+  // ... while 4/4 (2+2, 1 per bar, 3+1, 3+3+2) keeps its 4-beat bars.
+  for (const [what, bar] of [['2+2', [2, 2]], ['1 per bar', [4]], ['3+1', [3, 1]], ['3+3+2 over 2 bars', [3, 3, 2]]]) {
+    const len = bar.reduce((a, b) => a + b, 0);
+    const bars = Array.from({ length: 64 / (len / 4) }, (_, k) => bar.map((b, j) => [WP[(k * bar.length + j) % 8], b]));
+    const w = song(bars, { bpm: 100 });
+    const m = buildPhoneModel(w.runs, w.grid, [], w.dur);
+    assert.equal(m.mode, 'bars', what);
+    assert.equal(m.beatsPerBar, 4, what);
+  }
 });
 
 test('poor fit (chords not on the beat) -> sequence', () => {

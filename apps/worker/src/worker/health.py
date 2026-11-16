@@ -23,20 +23,31 @@ app = FastAPI(title="stem-loops-worker")
 
 
 def sentry_state() -> str:
-    """``"on"`` only if ``sentry_sdk.init()`` ran AND produced a client that can send.
+    """``"on"`` only if ``sentry_sdk.init()`` ran AND left a client CONFIGURED to send.
+
+    Configured, not proven: a syntactically valid DSN pointing at an unreachable
+    host still reports "on". This answers "did Sentry initialise", which is the
+    question nobody could answer without the Fly dashboard — not "did an event
+    arrive", which no liveness probe can answer without the network.
 
     Read from the SDK, not from ``os.environ["SENTRY_DSN"]``: a set-but-unusable
-    env var must not report "on", because the whole point of the field is to tell
-    us whether events actually reach Sentry.
+    env var must not report "on".
 
-    Both halves are load-bearing on sentry-sdk 2.x (pinned 2.68.1, floor 2.66.0):
+    ``transport is not None`` is the half that does the work on sentry-sdk 2.x
+    (pinned 2.68.1, floor 2.66.0). A client built by ``init()`` with no usable DSN
+    is still ``is_active()`` — it has ``transport is None`` and silently drops
+    every event — so a bare ``is_active()`` check would report "on" for a worker
+    that reports nothing.
 
-    * ``get_client()`` returns a ``NonRecordingClient`` when ``init()`` never ran;
-      its ``is_active()`` is ``False``.
-    * ``is_active()`` alone is NOT enough — a client built by ``init()`` with no
-      usable DSN is still "active" but has ``transport is None`` and silently
-      drops every event. ``transport`` is ``None`` on ``BaseClient``, so the
-      attribute is present on both client kinds and this never raises.
+    ``is_active()`` is DEFENSIVE and redundant on 2.66-2.75: the only client whose
+    ``is_active()`` is ``False`` is ``NonRecordingClient`` (what ``get_client()``
+    returns when ``init()`` never ran), and that client also has no transport. A
+    mutant dropping it survives today; `tests/mutation/manifest.py` records that as
+    an expected survivor, so if a future SDK makes it meaningful the runner says so.
+    Keep it: it is the SDK's own documented "can this client record" predicate.
+
+    ``transport`` is assigned in ``BaseClient.__init__`` (sentry_sdk/client.py:422),
+    so it is present on every client kind and this cannot raise.
     """
     client = sentry_sdk.get_client()
     return "on" if client.is_active() and client.transport is not None else "off"

@@ -12,17 +12,37 @@ fixture puts the previous one back.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 
 import pytest
 import sentry_sdk
 from fastapi.testclient import TestClient
-from sentry_sdk.client import NonRecordingClient
+from sentry_sdk.client import BaseClient, NonRecordingClient
 
 from worker.health import app, sentry_state
 
 # Not a real project: ingest.sentry.io/0 accepts no events. No test here sends one.
 FAKE_DSN = "https://publickey000@o0.ingest.sentry.io/0"
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_sentry_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let the shell's SENTRY_DSN decide what these tests assert.
+
+    Bare ``sentry_sdk.init()`` READS ``SENTRY_DSN`` from ``os.environ``. Without
+    this, ``test_sentry_off_when_init_ran_without_a_usable_dsn`` — the only test
+    that pins the ``transport`` half, i.e. this PR's central claim — passes or
+    fails depending on the developer's shell, and builds a live transport aimed
+    at whatever DSN is exported, plausibly the production one. Same hazard, and
+    the same answer, as ``conftest.py``'s ``DATABASE_URL`` guard: the owner's
+    shell may export a production value and ``make test-py`` inherits it.
+    """
+    monkeypatch.delenv("SENTRY_DSN", raising=False)
+
+
+def _set_client(client: BaseClient) -> None:
+    sentry_sdk.get_global_scope().set_client(client)
 
 
 @pytest.fixture
@@ -32,11 +52,7 @@ def restore_sentry_client() -> Iterator[None]:
     try:
         yield
     finally:
-        sentry_sdk.get_global_scope().set_client(previous)
-
-
-def _set_client(client: object) -> None:
-    sentry_sdk.get_global_scope().set_client(client)
+        _set_client(previous)
 
 
 def test_sentry_off_when_init_never_ran(restore_sentry_client: None) -> None:
@@ -49,14 +65,21 @@ def test_sentry_off_when_init_ran_without_a_usable_dsn(restore_sentry_client: No
     """is_active() is True here and the client still cannot send: transport is None.
 
     This is the case a bare ``is_active()`` check would report as "on", which is
-    exactly the false green the field is supposed to prevent.
+    exactly the false green the field is supposed to prevent — so this test is the
+    one that pins the ``transport`` half of ``sentry_state``.
+
+    ``SENTRY_DSN`` is unset by the autouse fixture above, which is what makes bare
+    ``init()`` produce a transport-less client rather than a working one.
     """
+    assert "SENTRY_DSN" not in os.environ  # the fixture, asserted, not assumed
     sentry_sdk.init()
     assert sentry_sdk.get_client().is_active() is True
+    assert sentry_sdk.get_client().transport is None
     assert sentry_state() == "off"
 
 
 def test_sentry_on_when_initialised(restore_sentry_client: None) -> None:
+    """A DSN passed explicitly, so this does not depend on the environment either."""
     sentry_sdk.init(dsn=FAKE_DSN)
     try:
         assert sentry_state() == "on"

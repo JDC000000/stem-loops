@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  PHONE_TAB_CAPTURE_MESSAGE,
   UnsupportedBrowserError,
   __internal,
   checkTabCaptureSupport,
@@ -17,6 +18,10 @@ const UA = {
     'Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0',
   iphone:
     'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Version/17.5 Mobile/15E148 Safari/604.1',
+  android:
+    'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36',
+  androidFirefox:
+    'Mozilla/5.0 (Android 14; Mobile; rv:129.0) Gecko/129.0 Firefox/129.0',
   desktopSafari:
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.5 Safari/605.1.15',
 };
@@ -42,11 +47,38 @@ test('support check: Firefox is blocked with branded message', () => {
   assert.ok(/chrome/i.test(r.message));
 });
 
-test('support check: iOS Safari is blocked with desktop-only message', () => {
+// The product works on phones (#278). The phone banner must scope the
+// restriction to THIS feature and must not claim the app is desktop-only.
+function assertPhoneScopedMessage(message) {
+  assert.match(message, /live chord overlay/i, 'names the feature');
+  assert.match(message, /Chrome or Edge on a computer/, 'says what it needs');
+  assert.match(message, /Play along works on your phone or tablet/, 'says the product works on phones and tablets');
+  assert.match(message, /phone and tablet browsers/, 'covers tablets, not just phones');
+  assert.doesNotMatch(message, /desktop[ -]only|laptop or desktop|desktop or laptop/i);
+}
+
+test('support check: iOS Safari is blocked with a feature-scoped phone message', () => {
   const r = checkTabCaptureSupport(UA.iphone);
   assert.equal(r.supported, false);
   assert.equal(r.reason, 'ios-safari');
-  assert.ok(/desktop/i.test(r.message));
+  assert.equal(r.message, PHONE_TAB_CAPTURE_MESSAGE);
+  assertPhoneScopedMessage(r.message);
+});
+
+test('support check: Android (Chrome and Firefox) gets the same phone message', () => {
+  for (const ua of [UA.android, UA.androidFirefox]) {
+    const r = checkTabCaptureSupport(ua);
+    assert.equal(r.supported, false);
+    assert.equal(r.reason, 'android');
+    assertPhoneScopedMessage(r.message);
+  }
+});
+
+test('support check: no tab-capture message claims the product is desktop-only', () => {
+  for (const ua of Object.values(UA)) {
+    const r = checkTabCaptureSupport(ua);
+    if (r.message) assert.doesNotMatch(r.message, /desktop[ -]only/i, ua);
+  }
 });
 
 test('support check: desktop Safari is blocked', () => {

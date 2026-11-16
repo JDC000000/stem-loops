@@ -66,6 +66,16 @@ export interface BillingSubscription {
   currentPeriodStart: Date | null;
   currentPeriodEnd: Date | null;
   cancelAtPeriodEnd: boolean;
+  /** When the provider created the subscription (Stripe `created`). Used to
+   *  tell a redelivered first activation from a re-subscription (B3). */
+  createdAt?: Date | null;
+}
+
+/** Fields of a subscription an update event reports as changed. */
+export interface BillingSubscriptionChange {
+  status?: SubscriptionStatus;
+  planCode?: PlanCode;
+  cancelAtPeriodEnd?: boolean;
 }
 
 export interface BillingInvoice {
@@ -104,12 +114,24 @@ export type BillingEvent =
       type: 'subscription_upserted';
       userId: string;
       subscription: BillingSubscription;
+      /**
+       * What the event itself says changed (Stripe `data.previous_attributes`).
+       * null for customer.subscription.created (a new subscription). For an
+       * update, a field is present only if Stripe reports it changed.
+       * Billing emails derive the transition from this, NOT from our stored
+       * row, so a Stripe retry after a partial failure re-derives the same
+       * email (emails v1.2 R4/R5; PR #272 review B2).
+       */
+      previous?: BillingSubscriptionChange | null;
     }
   | {
       type: 'subscription_canceled';
       userId: string;
       providerSubscriptionId: string;
       providerCustomerId?: string | null;
+      /** True when Stripe ended a subscription that was never paid
+       *  (status incomplete / incomplete_expired). No plan-ended email. */
+      neverPaid?: boolean;
     }
   | {
       type: 'invoice_paid';
@@ -117,12 +139,28 @@ export type BillingEvent =
       providerSubscriptionId: string;
       providerCustomerId?: string | null;
       invoice: BillingInvoice;
+      /** Stripe invoice.billing_reason: 'subscription_create' labels the first
+       *  invoice "Pro plan", 'subscription_cycle' a "Pro plan renewal" (E4). */
+      billingReason?: string | null;
     }
   | {
       type: 'invoice_payment_failed';
       userId: string;
       providerSubscriptionId: string;
       providerCustomerId?: string | null;
+      /** Fields below feed the R7 payment-failed email (emails v1.2 §3 R7). */
+      providerInvoiceId?: string | null;
+      /** invoice.attempt_count; part of the R7 idempotency key. */
+      attemptCount?: number | null;
+      /** invoice.next_payment_attempt, or null when none is scheduled. */
+      nextPaymentAttempt?: Date | null;
+      /** The subscription line's period.start: the period the failed charge
+       *  is for. R7's grace date is this + PAST_DUE_GRACE_MS. */
+      periodStart?: Date | null;
+      /** invoice.billing_reason. R7 is sent only for subscription_cycle and
+       *  subscription_update; a failed first payment (subscription_create)
+       *  sends nothing. */
+      billingReason?: string | null;
     }
   | {
       type: 'dispute_created';

@@ -1,58 +1,21 @@
-// Header + footer shared by the landing, /terms and /privacy.
+// Header + footer shared by the landing, /terms, /privacy and the 404.
+import SignedInNav from '@/components/chrome/SignedInNav';
 import { ToInputLink } from './DemoArt';
 import { Ic } from './Icons';
 
-export function SiteHeader({ showHistory = true, showSignIn = true }: { showHistory?: boolean; showSignIn?: boolean }) {
-  return (
-    <header className="site-header">
-      <div className="container header-row">
-        {/* Wordmark: "stem" + lime dash + "loops" (the name is always written stem-loops) */}
-        <a className="wordmark" href="/" aria-label="stem-loops, home">
-          <span className="wm-stem">stem</span>
-          <span className="wm-dash">-</span>
-          <span className="wm-loops">loops</span>
-        </a>
-        {/* Grouped so the header stays wordmark-left / links-right: .header-row is
-            space-between, and a third direct child would strand "Job history" in the
-            middle of the bar. */}
-        {(showHistory || showSignIn) && (
-          <nav className="header-nav" aria-label="Account">
-            {showHistory && (
-              <a className="header-link" href="/history">
-                Job history
-              </a>
-            )}
-            {/* Sign-in needs a way in from the landing page because THE JOB PAGE
-                redirects: app/jobs/[id]/page.tsx:32-33 awaits getUser() and sends a
-                signed-out visitor to /login before the player, the faders or the
-                chords render.
-
-                Naming the right reason matters, because this comment used to give a
-                different one — it cited V3-J9 and the download path, in the present
-                tense, as if describing the code. It was not describing the code.
-                V3-J9 (TSD §12.9) is Jon's DECISION about a path that is still
-                UNBUILT: mintStemDownloadUrl (lib/stem-urls.ts:68) has no production
-                consumer, its only callers being its own contract test, and the
-                serving route under api/jobs/[id]/ makes ZERO getUser() calls. The
-                LINK is still owed to V3-J9, which lists "a sign-in affordance on the
-                landing page" among the agent deliverables; only the stated reason
-                was wrong. (The same wording survives in that route's own header. It
-                is deliberately left alone: it sits under an unresolved M-11 note
-                awaiting Jon's recorded acceptance.)
-
-                Sign-in itself works today; the sign-up tab self-describes as
-                unavailable until NEXT_PUBLIC_HCAPTCHA_SITE_KEY is set
-                (LoginForm.tsx), so this link never leads to a silently broken form. */}
-            {showSignIn && (
-              <a className="header-link" href="/login">
-                Sign in
-              </a>
-            )}
-          </nav>
-        )}
-      </div>
-    </header>
-  );
+/**
+ * The landing, /terms, /privacy and the 404 render THE SAME top nav as every other page
+ * (2026-11-15): Play along · Download loops · Job history · Sign in / Account, with the
+ * current product marked. These pages are statically rendered, so the session is not read
+ * here; see the header of components/chrome/SignedInNav.tsx for how the last item is chosen.
+ *
+ * It used to be a separate, marketing-only bar (Job history · Sign in) — which is why Jon
+ * could not find Download loops from the home page. The old `.site-header` bar and its
+ * `showHistory` / `showSignIn` props are gone; the sign-in link it carried is now the
+ * nav's own last item (still owed to V3-J9's "a sign-in affordance on the landing page").
+ */
+export function SiteHeader() {
+  return <SignedInNav signedIn={null} />;
 }
 
 export function SiteFooter({ onLanding = false }: { onLanding?: boolean }) {
@@ -60,6 +23,11 @@ export function SiteFooter({ onLanding = false }: { onLanding?: boolean }) {
     <footer className="site-footer">
       <div className="container footer-row">
         <p className="footer-line">stem-loops. Stems by Demucs, run on Replicate.</p>
+        {/* The two products, as peers, the way the top nav lists them. */}
+        <nav className="footer-links" aria-label="Products">
+          <a href="/">Play along</a>
+          <a href="/loops">Download loops</a>
+        </nav>
         <nav className="footer-links" aria-label="Legal">
           <a href="/terms">Terms</a>
           <a href="/privacy">Privacy</a>

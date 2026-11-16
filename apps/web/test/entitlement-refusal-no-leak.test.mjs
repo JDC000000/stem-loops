@@ -69,7 +69,7 @@ const expected = (code) => {
 };
 const DEFAULT_SENTENCE = `${copy.DEFAULT_ERROR.headline} ${copy.DEFAULT_ERROR.action}`;
 const OVER_QUOTA_SENTENCE =
-  'You’ve used this month’s allowance on your plan. Your account page shows when the period ends.';
+  "You've used this month's allowance on your plan. Your account page shows when the period ends.";
 
 function assertNoLeak(message, detail, label) {
   assert.equal(typeof message, 'string', `${label}: message is a string`);
@@ -87,6 +87,10 @@ function assertNoLeak(message, detail, label) {
 for (const code of ENTITLEMENT_CODES) {
   test(`entitlementMessage(${code}, <internal detail>) is exactly its ERROR_COPY sentence, never the detail`, () => {
     for (const detail of [undefined, '', code, ...INTERNAL_DETAILS]) {
+      // The one keyed special case in INTERNAL_DETAILS ('service not in plan'
+      // under ENTITLEMENT_UNAVAILABLE) has its own sentence, pinned below.
+      if (code === 'ENTITLEMENT_UNAVAILABLE' && detail === 'service not in plan') continue;
+      if (code === 'FREE_MONTHLY_QUOTA_EXHAUSTED' && detail === copy.LINK_CAP_CREDITS_DETAIL) continue;
       const msg = copy.entitlementMessage(code, detail);
       assertNoLeak(msg, detail, `${code} / ${JSON.stringify(detail)}`);
       assert.equal(msg, expected(code), `${code} with detail ${JSON.stringify(detail)}`);
@@ -113,6 +117,23 @@ test('entitlementMessage: paid over-quota ("quota exhausted") gets the allowance
   assertNoLeak(msg, 'quota exhausted', 'over quota');
   // The special case is keyed on the code too: the same reason under another code is not it.
   assert.equal(copy.entitlementMessage('PLAN_NOT_FOUND', 'quota exhausted'), expected('PLAN_NOT_FOUND'));
+});
+
+test('entitlementMessage: paid link before migration 039 ("service not in plan") gets its own sentence, not "could not verify your plan"', () => {
+  const msg = copy.entitlementMessage('ENTITLEMENT_UNAVAILABLE', 'service not in plan');
+  assert.equal(msg, "YouTube links aren't switched on for your plan yet. Upload the audio file instead, or try again later.");
+  assert.equal(msg, copy.SERVICE_NOT_IN_PLAN_MSG);
+  assert.notEqual(msg, expected('ENTITLEMENT_UNAVAILABLE'));
+  assertNoLeak(msg, 'service not in plan', 'service not in plan');
+  assert.equal(copy.entitlementMessage('PLAN_NOT_FOUND', 'service not in plan'), expected('PLAN_NOT_FOUND'));
+});
+
+test('entitlementMessage: free credit holder at the link cap gets the "credits still work" sentence, keyed on code + detail', () => {
+  const msg = copy.entitlementMessage('FREE_MONTHLY_QUOTA_EXHAUSTED', copy.LINK_CAP_CREDITS_DETAIL);
+  assert.equal(msg, "You've used this month's free YouTube links. Your credits still work: upload the audio file instead.");
+  assertNoLeak(msg, copy.LINK_CAP_CREDITS_DETAIL, 'link cap credits');
+  assert.equal(copy.entitlementMessage('FREE_MONTHLY_QUOTA_EXHAUSTED', 'anything else'), expected('FREE_MONTHLY_QUOTA_EXHAUSTED'));
+  assert.equal(copy.entitlementMessage('ENTITLEMENT_UNAVAILABLE', copy.LINK_CAP_CREDITS_DETAIL), expected('ENTITLEMENT_UNAVAILABLE'));
 });
 
 // ---------------------------------------------------------------------------
@@ -310,14 +331,17 @@ test('in-tx: free allowance cap hit under the quota lock -> copy only, not FREE_
   });
 });
 
-// Site 3: the link gate (enforceEntitlement('start_job_youtube')) for a paid plan.
-test('link gate: PAID_LINK_INGEST_DISALLOWED thrown with internal text -> copy only, no leak', async () => {
-  const detail = `paid plans are upload-only ${MARKER}`;
+// Site 3: the link gate (enforceEntitlement('start_job_youtube')) for a paid
+// plan. Since §1.2a was reversed (2026-11-16) its refusals are
+// ENTITLEMENT_UNAVAILABLE ('service not in plan' before migration 039, 'quota
+// exhausted' after) and a subscriber gets every one of them, as copy only.
+test('link gate: paid refusal thrown with internal text -> copy only, no leak', async () => {
+  const detail = `service lookup failed (internal) ${MARKER}`;
   await withEnv({ ALLOW_YOUTUBE_INPUT: 'true' }, async () => {
     const mod = await loadRoute({
-      ent: { planCode: 'studio', credits: 0, freeQuotaMessage: 'unused', throwOn: { start_job_youtube: { code: 'PAID_LINK_INGEST_DISALLOWED', message: detail } } },
+      ent: { planCode: 'studio', credits: 0, freeQuotaMessage: 'unused', throwOn: { start_job_youtube: { code: 'ENTITLEMENT_UNAVAILABLE', message: detail } } },
     });
     const res = await mod.POST(req(LINK));
-    assertRefusal(res, { code: 'PAID_LINK_INGEST_DISALLOWED', status: 400, detail, message: expected('PAID_LINK_INGEST_DISALLOWED') });
+    assertRefusal(res, { code: 'ENTITLEMENT_UNAVAILABLE', status: 402, detail, message: expected('ENTITLEMENT_UNAVAILABLE') });
   });
 });

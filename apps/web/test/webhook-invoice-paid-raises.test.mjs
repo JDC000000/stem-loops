@@ -55,6 +55,9 @@ async function loadRoute(opts) {
   const em = dataUrl(`
     export const sendWelcomeIfFirstTime = async () => {};
     export const sendSubscriptionChanged = async () => {};
+    export const sendPlanEnding = async () => {};
+    export const sendPlanEnded = async () => {};
+    export const sendPaymentFailed = async () => {};
     export const sendReceipt = async () => { globalThis.__receipts++; };
   `);
   const next = dataUrl(`

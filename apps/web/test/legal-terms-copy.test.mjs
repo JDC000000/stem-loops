@@ -258,3 +258,11 @@ test('terms: metadata is the terms metadata, not another page’s', async () => 
   assert.match(page.metaSpaced, /The short terms for using stem-loops\./);
   assert.match(page.metaSpaced, /\/terms/);
 });
+
+test('terms: Free\'s 24 hours stays exact, and the paid library is stated with its 30 days (2026-11-15)', async () => {
+  const page = await renderPage(TERMS);
+  assertSays(assert, page, 'Your files, stems, loops and job details are deleted after 24 hours', 'terms');
+  assertSays(assert, page, 'That is the Free plan, and every job started without an account.', 'terms');
+  assertSays(assert, page, 'On Pro and Studio, the songs in your account are kept as your library while your subscription is active, and for 30 days after it ends', 'terms');
+  assertSays(assert, page, 'A song you start after your plan has ended is deleted after 24 hours.', 'terms');
+});

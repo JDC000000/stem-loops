@@ -512,7 +512,7 @@ test('a rate-limited request is 429 RATE_LIMITED and never reaches the DB or R2'
   const res = await call(mod);
   assert.equal(res.status, 429);
   assert.equal(res.body.error_code, 'RATE_LIMITED', 'same error contract as /api/uploads');
-  assert.match(res.body.message, /going a bit fast/, 'same copy as the sibling throttled routes');
+  assert.equal(res.body.message, "You're sending requests too fast. Wait a minute and try again.", 'same per-client copy as the sibling throttled routes (F72)');
 
   const kinds = globalThis.__st.calls.map((c) => c[0]);
   assert.deepEqual(kinds, ['rate'], 'the limiter must be the ONLY thing that ran');
@@ -619,7 +619,12 @@ test('checkStemListRate BLOCKS when the atomic insert records no row', async () 
   // The statement inserts only while under the cap, so rowCount 0 IS the refusal.
   globalThis.__ad = [];
   const m = await loadAdmission({ rowCount: 0 });
-  assert.deepEqual(await m.checkStemListRate('ip'), { allowed: false, error_code: 'RATE_LIMITED' });
+  assert.deepEqual(await m.checkStemListRate('ip'), {
+    allowed: false,
+    error_code: 'RATE_LIMITED',
+    reason: 'per_client',
+    message: "You're sending requests too fast. Wait a minute and try again.",
+  });
   const m2 = await loadAdmission({ rowCount: 1 });
   assert.deepEqual(await m2.checkStemListRate('ip'), { allowed: true, error_code: null });
 });
@@ -652,7 +657,13 @@ test('the job lookup is gated on expires_at, not just on id', async () => {
   const q = globalThis.__st.calls.find((c) => c[0] === 'query');
   assert.ok(q, 'the route must query for the job');
   const sql = q[1].replace(/\s+/g, ' ');
-  assert.match(sql, /expires_at\s*>\s*now\(\)/i, 'the expiry gate must be in the SQL');
+  // Since 2026-11-15 the gate is the per-plan retention rule, the SAME text the worker's sweep
+  // deletes on (lib/retention.ts JOB_RETAINED_UNTIL_SQL; real-Postgres semantics in
+  // apps/worker/tests/test_paid_retention.py). Pinned as the exact constant, not a fragment.
+  const { JOB_RETAINED_UNTIL_SQL } = await import(dataUrl(toJs(readFileSync(RETENTION, 'utf8'))));
+  const retained = JOB_RETAINED_UNTIL_SQL.replace(/\s+/g, ' ');
+  assert.ok(sql.includes(`AND ${retained} > now()`), 'the retention gate must be in the SQL');
+  assert.ok(sql.includes(`${retained} AS expires_at`), 'the URL TTL must be bounded by the retention deadline');
   assert.match(sql, /FROM jobs/i);
   assert.deepEqual(q[2], [JOB], 'the id must be a bound parameter, never interpolated');
 });

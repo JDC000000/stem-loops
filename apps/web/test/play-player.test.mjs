@@ -126,7 +126,17 @@ const engineMod = put(
   toJs(read('src/lib/play/engine.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
 );
 
+// device-support (Story 8.3): the REAL module, pure, no I/O at import time.
+const deviceSupportMod = put(
+  'device-support.mjs',
+  toJs(read('src/lib/play/device-support.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
+);
+// background-audio (Story 8, phones): the REAL module; every browser object is passed in.
+const backgroundAudioMod = put('background-audio.mjs', toJs(read('src/lib/play/background-audio.ts')));
+
 const playerJs = rewriteShared(toJs(read('src/components/play/Player.tsx'), true))
+  .replace(/from ['"]@\/lib\/play\/device-support['"]/g, `from '${deviceSupportMod}'`)
+  .replace(/from ['"]@\/lib\/play\/background-audio['"]/g, `from '${backgroundAudioMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordMod}'`)
   .replace(/from ['"]@\/lib\/play\/engine['"]/g, `from '${engineMod}'`)
   .replace(/from ['"]@\/lib\/play\/load-stems['"]/g, `from '${loadStemsMod}'`)
@@ -311,7 +321,7 @@ test('degradedMessage ignores junk entries rather than printing "undefined"', ()
 
 // The words that appear in src/chord/tab-capture.ts's unsupported messages.
 // Every one of them is false for this player: nothing here captures a tab, and
-// Edge is not launch scope (Chrome desktop is).
+// Edge is not named because it is not what we test against (Chrome is).
 const TAB_CAPTURE_WORDS = [
   'tab capture',
   'tab-audio',
@@ -339,11 +349,13 @@ test('the unsupported-browser copy is not byte-identical to any tab-capture mess
   }
 });
 
-test('the unsupported-browser copy names Chrome desktop and points at the loops', () => {
+test('the unsupported-browser copy names Chrome, points at the loops, and does not send phones to a desktop', () => {
+  // Story 8 (Jon, 2026-11-15): the player runs on phones. A phone user reading
+  // either message must not be told the fix is a desktop or laptop.
   for (const message of [UNSUPPORTED_BROWSER_MESSAGE, UNDECODABLE_MESSAGE]) {
     assert.match(message, /Chrome/);
-    assert.match(message, /desktop|laptop/);
     assert.match(message, /loops/);
+    assert.doesNotMatch(message, /desktop|laptop|not supported|700|\bMB\b/i);
   }
 });
 
@@ -846,21 +858,16 @@ test('withoutComments keeps literals readable but still removes comments', () =>
   assert.match(withoutComments('// /* not a comment\nREAL2();'), /REAL2\(\)/);
 });
 
-test('Story 1.2: the Player is mounted ABOVE LoopResults on the job page', () => {
-  // "Everybody uploading songs wants to see the player and toggle and play
-  // along" — the player is the primary view and the loop downloader is
-  // secondary. Swapping the two is invisible to every other test.
-  //
-  // COMMENTS ARE STRIPPED FIRST, and that is not incidental: the first version
-  // of this test used indexOf on the raw source and SURVIVED the swap, because
-  // JobView's header comment names `<Player>` before `<LoopResults>` in prose.
-  // It was measuring the documentation's word order, not the render order.
+test('Story 6.1: the job page mounts the Player and no LoopResults', () => {
+  // Story 1.2 made the player the primary view with the loops below it; Story
+  // 6.1 (v3.0) then moved the loops to their own page, /loops. COMMENTS ARE
+  // STRIPPED FIRST: JobView's header names <LoopResults> in prose, and a raw
+  // indexOf once measured the documentation instead of the code. The rendered
+  // form of this gate is in test/job-page-render.test.mjs.
   const view = codeOnly(read('src/app/jobs/[id]/JobView.tsx'));
-  const player = view.indexOf('<Player');
-  const loops = view.indexOf('<LoopResults');
-  assert.ok(player !== -1, 'JobView no longer mounts the Player at all');
-  assert.ok(loops !== -1, 'JobView no longer mounts LoopResults');
-  assert.ok(player < loops, 'LoopResults is above the Player — Story 1.2 is inverted');
+  assert.ok(view.indexOf('<Player') !== -1, 'JobView no longer mounts the Player at all');
+  assert.equal(view.indexOf('<LoopResults'), -1, 'JobView mounts LoopResults again (Story 6.1)');
+  assert.equal(view.indexOf("from '@/components/LoopResults'"), -1, 'JobView imports LoopResults again');
 });
 
 // ═══ the page gutter the mixer budgeted against ═════════════════════════════
@@ -1113,4 +1120,19 @@ test('Player wires the three outcomes: it reads zeroSourceReason and reports onl
   // ENCODE_FAILED must never reach the reporter (worker reports it once per job;
   // a refetch by anyone holding the UUID would otherwise mint events)
   assert.doesNotMatch(src, /reportStemFetchFailure\([^)]*ENCODE/);
+});
+
+test('chordPositionFor: a route latency holds the marker back while playing only, floored at 0 (Story 8)', () => {
+  const base = { stems: [], loop: null, degraded: null, error: null, durationSec: 120 };
+  const ready = { kind: 'ready' };
+  assert.equal(chordPositionFor(ready, { ...base, status: 'playing', positionSec: 10 }, 0.05), 10 - 0.05);
+  assert.equal(chordPositionFor(ready, { ...base, status: 'playing', positionSec: 0.02 }, 0.05), 0);
+  for (const status of ['ready', 'ended']) {
+    assert.equal(chordPositionFor(ready, { ...base, status, positionSec: 10 }, 0.05), 10, status);
+  }
+  // default (desktop) is the old behaviour
+  assert.equal(chordPositionFor(ready, { ...base, status: 'playing', positionSec: 10 }), 10);
+  for (const bad of [NaN, -1, Infinity]) {
+    assert.equal(chordPositionFor(ready, { ...base, status: 'playing', positionSec: 10 }, bad), 10, String(bad));
+  }
 });

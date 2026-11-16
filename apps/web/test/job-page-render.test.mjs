@@ -252,7 +252,7 @@ test('the harness reaches the done branch: without this every gate below is vacu
   // reason, so the seed is asserted before anything depends on it.
   const html = renderJob();
   assert.doesNotMatch(html, /Loading…/, 'the seed did not take: JobView is still at job=null');
-  assert.match(html, /data-testid="loop-results"/, 'the done branch was not reached');
+  assert.match(html, /data-testid="player"/, 'the done branch was not reached');
   // And the null case really does render Loading…, so the assertion above is
   // discriminating rather than always-true.
   assert.match(renderJob(null), /Loading…/, 'a null job no longer renders the loading state');
@@ -285,17 +285,20 @@ test('FG-1: /jobs/[id] RENDERS a mounted Player, not a string that mentions one'
 
 // ═══ Story 1.2 — ordering, on rendered output rather than source text ════════
 
-test('Story 1.2: the Player precedes LoopResults in the RENDERED markup', () => {
-  // The source-text form of this gate lives in test/play-player.test.mjs and is
-  // kept. It was defeated twice: once by JobView's header comment naming
-  // `<Player>` in prose, and once by a trailing `// <Player …` on `POLL_MS`.
-  // Render order cannot be influenced by either.
+test('Story 6.1: the job page shows NO loops, and links to /loops with this job preselected', () => {
+  // Story 6.1 (v3.0): "A dedicated page carries the original stem-loops
+  // product. The job page does not show loops." LoopResults is still stubbed
+  // above, so a re-mount would show up here as its test id, not silently.
   const html = renderJob();
-  const player = html.indexOf('data-testid="player"');
-  const loops = html.indexOf('data-testid="loop-results"');
-  assert.ok(player !== -1, 'no Player in the rendered output');
-  assert.ok(loops !== -1, 'no LoopResults in the rendered output');
-  assert.ok(player < loops, 'LoopResults renders above the Player — Story 1.2 is inverted');
+  assert.ok(html.indexOf('data-testid="player"') !== -1, 'no Player in the rendered output');
+  assert.equal(count(html, /data-testid="loop-results"/g), 0, 'the job page renders loops again (Story 6.1)');
+  assert.equal(globalThis.__loopResultsProps, null, 'LoopResults was mounted on the job page');
+  const link = html.match(/data-testid="loops-link"[\s\S]*?<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/);
+  assert.ok(link, 'no route from the job page to its loops');
+  assert.equal(link[1], `/loops?job=${DONE_JOB.id}`);
+  assert.match(link[2], /Download loops/);
+  // And it sits BELOW the player: the player stays the primary view (Story 1.2).
+  assert.ok(html.indexOf('data-testid="player"') < html.indexOf('data-testid="loops-link"'));
 });
 
 // ═══ FG-2 — no second, position-less chord overlay ══════════════════════════
@@ -408,12 +411,12 @@ test('failed job: no raw error code ever reaches the box, for any code the map o
 test('failed job whose code is an Object.prototype key: the worker sentence, never inherited map lookups', () => {
   for (const code of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf']) {
     assert.equal(failedBoxText(failed(code, 'Worker sentence.')), 'Worker sentence.', code);
-    assert.equal(failedBoxText(failed(code, null)), 'We couldn’t finish this track. Try another file.', code);
+    assert.equal(failedBoxText(failed(code, null)), "We couldn't finish this track. Try another file.", code);
   }
 });
 
 test('failed job with neither a known code nor a stored sentence: the generic fallback', () => {
-  assert.equal(failedBoxText(failed(null, null)), 'We couldn’t finish this track. Try another file.');
+  assert.equal(failedBoxText(failed(null, null)), "We couldn't finish this track. Try another file.");
 });
 
 test('a processing job renders progress and mounts no player', () => {
@@ -458,7 +461,7 @@ test('unreachable: says the page cannot get an update, offers Try again, no prog
   assert.doesNotMatch(html, /data-testid="job-progress"/);
   assert.doesNotMatch(html, /Processing…/);
   // and it must not claim the TRACK failed: we do not know that
-  assert.doesNotMatch(html, /Something went wrong|couldn’t finish this track/i);
+  assert.doesNotMatch(html, /Something went wrong|couldn['’]t finish this track/i);
 });
 
 test('unreachable copy splits by status: a 500 is OUR fault, not the user\'s connection', () => {

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { HeadObjectCommand } from '@aws-sdk/client-s3';
 import { db } from '@/lib/db';
+import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { r2 } from '@/lib/r2';
 import { getUser } from '@/lib/auth/supabase';
 import { EntitlementError, enforceEntitlement } from '@/lib/billing/entitlements';
@@ -68,8 +69,8 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     }
 
     const jobRes = await db.query(
-      `SELECT id::text AS id, user_id::text AS user_id, status, expires_at
-         FROM jobs WHERE id = $1 AND expires_at > now()`,
+      `SELECT id::text AS id, user_id::text AS user_id, status, ${JOB_RETAINED_UNTIL_SQL} AS expires_at
+         FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
       [params.id],
     );
     if (jobRes.rowCount === 0) return bad('NOT_FOUND', 'Job not found', 404);

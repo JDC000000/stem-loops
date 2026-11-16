@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { db } from '@/lib/db';
+import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { r2 } from '@/lib/r2';
 import { checkStemListRate } from '@/lib/admission';
 import { mayReadJob } from '@/lib/job-access';
@@ -22,8 +23,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // event to a user as a throttled upload, so it gets the same words and the same
 // { error_code: 'RATE_LIMITED' } 429 body — not a new error contract for the client
 // to learn.
-const RATE_LIMIT_MSG =
-  "You're going a bit fast, or we're at capacity right now. Give it a minute and try again.";
+// F72: checkStemListRate is a per-client limit only, so this is error-copy.ts's
+// RATE_LIMITED_PER_CLIENT_MSG, kept as a literal so the route has no extra import;
+// test/copy-leftovers.test.mjs pins the two equal.
+const RATE_LIMIT_MSG = "You're sending requests too fast. Wait a minute and try again.";
 
 // This response body is a set of bearer credentials: each `signed_url` is a presigned
 // R2 GET that anyone holding the string can replay until it expires. Without this
@@ -119,7 +122,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
     // Same gate as GET /api/jobs/:id and the play-chords route.
     const jobRes = await db.query(
-      `SELECT id::text AS id, user_id, status, expires_at FROM jobs WHERE id = $1 AND expires_at > now()`,
+      `SELECT id::text AS id, user_id, status, ${JOB_RETAINED_UNTIL_SQL} AS expires_at FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
       [params.id]
     );
     if (jobRes.rowCount === 0) {

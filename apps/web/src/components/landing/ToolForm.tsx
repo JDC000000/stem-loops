@@ -12,7 +12,7 @@ import { canonicalizeYoutubeUrl, youtubeUrlProblem } from '@/lib/youtube-url';
 import { addToHistory } from '@/lib/history';
 import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
 import { useDemo } from './DemoProvider';
-import { BAR_OPTIONS, STEM_ORDER } from './demo-data';
+import { STEM_ORDER } from './demo-data';
 import { Ic } from './Icons';
 
 const ERR = {
@@ -61,7 +61,10 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
 }
 
 export function ToolForm() {
-  const { stems, bars, setStemChecked, setBars } = useDemo();
+  // No loop length here (2026-11-15): Download loops is its own product (/loops), and the Play
+  // along form neither sells nor configures it. The job gets the API's default loop length
+  // (4 bars, app/api/jobs/route.ts), which is what the /loops intro states.
+  const { stems, setStemChecked } = useDemo();
   const formRef = useRef<HTMLFormElement>(null);
   const sourceRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -245,12 +248,11 @@ export function ToolForm() {
           uploadKey: pres.key,
           filename: file.name,
           stems: orderedStems,
-          loop_length_bars: bars,
         });
         jobId = job.id;
       } else {
         setPhase({ kind: 'busy', ...base, now: null, pct: 100, label: 'Starting…', msg: 'Starting your job…' });
-        const job = await postJson<{ id: string }>('/api/jobs', { url: canonicalUrl, stems: orderedStems, loop_length_bars: bars });
+        const job = await postJson<{ id: string }>('/api/jobs', { url: canonicalUrl, stems: orderedStems });
         jobId = job.id;
       }
       addToHistory(jobId);
@@ -437,7 +439,7 @@ export function ToolForm() {
         aria-controls="options"
         onClick={() => setOptionsOpen((o) => !o)}
       >
-        <span className="mono" id="options-summary">{`${n ? stemTxt : 'No stems'} · ${bars}-bar loops`}</span>
+        <span className="mono" id="options-summary">{n ? stemTxt : 'No stems'}</span>
         <span className="options-change">
           Change <Ic name="chev" />
         </span>
@@ -474,21 +476,10 @@ export function ToolForm() {
           </p>
         </fieldset>
 
-        <fieldset className="group" id="length-group">
-          <legend className="label">Loop length</legend>
-          <div className="seg seg-4" id="len-seg">
-            {BAR_OPTIONS.map((b) => (
-              <label className="seg-opt" key={b}>
-                <input type="radio" name="bars" value={b} checked={bars === b} onChange={() => setBars(b)} />
-                <span>{b === 1 ? '1 bar' : `${b} bars`}</span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
       </div>
 
       <p className="readout mono sr-only" id="readout" aria-live="polite">
-        {n ? `${stemTxt} × ${bars}-bar loops, up to 10 per stem` : 'No stems selected'}
+        {n ? stemTxt : 'No stems selected'}
       </p>
 
       <button
@@ -553,7 +544,7 @@ export function ToolForm() {
       </div>
 
       <p className="hint cta-note">
-        Our 3:34 example song took about 1–3 minutes. Files are deleted after 24 hours. Use audio you have the rights to.
+        Our 3:34 example song took about 1–3 minutes. Without a subscription, files are deleted after 24 hours. Use audio you have the rights to.
       </p>
     </form>
   );

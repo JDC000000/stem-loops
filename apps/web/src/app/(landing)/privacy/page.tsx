@@ -1,12 +1,11 @@
 import type { Metadata } from 'next';
+import { pageMetadata } from '@/lib/seo/meta';
+import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import { CONTACT_LABEL, CONTACT_URL, LEGAL_UPDATED } from '@/components/landing/legal';
 
-export const metadata: Metadata = {
-  title: 'Privacy',
-  description: 'What stem-loops stores, for how long, and who processes it.',
-  alternates: { canonical: '/privacy' },
-};
+// SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
+export const metadata: Metadata = pageMetadata(pageFor('/privacy')!);
 
 export default function PrivacyPage() {
   return (
@@ -22,8 +21,9 @@ export default function PrivacyPage() {
             <p>
               No ads, no tracking cookies, nothing sold. You can start a job without an account, but you need one to open the
               player and reach your results. Your audio goes to two outside services to be processed — one to split it into
-              stems, one to estimate the chords — and both are named below. We delete your audio, stems, loops and job records
-              after 24 hours. Account details stay until you delete the account.
+              stems, one to estimate the chords — and both are named below. On the Free plan we delete your audio, stems, loops
+              and job records after 24 hours. On Pro and Studio they stay in your library while you are subscribed, and for
+              30 days after your plan ends. Account details stay until you delete the account.
             </p>
 
             <h2>What we process</h2>
@@ -59,11 +59,17 @@ export default function PrivacyPage() {
               deleted after 24 hours.
             </p>
             <p>
+              That is the Free plan, and every job started without an account. On Pro and Studio, the songs in your account
+              are kept instead, as your library: while your subscription is active (including up to 7 days while a failed
+              renewal payment is retried), and for 30 days after it ends. Then they are deleted the same way. A song you
+              start after your plan has ended is deleted after 24 hours.
+            </p>
+            <p>
               Account details are not on that clock, because an account has to outlive a job to be useful. They stay until you
               delete the account, which you can do yourself from your <a href="/account">account page</a> at any time, or by
               emailing us.
             </p>
-            <p>Three other things outlive the 24 hours:</p>
+            <p>Three other things outlive those times:</p>
             <ul>
               <li>
                 <strong>A shell of a job that charged a credit,</strong> kept so purchases and credits stay accounted for. It
@@ -75,7 +81,7 @@ export default function PrivacyPage() {
               <li>
                 <strong>Chord corrections you save,</strong> kept to improve the chord estimates: the part of the song a
                 correction covers, what we estimated, what you changed it to, and a one-way fingerprint of the audio. These are
-                not on the 24-hour clock — they stay until you delete your account. Nothing in the player sends them today.
+                not on that clock — they stay until you delete your account. Nothing in the player sends them today.
               </li>
               <li>
                 <strong>Counters and diagnostics,</strong> kept without a time limit: that a job was started, that a payment

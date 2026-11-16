@@ -1,4 +1,6 @@
 import type { Metadata } from 'next';
+import { pageMetadata } from '@/lib/seo/meta';
+import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import { CONTACT_LABEL, CONTACT_URL, LEGAL_UPDATED } from '@/components/landing/legal';
 import { MAX_TRACK_SEC } from '@/lib/play/types';
@@ -11,11 +13,8 @@ import { MAX_TRACK_SEC } from '@/lib/play/types';
 // constant and to the worker's own default, so a drift between the three fails there.
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
-export const metadata: Metadata = {
-  title: 'Terms',
-  description: 'The short terms for using stem-loops.',
-  alternates: { canonical: '/terms' },
-};
+// SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
+export const metadata: Metadata = pageMetadata(pageFor('/terms')!);
 
 export default function TermsPage() {
   return (
@@ -44,7 +43,10 @@ export default function TermsPage() {
                 We use the first {MAX_TRACK_MIN}&nbsp;minutes of any song. A longer track is trimmed on our end to its
                 first {MAX_TRACK_MIN}&nbsp;minutes, which is where the chord track and the player both stop.
               </li>
-              <li>Chrome, on a desktop or laptop. Other browsers and phones are not supported yet.</li>
+              <li>
+                Built and tested in Chrome on a computer. On a phone the player loads lighter audio (mono, 24&nbsp;kHz).
+                Phone support is new, and other browsers are not tested yet.
+              </li>
               <li>
                 The chords are an <strong>estimate made from the audio</strong>, not a transcription anyone checked. Trust your
                 ears over the screen.
@@ -77,6 +79,11 @@ export default function TermsPage() {
             <h2>Deletion</h2>
             <p>
               Your files, stems, loops and job details are deleted after 24 hours — download what you want to keep.
+            </p>
+            <p>
+              That is the Free plan, and every job started without an account. On Pro and Studio, the songs in your account
+              are kept as your library while your subscription is active, and for 30 days after it ends; then they are
+              deleted the same way. A song you start after your plan has ended is deleted after 24 hours.
             </p>
             <p>
               Some things outlive that: your account, until you delete it; a stripped-down shell of any job that charged a

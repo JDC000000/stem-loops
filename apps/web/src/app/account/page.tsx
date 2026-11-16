@@ -2,9 +2,11 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { getUser } from '@/lib/auth/supabase';
 import { db } from '@/lib/db';
+import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { serverGet, type CreditsBalance, type Entitlements } from '@/lib/billing/server-fetch';
 import BillingButton from '@/components/BillingButton';
 import { jobLabel } from '@/lib/job-label';
+import { hasPortalSubscription, showManageSubscription } from '@/lib/billing/portal-eligibility';
 
 export const metadata: Metadata = { title: 'Account', robots: { index: false, follow: false } };
 export const dynamic = 'force-dynamic';
@@ -21,8 +23,9 @@ type JobRow = {
 async function recentJobs(userId: string): Promise<JobRow[] | null> {
   try {
     const r = await db.query(
-      `SELECT id, title, original_filename, youtube_url, status, created_at FROM public.jobs
-        WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20`,
+      // Only songs that still exist (lib/retention.ts): a deleted one would link to a 404.
+      `SELECT id, title, original_filename, youtube_url, status, created_at FROM jobs
+        WHERE user_id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now() ORDER BY created_at DESC LIMIT 20`,
       [userId],
     );
     return r.rows as JobRow[];
@@ -33,7 +36,7 @@ async function recentJobs(userId: string): Promise<JobRow[] | null> {
 
 const fmt = (d?: string | null) => (d ? new Date(d).toISOString().slice(0, 10) : '—');
 const section = {
-  border: '1px solid var(--border-default, #333)', borderRadius: 12, padding: 16,
+  border: '1px solid var(--border-default, #333)', borderRadius: 'var(--radius-lg)', padding: 16,
   background: 'var(--bg-card, #151515)', marginTop: 16,
 };
 const h2 = { margin: '0 0 8px', fontSize: 18, color: 'var(--text-primary)' };
@@ -43,15 +46,20 @@ export default async function AccountPage() {
   const user = await getUser();
   if (!user) redirect('/login?return_to=/account');
 
-  const [ent, bal, jobs] = await Promise.all([
+  const [ent, bal, jobs, billingCustomer] = await Promise.all([
     serverGet<Entitlements>('/api/entitlements'),
     serverGet<CreditsBalance>('/api/billing/credits/balance'),
     recentJobs(user.user_id),
+    hasPortalSubscription(user.user_id),
   ]);
+  const showPortal = showManageSubscription({
+    hasPortalSubscription: billingCustomer,
+    planCode: ent.ok ? ent.data.plan_code : null,
+  });
 
   return (
     <main style={{ minHeight: '100dvh', padding: '24px 16px', maxWidth: 720, margin: '0 auto', boxSizing: 'border-box' }}>
-      <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Account</h1>
+      <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, color: 'var(--text-primary)' }}>Account</h1>
       <p style={{ ...muted, overflowWrap: 'anywhere' }}>{user.display_name ? `${user.display_name} · ` : ''}{user.email}</p>
 
       <section style={section} aria-label="Plan">
@@ -85,10 +93,13 @@ export default async function AccountPage() {
         ) : (
           <p style={muted}>Plan details are temporarily unavailable.</p>
         )}
-        {/* Portal is only useful for paid plans; free-tier users have no
-            customers_billing row and the portal call would 400. Show the
-            manage button only when the user is on a paid plan. */}
-        {ent.ok && ent.data.plan_code !== 'free' && (
+        {/* Shown to anyone with a paid-at-least-once subscription and a
+            customers_billing row for the current provider (E6): a paused or
+            lapsed past_due subscriber reads as 'free' here but still needs
+            the portal to fix their card, which is where the billing emails
+            send them. Not shown for an abandoned Checkout or credit-only
+            buyer. See lib/billing/portal-eligibility.ts. */}
+        {showPortal && (
           <div style={{ maxWidth: 260, marginTop: 8 }}>
             <BillingButton label="Manage subscription" endpoint="/api/billing/portal" returnTo="/account" primary={false} />
           </div>

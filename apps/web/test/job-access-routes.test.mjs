@@ -79,7 +79,7 @@ async function loadRoute(file) {
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${getUserStub}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub}'`)
-    .replace(/from ['"]@\/lib\/retention['"]/g, `from '${dataUrl('export const presignTtlSec = () => 900;')}'`)
+    .replace(/from ['"]@\/lib\/retention['"]/g, `from '${dataUrl("export const presignTtlSec = () => 900; export const JOB_RETAINED_UNTIL_SQL = 'expires_at';")}'`)
     .replace(
       /from ['"]@\/lib\/r2['"]/g,
       `from '${dataUrl(`

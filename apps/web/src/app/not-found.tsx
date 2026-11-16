@@ -1,20 +1,11 @@
 import type { Metadata } from 'next';
-import localFont from 'next/font/local';
 import { Ic, IconSprite } from '@/components/landing/Icons';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import '@/styles/landing.css';
 import '@/styles/landing-color.css';
 import '@/styles/not-found.css';
 
-// The same self-hosted mono as app/(landing)/layout.tsx (the root 404 sits outside that group).
-const jetbrainsMono = localFont({
-  src: './(landing)/fonts/jetbrains-mono-latin-wght-normal.woff2',
-  weight: '100 800',
-  style: 'normal',
-  display: 'swap',
-  variable: '--font-jbm',
-  fallback: ['ui-monospace', 'SF Mono', 'Consolas', 'monospace'],
-});
+// JetBrains Mono comes from the root layout, as on every route.
 
 // Our own title; the root layout's template appends " · stem-loops".
 export const metadata: Metadata = {
@@ -24,7 +15,7 @@ export const metadata: Metadata = {
 // Branded 404 inside the app chrome, with one link home: "Start a new song", the label the job pages use.
 export default function NotFound() {
   return (
-    <div className={`sl-root ${jetbrainsMono.variable}`}>
+    <div className="sl-root">
       <IconSprite />
       <SiteHeader />
       <main id="main" className="nf">

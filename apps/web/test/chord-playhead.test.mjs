@@ -623,7 +623,7 @@ test('the live mount now carries positionSec, and positionSec is still optional'
   );
   assert.match(
     player,
-    /<ChordOverlay\s+jobId=\{jobId\}\s+positionSec=\{chordPosition\}\s*\/>/,
+    /<ChordOverlay\s+jobId=\{jobId\}\s+positionSec=\{chordPosition\}(?:\s+beatGrid=\{beatGrid\})?(?:\s+sections=\{sections\})?(?:\s+loop=\{snapshot\.loop\})?\s*\/>/,
     'the chord playhead is not wired to the engine position',
   );
 

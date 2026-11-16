@@ -12,7 +12,7 @@ export default function GlobalError({ reset }: { error: Error; reset: () => void
         className="jp-primary"
         style={{
           alignSelf: 'flex-start', minHeight: 48, padding: '0 24px', fontSize: 16, fontWeight: 600,
-          border: 'none', borderRadius: 10, cursor: 'pointer',
+          border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer',
         }}
       >
         Try again

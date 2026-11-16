@@ -143,3 +143,37 @@ test('charge.dispute.created: event id + charge + payment_intent carried', async
   assert.equal(evt.providerChargeId, 'ch_test_1');
   assert.equal(evt.providerPaymentIntentId, 'pi_test_1');
 });
+
+// emails v1.2: invoice events carry what R3 and R7 need (E4, E5).
+test('invoice.paid carries billing_reason (R3 "renewal" label, E4)', async () => {
+  const evt = await parse(envelope('invoice.paid', invoiceFixture({ billing_reason: 'subscription_cycle' })));
+  assert.equal(evt.billingReason, 'subscription_cycle');
+  const none = await parse(envelope('invoice.paid', invoiceFixture()));
+  assert.equal(none.billingReason, null);
+});
+
+test('invoice.payment_failed carries invoice id, attempt, next attempt, period start and reason (R7)', async () => {
+  const start = 1_800_000_000;
+  const evt = await parse(envelope('invoice.payment_failed', invoiceFixture({
+    billing_reason: 'subscription_cycle',
+    attempt_count: 3,
+    next_payment_attempt: start + 86400,
+    lines: {
+      object: 'list',
+      data: [
+        { id: 'il_0', object: 'line_item', parent: { type: 'invoice_item_details' }, period: { start: 1, end: 2 } },
+        { id: 'il_1', object: 'line_item', parent: { type: 'subscription_item_details' }, period: { start, end: start + 1 } },
+      ],
+    },
+  })));
+  assert.equal(evt.type, 'invoice_payment_failed');
+  assert.equal(evt.providerInvoiceId, 'in_test_1');
+  assert.equal(evt.attemptCount, 3);
+  assert.equal(evt.nextPaymentAttempt.getTime(), (start + 86400) * 1000);
+  assert.equal(evt.periodStart.getTime(), start * 1000, 'the subscription line, not the first line');
+  assert.equal(evt.billingReason, 'subscription_cycle');
+  const bare = await parse(envelope('invoice.payment_failed', invoiceFixture()));
+  assert.equal(bare.periodStart, null);
+  assert.equal(bare.nextPaymentAttempt, null);
+  assert.equal(bare.attemptCount, null);
+});

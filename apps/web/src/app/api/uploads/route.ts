@@ -5,9 +5,10 @@ import { presignPut } from '@/lib/r2';
 import { validateUpload, MAX_UPLOAD_BYTES } from '@/lib/upload';
 import { checkGlobalCapacity, checkUploadRate } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
+import { RATE_LIMITED_PER_CLIENT_MSG } from '@/lib/error-copy';
 
-const RATE_LIMIT_MSG =
-  "You're going a bit fast, or we're at capacity right now. Give it a minute and try again.";
+// F72: checkUploadRate is a per-client limit only.
+const RATE_LIMIT_MSG = RATE_LIMITED_PER_CLIENT_MSG;
 
 // POST /api/uploads — validate an intended upload and return a presigned PUT URL.
 // The browser then uploads DIRECT to R2 (no bytes through this function), then

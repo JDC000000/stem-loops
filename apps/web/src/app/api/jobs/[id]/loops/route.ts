@@ -28,6 +28,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
+import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { getUser } from '@/lib/auth/supabase';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
@@ -64,7 +65,7 @@ async function authorize(jobId: string): Promise<Authorized | Denied> {
     return { denied: bad('NOT_FOUND', 'Job not found', 404) };
   }
   const res = await db.query<JobRow>(
-    `SELECT user_id, status FROM jobs WHERE id = $1 AND expires_at > now()`,
+    `SELECT user_id, status FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
     [jobId],
   );
   if (res.rowCount === 0) {

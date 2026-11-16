@@ -1,79 +1,153 @@
 'use client';
 
-// The persistent header for the signed-in app. Presentational and interactive
-// only — it is handed everything it needs.
+// THE ONE TOP NAV — every page, signed in or out (2026-11-15, Jon: "Download
+// loops is a separate product in the top nav on every page, including the
+// landing page"). Two products side by side — Play along · Download loops —
+// then Job history and Account / Sign in. The current product is marked
+// (aria-current + the #275 edge-and-weight cue) and named by a tag beside the
+// wordmark, which stays visible below 760px where the items fold into a menu.
+// Moises-style separation: products are peers in the bar, each with its own
+// page, and the marketing page of one product does not sell the other.
 //
-// WHY IT IS A CLIENT COMPONENT AND THE SESSION STILL IS NOT READ HERE.
-// Two things this bar must do cannot be done on the server in the App Router:
-// mark the current page (`aria-current`), which needs the pathname, and open a
-// menu (`aria-expanded`), which needs state. Both are view concerns. The
-// SESSION is NOT one of them: `signedIn` arrives as a prop from
-// SignedInChrome, which awaits `getUser()` on the server — the same pattern as
-// app/jobs/[id]/page.tsx:32. There is no client-side auth read, and this file
-// imports nothing from @/lib/auth.
+// The file keeps its old name so the eight signed-in layouts and their gates
+// (test/signed-in-nav.test.mjs) are untouched; SiteHeader
+// (components/landing/SiteChrome.tsx) now renders this same component on the
+// landing, /terms, /privacy and the 404.
 //
-// WHY A SIBLING OF SiteHeader RATHER THAN AN EXTENSION OF IT.
-// SiteHeader (components/landing/SiteChrome.tsx) is styled entirely by
-// src/styles/landing.css, which is imported by app/(landing)/layout.tsx and
-// therefore loads on four routes ONLY: /, /terms, /privacy and the 404.
-// Rendering SiteHeader on /account would emit `.site-header`, `.header-row`,
-// `.wordmark` and `.header-link` with NO RULES BEHIND THEM — an unstyled strip
-// of blue underlined links. Making it work would mean lifting landing.css out
-// of the landing group, which changes what loads on the landing page; and the
-// two bars do not agree on contents anyway (this one carries the product items
-// and an Account control, that one carries marketing). So: a sibling, with its
-// own stylesheet, and SiteChrome.tsx untouched. The cost is two bars to keep in
-// step; the gates in test/signed-in-nav.test.mjs pin this one's contract.
+// SESSION. Two callers, two ways of knowing it:
+//   * signed-in subtrees: SignedInChrome awaits `getUser()` on the server and
+//     passes a boolean. That is the authoritative read.
+//   * the marketing pages are STATICALLY rendered (prerendered, cached at the
+//     edge — the landing is the page most crawled and most shared), so they
+//     cannot read the session on the server without becoming dynamic on every
+//     hit. They pass `signedIn={null}`: the bar renders "Sign in", and after
+//     mount swaps it for "Account" if the browser holds a Supabase session
+//     cookie. That is a LABEL hint, not an auth decision: nothing is unlocked
+//     by it, /account still checks `getUser()` and sends a stale cookie to
+//     sign-in, and no request is made (no /api/auth/me hit per landing view).
+//     This file still imports nothing from @/lib/auth.
+//
+// WHY A CLIENT COMPONENT: marking the current page needs the pathname and the
+// phone menu needs state; both are view concerns.
 import { usePathname } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export type SignedInNavProps = {
-  /** Server-resolved. Drives Account (true) vs Sign in (false). */
-  signedIn: boolean;
+  /**
+   * Server-resolved on signed-in subtrees: Account (true) vs Sign in (false).
+   * `null` on the statically rendered marketing pages: see the header.
+   */
+  signedIn: boolean | null;
 };
 
-type Item = { label: string; href: string; match: (p: string) => boolean; outlined?: true };
+/**
+ * True when the browser holds a Supabase auth cookie (`sb-<ref>-auth-token`,
+ * possibly chunked as `.0`, `.1`). Exported for the tests. A label hint only.
+ */
+export function hasSessionCookie(cookie: string): boolean {
+  return /(?:^|;\s*)sb-[^=;]+-auth-token(?:\.\d+)?=[^;]/.test(cookie);
+}
+
+type Item = {
+  label: string;
+  href: string;
+  match: (p: string) => boolean;
+  outlined?: true;
+  /** Set on the two product items: the tag shown beside the wordmark. */
+  product?: string;
+};
 
 export default function SignedInNav({ signedIn }: SignedInNavProps) {
   // usePathname returns null outside a router (and in renderToStaticMarkup).
   // The nav still renders in full; only aria-current goes quiet.
   const pathname = usePathname() ?? '';
   const [open, setOpen] = useState(false);
+  const [hinted, setHinted] = useState(false);
+  useEffect(() => {
+    if (signedIn !== null) return;
+    try {
+      setHinted(hasSessionCookie(document.cookie));
+    } catch {
+      setHinted(false);
+    }
+  }, [signedIn]);
+  const showAccount = signedIn ?? hinted;
 
-  // WHY THERE IS NO "DOWNLOAD LOOPS" ITEM YET. Jon asked for the loops as a
-  // SEPARATE secondary product page. There is no such route: the loops render
-  // in LoopResults, inside the `job.status === 'done'` branch of the job page,
-  // so the only thing a nav item could point at today is a fragment on a URL
-  // that (a) needs a job id the bar does not have, and (b) has no such anchor
-  // at all while a job is processing, failed or expired. Two differently
-  // labelled items resolving to one page teaches the reader that the labels do
-  // not mean what they say, so the item lands with /loops itself, as its own
-  // piece of work. The dead-end defect this bar exists to close is closed
-  // without it.
+  // Escape closes the phone menu and hands focus back to the toggle (WAI-ARIA disclosure
+  // pattern), so a keyboard user is never left inside a menu they cannot see the end of.
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      toggleRef.current?.focus();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  // Sign in from the Download loops page comes back to it, as the page's own button does. Only
+  // there: elsewhere the login page's default landing is the right one, and no other item may
+  // carry a query (test/signed-in-nav.test.mjs).
+  const onLoops = pathname === '/loops';
+  const signInHref = onLoops ? `/login?return_to=${encodeURIComponent('/loops')}` : '/login';
+
+  // Story 7.2: the tool, Download loops, Job history and Account, in the
+  // order the design canvas shows (kept from PR #208).
+  //
+  // "Download loops" was withheld until there was a page behind it: the loops
+  // used to render inside the job page's `done` branch, so the only target was
+  // a fragment on a URL this bar has no id for. /loops is now a real page that
+  // takes no job id (it has its own song picker), so the item is a plain link
+  // to a page that is always there. Still true and still gated: no href here
+  // may be job-specific, and none may point at a fragment.
   //
   // "Play along" goes to the tool rather than to a specific job for the reason
   // set out in SignedInChrome: a per-browser cookie cannot answer "which job is
   // THIS user's" and must not be asked to.
+  //
+  // Signed out, the bar still offers Download loops: /loops shows signed-out
+  // visitors that product's own intro, with sign-in one click on (Story 7.5).
+  //
+  // "Play along" is current on the landing too: the landing IS the Play along
+  // product page (2026-11-15), as /loops is Download loops'.
   const items: Item[] = [
-    { label: 'Play along', href: '/', match: (p) => p.startsWith('/jobs/') },
+    { label: 'Play along', href: '/', match: (p) => p === '/' || p.startsWith('/jobs/'), product: 'Play along' },
+    { label: 'Download loops', href: '/loops', match: (p) => p === '/loops' || p.startsWith('/loops/'), product: 'Download loops' },
     { label: 'Job history', href: '/history', match: (p) => p === '/history' },
-    signedIn
+    showAccount
       ? { label: 'Account', href: '/account', match: (p) => p.startsWith('/account'), outlined: true }
-      : { label: 'Sign in', href: '/login', match: (p) => p === '/login', outlined: true },
+      : { label: 'Sign in', href: signInHref, match: (p) => p === '/login', outlined: true },
   ];
+
+  // Story 7.4: say which product you are in. The current pill already does on
+  // a wide screen, but below 760px the items are folded into the menu, so the
+  // only thing on screen is the wordmark. A short tag beside it carries the
+  // product at every width. Off a product page there is no tag: /history,
+  // /account, /pricing and the legal pages belong to neither.
+  const product = items.find((it) => it.product && it.match(pathname))?.product ?? null;
 
   return (
     <header className="sin-bar">
       <div className="sin-inner">
-        <a className="sin-wordmark" href="/" aria-label="stem-loops, home">
-          <span>stem</span>
-          <span className="sin-dash">-</span>
-          <span className="sin-loops">loops</span>
-        </a>
+        <div className="sin-brand">
+          <a className="sin-wordmark" href="/" aria-label="stem-loops, home">
+            <span>stem</span>
+            <span className="sin-dash">-</span>
+            <span className="sin-loops">loops</span>
+          </a>
+          {product && (
+            <span className="sin-product" data-testid="sin-product">
+              {product}
+            </span>
+          )}
+        </div>
 
         <button
           type="button"
           className="sin-toggle"
+          ref={toggleRef}
           aria-label={open ? 'Close menu' : 'Open menu'}
           aria-expanded={open}
           aria-controls="sin-menu"

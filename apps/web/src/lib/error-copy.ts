@@ -59,19 +59,15 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
     headline: "You've used all your free tracks this month.",
     action: 'Your allowance resets at the start of next month.',
   },
-  // The action line used to read "Paste a link into the free tier (3/day)".
-  // There has never been a 3/day limit anywhere in the system: the free
-  // allowance is plans.monthly_job_quota, enforced per CALENDAR MONTH by
-  // checkMonthlyQuota(), and migration 034 sets it to 5. A number and a period
-  // that are both wrong are worse than no number, and any figure hardcoded
-  // here goes stale the next time the catalog is re-priced — so this copy now
-  // names the tier and the place the real number is shown, and nothing else.
+  // LEGACY, kept so a stored error_code or an old client still resolves to
+  // copy. Nothing throws it any more: TSD-V3-DELTA §1.2a (Pro/Studio
+  // upload-only) was REVERSED by Jon on 2026-11-16, and every plan whose
+  // catalog row lists YouTube may paste a link. The old sentence ("Credits,
+  // Pro and Studio only work with files you upload.") is now false, so it is
+  // not shown to anyone even here.
   PAID_LINK_INGEST_DISALLOWED: {
-    // Also named Studio: enforceEntitlement() throws this for plan_code 'pro'
-    // AND 'studio', but the headline listed only Pro, so a Studio subscriber
-    // hit an error that did not mention their plan.
-    headline: 'Credits, Pro and Studio only work with files you upload.',
-    action: 'Upload the audio file instead. YouTube links work on the Free plan.',
+    headline: "We couldn't start that link.",
+    action: 'Try again in a moment, or upload the audio file instead.',
   },
   PROMO_INVALID: {
     headline: "That promo code isn't valid.",
@@ -85,10 +81,41 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
 
 export const DEFAULT_ERROR = ERROR_COPY.INTERNAL_ERROR;
 
+// F72 (copy audit v1.3.1): RATE_LIMITED has two causes, and each gets its own sentence.
+// Per-client: this visitor started jobs, uploads or stem fetches too quickly (lib/admission.ts
+// gate 1, checkUploadRate, checkStemListRate, and the atomic INSERT's per-IP WHERE).
+export const RATE_LIMITED_PER_CLIENT_MSG = "You're sending requests too fast. Wait a minute and try again.";
+// Spend ceiling: the rolling 24h processing budget for the whole site is used up (gate 3).
+// Not about this visitor, so it must not say they went too fast.
+export const RATE_LIMITED_SPEND_CEILING_MSG =
+  "We've reached today's processing limit on our end. It's not something you did. Please try again later.";
+
+/** A paid plan asked for link ingest its plans.services row does not list. */
+export const SERVICE_NOT_IN_PLAN_MSG =
+  "YouTube links aren't switched on for your plan yet. Upload the audio file instead, or try again later.";
+
+/** Internal detail (never shown) marking a free credit holder who has spent the
+ *  free monthly allowance on YouTube links. Credits fund uploads only (013
+ *  trigger), and Jon capped links at the free allowance (2026-11-16, "Cap at
+ *  5/month"), so the copy points them at the thing their credits do buy. */
+export const LINK_CAP_CREDITS_DETAIL = 'link cap reached, credits held';
+export const LINK_CAP_CREDITS_MSG =
+  "You've used this month's free YouTube links. Your credits still work: upload the audio file instead.";
+
 /** The sentence a user sees for an entitlement refusal. Never the thrown message: that can be a bare code or database text. */
 export function entitlementMessage(code: string, detail?: string): string {
   if (code === 'ENTITLEMENT_UNAVAILABLE' && detail === 'quota exhausted') {
-    return 'You’ve used this month’s allowance on your plan. Your account page shows when the period ends.';
+    return "You've used this month's allowance on your plan. Your account page shows when the period ends.";
+  }
+  // A paid plan whose catalog row does not (yet) list the link service — the
+  // short window between the §1.2a-reversal deploy and migration 039. Not a
+  // billing outage, so it must not borrow ENTITLEMENT_UNAVAILABLE's
+  // "couldn't verify your plan" sentence.
+  if (code === 'ENTITLEMENT_UNAVAILABLE' && detail === 'service not in plan') {
+    return SERVICE_NOT_IN_PLAN_MSG;
+  }
+  if (code === 'FREE_MONTHLY_QUOTA_EXHAUSTED' && detail === LINK_CAP_CREDITS_DETAIL) {
+    return LINK_CAP_CREDITS_MSG;
   }
   const c = ERROR_COPY[code] ?? DEFAULT_ERROR;
   return c.action ? `${c.headline} ${c.action}` : c.headline;
@@ -105,7 +132,7 @@ export function entitlementMessage(code: string, detail?: string): string {
  */
 const FAILED_JOB_COPY_OVERRIDES: ReadonlySet<string> = new Set(['SEPARATION_FAILED']);
 
-export const FAILED_JOB_FALLBACK = 'We couldn’t finish this track. Try another file.';
+export const FAILED_JOB_FALLBACK = "We couldn't finish this track. Try another file.";
 
 /**
  * The sentence in a failed job's box on /jobs/[id]. For SEPARATION_FAILED (a provider

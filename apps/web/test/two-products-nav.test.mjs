@@ -215,6 +215,10 @@ test('/loops intro: names the product, links sign-in with a return path to /loop
   for (const re of [/24-bit WAV/, /44\.1/, /\b4 bars, up to 10 loops per stem/, /fixed when the song is split/, /Nudge it in your DAW/, /need clearance/, /separate tool from Play along/i]) {
     assert.match(flat, re);
   }
+  // The example is 8 bars (the only WAV the demo host has); the page must say so next to it.
+  if (/lp-file-name/.test(html)) {
+    assert.match(flat, /This example is 8 bars long, from an earlier run\. Loops you cut here are 4 bars\./);
+  }
   // B2: no claim of a length choice the cutter does not offer.
   assert.doesNotMatch(flat, /1, 2, 4 or 8|choose its loops|pick (?:a|the) length/i);
   // S2: the 5-minute rule, from the player cap.
@@ -354,4 +358,11 @@ test('N3: on /loops the nav Sign in returns to /loops; elsewhere it is plain /lo
   assert.equal(l.find((x) => x.text === 'Sign in').href.replace(/&amp;/g, '&'), '/login?return_to=%2Floops');
   const { default: OnTerms } = await navModule('/terms');
   assert.equal(links(await toMarkup(React.createElement(OnTerms, { signedIn: false }))).find((x) => x.text === 'Sign in').href, '/login');
+});
+
+test('the landing example lanes draw no loop bracket', async () => {
+  const { html } = await landingPage();
+  const lanes = html.match(/<section[^>]*class="lanes[\s\S]*?<\/section>/)?.[0];
+  assert.ok(lanes, 'no example lanes rendered');
+  assert.ok(!/class="bracket"/.test(lanes), 'the loop bracket is back on the Play along landing');
 });

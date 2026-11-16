@@ -137,6 +137,12 @@ export default function LoopsIntro() {
                 24-bit WAV · 44.1&nbsp;kHz · stereo · 8&nbsp;bars · from our
                 example song
               </p>
+              {/* The only WAV the demo host serves is 8 bars (assets-v3/drums-8bar.wav), cut
+                  before the length was fixed at 4. Said plainly rather than relabelled. */}
+              <p className="lp-muted" data-testid="loops-intro-example-length">
+                This example is 8 bars long, from an earlier run. Loops you cut here are{' '}
+                {LOOP_BARS} bars.
+              </p>
               <a
                 className="lp-secondary lp-file-dl"
                 href={DEMO_WAV_URL}

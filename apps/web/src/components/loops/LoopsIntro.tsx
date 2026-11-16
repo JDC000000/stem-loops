@@ -177,6 +177,9 @@ export default function LoopsIntro() {
           <a className="lp-link" href="/loops" aria-current="page">
             Download loops
           </a>
+          <a className="lp-link" href="/pricing">
+            Pricing
+          </a>
         </nav>
         <nav aria-label="Legal" className="lp-foot-links">
           <a className="lp-link" href="/terms">

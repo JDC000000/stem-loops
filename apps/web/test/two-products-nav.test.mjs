@@ -73,6 +73,16 @@ for (const [route, file, current] of MARKETING) {
   });
 }
 
+// S4 (IA review of #280): Pricing had no place in the IA. It is linked from the /loops intro's
+// footer (asserted in section 4). It is deliberately NOT added to the shared marketing footer or
+// the top nav: both render on the landing, where Jon's F31 (2026-11-13) allows exactly one
+// /pricing link (the scope sheet's) and landing-copy.test.mjs bans plan/pricing words in the
+// landing's components. The signed-in pages reach /pricing from Account, as before.
+test('S4: the landing still carries exactly one /pricing link (F31)', async () => {
+  const { html } = await landingPage();
+  assert.equal((html.match(/href="\/pricing/g) ?? []).length, 1);
+});
+
 test('the marketing footer lists the two products as peers', async () => {
   const { html } = await landingPage();
   const nav = html.match(/<nav class="footer-links" aria-label="Products">[\s\S]*?<\/nav>/)?.[0];
@@ -217,7 +227,7 @@ test('/loops intro: names the product, links sign-in with a return path to /loop
   assert.match(when, /kept as a library while you subscribe, and for 30 days after it ends\./);
   // N5: an indexable product page has the site's footer links.
   const foot = html.match(/<footer[^>]*data-testid="loops-intro-footer"[\s\S]*?<\/footer>/)?.[0] ?? '';
-  assert.deepEqual(links(foot).map((x) => x.href), ['/', '/loops', '/terms', '/privacy']);
+  assert.deepEqual(links(foot).map((x) => x.href), ['/', '/loops', '/pricing', '/terms', '/privacy']);
   assert.ok(!/<main[\s\S]*<footer[\s\S]*<\/main>/.test(html), 'the footer belongs outside <main>');
   // A signed-out page shows no song, no job and no API wiring.
   assert.doesNotMatch(html, /\/api\//);

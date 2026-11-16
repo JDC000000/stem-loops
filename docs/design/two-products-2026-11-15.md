@@ -58,6 +58,8 @@ Script: `scripts/design/nav-audit.mjs`. Signed-in cells used the same local, nev
   - Escape now closes the phone menu and returns focus to the toggle.
   - The signed-out /loops intro now has a footer.
   - A new test checks that the static pages keep the "Account" hint.
+- **S4 (where /pricing sits):** the /loops intro footer now links to Pricing. The shared marketing footer and the top nav do not, because both render on the landing, where Jon's F31 (2026-11-13) allows exactly one /pricing link and the landing tests ban pricing words. Signed-in visitors still reach /pricing from Account.
+- **Screens:** every screenshot in `screens-2026-11-15/nav/` was regenerated from this round's code.
 - **Still open:** the hero's example lanes are still captioned around the loop cut, and the landing FAQ's "deleted after 24 hours" belongs to PR #279.
 
 ## 5. Screens

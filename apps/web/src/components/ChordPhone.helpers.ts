@@ -50,9 +50,17 @@ export const MAX_TRIPLE_SHARE = 0.45;
  * next phase by TRIPLE_MARGIN, and NOT also explained by a 4-beat cycle (a
  * change every 12 beats fits both; that is ambiguous and stays a list).
  */
-export const MIN_TRIPLE_FOR_34 = 0.6;
-export const TRIPLE_MARGIN = 1.5;
 export const MAX_QUAD_FOR_34 = 0.6;
+/**
+ * The beat data has NO explicit downbeats (the worker counts 4-beat groups
+ * from the first beat), so a 3/4 bar line is only trusted when the chord
+ * changes give it unambiguously: at least this share of the on-beat chord
+ * CHANGES (counted, not weighted by length) fall on ONE phase of the 3-beat
+ * cycle. That holds for changes on the bar line only (every bar, every two
+ * bars). Any change inside the bar (2+1, 1+2) makes the phase ambiguous, and
+ * the view shows the plain list rather than guess a downbeat.
+ */
+export const MIN_TRIPLE_CHANGES_FOR_34 = 0.95;
 /** Inside the winning pair, beat 1 must beat beat 3 by this much to be chosen on votes alone. */
 export const HALF_BAR_MARGIN = 1.2;
 /** ... and at least this many chord changes to judge by. */
@@ -286,14 +294,16 @@ export function downbeatVotes(
   sections: readonly PhoneSection[],
   grid: BeatGrid,
   durSec: number,
-): { phase: number; phase3: number; scores: number[]; scores3: number[]; pairs: [number, number]; triple: number; quad: number; halfBarTie: boolean; aligned: number; total: number; changes: number } {
+): { phase: number; phase3: number; triplePhaseChanges: number; scores: number[]; scores3: number[]; pairs: [number, number]; triple: number; quad: number; halfBarTie: boolean; aligned: number; total: number; changes: number } {
   const scores = new Array<number>(BEATS_PER_BAR).fill(0);
   const scores3 = [0, 0, 0];
+  const counts3 = [0, 0, 0];
+  let alignedCount = 0;
   let aligned = 0;
   let total = 0;
   let changes = 0;
   let firstPhase = -1;
-  if (!(grid.beatSec > 0)) return { phase: 0, phase3: 0, scores, scores3, pairs: [0, 0], triple: 0, quad: 0, halfBarTie: false, aligned, total, changes };
+  if (!(grid.beatSec > 0)) return { phase: 0, phase3: 0, triplePhaseChanges: 0, scores, scores3, pairs: [0, 0], triple: 0, quad: 0, halfBarTie: false, aligned, total, changes };
   const segs = segmentsFor(sections, grid, durSec);
   for (let i = 0; i < runs.length; i++) {
     const r = runs[i];
@@ -316,13 +326,16 @@ export function downbeatVotes(
     scores[((nearest % BEATS_PER_BAR) + BEATS_PER_BAR) % BEATS_PER_BAR] += d;
     const g = seg.index0 + nearest;
     scores3[((g % 3) + 3) % 3] += d;
+    counts3[((g % 3) + 3) % 3] += 1;
+    alignedCount += 1;
   }
   // Share of on-beat chord-time on ONE phase of a 3-beat cycle: high for 3/4
   // (and 6/8 counted in eighths) whatever the change rate, ~1/3 for 4/4.
   const triple = aligned > 0 ? Math.max(...scores3) / aligned : 0;
   const quad = aligned > 0 ? Math.max(...scores) / aligned : 0;
   let phase3 = 0;
-  for (let k = 1; k < 3; k++) if (scores3[k] > scores3[phase3] + 1e-9) phase3 = k;
+  for (let k = 1; k < 3; k++) if (counts3[k] > counts3[phase3]) phase3 = k;
+  const triplePhaseChanges = alignedCount > 0 ? counts3[phase3] / alignedCount : 0;
   const pairs: [number, number] = [scores[0] + scores[2], scores[1] + scores[3]];
   const q = pairs[1] > pairs[0] + 1e-9 ? 1 : 0;
   const a = scores[q];
@@ -335,12 +348,13 @@ export function downbeatVotes(
     halfBarTie = true;
     phase = firstPhase === q || firstPhase === q + 2 ? firstPhase : q;
   }
-  return { phase, phase3, scores, scores3, pairs, triple, quad, halfBarTie, aligned, total, changes };
+  return { phase, phase3, triplePhaseChanges, scores, scores3, pairs, triple, quad, halfBarTie, aligned, total, changes };
 }
 
 /**
  * Does the grid fit the chords well enough to draw bars, and in which meter?
- * METER FIRST: a confident 3-beat cycle draws 3/4 bars; any other sign of a
+ * METER FIRST: a 3-beat cycle whose downbeat is UNAMBIGUOUS draws 3/4 bars
+ * (see MIN_TRIPLE_CHANGES_FOR_34); any other sign of a
  * 3-beat cycle (an uncertain band, or a 12-beat cycle that fits 3/4 and 4/4
  * alike) draws no bars; only then the 4/4 test, beats 1+3 against 2+4 (two
  * chords in every bar passes it).
@@ -349,8 +363,7 @@ export function meterFit(votes: ReturnType<typeof downbeatVotes>): { reason: Pho
   const no = (reason: PhoneModel['reason']) => ({ reason, beatsPerBar: 4 as const });
   if (votes.changes < MIN_CHANGES || !(votes.total > 0)) return no('few-changes');
   if (votes.aligned / votes.total < MIN_FIT_FRACTION) return no('poor-fit');
-  const s3 = [...votes.scores3].sort((a, b) => b - a).map((x) => x / votes.aligned);
-  if (s3[0] >= MIN_TRIPLE_FOR_34 && s3[0] >= TRIPLE_MARGIN * s3[1] && votes.quad <= MAX_QUAD_FOR_34) return { reason: 'ok', beatsPerBar: 3 };
+  if (votes.triplePhaseChanges >= MIN_TRIPLE_CHANGES_FOR_34 && votes.quad <= MAX_QUAD_FOR_34) return { reason: 'ok', beatsPerBar: 3 };
   if (votes.triple >= MAX_TRIPLE_SHARE) return no('meter');
   const [hi, lo] = [...votes.pairs].sort((a, b) => b - a);
   if (hi < MIN_DOWNBEAT_MARGIN * lo) return no('meter');

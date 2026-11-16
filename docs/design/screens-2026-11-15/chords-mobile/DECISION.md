@@ -64,13 +64,21 @@ Tests: 23 unit tests. The gate grew to 14 Chromium tests. All 32 mutants (the ea
 **Limit:** 6/8 tracked at the dotted-quarter beat (2 beats per bar) cannot be told apart from 4/4 with two chords per bar using chord timing alone.
 
 ## Orientation should-fixes after `6907e9e` (88 on orientation): a real 3/4 grid
-- **3/4 is drawn as 3-beat bars** when the meter is confident. That means at least 60% of on-beat chord-time falls on one phase of the 3-beat cycle (the count carries across sections), beating the next phase by 1.5×, and the song is not also explained by a 4-beat cycle. It uses the same Now/Next card, with **3 beat dots**, "bar n/N", "in N beats", and split bars (2+1).
+- *(Narrowed at the next delta, below: 2+1 and 1+2 are now the list.)* **3/4 is drawn as 3-beat bars** when the meter is confident. That means at least 60% of on-beat chord-time falls on one phase of the 3-beat cycle (the count carries across sections), beating the next phase by 1.5×, and the song is not also explained by a 4-beat cycle. It uses the same Now/Next card, with **3 beat dots**, "bar n/N", "in N beats", and split bars (2+1).
 - **6/8 counted in eighths** is drawn as two bars of three. 6/8 tracked at the dotted-quarter beat still cannot be told apart from 4/4 with two chords per bar.
 - **Uncertain meter gets the plain list.** That covers a 3-beat share between 0.45 and the 3/4 test, and a 12-beat cycle (3/4 changing every 4 bars, or 4/4 every 3 bars). This fixes **S1**: 3/4 alternating 2+1 and 1+2 is no longer drawn as 4/4 bars.
 - **Tests:**
   - Unit tests: 3/4 every bar, every 2 bars, 2+1 and 6/8 get 3-beat bars on the true downbeats; the same holds inside 4-beat worker sections; the uncertain cases give the list; 4/4 at 2+2, 1 per bar, 3+1 and 3+3+2 keep 4-beat bars.
   - Chromium, at 390 and 360, 7 meter cases. For the bar cases the gate checks bar n/N, 3 or 4 dots, the lit beat, and that every bar on screen holds that bar's own chords.
   - Mutants seen to fail: no 3/4 grid, 4 dots on 3/4, a wrong 3/4 downbeat, the uncertain band removed, the 12-beat ambiguity ignored, and a 4-beat dot count on 3/4.
+
+## Delta review at `1ea9736` (93 / 87 / 84): regression fixed. Rule: never draw a grid whose downbeat is not confirmed
+- **Cause:** at `1ea9736`, a 3/4 song in "1+2" got its downbeat from duration-weighted votes. Those votes favoured the 2-beat chord, which put the bar line on the wrong beat. Split bars then mixed chords from neighbouring bars, and the label read "Bar 1/41".
+- **Fix:** the beat data has **no explicit downbeats**. The worker counts 4-beat groups from the first beat. So a 3/4 grid is drawn **only when the chord changes make the downbeat unambiguous across the whole song**: at least 95% of on-beat chord *changes* (counted, not weighted by length) fall on one phase of the 3-beat cycle. That happens when chords change only on the bar line: every bar or every two bars, and 6/8 counted in eighths. Any change inside a 3/4 bar (2+1, 1+2, or mixed) means **the plain list**.
+- **Gate:**
+  - New Chromium cases at 390 and 360: 3/4 1+2 and 3/4 2+1 must show the list.
+  - New assertion on every bar the gate draws, in every bars-mode test: no chord is shown in a bar it does not sound in. The run's time is checked against the bar's time, both exposed as `data-start-sec`/`data-end-sec`.
+  - Mutants seen to fail: the old duration-weighted rule, chords drawn one bar late, a 0.5 confidence threshold, and the earlier 3/4 mutants.
 
 Not done (should-fix, not must-fix):
 - tap-to-seek, with editing on a long press;

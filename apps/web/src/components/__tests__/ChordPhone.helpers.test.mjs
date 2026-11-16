@@ -279,11 +279,10 @@ test('no grid -> sequence: one cell per chord, no beats', () => {
 const waltz = (bars, bpm = 96) => song(bars, { bpm });
 const WP = ['C:maj', 'A:min', 'F:maj', 'G:7', 'E:min7', 'A:min', 'D:min7', 'G:7'];
 
-test('3/4: a confident 3-beat cycle draws 3-beat bars on the true downbeats', () => {
+test('3/4: an UNAMBIGUOUS 3-beat cycle (changes only on the bar line) draws 3-beat bars on the true downbeats', () => {
   for (const [what, bars] of [
     ['a change every bar', Array.from({ length: 48 }, (_, k) => [[WP[k % 8], 3]])],
     ['a change every 2 bars', Array.from({ length: 32 }, (_, k) => [[WP[k % 8], 6]])],
-    ['2+1 in every bar', Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 2], [WP[(k + 3) % 8], 1]])],
     ['6/8 counted in eighths (two bars of three)', Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 6]])],
   ]) {
     const w = waltz(bars, what.startsWith('6/8') ? 180 : 96);
@@ -297,9 +296,6 @@ test('3/4: a confident 3-beat cycle draws 3-beat bars on the true downbeats', ()
       const k = (c.startSec - 0.5) / (3 * beat);
       assert.ok(Math.abs(k - Math.round(k)) < 1e-6, `${what}: bar at ${c.startSec} is off the 3/4 downbeats`);
       assert.ok(Math.abs(c.slots.reduce((a, s) => a + s.beats, 0) - 3) < 0.05, `${what}: a bar does not hold 3 beats`);
-    }
-    if (what.startsWith('2+1')) {
-      for (const c of m.cells.slice(0, -1)) assert.deepEqual(c.slots.map((s) => Math.round(s.beats)), [2, 1], 'the 2+1 bars split');
     }
     const ci = cellIndexAt(m, 0.5 + (3 * 5 + 1.2) * beat);
     assert.equal(beatInCell(m.cells[ci], 0.5 + (3 * 5 + 1.2) * beat, 3), 1);
@@ -321,8 +317,13 @@ test('3/4 in worker sections (4-beat lines): the beat count is carried, bars sta
   }
 });
 
-test('meter uncertain -> plain list: 12-beat cycles, and 3/4 alternating 2+1 / 1+2 (review 5 S1)', () => {
+test('meter uncertain -> plain list: 12-beat cycles, 3/4 with changes inside the bar (2+1, 1+2, alternating)', () => {
+  // The beat data has no explicit downbeats; a change inside a 3/4 bar makes
+  // the downbeat ambiguous (review 6: "1+2" was given a wrong downbeat).
   for (const [what, bars] of [
+    ['3/4 2+1', Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 2], [WP[(k + 3) % 8], 1]])],
+    ['3/4 1+2', Array.from({ length: 41 }, (_, k) => [[WP[k % 8], 1], [WP[(k + 3) % 8], 2]])],
+    ['3/4 2+1 every other bar', Array.from({ length: 40 }, (_, k) => (k % 2 ? [[WP[k % 8], 3]] : [[WP[k % 8], 2], [WP[(k + 3) % 8], 1]]))],
     ['3/4 every 4 bars', Array.from({ length: 20 }, (_, k) => [[WP[k % 8], 12]])],
     ['4/4 every 3 bars', Array.from({ length: 20 }, (_, k) => [[WP[k % 8], 12]])],
     ['3/4 alternating 2+1 and 1+2', Array.from({ length: 40 }, (_, k) => (k % 2 ? [[WP[k % 8], 1], [WP[(k + 3) % 8], 2]] : [[WP[k % 8], 2], [WP[(k + 3) % 8], 1]]))],

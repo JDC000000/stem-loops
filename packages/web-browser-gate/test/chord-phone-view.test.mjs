@@ -281,6 +281,10 @@ function measure() {
     const r = b.getBoundingClientRect();
     out.slots.push({
       groupCell: b.closest('[role="group"]')?.dataset.cell ?? null,
+      runStart: Number(b.dataset.startSec),
+      runEnd: Number(b.dataset.endSec),
+      barStart: Number(b.closest('[data-start-sec][data-cell]:not(button)')?.dataset.startSec),
+      barEnd: Number(b.closest('[data-start-sec][data-cell]:not(button)')?.dataset.endSec),
       cell: b.dataset.cell,
       title: b.title,
       text: b.textContent,
@@ -304,6 +308,11 @@ function measure() {
 function checkSlots(m, f, ctx) {
   if (m.slots.length === 0) f.push(`no chord slots in the lines @ ${ctx}`);
   if (m.mode === 'bars') {
+    // No bar ever shows a chord that is not sounding during that bar.
+    for (const s of m.slots) {
+      const ov = Math.min(s.runEnd, s.barEnd) - Math.max(s.runStart, s.barStart);
+      if (!(ov > 0.05)) f.push(`chord ${s.title} (${s.runStart}-${s.runEnd}s) is drawn in a bar it does not sound in (${s.barStart}-${s.barEnd}s) @ ${ctx}`);
+    }
     for (const s of m.slots) if (s.groupCell !== s.cell) f.push(`chord ${s.title} is not inside its bar's group (in ${s.groupCell}, belongs to ${s.cell}) @ ${ctx}`);
     for (const g of m.groups) {
       if (g.texts.length === 0) f.push(`bar group "${g.label}" holds no chord buttons @ ${ctx}`);
@@ -562,7 +571,8 @@ const WALTZ = ['C:maj', 'A:min', 'F:maj', 'G:7', 'E:min7', 'A:min', 'D:min7', 'G
 const METER_CASES = [
   { name: '3/4, a change every bar', bpm: 96, n: 48, bar: (k) => [[WALTZ[k % 8], 3]], want: 3 },
   { name: '3/4, a change every 2 bars', bpm: 96, n: 32, bar: (k) => [[WALTZ[k % 8], 6]], want: 3 },
-  { name: '3/4, 2+1 in every bar', bpm: 96, n: 40, bar: (k) => [[WALTZ[k % 8], 2], [WALTZ[(k + 3) % 8], 1]], want: 3 },
+  { name: '3/4, 2+1 in every bar (downbeat not confirmed)', bpm: 96, n: 40, bar: (k) => [[WALTZ[k % 8], 2], [WALTZ[(k + 3) % 8], 1]], want: 'sequence' },
+  { name: '3/4, 1+2 in every bar (downbeat not confirmed)', bpm: 96, n: 41, bar: (k) => [[WALTZ[k % 8], 1], [WALTZ[(k + 3) % 8], 2]], want: 'sequence' },
   { name: '6/8 counted in eighths, a change every bar', bpm: 180, n: 40, bar: (k) => [[WALTZ[k % 8], 6]], want: 3 },
   { name: '3/4 alternating 2+1 and 1+2 (uncertain)', bpm: 96, n: 40, bar: (k) => (k % 2 ? [[WALTZ[k % 8], 1], [WALTZ[(k + 3) % 8], 2]] : [[WALTZ[k % 8], 2], [WALTZ[(k + 3) % 8], 1]]), want: 'sequence' },
   { name: '3/4, a change every 4 bars (fits 4/4 too)', bpm: 96, n: 20, bar: (k) => [[WALTZ[k % 8], 12]], want: 'sequence' },

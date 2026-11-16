@@ -1399,6 +1399,8 @@ const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ mode
             data-cell={cb.cell}
             data-current={isCur ? 'true' : undefined}
             data-slots={cell.slots.length}
+            data-start-sec={cell.startSec.toFixed(3)}
+            data-end-sec={cell.endSec.toFixed(3)}
             data-stacked={cb.stacked ? 'true' : undefined}
             style={{
               position: 'absolute',
@@ -1429,6 +1431,8 @@ const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ mode
                   data-testid={`phone-slot-${sb.runIndex}`}
                   data-cell={cb.cell}
                   data-run-index={sb.runIndex}
+                  data-start-sec={run.startSec.toFixed(3)}
+                  data-end-sec={run.endSec.toFixed(3)}
                   data-current={isCurSlot ? 'true' : undefined}
                   aria-current={isCurSlot ? 'true' : undefined}
                   aria-label={phoneSlotLabel(run, slot.beats)}

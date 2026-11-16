@@ -30,6 +30,17 @@
 export type PlanCopyInput = {
   monthly_job_quota: number;
   services: string[];
+  /** plans.code. Drives the retention bullet; absent or unknown -> no retention bullet. */
+  code?: string;
+};
+
+/** How long each plan keeps a song (Jon, 2026-11-15). Free's 24 hours is exact
+ *  (jobs.expires_at, migration 007); Pro and Studio is JOB_RETAINED_UNTIL_SQL in
+ *  lib/retention.ts and RETAINED_UNTIL_SQL in the worker's cleanup.py. */
+export const RETENTION_BULLET: Readonly<Record<string, string>> = {
+  free: 'Songs deleted after 24 hours',
+  pro: 'Song library: kept while you subscribe, plus 30 days',
+  studio: 'Song library: kept while you subscribe, plus 30 days',
 };
 
 // Link-import services that are ACTUALLY IMPLEMENTED, and therefore the only
@@ -85,5 +96,7 @@ export function features(p: PlanCopyInput): string[] {
   // Never a negative bullet: pricing-features-table.test.mjs bans "uploads only".
   else out.push('Works with audio files you upload');
   out.push('Loop download — 24-bit WAV');
+  const keep = p.code ? RETENTION_BULLET[p.code] : undefined;
+  if (keep) out.push(keep);
   return out;
 }

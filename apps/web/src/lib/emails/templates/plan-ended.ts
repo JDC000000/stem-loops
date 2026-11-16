@@ -74,13 +74,18 @@ export function renderPlanEnded(vars: PlanEndedVars): RenderedEmail {
     typeof vars.free_quota === 'number' && vars.free_quota > 0
       ? `The Free plan covers ${vars.free_quota} tracks a month. Any credits you hold stay on your account.`
       : 'Any credits you hold stay on your account.';
-  const paragraphs = onFree ? [lead, detailText(rows), freeLine] : [lead, detailText(rows)];
+  // Paid-plan retention (lib/retention.ts): the library gets 30 days' grace from the end
+  // of the plan, then is deleted; new songs on Free are deleted after 24 hours. No "until":
+  // the ended email states no date it cannot vouch for (see the test).
+  const libraryLine =
+    'Songs already in your library are kept for 30 more days, then deleted. Songs you start on the Free plan are deleted after 24 hours.';
+  const paragraphs = onFree ? [lead, detailText(rows), freeLine, libraryLine] : [lead, detailText(rows)];
 
   const cta = { label: 'Go to your account', url: `${base}/account` };
   const footer = footerFor('service');
 
   const bodyParts = [h1(headline), p(lead), detailRows(rows)];
-  if (onFree) bodyParts.push(p(freeLine));
+  if (onFree) bodyParts.push(p(freeLine), p(libraryLine));
   const html = shell({ subject, preheader, bodyHtml: bodyParts.join('\n'), cta, footer, siteBase: base });
   const text = plainText({ paragraphs, cta, footer });
   return { subject, html, text };

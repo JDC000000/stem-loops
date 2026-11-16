@@ -29,7 +29,7 @@ export function homeGraph() {
       'Looping of a detected section',
       'Bar-length loops from each stem as 24-bit WAV files',
       `Uses the first ${MAX_TRACK_MIN} minutes of any song`,
-      'Files deleted after 24 hours',
+      'Free plan: files deleted after 24 hours. Pro and Studio: a song library kept while subscribed, plus 30 days',
     ],
     offers: { '@type': 'Offer', price: '0', priceCurrency: 'CAD', category: 'free' },
     image: `${SITE_URL}${OG_IMAGE}`,

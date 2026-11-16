@@ -22,7 +22,7 @@ test('entity facts come from the shared constants', () => {
   assert.ok(app.featureList.includes(`Uses the first ${MAX_TRACK_MIN} minutes of any song`));
   // Story 2.1 stem order, everywhere.
   assert.ok(app.featureList.includes('Six stems: drums, bass, guitar, keys, vocals and other'));
-  assert.ok(app.featureList.includes('Files deleted after 24 hours'));
+  assert.ok(app.featureList.includes('Free plan: files deleted after 24 hours. Pro and Studio: a song library kept while subscribed, plus 30 days'));
   assert.match(app.browserRequirements, /Chrome on a desktop/);
   assert.equal(app.offers.price, '0');
   assert.match(ENTITY_ONE_LINER, /\bsix stems\b/);

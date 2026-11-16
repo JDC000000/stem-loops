@@ -44,7 +44,12 @@ export function renderPlanEnding(vars: PlanEndingVars): RenderedEmail {
   const keep = ends
     ? `You keep ${plan} until ${ends}. After that your account moves to the Free plan. Any credits you hold stay on your account.`
     : `You keep ${plan} until the end of the period you paid for. After that your account moves to the Free plan. Any credits you hold stay on your account.`;
-  const paragraphs = [lead, keep];
+  // Paid-plan retention (lib/retention.ts): the library is kept for 30 days after the
+  // plan stops being effective, then deleted.
+  const library = ends
+    ? `Your songs stay in your library for 30 days after ${ends}, then they are deleted. Download anything you want to keep.`
+    : 'Your songs stay in your library for 30 days after your plan ends, then they are deleted. Download anything you want to keep.';
+  const paragraphs = [lead, keep, library];
   if (vars.undo_available) {
     paragraphs.push('If you change your mind before then, you can keep the plan from your account page.');
   }

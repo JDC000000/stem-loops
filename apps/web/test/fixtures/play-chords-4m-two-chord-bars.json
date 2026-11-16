@@ -500,14 +500,8 @@
   },
   {
    "start_sec": 170.996,
-   "end_sec": 173.521,
-   "label": "A:min",
-   "confidence": 1.0
-  },
-  {
-   "start_sec": 173.521,
    "end_sec": 176.028,
-   "label": "E:min",
+   "label": "A:min",
    "confidence": 1.0
   },
   {
@@ -716,59 +710,109 @@
   },
   {
    "start_sec": 238.494,
-   "end_sec": 240.0,
+   "end_sec": 239.12,
+   "label": "D:min7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 239.12,
+   "end_sec": 239.755,
+   "label": "G:7",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 239.755,
+   "end_sec": 240.376,
+   "label": "C#:hdim7/5",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 240.376,
+   "end_sec": 243.494,
    "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 243.494,
+   "end_sec": 245.99,
+   "label": "G:maj/3",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 245.99,
+   "end_sec": 247.251,
+   "label": "A:min",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 247.251,
+   "end_sec": 248.497,
+   "label": "F:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 248.497,
+   "end_sec": 251.025,
+   "label": "C:maj",
+   "confidence": 1.0
+  },
+  {
+   "start_sec": 251.025,
+   "end_sec": 251.525,
+   "label": "N",
    "confidence": 1.0
   }
  ],
  "key": "C:major",
  "provider": "fixture",
- "provider_version": "m3-chords",
- "duration_sec": 240.0,
+ "provider_version": "m3-chords-2",
+ "duration_sec": 251.525,
  "model_ms": 1,
  "_fixture": {
-  "note": "Synthetic 4-minute song for the phone chord view: 96 bpm 4/4, two-chord bars (2+2 and 3+1), +-35 ms boundary jitter, bar 1 on the SECOND detected beat. Not used by the loader; the gate passes the grid to the player as loops rows would.",
+  "note": "Synthetic 4:12 song for the phone chord view: 96 bpm 4/4, 100 bars, two-chord bars (2+2, 3+1 G7|Bb), one 4-chord turnaround bar with a long name (Dm7 G7 C#m7b5/G# C), +-35 ms boundary jitter, bar 1 on the SECOND detected beat. Sections start where the worker puts them: on its own 4-beat lines counted from the first beat (anchor_sec), i.e. ONE BEAT BEFORE each true downbeat, as loops rows would. Not used by the loader; tests pass bpm/anchor as a beat grid the way Player derives it from loops rows. The bridge opens with A:min HELD over two bars (one run in two cells of one line).",
   "bpm": 96,
   "anchor_sec": 0.4,
+  "first_downbeat_sec": 1.025,
+  "bars": 100,
   "sections": [
    {
-    "startSec": 0,
-    "endSec": 11.025,
+    "startSec": 0.4,
+    "endSec": 10.4,
     "label": "intro"
    },
    {
-    "startSec": 11.025,
-    "endSec": 51.025,
+    "startSec": 10.4,
+    "endSec": 50.4,
     "label": "verse"
    },
    {
-    "startSec": 51.025,
-    "endSec": 91.025,
+    "startSec": 50.4,
+    "endSec": 90.4,
     "label": "chorus"
    },
    {
-    "startSec": 91.025,
-    "endSec": 131.025,
+    "startSec": 90.4,
+    "endSec": 130.4,
     "label": "verse"
    },
    {
-    "startSec": 131.025,
-    "endSec": 171.025,
+    "startSec": 130.4,
+    "endSec": 170.4,
     "label": "chorus"
    },
    {
-    "startSec": 171.025,
-    "endSec": 191.025,
+    "startSec": 170.4,
+    "endSec": 190.4,
     "label": "bridge"
    },
    {
-    "startSec": 191.025,
-    "endSec": 231.025,
+    "startSec": 190.4,
+    "endSec": 230.4,
     "label": "chorus"
    },
    {
-    "startSec": 231.025,
-    "endSec": 240.0,
+    "startSec": 230.4,
+    "endSec": 251.025,
     "label": "outro"
    }
   ]

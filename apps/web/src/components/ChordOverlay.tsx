@@ -47,18 +47,29 @@ import {
 } from '../chord/tab-capture.ts';
 import type { ChordPlayheadProps, LoopRegion } from '../lib/play/types.ts';
 import {
+  type BeatGrid,
+  type LineBox,
+  type PhoneModel,
+  BEATS_PER_BAR,
+  CELL_HEAD_PX,
+  SLOT_PAD_PX,
+  beatInCell,
+  beatsUntil,
+  buildPhoneModel,
+  cellIndexAt,
+  layoutLine,
+  leadSheetSymbol,
+  lineIndexOfCell,
+  nextChord,
+  nextLineIndex,
+  phoneSlotLabel,
+  positionLabel,
+} from './ChordPhone.helpers.ts';
+import {
   type ChordAlternative,
   type ChordEdit,
-  type Bar,
-  type BarSlot,
-  type BeatGrid,
-  BEATS_PER_BAR,
-  barIndexAt,
-  leadSheetSymbol,
   type ChordLabelEdit,
   type OverlayRun,
-  buildBars,
-  fallbackBeatGrid,
   MAX_PX_PER_SEC,
   NARROW_BREAKPOINT_PX,
   WRAP_DEFAULT_ROW_SEC,
@@ -145,11 +156,14 @@ export interface ChordOverlayProps extends Partial<ChordPlayheadProps> {
   jobId?: string | null;
   /**
    * The job's beat grid (from its loops rows; see beatGridFromLoops). The
-   * phone view draws chords in bars with it. Absent: a pseudo-bar fallback.
+   * phone view draws bars with it when it fits the chords; absent or a poor
+   * fit, the phone view shows a plain chord sequence (no invented beats).
    */
   beatGrid?: BeatGrid | null;
-  /** Song sections, for the phone view's "where am I" line. */
+  /** Song sections: the phone view's "where am I" and its per-section re-anchoring. */
   sections?: readonly LoopRegion[];
+  /** The section loop being played, if any (the phone view's Next follows it). */
+  loop?: LoopRegion | null;
 }
 
 export { observationsToRuns };
@@ -177,6 +191,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   positionSec = null,
   beatGrid = null,
   sections,
+  loop = null,
 }) => {
   const [state, setState] = useState<State>(INITIAL_STATE);
   const [popoverFor, setPopoverFor] = useState<{ run: OverlayRun; idx: number } | null>(null);
@@ -512,9 +527,11 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   const activeRun = activeIdx >= 0 ? state.runs[activeIdx] : null;
 
   // ---- phone view (Stories 3 / 4.8 on phones) ------------------------------
-  const grid = useMemo(() => beatGrid ?? fallbackBeatGrid(state.runs), [beatGrid, state.runs]);
-  const bars = useMemo(() => (grid ? buildBars(state.runs, grid, dur) : []), [grid, state.runs, dur]);
-  const showPhone = narrow && bars.length > 0;
+  const phoneModel = useMemo(
+    () => (narrow ? buildPhoneModel(state.runs, beatGrid, sections, dur) : null),
+    [narrow, state.runs, beatGrid, sections, dur],
+  );
+  const showPhone = narrow && !!phoneModel && phoneModel.cells.length > 0;
   // "Playing" for LAYOUT purposes: a usable position arrived. Deliberately
   // distinct from "a chord is sounding" — positionSec can legitimately sit in
   // a gap Klangio left, and the Now-row must not vanish when it does.
@@ -705,12 +722,11 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
         <>
           <PhoneChords
             runs={state.runs}
-            bars={bars}
-            measured={grid?.measured ?? false}
+            model={phoneModel!}
             positionSec={isPlayingPos(positionSec) ? positionSec : null}
             activeIdx={activeIdx}
             widthPx={widthPx}
-            sections={sections}
+            loop={loop}
             onOpen={setPopoverFor}
           />
           <h3 style={allChordsHeadingStyle} data-testid="all-chords-heading">All chords</h3>
@@ -1313,195 +1329,183 @@ const altButtonStyle: CSSProperties = {
 // large list of different chords. You don't know where you're at ... especially
 // chords when you have two chords in one bar."
 //
-// The design (chosen over a streaming lane and a scrolling 4-bar grid; see
-// docs/design/screens-2026-11-15/chords-mobile/DECISION.md):
-//   1. a Now card: section and bar ("Chorus . bar 55"), the CURRENT chord at
-//      NOW_PX, the beat of the bar, and the NEXT chord with "in N beats";
-//   2. two lines of four bars: the line being played and the next one. A bar
-//      with two chords is ONE cell split in proportion to its beats.
-// Nothing slides or scrolls by itself: the lines page when playback crosses a
-// line, so there is no motion to reduce (prefers-reduced-motion needs nothing
-// extra here). The full song stays below ("All chords"), where every chord is
-// reachable and editable (#212).
+//   1. a Now card: where you are ("Chorus 2 · bar 3/16"), the CURRENT chord at
+//      NOW_PX, the beat of the bar, and the NEXT chord with "in N beats" (it
+//      follows a section loop back to its start);
+//   2. the line being played and the next one. In bars mode a bar with two
+//      chords is ONE cell split by beats; in sequence mode (no trustworthy
+//      grid) one cell per chord, and no beats are shown at all.
+// The model, the fit test and the layout are pure: ChordPhone.helpers.ts.
+// Nothing slides or scrolls by itself (lines page when playback crosses one),
+// so there is no motion to reduce. No aria-live: a chord a second would make a
+// screen reader unusable; the current bar and chord carry aria-current. The
+// full song stays below ("All chords"), every chord reachable and editable (#212).
 // ===========================================================================
 interface PhoneChordsProps {
   runs: readonly OverlayRun[];
-  bars: readonly Bar[];
-  /** The bars come from the job's measured tempo (bar numbers are shown only then). */
-  measured: boolean;
+  model: PhoneModel;
   positionSec: number | null;
   activeIdx: number;
   widthPx: number;
-  sections?: readonly LoopRegion[];
+  loop: LoopRegion | null;
   onOpen: (v: { run: OverlayRun; idx: number }) => void;
 }
 
-const SLOT_PAD_PX = 2;
-/** Upcoming chord sizes, largest first; a slot takes the largest its name fits at. A15 floor is 11. */
-const SLOT_SIZES = [20, 16, 13, 11];
 const NOW_PX = 44;
 const NEXT_PX = 24;
-
-function slotBg(run: OverlayRun, current: boolean): string {
+/** Chord colours in the phone view: white text >= 5:1 on every hue at L30, >= 6.2:1 at L26. */
+function phoneSlotBg(run: OverlayRun, current: boolean): string {
   if (run.kind === 'none') return 'transparent';
   if (run.kind === 'unknown') return '#78350f';
   const hue = rootHue(run.label);
   if (hue === null) return '#1e40af';
-  return `hsl(${hue} 50% ${current ? 38 : 26}%)`;
+  return `hsl(${hue} 50% ${current ? 30 : 26}%)`;
 }
 
-/**
- * Phone slot text is bold (600/700) and not sized by the chip measurer, so it
- * is fitted with the headless advance table (Inter 400 at 16px, unknown glyphs
- * at the widest advance) widened by PHONE_BOLD_FACTOR: conservative on
- * purpose, a name that is a size smaller is better than one that is clipped.
- * The real-Chromium gate (chord-phone-view.test.mjs) checks no slot clips.
- */
-const PHONE_BOLD_FACTOR = 1.12;
-function fitSize(text: string, widthPx: number, sizes = SLOT_SIZES): number | null {
-  for (const px of sizes) if (estimateLabelPx(text, px) * PHONE_BOLD_FACTOR <= widthPx - 2 * SLOT_PAD_PX) return px;
-  return null;
-}
-
-function sectionAt(sections: readonly LoopRegion[] | undefined, sec: number | null): string | null {
-  if (!sections || sec === null) return null;
-  for (const s of sections) if (sec >= s.startSec && sec < s.endSec && s.label) return s.label[0].toUpperCase() + s.label.slice(1);
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// One bar cell, shared by the grid (B) and the focus lines (C).
-// ---------------------------------------------------------------------------
-interface BarCellProps {
-  bar: Bar;
+interface PhoneLineViewProps {
+  model: PhoneModel;
   runs: readonly OverlayRun[];
-  widthPx: number;
-  heightPx: number;
-  isCurrentBar: boolean;
+  box: LineBox;
+  lineIndex: number;
+  role: 'current' | 'next';
+  currentCell: number;
   activeIdx: number;
-  showNumber: boolean;
   onOpen: PhoneChordsProps['onOpen'];
 }
 
-const BarCell: FC<BarCellProps> = memo(function BarCell({ bar, runs, widthPx, heightPx, isCurrentBar, activeIdx, showNumber, onOpen }) {
-  const total = bar.slots.reduce((a, s) => a + s.beats, 0) || BEATS_PER_BAR;
+const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ model, runs, box, lineIndex, role, currentCell, activeIdx, onOpen }) {
+  const bars = model.mode === 'bars';
   return (
     <div
-      data-testid={`phone-bar-${bar.number}`}
-      data-current={isCurrentBar ? 'true' : undefined}
-      data-slots={bar.slots.length}
-      style={{
-        position: 'relative',
-        width: widthPx,
-        height: heightPx,
-        flex: 'none',
-        display: 'flex',
-        gap: 2,
-        padding: 2,
-        boxSizing: 'border-box',
-        borderRadius: 4,
-        background: isCurrentBar ? 'rgba(244,114,182,0.14)' : 'rgba(255,255,255,0.04)',
-        outline: isCurrentBar ? `2px solid ${PLAYHEAD_COLOR}` : '1px solid rgba(255,255,255,0.18)',
-        outlineOffset: isCurrentBar ? 0 : -1,
-      }}
+      data-testid={role === 'current' ? 'phone-line-current' : 'phone-line-next'}
+      data-line={lineIndex}
+      data-rows={box.rows}
+      style={{ position: 'relative', height: box.h }}
     >
-      {showNumber ? <span style={barNumberStyle} aria-hidden="true">{bar.number + 1}</span> : null}
-      {bar.slots.map((slot, i) => (
-        <SlotView
-          key={`${slot.runIndex}-${i}`}
-          slot={slot}
-          run={runs[slot.runIndex]}
-          widthPx={((widthPx - 4 - 2 * (bar.slots.length - 1)) * slot.beats) / total}
-          isCurrent={isCurrentBar && slot.runIndex === activeIdx}
-          onOpen={onOpen}
-        />
-      ))}
+      {box.cells.map((cb) => {
+        const cell = model.cells[cb.cell];
+        const isCur = cb.cell === currentCell;
+        const sec = cell.section >= 0 ? model.sections[cell.section]?.name ?? null : null;
+        return (
+          <div
+            key={cb.cell}
+            role="group"
+            aria-label={bars ? `Bar ${cell.numberInSection} of ${cell.countInSection}${sec ? `, ${sec}` : ''}` : undefined}
+            aria-current={isCur ? 'true' : undefined}
+            data-testid={`phone-cell-${cb.cell}`}
+            data-current={isCur ? 'true' : undefined}
+            data-slots={cell.slots.length}
+            data-stacked={cb.stacked ? 'true' : undefined}
+            style={{
+              position: 'absolute',
+              left: cb.x,
+              top: cb.y,
+              width: cb.w,
+              height: cb.h,
+              boxSizing: 'border-box',
+              borderRadius: 4,
+              background: isCur ? 'rgba(244,114,182,0.14)' : 'rgba(255,255,255,0.04)',
+              outline: isCur ? `2px solid ${PLAYHEAD_COLOR}` : '1px solid rgba(255,255,255,0.18)',
+              outlineOffset: isCur ? 0 : -1,
+            }}
+          >
+            {bars ? (
+              <span style={barNumberStyle} aria-hidden="true" data-testid="phone-bar-number">
+                {cell.numberInSection}
+              </span>
+            ) : null}
+          </div>
+        );
+      })}
+      {box.cells.flatMap((cb) =>
+        cb.slots.map((sb, i) => {
+          const run = runs[sb.runIndex];
+          const slot = model.cells[cb.cell].slots[i];
+          const isCur = cb.cell === currentCell && sb.runIndex === activeIdx;
+          return (
+            <button
+              type="button"
+              key={`${cb.cell}-${sb.runIndex}`}
+              data-testid={`phone-slot-${sb.runIndex}`}
+              data-cell={cb.cell}
+              data-run-index={sb.runIndex}
+              data-current={isCur ? 'true' : undefined}
+              aria-current={isCur ? 'true' : undefined}
+              aria-label={phoneSlotLabel(run, slot.beats)}
+              title={run.label}
+              onClick={() => onOpen({ run, idx: sb.runIndex })}
+              style={{
+                position: 'absolute',
+                left: sb.x,
+                top: sb.y,
+                width: sb.w,
+                height: sb.h,
+                border: run.kind === 'none' ? '1px dashed rgba(255,255,255,0.6)' : 'none',
+                borderRadius: 4,
+                background: phoneSlotBg(run, isCur),
+                color: run.kind === 'none' ? 'rgba(255,255,255,0.85)' : '#fff',
+                padding: `0 ${PHONE_SLOT_PAD_PX}px`,
+                boxSizing: 'border-box',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                textAlign: 'center',
+                fontSize: sb.fontPx,
+                lineHeight: sb.wrap ? 1.05 : 1.2,
+                fontWeight: isCur ? 700 : 600,
+                whiteSpace: sb.wrap ? 'normal' : 'nowrap',
+                overflowWrap: sb.wrap ? 'anywhere' : undefined,
+                overflow: 'hidden',
+                cursor: 'pointer',
+                boxShadow: isCur ? `inset 0 0 0 2px ${PLAYHEAD_COLOR}` : undefined,
+              }}
+            >
+              {sb.text}
+            </button>
+          );
+        }),
+      )}
     </div>
   );
 });
 
-interface SlotViewProps {
-  slot: BarSlot;
-  run: OverlayRun;
-  widthPx: number;
-  isCurrent: boolean;
-  onOpen: PhoneChordsProps['onOpen'];
-}
-
-function SlotView({ slot, run, widthPx, isCurrent, onOpen }: SlotViewProps) {
-  const text = leadSheetSymbol(run);
-  const sizes = isCurrent ? [24, 20, 16, 13, 11] : SLOT_SIZES;
-  const px = fitSize(text, widthPx, sizes);
-  return (
-    <button
-      type="button"
-      data-testid={`phone-slot-${slot.runIndex}`}
-      data-run-index={slot.runIndex}
-      data-current={isCurrent ? 'true' : undefined}
-      data-held={slot.held ? 'true' : undefined}
-      aria-label={runAriaLabel(run)}
-      title={run.label}
-      onClick={() => onOpen({ run, idx: slot.runIndex })}
-      style={{
-        width: widthPx,
-        flex: 'none',
-        height: '100%',
-        border: run.kind === 'none' ? '1px dashed rgba(255,255,255,0.5)' : 'none',
-        borderRadius: 4,
-        background: slotBg(run, isCurrent),
-        color: run.kind === 'none' ? 'rgba(255,255,255,0.75)' : '#fff',
-        padding: `0 ${SLOT_PAD_PX}px`,
-        boxSizing: 'border-box',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: px ?? 11,
-        fontWeight: isCurrent ? 700 : 600,
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        cursor: 'pointer',
-        boxShadow: isCurrent ? `inset 0 0 0 2px ${PLAYHEAD_COLOR}` : undefined,
-      }}
-    >
-      {px === null ? null : text}
-    </button>
+const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx, widthPx, loop, onOpen }) => {
+  const bars = model.mode === 'bars';
+  const cur = cellIndexAt(model, positionSec);
+  const line = cur >= 0 ? lineIndexOfCell(model, cur) : 0;
+  const next = nextLineIndex(model, line, loop, positionSec);
+  // Layout depends on which chord is current (it may take a larger size), so
+  // it is recomputed per chord change, never per frame.
+  const curBox = useMemo(
+    () => (model.lines[line] ? layoutLine(model, runs, model.lines[line], widthPx, activeIdx) : null),
+    [model, runs, line, widthPx, activeIdx],
   );
-}
-
-// ---------------------------------------------------------------------------
-// Now / Next card, beat count, then this line and the next
-// ---------------------------------------------------------------------------
-const FOCUS_CELL_H = 52;
-
-const PhoneChords: FC<PhoneChordsProps> = ({ runs, bars, measured, positionSec, activeIdx, widthPx, sections, onOpen }) => {
-  const perRow = BEATS_PER_BAR;
-  const gap = 4;
-  const cellW = Math.floor((widthPx - gap * (perRow - 1)) / perRow);
-  const cur = barIndexAt(bars, positionSec);
-  const line = cur >= 0 ? Math.floor(cur / perRow) : 0;
-  const lines = [bars.slice(line * perRow, line * perRow + perRow), bars.slice((line + 1) * perRow, (line + 2) * perRow)];
+  const nextBox = useMemo(
+    () => (next >= 0 && model.lines[next] ? layoutLine(model, runs, model.lines[next], widthPx, -1) : null),
+    [model, runs, next, widthPx],
+  );
   const nowRun = activeIdx >= 0 ? runs[activeIdx] : null;
-  // Next chord: the first run after the current one that is not "no chord".
-  let nextIdx = -1;
-  for (let i = Math.max(0, activeIdx + 1); i < runs.length; i++) if (runs[i].kind !== 'none' || i === runs.length - 1) { nextIdx = i; break; }
-  const nextRun = nextIdx >= 0 ? runs[nextIdx] : null;
-  const barSec = bars.length ? bars[0].endSec - bars[0].startSec : 0;
-  const beatSec = barSec / BEATS_PER_BAR;
-  const beatInBar = cur >= 0 && positionSec !== null && beatSec > 0 ? Math.min(BEATS_PER_BAR - 1, Math.floor((positionSec - bars[cur].startSec) / beatSec)) : -1;
-  const beatsToNext = nextRun && positionSec !== null && beatSec > 0 ? Math.max(1, Math.ceil((nextRun.startSec - positionSec) / beatSec - 0.05)) : null;
-  const section = sectionAt(sections, positionSec);
+  const nx = nextChord(runs, positionSec, activeIdx, loop);
+  const nextRun = nx ? runs[nx.runIndex] : null;
+  const cell = cur >= 0 ? model.cells[cur] : null;
+  const beat = bars && cell && positionSec !== null ? beatInCell(cell, positionSec) : -1;
+  const count = bars && cell && nx ? beatsUntil(cell, nx.inSec) : null;
   return (
-    <div data-testid="phone-chords" data-layout="bars" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div data-testid="phone-chords" data-mode={model.mode} data-reason={model.reason} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={focusCardStyle}>
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-          <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.8)' }}>
-            {section ?? 'Now'}
-            {measured && cur >= 0 ? ` · bar ${bars[cur].number + 1}` : ''}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 20 }}>
+          <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.85)' }} data-testid="phone-position">
+            {cur >= 0 ? positionLabel(model, cur) : 'Now'}
           </span>
-          {beatInBar >= 0 ? (
-            <span aria-hidden="true" style={{ display: 'flex', gap: 6 }} data-testid="phone-beats" data-beat={beatInBar + 1}>
+          {beat >= 0 ? (
+            <span aria-hidden="true" style={{ display: 'flex', gap: 6 }} data-testid="phone-beats" data-beat={beat + 1}>
               {Array.from({ length: BEATS_PER_BAR }, (_, b) => (
-                <span key={b} style={{ width: 10, height: 10, borderRadius: 5, background: b === beatInBar ? PLAYHEAD_COLOR : 'rgba(255,255,255,0.25)' }} />
+                <span
+                  key={b}
+                  data-testid="phone-beat-dot"
+                  data-on={b === beat ? 'true' : undefined}
+                  style={{ width: 10, height: 10, borderRadius: 5, background: b === beat ? PLAYHEAD_COLOR : 'rgba(255,255,255,0.5)' }}
+                />
               ))}
             </span>
           ) : null}
@@ -1512,48 +1516,40 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, bars, measured, positionSec, 
               {nowRun ? leadSheetSymbol(nowRun) : '—'}
             </span>
           </span>
-          {nextRun ? (
-            <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }} data-testid="phone-next" data-run-index={nextIdx}>
-              <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.75)' }}>
-                Next{beatsToNext !== null ? ` in ${beatsToNext} beat${beatsToNext === 1 ? '' : 's'}` : ''}
+          {nextRun && nx ? (
+            <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', minWidth: 0 }} data-testid="phone-next" data-run-index={nx.runIndex} data-wraps={nx.wraps ? 'true' : undefined}>
+              <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.85)' }} data-testid="phone-next-when">
+                {nx.wraps ? 'Loop back to' : 'Next'}
+                {count !== null ? ` in ${count} beat${count === 1 ? '' : 's'}` : ''}
               </span>
-              <span style={{ fontSize: NEXT_PX, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap' }}>{leadSheetSymbol(nextRun)}</span>
+              <span style={{ fontSize: NEXT_PX, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap' }} data-testid="phone-next-name">
+                {leadSheetSymbol(nextRun)}
+              </span>
             </span>
           ) : null}
         </div>
       </div>
-      {lines.map((row, li) =>
-        row.length ? (
-          <div key={`${line + li}`} style={{ display: 'flex', gap, opacity: li === 0 ? 1 : 0.85 }} data-testid={li === 0 ? 'phone-line-current' : 'phone-line-next'}>
-            {row.map((bar, k) => (
-              <BarCell
-                key={bar.number}
-                bar={bar}
-                runs={runs}
-                widthPx={cellW}
-                heightPx={FOCUS_CELL_H}
-                isCurrentBar={(line + li) * perRow + k === cur}
-                activeIdx={activeIdx}
-                showNumber={measured}
-                onOpen={onOpen}
-              />
-            ))}
-          </div>
-        ) : null,
-      )}
+      {curBox ? (
+        <PhoneLineView model={model} runs={runs} box={curBox} lineIndex={line} role="current" currentCell={cur} activeIdx={activeIdx} onOpen={onOpen} />
+      ) : null}
+      {nextBox ? (
+        <PhoneLineView model={model} runs={runs} box={nextBox} lineIndex={next} role="next" currentCell={-1} activeIdx={-1} onOpen={onOpen} />
+      ) : null}
     </div>
   );
 };
 
+const PHONE_SLOT_PAD_PX = SLOT_PAD_PX;
 const barNumberStyle: CSSProperties = {
   position: 'absolute',
   top: 1,
-  left: 4,
-  fontSize: 11,
-  lineHeight: '12px',
-  color: 'rgba(255,255,255,0.75)',
+  left: 5,
+  height: CELL_HEAD_PX - 2,
+  fontSize: 12,
+  lineHeight: `${CELL_HEAD_PX - 2}px`,
+  color: 'rgba(255,255,255,0.85)',
+  fontVariantNumeric: 'tabular-nums',
   pointerEvents: 'none',
-  zIndex: 1,
 };
 const focusCardStyle: CSSProperties = {
   background: 'rgba(244,114,182,0.10)',

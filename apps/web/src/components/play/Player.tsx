@@ -653,7 +653,13 @@ export function PlayerView({
           states, which is Story 3.6. */}
       <div className={styles.chords}>
         <h2 className={styles.subtitle}>Chords</h2>
-        <ChordOverlay jobId={jobId} positionSec={chordPosition} beatGrid={beatGrid} sections={sections} />
+        <ChordOverlay
+          jobId={jobId}
+          positionSec={chordPosition}
+          beatGrid={beatGrid}
+          sections={sections}
+          loop={snapshot.loop}
+        />
       </div>
     </section>
   );

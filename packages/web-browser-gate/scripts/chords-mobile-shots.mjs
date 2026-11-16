@@ -30,6 +30,7 @@ const FONT_CSS =
 
 const FIX = JSON.parse(readFileSync(join(WEB, 'test/fixtures/play-chords-4m-two-chord-bars.json'), 'utf8'));
 const GRID = { beatSec: 60 / FIX._fixture.bpm, anchorSec: FIX._fixture.anchor_sec, measured: true };
+// '-no-tempo' shots pass no grid: the plain chord-sequence fallback.
 const SECTIONS = FIX._fixture.sections;
 const DURATION = FIX.duration_sec;
 // Mid-song, beat 3 of a split bar in the second chorus (E:min7 | A:min).
@@ -85,9 +86,9 @@ const snap = {
 const built = await bundle();
 const browser = await chromium.launch({ args: ['--font-render-hinting=none'] });
 mkdirSync(OUT, { recursive: true });
-{
+for (const [variant, grid] of [['', GRID], ['-no-tempo', null]]) {
   for (const [w, h] of [[390, 844], [360, 800]]) {
-    for (const reduced of [false, true]) {
+    for (const reduced of variant ? [false] : [false, true]) {
       const ctx = await browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, reducedMotion: reduced ? 'reduce' : 'no-preference' });
       const page = await ctx.newPage();
       await page.route('http://shots.test/**', async (route) => {
@@ -97,7 +98,7 @@ mkdirSync(OUT, { recursive: true });
             '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
             `<link rel="stylesheet" href="/out.css"><style>${FONT_CSS}</style></head><body>` +
             '<main style="max-width:960px;margin:0 auto;padding:24px var(--sl-gutter,16px) 96px"><div id="root"></div></main>' +
-            `<script>window.__snap=${JSON.stringify(snap)};window.__sections=${JSON.stringify(SECTIONS)};window.__grid=${JSON.stringify(GRID)};</script>` +
+            `<script>window.__snap=${JSON.stringify(snap)};window.__sections=${JSON.stringify(SECTIONS)};window.__grid=${JSON.stringify(grid)};</script>` +
             '<script>Promise.all([400,500,600,700].map(function(w){return document.fonts.load(w+" 16px GateInter")})).then(function(){var s=document.createElement("script");s.src="/out.js";document.body.appendChild(s)})</script>' +
             '</body></html>' });
         const fm = /^\/font-(\d+)\.woff2$/.exec(u.pathname);
@@ -111,7 +112,7 @@ mkdirSync(OUT, { recursive: true });
       await page.goto('http://shots.test/');
       await page.waitForSelector('[data-testid="phone-chords"]', { timeout: 30000 });
       await page.evaluate(() => new Promise((r) => setTimeout(r, 600)));
-      const name = `shipped-${w}x${h}${reduced ? '-reduced-motion' : ''}`;
+      const name = `shipped${variant}-${w}x${h}${reduced ? '-reduced-motion' : ''}`;
       // What the phone shows once the user has scrolled to the chords.
       await page.evaluate(() => {
         const el = document.querySelector('[data-testid="chord-overlay"]');
@@ -119,8 +120,8 @@ mkdirSync(OUT, { recursive: true });
       });
       await page.evaluate(() => new Promise((r) => setTimeout(r, 400)));
       writeFileSync(join(OUT, `${name}.png`), await page.screenshot());
-      const layoutUsed = await page.evaluate(() => document.querySelector('[data-testid="phone-chords"]').dataset.layout);
-      console.log(`${name}: layout=${layoutUsed}`);
+      const layoutUsed = await page.evaluate(() => document.querySelector('[data-testid="phone-chords"]').dataset.mode);
+      console.log(`${name}: mode=${layoutUsed}`);
       await ctx.close();
     }
   }

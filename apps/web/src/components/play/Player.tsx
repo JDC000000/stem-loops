@@ -77,17 +77,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ChordOverlay } from '@/components/ChordOverlay';
 import {
-  COPY_LINK_DONE,
-  COPY_LINK_FAILED,
-  COPY_LINK_LABEL,
-  DEVICE_UNSUPPORTED_BODY,
-  DEVICE_UNSUPPORTED_STILL_WORKS,
-  DEVICE_UNSUPPORTED_TITLE,
-  deviceBlockReason,
-  playerForced,
-  readDeviceSignals,
-  type DeviceBlockReason,
-} from '@/lib/play/device-support';
+  createBackgroundOutput,
+  routeLatencySec,
+  setPlaybackAudioSession,
+  wireAudioResume,
+  wireMediaSession,
+  type BackgroundOutput,
+  type MediaSessionWiring,
+} from '@/lib/play/background-audio';
+import { LIGHT_AUDIO_NOTE, playbackProfile, readDeviceSignals } from '@/lib/play/device-support';
 import { createPlayEngine } from '@/lib/play/engine';
 import {
   StemLoadError,
@@ -114,7 +112,9 @@ import styles from './Player.module.css';
 // ─── copy (exported so node:test can assert it without a DOM) ────────────────
 
 /**
- * Story 5.3. Chrome desktop is launch scope.
+ * Story 5.3 — the ONE device-level fallback left (Jon, 2026-11-15: the product
+ * must work on phones). Only a browser with no Web Audio at all lands here; a
+ * phone with Web Audio gets the player, with lighter audio (device-support.ts).
  *
  * ⚠️ This copy must NOT reuse the old tab-capture wording from TSD §12.7 /
  * src/chord/tab-capture.ts ("does not support reliable tab-audio capture",
@@ -124,12 +124,18 @@ import styles from './Player.module.css';
  */
 export const UNSUPPORTED_BROWSER_MESSAGE =
   'Play along needs the Web Audio API, which this browser does not provide. ' +
-  'Use Chrome on a desktop or laptop. Your loops are still on the Download loops page.';
+  'Open this page in an up-to-date browser such as Chrome, on a phone or a computer. ' +
+  'Your loops are still on the Download loops page.';
 
-/** Story 5.3, reached when every stem decoded to nothing (ENGINE_ERROR.DECODE_FAILED). */
+/**
+ * Story 5.3, reached when every stem decoded to nothing (ENGINE_ERROR.DECODE_FAILED).
+ * Stems are Ogg/Opus. Older Safari versions cannot decode that container, which
+ * is the most likely way to land here on an iPhone, so "update" is the honest
+ * first step and Chrome is the one we have tested.
+ */
 export const UNDECODABLE_MESSAGE =
   'This browser could not decode this track’s audio. ' +
-  'Use Chrome on a desktop or laptop. Your loops are still on the Download loops page.';
+  'Update it to the latest version, or open this page in Chrome. Your loops are still on the Download loops page.';
 
 /**
  * Story 6.4 — nothing was stored for this job (`state: 'unavailable'`). Not an
@@ -290,12 +296,6 @@ export type Phase =
   | { readonly kind: 'idle' }
   /** Story 5.3. */
   | { readonly kind: 'unsupported'; readonly message: string }
-  /**
-   * Story 8.3 — a phone, a touch-only tablet or a low-memory device. Web Audio
-   * exists, but the six-stem load has never been measured on such a device, so
-   * nothing is fetched or decoded. See src/lib/play/device-support.ts.
-   */
-  | { readonly kind: 'device-unsupported'; readonly reason: DeviceBlockReason }
   | { readonly kind: 'loading' }
   /** Story 6.4 — fall back to loops; NOT an error. */
   | { readonly kind: 'no-stems' }
@@ -352,9 +352,17 @@ export function isPlayable(phase: Phase, snapshot: EngineSnapshot): boolean {
   return phase.kind === 'ready' && snapshot.error === null;
 }
 
-export function chordPositionFor(phase: Phase, snapshot: EngineSnapshot): number | null {
+export function chordPositionFor(phase: Phase, snapshot: EngineSnapshot, latencySec = 0): number | null {
   if (!isPlayable(phase, snapshot)) return null;
-  return Number.isFinite(snapshot.positionSec) ? snapshot.positionSec : null;
+  if (!Number.isFinite(snapshot.positionSec)) return null;
+  // Story 8 — on the phone route the engine clock runs ahead of what is heard
+  // by `latencySec` (routeLatencySec in background-audio.ts). Only WHILE
+  // PLAYING: a paused or ended position is where the audio stopped, not ahead
+  // of it. Desktop passes 0, so its behaviour is exactly the old one.
+  if (snapshot.status === 'playing' && Number.isFinite(latencySec) && latencySec > 0) {
+    return Math.max(0, snapshot.positionSec - latencySec);
+  }
+  return snapshot.positionSec;
 }
 
 const IDLE_SNAPSHOT: EngineSnapshot = Object.freeze({
@@ -379,12 +387,31 @@ export interface PlayerProps {
    * not complete, so nothing is fetched before then.
    */
   readonly enabled?: boolean;
+  /** Shown on the lock screen / notification (Media Session). */
+  readonly title?: string | null;
 }
 
-export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
+/** Lock-screen artwork. The app icon; it exists in /public. */
+export const MEDIA_ARTWORK_URL = '/apple-touch-icon.png';
+export const MEDIA_ARTIST = 'stem-loops';
+export const MEDIA_FALLBACK_TITLE = 'Your track';
+/**
+ * When to re-read the route latency after a start, in ms. Chromium was probed
+ * reporting outputLatency 0 in the tap and 0.032 by +200 ms after a resume.
+ */
+export const LATENCY_RESAMPLE_MS = [250, 1000] as const;
+
+export default function Player({ jobId, loops, enabled = true, title }: PlayerProps) {
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const [snapshot, setSnapshot] = useState<EngineSnapshot>(IDLE_SNAPSHOT);
+  const [lightAudio, setLightAudio] = useState(false);
+  /** Seconds the chord clock is held back on the phone route; 0 on desktop. */
+  const [chordLatencySec, setChordLatencySec] = useState(0);
   const engineRef = useRef<PlayEngine | null>(null);
+  /** The phone output route; null on the desktop path. */
+  const outputRef = useRef<BackgroundOutput | null>(null);
+  const titleRef = useRef(title);
+  titleRef.current = title;
   // Bumped by "Try again"; re-runs the load effect below.
   const [attempt, setAttempt] = useState(0);
 
@@ -397,20 +424,96 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
       setPhase({ kind: 'unsupported', message: UNSUPPORTED_BROWSER_MESSAGE });
       return;
     }
-    // Story 8.3. Checked BEFORE an engine exists, so a blocked device never
-    // allocates an AudioContext or downloads a byte of audio.
-    // `?player=force` skips it, so the question can be measured on a real phone.
-    const forced = playerForced(globalThis.location?.search);
-    const blocked = forced ? null : deviceBlockReason(readDeviceSignals(globalThis));
-    if (blocked) {
-      setPhase({ kind: 'device-unsupported', reason: blocked });
-      return;
-    }
+    // Story 8. Nothing is blocked: phones, touch-only tablets and low-memory
+    // devices get a lighter decode and the background-capable output route.
+    // Desktop gets exactly the engine it had (48 kHz, ctx.destination).
+    const profile = playbackProfile(readDeviceSignals(globalThis));
+    setLightAudio(profile.reason !== null);
 
-    const engine = createPlayEngine();
+    // The engine is referenced by the output's external-pause callback before
+    // it exists; the ref is read at call time, never at wiring time.
+    const output = profile.backgroundOutput
+      ? createBackgroundOutput(globalThis.document, { onExternalPause: () => engineRef.current?.pause() })
+      : null;
+    if (output) setPlaybackAudioSession(globalThis.navigator);
+    outputRef.current = output;
+
+    const engine = createPlayEngine({
+      decodeSampleRate: profile.decodeSampleRate,
+      ...(output ? { createOutput: output.createOutput } : {}),
+    });
     engineRef.current = engine;
-    const unsubscribe = engine.subscribe(setSnapshot);
+
+    // Lock-screen / notification controls go through the SAME callbacks as the
+    // on-screen transport, so the two cannot disagree.
+    const media: MediaSessionWiring | null = wireMediaSession(
+      globalThis as Parameters<typeof wireMediaSession>[0],
+      {
+        title: titleRef.current || MEDIA_FALLBACK_TITLE,
+        artist: MEDIA_ARTIST,
+        artworkUrl: MEDIA_ARTWORK_URL,
+        onPlay: () => {
+          outputRef.current?.play();
+          engineRef.current?.play();
+        },
+        onPause: () => {
+          engineRef.current?.pause();
+          outputRef.current?.pause();
+        },
+        onSeek: (sec) => engineRef.current?.seek(sec),
+        getPosition: () => engine.getSnapshot().positionSec,
+        getDuration: () => engine.getSnapshot().durationSec,
+      },
+    );
+
+    // Chord-clock compensation for the phone route. Read on the playing edge,
+    // and READ AGAIN once the context is actually running: on a fresh page the
+    // first tap finds it 'suspended', and Chromium reports outputLatency = 0
+    // until it runs (review #278 round 2). So: on 'statechange' to running, and
+    // re-sampled shortly after each start (also catches a route that fell back
+    // to ctx.destination after an async play() refusal).
+    const refreshLatency = () => {
+      if (engine.getSnapshot().status !== 'playing') return;
+      setChordLatencySec(routeLatencySec(engine.audioLatency?.(), !!output?.routed));
+    };
+    const unsubscribeState = engine.onAudioStateChange?.((state) => {
+      if (state === 'running') refreshLatency();
+    });
+    let resample: ReturnType<typeof setTimeout>[] = [];
+    const clearResample = () => {
+      for (const t of resample) clearTimeout(t);
+      resample = [];
+    };
+
+    // Engine → element and lock screen. In the subscription rather than a React
+    // effect so a `playing → ended` edge is seen exactly as the engine emits it.
+    let wasPlaying = false;
+    const unsubscribe = engine.subscribe((s) => {
+      setSnapshot(s);
+      media?.update(s);
+      const playing = s.status === 'playing';
+      if (wasPlaying && !playing) output?.pause(); // ended, failed or paused
+      // Re-read on every start (and again later, see refreshLatency): the route
+      // can fall back to ctx.destination (then 0), and outputLatency is only
+      // meaningful once the context runs.
+      if (playing && !wasPlaying) {
+        refreshLatency();
+        if (output) {
+          clearResample();
+          resample = LATENCY_RESAMPLE_MS.map((ms) => setTimeout(refreshLatency, ms));
+        }
+      }
+      wasPlaying = playing;
+    });
     setSnapshot(engine.getSnapshot());
+
+    const stopResume = wireAudioResume(
+      { document: globalThis.document, window: globalThis.window },
+      () => {
+        engine.resumeAudio?.();
+        if (engine.getSnapshot().status === 'playing') output?.ensurePlaying();
+      },
+    );
 
     const controller = new AbortController();
     let cancelled = false;
@@ -464,9 +567,15 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
     return () => {
       cancelled = true;
       controller.abort();
+      stopResume();
+      clearResample();
+      unsubscribeState?.();
       unsubscribe();
+      media?.dispose();
       engine.dispose();
+      output?.dispose();
       engineRef.current = null;
+      outputRef.current = null;
       setSnapshot(IDLE_SNAPSHOT);
     };
   }, [enabled, jobId, attempt]);
@@ -475,8 +584,17 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
   // lifetime of the component. Mixer's `Channel` memo and Transport's latest-ref
   // both rely on that; a fresh closure per snapshot would re-render six
   // channels on every frame of playback.
-  const onPlay = useCallback(() => engineRef.current?.play(), []);
-  const onPause = useCallback(() => engineRef.current?.pause(), []);
+  // On phones the `<audio>` element must be started inside the tap, BEFORE the
+  // engine, or iOS refuses it. On desktop `outputRef` is null and this is the
+  // old one-liner.
+  const onPlay = useCallback(() => {
+    outputRef.current?.play();
+    engineRef.current?.play();
+  }, []);
+  const onPause = useCallback(() => {
+    engineRef.current?.pause();
+    outputRef.current?.pause();
+  }, []);
   const onSeek = useCallback((positionSec: number) => engineRef.current?.seek(positionSec), []);
   const onGain = useCallback((stem: StemName, gain: number) => engineRef.current?.setGain(stem, gain), []);
   const onMute = useCallback((stem: StemName, muted: boolean) => engineRef.current?.setMute(stem, muted), []);
@@ -498,6 +616,8 @@ export default function Player({ jobId, loops, enabled = true }: PlayerProps) {
       snapshot={snapshot}
       sections={sections}
       beatGrid={beatGrid}
+      lightAudio={lightAudio}
+      chordLatencySec={chordLatencySec}
       onPlay={onPlay}
       onPause={onPause}
       onSeek={onSeek}
@@ -517,6 +637,10 @@ export interface PlayerViewProps {
   readonly sections: readonly LoopRegion[];
   /** The job's beat grid, for the phone chord view's bars. */
   readonly beatGrid?: BeatGrid | null;
+  /** True on the phone / low-memory path: shows LIGHT_AUDIO_NOTE once the player is up. */
+  readonly lightAudio?: boolean;
+  /** Phone route only: how far to hold the chord playhead behind the engine clock while playing. */
+  readonly chordLatencySec?: number;
   readonly onPlay: () => void;
   readonly onPause: () => void;
   readonly onSeek: (positionSec: number) => void;
@@ -545,6 +669,8 @@ export function PlayerView({
   snapshot,
   sections,
   beatGrid = null,
+  lightAudio = false,
+  chordLatencySec = 0,
   onPlay,
   onPause,
   onSeek,
@@ -565,7 +691,7 @@ export function PlayerView({
   // engine position and nothing else. See `chordPositionFor`: `null` means NOT
   // PLAYABLE, not "not playing" — a loaded engine paused at 0 passes 0, so the
   // marker sits on the first chord instead of disappearing.
-  const chordPosition = chordPositionFor(phase, snapshot);
+  const chordPosition = chordPositionFor(phase, snapshot, chordLatencySec);
 
   const banner = (() => {
     if (phase.kind === 'unsupported') return { tone: 'notice' as const, text: phase.message };
@@ -608,8 +734,6 @@ export function PlayerView({
         </p>
       ) : null}
 
-      {phase.kind === 'device-unsupported' ? <DeviceUnsupported reason={phase.reason} /> : null}
-
       {phase.kind === 'load-error' && phase.retryable && onRetry ? (
         <button type="button" className={styles.retry} onClick={onRetry} data-testid="player-retry">
           Try again
@@ -618,6 +742,12 @@ export function PlayerView({
 
       {playable ? (
         <>
+          {lightAudio ? (
+            <p className={styles.notice} role="status" data-testid="player-light-audio">
+              {LIGHT_AUDIO_NOTE}
+            </p>
+          ) : null}
+
           {degraded ? (
             <p className={styles.notice} role="status" data-testid="player-degraded">
               {degraded}
@@ -662,48 +792,5 @@ export function PlayerView({
         />
       </div>
     </section>
-  );
-}
-
-/**
- * Story 8.3 — the designed "not on this device yet" state. Not an error: the
- * tone is the calm notice, the heading says what is needed, the body says why
- * with the measured number, and the one action helps the user get to a
- * desktop (copy the link to send to themselves). The chord track stays
- * mounted below it, as in every other phase.
- */
-export function DeviceUnsupported({ reason }: { readonly reason: DeviceBlockReason }) {
-  const [copy, setCopy] = useState<'idle' | 'done' | 'failed'>('idle');
-  const onCopy = useCallback(() => {
-    const href = globalThis.location?.href;
-    const clip = globalThis.navigator?.clipboard;
-    if (!href || !clip || typeof clip.writeText !== 'function') {
-      setCopy('failed');
-      return;
-    }
-    clip.writeText(href).then(
-      () => setCopy('done'),
-      () => setCopy('failed'),
-    );
-  }, []);
-  return (
-    <div
-      className={styles.device}
-      role="status"
-      data-testid="player-device-unsupported"
-      data-reason={reason}
-    >
-      <h2 className={styles.deviceTitle}>{DEVICE_UNSUPPORTED_TITLE}</h2>
-      <p className={styles.deviceBody}>{DEVICE_UNSUPPORTED_BODY[reason]}</p>
-      <p className={styles.deviceBody}>{DEVICE_UNSUPPORTED_STILL_WORKS}</p>
-      <div className={styles.deviceActions}>
-        <button type="button" className={styles.deviceButton} onClick={onCopy} data-testid="player-copy-link">
-          {COPY_LINK_LABEL}
-        </button>
-        <span className={styles.deviceCopyState} aria-live="polite">
-          {copy === 'done' ? COPY_LINK_DONE : copy === 'failed' ? COPY_LINK_FAILED : ''}
-        </span>
-      </div>
-    </div>
   );
 }

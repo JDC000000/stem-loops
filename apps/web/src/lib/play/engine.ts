@@ -153,6 +153,14 @@
  * The peak happens during LOAD, before a note plays: a device that survives
  * steady-state playback can still die loading.
  *
+ * PHONES (2026-11-15). Everything above is the DESKTOP path, 48 kHz. Phones,
+ * touch-only tablets and low-memory devices pass `decodeSampleRate` =
+ * `LIGHT_DECODE_SAMPLE_RATE` (24 kHz, device-support.ts), which creates the
+ * context at that rate so `decodeAudioData` resamples every stem to it. That
+ * halves the PCM and lowers the load peak; the measured figures are in
+ * docs/perf/mobile-player-2026-11-14.md (2026-11-15 section). The downmix and
+ * the eager release below are unchanged and apply on both paths.
+ *
  * MEASUREMENT CAVEATS, because they bound what the table above licenses: one
  * headless Chromium on one Linux box; the Opus run holds all six encoded
  * buffers resident at once, which is what `load()` really does but which also
@@ -224,6 +232,19 @@ export const ENGINE_ERROR = {
 
 type AudioContextFactory = (options: { sampleRate: number }) => AudioContext;
 
+/**
+ * Where the mix goes. Called ONCE per AudioContext, the first time `load()`
+ * creates one; every stem's GainNode connects to the node it returns. Default
+ * is `ctx.destination`, which is what the desktop path has always used.
+ *
+ * The phone path (background-audio.ts) returns a bus that feeds a
+ * MediaStreamAudioDestinationNode played by an `<audio>` element, so the
+ * operating system treats the player as media and keeps it running when the
+ * screen sleeps. Mute, solo, faders, sample-lock and looping are all upstream
+ * of this node and do not know which route is in use.
+ */
+export type OutputFactory = (ctx: AudioContext) => AudioNode;
+
 /** Cancels the frame it was given. */
 type FrameCanceller = () => void;
 
@@ -240,6 +261,20 @@ export interface PlayEngineOptions {
    * timer where there is no rAF.
    */
   readonly scheduleFrame?: (cb: () => void) => FrameCanceller;
+  /**
+   * The AudioContext rate, which is also the rate `decodeAudioData` resamples
+   * every stem to. Default `PLAYBACK_SAMPLE_RATE` (48 kHz, the desktop path).
+   * Constrained devices pass `LIGHT_DECODE_SAMPLE_RATE` (device-support.ts).
+   * One rate for all six stems, so sample-lock is unaffected.
+   *
+   * If the browser refuses a context at this rate, `load()` retries ONCE at
+   * `PLAYBACK_SAMPLE_RATE` rather than failing: full-rate audio that might not
+   * fit beats a guaranteed "no audio". Non-finite or non-positive values are
+   * ignored (default used).
+   */
+  readonly decodeSampleRate?: number;
+  /** See `OutputFactory`. Default: `ctx.destination`. */
+  readonly createOutput?: OutputFactory;
 }
 
 interface MutableStem {
@@ -369,8 +404,24 @@ function downmixToMono(ctx: AudioContext, decoded: AudioBuffer): AudioBuffer {
 export class WebAudioPlayEngine implements PlayEngine {
   private readonly createCtx: AudioContextFactory;
   private readonly scheduleFrame: (cb: () => void) => FrameCanceller;
+  private readonly decodeRate: number;
+  private readonly createOutput: OutputFactory | null;
 
   private ctx: AudioContext | null = null;
+  /** Where every GainNode connects. Created once with the context. */
+  private output: AudioNode | null = null;
+  /** `onAudioStateChange` subscribers; fired on the context's 'statechange'. */
+  private readonly audioStateListeners = new Set<(state: string) => void>();
+  private readonly onCtxStateChange = () => {
+    const state = String(this.ctx?.state ?? 'closed');
+    for (const l of Array.from(this.audioStateListeners)) {
+      try {
+        l(state);
+      } catch {
+        /* a listener's failure is not the engine's */
+      }
+    }
+  };
   private readonly buffers = new Map<StemName, AudioBuffer>();
   /** Created once per ready stem in `load()`. Never recreated — invariant 2. */
   private readonly gains = new Map<StemName, GainNode>();
@@ -403,6 +454,15 @@ export class WebAudioPlayEngine implements PlayEngine {
   constructor(options: PlayEngineOptions = {}) {
     this.createCtx = options.createAudioContext ?? defaultCreateAudioContext;
     this.scheduleFrame = options.scheduleFrame ?? defaultScheduleFrame;
+    const r = options.decodeSampleRate;
+    this.decodeRate = isFiniteNumber(r) && r > 0 ? r : PLAYBACK_SAMPLE_RATE;
+    this.createOutput = typeof options.createOutput === 'function' ? options.createOutput : null;
+  }
+
+  /** The rate stems are decoded and played at, once a context exists; else the requested one. */
+  get sampleRate(): number {
+    const r = this.ctx?.sampleRate;
+    return isFiniteNumber(r) && r > 0 ? r : this.decodeRate;
   }
 
   // ── load ───────────────────────────────────────────────────────────────────
@@ -430,13 +490,24 @@ export class WebAudioPlayEngine implements PlayEngine {
 
     let ctx: AudioContext;
     try {
-      ctx = this.ctx ?? this.createCtx({ sampleRate: PLAYBACK_SAMPLE_RATE });
+      ctx = this.ctx ?? this.openContext();
     } catch (e) {
       if (myLoad !== this.loadId || this.disposed) return;
       this.fail(ENGINE_ERROR.NO_AUDIO, messageOf(e, 'Web Audio is unavailable'));
       return;
     }
-    this.ctx = ctx;
+    if (this.ctx !== ctx) {
+      this.ctx = ctx;
+      this.output = this.openOutput(ctx);
+      try {
+        (ctx as { addEventListener?: (t: string, cb: () => void) => void }).addEventListener?.(
+          'statechange',
+          this.onCtxStateChange,
+        );
+      } catch {
+        /* an engine without the event still works; callers also re-sample */
+      }
+    }
 
     for (const name of PLAYABLE_STEMS) {
       const source = byName.get(name);
@@ -495,11 +566,72 @@ export class WebAudioPlayEngine implements PlayEngine {
     for (const name of Array.from(this.buffers.keys())) {
       const g = ctx.createGain();
       g.gain.setValueAtTime(this.targetGain(name), ctx.currentTime);
-      g.connect(ctx.destination);
+      g.connect(this.output ?? ctx.destination);
       this.gains.set(name, g);
     }
 
     this.setStatus('ready');
+  }
+
+  private openContext(): AudioContext {
+    try {
+      return this.createCtx({ sampleRate: this.decodeRate });
+    } catch (e) {
+      if (this.decodeRate === PLAYBACK_SAMPLE_RATE) throw e;
+      // A browser that refuses the light rate still gets a player.
+      return this.createCtx({ sampleRate: PLAYBACK_SAMPLE_RATE });
+    }
+  }
+
+  private openOutput(ctx: AudioContext): AudioNode {
+    if (!this.createOutput) return ctx.destination;
+    try {
+      return this.createOutput(ctx) ?? ctx.destination;
+    } catch {
+      // A route that cannot be built must never cost the user their audio.
+      return ctx.destination;
+    }
+  }
+
+  /**
+   * Ask a suspended or interrupted context to run again, WITHOUT touching the
+   * transport. For the visibilitychange / user-gesture hooks on phones: iOS
+   * moves a context to 'interrupted' (a call, Siri, another app taking audio)
+   * and Chrome can suspend one. While the context is not running its clock is
+   * frozen, and every source is scheduled on that clock, so the six stems stay
+   * sample-locked across the gap and resume where they stopped.
+   *
+   * No-op unless we are playing and the context is not already running.
+   */
+  resumeAudio(): void {
+    const ctx = this.ctx;
+    if (this.disposed || !ctx || this.status !== 'playing') return;
+    if (ctx.state === 'running' || ctx.state === 'closed') return;
+    try {
+      void Promise.resolve(ctx.resume()).catch(() => {});
+    } catch {
+      /* the next gesture will try again */
+    }
+  }
+
+  /**
+   * Called with the context's new state whenever it changes ('running' after a
+   * resume, 'interrupted' on iOS, …). Returns an unsubscribe fn. Used to
+   * re-read `outputLatency`, which Chromium reports as 0 until the context runs.
+   */
+  onAudioStateChange(cb: (state: string) => void): () => void {
+    if (typeof cb !== 'function' || this.disposed) return () => {};
+    this.audioStateListeners.add(cb);
+    return () => {
+      this.audioStateListeners.delete(cb);
+    };
+  }
+
+  /** The context's reported latencies, for chord-clock compensation; null without a context. */
+  audioLatency(): { outputLatency?: number; baseLatency?: number } | null {
+    const ctx = this.ctx as (AudioContext & { outputLatency?: number }) | null;
+    if (!ctx || this.disposed) return null;
+    return { outputLatency: ctx.outputLatency, baseLatency: ctx.baseLatency };
   }
 
   // ── transport ──────────────────────────────────────────────────────────────
@@ -517,7 +649,11 @@ export class WebAudioPlayEngine implements PlayEngine {
     }
     if (from >= this.durationSec) from = 0;
 
-    if (this.ctx.state === 'suspended') void Promise.resolve(this.ctx.resume()).catch(() => {});
+    // 'suspended' (autoplay policy, Chrome) and 'interrupted' (iOS: a call or
+    // another app took the audio session) both need a resume; play() is always
+    // called from a user gesture, which is what iOS requires for it to stick.
+    const st = this.ctx.state as string;
+    if (st === 'suspended' || st === 'interrupted') void Promise.resolve(this.ctx.resume()).catch(() => {});
     this.startVoices(from);
     this.status = 'playing';
     this.startFrameLoop();
@@ -674,7 +810,17 @@ export class WebAudioPlayEngine implements PlayEngine {
     this.missing = [];
     this.error = null;
     const ctx = this.ctx;
+    try {
+      (ctx as { removeEventListener?: (t: string, cb: () => void) => void } | null)?.removeEventListener?.(
+        'statechange',
+        this.onCtxStateChange,
+      );
+    } catch {
+      /* ignore */
+    }
+    this.audioStateListeners.clear();
     this.ctx = null;
+    this.output = null;
     this.snapshot = IDLE_SNAPSHOT;
     for (const l of Array.from(this.listeners)) {
       try {

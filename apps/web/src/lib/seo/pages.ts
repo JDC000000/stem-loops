@@ -15,12 +15,12 @@ export type PublicPage = {
 
 export const PUBLIC_PAGES: PublicPage[] = [
   { path: '/', title: 'stem-loops: play along with any song, stem by stem', absoluteTitle: true,
-    description: `Six stems with faders, mute and solo, a chord track and section loops. Play along in Chrome on the desktop. Uses the first ${MAX_TRACK_MIN} minutes of any song.`,
-    section: 'home', lastModified: '2026-11-14', llms: true, published: true },
+    description: `Six stems with faders, mute and solo, a chord track and section loops. Play along on a computer or a phone. Uses the first ${MAX_TRACK_MIN} minutes of any song.`,
+    section: 'home', lastModified: '2026-11-15', llms: true, published: true },
   { path: '/privacy', title: 'Privacy', description: 'What stem-loops stores, for how long, and who processes it.',
     section: 'legal', lastModified: '2026-11-13', llms: true, published: true },
   { path: '/terms', title: 'Terms', description: 'The short terms for using stem-loops.',
-    section: 'legal', lastModified: '2026-11-14', llms: false, published: true },
+    section: 'legal', lastModified: '2026-11-15', llms: false, published: true },
 ];
 
 export const publishedPages = () => PUBLIC_PAGES.filter((p) => p.published);

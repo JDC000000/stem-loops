@@ -1479,3 +1479,131 @@ test('createPlayEngine returns a working engine with the whole contract surface'
   );
   engine.dispose();
 });
+
+// ═══ Story 8 (phones): decode rate, output route, resume ═════════════════════
+
+function phoneEngine(engineOpts = {}, ctxOpts = {}) {
+  const made = [];
+  const engine = new WebAudioPlayEngine({
+    createAudioContext: (o) => {
+      const ctx = new FakeAudioContext(o, ctxOpts);
+      made.push(ctx);
+      return ctx;
+    },
+    scheduleFrame: () => () => {},
+    ...engineOpts,
+  });
+  return { engine, ctx: () => made[made.length - 1], made };
+}
+const sixSources = () => PLAYABLE_STEMS.map((name) => ({ name, bytes: makeStemBytes(name) }));
+
+test('desktop default is unchanged: context at 48 kHz, every gain wired straight to ctx.destination', async () => {
+  const { engine, ctx } = phoneEngine();
+  await engine.load(sixSources());
+  assert.equal(ctx().sampleRate, PLAYBACK_SAMPLE_RATE);
+  assert.equal(engine.sampleRate, PLAYBACK_SAMPLE_RATE);
+  assert.equal(ctx().gains.length, 6);
+  for (const g of ctx().gains) assert.deepEqual(g.outputs, [ctx().destination]);
+});
+
+test('decodeSampleRate creates the ONE context at that rate, and all six stems stay sample-locked', async () => {
+  const { engine, ctx, made } = phoneEngine({ decodeSampleRate: 24_000 });
+  await engine.load(sixSources());
+  assert.equal(made.length, 1);
+  assert.equal(ctx().sampleRate, 24_000);
+  assert.equal(engine.sampleRate, 24_000);
+  engine.seek(0.5);
+  engine.play();
+  const starts = ctx().starts;
+  assert.equal(starts.length, 6);
+  assert.equal(new Set(starts.map((s) => s.when)).size, 1, 'one when');
+  assert.equal(new Set(starts.map((s) => s.offset)).size, 1, 'one offset');
+});
+
+test('a bad decodeSampleRate is ignored (48 kHz), never passed to the browser', async () => {
+  for (const r of [NaN, 0, -24000, Infinity]) {
+    const { engine, ctx } = phoneEngine({ decodeSampleRate: r });
+    await engine.load(sixSources());
+    assert.equal(ctx().sampleRate, PLAYBACK_SAMPLE_RATE, String(r));
+  }
+});
+
+test('a context refused at the light rate is retried ONCE at 48 kHz, so a phone still gets a player', async () => {
+  const asked = [];
+  const engine = new WebAudioPlayEngine({
+    decodeSampleRate: 24_000,
+    scheduleFrame: () => () => {},
+    createAudioContext: (o) => {
+      asked.push(o.sampleRate);
+      if (o.sampleRate !== PLAYBACK_SAMPLE_RATE) throw new Error('NotSupportedError');
+      return new FakeAudioContext(o);
+    },
+  });
+  await engine.load(sixSources());
+  assert.deepEqual(asked, [24_000, PLAYBACK_SAMPLE_RATE]);
+  assert.equal(engine.getSnapshot().status, 'ready');
+});
+
+test('createOutput: called once per context, and the gains connect to ITS node, not the destination', async () => {
+  const calls = [];
+  const bus = { kind: 'bus' };
+  const { engine, ctx } = phoneEngine({
+    createOutput: (c) => {
+      calls.push(c);
+      return bus;
+    },
+  });
+  await engine.load(sixSources());
+  await engine.load(sixSources()); // re-load reuses the context and the route
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0], ctx());
+  for (const g of ctx().gains) assert.ok(g.outputs.every((o) => o === bus), 'a gain bypassed the output route');
+});
+
+test('createOutput that throws (or returns nothing) falls back to ctx.destination: the route can never cost sound', async () => {
+  for (const createOutput of [() => { throw new Error('no MediaStream'); }, () => null]) {
+    const { engine, ctx } = phoneEngine({ createOutput });
+    await engine.load(sixSources());
+    assert.equal(engine.getSnapshot().status, 'ready');
+    for (const g of ctx().gains) assert.deepEqual(g.outputs, [ctx().destination]);
+  }
+});
+
+test('mix changes do not touch the output route (no node created, no reconnect)', async () => {
+  const bus = { kind: 'bus' };
+  const { engine, ctx } = phoneEngine({ createOutput: () => bus });
+  await engine.load(sixSources());
+  engine.play();
+  const nodes = ctx().nodesCreated;
+  const outs = ctx().gains.map((g) => g.outputs.length);
+  engine.setGain('drums', 0.3);
+  engine.setMute('bass', true);
+  engine.setSolo('vocals', true);
+  assert.equal(ctx().nodesCreated, nodes);
+  assert.deepEqual(ctx().gains.map((g) => g.outputs.length), outs);
+});
+
+test("resumeAudio: resumes an 'interrupted' or 'suspended' context while playing, and only then", async () => {
+  const { engine, ctx } = phoneEngine();
+  await engine.load(sixSources());
+  ctx().state = 'interrupted';
+  engine.resumeAudio(); // not playing → no-op
+  assert.equal(ctx().resumes, 0);
+  engine.play();
+  const afterPlay = ctx().resumes;
+  assert.equal(afterPlay, 1, "play() itself resumes an 'interrupted' context (iOS)");
+  ctx().state = 'interrupted';
+  engine.resumeAudio();
+  assert.equal(ctx().resumes, 2);
+  ctx().state = 'suspended';
+  engine.resumeAudio();
+  assert.equal(ctx().resumes, 3);
+  ctx().state = 'running';
+  engine.resumeAudio();
+  assert.equal(ctx().resumes, 3, 'a running context is left alone');
+  const before = ctx().starts.length;
+  engine.resumeAudio();
+  assert.equal(ctx().starts.length, before, 'resume never restarts or reseeks the stems');
+  engine.dispose();
+  engine.resumeAudio(); // safe after dispose
+});

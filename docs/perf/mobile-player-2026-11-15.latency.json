@@ -1,0 +1,405 @@
+{
+  "when": "2026-11-16T00:20:59.368Z",
+  "rows": [
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 17.51,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 16.83,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 11.57,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 18.27,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 16.83,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 27.23,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 18.13,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 16.83,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 11.57,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 27.77,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 19.95,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 19.9,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 19.9,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 20.91,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 19.9,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 10.28,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 24.54,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 19.9,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 19.9,
+      "elPaused": false
+    },
+    {
+      "profile": "Pixel 7 (emulated)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 23.48,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 18.13,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 27.18,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 16.83,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 16.88,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 16.83,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 16.83,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 17.19,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 16.83,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 27.86,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 24000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010041666666666667,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 30.48,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 22.28,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 14.85,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 20.58,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 19.9,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 13.29,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 21.19,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 19.9,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 21.52,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 21.19,
+      "elPaused": false
+    },
+    {
+      "profile": "iPhone 14 (emulated on Chromium)",
+      "rate": 48000,
+      "outputLatencyA": 0.032,
+      "baseLatencyA": 0.010020833333333333,
+      "outputLatencyB": 0.032,
+      "baseLatencyB": 0.01,
+      "transportMs": 19.9,
+      "elPaused": false
+    }
+  ]
+}

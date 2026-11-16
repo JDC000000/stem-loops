@@ -19,8 +19,8 @@ export function homeGraph() {
     '@type': 'WebApplication', '@id': APP, name: 'stem-loops', url: `${SITE_URL}/`,
     description: ENTITY_ONE_LINER,
     applicationCategory: 'MultimediaApplication', applicationSubCategory: 'Music practice',
-    operatingSystem: 'Windows, macOS, ChromeOS, Linux (desktop)',
-    browserRequirements: 'Requires Google Chrome on a desktop or laptop computer.',
+    operatingSystem: 'Windows, macOS, ChromeOS, Linux, Android, iOS',
+    browserRequirements: 'Requires a browser with the Web Audio API. Built and tested in Google Chrome on a computer; phones load lighter audio.',
     inLanguage: 'en', isAccessibleForFree: true,
     featureList: [
       'Six stems: drums, bass, guitar, keys, vocals and other',

@@ -101,12 +101,18 @@ const engineMod = put(
   toJs(read('src/lib/play/engine.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
 );
 
-// device-support (Story 8.3): the REAL module. Under happy-dom no pointer media
-// query matches and deviceMemory is absent, so the rule offers the player.
-const deviceSupportMod = put('device-support.mjs', toJs(read('src/lib/play/device-support.ts')));
+// device-support (Story 8): the REAL module. Under happy-dom no pointer media
+// query matches and deviceMemory is absent, so the rule picks the desktop path.
+const deviceSupportMod = put(
+  'device-support.mjs',
+  toJs(read('src/lib/play/device-support.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
+);
+// background-audio (Story 8, phones): the REAL module; every browser object is passed in.
+const backgroundAudioMod = put('background-audio.mjs', toJs(read('src/lib/play/background-audio.ts')));
 
 const playerJs = rewriteShared(toJs(read('src/components/play/Player.tsx'), true))
   .replace(/from ['"]@\/lib\/play\/device-support['"]/g, `from '${deviceSupportMod}'`)
+  .replace(/from ['"]@\/lib\/play\/background-audio['"]/g, `from '${backgroundAudioMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordMod}'`)
   .replace(/from ['"]@\/lib\/play\/engine['"]/g, `from '${engineMod}'`)
   .replace(/from ['"]@\/lib\/play\/load-stems['"]/g, `from '${loadStemsMod}'`)
@@ -124,6 +130,7 @@ const UNRESOLVED = [...playerJs.matchAll(/from ['"]([^'"]+)['"]/g)]
 const React = (await import('react')).default;
 const Player = await import(pathToFileURL(join(dir, 'Player.mjs')).href);
 const { PLAYABLE_STEMS } = await import(pathToFileURL(join(dir, 'play-types.mjs')).href);
+const { ROUTE_TRANSPORT_LATENCY_SEC } = await import(pathToFileURL(join(dir, 'background-audio.mjs')).href);
 
 const {
   NO_STEMS_MESSAGE,
@@ -134,6 +141,7 @@ const {
   MANIFEST_UNREACHABLE_MESSAGE,
   MANIFEST_SERVER_ERROR_MESSAGE,
   GENERIC_LOAD_MESSAGE,
+  LATENCY_RESAMPLE_MS,
   stemLoadMessage,
 } = Player;
 
@@ -142,12 +150,79 @@ const {
 // them and teardown sees no drift. `hasWebAudio` only checks that a constructor
 // EXISTS, and no scenario here reaches `engine.load`, so a bare class is enough.
 
+// A minimal WORKING context, used only when a test sets `__audioMode = 'fake'`
+// (the Story 8 phone-route tests, which need the engine to reach `ready` and
+// play). Every call that matters to them is appended to `__audioLog`.
+function workingContext(opts) {
+  const log = globalThis.__audioLog;
+  const param = () => ({
+    value: 1,
+    setValueAtTime() {}, cancelScheduledValues() {}, linearRampToValueAtTime() {}, setTargetAtTime() {}, cancelAndHoldAtTime() {},
+  });
+  const node = (kind) => ({ kind, connect(n) { return n; }, disconnect() {} });
+  // `__fakeStart`: 'running' (default) or 'suspended' / 'suspended-silent' —
+  // a FRESH page, where the first tap finds the context suspended and Chromium
+  // reports outputLatency 0 until it runs. 'silent' = no statechange event.
+  const fresh = globalThis.__fakeStart !== 'running';
+  const stateListeners = [];
+  const ctx = {
+    sampleRate: opts?.sampleRate ?? 48000,
+    currentTime: 1,
+    state: fresh ? 'suspended' : 'running',
+    outputLatency: fresh ? 0 : 0.032,
+    baseLatency: 0.01,
+    addEventListener(t, cb) { if (t === 'statechange' && globalThis.__fakeStart !== 'suspended-silent') stateListeners.push(cb); },
+    removeEventListener(t, cb) { const i = stateListeners.indexOf(cb); if (i >= 0) stateListeners.splice(i, 1); },
+    stateListeners,
+    destination: node('destination'),
+    sources: [],
+    createGain() { return { ...node('gain'), gain: param() }; },
+    createMediaStreamDestination() { log.push('ctx.createMediaStreamDestination'); return { ...node('stream-dest'), stream: { id: 's' } }; },
+    createBufferSource() {
+      const src = {
+        ...node('source'), buffer: null, loop: false, loopStart: 0, loopEnd: 0, onended: null,
+        start() { log.push('source.start'); },
+        stop() {},
+      };
+      ctx.sources.push(src);
+      return src;
+    },
+    createBuffer(c, length, sampleRate) { return fakeBuf(length, sampleRate); },
+    async decodeAudioData() { return fakeBuf(120 * ctx.sampleRate, ctx.sampleRate); },
+    resume() {
+      log.push('ctx.resume');
+      // Like a browser: the context starts running AFTER the tap, and only then
+      // reports its real output latency.
+      return Promise.resolve().then(() => {
+        if (ctx.state === 'running') return;
+        ctx.state = 'running';
+        ctx.outputLatency = 0.032;
+        for (const cb of stateListeners.slice()) cb();
+      });
+    },
+    close() { return Promise.resolve(); },
+  };
+  globalThis.__audioContexts.push(ctx);
+  return ctx;
+}
+function fakeBuf(length, sampleRate) {
+  return { numberOfChannels: 1, length, sampleRate, duration: length / sampleRate, getChannelData: () => new Float32Array(0) };
+}
 class FakeAudioContext {
-  constructor() {
+  constructor(opts) {
+    // Recorded, then refused by default: the rate the engine ASKED for is the
+    // observable (Story 8: phones ask for the light rate).
+    globalThis.__audioContextRates.push(opts?.sampleRate);
+    if (globalThis.__audioMode === 'fake') return workingContext(opts);
     throw new Error('no scenario in this file may construct an AudioContext');
   }
 }
 globalThis.AudioContext = FakeAudioContext;
+globalThis.__audioContextRates = [];
+globalThis.__audioMode = 'throw';
+globalThis.__fakeStart = 'running';
+globalThis.__audioLog = [];
+globalThis.__audioContexts = [];
 // Declared here, not inside a test: the harness fails a body that ADDS a
 // global, so the array has to exist before the first withDom() snapshot.
 globalThis.__stemFetchReports = [];
@@ -211,6 +286,9 @@ async function mountPlayer(server, body, props = {}, setup = null) {
     serve = server;
     requests = [];
     globalThis.__stemFetchReports.length = 0;
+    globalThis.__audioContextRates.length = 0;
+    globalThis.__audioLog.length = 0;
+    globalThis.__audioContexts.length = 0;
     const realSetTimeout = globalThis.setTimeout;
     const settle = () => dom.act(() => new Promise((r) => realSetTimeout(r, 0)));
 
@@ -545,29 +623,252 @@ test('unmounting mid-load aborts it: the load never lands on an unmounted compon
   );
 });
 
-// ═══ Story 8.3 — a phone never reaches the network or the engine ════════════
+// ═══ Story 8 — a phone is NOT blocked; it loads, at the light rate ═══════════
 
-test('a touch-only device gets the device state, and NOTHING is fetched or constructed', async () => {
+const sixStems = () =>
+  router(() => ({ body: manifest('ready') }), () => ({ status: 200, bytes: sixBytes() }));
+
+test('a touch-only phone is not blocked: it fetches the manifest and all six stems, like desktop', async () => {
   await mountPlayerOnTouchOnly(async (p) => {
-    assert.equal(p.phase(), 'device-unsupported');
-    assert.ok(p.dom.find('[data-testid="player-device-unsupported"]'), 'no device state rendered');
-    assert.equal(p.requests.length, 0, `fetched: ${p.requests.join(', ')}`);
-    assert.equal(p.banner(), null, 'the device state is not an error banner');
+    assert.notEqual(p.phase(), 'device-unsupported');
+    assert.equal(p.dom.find('[data-testid="player-device-unsupported"]'), null);
+    assert.ok(p.requests.some(isManifest), 'the phone never asked for the manifest');
+    assert.equal(p.requests.filter((h) => !isManifest(h)).length, PLAYABLE_STEMS.length, 'six stem GETs');
+  }, sixStems());
+});
+
+test('the phone asks the engine for the light rate first; desktop asks for 48 kHz only', async () => {
+  await mountPlayerOnTouchOnly(async () => {
+    // The fake refuses every context, so the engine's one retry at 48 kHz shows too.
+    assert.deepEqual(globalThis.__audioContextRates, [24000, 48000]);
+  }, sixStems());
+  await mountPlayer(sixStems(), async () => {
+    assert.deepEqual(globalThis.__audioContextRates, [48000]);
   });
 });
 
-test('?player=force skips the device rule (and only that) so a real phone can be measured', async () => {
-  await mountPlayerOnTouchOnly(async (p) => {
-    assert.notEqual(p.phase(), 'device-unsupported');
-    assert.ok(p.requests.some(isManifest), 'the forced load did not ask for the manifest');
-  }, '?player=force');
+test('lock-screen controls: Player installs Media Session handlers that drive the transport, and removes them on unmount', async () => {
+  const ms = {
+    metadata: undefined,
+    playbackState: 'none',
+    handlers: {},
+    setActionHandler(a, h) {
+      this.handlers[a] = h;
+    },
+    setPositionState() {},
+  };
+  await mountPlayer(
+    router(() => ({ body: manifest('unavailable', []) })),
+    async (p) => {
+      for (const a of ['play', 'pause', 'stop', 'seekto', 'seekbackward', 'seekforward']) {
+        assert.equal(typeof ms.handlers[a], 'function', `${a} handler missing`);
+      }
+      // No engine is loaded in this scenario: the handlers must be safe no-ops, never throws.
+      assert.doesNotThrow(() => ms.handlers.play({}));
+      assert.doesNotThrow(() => ms.handlers.seekto({ seekTime: 3 }));
+      await p.dom.unmountAll();
+      await p.settle();
+      for (const a of ['play', 'pause', 'stop', 'seekto', 'seekbackward', 'seekforward']) {
+        assert.equal(ms.handlers[a], null, `${a} handler left behind after unmount`);
+      }
+      assert.equal(ms.playbackState, 'none');
+    },
+    { title: 'Song.mp3' },
+    () => {
+      const nav = globalThis.navigator;
+      Object.defineProperty(nav, 'mediaSession', { value: ms, configurable: true });
+      return () => {
+        delete nav.mediaSession;
+      };
+    },
+  );
 });
 
-async function mountPlayerOnTouchOnly(body, search = '') {
-  await mountPlayer(router(() => ({ status: 500 })), body, {}, () => {
+// ═══ Story 8 — the phone route, driven end to end through Player ═══════════
+// A working fake context + a fake <audio> element + a fake Media Session, on a
+// touch-only device (or desktop, for the contrast). Written failing-first
+// against review #278's three surviving mutants (M13 order, M14 listener leak,
+// M15 no pause on end) and the chord-clock compensation.
+
+const RESUME_EVENTS = ['visibilitychange', 'pointerdown', 'touchend', 'pageshow', 'focus'];
+
+async function mountRoute({ phone = true, start = 'running' } = {}, body) {
+  const ms = {
+    metadata: undefined, playbackState: 'none', handlers: {},
+    setActionHandler(a, h) { this.handlers[a] = h; }, setPositionState() {},
+  };
+  const el = {
+    srcObject: null, playsInline: false, autoplay: true, paused: true, pauses: 0, listeners: {},
+    setAttribute() {}, removeAttribute() {},
+    addEventListener(t, cb) { (this.listeners[t] ??= []).push(cb); },
+    removeEventListener(t, cb) { this.listeners[t] = (this.listeners[t] ?? []).filter((x) => x !== cb); },
+    play() { globalThis.__audioLog.push('element.play'); this.paused = false; return Promise.resolve(); },
+    pause() { globalThis.__audioLog.push('element.pause'); this.pauses++; this.paused = true; for (const cb of this.listeners.pause ?? []) cb(); },
+  };
+  const live = new Map(); // `${target}:${type}` -> count of resume listeners currently attached
+  await mountPlayer(sixStems(), async (p) => {
+    await p.settle();
+    await p.settle();
+    await body({ ...p, ms, el, live, ctx: () => globalThis.__audioContexts.at(-1) });
+  }, { title: 'Song.mp3' }, () => {
+    globalThis.__audioMode = 'fake';
+    globalThis.__fakeStart = start;
+    const doc = globalThis.document;
+    const win = globalThis.window;
+    const nav = globalThis.navigator;
+    const realMM = globalThis.matchMedia;
+    if (phone) globalThis.matchMedia = (q) => ({ matches: q === '(pointer: coarse)', media: q, addEventListener() {}, removeEventListener() {} });
+    Object.defineProperty(nav, 'mediaSession', { value: ms, configurable: true });
+    const realCreate = doc.createElement;
+    doc.createElement = function (tag, ...rest) { return tag === 'audio' ? el : realCreate.call(this, tag, ...rest); };
+    const spy = (name, t) => {
+      const add = t.addEventListener, rem = t.removeEventListener;
+      t.addEventListener = function (type, cb, o) {
+        if (RESUME_EVENTS.includes(type)) live.set(`${name}:${type}`, (live.get(`${name}:${type}`) ?? 0) + 1);
+        return add.call(this, type, cb, o);
+      };
+      t.removeEventListener = function (type, cb, o) {
+        if (RESUME_EVENTS.includes(type)) live.set(`${name}:${type}`, (live.get(`${name}:${type}`) ?? 0) - 1);
+        return rem.call(this, type, cb, o);
+      };
+      return () => { delete t.addEventListener; delete t.removeEventListener; if (t.addEventListener !== add) { t.addEventListener = add; t.removeEventListener = rem; } };
+    };
+    const unspyDoc = spy('document', doc);
+    const unspyWin = spy('window', win);
+    return () => {
+      globalThis.__audioMode = 'throw';
+      globalThis.__fakeStart = 'running';
+      globalThis.matchMedia = realMM;
+      delete nav.mediaSession;
+      delete doc.createElement;
+      if (doc.createElement !== realCreate) doc.createElement = realCreate;
+      unspyDoc();
+      unspyWin();
+    };
+  });
+}
+
+/** Tap Play exactly as a user does, and return the log as it stood when the tap's handler RETURNED. */
+function tapPlay(p) {
+  const play = [...p.host.querySelectorAll('button')].find((b) => /play/i.test(b.getAttribute('aria-label') ?? b.textContent ?? ''));
+  assert.ok(play, 'no Play button rendered: the engine never reached ready');
+  globalThis.__audioLog.length = 0;
+  play.dispatchEvent(new p.dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  return globalThis.__audioLog.slice(); // synchronous: nothing awaited yet
+}
+
+test('iOS tap rule (M13): the <audio> element is started synchronously inside the tap, BEFORE the engine starts', async () => {
+  await mountRoute({ phone: true }, async (p) => {
+    assert.equal(p.phase(), 'ready');
+    const sync = tapPlay(p);
+    const iEl = sync.indexOf('element.play');
+    const iSrc = sync.indexOf('source.start');
+    assert.ok(iEl >= 0, `element.play() was not called inside the tap: ${sync.join(', ')}`);
+    assert.ok(iSrc >= 0, `the engine did not start inside the tap: ${sync.join(', ')}`);
+    assert.ok(iEl < iSrc, `engine started before the element: ${sync.join(', ')}`);
+  });
+});
+
+test('desktop tap: no <audio> element is involved at all', async () => {
+  await mountRoute({ phone: false }, async (p) => {
+    const sync = tapPlay(p);
+    assert.ok(sync.includes('source.start'));
+    assert.ok(!sync.includes('element.play'), 'desktop must not route through the element');
+    assert.ok(!globalThis.__audioLog.includes('ctx.createMediaStreamDestination'));
+  });
+});
+
+test('song end (M15): when the engine goes playing → ended, the <audio> element is paused', async () => {
+  await mountRoute({ phone: true }, async (p) => {
+    tapPlay(p);
+    await p.settle();
+    assert.equal(p.el.paused, false);
+    const before = p.el.pauses;
+    await p.dom.act(async () => { for (const src of p.ctx().sources) src.onended?.(); });
+    await p.settle();
+    assert.ok(p.el.pauses > before, 'the element kept playing silence after the song ended');
+    assert.equal(p.el.paused, true);
+    assert.equal(p.ms.playbackState, 'paused', 'lock screen still says playing');
+  });
+});
+
+test('unmount (M14): every resume listener and every Media Session handler is removed', async () => {
+  await mountRoute({ phone: true }, async (p) => {
+    const attached = [...p.live.entries()].filter(([, n]) => n > 0).map(([k]) => k);
+    assert.ok(attached.length >= RESUME_EVENTS.length, `resume hooks not attached: ${attached.join(', ')}`);
+    assert.equal(typeof p.ms.handlers.play, 'function');
+    await p.dom.unmountAll();
+    await p.settle();
+    const leaked = [...p.live.entries()].filter(([, n]) => n > 0).map(([k]) => k);
+    assert.deepEqual(leaked, [], `listeners left behind after unmount: ${leaked.join(', ')}`);
+    for (const a of ['play', 'pause', 'stop', 'seekto', 'seekbackward', 'seekforward']) assert.equal(p.ms.handlers[a], null, a);
+    assert.equal(p.el.srcObject, null, 'the element still holds the stream');
+  });
+});
+
+const chordPos = (p) => Number(p.dom.find('[data-testid="chord-overlay"]').getAttribute('data-position'));
+
+test('chord sync: on the phone route the chord clock is held back by routeLatencySec while playing', async () => {
+  await mountRoute({ phone: true }, async (p) => {
+    tapPlay(p);
+    await p.settle();
+    await p.dom.act(async () => p.ms.handlers.seekto({ seekTime: 10 }));
+    await p.settle();
+    const expected = 10 - (ROUTE_TRANSPORT_LATENCY_SEC + 0.032); // fake ctx outputLatency
+    assert.ok(Math.abs(chordPos(p) - expected) < 1e-9, `chord at ${chordPos(p)}, expected ${expected}`);
+    // paused: no compensation — the playhead sits where the audio stopped
+    await p.dom.act(async () => p.ms.handlers.pause({}));
+    await p.settle();
+    assert.equal(chordPos(p), 10);
+  });
+});
+
+test('chord sync, fresh page (review #278 B1): first play from a SUSPENDED context uses the latency it reports once RUNNING', async () => {
+  await mountRoute({ phone: true, start: 'suspended' }, async (p) => {
+    assert.equal(p.ctx().state, 'suspended');
+    assert.equal(p.ctx().outputLatency, 0, 'fixture: a fresh context reports 0');
+    tapPlay(p);
+    await p.settle();
+    await p.settle();
+    assert.equal(p.ctx().state, 'running');
+    await p.dom.act(async () => p.ms.handlers.seekto({ seekTime: 10 }));
+    await p.settle();
+    const expected = 10 - (ROUTE_TRANSPORT_LATENCY_SEC + 0.032);
+    assert.ok(Math.abs(chordPos(p) - expected) < 1e-9, `first play compensated ${10 - chordPos(p)} s, expected ${10 - expected}`);
+    assert.equal(p.ctx().stateListeners.length, 1, 'statechange listener attached once');
+    await p.dom.unmountAll();
+    await p.settle();
+    assert.equal(p.ctx().stateListeners.length, 0, 'statechange listener left behind after unmount');
+  });
+});
+
+test('chord sync, fresh page with NO statechange event: the timed re-sample still picks up the running latency', async () => {
+  await mountRoute({ phone: true, start: 'suspended-silent' }, async (p) => {
+    tapPlay(p);
+    await p.settle();
+    await p.dom.act(async () => p.ms.handlers.seekto({ seekTime: 10 }));
+    await p.settle();
+    await p.dom.act(() => new Promise((r) => setTimeout(r, LATENCY_RESAMPLE_MS[0] + 100)));
+    await p.settle();
+    const expected = 10 - (ROUTE_TRANSPORT_LATENCY_SEC + 0.032);
+    assert.ok(Math.abs(chordPos(p) - expected) < 1e-9, `after re-sample compensated ${10 - chordPos(p)} s, expected ${10 - expected}`);
+  });
+});
+
+test('chord sync: desktop is NOT compensated (the chord clock is the engine clock, as before)', async () => {
+  await mountRoute({ phone: false }, async (p) => {
+    tapPlay(p);
+    await p.settle();
+    await p.dom.act(async () => p.ms.handlers.seekto({ seekTime: 10 }));
+    await p.settle();
+    assert.equal(chordPos(p), 10);
+  });
+});
+
+async function mountPlayerOnTouchOnly(body, server = router(() => ({ status: 500 }))) {
+  await mountPlayer(server, body, {}, () => {
     const real = globalThis.matchMedia;
     globalThis.matchMedia = (q) => ({ matches: q === '(pointer: coarse)', media: q, addEventListener() {}, removeEventListener() {} });
-    if (search) globalThis.history.replaceState(null, '', search);
     return () => {
       globalThis.matchMedia = real;
     };

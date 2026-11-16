@@ -78,7 +78,7 @@ export default function HomePage() {
                 top — so you can turn your own part down and play it yourself.
               </p>
               <p className="audience">
-                Uses the first {MAX_TRACK_MIN}&nbsp;minutes of any song, in Chrome on the desktop. Starting a job needs no account;
+                Uses the first {MAX_TRACK_MIN}&nbsp;minutes of any song, on a computer or a phone. Starting a job needs no account;
                 opening the player needs one.
               </p>
             </div>
@@ -137,7 +137,7 @@ export default function HomePage() {
               </div>
               <div className="spec-row">
                 <dt>Where it runs</dt>
-                <dd>Chrome, on a desktop. Other browsers and phones are not supported yet.</dd>
+                <dd>Chrome on a computer, which is what it is built and tested on. Phones get lighter audio (mono, 24&nbsp;kHz) so all six stems fit in memory. Phone support is new, and other browsers are not tested yet.</dd>
               </div>
               <div className="spec-row">
                 <dt>Account</dt>
@@ -256,8 +256,9 @@ export default function HomePage() {
                 <details>
                   <summary>Which browsers work?</summary>
                   <p>
-                    Chrome on a desktop or laptop, which is what the player is built and tested against for now. Other
-                    browsers and phones are not supported yet.
+                    Chrome on a computer, which is what the player is built and tested against. On a phone the player
+                    loads lighter audio (mono, 24&nbsp;kHz) so all six stems fit in memory. Phone support is new, and
+                    other browsers are not tested yet.
                   </p>
                 </details>
                 <details>

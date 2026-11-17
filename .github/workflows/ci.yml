@@ -693,7 +693,13 @@ jobs:
     # The journeys step therefore runs the suite a SECOND time when the first
     # attempt is red, and emits a ::warning:: when it does. If attempt 1 was red
     # and attempt 2 green, THIS SUITE FLAKED -- read both summaries in the
-    # evidence artifact before dismissing it. Two independent reds still fail.
+    # browser-journeys-evidence artifact before dismissing it. Two independent
+    # reds still fail.
+    #
+    # That last instruction is only followable as of this PR: the upload step had
+    # silently uploaded nothing since #245 (see its own comment below), so for the
+    # first three rounds of this change "read the evidence artifact" named
+    # something that did not exist. Fixed here, not worked around.
     #
     # The axe scans are now on (see the resolve step below). The first run that
     # actually scanned -- 2e2f20b on PR #285 -- is 86 PASS / 0 FAIL /
@@ -719,9 +725,18 @@ jobs:
     # when EITHER of these is true, and not before:
     #   (a) issue #286 is closed -- the file-chooser race is diagnosed and fixed; OR
     #   (b) this job has run green on v3/main for 10 CONSECUTIVE runs in which the
-    #       retry's ::warning:: never fired. Check that by searching those runs'
-    #       logs for "Browser journeys flaked"; if it appears in any of them, the
-    #       count restarts at zero.
+    #       retry's ::warning:: never fired; one hit restarts the count at zero.
+    #       Count it with EITHER of these, not with a bare "Browser journeys
+    #       flaked" grep -- the runner echoes the step's own script into its
+    #       ##[group] header, so that string matches on every run, retry or not,
+    #       and a literal reading of it would restart the count forever:
+    #         gh api repos/JDC000000/stem-loops/actions/jobs/<id>/logs \
+    #           | grep -c '##\[warning\]Browser journeys flaked'   # 0 = no retry
+    #         ... | grep -c 'journeys, [0-9]* failed'                # 1 = no retry, 2 = retried
+    #       The annotation carries the ##[warning] prefix and the echoed script
+    #       carries "::warning title=", which is what separates them. A bare
+    #       ##[warning] grep is NOT a discriminator: these logs carry unrelated
+    #       ones (a deprecated-Node notice, for one).
     # (b) is a real bar, not a formality: if the flake persists at anything like
     # the frequency #286 records, ten clean runs in a row will not arrive, and the
     # right answer is to fix it rather than to lower the bar. If neither (a) nor
@@ -802,6 +817,17 @@ jobs:
         with:
           name: browser-journeys-evidence
           path: packages/web-browser-gate/.evidence/
+          # WITHOUT THIS, THE ARTIFACT DOES NOT EXIST. upload-artifact@v4 excludes
+          # dot-prefixed paths unless told otherwise, and this path is `.evidence/`.
+          # Every run of this job from #245 up to 61aa309 logged
+          #   ##[warning]No files were found with the provided path: ... .evidence/
+          # and uploaded nothing -- confirmed by GET /actions/runs/{id}/artifacts
+          # returning total_count: 0 for all seven of them. The step reported
+          # success throughout, which is the same defect class this job is for.
+          # Consequence worth knowing: on b4a3852, the one red run this project
+          # has, the screenshots and result.json that would have diagnosed the
+          # file-chooser race (#286) were discarded.
+          include-hidden-files: true
 
 
   supabase-prelude-migrations:

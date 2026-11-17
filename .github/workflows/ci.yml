@@ -682,11 +682,14 @@ jobs:
     # whose entire diff is CI files -- zero application change -- and the same
     # check passes on both. That is a flake, not a finding.
     #
-    # FLAKE, MEASURED. 8 recorded runs, 3 red: ac3c3a1 (j1 "Cut N loops" missing,
-    # a real race fixed by the next commit), 6966422 (the real 44 px finding) and
-    # b4a3852 (the file-chooser flake above). Of the six runs of #245's final
-    # tree, one was red for a reason no code change explains. So: ~1 in 6, with no
-    # retry anywhere, against a 25-minute budget of which the whole job uses ~8.
+    # THE FLAKE. 8 recorded runs, 3 red: ac3c3a1 (j1 "Cut N loops" missing -- a real
+    # race, fixed by the next commit), 6966422 (the real 44 px finding -- the gate
+    # working, not a flake) and b4a3852 (the file-chooser flake above). So exactly
+    # ONE red that no code change explains, in the six runs of #245's final tree.
+    # One observation is not a rate: do not read "1 in 6" here as a measured
+    # frequency, because n=6 cannot support one. What it is, is an unexplained red
+    # on a job with no retry anywhere, which is enough to act on. Tracked as #286.
+    #
     # The journeys step therefore runs the suite a SECOND time when the first
     # attempt is red, and emits a ::warning:: when it does. If attempt 1 was red
     # and attempt 2 green, THIS SUITE FLAKED -- read both summaries in the
@@ -710,6 +713,21 @@ jobs:
     # a hold on a human pressing merge by hand. The exact context string is this
     # job's name: "Browser journeys (real Chromium)" -- it no longer ends in
     # ", advisory".
+    #
+    # DO NOT ADD THE CONTEXT TO THE RULESET YET. The retry above is a bridge, not
+    # a feature, and this is what stops it becoming permanent. Add the context
+    # when EITHER of these is true, and not before:
+    #   (a) issue #286 is closed -- the file-chooser race is diagnosed and fixed; OR
+    #   (b) this job has run green on v3/main for 10 CONSECUTIVE runs in which the
+    #       retry's ::warning:: never fired. Check that by searching those runs'
+    #       logs for "Browser journeys flaked"; if it appears in any of them, the
+    #       count restarts at zero.
+    # (b) is a real bar, not a formality: if the flake persists at anything like
+    # the frequency #286 records, ten clean runs in a row will not arrive, and the
+    # right answer is to fix it rather than to lower the bar. If neither (a) nor
+    # (b) has happened a month from now, take the retry OUT as well and reopen the
+    # question -- a permanent retry on a gate is a gate that quietly reports less
+    # than it claims.
     services:
       postgres:
         image: postgres:17-alpine@sha256:e5d2edd28b1f8d40a0a6c0c9cdc545b19b56a0d5d88f94bc11a97d970d4700d0
@@ -761,6 +779,8 @@ jobs:
       - name: Run all journeys (one retry on red; both attempts kept as evidence)
         env:
           JOURNEY_AXE: ${{ steps.axe.outputs.path }}
+        # Mitigation for #286, not a fix for it; the ruleset condition in this job's
+        # comment is what keeps it temporary.
         # A retry is a hiding place, so this one is loud: the ::warning:: survives
         # into the run summary of an otherwise green job, and attempt 2's evidence
         # is kept SEPARATELY (under .evidence/attempt-2/, already inside the

@@ -127,9 +127,18 @@ export default async function run() {
       // for these two pages could be verified without the stack. j5 and j6 assert their
       // real content independently.
       const resp = await page.goto(path);
+      // The pathname matters as much as the status. goto() returns the FINAL response
+      // after redirects, so a 302 /account -> /login arrives as status 200 and the scan
+      // would run against the sign-in page while still labelled `account` -- i.e. the
+      // one realistic /account failure would sail through. Demonstrated against real
+      // Chromium before this line existed.
+      const landed = new URL(page.url()).pathname;
       const body = await page.evaluate(() => document.body?.innerText?.trim() ?? '');
-      const broken = /application error|client-side exception|this page could not be found|404/i.test(body);
-      j.check(`${path}: page rendered before the axe scan`, resp?.status() === 200 && body.length > 0 && !broken, `status=${resp?.status()} bodyChars=${body.length}${broken ? ' ERROR PAGE' : ''}`);
+      // No bare `404` here: Next's own 404 says "This page could not be found", while
+      // "404" as a token appears in ordinary pricing copy ("404 credits a month"), which
+      // made this check report a false RED. Demonstrated the same way.
+      const broken = /application error|client-side exception|this page could not be found/i.test(body);
+      j.check(`${path}: page rendered before the axe scan`, resp?.status() === 200 && landed === path && body.length > 0 && !broken, `status=${resp?.status()} landed=${landed} bodyChars=${body.length}${broken ? ' ERROR PAGE' : ''}`);
       await axe(page, j, path.slice(1));
     }
   } catch (e) {

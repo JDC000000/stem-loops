@@ -682,13 +682,20 @@ jobs:
     # whose entire diff is CI files -- zero application change -- and the same
     # check passes on both. That is a flake, not a finding.
     #
-    # THE FLAKE. 8 recorded runs, 3 red: ac3c3a1 (j1 "Cut N loops" missing -- a real
-    # race, fixed by the next commit), 6966422 (the real 44 px finding -- the gate
-    # working, not a flake) and b4a3852 (the file-chooser flake above). So exactly
-    # ONE red that no code change explains, in the six runs of #245's final tree.
-    # One observation is not a rate: do not read "1 in 6" here as a measured
-    # frequency, because n=6 cannot support one. What it is, is an unexplained red
-    # on a job with no retry anywhere, which is enough to act on. Tracked as #286.
+    # THE FLAKE. Of the reds on record, two are explained: ac3c3a1 (j1 "Cut N
+    # loops" missing -- a real race, fixed by the next commit) and 6966422 (the
+    # real 44 px finding -- the gate working). The rest are the SAME j8 check,
+    # twice, on application code that never changed between them:
+    #   b4a3852  job 133727904155  "Enter on Choose a file" -- no chooser
+    #   f9ad9b5  job 133777063521  the same check, same detail, attempt 1
+    # That is 2 reds in the 9 runs of this job over an unchanged apps/web and
+    # apps/worker. Still a small n -- do not quote it as a rate -- but it is two
+    # independent observations of one failure, not one anomaly. Tracked as #286.
+    #
+    # f9ad9b5 is also the first live proof that the retry does what it claims:
+    # attempt 1 red on that check, attempt 2 clean (8 journeys, 0 failed, written
+    # to .evidence/attempt-2/), job green, annotation raised. It is the run whose
+    # artifact finally captured the failure's screenshots -- see #286.
     #
     # The journeys step therefore runs the suite a SECOND time when the first
     # attempt is red, and emits a ::warning:: when it does. If attempt 1 was red
@@ -725,18 +732,27 @@ jobs:
     # when EITHER of these is true, and not before:
     #   (a) issue #286 is closed -- the file-chooser race is diagnosed and fixed; OR
     #   (b) this job has run green on v3/main for 10 CONSECUTIVE runs in which the
-    #       retry's ::warning:: never fired; one hit restarts the count at zero.
-    #       Count it with EITHER of these, not with a bare "Browser journeys
-    #       flaked" grep -- the runner echoes the step's own script into its
-    #       ##[group] header, so that string matches on every run, retry or not,
-    #       and a literal reading of it would restart the count forever:
+    #       retry never fired; one firing restarts the count at zero. Use EITHER
+    #       of these two, both verified against a real retry run (job
+    #       133777063521) AND real non-retry runs (133768171344, 133755569798):
+    #
+    #         # 1 = no retry, 2 = retried
     #         gh api repos/JDC000000/stem-loops/actions/jobs/<id>/logs \
-    #           | grep -c '##\[warning\]Browser journeys flaked'   # 0 = no retry
-    #         ... | grep -c 'journeys, [0-9]* failed'                # 1 = no retry, 2 = retried
-    #       The annotation carries the ##[warning] prefix and the echoed script
-    #       carries "::warning title=", which is what separates them. A bare
-    #       ##[warning] grep is NOT a discriminator: these logs carry unrelated
-    #       ones (a deprecated-Node notice, for one).
+    #           | grep -c 'journeys, [0-9]* failed'
+    #
+    #         # 0 = no retry, 1 = retried
+    #         gh api repos/JDC000000/stem-loops/check-runs/<id>/annotations \
+    #           --jq '[.[] | select(.title=="Browser journeys flaked")] | length'
+    #
+    #       DO NOT grep the job log for the warning text, by any pattern. The
+    #       runner echoes the step's own script into its ##[group] header, so a
+    #       bare "Browser journeys flaked" matches on EVERY run -- and the
+    #       ##[warning]-prefixed form matches on NONE, including runs where the
+    #       retry did fire, because `::warning::` from a `run:` step becomes a
+    #       check-run ANNOTATION and never appears as ##[warning] in the log text.
+    #       The first mistake makes the bar impossible; the second makes it
+    #       vacuous. Both were committed to this file before being checked in both
+    #       directions. The two commands above were.
     # (b) is a real bar, not a formality: if the flake persists at anything like
     # the frequency #286 records, ten clean runs in a row will not arrive, and the
     # right answer is to fix it rather than to lower the bar. If neither (a) nor

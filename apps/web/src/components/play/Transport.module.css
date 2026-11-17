@@ -43,7 +43,10 @@
 .track {
   flex: 1 1 160px;
   min-width: 120px;
-  height: 32px;            /* generous hit area around a thin rail */
+  /* --touch-min: the seek bar is a drag target on a phone; 32px failed the 44px
+     bar (j7 measured 163x32 at 390 and 238x32 at 360). The rail stays 8px and
+     stays centred, so only the hit area grows. */
+  height: var(--touch-min, 44px);
   display: flex;
   align-items: center;
   cursor: pointer;

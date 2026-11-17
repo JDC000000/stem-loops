@@ -658,6 +658,60 @@ jobs:
         env:
           CHORD_GATE_LOG: "1"
 
+  browser-journeys:
+    name: Browser journeys (real Chromium, advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # ADVISORY ONLY. Do NOT add this context to the v3/main ruleset: on today's
+    # tree 4 of 8 journeys fail on open product findings (j3 SEPARATION_FAILED
+    # copy #243, j7 44 px targets, j8 axe contrast), so as a required check it
+    # would block every PR. continue-on-error keeps the PR's overall result
+    # green while the job itself still shows red with its evidence.
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:e5d2edd28b1f8d40a0a6c0c9cdc545b19b56a0d5d88f94bc11a97d970d4700d0
+        env:
+          POSTGRES_USER: stemloops
+          POSTGRES_PASSWORD: stemloops
+          POSTGRES_DB: stemloops
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 55432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install deps (pnpm, worker, mocks, ffmpeg, psql)
+        run: |
+          pnpm install --frozen-lockfile
+          pip install -r apps/worker/requirements.txt -r apps/worker/requirements-dev.txt -c apps/worker/constraints-prod.txt moto[server] boto3
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg postgresql-client
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      - name: Install Chromium and its system libraries
+        run: pnpm --filter @stem-loops/web-browser-gate exec playwright install --with-deps chromium
+      - name: Bring up the loopback stack (prelude + migrations, mocks, worker, next build + start)
+        run: packages/web-browser-gate/stack/up.sh
+      - name: Run all journeys
+        run: packages/web-browser-gate/stack/journeys.sh
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-journeys-evidence
+          path: packages/web-browser-gate/.evidence/
+
 
   supabase-prelude-migrations:
     name: Migrations on a Supabase-like Postgres (PG ${{ matrix.pg }})

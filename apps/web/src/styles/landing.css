@@ -396,7 +396,12 @@ html:not(.js) .lanes, html:not(.js) .pipe-art, html:not(.js) #ab, html:not(.js) 
 .lead { color: var(--text-secondary); }
 @media (min-width: 760px) { .lead { font-size: 18px; line-height: 1.5; } }
 .btn-secondary.is-active { background: var(--bg-selected); border-color: var(--text-secondary); color: var(--text-primary); }
-.link-btn { min-height: 24px; padding-block: 10px; margin-block: -10px; }
+/* 44px hit area (--touch-min) on an inline link-button, kept line-neutral by the
+   negative block margin: 21px of text + 24px of padding is 45px, and the margin
+   gives the line the 21px back. 10px padding left it at 41px, which j7 caught at
+   360. No min-height here: the padding already clears the bar, and the rule above
+   (.link-btn { min-height: var(--h-control) }) is the one that states the floor. */
+.link-btn { padding-block: 12px; margin-block: -12px; }
 .file-ic { display: none; }
 .file-card { grid-template-columns: minmax(0, 1fr); }
 @media (max-width: 359px) {

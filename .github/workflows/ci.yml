@@ -659,14 +659,168 @@ jobs:
           CHORD_GATE_LOG: "1"
 
   browser-journeys:
-    name: Browser journeys (real Chromium, advisory)
+    name: Browser journeys (real Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    # ADVISORY ONLY. Do NOT add this context to the v3/main ruleset: on today's
-    # tree 4 of 8 journeys fail on open product findings (j3 SEPARATION_FAILED
-    # copy #243, j7 44 px targets, j8 axe contrast), so as a required check it
-    # would block every PR. continue-on-error keeps the PR's overall result
-    # green while the job itself still shows red with its evidence.
+    # ADVISORY. continue-on-error is BACK, deliberately, after being removed
+    # earlier in this same PR. Read the "WHY THIS IS STILL ADVISORY" block below
+    # before taking it out again -- the evidence against promoting is from this
+    # job, on this branch, and it is not an argument anyone has to re-derive.
+    #
+    # The NAME no longer says "advisory", and that is on purpose: whether this
+    # job blocks is a property of continue-on-error, not of its name, and
+    # encoding mutable state in a check CONTEXT means a ruleset edit every time
+    # the state changes. The name is stable now; the comment carries the state.
+    #
+    # #245 added this job advisory, on the rationale that "4 of 8 journeys fail
+    # on open product findings (j3 SEPARATION_FAILED copy #243, j7 44 px targets,
+    # j8 axe contrast)". That rationale no longer holds, and one third of it was
+    # never true:
+    #   * #243 (failed-job copy) and #244 (chord provider_failed copy) are merged,
+    #     and j7's 44 px targets were fixed inside #245 itself (they were a real
+    #     finding: job 133644482368 on 6966422, "Download loops -> 118x40");
+    #   * "j8 axe contrast" was never a finding this job could produce. JOURNEY_AXE
+    #     was unset, so j8-a11y.mjs reported all four of its axe scans
+    #     `not-reached` -- on every run, green ones included.
+    #
+    # WHAT THE BASE COMMIT ACTUALLY DID. The only run of this job on b4a3852
+    # (job 133727904155) was 81 PASS / 1 FAIL / 4 not-reached -- RED. The failure
+    # was j8's `Enter on "Choose a file" opens the file chooser`: focus landed on
+    # #file-btn and the event never fired. 2e2f20b and 3ca0bff are descendants
+    # whose whole diff from it is this file, the gate package's package.json and
+    # pnpm-lock.yaml -- nothing under apps/ at all -- and the same check passes on
+    # both. That is a flake, not a finding.
+    #
+    # THE FLAKE. Every figure below was re-derived from the Actions API, not
+    # carried forward -- three earlier versions of this comment each shipped a
+    # wrong number here. 14 runs of this job exist; 5 ended red. Three of those
+    # five are explained, and are the gate working:
+    #   1afce88  job 132612457410  j7 44 px targets (pre-fix)
+    #   ac3c3a1  job 133608181185  j1 "Cut N loops" -- a real race, fixed next commit
+    #   6966422  job 133644482368  j7 44 px targets, "Download loops -> 118x40"
+    # The remainder are all ONE check -- j8's `Enter on "Choose a file" opens the
+    # file chooser` -- on 3 occasions across 4 attempts:
+    #   b4a3852  job 133727904155  red (no retry existed yet)
+    #   f9ad9b5  job 133777063521  attempt 1 red, attempt 2 clean -> job green
+    #   db2e57d  job 133784823424  BOTH attempts red -> job red
+    # The window in which apps/web and apps/worker do not change at all starts at
+    # b4a3852 and runs to fc03e86: `git diff --name-only b4a3852 fc03e86` touches
+    # only .github, packages and pnpm-lock.yaml. That is 8 runs (9 counting
+    # a1b0e58 -- same tree, pre-squash). So: 3 occasions in 8 runs, 2 of them in
+    # the last 6. Still a small n -- do NOT quote it as a rate -- but three
+    # sightings of one check is not an anomaly. Tracked as #286.
+    #
+    # f9ad9b5 is the first live proof that the retry does what it claims: attempt
+    # 1 red on that check, attempt 2 clean (8 journeys, 0 failed, written to
+    # .evidence/attempt-2/), job green, annotation raised.
+    #
+    # WHY THIS IS STILL ADVISORY -- and the retry is not enough.
+    # The very next run, db2e57d (job 133784823424), failed BOTH attempts on that
+    # same check with the same detail line. That commit's diff is COMMENTS IN
+    # THIS FILE AND NOTHING ELSE. So:
+    #   * the flake is correlated WITHIN a runner. A retry assumes the second
+    #     attempt is an independent draw; this one was not, and the retry cleared
+    #     nothing. The round-2 reasoning for promoting rested on an independence
+    #     nobody had measured, and the measurement has now come back negative.
+    #   * had continue-on-error already been gone, a comment-only change would
+    #     have been blocked from merging. That is not a hypothetical -- it is what
+    #     this job did to db2e57d.
+    #   * the tally is 3 occasions on this one check (b4a3852, f9ad9b5 attempt 1,
+    #     db2e57d both attempts) across the 8 runs over an unchanged apps/web and
+    #     apps/worker, 2 of them in the last 6. It is not getting rarer.
+    # Promoting a gate to blocking while it has a known, unfixed, reproducing
+    # failure breaks every subsequent PR, which is the one thing this change was
+    # not allowed to do. So continue-on-error stays until #286 is fixed.
+    #
+    # WHAT THE RETRY IS FOR NOW. Its purpose has changed, and this is the honest
+    # statement of it. It was added to MITIGATE the flake; db2e57d showed it does
+    # not -- when the failure is correlated within a runner it clears nothing.
+    # What it does do, and what nothing else here does, is tell you WHETHER A RED
+    # REPRODUCES. One red attempt and one clean one is a flake; two red attempts
+    # is something broken. Without it, b4a3852 and db2e57d read identically, and
+    # the single most useful fact about #286 -- that the failure survives a full
+    # re-run of the suite on the same runner -- could not have been learned. It
+    # is an instrument, not a mitigation. Cost, from the API: a single-attempt
+    # job is 8m07s (job 133768171344) to 8m42s (133792904141), and the two
+    # retried runs took 12m15s (133777063521) and 13m11s (133784823424) -- so
+    # ~3.5-4.5 min, only ever on an already-red run, inside a 25-minute cap.
+    #
+    # EVERYTHING ELSE IN THIS PR STANDS AND IS THE POINT OF IT: j8's four axe
+    # scans actually run, they cannot silently skip, they gate on WCAG, the
+    # /account and /pricing scans cannot run against a redirect or an error page,
+    # and the evidence artifact uploads for the first time since #245.
+    #
+    # The journeys step therefore runs the suite a SECOND time when the first
+    # attempt is red, and emits a ::warning:: when it does. If attempt 1 was red
+    # and attempt 2 green, THIS SUITE FLAKED -- read both summaries in the
+    # browser-journeys-evidence artifact before dismissing it. Two independent
+    # reds still fail.
+    #
+    # That last instruction is only followable as of this PR: the upload step had
+    # silently uploaded nothing since #245 (see its own comment below), so for the
+    # first three rounds of this change "read the evidence artifact" named
+    # something that did not exist. Fixed here, not worked around.
+    #
+    # The axe scans are now on (see the resolve step below). The first run that
+    # actually scanned -- 2e2f20b on PR #285 -- is 86 PASS / 0 FAIL /
+    # 0 not-reached; reproduced on 3ca0bff. All four scans (landing, player,
+    # /account, /pricing) report zero critical or serious WCAG violations. That
+    # is the claim to re-check if this job starts failing on a11y rather than on
+    # a product change.
+    #
+    # WHAT PROMOTION WOULD ACTUALLY CHANGE, when it eventually happens. Less than
+    # it looks like. continue-on-error suppresses only the WORKFLOW RUN's
+    # conclusion: the check-run is already `failure` on a red journey (b4a3852
+    # and 6966422 are the proof -- both ran WITH continue-on-error set and both
+    # recorded conclusion `failure`. db2e57d does NOT prove it: that run had
+    # continue-on-error removed, so it says nothing about suppression), so
+    # auto-merge.yml's M-1 sweep over every check-run on the head SHA ALREADY
+    # refuses to auto-merge on one, today, advisory and all -- which is a point
+    # in favour of the name: a check that looks like it matters is more accurate
+    # than one labelled advisory. Removing continue-on-error would add a red RUN
+    # conclusion, which also stops auto-merge.yml's post-CI `workflow_run` path
+    # from starting. Adding the context to the v3/main ruleset (v3-main-
+    # protection, id 26478884) is a repository setting no PR can make, and what
+    # IT adds is a hold on a human pressing merge by hand. The exact context
+    # string is this job's name: "Browser journeys (real Chromium)".
+    #
+    # DO NOT ADD THE CONTEXT TO THE RULESET YET. The retry above is a bridge, not
+    # a feature, and this is what stops it becoming permanent. Add the context
+    # when EITHER of these is true, and not before:
+    #   (a) issue #286 is closed -- the file-chooser race is diagnosed and fixed; OR
+    #   (b) this job has run green on v3/main for 10 CONSECUTIVE runs in which the
+    #       retry never fired; one firing restarts the count at zero. Use EITHER
+    #       of these two, both verified against a real retry run (job
+    #       133777063521) AND real non-retry runs (133768171344, 133755569798):
+    #
+    #         # 1 = no retry, 2 = retried
+    #         gh api repos/JDC000000/stem-loops/actions/jobs/<id>/logs \
+    #           | grep -c 'journeys, [0-9]* failed'
+    #
+    #         # 0 = no retry, 1 = retried
+    #         gh api repos/JDC000000/stem-loops/check-runs/<id>/annotations \
+    #           --jq '[.[] | select(.title=="Browser journeys flaked")] | length'
+    #
+    #       DO NOT grep the job log for the warning text, by any pattern. The
+    #       runner echoes the step's own script into its ##[group] header, so a
+    #       bare "Browser journeys flaked" matches on EVERY run -- and the
+    #       ##[warning]-prefixed form matches on NONE, including runs where the
+    #       retry did fire, because `::warning::` from a `run:` step becomes a
+    #       check-run ANNOTATION and never appears as ##[warning] in the log text.
+    #       The first mistake makes the bar impossible; the second makes it
+    #       vacuous. Both were committed to this file before being checked in both
+    #       directions. The two commands above were.
+    # (b) is a real bar, not a formality: if the flake persists at anything like
+    # the frequency #286 records, ten clean runs in a row will not arrive, and the
+    # right answer is to fix it rather than to lower the bar. If neither (a) nor
+    # (b) has happened a month from now, take the retry OUT as well and reopen the
+    # question -- a permanent retry on a gate is a gate that quietly reports less
+    # than it claims.
+    #
+    # Promotion is ONE decision with two steps, and neither happens before the
+    # condition above holds: remove continue-on-error here, THEN add the context
+    # to the ruleset. Do not do the first on its own as "the safe half" -- the
+    # first is what blocked db2e57d.
     continue-on-error: true
     services:
       postgres:
@@ -703,14 +857,60 @@ jobs:
         run: pnpm --filter @stem-loops/web-browser-gate exec playwright install --with-deps chromium
       - name: Bring up the loopback stack (prelude + migrations, mocks, worker, next build + start)
         run: packages/web-browser-gate/stack/up.sh
-      - name: Run all journeys
-        run: packages/web-browser-gate/stack/journeys.sh
+      - name: Resolve axe-core for j8's accessibility scans
+        id: axe
+        # j8-a11y.mjs SKIPS its four axe scans -- landing, player, /account,
+        # /pricing -- and reports them `not-reached` when JOURNEY_AXE is unset or
+        # names a path that does not exist. Resolving it from the gate package's
+        # own declared dependency, rather than hardcoding a path under
+        # node_modules/.pnpm, means a version bump that moves the file fails HERE,
+        # loudly, instead of silently turning the scans back off.
+        run: |
+          AXE=$(pnpm --filter @stem-loops/web-browser-gate exec node -p "require.resolve('axe-core/axe.min.js')")
+          test -s "$AXE"
+          echo "axe-core: $AXE"
+          echo "path=$AXE" >> "$GITHUB_OUTPUT"
+      - name: Run all journeys (one retry on red; both attempts kept as evidence)
+        env:
+          JOURNEY_AXE: ${{ steps.axe.outputs.path }}
+        # Mitigation for #286, not a fix for it; the ruleset condition in this job's
+        # comment is what keeps it temporary.
+        # A retry is a hiding place, so this one is loud: the ::warning:: survives
+        # into the run summary of an otherwise green job, and attempt 2's evidence
+        # is kept SEPARATELY (under .evidence/attempt-2/, already inside the
+        # uploaded directory) instead of overwriting attempt 1's. A full re-run,
+        # not a re-run of the failed ids: run.mjs exits 1 on any subset ("PARTIAL
+        # RUN") regardless of verdict, so a subset retry would need its summary
+        # parsed to be read at all -- more code to be wrong in, on a gate. The
+        # suite is re-runnable: every journey mints its own user (Date.now-keyed)
+        # and j4 computes capacity from the live in-flight count.
+        run: |
+          set -uo pipefail
+          if packages/web-browser-gate/stack/journeys.sh; then exit 0; fi
+          echo "::warning title=Browser journeys flaked::Attempt 1 was RED and is being re-run once. If this job ends green, the suite FLAKED: compare .evidence/summary.md (attempt 1) with .evidence/attempt-2/summary.md in the browser-journeys-evidence artifact before dismissing it."
+          JOURNEY_EVIDENCE_DIR="$GITHUB_WORKSPACE/packages/web-browser-gate/.evidence/attempt-2" \
+            packages/web-browser-gate/stack/journeys.sh
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: browser-journeys-evidence
           path: packages/web-browser-gate/.evidence/
+          # WITHOUT THIS, THE ARTIFACT DOES NOT EXIST. upload-artifact@v4 excludes
+          # dot-prefixed paths unless told otherwise, and this path is `.evidence/`.
+          # Every run of this job up to and including 61aa309 logged
+          #   ##[warning]No files were found with the provided path: ... .evidence/
+          # and uploaded nothing -- confirmed by GET /actions/runs/{id}/artifacts
+          # returning total_count: 0 for ALL ELEVEN of them (jobs 132612457410,
+          # 133608181185, 133616261619, 133622072123, 133644482368, 133654496177,
+          # 133727904155, 133732244277, 133739422301, 133755569798, 133768171344;
+          # re-counted from the API, an earlier draft of this comment said seven).
+          # The step reported success throughout, which is the same defect class
+          # this job is for.
+          # Consequence worth knowing: on b4a3852, the one red run this project
+          # has, the screenshots and result.json that would have diagnosed the
+          # file-chooser race (#286) were discarded.
+          include-hidden-files: true
 
 
   supabase-prelude-migrations:

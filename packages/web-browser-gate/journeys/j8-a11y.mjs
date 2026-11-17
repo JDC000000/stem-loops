@@ -1,6 +1,7 @@
 // J8 — keyboard and accessibility basics on the upload form and the player:
 // tab order, a visible focus indicator on every stop, accessible names on buttons, and an
-// axe-core scan (JOURNEY_AXE = path to axe.min.js; without it only the manual checks run).
+// axe-core scan of four pages (JOURNEY_AXE = path to axe.min.js; journeys.sh resolves it
+// from this package's own axe-core dependency, so it is set by default).
 import { existsSync, readFileSync } from 'node:fs';
 import { Journey, mintUser, newContext, uploadViaLanding } from './lib.mjs';
 
@@ -30,19 +31,30 @@ async function tabWalk(page, n) {
 async function axe(page, j, tag) {
   const p = process.env.JOURNEY_AXE;
   if (!p || !existsSync(p)) {
-    j.step(`${tag}: axe-core scan`, 'not-reached', 'JOURNEY_AXE not set; manual checks only');
+    // FAIL, not `not-reached`. A not-reached step yields the verdict
+    // "PASS (partial: not-reached steps)", which run.mjs does NOT count as failed —
+    // so an empty JOURNEY_AXE would turn all four scans off and leave this gate GREEN.
+    // That is the exact silent-skip the job's resolve step exists to prevent; it must
+    // not be reachable through the other door.
+    j.check(`${tag}: axe-core scan ran`, false, p ? `JOURNEY_AXE points at a missing file: ${p}` : 'JOURNEY_AXE is not set');
     return;
   }
   await page.addScriptTag({ content: readFileSync(p, 'utf8') });
   const res = await page.evaluate(async () => {
     // eslint-disable-next-line no-undef
     const r = await axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice'] } });
-    return r.violations.map((v) => ({ id: v.id, impact: v.impact, n: v.nodes.length, sample: v.nodes.slice(0, 2).map((x) => x.target.join(' ')).join(' ; ') }));
+    return r.violations.map((v) => ({ id: v.id, impact: v.impact, tags: v.tags, n: v.nodes.length, sample: v.nodes.slice(0, 2).map((x) => x.target.join(' ')).join(' ; ') }));
   });
-  const serious = res.filter((v) => v.impact === 'critical' || v.impact === 'serious');
-  j.check(`${tag}: axe — no critical/serious violations`, serious.length === 0, serious.map((v) => `${v.id}(${v.impact},${v.n}): ${v.sample}`).join(' | ') || 'none');
-  const minor = res.filter((v) => !serious.includes(v));
-  if (minor.length) j.step(`${tag}: axe — moderate/minor`, 'info', minor.map((v) => `${v.id}(${v.impact},${v.n})`).join(', '));
+  // `best-practice` is still SCANNED — losing the finding would be worse — but only
+  // WCAG violations GATE. best-practice selects 99 of axe's 105 rules, ~30 of them
+  // non-WCAG, and some of those (tabindex, aria-dialog-name) carry serious impact. On a
+  // blocking gate that means a developer writing tabindex="1" blocks every PR on an
+  // opinion rather than on a conformance failure. Non-WCAG findings report as info.
+  const wcag = (v) => (v.tags ?? []).some((t) => t.startsWith('wcag'));
+  const blocking = res.filter((v) => (v.impact === 'critical' || v.impact === 'serious') && wcag(v));
+  j.check(`${tag}: axe — no critical/serious WCAG violations`, blocking.length === 0, blocking.map((v) => `${v.id}(${v.impact},${v.n}): ${v.sample}`).join(' | ') || 'none');
+  const rest = res.filter((v) => !blocking.includes(v));
+  if (rest.length) j.step(`${tag}: axe — other findings (best-practice, or moderate/minor)`, 'info', rest.map((v) => `${v.id}(${v.impact},${v.n}${wcag(v) ? '' : ',non-wcag'})`).join(', '));
 }
 
 export default async function run() {
@@ -108,7 +120,16 @@ export default async function run() {
     await axe(page, j, 'player');
     await j.shot(page, 'player');
     for (const path of ['/account', '/pricing']) {
-      await page.goto(path);
+      // Scan nothing without first proving there is something to scan: an empty <body>
+      // and a Next client-side-exception page both score ZERO axe violations and would
+      // report [PASS]. This is the weak form of that assertion — HTTP status plus the
+      // absence of an error page — chosen over a content selector because no selector
+      // for these two pages could be verified without the stack. j5 and j6 assert their
+      // real content independently.
+      const resp = await page.goto(path);
+      const body = await page.evaluate(() => document.body?.innerText?.trim() ?? '');
+      const broken = /application error|client-side exception|this page could not be found|404/i.test(body);
+      j.check(`${path}: page rendered before the axe scan`, resp?.status() === 200 && body.length > 0 && !broken, `status=${resp?.status()} bodyChars=${body.length}${broken ? ' ERROR PAGE' : ''}`);
       await axe(page, j, path.slice(1));
     }
   } catch (e) {

@@ -666,29 +666,50 @@ jobs:
     #
     # #245 added this job advisory, on the rationale that "4 of 8 journeys fail
     # on open product findings (j3 SEPARATION_FAILED copy #243, j7 44 px targets,
-    # j8 axe contrast)". That rationale no longer holds, and two parts of it were
-    # not true even when written:
+    # j8 axe contrast)". That rationale no longer holds, and one third of it was
+    # never true:
     #   * #243 (failed-job copy) and #244 (chord provider_failed copy) are merged,
-    #     and j7's 44 px targets were fixed inside #245 itself;
+    #     and j7's 44 px targets were fixed inside #245 itself (they were a real
+    #     finding: job 133644482368 on 6966422, "Download loops -> 118x40");
     #   * "j8 axe contrast" was never a finding this job could produce. JOURNEY_AXE
     #     was unset, so j8-a11y.mjs reported all four of its axe scans
     #     `not-reached` -- on every run, green ones included.
-    # On b4a3852 the job was already 82 PASS / 0 FAIL: 0 of 8 failing, not 4 of 8.
+    #
+    # WHAT THE BASE COMMIT ACTUALLY DID. The only run of this job on b4a3852
+    # (job 133727904155) was 81 PASS / 1 FAIL / 4 not-reached -- RED. The failure
+    # was j8's `Enter on "Choose a file" opens the file chooser`: focus landed on
+    # #file-btn and the event never fired. 2e2f20b and 3ca0bff are descendants
+    # whose entire diff is CI files -- zero application change -- and the same
+    # check passes on both. That is a flake, not a finding.
+    #
+    # FLAKE, MEASURED. 8 recorded runs, 3 red: ac3c3a1 (j1 "Cut N loops" missing,
+    # a real race fixed by the next commit), 6966422 (the real 44 px finding) and
+    # b4a3852 (the file-chooser flake above). Of the six runs of #245's final
+    # tree, one was red for a reason no code change explains. So: ~1 in 6, with no
+    # retry anywhere, against a 25-minute budget of which the whole job uses ~8.
+    # The journeys step therefore runs the suite a SECOND time when the first
+    # attempt is red, and emits a ::warning:: when it does. If attempt 1 was red
+    # and attempt 2 green, THIS SUITE FLAKED -- read both summaries in the
+    # evidence artifact before dismissing it. Two independent reds still fail.
     #
     # The axe scans are now on (see the resolve step below). The first run that
-    # actually scanned -- commit 2e2f20b on PR #285 -- is 86 PASS / 0 FAIL /
-    # 0 not-reached, up from 82/0 with 4 not-reached. All four scans (landing,
-    # player, /account, /pricing) report zero critical or serious violations and
-    # zero moderate or minor ones. That is what makes blocking safe; it is also
-    # the claim to re-check if this job starts failing on a11y rather than on a
-    # product change.
+    # actually scanned -- 2e2f20b on PR #285 -- is 86 PASS / 0 FAIL /
+    # 0 not-reached; reproduced on 3ca0bff. All four scans (landing, player,
+    # /account, /pricing) report zero critical or serious WCAG violations. That
+    # is the claim to re-check if this job starts failing on a11y rather than on
+    # a product change.
     #
-    # Blocking is NOT the same as required. Adding this context to the v3/main
-    # ruleset (v3-main-protection, id 26478884) is a repository setting, not a
-    # file in this tree, and no PR can make it. Until Jon adds it there, a red run
-    # fails this job and the workflow run but does not hold the merge button. The
-    # exact context string to add is this job's name: "Browser journeys (real
-    # Chromium)" -- note it no longer ends in ", advisory".
+    # BLOCKING IS NOT REQUIRED, and removing continue-on-error changes less than
+    # it looks like. continue-on-error suppressed only the WORKFLOW RUN's
+    # conclusion: the check-run was already `failure` (b4a3852 is the proof), so
+    # auto-merge.yml's M-1 sweep over every check-run on the head SHA already
+    # refused on a red journey. What this change adds is a red RUN conclusion,
+    # which stops auto-merge.yml's post-CI `workflow_run` path from starting at
+    # all. Adding the context to the v3/main ruleset (v3-main-protection, id
+    # 26478884) is a repository setting that no PR can make, and what IT adds is
+    # a hold on a human pressing merge by hand. The exact context string is this
+    # job's name: "Browser journeys (real Chromium)" -- it no longer ends in
+    # ", advisory".
     services:
       postgres:
         image: postgres:17-alpine@sha256:e5d2edd28b1f8d40a0a6c0c9cdc545b19b56a0d5d88f94bc11a97d970d4700d0
@@ -737,10 +758,24 @@ jobs:
           test -s "$AXE"
           echo "axe-core: $AXE"
           echo "path=$AXE" >> "$GITHUB_OUTPUT"
-      - name: Run all journeys
-        run: packages/web-browser-gate/stack/journeys.sh
+      - name: Run all journeys (one retry on red; both attempts kept as evidence)
         env:
           JOURNEY_AXE: ${{ steps.axe.outputs.path }}
+        # A retry is a hiding place, so this one is loud: the ::warning:: survives
+        # into the run summary of an otherwise green job, and attempt 2's evidence
+        # is kept SEPARATELY (under .evidence/attempt-2/, already inside the
+        # uploaded directory) instead of overwriting attempt 1's. A full re-run,
+        # not a re-run of the failed ids: run.mjs exits 1 on any subset ("PARTIAL
+        # RUN") regardless of verdict, so a subset retry would need its summary
+        # parsed to be read at all -- more code to be wrong in, on a gate. The
+        # suite is re-runnable: every journey mints its own user (Date.now-keyed)
+        # and j4 computes capacity from the live in-flight count.
+        run: |
+          set -uo pipefail
+          if packages/web-browser-gate/stack/journeys.sh; then exit 0; fi
+          echo "::warning title=Browser journeys flaked::Attempt 1 was RED and is being re-run once. If this job ends green, the suite FLAKED: compare .evidence/summary.md (attempt 1) with .evidence/attempt-2/summary.md in the browser-journeys-evidence artifact before dismissing it."
+          JOURNEY_EVIDENCE_DIR="$GITHUB_WORKSPACE/packages/web-browser-gate/.evidence/attempt-2" \
+            packages/web-browser-gate/stack/journeys.sh
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4

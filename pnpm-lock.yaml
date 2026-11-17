@@ -104,6 +104,9 @@ importers:
       '@fontsource/inter':
         specifier: 5.2.5
         version: 5.2.5
+      axe-core:
+        specifier: 4.12.1
+        version: 4.12.1
       esbuild:
         specifier: 0.25.12
         version: 0.25.12

@@ -662,11 +662,20 @@ jobs:
     name: Browser journeys (real Chromium, advisory)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    # ADVISORY ONLY. Do NOT add this context to the v3/main ruleset: on today's
-    # tree 4 of 8 journeys fail on open product findings (j3 SEPARATION_FAILED
-    # copy #243, j7 44 px targets, j8 axe contrast), so as a required check it
-    # would block every PR. continue-on-error keeps the PR's overall result
-    # green while the job itself still shows red with its evidence.
+    # ADVISORY ONLY, PENDING THE FIRST RUN WITH THE axe SCANS ACTUALLY ON.
+    #
+    # The findings the previous version of this comment cited are all closed:
+    # j3's SEPARATION_FAILED copy landed in #243, the chord provider_failed copy
+    # in #244, and j7's 44 px targets in #245 itself. On b4a3852 the job reports
+    # 82 PASS / 0 FAIL -- 0 of 8 journeys failing, not 4 of 8.
+    #
+    # The one finding that comment named which was never disproved is j8's axe
+    # contrast -- because j8's four axe scans had never run at all. JOURNEY_AXE
+    # was never set in this job, so j8-a11y.mjs reported every scan `not-reached`,
+    # on green runs included. The step below sets it. Until a run with the scans
+    # genuinely on is on record, continue-on-error stays: promoting a job to
+    # blocking while its newly-enabled checks are of unknown colour would block
+    # every subsequent PR.
     continue-on-error: true
     services:
       postgres:
@@ -703,8 +712,23 @@ jobs:
         run: pnpm --filter @stem-loops/web-browser-gate exec playwright install --with-deps chromium
       - name: Bring up the loopback stack (prelude + migrations, mocks, worker, next build + start)
         run: packages/web-browser-gate/stack/up.sh
+      - name: Resolve axe-core for j8's accessibility scans
+        id: axe
+        # j8-a11y.mjs SKIPS its four axe scans -- landing, player, /account,
+        # /pricing -- and reports them `not-reached` when JOURNEY_AXE is unset or
+        # names a path that does not exist. Resolving it from the gate package's
+        # own declared dependency, rather than hardcoding a path under
+        # node_modules/.pnpm, means a version bump that moves the file fails HERE,
+        # loudly, instead of silently turning the scans back off.
+        run: |
+          AXE=$(pnpm --filter @stem-loops/web-browser-gate exec node -p "require.resolve('axe-core/axe.min.js')")
+          test -s "$AXE"
+          echo "axe-core: $AXE"
+          echo "path=$AXE" >> "$GITHUB_OUTPUT"
       - name: Run all journeys
         run: packages/web-browser-gate/stack/journeys.sh
+        env:
+          JOURNEY_AXE: ${{ steps.axe.outputs.path }}
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4

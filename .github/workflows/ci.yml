@@ -662,7 +662,15 @@ jobs:
     name: Browser journeys (real Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    # BLOCKING: no continue-on-error. A red journey fails this job and the run.
+    # ADVISORY. continue-on-error is BACK, deliberately, after being removed
+    # earlier in this same PR. Read the "WHY THIS IS STILL ADVISORY" block below
+    # before taking it out again -- the evidence against promoting is from this
+    # job, on this branch, and it is not an argument anyone has to re-derive.
+    #
+    # The NAME no longer says "advisory", and that is on purpose: whether this
+    # job blocks is a property of continue-on-error, not of its name, and
+    # encoding mutable state in a check CONTEXT means a ruleset edit every time
+    # the state changes. The name is stable now; the comment carries the state.
     #
     # #245 added this job advisory, on the rationale that "4 of 8 journeys fail
     # on open product findings (j3 SEPARATION_FAILED copy #243, j7 44 px targets,
@@ -692,10 +700,34 @@ jobs:
     # apps/worker. Still a small n -- do not quote it as a rate -- but it is two
     # independent observations of one failure, not one anomaly. Tracked as #286.
     #
-    # f9ad9b5 is also the first live proof that the retry does what it claims:
-    # attempt 1 red on that check, attempt 2 clean (8 journeys, 0 failed, written
-    # to .evidence/attempt-2/), job green, annotation raised. It is the run whose
-    # artifact finally captured the failure's screenshots -- see #286.
+    # f9ad9b5 is the first live proof that the retry does what it claims: attempt
+    # 1 red on that check, attempt 2 clean (8 journeys, 0 failed, written to
+    # .evidence/attempt-2/), job green, annotation raised.
+    #
+    # WHY THIS IS STILL ADVISORY -- and the retry is not enough.
+    # The very next run, db2e57d (job 133784823424), failed BOTH attempts on that
+    # same check with the same detail line. That commit's diff is COMMENTS IN
+    # THIS FILE AND NOTHING ELSE. So:
+    #   * the flake is correlated WITHIN a runner. A retry assumes the second
+    #     attempt is an independent draw; this one was not, and the retry cleared
+    #     nothing. The round-2 reasoning for promoting rested on an independence
+    #     nobody had measured, and the measurement has now come back negative.
+    #   * had continue-on-error already been gone, a comment-only change would
+    #     have been blocked from merging. That is not a hypothetical -- it is what
+    #     this job did to db2e57d.
+    #   * the tally is 3 reds on this one check (b4a3852, f9ad9b5 attempt 1,
+    #     db2e57d both attempts) across 10 runs of an unchanged apps/web and
+    #     apps/worker, and 3 of the last 6 runs. It is not getting rarer.
+    # Promoting a gate to blocking while it has a known, unfixed, reproducing
+    # failure breaks every subsequent PR, which is the one thing this change was
+    # not allowed to do. So continue-on-error stays until #286 is fixed. The
+    # retry stays too -- it costs ~5 min only on an already-red run, it annotates
+    # rather than hides, and it is what produced the correlation evidence above.
+    #
+    # EVERYTHING ELSE IN THIS PR STANDS AND IS THE POINT OF IT: j8's four axe
+    # scans actually run, they cannot silently skip, they gate on WCAG, the
+    # /account and /pricing scans cannot run against a redirect or an error page,
+    # and the evidence artifact uploads for the first time since #245.
     #
     # The journeys step therefore runs the suite a SECOND time when the first
     # attempt is red, and emits a ::warning:: when it does. If attempt 1 was red
@@ -715,17 +747,17 @@ jobs:
     # is the claim to re-check if this job starts failing on a11y rather than on
     # a product change.
     #
-    # BLOCKING IS NOT REQUIRED, and removing continue-on-error changes less than
-    # it looks like. continue-on-error suppressed only the WORKFLOW RUN's
-    # conclusion: the check-run was already `failure` (b4a3852 is the proof), so
-    # auto-merge.yml's M-1 sweep over every check-run on the head SHA already
-    # refused on a red journey. What this change adds is a red RUN conclusion,
-    # which stops auto-merge.yml's post-CI `workflow_run` path from starting at
-    # all. Adding the context to the v3/main ruleset (v3-main-protection, id
-    # 26478884) is a repository setting that no PR can make, and what IT adds is
-    # a hold on a human pressing merge by hand. The exact context string is this
-    # job's name: "Browser journeys (real Chromium)" -- it no longer ends in
-    # ", advisory".
+    # WHAT PROMOTION WOULD ACTUALLY CHANGE, when it eventually happens. Less than
+    # it looks like. continue-on-error suppresses only the WORKFLOW RUN's
+    # conclusion: the check-run is already `failure` on a red journey (b4a3852
+    # and db2e57d are the proof), so auto-merge.yml's M-1 sweep over every
+    # check-run on the head SHA ALREADY refuses to auto-merge on one, today,
+    # advisory and all. Removing continue-on-error would add a red RUN
+    # conclusion, which also stops auto-merge.yml's post-CI `workflow_run` path
+    # from starting. Adding the context to the v3/main ruleset (v3-main-
+    # protection, id 26478884) is a repository setting no PR can make, and what
+    # IT adds is a hold on a human pressing merge by hand. The exact context
+    # string is this job's name: "Browser journeys (real Chromium)".
     #
     # DO NOT ADD THE CONTEXT TO THE RULESET YET. The retry above is a bridge, not
     # a feature, and this is what stops it becoming permanent. Add the context
@@ -759,6 +791,12 @@ jobs:
     # (b) has happened a month from now, take the retry OUT as well and reopen the
     # question -- a permanent retry on a gate is a gate that quietly reports less
     # than it claims.
+    #
+    # Promotion is ONE decision with two steps, and neither happens before the
+    # condition above holds: remove continue-on-error here, THEN add the context
+    # to the ruleset. Do not do the first on its own as "the safe half" -- the
+    # first is what blocked db2e57d.
+    continue-on-error: true
     services:
       postgres:
         image: postgres:17-alpine@sha256:e5d2edd28b1f8d40a0a6c0c9cdc545b19b56a0d5d88f94bc11a97d970d4700d0

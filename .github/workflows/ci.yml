@@ -659,24 +659,36 @@ jobs:
           CHORD_GATE_LOG: "1"
 
   browser-journeys:
-    name: Browser journeys (real Chromium, advisory)
+    name: Browser journeys (real Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    # ADVISORY ONLY, PENDING THE FIRST RUN WITH THE axe SCANS ACTUALLY ON.
+    # BLOCKING: no continue-on-error. A red journey fails this job and the run.
     #
-    # The findings the previous version of this comment cited are all closed:
-    # j3's SEPARATION_FAILED copy landed in #243, the chord provider_failed copy
-    # in #244, and j7's 44 px targets in #245 itself. On b4a3852 the job reports
-    # 82 PASS / 0 FAIL -- 0 of 8 journeys failing, not 4 of 8.
+    # #245 added this job advisory, on the rationale that "4 of 8 journeys fail
+    # on open product findings (j3 SEPARATION_FAILED copy #243, j7 44 px targets,
+    # j8 axe contrast)". That rationale no longer holds, and two parts of it were
+    # not true even when written:
+    #   * #243 (failed-job copy) and #244 (chord provider_failed copy) are merged,
+    #     and j7's 44 px targets were fixed inside #245 itself;
+    #   * "j8 axe contrast" was never a finding this job could produce. JOURNEY_AXE
+    #     was unset, so j8-a11y.mjs reported all four of its axe scans
+    #     `not-reached` -- on every run, green ones included.
+    # On b4a3852 the job was already 82 PASS / 0 FAIL: 0 of 8 failing, not 4 of 8.
     #
-    # The one finding that comment named which was never disproved is j8's axe
-    # contrast -- because j8's four axe scans had never run at all. JOURNEY_AXE
-    # was never set in this job, so j8-a11y.mjs reported every scan `not-reached`,
-    # on green runs included. The step below sets it. Until a run with the scans
-    # genuinely on is on record, continue-on-error stays: promoting a job to
-    # blocking while its newly-enabled checks are of unknown colour would block
-    # every subsequent PR.
-    continue-on-error: true
+    # The axe scans are now on (see the resolve step below). The first run that
+    # actually scanned -- commit 2e2f20b on PR #285 -- is 86 PASS / 0 FAIL /
+    # 0 not-reached, up from 82/0 with 4 not-reached. All four scans (landing,
+    # player, /account, /pricing) report zero critical or serious violations and
+    # zero moderate or minor ones. That is what makes blocking safe; it is also
+    # the claim to re-check if this job starts failing on a11y rather than on a
+    # product change.
+    #
+    # Blocking is NOT the same as required. Adding this context to the v3/main
+    # ruleset (v3-main-protection, id 26478884) is a repository setting, not a
+    # file in this tree, and no PR can make it. Until Jon adds it there, a red run
+    # fails this job and the workflow run but does not hold the merge button. The
+    # exact context string to add is this job's name: "Browser journeys (real
+    # Chromium)" -- note it no longer ends in ", advisory".
     services:
       postgres:
         image: postgres:17-alpine@sha256:e5d2edd28b1f8d40a0a6c0c9cdc545b19b56a0d5d88f94bc11a97d970d4700d0

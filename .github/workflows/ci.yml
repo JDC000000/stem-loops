@@ -687,18 +687,28 @@ jobs:
     # (job 133727904155) was 81 PASS / 1 FAIL / 4 not-reached -- RED. The failure
     # was j8's `Enter on "Choose a file" opens the file chooser`: focus landed on
     # #file-btn and the event never fired. 2e2f20b and 3ca0bff are descendants
-    # whose entire diff is CI files -- zero application change -- and the same
-    # check passes on both. That is a flake, not a finding.
+    # whose whole diff from it is this file, the gate package's package.json and
+    # pnpm-lock.yaml -- nothing under apps/ at all -- and the same check passes on
+    # both. That is a flake, not a finding.
     #
-    # THE FLAKE. Of the reds on record, two are explained: ac3c3a1 (j1 "Cut N
-    # loops" missing -- a real race, fixed by the next commit) and 6966422 (the
-    # real 44 px finding -- the gate working). The rest are the SAME j8 check,
-    # twice, on application code that never changed between them:
-    #   b4a3852  job 133727904155  "Enter on Choose a file" -- no chooser
-    #   f9ad9b5  job 133777063521  the same check, same detail, attempt 1
-    # That is 2 reds in the 9 runs of this job over an unchanged apps/web and
-    # apps/worker. Still a small n -- do not quote it as a rate -- but it is two
-    # independent observations of one failure, not one anomaly. Tracked as #286.
+    # THE FLAKE. Every figure below was re-derived from the Actions API, not
+    # carried forward -- three earlier versions of this comment each shipped a
+    # wrong number here. 14 runs of this job exist; 5 ended red. Three of those
+    # five are explained, and are the gate working:
+    #   1afce88  job 132612457410  j7 44 px targets (pre-fix)
+    #   ac3c3a1  job 133608181185  j1 "Cut N loops" -- a real race, fixed next commit
+    #   6966422  job 133644482368  j7 44 px targets, "Download loops -> 118x40"
+    # The remainder are all ONE check -- j8's `Enter on "Choose a file" opens the
+    # file chooser` -- on 3 occasions across 4 attempts:
+    #   b4a3852  job 133727904155  red (no retry existed yet)
+    #   f9ad9b5  job 133777063521  attempt 1 red, attempt 2 clean -> job green
+    #   db2e57d  job 133784823424  BOTH attempts red -> job red
+    # The window in which apps/web and apps/worker do not change at all starts at
+    # b4a3852 and runs to fc03e86: `git diff --name-only b4a3852 fc03e86` touches
+    # only .github, packages and pnpm-lock.yaml. That is 8 runs (9 counting
+    # a1b0e58 -- same tree, pre-squash). So: 3 occasions in 8 runs, 2 of them in
+    # the last 6. Still a small n -- do NOT quote it as a rate -- but three
+    # sightings of one check is not an anomaly. Tracked as #286.
     #
     # f9ad9b5 is the first live proof that the retry does what it claims: attempt
     # 1 red on that check, attempt 2 clean (8 journeys, 0 failed, written to
@@ -715,14 +725,25 @@ jobs:
     #   * had continue-on-error already been gone, a comment-only change would
     #     have been blocked from merging. That is not a hypothetical -- it is what
     #     this job did to db2e57d.
-    #   * the tally is 3 reds on this one check (b4a3852, f9ad9b5 attempt 1,
-    #     db2e57d both attempts) across 10 runs of an unchanged apps/web and
-    #     apps/worker, and 3 of the last 6 runs. It is not getting rarer.
+    #   * the tally is 3 occasions on this one check (b4a3852, f9ad9b5 attempt 1,
+    #     db2e57d both attempts) across the 8 runs over an unchanged apps/web and
+    #     apps/worker, 2 of them in the last 6. It is not getting rarer.
     # Promoting a gate to blocking while it has a known, unfixed, reproducing
     # failure breaks every subsequent PR, which is the one thing this change was
-    # not allowed to do. So continue-on-error stays until #286 is fixed. The
-    # retry stays too -- it costs ~5 min only on an already-red run, it annotates
-    # rather than hides, and it is what produced the correlation evidence above.
+    # not allowed to do. So continue-on-error stays until #286 is fixed.
+    #
+    # WHAT THE RETRY IS FOR NOW. Its purpose has changed, and this is the honest
+    # statement of it. It was added to MITIGATE the flake; db2e57d showed it does
+    # not -- when the failure is correlated within a runner it clears nothing.
+    # What it does do, and what nothing else here does, is tell you WHETHER A RED
+    # REPRODUCES. One red attempt and one clean one is a flake; two red attempts
+    # is something broken. Without it, b4a3852 and db2e57d read identically, and
+    # the single most useful fact about #286 -- that the failure survives a full
+    # re-run of the suite on the same runner -- could not have been learned. It
+    # is an instrument, not a mitigation. Cost, from the API: a single-attempt
+    # job is 8m07s (job 133768171344) to 8m42s (133792904141), and the two
+    # retried runs took 12m15s (133777063521) and 13m11s (133784823424) -- so
+    # ~3.5-4.5 min, only ever on an already-red run, inside a 25-minute cap.
     #
     # EVERYTHING ELSE IN THIS PR STANDS AND IS THE POINT OF IT: j8's four axe
     # scans actually run, they cannot silently skip, they gate on WCAG, the
@@ -750,9 +771,13 @@ jobs:
     # WHAT PROMOTION WOULD ACTUALLY CHANGE, when it eventually happens. Less than
     # it looks like. continue-on-error suppresses only the WORKFLOW RUN's
     # conclusion: the check-run is already `failure` on a red journey (b4a3852
-    # and db2e57d are the proof), so auto-merge.yml's M-1 sweep over every
-    # check-run on the head SHA ALREADY refuses to auto-merge on one, today,
-    # advisory and all. Removing continue-on-error would add a red RUN
+    # and 6966422 are the proof -- both ran WITH continue-on-error set and both
+    # recorded conclusion `failure`. db2e57d does NOT prove it: that run had
+    # continue-on-error removed, so it says nothing about suppression), so
+    # auto-merge.yml's M-1 sweep over every check-run on the head SHA ALREADY
+    # refuses to auto-merge on one, today, advisory and all -- which is a point
+    # in favour of the name: a check that looks like it matters is more accurate
+    # than one labelled advisory. Removing continue-on-error would add a red RUN
     # conclusion, which also stops auto-merge.yml's post-CI `workflow_run` path
     # from starting. Adding the context to the v3/main ruleset (v3-main-
     # protection, id 26478884) is a repository setting no PR can make, and what
@@ -873,11 +898,15 @@ jobs:
           path: packages/web-browser-gate/.evidence/
           # WITHOUT THIS, THE ARTIFACT DOES NOT EXIST. upload-artifact@v4 excludes
           # dot-prefixed paths unless told otherwise, and this path is `.evidence/`.
-          # Every run of this job from #245 up to 61aa309 logged
+          # Every run of this job up to and including 61aa309 logged
           #   ##[warning]No files were found with the provided path: ... .evidence/
           # and uploaded nothing -- confirmed by GET /actions/runs/{id}/artifacts
-          # returning total_count: 0 for all seven of them. The step reported
-          # success throughout, which is the same defect class this job is for.
+          # returning total_count: 0 for ALL ELEVEN of them (jobs 132612457410,
+          # 133608181185, 133616261619, 133622072123, 133644482368, 133654496177,
+          # 133727904155, 133732244277, 133739422301, 133755569798, 133768171344;
+          # re-counted from the API, an earlier draft of this comment said seven).
+          # The step reported success throughout, which is the same defect class
+          # this job is for.
           # Consequence worth knowing: on b4a3852, the one red run this project
           # has, the screenshots and result.json that would have diagnosed the
           # file-chooser race (#286) were discarded.

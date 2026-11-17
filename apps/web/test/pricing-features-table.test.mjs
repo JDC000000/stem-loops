@@ -76,7 +76,7 @@ const pageSrc = readFileSync(PAGE, 'utf8');
 const copyJs = ts.transpileModule(readFileSync(COPY, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const { features, quotaLine } = await import(
+const { features, quotaLine, benefitLine } = await import(
   'data:text/javascript;base64,' + Buffer.from(copyJs).toString('base64')
 );
 
@@ -435,4 +435,20 @@ test('the page header makes no claim the tiers contradict', () => {
   for (const re of [/\bunlimited\b/i, /\bfree forever\b/i, /\bhigher-quality exports?\b/i]) {
     assert.doesNotMatch(header, re, `page header matches ${re}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// (4) P6: the one-line benefit each card leads with, against the data.
+// ---------------------------------------------------------------------------
+test('benefitLine: pinned against the effective catalog (034 + 037 + 039)', () => {
+  assert.equal(benefitLine(PLANS.free), '5 songs a month');
+  assert.equal(benefitLine(PLANS.pro), '50 songs a month');
+  assert.equal(benefitLine(PLANS.studio), '150 songs a month');
+});
+
+test('benefitLine: the number follows monthly_job_quota, and it makes no retention claim', () => {
+  assert.equal(benefitLine({ ...PLANS.pro, monthly_job_quota: 77 }), '77 songs a month');
+  assert.equal(benefitLine({ ...PLANS.free, monthly_job_quota: 1 }), '1 song a month');
+  // Retention is RETENTION_BULLET's job, in its exact words; the benefit line never paraphrases it.
+  for (const code of ['free', 'pro', 'studio']) assert.doesNotMatch(benefitLine(PLANS[code]), /kept|deleted|library|hours|days/i, code);
 });

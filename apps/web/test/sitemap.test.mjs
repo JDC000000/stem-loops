@@ -5,7 +5,9 @@ import sitemap from '../src/app/sitemap.ts';
 import robots from '../src/app/robots.ts';
 import { PUBLIC_PAGES } from '../src/lib/seo/pages.ts';
 
-const EXCLUDED = ['/login', '/history', '/account', '/trial', '/success', '/pricing', '/jobs/', '/api/'];
+// /pricing is public and indexable since P6 (2026-11-17); it is asserted IN the sitemap by
+// test/pricing-indexable.test.mjs.
+const EXCLUDED = ['/login', '/history', '/account', '/trial', '/success', '/jobs/', '/api/'];
 
 test('sitemap: absolute, unique, published only, no app routes', () => {
   const urls = sitemap().map((e) => e.url);

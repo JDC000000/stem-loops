@@ -1,0 +1,155 @@
+/* /pricing (app/pricing/page.tsx), design P6.
+ *
+ * Mobile-first: the plan cards stack on a phone and sit three across from
+ * 900px. Built on design-tokens.css (loaded by globals.css for every route), so
+ * this file defines no colour of its own. Every class is `pr-` prefixed;
+ * nothing elsewhere matches one. Loaded from globals.css rather than imported
+ * by the page, so the page module stays importable by the node tests.
+ *
+ * Sizes: no text below 13px; every link and button at least 44px tall (--touch-min).
+ */
+
+.pr-wrap {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 24px var(--sl-gutter, 16px) 64px;
+  box-sizing: border-box;
+  min-height: 100dvh;
+  font-family: var(--font-sans);
+}
+
+.pr-h1 {
+  margin: 0;
+  font-size: 28px;
+  color: var(--text-primary);
+}
+
+.pr-h2 {
+  margin: 40px 0 0;
+  font-size: 22px;
+  color: var(--text-primary);
+}
+
+.pr-lede {
+  margin: 6px 0 0;
+  max-width: 60ch;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.pr-note {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* Phone first: one column. */
+.pr-plans {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.pr-packs {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.pr-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  background: var(--bg-card);
+}
+
+/* Pro: the highlighted plan. Brand rule A5 keeps lime to the focus ring and
+   the one primary fill, so the highlight is a white 2px edge on the selected
+   surface. Pro's button is the view's one lime action. */
+.pr-featured {
+  border: 2px solid var(--text-primary);
+  padding: 19px;
+  background: var(--bg-selected);
+}
+
+.pr-name {
+  margin: 0;
+  font-size: 20px;
+  color: var(--text-primary);
+}
+
+.pr-benefit {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.pr-price {
+  font-size: 30px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.pr-per {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.pr-features {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.pr-pack-credits {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.pr-pack-price {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+/* The CTA links. The lime fill is .jp-primary's (stem-color.css), the shared
+   primary action; here they only stretch to the card and keep 44px. */
+a.pr-cta {
+  min-height: var(--touch-min);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+a.pr-cta-quiet {
+  border: 1px solid var(--border-control);
+  color: var(--text-primary);
+}
+
+/* Packs go three across as soon as three fit; they are short. */
+@media (min-width: 600px) {
+  .pr-packs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* Desktop: the three plans side by side. */
+@media (min-width: 900px) {
+  .pr-plans { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; }
+}

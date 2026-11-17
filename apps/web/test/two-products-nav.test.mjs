@@ -59,7 +59,8 @@ for (const [route, file, current] of MARKETING) {
     const header = headerOf(html);
     assert.ok(header, `${route} has no .sin-bar header`);
     assert.ok(!/class="site-header"/.test(html), `${route} still renders the old marketing-only bar`);
-    assert.deepEqual(navItems(html), ['Play along', 'Download loops', 'Job history', 'Sign in']);
+    assert.deepEqual(navItems(html), ['Play along', 'Download loops', 'Job history', 'Pricing', 'Sign in']);
+    assert.equal(links(header).find((l) => l.text === 'Pricing')?.href, '/pricing');
     const dl = links(header).find((l) => l.text === 'Download loops');
     assert.equal(dl.href, '/loops');
     assert.equal(links(header).find((l) => l.text === 'Play along').href, '/');
@@ -73,14 +74,18 @@ for (const [route, file, current] of MARKETING) {
   });
 }
 
-// S4 (IA review of #280): Pricing had no place in the IA. It is linked from the /loops intro's
-// footer (asserted in section 4). It is deliberately NOT added to the shared marketing footer or
-// the top nav: both render on the landing, where Jon's F31 (2026-11-13) allows exactly one
-// /pricing link (the scope sheet's) and landing-copy.test.mjs bans plan/pricing words in the
-// landing's components. The signed-in pages reach /pricing from Account, as before.
-test('S4: the landing still carries exactly one /pricing link (F31)', async () => {
+// S4 (IA review of #280), revised by P6 (Jon, 2026-11-17). Pricing was kept out of the top nav
+// because F31 (2026-11-13) allowed the landing exactly one /pricing link. P6 puts "Pricing" in
+// the top nav on every page, so the landing now carries exactly TWO: the nav item (in the
+// .sin-bar header, labelled "Pricing") and the scope sheet's link in the page body. It is still
+// NOT in the shared marketing footer, which lists the two products only.
+test('S4/P6: the landing carries exactly two /pricing links — the nav item and the scope sheet', async () => {
   const { html } = await landingPage();
-  assert.equal((html.match(/href="\/pricing/g) ?? []).length, 1);
+  assert.equal((html.match(/href="\/pricing/g) ?? []).length, 2);
+  const header = html.match(/<header\b[^>]*class="sin-bar"[\s\S]*?<\/header>/)?.[0] ?? '';
+  assert.deepEqual(links(header).filter((l) => l.href === '/pricing').map((l) => l.text), ['Pricing']);
+  const body = html.replace(header, '');
+  assert.equal((body.match(/href="\/pricing/g) ?? []).length, 1, 'outside the nav, only the scope sheet links /pricing');
 });
 
 test('the marketing footer lists the two products as peers', async () => {

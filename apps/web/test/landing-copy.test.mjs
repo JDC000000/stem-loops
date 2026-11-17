@@ -314,19 +314,41 @@ test('the landing never claims an account is required to START — nothing enfor
 });
 
 test('the landing shows no price, plan or paywall — there is no payment at launch', () => {
-  // F31 (Jon, 2026-11-13): one link to /pricing is allowed (see the next test), so the word
-  // "pricing" is banned everywhere except inside that href. Prices and plan names stay banned.
-  const banned = [/\$\d/, /\bper month\b/i, /\/mo\b/, /\bfree forever\b/i, /\bupgrade\b/i, /(?<!href="\/)\bpricing\b/i, /\bpaid plan/i, /\bcredits\b/i,
+  // F31 (Jon, 2026-11-13): one link to /pricing is allowed in the landing's own copy (see the next
+  // test), so the word "pricing" is banned everywhere except inside that href. Prices and plan
+  // names stay banned.
+  //
+  // P6 (Jon, 2026-11-17): the shared top nav now carries a "Pricing" item on every page, the
+  // landing included. That label is the ONE rendered occurrence of the word allowed, and only
+  // inside the .sin-bar header; the landing's own source (RAW_PAGE_AND_COMPONENTS, which does
+  // not include components/chrome) still may not say it, and the metadata still may not.
+  const PRICING_WORD = /(?<!href="\/)\bpricing\b/i;
+  const banned = [/\$\d/, /\bper month\b/i, /\/mo\b/, /\bfree forever\b/i, /\bupgrade\b/i, PRICING_WORD, /\bpaid plan/i, /\bcredits\b/i,
     /\bPro\b/, /\bStudio\b/, /\bFree plan\b/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
-  for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
+  for (const [where, text] of READ_AS) {
+    for (const re of banned) {
+      if (re === PRICING_WORD) continue;
+      assert.doesNotMatch(text, re, `${where} says ${re}`);
+    }
+    // No \b: the markup-removed reading joins the nav labels ("Job historyPricingSign in").
+    const n = (text.match(/pricing/gi) ?? []).length;
+    assert.equal(n, where.startsWith('the page metadata') ? 0 : 1, `${where}: "pricing" ${n} times; only the nav item may say it`);
+  }
+  const header = RENDER.html.match(/<header\b[^>]*class="sin-bar"[\s\S]*?<\/header>/)?.[0] ?? '';
+  assert.match(header, /<a\b[^>]*href="\/pricing"[^>]*>Pricing<\/a>/, 'the one allowed "Pricing" is the nav item');
+  const body = RENDER.html.replace(header, '');
+  assert.doesNotMatch(body.replace(/<[^>]*>/g, ' '), /\bpricing\b/i, 'outside the nav, the landing does not say "pricing"');
 });
 
-test('the landing links to /pricing exactly once (F31, Jon 2026-11-13)', () => {
+test('the landing links to /pricing exactly once in its own copy, plus the top-nav item (F31 + P6)', () => {
   let inSource = 0;
   for (const [, src] of RAW_PAGE_AND_COMPONENTS) inSource += (src.match(/href="\/pricing/g) ?? []).length;
   assert.equal(inSource, 1, 'the landing source must carry exactly one /pricing link');
-  assert.equal((RENDER.html.match(/href="\/pricing/g) ?? []).length, 1, 'the rendered page must carry exactly one /pricing link');
+  // P6 (Jon, 2026-11-17): the shared top nav adds one more on every page.
+  assert.equal((RENDER.html.match(/href="\/pricing/g) ?? []).length, 2, 'the rendered page: the scope sheet link and the nav item');
+  const header = RENDER.html.match(/<header\b[^>]*class="sin-bar"[\s\S]*?<\/header>/)?.[0] ?? '';
+  assert.equal((header.match(/href="\/pricing/g) ?? []).length, 1, 'exactly one of them is in the nav');
 });
 
 test('the landing states the device scope truthfully: tested on desktop Chrome, phones new with lighter audio (Story 8)', () => {

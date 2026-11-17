@@ -1,13 +1,15 @@
-import type { Metadata } from 'next';
 import { db } from '@/lib/db';
 import { getUser } from '@/lib/auth/supabase';
 import BillingButton, { CreditPackCheckout, PackBuyButton } from '@/components/BillingButton';
 // The feature bullets live in their own module: a Next.js App Router page may
 // only export a fixed set of fields, so exporting features()/quotaLine() from
 // here passed `tsc --noEmit` but failed `next build`.
-import { features } from '@/lib/pricing-copy';
+import { benefitLine, features } from '@/lib/pricing-copy';
 
-export const metadata: Metadata = { title: 'Pricing', robots: { index: false, follow: false } };
+// P6 (Jon, 2026-11-17): /pricing is a public, indexable page. Its metadata comes
+// from the page registry (lib/seo/pages.ts) and is declared in ./layout.tsx, as
+// /loops does: this page stays free of the SEO modules so the pricing tests can
+// keep loading it in isolation.
 export const dynamic = 'force-dynamic';
 
 type Plan = {
@@ -102,17 +104,10 @@ async function loadCreditPacks(): Promise<{ packs: CreditPack[]; degraded: boole
   return { packs: CREDIT_PACKS_FALLBACK, degraded: true };
 }
 
-// Plans are priced in CAD cents per TSD §1.2. Append " CAD" so the UI never
-// reads as implied USD — audit MAJOR finding (sandbox is BC CAD catalog).
-// $0 renders without a currency tag (free is currency-neutral in copy).
-const price = (c: number) => {
-  if (c === 0) return '$0';
-  return `$${(c / 100).toFixed(c % 100 ? 2 : 0)} CAD`;
-};
-const card = {
-  border: '1px solid var(--border-default, #333)', borderRadius: 12, padding: 20,
-  background: 'var(--bg-card, #151515)', display: 'flex', flexDirection: 'column' as const, gap: 12,
-};
+// Plans are priced in CAD cents per TSD §1.2, so every price, Free's $0
+// included, carries " CAD" (design P6 / copy rules: prices always with
+// currency). One formatter for plans and packs.
+const price = priceCad;
 
 export default async function PricingPage() {
   const [{ plans, degraded: plansDegraded }, { packs, degraded: packsDegraded }, user] = await Promise.all([
@@ -136,63 +131,68 @@ export default async function PricingPage() {
   // still works for anyone who reaches it.
 
   return (
-    <main style={{ minHeight: '100dvh', padding: '24px 16px', maxWidth: 960, margin: '0 auto', boxSizing: 'border-box' }}>
-      <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Pricing</h1>
-      <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>
-        Every plan opens your tracks in the player and lets you download loops as 24-bit WAV. Plans differ in
-        how many tracks you can add each month, and in how long your songs are kept.
-      </p>
+    <main className="pr-wrap">
+      <h1 className="pr-h1">Pricing</h1>
+      <p className="pr-lede">Every plan includes the player and loop downloads. Plans differ in songs per month and how long they are kept.</p>
       {degraded && (
-        <p role="status" style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+        <p role="status" className="pr-note">
           Showing standard pricing; live plan data is temporarily unavailable.
         </p>
       )}
 
-      <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', marginTop: 16 }}>
-        {plans.map((p) => (
-          <section key={p.code} style={card} aria-label={p.display_name}>
-            <h2 style={{ margin: 0, fontSize: 20, color: 'var(--text-primary)' }}>{p.display_name}</h2>
-            <div style={{ fontSize: 30, fontWeight: 700, color: 'var(--text-primary)' }}>
-              {price(p.price_cad_cents)}
-              {p.price_cad_cents > 0 && <span style={{ fontSize: 14, fontWeight: 400, color: 'var(--text-muted)' }}> /mo</span>}
-            </div>
-            <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--text-secondary)', fontSize: 14, display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
-              {features(p).map((f) => <li key={f}>{f}</li>)}
-            </ul>
-            {p.code === 'free' ? (
-              <a href="/" style={{ minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: '1px solid var(--border-default, #444)', textDecoration: 'none', color: 'var(--text-primary)' }}>
-                Start free
-              </a>
-            ) : user ? (
-              <BillingButton
-                label={`Get ${p.display_name}`}
-                endpoint="/api/billing/checkout"
-                body={{ plan_code: p.code }}
-                returnTo="/pricing"
-              />
-            ) : (
-              <a href="/login?return_to=/pricing" style={{ minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: 'var(--btn-primary-bg, var(--accent))', color: 'var(--btn-primary-text, #000)', textDecoration: 'none', fontWeight: 600 }}>
-                Get {p.display_name}
-              </a>
-            )}
-          </section>
-        ))}
+      <div className="pr-plans">
+        {plans.map((p) => {
+          // Pro carries the highlight (design P6): a white edge on the selected
+          // surface, and the page's one lime action. No badge or "recommended" /
+          // "most popular" text: there is no data behind either claim.
+          const featured = p.code === 'pro';
+          return (
+            <section key={p.code} className={`pr-card${featured ? ' pr-featured' : ''}`} aria-label={p.display_name}>
+              <h2 className="pr-name">{p.display_name}</h2>
+              <p className="pr-benefit">{benefitLine(p)}</p>
+              <div className="pr-price">
+                {price(p.price_cad_cents)}
+                {p.price_cad_cents > 0 && <span className="pr-per"> /mo</span>}
+              </div>
+              <ul className="pr-features">
+                {features(p).map((f) => <li key={f}>{f}</li>)}
+              </ul>
+              {p.code === 'free' ? (
+                <a href="/" className="pr-cta pr-cta-quiet">
+                  Start free
+                </a>
+              ) : user ? (
+                <BillingButton
+                  label={`Get ${p.display_name}`}
+                  endpoint="/api/billing/checkout"
+                  body={{ plan_code: p.code }}
+                  returnTo="/pricing"
+                  primary={featured}
+                />
+              ) : (
+                <a href="/login?return_to=/pricing" className={featured ? 'pr-cta jp-primary' : 'pr-cta pr-cta-quiet'}>
+                  Get {p.display_name}
+                </a>
+              )}
+            </section>
+          );
+        })}
       </div>
 
-      <h2 style={{ fontSize: 22, marginTop: 32, color: 'var(--text-primary)' }}>Credits</h2>
-      <p style={{ color: 'var(--text-muted)', marginTop: 4 }}>One-time packs. On the Free plan, each credit covers one uploaded track. Credits never expire.</p>
+      <h2 className="pr-h2">Credits</h2>
+      <p className="pr-lede">One credit is one uploaded track on the Free plan. Credits never expire.</p>
       <CreditPackCheckout returnTo="/pricing">
-      <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(min(200px, 100%), 1fr))' }}>
+      <div className="pr-packs">
         {packs.map((c) => (
-          <section key={c.pack_code} style={card} aria-label={`${c.credits} credits for ${priceCad(c.price_cad_cents)}`}>
-            <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--text-primary)' }}>{c.credits} credits</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>
+          <section key={c.pack_code} className="pr-card" aria-label={`${c.credits} credits for ${priceCad(c.price_cad_cents)}`}>
+            <div className="pr-pack-credits">{c.credits} credits</div>
+            <div className="pr-pack-price">
               {priceCad(c.price_cad_cents)}
             </div>
             {user ? (
               <PackBuyButton packCode={c.pack_code} label="Buy credits" />
             ) : (
-              <a href="/login?return_to=/pricing" style={{ minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, background: 'var(--btn-primary-bg, var(--accent))', color: 'var(--btn-primary-text, #000)', textDecoration: 'none', fontWeight: 600 }}>
+              <a href="/login?return_to=/pricing" className="pr-cta pr-cta-quiet">
                 Buy credits
               </a>
             )}

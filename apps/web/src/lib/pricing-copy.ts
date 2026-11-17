@@ -65,6 +65,15 @@ export function quotaLine(p: PlanCopyInput): string {
   return `${n} ${n === 1 ? 'track' : 'tracks'} converted to play-along per ${QUOTA_PERIOD}`;
 }
 
+/** The one-line benefit each /pricing card leads with (design P6): the quota,
+ *  read off monthly_job_quota. Deliberately the quota ONLY: retention is stated
+ *  once per card, in RETENTION_BULLET's exact wording, among the bullets, so
+ *  there is no second, paraphrased retention promise to drift from it. */
+export function benefitLine(p: PlanCopyInput): string {
+  const n = p.monthly_job_quota;
+  return `${n} ${n === 1 ? 'song' : 'songs'} a ${QUOTA_PERIOD}`;
+}
+
 /** The feature bullets for one plan.
  *
  *  Every bullet must be something the app can deliver for THAT plan today:

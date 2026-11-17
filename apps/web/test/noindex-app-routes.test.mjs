@@ -21,7 +21,9 @@ for (const f of ['app/login/layout.tsx', 'app/history/layout.tsx', 'app/account/
   });
 }
 
-for (const f of ['app/account/page.tsx', 'app/success/page.tsx', 'app/pricing/page.tsx', 'app/jobs/[id]/page.tsx']) {
+// /pricing left this list in P6 (Jon, 2026-11-17): it is a public page now. Its
+// indexability is gated in test/pricing-indexable.test.mjs.
+for (const f of ['app/account/page.tsx', 'app/success/page.tsx', 'app/jobs/[id]/page.tsx']) {
   test(`${f}: still declares noindex`, () => {
     assert.match(readFileSync(join(SRC, f), 'utf8'), /robots:\s*\{\s*index:\s*false/);
   });

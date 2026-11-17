@@ -247,3 +247,99 @@ test('BillingButton source: hCaptcha is instantiated once, outside any per-card 
   assert.match(src, /export function CreditPackCheckout/);
   assert.match(src, /export function PackBuyButton/);
 });
+
+// ---------------------------------------------------------------------------
+// P6 (Jon, 2026-11-17): the plan cards, read off the rendered tree.
+// ---------------------------------------------------------------------------
+const PLANS_034 = [
+  { code: 'free', display_name: 'Free', price_cad_cents: 0, monthly_job_quota: 5, services: ['youtube'], export_stems: false, export_wav24: false },
+  { code: 'pro', display_name: 'Pro', price_cad_cents: 499, monthly_job_quota: 50, services: ['youtube'], export_stems: false, export_wav24: false },
+  { code: 'studio', display_name: 'Studio', price_cad_cents: 1200, monthly_job_quota: 150, services: ['youtube'], export_stems: true, export_wav24: false },
+];
+
+function planSections(tree) {
+  const out = {};
+  for (const el of walk(tree)) {
+    if (el && el.type === 'section' && ['Free', 'Pro', 'Studio'].includes(el.props['aria-label'])) out[el.props['aria-label']] = el;
+  }
+  return out;
+}
+
+for (const user of [null, USER]) {
+  test(`P6 cards (${user ? 'signed in' : 'signed out'}): every price shows CAD, Free included; each card leads with its benefit`, async () => {
+    const mod = await loadPricing({ user, plans: PLANS_034, packs: PACKS_OK });
+    const s = planSections(await mod.default());
+    assert.deepEqual(Object.keys(s), ['Free', 'Pro', 'Studio']);
+    assert.match(textOf(s.Free), /\$0 CAD/);
+    assert.match(textOf(s.Pro), /\$4\.99 CAD/);
+    assert.match(textOf(s.Studio), /\$12 CAD/);
+    // No bare "$0" (the old formatter printed Free without a currency).
+    const all = textOf(await mod.default());
+    const prices = [...all.matchAll(/\$[\d.]+(.{0,4})/g)];
+    assert.ok(prices.length >= 6, `expected 3 plan + 3 pack prices, found ${prices.length}`);
+    for (const m of prices) assert.ok(m[1].startsWith(' CAD'), `price without currency: ${m[0]}`);
+    // The benefit line comes before the price and the bullets (it LEADS the card).
+    // Retention is said once, in RETENTION_BULLET's exact words, never paraphrased.
+    assert.ok(textOf(s.Free).includes('Songs deleted after 24 hours'));
+    for (const n of ['Pro', 'Studio']) assert.ok(textOf(s[n]).includes('Song library: kept while you subscribe, plus 30 days'), n);
+    assert.doesNotMatch(all, /library is kept/i);
+    for (const [name, line] of [['Free', '5 songs a month'], ['Pro', '50 songs a month'], ['Studio', '150 songs a month']]) {
+      const t = textOf(s[name]);
+      assert.ok(t.includes(line), `${name}: ${t}`);
+      assert.ok(t.indexOf(line) < t.indexOf('$'), `${name}: the benefit line must come before the price`);
+    }
+  });
+}
+
+test('P6: Pro is the one highlighted card, with no badge or ranking claim', async () => {
+  const mod = await loadPricing({ user: null, plans: PLANS_034, packs: PACKS_OK });
+  const tree = await mod.default();
+  const s = planSections(tree);
+  assert.match(s.Pro.props.className, /\bpr-featured\b/);
+  assert.doesNotMatch(s.Free.props.className, /\bpr-featured\b/);
+  assert.doesNotMatch(s.Studio.props.className, /\bpr-featured\b/);
+  // "Recommended" and "most popular" are both unbacked claims (no data): neither is shown.
+  assert.doesNotMatch(textOf(tree), /recommended|most popular|best value|popular/i);
+});
+
+// Brand rule A5: lime fills the view's ONE primary action. Signed out, that is Pro's link; the
+// rest are outlined. Signed in, the plan buttons follow (BillingButton's own `primary` prop),
+// but PackBuyButton is always primary inside BillingButton.tsx, which P6 may not edit — so the
+// signed-in pack buttons stay lime. That residue is named in the PR, and pinned here so a
+// change to it is seen.
+test('P6 (A5): signed out, exactly one lime action on the page — Get Pro', async () => {
+  const mod = await loadPricing({ user: null, plans: PLANS_034, packs: PACKS_OK });
+  const tree = await mod.default();
+  const primaries = [...walk(tree)].filter((el) => el && el.type === 'a' && /\bjp-primary\b/.test(el.props.className ?? ''));
+  assert.deepEqual(primaries.map(textOf), ['Get Pro']);
+  for (const el of walk(tree)) if (el && el.type === 'a') assert.match(el.props.className ?? '', /\bpr-cta\b/, `${textOf(el)} is not a 44px pr-cta`);
+});
+
+test('P6 (A5): signed in, only Pro\'s plan button is primary', async () => {
+  const mod = await loadPricing({ user: USER, plans: PLANS_034, packs: PACKS_OK });
+  const tree = await mod.default();
+  const plan = [...walk(tree)].filter((el) => el && typeof el.type === 'function' && el.props?.body?.plan_code);
+  assert.deepEqual(plan.map((el) => [el.props.body.plan_code, el.props.primary]), [['pro', true], ['studio', false]]);
+});
+
+test('P6: nothing the catalog cannot back — no annual price, no tempo/pitch, no implementation names', async () => {
+  const mod = await loadPricing({ user: null, plans: PLANS_034, packs: PACKS_OK });
+  const t = textOf(await mod.default());
+  // public.plans has no annual price column (migrations through 039), so none is shown.
+  assert.doesNotMatch(t, /annual|yearly|\/yr\b|per year|a year/i);
+  // Tempo and pitch are not built; they may only appear under "Coming soon", and this page has none.
+  assert.doesNotMatch(t, /tempo|pitch|slow (?:a song )?down/i);
+  assert.doesNotMatch(t, /demucs|replicate|\bmono\b|24 ?kHz|stripe/i);
+});
+
+test('P6: the intro and the credits line are at most two sentences each', async () => {
+  const mod = await loadPricing({ user: null, plans: PLANS_034, packs: PACKS_OK });
+  const tree = await mod.default();
+  const ledes = [...walk(tree)].filter((el) => el && el.type === 'p' && el.props.className === 'pr-lede').map(textOf);
+  assert.equal(ledes.length, 2);
+  for (const l of ledes) {
+    const sentences = l.split(/(?<=\.)\s+/).filter(Boolean);
+    assert.ok(sentences.length <= 2, `${sentences.length} sentences: ${l}`);
+    assert.ok(l.length <= 120, `${l.length} characters: ${l}`);
+  }
+});

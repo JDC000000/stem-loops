@@ -136,6 +136,7 @@ test('the bar carries every item it claims to', async () => {
   assert.equal(by('Download loops')?.href, '/loops');
   assert.equal(by('Job history')?.href, '/history');
   assert.equal(by('Account')?.href, '/account');
+  assert.equal(by('Pricing')?.href, '/pricing');
   // Exactly these, in this order (Story 7.2; the design canvas order). An item
   // added without a gate turns this red rather than sliding in.
   // Link TEXT, in document order — the wordmark reads "stem-loops"; its
@@ -145,6 +146,8 @@ test('the bar carries every item it claims to', async () => {
     'Play along',
     'Download loops',
     'Job history',
+    // P6 (Jon, 2026-11-17): Pricing in the top nav, signed in and out.
+    'Pricing',
     'Account',
   ]);
 });
@@ -194,6 +197,7 @@ test('exactly one item is aria-current="page", and it is the right one', async (
     ['/history', 'Job history'],
     [`/jobs/${JOB_A}`, 'Play along'],
     ['/loops', 'Download loops'],
+    ['/pricing', 'Pricing'],
   ]) {
     const html = await chrome({ user: { user_id: 'u', email: 'a@b.c' }, path });
     const marked = [...html.matchAll(/<a\b[^>]*aria-current="page"[^>]*>([\s\S]*?)<\/a>/g)].map(
@@ -479,7 +483,7 @@ test('every nav item is reachable once the menu is open', async () => {
     await dom.act(() => toggle.click());
 
     const items = dom.findAll('#sin-menu.sin-open a.sin-item').map((a) => a.textContent.trim());
-    assert.deepEqual(items, ['Play along', 'Download loops', 'Job history', 'Sign in']);
+    assert.deepEqual(items, ['Play along', 'Download loops', 'Job history', 'Pricing', 'Sign in']);
   });
 });
 

@@ -29,6 +29,7 @@ import psycopg
 import sentry_sdk
 
 from . import tmpdirs
+from .artifact_audit import start_artifact_audit
 from .cleanup import sweep_expired
 from .errors import InternalError, StemLoopsError
 from .job_failure import JobNoLongerActive, fail_job
@@ -37,6 +38,7 @@ from .loop_cutter import claim_and_cut, reap_stale_requests
 from .pipeline import run_pipeline
 from .reaper import reap_stale_jobs
 from .spend_gate import brake_state
+from .storage.r2_lifecycle_guard import start_r2_lifecycle_check
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 POLL_INTERVAL = 2  # seconds
@@ -45,6 +47,11 @@ REAP_INTERVAL = int(os.environ.get("REAPER_INTERVAL_SECONDS", "60"))
 # How often to run the retention sweep (T33) — delete content past its 24h TTL. 15 min keeps
 # the worst-case overshoot (plus any in-flight job it waits behind) well under an hour.
 CLEANUP_INTERVAL = int(os.environ.get("RETENTION_SWEEP_SECONDS", "900"))
+# How often to run the storage checks (QA-57/QA-59): re-read the R2 bucket's lifecycle
+# rules (an expiration rule deletes paid libraries behind the sweep's back) and sample
+# retained songs for missing files (artifact_audit.py). A missing object raises no error
+# anywhere else. Startup + once a day, each on a daemon thread, never blocking the loop.
+LIFECYCLE_CHECK_INTERVAL = 86400
 # Per-job wall-clock budget (QA C-06). The pipeline runs INLINE in this loop, so the reaper and
 # the retention sweep only run between jobs: one hung stage used to block the queue and the
 # reaper that would have recovered it until Fly restarted the process. Heartbeated stages
@@ -190,6 +197,22 @@ async def _safe_sweep() -> None:
         log_structured("ERROR", "retention_sweep_error", error=str(e)[:200])
 
 
+def _safe_lifecycle_check() -> None:
+    """Start the daily storage checks in the background; never raises, never blocks.
+
+    Two independent daemon threads, separately guarded: the R2 lifecycle guard and the
+    retained-song artifact audit.
+    """
+    try:
+        start_r2_lifecycle_check()
+    except Exception as e:  # noqa: BLE001
+        log_structured("WARN", "r2_lifecycle_check_failed", error=str(e)[:200])
+    try:
+        start_artifact_audit()
+    except Exception as e:  # noqa: BLE001
+        log_structured("WARN", "artifact_audit_failed", stage="start", error=str(e)[:200])
+
+
 async def poll_loop() -> None:
     """Continuously claim and run jobs; idle-sleep when the queue is empty.
 
@@ -202,10 +225,12 @@ async def poll_loop() -> None:
         await asyncio.to_thread(tmpdirs.sweep_stale)
     except Exception as e:  # noqa: BLE001
         log_structured("ERROR", "tmp_sweep_error", error=str(e)[:200])
+    _safe_lifecycle_check()
     await _safe_reap()
     await _safe_sweep()
     last_reap = time.monotonic()
     last_cleanup = time.monotonic()
+    last_lifecycle_check = time.monotonic()
     while True:
         try:
             claimed = await claim_and_run()
@@ -228,5 +253,8 @@ async def poll_loop() -> None:
         if time.monotonic() - last_cleanup >= CLEANUP_INTERVAL:
             await _safe_sweep()
             last_cleanup = time.monotonic()
+        if time.monotonic() - last_lifecycle_check >= LIFECYCLE_CHECK_INTERVAL:
+            _safe_lifecycle_check()
+            last_lifecycle_check = time.monotonic()
         if not claimed:
             await asyncio.sleep(POLL_INTERVAL)

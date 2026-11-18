@@ -60,6 +60,8 @@ def r2(monkeypatch):
     monkeypatch.setattr(cleanup, "delete_prefix", fake.delete_prefix)
     monkeypatch.setattr(cleanup, "list_objects_older_than", fake.list_older)
     monkeypatch.setattr(cleanup, "delete_objects", fake.delete_objects)
+    # The orphan pass refuses to run unless the bucket + database are bound (QA-57/59).
+    monkeypatch.setenv(cleanup.ORPHAN_SWEEP_BINDING_ENV, cleanup.orphan_sweep_binding())
     return fake
 
 

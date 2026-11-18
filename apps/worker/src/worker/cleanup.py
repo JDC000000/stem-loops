@@ -35,13 +35,17 @@ an expiration by default; this sweep is the retention mechanism. See that script
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import os
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import psycopg
+import sentry_sdk
 from psycopg import errors as pg_errors
+from psycopg.conninfo import conninfo_to_dict
 
 from . import tmpdirs
 from .logger import log_structured
@@ -144,6 +148,133 @@ RETAINED_UNTIL_SQL = (
 # LIMIT, eventually starve every newer job). A purged_at column would be cleaner; this avoids a
 # schema change.
 PURGED_MARKER = "purged"
+
+# ---------------------------------------------------------------------------------------
+# Orphan-sweep safety (QA-57 / QA-59, 2026-11-18).
+#
+# THE INCIDENT. Every job older than ~24 h lost its WHOLE R2 footprint (`<id>/` and
+# `jobs/<id>/`), including demo songs and paid libraries the DB retains until 2027, while
+# the bucket had no lifecycle rule. The orphan pass below deletes every aged object whose
+# job id the database does not list as live. Pointed at the RIGHT bucket and the WRONG
+# database (an old staging stack holding the production R2 keys, a restored or empty DB),
+# that is "delete everything older than a day", and nothing in the code could tell.
+#
+# TWO BRAKES, both in this file so they bind every caller of `_sweep_orphaned_objects`:
+#
+#   1. BINDING (refuse to run at all). The pass runs only when ORPHAN_SWEEP_BINDING equals
+#      `orphan_sweep_binding()`: a short sha256 of the bucket name and the database
+#      identity this process actually connects to (user, host, port, dbname of
+#      DATABASE_URL; never the password). Unset -> the pass is skipped with a WARN that
+#      prints the value to set. Set but different -> skipped with an ERROR + Sentry event:
+#      that is the signature of a deployment whose bucket and database do not belong
+#      together (a stack that copied the env and swapped DATABASE_URL), or of a changed
+#      DATABASE_URL the operator must re-bind on purpose.
+#      Why an env value and not a table row: no migration, nothing to seed in CI, and it is
+#      checked against what this process really connects to rather than against data a
+#      wrong database could also contain. Why a hash: it binds user + host + port + dbname
+#      (a Supabase pooler host is shared between projects; the user carries the project
+#      ref) without putting a connection string in an env var or a log line.
+#
+#   2. EVIDENCE (abort mid-pass). An object under a prefix the database has NEVER HEARD OF
+#      (no row at all, not even an anonymised shell) whose keys show the job was PROCESSED
+#      (anything under `<id>/` other than the uploaded `_input.*`, or a `jobs/<id>/` chord
+#      file) should not exist: the per-job sweep deletes R2 BEFORE the row, and a failed R2
+#      delete keeps the row. Abandoned presigned uploads (`<id>/_input.*` only) are the
+#      normal orphans and are not counted. More than MAX_UNKNOWN_PROCESSED_JOBS such ids in
+#      one pass aborts the pass BEFORE the batch that crossed it is deleted, with an ERROR +
+#      Sentry event. This is what an empty or wrong database looks like from inside, even
+#      when the binding was copied along with it.
+#      Not "the live query returned none of the candidates": the incident database was
+#      EMPTY, which that rule (conditioned on retained rows existing) would not catch, and
+#      a batch of only abandoned uploads legitimately has no live candidates.
+#
+# NEITHER BRAKE STOPS CODE THAT DOES NOT HAVE IT. A deployment running an older build
+# keeps deleting. The fix for that is operational: find it and rotate the R2 keys.
+# ---------------------------------------------------------------------------------------
+ORPHAN_SWEEP_BINDING_ENV = "ORPHAN_SWEEP_BINDING"
+MAX_UNKNOWN_PROCESSED_JOBS = int(os.environ.get("ORPHAN_SWEEP_MAX_UNKNOWN_PROCESSED_JOBS", "5"))
+ORPHAN_BRAKE_FINGERPRINT = ["retention", "orphan-sweep-brake"]
+_binding_warned = False
+
+
+def orphan_sweep_binding(database_url: str | None = None, bucket: str | None = None) -> str:
+    """The value ORPHAN_SWEEP_BINDING must hold for this process's bucket + database.
+
+    Pure apart from reading the defaults (`DATABASE_URL` here, `R2_BUCKET_NAME` env).
+    The password is never part of it, so rotating it does not unbind the sweep.
+    """
+    url = DATABASE_URL if database_url is None else database_url
+    name = os.environ.get("R2_BUCKET_NAME", "") if bucket is None else bucket
+    try:
+        info = conninfo_to_dict(url) if url else {}
+    except Exception:  # noqa: BLE001 — an unparseable URL binds to nothing in particular
+        info = {}
+    parts = [name] + [str(info.get(k) or "") for k in ("user", "host", "port", "dbname")]
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
+
+
+def _orphan_sweep_refused() -> str | None:
+    """None when the orphan pass may run; otherwise why it may not (and say so, loudly)."""
+    global _binding_warned
+    expected = orphan_sweep_binding()
+    configured = os.environ.get(ORPHAN_SWEEP_BINDING_ENV, "").strip()
+    if configured == expected:
+        return None
+    if not configured:
+        if not _binding_warned:
+            _binding_warned = True
+            log_structured(
+                "WARN",
+                "retention_orphan_sweep_unbound",
+                action=f"set {ORPHAN_SWEEP_BINDING_ENV}={expected} on the deployment whose "
+                "database owns this bucket; until then aged orphans are not deleted",
+            )
+        return "unbound"
+    log_structured(
+        "ERROR",
+        "retention_orphan_sweep_binding_mismatch",
+        expected_here=expected,
+        action="this process's bucket + database are not the pair the binding names; "
+        "the orphan pass is refused. If DATABASE_URL changed on purpose, re-bind.",
+    )
+    with contextlib.suppress(Exception):  # telemetry is never load-bearing
+        sentry_sdk.capture_message(
+            "Orphan sweep refused: R2 bucket / database binding mismatch "
+            f"(expected here {expected})",
+            level="error",
+            fingerprint=["retention", "orphan-sweep-binding-mismatch"],
+        )
+    return "mismatch"
+
+
+def _is_processed_key(key: str) -> bool:
+    """True when `key` is something only a PROCESSED job has (not an uploaded `_input.*`)."""
+    k = key.lower()
+    if k.startswith(CHORDS_TOP_PREFIX):
+        return True
+    rest = k.split("/", 1)[1] if "/" in k else ""
+    return not rest.startswith("_input")
+
+
+def _brake_orphan_sweep(unknown_processed: int, batch_keys: int, deleted: int) -> None:
+    log_structured(
+        "ERROR",
+        "retention_orphan_sweep_braked",
+        unknown_processed_jobs=unknown_processed,
+        limit=MAX_UNKNOWN_PROCESSED_JOBS,
+        batch_keys=batch_keys,
+        deleted_before_brake=deleted,
+        action="aged objects of processed jobs the database has never heard of: this "
+        "database may not be the one that owns this bucket. Nothing more was deleted.",
+    )
+    with contextlib.suppress(Exception):  # telemetry is never load-bearing
+        sentry_sdk.capture_message(
+            "Orphan sweep braked: "
+            f"{unknown_processed} processed jobs in R2 are unknown to the database "
+            f"(limit {MAX_UNKNOWN_PROCESSED_JOBS}); pass aborted",
+            level="error",
+            fingerprint=ORPHAN_BRAKE_FINGERPRINT,
+        )
 
 
 def _job_id_of(key: str) -> str:
@@ -303,8 +434,11 @@ async def _sweep_orphaned_objects(conn, deadline: float | None = None) -> int:
     looked at once per sweep and the scan moves on, until the listing ends, the deletion cap
     is reached, or the sweep's deadline passes.
     """
+    if _orphan_sweep_refused():
+        return 0
     if deadline is None:
         deadline = time.monotonic() + SWEEP_BUDGET_SECONDS
+    unknown_processed: set[str] = set()
     cutoff = datetime.now(UTC) - timedelta(seconds=RETENTION_SECONDS)
     deleted = 0
     start_after = ""
@@ -333,6 +467,19 @@ async def _sweep_orphaned_objects(conn, deadline: float | None = None) -> int:
                 )
             ).fetchall()
             live = {r[0] for r in found}
+            # Brake 2: ids with NO row at all (a shell is known, merely not live).
+            known = await (
+                await conn.execute(
+                    "SELECT id::text FROM jobs WHERE id = ANY(%s::uuid[])", (candidates,)
+                )
+            ).fetchall()
+            unknown = set(candidates) - {r[0] for r in known}
+            unknown_processed |= {
+                j for j in (_job_id_of(k) for k in keys if _is_processed_key(k)) if j in unknown
+            }
+            if len(unknown_processed) > MAX_UNKNOWN_PROCESSED_JOBS:
+                _brake_orphan_sweep(len(unknown_processed), len(keys), deleted)
+                return deleted
         orphans = [k for k in keys if _job_id_of(k) not in live]
         orphans = orphans[: MAX_ORPHANS_PER_SWEEP - deleted]
         if orphans:

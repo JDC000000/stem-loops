@@ -89,8 +89,9 @@ def _drive_poll_loop(
 
     Real: `poll_loop`, `_safe_sweep`, the interval arithmetic. Stubbed: `consumer.time` (the
     clock), `asyncio.sleep`, `tmpdirs.sweep_stale` (a module shared with `cleanup`, so it is
-    inert there too, unless `real_tmp_sweep`), the two reapers and the two claimers -- and
-    `consumer.sweep_expired` itself whenever `sweep` is given.
+    inert there too, unless `real_tmp_sweep`), the two reapers and the two claimers, the two
+    daily storage-check starters -- and `consumer.sweep_expired` itself whenever `sweep` is
+    given.
     """
     clock = _Clock()
     # `consumer.time` is the module; give consumer a stub with only the clock it reads.
@@ -138,6 +139,11 @@ def _drive_poll_loop(
     )
     monkeypatch.setattr(consumer, "claim_and_cut", nothing_to_claim)
     monkeypatch.setattr(consumer.asyncio, "sleep", fake_sleep)
+    # The daily storage checks (QA-57/59) start daemon threads that read the REAL bucket and
+    # database named by the environment; inert here (their wiring is tested in
+    # test_r2_lifecycle_guard.py), so no test in this file reaches a non-local service.
+    monkeypatch.setattr(consumer, "start_r2_lifecycle_check", lambda: None)
+    monkeypatch.setattr(consumer, "start_artifact_audit", lambda: None)
 
     with pytest.raises(_Stop):
         asyncio.run(consumer.poll_loop())
@@ -300,6 +306,8 @@ def test_poll_loop_startup_sweep_removes_an_expired_jobs_objects_from_real_r2(
         process-wide for the test) -- so `poll_loop` runs in zero real time;
       * `consumer.reap_stale_jobs`, `consumer.reap_stale_requests`, `consumer.claim_and_run`
         and `consumer.claim_and_cut` -- there is no queue to claim from;
+      * `consumer.start_r2_lifecycle_check` and `consumer.start_artifact_audit` (no-ops:
+        daemon threads reading the bucket and database, not part of what this proves);
       * `tmpdirs.sweep_stale`, replaced by a no-op. That module is shared, so it is inert
         inside `cleanup.sweep_expired` too: nothing here tests the local scratch-dir pass.
       * the process environment (r4: the list was partial): `RealR2` sets `R2_ENDPOINT_URL`

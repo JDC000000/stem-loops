@@ -357,7 +357,18 @@ export function chordPositionFor(phase: Phase, snapshot: EngineSnapshot, latency
   // PLAYING: a paused or ended position is where the audio stopped, not ahead
   // of it. Desktop passes 0, so its behaviour is exactly the old one.
   if (snapshot.status === 'playing' && Number.isFinite(latencySec) && latencySec > 0) {
-    return Math.max(0, snapshot.positionSec - latencySec);
+    const heard = snapshot.positionSec - latencySec;
+    // QA C-11 — the engine position is already folded into the loop, so just
+    // after a wrap `heard` lands BEFORE the loop head, on the previous
+    // section's chord. What is heard then is the END of the loop: fold the
+    // latency back into the region. Only when the span exceeds the latency,
+    // so the fold is a single step.
+    const loop = snapshot.loop;
+    if (loop && heard < loop.startSec && snapshot.positionSec >= loop.startSec && snapshot.positionSec < loop.endSec) {
+      const span = loop.endSec - loop.startSec;
+      if (span > latencySec) return loop.endSec - (loop.startSec - heard);
+    }
+    return Math.max(0, heard);
   }
   return snapshot.positionSec;
 }

@@ -82,6 +82,7 @@ import {
   WRAP_DEFAULT_ROW_SEC,
   WRAP_MAX_ROW_SEC,
   activeRunIndex,
+  alternativeSpoken,
   alternativeText,
   buildChordEdit,
   buildChordLabelEdit,
@@ -97,6 +98,7 @@ import {
   MAX_TIMELINE_PX,
   MAX_WRAP_ROWS,
   estimateLabelPx,
+  estimateStageLabelPx,
   makeCanvasMeasurer,
   readablePxPerSec,
   CHIP_FONT_PX,
@@ -718,6 +720,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
                 data-testid={`alt-${alt.label}`}
                 data-reason={alt.reason}
                 title={altTitle(alt)}
+                aria-label={alternativeSpoken(alt)}
                 style={altButtonStyle}
               >
                 {alternativeText(alt)}
@@ -1165,7 +1168,11 @@ function renderChip(
       data-testid={continuedRow === null ? `chord-chip-${idx}` : `chord-chip-${idx}-r${continuedRow}`}
       data-kind={run.kind}
       data-density={density}
-      title={run.kind === 'chord' ? run.label : runAriaLabel(run)}
+      // The chord's DISPLAYED name (guitarist notation), never the Harte data
+      // label: the tooltip shows what the chip shows, and the real-Chromium
+      // chip-fit gate reads a tick's name off `title` to prove the tick was
+      // justified -- it must measure the string that would have been painted.
+      title={run.kind === 'chord' ? text : runAriaLabel(run)}
       aria-label={runAriaLabel(run)}
     >
       {/* A tick is too narrow for any legible size, so it renders as a colour
@@ -1760,9 +1767,9 @@ export const WIDE_NOW_SIZES = [128, 96, ...NOW_SIZES] as const;
 export const TALL_NOW_SIZES = [TALL_NOW_PX, ...NOW_SIZES] as const;
 export const TALLER_NOW_SIZES = [TALLER_NOW_PX, TALL_NOW_PX, ...NOW_SIZES] as const;
 const WIDE_NEXT_PX = 48;
-/** Bold text width from the headless advance table, widened by `factor` (conservative). */
+/** Bold text width from the headless advance table, widened by `factor` (conservative; see STAGE_WIDEST_GLYPHS). */
 function nameWidthPx(text: string, px: number, factor: number): number {
-  return text ? estimateLabelPx(text, px) * factor : 0;
+  return text ? estimateStageLabelPx(text, px) * factor : 0;
 }
 /**
  * Fit the Now name beside Next so the two NEVER overlap: the largest size that

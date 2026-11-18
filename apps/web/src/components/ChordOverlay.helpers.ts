@@ -17,6 +17,7 @@ import type {
   PlayChordsResult,
 } from '../chord/play-chords-loader.ts';
 import { MAX_TRACK_SEC } from '../lib/play/types.ts';
+import { spellChord } from '../lib/play/notation.ts';
 
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
@@ -91,18 +92,38 @@ export function classIndexOrNull(label: string): number | null {
   return i < 0 ? null : i;
 }
 
-/** Text shown on the chip: explicit symbols for N and X, label otherwise. */
+/**
+ * Text shown on the chip: explicit symbols for N and X, and for a chord its
+ * guitarist name from THE ONE display formatter, lib/play/notation.ts ("A:min7"
+ * -> "Am7", "C#:hdim7/5" -> "C♯m7♭5/G♯"; design v1.4 P1.5). The run's
+ * `label` stays Harte: that is the stored data and what an edit sends. A label
+ * the formatter cannot spell exactly is shown as its Harte label, never a guess.
+ *
+ * This is ALSO the string every geometry decision measures (chipDensity, the
+ * default zoom, the zoom ceiling), so the pinned widths in
+ * test/fixtures/chord-label-widths.json are widths of THESE strings.
+ */
 export function displayText(run: Pick<OverlayRun, 'kind' | 'label'>): string {
   if (run.kind === 'none') return 'N.C.';
   if (run.kind === 'unknown') return '?';
-  return run.label;
+  return spellChord(run.label).text;
 }
 
-/** Accessible name, spelled out so N / X / chord are distinguishable. */
-export function runAriaLabel(run: Pick<OverlayRun, 'kind' | 'label'>): string {
+/** The chord in WORDS ("C sharp minor 7"): what a screen reader says for a painted glyph. */
+export function spokenText(run: Pick<OverlayRun, 'kind' | 'label'>): string {
   if (run.kind === 'none') return 'No chord';
   if (run.kind === 'unknown') return 'Unknown chord';
-  return `${run.label} \u2014 edit`;
+  return spellChord(run.label).spoken;
+}
+
+/**
+ * Accessible name, spelled out so N / X / chord are distinguishable. A chord is
+ * spoken in words, "flat" / "sharp" and not the glyphs (a screen reader reads
+ * "♯" inconsistently and "#" as "number"), as the phone slots do since #288.
+ */
+export function runAriaLabel(run: Pick<OverlayRun, 'kind' | 'label'>): string {
+  if (run.kind !== 'chord') return spokenText(run);
+  return `${spokenText(run)} \u2014 edit`;
 }
 
 // ---------------------------------------------------------------------------
@@ -511,11 +532,22 @@ function slash(root: number, quality: number, semis: number): string | null {
   return base && tok ? `${base}/${tok}` : null;
 }
 
-/** Display text for an alternative button. */
+/**
+ * Display text for an alternative button: the same formatter as the chips, so
+ * the chord you tap is spelled the way the chart spells it. `label` stays Harte
+ * (it is what the edit sends).
+ */
 export function alternativeText(a: Pick<ChordAlternative, 'label' | 'reason'>): string {
   if (a.reason === 'none') return 'N.C.';
   if (a.reason === 'unknown') return '?';
-  return a.label;
+  return spellChord(a.label).text;
+}
+
+/** Accessible name of an alternative button: the chord in words. */
+export function alternativeSpoken(a: Pick<ChordAlternative, 'label' | 'reason'>): string {
+  if (a.reason === 'none') return 'No chord';
+  if (a.reason === 'unknown') return 'Unknown chord';
+  return spellChord(a.label).spoken;
 }
 
 /**
@@ -679,34 +711,44 @@ export function rootHue(label: string): number | null {
 //
 // The real measurement happens in the browser (ChordOverlay passes a canvas
 // `measureText` measurer). This table is the headless fallback and the unit of
-// account for the tests. Its advances were MEASURED, not guessed: Chromium
-// 1280x900 on the chips' own font stack (ui-sans-serif, system-ui,
-// -apple-system, "Segoe UI", Roboto, sans-serif -> Inter 4.000, weight 400,
-// proportional digits -- the chips declare no font-variant-numeric) at 16px,
-// via a hidden span.
+// account for the tests. Its advances are MEASURED, not guessed, and since the
+// switch to guitarist notation (Jon, 2026-11-17) the machine that measures them
+// is THE REFERENCE, not a one-off box:
 //
-// RE-MEASURED over every label the Harte grammar can produce (21 roots x (no
-// quality + 24 qualities) x (no bass + b/#/natural x degrees 1..13), plus
-// "N.C." and "?": 21,002 labels, built from HARTE_QUALITIES in the gate file).
-// Against the DOM width of the label (canvas measureText is within 0.0078px of
-// the DOM over the same 21,002):
-//   - BEFORE this change the table was up to 0.1094px UNDER (the 34 bare-root
-//     slash labels such as "A/6": the 'A' + '/' pair is wider than the sum of
-//     its advances). ESTIMATE_PAD_PX below covers that: it is now never under,
-//     by at least 0.0156px, over the whole alphabet.
-//   - BEFORE this change it was up to 5.33px OVER ("A:hdim7/b11", and 4.79px
-//     for "A#:hdim7/11"), because 'h' -- used only by "hdim7" -- was the one
-//     glyph of the grammar the table lacked and an unlisted glyph is charged
-//     the widest advance. With 'h' the worst over-estimate is 1.31px
-//     ("D/b13"). "N.C." is over by 0.82, "A:min" by 0.33, "?" by 0.12; an
-//     earlier note that put the worst case at "N.C. 0.70, A:min 0.21" left the
-//     hdim7 labels out.
-// The table holds exactly the glyphs the grammar and "N.C." / "?" use. Glyphs
-// nothing renders (space, '-', '(', ')', 'x', 'X') used to sit in it, defended
-// by no label: mutating them left the suite green. They are gone, so every
-// entry is load-bearing, and a glyph outside the grammar costs the safe
-// (widest) estimate instead of a stale number. The gate file enumerates the
-// grammar and fails on a missing or an unused glyph.
+//   REFERENCE = the CI Chromium. The "Chord chip fit (real Chromium)" job of
+//   .github/workflows/ci.yml: ubuntu-latest (24.04), Playwright 1.63.0 as pinned
+//   in pnpm-lock.yaml -> Chromium build 1243, `playwright install --with-deps
+//   chromium`; 16px, weight 400, on a container whose family is
+//   `GateInter, sans-serif` with GateInter = @fontsource/inter 5.2.5
+//   files/inter-latin-400-normal.woff2 (the same pin chord-chip-fit.test.mjs
+//   uses). That Inter file is the LATIN subset and has no U+266D / U+266F, so
+//   ♭ and ♯ are painted by the runner's `sans-serif` fallback; which font that
+//   is, and its sha256-pinned Inter, are recorded in the fixture's `reference`.
+//
+//   The numbers live in apps/web/test/fixtures/chord-label-widths.json, written
+//   by packages/web-browser-gate/scripts/measure-chord-label-widths.mjs.
+//   packages/web-browser-gate/test/chord-label-widths.test.mjs re-measures them
+//   in that CI job on every PR and fails on ANY difference (and prints the
+//   replacement fixture); apps/web/test/chord-default-zoom.test.mjs fails if
+//   this table or ESTIMATE_PAD_PX is not the fixture's. Numbers measured on any
+//   other machine are a different font: do not paste them here.
+//
+// The fixture's `alphabet` block is the whole-alphabet check, re-derived on
+// every CI run: every string the chart can paint (displayText over the Harte
+// grammar: 21 roots x (no quality + 24) x (no bass + b/#/natural x 1..13), plus
+// "N.C." and "?" -- 21,002 labels, fewer distinct painted strings) as a DOM span
+// and through canvas. It records the table's worst UNDER-estimate before the pad
+// (the "A/" pair is wider than the sum of its advances), the pad that covers it
+// (ESTIMATE_PAD_PX, the next 1/64px step above), the worst OVER-estimate with
+// the pad, and the canvas-vs-DOM spread. Read the numbers there; they are not
+// restated here so that they cannot go stale here.
+//
+// The table holds exactly the glyphs the chart paints -- guitarist notation
+// (♭ ♯ ( ) and the suffix letters) plus the Harte labels the formatter cannot
+// spell exactly and shows as-is (':' 'h' '#' ...), plus "N.C." / "?". An entry
+// nothing renders is defended by no label, and a glyph outside the set costs
+// the safe (widest) estimate. The gate file enumerates the painted alphabet
+// and fails on a missing or an unused glyph.
 
 /**
  * Font size chips render their label at, DECLARED on every chip in px by
@@ -719,8 +761,9 @@ export function rootHue(label: string): number | null {
  *
  * It is now one number used by the measurer AND the declaration. CHANGING IT
  * is the sizing pass's job, and it is not a one-line edit: the pinned canvas
- * widths in test/chord-default-zoom.test.mjs are 16px measurements and a test
- * there fails loudly until they are re-measured at the new size.
+ * widths in test/fixtures/chord-label-widths.json are 16px measurements on the
+ * CI reference, and a test in test/chord-default-zoom.test.mjs fails loudly
+ * until they are re-measured at the new size.
  */
 export const CHIP_FONT_PX = 16;
 /**
@@ -753,23 +796,25 @@ export const CHIP_TIGHT_PAD_PX = 2;
 export const CHIP_GAP_PX = 1;
 
 export const ADVANCE_16PX: Readonly<Record<string, number>> = Object.freeze({
-  A: 11.25, B: 10.4688, C: 11.6875, D: 11.5469, E: 9.6172, F: 9.4453, G: 11.9375,
-  N: 12.0547,
-  a: 8.9844, b: 9.7969, d: 9.7969, g: 9.8125, h: 9.4609, i: 3.875, j: 3.875, m: 14.0156,
-  n: 9.4531, s: 8.4453, u: 9.4609,
-  '0': 10.0938, '1': 6.5156, '2': 9.7656, '3': 9.8906, '4': 10.3438,
-  '5': 9.7344, '6': 9.9219, '7': 9.0625, '8': 9.9063, '9': 9.9219,
-  ':': 4.6094, '#': 10.1328, '/': 5.7656, '.': 4.6094, '?': 8.1797,
+  A: 11.3594, B: 10.4688, C: 11.6875, D: 11.5469, E: 9.625, F: 9.4531, G: 11.9375, N: 12.0625,
+  a: 8.9844, b: 9.7969, d: 9.7969, g: 9.8125, h: 9.4688, i: 3.875, j: 3.875, m: 14.0156, n: 9.4531,
+  s: 8.4531, u: 9.4688,
+  '0': 10.0938, '1': 6.5156, '2': 9.7656, '3': 9.8906, '4': 10.3438, '5': 9.5, '6': 9.9219,
+  '7': 9.0625, '8': 9.9063, '9': 9.9219,
+  '#': 10.1406, '(': 5.8438, ')': 5.8438, '.': 4.6094, '/': 5.7656, ':': 4.6094, '?': 8.1875,
+  '♭': 7.5469, '♯': 8,
 });
 /**
- * Added to every estimate, in px at 16px. The sum of per-glyph advances is
- * 0.1094px short of the DOM width for the 34 labels that start "A/" (the pair
- * is wider than its parts); 0.125 is the next step above that. It makes "the
- * table never under-estimates" TRUE for the whole alphabet rather than true for
- * the fixture, at the price of ~0.1% on a width that is only ever used when
- * there is no canvas.
+ * Added to every estimate, in px at 16px. The sum of per-glyph advances falls
+ * short of the DOM width for labels whose glyph pairs are wider than their
+ * parts (worst: an "A/" pair); this is the next 1/64px step above the worst
+ * shortfall over the whole painted alphabet on the reference, as measured into
+ * the fixture (`alphabet.estimatePadPx`). It makes "the table never
+ * under-estimates" TRUE for the whole alphabet rather than true for the pinned
+ * labels, at the price of a fraction of a pixel on a width that is only ever
+ * used when there is no canvas (and by the phone stage's conservative fit).
  */
-export const ESTIMATE_PAD_PX = 0.125;
+export const ESTIMATE_PAD_PX = 0.015625;
 // Widest advance in the table: an unlisted glyph must never be UNDER-estimated,
 // or a label would be declared to fit when it does not.
 const WIDEST_ADVANCE_16PX = 14.0156;
@@ -790,6 +835,29 @@ export function estimateLabelPx(label: string, fontPx: number = CHIP_FONT_PX): n
   for (const ch of label) w += ADVANCE_16PX[ch] ?? WIDEST_ADVANCE_16PX;
   // The table is a 16px measurement, so it scales from 16 and not from
   // CHIP_FONT_PX: changing the constant must not silently re-scale the table.
+  return (w * fontPx) / TABLE_FONT_PX;
+}
+
+/**
+ * Glyphs the PLAYER STAGE (phone line view and Now card) still charges at the
+ * widest advance. Until the chart switched to guitarist notation these four
+ * were not in ADVANCE_16PX at all, so every caller charged them WIDEST_ADVANCE_16PX,
+ * and the stage's bold fit (ChordPhone.helpers BOLD_FACTOR, ChordOverlay
+ * nameWidthPx) was validated by its real-Chromium gate WITH that charge. The
+ * table now holds their real 400-weight advances for the chart, which measures
+ * 400. The stage paints them BOLD -- ♭ / ♯ in the machine's fallback font,
+ * which no reference measures at that weight -- and with the real advances its
+ * gate found a B♭ slot under the 24px hit target and an "A:min(9)" Now name
+ * overlapping Next. So the stage keeps exactly the charge it was validated
+ * with; re-fitting it with measured bold advances is its own change.
+ */
+export const STAGE_WIDEST_GLYPHS: ReadonlySet<string> = new Set(['\u266d', '\u266f', '(', ')']);
+
+/** estimateLabelPx for the player stage: STAGE_WIDEST_GLYPHS at the widest advance (see there). */
+export function estimateStageLabelPx(label: string, fontPx: number = CHIP_FONT_PX): number {
+  if (!label) return 0;
+  let w = ESTIMATE_PAD_PX;
+  for (const ch of label) w += STAGE_WIDEST_GLYPHS.has(ch) ? WIDEST_ADVANCE_16PX : ADVANCE_16PX[ch] ?? WIDEST_ADVANCE_16PX;
   return (w * fontPx) / TABLE_FONT_PX;
 }
 

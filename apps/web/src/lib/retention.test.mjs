@@ -17,11 +17,16 @@ test('never exceeds the job\'s remaining life', () => {
 test('never exceeds 24h even for legacy 7-day rows', () => {
   assert.equal(presignTtlSec(at(7 * 24 * H), NOW), RETENTION_SEC);
 });
-test('near/past expiry floors at 60s; null/garbage -> 24h cap', () => {
+test('near/past expiry floors at 60s; null/garbage -> 60s floor (fails closed)', () => {
   assert.equal(presignTtlSec(at(5 * 1000), NOW), 60);
   assert.equal(presignTtlSec(at(-H), NOW), 60);
-  assert.equal(presignTtlSec(null, NOW), RETENTION_SEC);
-  assert.equal(presignTtlSec('nope', NOW), RETENTION_SEC);
+  // QA track B, B-12: an unreadable expiry fails CLOSED to the 60 s floor, never the 24 h max.
+  assert.equal(presignTtlSec(null, NOW), 60);
+  assert.equal(presignTtlSec(undefined, NOW), 60);
+  assert.equal(presignTtlSec('nope', NOW), 60);
+  assert.equal(presignTtlSec('garbage', NOW), 60);
+  assert.equal(presignTtlSec(new Date(Infinity), NOW), 60);
+  assert.equal(presignTtlSec(new Date(NaN), NOW), 60);
 });
 test('formatExpiresIn', () => {
   assert.equal(formatExpiresIn(NOW + 5 * H + 1000, NOW), 'in 5 hours');

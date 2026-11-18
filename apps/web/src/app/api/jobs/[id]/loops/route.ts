@@ -31,14 +31,20 @@ import { db } from '@/lib/db';
 import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { getUser } from '@/lib/auth/supabase';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
+import { clientIpHashOf } from '@/lib/client-ip';
+import { admitJobRead, jobReadRetryAfterSec } from '@/lib/read-rate-limit';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Postgres unique_violation — the partial index refused a second live request. */
 const PG_UNIQUE_VIOLATION = '23505';
 
+// QA track B, B-10: nothing this route answers (status, counts, errors, 404s) may sit in a
+// shared cache; Next's default is `public, max-age=0, must-revalidate`.
+const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
+
 function bad(error_code: string, message: string, status: number): NextResponse {
-  return NextResponse.json({ error_code, message }, { status });
+  return NextResponse.json({ error_code, message }, { status, headers: NO_STORE });
 }
 
 interface JobRow {
@@ -113,7 +119,7 @@ export async function POST(
     if ((uncut.rows[0]?.count ?? 0) === 0) {
       // Already cut (or a job with no loops at all). Idempotent success rather
       // than an error: the caller wanted loops and loops is what they have.
-      return NextResponse.json({ status: 'done', loops_pending: 0, request: null });
+      return NextResponse.json({ status: 'done', loops_pending: 0, request: null }, { headers: NO_STORE });
     }
 
     const user = await getUser();
@@ -130,7 +136,7 @@ export async function POST(
           loops_pending: uncut.rows[0].count,
           request: ins.rows[0],
         },
-        { status: 202 },
+        { status: 202, headers: NO_STORE },
       );
     } catch (err) {
       if ((err as { code?: string })?.code !== PG_UNIQUE_VIOLATION) throw err;
@@ -148,7 +154,7 @@ export async function POST(
         loops_pending: uncut.rows[0].count,
         request: live.rows[0] ?? null,
         already_requested: true,
-      });
+      }, { headers: NO_STORE });
     }
   } catch (err) {
     Sentry.captureException(err);
@@ -158,10 +164,17 @@ export async function POST(
 }
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: { id: string } },
 ): Promise<NextResponse> {
   try {
+    // QA track B, B-11: per-IP read limiter BEFORE any database work (lib/read-rate-limit.ts).
+    const readKey = clientIpHashOf(request);
+    if (!admitJobRead(readKey)) {
+      const res = bad('RATE_LIMITED', "You're sending requests too fast. Wait a minute and try again.", 429);
+      res.headers.set('Retry-After', String(jobReadRetryAfterSec(readKey)));
+      return res;
+    }
     const auth = await authorize(params.id);
     if (auth.denied) return auth.denied;
 
@@ -188,7 +201,7 @@ export async function GET(
       loops_cut: cut,
       loops_pending: total - cut,
       request: live.rows[0] ?? null,
-    });
+    }, { headers: NO_STORE });
   } catch (err) {
     Sentry.captureException(err);
     console.error(`GET /api/jobs/${params.id}/loops error:`, err);

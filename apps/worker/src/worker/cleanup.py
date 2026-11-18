@@ -63,6 +63,8 @@ UPLOAD_EVENT_RETENTION_SECONDS = int(os.environ.get("UPLOAD_EVENT_RETENTION_SECO
 # monopolise the poll loop; the rest is picked up on the next sweep.
 MAX_JOBS_PER_SWEEP = int(os.environ.get("RETENTION_MAX_JOBS_PER_SWEEP", "200"))
 MAX_ORPHANS_PER_SWEEP = 2000
+# Old keys fetched per listing call in the orphan sweep; it pages on past the ones it keeps.
+ORPHAN_LIST_BATCH = 1000
 # Wall-clock budget per sweep pass: the sweep runs inline in the poll loop, so it must not
 # starve job claiming while a big backlog drains. When it runs out it stops; the next pass
 # (15 min) continues. A single job's delete is never interrupted midway.
@@ -280,7 +282,7 @@ async def _sweep_expired_jobs(conn, deadline: float) -> tuple[int, int, int]:
     return swept, stuck, anonymised
 
 
-async def _sweep_orphaned_objects(conn) -> int:
+async def _sweep_orphaned_objects(conn, deadline: float | None = None) -> int:
     """Delete R2 objects past the retention window that belong to no LIVE job.
 
     "Live" means a job row that is not an anonymised shell: a shell's content was already
@@ -289,37 +291,56 @@ async def _sweep_orphaned_objects(conn) -> int:
     and never re-swept, so if this pass treated them as live those objects would be kept
     for ever.
 
-    Best-effort and capped at MAX_ORPHANS_PER_SWEEP. It is the BACKSTOP, not the retention
-    mechanism — anything a job owns must be deleted by _sweep_expired_jobs, whose prefix
-    list (job_object_prefixes) is what makes that true.
+    Best-effort and capped at MAX_ORPHANS_PER_SWEEP DELETIONS. It is the BACKSTOP, not the
+    retention mechanism — anything a job owns must be deleted by _sweep_expired_jobs, whose
+    prefix list (job_object_prefixes) is what makes that true.
+
+    PAGES PAST WHAT IT KEEPS (QA track B, B-05). It used to list the first
+    MAX_ORPHANS_PER_SWEEP old keys in lexical order and stop. Old objects of LIVE jobs (paid
+    libraries, the 2099 demos) are kept, so once more of them than the cap sorted first, every
+    sweep re-listed the same kept keys and never reached a real orphan later in the keyspace.
+    Now it lists in batches of ORPHAN_LIST_BATCH from the last key it saw, so a kept key is
+    looked at once per sweep and the scan moves on, until the listing ends, the deletion cap
+    is reached, or the sweep's deadline passes.
     """
+    if deadline is None:
+        deadline = time.monotonic() + SWEEP_BUDGET_SECONDS
     cutoff = datetime.now(UTC) - timedelta(seconds=RETENTION_SECONDS)
-    keys = await asyncio.to_thread(list_objects_older_than, cutoff, MAX_ORPHANS_PER_SWEEP)
-    if not keys:
-        return 0
-    # Non-uuid prefixes would make the ::uuid cast throw; they can't have a job row anyway.
-    candidates = sorted({p for p in (_job_id_of(k) for k in keys) if _is_uuid(p)})
-    live: set[str] = set()
-    if candidates:
-        found = await (
-            await conn.execute(
-                # A purged shell (see _anonymise_job) is NOT live for this purpose. Its
-                # content was deleted and the row survives only to anchor the credit
-                # ledger, so anything still under its prefix is garbage the retention
-                # promise already covers. Counting it as live would keep those objects
-                # FOREVER — which is exactly what fixing _job_id_of would otherwise do to
-                # the chord file of every ledger-bound job purged before that fix, since
-                # those shells are excluded from _sweep_expired_jobs and never re-swept.
-                "SELECT id::text FROM jobs WHERE id = ANY(%s::uuid[]) "
-                "  AND client_ip_hash <> %s",
-                (candidates, PURGED_MARKER),
-            )
-        ).fetchall()
-        live = {r[0] for r in found}
-    orphans = [k for k in keys if _job_id_of(k) not in live]
-    if not orphans:
-        return 0
-    return await asyncio.to_thread(delete_objects, orphans)
+    deleted = 0
+    start_after = ""
+    while deleted < MAX_ORPHANS_PER_SWEEP and time.monotonic() < deadline:
+        keys = await asyncio.to_thread(
+            list_objects_older_than, cutoff, ORPHAN_LIST_BATCH, start_after
+        )
+        if not keys:
+            break
+        # Non-uuid prefixes would make the ::uuid cast throw; they can't have a job row anyway.
+        candidates = sorted({p for p in (_job_id_of(k) for k in keys) if _is_uuid(p)})
+        live: set[str] = set()
+        if candidates:
+            found = await (
+                await conn.execute(
+                    # A purged shell (see _anonymise_job) is NOT live for this purpose. Its
+                    # content was deleted and the row survives only to anchor the credit
+                    # ledger, so anything still under its prefix is garbage the retention
+                    # promise already covers. Counting it as live would keep those objects
+                    # FOREVER — which is exactly what fixing _job_id_of would otherwise do to
+                    # the chord file of every ledger-bound job purged before that fix, since
+                    # those shells are excluded from _sweep_expired_jobs and never re-swept.
+                    "SELECT id::text FROM jobs WHERE id = ANY(%s::uuid[]) "
+                    "  AND client_ip_hash <> %s",
+                    (candidates, PURGED_MARKER),
+                )
+            ).fetchall()
+            live = {r[0] for r in found}
+        orphans = [k for k in keys if _job_id_of(k) not in live]
+        orphans = orphans[: MAX_ORPHANS_PER_SWEEP - deleted]
+        if orphans:
+            deleted += await asyncio.to_thread(delete_objects, orphans)
+        if len(keys) < ORPHAN_LIST_BATCH:
+            break  # the listing reached the end of the bucket
+        start_after = keys[-1]
+    return deleted
 
 
 async def sweep_expired() -> dict[str, int]:
@@ -332,7 +353,7 @@ async def sweep_expired() -> dict[str, int]:
         orphans = 0
         if time.monotonic() < deadline:
             try:
-                orphans = await _sweep_orphaned_objects(conn)
+                orphans = await _sweep_orphaned_objects(conn, deadline)
             except Exception as e:  # noqa: BLE001 — orphan sweep is best-effort
                 log_structured("ERROR", "retention_orphan_sweep_failed", error=str(e)[:200])
         upload_events = await (

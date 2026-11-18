@@ -2,7 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
-import { checkAdmission, RATE_LIMIT, RATE_WINDOW_MS } from '@/lib/admission';
+import {
+  anonLinkCapsWhere,
+  anonLinkDailyCap,
+  anonLinkMaxInFlight,
+  checkAdmission,
+  checkAnonLinkCaps,
+  IN_FLIGHT_STATUSES,
+  RATE_LIMIT,
+  RATE_WINDOW_MS,
+} from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
 import { canonicalizeYoutubeUrl } from '@/lib/youtube-url';
 import { isValidUploadKey } from '@/lib/upload';
@@ -436,6 +445,14 @@ export async function POST(request: NextRequest) {
       }
       return NextResponse.json({ error_code: adm.error_code, message: adm.message }, { status: 429 });
     }
+    // B-03: signed-out link jobs — say WHICH per-IP cap was hit. The INSERT's WHERE below is
+    // what enforces it atomically; this read only picks the sentence.
+    if (!user) {
+      const anon = await checkAnonLinkCaps(clientIpHash);
+      if (!anon.allowed) {
+        return NextResponse.json({ error_code: anon.error_code, message: anon.message }, { status: 429 });
+      }
+    }
 
     const id = randomUUID();
     const requestedStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
@@ -447,10 +464,13 @@ export async function POST(request: NextRequest) {
              WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
                     AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
              RETURNING id`;
+    // B-03: the per-IP in-flight (2) and daily (10) caps for signed-out link jobs are part of
+    // the SAME atomic WHERE as the per-minute window (lib/admission.ts anonLinkCapsWhere).
     const ANON_INSERT_SQL = `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint)
            SELECT $1, $2, $3, $4, 'queued', $5, ''
            WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
                   AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
+             AND ${anonLinkCapsWhere('$5', '$8', '$9', '$10')}
            RETURNING id`;
 
     // §1.2a: trial applies ONLY to the link-ingest branch (this one). For
@@ -597,7 +617,8 @@ export async function POST(request: NextRequest) {
           })
         : await db.query(
             ANON_INSERT_SQL,
-            [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT],
+            [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT,
+             IN_FLIGHT_STATUSES, anonLinkMaxInFlight(), anonLinkDailyCap()],
           );
     } catch (err) {
       // Allowance spent under the lock: the tx rolled back, no job row exists.

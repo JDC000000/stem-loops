@@ -67,6 +67,7 @@ import { deleteAuthUser, getUser } from '@/lib/auth/supabase';
 import { getBillingProvider } from '@/lib/billing';
 import { db } from '@/lib/db';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
+import { ipHashKey } from '@/lib/secret-env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -112,6 +113,16 @@ export async function DELETE(req: NextRequest) {
   const typed = typeof body?.confirm_email === 'string' ? body.confirm_email.trim().toLowerCase() : '';
   if (!typed || typed !== user.email.trim().toLowerCase()) {
     return err(400, 'EMAIL_MISMATCH', 'The email you typed does not match your account email.');
+  }
+  // QA track B, B-08: the audit hash below is keyed with IP_HASH_KEY, which now fails closed
+  // in production when unset. Resolve it HERE, before anything is cancelled or deleted, so a
+  // missing key refuses the whole request instead of failing half-way through it.
+  let auditKey: string;
+  try {
+    auditKey = ipHashKey();
+  } catch (e) {
+    console.error('[users/me] DELETE refused:', e instanceof Error ? e.message : e);
+    return err(500, 'INTERNAL_ERROR', 'Something went wrong on our end. Please try again.');
   }
 
   try {
@@ -211,7 +222,7 @@ export async function DELETE(req: NextRequest) {
             // would let anyone with the uuid verify deletion). Reuses the
             // existing IP_HASH_KEY convention from lib/client-ip.ts rather
             // than adding a new env var.
-            user_hash: createHmac('sha256', process.env.IP_HASH_KEY ?? 'dev-key')
+            user_hash: createHmac('sha256', auditKey)
               .update(user.user_id)
               .digest('hex'),
             subscriptions_cancelled: cancelled,

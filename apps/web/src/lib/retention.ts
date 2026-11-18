@@ -80,12 +80,16 @@ const MIN_PRESIGN_SEC = 60;
 /**
  * Presigned-download TTL for a job: 24h, but never past the job's own expires_at — a URL
  * minted at hour 23 must not outlive the objects it points at. `expiresAt` is the
- * jobs.expires_at value (Date, ISO string, or null/invalid → full window, capped at 24h).
+ * jobs.expires_at value (Date or ISO string).
+ *
+ * FAILS CLOSED (QA track B, B-12): a null, unparseable or non-finite expiry returns the
+ * MINIMUM (60 s), not the 24 h maximum. An expiry we cannot read is not a reason to hand out
+ * the longest-lived bearer URL; the stems and download routes already fail closed the same way.
  */
 export function presignTtlSec(expiresAt: Date | string | null | undefined, nowMs: number = Date.now()): number {
-  if (expiresAt == null) return RETENTION_SEC;
+  if (expiresAt == null) return MIN_PRESIGN_SEC;
   const t = new Date(expiresAt).getTime();
-  if (Number.isNaN(t)) return RETENTION_SEC;
+  if (!Number.isFinite(t)) return MIN_PRESIGN_SEC;
   const remaining = Math.floor((t - nowMs) / 1000);
   return Math.min(RETENTION_SEC, Math.max(MIN_PRESIGN_SEC, remaining));
 }

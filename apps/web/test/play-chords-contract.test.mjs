@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import ts from 'typescript';
 import { WEB, dataUrl } from './helpers/billing-harness.mjs';
 import { fetchPlayChords } from '../src/chord/play-chords-loader.ts';
+import { wirePureLibs } from './helpers/pure-libs.mjs';
 
 const GOLDEN = JSON.parse(
   readFileSync(join(WEB, '..', '..', 'fixtures', 'contracts', 'play-chords.golden.json'), 'utf8'),
@@ -59,7 +60,7 @@ async function loadRoute() {
     .replace(/from ['"]@\/lib\/job-access['"]/, `from '${dataUrl(`export const mayReadJob = async () => true;`)}'`)
     .replace(/from ['"]@\/lib\/r2['"]/, `from '${r2}'`)
     .replace(/from ['"]@\/lib\/retention['"]/, `from '${retention}'`);
-  return import(dataUrl(js) + '#' + Math.random());
+  return import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
 let route; let originalFetch; let fetched;

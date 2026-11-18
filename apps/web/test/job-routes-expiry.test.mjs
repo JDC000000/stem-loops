@@ -61,6 +61,7 @@ import ts from 'typescript';
 import { WEB, dataUrl } from './helpers/billing-harness.mjs';
 import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginReq } from './helpers/same-origin.mjs';
 import { INPUT_TRIM_URL, INPUT_TRIM_IMPORT_RE } from './helpers/input-trim.mjs';
+import { wirePureLibs } from './helpers/pure-libs.mjs';
 
 const toJs = (file) =>
   ts.transpileModule(readFileSync(join(WEB, file), 'utf8'), {
@@ -225,7 +226,7 @@ async function loadRoutes() {
       .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${jobAccess}'`)
       .replace(INPUT_TRIM_IMPORT_RE, `from '${INPUT_TRIM_URL}'`)
       .replace(/from ['"]@aws-sdk\/client-s3['"]/g, `from '${resolveBare('@aws-sdk/client-s3')}'`);
-  const load = (file) => import(dataUrl(wire(toJs(file))) + '#' + Math.random());
+  const load = (file) => import(dataUrl(wirePureLibs(wire(toJs(file)))) + '#' + Math.random());
   const r2Mod = await import(r2);
   // The stems route LISTS the bucket; that is the one R2 call it makes. Presigning,
   // which is what the TTL assertions read, never touches the network.

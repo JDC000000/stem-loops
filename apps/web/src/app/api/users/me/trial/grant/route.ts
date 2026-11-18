@@ -15,16 +15,22 @@
 // Rate limit: the PK on trial_grants(user_id) already enforces "one grant
 // per user ever"; no additional usage_events gate is needed.
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getUser } from '@/lib/auth/supabase';
 import { grantTrial } from '@/lib/trial';
+import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const NO_STORE = { 'Cache-Control': 'no-store' } as const;
 
-export async function POST() {
+export async function POST(req: NextRequest) {
+  // CSRF (QA track B, B-06): same-origin browser requests only, before auth.
+  const originRefusal = crossOriginRefusal(req);
+  if (originRefusal) {
+    return NextResponse.json({ error: originRefusal, code: BAD_ORIGIN }, { status: 403, headers: NO_STORE });
+  }
   const user = await getUser();
   if (!user) {
     return NextResponse.json(

@@ -5,6 +5,8 @@ import { mintSignedUrl } from '@/lib/r2';
 import { JOB_RETAINED_UNTIL_SQL, presignTtlSec } from '@/lib/retention';
 import { mayReadJob } from '@/lib/job-access';
 import { inputTrimFromEvents } from '@/lib/input-trim';
+import { clientIpHashOf } from '@/lib/client-ip';
+import { admitJobRead, jobReadRetryAfterSec } from '@/lib/read-rate-limit';
 // OWNERSHIP: a job with a user_id is readable only by that user; an anonymous job
 // (user_id NULL) is readable by anyone holding its id. See lib/job-access.ts. A denied
 // caller gets the same 404 as a missing job. `user_id` is read to decide that and is
@@ -25,15 +27,23 @@ const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
 // Past it the job is treated as gone even if the sweep hasn't run yet. `is_demo` (migration
 // 040) is returned so the player can hide "deleted in …" for a demo song, whose expires_at is
 // the far-future DEMO_RETAINED_UNTIL. It opens no read path: ownership is unchanged.
-export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   // A shape-invalid id (mistyped/truncated bookmark) would otherwise hit Postgres's
   // uuid-cast error → generic 500, which the client poll loop treats as non-terminal
   // and retries forever ("Processing... 0%" loop, QA P1). Return the clean 404 the UI
   // already handles, matching the UUID_RE guard POST /api/jobs already uses.
   if (!UUID_RE.test(params.id)) {
-    return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+    return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
   }
   try {
+    // QA track B, B-11: per-IP read limiter BEFORE any database work (lib/read-rate-limit.ts).
+    const readKey = clientIpHashOf(request);
+    if (!admitJobRead(readKey)) {
+      return NextResponse.json(
+        { error_code: 'RATE_LIMITED', message: "You're sending requests too fast. Wait a minute and try again." },
+        { status: 429, headers: { ...NO_STORE, 'Retry-After': String(jobReadRetryAfterSec(readKey)) } },
+      );
+    }
     const jobRes = await db.query(
       `SELECT user_id, id, input_kind, youtube_url, upload_r2_key, original_filename, title, requested_stems,
               loop_length_bars, status, error_code, error_message_user, bpm, musical_key,
@@ -42,11 +52,11 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       [params.id]
     );
     if (jobRes.rowCount === 0) {
-      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
     }
     const { user_id: ownerId, ...job } = jobRes.rows[0];
     if (!(await mayReadJob(ownerId))) {
-      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
     }
     const urlTtlSec = presignTtlSec(job.expires_at);
 
@@ -107,6 +117,6 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
   } catch (err) {
     Sentry.captureException(err);
     console.error(`GET /api/jobs/${params.id} error:`, err);
-    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500, headers: NO_STORE });
   }
 }

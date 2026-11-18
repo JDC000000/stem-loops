@@ -23,6 +23,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { INPUT_TRIM_URL, INPUT_TRIM_IMPORT_RE } from './helpers/input-trim.mjs';
+import { wirePureLibs } from './helpers/pure-libs.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const toJs = (file) =>
@@ -99,7 +100,7 @@ async function loadRoute(file) {
       /from ['"]@\/lib\/stem-urls['"]/g,
       `from '${dataUrl("export const mintStemPlayUrl = async (id, s) => 'https://signed/' + id + '/_stems/play/' + s + '.opus';")}'`,
     );
-  return import(dataUrl(js) + '#' + Math.random());
+  return import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
 const ROUTES = {

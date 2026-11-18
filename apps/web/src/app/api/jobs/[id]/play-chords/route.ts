@@ -4,6 +4,8 @@ import { db } from '@/lib/db';
 import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { mintPlayChordsSignedUrl, PLAY_CHORDS_SIGNED_URL_TTL_SEC } from '@/lib/r2';
 import { mayReadJob } from '@/lib/job-access';
+import { clientIpHashOf } from '@/lib/client-ip';
+import { admitJobRead, jobReadRetryAfterSec } from '@/lib/read-rate-limit';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -21,11 +23,19 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 //           loader treats it as "no chord data for this job" either way.)
 const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
 
-export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   if (!UUID_RE.test(params.id)) {
-    return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+    return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
   }
   try {
+    // QA track B, B-11: per-IP read limiter BEFORE any database work (lib/read-rate-limit.ts).
+    const readKey = clientIpHashOf(request);
+    if (!admitJobRead(readKey)) {
+      return NextResponse.json(
+        { error_code: 'RATE_LIMITED', message: "You're sending requests too fast. Wait a minute and try again." },
+        { status: 429, headers: { ...NO_STORE, 'Retry-After': String(jobReadRetryAfterSec(readKey)) } },
+      );
+    }
     // Gate on the job row existing + not expired, same rule as GET /api/jobs/:id.
     // We do NOT HEAD R2 to confirm the object is present — on a happy path the
     // extra round trip doubles the API latency; on a cold-cache miss the browser
@@ -35,17 +45,17 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       [params.id]
     );
     if (jobRes.rowCount === 0) {
-      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
     }
     // Ownership first (lib/job-access.ts): an owned job is served to its owner only, an
     // anonymous one to anyone holding the id. Same 404 as a missing job.
     if (!(await mayReadJob(jobRes.rows[0].user_id))) {
-      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
     }
     // Only completed jobs will have a play.chords.json — surface a 404 for
     // not-yet-done jobs so the client doesn't mint a URL it will race against.
     if (jobRes.rows[0].status !== 'done') {
-      return NextResponse.json({ error_code: 'NOT_READY', message: 'Job not yet complete' }, { status: 404 });
+      return NextResponse.json({ error_code: 'NOT_READY', message: 'Job not yet complete' }, { status: 404, headers: NO_STORE });
     }
     const signed_url = await mintPlayChordsSignedUrl(params.id);
     // This body carries a BEARER CREDENTIAL (a presigned R2 URL), so it must
@@ -62,6 +72,6 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
   } catch (err) {
     Sentry.captureException(err);
     console.error(`GET /api/jobs/${params.id}/play-chords error:`, err);
-    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500, headers: NO_STORE });
   }
 }

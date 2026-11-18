@@ -19,6 +19,8 @@ import { getUser } from '@/lib/auth/supabase';
 import { getBillingProvider, type PackCode, type PlanCode } from '@/lib/billing';
 import { db } from '@/lib/db';
 import { verifyHcaptchaToken } from '@/lib/hcaptcha';
+import { appOrigin } from '@/lib/app-url';
+import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -86,6 +88,11 @@ async function underCheckoutRateLimit(userId: string): Promise<boolean> {
 }
 
 export async function POST(req: NextRequest) {
+  // CSRF (QA track B, B-06): same-origin browser requests only, before auth or the body.
+  const originRefusal = crossOriginRefusal(req);
+  if (originRefusal) {
+    return NextResponse.json({ error: originRefusal, code: BAD_ORIGIN }, { status: 403 });
+  }
   const user = await getUser();
   if (!user) {
     return NextResponse.json(
@@ -148,7 +155,9 @@ export async function POST(req: NextRequest) {
   }
 
   const provider = getBillingProvider();
-  const origin = req.headers.get('origin') ?? 'https://stem-loops.com';
+  // QA track B, B-07: redirect targets come from config (lib/app-url.ts), never from the
+  // request's Origin header, so a direct caller cannot make Stripe send a payer elsewhere.
+  const origin = appOrigin();
   // The success page lives at app/success/page.tsx -> /success. This used to
   // point at /billing/success, and there is no app/billing/ route segment at
   // all (only app/api/billing/), so EVERY paying customer landed on a 404 the

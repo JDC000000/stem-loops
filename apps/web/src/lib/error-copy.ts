@@ -94,6 +94,16 @@ export const RATE_LIMITED_PER_CLIENT_MSG = "You're sending requests too fast. Wa
 export const RATE_LIMITED_SPEND_CEILING_MSG =
   "We've reached today's processing limit on our end. It's not something you did. Please try again later.";
 
+// QA track B, B-03: per-IP caps on signed-out link jobs (lib/admission.ts). Both are about
+// this visitor's own usage, so they say what to do, and that signing in lifts them.
+export const ANON_LINK_IN_FLIGHT_MSG =
+  "You already have songs processing. Wait for one to finish, or sign in to add more.";
+export const ANON_LINK_DAILY_MSG =
+  "You've reached today's limit for songs without an account. Sign in to keep going, or try again tomorrow.";
+// B-05: the per-IP daily cap on signed-out upload presigns (lib/admission.ts).
+export const ANON_UPLOAD_DAILY_MSG =
+  "You've reached today's upload limit without an account. Sign in to keep going, or try again tomorrow.";
+
 /** A paid plan asked for link ingest its plans.services row does not list. */
 export const SERVICE_NOT_IN_PLAN_MSG =
   "YouTube links aren't switched on for your plan yet. Upload the audio file instead, or try again later.";

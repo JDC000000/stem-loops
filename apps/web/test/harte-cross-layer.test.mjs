@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import ts from 'typescript';
 import { WEB, dataUrl } from './helpers/billing-harness.mjs';
 import { HARTE_QUALITIES } from '../src/chord/harte.ts';
+import { wirePureLibs } from './helpers/pure-libs.mjs';
 
 const TABLE = JSON.parse(
   readFileSync(join(WEB, '..', '..', 'fixtures', 'contracts', 'harte-labels.json'), 'utf8'),
@@ -47,12 +48,12 @@ async function loadRoute() {
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentry}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${next}'`)
     .replace(/from ['"]@\/chord\/harte['"]/g, `from '${harteUrl()}'`);
-  return import(dataUrl(js) + '#' + Math.random());
+  return import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
 async function loadCollector() {
   const js = toJs('src/chord/edit-collector.ts').replace(/from '\.\/harte\.ts'/, `from '${harteUrl()}'`);
-  return import(dataUrl(js) + '#' + Math.random());
+  return import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
 const BODY = {
@@ -80,7 +81,7 @@ test('real chord-edits route agrees with the table on every label', async () => 
   const route = await loadRoute();
   const wrong = [];
   for (const { label, valid, note } of TABLE.labels) {
-    const res = await route.POST({ json: async () => ({ ...BODY, corrected_label: label }), headers: new Map() });
+    const res = await route.POST({ json: async () => ({ ...BODY, corrected_label: label }), headers: new Map([['origin', 'https://stem-loops.com'], ['host', 'stem-loops.com']]) });
     const accepted = res.status === 201;
     const harteRejected = res.body?.error_code === 'CHORD_EDIT_HARTE';
     if (valid && !accepted) wrong.push(`route REJECTED valid ${JSON.stringify(label)} (${note}): ${res.status} ${res.body?.error_code}`);

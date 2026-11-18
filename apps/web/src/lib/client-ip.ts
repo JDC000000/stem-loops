@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import type { NextRequest } from 'next/server';
+import { ipHashKey } from '@/lib/secret-env';
 
 // Spoof-resistant client-IP resolution for the admission / rate-limit gates.
 //
@@ -14,7 +15,8 @@ import type { NextRequest } from 'next/server';
 // (no CDN/edge in front — verified: response `server: nginx`, no CF-Ray/via), so the
 // default of 1 hop resolves to the rightmost, nginx-appended, real client IP. Set
 // TRUSTED_PROXY_HOPS to match any other edge (e.g. 2 if a CDN also appends a hop).
-const IP_HASH_KEY = process.env.IP_HASH_KEY ?? 'dev-key';
+// IP_HASH_KEY: read per call through lib/secret-env.ts, which throws in production when it is
+// unset (QA track B, B-08). It used to fall back to the public 'dev-key'.
 const TRUSTED_PROXY_HOPS = Math.max(
   1,
   Number.parseInt(process.env.TRUSTED_PROXY_HOPS ?? '1', 10) || 1,
@@ -34,7 +36,7 @@ export function clientIp(request: NextRequest): string {
 }
 
 export function hashIp(ip: string): string {
-  return createHash('sha256').update(IP_HASH_KEY + ip).digest('hex');
+  return createHash('sha256').update(ipHashKey() + ip).digest('hex');
 }
 
 export function clientIpHashOf(request: NextRequest): string {

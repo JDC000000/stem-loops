@@ -30,6 +30,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { getUser } from '@/lib/auth/supabase';
+import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 // Shared with chord/edit-collector.ts; mirrors chord_source.py and migration 029.
 import { HARTE_RE } from '@/chord/harte';
 
@@ -154,6 +155,9 @@ function parse(body: unknown): { ok: true; edit: ChordEditBody } | { ok: false; 
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  // CSRF (QA track B, B-06): same-origin browser requests only, before auth or the body.
+  const originRefusal = crossOriginRefusal(request);
+  if (originRefusal) return bad(BAD_ORIGIN, originRefusal, 403);
   try {
     const user = await getUser();
     if (!user) {

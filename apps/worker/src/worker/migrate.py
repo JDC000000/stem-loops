@@ -166,20 +166,78 @@ def split_sql_statements(sql: str) -> Iterator[str]:
         yield tail
 
 
+# The ledger table. Created here, not by a migration, so `scripts/check_rls.py` reads this
+# file as well as `migrations/*.sql` (QA track B, B-01).
+LEDGER_CREATE_SQL = """
+    CREATE TABLE IF NOT EXISTS public._migrations (
+        filename   text PRIMARY KEY,
+        applied_at timestamptz DEFAULT now()
+    )
+"""
+
+# QA track B, B-01. On Supabase, `anon` and `authenticated` get ALL on every new table in
+# `public` by default, and the publishable (anon) key is in the browser bundle. Without RLS
+# and this REVOKE, anyone could DELETE a ledger row over PostgREST and the next routine
+# `make migrate` would re-run that migration (proved locally: deleting 014's row reverted
+# the plans to the pre-034 pricing). So the runner hardens the ledger on EVERY run, before
+# it reads it, and migration 041 does the same for a database migrated by hand.
+#
+# Guarded and idempotent:
+#   * ENABLE RLS only when it is off. ALTER TABLE needs ownership; on production RLS is
+#     already on, so a runner that does not own the table never attempts it.
+#   * REVOKE only for a role that exists (bare Postgres has neither) AND still holds a
+#     privilege, so a hardened ledger needs no rights at all to pass through here.
+#   * After a REVOKE the privilege is re-checked; if the role can still reach the table
+#     (e.g. the runner is not the owner and lacks the grant option, which Postgres reports
+#     only as a WARNING that psycopg swallows) it RAISES. A silently open ledger is the bug
+#     this block exists for, so it fails the deploy loudly instead.
+#   * No policy is created, altered or dropped. The ledger is read and written only by the
+#     migration role, which owns the table (owners bypass RLS without FORCE) or has
+#     BYPASSRLS. Production's existing `stemloops_app_all` policy is left exactly as it is.
+LEDGER_HARDEN_SQL = """
+DO $ledger$
+BEGIN
+  IF NOT (SELECT relrowsecurity FROM pg_class WHERE oid = 'public._migrations'::regclass) THEN
+    ALTER TABLE public._migrations ENABLE ROW LEVEL SECURITY;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon')
+     AND (SELECT bool_or(has_table_privilege('anon', 'public._migrations', p))
+            FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p) THEN
+    REVOKE ALL ON TABLE public._migrations FROM anon;
+    IF (SELECT bool_or(has_table_privilege('anon', 'public._migrations', p))
+          FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p) THEN
+      RAISE EXCEPTION 'public._migrations is still accessible to anon after REVOKE (run this as the table owner)';
+    END IF;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated')
+     AND (SELECT bool_or(has_table_privilege('authenticated', 'public._migrations', p))
+            FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p) THEN
+    REVOKE ALL ON TABLE public._migrations FROM authenticated;
+    IF (SELECT bool_or(has_table_privilege('authenticated', 'public._migrations', p))
+          FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p) THEN
+      RAISE EXCEPTION 'public._migrations is still accessible to authenticated after REVOKE (run this as the table owner)';
+    END IF;
+  END IF;
+END
+$ledger$
+"""
+
+
+def ensure_ledger(conn: psycopg.Connection) -> None:
+    """Create the ledger if needed and close it to the browser roles. Commits."""
+    conn.execute(LEDGER_CREATE_SQL)
+    conn.execute(LEDGER_HARDEN_SQL)
+    conn.commit()
+
+
 def run() -> None:
     database_url = os.environ["DATABASE_URL"]
     with psycopg.connect(database_url) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS _migrations (
-                filename   text PRIMARY KEY,
-                applied_at timestamptz DEFAULT now()
-            )
-            """)
-        conn.commit()
+        ensure_ledger(conn)
         for path in discover_migration_paths():
             fname = os.path.basename(path)
             already = conn.execute(
-                "SELECT 1 FROM _migrations WHERE filename=%s", (fname,)
+                "SELECT 1 FROM public._migrations WHERE filename=%s", (fname,)
             ).fetchone()
             if already:
                 print(f"  skip  {fname} (already applied)")
@@ -188,7 +246,7 @@ def run() -> None:
                 source = f.read()
             for stmt in split_sql_statements(source):
                 conn.execute(stmt)
-            conn.execute("INSERT INTO _migrations(filename) VALUES(%s)", (fname,))
+            conn.execute("INSERT INTO public._migrations(filename) VALUES(%s)", (fname,))
             conn.commit()
             print(f"  apply {fname}")
     print("Migrations complete.")

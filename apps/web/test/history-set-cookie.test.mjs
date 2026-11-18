@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { wirePureLibs } from './helpers/pure-libs.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(WEB, 'src/app/api/history/set-cookie/route.ts');
@@ -40,10 +41,11 @@ async function loadRoute() {
   const js = toJs(readFileSync(SRC, 'utf8'))
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub}'`)
     .replace(/from ['"]@\/lib\/retention['"]/g, `from '${retentionStub}'`);
-  return await import(dataUrl(js) + '#' + Math.random());
+  return await import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
-const post = async (body) => (await loadRoute()).POST({ json: async () => body });
+const SAME = new Headers({ origin: 'https://stem-loops.com', host: 'stem-loops.com' });
+const post = async (body, headers = SAME) => (await loadRoute()).POST({ json: async () => body, headers });
 const uuid = (n) => `3f2b8c1e-5a4d-4e6f-8a9b-${String(n).padStart(12, '0')}`;
 const decode = (cookieVal) => {
   const [b64, sig] = cookieVal.split('.');
@@ -101,3 +103,16 @@ for (const [label, body] of REJECT) {
     assert.equal(res.set.length, 0, 'nothing may be signed');
   });
 }
+
+// QA track B, B-06: a foreign page must not be able to overwrite a visitor's history cookie.
+test('a cross-origin POST is refused (403 BAD_ORIGIN) and sets no cookie', async () => {
+  for (const headers of [
+    new Headers({ origin: 'https://evil.example', host: 'stem-loops.com' }),
+    new Headers({ host: 'stem-loops.com' }),
+  ]) {
+    const res = await post({ jobIds: [uuid(1)] }, headers);
+    assert.equal(res.status, 403);
+    assert.equal(res.body.error_code, 'BAD_ORIGIN');
+    assert.equal(res.set.length, 0);
+  }
+});

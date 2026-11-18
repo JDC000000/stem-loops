@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginReq } from './helpers/same-origin.mjs';
 import { INPUT_TRIM_URL, INPUT_TRIM_IMPORT_RE } from './helpers/input-trim.mjs';
+import { wirePureLibs } from './helpers/pure-libs.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -199,7 +200,7 @@ async function loadJobRoute(loops) {
         export const NextResponse = { json: (body, init = {}) => ({ status: (init && init.status) ?? 200, body }) };
       `)}'`,
     );
-  return await import(dataUrl(js) + '#' + Math.random());
+  return await import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
 const loopRow = (id, cut) => ({
@@ -318,7 +319,7 @@ async function loadLoopsRoute({ job, user = null, uncut = 3, insertThrows = null
         export const NextResponse = { json: (body, init = {}) => ({ status: (init && init.status) ?? 200, body }) };
       `)}'`,
     );
-  return await import(dataUrl(js) + '#' + Math.random());
+  return await import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
 const OK_ID = '22222222-2222-4222-8222-222222222222';

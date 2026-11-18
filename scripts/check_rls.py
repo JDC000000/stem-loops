@@ -41,6 +41,20 @@ STRICT_FROM_MIGRATION threshold:
     so a typo (e.g. `STRICT_FROM_MIGRATION=true`) can't silently disable the
     gate.
 
+Runner-created tables (QA track B, B-01). The migration runner
+(apps/worker/src/worker/migrate.py) creates `public._migrations` itself, so no
+migration file ever named it and this gate could not see it. The runner source
+is now read too. Every CREATE TABLE found there must, IN THE RUNNER ITSELF
+(it is what creates the table, and it runs on every deploy):
+  R1. ENABLE ROW LEVEL SECURITY on it, and
+  R2. REVOKE ALL on it FROM anon AND FROM authenticated.
+Rules 2/3/c/d (policies) do not apply to runner tables: the ledger is read and
+written only by the migration role (owner / BYPASSRLS), so the correct policy set
+for every other role is NONE. A runner table also counts as "existing" for the
+orphan-marker warning. The runner file is found at
+<migrations_dir>/../src/worker/migrate.py; a migrations dir without one (unit
+tests' temp dirs) skips R1/R2, and the real tree's runner is pinned by a test.
+
 Backend-only marker format (comment line, any migration file):
   -- rls-backend-only: jobs, job_events, loops
 
@@ -177,6 +191,60 @@ BACKEND_ONLY_MARKER_RE = re.compile(
     r"^\s*--\s*rls-backend-only\s*:\s*([^\n]+)",
     re.IGNORECASE | re.MULTILINE,
 )
+
+# REVOKE ... ON [TABLE] [schema.]<table> FROM <grantees>  (runner rule R2).
+REVOKE_RE = re.compile(
+    r"REVOKE\s+ALL(?:\s+PRIVILEGES)?\s+ON\s+(?:TABLE\s+)?"
+    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*)\.)?"
+    r'(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))'
+    r"\s+FROM\s+([^;\n]+)",
+    re.IGNORECASE,
+)
+
+# Roles that must hold nothing on a runner-created table (Supabase's browser roles).
+RUNNER_REVOKE_ROLES = ("anon", "authenticated")
+
+
+def default_runner_sources(migrations_dir: Path) -> list[Path]:
+    """The migration runner's source, if this migrations dir has one beside it."""
+    runner = migrations_dir.parent / "src" / "worker" / "migrate.py"
+    return [runner] if runner.is_file() else []
+
+
+def check_runner_tables(runner_sources: list[Path]) -> tuple[set[str], list[str]]:
+    """Rules R1/R2 over the runner source. Returns (runner tables, failure lines)."""
+    tables: set[str] = set()
+    rls: set[str] = set()
+    revoked: dict[str, set[str]] = {}
+    for src in runner_sources:
+        text = src.read_text()
+        for m in CREATE_TABLE_RE.finditer(text):
+            name = _table_name_from_match(m)
+            if name:
+                tables.add(name)
+        for m in ENABLE_RLS_RE.finditer(text):
+            name = _table_name_from_match(m)
+            if name:
+                rls.add(name)
+        for m in REVOKE_RE.finditer(text):
+            name = m.group(1) or m.group(2)
+            grantees = {g.strip().strip('"').lower() for g in m.group(3).split(",")}
+            revoked.setdefault(name, set()).update(grantees)
+    failures: list[str] = []
+    for t in sorted(tables):
+        if t not in rls:
+            failures.append(
+                f"runner table {t}: the runner never runs "
+                f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY (rule R1)"
+            )
+        missing = [r for r in RUNNER_REVOKE_ROLES if r not in revoked.get(t, set())]
+        if missing:
+            failures.append(
+                f"runner table {t}: the runner never revokes ALL from "
+                f"{', '.join(missing)} (rule R2)"
+            )
+    return tables, failures
+
 
 # What counts as "per-user" scoping in a policy body.
 AUTHUID_REF_RE = re.compile(
@@ -386,7 +454,8 @@ def _is_app_select_policy(name: str, body: str) -> bool:
 
 
 def main(migrations_dir: Path,
-         strict_from: int = STRICT_FROM_MIGRATION) -> int:
+         strict_from: int = STRICT_FROM_MIGRATION,
+         runner_sources: list[Path] | None = None) -> int:
     sql_files = sorted(migrations_dir.glob("*.sql"))
     if not sql_files:
         print(f"RLS gate: no .sql files found under {migrations_dir}",
@@ -535,6 +604,16 @@ def main(migrations_dir: Path,
             app_mark, ro_mark = "n/a", "n/a"
         print(f"  [{rls_mark}][{pol_mark}][{scope_mark}][{app_mark}][{ro_mark}] {t}")
 
+    if runner_sources is None:
+        runner_sources = default_runner_sources(migrations_dir)
+    runner_tables, runner_failures = check_runner_tables(runner_sources)
+    if runner_sources:
+        print(f"Runner-created tables ({', '.join(str(p) for p in runner_sources)}): "
+              f"{sorted(runner_tables) or 'none'}")
+        for t in sorted(runner_tables):
+            ok = not any(f.startswith(f"runner table {t}:") for f in runner_failures)
+            print(f"  [{'RLS+REVOKE' if ok else '----------'}] {t} (runner)")
+
     if backend_only:
         print(f"\nDeclared backend-only (service-role bypass only): "
               f"{sorted(backend_only)}")
@@ -543,13 +622,16 @@ def main(migrations_dir: Path,
     # exempts nothing today, but it rots — someone adds a real `users` table
     # tomorrow and the typo now looks like the intended exemption. Warn (don't
     # fail) so typos surface without blocking merges on a cosmetic. (review-2 NIT)
-    orphan_markers = sorted(backend_only - created_tables)
+    orphan_markers = sorted(backend_only - created_tables - runner_tables)
     if orphan_markers:
         print(f"\nWARN: `-- rls-backend-only:` names tables that don't exist "
               f"in any migration: {orphan_markers}. Typo, or a stale marker "
               f"left behind after a table was renamed/dropped?")
 
     failed = False
+    for line in runner_failures:
+        print(f"\nFAIL: {line}")
+        failed = True
     if missing_rls:
         print(f"\nFAIL (rule 1): tables without ENABLE ROW LEVEL SECURITY: "
               f"{missing_rls}")

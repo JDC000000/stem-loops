@@ -201,7 +201,7 @@ const STUBS = {
     export const checkAdmission = async () => ({ allowed: true, error_code: null });
     export const checkUploadRate = async () => ({ allowed: true, error_code: null });
     export const RATE_WINDOW_MS = 60000;
-    export const RATE_LIMIT = 5;
+    export const RATE_LIMIT = 5; export const IN_FLIGHT_STATUSES = ['queued']; export const anonLinkMaxInFlight = () => 2; export const anonLinkDailyCap = () => 10; export const anonLinkCapsWhere = () => 'true'; export const checkAnonLinkCaps = async () => ({ allowed: true, error_code: null });
   `),
   db: dataUrl(`
     export const db = {

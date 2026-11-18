@@ -1,5 +1,12 @@
 import { db } from '@/lib/db';
-import { ERROR_COPY, RATE_LIMITED_PER_CLIENT_MSG, RATE_LIMITED_SPEND_CEILING_MSG } from '@/lib/error-copy';
+import {
+  ANON_LINK_DAILY_MSG,
+  ANON_LINK_IN_FLIGHT_MSG,
+  ANON_UPLOAD_DAILY_MSG,
+  ERROR_COPY,
+  RATE_LIMITED_PER_CLIENT_MSG,
+  RATE_LIMITED_SPEND_CEILING_MSG,
+} from '@/lib/error-copy';
 
 // Admission control (PRD draft-2 hardening): three gates run BEFORE a job row is
 // inserted or enqueued, so abuse and runaway spend are stopped at the door. The
@@ -16,7 +23,12 @@ export type AdmissionResult =
   // code, its own copy, and the HTTP layer answers 503 + Retry-After rather than 429.
   | { allowed: false; error_code: 'AT_CAPACITY'; retry_after_s: number; message: string };
 
-export type RateLimitReason = 'per_client' | 'spend_ceiling';
+export type RateLimitReason =
+  | 'per_client'
+  | 'spend_ceiling'
+  | 'anon_link_in_flight'
+  | 'anon_link_daily'
+  | 'anon_upload_daily';
 
 export const RATE_WINDOW_MS = 60_000;
 export const RATE_LIMIT = 5; // per-client jobs per minute
@@ -114,7 +126,80 @@ const stemListRateLimit = () =>
 /** Namespaces the stems counter inside the shared table. */
 const stemListRateKey = (clientIpHash: string) => `stems:${clientIpHash}`;
 
-const IN_FLIGHT_STATUSES = ['queued', 'downloading', 'separating', 'extracting', 'uploading'];
+export const IN_FLIGHT_STATUSES = ['queued', 'downloading', 'separating', 'extracting', 'uploading'];
+
+// ─── Signed-out link jobs: per-IP caps (QA track B, B-03) ───────────────────────────────
+// Before these, the only per-visitor gate on a signed-out YouTube job was 5/min/IP. One
+// script could fill the GLOBAL in-flight cap (20) in about four minutes, so every visitor got
+// AT_CAPACITY, and a few IPs could burn the site-wide 24 h spend ceiling for everyone.
+//
+//   • in flight: at most ANON_LINK_MAX_IN_FLIGHT (2) non-terminal signed-out link jobs per
+//     IP hash. The worker is serial, so more than two queued from one visitor is only ever a
+//     queue someone else waits behind.
+//   • daily: at most ANON_LINK_DAILY_CAP (10) signed-out link jobs per IP hash per rolling
+//     24 h.
+//
+// Counted on the `jobs` rows themselves (client_ip_hash, created_at, status; index
+// jobs_ip_hash_idx), so no new table. Enforced INSIDE the atomic INSERT ... WHERE in
+// POST /api/jobs (ANON_LINK_CAPS_WHERE below), so a burst cannot each pass a pre-check
+// and then all insert. checkAnonLinkCaps() runs first only to pick the right sentence.
+// Signed-in users are unaffected: their caps are the plan's quota and burst limits.
+// Env overrides are guarded like ADMISSION_MAX_IN_FLIGHT (a typo falls back to the default).
+export const DEFAULT_ANON_LINK_MAX_IN_FLIGHT = 2;
+export const DEFAULT_ANON_LINK_DAILY_CAP = 10;
+const warnedAnonCap = new Set<string>();
+function positiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const t = raw.trim();
+  const n = /^[0-9]+$/.test(t) ? Number(t) : NaN;
+  if (Number.isSafeInteger(n) && n > 0) return n;
+  if (!warnedAnonCap.has(name)) {
+    warnedAnonCap.add(name);
+    console.warn(`[admission] ${name}=${JSON.stringify(raw)} is not a positive integer; using ${fallback}.`);
+  }
+  return fallback;
+}
+export const anonLinkMaxInFlight = () =>
+  positiveIntEnv('ANON_LINK_MAX_IN_FLIGHT', DEFAULT_ANON_LINK_MAX_IN_FLIGHT);
+export const anonLinkDailyCap = () => positiveIntEnv('ANON_LINK_DAILY_CAP', DEFAULT_ANON_LINK_DAILY_CAP);
+
+/**
+ * SQL predicate for the anonymous link INSERT. `$ip`, `$statuses`, `$maxInFlight`, `$daily`
+ * are the caller's placeholder numbers. Only signed-out link rows from this IP count.
+ */
+export function anonLinkCapsWhere(ip: string, statuses: string, maxInFlight: string, daily: string): string {
+  return `(SELECT COUNT(*) FROM jobs WHERE client_ip_hash = ${ip} AND user_id IS NULL
+            AND input_kind = 'youtube' AND status = ANY(${statuses}::text[])) < ${maxInFlight}
+          AND (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = ${ip} AND user_id IS NULL
+            AND input_kind = 'youtube' AND created_at >= NOW() - INTERVAL '24 hours') < ${daily}`;
+}
+
+/** Which anonymous link cap (if any) this IP is at. Advisory: the INSERT's WHERE decides. */
+export async function checkAnonLinkCaps(clientIpHash: string): Promise<AdmissionResult> {
+  const r = await db.query(
+    `SELECT
+       COUNT(*) FILTER (WHERE status = ANY($2::text[]))::int AS in_flight,
+       COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours')::int AS today
+     FROM jobs
+     WHERE client_ip_hash = $1 AND user_id IS NULL AND input_kind = 'youtube'
+       AND (status = ANY($2::text[]) OR created_at >= NOW() - INTERVAL '24 hours')`,
+    [clientIpHash, IN_FLIGHT_STATUSES],
+  );
+  const row = r.rows[0] ?? { in_flight: 0, today: 0 };
+  if (row.today >= anonLinkDailyCap()) {
+    return { allowed: false, error_code: 'RATE_LIMITED', reason: 'anon_link_daily', message: ANON_LINK_DAILY_MSG };
+  }
+  if (row.in_flight >= anonLinkMaxInFlight()) {
+    return {
+      allowed: false,
+      error_code: 'RATE_LIMITED',
+      reason: 'anon_link_in_flight',
+      message: ANON_LINK_IN_FLIGHT_MSG,
+    };
+  }
+  return ALLOWED;
+}
 
 const BLOCKED: AdmissionResult = {
   allowed: false,
@@ -186,6 +271,26 @@ export async function checkAdmission(clientIpHash: string): Promise<AdmissionRes
 // unprefixed key so existing rows keep counting).
 export async function checkUploadRate(clientIpHash: string): Promise<AdmissionResult> {
   return rollingWindowAdmission(clientIpHash, UPLOAD_RATE_WINDOW_MS, uploadRateLimit());
+}
+
+// QA track B, B-05: a per-IP DAILY cap on presigned upload URLs minted for SIGNED-OUT callers.
+// The per-minute limit alone allowed 10 x 200 MB PUTs a minute per IP (about 2.9 TB a day of
+// R2 writes), none of them tied to a job, reaped only by the 24 h orphan sweep. Same table
+// and atomic statement as the per-minute counter, under its own prefixed key and a 24 h
+// window. upload_rate_events rows are kept 24 h by the worker sweep (cleanup.py
+// UPLOAD_EVENT_RETENTION_SECONDS), which is exactly this window. 20 a day is ~4 GB at the
+// 200 MB cap; a signed-out visitor who uploads more than 20 songs a day can sign in.
+// Signed-in callers are not counted here: their jobs are metered by plan quota or credits.
+export const DEFAULT_ANON_UPLOAD_DAILY_CAP = 20;
+const ANON_UPLOAD_DAY_MS = 24 * 3600 * 1000;
+export const anonUploadDailyCap = () =>
+  positiveIntEnv('ANON_UPLOAD_DAILY_CAP', DEFAULT_ANON_UPLOAD_DAILY_CAP);
+const anonUploadDayKey = (clientIpHash: string) => `uploads-day:${clientIpHash}`;
+export async function checkAnonUploadDailyRate(clientIpHash: string): Promise<AdmissionResult> {
+  const r = await rollingWindowAdmission(anonUploadDayKey(clientIpHash), ANON_UPLOAD_DAY_MS, anonUploadDailyCap());
+  return r.allowed
+    ? r
+    : { allowed: false, error_code: 'RATE_LIMITED', reason: 'anon_upload_daily', message: ANON_UPLOAD_DAILY_MSG };
 }
 
 // Per-IP rate limit for GET /api/jobs/:id/stems (M-11 owner decision OD-B). Same

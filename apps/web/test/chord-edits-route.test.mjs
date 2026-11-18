@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { wirePureLibs } from './helpers/pure-libs.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(WEB, 'src/app/api/chord-edits/route.ts');
@@ -114,13 +115,13 @@ async function loadRoute({ user, db } = {}) {
     // Shared validator: inline the real harte.ts so the route is tested against
     // the same regex that ships.
     .replace(/from ['"]@\/chord\/harte['"]/g, `from '${dataUrl(toJs(readFileSync(join(WEB, 'src/chord/harte.ts'), 'utf8')))}'`);
-  return await import(dataUrl(js) + '#' + Math.random());
+  return await import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
 function makeReq(body) {
   return {
     json: async () => body,
-    headers: new Map(),
+    headers: new Map([['origin', 'https://stem-loops.com'], ['host', 'stem-loops.com']]),
   };
 }
 
@@ -152,7 +153,7 @@ test('401 when unauthenticated', async () => {
 
 test('400 on malformed JSON body', async () => {
   const mod = await loadRoute({ user: USER });
-  const bad = { json: async () => { throw new Error('bad'); }, headers: new Map() };
+  const bad = { json: async () => { throw new Error('bad'); }, headers: new Map([['origin', 'https://stem-loops.com'], ['host', 'stem-loops.com']]) };
   const res = await mod.POST(bad);
   assert.equal(res.status, 400);
   assert.equal(res.body.error_code, 'CHORD_EDIT_INVALID');

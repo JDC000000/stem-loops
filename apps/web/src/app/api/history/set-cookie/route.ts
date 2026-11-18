@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createHmac } from 'crypto';
 import { RETENTION_SEC } from '@/lib/retention';
+import { historyCookieKey } from '@/lib/secret-env';
+import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 export const runtime = 'nodejs';
 
@@ -21,6 +23,12 @@ const STORED_IDS = 20;
 // signing oracle for arbitrary payloads and let one request produce a
 // Set-Cookie header over 64 KB (W1 overnight QA, 2026-11-12, P2).
 export async function POST(req: NextRequest) {
+  // CSRF (QA track B, B-06): same-origin browser requests only. A foreign page must not be
+  // able to overwrite a visitor's history cookie.
+  const originRefusal = crossOriginRefusal(req);
+  if (originRefusal) {
+    return NextResponse.json({ ok: false, error_code: BAD_ORIGIN, message: originRefusal }, { status: 403 });
+  }
   const body = await req.json().catch(() => null);
   const jobIds: unknown = body && typeof body === 'object' ? (body as { jobIds?: unknown }).jobIds : undefined;
   if (
@@ -31,7 +39,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false }, { status: 422 });
   }
   const payload = JSON.stringify((jobIds as string[]).slice(0, STORED_IDS).map((id) => id.toLowerCase()));
-  const sig = createHmac('sha256', process.env.HISTORY_COOKIE_KEY ?? 'dev')
+  const sig = createHmac('sha256', historyCookieKey())
     .update(payload)
     .digest('hex');
   const cookieVal = `${Buffer.from(payload).toString('base64')}.${sig}`;

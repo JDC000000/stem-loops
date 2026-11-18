@@ -284,7 +284,7 @@ const stub = {
   trial: dataUrl(`export const TRIAL_SONG_CAP = 3; export const consumeTrialInTx = async () => ({ ok: false });`),
   admission: dataUrl(`
     export const checkAdmission = async () => ({ allowed: true, error_code: null });
-    export const RATE_WINDOW_MS = 60000; export const RATE_LIMIT = ${IP_CAP};`),
+    export const RATE_WINDOW_MS = 60000; export const RATE_LIMIT = ${IP_CAP}; export const IN_FLIGHT_STATUSES = ['queued']; export const anonLinkMaxInFlight = () => 2; export const anonLinkDailyCap = () => 10; export const anonLinkCapsWhere = () => 'true'; export const checkAnonLinkCaps = async () => ({ allowed: true, error_code: null });`),
   clientIp: dataUrl(`export const clientIpHashOf = () => 'hash';`),
   ytUrl: dataUrl(`export const canonicalizeYoutubeUrl = (u) => u;`),
   upload: dataUrl(`export const isValidUploadKey = () => true;`),

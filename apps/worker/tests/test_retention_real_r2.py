@@ -456,6 +456,44 @@ def test_orphan_backstop_is_not_blind_past_the_first_1000_keys_of_the_bucket(r2)
     assert len([k for k in left if k.startswith(young_job)]) == 1000, "young objects were deleted"
 
 
+def test_orphan_sweep_pages_past_more_kept_keys_than_its_cap(r2, monkeypatch):
+    """QA track B, B-05: the sweep used to list the first MAX_ORPHANS_PER_SWEEP old keys and
+    stop. With more old keys of LIVE jobs (paid libraries, demos) than that sorting first, an
+    orphan later in the keyspace was never reached, on any sweep. Scaled down: cap 5, batch 5,
+    12 old kept keys before one old orphan.
+    """
+    monkeypatch.setattr(cleanup, "MAX_ORPHANS_PER_SWEEP", 5)
+    monkeypatch.setattr(cleanup, "ORPHAN_LIST_BATCH", 5, raising=False)
+    live = _insert_job(1, job_id="00000000-0000-4000-8000-0000000000b5")
+    kept = [f"{live}/s/{i:02d}.wav" for i in range(12)]
+    _put_many(r2, kept)
+    r2.age_many(kept, 30)
+    orphan = "ffffffff-ffff-4fff-8fff-0000000000b5"
+    r2.put(f"{orphan}/_input.mp3", 30)
+
+    async def scenario():
+        return await cleanup.sweep_expired()
+
+    res = asyncio.run(scenario())
+    assert res["orphan_objects"] == 1, f"the orphan past the kept keys was never reached: {res}"
+    left = r2.all_keys()
+    assert f"{orphan}/_input.mp3" not in left
+    assert set(kept) <= left, "a live job's objects were deleted"
+
+
+def test_orphan_sweep_stops_at_its_deletion_cap(r2, monkeypatch):
+    """Paging on must not turn the cap into 'delete everything': 7 orphans, cap 3, batch 2."""
+    monkeypatch.setattr(cleanup, "MAX_ORPHANS_PER_SWEEP", 3)
+    monkeypatch.setattr(cleanup, "ORPHAN_LIST_BATCH", 2, raising=False)
+    orphans = [f"{uuid.uuid4()}/_input.mp3" for _ in range(7)]
+    for k in orphans:
+        r2.put(k, 30)
+
+    res = asyncio.run(cleanup.sweep_expired())
+    assert res["orphan_objects"] == 3, res
+    assert len(r2.all_keys() & set(orphans)) == 4
+
+
 def test_list_objects_older_than_collects_across_pages_and_honours_its_limit(r2):
     from datetime import UTC, datetime, timedelta
 

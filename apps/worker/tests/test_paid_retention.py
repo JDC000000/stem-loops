@@ -130,8 +130,9 @@ class FakeR2:
             del self.objs[k]
         return len(keys)
 
-    def list_older(self, cutoff, limit=2000):
-        return [k for k, t in self.objs.items() if t < cutoff][:limit]
+    def list_older(self, cutoff, limit=2000, start_after=""):
+        # Lexical order and StartAfter, like ListObjectsV2.
+        return [k for k in sorted(self.objs) if k > start_after and self.objs[k] < cutoff][:limit]
 
     def delete_objects(self, keys):
         for k in keys:

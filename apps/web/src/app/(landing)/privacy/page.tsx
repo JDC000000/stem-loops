@@ -2,7 +2,15 @@ import type { Metadata } from 'next';
 import { pageMetadata } from '@/lib/seo/meta';
 import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
-import { CONTACT_LABEL, CONTACT_URL, LEGAL_UPDATED } from '@/components/landing/legal';
+import { CONTACT_LABEL, CONTACT_URL, PRIVACY_UPDATED } from '@/components/landing/legal';
+import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
+
+// DB-17 (lib/chords-claim.ts). With the switch off, only the PROMISE goes: the short version and
+// "Your audio" stop describing chord estimation as what happens to a new song. Every DISCLOSURE
+// stays, word for word, whatever the switch says: Klangio in "Who else handles it", the estimated
+// chord track in the 24-hour deletion, the chord-recognition reference numbers in a credit shell,
+// and saved chord corrections. That data exists while any song has chords, and a processor that
+// has received audio must stay listed. test/chords-switch-surfaces.test.mjs pins both halves.
 
 // SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
 export const metadata: Metadata = pageMetadata(pageFor('/privacy')!);
@@ -15,13 +23,19 @@ export default function PrivacyPage() {
         <div className="container">
           <div className="reading">
             <h1>Privacy</h1>
-            <p className="updated">Last updated {LEGAL_UPDATED}</p>
+            <p className="updated">Last updated {PRIVACY_UPDATED}</p>
 
             <h2>The short version</h2>
             <p>
               No ads, no tracking cookies, nothing sold. You can start a job without an account, but you need one to open the
-              player and reach your results. Your audio goes to two outside services to be processed — one to split it into
-              stems, one to estimate the chords — and both are named below. On the Free plan we delete your audio, stems, loops
+              player and reach your results.{' '}
+              {CHORDS_LINE_SHOWN
+                ? 'Your audio goes to two outside services to be processed — one to split it into stems, one to estimate the chords — and both are named below.'
+                : 'Your audio goes to outside services to be processed, and every one of them is named below.'}{' '}
+              {/* Source of truth: 24 hours = RETENTION_HOURS, 30 days = PAID_RETENTION_GRACE_DAYS, 7 days =
+                  the past_due interval in JOB_RETAINED_UNTIL_SQL (lib/retention.ts; migration 007). Pinned by
+                  test/chords-switch-surfaces.test.mjs. */}
+              On the Free plan we delete your audio, stems, loops
               and job records after 24 hours. On Pro and Studio they stay in your library while you are subscribed, and for
               30 days after your plan ends. Account details stay until you delete the account.
             </p>
@@ -30,7 +44,8 @@ export default function PrivacyPage() {
             <ul>
               <li>
                 <strong>Your audio.</strong> The file you upload, or the audio fetched from the YouTube link you paste. It is
-                sent to the processors named below to be separated into stems and to have its chords estimated.
+                sent to the processors named below to be separated into stems
+                {CHORDS_LINE_SHOWN ? ' and to have its chords estimated.' : '.'}
               </li>
               <li>
                 <strong>Job details.</strong> The link or file name, the song’s title (the video’s title on YouTube, or the file name without its extension), the stems and loop length you chose, and the job’s progress.

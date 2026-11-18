@@ -48,7 +48,10 @@ test('DB-17: the Chords line is decided by ONE constant, and turning it off drop
   assert.match(src, /DB-17/, 'the switch says why it exists');
   // Nobody else defines it: every consumer imports this one.
   for (const f of ['src/components/landing/what-you-get.ts', 'src/app/(landing)/page.tsx', 'src/components/landing/PlayerArt.tsx',
-    'src/components/landing/faq.tsx', 'src/lib/seo/pages.ts', 'src/lib/seo/jsonld.ts', 'src/lib/seo/site.ts']) {
+    'src/components/landing/faq.tsx', 'src/lib/seo/pages.ts', 'src/lib/seo/jsonld.ts', 'src/lib/seo/site.ts',
+    // QA C-12 (2026-11-18): the rest of the site reads the same switch.
+    'src/lib/seo/llms.ts', 'src/app/(landing)/terms/page.tsx', 'src/app/(landing)/privacy/page.tsx',
+    'src/lib/emails/templates/welcome.ts', 'src/app/loops/LoopsView.tsx']) {
     const t = readFileSync(join(WEB, f), 'utf8');
     assert.doesNotMatch(t, /const CHORDS_LINE_SHOWN\s*=/, `${f} defines its own switch`);
     assert.match(t, /import \{[^}]*\bCHORDS_LINE_SHOWN\b[^}]*\} from '(?:@\/lib\/chords-claim|\.\.\/chords-claim\.ts)'/, `${f} does not read the switch`);
@@ -77,9 +80,10 @@ const OFF = await renderPage('app/(landing)/page.tsx', {
     ? src.replace(/export const CHORDS_LINE_SHOWN = true;/, 'export const CHORDS_LINE_SHOWN = false;')
     : src),
 });
-// The ONE allowed mention: OG_ALT describes the Open Graph IMAGE, which draws chord names. The
-// image is an asset; swapping it is recorded as residue in lib/chords-claim.ts.
-const OG_ALT_RE = /Four chord names, Gm, E flat, B flat and F,[^¶]*?Play along\./g; // openGraph + twitter
+// QA C-12 (2026-11-18): the Open Graph IMAGE and its alt text are switched too (OG_IMAGE and
+// OG_ALT in lib/seo/site.ts), so with the switch off the metadata has NO allowed chord mention.
+// The off-image is v3 (stems and a boxed loop): its alt is expected, and the v4 file must be gone.
+const OG_V3_ALT = 'Waveforms for four stems, drums, bass, vocals and guitar, with a four-bar loop boxed, under the headline Paste a song. Get bar-length loops.';
 
 test('SF-3: CHORDS_LINE_SHOWN=false removes EVERY chord claim from the rendered home page', () => {
   assert.ok(/chord/i.test(HOME.textSpaced), 'sanity: with the switch on, the page does talk about chords');
@@ -88,10 +92,11 @@ test('SF-3: CHORDS_LINE_SHOWN=false removes EVERY chord claim from the rendered 
     assert.deepEqual(hits, [], `${where} still claims chords`);
   }
   for (const [where, text] of [['metadata (spaced)', OFF.metaSpaced], ['metadata (tight)', OFF.metaTight]]) {
-    const rest = text.replace(OG_ALT_RE, '');
-    assert.notEqual(rest, text, `${where}: the OG image alt was expected (if the image changed, update this test)`);
-    assert.deepEqual(rest.match(/.{0,50}chord.{0,50}/gi) ?? [], [], `${where} still claims chords`);
+    assert.deepEqual(text.match(/.{0,50}chord.{0,50}/gi) ?? [], [], `${where} still claims chords`);
+    assert.doesNotMatch(text, /og-image-v4/, `${where} still shares the image that draws chord names`);
   }
+  assert.ok(OFF.metaSpaced.includes('/og-image-v3.png'), 'the off-image is v3');
+  assert.ok(OFF.metaSpaced.includes(OG_V3_ALT), 'the off-image carries its own alt text');
   const jsonLd = [...OFF.html.matchAll(/<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]).join('\n');
   assert.ok(jsonLd.length > 0, 'the home page renders its JSON-LD');
   assert.doesNotMatch(jsonLd, /chord/i, 'the JSON-LD still claims chords');

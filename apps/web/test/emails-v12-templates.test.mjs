@@ -20,12 +20,15 @@ const dataUrl = (js) => 'data:text/javascript;base64,' + Buffer.from(js).toStrin
 
 const sharedUrl = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/emails/templates/shared.ts'), 'utf8')));
 const shared = await import(sharedUrl);
+const chordsClaimUrl = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/chords-claim.ts'), 'utf8')));
 
 async function load(name) {
   let js = toJs(readFileSync(join(WEB, `src/lib/emails/templates/${name}.ts`), 'utf8'));
   js = js
     .replace(/from ['"]@\/lib\/billing\/types['"]/g, `from '${dataUrl('export {};')}'`)
-    .replace(/from ['"]\.\/shared['"]/g, `from '${sharedUrl}'`);
+    .replace(/from ['"]\.\/shared['"]/g, `from '${sharedUrl}'`)
+    // welcome reads the DB-17 chords switch: the REAL module, transpiled, never a stub.
+    .replace(/from ['"]@\/lib\/chords-claim['"]/g, `from '${chordsClaimUrl}'`);
   return import(dataUrl(js) + '#' + Math.random());
 }
 
@@ -52,7 +55,7 @@ const CASES = [
     render: () => renderWelcome({ plan_code: 'pro', period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 50 }),
     subject: 'Welcome to stem-loops',
     lead: 'Thanks for subscribing. Your Pro plan is active, covers 50 tracks a month and renews on 15 January 2027.',
-    cta: ['Upload a song', 'https://stem-loops.com/'],
+    cta: ['Add a song', 'https://stem-loops.com/'],
     why: WHY_SERVICE,
   },
   {

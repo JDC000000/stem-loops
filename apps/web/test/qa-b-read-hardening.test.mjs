@@ -67,7 +67,7 @@ beforeEach(() => {
   delete process.env.JOB_READ_RATE_LIMIT;
 });
 afterEach(() => {
-  for (const k of ['JOB_READ_RATE_LIMIT', 'NODE_ENV', 'IP_HASH_KEY', 'HISTORY_COOKIE_KEY']) {
+  for (const k of ['JOB_READ_RATE_LIMIT', 'NODE_ENV', 'VERCEL_ENV', 'IP_HASH_KEY', 'HISTORY_COOKIE_KEY']) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
@@ -120,17 +120,33 @@ test('B-10: GET /api/history answers private, no-store', async () => {
   assert.equal(res.headers.get('cache-control'), 'private, no-store');
 });
 
-// ── B-08: secrets fail closed in production ──────────────────────────────────────────────
+// ── B-08: secrets fail closed in Vercel PRODUCTION only ──────────────────────────────────
+// Previews, the staging project and local `next start` also run NODE_ENV=production, and as of
+// 2026-11-18 web previews lack HISTORY_COOKIE_KEY and staging lacks both, so they must fall back
+// (and warn), not 500.
 const secretEnv = () => import(SECRET_ENV_URL + '#' + Math.random());
+const unsetBoth = () => {
+  delete process.env.IP_HASH_KEY;
+  delete process.env.HISTORY_COOKIE_KEY;
+};
+function captureWarn(fn) {
+  const orig = console.warn;
+  const lines = [];
+  console.warn = (...a) => lines.push(a.join(' '));
+  try {
+    return { value: fn(), lines };
+  } finally {
+    console.warn = orig;
+  }
+}
 
-test('B-08: IP_HASH_KEY / HISTORY_COOKIE_KEY unset or blank in production THROW', async () => {
+test('B-08: VERCEL_ENV=production with the keys unset or blank THROWS', async () => {
   const s = await secretEnv();
+  process.env.VERCEL_ENV = 'production';
   process.env.NODE_ENV = 'production';
   for (const v of [undefined, '', '   ']) {
-    if (v === undefined) {
-      delete process.env.IP_HASH_KEY;
-      delete process.env.HISTORY_COOKIE_KEY;
-    } else {
+    if (v === undefined) unsetBoth();
+    else {
       process.env.IP_HASH_KEY = v;
       process.env.HISTORY_COOKIE_KEY = v;
     }
@@ -139,25 +155,47 @@ test('B-08: IP_HASH_KEY / HISTORY_COOKIE_KEY unset or blank in production THROW'
   }
 });
 
-test('B-08: set in production -> the real value; unset outside production -> the dev default', async () => {
+test('B-08: VERCEL_ENV=production with the keys set -> the real values', async () => {
   const s = await secretEnv();
-  process.env.NODE_ENV = 'production';
+  process.env.VERCEL_ENV = 'production';
   process.env.IP_HASH_KEY = 'k1';
   process.env.HISTORY_COOKIE_KEY = 'k2';
   assert.equal(s.ipHashKey(), 'k1');
   assert.equal(s.historyCookieKey(), 'k2');
-  process.env.NODE_ENV = 'test';
-  delete process.env.IP_HASH_KEY;
-  delete process.env.HISTORY_COOKIE_KEY;
-  assert.equal(s.ipHashKey(), 'dev-key');
-  assert.equal(s.historyCookieKey(), 'dev');
 });
 
-test('B-08: the real client-ip hashes with the key, and refuses in production without one', async () => {
+test('B-08: a preview (or staging) build with the keys unset falls back and warns ONCE per key', async () => {
+  for (const vercelEnv of ['preview', undefined]) {
+    const s = await secretEnv();
+    if (vercelEnv) process.env.VERCEL_ENV = vercelEnv;
+    else delete process.env.VERCEL_ENV; // staging project / non-Vercel `next start`
+    process.env.NODE_ENV = 'production';
+    unsetBoth();
+    const r = captureWarn(() => [s.ipHashKey(), s.historyCookieKey(), s.ipHashKey(), s.historyCookieKey()]);
+    assert.deepEqual(r.value, ['dev-key', 'dev', 'dev-key', 'dev']);
+    assert.equal(r.lines.length, 2, `one warning per variable: ${r.lines.join(' | ')}`);
+    const events = r.lines.map((l) => JSON.parse(l));
+    assert.deepEqual(events.map((e) => e.event), ['secret_env_default_used', 'secret_env_default_used']);
+    assert.deepEqual(events.map((e) => e.variable).sort(), ['HISTORY_COOKIE_KEY', 'IP_HASH_KEY']);
+    assert.equal(events[0].level, 'WARN');
+  }
+});
+
+test('B-08: development/test with the keys unset -> the dev defaults, silently', async () => {
+  const s = await secretEnv();
+  delete process.env.VERCEL_ENV;
+  process.env.NODE_ENV = 'test';
+  unsetBoth();
+  const r = captureWarn(() => [s.ipHashKey(), s.historyCookieKey()]);
+  assert.deepEqual(r.value, ['dev-key', 'dev']);
+  assert.equal(r.lines.length, 0);
+});
+
+test('B-08: the real client-ip hashes with the key, and refuses in Vercel production without one', async () => {
   const js = toJs(read('src/lib/client-ip.ts')).replace(/from ['"]@\/lib\/secret-env['"]/g, `from '${SECRET_ENV_URL}'`);
   const ip = await import(dataUrl(js) + '#' + Math.random());
   const { createHash } = await import('node:crypto');
-  process.env.NODE_ENV = 'production';
+  process.env.VERCEL_ENV = 'production';
   process.env.IP_HASH_KEY = 'secret';
   assert.equal(ip.hashIp('1.2.3.4'), createHash('sha256').update('secret1.2.3.4').digest('hex'));
   delete process.env.IP_HASH_KEY;

@@ -429,8 +429,29 @@ def _mark_loop_cut(loop_id: str, peaks: list[float]) -> None:
 
 
 # ----------------------------- audio core (sync) -----------------------------
+def _key_audio(stem_paths: dict, sr: int) -> np.ndarray:
+    """Mono sum of EVERY stem the job has: the song as heard, reconstructed from its parts.
+
+    Separation is additive, so the stems sum back to (approximately) the original mix,
+    which is the input the key detector was validated on. Deliberately NOT filtered by
+    `requested_stems`: which loops a user wants cut says nothing about the song's key.
+    """
+    total: np.ndarray | None = None
+    for path in stem_paths.values():
+        y, _ = librosa.load(path, sr=sr, mono=True)
+        if total is None:
+            total = y.astype(np.float32, copy=True)
+            continue
+        if len(y) > len(total):
+            total = np.pad(total, (0, len(y) - len(total)))
+        total[: len(y)] += y
+    if total is None:
+        raise ValueError("no stems to detect the key from")
+    return total
+
+
 def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
-    """Load ref stem, detect bpm/key, extract loops, classify energy + label sections."""
+    """Detect bpm (ref stem grid) and key (all stems), extract loops, classify + label sections."""
     sp = {k: v for k, v in stem_paths.items() if k in (requested_stems or stem_paths)}
     if not sp:
         sp = stem_paths
@@ -442,7 +463,11 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     # One beat grid (fitted tempo + first-beat anchor) drives the reported BPM, the loop
     # length and where loops start, so all three agree.
     grid = estimate_beat_grid(y_ref, sr)
-    tags = detect_bpm_and_key(y_ref, sr, grid=grid)
+    # The KEY must come from the song, not the beat reference. The reference is the drums
+    # stem whenever drums exist, and a drum stem carries no tonal centre: chroma over it is
+    # cymbal/kick noise plus bleed. Prod wrote three wrong keys this way (2026-11-18).
+    # BPM is unaffected because, with `grid` passed, detect_bpm_and_key takes it from there.
+    tags = detect_bpm_and_key(_key_audio(stem_paths, sr), sr, grid=grid)
     try:
         loops = list(extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars, grid=grid))
     except NoReliableBeatError as exc:
@@ -490,7 +515,8 @@ def record_loops(job_id, loops, tags, seg_label, seg_energy, bars, title=None) -
         return 0
     bar = 4 * 60.0 / tags["bpm"]
     duration_ms = int(bars * bar * 1000)
-    # Loops inherit the job-level BPM/key (computed once from the reference stem).
+    # Loops inherit the job-level BPM/key (computed once: BPM from the reference stem,
+    # key from all stems summed).
     # Re-detecting per loop is both slow and musically wrong — an isolated drum
     # loop has no key, and every loop from one song shares its key/tempo.
     bpm = tags["bpm"]

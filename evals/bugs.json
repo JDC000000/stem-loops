@@ -46,8 +46,23 @@
         "Fixed: cancel on abandonment, idempotent per-job cost booking inside replicate_client, pending marker before POST.",
         "OPEN (pipeline.py, queued behind PR #134): pipeline still emits its own separating/completed cost_usd (now 0.0 normally); _fetch_stems failure is covered because cost is booked at poll success."
       ]
+    },
+    {
+      "id": "WK-KEY-FROM-DRUMS",
+      "opened": "2026-11-18",
+      "title": "Musical key detected from the drums stem instead of the song (wrong keys in prod, BPM correct)",
+      "severity": "high",
+      "area": "apps/worker/src/worker/pipeline.py",
+      "related_pr": "v3/fix-key-detection",
+      "repro": [
+        "cd apps/worker && python -m pytest tests/test_key_detection.py"
+      ],
+      "notes": [
+        "extract_and_tag passed the beat-reference stem (drums whenever present) to detect_bpm_and_key. A drum stem has no tonal centre. Prod 2026-11-18: Lucky Ticket G minor (A major), I'm Asking You B minor (A minor), Offline C# major (G major). Fixed: key is detected from the mono sum of all stems; BPM still from the drums beat grid.",
+        "Existing jobs/loops rows keep their old keys; re-tag of retained rows is proposed in the PR, not run."
+      ]
     }
   ],
-  "last_updated": "2026-11-05",
+  "last_updated": "2026-11-18",
   "note": "Pre-allocated per TSD §9. Add regression cases here."
 }

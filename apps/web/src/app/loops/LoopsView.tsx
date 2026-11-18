@@ -46,6 +46,7 @@ import type { Job } from '@stem-loops/types';
 import { LoopResults } from '@/components/LoopResults';
 import { getStoredHistoryEntries } from '@/lib/history';
 import { formatExpiresIn } from '@/lib/retention';
+import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
 import { jobLabel } from '@/lib/job-label';
 import {
   LOOPS_CLOSED_COPY,
@@ -440,8 +441,9 @@ export default function LoopsView({
           ) : view.kind === 'ready' ? (
             (view.job.loops ?? []).length === 0 ? (
               <p className="lp-muted" role="status" data-testid="lp-no-loops">
-                We found no steady beat in this song, so there are no bar-length loops to cut. The stems and chords
-                are still in the player.
+                We found no steady beat in this song, so there are no bar-length loops to cut.{' '}
+                {/* DB-17 (lib/chords-claim.ts): no chord claim when the switch is off. */}
+                {CHORDS_LINE_SHOWN ? 'The stems and chords are still in the player.' : 'The stems are still in the player.'}
               </p>
             ) : (
               <LoopResults

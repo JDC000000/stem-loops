@@ -34,6 +34,7 @@ import { MAX_TRACK_SEC } from '@/lib/play/types';
 import { JsonLd } from '@/components/seo/JsonLd';
 import { homeGraph } from '@/lib/seo/jsonld';
 import { pageFor } from '@/lib/seo/pages';
+import { OG_ALT, OG_IMAGE } from '@/lib/seo/site';
 
 // Story 1.4 (revised 2026-11-14): any song is accepted and its FIRST MAX_TRACK_MIN minutes are
 // used — a longer track is trimmed on our end and still converted. The copy says the figure in minutes,
@@ -45,8 +46,7 @@ const OG_TITLE = 'Paste a song. Play along.';
 const OG_DESC = CHORDS_LINE_SHOWN
   ? 'Six stems with faders, mute and solo, and a chord track that moves with the song. Loop a detected section until you have it.'
   : 'Six stems with faders, mute and solo. Loop a detected section until you have it.';
-const OG_ALT =
-  'Four chord names, Gm, E flat, B flat and F, above six mixer channels for drums, bass, guitar, keys, vocals and other, with the guitar fader pulled down and muted, under the headline Paste a song. Play along.';
+// The image and its alt text are switched together in lib/seo/site.ts (DB-17).
 
 export const metadata: Metadata = {
   title: { absolute: 'stem-loops: play along with any song, stem by stem' },
@@ -60,9 +60,9 @@ export const metadata: Metadata = {
     url: '/',
     title: OG_TITLE,
     description: OG_DESC,
-    images: [{ url: '/og-image-v4.png', width: 1200, height: 630, alt: OG_ALT }],
+    images: [{ url: OG_IMAGE, width: 1200, height: 630, alt: OG_ALT }],
   },
-  twitter: { card: 'summary_large_image', title: OG_TITLE, description: OG_DESC, images: [{ url: '/og-image-v4.png', alt: OG_ALT }] },
+  twitter: { card: 'summary_large_image', title: OG_TITLE, description: OG_DESC, images: [{ url: OG_IMAGE, alt: OG_ALT }] },
 };
 
 export default function HomePage() {

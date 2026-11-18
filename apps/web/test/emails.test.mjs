@@ -259,11 +259,14 @@ async function loadTemplate(name) {
     `from '${dataUrl('export {};')}'`,
   );
   js = js.replace(/from ['"]\.\/shared['"]/g, `from '${sharedUrl}'`);
+  // welcome reads the DB-17 chords switch: the REAL module, transpiled, never a stub.
+  js = js.replace(/from ['"]@\/lib\/chords-claim['"]/g, `from '${chordsClaimUrl}'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
 const sharedUrl = dataUrl(
   toJs(readFileSync(join(WEB, 'src/lib/emails/templates/shared.ts'), 'utf8')),
 );
+const chordsClaimUrl = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/chords-claim.ts'), 'utf8')));
 
 // D3 (emails v1.2 R2): the subscriber welcome is a service email, so the
 // "/pricing" link is gone. The /account pin holds.

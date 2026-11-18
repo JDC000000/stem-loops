@@ -17,7 +17,7 @@ import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PRICE, loadStripeProvider, loadWebhookRoute, makeState, envelope, deliver,
-  subscriptionFixture,
+  subscriptionFixture, invoiceFixture,
 } from './helpers/billing-harness.mjs';
 
 const USER = '11111111-1111-1111-1111-111111111111';
@@ -194,6 +194,85 @@ test('current state carries an unknown price -> dropped with 200, nothing grante
   assert.equal(res.status, 200);
   assert.equal(state.subscriptions.length, 0);
   assert.equal(state.entitlements.length, 0);
+});
+
+// ---- invoice.payment_failed: same bug class --------------------------------
+// A renewal fails, Stripe retries the card and it succeeds (invoice.paid),
+// then the payment_failed delivery that had 500'd is retried. Applying the
+// event alone left a paying subscriber past_due, and readSnapshot drops a
+// past_due user to free once PAST_DUE_GRACE_MS runs out.
+
+const cycleFailed = (over = {}) => envelope('invoice.payment_failed',
+  invoiceFixture({ id: 'in_cycle_2', billing_reason: 'subscription_cycle', attempt_count: 1, ...over }));
+
+test('payment_failed: stale failure after invoice.paid -> stays active, no R7', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  // The renewal fails; the delivery 500s, so Stripe will retry it.
+  const stale = cycleFailed();
+  h.subs.sub_test_1 = sub({ status: 'past_due' });
+  state.failures.push({ re: /^UPDATE subscriptions SET status/, times: 1 });
+  assert.equal((await raw(stale)).status, 500);
+  // Stripe's own retry of the card succeeds: subscription active, invoice paid.
+  h.subs.sub_test_1 = sub();
+  assert.equal((await raw(envelope('invoice.paid', invoiceFixture({ id: 'in_cycle_2', billing_reason: 'subscription_cycle' })))).status, 200);
+  state.emails.length = 0;
+  // Now the stale payment_failed is retried.
+  const before = retrieves();
+  assert.equal((await raw(stale)).status, 200);
+  assert.ok(retrieves() > before, 'payment_failed must re-read the subscription from Stripe');
+  assert.equal(row().status, 'active', 'a stale payment_failed marked a paid subscription past_due');
+  assert.equal(plan(), 'pro');
+  assert.deepEqual(state.emails.map((e) => e.fn), [], 'no "payment failed" email for a paid renewal');
+});
+
+test('payment_failed: stale failure also repairs a row an earlier delivery left past_due', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  state.subscriptions[0].status = 'past_due';
+  await raw(cycleFailed());
+  assert.equal(row().status, 'active');
+});
+
+test('payment_failed: genuine failure (Stripe says past_due) -> past_due, entitlement kept for grace, R7 once', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  state.emails.length = 0;
+  state.invalidated.length = 0;
+  h.subs.sub_test_1 = sub({ status: 'past_due' });
+  const evt = cycleFailed();
+  assert.equal((await raw(evt)).status, 200);
+  assert.equal(row().status, 'past_due');
+  assert.equal(plan(), 'pro', 'row kept; readSnapshot applies the grace window');
+  assert.deepEqual(state.invalidated, [USER]);
+  assert.deepEqual(state.emails.map((e) => e.fn), ['sendPaymentFailed']);
+  assert.equal(state.emails[0].vars.provider_invoice_id, 'in_cycle_2');
+});
+
+test('payment_failed: Stripe read fails -> 500 (Stripe retries), row untouched, no R7; the retry applies', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  state.emails.length = 0;
+  delete h.subs.sub_test_1; // the mocked subscriptions.retrieve now throws
+  const evt = cycleFailed();
+  assert.equal((await raw(evt)).status, 500);
+  assert.equal(row().status, 'active', 'nothing written on a failed read');
+  assert.deepEqual(state.emails.map((e) => e.fn), []);
+  h.subs.sub_test_1 = sub({ status: 'past_due' });
+  assert.equal((await raw(evt)).status, 200);
+  assert.equal(row().status, 'past_due');
+  assert.deepEqual(state.emails.map((e) => e.fn), ['sendPaymentFailed']);
+});
+
+test('payment_failed: current state carries an unknown price -> dropped with 200, row untouched', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  h.subs.sub_test_1 = sub({
+    status: 'past_due',
+    items: { object: 'list', data: [{ ...subscriptionFixture().items.data[0], price: { id: 'price_legacy', object: 'price' } }] },
+  });
+  assert.equal((await raw(cycleFailed())).status, 200);
+  assert.equal(row().status, 'active');
 });
 
 // ---- the harness itself cannot reach Stripe ----------------------------------

@@ -282,12 +282,13 @@ export function fakeDb(state) {
       rows.forEach((s) => { s.status = 'canceled'; });
       return r(rows.map((s) => ({ user_id: s.user_id, plan_code: s.plan_code, current_period_end: s.current_period_end })));
     }
-    if (/^UPDATE subscriptions SET status = 'past_due'/.test(q)) {
+    if (/^UPDATE subscriptions SET status = \$3, updated_at = now\(\)/.test(q)) {
+      // invoice_payment_failed applies Stripe's CURRENT status (QA B-04).
       // Mirrors `AND status NOT IN ('incomplete', 'canceled')` (review B1).
-      assert(/AND status NOT IN \('incomplete', 'canceled'\)/.test(q), 'past_due UPDATE must skip incomplete/canceled');
+      assert(/AND status NOT IN \('incomplete', 'canceled'\)/.test(q), 'payment_failed UPDATE must skip incomplete/canceled');
       const rows = state.subscriptions.filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1]
         && !['incomplete', 'canceled'].includes(s.status));
-      rows.forEach((s) => { s.status = 'past_due'; });
+      rows.forEach((s) => { s.status = p[2]; });
       return r(rows.map((s) => ({ user_id: s.user_id, plan_code: s.plan_code, current_period_start: s.current_period_start })));
     }
     if (/^INSERT INTO entitlements/.test(q)) {

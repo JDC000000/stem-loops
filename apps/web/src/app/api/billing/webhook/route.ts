@@ -22,8 +22,9 @@
 //                        resolves it into session.metadata since M7 — see migration 015)
 //
 // Ordering (QA B-04): Stripe neither orders nor de-duplicates deliveries.
-// Subscription events re-read the subscription from Stripe and apply its
-// CURRENT state, never the payload, and a stored `canceled` row is terminal.
+// Subscription events and invoice.payment_failed re-read the subscription
+// from Stripe and apply its CURRENT state, never the payload; a stored
+// `canceled` row is terminal.
 // Credit packs are priced from the session's line items, never its metadata.
 //
 // Raw body: we MUST use req.text() (Next 14 App Router) — JSON parsing
@@ -806,20 +807,53 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
     }
 
     case 'invoice_payment_failed': {
-      // Flip the subscription to past_due. Access continues for the grace
-      // window (PAST_DUE_GRACE_MS, applied by readSnapshot) and then drops to
-      // free; the entitlement row itself is left alone.
-      const res = await db.query<{
-        user_id: string;
-        plan_code: 'pro' | 'studio';
-        current_period_start: Date | string | null;
-      }>(
-        `UPDATE subscriptions SET status = 'past_due', updated_at = now()
-          WHERE provider = $1 AND provider_subscription_id = $2
-            AND status NOT IN ('incomplete', 'canceled')
-          RETURNING user_id, plan_code, current_period_start`,
-        [providerName, evt.providerSubscriptionId],
-      );
+      // QA B-04, same bug class as subscription_upserted: this used to flip
+      // the row to past_due on the event alone, so a stale or late
+      // payment_failed that landed AFTER the retry succeeded (invoice.paid)
+      // left a paying subscriber past_due, and readSnapshot dropped them to
+      // free once the grace window ran out. Now the subscription is re-read
+      // from the provider and its CURRENT status is applied. A failed read
+      // throws (500, Stripe retries); an unmappable price/status is dropped
+      // with a log, as in subscription_upserted.
+      let current: BillingSubscription;
+      try {
+        current = await getBillingProvider().getSubscription(evt.providerSubscriptionId);
+      } catch (err) {
+        const name = err instanceof Error ? err.name : '';
+        if (name === 'UnknownPriceError' || name === 'UnknownStatusError') {
+          console.error(
+            `[webhook] invoice_payment_failed ${evt.providerSubscriptionId} dropped: ${(err as Error).message}`,
+          );
+          return;
+        }
+        throw err;
+      }
+      // Only the statuses this event can settle are written here: past_due
+      // (the failure stands; access continues for PAST_DUE_GRACE_MS, applied
+      // by readSnapshot, then drops to free) or active/trialing (the retry
+      // already succeeded; the event is stale). canceled / paused /
+      // incomplete belong to the subscription events, which re-read too and
+      // also move the entitlement. The row guard is unchanged: never touch a
+      // never-paid `incomplete` row (review B1) or a terminal `canceled` one.
+      const settles = ['past_due', 'active', 'trialing'].includes(current.status);
+      const res = settles
+        ? await db.query<{
+            user_id: string;
+            plan_code: 'pro' | 'studio';
+            current_period_start: Date | string | null;
+          }>(
+            `UPDATE subscriptions SET status = $3, updated_at = now()
+              WHERE provider = $1 AND provider_subscription_id = $2
+                AND status NOT IN ('incomplete', 'canceled')
+              RETURNING user_id, plan_code, current_period_start`,
+            [providerName, evt.providerSubscriptionId, current.status],
+          )
+        : { rows: [] as Array<{ user_id: string; plan_code: 'pro' | 'studio'; current_period_start: Date | string | null }> };
+      if (!settles) {
+        console.info(
+          `[webhook] invoice_payment_failed ${evt.providerInvoiceId ?? '?'}: subscription ${evt.providerSubscriptionId} is ${current.status}; left to subscription events`,
+        );
+      }
       const failedRow = res.rows[0];
       const failedUser = failedRow?.user_id ?? evt.userId;
       if (failedUser) invalidateEntitlement(failedUser);
@@ -839,6 +873,13 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         return;
       }
       if (!failedRow || !evt.providerInvoiceId) return;
+      // A stale failure (the retry already succeeded) sends no R7.
+      if (current.status !== 'past_due') {
+        console.info(
+          `[webhook] invoice_payment_failed ${evt.providerInvoiceId}: no email (subscription is ${current.status} now)`,
+        );
+        return;
+      }
       const periodStart = evt.periodStart ?? failedRow.current_period_start;
       if (!periodStart) return;
       await emailBestEffort('payment_failed', () =>

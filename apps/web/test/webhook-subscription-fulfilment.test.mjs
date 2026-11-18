@@ -119,6 +119,7 @@ test('subscription.updated status=canceled downgrades to free', async () => {
 test('invoice.payment_failed marks past_due and invalidates the cache for the real user (no metadata)', async () => {
   await deliver(route, envelope('customer.subscription.created', subscriptionFixture({ metadata: { user_id: USER } })));
   state.invalidated.length = 0;
+  h.subs.sub_test_1 = subscriptionFixture({ status: 'past_due', metadata: { user_id: USER } }); // Stripe: renewal failed
   const res = await deliver(route, envelope('invoice.payment_failed', invoiceFixture()));
   assert.equal(res.status, 200);
   assert.equal(state.subscriptions[0].status, 'past_due');

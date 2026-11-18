@@ -452,7 +452,10 @@ test('S1: the screen scrolls only when its content cannot fit (CSS contract; mea
   assert.match(css, /\.body\s*\{[^}]*flex:\s*1 0 auto;/, 'the body never shrinks below its content');
   const stage = css.match(/\.stage\s*\{([^}]*)\}/)[1];
   assert.match(stage, /flex:\s*1 1 0;/, 'the stage takes the remainder');
-  assert.match(stage, /min-height:\s*\d+px;/, 'down to a floor, then the screen scrolls');
+  assert.doesNotMatch(stage, /overflow:\s*hidden/, 'the stage must keep its content minimum (notice + chord floor), R2');
+  const chords = css.match(/\.chords\s*\{([^}]*)\}/)[1];
+  assert.match(chords, /min-height:\s*200px;/, 'the chord area floor (stageChromePx(28) + one 62px line), then the screen scrolls');
+  assert.match(chords, /overflow:\s*hidden;/);
   assert.match(css, /@media \(max-height: 499px\) and \(min-width: 560px\)/, 'a 320px-wide zoomed window is a phone column, not two 160px columns');
   assert.match(read('src/components/play/Sheet.module.css'), /\.backdrop\s*\{[^}]*position:\s*fixed;/, 'the sheet covers the viewport even when the screen is scrolled');
 });

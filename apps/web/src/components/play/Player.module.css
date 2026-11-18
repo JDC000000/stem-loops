@@ -156,24 +156,27 @@
 }
 
 .stage {
-  /* The stage takes the remainder (basis 0) down to a floor that still shows
-     where you are, Now/Next, the beat row and the current bar line; the chord
-     view drops the NEXT line when it has no room. Below the floor the screen
-     scrolls instead (WCAG 1.4.10, .root). */
+  /* The stage takes the remainder (basis 0). Its own minimum is its content's:
+     the notice bar (when there is one) plus the chord area's floor below, so a
+     notice never pushes the chords under the section strip — the screen scrolls
+     instead (WCAG 1.4.10, .root; review R2/R3 on #288). */
   flex: 1 1 0;
-  min-height: 230px;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   padding: 14px 20px 10px;
-  overflow: hidden;
 }
 
 .chords {
-  flex: 1 1 auto;
-  min-height: 0;
+  /* THE FLOOR: where you are, Now/Next (down to 28px), the beat row and the
+     current bar line (ChordPhone.helpers stageChromePx(28) + one 62px line =
+     192px). The chord view sizes itself to this box's measured height: it picks
+     the Now step, drops the NEXT line and grows the bars to fit, never past it. */
+  flex: 1 1 0;
+  min-height: 200px;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 /* The one notice bar at the top of the stage (P1.1). */
@@ -375,6 +378,15 @@
   .main > [data-testid='transport'] { padding-left: 40px; padding-right: 40px; }
 }
 
+/* Short desktop windows (1024x500 to ~1366x620): the same two columns with
+   compact chrome, so the floor still fits without a scroll (review R5). */
+@media (min-width: 1024px) and (min-height: 500px) and (max-height: 620px) {
+  .head { height: 56px; }
+  .stage { padding: 6px 40px 6px; gap: 8px; }
+  .main { padding-bottom: 0; }
+  .aside { padding: 16px 24px; gap: 10px; }
+}
+
 /* ── P1.4 rule 1: short screens (landscape phones) — two columns ───────── */
 /* (min-width: a 320px-wide window at 400% zoom is a phone column that scrolls,
    not two 160px columns.) */
@@ -383,7 +395,7 @@
   .body { flex-direction: row; max-width: none; }
   .main {
     display: grid;
-    grid-template-columns: minmax(0, 6fr) minmax(0, 4fr);
+    grid-template-columns: minmax(0, 55fr) minmax(0, 45fr);
     grid-template-rows: 1fr auto auto;
   }
   .stage { grid-column: 1; grid-row: 1 / span 3; padding: 8px 16px; }

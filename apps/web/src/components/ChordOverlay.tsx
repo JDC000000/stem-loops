@@ -1615,24 +1615,43 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
   // GROWN_BAR_PX tall. The fit ladder itself is unchanged.
   // No room for the next line at the smallest Now (a short or zoomed screen):
   // drop it rather than clip it. The current line always stays.
-  const minNow = NOW_SIZES[NOW_SIZES.length - 1];
-  const showNext = !!nextBox && (heightPx <= 0 || heightPx - stageChromePx(minNow) - (curBox?.h ?? 0) - nextBox.h - LINE_GAP_PX >= 0);
-  const linesH = (curBox?.h ?? 0) + (showNext && nextBox ? nextBox.h + LINE_GAP_PX : 0);
+  // Fit EVERYTHING to the measured height (review R2 on #288: never draw a bar
+  // line under the section strip). Ladders are tried largest first; for each,
+  // the Now name is fitted to the width (P1.2's ladder, unchanged), then the
+  // stage needs its chrome + that Now + (Next's own row if it moved) + the bar
+  // lines. The first ladder that fits with both lines wins; failing that, the
+  // first that fits with the current line alone (the NEXT line is dropped, not
+  // clipped). Unknown height: the plain ladders, both lines.
   const wide = widthPx >= WIDE_STAGE_PX;
-  const room = (px: number) => heightPx - stageChromePx(px) - linesH;
-  const ladder = wide
-    ? WIDE_NOW_SIZES
-    : heightPx > 0 && room(TALLER_NOW_PX) >= 0
-      ? TALLER_NOW_SIZES
-      : heightPx > 0 && room(TALL_NOW_PX) >= 0
-        ? TALL_NOW_SIZES
-        : NOW_SIZES;
   const nextPx = wide ? WIDE_NEXT_PX : NEXT_PX;
-  // The Now name is fitted to the room Next leaves (P1.2's ladder).
-  const fit = fitNowName(nowText, widthPx - 4, nx ? Math.max(nameWidthPx(whenText, 13, 1.05), nameWidthPx(nextText, nextPx, 1.12)) : 0, ladder);
-  // Next on its own row (the ladder's last resort) costs its label and name.
-  const nextRowPx = fit.nextBelow ? Math.ceil(13 * 1.3 + nextPx * 1.1 + 4) : 0;
-  const lineScale = growScale(heightPx > 0 ? room(fit.lines.length * fit.px) - nextRowPx : 0, curBox, showNext ? nextBox : null);
+  const nextW = nx ? Math.max(nameWidthPx(whenText, 13, 1.05), nameWidthPx(nextText, nextPx, 1.12)) : 0;
+  const curH = curBox?.h ?? 0;
+  const bothH = curH + (nextBox ? nextBox.h + LINE_GAP_PX : 0);
+  const ladders: readonly (readonly number[])[] = wide
+    ? [WIDE_NOW_SIZES, TALL_NOW_SIZES, NOW_SIZES]
+    : [TALLER_NOW_SIZES, TALL_NOW_SIZES, NOW_SIZES];
+  const fitFor = (l: readonly number[]) => fitNowName(nowText, widthPx - 4, nextW, l);
+  const need = (f: ReturnType<typeof fitNowName>, lines: number) =>
+    stageChromePx(f.lines.length * f.px) + (f.nextBelow ? Math.ceil(13 * 1.3 + nextPx * 1.1 + 4) : 0) + lines;
+  let fit = fitFor(wide ? WIDE_NOW_SIZES : NOW_SIZES);
+  let showNext = !!nextBox;
+  if (heightPx > 0) {
+    const fits = (lines: number) => {
+      for (const l of ladders) {
+        const f = fitFor(l);
+        if (need(f, lines) <= heightPx) return f;
+      }
+      return null;
+    };
+    const withBoth = nextBox ? fits(bothH) : null;
+    if (withBoth) fit = withBoth;
+    else {
+      showNext = false;
+      fit = fits(curH) ?? fitFor(NOW_SIZES);
+    }
+  }
+  const linesH = showNext ? bothH : curH;
+  const lineScale = growScale(heightPx > 0 ? heightPx - need(fit, linesH) : 0, curBox, showNext ? nextBox : null);
 
   // The Mix sheet header reads these. Fired on a CHANGE of name, never per frame.
   const nowSpoken = nowRun ? spokenSymbol(nowRun) : '';

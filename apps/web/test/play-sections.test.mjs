@@ -532,6 +532,28 @@ test('strip (DOM): long-press 500 ms = loop only this, and the POINTER click aft
   });
 });
 
+test('strip (DOM, review R1): a LONG hold (2000 ms) still swallows its release click; the window starts at release', async () => {
+  const { mod, React } = await loadComponent();
+  await withDom(async (dom) => {
+    const taps = [];
+    const longs = [];
+    await dom.mount(React.createElement(mod.SectionLoop, { names: NAMES, state: NO_RUN, onTap: (i) => taps.push(i), onLongPress: (i) => longs.push(i) }));
+    const chip = dom.findAll('button')[2];
+    for (const pointerType of ['mouse', 'touch']) {
+      taps.length = 0;
+      await dom.pointer('pointerdown', chip, { clientX: 10, clientY: 10, pointerType });
+      await dom.advance(2000); // held well past LONG_PRESS_MS + SWALLOW_WINDOW_MS
+      await dom.pointer('pointerup', chip, { clientX: 10, clientY: 10, pointerType });
+      await pointerClick(dom, chip);
+      assert.deepEqual(taps, [], `${pointerType}: the release click after a 2 s hold undid the long-press`);
+      await dom.advance(mod.SWALLOW_WINDOW_MS + 50);
+    }
+    assert.equal(longs.length, 2);
+    assert.ok(2000 > mod.LONG_PRESS_MS + mod.SWALLOW_WINDOW_MS, 'the hold must outlast the old (fire-time) window');
+    await dom.unmountAll();
+  });
+});
+
 test('strip (DOM, review S2): a long-press whose click never comes cannot swallow a later activation', async () => {
   const { mod, React } = await loadComponent();
   assert.ok(mod.SWALLOW_WINDOW_MS > 0 && mod.SWALLOW_WINDOW_MS <= 1000);
@@ -552,9 +574,10 @@ test('strip (DOM, review S2): a long-press whose click never comes cannot swallo
     await dom.keydown('Enter', { target: b });
     await pointerClick(dom, b);
     assert.deepEqual(taps, [1, 1], 'a keydown in between must clear the flag');
-    // And the flag times out: a pointer click well after the long-press is a tap.
+    // And the flag times out: a pointer click well after the long-press is RELEASED is a tap.
     await dom.pointer('pointerdown', a, { clientX: 10, clientY: 10, pointerType: 'touch' });
     await dom.advance(550);
+    await dom.pointer('pointerup', a, { clientX: 10, clientY: 10, pointerType: 'touch' });
     await dom.advance(mod.SWALLOW_WINDOW_MS + 50);
     await pointerClick(dom, b);
     assert.deepEqual(taps, [1, 1, 1], 'the flag outlived its window');

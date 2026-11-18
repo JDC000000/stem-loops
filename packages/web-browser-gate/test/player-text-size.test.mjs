@@ -161,16 +161,26 @@ async function bundle() {
         import { PlayerView } from './src/components/play/Player.tsx';
         import './src/app/globals.css';
         const noop = () => {};
-        createRoot(document.getElementById('root')).render(
+        const root = createRoot(document.getElementById('root'));
+        // onLoop behaves like the engine: the loop it is handed is in the next
+        // snapshot (so the screen shows "Looping" only when the engine does), and
+        // every call is recorded for the R1 long-press check.
+        const draw = () => root.render(
           React.createElement(PlayerView, {
             jobId: 'gate-job',
             phase: { kind: 'ready' },
             snapshot: window.__gateSnapshot,
             sections: window.__gateSections,
             onPlay: noop, onPause: noop, onSeek: noop, onGain: noop,
-            onMute: noop, onSolo: noop, onLoop: noop,
+            onMute: noop, onSolo: noop,
+            onLoop: (r) => {
+              (window.__loops = window.__loops || []).push(r);
+              window.__gateSnapshot = { ...window.__gateSnapshot, loop: r };
+              draw();
+            },
           }),
         );
+        draw();
       `,
       resolveDir: WEB,
       loader: 'js',
@@ -204,8 +214,10 @@ async function bundle() {
   return { js: js.text, css: css?.text ?? '' };
 }
 
-async function openPlayer(browser, built, width, positionSec, height = 900) {
-  const page = await browser.newPage({ viewport: { width, height } });
+async function openPlayer(browser, built, width, positionSec, height = 900, { notice = true, touch = false } = {}) {
+  const page = touch
+    ? await (await browser.newContext({ viewport: { width, height }, isMobile: true, hasTouch: true })).newPage()
+    : await browser.newPage({ viewport: { width, height } });
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(String(e)));
   await page.route('http://gate.test/**', async (route) => {
@@ -221,7 +233,7 @@ async function openPlayer(browser, built, width, positionSec, height = 900) {
           '</head><body>' +
           // The job page's own frame: max 960px, centred, the app gutter.
           '<main style="max-width:960px;margin:0 auto;padding:48px var(--sl-gutter,16px) 96px"><div id="root"></div></main>' +
-          `<script>window.__gateSnapshot=${JSON.stringify(snapshotAt(positionSec))};window.__gateSections=${JSON.stringify(SECTIONS)};</script>` +
+          `<script>window.__gateSnapshot=${JSON.stringify(notice ? snapshotAt(positionSec) : { ...snapshotAt(positionSec), degraded: null })};window.__gateSections=${JSON.stringify(SECTIONS)};</script>` +
           '<script>Promise.all([400,500,600,700].map(function(w){return document.fonts.load(w+" 16px GateInter")}))' +
           ".then(function(){var s=document.createElement('script');s.src='/out.js';document.body.appendChild(s)})</script>" +
           '</body></html>',
@@ -601,7 +613,7 @@ for (const width of VIEWPORTS) {
 // scroll when it fits, and DOES scroll when it cannot (a short window, 400%
 // zoom), so every transport control stays reachable by pointer and touch.
 // ---------------------------------------------------------------------------
-const FITS = [[390, 844], [390, 664], [360, 800], [320, 568], [1440, 900], [1024, 768]];
+const FITS = [[390, 844], [390, 664], [360, 800], [320, 568], [360, 520], [600, 500], [1440, 900], [1024, 768], [1366, 600], [1024, 520], [1024, 500], [667, 375]];
 const ZOOMED = [[320, 256], [320, 225]];
 const CONTROLS = ['[aria-label="Back 5 seconds"]', '[data-testid="transport-play"]', '[aria-label="Forward 5 seconds"]', '[data-testid="transport-loop"]', '[data-testid="transport-mix"]'];
 
@@ -609,7 +621,8 @@ test('S1: no scroll at the sizes the screen fits', async () => {
   assert.ok(browser && built, 'setup test did not run or failed');
   const f = [];
   for (const [w, h] of FITS) {
-    const { page, pageErrors } = await openPlayer(browser, built, w, POSITIONS[0].sec, h);
+    // No notice bar: these are the sizes the screen fits as a user normally sees it.
+    const { page, pageErrors } = await openPlayer(browser, built, w, POSITIONS[0].sec, h, { notice: false });
     try {
       const m = await page.evaluate(() => {
         const r = document.querySelector('[data-testid="player"]');
@@ -662,6 +675,117 @@ test('S1: at 400% zoom (320x256, 320x225) the screen scrolls and Play, ±5, Loop
       assert.deepEqual(pageErrors, []);
     } finally {
       await page.close();
+    }
+  }
+  if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);
+});
+
+// Review R2/R3 on #288: at EVERY size, with a notice bar showing (the gate's
+// snapshot is degraded), the chord stage never draws under the section strip:
+// the current bar line and the Now name sit inside the chord area and end at or
+// above the strip's top (when they share a column). Short or zoomed windows
+// scroll instead. Removing the chord floor (.chords min-height) fails this at
+// 320x256/320x225, where the Now name would be drawn below its own area.
+const SWEEP = [[390, 844], [390, 664], [360, 640], [360, 520], [320, 568], [320, 256], [320, 225], [600, 500], [1024, 500], [1024, 520], [1100, 540], [1280, 600], [1366, 600], [1440, 900], [667, 375], [844, 390]];
+test('R2/R3: the current bar line and the Now name never sit under the section strip (sweep, with a notice)', async () => {
+  assert.ok(browser && built, 'setup test did not run or failed');
+  const f = [];
+  let measured = 0;
+  for (const [w, h] of SWEEP) {
+    const { page, pageErrors } = await openPlayer(browser, built, w, POSITIONS[0].sec, h);
+    try {
+      const m = await page.evaluate(() => {
+        const rect = (sel) => { const e = document.querySelector(sel); if (!e) return null; const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom }; };
+        const nameEl = document.querySelector('[data-testid="phone-chords"] [data-testid="playhead-now-name"]');
+        let name = null;
+        if (nameEl) { const rg = document.createRange(); rg.selectNodeContents(nameEl); const r = rg.getBoundingClientRect(); name = { l: r.left, r: r.right, t: r.top, b: r.bottom }; }
+        return { notice: !!document.querySelector('[data-testid="player-notice"]'), area: rect('[data-testid="chord-overlay"][data-view="stage"]'), line: rect('[data-testid="phone-line-current"]'), name, strip: rect('[data-testid="section-strip"]') };
+      });
+      const tag = `${w}x${h}`;
+      if (!m.notice) f.push(`${tag}: no notice bar, so this case does not test what it names`);
+      if (!m.area || !m.line || !m.name || !m.strip) { f.push(`${tag}: missing ${JSON.stringify(m)}`); continue; }
+      measured++;
+      const inside = (x) => x.t >= m.area.t - 0.5 && x.b <= m.area.b + 0.5;
+      if (!inside(m.line)) f.push(`${tag}: the current bar line (${m.line.t.toFixed(1)}–${m.line.b.toFixed(1)}) is outside the chord area (${m.area.t.toFixed(1)}–${m.area.b.toFixed(1)})`);
+      if (!inside(m.name)) f.push(`${tag}: the Now name (${m.name.t.toFixed(1)}–${m.name.b.toFixed(1)}) is outside the chord area (${m.area.t.toFixed(1)}–${m.area.b.toFixed(1)})`);
+      const sameColumn = (x) => x.l < m.strip.r && x.r > m.strip.l;
+      for (const [what, x] of [['current bar line', m.line], ['Now name', m.name]]) {
+        if (sameColumn(x) && x.b > m.strip.t + 0.5) f.push(`${tag}: the ${what} ends at ${x.b.toFixed(1)}, under the strip (top ${m.strip.t.toFixed(1)})`);
+      }
+      assert.deepEqual(pageErrors, []);
+    } finally {
+      await page.close();
+    }
+  }
+  if (measured < SWEEP.length) f.push(`only ${measured}/${SWEEP.length} sizes measured`);
+  if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);
+});
+
+// Review R4: landscape phones keep every control >= 44x44 (Loop was 31.6px wide).
+test('R4: landscape (667x375, 740x360, 844x390): every player control is at least 44x44', async () => {
+  assert.ok(browser && built, 'setup test did not run or failed');
+  const f = [];
+  for (const [w, h] of [[667, 375], [740, 360], [844, 390]]) {
+    const { page } = await openPlayer(browser, built, w, POSITIONS[0].sec, h, { notice: false });
+    try {
+      const small = await page.evaluate(() => {
+        const out = [];
+        let n = 0;
+        for (const el of document.querySelectorAll('[data-testid="player"] button, [data-testid="player"] a[href], [data-testid="player"] input')) {
+          if (el.closest('[hidden]') || el.matches('[data-testid^="phone-slot-"]')) continue; // chord slots: width is musical time (j7 carve-out 2)
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 && r.height === 0) continue;
+          n++;
+          if (r.width < 44 - 0.01 || r.height < 44 - 0.01) out.push(`${(el.getAttribute('aria-label') || el.textContent || el.tagName).trim().slice(0, 30)} ${r.width.toFixed(1)}x${r.height.toFixed(1)}`);
+        }
+        return { n, out };
+      });
+      if (small.n < 10) f.push(`${w}x${h}: only ${small.n} controls measured`);
+      for (const s of small.out) f.push(`${w}x${h}: ${s}`);
+    } finally {
+      await page.close();
+    }
+  }
+  if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);
+});
+
+// Review R1: a long-press held for 2 s (mouse AND touch) must leave the chip
+// looping: its release click is swallowed however long the hold was.
+test('R1: a 2-second long-press loops that chip, by mouse and by touch (the release click is swallowed)', async () => {
+  assert.ok(browser && built, 'setup test did not run or failed');
+  const f = [];
+  for (const touch of [false, true]) {
+    const { page } = await openPlayer(browser, built, 390, POSITIONS[0].sec, 844, { notice: false, touch });
+    try {
+      const chip = page.locator('[data-testid="section-strip"] button').nth(4);
+      await chip.scrollIntoViewIfNeeded();
+      const b = await chip.boundingBox();
+      const x = b.x + b.width / 2;
+      const y = b.y + b.height / 2;
+      if (touch) {
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+        await page.waitForTimeout(2000);
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      } else {
+        await page.mouse.move(x, y);
+        await page.mouse.down();
+        await page.waitForTimeout(2000);
+        await page.mouse.up();
+      }
+      await page.waitForTimeout(300);
+      const loops = await page.evaluate(() => window.__loops ?? []);
+      const pressed = await page.locator('[data-testid="section-strip"] button[aria-pressed="true"]').count();
+      const want = SECTIONS[4];
+      const last = loops[loops.length - 1];
+      const how = touch ? 'touch' : 'mouse';
+      if (loops.length === 0) f.push(`${how}: the long-press set no loop`);
+      else if (!last || Math.abs(last.startSec - want.startSec) > 0.01 || Math.abs(last.endSec - want.endSec) > 0.01)
+        f.push(`${how}: after a 2 s hold the last loop call was ${JSON.stringify(last)} (calls ${JSON.stringify(loops)}); the release click undid the long-press`);
+      else if (pressed !== 1) f.push(`${how}: ${pressed} chips pressed after the long-press, want 1`);
+    } finally {
+      await page.context().close().catch(() => {});
+      await page.close().catch(() => {});
     }
   }
   if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);

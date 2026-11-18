@@ -11,9 +11,11 @@ export const LONG_PRESS_MS = 500;
 export const LONG_PRESS_SLOP_PX = 10;
 
 /**
- * How long after a long-press its release click may still arrive. Past this the
- * swallow flag is dropped, so a long-press whose click never comes (the finger
- * slid off, or the browser suppressed it) cannot eat a later activation.
+ * How long after the long-press is RELEASED (pointerup / pointercancel /
+ * pointerleave) its click may still arrive. The flag is held for as long as the
+ * pointer stays down — a 2-second hold must still swallow its release click
+ * (review R1 on #288) — and dropped this long after the release, so a click that
+ * never comes cannot eat a later activation.
  */
 export const SWALLOW_WINDOW_MS = 700;
 
@@ -89,12 +91,16 @@ export function SectionLoop({ names, state, onTap, onLongPress, hint = false }: 
     start.current = { x: e.clientX, y: e.clientY };
     timer.current = setTimeout(() => {
       timer.current = null;
+      // Held: swallow the click that follows the RELEASE. The expiry window is
+      // armed at release (see `release`), never here.
       swallow.current = true;
-      // The release click arrives right after pointerup; if it never does,
-      // the flag must not outlive this window.
-      swallowTimer.current = setTimeout(clearSwallow, SWALLOW_WINDOW_MS);
       onLongPress(i);
     }, LONG_PRESS_MS);
+  };
+  /** The pointer let go (or left): end the press, and start the swallow window if armed. */
+  const release = () => {
+    cancel();
+    if (swallow.current && !swallowTimer.current) swallowTimer.current = setTimeout(clearSwallow, SWALLOW_WINDOW_MS);
   };
   const move = (e: ReactPointerEvent<HTMLButtonElement>) => {
     const s = start.current;
@@ -119,9 +125,9 @@ export function SectionLoop({ names, state, onTap, onLongPress, hint = false }: 
               aria-pressed={pressed}
               onPointerDown={down(i)}
               onPointerMove={move}
-              onPointerUp={cancel}
-              onPointerCancel={cancel}
-              onPointerLeave={cancel}
+              onPointerUp={release}
+              onPointerCancel={release}
+              onPointerLeave={release}
               onContextMenu={(e) => e.preventDefault()}
               onKeyDown={clearSwallow}
               onClick={(e) => {

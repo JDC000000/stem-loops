@@ -143,12 +143,29 @@ def test_our_fault_failure_after_paid_call_returns_the_credit(conn, _pipeline_db
     )
 
 
-@pytest.mark.parametrize("code", ["UPLOAD_INVALID", "UPLOAD_TOO_LONG", "EXTRACTION_FAILED"])
+@pytest.mark.parametrize("code", ["UPLOAD_INVALID", "EXTRACTION_FAILED"])
 def test_failure_before_any_paid_call_returns_the_credit(conn, _pipeline_db, code):
+    """An empty, corrupt or too-short upload rejected before separation: refunded."""
     uid = _user(conn)
     jid = _job(conn, uid, pred=None)
     _fail(_pipeline_db, jid, code)
+    _fail(_pipeline_db, jid, code)  # a second failure path refunds nothing more
+    assert _refund_rows(conn, jid) == 1
     assert _balance(conn, uid) == 20
+
+
+def test_an_over_length_upload_is_never_refunded(conn, _pipeline_db):
+    """Jon 2026-11-18 09:23 PT: "No refund for over length." Even with no paid call made."""
+    uid = _user(conn)
+    jid = _job(conn, uid, pred=None)
+    _fail(_pipeline_db, jid, "UPLOAD_TOO_LONG")
+    assert conn.execute("SELECT status, error_code FROM jobs WHERE id=%s", (jid,)).fetchone() == (
+        "failed",
+        "UPLOAD_TOO_LONG",
+    )
+    assert "UPLOAD_TOO_LONG" not in _pipeline_db._OUR_FAULT_CODES
+    assert _refund_rows(conn, jid) == 0
+    assert _balance(conn, uid) == 19
 
 
 def test_input_caused_failure_after_paid_separation_keeps_the_credit(conn, _pipeline_db):

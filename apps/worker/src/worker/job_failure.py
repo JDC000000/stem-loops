@@ -27,12 +27,18 @@ from .logger import log_structured
 # job we abandoned): the credit the web route debited for this job is returned.
 OUR_FAULT_CODES = ("SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR")
 REFUND_PROVIDER = "worker_job_failed"
+# Never refunded, even though no paid call was made (Jon 2026-11-18 09:23 PT: "No refund for
+# over length."). Today an over-length upload is not rejected at all: it is TRIMMED to its
+# first MAX_UPLOAD_DURATION_SEC seconds and processed (Jon, 2026-11-14), so it never fails
+# with this code. This pins the decision for the day a refusal path comes back, and for rows
+# failed before the trim. A user-fault code, decided from the STORED error_code like the rest.
+NEVER_REFUNDED_CODES = ("UPLOAD_TOO_LONG",)
 
 # One credit back for a FAILED credit-funded job when either
 #   * the failure is ours: the job's STORED error_code is in OUR_FAULT_CODES, or
 #   * no paid provider call was made (replicate_prediction_id IS NULL: a corrupt, empty or
-#     over-length upload rejected before separation) -- nothing was spent, so this cannot be
-#     farmed.
+#     too-short upload rejected before separation) -- nothing was spent, so this cannot be
+#     farmed -- EXCEPT a NEVER_REFUNDED_CODES failure (over length: Jon, 2026-11-18).
 # NOT refunded: an input-caused failure AFTER paid separation (EXTRACTION_FAILED on a
 # beatless / too-short track); refunding that would make Replicate spend free to trigger.
 #
@@ -55,6 +61,7 @@ SELECT cc.user_id, 1, 'adjustment', %(provider)s, cc.job_id::text
  WHERE cc.job_id = %(job_id)s
    AND j.status = 'failed'
    AND (j.error_code = ANY(%(our_fault_codes)s) OR j.replicate_prediction_id IS NULL)
+   AND COALESCE(j.error_code, '') <> ALL(%(never_refunded_codes)s)
 ON CONFLICT (provider, provider_event_id) DO NOTHING
 RETURNING user_id
 """
@@ -79,7 +86,12 @@ async def refund_if_owed(conn: psycopg.AsyncConnection, job_id: str) -> bool:
     returned by THIS call; False if none is owed or it had already been returned."""
     cur = await conn.execute(
         REFUND_SQL,
-        {"provider": REFUND_PROVIDER, "job_id": job_id, "our_fault_codes": list(OUR_FAULT_CODES)},
+        {
+            "provider": REFUND_PROVIDER,
+            "job_id": job_id,
+            "our_fault_codes": list(OUR_FAULT_CODES),
+            "never_refunded_codes": list(NEVER_REFUNDED_CODES),
+        },
     )
     refunded = await cur.fetchone() is not None
     if refunded:

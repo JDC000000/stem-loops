@@ -20,8 +20,23 @@ bounded retry lives HERE:
     so successive retries back off instead of hammering a poison job every sweep.
 
 Staleness must exceed the longest heartbeated gap so a LIVE job is never reaped:
-separation (the long pole) heartbeats `updated_at` every ~20s and every other stage
-bumps it on entry, all well under the 300s base window.
+separation, stem download, extraction, chords and stem retention heartbeat `updated_at`
+every ~20s (pipeline._stage_heartbeat) and every other stage bumps it on entry. A stage that
+hangs while heartbeating is not this module's job: the consumer's per-job wall-clock
+deadline (JOB_WALL_TIMEOUT_SECONDS) fails it.
+
+REFUNDS (QA C-05). A job failed here is OUR fault (INTERNAL_ERROR), so the credit the web
+route debited for it is returned with the same idempotent SQL the pipeline uses
+(job_failure.refund_if_owed), in the same transaction as the UPDATE that fails it: either
+both happen or neither does and the next reap retries.
+
+QUEUED PAST RETENTION (QA C-06). A job waiting in `queued` (behind the spend brake, or a long
+queue) is not an orphan and is never re-queued or failed for being stale. But once it is
+past its own `expires_at` (the 24 h retention TTL, migration 007) nothing will serve it, and
+the retention sweep takes any non-terminal job one INFLIGHT_GRACE (1 h) later, deleting or
+anonymising it with the credit still spent. So the reaper fails such a job with a refund
+first. The reaper runs at startup before the first sweep and every REAPER_INTERVAL_SECONDS
+(60 s) after, far inside that hour.
 """
 
 from __future__ import annotations
@@ -30,6 +45,7 @@ import os
 
 import psycopg
 
+from .job_failure import refund_if_owed
 from .logger import log_structured
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -46,28 +62,20 @@ BACKOFF_FACTOR = float(os.environ.get("REAPER_BACKOFF_FACTOR", "2"))
 
 _NON_TERMINAL = ["downloading", "separating", "extracting", "uploading"]
 _POISON_MESSAGE = "Processing failed after repeated attempts. Please try again."
+_EXPIRED_QUEUED_MESSAGE = (
+    "We couldn't start processing this song in time. Please try again. "
+    "If this used a credit, it has been returned."
+)
+_FAIL_CODE = "INTERNAL_ERROR"
 
 
 async def reap_stale_jobs() -> dict[str, int]:
-    """Re-queue stale orphans with exponential backoff (bounded to MAX_ATTEMPTS), and
-    fail those that have exhausted their attempts. Returns {'requeued','failed'}."""
+    """Re-queue stale orphans with exponential backoff (bounded to MAX_ATTEMPTS), fail (and
+    refund) those that have exhausted their attempts, and fail (and refund) jobs still queued
+    past their retention. Returns {'requeued','failed','expired_queued'}."""
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-        # Fail first: attempts exhausted AND stale (base window). Mutually exclusive with
-        # the requeue branch by `attempts`, so a row is only ever touched by one branch.
-        failed = await (
-            await conn.execute(
-                """
-            UPDATE jobs SET status='failed', error_code='INTERNAL_ERROR',
-                   error_message_user=%s, updated_at=now()
-            WHERE status = ANY(%s)
-              AND attempts >= %s
-              AND updated_at < now() - (%s * interval '1 second')
-            RETURNING id
-            """,
-                (_POISON_MESSAGE, _NON_TERMINAL, MAX_ATTEMPTS, STALE_SECONDS),
-            )
-        ).fetchall()
         # Requeue: attempts left AND stale beyond this attempt's exponential backoff window.
+        # Its own transaction, so a refund problem below can never hold up a requeue.
         requeued = await (
             await conn.execute(
                 """
@@ -83,9 +91,57 @@ async def reap_stale_jobs() -> dict[str, int]:
         ).fetchall()
         await conn.commit()
 
-    result = {"requeued": len(requeued), "failed": len(failed)}
-    if result["requeued"] or result["failed"]:
+        # Fail: attempts exhausted AND stale (base window). Mutually exclusive with the
+        # requeue branch by `attempts`, so a row is only ever touched by one branch. The
+        # refund commits with the failure (C-05).
+        failed = await (
+            await conn.execute(
+                """
+            UPDATE jobs SET status='failed', error_code=%s,
+                   error_message_user=%s, updated_at=now()
+            WHERE status = ANY(%s)
+              AND attempts >= %s
+              AND updated_at < now() - (%s * interval '1 second')
+            RETURNING id
+            """,
+                (_FAIL_CODE, _POISON_MESSAGE, _NON_TERMINAL, MAX_ATTEMPTS, STALE_SECONDS),
+            )
+        ).fetchall()
+        refunded = 0
+        for (job_id,) in failed:
+            refunded += await refund_if_owed(conn, str(job_id), _FAIL_CODE)
+        await conn.commit()
+
+        # Queued past its retention TTL: it will never be served, and the sweep would take it
+        # without a refund (C-06). Fail it, refund in the same transaction. SKIP LOCKED so a
+        # consumer claiming the row at this instant wins and the job simply runs.
+        expired = await (
+            await conn.execute(
+                """
+            UPDATE jobs SET status='failed', error_code=%s,
+                   error_message_user=%s, updated_at=now()
+            WHERE id IN (
+                SELECT id FROM jobs
+                 WHERE status = 'queued' AND expires_at < now()
+                 FOR UPDATE SKIP LOCKED
+            )
+            RETURNING id
+            """,
+                (_FAIL_CODE, _EXPIRED_QUEUED_MESSAGE),
+            )
+        ).fetchall()
+        for (job_id,) in expired:
+            refunded += await refund_if_owed(conn, str(job_id), _FAIL_CODE)
+        await conn.commit()
+
+    result = {"requeued": len(requeued), "failed": len(failed), "expired_queued": len(expired)}
+    if result["requeued"] or result["failed"] or result["expired_queued"]:
         log_structured(
-            "WARN", "reaper_swept", stale_s=STALE_SECONDS, max_attempts=MAX_ATTEMPTS, **result
+            "WARN",
+            "reaper_swept",
+            stale_s=STALE_SECONDS,
+            max_attempts=MAX_ATTEMPTS,
+            refunded=refunded,
+            **result,
         )
     return result

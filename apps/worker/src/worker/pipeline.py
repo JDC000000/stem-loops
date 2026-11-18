@@ -29,6 +29,7 @@ import os
 import resource
 import shutil
 import subprocess
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -59,6 +60,7 @@ from .errors import (
 from .extractor import loop_extractor
 from .extractor.beat_grid import estimate_beat_grid
 from .extractor.loop_extractor import NoReliableBeatError, extract_loops
+from .job_failure import OUR_FAULT_CODES, fail_job
 from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
 from .storage.r2_uploader import (
@@ -207,6 +209,20 @@ def _max_upload_duration_sec() -> float:
 
 def _ffmpeg_decode_timeout_sec() -> float:
     return _env_positive_float("FFMPEG_DECODE_TIMEOUT_SEC", FFMPEG_DECODE_TIMEOUT_SEC_DEFAULT)
+
+
+# Total wall-clock budget for downloading ONE stem, across every retry (QA C-06). httpx's
+# `timeout` is per network operation, so a CDN trickling a byte at a time never tripped the
+# old per-read 180 s and could hold the job (and, inline, the whole queue) for hours. Real
+# stems are 40-60 MB; 300 s is ~200 kB/s, far below any healthy CDN. Past it the job fails
+# as INTERNAL_ERROR (our fault -> credit returned). Worst case a stem takes this plus one
+# final read wait, which is itself capped at whatever budget remained when the attempt began.
+STEM_FETCH_DEADLINE_SEC_DEFAULT = 300.0
+STEM_FETCH_READ_TIMEOUT_SEC = 180.0
+
+
+def _stem_fetch_deadline_sec() -> float:
+    return _env_positive_float("STEM_FETCH_DEADLINE_SEC", STEM_FETCH_DEADLINE_SEC_DEFAULT)
 
 
 # Peak at or below 2 LSB of 16-bit PCM = digital silence (the decode target is pcm_s16le).
@@ -1326,6 +1342,10 @@ def _chords_enabled() -> bool:
     return bool(os.environ.get("CHORDS_PROVIDER", "klangio"))
 
 
+class _StemDeadline(Exception):
+    """A stem download ran past STEM_FETCH_DEADLINE_SEC (not retried)."""
+
+
 def _fetch_stems(stem_urls: dict, requested_stems, also: tuple[str, ...] = ()) -> dict:
     """Download the user's requested stems plus any ``also`` stems the pipeline needs itself.
 
@@ -1347,20 +1367,36 @@ def _fetch_stems(stem_urls: dict, requested_stems, also: tuple[str, ...] = ()) -
         # Stream to disk with retries. Replicate's CDN can drop a large stem body
         # mid-download (httpx RemoteProtocolError). Real songs → 40-60MB stems, so
         # chunk-stream + retry instead of buffering .content in one shot.
+        # The whole download, retries included, is bounded by one deadline (QA C-06).
+        budget = _stem_fetch_deadline_sec()
+        deadline = time.monotonic() + budget
         last_exc = None
         for attempt in range(4):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
-                with httpx.stream("GET", url, timeout=180, follow_redirects=True) as r:
+                read_timeout = min(STEM_FETCH_READ_TIMEOUT_SEC, remaining)
+                with httpx.stream("GET", url, timeout=read_timeout, follow_redirects=True) as r:
                     r.raise_for_status()
                     with open(path, "wb") as f:
-                        for chunk in r.iter_bytes(1 << 20):
+                        # No chunk_size: yield bytes as they arrive, so a trickle is checked
+                        # against the deadline on every read rather than once per 1 MiB.
+                        for chunk in r.iter_bytes():
+                            if time.monotonic() > deadline:
+                                raise _StemDeadline(name)
                             f.write(chunk)
                 return name, path
+            except _StemDeadline:
+                break
             except Exception as exc:  # noqa: BLE001 — retry transient CDN drops
                 last_exc = exc
                 log_structured(
                     "WARN", "stem_fetch_retry", stem=name, attempt=attempt, error=str(exc)[:160]
                 )
+        if time.monotonic() >= deadline:
+            log_structured("WARN", "stem_fetch_deadline", stem=name, budget_s=budget)
+            raise InternalError(f"stem download exceeded its {budget:g}s budget: {name}")
         raise InternalError(f"stem download failed after retries: {last_exc}")
 
     # Download stems concurrently — each is a full-length WAV.
@@ -1587,16 +1623,22 @@ async def _run_pipeline(job_id: str) -> None:
         # and NO DRUMS — and the mixer would then play a drumless song with no error
         # at all. `requested_stems` governs which LOOPS get cut (extract_and_tag
         # filters independently); it must not govern which stems the mixer can fade.
-        stem_paths = await asyncio.to_thread(_fetch_stems, stem_urls, requested_stems, ALL_STEMS)
+        # Heartbeated: six stems at up to STEM_FETCH_DEADLINE_SEC each can outlast the reaper's
+        # stale window, and nothing else bumps updated_at here (QA C-06).
+        async with _stage_heartbeat(job_id):
+            stem_paths = await asyncio.to_thread(
+                _fetch_stems, stem_urls, requested_stems, ALL_STEMS
+            )
         # Persist the Replicate cost so the admission spend-ceiling (which sums
         # job_events.detail->>'cost_usd' over 24h) actually enforces (P4).
         await emit_event(job_id, "separating", "completed", pct=100, detail={"cost_usd": sep_cost})
 
         await set_status(job_id, "extracting")
         await emit_event(job_id, "extracting", "started", pct=70)
-        loops, tags, seg_label, seg_energy = await asyncio.to_thread(
-            extract_and_tag, job_id, stem_paths, requested_stems, bars
-        )
+        async with _stage_heartbeat(job_id):
+            loops, tags, seg_label, seg_energy = await asyncio.to_thread(
+                extract_and_tag, job_id, stem_paths, requested_stems, bars
+            )
         # Y1.1: Chord recognition (feature-flagged). Runs AFTER extract_and_tag succeeds: a
         # too-short track fails the job there, and must do so BEFORE the $0.20 Klangio
         # request is made, not after. A beatless / rubato track does NOT fail there (B5):
@@ -1684,10 +1726,10 @@ async def _run_pipeline(job_id: str) -> None:
         raise
 
 
-# Failures that are OUR fault (provider outage, our storage, an unanticipated exception):
-# the credit the web route debited for this job is returned. See _REFUND_SQL.
-_OUR_FAULT_CODES = ("SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR")
-_REFUND_PROVIDER = "worker_job_failed"
+# Failures that are OUR fault: the credit the web route debited for this job is returned.
+# The policy, the SQL and its idempotency live in job_failure.py, shared with the reaper and
+# the consumer (QA C-05: every path that fails a job refunds the same way).
+_OUR_FAULT_CODES = OUR_FAULT_CODES
 
 
 def _report_our_fault(exc: StemLoopsError) -> None:
@@ -1707,53 +1749,6 @@ def _report_our_fault(exc: StemLoopsError) -> None:
         log_structured("WARN", "sentry_report_failed", error=str(report_exc)[:120])
 
 
-# One credit back for a failed credit-funded job when either
-#   * the failure is ours (_OUR_FAULT_CODES), or
-#   * no paid provider call was made (replicate_prediction_id IS NULL: a corrupt, empty or
-#     over-length upload rejected before separation) -- nothing was spent, so this cannot be
-#     farmed.
-# NOT refunded: an input-caused failure AFTER paid separation (EXTRACTION_FAILED on a
-# beatless / too-short track); refunding that would make Replicate spend free to trigger.
-# Idempotent: credit_adjustments is UNIQUE (provider, provider_event_id) and the job id is
-# the event id, so a reaper rerun that fails again cannot refund twice. Only jobs with a
-# credit_consumption row are touched (quota-funded and anonymous jobs spent no credit).
-# reason='adjustment' (positive delta) so it can never collide with Stripe 'refund'
-# clawbacks, which are negative and keyed by charge.
-_REFUND_SQL = """
-INSERT INTO credit_adjustments (user_id, credits_delta, reason, provider, provider_event_id)
-SELECT cc.user_id, 1, 'adjustment', %(provider)s, cc.job_id::text
-  FROM credit_consumption cc
-  JOIN jobs j ON j.id = cc.job_id
- WHERE cc.job_id = %(job_id)s
-   AND (%(our_fault)s OR j.replicate_prediction_id IS NULL)
-ON CONFLICT (provider, provider_event_id) DO NOTHING
-RETURNING user_id
-"""
-
-
 async def _fail(job_id: str, error_code: str, user_message: str) -> None:
-    async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-        await conn.execute(
-            "UPDATE jobs SET status='failed', error_code=%s, error_message_user=%s, updated_at=now() WHERE id=%s",
-            (error_code, user_message, job_id),
-        )
-        await conn.commit()
-    try:
-        async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-            cur = await conn.execute(
-                _REFUND_SQL,
-                {
-                    "provider": _REFUND_PROVIDER,
-                    "job_id": job_id,
-                    "our_fault": error_code in _OUR_FAULT_CODES,
-                },
-            )
-            refunded = await cur.fetchone()
-            await conn.commit()
-        if refunded:
-            log_structured(
-                "INFO", "credit_refunded_failed_job", job_id=job_id, error_code=error_code
-            )
-    except Exception as exc:  # noqa: BLE001 — a refund problem must never mask the failure
-        log_structured("ERROR", "credit_refund_failed", job_id=job_id, error=str(exc)[:200])
-        sentry_sdk.capture_exception(exc)
+    """Mark the job failed and return its credit if owed (job_failure.fail_job)."""
+    await fail_job(DATABASE_URL, job_id, error_code, user_message)

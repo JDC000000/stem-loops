@@ -28,6 +28,7 @@ import psycopg
 from . import tmpdirs
 from .cleanup import sweep_expired
 from .errors import InternalError, StemLoopsError
+from .job_failure import fail_job
 from .logger import log_structured
 from .loop_cutter import claim_and_cut, reap_stale_requests
 from .pipeline import run_pipeline
@@ -41,6 +42,31 @@ REAP_INTERVAL = int(os.environ.get("REAPER_INTERVAL_SECONDS", "60"))
 # How often to run the retention sweep (T33) — delete content past its 24h TTL. 15 min keeps
 # the worst-case overshoot (plus any in-flight job it waits behind) well under an hour.
 CLEANUP_INTERVAL = int(os.environ.get("RETENTION_SWEEP_SECONDS", "900"))
+# Per-job wall-clock budget (QA C-06). The pipeline runs INLINE in this loop, so the reaper and
+# the retention sweep only run between jobs: one hung stage used to block the queue and the
+# reaper that would have recovered it until Fly restarted the process. Heartbeated stages
+# never go stale, so the reaper cannot catch a hang there either; this deadline does.
+# The default covers the worst legitimate job with margin: decode (FFMPEG_DECODE_TIMEOUT_SEC
+# 120 s) + separation (SEPARATION_MAX_ATTEMPTS 3 x REPLICATE_DEADLINE 55 s, plus submit) +
+# stems (STEM_FETCH_DEADLINE_SEC 300 s, in parallel) + extraction + Klangio
+# (KLANGIO_POLL_DEADLINE_SEC 600 s) + stem retention uploads: well under 30 minutes.
+JOB_WALL_TIMEOUT_DEFAULT = 1800.0
+JOB_WALL_TIMEOUT_MESSAGE = (
+    "Processing took too long and was stopped. Please try again. "
+    "If this used a credit, it has been returned."
+)
+
+
+def _job_wall_timeout() -> float:
+    raw = os.environ.get("JOB_WALL_TIMEOUT_SECONDS", "").strip()
+    try:
+        value = float(raw) if raw else JOB_WALL_TIMEOUT_DEFAULT
+    except ValueError:
+        value = 0.0
+    if not 0 < value < float("inf"):
+        log_structured("WARN", "env_float_invalid", name="JOB_WALL_TIMEOUT_SECONDS")
+        return JOB_WALL_TIMEOUT_DEFAULT
+    return value
 
 
 async def claim_and_run() -> bool:
@@ -70,8 +96,23 @@ async def claim_and_run() -> bool:
 
     job_id = str(row[0])
     log_structured("INFO", "job_claimed", job_id=job_id)
+    budget = _job_wall_timeout()
+    deadline = asyncio.timeout(budget)
     try:
-        await run_pipeline(job_id)
+        # The deadline cancels the pipeline coroutine. A worker thread it was awaiting cannot
+        # be killed and finishes (or times out) in the background, but the job is already
+        # terminal and the queue moves on. CancelledError is not an Exception, so the
+        # pipeline's own handlers do not run; the branch below fails and refunds the job.
+        async with deadline:
+            await run_pipeline(job_id)
+    except TimeoutError as e:
+        if deadline.expired():
+            log_structured("ERROR", "job_wall_timeout", job_id=job_id, budget_s=budget)
+            await mark_failed(job_id, "INTERNAL_ERROR", JOB_WALL_TIMEOUT_MESSAGE)
+        else:  # a TimeoutError raised BY the pipeline (e.g. socket.timeout), not our deadline
+            log_structured("ERROR", "unhandled_exception", job_id=job_id, error=str(e)[:200])
+            err = InternalError()
+            await mark_failed(job_id, err.error_code, err.user_message)
     except StemLoopsError as e:
         await mark_failed(job_id, e.error_code, e.user_message)
     except Exception as e:  # noqa: BLE001 — isolate the failure, never crash the loop
@@ -82,15 +123,9 @@ async def claim_and_run() -> bool:
 
 
 async def mark_failed(job_id: str, error_code: str, message: str) -> None:
-    async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-        await conn.execute(
-            """
-            UPDATE jobs SET status='failed', error_code=%s, error_message_user=%s, updated_at=now()
-            WHERE id=%s
-            """,
-            (error_code, message, job_id),
-        )
-        await conn.commit()
+    """Fail the job and return its credit if owed (job_failure.fail_job; idempotent, so the
+    pipeline having already failed and refunded the same job is harmless)."""
+    await fail_job(DATABASE_URL, job_id, error_code, message)
     log_structured("WARN", "job_failed", job_id=job_id, error_code=error_code)
 
 

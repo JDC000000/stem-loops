@@ -10,7 +10,7 @@
 // FAILS when a single number differs. So the pins cannot drift from the
 // reference silently, and a pin typed by hand cannot pass for a measurement.
 //
-// ON FAILURE it prints the complete replacement fixture between
+// It prints the complete measured fixture (on success too) between
 // `=== chord-label-widths.json (measured here) ===` markers. If the reference
 // itself moved on purpose (a Playwright bump, a runner image whose fallback
 // font for ♯/♭ changed, a formatter change), copy THAT block from the CI log
@@ -60,6 +60,8 @@ test('the escape hatch is not available in CI', () => {
 test('every pinned #212 width is what the CI Chromium measures today', async (t) => {
   const pinned = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8'));
   const got = await measure();
+  // Printed on success as well: the CI log is then the evidence of what the
+  // reference measured on this run, not only of what it disagreed with.
   const report = () =>
     console.log(`=== chord-label-widths.json (measured here) ===\n${JSON.stringify(got, null, 2)}\n=== end ===`);
   const mismatches = [];
@@ -81,8 +83,8 @@ test('every pinned #212 width is what the CI Chromium measures today', async (t)
       if (got[sec][k] !== pinned[sec][k]) console.log(`# ${sec}[${JSON.stringify(k)}]: pinned ${pinned[sec][k]}, measured ${got[sec][k]}`);
     }
   }
+  report();
   if (mismatches.length) {
-    report();
     if (OFF_REFERENCE) {
       t.diagnostic(`off the reference machine (CHORD_WIDTHS_OFF_REFERENCE=1): ${mismatches.join('; ')} differ, as expected`);
       return;

@@ -716,7 +716,8 @@ export function rootHue(label: string): number | null {
 // is THE REFERENCE, not a one-off box:
 //
 //   REFERENCE = the CI Chromium. The "Chord chip fit (real Chromium)" job of
-//   .github/workflows/ci.yml: ubuntu-latest (24.04), Playwright 1.63.0 as pinned
+//   .github/workflows/ci.yml: ubuntu-latest (the image is in the fixture's
+//   `reference.ci`; ubuntu-26.04 when first pinned), Playwright 1.63.0 as pinned
 //   in pnpm-lock.yaml -> Chromium build 1243, `playwright install --with-deps
 //   chromium`; 16px, weight 400, on a container whose family is
 //   `GateInter, sans-serif` with GateInter = @fontsource/inter 5.2.5

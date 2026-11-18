@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { wirePureLibs } from './helpers/pure-libs.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const toJs = (src) =>
@@ -59,11 +60,11 @@ async function loadRoute() {
     .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billingStub}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub}'`)
     .replace(/from ['"]@\/lib\/hcaptcha['"]/g, `from '${hcaptchaUrl}'`);
-  return import(dataUrl(js) + '#' + Math.random());
+  return import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
 const makeReq = (body) => ({
-  headers: new Headers({ origin: 'https://stem-loops.com', 'x-forwarded-for': '203.0.113.9' }),
+  headers: new Headers({ origin: 'https://stem-loops.com', host: 'stem-loops.com', 'x-forwarded-for': '203.0.113.9' }),
   json: async () => body,
 });
 

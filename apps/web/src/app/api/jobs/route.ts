@@ -2,7 +2,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
-import { checkAdmission, RATE_LIMIT, RATE_WINDOW_MS } from '@/lib/admission';
+import {
+  anonJobCapsWhere,
+  anonPresignedWhere,
+  hasAnonPresign,
+  lockAnonIp,
+  presignRecordKey,
+  anonJobDailyCap,
+  anonJobMaxInFlight,
+  checkAdmission,
+  checkAnonJobCaps,
+  IN_FLIGHT_STATUSES,
+  RATE_LIMIT,
+  RATE_WINDOW_MS,
+} from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
 import { canonicalizeYoutubeUrl } from '@/lib/youtube-url';
 import { isValidUploadKey } from '@/lib/upload';
@@ -206,15 +219,36 @@ export async function POST(request: NextRequest) {
         }
         return NextResponse.json({ error_code: adm.error_code, message: adm.message }, { status: 429 });
       }
+      // PR #300 review MF-2: a signed-out upload job is subject to the same per-IP in-flight
+      // and daily caps as a signed-out link job, and its upload key must have been presigned
+      // by POST /api/uploads for THIS IP hash (lib/admission.ts presign records). These two
+      // reads only pick the sentence; the locked INSERT below enforces both.
+      if (!user) {
+        if (!(await hasAnonPresign(clientIpHash, jobId))) {
+          return NextResponse.json(
+            {
+              error_code: 'UPLOAD_INVALID',
+              message: 'That upload has expired or came from a different connection. Please choose the file again.',
+            },
+            { status: 400 },
+          );
+        }
+        const anon = await checkAnonJobCaps(clientIpHash);
+        if (!anon.allowed) {
+          return NextResponse.json({ error_code: anon.error_code, message: anon.message }, { status: 429 });
+        }
+      }
 
-      // Atomic per-IP rate enforcement (QA P0/P1): the count and the insert are ONE
-      // statement, so a concurrent burst can't each pass checkAdmission's pre-check and then
-      // insert unconditionally (the old TOCTOU). If already at the cap → 0 rows → 429.
-      //
-      // V3-C4 (TSD §1.4): for authed users we wrap in a tx that also bumps
-      // entitlements.jobs_used under a per-(user,period) advisory lock, so
-      // the counter is consistent with the real insert. Anon path stays as
-      // a single statement — cheaper + the existing shape.
+      // Per-IP rate enforcement in the INSERT itself (QA P0/P1): the count and the insert are
+      // ONE statement, so a request can't pass checkAdmission's pre-check and then insert
+      // unconditionally (the old TOCTOU). If already at the cap → 0 rows → 429. One statement
+      // is NOT enough against a perfectly simultaneous burst under READ COMMITTED (each
+      // statement counts from its own snapshot; PR #300 review MF-1), so:
+      //   • signed out: a tx that takes lockAnonIp() first, then the capped INSERT — burst-safe
+      //     for the per-minute window, the in-flight and daily caps and the presign record;
+      //   • signed in (V3-C4, TSD §1.4): a tx that also bumps entitlements.jobs_used under a
+      //     per-(user,period) advisory lock. The per-IP minute window there is not IP-locked;
+      //     a signed-in burst is bounded by that account's quota and burst limits instead.
       let inserted;
       try {
       inserted = user
@@ -296,16 +330,25 @@ export async function POST(request: NextRequest) {
             }
             return r;
           })
-        : await db.query(
-            `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
-                               loop_length_bars, status, client_ip_hash, client_fingerprint)
-             SELECT $1, 'upload', $2, $3, $4, $5, 'queued', $6, ''
-             WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $6
-                    AND created_at >= NOW() - ($7::int * INTERVAL '1 millisecond')) < $8
-             RETURNING id`,
-            [jobId, uploadKey, filenameTrim, uStems, ubars, clientIpHash,
-             RATE_WINDOW_MS, RATE_LIMIT],
-          );
+        : // Signed out (MF-1/MF-2): per-IP advisory lock FIRST, then the capped INSERT as its
+          // own statement, so concurrent requests from one IP are serialised and each one
+          // counts every earlier row. Also requires this IP's presign record for this job id.
+          await db.tx(async (client) => {
+            await lockAnonIp(client, clientIpHash);
+            return client.query(
+              `INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems,
+                                 loop_length_bars, status, client_ip_hash, client_fingerprint)
+               SELECT $1, 'upload', $2, $3, $4, $5, 'queued', $6, ''
+               WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $6
+                      AND created_at >= NOW() - ($7::int * INTERVAL '1 millisecond')) < $8
+                 AND ${anonJobCapsWhere('$6', '$9', '$10', '$11')}
+                 AND ${anonPresignedWhere('$12')}
+               RETURNING id`,
+              [jobId, uploadKey, filenameTrim, uStems, ubars, clientIpHash,
+               RATE_WINDOW_MS, RATE_LIMIT, IN_FLIGHT_STATUSES, anonJobMaxInFlight(), anonJobDailyCap(),
+               presignRecordKey(clientIpHash, jobId)],
+            );
+          });
       } catch (err) {
         // Lost the race for the last credit (M3): tx already rolled back.
         if (err instanceof EntitlementError) {
@@ -436,6 +479,14 @@ export async function POST(request: NextRequest) {
       }
       return NextResponse.json({ error_code: adm.error_code, message: adm.message }, { status: 429 });
     }
+    // B-03: signed-out jobs — say WHICH per-IP cap was hit. The locked INSERT below is what
+    // enforces it; this read only picks the sentence.
+    if (!user) {
+      const anon = await checkAnonJobCaps(clientIpHash);
+      if (!anon.allowed) {
+        return NextResponse.json({ error_code: anon.error_code, message: anon.message }, { status: 429 });
+      }
+    }
 
     const id = randomUUID();
     const requestedStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
@@ -447,10 +498,14 @@ export async function POST(request: NextRequest) {
              WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
                     AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
              RETURNING id`;
+    // B-03: the per-IP in-flight (2) and daily (10) caps for signed-out jobs are in the same
+    // WHERE as the per-minute window (lib/admission.ts anonJobCapsWhere). Burst-safe ONLY
+    // because the signed-out INSERT below runs after lockAnonIp() in its own transaction.
     const ANON_INSERT_SQL = `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint)
            SELECT $1, $2, $3, $4, 'queued', $5, ''
            WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
                   AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
+             AND ${anonJobCapsWhere('$5', '$8', '$9', '$10')}
            RETURNING id`;
 
     // §1.2a: trial applies ONLY to the link-ingest branch (this one). For
@@ -595,10 +650,15 @@ export async function POST(request: NextRequest) {
             }
             return r;
           })
-        : await db.query(
-            ANON_INSERT_SQL,
-            [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT],
-          );
+        : await db.tx(async (client) => {
+            // MF-1: serialise signed-out INSERTs per IP, then insert in a fresh statement.
+            await lockAnonIp(client, clientIpHash);
+            return client.query(
+              ANON_INSERT_SQL,
+              [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT,
+               IN_FLIGHT_STATUSES, anonJobMaxInFlight(), anonJobDailyCap()],
+            );
+          });
     } catch (err) {
       // Allowance spent under the lock: the tx rolled back, no job row exists.
       if (err instanceof EntitlementError) {

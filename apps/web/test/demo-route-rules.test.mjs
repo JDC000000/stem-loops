@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { INPUT_TRIM_URL, INPUT_TRIM_IMPORT_RE } from './helpers/input-trim.mjs';
 import { DEMO_RATE_IMPORT_RE, DEMO_RATE_URL } from './helpers/job-access-stub.mjs';
+import { wirePureLibs } from './helpers/pure-libs.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const P = (rel) => join(WEB, rel);
@@ -123,7 +124,7 @@ async function loadRoute(rel) {
     .replace(/from ['"]@aws-sdk\/client-s3['"]/g, `from '${s3Stub}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub}'`);
-  return import(dataUrl(js) + '#' + Math.random());
+  return import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
 const req = (url = 'https://x.test/') => ({ url, headers: { get: () => null } });

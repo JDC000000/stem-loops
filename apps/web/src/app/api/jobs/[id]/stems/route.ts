@@ -92,9 +92,15 @@ function errLabel(e: unknown): string {
 // thing worth protecting is the billable Class A ListObjectsV2 and the connection
 // pool, and both sit behind it. See lib/admission.ts for why the number is 60 and not
 // the upload route's 10.
+//
+// NOT A READ-ONLY GET (QA track B, B-17). Every admitted request INSERTs one
+// upload_rate_events row (that is how the counter counts), even when the answer is a 404.
+// QA and smoke briefs that allow "harmless live GETs" against production must EXCLUDE this
+// route. Making the limiter write-free needs a non-DB counter (see lib/read-rate-limit.ts for
+// the in-process one the other job reads use, and why it is weaker); not done here.
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   if (!UUID_RE.test(params.id)) {
-    return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+    return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
   }
   try {
     // ORDER MATTERS, and this is as early as a limiter can go. Above it is only the
@@ -126,17 +132,17 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       [params.id]
     );
     if (jobRes.rowCount === 0) {
-      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
     }
     const job = jobRes.rows[0];
     // Ownership BEFORE the status check, so a non-owner cannot learn a job's state.
     // A demo song (is_demo) is readable by everyone; its per-IP limit is the limiter above,
     // which already ran for this request. Its URLs keep the 900 s cap (2099 expiry).
     if (!(await mayReadJob(job.user_id, job.is_demo))) {
-      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
     }
     if (job.status !== 'done') {
-      return NextResponse.json({ error_code: 'NOT_READY', message: 'Job not yet complete' }, { status: 404 });
+      return NextResponse.json({ error_code: 'NOT_READY', message: 'Job not yet complete' }, { status: 404, headers: NO_STORE });
     }
 
     // Use the DB row's id, NOT params.id, to build the R2 prefix. UUID_RE is
@@ -214,7 +220,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       console.error('GET /api/jobs/[id]/stems: R2 list failed:', errLabel(listErr));
       return NextResponse.json(
         { error_code: 'STEM_LIST_FAILED', message: 'Could not list stems' },
-        { status: 502 }
+        { status: 502, headers: NO_STORE }
       );
     }
 
@@ -284,6 +290,6 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     // attempt counts), NoSuchBucket carries the bucket name, and a DNS failure
     // embeds `<account>.r2.cloudflarestorage.com`. Logs only, never the caller.
     console.error(`GET /api/jobs/${params.id}/stems error:`, errLabel(err));
-    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500, headers: NO_STORE });
   }
 }

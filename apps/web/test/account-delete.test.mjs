@@ -11,6 +11,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE } from './helpers/same-origin.mjs';
+import { wirePureLibs } from './helpers/pure-libs.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(WEB, 'src/app/api/users/me/route.ts');
@@ -98,7 +99,7 @@ async function loadRoute({ user = USER, subIds = [], cancelError = null, deleteF
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub(subIds, dbErrors)}'`)
     .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
-  return await import(dataUrl(js) + '#' + Math.random());
+  return await import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
 // Default headers include a same-origin pair so tests that aren't exercising

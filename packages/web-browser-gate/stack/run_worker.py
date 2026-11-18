@@ -49,6 +49,15 @@ if not _is_loopback_url(REPLICATE_MOCK):
 
 from worker import replicate_client  # noqa: E402
 replicate_client.API = REPLICATE_MOCK
+# The Replicate mock serves stems from http://127.0.0.1:<port>/... The worker allow-lists stem
+# URLs to https on replicate.delivery (pipeline.STEM_URL_*, QA track B B-09); point that list at
+# the loopback mock, exactly as replicate_client.API is re-pointed above. Loopback only.
+from worker import pipeline  # noqa: E402
+_mock_host = urlsplit(REPLICATE_MOCK).hostname
+pipeline.STEM_URL_SCHEMES = ("http",)
+pipeline.STEM_URL_ALLOWED_HOSTS = (_mock_host,)
+if not _is_loopback_url(f"http://{_mock_host}/"):
+    print(f"ABORT: stem URL allow-list host {_mock_host} is not loopback", file=sys.stderr); sys.exit(2)
 from worker.chord_providers import klangio  # noqa: E402
 from worker import consumer  # noqa: E402
 
@@ -57,6 +66,7 @@ for name, val in (("replicate_client.API", replicate_client.API), ("klangio.API_
         print(f"ABORT: {name} = {val} is not loopback", file=sys.stderr)
         sys.exit(2)
 print(f"run_worker: preflight OK; replicate={replicate_client.API} klangio={klangio.API_BASE} "
+      f"stem_hosts={pipeline.STEM_URL_ALLOWED_HOSTS} "
       f"db={urlsplit(os.environ['DATABASE_URL']).path} r2={os.environ['R2_ENDPOINT_URL']} "
       f"bucket={os.environ['R2_BUCKET_NAME']} worker_src={replicate_client.__file__}", flush=True)
 asyncio.run(consumer.poll_loop())

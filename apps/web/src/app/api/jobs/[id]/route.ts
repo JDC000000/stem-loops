@@ -6,6 +6,8 @@ import { JOB_RETAINED_UNTIL_SQL, presignTtlSec } from '@/lib/retention';
 import { mayActOnJob, mayReadJob } from '@/lib/job-access';
 import { demoReadAllowed, DEMO_RATE_LIMIT_MSG } from '@/lib/demo-rate';
 import { inputTrimFromEvents } from '@/lib/input-trim';
+import { clientIpHashOf } from '@/lib/client-ip';
+import { admitJobRead, jobReadRetryAfterSec } from '@/lib/read-rate-limit';
 // OWNERSHIP: a job with a user_id is readable only by that user; an anonymous job
 // (user_id NULL) is readable by anyone holding its id; a DEMO song (is_demo, Slice 2a,
 // DB-12a) is readable by everyone, signed out included, and its reads are rate-limited
@@ -42,9 +44,17 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   // and retries forever ("Processing... 0%" loop, QA P1). Return the clean 404 the UI
   // already handles, matching the UUID_RE guard POST /api/jobs already uses.
   if (!UUID_RE.test(params.id)) {
-    return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+    return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
   }
   try {
+    // QA track B, B-11: per-IP read limiter BEFORE any database work (lib/read-rate-limit.ts).
+    const readKey = clientIpHashOf(request);
+    if (!admitJobRead(readKey)) {
+      return NextResponse.json(
+        { error_code: 'RATE_LIMITED', message: "You're sending requests too fast. Wait a minute and try again." },
+        { status: 429, headers: { ...NO_STORE, 'Retry-After': String(jobReadRetryAfterSec(readKey)) } },
+      );
+    }
     const jobRes = await db.query(
       `SELECT user_id, id, input_kind, youtube_url, upload_r2_key, original_filename, title, requested_stems,
               loop_length_bars, status, error_code, error_message_user, bpm, musical_key,
@@ -53,11 +63,11 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       [params.id]
     );
     if (jobRes.rowCount === 0) {
-      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
     }
     const { user_id: ownerId, ...job } = jobRes.rows[0];
     if (!(await mayReadJob(ownerId, job.is_demo))) {
-      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+      return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
     }
     // Demo songs only: the per-IP read limit (design P3.1). An ordinary job never gets here.
     if (job.is_demo === true && !(await demoReadAllowed(request))) {
@@ -140,6 +150,6 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   } catch (err) {
     Sentry.captureException(err);
     console.error(`GET /api/jobs/${params.id} error:`, err);
-    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error_code: 'INTERNAL_ERROR', message: 'Internal server error' }, { status: 500, headers: NO_STORE });
   }
 }

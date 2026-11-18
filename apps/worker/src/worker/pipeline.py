@@ -32,6 +32,7 @@ import subprocess
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 import librosa
@@ -134,6 +135,24 @@ def _title_slug(original_filename: str | None, job_id: str) -> str:
     while "__" in slug:
         slug = slug.replace("__", "_")
     return slug[:80] or job_id
+
+
+# QA track B, B-09. Every ffmpeg/ffprobe that opens a file WE DID NOT WRITE (a user upload, a
+# yt-dlp download) may only use local files and pipes. Without it, a playlist-shaped upload
+# could make ffmpeg fetch URLs or read other local paths; ffmpeg 6.1 refuses the obvious HLS
+# trick by extension sniffing, but the worker image's Debian ffmpeg 5.1 was never tested, so
+# this is enforced here rather than left to the version. Goes BEFORE `-i` (input option).
+FFMPEG_INPUT_GUARD = ("-protocol_whitelist", "file,pipe")
+# SF-5 (PR #300 review): `file` alone still lets a playlist-shaped upload make the hls (or
+# concat) demuxer READ OTHER LOCAL FILES. Proved with ffmpeg 6.1: `-protocol_whitelist
+# file,pipe -f hls` on a playlist naming a local WAV decodes it. So user UPLOADS (and every
+# ffprobe) are also restricted to the demuxers of the accepted upload types (lib/upload.ts
+# ACCEPTED_TYPES: mp3 wav m4a aac flac ogg oga opus aiff aif mp4 m4v mov webm). hls, concat,
+# image2, mpegts etc. are refused before they open anything. The link trim keeps only the
+# protocol guard: yt-dlp's output container is not ours to enumerate, and it is not a file
+# the user wrote.
+FFMPEG_AUDIO_DEMUXERS = "mp3,wav,mov,aac,flac,ogg,aiff,matroska"
+FFMPEG_UPLOAD_GUARD = (*FFMPEG_INPUT_GUARD, "-format_whitelist", FFMPEG_AUDIO_DEMUXERS)
 
 
 def _ffmpeg_bin() -> str:
@@ -327,6 +346,7 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> tuple[str, dict |
                 "-loglevel",
                 "error",
                 "-y",
+                *FFMPEG_UPLOAD_GUARD,
                 "-i",
                 raw,
                 "-ac",
@@ -402,6 +422,7 @@ def _trim_link_source(job_id: str, path: str) -> tuple[str, dict | None]:
                 "-loglevel",
                 "error",
                 "-y",
+                *FFMPEG_INPUT_GUARD,
                 "-i",
                 path,
                 "-vn",
@@ -1058,7 +1079,8 @@ def _probe_duration_sec(path: str) -> float | None:
         if not exe:
             return None
         proc = subprocess.run(
-            [exe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+            [exe, "-v", "error", *FFMPEG_UPLOAD_GUARD, "-show_entries", "format=duration"]
+            + ["-of", "csv=p=0", path],
             capture_output=True,
             text=True,
             timeout=30,
@@ -1360,6 +1382,33 @@ class _StemDeadline(Exception):
     """A stem download ran past STEM_FETCH_DEADLINE_SEC (not retried)."""
 
 
+# QA track B, B-09: Replicate's output is external data. Its KEYS become file names here and
+# its VALUES are fetched, so both are allow-listed at this boundary before either is used.
+#   * a key must be one of ALL_STEMS (never a path fragment like "../x");
+#   * a URL must be https on an expected host (Replicate serves outputs from
+#     replicate.delivery and its subdomains), and so must every redirect hop, which is
+#     followed by hand (at most STEM_MAX_REDIRECTS) so a redirect cannot leave the list.
+# Module attributes, not env vars: a deployment cannot widen them by accident. The local
+# browser-gate stack (packages/web-browser-gate/stack/run_worker.py) points them at its
+# loopback Replicate mock, exactly as it re-points replicate_client.API.
+STEM_URL_SCHEMES: tuple[str, ...] = ("https",)
+STEM_URL_ALLOWED_HOSTS: tuple[str, ...] = ("replicate.delivery",)
+STEM_MAX_REDIRECTS = 3
+
+
+def _stem_url_allowed(url: object) -> bool:
+    if not isinstance(url, str):
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    host = (parts.hostname or "").lower()
+    if parts.scheme not in STEM_URL_SCHEMES or not host or parts.username or parts.password:
+        return False
+    return any(host == h or host.endswith("." + h) for h in STEM_URL_ALLOWED_HOSTS)
+
+
 def _fetch_stems(stem_urls: dict, requested_stems, also: tuple[str, ...] = ()) -> dict:
     """Download the user's requested stems plus any ``also`` stems the pipeline needs itself.
 
@@ -1367,13 +1416,22 @@ def _fetch_stems(stem_urls: dict, requested_stems, also: tuple[str, ...] = ()) -
     chord harmonic mix). They are fetched regardless of what the user toggled, so the chord
     input never silently degrades to the post-extraction ``other`` residue. Loop extraction
     still honours ``requested_stems`` (``extract_and_tag`` filters), so no unrequested loops.
+
+    Unknown stem names are DROPPED (logged), never used in a path. A URL off the allow-list
+    fails the job (InternalError) before anything is fetched.
     """
-    tmpdir = tmpdirs.mkdtemp(prefix="sl_stems_")
+    unknown = sorted(str(n) for n in stem_urls if n not in ALL_STEMS)
+    if unknown:
+        log_structured("WARN", "stem_name_rejected", names=[n[:40] for n in unknown][:10])
     wanted = [
         (name, url)
         for name, url in stem_urls.items()
-        if not requested_stems or name in requested_stems or name in also
+        if name in ALL_STEMS and (not requested_stems or name in requested_stems or name in also)
     ]
+    bad = [name for name, url in wanted if not _stem_url_allowed(url)]
+    if bad:
+        raise InternalError(f"stem output URL not on the allow-list for: {', '.join(bad)}")
+    tmpdir = tmpdirs.mkdtemp(prefix="sl_stems_")
 
     def _get(item):
         name, url = item
@@ -1390,17 +1448,39 @@ def _fetch_stems(stem_urls: dict, requested_stems, also: tuple[str, ...] = ()) -
             if remaining <= 0:
                 break
             try:
-                read_timeout = min(STEM_FETCH_READ_TIMEOUT_SEC, remaining)
-                with httpx.stream("GET", url, timeout=read_timeout, follow_redirects=True) as r:
-                    r.raise_for_status()
-                    with open(path, "wb") as f:
-                        # No chunk_size: yield bytes as they arrive, so a trickle is checked
-                        # against the deadline on every read rather than once per 1 MiB.
-                        for chunk in r.iter_bytes():
-                            if time.monotonic() > deadline:
-                                raise _StemDeadline(name)
-                            f.write(chunk)
-                return name, path
+                # B-09 redirect hops (each re-checked against the allow-list) INSIDE #297's
+                # one deadline (QA C-06): every hop's read timeout is what is left of the
+                # whole download's budget, so redirects cannot stretch the worst case.
+                target = url
+                for _hop in range(STEM_MAX_REDIRECTS + 1):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise _StemDeadline(name)
+                    read_timeout = min(STEM_FETCH_READ_TIMEOUT_SEC, remaining)
+                    with httpx.stream(
+                        "GET", target, timeout=read_timeout, follow_redirects=False
+                    ) as r:
+                        if r.is_redirect:
+                            nxt = urljoin(target, r.headers.get("location", ""))
+                            if not _stem_url_allowed(nxt):
+                                raise InternalError(
+                                    f"stem {name}: redirect off the allow-list "
+                                    f"({urlsplit(nxt).hostname})"
+                                )
+                            target = nxt
+                            continue
+                        r.raise_for_status()
+                        with open(path, "wb") as f:
+                            # No chunk_size: yield bytes as they arrive, so a trickle is
+                            # checked against the deadline on every read, not once per 1 MiB.
+                            for chunk in r.iter_bytes():
+                                if time.monotonic() > deadline:
+                                    raise _StemDeadline(name)
+                                f.write(chunk)
+                        return name, path
+                raise InternalError(f"stem {name}: more than {STEM_MAX_REDIRECTS} redirects")
+            except InternalError:
+                raise  # an allow-list refusal is not a transient CDN drop: never retried
             except _StemDeadline:
                 break
             except Exception as exc:  # noqa: BLE001 — retry transient CDN drops

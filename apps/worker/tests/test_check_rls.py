@@ -291,3 +291,69 @@ def test_ratchet_fails_once_011_exists_in_tree(tmp_path, capsys):
             "to 1 in scripts/check_rls.py so rules (c)/(d) cover the full tree. "
             f"(current: STRICT_FROM_MIGRATION={check_rls.STRICT_FROM_MIGRATION})"
         )
+
+
+# --- QA track B, B-01: tables the migration RUNNER creates ------------------
+
+_RUNNER_OPEN = '''
+conn.execute("""
+    CREATE TABLE IF NOT EXISTS public._migrations (filename text PRIMARY KEY)
+""")
+'''
+_RUNNER_HARDENED = _RUNNER_OPEN + '''
+conn.execute("""
+DO $l$ BEGIN
+  ALTER TABLE public._migrations ENABLE ROW LEVEL SECURITY;
+  REVOKE ALL ON TABLE public._migrations FROM anon;
+  REVOKE ALL ON TABLE public._migrations FROM authenticated;
+END $l$
+""")
+'''
+
+
+def _runner(tmp_path, body: str) -> Path:
+    p = tmp_path / "migrate.py"
+    p.write_text(body)
+    return p
+
+
+def test_runner_table_without_rls_or_revoke_fails(tmp_path, capsys):
+    """B-01: the gate printed OK while `_migrations` (created by the runner) was open."""
+    mdir = tmp_path / "m"
+    mdir.mkdir()
+    (mdir / "001_a.sql").write_text(_GOOD.replace("013", "001"))
+    rc = check_rls.main(mdir, runner_sources=[_runner(tmp_path, _RUNNER_OPEN)])
+    out = capsys.readouterr().out
+    assert rc == 1, out
+    assert "_migrations" in out and "rule R1" in out and "rule R2" in out
+
+
+def test_runner_table_missing_one_revoke_fails(tmp_path, capsys):
+    mdir = tmp_path / "m"
+    mdir.mkdir()
+    (mdir / "001_a.sql").write_text(_GOOD.replace("013", "001"))
+    body = _RUNNER_HARDENED.replace(
+        "REVOKE ALL ON TABLE public._migrations FROM authenticated;", ""
+    )
+    rc = check_rls.main(mdir, runner_sources=[_runner(tmp_path, body)])
+    out = capsys.readouterr().out
+    assert rc == 1 and "authenticated (rule R2)" in out, out
+
+
+def test_hardened_runner_table_passes(tmp_path, capsys):
+    mdir = tmp_path / "m"
+    mdir.mkdir()
+    (mdir / "001_a.sql").write_text(_GOOD.replace("013", "001"))
+    rc = check_rls.main(mdir, runner_sources=[_runner(tmp_path, _RUNNER_HARDENED)])
+    assert rc == 0, capsys.readouterr().out
+
+
+def test_real_tree_checks_the_real_runner_and_finds_the_ledger(capsys):
+    """Pins the default runner lookup: if migrate.py moves, this goes red instead of the
+    runner rules silently switching off."""
+    migrations = Path(__file__).resolve().parents[1] / "migrations"
+    sources = check_rls.default_runner_sources(migrations)
+    assert [p.name for p in sources] == ["migrate.py"]
+    tables, failures = check_rls.check_runner_tables(sources)
+    assert tables == {"_migrations"}
+    assert failures == []

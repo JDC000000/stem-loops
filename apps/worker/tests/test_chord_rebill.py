@@ -341,10 +341,12 @@ def test_single_harmonic_stem_spends_nothing(
 def test_fetch_stems_includes_chord_stems_the_user_did_not_toggle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    urls = {n: f"https://cdn/{n}.wav" for n in REAL_6S_STEMS}
+    urls = {n: f"https://replicate.delivery/xezq/{n}.wav" for n in REAL_6S_STEMS}
     fetched: list[str] = []
 
     class _Resp:
+        is_redirect = False
+
         def __enter__(self):
             return self
 

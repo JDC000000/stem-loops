@@ -13,11 +13,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getUser } from '@/lib/auth/supabase';
 import { getBillingProvider } from '@/lib/billing';
 import { db } from '@/lib/db';
+import { appOrigin } from '@/lib/app-url';
+import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  // CSRF (QA track B, B-06): same-origin browser requests only, before auth.
+  const originRefusal = crossOriginRefusal(req);
+  if (originRefusal) {
+    return NextResponse.json({ error: originRefusal, code: BAD_ORIGIN }, { status: 403 });
+  }
   const user = await getUser();
   if (!user) {
     return NextResponse.json(
@@ -44,7 +51,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const origin = req.headers.get('origin') ?? 'https://stem-loops.com';
+  // QA track B, B-07: the return URL comes from config (lib/app-url.ts), never the Origin header.
+  const origin = appOrigin();
   try {
     const session = await provider.createPortalSession(customerId, `${origin}/account`);
     return NextResponse.json({ portal_url: session.url });

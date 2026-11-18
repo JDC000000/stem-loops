@@ -303,6 +303,7 @@ const ALLOW = {
   'src/components/play/Presets.tsx': [0, 'comments only'],
   'src/components/play/Transport.tsx': [0, 'comments only'],
   'src/lib/play/background-audio.ts': [0, 'comments only'],
+  'src/lib/read-rate-limit.ts': [0, 'comments only (names the /play-chords route it limits)'],
   'src/lib/play/engine.ts': [0, 'comments only'],
   'src/lib/play/notation.ts': [0, 'comments and identifiers only'],
   'src/lib/play/ogg-opus.ts': [0, 'comments only'],

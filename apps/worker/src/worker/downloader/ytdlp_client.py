@@ -135,7 +135,8 @@ def _reject_if_live(youtube_url: str, proxy: str) -> None:
     cmd = [sys.executable, "-m", "yt_dlp", "--simulate", "--no-warnings", "--print", "is_live"]
     if proxy:
         cmd += ["--proxy", proxy]
-    cmd.append(youtube_url)
+    # `--` ends option parsing (QA track B, B-09): the URL can never be read as a flag.
+    cmd += ["--", youtube_url]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     except subprocess.TimeoutExpired:
@@ -203,7 +204,8 @@ def probe_metadata(youtube_url: str, proxy: str | None = None) -> LinkMetadata:
         proxy = _sticky_proxy_url()
     if proxy:
         cmd += ["--proxy", proxy]
-    cmd.append(youtube_url)
+    # `--` ends option parsing (QA track B, B-09): the URL can never be read as a flag.
+    cmd += ["--", youtube_url]
     try:
         # Titles are arbitrary Unicode: decode as UTF-8 whatever the worker's locale is, and
         # never let one undecodable byte throw away the duration reading.
@@ -252,7 +254,8 @@ def fetch_audio_file(youtube_url: str) -> str:
         cmd += ["--cookies", cf]
     if proxy:
         cmd += ["--proxy", proxy]
-    cmd.append(youtube_url)
+    # `--` ends option parsing (QA track B, B-09): the URL can never be read as a flag.
+    cmd += ["--", youtube_url]
 
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)

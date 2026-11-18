@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import ts from 'typescript';
 import { WEB, dataUrl } from './helpers/billing-harness.mjs';
 import { fetchPlayChords } from '../src/chord/play-chords-loader.ts';
+import { wirePureLibs } from './helpers/pure-libs.mjs';
 import { DEMO_RATE_IMPORT_RE, DEMO_RATE_URL, JOB_ACCESS_IMPORT_RE, jobAccessUrl } from './helpers/job-access-stub.mjs';
 
 const GOLDEN = JSON.parse(
@@ -61,7 +62,7 @@ async function loadRoute() {
     .replace(DEMO_RATE_IMPORT_RE, `from '${DEMO_RATE_URL}'`)
     .replace(/from ['"]@\/lib\/r2['"]/, `from '${r2}'`)
     .replace(/from ['"]@\/lib\/retention['"]/, `from '${retention}'`);
-  return import(dataUrl(js) + '#' + Math.random());
+  return import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
 let route; let originalFetch; let fetched;

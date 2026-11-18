@@ -47,6 +47,13 @@ const dbStub = dataUrl(`
     }
     if (/FROM job_events WHERE created_at >= NOW\\(\\) - INTERVAL '24 hours'/.test(s))
       return ok([{ total: f.spend ?? '0' }]);
+    // PR #300 MF-1/MF-2: per-IP advisory locks, the signed-out caps pre-check and the
+    // presign record (write + read). Not what this file tests; answered permissively.
+    if (/^SELECT pg_advisory_xact_lock\\(hashtextextended\\('(anon-caps|rate):' \\|\\| \\$1, 0\\)\\)$/.test(s)) return ok([{}]);
+    if (/^SELECT COUNT\\(\\*\\) FILTER \\(WHERE status = ANY\\(\\$2::text\\[\\]\\)\\)::int AS in_flight/.test(s))
+      return ok([{ in_flight: 0, today: 0 }]);
+    if (/^INSERT INTO upload_rate_events \\(client_ip_hash\\) VALUES \\(\\$1\\)$/.test(s)) return ok([]);
+    if (/^SELECT 1 FROM upload_rate_events WHERE client_ip_hash = \\$1/.test(s)) return ok([{ '?column?': 1 }]);
     if (/^INSERT INTO upload_rate_events/.test(s))
       return f.uploadAllowed ? ok([{ id: 1 }]) : { rows: [], rowCount: 0 };
     if (/^INSERT INTO jobs/.test(s)) { f.inserted.push(params[0]); return ok([{ id: params[0] }]); }

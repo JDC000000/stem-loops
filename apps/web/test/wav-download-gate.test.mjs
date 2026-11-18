@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { wirePureLibs } from './helpers/pure-libs.mjs';
 import { DEMO_RATE_IMPORT_RE, DEMO_RATE_URL } from './helpers/job-access-stub.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -142,7 +143,7 @@ async function loadRoute(rel) {
     .replace(/from ['"]@aws-sdk\/client-s3['"]/g, `from '${s3Stub}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub}'`);
-  return import(dataUrl(js) + '#' + Math.random());
+  return import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 const loadDownload = () => loadRoute('src/app/api/jobs/[id]/download/route.ts');
 const loadStems = () => loadRoute('src/app/api/jobs/[id]/stems/route.ts');

@@ -15,6 +15,7 @@ import ts from 'typescript';
 import { WEB, dataUrl } from './helpers/billing-harness.mjs';
 import { INPUT_TRIM_URL, INPUT_TRIM_IMPORT_RE } from './helpers/input-trim.mjs';
 import { inputTrimFromEvents, trimNote, jobTrimNote } from '../src/lib/input-trim.ts';
+import { wirePureLibs } from './helpers/pure-libs.mjs';
 import { DEMO_RATE_IMPORT_RE, DEMO_RATE_URL, JOB_ACCESS_IMPORT_RE, jobAccessUrl } from './helpers/job-access-stub.mjs';
 
 // ───────────────────────────── the pure helper ─────────────────────────────
@@ -132,7 +133,7 @@ async function loadRoute() {
         }
       `)}'`,
     );
-  return import(dataUrl(js) + '#' + Math.random());
+  return import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
 const get = async () => (await loadRoute()).GET({ headers: { get: () => null } }, { params: { id: JOB } });

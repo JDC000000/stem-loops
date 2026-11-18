@@ -3,9 +3,11 @@ import { randomUUID } from 'crypto';
 import * as Sentry from '@sentry/nextjs';
 import { presignPut } from '@/lib/r2';
 import { validateUpload, MAX_UPLOAD_BYTES } from '@/lib/upload';
-import { checkGlobalCapacity, checkUploadRate } from '@/lib/admission';
+import { checkAnonUploadDailyRate, checkGlobalCapacity, checkUploadRate, recordAnonPresign } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
 import { RATE_LIMITED_PER_CLIENT_MSG } from '@/lib/error-copy';
+import { getUser } from '@/lib/auth/supabase';
+import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 // F72: checkUploadRate is a per-client limit only.
 const RATE_LIMIT_MSG = RATE_LIMITED_PER_CLIENT_MSG;
@@ -14,6 +16,12 @@ const RATE_LIMIT_MSG = RATE_LIMITED_PER_CLIENT_MSG;
 // The browser then uploads DIRECT to R2 (no bytes through this function), then
 // calls POST /api/jobs with { jobId, uploadKey } to create the job.
 export async function POST(request: NextRequest) {
+  // CSRF (QA track B, B-06): same-origin browser requests only, before the body or any
+  // counter is touched. Minting a presigned PUT is a state change (an R2 write credential).
+  const originRefusal = crossOriginRefusal(request);
+  if (originRefusal) {
+    return NextResponse.json({ error_code: BAD_ORIGIN, message: originRefusal }, { status: 403 });
+  }
   try {
     let payload: any;
     try {
@@ -58,12 +66,30 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error_code: v.error_code, message: v.message }, { status: 400 });
     }
 
+    // QA track B, B-05: a SIGNED-OUT caller also has a per-IP DAILY presign cap
+    // (lib/admission.ts checkAnonUploadDailyRate). Last gate before minting, so a refused,
+    // invalid or at-capacity request never spends a unit of it. Signed-in callers are
+    // metered at job creation by plan quota or credits.
+    const user = await getUser();
+    if (!user) {
+      const daily = await checkAnonUploadDailyRate(clientIpHashOf(request));
+      if (!daily.allowed) {
+        return NextResponse.json(
+          { error_code: daily.error_code, message: 'message' in daily ? daily.message : RATE_LIMIT_MSG },
+          { status: 429 },
+        );
+      }
+    }
+
     // Key is under the {jobId}/ prefix — same as this job's loops — so the 24-hour
     // retention sweep (T33) + R2 lifecycle backstop delete the uploaded source
     // alongside the outputs (PRD §6.1: no user content beyond TTL).
     const jobId = randomUUID();
     const key = `${jobId}/_input.${v.ext}`;
     const uploadUrl = await presignPut(key, v.contentType, size);
+    // PR #300 review MF-2: a signed-out job may only be created for an upload key minted HERE,
+    // for this IP hash. POST /api/jobs checks this record inside its locked INSERT.
+    if (!user) await recordAnonPresign(clientIpHashOf(request), jobId);
 
     return NextResponse.json({ jobId, key, uploadUrl, maxBytes: MAX_UPLOAD_BYTES, contentType: v.contentType });
   } catch (err) {

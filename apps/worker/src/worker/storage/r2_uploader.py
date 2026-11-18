@@ -262,11 +262,17 @@ def delete_prefix(prefix: str) -> int:
     return deleted
 
 
-def list_objects_older_than(cutoff, limit: int = 2000) -> list[str]:
-    """Keys of objects whose LastModified is before `cutoff` (tz-aware datetime), up to `limit`."""
+def list_objects_older_than(cutoff, limit: int = 2000, start_after: str = "") -> list[str]:
+    """Keys of objects whose LastModified is before `cutoff` (tz-aware datetime), up to `limit`,
+    in the listing's (lexical) order, starting after the key `start_after` ("" = the start).
+
+    `start_after` lets a caller page PAST keys it decided to keep: pass the last key of the
+    previous call. Fewer than `limit` keys back means the listing reached the end.
+    """
     bucket = os.environ["R2_BUCKET_NAME"]
     keys: list[str] = []
-    for page in _r2().get_paginator("list_objects_v2").paginate(Bucket=bucket):
+    kwargs = {"StartAfter": start_after} if start_after else {}
+    for page in _r2().get_paginator("list_objects_v2").paginate(Bucket=bucket, **kwargs):
         for obj in page.get("Contents", []):
             if obj["LastModified"] < cutoff:
                 keys.append(obj["Key"])

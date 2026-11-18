@@ -177,6 +177,19 @@ function _invoiceUserId(invoice: Stripe.Invoice): string {
   );
 }
 
+// Thrown by handleWebhook when the event's signature was valid but a read
+// back from Stripe (a Checkout Session's line items) failed. The webhook
+// route answers 500 for it so Stripe RETRIES; every other handleWebhook
+// failure is treated as a bad signature and answered 400 (no retry). The
+// route matches it by `name`, not instanceof (it only sees the provider
+// through the BillingProvider interface).
+export class BillingProviderUnavailableError extends Error {
+  constructor(what: string, cause: unknown) {
+    super(`${what}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'BillingProviderUnavailableError';
+  }
+}
+
 // Sentinel thrown when a Stripe subscription carries a price_id that doesn't
 // map to any known PLAN_PRICE_ENV entry. Previously `priceIdToPlan ?? 'pro'`
 // (and before that, `?? 'pro_monthly'`) silently downgraded a studio
@@ -564,31 +577,53 @@ export class StripeProvider implements BillingProvider {
     }
   }
 
-  // session.line_items is NOT populated on webhook events by default — must
-  // retrieve with expand (fixes PR #13 review finding C1 — CRITICAL).
-  // Prefer metadata.price_id (we set it at checkout-create time) for speed;
-  // fall back to a retrieve when metadata is absent.
+  // QA B-15 / B-04 follow-up: the pack is derived from what was actually
+  // SOLD — the session's line items — never from session.metadata.
+  // session.line_items is NOT populated on webhook events, so the session is
+  // always re-read with expand (PR #13 review C1). metadata.price_id /
+  // metadata.pack_code are only compared, and a disagreement is logged: a
+  // Dashboard / Payment Link session with hand-typed metadata must not be
+  // able to turn a credits_20 payment into 180 credits. A failed read is a
+  // BillingProviderUnavailableError, which the route answers with 500 so
+  // Stripe retries (a 400 would drop a paid purchase for good).
   private async _creditPurchaseFromSession(
     session: Stripe.Checkout.Session,
   ): Promise<BillingEvent> {
     const userId = (session.metadata?.user_id as string | undefined) ?? '';
-    const packFromMeta = (session.metadata?.pack_code as string | undefined) ?? null;
-    let priceId = (session.metadata?.price_id as string | undefined) ?? '';
 
-    // Last-ditch retrieve if metadata was lost (shouldn't happen via our
-    // checkout route, but handles out-of-band session creation).
-    if (!priceId) {
-      const full = await getClient().checkout.sessions.retrieve(session.id, {
+    let full: Stripe.Checkout.Session;
+    try {
+      full = await getClient().checkout.sessions.retrieve(session.id, {
         expand: ['line_items'],
       });
-      priceId = full.line_items?.data?.[0]?.price?.id ?? '';
+    } catch (err) {
+      throw new BillingProviderUnavailableError(
+        `checkout.sessions.retrieve(${session.id})`,
+        err,
+      );
     }
-
-    // Derive pack AUTHORITATIVELY from price_id, metadata is only a hint —
-    // prevents user paying for pack A but getting pack B via portal plan swap.
-    const packCode = priceIdToPack(priceId) ?? (packFromMeta as PackCode | null);
+    const items = full.line_items?.data ?? [];
+    const item = items[0];
+    if (items.length !== 1 || (item?.quantity ?? 1) !== 1) {
+      console.error(
+        `[stripe] credit session ${session.id}: expected exactly one line item of quantity 1, got ${items.length} (qty ${item?.quantity ?? 'n/a'}); not granting`,
+      );
+      return { type: 'unhandled', eventType: 'checkout.session.completed:unexpected_line_items' };
+    }
+    const priceId = item?.price?.id ?? '';
+    const packCode = priceIdToPack(priceId);
     if (!packCode) {
+      console.error(
+        `[stripe] credit session ${session.id}: line-item price '${priceId}' is not a known credit pack; not granting`,
+      );
       return { type: 'unhandled', eventType: 'checkout.session.completed:unknown_pack' };
+    }
+    const metaPrice = (session.metadata?.price_id as string | undefined) ?? null;
+    const metaPack = (session.metadata?.pack_code as string | undefined) ?? null;
+    if ((metaPrice && metaPrice !== priceId) || (metaPack && metaPack !== packCode)) {
+      console.warn(
+        `[stripe] credit session ${session.id}: metadata (price_id=${metaPrice}, pack_code=${metaPack}) disagrees with the line item (${priceId} -> ${packCode}); granting the line item`,
+      );
     }
 
     const paymentIntentId =
@@ -604,7 +639,7 @@ export class StripeProvider implements BillingProvider {
       userId,
       packCode,
       providerChargeId: paymentIntentId,
-      amountCents: session.amount_total ?? 0,
+      amountCents: full.amount_total ?? session.amount_total ?? 0,
       currency: session.currency ?? 'cad',
       priceId,
       promoCode: (session.metadata?.promo_code as string | undefined) ?? undefined,

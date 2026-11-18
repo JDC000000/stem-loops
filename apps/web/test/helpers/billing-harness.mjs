@@ -48,18 +48,38 @@ export function setStripeEnv() {
 }
 
 /** Load the real StripeProvider with the Stripe client's network methods
- *  replaced by recorders. Returns { provider, calls, subs }. */
+ *  replaced by recorders. Returns { provider, calls, subs, sessions }.
+ *  `subs[id]` is what subscriptions.retrieve returns (Stripe's CURRENT state
+ *  of a subscription); `sessions[id]` is what checkout.sessions.retrieve
+ *  returns (with line_items). An id with no fixture throws.
+ *  No request can leave the process: the client is built with an
+ *  httpClient that throws, so any Stripe method NOT faked below fails the
+ *  test instead of reaching api.stripe.com. */
 export async function loadStripeProvider() {
   setStripeEnv();
   const stripeEntry = new URL(import.meta.resolve('stripe')).href;
   const calls = [];
   const subs = {};
-  globalThis.__harness = { calls, subs };
+  const sessions = {};
+  globalThis.__harness = { calls, subs, sessions };
   const wrapper = dataUrl(`
     import Real from ${JSON.stringify(stripeEntry)};
-    export default function Stripe(...args) {
-      const c = new Real(...args);
+    const blocked = {
+      getClientName: () => 'harness-blocked',
+      // A rejected promise (not a sync throw): stripe-node then reports it
+      // as a StripeConnectionError through the normal callback path.
+      makeRequest: (host, port, path, method) =>
+        Promise.reject(new Error('harness: real Stripe network call blocked: ' + method + ' ' + host + path)),
+    };
+    export default function Stripe(key, opts = {}) {
+      const c = new Real(key, { ...opts, httpClient: blocked, maxNetworkRetries: 0 });
       const h = globalThis.__harness;
+      c.checkout.sessions.retrieve = async (id, params) => {
+        h.calls.push({ api: 'checkout.sessions.retrieve', id, params });
+        if (h.sessionRetrieveError) throw h.sessionRetrieveError;
+        if (!h.sessions[id]) throw new Error('no session fixture for ' + id);
+        return h.sessions[id];
+      };
       c.checkout.sessions.create = async (params, opts) => {
         h.calls.push({ api: 'checkout.sessions.create', params, opts });
         return { id: 'cs_test_' + h.calls.length, url: 'https://checkout.stripe.test/c/pay' };
@@ -80,7 +100,7 @@ export async function loadStripeProvider() {
     .replace(/from ['"]stripe['"]/g, `from '${wrapper}'`);
   const mod = await import(dataUrl(js) + '#' + Math.random());
   mod._resetStripeClientForTests();
-  return { provider: new mod.StripeProvider(), calls, subs, mod };
+  return { provider: new mod.StripeProvider(), calls, subs, sessions, mod, harness: globalThis.__harness };
 }
 
 /** Sign `event` with the real Stripe signer. Returns { body, signature }. */
@@ -165,6 +185,22 @@ export const creditSessionFixture = (over = {}) => ({
   ...over,
 });
 
+/** Register what checkout.sessions.retrieve(id, { expand: ['line_items'] })
+ *  returns for `session`: the session plus ONE line item of `priceId`
+ *  (default: the price the session's metadata claims, i.e. an honest
+ *  session). Pass a different price to model metadata that lies. */
+export function stripeSession(h, session, priceId = session.metadata?.price_id, over = {}) {
+  h.sessions[session.id] = {
+    ...session,
+    line_items: {
+      object: 'list',
+      data: [{ id: 'li_1', object: 'item', quantity: 1, price: { id: priceId, object: 'price' } }],
+    },
+    ...over,
+  };
+  return session;
+}
+
 export const disputeFixture = (over = {}) => ({
   id: 'du_test_1',
   object: 'dispute',
@@ -232,9 +268,14 @@ export function fakeDb(state) {
       const [user_id, provider, provider_subscription_id, plan_code, status, ps, pe, cap] = p;
       const row = state.subscriptions.find((s) => s.provider === provider && s.provider_subscription_id === provider_subscription_id);
       const vals = { plan_code, status, current_period_start: ps, current_period_end: pe, cancel_at_period_end: cap };
-      if (row) Object.assign(row, vals);
-      else state.subscriptions.push({ user_id, provider, provider_subscription_id, ...vals });
-      return r([]);
+      // Mirrors `ON CONFLICT ... DO UPDATE ... WHERE subscriptions.status <>
+      // 'canceled' RETURNING status` (QA B-04): a skipped update returns no row.
+      const guarded = /WHERE subscriptions\.status <> 'canceled'/.test(q);
+      if (row) {
+        if (guarded && row.status === 'canceled') return r([]);
+        Object.assign(row, vals);
+      } else state.subscriptions.push({ user_id, provider, provider_subscription_id, ...vals });
+      return r([{ status }]);
     }
     if (/^UPDATE subscriptions SET status = 'canceled'/.test(q)) {
       const rows = state.subscriptions.filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1]);
@@ -340,8 +381,19 @@ export async function loadWebhookRoute(provider, state) {
   return import(dataUrl(js) + '#' + Math.random());
 }
 
-/** POST a Stripe event through route.POST with a real signature. */
-export async function deliver(mod, event) {
+/** POST a Stripe event through route.POST with a real signature.
+ *
+ *  The route re-reads a subscription from Stripe on every
+ *  customer.subscription.* event (QA B-04). By default `deliver` models
+ *  IN-ORDER delivery: Stripe's current state of the subscription is the
+ *  object the event carries, so `subs[id]` is set to it before the POST.
+ *  Pass { syncStripe: false } to leave `subs` alone and model a stale,
+ *  replayed or out-of-order delivery against the state a test set. */
+export async function deliver(mod, event, { syncStripe = true } = {}) {
+  const obj = event?.data?.object;
+  if (syncStripe && /^customer\.subscription\./.test(event?.type ?? '') && obj?.id && globalThis.__harness?.subs) {
+    globalThis.__harness.subs[obj.id] = obj;
+  }
   const { body, signature } = sign(event);
   return mod.POST({
     headers: { get: (n) => (n.toLowerCase() === 'stripe-signature' ? signature : null) },

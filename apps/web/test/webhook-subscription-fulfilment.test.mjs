@@ -8,7 +8,7 @@ import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PRICE, loadStripeProvider, loadWebhookRoute, makeState, envelope, deliver,
-  subscriptionFixture, invoiceFixture, creditSessionFixture, disputeFixture,
+  subscriptionFixture, invoiceFixture, creditSessionFixture, disputeFixture, stripeSession,
 } from './helpers/billing-harness.mjs';
 
 const USER = '11111111-1111-1111-1111-111111111111';
@@ -129,7 +129,7 @@ test('invoice.payment_failed marks past_due and invalidates the cache for the re
 // ---- Defect 4: paid credit purchase must never be dropped with a 200 -------
 
 test('credit purchase with EMPTY metadata.user_id: resolved via session.customer, credits granted', async () => {
-  const res = await deliver(route, envelope('checkout.session.completed', creditSessionFixture()));
+  const res = await deliver(route, envelope('checkout.session.completed', stripeSession(h, creditSessionFixture())));
   assert.equal(res.status, 200);
   assert.equal(state.credit_purchases.length, 1);
   assert.equal(state.credit_purchases[0].user_id, USER);
@@ -138,7 +138,7 @@ test('credit purchase with EMPTY metadata.user_id: resolved via session.customer
 
 test('credit purchase, no metadata, unknown customer, matching customer_email: resolved via email', async () => {
   const res = await deliver(route, envelope('checkout.session.completed',
-    creditSessionFixture({ customer: 'cus_stranger', customer_email: 'payer@example.com' })));
+    stripeSession(h, creditSessionFixture({ customer: 'cus_stranger', customer_email: 'payer@example.com' }))));
   assert.equal(res.status, 200);
   assert.equal(state.credit_purchases[0]?.user_id, USER);
 });
@@ -151,7 +151,7 @@ test('credit purchase nobody can be found for: 500 + error log, no row (never a 
   let res;
   try {
     res = await deliver(route, envelope('checkout.session.completed',
-      creditSessionFixture({ customer: 'cus_stranger', customer_details: { email: 'nobody@example.com' } })));
+      stripeSession(h, creditSessionFixture({ customer: 'cus_stranger', customer_details: { email: 'nobody@example.com' } }))));
   } finally { Object.assign(console, o); }
   assert.equal(res.status, 500);
   assert.equal(state.credit_purchases.length, 0);

@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { pageMetadata } from '@/lib/seo/meta';
 import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
-import { CONTACT_LABEL, CONTACT_URL, LEGAL_UPDATED } from '@/components/landing/legal';
+import { CONTACT_LABEL, CONTACT_URL, PRIVACY_UPDATED } from '@/components/landing/legal';
 import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
 
 // DB-17 (lib/chords-claim.ts). With the switch off, only the PROMISE goes: the short version and
@@ -23,7 +23,7 @@ export default function PrivacyPage() {
         <div className="container">
           <div className="reading">
             <h1>Privacy</h1>
-            <p className="updated">Last updated {LEGAL_UPDATED}</p>
+            <p className="updated">Last updated {PRIVACY_UPDATED}</p>
 
             <h2>The short version</h2>
             <p>

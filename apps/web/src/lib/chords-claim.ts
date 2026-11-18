@@ -22,6 +22,16 @@
 // chord-recognition reference numbers in a credit shell, and saved chord corrections. While any
 // of that data exists the notice has to say so; over-disclosing is safe, under-disclosing is not.
 //
+// FLIP-DAY CHECKLIST (review SF-5). Setting this to false is not the whole change. In the same PR:
+//   1. bump TERMS_UPDATED and PRIVACY_UPDATED (components/landing/legal.ts) and the lastModified of
+//      '/terms', '/privacy', '/help' and '/' (lib/seo/pages.ts): the switch changes the text of all
+//      four, and the terms say "the date above shows the latest version";
+//   2. clear CHORDS_PROVIDER on the worker (Fly secret) the same day, so no new audio goes to Klangio
+//      once nothing promises chords; /privacy keeps naming Klangio while any chord data exists;
+//   3. expect test/chords-switch-surfaces.test.mjs and test/p7-copy.test.mjs to fail their "the
+//      switch is ON today" sanity checks: that is on purpose, so the flip is a reviewed change.
+//      Update those checks, and the dates in step 1 (pinned against each other by the same test).
+//
 // Gates: test/p7-copy.test.mjs renders the home page with this set to false; test/
 // chords-switch-surfaces.test.mjs renders /help, /terms, /privacy, /llms.txt, the welcome email
 // and the shared metadata with it false, and scans src/ so that any file mentioning "chord"

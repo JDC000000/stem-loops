@@ -51,8 +51,8 @@ export function renderWelcome(vars: WelcomeVars = {}): RenderedEmail {
   const subject = 'Welcome to stem-loops';
   const plan = vars.plan_code ? planLabel(vars.plan_code) : '';
   const preheader = plan
-    ? `Your ${plan} plan is active. Upload a song to start.`
-    : 'Your plan is active. Upload a song to start.';
+    ? `Your ${plan} plan is active. Add a song to start.`
+    : 'Your plan is active. Add a song to start.';
   const lead = `Thanks for subscribing. ${planSentence(vars)}`;
   // DB-17 (lib/chords-claim.ts): no chord claim when the switch is off.
   // C-13 (QA 2026-11-18): the old second sentence, "Pro and Studio work with audio files you
@@ -68,7 +68,8 @@ export function renderWelcome(vars: WelcomeVars = {}): RenderedEmail {
   // (lib/retention.ts); 5 minutes = MAX_TRACK_SEC (lib/play/types.ts). This email goes to
   // subscribers only. Pinned by test/chords-switch-surfaces.test.mjs ("numeric claims").
   const limits = `Songs longer than 5${NB}minutes use the first 5${NB}minutes. Your songs stay in your library while you are subscribed, and for 30${NB}days after your plan ends.`;
-  const cta = { label: 'Upload a song', url: `${base}/` };
+  // "Add", not "Upload": a file or a link (review nit; C-13).
+  const cta = { label: 'Add a song', url: `${base}/` };
   const footer = footerFor('service');
 
   const bodyHtml = [

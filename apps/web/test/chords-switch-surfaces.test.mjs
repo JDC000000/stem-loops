@@ -20,6 +20,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { renderPage } from './helpers/render-landing-page.mjs';
 import { buildModuleGraph } from './helpers/module-graph.mjs';
 import { RETENTION_HOURS, PAID_RETENTION_GRACE_DAYS, JOB_RETAINED_UNTIL_SQL } from '../src/lib/retention.ts';
@@ -192,8 +193,40 @@ test('C-14: no "about 1–3 minutes" (or any measured-looking duration) on /help
 test('C-17: /terms states the Free cap and that more needs a plan or credits', () => {
   for (const r of [ON.terms, OFF.terms]) {
     assert.doesNotMatch(r.textSpaced, /not required|Free to use at the moment/i);
-    assert.match(r.textSpaced, /The Free plan costs nothing and covers \d+ songs a month on your account\. For more than that you need a paid plan \(Pro or Studio\) or credits/);
+    assert.match(r.textSpaced, /The Free plan costs nothing and covers \d+ songs a month on your account\. For more than that you need a paid plan \(Pro or Studio\), or credits for uploaded files \(credits do not add song links\)\./);
     assert.match(r.html, /<a href="\/pricing">pricing page<\/a>/);
+    // Review SF-3: credits never extend link jobs, so the page must not offer them as a remedy for links.
+    assert.doesNotMatch(r.textSpaced, /\bor credits[;.]/);
+  }
+});
+
+test('SF-3: the "credits for uploaded files" claim matches the code: link jobs never spend a credit', () => {
+  const route = readFileSync(join(SRC, 'app/api/jobs/route.ts'), 'utf8');
+  assert.match(route, /Credits are never\s*\n?\s*\/\/\s*spent on a link/, 'the jobs route still documents that links never spend credits');
+  // The DB is the authority: check_credit_decrement (013) refuses a credit for any non-upload job,
+  // and no later migration redefines it.
+  const dir = join(REPO, 'apps/worker/migrations');
+  const defs = readdirSync(dir).filter((f) => f.endsWith('.sql'))
+    .filter((f) => /CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION[^(]*check_credit_decrement/i.test(readFileSync(join(dir, f), 'utf8')));
+  assert.deepEqual(defs, ['013_v3_commercial.sql'], 'check_credit_decrement is redefined: re-check "credits for uploaded files"');
+  assert.match(readFileSync(join(dir, '013_v3_commercial.sql'), 'utf8'), /IF _input_kind != 'upload' THEN\s*RAISE EXCEPTION 'credit_consumption rejected/);
+});
+
+test('SF-4: /terms keeps its BILLING_ENFORCED switch-on checklist next to the Free figure', () => {
+  const src = readFileSync(join(SRC, 'app/(landing)/terms/page.tsx'), 'utf8');
+  const i = src.indexOf('const FREE_MONTHLY_SONGS');
+  assert.ok(i > 0);
+  assert.match(src.slice(Math.max(0, i - 2000), i), /BILLING_ENFORCED SWITCH-ON CHECKLIST[\s\S]*reword the Free sentence/);
+});
+
+test('nit: each legal page shows the same day as its registry lastModified', async () => {
+  const { PUBLIC_PAGES } = await import('../src/lib/seo/pages.ts');
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  for (const [path, r] of [['/terms', ON.terms], ['/privacy', ON.privacy]]) {
+    const shown = r.textSpaced.match(/Last updated (\d{1,2}) (\w+) (\d{4})/);
+    assert.ok(shown, `${path} shows a date`);
+    const iso = `${shown[3]}-${String(MONTHS.indexOf(shown[2]) + 1).padStart(2, '0')}-${shown[1].padStart(2, '0')}`;
+    assert.equal(iso, PUBLIC_PAGES.find((p) => p.path === path).lastModified, `${path}: "Last updated" and lastModified disagree`);
   }
 });
 
@@ -242,31 +275,88 @@ test('numeric claims: every hour and day figure on /help, /terms, /privacy, llms
 });
 
 // ── 9. the source scan ─────────────────────────────────────────────────────────────────────
-// A file under src/ that mentions "chord" (any case, comments included: a false RED is cheap)
-// must either import CHORDS_LINE_SHOWN from the one switch, or be listed here with the reason
-// it carries no PROMISE of a chord track to a new song.
-const ALLOW_PREFIX = {
-  'chord/': 'the in-browser chord engine and loaders: code, no copy',
-  'app/api/': 'API routes: JSON for the player, no marketing copy',
-  'lib/play/': 'player engine and notation: renders the chord data a job actually has',
-  'components/play/': 'the player UI: shows the job\'s own chord track, or "No chords for this song."',
-};
+// A file under src/ that mentions "chord" anywhere (comments included) must EITHER import and read
+// CHORDS_LINE_SHOWN from the one switch, OR be listed in ALLOW below — by exact path, no folder
+// prefixes — with the EXACT number of "chord" mentions it carries in COPY-CAPABLE text: string
+// literals, template text, JSX text and JSX attribute strings (title, aria-label, data-*…), as the
+// TypeScript parser sees them. Comments and identifiers (chordStatus, ChordOverlay) are not copy
+// and are not counted. Module specifiers are not counted.
+//
+// WHY PINNED COUNTS (QA C-12 review MF-1, 2026-11-18). The first version exempted whole files and
+// whole folders. A reviewer then put a chord promise in an allow-listed file's title attribute
+// (JobView), appended one to an allow-listed disclosure page (account/delete), and created a new
+// file under an allowed folder (components/play/Upsell.tsx). All three passed. With exact counts,
+// any NEW chord text in an allowed file changes its count and fails here, and a new file is never
+// allowed implicitly. A count going DOWN also fails, so the list cannot rot into headroom.
+// When this fails on a legitimate change: read the new mention. If it promises a chord track to a
+// NEW song, gate it on the switch; if it renders a job's own chord data or a disclosure, update the
+// count and say why in the reason.
 const ALLOW = {
-  'components/ChordOverlay.tsx': 'player chord track: renders the job\'s own data',
-  'components/ChordOverlay.helpers.ts': 'player chord track helpers',
-  'components/ChordPhone.helpers.ts': 'player chord track helpers (phone)',
-  'components/DeleteAccountForm.tsx': 'clears buffered chord EDITS on delete: code',
-  'app/account/delete/page.tsx': 'DISCLOSURE: lists saved chord corrections among what deletion removes',
-  'app/account/layout.tsx': 'comment only',
-  'app/jobs/[id]/JobView.tsx': 'comment only (the player owns the chord track)',
-  'app/jobs/[id]/page.tsx': 'comment only (names the play-chords route)',
-  'lib/job-access.ts': 'access control for the play-chords route: code',
-  'lib/job-poll.ts': 'polls the job, including its chord status: code',
-  'lib/r2.ts': 'storage keys for play.chords.json: code',
-  'lib/stem-keys.ts': 'storage keys: code',
-  'lib/stem-urls.ts': 'signed URLs, including the chord file: code',
-  'lib/upload.ts': 'upload pipeline comment: code',
-  'middleware.ts': 'route matcher names the chord routes: code',
+  // the player and its chord track: render THE JOB'S OWN chord data, or "No chords for this song."
+  'components/ChordOverlay.tsx': [25, 'player chord track: testids, aria-labels and pickers for the job\'s own chords'],
+  'components/ChordOverlay.helpers.ts': [21, 'player chord track helpers: labels for the job\'s own chord runs'],
+  'components/ChordPhone.helpers.ts': [3, 'player chord track helpers (phone)'],
+  'components/play/PlayerScreen.tsx': [8, 'player: NO_CHORDS_LINE ("No chords for this song.") and no-chords testids'],
+  'components/play/MixSheet.tsx': [0, 'comments only'],
+  'components/play/Player.tsx': [0, 'comments only'],
+  'components/play/Presets.tsx': [0, 'comments only'],
+  'components/play/Transport.tsx': [0, 'comments only'],
+  'lib/play/background-audio.ts': [0, 'comments only'],
+  'lib/play/engine.ts': [0, 'comments only'],
+  'lib/play/notation.ts': [0, 'comments and identifiers only'],
+  'lib/play/ogg-opus.ts': [0, 'comments only'],
+  'lib/play/sections.ts': [0, 'comments only'],
+  'lib/play/types.ts': [0, 'comments and identifiers only'],
+  // the in-browser chord engine: code; its strings are errors, keys and log lines
+  'chord/alphabet.ts': [1, 'engine: one internal string'],
+  'chord/chordnet-session.ts': [16, 'engine: model paths, errors, log lines'],
+  'chord/cqt-frontend.ts': [0, 'comments only'],
+  'chord/edit-collector.ts': [7, 'engine: storage keys and API path for chord edits'],
+  'chord/harte.ts': [0, 'comments only'],
+  'chord/play-chords-loader.ts': [7, 'engine: play-chords API path and errors'],
+  'chord/sha256.ts': [0, 'comments only'],
+  'chord/smoother.ts': [1, 'engine: one internal string'],
+  'chord/tab-capture.ts': [4, 'engine: errors and log lines'],
+  'chord/transition.ts': [0, 'comments only'],
+  'chord/viterbi.ts': [0, 'comments only'],
+  // API routes: JSON for the player, no marketing copy
+  'app/api/chord-edits/route.ts': [31, 'API: chord_edits SQL, columns and error messages'],
+  'app/api/jobs/[id]/play-chords/route.ts': [1, 'API: the play.chords.json key'],
+  'app/api/users/me/route.ts': [2, 'API: erases chord edits on account delete'],
+  'app/api/jobs/[id]/download/route.ts': [0, 'comments only'],
+  'app/api/jobs/[id]/route.ts': [0, 'comments only'],
+  'app/api/jobs/[id]/stems/route.ts': [0, 'comments only'],
+  // disclosures and plumbing
+  'app/account/delete/page.tsx': [1, 'DISCLOSURE: "Any chord corrections you saved" among what deletion removes'],
+  'components/DeleteAccountForm.tsx': [0, 'imports the chord edit collector to clear it: code'],
+  'app/account/layout.tsx': [0, 'comment only'],
+  'app/jobs/[id]/JobView.tsx': [0, 'comments only (the player owns the chord track)'],
+  'app/jobs/[id]/page.tsx': [0, 'comment only (names the play-chords route)'],
+  'lib/r2.ts': [1, 'storage: the play.chords.json key'],
+  'lib/job-access.ts': [0, 'comments only'],
+  'lib/job-poll.ts': [0, 'comments only'],
+  'lib/stem-keys.ts': [0, 'comments only'],
+  'lib/stem-urls.ts': [0, 'comments only'],
+  'lib/upload.ts': [0, 'comments only'],
+  'middleware.ts': [0, 'comments only'],
+};
+// Files that READ the switch are covered by the OFF renders above — but only for text they render.
+// An unrendered export (a new const nobody imports yet) would slip past the renders, so these are
+// pinned at their exact copy count too (review A3). Every chord literal in them is either inside a
+// CHORDS_LINE_SHOWN branch that an OFF render proves gone, or a /privacy or /terms DISCLOSURE.
+const SWITCHED = {
+  'app/(landing)/page.tsx': 6,
+  'app/(landing)/privacy/page.tsx': 8,
+  'app/(landing)/terms/page.tsx': 4,
+  'app/loops/LoopsView.tsx': 1,
+  'components/landing/PlayerArt.tsx': 6,
+  'components/landing/faq.tsx': 5,
+  'components/landing/what-you-get.ts': 2,
+  'lib/emails/templates/welcome.ts': 1,
+  'lib/seo/jsonld.ts': 1,
+  'lib/seo/llms.ts': 1,
+  'lib/seo/pages.ts': 2,
+  'lib/seo/site.ts': 3,
 };
 const IMPORT_RE = /import \{[^}]*\bCHORDS_LINE_SHOWN\b[^}]*\} from '(?:@\/lib\/chords-claim|\.\.\/chords-claim\.ts|\.\/chords-claim)'/;
 
@@ -275,9 +365,40 @@ const walk = (d) => readdirSync(d).flatMap((n) => {
   return statSync(p).isDirectory() ? walk(p) : /\.(tsx?|mjs|js|md|txt|json)$/.test(n) ? [p] : [];
 });
 
-test('source scan: every file that mentions "chord" reads the switch or is on the reasoned allow-list', () => {
+/** "chord" mentions in copy-capable text, by the TypeScript parser: string literals, template
+ *  text, JSX text and JSX attribute strings. Not comments, identifiers or module specifiers.
+ *  A non-code file (md, txt, json) counts every mention. */
+function copyChordMentions(path, text = readFileSync(path, 'utf8')) {
+  if (!/\.(tsx?|mjs|js)$/.test(path)) return (text.match(/chord/gi) ?? []).length;
+  const sf = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, /x$/.test(path) ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  let n = 0;
+  const visit = (node) => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return; // module specifiers
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) return;
+    let t = null;
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateHead(node)
+      || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) t = node.text;
+    else if (ts.isJsxText(node)) t = node.getText(sf);
+    if (t) n += (t.match(/chord/gi) ?? []).length;
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return n;
+}
+
+test('source scan: the copy counter sees literals, JSX text and attributes, and ignores comments and identifiers', () => {
+  const f = 'x.tsx';
+  assert.equal(copyChordMentions(f, '// chord chord\nconst chordRun = 1; /* chords */'), 0);
+  assert.equal(copyChordMentions(f, "import { a } from '../chord/x';\nconst m = await import('../chord/y');"), 0);
+  assert.equal(copyChordMentions(f, "const s = 'a chord'; const t = `x ${1} chords`;"), 2);
+  assert.equal(copyChordMentions(f, 'const e = <div title="Every song gets a chord track.">Chords in time</div>;'), 2);
+  assert.equal(copyChordMentions(f, 'const e = <p data-x={`chord-${1}`}>{"chord"}</p>;'), 2);
+  assert.equal(copyChordMentions('x.md', '# chords'), 1);
+});
+
+test('source scan: every file that mentions "chord" reads the switch, or is allow-listed at its exact copy count', () => {
   const offenders = [];
-  const allowedSeen = new Set();
+  const seen = new Set();
   for (const abs of walk(SRC)) {
     const rel = relative(SRC, abs).split('\\').join('/');
     if (rel === 'lib/chords-claim.ts') continue;
@@ -288,15 +409,21 @@ test('source scan: every file that mentions "chord" reads the switch or is on th
       // Importing it is not enough: it must be read somewhere past the import.
       assert.ok((t.match(/\bCHORDS_LINE_SHOWN\b/g) ?? []).length >= 2, `${rel} imports the switch but never reads it`);
       assert.doesNotMatch(t, /const CHORDS_LINE_SHOWN\s*=/, `${rel} defines its own switch`);
+      assert.ok(!ALLOW[rel], `${rel} imports the switch: drop it from ALLOW`);
+      seen.add(rel);
+      const k = copyChordMentions(abs, t);
+      if (k !== SWITCHED[rel]) offenders.push(`${rel}: reads the switch, ${k} chord mention(s) in copy-capable text, pinned at ${SWITCHED[rel]} (gate any new one, prove it in an OFF render, then update SWITCHED)`);
       continue;
     }
-    if (ALLOW[rel]) { allowedSeen.add(rel); continue; }
-    if (Object.keys(ALLOW_PREFIX).some((p) => rel.startsWith(p))) continue;
-    offenders.push(rel);
+    const n = copyChordMentions(abs, t);
+    if (!ALLOW[rel]) { offenders.push(`${rel}: not allow-listed (${n} chord mention(s) in copy-capable text)`); continue; }
+    seen.add(rel);
+    if (n !== ALLOW[rel][0]) offenders.push(`${rel}: ${n} chord mention(s) in copy-capable text, allow-listed at ${ALLOW[rel][0]} (${ALLOW[rel][1]})`);
   }
-  assert.deepEqual(offenders, [], 'these files mention chords without the DB-17 switch: import CHORDS_LINE_SHOWN, or add a reasoned ALLOW entry');
-  // A stale allow-list entry is a hole waiting to be reused.
-  assert.deepEqual(Object.keys(ALLOW).filter((k) => !allowedSeen.has(k)), [], 'ALLOW names a file that no longer mentions chords (or now imports the switch)');
+  assert.deepEqual(offenders, [], 'chord text outside the DB-17 switch: gate it on CHORDS_LINE_SHOWN, or (if it is not a promise to a new song) update ALLOW with a reason');
+  // A stale entry is a hole waiting to be reused.
+  assert.deepEqual(Object.keys(ALLOW).filter((k) => !seen.has(k)), [], 'ALLOW names a file that no longer mentions chords');
+  assert.deepEqual(Object.keys(SWITCHED).filter((k) => !seen.has(k)), [], 'SWITCHED names a file that no longer reads the switch');
 });
 
 test('source scan: public/ text assets carry no chord claim', () => {

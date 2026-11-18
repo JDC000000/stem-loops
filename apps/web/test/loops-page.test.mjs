@@ -33,8 +33,17 @@ const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 // withDom(), so the harness's global-pollution check does not see it appear.
 globalThis.__loopResultsMounts = [];
 const real = (p) => pathToFileURL(join(WEB, p)).href;
+const SWITCH_ON = 'export const CHORDS_LINE_SHOWN = true;';
+function chordsOffUrl() {
+  const src = readFileSync(join(WEB, 'src/lib/chords-claim.ts'), 'utf8');
+  assert.equal(src.split(SWITCH_ON).length - 1, 1, 'the DB-17 switch is ON and defined once');
+  const dir = mkdtempSync(join(WEB, 'node_modules/.cache', 'chords-off-'));
+  const f = join(dir, 'chords-claim.mjs');
+  writeFileSync(f, src.replace(SWITCH_ON, 'export const CHORDS_LINE_SHOWN = false;'));
+  return pathToFileURL(f).href;
+}
 
-async function loadLoopsView() {
+async function loadLoopsView({ chordsOff = false } = {}) {
   const cache = join(WEB, 'node_modules/.cache');
   mkdirSync(cache, { recursive: true });
   const outDir = mkdtempSync(join(cache, 'loops-view-'));
@@ -64,7 +73,8 @@ async function loadLoopsView() {
     .outputText.replace(/from ['"]@\/components\/LoopResults['"]/g, `from '${resultsUrl}'`)
     .replace(/from ['"]@\/lib\/history['"]/g, `from '${historyUrl}'`)
     .replace(/from ['"]@\/lib\/retention['"]/g, `from '${real('src/lib/retention.ts')}'`)
-    .replace(/from ['"]@\/lib\/chords-claim['"]/g, `from '${real('src/lib/chords-claim.ts')}'`)
+    // DB-17: the REAL switch file, or that file with its one line flipped (QA C-12 review MF-2).
+    .replace(/from ['"]@\/lib\/chords-claim['"]/g, `from '${chordsOff ? chordsOffUrl() : real('src/lib/chords-claim.ts')}'`)
     .replace(/from ['"]@\/lib\/job-label['"]/g, `from '${real('src/lib/job-label.ts')}'`)
     .replace(/from ['"]@\/lib\/loops\/availability['"]/g, `from '${real('src/lib/loops/availability.ts')}'`);
   // Guard: an import this loader does not know about would fail to resolve and
@@ -424,3 +434,26 @@ test('copy: the page states Free\'s exact 24 hours and the paid library, per pla
     assert.match(foot, /On Pro and Studio they stay in your library while you are subscribed, and for 30 days after\./);
   });
 });
+
+// DB-17 / QA C-12 review MF-2: the "no steady beat" note is a switched surface. Rendered, both ways.
+for (const chordsOff of [false, true]) {
+  test(`DB-17: a done job with no loops says the stems are in the player${chordsOff ? ', and no chords with the switch OFF' : ' and the chords too (switch ON)'}`, async () => {
+    mkdirSync(join(WEB, 'node_modules/.cache'), { recursive: true });
+    const LoopsView = await loadLoopsView({ chordsOff });
+    const { deps } = harness({ songs: SONGS, jobs: { [FRESH]: { kind: 'ok', job: doneJob(FRESH, []) } } });
+    await withDom(async (dom) => {
+      await dom.mount(React.createElement(LoopsView, { deps, initialJobId: FRESH }));
+      await settle(dom);
+      const note = dom.find('[data-testid="lp-no-loops"]');
+      assert.ok(note, 'no "no loops" note for a done job with no loops');
+      const text = note.textContent.replace(/\s+/g, ' ');
+      assert.match(text, /We found no steady beat in this song, so there are no bar-length loops to cut\./);
+      if (chordsOff) {
+        assert.doesNotMatch(text, /chord/i, 'the switch is off but the note still claims chords');
+        assert.match(text, /The stems are still in the player\./);
+      } else {
+        assert.match(text, /The stems and chords are still in the player\./);
+      }
+    });
+  });
+}

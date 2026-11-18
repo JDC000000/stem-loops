@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { pageMetadata } from '@/lib/seo/meta';
 import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
-import { CONTACT_LABEL, CONTACT_URL, LEGAL_UPDATED } from '@/components/landing/legal';
+import { CONTACT_LABEL, CONTACT_URL, TERMS_UPDATED } from '@/components/landing/legal';
 import { MAX_TRACK_SEC } from '@/lib/play/types';
 import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
 
@@ -16,8 +16,21 @@ const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
 // C-17 (QA 2026-11-18). Source of truth: plans.monthly_job_quota for 'free' = 5, set by
 // apps/worker/migrations/034_v3_pricing_model_truth.sql and enforced for accounts by
-// checkMonthlyQuota() / enforceEntitlement() (lib/billing/entitlements.ts). Pinned against that
-// migration by test/chords-switch-surfaces.test.mjs ("numeric claims"); /pricing reads the row.
+// checkMonthlyQuota() / enforceEntitlement() (lib/billing/entitlements.ts) and, for links, by
+// bumpJobsUsedWithinQuota() in app/api/jobs/route.ts. Pinned against that migration by
+// test/chords-switch-surfaces.test.mjs ("numeric claims"); /pricing reads the row.
+//
+// Credits are for UPLOADED files only: the credit_consumption trigger (migration 013) accepts
+// upload jobs only, and a Free account holding credits is still capped at the 5 for links
+// (app/api/jobs/route.ts, link branch). Hence "credits for uploaded files" below (QA follow-up SF-3).
+//
+// BILLING_ENFORCED SWITCH-ON CHECKLIST (QA follow-up SF-4; the flag lives in lib/billing/entitlements.ts,
+// a CODEOWNERS path this change does not touch). Today BILLING_ENFORCED is off, and a Free
+// account's UPLOADS fall back to this monthly allowance, so "covers 5 songs a month" is true for
+// uploads and links alike. With BILLING_ENFORCED=true a Free upload with no credits is refused
+// (CREDIT_BALANCE_INSUFFICIENT) and the 5 covers LINKS only. On the day the flag goes on, in the
+// same change: reword the Free sentence below (e.g. "covers 5 song links a month; uploads use
+// credits"), bump TERMS_UPDATED and /terms lastModified, and re-check /pricing and /help.
 const FREE_MONTHLY_SONGS = 5;
 
 // SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
@@ -31,7 +44,7 @@ export default function TermsPage() {
         <div className="container">
           <div className="reading">
             <h1>Terms</h1>
-            <p className="updated">Last updated {LEGAL_UPDATED}</p>
+            <p className="updated">Last updated {TERMS_UPDATED}</p>
 
             <h2>The service</h2>
             <p>
@@ -42,8 +55,8 @@ export default function TermsPage() {
             </p>
             <p>
               The Free plan costs nothing and covers {FREE_MONTHLY_SONGS}&nbsp;songs a month on your account. For more than
-              that you need a paid plan (Pro or Studio) or credits; prices and limits are on the{' '}
-              <a href="/pricing">pricing page</a>.
+              that you need a paid plan (Pro or Studio), or credits for uploaded files (credits do not add song links).
+              Prices and limits are on the <a href="/pricing">pricing page</a>.
             </p>
             <p>
               You can start a job without an account. You need an account to open the player and reach your results. By using

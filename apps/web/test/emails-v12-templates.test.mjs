@@ -55,7 +55,7 @@ const CASES = [
     render: () => renderWelcome({ plan_code: 'pro', period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 50 }),
     subject: 'Welcome to stem-loops',
     lead: 'Thanks for subscribing. Your Pro plan is active, covers 50 tracks a month and renews on 15 January 2027.',
-    cta: ['Upload a song', 'https://stem-loops.com/'],
+    cta: ['Add a song', 'https://stem-loops.com/'],
     why: WHY_SERVICE,
   },
   {

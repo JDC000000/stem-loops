@@ -132,6 +132,11 @@ export type BillingEvent =
       /** True when Stripe ended a subscription that was never paid
        *  (status incomplete / incomplete_expired). No plan-ended email. */
       neverPaid?: boolean;
+      /** From the payload, only to write a canceled TOMBSTONE when no row
+       *  exists yet (review M-1 demo 2). null when the price is unknown. */
+      planCode?: PlanCode | null;
+      currentPeriodStart?: Date | null;
+      currentPeriodEnd?: Date | null;
     }
   | {
       type: 'invoice_paid';
@@ -188,6 +193,10 @@ export type BillingEvent =
   | {
       type: 'unhandled';
       eventType: string;
+      /** Set when money may have been taken but nothing was granted (review
+       *  L-5). The route answers 200 and raises this to Sentry. */
+      alert?: string;
+      alertDetail?: Record<string, unknown>;
     };
 
 // The 9-method contract from TSD §1.1.
@@ -227,6 +236,12 @@ export interface BillingProvider {
   ): Promise<BillingPortalResult>;
 
   getSubscription(subscriptionId: string): Promise<BillingSubscription>;
+
+  /** Current state of an invoice: the provider's status ('open', 'paid',
+   *  'void', ...) and the amount still due, minor units. Optional: a
+   *  provider without it never makes the payment-failed email depend on
+   *  the invoice (review L-1). */
+  getInvoiceState?(invoiceId: string): Promise<{ status: string; amountRemaining: number }>;
 
   cancelSubscription(
     subscriptionId: string,

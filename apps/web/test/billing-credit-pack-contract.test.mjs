@@ -139,6 +139,11 @@ test('webhook: line-item price unknown -> nothing granted, even with a valid met
   assert.equal(res.status, 200);
   assert.equal(res.body.type, 'unhandled');
   assert.equal(state.credit_purchases.length, 0, 'metadata.pack_code must not be a fallback');
+  // Review L-5: money taken, nothing granted -> a Sentry ERROR, not just a log.
+  assert.equal(state.sentry.length, 1);
+  assert.equal(state.sentry[0].opts.level, 'error');
+  assert.match(state.sentry[0].message, /Paid credit session cs_test_credit NOT granted/);
+  assert.equal(state.sentry[0].opts.extra.payment_intent, 'pi_unknown');
 });
 
 test('webhook: more than one line item, or quantity != 1 -> nothing granted', async () => {
@@ -152,9 +157,13 @@ test('webhook: more than one line item, or quantity != 1 -> nothing granted', as
     const s = creditSessionFixture({ id: 'cs_multi_' + i, payment_intent: 'pi_multi_' + i });
     stripeSession(h, s, PRICE.credits_20, over);
     const o = console.error; console.error = () => {};
-    try { await deliver(route, envelope('checkout.session.completed', s)); } finally { console.error = o; }
+    let res;
+    try { res = await deliver(route, envelope('checkout.session.completed', s)); } finally { console.error = o; }
+    assert.equal(res.status, 200);
   }
   assert.equal(state.credit_purchases.length, 0);
+  assert.equal(state.sentry.length, 2, 'each paid-but-not-granted session raises a Sentry error');
+  assert.ok(state.sentry.every((c) => c.opts.level === 'error' && /NOT granted/.test(c.message)));
 });
 
 test('webhook: line-item read fails -> 500 so Stripe retries, nothing granted; the retry grants once', async () => {

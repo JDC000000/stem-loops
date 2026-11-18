@@ -70,7 +70,8 @@ async function loadRoute(evt) {
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${ent}'`)
     .replace(/from ['"]@\/lib\/billing\/prorata['"]/g, `from 'data:text/javascript,export const computeProRataClawback = () => 0;'`)
     .replace(/from ['"]@\/lib\/emails\/dispatch['"]/g, `from '${em}'`)
-    .replace(/from ['"]next\/server['"]/g, `from '${next}'`);
+    .replace(/from ['"]next\/server['"]/g, `from '${next}'`)
+    .replace(/from ['"]@sentry\/nextjs['"]/g, `from 'data:text/javascript,export const captureMessage = () => {}; export const captureException = () => {};'`);
   return import(dataUrl(js) + '#' + Math.random());
 }
 

@@ -217,7 +217,8 @@ test('payment_failed: stale failure after invoice.paid -> stays active, no R7', 
   h.subs.sub_test_1 = sub();
   assert.equal((await raw(envelope('invoice.paid', invoiceFixture({ id: 'in_cycle_2', billing_reason: 'subscription_cycle' })))).status, 200);
   state.emails.length = 0;
-  // Now the stale payment_failed is retried.
+  // Now the stale payment_failed is retried. Stripe: that invoice is paid.
+  h.invoices.in_cycle_2 = { id: 'in_cycle_2', object: 'invoice', status: 'paid', amount_remaining: 0 };
   const before = retrieves();
   assert.equal((await raw(stale)).status, 200);
   assert.ok(retrieves() > before, 'payment_failed must re-read the subscription from Stripe');
@@ -230,8 +231,10 @@ test('payment_failed: stale failure also repairs a row an earlier delivery left 
   h.subs.sub_test_1 = sub();
   await raw(envelope('customer.subscription.created', sub()));
   state.subscriptions[0].status = 'past_due';
-  await raw(cycleFailed());
+  h.invoices.in_cycle_2 = { id: 'in_cycle_2', object: 'invoice', status: 'paid', amount_remaining: 0 };
+  assert.equal((await raw(cycleFailed())).status, 200);
   assert.equal(row().status, 'active');
+  assert.deepEqual(state.emails.filter((e) => e.fn === 'sendPaymentFailed'), []);
 });
 
 test('payment_failed: genuine failure (Stripe says past_due) -> past_due, entitlement kept for grace, R7 once', async () => {
@@ -273,6 +276,207 @@ test('payment_failed: current state carries an unknown price -> dropped with 200
   });
   assert.equal((await raw(cycleFailed())).status, 200);
   assert.equal(row().status, 'active');
+});
+
+// ---- review M-1: CONCURRENT deliveries -------------------------------------
+// The reviewer's two demos, kept as regression tests. A mocked read is
+// snapshotted when it is issued and held for `retrieveDelays` ms, so an
+// older read can try to land after a newer one. The per-subscription
+// advisory lock (fakeDb.tx serialises on it as Postgres would) must make the
+// later delivery read AFTER the earlier one committed.
+
+const tick = () => new Promise((r) => setTimeout(r, 5));
+const until = async (cond) => { for (let i = 0; i < 400 && !cond(); i += 1) await tick(); assert.ok(cond(), 'timed out'); };
+
+test('M-1 demo 1: slow Pro read vs a newer Studio read -> ends Studio (row and entitlement)', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  const n0 = retrieves();
+  h.harness.retrieveDelays.push(50); // A's read is slow
+  const a = raw(envelope('customer.subscription.updated', sub(), { cancel_at_period_end: true }));
+  await until(() => retrieves() > n0); // A has read Pro
+  h.subs.sub_test_1 = studio(); // the user upgrades
+  const b = raw(envelope('customer.subscription.updated', studio(), { items: { data: [{ price: { id: PRICE.pro } }] } }));
+  const [ra, rb] = await Promise.all([a, b]);
+  assert.equal(ra.status, 200); assert.equal(rb.status, 200);
+  assert.equal(row().plan_code, 'studio', 'an older read was written over a newer one');
+  assert.equal(plan(), 'studio');
+});
+
+test('M-1 demo 1b: slow "not ending" read vs a newer cancel_at_period_end=true -> flag stays true', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  const n0 = retrieves();
+  h.harness.retrieveDelays.push(50);
+  const a = raw(envelope('customer.subscription.updated', sub(), { metadata: {} }));
+  await until(() => retrieves() > n0);
+  h.subs.sub_test_1 = sub({ cancel_at_period_end: true });
+  const b = raw(envelope('customer.subscription.updated', sub({ cancel_at_period_end: true }), { cancel_at_period_end: false }));
+  await Promise.all([a, b]);
+  assert.equal(row().cancel_at_period_end, true);
+});
+
+test('M-1 demo 2: created reads active (slow) while deleted runs -> canceled, never a phantom active row', async () => {
+  const n0 = retrieves();
+  h.subs.sub_test_1 = sub();
+  h.harness.retrieveDelays.push(50);
+  const created = raw(envelope('customer.subscription.created', sub()));
+  await until(() => retrieves() > n0); // created has read `active`
+  h.subs.sub_test_1 = sub({ status: 'canceled' }); // canceled at Stripe
+  const deleted = raw(envelope('customer.subscription.deleted', sub({ status: 'canceled' })));
+  const [rc, rd] = await Promise.all([created, deleted]);
+  assert.equal(rc.status, 200); assert.equal(rd.status, 200);
+  assert.equal(row().status, 'canceled', 'phantom active row');
+  assert.notEqual(plan(), 'pro');
+});
+
+test('M-1: every subscription write path takes the per-subscription lock, keyed on provider + id', async () => {
+  h.subs.sub_test_1 = sub({ status: 'past_due' });
+  await raw(envelope('customer.subscription.created', sub({ status: 'past_due' })));
+  await raw(cycleFailed());
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('invoice.paid', invoiceFixture()));
+  h.subs.sub_test_1 = sub({ status: 'canceled' });
+  await raw(envelope('customer.subscription.deleted', sub({ status: 'canceled' })));
+  const locks = state.lockLog.filter((l) => l.key !== null);
+  assert.equal(locks.length, 4, 'created, payment_failed, invoice.paid, deleted');
+  for (const l of locks) {
+    assert.equal(l.key, 'stripe|sub_test_1');
+    assert.match(l.sql, /pg_advisory_xact_lock\(hashtextextended\(\$1 \|\| '-sub:' \|\| \$2, 0\)\)/);
+  }
+  // Each lock is preceded by a lock_timeout, so a stuck holder is a 500, not a hang.
+  for (let i = 0; i < state.lockLog.length; i += 2) {
+    assert.match(state.lockLog[i].sql, /^SET LOCAL lock_timeout = '25s'$/);
+    assert.notEqual(state.lockLog[i + 1].key, null);
+  }
+});
+
+test('tombstone: deleted with no row stores a canceled row (no R6); a later created(active) cannot revive it', async () => {
+  h.subs.sub_test_1 = sub({ status: 'canceled' });
+  await raw(envelope('customer.subscription.deleted', sub({ status: 'canceled' })));
+  assert.equal(row()?.status, 'canceled', 'no tombstone');
+  assert.equal(row().plan_code, 'pro');
+  assert.equal(row().user_id, USER);
+  assert.deepEqual(state.emails.map((e) => e.fn), [], 'a tombstone is not a plan that ended');
+  // Even a read that still says active (lagging) cannot write over it.
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  assert.equal(row().status, 'canceled');
+  assert.equal(plan(), undefined);
+});
+
+// ---- review L-2: guards no test used to notice -----------------------------
+
+test('L-2: payment_failed when Stripe says paused -> payment_failed writes nothing (left to subscription events)', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  h.subs.sub_test_1 = sub({ status: 'paused' });
+  assert.equal((await raw(cycleFailed())).status, 200);
+  assert.equal(row().status, 'active');
+});
+
+test('L-2: provider returns a DIFFERENT subscription id -> 500, nothing written', async () => {
+  h.subs.sub_test_1 = sub({ id: 'sub_someone_else' });
+  assert.equal((await raw(envelope('customer.subscription.created', sub()))).status, 500);
+  assert.equal(state.subscriptions.length, 0);
+  assert.equal(state.entitlements.length, 0);
+  assert.equal((await raw(cycleFailed())).status, 500, 'payment_failed checks it too');
+});
+
+test('L-2: stale event against a stored canceled row also clears a paid entitlement left behind', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  state.subscriptions[0].status = 'canceled';
+  assert.equal(plan(), 'pro', 'precondition: an entitlement the cancel did not clear');
+  await raw(envelope('customer.subscription.updated', sub(), { status: 'past_due' }));
+  assert.equal(plan(), 'free');
+});
+
+// ---- review L-1: payment_failed while Stripe still says active -------------
+
+test('L-1: active subscription, invoice still OPEN with an amount due -> R7, row stays active', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  state.emails.length = 0;
+  h.invoices.in_cycle_2 = { id: 'in_cycle_2', object: 'invoice', status: 'open', amount_remaining: 1200 };
+  assert.equal((await raw(cycleFailed())).status, 200);
+  assert.equal(row().status, 'active');
+  assert.deepEqual(state.emails.map((e) => e.fn), ['sendPaymentFailed']);
+});
+
+test('L-1: active subscription, invoice voided (delayed method gave up) or paid -> no R7', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  state.emails.length = 0;
+  for (const status of ['void', 'paid']) {
+    h.invoices.in_cycle_2 = { id: 'in_cycle_2', object: 'invoice', status, amount_remaining: status === 'void' ? 1200 : 0 };
+    assert.equal((await raw(cycleFailed())).status, 200);
+  }
+  assert.deepEqual(state.emails.map((e) => e.fn), []);
+});
+
+test('L-1: the invoice read fails -> 500 (Stripe retries), no R7', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  state.emails.length = 0;
+  assert.equal((await raw(cycleFailed())).status, 500);
+  assert.deepEqual(state.emails.map((e) => e.fn), []);
+});
+
+test('L-1: past_due needs no invoice read (card path unchanged)', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  h.subs.sub_test_1 = sub({ status: 'past_due' });
+  await raw(cycleFailed());
+  assert.equal(h.calls.filter((c) => c.api === 'invoices.retrieve').length, 0);
+});
+
+// ---- review L-4: an unknown price/status in a STALE payload -----------------
+
+const legacyItems = { object: 'list', data: [{ ...subscriptionFixture().items.data[0], price: { id: 'price_legacy', object: 'price' } }] };
+
+test('L-4: payload has an unknown price but Stripe now has a known one -> current state applied', async () => {
+  h.subs.sub_test_1 = studio();
+  const res = await raw(envelope('customer.subscription.created', sub({ items: legacyItems })));
+  assert.equal(res.status, 200);
+  assert.equal(row()?.plan_code, 'studio');
+  assert.equal(plan(), 'studio');
+  assert.deepEqual(state.sentry, []);
+});
+
+test('L-4: payload has an unknown status but Stripe now has a known one -> current state applied', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub({ status: 'some_future_status' })));
+  assert.equal(row()?.status, 'active');
+});
+
+test('L-4: unknown in the payload AND now -> 200, nothing written, Sentry error raised', async () => {
+  h.subs.sub_test_1 = sub({ items: legacyItems });
+  const res = await raw(envelope('customer.subscription.created', sub({ items: legacyItems })));
+  assert.equal(res.status, 200);
+  assert.equal(state.subscriptions.length, 0);
+  assert.equal(state.sentry.length, 1);
+  assert.equal(state.sentry[0].opts.level, 'error');
+  assert.match(state.sentry[0].message, /sub_test_1 not applied/);
+});
+
+test('L-4: unknown in the payload and the re-read fails -> 500 (Stripe retries)', async () => {
+  const res = await raw(envelope('customer.subscription.created', sub({ items: legacyItems })));
+  assert.equal(res.status, 500);
+});
+
+// ---- review I-1: livemode vs key mode ------------------------------------------
+
+test('I-1: a LIVE event against a TEST key fails closed: 500, nothing read or written, Sentry error', async () => {
+  h.subs.sub_test_1 = sub();
+  const evt = { ...envelope('customer.subscription.created', sub()), livemode: true };
+  const n0 = h.calls.length;
+  const res = await raw(evt);
+  assert.equal(res.status, 500);
+  assert.equal(h.calls.length, n0, 'no Stripe read');
+  assert.equal(state.subscriptions.length, 0);
+  assert.equal(state.sentry.length, 1);
+  assert.match(state.sentry[0].message, /mode does not match/);
 });
 
 // ---- the harness itself cannot reach Stripe ----------------------------------

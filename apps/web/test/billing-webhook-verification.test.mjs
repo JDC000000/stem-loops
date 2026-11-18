@@ -110,7 +110,8 @@ async function loadRoute({ handleWebhookThrows = false, event = { type: 'unhandl
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${eStub}'`)
     .replace(/from ['"]@\/lib\/billing\/prorata['"]/g, `from 'data:text/javascript,export const computeProRataClawback = () => 0;'`)
     .replace(/from ['"]@\/lib\/emails\/dispatch['"]/g, `from '${emStub}'`)
-    .replace(/from ['"]next\/server['"]/g, `from '${nextStub}'`);
+    .replace(/from ['"]next\/server['"]/g, `from '${nextStub}'`)
+    .replace(/from ['"]@sentry\/nextjs['"]/g, `from 'data:text/javascript,export const captureMessage = () => {}; export const captureException = () => {};'`);
   return await import(dataUrl(js) + '#' + Math.random());
 }
 

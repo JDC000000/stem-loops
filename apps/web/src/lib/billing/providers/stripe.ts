@@ -190,6 +190,24 @@ export class BillingProviderUnavailableError extends Error {
   }
 }
 
+// Review I-1: the event's `livemode` disagrees with the API key's mode (a
+// live endpoint secret with a test key, or the reverse). Thrown after the
+// signature check; the route answers 500 and alerts. Matched by name.
+export class BillingModeMismatchError extends Error {
+  constructor(eventLive: boolean, keyLive: boolean) {
+    super(`event livemode=${eventLive} but STRIPE_SECRET_KEY is a ${keyLive ? 'live' : 'test'} key`);
+    this.name = 'BillingModeMismatchError';
+  }
+}
+
+/** true/false for a live/test key, null when the key does not say. */
+function keyIsLive(key: string | undefined): boolean | null {
+  if (!key) return null;
+  if (/^(sk|rk)_live_/.test(key)) return true;
+  if (/^(sk|rk)_test_/.test(key)) return false;
+  return null;
+}
+
 // Sentinel thrown when a Stripe subscription carries a price_id that doesn't
 // map to any known PLAN_PRICE_ENV entry. Previously `priceIdToPlan ?? 'pro'`
 // (and before that, `?? 'pro_monthly'`) silently downgraded a studio
@@ -430,6 +448,11 @@ export class StripeProvider implements BillingProvider {
     return subFromStripe(sub);
   }
 
+  async getInvoiceState(invoiceId: string): Promise<{ status: string; amountRemaining: number }> {
+    const inv = await getClient().invoices.retrieve(invoiceId);
+    return { status: inv.status ?? 'unknown', amountRemaining: inv.amount_remaining ?? 0 };
+  }
+
   async cancelSubscription(
     subscriptionId: string,
     atPeriodEnd: boolean,
@@ -449,6 +472,10 @@ export class StripeProvider implements BillingProvider {
       throw new Error('STRIPE_WEBHOOK_SECRET is not set');
     }
     const event = getClient().webhooks.constructEvent(rawBody, signature, secret);
+    const keyLive = keyIsLive(process.env.STRIPE_SECRET_KEY);
+    if (keyLive !== null && typeof event.livemode === 'boolean' && event.livemode !== keyLive) {
+      throw new BillingModeMismatchError(event.livemode, keyLive);
+    }
     return await this._dispatch(event);
   }
 
@@ -509,44 +536,53 @@ export class StripeProvider implements BillingProvider {
         const sub = event.data.object as Stripe.Subscription;
         const userId = (sub.metadata?.user_id as string | undefined) ?? '';
         if (event.type === 'customer.subscription.deleted') {
+          const item = sub.items?.data?.[0];
           return {
             type: 'subscription_canceled',
             userId,
             providerSubscriptionId: sub.id,
             providerCustomerId: _customerId(sub.customer),
             neverPaid: sub.status === 'incomplete' || sub.status === 'incomplete_expired',
+            planCode: item?.price?.id ? priceIdToPlan(item.price.id) : null,
+            currentPeriodStart: item?.current_period_start ? new Date(item.current_period_start * 1000) : null,
+            currentPeriodEnd: item?.current_period_end ? new Date(item.current_period_end * 1000) : null,
           };
         }
+        const previous =
+          event.type === 'customer.subscription.created'
+            ? null
+            : _previousAttributes(event.data as { previous_attributes?: unknown });
         try {
-          return {
-            type: 'subscription_upserted',
-            userId,
-            subscription: subFromStripe(sub),
-            previous:
-              event.type === 'customer.subscription.created'
-                ? null
-                : _previousAttributes(event.data as { previous_attributes?: unknown }),
-          };
+          return { type: 'subscription_upserted', userId, subscription: subFromStripe(sub), previous };
         } catch (err) {
-          // HIGH #2: unknown price_id must NOT silently downgrade to pro.
-          // Mark unhandled so the webhook route logs it and the operator sees
-          // the mismatch via Stripe's dashboard retry/alerting.
-          if (err instanceof UnknownPriceError) {
-            console.error(
-              `[stripe] ${event.type} dropped for sub ${sub.id}: ${err.message}`,
-            );
-            return { type: 'unhandled', eventType: `${event.type}:unknown_price` };
+          if (!(err instanceof UnknownPriceError) && !(err instanceof UnknownStatusError)) throw err;
+          // Review L-4: the PAYLOAD may be stale. An unknown price or status
+          // in it says nothing about now, so re-read before dropping: if the
+          // CURRENT state maps, it is applied (the route re-reads again under
+          // its lock). A failed read is a 500 so Stripe retries.
+          let fresh: Stripe.Subscription;
+          try {
+            fresh = await getClient().subscriptions.retrieve(sub.id);
+          } catch (readErr) {
+            throw new BillingProviderUnavailableError(`subscriptions.retrieve(${sub.id})`, readErr);
           }
-          // Phase-1b launch-blocker: Stripe status we don't recognize.
-          // Mark unhandled (not 500) so the webhook returns 200, Stripe
-          // stops retrying, and the operator sees the drift in logs.
-          if (err instanceof UnknownStatusError) {
-            console.error(
-              `[stripe] ${event.type} dropped for sub ${sub.id}: ${err.message}`,
-            );
-            return { type: 'unhandled', eventType: `${event.type}:unknown_status` };
+          try {
+            return { type: 'subscription_upserted', userId, subscription: subFromStripe(fresh), previous };
+          } catch (freshErr) {
+            // HIGH #2: an unknown price must NOT silently downgrade to pro,
+            // and an unknown status must not CHECK-violate the DB. Drop it
+            // (200; a retry cannot fix it) and alert a human.
+            if (freshErr instanceof UnknownPriceError || freshErr instanceof UnknownStatusError) {
+              const kind = freshErr instanceof UnknownPriceError ? 'unknown_price' : 'unknown_status';
+              return {
+                type: 'unhandled',
+                eventType: `${event.type}:${kind}`,
+                alert: `Stripe subscription ${sub.id} not applied: ${freshErr.message}`,
+                alertDetail: { subscription: sub.id },
+              };
+            }
+            throw freshErr;
           }
-          throw err;
         }
       }
       case 'charge.dispute.created': {
@@ -604,19 +640,29 @@ export class StripeProvider implements BillingProvider {
     }
     const items = full.line_items?.data ?? [];
     const item = items[0];
+    const detail = {
+      session: session.id,
+      payment_intent: typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id ?? null,
+      amount_total: full.amount_total ?? session.amount_total ?? null,
+      currency: full.currency ?? session.currency ?? null,
+    };
     if (items.length !== 1 || (item?.quantity ?? 1) !== 1) {
-      console.error(
-        `[stripe] credit session ${session.id}: expected exactly one line item of quantity 1, got ${items.length} (qty ${item?.quantity ?? 'n/a'}); not granting`,
-      );
-      return { type: 'unhandled', eventType: 'checkout.session.completed:unexpected_line_items' };
+      return {
+        type: 'unhandled',
+        eventType: 'checkout.session.completed:unexpected_line_items',
+        alert: `Paid credit session ${session.id} NOT granted: expected one line item of quantity 1, got ${items.length} (qty ${item?.quantity ?? 'n/a'})`,
+        alertDetail: detail,
+      };
     }
     const priceId = item?.price?.id ?? '';
     const packCode = priceIdToPack(priceId);
     if (!packCode) {
-      console.error(
-        `[stripe] credit session ${session.id}: line-item price '${priceId}' is not a known credit pack; not granting`,
-      );
-      return { type: 'unhandled', eventType: 'checkout.session.completed:unknown_pack' };
+      return {
+        type: 'unhandled',
+        eventType: 'checkout.session.completed:unknown_pack',
+        alert: `Paid credit session ${session.id} NOT granted: line-item price '${priceId}' is not a known credit pack`,
+        alertDetail: { ...detail, price: priceId },
+      };
     }
     const metaPrice = (session.metadata?.price_id as string | undefined) ?? null;
     const metaPack = (session.metadata?.pack_code as string | undefined) ?? null;

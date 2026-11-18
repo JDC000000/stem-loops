@@ -19,6 +19,7 @@
 // here and tracked as a follow-up.
 import { DemoProvider } from '@/components/landing/DemoProvider';
 import { ToolForm } from '@/components/landing/ToolForm';
+import { HomeDemo } from '@/components/landing/HomeDemo';
 import { Lanes } from '@/components/landing/Lanes';
 import { AbCompare, PipeSongArt, PipeStemsArt, ToInputLink } from '@/components/landing/DemoArt';
 import { PlayerArt } from '@/components/landing/PlayerArt';
@@ -90,6 +91,9 @@ export default function HomePage() {
                 opening the player needs one.
               </p>
             </div>
+            {/* Slice 2a (design P4.1 item 2): the live play-along demo, signed out, near the
+                top. A static poster until Play is tapped (P4.2); components/landing/HomeDemo.tsx. */}
+            <HomeDemo />
             <ToolForm />
             <Lanes />
           </div>

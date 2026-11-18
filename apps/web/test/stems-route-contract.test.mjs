@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { DEMO_RATE_IMPORT_RE, DEMO_RATE_URL, JOB_ACCESS_IMPORT_RE, jobAccessUrl } from './helpers/job-access-stub.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(WEB, 'src/app/api/jobs/[id]/stems/route.ts');
@@ -139,6 +140,7 @@ async function loadRoute({
     // Ownership is not what this file tests (test/job-access-routes.test.mjs runs the REAL helper);
     // here it is stubbed open so this file's own subject stays isolated.
     .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl(`export const mayReadJob = async () => true;`)}'`)
+    .replace(DEMO_RATE_IMPORT_RE, `from '${DEMO_RATE_URL}'`)
     // the REAL modules, inlined — the logic under test, not a stub of it
     .replace(/from ['"]@\/lib\/stem-keys['"]/g, `from '${dataUrl(toJs(readFileSync(KEYS, 'utf8')))}'`)
     .replace(/from ['"]@\/lib\/retention['"]/g, `from '${dataUrl(toJs(readFileSync(RETENTION, 'utf8')))}'`)

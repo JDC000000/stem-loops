@@ -15,6 +15,7 @@ import ts from 'typescript';
 import { WEB, dataUrl } from './helpers/billing-harness.mjs';
 import { INPUT_TRIM_URL, INPUT_TRIM_IMPORT_RE } from './helpers/input-trim.mjs';
 import { inputTrimFromEvents, trimNote, jobTrimNote } from '../src/lib/input-trim.ts';
+import { DEMO_RATE_IMPORT_RE, DEMO_RATE_URL, JOB_ACCESS_IMPORT_RE, jobAccessUrl } from './helpers/job-access-stub.mjs';
 
 // ───────────────────────────── the pure helper ─────────────────────────────
 
@@ -117,6 +118,7 @@ async function loadRoute() {
   const js = toJs('src/app/api/jobs/[id]/route.ts')
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub}'`)
     .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl('export const mayReadJob = async () => true;')}'`)
+    .replace(DEMO_RATE_IMPORT_RE, `from '${DEMO_RATE_URL}'`)
     .replace(INPUT_TRIM_IMPORT_RE, `from '${INPUT_TRIM_URL}'`)
     .replace(/from ['"]@\/lib\/retention['"]/g, `from '${dataUrl("export const presignTtlSec = () => 900; export const JOB_RETAINED_UNTIL_SQL = 'expires_at';")}'`)
     .replace(/from ['"]@\/lib\/r2['"]/g, `from '${dataUrl("export const mintSignedUrl = async (k) => 'https://signed/' + k;")}'`)

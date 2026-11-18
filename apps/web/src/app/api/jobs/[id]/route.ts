@@ -4,9 +4,12 @@ import { db } from '@/lib/db';
 import { mintSignedUrl } from '@/lib/r2';
 import { JOB_RETAINED_UNTIL_SQL, presignTtlSec } from '@/lib/retention';
 import { mayReadJob } from '@/lib/job-access';
+import { demoReadAllowed, DEMO_RATE_LIMIT_MSG } from '@/lib/demo-rate';
 import { inputTrimFromEvents } from '@/lib/input-trim';
 // OWNERSHIP: a job with a user_id is readable only by that user; an anonymous job
-// (user_id NULL) is readable by anyone holding its id. See lib/job-access.ts. A denied
+// (user_id NULL) is readable by anyone holding its id; a DEMO song (is_demo, Slice 2a,
+// DB-12a) is readable by everyone, signed out included, and its reads are rate-limited
+// per IP (lib/demo-rate.ts, read-only). See lib/job-access.ts. A denied
 // caller gets the same 404 as a missing job. `user_id` is read to decide that and is
 // NEVER copied into the response. The body therefore also varies by who is signed in,
 // which is a second reason for NO_STORE below.
@@ -24,8 +27,9 @@ const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
 // (24h for Free, longer for a Pro/Studio owner; lib/retention.ts), returned AS expires_at.
 // Past it the job is treated as gone even if the sweep hasn't run yet. `is_demo` (migration
 // 040) is returned so the player can hide "deleted in …" for a demo song, whose expires_at is
-// the far-future DEMO_RETAINED_UNTIL. It opens no read path: ownership is unchanged.
-export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
+// the far-future DEMO_RETAINED_UNTIL. Since Slice 2a it also opens the READ path for that row
+// (lib/job-access.ts); nothing else about the response changes.
+export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   // A shape-invalid id (mistyped/truncated bookmark) would otherwise hit Postgres's
   // uuid-cast error → generic 500, which the client poll loop treats as non-terminal
   // and retries forever ("Processing... 0%" loop, QA P1). Return the clean 404 the UI
@@ -45,8 +49,15 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
     }
     const { user_id: ownerId, ...job } = jobRes.rows[0];
-    if (!(await mayReadJob(ownerId))) {
+    if (!(await mayReadJob(ownerId, job.is_demo))) {
       return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+    }
+    // Demo songs only: the per-IP read limit (design P3.1). An ordinary job never gets here.
+    if (job.is_demo === true && !(await demoReadAllowed(request))) {
+      return NextResponse.json(
+        { error_code: 'RATE_LIMITED', message: DEMO_RATE_LIMIT_MSG },
+        { status: 429, headers: NO_STORE },
+      );
     }
     const urlTtlSec = presignTtlSec(job.expires_at);
 

@@ -393,6 +393,8 @@ export interface PlayerProps {
   readonly back?: { readonly href: string; readonly label: string };
   readonly songInfo?: readonly string[];
   readonly loopsHref?: string | null;
+  /** See PlayerViewProps.onBack. */
+  readonly onBack?: () => void;
 }
 
 /** Lock-screen artwork. The app icon; it exists in /public. */
@@ -416,6 +418,7 @@ export default function Player({
   back,
   songInfo,
   loopsHref,
+  onBack,
 }: PlayerProps) {
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const [snapshot, setSnapshot] = useState<EngineSnapshot>(IDLE_SNAPSHOT);
@@ -665,6 +668,7 @@ export default function Player({
       back={back}
       songInfo={songInfo}
       loopsHref={loopsHref}
+      onBack={onBack}
     />
   );
 }
@@ -702,6 +706,11 @@ export interface PlayerViewProps {
   readonly songInfo?: readonly string[];
   /** "Download loops" in the ⋯ menu; omitted when null. */
   readonly loopsHref?: string | null;
+  /**
+   * When set, the back arrow calls this instead of following `back.href` (the href is
+   * still rendered). Used by the home page's demo layer, which closes in place.
+   */
+  readonly onBack?: () => void;
 }
 
 export { DEFAULT_BACK, DETECTED_NOTE, LIGHT_AUDIO_HINT, NO_CHORDS_LINE } from './PlayerScreen';

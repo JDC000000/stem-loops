@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import ts from 'typescript';
 import { WEB, dataUrl } from './helpers/billing-harness.mjs';
 import { fetchPlayChords } from '../src/chord/play-chords-loader.ts';
+import { DEMO_RATE_IMPORT_RE, DEMO_RATE_URL, JOB_ACCESS_IMPORT_RE, jobAccessUrl } from './helpers/job-access-stub.mjs';
 
 const GOLDEN = JSON.parse(
   readFileSync(join(WEB, '..', '..', 'fixtures', 'contracts', 'play-chords.golden.json'), 'utf8'),
@@ -57,6 +58,7 @@ async function loadRoute() {
     // Ownership is not what this file tests (test/job-access-routes.test.mjs runs the REAL helper);
     // here it is stubbed open so this file's own subject stays isolated.
     .replace(/from ['"]@\/lib\/job-access['"]/, `from '${dataUrl(`export const mayReadJob = async () => true;`)}'`)
+    .replace(DEMO_RATE_IMPORT_RE, `from '${DEMO_RATE_URL}'`)
     .replace(/from ['"]@\/lib\/r2['"]/, `from '${r2}'`)
     .replace(/from ['"]@\/lib\/retention['"]/, `from '${retention}'`);
   return import(dataUrl(js) + '#' + Math.random());

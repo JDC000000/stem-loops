@@ -158,6 +158,9 @@ test('POST /api/users/me/claim-jobs — happy path claims N jobs', async () => {
   assert.ok(insertIdx < updateIdx, 'INSERT must precede UPDATE');
   // The UPDATE filters by user_id IS NULL (idempotency guard).
   assert.match(calls[updateIdx].text, /user_id IS NULL/);
+  // Slice 2a (design P3.1 "Claim into an account: Never"): a demo song whose system account
+  // was deleted has user_id NULL too, and must never be claimed.
+  assert.match(calls[updateIdx].text, /\bis_demo = false\b/, 'a NULL-owner demo song could be claimed');
   // Non-ceiling rowCount must NOT trigger the remaining-count probe.
   const truncInsert = calls.find((c) =>
     /INSERT INTO public\.usage_events/i.test(c.text) && /claim_jobs_truncated/i.test(String(c.params?.[1] ?? '')),

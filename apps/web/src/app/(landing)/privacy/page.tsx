@@ -33,7 +33,7 @@ export default function PrivacyPage() {
                 sent to the processors named below to be separated into stems and to have its chords estimated.
               </li>
               <li>
-                <strong>Job details.</strong> The link or file name, the stems and loop length you chose, and the job’s progress.
+                <strong>Job details.</strong> The link or file name, the song’s title (the video’s title on YouTube, or the file name without its extension), the stems and loop length you chose, and the job’s progress.
               </li>
               <li>
                 <strong>Your account.</strong> We store your email address. If you set a password, it is stored by Supabase as a
@@ -76,7 +76,7 @@ export default function PrivacyPage() {
                 holds the job’s id, status, timestamps and expiry, which account it belonged to, whether it was an upload or
                 a link, the stems and loop length you chose, the progress trace, how many attempts it took and any error it
                 ended with, and the reference numbers for the separation and chord-recognition runs — including the one held
-                by Klangio. Your file names, your links and your audio are gone from it.
+                by Klangio. Your file names, song titles, links and audio are gone from it.
               </li>
               <li>
                 <strong>Chord corrections you save,</strong> kept to improve the chord estimates: the part of the song a
@@ -96,7 +96,7 @@ export default function PrivacyPage() {
             <p>These are everyone who touches your audio or your account, and what each one does:</p>
             <ul>
               <li>
-                <strong>Replicate</strong> runs the stem separation (Demucs). Your audio is sent to them.
+                <strong>Replicate</strong> runs the stem separation. Your audio is sent to them.
               </li>
               <li>
                 <strong>Klangio</strong> estimates the chords. Your audio is sent to them too.
@@ -128,6 +128,11 @@ export default function PrivacyPage() {
                 <strong>Sentry</strong> receives error reports.
               </li>
               <li>A proxy provider may be used to fetch audio from YouTube links.</li>
+              <li>
+                <strong>YouTube</strong> serves the small picture shown next to a linked song in your library. Your
+                browser asks YouTube for it directly, without telling YouTube which page it is on, so YouTube sees your IP
+                address and that video’s id.
+              </li>
             </ul>
             <p>We don’t sell your data or share it for advertising.</p>
 

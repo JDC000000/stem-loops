@@ -1,35 +1,39 @@
 // Single source of user-facing error copy (PRD §6.2 + TSD §3.6). Rendered by error_code from
 // this static map only — never interpolated from server state, never a stack trace.
+//
+// Copy rule (design v1.4, P7): `headline` is ONE sentence saying what happened; `action` is
+// ONE sentence saying what to do. Never empty, never two sentences (test/error-copy-shape).
+// Slice 1b brought the entries that broke it into line.
 export const ERROR_COPY: Record<string, { headline: string; action: string }> = {
   // v1 pipeline codes
-  DOWNLOAD_BLOCKED: { headline: 'YouTube is temporarily blocking automated access for this video.', action: 'Try again in a few minutes.' },
+  DOWNLOAD_BLOCKED: { headline: 'YouTube is blocking us from getting this video right now.', action: 'Try again in a few minutes, or upload the file.' },
   DOWNLOAD_TIMEOUT: { headline: "We couldn't reach that video in time.", action: 'Check the link and try again.' },
   DOWNLOAD_INVALID_URL: { headline: "That doesn't look like a YouTube link.", action: 'Paste a full youtube.com or youtu.be URL.' },
-  DOWNLOAD_AGE_RESTRICTED: { headline: "This video is age-restricted and can't be processed.", action: '' },
-  DOWNLOAD_PRIVATE: { headline: 'This video is private or unavailable.', action: '' },
+  DOWNLOAD_AGE_RESTRICTED: { headline: "This video is age-restricted, so we can't get it.", action: 'Try another link, or upload the file.' },
+  DOWNLOAD_PRIVATE: { headline: 'This video is private or unavailable.', action: 'Try another link, or upload the file.' },
   // Raised for provider-side failures: Replicate answering `failed`, the poll budget
   // running out, a cancelled prediction. None of those is about the song, and "Try a
   // different song" sent people away from a track that would work on a retry.
   SEPARATION_FAILED: {
-    headline: "Stem separation didn't finish.",
-    action: 'That was a problem on our end, not your song. Add the same track again in a few minutes.',
+    headline: "Splitting the song didn't finish, because of a problem on our end, not your song.",
+    action: 'Add the same song again in a few minutes.',
   },
-  EXTRACTION_FAILED: { headline: "We couldn't find clean loops in this audio.", action: 'It may be too short or beatless.' },
-  UPLOAD_FAILED: { headline: "We separated your stems but couldn't save them.", action: 'Please retry.' },
+  EXTRACTION_FAILED: { headline: "We couldn't find a steady beat in this audio.", action: 'Try a longer song with a clear beat.' },
+  UPLOAD_FAILED: { headline: "We split your song but couldn't save the stems.", action: 'Add the same song again.' },
   RATE_LIMITED: { headline: "We're busy or you've hit the limit.", action: 'Wait a moment and try again.' },
-  INTERNAL_ERROR: { headline: "Something went wrong on our end. We've logged it.", action: 'Please try again.' },
+  INTERNAL_ERROR: { headline: 'Something went wrong on our end, and we have logged it.', action: 'Try again in a moment.' },
   // B8: the GLOBAL in-flight cap (admission.ts checkGlobalCapacity). Distinct from
   // RATE_LIMITED because it is not about this visitor at all — other people's songs fill
   // the queue. Returned as 503 + Retry-After: 120, which is what "a few minutes" means.
   AT_CAPACITY: {
-    headline: "We're at capacity right now.",
-    action: "It's not something you did — we're working through other people's songs. Please try again in a few minutes.",
+    headline: "We're at capacity with other people's songs right now — not something you did.",
+    action: 'Try again in a few minutes.',
   },
 
   // V3 billing codes (TSD §3.6)
   CHECKOUT_FAILED: {
     headline: "We couldn't start checkout.",
-    action: 'Please try again, or contact support if it keeps failing.',
+    action: 'Try again, or contact support if it keeps failing.',
   },
   UNAUTHENTICATED: {
     headline: 'Sign in to continue.',
@@ -75,7 +79,7 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
   },
   BOT_CHALLENGE_FAILED: {
     headline: "We couldn't verify you're not a bot.",
-    action: 'Complete the challenge and try again. If it keeps failing, reload the page.',
+    action: 'Complete the challenge again, or reload the page if it keeps failing.',
   },
 };
 

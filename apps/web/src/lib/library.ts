@@ -8,6 +8,7 @@
 // Pure and free of `@/` imports so src/lib/library.test.mjs can load it directly.
 import { jobLabel } from './job-label.ts';
 import { RETENTION_MS } from './retention.ts';
+import { songThumbnailUrl } from './song-thumb.ts';
 
 /** One row of GET /api/library. `expires_at` is the song's real deletion time. */
 export type LibraryRow = {
@@ -15,6 +16,8 @@ export type LibraryRow = {
   title?: string | null;
   original_filename?: string | null;
   youtube_url?: string | null;
+  /** Usually empty on recent rows (P5.1); the thumbnail falls back to youtube_url. */
+  video_id?: string | null;
   status?: string;
   created_at: string;
   expires_at: string;
@@ -34,6 +37,8 @@ export type ListedSong = {
   source: 'library' | 'browser';
   /** A demo song: the list shows no "deleted in" for it. Library rows only. */
   isDemo: boolean;
+  /** i.ytimg.com thumbnail for a linked song (P5.1), else null. Library rows only. */
+  thumbUrl: string | null;
 };
 
 const ms = (iso: string): number => {
@@ -57,13 +62,16 @@ export function listedSongs(
     const createdAtMs = ms(r.created_at);
     const expiresAtMs = ms(r.expires_at);
     if (!Number.isFinite(createdAtMs) || !Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) continue;
-    out.set(r.id, { id: r.id, label: jobLabel(r), createdAtMs, expiresAtMs, source: 'library', isDemo: r.is_demo === true });
+    out.set(r.id, {
+      id: r.id, label: jobLabel(r), createdAtMs, expiresAtMs, source: 'library', isDemo: r.is_demo === true,
+      thumbUrl: songThumbnailUrl(r),
+    });
   }
   for (const e of browser) {
     if (out.has(e.id)) continue;
     const expiresAtMs = e.at + RETENTION_MS;
     if (expiresAtMs <= nowMs) continue;
-    out.set(e.id, { id: e.id, label: e.id, createdAtMs: e.at, expiresAtMs, source: 'browser', isDemo: false });
+    out.set(e.id, { id: e.id, label: e.id, createdAtMs: e.at, expiresAtMs, source: 'browser', isDemo: false, thumbUrl: null });
   }
   return Array.from(out.values()).sort((a, b) => b.createdAtMs - a.createdAtMs);
 }

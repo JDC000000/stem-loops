@@ -104,13 +104,14 @@ const resolveSrc = (p) => {
  * COMPILER does the compiling; this only walks imports and rewrites specifiers. Bare
  * specifiers (react, next) are left alone so Node resolves them normally.
  */
-function build(outDir, entryAbs) {
+function build(outDir, entryAbs, patch = null) {
   const emitted = new Map();
   const emit = (abs) => {
     if (emitted.has(abs)) return emitted.get(abs);
     const out = join(outDir, relative(SRC, abs).replace(/\.tsx?$/, '.mjs'));
     emitted.set(abs, out);
-    const js = ts.transpileModule(readFileSync(abs, 'utf8'), {
+    const raw = readFileSync(abs, 'utf8');
+    const js = ts.transpileModule(patch ? patch(relative(SRC, abs), raw) : raw, {
       compilerOptions: {
         module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022,
         ...(abs.endsWith('.tsx') ? { jsx: ts.JsxEmit.ReactJSX } : {}),
@@ -192,12 +193,15 @@ const cache = new Map();
  * rendered here at all. Both legal pages are sync and read nothing, which is why they can
  * be gated this way and those pages cannot.
  */
-export async function renderPage(relPath) {
-  const hit = cache.get(relPath);
+export async function renderPage(relPath, { patch = null } = {}) {
+  // `patch(srcRelPath, source) => source` rewrites a module's source before it is transpiled
+  // (e.g. flipping a feature constant), so a test can render a variant of the page. A patched
+  // render is never cached, and never shares a module graph with the unpatched one.
+  const hit = patch ? null : cache.get(relPath);
   if (hit) return hit;
   const outRoot = join(WEB, 'node_modules/.cache');
   mkdirSync(outRoot, { recursive: true });
-  const { entry, count } = build(mkdtempSync(join(outRoot, 'render-page-')), join(SRC, relPath));
+  const { entry, count } = build(mkdtempSync(join(outRoot, 'render-page-')), join(SRC, relPath), patch);
 
   const React = (await import('react')).default;
   const { renderToStaticMarkup } = await import('react-dom/server');
@@ -210,7 +214,7 @@ export async function renderPage(relPath) {
     html, textSpaced: toText(html, ' '), textTight: toText(html, ''),
     metaSpaced: toText(meta, ' '), metaTight: toText(meta, ''), modules: count,
   };
-  cache.set(relPath, out);
+  if (!patch) cache.set(relPath, out);
   return out;
 }
 

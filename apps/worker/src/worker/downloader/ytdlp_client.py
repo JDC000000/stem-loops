@@ -23,6 +23,7 @@ import string
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
 
 from .. import tmpdirs
@@ -35,6 +36,7 @@ from ..errors import (
     LiveStreamNotSupportedError,
 )
 from ..logger import log_structured, redact_secrets
+from ..titles import clean_title
 
 COOKIE_DIR = os.environ.get("YTDLP_COOKIE_DIR", "")
 PROXY_URL = os.environ.get("PROXY_URL", "")  # e.g. http://user:pass@geo.iproyal.com:12321
@@ -142,37 +144,82 @@ def _reject_if_live(youtube_url: str, proxy: str) -> None:
         raise LiveStreamNotSupportedError("is_live=True")
 
 
-def probe_duration_sec(youtube_url: str, proxy: str | None = None) -> float | None:
-    """Length in seconds from yt-dlp's METADATA, downloading nothing.
+@dataclass(frozen=True)
+class LinkMetadata:
+    """What one metadata-only yt-dlp call tells us about a link (design v1.4, P5.1).
+
+    ``duration_sec``: ``None`` means UNKNOWN, never "short enough" (see ``probe_metadata``).
+    ``title``: already passed through ``titles.clean_title``; ``None`` when absent.
+    """
+
+    duration_sec: float | None
+    title: str | None
+
+
+UNKNOWN = LinkMetadata(duration_sec=None, title=None)
+
+
+def _parse_duration(line: str) -> float | None:
+    try:
+        value = float(line.strip())
+    except ValueError:
+        return None
+    return value if 0 < value < float("inf") else None
+
+
+def probe_metadata(youtube_url: str, proxy: str | None = None) -> LinkMetadata:
+    """Length and title from yt-dlp's METADATA, downloading nothing. ONE subprocess, one
+    request: ``--print duration --print title`` is the duration call this worker already made,
+    with the title added (P5.1: "same request, no extra proxy traffic").
 
     Same ``--simulate`` mechanism ``_reject_if_live`` above already uses, and cheap for the
     same reason: under SABR it is the MEDIA request that 403s from a datacenter IP while the
-    metadata resolve still succeeds (see yt-session/fly.toml), so a duration reading is
-    usually available even where a byte fetch is not.
+    metadata resolve still succeeds (see yt-session/fly.toml), so a reading is usually
+    available even where a byte fetch is not.
 
-    Returns ``None`` when the length cannot be read -- probe error, timeout, yt-dlp's ``NA``,
-    or a non-finite/non-positive value. ``None`` means UNKNOWN and must never be treated as
-    "short enough": the enforcing measurement is taken on the staged file
-    (``pipeline._trim_link_source``, which cuts to the cap), on bytes we hold.
+    Output contract: yt-dlp prints each ``--print`` field on its own line, in the order
+    given. Line 1 is the duration; EVERYTHING after it is the title. The title is printed
+    LAST on purpose: a title containing a line break can then only spill into its own field,
+    never shift the duration.
+
+    ``duration_sec`` is ``None`` when the length cannot be read -- probe error, timeout,
+    yt-dlp's ``NA``, or a non-finite/non-positive value. ``None`` means UNKNOWN and must never
+    be treated as "short enough": the enforcing measurement is taken on the staged file
+    (``pipeline._trim_link_source``, which cuts to the cap), on bytes we hold. ``title`` is
+    ``None`` when absent; a failed probe yields neither.
     """
-    cmd = [sys.executable, "-m", "yt_dlp", "--simulate", "--no-warnings", "--print", "duration"]
+    cmd = [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+        "--simulate",
+        "--no-warnings",
+        "--print",
+        "duration",
+        "--print",
+        "title",
+    ]
     if proxy is None:
         proxy = _sticky_proxy_url()
     if proxy:
         cmd += ["--proxy", proxy]
     cmd.append(youtube_url)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        # Titles are arbitrary Unicode: decode as UTF-8 whatever the worker's locale is, and
+        # never let one undecodable byte throw away the duration reading.
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
+        )
     except subprocess.TimeoutExpired:
-        return None
+        return UNKNOWN
     if r.returncode != 0:
-        return None
-    lines = r.stdout.strip().splitlines()
-    try:
-        value = float(lines[0].strip()) if lines else 0.0
-    except ValueError:
-        return None
-    return value if 0 < value < float("inf") else None
+        return UNKNOWN
+    lines = (r.stdout or "").splitlines()
+    if not lines:
+        return UNKNOWN
+    duration = _parse_duration(lines[0])
+    title = clean_title(" ".join(lines[1:])) if len(lines) > 1 else None
+    return LinkMetadata(duration_sec=duration, title=title)
 
 
 def fetch_audio_file(youtube_url: str) -> str:

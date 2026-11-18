@@ -5,14 +5,16 @@
 // Missing/invalid token -> 400 { code: 'BOT_CHALLENGE_FAILED' }.
 //
 // Success: { ok: true, needs_confirmation: boolean }. Errors carry
-// { ok: false, code, error }.
+// { ok: false, code, error } — `error` is always this app's own one-line copy, never the
+// provider's text — plus `sign_in: true` when the form should offer a Sign in link.
 
 import { NextResponse, type NextRequest } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { createServerClient } from '@/lib/auth/supabase';
-import { validateEmail, validatePassword } from '@/lib/auth/password-rules';
+import { validateSignupEmail, validatePassword } from '@/lib/auth/password-rules';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
 import { verifyHcaptchaToken } from '@/lib/hcaptcha';
+import { SIGNUP_GENERIC, safeAuthCode, signupErrorReply } from '@/lib/auth/signup-errors';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -42,7 +44,8 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const emailError = validateEmail(body?.email);
+  // Sign-up only: also refuses local-part characters most providers bounce (Slice 1b).
+  const emailError = validateSignupEmail(body?.email);
   // Authoritative password policy (same validator as password reset).
   const passwordError = validatePassword(body?.password);
   if (emailError || passwordError) {
@@ -74,9 +77,24 @@ export async function POST(request: NextRequest) {
       options: { emailRedirectTo },
     });
     if (error) {
+      // Never the provider's text (Slice 1b): one plain line per case, lib/auth/signup-errors.ts.
+      const reply = signupErrorReply(error);
+      if (reply.report) {
+        // Code and status only: no address, no provider message. A server failure (5xx or
+        // `unexpected_failure`) means sign-up may be down, so it is an error, not a warning.
+        const server = reply.report === 'server_failure';
+        Sentry.captureMessage(server ? 'signup: auth server failure' : 'signup: unmapped signUp error', {
+          level: server ? 'error' : 'warning',
+          tags: {
+            route: 'api/auth/signup',
+            auth_code: safeAuthCode((error as { code?: unknown }).code),
+            auth_status: typeof error.status === 'number' ? String(error.status) : '',
+          },
+        });
+      }
       return NextResponse.json(
-        { ok: false, code: 'SIGNUP_FAILED', error: error.message },
-        { status: 400, headers: NO_STORE },
+        { ok: false, code: reply.code, error: reply.error, sign_in: reply.sign_in },
+        { status: reply.status, headers: NO_STORE },
       );
     }
     return NextResponse.json(
@@ -86,7 +104,7 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     Sentry.captureException(err, { tags: { route: 'api/auth/signup' } });
     return NextResponse.json(
-      { ok: false, code: 'SIGNUP_FAILED', error: 'Could not create account. Please try again.' },
+      { ok: false, code: 'SIGNUP_FAILED', error: SIGNUP_GENERIC },
       { status: 500, headers: NO_STORE },
     );
   }

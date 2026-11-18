@@ -77,7 +77,27 @@ export default function HistoryPage() {
                   fontSize: 13, justifyContent: 'space-between', gap: 12,
                 }}
               >
-                <span className="jp-row-id" style={{ overflowWrap: 'anywhere' }}>{s.label}</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+                  {s.thumbUrl ? (
+                    // P5.1: the video's own thumbnail, derived from its link (lib/song-thumb.ts).
+                    // A plain <img>: next/image would proxy a third-party image through our
+                    // server. no-referrer keeps this page's address out of YouTube's logs, and
+                    // alt="" because the title beside it already names the song.
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={s.thumbUrl}
+                      alt=""
+                      width={64}
+                      height={36}
+                      loading="lazy"
+                      decoding="async"
+                      referrerPolicy="no-referrer"
+                      data-testid="song-thumb"
+                      style={{ flex: 'none', width: 64, height: 36, objectFit: 'cover', borderRadius: 4 }}
+                    />
+                  ) : null}
+                  <span className="jp-row-id" style={{ overflowWrap: 'anywhere' }}>{s.label}</span>
+                </span>
                 {/* A demo song (migration 040) is kept until 2099: no "deleted in ~27,000 days". */}
                 {s.isDemo ? null : (
                   <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>

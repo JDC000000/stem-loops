@@ -35,10 +35,16 @@ const put = (name, code) => {
 
 const retentionMod = put('retention.mjs', toJs(read('src/lib/retention.ts')));
 const jobLabelMod = put('job-label.mjs', toJs(read('src/lib/job-label.ts')));
+const youtubeUrlMod = put('youtube-url.mjs', toJs(read('src/lib/youtube-url.ts')));
+const songThumbMod = put(
+  'song-thumb.mjs',
+  toJs(read('src/lib/song-thumb.ts')).replace(/from ['"]\.\/youtube-url\.ts['"]/g, `from '${youtubeUrlMod}'`),
+);
 const libraryMod = put(
   'library.mjs',
   toJs(read('src/lib/library.ts'))
     .replace(/from ['"]\.\/job-label\.ts['"]/g, `from '${jobLabelMod}'`)
+    .replace(/from ['"]\.\/song-thumb\.ts['"]/g, `from '${songThumbMod}'`)
     .replace(/from ['"]\.\/retention\.ts['"]/g, `from '${retentionMod}'`),
 );
 const historyMod = put('history.mjs', 'export const getHistoryEntries = () => globalThis.__browserHistory ?? [];');
@@ -79,6 +85,7 @@ async function render(rows) {
     return [...host.querySelectorAll('li')].map((li) => ({
       href: li.querySelector('a')?.getAttribute('href'),
       text: li.textContent,
+      thumb: li.querySelector('img[data-testid="song-thumb"]'),
     }));
   });
 }
@@ -117,4 +124,31 @@ test('/history: without is_demo the SAME far-future row would read "deleted in 2
     },
   ]);
   assert.match(item.text, /deleted in \d{5} days/);
+});
+
+// ── P5.1 (Slice 1b): titles and thumbnails in the library ──
+test('/history: a linked song shows its title and its i.ytimg.com thumbnail; an upload shows neither image', async () => {
+  const now = Date.now();
+  const LINKED = 'eeeeeeee-0000-4000-8000-000000000003';
+  const items = await render([
+    {
+      id: LINKED, title: 'Lucky Ticket', original_filename: null,
+      youtube_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', status: 'done',
+      created_at: iso(now - 1 * DAY), expires_at: iso(now + 20 * DAY),
+    },
+    {
+      id: MINE, title: 'take-5', original_filename: 'take-5.mp3', youtube_url: null, status: 'done',
+      created_at: iso(now - 2 * DAY), expires_at: iso(now + 20 * DAY),
+    },
+  ]);
+  const linked = items.find((i) => i.href === `/jobs/${LINKED}`);
+  assert.match(linked.text, /^Lucky Ticket/, 'the title, not the URL');
+  assert.doesNotMatch(linked.text, /youtube\.com/);
+  assert.ok(linked.thumb, 'a linked song has a thumbnail');
+  assert.equal(linked.thumb.getAttribute('src'), 'https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg');
+  assert.equal(linked.thumb.getAttribute('alt'), '', 'decorative: the title beside it names the song');
+  assert.equal(linked.thumb.getAttribute('referrerpolicy'), 'no-referrer');
+  const upload = items.find((i) => i.href === `/jobs/${MINE}`);
+  assert.match(upload.text, /^take-5/);
+  assert.equal(upload.thumb, null, 'an upload has no thumbnail');
 });

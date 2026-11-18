@@ -2,7 +2,7 @@
 //
 // This lives outside `app/pricing/page.tsx` because a Next.js App Router page
 // may only export a fixed set of fields (`default`, `metadata`, `dynamic`, …).
-// Exporting `features`/`quotaLine` from the page compiled under
+// Exporting `features`/`benefitLine` from the page compiled under
 // `tsc --noEmit` but failed `next build` with:
 //
 //   Type error: Page "src/app/pricing/page.tsx" does not match the required
@@ -53,22 +53,19 @@ export const RETENTION_BULLET: Readonly<Record<string, string>> = {
 // rendered a bare "spotify" straight from the database.
 export const SERVICE_LABEL: Record<string, string> = { youtube: 'YouTube' };
 
-// `plans.monthly_job_quota` counts TRACKS CONVERTED TO PLAY-ALONG, and the
+// `plans.monthly_job_quota` counts songs converted to play-along, and the
 // enforcement is checkMonthlyQuota() comparing entitlements.jobs_used against
-// it, rolled to the current calendar month. Both halves of that sentence are
-// stated here because the previous copy got both wrong.
+// it, rolled to the current calendar month. The period is stated here because
+// the previous copy said "per day", which no code implements.
 export const QUOTA_PERIOD = 'month';
 
-/** The quota sentence, derived from the column rather than typed. */
-export function quotaLine(p: PlanCopyInput): string {
-  const n = p.monthly_job_quota;
-  return `${n} ${n === 1 ? 'track' : 'tracks'} converted to play-along per ${QUOTA_PERIOD}`;
-}
-
-/** The one-line benefit each /pricing card leads with (design P6): the quota,
- *  read off monthly_job_quota. Deliberately the quota ONLY: retention is stated
- *  once per card, in RETENTION_BULLET's exact wording, among the bullets, so
- *  there is no second, paraphrased retention promise to drift from it. */
+/** The quota, stated ONCE per card (design P6; Slice 1b follow-up). Each card
+ *  used to say it twice — "50 songs a month" as the lead line and "50 tracks
+ *  converted to play-along per month" as the first bullet. This line is now
+ *  the only one, read off monthly_job_quota, in the word the rest of the site
+ *  uses ("songs"). Deliberately the quota ONLY: retention is stated once per
+ *  card, in RETENTION_BULLET's exact wording, among the bullets, so there is
+ *  no second, paraphrased retention promise to drift from it. */
 export function benefitLine(p: PlanCopyInput): string {
   const n = p.monthly_job_quota;
   return `${n} ${n === 1 ? 'song' : 'songs'} a ${QUOTA_PERIOD}`;
@@ -78,7 +75,7 @@ export function benefitLine(p: PlanCopyInput): string {
  *
  *  Every bullet must be something the app can deliver for THAT plan today:
  *
- *   - the quota sentence is read off the column (above);
+ *   - the quota is NOT a bullet: benefitLine() above states it once;
  *   - link import is named only for implemented services the row actually
  *     carries. Its ABSENCE is rendered only as the neutral 'Works with audio
  *     files you upload' (audit F14), never as a loss. The old code
@@ -98,7 +95,6 @@ export function benefitLine(p: PlanCopyInput): string {
  *  bullet" in pricing-features-table.test.mjs in the same change. */
 export function features(p: PlanCopyInput): string[] {
   const out: string[] = [];
-  out.push(quotaLine(p));
   const named = p.services.map((s) => SERVICE_LABEL[s]).filter((l): l is string => !!l);
   if (named.length) out.push(`Link import: ${named.join(', ')}`);
   // No implemented link service (no plan since 039 gave Pro and Studio YouTube): say what

@@ -64,6 +64,7 @@ async function loadLoopsView() {
     .outputText.replace(/from ['"]@\/components\/LoopResults['"]/g, `from '${resultsUrl}'`)
     .replace(/from ['"]@\/lib\/history['"]/g, `from '${historyUrl}'`)
     .replace(/from ['"]@\/lib\/retention['"]/g, `from '${real('src/lib/retention.ts')}'`)
+    .replace(/from ['"]@\/lib\/chords-claim['"]/g, `from '${real('src/lib/chords-claim.ts')}'`)
     .replace(/from ['"]@\/lib\/job-label['"]/g, `from '${real('src/lib/job-label.ts')}'`)
     .replace(/from ['"]@\/lib\/loops\/availability['"]/g, `from '${real('src/lib/loops/availability.ts')}'`);
   // Guard: an import this loader does not know about would fail to resolve and

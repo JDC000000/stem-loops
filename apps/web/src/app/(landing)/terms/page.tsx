@@ -4,6 +4,7 @@ import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import { CONTACT_LABEL, CONTACT_URL, LEGAL_UPDATED } from '@/components/landing/legal';
 import { MAX_TRACK_SEC } from '@/lib/play/types';
+import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
 
 // Read from the one ceiling, exactly as the landing page does, rather than typed as a word.
 // A legal page is the worst place to carry a number that a single env change can falsify, and
@@ -12,6 +13,12 @@ import { MAX_TRACK_SEC } from '@/lib/play/types';
 // player enforces -- and test/legal-terms-copy.test.mjs compares the rendered figure to this
 // constant and to the worker's own default, so a drift between the three fails there.
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
+
+// C-17 (QA 2026-11-18). Source of truth: plans.monthly_job_quota for 'free' = 5, set by
+// apps/worker/migrations/034_v3_pricing_model_truth.sql and enforced for accounts by
+// checkMonthlyQuota() / enforceEntitlement() (lib/billing/entitlements.ts). Pinned against that
+// migration by test/chords-switch-surfaces.test.mjs ("numeric claims"); /pricing reads the row.
+const FREE_MONTHLY_SONGS = 5;
 
 // SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
 export const metadata: Metadata = pageMetadata(pageFor('/terms')!);
@@ -29,8 +36,14 @@ export default function TermsPage() {
             <h2>The service</h2>
             <p>
               We split a song into six stems and play them back in your browser, with a fader, a mute and a solo on
-              each, and an estimated chord track running above them. The same job also finds bar-length loops you can cut and download.
-              Free to use at the moment. Paid plans and credits exist but are not required.
+              {/* DB-17 (lib/chords-claim.ts): no chord claim when the switch is off. */}
+              {CHORDS_LINE_SHOWN ? ' each, and an estimated chord track running above them.' : ' each.'} The same job also
+              finds bar-length loops you can cut and download.
+            </p>
+            <p>
+              The Free plan costs nothing and covers {FREE_MONTHLY_SONGS}&nbsp;songs a month on your account. For more than
+              that you need a paid plan (Pro or Studio) or credits; prices and limits are on the{' '}
+              <a href="/pricing">pricing page</a>.
             </p>
             <p>
               You can start a job without an account. You need an account to open the player and reach your results. By using
@@ -41,16 +54,19 @@ export default function TermsPage() {
             <ul>
               <li>
                 We use the first {MAX_TRACK_MIN}&nbsp;minutes of any song. A longer track is trimmed on our end to its
-                first {MAX_TRACK_MIN}&nbsp;minutes, which is where the chord track and the player both stop.
+                first {MAX_TRACK_MIN}&nbsp;minutes, which is where{' '}
+                {CHORDS_LINE_SHOWN ? 'the chord track and the player both stop.' : 'the player stops.'}
               </li>
               <li>
                 Built and tested in Chrome on a computer. On a phone the player loads lighter audio.
                 Phone support is new, and other browsers are not tested yet.
               </li>
-              <li>
-                The chords are an <strong>estimate made from the audio</strong>, not a transcription anyone checked. Trust your
-                ears over the screen.
-              </li>
+              {CHORDS_LINE_SHOWN && (
+                <li>
+                  The chords are an <strong>estimate made from the audio</strong>, not a transcription anyone checked. Trust your
+                  ears over the screen.
+                </li>
+              )}
               <li>
                 Separation is imperfect. Dense passages can leave bleed from other instruments in a stem, and tempo and bar
                 positions vary.
@@ -77,6 +93,9 @@ export default function TermsPage() {
             </p>
 
             <h2>Deletion</h2>
+            {/* Source of truth: 24 hours = RETENTION_HOURS, 30 days = PAID_RETENTION_GRACE_DAYS (lib/retention.ts;
+                jobs.expires_at default, migration 007). Pinned by test/chords-switch-surfaces.test.mjs. The
+                "chord corrections" line below is a DISCLOSURE of data that exists, so DB-17 leaves it on. */}
             <p>
               Your files, stems, loops and job details are deleted after 24 hours — download what you want to keep.
             </p>

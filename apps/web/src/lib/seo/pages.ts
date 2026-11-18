@@ -28,7 +28,10 @@ export const PUBLIC_PAGES: PublicPage[] = [
     description: 'Free, Pro and Studio plans in Canadian dollars: how many songs you can add each month, how long they are kept, and one-time credit packs.',
     section: 'product', lastModified: '2026-11-17', llms: true, published: true },
   { path: '/help', title: 'Help',
-    description: 'Answers about accounts, browsers and phones, the chords, how long a song takes, song links, and what happens to your files.',
+    // DB-17: the chords question leaves /help with the switch off, so the description drops it too.
+    description: CHORDS_LINE_SHOWN
+      ? 'Answers about accounts, browsers and phones, the chords, how long a song takes, song links, and what happens to your files.'
+      : 'Answers about accounts, browsers and phones, how long a song takes, song links, and what happens to your files.',
     section: 'trust', lastModified: '2026-11-17', llms: true, published: true },
   { path: '/privacy', title: 'Privacy', description: 'What stem-loops stores, for how long, and who processes it.',
     section: 'legal', lastModified: '2026-11-17', llms: true, published: true },

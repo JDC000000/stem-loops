@@ -20,12 +20,15 @@ const dataUrl = (js) => 'data:text/javascript;base64,' + Buffer.from(js).toStrin
 
 const sharedUrl = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/emails/templates/shared.ts'), 'utf8')));
 const shared = await import(sharedUrl);
+const chordsClaimUrl = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/chords-claim.ts'), 'utf8')));
 
 async function load(name) {
   let js = toJs(readFileSync(join(WEB, `src/lib/emails/templates/${name}.ts`), 'utf8'));
   js = js
     .replace(/from ['"]@\/lib\/billing\/types['"]/g, `from '${dataUrl('export {};')}'`)
-    .replace(/from ['"]\.\/shared['"]/g, `from '${sharedUrl}'`);
+    .replace(/from ['"]\.\/shared['"]/g, `from '${sharedUrl}'`)
+    // welcome reads the DB-17 chords switch: the REAL module, transpiled, never a stub.
+    .replace(/from ['"]@\/lib\/chords-claim['"]/g, `from '${chordsClaimUrl}'`);
   return import(dataUrl(js) + '#' + Math.random());
 }
 

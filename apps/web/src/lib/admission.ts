@@ -46,8 +46,8 @@ export function maxInFlight(): number {
 
 // Retry-After for an AT_CAPACITY refusal, in seconds. The worker is SERIAL (one Fly
 // Machine, consumer.py poll_loop claims LIMIT 1 and runs it to completion), so a slot
-// frees exactly when one job finishes. A typical job takes ~1–3 minutes end to end (the
-// landing's own measured note: a 3:34 song took about 1–3 minutes), so the expected wait
+// frees exactly when one job finishes. A typical job takes a few minutes end to end (the
+// 9 October 2026 measurement was 0:51–3:07 for a 3:34 song; 2026-11-17 jobs took ~2.5 min), so the expected wait
 // for the next free slot is about one job's duration. 120 s is the middle of that range:
 // shorter would invite retries that land on a still-full queue, longer would turn people
 // away for longer than the queue actually needs. It matches the copy ("a few minutes").

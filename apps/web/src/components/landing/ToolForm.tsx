@@ -544,7 +544,9 @@ export function ToolForm() {
       </div>
 
       <p className="hint cta-note">
-        Our 3:34 example song took about 1–3 minutes. Without a subscription, files are deleted after 24 hours. Use audio you have the rights to.
+        {/* C-14: no processing-time figure (see FAQ.time in faq.tsx for why). 24 hours = RETENTION_HOURS
+            (lib/retention.ts; migration 007). */}
+        A song usually takes a few minutes. Without a subscription, files are deleted after 24 hours. Use audio you have the rights to.
       </p>
     </form>
   );

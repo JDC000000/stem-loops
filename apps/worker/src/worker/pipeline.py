@@ -60,7 +60,7 @@ from .errors import (
 from .extractor import loop_extractor
 from .extractor.beat_grid import estimate_beat_grid
 from .extractor.loop_extractor import NoReliableBeatError, extract_loops
-from .job_failure import OUR_FAULT_CODES, fail_job
+from .job_failure import OUR_FAULT_CODES, JobNoLongerActive, fail_job
 from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
 from .storage.r2_uploader import (
@@ -1332,11 +1332,23 @@ async def emit_event(
 
 
 async def set_status(job_id: str, status: str) -> None:
+    """Advance a job that is still in flight. Never overwrites a terminal state (review MF-1):
+    if the reaper or the deadline already failed (and refunded) the job, or it is done, this
+    run is a zombie -- a second machine's live run after the reaper gave up on it. It must not
+    resurrect the job to 'done' (the user would keep the result AND the credit), so it raises
+    JobNoLongerActive and the run stops writing."""
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-        await conn.execute(
-            "UPDATE jobs SET status=%s, updated_at=now() WHERE id=%s", (status, job_id)
-        )
+        row = await (
+            await conn.execute(
+                "UPDATE jobs SET status=%s, updated_at=now()"
+                " WHERE id=%s AND status NOT IN ('done','failed') RETURNING id",
+                (status, job_id),
+            )
+        ).fetchone()
         await conn.commit()
+    if row is None:
+        log_structured("WARN", "job_no_longer_active", job_id=job_id, wanted_status=status)
+        raise JobNoLongerActive(job_id)
 
 
 def _chords_enabled() -> bool:
@@ -1710,6 +1722,10 @@ async def _run_pipeline(job_id: str) -> None:
             peak_rss_mb=round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
         )
 
+    except JobNoLongerActive:
+        # Already terminal (failed and refunded by the reaper, or done): write nothing more.
+        log_structured("WARN", "pipeline_abandoned_terminal_job", job_id=job_id)
+        raise
     except StemLoopsError as exc:
         # User/input-caused typed errors (DOWNLOAD_BLOCKED, UPLOAD_TOO_LONG, etc.) are the
         # designed paths working as intended and are NOT sent to Sentry - that would be noise.

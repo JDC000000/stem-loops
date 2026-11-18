@@ -20,15 +20,18 @@ already a background task from the moment it is made.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import sys
 import time
 
 import psycopg
+import sentry_sdk
 
 from . import tmpdirs
 from .cleanup import sweep_expired
 from .errors import InternalError, StemLoopsError
-from .job_failure import fail_job
+from .job_failure import JobNoLongerActive, fail_job
 from .logger import log_structured
 from .loop_cutter import claim_and_cut, reap_stale_requests
 from .pipeline import run_pipeline
@@ -56,6 +59,31 @@ JOB_WALL_TIMEOUT_MESSAGE = (
     "Processing took too long and was stopped. Please try again. "
     "If this used a credit, it has been returned."
 )
+
+
+# Exit status after a wall-deadline kill (EX_TEMPFAIL). Non-zero, so Fly's restart-on-exit
+# (fly.toml: "Liveness is handled by Fly's restart-on-exit") brings up a fresh process.
+RESTART_EXIT_CODE = 75
+
+
+def _restart_process() -> None:
+    """End the process so Fly restarts it (review SF-2).
+
+    The deadline cancels the pipeline COROUTINE only. The stage that hung is a worker thread
+    (`asyncio.to_thread`) and Python cannot kill a thread: it keeps its executor slot, its
+    memory (six stems' arrays) and its ability to act -- an abandoned chord thread can still
+    submit a PAID Klangio request for a job that was just failed and refunded. A few such
+    hangs exhaust the default executor and every later job times out while the worker looks
+    alive. Exiting reclaims all of it. The job is already failed and refunded (committed), and
+    the worker runs one job at a time, so nothing else is in flight. `os._exit`, not
+    `sys.exit`: interpreter shutdown joins executor threads, i.e. would wait on the hang.
+    """
+    log_structured("ERROR", "worker_exit_after_wall_timeout", exit_code=RESTART_EXIT_CODE)
+    with contextlib.suppress(Exception):  # exiting regardless
+        sentry_sdk.flush(timeout=2)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(RESTART_EXIT_CODE)
 
 
 def _job_wall_timeout() -> float:
@@ -106,10 +134,15 @@ async def claim_and_run() -> bool:
         # pipeline's own handlers do not run; the branch below fails and refunds the job.
         async with deadline:
             await run_pipeline(job_id)
+    except JobNoLongerActive:
+        # The reaper (or a deadline) already made the job terminal and refunded it; this run
+        # was a zombie. Nothing to fail, nothing to refund (review MF-1).
+        log_structured("WARN", "job_abandoned_terminal", job_id=job_id)
     except TimeoutError as e:
         if deadline.expired():
             log_structured("ERROR", "job_wall_timeout", job_id=job_id, budget_s=budget)
             await mark_failed(job_id, "INTERNAL_ERROR", JOB_WALL_TIMEOUT_MESSAGE)
+            _restart_process()
         else:  # a TimeoutError raised BY the pipeline (e.g. socket.timeout), not our deadline
             log_structured("ERROR", "unhandled_exception", job_id=job_id, error=str(e)[:200])
             err = InternalError()

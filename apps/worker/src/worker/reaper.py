@@ -27,16 +27,25 @@ deadline (JOB_WALL_TIMEOUT_SECONDS) fails it.
 
 REFUNDS (QA C-05). A job failed here is OUR fault (INTERNAL_ERROR), so the credit the web
 route debited for it is returned with the same idempotent SQL the pipeline uses
-(job_failure.refund_if_owed), in the same transaction as the UPDATE that fails it: either
-both happen or neither does and the next reap retries.
+(job_failure.refund_if_owed). Each job is failed and refunded inside its OWN savepoint
+(review SF-4): either both happen or neither does, and one job whose refund raises is rolled
+back alone -- it stays non-terminal and the next reap retries it -- instead of rolling back
+every other job in the batch.
 
-QUEUED PAST RETENTION (QA C-06). A job waiting in `queued` (behind the spend brake, or a long
-queue) is not an orphan and is never re-queued or failed for being stale. But once it is
-past its own `expires_at` (the 24 h retention TTL, migration 007) nothing will serve it, and
-the retention sweep takes any non-terminal job one INFLIGHT_GRACE (1 h) later, deleting or
-anonymising it with the credit still spent. So the reaper fails such a job with a refund
-first. The reaper runs at startup before the first sweep and every REAPER_INTERVAL_SECONDS
-(60 s) after, far inside that hour.
+QUEUED PAST ITS EXPIRY (QA C-06). A job waiting in `queued` (behind the spend brake, or a long
+queue) is not an orphan and is never re-queued or failed for being stale. But once it is past
+its own `expires_at` (created_at + 24 h, migration 007) the retention sweep takes any
+non-terminal Free job one INFLIGHT_GRACE (1 h) later, deleting or anonymising it with the
+credit still spent. So the reaper fails such a job with a refund first. It runs at startup
+before the first sweep and every REAPER_INTERVAL_SECONDS (60 s) after, far inside that hour.
+
+The cutoff is the raw `expires_at`, NOT the paid-plan retention (cleanup.RETAINED_UNTIL_SQL),
+deliberately (review L-1). Retention says how long a FINISHED result is kept; a job that has
+not even started after 24 h has no result to keep. For a Pro/Studio owner the sweep would not
+take it (so the money risk above is Free-only), but leaving it queued means it waits for as
+long as the subscription lasts and then runs, unannounced, days late. Failing it at 24 h
+tells the user the truth and lets them retry; those jobs are quota-funded, so no credit is at
+stake, and a credit-funded one is refunded.
 """
 
 from __future__ import annotations
@@ -44,6 +53,7 @@ from __future__ import annotations
 import os
 
 import psycopg
+import sentry_sdk
 
 from .job_failure import refund_if_owed
 from .logger import log_structured
@@ -69,10 +79,37 @@ _EXPIRED_QUEUED_MESSAGE = (
 _FAIL_CODE = "INTERNAL_ERROR"
 
 
+async def _fail_and_refund_each(
+    conn: psycopg.AsyncConnection, job_ids: list, fail_sql: str, params: tuple, branch: str
+) -> tuple[int, int]:
+    """Fail and refund each candidate in its own savepoint (SF-4). The candidate rows are
+    already locked by the caller's SELECT ... FOR UPDATE SKIP LOCKED; `fail_sql` re-checks the
+    branch's condition on the one row. Returns (failed, refunded)."""
+    failed = refunded = 0
+    for (job_id,) in job_ids:
+        try:
+            async with conn.transaction():  # a SAVEPOINT inside the open transaction
+                row = await (await conn.execute(fail_sql, (*params, job_id))).fetchone()
+                if row is None:
+                    continue
+                refunded += await refund_if_owed(conn, str(job_id))
+                failed += 1
+        except Exception as exc:  # noqa: BLE001 — one bad row must not roll back the batch
+            log_structured(
+                "ERROR",
+                "reaper_fail_refund_error",
+                job_id=str(job_id),
+                branch=branch,
+                error=str(exc)[:200],
+            )
+            sentry_sdk.capture_exception(exc)
+    return failed, refunded
+
+
 async def reap_stale_jobs() -> dict[str, int]:
     """Re-queue stale orphans with exponential backoff (bounded to MAX_ATTEMPTS), fail (and
     refund) those that have exhausted their attempts, and fail (and refund) jobs still queued
-    past their retention. Returns {'requeued','failed','expired_queued'}."""
+    past their expiry. Returns {'requeued','failed','expired_queued'}."""
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
         # Requeue: attempts left AND stale beyond this attempt's exponential backoff window.
         # Its own transaction, so a refund problem below can never hold up a requeue.
@@ -92,49 +129,56 @@ async def reap_stale_jobs() -> dict[str, int]:
         await conn.commit()
 
         # Fail: attempts exhausted AND stale (base window). Mutually exclusive with the
-        # requeue branch by `attempts`, so a row is only ever touched by one branch. The
-        # refund commits with the failure (C-05).
-        failed = await (
+        # requeue branch by `attempts`. Refunded with the failure, per job (C-05, SF-4).
+        poison = await (
             await conn.execute(
                 """
-            UPDATE jobs SET status='failed', error_code=%s,
-                   error_message_user=%s, updated_at=now()
-            WHERE status = ANY(%s)
-              AND attempts >= %s
-              AND updated_at < now() - (%s * interval '1 second')
-            RETURNING id
+            SELECT id FROM jobs
+             WHERE status = ANY(%s)
+               AND attempts >= %s
+               AND updated_at < now() - (%s * interval '1 second')
+             FOR UPDATE SKIP LOCKED
             """,
-                (_FAIL_CODE, _POISON_MESSAGE, _NON_TERMINAL, MAX_ATTEMPTS, STALE_SECONDS),
+                (_NON_TERMINAL, MAX_ATTEMPTS, STALE_SECONDS),
             )
         ).fetchall()
-        refunded = 0
-        for (job_id,) in failed:
-            refunded += await refund_if_owed(conn, str(job_id), _FAIL_CODE)
-        await conn.commit()
-
-        # Queued past its retention TTL: it will never be served, and the sweep would take it
-        # without a refund (C-06). Fail it, refund in the same transaction. SKIP LOCKED so a
-        # consumer claiming the row at this instant wins and the job simply runs.
-        expired = await (
-            await conn.execute(
-                """
+        failed, refunded = await _fail_and_refund_each(
+            conn,
+            poison,
+            """
             UPDATE jobs SET status='failed', error_code=%s,
                    error_message_user=%s, updated_at=now()
-            WHERE id IN (
-                SELECT id FROM jobs
-                 WHERE status = 'queued' AND expires_at < now()
-                 FOR UPDATE SKIP LOCKED
-            )
+             WHERE status = ANY(%s) AND id = %s
             RETURNING id
             """,
-                (_FAIL_CODE, _EXPIRED_QUEUED_MESSAGE),
-            )
-        ).fetchall()
-        for (job_id,) in expired:
-            refunded += await refund_if_owed(conn, str(job_id), _FAIL_CODE)
+            (_FAIL_CODE, _POISON_MESSAGE, _NON_TERMINAL),
+            "poison",
+        )
         await conn.commit()
 
-    result = {"requeued": len(requeued), "failed": len(failed), "expired_queued": len(expired)}
+        # Queued past its expiry (C-06). SKIP LOCKED so a consumer claiming the row at this
+        # instant wins and the job simply runs.
+        stale_queued = await (await conn.execute("""
+            SELECT id FROM jobs
+             WHERE status = 'queued' AND expires_at < now()
+             FOR UPDATE SKIP LOCKED
+            """)).fetchall()
+        expired, expired_refunded = await _fail_and_refund_each(
+            conn,
+            stale_queued,
+            """
+            UPDATE jobs SET status='failed', error_code=%s,
+                   error_message_user=%s, updated_at=now()
+             WHERE status = 'queued' AND id = %s
+            RETURNING id
+            """,
+            (_FAIL_CODE, _EXPIRED_QUEUED_MESSAGE),
+            "expired_queued",
+        )
+        refunded += expired_refunded
+        await conn.commit()
+
+    result = {"requeued": len(requeued), "failed": failed, "expired_queued": expired}
     if result["requeued"] or result["failed"] or result["expired_queued"]:
         log_structured(
             "WARN",

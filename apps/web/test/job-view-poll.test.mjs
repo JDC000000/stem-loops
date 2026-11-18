@@ -104,6 +104,8 @@ const errorCopyMod = put('error-copy.mjs', toJs(read('src/lib/error-copy.ts')));
 // The REAL input-trim module (pure): the job page's "Using the first 5:00" line.
 const inputTrimMod = put('input-trim.mjs', toJs(read('src/lib/input-trim.ts')));
 const jobLabelMod = put('job-label.mjs', toJs(read('src/lib/job-label.ts')));
+// The REAL demo catalog (pure data; Slice 2a): a demo song's title and artist come from it.
+const demoCatalogMod = put('demo-catalog.mjs', toJs(read('src/lib/demo-catalog.ts')));
 
 const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]@\/components\/play\/Player['"]/g, `from '${playerMod}'`)
@@ -115,6 +117,7 @@ const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${errorCopyMod}'`)
   .replace(/from ['"]@\/lib\/input-trim['"]/g, `from '${inputTrimMod}'`)
   .replace(/from ['"]@\/lib\/job-label['"]/g, `from '${jobLabelMod}'`)
+  .replace(/from ['"]@\/lib\/demo-catalog['"]/g, `from '${demoCatalogMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordOverlayMod}'`);
 writeFileSync(join(dir, 'JobView.mjs'), jobViewJs);
 

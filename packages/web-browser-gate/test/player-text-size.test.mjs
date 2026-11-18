@@ -414,8 +414,12 @@ function measurePlayer() {
 
   // Chord-root hues.
   for (const c of root.querySelectorAll('[data-testid^="chord-chip-"][data-kind="chord"]')) {
+    // The chip's name is guitarist notation ("F♯m7", "B♭", "G7/D"), or Harte
+    // ("Bb:add9") where the formatter cannot spell a label exactly. The root is
+    // the leading letter and accidental either way; ♯ / ♭ are folded to # / b so
+    // "B♭" and "Bb:add9" count as the one root they are.
     const label = c.getAttribute('title') || '';
-    const rootName = label.split(/[:/]/)[0];
+    const rootName = (/^[A-G](?:#|b|\u266f|\u266d)?/.exec(label)?.[0] ?? label).replace('\u266f', '#').replace('\u266d', 'b');
     out.hues.push({ root: rootName, bg: getComputedStyle(c).backgroundColor });
   }
 

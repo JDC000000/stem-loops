@@ -34,7 +34,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { getBillingProvider, type BillingEvent, type BillingSubscription } from '@/lib/billing';
 import type { BillingSubscriptionChange } from '@/lib/billing/types';
-import { db } from '@/lib/db';
+// The webhook's OWN pool (PR #298 review R2-2): it holds a transaction across
+// a Stripe read, so it must never take the connections page loads use.
+import { webhookDb as db } from '@/lib/db';
 import { invalidateEntitlement } from '@/lib/billing/entitlements';
 import { computeProRataClawback } from '@/lib/billing/prorata';
 import {
@@ -48,6 +50,25 @@ import {
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+// Time budget (PR #298 review R2-2). Every wait on this path is bounded, and
+// the bounds add up to well under maxDuration, so the function returns (500,
+// Stripe retries) before Vercel kills it:
+//   Stripe read outside the lock (credit session, or the L-4 re-read)  8 s
+//   webhook-pool connection (WEBHOOK_POOL_CONNECT_TIMEOUT_MS, db.ts)    5 s
+//   advisory-lock wait (LOCK_TIMEOUT)                                   8 s
+//   Stripe reads inside the lock (subscription + invoice), 8 s each    16 s
+//                                                              total  37 s
+// leaving 23 s for the (millisecond) statements, each capped by
+// STATEMENT_TIMEOUT, and the best-effort emails after commit. Stripe reads
+// use STRIPE_WEBHOOK_READ_OPTIONS (providers/stripe.ts): 8 s, no retries.
+export const maxDuration = 60;
+const LOCK_TIMEOUT = '8s';
+const STATEMENT_TIMEOUT = '10s';
+// Longer than one Stripe read (8 s), the longest gap between two statements
+// of the locked transaction. A frozen instance's open transaction (and its
+// advisory lock) is then ended by the server after this.
+const IDLE_IN_TX_TIMEOUT = '12s';
 
 // PR #29 aligned BillingProvider's PlanCode with plans.code ('free' | 'pro' |
 // 'studio'), so no translation is needed anymore. We just narrow 'free' out,
@@ -74,15 +95,22 @@ function alertBilling(message: string, extra: Record<string, unknown>): void {
  *  an older read can never be written after a newer one. db.tx checks out a
  *  single client and wraps BEGIN/COMMIT; pg_advisory_xact_lock is
  *  transaction-scoped, so it is safe behind a transaction-mode pooler
- *  (DATABASE_URL_POOLED) where a session lock would not be. lock_timeout
- *  turns a stuck holder into a 500 (Stripe retries) instead of a hang. */
+ *  (DATABASE_URL_POOLED) where a session lock would not be. The SET LOCALs
+ *  bound the lock wait, every statement, and idle time inside the
+ *  transaction (review R2-2): a stuck holder is a 500 (Stripe retries), not
+ *  a hang. */
 async function withSubscriptionLock<T>(
   providerName: string,
   providerSubscriptionId: string,
   fn: (q: Queryable) => Promise<T>,
 ): Promise<T> {
   return db.tx(async (q) => {
-    await q.query(`SET LOCAL lock_timeout = '25s'`);
+    await q.query(
+      `SELECT set_config('lock_timeout', $1, true),
+              set_config('statement_timeout', $2, true),
+              set_config('idle_in_transaction_session_timeout', $3, true)`,
+      [LOCK_TIMEOUT, STATEMENT_TIMEOUT, IDLE_IN_TX_TIMEOUT],
+    );
     await q.query(
       `SELECT pg_advisory_xact_lock(hashtextextended($1 || '-sub:' || $2, 0))`,
       [providerName, providerSubscriptionId],
@@ -652,6 +680,20 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
             customer: current.providerCustomerId,
           });
         }
+        // A subscription that is already canceled at Stripe, for a user whose
+        // account is gone (DELETE /api/users/me cancels, then the auth.users
+        // cascade removes public.users), has nothing left to grant. Recreating
+        // the users row would violate its FK to auth.users and 500 on every
+        // retry for ~3 days (review R2-1), so ack it instead.
+        if (current.status === 'canceled') {
+          const exists = await q.query('SELECT 1 FROM users WHERE id = $1', [subUserId]);
+          if ((exists.rowCount ?? exists.rows.length) === 0) {
+            console.info(
+              `[webhook] subscription_upserted ${current.providerSubscriptionId}: canceled, and user ${subUserId} no longer exists; nothing to apply`,
+            );
+            return null;
+          }
+        }
         // Defensive users-row upsert; throws on failure so Stripe retries.
         await ensureUserRow(subUserId, null, q);
         const planCode = dbPlanCode(current.planCode);
@@ -795,24 +837,34 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         // Review M-1 demo 2: `deleted` can land before any row exists (its
         // `created` is still in flight, or failed and will be retried). Leave
         // a canceled TOMBSTONE so the terminal guard in subscription_upserted
-        // blocks that later write. It needs a user and a known plan (plans FK);
-        // without them the lock alone still orders the two deliveries.
+        // blocks that later write. It needs a known plan (plans FK) and a user
+        // row that STILL EXISTS: it never creates one (review R2-1). After an
+        // account deletion the auth.users cascade has removed public.users and
+        // every subscription row, so there is nothing to protect and no row
+        // to point at; recreating the user would violate its FK to auth.users
+        // and 500 on every retry. Without a tombstone the lock alone still
+        // orders the two deliveries.
         if (!row && userId) {
           const plan = evt.planCode === 'pro' || evt.planCode === 'studio' ? evt.planCode : null;
           if (plan) {
             const end = evt.currentPeriodEnd ?? new Date();
             let start = evt.currentPeriodStart ?? new Date(end.getTime() - 1000);
             if (start.getTime() >= end.getTime()) start = new Date(end.getTime() - 1000);
-            await ensureUserRow(userId, null, q);
-            await q.query(
+            const tomb = await q.query(
               `INSERT INTO subscriptions
                  (user_id, provider, provider_subscription_id, plan_code, status,
                   current_period_start, current_period_end, cancel_at_period_end)
-               VALUES ($1, $2, $3, $4, 'canceled', $5, $6, true)
+               SELECT $1::uuid, $2::text, $3::text, $4::text, 'canceled', $5::timestamptz, $6::timestamptz, true
+                WHERE EXISTS (SELECT 1 FROM users WHERE id = $1::uuid)
                ON CONFLICT (provider, provider_subscription_id) DO UPDATE SET
                  status = 'canceled', cancel_at_period_end = true, updated_at = now()`,
               [userId, providerName, evt.providerSubscriptionId, plan, start, end],
             );
+            if ((tomb.rowCount ?? 0) === 0) {
+              console.info(
+                `[webhook] subscription_canceled ${evt.providerSubscriptionId}: user ${userId} no longer exists; no tombstone`,
+              );
+            }
           } else {
             console.warn(
               `[webhook] subscription_canceled ${evt.providerSubscriptionId}: no row and no known plan; no tombstone`,
@@ -933,8 +985,8 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         // Only the statuses this event can settle are written here: past_due
         // (the failure stands; access continues for PAST_DUE_GRACE_MS,
         // applied by readSnapshot, then drops to free) or active/trialing
-        // (the retry already succeeded, or a delayed method keeps the
-        // subscription active). canceled / paused / incomplete belong to the
+        // (typically: the retry already succeeded, so the event is stale).
+        // canceled / paused / incomplete belong to the
         // subscription events, which re-read too and also move the
         // entitlement. The row guard is unchanged: never touch a never-paid
         // `incomplete` row (review B1) or a terminal `canceled` one.
@@ -958,11 +1010,13 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         );
         const failedRow = res.rows[0];
         // Review L-1. With a card, a failed renewal moves the subscription to
-        // past_due. When Stripe still says active/trialing the failure is
-        // either stale (the retry succeeded: invoice paid) or a case where
-        // the subscription stays active (e.g. delayed status resolution).
-        // Decide R7 from the invoice itself: still open with an amount due
-        // means the customer must act. Only read when an email could follow.
+        // past_due. When Stripe still says active/trialing, decide R7 from
+        // the invoice itself: still `open` with an amount due means the
+        // customer must act; `paid` means the event is stale. This does NOT
+        // cover a delayed payment method (ACH / PAD) failing later: there
+        // Stripe VOIDS the invoice and keeps the subscription active, so no
+        // R7 is sent (nothing is owed on a void invoice). See the PR body's
+        // residue. Only read when an email could follow.
         let invoiceUnpaid = false;
         const provider = getBillingProvider();
         if (

@@ -3,6 +3,11 @@
 // The route runs with the REAL lib/db.ts (pg Pool, db.tx = one checked-out
 // client in BEGIN/COMMIT) over the migrated schema. Stripe is mocked
 // (test/helpers/billing-harness.mjs; every real network call is blocked).
+// The ROUTE connects as a login role that inherits stemloops_app, the role
+// the app runs as, so its privileges are production's: in particular it cannot
+// read auth.users (the ensureUserRow savepoint path runs for real). Setup and
+// inspection use the CI superuser.
+//
 // This is what the in-memory fakeDb cannot prove:
 //   * pg_advisory_xact_lock(hashtextextended(...)) really serialises two
 //     concurrent deliveries for one subscription (the reviewer's demos);
@@ -34,23 +39,29 @@ const EMAIL_PREFIX = 'test-webhook-pg-';
 const toJs = (src) =>
   ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
 
-/** The REAL lib/db.ts, optionally with a different pool size. */
-async function loadRealDb({ max } = {}) {
+/** The REAL lib/db.ts (both pools), optionally with the WEBHOOK pool's size
+ *  or connect timeout changed. */
+async function loadRealDb({ webhookMax, webhookConnectMs } = {}) {
   const ssl = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/db-ssl.ts'), 'utf8')));
   let js = toJs(readFileSync(join(WEB, 'src/lib/db.ts'), 'utf8'))
     .replace(/from ['"]pg['"]/g, `from '${import.meta.resolve('pg')}'`)
     .replace(/from ['"]\.\/db-ssl['"]/g, `from '${ssl}'`);
-  if (max) {
-    assert.match(js, /max: 3,/, 'db.ts pool size moved; update this test');
-    // connectionTimeoutMillis makes a second checkout FAIL in 3 s instead of
-    // waiting for ever, so a regression is a quick red test, not a hung job.
-    js = js.replace(/max: 3,/, `max: ${max}, connectionTimeoutMillis: 3000,`);
-  }
+  const set = (name, v) => {
+    const re = new RegExp(`const ${name} = \\d+;`);
+    assert.match(js, re, `db.ts ${name} moved; update this test`);
+    js = js.replace(re, `const ${name} = ${v};`);
+  };
+  if (webhookMax) set('WEBHOOK_POOL_MAX', webhookMax);
+  if (webhookConnectMs) set('WEBHOOK_POOL_CONNECT_TIMEOUT_MS', webhookConnectMs);
   return import(dataUrl(js) + '#' + Math.random());
 }
 
-let admin; // a separate pg Pool for setup / inspection
-let realDb; let h; let state; let route;
+const APP_ROLE = 'webhook_pg_test_app';
+const APP_PW = 'webhook_pg_test_pw';
+const appUrl = () => { const u = new URL(URL_); u.username = APP_ROLE; u.password = APP_PW; return u.toString(); };
+
+let admin; // a separate pg Pool for setup / inspection (superuser)
+let realDb; let sharedDb; let h; let state; let route;
 let user; let cus; let subId;
 
 const sub = (over = {}) => subscriptionFixture({ id: subId, customer: cus, metadata: { user_id: user }, ...over });
@@ -83,8 +94,10 @@ async function cleanup() {
   await admin.query(`DELETE FROM auth.users WHERE email LIKE $1`, [EMAIL_PREFIX + '%']);
 }
 
-/** A fresh user (auth.users -> handle_new_user trigger), customer and route. */
-async function fresh({ max } = {}) {
+/** A fresh user (auth.users -> handle_new_user trigger), customer and route.
+ *  The route gets the REAL webhook pool; the real SHARED pool stands for page
+ *  loads (review R2-2). */
+async function fresh({ webhookMax, webhookConnectMs } = {}) {
   user = randomUUID();
   cus = 'cus_pg_' + user.slice(0, 8);
   subId = 'sub_pg_' + user.slice(0, 8);
@@ -101,8 +114,11 @@ async function fresh({ max } = {}) {
   h = await loadStripeProvider();
   state = makeState();
   route = await loadWebhookRoute(h.provider, state);
-  realDb = (await loadRealDb({ max })).db;
-  globalThis.__routeDb = realDb; // the route's db stub is late-bound
+  const mod = await loadRealDb({ webhookMax, webhookConnectMs });
+  realDb = mod.webhookDb;
+  sharedDb = mod.db;
+  globalThis.__routeDb = realDb; // the route's webhookDb stub is late-bound
+  globalThis.__routeSharedDb = sharedDb; // ... and so is its shared `db`
 }
 
 before(async () => {
@@ -110,14 +126,28 @@ before(async () => {
   delete process.env.DATABASE_URL_POOLED;
   const pg = await import('pg');
   admin = new (pg.default?.Pool ?? pg.Pool)({ connectionString: URL_, max: 2 });
+  await admin.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${APP_ROLE}') THEN
+        CREATE ROLE ${APP_ROLE} LOGIN PASSWORD '${APP_PW}' IN ROLE stemloops_app;
+      END IF;
+    END $$`);
+  // lib/db.ts reads DATABASE_URL when it first builds a pool: the route runs
+  // with production's app privileges.
+  process.env.DATABASE_URL = appUrl();
   await cleanup();
 });
 after(async () => {
   if (skip) return;
+  process.env.DATABASE_URL = URL_;
   await cleanup();
   await admin.end();
 });
-beforeEach(() => { if (!skip) globalThis.__routeDb = undefined; });
+beforeEach(() => { if (!skip) { globalThis.__routeDb = undefined; globalThis.__routeSharedDb = undefined; } });
+
+test('PG: precondition: the route role cannot read auth.users (as in production)', { skip, timeout: 20000 }, async () => {
+  await fresh();
+  await assert.rejects(() => realDb.query('SELECT 1 FROM auth.users LIMIT 1'), /permission denied/);
+});
 
 test('PG: M-1 demo 1 (slow Pro read vs newer Studio read) ends Studio in the real DB', { skip, timeout: 20000 }, async () => {
   await fresh();
@@ -169,8 +199,10 @@ test('PG: deleted first leaves a canceled tombstone; the real guard SQL blocks a
   subId = old;
 });
 
-test('PG: with the pool at max 1, every locked path completes (no second checkout inside the transaction)', { skip, timeout: 20000 }, async () => {
-  await fresh({ max: 1 });
+test('PG: with the webhook pool at max 1, every locked path completes (no second checkout inside the transaction)', { skip, timeout: 20000 }, async () => {
+  // A 3 s connect timeout makes a second checkout FAIL fast instead of
+  // waiting for ever, so a regression is a quick red test, not a hung job.
+  await fresh({ webhookMax: 1, webhookConnectMs: 3000 });
   h.subs[subId] = sub();
   assert.equal((await raw(envelope('customer.subscription.created', sub()))).status, 200);
   h.subs[subId] = sub({ status: 'past_due' });
@@ -186,4 +218,70 @@ test('PG: with the pool at max 1, every locked path completes (no second checkou
   assert.equal((await row()).status, 'canceled');
   assert.equal(await ent(), 'free');
   await realDb.query('SELECT 1'); // the single connection was returned
+});
+
+// ---- review R2-1: the account is deleted before its `deleted` webhook ------
+
+test('PG R2-1: account deleted first, then deleted x3 (+ a stale updated) -> 200 each, no row, no user recreated', { skip, timeout: 30000 }, async () => {
+  await fresh();
+  h.subs[subId] = sub();
+  assert.equal((await raw(envelope('customer.subscription.created', sub()))).status, 200);
+  // DELETE /api/users/me: Stripe cancel, then auth.admin.deleteUser cascades.
+  await admin.query('DELETE FROM auth.users WHERE id = $1', [user]);
+  assert.equal(await row(), undefined, 'cascade precondition');
+  h.subs[subId] = sub({ status: 'canceled' });
+  const del = envelope('customer.subscription.deleted', sub({ status: 'canceled' }));
+  for (let i = 0; i < 3; i += 1) assert.equal((await raw(del)).status, 200, `delivery ${i + 1} (Stripe would retry a 500 for ~3 days)`);
+  assert.equal((await raw(envelope('customer.subscription.updated', sub(), { cancel_at_period_end: true }))).status, 200);
+  assert.equal(await row(), undefined);
+  assert.equal((await admin.query('SELECT 1 FROM public.users WHERE id = $1', [user])).rowCount, 0);
+});
+
+// ---- the ensureUserRow savepoint, for real (round-2 Low) ----------------------
+
+test('PG savepoint: public.users row missing, auth.users unreadable -> created still fulfilled (derived email)', { skip, timeout: 20000 }, async () => {
+  await fresh();
+  // The trigger has not caught up: auth.users has the user, public.users not.
+  await admin.query('DELETE FROM public.users WHERE id = $1', [user]);
+  h.subs[subId] = sub();
+  const res = await raw(envelope('customer.subscription.created', sub()));
+  assert.equal(res.status, 200, 'the denied auth.users read aborted the locked transaction');
+  const u = await admin.query('SELECT email FROM public.users WHERE id = $1', [user]);
+  assert.equal(u.rows[0]?.email, `${user}@noemail.local`);
+  assert.equal((await row()).status, 'active');
+  assert.equal(await ent(), 'pro');
+});
+
+// ---- review R2-2: webhooks holding transactions across Stripe HTTP ---------
+
+test('PG R2-2: three slow concurrent webhooks do not block a page-style query on the shared pool', { skip, timeout: 30000 }, async () => {
+  await fresh();
+  const ids = [0, 1, 2].map((i) => `${subId}_${i}`);
+  for (const id of ids) h.subs[id] = sub({ id });
+  h.harness.retrieveDelays.push(1500, 1500, 1500);
+  const n0 = retrieves();
+  const deliveries = ids.map((id) => raw(envelope('customer.subscription.created', sub({ id }))));
+  await until(() => retrieves() >= n0 + 2); // two transactions are open, holding Stripe reads
+  const t0 = Date.now();
+  await sharedDb.query('SELECT 1');
+  const waited = Date.now() - t0;
+  const results = await Promise.all(deliveries);
+  assert.ok(waited < 400, `a page query waited ${waited} ms behind webhook transactions`);
+  assert.deepEqual(results.map((r) => r.status), [200, 200, 200], 'the third waits for a webhook-pool slot, within its timeout');
+});
+
+test('PG R2-2: webhook pool exhausted past its connect timeout -> 500 quickly (Stripe retries), not a queue', { skip, timeout: 30000 }, async () => {
+  await fresh({ webhookMax: 1, webhookConnectMs: 300 });
+  const ids = [0, 1].map((i) => `${subId}_x${i}`);
+  for (const id of ids) h.subs[id] = sub({ id });
+  h.harness.retrieveDelays.push(1500);
+  const n0 = retrieves();
+  const first = raw(envelope('customer.subscription.created', sub({ id: ids[0] })));
+  await until(() => retrieves() > n0); // the only connection is held
+  const t0 = Date.now();
+  const second = await raw(envelope('customer.subscription.created', sub({ id: ids[1] })));
+  const took = Date.now() - t0;
+  assert.equal(second.status, 500);
+  assert.ok(took < 1200, `took ${took} ms: queued instead of failing fast`);
+  assert.equal((await first).status, 200);
 });

@@ -344,9 +344,13 @@ test('M-1: every subscription write path takes the per-subscription lock, keyed 
     assert.equal(l.key, 'stripe|sub_test_1');
     assert.match(l.sql, /pg_advisory_xact_lock\(hashtextextended\(\$1 \|\| '-sub:' \|\| \$2, 0\)\)/);
   }
-  // Each lock is preceded by a lock_timeout, so a stuck holder is a 500, not a hang.
+  // Each lock is preceded by the transaction's timeouts (review R2-2): the
+  // lock wait, every statement, and idle time inside the transaction are all
+  // bounded, so a stuck holder is a 500, not a hang.
   for (let i = 0; i < state.lockLog.length; i += 2) {
-    assert.match(state.lockLog[i].sql, /^SET LOCAL lock_timeout = '25s'$/);
+    assert.match(state.lockLog[i].sql,
+      /set_config\('lock_timeout', \$1, true\), set_config\('statement_timeout', \$2, true\), set_config\('idle_in_transaction_session_timeout', \$3, true\)/);
+    assert.deepEqual(state.lockLog[i].params, ['8s', '10s', '12s']);
     assert.notEqual(state.lockLog[i + 1].key, null);
   }
 });
@@ -363,6 +367,55 @@ test('tombstone: deleted with no row stores a canceled row (no R6); a later crea
   await raw(envelope('customer.subscription.created', sub()));
   assert.equal(row().status, 'canceled');
   assert.equal(plan(), undefined);
+});
+
+// ---- review R2-1: account deleted before its `deleted` webhook ---------------
+// DELETE /api/users/me cancels at Stripe, then the auth.users cascade removes
+// public.users, customers_billing and subscriptions. The webhook must ack:
+// recreating the user would violate its FK to auth.users and 500 for ~3 days.
+
+const deleteAccount = () => {
+  state.users.length = 0;
+  state.customers_billing.length = 0;
+  state.subscriptions.length = 0;
+  state.entitlements.length = 0;
+};
+
+test('R2-1: deleted webhook after the account was deleted -> 200 on every delivery, no tombstone, no user recreated', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  deleteAccount();
+  h.subs.sub_test_1 = sub({ status: 'canceled' });
+  const del = envelope('customer.subscription.deleted', sub({ status: 'canceled' }));
+  for (let i = 0; i < 3; i += 1) assert.equal((await raw(del)).status, 200, `delivery ${i + 1}`);
+  assert.equal(state.subscriptions.length, 0, 'tombstone written for a user that no longer exists');
+  assert.equal(state.users.length, 0, 'user row recreated');
+});
+
+test('R2-1: a stale updated retry after the account was deleted (Stripe: canceled) -> 200, nothing recreated', async () => {
+  h.subs.sub_test_1 = sub();
+  await raw(envelope('customer.subscription.created', sub()));
+  deleteAccount();
+  h.subs.sub_test_1 = sub({ status: 'canceled' });
+  assert.equal((await raw(envelope('customer.subscription.updated', sub(), { cancel_at_period_end: true }))).status, 200);
+  assert.equal(state.users.length, 0);
+  assert.equal(state.subscriptions.length, 0);
+});
+
+// ---- the ensureUserRow savepoint (round-2 Low: mutant N5 survived) ----------
+// In production the app role may not read auth.users. Inside the locked
+// transaction that failure aborts the transaction unless it is fenced by a
+// savepoint; fakeDb.tx emulates Postgres's aborted-transaction rule.
+
+test('savepoint: auth.users unreadable while seeding a missing user row -> still fulfilled (200)', async () => {
+  state.users.length = 0; // the handle_new_user trigger has not caught up
+  state.failures.push({ re: /^SELECT email FROM auth\.users/, times: 1 });
+  h.subs.sub_test_1 = sub();
+  const res = await raw(envelope('customer.subscription.created', sub()));
+  assert.equal(res.status, 200, 'the tolerated auth.users failure aborted the transaction');
+  assert.equal(state.users[0]?.email, `${USER}@noemail.local`);
+  assert.equal(row()?.status, 'active');
+  assert.equal(plan(), 'pro');
 });
 
 // ---- review L-2: guards no test used to notice -----------------------------

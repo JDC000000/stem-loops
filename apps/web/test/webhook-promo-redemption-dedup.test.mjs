@@ -66,7 +66,7 @@ async function loadRoute(evt) {
     }`);
   const js = toJs(readFileSync(SRC, 'utf8'))
     .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billing}'`)
-    .replace(/from ['"]@\/lib\/db['"]/g, `from '${db}'`)
+    .replace(/from ['"]@\/lib\/db['"]/g, `from '${dataUrl(`export * from '${db}'; export { db as webhookDb } from '${db}';`)}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${ent}'`)
     .replace(/from ['"]@\/lib\/billing\/prorata['"]/g, `from 'data:text/javascript,export const computeProRataClawback = () => 0;'`)
     .replace(/from ['"]@\/lib\/emails\/dispatch['"]/g, `from '${em}'`)

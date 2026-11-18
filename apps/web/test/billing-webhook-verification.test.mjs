@@ -106,7 +106,7 @@ async function loadRoute({ handleWebhookThrows = false, event = { type: 'unhandl
   `);
   js = js
     .replace(/from ['"]@\/lib\/billing['"]/g, `from '${bStub}'`)
-    .replace(/from ['"]@\/lib\/db['"]/g, `from '${dStub}'`)
+    .replace(/from ['"]@\/lib\/db['"]/g, `from '${dataUrl(`export * from '${dStub}'; export { db as webhookDb } from '${dStub}';`)}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${eStub}'`)
     .replace(/from ['"]@\/lib\/billing\/prorata['"]/g, `from 'data:text/javascript,export const computeProRataClawback = () => 0;'`)
     .replace(/from ['"]@\/lib\/emails\/dispatch['"]/g, `from '${emStub}'`)

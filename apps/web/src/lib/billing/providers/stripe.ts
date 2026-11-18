@@ -190,6 +190,15 @@ export class BillingProviderUnavailableError extends Error {
   }
 }
 
+// PR #298 review R2-2. Every Stripe read on the webhook path (most of them
+// inside a DB transaction holding a per-subscription lock) is bounded: 8 s,
+// and no SDK retries. stripe-node's defaults are an 80 s timeout and 2
+// network retries, i.e. minutes holding a pooled connection and an open
+// transaction. A timeout surfaces as an error; the webhook answers 500 and
+// STRIPE retries the delivery (it retries for days), which is the right
+// retry layer.
+export const STRIPE_WEBHOOK_READ_OPTIONS = Object.freeze({ timeout: 8000, maxNetworkRetries: 0 });
+
 // Review I-1: the event's `livemode` disagrees with the API key's mode (a
 // live endpoint secret with a test key, or the reverse). Thrown after the
 // signature check; the route answers 500 and alerts. Matched by name.
@@ -444,12 +453,12 @@ export class StripeProvider implements BillingProvider {
   }
 
   async getSubscription(subscriptionId: string): Promise<BillingSubscription> {
-    const sub = await getClient().subscriptions.retrieve(subscriptionId);
+    const sub = await getClient().subscriptions.retrieve(subscriptionId, {}, { ...STRIPE_WEBHOOK_READ_OPTIONS });
     return subFromStripe(sub);
   }
 
   async getInvoiceState(invoiceId: string): Promise<{ status: string; amountRemaining: number }> {
-    const inv = await getClient().invoices.retrieve(invoiceId);
+    const inv = await getClient().invoices.retrieve(invoiceId, {}, { ...STRIPE_WEBHOOK_READ_OPTIONS });
     return { status: inv.status ?? 'unknown', amountRemaining: inv.amount_remaining ?? 0 };
   }
 
@@ -562,7 +571,7 @@ export class StripeProvider implements BillingProvider {
           // its lock). A failed read is a 500 so Stripe retries.
           let fresh: Stripe.Subscription;
           try {
-            fresh = await getClient().subscriptions.retrieve(sub.id);
+            fresh = await getClient().subscriptions.retrieve(sub.id, {}, { ...STRIPE_WEBHOOK_READ_OPTIONS });
           } catch (readErr) {
             throw new BillingProviderUnavailableError(`subscriptions.retrieve(${sub.id})`, readErr);
           }
@@ -629,9 +638,11 @@ export class StripeProvider implements BillingProvider {
 
     let full: Stripe.Checkout.Session;
     try {
-      full = await getClient().checkout.sessions.retrieve(session.id, {
-        expand: ['line_items'],
-      });
+      full = await getClient().checkout.sessions.retrieve(
+        session.id,
+        { expand: ['line_items'] },
+        { ...STRIPE_WEBHOOK_READ_OPTIONS },
+      );
     } catch (err) {
       throw new BillingProviderUnavailableError(
         `checkout.sessions.retrieve(${session.id})`,

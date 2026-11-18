@@ -29,6 +29,11 @@ export const SITE_DESCRIPTION = CHORDS_LINE_SHOWN
 export const ENTITY_LIMITS =
   `It is built and tested in Chrome on a computer and loads lighter audio on phones, uses the first ${MAX_TRACK_MIN} minutes of any song and, on the Free plan, deletes files after 24 hours ` +
   '(Pro and Studio keep a song library while subscribed, plus 30 days). ' +
-  'You need an account to open the player, and the rights to the audio you add.';
+  // D-SEO-7 / QA-55: since #302 the /demo/<slug> songs (lib/demo-catalog.ts) play signed out, so the
+  // account sentence is about opening the player with your own songs. Starting a job needs no
+  // account (POST /api/jobs takes signed-out jobs), so never say adding a song needs one.
+  // "the demo opens without signing in" is the pinned no-sign-in phrase (SEO-AIO-PLAN §6.3);
+  // "no account needed" stays banned.
+  'The demo songs open without signing in. You need an account to open the player with your own songs, and the rights to the audio you add.';
 // Filled only when each profile exists and returns 200 (SEO-22). Never list a profile that does not exist.
 export const SAME_AS: string[] = [];

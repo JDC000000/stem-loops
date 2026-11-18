@@ -461,7 +461,7 @@ function routeStubs({ planCode, credits, quotaDenied = false }) {
     admission: dataUrl(`
       export const checkAdmission = async () => ({ allowed: true, error_code: null });
       export const RATE_WINDOW_MS = 60000;
-      export const RATE_LIMIT = 5; export const IN_FLIGHT_STATUSES = ['queued']; export const anonLinkMaxInFlight = () => 2; export const anonLinkDailyCap = () => 10; export const anonLinkCapsWhere = () => 'true'; export const checkAnonLinkCaps = async () => ({ allowed: true, error_code: null });
+      export const RATE_LIMIT = 5; export const IN_FLIGHT_STATUSES = ['queued']; export const anonJobMaxInFlight = () => 2; export const anonJobDailyCap = () => 10; export const anonJobCapsWhere = () => 'true'; export const checkAnonJobCaps = async () => ({ allowed: true, error_code: null }); export const lockAnonIp = async () => {}; export const hasAnonPresign = async () => true; export const presignRecordKey = (i, j) => 'presign:' + i + ':' + j; export const anonPresignedWhere = () => 'true'; export const recordAnonPresign = async () => {};
       export const checkUploadRate = async () => ({ allowed: true, error_code: null });
     `),
     db: dataUrl(`

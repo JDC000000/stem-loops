@@ -130,3 +130,60 @@ test('cross-origin requests to checkout and portal are refused before auth (403 
     assert.equal(globalThis.__urls.length, 0);
   }
 });
+
+// PR #300 review SF-1: APP_URL unset on a deployment that is not the production site still
+// falls back to the production origin, but must SAY so (one structured warning per process).
+const appUrlFresh = () => import(dataUrl(toJs(read('src/lib/app-url.ts'))) + '#' + Math.random());
+function warnsDuring(fn) {
+  const orig = console.warn;
+  const lines = [];
+  console.warn = (...a) => lines.push(a.join(' '));
+  try {
+    fn();
+  } finally {
+    console.warn = orig;
+  }
+  return lines;
+}
+
+test('SF-1: APP_URL unset on a Vercel preview -> production origin, ONE app_url_default_used warning', async () => {
+  const saved = { e: process.env.VERCEL_ENV, p: process.env.VERCEL_PROJECT_PRODUCTION_URL };
+  try {
+    process.env.VERCEL_ENV = 'preview';
+    delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+    const m = await appUrlFresh();
+    const lines = warnsDuring(() => {
+      assert.equal(m.appOrigin(), 'https://stem-loops.com');
+      assert.equal(m.appOrigin(), 'https://stem-loops.com');
+    });
+    assert.equal(lines.length, 1);
+    assert.equal(JSON.parse(lines[0]).event, 'app_url_default_used');
+  } finally {
+    for (const [k, v] of [['VERCEL_ENV', saved.e], ['VERCEL_PROJECT_PRODUCTION_URL', saved.p]]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
+test('SF-1: the staging project (VERCEL_ENV=production, its own production URL) warns; the real site does not', async () => {
+  const saved = { e: process.env.VERCEL_ENV, p: process.env.VERCEL_PROJECT_PRODUCTION_URL };
+  try {
+    process.env.VERCEL_ENV = 'production';
+    process.env.VERCEL_PROJECT_PRODUCTION_URL = 'stem-loops-staging.vercel.app';
+    let m = await appUrlFresh();
+    assert.equal(warnsDuring(() => m.appOrigin()).length, 1, 'staging must warn');
+    process.env.VERCEL_PROJECT_PRODUCTION_URL = 'stem-loops.com';
+    m = await appUrlFresh();
+    assert.equal(warnsDuring(() => m.appOrigin()).length, 0, 'the production site must not warn');
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+    m = await appUrlFresh();
+    assert.equal(warnsDuring(() => m.appOrigin()).length, 0, 'local dev/test must not warn');
+  } finally {
+    for (const [k, v] of [['VERCEL_ENV', saved.e], ['VERCEL_PROJECT_PRODUCTION_URL', saved.p]]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});

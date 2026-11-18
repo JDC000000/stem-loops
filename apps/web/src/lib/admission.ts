@@ -1,7 +1,7 @@
 import { db } from '@/lib/db';
 import {
-  ANON_LINK_DAILY_MSG,
-  ANON_LINK_IN_FLIGHT_MSG,
+  ANON_JOB_DAILY_MSG,
+  ANON_JOB_IN_FLIGHT_MSG,
   ANON_UPLOAD_DAILY_MSG,
   ERROR_COPY,
   RATE_LIMITED_PER_CLIENT_MSG,
@@ -26,8 +26,8 @@ export type AdmissionResult =
 export type RateLimitReason =
   | 'per_client'
   | 'spend_ceiling'
-  | 'anon_link_in_flight'
-  | 'anon_link_daily'
+  | 'anon_job_in_flight'
+  | 'anon_job_daily'
   | 'anon_upload_daily';
 
 export const RATE_WINDOW_MS = 60_000;
@@ -128,25 +128,32 @@ const stemListRateKey = (clientIpHash: string) => `stems:${clientIpHash}`;
 
 export const IN_FLIGHT_STATUSES = ['queued', 'downloading', 'separating', 'extracting', 'uploading'];
 
-// ─── Signed-out link jobs: per-IP caps (QA track B, B-03) ───────────────────────────────
-// Before these, the only per-visitor gate on a signed-out YouTube job was 5/min/IP. One
-// script could fill the GLOBAL in-flight cap (20) in about four minutes, so every visitor got
-// AT_CAPACITY, and a few IPs could burn the site-wide 24 h spend ceiling for everyone.
+// ─── Signed-out jobs: per-IP caps (QA track B, B-03; PR #300 review MF-1, MF-2) ─────────
+// Before these, the only per-visitor gate on a signed-out job was 5/min/IP. One script could
+// fill the GLOBAL in-flight cap (20) in about four minutes, so every visitor got AT_CAPACITY,
+// and a few IPs could burn the site-wide 24 h spend ceiling for everyone.
 //
-//   • in flight: at most ANON_LINK_MAX_IN_FLIGHT (2) non-terminal signed-out link jobs per
-//     IP hash. The worker is serial, so more than two queued from one visitor is only ever a
-//     queue someone else waits behind.
-//   • daily: at most ANON_LINK_DAILY_CAP (10) signed-out link jobs per IP hash per rolling
-//     24 h.
+//   • in flight: at most ANON_JOB_MAX_IN_FLIGHT (2) non-terminal signed-out jobs per IP hash.
+//     The worker is serial, so more than two queued from one visitor is only ever a queue
+//     someone else waits behind.
+//   • daily: at most ANON_JOB_DAILY_CAP (10) signed-out jobs per IP hash per rolling 24 h.
 //
-// Counted on the `jobs` rows themselves (client_ip_hash, created_at, status; index
-// jobs_ip_hash_idx), so no new table. Enforced INSIDE the atomic INSERT ... WHERE in
-// POST /api/jobs (ANON_LINK_CAPS_WHERE below), so a burst cannot each pass a pre-check
-// and then all insert. checkAnonLinkCaps() runs first only to pick the right sentence.
+// EVERY signed-out job counts, link AND upload (MF-2: the first version filtered
+// input_kind = 'youtube', so signed-out upload jobs had neither cap). Counted on the `jobs`
+// rows themselves (client_ip_hash, created_at, status; index jobs_ip_hash_idx), so no new table.
+//
+// CONCURRENCY (MF-1). A single INSERT ... SELECT ... WHERE (count) < cap is NOT burst-safe
+// under READ COMMITTED: concurrent statements each count from their own snapshot and never
+// see each other's uncommitted rows (the review measured 20 parallel inserts -> 15 rows
+// against a cap of 2). So every signed-out job INSERT runs in a transaction that FIRST takes
+// lockAnonIp() — a transaction-scoped advisory lock on this IP hash — and only then runs the
+// INSERT, whose statement snapshot is taken after the lock, so it sees every earlier insert
+// from this IP. Different IPs never contend. Pinned by a real-Postgres parallel-burst test
+// (test/anon-link-caps-db.test.mjs). checkAnonJobCaps() runs first only to pick the sentence.
 // Signed-in users are unaffected: their caps are the plan's quota and burst limits.
 // Env overrides are guarded like ADMISSION_MAX_IN_FLIGHT (a typo falls back to the default).
-export const DEFAULT_ANON_LINK_MAX_IN_FLIGHT = 2;
-export const DEFAULT_ANON_LINK_DAILY_CAP = 10;
+export const DEFAULT_ANON_JOB_MAX_IN_FLIGHT = 2;
+export const DEFAULT_ANON_JOB_DAILY_CAP = 10;
 const warnedAnonCap = new Set<string>();
 function positiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -160,42 +167,55 @@ function positiveIntEnv(name: string, fallback: number): number {
   }
   return fallback;
 }
-export const anonLinkMaxInFlight = () =>
-  positiveIntEnv('ANON_LINK_MAX_IN_FLIGHT', DEFAULT_ANON_LINK_MAX_IN_FLIGHT);
-export const anonLinkDailyCap = () => positiveIntEnv('ANON_LINK_DAILY_CAP', DEFAULT_ANON_LINK_DAILY_CAP);
+export const anonJobMaxInFlight = () =>
+  positiveIntEnv('ANON_JOB_MAX_IN_FLIGHT', DEFAULT_ANON_JOB_MAX_IN_FLIGHT);
+export const anonJobDailyCap = () => positiveIntEnv('ANON_JOB_DAILY_CAP', DEFAULT_ANON_JOB_DAILY_CAP);
 
 /**
- * SQL predicate for the anonymous link INSERT. `$ip`, `$statuses`, `$maxInFlight`, `$daily`
- * are the caller's placeholder numbers. Only signed-out link rows from this IP count.
+ * SQL predicate for every signed-out job INSERT. `$ip`, `$statuses`, `$maxInFlight`, `$daily`
+ * are the caller's placeholder numbers. Every signed-out row from this IP counts, any kind.
+ * Only burst-safe inside a transaction that called lockAnonIp() first.
  */
-export function anonLinkCapsWhere(ip: string, statuses: string, maxInFlight: string, daily: string): string {
+export function anonJobCapsWhere(ip: string, statuses: string, maxInFlight: string, daily: string): string {
   return `(SELECT COUNT(*) FROM jobs WHERE client_ip_hash = ${ip} AND user_id IS NULL
-            AND input_kind = 'youtube' AND status = ANY(${statuses}::text[])) < ${maxInFlight}
+            AND status = ANY(${statuses}::text[])) < ${maxInFlight}
           AND (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = ${ip} AND user_id IS NULL
-            AND input_kind = 'youtube' AND created_at >= NOW() - INTERVAL '24 hours') < ${daily}`;
+            AND created_at >= NOW() - INTERVAL '24 hours') < ${daily}`;
 }
 
-/** Which anonymous link cap (if any) this IP is at. Advisory: the INSERT's WHERE decides. */
-export async function checkAnonLinkCaps(clientIpHash: string): Promise<AdmissionResult> {
+type TxClient = { query: (text: string, params?: unknown[]) => Promise<unknown> };
+
+/**
+ * Serialise every signed-out job INSERT from one IP hash (MF-1). Transaction-scoped: released
+ * at COMMIT/ROLLBACK, so it is safe through a transaction-mode pooler. Call it as the FIRST
+ * statement of the tx, then run the capped INSERT as a SEPARATE statement (a statement's
+ * snapshot is taken when it starts, so a CTE inside the INSERT would still count stale rows).
+ */
+export async function lockAnonIp(client: TxClient, clientIpHash: string): Promise<void> {
+  await client.query(`SELECT pg_advisory_xact_lock(hashtextextended('anon-caps:' || $1, 0))`, [clientIpHash]);
+}
+
+/** Which anonymous job cap (if any) this IP is at. Advisory: the locked INSERT's WHERE decides. */
+export async function checkAnonJobCaps(clientIpHash: string): Promise<AdmissionResult> {
   const r = await db.query(
     `SELECT
        COUNT(*) FILTER (WHERE status = ANY($2::text[]))::int AS in_flight,
        COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours')::int AS today
      FROM jobs
-     WHERE client_ip_hash = $1 AND user_id IS NULL AND input_kind = 'youtube'
+     WHERE client_ip_hash = $1 AND user_id IS NULL
        AND (status = ANY($2::text[]) OR created_at >= NOW() - INTERVAL '24 hours')`,
     [clientIpHash, IN_FLIGHT_STATUSES],
   );
   const row = r.rows[0] ?? { in_flight: 0, today: 0 };
-  if (row.today >= anonLinkDailyCap()) {
-    return { allowed: false, error_code: 'RATE_LIMITED', reason: 'anon_link_daily', message: ANON_LINK_DAILY_MSG };
+  if (row.today >= anonJobDailyCap()) {
+    return { allowed: false, error_code: 'RATE_LIMITED', reason: 'anon_job_daily', message: ANON_JOB_DAILY_MSG };
   }
-  if (row.in_flight >= anonLinkMaxInFlight()) {
+  if (row.in_flight >= anonJobMaxInFlight()) {
     return {
       allowed: false,
       error_code: 'RATE_LIMITED',
-      reason: 'anon_link_in_flight',
-      message: ANON_LINK_IN_FLIGHT_MSG,
+      reason: 'anon_job_in_flight',
+      message: ANON_JOB_IN_FLIGHT_MSG,
     };
   }
   return ALLOWED;
@@ -304,13 +324,14 @@ export async function checkStemListRate(clientIpHash: string): Promise<Admission
   );
 }
 
-// Atomic check-and-record (QA P0/P1): the count and the insert are ONE statement, so a
-// request can't pass the check in the gap before it records its own event — the old
-// two-round-trip TOCTOU where a concurrent burst all saw "under limit" then all inserted
-// unconditionally. The INSERT ... SELECT records only while still under the cap (else 0
-// rows). This fully serializes STAGGERED requests (each sees prior commits); a perfectly-
-// simultaneous burst can still overshoot by ~the burst size under READ COMMITTED — a fully
-// race-proof version would need a per-IP advisory lock or an atomic counter row (see report).
+// Check-and-record for the upload_rate_events counters (per-minute presign, per-day anonymous
+// presign, stems reads). The count and the insert are ONE statement, and since PR #300 review
+// MF-1 that statement runs in a transaction AFTER a transaction-scoped advisory lock on the
+// counter key. Without the lock a perfectly simultaneous burst overshot the limit by about the
+// burst size under READ COMMITTED (each statement counts from its own snapshot); with it,
+// requests for one key are serialised and each one's snapshot sees every earlier record.
+// Different keys never contend. The INSERT ... SELECT records only while still under the cap
+// (else 0 rows), so the table stays bounded.
 //
 // Relies on the real client IP being resolved spoof-resistantly (client-ip.ts /
 // BLOCKER #1) — otherwise it's keyed on a forgeable value. `key` is whatever the
@@ -322,16 +343,50 @@ async function rollingWindowAdmission(
   windowMs: number,
   limit: number,
 ): Promise<AdmissionResult> {
-  const res = await db.query(
-    `INSERT INTO upload_rate_events (client_ip_hash)
-     SELECT $1::text
-     WHERE (
-       SELECT COUNT(*) FROM upload_rate_events
-       WHERE client_ip_hash = $1
-         AND created_at >= NOW() - ($2::int * INTERVAL '1 millisecond')
-     ) < $3
-     RETURNING id`,
-    [key, windowMs, limit],
-  );
+  const res = (await db.tx(async (client) => {
+    await client.query(`SELECT pg_advisory_xact_lock(hashtextextended('rate:' || $1, 0))`, [key]);
+    return client.query(
+      `INSERT INTO upload_rate_events (client_ip_hash)
+       SELECT $1::text
+       WHERE (
+         SELECT COUNT(*) FROM upload_rate_events
+         WHERE client_ip_hash = $1
+           AND created_at >= NOW() - ($2::int * INTERVAL '1 millisecond')
+       ) < $3
+       RETURNING id`,
+      [key, windowMs, limit],
+    );
+  })) as { rowCount?: number | null };
   return (res.rowCount ?? 0) > 0 ? ALLOWED : BLOCKED;
+}
+
+// ─── Presign records for signed-out upload jobs (PR #300 review MF-2) ────────────────────
+// POST /api/jobs only checked an upload key's FORMAT, so a signed-out caller could create
+// upload jobs without ever calling POST /api/uploads, and the presign daily cap bounded
+// nothing. Now, when POST /api/uploads mints a URL for a signed-out caller, it records
+// `presign:<ipHash>:<jobId>` in upload_rate_events (same table, no migration; the worker
+// sweep keeps rows 24 h), and the signed-out upload INSERT requires that record for the SAME
+// IP hash and job id. A job id can be used once (jobs.id is the primary key).
+export const presignRecordKey = (clientIpHash: string, jobId: string) => `presign:${clientIpHash}:${jobId}`;
+
+export async function recordAnonPresign(clientIpHash: string, jobId: string): Promise<void> {
+  await db.query(`INSERT INTO upload_rate_events (client_ip_hash) VALUES ($1)`, [
+    presignRecordKey(clientIpHash, jobId),
+  ]);
+}
+
+/** SQL predicate: this IP hash was issued this job id's upload URL within 24 h. */
+export function anonPresignedWhere(key: string): string {
+  return `EXISTS (SELECT 1 FROM upload_rate_events WHERE client_ip_hash = ${key}
+            AND created_at >= NOW() - INTERVAL '24 hours')`;
+}
+
+/** Advisory pre-check for the user-facing sentence; the INSERT's WHERE decides. */
+export async function hasAnonPresign(clientIpHash: string, jobId: string): Promise<boolean> {
+  const r = await db.query(
+    `SELECT 1 FROM upload_rate_events WHERE client_ip_hash = $1
+       AND created_at >= NOW() - INTERVAL '24 hours' LIMIT 1`,
+    [presignRecordKey(clientIpHash, jobId)],
+  );
+  return (r.rowCount ?? 0) > 0;
 }

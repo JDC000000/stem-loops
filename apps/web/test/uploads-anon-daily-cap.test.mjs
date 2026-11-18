@@ -37,11 +37,21 @@ const dbStub = dataUrl(`
       S().events.push({ key, at: now });
       return { rows: [{ id: S().events.length }], rowCount: 1 };
     }
+    // PR #300 MF-1: the counter runs in a tx after a per-key advisory lock; MF-2: a signed-out
+    // presign is recorded as presign:<ip>:<jobId>.
+    if (/^SELECT pg_advisory_xact_lock/.test(s)) { S().locks.push(params[0]); return { rows: [{}], rowCount: 1 }; }
+    if (/^INSERT INTO upload_rate_events \\(client_ip_hash\\) VALUES \\(\\$1\\)$/.test(s)) {
+      S().presigns.push(params[0]);
+      return { rows: [], rowCount: 1 };
+    }
     if (/^SELECT COUNT\\(\\*\\)::int AS count FROM jobs WHERE status = ANY\\(\\$1\\)$/.test(s))
       return { rows: [{ count: 0 }], rowCount: 1 };
     throw new Error('fake db: unrecognised SQL: ' + s.slice(0, 160));
   }
-  export const db = { query: async (sql, params) => handle(sql, params) };
+  export const db = {
+    query: async (sql, params) => handle(sql, params),
+    tx: async (fn) => fn({ query: async (sql, params) => handle(sql, params) }),
+  };
 `);
 
 const ERRCOPY = dataUrl(read('lib/error-copy.ts'));
@@ -87,7 +97,7 @@ const MIN = 60_000;
 beforeEach(() => {
   delete process.env.ANON_UPLOAD_DAILY_CAP;
   delete process.env.UPLOAD_RATE_LIMIT;
-  globalThis.__up = { now: Date.now(), events: [], minted: [], ip: 'ip-a', user: null };
+  globalThis.__up = { now: Date.now(), events: [], minted: [], ip: 'ip-a', user: null, locks: [], presigns: [] };
 });
 
 test('signed out: the 21st presign from one IP in 24 h is refused, spread over the day', async () => {
@@ -136,4 +146,21 @@ test('the daily cap is counted under its own key, separate from the per-minute c
   await presign();
   const keys = globalThis.__up.events.map((e) => e.key).sort();
   assert.deepEqual(keys, ['ip-a', 'uploads-day:ip-a']);
+});
+
+test('MF-2: a signed-out presign records presign:<ip>:<jobId> for the job route; signed-in does not', async () => {
+  globalThis.__up.now += 5 * MIN;
+  const r = await presign();
+  assert.equal(r.status, 200);
+  assert.deepEqual(globalThis.__up.presigns, [`presign:ip-a:${r.body.jobId}`]);
+  globalThis.__up.user = { user_id: 'u1' };
+  globalThis.__up.now += 5 * MIN;
+  await presign();
+  assert.equal(globalThis.__up.presigns.length, 1);
+});
+
+test('MF-1: each counter is taken under its own per-key advisory lock', async () => {
+  globalThis.__up.now += 5 * MIN;
+  await presign();
+  assert.deepEqual(globalThis.__up.locks, ['ip-a', 'uploads-day:ip-a']);
 });

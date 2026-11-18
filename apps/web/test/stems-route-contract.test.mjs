@@ -40,7 +40,7 @@ const SIX = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'];
 
 function dbStub({ rows, rowCount, dbThrows = false }) {
   return dataUrl(`
-    export const db = { query: async (text, params) => {
+    export const db = { tx: async (fn) => fn({ query: (t, p) => db.query(t, p) }), query: async (text, params) => {
       globalThis.__st.calls.push(['query', text, params]);
       if (${dbThrows}) {
         // Shaped like the errors this handler actually sees: a name, a message, and
@@ -582,7 +582,10 @@ test('the 429 does not let a shared cache keep the throttle response', async () 
 // nothing else would notice if the stems counter shared the uploads budget.
 async function loadAdmission({ rowCount = 1 } = {}) {
   const dbRec = dataUrl(`
-    export const db = { query: async (text, params) => {
+    // PR #300 MF-1: the check-and-record now runs in a tx after a per-key advisory lock. The
+    // lock is recorded separately (__adLocks) so __ad still lists the counter statements only.
+    export const db = { tx: async (fn) => fn({ query: (t, p) => db.query(t, p) }), query: async (text, params) => {
+      if (/pg_advisory_xact_lock/.test(text)) { (globalThis.__adLocks ??= []).push(params[0]); return { rows: [{}], rowCount: 1 }; }
       globalThis.__ad.push({ text, params });
       return { rows: [], rowCount: ${rowCount} };
     } };
@@ -608,6 +611,8 @@ test('checkStemListRate counts under a NAMESPACED key, so playback cannot eat th
   assert.equal(stems.params[0], 'stems:deadbeef', 'the stems counter must be namespaced');
   assert.equal(uploads.params[0], 'deadbeef', 'the uploads counter must stay UNPREFIXED');
   assert.notEqual(stems.params[0], uploads.params[0], 'the two must never share a budget');
+  // Each counter is serialised on its OWN key (MF-1), so the two never contend.
+  assert.deepEqual(globalThis.__adLocks.slice(-2), ['stems:deadbeef', 'deadbeef']);
   // Same proven atomic check-and-record statement, not a reinvented one.
   assert.match(stems.text.replace(/\s+/g, ' '), /INSERT INTO upload_rate_events/);
   assert.match(stems.text.replace(/\s+/g, ' '), /SELECT COUNT\(\*\) FROM upload_rate_events/);

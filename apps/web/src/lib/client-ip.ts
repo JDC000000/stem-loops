@@ -11,10 +11,12 @@ import { ipHashKey } from '@/lib/secret-env';
 // Taking the leftmost entry (the old behaviour) let any client forge a fresh IP per
 // request and bypass the per-IP rate limit entirely.
 //
-// Deployment: this app sits behind exactly one nginx on the VPS staging/prod box
-// (no CDN/edge in front — verified: response `server: nginx`, no CF-Ray/via), so the
-// default of 1 hop resolves to the rightmost, nginx-appended, real client IP. Set
-// TRUSTED_PROXY_HOPS to match any other edge (e.g. 2 if a CDN also appends a hop).
+// Deployment: production and staging run on Vercel (live responses say `server: Vercel`).
+// Vercel OVERWRITES X-Forwarded-For with the client address it saw and does not forward an
+// external client's value (https://vercel.com/docs/edge-network/headers/request-headers), so
+// the default of 1 hop takes the rightmost entry, which is that address. An earlier comment
+// here described a single nginx on a VPS; that deployment no longer exists. If another proxy
+// or CDN is ever put in front of Vercel, set TRUSTED_PROXY_HOPS to match. (QA track B, B-13.)
 // IP_HASH_KEY: read per call through lib/secret-env.ts, which throws in production when it is
 // unset (QA track B, B-08). It used to fall back to the public 'dev-key'.
 const TRUSTED_PROXY_HOPS = Math.max(

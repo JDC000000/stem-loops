@@ -174,6 +174,16 @@ test('the Stripe webhook is NOT guarded (Stripe is server-to-server and sends no
   assert.doesNotMatch(readFileSync(p, 'utf8'), /same-origin/, 'billing/webhook must not import the guard');
 });
 
+// Any export form: `export async function POST`, `export function POST`, `export const POST =`,
+// `export { handler as POST }`, `export { POST } from` (PR #300 review SF-7).
+function isStateChangingRoute(src) {
+  return (
+    /export\s+(?:async\s+)?function\s+(POST|PUT|PATCH|DELETE)\b/.test(src) ||
+    /export\s+(?:const|let|var)\s+(POST|PUT|PATCH|DELETE)\b/.test(src) ||
+    /export\s*\{[^}]*\b(POST|PUT|PATCH|DELETE)\b[^}]*\}/.test(src)
+  );
+}
+
 // QA track B, B-06: every exported state-changing handler under src/app/api imports the guard,
 // except the allow-listed webhook. A new POST/PUT/PATCH/DELETE route without it fails here.
 test('every state-changing API route uses crossOriginRefusal (allow-list: billing webhook)', () => {
@@ -195,9 +205,25 @@ test('every state-changing API route uses crossOriginRefusal (allow-list: billin
   for (const file of walk(API)) {
     const rel = file.slice(API.length + 1);
     const src = readFileSync(file, 'utf8');
-    if (!/export\s+async\s+function\s+(POST|PUT|PATCH|DELETE)\b/.test(src)) continue;
+    const stateChanging = isStateChangingRoute(src);
+    if (!stateChanging) continue;
     if (ALLOW.has(rel)) continue;
     if (!/crossOriginRefusal\(/.test(src)) missing.push(rel);
   }
   assert.deepEqual(missing, [], `state-changing routes without the same-origin guard: ${missing.join(', ')}`);
+});
+
+test('the route-export detector itself sees every export form (no vacuous pass)', () => {
+  for (const f of [
+    'export async function POST(req) {}',
+    'export function DELETE() {}',
+    'export const POST = async (req) => {};',
+    'const h = () => {}; export { h as PATCH };',
+    "export { PUT } from './x';",
+  ]) {
+    assert.equal(isStateChangingRoute(f), true, f);
+  }
+  for (const f of ['export async function GET() {}', 'export const dynamic = "force-dynamic";']) {
+    assert.equal(isStateChangingRoute(f), false, f);
+  }
 });

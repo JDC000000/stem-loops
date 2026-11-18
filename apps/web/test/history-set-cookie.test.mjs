@@ -116,3 +116,34 @@ test('a cross-origin POST is refused (403 BAD_ORIGIN) and sets no cookie', async
     assert.equal(res.set.length, 0);
   }
 });
+
+// PR #300 review SF-2 (mutant R5): the signer must use HISTORY_COOKIE_KEY through
+// lib/secret-env.ts, so a configured key is used and Vercel production without one refuses.
+test('the cookie is signed with the configured HISTORY_COOKIE_KEY, not a default', async () => {
+  const saved = { k: process.env.HISTORY_COOKIE_KEY, e: process.env.VERCEL_ENV };
+  try {
+    process.env.HISTORY_COOKIE_KEY = 'configured-key-for-this-test';
+    const res = await post({ jobIds: [uuid(7)] });
+    assert.equal(res.status, 200);
+    const { sig, payload } = decode(res.set[0][1]);
+    assert.equal(sig, createHmac('sha256', 'configured-key-for-this-test').update(payload).digest('hex'));
+    assert.notEqual(sig, createHmac('sha256', 'dev').update(payload).digest('hex'));
+  } finally {
+    if (saved.k === undefined) delete process.env.HISTORY_COOKIE_KEY;
+    else process.env.HISTORY_COOKIE_KEY = saved.k;
+  }
+});
+
+test('Vercel production without HISTORY_COOKIE_KEY refuses to sign (never the public default)', async () => {
+  const saved = { k: process.env.HISTORY_COOKIE_KEY, e: process.env.VERCEL_ENV };
+  try {
+    delete process.env.HISTORY_COOKIE_KEY;
+    process.env.VERCEL_ENV = 'production';
+    await assert.rejects(() => post({ jobIds: [uuid(8)] }), /HISTORY_COOKIE_KEY is not set/);
+  } finally {
+    if (saved.k === undefined) delete process.env.HISTORY_COOKIE_KEY;
+    else process.env.HISTORY_COOKIE_KEY = saved.k;
+    if (saved.e === undefined) delete process.env.VERCEL_ENV;
+    else process.env.VERCEL_ENV = saved.e;
+  }
+});

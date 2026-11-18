@@ -68,11 +68,18 @@ def test_ytdlp_every_invocation_in_the_source_ends_options_before_the_url():
 # ---------------------------------------------------------------------------------- ffmpeg
 
 
-def _guard_before_input(cmd: list[str]) -> bool:
+def _guard_before_input(cmd: list[str], *, formats: bool = False) -> bool:
     if "-i" not in cmd or "-protocol_whitelist" not in cmd:
         return False
     w = cmd.index("-protocol_whitelist")
-    return cmd[w + 1] == "file,pipe" and w < cmd.index("-i")
+    ok = cmd[w + 1] == "file,pipe" and w < cmd.index("-i")
+    if formats:
+        if "-format_whitelist" not in cmd:
+            return False
+        f = cmd.index("-format_whitelist")
+        allowed = set(cmd[f + 1].split(","))
+        ok = ok and f < cmd.index("-i") and not ({"hls", "concat", "image2", "mpegts"} & allowed)
+    return ok
 
 
 def test_upload_decode_restricts_ffmpeg_to_local_protocols(monkeypatch, tmp_path):
@@ -88,7 +95,7 @@ def test_upload_decode_restricts_ffmpeg_to_local_protocols(monkeypatch, tmp_path
     with pytest.raises(UploadInvalidError):
         pipeline._prepare_upload_source("job", "job/_input.mp3")
     ffmpeg = [c for c in seen if "-i" in c]
-    assert ffmpeg and all(_guard_before_input(c) for c in ffmpeg), ffmpeg
+    assert ffmpeg and all(_guard_before_input(c, formats=True) for c in ffmpeg), ffmpeg
 
 
 def test_link_trim_restricts_ffmpeg_to_local_protocols(monkeypatch, tmp_path):
@@ -120,6 +127,100 @@ def test_real_ffmpeg_refuses_a_network_fetch_with_the_guard(tmp_path):
     )
     assert r.returncode != 0
     assert "not on whitelist" in r.stderr
+
+
+def test_ffprobe_duration_probe_is_restricted_too(monkeypatch, tmp_path):
+    """The duration probe also opens the raw upload, so it carries the same guard (R10)."""
+    junk = tmp_path / "raw_input"
+    junk.write_bytes(b"not audio at all")  # soundfile refuses -> falls through to ffprobe
+    seen: list[list[str]] = []
+
+    class _P:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(pipeline.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(
+        pipeline.subprocess, "run", lambda cmd, *a, **k: (seen.append(cmd), _P())[1]
+    )
+    assert pipeline._probe_duration_sec(str(junk)) is None
+    assert len(seen) == 1
+    cmd = seen[0]
+    assert cmd[0].endswith("ffprobe") and cmd[-1] == str(junk)
+    w, f = cmd.index("-protocol_whitelist"), cmd.index("-format_whitelist")
+    assert cmd[w + 1] == "file,pipe" and "hls" not in cmd[f + 1].split(",")
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_upload_guard_refuses_an_hls_local_file_read(tmp_path):
+    """SF-5: the protocol whitelist alone still lets the hls demuxer read a LOCAL file named
+    in a playlist (shown here first, so the test proves something). The upload guard's format
+    whitelist refuses the demuxer itself."""
+    wav = tmp_path / "secret.wav"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=d=1"]
+        + [str(wav)],
+        check=True,
+        timeout=30,
+    )
+    pl = tmp_path / "raw_input"
+    pl.write_text(f"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\n{wav}\n#EXT-X-ENDLIST\n")
+
+    def run(guard):
+        return subprocess.run(
+            ["ffmpeg", "-hide_banner", "-y", *guard, "-f", "hls", "-i", str(pl)]
+            + [str(tmp_path / "o.wav")],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    assert run(pipeline.FFMPEG_INPUT_GUARD).returncode == 0, "control: file-only reads it"
+    assert run(pipeline.FFMPEG_UPLOAD_GUARD).returncode != 0
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_an_hls_playlist_shaped_upload_is_refused_by_the_real_decode(monkeypatch, tmp_path):
+    """End to end through _prepare_upload_source with real ffmpeg: a playlist uploaded as the
+    input is an invalid upload, and nothing it names is staged."""
+    wav = tmp_path / "secret.wav"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=d=1"]
+        + [str(wav)],
+        check=True,
+        timeout=30,
+    )
+    body = f"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\n{wav}\n#EXT-X-ENDLIST\n"
+    monkeypatch.setattr(pipeline, "download_object", lambda key, dest: Path(dest).write_text(body))
+    staged: list[str] = []
+    monkeypatch.setattr(pipeline, "upload_input", lambda job, path: staged.append(path) or "u")
+    with pytest.raises(UploadInvalidError):
+        pipeline._prepare_upload_source("job", "job/_input.mp3")
+    assert staged == []
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+@pytest.mark.parametrize(
+    "ext", ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "aiff", "mp4", "mov", "webm"]
+)
+def test_every_accepted_upload_type_still_decodes_under_the_upload_guard(tmp_path, ext):
+    src = tmp_path / f"t.{ext}"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=d=1"]
+        + [str(src)],
+        check=True,
+        timeout=30,
+    )
+    raw = tmp_path / "raw_input"  # extensionless, exactly as the pipeline stores it
+    raw.write_bytes(src.read_bytes())
+    r = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *pipeline.FFMPEG_UPLOAD_GUARD]
+        + ["-i", str(raw), str(tmp_path / "o.wav")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
 
 
 # -------------------------------------------------------------------------- Replicate stems
@@ -164,6 +265,7 @@ def test_unknown_stem_names_are_never_used_as_paths(monkeypatch):
         "http://replicate.delivery/a/drums.wav",
         "https://evil.example/drums.wav",
         "https://replicate.delivery.evil.example/drums.wav",
+        "https://evilreplicate.delivery/drums.wav",
         "https://user:pw@replicate.delivery/drums.wav",
         "file:///etc/passwd",
         "https://169.254.169.254/latest/meta-data",

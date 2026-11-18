@@ -1,14 +1,18 @@
-// QA track B, B-03: per-IP caps on SIGNED-OUT YouTube jobs, against a REAL Postgres.
+// QA track B, B-03/B-05 + PR #300 review MF-1/MF-2: per-IP caps on SIGNED-OUT jobs, against a
+// REAL Postgres.
 //
 // Before: the only per-visitor gate was 5 jobs/min/IP, so one script could fill the global
 // in-flight cap (20) in about four minutes and every visitor got AT_CAPACITY. Now a signed-
-// out IP hash may hold at most 2 non-terminal link jobs and start at most 10 per rolling 24 h.
+// out IP hash may hold at most 2 non-terminal jobs (link OR upload) and start at most 10 per
+// rolling 24 h, and a signed-out upload job needs a presign record for that IP and job id.
 //
-// The REAL route (POST /api/jobs) and the REAL lib/admission.ts run against the migrated
-// database in DATABASE_URL (CI's Tests job has one); only auth (signed out), the client IP
-// (a fresh hash per test), Sentry and the signed-in-only billing modules are stubbed. The
-// atomic INSERT ... WHERE is tested on its own too, with the advisory pre-check switched off,
-// because that statement, not the pre-check, is what holds under a concurrent burst.
+// The REAL routes (POST /api/jobs, POST /api/uploads) and the REAL lib/admission.ts run
+// against the migrated database in DATABASE_URL (CI's Tests job has one); only auth (signed
+// out), the client IP (a fresh hash per test), R2 presigning, Sentry and the signed-in-only
+// billing modules are stubbed. The locked INSERT is tested on its own (advisory pre-check
+// switched off) and under PARALLEL bursts on separate connections, because that statement,
+// not the pre-check, is what must hold when requests arrive together (the review measured
+// 20 parallel inserts -> 15 rows before the per-IP advisory lock).
 //
 // Skips locally without a local DATABASE_URL; FAILS under CI=true (a skipped gate is not a pass).
 
@@ -43,7 +47,7 @@ const read = (rel) => readFileSync(join(WEB, rel), 'utf8');
 let pool;
 if (!skip) {
   const { Pool } = require('pg');
-  pool = new Pool({ connectionString: DB_URL, max: 4 });
+  pool = new Pool({ connectionString: DB_URL, max: 30 });
   globalThis.__capsPool = pool;
 }
 after(async () => {
@@ -65,9 +69,16 @@ function admissionModule() {
     .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${errorCopy}'`);
   // Test switch: skip the ADVISORY pre-check so the INSERT's own WHERE is what refuses.
   js = js.replace(
-    /export async function checkAnonLinkCaps\(clientIpHash\) \{/,
-    'export async function checkAnonLinkCaps(clientIpHash) { if (globalThis.__skipPrecheck) return ALLOWED;',
+    /export async function checkAnonJobCaps\(clientIpHash\) \{/,
+    'export async function checkAnonJobCaps(clientIpHash) { if (globalThis.__skipPrecheck) return ALLOWED;',
   );
+  js = js.replace(
+    /export async function hasAnonPresign\(clientIpHash, jobId\) \{/,
+    'export async function hasAnonPresign(clientIpHash, jobId) { if (globalThis.__skipPrecheck) return true;',
+  );
+  if (!js.includes('__skipPrecheck) return ALLOWED') || !js.includes('__skipPrecheck) return true')) {
+    throw new Error('test switch did not apply: admission.ts pre-check signatures changed');
+  }
   return dataUrl(js);
 }
 
@@ -87,9 +98,9 @@ function namesStub(clause) {
   );
 }
 
-async function loadRoute() {
+async function loadRoute(rel = 'src/app/api/jobs/route.ts') {
   const admission = admissionModule();
-  let js = toJs(read('src/app/api/jobs/route.ts'));
+  let js = toJs(read(rel));
   js = js.replace(/import\s+([\s\S]+?)\s+from\s+['"]([^'"]+)['"];?/g, (all, clause, spec) => {
     if (spec === 'crypto' || spec.startsWith('node:')) return all;
     const map = {
@@ -105,6 +116,11 @@ async function loadRoute() {
       '@/lib/client-ip': dataUrl('export const clientIpHashOf = () => globalThis.__ipHash;'),
       '@/lib/youtube-url': dataUrl('export const canonicalizeYoutubeUrl = (u) => u;'),
       '@/lib/auth/supabase': dataUrl('export const getUser = async () => null;'),
+      '@/lib/upload': dataUrl(`
+        export const isValidUploadKey = (id, key) => key === id + '/_input.mp3';
+        export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+        export const validateUpload = () => ({ ok: true, ext: 'mp3', contentType: 'audio/mpeg' });`),
+      '@/lib/r2': dataUrl(`export const presignPut = async (key) => { (globalThis.__minted ??= []).push(key); return 'https://r2.test/put'; };`),
     };
     return `import ${clause} from '${map[spec] ?? namesStub(clause)}';`;
   });
@@ -112,11 +128,15 @@ async function loadRoute() {
 }
 
 const HOST = 'stem-loops.com';
-const post = (mod) =>
-  mod.POST({
-    headers: new Headers({ origin: `https://${HOST}`, host: HOST, 'content-type': 'application/json' }),
-    json: async () => ({ url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }),
-  });
+const reqOf = (body) => ({
+  headers: new Headers({ origin: `https://${HOST}`, host: HOST, 'content-type': 'application/json' }),
+  json: async () => body,
+});
+const post = (mod) => mod.POST(reqOf({ url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }));
+const postUpload = (mod, jobId) => mod.POST(reqOf({ jobId, uploadKey: `${jobId}/_input.mp3` }));
+const presign = (mod) => mod.POST(reqOf({ filename: 'song.mp3', size: 1000 }));
+const countJobs = async (ip) =>
+  (await pool.query('SELECT count(*)::int AS n FROM jobs WHERE client_ip_hash = $1', [ip])).rows[0].n;
 
 async function freshIp() {
   const ip = `test-anon-caps-${randomUUID()}`;
@@ -125,6 +145,10 @@ async function freshIp() {
 }
 async function cleanup(ip) {
   await pool.query('DELETE FROM jobs WHERE client_ip_hash = $1', [ip]);
+  await pool.query(
+    "DELETE FROM upload_rate_events WHERE client_ip_hash IN ($1, 'uploads-day:' || $1) OR client_ip_hash LIKE 'presign:' || $1 || ':%'",
+    [ip],
+  );
 }
 async function seed(ip, n, { status = 'done', ageHours = 1, userId = null } = {}) {
   for (let i = 0; i < n; i++) {
@@ -139,8 +163,10 @@ async function seed(ip, n, { status = 'done', ageHours = 1, userId = null } = {}
 }
 
 process.env.ALLOW_YOUTUBE_INPUT = 'true';
-delete process.env.ANON_LINK_MAX_IN_FLIGHT;
-delete process.env.ANON_LINK_DAILY_CAP;
+delete process.env.ANON_JOB_MAX_IN_FLIGHT;
+delete process.env.ANON_JOB_DAILY_CAP;
+delete process.env.ANON_UPLOAD_DAILY_CAP;
+process.env.UPLOAD_RATE_LIMIT = '1000';
 // The GLOBAL gates are not under test, and a shared CI database may hold other suites' queued
 // jobs and cost events: lift them so they cannot decide these answers.
 process.env.ADMISSION_MAX_IN_FLIGHT = '1000000';
@@ -178,7 +204,7 @@ test('signed out: finished jobs free the in-flight slots, but 10 in 24 h is the 
   }
 });
 
-test('the atomic INSERT WHERE enforces both caps on its own (advisory pre-check off)', { skip }, async () => {
+test('the locked INSERT WHERE enforces both caps on its own (advisory pre-check off)', { skip }, async () => {
   globalThis.__skipPrecheck = true;
   const ip = await freshIp();
   try {
@@ -208,5 +234,136 @@ test('signed-in jobs from the same IP do not count against the signed-out caps',
   } finally {
     await cleanup(ip);
     await pool.query('DELETE FROM auth.users WHERE id = $1', [uid]);
+  }
+});
+
+// ── MF-1: parallel bursts (separate pooled connections, released together) ────────────────
+
+test('MF-1: 20 PARALLEL signed-out link POSTs from one IP admit exactly the in-flight cap (2)', { skip }, async () => {
+  globalThis.__skipPrecheck = true; // only the locked INSERT stands between the burst and the table
+  const ip = await freshIp();
+  try {
+    const mod = await loadRoute();
+    const res = await Promise.all(Array.from({ length: 20 }, () => post(mod)));
+    const ok = res.filter((r) => r.status === 201).length;
+    assert.equal(ok, 2, `statuses: ${res.map((r) => r.status).join(',')}`);
+    assert.equal(await countJobs(ip), 2);
+  } finally {
+    globalThis.__skipPrecheck = false;
+    await cleanup(ip);
+  }
+});
+
+test('MF-1: a parallel burst against the DAILY cap admits exactly what is left of it', { skip }, async () => {
+  globalThis.__skipPrecheck = true;
+  const ip = await freshIp();
+  try {
+    await seed(ip, 9, { status: 'done', ageHours: 2 });
+    const mod = await loadRoute();
+    const res = await Promise.all(Array.from({ length: 15 }, () => post(mod)));
+    assert.equal(res.filter((r) => r.status === 201).length, 1);
+    assert.equal(await countJobs(ip), 10);
+  } finally {
+    globalThis.__skipPrecheck = false;
+    await cleanup(ip);
+  }
+});
+
+test('MF-1: 30 PARALLEL signed-out presigns admit exactly ANON_UPLOAD_DAILY_CAP', { skip }, async () => {
+  process.env.ANON_UPLOAD_DAILY_CAP = '5';
+  const ip = await freshIp();
+  globalThis.__minted = [];
+  try {
+    const mod = await loadRoute('src/app/api/uploads/route.ts');
+    const res = await Promise.all(Array.from({ length: 30 }, () => presign(mod)));
+    assert.equal(res.filter((r) => r.status === 200).length, 5, res.map((r) => r.status).join(','));
+    assert.equal(globalThis.__minted.length, 5);
+  } finally {
+    delete process.env.ANON_UPLOAD_DAILY_CAP;
+    await cleanup(ip);
+  }
+});
+
+// ── MF-2: signed-out UPLOAD jobs ───────────────────────────────────────────────────────────
+
+test('MF-2: a signed-out upload job with a key never presigned is refused (400), no row', { skip }, async () => {
+  const ip = await freshIp();
+  try {
+    const mod = await loadRoute();
+    const r = await postUpload(mod, randomUUID());
+    assert.equal(r.status, 400, JSON.stringify(r.body));
+    assert.equal(r.body.error_code, 'UPLOAD_INVALID');
+    assert.equal(await countJobs(ip), 0);
+  } finally {
+    await cleanup(ip);
+  }
+});
+
+test('MF-2: a key presigned for ANOTHER IP is refused, even by the locked INSERT alone', { skip }, async () => {
+  const other = await freshIp();
+  const uploads = await loadRoute('src/app/api/uploads/route.ts');
+  const p = await presign(uploads);
+  assert.equal(p.status, 200);
+  const ip = await freshIp();
+  try {
+    const mod = await loadRoute();
+    assert.equal((await postUpload(mod, p.body.jobId)).status, 400);
+    globalThis.__skipPrecheck = true;
+    assert.equal((await postUpload(mod, p.body.jobId)).status, 429, 'the INSERT WHERE must refuse it too');
+    assert.equal(await countJobs(ip), 0);
+  } finally {
+    globalThis.__skipPrecheck = false;
+    await cleanup(ip);
+    await cleanup(other);
+  }
+});
+
+test('MF-2: presigned signed-out uploads get the same in-flight cap as links (3rd is 429)', { skip }, async () => {
+  const ip = await freshIp();
+  try {
+    const uploads = await loadRoute('src/app/api/uploads/route.ts');
+    const mod = await loadRoute();
+    const ids = [];
+    for (let i = 0; i < 3; i++) ids.push((await presign(uploads)).body.jobId);
+    assert.equal((await postUpload(mod, ids[0])).status, 201);
+    assert.equal((await post(mod)).status, 201, 'a link job shares the same two slots');
+    const third = await postUpload(mod, ids[1]);
+    assert.equal(third.status, 429, JSON.stringify(third.body));
+    assert.match(third.body.message, /already have songs processing/);
+    assert.equal(await countJobs(ip), 2);
+  } finally {
+    await cleanup(ip);
+  }
+});
+
+test('MF-2: the daily cap counts signed-out uploads and links together', { skip }, async () => {
+  const ip = await freshIp();
+  try {
+    await seed(ip, 10, { status: 'done', ageHours: 2 }); // ten link jobs today
+    const uploads = await loadRoute('src/app/api/uploads/route.ts');
+    const mod = await loadRoute();
+    const { jobId } = (await presign(uploads)).body;
+    const r = await postUpload(mod, jobId);
+    assert.equal(r.status, 429);
+    assert.match(r.body.message, /today's limit/);
+  } finally {
+    await cleanup(ip);
+  }
+});
+
+test('MF-1+MF-2: 20 PARALLEL signed-out upload jobs (each presigned) admit exactly 2', { skip }, async () => {
+  globalThis.__skipPrecheck = true;
+  const ip = await freshIp();
+  try {
+    const uploads = await loadRoute('src/app/api/uploads/route.ts');
+    const ids = [];
+    for (let i = 0; i < 20; i++) ids.push((await presign(uploads)).body.jobId);
+    const mod = await loadRoute();
+    const res = await Promise.all(ids.map((id) => postUpload(mod, id)));
+    assert.equal(res.filter((r) => r.status === 201).length, 2, res.map((r) => r.status).join(','));
+    assert.equal(await countJobs(ip), 2);
+  } finally {
+    globalThis.__skipPrecheck = false;
+    await cleanup(ip);
   }
 });

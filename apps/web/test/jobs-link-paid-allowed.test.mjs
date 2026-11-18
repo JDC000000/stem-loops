@@ -159,7 +159,7 @@ function admissionStub({ allowed = true } = {}) {
       return cfg.allowed ? { allowed: true, error_code: null } : { allowed: false, error_code: 'RATE_LIMITED' };
     };
     export const RATE_WINDOW_MS = 60000;
-    export const RATE_LIMIT = 5; export const IN_FLIGHT_STATUSES = ['queued']; export const anonLinkMaxInFlight = () => 2; export const anonLinkDailyCap = () => 10; export const anonLinkCapsWhere = () => 'true'; export const checkAnonLinkCaps = async () => ({ allowed: true, error_code: null });
+    export const RATE_LIMIT = 5; export const IN_FLIGHT_STATUSES = ['queued']; export const anonJobMaxInFlight = () => 2; export const anonJobDailyCap = () => 10; export const anonJobCapsWhere = () => 'true'; export const checkAnonJobCaps = async () => ({ allowed: true, error_code: null }); export const lockAnonIp = async () => {}; export const hasAnonPresign = async () => true; export const presignRecordKey = (i, j) => 'presign:' + i + ':' + j; export const anonPresignedWhere = () => 'true'; export const recordAnonPresign = async () => {};
     export const checkUploadRate = async () => ({ allowed: true, error_code: null });
   `);
 }
@@ -428,7 +428,10 @@ test('anonymous -> allowed, entitlement guard not called, no metering', async ()
   for (const fn of ['bumpJobsUsed', 'bumpJobsUsedWithinQuota', 'consumeTrial', 'consumeCredit']) {
     assert.equal(count(calls, fn), 0, fn);
   }
-  assert.equal(count(calls, 'db.query'), 1, 'single atomic anon INSERT');
+  // PR #300 MF-1: the signed-out INSERT runs inside a tx after the per-IP advisory lock
+  // (lockAnonIp is stubbed here), so it is ONE tx query and no bare db.query.
+  assert.equal(count(calls, 'db.tx.query'), 1, 'one capped anon INSERT, inside the per-IP-locked tx');
+  assert.equal(count(calls, 'db.query'), 0);
 });
 
 test('upload branch untouched: pro upload does not hit the link guard', async () => {

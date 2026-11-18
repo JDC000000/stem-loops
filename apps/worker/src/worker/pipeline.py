@@ -141,6 +141,16 @@ def _title_slug(original_filename: str | None, job_id: str) -> str:
 # trick by extension sniffing, but the worker image's Debian ffmpeg 5.1 was never tested, so
 # this is enforced here rather than left to the version. Goes BEFORE `-i` (input option).
 FFMPEG_INPUT_GUARD = ("-protocol_whitelist", "file,pipe")
+# SF-5 (PR #300 review): `file` alone still lets a playlist-shaped upload make the hls (or
+# concat) demuxer READ OTHER LOCAL FILES. Proved with ffmpeg 6.1: `-protocol_whitelist
+# file,pipe -f hls` on a playlist naming a local WAV decodes it. So user UPLOADS (and every
+# ffprobe) are also restricted to the demuxers of the accepted upload types (lib/upload.ts
+# ACCEPTED_TYPES: mp3 wav m4a aac flac ogg oga opus aiff aif mp4 m4v mov webm). hls, concat,
+# image2, mpegts etc. are refused before they open anything. The link trim keeps only the
+# protocol guard: yt-dlp's output container is not ours to enumerate, and it is not a file
+# the user wrote.
+FFMPEG_AUDIO_DEMUXERS = "mp3,wav,mov,aac,flac,ogg,aiff,matroska"
+FFMPEG_UPLOAD_GUARD = (*FFMPEG_INPUT_GUARD, "-format_whitelist", FFMPEG_AUDIO_DEMUXERS)
 
 
 def _ffmpeg_bin() -> str:
@@ -318,7 +328,7 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> tuple[str, dict |
                 "-loglevel",
                 "error",
                 "-y",
-                *FFMPEG_INPUT_GUARD,
+                *FFMPEG_UPLOAD_GUARD,
                 "-i",
                 raw,
                 "-ac",
@@ -1051,7 +1061,7 @@ def _probe_duration_sec(path: str) -> float | None:
         if not exe:
             return None
         proc = subprocess.run(
-            [exe, "-v", "error", *FFMPEG_INPUT_GUARD, "-show_entries", "format=duration"]
+            [exe, "-v", "error", *FFMPEG_UPLOAD_GUARD, "-show_entries", "format=duration"]
             + ["-of", "csv=p=0", path],
             capture_output=True,
             text=True,

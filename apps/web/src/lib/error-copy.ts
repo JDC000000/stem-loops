@@ -96,9 +96,9 @@ export const RATE_LIMITED_SPEND_CEILING_MSG =
 
 // QA track B, B-03: per-IP caps on signed-out link jobs (lib/admission.ts). Both are about
 // this visitor's own usage, so they say what to do, and that signing in lifts them.
-export const ANON_LINK_IN_FLIGHT_MSG =
+export const ANON_JOB_IN_FLIGHT_MSG =
   "You already have songs processing. Wait for one to finish, or sign in to add more.";
-export const ANON_LINK_DAILY_MSG =
+export const ANON_JOB_DAILY_MSG =
   "You've reached today's limit for songs without an account. Sign in to keep going, or try again tomorrow.";
 // B-05: the per-IP daily cap on signed-out upload presigns (lib/admission.ts).
 export const ANON_UPLOAD_DAILY_MSG =

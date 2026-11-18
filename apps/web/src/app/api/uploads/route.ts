@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import * as Sentry from '@sentry/nextjs';
 import { presignPut } from '@/lib/r2';
 import { validateUpload, MAX_UPLOAD_BYTES } from '@/lib/upload';
-import { checkAnonUploadDailyRate, checkGlobalCapacity, checkUploadRate } from '@/lib/admission';
+import { checkAnonUploadDailyRate, checkGlobalCapacity, checkUploadRate, recordAnonPresign } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
 import { RATE_LIMITED_PER_CLIENT_MSG } from '@/lib/error-copy';
 import { getUser } from '@/lib/auth/supabase';
@@ -87,6 +87,9 @@ export async function POST(request: NextRequest) {
     const jobId = randomUUID();
     const key = `${jobId}/_input.${v.ext}`;
     const uploadUrl = await presignPut(key, v.contentType, size);
+    // PR #300 review MF-2: a signed-out job may only be created for an upload key minted HERE,
+    // for this IP hash. POST /api/jobs checks this record inside its locked INSERT.
+    if (!user) await recordAnonPresign(clientIpHashOf(request), jobId);
 
     return NextResponse.json({ jobId, key, uploadUrl, maxBytes: MAX_UPLOAD_BYTES, contentType: v.contentType });
   } catch (err) {

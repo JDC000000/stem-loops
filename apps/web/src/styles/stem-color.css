@@ -40,8 +40,21 @@
 .jp-row { background: var(--bg-card); border: 1px solid var(--border-default); color: var(--text-secondary);
   transition: border-color var(--sl-dur-1) var(--sl-ease), background var(--sl-dur-1) var(--sl-ease); }
 .jp-row:hover { background: var(--bg-hover); border-color: var(--border-control); color: var(--text-primary); }
-/* the job id stays on one line (it wrapped onto two at 390); the full id is in the link */
-.jp-row-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the row's title: up to TWO lines, then an ellipsis (QA A-06: one nowrap line beside
+   "deleted in 22 hours" cut titles to ~13 characters at 390). A long unbroken string
+   (a job id, a link) breaks anywhere rather than pushing the row wider. */
+.jp-row-id { min-width: 0; overflow: hidden; overflow-wrap: anywhere; color: var(--text-primary);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; line-height: 1.35; }
+/* a row that will not play (QA A-06): its title steps back to muted */
+.jp-row[data-state="failed"] .jp-row-id { color: var(--text-muted); }
+/* status chips: 22px pills, neutral; "Failed" carries the failed hue with its word */
+.jp-chip { display: inline-flex; align-items: center; height: 22px; box-sizing: border-box; padding: 0 9px;
+  border-radius: 11px; border: 1px solid var(--border-control); color: var(--text-secondary);
+  font-family: var(--font-sans); font-size: 12px; font-weight: 600; line-height: 1; white-space: nowrap; }
+.jp-chip[data-state="failed"] { border-color: var(--status-failed); color: var(--status-failed); }
+/* the thumbnail's stand-in (a failed song, or an image that did not load) */
+.jp-thumb-empty { background: var(--bg-elevated); border: 1px solid var(--border-default); box-sizing: border-box;
+  color: var(--status-failed); font-family: var(--font-sans); font-weight: 700; font-size: 14px; }
 
 /* the one filled action on a view: lime. 16px label (it was the UA's 13.33px Arial). */
 .jp-primary { background: var(--accent); color: var(--accent-text); font-size: 16px; cursor: pointer; transition: background var(--sl-dur-1) var(--sl-ease); }

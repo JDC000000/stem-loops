@@ -38,11 +38,15 @@
   cursor: pointer;
 }
 
+/* Selected: the ONE neutral selected state (QA A-07; brand A5): --bg-selected
+   (#222) with a 2px white edge, never a white fill. The padding gives back the
+   extra 1px of edge so the label does not move when it is pressed. */
 .preset[aria-pressed='true'],
 .part[aria-pressed='true'] {
-  background: var(--text-primary);
-  border-color: var(--text-primary);
-  color: var(--text-inverse);
+  background: var(--bg-selected);
+  border: 2px solid var(--text-primary);
+  padding: 0 11px;
+  color: var(--text-primary);
   font-weight: var(--weight-semibold);
 }
 

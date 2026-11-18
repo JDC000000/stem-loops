@@ -8,9 +8,11 @@
 // explicit `.ts` specifier.
 //
 //   * Chords: Harte ("A:min7", "G:7/5", "C#:hdim7/5") -> guitarist notation
-//     ("Am7", "G7/D", "C♯m7♭5/G♯"). Anything not known exactly (a parenthesised
-//     extension, an unlisted shorthand, an unknown bass interval) is shown as
-//     its Harte label, never as a guess.
+//     ("Am7", "G7/D", "C♯m7♭5/G♯"). Every quality of the grammar and every bass
+//     interval token is spelled; the bass by its interval's letter (C/B♭, not
+//     C/A♯). Anything not known exactly (a parenthesised extension such as
+//     "min(9)", an unlisted shorthand) is shown as its Harte label, never as a
+//     guess. Roots are spelled as stored (A♯ stays A♯ even in a B♭ song).
 //   * Keys: the worker writes "<sharp-spelled root> major|minor" (tagger/
 //     bpm_key.py). Shown with the spelling a musician expects: flats where
 //     conventional (major F B♭ E♭ A♭ D♭; minor D G C F B♭ E♭), sharps for
@@ -36,6 +38,9 @@ const QUALITY: Readonly<Record<string, string>> = Object.freeze({
   '': '', maj: '', min: 'm', dim: 'dim', aug: 'aug', sus2: 'sus2', sus4: 'sus4', maj6: '6', min6: 'm6',
   maj7: 'maj7', min7: 'm7', '7': '7', dim7: 'dim7', hdim7: 'm7b5', minmaj7: 'm(maj7)', maj9: 'maj9',
   min9: 'm9', '9': '9', '11': '11', '13': '13', min11: 'm11', '5': '5', '1': '',
+  // The rest of the worker's grammar (harte.ts HARTE_QUALITIES) and of the
+  // extended vocabulary: shown as guitarist names, never as raw Harte.
+  add9: 'add9', add11: 'add11', add6: '6', aug7: '7#5', min13: 'm13', maj13: 'maj13', 'sus4(b7)': '7sus4',
 });
 
 /** Lead-sheet suffix -> words. */
@@ -43,15 +48,54 @@ const QUALITY_SPOKEN: Readonly<Record<string, string>> = Object.freeze({
   '': '', m: 'minor', dim: 'diminished', aug: 'augmented', sus2: 'sus 2', sus4: 'sus 4', '6': '6', m6: 'minor 6',
   maj7: 'major 7', m7: 'minor 7', '7': '7', dim7: 'diminished 7', m7b5: 'minor 7 flat 5', 'm(maj7)': 'minor major 7',
   maj9: 'major 9', m9: 'minor 9', '9': '9', '11': '11', '13': '13', m11: 'minor 11', '5': '5',
+  add9: 'add 9', add11: 'add 11', '7#5': '7 sharp 5', m13: 'minor 13', maj13: 'major 13', '7sus4': '7 sus 4',
 });
 
-const INTERVAL_SEMIS: Readonly<Record<string, number>> = Object.freeze({
-  '1': 0, b2: 1, '2': 2, '#2': 3, b3: 3, '3': 4, '4': 5, '#4': 6, b5: 6, '5': 7, '#5': 8, b6: 8,
-  '6': 9, bb7: 9, b7: 10, '7': 11, b9: 1, '9': 2, '#9': 3, '11': 5, '#11': 6, b13: 8, '13': 9,
+/** Semitones above the root of each (natural) Harte degree, 1..13. */
+const DEGREE_SEMIS: Readonly<Record<number, number>> = Object.freeze({
+  1: 0, 2: 2, 3: 4, 4: 5, 5: 7, 6: 9, 7: 11, 8: 12, 9: 14, 10: 16, 11: 17, 12: 19, 13: 21,
 });
 const ROOT_PC: Readonly<Record<string, number>> = Object.freeze({ C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 });
+const LETTERS = 'CDEFGAB';
 const SHARP_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const FLAT_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+/** A Harte bass interval ("b7", "#4", "bb3", "5", "10"), or null if it is not one. */
+function parseInterval(tok: string): { semis: number; degree: number; acc: number } | null {
+  const m = /^(b*|#*)(\d+)$/.exec(tok);
+  if (!m) return null;
+  const degree = Number(m[2]);
+  const base = DEGREE_SEMIS[degree];
+  if (base === undefined) return null;
+  const acc = m[1].startsWith('#') ? m[1].length : -m[1].length;
+  return { semis: base + acc, degree, acc };
+}
+
+/**
+ * The bass NOTE for a root and a Harte bass interval, spelled the way the
+ * interval names it: the LETTER is the root's letter plus the interval number
+ * (a 3rd above C is some E, a b7 above C is some B), and the accidental is
+ * whatever makes that letter the right pitch. So C/b7 is C/B♭ (not A♯), Gm/b6
+ * is Gm/E♭, C/b3 is C/E♭, A/6 is A/F♯, B♭/b7 is B♭/A♭, F+/#5 is F+/C♯,
+ * C♯/3 is C♯/E♯. Every interval token of the grammar is spelled (#1, b4, bb3,
+ * #6, #7, 8, 10, 12 included).
+ *
+ * The one exception: a spelling that would need a DOUBLE accidental (G♭/b3 =
+ * B♭♭) is written as the plain note instead, in the direction of the
+ * interval's own accidental (flats for a b-interval, sharps for a #-interval,
+ * the root's direction for a natural one): G♭/b3 -> G♭/A.
+ */
+function bassNote(root: { name: string; pc: number }, tok: string): string | null {
+  const iv = parseInterval(tok);
+  if (!iv) return null;
+  const pc = (((root.pc + iv.semis) % 12) + 12) % 12;
+  const letter = LETTERS[(LETTERS.indexOf(root.name[0]) + iv.degree - 1) % 7];
+  let acc = (((pc - ROOT_PC[letter]) % 12) + 12) % 12;
+  if (acc > 6) acc -= 12;
+  if (Math.abs(acc) <= 1) return letter + (acc < 0 ? 'b' : acc > 0 ? '#' : '');
+  const flats = iv.acc < 0 || (iv.acc === 0 && (root.name.includes('b') || root.name === 'F'));
+  return (flats ? FLAT_NAMES : SHARP_NAMES)[pc];
+}
 
 function parseRoot(s: string): { name: string; pc: number } | null {
   const m = /^([A-G])((?:#|b)*)$/.exec(s);
@@ -72,19 +116,17 @@ export function chordAscii(harte: string): string | null {
   const slash = label.indexOf('/');
   const body = slash >= 0 ? label.slice(0, slash) : label;
   const bassTok = slash >= 0 ? label.slice(slash + 1) : null;
-  if (body.includes('(')) return null;
   const colon = body.indexOf(':');
   const root = parseRoot(colon >= 0 ? body.slice(0, colon) : body);
   const shorthand = colon >= 0 ? body.slice(colon + 1) : '';
   if (!root || !(shorthand in QUALITY)) return null;
   let out = root.name + QUALITY[shorthand];
-  if (bassTok !== null) {
-    const semis = INTERVAL_SEMIS[bassTok];
-    if (semis === undefined) return null;
-    if (semis !== 0) {
-      const flats = root.name.includes('b') || root.name === 'F';
-      out += '/' + (flats ? FLAT_NAMES : SHARP_NAMES)[(root.pc + semis) % 12];
-    }
+  // A parenthesised Harte shorthand ("min(9)", "(1,3,5)") is not in QUALITY
+  // unless it is one we spell ("sus4(b7)"), so it falls through to null above.
+  if (bassTok !== null && bassTok !== '1') {
+    const bass = bassNote(root, bassTok);
+    if (bass === null) return null;
+    out += '/' + bass;
   }
   return out;
 }

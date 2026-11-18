@@ -62,6 +62,9 @@ import {
   clampPxPerSec,
   durationSec,
   estimateLabelPx,
+  ESTIMATE_PAD_PX,
+  classifyLabel,
+  classIndexOrNull,
   displayText,
   fitPxPerSec,
   makeCanvasMeasurer,
@@ -100,53 +103,41 @@ const DUR = durationSec(RUNS);
 // So the gates now call `makeCanvasMeasurer` itself -- the code that runs in
 // every browser -- over a 2D context that serves what Chromium's canvas
 // `measureText` actually returned. Node has no canvas, so those widths are
-// PINNED, measured in Chromium 1280x900 on the CHIPS' font stack -- the one
-// ChordOverlay's containerStyle declares and the chips inherit through
-// `button { font: inherit }` (ui-sans-serif, system-ui, -apple-system,
-// "Segoe UI", Roboto, sans-serif), NOT the globals.css body stack (an earlier
-// note here said it was). Both resolve to Inter 4.000 on the box that measured
-// them, weight 400, 16px, confirmed with CDP CSS.getPlatformFontsForNode,
-// isCustomFont false. They are canvas
-// numbers, not DOM numbers, which is the point. A label the table does not hold
-// would make makeCanvasMeasurer fall back to the headless table SILENTLY (it
-// swallows a bad width by design), so the context records every label it is
-// asked for that it cannot serve, and the last test in the file fails on any.
-const CHROMIUM_CANVAS_16PX = {
-  'A:min': 42.9922, 'A:min7': 52.0469, 'Bb:maj': 51.75, 'C:maj': 43.1719,
-  'C:maj6': 53.0938, 'C#:minmaj7': 89.7031, 'D:min7': 52.5547, 'E:min': 41.5703,
-  'F:maj': 40.9297, 'F:maj7': 49.9844, 'F#:min7': 60.5859, 'G:7': 25.6016,
-  'G:7/5': 41.0938, 'Ab:maj7/3': 77.0234, 'N.C.': 32.2578, '?': 8.1797,
-  // Added with the table fix. Each is a label the table got wrong before it:
-  // 'A/6' (bare root + slash, the table was 0.1094px UNDER), the two hdim7
-  // labels ('h' was missing, 4.79 / 5.33px OVER) and the digit-heavy labels
-  // that tabular digits widened by up to 15px.
-  'A/6': 27.0391, 'A#:hdim7/11': 90.7656, 'Ab:hdim7/b11': 99.6875,
-  'C:11': 29.3125, 'C#:11/11': 58.2266, 'Bb:add11/b3': 91.9141,
-  // Added with round 6. Eight advance-table entries ('0' '2' '4' '8' '9' 'g'
-  // 's' 'u') appeared in NO label above, so their values were defended by
-  // nothing while a comment in the helpers called every entry load-bearing:
-  // setting '9' (or 's') to 1.0 left the suite green with 'C:maj9' estimated
-  // at 44.3px against 53.1px in Chromium. Measured in Chromium 1280x900 on
-  // the same stack, canvas and a DOM span, 16px.
-  'C:maj9': 53.0938, 'G:sus4': 53.2344, 'D:sus2': 52.2656, 'B:9/10': 47.3672,
-  'Eb:aug7/8': 77.0,
-};
+// PINNED. They are now keyed by what the chart PAINTS -- guitarist notation from
+// lib/play/notation.ts ("F♯m7", not "F#:min7"), because displayText is what
+// every geometry decision measures -- and they live in
+// fixtures/chord-label-widths.json.
+//
+// THE REFERENCE IS THE CI CHROMIUM (Jon, 2026-11-17), not a one-off box. The
+// earlier pins came from "Inter 4.000 on the box that measured them": a machine
+// with Inter installed system-wide, which nobody else had and nothing
+// re-checked. Guitarist notation made that untenable: the chips' pinned Inter
+// is the latin subset, which has no ♭ / ♯, so those two glyphs are painted by
+// the machine's `sans-serif` fallback and differ from machine to machine. So:
+//   - measured by packages/web-browser-gate/scripts/measure-chord-label-widths.mjs
+//     in the "Chord chip fit (real Chromium)" CI job: ubuntu-latest, Playwright
+//     1.63.0 / Chromium build 1243 (pnpm-lock.yaml), 1280x900, 16px, weight
+//     400, container family `GateInter, sans-serif`, GateInter = @fontsource/inter
+//     5.2.5 inter-latin-400-normal.woff2 (sha256 and the platform fonts that
+//     painted ♭ / ♯, via CDP CSS.getPlatformFontsForNode, are in the fixture's
+//     `reference` block);
+//   - re-measured on EVERY PR by packages/web-browser-gate/test/chord-label-widths.test.mjs
+//     in that job, which fails on any difference and prints the replacement.
+// They are canvas numbers, not DOM numbers, which is the point. A label the
+// fixture does not hold would make makeCanvasMeasurer fall back to the headless
+// table SILENTLY (it swallows a bad width by design), so the context records
+// every label it is asked for that it cannot serve, and the last test in the
+// file fails on any.
+const WIDTHS = JSON.parse(readFileSync(join(HERE, 'fixtures/chord-label-widths.json'), 'utf8'));
+const CHROMIUM_CANVAS_16PX = WIDTHS.canvas16;
 // The SAME labels measured a second way: a hidden <span> in the DOM, which is
 // what the chip actually is. A canvas pin is only as good as whoever typed it;
 // one that sits 0.9px low is invisible to the table comparison (which tolerates
-// a 1px over-estimate) and quietly lowers every ceiling derived from it.
-// Canvas and DOM agree to 0.0078px over all 21,002 labels of the grammar, so
-// two numbers that disagree by more than 1/64px mean one of them is wrong.
-const CHROMIUM_DOM_16PX = {
-  'A:min': 43.0, 'A:min7': 52.0469, 'Bb:maj': 51.75, 'C:maj': 43.1719,
-  'C:maj6': 53.0938, 'C#:minmaj7': 89.7031, 'D:min7': 52.5625, 'E:min': 41.5781,
-  'F:maj': 40.9375, 'F:maj7': 49.9844, 'F#:min7': 60.5938, 'G:7': 25.6094,
-  'G:7/5': 41.0938, 'Ab:maj7/3': 77.0313, 'N.C.': 32.2656, '?': 8.1875,
-  'A/6': 27.0469, 'A#:hdim7/11': 90.7656, 'Ab:hdim7/b11': 99.6875,
-  'C:11': 29.3125, 'C#:11/11': 58.2344, 'Bb:add11/b3': 91.9219,
-  'C:maj9': 53.0938, 'G:sus4': 53.2344, 'D:sus2': 52.2656, 'B:9/10': 47.375,
-  'Eb:aug7/8': 77.0,
-};
+// a 1px over-estimate) and quietly lowers every ceiling derived from it. Canvas
+// and DOM agree to `alphabet.canvasDomMaxDiffPx` over the whole painted
+// alphabet on the reference, so two numbers that disagree by more than 1/64px
+// mean one of them is wrong.
+const CHROMIUM_DOM_16PX = WIDTHS.dom16;
 // The pins above are 16px measurements. CHIP_FONT_PX is asserted equal to this
 // in its own test, so changing the constant fails by NAME instead of letting
 // every gate run on widths that belong to a different size.
@@ -217,7 +208,8 @@ const DESKTOP_WIDTHS = [
 //               AT MAXIMUM ZOOM and the table recorded it as scaling behaviour.
 //
 // Both are built from the fixture's own label alphabet, so `widest` is the same
-// `F#:min7` the real song has and the only thing that varies is the durations.
+// name the real song's widest is (painted "Fmaj7" since the chart switched to
+// guitarist notation) and the only thing that varies is the durations.
 const FIX_LABELS = [...new Set(PAYLOAD.segments.map((s) => s.label))];
 
 /** A song from [durationSec, count] blocks, cycling the fixture's chord names. */
@@ -287,13 +279,13 @@ function densitiesAt(pps) {
 // ---------------------------------------------------------------------------
 
 test('the headless table and the canvas measurer both agree with Chromium', () => {
-  // Pinned against real measurements on the chips' own font stack (see the
-  // block comment above: ui-sans-serif ... sans-serif -> Inter 4.000, weight
-  // 400, 16px), Chromium 1280x900. These are the widths of the SHIPPED chip
-  // (proportional digits), canvas measureText and DOM span alike: they agree to
-  // 0.0078px over all 21,002 labels of the grammar, which is the property this
-  // PR depends on. If this drifts, every width below is measuring the wrong
-  // thing.
+  // Pinned against real measurements on the CI reference (see the block
+  // comment above: CI Chromium, GateInter 400 at 16px, the runner's fallback for
+  // ♭ / ♯), 1280x900. These are the widths of the SHIPPED chip's painted text
+  // (proportional digits, guitarist notation), canvas measureText and DOM span
+  // alike: they agree to within 1/64px over the whole painted alphabet, which
+  // is the property this PR depends on. If this drifts, every width below is
+  // measuring the wrong thing.
   //
   // Three instruments are checked against each other: the headless table the
   // component falls back to, the production canvas measurer (through its real
@@ -324,7 +316,7 @@ test('the headless table and the canvas measurer both agree with Chromium', () =
     'a DOM pin without a canvas pin (or the reverse)',
   );
   // And the table scales linearly with font size, which is how `tight` is judged.
-  assert.ok(Math.abs(estimateLabelPx('F#:min7', 10) - 60.594 * 0.625) < 0.2);
+  assert.ok(Math.abs(estimateLabelPx('F♯m7', 10) - CHROMIUM_DOM_16PX['F♯m7'] * 0.625) < 0.2);
 });
 
 test('the pins are 16px measurements, so CHIP_FONT_PX may not move without re-measuring them', () => {
@@ -350,18 +342,18 @@ test('the pinned canvas context honours the font it is given', () => {
   // its own gate. Ask it for other sizes: the answer must follow the size.
   const spec = { fontFamily: PROD_FONT_FAMILY, fontWeight: '400' };
   const fresh = makeCanvasMeasurer(PROD_CTX, spec);
-  const at16 = fresh('F#:min7', 16);
-  assert.equal(at16, CHROMIUM_CANVAS_16PX['F#:min7']);
-  assert.ok(Math.abs(fresh('F#:min7', 10) - at16 * 0.625) < 1e-9, 'a 10px request must not be served the 16px pin');
-  assert.ok(Math.abs(fresh('F#:min7', 20) - at16 * 1.25) < 1e-9, 'a 20px request must not be served the 16px pin');
-  assert.ok(fresh('F#:min7', 20) > fresh('F#:min7', 16) && fresh('F#:min7', 16) > fresh('F#:min7', 10));
+  const at16 = fresh('F♯m7', 16);
+  assert.equal(at16, CHROMIUM_CANVAS_16PX['F♯m7']);
+  assert.ok(Math.abs(fresh('F♯m7', 10) - at16 * 0.625) < 1e-9, 'a 10px request must not be served the 16px pin');
+  assert.ok(Math.abs(fresh('F♯m7', 20) - at16 * 1.25) < 1e-9, 'a 20px request must not be served the 16px pin');
+  assert.ok(fresh('F♯m7', 20) > fresh('F♯m7', 16) && fresh('F♯m7', 16) > fresh('F♯m7', 10));
   // A weight or family the pins were not measured at is refused, not served.
   const wrongFamily = makeCanvasMeasurer(PROD_CTX, { fontFamily: 'serif', fontWeight: '400' });
   const wrongWeight = makeCanvasMeasurer(PROD_CTX, { fontFamily: PROD_FONT_FAMILY, fontWeight: '700' });
   const kept = [...BAD_FONTS];
   BAD_FONTS.clear();
-  assert.equal(wrongFamily('G:7', 16), estimateLabelPx('G:7', 16), 'a wrong family must fall back, not be served the pin');
-  assert.equal(wrongWeight('G:7', 16), estimateLabelPx('G:7', 16), 'a wrong weight must fall back, not be served the pin');
+  assert.equal(wrongFamily('G7', 16), estimateLabelPx('G7', 16), 'a wrong family must fall back, not be served the pin');
+  assert.equal(wrongWeight('G7', 16), estimateLabelPx('G7', 16), 'a wrong weight must fall back, not be served the pin');
   assert.equal(BAD_FONTS.size, 2, 'the context did not record the fonts it refused');
   // The two probes above were deliberate; forget them (and keep what the other
   // gates recorded) so the final test only reports a REAL gate that measured at
@@ -370,11 +362,13 @@ test('the pinned canvas context honours the font it is given', () => {
   for (const f of kept) BAD_FONTS.add(f);
 });
 
-test('the advance table holds exactly the glyphs the Harte grammar renders', () => {
+test('the advance table holds exactly the glyphs the chart paints', () => {
   // The grammar, from the real source (harte.ts is the TS mirror of the worker's
   // HARTE_RE): 21 roots x (no quality + 24 qualities) x (no bass + b/#/natural
-  // x degrees 1..13), plus what displayText draws for N and X. Built here,
-  // not typed, so a new quality adds its glyphs to the requirement.
+  // x degrees 1..13), plus N and X -- then PAINTED, through the same
+  // displayText the chips use (guitarist notation; Harte as-is for what the
+  // formatter cannot spell). Built here, not typed, so a new quality or a
+  // formatter change adds its glyphs to the requirement.
   const roots = [];
   for (const l of 'ABCDEFG') for (const a of ['', '#', 'b']) roots.push(l + a);
   const bass = [''];
@@ -383,30 +377,66 @@ test('the advance table holds exactly the glyphs the Harte grammar renders', () 
   for (const r of roots) for (const q of ['', ...HARTE_QUALITIES.map((x) => `:${x}`)]) for (const b of bass) labels.push(r + q + b);
   assert.equal(labels.length, 21 * 25 * 40);
   assert.ok(labels.every((l) => HARTE_RE.test(l)), 'the generated alphabet is wider than the grammar');
-  const used = new Set([...labels.join(''), ...displayText({ kind: 'none', label: 'N' }), ...displayText({ kind: 'unknown', label: 'X' })]);
+  const painted = [...labels, 'N', 'X'].map((l) => displayText({ kind: classifyLabel(l), label: l }));
+  // The switch is real: the painted alphabet carries the glyphs, and the common
+  // chords are no longer painted as Harte.
+  assert.equal(displayText({ kind: 'chord', label: 'C#:min7' }), 'C♯m7');
+  assert.equal(displayText({ kind: 'chord', label: 'Bb:maj' }), 'B♭');
+  const used = new Set(painted.join(''));
+  // The whole-alphabet figures in the fixture were measured over exactly this set.
+  assert.equal(new Set(painted).size, WIDTHS.alphabet.paintedStrings, 'the painted alphabet changed size since the reference measured it');
+  assert.equal([...used].sort().join(''), [...WIDTHS.alphabet.glyphs].sort().join(''), 'the painted glyph set changed since the reference measured it');
   const have = new Set(Object.keys(ADVANCE_16PX));
   // A glyph the table lacks is charged the WIDEST advance: safe, but it made
   // every hdim7 label up to 5.33px too wide for months ('h' was the one).
-  assert.deepEqual([...used].filter((g) => !have.has(g)).sort(), [], 'a glyph the grammar renders has no advance in the table');
+  assert.deepEqual([...used].filter((g) => !have.has(g)).sort(), [], 'a glyph the chart paints has no advance in the table');
   // An entry nothing renders is defended by no label: mutating the space, '-',
   // '(' and ')' entries to 1.5 left the whole suite green.
   assert.deepEqual([...have].filter((g) => !used.has(g)).sort(), [], 'the table has an advance for a glyph nothing renders');
   for (const l of FIX_LABELS) {
-    assert.ok([...l].every((g) => have.has(g)), `fixture label ${l} uses a glyph outside the table`);
+    const p = displayText({ kind: classifyLabel(l), label: l });
+    assert.ok([...p].every((g) => have.has(g)), `fixture label ${l} (painted ${p}) uses a glyph outside the table`);
   }
 });
 
-test('the OLD default (fit-the-whole-track) made every chord label unshowable', () => {
+test('the headless table IS the reference measurement, not a copy of it', () => {
+  // ADVANCE_16PX and ESTIMATE_PAD_PX are product constants, so they cannot read
+  // the fixture at runtime. They must equal it EXACTLY: a value typed in by hand
+  // (or left over from the old box) fails here, and the CI test in
+  // packages/web-browser-gate proves the fixture is what the CI Chromium measures.
+  assert.deepEqual({ ...ADVANCE_16PX }, WIDTHS.advance16, 'ADVANCE_16PX is not the measured advance16');
+  assert.equal(ESTIMATE_PAD_PX, WIDTHS.alphabet.estimatePadPx, 'ESTIMATE_PAD_PX is not the measured alphabet pad');
+  // And the whole-alphabet claims the helpers make are the measured ones: never
+  // under (the pad exceeds the worst shortfall), and canvas agrees with the DOM
+  // to within one LayoutUnit.
+  assert.ok(WIDTHS.alphabet.estimatePadPx > WIDTHS.alphabet.tableMaxUnderPxBeforePad);
+  assert.ok(WIDTHS.alphabet.canvasDomMaxDiffPx <= 1 / 64 + 1e-9);
+  // Every pinned label is a painted label (keyed by what the chart shows).
+  assert.ok(Object.keys(CHROMIUM_CANVAS_16PX).every((k) => !/^[A-G](#|b)?:(maj|min)$/.test(k)), 'a pin is keyed by a Harte label the chart no longer paints');
+});
+
+test('the OLD default (fit-the-whole-track) named no chord at full size', () => {
   // This is the bug, reproduced through the real exported functions. It is here
   // so that a change which quietly restores fit-to-width as the strip default
   // fails loudly instead of going green.
+  //
+  // It used to assert that EVERY chip (107/107) was a tick. With guitarist
+  // notation the names are shorter ("C" is ~12px where "C:maj" was ~43px), so
+  // at fit-to-width a handful of the longest-held short names now squeeze in at
+  // the 11px `tight` size (7 at 768, 8 at 1280/1440 on the reference). What
+  // fit-to-width still does is the defect: NOT ONE chip can show its name at
+  // full size, 0% of the song's chord time, against the READABLE_TIME_FRACTION
+  // the real default must meet (asserted below), and the overwhelming majority
+  // show no name at all. Both are asserted.
   for (const { viewport, containerPx } of DESKTOP_WIDTHS) {
     const oldPps = fitPxPerSec(DUR, containerPx);
-    const ticks = densitiesAt(oldPps).filter((d) => d === 'tick').length;
-    assert.equal(
-      ticks,
-      RUNS.length,
-      `@${viewport}: fit-to-width is ${oldPps.toFixed(2)}px/sec and leaves ${ticks}/${RUNS.length} chips unable to show a label`,
+    const d = densitiesAt(oldPps);
+    const ticks = d.filter((x) => x === 'tick').length;
+    const full = d.filter((x) => x === 'full').length;
+    assert.equal(full, 0, `@${viewport}: fit-to-width (${oldPps.toFixed(2)}px/sec) showed ${full} chord names at full size`);
+    assert.ok(
+      ticks >= 0.9 * RUNS.length,
+      `@${viewport}: fit-to-width is ${oldPps.toFixed(2)}px/sec and leaves only ${ticks}/${RUNS.length} chips unable to show a label`,
     );
   }
 });
@@ -558,6 +588,13 @@ test('a sparse song still fits the strip; a dense song is capped, not run away',
 // with no readable name AT ANY ZOOM; on #207's own jittered-400 row it left 91.
 // The user could not get at them, and nothing said so.
 
+// What the OLD 80px/sec cap strands on each shape, on the CI reference widths.
+const OLD_CAP_STRANDED = {
+  'bimodal 60x4.0s + 55x0.4s (reviewer)': 4,
+  'bimodal flipped 55x4.0s + 60x0.4s': 4,
+  'jittered 400 x 0.32-0.69s (#207 table)': 22,
+};
+
 test('the OLD cap left chords that no zoom could name — the defect, reproduced', () => {
   // Driven off the IMPORTED constant, so this reproduces the old ceiling rather
   // than a literal 80 that merely equals it today.
@@ -567,12 +604,20 @@ test('the OLD cap left chords that no zoom could name — the defect, reproduced
       unreachable.length > 0,
       `${name}: expected the old cap to strand chords, found none — has the shape drifted?`,
     );
-    // And it is not a rounding-margin case: they need multiples of the old cap.
+    // And it is not a rounding-margin case. This used to say "they need
+    // multiples of the old cap" (> 1.25x). Guitarist notation shortened the
+    // names these shapes cycle through (the widest is now "Fmaj7", 44.9px,
+    // where it was "F#:min7", 60.6px), so the old cap now strands fewer chords
+    // here, by less: on the reference 4/115 on each bimodal song, needing 1.06x
+    // the cap, and 22/400 on the jittered song, needing 1.28x. The defect is
+    // the same; its size on these shapes is not. Pinned EXACTLY instead of by a
+    // factor, so the shape cannot drift in either direction unseen.
     const worst = Math.max(...runs.map(ppsForTightName));
     assert.ok(
-      worst > MAX_PX_PER_SEC * 1.25,
-      `${name}: worst chord needs ${worst.toFixed(1)}px/sec against a ${MAX_PX_PER_SEC} cap`,
+      worst - MAX_PX_PER_SEC > 1,
+      `${name}: worst chord needs ${worst.toFixed(1)}px/sec against a ${MAX_PX_PER_SEC} cap -- a rounding margin, not the defect`,
     );
+    assert.equal(unreachable.length, OLD_CAP_STRANDED[name], `${name}: the old cap strands ${unreachable.length}/${runs.length}`);
   }
 });
 
@@ -675,10 +720,14 @@ test('the slider reaches the ceiling, and the ceiling is where it stops', () => 
 });
 
 test('the painted-length budget binds on malformed data, and nothing else', () => {
-  // A single 5ms run would otherwise demand ~15,700px/sec and a 3.8M-px strip.
+  // A single 2ms run would otherwise demand ~14,300px/sec and a 3.4M-px strip.
   // The budget is a guard against data the 10fps detector cannot emit, so it
-  // must bind THERE and not on any of the real shapes.
-  const pathological = songOf([[0.005, 1], [3, 80]]);
+  // must bind THERE and not on any of the real shapes. (It was a 5ms run while
+  // the chips painted Harte: "C:maj" needed 12,000px/sec there; painted "C" it
+  // needs ~5,700, under the 2M-px budget's ~8,300 for this song, so the run is
+  // shortened to stay pathological. 2ms is still 50x below the detector's 100ms
+  // frame.)
+  const pathological = songOf([[0.002, 1], [3, 80]]);
   const dur = durationSec(pathological);
   const ceiling = stripCeiling(pathological);
   assert.ok(
@@ -812,7 +861,7 @@ test('chipContentPx is the one rule for a chip width, gap included', () => {
   assert.equal(runContentPx({ startSec: 1, endSec: 3 }, 50), 100 - CHIP_GAP_PX);
   // The gap is really reserved by the fit rule: a box exactly one label wide
   // plus padding is NOT full, because the gap is taken off it first.
-  const labelPx = PROD_MEASURE('F#:min7', CHIP_FONT_PX);
+  const labelPx = PROD_MEASURE('F♯m7', CHIP_FONT_PX);
   assert.equal(chipDensity(chipContentPx(labelPx + CHIP_FULL_PAD_PX), labelPx), 'tight');
   assert.equal(chipDensity(chipContentPx(labelPx + CHIP_FULL_PAD_PX + CHIP_GAP_PX), labelPx), 'full');
 });
@@ -1115,7 +1164,7 @@ function installCanvas(dom, widthOf) {
  */
 async function mountOverlay(
   dom,
-  { containerPx, afterMount, beforeMount, payload = PAYLOAD, widthOf } = {},
+  { containerPx, afterMount, beforeMount, payload = PAYLOAD, widthOf, props = {} } = {},
 ) {
   const React = (await import('react')).default;
   const { ChordOverlay } = await loadChordOverlay();
@@ -1151,7 +1200,7 @@ async function mountOverlay(
 
   try {
     if (beforeMount) await beforeMount(dom);
-    await dom.mount(React.createElement(ChordOverlay, { jobId: 'fixture-job' }));
+    await dom.mount(React.createElement(ChordOverlay, { jobId: 'fixture-job', ...props }));
     await dom.act();
     if (afterMount) await afterMount(dom);
     const timeline = dom.find('[data-testid="chord-timeline"]');
@@ -1585,8 +1634,17 @@ const ALL_KINDS_PAYLOAD = {
     { start_sec: 213.0, end_sec: 214.5, label: 'N', confidence: 1 },
     { start_sec: 214.5, end_sec: 216.0, label: 'X', confidence: 1 },
     { start_sec: 216.0, end_sec: 218.0, label: 'A#:hdim7/11', confidence: 1 },
+    // A 0.9s chord: at this payload's default zoom it is too short for its
+    // name ("F♯m7") at 16px and long enough at 11px (the window is ~0.8-1.0s;
+    // 0.9 is its middle), so a `chord/tight` chip exists for the allowlist gate
+    // to meet. The 3:33 song's own short
+    // runs used to supply one; painted in guitarist notation they all fit full.
+    { start_sec: 218.0, end_sec: 218.9, label: 'F#:min7', confidence: 1 },
   ],
 };
+const RUNS_ALL_KINDS = observationsToRuns(
+  ALL_KINDS_PAYLOAD.segments.map((x) => ({ startSec: x.start_sec, endSec: x.end_sec, label: x.label, confidence: x.confidence })),
+);
 
 test('the allowlist reader sees a font property however it is spelled and wherever it was declared', async () => {
   // A check that cannot fail has not checked. Feed the reader the spellings the
@@ -2166,6 +2224,78 @@ test("wrapped layout: the DOM-row budget reaches the component's zoom ceiling", 
       seen.domRows <= MAX_WRAP_ROWS,
       `${seen.domRows} wrapped rows are in the DOM at the ceiling (budget ${MAX_WRAP_ROWS})`,
     );
+    await dom.unmountAll();
+  });
+});
+
+test('rendered chart: chips, tooltips, accessible names and the editor all use guitarist notation', async () => {
+  // The chart ("See all chords") and its chord editor, mounted for real. What
+  // is PAINTED (and measured) is the formatter's text; the tooltip shows the
+  // same; the accessible name is the chord in words; an edit still sends Harte.
+  const labelEdits = [];
+  const classEdits = [];
+  await withDom(async (dom) => {
+    const { chips } = await mountOverlay(dom, {
+      containerPx: 872,
+      payload: ALL_KINDS_PAYLOAD,
+      props: { onChordLabelEdit: (e) => labelEdits.push(e), onChordEdit: (e) => classEdits.push(e) },
+    });
+    const chordChips = chips.filter((c) => c.dataset.kind === 'chord');
+    assert.ok(chordChips.length >= 100, 'too few chord chips to say anything');
+    const harteLike = /^[A-G](#|b)?:(maj|min|7|maj7|min7)(\/|$)/;
+    for (const c of chordChips) {
+      if (c.textContent) assert.doesNotMatch(c.textContent, harteLike, `chip ${c.dataset.testid} paints Harte "${c.textContent}"`);
+      assert.doesNotMatch(c.getAttribute('title'), harteLike, `chip ${c.dataset.testid} tooltip is Harte`);
+      assert.doesNotMatch(c.getAttribute('aria-label'), /[\u266d\u266f#]|:(maj|min)/, `chip ${c.dataset.testid} accessible name has a glyph or Harte`);
+      if (c.textContent) assert.equal(c.getAttribute('title'), c.textContent, 'the tooltip names the painted chord');
+    }
+    const fs = chordChips.find((c) => c.getAttribute('title') === 'F\u266fm7');
+    assert.ok(fs, 'no F\u266fm7 chip (the fixture has F#:min7)');
+    assert.equal(fs.getAttribute('aria-label'), 'F sharp minor 7 \u2014 edit');
+
+    // The chord editor: open it on that chip.
+    await dom.act(() => fs.click());
+    const pop = dom.find('[data-testid="chord-popover"]');
+    assert.ok(pop, 'the chord editor did not open');
+    assert.match(pop.textContent, /Change F\u266fm7/);
+    const alts = [...pop.querySelectorAll('[data-testid^="alt-"]')];
+    assert.ok(alts.length >= 4, `only ${alts.length} alternatives`);
+    for (const b of alts) {
+      const harte = b.dataset.testid.slice('alt-'.length); // the data label an edit sends
+      if (harte === 'N' || harte === 'X') continue;
+      assert.match(harte, /^[A-G](#|b)?/, 'the alternative testid is no longer the Harte data label');
+      assert.equal(b.textContent, displayText({ kind: 'chord', label: harte }), `alternative ${harte} painted`);
+      assert.doesNotMatch(b.textContent, harteLike, `alternative ${harte} painted as Harte`);
+      assert.doesNotMatch(b.getAttribute('aria-label'), /[\u266d\u266f#]|:(maj|min)/, `alternative ${harte} accessible name`);
+    }
+    // The header says what is being changed, spoken in words for a screen reader.
+    const header = pop.querySelector('[data-testid="chord-popover-header"]');
+    assert.ok(header, 'no popover header');
+    assert.equal(header.getAttribute('aria-label'), 'Change F sharp minor 7');
+    assert.equal(header.getAttribute('role'), 'heading', 'a name on a generic div is ignored by ARIA');
+
+    // PICKING an alternative sends HARTE, not the painted name (review MF-1): the
+    // server and the DB both reject anything that is not a Harte label, so a
+    // painted "Am7" here would 400 every edit with no gate noticing. Both
+    // collector paths are checked: the label path for every pick, and the
+    // flat-60 class path, which must carry the class of the Harte label.
+    const fsRun = RUNS_ALL_KINDS.find((r) => r.label === 'F#:min7');
+    const pick = alts.find((b) => {
+      const l = b.dataset.testid.slice('alt-'.length);
+      return l !== 'N' && l !== 'X' && displayText({ kind: 'chord', label: l }) !== l && classIndexOrNull(l) !== null;
+    });
+    assert.ok(pick, 'no alternative whose painted name differs from its Harte label');
+    const pickedHarte = pick.dataset.testid.slice('alt-'.length);
+    await dom.act(() => pick.click());
+    assert.equal(labelEdits.length, 1, `${labelEdits.length} label edits for one pick`);
+    assert.equal(labelEdits[0].newLabel, pickedHarte, 'the edit sent the painted name, not the Harte label');
+    assert.equal(labelEdits[0].originalLabel, fsRun.label);
+    assert.equal(labelEdits[0].originalLabel, 'F#:min7');
+    assert.notEqual(labelEdits[0].newLabel, pick.textContent, 'painted and Harte are the same string, so this proves nothing');
+    assert.equal(classEdits.length, 1, 'the class-path edit did not fire for a flat-60 chord');
+    assert.equal(classEdits[0].newCls, classIndexOrNull(pickedHarte));
+    assert.equal(classEdits[0].originalCls, classIndexOrNull('F#:min7'));
+    assert.equal(dom.find('[data-testid="chord-popover"]'), null, 'the editor did not close after a pick');
     await dom.unmountAll();
   });
 });

@@ -1607,3 +1607,180 @@ test("resumeAudio: resumes an 'interrupted' or 'suspended' context while playing
   engine.dispose();
   engine.resumeAudio(); // safe after dispose
 });
+
+// ─── QA C-01: the clock after a loop has WRAPPED and is then changed ────────
+// The native sources keep playing from their wrapped position when the loop is
+// turned off, extended or shrunk around the playhead. `livePosition()` adds the
+// elapsed time to an UNWRAPPED base and folds it by the loop installed when it
+// is read, so `setLoop` must collapse the wraps already played into the base
+// before installing the new region. Every test drives a loop through at least
+// one wrap first: with zero wraps the old code was right by accident.
+//
+// Shrink with the playhead OUTSIDE the new region: the chosen behaviour is the
+// engine's existing "outside → jump to the region's head" rule (one fresh,
+// sample-locked start at `startSec`), not "keep playing until the playhead
+// reaches the region". A loop is a request to hear that region now.
+
+const EPS = 1e-6;
+
+function near(actual, expected, msg) {
+  assert.ok(Math.abs(actual - expected) < EPS, `${msg}: reported ${actual}, expected ${expected}`);
+}
+
+/** Play from 0, engage loop [start,end) at the playhead, then wrap `wraps` times
+ *  and land `into` seconds past the loop head. Returns the audio position. */
+async function wrappedLoop({ startSec = 0, endSec = 10, wraps = 3, into = 5 } = {}) {
+  const h = await loadedSix({}, { durationSec: 120 });
+  const c = h.ctx();
+  h.engine.play();
+  c.advance(0.05 + startSec); // past the start lead, at the loop head
+  h.engine.setLoop({ startSec, endSec });
+  assert.equal(c.starts.length, 6, 'engaging the loop at the playhead must not restart');
+  c.advance(wraps * (endSec - startSec) + into);
+  near(h.engine.getSnapshot().positionSec, startSec + into, `after ${wraps} wraps`);
+  return h;
+}
+
+/** Pause, then Play: both must land on `expected`, all six re-locked on it. */
+function pausePlayResumesAt(h, expected, label) {
+  const { engine } = h;
+  const c = h.ctx();
+  engine.pause();
+  near(engine.getSnapshot().positionSec, expected, `${label}: paused position`);
+  const before = c.starts.length;
+  engine.play();
+  const fresh = c.starts.slice(before);
+  assert.equal(fresh.length, 6, `${label}: play re-starts all six`);
+  for (const s of fresh) near(s.offset, expected, `${label}: play resumed ${s.stem} at the wrong offset`);
+  near(engine.getSnapshot().positionSec, expected, `${label}: position after play`);
+  c.advance(0.05 + 0.5);
+  near(engine.getSnapshot().positionSec, expected + 0.5, `${label}: clock runs after play`);
+}
+
+for (const wraps of [1, 3]) {
+  test(`C-01: loop OFF after ${wraps} repeat(s) keeps the reported position on the audio`, async () => {
+    const h = await wrappedLoop({ wraps });
+    const { engine } = h;
+    const c = h.ctx();
+    const starts = c.starts.length;
+    engine.setLoop(null);
+    assert.equal(c.starts.length, starts, 'loop off must not restart the stems');
+    near(engine.getSnapshot().positionSec, 5, 'position preserved exactly across loop off');
+    c.advance(1);
+    near(engine.getSnapshot().positionSec, 6, 'loop off +1 s');
+    c.advance(10); // straight through the old loop end: no fold any more
+    near(engine.getSnapshot().positionSec, 16, 'loop off +11 s');
+    pausePlayResumesAt(h, 16, 'loop off');
+    engine.dispose();
+  });
+}
+
+test('C-01: EXTEND after repeats keeps the position, then wraps on the new end', async () => {
+  const h = await wrappedLoop({ wraps: 2 });
+  const { engine } = h;
+  const c = h.ctx();
+  const starts = c.starts.length;
+  engine.setLoop({ startSec: 0, endSec: 40 });
+  assert.equal(c.starts.length, starts, 'extend around the playhead must not restart');
+  for (const s of c.live()) assert.equal(s.loopEnd, 40);
+  near(engine.getSnapshot().positionSec, 5, 'position preserved exactly across extend');
+  c.advance(1);
+  near(engine.getSnapshot().positionSec, 6, 'extend +1 s');
+  c.advance(30);
+  near(engine.getSnapshot().positionSec, 36, 'past the OLD end, inside the new one');
+  c.advance(6); // 42 → wraps on the new end at 40
+  near(engine.getSnapshot().positionSec, 2, 'wraps on the new end');
+  pausePlayResumesAt(h, 2, 'extend');
+  engine.dispose();
+});
+
+test('C-01: SHRINK with the playhead still inside keeps the position and wraps on the new span', async () => {
+  const h = await wrappedLoop({ wraps: 3 });
+  const { engine } = h;
+  const c = h.ctx();
+  const starts = c.starts.length;
+  engine.setLoop({ startSec: 4, endSec: 8 });
+  assert.equal(c.starts.length, starts, 'shrink around the playhead must not restart');
+  near(engine.getSnapshot().positionSec, 5, 'position preserved exactly across shrink');
+  c.advance(2);
+  near(engine.getSnapshot().positionSec, 7, 'shrink +2 s');
+  c.advance(2); // 9 → wraps on 8 back to 5
+  near(engine.getSnapshot().positionSec, 5, 'wraps on the shrunk span');
+  pausePlayResumesAt(h, 5, 'shrink inside');
+  engine.dispose();
+});
+
+for (const region of [
+  { startSec: 6, endSec: 9 }, // playhead (5) before the new region
+  { startSec: 0, endSec: 4 }, // playhead (5) after the new region
+]) {
+  test(`C-01: SHRINK to [${region.startSec},${region.endSec}) with the playhead outside jumps to its head`, async () => {
+    const h = await wrappedLoop({ wraps: 3 });
+    const { engine } = h;
+    const c = h.ctx();
+    const starts = c.starts.length;
+    engine.setLoop(region);
+    const fresh = c.starts.slice(starts);
+    assert.equal(fresh.length, 6, 'one sample-locked restart of all six');
+    for (const s of fresh) near(s.offset, region.startSec, `restart of ${s.stem}`);
+    near(engine.getSnapshot().positionSec, region.startSec, 'lands on the new head');
+    const span = region.endSec - region.startSec;
+    c.advance(0.05 + 1);
+    near(engine.getSnapshot().positionSec, region.startSec + 1, 'runs from the head');
+    c.advance(span); // a whole span later: same point
+    near(engine.getSnapshot().positionSec, region.startSec + 1, 'wraps on the new span');
+    pausePlayResumesAt(h, region.startSec + 1, 'shrink outside');
+    engine.dispose();
+  });
+}
+
+test('C-01: loop OFF after repeats, then ON again at the playhead does not jump', async () => {
+  const h = await wrappedLoop({ wraps: 3 });
+  const { engine } = h;
+  const c = h.ctx();
+  engine.setLoop(null);
+  c.advance(1);
+  const starts = c.starts.length;
+  engine.setLoop({ startSec: 0, endSec: 10 }); // the audio is at 6: inside
+  assert.equal(c.starts.length, starts, 're-engaging around the playhead must not restart');
+  near(engine.getSnapshot().positionSec, 6, 'position preserved');
+  c.advance(5); // 11 → wraps to 1
+  near(engine.getSnapshot().positionSec, 1, 'wraps again');
+  pausePlayResumesAt(h, 1, 'off then on');
+  engine.dispose();
+});
+
+test('C-01: SEEK during a loop, wrap again, then loop off', async () => {
+  const h = await wrappedLoop({ wraps: 3 });
+  const { engine } = h;
+  const c = h.ctx();
+  engine.seek(2);
+  const last6 = c.starts.slice(-6);
+  for (const s of last6) near(s.offset, 2, `seek restart of ${s.stem}`);
+  for (const s of c.live()) assert.equal(s.loop, true, 'the loop survives the seek');
+  c.advance(0.05 + 9); // 11 → wraps to 1
+  near(engine.getSnapshot().positionSec, 1, 'wraps after the seek');
+  pausePlayResumesAt(h, 1, 'seek in loop');
+  c.advance(10); // 1.5 + 10 → wraps to 1.5
+  near(engine.getSnapshot().positionSec, 1.5, 'wraps after pause/play');
+  engine.setLoop(null);
+  near(engine.getSnapshot().positionSec, 1.5, 'loop off after seek + wrap');
+  c.advance(1);
+  near(engine.getSnapshot().positionSec, 2.5, 'loop off +1 s');
+  engine.dispose();
+});
+
+test('C-01: a loop change inside the start lead does not count the lead as played', async () => {
+  const { engine, ctx } = await loadedSix({}, { durationSec: 120 });
+  const c = ctx();
+  engine.play(); // sources scheduled 50 ms ahead
+  engine.setLoop({ startSec: 0, endSec: 10 });
+  engine.setLoop({ startSec: 0, endSec: 20 });
+  near(engine.getSnapshot().positionSec, 0, 'pre-roll reads as the start');
+  c.advance(0.05 + 1);
+  near(engine.getSnapshot().positionSec, 1, 'the clock starts with the audio, not with setLoop');
+  engine.setLoop(null);
+  c.advance(1);
+  near(engine.getSnapshot().positionSec, 2, 'and stays on it');
+  engine.dispose();
+});

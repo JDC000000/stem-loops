@@ -50,8 +50,39 @@ const INTERVAL_SEMIS: Readonly<Record<string, number>> = Object.freeze({
   '6': 9, bb7: 9, b7: 10, '7': 11, b9: 1, '9': 2, '#9': 3, '11': 5, '#11': 6, b13: 8, '13': 9,
 });
 const ROOT_PC: Readonly<Record<string, number>> = Object.freeze({ C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 });
+const LETTERS = 'CDEFGAB';
 const SHARP_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const FLAT_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+/** Accidentals on a white-key boundary: theory-correct, but not what a lead sheet writes for a bass. */
+const AWKWARD = new Set(['E#', 'B#', 'Fb', 'Cb']);
+
+/**
+ * The bass NOTE for a root and a Harte bass interval, spelled the way the
+ * interval names it: the LETTER is the root's letter plus the interval number
+ * (a 3rd above C is some E, a b7 above C is some B), and the accidental is
+ * whatever makes that letter the right pitch. So C/b7 is C/B♭ (not A♯), Gm/b6
+ * is Gm/E♭, C/b3 is C/E♭, A/6 is A/F♯, B♭/b7 is B♭/A♭, C/#4 is C/F♯.
+ *
+ * Guitarist notation, not a harmony exam: where that spelling would need a
+ * double accidental (G♭/b3 = B♭♭) or a white-key accidental (E/#5 = B♯,
+ * D♭/b7 = C♭), the bass is written as the plain note instead, in the direction
+ * of the interval's own accidental -- flats for a b-interval, sharps for a
+ * #-interval, and for a natural interval the root's direction (G♭/b3 -> A,
+ * E/#5 -> C, D♭/b7 -> B, B/#5 -> G).
+ */
+function bassNote(root: { name: string; pc: number }, tok: string): string | null {
+  const semis = INTERVAL_SEMIS[tok];
+  const deg = /(\d+)$/.exec(tok);
+  if (semis === undefined || !deg) return null;
+  const pc = (root.pc + semis) % 12;
+  const letter = LETTERS[(LETTERS.indexOf(root.name[0]) + Number(deg[1]) - 1) % 7];
+  let acc = (((pc - ROOT_PC[letter]) % 12) + 12) % 12;
+  if (acc > 6) acc -= 12;
+  const spelled = letter + (acc < 0 ? 'b'.repeat(-acc) : '#'.repeat(acc));
+  if (Math.abs(acc) <= 1 && !AWKWARD.has(spelled)) return spelled;
+  const flats = tok.startsWith('b') || (!tok.startsWith('#') && (root.name.includes('b') || root.name === 'F'));
+  return (flats ? FLAT_NAMES : SHARP_NAMES)[pc];
+}
 
 function parseRoot(s: string): { name: string; pc: number } | null {
   const m = /^([A-G])((?:#|b)*)$/.exec(s);
@@ -79,11 +110,11 @@ export function chordAscii(harte: string): string | null {
   if (!root || !(shorthand in QUALITY)) return null;
   let out = root.name + QUALITY[shorthand];
   if (bassTok !== null) {
-    const semis = INTERVAL_SEMIS[bassTok];
-    if (semis === undefined) return null;
-    if (semis !== 0) {
-      const flats = root.name.includes('b') || root.name === 'F';
-      out += '/' + (flats ? FLAT_NAMES : SHARP_NAMES)[(root.pc + semis) % 12];
+    if (INTERVAL_SEMIS[bassTok] === undefined) return null;
+    if (INTERVAL_SEMIS[bassTok] !== 0) {
+      const bass = bassNote(root, bassTok);
+      if (bass === null) return null;
+      out += '/' + bass;
     }
   }
   return out;

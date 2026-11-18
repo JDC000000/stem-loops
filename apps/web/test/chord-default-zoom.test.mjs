@@ -64,6 +64,7 @@ import {
   estimateLabelPx,
   ESTIMATE_PAD_PX,
   classifyLabel,
+  classIndexOrNull,
   displayText,
   fitPxPerSec,
   makeCanvasMeasurer,
@@ -1163,7 +1164,7 @@ function installCanvas(dom, widthOf) {
  */
 async function mountOverlay(
   dom,
-  { containerPx, afterMount, beforeMount, payload = PAYLOAD, widthOf } = {},
+  { containerPx, afterMount, beforeMount, payload = PAYLOAD, widthOf, props = {} } = {},
 ) {
   const React = (await import('react')).default;
   const { ChordOverlay } = await loadChordOverlay();
@@ -1199,7 +1200,7 @@ async function mountOverlay(
 
   try {
     if (beforeMount) await beforeMount(dom);
-    await dom.mount(React.createElement(ChordOverlay, { jobId: 'fixture-job' }));
+    await dom.mount(React.createElement(ChordOverlay, { jobId: 'fixture-job', ...props }));
     await dom.act();
     if (afterMount) await afterMount(dom);
     const timeline = dom.find('[data-testid="chord-timeline"]');
@@ -1641,6 +1642,9 @@ const ALL_KINDS_PAYLOAD = {
     { start_sec: 218.0, end_sec: 218.9, label: 'F#:min7', confidence: 1 },
   ],
 };
+const RUNS_ALL_KINDS = observationsToRuns(
+  ALL_KINDS_PAYLOAD.segments.map((x) => ({ startSec: x.start_sec, endSec: x.end_sec, label: x.label, confidence: x.confidence })),
+);
 
 test('the allowlist reader sees a font property however it is spelled and wherever it was declared', async () => {
   // A check that cannot fail has not checked. Feed the reader the spellings the
@@ -2228,8 +2232,14 @@ test('rendered chart: chips, tooltips, accessible names and the editor all use g
   // The chart ("See all chords") and its chord editor, mounted for real. What
   // is PAINTED (and measured) is the formatter's text; the tooltip shows the
   // same; the accessible name is the chord in words; an edit still sends Harte.
+  const labelEdits = [];
+  const classEdits = [];
   await withDom(async (dom) => {
-    const { chips } = await mountOverlay(dom, { containerPx: 872, payload: ALL_KINDS_PAYLOAD });
+    const { chips } = await mountOverlay(dom, {
+      containerPx: 872,
+      payload: ALL_KINDS_PAYLOAD,
+      props: { onChordLabelEdit: (e) => labelEdits.push(e), onChordEdit: (e) => classEdits.push(e) },
+    });
     const chordChips = chips.filter((c) => c.dataset.kind === 'chord');
     assert.ok(chordChips.length >= 100, 'too few chord chips to say anything');
     const harteLike = /^[A-G](#|b)?:(maj|min|7|maj7|min7)(\/|$)/;
@@ -2258,6 +2268,34 @@ test('rendered chart: chips, tooltips, accessible names and the editor all use g
       assert.doesNotMatch(b.textContent, harteLike, `alternative ${harte} painted as Harte`);
       assert.doesNotMatch(b.getAttribute('aria-label'), /[\u266d\u266f#]|:(maj|min)/, `alternative ${harte} accessible name`);
     }
+    // The header says what is being changed, spoken in words for a screen reader.
+    const header = pop.querySelector('[data-testid="chord-popover-header"]');
+    assert.ok(header, 'no popover header');
+    assert.equal(header.getAttribute('aria-label'), 'Change F sharp minor 7');
+    assert.equal(header.getAttribute('role'), 'heading', 'a name on a generic div is ignored by ARIA');
+
+    // PICKING an alternative sends HARTE, not the painted name (review MF-1): the
+    // server and the DB both reject anything that is not a Harte label, so a
+    // painted "Am7" here would 400 every edit with no gate noticing. Both
+    // collector paths are checked: the label path for every pick, and the
+    // flat-60 class path, which must carry the class of the Harte label.
+    const fsRun = RUNS_ALL_KINDS.find((r) => r.label === 'F#:min7');
+    const pick = alts.find((b) => {
+      const l = b.dataset.testid.slice('alt-'.length);
+      return l !== 'N' && l !== 'X' && displayText({ kind: 'chord', label: l }) !== l && classIndexOrNull(l) !== null;
+    });
+    assert.ok(pick, 'no alternative whose painted name differs from its Harte label');
+    const pickedHarte = pick.dataset.testid.slice('alt-'.length);
+    await dom.act(() => pick.click());
+    assert.equal(labelEdits.length, 1, `${labelEdits.length} label edits for one pick`);
+    assert.equal(labelEdits[0].newLabel, pickedHarte, 'the edit sent the painted name, not the Harte label');
+    assert.equal(labelEdits[0].originalLabel, fsRun.label);
+    assert.equal(labelEdits[0].originalLabel, 'F#:min7');
+    assert.notEqual(labelEdits[0].newLabel, pick.textContent, 'painted and Harte are the same string, so this proves nothing');
+    assert.equal(classEdits.length, 1, 'the class-path edit did not fire for a flat-60 chord');
+    assert.equal(classEdits[0].newCls, classIndexOrNull(pickedHarte));
+    assert.equal(classEdits[0].originalCls, classIndexOrNull('F#:min7'));
+    assert.equal(dom.find('[data-testid="chord-popover"]'), null, 'the editor did not close after a pick');
     await dom.unmountAll();
   });
 });

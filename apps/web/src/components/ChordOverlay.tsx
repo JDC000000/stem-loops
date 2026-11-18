@@ -122,6 +122,7 @@ import {
   rootHue,
   rulerTicks,
   runAriaLabel,
+  spokenText,
   sliderToPps,
   timelineWidthPx,
 } from './ChordOverlay.helpers.ts';
@@ -705,7 +706,16 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           style={popoverStyle}
           data-testid="chord-popover"
         >
-          <div style={popoverHeaderStyle}>
+          {/* Painted with the glyphs ("Change F♯m7"); named in words for a
+              screen reader, which reads "♯" inconsistently (review L-4). A
+              heading, because ARIA does not allow a name on a generic div. */}
+          <div
+            style={popoverHeaderStyle}
+            data-testid="chord-popover-header"
+            role="heading"
+            aria-level={2}
+            aria-label={`Change ${spokenText(popoverFor.run)}`}
+          >
             Change {displayText(popoverFor.run)}
           </div>
           <div style={popoverGridStyle}>

@@ -1088,3 +1088,22 @@ test('chordPositionFor: a route latency holds the marker back while playing only
     assert.equal(chordPositionFor(ready, { ...base, status: 'playing', positionSec: 10 }, bad), 10, String(bad));
   }
 });
+
+test('chordPositionFor: latency after a loop wrap reads the END of the loop, not the chord before it (QA C-11)', () => {
+  const base = { stems: [], degraded: null, error: null, durationSec: 120, status: 'playing' };
+  const ready = { kind: 'ready' };
+  const loop = { startSec: 20, endSec: 30 };
+  const near = (a, e, m) => assert.ok(Math.abs(a - e) < 1e-9, `${m}: ${a} vs ${e}`);
+  // 50 ms after the wrap, with 200 ms of route latency, the ear is 150 ms before the loop END
+  near(chordPositionFor(ready, { ...base, loop, positionSec: 20.05 }, 0.2), 29.85, 'just after a wrap');
+  near(chordPositionFor(ready, { ...base, loop, positionSec: 20 }, 0.2), 29.8, 'exactly on the head');
+  // once past the latency window it is the plain subtraction again
+  near(chordPositionFor(ready, { ...base, loop, positionSec: 25 }, 0.2), 24.8, 'mid-loop');
+  // no loop, or a position outside the loop: unchanged (Story 8 behaviour)
+  near(chordPositionFor(ready, { ...base, loop: null, positionSec: 20.05 }, 0.2), 19.85, 'no loop');
+  near(chordPositionFor(ready, { ...base, loop, positionSec: 10 }, 0.2), 9.8, 'outside the loop');
+  // a span shorter than the latency is not folded (no multi-step fold)
+  near(chordPositionFor(ready, { ...base, loop: { startSec: 20, endSec: 20.1 }, positionSec: 20.05 }, 0.2), 19.85, 'tiny span');
+  // not playing: the latency never applies
+  assert.equal(chordPositionFor(ready, { ...base, status: 'ready', loop, positionSec: 20.05 }, 0.2), 20.05);
+});

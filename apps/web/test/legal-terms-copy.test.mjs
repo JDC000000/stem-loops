@@ -55,7 +55,10 @@ test('terms: the account-rule fragments are still present', async () => {
   // src/components/landing/ToolForm.tsx has no client-side auth gate.
   assertSays(assert, page, 'You can start a job without an account', 'terms');
   // TRUE: src/app/jobs/[id]/page.tsx:32-33 — getUser() then redirect('/login?return_to=…').
-  assertSays(assert, page, 'You need an account to open the player', 'terms');
+  // Scoped to YOUR OWN songs since #302: /demo/<slug> opens the player signed out
+  // (src/app/demo/[slug]/page.tsx), so the unscoped "to open the player" was false.
+  assertSays(assert, page, 'You need an account to open the player with your own songs and reach your results.', 'terms');
+  assertSays(assert, page, 'The demo songs open without an account.', 'terms');
 });
 
 // ─────────────────────────── the duration claim ───────────────────────────

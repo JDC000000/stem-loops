@@ -27,7 +27,7 @@ test('ENTITY_LIMITS states the five brand limits, with the player cap as its onl
   assert.match(ENTITY_LIMITS, /Chrome on a computer/);
   assert.match(ENTITY_LIMITS, /lighter audio on phones/);
   assert.match(ENTITY_LIMITS, /after 24 hours/);
-  assert.match(ENTITY_LIMITS, /adding your own songs needs an account/);
+  assert.match(ENTITY_LIMITS, /You need an account to open the player with your own songs/, 'D-SEO-7 wording');
   assert.match(ENTITY_LIMITS, /demo songs open without signing in/);
   assert.match(ENTITY_LIMITS, /rights to the audio/);
 });
@@ -41,13 +41,25 @@ test('entity text keeps the brand truth rules: no platform, no downbeat or speed
   assert.ok(body.includes('The six stems are drums, bass, guitar, keys, vocals and other'), 'Story 2.1 stem order');
 });
 
-// QA-55: since #302 the demo songs play signed out, so "you need an account to open the player"
-// is false. llms.txt must say the demos are open and list each demo URL.
+// QA-55: since #302 the demo songs play signed out, so an unqualified "you need an account to open
+// the player" is false. llms.txt must say the demos are open and list each demo URL.
 test('llms.txt: no unqualified account claim; lists every demo song URL from the catalog', async () => {
   const body = await GET().text();
-  assert.ok(!body.toLowerCase().includes('need an account to open the player'), 'false since #302');
+  // Unqualified it is false since #302; D-SEO-7's qualified form ("... with your own songs") is the truth.
+  assert.doesNotMatch(body, /need an account to open the player(?! with your own songs)/i);
   assert.ok(body.includes('/demo/'));
   assert.match(body, /without signing in/);
   for (const d of DEMO_SONGS) assert.ok(body.includes(`(https://stem-loops.com${demoHref(d.slug)})`), `${d.slug} missing`);
   assert.doesNotMatch(body, /llms-full\.txt/, 'llms-full.txt is not served (404); do not link it');
+});
+
+// QA-55 review B1: starting a job needs no account (POST /api/jobs accepts signed-out jobs; only
+// /jobs/<id> redirects to /login). llms.txt must never say adding or starting a song needs one.
+test('llms.txt: never claims an account is needed to add, start or upload a song', async () => {
+  const body = await GET().text();
+  for (const re of [
+    /(add|adding|start|starting|upload|uploading|paste|pasting)[^.;]{0,40}\b(needs?|requires?)\b[^.;]{0,20}\baccount/i,
+    /\b(need|needs|require|requires)\b[^.;]{0,20}\baccount\b[^.;]{0,10}\bto (add|start|upload|paste)\b/i,
+  ]) assert.doesNotMatch(body, re);
+  assert.match(body, /open the player with your own songs/);
 });

@@ -8,19 +8,14 @@
 import type { Metadata, Viewport } from 'next';
 import { notFound } from 'next/navigation';
 import { getUser } from '@/lib/auth/supabase';
-import { demoBySlug } from '@/lib/demo-catalog';
 import { resolveDemo } from '@/lib/demo-songs';
+import { demoMetadata } from '@/lib/seo/demo-pages';
 import JobView from '../../jobs/[id]/JobView';
 
-// QA-55: the catalog's demo pages are public and listed in sitemap.xml (lib/seo/demo-pages.ts),
-// so they are indexable; a slug outside the catalog stays noindex (it 404s anyway).
+// QA-55: the catalog's demo pages are public and listed in sitemap.xml, so they are indexable and
+// built by the SEO-06 builder (canonical, Open Graph, Twitter); any other slug is noindex (and 404s).
 export function generateMetadata({ params }: { params: { slug: string } }): Metadata {
-  const song = demoBySlug(params.slug);
-  if (!song) return { title: 'Play along: demo song', robots: { index: false, follow: false } };
-  return {
-    title: `Play along: ${song.title} by ${song.artist}`,
-    description: `${song.title} by ${song.artist} in the stem-loops player. The demo opens without signing in.`,
-  };
+  return demoMetadata(params.slug);
 }
 // Reads the session (back arrow: library or home) and the demo rows on every request.
 export const dynamic = 'force-dynamic';

@@ -17,7 +17,7 @@ export function llmsText(): string {
     ...publishedPages().filter((p) => p.llms).map((p) => `- [${p.title}](${SITE_URL}${p.path === '/' ? '/' : p.path}): ${p.description}`),
     '', '## Demo songs', '',
     // QA-55: the demo songs play in the real player for anyone, signed out included (#302).
-    'Anyone can try these in the player without signing in. Adding your own songs needs an account.',
+    'Anyone can try these in the player without signing in. Opening the player with your own songs needs an account.',
     ...demoPages().map((d) => `- [${d.title}](${SITE_URL}${d.path}): ${d.description}`),
     '',
   ];

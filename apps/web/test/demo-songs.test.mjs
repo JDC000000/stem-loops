@@ -187,6 +187,7 @@ const pageFile = put(
     .replace(/from ['"]next\/navigation['"]/g, `from '${navMod}'`)
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authMod}'`)
     .replace(/from ['"]@\/lib\/demo-songs['"]/g, `from '${dsMod}'`)
+    .replace(/from ['"]@\/lib\/demo-catalog['"]/g, `from '${catalogUrl}'`)
     .replace(/from ['"]\.\.\/\.\.\/jobs\/\[id\]\/JobView['"]/g, `from '${viewMod}'`),
 );
 const demoPage = await import(pathToFileURL(join(dir, pageFile.slice(2))).href);
@@ -205,10 +206,25 @@ test('/demo/<slug>: anything that is not a playable demo is a 404, including an 
   }
 });
 
-test('/demo/<slug> is dynamic, not indexed, and lays the player out under the notch like /jobs/[id]', () => {
+test('/demo/<slug> is dynamic and lays the player out under the notch like /jobs/[id]', () => {
   assert.equal(demoPage.dynamic, 'force-dynamic');
-  assert.equal(demoPage.metadata.robots.index, false);
   assert.equal(demoPage.viewport.viewportFit, 'cover');
+});
+
+// QA-55: the catalog's demo pages are in sitemap.xml, so they must be indexable (a sitemap URL
+// marked noindex is a Search Console error) and each needs its own title. Off-catalog: noindex.
+test('/demo/<slug> metadata: catalog slugs are indexable with their own title; anything else is noindex', async () => {
+  const { DEMO_SONGS } = await import(catalogUrl);
+  const titles = new Set();
+  for (const d of DEMO_SONGS) {
+    const m = demoPage.generateMetadata({ params: { slug: d.slug } });
+    assert.notEqual(m.robots?.index, false, `${d.slug} is noindex but listed in the sitemap`);
+    assert.ok(m.title.includes(d.title), d.slug);
+    assert.match(m.description, /the demo opens without signing in/i);
+    titles.add(m.title);
+  }
+  assert.equal(titles.size, DEMO_SONGS.length, 'demo titles are unique');
+  for (const slug of ['nope', ORDINARY]) assert.equal(demoPage.generateMetadata({ params: { slug } }).robots.index, false, slug);
 });
 
 // ── the read-only demo limiter (QA B-17: no write on GET) ────────────────────────────

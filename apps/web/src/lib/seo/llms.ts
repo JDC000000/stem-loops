@@ -1,6 +1,7 @@
 // SEO-07 body builder (kept out of route.ts: a route file may export only route fields).
 import { publishedPages } from './pages.ts';
 import { ENTITY_LIMITS, ENTITY_ONE_LINER, SITE_URL } from './site.ts';
+import { demoPages } from './demo-pages.ts';
 import { CHORDS_LINE_SHOWN } from '../chords-claim.ts';
 
 
@@ -14,6 +15,10 @@ export function llmsText(): string {
       'There are no lyrics. Bar-length loops from each stem can be downloaded as 24-bit WAV files.',
     '', 'stem-loops is not a sample pack and not the RNA stem-loop structure.', '', '## Pages',
     ...publishedPages().filter((p) => p.llms).map((p) => `- [${p.title}](${SITE_URL}${p.path === '/' ? '/' : p.path}): ${p.description}`),
+    '', '## Demo songs', '',
+    // QA-55: the demo songs play in the real player for anyone, signed out included (#302).
+    'Anyone can try these in the player without signing in. Adding your own songs needs an account.',
+    ...demoPages().map((d) => `- [${d.title}](${SITE_URL}${d.path}): ${d.description}`),
     '',
   ];
   return lines.join('\n');

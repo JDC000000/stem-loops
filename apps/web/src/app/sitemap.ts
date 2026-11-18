@@ -2,7 +2,13 @@
 import type { MetadataRoute } from 'next';
 import { publishedPages } from '../lib/seo/pages.ts';
 import { SITE_URL } from '../lib/seo/site.ts';
+import { demoPages } from '../lib/seo/demo-pages.ts';
 
+// QA-55: plus the public demo songs (/demo/<slug>, signed-out playable since #302), derived from
+// the same catalog the demo route and home page use (lib/demo-catalog.ts).
 export default function sitemap(): MetadataRoute.Sitemap {
-  return publishedPages().map((p) => ({ url: `${SITE_URL}${p.path === '/' ? '/' : p.path}`, lastModified: p.lastModified }));
+  return [
+    ...publishedPages().map((p) => ({ url: `${SITE_URL}${p.path === '/' ? '/' : p.path}`, lastModified: p.lastModified })),
+    ...demoPages().map((d) => ({ url: `${SITE_URL}${d.path}`, lastModified: d.lastModified })),
+  ];
 }

@@ -20,7 +20,7 @@ export const PUBLIC_PAGES: PublicPage[] = [
     description: CHORDS_LINE_SHOWN
       ? `Six stems with faders, mute and solo, a chord track and section loops. Play along on a computer or a phone. Uses the first ${MAX_TRACK_MIN} minutes of any song.`
       : `Six stems with faders, mute and solo, and section loops. Play along on a computer or a phone. Uses the first ${MAX_TRACK_MIN} minutes of any song.`,
-    section: 'home', lastModified: '2026-11-17', llms: true, published: true },
+    section: 'home', lastModified: '2026-11-18', llms: true, published: true },
   { path: '/loops', title: 'Download loops',
     description: 'Bar-length loops cut from each stem of a song you have split, as 24-bit WAV files named by stem, BPM, key, section and number.',
     section: 'product', lastModified: '2026-11-15', llms: true, published: true },
@@ -32,11 +32,11 @@ export const PUBLIC_PAGES: PublicPage[] = [
     description: CHORDS_LINE_SHOWN
       ? 'Answers about accounts, browsers and phones, the chords, how long a song takes, song links, and what happens to your files.'
       : 'Answers about accounts, browsers and phones, how long a song takes, song links, and what happens to your files.',
-    section: 'trust', lastModified: '2026-11-17', llms: true, published: true },
+    section: 'trust', lastModified: '2026-11-18', llms: true, published: true },
   { path: '/privacy', title: 'Privacy', description: 'What stem-loops stores, for how long, and who processes it.',
     section: 'legal', lastModified: '2026-11-17', llms: true, published: true },
   { path: '/terms', title: 'Terms', description: 'The short terms for using stem-loops.',
-    section: 'legal', lastModified: '2026-11-17', llms: false, published: true },
+    section: 'legal', lastModified: '2026-11-18', llms: false, published: true },
 ];
 
 export const publishedPages = () => PUBLIC_PAGES.filter((p) => p.published);

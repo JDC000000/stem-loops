@@ -46,8 +46,37 @@ test('JOB_RETAINED_UNTIL_SQL: Free 24 h is expires_at; paid adds 30 days; past_d
   const { JOB_RETAINED_UNTIL_SQL: sql, PAID_RETENTION_GRACE_DAYS, RETENTION_HOURS } = await import('./retention.ts');
   assert.equal(RETENTION_HOURS, 24);
   assert.equal(PAID_RETENTION_GRACE_DAYS, 30);
-  assert.match(sql, /^GREATEST\(jobs\.expires_at, /);
+  // Outer CASE: a demo song (migration 040) first, then the Free/paid rule unchanged.
+  assert.match(sql, /^\(CASE WHEN jobs\.is_demo THEN '2099-12-31T00:00:00Z'::timestamptz ELSE GREATEST\(jobs\.expires_at, /);
+  assert.match(sql, / END\)$/);
   assert.ok(sql.includes(`interval '${PAID_RETENTION_GRACE_DAYS} days'`));
   assert.ok(sql.includes("s.current_period_start + interval '7 days'"));
   assert.ok(sql.includes("s.plan_code IN ('pro','studio')"));
+});
+
+// ── demo songs (V3 Slice 0, migration 040) ──
+test('demo: the SQL returns DEMO_RETAINED_UNTIL, a FINITE 2099-12-31, never infinity', async () => {
+  const { JOB_RETAINED_UNTIL_SQL: sql, DEMO_RETAINED_UNTIL } = await import('./retention.ts');
+  assert.equal(DEMO_RETAINED_UNTIL, '2099-12-31T00:00:00Z');
+  assert.ok(sql.includes(`WHEN jobs.is_demo THEN '${DEMO_RETAINED_UNTIL}'::timestamptz`));
+  assert.doesNotMatch(sql, /infinity/i, "'infinity' -> node-pg Infinity -> NaN -> 1 s signed URLs");
+  const t = new Date(DEMO_RETAINED_UNTIL).getTime();
+  assert.ok(Number.isFinite(t));
+  assert.equal(new Date(t).toISOString(), '2099-12-31T00:00:00.000Z', 'expiry reads as 2099-12-31');
+  // What node-pg hands the route for that timestamptz (a Date) round-trips through JSON.
+  assert.equal(JSON.parse(JSON.stringify({ e: new Date(t) })).e, '2099-12-31T00:00:00.000Z');
+});
+
+test('demo: presignTtlSec for a demo expiry stays at the normal 24 h cap (no NaN, no 1 s)', async () => {
+  const { DEMO_RETAINED_UNTIL } = await import('./retention.ts');
+  assert.equal(presignTtlSec(DEMO_RETAINED_UNTIL, NOW), RETENTION_SEC);
+  assert.equal(presignTtlSec(new Date(DEMO_RETAINED_UNTIL), NOW), RETENTION_SEC);
+});
+
+test('demo: isDemoRow is true only for is_demo === true', async () => {
+  const { isDemoRow } = await import('./retention.ts');
+  assert.equal(isDemoRow({ is_demo: true }), true);
+  for (const r of [{ is_demo: false }, {}, { is_demo: null }, { is_demo: 'true' }, null, undefined]) {
+    assert.equal(isDemoRow(r), false, JSON.stringify(r));
+  }
 });

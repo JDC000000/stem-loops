@@ -213,3 +213,21 @@ test('mayReadJob: a row with NO user_id column (undefined) is denied to everyone
   assert.equal(await access.mayReadJob(OWNER), true);
   assert.equal(await access.mayReadJob(OTHER), false);
 });
+
+// ── demo songs (V3 Slice 0, migration 040): the flag opens NO read path ──
+// Slice 0 only keeps demo rows out of the retention sweep. Who may read one (the is_demo
+// branch in mayReadJob, signed-out access) is Slice 2. Until then a demo is an ordinary
+// OWNED job: 404 to a signed-out caller and to any other user, on every read route.
+for (const [name, file] of Object.entries(ROUTES)) {
+  test(`${name}: an owned DEMO job (is_demo) is still a 404 to signed-out and to other users`, async () => {
+    for (const user of [null, { user_id: OTHER }]) {
+      globalThis.__sec = { job: { ...jobRow(OWNER), is_demo: true }, user, queries: [] };
+      const res = await call(await loadRoute(file));
+      assert.equal(res.status, 404, `is_demo opened ${name} to ${user ? 'another user' : 'a signed-out caller'}`);
+      assert.equal(JSON.stringify(res.body).includes('signed'), false);
+    }
+    // ... and the owner still reads it (control: the denial above is not a broken route).
+    globalThis.__sec = { job: { ...jobRow(OWNER), is_demo: true }, user: { user_id: OWNER }, queries: [] };
+    assert.equal((await call(await loadRoute(file))).status, 200);
+  });
+}

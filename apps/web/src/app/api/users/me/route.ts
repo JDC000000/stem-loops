@@ -158,9 +158,16 @@ export async function DELETE(req: NextRequest) {
         // job in the past for every route (404) and for the worker's sweep, which
         // deletes the objects. LEAST() never extends a job; the WHERE skips jobs
         // already killed, so a retried deletion changes nothing.
+        //
+        // is_demo = false (migration 040): a demo song is retained until 2099 WHATEVER
+        // its expires_at says, so without this the owner's deletion would leave it
+        // retained AND anonymous (user_id SET NULL) — open to any id holder. Clearing
+        // the flag puts it back on the expiry above, like every other job. The WHERE
+        // also catches a demo already in the killed shape (expires_at = created_at).
+        // Only ever writes false: no application path sets is_demo = true.
         await client.query(
-          `UPDATE public.jobs SET expires_at = LEAST(expires_at, created_at)
-            WHERE user_id = $1::uuid AND expires_at > created_at`,
+          `UPDATE public.jobs SET expires_at = LEAST(expires_at, created_at), is_demo = false
+            WHERE user_id = $1::uuid AND (expires_at > created_at OR is_demo)`,
           [user.user_id],
         );
 

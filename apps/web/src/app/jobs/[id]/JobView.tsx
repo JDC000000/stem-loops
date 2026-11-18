@@ -25,7 +25,7 @@ import Link from 'next/link';
 import type { Job } from '@stem-loops/types';
 import { JobProgress } from '@/components/JobProgress';
 import Player from '@/components/play/Player';
-import { formatExpiresIn } from '@/lib/retention';
+import { formatExpiresIn, isDemoRow } from '@/lib/retention';
 import { failedJobMessage } from '@/lib/error-copy';
 import { jobTrimNote } from '@/lib/input-trim';
 import {
@@ -286,9 +286,10 @@ export default function JobView({ id }: { id: string }) {
           </p>
           <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
             {/* job.expires_at is the song's real deletion time (JOB_RETAINED_UNTIL_SQL):
-                24 hours on Free, later for a Pro/Studio library (lib/retention.ts). */}
+                24 hours on Free, later for a Pro/Studio library (lib/retention.ts). A demo song
+                (is_demo, migration 040) is kept until 2099, so its countdown is not shown. */}
             On Free, files are deleted after 24 hours; on Pro and Studio they stay in your library.
-            {job.expires_at ? ` This song is deleted ${formatExpiresIn(new Date(job.expires_at).getTime())}.` : ''}
+            {job.expires_at && !isDemoRow(job) ? ` This song is deleted ${formatExpiresIn(new Date(job.expires_at).getTime())}.` : ''}
           </p>
         </>
       ) : trouble?.kind === 'stalled' ? (

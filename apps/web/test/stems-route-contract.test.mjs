@@ -298,6 +298,24 @@ test('TTL never outlives the job: a job 5 min from expiry gets ~300s', async () 
   assert.ok(res.body.expires_in_sec > 250);
 });
 
+// ---------- demo songs (V3 Slice 0, migration 040) ----------
+
+test('a demo song (retained until 2099-12-31) gets the normal 900s TTL, not 1s', async () => {
+  // JOB_RETAINED_UNTIL_SQL returns the FINITE DEMO_RETAINED_UNTIL for an is_demo row. node-pg
+  // hands it over as a Date; the route sees it as such. Had the SQL returned 'infinity', pg
+  // would give Infinity -> new Date(Infinity) is NaN -> the fail-closed 1s branch below, and
+  // demo playback would break. Pinned with the REAL constant from lib/retention.ts.
+  const { DEMO_RETAINED_UNTIL } = await import(dataUrl(toJs(readFileSync(RETENTION, 'utf8'))));
+  for (const expiresAt of [DEMO_RETAINED_UNTIL, new Date(DEMO_RETAINED_UNTIL).toISOString()]) {
+    globalThis.__st = { calls: [], minted: [], sentry: [] };
+    const mod = await loadRoute({ keys: SIX.map(PLAY), expiresAt });
+    const res = await call(mod);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.expires_in_sec, 900, 'the normal cap, never the 1s fail-closed TTL');
+    assert.ok(globalThis.__st.minted.length > 0 && globalThis.__st.minted.every((m) => m.expiresIn === 900));
+  }
+});
+
 // ---------- the id used for the R2 prefix ----------
 
 test('a job with LESS than 60s left gets a TTL that does not outlive it', async () => {

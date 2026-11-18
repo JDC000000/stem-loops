@@ -72,6 +72,9 @@ test('privacy: the 24-hour deletion sentence names the chord track, as a whole s
   // 2026-11-15 (Jon): the 24 h sentence now names WHO it applies to, and the paid library
   // follows it. Pinned whole, both paragraphs, so dropping Free's exactness or the paid
   // grace terms is a red test. The rule itself: lib/retention.ts JOB_RETAINED_UNTIL_SQL.
+  // Its one other branch, is_demo (migration 040), keeps the operator's own demo songs
+  // (docs/legal/demo-songs-rights.md) and no user's content, so this sentence is unchanged;
+  // no application path sets is_demo on a user's job.
   const sentence =
     'How long Uploaded files, fetched audio, stems, loops, the estimated chord track and the job\u2019s own row are deleted after 24 hours. ' +
     'That is the Free plan, and every job started without an account. On Pro and Studio, the songs in your account are kept instead, as your library: ' +

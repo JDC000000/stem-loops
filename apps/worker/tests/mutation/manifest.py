@@ -462,6 +462,28 @@ MUTANTS: tuple[Mutant, ...] = (
         ("tests/test_paid_retention.py::test_sweep_applies_the_rule_to_every_case",),
         "Review of #279: with two qualifying subscriptions the LATEST end must decide.",
     ),
+    # -------------------------------------------- demo songs (V3 Slice 0, migration 040)
+    Mutant(
+        "demo_branch_removed_from_sweep_rule",
+        CL,
+        "f\"(CASE WHEN jobs.is_demo THEN '{DEMO_RETAINED_UNTIL}'::timestamptz ELSE \"",
+        '"(CASE WHEN false THEN now() ELSE "',
+        (
+            "tests/test_paid_retention.py::test_sweep_applies_the_rule_to_every_case",
+            "tests/test_paid_retention.py::test_sweep_never_selects_a_demo_row",
+        ),
+        "Slice 0 (migration 040): without the is_demo branch in cleanup.RETAINED_UNTIL_SQL the "
+        "sweep deletes the demo songs like any other job.",
+    ),
+    Mutant(
+        "demo_retained_until_infinity",
+        CL,
+        'DEMO_RETAINED_UNTIL = "2099-12-31T00:00:00Z"',
+        'DEMO_RETAINED_UNTIL = "infinity"',
+        ("tests/test_paid_retention.py::test_demo_branch_is_finite_and_matches_the_web_constant",),
+        "Slice 0: the demo date must be FINITE (node-pg turns 'infinity' into Infinity -> NaN -> "
+        "1-second signed URLs), and identical to the web's DEMO_RETAINED_UNTIL.",
+    ),
     Mutant(
         "orphan_error_log_removed",
         CL,
@@ -652,6 +674,38 @@ MUTANTS: tuple[Mutant, ...] = (
                 "GET /api/jobs/:id/loops: an EXPIRED",
             ),
         )
+    ),
+    Mutant(
+        "web_library_is_demo_column_dropped",
+        "src/app/api/library/route.ts",
+        "              is_demo, ${JOB_RETAINED_UNTIL_SQL} AS expires_at",
+        "              ${JOB_RETAINED_UNTIL_SQL} AS expires_at",
+        ("test/library-route.test.mjs::GET /api/library: reads is_demo and passes it through",),
+        "Review of #289, MF-2 (W7): the library SELECT must read the is_demo column; the old "
+        "regex matched jobs.is_demo inside the retention SQL and let this mutant survive.",
+        suite="web",
+    ),
+    Mutant(
+        "web_library_is_demo_aliased_null",
+        "src/app/api/library/route.ts",
+        "              is_demo, ${JOB_RETAINED_UNTIL_SQL} AS expires_at",
+        "              NULL AS is_demo, ${JOB_RETAINED_UNTIL_SQL} AS expires_at",
+        ("test/library-route.test.mjs::GET /api/library: reads is_demo and passes it through",),
+        "Re-review of #289 @60dda0a, N-1 (A5): `NULL AS is_demo` must not pass for the real "
+        "column; the fake DB returns is_demo whatever the SQL asks for, so the select list is "
+        "what the test pins.",
+        suite="web",
+    ),
+    Mutant(
+        "web_account_delete_keeps_is_demo",
+        "src/app/api/users/me/route.ts",
+        "SET expires_at = LEAST(expires_at, created_at), is_demo = false",
+        "SET expires_at = LEAST(expires_at, created_at)",
+        ("test/account-delete.test.mjs::DELETE /api/users/me — expires the user",),
+        "Review of #289, SF-3: account deletion must clear is_demo, or a deleted demo owner "
+        "leaves demo songs retained until 2099 AND anonymous. Real-DB behaviour: "
+        "test_paid_retention.py::test_account_deletion_statement_ends_a_demo.",
+        suite="web",
     ),
     Mutant(
         "web_job_ttl_is_the_full_window",

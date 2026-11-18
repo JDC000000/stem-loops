@@ -94,8 +94,15 @@ delete process.env.MINIO_ENDPOINT;
 // apps/worker/tests/test_paid_retention.py, which executes this same constant.
 // Anything else that is not modelled still records-and-throws, so dropping or rewriting the
 // predicate is a red test, as before.
+//
+// Demo songs (V3 Slice 0, migration 040): for an is_demo row the real expression is the
+// finite DEMO_RETAINED_UNTIL (2099-12-31), whatever expires_at says. The fake models that
+// too, in the predicate AND in the `<rule> AS expires_at` projection the routes read their
+// TTLs from, so a demo fixture exercises the same path a real one would.
 const RETAINED = '__RETAINED_UNTIL__';
 let RETAINED_SQL = null; // set in loadRoutes from the real module
+let DEMO_UNTIL = null; // DEMO_RETAINED_UNTIL, set in loadRoutes from the real module
+const retainedUntil = (r) => (r.is_demo === true ? DEMO_UNTIL : r.expires_at);
 const tokenise = (sql) => (RETAINED_SQL ? sql.split(RETAINED_SQL).join(RETAINED) : sql);
 
 function evaluate(table, where, params, rows, now, unmodelled) {
@@ -113,7 +120,7 @@ function evaluate(table, where, params, rows, now, unmodelled) {
     } else if (table === 'jobs' && c === `${RETAINED} > now()`) {
       out = out.filter((r) => {
         if (r.user_id !== null) throw new Error('fake db models JOB_RETAINED_UNTIL_SQL for anonymous jobs only');
-        return new Date(r.expires_at).getTime() > now;
+        return new Date(retainedUntil(r)).getTime() > now;
       });
     } else if (table === 'loops' && /^cut_at IS NULL$/i.test(c)) {
       out = out.filter((r) => r.cut_at == null);
@@ -145,7 +152,11 @@ function makeDb(store) {
       if (/^SELECT COUNT\(\*\)::int AS total, COUNT\(cut_at\)::int AS cut FROM loops /i.test(sql)) {
         return { rows: [{ total: rows.length, cut: rows.filter((r) => r.cut_at != null).length }], rowCount: 1 };
       }
-      return { rows: rows.map((r) => ({ ...r })), rowCount: rows.length };
+      const projected = table === 'jobs' && sql.includes(`${RETAINED} AS expires_at`);
+      return {
+        rows: rows.map((r) => (projected ? { ...r, expires_at: retainedUntil(r) } : { ...r })),
+        rowCount: rows.length,
+      };
     },
   };
 }
@@ -156,6 +167,8 @@ let routes;
 async function loadRoutes() {
   const retention = dataUrl(toJs('src/lib/retention.ts'));
   RETAINED_SQL = (await import(retention)).JOB_RETAINED_UNTIL_SQL.replace(/\s+/g, ' ').trim();
+  DEMO_UNTIL = (await import(retention)).DEMO_RETAINED_UNTIL;
+  assert.equal(DEMO_UNTIL, '2099-12-31T00:00:00Z');
   assert.ok(RETAINED_SQL.length > 0, 'lib/retention.ts must export JOB_RETAINED_UNTIL_SQL');
   const r2 = dataUrl(
     toJs('src/lib/r2.ts')
@@ -234,11 +247,12 @@ const H = 3600 * 1000;
 let store;
 
 /** A job row; `expiresInMs` is relative to now (negative = already expired, unswept). */
-function addJob(id, expiresInMs, status = 'done') {
+function addJob(id, expiresInMs, status = 'done', extra = {}) {
   const now = Date.now();
   store.jobs.push({
     id,
     status,
+    is_demo: false,
     user_id: null,
     input_kind: 'youtube',
     youtube_url: 'https://y/x',
@@ -253,6 +267,7 @@ function addJob(id, expiresInMs, status = 'done') {
     created_at: new Date(now + expiresInMs - 24 * H).toISOString(),
     updated_at: new Date(now).toISOString(),
     expires_at: new Date(now + expiresInMs).toISOString(),
+    ...extra,
   });
   store.loops.push({
     id: `loop-${id}`,
@@ -272,6 +287,7 @@ function addJob(id, expiresInMs, status = 'done') {
 const LIVE = '550e8400-e29b-41d4-a716-446655440001';
 const EXPIRED = '550e8400-e29b-41d4-a716-446655440002';
 const EDGE = '550e8400-e29b-41d4-a716-446655440003';
+const DEMO = '550e8400-e29b-41d4-a716-446655440004';
 const call = (route, id) => route.GET({}, { params: { id } });
 const ttlOf = (url) => Number(new URL(url).searchParams.get('X-Amz-Expires'));
 
@@ -283,6 +299,8 @@ beforeEach(async () => {
   addJob(LIVE, 2 * H);
   addJob(EXPIRED, -1 * H); // expired an hour ago, worker sweep has not reached it
   addJob(EDGE, 90 * 1000); // 90 s of life left
+  // A demo song: its own 24 h expires_at ran out 30 days ago; is_demo keeps it (migration 040).
+  addJob(DEMO, -30 * 24 * H, 'done', { is_demo: true });
 });
 
 afterEach(() => {
@@ -429,4 +447,42 @@ test('every GET that returns a signed URL sends Cache-Control: private, no-store
     const cc = res.headers?.['Cache-Control'] ?? res.headers?.['cache-control'];
     assert.equal(cc, 'private, no-store', `${name}: Cache-Control was ${JSON.stringify(cc)}`);
   }
+});
+
+// ───────────── demo songs (V3 Slice 0, migration 040) ─────────────
+// The fake models every fixture as anonymous, so ownership is NOT what these test (a real demo
+// is owned by the demo system account; the read branch is Slice 2). They test the retention
+// value: a demo row whose expires_at is long past is still retained, its expiry reads as
+// 2099-12-31, and every TTL derived from it is the NORMAL cap (not NaN, not 1 s).
+
+test('demo: GET /api/jobs/:id serves a demo song past its expires_at; expiry reads 2099-12-31; 24 h URL cap', async () => {
+  const res = await call(routes.job, DEMO);
+  assert.equal(res.status, 200, `demo answered ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
+  assert.equal(new Date(res.body.expires_at).toISOString(), '2099-12-31T00:00:00.000Z');
+  assert.equal(res.body.is_demo, true, 'the player needs is_demo to hide "deleted in"');
+  assert.equal(ttlOf(res.body.loops[0].signed_url), 24 * 3600, 'presignTtlSec: the normal 24 h cap');
+});
+
+test('demo: GET /api/jobs/:id returns is_demo false for a regular job', async () => {
+  const res = await call(routes.job, LIVE);
+  assert.equal(res.body.is_demo, false);
+});
+
+test('demo: GET /api/jobs/:id/stems gives a demo song six 900 s URLs (never the 1 s fail-closed TTL)', async () => {
+  const res = await call(routes.stems, DEMO);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.stems.length, 6);
+  assert.equal(res.body.expires_in_sec, 900);
+  for (const s of res.body.stems) assert.equal(ttlOf(s.signed_url), 900, `${s.stem}`);
+});
+
+test('demo: without the flag the SAME row is expired and 404 (the flag is what keeps it)', async () => {
+  store.jobs.find((j) => j.id === DEMO).is_demo = false;
+  assert.equal((await call(routes.job, DEMO)).status, 404);
+  assert.equal((await call(routes.stems, DEMO)).status, 404);
+});
+
+test('demo: GET /api/jobs/:id SELECTs is_demo (the fake returns whole rows, so pin the statement)', () => {
+  const src = readFileSync(join(WEB, 'src/app/api/jobs/[id]/route.ts'), 'utf8').replace(/\s+/g, ' ');
+  assert.match(src, /SELECT user_id, id, [^`]*\bis_demo, \$\{JOB_RETAINED_UNTIL_SQL\} AS expires_at FROM jobs WHERE/);
 });

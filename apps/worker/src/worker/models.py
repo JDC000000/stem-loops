@@ -134,6 +134,9 @@ class Job(BaseModel):
     created_at: datetime
     updated_at: datetime
     expires_at: datetime
+    # Demo song (V3 Slice 0, migration 040): retained until 2099-12-31, so the player hides
+    # its "deleted in ..." line. Set only by an operator; false for every other job.
+    is_demo: bool = False
     # Input trim (2026-11-14): a track longer than MAX_UPLOAD_DURATION_SEC is cut to its first
     # MAX_UPLOAD_DURATION_SEC seconds instead of refused. Read from the downloading/completed
     # job_events.detail ({"trimmed": true, "source_sec": X, "used_sec": N}); no migration.

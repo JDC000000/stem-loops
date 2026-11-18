@@ -149,9 +149,13 @@ const linkMod = put(
    }`,
 );
 
+// isDemoRow is the REAL one (lib/retention.ts, transpiled), so the demo gate below tests
+// the rule the player ships, not a copy of it.
+const retentionRealMod = put('retention-real.mjs', toJs(read('src/lib/retention.ts')));
 const retentionMod = put(
   'retention.mjs',
-  `export const formatExpiresIn = () => 'in 24 hours';`,
+  `export const formatExpiresIn = () => 'in 24 hours';
+   export { isDemoRow } from '${retentionRealMod}';`,
 );
 
 // ChordOverlay is NOT imported by JobView on a healthy tree — the overlay moved
@@ -531,4 +535,22 @@ test('an untouched job renders no trim note', () => {
   for (const job of [DONE_JOB, { ...DONE_JOB, input_trim_used_sec: null, input_trim_source_sec: null }]) {
     assert.doesNotMatch(renderJob(job), /trim-note|Using the first/);
   }
+});
+
+// ── demo songs (V3 Slice 0, migration 040): kept until 2099, so no countdown ──
+// The retention stub's formatExpiresIn returns 'in 24 hours'; the demo gate is the REAL
+// isDemoRow. A regular job with an expiry shows the countdown (so the negative below is
+// discriminating); a demo job with the SAME expiry shows none, and keeps the plan sentence.
+test('a job with an expiry says "This song is deleted in …"; a demo song (is_demo) does not', () => {
+  const expires_at = '2099-12-31T00:00:00Z';
+  const regular = renderJob({ ...DONE_JOB, expires_at });
+  assert.match(regular, /This song is deleted in 24 hours\./, 'the countdown must render for a regular job');
+  for (const job of [{ ...DONE_JOB, expires_at, is_demo: true }]) {
+    const html = renderJob(job);
+    assert.doesNotMatch(html, /This song is deleted/, 'a demo song must not read "deleted in ~27,000 days"');
+    assert.match(html, /On Free, files are deleted after 24 hours/, 'only the countdown is hidden');
+    assert.match(html, /data-testid="player"/, 'the demo still reaches the done branch');
+  }
+  // is_demo: false (every job the API returns that is not a demo) keeps the countdown.
+  assert.match(renderJob({ ...DONE_JOB, expires_at, is_demo: false }), /This song is deleted in 24 hours\./);
 });

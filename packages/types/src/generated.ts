@@ -58,6 +58,7 @@ export interface Job {
   created_at: string;
   updated_at: string;
   expires_at: string;
+  is_demo?: boolean;
   input_trim_used_sec?: number | null;
   input_trim_source_sec?: number | null;
   events?: JobEvent[];

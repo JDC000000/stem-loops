@@ -22,7 +22,9 @@ const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
 // Each loop gets a FRESHLY minted signed URL on every read (PRD §8 anti-goal #4), valid for
 // at most the job's remaining life, capped at 24h. "Remaining life" is JOB_RETAINED_UNTIL_SQL
 // (24h for Free, longer for a Pro/Studio owner; lib/retention.ts), returned AS expires_at.
-// Past it the job is treated as gone even if the sweep hasn't run yet.
+// Past it the job is treated as gone even if the sweep hasn't run yet. `is_demo` (migration
+// 040) is returned so the player can hide "deleted in …" for a demo song, whose expires_at is
+// the far-future DEMO_RETAINED_UNTIL. It opens no read path: ownership is unchanged.
 export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
   // A shape-invalid id (mistyped/truncated bookmark) would otherwise hit Postgres's
   // uuid-cast error → generic 500, which the client poll loop treats as non-terminal
@@ -35,7 +37,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     const jobRes = await db.query(
       `SELECT user_id, id, input_kind, youtube_url, upload_r2_key, original_filename, requested_stems,
               loop_length_bars, status, error_code, error_message_user, bpm, musical_key,
-              created_at, updated_at, ${JOB_RETAINED_UNTIL_SQL} AS expires_at
+              created_at, updated_at, is_demo, ${JOB_RETAINED_UNTIL_SQL} AS expires_at
        FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
       [params.id]
     );

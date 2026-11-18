@@ -220,16 +220,17 @@ const inRun = (run: SectionRun, i: number) => i >= run.lo && i <= run.hi;
 /**
  * A tap (click, Enter or Space) on chip `i`. P2.1:
  *   no loop · tap X                        -> loop [X]
- *   loop off, run remembered · tap inside  -> loop that chip alone (re-loops it)
+ *   loop off (run remembered or not) · tap X -> loop [X] alone, on. It never
+ *                                            extends the remembered run
+ *                                            (Jon, QA C-10 option (b), 2026-11-18)
  *   run [X] (one chip, looping) · tap X    -> clear
- *   run [i..j] · tap outside, either side  -> extend to [min(i,X)..max(j,X)], looping
+ *   run [i..j] looping · tap outside       -> extend to [min(i,X)..max(j,X)], looping
  *   run [i..j], 2+ chips · tap inside      -> shrink to that chip
  */
 export function tapSection(state: RunState, i: number): RunTapResult {
   const { run, on } = state;
   if (!Number.isInteger(i) || i < 0) return { state, extended: false };
-  if (!run) return { state: { run: { lo: i, hi: i }, on: true }, extended: false };
-  if (!on && inRun(run, i)) return { state: { run: { lo: i, hi: i }, on: true }, extended: false };
+  if (!run || !on) return { state: { run: { lo: i, hi: i }, on: true }, extended: false };
   if (run.lo === run.hi && i === run.lo) return { state: NO_RUN, extended: false };
   if (!inRun(run, i)) {
     return { state: { run: { lo: Math.min(run.lo, i), hi: Math.max(run.hi, i) }, on: true }, extended: true };

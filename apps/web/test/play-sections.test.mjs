@@ -364,10 +364,57 @@ test('P2.1 row 8 — loop button, loop off and nothing remembered -> no change (
   assert.deepEqual(toggleRunLoop(NO_RUN), NO_RUN);
 });
 
-test('P2.1 — with the loop off, tapping a REMEMBERED chip re-loops it (alone); outside extends and turns it on', () => {
-  assert.deepEqual(tapSection(run(1, 3, false), 2), { state: run(2, 2), extended: false });
+// QA C-10, Jon 2026-11-18 (option b): with the loop OFF, a tap loops just the
+// tapped section. It never extends the remembered run and never fires the hint.
+test('P2.1 (C-10 b) — loop off · tap OUTSIDE the remembered run -> loop just that chip, NOT extend', () => {
+  assert.deepEqual(tapSection(run(1, 2, false), 4), { state: run(4, 4), extended: false }, 'after the run');
+  assert.deepEqual(tapSection(run(2, 3, false), 0), { state: run(0, 0), extended: false }, 'before the run');
+  assert.deepEqual(tapSection(run(2, 2, false), 5), { state: run(5, 5), extended: false }, 'a remembered single chip, far tap');
+  assert.deepEqual(tapSection(run(2, 2, false), 3), { state: run(3, 3), extended: false }, 'a remembered single chip, adjacent tap');
+});
+
+test('P2.1 (C-10 b) — loop off · tap INSIDE the remembered run -> loop just that chip', () => {
+  for (const i of [1, 2, 3]) assert.deepEqual(tapSection(run(1, 3, false), i), { state: run(i, i), extended: false }, `chip ${i}`);
   assert.deepEqual(tapSection(run(2, 2, false), 2), { state: run(2, 2), extended: false }, 'a remembered single chip loops, it does not clear');
-  assert.deepEqual(tapSection(run(1, 2, false), 4), { state: run(1, 4), extended: true });
+});
+
+test('P2.1 (C-10 b) — loop off, then any tap: the result is always [X] alone and on, whatever was remembered', () => {
+  const remembered = [null, [0, 0], [0, 6], [2, 4], [5, 5]];
+  for (const r of remembered) {
+    const state = r ? run(r[0], r[1], false) : NO_RUN;
+    for (let x = 0; x <= 6; x++) {
+      assert.deepEqual(tapSection(state, x), { state: run(x, x), extended: false }, `remembered ${JSON.stringify(r)} tap ${x}`);
+    }
+  }
+});
+
+test('P2.1 (C-10 b) — the C-10 repro: loop off on Verse 1, tap Outro -> loops Outro only, not Verse 1 -> Outro', () => {
+  // QA C-10: `{run:[2], on:false}` + tap 5 used to give [2..5], on.
+  assert.deepEqual(tapSection(run(2, 2, false), 5).state, run(5, 5));
+});
+
+test('P2.1 — the loop ON rows still hold after the C-10 change (extend + hint, clear, shrink)', () => {
+  // extend, either side, with the hint flag
+  assert.deepEqual(tapSection(run(2, 2), 5), { state: run(2, 5), extended: true });
+  assert.deepEqual(tapSection(run(2, 4), 0), { state: run(0, 4), extended: true });
+  // the single looped section tapped again clears
+  assert.deepEqual(tapSection(run(4, 4), 4), { state: NO_RUN, extended: false });
+  // shrink inside a 2+ run
+  assert.deepEqual(tapSection(run(0, 3), 1), { state: run(1, 1), extended: false });
+  // a full sequence: tap 2 (loop), tap 4 (extend), loop button off, tap 6 -> [6] alone
+  let s = tapSection(NO_RUN, 2).state;
+  s = tapSection(s, 4).state;
+  assert.deepEqual(s, run(2, 4));
+  s = toggleRunLoop(s);
+  assert.deepEqual(s, run(2, 4, false), 'off, remembered');
+  assert.deepEqual(tapSection(s, 6), { state: run(6, 6), extended: false }, 'off: loops the tapped chip only');
+  assert.deepEqual(toggleRunLoop(s), run(2, 4), 'the loop button still brings the remembered run back');
+});
+
+test('P2.1 — long-press is unchanged by C-10: loop only this, on or off', () => {
+  assert.deepEqual(longPressSection(run(1, 2, false), 5), run(5, 5));
+  assert.deepEqual(longPressSection(run(1, 2), 5), run(5, 5));
+  assert.deepEqual(longPressSection(NO_RUN, 0), run(0, 0));
 });
 
 test('P2.1 — a bad index changes nothing', () => {

@@ -261,6 +261,41 @@ test('P2.1 through the screen: tap, extend (+ the one-time hint), shrink, loop o
   });
 });
 
+// QA C-10, Jon 2026-11-18 (option b): with the loop OFF, tapping a section loops
+// just that section. It must not extend the remembered run, and must not spend
+// the one-time hint (that belongs to the first real extend, with the loop on).
+test('P2.1 (C-10 b) through the screen: loop off, tap outside the remembered run -> loops that section alone', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const loops = [];
+    await dom.mount(React.createElement(EngineEcho, { calls: loops }));
+    const chip = (i) => dom.findAll('[data-testid="section-strip"] button')[i];
+    const loopBtn = () => dom.find('[data-testid="transport-loop"]');
+
+    await dom.act(() => chip(1).click());
+    assert.deepEqual(loops.at(-1), { startSec: 9, endSec: 47 });
+    await dom.act(() => loopBtn().click());
+    assert.equal(loops.at(-1), null, 'loop off, Verse 1 remembered');
+
+    await dom.act(() => chip(3).click());
+    assert.deepEqual(loops.at(-1), { startSec: 66, endSec: 104 }, 'loop off + tap outside: just that section, NOT Verse 1 -> it');
+    assert.equal(loopBtn().getAttribute('aria-pressed'), 'true', 'and the loop is on');
+    assert.equal(dom.findAll('[data-testid="section-strip"] button[aria-pressed="true"]').length, 1);
+    assert.equal(dom.find('[data-testid="section-hint"]'), null, 'no extend, so no hint');
+
+    // With the loop ON, outside still extends, and the one-time hint is still unspent.
+    await dom.act(() => chip(1).click());
+    assert.deepEqual(loops.at(-1), { startSec: 9, endSec: 104 }, 'loop on + tap outside: extend');
+    assert.match(dom.find('[data-testid="section-hint"]').textContent, /Looping these — tap one to loop it alone\./);
+
+    // Loop off on a 2+ run, tap inside: that chip alone.
+    await dom.act(() => loopBtn().click());
+    await dom.act(() => chip(2).click());
+    assert.deepEqual(loops.at(-1), { startSec: 47, endSec: 66 }, 'loop off + tap inside: just that section');
+    await dom.unmountAll();
+  });
+});
+
 // Slice 1b follow-up (review nit on #288): the swallow window used to start on pointerleave
 // too. A MOUSE that holds a chip past the long-press, slides off it and back, and lets go
 // more than SWALLOW_WINDOW_MS later then had its release click read as a TAP — which on the

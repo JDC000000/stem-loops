@@ -36,9 +36,19 @@ export const PAID_RETENTION_GRACE_DAYS = 30;
  *   updated_at, which can push LEAST(current_period_end, updated_at) later, up to
  *   current_period_end; bounded, never forever. Computed at read time: no webhook or backfill has to run for it.
  *
+ * DEMO SONGS (V3 Slice 0, migration 040): a row with `jobs.is_demo` is retained until
+ * DEMO_RETAINED_UNTIL, whatever its expires_at or owner's plan, so the sweep never selects
+ * it. That date is FINITE on purpose, never 'infinity': node-pg returns 'infinity' as the
+ * number Infinity, `new Date(Infinity)` is NaN, lib/library.ts drops a row with a
+ * non-finite expiry, and the stems/download routes fail closed to 1-second signed URLs.
+ * With a finite date every expiry path works unchanged (stems: 900 s cap; presignTtlSec:
+ * 24 h cap). The UI hides "deleted in …" for a demo (isDemoRow; it would read
+ * "in ~27,000 days").
+ *
  * DO NOT EDIT WITHOUT apps/worker/src/worker/cleanup.py RETAINED_UNTIL_SQL.
  */
 export const JOB_RETAINED_UNTIL_SQL =
+  "(CASE WHEN jobs.is_demo THEN '2099-12-31T00:00:00Z'::timestamptz ELSE " +
   "GREATEST(jobs.expires_at, (" +
   "SELECT MAX(p.paid_until) + interval '30 days' FROM (" +
   "SELECT CASE" +
@@ -52,7 +62,17 @@ export const JOB_RETAINED_UNTIL_SQL =
   " WHERE p.paid_until >= jobs.created_at" +
   " AND jobs.expires_at = jobs.created_at + interval '24 hours'" +
   " AND jobs.client_ip_hash <> 'purged'" +
-  "))";
+  ")) END)";
+
+/** The retained-until value of a demo song (`jobs.is_demo`), as JOB_RETAINED_UNTIL_SQL
+ *  returns it. A literal inside the SQL above (the worker's test reads that constant as
+ *  string literals only); retention.test.mjs pins the two equal. */
+export const DEMO_RETAINED_UNTIL = '2099-12-31T00:00:00Z';
+
+/** True for a demo song. Accepts the API's `is_demo` (boolean; absent on older bodies). */
+export function isDemoRow(row: { is_demo?: boolean | null } | null | undefined): boolean {
+  return row?.is_demo === true;
+}
 
 // Floor so a presign for a job seconds from expiry is still a valid positive TTL.
 const MIN_PRESIGN_SEC = 60;

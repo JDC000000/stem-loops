@@ -462,6 +462,28 @@ MUTANTS: tuple[Mutant, ...] = (
         ("tests/test_paid_retention.py::test_sweep_applies_the_rule_to_every_case",),
         "Review of #279: with two qualifying subscriptions the LATEST end must decide.",
     ),
+    # -------------------------------------------- demo songs (V3 Slice 0, migration 040)
+    Mutant(
+        "demo_branch_removed_from_sweep_rule",
+        CL,
+        "f\"(CASE WHEN jobs.is_demo THEN '{DEMO_RETAINED_UNTIL}'::timestamptz ELSE \"",
+        '"(CASE WHEN false THEN now() ELSE "',
+        (
+            "tests/test_paid_retention.py::test_sweep_applies_the_rule_to_every_case",
+            "tests/test_paid_retention.py::test_sweep_never_selects_a_demo_row",
+        ),
+        "Slice 0 (migration 040): without the is_demo branch in cleanup.RETAINED_UNTIL_SQL the "
+        "sweep deletes the demo songs like any other job.",
+    ),
+    Mutant(
+        "demo_retained_until_infinity",
+        CL,
+        'DEMO_RETAINED_UNTIL = "2099-12-31T00:00:00Z"',
+        'DEMO_RETAINED_UNTIL = "infinity"',
+        ("tests/test_paid_retention.py::test_demo_branch_is_finite_and_matches_the_web_constant",),
+        "Slice 0: the demo date must be FINITE (node-pg turns 'infinity' into Infinity -> NaN -> "
+        "1-second signed URLs), and identical to the web's DEMO_RETAINED_UNTIL.",
+    ),
     Mutant(
         "orphan_error_log_removed",
         CL,

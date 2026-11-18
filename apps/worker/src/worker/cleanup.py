@@ -107,11 +107,20 @@ MAX_BACKOFF_SECONDS = 6 * 3600
 #     job and a job started WITHOUT an account (later claimed) both stay on the 24 h clock,
 #   * the job is not an anonymised shell (its content is already gone).
 # Every term is a finite timestamp, so every job is eventually deleted.
+#
+# DEMO SONGS (V3 Slice 0, migration 040): a row with jobs.is_demo is retained until
+# DEMO_RETAINED_UNTIL whatever its expires_at or owner's plan, so this sweep never selects
+# it. FINITE on purpose, not 'infinity' (node-pg would hand the web Infinity -> NaN, and the
+# stems/download routes fail closed to 1-second signed URLs on NaN). Only an operator sets
+# is_demo; no application code writes it.
 # ---------------------------------------------------------------------------------------
 PAID_RETENTION_GRACE = "30 days"
 # = PAST_DUE_GRACE_MS (7 days) in apps/web/src/lib/billing/entitlements.ts.
 PAST_DUE_GRACE = "7 days"
+# = DEMO_RETAINED_UNTIL in apps/web/src/lib/retention.ts.
+DEMO_RETAINED_UNTIL = "2099-12-31T00:00:00Z"
 RETAINED_UNTIL_SQL = (
+    f"(CASE WHEN jobs.is_demo THEN '{DEMO_RETAINED_UNTIL}'::timestamptz ELSE "
     "GREATEST(jobs.expires_at, ("
     f"SELECT MAX(p.paid_until) + interval '{PAID_RETENTION_GRACE}' FROM ("
     "SELECT CASE"
@@ -125,7 +134,7 @@ RETAINED_UNTIL_SQL = (
     " WHERE p.paid_until >= jobs.created_at"
     " AND jobs.expires_at = jobs.created_at + interval '24 hours'"
     " AND jobs.client_ip_hash <> 'purged'"
-    "))"
+    ")) END)"
 )
 # Written to client_ip_hash / client_fingerprint of an anonymised job shell. Real values are
 # hex digests so this cannot collide, and it is how the sweep recognises a shell it has already

@@ -336,6 +336,11 @@ test('DELETE /api/users/me — expires the user\'s live jobs inside the erase tx
   // 2026-11-15: expires_at = created_at, not now(). A Pro/Studio library is retained PAST
   // expires_at by the subscription (lib/retention.ts JOB_RETAINED_UNTIL_SQL), which ignores
   // the subscription once expires_at <= created_at; so this kills paid retention too.
+  // It does NOT kill a DEMO song's retention (migration 040: is_demo rows are retained until
+  // 2099-12-31 whatever expires_at says). That is why demos are owned by a dedicated system
+  // account, never Jon's personal one (DESIGN-PROPOSAL v1.4 P3.1): deleting the owner would
+  // leave them retained AND anonymous (user_id ON DELETE SET NULL). Real-DB pin:
+  // apps/worker/tests/test_paid_retention.py::test_demo_survives_its_owners_account_deletion_statement.
   assert.match(exp[0][1], /SET\s+expires_at\s*=\s*LEAST\(expires_at,\s*created_at\)/i);
   assert.match(exp[0][1], /WHERE\s+user_id\s*=\s*\$1::uuid/i);
   assert.match(exp[0][1], /expires_at\s*>\s*created_at/i, 'every not-yet-killed job, including a paid one past its 24 h');

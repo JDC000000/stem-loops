@@ -87,7 +87,12 @@ const linkMod = put(
      return createElement('a', { href: String(href), ...rest }, children);
    }`,
 );
-const retentionMod = put('retention.mjs', `export const formatExpiresIn = () => 'in 24 hours';`);
+const retentionRealMod = put('retention-real.mjs', toJs(read('src/lib/retention.ts')));
+const retentionMod = put(
+  'retention.mjs',
+  `export const formatExpiresIn = () => 'in 24 hours';
+   export { isDemoRow } from '${retentionRealMod}';`,
+);
 const chordOverlayMod = put(
   'ChordOverlay.mjs',
   `import { createElement } from 'react';

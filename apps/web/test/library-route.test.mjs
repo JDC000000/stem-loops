@@ -120,3 +120,19 @@ test('/history reads the library from /api/library (the DB), not only this brows
   assert.match(src, /fetch\('\/api\/library'/);
   assert.match(src, /listedSongs\(/);
 });
+
+// ── demo songs (V3 Slice 0, migration 040) ──
+test('GET /api/library: reads is_demo and passes it through, so /history can hide "deleted in"', async () => {
+  const { DEMO_RETAINED_UNTIL } = await import(retentionUrl);
+  const demo = { ...row(9), title: 'Lucky Ticket', expires_at: DEMO_RETAINED_UNTIL, is_demo: true };
+  const { GET } = await load({ user: { user_id: ME }, rows: [demo, { ...row(1), is_demo: false }] });
+  const res = await GET();
+  const select = norm(globalThis.__lib.queries[0].text).split(' FROM jobs ')[0];
+  assert.match(select, /\bis_demo\b/, 'the SELECT must read is_demo');
+  assert.deepEqual(res.body.songs.map((s) => [s.is_demo, s.expires_at]), [[true, DEMO_RETAINED_UNTIL], [false, row(1).expires_at]]);
+});
+
+test('/history hides "deleted in" for a demo row (render test: history-demo-row.test.mjs)', () => {
+  const src = readFileSync(join(WEB, 'src/app/history/page.tsx'), 'utf8');
+  assert.match(src, /s\.isDemo \? null :/);
+});

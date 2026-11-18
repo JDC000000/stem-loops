@@ -4,7 +4,8 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import HCaptcha from '@hcaptcha/react-hcaptcha';
 import { createBrowserClient } from '@/lib/auth/supabase';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
-import { PASSWORD_MIN_LENGTH, validatePassword } from '@/lib/auth/password-rules';
+import { PASSWORD_MIN_LENGTH, PASSWORD_RULE_TEXT, validatePassword, validateSignupEmail } from '@/lib/auth/password-rules';
+import { PasswordField } from '@/components/PasswordField';
 import { loginErrorMessage } from '@/lib/auth/login-errors';
 import { sendMagicLink } from '@/lib/auth/magic-link';
 import { fieldStyle, buttonBase, primaryButton, secondaryButton, secondaryEmphasisButton, textButton } from '@/lib/ui/form-styles';
@@ -31,6 +32,9 @@ export default function LoginForm({
   const busy = busyAction !== null;
   const [error, setError] = useState<string | null>(loginErrorMessage(initialError));
   const [notice, setNotice] = useState<string | null>(null);
+  // Slice 1b: the sign-up route's "If you already have an account, sign in instead…" reply
+  // carries `sign_in: true`; the error line then gets a Sign in link beside it.
+  const [offerSignIn, setOfferSignIn] = useState(false);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const captchaRef = useRef<HCaptcha>(null);
   const siteKey = process.env.NEXT_PUBLIC_HCAPTCHA_SITE_KEY;
@@ -67,11 +71,13 @@ export default function LoginForm({
     setBusyAction(action);
     setError(null);
     setNotice(null);
+    setOfferSignIn(false);
     try {
       const msg = await fn();
       if (msg) setNotice(msg);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
+      setOfferSignIn(e instanceof Error && (e as Error & { signIn?: boolean }).signIn === true);
     } finally {
       setBusyAction(null);
     }
@@ -83,6 +89,10 @@ export default function LoginForm({
     // accepts a password the server will reject. Sign-in is never checked:
     // existing accounts may predate these rules.
     if (mode === 'signup') {
+      // Same check as the server: an address most providers will bounce is caught here,
+      // before a confirmation email is sent to it (Slice 1b).
+      const emailError = validateSignupEmail(email);
+      if (emailError) { setError(emailError); return; }
       const pwError = validatePassword(password);
       if (pwError) { setError(pwError); return; }
     }
@@ -102,12 +112,17 @@ export default function LoginForm({
           body: JSON.stringify({ email, password, hcaptcha_token: captchaToken, return_to: dest }),
         });
         const json = (await res.json().catch(() => ({}))) as {
-          ok?: boolean; error?: string; needs_confirmation?: boolean;
+          ok?: boolean; error?: string; needs_confirmation?: boolean; sign_in?: boolean;
         };
         // Tokens are single-use: always demand a fresh challenge after an attempt.
         setCaptchaToken(null);
         captchaRef.current?.resetCaptcha();
-        if (!res.ok || !json.ok) throw new Error(json.error ?? 'Could not create account. Please try again.');
+        if (!res.ok || !json.ok) {
+          // The route only ever sends its own one-line copy (lib/auth/signup-errors.ts).
+          throw Object.assign(new Error(json.error ?? "We couldn't create your account just now — try again in a minute."), {
+            signIn: json.sign_in === true,
+          });
+        }
         if (json.needs_confirmation) return 'Check your email to confirm your account.';
       } else {
         const { error: err } = await supabase.auth.signInWithPassword({ email, password });
@@ -160,13 +175,14 @@ export default function LoginForm({
         {mode !== 'reset' && (
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4, color: 'var(--text-secondary)', fontSize: 14 }}>
             Password
-            <input type="password" required
+            <PasswordField required
               minLength={mode === 'signup' ? PASSWORD_MIN_LENGTH : undefined}
               autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-              value={password} onChange={(e) => setPassword(e.target.value)} style={input} />
+              aria-describedby={mode === 'signup' ? 'password-rule' : undefined}
+              value={password} onChange={(e) => setPassword(e.target.value)} inputStyle={input} />
             {mode === 'signup' && (
-              <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-                At least {PASSWORD_MIN_LENGTH} characters, with a letter and a digit.
+              <span id="password-rule" style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+                {PASSWORD_RULE_TEXT}
               </span>
             )}
           </label>
@@ -198,6 +214,12 @@ export default function LoginForm({
       </form>
 
       {error && <p role="alert" style={{ color: 'var(--status-failed, #f66)', margin: 0, fontSize: 14 }}>{error}</p>}
+      {error && offerSignIn && mode === 'signup' && (
+        <button type="button" style={linkBtn} data-testid="signup-sign-in"
+          onClick={() => { setError(null); setOfferSignIn(false); setMode('signin'); }}>
+          Sign in
+        </button>
+      )}
       {notice && <p role="status" style={{ color: 'var(--status-done, #6c6)', margin: 0, fontSize: 14 }}>{notice}</p>}
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 8px', fontSize: 14, color: 'var(--text-muted)' }}>

@@ -42,6 +42,8 @@ async function build() {
     // test); unscripted, it returns undefined and the destructure throws, as an absent method did.
     'signInWithOAuth: (...a) => globalThis.__loginStub?.oauth?.(...a) } }; }');
   const hcaptcha = put('hcaptcha.mjs', 'export default function HCaptcha() { return null; }');
+  // The REAL show/hide password field (Slice 1b), not a stub: the toggle is what is tested.
+  const passwordField = put('PasswordField.mjs', toJs(read('src/components/PasswordField.tsx'), true));
 
   const js = toJs(read('src/components/LoginForm.tsx'), true)
     .replace(/from ['"]@hcaptcha\/react-hcaptcha['"]/g, `from '${hcaptcha}'`)
@@ -50,7 +52,8 @@ async function build() {
     .replace(/from ['"]@\/lib\/auth\/password-rules['"]/g, `from '${rules}'`)
     .replace(/from ['"]@\/lib\/auth\/login-errors['"]/g, `from '${errors}'`)
     .replace(/from ['"]@\/lib\/auth\/magic-link['"]/g, `from '${magic}'`)
-    .replace(/from ['"]@\/lib\/ui\/form-styles['"]/g, `from '${formStyles}'`);
+    .replace(/from ['"]@\/lib\/ui\/form-styles['"]/g, `from '${formStyles}'`)
+    .replace(/from ['"]@\/components\/PasswordField['"]/g, `from '${passwordField}'`);
   const file = join(dir, 'LoginForm.mjs');
   writeFileSync(file, js);
 

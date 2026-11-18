@@ -15,6 +15,10 @@
 
 export const PASSWORD_MIN_LENGTH = 10;
 
+/** The rule, as shown under every new-password field BEFORE anyone types (Slice 1b). Worded
+ *  from the same constant validatePassword() enforces, so the hint and the check agree. */
+export const PASSWORD_RULE_TEXT = `At least ${PASSWORD_MIN_LENGTH} characters, with a letter and a digit.`;
+
 export function validatePassword(raw: unknown): string | null {
   if (typeof raw !== 'string') return 'Enter a password.';
   if (raw.length === 0) return 'Enter a password.';
@@ -40,4 +44,40 @@ export function validateEmail(raw: unknown): string | null {
     return 'Enter a valid email address.';
   }
   return null;
+}
+
+/** Sign-up only (Slice 1b; Jon, 2026-11-17): two real sign-ups bounced on `name!@gmail.com`. */
+export const SIGNUP_EMAIL_CHAR_MSG =
+  "Check your email address — it has a character most email providers don't accept.";
+
+// Characters in the LOCAL part (before the @) that Gmail and most providers refuse, even
+// though RFC 5322 allows several of them: whitespace and ! # $ % & * / = ? ^ ` { | } ~ " ( )
+// , : ; < > [ \ ]. Letters (including non-ASCII), digits, . _ + - and ' are left alone so
+// no ordinary address is turned away.
+const LOCAL_PART_BAD_CHAR = /[\s!#$%&*/=?^`{|}~"(),:;<>[\]\\]/;
+
+/**
+ * The sign-up form's email check: validateEmail(), then a local-part check for characters
+ * (and dot patterns: leading, trailing, consecutive) that most providers do not accept, so a
+ * confirmation email is not sent to an address that will bounce. Used by the sign-up form and
+ * POST /api/auth/signup only. Sign-in and password reset keep validateEmail() unchanged, so an
+ * account that already exists is never locked out by the stricter rule.
+ */
+export function validateSignupEmail(raw: unknown): string | null {
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    const at = trimmed.lastIndexOf('@');
+    if (at > 0) {
+      const local = trimmed.slice(0, at);
+      if (
+        LOCAL_PART_BAD_CHAR.test(local) ||
+        local.startsWith('.') ||
+        local.endsWith('.') ||
+        local.includes('..')
+      ) {
+        return SIGNUP_EMAIL_CHAR_MSG;
+      }
+    }
+  }
+  return validateEmail(raw);
 }

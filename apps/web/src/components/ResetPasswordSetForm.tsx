@@ -10,7 +10,9 @@ import { fieldStyle, buttonBase, primaryButton } from '@/lib/ui/form-styles';
 import {
   validatePassword,
   PASSWORD_MIN_LENGTH,
+  PASSWORD_RULE_TEXT,
 } from '@/lib/auth/password-rules';
+import { PasswordField } from '@/components/PasswordField';
 
 const input = fieldStyle;
 const btn = { ...buttonBase, ...primaryButton };
@@ -64,8 +66,8 @@ export default function ResetPasswordSetForm() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, color: 'var(--text-primary)' }}>Set a new password</h1>
-      <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: 14 }}>
-        Choose a password at least {PASSWORD_MIN_LENGTH} characters long, with a letter and a digit.
+      <p id="password-rule" style={{ color: 'var(--text-secondary)', margin: 0, fontSize: 14 }}>
+        {PASSWORD_RULE_TEXT}
       </p>
 
       <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -79,14 +81,14 @@ export default function ResetPasswordSetForm() {
           }}
         >
           New password
-          <input
-            type="password"
+          <PasswordField
             required
             minLength={PASSWORD_MIN_LENGTH}
             autoComplete="new-password"
+            aria-describedby="password-rule"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            style={input}
+            inputStyle={input}
           />
         </label>
         <label
@@ -99,14 +101,14 @@ export default function ResetPasswordSetForm() {
           }}
         >
           Confirm password
-          <input
-            type="password"
+          <PasswordField
             required
             minLength={PASSWORD_MIN_LENGTH}
             autoComplete="new-password"
+            aria-describedby="password-rule"
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
-            style={input}
+            inputStyle={input}
           />
         </label>
         <button type="submit" disabled={busy || done} style={btn}>

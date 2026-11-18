@@ -16,9 +16,8 @@
 //        which may be 10px. Every visible text node inside [data-testid=player]
 //        is checked, and the count checked is printed and must be non-trivial.
 //   A16  Song-section chips: at least 44px tall, the name not clipped inside the
-//        chip, and pill corners (22px) — the section strip of the mockup Jon
-//        approved on 2026-11-17 (Slice 1a), which supersedes A16's 4px corners
-//        for this strip.
+//        chip, and fully rounded pill corners (22px). A16 AMENDED, approved by
+//        Jon 2026-11-17: pills replace the row's original 4px corners.
 //   Kept  Chord-root hues on the chord chips (Jon: "I like the colour
 //        separations"): every chord root maps to ONE background, and different
 //        roots to different backgrounds.
@@ -83,7 +82,7 @@ export const MIN_TEXT_PX = 11;
 export const MIN_MONO_PX = 12;
 /** A15: the mixer level readout, the one exemption inside the player. */
 export const MIXER_READOUT_MIN_PX = 10;
-/** A16 (radius: the approved Slice 1a mockup's pill, see the header). */
+/** A16, amended (approved by Jon 2026-11-17): 22px pills, not 4px corners. */
 export const SECTION_MIN_HEIGHT_PX = 44;
 export const SECTION_RADIUS_PX = 22;
 /** Story 2.1. */

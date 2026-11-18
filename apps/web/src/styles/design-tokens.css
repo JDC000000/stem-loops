@@ -185,6 +185,10 @@
   --radius-md:   4px;    /* cards, buttons, inputs */
   --radius-lg:   6px;    /* large cards */
   --radius-full: 9999px; /* chips (pill) */
+  /* Brand book A16, AMENDED (approved by Jon 2026-11-17): song-section chips on the
+     player's section strip are fully rounded pills (border-radius 22px on a 44px
+     chip), replacing A16's 4px corners. Still >= 44px tall, label never clipped.
+     Gated by packages/web-browser-gate/test/player-text-size.test.mjs (A16). */
 
   /* ── Shadows (dark mode — used sparingly, borders preferred) ── */
   --shadow-card:  0 1px 3px rgba(0,0,0,0.5), 0 1px 2px rgba(0,0,0,0.3);

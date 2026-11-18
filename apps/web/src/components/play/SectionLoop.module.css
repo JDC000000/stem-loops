@@ -2,8 +2,8 @@
    Tokens only (src/styles/design-tokens.css).
 
    - One row of pill chips that scrolls sideways; 44px tall (A16 touch target).
-     The mockup Jon approved on 2026-11-17 draws them as pills (radius 22px), which
-     supersedes the 4px corners of the 2026-11-14 brand-book row A16 for this strip.
+     A16 AMENDED, approved by Jon 2026-11-17: fully rounded pills (radius 22px)
+     replace the 4px corners of the 2026-11-14 brand-book row.
    - Selected is NEUTRAL, never lime (brand book A5): --bg-selected with a 2px white
      edge. A run remembered while the loop is off keeps a dashed edge, so the two
      states differ by more than colour.

@@ -416,3 +416,11 @@ test('A5: lime is ONE primary fill per player view: the Play button', () => {
     'src/components/play/Transport.module.css .play:hover:not(:disabled)',
   ]);
 });
+
+test('A16 (amended, approved by Jon 2026-11-17): section chips are 22px pills, and the token file says so', () => {
+  const raw = read(TOKENS_REL);
+  assert.match(raw, /Brand book A16, AMENDED \(approved by Jon 2026-11-17\)/);
+  const chip = uncomment(read('src/components/play/SectionLoop.module.css')).match(/\.chip\s*\{([^}]*)\}/)[1];
+  assert.match(chip, /border-radius:\s*22px;/);
+  assert.match(chip, /height:\s*var\(--touch-min, 44px\)/);
+});

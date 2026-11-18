@@ -108,9 +108,13 @@ const FFMPEG_DECODE_TIMEOUT_S = 120;
 const REPLICATE_DEADLINE_S = 300;
 /** pipeline.py:76 `SEPARATION_MAX_ATTEMPTS = 3`; the re-poll loop is at :1301. */
 const SEPARATION_MAX_ATTEMPTS = 3;
-/** pipeline.py:1114 `httpx.stream(..., timeout=180)` inside :1112 `for attempt in range(4)`. */
-const STEM_FETCH_TIMEOUT_S = 180;
-const STEM_FETCH_ATTEMPTS = 4;
+/**
+ * pipeline.py `STEM_FETCH_DEADLINE_SEC_DEFAULT = 540.0`: one stem's TOTAL budget across
+ * retries, checked as bytes arrive, plus `STEM_FETCH_READ_TIMEOUT_SEC = 180.0`, the most
+ * one final read can wait past it (QA C-06).
+ */
+const STEM_FETCH_DEADLINE_S = 540;
+const STEM_FETCH_READ_TIMEOUT_S = 180;
 /** pipeline.py:689 — the chord harmonic mix, `subprocess.run(..., timeout=300)`. */
 const CHORD_MIX_TIMEOUT_S = 300;
 /** chord_providers/klangio.py:108 `POLL_DEADLINE_SEC = 600`. */
@@ -127,7 +131,7 @@ const STEM_COUNT = 6;
  *   claim by an idle worker                2
  *   ffmpeg normalise of the upload       120
  *   separation polls   300 x 3           900   <- the deployed REPLICATE_DEADLINE
- *   fetch 6 stems      180 x 4           720   (6-wide pool, so one stem's budget)
+ *   fetch 6 stems      540 + 180         720   (6-wide pool, so one stem's budget)
  *   chord harmonic mix                   300
  *   chord recognition poll               600
  *   Opus encode        300 x 6          1800   (SERIAL, one subprocess per stem)
@@ -137,17 +141,17 @@ const STEM_COUNT = 6;
  * TWO HONEST CAVEATS, because this is a floor on the ceiling and not the ceiling:
  *   1. `extract_and_tag` and the R2 PUTs are bounded by no constant at all, so
  *      they add an unknown amount.
- *   2. httpx's `timeout=180` is PER OPERATION, not per transfer: a response that
- *      delivers a byte every 179 s never trips it, so the 720 s row is a lower
- *      bound on its own worst case.
- * Both push the real ceiling UP, which is why the margin below is multiplicative
+ *   2. (Closed by QA C-06.) The stem row used to be a lower bound: httpx's
+ *      `timeout=180` is per operation, so a trickle never tripped it. The worker
+ *      now enforces a total per-stem deadline, so 720 s is a real bound.
+ * The first pushes the real ceiling UP, which is why the margin below is multiplicative
  * and why this threshold must never be tightened without new evidence.
  */
 export const ONE_JOB_WORST_CASE_S =
   WORKER_CLAIM_POLL_S +
   FFMPEG_DECODE_TIMEOUT_S +
   REPLICATE_DEADLINE_S * SEPARATION_MAX_ATTEMPTS +
-  STEM_FETCH_TIMEOUT_S * STEM_FETCH_ATTEMPTS +
+  STEM_FETCH_DEADLINE_S + STEM_FETCH_READ_TIMEOUT_S +
   CHORD_MIX_TIMEOUT_S +
   KLANGIO_POLL_DEADLINE_S +
   STEM_OPUS_ENCODE_TIMEOUT_S * STEM_COUNT;

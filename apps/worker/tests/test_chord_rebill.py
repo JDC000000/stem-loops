@@ -356,7 +356,7 @@ def test_fetch_stems_includes_chord_stems_the_user_did_not_toggle(
         def raise_for_status(self):
             pass
 
-        def iter_bytes(self, _n):
+        def iter_bytes(self, _n=None):  # chunk size optional (C-06 reads unchunked)
             yield b"RIFF"
 
     def fake_stream(method, url, **kw):

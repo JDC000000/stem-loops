@@ -367,3 +367,77 @@ test('MF-1+MF-2: 20 PARALLEL signed-out upload jobs (each presigned) admit exact
     await cleanup(ip);
   }
 });
+
+// ── #298 changed lib/db.ts tx (checked-out client error listener, release(err)). The per-IP
+// lock relies on db.tx running BEGIN, the lock and the INSERT on ONE client and releasing
+// the lock at COMMIT/ROLLBACK. Pin that against the REAL lib/db.ts, not a stub. ───────────
+
+async function realDb() {
+  const pgUrl = dataUrl(`import pg from 'file://${require.resolve('pg')}'; export const Pool = pg.Pool;`);
+  const sslJs = dataUrl(toJs(read('src/lib/db-ssl.ts')));
+  const js = toJs(read('src/lib/db.ts'))
+    .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${dataUrl('export const captureException = () => {};')}'`)
+    .replace(/from ['"]pg['"]/g, `from '${pgUrl}'`)
+    .replace(/from ['"]\.\/db-ssl['"]/g, `from '${sslJs}'`);
+  return import(dataUrl(js) + '#' + Math.random());
+}
+async function realLock() {
+  return import(admissionModule() + '#lock' + Math.random());
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('real lib/db.ts tx: lockAnonIp is held until COMMIT, so a second tx for the same IP waits', { skip }, async () => {
+  const { db } = await realDb();
+  const { lockAnonIp } = await realLock();
+  const ip = `lock-${randomUUID()}`;
+  let t1Done = 0;
+  const t1 = db.tx(async (c) => {
+    await lockAnonIp(c, ip);
+    await c.query('SELECT pg_sleep(0.4)');
+    t1Done = Date.now();
+  });
+  await sleep(60);
+  let t2Got = 0;
+  await db.tx(async (c) => {
+    await lockAnonIp(c, ip);
+    t2Got = Date.now();
+  });
+  await t1;
+  assert.ok(t1Done > 0 && t2Got >= t1Done, `second tx got the lock at ${t2Got}, first committed at ${t1Done}`);
+});
+
+test('real lib/db.ts tx: a throw inside the tx rolls back AND releases the lock (release(err) path)', { skip }, async () => {
+  const { db } = await realDb();
+  const { lockAnonIp } = await realLock();
+  const ip = `lock-${randomUUID()}`;
+  await assert.rejects(
+    db.tx(async (c) => {
+      await lockAnonIp(c, ip);
+      throw new Error('boom inside tx');
+    }),
+    /boom inside tx/,
+  );
+  const t0 = Date.now();
+  await db.tx(async (c) => {
+    await lockAnonIp(c, ip);
+  });
+  assert.ok(Date.now() - t0 < 2000, 'the lock must not outlive the failed transaction');
+});
+
+test('real lib/db.ts tx: different IPs never wait on each other', { skip }, async () => {
+  const { db } = await realDb();
+  const { lockAnonIp } = await realLock();
+  const a = `lock-${randomUUID()}`;
+  const b = `lock-${randomUUID()}`;
+  const slow = db.tx(async (c) => {
+    await lockAnonIp(c, a);
+    await c.query('SELECT pg_sleep(0.5)');
+  });
+  await sleep(50);
+  const t0 = Date.now();
+  await db.tx(async (c) => {
+    await lockAnonIp(c, b);
+  });
+  assert.ok(Date.now() - t0 < 300, 'an unrelated IP waited for another IP\'s lock');
+  await slow;
+});

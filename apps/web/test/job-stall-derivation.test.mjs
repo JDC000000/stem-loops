@@ -21,11 +21,12 @@
 // the stem count breaks a test here instead of breaking the UX silently.
 //
 // WHAT IT IS NOT. It is not a claim that 4442 s is the true ceiling. Two stages
-// (`extract_and_tag`, the R2 PUTs) are bounded by no constant at all, and
-// httpx's `timeout=180` is per-operation rather than per-transfer, so the real
-// ceiling is HIGHER. That is why the threshold carries a multiplicative margin
-// and why the assertions below are "the threshold is at least the derivation",
-// never "at most".
+// (`extract_and_tag`, the R2 PUTs) are bounded by no constant at all, so the real
+// ceiling is HIGHER. (The stem row used to be a lower bound too, because httpx's
+// `timeout=180` is per-operation; since QA C-06 the worker enforces a total
+// per-stem deadline and the row is a real bound.) That is why the threshold
+// carries a multiplicative margin and why the assertions below are "the
+// threshold is at least the derivation", never "at most".
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -81,8 +82,8 @@ const CITED = {
   FFMPEG_DECODE_TIMEOUT_S: () => one(PIPELINE, /^FFMPEG_DECODE_TIMEOUT_SEC_DEFAULT = ([\d.]+)/m, 'FFMPEG_DECODE_TIMEOUT_SEC_DEFAULT'),
   REPLICATE_DEADLINE_S: () => one(FLY, /^\s*REPLICATE_DEADLINE\s*=\s*"(\d+)"/m, 'REPLICATE_DEADLINE in fly.toml'),
   SEPARATION_MAX_ATTEMPTS: () => one(PIPELINE, /^SEPARATION_MAX_ATTEMPTS = int\(os\.environ\.get\("SEPARATION_MAX_ATTEMPTS", "(\d+)"\)\)/m, 'SEPARATION_MAX_ATTEMPTS'),
-  STEM_FETCH_TIMEOUT_S: () => one(PIPELINE, /httpx\.stream\("GET", target, timeout=(\d+), follow_redirects=False\)/, 'the per-stem download timeout'),
-  STEM_FETCH_ATTEMPTS: () => one(PIPELINE, /for attempt in range\((\d+)\):\n\s+try:\n\s+target = url\n\s+for _hop in range\(STEM_MAX_REDIRECTS \+ 1\):\n\s+with httpx\.stream\("GET", target/, 'the per-stem download retry count'),
+  STEM_FETCH_DEADLINE_S: () => one(PIPELINE, /^STEM_FETCH_DEADLINE_SEC_DEFAULT = ([\d.]+)/m, 'the per-stem total download deadline'),
+  STEM_FETCH_READ_TIMEOUT_S: () => one(PIPELINE, /^STEM_FETCH_READ_TIMEOUT_SEC = ([\d.]+)/m, 'the per-stem read timeout'),
   CHORD_MIX_TIMEOUT_S: () => one(PIPELINE, /proc = subprocess\.run\(cmd, capture_output=True, text=True, timeout=(\d+)\)/, 'the chord harmonic-mix ffmpeg timeout'),
   KLANGIO_POLL_DEADLINE_S: () => one(KLANGIO, /^POLL_DEADLINE_SEC = float\(os\.environ\.get\("KLANGIO_POLL_DEADLINE_SEC", "(\d+)"\)\)/m, 'POLL_DEADLINE_SEC'),
   STEM_OPUS_ENCODE_TIMEOUT_S: () => one(PIPELINE, /proc = subprocess\.run\(cmd, capture_output=True, timeout=(\d+), check=False\)/, 'the per-stem Opus encode timeout'),
@@ -93,8 +94,8 @@ const EXPECTED = {
   FFMPEG_DECODE_TIMEOUT_S: 120,
   REPLICATE_DEADLINE_S: 300,
   SEPARATION_MAX_ATTEMPTS: 3,
-  STEM_FETCH_TIMEOUT_S: 180,
-  STEM_FETCH_ATTEMPTS: 4,
+  STEM_FETCH_DEADLINE_S: 540,
+  STEM_FETCH_READ_TIMEOUT_S: 180,
   CHORD_MIX_TIMEOUT_S: 300,
   KLANGIO_POLL_DEADLINE_S: 600,
   STEM_OPUS_ENCODE_TIMEOUT_S: 300,
@@ -123,6 +124,23 @@ test('the stem count the encode row multiplies by is the real ALL_STEMS, and the
   assert.doesNotMatch(retain, /ThreadPoolExecutor/, 'retain_stems now pools the encodes: the x6 row is stale');
 });
 
+test('the stem row is a real bound: the worker checks a total deadline on every read and caps the read wait', () => {
+  // QA C-06: a per-operation timeout alone let a trickling download run forever.
+  assert.match(PIPELINE, /read_timeout = min\(STEM_FETCH_READ_TIMEOUT_SEC, remaining\)/);
+  assert.match(PIPELINE, /for chunk in r\.iter_bytes\(\):\n\s+if time\.monotonic\(\) > deadline:/);
+});
+
+test('the worker per-job wall-clock deadline never cuts off a job inside the legitimate worst case', () => {
+  // QA C-06: consumer.py cancels a job at JOB_WALL_TIMEOUT_SECONDS. Below this derivation
+  // it would fail (and refund) healthy jobs.
+  const wall = one(CONSUMER, /^JOB_WALL_TIMEOUT_DEFAULT = ([\d.]+)/m, 'JOB_WALL_TIMEOUT_DEFAULT');
+  assert.ok(
+    wall >= ONE_JOB_WORST_CASE_S * QUEUED_STALL_MARGIN,
+    `JOB_WALL_TIMEOUT_DEFAULT (${wall} s) is below the worst case plus margin (${ONE_JOB_WORST_CASE_S * QUEUED_STALL_MARGIN} s)`,
+  );
+  assert.ok(!/JOB_WALL_TIMEOUT_SECONDS\s*=/.test(FLY), 'fly.toml overrides JOB_WALL_TIMEOUT_SECONDS: re-check it here');
+});
+
 // ── 3. the arithmetic, recomputed from what was just read ────────────────────
 
 test('ONE_JOB_WORST_CASE_S is exactly the sum of the stages read out of the worker', () => {
@@ -131,7 +149,7 @@ test('ONE_JOB_WORST_CASE_S is exactly the sum of the stages read out of the work
     v.WORKER_CLAIM_POLL_S +
     v.FFMPEG_DECODE_TIMEOUT_S +
     v.REPLICATE_DEADLINE_S * v.SEPARATION_MAX_ATTEMPTS +
-    v.STEM_FETCH_TIMEOUT_S * v.STEM_FETCH_ATTEMPTS +
+    v.STEM_FETCH_DEADLINE_S + v.STEM_FETCH_READ_TIMEOUT_S +
     v.CHORD_MIX_TIMEOUT_S +
     v.KLANGIO_POLL_DEADLINE_S +
     v.STEM_OPUS_ENCODE_TIMEOUT_S * 6;

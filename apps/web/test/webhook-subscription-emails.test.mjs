@@ -300,6 +300,7 @@ const lines = (start) => ({
 test('renewal payment failed: R7 with the invoice period start, attempt and next attempt', async () => {
   await send('customer.subscription.created', sub());
   state.emails.length = 0;
+  h.subs.sub_test_1 = sub({ status: 'past_due' }); // Stripe: the renewal failed
   const start = 1_800_000_000;
   await send('invoice.payment_failed', invoiceFixture({
     billing_reason: 'subscription_cycle', attempt_count: 2, next_payment_attempt: start + 3 * 86400, lines: lines(start),
@@ -317,6 +318,7 @@ test('renewal payment failed: R7 with the invoice period start, attempt and next
 test('payment failed without invoice lines: R7 falls back to the stored period start', async () => {
   await send('customer.subscription.created', sub());
   state.emails.length = 0;
+  h.subs.sub_test_1 = sub({ status: 'past_due' });
   await send('invoice.payment_failed', invoiceFixture({ billing_reason: 'subscription_cycle', attempt_count: 1 }));
   assert.deepEqual(fns(), ['sendPaymentFailed']);
   assert.equal(state.emails[0].vars.next_attempt, null);
@@ -324,10 +326,12 @@ test('payment failed without invoice lines: R7 falls back to the stored period s
 });
 
 test('payment failed with no stored subscription, or no/unknown billing_reason: no R7', async () => {
+  h.subs.sub_test_1 = sub({ status: 'past_due' });
   await send('invoice.payment_failed', invoiceFixture({ billing_reason: 'subscription_cycle', attempt_count: 1 }));
   assert.deepEqual(fns(), [], 'UPDATE matched no row');
   await send('customer.subscription.created', sub());
   state.emails.length = 0;
+  h.subs.sub_test_1 = sub({ status: 'past_due' });
   await send('invoice.payment_failed', invoiceFixture({ attempt_count: 1 }));
   await send('invoice.payment_failed', invoiceFixture({ billing_reason: 'manual', attempt_count: 1 }));
   // A mid-period plan change's proration invoice is not a "renewal" (M-a).

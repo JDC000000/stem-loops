@@ -255,7 +255,7 @@ class _Resp:
     def raise_for_status(self):
         pass
 
-    def iter_bytes(self, _n):
+    def iter_bytes(self, _n=None):  # chunk size optional (#297 reads unchunked)
         yield b"RIFF"
 
 
@@ -335,3 +335,27 @@ def test_a_redirect_within_the_list_is_followed(monkeypatch):
     )
     assert set(paths) == {"drums"}
     assert calls[-1] == "https://pbxt.replicate.delivery/b/drums.wav"
+
+
+def test_redirect_hops_share_the_one_stem_deadline(monkeypatch):
+    """#297's total deadline (QA C-06) bounds the WHOLE download, redirect hops included: each
+    hop's read timeout is what is left of the budget, and a slow chain ends at the deadline."""
+    import time as _time
+
+    monkeypatch.setenv("STEM_FETCH_DEADLINE_SEC", "0.3")
+    timeouts: list[float] = []
+
+    def stream(m, u, **k):
+        timeouts.append(k["timeout"])
+        _time.sleep(0.12)
+        return _Resp(302, "https://replicate.delivery/next.wav")
+
+    monkeypatch.setattr(pipeline.httpx, "stream", stream)
+    t0 = _time.monotonic()
+    with pytest.raises(InternalError, match="budget"):
+        pipeline._fetch_stems(
+            {"drums": "https://replicate.delivery/a/drums.wav"}, [], pipeline.ALL_STEMS
+        )
+    assert _time.monotonic() - t0 < 1.0
+    assert timeouts and all(t <= 0.3 for t in timeouts), timeouts
+    assert timeouts == sorted(timeouts, reverse=True), "each hop gets only what is left"

@@ -10,14 +10,15 @@ import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PRICE, loadStripeProvider, sign, envelope,
-  subscriptionFixture, invoiceFixture, creditSessionFixture, disputeFixture,
+  subscriptionFixture, invoiceFixture, creditSessionFixture, disputeFixture, stripeSession,
 } from './helpers/billing-harness.mjs';
 
 const USER = '11111111-1111-1111-1111-111111111111';
-let provider; let calls;
+let provider; let calls; let h;
 
 before(async () => {
-  ({ provider, calls } = await loadStripeProvider());
+  h = await loadStripeProvider();
+  ({ provider, calls } = h);
 });
 const last = () => calls[calls.length - 1];
 
@@ -126,7 +127,7 @@ test('invoice.paid with no metadata anywhere: userId "" + customer id (route res
 });
 
 test('checkout.session.completed (payment): pack from price, customer id carried even when metadata.user_id is empty', async () => {
-  const evt = await parse(envelope('checkout.session.completed', creditSessionFixture()));
+  const evt = await parse(envelope('checkout.session.completed', stripeSession(h, creditSessionFixture())));
   assert.equal(evt.type, 'credit_purchase_completed');
   assert.equal(evt.userId, '');
   assert.equal(evt.packCode, 'credits_180');

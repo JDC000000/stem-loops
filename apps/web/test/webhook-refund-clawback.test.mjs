@@ -92,10 +92,11 @@ async function loadRoute(event, state) {
   const js = toJs(readFileSync(SRC, 'utf8'))
     .replace(/from ['"]@\/lib\/billing\/prorata['"]/g, `from '${prorata}'`)
     .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billing}'`)
-    .replace(/from ['"]@\/lib\/db['"]/g, `from '${db}'`)
+    .replace(/from ['"]@\/lib\/db['"]/g, `from '${dataUrl(`export * from '${db}'; export { db as webhookDb } from '${db}';`)}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${ent}'`)
     .replace(/from ['"]@\/lib\/emails\/dispatch['"]/g, `from '${em}'`)
-    .replace(/from ['"]next\/server['"]/g, `from '${next}'`);
+    .replace(/from ['"]next\/server['"]/g, `from '${next}'`)
+    .replace(/from ['"]@sentry\/nextjs['"]/g, `from 'data:text/javascript,export const captureMessage = () => {}; export const captureException = () => {};'`);
   return import(dataUrl(js) + '#' + Math.random());
 }
 

@@ -21,13 +21,22 @@
 //                        de-dups only when stripe_promotion_code_id is non-NULL; checkout
 //                        resolves it into session.metadata since M7 — see migration 015)
 //
+// Ordering (QA B-04): Stripe neither orders nor de-duplicates deliveries.
+// Subscription events and invoice.payment_failed re-read the subscription
+// from Stripe and apply its CURRENT state, never the payload; a stored
+// `canceled` row is terminal.
+// Credit packs are priced from the session's line items, never its metadata.
+//
 // Raw body: we MUST use req.text() (Next 14 App Router) — JSON parsing
 // would normalize whitespace and invalidate the signature.
 
 import { NextRequest, NextResponse } from 'next/server';
+import * as Sentry from '@sentry/nextjs';
 import { getBillingProvider, type BillingEvent, type BillingSubscription } from '@/lib/billing';
 import type { BillingSubscriptionChange } from '@/lib/billing/types';
-import { db } from '@/lib/db';
+// The webhook's OWN pool (PR #298 review R2-2): it holds a transaction across
+// a Stripe read, so it must never take the connections page loads use.
+import { webhookDb as db } from '@/lib/db';
 import { invalidateEntitlement } from '@/lib/billing/entitlements';
 import { computeProRataClawback } from '@/lib/billing/prorata';
 import {
@@ -42,9 +51,106 @@ import {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+// Time budget (PR #298 review R2-2, R3-2). Every wait on this path is
+// bounded, and the bounds add up to well under maxDuration, so the function
+// returns (500, Stripe retries) before Vercel kills it. One Stripe read is
+// STRIPE_WEBHOOK_READ_OPTIONS.timeout (6 s) per attempt, and stripe-node
+// retries once on a connection reset even with retries off, so a read can
+// take 2 x 6 = 12 s:
+//   Stripe read outside the lock (credit session, or the L-4 re-read)  12 s
+//   webhook-pool connection (WEBHOOK_POOL_CONNECT_TIMEOUT_MS, db.ts)    5 s
+//   advisory-lock wait (LOCK_TIMEOUT)                                   8 s
+//   Stripe reads inside the lock (subscription + invoice), 12 s each   24 s
+//                                                              total  49 s
+// leaving 11 s for the (millisecond) statements, each capped by
+// STATEMENT_TIMEOUT, and the best-effort emails after commit.
+export const maxDuration = 60;
+const LOCK_TIMEOUT = '8s';
+const STATEMENT_TIMEOUT = '10s';
+// Longer than the longest gap between two statements of the locked
+// transaction: one Stripe read including the SDK's forced reset retry
+// (2 x 6 s = 12 s; 20 s would also cover 2 x 8 s). A frozen instance's open
+// transaction (and its advisory lock) is then ended by the server after this.
+const IDLE_IN_TX_TIMEOUT = '20s';
+
 // PR #29 aligned BillingProvider's PlanCode with plans.code ('free' | 'pro' |
 // 'studio'), so no translation is needed anymore. We just narrow 'free' out,
 // which is not a valid subscription plan (TSD §1.2).
+/** db, or the client of a db.tx. Everything inside a subscription lock must
+ *  use the tx client: the pool is max 3, so a second checkout from inside a
+ *  held transaction can deadlock the pool under concurrent webhooks. */
+type Queryable = { query: typeof db.query };
+
+/** Raise a money-path problem to Sentry (and the log) without failing the
+ *  request: used where Stripe must get 200 but a human must look. */
+function alertBilling(message: string, extra: Record<string, unknown>): void {
+  console.error(`[webhook][ALERT] ${message}`, JSON.stringify(extra));
+  try {
+    Sentry.captureMessage(message, { level: 'error', tags: { route: 'api/billing/webhook' }, extra });
+  } catch {
+    // never let reporting break the webhook
+  }
+}
+
+/** QA B-04 / review M-1. Run `fn` in ONE transaction holding a
+ *  per-subscription advisory lock. The provider read happens INSIDE `fn`,
+ *  i.e. after any earlier delivery for the same subscription committed, so
+ *  an older read can never be written after a newer one. db.tx checks out a
+ *  single client and wraps BEGIN/COMMIT; pg_advisory_xact_lock is
+ *  transaction-scoped, so it is safe behind a transaction-mode pooler
+ *  (DATABASE_URL_POOLED) where a session lock would not be. The SET LOCALs
+ *  bound the lock wait, every statement, and idle time inside the
+ *  transaction (review R2-2): a stuck holder is a 500 (Stripe retries), not
+ *  a hang. */
+async function withSubscriptionLock<T>(
+  providerName: string,
+  providerSubscriptionId: string,
+  fn: (q: Queryable) => Promise<T>,
+): Promise<T> {
+  return db.tx(async (q) => {
+    await q.query(
+      `SELECT set_config('lock_timeout', $1, true),
+              set_config('statement_timeout', $2, true),
+              set_config('idle_in_transaction_session_timeout', $3, true)`,
+      [LOCK_TIMEOUT, STATEMENT_TIMEOUT, IDLE_IN_TX_TIMEOUT],
+    );
+    await q.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended($1 || '-sub:' || $2, 0))`,
+      [providerName, providerSubscriptionId],
+    );
+    return fn(q);
+  });
+}
+
+/** The provider's CURRENT state of a subscription, or null when it carries a
+ *  price/status we cannot map (alerted, then dropped: Stripe gets 200). Any
+ *  other failure throws, so the route answers 500 and Stripe retries. */
+async function readCurrentSubscription(
+  label: string,
+  providerSubscriptionId: string,
+): Promise<BillingSubscription | null> {
+  let current: BillingSubscription;
+  try {
+    current = await getBillingProvider().getSubscription(providerSubscriptionId);
+  } catch (err) {
+    const name = err instanceof Error ? err.name : '';
+    if (name === 'UnknownPriceError' || name === 'UnknownStatusError') {
+      alertBilling(`${label}: subscription dropped, unmappable current state`, {
+        subscription: providerSubscriptionId,
+        error: (err as Error).message,
+      });
+      return null;
+    }
+    throw err;
+  }
+  if (current.providerSubscriptionId !== providerSubscriptionId) {
+    throw new Error(
+      `${label}: provider returned ${current.providerSubscriptionId} for ${providerSubscriptionId}`,
+    );
+  }
+  return current;
+}
+
 function dbPlanCode(provider: BillingSubscription['planCode']): 'pro' | 'studio' | null {
   return provider === 'pro' || provider === 'studio' ? provider : null;
 }
@@ -68,9 +174,13 @@ function credits_for_pack(pack: 'credits_20' | 'credits_60' | 'credits_180'): nu
  * a stable derived placeholder matching the handle_new_user trigger, so the
  * NOT NULL constraint is satisfied.
  */
-async function ensureUserRow(userId: string, emailHint?: string | null): Promise<void> {
+async function ensureUserRow(
+  userId: string,
+  emailHint?: string | null,
+  q: Queryable = db,
+): Promise<void> {
   // Fast-path: row already exists.
-  const read = await db.query('SELECT 1 FROM users WHERE id = $1', [userId]);
+  const read = await q.query('SELECT 1 FROM users WHERE id = $1', [userId]);
   if ((read.rowCount ?? 0) > 0) return;
 
   // Try to recover an email from auth.users first (the webhook role has
@@ -78,14 +188,20 @@ async function ensureUserRow(userId: string, emailHint?: string | null): Promise
   // deployments, but may not in all — tolerate failure).
   let email = emailHint ?? null;
   if (!email) {
+    // Inside a transaction a failed statement aborts the WHOLE transaction,
+    // so the tolerated failure is fenced by a savepoint.
+    const inTx = q !== db;
     try {
-      const auth = await db.query<{ email: string | null }>(
+      if (inTx) await q.query('SAVEPOINT ensure_user_auth_read');
+      const auth = await q.query<{ email: string | null }>(
         'SELECT email FROM auth.users WHERE id = $1',
         [userId],
       );
       email = auth.rows[0]?.email ?? null;
+      if (inTx) await q.query('RELEASE SAVEPOINT ensure_user_auth_read');
     } catch {
       // auth schema not readable from this role; keep going with derived email
+      if (inTx) await q.query('ROLLBACK TO SAVEPOINT ensure_user_auth_read');
     }
   }
   if (!email) {
@@ -98,7 +214,7 @@ async function ensureUserRow(userId: string, emailHint?: string | null): Promise
   // Defensive upsert. If this throws (constraint violation other than the
   // handled conflict, pool exhaustion, etc.) let it propagate — the route's
   // outer catch returns 500 and Stripe retries.
-  await db.query(
+  await q.query(
     `INSERT INTO users (id, email) VALUES ($1, $2)
      ON CONFLICT (id) DO NOTHING`,
     [userId, email],
@@ -153,9 +269,10 @@ function previousFromEvent(
 async function readStoredSub(
   providerName: string,
   providerSubscriptionId: string,
+  q: Queryable = db,
 ): Promise<{ known: boolean; row: StoredSub | null }> {
   try {
-    const res = await db.query<StoredSub>(
+    const res = await q.query<StoredSub>(
       `SELECT status, plan_code, cancel_at_period_end FROM subscriptions
         WHERE provider = $1 AND provider_subscription_id = $2`,
       [providerName, providerSubscriptionId],
@@ -268,10 +385,11 @@ async function resolveUserId(
     subscriptionId?: string | null;
     email?: string | null;
   },
+  q: Queryable = db,
 ): Promise<string> {
   if (hint.userId) return hint.userId;
   if (hint.customerId) {
-    const res = await db.query<{ user_id: string }>(
+    const res = await q.query<{ user_id: string }>(
       `SELECT user_id FROM customers_billing
         WHERE provider = $1 AND provider_customer_id = $2`,
       [providerName, hint.customerId],
@@ -279,7 +397,7 @@ async function resolveUserId(
     if (res.rows[0]?.user_id) return res.rows[0].user_id;
   }
   if (hint.subscriptionId) {
-    const res = await db.query<{ user_id: string }>(
+    const res = await q.query<{ user_id: string }>(
       `SELECT user_id FROM subscriptions
         WHERE provider = $1 AND provider_subscription_id = $2`,
       [providerName, hint.subscriptionId],
@@ -287,7 +405,7 @@ async function resolveUserId(
     if (res.rows[0]?.user_id) return res.rows[0].user_id;
   }
   if (hint.email) {
-    const res = await db.query<{ id: string }>(
+    const res = await q.query<{ id: string }>(
       `SELECT id FROM users WHERE email = $1`,
       [hint.email],
     );
@@ -299,8 +417,8 @@ async function resolveUserId(
 /** Drop a user's paid entitlement to free, unless another subscription of
  *  theirs still entitles them. Callers must have already persisted the new
  *  (canceled / paused) subscription status. */
-async function downgradeEntitlementIfUnentitled(userId: string): Promise<void> {
-  await db.query(
+async function downgradeEntitlementIfUnentitled(userId: string, q: Queryable = db): Promise<void> {
+  await q.query(
     `UPDATE entitlements
         SET plan_code = 'free', computed_at = now()
       WHERE user_id = $1
@@ -321,18 +439,19 @@ async function downgradeEntitlementIfUnentitled(userId: string): Promise<void> {
 async function upsertEntitlementFromSubscription(
   userId: string,
   sub: BillingSubscription,
+  q: Queryable = db,
 ): Promise<void> {
   const planCode = dbPlanCode(sub.planCode);
   if (!planCode) return;
   if (sub.status === 'canceled' || sub.status === 'paused') {
-    await downgradeEntitlementIfUnentitled(userId);
+    await downgradeEntitlementIfUnentitled(userId, q);
     return;
   }
   if (sub.status !== 'active' && sub.status !== 'trialing') return;
   const periodStart = sub.currentPeriodStart ?? new Date();
   const periodEnd = sub.currentPeriodEnd ?? new Date(Date.now() + 30 * 24 * 3600 * 1000);
   // Upsert entitlements; jobs_used resets to 0 on a new period.
-  await db.query(
+  await q.query(
     `INSERT INTO entitlements
        (user_id, plan_code, period_start, period_end, jobs_used, computed_at)
      VALUES ($1, $2, $3, $4, 0, now())
@@ -528,63 +647,119 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
     }
 
     case 'subscription_upserted': {
-      // subscription_data.metadata.user_id is the primary key; fall back to
-      // the stored customer for subscriptions created without it. Unresolved
-      // => throw (500, Stripe retries) rather than silently abandon a payer.
-      const subUserId = await resolveUserId(providerName, {
-        userId: evt.userId,
-        customerId: evt.subscription.providerCustomerId,
-        subscriptionId: evt.subscription.providerSubscriptionId,
-      });
-      if (!subUserId) {
-        console.error(
-          `[webhook][UNFULFILLED SUBSCRIPTION] ${evt.subscription.providerSubscriptionId} (${evt.subscription.status}) has no user_id metadata and customer ${evt.subscription.providerCustomerId} is not in customers_billing. Returning 500 so Stripe retries.`,
-        );
-        throw new UnresolvedPayerError('subscription_upserted', {
-          subscription: evt.subscription.providerSubscriptionId,
-          customer: evt.subscription.providerCustomerId,
-        });
-      }
-      // Defensive users-row upsert; throws on failure so Stripe retries.
-      await ensureUserRow(subUserId, null);
-      const planCode = dbPlanCode(evt.subscription.planCode);
-      if (!planCode) return;
-      // customers_billing must exist for the FK story; insert idempotently.
-      await db.query(
-        `INSERT INTO customers_billing (user_id, provider, provider_customer_id)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (user_id, provider) DO NOTHING`,
-        [subUserId, providerName, evt.subscription.providerCustomerId],
-      );
-      await db.query(
-        `INSERT INTO subscriptions
-           (user_id, provider, provider_subscription_id, plan_code, status,
-            current_period_start, current_period_end, cancel_at_period_end)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (provider, provider_subscription_id) DO UPDATE SET
-           status               = EXCLUDED.status,
-           plan_code            = EXCLUDED.plan_code,
-           current_period_start = EXCLUDED.current_period_start,
-           current_period_end   = EXCLUDED.current_period_end,
-           cancel_at_period_end = EXCLUDED.cancel_at_period_end,
-           updated_at           = now()`,
-        [
-          subUserId,
+      // QA B-04: Stripe neither orders nor de-duplicates deliveries, and it
+      // retries a failed one for days. Applying the event PAYLOAD let a stale
+      // `updated (active)` retry, landing after `deleted`, turn a canceled
+      // subscription and its Pro/Studio entitlement back on. So the payload
+      // only names the subscription: its state is re-read from the provider
+      // and THAT is applied. The read and the write run in ONE transaction
+      // under a per-subscription advisory lock (review M-1), so two
+      // concurrent deliveries cannot write an older read over a newer one.
+      // A failed read throws (500, Stripe retries); an unmappable price or
+      // status is alerted and dropped.
+      const subId = evt.subscription.providerSubscriptionId;
+      const applied = await withSubscriptionLock(providerName, subId, async (q) => {
+        const current = await readCurrentSubscription('subscription_upserted', subId);
+        if (!current) return null;
+        // subscription_data.metadata.user_id is the primary key; fall back to
+        // the stored customer for subscriptions created without it.
+        // Unresolved => throw (500, Stripe retries) rather than silently
+        // abandon a payer.
+        const subUserId = await resolveUserId(
           providerName,
-          evt.subscription.providerSubscriptionId,
-          planCode,
-          evt.subscription.status,
-          evt.subscription.currentPeriodStart ?? new Date(),
-          evt.subscription.currentPeriodEnd ?? new Date(Date.now() + 30 * 24 * 3600 * 1000),
-          evt.subscription.cancelAtPeriodEnd,
-        ],
-      );
-      await upsertEntitlementFromSubscription(subUserId, evt.subscription);
+          {
+            userId: evt.userId,
+            customerId: current.providerCustomerId,
+            subscriptionId: current.providerSubscriptionId,
+          },
+          q,
+        );
+        if (!subUserId) {
+          console.error(
+            `[webhook][UNFULFILLED SUBSCRIPTION] ${current.providerSubscriptionId} (${current.status}) has no user_id metadata and customer ${current.providerCustomerId} is not in customers_billing. Returning 500 so Stripe retries.`,
+          );
+          throw new UnresolvedPayerError('subscription_upserted', {
+            subscription: current.providerSubscriptionId,
+            customer: current.providerCustomerId,
+          });
+        }
+        // A subscription that is already canceled at Stripe, for a user whose
+        // account is gone (DELETE /api/users/me cancels, then the auth.users
+        // cascade removes public.users), has nothing left to grant. Recreating
+        // the users row would violate its FK to auth.users and 500 on every
+        // retry for ~3 days (review R2-1), so ack it instead.
+        if (current.status === 'canceled') {
+          const exists = await q.query('SELECT 1 FROM users WHERE id = $1', [subUserId]);
+          if ((exists.rowCount ?? exists.rows.length) === 0) {
+            console.info(
+              `[webhook] subscription_upserted ${current.providerSubscriptionId}: canceled, and user ${subUserId} no longer exists; nothing to apply`,
+            );
+            return null;
+          }
+        }
+        // Defensive users-row upsert; throws on failure so Stripe retries.
+        await ensureUserRow(subUserId, null, q);
+        const planCode = dbPlanCode(current.planCode);
+        if (!planCode) return null;
+        // customers_billing must exist for the FK story; insert idempotently.
+        await q.query(
+          `INSERT INTO customers_billing (user_id, provider, provider_customer_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (user_id, provider) DO NOTHING`,
+          [subUserId, providerName, current.providerCustomerId],
+        );
+        // `canceled` is terminal at Stripe: a canceled subscription id never
+        // becomes active again. The WHERE makes it terminal here too, so a
+        // stored canceled row (including the tombstone subscription_canceled
+        // writes when it arrives first) can never be revived.
+        const written = await q.query<{ status: string }>(
+          `INSERT INTO subscriptions
+             (user_id, provider, provider_subscription_id, plan_code, status,
+              current_period_start, current_period_end, cancel_at_period_end)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (provider, provider_subscription_id) DO UPDATE SET
+             status               = EXCLUDED.status,
+             plan_code            = EXCLUDED.plan_code,
+             current_period_start = EXCLUDED.current_period_start,
+             current_period_end   = EXCLUDED.current_period_end,
+             cancel_at_period_end = EXCLUDED.cancel_at_period_end,
+             updated_at           = now()
+           WHERE subscriptions.status <> 'canceled'
+           RETURNING status`,
+          [
+            subUserId,
+            providerName,
+            current.providerSubscriptionId,
+            planCode,
+            current.status,
+            current.currentPeriodStart ?? new Date(),
+            current.currentPeriodEnd ?? new Date(Date.now() + 30 * 24 * 3600 * 1000),
+            current.cancelAtPeriodEnd,
+          ],
+        );
+        if ((written.rowCount ?? written.rows.length) === 0) {
+          // Stored row is already canceled: grant nothing, send nothing, and
+          // make sure no paid entitlement survives it.
+          console.warn(
+            `[webhook] subscription_upserted ${current.providerSubscriptionId} (${current.status}) ignored: stored subscription is canceled`,
+          );
+          await downgradeEntitlementIfUnentitled(subUserId, q);
+          return { subUserId, current, planCode, blocked: true as const };
+        }
+        await upsertEntitlementFromSubscription(subUserId, current, q);
+        return { subUserId, current, planCode, blocked: false as const };
+      });
+      if (!applied) return;
+      const { subUserId, planCode } = applied;
       invalidateEntitlement(subUserId);
-      // Emails (emails v1.2 R2, R4, R5). R2, the welcome, goes out only once
-      // the plan is actually active or trialing: never on `incomplete`, which
-      // grants nothing (E3). It is idempotent via users.welcomed_at.
-      const sub = evt.subscription;
+      if (applied.blocked) return;
+      // Emails run AFTER commit (never while holding the lock). R2, the
+      // welcome, goes out only once the plan is actually active or trialing:
+      // never on `incomplete`, which grants nothing (E3). It is idempotent
+      // via users.welcomed_at. The transition (`previous`) still comes from
+      // the event, but it is judged against the CURRENT state, so a stale
+      // event cannot announce a change that has since been undone.
+      const sub = applied.current;
       const nowActive = sub.status === 'active' || sub.status === 'trialing';
       let welcomeSent = false;
       if (nowActive) {
@@ -637,29 +812,73 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
     }
 
     case 'subscription_canceled': {
+      // Not re-read from the provider: deletion is terminal at Stripe, so a
+      // `deleted` event can never be stale, and a replay is idempotent. It
+      // still takes the per-subscription lock (review M-1), so it serialises
+      // with an in-flight subscription_upserted for the same id.
       // Mark the row canceled and downgrade the entitlement. Stripe sends
       // customer.subscription.deleted when the paid period has ended (or on an
       // immediate cancel), so access ends now. readSnapshot also gates on
       // subscription status, so a stale 'pro' row can never outlive this.
-      const stored = await readStoredSub(providerName, evt.providerSubscriptionId);
-      const res = await db.query<{ user_id: string; plan_code: 'pro' | 'studio'; current_period_end: Date }>(
-        `UPDATE subscriptions
-            SET status = 'canceled', cancel_at_period_end = true, updated_at = now()
-          WHERE provider = $1 AND provider_subscription_id = $2
-          RETURNING user_id, plan_code, current_period_end`,
-        [providerName, evt.providerSubscriptionId],
-      );
-      const row = res.rows[0];
-      const userId =
-        row?.user_id ??
-        (await resolveUserId(providerName, {
-          userId: evt.userId,
-          customerId: evt.providerCustomerId,
-        }));
-      if (userId) {
-        await downgradeEntitlementIfUnentitled(userId);
-        invalidateEntitlement(userId);
-      }
+      const done = await withSubscriptionLock(providerName, evt.providerSubscriptionId, async (q) => {
+        const stored = await readStoredSub(providerName, evt.providerSubscriptionId, q);
+        const res = await q.query<{ user_id: string; plan_code: 'pro' | 'studio'; current_period_end: Date }>(
+          `UPDATE subscriptions
+              SET status = 'canceled', cancel_at_period_end = true, updated_at = now()
+            WHERE provider = $1 AND provider_subscription_id = $2
+            RETURNING user_id, plan_code, current_period_end`,
+          [providerName, evt.providerSubscriptionId],
+        );
+        const row = res.rows[0];
+        const userId =
+          row?.user_id ??
+          (await resolveUserId(
+            providerName,
+            { userId: evt.userId, customerId: evt.providerCustomerId },
+            q,
+          ));
+        // Review M-1 demo 2: `deleted` can land before any row exists (its
+        // `created` is still in flight, or failed and will be retried). Leave
+        // a canceled TOMBSTONE so the terminal guard in subscription_upserted
+        // blocks that later write. It needs a known plan (plans FK) and a user
+        // row that STILL EXISTS: it never creates one (review R2-1). After an
+        // account deletion the auth.users cascade has removed public.users and
+        // every subscription row, so there is nothing to protect and no row
+        // to point at; recreating the user would violate its FK to auth.users
+        // and 500 on every retry. Without a tombstone the lock alone still
+        // orders the two deliveries.
+        if (!row && userId) {
+          const plan = evt.planCode === 'pro' || evt.planCode === 'studio' ? evt.planCode : null;
+          if (plan) {
+            const end = evt.currentPeriodEnd ?? new Date();
+            let start = evt.currentPeriodStart ?? new Date(end.getTime() - 1000);
+            if (start.getTime() >= end.getTime()) start = new Date(end.getTime() - 1000);
+            const tomb = await q.query(
+              `INSERT INTO subscriptions
+                 (user_id, provider, provider_subscription_id, plan_code, status,
+                  current_period_start, current_period_end, cancel_at_period_end)
+               SELECT $1::uuid, $2::text, $3::text, $4::text, 'canceled', $5::timestamptz, $6::timestamptz, true
+                WHERE EXISTS (SELECT 1 FROM users WHERE id = $1::uuid)
+               ON CONFLICT (provider, provider_subscription_id) DO UPDATE SET
+                 status = 'canceled', cancel_at_period_end = true, updated_at = now()`,
+              [userId, providerName, evt.providerSubscriptionId, plan, start, end],
+            );
+            if ((tomb.rowCount ?? 0) === 0) {
+              console.info(
+                `[webhook] subscription_canceled ${evt.providerSubscriptionId}: user ${userId} no longer exists; no tombstone`,
+              );
+            }
+          } else {
+            console.warn(
+              `[webhook] subscription_canceled ${evt.providerSubscriptionId}: no row and no known plan; no tombstone`,
+            );
+          }
+        }
+        if (userId) await downgradeEntitlementIfUnentitled(userId, q);
+        return { stored, row, userId };
+      });
+      const { stored, row, userId } = done;
+      if (userId) invalidateEntitlement(userId);
       // R6, plan ended (emails v1.2; fixes E1). Sent only when we know which
       // plan ended (a stored row) and it was a plan the user actually had:
       // not when Stripe says the subscription was never paid (status
@@ -670,7 +889,8 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       // a partial failure of this handler sees, and skipping it would lose
       // the email (review B2). A repeat send is stopped by the
       // sub-changed:<id>:canceled Resend key. The old code guessed 'pro' when
-      // the row was missing and told the user they would keep access.
+      // the row was missing and told the user they would keep access. A
+      // tombstone is not a stored row: no R6 for it.
       if (
         userId &&
         row &&
@@ -718,9 +938,13 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       // to extending the existing period by the invoice interval.
       let planLabel = 'stem-loops subscription';
       try {
-        const provider = getBillingProvider();
-        const sub = await provider.getSubscription(evt.providerSubscriptionId);
-        await upsertEntitlementFromSubscription(userId, sub);
+        // Same per-subscription lock as the subscription events (review
+        // M-1), so this read-then-write cannot interleave with a cancel.
+        const sub = await withSubscriptionLock(providerName, evt.providerSubscriptionId, async (q) => {
+          const s = await getBillingProvider().getSubscription(evt.providerSubscriptionId);
+          await upsertEntitlementFromSubscription(userId, s, q);
+          return s;
+        });
         // E4: only a cycle invoice is a "renewal". The first invoice
         // (subscription_create) and anything else is labelled "<Plan> plan".
         const planName = ({ pro: 'Pro', studio: 'Studio' } as Record<string, string>)[sub.planCode] ?? sub.planCode;
@@ -750,32 +974,78 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
     }
 
     case 'invoice_payment_failed': {
-      // Flip the subscription to past_due. Access continues for the grace
-      // window (PAST_DUE_GRACE_MS, applied by readSnapshot) and then drops to
-      // free; the entitlement row itself is left alone.
-      const res = await db.query<{
-        user_id: string;
-        plan_code: 'pro' | 'studio';
-        current_period_start: Date | string | null;
-      }>(
-        `UPDATE subscriptions SET status = 'past_due', updated_at = now()
-          WHERE provider = $1 AND provider_subscription_id = $2
-            AND status NOT IN ('incomplete', 'canceled')
-          RETURNING user_id, plan_code, current_period_start`,
-        [providerName, evt.providerSubscriptionId],
-      );
-      const failedRow = res.rows[0];
+      // QA B-04, same bug class as subscription_upserted: this used to flip
+      // the row to past_due on the event alone, so a stale or late
+      // payment_failed that landed AFTER the retry succeeded (invoice.paid)
+      // left a paying subscriber past_due, and readSnapshot dropped them to
+      // free once the grace window ran out. Now the subscription is re-read
+      // (inside the per-subscription lock, review M-1) and its CURRENT
+      // status is applied. A failed read throws (500, Stripe retries).
+      const reason = evt.billingReason ?? null;
+      const outcome = await withSubscriptionLock(providerName, evt.providerSubscriptionId, async (q) => {
+        const current = await readCurrentSubscription('invoice_payment_failed', evt.providerSubscriptionId);
+        if (!current) return null;
+        // Only the statuses this event can settle are written here: past_due
+        // (the failure stands; access continues for PAST_DUE_GRACE_MS,
+        // applied by readSnapshot, then drops to free) or active/trialing
+        // (typically: the retry already succeeded, so the event is stale).
+        // canceled / paused / incomplete belong to the
+        // subscription events, which re-read too and also move the
+        // entitlement. The row guard is unchanged: never touch a never-paid
+        // `incomplete` row (review B1) or a terminal `canceled` one.
+        const settles = ['past_due', 'active', 'trialing'].includes(current.status);
+        if (!settles) {
+          console.info(
+            `[webhook] invoice_payment_failed ${evt.providerInvoiceId ?? '?'}: subscription ${evt.providerSubscriptionId} is ${current.status}; left to subscription events`,
+          );
+          return { current, failedRow: undefined, invoiceUnpaid: false };
+        }
+        const res = await q.query<{
+          user_id: string;
+          plan_code: 'pro' | 'studio';
+          current_period_start: Date | string | null;
+        }>(
+          `UPDATE subscriptions SET status = $3, updated_at = now()
+            WHERE provider = $1 AND provider_subscription_id = $2
+              AND status NOT IN ('incomplete', 'canceled')
+            RETURNING user_id, plan_code, current_period_start`,
+          [providerName, evt.providerSubscriptionId, current.status],
+        );
+        const failedRow = res.rows[0];
+        // Review L-1. With a card, a failed renewal moves the subscription to
+        // past_due. When Stripe still says active/trialing, decide R7 from
+        // the invoice itself: still `open` with an amount due means the
+        // customer must act; `paid` means the event is stale. This does NOT
+        // cover a delayed payment method (ACH / PAD) failing later: there
+        // Stripe VOIDS the invoice and keeps the subscription active, so no
+        // R7 is sent (nothing is owed on a void invoice). See the PR body's
+        // residue. Only read when an email could follow.
+        let invoiceUnpaid = false;
+        const provider = getBillingProvider();
+        if (
+          current.status !== 'past_due' &&
+          reason === 'subscription_cycle' &&
+          failedRow &&
+          evt.providerInvoiceId &&
+          provider.getInvoiceState
+        ) {
+          const inv = await provider.getInvoiceState(evt.providerInvoiceId);
+          invoiceUnpaid = inv.status === 'open' && inv.amountRemaining > 0;
+        }
+        return { current, failedRow, invoiceUnpaid };
+      });
+      if (!outcome) return;
+      const { current, failedRow, invoiceUnpaid } = outcome;
       const failedUser = failedRow?.user_id ?? evt.userId;
       if (failedUser) invalidateEntitlement(failedUser);
       // R7, payment failed (emails v1.2; fixes E5). Only for a RENEWAL
       // (billing_reason subscription_cycle), and only when a paid
       // subscription matched the UPDATE above. A failed FIRST payment
       // (subscription_create) sends nothing and, since the UPDATE skips
-      // `incomplete` rows, no longer turns a never-paid subscription into
+      // `incomplete` rows, never turns a never-paid subscription into
       // past_due (review B1). subscription_update is excluded too: the copy
       // says "renewal", and a proration invoice's line period starts at the
       // change, not at the cycle start the grace window counts from (M-a).
-      const reason = evt.billingReason ?? null;
       if (reason !== 'subscription_cycle') {
         console.info(
           `[webhook] invoice_payment_failed ${evt.providerInvoiceId ?? '?'}: no email (billing_reason=${reason ?? 'none'})`,
@@ -783,6 +1053,13 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         return;
       }
       if (!failedRow || !evt.providerInvoiceId) return;
+      // A stale failure (the retry already succeeded) sends no R7.
+      if (current.status !== 'past_due' && !invoiceUnpaid) {
+        console.info(
+          `[webhook] invoice_payment_failed ${evt.providerInvoiceId}: no email (subscription is ${current.status}, invoice not open)`,
+        );
+        return;
+      }
       const periodStart = evt.periodStart ?? failedRow.current_period_start;
       if (!periodStart) return;
       await emailBestEffort('payment_failed', () =>
@@ -826,6 +1103,11 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
     }
 
     case 'unhandled':
+      // Review L-5: a paid session (or subscription) the provider could not
+      // map carries an alert. Stripe still gets 200 (a retry cannot fix a
+      // price we do not know), but a human is paged through Sentry.
+      if (evt.alert) alertBilling(evt.alert, { eventType: evt.eventType, ...(evt.alertDetail ?? {}) });
+      return;
     default:
       return;
   }
@@ -857,6 +1139,20 @@ export async function POST(req: NextRequest) {
   try {
     event = await provider.handleWebhook(rawBody, signature);
   } catch (err) {
+    // The signature was fine but a read back from the provider failed (e.g.
+    // a credit session's line items): 500 so Stripe retries. A 400 would
+    // drop a paid purchase for good.
+    if (err instanceof Error && err.name === 'BillingProviderUnavailableError') {
+      console.error('[webhook] provider read failed, asking for a retry:', err.message);
+      return NextResponse.json({ error: 'provider_unavailable' }, { status: 500 });
+    }
+    // Review I-1: a live event against a test key (or the reverse). Fail
+    // CLOSED and loud: nothing is granted, Stripe keeps retrying (~3 days)
+    // so the events can still be processed once the config is fixed.
+    if (err instanceof Error && err.name === 'BillingModeMismatchError') {
+      alertBilling('Stripe event mode does not match the API key mode', { error: err.message });
+      return NextResponse.json({ error: 'mode_mismatch' }, { status: 500 });
+    }
     // Stripe treats 400 as "do not retry" — correct for signature mismatch.
     console.warn('[webhook] signature verification failed:', err instanceof Error ? err.message : err);
     return NextResponse.json({ error: 'invalid signature' }, { status: 400 });

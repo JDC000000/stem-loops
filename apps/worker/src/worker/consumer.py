@@ -46,11 +46,12 @@ CLEANUP_INTERVAL = int(os.environ.get("RETENTION_SWEEP_SECONDS", "900"))
 # the retention sweep only run between jobs: one hung stage used to block the queue and the
 # reaper that would have recovered it until Fly restarted the process. Heartbeated stages
 # never go stale, so the reaper cannot catch a hang there either; this deadline does.
-# The default covers the worst legitimate job with margin: decode (FFMPEG_DECODE_TIMEOUT_SEC
-# 120 s) + separation (SEPARATION_MAX_ATTEMPTS 3 x REPLICATE_DEADLINE 55 s, plus submit) +
-# stems (STEM_FETCH_DEADLINE_SEC 300 s, in parallel) + extraction + Klangio
-# (KLANGIO_POLL_DEADLINE_SEC 600 s) + stem retention uploads: well under 30 minutes.
-JOB_WALL_TIMEOUT_DEFAULT = 1800.0
+# The default must never cut off a healthy job. It is the web's queued-stall threshold
+# (apps/web/src/lib/job-poll.ts QUEUED_STALL_MS, 90 min): the sum of every stage the worker
+# bounds with a constant, using the DEPLOYED REPLICATE_DEADLINE (fly.toml, 300 s), is 4442 s
+# (ONE_JOB_WORST_CASE_S), plus margin for extract_and_tag and the R2 PUTs, which no constant
+# bounds. test/job-stall-derivation.test.mjs pins this default at or above that sum.
+JOB_WALL_TIMEOUT_DEFAULT = 5400.0
 JOB_WALL_TIMEOUT_MESSAGE = (
     "Processing took too long and was stopped. Please try again. "
     "If this used a credit, it has been returned."

@@ -275,12 +275,14 @@ def test_a_hung_job_is_failed_and_refunded_at_the_wall_clock_deadline(conn, monk
     assert _balance(conn, uid) == 20
 
 
-def test_the_default_wall_clock_budget_is_thirty_minutes(monkeypatch):
+def test_the_default_wall_clock_budget_is_ninety_minutes(monkeypatch):
+    """At least the web's ONE_JOB_WORST_CASE_S (4442 s, deployed values): a healthy job is
+    never cut off. The cross-check against job-poll.ts is in job-stall-derivation.test.mjs."""
     monkeypatch.delenv("JOB_WALL_TIMEOUT_SECONDS", raising=False)
-    assert consumer._job_wall_timeout() == 1800.0
+    assert consumer._job_wall_timeout() == 5400.0
     for bad in ("0", "-5", "inf", "nan", "abc"):
         monkeypatch.setenv("JOB_WALL_TIMEOUT_SECONDS", bad)
-        assert consumer._job_wall_timeout() == 1800.0, bad
+        assert consumer._job_wall_timeout() == 5400.0, bad
 
 
 def test_an_exception_escaping_the_pipeline_is_refunded_by_the_consumer(conn, monkeypatch):
@@ -377,6 +379,6 @@ def test_a_trickling_stem_download_hits_its_total_deadline(monkeypatch, trickle_
     assert box["exc"].error_code in job_failure.OUR_FAULT_CODES
 
 
-def test_the_default_stem_download_budget_is_five_minutes(monkeypatch):
+def test_the_default_stem_download_budget_is_nine_minutes(monkeypatch):
     monkeypatch.delenv("STEM_FETCH_DEADLINE_SEC", raising=False)
-    assert pipeline._stem_fetch_deadline_sec() == 300.0
+    assert pipeline._stem_fetch_deadline_sec() == 540.0

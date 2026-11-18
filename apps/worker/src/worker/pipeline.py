@@ -214,10 +214,12 @@ def _ffmpeg_decode_timeout_sec() -> float:
 # Total wall-clock budget for downloading ONE stem, across every retry (QA C-06). httpx's
 # `timeout` is per network operation, so a CDN trickling a byte at a time never tripped the
 # old per-read 180 s and could hold the job (and, inline, the whole queue) for hours. Real
-# stems are 40-60 MB; 300 s is ~200 kB/s, far below any healthy CDN. Past it the job fails
-# as INTERNAL_ERROR (our fault -> credit returned). Worst case a stem takes this plus one
-# final read wait, which is itself capped at whatever budget remained when the attempt began.
-STEM_FETCH_DEADLINE_SEC_DEFAULT = 300.0
+# stems are 40-60 MB; 540 s is ~100 kB/s, far below any healthy CDN. Past it the job fails
+# as INTERNAL_ERROR (our fault -> credit returned). The deadline is checked as bytes arrive,
+# so a stem's worst case is this plus ONE final read wait (STEM_FETCH_READ_TIMEOUT_SEC):
+# 540 + 180 = 720 s, the same per-stem row the web's queued-stall derivation already used
+# (apps/web/src/lib/job-poll.ts, pinned by test/job-stall-derivation.test.mjs).
+STEM_FETCH_DEADLINE_SEC_DEFAULT = 540.0
 STEM_FETCH_READ_TIMEOUT_SEC = 180.0
 
 

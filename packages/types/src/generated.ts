@@ -50,6 +50,7 @@ export interface Job {
   youtube_url?: string | null;
   upload_r2_key?: string | null;
   original_filename?: string | null;
+  title?: string | null;
   status: string;
   error_code?: string | null;
   error_message_user?: string | null;

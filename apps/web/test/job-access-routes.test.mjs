@@ -190,6 +190,17 @@ test('GET /api/jobs/:id never puts user_id in the response, and is not cacheable
   assert.equal(res.headers['Cache-Control'], 'private, no-store');
 });
 
+// P5.1 (Slice 1b): the player and the processing view are titled by jobs.title, so the job
+// route must read the column and hand it on. The db fake returns only the columns the SELECT
+// names, so dropping `title` from the SELECT turns this red.
+test('GET /api/jobs/:id returns the song title (jobs.title) to its owner', async () => {
+  globalThis.__sec.job = { ...jobRow(OWNER), title: 'Lucky Ticket' };
+  globalThis.__sec.user = { user_id: OWNER, email: 'a@example.com' };
+  const res = await call(await loadRoute(ROUTES['GET /api/jobs/:id']));
+  assert.equal(res.status, 200);
+  assert.equal(res.body.title, 'Lucky Ticket');
+});
+
 test('a denied caller on an owned job learns nothing about its state (404, not NOT_READY)', async () => {
   globalThis.__sec.job = { ...jobRow(OWNER), status: 'separating' };
   globalThis.__sec.user = null;

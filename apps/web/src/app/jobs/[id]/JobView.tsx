@@ -348,7 +348,7 @@ export default function JobView({ id, signedIn = true }: { id: string; signedIn?
       ) : (
         <>
           <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, textAlign: 'center' }}>
-            {job.original_filename ?? job.youtube_url ?? 'Your track'}
+            {job.title?.trim() || job.original_filename || job.youtube_url || 'Your track'}
           </h1>
           <p style={{ margin: '-16px 0 0', color: 'var(--text-muted)' }}>Processing…</p>
           <TrimNote job={job} />

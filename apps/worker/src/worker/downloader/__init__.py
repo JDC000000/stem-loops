@@ -56,7 +56,10 @@ def _outcome(exc: BaseException) -> str:
 
 
 def download_audio(
-    youtube_url: str, job_id: str | None = None, max_duration_sec: float | None = None
+    youtube_url: str,
+    job_id: str | None = None,
+    max_duration_sec: float | None = None,
+    meta: dict | None = None,
 ) -> tuple[str, str]:
     """Return (path_or_url, source) where source is 'ytdlp' (local path) or 'cobalt' (URL).
 
@@ -69,6 +72,11 @@ def download_audio(
     A video LONGER than the ceiling is no longer refused here (Jon, 2026-11-14: long songs
     are trimmed to their first ``max_duration_sec`` seconds, not turned away). The yt-dlp leg
     downloads it and ``pipeline._trim_link_source`` cuts it on bytes we hold.
+
+    ``meta``, when the caller passes a dict, receives ``meta["title"]`` (P5.1): the video
+    title read by the SAME metadata call gate 0c makes, cleaned by ``titles.clean_title``, or
+    ``None``. The return shape is unchanged so no caller has to learn a new one; only a caller
+    that wants the title passes the dict. No cap means no gate-0c call and so no title.
     """
     _ssrf_guard(youtube_url)
 
@@ -109,7 +117,10 @@ def download_audio(
     # under the cap -- never for an unreadable length and never for a long video.
     declared: float | None = None
     if max_duration_sec is not None:
-        declared = ytdlp_client.probe_duration_sec(fetch_url)
+        probed = ytdlp_client.probe_metadata(fetch_url)
+        declared = probed.duration_sec
+        if meta is not None:
+            meta["title"] = probed.title
         if declared is not None and declared > max_duration_sec:
             log_structured(
                 "INFO",

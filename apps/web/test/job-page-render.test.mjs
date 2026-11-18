@@ -575,3 +575,24 @@ test('a job with an expiry says "This song is deleted in …"; a demo song (is_d
   // is_demo: false (every job the API returns that is not a demo) keeps the countdown.
   assert.match(info({ ...DONE_JOB, expires_at, is_demo: false }), /This song is deleted in 24 hours\./);
 });
+
+// ── P5.1 (Slice 1b): the song's title names it in the player and while it processes ──
+// The worker now writes jobs.title for new songs and GET /api/jobs/:id returns it. The
+// player's h1 is fed by jobLabel(job), which puts the title first; without a title it falls
+// back to the file name, then the link, exactly as before (old rows are not backfilled).
+test('the player is titled by jobs.title when present, and by the file name or link when not', () => {
+  renderJob({ ...DONE_JOB, title: 'Lucky Ticket' });
+  assert.equal(globalThis.__playerProps.title, 'Lucky Ticket');
+  renderJob(DONE_JOB);
+  assert.equal(globalThis.__playerProps.title, 'take-5.mp3', 'no title: the old fallback, unchanged');
+  renderJob({ ...DONE_JOB, original_filename: null, youtube_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' });
+  assert.equal(globalThis.__playerProps.title, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+});
+
+test('a song still processing is headed by its title too', () => {
+  const html = renderJob({ ...DONE_JOB, status: 'separating', title: 'Lucky Ticket', youtube_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', original_filename: null });
+  assert.match(html, /<h1[^>]*>Lucky Ticket<\/h1>/);
+  assert.doesNotMatch(html, /<h1[^>]*>https:/);
+  const fallback = renderJob({ ...DONE_JOB, status: 'separating' });
+  assert.match(fallback, /<h1[^>]*>take-5\.mp3<\/h1>/);
+});

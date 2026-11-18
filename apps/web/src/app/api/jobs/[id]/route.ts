@@ -35,7 +35,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
   }
   try {
     const jobRes = await db.query(
-      `SELECT user_id, id, input_kind, youtube_url, upload_r2_key, original_filename, requested_stems,
+      `SELECT user_id, id, input_kind, youtube_url, upload_r2_key, original_filename, title, requested_stems,
               loop_length_bars, status, error_code, error_message_user, bpm, musical_key,
               created_at, updated_at, is_demo, ${JOB_RETAINED_UNTIL_SQL} AS expires_at
        FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,

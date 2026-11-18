@@ -4,9 +4,9 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import HCaptcha from '@hcaptcha/react-hcaptcha';
 import { createBrowserClient } from '@/lib/auth/supabase';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
-import { PASSWORD_MIN_LENGTH, PASSWORD_RULE_TEXT, validatePassword, validateSignupEmail } from '@/lib/auth/password-rules';
+import { PASSWORD_MIN_LENGTH, PASSWORD_RULE_TEXT, suggestEmailFix, validatePassword, validateSignupEmail } from '@/lib/auth/password-rules';
 import { PasswordField } from '@/components/PasswordField';
-import { loginErrorMessage } from '@/lib/auth/login-errors';
+import { appCopyError, authErrorMessage, loginErrorMessage } from '@/lib/auth/login-errors';
 import { sendMagicLink } from '@/lib/auth/magic-link';
 import { fieldStyle, buttonBase, primaryButton, secondaryButton, secondaryEmphasisButton, textButton } from '@/lib/ui/form-styles';
 
@@ -17,6 +17,7 @@ const input = fieldStyle;
 const btn = buttonBase;
 // White underlined text actions with a 44px tap target, never lime (brand book §7.10).
 const linkBtn = textButton;
+const LOGIN_FAILED = 'Sign-in did not complete. Please try again.';
 
 export default function LoginForm({
   returnTo, initialError, initialMode = 'signin',
@@ -35,6 +36,10 @@ export default function LoginForm({
   // Slice 1b: the sign-up route's "If you already have an account, sign in instead…" reply
   // carries `sign_in: true`; the error line then gets a Sign in link beside it.
   const [offerSignIn, setOfferSignIn] = useState(false);
+  // QA A-09: the address last checked for a provider typo (on leaving the field, and on
+  // submit). The hint shows only while the field still holds that address.
+  const [typoChecked, setTypoChecked] = useState<string | null>(null);
+  const typoFix = mode === 'signup' && typoChecked !== null && typoChecked === email ? suggestEmailFix(email) : null;
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const captchaRef = useRef<HCaptcha>(null);
   const siteKey = process.env.NEXT_PUBLIC_HCAPTCHA_SITE_KEY;
@@ -67,6 +72,13 @@ export default function LoginForm({
     return () => unsub?.();
   }, [dest]);
 
+  // QA A-11: an error is about what was submitted; once the person edits a field it
+  // describes, it goes, so it never sits beside a fresh browser validation bubble.
+  function clearError() {
+    setError(null);
+    setOfferSignIn(false);
+  }
+
   async function run(action: BusyAction, fn: () => Promise<string | null>) {
     setBusyAction(action);
     setError(null);
@@ -76,7 +88,8 @@ export default function LoginForm({
       const msg = await fn();
       if (msg) setNotice(msg);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
+      // QA A-08: never e.message from fetch or supabase-js ("Failed to fetch"): one copy map.
+      setError(authErrorMessage(e, action === 'signin' ? LOGIN_FAILED : undefined));
       setOfferSignIn(e instanceof Error && (e as Error & { signIn?: boolean }).signIn === true);
     } finally {
       setBusyAction(null);
@@ -89,6 +102,8 @@ export default function LoginForm({
     // accepts a password the server will reject. Sign-in is never checked:
     // existing accounts may predate these rules.
     if (mode === 'signup') {
+      // A likely typo is pointed out, never blocked (QA A-09): the address as typed is sent.
+      setTypoChecked(email);
       // Same check as the server: an address most providers will bounce is caught here,
       // before a confirmation email is sent to it (Slice 1b).
       const emailError = validateSignupEmail(email);
@@ -119,7 +134,7 @@ export default function LoginForm({
         captchaRef.current?.resetCaptcha();
         if (!res.ok || !json.ok) {
           // The route only ever sends its own one-line copy (lib/auth/signup-errors.ts).
-          throw Object.assign(new Error(json.error ?? "We couldn't create your account just now — try again in a minute."), {
+          throw appCopyError(json.error ?? "We couldn't create your account just now — try again in a minute.", {
             signIn: json.sign_in === true,
           });
         }
@@ -170,15 +185,29 @@ export default function LoginForm({
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, color: 'var(--text-secondary)', fontSize: 14 }}>
           Email
           <input type="email" required autoComplete="email" value={email}
-            onChange={(e) => setEmail(e.target.value)} style={input} />
+            onChange={(e) => { setEmail(e.target.value); clearError(); }}
+            onBlur={() => setTypoChecked(email)}
+            aria-describedby={typoFix ? 'email-typo' : undefined}
+            style={input} />
         </label>
+        {typoFix && (
+          <p id="email-typo" role="status" data-testid="email-typo"
+            style={{ margin: '-4px 0 0', fontSize: 14, color: 'var(--text-secondary)' }}>
+            Did you mean{' '}
+            <button type="button" style={{ ...linkBtn, padding: '0 2px' }} data-testid="email-typo-fix"
+              onClick={() => { setEmail(typoFix); setTypoChecked(typoFix); }}>
+              {typoFix}
+            </button>
+            ?
+          </p>
+        )}
         {mode !== 'reset' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, color: 'var(--text-secondary)', fontSize: 14 }}>
             <PasswordField label="Password" required
               minLength={mode === 'signup' ? PASSWORD_MIN_LENGTH : undefined}
               autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
               aria-describedby={mode === 'signup' ? 'password-rule' : undefined}
-              value={password} onChange={(e) => setPassword(e.target.value)} inputStyle={input} />
+              value={password} onChange={(e) => { setPassword(e.target.value); clearError(); }} inputStyle={input} />
             {mode === 'signup' && (
               <span id="password-rule" style={{ color: 'var(--text-muted)', fontSize: 13 }}>
                 {PASSWORD_RULE_TEXT}

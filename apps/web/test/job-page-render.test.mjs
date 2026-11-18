@@ -182,6 +182,11 @@ const errorCopyMod = put('error-copy.mjs', toJs(read('src/lib/error-copy.ts')));
 // The REAL input-trim module (pure): the job page's "Using the first 5:00" line.
 const inputTrimMod = put('input-trim.mjs', toJs(read('src/lib/input-trim.ts')));
 const jobLabelMod = put('job-label.mjs', toJs(read('src/lib/job-label.ts')));
+// The REAL processing heading (QA A-04), wired to the real job-label module.
+const processingHeadingMod = put(
+  'ProcessingHeading.mjs',
+  toJs(read('src/components/ProcessingHeading.tsx')).replace(/from ['"]@\/lib\/job-label['"]/g, `from '${jobLabelMod}'`),
+);
 // The REAL demo catalog (pure data; Slice 2a): a demo song's title and artist come from it.
 const demoCatalogMod = put('demo-catalog.mjs', toJs(read('src/lib/demo-catalog.ts')));
 
@@ -197,6 +202,7 @@ const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${errorCopyMod}'`)
   .replace(/from ['"]@\/lib\/input-trim['"]/g, `from '${inputTrimMod}'`)
   .replace(/from ['"]@\/lib\/job-label['"]/g, `from '${jobLabelMod}'`)
+  .replace(/from ['"]@\/components\/ProcessingHeading['"]/g, `from '${processingHeadingMod}'`)
   .replace(/from ['"]@\/lib\/demo-catalog['"]/g, `from '${demoCatalogMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordOverlayMod}'`);
 writeFileSync(join(dir, 'JobView.mjs'), jobViewJs);
@@ -599,6 +605,42 @@ test('a song still processing is headed by its title too', () => {
   assert.doesNotMatch(html, /<h1[^>]*>https:/);
   const fallback = renderJob({ ...DONE_JOB, status: 'separating' });
   assert.match(fallback, /<h1[^>]*>take-5\.mp3<\/h1>/);
+});
+
+// ── QA A-04 (track A, 2026-11-18): the processing heading was the RAW URL ──────
+// A link job with no title yet put "https://www.youtube.com/watch?v=…" in a
+// centred 2xl <h1> with no wrapping; it ran off both edges at 390 px. The
+// layout half (a long unbroken string stays inside a 360 px screen) is the
+// real-Chromium test packages/web-browser-gate/test/processing-heading.test.mjs.
+const headingOf = (html) => html.match(/<h1[^>]*data-testid="job-heading"[^>]*>([\s\S]*?)<\/h1>/);
+test('A-04: before a title is known, a link job is headed by a short host/ID form, never the raw URL', () => {
+  for (const [url, want] of [
+    ['https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'youtube.com · dQw4w9WgXcQ'],
+    ['https://youtu.be/dQw4w9WgXcQ?si=abc123', 'youtu.be · dQw4w9WgXcQ'],
+    ['https://m.youtube.com/shorts/dQw4w9WgXcQ', 'youtube.com · dQw4w9WgXcQ'],
+  ]) {
+    const html = renderJob({ ...DONE_JOB, status: 'downloading', title: null, original_filename: null, youtube_url: url });
+    const h = headingOf(html);
+    assert.ok(h, 'no processing heading rendered');
+    assert.equal(h[1], want, `heading for ${url}`);
+    assert.doesNotMatch(h[1], /https?:|\/\//, 'the heading still shows a URL');
+  }
+  // Once the worker has the title, the title replaces it.
+  const titled = headingOf(renderJob({ ...DONE_JOB, status: 'separating', title: 'Lucky Ticket', original_filename: null, youtube_url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }));
+  assert.equal(titled[1], 'Lucky Ticket');
+});
+
+test('A-04: a very long unbroken string wraps (overflow-wrap: anywhere) and a URL heading is bounded', () => {
+  const LONG = 'A'.repeat(400);
+  const html = renderJob({ ...DONE_JOB, status: 'separating', title: LONG });
+  const tag = html.match(/<h1[^>]*data-testid="job-heading"[^>]*>/)?.[0] ?? '';
+  assert.match(tag, /overflow-wrap:anywhere/, 'the heading does not wrap a long unbroken string');
+  assert.match(tag, /max-width:100%/, 'the heading is not bounded by its column');
+  // A pathological link: the short form is still short.
+  const url = `https://www.youtube.com/watch?v=${'x'.repeat(300)}`;
+  const h = headingOf(renderJob({ ...DONE_JOB, status: 'separating', title: null, original_filename: null, youtube_url: url }));
+  assert.ok(h[1].length <= 40, `short form is ${h[1].length} characters`);
+  assert.ok(h[1].startsWith('youtube.com · '), h[1]);
 });
 
 // ── demo songs (Slice 2a): played signed out, so the player says what the song is ──

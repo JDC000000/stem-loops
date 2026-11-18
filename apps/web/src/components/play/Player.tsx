@@ -482,6 +482,7 @@ export default function Player({
         artist: MEDIA_ARTIST,
         artworkUrl: MEDIA_ARTWORK_URL,
         onPlay: () => {
+          setPlaybackAudioSession(globalThis.navigator);
           outputRef.current?.play();
           engineRef.current?.play();
         },
@@ -616,7 +617,15 @@ export default function Player({
   // On phones the `<audio>` element must be started inside the tap, BEFORE the
   // engine, or iOS refuses it. On desktop `outputRef` is null and this is the
   // old one-liner.
+  // QA A-20: every play — the first tap above all — also marks the page's audio as
+  // music playback (Safari 16.4+ `navigator.audioSession.type = 'playback'`), so an
+  // iPhone with the ring/silent switch on still plays. Feature-detected and wrapped
+  // in try/catch (setPlaybackAudioSession); on every device, not only the phone
+  // route, because iPadOS Safari reports itself as a desktop. Set inside the tap,
+  // before the engine starts, and the engine's own AudioContext unlock (resume()
+  // in the same gesture) is unchanged.
   const onPlay = useCallback(() => {
+    setPlaybackAudioSession(globalThis.navigator);
     outputRef.current?.play();
     engineRef.current?.play();
   }, []);

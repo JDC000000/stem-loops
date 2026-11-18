@@ -256,6 +256,12 @@
   font-size: 15px;
   color: var(--text-secondary);
 }
+.noChordsReason {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
 .noChordsPresets { margin-top: auto; }
 
 /* ── desktop: the mixer column ─────────────────────────────────────────── */

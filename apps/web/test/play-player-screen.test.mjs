@@ -30,7 +30,8 @@ const graph = buildModuleGraph({
         useEffect(() => {
           if (props.onNowNext && globalThis.__nowNext) props.onNowNext(globalThis.__nowNext);
         }, [props.onNowNext]);
-        if (props.view === 'stage' && globalThis.__noChords) return props.emptyStage;
+        if (props.view === 'stage' && globalThis.__noChords)
+          return typeof props.emptyStage === 'function' ? props.emptyStage(globalThis.__noChordsReason ?? null) : props.emptyStage;
         return createElement('div', { 'data-testid': 'chord-overlay', 'data-view': String(props.view), 'data-position': String(props.positionSec) });
       };
       export default ChordOverlay;`,
@@ -200,8 +201,14 @@ test('P1.2 no chords: the section name large, bar/beat, "No chords for this song
     assert.match(h, /data-testid="stage-presets"/);
     assert.ok(h.indexOf('stage-presets') < h.indexOf('section-strip'), 'the presets are IN the stage');
     assert.match(h, /Mute my part[\s\S]*Full song[\s\S]*No vocals[\s\S]*Drums \+ bass/);
+    assert.doesNotMatch(h, /completed-job-message/, 'a song with no chords needs no reason line');
+    // Chords UNAVAILABLE: the provider's reason is kept (never "failed for this track").
+    globalThis.__noChordsReason = 'Chord detection didn\u2019t return a result for this track. This is usually on our end rather than your song.';
+    const u = decode(ssr());
+    assert.match(u, /No chords for this song\.<\/p><p class="noChordsReason" role="status" data-testid="completed-job-message">Chord detection didn’t return a result/);
   } finally {
     globalThis.__noChords = false;
+    globalThis.__noChordsReason = null;
   }
 });
 

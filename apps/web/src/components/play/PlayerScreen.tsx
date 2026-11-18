@@ -247,7 +247,7 @@ export function PlayerScreen(props: ScreenProps) {
   );
 
   // P1.2: no chords -> the section name large, bar/beat, one line, the presets.
-  const emptyStage = (
+  const emptyStage = (reason: string | null) => (
     <div className={styles.noChords} data-testid="no-chords">
       <span className={styles.stageLabel}>Now playing</span>
       <span className={styles.noChordsSection} data-testid="no-chords-section">
@@ -259,6 +259,13 @@ export function PlayerScreen(props: ScreenProps) {
         </span>
       ) : null}
       <p className={styles.noChordsLine}>{NO_CHORDS_LINE}</p>
+      {reason ? (
+        // Why (the provider's own copy: never "failed for this track"; a load
+        // failure says to refresh). A status, not live chatter: it appears once.
+        <p className={styles.noChordsReason} role="status" data-testid="completed-job-message">
+          {reason}
+        </p>
+      ) : null}
       {playable && !desktop ? <div className={styles.noChordsPresets}>{presets('stage-presets')}</div> : null}
     </div>
   );

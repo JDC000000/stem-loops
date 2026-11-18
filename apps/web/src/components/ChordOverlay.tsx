@@ -181,8 +181,13 @@ export interface ChordOverlayProps extends Partial<ChordPlayheadProps> {
    *   'chart' the full chord chart only ("See all chords").
    */
   view?: 'both' | 'stage' | 'chart';
-  /** Stage view only: what to show when this song has no chords (P1.2 no-chords state). */
-  emptyStage?: ReactNode;
+  /**
+   * Stage view only: what to show when this song has no chords (P1.2
+   * no-chords state). A function is given WHY when chords are unavailable
+   * (the provider's reason, e.g. "usually on our end"; a load failure's "Refresh
+   * the page"), or null when the song simply has none.
+   */
+  emptyStage?: ReactNode | ((reason: string | null) => ReactNode);
   /**
    * Stage view only: told the current and next chord names whenever they
    * change (never per frame), so the Mix sheet's header can show them while it
@@ -740,7 +745,9 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
     return (
       <div ref={setWrapEl} data-testid="chord-overlay" data-view="stage" style={stageRootStyle}>
         {noChords ? (
-          emptyStage
+          typeof emptyStage === 'function'
+            ? emptyStage(completedJobChords.status === 'unavailable' ? completedStatus.message : null)
+            : emptyStage
         ) : showPhone ? (
           <PhoneChords
             runs={state.runs}

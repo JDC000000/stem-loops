@@ -3,7 +3,7 @@
 // THE ONE TOP NAV — every page, signed in or out (2026-11-15, Jon: "Download
 // loops is a separate product in the top nav on every page, including the
 // landing page"). Two products side by side — Play along · Download loops —
-// then Job history, Pricing and Account / Sign in. The current product is marked
+// then Library (was "Job history" until Slice 2a), Pricing and Account / Sign in. The current product is marked
 // (aria-current + the #275 edge-and-weight cue) and named by a tag beside the
 // wordmark, which stays visible below 760px where the items fold into a menu.
 // Moises-style separation: products are peers in the bar, each with its own
@@ -93,7 +93,7 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
   const onLoops = pathname === '/loops';
   const signInHref = onLoops ? `/login?return_to=${encodeURIComponent('/loops')}` : '/login';
 
-  // Story 7.2: the tool, Download loops, Job history and Account, in the
+  // Story 7.2: the tool, Download loops, Library and Account, in the
   // order the design canvas shows (kept from PR #208); Pricing (P6) sits just
   // before Account / Sign in.
   //
@@ -116,7 +116,7 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
   const items: Item[] = [
     { label: 'Play along', href: '/', match: (p) => p === '/' || p.startsWith('/jobs/'), product: 'Play along' },
     { label: 'Download loops', href: '/loops', match: (p) => p === '/loops' || p.startsWith('/loops/'), product: 'Download loops' },
-    { label: 'Job history', href: '/history', match: (p) => p === '/history' },
+    { label: 'Library', href: '/history', match: (p) => p === '/history' },
     // P6 (Jon, 2026-11-17): Pricing is in the bar, signed in and out, on every
     // page including the landing. It belongs to neither product, so it carries
     // no `product` tag.

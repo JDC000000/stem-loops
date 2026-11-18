@@ -331,7 +331,7 @@ test('the landing shows no price, plan or paywall — there is no payment at lau
       if (re === PRICING_WORD) continue;
       assert.doesNotMatch(text, re, `${where} says ${re}`);
     }
-    // No \b: the markup-removed reading joins the nav labels ("Job historyPricingSign in").
+    // No \b: the markup-removed reading joins the nav labels ("LibraryPricingSign in").
     const n = (text.match(/pricing/gi) ?? []).length;
     assert.equal(n, where.startsWith('the page metadata') ? 0 : 1, `${where}: "pricing" ${n} times; only the nav item may say it`);
   }

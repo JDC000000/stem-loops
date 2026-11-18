@@ -23,6 +23,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { INPUT_TRIM_URL, INPUT_TRIM_IMPORT_RE } from './helpers/input-trim.mjs';
+import { DEMO_RATE_IMPORT_RE, DEMO_RATE_URL, JOB_ACCESS_IMPORT_RE, jobAccessUrl } from './helpers/job-access-stub.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const toJs = (file) =>
@@ -75,6 +76,7 @@ async function loadRoute(file) {
   const js = toJs(file)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub}'`)
     .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${access}'`)
+    .replace(DEMO_RATE_IMPORT_RE, `from '${DEMO_RATE_URL}'`)
     .replace(INPUT_TRIM_IMPORT_RE, `from '${INPUT_TRIM_URL}'`)
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${getUserStub}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub}'`)
@@ -225,20 +227,77 @@ test('mayReadJob: a row with NO user_id column (undefined) is denied to everyone
   assert.equal(await access.mayReadJob(OTHER), false);
 });
 
-// ── demo songs (V3 Slice 0, migration 040): the flag opens NO read path ──
-// Slice 0 only keeps demo rows out of the retention sweep. Who may read one (the is_demo
-// branch in mayReadJob, signed-out access) is Slice 2. Until then a demo is an ordinary
-// OWNED job: 404 to a signed-out caller and to any other user, on every read route.
+// ── demo songs (Slice 2a, DB-12a): the is_demo branch opens the READ path, and only it ──
+// Slice 0 kept a demo an ordinary owned job (404 to everyone but its owner). Slice 2a opens
+// reads to everyone, signed out included. The full route × caller × job table, write routes
+// included, is test/demo-route-rules.test.mjs; this file keeps the read-route cells.
 for (const [name, file] of Object.entries(ROUTES)) {
-  test(`${name}: an owned DEMO job (is_demo) is still a 404 to signed-out and to other users`, async () => {
-    for (const user of [null, { user_id: OTHER }]) {
+  test(`${name}: a DEMO job (is_demo) is readable signed out, by another user and by its owner`, async () => {
+    for (const user of [null, { user_id: OTHER }, { user_id: OWNER }]) {
       globalThis.__sec = { job: { ...jobRow(OWNER), is_demo: true }, user, queries: [] };
       const res = await call(await loadRoute(file));
-      assert.equal(res.status, 404, `is_demo opened ${name} to ${user ? 'another user' : 'a signed-out caller'}`);
-      assert.equal(JSON.stringify(res.body).includes('signed'), false);
+      assert.equal(res.status, 200, `is_demo did not open ${name} to ${user ? user.user_id : 'a signed-out caller'}`);
     }
-    // ... and the owner still reads it (control: the denial above is not a broken route).
-    globalThis.__sec = { job: { ...jobRow(OWNER), is_demo: true }, user: { user_id: OWNER }, queries: [] };
-    assert.equal((await call(await loadRoute(file))).status, 200);
+  });
+
+  test(`${name}: is_demo FALSE on the same owned row is still a 404 to others (the flag, not the row, opens it)`, async () => {
+    for (const user of [null, { user_id: OTHER }]) {
+      globalThis.__sec = { job: { ...jobRow(OWNER), is_demo: false }, user, queries: [] };
+      assert.equal((await call(await loadRoute(file))).status, 404);
+    }
   });
 }
+
+// The pure rule, cell by cell (DESIGN-PROPOSAL v1.5 P3.1). [signed out, other user, owner].
+const RULE = {
+  demo: { read: [1, 1, 1], download: [0, 0, 1], cut_loops: [0, 0, 1], edit_chords: [0, 0, 1], delete: [0, 0, 1], claim: [0, 0, 1] },
+  'orphaned demo': { read: [1, 1, 1], download: [0, 0, 0], cut_loops: [0, 0, 0], edit_chords: [0, 0, 0], delete: [0, 0, 0], claim: [0, 0, 0] },
+  ordinary: { read: [0, 0, 1], download: [0, 0, 1], cut_loops: [0, 0, 1], edit_chords: [0, 0, 1], delete: [0, 0, 1], claim: [0, 0, 0] },
+  'anonymous ordinary': { read: [1, 1, 1], download: [1, 1, 1], cut_loops: [1, 1, 1], edit_chords: [0, 0, 0], delete: [0, 0, 0], claim: [0, 1, 1] },
+};
+const FACTS = {
+  demo: { ownerId: OWNER, isDemo: true },
+  'orphaned demo': { ownerId: null, isDemo: true },
+  ordinary: { ownerId: OWNER, isDemo: false },
+  'anonymous ordinary': { ownerId: null, isDemo: false },
+};
+const loadAccess = async () =>
+  import(dataUrl(toJs('src/lib/job-access.ts').replace(/from ['"]@\/lib\/auth\/supabase['"]/, `from '${getUserStub}'`)) + '#' + Math.random());
+
+test('decideJobAccess: every cell of the P3.1 rule table (6 actions × 3 callers × 4 job kinds)', async () => {
+  const access = await loadAccess();
+  assert.deepEqual([...access.JOB_ACTIONS].sort(), Object.keys(RULE.demo).sort(), 'an action is missing from the table');
+  let cells = 0;
+  for (const [kind, actions] of Object.entries(RULE)) {
+    for (const [action, row] of Object.entries(actions)) {
+      [null, OTHER, OWNER].forEach((caller, i) => {
+        cells += 1;
+        assert.equal(access.decideJobAccess(action, FACTS[kind], caller), row[i] === 1, `${kind} · ${action} · ${caller ?? 'signed out'}`);
+      });
+    }
+  }
+  assert.equal(cells, 72);
+});
+
+test('decideJobAccess fails closed: is_demo must be a literal true; user_id undefined is owned', async () => {
+  const access = await loadAccess();
+  for (const isDemo of [undefined, null, 'true', 1]) {
+    // A demo row whose SELECT dropped is_demo is just an owned job: nobody but the owner reads it.
+    assert.equal(access.decideJobAccess('read', { ownerId: OWNER, isDemo }, null), false, `isDemo=${String(isDemo)} opened a read`);
+  }
+  for (const action of access.JOB_ACTIONS) {
+    assert.equal(access.decideJobAccess(action, { ownerId: undefined, isDemo: false }, OTHER), false, `${action}: undefined owner opened`);
+    assert.equal(access.decideJobAccess(action, { ownerId: undefined, isDemo: false }, null), false, `${action}: undefined owner opened`);
+  }
+});
+
+test('mayReadJob(owner, isDemo): a demo needs no session lookup; the one-argument form is the pre-2a rule', async () => {
+  const access = await loadAccess();
+  globalThis.__sec.user = null;
+  assert.equal(await access.mayReadJob(OWNER, true), true);
+  assert.equal(await access.mayReadJob(null, true), true);
+  assert.equal(await access.mayReadJob(OWNER), false);
+  assert.equal(await access.mayReadJob(OWNER, false), false);
+  globalThis.__sec.user = { user_id: OWNER };
+  assert.equal(await access.mayReadJob(OWNER), true);
+});

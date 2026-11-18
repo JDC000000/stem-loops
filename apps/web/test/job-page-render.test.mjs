@@ -187,6 +187,8 @@ const processingHeadingMod = put(
   'ProcessingHeading.mjs',
   toJs(read('src/components/ProcessingHeading.tsx')).replace(/from ['"]@\/lib\/job-label['"]/g, `from '${jobLabelMod}'`),
 );
+// The REAL demo catalog (pure data; Slice 2a): a demo song's title and artist come from it.
+const demoCatalogMod = put('demo-catalog.mjs', toJs(read('src/lib/demo-catalog.ts')));
 
 const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   // bare 'react' only — 'react/jsx-runtime' must stay real
@@ -201,6 +203,7 @@ const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]@\/lib\/input-trim['"]/g, `from '${inputTrimMod}'`)
   .replace(/from ['"]@\/lib\/job-label['"]/g, `from '${jobLabelMod}'`)
   .replace(/from ['"]@\/components\/ProcessingHeading['"]/g, `from '${processingHeadingMod}'`)
+  .replace(/from ['"]@\/lib\/demo-catalog['"]/g, `from '${demoCatalogMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordOverlayMod}'`);
 writeFileSync(join(dir, 'JobView.mjs'), jobViewJs);
 
@@ -215,7 +218,8 @@ const UNRESOLVED = [...jobViewJs.matchAll(/from ['"]([^'"]+)['"]/g)]
 const React = (await import('react')).default;
 const { renderToStaticMarkup } = await import('react-dom/server');
 const shim = await import(pathToFileURL(join(dir, 'react-shim.mjs')).href);
-const JobView = (await import(pathToFileURL(join(dir, 'JobView.mjs')).href)).default;
+const JobViewModule = await import(pathToFileURL(join(dir, 'JobView.mjs')).href);
+const JobView = JobViewModule.default;
 
 const DONE_JOB = Object.freeze({
   id: 'job-render-1',
@@ -637,4 +641,29 @@ test('A-04: a very long unbroken string wraps (overflow-wrap: anywhere) and a UR
   const h = headingOf(renderJob({ ...DONE_JOB, status: 'separating', title: null, original_filename: null, youtube_url: url }));
   assert.ok(h[1].length <= 40, `short form is ${h[1].length} characters`);
   assert.ok(h[1].startsWith('youtube.com · '), h[1]);
+});
+
+// ── demo songs (Slice 2a): played signed out, so the player says what the song is ──
+test('a demo song: catalog title and band in the header, the demo line in Song info, no "Download loops"', () => {
+  const demo = { ...DONE_JOB, id: '9c5ba587-0000-4000-8000-000000000001', title: '_Lucky_Ticket_-_MIX_1_07', is_demo: true, expires_at: '2099-12-31T00:00:00Z' };
+  renderJob(demo);
+  const p = globalThis.__playerProps;
+  assert.equal(p.title, 'Lucky Ticket', 'the upload file name titled a demo song');
+  assert.equal(p.artist, 'The Royal Sundowners');
+  assert.equal(p.loopsHref, null, 'a demo offered loop cutting, which the route denies (P3.1)');
+  assert.ok(p.songInfo.includes(JobViewModule.DEMO_SONG_INFO));
+  // A demo row not in the catalog keeps its own label, still credited and still loop-free.
+  renderJob({ ...demo, id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', title: 'Some take' });
+  assert.equal(globalThis.__playerProps.title, 'Some take');
+  assert.equal(globalThis.__playerProps.loopsHref, null);
+});
+
+test('an ordinary job is unchanged: its own label, no artist prop, "Download loops" kept', () => {
+  renderJob({ ...DONE_JOB, title: 'Lucky Ticket', is_demo: false });
+  const p = globalThis.__playerProps;
+  assert.equal(p.title, 'Lucky Ticket');
+  assert.equal('artist' in p, false);
+  assert.equal(p.loopsHref, `/loops?job=${DONE_JOB.id}`);
+  assert.ok(!p.songInfo.includes(JobViewModule.DEMO_SONG_INFO));
+  assert.equal('onBack' in p, false);
 });

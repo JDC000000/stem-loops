@@ -30,6 +30,7 @@ import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { getUser } from '@/lib/auth/supabase';
+import { decideJobAccess } from '@/lib/job-access';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -44,6 +45,7 @@ function bad(error_code: string, message: string, status: number): NextResponse 
 interface JobRow {
   user_id: string | null;
   status: string;
+  is_demo?: boolean | null;
 }
 
 /**
@@ -65,16 +67,21 @@ async function authorize(jobId: string): Promise<Authorized | Denied> {
     return { denied: bad('NOT_FOUND', 'Job not found', 404) };
   }
   const res = await db.query<JobRow>(
-    `SELECT user_id, status FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
+    `SELECT user_id, status, is_demo FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
     [jobId],
   );
   if (res.rowCount === 0) {
     return { denied: bad('NOT_FOUND', 'Job not found', 404) };
   }
   const job = res.rows[0];
-  if (job.user_id !== null) {
+  // The rule is lib/job-access.ts's (`cut_loops`, which also covers this GET poll): an
+  // owned job is its owner's; an anonymous job is open to its link; a DEMO song is the
+  // demo system account's only, even if that account is deleted and user_id goes NULL
+  // (design P3.1: loop cutting denied for demos, GET /loops stays denied). The session is
+  // looked up only when the answer depends on it, exactly as before for ordinary jobs.
+  if (job.user_id !== null || job.is_demo === true) {
     const user = await getUser();
-    if (!user || user.user_id !== job.user_id) {
+    if (!decideJobAccess('cut_loops', { ownerId: job.user_id, isDemo: job.is_demo }, user?.user_id ?? null)) {
       // 404 rather than 403: a 403 confirms the job exists.
       return { denied: bad('NOT_FOUND', 'Job not found', 404) };
     }

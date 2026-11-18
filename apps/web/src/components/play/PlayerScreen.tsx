@@ -133,6 +133,7 @@ export function PlayerScreen(props: ScreenProps) {
     back = DEFAULT_BACK,
     songInfo = [],
     loopsHref = null,
+    onBack,
     playable,
     chordPosition,
     banner,
@@ -334,7 +335,21 @@ export function PlayerScreen(props: ScreenProps) {
       data-layout={desktop ? 'desktop' : 'phone'}
     >
       <header className={styles.head}>
-        <a className={styles.back} href={back.href} aria-label={back.label}>
+        <a
+          className={styles.back}
+          href={back.href}
+          aria-label={back.label}
+          // The home page's demo layer (Slice 2a) closes in place instead of reloading
+          // the page it is already on. The href stays, so the link still works without JS.
+          onClick={
+            onBack
+              ? (e) => {
+                  e.preventDefault();
+                  onBack();
+                }
+              : undefined
+          }
+        >
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
             <path d="M15 18l-6-6 6-6" />
           </svg>

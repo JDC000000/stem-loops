@@ -30,6 +30,7 @@ import { jobLabel } from '@/lib/job-label';
 import { ProcessingHeading } from '@/components/ProcessingHeading';
 import { failedJobMessage } from '@/lib/error-copy';
 import { jobTrimNote } from '@/lib/input-trim';
+import { DEMO_ARTIST, demoForJobId } from '@/lib/demo-catalog';
 import {
   ACTIVE_STALL_MS,
   BACKOFF_POLL_MS,
@@ -88,6 +89,9 @@ export function songInfoLines(job: Job, now: number = Date.now()): string[] {
   const lines: string[] = [];
   const trim = jobTrimNote(job);
   if (trim) lines.push(trim);
+  // A demo song says what it is; the plan sentence below stays (it describes the visitor's
+  // own songs), only the countdown is hidden for a demo.
+  if (isDemoRow(job)) lines.push(DEMO_SONG_INFO);
   const expires = job.expires_at ? new Date(job.expires_at).getTime() : NaN;
   lines.push(
     'On Free, files are deleted after 24 hours; on Pro and Studio they stay in your library.' +
@@ -96,7 +100,30 @@ export function songInfoLines(job: Job, now: number = Date.now()): string[] {
   return lines;
 }
 
-export default function JobView({ id, signedIn = true }: { id: string; signedIn?: boolean }) {
+/** Song info for a demo song (Slice 2a). Says only what is true: anyone may play it. */
+export const DEMO_SONG_INFO = `A demo song by ${DEMO_ARTIST}. Anyone can play it, with no account.`;
+
+/**
+ * What the player header says for this job. A demo song is titled from the catalog
+ * (lib/demo-catalog.ts) — its row title is the uploaded file's name — and credited to
+ * the band; every other job is exactly as before.
+ */
+export function playerLabels(job: Job): { title: string; artist: string | null } {
+  const demo = isDemoRow(job) ? demoForJobId(String(job.id)) : null;
+  if (isDemoRow(job)) return { title: demo?.title ?? jobLabel(job), artist: DEMO_ARTIST };
+  return { title: jobLabel(job), artist: null };
+}
+
+export default function JobView({
+  id,
+  signedIn = true,
+  onBack,
+}: {
+  id: string;
+  signedIn?: boolean;
+  /** The home page's demo layer closes in place (see PlayerViewProps.onBack). */
+  onBack?: () => void;
+}) {
   const [job, setJob] = useState<Job | null>(null);
   const [missing, setMissing] = useState(false);
   // Appended AFTER the two above on purpose: test/job-page-render.test.mjs seeds
@@ -241,18 +268,23 @@ export default function JobView({ id, signedIn = true }: { id: string; signedIn?
   // time and "Download loops" (Story 6.1: loops live on /loops) moved to its
   // back arrow, ⋯ menu and Song info.
   if (job && job.status === 'done' && !missing && !(trouble?.kind === 'unreachable' && !TERMINAL.has(job.status))) {
+    const labels = playerLabels(job);
     return (
       <main>
         <Player
           jobId={job.id}
           loops={job.loops}
           enabled
-          title={jobLabel(job)}
+          title={labels.title}
           bpm={job.bpm ?? null}
           musicalKey={job.musical_key ?? null}
+          {...(labels.artist ? { artist: labels.artist } : {})}
           back={backLink(signedIn)}
           songInfo={songInfoLines(job)}
-          loopsHref={`/loops?job=${job.id}`}
+          // Design P3.1: no "Download loops" for a demo song — loop cutting is denied
+          // to everyone but the demo system account, so the link would only 404.
+          loopsHref={isDemoRow(job) ? null : `/loops?job=${job.id}`}
+          {...(onBack ? { onBack } : {})}
         />
       </main>
     );

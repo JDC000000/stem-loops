@@ -158,6 +158,9 @@ test('POST /api/users/me/claim-jobs — happy path claims N jobs', async () => {
   assert.ok(insertIdx < updateIdx, 'INSERT must precede UPDATE');
   // The UPDATE filters by user_id IS NULL (idempotency guard).
   assert.match(calls[updateIdx].text, /user_id IS NULL/);
+  // Slice 2a (design P3.1 "Claim into an account: Never"): a demo song whose system account
+  // was deleted has user_id NULL too, and must never be claimed.
+  assert.match(calls[updateIdx].text, /\bis_demo = false\b/, 'a NULL-owner demo song could be claimed');
   // Non-ceiling rowCount must NOT trigger the remaining-count probe.
   const truncInsert = calls.find((c) =>
     /INSERT INTO public\.usage_events/i.test(c.text) && /claim_jobs_truncated/i.test(String(c.params?.[1] ?? '')),
@@ -243,6 +246,8 @@ test('POST /api/users/me/claim-jobs — truncation: UPDATE hits MAX and remainin
     (c, i) => i > updateIdx && /SELECT COUNT\(\*\)/i.test(c.text) && /user_id IS NULL/.test(c.text),
   );
   assert.ok(countIdx !== -1, 'remaining-count probe must run when UPDATE hits MAX');
+  // Slice 2a: the probe counts what the UPDATE could claim, so it excludes demo songs too.
+  assert.match(calls[countIdx].text, /\bis_demo = false\b/, 'the truncation probe counts demo songs the UPDATE can never claim');
   // A second usage_events INSERT with kind='claim_jobs_truncated' must be
   // written, and its detail JSON must carry the TOTAL matched count
   // (claimed + remaining).

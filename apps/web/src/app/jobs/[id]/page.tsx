@@ -34,6 +34,7 @@
 import type { Metadata, Viewport } from 'next';
 import { redirect } from 'next/navigation';
 import { getUser } from '@/lib/auth/supabase';
+import { isDemoJob } from '@/lib/demo-songs';
 import JobView from './JobView';
 
 export const metadata: Metadata = { title: 'Play along', robots: { index: false, follow: false } };
@@ -48,7 +49,16 @@ export const viewport: Viewport = { viewportFit: 'cover' };
 
 export default async function JobPage({ params }: { params: { id: string } }) {
   const user = await getUser();
-  if (!user) redirect(`/login?return_to=${encodeURIComponent(`/jobs/${params.id}`)}`);
+  if (!user) {
+    // DEMO SONGS PLAY SIGNED OUT (Slice 2a; DB-12a, Jon 2026-11-17: "should people play the
+    // demo songs without signing in? I recommend yes, for the demos only."). The gate now
+    // looks the id up first — ONE read, scoped to `is_demo = true` rows (lib/demo-songs.ts)
+    // — and only a retained demo row skips the redirect. Every other id, a malformed one
+    // included, still goes to /login exactly as before. As above, this is not the
+    // authorisation boundary: the API routes apply the same rule (lib/job-access.ts).
+    if (await isDemoJob(params.id)) return <JobView id={params.id} signedIn={false} />;
+    redirect(`/login?return_to=${encodeURIComponent(`/jobs/${params.id}`)}`);
+  }
 
   // Signed in, always, past the gate above: the back arrow goes to the library.
   return <JobView id={params.id} signedIn />;

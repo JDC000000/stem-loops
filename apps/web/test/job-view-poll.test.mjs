@@ -109,6 +109,8 @@ const processingHeadingMod = put(
   'ProcessingHeading.mjs',
   toJs(read('src/components/ProcessingHeading.tsx')).replace(/from ['"]@\/lib\/job-label['"]/g, `from '${jobLabelMod}'`),
 );
+// The REAL demo catalog (pure data; Slice 2a): a demo song's title and artist come from it.
+const demoCatalogMod = put('demo-catalog.mjs', toJs(read('src/lib/demo-catalog.ts')));
 
 const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]@\/components\/play\/Player['"]/g, `from '${playerMod}'`)
@@ -121,6 +123,7 @@ const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]@\/lib\/input-trim['"]/g, `from '${inputTrimMod}'`)
   .replace(/from ['"]@\/lib\/job-label['"]/g, `from '${jobLabelMod}'`)
   .replace(/from ['"]@\/components\/ProcessingHeading['"]/g, `from '${processingHeadingMod}'`)
+  .replace(/from ['"]@\/lib\/demo-catalog['"]/g, `from '${demoCatalogMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordOverlayMod}'`);
 writeFileSync(join(dir, 'JobView.mjs'), jobViewJs);
 

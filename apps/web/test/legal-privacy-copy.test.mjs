@@ -42,7 +42,7 @@ test('privacy: the account-rule fragments are still present', async () => {
   assertSays(assert, page, 'You can start a job without an account', 'privacy');
   // Scoped to your own songs since #302: /demo/<slug> opens the player signed out.
   assertSays(assert, page, 'you need one to open the player with your own songs and reach your results.', 'privacy');
-  assertSays(assert, page, 'The demo songs open without an account.', 'privacy');
+  assertSays(assert, page, 'The demo songs open without signing in.', 'privacy');
 });
 
 test('privacy: the job-link fragments are the un-overstated ones', async () => {

@@ -28,7 +28,7 @@ export default function PrivacyPage() {
             <h2>The short version</h2>
             <p>
               No ads, no tracking cookies, nothing sold. You can start a job without an account, but you need one to open the
-              player with your own songs and reach your results. The demo songs open without an account.{' '}
+              player with your own songs and reach your results. The demo songs open without signing in.{' '}
               {CHORDS_LINE_SHOWN
                 ? 'Your audio goes to two outside services to be processed — one to split it into stems, one to estimate the chords — and both are named below.'
                 : 'Your audio goes to outside services to be processed, and every one of them is named below.'}{' '}

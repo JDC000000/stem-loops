@@ -58,7 +58,7 @@ test('terms: the account-rule fragments are still present', async () => {
   // Scoped to YOUR OWN songs since #302: /demo/<slug> opens the player signed out
   // (src/app/demo/[slug]/page.tsx), so the unscoped "to open the player" was false.
   assertSays(assert, page, 'You need an account to open the player with your own songs and reach your results.', 'terms');
-  assertSays(assert, page, 'The demo songs open without an account.', 'terms');
+  assertSays(assert, page, 'The demo songs open without signing in.', 'terms');
 });
 
 // ─────────────────────────── the duration claim ───────────────────────────

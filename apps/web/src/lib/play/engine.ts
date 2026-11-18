@@ -735,6 +735,10 @@ export class WebAudioPlayEngine implements PlayEngine {
     if (this.disposed) return;
     if (region === null) {
       if (this.loop === null) return;
+      // Fold the wraps already played into the clock base FIRST, while the old
+      // region is still installed (QA C-01): otherwise the unwrapped counter is
+      // read with no loop to fold it and reports wraps × span too far ahead.
+      this.rebaseClock();
       this.loop = null;
       for (const src of Array.from(this.voices.values())) src.loop = false;
       this.emit();
@@ -750,6 +754,11 @@ export class WebAudioPlayEngine implements PlayEngine {
     // position already folded into the new region and we would never notice
     // that the playhead was outside it.
     const posBefore = this.livePosition();
+    // And collapse the wraps already played into the clock base against that
+    // same OLD region (QA C-01). Extending or shrinking around a playhead that
+    // stays inside leaves the sources running, so nothing else rebases the
+    // clock; without this the unwrapped counter is re-folded by the NEW span.
+    this.rebaseClock();
     this.loop = region.label === undefined ? { startSec, endSec } : { startSec, endSec, label: region.label };
     // A hair of tolerance at the head: the playhead is derived from a float
     // clock, and dropping a loop exactly on the beat must not read as "outside".
@@ -996,6 +1005,28 @@ export class WebAudioPlayEngine implements PlayEngine {
       }
     }
     this.gains.clear();
+  }
+
+  /**
+   * Re-anchor the clock at the current playhead without touching the audio.
+   *
+   * `livePosition()` adds the elapsed time to `startOffset` UNWRAPPED and folds
+   * the sum by whatever loop is installed at the moment it is read. That is
+   * only right while the loop it is folded by is the loop the sources actually
+   * wrapped on. So every change to the loop while playing must first collapse
+   * the wraps already played into `startOffset`, measured against the OLD
+   * region; the new region then folds only time played under it (QA C-01).
+   * The position is preserved exactly: `livePosition()` reads the same value
+   * immediately before and after.
+   */
+  private rebaseClock(): void {
+    const ctx = this.ctx;
+    if (!ctx || this.status !== 'playing') return;
+    // Still inside the start lead: nothing has sounded yet and no wrap can have
+    // happened. Keep the scheduled `when`, or the lead would count as playing.
+    if (ctx.currentTime <= this.startCtxTime) return;
+    this.startOffset = this.livePosition();
+    this.startCtxTime = ctx.currentTime;
   }
 
   /** Position derived from the clock, wrapped by the loop region. */

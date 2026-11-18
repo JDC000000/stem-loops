@@ -18,6 +18,9 @@ import {
   unavailableMessage,
   classifyLabel,
   displayText,
+  spokenText,
+  alternativeText,
+  alternativeSpoken,
   observationsToRuns,
   popoverAlternatives,
   runAriaLabel,
@@ -148,11 +151,54 @@ test('N and X are distinguishable from each other and from real chords', () => {
   const texts = new Set(runs.map(displayText));
   assert.equal(displayText(runs[4]), 'N.C.');
   assert.equal(displayText(runs[5]), '?');
-  assert.ok(texts.has('G:7/5'));
+  // Painted in guitarist notation (lib/play/notation.ts), not Harte.
+  assert.ok(texts.has('G7/D'));
+  assert.ok(!texts.has('G:7/5'));
   assert.equal(runAriaLabel(runs[4]), 'No chord');
   assert.equal(runAriaLabel(runs[5]), 'Unknown chord');
   assert.notEqual(runAriaLabel(runs[0]), runAriaLabel(runs[4]));
   assert.equal(classifyLabel(''), 'unknown');
+});
+
+test('the chart paints guitarist notation and speaks it in words; the data stays Harte', () => {
+  // One formatter for the chart, the chord editor and the phone (design v1.4
+  // P1.5). The painted text uses the glyphs; the accessible name uses words.
+  const chord = (label) => ({ kind: classifyLabel(label), label });
+  const cases = [
+    ['C:maj', 'C', 'C'],
+    ['A:min7', 'Am7', 'A minor 7'],
+    ['F#:min7', 'F\u266fm7', 'F sharp minor 7'],
+    ['Bb:maj', 'B\u266d', 'B flat'],
+    ['G:7/5', 'G7/D', 'G 7 over D'],
+    ['C#:hdim7/5', 'C\u266fm7\u266d5/G\u266f', 'C sharp minor 7 flat 5 over G sharp'],
+    ['C:maj7', 'Cmaj7', 'C major 7'],
+    ['C:add9', 'Cadd9', 'C add 9'],
+    ['C:maj/b7', 'C/B\u266d', 'C over B flat'],
+    // Not spellable exactly: shown as its Harte label, never a guess.
+    ['A:min(9)', 'A:min(9)', 'A:min(9)'],
+  ];
+  for (const [harte, text, spoken] of cases) {
+    assert.equal(displayText(chord(harte)), text, `${harte} painted`);
+    assert.equal(spokenText(chord(harte)), spoken, `${harte} spoken`);
+    assert.equal(runAriaLabel(chord(harte)), `${spoken} \u2014 edit`, `${harte} accessible name`);
+    // The editor's alternatives use the same formatter.
+    assert.equal(alternativeText({ label: harte, reason: 'quality' }), text, `${harte} alternative`);
+    assert.equal(alternativeSpoken({ label: harte, reason: 'quality' }), spoken, `${harte} alternative spoken`);
+  }
+  // No accessible name carries a glyph or a Harte colon for a spellable chord.
+  for (const [harte] of cases.slice(0, -1)) assert.doesNotMatch(runAriaLabel(chord(harte)), /[\u266d\u266f#:]/);
+  assert.equal(alternativeText({ label: 'N', reason: 'none' }), 'N.C.');
+  assert.equal(alternativeText({ label: 'X', reason: 'unknown' }), '?');
+  assert.equal(alternativeSpoken({ label: 'N', reason: 'none' }), 'No chord');
+  assert.equal(alternativeSpoken({ label: 'X', reason: 'unknown' }), 'Unknown chord');
+  // Every alternative the editor offers is painted through the formatter, and
+  // its label (what an edit sends) is still Harte.
+  for (const alt of chordAlternatives('C#:min7', { prevLabel: 'A:maj', nextLabel: 'E:maj' })) {
+    if (alt.reason === 'none' || alt.reason === 'unknown') continue;
+    assert.match(alt.label, /^[A-G](#|b)?(:|\/|$)/, `alternative ${alt.label} is not Harte data`);
+    assert.equal(alternativeText(alt), displayText(chord(alt.label)));
+    assert.doesNotMatch(alternativeText(alt), /^[A-G](#|b)?:(maj|min|7)$/, `alternative ${alt.label} painted as Harte`);
+  }
 });
 
 test('picker: no RangeError from labelAt for any run, including out-of-vocabulary', () => {

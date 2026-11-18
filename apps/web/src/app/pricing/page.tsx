@@ -7,6 +7,8 @@ import BillingButton, { CreditPackCheckout, PackBuyButton } from '@/components/B
 import { benefitLine, featuredPlan, features, planCta } from '@/lib/pricing-copy';
 // Display only (QA A-10): which plan the signed-in viewer is on, to mark it "Current plan".
 import { getEntitlementSnapshot } from '@/lib/billing/entitlements';
+// Read only (review of #301, R2-2): an effective-Free viewer may still hold a live subscription.
+import { freeViewerHasLiveSubscription } from '@/lib/billing/pricing-plan-state';
 
 // P6 (Jon, 2026-11-17): /pricing is a public, indexable page. Its metadata comes
 // from the page registry (lib/seo/pages.ts) and is declared in ./layout.tsx, as
@@ -122,9 +124,19 @@ export default async function PricingPage() {
   const degraded = plansDegraded || packsDegraded;
   // The viewer's plan (QA A-10). null when signed out or when it cannot be read:
   // the cards then fall back to offers that are right for anyone (lib/pricing-copy.ts).
-  const currentPlan: string | null = user
+  const effectivePlan: string | null = user
     ? await getEntitlementSnapshot(user.user_id).then((s) => s.plan_code, () => null)
     : null;
+  // R2-2: an effective 'free' is only Free for checkout purposes when the viewer has
+  // no live subscription (past_due after grace, paused, a lapsed active period,
+  // incomplete, or a paid entitlements row whose subscription row has not landed).
+  // A match, or a failed read, is treated as unknown: Manage plan, a note, no checkout.
+  const currentPlan: string | null =
+    user && effectivePlan === 'free'
+      ? (await freeViewerHasLiveSubscription(user.user_id)) === false
+        ? 'free'
+        : null
+      : effectivePlan;
   const featuredCode = featuredPlan(plans.map((p) => p.code), !!user, currentPlan);
 
   // The V3-C10 trial banner used to render here, directly above the Free card.

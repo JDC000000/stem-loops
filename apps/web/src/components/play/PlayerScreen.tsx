@@ -455,7 +455,7 @@ export function PlayerScreen(props: ScreenProps) {
             <div
               className={styles.chords}
               ref={chordsRef}
-              data-testid="player-chords"
+              data-testid="player-harmony-track"
               onWheel={onUserScroll}
               onTouchMove={onUserScroll}
               onPointerDown={onUserScroll}

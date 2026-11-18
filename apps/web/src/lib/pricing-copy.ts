@@ -111,12 +111,14 @@ export function features(p: PlanCopyInput): string[] {
 // Signed in, /pricing was not plan-aware: a Free user was offered "Start free" (a
 // link home) and a Pro subscriber "Get Pro". Display only — checkout is untouched.
 //
-// MONEY RULE (review of #301, F-1/F-2): /api/billing/checkout opens a NEW
+// MONEY RULE (review of #301, F-1/F-2/R2-2): /api/billing/checkout opens a NEW
 // subscription (Stripe mode 'subscription') and does not check for an existing one.
-// So the page offers a plan checkout ONLY to a viewer KNOWN to be on Free. A paying
-// viewer never gets one — not for a higher plan, a lower plan, or their own — and
-// is sent to /account (the billing portal) to change plan instead. A viewer whose
-// plan cannot be read gets no checkout either.
+// So the page offers a plan checkout only when the caller passes current = 'free',
+// which pricing/page.tsx does only for a viewer whose effective plan is Free AND who
+// has no live subscription row (lib/billing/pricing-plan-state.ts). Everyone else —
+// Pro/Studio, a live-but-effectively-free subscription, an unreadable plan — is sent
+// to /account (the billing portal). This is a DISPLAY rule: it does not stop a
+// direct POST to checkout; that needs the server-side guard (follow-up [billing] PR).
 //   * signed out: unchanged (Start free, and Get <plan> through sign-in, Pro lime);
 //   * Free: "Current plan" on Free (neutral, not a control); checkout for paid
 //     plans, Pro carrying the highlight and the page's one lime fill;

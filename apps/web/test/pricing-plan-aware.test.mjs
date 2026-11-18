@@ -31,7 +31,7 @@ const PACKS = [
 function cards(html) {
   return Object.fromEntries([...html.matchAll(/<section class="([^"]*)" aria-label="(Free|Pro|Studio)">([\s\S]*?)<\/section>/g)].map((m) => [m[2], { cls: m[1], html: m[3] }]));
 }
-const render = (user, plan) => renderPricingPage({ user, plans: PLANS, packs: PACKS, plan });
+const render = (user, plan, extra = {}) => renderPricingPage({ user, plans: PLANS, packs: PACKS, plan, ...extra });
 const text = (h) => h.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
 
 function assertCurrent(card, name) {
@@ -63,16 +63,16 @@ function* walkTree(node) {
 }
 /** Every way the page could start a PLAN checkout: a component handed a plan_code or the
  *  checkout endpoint with a plan body, a form posting there, or the endpoint in the markup. */
-async function planCheckouts(plan) {
+async function planCheckouts(plan, extra = {}) {
   const found = [];
-  const tree = await pricingPageTree({ user: USER, plans: PLANS, packs: PACKS, plan });
+  const tree = await pricingPageTree({ user: USER, plans: PLANS, packs: PACKS, plan, ...extra });
   for (const el of walkTree(tree)) {
     const p = el.props ?? {};
     if (p.body && typeof p.body === 'object' && 'plan_code' in p.body) found.push(`component with body.plan_code=${p.body.plan_code}`);
     if (p.endpoint === '/api/billing/checkout' && !p.packCode) found.push(`component posting to ${p.endpoint}`);
     if (el.type === 'form' && /checkout/.test(String(p.action ?? ''))) found.push(`form action ${p.action}`);
   }
-  const html = await render(USER, plan);
+  const html = await render(USER, plan, extra);
   if (/plan_code/.test(html)) found.push('plan_code in the markup');
   if (/<form[^>]*billing\/checkout/.test(html)) found.push('a form posting to checkout');
   for (const m of html.matchAll(/<button[^>]*>(Get (?:Pro|Studio|Free))<\/button>/g)) found.push(`button "${m[1]}"`);
@@ -131,6 +131,49 @@ test('F-2: signed in but the plan cannot be read — no plan checkout at all, a 
   // A plan code this page does not know is treated the same way.
   assert.deepEqual(await planCheckouts('enterprise'), []);
 });
+
+// ── review of #301, R2-2 (money): "Free" on /pricing is the EFFECTIVE plan
+// (effectivePlanCode), which reads 'free' for viewers who still hold a live
+// subscription that a new checkout would duplicate. Each state below has effective
+// plan 'free' (the reviewer ran the real effectivePlanCode over them); the page must
+// treat each as unknown: Manage plan, the neutral note, no checkout, no lime. ──
+const STRIPE = (status) => ({ provider: 'stripe', status });
+const LIVE_BUT_FREE = [
+  ['past_due beyond the 7-day grace', { subs: [STRIPE('past_due')], entPlan: 'pro' }],
+  ['paused', { subs: [STRIPE('paused')], entPlan: 'pro' }],
+  ['active, entitlements period_end lapsed (late renewal webhook)', { subs: [STRIPE('active')], entPlan: 'pro' }],
+  ['trialing with a lapsed period', { subs: [STRIPE('trialing')], entPlan: 'studio' }],
+  ['incomplete (first payment / 3DS pending)', { subs: [STRIPE('incomplete')], entPlan: 'free' }],
+  ['entitlements row on a paid plan, no subscriptions row yet', { subs: [], entPlan: 'pro' }],
+  ['a canceled sub AND a live paused one', { subs: [STRIPE('canceled'), STRIPE('paused')], entPlan: 'pro' }],
+  ['the subscription read fails', { subsThrow: true }],
+];
+for (const [name, state] of LIVE_BUT_FREE) {
+  test(`R2-2: effective Free but ${name} — no plan checkout, Manage plan and the note`, async () => {
+    assert.deepEqual(await planCheckouts('free', state), [], `${name}: a second subscription is offered`);
+    const html = await render(USER, 'free', state);
+    assert.deepEqual(limeFills(html), [], `${name}: lime on the page`);
+    assert.match(html, /data-testid="plan-unknown"/, `${name}: no neutral note`);
+    assert.doesNotMatch(html, /Current plan|Start free/, `${name}: Free is presented as the current plan`);
+    const c = cards(html);
+    for (const n of ['Free', 'Pro', 'Studio']) assert.match(c[n].html, /<a href="\/account" class="pr-cta pr-cta-quiet">Manage plan<\/a>/, `${name}: ${n}`);
+  });
+}
+
+for (const [name, state] of [
+  ['canceled-only (one canceled subscription)', { subs: [STRIPE('canceled')], entPlan: 'pro' }],
+  ['canceled twice, entitlements row back on free', { subs: [STRIPE('canceled'), STRIPE('canceled')], entPlan: 'free' }],
+  ['never subscribed (no rows)', { subs: [], entPlan: null }],
+  ['a live sub with ANOTHER provider only', { subs: [{ provider: 'paddle', status: 'active' }], entPlan: 'free' }],
+]) {
+  test(`R2-2: ${name} is plainly Free and CAN (re)subscribe — checkout shown, Get Pro the one lime`, async () => {
+    const found = await planCheckouts('free', state);
+    assert.ok(found.some((f) => /plan_code=pro/.test(f)) && found.some((f) => /plan_code=studio/.test(f)), `${name}: resubscribing is blocked (${found.join('; ')})`);
+    const html = await render(USER, 'free', state);
+    assert.deepEqual(limeFills(html), ['button Get Pro']);
+    assert.doesNotMatch(html, /data-testid="plan-unknown"/);
+  });
+}
 
 test('A-10: the decision table (pure)', () => {
   const codes = ['free', 'pro', 'studio'];

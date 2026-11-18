@@ -36,12 +36,30 @@ async function build() {
   const formStyles = put('form-styles.mjs', toJs(read('src/lib/ui/form-styles.ts')));
   const pricingCopy = put('pricing-copy.mjs', toJs(read('src/lib/pricing-copy.ts')));
   const hcaptcha = put('hcaptcha.mjs', 'export default function HCaptcha() { return null; }');
+  // The DB stub also answers lib/billing/pricing-plan-state.ts's read (R2-2) from
+  // `subs` (subscriptions rows: { provider, status }) and `entPlan` (entitlements.plan_code,
+  // null = no row), honouring the query's own parameters ($2 provider, $3 live statuses).
   const db = put('db.mjs', `
     export const db = {
-      query: async (text) => {
+      query: async (text, params = []) => {
         const cfg = globalThis.__pricingRender;
         if (/public\\.plans/.test(text)) return { rows: cfg.plans };
         if (/public\\.credit_packs/.test(text)) return { rows: cfg.packs };
+        if (/FROM subscriptions/.test(text)) {
+          if (cfg.subsThrow) throw new Error('subscriptions down');
+          const [, provider, statuses] = params;
+          // Each EXISTS is evaluated by its own WHERE clause: a clause that drops
+          // "provider = $2" really does count another provider's rows.
+          const clauses = {};
+          for (const m of text.matchAll(/FROM subscriptions\\s+WHERE ([\\s\\S]*?)\\)\\s+AS (\\w+)/g)) clauses[m[2]] = m[1];
+          const where = (alias) => clauses[alias] ?? '';
+          const rows = (alias) => (cfg.subs ?? []).filter((r) => !/provider = \\$2/.test(where(alias)) || r.provider === provider);
+          return { rows: [{
+            live: rows('live').some((r) => !/status = ANY\\(\\$3/.test(where('live')) || statuses.includes(r.status)),
+            any_sub: rows('any_sub').length > 0,
+            paid_row: cfg.entPlan != null && cfg.entPlan !== 'free',
+          }] };
+        }
         return { rows: [] };
       },
     };`);
@@ -50,6 +68,12 @@ async function build() {
   // plan: null makes the read FAIL (the page must still render, with no "Start free").
   const ents = put('entitlements.mjs', 'export const getEntitlementSnapshot = async () => { const p = globalThis.__pricingRender.plan; if (p === null) throw new Error("entitlements down"); return { plan_code: p ?? "free" }; };');
 
+  const portal = put('portal-eligibility.mjs', toJs(read('src/lib/billing/portal-eligibility.ts'))
+    .replace(/from ['"]@\/lib\/db['"]/g, `from '${db}'`));
+  const planState = put('pricing-plan-state.mjs', toJs(read('src/lib/billing/pricing-plan-state.ts'))
+    .replace(/from ['"]@\/lib\/db['"]/g, `from '${db}'`)
+    .replace(/from ['"]@\/lib\/billing\/portal-eligibility['"]/g, `from '${portal}'`));
+
   const billing = put('BillingButton.mjs', toJs(read('src/components/BillingButton.tsx'), true)
     .replace(/from ['"]@hcaptcha\/react-hcaptcha['"]/g, `from '${hcaptcha}'`)
     .replace(/from ['"]@\/lib\/ui\/form-styles['"]/g, `from '${formStyles}'`));
@@ -57,6 +81,7 @@ async function build() {
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${db}'`)
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${auth}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${ents}'`)
+    .replace(/from ['"]@\/lib\/billing\/pricing-plan-state['"]/g, `from '${planState}'`)
     .replace(/from ['"]@\/components\/BillingButton['"]/g, `from '${billing}'`)
     .replace(/from ['"]@\/lib\/pricing-copy['"]/g, `from '${pricingCopy}'`));
 
@@ -69,18 +94,18 @@ async function build() {
 }
 
 /** Render /pricing for `user` (null = signed out) against the given catalog rows. */
-export async function renderPricingPage({ user, plans, packs, plan = 'free' }) {
+export async function renderPricingPage({ user, plans, packs, plan = 'free', subs = [], entPlan = null, subsThrow = false }) {
   const { renderToStaticMarkup, Page } = await build();
-  globalThis.__pricingRender = { user, plans, packs, plan };
+  globalThis.__pricingRender = { user, plans, packs, plan, subs, entPlan, subsThrow };
   // The page is an async server component: resolve it, then render the client tree it returns.
   return renderToStaticMarkup(await Page());
 }
 
 /** The page's React element tree, unrendered: client components (BillingButton,
  *  PackBuyButton) appear as elements with the props the page passed them. */
-export async function pricingPageTree({ user, plans, packs, plan = 'free' }) {
+export async function pricingPageTree({ user, plans, packs, plan = 'free', subs = [], entPlan = null, subsThrow = false }) {
   const { Page } = await build();
-  globalThis.__pricingRender = { user, plans, packs, plan };
+  globalThis.__pricingRender = { user, plans, packs, plan, subs, entPlan, subsThrow };
   return Page();
 }
 

@@ -113,6 +113,8 @@ async function loadPricing({ user = null, plans = null, packs = null, throwPlans
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
     .replace(/from ['"]@\/lib\/trial['"]/g, `from '${trialStub()}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${entitlementsStub(plan, throwPlan)}'`)
+    // R2-2: a plain Free viewer here (no live subscription); the states are pinned in pricing-plan-aware.test.mjs.
+    .replace(/from ['"]@\/lib\/billing\/pricing-plan-state['"]/g, `from '${dataUrl('export const freeViewerHasLiveSubscription = async () => false;')}'`)
     .replace(/from ['"]@\/components\/BillingButton['"]/g, `from '${await billingButtonStub()}'`)
     // The feature bullets moved to src/lib/pricing-copy.ts: a Next.js App Router
     // page may only export a fixed set of fields, so the page cannot export

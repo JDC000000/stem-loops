@@ -360,7 +360,7 @@ test('a failed job renders its own box and mounts no player', () => {
 // songs over our outage. For SEPARATION_FAILED only, the box speaks from ERROR_COPY.
 const WORKER_SEPARATION_SENTENCE = 'Stem separation failed for this track. Try a different song.';
 const SEPARATION_BOX =
-  "Stem separation didn't finish. That was a problem on our end, not your song. Add the same track again in a few minutes.";
+  "Splitting the song didn't finish, because of a problem on our end, not your song. Add the same song again in a few minutes.";
 
 /** The decoded text of the failed box's sentence (the <p> after its <h1>). */
 function failedBoxText(html) {

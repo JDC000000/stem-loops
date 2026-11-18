@@ -520,17 +520,15 @@ html:not(.js) .lanes, html:not(.js) .pipe-art, html:not(.js) #ab, html:not(.js) 
 .pl-loop-name { font-size: var(--text-xs); color: var(--text-secondary); }
 .pl-pos { position: absolute; top: -4px; bottom: -4px; left: 40%; width: 2px; background: var(--wf-playhead); }
 
-/* the scope sheet: rules, not cards. The "not yet" rows say so in words; the quieter
-   term is reinforcement, never the only signal. */
-.spec { margin-top: var(--space-8); max-width: var(--sl-reading); border-top: 1px solid var(--border-default); }
-.spec-row { display: grid; grid-template-columns: 1fr; gap: var(--space-1); padding-block: var(--space-4); border-bottom: 1px solid var(--border-default); }
-.spec-row dt { color: var(--text-primary); font-weight: 600; }
-.spec-row dd { margin: 0; color: var(--text-muted); max-width: 62ch; line-height: 1.5; }
-.spec-later dt { color: var(--text-muted); }
-.spec a { color: var(--text-primary); text-underline-offset: 4px; }
-@media (min-width: 560px) {
-  .spec-row { grid-template-columns: 172px minmax(0, 1fr); gap: var(--space-6); align-items: baseline; }
-}
+/* "What you get" (P7): a short list, rules not cards. Bold lead, muted rest; neutral
+   colours only (lime is reserved for its three jobs, brand-tokens.test.mjs). */
+.wyg { margin: var(--space-6) 0 0; padding: 0; list-style: none; max-width: var(--sl-reading); border-top: 1px solid var(--border-default); }
+.wyg li { padding-block: var(--space-3); border-bottom: 1px solid var(--border-default); color: var(--text-muted); line-height: 1.5; }
+.wyg strong { color: var(--text-primary); font-weight: 600; }
+.wyg-soon { margin: var(--space-4) 0 0; color: var(--text-muted); }
+.wyg-soon strong { color: var(--text-secondary); font-weight: 600; }
+.faq-more { margin-top: var(--space-6); }
+.faq-more a { color: var(--text-primary); text-underline-offset: 4px; }
 
 /* 360px, checked in Chrome: six stem names have to fit without an ellipsis, and the loop's
    name has nowhere to sit clear of the playhead once the track is this short — so the name

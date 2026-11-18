@@ -8,9 +8,10 @@
 // components/loops/LoopsIntro.tsx); the top nav names both products on every page.
 // test/two-products-nav.test.mjs fails if loop-download selling comes back here.
 //
-// Every capability claim here maps to a row of the approved launch table. The gaps — tempo,
-// pitch, lyrics — are stated on the page on purpose, because they are the first thing anyone
-// asks for after playing along once and we would rather say "coming" than let them find out.
+// v8 (2026-11-17, Slice 1b, design v1.4 P7): less copy. The 8-row spec sheet became the ~70-word
+// "What you get" block (components/landing/what-you-get.ts), the FAQ is five questions with the
+// rest on /help (components/landing/faq.tsx), and no implementation names are on the page.
+// The tempo/pitch gap is still stated, as "Coming soon", never as something you can do today.
 //
 // Static sections are server-rendered; the tool, the example lanes and the players are client
 // islands that share one DemoProvider. The hero's example (Lanes) still frames itself around
@@ -25,6 +26,8 @@ import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import { Ic } from '@/components/landing/Icons';
 import type { Metadata } from 'next';
 import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
+import { FaqItem, HOME_FAQ } from '@/components/landing/faq';
+import { COMING_SOON, WHAT_YOU_GET } from '@/components/landing/what-you-get';
 import { MAX_TRACK_SEC } from '@/lib/play/types';
 import { JsonLd } from '@/components/seo/JsonLd';
 import { homeGraph } from '@/lib/seo/jsonld';
@@ -74,8 +77,7 @@ export default function HomePage() {
                 <span className="h1-line">Paste a song.</span> <span className="h1-line">Play along.</span>
               </h1>
               <p className="lead">
-                We split the song into six stems, each with a fader, mute and solo, and run a chord track over the
-                top — so you can turn your own part down and play it yourself.
+                Six stems on faders, with the chords running over the top. Turn your part down and play it yourself.
               </p>
               <p className="audience">
                 Uses the first {MAX_TRACK_MIN}&nbsp;minutes of any song, on a computer or a phone. Starting a job needs no account;
@@ -108,59 +110,27 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* 3. SCOPE: the honest spec sheet, including what is deliberately not here yet */}
+        {/* 3. WHAT YOU GET (design v1.4, P7): ~70 words, true today. The lines live in
+            components/landing/what-you-get.ts, including the DB-17 switch for the Chords line. */}
         <section className="section" id="scope" aria-labelledby="scope-h">
           <div className="container">
             <div className="reading">
-              <h2 id="scope-h">What it does, and what it does not do yet</h2>
+              <h2 id="scope-h">What you get</h2>
+              <ul className="wyg" data-testid="what-you-get">
+                {WHAT_YOU_GET.map((l) => (
+                  <li key={l.key} data-line={l.key}>
+                    <strong>{l.lead}</strong>
+                    {l.rest}
+                  </li>
+                ))}
+              </ul>
+              <p className="wyg-soon" data-testid="coming-soon">
+                <strong>Coming soon:</strong> {COMING_SOON.charAt(0).toLowerCase() + COMING_SOON.slice(1)}
+              </p>
               <p className="body-lg">
-                The whole list, so none of it is a surprise once you are inside.{' '}
-                <a href="/pricing">See the monthly track limits →</a>
+                <a href="/pricing">See the monthly song limits →</a>
               </p>
             </div>
-            <dl className="spec">
-              <div className="spec-row">
-                <dt>Stems</dt>
-                <dd>Six — drums, bass, guitar, keys, vocals and other. Every one has its own fader, a mute and a solo.</dd>
-              </div>
-              <div className="spec-row">
-                <dt>Chords</dt>
-                <dd>A chord track above the mixer, kept in time with the song. Check it by ear: it is an estimate, not a transcription.</dd>
-              </div>
-              <div className="spec-row">
-                <dt>Looping</dt>
-                <dd>Pick a detected section of the song and it repeats.</dd>
-              </div>
-              <div className="spec-row">
-                <dt>Track length</dt>
-                <dd>The first {MAX_TRACK_MIN}&nbsp;minutes of any song. A longer track is trimmed on our end to its first {MAX_TRACK_MIN}&nbsp;minutes, which is where the chord track and the player both stop.</dd>
-              </div>
-              <div className="spec-row">
-                <dt>Where it runs</dt>
-                <dd>Chrome on a computer, which is what it is built and tested on. Phones get lighter audio (mono, 24&nbsp;kHz) so all six stems fit in memory. Phone support is new, and other browsers are not tested yet.</dd>
-              </div>
-              <div className="spec-row">
-                <dt>Account</dt>
-                <dd>
-                  Needed to play, not to start. You can run a job signed out; the player, where the stems and chords
-                  are shown, asks you to sign in. If you are new, you create an account on the{' '}
-                  <a href="/login">sign-in page</a>. The one-time link by email only signs you back in to an account
-                  that already exists; it does not create one.
-                </dd>
-              </div>
-              <div className="spec-row spec-later">
-                <dt>Tempo</dt>
-                <dd>Not yet. Playing a song slower without dropping its pitch is the next thing being built.</dd>
-              </div>
-              <div className="spec-row spec-later">
-                <dt>Pitch and capo</dt>
-                <dd>Not yet. The song plays in its own key for now.</dd>
-              </div>
-              <div className="spec-row spec-later">
-                <dt>Lyrics</dt>
-                <dd>No. Chords only, and that is not planned to change.</dd>
-              </div>
-            </dl>
           </div>
         </section>
 
@@ -186,7 +156,7 @@ export default function HomePage() {
                     <dt>Max upload</dt>
                     <dd>200&nbsp;MB</dd>
                     <dt>Length used</dt>
-                    <dd>The first {MAX_TRACK_MIN}&nbsp;minutes</dd>
+                    <dd>The first {MAX_TRACK_MIN}&nbsp;minutes. A longer song is trimmed on our end, where the chord track and the player both stop.</dd>
                     <dt>Tempo</dt>
                     <dd>40–250 BPM</dd>
                   </dl>
@@ -198,12 +168,10 @@ export default function HomePage() {
                   <PipeStemsArt />
                 </div>
                 <div className="pipe-text">
-                  <p>Demucs splits it into drums, bass, guitar, keys, vocals and other — the six channels of the mixer.</p>
+                  <p>We split it into drums, bass, guitar, keys, vocals and other — the six channels of the mixer.</p>
                   <dl className="kv">
                     <dt>Stems</dt>
                     <dd>6, pick any</dd>
-                    <dt>Model</dt>
-                    <dd>Demucs htdemucs_6s on Replicate</dd>
                   </dl>
                 </div>
               </li>
@@ -230,101 +198,21 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* 5. FAQ */}
+        {/* 5. FAQ: five questions (P7: home FAQ ≤ 5). Every answer, these included, is on /help. */}
         <section className="section" id="faq" aria-labelledby="faq-h">
           <div className="container">
             <h2 id="faq-h">Questions</h2>
             <div className="faq">
               <div className="faq-col">
-                <details>
-                  <summary>What do I actually get?</summary>
-                  <p>
-                    A player, in your browser, with the song’s six stems on their own faders and a chord track running
-                    above them. Mute the guitar and play the guitar part; solo the bass to work it out; loop the chorus
-                    until it sticks.
-                  </p>
-                </details>
-                <details>
-                  <summary>Do I need an account?</summary>
-                  <p>
-                    Not to start one. Running a job works signed out. The player asks you to sign in — that is where
-                    the stems and the chord track are shown. If you are new, you create an account on the{' '}
-                    <a href="/login">sign-in page</a>. A one-time link sent to your email only signs you back in to an
-                    account that already exists; it does not create one.
-                  </p>
-                </details>
-                <details>
-                  <summary>Which browsers work?</summary>
-                  <p>
-                    Chrome on a computer, which is what the player is built and tested against. On a phone the player
-                    loads lighter audio (mono, 24&nbsp;kHz) so all six stems fit in memory. Phone support is new, and
-                    other browsers are not tested yet.
-                  </p>
-                </details>
-                <details>
-                  <summary>Can I slow a song down, or change its key?</summary>
-                  <p>
-                    Not yet, and that is a deliberate order rather than an oversight: separation, faders and chords came
-                    first. Playing a track slower without dropping its pitch is next, and a capo or key change follows it.
-                    Today the song plays at its own tempo in its own key.
-                  </p>
-                </details>
-                <details>
-                  <summary>How good are the chords?</summary>
-                  <p>
-                    Good enough to play along to on most songs, and wrong often enough that you should trust your ears
-                    over the screen. They are an estimate made from the audio, not a transcription someone checked. Dense,
-                    heavily altered or very quiet passages are where they slip.
-                  </p>
-                </details>
+                {HOME_FAQ.slice(0, 3).map((e) => <FaqItem key={e.id} entry={e} />)}
               </div>
               <div className="faq-col">
-                <details>
-                  <summary>How long does it take?</summary>
-                  <p>
-                    Our 3:34 example song took about 1–3 minutes (0:51 to 3:07 across four runs on 9 October 2026). Longer
-                    tracks and a busy queue take longer. The job page shows each stage as it runs, with a timer.
-                  </p>
-                </details>
-                <details>
-                  <summary>How clean is the split?</summary>
-                  <p>
-                    Not perfect. Dense passages can leave a little bleed from other instruments in a stem. The
-                    before-and-after in “From one song to a player” is a 4-bar MP3 crop of the tool’s real output, so you
-                    can judge for yourself.
-                  </p>
-                </details>
-                <details id="faq-files">
-                  <summary>What happens to my files?</summary>
-                  <p>
-                    Your link or file goes to our storage, and the audio goes to Replicate to split it and to Klangio to estimate the chords. Sources, stems and
-                    loops are deleted after 24 hours. With a subscription, the songs in your account are kept as a library while you subscribe, and for 30 days after it ends. Anyone holding the link to a job you start without an account can fetch its audio and stems, so don’t pass that link around. A job you start while signed in opens only for your account. More in
-                    the <a href="/privacy">privacy notice</a>.
-                  </p>
-                </details>
-                <details>
-                  <summary>Can I use the stems in my own music?</summary>
-                  <p>
-                    It depends on the source audio. Splitting a song doesn’t change who owns it. If it’s yours, or you hold the
-                    rights, use it as you like. If it’s someone else’s recording, practising along to it is one thing; releasing
-                    anything made from it needs clearance first. We don’t grant rights and can’t clear a sample.
-                  </p>
-                </details>
-                <details>
-                  <summary>Does it work with YouTube links?</summary>
-                  {YOUTUBE_INPUT_ENABLED ? (
-                    <p>
-                      Yes, with public videos on youtube.com or youtu.be, including Shorts and YouTube Music links. Playlists,
-                      private, age-restricted and live videos don’t work. YouTube sometimes blocks automated fetches; if it does,
-                      try again in a few minutes or upload the file. Links work with or without a subscription. With one, a linked song
-                      counts toward your monthly tracks, just like an upload, and stays in your library.
-                    </p>
-                  ) : (
-                    <p>Not right now: YouTube links are paused. Upload the audio or video file instead.</p>
-                  )}
-                </details>
+                {HOME_FAQ.slice(3).map((e) => <FaqItem key={e.id} entry={e} />)}
               </div>
             </div>
+            <p className="faq-more">
+              <a href="/help">More questions and answers →</a>
+            </p>
           </div>
         </section>
       </main>

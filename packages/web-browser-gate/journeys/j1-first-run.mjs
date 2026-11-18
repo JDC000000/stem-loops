@@ -43,12 +43,18 @@ export default async function run() {
     j.check('player ready with 6 stems', phase === 'ready' && channels === 6 && enabledFaders === 6, `phase=${phase} channels=${channels} enabledFaders=${enabledFaders}`);
     await j.shot(page, 'player-ready');
 
-    // Chords
-    const chip = page.locator('[data-testid^="chord-chip-"]').first();
-    const chordsOk = await chip.waitFor({ state: 'visible', timeout: 30_000 }).then(() => true, () => false);
-    const chipLabels = chordsOk ? await page.locator('[data-testid^="chord-chip-"]').evaluateAll((els) => els.slice(0, 6).map((e) => e.getAttribute('aria-label'))) : [];
+    // Chords — Slice 1a: the chord STAGE is the screen (Now/Next + two bar
+    // lines); the full chart is one tap away ("Show all chords" on desktop).
+    const nowName = page.locator('[data-testid="phone-chords"] [data-testid="playhead-now-name"]').first();
+    const stageOk = await nowName.waitFor({ state: 'visible', timeout: 30_000 }).then(() => true, () => false);
+    const slotLabels = stageOk ? await page.locator('[data-testid^="phone-slot-"]').evaluateAll((els) => els.slice(0, 6).map((e) => e.getAttribute('aria-label'))) : [];
     const chordMsg = await page.locator('[data-testid="completed-job-message"]').innerText().catch(() => '');
-    j.check('chords visible (chord chips rendered)', chordsOk && chipLabels.length > 0, chordsOk ? chipLabels.join(' | ') : `no chips; message="${chordMsg}"`);
+    j.check('chords visible on the stage (Now + bar lines)', stageOk && slotLabels.length > 0, stageOk ? `${await nowName.innerText()} | ${slotLabels.join(' | ')}` : `no stage; message="${chordMsg}"`);
+    await page.getByRole('button', { name: 'Show all chords' }).click().catch(() => {});
+    const chip = page.locator('[data-testid="chart-sheet"] [data-testid^="chord-chip-"]').first();
+    const chartOk = await chip.waitFor({ state: 'visible', timeout: 30_000 }).then(() => true, () => false);
+    j.check('the full chart opens ("Show all chords")', chartOk, chartOk ? 'chips rendered' : 'no chips in the chart sheet');
+    await page.keyboard.press('Escape');
 
     // Mixer — mute, solo, volume, checked on the engine's gain targets.
     const gains = () => page.evaluate(() => (window.__w4gains ?? []).map((g) => Math.round(g.target * 100) / 100));
@@ -100,9 +106,11 @@ export default async function run() {
     // one link there. The cut, the cards, the WAV and the ZIP are the same
     // <LoopResults> as before, mounted by /loops instead. So this journey
     // follows the link a user would follow, and then runs the same checks.
-    const toLoops = page.locator('[data-testid="loops-link"] a');
+    // Slice 1a: the link lives in the player's ⋯ menu.
+    await page.locator('[data-testid="player-more"]').click().catch(() => {});
+    const toLoops = page.locator('a[data-testid="loops-link"]');
     const hasLink = await toLoops.first().isVisible().catch(() => false);
-    j.check('the job page links to this song\'s loops ("Download loops →")', hasLink,
+    j.check('the job page links to this song\'s loops (⋯ → "Download loops")', hasLink,
       hasLink ? `${(await toLoops.first().innerText()).replace(/\s+/g, ' ')} → ${await toLoops.first().getAttribute('href')}` : 'missing');
     if (hasLink) await toLoops.first().click();
     else await page.goto(`/loops?job=${jobId}`);

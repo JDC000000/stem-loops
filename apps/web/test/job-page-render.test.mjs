@@ -177,6 +177,7 @@ const jobPollMod = put('job-poll.mjs', toJs(read('src/lib/job-poll.ts')));
 const errorCopyMod = put('error-copy.mjs', toJs(read('src/lib/error-copy.ts')));
 // The REAL input-trim module (pure): the job page's "Using the first 5:00" line.
 const inputTrimMod = put('input-trim.mjs', toJs(read('src/lib/input-trim.ts')));
+const jobLabelMod = put('job-label.mjs', toJs(read('src/lib/job-label.ts')));
 
 const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   // bare 'react' only — 'react/jsx-runtime' must stay real
@@ -189,6 +190,7 @@ const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]@\/lib\/job-poll['"]/g, `from '${jobPollMod}'`)
   .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${errorCopyMod}'`)
   .replace(/from ['"]@\/lib\/input-trim['"]/g, `from '${inputTrimMod}'`)
+  .replace(/from ['"]@\/lib\/job-label['"]/g, `from '${jobLabelMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordOverlayMod}'`);
 writeFileSync(join(dir, 'JobView.mjs'), jobViewJs);
 
@@ -293,12 +295,27 @@ test('Story 6.1: the job page shows NO loops, and links to /loops with this job 
   assert.ok(html.indexOf('data-testid="player"') !== -1, 'no Player in the rendered output');
   assert.equal(count(html, /data-testid="loop-results"/g), 0, 'the job page renders loops again (Story 6.1)');
   assert.equal(globalThis.__loopResultsProps, null, 'LoopResults was mounted on the job page');
-  const link = html.match(/data-testid="loops-link"[\s\S]*?<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/);
-  assert.ok(link, 'no route from the job page to its loops');
-  assert.equal(link[1], `/loops?job=${DONE_JOB.id}`);
-  assert.match(link[2], /Download loops/);
-  // And it sits BELOW the player: the player stays the primary view (Story 1.2).
-  assert.ok(html.indexOf('data-testid="player"') < html.indexOf('data-testid="loops-link"'));
+  // Slice 1a (design v1.4 P1.1): the player is the whole screen, so the route
+  // to the loops is the player's ⋯ menu ("Download loops") and Song info, fed
+  // by this prop. The player renders it (test/play-player-screen.test.mjs).
+  assert.equal(globalThis.__playerProps.loopsHref, `/loops?job=${DONE_JOB.id}`, 'no route from the job page to its loops');
+  assert.doesNotMatch(html, /data-testid="loops-link"/, 'nothing is rendered below the full-screen player');
+  // ...or above it: the player covers the page, so anything else would be a
+  // tab stop hidden behind it.
+  assert.match(html, /^<main><div data-testid="player"[^>]*><\/div><\/main>$/);
+});
+
+test('Slice 1a: the job page hands the player its header and Song info', () => {
+  renderJob({ ...DONE_JOB, bpm: 101.6, musical_key: 'A# major', original_filename: 'Lucky Ticket.mp3' });
+  const p = globalThis.__playerProps;
+  assert.equal(p.title, 'Lucky Ticket.mp3');
+  assert.equal(p.bpm, 101.6);
+  assert.equal(p.musicalKey, 'A# major');
+  assert.deepEqual(p.back, { href: '/history', label: 'Back to library' }, 'signed in: back to the library');
+  assert.ok(p.songInfo.some((l) => /On Free, files are deleted after 24 hours/.test(l)));
+  renderJob({ ...DONE_JOB, bpm: null, musical_key: null });
+  assert.equal(globalThis.__playerProps.bpm, null);
+  assert.equal(globalThis.__playerProps.musicalKey, null);
 });
 
 // ═══ FG-2 — no second, position-less chord overlay ══════════════════════════
@@ -508,18 +525,16 @@ test('JobView no longer stores a response body it did not check: no bare `setJob
 });
 
 // ── input trim (2026-11-14): a long track is cut to its first 5:00, and the page says so ──
-test('a trimmed done job renders "Using the first 5:00 of a 6:12 track." before the player', () => {
-  const html = renderJob({ ...DONE_JOB, input_trim_used_sec: 300, input_trim_source_sec: 372 });
-  assert.match(html, /data-testid="trim-note"[^>]*>Using the first 5:00 of a 6:12 track\.</);
-  assert.ok(
-    html.indexOf('data-testid="trim-note"') < html.indexOf('data-testid="player"'),
-    'the trim note must sit above the player',
-  );
+test('a trimmed done job says "Using the first 5:00 of a 6:12 track." in the player\'s Song info', () => {
+  // Slice 1a: nothing renders around the full-screen player; the note is the
+  // first Song info line instead (the player renders songInfo lines).
+  renderJob({ ...DONE_JOB, input_trim_used_sec: 300, input_trim_source_sec: 372 });
+  assert.equal(globalThis.__playerProps.songInfo[0], 'Using the first 5:00 of a 6:12 track.');
 });
 
 test('a trimmed job whose original length is unknown still says it was trimmed', () => {
-  const html = renderJob({ ...DONE_JOB, input_trim_used_sec: 300, input_trim_source_sec: null });
-  assert.match(html, /Using the first 5:00 of this track\./);
+  renderJob({ ...DONE_JOB, input_trim_used_sec: 300, input_trim_source_sec: null });
+  assert.equal(globalThis.__playerProps.songInfo[0], 'Using the first 5:00 of this track.');
 });
 
 test('a trimmed job still processing shows the note too', () => {
@@ -530,5 +545,6 @@ test('a trimmed job still processing shows the note too', () => {
 test('an untouched job renders no trim note', () => {
   for (const job of [DONE_JOB, { ...DONE_JOB, input_trim_used_sec: null, input_trim_source_sec: null }]) {
     assert.doesNotMatch(renderJob(job), /trim-note|Using the first/);
+    assert.ok(!globalThis.__playerProps.songInfo.some((l) => /Using the first/.test(l)));
   }
 });

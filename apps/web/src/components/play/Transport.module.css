@@ -1,106 +1,224 @@
-/* Play-along transport. Tokens only (src/styles/design-tokens.css); no new palette.
-   A tall custom bar with a neutral fill and a white round thumb. Lime is kept for the Play
-   button (the player's primary action) and the focus ring; progress is never lime
-   (brand book A5, M8). Fill #e0e0e0 on the #1e1e1e rail is 12.63:1. */
+/* Play-along transport (design v1.4, P1.1; Jon-approved mockup Main.dc.html).
+   Tokens only (src/styles/design-tokens.css); no new palette.
+
+   Lime has its three jobs only (brand book A5): the Play fill (the ONE primary
+   action on the view) and the focus ring. Progress, the loop band and a pressed
+   loop button are neutral. Fill #ffffff on the #3a3a3a rail; the loop band is
+   --text-label grey; the pressed loop button is white with dark text. */
 
 .root {
+  flex-shrink: 0;
   display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-  padding: var(--space-3) var(--space-4);
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
+  flex-direction: column;
   font-family: var(--font-sans);
   color: var(--text-secondary);
 }
 
-.play {
-  flex: none;
-  width: 44px;
-  height: 44px;
-  display: inline-flex;
+/* ── the seek line ─────────────────────────────────────────────────────── */
+.seek {
+  padding: 0 20px;
+  display: flex;
+  flex-direction: column;
+}
+
+.loopText {
+  min-height: 18px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.track {
+  position: relative;
+  height: var(--touch-min, 44px);
+}
+
+.rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 20px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-strong);
+}
+
+.band {
+  position: absolute;
+  top: 18px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--text-label);
+}
+
+.fill {
+  position: absolute;
+  left: 0;
+  top: 20px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--text-primary);
+  pointer-events: none;
+}
+
+.tick {
+  position: absolute;
+  top: 16px;
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  background: var(--text-primary);
+  pointer-events: none;
+}
+
+/* The real control: a native range input laid over the drawn bar, invisible,
+   44px tall, so it is the hit area, the keyboard target and what assistive tech
+   reads. The drawn thumb after it shows its focus. */
+.range {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: var(--touch-min, 44px);
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  touch-action: none;
+}
+.range:disabled { cursor: not-allowed; }
+
+.thumb {
+  position: absolute;
+  top: 15px;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  border-radius: 7px;
+  background: var(--text-primary);
+  pointer-events: none;
+}
+.range:focus-visible + .thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.range:disabled + .thumb { display: none; }
+
+.times {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -8px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+/* ── the buttons ───────────────────────────────────────────────────────── */
+.buttons {
+  height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+}
+
+.skip {
+  width: 48px;
+  height: 48px;
+  border-radius: 24px;
+  background: none;
+  border: 0;
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1.5px solid transparent;
-  border-radius: var(--radius-full);
+  font: inherit;
+  cursor: pointer;
+}
+.skip:disabled { color: var(--text-disabled); cursor: not-allowed; }
+.skipText { font-size: 11px; }
+
+.play {
+  width: 64px;
+  height: 64px;
+  flex: none;
+  border-radius: 32px;
+  border: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--accent);
   color: var(--text-inverse);
   cursor: pointer;
 }
 .play:hover:not(:disabled) { background: var(--accent-hover, var(--accent)); }
-.play:active:not(:disabled) { transform: translateY(1px); }
-.play:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .play:disabled {
   cursor: not-allowed;
   background: transparent;
-  border-color: var(--border-control);
+  border: 1.5px solid var(--border-control);
   color: var(--text-muted);
 }
 
-.track {
-  flex: 1 1 160px;
-  min-width: 120px;
-  /* --touch-min: the seek bar is a drag target on a phone; 32px failed the 44px
-     bar (j7 measured 163x32 at 390 and 238x32 at 360). The rail stays 8px and
-     stays centred, so only the hit area grows. */
-  height: var(--touch-min, 44px);
+.loop {
+  width: 48px;
+  height: 48px;
+  border-radius: 24px;
+  padding: 0;
   display: flex;
   align-items: center;
-  cursor: pointer;
-  touch-action: none;      /* a horizontal drag must not scroll the page */
-  user-select: none;
-  -webkit-user-select: none;
-  border-radius: var(--radius-md);
-}
-.track:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.track[aria-disabled='true'] { cursor: not-allowed; opacity: 0.6; }
-
-.rail {
-  position: relative;
-  width: 100%;
-  height: 8px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-full);
-}
-.fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: var(--text-secondary);
-  border-radius: var(--radius-full);
-  pointer-events: none;
-}
-.thumb {
-  position: absolute;
-  top: 50%;
-  width: 16px;
-  height: 16px;
-  margin: -8px 0 0 -8px;
-  background: var(--text-primary);
-  border: 2px solid var(--bg-card);   /* a dark ring keeps the white thumb distinct from the fill */
-  border-radius: var(--radius-full);
-  pointer-events: none;
-}
-.track[data-scrubbing='true'] .thumb { transform: scale(1.25); }
-.track[aria-disabled='true'] .thumb { display: none; }
-
-.readout {
-  flex: none;
-  min-width: 88px;
-  text-align: right;
-  font-family: var(--font-mono);
-  font-size: var(--text-md);
-  font-variant-numeric: tabular-nums;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--border-control);
   color: var(--text-primary);
+  cursor: pointer;
 }
-.sep { color: var(--text-muted); }
+/* On: neutral pressed (white fill, dark glyph), never lime (A5). */
+.loop[data-state='on'] {
+  background: var(--text-primary);
+  border: 0;
+  color: var(--text-inverse);
+}
+/* Nothing to loop yet: shown, greyed, labelled "Tap a section to loop it". */
+.loop[data-state='disabled'] {
+  border-color: var(--border-strong);
+  color: var(--text-label);
+  cursor: default;
+}
+
+.mix {
+  height: 48px;
+  min-width: 76px;
+  padding: 0 12px;
+  border-radius: 24px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-control);
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.15;
+  font: inherit;
+  cursor: pointer;
+}
+.mixName { font-size: 15px; font-weight: var(--weight-semibold); }
+.mixState { font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+
+.skip:focus-visible,
+.play:focus-visible,
+.loop:focus-visible,
+.mix:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 .hint {
-  flex-basis: 100%;
-  font-size: var(--text-base);
+  padding: 0 20px 4px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -112,6 +230,14 @@
 @keyframes shimmer { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .busy .rail { animation: none; } }
 
-.error { border-color: var(--status-failed); background: var(--status-failed-bg); }
 .error .hint { color: var(--status-failed); }
-.error .play:disabled { border-color: var(--status-failed); color: var(--status-failed); }
+
+/* Desktop column (P1.4 rule 4, DesktopPlayer.dc.html): bigger, centred buttons. */
+@media (min-width: 1024px) and (min-height: 500px) {
+  .seek { padding: 0; }
+  .rail, .fill { top: 19px; height: 6px; }
+  .thumb { top: 14px; width: 16px; height: 16px; margin-left: -8px; border-radius: 8px; }
+  .times { font-size: 13px; margin-top: 0; }
+  .buttons { justify-content: center; gap: 24px; padding: 0; height: 96px; }
+  .play { width: 72px; height: 72px; border-radius: 36px; }
+}

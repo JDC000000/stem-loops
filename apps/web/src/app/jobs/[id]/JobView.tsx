@@ -26,6 +26,7 @@ import type { Job } from '@stem-loops/types';
 import { JobProgress } from '@/components/JobProgress';
 import Player from '@/components/play/Player';
 import { formatExpiresIn } from '@/lib/retention';
+import { jobLabel } from '@/lib/job-label';
 import { failedJobMessage } from '@/lib/error-copy';
 import { jobTrimNote } from '@/lib/input-trim';
 import {
@@ -68,7 +69,29 @@ const actionButton: React.CSSProperties = {
   fontWeight: 700,
 };
 
-export default function JobView({ id }: { id: string }) {
+/**
+ * The back arrow on the player (coordinator note 6, 2026-11-17): "Back to
+ * library" when signed in, "Back to home" when signed out — never a compound
+ * label. The library is /history until Slice 2 renames it.
+ */
+export function backLink(signedIn: boolean): { href: string; label: string } {
+  return signedIn ? { href: '/history', label: 'Back to library' } : { href: '/', label: 'Back to home' };
+}
+
+/** The player's Song info lines: the trim note and the deletion time, in neutral text. */
+export function songInfoLines(job: Job, now: number = Date.now()): string[] {
+  const lines: string[] = [];
+  const trim = jobTrimNote(job);
+  if (trim) lines.push(trim);
+  const expires = job.expires_at ? new Date(job.expires_at).getTime() : NaN;
+  lines.push(
+    'On Free, files are deleted after 24 hours; on Pro and Studio they stay in your library.' +
+      (Number.isFinite(expires) ? ` This song is deleted ${formatExpiresIn(expires, now)}.` : ''),
+  );
+  return lines;
+}
+
+export default function JobView({ id, signedIn = true }: { id: string; signedIn?: boolean }) {
   const [job, setJob] = useState<Job | null>(null);
   const [missing, setMissing] = useState(false);
   // Appended AFTER the two above on purpose: test/job-page-render.test.mjs seeds
@@ -206,6 +229,30 @@ export default function JobView({ id }: { id: string }) {
     </div>
   );
 
+  // Story 1.2 — the player is the PRIMARY view, and (design v1.4, P1.1) it is
+  // the whole screen: a fixed, non-scrolling surface whose own header replaces
+  // the site nav. Nothing else renders around it, so nothing sits behind it in
+  // the tab order: the "Start a new song" link, the trim note, the deletion
+  // time and "Download loops" (Story 6.1: loops live on /loops) moved to its
+  // back arrow, ⋯ menu and Song info.
+  if (job && job.status === 'done' && !missing && !(trouble?.kind === 'unreachable' && !TERMINAL.has(job.status))) {
+    return (
+      <main>
+        <Player
+          jobId={job.id}
+          loops={job.loops}
+          enabled
+          title={jobLabel(job)}
+          bpm={job.bpm ?? null}
+          musicalKey={job.musical_key ?? null}
+          back={backLink(signedIn)}
+          songInfo={songInfoLines(job)}
+          loopsHref={`/loops?job=${job.id}`}
+        />
+      </main>
+    );
+  }
+
   return (
     <main style={wrap}>
       {back}
@@ -263,34 +310,6 @@ export default function JobView({ id }: { id: string }) {
             Start a new song
           </Link>
         </div>
-      ) : job.status === 'done' ? (
-        <>
-          {/* Story 1.2 — the player is the PRIMARY view. Jon: "Everybody
-              uploading songs wants to see the player and toggle and play
-              along." Story 6.1 — the loops are their own product page now;
-              this page shows none and links there instead. */}
-          <TrimNote job={job} />
-          <Player jobId={job.id} loops={job.loops} enabled title={job.original_filename ?? null} />
-          <p data-testid="loops-link" style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 'var(--text-md, 14px)' }}>
-            Want this song as bar-length WAV loops?{' '}
-            {/* inline-block, so it is NOT sized by the line: it is a standalone CTA
-                and owes the full 44px (--touch-min). 12px of padding left it at
-                118x40, which j7 caught on the player at 390 and 360; 15px clears 44
-                with a cushion for font metrics, and the equal negative margin keeps
-                the paragraph's line box exactly where it was. */}
-            <Link href={`/loops?job=${job.id}`} className="jp-back"
-              style={{ fontSize: 'var(--text-md, 14px)', display: 'inline-block', padding: '15px 0', margin: '-15px 0' }}
-            >
-              Download loops →
-            </Link>
-          </p>
-          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
-            {/* job.expires_at is the song's real deletion time (JOB_RETAINED_UNTIL_SQL):
-                24 hours on Free, later for a Pro/Studio library (lib/retention.ts). */}
-            On Free, files are deleted after 24 hours; on Pro and Studio they stay in your library.
-            {job.expires_at ? ` This song is deleted ${formatExpiresIn(new Date(job.expires_at).getTime())}.` : ''}
-          </p>
-        </>
       ) : trouble?.kind === 'stalled' ? (
         <div
           className="jp-failed"

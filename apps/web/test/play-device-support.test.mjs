@@ -17,6 +17,7 @@ import { readFileSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
+import { buildModuleGraph } from './helpers/module-graph.mjs';
 
 import {
   LIGHT_AUDIO_NOTE,
@@ -204,44 +205,25 @@ const toJs = (src, jsx = false) =>
   ts.transpileModule(src, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022, ...(jsx ? { jsx: ts.JsxEmit.ReactJSX } : {}) },
   }).outputText;
-const cache = join(WEB, 'node_modules/.cache');
-mkdirSync(cache, { recursive: true });
-const dir = mkdtempSync(join(cache, 'play-device-'));
-const put = (name, code) => (writeFileSync(join(dir, name), code), './' + name);
-
-const typesMod = put('types.mjs', toJs(read('src/lib/play/types.ts')));
-const cssMod = put('styles.mjs', 'export default new Proxy({}, { get: (_t, k) => (typeof k === "string" ? k : undefined) });');
-const deviceMod = put('device-support.mjs', toJs(read('src/lib/play/device-support.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`));
-const bgMod = put('background-audio.mjs', toJs(read('src/lib/play/background-audio.ts')));
-const sectionsMod = put('sections.mjs', toJs(read('src/lib/play/sections.ts')).replace(/from ['"]\.\/types['"]/g, `from '${typesMod}'`));
-const shared = (js) =>
-  js
-    .replace(/from ['"]@\/lib\/play\/types['"]/g, `from '${typesMod}'`)
-    .replace(/from ['"]@\/lib\/play\/sections['"]/g, `from '${sectionsMod}'`)
-    .replace(/from ['"]@\/lib\/play\/device-support['"]/g, `from '${deviceMod}'`)
-    .replace(/from ['"]@\/lib\/play\/background-audio['"]/g, `from '${bgMod}'`)
-    .replace(/from ['"][^'"]*\.module\.css['"]/g, `from '${cssMod}'`);
-const stub = (name, body) => put(name, body);
-const chordMod = stub('chord.mjs', `import { createElement } from 'react'; export const ChordOverlay = () => createElement('div', { 'data-testid': 'chord-overlay' });`);
-const compMod = (name) => stub(`${name}.mjs`, `import { createElement } from 'react'; const C = () => createElement('div', { 'data-testid': '${name.toLowerCase()}' }); export default C; export const ${name} = C;`);
-const engineMod = put('engine.mjs', toJs(read('src/lib/play/engine.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`));
-const loadMod = put('load-stems.mjs', toJs(read('src/lib/play/load-stems.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`));
-const reportMod = stub('report.mjs', 'export function reportStemFetchFailure() {}');
-writeFileSync(
-  join(dir, 'Player.mjs'),
-  shared(toJs(read('src/components/play/Player.tsx'), true))
-    .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordMod}'`)
-    .replace(/from ['"]@\/lib\/play\/engine['"]/g, `from '${engineMod}'`)
-    .replace(/from ['"]@\/lib\/play\/load-stems['"]/g, `from '${loadMod}'`)
-    .replace(/from ['"]@\/lib\/play\/report-failure['"]/g, `from '${reportMod}'`)
-    .replace(/from ['"]\.\/Mixer['"]/g, `from '${compMod('Mixer')}'`)
-    .replace(/from ['"]\.\/Transport['"]/g, `from '${compMod('Transport')}'`)
-    .replace(/from ['"]\.\/SectionLoop['"]/g, `from '${compMod('SectionLoop')}'`),
-);
+// The real module graph from Player.tsx (test/helpers/module-graph.mjs); the
+// chord overlay, the mixer, the transport and the strip are stubbed BY PATH so
+// the markup says which mounted, and nothing else is.
+const comp = (name) => `import { createElement } from 'react'; const C = () => createElement('div', { 'data-testid': '${name.toLowerCase()}' }); export default C; export const ${name} = C;`;
+const graph = buildModuleGraph({
+  name: 'play-device',
+  entries: ['components/play/Player.tsx'],
+  overrides: {
+    'components/ChordOverlay.tsx': `import { createElement } from 'react'; export const ChordOverlay = () => createElement('div', { 'data-testid': 'chord-overlay' });`,
+    'lib/play/report-failure.ts': 'export function reportStemFetchFailure() {}',
+    'components/play/Mixer.tsx': comp('Mixer'),
+    'components/play/Transport.tsx': comp('Transport'),
+    'components/play/SectionLoop.tsx': comp('SectionLoop'),
+  },
+});
 
 const React = (await import('react')).default;
 const { renderToStaticMarkup } = await import('react-dom/server');
-const Player = await import(pathToFileURL(join(dir, 'Player.mjs')).href);
+const Player = await import(graph.url('components/play/Player.tsx'));
 const noop = () => {};
 const IDLE = { status: 'idle', positionSec: 0, durationSec: 0, stems: [], loop: null, degraded: null, error: null };
 const READY = { ...IDLE, status: 'ready', durationSec: 120 };
@@ -255,9 +237,14 @@ const view = (phase, extra = {}) =>
 const decode = (html) => html.replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&');
 
 
-test('the light path renders the note above a working player; desktop does not', () => {
+test('the light path renders the one-time hint above a working player; desktop does not', () => {
+  // Slice 1a (design v1.4 P1.1/P1.5, copy rules): the notice bar carries a short
+  // hint with no implementation names; LIGHT_AUDIO_NOTE itself moved to Song info
+  // (test/play-player-screen.test.mjs opens it there).
   const light = decode(view({ kind: 'ready' }, { lightAudio: true }));
-  assert.ok(light.includes(LIGHT_AUDIO_NOTE));
+  assert.equal(Player.LIGHT_AUDIO_HINT, 'Phones get lighter audio so all six stems fit. Details in Song info.');
+  assert.ok(light.includes(Player.LIGHT_AUDIO_HINT));
+  assert.doesNotMatch(light, /mono|24 kHz|kHz/, 'no implementation names in the hint');
   assert.match(light, /data-testid="player-light-audio"/);
   assert.match(light, /data-testid="transport"/, 'the player itself is there');
   assert.match(light, /data-testid="mixer"/);

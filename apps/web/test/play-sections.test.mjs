@@ -15,8 +15,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 
 import {
-  deriveSections, sanitizeRegions, sameRegion, nextLoop, formatTime, nameRegions, normalizeLabel,
+  deriveSections, sanitizeRegions, sameRegion, formatTime, nameRegions, normalizeLabel,
+  NO_RUN, tapSection, longPressSection, toggleRunLoop, runRegion, runFromRegion, runName, runReadout,
+  stripLegend, placeInSong,
 } from '../src/lib/play/sections.ts';
+import { withDom } from './helpers/dom.mjs';
 
 // ─── fixtures: the shape of a real production job ───────────────────────────
 // 60 loops, 6 stems, bpm 82.5, C major, track 142.6 s. One 4-bar loop is
@@ -319,12 +322,97 @@ test('sameRegion compares spans with tolerance and ignores labels; null is never
   assert.ok(!sameRegion({ startSec: 1, endSec: 2 }, null));
 });
 
-test('nextLoop: clicking the active region clears it, another region selects it', () => {
-  const a = { startSec: 0, endSec: 10, label: 'verse' };
-  const b = { startSec: 10, endSec: 20, label: 'chorus' };
-  assert.equal(nextLoop(a, a), null);
-  assert.equal(nextLoop(a, b), b);
-  assert.equal(nextLoop(null, a), a);
+// ─── P2.1: runs of sections — EVERY row of the design table ───────────────
+// (DESIGN-PROPOSAL v1.4, P2.1; the mockup's pickSection is the same function.)
+const run = (lo, hi, on = true) => ({ run: { lo, hi }, on });
+
+test('P2.1 row 1 — no loop · tap chip X -> loop [X]', () => {
+  assert.deepEqual(tapSection(NO_RUN, 3), { state: run(3, 3), extended: false });
+});
+
+test('P2.1 row 2 — run [X] (one chip) · tap X -> clear', () => {
+  assert.deepEqual(tapSection(run(3, 3), 3), { state: NO_RUN, extended: false });
+});
+
+test('P2.1 row 3 — run [i..j] · tap OUTSIDE, either side -> extend to [min(i,X)..max(j,X)]', () => {
+  assert.deepEqual(tapSection(run(2, 3), 5), { state: run(2, 5), extended: true }, 'after');
+  assert.deepEqual(tapSection(run(2, 3), 0), { state: run(0, 3), extended: true }, 'before');
+  assert.deepEqual(tapSection(run(2, 2), 3), { state: run(2, 3), extended: true }, 'a single chip extends too');
+  assert.deepEqual(tapSection(run(2, 2), 1), { state: run(1, 2), extended: true });
+});
+
+test('P2.1 row 4 — run [i..j], 2+ chips · tap INSIDE -> shrink to that chip', () => {
+  for (const i of [2, 3, 4]) assert.deepEqual(tapSection(run(2, 4), i), { state: run(i, i), extended: false }, `chip ${i}`);
+});
+
+test('P2.1 row 5 — long-press any chip -> loop only this', () => {
+  assert.deepEqual(longPressSection(NO_RUN, 4), run(4, 4));
+  assert.deepEqual(longPressSection(run(0, 6), 2), run(2, 2), 'inside a run');
+  assert.deepEqual(longPressSection(run(0, 1), 5), run(5, 5), 'outside a run: no extend');
+  assert.deepEqual(longPressSection(run(1, 2, false), 2), run(2, 2), 'loop off: on again, alone');
+});
+
+test('P2.1 row 6 — loop button, loop on -> off, the run is remembered', () => {
+  assert.deepEqual(toggleRunLoop(run(1, 3)), run(1, 3, false));
+});
+
+test('P2.1 row 7 — loop button, loop off with a run remembered -> back on', () => {
+  assert.deepEqual(toggleRunLoop(run(1, 3, false)), run(1, 3));
+});
+
+test('P2.1 row 8 — loop button, loop off and nothing remembered -> no change (disabled)', () => {
+  assert.deepEqual(toggleRunLoop(NO_RUN), NO_RUN);
+});
+
+test('P2.1 — with the loop off, tapping a REMEMBERED chip re-loops it (alone); outside extends and turns it on', () => {
+  assert.deepEqual(tapSection(run(1, 3, false), 2), { state: run(2, 2), extended: false });
+  assert.deepEqual(tapSection(run(2, 2, false), 2), { state: run(2, 2), extended: false }, 'a remembered single chip loops, it does not clear');
+  assert.deepEqual(tapSection(run(1, 2, false), 4), { state: run(1, 4), extended: true });
+});
+
+test('P2.1 — a bad index changes nothing', () => {
+  for (const i of [-1, 1.5, NaN]) {
+    assert.deepEqual(tapSection(run(1, 2), i).state, run(1, 2));
+    assert.deepEqual(longPressSection(run(1, 2), i), run(1, 2));
+  }
+});
+
+test('P2.1 — a run is ONE continuous span for the engine, gaps between sections included', () => {
+  const secs = [
+    { startSec: 0, endSec: 10 }, { startSec: 10, endSec: 20 }, { startSec: 22, endSec: 30 }, { startSec: 30, endSec: 40 },
+  ];
+  assert.deepEqual(runRegion(secs, { lo: 1, hi: 2 }), { startSec: 10, endSec: 30 }, 'the 20-22 gap is inside');
+  assert.deepEqual(runRegion(secs, { lo: 0, hi: 0 }), { startSec: 0, endSec: 10 });
+  assert.equal(runRegion(secs, null), null);
+  assert.equal(runRegion(secs, { lo: 2, hi: 9 }), null);
+  assert.deepEqual(runFromRegion(secs, { startSec: 10, endSec: 30 }), { lo: 1, hi: 2 });
+  assert.deepEqual(runFromRegion(secs, { startSec: 10.005, endSec: 29.995 }), { lo: 1, hi: 2 }, 'engine rounding');
+  assert.equal(runFromRegion(secs, { startSec: 12, endSec: 30 }), null, 'a custom range is not a run');
+  assert.equal(runFromRegion(secs, null), null);
+});
+
+test('P2.1 — the readout, the strip legend and the run name say the state in words', () => {
+  const names = ['Intro', 'Verse 1', 'Chorus 1'];
+  const secs = [{ startSec: 0, endSec: 9 }, { startSec: 9, endSec: 47 }, { startSec: 47, endSec: 66 }];
+  assert.equal(runName(names, { lo: 1, hi: 2 }), 'Verse 1 \u2192 Chorus 1');
+  assert.equal(runName(names, { lo: 1, hi: 2 }, true), 'Verse 1 to Chorus 1');
+  assert.equal(runName(names, { lo: 2, hi: 2 }), 'Chorus 1');
+  assert.equal(runReadout(names, secs, run(1, 2)), 'Looping Verse 1 \u2192 Chorus 1 \u00b7 0:09\u20131:06');
+  assert.equal(runReadout(names, secs, run(1, 2, false)), 'Loop off');
+  assert.equal(runReadout(names, secs, NO_RUN), '');
+  assert.equal(stripLegend(names, NO_RUN), 'Sections. No loop.');
+  assert.equal(stripLegend(names, run(1, 2)), 'Sections. Looping Verse 1 to Chorus 1');
+  assert.equal(stripLegend(names, run(1, 2, false)), 'Sections. Loop off, Verse 1 to Chorus 1 remembered');
+});
+
+test('placeInSong: the no-chords stage knows the section, bar and beat (bars from the section start)', () => {
+  const secs = [{ startSec: 0, endSec: 8 }, { startSec: 8, endSec: 24 }];
+  const grid = { beatSec: 0.5, anchorSec: 0, measured: true }; // 2 s bars
+  assert.deepEqual(placeInSong(secs, grid, 13.1), { section: 1, bar: 3, bars: 8, beat: 3 });
+  assert.deepEqual(placeInSong(secs, grid, 0), { section: 0, bar: 1, bars: 4, beat: 1 });
+  assert.deepEqual(placeInSong(secs, null, 13), { section: 1, bar: null, bars: null, beat: null }, 'no tempo, no bars');
+  assert.deepEqual(placeInSong(secs, grid, 99), { section: -1, bar: null, bars: null, beat: null });
+  assert.deepEqual(placeInSong(secs, grid, null), { section: 0, bar: 1, bars: 4, beat: 1 });
 });
 
 test('formatTime renders m:ss and survives bad input', () => {
@@ -341,7 +429,7 @@ test('nameRegions numbers repeated labels and leaves unique ones plain', () => {
   assert.deepEqual(nameRegions([{ startSec: 0, endSec: 1 }]).map((n) => n.name), ['Section']);
 });
 
-// ─── the component ──────────────────────────────────────────────────────────
+// ─── the component: the section strip ───────────────────────────────────────
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const toJs = (src) => ts.transpileModule(src, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
@@ -360,136 +448,126 @@ async function loadComponent() {
     .replace(/from ['"]@\/lib\/play\/sections['"]/g, "from './sections.mjs'")
     .replace(/from ['"]\.\/SectionLoop\.module\.css['"]/g, "from './styles.mjs'");
   writeFileSync(join(dir, 'SectionLoop.mjs'), js);
+  const React = (await import('react')).default;
   const { renderToStaticMarkup } = await import('react-dom/server');
   const mod = await import(pathToFileURL(join(dir, 'SectionLoop.mjs')).href);
-  loaded = { SectionLoop: mod.SectionLoop, render: (p) => renderToStaticMarkup(mod.SectionLoop(p)) };
+  loaded = { mod, React, render: (p) => renderToStaticMarkup(React.createElement(mod.SectionLoop, p)) };
   return loaded;
 }
 
-// Walk the element tree the component returns and collect <button> elements.
-function buttons(node, out = []) {
-  if (!node || typeof node !== 'object') return out;
-  if (Array.isArray(node)) { node.forEach((n) => buttons(n, out)); return out; }
-  if (node.type === 'button') out.push(node);
-  buttons(node.props && node.props.children, out);
-  return out;
-}
-const textOf = (n) => (n == null || typeof n === 'boolean' ? '' : Array.isArray(n) ? n.map(textOf).join('') : typeof n === 'object' ? textOf(n.props && n.props.children) : String(n));
+const NAMES = nameRegions(deriveSections(realJob(), { durationSec: TRACK_SEC })).map((n) => n.name);
+const noop = () => {};
 
-const SECTIONS = deriveSections(realJob(), { durationSec: TRACK_SEC });
-
-test('component: one real <button> per section, each with an explicit aria-pressed', async () => {
-  const { SectionLoop, render } = await loadComponent();
-  const html = render({ sections: SECTIONS, active: null, onLoop() {} });
-  const bs = buttons(SectionLoop({ sections: SECTIONS, active: null, onLoop() {} }));
-  assert.equal(bs.length, SECTIONS.length + 1); // + Clear
-  assert.equal((html.match(/aria-pressed="false"/g) || []).length, SECTIONS.length);
+test('strip: one real <button> per section in a fieldset whose legend names the run; aria-pressed on each', async () => {
+  const { render } = await loadComponent();
+  const html = render({ names: NAMES, state: NO_RUN, onTap: noop, onLongPress: noop });
+  assert.match(html, /^<fieldset/);
+  assert.match(html, /<legend class="srOnly">Sections\. No loop\.<\/legend>/);
+  assert.equal((html.match(/<button/g) || []).length, NAMES.length);
+  assert.equal((html.match(/aria-pressed="false"/g) || []).length, NAMES.length);
   assert.ok(!html.includes('aria-pressed="true"'));
-  assert.ok(bs.every((b) => b.props.type === 'button'));
   assert.ok(html.includes('Chorus 1') && html.includes('Chorus 2'));
-  assert.ok(html.includes('Not looping'));
+  assert.doesNotMatch(html, /aria-live/, 'no live region in the strip');
 });
 
-test('component: the active section is pressed, badged and announced; the others are not', async () => {
+test('strip: a looping run presses EVERY chip in it; a remembered run presses none but marks them', async () => {
   const { render } = await loadComponent();
-  const html = render({ sections: SECTIONS, active: SECTIONS[2], onLoop() {} });
-  assert.equal((html.match(/aria-pressed="true"/g) || []).length, 1);
-  assert.ok(html.includes('Looping</span>')); // text badge, not colour alone
-  assert.ok(html.includes('Looping Chorus 1, 0:34 to 0:58'));
-  assert.ok(!/class="clear"[^>]*disabled/.test(html));
+  const on = render({ names: NAMES, state: { run: { lo: 1, hi: 2 }, on: true }, onTap: noop, onLongPress: noop });
+  assert.equal((on.match(/aria-pressed="true"/g) || []).length, 2);
+  assert.match(on, /Sections\. Looping Verse 1 to Chorus 1/);
+  const off = render({ names: NAMES, state: { run: { lo: 1, hi: 2 }, on: false }, onTap: noop, onLongPress: noop });
+  assert.equal((off.match(/aria-pressed="true"/g) || []).length, 0);
+  assert.equal((off.match(/data-run="remembered"/g) || []).length, 2);
+  assert.match(off, /Loop off, Verse 1 to Chorus 1 remembered/);
 });
 
-test('component: clicking a section calls onLoop(region); clicking it again calls onLoop(null)', async () => {
-  const { SectionLoop } = await loadComponent();
-  const calls = [];
-  const onLoop = (r) => calls.push(r);
-  let bs = buttons(SectionLoop({ sections: SECTIONS, active: null, onLoop }));
-  bs[2].props.onClick();
-  assert.deepEqual(calls, [SECTIONS[2]]);
-  bs = buttons(SectionLoop({ sections: SECTIONS, active: SECTIONS[2], onLoop }));
-  bs[2].props.onClick();
-  assert.equal(calls[1], null);
-  bs[3].props.onClick(); // a different section while one is active switches to it
-  assert.deepEqual(calls[2], SECTIONS[3]);
+test('strip: the one-time hint is the copy P2.1 specifies, shown only when asked', async () => {
+  const { render, mod } = await loadComponent();
+  assert.equal(mod.RUN_HINT, 'Looping these — tap one to loop it alone.');
+  const st = { run: { lo: 1, hi: 2 }, on: true };
+  assert.ok(render({ names: NAMES, state: st, onTap: noop, onLongPress: noop, hint: true }).includes(mod.RUN_HINT));
+  assert.ok(!render({ names: NAMES, state: st, onTap: noop, onLongPress: noop }).includes(mod.RUN_HINT));
 });
 
-test('component: Clear loop calls onLoop(null) and is disabled when nothing is looping', async () => {
-  const { SectionLoop } = await loadComponent();
-  const calls = [];
-  const idle = buttons(SectionLoop({ sections: SECTIONS, active: null, onLoop: (r) => calls.push(r) }));
-  assert.equal(idle[idle.length - 1].props.disabled, true);
-  const live = buttons(SectionLoop({ sections: SECTIONS, active: SECTIONS[0], onLoop: (r) => calls.push(r) }));
-  const clear = live[live.length - 1];
-  assert.equal(clear.props.disabled, false);
-  assert.equal(textOf(clear), 'Clear loop');
-  clear.props.onClick();
-  assert.deepEqual(calls, [null]);
-});
-
-test('component: Escape inside the control clears an active loop; other keys do nothing', async () => {
-  const { SectionLoop } = await loadComponent();
-  const calls = [];
-  const tree = SectionLoop({ sections: SECTIONS, active: SECTIONS[1], onLoop: (r) => calls.push(r) });
-  let prevented = false;
-  tree.props.onKeyDown({ key: 'a', preventDefault() { prevented = true; } });
-  assert.deepEqual(calls, []);
-  tree.props.onKeyDown({ key: 'Escape', preventDefault() { prevented = true; } });
-  assert.deepEqual(calls, [null]);
-  assert.ok(prevented);
-  const idle = SectionLoop({ sections: SECTIONS, active: null, onLoop: (r) => calls.push(r) });
-  idle.props.onKeyDown({ key: 'Escape', preventDefault() {} });
-  assert.equal(calls.length, 1); // nothing to clear -> no call
-});
-
-test('component: `active` that is not one of `sections` marks nothing pressed but is announced and clearable', async () => {
-  const { SectionLoop, render } = await loadComponent();
-  const stray = { startSec: 3.3, endSec: 7.7 };
-  const html = render({ sections: SECTIONS, active: stray, onLoop() {} });
-  assert.ok(!html.includes('aria-pressed="true"'));
-  assert.ok(html.includes('Looping custom region, 0:03 to 0:07'));
-  const calls = [];
-  const bs = buttons(SectionLoop({ sections: SECTIONS, active: stray, onLoop: (r) => calls.push(r) }));
-  assert.equal(bs[bs.length - 1].props.disabled, false);
-  bs[bs.length - 1].props.onClick();
-  assert.deepEqual(calls, [null]);
-});
-
-test('component: with no sections offered, a stray active loop is still shown and clearable', async () => {
-  const { SectionLoop, render } = await loadComponent();
-  const stray = { startSec: 12, endSec: 24 };
-  assert.ok(render({ sections: [], active: stray, onLoop() {} }).includes('Looping custom region, 0:12 to 0:24'));
-  const calls = [];
-  const bs = buttons(SectionLoop({ sections: [], active: stray, onLoop: (r) => calls.push(r) }));
-  assert.equal(bs.length, 1);
-  bs[0].props.onClick();
-  assert.deepEqual(calls, [null]);
-});
-
-test('component: hostile sections never render a button or emit an invalid region', async () => {
-  const { SectionLoop, render } = await loadComponent();
-  const hostile = [
-    { startSec: 10, endSec: 10, label: 'zero' }, { startSec: 20, endSec: 5, label: 'backwards' },
-    { startSec: NaN, endSec: 5, label: 'nan' }, { startSec: -4, endSec: 5, label: 'neg' },
-    null, undefined, { startSec: 0, endSec: 9999, label: 'huge' }, { startSec: 500, endSec: 600, label: 'past' },
-  ];
-  const calls = [];
-  const bs = buttons(SectionLoop({ sections: hostile, active: null, onLoop: (r) => calls.push(r), durationSec: TRACK_SEC }));
-  assert.equal(bs.length, 2); // 'huge' (clamped) + Clear
-  bs[0].props.onClick();
-  assert.deepEqual(calls, [{ startSec: 0, endSec: TRACK_SEC, label: 'huge' }]);
-  const html = render({ sections: hostile, active: null, onLoop() {}, durationSec: TRACK_SEC });
-  assert.ok(!/zero|backwards|nan|neg|past/i.test(html.replace(/not looping/i, '')));
-});
-
-test('component: no sections and no active renders nothing; bad `sections` does not throw', async () => {
+test('strip: no sections renders nothing', async () => {
   const { render } = await loadComponent();
-  assert.equal(render({ sections: [], active: null, onLoop() {} }), '');
-  assert.equal(render({ sections: null, active: null, onLoop() {} }), '');
-  assert.equal(render({ sections: [{ startSec: 5, endSec: 1 }], active: null, onLoop() {} }), '');
+  assert.equal(render({ names: [], state: NO_RUN, onTap: noop, onLongPress: noop }), '');
 });
 
-test('component: 60 identically-labelled rows through deriveSections give one button', async () => {
-  const { SectionLoop } = await loadComponent();
-  const one = deriveSections(Array.from({ length: 60 }, () => row('chorus', 0, 23.272)));
-  assert.equal(buttons(SectionLoop({ sections: one, active: null, onLoop() {} })).length, 2);
+test('strip (DOM): a click, Enter or Space is a TAP on that chip index', async () => {
+  const { mod, React } = await loadComponent();
+  await withDom(async (dom) => {
+    const taps = [];
+    await dom.mount(React.createElement(mod.SectionLoop, { names: NAMES, state: NO_RUN, onTap: (i) => taps.push(i), onLongPress: noop }));
+    const chips = dom.findAll('button');
+    await dom.act(() => chips[3].click());
+    assert.deepEqual(taps, [3]);
+    await dom.unmountAll();
+  });
+});
+
+test('strip (DOM): long-press 500 ms = loop only this, and the click after the release is SWALLOWED', async () => {
+  const { mod, React } = await loadComponent();
+  assert.equal(mod.LONG_PRESS_MS, 500);
+  await withDom(async (dom) => {
+    const taps = [];
+    const longs = [];
+    await dom.mount(React.createElement(mod.SectionLoop, { names: NAMES, state: NO_RUN, onTap: (i) => taps.push(i), onLongPress: (i) => longs.push(i) }));
+    const chip = dom.findAll('button')[2];
+    await dom.pointer('pointerdown', chip, { clientX: 10, clientY: 10, pointerType: 'touch' });
+    await dom.advance(450);
+    assert.deepEqual(longs, [], 'not before 500 ms');
+    await dom.advance(100);
+    assert.deepEqual(longs, [2]);
+    await dom.pointer('pointerup', chip, { clientX: 10, clientY: 10, pointerType: 'touch' });
+    await dom.act(() => chip.click());
+    assert.deepEqual(taps, [], 'the release click must not read as a tap (it would clear the loop)');
+    // ...and only that one click: the next is a tap again.
+    await dom.act(() => chip.click());
+    assert.deepEqual(taps, [2]);
+    await dom.unmountAll();
+  });
+});
+
+test('strip (DOM): a finger that moves (scrolling the strip) cancels the long-press; a short press is a tap', async () => {
+  const { mod, React } = await loadComponent();
+  await withDom(async (dom) => {
+    const taps = [];
+    const longs = [];
+    await dom.mount(React.createElement(mod.SectionLoop, { names: NAMES, state: NO_RUN, onTap: (i) => taps.push(i), onLongPress: (i) => longs.push(i) }));
+    const chip = dom.findAll('button')[1];
+    await dom.pointer('pointerdown', chip, { clientX: 10, clientY: 10, pointerType: 'touch' });
+    await dom.pointer('pointermove', chip, { clientX: 40, clientY: 10, pointerType: 'touch' });
+    await dom.advance(600);
+    assert.deepEqual(longs, [], 'moved past the slop: no long-press');
+    await dom.pointer('pointerdown', chip, { clientX: 10, clientY: 10, pointerType: 'touch' });
+    await dom.advance(100);
+    await dom.pointer('pointerup', chip, { clientX: 10, clientY: 10, pointerType: 'touch' });
+    await dom.act(() => chip.click());
+    await dom.advance(600);
+    assert.deepEqual(longs, []);
+    assert.deepEqual(taps, [1]);
+    await dom.unmountAll();
+  });
+});
+
+test('strip (DOM): the context menu (Android long-press) is suppressed on a chip', async () => {
+  const { mod, React } = await loadComponent();
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(mod.SectionLoop, { names: NAMES, state: NO_RUN, onTap: noop, onLongPress: noop }));
+    const chip = dom.findAll('button')[0];
+    const ev = new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    await dom.act(() => chip.dispatchEvent(ev));
+    assert.equal(ev.defaultPrevented, true);
+    await dom.unmountAll();
+  });
+});
+
+test('strip CSS: no iOS callout or text selection on a chip; 44px tall; selected is neutral', () => {
+  const css = readFileSync(join(WEB, 'src/components/play/SectionLoop.module.css'), 'utf8');
+  const chip = css.match(/\.chip\s*\{([^}]*)\}/)[1];
+  assert.match(chip, /-webkit-touch-callout:\s*none/);
+  assert.match(chip, /user-select:\s*none/);
+  assert.match(chip, /height:\s*var\(--touch-min, 44px\)/);
+  assert.doesNotMatch(css.match(/\.chip\[aria-pressed='true'\]\s*\{([^}]*)\}/)[1], /accent/);
 });

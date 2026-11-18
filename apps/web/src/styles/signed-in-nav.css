@@ -209,3 +209,11 @@
     border-color: Highlight;
   }
 }
+
+/* The play-along screen (components/play/Player.module.css) replaces the site nav
+   with its own compact header (design v1.4, P1.1). While it is mounted the bar is
+   removed — display:none, so it is out of the tab order and the accessibility tree
+   too, not just painted over. The way back is the player's own back arrow. */
+body:has([data-player-fullscreen]) .sin-bar {
+  display: none;
+}

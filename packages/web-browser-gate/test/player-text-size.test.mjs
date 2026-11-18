@@ -1,12 +1,13 @@
 // REAL-BROWSER GATE: text sizes in the play-along player (Stories 3.7 and 4.8).
 //
 // WHAT IT CHECKS (brand book v2.2 Appendix A, decided by Jon 2026-11-14)
-//   A11  The CURRENT chord name (the "Now" readout under the chord timeline) is
-//        at least CURRENT_MIN_PX, measured as rendered: computed font-size, the
-//        rendered text box, and the height of the INK actually painted (two
-//        screenshots, text paint on and off). At the default zoom and at the
-//        zoom ceiling, at 1280 / 1024 / 390 px viewports, and for the longest
-//        chord name in the song (it must not be clipped either).
+//   A11  The CURRENT chord name (the chord stage's "Now", Slice 1a) is at least
+//        CURRENT_MIN_PX, measured as rendered: computed font-size, the rendered
+//        text box, and the height of the INK actually painted (two screenshots,
+//        text paint on and off). At 1280 / 1024 / 390 px viewports, and for the
+//        longest chord name in the song (it must not be clipped either). It must
+//        name the chord the chart's playhead ring is on, at the default zoom and
+//        at the zoom ceiling of the "All chords" chart (the ⋯ menu's sheet).
 //        Upcoming chords (the chips after the current one) may be smaller but
 //        not below the A15 floor.
 //   A15  No visible text in the player is below the floor: 11px for readable
@@ -14,8 +15,10 @@
 //        book grants inside the player is the mixer's level readout ("80%"),
 //        which may be 10px. Every visible text node inside [data-testid=player]
 //        is checked, and the count checked is printed and must be non-trivial.
-//   A16  Song-section chips: 4px corners on every corner, at least 44px tall,
-//        and the name is not clipped inside the chip.
+//   A16  Song-section chips: at least 44px tall, the name not clipped inside the
+//        chip, and pill corners (22px) — the section strip of the mockup Jon
+//        approved on 2026-11-17 (Slice 1a), which supersedes A16's 4px corners
+//        for this strip.
 //   Kept  Chord-root hues on the chord chips (Jon: "I like the colour
 //        separations"): every chord root maps to ONE background, and different
 //        roots to different backgrounds.
@@ -80,9 +83,9 @@ export const MIN_TEXT_PX = 11;
 export const MIN_MONO_PX = 12;
 /** A15: the mixer level readout, the one exemption inside the player. */
 export const MIXER_READOUT_MIN_PX = 10;
-/** A16. */
+/** A16 (radius: the approved Slice 1a mockup's pill, see the header). */
 export const SECTION_MIN_HEIGHT_PX = 44;
-export const SECTION_RADIUS_PX = 4;
+export const SECTION_RADIUS_PX = 22;
 /** Story 2.1. */
 export const STEM_ORDER = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'];
 /** Layout-unit slack (1/64 px) for "inside" comparisons. */
@@ -235,30 +238,41 @@ async function openPlayer(browser, built, width, positionSec) {
   });
   await page.goto('http://gate.test/');
   await page.waitForSelector('[data-testid="player"]', { timeout: 30000 });
-  await page.waitForSelector('[data-testid^="chord-chip-"]', { timeout: 30000 });
+  await page.waitForSelector('[data-testid="phone-chords"] [data-testid="playhead-now-name"]', { timeout: 30000 });
+  await settle(page);
+  return { page, pageErrors };
+}
+
+/** Open the full chord chart (Slice 1a: a sheet) — the aside's button on desktop, the ⋯ menu on a phone. */
+async function openChart(page, width) {
+  if (width >= 1024) await page.click('aside button:has-text("Show all chords")');
+  else {
+    await page.click('[data-testid="player-more"]');
+    await page.click('#player-menu button:has-text("See all chords")');
+  }
+  await page.waitForSelector('[data-testid="chart-sheet"] [data-testid^="chord-chip-"]', { timeout: 30000 });
   await page.waitForFunction(() => {
-    const s = document.querySelector('[data-testid="zoom-slider"]');
+    const s = document.querySelector('[data-testid="chart-sheet"] [data-testid="zoom-slider"]');
     return s && !s.disabled;
   }, null, { timeout: 30000 });
   await settle(page);
-  return { page, pageErrors };
 }
 
 const settle = (page) =>
   page.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))));
 
 async function setSlider(page, thousandths) {
-  const before = await page.evaluate(() => document.querySelector('[data-testid="chord-timeline"]').dataset.pxPerSec);
-  const sliderBefore = await page.evaluate(() => document.querySelector('[data-testid="zoom-slider"]').value);
+  const before = await page.evaluate(() => document.querySelector('[data-testid="chart-sheet"] [data-testid="chord-timeline"]').dataset.pxPerSec);
+  const sliderBefore = await page.evaluate(() => document.querySelector('[data-testid="chart-sheet"] [data-testid="zoom-slider"]').value);
   await page.evaluate((v) => {
-    const el = document.querySelector('[data-testid="zoom-slider"]');
+    const el = document.querySelector('[data-testid="chart-sheet"] [data-testid="zoom-slider"]');
     // React 18 installs its own `value` setter; the prototype's fires onChange.
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, String(v));
     el.dispatchEvent(new Event('input', { bubbles: true }));
   }, thousandths);
   if (String(thousandths) !== sliderBefore)
     await page.waitForFunction(
-      (b) => document.querySelector('[data-testid="chord-timeline"]').dataset.pxPerSec !== b,
+      (b) => document.querySelector('[data-testid="chart-sheet"] [data-testid="chord-timeline"]').dataset.pxPerSec !== b,
       before,
       { timeout: 10000 },
     );
@@ -312,11 +326,11 @@ function measurePlayer() {
   }
 
   // A16: section chips (and the Clear loop button, which shares the style).
-  const sec = root.querySelector('section[aria-label="Loop a section"]');
+  const sec = root.querySelector('[data-testid="section-strip"]');
   for (const b of sec ? sec.querySelectorAll('button') : []) {
     const cs = getComputedStyle(b);
     const r = b.getBoundingClientRect();
-    const name = b.querySelector('span') ?? b;
+    const name = b.querySelector('span') ?? b;  // the chip's own text node since Slice 1a
     const nr = (() => {
       const rg = document.createRange();
       rg.selectNodeContents(name);
@@ -338,8 +352,10 @@ function measurePlayer() {
   }
 
   // A11: the current chord.
-  const now = root.querySelector('[data-testid="playhead-now"]');
-  const name = root.querySelector('[data-testid="playhead-now-name"]');
+  // The STAGE's Now (Slice 1a); the chart may render its own readout too.
+  const stage = root.querySelector('[data-testid="phone-chords"]') ?? root;
+  const now = stage.querySelector('[data-testid="playhead-now"]');
+  const name = stage.querySelector('[data-testid="playhead-now-name"]');
   const ring = root.querySelector('[data-testid="chord-playhead-ring"]');
   if (now) {
     const target = name ?? now;
@@ -357,6 +373,9 @@ function measurePlayer() {
         if (t.left < er.left - 0.02 || t.right > er.right + 0.02 || t.top < er.top - 0.02 || t.bottom > er.bottom + 0.02)
           clippedBy.push(e.getAttribute('data-testid') || e.tagName.toLowerCase());
       }
+      // The player is a position:fixed screen (Slice 1a): its containing block
+      // is the viewport, so nothing above it can clip it.
+      if (ecs.position === 'fixed') break;
     }
     let alpha = 1;
     for (let e = target; e; e = e.parentElement) alpha *= Number(getComputedStyle(e).opacity);
@@ -403,7 +422,7 @@ async function inkHeight(page, helper) {
   // Bring the name into the viewport first: the player is taller than the
   // window, and a capture of an off-screen rectangle is blank.
   const box = await page.evaluate(() => {
-    const el = document.querySelector('[data-testid="playhead-now-name"]') || document.querySelector('[data-testid="playhead-now"]');
+    const el = document.querySelector('[data-testid="phone-chords"] [data-testid="playhead-now-name"]');
     el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
     const rg = document.createRange();
     rg.selectNodeContents(el);
@@ -419,7 +438,7 @@ async function inkHeight(page, helper) {
     const s = document.createElement('style');
     s.id = '__gate_hide_now';
     s.textContent =
-      '[data-testid="playhead-now-name"],[data-testid="playhead-now-name"] *{color:transparent !important;-webkit-text-fill-color:transparent !important;text-shadow:none !important}';
+      '[data-testid="phone-chords"] [data-testid="playhead-now-name"],[data-testid="phone-chords"] [data-testid="playhead-now-name"] *{color:transparent !important;-webkit-text-fill-color:transparent !important;text-shadow:none !important}';
     document.head.appendChild(s);
     return document.body.offsetHeight;
   });
@@ -477,6 +496,9 @@ for (const width of VIEWPORTS) {
       const helper = await browser.newPage();
       try {
         const findings = [];
+        // A11's ink is measured on the stage BEFORE the chart sheet covers it.
+        const ink0 = await inkHeight(page, helper);
+        await openChart(page, width);
         for (const stop of SLIDER_STOPS) {
           if (stop !== null) await setSlider(page, stop);
           const zoom = stop === null ? 'default zoom' : `slider ${stop}/1000`;
@@ -496,7 +518,7 @@ for (const width of VIEWPORTS) {
             if (c.box.h < CURRENT_MIN_PX) findings.push(`A11 current chord "${c.text}" rendered text box ${c.box.h.toFixed(2)}px tall < ${CURRENT_MIN_PX}px @ ${ctx}`);
             if (!c.inViewport) findings.push(`A11 current chord "${c.text}" runs off the viewport (${JSON.stringify(c.box)}) @ ${ctx}`);
             if (c.clippedBy.length) findings.push(`A11 current chord "${c.text}" is clipped by ${c.clippedBy.join(', ')} @ ${ctx}`);
-            const ink = await inkHeight(page, helper);
+            const ink = ink0;
             c.ink = ink;
             if (ink.pixels === 0) findings.push(`A11 current chord "${c.text}" paints no pixels @ ${ctx}`);
             else if (ink.height < CURRENT_MIN_INK_RATIO * CURRENT_MIN_PX)

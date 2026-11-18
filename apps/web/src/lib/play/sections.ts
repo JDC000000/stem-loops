@@ -182,9 +182,122 @@ export function sanitizeRegions(
   return out.sort((a, b) => a.startSec - b.startSec || a.endSec - b.endSec);
 }
 
-/** Click semantics: clicking the active region clears it, anything else selects it. */
-export function nextLoop(active: LoopRegion | null, clicked: LoopRegion): LoopRegion | null {
-  return sameRegion(active, clicked) ? null : clicked;
+// ─── runs of sections (design v1.4, P2.1) ────────────────────────────────────
+//
+// State: no loop, or a RUN = sections i..j inclusive (one section is a run with
+// i = j). The engine already loops any continuous span (engine.ts setLoop, the
+// native AudioBufferSourceNode.loop), so a run is handed to it as ONE region
+// from section i's start to section j's end; a gap between derived sections
+// inside a run is included. "Loop off" keeps the run REMEMBERED so the loop
+// button can turn it back on.
+//
+// Every row of the P2.1 table is one branch below, in the table's order, and
+// pinned by test/play-sections.test.mjs. Indices are into the list the strip
+// shows (sanitizeRegions order).
+
+export interface SectionRun {
+  readonly lo: number;
+  readonly hi: number;
+}
+
+export interface RunState {
+  /** The run on screen (looping, or remembered while the loop is off). */
+  readonly run: SectionRun | null;
+  /** True while the run is looping. Always false when `run` is null. */
+  readonly on: boolean;
+}
+
+export const NO_RUN: RunState = Object.freeze({ run: null, on: false });
+
+export interface RunTapResult {
+  readonly state: RunState;
+  /** True when this tap EXTENDED a run (the one-time hint fires on the first). */
+  readonly extended: boolean;
+}
+
+const inRun = (run: SectionRun, i: number) => i >= run.lo && i <= run.hi;
+
+/**
+ * A tap (click, Enter or Space) on chip `i`. P2.1:
+ *   no loop · tap X                        -> loop [X]
+ *   loop off, run remembered · tap inside  -> loop that chip alone (re-loops it)
+ *   run [X] (one chip, looping) · tap X    -> clear
+ *   run [i..j] · tap outside, either side  -> extend to [min(i,X)..max(j,X)], looping
+ *   run [i..j], 2+ chips · tap inside      -> shrink to that chip
+ */
+export function tapSection(state: RunState, i: number): RunTapResult {
+  const { run, on } = state;
+  if (!Number.isInteger(i) || i < 0) return { state, extended: false };
+  if (!run) return { state: { run: { lo: i, hi: i }, on: true }, extended: false };
+  if (!on && inRun(run, i)) return { state: { run: { lo: i, hi: i }, on: true }, extended: false };
+  if (run.lo === run.hi && i === run.lo) return { state: NO_RUN, extended: false };
+  if (!inRun(run, i)) {
+    return { state: { run: { lo: Math.min(run.lo, i), hi: Math.max(run.hi, i) }, on: true }, extended: true };
+  }
+  return { state: { run: { lo: i, hi: i }, on: true }, extended: false };
+}
+
+/** Long-press on chip `i`: "loop only this", whatever was there before. */
+export function longPressSection(_state: RunState, i: number): RunState {
+  if (!Number.isInteger(i) || i < 0) return _state;
+  return { run: { lo: i, hi: i }, on: true };
+}
+
+/**
+ * The loop button. On -> off (the run is remembered); off with a run -> back
+ * on; nothing remembered -> no change (the button is disabled).
+ */
+export function toggleRunLoop(state: RunState): RunState {
+  if (!state.run) return NO_RUN;
+  return { run: state.run, on: !state.on };
+}
+
+/** The one continuous span the engine loops for a run, or null when it cannot be built. */
+export function runRegion(sections: readonly LoopRegion[], run: SectionRun | null): LoopRegion | null {
+  if (!run) return null;
+  const a = sections[run.lo];
+  const b = sections[run.hi];
+  if (!a || !b || run.hi < run.lo) return null;
+  const region = { startSec: a.startSec, endSec: b.endSec };
+  return isValidRegion(region) ? region : null;
+}
+
+/**
+ * The run an engine loop corresponds to: the sections whose start and end it
+ * matches. Null for no loop or a span that is not a run of these sections
+ * (a custom range).
+ */
+export function runFromRegion(sections: readonly LoopRegion[], region: LoopRegion | null | undefined): SectionRun | null {
+  if (!region || !isValidRegion(region)) return null;
+  const lo = sections.findIndex((s) => Math.abs(s.startSec - region.startSec) <= MATCH_SEC);
+  if (lo < 0) return null;
+  for (let hi = lo; hi < sections.length; hi++) {
+    if (Math.abs(sections[hi].endSec - region.endSec) <= MATCH_SEC) return { lo, hi };
+  }
+  return null;
+}
+
+/** "Verse 1 → Chorus 1" (screen) / "Verse 1 to Chorus 1" (spoken). */
+export function runName(names: readonly string[], run: SectionRun, spoken = false): string {
+  const a = names[run.lo] ?? '';
+  if (run.hi === run.lo) return a;
+  return `${a}${spoken ? ' to ' : ' \u2192 '}${names[run.hi] ?? ''}`;
+}
+
+/** The transport readout: "Looping Verse 1 → Chorus 1 · 0:32–1:18", "Loop off", or "". */
+export function runReadout(names: readonly string[], sections: readonly LoopRegion[], state: RunState): string {
+  if (!state.run) return '';
+  if (!state.on) return 'Loop off';
+  const region = runRegion(sections, state.run);
+  if (!region) return '';
+  return `Looping ${runName(names, state.run)} \u00b7 ${formatTime(region.startSec)}\u2013${formatTime(region.endSec)}`;
+}
+
+/** The strip's legend (sr-only): what a screen reader hears for the group. */
+export function stripLegend(names: readonly string[], state: RunState): string {
+  if (!state.run) return 'Sections. No loop.';
+  const spoken = runName(names, state.run, true);
+  return state.on ? `Sections. Looping ${spoken}` : `Sections. Loop off, ${spoken} remembered`;
 }
 
 /** m:ss, floored. Bad input renders as 0:00 rather than "NaN:NaN". */
@@ -250,4 +363,42 @@ export function beatGridFromLoops(
   }
   if (!Number.isFinite(bpm)) return null;
   return { beatSec: 60 / bpm, anchorSec: Number.isFinite(anchor) ? anchor : 0, measured: true };
+}
+
+// ─── where am I (the no-chords stage, design v1.4 P1.2) ─────────────────────
+
+export interface SongPlace {
+  /** Index of the section under the playhead, or -1. */
+  readonly section: number;
+  /** 1-based bar within that section, or null without a believable tempo. */
+  readonly bar: number | null;
+  /** Bars in that section (rounded), or null. */
+  readonly bars: number | null;
+  /** 1-based beat in the bar, or null. */
+  readonly beat: number | null;
+}
+
+/**
+ * The section, bar and beat under the playhead, for a song with no chords:
+ * "Pre-chorus 1 · bar 3 / 8 · beat 2". Bars count 4/4 from the section's start
+ * (each section starts on a worker-snapped beat); without a grid only the
+ * section is known.
+ */
+export function placeInSong(
+  sections: readonly LoopRegion[],
+  grid: BeatGrid | null | undefined,
+  positionSec: number | null | undefined,
+  beatsPerBar = 4,
+): SongPlace {
+  const t = typeof positionSec === 'number' && Number.isFinite(positionSec) ? Math.max(0, positionSec) : 0;
+  const section = sections.findIndex((s) => t >= s.startSec && t < s.endSec);
+  if (section < 0) return { section, bar: null, bars: null, beat: null };
+  if (!grid || !(grid.beatSec > 0)) return { section, bar: null, bars: null, beat: null };
+  const s = sections[section];
+  const barSec = grid.beatSec * beatsPerBar;
+  const into = t - s.startSec;
+  const bar = Math.floor(into / barSec + 1e-6) + 1;
+  const bars = Math.max(bar, Math.round((s.endSec - s.startSec) / barSec));
+  const beat = (Math.floor(into / grid.beatSec + 1e-6) % beatsPerBar) + 1;
+  return { section, bar, bars, beat };
 }

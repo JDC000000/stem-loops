@@ -540,7 +540,12 @@ interface ChannelProps {
   readonly onCommit: () => void;
   readonly onMuteToggle: (stem: StemName, next: boolean) => void;
   readonly onSoloToggle: (stem: StemName, next: boolean) => void;
+  /** 'columns': vertical faders (desktop). 'rows': one horizontal row per stem (the phone Mix sheet). */
+  readonly layout?: MixerLayout;
 }
+
+/** Design v1.4: vertical faders on desktop (P1.4), horizontal rows in the phone Mix sheet (P1.3). */
+export type MixerLayout = 'columns' | 'rows';
 
 const Channel = memo(function Channel({
   stem,
@@ -555,6 +560,7 @@ const Channel = memo(function Channel({
   onCommit,
   onMuteToggle,
   onSoloToggle,
+  layout = 'columns',
 }: ChannelProps) {
   const faderId = `mixer-fader-${stem}`;
   const noteId = `mixer-note-${stem}`;
@@ -579,6 +585,64 @@ const Channel = memo(function Channel({
   ]
     .filter(Boolean)
     .join(' ');
+
+  if (layout === 'rows') {
+    // P1.3: name · M · S · horizontal slider · %. One 52px row per stem, so six
+    // rows fit a phone sheet with every target at 44px.
+    return (
+      <div className={styles.row} data-stem={stem} role="group" aria-label={name} data-layout="rows">
+        <span className={styles.dot} aria-hidden="true" />
+        <span className={styles.rowName}>{name}</span>
+        <button
+          type="button"
+          className={`${styles.rowToggle} ${styles.mute}`}
+          data-role="mute"
+          disabled={disabled}
+          aria-pressed={muted}
+          aria-label={`Mute ${name}`}
+          onClick={() => onMuteToggle(stem, !muted)}
+        >
+          M
+        </button>
+        <button
+          type="button"
+          className={`${styles.rowToggle} ${styles.solo}`}
+          data-role="solo"
+          disabled={disabled}
+          aria-pressed={soloed}
+          aria-label={`Solo ${name}`}
+          onClick={() => onSoloToggle(stem, !soloed)}
+        >
+          S
+        </button>
+        <input
+          id={faderId}
+          className={styles.hfader}
+          type="range"
+          min={PERCENT_MIN}
+          max={PERCENT_MAX}
+          step={1}
+          value={disabled ? 0 : percent}
+          disabled={disabled}
+          aria-label={`${name} level`}
+          aria-valuetext={disabled ? 'Unavailable' : `${percent} percent`}
+          aria-describedby={note ? noteId : undefined}
+          onChange={(event) => onInput(stem, Number(event.currentTarget.value))}
+          onPointerUp={onCommit}
+          onKeyUp={onCommit}
+          onBlur={onCommit}
+        />
+        <span className={styles.rowReadout} aria-hidden="true">
+          {disabled ? '—' : `${percent}%`}
+        </span>
+        {note ? (
+          <p className={styles.rowNote} id={noteId}>
+            {note}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className={className} data-stem={stem} role="group" aria-label={name}>
@@ -672,9 +736,11 @@ export interface MixerComponentProps extends MixerProps {
    * props-driven and whoever owns the engine owns persistence.
    */
   readonly jobId?: string;
+  /** See MixerLayout. Default 'columns' (the layout every earlier caller got). */
+  readonly layout?: MixerLayout;
 }
 
-export default function Mixer({ stems, onGain, onMute, onSolo, jobId }: MixerComponentProps) {
+export default function Mixer({ stems, onGain, onMute, onSolo, jobId, layout = 'columns' }: MixerComponentProps) {
   const rows = useMemo(() => mixerRows(stems), [stems]);
 
   // One figure per stem, for THIS song. Memoised on the song key alone, so a
@@ -785,14 +851,18 @@ export default function Mixer({ stems, onGain, onMute, onSolo, jobId }: MixerCom
   const anySoloed = rows.some((row) => row.stem.soloed);
 
   return (
-    <section className={styles.mixer} aria-label="Stem mixer">
+    <section
+      className={layout === 'rows' ? styles.mixerRows : styles.mixer}
+      aria-label="Stem mixer"
+      data-layout={layout === 'rows' ? 'rows' : undefined}
+    >
       {/* A six-channel control surface was an unlabelled region in the document
           outline: `aria-label` names it for a screen reader that has already
           landed on it, but nothing put it in the heading list a keyboard user
           navigates by. The `aria-label` stays as the region's name (it is the
           more specific of the two) and this is the outline entry. */}
-      <h2 className={styles.heading}>Mixer</h2>
-      <div className={styles.rail}>
+      <h2 className={layout === 'rows' ? styles.rowsSr : styles.heading}>Mixer</h2>
+      <div className={layout === 'rows' ? styles.rowsRail : styles.rail}>
         {rows.map((row) => {
           const held = draft[row.stem.name];
           return (
@@ -810,11 +880,12 @@ export default function Mixer({ stems, onGain, onMute, onSolo, jobId }: MixerCom
               onCommit={handleCommit}
               onMuteToggle={handleMuteToggle}
               onSoloToggle={handleSoloToggle}
+              layout={layout}
             />
           );
         })}
       </div>
-      <p className={styles.legend}>
+      <p className={layout === 'rows' ? styles.rowsSr : styles.legend}>
         <span className={styles.srOnly}>
           Each fader sets one stem&rsquo;s level from 0 to 100 percent. M mutes a stem; S solos it,
           and several stems can be soloed at once.

@@ -617,15 +617,23 @@ test('the live mount now carries positionSec, and positionSec is still optional'
   // chord track is mounted there with the engine's own position. What the
   // guard was really protecting — that `positionSec` stays OPTIONAL, and that
   // ChordOverlay never grows a transport of its own — is kept below.
-  const player = readFileSync(
-    join(import.meta.dirname, '..', 'src/components/play/Player.tsx'),
-    'utf8',
+  // Slice 1a (design v1.4): the screen is components/play/PlayerScreen.tsx and
+  // it mounts the overlay TWICE, both with the engine's position: the chord
+  // stage (view="stage") and the "See all chords" chart (view="chart").
+  const screen = codeOnly(
+    readFileSync(join(import.meta.dirname, '..', 'src/components/play/PlayerScreen.tsx'), 'utf8'),
   );
-  assert.match(
-    player,
-    /<ChordOverlay\s+jobId=\{jobId\}\s+positionSec=\{chordPosition\}(?:\s+beatGrid=\{beatGrid\})?(?:\s+sections=\{sections\})?(?:\s+loop=\{snapshot\.loop\})?\s*\/>/,
-    'the chord playhead is not wired to the engine position',
-  );
+  const mounts = screen.match(/<ChordOverlay\b[^>]*\/>/g) ?? [];
+  assert.equal(mounts.length, 2, 'the stage and the chart, nothing else');
+  for (const m of mounts) {
+    assert.match(m, /jobId=\{jobId\}/);
+    assert.match(m, /positionSec=\{chordPosition\}/, 'the chord playhead is not wired to the engine position');
+    assert.match(m, /loop=\{snapshot\.loop\}/);
+  }
+  // Player.tsx computes the position it hands down; it no longer renders.
+  const player = readFileSync(join(import.meta.dirname, '..', 'src/components/play/Player.tsx'), 'utf8');
+  assert.match(player, /const chordPosition = chordPositionFor\(phase, snapshot, chordLatencySec\)/);
+  assert.match(player, /chordPosition=\{chordPosition\}/);
 
   // Still optional, with a null default: nothing else in the app is forced to
   // pass it, and a mount without it renders exactly as it did before.

@@ -14,9 +14,10 @@
 //     (aria-current), in the current line, the chord heard;
 //   * the current line holds the expected bars of its section (lines start at
 //     bar 1, 5, 9 ... of a section) and the next line starts where expected;
-//   * EVERY visible chord slot: a name (never blank), the chart spelling of its
-//     own data, >= 14px, not clipped, accessible name starting with the visible
-//     text, white-on-colour contrast >= 4.5:1;
+//   * EVERY visible chord slot: a name (never blank), the guitarist spelling of
+//     its own data with ♭/♯ glyphs, >= 14px, not clipped, an accessible name
+//     that starts with the chord IN WORDS ("C sharp minor 7 flat 5 over G
+//     sharp"; never a glyph — design v1.4 P1.5), text contrast >= 4.5:1;
 //   * bar numbers >= 4.5:1 against what is under them; inactive beat dots >= 3:1;
 //   * no aria-live inside the view.
 //  LOOP: near the end of a looped section, Next is the chord at the loop start
@@ -31,7 +32,8 @@
 //   4/4 shows "Bar n/N" with N = the distinct bars rendered; triple time (3/4
 //   or 6/8, unknowable from the data) at 120, 150 and 180 shows "Bar n" and
 //   "Bar n, ..." names with no total, on 3-beat cells on the downbeats.
-//  #212: the "All chords" list below keeps one primary chip per segment.
+//  #212: the "All chords" chart (the ⋯ menu's sheet since Slice 1a) keeps one
+//   primary chip per segment.
 // It FAILS (never skips) when Chromium or the page is missing.
 
 import { test } from 'node:test';
@@ -71,10 +73,21 @@ const NAMES = ['Intro', 'Verse 1', 'Chorus 1', 'Verse 2', 'Chorus 2', 'Bridge', 
 const SEC_FIRST_BAR = F.sections.map((s, i) => (i === 0 ? 0 : Math.round((s.startSec + BEAT - DOWN) / BAR)));
 const SEC_BARS = SEC_FIRST_BAR.map((b, i) => (i + 1 < SEC_FIRST_BAR.length ? SEC_FIRST_BAR[i + 1] : F.bars) - b);
 
-// Independent lead-sheet spelling for the labels this fixture uses.
+// Independent lead-sheet spelling for the labels this fixture uses: what is
+// PAINTED (guitarist notation with the ♭/♯ glyphs, design v1.4 P1.5) and what
+// is SPOKEN (the accessible name says "flat"/"sharp" in words).
 const SPELL = {
   'C:maj': 'C', 'G:maj': 'G', 'A:min': 'Am', 'F:maj': 'F', 'A:min7': 'Am7', 'D:min7': 'Dm7', 'G:7': 'G7', 'E:min7': 'Em7',
-  'C:maj/3': 'C/E', 'E:min': 'Em', 'Bb:maj': 'Bb', 'G:maj/3': 'G/B', 'C#:hdim7/5': 'C#m7b5/G#', N: 'N.C.',
+  'C:maj/3': 'C/E', 'E:min': 'Em', 'Bb:maj': 'B\u266d', 'G:maj/3': 'G/B', 'C#:hdim7/5': 'C\u266fm7\u266d5/G\u266f', N: 'N.C.',
+};
+const SPOKEN = {
+  'C:maj': 'C', 'G:maj': 'G', 'A:min': 'A minor', 'F:maj': 'F', 'A:min7': 'A minor 7', 'D:min7': 'D minor 7', 'G:7': 'G 7',
+  'E:min7': 'E minor 7', 'C:maj/3': 'C over E', 'E:min': 'E minor', 'Bb:maj': 'B flat', 'G:maj/3': 'G over B',
+  'C#:hdim7/5': 'C sharp minor 7 flat 5 over G sharp', N: 'No chord',
+};
+const speak = (l) => {
+  assert.ok(l in SPOKEN, `test has no spoken name for ${l}`);
+  return SPOKEN[l];
 };
 const spell = (l) => {
   assert.ok(l in SPELL, `test has no spelling for ${l}`);
@@ -107,7 +120,7 @@ function barTag(k) {
   const bs = DOWN + k * BAR;
   const chords = FIX.segments
     .filter((s) => Math.min(s.end_sec, bs + BAR) - Math.max(s.start_sec, bs) >= 0.5 * BEAT)
-    .map((s) => spell(s.label));
+    .map((s) => speak(s.label));
   return `Bar ${k - SEC_FIRST_BAR[sec] + 1} of ${SEC_BARS[sec]}, ${NAMES[sec]}: ${chords.join(', ')}`;
 }
 
@@ -254,6 +267,9 @@ function measure() {
         const er = e.getBoundingClientRect();
         if (t.left < er.left - 0.02 || t.right > er.right + 0.02 || t.top < er.top - 0.02 || t.bottom > er.bottom + 0.02) clippedBy.push(e.tagName);
       }
+      // The player is a position:fixed screen (Slice 1a): nothing above its
+      // containing block (the viewport) can clip it, so the walk ends here.
+      if (ecs.position === 'fixed') break;
     }
     const nx = root.querySelector('[data-testid="phone-next"]');
     let overlap = null;
@@ -279,7 +295,7 @@ function measure() {
   out.lineNextFirst = root.querySelector('[data-testid="phone-line-next"] [role="group"]')?.getAttribute('aria-label') ?? null;
   out.groups = [];
   for (const g of root.querySelectorAll('[role="group"]')) {
-    out.groups.push({ cell: g.dataset.cell, label: g.getAttribute('aria-label') ?? '', texts: [...g.querySelectorAll('button')].map((b) => b.textContent) });
+    out.groups.push({ cell: g.dataset.cell, label: g.getAttribute('aria-label') ?? '', texts: [...g.querySelectorAll('button')].map((b) => b.textContent), titles: [...g.querySelectorAll('button')].map((b) => b.title) });
   }
   for (const b of root.querySelectorAll('[data-testid="phone-line-current"] button, [data-testid="phone-line-next"] button')) {
     const r = b.getBoundingClientRect();
@@ -320,7 +336,8 @@ function checkSlots(m, f, ctx) {
     for (const s of m.slots) if (s.groupCell !== s.cell) f.push(`chord ${s.title} is not inside its bar's group (in ${s.groupCell}, belongs to ${s.cell}) @ ${ctx}`);
     for (const g of m.groups) {
       if (g.texts.length === 0) f.push(`bar group "${g.label}" holds no chord buttons @ ${ctx}`);
-      if (!g.label.endsWith(`: ${g.texts.join(', ')}`)) f.push(`bar group "${g.label}" does not name its chords [${g.texts.join(', ')}] in order @ ${ctx}`);
+      const words = g.titles.map((t) => (t in SPOKEN ? SPOKEN[t] : t));
+      if (!g.label.endsWith(`: ${words.join(', ')}`)) f.push(`bar group "${g.label}" does not name its chords [${words.join(', ')}] in order @ ${ctx}`);
     }
   }
   for (const s of m.slots) {
@@ -329,7 +346,11 @@ function checkSlots(m, f, ctx) {
     else if (want !== null && s.text !== want) f.push(`slot ${s.title} reads "${s.text}", want "${want}" @ ${ctx}`);
     if (s.fontPx < NAME_MIN_PX) f.push(`slot ${s.title} "${s.text}" is ${s.fontPx}px < ${NAME_MIN_PX}px @ ${ctx}`);
     if (s.overX > 0 || s.overY > 0) f.push(`slot ${s.title} "${s.text}" is clipped (${s.overX}/${s.overY}px) @ ${ctx}`);
-    if (!s.aria.startsWith(s.text)) f.push(`slot ${s.title}: accessible name "${s.aria}" does not start with its visible text "${s.text}" @ ${ctx}`);
+    // The accessible name is the chord in WORDS (design v1.4 P1.5: "flat" /
+    // "sharp", never a glyph) — the spoken form of exactly what is painted.
+    const said = s.title in SPOKEN ? SPOKEN[s.title] : null;
+    if (said !== null && !s.aria.startsWith(said)) f.push(`slot ${s.title}: accessible name "${s.aria}" does not start with its spoken name "${said}" @ ${ctx}`);
+    if (/[\u266d\u266f#]/.test(s.aria)) f.push(`slot ${s.title}: accessible name "${s.aria}" carries a glyph @ ${ctx}`);
     if (s.contrast < TEXT_CONTRAST) f.push(`slot ${s.title} "${s.text}" contrast ${s.contrast.toFixed(2)} < ${TEXT_CONTRAST} @ ${ctx}`);
     if (s.h < 24 || s.w < 24) f.push(`slot ${s.title} target ${s.w.toFixed(1)}x${s.h.toFixed(1)} < 24px @ ${ctx}`);
   }
@@ -406,8 +427,15 @@ for (const vp of [[390, 844], [360, 800]]) {
         checkSlots(m, f, ctxs);
         checkedSlots += m.slots.length;
         multi = Math.max(multi, m.cellsMulti);
-        if (k === 0 && m.primaries !== FIX.segments.length) f.push(`${m.primaries} primary chips in All chords for ${FIX.segments.length} segments`);
       }
+      // #212: the full chart ("See all chords", the ⋯ menu's sheet since Slice 1a)
+      // keeps one primary chip per segment.
+      await page.click('[data-testid="player-more"]');
+      await page.click('#player-menu button:has-text("See all chords")');
+      await page.waitForSelector('[data-testid="chart-sheet"] [data-testid^="chord-chip-"]', { timeout: 30000 });
+      await settle(page);
+      const prim = await page.evaluate(() => [...document.querySelectorAll('[data-testid="chart-sheet"] [data-testid^="chord-chip-"]')].filter((c) => /^chord-chip-\d+$/.test(c.dataset.testid)).length);
+      if (prim !== FIX.segments.length) f.push(`${prim} primary chips in All chords for ${FIX.segments.length} segments`);
       if (checkedSlots < F.bars * 6) f.push(`only ${checkedSlots} slots checked across the sweep`);
       if (multi === 0) f.push('no split bar was ever on screen');
       assert.deepEqual(errors, [], 'the page threw');
@@ -540,8 +568,12 @@ for (const vp of [[390, 844], [360, 800]]) {
   });
 
   test(`phone chords @ ${vp[0]}x${vp[1]}: long current and next names never overlap on the Now card`, async () => {
-    const LONG = { 'C#:hdim7/5': 'C#m7b5/G#', 'F#:7/3': 'F#7/A#', 'B:hdim7/b5': 'Bm7b5/F', 'E:7/3': 'E7/G#', 'A:min(9)': 'A:min(9)', 'D:minmaj7/5': 'Dm(maj7)/A' };
+    const LONG = { 'C#:hdim7/5': 'C\u266fm7\u266d5/G\u266f', 'F#:7/3': 'F\u266f7/A\u266f', 'B:hdim7/b5': 'Bm7\u266d5/F', 'E:7/3': 'E7/G\u266f', 'A:min(9)': 'A:min(9)', 'D:minmaj7/5': 'Dm(maj7)/A' };
     Object.assign(SPELL, LONG);
+    Object.assign(SPOKEN, {
+      'C#:hdim7/5': 'C sharp minor 7 flat 5 over G sharp', 'F#:7/3': 'F sharp 7 over A sharp', 'B:hdim7/b5': 'B minor 7 flat 5 over F',
+      'E:7/3': 'E 7 over G sharp', 'A:min(9)': 'A:min(9)', 'D:minmaj7/5': 'D minor major 7 over A',
+    });
     const labels = Object.keys(LONG);
     const bars = Array.from({ length: 24 }, (_, k) => [[labels[k % labels.length], 2], [labels[(k + 1) % labels.length], 2]]);
     const { payload, grid, beat } = synth(bars, 80);

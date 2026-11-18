@@ -465,22 +465,16 @@
   outline-offset: 2px;
 }
 
-/* Engaged M: the "failed/off" hue, which already means "this is not sounding".
-   Engaged S: the stem's own hue, because solo is "listen to THIS one". The two
-   pressed states are different colours AND different fills, so the pair never
-   reads as one generic "on". */
-.mute[aria-pressed='true'] {
-  background: color-mix(in srgb, var(--status-failed) 26%, var(--bg-elevated));
-  border-color: var(--status-failed);
-  color: var(--text-primary);
-  box-shadow: inset 0 0 0 1px var(--status-failed);
-}
-
+/* Engaged M and S: NEUTRAL pressed, like everything selected or pressed on the
+   player (design v1.4, Slice 1a): --bg-selected with a 2px white edge, never a
+   hue and never lime. The two stay distinguishable by their letter and by the
+   channel's own note ("Muted" / "Solo"), so neither rides on colour. White on
+   #222 is 15.91:1. (Before Slice 1a, M took the failed red and S the stem hue.) */
+.mute[aria-pressed='true'],
 .solo[aria-pressed='true'] {
-  background: color-mix(in srgb, var(--stem, var(--accent)) 28%, var(--bg-elevated));
-  border-color: var(--stem, var(--accent));
+  background: var(--bg-selected);
+  border: 2px solid var(--text-primary);
   color: var(--text-primary);
-  box-shadow: inset 0 0 0 1px var(--stem, var(--accent));
 }
 
 /* ── per-channel note (the reason) ───────────────────────────────────────── */
@@ -694,4 +688,102 @@
     forced-color-adjust: none;
     background: CanvasText;
   }
+}
+
+/* ── rows: the phone Mix sheet (design v1.4, P1.3) ───────────────────────────
+   One 52px row per stem: dot · name · M · S · horizontal slider · %. The sheet
+   owns the surface, so the rows use their OWN classes (.mixerRows, .row*) rather
+   than overriding the column ones: the cascade gate in play-mixer.test.mjs
+   resolves selectors by exact match and refuses a compound override. Every
+   control is >= 44px. */
+.mixerRows {
+  display: flex;
+  flex-direction: column;
+}
+.rowsRail {
+  display: flex;
+  flex-direction: column;
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--space-2);
+  min-height: 52px;
+  padding: 4px 0;
+}
+.dot {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  background: var(--stem, var(--text-secondary));
+}
+.rowName {
+  width: 54px;
+  flex-shrink: 0;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+.rowToggle {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-control);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: var(--weight-bold);
+  cursor: pointer;
+}
+.rowToggle:disabled {
+  color: var(--text-disabled);
+  border-color: var(--border-subtle);
+  cursor: not-allowed;
+}
+.rowToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.hfader {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 44px;
+  margin: 0;
+  accent-color: var(--text-primary);
+  cursor: pointer;
+}
+.hfader:disabled { cursor: not-allowed; }
+.hfader:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.rowReadout {
+  width: 36px;
+  flex-shrink: 0;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-label);
+}
+.rowNote {
+  flex-basis: 100%;
+  margin: 0 0 4px 18px;
+  font-size: 12px;
+  color: var(--text-label);
+}
+.rowsSr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
 }

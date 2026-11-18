@@ -31,7 +31,7 @@
 // `force-dynamic` because the gate reads the session cookie on every request;
 // the same line appears for the same reason on /account and /trial.
 
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { redirect } from 'next/navigation';
 import { getUser } from '@/lib/auth/supabase';
 import JobView from './JobView';
@@ -39,9 +39,17 @@ import JobView from './JobView';
 export const metadata: Metadata = { title: 'Play along', robots: { index: false, follow: false } };
 export const dynamic = 'force-dynamic';
 
+// The player is a fixed, edge-to-edge screen that pads itself with the
+// safe-area insets (design v1.4, P1.1), and env(safe-area-inset-*) is only
+// non-zero under viewport-fit=cover. Scoped to THIS segment: Next 14.2 merges a
+// segment's `viewport` export over the root layout's (themeColor stays), so no
+// other page slides under the notch in landscape.
+export const viewport: Viewport = { viewportFit: 'cover' };
+
 export default async function JobPage({ params }: { params: { id: string } }) {
   const user = await getUser();
   if (!user) redirect(`/login?return_to=${encodeURIComponent(`/jobs/${params.id}`)}`);
 
-  return <JobView id={params.id} />;
+  // Signed in, always, past the gate above: the back arrow goes to the library.
+  return <JobView id={params.id} signedIn />;
 }

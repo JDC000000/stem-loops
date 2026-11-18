@@ -1,0 +1,82 @@
+/* The Mix sheet's contents (design v1.4, P1.3; mockup MixSheet.dc.html).
+   The header and the presets stay pinned; only the stem list scrolls. */
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  flex-shrink: 0;
+}
+
+.title {
+  margin: 0;
+  font-size: 20px;
+}
+
+/* The CURRENT chord: --chord-now, its one job (design-tokens.css). */
+.now {
+  font-size: 22px;
+  font-weight: var(--weight-bold);
+  color: var(--chord-now);
+  white-space: nowrap;
+}
+
+.next {
+  font-size: 15px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.round,
+.close {
+  height: 44px;
+  border-radius: 22px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-control);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+.round {
+  margin-left: auto;
+  width: 44px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.round:disabled { color: var(--text-disabled); cursor: not-allowed; }
+.close {
+  flex-shrink: 0;
+  padding: 0 16px;
+  font-size: 15px;
+}
+.round:focus-visible,
+.close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

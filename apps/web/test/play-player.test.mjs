@@ -36,6 +36,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 
 import { codeOnly, withoutComments } from './helpers/code-only.mjs';
+import { buildModuleGraph } from './helpers/module-graph.mjs';
 
 import { WebAudioPlayEngine } from '../src/lib/play/engine.ts';
 import { PLAYABLE_STEMS } from '../src/lib/play/types.ts';
@@ -61,121 +62,67 @@ const put = (name, code) => {
 
 // ─── the module graph ────────────────────────────────────────────────────────
 
-const typesMod = put('play-types.mjs', toJs(read('src/lib/play/types.ts')));
-const cssMod = put(
-  'styles.mjs',
-  'export default new Proxy({}, { get: (_t, k) => (typeof k === "string" ? k : undefined) });',
-);
-
-const sectionsMod = put(
-  'sections.mjs',
-  toJs(read('src/lib/play/sections.ts')).replace(/from ['"]\.\/types['"]/g, `from '${typesMod}'`),
-);
-
-const rewriteShared = (js) =>
-  js
-    .replace(/from ['"]@\/lib\/play\/types['"]/g, `from '${typesMod}'`)
-    .replace(/from ['"]@\/lib\/play\/sections['"]/g, `from '${sectionsMod}'`)
-    .replace(/from ['"][^'"]*\.module\.css['"]/g, `from '${cssMod}'`);
-
-const mixerMod = put('Mixer.mjs', rewriteShared(toJs(read('src/components/play/Mixer.tsx'), true)));
-const transportMod = put(
-  'Transport.mjs',
-  rewriteShared(toJs(read('src/components/play/Transport.tsx'), true)),
-);
-const sectionLoopMod = put(
-  'SectionLoop.mjs',
-  rewriteShared(toJs(read('src/components/play/SectionLoop.tsx'), true)),
-);
-
+// The REAL module graph from Player.tsx (test/helpers/module-graph.mjs). Only
+// two files are stubbed, by path: ChordOverlay (pulls onnxruntime-web) and
+// report-failure (records what Player WOULD send to Sentry, sends nothing).
+// load-stems is the REAL module (it does no I/O at import time; `loadStems` is
+// never called in a server render): a stub of a pure classifier would test the
+// stub.
+//
 // ChordOverlay stub. The thing under test is whether `positionSec` is PASSED AT
 // ALL — before the seam the prop was absent from the mount — so the stub
-// reports the presence of the key separately from its value.
-const chordMod = put(
-  'ChordOverlay.mjs',
-  `import { createElement } from 'react';
+// reports the presence of the key separately from its value, and which view.
+const CHORD_STUB = `import { createElement } from 'react';
    export const ChordOverlay = (props) =>
      createElement('div', {
        'data-testid': 'chord-overlay',
+       'data-view': String(props.view),
        'data-job-id': String(props.jobId),
        'data-has-position': String(Object.prototype.hasOwnProperty.call(props, 'positionSec')),
        'data-position': String(props.positionSec),
      });
-   export default ChordOverlay;`,
-);
-
-// load-stems: the REAL module (it does no I/O at import time; `loadStems` is
-// never called in a server render). It used to be a stub, which stopped being
-// possible when Player began importing `zeroSourceReason` from it: a stub of a
-// pure classifier would test the stub.
-const loadStemsMod = put(
-  'load-stems.mjs',
-  toJs(read('src/lib/play/load-stems.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
-);
-
-// report-failure stub: records what Player WOULD send to Sentry, sends nothing.
-const reportMod = put(
-  'report-failure.mjs',
-  `export function reportStemFetchFailure(reason, summary) {
+   export default ChordOverlay;`;
+const REPORT_STUB = `export function reportStemFetchFailure(reason, summary) {
      (globalThis.__stemFetchReports ??= []).push({ reason, summary });
-   }`,
-);
+   }`;
+const graph = buildModuleGraph({
+  name: 'play-player',
+  entries: ['components/play/Player.tsx'],
+  overrides: { 'components/ChordOverlay.tsx': CHORD_STUB, 'lib/play/report-failure.ts': REPORT_STUB },
+});
 
-const engineMod = put(
-  'engine.mjs',
-  toJs(read('src/lib/play/engine.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
-);
-
-// device-support (Story 8.3): the REAL module, pure, no I/O at import time.
-const deviceSupportMod = put(
-  'device-support.mjs',
-  toJs(read('src/lib/play/device-support.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
-);
-// background-audio (Story 8, phones): the REAL module; every browser object is passed in.
-const backgroundAudioMod = put('background-audio.mjs', toJs(read('src/lib/play/background-audio.ts')));
-
-const playerJs = rewriteShared(toJs(read('src/components/play/Player.tsx'), true))
-  .replace(/from ['"]@\/lib\/play\/device-support['"]/g, `from '${deviceSupportMod}'`)
-  .replace(/from ['"]@\/lib\/play\/background-audio['"]/g, `from '${backgroundAudioMod}'`)
-  .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordMod}'`)
-  .replace(/from ['"]@\/lib\/play\/engine['"]/g, `from '${engineMod}'`)
-  .replace(/from ['"]@\/lib\/play\/load-stems['"]/g, `from '${loadStemsMod}'`)
-  .replace(/from ['"]@\/lib\/play\/report-failure['"]/g, `from '${reportMod}'`)
-  .replace(/from ['"]\.\/Mixer['"]/g, `from '${mixerMod}'`)
-  .replace(/from ['"]\.\/Transport['"]/g, `from '${transportMod}'`)
-  .replace(/from ['"]\.\/SectionLoop['"]/g, `from '${sectionLoopMod}'`);
-writeFileSync(join(dir, 'Player.mjs'), playerJs);
-
-// A second Player instance whose Mixer is a RECORDING STUB. The real Mixer
-// reads `jobId` only inside effects (sessionStorage restore/persist via
-// mixerMemoryKey), so it renders nothing derived from it and no amount of
-// server-rendering the real component can see whether the prop arrived. Round 3
-// exploited exactly that: `jobId` dropped from the live mount plus a
+// A second graph whose Mixer is a RECORDING STUB. The real Mixer reads `jobId`
+// only inside effects (sessionStorage restore/persist via mixerMemoryKey), so
+// it renders nothing derived from it and no amount of server-rendering the
+// real component can see whether the prop arrived. Round 3 exploited exactly
+// that: `jobId` dropped from the live mount plus a
 // `<span data-prev={'<Mixer … jobId={jobId} />'} />` string literal satisfied
 // the source-text gate with per-job memory dead. Reflecting the prop into
 // markup makes it observable, and a string literal cannot reach markup.
-const mixerProbeMod = put(
-  'MixerProbe.mjs',
-  `import { createElement } from 'react';
+const probeGraph = buildModuleGraph({
+  name: 'play-player-probe',
+  entries: ['components/play/Player.tsx'],
+  overrides: {
+    'components/ChordOverlay.tsx': CHORD_STUB,
+    'lib/play/report-failure.ts': REPORT_STUB,
+    'components/play/Mixer.tsx': `import { createElement } from 'react';
    export default function Mixer(props) {
      return createElement('section', {
        'aria-label': 'Stem mixer',
        'data-testid': 'mixer-probe',
+       'data-layout': String(props.layout),
        'data-job-id': String(props.jobId),
        'data-has-job-id': String(Object.prototype.hasOwnProperty.call(props, 'jobId')),
      });
    }`,
-);
-writeFileSync(
-  join(dir, 'PlayerMixerProbe.mjs'),
-  playerJs.replace(new RegExp(`from '\\./${mixerMod.slice(2)}'`, 'g'), `from '${mixerProbeMod}'`),
-);
+  },
+});
 
 const React = (await import('react')).default;
 const { renderToStaticMarkup } = await import('react-dom/server');
-const Player = await import(pathToFileURL(join(dir, 'Player.mjs')).href);
-const PlayerProbe = await import(pathToFileURL(join(dir, 'PlayerMixerProbe.mjs')).href);
-const Loader = await import(pathToFileURL(join(dir, 'load-stems.mjs')).href);
+const Player = await import(graph.url('components/play/Player.tsx'));
+const PlayerProbe = await import(probeGraph.url('components/play/Player.tsx'));
+const Loader = await import(graph.url('lib/play/load-stems.ts'));
 
 const render = (props) =>
   renderToStaticMarkup(React.createElement(Player.default, { jobId: 'job-1', ...props }));
@@ -265,7 +212,10 @@ test('Player server-renders without touching window, and shows no transport yet'
   const html = render({ loops: null });
   assert.match(html, /data-testid="player"/);
   assert.equal(attr(html, 'data-phase'), 'idle');
-  assert.match(html, /<h1[^>]*>Play along<\/h1>/);
+  // Design v1.4 P1.1: the h1 is the SONG's name (the fixed "Play along" heading
+  // is gone); with no title passed it says so plainly rather than a UUID.
+  assert.match(html, /<h1[^>]*>Your song<\/h1>/);
+  assert.match(render({ loops: null, title: 'Lucky Ticket' }), /<h1[^>]*>Lucky Ticket<\/h1>/);
   // Effects have not run, so no engine exists and no mix is shown. A transport
   // rendered here would be a dead control.
   assert.doesNotMatch(html, /data-testid="transport"/);
@@ -744,12 +694,14 @@ test('Story 2.7: the Mixer mount carries jobId, which is its memory key', () => 
   // green. Dropping jobId from the live mount and leaving a plausible
   // commented-out `{/* was: <Mixer … jobId={jobId} /> */}` above it passed the
   // whole suite with per-job memory dead.
-  const src = codeOnly(read('src/components/play/Player.tsx'));
-  assert.match(
-    src,
-    /<Mixer[^>]*\bjobId=\{jobId\}/,
-    'the Mixer lost jobId, so Story 2.7 memory is dead',
-  );
+  // Slice 1a: the Mixer is mounted twice — the desktop column (PlayerScreen)
+  // and the phone Mix sheet (MixSheet) — and BOTH must carry the job id.
+  for (const f of ['src/components/play/PlayerScreen.tsx', 'src/components/play/MixSheet.tsx']) {
+    const src = codeOnly(read(f));
+    const mounts = src.match(/<Mixer\b[^>]*\/>/g) ?? [];
+    assert.equal(mounts.length, 1, `${f}: one Mixer mount`);
+    assert.match(mounts[0], /\bjobId=\{jobId\}/, `${f}: the Mixer lost jobId, so Story 2.7 memory is dead`);
+  }
 });
 
 test('FG-3: Story 2.7 observed in RENDERED output, not in source text', () => {

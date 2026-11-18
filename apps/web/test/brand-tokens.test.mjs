@@ -42,7 +42,7 @@ const BRAND_TOKENS = [
   '--stem-vocals', '--stem-other', '--sl-stem-strip', '--font-sans', '--font-mono', '--text-12', '--text-h2',
   '--text-display', '--text-min', '--text-min-mono', '--h-control', '--h-field', '--touch-min', '--sl-container',
   '--sl-reading', '--sl-section', '--sl-gutter', '--sl-ease', '--sl-dur-1', '--sl-dur-2', '--sl-grid',
-  '--radius-sm', '--radius-md', '--radius-lg', '--radius-full',
+  '--radius-sm', '--radius-md', '--radius-lg', '--radius-full', '--chord-now',
 ];
 
 test('M22: every brand token is declared in design-tokens.css and in no other stylesheet', () => {
@@ -117,9 +117,15 @@ test('M20: --border-control is >= 3:1 on every surface a control sits on, and co
     assert.ok(ratio(tok('--border-control'), tok(bg)) >= 3, `--border-control on ${bg} ${ratio(tok('--border-control'), tok(bg)).toFixed(2)}:1`);
   }
   for (const weak of ['--border-strong', '--border-default']) assert.ok(ratio(tok(weak), tok('--bg-page')) < 3, `${weak} is not a control edge`);
+  // Slice 1a: the section strip's chips are the approved mockup's pills, edged
+  // with the control colour (no time label any more; the readout is on the seek line).
   const section = uncomment(read('src/components/play/SectionLoop.module.css'));
-  assert.match(section, /\.chip,\s*\.clear\s*\{[^}]*border:\s*1\.5px solid var\(--border-control\)/);
-  assert.match(section, /\.time\s*\{[^}]*color:\s*var\(--text-label\)/);
+  assert.match(section, /\.chip\s*\{[^}]*border:\s*1px solid var\(--border-control\)/);
+  for (const f of ['Transport', 'Presets', 'MixSheet']) {
+    const css = uncomment(read(`src/components/play/${f}.module.css`));
+    assert.match(css, /border:\s*1(\.5)?px solid var\(--border-control\)/, `${f}: controls take the control edge`);
+    assert.doesNotMatch(css, /border[\w-]*:[^;]*var\(--border-(default|strong)\)[^;]*;[^}]*cursor:\s*pointer/, `${f}: a 1.35-1.71:1 control edge`);
+  }
   const nav = uncomment(read('src/styles/signed-in-nav.css'));
   assert.match(nav, /\.sin-item\.sin-outlined\s*\{[^}]*border-color:\s*var\(--border-control\)/);
   assert.match(nav, /\.sin-toggle\s*\{[^}]*border:\s*1px solid var\(--border-control\)/);
@@ -162,11 +168,17 @@ test('A5/M19: no link, selected state or progress is lime', () => {
   }
   const section = uncomment(read('src/components/play/SectionLoop.module.css'));
   const pressed = section.match(/\.chip\[aria-pressed='true'\]\s*\{([^}]*)\}/)[1];
-  assert.doesNotMatch(pressed, /accent/, 'the pressed section chip is neutral');
-  assert.doesNotMatch(section.match(/\.badge\s*\{([^}]*)\}/)[1], /accent/, 'the Looping badge is neutral');
+  assert.doesNotMatch(pressed, /accent|chord-now/, 'the pressed section chip is neutral');
+  // Selected/pressed is NEUTRAL everywhere on the player: #222 + a 2px white edge.
+  assert.match(pressed, /background:\s*var\(--bg-selected\)/);
+  assert.match(pressed, /border:\s*2px solid var\(--text-primary\)/);
   const transport = uncomment(read('src/components/play/Transport.module.css'));
   assert.doesNotMatch(transport.match(/\.fill\s*\{([^}]*)\}/)[1], /accent/, 'the seek fill is not lime');
   assert.doesNotMatch(transport.match(/\.thumb\s*\{([^}]*)\}/)[1], /accent/, 'the seek thumb is not lime');
+  assert.doesNotMatch(transport.match(/\.band\s*\{([^}]*)\}/)[1], /accent|chord-now/, 'the loop band is neutral');
+  assert.doesNotMatch(transport.match(/\.loop\[data-state='on'\]\s*\{([^}]*)\}/)[1], /accent|chord-now/, 'the pressed loop button is neutral');
+  const presets = uncomment(read('src/components/play/Presets.module.css'));
+  assert.doesNotMatch(presets.match(/\.preset\[aria-pressed='true'\],\s*\.part\[aria-pressed='true'\]\s*\{([^}]*)\}/)[1], /accent|chord-now/, 'the pressed preset is neutral');
   const nav = uncomment(read('src/styles/signed-in-nav.css'));
   assert.doesNotMatch(nav.match(/\.sin-item\.sin-current\s*\{([^}]*)\}/)[1], /accent|#1c1c1f/, 'current nav item is white on --bg-selected');
 });
@@ -306,4 +318,101 @@ test('M12: loop-card buttons take the button radius', () => {
   const card = uncomment(read('src/styles/loop-card.css'));
   const btns = card.match(/\.play-btn,\s*\.btn-download-wav,\s*\.action-row button,\s*\.action-row a\s*\{([^}]*)\}/)[1];
   assert.match(btns, /border-radius:\s*var\(--radius-md\)/);
+});
+
+// ── Slice 1a (design v1.4; Jon 2026-11-17): the current chord is amber, and amber has ONE job ──
+const PLAYER_CODE = [
+  ...walk(join(SRC, 'components/play')),
+  join(SRC, 'components/ChordOverlay.tsx'),
+  join(SRC, 'components/ChordPhone.helpers.ts'),
+  ...walk(join(SRC, 'app/jobs')),
+].filter((p) => /\.(tsx?|css)$/.test(p) && !/\.test\./.test(p));
+
+test('--chord-now is Amber Gold, a NEW section-1 token; the archived ACCENT B block stays inactive', () => {
+  assert.equal(tok('--chord-now'), '#f59e0b');
+  const raw = read(TOKENS_REL);
+  const section1 = raw.slice(raw.indexOf('1. BASE'), raw.indexOf('2. ACCENT A'));
+  assert.match(uncomment(section1), /--chord-now:\s*#f59e0b;/, '--chord-now is declared in section 1');
+  // Its comment gives it exactly one job, says so in those words, carries the
+  // figures below and Jon's approval (the lime token carries a LOCKED note too).
+  const note = section1.slice(section1.lastIndexOf('/*', section1.indexOf('--chord-now:')), section1.indexOf('--chord-now:'));
+  assert.match(note, /ONE job: the CURRENT chord, at the playhead/);
+  assert.match(note, /stays\s+amber while paused/);
+  assert.match(note, /approved by Jon 2026-11-17/);
+  for (const fig of ['9.05:1 on #0d0d0d', '8.43:1 on #161616', '7.41:1 on #222222']) assert.ok(note.replace(/\s+/g, ' ').includes(fig), fig);
+  assert.match(raw, /CHORD-NOW: Amber Gold #f59e0b — LOCKED \(approved by Jon 2026-11-17\)/);
+  // ACCENT B is still a comment (amber is not an accent), with a note that its hex is reused.
+  const b = raw.slice(raw.indexOf('3. ACCENT B'), raw.indexOf('4. ACCENT C'));
+  assert.match(b, /its hex is reused by --chord-now/);
+  assert.doesNotMatch(uncomment(b), /--accent\s*:/, 'ACCENT B must stay commented out');
+  assert.equal(tok('--accent'), '#a3e635', 'lime is still THE accent');
+});
+
+test('--chord-now reads as text >= 7:1 on the page, a card and the selected bar (and the comment is right)', () => {
+  const want = { '--bg-page': 9.05, '--bg-card': 8.43, '--bg-selected': 7.41 };
+  for (const [bg, fig] of Object.entries(want)) {
+    const r = ratio(tok('--chord-now'), tok(bg));
+    assert.ok(r >= 7, `--chord-now on ${bg} ${r.toFixed(2)}:1`);
+    assert.equal(Number(r.toFixed(2)), fig, `the token comment's figure for ${bg}`);
+  }
+});
+
+test('amber keeps its ONE job: var(--chord-now) / #f59e0b only colour the current chord', () => {
+  const AMBER = /var\(--chord-now|#f59e0b/i;
+  // CSS: only the Mix sheet header's chord, as a text colour.
+  for (const f of CSS_FILES.filter((p) => !p.endsWith('design-tokens.css'))) {
+    const css = uncomment(readFileSync(f, 'utf8'));
+    for (const [, sel, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      for (const decl of body.split(';')) {
+        const m = decl.match(/^\s*([\w-]+)\s*:(.*)$/s);
+        if (!m || !AMBER.test(m[2])) continue;
+        const ok = relative(WEB, f) === 'src/components/play/MixSheet.module.css' && sel.trim() === '.now' && m[1] === 'color';
+        assert.ok(ok, `${relative(WEB, f)}: "${sel.trim()} { ${m[1]} }" is amber (its one job is the current chord)`);
+      }
+    }
+  }
+  // TS/TSX: only ChordOverlay's stage, through ONE constant.
+  for (const f of CODE_FILES.filter((p) => /\.tsx?$/.test(p))) {
+    const src = uncomment(readFileSync(f, 'utf8')).replace(/\/\/.*$/gm, '');
+    if (!AMBER.test(src)) continue;
+    assert.equal(relative(WEB, f), 'src/components/ChordOverlay.tsx', `${relative(WEB, f)} uses amber`);
+    assert.equal((src.match(/var\(--chord-now/g) ?? []).length, 1, 'one CHORD_NOW constant');
+    assert.match(src, /const CHORD_NOW = 'var\(--chord-now, #f59e0b\)';/);
+    // Every use of the constant is the current chord: the Now name (data-testid
+    // playhead-now-name), the current bar's edge (outline, drawn inside the bar
+    // so the chords in it do not move) and the current chord's text.
+    const uses = [...src.matchAll(/^.*CHORD_NOW.*$/gm)].map((m) => m[0].trim()).filter((l) => !l.startsWith('const CHORD_NOW'));
+    assert.ok(uses.length >= 3, uses.join('\n'));
+    for (const u of uses) {
+      assert.match(u, /^(color: isCurSlot \? CHORD_NOW|outline: isCur \? `2px solid \$\{CHORD_NOW\}`|style=\{\{ fontSize: fit\.px, [^}]*color: CHORD_NOW)/, `CHORD_NOW used outside the current chord: ${u}`);
+    }
+  }
+});
+
+test('the expiry orange never appears on /jobs/[id] (it reads as the chord-now amber to colour-blind users)', () => {
+  for (const f of PLAYER_CODE) {
+    const src = uncomment(readFileSync(f, 'utf8')).replace(/\/\/.*$/gm, '');
+    assert.doesNotMatch(src, /--status-expiry|#fb923c/i, `${relative(WEB, f)} uses the expiry orange on the player`);
+  }
+  // The player's "deleted in …" line is neutral Song info text.
+  const info = uncomment(read('src/components/play/Player.module.css')).match(/\.info\s*\{([^}]*)\}/)[1];
+  assert.match(info, /color:\s*var\(--text-secondary\)/);
+  // And JobView hands that line to the player, it does not style it.
+  assert.match(read('src/app/jobs/[id]/JobView.tsx'), /songInfo=\{songInfoLines\(job\)\}/);
+});
+
+test('A5: lime is ONE primary fill per player view: the Play button', () => {
+  const LIME_FILL = /background[\w-]*:\s*var\(--accent(-hover|-active)?\s*[,)]|background[\w-]*:\s*#a3e635/i;
+  const fills = [];
+  for (const f of PLAYER_CODE) {
+    const css = uncomment(readFileSync(f, 'utf8'));
+    for (const [, sel, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (LIME_FILL.test(body)) fills.push(`${relative(WEB, f)} ${sel.trim()}`);
+    }
+    if (/\.tsx?$/.test(f)) assert.doesNotMatch(css, /background\w*:\s*['`]var\(--accent/, `${relative(WEB, f)}: an inline lime fill`);
+  }
+  assert.deepEqual(fills, [
+    'src/components/play/Transport.module.css .play',
+    'src/components/play/Transport.module.css .play:hover:not(:disabled)',
+  ]);
 });

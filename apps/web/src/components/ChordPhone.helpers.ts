@@ -17,6 +17,7 @@
 
 import { type OverlayRun, activeRunIndex, displayText, estimateLabelPx } from './ChordOverlay.helpers.ts';
 import type { BeatGrid } from '../lib/play/sections.ts';
+import { spellChord } from '../lib/play/notation.ts';
 
 export type { BeatGrid };
 
@@ -72,64 +73,33 @@ export const MAX_CELLS = 2000;
 // Chord symbols
 // ---------------------------------------------------------------------------
 // Harte ("A:min7", "G:7/5") is the data's spelling and stays in the chord
-// editor and the full list. The phone view shows what a chord chart shows
-// ("Am7", "G7/D"). Anything not known exactly (a parenthesised extension, an
-// unlisted shorthand) is shown as its Harte label, never as a guess.
-const LEAD_SHEET_QUALITY: Readonly<Record<string, string>> = Object.freeze({
-  '': '', maj: '', min: 'm', dim: 'dim', aug: 'aug', sus2: 'sus2', sus4: 'sus4', maj6: '6', min6: 'm6',
-  maj7: 'maj7', min7: 'm7', '7': '7', dim7: 'dim7', hdim7: 'm7b5', minmaj7: 'm(maj7)', maj9: 'maj9',
-  min9: 'm9', '9': '9', '11': '11', '13': '13', min11: 'm11', '5': '5', '1': '',
-});
-const INTERVAL_SEMIS: Readonly<Record<string, number>> = Object.freeze({
-  '1': 0, b2: 1, '2': 2, '#2': 3, b3: 3, '3': 4, '4': 5, '#4': 6, b5: 6, '5': 7, '#5': 8, b6: 8,
-  '6': 9, bb7: 9, b7: 10, '7': 11, b9: 1, '9': 2, '#9': 3, '11': 5, '#11': 6, b13: 8, '13': 9,
-});
-const ROOT_PC: Readonly<Record<string, number>> = Object.freeze({ C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 });
-const SHARP_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-const FLAT_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+// editor's data. What is SHOWN everywhere on the player is guitarist notation
+// ("Am7", "G7/D", "C♯m7♭5/G♯") from THE ONE formatter, lib/play/notation.ts
+// (design v1.4, P1.5). Anything it cannot spell exactly is shown as its Harte
+// label, never as a guess.
 
-function parseRoot(s: string): { name: string; pc: number } | null {
-  const m = /^([A-G])((?:#|b)*)$/.exec(s);
-  if (!m) return null;
-  let pc = ROOT_PC[m[1]];
-  for (const ch of m[2]) pc += ch === '#' ? 1 : -1;
-  return { name: s, pc: ((pc % 12) + 12) % 12 };
-}
-
-/** "A:min7" -> "Am7", "G:7/5" -> "G7/D", "Bb:maj" -> "Bb", "C:1" -> "C". N -> "N.C.", X -> "?". */
+/** "A:min7" -> "Am7", "G:7/5" -> "G7/D", "Bb:maj" -> "B♭", "C:1" -> "C". N -> "N.C.", X -> "?". */
 export function leadSheetSymbol(run: Pick<OverlayRun, 'kind' | 'label'>): string {
   if (run.kind !== 'chord') return displayText(run);
-  const label = run.label;
-  const slash = label.indexOf('/');
-  const body = slash >= 0 ? label.slice(0, slash) : label;
-  const bassTok = slash >= 0 ? label.slice(slash + 1) : null;
-  if (body.includes('(')) return label;
-  const colon = body.indexOf(':');
-  const root = parseRoot(colon >= 0 ? body.slice(0, colon) : body);
-  const shorthand = colon >= 0 ? body.slice(colon + 1) : '';
-  if (!root || !(shorthand in LEAD_SHEET_QUALITY)) return label;
-  let out = root.name + LEAD_SHEET_QUALITY[shorthand];
-  if (bassTok !== null) {
-    const semis = INTERVAL_SEMIS[bassTok];
-    if (semis === undefined) return label;
-    if (semis !== 0) {
-      const flats = root.name.includes('b') || root.name === 'F';
-      out += '/' + (flats ? FLAT_NAMES : SHARP_NAMES)[(root.pc + semis) % 12];
-    }
-  }
-  return out;
+  return spellChord(run.label).text;
+}
+
+/** The same name in words, for accessible names ("C sharp minor 7 flat 5 over G sharp"). */
+export function spokenSymbol(run: Pick<OverlayRun, 'kind' | 'label'>): string {
+  if (run.kind === 'none') return 'No chord';
+  if (run.kind === 'unknown') return 'Unknown chord';
+  return spellChord(run.label).spoken;
 }
 
 /**
- * Accessible name of a phone slot. It STARTS with the visible text (WCAG 2.5.3
- * label in name: "tap Em7" must work), then the data's own spelling when it
- * differs, then how long the chord is held in this bar.
+ * Accessible name of a phone slot: the chord in WORDS (design v1.4, P1.5:
+ * "flat" / "sharp" in aria-labels, the glyphs on screen), then how long it is
+ * held in this bar. Spoken words are the accessible equivalent of the painted
+ * glyphs (WCAG 2.5.3: a speech user says "C sharp minor", not "C ♯ m").
  */
 export function phoneSlotLabel(run: Pick<OverlayRun, 'kind' | 'label'>, beats: number | null): string {
-  const sym = leadSheetSymbol(run);
-  const what = run.kind === 'none' ? ' (no chord)' : run.kind === 'unknown' ? ' (unknown chord)' : sym !== run.label ? ` (${run.label})` : '';
   const held = beats === null ? '' : `, ${fmtBeats(beats)} beat${Math.abs(beats - 1) < 0.05 ? '' : 's'}`;
-  return `${sym}${what}${held} — edit`;
+  return `${spokenSymbol(run)}${held} — edit`;
 }
 
 /**
@@ -146,15 +116,15 @@ export function showsBarTotal(model: Pick<PhoneModel, 'mode' | 'beatsPerBar'>): 
 }
 
 /**
- * Accessible name of a bar: its place and its chords in order, in the visible
- * spelling ("Bar 3 of 16, Chorus 2: G7, Bb"; "Bar 3, Chorus 2: G7, Bb" in
+ * Accessible name of a bar: its place and its chords in order, in words
+ * ("Bar 3 of 16, Chorus 2: G 7, B flat"; "Bar 3, Chorus 2: G 7, B flat" in
  * triple time, see showsBarTotal).
  */
 export function phoneBarLabel(model: PhoneModel, runs: readonly Pick<OverlayRun, 'kind' | 'label'>[], cell: number): string {
   const c = model.cells[cell];
   if (!c) return '';
   const sec = c.section >= 0 ? model.sections[c.section]?.name ?? null : null;
-  const chords = c.slots.map((s) => leadSheetSymbol(runs[s.runIndex])).join(', ');
+  const chords = c.slots.map((s) => spokenSymbol(runs[s.runIndex])).join(', ');
   const of = showsBarTotal(model) ? ` of ${c.countInSection}` : '';
   return `Bar ${c.numberInSection}${of}${sec ? `, ${sec}` : ''}: ${chords}`;
 }

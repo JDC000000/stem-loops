@@ -9,9 +9,14 @@ import type { Metadata, Viewport } from 'next';
 import { notFound } from 'next/navigation';
 import { getUser } from '@/lib/auth/supabase';
 import { resolveDemo } from '@/lib/demo-songs';
+import { demoMetadata } from '@/lib/seo/demo-pages';
 import JobView from '../../jobs/[id]/JobView';
 
-export const metadata: Metadata = { title: 'Play along: demo song', robots: { index: false, follow: false } };
+// QA-55: the catalog's demo pages are public and listed in sitemap.xml, so they are indexable and
+// built by the SEO-06 builder (canonical, Open Graph, Twitter); any other slug is noindex (and 404s).
+export function generateMetadata({ params }: { params: { slug: string } }): Metadata {
+  return demoMetadata(params.slug);
+}
 // Reads the session (back arrow: library or home) and the demo rows on every request.
 export const dynamic = 'force-dynamic';
 // The player pads itself with the safe-area insets; see app/jobs/[id]/page.tsx.

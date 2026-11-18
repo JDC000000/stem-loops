@@ -187,6 +187,7 @@ const pageFile = put(
     .replace(/from ['"]next\/navigation['"]/g, `from '${navMod}'`)
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authMod}'`)
     .replace(/from ['"]@\/lib\/demo-songs['"]/g, `from '${dsMod}'`)
+    .replace(/from ['"]@\/lib\/seo\/demo-pages['"]/g, `from '${pathToFileURL(P('src/lib/seo/demo-pages.ts')).href}'`)
     .replace(/from ['"]\.\.\/\.\.\/jobs\/\[id\]\/JobView['"]/g, `from '${viewMod}'`),
 );
 const demoPage = await import(pathToFileURL(join(dir, pageFile.slice(2))).href);
@@ -205,10 +206,43 @@ test('/demo/<slug>: anything that is not a playable demo is a 404, including an 
   }
 });
 
-test('/demo/<slug> is dynamic, not indexed, and lays the player out under the notch like /jobs/[id]', () => {
+test('/demo/<slug> is dynamic and lays the player out under the notch like /jobs/[id]', () => {
   assert.equal(demoPage.dynamic, 'force-dynamic');
-  assert.equal(demoPage.metadata.robots.index, false);
   assert.equal(demoPage.viewport.viewportFit, 'cover');
+});
+
+// QA-55: the catalog's demo pages are in sitemap.xml, so they must be indexable (a sitemap URL
+// marked noindex is a Search Console error), built by the SEO-06 builder (canonical, Open Graph,
+// Twitter), with canonical == sitemap path and a unique title of <= 60 characters once the layout
+// template (" · stem-loops") is added. Off-catalog slugs: noindex.
+test('/demo/<slug> metadata: catalog slugs indexable, SEO-06 complete, canonical is the sitemap path', async () => {
+  const { DEMO_SONGS } = await import(catalogUrl);
+  const { default: sitemap } = await import(pathToFileURL(P('src/app/sitemap.ts')).href);
+  const demoUrls = sitemap().map((e) => e.url).filter((u) => u.includes('/demo/'));
+  assert.equal(demoUrls.length, DEMO_SONGS.length);
+  const titles = new Set();
+  for (const d of DEMO_SONGS) {
+    const m = demoPage.generateMetadata({ params: { slug: d.slug } });
+    assert.notEqual(m.robots?.index, false, `${d.slug} is noindex but listed in the sitemap`);
+    assert.ok(m.title.includes(d.title), d.slug);
+    assert.ok(`${m.title} · stem-loops`.length <= 60, `${d.slug}: title over 60 characters`);
+    assert.match(m.description, /the demo opens without signing in/i);
+    const path = `/demo/${d.slug}`;
+    assert.equal(m.alternates?.canonical, path, `${d.slug}: canonical`);
+    assert.ok(demoUrls.includes(`https://stem-loops.com${m.alternates.canonical}`), `${d.slug}: canonical not in sitemap`);
+    assert.equal(m.openGraph?.url, path);
+    assert.equal(m.openGraph?.title, m.title);
+    assert.ok(m.openGraph?.siteName && m.openGraph?.images?.length, `${d.slug}: openGraph incomplete`);
+    assert.equal(m.twitter?.card, 'summary_large_image');
+    assert.ok(m.twitter?.images?.length, `${d.slug}: twitter image`);
+    titles.add(m.title);
+  }
+  assert.equal(titles.size, DEMO_SONGS.length, 'demo titles are unique');
+  for (const slug of ['nope', ORDINARY, 'Lucky-Ticket']) {
+    const m = demoPage.generateMetadata({ params: { slug } });
+    assert.equal(m.robots.index, false, slug);
+    assert.equal(m.alternates, undefined, slug);
+  }
 });
 
 // ── the read-only demo limiter (QA B-17: no write on GET) ────────────────────────────

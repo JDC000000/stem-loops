@@ -6,6 +6,7 @@
 // registered (anti-enumeration — matches the server policy).
 
 import { useState, type FormEvent } from 'react';
+import { authErrorMessage } from '@/lib/auth/login-errors';
 import { fieldStyle, buttonBase, primaryButton } from '@/lib/ui/form-styles';
 import { validateEmail } from '@/lib/auth/password-rules';
 
@@ -51,8 +52,9 @@ export default function ResetPasswordRequestForm() {
         return;
       }
       setSent(true);
-    } catch {
-      setError("We couldn't send a reset link. Please try again.");
+    } catch (e) {
+      // QA A-08: an offline submit says so (lib/auth/login-errors.ts), never "Failed to fetch".
+      setError(authErrorMessage(e, "We couldn't send a reset link. Please try again."));
     } finally {
       setBusy(false);
     }

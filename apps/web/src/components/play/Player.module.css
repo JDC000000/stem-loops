@@ -398,7 +398,31 @@
     grid-template-columns: minmax(0, 55fr) minmax(0, 45fr);
     grid-template-rows: 1fr auto auto;
   }
-  .stage { grid-column: 1; grid-row: 1 / span 3; padding: 8px 16px; }
-  .main > fieldset { grid-column: 2; grid-row: 1; align-self: end; }
-  .main > [data-testid='transport'] { grid-column: 2; grid-row: 2 / span 2; }
+  /* QA A-03 (844x390, 800x360): the left column is the chord area ALONE. The
+     stage box dissolves (display: contents) so its notice bar moves to the top
+     of the right column, above the section strip, and the chords get the whole
+     height. A line that still cannot fit (a stacked three-chord bar makes a
+     line 2-3 rows tall) scrolls inside the chord area instead of being clipped,
+     and PlayerScreen keeps the current bar scrolled into view. */
+  .main {
+    grid-template-rows: auto 1fr auto auto;
+  }
+  .stage { display: contents; }
+  .chords {
+    grid-column: 1;
+    grid-row: 1 / span 4;
+    min-height: 0;
+    /* Its content must not size the grid (that would grow the screen past the
+       viewport, the A-03 bug): the area takes the rows the right column leaves
+       and its content scrolls inside it. */
+    contain: size;
+    padding: 6px 16px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .notice,
+  .error { grid-column: 2; grid-row: 1; margin: 6px 16px 0; }
+  .main > fieldset { grid-column: 2; grid-row: 2; align-self: end; }
+  .main > [data-testid='transport'] { grid-column: 2; grid-row: 3 / span 2; }
 }

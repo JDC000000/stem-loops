@@ -124,13 +124,13 @@ function barTag(k) {
   return `Bar ${k - SEC_FIRST_BAR[sec] + 1} of ${SEC_BARS[sec]}, ${NAMES[sec]}: ${chords.join(', ')}`;
 }
 
-const snapAt = (positionSec, loop = null) => ({
+const snapAt = (positionSec, loop = null, degraded = null) => ({
   status: 'playing',
   positionSec,
   durationSec: FIX.duration_sec,
   stems: ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'].map((name) => ({ name, availability: 'ready', gain: 0.8, muted: false, soloed: false, effectivelySilent: false })),
   loop,
-  degraded: null,
+  degraded,
   error: null,
 });
 
@@ -178,7 +178,7 @@ async function bundle() {
   return { js: js.text, css: res.outputFiles.find((f) => f.path.endsWith('.css'))?.text ?? '' };
 }
 
-async function open(browser, built, [w, h], { pos, grid = GRID, sections = F.sections, payload = FIX, loop = null }) {
+async function open(browser, built, [w, h], { pos, grid = GRID, sections = F.sections, payload = FIX, loop = null, degraded = null }) {
   const ctx = await browser.newContext({ viewport: { width: w, height: h }, isMobile: true, hasTouch: true });
   const page = await ctx.newPage();
   const errors = [];
@@ -190,7 +190,7 @@ async function open(browser, built, [w, h], { pos, grid = GRID, sections = F.sec
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
         `<link rel="stylesheet" href="/out.css"><style>${FONT_CSS}</style></head><body>` +
         '<main style="max-width:960px;margin:0 auto;padding:24px var(--sl-gutter,16px) 96px"><div id="root"></div></main>' +
-        `<script>window.__snap=${JSON.stringify(snapAt(pos, loop))};window.__sections=${JSON.stringify(sections)};window.__grid=${JSON.stringify(grid)};</script>` +
+        `<script>window.__snap=${JSON.stringify(snapAt(pos, loop, degraded))};window.__sections=${JSON.stringify(sections)};window.__grid=${JSON.stringify(grid)};</script>` +
         '<script>Promise.all([400,500,600,700].map(function(w){return document.fonts.load(w+" 16px GateInter")})).then(function(){var s=document.createElement("script");s.src="/out.js";document.body.appendChild(s)})</script>' +
         '</body></html>' });
     const fm = /^\/font-(\d+)\.woff2$/.exec(u.pathname);
@@ -208,8 +208,8 @@ async function open(browser, built, [w, h], { pos, grid = GRID, sections = F.sec
 }
 
 const settle = (page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-async function moveTo(page, pos, loop = null) {
-  await page.evaluate((s) => window.__render(s), snapAt(pos, loop));
+async function moveTo(page, pos, loop = null, degraded = null) {
+  await page.evaluate((s) => window.__render(s), snapAt(pos, loop, degraded));
   await settle(page);
 }
 
@@ -730,6 +730,114 @@ for (const vp of [[390, 844], [360, 800]]) {
       }
     });
   }
+}
+
+// QA A-03 (track A, 2026-11-18): in phone LANDSCAPE (844x390, 800x360) the
+// current bar was drawn below the screen: a line of stacked three-chord bars is
+// two or three rows tall, the chord area clipped it and the screen did not
+// scroll. The player must fit or scroll, so at every bar of a song full of
+// stacked bars, with a notice bar showing (the worst case for height):
+//   * the CURRENT bar cell is fully on screen: inside the viewport and inside
+//     every clipping box above it (measured from the DOM, not from a test id
+//     the fix added), and the point at its centre hits the cell itself;
+//   * the page behind never scrolls, and in landscape the player screen itself
+//     does not grow past the viewport (only the chord area may scroll).
+// Portrait sizes run the same check as a control.
+const A03_VIEWPORTS = [[844, 390], [800, 360], [740, 360], [667, 375], [390, 844], [360, 800]];
+const A03_BARS = [
+  [['A:min', 4]],
+  [['C#:hdim7/5', 2], ['G:maj/3', 1], ['C:maj/3', 1]],
+  [['C#:hdim7/5', 2], ['Bb:maj', 1], ['G:maj/3', 1]],
+  [['G:7', 4]],
+];
+// A denser song, in QA's own shapes: lines two and three rows tall. At 844x390
+// they now fit the chord area (which has the whole column); at 800x360 they do
+// not, and that is the case that proves the screen itself never grows past the
+// viewport (the chord area scrolls instead).
+const A03_DENSE = [
+  // QA's fixture: plain bars, then its worst-case shapes (its bars 10-13):
+  // half-beat chords, slash chords and long names, three to a bar.
+  [['G:min', 4]],
+  [['Eb:maj', 4]],
+  [['Bb:maj', 4]],
+  [['F:maj', 3], ['D:7', 1]],
+  [['C:min7', 2], ['D:7/3', 0.5], ['F#:hdim7/b7', 1.5]],
+  [['Bb:maj7/5', 1], ['C#:hdim7/5', 1], ['Eb:maj/b7', 2]],
+  [['G:min', 3.5], ['A:7', 0.5]],
+  [['Eb:maj', 0.5], ['Bb:maj', 3.5]],
+];
+const A03_CASES = [
+  ...A03_VIEWPORTS.map((vp) => ({ vp, name: 'stacked bars', bars: A03_BARS, mustScroll: vp[0] === 667 })),
+  { vp: [844, 390], name: "QA's worst-case bars", bars: A03_DENSE, mustScroll: false },
+  { vp: [800, 360], name: "QA's worst-case bars", bars: A03_DENSE, mustScroll: true },
+];
+for (const { vp, name, bars: shape, mustScroll } of A03_CASES) {
+  test(`A-03 phone chords @ ${vp[0]}x${vp[1]}: the current bar is always fully on screen (${name}, notice showing)`, async () => {
+    const bars = Array.from({ length: 32 }, (_, k) => shape[k % shape.length]);
+    const { payload, grid, beat } = synth(bars, 96);
+    const degraded = { missing: ['other'] };
+    const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections: [], payload, degraded });
+    const f = [];
+    let checked = 0;
+    let tallLines = 0;
+    try {
+      for (let k = 0; k < 32; k++) {
+        for (const off of [0.3, 2.5, 3.5]) {
+          const t = 0.5 + (k * 4 + off) * beat;
+          await moveTo(page, t, null, degraded);
+          const m = await page.evaluate(() => {
+            const cell = document.querySelector('[data-testid="phone-chords"] [role="group"][aria-current="true"]');
+            const root = document.querySelector('[data-testid="player"]');
+            if (!cell || !root) { const pc = document.querySelector('[data-testid="phone-chords"]'); return { missing: !cell ? `current bar (mode ${pc?.dataset.mode}/${pc?.dataset.reason})` : 'player' }; }
+            const r = cell.getBoundingClientRect();
+            // The visible box: the viewport, cut by every clipping ancestor up to the fixed screen.
+            let vis = { t: 0, b: innerHeight, l: 0, r: innerWidth };
+            let clipH = null;
+            for (let e = cell.parentElement; e && e !== document.documentElement; e = e.parentElement) {
+              const cs = getComputedStyle(e);
+              if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') {
+                const b = e.getBoundingClientRect();
+                vis = { t: Math.max(vis.t, b.top), b: Math.min(vis.b, b.bottom), l: Math.max(vis.l, b.left), r: Math.min(vis.r, b.right) };
+                if (e !== root && e.scrollHeight > e.clientHeight + 1) clipH = true;
+              }
+              if (cs.position === 'fixed') break;
+            }
+            const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            return {
+              cell: { t: r.top, b: r.bottom, l: r.left, r: r.right },
+              vis,
+              hits: !!hit && cell.contains(hit),
+              label: cell.getAttribute('aria-label'),
+              clipH,
+              rootGrows: root.scrollHeight - root.clientHeight,
+              docScroll: document.scrollingElement.scrollHeight - innerHeight,
+              notice: !!document.querySelector('[data-testid="player-notice"]'),
+            };
+          });
+          const tag = `${vp.join('x')} bar#${k} +${off} beats`;
+          if (m.missing) { f.push(`${tag}: no ${m.missing}`); continue; }
+          checked++;
+          if (!m.notice) f.push(`${tag}: no notice bar, so this case does not test what it names`);
+          const E = 0.5;
+          if (m.cell.t < m.vis.t - E || m.cell.b > m.vis.b + E || m.cell.l < m.vis.l - E || m.cell.r > m.vis.r + E)
+            f.push(`${tag}: current bar "${m.label}" (${m.cell.t.toFixed(1)}–${m.cell.b.toFixed(1)}) is not fully on screen (visible ${m.vis.t.toFixed(1)}–${m.vis.b.toFixed(1)})`);
+          else if (!m.hits) f.push(`${tag}: current bar "${m.label}" is covered by something else at its centre`);
+          if (m.docScroll > 0) f.push(`${tag}: the page behind scrolls by ${m.docScroll}px`);
+          if (vp[1] < 500 && m.rootGrows > 0) f.push(`${tag}: the player screen grows ${m.rootGrows}px past the viewport (only the chord area may scroll)`);
+          if (m.clipH) tallLines++;
+        }
+      }
+      if (checked < 90) f.push(`only ${checked} positions measured`);
+      // Non-vacuity: where marked, the chord content is (at some bars) taller
+      // than the box that clips it, so the scroll path, not just the fit path,
+      // is what the case exercises.
+      if (mustScroll && tallLines === 0) f.push('the chord content never overflowed its clipping box: this case no longer tests the scroll path');
+      assert.deepEqual(errors, [], 'the page threw');
+      fail(f);
+    } finally {
+      await ctx.close();
+    }
+  });
 }
 
 test('teardown', async () => {

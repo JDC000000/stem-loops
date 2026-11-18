@@ -27,6 +27,7 @@ import { JobProgress } from '@/components/JobProgress';
 import Player from '@/components/play/Player';
 import { formatExpiresIn, isDemoRow } from '@/lib/retention';
 import { jobLabel } from '@/lib/job-label';
+import { ProcessingHeading } from '@/components/ProcessingHeading';
 import { failedJobMessage } from '@/lib/error-copy';
 import { jobTrimNote } from '@/lib/input-trim';
 import {
@@ -347,9 +348,9 @@ export default function JobView({ id, signedIn = true }: { id: string; signedIn?
         </div>
       ) : (
         <>
-          <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, textAlign: 'center' }}>
-            {job.title?.trim() || job.original_filename || job.youtube_url || 'Your track'}
-          </h1>
+          {/* QA A-04: never the raw URL, and a long unbroken title wraps
+              instead of running off both edges (lib/job-label.ts). */}
+          <ProcessingHeading job={job} />
           <p style={{ margin: '-16px 0 0', color: 'var(--text-muted)' }}>Processing…</p>
           <TrimNote job={job} />
           <JobProgress job={job} />

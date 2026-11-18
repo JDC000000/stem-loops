@@ -46,6 +46,9 @@ async function build() {
       },
     };`);
   const auth = put('auth.mjs', 'export const getUser = async () => globalThis.__pricingRender.user;');
+  // QA A-10: the viewer's plan (the entitlement snapshot's plan_code), 'free' unless a test says otherwise.
+  // plan: null makes the read FAIL (the page must still render, with no "Start free").
+  const ents = put('entitlements.mjs', 'export const getEntitlementSnapshot = async () => { const p = globalThis.__pricingRender.plan; if (p === null) throw new Error("entitlements down"); return { plan_code: p ?? "free" }; };');
 
   const billing = put('BillingButton.mjs', toJs(read('src/components/BillingButton.tsx'), true)
     .replace(/from ['"]@hcaptcha\/react-hcaptcha['"]/g, `from '${hcaptcha}'`)
@@ -53,6 +56,7 @@ async function build() {
   const page = put('page.mjs', toJs(read('src/app/pricing/page.tsx'), true)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${db}'`)
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${auth}'`)
+    .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${ents}'`)
     .replace(/from ['"]@\/components\/BillingButton['"]/g, `from '${billing}'`)
     .replace(/from ['"]@\/lib\/pricing-copy['"]/g, `from '${pricingCopy}'`));
 
@@ -65,9 +69,9 @@ async function build() {
 }
 
 /** Render /pricing for `user` (null = signed out) against the given catalog rows. */
-export async function renderPricingPage({ user, plans, packs }) {
+export async function renderPricingPage({ user, plans, packs, plan = 'free' }) {
   const { renderToStaticMarkup, Page } = await build();
-  globalThis.__pricingRender = { user, plans, packs };
+  globalThis.__pricingRender = { user, plans, packs, plan };
   // The page is an async server component: resolve it, then render the client tree it returns.
   return renderToStaticMarkup(await Page());
 }

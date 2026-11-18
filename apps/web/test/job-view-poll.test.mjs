@@ -104,6 +104,11 @@ const errorCopyMod = put('error-copy.mjs', toJs(read('src/lib/error-copy.ts')));
 // The REAL input-trim module (pure): the job page's "Using the first 5:00" line.
 const inputTrimMod = put('input-trim.mjs', toJs(read('src/lib/input-trim.ts')));
 const jobLabelMod = put('job-label.mjs', toJs(read('src/lib/job-label.ts')));
+// The real processing heading (QA A-04), wired to the real job-label module.
+const processingHeadingMod = put(
+  'ProcessingHeading.mjs',
+  toJs(read('src/components/ProcessingHeading.tsx')).replace(/from ['"]@\/lib\/job-label['"]/g, `from '${jobLabelMod}'`),
+);
 
 const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]@\/components\/play\/Player['"]/g, `from '${playerMod}'`)
@@ -115,6 +120,7 @@ const jobViewJs = toJs(read('src/app/jobs/[id]/JobView.tsx'))
   .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${errorCopyMod}'`)
   .replace(/from ['"]@\/lib\/input-trim['"]/g, `from '${inputTrimMod}'`)
   .replace(/from ['"]@\/lib\/job-label['"]/g, `from '${jobLabelMod}'`)
+  .replace(/from ['"]@\/components\/ProcessingHeading['"]/g, `from '${processingHeadingMod}'`)
   .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordOverlayMod}'`);
 writeFileSync(join(dir, 'JobView.mjs'), jobViewJs);
 

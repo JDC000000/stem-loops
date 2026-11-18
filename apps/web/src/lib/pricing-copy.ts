@@ -106,3 +106,42 @@ export function features(p: PlanCopyInput): string[] {
   if (keep) out.push(keep);
   return out;
 }
+
+// ─── what each plan card offers, by who is looking (QA A-10, 2026-11-18) ──────
+// Signed in, /pricing was not plan-aware: a Free user was offered "Start free" (a
+// link home) and a Pro subscriber "Get Pro". Display only — checkout is untouched.
+//   * the viewer's own plan: "Current plan", neutral (never lime, not a control);
+//   * a plan above it: the checkout button, and the NEXT one up carries the page's
+//     one lime fill and the highlight (Free -> Pro, Pro -> Studio, Studio -> none);
+//   * a plan below it (or Free for a paid viewer): a quiet "Manage plan" link to
+//     /account, where the subscription is managed;
+//   * signed out: unchanged (Start free, and Get <plan> through sign-in, Pro lime);
+//   * signed in but the plan could not be read: no "Start free" (an account
+//     holder never needs it), checkout buttons as before with Pro lime.
+export type PlanCta =
+  | { kind: 'start-free' }
+  | { kind: 'sign-in'; primary: boolean }
+  | { kind: 'checkout'; primary: boolean }
+  | { kind: 'current' }
+  | { kind: 'manage' }
+  | { kind: 'none' };
+
+const PLAN_RANK: Readonly<Record<string, number>> = { free: 0, pro: 1, studio: 2 };
+
+/** The plan code that gets the highlight and the one lime action, or null for none. */
+export function featuredPlan(planCodes: readonly string[], signedIn: boolean, current: string | null): string | null {
+  if (!signedIn || current === null || !(current in PLAN_RANK)) return planCodes.includes('pro') ? 'pro' : null;
+  const above = planCodes
+    .filter((c) => c in PLAN_RANK && PLAN_RANK[c] > PLAN_RANK[current])
+    .sort((a, b) => PLAN_RANK[a] - PLAN_RANK[b]);
+  return above[0] ?? null;
+}
+
+/** What the card for `code` offers this viewer. `current` is null when unknown. */
+export function planCta(code: string, signedIn: boolean, current: string | null, featured: string | null): PlanCta {
+  if (!signedIn) return code === 'free' ? { kind: 'start-free' } : { kind: 'sign-in', primary: code === featured };
+  if (current !== null && code === current) return { kind: 'current' };
+  if (code === 'free') return current === null ? { kind: 'none' } : { kind: 'manage' };
+  if (current !== null && current in PLAN_RANK && code in PLAN_RANK && PLAN_RANK[code] < PLAN_RANK[current]) return { kind: 'manage' };
+  return { kind: 'checkout', primary: code === featured };
+}

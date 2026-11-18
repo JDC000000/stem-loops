@@ -21,7 +21,7 @@ const toJs = (src, jsx = false) => ts.transpileModule(src, {
 
 const { React, Form: LoginForm } = await loadLoginFormComponent();
 
-// ResetPasswordSetForm with its three imports mapped to the real modules.
+// ResetPasswordSetForm with its four imports mapped to the real modules.
 const cache = join(WEB, 'node_modules/.cache');
 mkdirSync(cache, { recursive: true });
 const dir = mkdtempSync(join(cache, 'password-toggle-'));
@@ -29,7 +29,9 @@ const put = (name, code) => { writeFileSync(join(dir, name), code); return './' 
 const rulesMod = put('password-rules.mjs', toJs(read('src/lib/auth/password-rules.ts')));
 const stylesMod = put('form-styles.mjs', toJs(read('src/lib/ui/form-styles.ts')));
 const fieldMod = put('PasswordField.mjs', toJs(read('src/components/PasswordField.tsx'), true));
+const errorsMod = put('login-errors.mjs', toJs(read('src/lib/auth/login-errors.ts')));
 put('ResetPasswordSetForm.mjs', toJs(read('src/components/ResetPasswordSetForm.tsx'), true)
+  .replace(/from ['"]@\/lib\/auth\/login-errors['"]/g, `from '${errorsMod}'`)
   .replace(/from ['"]@\/lib\/auth\/password-rules['"]/g, `from '${rulesMod}'`)
   .replace(/from ['"]@\/lib\/ui\/form-styles['"]/g, `from '${stylesMod}'`)
   .replace(/from ['"]@\/components\/PasswordField['"]/g, `from '${fieldMod}'`));

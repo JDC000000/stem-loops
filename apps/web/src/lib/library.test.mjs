@@ -18,7 +18,7 @@ test('a library song older than 24 h is listed with the SERVER deadline and its 
     [],
     NOW,
   );
-  assert.deepEqual(out, [{ id: A, label: 'tune.mp3', createdAtMs: NOW - 10 * D, expiresAtMs: NOW + 40 * D, source: 'library', isDemo: false, thumbUrl: null }]);
+  assert.deepEqual(out, [{ id: A, label: 'tune.mp3', createdAtMs: NOW - 10 * D, expiresAtMs: NOW + 40 * D, source: 'library', isDemo: false, thumbUrl: null, state: 'unknown' }]);
 });
 
 test('a browser-only entry keeps Free\'s 24 h and drops out after it', () => {

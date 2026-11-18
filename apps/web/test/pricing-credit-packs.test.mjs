@@ -62,6 +62,12 @@ function authStub(user) {
   return dataUrl(`export const getUser = async () => (${JSON.stringify(user)});`);
 }
 
+// QA A-10: the page reads the viewer's plan from the entitlement snapshot. `plan` is that
+// snapshot's plan_code; `throwPlan` makes the read fail (the page must still render).
+function entitlementsStub(plan, throwPlan) {
+  return dataUrl(`export const getEntitlementSnapshot = async () => { ${throwPlan ? "throw new Error('entitlements down');" : ''} return { plan_code: ${JSON.stringify(plan)} }; };`);
+}
+
 function trialStub() {
   // Keep it simple — pricing just needs readTrial not to crash.
   return dataUrl(`
@@ -93,7 +99,7 @@ function pricingCopyModule() {
   return dataUrl(toJs(readFileSync(join(WEB, 'src/lib/pricing-copy.ts'), 'utf8')));
 }
 
-async function loadPricing({ user = null, plans = null, packs = null, throwPlans = false, throwPacks = false } = {}) {
+async function loadPricing({ user = null, plans = null, packs = null, throwPlans = false, throwPacks = false, plan = 'free', throwPlan = false } = {}) {
   globalThis.__pricingQueries = [];
   // Resolve `react` to its absolute file:// URL so the data-URL module can
   // `import React from 'react'` (data-URL imports can't look up bare
@@ -106,6 +112,7 @@ async function loadPricing({ user = null, plans = null, packs = null, throwPlans
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub({ plans, packs, throwPlans, throwPacks })}'`)
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
     .replace(/from ['"]@\/lib\/trial['"]/g, `from '${trialStub()}'`)
+    .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${entitlementsStub(plan, throwPlan)}'`)
     .replace(/from ['"]@\/components\/BillingButton['"]/g, `from '${await billingButtonStub()}'`)
     // The feature bullets moved to src/lib/pricing-copy.ts: a Next.js App Router
     // page may only export a fixed set of fields, so the page cannot export

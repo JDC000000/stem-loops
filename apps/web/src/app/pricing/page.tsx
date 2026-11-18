@@ -4,7 +4,9 @@ import BillingButton, { CreditPackCheckout, PackBuyButton } from '@/components/B
 // The feature bullets live in their own module: a Next.js App Router page may
 // only export a fixed set of fields, so exporting features()/benefitLine() from
 // here passed `tsc --noEmit` but failed `next build`.
-import { benefitLine, features } from '@/lib/pricing-copy';
+import { benefitLine, featuredPlan, features, planCta } from '@/lib/pricing-copy';
+// Display only (QA A-10): which plan the signed-in viewer is on, to mark it "Current plan".
+import { getEntitlementSnapshot } from '@/lib/billing/entitlements';
 
 // P6 (Jon, 2026-11-17): /pricing is a public, indexable page. Its metadata comes
 // from the page registry (lib/seo/pages.ts) and is declared in ./layout.tsx, as
@@ -118,6 +120,12 @@ export default async function PricingPage() {
   // Either catalog being on FALLBACK is enough to show the banner — the two
   // live in the same DB and typically degrade together.
   const degraded = plansDegraded || packsDegraded;
+  // The viewer's plan (QA A-10). null when signed out or when it cannot be read:
+  // the cards then fall back to offers that are right for anyone (lib/pricing-copy.ts).
+  const currentPlan: string | null = user
+    ? await getEntitlementSnapshot(user.user_id).then((s) => s.plan_code, () => null)
+    : null;
+  const featuredCode = featuredPlan(plans.map((p) => p.code), !!user, currentPlan);
 
   // The V3-C10 trial banner used to render here, directly above the Free card.
   // It pitched a three-track signup offer to every signed-out viewer, while the
@@ -142,10 +150,12 @@ export default async function PricingPage() {
 
       <div className="pr-plans">
         {plans.map((p) => {
-          // Pro carries the highlight (design P6): a white edge on the selected
-          // surface, and the page's one lime action. No badge or "recommended" /
-          // "most popular" text: there is no data behind either claim.
-          const featured = p.code === 'pro';
+          // The next plan up carries the highlight (design P6; QA A-10): a white
+          // edge on the selected surface, and the page's one lime action. Pro for a
+          // visitor or a Free user, Studio for Pro, none for Studio. No badge or
+          // "recommended" / "most popular" text: there is no data behind either claim.
+          const featured = p.code === featuredCode;
+          const cta = planCta(p.code, !!user, currentPlan, featuredCode);
           return (
             <section key={p.code} className={`pr-card${featured ? ' pr-featured' : ''}`} aria-label={p.display_name}>
               <h2 className="pr-name">{p.display_name}</h2>
@@ -157,23 +167,32 @@ export default async function PricingPage() {
               <ul className="pr-features">
                 {features(p).map((f) => <li key={f}>{f}</li>)}
               </ul>
-              {p.code === 'free' ? (
+              {cta.kind === 'start-free' ? (
                 <a href="/" className="pr-cta pr-cta-quiet">
                   Start free
                 </a>
-              ) : user ? (
+              ) : cta.kind === 'current' ? (
+                // Neutral and not a control: nothing to do on the plan you have.
+                <p className="pr-cta pr-cta-current" data-testid="plan-current">
+                  Current plan
+                </p>
+              ) : cta.kind === 'manage' ? (
+                <a href="/account" className="pr-cta pr-cta-quiet">
+                  Manage plan
+                </a>
+              ) : cta.kind === 'checkout' ? (
                 <BillingButton
                   label={`Get ${p.display_name}`}
                   endpoint="/api/billing/checkout"
                   body={{ plan_code: p.code }}
                   returnTo="/pricing"
-                  primary={featured}
+                  primary={cta.primary}
                 />
-              ) : (
-                <a href="/login?return_to=/pricing" className={featured ? 'pr-cta jp-primary' : 'pr-cta pr-cta-quiet'}>
+              ) : cta.kind === 'sign-in' ? (
+                <a href="/login?return_to=/pricing" className={cta.primary ? 'pr-cta jp-primary' : 'pr-cta pr-cta-quiet'}>
                   Get {p.display_name}
                 </a>
-              )}
+              ) : null}
             </section>
           );
         })}

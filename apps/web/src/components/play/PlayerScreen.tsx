@@ -66,6 +66,19 @@ interface ScreenProps extends PlayerViewProps {
   readonly banner: Notice | null;
 }
 
+/**
+ * Scroll `area` (only it: never an ancestor, never the page) so `el` is fully
+ * inside its visible box. A no-op when it already is, or when `area` does not
+ * scroll. Exported for the unit test.
+ */
+export function scrollIntoArea(area: HTMLElement, el: Element): void {
+  if (!(area.scrollHeight > area.clientHeight)) return;
+  const a = area.getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  if (r.top < a.top) area.scrollTop += r.top - a.top;
+  else if (r.bottom > a.bottom) area.scrollTop += Math.min(r.bottom - a.bottom, r.top - a.top);
+}
+
 function useMedia(query: string): boolean {
   const [match, setMatch] = useState(false);
   useEffect(() => {
@@ -233,6 +246,21 @@ export function PlayerScreen(props: ScreenProps) {
   const facts = songFacts(bpm, musicalKey);
   const songTitle = (title ?? '').trim() || 'Your song';
 
+  // ── QA A-03: keep the current bar in view when the chord area scrolls ──────
+  // In short landscape (844x390, 800x360) a line of stacked bars can be taller
+  // than the chord area, which then scrolls (Player.module.css). Bring the
+  // current bar fully into view after every render that leaves it partly out
+  // (a new bar, or a new chord re-sizing the Now name above it) — only the
+  // chord area moves, never the page, and nothing is read or moved when the
+  // area does not scroll (every portrait and desktop size).
+  const chordsRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const box = chordsRef.current;
+    if (!box) return;
+    const bar = box.querySelector('[role="group"][aria-current="true"]');
+    if (bar) scrollIntoArea(box, bar);
+  });
+
   const place = placeInSong(sections, beatGrid, chordPosition);
   const whereText =
     place.section >= 0
@@ -398,7 +426,7 @@ export function PlayerScreen(props: ScreenProps) {
             {/* Story 3. The chord stage stays mounted in EVERY phase, so a job
                 with no retained stems (6.4) or an unsupported browser (5.3)
                 still shows its chords. */}
-            <div className={styles.chords}>
+            <div className={styles.chords} ref={chordsRef} data-testid="player-chords">
               <ChordOverlay
                 jobId={jobId}
                 view="stage"

@@ -157,3 +157,95 @@ test('no other password input in the app bypasses the toggle', () => {
     assert.doesNotMatch(read(f), /type="password"/, `${f} renders a bare password input`);
   }
 });
+
+// ---- Review round 2 ---------------------------------------------------------------------
+
+// MF-1: a revealed password is type="text"; it must not be spell-checked (cloud spell-check
+// "spell-jacking"), autocorrected or autocapitalised. Asserted in BOTH states.
+function assertNoSpellcheck(input, where) {
+  assert.equal(input.getAttribute('spellcheck'), 'false', `${where}: spellcheck must be "false"`);
+  assert.equal(input.getAttribute('autocorrect'), 'off', `${where}: autocorrect must be "off"`);
+  assert.equal(input.getAttribute('autocapitalize'), 'off', `${where}: autocapitalize must be "off"`);
+}
+
+test('MF-1: spellcheck, autocorrect and autocapitalize are off, hidden AND revealed, on every form', async () => {
+  process.env.NEXT_PUBLIC_HCAPTCHA_SITE_KEY = 'test-site-key';
+  for (const [name, el, prep] of [
+    ['sign-in', () => React.createElement(LoginForm), async () => {}],
+    ['sign-up', () => React.createElement(LoginForm), toSignup],
+    ['set-new-password', () => React.createElement(ResetForm), async () => {}],
+  ]) {
+    await withDom(async (dom) => {
+      await dom.mount(el());
+      await prep(dom);
+      const ts = toggles(dom);
+      assert.ok(ts.length > 0, `${name}: no toggle`);
+      for (const btn of ts) {
+        assertNoSpellcheck(field(btn), `${name} hidden`);
+        await click(dom, btn);
+        assert.equal(field(btn).getAttribute('type'), 'text', `${name}: revealed`);
+        assertNoSpellcheck(field(btn), `${name} revealed`);
+      }
+    });
+  }
+});
+
+// N-3: the input's accessible name is its label text only. The toggle must not sit inside the
+// label (an ancestor <label> folds the button's own name into the input's: "Password Show
+// password"), and no other text (the rule hint) may be part of the label either.
+// A narrow accname: aria-labelledby, else every associated <label> (for= and ancestor).
+function accName(dom, input) {
+  const doc = dom.window.document;
+  const by = input.getAttribute('aria-labelledby');
+  if (by) return by.split(/\s+/).map((id) => doc.getElementById(id)?.textContent ?? '').join(' ').trim();
+  const labels = [];
+  if (input.id) labels.push(...doc.querySelectorAll(`label[for="${input.id}"]`));
+  const anc = input.closest('label');
+  if (anc && !labels.includes(anc)) labels.push(anc);
+  // Real accname also pulls in a descendant button's aria-label; count it, so a toggle inside
+  // a label shows up in the name the way Chromium's AX tree reports it.
+  return labels.map((l) => {
+    let t = '';
+    const walk = (n) => {
+      if (n === input) return;
+      if (n.nodeType === 3) { t += n.textContent; return; }
+      if (n.nodeType === 1 && n.getAttribute('aria-hidden') === 'true') return;
+      if (n.nodeType === 1 && n.hasAttribute('aria-label')) { t += ' ' + n.getAttribute('aria-label') + ' '; return; }
+      n.childNodes.forEach(walk);
+    };
+    walk(l);
+    return t;
+  }).join(' ').replace(/\s+/g, ' ').trim();
+}
+
+test('N-3: each password input is named by its label alone; the toggle is outside the label', async () => {
+  process.env.NEXT_PUBLIC_HCAPTCHA_SITE_KEY = 'test-site-key';
+  for (const [name, el, prep, want] of [
+    ['sign-in', () => React.createElement(LoginForm), async () => {}, ['Password']],
+    ['sign-up', () => React.createElement(LoginForm), toSignup, ['Password']],
+    ['set-new-password', () => React.createElement(ResetForm), async () => {}, ['New password', 'Confirm password']],
+  ]) {
+    await withDom(async (dom) => {
+      await dom.mount(el());
+      await prep(dom);
+      const ts = toggles(dom);
+      assert.equal(ts.length, want.length, name);
+      ts.forEach((btn, i) => {
+        const input = field(btn);
+        assert.ok(btn.closest('label') === null, `${name}: the toggle is inside a <label>`); // boolean: a DOM node in the diff OOMs the runner
+        assert.ok(input.closest('label') === null, `${name}: the input is wrapped in a <label>`);
+        assert.ok(Boolean(input.id), `${name}: the input has an id for its label`);
+        assert.equal(accName(dom, input), want[i], `${name}: accessible name`);
+        // Revealed state too: the name must not change with the toggle.
+      });
+      await click(dom, ts[0]);
+      assert.equal(accName(dom, field(ts[0])), want[0], `${name}: accessible name when revealed`);
+    });
+  }
+  // Distinct ids for the two reset fields.
+  await withDom(async (dom) => {
+    await dom.mount(React.createElement(ResetForm));
+    const ids = toggles(dom).map((b) => field(b).id);
+    assert.equal(new Set(ids).size, 2, 'the two fields share an id');
+  });
+});

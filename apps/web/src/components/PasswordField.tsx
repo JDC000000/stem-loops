@@ -12,8 +12,16 @@
 //   - a keyboard user who tabbed to the button keeps focus on the button, as expected.
 // autoComplete is passed straight through, so "new-password" / "current-password" survive.
 //
+// Spell-check, autocorrect and autocapitalise are OFF in both modes (review round 2, MF-1):
+// once revealed the field is type="text", and a text field's contents can be sent to a
+// browser vendor's cloud spell-check service ("spell-jacking") or rewritten by a phone keyboard.
+//
+// The field renders its OWN <label htmlFor> (review round 2, N-3), and the toggle sits outside
+// it, so the input's accessible name is just the label text ("Password"), not
+// "Password Show password". Callers wrap it in a plain container, not a <label>.
+//
 // Purely presentational: it holds no password state of its own and makes no network call.
-import { useLayoutEffect, useRef, useState, type CSSProperties, type InputHTMLAttributes } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type InputHTMLAttributes } from 'react';
 
 export const SHOW_PASSWORD = 'Show password';
 export const HIDE_PASSWORD = 'Hide password';
@@ -21,7 +29,9 @@ export const HIDE_PASSWORD = 'Hide password';
 /** The toggle's tap target, in px. WCAG 2.5.5 / the brand book's 44px minimum. */
 export const TOGGLE_SIZE = 44;
 
-type Props = Omit<InputHTMLAttributes<HTMLInputElement>, 'type'> & {
+type Props = Omit<InputHTMLAttributes<HTMLInputElement>, 'type' | 'spellCheck' | 'autoCorrect' | 'autoCapitalize'> & {
+  /** The visible label. It is the input's whole accessible name. */
+  label: string;
   inputStyle?: CSSProperties;
 };
 
@@ -57,7 +67,9 @@ function EyeIcon({ open }: { open: boolean }) {
   );
 }
 
-export function PasswordField({ inputStyle, ...inputProps }: Props) {
+export function PasswordField({ label, inputStyle, id, ...inputProps }: Props) {
+  const autoId = useId();
+  const inputId = id ?? `password-${autoId.replace(/:/g, '')}`;
   const [visible, setVisible] = useState(false);
   const ref = useRef<HTMLInputElement | null>(null);
   const restore = useRef<{ start: number | null; end: number | null } | null>(null);
@@ -87,11 +99,17 @@ export function PasswordField({ inputStyle, ...inputProps }: Props) {
   };
 
   return (
+    <>
+    <label htmlFor={inputId}>{label}</label>
     <span style={wrap}>
       <input
         {...inputProps}
+        id={inputId}
         ref={ref}
         type={visible ? 'text' : 'password'}
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
         style={{ ...inputStyle, paddingRight: TOGGLE_SIZE + 4 }}
       />
       <button
@@ -107,6 +125,7 @@ export function PasswordField({ inputStyle, ...inputProps }: Props) {
         <EyeIcon open={!visible} />
       </button>
     </span>
+    </>
   );
 }
 

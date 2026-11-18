@@ -178,6 +178,66 @@ def test_clean_title(raw, expected):
     assert clean_title(raw) == expected
 
 
+# SF-2 (review round 2): every format character (Cf) goes, except ZWJ/ZWNJ; the blank fillers
+# go too; and a title with nothing visible left is None so the UI falls back.
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Song\U000e0041\U000e0042\U000e007f", "Song"),  # tag characters (hidden-text smuggling)
+        ("\U000e0001Tagged", "Tagged"),  # LANGUAGE TAG
+        ("A\U000e0000B", "AB"),  # unassigned (Cn) code point in the tag block
+        ("soft\u00adhyphen", "softhyphen"),
+        ("f\u2061x\u2062y\u2063z\u2064", "fxyz"),  # invisible math operators
+        ("mongolian\u180evowel", "mongolianvowel"),
+        ("\ufff9anno\ufffatated\ufffb", "annotated"),  # interlinear annotation
+        ("\u206aold\u206fbidi", "oldbidi"),  # deprecated format chars, Cf
+        ("Han\u3164gul", "Hangul"),  # HANGUL FILLER
+        ("x\u115f\u1160y", "xy"),  # Hangul choseong/jungseong fillers
+        ("half\uffa0width", "halfwidth"),  # HALFWIDTH HANGUL FILLER
+        ("braille\u2800blank", "brailleblank"),
+        (
+            "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
+            "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
+        ),  # ZWNJ kept (Persian)
+        ("\U0001f469\u200d\U0001f4bb coder", "\U0001f469\u200d\U0001f4bb coder"),  # ZWJ kept
+    ],
+)
+def test_clean_title_strips_every_format_character_and_filler(raw, expected):
+    assert clean_title(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "\u3164\u3164",  # the reviewer's blank title
+        "\u115f\u1160\uffa0",
+        "\u2800 \u2800",
+        "\U000e0041\U000e0042",
+        "\u00ad\u2061\u180e",
+        "\u200d",  # a joiner alone shows nothing
+        "\u200c \u200d",
+        " \u3164 \u200b\u2800 ",
+    ],
+)
+def test_clean_title_is_none_when_nothing_visible_is_left(raw):
+    assert clean_title(raw) is None
+
+
+def test_no_format_character_but_the_joiners_survives_clean_title():
+    """Exhaustive over the Cf category as this Python knows it."""
+    import sys
+    import unicodedata
+
+    leaked = [
+        f"U+{cp:04X}"
+        for cp in range(sys.maxunicode + 1)
+        if unicodedata.category(chr(cp)) == "Cf"
+        and cp not in (0x200C, 0x200D)
+        and chr(cp) in (clean_title(f"a{chr(cp)}b") or "")
+    ]
+    assert leaked == []
+
+
 def test_clean_title_caps_the_length():
     out = clean_title("x" * 10_000)
     assert out is not None
@@ -228,9 +288,27 @@ def test_record_title_never_overwrites(monkeypatch: pytest.MonkeyPatch):
     sink: list = []
     monkeypatch.setattr(pipeline, "_db", lambda: _FakeConn(sink))
     pipeline._record_title(JOB, "Lucky Ticket")
-    assert sink == [
-        ("UPDATE jobs SET title=%s WHERE id=%s AND title IS NULL", ("Lucky Ticket", JOB))
-    ]
+    assert len(sink) == 1
+    sql, params = sink[0]
+    assert sql.startswith("UPDATE jobs SET title=%s WHERE id=%s AND title IS NULL ")
+    assert params == ("Lucky Ticket", JOB, "purged")
+
+
+def test_record_title_refuses_a_blanked_or_expired_row_by_the_sweeps_own_rule(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """N-1 (review round 2): the UPDATE is guarded by the cleanup's columns -- never onto an
+    anonymised shell, never past retention -- using cleanup's OWN marker and rule, not a copy.
+    The behaviour is proven on real Postgres in test_song_titles_db.py."""
+    from worker import cleanup
+
+    sink: list = []
+    monkeypatch.setattr(pipeline, "_db", lambda: _FakeConn(sink))
+    pipeline._record_title(JOB, "Lucky Ticket")
+    sql, params = sink[0]
+    assert "AND client_ip_hash IS DISTINCT FROM %s" in sql
+    assert params[2] == cleanup.PURGED_MARKER
+    assert f"AND {' '.join(cleanup.RETAINED_UNTIL_SQL.split())} > now()" in sql
 
 
 def test_record_title_skips_an_empty_title(monkeypatch: pytest.MonkeyPatch):

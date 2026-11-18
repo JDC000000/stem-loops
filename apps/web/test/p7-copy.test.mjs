@@ -43,13 +43,21 @@ test('"What you get" is the six true-today lines, in order, and about 70 words w
 });
 
 test('DB-17: the Chords line is decided by ONE constant, and turning it off drops only that line', async () => {
-  const src = readFileSync(join(WEB, 'src/components/landing/what-you-get.ts'), 'utf8');
+  const src = readFileSync(join(WEB, 'src/lib/chords-claim.ts'), 'utf8');
   assert.equal((src.match(/export const CHORDS_LINE_SHOWN = (true|false);/g) ?? []).length, 1);
   assert.match(src, /DB-17/, 'the switch says why it exists');
+  // Nobody else defines it: every consumer imports this one.
+  for (const f of ['src/components/landing/what-you-get.ts', 'src/app/(landing)/page.tsx', 'src/components/landing/PlayerArt.tsx',
+    'src/components/landing/faq.tsx', 'src/lib/seo/pages.ts', 'src/lib/seo/jsonld.ts', 'src/lib/seo/site.ts']) {
+    const t = readFileSync(join(WEB, f), 'utf8');
+    assert.doesNotMatch(t, /const CHORDS_LINE_SHOWN\s*=/, `${f} defines its own switch`);
+    assert.match(t, /import \{[^}]*\bCHORDS_LINE_SHOWN\b[^}]*\} from '(?:@\/lib\/chords-claim|\.\.\/chords-claim\.ts)'/, `${f} does not read the switch`);
+  }
+  const wygSrc = readFileSync(join(WEB, 'src/components/landing/what-you-get.ts'), 'utf8');
   const load = async (flag) => {
     const js = ts.transpileModule(
-      src.replace(/import \{ MAX_TRACK_SEC \} from '@\/lib\/play\/types';/, 'const MAX_TRACK_SEC = 300;')
-        .replace(/CHORDS_LINE_SHOWN = true;/, `CHORDS_LINE_SHOWN = ${flag};`),
+      wygSrc.replace(/import \{ MAX_TRACK_SEC \} from '@\/lib\/play\/types';/, 'const MAX_TRACK_SEC = 300;')
+        .replace(/import \{ CHORDS_LINE_SHOWN \} from '@\/lib\/chords-claim';/, `const CHORDS_LINE_SHOWN = ${flag};`),
       { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } },
     ).outputText;
     return import('data:text/javascript;base64,' + Buffer.from(js).toString('base64') + '#' + flag);
@@ -58,6 +66,51 @@ test('DB-17: the Chords line is decided by ONE constant, and turning it off drop
   const off = (await load(false)).WHAT_YOU_GET.map((l) => l.key);
   assert.deepEqual(on, ['stems', 'chords', 'loop', 'length', 'device', 'account']);
   assert.deepEqual(off, ['stems', 'loop', 'length', 'device', 'account']);
+});
+
+// SF-3 (review round 2): flipping the switch alone must leave NO chord claim on the home page —
+// not just the "What you get" line. Rendered (the repo's rule), with the switch patched to false
+// at its one definition, then every channel the render helper exposes is searched: DOM text in
+// both normalisations, accessible-name attributes, the page metadata, and the JSON-LD script.
+const OFF = await renderPage('app/(landing)/page.tsx', {
+  patch: (rel, src) => (rel === join('lib', 'chords-claim.ts')
+    ? src.replace(/export const CHORDS_LINE_SHOWN = true;/, 'export const CHORDS_LINE_SHOWN = false;')
+    : src),
+});
+// The ONE allowed mention: OG_ALT describes the Open Graph IMAGE, which draws chord names. The
+// image is an asset; swapping it is recorded as residue in lib/chords-claim.ts.
+const OG_ALT_RE = /Four chord names, Gm, E flat, B flat and F,[^¶]*?Play along\./g; // openGraph + twitter
+
+test('SF-3: CHORDS_LINE_SHOWN=false removes EVERY chord claim from the rendered home page', () => {
+  assert.ok(/chord/i.test(HOME.textSpaced), 'sanity: with the switch on, the page does talk about chords');
+  for (const [where, text] of [['text (spaced)', OFF.textSpaced], ['text (tight)', OFF.textTight]]) {
+    const hits = text.match(/.{0,50}chord.{0,50}/gi) ?? [];
+    assert.deepEqual(hits, [], `${where} still claims chords`);
+  }
+  for (const [where, text] of [['metadata (spaced)', OFF.metaSpaced], ['metadata (tight)', OFF.metaTight]]) {
+    const rest = text.replace(OG_ALT_RE, '');
+    assert.notEqual(rest, text, `${where}: the OG image alt was expected (if the image changed, update this test)`);
+    assert.deepEqual(rest.match(/.{0,50}chord.{0,50}/gi) ?? [], [], `${where} still claims chords`);
+  }
+  const jsonLd = [...OFF.html.matchAll(/<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]).join('\n');
+  assert.ok(jsonLd.length > 0, 'the home page renders its JSON-LD');
+  assert.doesNotMatch(jsonLd, /chord/i, 'the JSON-LD still claims chords');
+  // Visible markup other than CSS class names (e.g. the drawn player's `pl-chord`, now gone too).
+  assert.doesNotMatch(OFF.html.replace(/<script[\s\S]*?<\/script>/gi, ''), /chord/i, 'chords left in the markup');
+});
+
+test('SF-3: with the switch off, the rest of the page is intact', () => {
+  assert.match(OFF.textSpaced, /Six stems on faders\. Turn your part down and play it yourself\./);
+  assert.match(OFF.textSpaced, /the six stems on faders, and a loop you can set on any detected section/);
+  assert.match(OFF.textSpaced, /trimmed on our end, where the player stops\./);
+  assert.match(OFF.textSpaced, /The stems load into the player\. Pull your part down/);
+  const qs = [...OFF.html.match(/<section[^>]*id="faq"[\s\S]*?<\/section>/)[0].matchAll(/<summary>([^<]+)<\/summary>/g)].map((m) => m[1]);
+  assert.deepEqual(qs.length, 4);
+  // And with it on, the default render is unchanged: the chords lines are all there.
+  for (const re of [/with the chords running over the top/, /the chords across the top/, /where the chord track and the player both stop/,
+    /with the chord track over them/, /Chords An estimate, kept in time with the song/, /How good are the chords\?/]) {
+    assert.match(HOME.textSpaced, re);
+  }
 });
 
 test('home FAQ is at most five questions and links to /help', () => {

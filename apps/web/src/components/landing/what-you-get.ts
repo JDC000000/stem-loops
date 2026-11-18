@@ -3,7 +3,7 @@
 //
 // Every line is a fact about the product today:
 //   - six stems with a mute each: the mixer (components/play);
-//   - chords in time: see CHORDS_LINE_SHOWN below;
+//   - chords in time: see CHORDS_LINE_SHOWN (lib/chords-claim.ts);
 //   - loop a section, or several in a row: section runs shipped in Slice 1a (#288, P2);
 //   - the first MAX_TRACK_MIN minutes: the trim the worker and the player both enforce;
 //   - Chrome on a computer, phones with lighter audio, phone support new;
@@ -13,13 +13,10 @@ import { MAX_TRACK_SEC } from '@/lib/play/types';
 
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
-/**
- * DB-17 (undecided; Jon, 2026-11-17: "wait and see"). If new songs stop getting chords after
- * 2026-12-05, set this to false and the Chords line leaves "What you get" the same day — this
- * is the one place it is decided. (The hero, the FAQ "How good are the chords?" and the page
- * metadata also mention chords; they would need checking in that change too.)
- */
-export const CHORDS_LINE_SHOWN = true;
+// DB-17: the switch lives in lib/chords-claim.ts, the ONE place it is decided. Setting it to
+// false drops this list's Chords line AND every other chord claim on the home page.
+import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
+export { CHORDS_LINE_SHOWN };
 
 /** One line: a bold lead, then the rest of the sentence. */
 export type WhatYouGetLine = { key: string; lead: string; rest: string };

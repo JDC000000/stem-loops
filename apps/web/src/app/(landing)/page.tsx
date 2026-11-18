@@ -28,6 +28,7 @@ import type { Metadata } from 'next';
 import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
 import { FaqItem, HOME_FAQ } from '@/components/landing/faq';
 import { COMING_SOON, WHAT_YOU_GET } from '@/components/landing/what-you-get';
+import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
 import { MAX_TRACK_SEC } from '@/lib/play/types';
 import { JsonLd } from '@/components/seo/JsonLd';
 import { homeGraph } from '@/lib/seo/jsonld';
@@ -39,7 +40,10 @@ import { pageFor } from '@/lib/seo/pages';
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
 const OG_TITLE = 'Paste a song. Play along.';
-const OG_DESC = 'Six stems with faders, mute and solo, and a chord track that moves with the song. Loop a detected section until you have it.';
+// Every chord claim on this page depends on CHORDS_LINE_SHOWN (DB-17, lib/chords-claim.ts).
+const OG_DESC = CHORDS_LINE_SHOWN
+  ? 'Six stems with faders, mute and solo, and a chord track that moves with the song. Loop a detected section until you have it.'
+  : 'Six stems with faders, mute and solo. Loop a detected section until you have it.';
 const OG_ALT =
   'Four chord names, Gm, E flat, B flat and F, above six mixer channels for drums, bass, guitar, keys, vocals and other, with the guitar fader pulled down and muted, under the headline Paste a song. Play along.';
 
@@ -77,7 +81,9 @@ export default function HomePage() {
                 <span className="h1-line">Paste a song.</span> <span className="h1-line">Play along.</span>
               </h1>
               <p className="lead">
-                Six stems on faders, with the chords running over the top. Turn your part down and play it yourself.
+                {CHORDS_LINE_SHOWN
+                  ? 'Six stems on faders, with the chords running over the top. Turn your part down and play it yourself.'
+                  : 'Six stems on faders. Turn your part down and play it yourself.'}
               </p>
               <p className="audience">
                 Uses the first {MAX_TRACK_MIN}&nbsp;minutes of any song, on a computer or a phone. Starting a job needs no account;
@@ -95,8 +101,9 @@ export default function HomePage() {
             <div className="reading">
               <h2 id="play-h">What playing along looks like</h2>
               <p className="body-lg">
-                When a job finishes it opens a player in the same tab: the chords across the top, the six stems on faders
-                underneath, and a loop you can set on any detected section of the song.
+                {CHORDS_LINE_SHOWN
+                  ? 'When a job finishes it opens a player in the same tab: the chords across the top, the six stems on faders underneath, and a loop you can set on any detected section of the song.'
+                  : 'When a job finishes it opens a player in the same tab: the six stems on faders, and a loop you can set on any detected section of the song.'}
               </p>
             </div>
             <PlayerArt />
@@ -111,7 +118,7 @@ export default function HomePage() {
         </section>
 
         {/* 3. WHAT YOU GET (design v1.4, P7): ~70 words, true today. The lines live in
-            components/landing/what-you-get.ts, including the DB-17 switch for the Chords line. */}
+            components/landing/what-you-get.ts; the DB-17 switch is lib/chords-claim.ts. */}
         <section className="section" id="scope" aria-labelledby="scope-h">
           <div className="container">
             <div className="reading">
@@ -156,7 +163,10 @@ export default function HomePage() {
                     <dt>Max upload</dt>
                     <dd>200&nbsp;MB</dd>
                     <dt>Length used</dt>
-                    <dd>The first {MAX_TRACK_MIN}&nbsp;minutes. A longer song is trimmed on our end, where the chord track and the player both stop.</dd>
+                    <dd>
+                      The first {MAX_TRACK_MIN}&nbsp;minutes. A longer song is trimmed on our end,{' '}
+                      {CHORDS_LINE_SHOWN ? 'where the chord track and the player both stop.' : 'where the player stops.'}
+                    </dd>
                     <dt>Tempo</dt>
                     <dd>40–250 BPM</dd>
                   </dl>
@@ -182,14 +192,20 @@ export default function HomePage() {
                 </div>
                 <div className="pipe-text">
                   <p>
-                    The stems load into the player with the chord track over them. Pull your part down, solo the one you are
-                    learning, or loop a section until it sticks.
+                    {CHORDS_LINE_SHOWN
+                      ? 'The stems load into the player with the chord track over them. '
+                      : 'The stems load into the player. '}
+                    Pull your part down, solo the one you are learning, or loop a section until it sticks.
                   </p>
                   <dl className="kv">
                     <dt>Player</dt>
                     <dd>6 faders, mute, solo, section loop</dd>
-                    <dt>Chords</dt>
-                    <dd>An estimate, kept in time with the song</dd>
+                    {CHORDS_LINE_SHOWN && (
+                      <>
+                        <dt>Chords</dt>
+                        <dd>An estimate, kept in time with the song</dd>
+                      </>
+                    )}
                   </dl>
                 </div>
               </li>

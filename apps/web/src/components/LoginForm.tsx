@@ -173,9 +173,8 @@ export default function LoginForm({
             onChange={(e) => setEmail(e.target.value)} style={input} />
         </label>
         {mode !== 'reset' && (
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, color: 'var(--text-secondary)', fontSize: 14 }}>
-            Password
-            <PasswordField required
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, color: 'var(--text-secondary)', fontSize: 14 }}>
+            <PasswordField label="Password" required
               minLength={mode === 'signup' ? PASSWORD_MIN_LENGTH : undefined}
               autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
               aria-describedby={mode === 'signup' ? 'password-rule' : undefined}
@@ -185,7 +184,7 @@ export default function LoginForm({
                 {PASSWORD_RULE_TEXT}
               </span>
             )}
-          </label>
+          </div>
         )}
         {mode === 'signup' && (siteKey ? (
           <HCaptcha ref={captchaRef} sitekey={siteKey}

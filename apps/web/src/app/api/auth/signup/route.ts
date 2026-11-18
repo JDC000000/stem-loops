@@ -14,7 +14,7 @@ import { createServerClient } from '@/lib/auth/supabase';
 import { validateSignupEmail, validatePassword } from '@/lib/auth/password-rules';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
 import { verifyHcaptchaToken } from '@/lib/hcaptcha';
-import { SIGNUP_GENERIC, signupErrorReply } from '@/lib/auth/signup-errors';
+import { SIGNUP_GENERIC, safeAuthCode, signupErrorReply } from '@/lib/auth/signup-errors';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -79,11 +79,17 @@ export async function POST(request: NextRequest) {
     if (error) {
       // Never the provider's text (Slice 1b): one plain line per case, lib/auth/signup-errors.ts.
       const reply = signupErrorReply(error);
-      if (reply.unexpected) {
-        // Code and status only: no address, no provider message.
-        Sentry.captureMessage('signup: unmapped signUp error', {
-          level: 'warning',
-          tags: { route: 'api/auth/signup', auth_code: String((error as { code?: unknown }).code ?? ''), auth_status: String(error.status ?? '') },
+      if (reply.report) {
+        // Code and status only: no address, no provider message. A server failure (5xx or
+        // `unexpected_failure`) means sign-up may be down, so it is an error, not a warning.
+        const server = reply.report === 'server_failure';
+        Sentry.captureMessage(server ? 'signup: auth server failure' : 'signup: unmapped signUp error', {
+          level: server ? 'error' : 'warning',
+          tags: {
+            route: 'api/auth/signup',
+            auth_code: safeAuthCode((error as { code?: unknown }).code),
+            auth_status: typeof error.status === 'number' ? String(error.status) : '',
+          },
         });
       }
       return NextResponse.json(

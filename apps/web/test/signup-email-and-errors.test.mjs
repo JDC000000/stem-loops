@@ -9,7 +9,7 @@
 //      with a Sign in link — the same line for each, so it reveals nothing about the account.
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
@@ -36,6 +36,17 @@ test('sign-up email: refuses ! , spaces, consecutive dots and a leading/trailing
     'a#b@example.com', 'a(b)@example.com', 'a"b@example.com', 'a,b@example.com', 'a;b@example.com', 'a<b>@example.com']) {
     assert.equal(rules.validateSignupEmail(bad), MSG, bad);
   }
+});
+
+test('N-6: the same check covers the DOMAIN: a@gm!ail.com and friends are refused', () => {
+  for (const bad of ['a@gm!ail.com', 'a@gmail.com!', 'a@!gmail.com', 'name@gma il.com', 'a@gmail..com', 'a@.gmail.com',
+    'a@gmail.com.', 'a@gm#ail.com', 'a@gm(ail).com', 'a@gm,ail.com', 'a@[1.2.3.4]', 'a@b!@gmail.com']) {
+    assert.equal(rules.validateSignupEmail(bad), MSG, bad);
+  }
+  for (const ok of ['a@mail.example-host.co.uk', 'a@sub.domain.io', 'a@münchen.de', 'a@xn--mnchen-3ya.de']) {
+    assert.equal(rules.validateSignupEmail(ok), null, ok);
+  }
+  assert.equal(rules.validateEmail('a@gm!ail.com'), null, 'sign-in keeps the old permissive check');
 });
 
 test('sign-up email: ordinary addresses still pass, and the base checks still apply', () => {
@@ -123,7 +134,82 @@ test('route: "Error sending confirmation email" becomes the neutral line with si
   assert.equal(res.status, 400);
   assert.deepEqual(res.body, { ok: false, code: 'SIGNUP_RETRY_OR_SIGN_IN', error: RETRY, sign_in: true });
   assert.doesNotMatch(JSON.stringify(res.body), /confirmation email/i);
-  assert.equal(globalThis.__sentry.length, 0, 'a known case is not a Sentry event');
+  // SF-1 (review round 2): `unexpected_failure` is GoTrue's code for EVERY 500, so it is reported
+  // (the reply to the person is unchanged) — code and status only.
+  assert.equal(globalThis.__sentry.length, 1, 'a server failure is a Sentry event');
+  const [msg, opts] = globalThis.__sentry[0];
+  assert.equal(msg, 'signup: auth server failure');
+  assert.equal(opts.level, 'error');
+  assert.deepEqual(opts.tags, { route: 'api/auth/signup', auth_code: 'unexpected_failure', auth_status: '500' });
+  assert.doesNotMatch(JSON.stringify(globalThis.__sentry), /confirmation|alice|example\.com/i, 'no provider text or address');
+});
+
+test('SF-1 route: a 5xx with "Database error saving new user" keeps the neutral reply and is reported, code+status only', async () => {
+  globalThis.__signUpResult = { data: {}, error: { name: 'AuthApiError', status: 500, code: 'unexpected_failure', message: 'Database error saving new user bob@example.com' } };
+  const { POST } = await loadRoute();
+  const res = await POST(req(body('bob@example.com')));
+  assert.deepEqual(res.body, { ok: false, code: 'SIGNUP_RETRY_OR_SIGN_IN', error: RETRY, sign_in: true });
+  assert.equal(globalThis.__sentry.length, 1);
+  assert.doesNotMatch(JSON.stringify(globalThis.__sentry), /Database|bob|example\.com/i);
+});
+
+test('SF-1 route: a 503 with no code is generic for the person and reported as a server failure', async () => {
+  globalThis.__signUpResult = { data: {}, error: { name: 'AuthRetryableFetchError', status: 503, message: 'upstream connect error carol@example.com' } };
+  const { POST } = await loadRoute();
+  const res = await POST(req(body('carol@example.com')));
+  assert.equal(res.body.error, errs.SIGNUP_GENERIC);
+  assert.equal(globalThis.__sentry.length, 1);
+  assert.equal(globalThis.__sentry[0][0], 'signup: auth server failure');
+  assert.deepEqual(globalThis.__sentry[0][1].tags, { route: 'api/auth/signup', auth_code: '', auth_status: '503' });
+  assert.doesNotMatch(JSON.stringify(globalThis.__sentry), /upstream|carol/i);
+});
+
+test('SF-1 route: the known 4xx cases (existing account, rate limit, weak password) are NOT reported', async () => {
+  for (const error of [
+    { status: 422, code: 'user_already_exists', message: 'User already registered' },
+    { status: 429, code: 'over_email_send_rate_limit', message: 'email rate limit exceeded' },
+    { status: 422, code: 'weak_password', message: 'weak' },
+    { status: 400, code: 'email_address_invalid', message: 'bad' },
+  ]) {
+    globalThis.__sentry = [];
+    globalThis.__signUpResult = { data: {}, error };
+    const { POST } = await loadRoute();
+    await POST(req(body('dave@example.com')));
+    assert.equal(globalThis.__sentry.length, 0, error.code);
+  }
+});
+
+test('SF-1 mapping: report is server_failure for unexpected_failure or any status >= 500, else null/unmapped', () => {
+  const r = (e) => errs.signupErrorReply(e);
+  assert.equal(r({ status: 500, code: 'unexpected_failure' }).report, 'server_failure');
+  assert.equal(r({ status: 0, code: 'unexpected_failure' }).report, 'server_failure', 'the code alone is enough');
+  assert.equal(r({ status: 500, message: 'Error sending confirmation email' }).report, 'server_failure', 'the status alone is enough');
+  assert.equal(r({ status: 502, code: 'weak_password' }).report, 'server_failure');
+  assert.equal(r({ status: 504 }).report, 'server_failure');
+  assert.equal(r({ status: 418, code: 'something_new' }).report, 'unmapped');
+  assert.equal(r({ status: 429, code: 'over_request_rate_limit' }).report, null);
+  assert.equal(r({ status: 422, code: 'email_exists' }).report, null);
+  for (const e of [{ status: 500, code: 'unexpected_failure' }, { status: 418 }, { status: 422, code: 'email_exists' }]) {
+    assert.equal(r(e).unexpected, r(e).report !== null, JSON.stringify(e));
+  }
+  // The reply the person sees for unexpected_failure is unchanged.
+  assert.equal(r({ status: 500, code: 'unexpected_failure' }).error, RETRY);
+  assert.equal(r({ status: 500, code: 'unexpected_failure' }).status, 400);
+});
+
+test('SF-1: the Sentry code tag forwards only identifier-shaped codes', () => {
+  assert.equal(errs.safeAuthCode('unexpected_failure'), 'unexpected_failure');
+  assert.equal(errs.safeAuthCode('Error for alice@example.com'), 'other');
+  assert.equal(errs.safeAuthCode(undefined), '');
+  assert.equal(errs.safeAuthCode(42), 'other');
+});
+
+test('N-4: signup-errors.ts names the test file that really exists', () => {
+  const src = read('src/lib/auth/signup-errors.ts');
+  for (const m of src.matchAll(/test\/[\w.-]+\.test\.mjs/g)) {
+    assert.ok(existsSync(join(WEB, m[0])), `comment cites ${m[0]}, which does not exist`);
+  }
+  assert.match(src, /test\/signup-email-and-errors\.test\.mjs/);
 });
 
 test('route: an unmapped error is generic for the user, and reported with code and status only', async () => {

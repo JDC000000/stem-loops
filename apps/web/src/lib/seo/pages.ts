@@ -1,5 +1,6 @@
 // SEO-04. The one list of public, indexable pages. Feeds sitemap.ts, llms.txt, jsonld.ts and the tests.
 import { MAX_TRACK_MIN } from './site.ts';
+import { CHORDS_LINE_SHOWN } from '../chords-claim.ts';
 
 export type PageSection = 'home' | 'product' | 'practice' | 'compare' | 'guide' | 'trust' | 'legal';
 export type PublicPage = {
@@ -15,7 +16,10 @@ export type PublicPage = {
 
 export const PUBLIC_PAGES: PublicPage[] = [
   { path: '/', title: 'stem-loops: play along with any song, stem by stem', absoluteTitle: true,
-    description: `Six stems with faders, mute and solo, a chord track and section loops. Play along on a computer or a phone. Uses the first ${MAX_TRACK_MIN} minutes of any song.`,
+    // DB-17 (lib/chords-claim.ts): no chord claim when the switch is off.
+    description: CHORDS_LINE_SHOWN
+      ? `Six stems with faders, mute and solo, a chord track and section loops. Play along on a computer or a phone. Uses the first ${MAX_TRACK_MIN} minutes of any song.`
+      : `Six stems with faders, mute and solo, and section loops. Play along on a computer or a phone. Uses the first ${MAX_TRACK_MIN} minutes of any song.`,
     section: 'home', lastModified: '2026-11-17', llms: true, published: true },
   { path: '/loops', title: 'Download loops',
     description: 'Bar-length loops cut from each stem of a song you have split, as 24-bit WAV files named by stem, BPM, key, section and number.',

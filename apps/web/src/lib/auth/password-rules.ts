@@ -57,7 +57,7 @@ export const SIGNUP_EMAIL_CHAR_MSG =
 const LOCAL_PART_BAD_CHAR = /[\s!#$%&*/=?^`{|}~"(),:;<>[\]\\]/;
 
 /**
- * The sign-up form's email check: validateEmail(), then a local-part check for characters
+ * The sign-up form's email check: validateEmail(), then a local-part AND domain check for characters
  * (and dot patterns: leading, trailing, consecutive) that most providers do not accept, so a
  * confirmation email is not sent to an address that will bounce. Used by the sign-up form and
  * POST /api/auth/signup only. Sign-in and password reset keep validateEmail() unchanged, so an
@@ -69,11 +69,20 @@ export function validateSignupEmail(raw: unknown): string | null {
     const at = trimmed.lastIndexOf('@');
     if (at > 0) {
       const local = trimmed.slice(0, at);
+      const domain = trimmed.slice(at + 1);
       if (
         LOCAL_PART_BAD_CHAR.test(local) ||
         local.startsWith('.') ||
         local.endsWith('.') ||
-        local.includes('..')
+        local.includes('..') ||
+        // The DOMAIN too (review round 2, N-6): `a@gm!ail.com` is a typo that bounces just
+        // like `name!@gmail.com`. None of these characters is legal in a host name, and a
+        // domain cannot start or end with a dot or have two in a row, so no real address
+        // is turned away.
+        LOCAL_PART_BAD_CHAR.test(domain) ||
+        domain.startsWith('.') ||
+        domain.endsWith('.') ||
+        domain.includes('..')
       ) {
         return SIGNUP_EMAIL_CHAR_MSG;
       }

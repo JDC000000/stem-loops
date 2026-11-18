@@ -7,6 +7,7 @@
 // it must, and the answers point there.
 import type { ReactNode } from 'react';
 import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
+import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
 
 export type FaqEntry = { id: string; q: string; a: ReactNode };
 
@@ -26,8 +27,8 @@ export const FAQ: Record<string, FaqEntry> = {
     q: 'Do I need an account?',
     a: (
       <p>
-        Not to start one. Running a job works signed out. The player asks you to sign in — that is where the stems and
-        the chord track are shown. If you are new, you create an account on the <a href="/login">sign-in page</a>. A
+        Not to start one. Running a job works signed out. The player asks you to sign in — that is where{' '}
+        {CHORDS_LINE_SHOWN ? 'the stems and the chord track are shown' : 'the stems are shown'}. If you are new, you create an account on the <a href="/login">sign-in page</a>. A
         one-time link sent to your email only signs you back in to an account that already exists; it does not create
         one.
       </p>
@@ -88,8 +89,12 @@ export const FAQ: Record<string, FaqEntry> = {
     q: 'What happens to my files?',
     a: (
       <p>
-        Your link or file goes to our storage, and the audio goes to two outside services: one splits it into stems, one
-        estimates the chords. Sources, stems and loops are deleted after 24 hours. With a subscription, the songs in your
+        {/* DB-17: with the chords switch off this stays a full disclosure (it names no feature, and
+            the privacy notice lists every processor) rather than dropping a service silently. */}
+        {CHORDS_LINE_SHOWN
+          ? 'Your link or file goes to our storage, and the audio goes to two outside services: one splits it into stems, one estimates the chords.'
+          : 'Your link or file goes to our storage, and the audio goes to the outside services named in the privacy notice for processing.'}{' '}
+        Sources, stems and loops are deleted after 24 hours. With a subscription, the songs in your
         account are kept as a library while you subscribe, and for 30 days after it ends. Anyone holding the link to a
         job you start without an account can fetch its audio and stems, so don’t pass that link around. A job you start
         while signed in opens only for your account. More in the <a href="/privacy">privacy notice</a>.
@@ -123,7 +128,11 @@ export const FAQ: Record<string, FaqEntry> = {
 };
 
 /** The home page's five (P7: "Home-page FAQ ≤ 5"). Everything is on /help. */
-export const HOME_FAQ: readonly FaqEntry[] = [FAQ.account, FAQ.chords, FAQ.time, FAQ.files, FAQ.youtube];
+// DB-17 (lib/chords-claim.ts): with the chords switch off, the chords question leaves the home
+// page (it stays on /help, which answers it honestly either way).
+export const HOME_FAQ: readonly FaqEntry[] = CHORDS_LINE_SHOWN
+  ? [FAQ.account, FAQ.chords, FAQ.time, FAQ.files, FAQ.youtube]
+  : [FAQ.account, FAQ.time, FAQ.files, FAQ.youtube];
 
 /** /help, grouped. Every entry appears exactly once. */
 export const HELP_SECTIONS: readonly { heading: string; entries: readonly FaqEntry[] }[] = [

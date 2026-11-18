@@ -43,6 +43,7 @@ from . import tmpdirs
 from .chord_source import ChordQuotaExceeded, ChordSubmitUncertain
 from .classifier.energy_classifier import classify_energy
 from .classifier.section_labeler import label_sections
+from .cleanup import PURGED_MARKER, RETAINED_UNTIL_SQL
 from .downloader import download_audio
 from .dsp.seamless import apply as seamless_apply
 from .encoder.wav_encoder import encode_24bit, waveform_peaks
@@ -93,6 +94,18 @@ def _fetch_job(job_id: str):
         ).fetchone()
 
 
+# Never write a title onto a row the cleanup has blanked or is about to (review round 2, N-1):
+# not an anonymised shell (client_ip_hash = PURGED_MARKER, set by cleanup._anonymise_job) and
+# not past retention by the SAME rule the sweep deletes by (cleanup.RETAINED_UNTIL_SQL --
+# which also covers account deletion, which sets expires_at = created_at). A reaper re-run of
+# a job that outlived its retention therefore cannot bring a purged title back.
+_RECORD_TITLE_SQL = (
+    "UPDATE jobs SET title=%s WHERE id=%s AND title IS NULL "
+    "AND client_ip_hash IS DISTINCT FROM %s "
+    f"AND {RETAINED_UNTIL_SQL} > now()"
+)
+
+
 def _record_title(job_id: str, title: str | None) -> None:
     """Write ``jobs.title`` for a NEW song (design v1.4, P5.1). ``title`` is already cleaned
     (``titles.clean_title``). Never overwrites: a reaper re-run of the same job, or a title
@@ -103,7 +116,7 @@ def _record_title(job_id: str, title: str | None) -> None:
         return
     try:
         with _db() as c:
-            c.execute("UPDATE jobs SET title=%s WHERE id=%s AND title IS NULL", (title, job_id))
+            c.execute(_RECORD_TITLE_SQL, (title, job_id, PURGED_MARKER))
     except Exception as exc:  # noqa: BLE001 - a title is cosmetic; the song must not fail on it
         log_structured("WARN", "title_write_failed", job_id=job_id, error=type(exc).__name__)
 

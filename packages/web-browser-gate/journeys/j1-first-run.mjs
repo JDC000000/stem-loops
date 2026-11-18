@@ -3,6 +3,7 @@
 // chords visible → mixer mute / solo / volume (checked on the engine's GainNode targets) →
 // on-demand loop cut → loop plays → loop WAV download → ZIP.
 import { GAIN_PROBE, Journey, mintUser, newContext, sleep, uploadViaLanding } from './lib.mjs';
+import { recentListsUploadByTitle } from './recent-label.mjs';
 
 export const id = 'j1-first-run';
 export default async function run() {
@@ -164,11 +165,10 @@ export default async function run() {
     // the account page lists this job; a tester recognises it by its file name
     await page.goto('/account');
     const recent = (await page.locator('section[aria-label="Recent jobs"]').innerText().catch(() => '')).replace(/\s+/g, ' ');
-    // Slice 1b (P5.1): the worker now stores the upload's title as its file name WITHOUT the
-    // extension, and jobLabel() prefers the title, so ".mp3" is no longer shown. The check is
-    // still "named by the file, not by its id": the file-name stem is present, the id is not.
-    j.check('account "Recent jobs" lists the upload by its file name (not its id)',
-      (/journey-song|w4-song/.test(recent) || /\.mp3/.test(recent)) && !(jobId && recent.includes(jobId)), recent.slice(0, 200));
+    // Slice 1b (P5.1): the label is the stored TITLE (file name without ".mp3"), not the id and
+    // not the original_filename fallback — see recent-label.mjs (review round 2, SF-4).
+    j.check('account "Recent jobs" lists the upload by its title (file name without .mp3; not its id)',
+      recentListsUploadByTitle(recent, jobId), recent.slice(0, 200));
     j.note(`job ${jobId}, user ${user.user_id}`);
   } catch (e) {
     j.step('journey aborted', 'fail', String(e).slice(0, 400));

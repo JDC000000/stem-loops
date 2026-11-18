@@ -71,7 +71,7 @@ export default function ResetPasswordSetForm() {
       </p>
 
       <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <label
+        <div
           style={{
             display: 'flex',
             flexDirection: 'column',
@@ -80,8 +80,8 @@ export default function ResetPasswordSetForm() {
             fontSize: 14,
           }}
         >
-          New password
           <PasswordField
+            label="New password"
             required
             minLength={PASSWORD_MIN_LENGTH}
             autoComplete="new-password"
@@ -90,8 +90,8 @@ export default function ResetPasswordSetForm() {
             onChange={(e) => setPassword(e.target.value)}
             inputStyle={input}
           />
-        </label>
-        <label
+        </div>
+        <div
           style={{
             display: 'flex',
             flexDirection: 'column',
@@ -100,8 +100,8 @@ export default function ResetPasswordSetForm() {
             fontSize: 14,
           }}
         >
-          Confirm password
           <PasswordField
+            label="Confirm password"
             required
             minLength={PASSWORD_MIN_LENGTH}
             autoComplete="new-password"
@@ -110,7 +110,7 @@ export default function ResetPasswordSetForm() {
             onChange={(e) => setConfirm(e.target.value)}
             inputStyle={input}
           />
-        </label>
+        </div>
         <button type="submit" disabled={busy || done} style={btn}>
           {busy ? 'Saving…' : done ? 'Saved' : 'Set new password'}
         </button>

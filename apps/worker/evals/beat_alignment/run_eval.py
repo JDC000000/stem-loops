@@ -9,8 +9,10 @@ DATA_DIR layout (all outside the repo — see README.md):
     stems/<name>.drums.wav                       htdemucs drum stem (ground_truth.py drums)
 
 Real tracks are evaluated twice: with the drum stem as reference (what production does —
-pipeline.extract_and_tag prefers drums) and with the full mix. Runs whatever version of
-`worker.pipeline.extract_and_tag` is at --worker-src, so the same script grades before/after.
+pipeline.extract_and_tag prefers drums) and with the full mix. On the drums run every
+stems/<name>.*.wav present is passed too, because the key comes from the sum of all stems.
+Runs whatever version of `worker.pipeline.extract_and_tag` is at --worker-src, so the same
+script grades before/after.
 """
 
 from __future__ import annotations
@@ -155,7 +157,16 @@ def discover(data: str) -> list[dict]:
         )
         drums = os.path.join(data, "stems", f"{name}.drums.wav")
         if os.path.exists(drums):
-            cases.append({"name": name, "ref": drums, "ref_kind": "drums", "gt": gtp})
+            # Every sibling stem present, so the key is computed as production does it (the
+            # sum of all stems, PR #295). Only a drums stem on disk -> a drum-derived key, and
+            # the row's key_source says so.
+            stems = {
+                os.path.basename(p)[len(name) + 1 : -len(".wav")]: p
+                for p in sorted(glob.glob(os.path.join(data, "stems", f"{name}.*.wav")))
+            }
+            cases.append(
+                {"name": name, "ref": drums, "ref_kind": "drums", "gt": gtp, "stems": stems}
+            )
         if mix:
             cases.append({"name": name, "ref": mix, "ref_kind": "mix", "gt": gtp})
     return cases
@@ -183,9 +194,8 @@ def main() -> None:
         gt = load_gt(case["gt"])
         for bars in args.bars:
             t0 = time.perf_counter()
-            loops, tags, seg_label, _ = pipeline.extract_and_tag(
-                "eval", {"drums": case["ref"]}, ["drums"], bars
-            )
+            stems = case.get("stems") or {"drums": case["ref"]}
+            loops, tags, seg_label, _ = pipeline.extract_and_tag("eval", stems, ["drums"], bars)
             elapsed = time.perf_counter() - t0
             bpm = float(tags["bpm"])
             loop_dur = bars * 4 * 60.0 / bpm
@@ -202,6 +212,7 @@ def main() -> None:
                 "bars": bars,
                 "bpm": bpm,
                 "key": tags["musical_key"],
+                "key_source": "+".join(sorted(stems)),
                 "gt_bpm": round(gt["bpm"], 3),
                 "gt_source": gt["source"],
                 "tempo_rel": rel,

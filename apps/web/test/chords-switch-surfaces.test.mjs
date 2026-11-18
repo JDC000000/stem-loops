@@ -17,7 +17,8 @@
 //      cap) are checked against the config or migration they come from.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
@@ -293,70 +294,73 @@ test('numeric claims: every hour and day figure on /help, /terms, /privacy, llms
 // count and say why in the reason.
 const ALLOW = {
   // the player and its chord track: render THE JOB'S OWN chord data, or "No chords for this song."
-  'components/ChordOverlay.tsx': [25, 'player chord track: testids, aria-labels and pickers for the job\'s own chords'],
-  'components/ChordOverlay.helpers.ts': [21, 'player chord track helpers: labels for the job\'s own chord runs'],
-  'components/ChordPhone.helpers.ts': [3, 'player chord track helpers (phone)'],
-  'components/play/PlayerScreen.tsx': [8, 'player: NO_CHORDS_LINE ("No chords for this song.") and no-chords testids'],
-  'components/play/MixSheet.tsx': [0, 'comments only'],
-  'components/play/Player.tsx': [0, 'comments only'],
-  'components/play/Presets.tsx': [0, 'comments only'],
-  'components/play/Transport.tsx': [0, 'comments only'],
-  'lib/play/background-audio.ts': [0, 'comments only'],
-  'lib/play/engine.ts': [0, 'comments only'],
-  'lib/play/notation.ts': [0, 'comments and identifiers only'],
-  'lib/play/ogg-opus.ts': [0, 'comments only'],
-  'lib/play/sections.ts': [0, 'comments only'],
-  'lib/play/types.ts': [0, 'comments and identifiers only'],
+  'src/components/ChordOverlay.tsx': [26, 'player chord track: testids, aria-labels and pickers for the job\'s own chords'],
+  'src/components/ChordOverlay.helpers.ts': [24, 'player chord track helpers: labels for the job\'s own chord runs ("No chord", "Unknown chord", kind === \'chord\')'],
+  'src/components/ChordPhone.helpers.ts': [3, 'player chord track helpers (phone)'],
+  'src/components/play/PlayerScreen.tsx': [8, 'player: NO_CHORDS_LINE ("No chords for this song.") and no-chords testids'],
+  'src/components/play/MixSheet.tsx': [0, 'comments only'],
+  'src/components/play/Player.tsx': [0, 'comments only'],
+  'src/components/play/Presets.tsx': [0, 'comments only'],
+  'src/components/play/Transport.tsx': [0, 'comments only'],
+  'src/lib/play/background-audio.ts': [0, 'comments only'],
+  'src/lib/play/engine.ts': [0, 'comments only'],
+  'src/lib/play/notation.ts': [0, 'comments and identifiers only'],
+  'src/lib/play/ogg-opus.ts': [0, 'comments only'],
+  'src/lib/play/sections.ts': [0, 'comments only'],
+  'src/lib/play/types.ts': [0, 'comments and identifiers only'],
   // the in-browser chord engine: code; its strings are errors, keys and log lines
-  'chord/alphabet.ts': [1, 'engine: one internal string'],
-  'chord/chordnet-session.ts': [16, 'engine: model paths, errors, log lines'],
-  'chord/cqt-frontend.ts': [0, 'comments only'],
-  'chord/edit-collector.ts': [7, 'engine: storage keys and API path for chord edits'],
-  'chord/harte.ts': [0, 'comments only'],
-  'chord/play-chords-loader.ts': [7, 'engine: play-chords API path and errors'],
-  'chord/sha256.ts': [0, 'comments only'],
-  'chord/smoother.ts': [1, 'engine: one internal string'],
-  'chord/tab-capture.ts': [4, 'engine: errors and log lines'],
-  'chord/transition.ts': [0, 'comments only'],
-  'chord/viterbi.ts': [0, 'comments only'],
+  'src/chord/alphabet.ts': [1, 'engine: one internal string'],
+  'src/chord/chordnet-session.ts': [16, 'engine: model paths, errors, log lines'],
+  'src/chord/cqt-frontend.ts': [0, 'comments only'],
+  'src/chord/edit-collector.ts': [7, 'engine: storage keys and API path for chord edits'],
+  'src/chord/harte.ts': [0, 'comments only'],
+  'src/chord/play-chords-loader.ts': [7, 'engine: play-chords API path and errors'],
+  'src/chord/sha256.ts': [0, 'comments only'],
+  'src/chord/smoother.ts': [1, 'engine: one internal string'],
+  'src/chord/tab-capture.ts': [4, 'engine: errors and log lines'],
+  'src/chord/transition.ts': [0, 'comments only'],
+  'src/chord/viterbi.ts': [0, 'comments only'],
   // API routes: JSON for the player, no marketing copy
-  'app/api/chord-edits/route.ts': [31, 'API: chord_edits SQL, columns and error messages'],
-  'app/api/jobs/[id]/play-chords/route.ts': [1, 'API: the play.chords.json key'],
-  'app/api/users/me/route.ts': [2, 'API: erases chord edits on account delete'],
-  'app/api/jobs/[id]/download/route.ts': [0, 'comments only'],
-  'app/api/jobs/[id]/route.ts': [0, 'comments only'],
-  'app/api/jobs/[id]/stems/route.ts': [0, 'comments only'],
+  'src/app/api/chord-edits/route.ts': [31, 'API: chord_edits SQL, columns and error messages'],
+  'src/app/api/jobs/[id]/play-chords/route.ts': [1, 'API: the play.chords.json key'],
+  'src/app/api/users/me/route.ts': [2, 'API: erases chord edits on account delete'],
+  'src/app/api/jobs/[id]/download/route.ts': [0, 'comments only'],
+  'src/app/api/jobs/[id]/route.ts': [0, 'comments only'],
+  'src/app/api/jobs/[id]/stems/route.ts': [0, 'comments only'],
   // disclosures and plumbing
-  'app/account/delete/page.tsx': [1, 'DISCLOSURE: "Any chord corrections you saved" among what deletion removes'],
-  'components/DeleteAccountForm.tsx': [0, 'imports the chord edit collector to clear it: code'],
-  'app/account/layout.tsx': [0, 'comment only'],
-  'app/jobs/[id]/JobView.tsx': [0, 'comments only (the player owns the chord track)'],
-  'app/jobs/[id]/page.tsx': [0, 'comment only (names the play-chords route)'],
-  'lib/r2.ts': [1, 'storage: the play.chords.json key'],
-  'lib/job-access.ts': [0, 'comments only'],
-  'lib/job-poll.ts': [0, 'comments only'],
-  'lib/stem-keys.ts': [0, 'comments only'],
-  'lib/stem-urls.ts': [0, 'comments only'],
-  'lib/upload.ts': [0, 'comments only'],
-  'middleware.ts': [0, 'comments only'],
+  'src/app/account/delete/page.tsx': [1, 'DISCLOSURE: "Any chord corrections you saved" among what deletion removes'],
+  'src/components/DeleteAccountForm.tsx': [0, 'imports the chord edit collector to clear it: code'],
+  'src/app/account/layout.tsx': [0, 'comment only'],
+  'src/app/jobs/[id]/JobView.tsx': [0, 'comments only (the player owns the chord track)'],
+  'src/app/jobs/[id]/page.tsx': [0, 'comment only (names the play-chords route)'],
+  'src/lib/r2.ts': [1, 'storage: the play.chords.json key'],
+  'src/lib/job-access.ts': [0, 'comments only'],
+  'src/lib/job-poll.ts': [0, 'comments only'],
+  'src/lib/stem-keys.ts': [0, 'comments only'],
+  'src/lib/stem-urls.ts': [0, 'comments only'],
+  'src/lib/upload.ts': [0, 'comments only'],
+  'src/middleware.ts': [0, 'comments only'],
+  // outside src/ (QA follow-up S-1: the scan covers all of apps/web except node_modules, .next, test)
+  'package.json': [3, 'the test:chord script name and its paths: tooling, never rendered'],
+  'e2e/chord-overlay-safari.spec.ts': [3, 'a manual Playwright QA stub for the player\'s chord overlay: not shipped'],
 };
 // Files that READ the switch are covered by the OFF renders above — but only for text they render.
 // An unrendered export (a new const nobody imports yet) would slip past the renders, so these are
 // pinned at their exact copy count too (review A3). Every chord literal in them is either inside a
 // CHORDS_LINE_SHOWN branch that an OFF render proves gone, or a /privacy or /terms DISCLOSURE.
 const SWITCHED = {
-  'app/(landing)/page.tsx': 6,
-  'app/(landing)/privacy/page.tsx': 8,
-  'app/(landing)/terms/page.tsx': 4,
-  'app/loops/LoopsView.tsx': 1,
-  'components/landing/PlayerArt.tsx': 6,
-  'components/landing/faq.tsx': 5,
-  'components/landing/what-you-get.ts': 2,
-  'lib/emails/templates/welcome.ts': 1,
-  'lib/seo/jsonld.ts': 1,
-  'lib/seo/llms.ts': 1,
-  'lib/seo/pages.ts': 2,
-  'lib/seo/site.ts': 3,
+  'src/app/(landing)/page.tsx': 6,
+  'src/app/(landing)/privacy/page.tsx': 8,
+  'src/app/(landing)/terms/page.tsx': 4,
+  'src/app/loops/LoopsView.tsx': 1,
+  'src/components/landing/PlayerArt.tsx': 6,
+  'src/components/landing/faq.tsx': 5,
+  'src/components/landing/what-you-get.ts': 2,
+  'src/lib/emails/templates/welcome.ts': 1,
+  'src/lib/seo/jsonld.ts': 1,
+  'src/lib/seo/llms.ts': 1,
+  'src/lib/seo/pages.ts': 2,
+  'src/lib/seo/site.ts': 3,
 };
 const IMPORT_RE = /import \{[^}]*\bCHORDS_LINE_SHOWN\b[^}]*\} from '(?:@\/lib\/chords-claim|\.\.\/chords-claim\.ts|\.\/chords-claim)'/;
 
@@ -365,11 +369,23 @@ const walk = (d) => readdirSync(d).flatMap((n) => {
   return statSync(p).isDirectory() ? walk(p) : /\.(tsx?|mjs|js|md|txt|json)$/.test(n) ? [p] : [];
 });
 
+// QA follow-up S-1: the scan walks ALL of apps/web, not only src/, so copy kept in a JSON, Markdown
+// or content file anywhere in the app (and imported into a page) is counted too. Only the build
+// output, the dependencies and the test tree are skipped. CSS is not walked: generated `content:`
+// text is named residue in the PR (as in test/helpers/render-landing-page.mjs).
+const WEB_SKIP = new Set(['node_modules', '.next', 'test']);
+const walkWeb = (d, top = true) => readdirSync(d).flatMap((n) => {
+  if (top && WEB_SKIP.has(n)) return [];
+  const p = join(d, n);
+  return statSync(p).isDirectory() ? walkWeb(p, false)
+    : /\.(tsx?|mjs|cjs|js|jsx|mdx?|txt|json|ya?ml|html?|svg|webmanifest)$/.test(n) ? [p] : [];
+});
+
 /** "chord" mentions in copy-capable text, by the TypeScript parser: string literals, template
  *  text, JSX text and JSX attribute strings. Not comments, identifiers or module specifiers.
  *  A non-code file (md, txt, json) counts every mention. */
 function copyChordMentions(path, text = readFileSync(path, 'utf8')) {
-  if (!/\.(tsx?|mjs|js)$/.test(path)) return (text.match(/chord/gi) ?? []).length;
+  if (!/\.(tsx?|mjs|cjs|jsx?)$/.test(path)) return (text.match(/chord/gi) ?? []).length;
   const sf = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, /x$/.test(path) ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
   let n = 0;
   const visit = (node) => {
@@ -396,12 +412,13 @@ test('source scan: the copy counter sees literals, JSX text and attributes, and 
   assert.equal(copyChordMentions('x.md', '# chords'), 1);
 });
 
-test('source scan: every file that mentions "chord" reads the switch, or is allow-listed at its exact copy count', () => {
+/** Offending files under `root` (an apps/web-shaped tree), and which ALLOW/SWITCHED keys were seen. */
+function scan(root) {
   const offenders = [];
   const seen = new Set();
-  for (const abs of walk(SRC)) {
-    const rel = relative(SRC, abs).split('\\').join('/');
-    if (rel === 'lib/chords-claim.ts') continue;
+  for (const abs of walkWeb(root)) {
+    const rel = relative(root, abs).split('\\').join('/');
+    if (rel === 'src/lib/chords-claim.ts') continue;
     if (/(^|\/)__tests__\/|\.test\.mjs$/.test(rel)) continue; // tests, not shipped
     const t = readFileSync(abs, 'utf8');
     if (!/chord/i.test(t)) continue;
@@ -420,10 +437,32 @@ test('source scan: every file that mentions "chord" reads the switch, or is allo
     seen.add(rel);
     if (n !== ALLOW[rel][0]) offenders.push(`${rel}: ${n} chord mention(s) in copy-capable text, allow-listed at ${ALLOW[rel][0]} (${ALLOW[rel][1]})`);
   }
+  return { offenders, seen };
+}
+
+test('source scan: every file that mentions "chord" reads the switch, or is allow-listed at its exact copy count', () => {
+  const { offenders, seen } = scan(WEB);
   assert.deepEqual(offenders, [], 'chord text outside the DB-17 switch: gate it on CHORDS_LINE_SHOWN, or (if it is not a promise to a new song) update ALLOW with a reason');
   // A stale entry is a hole waiting to be reused.
   assert.deepEqual(Object.keys(ALLOW).filter((k) => !seen.has(k)), [], 'ALLOW names a file that no longer mentions chords');
   assert.deepEqual(Object.keys(SWITCHED).filter((k) => !seen.has(k)), [], 'SWITCHED names a file that no longer reads the switch');
+});
+
+// The reviewer's S-1 case (rev299-tools/mut2.py E3a): a JSON file OUTSIDE src/ — apps/web/content/
+// promo.json — imported into JobView, carrying "Every new song gets a chord track." Built in a temp
+// tree shaped like apps/web, so the real tree is never written to. Also proves the skipped dirs.
+test('source scan (S-1): a content file outside src/ is counted; node_modules, .next and test are not', () => {
+  const root = mkdtempSync(join(tmpdir(), 'chords-scan-'));
+  try {
+    const put = (rel, txt) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), txt); };
+    put('content/promo.json', '{"promo":"Every new song gets a chord track."}\n');
+    put('src/app/jobs/[id]/JobView.tsx', "import promo from '../../../../content/promo.json';\nexport const T = () => <div title={promo.promo} />;\n");
+    for (const d of ['node_modules/x/promo.json', '.next/server/promo.json', 'test/fixtures/promo.json']) put(d, '{"p":"chord"}');
+    const { offenders } = scan(root);
+    assert.deepEqual(offenders, ['content/promo.json: not allow-listed (1 chord mention(s) in copy-capable text)']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('source scan: public/ text assets carry no chord claim', () => {

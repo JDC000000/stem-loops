@@ -2,12 +2,13 @@ import type { Metadata, Viewport } from 'next';
 import localFont from 'next/font/local';
 import './globals.css';
 import FlashBanner from '@/components/FlashBanner';
-import { MAX_TRACK_SEC } from '@/lib/play/types';
+import { SITE_DESCRIPTION } from '@/lib/seo/site';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://stem-loops.com'),
   title: { default: 'stem-loops', template: '%s · stem-loops' },
-  description: `Split a song into six stems with faders and a chord track, and play along. Uses the first ${Math.floor(MAX_TRACK_SEC / 60)} minutes of any song, on a computer or a phone.`,
+  // DB-17: switched with the one claim switch; defined in lib/seo/site.ts.
+  description: SITE_DESCRIPTION,
   applicationName: 'stem-loops',
   icons: {
     icon: [

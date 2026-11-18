@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { withDom } from './helpers/dom.mjs';
 import ts from 'typescript';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -188,7 +189,7 @@ test('renders in every status without NaN and with a named play button', () => {
   }
 });
 test('play button name reflects state; disabled only when it cannot act', () => {
-  const btn = (p) => render(p).match(/<button[^>]*>/)[0];
+  const btn = (p) => render(p).match(/<button[^>]*data-testid="transport-play"[^>]*>/)[0];
   assert.match(btn({ status: 'ready' }), /aria-label="Play"/);
   assert.doesNotMatch(btn({ status: 'ready' }), /disabled/);
   assert.match(btn({ status: 'playing' }), /aria-label="Pause"/);
@@ -196,22 +197,29 @@ test('play button name reflects state; disabled only when it cannot act', () => 
   assert.doesNotMatch(btn({ status: 'ended' }), /disabled/);
   for (const status of ['idle', 'loading', 'error']) assert.match(btn({ status }), /disabled/, status);
 });
-test('seek bar is a real slider with value attributes and human valuetext', () => {
-  const html = render({ status: 'playing', positionSec: 83.4, durationSec: 151.29 });
-  const slider = html.match(/<div[^>]*role="slider"[^>]*>/)[0];
-  assert.match(slider, /aria-label="Playback position"/);
+const seekOf = (html) => html.match(/<input[^>]*data-testid="transport-seek"[^>]*>/)[0];
+test('seek is a REAL range input (design v1.4 P1.1) with a human valuetext, not the zoom slider', () => {
+  const slider = seekOf(render({ status: 'playing', positionSec: 83.4, durationSec: 151.29 }));
+  assert.match(slider, /type="range"/);
+  assert.match(slider, /aria-label="Song position"/);
   assert.doesNotMatch(slider, /Timeline zoom|zoom-slider/);
-  assert.match(slider, /aria-valuemin="0"/);
-  assert.match(slider, /aria-valuemax="151.29"/);
-  assert.match(slider, /aria-valuenow="83.4"/);
+  assert.match(slider, /min="0"/);
+  assert.match(slider, /max="151.29"/);
+  assert.match(slider, /value="83.4"/);
   assert.match(slider, /aria-valuetext="1:23 of 2:31"/);
-  assert.match(slider, /tabindex="0"/);
-  assert.doesNotMatch(slider, /type="range"/);
+  assert.doesNotMatch(slider, /disabled/);
+  assert.doesNotMatch(slider, /role="slider"/, 'a native range needs no role');
+});
+test('the drawn thumb follows the range input, so its focus ring can show (input:focus-visible + .thumb)', () => {
+  const html = render({ status: 'playing', positionSec: 50, durationSec: 100 });
+  assert.match(html, /data-testid="transport-seek"[^>]*\/><div class="thumb" aria-hidden="true" style="left:50%"/);
+  const css = readFileSync(join(WEB, 'src/components/play/Transport.module.css'), 'utf8');
+  assert.match(css, /\.range:focus-visible \+ \.thumb\s*\{\s*outline:\s*2px solid var\(--accent\)/);
+  assert.match(css, /\.range\s*\{[^}]*height:\s*var\(--touch-min, 44px\)/, 'the seek target is 44px tall');
 });
 test('hostile props: duration 0, position > duration, negative, NaN', () => {
   let h = render({ durationSec: 0, positionSec: 30 });
-  assert.match(attr(h, 'aria-valuetext') ? h : '', /0:00 of 0:00/);
-  assert.match(h, /aria-valuemax="0"/);
+  assert.match(h, /aria-valuetext="0:00 of 0:00"/);
   assert.match(h, /width:0%/);
   h = render({ status: 'playing', positionSec: 999, durationSec: 100 });
   assert.match(h, /aria-valuetext="1:40 of 1:40"/);
@@ -222,13 +230,14 @@ test('hostile props: duration 0, position > duration, negative, NaN', () => {
   assert.doesNotMatch(h, /NaN/);
   assert.match(h, /aria-valuetext="0:00 of 0:00"/);
 });
-test('seek is disabled (aria-disabled, not tabbable) when idle/loading/error', () => {
+test('seek, -5 and +5 are disabled when idle/loading/error', () => {
   for (const status of ['idle', 'loading', 'error']) {
-    const s = render({ status }).match(/<div[^>]*role="slider"[^>]*>/)[0];
-    assert.match(s, /aria-disabled="true"/, status);
-    assert.match(s, /tabindex="-1"/, status);
+    const h = render({ status });
+    assert.match(seekOf(h), /disabled/, status);
+    assert.match(h, /<button[^>]*aria-label="Back 5 seconds"[^>]*disabled/, status);
+    assert.match(h, /<button[^>]*aria-label="Forward 5 seconds"[^>]*disabled/, status);
   }
-  assert.doesNotMatch(render({ status: 'ready' }).match(/<div[^>]*role="slider"[^>]*>/)[0], /aria-disabled/);
+  assert.doesNotMatch(seekOf(render({ status: 'ready' })), /disabled/);
 });
 test('error and loading explain themselves; error is an alert', () => {
   assert.match(render({ status: 'error' }), /role="alert"[^>]*>Playback unavailable/);
@@ -236,7 +245,58 @@ test('error and loading explain themselves; error is an alert', () => {
   assert.match(render({ status: 'loading' }), /Loading stems/);
   assert.doesNotMatch(render({ status: 'ready' }), /transport-hint/);
 });
-test('time readout shows current / total', () => {
+test('time readout: elapsed and remaining under the bar', () => {
   const h = render({ status: 'playing', positionSec: 83.4, durationSec: 151.29 });
-  assert.match(h, /data-testid="transport-time"[^>]*><span>1:23<\/span><span[^>]*> \/ <\/span><span>2:31<\/span>/);
+  assert.match(h, /data-testid="transport-time"[^>]*><span>1:23<\/span><span>-1:07<\/span>/);
+  assert.equal(T.remainingText(83.4, 151.29), '-1:07');
+  assert.equal(T.remainingText(NaN, 0), '-0:00');
+});
+test('section ticks and the loop band are drawn on the seek line; the readout states the run', () => {
+  const h = render({
+    status: 'playing', positionSec: 10, durationSec: 100, ticks: [0, 25, 50, 150],
+    loopBand: { startSec: 25, endSec: 75 }, loopText: 'Looping Verse 1 → Chorus 1 · 0:25–1:15', loopState: 'on',
+  });
+  assert.equal((h.match(/class="tick"/g) || []).length, 2, 'ticks inside (0, duration) only');
+  assert.match(h, /data-testid="transport-loop-band" style="left:25%;width:50%"/);
+  assert.match(h, /data-testid="transport-loop-text">Looping Verse 1 → Chorus 1 · 0:25–1:15</);
+  assert.doesNotMatch(render({ status: 'playing', durationSec: 100, loopBand: null }), /transport-loop-band/);
+});
+test('the loop button: on (pressed) / off / disabled-with-aria-disabled and the P2.1 label', () => {
+  const btn = (loopState) => render({ loopState }).match(/<button[^>]*data-testid="transport-loop"[^>]*>/)[0];
+  assert.match(btn('on'), /aria-pressed="true"/);
+  assert.match(btn('on'), /aria-label="Loop"/);
+  assert.match(btn('off'), /aria-pressed="false"/);
+  assert.doesNotMatch(btn('off'), /aria-disabled/);
+  const d = btn('disabled');
+  assert.match(d, /aria-disabled="true"/);
+  assert.match(d, /aria-label="Tap a section to loop it"/);
+  assert.doesNotMatch(d, / disabled=""/, 'shown and focusable, not removed from the tab order');
+});
+test('the Mix button shows the mix state and opens a dialog; absent where the mixer is always shown', () => {
+  const h = render({ mix: { label: 'guitar off', open: false, onOpen: noop } });
+  assert.match(h, /<button[^>]*aria-haspopup="dialog"[^>]*aria-expanded="false"[^>]*data-testid="transport-mix"[^>]*><span class="mixName">Mix<\/span><span class="mixState">guitar off<\/span>/);
+  assert.doesNotMatch(render({}), /transport-mix/);
+});
+test('transport order (P1.1): -5 s, Play/Pause, +5 s, Loop, Mix', () => {
+  const h = render({ mix: { label: 'full song', open: false, onOpen: noop } });
+  const order = [...h.matchAll(/<button[^>]*(?:aria-label="([^"]+)"|data-testid="transport-mix")/g)].map((m) => m[1] ?? 'Mix');
+  assert.deepEqual(order, ['Back 5 seconds', 'Play', 'Forward 5 seconds', 'Tap a section to loop it', 'Mix']);
+});
+
+test('(DOM) -5 s / +5 s seek from the engine position, clamped; the loop button toggles unless disabled', async () => {
+  await withDom(async (dom) => {
+    const seeks = [];
+    let toggles = 0;
+    const props = { status: 'playing', positionSec: 3, durationSec: 100, onPlay: noop, onPause: noop, onSeek: (s) => seeks.push(s), onToggleLoop: () => toggles++ };
+    const host = await dom.mount(React.createElement(T.Transport, { ...props, loopState: 'on' }));
+    await dom.act(() => dom.find('[aria-label="Back 5 seconds"]').click());
+    await dom.act(() => dom.find('[aria-label="Forward 5 seconds"]').click());
+    assert.deepEqual(seeks, [0, 8]);
+    await dom.act(() => dom.find('[data-testid="transport-loop"]').click());
+    assert.equal(toggles, 1);
+    await dom.rerender(host, React.createElement(T.Transport, { ...props, loopState: 'disabled' }));
+    await dom.act(() => dom.find('[data-testid="transport-loop"]').click());
+    assert.equal(toggles, 1, 'a disabled loop button does nothing');
+    await dom.unmountAll();
+  });
 });

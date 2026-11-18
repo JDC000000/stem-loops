@@ -60,7 +60,10 @@ async function axe(page, j, tag) {
 export default async function run() {
   const j = new Journey(id, 'Keyboard and a11y basics: upload form and player');
   const user = mintUser('j8');
-  const { ctx, log } = await newContext({ user });
+  // Desktop on purpose (review S5 on #288): the player's tab-order check expects
+  // the stems' Mute buttons in the always-visible mixer column. On a phone they
+  // live in the Mix sheet, which j7 opens and measures.
+  const { ctx, log } = await newContext({ user, viewport: { width: 1280, height: 900 } });
   const page = await ctx.newPage();
   try {
     // ── upload form ──
@@ -94,14 +97,16 @@ export default async function run() {
     await page.waitForURL(/\/jobs\//, { timeout: 60_000 });
     j.step('upload submitted with the keyboard (Enter on the CTA)', 'pass', page.url());
     await page.locator('[data-testid="player"][data-phase="ready"]').waitFor({ timeout: 240_000 });
-    await page.locator('[data-testid^="chord-chip-"]').first().waitFor({ timeout: 30_000 }).catch(() => {});
+    await page.locator('[data-testid="playhead-now-name"]').first().waitFor({ timeout: 30_000 }).catch(() => {});
     const pstops = await tabWalk(page, 40);
     const pnames = pstops.map((s) => s.name);
     j.step('player: tab order (first 40 stops)', 'info', pnames.join(' → '));
+    // Slice 1a (design v1.4 P1.1): the screen reads top to bottom — the chord
+    // stage, then the transport, then (desktop) the mixer column.
     const ip = pnames.findIndex((n) => /^(Play|Pause)/.test(n));
     const im = pnames.findIndex((n) => /^Mute /.test(n));
-    const ic = pnames.findIndex((n) => /chord|C:maj/i.test(n));
-    j.check('player: transport → mixer → chords in reading order', ip >= 0 && ip < im && (ic < 0 || im < ic), `play@${ip} mute@${im} chords@${ic}`);
+    const ic = pnames.findIndex((n) => / — edit$/.test(n));
+    j.check('player: chords → transport → mixer in reading order', ip >= 0 && ip < im && (ic < 0 || ic < ip), `chords@${ic} play@${ip} mute@${im}`);
     const pNoRing = pstops.filter((s) => s.name !== '(body)' && !s.ring);
     j.check('player: every tab stop shows a focus indicator', pNoRing.length === 0, pNoRing.map((s) => s.name).join(' | ') || 'all visible');
     // keyboard operation: Space on the play button toggles playback

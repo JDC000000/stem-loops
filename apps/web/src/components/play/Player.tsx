@@ -75,7 +75,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { ChordOverlay } from '@/components/ChordOverlay';
 import {
   createBackgroundOutput,
   routeLatencySec,
@@ -85,7 +84,8 @@ import {
   type BackgroundOutput,
   type MediaSessionWiring,
 } from '@/lib/play/background-audio';
-import { LIGHT_AUDIO_NOTE, playbackProfile, readDeviceSignals } from '@/lib/play/device-support';
+import { playbackProfile, readDeviceSignals } from '@/lib/play/device-support';
+import { createWakeLock } from '@/lib/play/wake-lock';
 import { createPlayEngine } from '@/lib/play/engine';
 import {
   StemLoadError,
@@ -104,10 +104,7 @@ import type {
   StemState,
 } from '@/lib/play/types';
 
-import Mixer from './Mixer';
-import { SectionLoop } from './SectionLoop';
-import { Transport } from './Transport';
-import styles from './Player.module.css';
+import { PlayerScreen } from './PlayerScreen';
 
 // ─── copy (exported so node:test can assert it without a DOM) ────────────────
 
@@ -387,8 +384,15 @@ export interface PlayerProps {
    * not complete, so nothing is fetched before then.
    */
   readonly enabled?: boolean;
-  /** Shown on the lock screen / notification (Media Session). */
+  /** Shown on the lock screen / notification (Media Session), and as the player's h1. */
   readonly title?: string | null;
+  /** The rest of the header and Song info; see PlayerViewProps. */
+  readonly bpm?: number | string | null;
+  readonly musicalKey?: string | null;
+  readonly artist?: string | null;
+  readonly back?: { readonly href: string; readonly label: string };
+  readonly songInfo?: readonly string[];
+  readonly loopsHref?: string | null;
 }
 
 /** Lock-screen artwork. The app icon; it exists in /public. */
@@ -401,7 +405,18 @@ export const MEDIA_FALLBACK_TITLE = 'Your track';
  */
 export const LATENCY_RESAMPLE_MS = [250, 1000] as const;
 
-export default function Player({ jobId, loops, enabled = true, title }: PlayerProps) {
+export default function Player({
+  jobId,
+  loops,
+  enabled = true,
+  title,
+  bpm,
+  musicalKey,
+  artist,
+  back,
+  songInfo,
+  loopsHref,
+}: PlayerProps) {
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const [snapshot, setSnapshot] = useState<EngineSnapshot>(IDLE_SNAPSHOT);
   const [lightAudio, setLightAudio] = useState(false);
@@ -602,6 +617,23 @@ export default function Player({ jobId, loops, enabled = true, title }: PlayerPr
   const onLoop = useCallback((region: LoopRegion | null) => engineRef.current?.setLoop(region), []);
   const onRetry = useCallback(() => setAttempt((n) => n + 1), []);
 
+  // P1.2 — Screen Wake Lock while playing, released on pause or end, so the
+  // phone does not dim mid-song. Feature-detected: where it is missing or
+  // refused nothing changes (lib/play/wake-lock.ts).
+  const wakeRef = useRef<ReturnType<typeof createWakeLock> | null>(null);
+  useEffect(() => {
+    const lock = createWakeLock(globalThis.navigator, globalThis.document);
+    wakeRef.current = lock;
+    return () => {
+      lock.dispose();
+      wakeRef.current = null;
+    };
+  }, []);
+  const playing = snapshot.status === 'playing';
+  useEffect(() => {
+    wakeRef.current?.set(playing);
+  }, [playing]);
+
   const sections = useMemo(
     () => deriveSections(loops ?? null, { durationSec: snapshot.durationSec }),
     [loops, snapshot.durationSec],
@@ -626,6 +658,13 @@ export default function Player({ jobId, loops, enabled = true, title }: PlayerPr
       onSolo={onSolo}
       onLoop={onLoop}
       onRetry={onRetry}
+      title={title}
+      bpm={bpm}
+      musicalKey={musicalKey}
+      artist={artist}
+      back={back}
+      songInfo={songInfo}
+      loopsHref={loopsHref}
     />
   );
 }
@@ -637,7 +676,7 @@ export interface PlayerViewProps {
   readonly sections: readonly LoopRegion[];
   /** The job's beat grid, for the phone chord view's bars. */
   readonly beatGrid?: BeatGrid | null;
-  /** True on the phone / low-memory path: shows LIGHT_AUDIO_NOTE once the player is up. */
+  /** True on the phone / low-memory path: LIGHT_AUDIO_NOTE once as a hint, and always in Song info. */
   readonly lightAudio?: boolean;
   /** Phone route only: how far to hold the chord playhead behind the engine clock while playing. */
   readonly chordLatencySec?: number;
@@ -650,11 +689,29 @@ export interface PlayerViewProps {
   readonly onLoop: (region: LoopRegion | null) => void;
   /** Offered only on a `load-error` the loader marked retryable. */
   readonly onRetry?: () => void;
+  /** The song's name for the header's h1 (P1.1). */
+  readonly title?: string | null;
+  /** jobs.bpm and jobs.musical_key (GET /api/jobs/[id]); hidden when null. */
+  readonly bpm?: number | string | null;
+  readonly musicalKey?: string | null;
+  /** Artist or uploader, when known (P5 captures titles; until then usually absent). */
+  readonly artist?: string | null;
+  /** The back arrow: the library when signed in, home when signed out. */
+  readonly back?: { readonly href: string; readonly label: string };
+  /** Extra Song info lines (the trim note, when the song is deleted). */
+  readonly songInfo?: readonly string[];
+  /** "Download loops" in the ⋯ menu; omitted when null. */
+  readonly loopsHref?: string | null;
 }
+
+export { DEFAULT_BACK, DETECTED_NOTE, LIGHT_AUDIO_HINT, NO_CHORDS_LINE } from './PlayerScreen';
 
 /**
  * The whole render, with no hooks and no engine — every phase is therefore
  * reachable from `node:test`, which has no DOM and cannot run React effects.
+ * The screen's own UI state (the run, which sheet is open, the remembered
+ * part) lives one level down, in PlayerScreen, which server-renders with its
+ * initial state.
  *
  * This split exists because of a review finding: four acceptance criteria
  * (Story 1.2's ordering aside) could only be checked by reading source, and
@@ -663,23 +720,8 @@ export interface PlayerViewProps {
  * `Player` in a server render, because `Player` only leaves `idle` from an
  * effect. Driving `PlayerView` directly is what makes them assertable.
  */
-export function PlayerView({
-  jobId,
-  phase,
-  snapshot,
-  sections,
-  beatGrid = null,
-  lightAudio = false,
-  chordLatencySec = 0,
-  onPlay,
-  onPause,
-  onSeek,
-  onGain,
-  onMute,
-  onSolo,
-  onLoop,
-  onRetry,
-}: PlayerViewProps) {
+export function PlayerView(props: PlayerViewProps) {
+  const { phase, snapshot, chordLatencySec = 0 } = props;
   const engineError = snapshot.error;
   // Derived, never re-stated: see `isPlayable`. Re-inlining this predicate is
   // what let `playable` and `chordPositionFor` disagree. Note the guarantee is
@@ -693,10 +735,13 @@ export function PlayerView({
   // marker sits on the first chord instead of disappearing.
   const chordPosition = chordPositionFor(phase, snapshot, chordLatencySec);
 
-  const banner = (() => {
-    if (phase.kind === 'unsupported') return { tone: 'notice' as const, text: phase.message };
-    if (phase.kind === 'no-stems') return { tone: 'notice' as const, text: NO_STEMS_MESSAGE };
-    if (phase.kind === 'load-error') return { tone: 'error' as const, text: phase.message };
+  // ONE notice bar at the top of the stage (P1.1): the most important first —
+  // error > degraded > loading. Hints (the one-time light-audio note) are
+  // PlayerScreen's, below these. Errors keep role="alert", notices "status".
+  const banner: Notice | null = (() => {
+    if (phase.kind === 'unsupported') return { tone: 'notice', text: phase.message };
+    if (phase.kind === 'no-stems') return { tone: 'notice', text: NO_STEMS_MESSAGE };
+    if (phase.kind === 'load-error') return { tone: 'error', text: phase.message, retry: !!phase.retryable };
     if (engineError) {
       // NOT Story 1.4. Story 1.4 (revised 2026-11-14) is "a track over 300 s is
       // trimmed by the worker to its first 300 s", so nothing over the ceiling
@@ -704,93 +749,21 @@ export function PlayerView({
       // reaches the engine over the ceiling surfaces `PLAY_TRACK_TOO_LONG`'s own
       // sentence instead of taking the page down. DECODE_FAILED is the real
       // "this browser cannot play Opus" answer (Story 5.3).
-      const text =
-        engineError.code === 'PLAY_DECODE_FAILED' ? UNDECODABLE_MESSAGE : engineError.message;
-      return { tone: 'error' as const, text };
+      const text = engineError.code === 'PLAY_DECODE_FAILED' ? UNDECODABLE_MESSAGE : engineError.message;
+      return { tone: 'error', text };
     }
+    const degraded = playable ? degradedMessage(snapshot.degraded?.missing) : null;
+    if (degraded) return { tone: 'notice', text: degraded, testId: 'player-degraded' };
+    if (phase.kind === 'loading') return { tone: 'notice', text: 'Loading the stems…', testId: 'player-loading' };
     return null;
   })();
 
-  const degraded = playable ? degradedMessage(snapshot.degraded?.missing) : null;
+  return <PlayerScreen {...props} playable={playable} chordPosition={chordPosition} banner={banner} />;
+}
 
-  return (
-    <section className={styles.root} aria-label="Play along" data-testid="player" data-phase={phase.kind}>
-      <header className={styles.head}>
-        <h1 className={styles.title}>Play along</h1>
-        {phase.kind === 'loading' ? (
-          <p className={styles.sub} role="status" aria-live="polite">
-            Loading the stems&hellip;
-          </p>
-        ) : null}
-      </header>
-
-      {banner ? (
-        <p
-          className={banner.tone === 'error' ? styles.error : styles.notice}
-          role={banner.tone === 'error' ? 'alert' : 'status'}
-          data-testid="player-banner"
-        >
-          {banner.text}
-        </p>
-      ) : null}
-
-      {phase.kind === 'load-error' && phase.retryable && onRetry ? (
-        <button type="button" className={styles.retry} onClick={onRetry} data-testid="player-retry">
-          Try again
-        </button>
-      ) : null}
-
-      {playable ? (
-        <>
-          {lightAudio ? (
-            <p className={styles.notice} role="status" data-testid="player-light-audio">
-              {LIGHT_AUDIO_NOTE}
-            </p>
-          ) : null}
-
-          {degraded ? (
-            <p className={styles.notice} role="status" data-testid="player-degraded">
-              {degraded}
-            </p>
-          ) : null}
-
-          <Transport
-            status={snapshot.status}
-            positionSec={snapshot.positionSec}
-            durationSec={snapshot.durationSec}
-            onPlay={onPlay}
-            onPause={onPause}
-            onSeek={onSeek}
-          />
-
-          {/* Story 2.7: `jobId` is what makes the Mixer remember this job's
-              fader positions, mutes and solos for the session. */}
-          <Mixer stems={snapshot.stems} onGain={onGain} onMute={onMute} onSolo={onSolo} jobId={jobId} />
-
-          <SectionLoop
-            sections={sections}
-            active={snapshot.loop}
-            onLoop={onLoop}
-            durationSec={snapshot.durationSec}
-          />
-        </>
-      ) : null}
-
-      {/* Story 3. The chord track stays mounted in EVERY phase, so a job with
-          no retained stems (6.4) or an unsupported browser (5.3) still gets the
-          chord timeline it got before this component existed. ChordOverlay
-          renders its own loading / unavailable / "no chords were detected"
-          states, which is Story 3.6. */}
-      <div className={styles.chords}>
-        <h2 className={styles.subtitle}>Chords</h2>
-        <ChordOverlay
-          jobId={jobId}
-          positionSec={chordPosition}
-          beatGrid={beatGrid}
-          sections={sections}
-          loop={snapshot.loop}
-        />
-      </div>
-    </section>
-  );
+export interface Notice {
+  readonly tone: 'notice' | 'error';
+  readonly text: string;
+  readonly retry?: boolean;
+  readonly testId?: string;
 }

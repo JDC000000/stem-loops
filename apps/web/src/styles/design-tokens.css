@@ -12,6 +12,10 @@
  * Lime has three jobs only (brand book §4): the fill of the one primary action on a view,
  * the wordmark dash, and the focus ring. Never a link, a selected state, progress or decoration.
  *
+ * ★ CHORD-NOW: Amber Gold #f59e0b — LOCKED (approved by Jon 2026-11-17)
+ * Amber has ONE job: the CURRENT chord, at the playhead (--chord-now, section 1).
+ * Everything selected or pressed is neutral (--bg-selected + a 2px white edge).
+ *
  * Contrast ratios are WCAG 2.x, on the 8-bit sRGB values Chrome renders (brand book App. C).
  *
  * Reference alternatives (not active — kept for archive):
@@ -81,8 +85,21 @@
      icon, and on the failed card with a 2px rule, so it is never colour alone. */
   --status-failed:     #ff5f5f;
   --status-failed-bg:  rgba(255, 95, 95, 0.08);  /* the tint follows the hue (M21) */
+  /* NEVER on the player (/jobs/[id]): this orange is indistinguishable from --chord-now's
+     amber for colour-blind users, so the player's "deleted in …" line stays neutral
+     (test/brand-tokens.test.mjs pins this). */
   --status-expiry:     #fb923c;  /* warning orange: expiring soon */
   --status-expiry-bg:  rgba(251, 146, 60, 0.08);
+
+  /* ── The current chord (design v1.4; approved by Jon 2026-11-17) ──
+     Amber Gold, with exactly ONE job: the CURRENT chord, at the playhead — the Now
+     chord name, the current bar's edge and its chord on the chord stage, and the
+     chord name in the Mix sheet header. It marks where the playhead IS, so it stays
+     amber while paused. Not a selected state, not progress, not a link, not
+     decoration. Contrast as text: 9.05:1 on #0d0d0d (--bg-page), 8.43:1 on #161616
+     (--bg-card), 7.41:1 on #222222 (--bg-selected). The hex is the archived ACCENT B
+     below (section 3), reused for this one job; that block stays inactive. */
+  --chord-now:      #f59e0b;
 
   /* ── Stems: one hue per stem (option A, "stem spectrum"; Jon approves these). Each hue
      means that stem, everywhere it appears, and nothing else. Ratios on #0d0d0d. ── */
@@ -168,6 +185,10 @@
   --radius-md:   4px;    /* cards, buttons, inputs */
   --radius-lg:   6px;    /* large cards */
   --radius-full: 9999px; /* chips (pill) */
+  /* Brand book A16, AMENDED (approved by Jon 2026-11-17): song-section chips on the
+     player's section strip are fully rounded pills (border-radius 22px on a 44px
+     chip), replacing A16's 4px corners. Still >= 44px tall, label never clipped.
+     Gated by packages/web-browser-gate/test/player-text-size.test.mjs (A16). */
 
   /* ── Shadows (dark mode — used sparingly, borders preferred) ── */
   --shadow-card:  0 1px 3px rgba(0,0,0,0.5), 0 1px 2px rgba(0,0,0,0.3);
@@ -264,6 +285,8 @@
 /* ────────────────────────────────────────────────────
    3. ACCENT B — Amber Gold #f59e0b  [REFERENCE ONLY — NOT ACTIVE IN PRODUCTION]
    Warm. DAW-native. Ableton-adjacent.
+   NOTE: its hex is reused by --chord-now (section 1) for that token's one job, the
+   current chord. This block itself stays commented out: amber is NOT an accent.
    ──────────────────────────────────────────────────── */
 /*
 .accent-b {

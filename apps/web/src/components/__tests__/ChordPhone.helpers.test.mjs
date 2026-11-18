@@ -70,25 +70,27 @@ function song(bars, { bpm = 100, offset = 0.5, drift = 1, beatsPerBar = 4 } = {}
 }
 
 // ---------------------------------------------------------------------------
-test('leadSheetSymbol: chart spelling, Harte when unsure', () => {
+test('leadSheetSymbol: chart spelling with the ♭/♯ glyphs, Harte when unsure', () => {
   const cases = {
-    'A:min7': 'Am7', 'G:7/5': 'G7/D', 'Bb:maj': 'Bb', 'C:maj6': 'C6', 'F#:min7': 'F#m7', 'F:maj7/3': 'Fmaj7/A',
-    'C:hdim7': 'Cm7b5', 'C#:hdim7/5': 'C#m7b5/G#', 'E:sus4/b7': 'Esus4/D', 'C:maj9': 'Cmaj9', 'C:1': 'C', 'C': 'C',
-    'Bb:maj/3': 'Bb/D', 'Eb:7/b7': 'Eb7/Db', 'D:min(9)': 'D:min(9)', 'G:weird': 'G:weird', 'H:maj': 'H:maj', 'C:maj/x': 'C:maj/x',
+    'A:min7': 'Am7', 'G:7/5': 'G7/D', 'Bb:maj': 'B♭', 'C:maj6': 'C6', 'F#:min7': 'F♯m7', 'F:maj7/3': 'Fmaj7/A',
+    'C:hdim7': 'Cm7♭5', 'C#:hdim7/5': 'C♯m7♭5/G♯', 'E:sus4/b7': 'Esus4/D', 'C:maj9': 'Cmaj9', 'C:1': 'C', 'C': 'C',
+    'Bb:maj/3': 'B♭/D', 'Eb:7/b7': 'E♭7/D♭', 'D:min(9)': 'D:min(9)', 'G:weird': 'G:weird', 'H:maj': 'H:maj', 'C:maj/x': 'C:maj/x',
   };
   for (const [h, want] of Object.entries(cases)) assert.equal(leadSheetSymbol(chord(h)), want, h);
   assert.equal(leadSheetSymbol(chord('N')), 'N.C.');
   assert.equal(leadSheetSymbol(chord('X')), '?');
 });
 
-test('phoneSlotLabel starts with the visible text (label in name) and says the beats', () => {
-  assert.equal(phoneSlotLabel(chord('E:min7'), 2), 'Em7 (E:min7), 2 beats — edit');
+test('phoneSlotLabel names the chord in WORDS ("flat"/"sharp", never a glyph) and says the beats', () => {
+  assert.equal(phoneSlotLabel(chord('E:min7'), 2), 'E minor 7, 2 beats — edit');
   assert.equal(phoneSlotLabel(chord('C'), 1), 'C, 1 beat — edit');
-  assert.equal(phoneSlotLabel(chord('N'), null), 'N.C. (no chord) — edit');
-  assert.equal(phoneSlotLabel(chord('X'), 3.02), '? (unknown chord), 3 beats — edit');
-  assert.equal(phoneSlotLabel(chord('G:7'), 1.5), 'G7 (G:7), 1.5 beats — edit');
-  for (const l of ['A:min7', 'C#:hdim7/5', 'Bb:maj'])
-    assert.ok(phoneSlotLabel(chord(l), 2).startsWith(leadSheetSymbol(chord(l))), l);
+  assert.equal(phoneSlotLabel(chord('N'), null), 'No chord — edit');
+  assert.equal(phoneSlotLabel(chord('X'), 3.02), 'Unknown chord, 3 beats — edit');
+  assert.equal(phoneSlotLabel(chord('G:7'), 1.5), 'G 7, 1.5 beats — edit');
+  assert.equal(phoneSlotLabel(chord('C#:hdim7/5'), 2), 'C sharp minor 7 flat 5 over G sharp, 2 beats — edit');
+  assert.equal(phoneSlotLabel(chord('Bb:maj'), 2), 'B flat, 2 beats — edit');
+  for (const l of ['A:min7', 'C#:hdim7/5', 'Bb:maj', 'Eb:7/b7'])
+    assert.doesNotMatch(phoneSlotLabel(chord(l), 2), /[♭♯#]/, l);
 });
 
 test('beatGridFromLoops: bpm and earliest start, numeric strings, guards', () => {
@@ -101,12 +103,12 @@ test('beatGridFromLoops: bpm and earliest start, numeric strings, guards', () =>
   assert.deepEqual(beatGridFromLoops([{ bpm: 120 }]), { beatSec: 0.5, anchorSec: 0, measured: true });
 });
 
-test('phoneBarLabel names the bar and its chords in order, in the visible spelling', () => {
+test('phoneBarLabel names the bar and its chords in order, in words', () => {
   const ci = MODEL.cells.findIndex((c) => c.slots.map((s) => RUNS[s.runIndex].label).join() === 'G:7,Bb:maj');
   const c = MODEL.cells[ci];
-  assert.equal(phoneBarLabel(MODEL, RUNS, ci), `Bar ${c.numberInSection} of ${c.countInSection}, Bridge: G7, Bb`);
+  assert.equal(phoneBarLabel(MODEL, RUNS, ci), `Bar ${c.numberInSection} of ${c.countInSection}, Bridge: G 7, B flat`);
   const four = MODEL.cells.findIndex((x) => x.slots.length === 4);
-  assert.match(phoneBarLabel(MODEL, RUNS, four), /^Bar \d+ of 8, Outro: Dm7, G7, C#m7b5\/G#, C$/);
+  assert.match(phoneBarLabel(MODEL, RUNS, four), /^Bar \d+ of 8, Outro: D minor 7, G 7, C sharp minor 7 flat 5 over G sharp, C$/);
   assert.equal(phoneBarLabel(MODEL, RUNS, 99999), '');
 });
 
@@ -375,7 +377,7 @@ test('pickups: bar starts land on the downbeats, the pickup is bar 1, labels car
   m68.cells.forEach((c, i) => assert.ok(Math.abs(c.startSec - (0.5 + 3 * i * b68)) < 1e-6, `6/8 pickup: cell ${i + 1} at ${c.startSec}`));
   assert.equal(positionLabel(m68, 0), 'Bar 1');
   assert.equal(positionLabel(m68, 80), 'Bar 81');
-  assert.equal(phoneBarLabel(m68, p68.runs, 0), 'Bar 1: Em');
+  assert.equal(phoneBarLabel(m68, p68.runs, 0), 'Bar 1: E minor');
   // 3/4 at 96 with a 1-beat pickup: bars start one beat after the first chord.
   const p34 = waltz([[['E:min', 1]], ...Array.from({ length: 40 }, (_, k) => [[WP[k % 8], 3]])], 96);
   const m34 = buildPhoneModel(p34.runs, p34.grid, [], p34.dur);
@@ -527,24 +529,24 @@ for (const w of [304, 334]) {
   });
 }
 
-test('layoutLine: the Bb of a 3+1 bar gets room for its name (the bar-76 defect)', () => {
+test('layoutLine: the B♭ of a 3+1 bar gets room for its name (the bar-76 defect)', () => {
   const ci = MODEL.cells.findIndex((c) => c.slots.map((s) => RUNS[s.runIndex].label).join() === 'G:7,Bb:maj');
   const line = MODEL.lines[lineIndexOfCell(MODEL, ci)];
   const box = layoutLine(MODEL, RUNS, line, 304, -1);
   const cb = box.cells.find((c) => c.cell === ci);
-  const bb = cb.slots.find((s) => s.text === 'Bb');
-  assert.ok(bb && bb.fontPx >= NAME_MIN_PX && nameWidth('Bb', bb.fontPx) <= bb.w + 1e-6);
+  const bb = cb.slots.find((s) => s.text === 'B♭');
+  assert.ok(bb && bb.fontPx >= NAME_MIN_PX && nameWidth('B♭', bb.fontPx) <= bb.w + 1e-6);
   const g7 = cb.slots.find((s) => s.text === 'G7');
   assert.ok(g7.w > bb.w, 'the 3-beat chord should still be the wider one');
 });
 
-test('layoutLine: a 4-chord bar with C#m7b5/G# at 304px stacks or wraps rows, never blanks', () => {
+test('layoutLine: a 4-chord bar with C♯m7♭5/G♯ at 304px stacks or wraps rows, never blanks', () => {
   const ci = MODEL.cells.findIndex((c) => c.slots.length === 4);
   const line = MODEL.lines[lineIndexOfCell(MODEL, ci)];
   const box = layoutLine(MODEL, RUNS, line, 304, -1);
   assert.equal(box.rows, 2);
   const cb = box.cells.find((c) => c.cell === ci);
-  assert.deepEqual(cb.slots.map((s) => s.text), ['Dm7', 'G7', 'C#m7b5/G#', 'C']);
+  assert.deepEqual(cb.slots.map((s) => s.text), ['Dm7', 'G7', 'C♯m7♭5/G♯', 'C']);
   for (const s of cb.slots) assert.ok(s.fontPx >= NAME_MIN_PX);
 });
 

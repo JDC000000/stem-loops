@@ -35,6 +35,7 @@ import { readFileSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
+import { buildModuleGraph } from './helpers/module-graph.mjs';
 
 import { withDom } from './helpers/dom.mjs';
 
@@ -59,78 +60,36 @@ const put = (name, code) => {
 
 // ─── the module graph ────────────────────────────────────────────────────────
 
-const typesMod = put('play-types.mjs', toJs(read('src/lib/play/types.ts')));
-const cssMod = put(
-  'styles.mjs',
-  'export default new Proxy({}, { get: (_t, k) => (typeof k === "string" ? k : undefined) });',
-);
-const sectionsMod = put(
-  'sections.mjs',
-  toJs(read('src/lib/play/sections.ts')).replace(/from ['"]\.\/types['"]/g, `from '${typesMod}'`),
-);
-const rewriteShared = (js) =>
-  js
-    .replace(/from ['"]@\/lib\/play\/types['"]/g, `from '${typesMod}'`)
-    .replace(/from ['"]@\/lib\/play\/sections['"]/g, `from '${sectionsMod}'`)
-    .replace(/from ['"][^'"]*\.module\.css['"]/g, `from '${cssMod}'`);
-
-const mixerMod = put('Mixer.mjs', rewriteShared(toJs(read('src/components/play/Mixer.tsx'), true)));
-const transportMod = put('Transport.mjs', rewriteShared(toJs(read('src/components/play/Transport.tsx'), true)));
-const sectionLoopMod = put('SectionLoop.mjs', rewriteShared(toJs(read('src/components/play/SectionLoop.tsx'), true)));
-const chordMod = put(
-  'ChordOverlay.mjs',
-  `import { createElement } from 'react';
+// The real module graph from Player.tsx (test/helpers/module-graph.mjs), with
+// two stubs: ChordOverlay (pulls onnxruntime-web; reports its position) and
+// report-failure (records what would go to Sentry). The loader, engine,
+// device-support and background-audio are the REAL modules — stubbing the
+// loader would test the stub, and it is the thing whose answers the effect is
+// accused of discarding. Under happy-dom no pointer media query matches and
+// deviceMemory is absent, so device-support picks the desktop path.
+const graph = buildModuleGraph({
+  name: 'play-player-effect',
+  entries: ['components/play/Player.tsx'],
+  overrides: {
+    'components/ChordOverlay.tsx': `import { createElement } from 'react';
    export const ChordOverlay = (props) =>
-     createElement('div', { 'data-testid': 'chord-overlay', 'data-position': String(props.positionSec) });
+     createElement('div', { 'data-testid': 'chord-overlay', 'data-view': String(props.view), 'data-position': String(props.positionSec) });
    export default ChordOverlay;`,
-);
-// The REAL loader. Stubbing it would test the stub — it is the thing whose
-// answers the effect is accused of discarding.
-const loadStemsMod = put(
-  'load-stems.mjs',
-  toJs(read('src/lib/play/load-stems.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
-);
-const reportMod = put(
-  'report-failure.mjs',
-  `export function reportStemFetchFailure(reason, summary) {
+    'lib/play/report-failure.ts': `export function reportStemFetchFailure(reason, summary) {
      (globalThis.__stemFetchReports ??= []).push({ reason, summary });
    }`,
-);
-const engineMod = put(
-  'engine.mjs',
-  toJs(read('src/lib/play/engine.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
-);
-
-// device-support (Story 8): the REAL module. Under happy-dom no pointer media
-// query matches and deviceMemory is absent, so the rule picks the desktop path.
-const deviceSupportMod = put(
-  'device-support.mjs',
-  toJs(read('src/lib/play/device-support.ts')).replace(/from ['"]\.\/types\.ts['"]/g, `from '${typesMod}'`),
-);
-// background-audio (Story 8, phones): the REAL module; every browser object is passed in.
-const backgroundAudioMod = put('background-audio.mjs', toJs(read('src/lib/play/background-audio.ts')));
-
-const playerJs = rewriteShared(toJs(read('src/components/play/Player.tsx'), true))
-  .replace(/from ['"]@\/lib\/play\/device-support['"]/g, `from '${deviceSupportMod}'`)
-  .replace(/from ['"]@\/lib\/play\/background-audio['"]/g, `from '${backgroundAudioMod}'`)
-  .replace(/from ['"]@\/components\/ChordOverlay['"]/g, `from '${chordMod}'`)
-  .replace(/from ['"]@\/lib\/play\/engine['"]/g, `from '${engineMod}'`)
-  .replace(/from ['"]@\/lib\/play\/load-stems['"]/g, `from '${loadStemsMod}'`)
-  .replace(/from ['"]@\/lib\/play\/report-failure['"]/g, `from '${reportMod}'`)
-  .replace(/from ['"]\.\/Mixer['"]/g, `from '${mixerMod}'`)
-  .replace(/from ['"]\.\/Transport['"]/g, `from '${transportMod}'`)
-  .replace(/from ['"]\.\/SectionLoop['"]/g, `from '${sectionLoopMod}'`);
-writeFileSync(join(dir, 'Player.mjs'), playerJs);
-
+  },
+});
+const playerJs = readFileSync(graph.file('components/play/Player.tsx'), 'utf8');
 const UNRESOLVED = [...playerJs.matchAll(/from ['"]([^'"]+)['"]/g)]
   .map((m) => m[1])
   .filter((spec) => !spec.startsWith('.'))
   .filter((spec) => spec !== 'react' && spec !== 'react/jsx-runtime');
 
 const React = (await import('react')).default;
-const Player = await import(pathToFileURL(join(dir, 'Player.mjs')).href);
-const { PLAYABLE_STEMS } = await import(pathToFileURL(join(dir, 'play-types.mjs')).href);
-const { ROUTE_TRANSPORT_LATENCY_SEC } = await import(pathToFileURL(join(dir, 'background-audio.mjs')).href);
+const Player = await import(graph.url('components/play/Player.tsx'));
+const { PLAYABLE_STEMS } = await import(graph.url('lib/play/types.ts'));
+const { ROUTE_TRANSPORT_LATENCY_SEC } = await import(graph.url('lib/play/background-audio.ts'));
 
 const {
   NO_STEMS_MESSAGE,

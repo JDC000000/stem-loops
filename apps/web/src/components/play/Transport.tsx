@@ -6,9 +6,10 @@
  *
  * Takes a snapshot slice plus callbacks (`TransportProps`) and never touches
  * the engine. This is NOT the Timeline zoom slider in ChordOverlay.tsx
- * (`aria-label="Timeline zoom"`): that is a native <input type="range"> that
- * scales the chord timeline. The seek bar here is a separate custom
- * role="slider" labelled "Playback position".
+ * (`aria-label="Timeline zoom"`), which scales the chord chart. The seek bar
+ * here is its own REAL <input type="range"> labelled "Song position" (design
+ * v1.4, P1.1), laid over a drawn bar so the section ticks and the loop band
+ * can sit on it; the drawn thumb carries the focus ring.
  *
  * SEEK STRATEGY: local scrub position, one `onSeek` on release. While the user
  * holds the thumb (pointer) or is mid key-burst, the thumb renders from the
@@ -20,7 +21,6 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import type { TransportProps, TransportStatus } from '@/lib/play/types';
 import s from './Transport.module.css';
 
@@ -211,25 +211,82 @@ export function describeTarget(el: EventTarget | null): TargetInfo | null {
 
 // ─── component ───────────────────────────────────────────────────────────────
 
+/** −5 s / +5 s (design v1.4, P1.1). */
+export const SKIP_SEC = 5;
+
+/** The seek line's readout under the bar: "0:53" and "-2:41". */
+export function remainingText(positionSec: number, durationSec: number): string {
+  const dur = sanitizeSec(durationSec);
+  const left = Math.max(0, dur - clamp(sanitizeSec(positionSec), 0, dur));
+  return `-${formatTime(left)}`;
+}
+
+/** Percent along the bar, for drawn marks (ticks, the loop band, the thumb). */
+export function pctOf(sec: number, durationSec: number): number {
+  return fraction(sec, durationSec) * 100;
+}
+
+export type LoopButtonState = 'on' | 'off' | 'disabled';
+
+export interface PlayerTransportProps extends TransportProps {
+  /** Section starts (seconds), drawn as ticks on the seek line. */
+  readonly ticks?: readonly number[];
+  /** The span being looped, drawn as a band; null when the loop is off. */
+  readonly loopBand?: { readonly startSec: number; readonly endSec: number } | null;
+  /** "Looping Verse 1 → Chorus 1 · 0:32–1:18", "Loop off" or "". */
+  readonly loopText?: string;
+  /** The loop button (P2.1): on, off (a run remembered) or disabled (nothing to loop). */
+  readonly loopState?: LoopButtonState;
+  readonly onToggleLoop?: () => void;
+  /** The Mix button (phones and tablets); absent where the mixer is always shown. */
+  readonly mix?: {
+    readonly label: string;
+    readonly open: boolean;
+    readonly onOpen: () => void;
+    readonly buttonRef?: (el: HTMLButtonElement | null) => void;
+  } | null;
+}
+
+/** Seek-commit delay for a key burst on the range input, ms. */
 const KEY_COMMIT_MS = 150;
 const SETTLE_MS = 500;
 
-export function Transport({ status, positionSec, durationSec, onPlay, onPause, onSeek }: TransportProps) {
+/**
+ * THE TRANSPORT (design v1.4, P1.1): the seek line — a REAL range input over a
+ * drawn bar with section ticks, the loop band and a thumb that shows the focus
+ * ring — then −5 s · Play/Pause · +5 s · Loop · Mix.
+ *
+ * SEEK STRATEGY (unchanged): while the user holds the thumb or is mid
+ * key-burst, the bar renders the local value and ignores incoming positions;
+ * ONE `onSeek` on release. The engine rebuilds its source nodes on every seek,
+ * so seeking per pointermove would thrash it.
+ *
+ * Space anywhere that does not type or activate something = play/pause.
+ */
+export function Transport({
+  status,
+  positionSec,
+  durationSec,
+  onPlay,
+  onPause,
+  onSeek,
+  ticks = [],
+  loopBand = null,
+  loopText = '',
+  loopState = 'disabled',
+  onToggleLoop,
+  mix = null,
+}: PlayerTransportProps) {
   const dur = sanitizeSec(durationSec);
   const aff = affordanceFor(status, dur);
 
-  // Local override: a live scrub, a pending key burst, or the just-committed value
-  // held until the engine reports a new position (so the thumb does not snap back).
   const [override, setOverride] = useState<number | null>(null);
-  const [scrubbing, setScrubbing] = useState(false);
-  const trackRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef(false);
+  const holding = useRef(false);
   const keyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const keyPending = useRef<number | null>(null);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const latest = useRef({ status, dur, onPlay, onPause, onSeek, aff });
-  latest.current = { status, dur, onPlay, onPause, onSeek, aff };
+  const latest = useRef({ status, dur, onPlay, onPause, onSeek, aff, override });
+  latest.current = { status, dur, onPlay, onPause, onSeek, aff, override };
 
   const clearTimers = () => {
     if (keyTimer.current) clearTimeout(keyTimer.current);
@@ -238,40 +295,35 @@ export function Transport({ status, positionSec, durationSec, onPlay, onPause, o
     settleTimer.current = null;
   };
 
-  const commit = useCallback((sec: number) => {
-    const { aff: a, dur: d, onSeek: seek } = latest.current;
-    if (!a.seekable) return;
-    const target = clamp(sanitizeSec(sec), 0, d);
-    seek(target);
-    setOverride(target);
+  const commit = useCallback(() => {
+    const { aff: a, dur: d, onSeek: seek, override: o } = latest.current;
+    holding.current = false;
+    if (keyTimer.current) clearTimeout(keyTimer.current);
+    keyTimer.current = null;
+    if (o === null || !a.seekable) return;
+    seek(clamp(sanitizeSec(o), 0, d));
     if (settleTimer.current) clearTimeout(settleTimer.current);
     settleTimer.current = setTimeout(() => {
       settleTimer.current = null;
-      if (!dragRef.current && keyPending.current === null) setOverride(null);
+      if (!holding.current) setOverride(null);
     }, SETTLE_MS);
   }, []);
 
-  const cancelInteraction = useCallback(() => {
-    dragRef.current = false;
-    keyPending.current = null;
-    clearTimers();
-    setScrubbing(false);
-    setOverride(null);
-  }, []);
-
-  // Engine moved: release a settled override (never one the user is still holding).
+  // A fresh engine position drops a stale override once nothing is held.
   useEffect(() => {
-    if (!dragRef.current && keyPending.current === null) setOverride(null);
+    if (!holding.current && keyTimer.current === null && settleTimer.current === null) setOverride(null);
   }, [positionSec]);
 
-  // Seeking became impossible mid-gesture (status flipped, duration vanished): drop it.
   useEffect(() => {
-    if (!aff.seekable) cancelInteraction();
-  }, [aff.seekable, cancelInteraction]);
+    if (!aff.seekable) {
+      holding.current = false;
+      clearTimers();
+      setOverride(null);
+    }
+  }, [aff.seekable]);
 
   useEffect(() => clearTimers, []);
 
-  // Global space = play/pause.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const { status: st, dur: d, onPlay: play, onPause: pause, onSeek: seek } = latest.current;
@@ -300,119 +352,131 @@ export function Transport({ status, positionSec, durationSec, onPlay, onPause, o
     else if (aff.action === 'play') onPlay();
   };
 
-  // Pointer scrubbing. Pointer capture keeps move/up flowing to the track even
-  // when the pointer leaves the bar, so a release outside still commits (clamped).
-  const posAt = (clientX: number) => {
-    const r = trackRef.current?.getBoundingClientRect();
-    return positionFromPointer(clientX, r?.left ?? 0, r?.width ?? 0, dur);
-  };
-  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!aff.seekable || (e.pointerType === 'mouse' && e.button !== 0)) return;
-    if (keyTimer.current) { clearTimeout(keyTimer.current); keyTimer.current = null; }
-    keyPending.current = null;
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* unsupported: release inside still works */ }
-    dragRef.current = true;
-    setScrubbing(true);
-    setOverride(posAt(e.clientX));
-    e.currentTarget.focus({ preventScroll: true });
-  };
-  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (dragRef.current) setOverride(posAt(e.clientX)); // visual only: no onSeek here
-  };
-  const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current) return;
-    dragRef.current = false;
-    setScrubbing(false);
-    commit(posAt(e.clientX)); // the single onSeek for this gesture
-  };
-  const onPointerCancel = () => { if (dragRef.current) cancelInteraction(); };
-
-  const flushKeys = () => {
-    if (keyTimer.current) { clearTimeout(keyTimer.current); keyTimer.current = null; }
-    if (keyPending.current !== null) {
-      const v = keyPending.current;
-      keyPending.current = null;
-      commit(v);
-    }
-  };
-  const onSliderKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (e.key === 'Escape' && dragRef.current) { e.preventDefault(); cancelInteraction(); return; }
-    if (!aff.seekable || dragRef.current) return;
-    const base = resolveDisplayPosition(keyPending.current ?? override, positionSec, dur);
-    const target = keySeekTarget(e.key, base, dur, e);
-    if (target === null) return;
-    e.preventDefault();
-    keyPending.current = target;
-    setOverride(target);
-    if (keyTimer.current) clearTimeout(keyTimer.current);
-    keyTimer.current = setTimeout(flushKeys, KEY_COMMIT_MS); // one onSeek per key burst
-  };
-
   const shown = resolveDisplayPosition(override, positionSec, dur);
-  const pct = fraction(shown, dur) * 100;
+  const pct = pctOf(shown, dur);
   const valueText = `${formatTime(shown)} of ${formatTime(dur)}`;
-  const cls = [s.root, aff.tone === 'busy' ? s.busy : '', aff.tone === 'error' ? s.error : '']
-    .filter(Boolean)
-    .join(' ');
+  const skip = (delta: number) => {
+    if (!aff.seekable) return;
+    onSeek(clamp(sanitizeSec(positionSec) + delta, 0, dur));
+  };
+
+  const loopLabel = loopState === 'disabled' ? 'Tap a section to loop it' : 'Loop';
 
   return (
     <div
-      className={cls}
-      role="group"
-      aria-label="Playback transport"
+      className={`${s.root} ${aff.tone === 'busy' ? s.busy : ''} ${aff.tone === 'error' ? s.error : ''}`}
       data-testid="transport"
-      data-status={status}
-      aria-busy={status === 'loading' ? true : undefined}
+      aria-busy={aff.tone === 'busy' ? true : undefined}
     >
-      <button
-        type="button"
-        className={s.play}
-        onClick={onButton}
-        disabled={aff.action === null}
-        aria-label={aff.buttonLabel}
-        data-testid="transport-play"
-      >
-        {aff.action === 'pause' ? <PauseIcon /> : aff.action === 'replay' ? <ReplayIcon /> : <PlayIcon />}
-      </button>
-
-      <div
-        ref={trackRef}
-        className={s.track}
-        data-scrubbing={scrubbing ? 'true' : undefined}
-        role="slider"
-        aria-label="Playback position"
-        aria-orientation="horizontal"
-        aria-valuemin={0}
-        aria-valuemax={dur}
-        aria-valuenow={Math.round(shown * 100) / 100}
-        aria-valuetext={valueText}
-        aria-disabled={aff.seekable ? undefined : true}
-        tabIndex={aff.seekable ? 0 : -1}
-        data-testid="transport-seek"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerCancel}
-        onKeyDown={onSliderKey}
-        onBlur={flushKeys}
-      >
-        <div className={s.rail}>
-          <div className={s.fill} style={{ width: `${pct}%` }} />
-          <div className={s.thumb} style={{ left: `${pct}%` }} />
+      <div className={s.seek}>
+        <div className={s.loopText} data-testid="transport-loop-text">{loopText}</div>
+        <div className={s.track}>
+          <div className={s.rail} aria-hidden="true" />
+          {loopBand && dur > 0 ? (
+            <div
+              className={s.band}
+              aria-hidden="true"
+              data-testid="transport-loop-band"
+              style={{ left: `${pctOf(loopBand.startSec, dur)}%`, width: `${Math.max(0, pctOf(loopBand.endSec, dur) - pctOf(loopBand.startSec, dur))}%` }}
+            />
+          ) : null}
+          <div className={s.fill} aria-hidden="true" style={{ width: `${pct}%` }} />
+          {dur > 0
+            ? ticks
+                .filter((t) => t > 0 && t < dur)
+                .map((t) => <div key={t} className={s.tick} aria-hidden="true" style={{ left: `${pctOf(t, dur)}%` }} />)
+            : null}
+          <input
+            className={s.range}
+            type="range"
+            min={0}
+            max={dur > 0 ? dur : 1}
+            step="any"
+            value={shown}
+            disabled={!aff.seekable}
+            aria-label="Song position"
+            aria-valuetext={valueText}
+            data-testid="transport-seek"
+            onPointerDown={() => {
+              holding.current = true;
+            }}
+            onChange={(e) => {
+              const v = Number(e.currentTarget.value);
+              setOverride(Number.isFinite(v) ? v : 0);
+              if (!holding.current) {
+                // Keyboard (or assistive tech): commit after the burst settles.
+                if (keyTimer.current) clearTimeout(keyTimer.current);
+                keyTimer.current = setTimeout(commit, KEY_COMMIT_MS);
+              }
+            }}
+            onPointerUp={commit}
+            onPointerCancel={commit}
+            onBlur={() => {
+              if (holding.current || keyTimer.current) commit();
+            }}
+          />
+          <div className={s.thumb} aria-hidden="true" style={{ left: `${pct}%` }} />
+        </div>
+        <div className={s.times} data-testid="transport-time" aria-hidden="true">
+          <span>{formatTime(shown)}</span>
+          <span>{remainingText(shown, dur)}</span>
         </div>
       </div>
 
-      <div className={s.readout} data-testid="transport-time" aria-hidden="true">
-        <span>{formatTime(shown)}</span>
-        <span className={s.sep}> / </span>
-        <span>{formatTime(dur)}</span>
+      <div className={s.buttons}>
+        <button type="button" className={s.skip} aria-label="Back 5 seconds" disabled={!aff.seekable} onClick={() => skip(-SKIP_SEC)}>
+          <BackIcon />
+          <span className={s.skipText} aria-hidden="true">5s</span>
+        </button>
+        <button
+          type="button"
+          className={s.play}
+          onClick={onButton}
+          disabled={aff.action === null}
+          aria-label={aff.buttonLabel}
+          data-testid="transport-play"
+        >
+          {aff.action === 'pause' ? <PauseIcon /> : aff.action === 'replay' ? <ReplayIcon /> : <PlayIcon />}
+        </button>
+        <button type="button" className={s.skip} aria-label="Forward 5 seconds" disabled={!aff.seekable} onClick={() => skip(SKIP_SEC)}>
+          <FwdIcon />
+          <span className={s.skipText} aria-hidden="true">5s</span>
+        </button>
+        <button
+          type="button"
+          className={s.loop}
+          data-state={loopState}
+          aria-label={loopLabel}
+          aria-pressed={loopState === 'on'}
+          aria-disabled={loopState === 'disabled' ? true : undefined}
+          data-testid="transport-loop"
+          onClick={() => {
+            if (loopState !== 'disabled') onToggleLoop?.();
+          }}
+        >
+          <LoopIcon />
+        </button>
+        {mix ? (
+          <button
+            type="button"
+            className={s.mix}
+            aria-haspopup="dialog"
+            aria-expanded={mix.open}
+            ref={mix.buttonRef}
+            onClick={mix.onOpen}
+            data-testid="transport-mix"
+          >
+            <span className={s.mixName}>Mix</span>
+            <span className={s.mixState}>{mix.label}</span>
+          </button>
+        ) : null}
       </div>
 
-      {aff.hint && (
+      {aff.hint && aff.tone !== 'normal' ? (
         <div className={s.hint} role={aff.tone === 'error' ? 'alert' : 'status'} data-testid="transport-hint">
           {aff.hint}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -421,16 +485,42 @@ export default Transport;
 
 function PlayIcon() {
   return (
-    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
+    <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false">
       <path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" fill="currentColor" />
     </svg>
   );
 }
 function PauseIcon() {
   return (
-    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
+    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" focusable="false">
       <rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor" />
       <rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor" />
+    </svg>
+  );
+}
+function BackIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M3 12a9 9 0 1 0 3-6.7" />
+      <path d="M3 4v5h5" />
+    </svg>
+  );
+}
+function FwdIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M21 12a9 9 0 1 1-3-6.7" />
+      <path d="M21 4v5h-5" />
+    </svg>
+  );
+}
+function LoopIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M17 2l4 4-4 4" />
+      <path d="M3 11v-1a4 4 0 0 1 4-4h14" />
+      <path d="M7 22l-4-4 4-4" />
+      <path d="M21 13v1a4 4 0 0 1-4 4H3" />
     </svg>
   );
 }

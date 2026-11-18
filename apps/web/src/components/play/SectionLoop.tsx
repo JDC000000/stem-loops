@@ -1,76 +1,159 @@
-import type { KeyboardEvent } from 'react';
-import type { LoopRegion, SectionLoopProps } from '@/lib/play/types';
-import {
-  formatTime,
-  nameRegions,
-  nextLoop,
-  sameRegion,
-  sanitizeRegions,
-} from '@/lib/play/sections';
+'use client';
+
+import { useEffect, useRef } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
+import { type RunState, stripLegend } from '@/lib/play/sections';
 import styles from './SectionLoop.module.css';
 
-export interface SectionLoopControlProps extends SectionLoopProps {
-  /** Track length; regions beyond it are clamped or dropped. Optional. */
-  readonly durationSec?: number;
+/** Long-press threshold (design v1.4, P2.1). */
+export const LONG_PRESS_MS = 500;
+/** A finger that moves this far is scrolling the strip, not pressing a chip. */
+export const LONG_PRESS_SLOP_PX = 10;
+
+/**
+ * How long after the long-press is RELEASED (pointerup / pointercancel /
+ * pointerleave) its click may still arrive. The flag is held for as long as the
+ * pointer stays down — a 2-second hold must still swallow its release click
+ * (review R1 on #288) — and dropped this long after the release, so a click that
+ * never comes cannot eat a later activation.
+ */
+export const SWALLOW_WINDOW_MS = 700;
+
+/** The one-time hint after the first extend (P2.1 "signposting the change"). */
+export const RUN_HINT = 'Looping these — tap one to loop it alone.';
+
+export interface SectionStripProps {
+  /** Display names, in strip order ("Verse 1", "Chorus 1", ...). */
+  readonly names: readonly string[];
+  /** The run on screen: looping, or remembered while the loop is off. */
+  readonly state: RunState;
+  /** A tap, click, Enter or Space on chip `i`. The P2.1 table lives in tapSection. */
+  readonly onTap: (i: number) => void;
+  /** Long-press on chip `i`: loop only this. */
+  readonly onLongPress: (i: number) => void;
+  /** Show the one-time hint under the strip. */
+  readonly hint?: boolean;
 }
 
 /**
- * Story 4.5. Pick a song section to loop. This emits regions and nothing else:
- * the seamless wrap is the engine's `setLoop`. Stateless on purpose - `active`
- * comes from the engine snapshot, so the pressed state can never disagree with
- * what is actually playing.
+ * The section strip (design v1.4, P1.1 + P2.1): one row of chips that scrolls
+ * sideways, in a fieldset whose legend names the run. Stateless about the run
+ * itself: `state` comes from the player, which owns it, so what is pressed can
+ * never disagree with what the engine loops.
+ *
+ * Chips are buttons with `aria-pressed`. Enter/Space = tap. Long-press (touch
+ * or mouse) is "loop only this": 500 ms, cancelled when the pointer moves (so
+ * scrolling the strip never triggers it), and the click that follows its
+ * release is SWALLOWED, or the release would read as a tap and undo it.
  */
-export function SectionLoop({ sections, active, onLoop, durationSec }: SectionLoopControlProps) {
-  const named = nameRegions(sanitizeRegions(sections, durationSec));
-  const cur = active && Number.isFinite(active.startSec) && Number.isFinite(active.endSec) ? active : null;
-  if (named.length === 0 && !cur) return null;
+export function SectionLoop({ names, state, onTap, onLongPress, hint = false }: SectionStripProps) {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const start = useRef<{ x: number; y: number } | null>(null);
+  const swallow = useRef(false);
+  const swallowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
-  const activeNamed = named.find((n) => sameRegion(n.region, cur));
-  // `active` may be a hand-dragged region (no label) or one we do not offer.
-  const status = !cur
-    ? 'Not looping'
-    : `Looping ${activeNamed ? activeNamed.name : 'custom region'}, ${formatTime(cur.startSec)} to ${formatTime(cur.endSec)}`;
+  const cancel = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    start.current = null;
+  };
+  const clearSwallow = () => {
+    swallow.current = false;
+    if (swallowTimer.current) clearTimeout(swallowTimer.current);
+    swallowTimer.current = null;
+  };
+  useEffect(
+    () => () => {
+      cancel();
+      clearSwallow();
+    },
+    [],
+  );
 
-  const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
-    if (e.key === 'Escape' && cur) {
-      e.preventDefault();
-      onLoop(null);
-    }
+  // Keep the run's ends in view (P2.1 auto-scroll): the far end first, then the
+  // near end, so on a run wider than the strip its START wins.
+  const lo = state.run?.lo ?? -1;
+  const hi = state.run?.hi ?? -1;
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el || lo < 0) return;
+    const chips = el.querySelectorAll<HTMLElement>('button[data-index]');
+    for (const i of [hi, lo]) chips[i]?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [lo, hi]);
+
+  if (names.length === 0) return null;
+
+  const down = (i: number) => (e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    cancel();
+    clearSwallow();
+    start.current = { x: e.clientX, y: e.clientY };
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      // Held: swallow the click that follows the RELEASE. The expiry window is
+      // armed at release (see `release`), never here.
+      swallow.current = true;
+      onLongPress(i);
+    }, LONG_PRESS_MS);
+  };
+  /** The pointer let go (or left): end the press, and start the swallow window if armed. */
+  const release = () => {
+    cancel();
+    if (swallow.current && !swallowTimer.current) swallowTimer.current = setTimeout(clearSwallow, SWALLOW_WINDOW_MS);
+  };
+  const move = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    const s = start.current;
+    if (!s) return;
+    if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > LONG_PRESS_SLOP_PX) cancel();
   };
 
   return (
-    <section className={styles.root} aria-label="Loop a section" onKeyDown={onKeyDown}>
-      <ul className={styles.list}>
-        {named.map(({ region, name }: { region: LoopRegion; name: string }) => {
-          const pressed = sameRegion(region, cur);
+    <fieldset className={styles.root} data-testid="section-strip">
+      <legend className={styles.srOnly}>{stripLegend(names, state)}</legend>
+      <div className={styles.list} ref={listRef}>
+        {names.map((name, i) => {
+          const inRun = !!state.run && i >= state.run.lo && i <= state.run.hi;
+          const pressed = inRun && state.on;
           return (
-            <li key={`${region.startSec}-${region.endSec}`}>
-              <button
-                type="button"
-                className={styles.chip}
-                aria-pressed={pressed}
-                data-active={pressed ? 'true' : undefined}
-                onClick={() => onLoop(nextLoop(cur, region))}
-              >
-                <span className={styles.name}>{name}</span>
-                <span className={styles.time}>
-                  {formatTime(region.startSec)}&ndash;{formatTime(region.endSec)}
-                </span>
-                {pressed ? <span className={styles.badge}>Looping</span> : null}
-              </button>
-            </li>
+            <button
+              key={`${i}-${name}`}
+              type="button"
+              className={styles.chip}
+              data-index={i}
+              data-run={inRun ? (state.on ? 'on' : 'remembered') : undefined}
+              aria-pressed={pressed}
+              onPointerDown={down(i)}
+              onPointerMove={move}
+              onPointerUp={release}
+              onPointerCancel={release}
+              onPointerLeave={release}
+              onContextMenu={(e) => e.preventDefault()}
+              onKeyDown={clearSwallow}
+              onClick={(e) => {
+                // Only a POINTER click (detail >= 1) can be the long-press's
+                // release. Keyboard, switch and AT activation dispatch a click
+                // with detail 0 and is never swallowed.
+                if (swallow.current && e.detail > 0) {
+                  clearSwallow();
+                  return;
+                }
+                clearSwallow();
+                onTap(i);
+              }}
+            >
+              {name}
+            </button>
           );
         })}
-      </ul>
-      <button
-        type="button"
-        className={styles.clear}
-        disabled={!cur}
-        onClick={() => onLoop(null)}
-      >
-        Clear loop
-      </button>
-      <p className={styles.status} role="status" aria-live="polite">{status}</p>
-    </section>
+      </div>
+      {hint ? (
+        <p className={styles.hint} data-testid="section-hint">
+          {RUN_HINT}
+        </p>
+      ) : null}
+    </fieldset>
   );
 }
+
+export default SectionLoop;

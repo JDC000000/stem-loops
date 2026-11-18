@@ -1,12 +1,13 @@
 // REAL-BROWSER GATE: text sizes in the play-along player (Stories 3.7 and 4.8).
 //
 // WHAT IT CHECKS (brand book v2.2 Appendix A, decided by Jon 2026-11-14)
-//   A11  The CURRENT chord name (the "Now" readout under the chord timeline) is
-//        at least CURRENT_MIN_PX, measured as rendered: computed font-size, the
-//        rendered text box, and the height of the INK actually painted (two
-//        screenshots, text paint on and off). At the default zoom and at the
-//        zoom ceiling, at 1280 / 1024 / 390 px viewports, and for the longest
-//        chord name in the song (it must not be clipped either).
+//   A11  The CURRENT chord name (the chord stage's "Now", Slice 1a) is at least
+//        CURRENT_MIN_PX, measured as rendered: computed font-size, the rendered
+//        text box, and the height of the INK actually painted (two screenshots,
+//        text paint on and off). At 1280 / 1024 / 390 px viewports, and for the
+//        longest chord name in the song (it must not be clipped either). It must
+//        name the chord the chart's playhead ring is on, at the default zoom and
+//        at the zoom ceiling of the "All chords" chart (the ⋯ menu's sheet).
 //        Upcoming chords (the chips after the current one) may be smaller but
 //        not below the A15 floor.
 //   A15  No visible text in the player is below the floor: 11px for readable
@@ -14,8 +15,9 @@
 //        book grants inside the player is the mixer's level readout ("80%"),
 //        which may be 10px. Every visible text node inside [data-testid=player]
 //        is checked, and the count checked is printed and must be non-trivial.
-//   A16  Song-section chips: 4px corners on every corner, at least 44px tall,
-//        and the name is not clipped inside the chip.
+//   A16  Song-section chips: at least 44px tall, the name not clipped inside the
+//        chip, and fully rounded pill corners (22px). A16 AMENDED, approved by
+//        Jon 2026-11-17: pills replace the row's original 4px corners.
 //   Kept  Chord-root hues on the chord chips (Jon: "I like the colour
 //        separations"): every chord root maps to ONE background, and different
 //        roots to different backgrounds.
@@ -80,9 +82,9 @@ export const MIN_TEXT_PX = 11;
 export const MIN_MONO_PX = 12;
 /** A15: the mixer level readout, the one exemption inside the player. */
 export const MIXER_READOUT_MIN_PX = 10;
-/** A16. */
+/** A16, amended (approved by Jon 2026-11-17): 22px pills, not 4px corners. */
 export const SECTION_MIN_HEIGHT_PX = 44;
-export const SECTION_RADIUS_PX = 4;
+export const SECTION_RADIUS_PX = 22;
 /** Story 2.1. */
 export const STEM_ORDER = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'];
 /** Layout-unit slack (1/64 px) for "inside" comparisons. */
@@ -159,16 +161,26 @@ async function bundle() {
         import { PlayerView } from './src/components/play/Player.tsx';
         import './src/app/globals.css';
         const noop = () => {};
-        createRoot(document.getElementById('root')).render(
+        const root = createRoot(document.getElementById('root'));
+        // onLoop behaves like the engine: the loop it is handed is in the next
+        // snapshot (so the screen shows "Looping" only when the engine does), and
+        // every call is recorded for the R1 long-press check.
+        const draw = () => root.render(
           React.createElement(PlayerView, {
             jobId: 'gate-job',
             phase: { kind: 'ready' },
             snapshot: window.__gateSnapshot,
             sections: window.__gateSections,
             onPlay: noop, onPause: noop, onSeek: noop, onGain: noop,
-            onMute: noop, onSolo: noop, onLoop: noop,
+            onMute: noop, onSolo: noop,
+            onLoop: (r) => {
+              (window.__loops = window.__loops || []).push(r);
+              window.__gateSnapshot = { ...window.__gateSnapshot, loop: r };
+              draw();
+            },
           }),
         );
+        draw();
       `,
       resolveDir: WEB,
       loader: 'js',
@@ -202,8 +214,10 @@ async function bundle() {
   return { js: js.text, css: css?.text ?? '' };
 }
 
-async function openPlayer(browser, built, width, positionSec) {
-  const page = await browser.newPage({ viewport: { width, height: 900 } });
+async function openPlayer(browser, built, width, positionSec, height = 900, { notice = true, touch = false } = {}) {
+  const page = touch
+    ? await (await browser.newContext({ viewport: { width, height }, isMobile: true, hasTouch: true })).newPage()
+    : await browser.newPage({ viewport: { width, height } });
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(String(e)));
   await page.route('http://gate.test/**', async (route) => {
@@ -219,7 +233,7 @@ async function openPlayer(browser, built, width, positionSec) {
           '</head><body>' +
           // The job page's own frame: max 960px, centred, the app gutter.
           '<main style="max-width:960px;margin:0 auto;padding:48px var(--sl-gutter,16px) 96px"><div id="root"></div></main>' +
-          `<script>window.__gateSnapshot=${JSON.stringify(snapshotAt(positionSec))};window.__gateSections=${JSON.stringify(SECTIONS)};</script>` +
+          `<script>window.__gateSnapshot=${JSON.stringify(notice ? snapshotAt(positionSec) : { ...snapshotAt(positionSec), degraded: null })};window.__gateSections=${JSON.stringify(SECTIONS)};</script>` +
           '<script>Promise.all([400,500,600,700].map(function(w){return document.fonts.load(w+" 16px GateInter")}))' +
           ".then(function(){var s=document.createElement('script');s.src='/out.js';document.body.appendChild(s)})</script>" +
           '</body></html>',
@@ -235,30 +249,41 @@ async function openPlayer(browser, built, width, positionSec) {
   });
   await page.goto('http://gate.test/');
   await page.waitForSelector('[data-testid="player"]', { timeout: 30000 });
-  await page.waitForSelector('[data-testid^="chord-chip-"]', { timeout: 30000 });
+  await page.waitForSelector('[data-testid="phone-chords"] [data-testid="playhead-now-name"]', { timeout: 30000 });
+  await settle(page);
+  return { page, pageErrors };
+}
+
+/** Open the full chord chart (Slice 1a: a sheet) — the aside's button on desktop, the ⋯ menu on a phone. */
+async function openChart(page, width) {
+  if (width >= 1024) await page.click('aside button:has-text("Show all chords")');
+  else {
+    await page.click('[data-testid="player-more"]');
+    await page.click('#player-menu button:has-text("See all chords")');
+  }
+  await page.waitForSelector('[data-testid="chart-sheet"] [data-testid^="chord-chip-"]', { timeout: 30000 });
   await page.waitForFunction(() => {
-    const s = document.querySelector('[data-testid="zoom-slider"]');
+    const s = document.querySelector('[data-testid="chart-sheet"] [data-testid="zoom-slider"]');
     return s && !s.disabled;
   }, null, { timeout: 30000 });
   await settle(page);
-  return { page, pageErrors };
 }
 
 const settle = (page) =>
   page.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))));
 
 async function setSlider(page, thousandths) {
-  const before = await page.evaluate(() => document.querySelector('[data-testid="chord-timeline"]').dataset.pxPerSec);
-  const sliderBefore = await page.evaluate(() => document.querySelector('[data-testid="zoom-slider"]').value);
+  const before = await page.evaluate(() => document.querySelector('[data-testid="chart-sheet"] [data-testid="chord-timeline"]').dataset.pxPerSec);
+  const sliderBefore = await page.evaluate(() => document.querySelector('[data-testid="chart-sheet"] [data-testid="zoom-slider"]').value);
   await page.evaluate((v) => {
-    const el = document.querySelector('[data-testid="zoom-slider"]');
+    const el = document.querySelector('[data-testid="chart-sheet"] [data-testid="zoom-slider"]');
     // React 18 installs its own `value` setter; the prototype's fires onChange.
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, String(v));
     el.dispatchEvent(new Event('input', { bubbles: true }));
   }, thousandths);
   if (String(thousandths) !== sliderBefore)
     await page.waitForFunction(
-      (b) => document.querySelector('[data-testid="chord-timeline"]').dataset.pxPerSec !== b,
+      (b) => document.querySelector('[data-testid="chart-sheet"] [data-testid="chord-timeline"]').dataset.pxPerSec !== b,
       before,
       { timeout: 10000 },
     );
@@ -312,11 +337,11 @@ function measurePlayer() {
   }
 
   // A16: section chips (and the Clear loop button, which shares the style).
-  const sec = root.querySelector('section[aria-label="Loop a section"]');
+  const sec = root.querySelector('[data-testid="section-strip"]');
   for (const b of sec ? sec.querySelectorAll('button') : []) {
     const cs = getComputedStyle(b);
     const r = b.getBoundingClientRect();
-    const name = b.querySelector('span') ?? b;
+    const name = b.querySelector('span') ?? b;  // the chip's own text node since Slice 1a
     const nr = (() => {
       const rg = document.createRange();
       rg.selectNodeContents(name);
@@ -338,8 +363,10 @@ function measurePlayer() {
   }
 
   // A11: the current chord.
-  const now = root.querySelector('[data-testid="playhead-now"]');
-  const name = root.querySelector('[data-testid="playhead-now-name"]');
+  // The STAGE's Now (Slice 1a); the chart may render its own readout too.
+  const stage = root.querySelector('[data-testid="phone-chords"]') ?? root;
+  const now = stage.querySelector('[data-testid="playhead-now"]');
+  const name = stage.querySelector('[data-testid="playhead-now-name"]');
   const ring = root.querySelector('[data-testid="chord-playhead-ring"]');
   if (now) {
     const target = name ?? now;
@@ -357,6 +384,9 @@ function measurePlayer() {
         if (t.left < er.left - 0.02 || t.right > er.right + 0.02 || t.top < er.top - 0.02 || t.bottom > er.bottom + 0.02)
           clippedBy.push(e.getAttribute('data-testid') || e.tagName.toLowerCase());
       }
+      // The player is a position:fixed screen (Slice 1a): its containing block
+      // is the viewport, so nothing above it can clip it.
+      if (ecs.position === 'fixed') break;
     }
     let alpha = 1;
     for (let e = target; e; e = e.parentElement) alpha *= Number(getComputedStyle(e).opacity);
@@ -403,7 +433,7 @@ async function inkHeight(page, helper) {
   // Bring the name into the viewport first: the player is taller than the
   // window, and a capture of an off-screen rectangle is blank.
   const box = await page.evaluate(() => {
-    const el = document.querySelector('[data-testid="playhead-now-name"]') || document.querySelector('[data-testid="playhead-now"]');
+    const el = document.querySelector('[data-testid="phone-chords"] [data-testid="playhead-now-name"]');
     el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
     const rg = document.createRange();
     rg.selectNodeContents(el);
@@ -419,7 +449,7 @@ async function inkHeight(page, helper) {
     const s = document.createElement('style');
     s.id = '__gate_hide_now';
     s.textContent =
-      '[data-testid="playhead-now-name"],[data-testid="playhead-now-name"] *{color:transparent !important;-webkit-text-fill-color:transparent !important;text-shadow:none !important}';
+      '[data-testid="phone-chords"] [data-testid="playhead-now-name"],[data-testid="phone-chords"] [data-testid="playhead-now-name"] *{color:transparent !important;-webkit-text-fill-color:transparent !important;text-shadow:none !important}';
     document.head.appendChild(s);
     return document.body.offsetHeight;
   });
@@ -477,6 +507,9 @@ for (const width of VIEWPORTS) {
       const helper = await browser.newPage();
       try {
         const findings = [];
+        // A11's ink is measured on the stage BEFORE the chart sheet covers it.
+        const ink0 = await inkHeight(page, helper);
+        await openChart(page, width);
         for (const stop of SLIDER_STOPS) {
           if (stop !== null) await setSlider(page, stop);
           const zoom = stop === null ? 'default zoom' : `slider ${stop}/1000`;
@@ -496,7 +529,7 @@ for (const width of VIEWPORTS) {
             if (c.box.h < CURRENT_MIN_PX) findings.push(`A11 current chord "${c.text}" rendered text box ${c.box.h.toFixed(2)}px tall < ${CURRENT_MIN_PX}px @ ${ctx}`);
             if (!c.inViewport) findings.push(`A11 current chord "${c.text}" runs off the viewport (${JSON.stringify(c.box)}) @ ${ctx}`);
             if (c.clippedBy.length) findings.push(`A11 current chord "${c.text}" is clipped by ${c.clippedBy.join(', ')} @ ${ctx}`);
-            const ink = await inkHeight(page, helper);
+            const ink = ink0;
             c.ink = ink;
             if (ink.pixels === 0) findings.push(`A11 current chord "${c.text}" paints no pixels @ ${ctx}`);
             else if (ink.height < CURRENT_MIN_INK_RATIO * CURRENT_MIN_PX)
@@ -574,6 +607,189 @@ for (const width of VIEWPORTS) {
     });
   }
 }
+
+// ---------------------------------------------------------------------------
+// WCAG 1.4.10 (review S1 on #288): the player is one fixed screen that does NOT
+// scroll when it fits, and DOES scroll when it cannot (a short window, 400%
+// zoom), so every transport control stays reachable by pointer and touch.
+// ---------------------------------------------------------------------------
+const FITS = [[390, 844], [390, 664], [360, 800], [320, 568], [360, 520], [600, 500], [1440, 900], [1024, 768], [1366, 600], [1024, 520], [1024, 500], [667, 375]];
+const ZOOMED = [[320, 256], [320, 225]];
+const CONTROLS = ['[aria-label="Back 5 seconds"]', '[data-testid="transport-play"]', '[aria-label="Forward 5 seconds"]', '[data-testid="transport-loop"]', '[data-testid="transport-mix"]'];
+
+test('S1: no scroll at the sizes the screen fits', async () => {
+  assert.ok(browser && built, 'setup test did not run or failed');
+  const f = [];
+  for (const [w, h] of FITS) {
+    // No notice bar: these are the sizes the screen fits as a user normally sees it.
+    const { page, pageErrors } = await openPlayer(browser, built, w, POSITIONS[0].sec, h, { notice: false });
+    try {
+      const m = await page.evaluate(() => {
+        const r = document.querySelector('[data-testid="player"]');
+        return { sh: r.scrollHeight, ch: r.clientHeight, doc: document.scrollingElement.scrollHeight - innerHeight };
+      });
+      if (m.sh > m.ch) f.push(`${w}x${h}: the player scrolls (${m.sh} > ${m.ch}) although it should fit`);
+      if (m.doc > 0) f.push(`${w}x${h}: the page behind scrolls by ${m.doc}px`);
+      assert.deepEqual(pageErrors, []);
+    } finally {
+      await page.close();
+    }
+  }
+  if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);
+});
+
+test('S1: at 400% zoom (320x256, 320x225) the screen scrolls and Play, ±5, Loop and Mix are reachable by pointer', async () => {
+  assert.ok(browser && built, 'setup test did not run or failed');
+  const f = [];
+  for (const [w, h] of ZOOMED) {
+    const { page, pageErrors } = await openPlayer(browser, built, w, POSITIONS[0].sec, h);
+    try {
+      const m = await page.evaluate((sels) => {
+        const root = document.querySelector('[data-testid="player"]');
+        const out = { sh: root.scrollHeight, ch: root.clientHeight, oy: getComputedStyle(root).overflowY, controls: [] };
+        for (const sel of sels) {
+          const el = document.querySelector(sel);
+          if (!el) { out.controls.push({ sel, missing: true }); continue; }
+          el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+          const r = el.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          out.controls.push({ sel, inView: r.top >= -0.5 && r.bottom <= innerHeight + 0.5 && r.left >= -0.5 && r.right <= innerWidth + 0.5, hits: !!hit && (hit === el || el.contains(hit)), w: r.width, h: r.height });
+        }
+        return out;
+      }, CONTROLS);
+      if (!(m.sh > m.ch)) f.push(`${w}x${h}: the content (${m.sh}) does not overflow the ${m.ch}px screen — this case would test nothing`);
+      if (m.oy !== 'auto' && m.oy !== 'scroll') f.push(`${w}x${h}: the player cannot scroll (overflow-y ${m.oy})`);
+      for (const c of m.controls) {
+        if (c.missing) f.push(`${w}x${h}: ${c.sel} is not rendered`);
+        else if (!c.inView || !c.hits) f.push(`${w}x${h}: ${c.sel} cannot be reached by pointer after scrolling (inView ${c.inView}, hit ${c.hits})`);
+        else if (c.w < 44 || c.h < 44) f.push(`${w}x${h}: ${c.sel} is ${c.w}x${c.h}`);
+      }
+      // ...and the real gesture: scroll the screen with the wheel, then click Mix.
+      await page.evaluate(() => (document.querySelector('[data-testid="player"]').scrollTop = 0));
+      await page.mouse.move(w / 2, h / 2);
+      await page.mouse.wheel(0, 2000);
+      await settle(page);
+      await page.click('[data-testid="transport-mix"]', { timeout: 5000 });
+      const open = await page.evaluate(() => !document.querySelector('[data-testid="mix-sheet-backdrop"]').hidden);
+      if (!open) f.push(`${w}x${h}: clicking Mix after scrolling did not open the sheet`);
+      assert.deepEqual(pageErrors, []);
+    } finally {
+      await page.close();
+    }
+  }
+  if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);
+});
+
+// Review R2/R3 on #288: at EVERY size, with a notice bar showing (the gate's
+// snapshot is degraded), the chord stage never draws under the section strip:
+// the current bar line and the Now name sit inside the chord area and end at or
+// above the strip's top (when they share a column). Short or zoomed windows
+// scroll instead. Removing the chord floor (.chords min-height) fails this at
+// 320x256/320x225, where the Now name would be drawn below its own area.
+const SWEEP = [[390, 844], [390, 664], [360, 640], [360, 520], [320, 568], [320, 256], [320, 225], [600, 500], [1024, 500], [1024, 520], [1100, 540], [1280, 600], [1366, 600], [1440, 900], [667, 375], [844, 390]];
+test('R2/R3: the current bar line and the Now name never sit under the section strip (sweep, with a notice)', async () => {
+  assert.ok(browser && built, 'setup test did not run or failed');
+  const f = [];
+  let measured = 0;
+  for (const [w, h] of SWEEP) {
+    const { page, pageErrors } = await openPlayer(browser, built, w, POSITIONS[0].sec, h);
+    try {
+      const m = await page.evaluate(() => {
+        const rect = (sel) => { const e = document.querySelector(sel); if (!e) return null; const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom }; };
+        const nameEl = document.querySelector('[data-testid="phone-chords"] [data-testid="playhead-now-name"]');
+        let name = null;
+        if (nameEl) { const rg = document.createRange(); rg.selectNodeContents(nameEl); const r = rg.getBoundingClientRect(); name = { l: r.left, r: r.right, t: r.top, b: r.bottom }; }
+        return { notice: !!document.querySelector('[data-testid="player-notice"]'), area: rect('[data-testid="chord-overlay"][data-view="stage"]'), line: rect('[data-testid="phone-line-current"]'), name, strip: rect('[data-testid="section-strip"]') };
+      });
+      const tag = `${w}x${h}`;
+      if (!m.notice) f.push(`${tag}: no notice bar, so this case does not test what it names`);
+      if (!m.area || !m.line || !m.name || !m.strip) { f.push(`${tag}: missing ${JSON.stringify(m)}`); continue; }
+      measured++;
+      const inside = (x) => x.t >= m.area.t - 0.5 && x.b <= m.area.b + 0.5;
+      if (!inside(m.line)) f.push(`${tag}: the current bar line (${m.line.t.toFixed(1)}–${m.line.b.toFixed(1)}) is outside the chord area (${m.area.t.toFixed(1)}–${m.area.b.toFixed(1)})`);
+      if (!inside(m.name)) f.push(`${tag}: the Now name (${m.name.t.toFixed(1)}–${m.name.b.toFixed(1)}) is outside the chord area (${m.area.t.toFixed(1)}–${m.area.b.toFixed(1)})`);
+      const sameColumn = (x) => x.l < m.strip.r && x.r > m.strip.l;
+      for (const [what, x] of [['current bar line', m.line], ['Now name', m.name]]) {
+        if (sameColumn(x) && x.b > m.strip.t + 0.5) f.push(`${tag}: the ${what} ends at ${x.b.toFixed(1)}, under the strip (top ${m.strip.t.toFixed(1)})`);
+      }
+      assert.deepEqual(pageErrors, []);
+    } finally {
+      await page.close();
+    }
+  }
+  if (measured < SWEEP.length) f.push(`only ${measured}/${SWEEP.length} sizes measured`);
+  if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);
+});
+
+// Review R4: landscape phones keep every control >= 44x44 (Loop was 31.6px wide).
+test('R4: landscape (667x375, 740x360, 844x390): every player control is at least 44x44', async () => {
+  assert.ok(browser && built, 'setup test did not run or failed');
+  const f = [];
+  for (const [w, h] of [[667, 375], [740, 360], [844, 390]]) {
+    const { page } = await openPlayer(browser, built, w, POSITIONS[0].sec, h, { notice: false });
+    try {
+      const small = await page.evaluate(() => {
+        const out = [];
+        let n = 0;
+        for (const el of document.querySelectorAll('[data-testid="player"] button, [data-testid="player"] a[href], [data-testid="player"] input')) {
+          if (el.closest('[hidden]') || el.matches('[data-testid^="phone-slot-"]')) continue; // chord slots: width is musical time (j7 carve-out 2)
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 && r.height === 0) continue;
+          n++;
+          if (r.width < 44 - 0.01 || r.height < 44 - 0.01) out.push(`${(el.getAttribute('aria-label') || el.textContent || el.tagName).trim().slice(0, 30)} ${r.width.toFixed(1)}x${r.height.toFixed(1)}`);
+        }
+        return { n, out };
+      });
+      if (small.n < 10) f.push(`${w}x${h}: only ${small.n} controls measured`);
+      for (const s of small.out) f.push(`${w}x${h}: ${s}`);
+    } finally {
+      await page.close();
+    }
+  }
+  if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);
+});
+
+// Review R1: a long-press held for 2 s (mouse AND touch) must leave the chip
+// looping: its release click is swallowed however long the hold was.
+test('R1: a 2-second long-press loops that chip, by mouse and by touch (the release click is swallowed)', async () => {
+  assert.ok(browser && built, 'setup test did not run or failed');
+  const f = [];
+  for (const touch of [false, true]) {
+    const { page } = await openPlayer(browser, built, 390, POSITIONS[0].sec, 844, { notice: false, touch });
+    try {
+      const chip = page.locator('[data-testid="section-strip"] button').nth(4);
+      await chip.scrollIntoViewIfNeeded();
+      const b = await chip.boundingBox();
+      const x = b.x + b.width / 2;
+      const y = b.y + b.height / 2;
+      if (touch) {
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+        await page.waitForTimeout(2000);
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      } else {
+        await page.mouse.move(x, y);
+        await page.mouse.down();
+        await page.waitForTimeout(2000);
+        await page.mouse.up();
+      }
+      await page.waitForTimeout(300);
+      const loops = await page.evaluate(() => window.__loops ?? []);
+      const pressed = await page.locator('[data-testid="section-strip"] button[aria-pressed="true"]').count();
+      const want = SECTIONS[4];
+      const last = loops[loops.length - 1];
+      const how = touch ? 'touch' : 'mouse';
+      if (loops.length === 0) f.push(`${how}: the long-press set no loop`);
+      else if (!last || Math.abs(last.startSec - want.startSec) > 0.01 || Math.abs(last.endSec - want.endSec) > 0.01)
+        f.push(`${how}: after a 2 s hold the last loop call was ${JSON.stringify(last)} (calls ${JSON.stringify(loops)}); the release click undid the long-press`);
+      else if (pressed !== 1) f.push(`${how}: ${pressed} chips pressed after the long-press, want 1`);
+    } finally {
+      await page.context().close().catch(() => {});
+      await page.close().catch(() => {});
+    }
+  }
+  if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);
+});
 
 test('teardown', async () => {
   if (browser) await browser.close();

@@ -28,7 +28,7 @@ import { randomUUID } from 'node:crypto';
 import ts from 'typescript';
 import {
   WEB, dataUrl, PRICE, loadStripeProvider, loadWebhookRoute, makeState, envelope, deliver,
-  subscriptionFixture, invoiceFixture,
+  subscriptionFixture, invoiceFixture, sentryStubUrl,
 } from './helpers/billing-harness.mjs';
 
 const URL_ = process.env.DATABASE_URL;
@@ -45,7 +45,8 @@ async function loadRealDb({ webhookMax, webhookConnectMs } = {}) {
   const ssl = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/db-ssl.ts'), 'utf8')));
   let js = toJs(readFileSync(join(WEB, 'src/lib/db.ts'), 'utf8'))
     .replace(/from ['"]pg['"]/g, `from '${import.meta.resolve('pg')}'`)
-    .replace(/from ['"]\.\/db-ssl['"]/g, `from '${ssl}'`);
+    .replace(/from ['"]\.\/db-ssl['"]/g, `from '${ssl}'`)
+    .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStubUrl()}'`);
   const set = (name, v) => {
     const re = new RegExp(`const ${name} = \\d+;`);
     assert.match(js, re, `db.ts ${name} moved; update this test`);
@@ -97,7 +98,7 @@ async function cleanup() {
 /** A fresh user (auth.users -> handle_new_user trigger), customer and route.
  *  The route gets the REAL webhook pool; the real SHARED pool stands for page
  *  loads (review R2-2). */
-async function fresh({ webhookMax, webhookConnectMs } = {}) {
+async function fresh({ webhookMax, webhookConnectMs, transform } = {}) {
   user = randomUUID();
   cus = 'cus_pg_' + user.slice(0, 8);
   subId = 'sub_pg_' + user.slice(0, 8);
@@ -113,7 +114,7 @@ async function fresh({ webhookMax, webhookConnectMs } = {}) {
      ON CONFLICT DO NOTHING`, [user, cus]);
   h = await loadStripeProvider();
   state = makeState();
-  route = await loadWebhookRoute(h.provider, state);
+  route = await loadWebhookRoute(h.provider, state, { transform });
   const mod = await loadRealDb({ webhookMax, webhookConnectMs });
   realDb = mod.webhookDb;
   sharedDb = mod.db;
@@ -284,4 +285,40 @@ test('PG R2-2: webhook pool exhausted past its connect timeout -> 500 quickly (S
   assert.equal(second.status, 500);
   assert.ok(took < 1200, `took ${took} ms: queued instead of failing fast`);
   assert.equal((await first).status, 200);
+});
+
+// ---- review R3-1: the server ends an idle-in-transaction session -----------
+// The webhook waits on Stripe inside its locked transaction. If that wait
+// outlasts idle_in_transaction_session_timeout, Postgres terminates the
+// session. pg then emits 'error' on the CHECKED-OUT client; with no listener
+// Node raises an uncaughtException and the instance dies. db.tx must catch it
+// (Sentry), and the delivery must answer 500 with nothing written.
+
+test('PG R3-1: a locked Stripe read longer than the idle timeout -> 500, nothing written, no uncaughtException', { skip, timeout: 30000 }, async () => {
+  // The route with a 1 s idle timeout (production: 20 s), so the test trips it fast.
+  await fresh({ transform: (src) => {
+    assert.match(src, /const IDLE_IN_TX_TIMEOUT = '20s';/);
+    return src.replace(/const IDLE_IN_TX_TIMEOUT = '20s';/, "const IDLE_IN_TX_TIMEOUT = '1s';");
+  } });
+  const uncaught = [];
+  const probe = (err) => { uncaught.push(err); };
+  process.on('uncaughtException', probe);
+  try {
+    h.subs[subId] = sub();
+    h.harness.retrieveDelays.push(2500); // the read outlasts the 1 s idle timeout
+    const res = await raw(envelope('customer.subscription.created', sub()));
+    await new Promise((r) => setTimeout(r, 300)); // let any late 'error' event fire
+    assert.equal(res.status, 500, 'a terminated transaction must not be acked');
+    assert.equal(await row(), undefined, 'nothing may be written');
+    assert.deepEqual(uncaught.map((e) => e.message), [], 'pg error escaped as an uncaughtException');
+    const db = state.sentry.filter((c) => c.kind === 'exception' && c.opts?.tags?.component === 'db.tx');
+    assert.equal(db.length, 1, 'the dropped connection is reported to Sentry');
+    assert.match(String(db[0].message?.message ?? db[0].message), /idle-in-transaction|terminat/i);
+    // The broken client was destroyed, not pooled: the next delivery works.
+    h.harness.retrieveDelays.length = 0;
+    assert.equal((await raw(envelope('customer.subscription.created', sub()))).status, 200);
+    assert.equal((await row()).status, 'active');
+  } finally {
+    process.removeListener('uncaughtException', probe);
+  }
 });

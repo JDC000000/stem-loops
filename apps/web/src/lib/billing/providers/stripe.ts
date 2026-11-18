@@ -190,14 +190,16 @@ export class BillingProviderUnavailableError extends Error {
   }
 }
 
-// PR #298 review R2-2. Every Stripe read on the webhook path (most of them
-// inside a DB transaction holding a per-subscription lock) is bounded: 8 s,
-// and no SDK retries. stripe-node's defaults are an 80 s timeout and 2
-// network retries, i.e. minutes holding a pooled connection and an open
-// transaction. A timeout surfaces as an error; the webhook answers 500 and
-// STRIPE retries the delivery (it retries for days), which is the right
-// retry layer.
-export const STRIPE_WEBHOOK_READ_OPTIONS = Object.freeze({ timeout: 8000, maxNetworkRetries: 0 });
+// PR #298 review R2-2 / R3-2. Every Stripe read on the webhook path (most of
+// them inside a DB transaction holding a per-subscription lock) is bounded:
+// 6 s per attempt, no configured retries. stripe-node's defaults are an 80 s
+// timeout and 2 network retries, i.e. minutes holding a pooled connection
+// and an open transaction. NOTE: even with maxNetworkRetries 0, stripe-node
+// 23 retries ONCE on ECONNRESET / EPIPE (RequestSender._shouldRetry), so one
+// read can take up to 2 x 6 s = 12 s; the route's time budget counts that.
+// A timeout surfaces as an error; the webhook answers 500 and STRIPE retries
+// the delivery (it retries for days), which is the right retry layer.
+export const STRIPE_WEBHOOK_READ_OPTIONS = Object.freeze({ timeout: 6000, maxNetworkRetries: 0 });
 
 // Review I-1: the event's `livemode` disagrees with the API key's mode (a
 // live endpoint secret with a test key, or the reverse). Thrown after the

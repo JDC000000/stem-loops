@@ -51,24 +51,27 @@ import {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// Time budget (PR #298 review R2-2). Every wait on this path is bounded, and
-// the bounds add up to well under maxDuration, so the function returns (500,
-// Stripe retries) before Vercel kills it:
-//   Stripe read outside the lock (credit session, or the L-4 re-read)  8 s
+// Time budget (PR #298 review R2-2, R3-2). Every wait on this path is
+// bounded, and the bounds add up to well under maxDuration, so the function
+// returns (500, Stripe retries) before Vercel kills it. One Stripe read is
+// STRIPE_WEBHOOK_READ_OPTIONS.timeout (6 s) per attempt, and stripe-node
+// retries once on a connection reset even with retries off, so a read can
+// take 2 x 6 = 12 s:
+//   Stripe read outside the lock (credit session, or the L-4 re-read)  12 s
 //   webhook-pool connection (WEBHOOK_POOL_CONNECT_TIMEOUT_MS, db.ts)    5 s
 //   advisory-lock wait (LOCK_TIMEOUT)                                   8 s
-//   Stripe reads inside the lock (subscription + invoice), 8 s each    16 s
-//                                                              total  37 s
-// leaving 23 s for the (millisecond) statements, each capped by
-// STATEMENT_TIMEOUT, and the best-effort emails after commit. Stripe reads
-// use STRIPE_WEBHOOK_READ_OPTIONS (providers/stripe.ts): 8 s, no retries.
+//   Stripe reads inside the lock (subscription + invoice), 12 s each   24 s
+//                                                              total  49 s
+// leaving 11 s for the (millisecond) statements, each capped by
+// STATEMENT_TIMEOUT, and the best-effort emails after commit.
 export const maxDuration = 60;
 const LOCK_TIMEOUT = '8s';
 const STATEMENT_TIMEOUT = '10s';
-// Longer than one Stripe read (8 s), the longest gap between two statements
-// of the locked transaction. A frozen instance's open transaction (and its
-// advisory lock) is then ended by the server after this.
-const IDLE_IN_TX_TIMEOUT = '12s';
+// Longer than the longest gap between two statements of the locked
+// transaction: one Stripe read including the SDK's forced reset retry
+// (2 x 6 s = 12 s; 20 s would also cover 2 x 8 s). A frozen instance's open
+// transaction (and its advisory lock) is then ended by the server after this.
+const IDLE_IN_TX_TIMEOUT = '20s';
 
 // PR #29 aligned BillingProvider's PlanCode with plans.code ('free' | 'pro' |
 // 'studio'), so no translation is needed anymore. We just narrow 'free' out,

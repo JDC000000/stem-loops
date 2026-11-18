@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/nextjs';
 import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { sslFor, sanitizeSupabaseConn } from './db-ssl';
 
@@ -82,6 +83,28 @@ function makeDb(get: () => Pool) {
      */
     tx: async <T>(fn: (client: { query: Query }) => Promise<T>): Promise<T> => {
       const client: PoolClient = await get().connect();
+      // PR #298 review R3-1. pg's Pool listens for 'error' only on IDLE
+      // clients; a checked-out client that the server drops (e.g. an
+      // idle_in_transaction_session_timeout while the webhook waits on
+      // Stripe, or a pooler restart) emits 'error' with NO listener, which
+      // Node turns into an uncaughtException that kills the instance. While
+      // the client is ours, report the error instead; the next statement
+      // then fails normally (the caller answers 500), and the broken client
+      // is destroyed on release instead of going back to the pool.
+      let broken: Error | null = null;
+      const onError = (err: Error) => {
+        // pg emits twice for one drop (the server's FATAL, then "Connection
+        // terminated unexpectedly"): report the first, once per checkout.
+        if (broken) return;
+        broken = err;
+        console.error('[db] checked-out client error:', err.message);
+        try {
+          Sentry.captureException(err, { tags: { component: 'db.tx' } });
+        } catch {
+          // never let reporting throw from an event handler
+        }
+      };
+      client.on('error', onError);
       try {
         await client.query('BEGIN');
         const result = await fn({
@@ -98,7 +121,9 @@ function makeDb(get: () => Pool) {
         }
         throw err;
       } finally {
-        client.release();
+        client.removeListener('error', onError);
+        // release(err) destroys the client rather than pooling a dead one.
+        client.release(broken ?? undefined);
       }
     },
   };

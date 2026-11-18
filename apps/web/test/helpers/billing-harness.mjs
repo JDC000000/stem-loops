@@ -76,7 +76,11 @@ export async function loadStripeProvider() {
       // timeout the SDK passed, so tests can check the REAL request options.
       makeRequest: (host, port, path, method, headers, body, protocol, timeout) => {
         globalThis.__harness?.netAttempts?.push({ method, path, timeout });
-        return Promise.reject(new Error('harness: real Stripe network call blocked: ' + method + ' ' + host + path));
+        const err = new Error('harness: real Stripe network call blocked: ' + method + ' ' + host + path);
+        // netErrorCode (e.g. 'ECONNRESET') models a reset socket, which
+        // stripe-node retries once even with maxNetworkRetries 0.
+        if (globalThis.__harness?.netErrorCode) err.code = globalThis.__harness.netErrorCode;
+        return Promise.reject(err);
       },
     };
     export default function Stripe(key, opts = {}) {
@@ -430,8 +434,10 @@ export function sentryStubUrl() {
   `);
 }
 
-/** Load the webhook route wired to the REAL provider and an in-memory DB. */
-export async function loadWebhookRoute(provider, state) {
+/** Load the webhook route wired to the REAL provider and an in-memory DB.
+ *  `transform` (tests only) may rewrite the route source first, e.g. to
+ *  shorten a timeout so a real-PG test can trip it in seconds. */
+export async function loadWebhookRoute(provider, state, { transform } = {}) {
   globalThis.__routeProvider = provider;
   globalThis.__routeDb = fakeDb(state);
   globalThis.__routeSharedDb = undefined;
@@ -478,7 +484,9 @@ export async function loadWebhookRoute(provider, state) {
     }
   `);
   const prorata = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/billing/prorata.ts'), 'utf8')));
-  const js = toJs(readFileSync(join(WEB, 'src/app/api/billing/webhook/route.ts'), 'utf8'))
+  let routeSrc = readFileSync(join(WEB, 'src/app/api/billing/webhook/route.ts'), 'utf8');
+  if (transform) routeSrc = transform(routeSrc);
+  const js = toJs(routeSrc)
     .replace(/from ['"]@\/lib\/billing\/prorata['"]/g, `from '${prorata}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${ent}'`)
     .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billing}'`)

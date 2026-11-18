@@ -30,32 +30,32 @@ beforeEach(async () => { h = await loadStripeProvider(); });
 
 const attemptsFor = (path) => h.harness.netAttempts.filter((a) => a.path.startsWith(path));
 
-test('getSubscription: one attempt (no SDK retries), 8 s timeout, through the real SDK', async () => {
+test('getSubscription: one attempt (no SDK retries), 6 s timeout, through the real SDK', async () => {
   h.harness.passthrough = true;
   await assert.rejects(() => h.provider.getSubscription('sub_budget'));
   const a = attemptsFor('/v1/subscriptions/sub_budget');
   assert.equal(a.length, 1, `stripe-node retried: ${a.length} attempts`);
-  assert.equal(a[0].timeout, 8000);
+  assert.equal(a[0].timeout, 6000);
 });
 
-test('getInvoiceState: one attempt, 8 s timeout, through the real SDK', async () => {
+test('getInvoiceState: one attempt, 6 s timeout, through the real SDK', async () => {
   h.harness.passthrough = true;
   await assert.rejects(() => h.provider.getInvoiceState('in_budget'));
   const a = attemptsFor('/v1/invoices/in_budget');
   assert.equal(a.length, 1);
-  assert.equal(a[0].timeout, 8000);
+  assert.equal(a[0].timeout, 6000);
 });
 
-test('credit session line-item read: one attempt, 8 s timeout; failure is a retryable 500 error', async () => {
+test('credit session line-item read: one attempt, 6 s timeout; failure is a retryable 500 error', async () => {
   h.harness.passthrough = true;
   const { body, signature } = sign(envelope('checkout.session.completed', creditSessionFixture({ id: 'cs_budget' })));
   await assert.rejects(() => h.provider.handleWebhook(body, signature), (e) => e.name === 'BillingProviderUnavailableError');
   const a = attemptsFor('/v1/checkout/sessions/cs_budget');
   assert.equal(a.length, 1);
-  assert.equal(a[0].timeout, 8000);
+  assert.equal(a[0].timeout, 6000);
 });
 
-test('L-4 re-read of a stale unknown payload: one attempt, 8 s timeout', async () => {
+test('L-4 re-read of a stale unknown payload: one attempt, 6 s timeout', async () => {
   h.harness.passthrough = true;
   const legacy = subscriptionFixture({
     id: 'sub_budget_l4',
@@ -65,7 +65,16 @@ test('L-4 re-read of a stale unknown payload: one attempt, 8 s timeout', async (
   await assert.rejects(() => h.provider.handleWebhook(body, signature), (e) => e.name === 'BillingProviderUnavailableError');
   const a = attemptsFor('/v1/subscriptions/sub_budget_l4');
   assert.equal(a.length, 1);
-  assert.equal(a[0].timeout, 8000);
+  assert.equal(a[0].timeout, 6000);
+});
+
+test('R3-2: a connection RESET is retried exactly once by stripe-node even with retries off -> worst read = 2 x timeout', async () => {
+  h.harness.passthrough = true;
+  h.harness.netErrorCode = 'ECONNRESET';
+  await assert.rejects(() => h.provider.getSubscription('sub_reset'));
+  const a = attemptsFor('/v1/subscriptions/sub_reset');
+  assert.equal(a.length, 2, `expected the SDK's one forced reset retry, got ${a.length} attempts`);
+  assert.ok(a.every((x) => x.timeout === 6000));
 });
 
 test('time budget: every bounded wait on the webhook path adds up to less than maxDuration', async () => {
@@ -83,13 +92,17 @@ test('time budget: every bounded wait on the webhook path adds up to less than m
   const mod = await loadWebhookRoute(h.provider, makeState());
   assert.equal(mod.maxDuration, maxDuration);
 
+  // stripe-node retries a reset socket once even with maxNetworkRetries 0
+  // (asserted above), so the worst single read is two attempts (review R3-2).
+  const worstRead = 2 * read;
   // One read outside the lock, a connection, the lock wait, two reads inside.
-  const waits = read + connect + lock + 2 * read;
+  const waits = worstRead + connect + lock + 2 * worstRead;
   assert.ok(waits < maxDuration, `bounded waits ${waits}s >= maxDuration ${maxDuration}s`);
   assert.ok(maxDuration <= 60, 'maxDuration above the 60 s that every Vercel plan allows without Fluid compute');
   // Idle-in-transaction must outlast the longest gap between two statements
-  // of the locked transaction (one Stripe read), or it would kill healthy work.
-  assert.ok(idle > read, `idle_in_transaction ${idle}s <= one Stripe read ${read}s`);
+  // of the locked transaction (one worst-case Stripe read), or it would kill
+  // healthy work.
+  assert.ok(idle > worstRead, `idle_in_transaction ${idle}s <= one worst-case Stripe read ${worstRead}s`);
   // A statement must never be cut short before the lock wait it contains.
   assert.ok(stmt >= lock, `statement_timeout ${stmt}s < lock_timeout ${lock}s`);
   assert.ok(connect < maxDuration);

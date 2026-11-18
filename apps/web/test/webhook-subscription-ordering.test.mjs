@@ -350,7 +350,7 @@ test('M-1: every subscription write path takes the per-subscription lock, keyed 
   for (let i = 0; i < state.lockLog.length; i += 2) {
     assert.match(state.lockLog[i].sql,
       /set_config\('lock_timeout', \$1, true\), set_config\('statement_timeout', \$2, true\), set_config\('idle_in_transaction_session_timeout', \$3, true\)/);
-    assert.deepEqual(state.lockLog[i].params, ['8s', '10s', '12s']);
+    assert.deepEqual(state.lockLog[i].params, ['8s', '10s', '20s']);
     assert.notEqual(state.lockLog[i + 1].key, null);
   }
 });

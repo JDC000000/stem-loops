@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -19,6 +18,21 @@ import pytest
 from worker import pipeline
 from worker.downloader import ytdlp_client
 from worker.errors import InternalError, LinkUnmeasurableError, UploadInvalidError
+
+
+def _ffmpeg_or_none() -> str | None:
+    """The worker's own ffmpeg (system binary, else imageio-ffmpeg: what CI runners have)."""
+    try:
+        return pipeline._ffmpeg_bin()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+FFMPEG = _ffmpeg_or_none()
+# Under CI a missing ffmpeg is a FAILURE, not a skip: a skipped gate is not a pass.
+needs_ffmpeg = pytest.mark.skipif(
+    FFMPEG is None and not os.environ.get("CI"), reason="no ffmpeg (system or imageio)"
+)
 
 # ---------------------------------------------------------------------------------- yt-dlp
 
@@ -112,14 +126,14 @@ def test_link_trim_restricts_ffmpeg_to_local_protocols(monkeypatch, tmp_path):
     assert seen and all(_guard_before_input(c) for c in seen if "-i" in c), seen
 
 
-@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+@needs_ffmpeg
 def test_real_ffmpeg_refuses_a_network_fetch_with_the_guard(tmp_path):
     """The flag is real, not decorative: forced into the HLS demuxer, a playlist naming an
     http segment is refused by the whitelist (no connection attempted)."""
     pl = tmp_path / "raw_input"
     pl.write_text("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nhttp://127.0.0.1:9/x.ts\n")
     r = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-y", *pipeline.FFMPEG_INPUT_GUARD, "-f", "hls", "-i", str(pl)]
+        [FFMPEG, "-hide_banner", "-y", *pipeline.FFMPEG_INPUT_GUARD, "-f", "hls", "-i", str(pl)]
         + [str(tmp_path / "o.wav")],
         capture_output=True,
         text=True,
@@ -151,14 +165,14 @@ def test_ffprobe_duration_probe_is_restricted_too(monkeypatch, tmp_path):
     assert cmd[w + 1] == "file,pipe" and "hls" not in cmd[f + 1].split(",")
 
 
-@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+@needs_ffmpeg
 def test_real_ffmpeg_upload_guard_refuses_an_hls_local_file_read(tmp_path):
     """SF-5: the protocol whitelist alone still lets the hls demuxer read a LOCAL file named
     in a playlist (shown here first, so the test proves something). The upload guard's format
     whitelist refuses the demuxer itself."""
     wav = tmp_path / "secret.wav"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=d=1"]
+        [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=d=1"]
         + [str(wav)],
         check=True,
         timeout=30,
@@ -168,7 +182,7 @@ def test_real_ffmpeg_upload_guard_refuses_an_hls_local_file_read(tmp_path):
 
     def run(guard):
         return subprocess.run(
-            ["ffmpeg", "-hide_banner", "-y", *guard, "-f", "hls", "-i", str(pl)]
+            [FFMPEG, "-hide_banner", "-y", *guard, "-f", "hls", "-i", str(pl)]
             + [str(tmp_path / "o.wav")],
             capture_output=True,
             text=True,
@@ -179,13 +193,13 @@ def test_real_ffmpeg_upload_guard_refuses_an_hls_local_file_read(tmp_path):
     assert run(pipeline.FFMPEG_UPLOAD_GUARD).returncode != 0
 
 
-@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+@needs_ffmpeg
 def test_an_hls_playlist_shaped_upload_is_refused_by_the_real_decode(monkeypatch, tmp_path):
     """End to end through _prepare_upload_source with real ffmpeg: a playlist uploaded as the
     input is an invalid upload, and nothing it names is staged."""
     wav = tmp_path / "secret.wav"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=d=1"]
+        [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=d=1"]
         + [str(wav)],
         check=True,
         timeout=30,
@@ -199,14 +213,14 @@ def test_an_hls_playlist_shaped_upload_is_refused_by_the_real_decode(monkeypatch
     assert staged == []
 
 
-@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+@needs_ffmpeg
 @pytest.mark.parametrize(
     "ext", ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "aiff", "mp4", "mov", "webm"]
 )
 def test_every_accepted_upload_type_still_decodes_under_the_upload_guard(tmp_path, ext):
     src = tmp_path / f"t.{ext}"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=d=1"]
+        [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=d=1"]
         + [str(src)],
         check=True,
         timeout=30,
@@ -214,7 +228,7 @@ def test_every_accepted_upload_type_still_decodes_under_the_upload_guard(tmp_pat
     raw = tmp_path / "raw_input"  # extensionless, exactly as the pipeline stores it
     raw.write_bytes(src.read_bytes())
     r = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *pipeline.FFMPEG_UPLOAD_GUARD]
+        [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *pipeline.FFMPEG_UPLOAD_GUARD]
         + ["-i", str(raw), str(tmp_path / "o.wav")],
         capture_output=True,
         text=True,

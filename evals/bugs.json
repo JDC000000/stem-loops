@@ -53,7 +53,7 @@
       "title": "Musical key detected from the drums stem instead of the song (wrong keys in prod, BPM correct)",
       "severity": "high",
       "area": "apps/worker/src/worker/pipeline.py",
-      "related_pr": "v3/fix-key-detection",
+      "related_pr": "#295",
       "repro": [
         "cd apps/worker && python -m pytest tests/test_key_detection.py"
       ],

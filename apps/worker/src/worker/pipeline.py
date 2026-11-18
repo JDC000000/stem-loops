@@ -435,10 +435,24 @@ def _key_audio(stem_paths: dict, sr: int) -> np.ndarray:
     Separation is additive, so the stems sum back to (approximately) the original mix,
     which is the input the key detector was validated on. Deliberately NOT filtered by
     `requested_stems`: which loops a user wants cut says nothing about the song's key.
+
+    One unreadable or empty stem must not fail the job (a non-requested stem was never
+    decoded before this function existed): it is skipped with a WARN, as `retain_stems`
+    skips it. Only when NO stem is usable does this raise.
     """
     total: np.ndarray | None = None
-    for path in stem_paths.values():
-        y, _ = librosa.load(path, sr=sr, mono=True)
+    for name, path in stem_paths.items():
+        if not path or not os.path.exists(path):
+            log_structured("WARN", "key_stem_skipped", stem=name, reason="missing")
+            continue
+        try:
+            y, _ = librosa.load(path, sr=sr, mono=True)
+        except Exception:  # noqa: BLE001 — a corrupt stem is skipped, not fatal
+            log_structured("WARN", "key_stem_skipped", stem=name, reason="unreadable")
+            continue
+        if y.size == 0:
+            log_structured("WARN", "key_stem_skipped", stem=name, reason="empty")
+            continue
         if total is None:
             total = y.astype(np.float32, copy=True)
             continue
@@ -446,7 +460,7 @@ def _key_audio(stem_paths: dict, sr: int) -> np.ndarray:
             total = np.pad(total, (0, len(y) - len(total)))
         total[: len(y)] += y
     if total is None:
-        raise ValueError("no stems to detect the key from")
+        raise ValueError("no usable stem to detect the key from")
     return total
 
 

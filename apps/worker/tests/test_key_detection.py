@@ -18,6 +18,7 @@ import pytest
 import soundfile as sf
 
 from worker import pipeline
+from worker.extractor.beat_grid import estimate_beat_grid
 from worker.tagger.bpm_key import detect_bpm_and_key
 
 SR = 44100
@@ -39,15 +40,23 @@ def _tone(midi: int, dur: float) -> np.ndarray:
     )
 
 
-def _progression(tonic_midi: int, bars: int = 16) -> tuple[np.ndarray, np.ndarray]:
-    """I-IV-V-I in the major key on ``tonic_midi``: (chords stem, bass stem), one chord a bar."""
+def _progression(
+    tonic_midi: int, bars: int = 16, minor: bool = False
+) -> tuple[np.ndarray, np.ndarray]:
+    """(chords stem, bass stem), one chord a bar, on ``tonic_midi``.
+
+    Major: I-IV-V-I. Minor: i-iv-V-i (harmonic-minor dominant, as songs actually play it).
+    """
     bar = 4 * 60.0 / BPM
     chords = np.zeros(int(bars * bar * SR))
     bass = np.zeros_like(chords)
     for b in range(bars):
-        root = tonic_midi + (0, 5, 7, 0)[b % 4]
+        degree = b % 4
+        root = tonic_midi + (0, 5, 7, 0)[degree]
+        # Minor key: i and iv are minor triads, V stays major.
+        third = 3 if (minor and degree != 2) else 4
         s = int(b * bar * SR)
-        for iv in (0, 4, 7):  # major triad
+        for iv in (0, third, 7):
             seg = _tone(root + iv, bar)
             chords[s : s + len(seg)] += 0.25 * seg[: len(chords) - s]
         seg = _tone(root - 12, bar)
@@ -74,8 +83,8 @@ def _drums(dur_samples: int, seed: int = 0) -> np.ndarray:
     return (0.8 * y).astype(np.float32)
 
 
-def _write_stems(tmp_path, tonic_midi: int) -> dict[str, str]:
-    chords, bass = _progression(tonic_midi)
+def _write_stems(tmp_path, tonic_midi: int, minor: bool = False) -> dict[str, str]:
+    chords, bass = _progression(tonic_midi, minor=minor)
     stems = {"drums": _drums(len(chords)), "bass": bass, "keys": chords}
     out = {}
     for name, y in stems.items():
@@ -94,6 +103,14 @@ def test_tagger_names_the_key_of_a_major_I_IV_V_progression(tonic):
     chords, bass = _progression(tonic)
     tags = detect_bpm_and_key(chords + bass, SR)
     assert tags["musical_key"] == f"{NOTES[tonic % 12]} major"
+
+
+def test_tagger_names_a_minor_from_a_minor_progression_summed_with_drums():
+    # Prod's "I'm Asking You" is A minor. Relative major/minor (C major here) is this
+    # tagger's known weakness, so pin the minor case with drums in the sum, as prod sums.
+    chords, bass = _progression(57, minor=True)
+    tags = detect_bpm_and_key(chords + bass + _drums(len(chords)), SR)
+    assert tags["musical_key"] == "A minor"
 
 
 # ------------------------------------------------------------------ what the pipeline feeds it
@@ -137,7 +154,9 @@ def test_pipeline_passes_the_sum_of_all_stems_to_the_tagger(tmp_path, monkeypatc
     drums = sf.read(stems["drums"], dtype="float32")[0]
     assert seen["sr"] == SR
     assert seen["y"].ndim == 1
-    assert seen["grid"] is not None, "the drums grid must still be passed, so BPM is unchanged"
+    assert seen["grid"] == estimate_beat_grid(
+        sf.read(stems["drums"], dtype="float32")[0], SR
+    ), "the grid must be fitted on the drums stem, so BPM and loop starts are unchanged"
     np.testing.assert_allclose(seen["y"], expected, atol=1e-4)
     assert not np.allclose(seen["y"], drums, atol=1e-3), "the tagger was handed the drums stem"
 
@@ -150,3 +169,33 @@ def test_key_audio_pads_stems_of_unequal_length(tmp_path):
     assert len(y) == 150
     np.testing.assert_allclose(y[:100], 0.3, atol=1e-4)
     np.testing.assert_allclose(y[100:], 0.2, atol=1e-4)
+
+
+def test_one_corrupt_unrequested_stem_does_not_fail_the_job(tmp_path, monkeypatch):
+    """S1: a stem nobody asked loops for is unreadable (and another is empty). The job still
+    tags the key from the stems that load, and says which stems were skipped."""
+    stems = _write_stems(tmp_path, 57)
+    bad = os.path.join(tmp_path, "vocals.wav")
+    with open(bad, "wb") as f:
+        f.write(b"RIFF\x00\x00not really a wav at all")
+    empty = os.path.join(tmp_path, "guitar.wav")
+    sf.write(empty, np.zeros(0, dtype=np.float32), SR)
+    stems = {**stems, "vocals": bad, "guitar": empty, "other": os.path.join(tmp_path, "gone.wav")}
+    logged: list[tuple] = []
+    monkeypatch.setattr(pipeline, "log_structured", lambda *a, **k: logged.append((a, k)))
+    _no_db_no_loops(monkeypatch, [])
+    _, tags, _, _ = pipeline.extract_and_tag(JOB, stems, ["drums"], 4)
+    assert tags["musical_key"] == "A major"
+    skipped = {k["stem"]: k["reason"] for a, k in logged if a[1:] == ("key_stem_skipped",)}
+    assert skipped == {"vocals": "unreadable", "guitar": "empty", "other": "missing"}
+    for a, k in logged:
+        if a[1:] == ("key_stem_skipped",):
+            assert a[0] == "WARN" and set(k) == {"stem", "reason"}, "stem name only, no path"
+
+
+def test_key_audio_raises_only_when_no_stem_is_usable(tmp_path):
+    bad = os.path.join(tmp_path, "x.wav")
+    with open(bad, "wb") as f:
+        f.write(b"junk")
+    with pytest.raises(ValueError, match="no usable stem"):
+        pipeline._key_audio({"vocals": bad, "bass": os.path.join(tmp_path, "nope.wav")}, SR)

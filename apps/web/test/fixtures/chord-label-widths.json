@@ -2,9 +2,12 @@
   "reference": {
     "what": "CI Chromium: the \"Chord chip fit (real Chromium)\" job of .github/workflows/ci.yml",
     "measuredBy": "packages/web-browser-gate/scripts/measure-chord-label-widths.mjs",
-    "os": "Linux 6.18.44-fc-v595 x64",
-    "osRelease": "Ubuntu 24.04.5 LTS",
-    "ci": null,
+    "os": "Linux 7.0.0-1019-azure x64",
+    "osRelease": "Ubuntu 26.04.1 LTS",
+    "ci": {
+      "runnerImage": "ubuntu26 20261111.196.1",
+      "runId": "44245680992"
+    },
     "playwright": "1.63.0",
     "chromium": "153.0.8010.12",
     "font": {

@@ -97,19 +97,21 @@ export function validateSignupEmail(raw: unknown): string | null {
 // shows "Did you mean jon@gmail.com?" with a one-tap fix and still submits what
 // was typed. Only exact, known misspellings of the big mail providers are
 // corrected, so no real domain is ever second-guessed (email.com, ymail.com,
-// hotmail.co.uk and friends are real and are left alone).
+// hotmail.co.uk and friends are real and are left alone). No bare `.co` form is
+// listed (review of #301, F-6): `.co` is a real TLD, and gmail.co, hotmail.co,
+// outlook.co and icloud.co could not be ruled out as live mailbox domains.
 const TYPO_DOMAINS: Readonly<Record<string, readonly string[]>> = {
   'gmail.com': [
     'gmial.com', 'gmai.com', 'gmal.com', 'gmali.com', 'gmaill.com', 'gamil.com', 'gnail.com', 'gmaul.com', 'gmeil.com',
-    'gmail.con', 'gmail.cm', 'gmail.co', 'gmail.c', 'gmail.om', 'gmail.comm', 'gmail.cmo', 'gmail.ocm', 'gmail.vom', 'gmail.xom', 'gmailcom',
+    'gmail.con', 'gmail.cm', 'gmail.c', 'gmail.om', 'gmail.comm', 'gmail.cmo', 'gmail.ocm', 'gmail.vom', 'gmail.xom', 'gmailcom',
   ],
   'hotmail.com': [
     'hotmial.com', 'hotmal.com', 'hotmil.com', 'hotmai.com', 'hotmaill.com', 'hotnail.com', 'homail.com', 'hotamil.com',
-    'hotmail.con', 'hotmail.cm', 'hotmail.co', 'hotmail.c', 'hotmail.om', 'hotmailcom',
+    'hotmail.con', 'hotmail.cm', 'hotmail.c', 'hotmail.om', 'hotmailcom',
   ],
   'yahoo.com': ['yaho.com', 'yahooo.com', 'yhoo.com', 'yahho.com', 'yaoo.com', 'yahoo.con', 'yahoo.cm', 'yahoo.c', 'yahoo.om', 'yahoocom'],
-  'outlook.com': ['outlok.com', 'outllok.com', 'outloo.com', 'outook.com', 'oulook.com', 'otlook.com', 'outlookk.com', 'outlook.con', 'outlook.cm', 'outlook.co', 'outlookcom'],
-  'icloud.com': ['iclod.com', 'icoud.com', 'iclould.com', 'icloud.con', 'icloud.cm', 'icloud.co', 'icluod.com', 'icloudcom'],
+  'outlook.com': ['outlok.com', 'outllok.com', 'outloo.com', 'outook.com', 'oulook.com', 'otlook.com', 'outlookk.com', 'outlook.con', 'outlook.cm', 'outlookcom'],
+  'icloud.com': ['iclod.com', 'icoud.com', 'iclould.com', 'icloud.con', 'icloud.cm', 'icluod.com', 'icloudcom'],
   'live.com': ['live.con', 'live.cm'],
   'aol.com': ['aol.con', 'aol.cm', 'aoll.com'],
 };

@@ -840,6 +840,65 @@ for (const { vp, name, bars: shape, mustScroll } of A03_CASES) {
   });
 }
 
+// Review of #301, F-8: the landscape follow (A-03) must (1) read no layout on a
+// render where neither the current bar nor the current chord changed, and (2)
+// stand back for a few seconds after the person scrolls the chord area, then
+// catch up. 667x375 with QA's stacked bars is a size where the area scrolls.
+test('F-8 phone chords @ 667x375: no layout read on unchanged renders; a manual scroll pauses the follow, then it resumes', async () => {
+  const bars = Array.from({ length: 32 }, (_, k) => A03_BARS[k % 4]);
+  const { payload, grid, beat } = synth(bars, 96);
+  const degraded = { missing: ['other'] };
+  const at = (k, off) => 0.5 + (k * 4 + off) * beat;
+  const { ctx, page, errors } = await open(browser, built, [667, 375], { pos: at(2, 2.5), grid, sections: [], payload, degraded });
+  const f = [];
+  try {
+    await moveTo(page, at(2, 2.5), null, degraded);
+    // (1) Count geometry reads on the chord area across renders inside ONE chord.
+    await page.evaluate(() => {
+      const area = document.querySelector('[data-testid="player-chords"]');
+      window.__reads = 0;
+      for (const prop of ['scrollHeight', 'clientHeight']) {
+        const d = Object.getOwnPropertyDescriptor(Element.prototype, prop);
+        Object.defineProperty(area, prop, { configurable: true, get() { window.__reads++; return d.get.call(this); } });
+      }
+      const g = Element.prototype.getBoundingClientRect;
+      area.getBoundingClientRect = function () { window.__reads++; return g.call(this); };
+    });
+    for (const d of [0.05, 0.1, 0.15, 0.2, 0.25]) await moveTo(page, at(2, 2.5 + d), null, degraded);
+    const reads = await page.evaluate(() => window.__reads);
+    if (reads !== 0) f.push(`${reads} layout reads on the chord area across 5 renders with the same bar and chord`);
+    // Non-vacuity: a NEW bar does read (and follows).
+    await moveTo(page, at(3, 0.3), null, degraded);
+    if ((await page.evaluate(() => window.__reads)) === 0) f.push('a new bar caused no read: the follow is not running at all');
+
+    // (2) The person scrolls the chord area to the top with the wheel...
+    const box = await page.locator('[data-testid="player-chords"]').boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -2000);
+    await page.waitForTimeout(200);
+    const top0 = await page.evaluate(() => document.querySelector('[data-testid="player-chords"]').scrollTop);
+    if (top0 !== 0) f.push(`the wheel did not scroll the area to the top (scrollTop ${top0})`);
+    // ...and playback moves on to a bar that is out of view: the follow waits.
+    await moveTo(page, at(6, 2.5), null, degraded);
+    const held = await page.evaluate(() => document.querySelector('[data-testid="player-chords"]').scrollTop);
+    if (held !== 0) f.push(`the follow snapped back ${held}px right after the person scrolled`);
+    // After the pause, the next render catches up: the current bar is fully visible again.
+    await page.waitForTimeout(4300);
+    await moveTo(page, at(6, 2.6), null, degraded);
+    const m = await page.evaluate(() => {
+      const area = document.querySelector('[data-testid="player-chords"]').getBoundingClientRect();
+      const c = document.querySelector('[data-testid="phone-chords"] [role="group"][aria-current="true"]').getBoundingClientRect();
+      return { a: [area.top, area.bottom], c: [c.top, c.bottom], top: document.querySelector('[data-testid="player-chords"]').scrollTop };
+    });
+    if (m.c[0] < m.a[0] - 0.5 || m.c[1] > m.a[1] + 0.5) f.push(`after the pause the current bar (${m.c.map((x) => x.toFixed(1))}) is still outside the area (${m.a.map((x) => x.toFixed(1))})`);
+    if (m.top === 0) f.push('the follow never resumed (scrollTop still 0): this case did not need a scroll, so it tests nothing');
+    assert.deepEqual(errors, []);
+    fail(f);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('teardown', async () => {
   if (browser) await browser.close();
 });

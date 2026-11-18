@@ -23,13 +23,14 @@ const OBSERVED = [
   ['  jon@gamil.com ', 'jon@gmail.com'],
   ['jon@icloud.con', 'jon@icloud.com'],
 ];
-const REAL = ['jon@gmail.com', 'jon@email.com', 'jon@ymail.com', 'jon@hotmail.co.uk', 'jon@yahoo.co.jp', 'jon@outlook.de', 'jon@example.test', 'jon@mail.gmial.com.au', 'not-an-email', '', null];
+const REAL = ['jon@outlook.co', 'jon@gmail.co', 'jon@hotmail.co', 'jon@icloud.co', 'jon@gmail.com', 'jon@email.com', 'jon@ymail.com', 'jon@hotmail.co.uk', 'jon@yahoo.co.jp', 'jon@outlook.de', 'jon@example.test', 'jon@mail.gmial.com.au', 'not-an-email', '', null];
 
 test('A-09: every observed provider typo gets a "did you mean" fix, keeping the local part as typed', () => {
   for (const [typed, want] of OBSERVED) assert.equal(suggestEmailFix(typed), want, typed);
 });
 
-test('A-09: real domains and non-addresses get no suggestion', () => {
+// Review of #301, F-6: the bare `.co` forms are a real TLD and are never flagged.
+test('A-09: real domains (the bare .co forms included) and non-addresses get no suggestion', () => {
   for (const ok of REAL) assert.equal(suggestEmailFix(ok), null, String(ok));
 });
 

@@ -12,7 +12,7 @@
 // are stubbed. The lime check reads the rendered paint (limeFills), not props.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderPricingPage, limeFills } from './helpers/render-pricing-page.mjs';
+import { renderPricingPage, limeFills, pricingPageTree } from './helpers/render-pricing-page.mjs';
 import { featuredPlan, planCta } from '../src/lib/pricing-copy.ts';
 
 const USER = { user_id: '22222222-2222-2222-2222-222222222222', email: 'u@x.co' };
@@ -53,24 +53,62 @@ test('A-10: a Free user sees "Current plan" on Free, never "Start free"; Get Pro
   assert.match(text(c.Studio.html), /Get Studio/);
 });
 
-test('A-10: a Pro subscriber sees "Current plan" on Pro, never "Get Pro"; the lime moves to Get Studio', async () => {
-  const html = await render(USER, 'pro');
-  const c = cards(html);
-  assert.doesNotMatch(html, /Get Pro|Start free/);
-  assertCurrent(c.Pro, 'Pro');
-  assert.deepEqual(limeFills(html), ['button Get Studio'], 'exactly one lime fill, on the next upgrade');
-  assert.match(c.Studio.cls, /\bpr-featured\b/);
-  assert.doesNotMatch(c.Pro.cls, /\bpr-featured\b/);
-  assert.match(c.Free.html, /<a href="\/account" class="pr-cta pr-cta-quiet">Manage plan<\/a>/);
+// ── review of #301, F-1 (money): /api/billing/checkout opens a NEW subscription and
+// does not check for an existing one, so a paying viewer must never be offered one. ──
+function* walkTree(node) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) { for (const n of node) yield* walkTree(n); return; }
+  yield node;
+  if (node.props && 'children' in node.props) yield* walkTree(node.props.children);
+}
+/** Every way the page could start a PLAN checkout: a component handed a plan_code or the
+ *  checkout endpoint with a plan body, a form posting there, or the endpoint in the markup. */
+async function planCheckouts(plan) {
+  const found = [];
+  const tree = await pricingPageTree({ user: USER, plans: PLANS, packs: PACKS, plan });
+  for (const el of walkTree(tree)) {
+    const p = el.props ?? {};
+    if (p.body && typeof p.body === 'object' && 'plan_code' in p.body) found.push(`component with body.plan_code=${p.body.plan_code}`);
+    if (p.endpoint === '/api/billing/checkout' && !p.packCode) found.push(`component posting to ${p.endpoint}`);
+    if (el.type === 'form' && /checkout/.test(String(p.action ?? ''))) found.push(`form action ${p.action}`);
+  }
+  const html = await render(USER, plan);
+  if (/plan_code/.test(html)) found.push('plan_code in the markup');
+  if (/<form[^>]*billing\/checkout/.test(html)) found.push('a form posting to checkout');
+  for (const m of html.matchAll(/<button[^>]*>(Get (?:Pro|Studio|Free))<\/button>/g)) found.push(`button "${m[1]}"`);
+  return found;
+}
+
+test('harness: a Free viewer DOES get plan checkouts (so the check below can see one)', async () => {
+  const found = await planCheckouts('free');
+  assert.ok(found.some((f) => /plan_code=pro/.test(f)) && found.some((f) => /plan_code=studio/.test(f)), found.join('; '));
 });
 
-test('A-10: a Studio subscriber sees "Current plan" on Studio and no lime plan action at all', async () => {
+for (const plan of ['pro', 'studio']) {
+  test(`F-1: a ${plan} subscriber's /pricing has NO action that posts plan_code to /api/billing/checkout`, async () => {
+    assert.deepEqual(await planCheckouts(plan), [], `a ${plan} subscriber is offered a second subscription`);
+  });
+}
+
+test('A-10 / F-1: a Pro subscriber sees "Current plan" on Pro, "Change plan" on Studio (to /account), and no lime', async () => {
+  const html = await render(USER, 'pro');
+  const c = cards(html);
+  assert.doesNotMatch(html, /Get Pro|Get Studio|Start free/);
+  assertCurrent(c.Pro, 'Pro');
+  assert.match(c.Studio.html, /<a href="\/account" class="pr-cta pr-cta-quiet">Change plan<\/a>/);
+  assert.match(c.Free.html, /<a href="\/account" class="pr-cta pr-cta-quiet">Manage plan<\/a>/);
+  assert.deepEqual(limeFills(html), [], 'no lime: there is nothing to buy here');
+  for (const n of ['Free', 'Pro', 'Studio']) assert.doesNotMatch(c[n].cls, /\bpr-featured\b/);
+});
+
+test('A-10 / F-1: a Studio subscriber sees "Current plan" on Studio, "Change plan" on Pro, and no lime', async () => {
   const html = await render(USER, 'studio');
   const c = cards(html);
   assert.doesNotMatch(html, /Get Pro|Get Studio|Start free/);
   assertCurrent(c.Studio, 'Studio');
-  assert.deepEqual(limeFills(html), [], 'nothing to upgrade to: no lime');
-  for (const n of ['Free', 'Pro']) assert.match(c[n].html, /Manage plan/, `${n}: no way to manage the plan`);
+  assert.match(c.Pro.html, />Change plan<\/a>/);
+  assert.match(c.Free.html, />Manage plan<\/a>/);
+  assert.deepEqual(limeFills(html), []);
   for (const n of ['Free', 'Pro', 'Studio']) assert.doesNotMatch(c[n].cls, /\bpr-featured\b/);
 });
 
@@ -81,21 +119,31 @@ test('A-10: signed out is unchanged — Start free, and Get Pro through sign-in 
   assert.doesNotMatch(html, /Current plan/);
 });
 
-test('A-10: signed in but the plan cannot be read — the page still renders, with no "Start free" and Pro lime', async () => {
+test('F-2: signed in but the plan cannot be read — no plan checkout at all, a neutral note, no lime', async () => {
   const html = await render(USER, null);
-  assert.doesNotMatch(html, /Start free|Current plan/);
-  assert.deepEqual(limeFills(html), ['button Get Pro']);
+  assert.doesNotMatch(html, /Start free|Current plan|Get Pro|Get Studio/);
+  assert.deepEqual(limeFills(html), []);
+  assert.match(html, /data-testid="plan-unknown"[^>]*>We couldn(?:&#x27;|')t load your current plan just now\./);
+  const c = cards(html);
+  for (const n of ['Free', 'Pro', 'Studio']) assert.match(c[n].html, /<a href="\/account" class="pr-cta pr-cta-quiet">Manage plan<\/a>/, n);
+  for (const n of ['Free', 'Pro', 'Studio']) assert.doesNotMatch(c[n].cls, /\bpr-featured\b/, `${n} is highlighted for a viewer of unknown plan`);
+  assert.deepEqual(await planCheckouts(null), []);
+  // A plan code this page does not know is treated the same way.
+  assert.deepEqual(await planCheckouts('enterprise'), []);
 });
 
 test('A-10: the decision table (pure)', () => {
   const codes = ['free', 'pro', 'studio'];
   assert.equal(featuredPlan(codes, false, null), 'pro');
   assert.equal(featuredPlan(codes, true, 'free'), 'pro');
-  assert.equal(featuredPlan(codes, true, 'pro'), 'studio');
+  assert.equal(featuredPlan(codes, true, 'pro'), null);
   assert.equal(featuredPlan(codes, true, 'studio'), null);
-  assert.equal(featuredPlan(codes, true, null), 'pro');
+  assert.equal(featuredPlan(codes, true, null), null);
   assert.deepEqual(planCta('free', true, 'free', 'pro'), { kind: 'current' });
-  assert.deepEqual(planCta('pro', true, 'studio', null), { kind: 'manage' });
-  assert.deepEqual(planCta('studio', true, 'pro', 'studio'), { kind: 'checkout', primary: true });
+  assert.deepEqual(planCta('pro', true, 'studio', null), { kind: 'change' });
+  assert.deepEqual(planCta('studio', true, 'pro', null), { kind: 'change' });
+  assert.deepEqual(planCta('free', true, 'pro', null), { kind: 'manage' });
+  assert.deepEqual(planCta('pro', true, null, null), { kind: 'manage' });
+  assert.deepEqual(planCta('studio', true, 'free', 'pro'), { kind: 'checkout', primary: false });
   assert.deepEqual(planCta('free', false, null, 'pro'), { kind: 'start-free' });
 });

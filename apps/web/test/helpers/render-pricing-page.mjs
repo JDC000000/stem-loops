@@ -76,6 +76,14 @@ export async function renderPricingPage({ user, plans, packs, plan = 'free' }) {
   return renderToStaticMarkup(await Page());
 }
 
+/** The page's React element tree, unrendered: client components (BillingButton,
+ *  PackBuyButton) appear as elements with the props the page passed them. */
+export async function pricingPageTree({ user, plans, packs, plan = 'free' }) {
+  const { Page } = await build();
+  globalThis.__pricingRender = { user, plans, packs, plan };
+  return Page();
+}
+
 /** The real BillingButton module exports, plus React and the renderer, for component tests. */
 export async function loadBillingButton() {
   const { React, renderToStaticMarkup, Billing } = await build();

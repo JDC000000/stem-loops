@@ -168,6 +168,36 @@ for (const [w, h] of [[390, 844], [360, 800]]) {
   });
 }
 
+// Review of #301, F-5: signed out, /history's "Sign in →" link (QA A-14) is a >= 24px target.
+for (const [w, h] of [[390, 844], [360, 800], [844, 390]]) {
+  test(`A-14 / F-5 signed-out /history @ ${w}x${h}: "Sign in →" is a >= 24px tap target`, async () => {
+    assert.ok(browser && built, 'setup test did not run or failed');
+    const ctx = await browser.newContext({ viewport: { width: w, height: h }, isMobile: w < h, hasTouch: w < h });
+    const page = await ctx.newPage();
+    await page.route('**/*', async (route) => {
+      const u = new URL(route.request().url());
+      if (u.hostname !== 'gate.test') return route.abort();
+      if (u.pathname === '/')
+        return route.fulfill({ contentType: 'text/html', body:
+          '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+          '<link rel="stylesheet" href="/out.css"></head><body><div id="root"></div><script src="/out.js"></script></body></html>' });
+      if (u.pathname === '/out.js') return route.fulfill({ contentType: 'text/javascript', body: built.js });
+      if (u.pathname === '/out.css') return route.fulfill({ contentType: 'text/css', body: built.css });
+      if (u.pathname === '/api/library') return route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"AUTH_REQUIRED"}' });
+      return route.fulfill({ status: 404, body: '' });
+    });
+    try {
+      await page.goto('http://gate.test/');
+      const link = page.locator('a[href="/login?return_to=/history"]');
+      await link.waitFor({ timeout: 30000 });
+      const r = await link.boundingBox();
+      assert.ok(r.height >= 24 && r.width >= 24, `"Sign in" link is ${r.width.toFixed(1)}x${r.height.toFixed(1)}px`);
+    } finally {
+      await ctx.close();
+    }
+  });
+}
+
 test('teardown', async () => {
   if (browser) await browser.close();
 });

@@ -148,6 +148,12 @@ export default async function PricingPage() {
         </p>
       )}
 
+      {user && (currentPlan === null || !['free', 'pro', 'studio'].includes(currentPlan)) && (
+        <p role="status" className="pr-note" data-testid="plan-unknown">
+          We couldn&apos;t load your current plan just now. To change plan, go to your account.
+        </p>
+      )}
+
       <div className="pr-plans">
         {plans.map((p) => {
           // The next plan up carries the highlight (design P6; QA A-10): a white
@@ -176,9 +182,11 @@ export default async function PricingPage() {
                 <p className="pr-cta pr-cta-current" data-testid="plan-current">
                   Current plan
                 </p>
-              ) : cta.kind === 'manage' ? (
+              ) : cta.kind === 'manage' || cta.kind === 'change' ? (
+                // A paying (or unknown) viewer changes plan in the billing portal on
+                // /account, never through a new checkout (review of #301, F-1/F-2).
                 <a href="/account" className="pr-cta pr-cta-quiet">
-                  Manage plan
+                  {cta.kind === 'change' ? 'Change plan' : 'Manage plan'}
                 </a>
               ) : cta.kind === 'checkout' ? (
                 <BillingButton

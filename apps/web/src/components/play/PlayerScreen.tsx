@@ -66,6 +66,9 @@ interface ScreenProps extends PlayerViewProps {
   readonly banner: Notice | null;
 }
 
+/** After the person scrolls the chord area themselves, auto-follow waits this long (F-8). */
+export const AUTO_SCROLL_PAUSE_MS = 4000;
+
 /**
  * Scroll `area` (only it: never an ancestor, never the page) so `el` is fully
  * inside its visible box. A no-op when it already is, or when `area` does not
@@ -249,15 +252,38 @@ export function PlayerScreen(props: ScreenProps) {
   // ── QA A-03: keep the current bar in view when the chord area scrolls ──────
   // In short landscape (844x390, 800x360) a line of stacked bars can be taller
   // than the chord area, which then scrolls (Player.module.css). Bring the
-  // current bar fully into view after every render that leaves it partly out
-  // (a new bar, or a new chord re-sizing the Now name above it) — only the
-  // chord area moves, never the page, and nothing is read or moved when the
-  // area does not scroll (every portrait and desktop size).
+  // current bar fully into view when it changes, or when the chord changes (a
+  // new Now name re-sizes what is above it) — only the chord area moves, never
+  // the page.
+  // Review of #301, F-8:
+  //   * no layout read on a render where neither changed: the key below is a
+  //     DOM query and a string compare, so steady playback reads no geometry;
+  //   * a person scrolling the chord area themselves (wheel, touch, keys, the
+  //     scrollbar) pauses the follow for AUTO_SCROLL_PAUSE_MS; the first render
+  //     after the pause re-checks, so playback then catches up.
   const chordsRef = useRef<HTMLDivElement | null>(null);
+  const followKey = useRef<{ bar: Element | null; now: string | null } | null>(null);
+  const userScrolledAt = useRef(-Infinity);
+  const onUserScroll = useCallback(() => {
+    userScrolledAt.current = Date.now();
+  }, []);
+  useEffect(() => {
+    // A rotation or resize changes what fits: re-check on the next render.
+    const reset = () => {
+      followKey.current = null;
+    };
+    globalThis.addEventListener?.('resize', reset);
+    return () => globalThis.removeEventListener?.('resize', reset);
+  }, []);
   useEffect(() => {
     const box = chordsRef.current;
     if (!box) return;
+    if (Date.now() - userScrolledAt.current < AUTO_SCROLL_PAUSE_MS) return;
     const bar = box.querySelector('[role="group"][aria-current="true"]');
+    const now = nowNext?.now ?? null;
+    const last = followKey.current;
+    if (last && last.bar === bar && last.now === now) return;
+    followKey.current = { bar, now };
     if (bar) scrollIntoArea(box, bar);
   });
 
@@ -426,7 +452,15 @@ export function PlayerScreen(props: ScreenProps) {
             {/* Story 3. The chord stage stays mounted in EVERY phase, so a job
                 with no retained stems (6.4) or an unsupported browser (5.3)
                 still shows its chords. */}
-            <div className={styles.chords} ref={chordsRef} data-testid="player-chords">
+            <div
+              className={styles.chords}
+              ref={chordsRef}
+              data-testid="player-chords"
+              onWheel={onUserScroll}
+              onTouchMove={onUserScroll}
+              onPointerDown={onUserScroll}
+              onKeyDown={onUserScroll}
+            >
               <ChordOverlay
                 jobId={jobId}
                 view="stage"

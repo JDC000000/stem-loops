@@ -62,7 +62,11 @@ export default function HistoryPage() {
       {lib.kind === 'loading' ? null : songs.length === 0 && lib.kind === 'signed_out' ? (
         // QA A-14: signed out on a new device, "No songs yet" read as a lost library.
         <p style={{ color: 'var(--text-muted)' }} data-testid="history-sign-in">
-          Sign in to see your library. <a href="/login?return_to=/history">Sign in →</a>
+          Sign in to see your library.{' '}
+          {/* A >= 24px tap target (review of #301, F-5), still inline in the sentence. */}
+          <a href="/login?return_to=/history" style={{ display: 'inline-flex', alignItems: 'center', minHeight: 24, padding: '0 2px' }}>
+            Sign in →
+          </a>
         </p>
       ) : songs.length === 0 ? (
         <p style={{ color: 'var(--text-muted)' }}>

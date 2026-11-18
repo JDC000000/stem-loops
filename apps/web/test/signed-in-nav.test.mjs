@@ -339,7 +339,8 @@ test('no routable page is left without chrome', async () => {
     else naked.push(p);
   }
   assert.deepEqual(naked, [], `these routes render with no chrome at all: ${naked.join(', ')}`);
-  assert.equal(marketing.length, 3, `marketing pages: ${marketing.join(', ')}`);
+  // landing, /help (Slice 1b, P7), /privacy, /terms — each renders SiteHeader itself.
+  assert.equal(marketing.length, 4, `marketing pages: ${marketing.join(', ')}`);
   assert.equal(covered.length, SIGNED_IN_ROUTES.length, `covered: ${covered.join(', ')}`);
 });
 

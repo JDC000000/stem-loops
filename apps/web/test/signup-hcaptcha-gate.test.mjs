@@ -19,12 +19,13 @@ const read = (p) => readFileSync(join(WEB, p), 'utf8');
 const hcaptchaUrl = dataUrl(toJs(read('src/lib/hcaptcha.ts')));
 const rulesUrl = dataUrl(toJs(read('src/lib/auth/password-rules.ts')));
 const returnToUrl = dataUrl(toJs(read('src/lib/auth/return-to.ts')));
+const signupErrorsUrl = dataUrl(toJs(read('src/lib/auth/signup-errors.ts')));
 const nextStub = dataUrl(`
   export class NextResponse {
     constructor(body, init = {}) { this.body = body; this.status = init.status ?? 200; }
     static json(body, init = {}) { return new NextResponse(body, init); }
   }`);
-const sentryStub = dataUrl(`export function captureException() {}`);
+const sentryStub = dataUrl(`export function captureException() {} export function captureMessage() {}`);
 const supabaseStub = dataUrl(`
   export async function createServerClient() {
     return { auth: { signUp: async (args) => {
@@ -40,7 +41,8 @@ async function loadRoute() {
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${supabaseStub}'`)
     .replace(/from ['"]@\/lib\/auth\/password-rules['"]/g, `from '${rulesUrl}'`)
     .replace(/from ['"]@\/lib\/auth\/return-to['"]/g, `from '${returnToUrl}'`)
-    .replace(/from ['"]@\/lib\/hcaptcha['"]/g, `from '${hcaptchaUrl}'`);
+    .replace(/from ['"]@\/lib\/hcaptcha['"]/g, `from '${hcaptchaUrl}'`)
+    .replace(/from ['"]@\/lib\/auth\/signup-errors['"]/g, `from '${signupErrorsUrl}'`);
   return import(dataUrl(js) + '#' + Math.random());
 }
 

@@ -261,6 +261,56 @@ test('P2.1 through the screen: tap, extend (+ the one-time hint), shrink, loop o
   });
 });
 
+// Slice 1b follow-up (review nit on #288): the swallow window used to start on pointerleave
+// too. A MOUSE that holds a chip past the long-press, slides off it and back, and lets go
+// more than SWALLOW_WINDOW_MS later then had its release click read as a TAP — which on the
+// only chip of a run clears the loop it had just set. The window now starts only on
+// pointerup / pointercancel. React synthesises onPointerLeave from `pointerout`, so that is
+// the event dispatched here.
+test('long-press (mouse): sliding off the chip and back does not lose the loop', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const loops = [];
+    await dom.mount(React.createElement(EngineEcho, { calls: loops }));
+    const chip = (i) => dom.findAll('[data-testid="section-strip"] button')[i];
+    const outside = dom.find('[data-testid="section-strip"]');
+
+    await dom.pointer('pointerdown', chip(3), { pointerType: 'mouse', clientX: 5, clientY: 5 });
+    await dom.advance(550);
+    assert.deepEqual(loops.at(-1), { startSec: 66, endSec: 104 }, 'the long-press fired: loop only this');
+
+    await dom.pointer('pointerout', chip(3), { pointerType: 'mouse', relatedTarget: outside });
+    await dom.advance(1500); // well past the 700 ms window
+    await dom.pointer('pointerover', chip(3), { pointerType: 'mouse', relatedTarget: outside });
+    await dom.pointer('pointerup', chip(3), { pointerType: 'mouse', clientX: 5, clientY: 5 });
+    await dom.act(() => chip(3).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })));
+    assert.deepEqual(loops.at(-1), { startSec: 66, endSec: 104 }, 'the release click was swallowed; the loop is kept');
+    assert.equal(chip(3).getAttribute('aria-pressed'), 'true');
+
+    // ...and the window still closes after the RELEASE: a later real click is a tap again.
+    await dom.advance(800);
+    await dom.act(() => chip(3).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })));
+    assert.equal(loops.at(-1), null, 'a click after the window is a tap (the only chip: clear)');
+    await dom.unmountAll();
+  });
+});
+
+test('long-press: leaving the chip BEFORE the threshold still cancels it', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const loops = [];
+    await dom.mount(React.createElement(EngineEcho, { calls: loops }));
+    const chip = (i) => dom.findAll('[data-testid="section-strip"] button')[i];
+    const outside = dom.find('[data-testid="section-strip"]');
+    await dom.pointer('pointerdown', chip(2), { pointerType: 'mouse', clientX: 5, clientY: 5 });
+    await dom.advance(200);
+    await dom.pointer('pointerout', chip(2), { pointerType: 'mouse', relatedTarget: outside });
+    await dom.advance(600);
+    assert.deepEqual(loops, [], 'no long-press after the pointer left');
+    await dom.unmountAll();
+  });
+});
+
 test('review S3 (DOM): an engine that REFUSES the loop never leaves the UI saying "Looping"', async () => {
   await withDom(async (dom) => {
     setMedia(false);

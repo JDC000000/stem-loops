@@ -1,4 +1,4 @@
-// Header + footer shared by the landing, /terms, /privacy and the 404.
+// Header + footer shared by the landing, /help, /terms, /privacy and the 404.
 import SignedInNav from '@/components/chrome/SignedInNav';
 import { ToInputLink } from './DemoArt';
 import { Ic } from './Icons';
@@ -22,13 +22,14 @@ export function SiteFooter({ onLanding = false }: { onLanding?: boolean }) {
   return (
     <footer className="site-footer">
       <div className="container footer-row">
-        <p className="footer-line">stem-loops. Stems by Demucs, run on Replicate.</p>
+        <p className="footer-line">stem-loops. Play along with any song.</p>
         {/* The two products, as peers, the way the top nav lists them. */}
         <nav className="footer-links" aria-label="Products">
           <a href="/">Play along</a>
           <a href="/loops">Download loops</a>
         </nav>
         <nav className="footer-links" aria-label="Legal">
+          <a href="/help">Help</a>
           <a href="/terms">Terms</a>
           <a href="/privacy">Privacy</a>
         </nav>

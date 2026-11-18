@@ -45,22 +45,27 @@ test('F23: the FAQ says who can fetch a job by its link, matching the privacy no
 
 // ── CA-7 / A-02: meta description length ────────────────────────────────────────────────
 
-/** The `description:` template literal of a metadata export, with its one ${…} filled in. */
-const metaDescription = (rel) => {
-  const m = read(rel).match(/\bdescription:\s*`([^`]*)`/);
+/** The `description:` template literal(s) of a metadata export, with their ${…} filled in. A
+ *  description switched by the DB-17 chords flag (`CHORDS_LINE_SHOWN ? `…` : `…``, review round
+ *  2) yields BOTH branches, so each must fit. */
+const metaDescriptions = (rel) => {
+  const m = read(rel).match(/\bdescription:\s*(?:CHORDS_LINE_SHOWN\s*\?\s*)?`([^`]*)`(?:\s*:\s*`([^`]*)`)?/);
   assert.ok(m, `${rel} has no template-literal metadata description`);
-  const fills = [...m[1].matchAll(/\$\{([^}]*)\}/g)].map((x) => x[1].trim());
-  for (const f of fills) assert.match(f, /^(?:MAX_TRACK_MIN|Math\.floor\(MAX_TRACK_SEC \/ 60\))$/, `${rel} fills ${f}`);
-  return m[1].replace(/\$\{[^}]*\}/g, String(MAX_TRACK_MIN));
+  return [m[1], m[2]].filter((x) => x !== undefined).map((lit) => {
+    const fills = [...lit.matchAll(/\$\{([^}]*)\}/g)].map((x) => x[1].trim());
+    for (const f of fills) assert.match(f, /^(?:MAX_TRACK_MIN|Math\.floor\(MAX_TRACK_SEC \/ 60\))$/, `${rel} fills ${f}`);
+    return lit.replace(/\$\{[^}]*\}/g, String(MAX_TRACK_MIN));
+  });
 };
 
 // The landing description now comes from the SEO page registry (#271), entry '/'.
 for (const rel of ['lib/seo/pages.ts', 'app/layout.tsx']) {
   test(`A-02: ${rel} meta description fits a search snippet (<= 160 characters)`, () => {
-    const d = metaDescription(rel);
-    assert.ok(d.length <= 160, `${d.length} characters: ${JSON.stringify(d)}`);
-    assert.ok(d.length >= 70, `too short to describe the page: ${JSON.stringify(d)}`);
-    assert.match(d, new RegExp(`Uses the first ${MAX_TRACK_MIN} minutes of any song`));
+    for (const d of metaDescriptions(rel)) {
+      assert.ok(d.length <= 160, `${d.length} characters: ${JSON.stringify(d)}`);
+      assert.ok(d.length >= 70, `too short to describe the page: ${JSON.stringify(d)}`);
+      assert.match(d, new RegExp(`Uses the first ${MAX_TRACK_MIN} minutes of any song`));
+    }
   });
 }
 

@@ -44,7 +44,7 @@ export default function TermsPage() {
                 first {MAX_TRACK_MIN}&nbsp;minutes, which is where the chord track and the player both stop.
               </li>
               <li>
-                Built and tested in Chrome on a computer. On a phone the player loads lighter audio (mono, 24&nbsp;kHz).
+                Built and tested in Chrome on a computer. On a phone the player loads lighter audio.
                 Phone support is new, and other browsers are not tested yet.
               </li>
               <li>

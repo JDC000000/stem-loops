@@ -13,6 +13,7 @@
 // The chords and the fader positions are drawn, not measured — the caption says so.
 
 import { STEM_ORDER } from './demo-data';
+import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
 
 // A plain G-minor turnaround, matching the key the rest of the page reports for the
 // example song. It illustrates a chord track; it is not a transcription of anything.
@@ -76,7 +77,7 @@ function Transport() {
   );
 }
 
-const BANDS = [
+const ALL_BANDS = [
   {
     name: 'Chords',
     art: <ChordRibbon />,
@@ -94,6 +95,9 @@ const BANDS = [
   },
 ];
 
+// DB-17 (lib/chords-claim.ts): with the switch off, the drawn player has no chord band.
+const BANDS = CHORDS_LINE_SHOWN ? ALL_BANDS : ALL_BANDS.filter((b) => b.name !== 'Chords');
+
 export function PlayerArt() {
   return (
     <figure className="player">
@@ -109,8 +113,9 @@ export function PlayerArt() {
         ))}
       </ul>
       <figcaption className="pl-cap-note">
-        An illustration of the player, drawn for this page. The chord names and the fader
-        positions are examples, not a recorded result.
+        {CHORDS_LINE_SHOWN
+          ? 'An illustration of the player, drawn for this page. The chord names and the fader positions are examples, not a recorded result.'
+          : 'An illustration of the player, drawn for this page. The fader positions are examples, not a recorded result.'}
       </figcaption>
     </figure>
   );

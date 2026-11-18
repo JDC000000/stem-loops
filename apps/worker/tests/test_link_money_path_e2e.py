@@ -94,7 +94,7 @@ def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
     def probe(_u):
         calls.append("probe")
-        return state["probe"]
+        return downloader.ytdlp_client.LinkMetadata(duration_sec=state["probe"], title=None)
 
     def ytdlp_fetch(_u):
         calls.append("ytdlp_fetch")
@@ -103,7 +103,7 @@ def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             raise outcome
         return outcome
 
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", probe)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_metadata", probe)
     monkeypatch.setattr(downloader.ytdlp_client, "fetch_audio_file", ytdlp_fetch)
     monkeypatch.setattr(
         downloader.cobalt_client,

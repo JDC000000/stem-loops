@@ -21,6 +21,8 @@ const ALL = [
   'j6-pricing',
   'j7-mobile',
   'j8-a11y',
+  // Slice 2a: a signed-out visitor plays a demo song at 390×844 and 360×800.
+  'j9-demo-signed-out',
 ];
 
 const want = process.argv.slice(2);

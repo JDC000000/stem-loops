@@ -46,8 +46,8 @@ export function maxInFlight(): number {
 
 // Retry-After for an AT_CAPACITY refusal, in seconds. The worker is SERIAL (one Fly
 // Machine, consumer.py poll_loop claims LIMIT 1 and runs it to completion), so a slot
-// frees exactly when one job finishes. A typical job takes ~1–3 minutes end to end (the
-// landing's own measured note: a 3:34 song took about 1–3 minutes), so the expected wait
+// frees exactly when one job finishes. A typical job takes a few minutes end to end (the
+// 9 October 2026 measurement was 0:51–3:07 for a 3:34 song; 2026-11-17 jobs took ~2.5 min), so the expected wait
 // for the next free slot is about one job's duration. 120 s is the middle of that range:
 // shorter would invite retries that land on a still-full queue, longer would turn people
 // away for longer than the queue actually needs. It matches the copy ("a few minutes").
@@ -197,6 +197,29 @@ export async function checkStemListRate(clientIpHash: string): Promise<Admission
     STEM_LIST_RATE_WINDOW_MS,
     stemListRateLimit(),
   );
+}
+
+// READ-ONLY sibling of checkStemListRate, for the demo-song reads (design v1.5 P3.1 "Abuse
+// limits": a per-IP limit on the app routes for is_demo ids). It COUNTS the caller's
+// `stems:` window and records nothing, so a GET that passes through it writes no row
+// (QA B-17 found the recording limiter writing on GET; this one cannot).
+//
+// Why it shares the stems counter instead of keeping its own: a counter that is never
+// written never trips. Playing a demo always fetches its stem manifest, and THAT request
+// is recorded by checkStemListRate (unchanged), so an IP hammering a demo is over this
+// budget on the job and chord reads too. What it does NOT bound: an IP that never asks
+// for stems and only re-reads GET /api/jobs/:id or /play-chords for a demo. Each such
+// request is one indexed SELECT (plus offline signing), the same cost as a recording
+// limiter's own INSERT ... SELECT, so a writing limiter there would double the DB cost
+// of every request it guards. Stated as residue in the PR rather than hidden.
+export async function peekStemListRate(clientIpHash: string): Promise<AdmissionResult> {
+  const res = await db.query(
+    `SELECT COUNT(*)::int AS count FROM upload_rate_events
+      WHERE client_ip_hash = $1
+        AND created_at >= NOW() - ($2::int * INTERVAL '1 millisecond')`,
+    [stemListRateKey(clientIpHash), STEM_LIST_RATE_WINDOW_MS],
+  );
+  return (res.rows[0]?.count ?? 0) >= stemListRateLimit() ? BLOCKED : ALLOWED;
 }
 
 // Atomic check-and-record (QA P0/P1): the count and the insert are ONE statement, so a

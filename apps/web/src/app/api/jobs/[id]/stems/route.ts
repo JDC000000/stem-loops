@@ -122,7 +122,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
     // Same gate as GET /api/jobs/:id and the play-chords route.
     const jobRes = await db.query(
-      `SELECT id::text AS id, user_id, status, ${JOB_RETAINED_UNTIL_SQL} AS expires_at FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
+      `SELECT id::text AS id, user_id, status, is_demo, ${JOB_RETAINED_UNTIL_SQL} AS expires_at FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
       [params.id]
     );
     if (jobRes.rowCount === 0) {
@@ -130,7 +130,9 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     }
     const job = jobRes.rows[0];
     // Ownership BEFORE the status check, so a non-owner cannot learn a job's state.
-    if (!(await mayReadJob(job.user_id))) {
+    // A demo song (is_demo) is readable by everyone; its per-IP limit is the limiter above,
+    // which already ran for this request. Its URLs keep the 900 s cap (2099 expiry).
+    if (!(await mayReadJob(job.user_id, job.is_demo))) {
       return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
     }
     if (job.status !== 'done') {

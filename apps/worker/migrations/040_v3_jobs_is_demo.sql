@@ -19,10 +19,18 @@
 -- signed-out player, an explicit is_demo denial on download/loops) is Slice 2. Until then a
 -- demo row is an ordinary owned job, readable by its owner only.
 --
--- WHO MAY WRITE IT: nobody but an operator. No application code writes is_demo — the
--- INSERT in POST /api/jobs does not name it, so every new job takes the DEFAULT false.
--- The three rows are flagged by a separate, Jon-approved named write:
---     UPDATE public.jobs SET is_demo = true WHERE id IN ('<id1>','<id2>','<id3>');
+-- WHO MAY WRITE IT: nobody but an operator. No application code writes is_demo = true —
+-- the INSERT in POST /api/jobs does not name it, so every new job takes the DEFAULT false.
+-- The only application write is account deletion (DELETE /api/users/me), which sets it to
+-- FALSE so a deleted demo owner never leaves demos retained-until-2099 AND anonymous.
+-- The three rows are flagged by a separate, Jon-approved, GUARDED named write (expect
+-- UPDATE 3; anything else: ROLLBACK and investigate):
+--     UPDATE public.jobs SET is_demo = true
+--      WHERE id IN ('<id1>','<id2>','<id3>')
+--        AND user_id = '<demo-system-account-uuid>'   -- never a personal account
+--        AND status = 'done'
+--        AND client_ip_hash <> 'purged'               -- never an anonymised shell
+--        AND expires_at > now();                      -- never resurrect a swept-due row
 -- No grant or policy is added. public.jobs is a backend-only table (009's
 -- `rls-backend-only` marker): RLS is on and the only policies are for stemloops_app (011)
 -- and, where it exists, cowork_ro (SELECT). anon and authenticated have no policy on jobs,
@@ -34,9 +42,21 @@
 -- Lock and cost: ADD COLUMN ... NOT NULL DEFAULT <constant> is a catalog-only change on
 -- PG 11+ (no table rewrite); it takes a brief ACCESS EXCLUSIVE lock on jobs.
 --
--- DEPLOY ORDER: apply this migration BEFORE the web and worker code that reads the column
--- ships. New code against the old schema fails every job read and every sweep with
--- "column jobs.is_demo does not exist". Old code against the new schema is unaffected.
+-- DEPLOY ORDER (required; each step after the previous one is confirmed):
+--   1. Apply THIS migration to prod (Supabase SQL editor, then
+--      INSERT INTO public._migrations(filename) VALUES ('040_v3_jobs_is_demo.sql');, or
+--      `make migrate` with the prod DATABASE_URL) BEFORE the PR merges. Also staging.
+--   2. Merge. Vercel AUTO-DEPLOYS the web app to production from v3/main on merge. New web
+--      code against the old schema fails every job route with
+--      "column jobs.is_demo does not exist", so step 1 must come first.
+--   3. Deploy the WORKER by hand: GitHub Actions -> Deploy -> target `worker`, ref v3/main.
+--      Nothing deploys the worker on merge, and the OLD worker's sweep ignores is_demo: it
+--      deletes a flagged demo at created_at + 24 h.
+--   4. Check the R2 bucket has no whole-bucket "Delete objects" lifecycle rule
+--      (scripts/configure_r2_lifecycle.py); R2 never reads this flag.
+--   5. Process the demo songs under the demo system account.
+--   6. Within 24 h of processing, run the guarded flag write above (expect UPDATE 3).
+-- Old code against the new schema is unaffected (the column is unused, defaults false).
 --
 -- Idempotent: ADD COLUMN IF NOT EXISTS; COMMENT is a plain overwrite.
 -- Down: migrations/down/040_v3_jobs_is_demo_down.sql.

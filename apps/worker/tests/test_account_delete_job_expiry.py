@@ -2,8 +2,12 @@
 
 DELETE /api/users/me runs one statement inside its erase-and-cancel transaction:
 
-    UPDATE public.jobs SET expires_at = LEAST(expires_at, created_at)
-     WHERE user_id = $1::uuid AND expires_at > created_at
+    UPDATE public.jobs SET expires_at = LEAST(expires_at, created_at), is_demo = false
+     WHERE user_id = $1::uuid AND (expires_at > created_at OR is_demo)
+
+(2026-11-17, migration 040: `is_demo = false` and `OR is_demo` so a deleted owner never leaves
+a demo song retained-until-2099 AND anonymous; see test_paid_retention.py::
+test_account_deletion_statement_ends_a_demo.)
 
 (2026-11-15: was `SET expires_at = now() ... AND expires_at > now()`. A Pro/Studio library is
 retained PAST expires_at by the owner's subscription; the retention rule ignores the subscription
@@ -155,8 +159,8 @@ def test_route_statement_is_the_one_under_test():
     """Guard: the statement this file runs is read from route.ts, not copied."""
     sql = " ".join(_route_expiry_sql().split())
     assert (
-        sql == "UPDATE public.jobs SET expires_at = LEAST(expires_at, created_at) "
-        "WHERE user_id = %s::uuid AND expires_at > created_at"
+        sql == "UPDATE public.jobs SET expires_at = LEAST(expires_at, created_at), is_demo = false "
+        "WHERE user_id = %s::uuid AND (expires_at > created_at OR is_demo)"
     )
 
 

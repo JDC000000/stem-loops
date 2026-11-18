@@ -676,6 +676,27 @@ MUTANTS: tuple[Mutant, ...] = (
         )
     ),
     Mutant(
+        "web_library_is_demo_column_dropped",
+        "src/app/api/library/route.ts",
+        "              is_demo, ${JOB_RETAINED_UNTIL_SQL} AS expires_at",
+        "              ${JOB_RETAINED_UNTIL_SQL} AS expires_at",
+        ("test/library-route.test.mjs::GET /api/library: reads is_demo and passes it through",),
+        "Review of #289, MF-2 (W7): the library SELECT must read the is_demo column; the old "
+        "regex matched jobs.is_demo inside the retention SQL and let this mutant survive.",
+        suite="web",
+    ),
+    Mutant(
+        "web_account_delete_keeps_is_demo",
+        "src/app/api/users/me/route.ts",
+        "SET expires_at = LEAST(expires_at, created_at), is_demo = false",
+        "SET expires_at = LEAST(expires_at, created_at)",
+        ("test/account-delete.test.mjs::DELETE /api/users/me — expires the user",),
+        "Review of #289, SF-3: account deletion must clear is_demo, or a deleted demo owner "
+        "leaves demo songs retained until 2099 AND anonymous. Real-DB behaviour: "
+        "test_paid_retention.py::test_account_deletion_statement_ends_a_demo.",
+        suite="web",
+    ),
+    Mutant(
         "web_job_ttl_is_the_full_window",
         "src/app/api/jobs/[id]/route.ts",
         "presignTtlSec(job.expires_at)",

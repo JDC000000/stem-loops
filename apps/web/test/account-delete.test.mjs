@@ -336,11 +336,12 @@ test('DELETE /api/users/me — expires the user\'s live jobs inside the erase tx
   // 2026-11-15: expires_at = created_at, not now(). A Pro/Studio library is retained PAST
   // expires_at by the subscription (lib/retention.ts JOB_RETAINED_UNTIL_SQL), which ignores
   // the subscription once expires_at <= created_at; so this kills paid retention too.
-  // It does NOT kill a DEMO song's retention (migration 040: is_demo rows are retained until
-  // 2099-12-31 whatever expires_at says). That is why demos are owned by a dedicated system
-  // account, never Jon's personal one (DESIGN-PROPOSAL v1.4 P3.1): deleting the owner would
-  // leave them retained AND anonymous (user_id ON DELETE SET NULL). Real-DB pin:
-  // apps/worker/tests/test_paid_retention.py::test_demo_survives_its_owners_account_deletion_statement.
+  // A DEMO song (migration 040) is retained until 2099-12-31 whatever expires_at says, so the
+  // same UPDATE also clears is_demo: otherwise the owner's deletion would leave demos retained
+  // AND anonymous (user_id ON DELETE SET NULL). Real-DB pin:
+  // apps/worker/tests/test_paid_retention.py::test_account_deletion_statement_ends_a_demo.
+  assert.match(exp[0][1], /,\s*is_demo\s*=\s*false\s+WHERE/i, 'the deletion must clear is_demo');
+  assert.match(exp[0][1], /\(\s*expires_at\s*>\s*created_at\s+OR\s+is_demo\s*\)/i, 'an already-killed demo is still cleared');
   assert.match(exp[0][1], /SET\s+expires_at\s*=\s*LEAST\(expires_at,\s*created_at\)/i);
   assert.match(exp[0][1], /WHERE\s+user_id\s*=\s*\$1::uuid/i);
   assert.match(exp[0][1], /expires_at\s*>\s*created_at/i, 'every not-yet-killed job, including a paid one past its 24 h');
@@ -379,7 +380,7 @@ test('DELETE /api/users/me — the job expiry runs on the TRANSACTION client, an
   const inTx = (globalThis.__ad.txq ?? []).map(norm).filter((t) => /UPDATE public\.jobs/.test(t));
   assert.deepEqual(
     inTx,
-    ['UPDATE public.jobs SET expires_at = LEAST(expires_at, created_at) WHERE user_id = $1::uuid AND expires_at > created_at'],
+    ['UPDATE public.jobs SET expires_at = LEAST(expires_at, created_at), is_demo = false WHERE user_id = $1::uuid AND (expires_at > created_at OR is_demo)'],
     'the expiry must be issued on the tx client (so ROLLBACK undoes it) and must set expires_at to created_at, never later',
   );
   assert.equal(jobsExpiry().length, 1, 'and it is the only jobs UPDATE, pool or tx');

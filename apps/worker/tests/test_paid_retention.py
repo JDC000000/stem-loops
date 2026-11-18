@@ -590,10 +590,11 @@ def test_sweep_never_selects_a_demo_row(conn, r2):
 
 
 @needs_db
-def test_demo_survives_its_owners_account_deletion_statement(conn):
-    """RESIDUE, pinned so it cannot change silently: DELETE /api/users/me's job-expiry UPDATE
-    does NOT end a demo's retention. This is why P3.1 requires demos to be owned by a dedicated
-    system account, never a personal one."""
+def test_account_deletion_statement_ends_a_demo(conn, r2):
+    """DELETE /api/users/me's job UPDATE (read from route.ts, run as stemloops_app) clears
+    is_demo, so a deleted demo owner never leaves demos retained until 2099 AND anonymous
+    (user_id ON DELETE SET NULL). Covers a live demo and one already in the killed shape
+    (expires_at = created_at), then deletes the owner and runs the real sweep."""
     route = (
         Path(__file__).resolve().parents[2]
         / "web"
@@ -606,10 +607,40 @@ def test_demo_survives_its_owners_account_deletion_statement(conn):
     ).read_text()
     (stmt,) = re.findall(r"`(\s*UPDATE\s+public\.jobs\b[^`]*)`", route)
     u = _user(conn, "demo-owner-deleting")
-    demo = _job(conn, u, 10 * DAY, demo=True)
+    live_demo = _job(conn, u, 10 * DAY, demo=True)
+    killed_demo = _job(conn, u, 2 * DAY, killed=True, demo=True)
+    other = _user(conn, "demo-bystander")
+    bystander_demo = _job(conn, other, 10 * DAY, demo=True)
     conn.commit()
+    for jid in (live_demo, killed_demo, bystander_demo):
+        r2.put(f"{jid}/_input.wav", 1 * HOUR)
+    assert _web_kept(conn, [live_demo, killed_demo]) == {live_demo, killed_demo}
+
     conn.execute("SET ROLE stemloops_app")
-    conn.execute(stmt.replace("$1", "%s"), (u,))
+    n = conn.execute(stmt.replace("$1", "%s"), (u,)).rowcount
     conn.commit()
     conn.execute("RESET ROLE")
-    assert _web_kept(conn, [demo]) == {demo}
+    assert n == 2, "both demos of the deleting owner, the killed-shape one included"
+    flags = dict(
+        conn.execute(
+            "SELECT id::text, is_demo FROM jobs WHERE id = ANY(%s::uuid[])",
+            ([live_demo, killed_demo, bystander_demo],),
+        ).fetchall()
+    )
+    assert flags == {live_demo: False, killed_demo: False, bystander_demo: True}
+    assert _web_kept(conn, [live_demo, killed_demo]) == set(), "gone to the web at once"
+
+    # The FK step of the real deletion: the owner goes, user_id SET NULL. The rows are past
+    # retention and anonymous now, and the sweep deletes them; another owner's demo stays.
+    conn.execute("DELETE FROM public.users WHERE id = %s", (u,))
+    conn.execute("DELETE FROM auth.users WHERE id = %s", (u,))
+    conn.commit()
+    _sweep_until_quiet()
+    assert not _exists(conn, live_demo) and not _exists(conn, killed_demo)
+    assert not [k for k in r2.objs if live_demo in k or killed_demo in k]
+    assert _exists(conn, bystander_demo), "another owner's demo is untouched"
+
+    conn.execute("SET ROLE stemloops_app")
+    assert conn.execute(stmt.replace("$1", "%s"), (u,)).rowcount == 0, "idempotent"
+    conn.commit()
+    conn.execute("RESET ROLE")

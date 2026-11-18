@@ -127,8 +127,12 @@ test('GET /api/library: reads is_demo and passes it through, so /history can hid
   const demo = { ...row(9), title: 'Lucky Ticket', expires_at: DEMO_RETAINED_UNTIL, is_demo: true };
   const { GET } = await load({ user: { user_id: ME }, rows: [demo, { ...row(1), is_demo: false }] });
   const res = await GET();
+  // The retention SQL in the same SELECT list contains `jobs.is_demo` (its CASE), so it is
+  // removed BEFORE matching; otherwise this passes with the bare column gone (review of #289,
+  // MF-2: a mutant dropping `is_demo, ` from the route survived the earlier regex).
   const select = norm(globalThis.__lib.queries[0].text).split(' FROM jobs ')[0];
-  assert.match(select, /\bis_demo\b/, 'the SELECT must read is_demo');
+  const columns = select.split(norm(JOB_RETAINED_UNTIL_SQL)).join('<RULE>');
+  assert.match(columns, /(^|[ ,])is_demo, <RULE> AS expires_at/, 'the SELECT list must read the is_demo column');
   assert.deepEqual(res.body.songs.map((s) => [s.is_demo, s.expires_at]), [[true, DEMO_RETAINED_UNTIL], [false, row(1).expires_at]]);
 });
 

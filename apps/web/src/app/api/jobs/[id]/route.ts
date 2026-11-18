@@ -3,12 +3,15 @@ import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { mintSignedUrl } from '@/lib/r2';
 import { JOB_RETAINED_UNTIL_SQL, presignTtlSec } from '@/lib/retention';
-import { mayReadJob } from '@/lib/job-access';
+import { mayActOnJob, mayReadJob } from '@/lib/job-access';
+import { demoReadAllowed, DEMO_RATE_LIMIT_MSG } from '@/lib/demo-rate';
 import { inputTrimFromEvents } from '@/lib/input-trim';
 import { clientIpHashOf } from '@/lib/client-ip';
 import { admitJobRead, jobReadRetryAfterSec } from '@/lib/read-rate-limit';
 // OWNERSHIP: a job with a user_id is readable only by that user; an anonymous job
-// (user_id NULL) is readable by anyone holding its id. See lib/job-access.ts. A denied
+// (user_id NULL) is readable by anyone holding its id; a DEMO song (is_demo, Slice 2a,
+// DB-12a) is readable by everyone, signed out included, and its reads are rate-limited
+// per IP (lib/demo-rate.ts, read-only). See lib/job-access.ts. A denied
 // caller gets the same 404 as a missing job. `user_id` is read to decide that and is
 // NEVER copied into the response. The body therefore also varies by who is signed in,
 // which is a second reason for NO_STORE below.
@@ -20,13 +23,21 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // let a shared cache store it, which Next's default `public, max-age=0, must-revalidate` permits.
 const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
 
+// Dropped from a demo song's response for everyone but its owner (review S1): where the
+// operator's upload lives and what the file was called, and each loop's storage key and file
+// name. The player reads none of them (title comes from the catalog; sections from
+// section_label / start_sec / end_sec / bpm).
+const DEMO_OWNER_ONLY_JOB_FIELDS = ['upload_r2_key', 'original_filename', 'youtube_url'] as const;
+const DEMO_OWNER_ONLY_LOOP_FIELDS = ['r2_key', 'filename'] as const;
+
 // GET /api/jobs/:id — status + events + loops, read straight from Postgres.
 // Each loop gets a FRESHLY minted signed URL on every read (PRD §8 anti-goal #4), valid for
 // at most the job's remaining life, capped at 24h. "Remaining life" is JOB_RETAINED_UNTIL_SQL
 // (24h for Free, longer for a Pro/Studio owner; lib/retention.ts), returned AS expires_at.
 // Past it the job is treated as gone even if the sweep hasn't run yet. `is_demo` (migration
 // 040) is returned so the player can hide "deleted in …" for a demo song, whose expires_at is
-// the far-future DEMO_RETAINED_UNTIL. It opens no read path: ownership is unchanged.
+// the far-future DEMO_RETAINED_UNTIL. Since Slice 2a it also opens the READ path for that row
+// (lib/job-access.ts); nothing else about the response changes.
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   // A shape-invalid id (mistyped/truncated bookmark) would otherwise hit Postgres's
   // uuid-cast error → generic 500, which the client poll loop treats as non-terminal
@@ -55,8 +66,25 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
     }
     const { user_id: ownerId, ...job } = jobRes.rows[0];
-    if (!(await mayReadJob(ownerId))) {
+    if (!(await mayReadJob(ownerId, job.is_demo))) {
       return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404, headers: NO_STORE });
+    }
+    // Demo songs only: the per-IP read limit (design P3.1). An ordinary job never gets here.
+    if (job.is_demo === true && !(await demoReadAllowed(request))) {
+      return NextResponse.json(
+        { error_code: 'RATE_LIMITED', message: DEMO_RATE_LIMIT_MSG },
+        { status: 429, headers: NO_STORE },
+      );
+    }
+    // THE PUBLIC DEMO VIEW (Slice 2a review F1, S1). A demo song read by anyone but its owner
+    // (the demo system account) gets what the player needs and nothing else: no signed loop
+    // URL (a cut demo loop is a 24 h WAV download, and P3.1 makes demo loops owner-only), no
+    // storage key and no upload metadata. The decision is the central rule's `download` cell,
+    // so an orphaned demo (owner deleted) is public to everyone. An ordinary job never enters
+    // this branch, so its response is unchanged.
+    const publicDemoView = job.is_demo === true && !(await mayActOnJob('download', { ownerId, isDemo: true }));
+    if (publicDemoView) {
+      for (const field of DEMO_OWNER_ONLY_JOB_FIELDS) delete (job as Record<string, unknown>)[field];
     }
     const urlTtlSec = presignTtlSec(job.expires_at);
 
@@ -92,6 +120,11 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     // served in full by an uncut row.
     const loops = await Promise.all(
       loopsRes.rows.map(async (l) => {
+        if (publicDemoView) {
+          const pub: Record<string, unknown> = { ...l, signed_url: null };
+          for (const field of DEMO_OWNER_ONLY_LOOP_FIELDS) delete pub[field];
+          return pub;
+        }
         if (l.cut_at === null || l.cut_at === undefined) return { ...l, signed_url: null };
         let signed_url: string | null = null;
         try {

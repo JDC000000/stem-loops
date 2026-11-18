@@ -17,7 +17,9 @@ export const FAQ: Record<string, FaqEntry> = {
     q: 'What do I actually get?',
     a: (
       <p>
-        A player, in your browser, with the song’s six stems on their own faders and a chord track running above them.
+        {CHORDS_LINE_SHOWN
+          ? 'A player, in your browser, with the song’s six stems on their own faders and a chord track running above them.'
+          : 'A player, in your browser, with the song’s six stems on their own faders.'}{' '}
         Mute the guitar and play the guitar part; solo the bass to work it out; loop the chorus until it sticks.
       </p>
     ),
@@ -69,8 +71,13 @@ export const FAQ: Record<string, FaqEntry> = {
     q: 'How long does it take?',
     a: (
       <p>
-        Our 3:34 example song took about 1–3 minutes (0:51 to 3:07 across four runs on 9 October 2026). Longer tracks and
-        a busy queue take longer. The job page shows each stage as it runs, with a timer.
+        {/* C-14 (QA 2026-11-18): the old "about 1–3 minutes" was measured on 9 October 2026, before
+            the chord stage (2026-11-04) and six-stem Opus encode + upload (2026-11-10), and no
+            measurement of the current pipeline is in the repo. So no figure is promised here. The
+            only later timings on record are three YouTube jobs on 2026-11-17 (2m19s, 2m42s, 2m26s;
+            Project doc LEDGER-17, 17:37Z), which supports "a few minutes" and nothing tighter. */}
+        Usually a few minutes. It depends on how long the song is and how busy the queue is. The job page shows each
+        stage as it runs, with a timer.
       </p>
     ),
   },
@@ -94,6 +101,8 @@ export const FAQ: Record<string, FaqEntry> = {
         {CHORDS_LINE_SHOWN
           ? 'Your link or file goes to our storage, and the audio goes to two outside services: one splits it into stems, one estimates the chords.'
           : 'Your link or file goes to our storage, and the audio goes to the outside services named in the privacy notice for processing.'}{' '}
+        {/* Source of truth: 24 hours = RETENTION_HOURS, 30 days = PAID_RETENTION_GRACE_DAYS
+            (lib/retention.ts; migration 007). Pinned by test/chords-switch-surfaces.test.mjs. */}
         Sources, stems and loops are deleted after 24 hours. With a subscription, the songs in your
         account are kept as a library while you subscribe, and for 30 days after it ends. Anyone holding the link to a
         job you start without an account can fetch its audio and stems, so don’t pass that link around. A job you start
@@ -129,15 +138,17 @@ export const FAQ: Record<string, FaqEntry> = {
 
 /** The home page's five (P7: "Home-page FAQ ≤ 5"). Everything is on /help. */
 // DB-17 (lib/chords-claim.ts): with the chords switch off, the chords question leaves the home
-// page (it stays on /help, which answers it honestly either way).
+// page (and /help: see HELP_SECTIONS).
 export const HOME_FAQ: readonly FaqEntry[] = CHORDS_LINE_SHOWN
   ? [FAQ.account, FAQ.chords, FAQ.time, FAQ.files, FAQ.youtube]
   : [FAQ.account, FAQ.time, FAQ.files, FAQ.youtube];
 
 /** /help, grouped. Every entry appears exactly once. */
+// DB-17: with the chords switch off, "How good are the chords?" leaves /help as well — the
+// question itself presents a chord track as part of what a new song gets.
 export const HELP_SECTIONS: readonly { heading: string; entries: readonly FaqEntry[] }[] = [
   { heading: 'Getting started', entries: [FAQ.get, FAQ.account, FAQ.youtube, FAQ.browsers, FAQ.time] },
-  { heading: 'Playing along', entries: [FAQ.chords, FAQ.split, FAQ.tempo] },
+  { heading: 'Playing along', entries: CHORDS_LINE_SHOWN ? [FAQ.chords, FAQ.split, FAQ.tempo] : [FAQ.split, FAQ.tempo] },
   { heading: 'Your songs', entries: [FAQ.files, FAQ.rights] },
 ];
 

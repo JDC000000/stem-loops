@@ -36,7 +36,14 @@ const stubs = {
   '@/lib/db': db,
   '@/lib/retention': dataUrl("export const presignTtlSec = () => 900; export const JOB_RETAINED_UNTIL_SQL = 'expires_at';"),
   '@/lib/r2': dataUrl('export const mintSignedUrl = async () => ""; export const mintPlayChordsSignedUrl = async () => ""; export const PLAY_CHORDS_SIGNED_URL_TTL_SEC = 300; export const r2 = {};'),
-  '@/lib/job-access': dataUrl('export const mayReadJob = async () => true;'),
+  '@/lib/job-access': dataUrl(
+    'export const mayReadJob = async () => true; export const mayActOnJob = async () => true; export const decideJobAccess = () => true;',
+  ),
+  // #302 (demo songs): the demo per-IP peek is a DB read, so it counts as a DB hit here.
+  '@/lib/demo-rate': dataUrl(
+    `export const DEMO_RATE_LIMIT_MSG = 'slow down';
+     export const demoReadAllowed = async () => { globalThis.__dbHits++; return true; };`,
+  ),
   '@/lib/input-trim': dataUrl('export const inputTrimFromEvents = () => null;'),
   '@/lib/auth/supabase': dataUrl('export const getUser = async () => null;'),
   '@/lib/admission': dataUrl('export const checkStemListRate = async () => { globalThis.__dbHits++; return { allowed: true, error_code: null }; };'),

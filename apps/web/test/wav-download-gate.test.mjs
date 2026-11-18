@@ -18,6 +18,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { wirePureLibs } from './helpers/pure-libs.mjs';
+import { DEMO_RATE_IMPORT_RE, DEMO_RATE_URL } from './helpers/job-access-stub.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const P = (rel) => join(WEB, rel);
@@ -131,6 +132,7 @@ async function loadRoute(rel) {
     .replace(/from ['"]@\/lib\/r2['"]/g, `from '${r2Stub}'`)
     // SEC-1 (#220): the REAL ownership helper, over this file's getUser stub.
     .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${jobAccessUrl}'`)
+    .replace(DEMO_RATE_IMPORT_RE, `from '${DEMO_RATE_URL}'`)
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${entitlementsUrl}'`)
     .replace(/from ['"]@\/lib\/stem-urls['"]/g, `from '${stemUrlsStub}'`)

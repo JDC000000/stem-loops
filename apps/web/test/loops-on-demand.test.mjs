@@ -29,6 +29,7 @@ import ts from 'typescript';
 import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginReq } from './helpers/same-origin.mjs';
 import { INPUT_TRIM_URL, INPUT_TRIM_IMPORT_RE } from './helpers/input-trim.mjs';
 import { wirePureLibs } from './helpers/pure-libs.mjs';
+import { DEMO_RATE_IMPORT_RE, DEMO_RATE_URL, JOB_ACCESS_IMPORT_RE, jobAccessUrl } from './helpers/job-access-stub.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -189,7 +190,8 @@ async function loadJobRoute(loops) {
     )
     // Ownership is not what this file tests (test/job-access-routes.test.mjs runs the REAL helper);
     // here it is stubbed open so this file's own subject stays isolated.
-    .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl(`export const mayReadJob = async () => true;`)}'`)
+    .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl(`export const mayReadJob = async () => true; export const mayActOnJob = async () => true;`)}'`)
+    .replace(DEMO_RATE_IMPORT_RE, `from '${DEMO_RATE_URL}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${dataUrl(`export const captureException = () => {};`)}'`)
     .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(INPUT_TRIM_IMPORT_RE, `from '${INPUT_TRIM_URL}'`)
@@ -308,6 +310,8 @@ async function loadLoopsRoute({ job, user = null, uncut = 3, insertThrows = null
       /from ['"]@\/lib\/auth\/supabase['"]/g,
       `from '${dataUrl(`export const getUser = async () => (${JSON.stringify(user)});`)}'`,
     )
+    // Slice 2a: the route asks the REAL central rule (src/lib/job-access.ts).
+    .replace(JOB_ACCESS_IMPORT_RE, `from '${jobAccessUrl(dataUrl(`export const getUser = async () => (${JSON.stringify(user)});`))}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${dataUrl(`export const captureException = () => {};`)}'`)
     .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     // The REAL retention module: the job lookup's predicate is JOB_RETAINED_UNTIL_SQL.

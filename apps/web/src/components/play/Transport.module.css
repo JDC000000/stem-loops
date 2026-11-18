@@ -178,11 +178,12 @@
   color: var(--text-primary);
   cursor: pointer;
 }
-/* On: neutral pressed (white fill, dark glyph), never lime (A5). */
+/* On: the ONE neutral pressed state (QA A-07; brand A5): --bg-selected (#222)
+   with a 2px white edge and a white glyph — never a white fill, never lime. */
 .loop[data-state='on'] {
-  background: var(--text-primary);
-  border: 0;
-  color: var(--text-inverse);
+  background: var(--bg-selected);
+  border: 2px solid var(--text-primary);
+  color: var(--text-primary);
 }
 /* Nothing to loop yet: shown, greyed, labelled "Tap a section to loop it". */
 .loop[data-state='disabled'] {

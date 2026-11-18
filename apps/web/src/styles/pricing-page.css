@@ -144,6 +144,20 @@ a.pr-cta-quiet {
   color: var(--text-primary);
 }
 
+/* The viewer's own plan (QA A-10): a neutral label in the CTA's place, the
+   same size, never lime and not a control. */
+.pr-cta-current {
+  min-height: var(--touch-min);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px dashed var(--border-control);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
 /* Packs go three across as soon as three fit; they are short. */
 @media (min-width: 600px) {
   .pr-packs { grid-template-columns: repeat(3, minmax(0, 1fr)); }

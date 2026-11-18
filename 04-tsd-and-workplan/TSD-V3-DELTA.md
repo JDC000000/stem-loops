@@ -1,7 +1,60 @@
 # TSD-V3-DELTA: Stem-Loops V3 (commercial layer + Play engine + Spotify + fetch) — delta over the pinned TSD
 
-Author: SL-V3 architect lane. Date: 2026-11-16 (**v1.10** amendment: §1.2a link-ingest separation **REVERSED by Jon** — Pro and Studio may paste YouTube links, metered like uploads and kept in their library; O-8 closed; see the v1.9 → v1.10 Changelog). Previous: 2026-11-14 (v1.9 amendment: V3-J4 revised — a song over 5 minutes is TRIMMED to its first 5 minutes, not refused; see the v1.8 → v1.9 Changelog and §12.5). Previous: 2026-11-11 (v1.8 amendment pass — the plan catalog re-priced on tracks-converted-to-play-along, and every plan flag that advertised an unbuilt capability cleared; see Changelog below). Previous: 2026-11-10 (v1.7 amendment pass — corrections to v1.5/v1.6 after an adversarial review scored them 48/100, plus Jon's .wav and 3-free-stems decisions). Status: DRAFT for Jon's review.
+Author: SL-V3 architect lane. Date: 2026-11-18 (**v2.0.1** fix-forward: the post-merge review of v2.0 (#291) scored it 86/100; its operational state was stale at merge, the demo-key item was wrong, and several IDs collided; see the v2.0 → v2.0.1 Changelog). Previous: 2026-11-17 (**v2.0** amendment: Jon's 2026-11-17 design decisions — DB-12(a) demo songs play signed out, DB-16 rights recorded, DB-17 still OPEN — and Slice 0 / Slice 1a / pricing as shipped in #289, #288, #287; deploy facts corrected; see the v1.10 → v2.0 Changelog). Previous: 2026-11-16 (v1.10 amendment: §1.2a link-ingest separation **REVERSED by Jon** — Pro and Studio may paste YouTube links, metered like uploads and kept in their library; O-8 closed; see the v1.9 → v1.10 Changelog). Previous: 2026-11-14 (v1.9 amendment: V3-J4 revised — a song over 5 minutes is TRIMMED to its first 5 minutes, not refused; see the v1.8 → v1.9 Changelog and §12.5). Previous: 2026-11-11 (v1.8 amendment pass — the plan catalog re-priced on tracks-converted-to-play-along, and every plan flag that advertised an unbuilt capability cleared; see Changelog below). Previous: 2026-11-10 (v1.7 amendment pass — corrections to v1.5/v1.6 after an adversarial review scored them 48/100, plus Jon's .wav and 3-free-stems decisions). Status: **living record, v2.0.1** — every amendment row that states a fact cites its source (Jon's words, a merged PR, or a measurement). This file was marked "DRAFT for Jon's review" from v1.0 to v1.10; that line was stale, because v1.8, v1.9 and v1.10 were each merged to `v3/main` (#210, #270, #282) and this file is the canonical PRD+TSD delta in the repo. Each amendment takes effect when it merges.
 This document EXTENDS the pinned TSD at `stem-loops-handoff/07-roadmap/TSD.md` (SL21-tsd, commit c3f6a911 of `stem-loops`). It is a DELTA only — anything the pinned TSD covers (job state machine, kill switches, blocklist, fetch chain, loops/export, R2 layout, migrations 001–012) is NOT restated here, only cross-referenced by section number (e.g. `TSD §3.1`). All new requirement IDs are prefixed **V3-**; new tests prefixed **T-V3-**. Pinned reqs use their existing IDs (R-A0, R-X2, etc.).
+
+---
+
+## Changelog — v2.0 → v2.0.1 (2026-11-18 — post-merge review fixes)
+
+Source: the post-merge adversarial review of #291 (v2.0), **86/100, FAIL**. Its MUST-FIX (MF), SHOULD-FIX (SF) and minor items are applied here. Where the orchestrator verified newer facts against the prod DB, those supersede the review's text.
+
+| ID | § | Change | Source |
+|---|---|---|---|
+| **MF-1** | §12.11 Deploy status, v2.0 Changelog, §11 | The v2.0 **[U]** bullets were stale at merge. Replaced: demos processed and flagged at 2026-11-18 04:47Z (jobs `9c5ba587` Lucky Ticket, `32f99278` I'm Asking You, `3d43d743` Offline), retained until 2099-12-31; staging fully caught up to 040 (38 `_migrations` rows, verified 05:08Z); 004 and 026 noted as not re-run-safe; R2 has no lifecycle rules (Jon). §11's "operator steps outstanding" line replaced | LEDGER-17; orchestrator prod/staging checks; Jon (Cloudflare) |
+| **MF-2** | §12.11, §12.12, §11 | The key item was wrong in scope (all three demo keys were wrong, not one) and named a "key override" that does not exist. Now: pipeline wrote G minor / B minor / C♯ major; Jon approved (*"approve demo keys"*, 21:56 PT) and a **named `UPDATE`** set A major / A minor / G major (verified). §12.12: key display shipped but the detected key is currently unreliable; key-detection investigation in §11 | Jon 2026-11-17 21:56 PT; orchestrator prod check |
+| **SF-1** | throughout | Brand book addendum citations renamed **[BB2.3-A1]…[BB2.3-A4]** so they cannot collide with brand book v2.2 rule numbers A1–A16 used in code | review |
+| **SF-2** | §11 | Duplicate "O-3 (v2.0)" row removed; the original O-3 row annotated; the decaying "18 days" dropped | review |
+| **SF-3** | §2.2, §12.1, §12.2 | ⟲ pointers to §12.9 v2.0 where text still described an anonymous launch | review |
+| **SF-4** | §12.9, §12.11 | Slice 2 behaviour put in the future tense: the demos **will be** shared and **will be** denied download/loop cutting by `is_demo`; today they are owner-only | review |
+| **SF-5** | §12.11, §11 | Static export of the demos ([DP] Slice 0 step 2): **not done**, listed as outstanding | review; orchestrator |
+| **SF-6** | §12.11, v2.0 Changelog, `docs/legal/demo-songs-rights.md` | DB-16 quoted verbatim, *"NOT NEEDED. I MADE ALL THE MUSIC WE HAVE RIGHTS"* (2026-11-17 18:23 PT); the "holds all rights" paraphrase removed in both files | Jon 2026-11-17 18:23 PT |
+| SF-7 | §12.14 | "rollback is promote-previous-deployment" attributed to §8.2 (and O-4) | review |
+| SF-8 | §12.11 table | "Deleted in …" is **not** hidden on `/loops` (#289 residue 2) | [#289] |
+| SF-9 | §12.14 | Vercel production-branch claim marked "Observed" (Deployments API, not Vercel settings) | review |
+| SF-10 | §0 Header | "every amendment row **that states a fact** cites its source" | review |
+| SF-11 | §12.12 | Short landscape two-column layout needs height < 500 **and** width ≥ 560 | [#288] |
+| SF-12 | §12.12 | P1 approved via the mockups (16:55 PT) and the work plan (19:05 PT) | [DP] |
+| — | §12.11, §12.14 | Worker redeploy cited by Actions run **44236315618** (success 04:18Z) | [GH] |
+
+---
+
+## Changelog — v1.10 → v2.0 (2026-11-17 — Jon's design decisions; Slice 0, Slice 1a and pricing as shipped)
+
+Sources, each fact cited to one of them:
+- **[DP]** `DESIGN-PROPOSAL v1.5` (play-along first), last section *"v1.5 — Jon's decisions and what shipped (2026-11-17)"*: **APPROVED by Jon** (P2–P7 at 15:39 PT; mockups at 16:55 PT; pill chips and the whole work plan at 19:05 PT). The proposal lives in the Claude Project, not this repo.
+- **[BB]** Brand book v2.3 addendum, 2026-11-17 (A1–A4). Also in the Project, not this repo. Cited as **[BB2.3-A1]**…**[BB2.3-A4]** (renamed in v2.0.1): A1–A4 here are v2.3 *amendment* numbers, **not** brand book v2.2 rule numbers — code comments such as `design-tokens.css`'s "brand book A4" (the failed red) and #287's "brand rule A5" use the v2.2 rule numbers.
+- **[#287]** P6 pricing page, merge `9aeae03`. **[#289]** Slice 0 `jobs.is_demo`, merge `cbe5b16`, migration 040. **[#288]** Slice 1a player, merge `f29bf17`. Read from the PR bodies and diffs.
+- **[GH]** GitHub Deployments and Actions APIs, read 2026-11-17 for the deploy facts (§12.14).
+
+| § | Change | Source |
+|---|---|---|
+| §0 Header | v1.10 → **v2.0**; date 2026-11-17; the stale *"Status: DRAFT for Jon's review"* replaced | this amendment |
+| **§12.9** | **DB-12(a): demo songs play signed out; your own songs still need sign-in.** Jon: *"APPROVED - should people play the demo songs without signing in? I recommend yes, for the demos only."* The 2026-11-10 sign-in decision stands for everything else. The v1.7 line *"the core journey stays anonymous"* is superseded. **Not yet built** — Slice 2 opens the demo read path; #289 deliberately opens none | Jon 2026-11-17 [DP] |
+| **§12.2 / §12.11 (NEW)** | **Retention: `jobs.is_demo`** (migration `040_v3_jobs_is_demo.sql`). Demo rows are retained until the finite `2099-12-31T00:00:00Z`, not `'infinity'`; excluded from the sweep in both `retention.ts` and `cleanup.py`; account deletion clears `is_demo`; operator rule: never delete the demo account from the Dashboard; the flag is set only by a Jon-approved guarded write | [#289] |
+| **§12.12 (NEW)** | **The player as shipped (Slice 1a):** P1 phone layout, P2.1 runs of sections, the Mix sheet and its presets with **DB-13(a)**, the no-chords state, BPM and key from `jobs.bpm` / `jobs.musical_key`, the `--chord-now` token, and one display formatter (`lib/play/notation.ts`) | [#288], [DP], [BB] |
+| **§12.13 (NEW)** | **Pricing page as shipped:** `/pricing` indexable and in the top nav; CAD on every price; retention wording = `RETENTION_BULLET` | [#287] |
+| **§12.8** | **DB-17 (= §11 O-3): Jon, 2026-11-17: *"LETS WAIT AND SEE"*. Still OPEN.** New songs lose chords on 2026-12-05 unless decided. The options are kept | Jon 2026-11-17 [DP] |
+| **§12.14 (NEW)** | **Deploy facts (verified):** the web app auto-deploys to production on merge to `v3/main` (Vercel Git integration); migrations and the worker are manual (worker: Actions → Deploy → target `worker`) | [#289], [GH] |
+| **§12.11** | **DB-16:** rights statement recorded in `docs/legal/demo-songs-rights.md` (Jon: *"NOT NEEDED. I MADE ALL THE MUSIC WE HAVE RIGHTS"*; quote completed in v2.0.1) | Jon 2026-11-17 [DP], [#289] |
+| **§2.3** | Pointer to the later migrations this delta names (034, 039, 040) | this amendment |
+| **§11** | **NEW: "Open after 2026-11-17"** — Slice 1b, Slice 2, Slice 3, the chart-notation PR, the [billing] quiet credit buttons, the staging catch-up, DB-17 | [DP], [BB] |
+
+Other decisions recorded in [DP] and not otherwise restated here: **DB-14 (a)** adjacent runs now (shipped, §12.12); **DB-15 (a)** prices unchanged, playlists Pro-only in Slice 3; **P1** portrait-only use, no rotation needed; **New:** show BPM + key (shipped, #288) and Amber Gold `#f59e0b` for the current chord ([BB2.3-A1]).
+
+**[U] markers resolved after merge (v2.0.1, 2026-11-18):** demos processed and flagged (04:47Z, retained until 2099-12-31); R2 has no lifecycle rules (Jon, Cloudflare); staging fully caught up to 040 (38 `_migrations` rows; verified 05:08Z). **Not done (no longer [U]):** the static-demo-host export ([DP] Slice 0 (2)). **New finding:** prod key detection was wrong on 3/3 demos; the three demo rows were corrected by a Jon-approved named write (§12.11).
+
+Items intentionally UNCHANGED in v2.0: §1 commercial layer and plan values (DB-15 (a): no price change), the 24-hour rule for Free and anonymous jobs, the paid retention rule (#279), §12.10 proxy, §8 (O-4 still open).
 
 ---
 
@@ -193,6 +246,8 @@ Items intentionally UNCHANGED in v1.5: §1 commercial layer (other than the §1.
 
 > A visitor pastes a public YouTube link on `stem-loops.com`. The song is fetched and separated into 6 stems server-side. On the result page they press play; the song plays back as a synchronised 6-stem mix. A **fader per stem** lets them pull any part to silence. A **chord timeline above the transport scrolls in sync with the playhead**. With an electric guitar in an outboard headphone amp, they play along to the song with the guitar stem removed, reading the chords as they pass.
 
+> ⟲ **v2.0.1:** superseded by §12.9 v2.0 — your own songs need sign-in (Jon, 2026-11-10); only the three demo songs play signed out (DB-12(a), not yet built — Slice 2). A visitor pasting a link must be signed in.
+
 **Explicitly OUT of scope for V3-J1**, per Jon's answer that the guitar is mixed in hardware: live audio input, input monitoring, round-trip latency budgets, and any `getUserMedia` path. The guitar never enters the browser.
 
 **Pass bar:** Jon performs the journey end to end on a real song with his own guitar and confirms it. A green test suite is **not** a pass for V3-J1 — this requirement is defined by the owner's own use.
@@ -207,8 +262,10 @@ Requirements:
 - **Download format: `.wav`** — decided by Jon, 2026-11-10 (*"download = .wav"*). Separate artifact from the Opus playback stems: Opus is the right streaming codec and the wrong hand-off to a DAW. ⚠️ **A second encode and a second R2 object per stem** — 6 extra objects per job, and `.wav` is **much** larger than Opus (roughly 10 MB/min/stereo at 16-bit/44.1k vs 4–5 MB for a whole Opus stem), so a 5-minute 6-stem job adds on the order of **300 MB** of R2 writes. The 24-hour expiry is what makes that affordable; **do not extend retention without re-costing this.**
 - **Entitlement: 3 free stem downloads, then paid once Stripe is integrated** — decided by Jon, 2026-11-10. This resolves the §1.3 contradiction the M-9 review found: a 3-download allowance is a **trial**, not a free tier, so it is consistent with §1.3 keeping `export_stems` on the paid tiers.
   > ⚠️ **Open, and it is load-bearing: the allowance needs an identity the launch path does not have.** The launch is anonymous (*"Free, no account"*), and anonymous users are keyed by **hashed IP** (`IP_HASH_KEY`), which is a rate-limit cohort, not an identity — trivially reset by changing network. So either (a) the allowance is per-IP-cohort and weak by design, or (b) **stem download requires sign-up**, which pulls the authed path — hCaptcha, Resend, the whole §12-excluded surface — back into launch scope. **This is Jon's call and it changes launch scope either way.** Existing machinery worth reusing if (b): `trial_grants` is already one-per-user-ever with a PK on `user_id` (§6.1), so a second counter should not be invented.
+  > ⟲ **v2.0.1:** superseded by §12.9 v2.0 — your own songs need sign-in (Jon, 2026-11-10); only the three demo songs play signed out (DB-12(a), not yet built — Slice 2).
 - `Job` gains a stems collection; stem URLs are **short-TTL signed GETs** from the private bucket, matching the existing `loops` and `play-chords` pattern — never public objects.
 - Stems obey the **same 24-hour expiry** as every other job artifact. The retention promise in §1.6a does not change.
+  > ⟲ **v2.0 (2026-11-17): 24 hours is no longer the only rule.** One retention rule, `JOB_RETAINED_UNTIL_SQL` (`apps/web/src/lib/retention.ts`) = `RETAINED_UNTIL_SQL` (`apps/worker/src/worker/cleanup.py`), pinned identical by `apps/worker/tests/test_paid_retention.py`, now gives three answers: **Free and anonymous jobs: 24 hours**; **Pro and Studio: kept while subscribed, plus 30 days** (#279; the pricing page's `RETENTION_BULLET`); **demo songs (`jobs.is_demo`): until 2099-12-31** (§12.11, #289).
 - Adds R2 storage and egress per job. Bounded by the 24-hour expiry.
 
 ### 12.2a V3-J2a — the Ogg demuxer nobody has scoped (NEW in v1.7) ⚠️ **unnamed dependency on the launch path**
@@ -389,6 +446,13 @@ Both reached stage `downloading`, which **proves `ALLOW_YOUTUBE_INPUT` is `'true
 
 ### 12.9 V3-J9 — stem download requires sign-up (NEW in v1.7, decided by Jon)
 
+> ⟲ **v2.0 (2026-11-17) — where the sign-in gate sits. DB-12 decided: option (a).**
+>
+> - **Demo songs play signed out; your own songs still need sign-in.** Jon, 2026-11-17: *"APPROVED - should people play the demo songs without signing in? I recommend yes, for the demos only."* [DP]
+> - **The 2026-11-10 decision stands for everything else.** Jon, 2026-11-10: *"Right from the start, let's require sign in so we know who's using it"* — quoted in `apps/web/src/app/jobs/[id]/page.tsx`, which redirects a signed-out visitor to `/login` before the job renders. So the v1.7 line below, *"the core journey (§12.1) stays anonymous … A visitor can still do the whole play-along without an account"*, is **superseded**: playing your own song needs an account. Only the three demo songs (§12.11) are open.
+> - **Status: decided, not yet built.** #289 (Slice 0) opens **no** read path — a demo row is still an ordinary owned job, readable by its owner only, and `test/job-access-routes.test.mjs` pins that. The signed-out demo player, the `is_demo` branch in `mayReadJob` and the page gate, and the explicit `is_demo` denial on download and loop cutting are **Slice 2** (see §11 "Open after 2026-11-17"). [#289], [DP]
+> - The `.wav` download gate below is unchanged by DB-12. Demo songs **will be** denied WAV download and loop cutting to everyone but the demo system account by an explicit `is_demo` denial (Slice 2) [DP P3.1]; **today** they are denied only because they are an owned job (owner-only reads, §12.11). *(v2.0.1: the v2.0 text read "are denied … unless Jon opts in"; the opt-in referred to DB-16, which [DP] now records as not needed.)*
+
 **Jon's decision, 2026-11-10:** *"lets require sign up"* — closing §11 **O-1**. A 3-download allowance needs an identity, hashed-IP is a rate-limit cohort and not one, so **stem download is gated behind an account.**
 
 **This is a launch-scope change and it is the largest one in this document.** The authed path was explicitly OUT of scope in v1.5 (*"Free, no account"*, no sign-in affordance on the landing page). It is now IN.
@@ -443,6 +507,121 @@ The fix is already implemented: a **fresh random 8-character session id per fetc
 ### 12.8 V3-J8 — the 2026-12-05 validation deadline
 
 The Klangio Startup subscription cancels **2026-12-05** — v1.4's documented hard cap, working as designed. **Chords stop that day** unless it is kept, `autochord` is implemented, or ChordNet training is resourced (dataset is a random-label placeholder, R-4). Jon, 2026-11-10: *"we have to validate this product before THEN."* **V3-J1 must be validated by Jon's own use before that date.**
+
+> ⟲ **v2.0 (2026-11-17) — DB-17 (the design proposal's name for §11 O-3) is still OPEN.** Jon, 2026-11-17: *"LETS WAIT AND SEE"*. **So, unless it is decided, chords stop for every new song on 2026-12-05.** [DP] (The design processes the three demo songs before that date for exactly this reason, so their chords exist whatever is decided [DP §1 Slice 0].)
+>
+> The options, as the design proposal lays them out (kept here so the decision can be taken without re-deriving them):
+>
+> | Option | For | Against |
+> |---|---|---|
+> | **(a) Keep Klangio past 12-05** for a fixed period | Nothing breaks; known quality | **$99.99/month** (API Monthly — Startup); reverses v1.4's "hard cap, one billing cycle" decision, deliberately |
+> | **(b) Implement `autochord`** | No subscription | GPL-licensed; not in `chord_source.py`'s closed provider set; needs an OS-level VAMP plugin in the worker image; quality vs Klangio unmeasured. **Not realistic by 12-05** |
+> | **(c) ChordNet training** | Ours | Not resourced; the dataset is a placeholder |
+> | **(d) Let chords stop for new songs** | No cost | The no-chords state (§12.12) becomes the main state |
+>
+> The proposal's recommendation (not a decision): **(a) for a fixed period with (b) built alongside**, switch when (b) agrees with Klangio on ≥ 85% of beats over a fixed 20-song set and Jon rates it usable; hard end date for (a) **2027-03-05**. [DP DB-17]
+>
+> **What already handles the cliff:** the player's no-chords state ships in #288 (§12.12). **Copy:** the design requires any copy that promises chords to change the same day chords stop — the P7 capabilities block's Chords line and the P4.1 home-page line (Slice 1b / Slice 2) [DP P4.1, P7].
+
+### 12.11 Demo songs and retention: `jobs.is_demo` (NEW in v2.0, shipped in #289)
+
+**What it is for.** Three of Jon's own recordings — *Lucky Ticket*, *I'm Asking You*, *Offline* (The Royal Sundowners) — are the demo songs: processed once through the real pipeline, and **will be** shared by everyone (Slice 2), never copied per account [DP P3.1]. **Today** they are ordinary owned jobs, readable by the demo system account only. They must survive the retention sweep. Migration **`040_v3_jobs_is_demo.sql`** (+ `down/040_v3_jobs_is_demo_down.sql`) adds:
+
+```sql
+ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS is_demo boolean NOT NULL DEFAULT false;
+```
+
+No grant or policy is added: `public.jobs` is backend-only (RLS on; only `stemloops_app_all` and `cowork_ro_read`), so `anon`/`authenticated` cannot read or write the column. [#289]
+
+| Rule | As shipped | Where |
+|---|---|---|
+| **Retained until** | A demo row's retained-until is **`'2099-12-31T00:00:00Z'::timestamptz`** — the rule is wrapped as `(CASE WHEN jobs.is_demo THEN '2099-12-31T00:00:00Z'::timestamptz ELSE GREATEST(...) END)`. Constant `DEMO_RETAINED_UNTIL` in both copies; `isDemoRow()` in TS | `retention.ts` `JOB_RETAINED_UNTIL_SQL`, `cleanup.py` `RETAINED_UNTIL_SQL` |
+| **Finite, not `'infinity'` — why** | node-pg turns `infinity` into the number `Infinity`; `new Date(Infinity)` is NaN; `lib/library.ts` drops rows with a non-finite expiry; and the stems and download routes deliberately fail closed on NaN to **1-second** signed URLs, which would break demo playback. With a finite date every expiry path works unchanged (stems 900 s; `presignTtlSec` 24 h cap). Consequence, accepted: in principle demos are eventually swept | migration 040 header; [#289] residue 4; mutant `demo_retained_until_infinity` KILLED |
+| **Excluded from the sweep** | The same `CASE` in **both** copies, so the worker's sweep never selects a demo row. The two copies stay identical, pinned by `test_paid_retention.py` (real Postgres) | `retention.ts`, `cleanup.py`; mutant `demo_branch_removed_from_sweep_rule` KILLED |
+| **"Deleted in …" hidden** | Hidden for `is_demo` on the player, library and `/history` rows — otherwise a demo would read "deleted in ~27,000 days" **Not hidden on `/loops`** (LoopsView "loops close in …"): accepted residue #289-2, visible only to the demo account until Slice 2 | `JobView.tsx` (`songInfoLines` after #288), `history/page.tsx`, `lib/library.ts`; [#289] residue 2 |
+| **Account deletion clears it** | `DELETE /api/users/me` sets `is_demo = false` in the same UPDATE that expires the user's jobs (`WHERE … AND (expires_at > created_at OR is_demo)`). This is the **only** application write to `is_demo`, and it only ever writes `false` | `users/me` route; `test_account_deletion_statement_ends_a_demo` (real PG) |
+| **Operator rule** | **Never delete the demo account from the Supabase Dashboard; use the app's account deletion.** Deleting it outside the app (Dashboard → Authentication → Users → Delete, or `auth.admin.deleteUser`, or a manual SQL change to `user_id`) runs `ON DELETE SET NULL` on `jobs.user_id` **without** clearing `is_demo`, leaving the demos retained until 2099 **and** anonymous. Closed for good only by Slice 2's explicit `is_demo` denial on download and loops, which must ship before or with publishing the demo ids | migration 040 header; [#289] residue 1 |
+| **Who sets it** | **Only a Jon-approved, guarded named write.** No application code writes `is_demo = true`; the `POST /api/jobs` INSERT does not name it | migration 040 header |
+
+The guarded write (from migration 040's header; **expect `UPDATE 3`, anything else: ROLLBACK and investigate**):
+
+```sql
+UPDATE public.jobs SET is_demo = true
+ WHERE id IN ('<id1>','<id2>','<id3>')
+   AND user_id = '<demo-system-account-uuid>'   -- never a personal account
+   AND status = 'done'
+   AND client_ip_hash <> 'purged'               -- never an anonymised shell
+   AND expires_at > now();                      -- never resurrect a swept-due row
+```
+
+**Ownership.** Demo songs are owned by a **dedicated demo system account**, not Jon's personal account, because account deletion sets `user_id` to NULL [DP P3.1].
+
+**Rights (DB-16).** Jon, 2026-11-17 18:23 PT, verbatim: *"NOT NEEDED. I MADE ALL THE MUSIC WE HAVE RIGHTS"* [DP]. Jon states he made all the music and that "we have rights"; no further consents were sought. Recorded in **`docs/legal/demo-songs-rights.md`** (#289; its paraphrase "holds all rights" was replaced by the verbatim quote in v2.0.1). This replaces the design's original DB-16 ask (written consent from every rights holder).
+
+**Deploy status** (v2.0.1: rewritten; the v2.0 [U] bullets were already stale when #291 merged at 2026-11-18 04:55Z).
+- Migration 040 **is applied in prod**; the worker was redeployed at `f29bf17` (Actions run **44236315618**, "Deploy Worker to Fly.io" success 2026-11-18 04:18Z) [DP], [GH]. So the deployed sweep honours `is_demo`.
+- **Demos processed and flagged.** The three demo songs were processed in prod under the dedicated demo account: jobs **`9c5ba587`** = *Lucky Ticket*, **`32f99278`** = *I'm Asking You*, **`3d43d743`** = *Offline*. The guarded write (Jon: "approve demo flag") ran at **2026-11-18 04:47Z** and flagged them `is_demo`; a separate SELECT verified retained-until **2099-12-31**. This was after the worker redeploy (04:18Z), so the deployed sweep honours the flag. [LEDGER-17; verified against prod by the orchestrator]
+- **Staging is fully caught up (done 2026-11-18).** Verified by the orchestrator with read-only SELECTs at 05:08Z: `public._migrations` has **38 rows** (001–040, minus 010 and 036, which do not exist); 009, 011, 012 and 013–040 were applied on 2026-11-18 (staging previously had 001–008) under Jon's approvals (catch-up approved 2026-11-17 21:39 PT; then *"a now"* / *"do it yourself"*); 004 was recorded as pre-applied after verifying its effects were already present. `jobs.is_demo` is `NOT NULL DEFAULT false`; `jobs.klangio_job_id`, `chord_edits`, `klangio_usage`, `loop_requests` and the 024 index are present; RLS on `jobs` is on. `plans` match prod (free 0 / 5, pro 499 / 50, studio 1200 / 150 with `export_stems`; `plans.services` = `{youtube}` on free, pro and studio, as in prod (migrations 034, 039)). Staging has 0 jobs and 0 users. Migrations **004** (bare `ADD CONSTRAINT jobs_input_source_chk`) and **026** (9 unguarded `ADD CONSTRAINT`s) are **not re-run-safe**, despite the migrations README's claim that every migration is idempotent; a fix PR is planned (§11).
+- **R2 lifecycle: none.** Jon, checking the bucket in Cloudflare: *"There are no object lifecycle rules defined for this bucket."* So the old whole-bucket `expire-ephemeral-job-io` 2-day rule is not active. It would come back only if `apps/worker/scripts/configure_r2_lifecycle.py` were re-run with `R2_LIFECYCLE_EXPIRE_DAYS` set.
+- **Static export: not done (outstanding).** [DP] §1 Slice 0 step (2) requires exporting the three demos' stems, chords and sections to the static demo host right after processing — a second copy that no sweep touches. It has not been done.
+- **Key detection was wrong on all three demos.** The prod pipeline wrote `jobs.musical_key` **G minor** (Lucky Ticket), **B minor** (I'm Asking You) and **C♯ major** (Offline); Jon's confirmed keys are **A major / A minor / G major**. BPM matched (102 / 128 / 95). The same detector run on the source files before upload gave the confirmed keys (LEDGER-17 22:49Z), so the prod pipeline diverges; the cause is not yet diagnosed. There is **no key-override feature**: `musical_key` is written only by `pipeline.py`. After Jon's named approval (*"approve demo keys"*, 2026-11-17 21:56 PT) the orchestrator corrected the three demo rows with a **Jon-approved named `UPDATE public.jobs SET musical_key = … WHERE id = … AND is_demo`** to A major, A minor and G major, and verified them. A **key-detection bug investigation** (PR in progress, §11) covers every user's song, not only the demos: the header shows `<BPM> BPM · <key>` on every song, and ⋯ → Song info already says *"Tempo and key are detected automatically and can be off."*
+
+### 12.12 The play-along player as shipped (Slice 1a, #288) (NEW in v2.0)
+
+Built from the approved design (P1.1–P1.5, P2.1) and Jon's approved mockups. P1 was approved via the mockups (16:55 PT) and the whole work plan (19:05 PT), not as a separate P1 decision [DP]. This is what `/jobs/[id]` does on `v3/main` at `f29bf17`. [#288]
+
+**P1 — layout.**
+- One fixed **`100svh`** screen that does not scroll when it fits: compact header (back · song title as the h1 · `<BPM> BPM · <key>` · ⋯) → chord stage → section strip → seek line → transport (−5 · Play/Pause · +5 · Loop · Mix). When it cannot fit (e.g. 400% zoom), it scrolls rather than clip (WCAG 1.4.10).
+- **One notice bar** at the top of the stage (error > degraded > loading > hint), keeping `role=alert` / `role=status`. `viewportFit: 'cover'` on the `app/jobs/[id]` segment only. The site nav is hidden while the player is mounted.
+- **Chord stage:** Now/Next on the fit ladder 72→64→56→44→40→36→32→28 px (larger starts when the stage has room), then a slash-bass second line, then Next below; beat row; two bar lines; `aria-current`; **no `aria-live`**.
+- **Widths:** ≥ 1024 wide (and ≥ 500 tall): two columns with the mixer always visible. 560–1023: the phone layout, centred. Short landscape (height < 500, width ≥ 560): two columns. Jon, 2026-11-17: portrait-only use, no rotation needed [DP].
+- **Wake Lock** held while playing, released on pause; feature-detected.
+- **Back link:** "Back to library" (`/history`) signed in, "Back to home" (`/`) signed out.
+
+**P2.1 — runs of sections (DB-14 (a), adjacent runs now).** A loop is **no loop** or a **run** of adjacent sections *i..j*. Tap outside the run extends it; tap inside a 2+ run shrinks it to that chip; tap the only chip clears it; long-press (500 ms, cancels on move, swallows its release click) loops only that chip. The Loop button has three states: on, off with a run remembered, and disabled "Tap a section to loop it". "Looping" is shown only while the engine's loop equals the run. `tapSection` / `longPressSection` / `toggleRunLoop` / `runRegion` in `lib/play/sections.ts`; `nextLoop` removed. Non-adjacent runs wait (DB-14).
+
+**P1.3 — the Mix sheet and presets.**
+- A modal bottom sheet (`role=dialog`, `aria-modal`, focus trap; Escape / Close / backdrop / swipe-down; focus returns to Mix); a right-side panel on short landscape screens. The header shows the live Now/Next chords and play/pause. Six stem rows with M · S · slider.
+- **Presets** (`lib/play/presets.ts`): **Mute my part · Full song · No vocals · Drums + bass**. A preset sets mutes; any later mute, solo or slider change relabels the selection **"Custom"**.
+- **DB-13 (a):** the first tap on **Mute my part** asks *"Which part do you play?"* — Guitar (pre-selected) · Bass · Keys · Drums · Vocals — and remembers the answer in `localStorage`. Jon took the recommendation under the approved plan [DP].
+
+**No-chords state.** When a song has no chords, the stage shows the current **section name** large, **`bar n / N · beat b`**, the line *"No chords for this song."*, and the presets. This is the state every new song reaches after 2026-12-05 if DB-17 (§12.8) is not decided. Accepted residue: its beat count runs from the section start, while the chord stage's bars use the chord-derived downbeat, so the two can differ by a beat.
+
+**BPM and key.** The header shows BPM from **`jobs.bpm`** (rounded) and the key from **`jobs.musical_key`**, each hidden when null, with a screen-reader "Detected: " prefix. ⋯ → Song info says *"Tempo and key are detected automatically and can be off."* Jon asked for BPM + key on 2026-11-17 [DP]. `GET /api/jobs/[id]` selects both columns.
+- **Known issue (v2.0.1): key display is shipped, but the detected key is currently unreliable.** Prod key detection was wrong on 3/3 demo songs (§12.11); the demo rows were corrected by a Jon-approved named write, but every other song still shows the detector's key. See the key-detection bug investigation in §11.
+
+**`--chord-now` token.** `--chord-now: #f59e0b` (Amber Gold), declared once in `design-tokens.css` section 1. **One job:** the current chord at the playhead — the big Now chord, the current bar's edge and chord text, and the Mix-sheet header chord; it stays amber while paused. Never a button, link, selected/pressed state, progress, status or decoration, and **never on the same view as `--status-expiry` `#fb923c`** (colour-blind confusion); `--status-expiry` does not appear on `/jobs/[id]`. Pinned by `test/brand-tokens.test.mjs` (declaration, one job, contrast ≥ 7:1, expiry guard). Jon, 2026-11-17 16:55 PT. [BB2.3-A1], [#288]
+- Selected/pressed states are neutral everywhere (#222 fill, 2 px #fff edge), including the mixer's M/S; lime fills only Play [BB2.3-A3]. Section chips are 22 px pills (Jon 19:05 PT) [BB2.3-A2].
+
+**One display formatter.** **`lib/play/notation.ts`** formats **chords and keys**: guitarist notation (`C`, `Am7`, `G7`, `C/E`); ♭/♯ glyphs on screen and "flat"/"sharp" in aria-labels; flats where conventional (B♭ major, not A♯ major). Stored data is unchanged (Harte labels). [BB2.3-A4], [#288]
+- **Partly met:** the stage, the Mix header and the key use it. The **"See all chords" chart and the chord editor still show Harte labels** (`C:maj`, `A:min7`) because switching them breaks the #212 geometry gates; that is the chart-notation PR (§11). The chart is in its own sheet, so the two notations never share a screen. [#288]
+- Accepted residue (S4, WCAG 2.5.3): chord buttons are named in words ("A minor 7 — edit") while the visible text is "Am7". [#288]
+
+**Not in Slice 1a** (deferred in #288): desktop seek-line drag handles (custom range), the strip-edge "+2 →" badge, the iOS silent-switch hint, "Add to playlist" (Slice 3), artist/uploader in the subtitle (no column until P5). Browser journeys j1/j7/j8 were updated but not run (advisory job).
+
+### 12.13 The pricing page as shipped (P6, #287) (NEW in v2.0)
+
+No price or plan change (DB-15 (a), Jon 2026-11-17 [DP]); this is presentation only. [#287]
+
+| Item | As shipped |
+|---|---|
+| **Indexable** | `robots: { index: false, follow: false }` removed. `/pricing` is in the page registry (`lib/seo/pages.ts`), so it is in `sitemap.xml` and `llms.txt`; metadata via `app/pricing/layout.tsx`. Pinned by `test/pricing-indexable.test.mjs` |
+| **In the nav** | "Pricing" → `/pricing` in the top nav on every page, signed in and signed out (`SignedInNav.tsx`), `aria-current` on `/pricing` |
+| **CAD everywhere** | Every price ends in " CAD", **including Free ("$0 CAD")**; plans and packs share one formatter |
+| **Retention wording** | Once per card, word for word from **`RETENTION_BULLET`** (`apps/web/src/lib/pricing-copy.ts`): Free *"Songs deleted after 24 hours"*; Pro and Studio *"Song library: kept while you subscribe, plus 30 days"* |
+| Cards | Mobile-first (one column on phones, three from 900 px); each opens with `benefitLine()` from `monthly_job_quota` ("50 songs a month"); Pro highlighted with no "Recommended"/"Most popular" text; no annual price (none exists in any migration); no "Coming soon" block |
+| Lime | Signed out: one lime action (Get Pro). **Signed in: the three "Buy credits" buttons are still lime**, hard-coded in `BillingButton.tsx`, which #287 could not edit — the **[billing] quiet credit buttons** PR (§11) [BB2.3-A3] |
+
+### 12.14 Deploy facts (NEW in v2.0 — verified 2026-11-17)
+
+| What | How it reaches production | Evidence |
+|---|---|---|
+| **Web app** (`apps/web`) | **Auto-deploys on merge to `v3/main`.** Observed (from the Deployments API, not read from Vercel project settings): Vercel's Git integration on `stem-loops-web` treats `v3/main` as its production branch; `vercel[bot]` creates a "Production – stem-loops-web" deployment for each merge commit | [GH] Deployments API: `f29bf17` → environment *"Production – stem-loops-web"*, creator `vercel[bot]`, 2026-11-18T03:30:47Z (one minute after #288 merged); [#289] |
+| **Migrations** | **Manual.** Nothing applies them on merge — `ci.yml` migrates only its own throwaway containers. Supabase SQL editor (then `INSERT INTO public._migrations(filename) …`) or `make migrate` with the prod `DATABASE_URL`. **Never** the Supabase connector's `apply_migration`, which writes to the wrong ledger. A migration a web change depends on must be applied **before** the merge, because the merge deploys the web | [#289], migration 040 header |
+| **Worker** (`apps/worker`, Fly) | **Manual.** GitHub Actions → **Deploy** (`deploy.yml`, `workflow_dispatch` only) → target **`worker`**, ref `v3/main`. `fly.toml` has no `release_command` | [GH] Deploy run **44236315618** at `f29bf17`, created 2026-11-18T04:17:39Z: "Deploy Worker to Fly.io" success, "Deploy Web to Vercel" skipped; [#289] |
+
+- `deploy.yml` also offers `web` and `all` targets (`vercel deploy --prod`). They still exist; the normal web path is the merge.
+- **No line in v1.10 said the web app deploys manually**, so none needed a strike-through. Lines that remain correct alongside this: §12.9's *"a redeploy after the keys land"* (an env edit alone changes nothing, since `NEXT_PUBLIC_*` is build-time inlined — a merge or a manual redeploy both satisfy it), and §8.2's (and §11 O-4's) *"rollback is promote-previous-deployment"*. §12.6's note that *"`fly deploy` builds from the local working tree"* describes a deploy run from Jon's machine; the Deploy workflow builds from the checked-out ref (`flyctl deploy --remote-only`).
 
 ---
 
@@ -829,10 +1008,14 @@ This gate is a direct Phase 1a entry prerequisite (per adversarial review and SL
 
 ### 2.2 Anonymous → authenticated stitching (V3-U3)
 - Today's jobs are anonymous (keyed on `client_ip_hash`). V3 keeps anonymous access on `free` (3 jobs/mo per `client_ip_hash` OR per `user_id`, whichever is lower).
+  > ⟲ **v2.0.1:** superseded by §12.9 v2.0 — your own songs need sign-in (Jon, 2026-11-10); only the three demo songs play signed out (DB-12(a), not yet built — Slice 2).
 - On sign-up, a client-side `claim_jobs` call (`POST /api/users/me/claim-jobs`) attaches any jobs from the current `client_ip_hash` (last 24 h) to the new `user_id`. Audit row in `job_events` kind `job_claimed`.
 - History (`/history`) becomes user-scoped post-signup; anonymous history continues via the existing cookie.
+  > ⟲ **v2.0.1:** superseded by §12.9 v2.0 — your own songs need sign-in (Jon, 2026-11-10); only the three demo songs play signed out (DB-12(a), not yet built — Slice 2).
 
 ### 2.3 DDL stubs — migration `013_v3_commercial.sql`
+
+> ⟲ **v2.0 (2026-11-17):** later migrations this delta names, all in `apps/worker/migrations/` with a `down/` twin: **034** `034_v3_pricing_model_truth.sql` (plan values, §1.2b), **039** `039_v3_paid_plans_youtube_links.sql` (§1.2a reversal), **040** `040_v3_jobs_is_demo.sql` (`jobs.is_demo`, §12.11). No migration is applied to production by a merge — see §12.14.
 
 Follows the §A1/A2/A3 template of `10-db-rls-and-roles.sql`. All 5 tables get `ENABLE ROW LEVEL SECURITY` + `stemloops_app_all` policy in the SAME migration, plus a `cowork_ro_read` policy under the A3 DO block, per the Phase 0 lesson (SL-B26, `09-open-items.md`). An `013_v3_commercial_down.sql` is required.
 
@@ -1275,7 +1458,7 @@ Three surfaces, read in this priority order (first non-null wins), cached 30 s:
 |---|---|---|
 | ~~**O-1**~~ | ~~Can a 3-free stem-download allowance be enforced on an anonymous launch path?~~ **DECIDED by Jon 2026-11-10: require sign-up.** See the new **§12.9** — this pulls the authed path into launch scope | ✅ **CLOSED** |
 | ~~**O-2**~~ | ~~The residential proxy~~ **DECIDED by Jon 2026-11-10: IPRoyal.** See the new **§12.10** — ~$7/GB, ≈100–170 jobs per GB | ✅ **CLOSED** |
-| **O-3** | **What happens to chords on 2026-12-05** — keep the Klangio subscription, implement `autochord`, or resource ChordNet training | Chords stop that day. See §12.8 |
+| **O-3** | **What happens to chords on 2026-12-05** — keep the Klangio subscription, implement `autochord`, or resource ChordNet training | Chords stop that day. See §12.8. ⟲ v2.0: still OPEN (= DB-17). Jon 2026-11-17: *"LETS WAIT AND SEE"*; cliff 2026-12-05; options in §12.8 |
 | **O-4** | **§8.2 needs rewriting against reality.** `ENABLE_V3_PLAY` does not exist in code (0 hits), and §8.2 describes it as the rollback master switch. Rollback is actually promote-previous-deployment | A rollback contract naming a switch that was never built is worse than none |
 | **O-5** | **§12.3's sync tolerance is unspecified** — no number, no test id, no clock source (§3.1's `startFrame` vs `AudioContext.currentTime`) | V3-J3 is stated but not yet actionable |
 | **O-6** | **COOP/COEP for `SharedArrayBuffer`.** §3.1's engine requires it; this document has zero mentions of COOP, COEP or `crossOriginIsolated`, and cross-origin isolation interacts with R2 signed URLs, hCaptcha, Stripe and Sentry embeds | Could block the engine late. Raised by the M-9 review |
@@ -1284,6 +1467,25 @@ Three surfaces, read in this priority order (first non-null wins), cached 30 s:
 | **O-8 ✅** | **CLOSED 2026-11-16 — REVERSED by Jon.** Pro and Studio get YouTube link import (migration 039; data-driven gate in `entitlements.ts`); paid link jobs metered like uploads and kept in the library; credits stay upload-only. Reason: a library of linked songs on paid plans. See v1.9 → v1.10 | Resolved |
 | **O-9** | **Re-price review trigger: at 10 users OR 100 song sessions** (Jon, 2026-11-11: *"lets review this once we have 10 users OR 100 song sessions to get real cost per song from"*). Baseline 2026-11-11: **1 user, 5 jobs (4 done)**. SQL to check is in the PR body and in `claude/pricing-review-trigger-2026-11-11.md` | The approved margins rest on a **4-job, Replicate-only** cost sample |
 
+
+### Open after 2026-11-17 (v2.0)
+
+Shipped on 2026-11-17: #287 (pricing), #289 (Slice 0 `is_demo`), #288 (Slice 1a player) — §12.11–§12.13. What is still open, from [DP] *"In progress"* and its delivery plan, and [BB]:
+
+| Item | What it is | Source |
+|---|---|---|
+| **DB-17** | Chords after 2026-12-05 — **open, "wait and see"**. See §12.8 and O-3 above | [DP] |
+| **Slice 1b** | Copy, titles, sign-up fixes (in progress). The design's Slice 1 also lists P7 copy true-today, P5 thumbnails from `video_id` and titles for new songs, and §8 analytics | [DP] |
+| **Slice 2** (next) | **Demo routes** (`is_demo` read branch in `mayReadJob` and the page gate; explicit `is_demo` denial on download and loop cutting — which also closes the §12.11 Dashboard-deletion residue; static demo assets); **the new home page** with the live demo (P4); **the claim-on-sign-in redesign** (P3.2); **"Job history" renamed "Library"**; P2 runs are already in (§12.12) | [DP] §1, [#289] |
+| **Slice 3** | **Playlists** — Pro-only per DB-15 (a); P2 section rename; non-adjacent loops only if users ask (DB-14) | [DP] |
+| **Chart-notation PR** | The "See all chords" chart and the chord editor onto `lib/play/notation.ts` (P1.5 is partly met until then; §12.12). In progress, Jon approved 2026-11-17 21:39 PT | [DP], [BB2.3-A4] |
+| **[billing] quiet credit buttons** | Signed-in `/pricing` still shows three lime "Buy credits" buttons, hard-coded in `BillingButton.tsx` (§12.13). In progress, Jon approved 2026-11-17 21:39 PT | [BB2.3-A3] |
+| ~~**Staging catch-up**~~ ✅ | **DONE 2026-11-18.** Staging `_migrations` has 38 rows (001–040 minus the non-existent 010 and 036); 009, 011, 012 and 013–040 applied 2026-11-18; 004 recorded as pre-applied after verification; `jobs.is_demo` present; plans match prod; 0 jobs, 0 users (§12.11). Verified read-only by the orchestrator 05:08Z | Jon 2026-11-17 21:39 PT, *"a now"* / *"do it yourself"*; LEDGER-17 |
+| **Migration re-run safety** | Migrations **004** (bare `ADD CONSTRAINT jobs_input_source_chk`) and **026** (9 unguarded `ADD CONSTRAINT`s) are **not re-run-safe**, despite the migrations README's claim that every migration is idempotent; a fix PR is planned | staging catch-up 2026-11-17/18 |
+| **Demo static export** | [DP] Slice 0 step (2): export the three demos' stems, chords and sections to the static demo host. **Not done** (§12.11) | [DP] §1 |
+| **Key-detection bug** | Diagnose why prod `musical_key` diverges from the same detector run locally (3/3 demos wrong, §12.11). Affects every user's song. Investigation PR in progress; the three demo rows were already corrected by a Jon-approved named write (2026-11-17 21:56 PT) | §12.11; LEDGER-17 |
+
+#289's operator steps are done (v2.0.1): the demos were processed and flagged on 2026-11-18 04:47Z, and the R2 bucket has no lifecycle rules (§12.11). Still outstanding: the demo static export and the key-detection bug (rows above).
 
 Items 1–6 below are the only remaining open items for Jon after the 2026-11-02T22:45 lock-in pass. Everything else in v1.0 that was open has been decided (processor, auth, pricing model, DMCA deferral, Variant Y promotion, Spotify ISRC chain). Numbered for clean reference:
 

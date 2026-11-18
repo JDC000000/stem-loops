@@ -417,6 +417,19 @@ test('A5: lime is ONE primary fill per player view: the Play button', () => {
   ]);
 });
 
+test('A5: lime is ONE primary fill on /pricing, signed in or out: Get Pro', async () => {
+  // Rendered with the real BillingButton.tsx (helpers/render-pricing-page.mjs): the plan and
+  // credit-pack buttons paint their fill inline, so the CSS scans above cannot see it.
+  const { renderPricingPage, limeFills } = await import('./helpers/render-pricing-page.mjs');
+  const plan = (code, name, cents) => ({ code, display_name: name, price_cad_cents: cents, monthly_job_quota: 5, services: ['youtube'], export_stems: false, export_wav24: false });
+  const plans = [plan('free', 'Free', 0), plan('pro', 'Pro', 499), plan('studio', 'Studio', 1200)];
+  const packs = [20, 60, 180].map((n) => ({ pack_code: `credits_${n}`, credits: n, price_cad_cents: n * 25 }));
+  const signedOut = await renderPricingPage({ user: null, plans, packs });
+  assert.deepEqual(limeFills(signedOut), ['a Get Pro'], 'signed out');
+  const signedIn = await renderPricingPage({ user: { user_id: '22222222-2222-2222-2222-222222222222', email: 'u@x.co' }, plans, packs });
+  assert.deepEqual(limeFills(signedIn), ['button Get Pro'], 'signed in');
+});
+
 test('A16 (amended, approved by Jon 2026-11-17): section chips are 22px pills, and the token file says so', () => {
   const raw = read(TOKENS_REL);
   assert.match(raw, /Brand book A16, AMENDED \(approved by Jon 2026-11-17\)/);

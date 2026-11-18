@@ -54,8 +54,11 @@ export async function playerArt() {
   const demo = put('demo-data.mjs', toJs(read('src/components/landing/demo-data.ts'))
     .replace(/from ['"]@\/lib\/public-config['"]/g, `from '${config}'`));
 
+  // The DB-17 chords switch (review round 2, SF-3): the REAL module, so the drawing follows it.
+  const chords = put('chords-claim.mjs', toJs(read('src/lib/chords-claim.ts')));
   const js = toJs(read('src/components/landing/PlayerArt.tsx'), true)
-    .replace(/from ['"]\.\/demo-data['"]/g, `from '${demo}'`);
+    .replace(/from ['"]\.\/demo-data['"]/g, `from '${demo}'`)
+    .replace(/from ['"]@\/lib\/chords-claim['"]/g, `from '${chords}'`);
   const file = join(dir, 'PlayerArt.mjs');
   writeFileSync(file, js);
 

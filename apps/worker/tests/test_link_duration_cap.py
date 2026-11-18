@@ -45,6 +45,11 @@ URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 JOB = "00000000-0000-4000-8000-0000000d0001"
 
 
+def _meta(duration: float | None, title: str | None = None) -> ytdlp_client.LinkMetadata:
+    """What gate 0c's metadata call returns (P5.1: duration AND title, one request)."""
+    return ytdlp_client.LinkMetadata(duration_sec=duration, title=title)
+
+
 def _wav(path: Path, secs: float, sr: int = 8000) -> Path:
     """A real WAV of exactly ``secs`` seconds. The length is set HERE, by frame count."""
     with wave.open(str(path), "wb") as w:
@@ -242,19 +247,19 @@ def test_gate_0c_no_longer_refuses_a_long_video(
     chain, monkeypatch: pytest.MonkeyPatch, declared: float
 ):
     """The new requirement at the gate: a long link is FETCHED (then trimmed), not refused."""
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: declared)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_metadata", lambda _u: _meta(declared))
     assert downloader.download_audio(URL, JOB, 300.0) == ("/tmp/a.wav", "ytdlp")
     assert chain == ["ytdlp"]
 
 
 def test_gate_0c_lets_a_short_video_through(chain, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: 120.0)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_metadata", lambda _u: _meta(120.0))
     assert downloader.download_audio(URL, JOB, 300.0) == ("/tmp/a.wav", "ytdlp")
     assert chain == ["ytdlp"]
 
 
 def test_gate_0c_proceeds_on_an_unreadable_length(chain, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: None)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_metadata", lambda _u: _meta(None))
     assert downloader.download_audio(URL, JOB, 300.0) == ("/tmp/a.wav", "ytdlp")
     assert chain == ["ytdlp"]
 
@@ -274,7 +279,7 @@ def _ytdlp_always_blocked(chain, monkeypatch: pytest.MonkeyPatch):
 def test_cobalt_is_not_tried_when_the_length_is_unknown(chain, monkeypatch: pytest.MonkeyPatch):
     """Cobalt returns a URL and no bytes: with no reading it could hand Replicate any length."""
     _ytdlp_always_blocked(chain, monkeypatch)
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: None)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_metadata", lambda _u: _meta(None))
     with pytest.raises(DownloadBlockedError):
         downloader.download_audio(URL, JOB, 300.0)
     assert chain == ["ytdlp", "ytdlp"]
@@ -289,7 +294,7 @@ def test_cobalt_cannot_bypass_the_trim_for_a_long_video(
     URL nothing downstream can trim -- must be skipped explicitly, or a 10-minute video goes
     straight to Replicate whenever yt-dlp is blocked."""
     _ytdlp_always_blocked(chain, monkeypatch)
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: declared)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_metadata", lambda _u: _meta(declared))
     with pytest.raises(DownloadBlockedError):
         downloader.download_audio(URL, JOB, 300.0)
     assert chain == ["ytdlp", "ytdlp"]
@@ -302,7 +307,7 @@ def test_cobalt_is_tried_when_the_length_was_read_and_is_within_the_cap(
     chain, monkeypatch: pytest.MonkeyPatch, declared: float
 ):
     _ytdlp_always_blocked(chain, monkeypatch)
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: declared)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_metadata", lambda _u: _meta(declared))
     assert downloader.download_audio(URL, JOB, 300.0) == ("https://tunnel", "cobalt")
     assert chain == ["ytdlp", "ytdlp", "cobalt"]
 
@@ -318,7 +323,7 @@ def test_cobalt_is_still_tried_for_a_caller_that_passes_no_cap(
 def test_no_cap_passed_means_no_probe_at_all(chain, monkeypatch: pytest.MonkeyPatch):
     """Read with the next test: the capless path is well-behaved, AND production never takes it."""
     probed = MagicMock(side_effect=AssertionError("must not probe without a cap"))
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", probed)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_metadata", probed)
     assert downloader.download_audio(URL, JOB) == ("/tmp/a.wav", "ytdlp")
     probed.assert_not_called()
 
@@ -361,7 +366,7 @@ def test_the_pipeline_arms_gate_0c_with_the_cap_in_force(
     monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "137")  # not 300: a number only this test sets
     seen: dict = {}
 
-    def fake_download(_url, _job, cap=None):
+    def fake_download(_url, _job, cap=None, meta=None):
         seen["cap"] = cap
         return str(_wav(tmp_path / "one_second.wav", 1.0)), "ytdlp"
 
@@ -384,7 +389,7 @@ def test_over_length_link_is_trimmed_and_reaches_replicate_with_at_most_n_second
     monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
     long_src = str(_wav(tmp_path / "ten_minutes_in_spirit.wav", 5.0))
 
-    def fake_download(_url, _job, cap=None):
+    def fake_download(_url, _job, cap=None, meta=None):
         return long_src, "ytdlp"
 
     events: list = []
@@ -416,7 +421,7 @@ def test_pipeline_cobalt_arm_hands_the_url_on_only_after_a_length_was_verified(
     monkeypatch.setattr(downloader.fetch_gates, "log_attempt", lambda **kw: None)
     monkeypatch.setattr(downloader.fetch_gates, "ytdlp_version", lambda: "test")
     monkeypatch.setattr(downloader, "YTDLP_RETRY_DELAY_S", 0.0)
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: 120.0)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_metadata", lambda _u: _meta(120.0))
 
     def blocked(_u):
         calls.append("ytdlp_fetch")
@@ -471,7 +476,7 @@ def test_pipeline_long_video_with_yt_dlp_blocked_never_reaches_replicate_via_cob
     monkeypatch.setattr(downloader.fetch_gates, "log_attempt", lambda **kw: None)
     monkeypatch.setattr(downloader.fetch_gates, "ytdlp_version", lambda: "test")
     monkeypatch.setattr(downloader, "YTDLP_RETRY_DELAY_S", 0.0)
-    monkeypatch.setattr(downloader.ytdlp_client, "probe_duration_sec", lambda _u: 612.0)
+    monkeypatch.setattr(downloader.ytdlp_client, "probe_metadata", lambda _u: _meta(612.0))
 
     def blocked(_u):
         calls.append("ytdlp_fetch")
@@ -518,7 +523,7 @@ def test_pipeline_long_video_with_yt_dlp_blocked_never_reaches_replicate_via_cob
         ("612.0\n", 1, None),  # a failed probe is unknown, not short
     ],
 )
-def test_probe_duration_sec_reads_yt_dlp_output(
+def test_probe_metadata_reads_the_duration(
     monkeypatch: pytest.MonkeyPatch, stdout: str, rc: int, expected: float | None
 ):
     monkeypatch.setattr(ytdlp_client, "PROXY_URL", "")
@@ -527,10 +532,10 @@ def test_probe_duration_sec_reads_yt_dlp_output(
         "run",
         lambda cmd, **kw: subprocess.CompletedProcess(cmd, rc, stdout, ""),
     )
-    assert ytdlp_client.probe_duration_sec(URL) == expected
+    assert ytdlp_client.probe_metadata(URL).duration_sec == expected
 
 
-def test_probe_duration_sec_downloads_nothing_and_is_bounded(monkeypatch: pytest.MonkeyPatch):
+def test_probe_metadata_downloads_nothing_and_is_bounded(monkeypatch: pytest.MonkeyPatch):
     seen: dict = {}
 
     def spy(cmd, **kw):
@@ -540,7 +545,7 @@ def test_probe_duration_sec_downloads_nothing_and_is_bounded(monkeypatch: pytest
 
     monkeypatch.setattr(ytdlp_client, "PROXY_URL", "")
     monkeypatch.setattr(ytdlp_client.subprocess, "run", spy)
-    ytdlp_client.probe_duration_sec(URL)
+    ytdlp_client.probe_metadata(URL)
     assert "--simulate" in seen["cmd"]  # metadata only: no media request, no bytes
     assert seen["kw"]["timeout"] == 15  # cannot hang the worker thread
 
@@ -551,7 +556,7 @@ def test_probe_timeout_is_unknown_not_short(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(ytdlp_client, "PROXY_URL", "")
     monkeypatch.setattr(ytdlp_client.subprocess, "run", boom)
-    assert ytdlp_client.probe_duration_sec(URL) is None
+    assert ytdlp_client.probe_metadata(URL) == ytdlp_client.UNKNOWN
 
 
 # --------------------- the retired codes stay defined (old rows, copy map) ---------------------

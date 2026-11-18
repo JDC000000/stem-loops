@@ -43,6 +43,7 @@ from . import tmpdirs
 from .chord_source import ChordQuotaExceeded, ChordSubmitUncertain
 from .classifier.energy_classifier import classify_energy
 from .classifier.section_labeler import label_sections
+from .cleanup import PURGED_MARKER, RETAINED_UNTIL_SQL
 from .downloader import download_audio
 from .dsp.seamless import apply as seamless_apply
 from .encoder.wav_encoder import encode_24bit, waveform_peaks
@@ -70,6 +71,7 @@ from .storage.r2_uploader import (
     upload_stem,
 )
 from .tagger.bpm_key import detect_bpm_and_key
+from .titles import upload_title
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 # Retry-on-deadline attempts for a slow-but-fine separation (QA P1). Each attempt
@@ -90,6 +92,33 @@ def _fetch_job(job_id: str):
             "original_filename FROM jobs WHERE id=%s",
             (job_id,),
         ).fetchone()
+
+
+# Never write a title onto a row the cleanup has blanked or is about to (review round 2, N-1):
+# not an anonymised shell (client_ip_hash = PURGED_MARKER, set by cleanup._anonymise_job) and
+# not past retention by the SAME rule the sweep deletes by (cleanup.RETAINED_UNTIL_SQL --
+# which also covers account deletion, which sets expires_at = created_at). A reaper re-run of
+# a job that outlived its retention therefore cannot bring a purged title back.
+_RECORD_TITLE_SQL = (
+    "UPDATE jobs SET title=%s WHERE id=%s AND title IS NULL "
+    "AND client_ip_hash IS DISTINCT FROM %s "
+    f"AND {RETAINED_UNTIL_SQL} > now()"
+)
+
+
+def _record_title(job_id: str, title: str | None) -> None:
+    """Write ``jobs.title`` for a NEW song (design v1.4, P5.1). ``title`` is already cleaned
+    (``titles.clean_title``). Never overwrites: a reaper re-run of the same job, or a title
+    some other flow set, is left alone. Never fails the job either -- a song without a title
+    still plays, and the library falls back to the file name or the link (lib/job-label.ts).
+    """
+    if not title:
+        return
+    try:
+        with _db() as c:
+            c.execute(_RECORD_TITLE_SQL, (title, job_id, PURGED_MARKER))
+    except Exception as exc:  # noqa: BLE001 - a title is cosmetic; the song must not fail on it
+        log_structured("WARN", "title_write_failed", job_id=job_id, error=type(exc).__name__)
 
 
 def _title_slug(original_filename: str | None, job_id: str) -> str:
@@ -1462,6 +1491,7 @@ async def _run_pipeline(job_id: str) -> None:
         await set_status(job_id, "downloading")
         await emit_event(job_id, "downloading", "started", pct=0)
         trim: dict | None = None
+        title: str | None = None
         override_url = os.environ.get("STEMLOOPS_AUDIO_URL")
         override_file = os.environ.get("STEMLOOPS_AUDIO_FILE")
         if override_url:
@@ -1480,6 +1510,7 @@ async def _run_pipeline(job_id: str) -> None:
             # and hand Replicate a presigned URL. No YouTube dependency.
             audio_src, trim = await asyncio.to_thread(_prepare_upload_source, job_id, upload_r2_key)
             _source = "upload"
+            title = upload_title(original_filename)
             log_structured("INFO", "audio_source_upload", job_id=job_id)
         else:
             # YouTube-link path (T12/C4) — DEFERRED post-launch (off-datacenter egress).
@@ -1488,9 +1519,11 @@ async def _run_pipeline(job_id: str) -> None:
             # path (STUB_MODE is not set in prod env). Defense-in-depth behind route.ts.
             if os.environ.get("ALLOW_YOUTUBE_INPUT", "").lower() != "true":
                 raise DownloadBlockedError("YouTube ingestion is disabled pre-launch")
+            link_meta: dict = {}
             dl_result, _source = await asyncio.to_thread(
-                download_audio, url, job_id, _max_upload_duration_sec()
+                download_audio, url, job_id, _max_upload_duration_sec(), meta=link_meta
             )
+            title = link_meta.get("title")
             # R2 fix (found in staging E2E test — T12 was never actually run before):
             # Cobalt's success path returns an already-public stream URL (Replicate can
             # fetch it directly), but yt-dlp's success path returns a LOCAL file path
@@ -1514,6 +1547,8 @@ async def _run_pipeline(job_id: str) -> None:
                 # trim). If a future change lets one through, this line is the only trace.
                 log_structured("WARN", "link_duration_unenforced_source", job_id=job_id)
                 audio_src = dl_result
+        # P5.1: name the song now, so the library and the job page show it while it processes.
+        await asyncio.to_thread(_record_title, job_id, title)
         # `trim` is None for an untouched track (detail stays NULL, as before), else
         # {"trimmed": True, "source_sec": X, "used_sec": N}; GET /api/jobs/:id reads it.
         await emit_event(job_id, "downloading", "completed", pct=100, detail=trim)

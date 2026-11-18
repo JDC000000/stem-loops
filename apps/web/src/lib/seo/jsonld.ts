@@ -1,6 +1,7 @@
 // SEO-05. Never add aggregateRating or review: there are none, and the landing bans social proof.
 import { ENTITY_ONE_LINER, MAX_TRACK_MIN, OG_IMAGE, SAME_AS, SITE_URL } from './site.ts';
 import { pageFor } from './pages.ts';
+import { CHORDS_LINE_SHOWN } from '../chords-claim.ts';
 
 const ORG = `${SITE_URL}/#org`;
 const APP = `${SITE_URL}/#app`;
@@ -25,7 +26,7 @@ export function homeGraph() {
     featureList: [
       'Six stems: drums, bass, guitar, keys, vocals and other',
       'A fader, mute and solo on every stem',
-      'A chord track estimated from the audio',
+      ...(CHORDS_LINE_SHOWN ? ['A chord track estimated from the audio'] : []), // DB-17
       'Looping of a detected section',
       'Bar-length loops from each stem as 24-bit WAV files',
       `Uses the first ${MAX_TRACK_MIN} minutes of any song`,

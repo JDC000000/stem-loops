@@ -226,6 +226,22 @@ test('default demo origin is permitted in connect-src and media-src (what the de
   assert.ok(img.includes('https:') || img.includes(origin), 'img-src must cover the demo origin');
 });
 
+// ── Song thumbnails (P5.1, Slice 1b) ───────────────────────────────────────
+// The library shows each linked song's thumbnail from i.ytimg.com (lib/song-thumb.ts). The
+// origin is read from that module so the two cannot drift. A CSP source list admits it via
+// the bare `https:` scheme, the exact origin, or a `*.ytimg.com` wildcard; anything narrower
+// blanks every thumbnail without an error a user would see.
+const thumbOrigin = readFileSync(join(WEB, 'src/lib/song-thumb.ts'), 'utf8').match(/YT_THUMB_ORIGIN = '([^']+)'/)?.[1];
+
+test('img-src admits the song-thumbnail origin (i.ytimg.com)', async () => {
+  assert.equal(thumbOrigin, 'https://i.ytimg.com', 'YT_THUMB_ORIGIN not found in song-thumb.ts');
+  const img = directive((await loadMiddleware()).buildCsp(), 'img-src');
+  const admits = img.includes('https:') || img.includes(thumbOrigin) || img.includes('https://*.ytimg.com');
+  assert.ok(admits, `img-src must allow ${thumbOrigin}; got ${img.join(' ')}`);
+  // ...and it is img-src that does it: the thumbnail is never fetched, so connect-src stays as it was.
+  assert.ok(!directive((await loadMiddleware()).buildCsp(), 'connect-src').includes('ytimg'), 'no connect-src entry for thumbnails');
+});
+
 test('NEXT_PUBLIC_DEMO_ASSET_BASE overrides the demo origin; blank turns it off', async () => {
   process.env.NEXT_PUBLIC_DEMO_ASSET_BASE = 'https://demo-assets.example.org/some/path/';
   let csp = (await loadMiddleware()).buildCsp();

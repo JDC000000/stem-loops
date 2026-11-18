@@ -144,28 +144,26 @@ const MAX_TRACK_SEC = Number(
 );
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
-/**
- * Pull one <dd> out of the scope sheet by its <dt>, from the RENDERED page — so what the gate
- * reads is the row the reader gets, with the JSX `{' '}` artifacts and the entities already
- * resolved.
- *
- * These stay PREFIX assertions on purpose (`^Required\.`). Everything after the prefix is
- * policed by the ban lists, which is sound now that they read the rendered page: appending
- * "In practice no account is needed yet — you can start a job straight away." to this row
- * passed the prefix AND evaded a raw ban list, suite unchanged (2026-11-11).
- */
-const specRow = (dt) => {
-  const m = RENDER.html.match(new RegExp(`<dt>${dt}</dt>\\s*<dd>([\\s\\S]*?)</dd>`));
-  assert.ok(m, `the rendered scope sheet has no "${dt}" row`);
-  return m[1].replace(/<[^>]*>/g, ' ').replace(/[\s\u00a0]+/g, ' ').trim();
-};
-
 const flatten = (s) => s.replace(/<[^>]*>/g, ' ').replace(/[\s\u00a0]+/g, ' ').trim();
+
+/**
+ * Slice 1b (design v1.4, P7): the 8-row scope sheet became the "What you get" list. Pull one
+ * line out of it by its data-line key, from the RENDERED page, so what the gate reads is the
+ * line the reader gets (the old specRow helper read the scope sheet's <dd> the same way). Whole-line equality is safe here: the line is read from
+ * RENDERED output (no comment stripping involved), so the precondition note above the
+ * decomment() stack does not apply.
+ */
+const wygLine = (key) => {
+  const m = RENDER.html.match(new RegExp(`<li data-line="${key}">([\\s\\S]*?)</li>`));
+  assert.ok(m, `the rendered "What you get" list has no "${key}" line`);
+  return flatten(m[1]);
+};
+const WYG_HTML = () => RENDER.html.match(/<ul class="wyg"[^>]*>[\s\S]*?<\/ul>/)?.[0] ?? '';
 const rxEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
  * The hero's `.audience` line and one FAQ answer, both from the RENDERED page \u2014 the same
- * reasoning as specRow.
+ * reasoning as wygLine.
  *
  * These exist because the first version of this gate asserted ONLY the scope row, and the
  * two sentences the account-copy change actually rewrote had no positive assertion at all.
@@ -289,10 +287,12 @@ test('the landing never claims an account is required to START — nothing enfor
   // page. See audienceLine/faqAnswer above for why the hero and the FAQ are asserted now.
   assert.match(audienceLine(), /Starting a job needs no account/);
   assert.match(faqAnswer('Do I need an account?'), /^Not to start one\./);
-  assert.match(specRow('Account'), /^Needed to play, not to start\./);
-  // …and the row must still carry the half that IS true. `on the sign-in page` rather than a
+  // Slice 1b: the spec sheet's Account row became one "What you get" line. Demos are not
+  // signed-out playable yet (Slice 2), so the line says an account is needed to PLAY.
+  assert.equal(wygLine('account'), 'Free account needed to play.');
+  // …and the FAQ still carries the half that IS true. `on the sign-in page` rather than a
   // bare /sign in/i, which "no sign in needed" satisfies by containing the words.
-  assert.match(specRow('Account'), /on the sign-in page/i);
+  assert.match(faqAnswer('Do I need an account?'), /on the sign-in page/i);
 
   const check = (where, text) => {
     for (const c of CLAUSES(text)) {
@@ -355,12 +355,12 @@ test('the landing states the device scope truthfully: tested on desktop Chrome, 
   // Jon 2026-11-15: the product must work on phones, so "phones are not supported" is now false.
   // Positive first: the row has to SAY the scope, including what is NOT yet known. The ban list
   // still stops over-claiming (no "works great on any phone", no "every browser").
-  const row = specRow('Where it runs');
-  assert.match(row, /^Chrome on a computer, which is what it is built and tested on\./);
-  assert.match(row, /Phones get lighter audio/);
-  assert.match(row, /Phone support is new/);
-  assert.match(row, /other browsers are not tested yet/);
+  // Slice 1b (P7): the scope sheet row became one "What you get" line, pinned whole.
+  const row = wygLine('device');
+  assert.equal(row, 'Best in Chrome on a computer. Phones work too, with lighter audio; phone support is new.');
   assert.doesNotMatch(row, /not supported/);
+  // The untested-browser caveat lives in the FAQ on /help now; the home page no longer
+  // carries a "Which browsers work?" answer.
   const banned = [/works (?:great |fine |perfectly )?on (?:any|every|all) (?:phone|mobile|device)/i, /\bany browser\b/i, /\bevery browser\b/i,
     /mobile.friendly/i, /runs? (?:fine |well |great )on (?:a )?(?:tablet|handset|phone|mobile)/i, /phones are not supported/i,
     /desktop only/i, /needs a desktop/i];
@@ -369,28 +369,18 @@ test('the landing states the device scope truthfully: tested on desktop Chrome, 
 });
 
 test('the landing says tempo and pitch are coming, and never implies we have them', () => {
-  // Comment-stripped, NOT raw. Wrapping the three spec-later rows — Tempo, Pitch and capo,
-  // Lyrics — in a JSX comment deletes all three from the rendered page, and reading raw source
-  // left this gate GREEN with every one of them gone (adversarial sweep round 2, 2026-11-11):
-  // tsc --noEmit exit 0, suite unchanged at 925/905/0/20.
-  const page = PAGE;
-  // both gaps are named on the page
-  assert.match(page, /<dt>Tempo<\/dt>/);
-  assert.match(page, /<dt>Pitch and capo<\/dt>/);
-  // and each is answered "Not yet" in its own row, so the gap is stated, not discovered
-  for (const dt of ['Tempo', 'Pitch and capo']) {
-    const row = page.match(new RegExp(`<dt>${dt}</dt>\\s*<dd>([^<]*)`));
-    assert.ok(row, `no <dd> for the ${dt} row`);
-    assert.match(row[1], /^Not yet\./, `the ${dt} row must open with "Not yet." — got ${JSON.stringify(row[1].slice(0, 40))}`);
-  }
+  // Slice 1b (P7): the Tempo / Pitch and capo / Lyrics rows are gone with the scope sheet. The
+  // gap is still STATED, now as one "Coming soon" line, read from the RENDERED page so that a
+  // commented-out or hidden line cannot satisfy it.
+  const soon = RENDER.html.match(/<p class="wyg-soon"[^>]*>([\s\S]*?)<\/p>/);
+  assert.ok(soon, 'the "Coming soon" line is not rendered');
+  assert.equal(flatten(soon[1]), 'Coming soon: slow a song down without changing its pitch.');
+  // …and it is NOT one of the things "What you get" offers.
+  assert.doesNotMatch(flatten(WYG_HTML()), /\bslow\b|\btempo\b|\bpitch\b|\bcapo\b/i);
   // and the marketing copy never offers either as something you can do today
   const banned = [/\byou can slow\b/i, /\bslow it down\b(?![^.]*\bnot\b)/i, /\bhalf speed\b/i, /\btranspose\b/i, /\bchange its key\b(?![^.]*\bnot\b)/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
   for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
-  // lyrics are out of scope (not "coming"), and the page says so in its own row
-  const lyrics = page.match(/<dt>Lyrics<\/dt>\s*<dd>([^<]*)/);
-  assert.ok(lyrics, 'no <dd> for the Lyrics row');
-  assert.match(lyrics[1], /^No\./, `the Lyrics row must open with "No." — got ${JSON.stringify(lyrics[1].slice(0, 40))}`);
 });
 
 test('the landing invents no social proof — production has zero registered users', () => {
@@ -444,9 +434,11 @@ test('the page claims no submit-time length gate — a long song is trimmed, not
     /\bnot supported\b[^.]*\blonger\b/i, /\blonger tracks are not\b/i, /-minute limit/i, /choose a shorter song/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} claims a gate that does not exist (${re})`);
   for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} claims a gate that does not exist (${re})`);
-  assert.match(specRow('Track length'), new RegExp(`^The first ${MAX_TRACK_MIN} minutes of any song\\.`));
-  assert.match(specRow('Track length'), /trimmed on our end/);
-  assert.doesNotMatch(specRow('Track length'), /on our side/i, '"on our side" is on the brand-tone avoid list');
+  // Slice 1b (P7): the Track length row became a "What you get" line; the trim sentence moved
+  // to the pipeline's "Length used" entry, which terms are compared against (legal-terms-copy).
+  assert.equal(wygLine('length'), `First ${MAX_TRACK_MIN} minutes of each song.`);
+  assert.match(RENDER.textSpaced, /A longer song is trimmed on our end/);
+  assert.doesNotMatch(RENDER.textSpaced, /on our side/i, '"on our side" is on the brand-tone avoid list');
 });
 
 test('the form carries the pre-submit trim note slot, empty until a long file is picked', () => {
@@ -624,8 +616,8 @@ test('the landing reads the v3 demo set', () => {
 // The anti-enumeration rule is unaffected: none of this copy depends on the address.
 const tidy = (s) => s.replace(/\s+([.,;:])/g, '$1'); // flatten() leaves "page ." where a link closes
 const ACCOUNT_CLAIM = 'If you are new, you create an account on the sign-in page.';
+// Slice 1b (P7): the spec sheet's Account row is gone; the FAQ answer carries both claims.
 const ONE_TIME_LINK_CLAIMS = {
-  'spec row': 'The one-time link by email only signs you back in to an account that already exists; it does not create one.',
   FAQ: 'A one-time link sent to your email only signs you back in to an account that already exists; it does not create one.',
 };
 const ACCOUNT_COPY_INVERSIONS = [
@@ -637,7 +629,7 @@ const ACCOUNT_COPY_INVERSIONS = [
 ];
 
 test('the landing says a new visitor creates an account, and the one-time link only signs an existing one back in', () => {
-  const blocks = { 'spec row': specRow('Account'), FAQ: faqAnswer('Do I need an account?') };
+  const blocks = { FAQ: faqAnswer('Do I need an account?') };
   for (const [where, raw] of Object.entries(blocks)) {
     const text = tidy(raw);
     assert.doesNotMatch(text, /or a one-time link/i, `${where} still offers the link as an alternative way in`);

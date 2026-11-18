@@ -190,7 +190,7 @@ export default async function PricingPage() {
               {priceCad(c.price_cad_cents)}
             </div>
             {user ? (
-              <PackBuyButton packCode={c.pack_code} label="Buy credits" />
+              <PackBuyButton packCode={c.pack_code} label="Buy credits" variant="quiet" />
             ) : (
               <a href="/login?return_to=/pricing" className="pr-cta pr-cta-quiet">
                 Buy credits

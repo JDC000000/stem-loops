@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import HCaptcha from '@hcaptcha/react-hcaptcha';
+import { secondaryButton } from '@/lib/ui/form-styles';
 
 type Props = {
   label: string;
@@ -55,13 +56,16 @@ export default function BillingButton({ label, endpoint, body, returnTo, primary
   );
 }
 
+// primary = the view's ONE lime fill (brand A5). Anything else is the brand's
+// secondary (form-styles.ts secondaryButton, §7.1): transparent, a 1.5px
+// --border-control edge (4.10:1, WCAG 1.4.11), weight 500. --border-default is
+// decorative only (1.35:1) and must not be a control's edge.
 function buttonStyle(primary: boolean, busy: boolean) {
   return {
     width: '100%', minHeight: 44, padding: '0 16px', borderRadius: 8, cursor: busy ? 'wait' : 'pointer',
-    fontWeight: 600,
-    border: primary ? 'none' : '1px solid var(--border-default, #444)',
-    background: primary ? 'var(--btn-primary-bg, var(--accent))' : 'transparent',
-    color: primary ? 'var(--btn-primary-text, #000)' : 'var(--text-primary)',
+    ...(primary
+      ? { fontWeight: 600, border: 'none', background: 'var(--btn-primary-bg, var(--accent))', color: 'var(--btn-primary-text, #000)' }
+      : secondaryButton),
     opacity: busy ? 0.7 : 1,
   } as const;
 }
@@ -178,7 +182,10 @@ export function CreditPackCheckout({ children, returnTo }: { children: ReactNode
 }
 
 // Per-card button. Must render inside <CreditPackCheckout>.
-export function PackBuyButton({ packCode, label }: { packCode: string; label: string }) {
+// variant: 'primary' (the default, unchanged) is the lime fill; 'quiet' is the
+// brand secondary, for views whose one lime action is something else (/pricing:
+// "Get Pro"). Presentation only — the click path is identical for both.
+export function PackBuyButton({ packCode, label, variant = 'primary' }: { packCode: string; label: string; variant?: 'primary' | 'quiet' }) {
   const ctx = useContext(PackContext);
   const active = ctx?.selected === packCode;
   return (
@@ -187,7 +194,7 @@ export function PackBuyButton({ packCode, label }: { packCode: string; label: st
       onClick={() => ctx?.select(packCode)}
       disabled={!ctx || ctx.busy}
       aria-pressed={active}
-      style={{ ...buttonStyle(true, Boolean(ctx?.busy)), outline: active ? '2px solid var(--text-primary)' : undefined, outlineOffset: 2 }}
+      style={{ ...buttonStyle(variant === 'primary', Boolean(ctx?.busy)), outline: active ? '2px solid var(--text-primary)' : undefined, outlineOffset: 2 }}
     >
       {label}
     </button>

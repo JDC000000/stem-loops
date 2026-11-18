@@ -11,10 +11,15 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readdirSync, statSync } from 'node:fs';
+import { relative } from 'node:path';
 import ts from 'typescript';
+import { renderPricingPage, loadBillingButton, limeFills } from './helpers/render-pricing-page.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PRICING_SRC = join(WEB, 'src/app/pricing/page.tsx');
+const walkDir = (d) => readdirSync(d).flatMap((n) => { const p = join(d, n); return statSync(p).isDirectory() ? walkDir(p) : [p]; });
+const CODE_TSX = walkDir(join(WEB, 'src')).filter((p) => /\.tsx$/.test(p) && !/\.test\./.test(p));
 
 const toJs = (src) =>
   ts.transpileModule(src, {
@@ -74,7 +79,7 @@ async function billingButtonStub() {
       return createElement('button', { 'data-plan': props.body && props.body.plan_code }, props.label);
     }
     export function PackBuyButton(props) {
-      return createElement('button', { 'data-pack': props.packCode }, props.label);
+      return createElement('button', { 'data-pack': props.packCode, 'data-variant': props.variant }, props.label);
     }
     export function CreditPackCheckout(props) {
       return createElement('div', { 'data-pack-checkout': true }, props.children);
@@ -302,11 +307,13 @@ test('P6: Pro is the one highlighted card, with no badge or ranking claim', asyn
   assert.doesNotMatch(textOf(tree), /recommended|most popular|best value|popular/i);
 });
 
-// Brand rule A5: lime fills the view's ONE primary action. Signed out, that is Pro's link; the
-// rest are outlined. Signed in, the plan buttons follow (BillingButton's own `primary` prop),
-// but PackBuyButton is always primary inside BillingButton.tsx, which P6 may not edit — so the
-// signed-in pack buttons stay lime. That residue is named in the PR, and pinned here so a
-// change to it is seen.
+// Brand rule A5: lime fills the view's ONE primary action, and on /pricing that is Get Pro.
+// Signed out, it is Pro's link; the rest are outlined. Signed in, the plan buttons follow
+// BillingButton's own `primary` prop, and the credit-pack buttons ask PackBuyButton for its
+// `variant="quiet"` (the brand secondary). The P6 residue that left the signed-in pack buttons
+// lime (S-2 on #287's review) is closed by the [billing] PR that added that variant. The tests
+// below read the PROPS the page passes; the rendered paint is pinned further down against the
+// real BillingButton.tsx, and in brand-tokens.test.mjs.
 test('P6 (A5): signed out, exactly one lime action on the page — Get Pro', async () => {
   const mod = await loadPricing({ user: null, plans: PLANS_034, packs: PACKS_OK });
   const tree = await mod.default();
@@ -320,6 +327,53 @@ test('P6 (A5): signed in, only Pro\'s plan button is primary', async () => {
   const tree = await mod.default();
   const plan = [...walk(tree)].filter((el) => el && typeof el.type === 'function' && el.props?.body?.plan_code);
   assert.deepEqual(plan.map((el) => [el.props.body.plan_code, el.props.primary]), [['pro', true], ['studio', false]]);
+});
+
+test('A5: signed in, every credit-pack button asks for the quiet variant', async () => {
+  const mod = await loadPricing({ user: USER, plans: PLANS_034, packs: PACKS_OK });
+  const tree = await mod.default();
+  const packs = [...walk(tree)].filter((el) => el && typeof el.type === 'function' && el.props?.packCode);
+  assert.deepEqual(packs.map((el) => [el.props.packCode, el.props.variant]),
+    [['credits_20', 'quiet'], ['credits_60', 'quiet'], ['credits_180', 'quiet']]);
+});
+
+// ---------------------------------------------------------------------------
+// The paint, not the props: the real BillingButton.tsx, server-rendered.
+// ---------------------------------------------------------------------------
+test('A5 (rendered): signed in, /pricing has exactly one lime fill — Get Pro', async () => {
+  const html = await renderPricingPage({ user: USER, plans: PLANS_034, packs: PACKS_OK });
+  assert.deepEqual(limeFills(html), ['button Get Pro']);
+  const buy = [...html.matchAll(/<button[^>]*>Buy credits<\/button>/g)].map((m) => m[0]);
+  assert.equal(buy.length, 3, 'three pack buttons render');
+  for (const b of buy) {
+    assert.match(b, /border:1\.5px solid var\(--border-control\)/, 'quiet = the --border-control edge');
+    assert.match(b, /font-weight:500/, 'quiet = weight 500');
+    assert.match(b, /min-height:44px/, 'quiet keeps the 44px touch target');
+    assert.match(b, /background:transparent/);
+    assert.doesNotMatch(b, /--border-default|--accent|--btn-primary-bg/);
+  }
+  const studio = html.match(/<button[^>]*>Get Studio<\/button>/)[0];
+  assert.match(studio, /border:1\.5px solid var\(--border-control\)/, 'Studio has a control edge, not --border-default');
+  assert.doesNotMatch(studio, /--border-default/);
+});
+
+// PackBuyButton's only caller today is /pricing. Any other caller that omits `variant` must
+// get exactly what every caller got before the variant existed: the lime primary. The
+// expected style string is the pre-change render, copied verbatim.
+test('PackBuyButton: the default (no variant) is unchanged — the lime primary', async () => {
+  const { React, renderToStaticMarkup, CreditPackCheckout, PackBuyButton } = await loadBillingButton();
+  const h = React.createElement;
+  const render = (props) => renderToStaticMarkup(
+    h(CreditPackCheckout, { returnTo: '/x' }, h(PackBuyButton, { packCode: 'credits_20', label: 'Buy', ...props })));
+  const BEFORE = '<button type="button" aria-pressed="false" style="width:100%;min-height:44px;padding:0 16px;'
+    + 'border-radius:8px;cursor:pointer;font-weight:600;border:none;background:var(--btn-primary-bg, var(--accent));'
+    + 'color:var(--btn-primary-text, #000);opacity:1;outline-offset:2px">Buy</button>';
+  assert.equal(render({}), BEFORE);
+  assert.equal(render({ variant: 'primary' }), BEFORE);
+  assert.notEqual(render({ variant: 'quiet' }), BEFORE);
+  // Every caller in src/, so a new one is seen here.
+  const callers = CODE_TSX.filter((f) => /<PackBuyButton\b/.test(readFileSync(f, 'utf8'))).map((f) => relative(WEB, f));
+  assert.deepEqual(callers, ['src/app/pricing/page.tsx']);
 });
 
 test('P6: nothing the catalog cannot back — no annual price, no tempo/pitch, no implementation names', async () => {

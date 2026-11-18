@@ -891,11 +891,30 @@ for (const width of VIEWPORTS) {
           nodeId: doc.root.nodeId,
           selector: '[data-density="full"]',
         });
+        const platformFonts = q.nodeId ? (await cdp.send('CSS.getPlatformFontsForNode', { nodeId: q.nodeId })).fonts : [];
         const font = q.nodeId
-          ? (await cdp.send('CSS.getPlatformFontsForNode', { nodeId: q.nodeId })).fonts
-              .map((f) => `${f.familyName}x${f.glyphCount}`)
-              .join(',')
+          ? platformFonts.map((f) => `${f.familyName}${f.isCustomFont ? '(webfont)' : ''}x${f.glyphCount}`).join(',')
           : 'no full-density chip';
+        // WHO PAINTED WHAT, exactly. Guitarist notation paints U+266D / U+266F,
+        // which the pinned Inter (latin subset) does not have; Chromium paints
+        // those two with the machine's `sans-serif` fallback. So the claim is no
+        // longer "Inter painted the chip" but, glyph for glyph: the pinned
+        // WEBFONT painted every character that is not an accidental, and other
+        // fonts painted exactly the accidentals and nothing else. A defect that
+        // moves any other character off the pinned font (a stylesheet family,
+        // a glyph outside the subset) still fails here.
+        const chipText = q.nodeId
+          ? await page.evaluate(() => document.querySelector('[data-density="full"]')?.textContent ?? '')
+          : '';
+        const accidentals = [...chipText].filter((ch) => ch === '\u266d' || ch === '\u266f').length;
+        const pinnedGlyphs = platformFonts
+          .filter((f) => /^Inter/.test(f.familyName) && f.isCustomFont)
+          .reduce((a, f) => a + f.glyphCount, 0);
+        const otherGlyphs = platformFonts
+          .filter((f) => !(/^Inter/.test(f.familyName) && f.isCustomFont))
+          .reduce((a, f) => a + f.glyphCount, 0);
+        const pinnedFontPainted =
+          q.nodeId && pinnedGlyphs > 0 && pinnedGlyphs === [...chipText].length - accidentals && otherGlyphs === accidentals;
         helper = await browser.newPage(); // its own context: the page under test stays the foreground page
         const failures = [];
         const styleFailures = [];
@@ -1052,8 +1071,11 @@ for (const width of VIEWPORTS) {
           );
         // Only when nothing above explains it: a chip whose name vanished has no
         // platform font at all and used to be reported here as a font problem.
-        if (PIN_FONT && !sections.length && !/^Inter/.test(font))
-          sections.push(`GATE-FAIL the pinned font did not paint the chips (platform fonts: ${font}); every width below would be for the wrong font`);
+        if (PIN_FONT && !sections.length && !pinnedFontPainted)
+          sections.push(
+            `GATE-FAIL the pinned font did not paint the chips (chip "${chipText}", ${accidentals} accidental(s); platform fonts: ${font}); ` +
+              'every width below would be for the wrong font',
+          );
         if (failures.length) {
           failures.sort((a, b) => b.px - a.px);
           sections.push(

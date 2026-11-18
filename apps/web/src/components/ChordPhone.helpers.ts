@@ -15,7 +15,7 @@
 //     all land here.
 // Lines never cross a section, so every section starts a new line.
 
-import { type OverlayRun, activeRunIndex, displayText, estimateLabelPx } from './ChordOverlay.helpers.ts';
+import { type OverlayRun, activeRunIndex, displayText, estimateStageLabelPx } from './ChordOverlay.helpers.ts';
 import type { BeatGrid } from '../lib/play/sections.ts';
 import { spellChord } from '../lib/play/notation.ts';
 
@@ -624,7 +624,8 @@ export const NAME_SIZES = [20, 16, 14] as const;
 export const CURRENT_NAME_SIZES = [24, 20, 16, 14] as const;
 /**
  * Slot names are bold and fitted with the headless advance table (Inter 400 at
- * 16px; unknown glyphs at the widest advance) widened by this factor:
+ * 16px; unknown glyphs, and ♭ ♯ ( ), at the widest advance: see
+ * STAGE_WIDEST_GLYPHS) widened by this factor:
  * conservative on purpose. The real-Chromium gate checks nothing clips.
  */
 export const BOLD_FACTOR = 1.12;
@@ -637,7 +638,7 @@ export const CELL_HEAD_PX = 16;
 export const SLOT_H_PX = 46;
 export const STACKED_SLOT_H_PX = 30;
 
-export const nameWidth = (text: string, px: number) => estimateLabelPx(text, px) * BOLD_FACTOR + 2 * SLOT_PAD_PX;
+export const nameWidth = (text: string, px: number) => estimateStageLabelPx(text, px) * BOLD_FACTOR + 2 * SLOT_PAD_PX;
 
 export interface SlotBox { runIndex: number; text: string; x: number; y: number; w: number; h: number; fontPx: number; wrap: boolean }
 export interface CellBox { cell: number; x: number; y: number; w: number; h: number; stacked: boolean; slots: SlotBox[] }

@@ -87,6 +87,18 @@ const MEASURE = () => {
   return { hscroll, small, wide, chips, chordCells, inlineExempt, examined };
 };
 
+// Phones (Slice 1a): the stems live in the Mix sheet. Open it and measure its
+// controls (presets, M, S, the level sliders, Close) like everything else.
+async function openMix(page) {
+  await page.locator('[data-testid="transport-mix"]').click().catch(() => {});
+  await page.locator('[data-testid="mix-sheet-backdrop"]:not([hidden])').waitFor({ timeout: 10_000 }).catch(() => {});
+  await sleep(300);
+}
+async function closeSheet(page) {
+  await page.keyboard.press('Escape').catch(() => {});
+  await sleep(300);
+}
+
 async function openChart(page) {
   await page.locator('[data-testid="player-more"]').click().catch(() => {});
   await page.getByRole('button', { name: 'See all chords' }).click().catch(() => {});
@@ -143,6 +155,11 @@ export default async function run() {
     await page.locator('[data-testid="playhead-now-name"]').first().waitFor({ timeout: 30_000 }).catch(() => {});
     await sleep(500);
     await checkView(j, page, '390-player');
+    await openMix(page);
+    const mix390 = await page.locator('[data-testid="mix-sheet"] button[aria-label^="Mute "]').count();
+    j.check('390: the Mix sheet opens with a Mute button per stem', mix390 === 6, `${mix390} Mute buttons`);
+    await checkView(j, page, '390-player-mix');
+    await closeSheet(page);
     // Slice 1a: the full chord chart is a sheet (⋯ → "See all chords").
     await openChart(page);
     await checkView(j, page, '390-player-chart', { chips: true });
@@ -153,6 +170,11 @@ export default async function run() {
     await page.locator('[data-testid="playhead-now-name"]').first().waitFor({ timeout: 30_000 }).catch(() => {});
     await sleep(500);
     await checkView(j, page, '360-player');
+    await openMix(page);
+    const mix360 = await page.locator('[data-testid="mix-sheet"] button[aria-label^="Mute "]').count();
+    j.check('360: the Mix sheet opens with a Mute button per stem', mix360 === 6, `${mix360} Mute buttons`);
+    await checkView(j, page, '360-player-mix');
+    await closeSheet(page);
     // Slice 1a: the full chord chart is a sheet (⋯ → "See all chords").
     await openChart(page);
     await checkView(j, page, '360-player-chart', { chips: true });

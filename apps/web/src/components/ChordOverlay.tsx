@@ -66,6 +66,11 @@ import {
   phoneSlotLabel,
   positionLabel,
   spokenSymbol,
+  TALL_NOW_PX,
+  TALLER_NOW_PX,
+  growScale,
+  grownFontPx,
+  stageChromePx,
 } from './ChordPhone.helpers.ts';
 import {
   type ChordAlternative,
@@ -230,6 +235,8 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   const [userPps, setUserPps] = useState<number | null>(null);
   const [wrapEl, setWrapEl] = useState<HTMLDivElement | null>(null);
   const [widthPx, setWidthPx] = useState(0);
+  // The stage view also reads its height, to let Now and the bars grow into spare room.
+  const [heightPx, setHeightPx] = useState(0);
   const [scrollInfo, setScrollInfo] = useState({ left: 0, client: 0, total: 0 });
   // Story 3 criterion 4: set once the user scrolls by hand, so auto-scroll
   // stops fighting them. It lifts itself again in the auto-scroll effect.
@@ -390,7 +397,11 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   // ---- timeline geometry ---------------------------------------------------
   useEffect(() => {
     if (!wrapEl) return;
-    const measure = () => setWidthPx(Math.floor(wrapEl.getBoundingClientRect().width));
+    const measure = () => {
+      const r = wrapEl.getBoundingClientRect();
+      setWidthPx(Math.floor(r.width));
+      setHeightPx(Math.floor(r.height));
+    };
     measure();
     if (typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(measure);
@@ -740,6 +751,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
             loop={loop}
             onOpen={setPopoverFor}
             onNowNext={onNowNext}
+            heightPx={heightPx}
           />
         ) : (
           <p role="status" style={stageWaitStyle} data-testid="completed-job-message" data-state={completedJobChords.status}>
@@ -1429,6 +1441,8 @@ interface PhoneChordsProps {
   loop: LoopRegion | null;
   onOpen: (v: { run: OverlayRun; idx: number }) => void;
   onNowNext?: (v: NowNext | null) => void;
+  /** The stage's height (stage view); 0 = unknown, nothing grows. */
+  heightPx?: number;
 }
 
 // ── colours (design v1.4 + Jon 2026-11-17) ──────────────────────────────────
@@ -1456,16 +1470,20 @@ interface PhoneLineViewProps {
   activeIdx: number;
   positionSec: number | null;
   onOpen: PhoneChordsProps['onOpen'];
+  /** Vertical growth into spare stage height (1 = the laid-out size). Widths and fonts are untouched. */
+  scale?: number;
 }
 
-const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ model, runs, box, lineIndex, role, currentCell, activeIdx, positionSec, onOpen }) {
+const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ model, runs, box, lineIndex, role, currentCell, activeIdx, positionSec, onOpen, scale = 1 }) {
   const bars = model.mode === 'bars';
+  const k = Number.isFinite(scale) && scale > 1 ? scale : 1;
   return (
     <div
       data-testid={role === 'current' ? 'phone-line-current' : 'phone-line-next'}
       data-line={lineIndex}
       data-rows={box.rows}
-      style={{ position: 'relative', height: box.h }}
+      data-scale={k.toFixed(3)}
+      style={{ position: 'relative', height: box.h * k }}
     >
       {box.cells.map((cb) => {
         const cell = model.cells[cb.cell];
@@ -1491,9 +1509,9 @@ const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ mode
             style={{
               position: 'absolute',
               left: cb.x,
-              top: cb.y,
+              top: cb.y * k,
               width: cb.w,
-              height: cb.h,
+              height: cb.h * k,
               boxSizing: 'border-box',
               borderRadius: 6,
               background: phoneCellBg(isCur),
@@ -1527,9 +1545,9 @@ const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ mode
                   style={{
                     position: 'absolute',
                     left: sb.x - cb.x,
-                    top: sb.y - cb.y,
+                    top: (sb.y - cb.y) * k,
                     width: sb.w,
-                    height: sb.h,
+                    height: sb.h * k,
                     border: run.kind === 'none' ? '1px dashed var(--border-control, #737373)' : 'none',
                     borderRadius: 4,
                     background: 'transparent',
@@ -1540,7 +1558,7 @@ const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ mode
                     alignItems: 'center',
                     justifyContent: 'center',
                     textAlign: 'center',
-                    fontSize: sb.fontPx,
+                    fontSize: grownFontPx(sb.text, sb.fontPx, sb.w, sb.wrap, k),
                     lineHeight: sb.wrap ? 1.05 : 1.2,
                     fontWeight: isCurSlot ? 700 : 500,
                     whiteSpace: sb.wrap ? 'normal' : 'nowrap',
@@ -1560,7 +1578,7 @@ const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ mode
   );
 });
 
-const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx, widthPx, loop, onOpen, onNowNext }) => {
+const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx, widthPx, loop, onOpen, onNowNext, heightPx = 0 }) => {
   const bars = model.mode === 'bars';
   const cur = cellIndexAt(model, positionSec);
   const line = cur >= 0 ? lineIndexOfCell(model, cur) : 0;
@@ -1584,10 +1602,30 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
   const nowText = nowRun ? leadSheetSymbol(nowRun) : '—';
   const nextText = nextRun ? leadSheetSymbol(nextRun) : '';
   const whenText = nx ? `${nx.wraps ? 'Loops back' : 'Next'}${count !== null ? ` in ${count} beat${count === 1 ? '' : 's'}` : ''}` : '';
-  const ladder = widthPx >= WIDE_STAGE_PX ? WIDE_NOW_SIZES : NOW_SIZES;
-  const nextPx = widthPx >= WIDE_STAGE_PX ? WIDE_NEXT_PX : NEXT_PX;
+  // Use the stage's spare HEIGHT (Jon, 2026-11-17: no empty band between the
+  // beat row and the bars): when the 96px step fits beside the laid-out bars the
+  // ladder starts there, and what is still spare grows the bar lines, up to
+  // GROWN_BAR_PX tall. The fit ladder itself is unchanged.
+  // No room for the next line at the smallest Now (a short or zoomed screen):
+  // drop it rather than clip it. The current line always stays.
+  const minNow = NOW_SIZES[NOW_SIZES.length - 1];
+  const showNext = !!nextBox && (heightPx <= 0 || heightPx - stageChromePx(minNow) - (curBox?.h ?? 0) - nextBox.h - LINE_GAP_PX >= 0);
+  const linesH = (curBox?.h ?? 0) + (showNext && nextBox ? nextBox.h + LINE_GAP_PX : 0);
+  const wide = widthPx >= WIDE_STAGE_PX;
+  const room = (px: number) => heightPx - stageChromePx(px) - linesH;
+  const ladder = wide
+    ? WIDE_NOW_SIZES
+    : heightPx > 0 && room(TALLER_NOW_PX) >= 0
+      ? TALLER_NOW_SIZES
+      : heightPx > 0 && room(TALL_NOW_PX) >= 0
+        ? TALL_NOW_SIZES
+        : NOW_SIZES;
+  const nextPx = wide ? WIDE_NEXT_PX : NEXT_PX;
   // The Now name is fitted to the room Next leaves (P1.2's ladder).
   const fit = fitNowName(nowText, widthPx - 4, nx ? Math.max(nameWidthPx(whenText, 13, 1.05), nameWidthPx(nextText, nextPx, 1.12)) : 0, ladder);
+  // Next on its own row (the ladder's last resort) costs its label and name.
+  const nextRowPx = fit.nextBelow ? Math.ceil(13 * 1.3 + nextPx * 1.1 + 4) : 0;
+  const lineScale = growScale(heightPx > 0 ? room(fit.lines.length * fit.px) - nextRowPx : 0, curBox, showNext ? nextBox : null);
 
   // The Mix sheet header reads these. Fired on a CHANGE of name, never per frame.
   const nowSpoken = nowRun ? spokenSymbol(nowRun) : '';
@@ -1668,12 +1706,12 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
           ))}
         </div>
       ) : null}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 'auto' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: LINE_GAP_PX, marginTop: 'auto' }}>
         {curBox ? (
-          <PhoneLineView model={model} runs={runs} box={curBox} lineIndex={line} role="current" currentCell={cur} activeIdx={activeIdx} positionSec={positionSec} onOpen={onOpen} />
+          <PhoneLineView model={model} runs={runs} box={curBox} lineIndex={line} role="current" currentCell={cur} activeIdx={activeIdx} positionSec={positionSec} onOpen={onOpen} scale={lineScale} />
         ) : null}
-        {nextBox ? (
-          <PhoneLineView model={model} runs={runs} box={nextBox} lineIndex={next} role="next" currentCell={-1} activeIdx={-1} positionSec={null} onOpen={onOpen} />
+        {nextBox && showNext ? (
+          <PhoneLineView model={model} runs={runs} box={nextBox} lineIndex={next} role="next" currentCell={-1} activeIdx={-1} positionSec={null} onOpen={onOpen} scale={lineScale} />
         ) : null}
       </div>
     </div>
@@ -1682,6 +1720,7 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
 
 const PHONE_SLOT_PAD_PX = SLOT_PAD_PX;
 const NOW_NEXT_GAP_PX = 12;
+const LINE_GAP_PX = 6;
 /**
  * The Now name's fit ladder, largest first (design v1.4, P1.2: the shipped
  * ladder extended upward, 72 -> ... -> 28). The card never goes below 28px
@@ -1692,6 +1731,8 @@ export const NOW_SIZES = [NOW_PX, 64, 56, 44, 40, 36, 32, 28] as const;
 /** A stage at least this wide (the desktop column) starts the ladder higher. */
 export const WIDE_STAGE_PX = 700;
 export const WIDE_NOW_SIZES = [128, 96, ...NOW_SIZES] as const;
+export const TALL_NOW_SIZES = [TALL_NOW_PX, ...NOW_SIZES] as const;
+export const TALLER_NOW_SIZES = [TALLER_NOW_PX, TALL_NOW_PX, ...NOW_SIZES] as const;
 const WIDE_NEXT_PX = 48;
 /** Bold text width from the headless advance table, widened by `factor` (conservative). */
 function nameWidthPx(text: string, px: number, factor: number): number {

@@ -79,7 +79,8 @@
 }
 
 .hint {
-  margin: 0 0 2px;
+  /* the fieldset pads 16px; the seek line's readout sits at 20px: align them */
+  margin: 0 4px 2px;
   font-size: 13px;
   color: var(--text-secondary);
 }

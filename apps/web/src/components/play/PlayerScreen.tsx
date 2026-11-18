@@ -30,6 +30,7 @@ import {
   runFromRegion,
   runReadout,
   runRegion,
+  sameRegion,
   sanitizeRegions,
   tapSection,
   toggleRunLoop,
@@ -125,11 +126,18 @@ export function PlayerScreen(props: ScreenProps) {
   const sections = useMemo(() => sanitizeRegions(rawSections, snapshot.durationSec || undefined), [rawSections, snapshot.durationSec]);
   const names = useMemo(() => nameRegions(sections).map((n) => n.name), [sections]);
   // The run starts from whatever the engine is looping (a gate or a remount may
-  // hand in a loop); after that the screen owns it and tells the engine.
+  // hand in a loop). After that the screen REMEMBERS the run, but whether it is
+  // LOOPING is always the engine's answer (review S3): the UI says "Looping"
+  // only while `snapshot.loop` is that run's span. An engine that refuses the
+  // loop (too short, clamped) or a new engine after "Try again" therefore never
+  // leaves the strip claiming a loop the audio is not doing.
   const [run, setRun] = useState<RunState>(() => {
     const r = runFromRegion(sections, snapshot.loop);
     return r ? { run: r, on: true } : NO_RUN;
   });
+  const wanted = run.on ? runRegion(sections, run.run) : null;
+  const engineLoops = !!wanted && sameRegion(snapshot.loop, wanted);
+  const shown: RunState = { run: run.run, on: engineLoops };
   const [hintSeen, setHintSeen] = useState(false);
   const [hint, setHint] = useState(false);
   const applyRun = useCallback(
@@ -139,8 +147,23 @@ export function PlayerScreen(props: ScreenProps) {
     },
     [onLoop, sections],
   );
+  // A NEW engine (Retry rebuilds it) starts with no loop: hand it the run the
+  // user had on, once, when it becomes ready. If it refuses, `shown` says off.
+  const phaseKind = phase.kind;
+  const runRef = useRef(run);
+  runRef.current = run;
+  const loopRef = useRef(snapshot.loop);
+  loopRef.current = snapshot.loop;
+  useEffect(() => {
+    if (phaseKind !== 'ready') return;
+    const r = runRef.current;
+    const region = r.on ? runRegion(sections, r.run) : null;
+    if (region && !sameRegion(loopRef.current, region)) onLoop(region);
+    // Only on entering `ready` (a load or a retry), not on every loop change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phaseKind]);
   const onTap = (i: number) => {
-    const { state, extended } = tapSection(run, i);
+    const { state, extended } = tapSection(shown, i);
     applyRun(state);
     if (extended && !hintSeen) {
       setHint(true);
@@ -151,14 +174,14 @@ export function PlayerScreen(props: ScreenProps) {
   };
   const onLongPress = (i: number) => {
     setHint(false);
-    applyRun(longPressSection(run, i));
+    applyRun(longPressSection(shown, i));
   };
   const onToggleLoop = () => {
     setHint(false);
-    applyRun(toggleRunLoop(run));
+    applyRun(toggleRunLoop(shown));
   };
-  const runOn = run.on && !!run.run;
-  const band = runOn ? runRegion(sections, run.run) : null;
+  const runOn = shown.on && !!shown.run;
+  const band = runOn ? snapshot.loop : null;
 
   // ── the mix (P1.3) ─────────────────────────────────────────────────────────
   const [part, setPart] = useState<Part | null>(null);
@@ -384,7 +407,7 @@ export function PlayerScreen(props: ScreenProps) {
 
           {playable ? (
             <>
-              <SectionLoop names={names} state={run} onTap={onTap} onLongPress={onLongPress} hint={hint && runOn} />
+              <SectionLoop names={names} state={shown} onTap={onTap} onLongPress={onLongPress} hint={hint && runOn} />
               <Transport
                 status={snapshot.status}
                 positionSec={snapshot.positionSec}
@@ -394,8 +417,8 @@ export function PlayerScreen(props: ScreenProps) {
                 onSeek={onSeek}
                 ticks={sections.slice(1).map((r: LoopRegion) => r.startSec)}
                 loopBand={band}
-                loopText={runReadout(names, sections, run)}
-                loopState={!run.run ? 'disabled' : run.on ? 'on' : 'off'}
+                loopText={runReadout(names, sections, shown)}
+                loopState={!shown.run ? 'disabled' : shown.on ? 'on' : 'off'}
                 onToggleLoop={onToggleLoop}
                 mix={
                   desktop

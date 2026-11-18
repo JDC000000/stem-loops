@@ -19,7 +19,14 @@
   padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* WCAG 1.4.10 (review S1): the screen does not scroll WHEN IT FITS — the body
+     below grows into the space and the stage takes the remainder — but when the
+     content cannot fit (a very short window, 400% zoom: 320x256, 320x225) the
+     body keeps its natural height and the screen scrolls, so Play, ±5, Loop and
+     Mix stay reachable by pointer and touch. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--bg-page);
   color: var(--text-primary);
   font-family: var(--font-sans);
@@ -135,8 +142,8 @@
 
 /* ── the body: the stage takes the remainder ───────────────────────────── */
 .body {
-  flex: 1 1 auto;
-  min-height: 0;
+  /* grows, never shrinks below its content: see .root */
+  flex: 1 0 auto;
   display: flex;
 }
 
@@ -149,8 +156,12 @@
 }
 
 .stage {
-  flex: 1 1 auto;
-  min-height: 0;
+  /* The stage takes the remainder (basis 0) down to a floor that still shows
+     where you are, Now/Next, the beat row and the current bar line; the chord
+     view drops the NEXT line when it has no room. Below the floor the screen
+     scrolls instead (WCAG 1.4.10, .root). */
+  flex: 1 1 0;
+  min-height: 230px;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -261,7 +272,7 @@
   min-height: 0;
 }
 .asideTitle { margin: 0; font-size: 18px; }
-.asideMixer { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.asideMixer { flex: 1 1 0; min-height: 0; overflow-y: auto; }
 .asideButton {
   min-height: var(--touch-min, 44px);
   border-radius: 22px;
@@ -359,8 +370,10 @@
 }
 
 /* ── P1.4 rule 1: short screens (landscape phones) — two columns ───────── */
-@media (max-height: 499px) {
-  .head { height: 44px; }
+/* (min-width: a 320px-wide window at 400% zoom is a phone column that scrolls,
+   not two 160px columns.) */
+@media (max-height: 499px) and (min-width: 560px) {
+  .head { height: 44px; max-width: none; margin: 0; }
   .body { flex-direction: row; max-width: none; }
   .main {
     display: grid;

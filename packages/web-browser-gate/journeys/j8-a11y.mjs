@@ -60,7 +60,10 @@ async function axe(page, j, tag) {
 export default async function run() {
   const j = new Journey(id, 'Keyboard and a11y basics: upload form and player');
   const user = mintUser('j8');
-  const { ctx, log } = await newContext({ user });
+  // Desktop on purpose (review S5 on #288): the player's tab-order check expects
+  // the stems' Mute buttons in the always-visible mixer column. On a phone they
+  // live in the Mix sheet, which j7 opens and measures.
+  const { ctx, log } = await newContext({ user, viewport: { width: 1280, height: 900 } });
   const page = await ctx.newPage();
   try {
     // ── upload form ──

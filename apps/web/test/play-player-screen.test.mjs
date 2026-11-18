@@ -36,8 +36,6 @@ const graph = buildModuleGraph({
       export default ChordOverlay;`,
     'lib/play/report-failure.ts': 'export function reportStemFetchFailure() {}',
     'components/JobProgress.tsx': "export function JobProgress() { return null; }",
-    'components/LoopResults.tsx': "export function LoopResults() { return null; }",
-    'lib/auth/supabase.ts': 'export async function getUser() { return null; }',
   },
   packages: {
     'next/link': "import { createElement } from 'react'; export default function Link(p) { return createElement('a', p); }",
@@ -76,6 +74,25 @@ const viewProps = (over = {}) => ({
 });
 const ssr = (over) => renderToStaticMarkup(React.createElement(Player.PlayerView, viewProps(over)));
 const decode = (h) => h.replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+
+/**
+ * A stand-in for Player's engine wiring: `onLoop` is applied to the snapshot
+ * the view renders (as the real engine does through setLoop -> subscribe),
+ * unless `reject` is set (an engine that refuses the loop). Also records calls.
+ */
+function EngineEcho({ calls, reject = false, phase = { kind: 'ready' }, loopOverride, ...over }) {
+  const [loop, setLoop] = React.useState(null);
+  const shownLoop = loopOverride !== undefined ? loopOverride : loop;
+  return React.createElement(Player.PlayerView, viewProps({
+    ...over,
+    phase,
+    snapshot: snap({ loop: shownLoop }),
+    onLoop: (r) => {
+      calls.push(r);
+      if (!reject) setLoop(r);
+    },
+  }));
+}
 
 /** Make the desktop query answer `desktop` for the life of one withDom(). */
 function setMedia(desktop) {
@@ -158,12 +175,11 @@ test('P1.1: viewportFit "cover" is set on /jobs/[id] ONLY', () => {
   assert.doesNotMatch(read('src/app/jobs/layout.tsx'), /viewportFit/);
 });
 
-test('P1.1: one non-scrolling 100svh screen padded by the safe-area insets; it replaces the site nav', () => {
+test('P1.1: one 100svh screen (scrolling only when it cannot fit, see S1) padded by the safe-area insets; it replaces the site nav', () => {
   const css = read('src/components/play/Player.module.css');
   const root = css.match(/\.root\s*\{([^}]*)\}/)[1];
   assert.match(root, /position:\s*fixed;/);
   assert.match(root, /height:\s*100svh;/);
-  assert.match(root, /overflow:\s*hidden;/);
   assert.match(root, /env\(safe-area-inset-top, 0px\) env\(safe-area-inset-right, 0px\) env\(safe-area-inset-bottom, 0px\) env\(safe-area-inset-left, 0px\)/);
   assert.match(read('src/styles/signed-in-nav.css'), /body:has\(\[data-player-fullscreen\]\) \.sin-bar\s*\{\s*display:\s*none;/);
 });
@@ -195,7 +211,7 @@ test('P2.1 through the screen: tap, extend (+ the one-time hint), shrink, loop o
   await withDom(async (dom) => {
     setMedia(false);
     const loops = [];
-    await dom.mount(React.createElement(Player.PlayerView, viewProps({ onLoop: (r) => loops.push(r) })));
+    await dom.mount(React.createElement(EngineEcho, { calls: loops }));
     const chip = (i) => dom.findAll('[data-testid="section-strip"] button')[i];
     const loopBtn = () => dom.find('[data-testid="transport-loop"]');
     assert.equal(loopBtn().getAttribute('aria-disabled'), 'true', 'nothing to loop yet');
@@ -228,12 +244,47 @@ test('P2.1 through the screen: tap, extend (+ the one-time hint), shrink, loop o
     await dom.pointer('pointerdown', chip(3), { pointerType: 'touch', clientX: 5, clientY: 5 });
     await dom.advance(550);
     await dom.pointer('pointerup', chip(3), { pointerType: 'touch', clientX: 5, clientY: 5 });
-    await dom.act(() => chip(3).click());
+    await dom.act(() => chip(3).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })));
     assert.deepEqual(loops.at(-1), { startSec: 66, endSec: 104 }, 'long-press: loop only this (the release click swallowed)');
 
     await dom.act(() => chip(3).click());
     assert.equal(loops.at(-1), null, 'the only chip: clear');
     assert.equal(loopBtn().getAttribute('aria-disabled'), 'true');
+    await dom.unmountAll();
+  });
+});
+
+test('review S3 (DOM): an engine that REFUSES the loop never leaves the UI saying "Looping"', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const calls = [];
+    await dom.mount(React.createElement(EngineEcho, { calls, reject: true }));
+    await dom.act(() => dom.findAll('[data-testid="section-strip"] button')[1].click());
+    assert.deepEqual(calls, [{ startSec: 9, endSec: 47 }], 'the run was asked for');
+    assert.equal(dom.findAll('[data-testid="section-strip"] button[aria-pressed="true"]').length, 0, 'no chip pressed');
+    assert.doesNotMatch(dom.find('[data-testid="transport-loop-text"]').textContent, /Looping/);
+    assert.equal(dom.find('[data-testid="transport-loop"]').getAttribute('aria-pressed'), 'false');
+    assert.equal(dom.find('[data-testid="transport-loop-band"]'), null, 'no band for a loop that is not there');
+    await dom.unmountAll();
+  });
+});
+
+test('review S3 (DOM): after "Try again" builds a NEW engine, the run is handed to it again', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const calls = [];
+    const host = await dom.mount(React.createElement(EngineEcho, { calls }));
+    await dom.act(() => dom.findAll('[data-testid="section-strip"] button')[2].click());
+    assert.deepEqual(calls.at(-1), { startSec: 47, endSec: 66 });
+    // Retry: the view goes back to loading with a fresh engine (no loop) ...
+    await dom.rerender(host, React.createElement(EngineEcho, { calls, phase: { kind: 'loading' }, loopOverride: null }));
+    const before = calls.length;
+    // ... and when the new engine is ready, the screen re-applies the run.
+    await dom.rerender(host, React.createElement(EngineEcho, { calls, phase: { kind: 'ready' }, loopOverride: null }));
+    assert.equal(calls.length, before + 1, 'the run was not re-applied to the new engine');
+    assert.deepEqual(calls.at(-1), { startSec: 47, endSec: 66 });
+    // Until the engine reports it, nothing claims to loop.
+    assert.equal(dom.findAll('[data-testid="section-strip"] button[aria-pressed="true"]').length, 0);
     await dom.unmountAll();
   });
 });
@@ -371,4 +422,51 @@ test('44px targets on every new control (CSS)', () => {
     assert.match(rule(css(f), sel), /(min-)?height:\s*var\(--touch-min, 44px\)/, `${f} ${sel}`);
   const m = css('MixSheet.module.css');
   assert.ok(px(rule(m, '.round,\n.close'), 'height') >= 44);
+});
+
+test('module-graph refuses a stub that replaces nothing (a typo would silently load the real module)', () => {
+  assert.throws(
+    () => buildModuleGraph({ name: 'graph-typo', entries: ['lib/play/notation.ts'], overrides: { 'lib/play/notaton.ts': 'export {}' } }),
+    /override\(s\) never reached/,
+  );
+  assert.throws(
+    () => buildModuleGraph({ name: 'graph-typo-pkg', entries: ['lib/play/notation.ts'], packages: { 'next/link': 'export {}' } }),
+    /package stub\(s\) never imported/,
+  );
+});
+
+// ═══ review S1 — WCAG 1.4.10: no scroll when it fits, scroll when it does not ═══
+
+test('S1: the screen scrolls only when its content cannot fit (CSS contract; measured in Chromium by player-text-size)', () => {
+  const css = read('src/components/play/Player.module.css');
+  const root = css.match(/\.root\s*\{([^}]*)\}/)[1];
+  assert.match(root, /overflow-y:\s*auto;/, 'the root must be able to scroll');
+  assert.doesNotMatch(root, /overflow:\s*hidden/, 'a hidden overflow strands Play/±5/Loop/Mix off-screen at 400% zoom');
+  assert.match(css, /\.body\s*\{[^}]*flex:\s*1 0 auto;/, 'the body never shrinks below its content');
+  const stage = css.match(/\.stage\s*\{([^}]*)\}/)[1];
+  assert.match(stage, /flex:\s*1 1 0;/, 'the stage takes the remainder');
+  assert.match(stage, /min-height:\s*\d+px;/, 'down to a floor, then the screen scrolls');
+  assert.match(css, /@media \(max-height: 499px\) and \(min-width: 560px\)/, 'a 320px-wide zoomed window is a phone column, not two 160px columns');
+  assert.match(read('src/components/play/Sheet.module.css'), /\.backdrop\s*\{[^}]*position:\s*fixed;/, 'the sheet covers the viewport even when the screen is scrolled');
+});
+
+test('stage growth: the ladder and the bars grow only into spare height, never past their caps', async () => {
+  const H = await import('../src/components/ChordPhone.helpers.ts');
+  assert.equal(H.TALL_NOW_PX, 96);
+  assert.equal(H.GROWN_BAR_PX, 104);
+  const line = { h: 62, rows: 1 };
+  assert.equal(H.growScale(0, line, line), 1);
+  assert.equal(H.growScale(-50, line, line), 1, 'never shrinks');
+  assert.equal(H.growScale(1000, line, line), 104 / 62, 'capped');
+  assert.ok(Math.abs(H.growScale(31, line, line) - (124 + 31) / 124) < 1e-9);
+  assert.equal(H.growScale(100, line, null), 104 / 62 > (62 + 100) / 62 ? (62 + 100) / 62 : 104 / 62);
+  assert.equal(H.growScale(100, null, null), 1);
+  assert.ok(H.stageChromePx(96) > H.stageChromePx(28));
+  // A name grows with its bar only as far as its slot is wide.
+  assert.equal(H.grownFontPx('G', 20, 80, false, 1), 20);
+  assert.ok(H.grownFontPx('G', 20, 80, false, 1.6) <= Math.floor(20 * H.GROWN_NAME_MAX));
+  assert.ok(H.grownFontPx('G', 20, 80, false, 1.6) > 20);
+  assert.equal(H.grownFontPx('C♯m7♭5/G♯', 14, 60, false, 1.6), 14, 'no room: unchanged');
+  assert.equal(H.grownFontPx('Am', 20, 80, true, 1.6), 20, 'a wrapped name keeps its size');
+  assert.ok(H.nameWidth('G', H.grownFontPx('G', 20, 40, false, 1.6)) <= 40);
 });

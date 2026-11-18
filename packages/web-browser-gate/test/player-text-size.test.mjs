@@ -205,8 +205,8 @@ async function bundle() {
   return { js: js.text, css: css?.text ?? '' };
 }
 
-async function openPlayer(browser, built, width, positionSec) {
-  const page = await browser.newPage({ viewport: { width, height: 900 } });
+async function openPlayer(browser, built, width, positionSec, height = 900) {
+  const page = await browser.newPage({ viewport: { width, height } });
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(String(e)));
   await page.route('http://gate.test/**', async (route) => {
@@ -596,6 +596,77 @@ for (const width of VIEWPORTS) {
     });
   }
 }
+
+// ---------------------------------------------------------------------------
+// WCAG 1.4.10 (review S1 on #288): the player is one fixed screen that does NOT
+// scroll when it fits, and DOES scroll when it cannot (a short window, 400%
+// zoom), so every transport control stays reachable by pointer and touch.
+// ---------------------------------------------------------------------------
+const FITS = [[390, 844], [390, 664], [360, 800], [320, 568], [1440, 900], [1024, 768]];
+const ZOOMED = [[320, 256], [320, 225]];
+const CONTROLS = ['[aria-label="Back 5 seconds"]', '[data-testid="transport-play"]', '[aria-label="Forward 5 seconds"]', '[data-testid="transport-loop"]', '[data-testid="transport-mix"]'];
+
+test('S1: no scroll at the sizes the screen fits', async () => {
+  assert.ok(browser && built, 'setup test did not run or failed');
+  const f = [];
+  for (const [w, h] of FITS) {
+    const { page, pageErrors } = await openPlayer(browser, built, w, POSITIONS[0].sec, h);
+    try {
+      const m = await page.evaluate(() => {
+        const r = document.querySelector('[data-testid="player"]');
+        return { sh: r.scrollHeight, ch: r.clientHeight, doc: document.scrollingElement.scrollHeight - innerHeight };
+      });
+      if (m.sh > m.ch) f.push(`${w}x${h}: the player scrolls (${m.sh} > ${m.ch}) although it should fit`);
+      if (m.doc > 0) f.push(`${w}x${h}: the page behind scrolls by ${m.doc}px`);
+      assert.deepEqual(pageErrors, []);
+    } finally {
+      await page.close();
+    }
+  }
+  if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);
+});
+
+test('S1: at 400% zoom (320x256, 320x225) the screen scrolls and Play, ±5, Loop and Mix are reachable by pointer', async () => {
+  assert.ok(browser && built, 'setup test did not run or failed');
+  const f = [];
+  for (const [w, h] of ZOOMED) {
+    const { page, pageErrors } = await openPlayer(browser, built, w, POSITIONS[0].sec, h);
+    try {
+      const m = await page.evaluate((sels) => {
+        const root = document.querySelector('[data-testid="player"]');
+        const out = { sh: root.scrollHeight, ch: root.clientHeight, oy: getComputedStyle(root).overflowY, controls: [] };
+        for (const sel of sels) {
+          const el = document.querySelector(sel);
+          if (!el) { out.controls.push({ sel, missing: true }); continue; }
+          el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+          const r = el.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          out.controls.push({ sel, inView: r.top >= -0.5 && r.bottom <= innerHeight + 0.5 && r.left >= -0.5 && r.right <= innerWidth + 0.5, hits: !!hit && (hit === el || el.contains(hit)), w: r.width, h: r.height });
+        }
+        return out;
+      }, CONTROLS);
+      if (!(m.sh > m.ch)) f.push(`${w}x${h}: the content (${m.sh}) does not overflow the ${m.ch}px screen — this case would test nothing`);
+      if (m.oy !== 'auto' && m.oy !== 'scroll') f.push(`${w}x${h}: the player cannot scroll (overflow-y ${m.oy})`);
+      for (const c of m.controls) {
+        if (c.missing) f.push(`${w}x${h}: ${c.sel} is not rendered`);
+        else if (!c.inView || !c.hits) f.push(`${w}x${h}: ${c.sel} cannot be reached by pointer after scrolling (inView ${c.inView}, hit ${c.hits})`);
+        else if (c.w < 44 || c.h < 44) f.push(`${w}x${h}: ${c.sel} is ${c.w}x${c.h}`);
+      }
+      // ...and the real gesture: scroll the screen with the wheel, then click Mix.
+      await page.evaluate(() => (document.querySelector('[data-testid="player"]').scrollTop = 0));
+      await page.mouse.move(w / 2, h / 2);
+      await page.mouse.wheel(0, 2000);
+      await settle(page);
+      await page.click('[data-testid="transport-mix"]', { timeout: 5000 });
+      const open = await page.evaluate(() => !document.querySelector('[data-testid="mix-sheet-backdrop"]').hidden);
+      if (!open) f.push(`${w}x${h}: clicking Mix after scrolling did not open the sheet`);
+      assert.deepEqual(pageErrors, []);
+    } finally {
+      await page.close();
+    }
+  }
+  if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);
+});
 
 test('teardown', async () => {
   if (browser) await browser.close();

@@ -58,6 +58,7 @@ export function buildModuleGraph({ name, entries, overrides = {}, packages = {} 
   const dir = mkdtempSync(join(cache, `${name}-`));
   const outName = (abs) => relative(SRC, abs).replace(/[\\/]/g, '__').replace(/\.(tsx?|css)$/, '') + (abs.endsWith('.css') ? '.css.mjs' : '.mjs');
   const done = new Set();
+  const usedPackages = new Set();
 
   const visit = (abs) => {
     if (done.has(abs)) return;
@@ -75,6 +76,7 @@ export function buildModuleGraph({ name, entries, overrides = {}, packages = {} 
     let js = toJs(readFileSync(abs, 'utf8'), abs.endsWith('.tsx'));
     js = js.replace(/(\bfrom\s*|\bimport\s*\(?\s*)(['"])([^'"]+)\2/g, (whole, lead, q, spec) => {
       if (Object.prototype.hasOwnProperty.call(packages, spec)) {
+        usedPackages.add(spec);
         const stub = join(dir, `pkg__${spec.replace(/[^\w]/g, '_')}.mjs`);
         writeFileSync(stub, packages[spec]);
         return `${lead}${q}./${relative(dir, stub)}${q}`;
@@ -87,6 +89,15 @@ export function buildModuleGraph({ name, entries, overrides = {}, packages = {} 
     writeFileSync(out, js);
   };
   for (const e of entries) visit(join(SRC, e));
+
+  // Every stub must have replaced something. A key that matches no path in the
+  // graph (a renamed file, a typo) would otherwise leave the REAL module loaded
+  // under a test that believes it is stubbed.
+  const reached = new Set([...done].map((abs) => relative(SRC, abs)));
+  const unusedOverrides = Object.keys(overrides).filter((k) => !reached.has(k));
+  if (unusedOverrides.length) throw new Error(`module-graph: override(s) never reached from ${entries.join(', ')}: ${unusedOverrides.join(', ')}`);
+  const unusedPackages = Object.keys(packages).filter((k) => !usedPackages.has(k));
+  if (unusedPackages.length) throw new Error(`module-graph: package stub(s) never imported: ${unusedPackages.join(', ')}`);
 
   return {
     dir,

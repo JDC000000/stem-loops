@@ -730,3 +730,44 @@ export function layoutLine(
   };
   return attempt(LINE_CELLS, false) ?? attempt(2, false) ?? (attempt(2, true) as LineBox);
 }
+
+// ---------------------------------------------------------------------------
+// The player's chord stage grows into spare HEIGHT (Slice 1a; Jon, 2026-11-17:
+// no empty band between the beat row and the bars). Pure, so it is unit tested.
+// ---------------------------------------------------------------------------
+/** The Now step tried first when the stage is tall enough for it (phones). */
+export const TALL_NOW_PX = 96;
+/** ...and above it, when there is room for that too. */
+export const TALLER_NOW_PX = 120;
+/** A one-row bar line may grow to this height (from the laid-out 62px). */
+export const GROWN_BAR_PX = 104;
+/** A chord name in a grown bar may grow by up to this factor, never past its slot's width. */
+export const GROWN_NAME_MAX = 1.35;
+/** The chord name's font in a slot grown by `k`: as large as the slot's width allows, up to GROWN_NAME_MAX. */
+export function grownFontPx(text: string, fontPx: number, slotW: number, wrap: boolean, k: number): number {
+  if (wrap || !(k > 1)) return fontPx;
+  for (let f = Math.min(k, GROWN_NAME_MAX); f > 1; f -= 0.05) {
+    const px = Math.floor(fontPx * f);
+    if (nameWidth(text, px) <= slotW) return px;
+  }
+  return fontPx;
+}
+/**
+ * The stage's height outside the bar lines for a Now name `nowPx` tall:
+ * position line 20, four 12px gaps, the "Now" label 16, the name at line
+ * height 1.05, the beat row 6, and a 10px safety margin (fonts, rounding).
+ */
+export function stageChromePx(nowPx: number): number {
+  return 20 + 4 * 12 + 16 + Math.ceil(nowPx * 1.05) + 6 + 10;
+}
+/**
+ * How much the bar lines may grow into `spare` px: never shrink, never past
+ * GROWN_BAR_PX per one-row bar (a two-row line grows by the same factor).
+ */
+export function growScale(spare: number, cur: { h: number; rows: number } | null | undefined, next: { h: number; rows: number } | null | undefined): number {
+  const boxes = [cur, next].filter((b): b is { h: number; rows: number } => !!b && b.h > 0);
+  const total = boxes.reduce((a, b) => a + b.h, 0);
+  if (!(spare > 0) || total <= 0) return 1;
+  const cap = Math.min(...boxes.map((b) => (GROWN_BAR_PX * b.rows) / b.h));
+  return Math.max(1, Math.min(cap, (total + spare) / total));
+}

@@ -506,7 +506,10 @@ test('strip (DOM): a click, Enter or Space is a TAP on that chip index', async (
   });
 });
 
-test('strip (DOM): long-press 500 ms = loop only this, and the click after the release is SWALLOWED', async () => {
+/** A click as a pointer produces it (detail 1); `el.click()` is a keyboard-like click (detail 0). */
+const pointerClick = (dom, el) => dom.act(() => el.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })));
+
+test('strip (DOM): long-press 500 ms = loop only this, and the POINTER click after the release is SWALLOWED', async () => {
   const { mod, React } = await loadComponent();
   assert.equal(mod.LONG_PRESS_MS, 500);
   await withDom(async (dom) => {
@@ -520,11 +523,41 @@ test('strip (DOM): long-press 500 ms = loop only this, and the click after the r
     await dom.advance(100);
     assert.deepEqual(longs, [2]);
     await dom.pointer('pointerup', chip, { clientX: 10, clientY: 10, pointerType: 'touch' });
-    await dom.act(() => chip.click());
+    await pointerClick(dom, chip);
     assert.deepEqual(taps, [], 'the release click must not read as a tap (it would clear the loop)');
     // ...and only that one click: the next is a tap again.
-    await dom.act(() => chip.click());
+    await pointerClick(dom, chip);
     assert.deepEqual(taps, [2]);
+    await dom.unmountAll();
+  });
+});
+
+test('strip (DOM, review S2): a long-press whose click never comes cannot swallow a later activation', async () => {
+  const { mod, React } = await loadComponent();
+  assert.ok(mod.SWALLOW_WINDOW_MS > 0 && mod.SWALLOW_WINDOW_MS <= 1000);
+  await withDom(async (dom) => {
+    const taps = [];
+    await dom.mount(React.createElement(mod.SectionLoop, { names: NAMES, state: NO_RUN, onTap: (i) => taps.push(i), onLongPress: noop }));
+    const [a, b] = dom.findAll('button');
+    // Long-press, finger slides off: no click follows.
+    await dom.pointer('pointerdown', a, { clientX: 10, clientY: 10, pointerType: 'touch' });
+    await dom.advance(550);
+    await dom.pointer('pointercancel', a, { pointerType: 'touch' });
+    // Keyboard / switch / AT activation right away (a click with detail 0): never eaten.
+    await dom.act(() => b.click());
+    assert.deepEqual(taps, [1], 'keyboard activation swallowed');
+    // A keydown also clears the flag.
+    await dom.pointer('pointerdown', a, { clientX: 10, clientY: 10, pointerType: 'touch' });
+    await dom.advance(550);
+    await dom.keydown('Enter', { target: b });
+    await pointerClick(dom, b);
+    assert.deepEqual(taps, [1, 1], 'a keydown in between must clear the flag');
+    // And the flag times out: a pointer click well after the long-press is a tap.
+    await dom.pointer('pointerdown', a, { clientX: 10, clientY: 10, pointerType: 'touch' });
+    await dom.advance(550);
+    await dom.advance(mod.SWALLOW_WINDOW_MS + 50);
+    await pointerClick(dom, b);
+    assert.deepEqual(taps, [1, 1, 1], 'the flag outlived its window');
     await dom.unmountAll();
   });
 });
@@ -543,7 +576,7 @@ test('strip (DOM): a finger that moves (scrolling the strip) cancels the long-pr
     await dom.pointer('pointerdown', chip, { clientX: 10, clientY: 10, pointerType: 'touch' });
     await dom.advance(100);
     await dom.pointer('pointerup', chip, { clientX: 10, clientY: 10, pointerType: 'touch' });
-    await dom.act(() => chip.click());
+    await pointerClick(dom, chip);
     await dom.advance(600);
     assert.deepEqual(longs, []);
     assert.deepEqual(taps, [1]);

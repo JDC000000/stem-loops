@@ -3,7 +3,9 @@
    positioned against the player root. */
 
 .backdrop {
-  position: absolute;
+  /* fixed, not absolute: the player root can scroll when it does not fit (WCAG
+     1.4.10), and the backdrop must cover the viewport, not the scrolled-away top. */
+  position: fixed;
   inset: 0;
   z-index: 10;
   background: rgba(0, 0, 0, 0.55);
@@ -56,7 +58,7 @@
 
 /* Landscape phones (P1.3, P1.4 rule 1): a right-side panel at full height whose
    content scrolls inside it. */
-@media (max-height: 499px) {
+@media (max-height: 499px) and (min-width: 560px) {
   .backdrop { flex-direction: row; justify-content: flex-end; }
   .sheet {
     width: min(420px, 60%);

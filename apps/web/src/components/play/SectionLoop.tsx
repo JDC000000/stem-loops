@@ -10,6 +10,13 @@ export const LONG_PRESS_MS = 500;
 /** A finger that moves this far is scrolling the strip, not pressing a chip. */
 export const LONG_PRESS_SLOP_PX = 10;
 
+/**
+ * How long after a long-press its release click may still arrive. Past this the
+ * swallow flag is dropped, so a long-press whose click never comes (the finger
+ * slid off, or the browser suppressed it) cannot eat a later activation.
+ */
+export const SWALLOW_WINDOW_MS = 700;
+
 /** The one-time hint after the first extend (P2.1 "signposting the change"). */
 export const RUN_HINT = 'Looping these — tap one to loop it alone.';
 
@@ -41,6 +48,7 @@ export function SectionLoop({ names, state, onTap, onLongPress, hint = false }: 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const start = useRef<{ x: number; y: number } | null>(null);
   const swallow = useRef(false);
+  const swallowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const cancel = () => {
@@ -48,7 +56,18 @@ export function SectionLoop({ names, state, onTap, onLongPress, hint = false }: 
     timer.current = null;
     start.current = null;
   };
-  useEffect(() => cancel, []);
+  const clearSwallow = () => {
+    swallow.current = false;
+    if (swallowTimer.current) clearTimeout(swallowTimer.current);
+    swallowTimer.current = null;
+  };
+  useEffect(
+    () => () => {
+      cancel();
+      clearSwallow();
+    },
+    [],
+  );
 
   // Keep the run's ends in view (P2.1 auto-scroll): the far end first, then the
   // near end, so on a run wider than the strip its START wins.
@@ -66,11 +85,14 @@ export function SectionLoop({ names, state, onTap, onLongPress, hint = false }: 
   const down = (i: number) => (e: ReactPointerEvent<HTMLButtonElement>) => {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     cancel();
-    swallow.current = false;
+    clearSwallow();
     start.current = { x: e.clientX, y: e.clientY };
     timer.current = setTimeout(() => {
       timer.current = null;
       swallow.current = true;
+      // The release click arrives right after pointerup; if it never does,
+      // the flag must not outlive this window.
+      swallowTimer.current = setTimeout(clearSwallow, SWALLOW_WINDOW_MS);
       onLongPress(i);
     }, LONG_PRESS_MS);
   };
@@ -101,11 +123,16 @@ export function SectionLoop({ names, state, onTap, onLongPress, hint = false }: 
               onPointerCancel={cancel}
               onPointerLeave={cancel}
               onContextMenu={(e) => e.preventDefault()}
-              onClick={() => {
-                if (swallow.current) {
-                  swallow.current = false;
+              onKeyDown={clearSwallow}
+              onClick={(e) => {
+                // Only a POINTER click (detail >= 1) can be the long-press's
+                // release. Keyboard, switch and AT activation dispatch a click
+                // with detail 0 and is never swallowed.
+                if (swallow.current && e.detail > 0) {
+                  clearSwallow();
                   return;
                 }
+                clearSwallow();
                 onTap(i);
               }}
             >

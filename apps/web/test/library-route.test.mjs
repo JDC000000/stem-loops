@@ -132,7 +132,11 @@ test('GET /api/library: reads is_demo and passes it through, so /history can hid
   // MF-2: a mutant dropping `is_demo, ` from the route survived the earlier regex).
   const select = norm(globalThis.__lib.queries[0].text).split(' FROM jobs ')[0];
   const columns = select.split(norm(JOB_RETAINED_UNTIL_SQL)).join('<RULE>');
-  assert.match(columns, /(^|[ ,])is_demo, <RULE> AS expires_at/, 'the SELECT list must read the is_demo column');
+  // The BARE column, not an expression aliased to it (re-review N-1: `NULL AS is_demo` passed
+  // the looser regex, and the fake DB returns is_demo whatever is asked for). It must be its
+  // own select-list item, preceded by a comma, and nothing may be aliased AS is_demo.
+  assert.match(columns, /, is_demo, <RULE> AS expires_at$/, 'the SELECT list must read the is_demo column');
+  assert.doesNotMatch(columns, /\bAS\s+is_demo\b/i, 'is_demo must be the column, not an aliased expression');
   assert.deepEqual(res.body.songs.map((s) => [s.is_demo, s.expires_at]), [[true, DEMO_RETAINED_UNTIL], [false, row(1).expires_at]]);
 });
 

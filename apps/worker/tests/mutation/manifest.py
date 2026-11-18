@@ -686,6 +686,17 @@ MUTANTS: tuple[Mutant, ...] = (
         suite="web",
     ),
     Mutant(
+        "web_library_is_demo_aliased_null",
+        "src/app/api/library/route.ts",
+        "              is_demo, ${JOB_RETAINED_UNTIL_SQL} AS expires_at",
+        "              NULL AS is_demo, ${JOB_RETAINED_UNTIL_SQL} AS expires_at",
+        ("test/library-route.test.mjs::GET /api/library: reads is_demo and passes it through",),
+        "Re-review of #289 @60dda0a, N-1 (A5): `NULL AS is_demo` must not pass for the real "
+        "column; the fake DB returns is_demo whatever the SQL asks for, so the select list is "
+        "what the test pins.",
+        suite="web",
+    ),
+    Mutant(
         "web_account_delete_keeps_is_demo",
         "src/app/api/users/me/route.ts",
         "SET expires_at = LEAST(expires_at, created_at), is_demo = false",

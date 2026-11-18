@@ -23,6 +23,12 @@
 -- the INSERT in POST /api/jobs does not name it, so every new job takes the DEFAULT false.
 -- The only application write is account deletion (DELETE /api/users/me), which sets it to
 -- FALSE so a deleted demo owner never leaves demos retained-until-2099 AND anonymous.
+-- That clearing happens ONLY in the app's deletion path. Deleting the demo account any
+-- other way (Supabase Dashboard -> Authentication -> Users -> Delete, or
+-- auth.admin.deleteUser) runs ON DELETE SET NULL on jobs.user_id WITHOUT clearing is_demo,
+-- leaving the demos retained AND anonymous (readable, and loop-cuttable, by any id holder).
+-- RULE: never delete the demo account from the Dashboard; use the app's account deletion.
+-- Slice 2's explicit is_demo denial on download and loops closes this for good.
 -- The three rows are flagged by a separate, Jon-approved, GUARDED named write (expect
 -- UPDATE 3; anything else: ROLLBACK and investigate):
 --     UPDATE public.jobs SET is_demo = true

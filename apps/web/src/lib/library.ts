@@ -6,7 +6,7 @@
 // grace after the subscription ends. Users build a LIBRARY of songs.
 //
 // Pure and free of `@/` imports so src/lib/library.test.mjs can load it directly.
-import { jobLabel } from './job-label.ts';
+import { jobLabel, shortSource } from './job-label.ts';
 import { RETENTION_MS } from './retention.ts';
 import { songThumbnailUrl } from './song-thumb.ts';
 
@@ -39,7 +39,30 @@ export type ListedSong = {
   isDemo: boolean;
   /** i.ytimg.com thumbnail for a linked song (P5.1), else null. Library rows only. */
   thumbUrl: string | null;
+  /**
+   * What the row can do (QA A-06): 'ready' plays, 'processing' is on its way,
+   * 'failed' never plays (the list shows a status chip and no thumbnail).
+   * 'unknown' for a browser-only entry, whose status this page never fetched.
+   */
+  state: SongState;
 };
+
+export type SongState = 'ready' | 'processing' | 'failed' | 'unknown';
+
+/** jobs.status (TSD §6.3) -> what the list says about the row. */
+export function songState(status: string | null | undefined): SongState {
+  if (status === 'done') return 'ready';
+  if (status === 'failed') return 'failed';
+  if (typeof status === 'string' && status) return 'processing';
+  return 'unknown';
+}
+
+/** The chip a row carries, or null for a playable (or unknown) one. */
+export function stateChip(state: SongState): string | null {
+  if (state === 'failed') return 'Failed';
+  if (state === 'processing') return 'Processing';
+  return null;
+}
 
 const ms = (iso: string): number => {
   const t = new Date(iso).getTime();
@@ -62,16 +85,21 @@ export function listedSongs(
     const createdAtMs = ms(r.created_at);
     const expiresAtMs = ms(r.expires_at);
     if (!Number.isFinite(createdAtMs) || !Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) continue;
+    const state = songState(r.status);
+    // A link with no title yet is listed by its short host/ID form, not the raw URL (QA A-06).
+    const label = r.title?.trim() || r.original_filename?.trim() ? jobLabel(r) : r.youtube_url?.trim() ? shortSource(r.youtube_url) : jobLabel(r);
     out.set(r.id, {
-      id: r.id, label: jobLabel(r), createdAtMs, expiresAtMs, source: 'library', isDemo: r.is_demo === true,
-      thumbUrl: songThumbnailUrl(r),
+      id: r.id, label, createdAtMs, expiresAtMs, source: 'library', isDemo: r.is_demo === true,
+      // A failed song shows no video still: nothing about the row may look playable.
+      thumbUrl: state === 'failed' ? null : songThumbnailUrl(r),
+      state,
     });
   }
   for (const e of browser) {
     if (out.has(e.id)) continue;
     const expiresAtMs = e.at + RETENTION_MS;
     if (expiresAtMs <= nowMs) continue;
-    out.set(e.id, { id: e.id, label: e.id, createdAtMs: e.at, expiresAtMs, source: 'browser', isDemo: false, thumbUrl: null });
+    out.set(e.id, { id: e.id, label: e.id, createdAtMs: e.at, expiresAtMs, source: 'browser', isDemo: false, thumbUrl: null, state: 'unknown' });
   }
   return Array.from(out.values()).sort((a, b) => b.createdAtMs - a.createdAtMs);
 }

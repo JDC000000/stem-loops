@@ -40,7 +40,10 @@ async function build() {
     'export function createBrowserClient() { return { auth: { onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }), ' +
     // A test may script the Google call through globalThis.__loginStub.oauth (F57 busy-label
     // test); unscripted, it returns undefined and the destructure throws, as an absent method did.
-    'signInWithOAuth: (...a) => globalThis.__loginStub?.oauth?.(...a) } }; }');
+    'signInWithOAuth: (...a) => globalThis.__loginStub?.oauth?.(...a), ' +
+    // QA A-08: sign-in and reset are scriptable the same way (globalThis.__loginStub.password / .reset).
+    'signInWithPassword: (...a) => globalThis.__loginStub?.password?.(...a), ' +
+    'resetPasswordForEmail: (...a) => globalThis.__loginStub?.reset?.(...a) } }; }');
   const hcaptcha = put('hcaptcha.mjs', 'export default function HCaptcha() { return null; }');
   // The REAL show/hide password field (Slice 1b), not a stub: the toggle is what is tested.
   const passwordField = put('PasswordField.mjs', toJs(read('src/components/PasswordField.tsx'), true));

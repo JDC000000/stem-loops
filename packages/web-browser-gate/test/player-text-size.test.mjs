@@ -617,7 +617,7 @@ for (const width of VIEWPORTS) {
 // scroll when it fits, and DOES scroll when it cannot (a short window, 400%
 // zoom), so every transport control stays reachable by pointer and touch.
 // ---------------------------------------------------------------------------
-const FITS = [[390, 844], [390, 664], [360, 800], [320, 568], [360, 520], [600, 500], [1440, 900], [1024, 768], [1366, 600], [1024, 520], [1024, 500], [667, 375]];
+const FITS = [[390, 844], [390, 664], [360, 800], [320, 568], [360, 520], [600, 500], [1440, 900], [1024, 768], [1366, 600], [1024, 520], [1024, 500], [667, 375], [844, 390], [800, 360]];
 const ZOOMED = [[320, 256], [320, 225]];
 const CONTROLS = ['[aria-label="Back 5 seconds"]', '[data-testid="transport-play"]', '[aria-label="Forward 5 seconds"]', '[data-testid="transport-loop"]', '[data-testid="transport-mix"]'];
 
@@ -690,7 +690,7 @@ test('S1: at 400% zoom (320x256, 320x225) the screen scrolls and Play, ±5, Loop
 // above the strip's top (when they share a column). Short or zoomed windows
 // scroll instead. Removing the chord floor (.chords min-height) fails this at
 // 320x256/320x225, where the Now name would be drawn below its own area.
-const SWEEP = [[390, 844], [390, 664], [360, 640], [360, 520], [320, 568], [320, 256], [320, 225], [600, 500], [1024, 500], [1024, 520], [1100, 540], [1280, 600], [1366, 600], [1440, 900], [667, 375], [844, 390]];
+const SWEEP = [[390, 844], [390, 664], [360, 640], [360, 520], [320, 568], [320, 256], [320, 225], [600, 500], [1024, 500], [1024, 520], [1100, 540], [1280, 600], [1366, 600], [1440, 900], [667, 375], [844, 390], [800, 360]];
 test('R2/R3: the current bar line and the Now name never sit under the section strip (sweep, with a notice)', async () => {
   assert.ok(browser && built, 'setup test did not run or failed');
   const f = [];
@@ -726,10 +726,10 @@ test('R2/R3: the current bar line and the Now name never sit under the section s
 });
 
 // Review R4: landscape phones keep every control >= 44x44 (Loop was 31.6px wide).
-test('R4: landscape (667x375, 740x360, 844x390): every player control is at least 44x44', async () => {
+test('R4: landscape (667x375, 740x360, 800x360, 844x390): every player control is at least 44x44', async () => {
   assert.ok(browser && built, 'setup test did not run or failed');
   const f = [];
-  for (const [w, h] of [[667, 375], [740, 360], [844, 390]]) {
+  for (const [w, h] of [[667, 375], [740, 360], [800, 360], [844, 390]]) {
     const { page } = await openPlayer(browser, built, w, POSITIONS[0].sec, h, { notice: false });
     try {
       const small = await page.evaluate(() => {

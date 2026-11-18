@@ -177,6 +177,48 @@ function _invoiceUserId(invoice: Stripe.Invoice): string {
   );
 }
 
+// Thrown by handleWebhook when the event's signature was valid but a read
+// back from Stripe (a Checkout Session's line items) failed. The webhook
+// route answers 500 for it so Stripe RETRIES; every other handleWebhook
+// failure is treated as a bad signature and answered 400 (no retry). The
+// route matches it by `name`, not instanceof (it only sees the provider
+// through the BillingProvider interface).
+export class BillingProviderUnavailableError extends Error {
+  constructor(what: string, cause: unknown) {
+    super(`${what}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'BillingProviderUnavailableError';
+  }
+}
+
+// PR #298 review R2-2 / R3-2. Every Stripe read on the webhook path (most of
+// them inside a DB transaction holding a per-subscription lock) is bounded:
+// 6 s per attempt, no configured retries. stripe-node's defaults are an 80 s
+// timeout and 2 network retries, i.e. minutes holding a pooled connection
+// and an open transaction. NOTE: even with maxNetworkRetries 0, stripe-node
+// 23 retries ONCE on ECONNRESET / EPIPE (RequestSender._shouldRetry), so one
+// read can take up to 2 x 6 s = 12 s; the route's time budget counts that.
+// A timeout surfaces as an error; the webhook answers 500 and STRIPE retries
+// the delivery (it retries for days), which is the right retry layer.
+export const STRIPE_WEBHOOK_READ_OPTIONS = Object.freeze({ timeout: 6000, maxNetworkRetries: 0 });
+
+// Review I-1: the event's `livemode` disagrees with the API key's mode (a
+// live endpoint secret with a test key, or the reverse). Thrown after the
+// signature check; the route answers 500 and alerts. Matched by name.
+export class BillingModeMismatchError extends Error {
+  constructor(eventLive: boolean, keyLive: boolean) {
+    super(`event livemode=${eventLive} but STRIPE_SECRET_KEY is a ${keyLive ? 'live' : 'test'} key`);
+    this.name = 'BillingModeMismatchError';
+  }
+}
+
+/** true/false for a live/test key, null when the key does not say. */
+function keyIsLive(key: string | undefined): boolean | null {
+  if (!key) return null;
+  if (/^(sk|rk)_live_/.test(key)) return true;
+  if (/^(sk|rk)_test_/.test(key)) return false;
+  return null;
+}
+
 // Sentinel thrown when a Stripe subscription carries a price_id that doesn't
 // map to any known PLAN_PRICE_ENV entry. Previously `priceIdToPlan ?? 'pro'`
 // (and before that, `?? 'pro_monthly'`) silently downgraded a studio
@@ -413,8 +455,13 @@ export class StripeProvider implements BillingProvider {
   }
 
   async getSubscription(subscriptionId: string): Promise<BillingSubscription> {
-    const sub = await getClient().subscriptions.retrieve(subscriptionId);
+    const sub = await getClient().subscriptions.retrieve(subscriptionId, {}, { ...STRIPE_WEBHOOK_READ_OPTIONS });
     return subFromStripe(sub);
+  }
+
+  async getInvoiceState(invoiceId: string): Promise<{ status: string; amountRemaining: number }> {
+    const inv = await getClient().invoices.retrieve(invoiceId, {}, { ...STRIPE_WEBHOOK_READ_OPTIONS });
+    return { status: inv.status ?? 'unknown', amountRemaining: inv.amount_remaining ?? 0 };
   }
 
   async cancelSubscription(
@@ -436,6 +483,10 @@ export class StripeProvider implements BillingProvider {
       throw new Error('STRIPE_WEBHOOK_SECRET is not set');
     }
     const event = getClient().webhooks.constructEvent(rawBody, signature, secret);
+    const keyLive = keyIsLive(process.env.STRIPE_SECRET_KEY);
+    if (keyLive !== null && typeof event.livemode === 'boolean' && event.livemode !== keyLive) {
+      throw new BillingModeMismatchError(event.livemode, keyLive);
+    }
     return await this._dispatch(event);
   }
 
@@ -496,44 +547,53 @@ export class StripeProvider implements BillingProvider {
         const sub = event.data.object as Stripe.Subscription;
         const userId = (sub.metadata?.user_id as string | undefined) ?? '';
         if (event.type === 'customer.subscription.deleted') {
+          const item = sub.items?.data?.[0];
           return {
             type: 'subscription_canceled',
             userId,
             providerSubscriptionId: sub.id,
             providerCustomerId: _customerId(sub.customer),
             neverPaid: sub.status === 'incomplete' || sub.status === 'incomplete_expired',
+            planCode: item?.price?.id ? priceIdToPlan(item.price.id) : null,
+            currentPeriodStart: item?.current_period_start ? new Date(item.current_period_start * 1000) : null,
+            currentPeriodEnd: item?.current_period_end ? new Date(item.current_period_end * 1000) : null,
           };
         }
+        const previous =
+          event.type === 'customer.subscription.created'
+            ? null
+            : _previousAttributes(event.data as { previous_attributes?: unknown });
         try {
-          return {
-            type: 'subscription_upserted',
-            userId,
-            subscription: subFromStripe(sub),
-            previous:
-              event.type === 'customer.subscription.created'
-                ? null
-                : _previousAttributes(event.data as { previous_attributes?: unknown }),
-          };
+          return { type: 'subscription_upserted', userId, subscription: subFromStripe(sub), previous };
         } catch (err) {
-          // HIGH #2: unknown price_id must NOT silently downgrade to pro.
-          // Mark unhandled so the webhook route logs it and the operator sees
-          // the mismatch via Stripe's dashboard retry/alerting.
-          if (err instanceof UnknownPriceError) {
-            console.error(
-              `[stripe] ${event.type} dropped for sub ${sub.id}: ${err.message}`,
-            );
-            return { type: 'unhandled', eventType: `${event.type}:unknown_price` };
+          if (!(err instanceof UnknownPriceError) && !(err instanceof UnknownStatusError)) throw err;
+          // Review L-4: the PAYLOAD may be stale. An unknown price or status
+          // in it says nothing about now, so re-read before dropping: if the
+          // CURRENT state maps, it is applied (the route re-reads again under
+          // its lock). A failed read is a 500 so Stripe retries.
+          let fresh: Stripe.Subscription;
+          try {
+            fresh = await getClient().subscriptions.retrieve(sub.id, {}, { ...STRIPE_WEBHOOK_READ_OPTIONS });
+          } catch (readErr) {
+            throw new BillingProviderUnavailableError(`subscriptions.retrieve(${sub.id})`, readErr);
           }
-          // Phase-1b launch-blocker: Stripe status we don't recognize.
-          // Mark unhandled (not 500) so the webhook returns 200, Stripe
-          // stops retrying, and the operator sees the drift in logs.
-          if (err instanceof UnknownStatusError) {
-            console.error(
-              `[stripe] ${event.type} dropped for sub ${sub.id}: ${err.message}`,
-            );
-            return { type: 'unhandled', eventType: `${event.type}:unknown_status` };
+          try {
+            return { type: 'subscription_upserted', userId, subscription: subFromStripe(fresh), previous };
+          } catch (freshErr) {
+            // HIGH #2: an unknown price must NOT silently downgrade to pro,
+            // and an unknown status must not CHECK-violate the DB. Drop it
+            // (200; a retry cannot fix it) and alert a human.
+            if (freshErr instanceof UnknownPriceError || freshErr instanceof UnknownStatusError) {
+              const kind = freshErr instanceof UnknownPriceError ? 'unknown_price' : 'unknown_status';
+              return {
+                type: 'unhandled',
+                eventType: `${event.type}:${kind}`,
+                alert: `Stripe subscription ${sub.id} not applied: ${freshErr.message}`,
+                alertDetail: { subscription: sub.id },
+              };
+            }
+            throw freshErr;
           }
-          throw err;
         }
       }
       case 'charge.dispute.created': {
@@ -564,31 +624,65 @@ export class StripeProvider implements BillingProvider {
     }
   }
 
-  // session.line_items is NOT populated on webhook events by default — must
-  // retrieve with expand (fixes PR #13 review finding C1 — CRITICAL).
-  // Prefer metadata.price_id (we set it at checkout-create time) for speed;
-  // fall back to a retrieve when metadata is absent.
+  // QA B-15 / B-04 follow-up: the pack is derived from what was actually
+  // SOLD — the session's line items — never from session.metadata.
+  // session.line_items is NOT populated on webhook events, so the session is
+  // always re-read with expand (PR #13 review C1). metadata.price_id /
+  // metadata.pack_code are only compared, and a disagreement is logged: a
+  // Dashboard / Payment Link session with hand-typed metadata must not be
+  // able to turn a credits_20 payment into 180 credits. A failed read is a
+  // BillingProviderUnavailableError, which the route answers with 500 so
+  // Stripe retries (a 400 would drop a paid purchase for good).
   private async _creditPurchaseFromSession(
     session: Stripe.Checkout.Session,
   ): Promise<BillingEvent> {
     const userId = (session.metadata?.user_id as string | undefined) ?? '';
-    const packFromMeta = (session.metadata?.pack_code as string | undefined) ?? null;
-    let priceId = (session.metadata?.price_id as string | undefined) ?? '';
 
-    // Last-ditch retrieve if metadata was lost (shouldn't happen via our
-    // checkout route, but handles out-of-band session creation).
-    if (!priceId) {
-      const full = await getClient().checkout.sessions.retrieve(session.id, {
-        expand: ['line_items'],
-      });
-      priceId = full.line_items?.data?.[0]?.price?.id ?? '';
+    let full: Stripe.Checkout.Session;
+    try {
+      full = await getClient().checkout.sessions.retrieve(
+        session.id,
+        { expand: ['line_items'] },
+        { ...STRIPE_WEBHOOK_READ_OPTIONS },
+      );
+    } catch (err) {
+      throw new BillingProviderUnavailableError(
+        `checkout.sessions.retrieve(${session.id})`,
+        err,
+      );
     }
-
-    // Derive pack AUTHORITATIVELY from price_id, metadata is only a hint —
-    // prevents user paying for pack A but getting pack B via portal plan swap.
-    const packCode = priceIdToPack(priceId) ?? (packFromMeta as PackCode | null);
+    const items = full.line_items?.data ?? [];
+    const item = items[0];
+    const detail = {
+      session: session.id,
+      payment_intent: typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id ?? null,
+      amount_total: full.amount_total ?? session.amount_total ?? null,
+      currency: full.currency ?? session.currency ?? null,
+    };
+    if (items.length !== 1 || (item?.quantity ?? 1) !== 1) {
+      return {
+        type: 'unhandled',
+        eventType: 'checkout.session.completed:unexpected_line_items',
+        alert: `Paid credit session ${session.id} NOT granted: expected one line item of quantity 1, got ${items.length} (qty ${item?.quantity ?? 'n/a'})`,
+        alertDetail: detail,
+      };
+    }
+    const priceId = item?.price?.id ?? '';
+    const packCode = priceIdToPack(priceId);
     if (!packCode) {
-      return { type: 'unhandled', eventType: 'checkout.session.completed:unknown_pack' };
+      return {
+        type: 'unhandled',
+        eventType: 'checkout.session.completed:unknown_pack',
+        alert: `Paid credit session ${session.id} NOT granted: line-item price '${priceId}' is not a known credit pack`,
+        alertDetail: { ...detail, price: priceId },
+      };
+    }
+    const metaPrice = (session.metadata?.price_id as string | undefined) ?? null;
+    const metaPack = (session.metadata?.pack_code as string | undefined) ?? null;
+    if ((metaPrice && metaPrice !== priceId) || (metaPack && metaPack !== packCode)) {
+      console.warn(
+        `[stripe] credit session ${session.id}: metadata (price_id=${metaPrice}, pack_code=${metaPack}) disagrees with the line item (${priceId} -> ${packCode}); granting the line item`,
+      );
     }
 
     const paymentIntentId =
@@ -604,7 +698,7 @@ export class StripeProvider implements BillingProvider {
       userId,
       packCode,
       providerChargeId: paymentIntentId,
-      amountCents: session.amount_total ?? 0,
+      amountCents: full.amount_total ?? session.amount_total ?? 0,
       currency: session.currency ?? 'cad',
       priceId,
       promoCode: (session.metadata?.promo_code as string | undefined) ?? undefined,

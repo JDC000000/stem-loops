@@ -48,18 +48,60 @@ export function setStripeEnv() {
 }
 
 /** Load the real StripeProvider with the Stripe client's network methods
- *  replaced by recorders. Returns { provider, calls, subs }. */
+ *  replaced by recorders. Returns { provider, calls, subs, sessions }.
+ *  `subs[id]` is what subscriptions.retrieve returns (Stripe's CURRENT state
+ *  of a subscription); `sessions[id]` is what checkout.sessions.retrieve
+ *  returns (with line_items). An id with no fixture throws.
+ *  No request can leave the process: the client is built with an
+ *  httpClient that throws, so any Stripe method NOT faked below fails the
+ *  test instead of reaching api.stripe.com. */
 export async function loadStripeProvider() {
   setStripeEnv();
   const stripeEntry = new URL(import.meta.resolve('stripe')).href;
   const calls = [];
   const subs = {};
-  globalThis.__harness = { calls, subs };
+  const sessions = {};
+  const invoices = {};
+  // retrieveDelays: ms to hold each subscriptions.retrieve, in call order
+  // (review M-1 demos). The state is SNAPSHOTTED when the read is issued,
+  // like a real slow read: a later change to subs[id] does not reach it.
+  globalThis.__harness = { calls, subs, sessions, invoices, retrieveDelays: [], netAttempts: [], passthrough: false };
   const wrapper = dataUrl(`
     import Real from ${JSON.stringify(stripeEntry)};
-    export default function Stripe(...args) {
-      const c = new Real(...args);
+    const blocked = {
+      getClientName: () => 'harness-blocked',
+      // A rejected promise (not a sync throw): stripe-node then reports it
+      // as a StripeConnectionError through the normal callback path. Each
+      // attempt (the SDK's own retries included) is recorded with the
+      // timeout the SDK passed, so tests can check the REAL request options.
+      makeRequest: (host, port, path, method, headers, body, protocol, timeout) => {
+        globalThis.__harness?.netAttempts?.push({ method, path, timeout });
+        const err = new Error('harness: real Stripe network call blocked: ' + method + ' ' + host + path);
+        // netErrorCode (e.g. 'ECONNRESET') models a reset socket, which
+        // stripe-node retries once even with maxNetworkRetries 0.
+        if (globalThis.__harness?.netErrorCode) err.code = globalThis.__harness.netErrorCode;
+        return Promise.reject(err);
+      },
+    };
+    export default function Stripe(key, opts = {}) {
+      // The client keeps the provider's own settings (no harness override of
+      // retries or timeouts); only the transport is replaced.
+      const c = new Real(key, { ...opts, httpClient: blocked });
       const h = globalThis.__harness;
+      // passthrough: send the call through the REAL SDK (into the blocked
+      // transport) instead of the fixture, to observe real request options.
+      const real = {
+        'subscriptions.retrieve': c.subscriptions.retrieve.bind(c.subscriptions),
+        'invoices.retrieve': c.invoices.retrieve.bind(c.invoices),
+        'checkout.sessions.retrieve': c.checkout.sessions.retrieve.bind(c.checkout.sessions),
+      };
+      c.checkout.sessions.retrieve = async (id, params, ropts) => {
+        h.calls.push({ api: 'checkout.sessions.retrieve', id, params, ropts });
+        if (h.passthrough) return real['checkout.sessions.retrieve'](id, params, ropts);
+        if (h.sessionRetrieveError) throw h.sessionRetrieveError;
+        if (!h.sessions[id]) throw new Error('no session fixture for ' + id);
+        return h.sessions[id];
+      };
       c.checkout.sessions.create = async (params, opts) => {
         h.calls.push({ api: 'checkout.sessions.create', params, opts });
         return { id: 'cs_test_' + h.calls.length, url: 'https://checkout.stripe.test/c/pay' };
@@ -68,10 +110,20 @@ export async function loadStripeProvider() {
         h.calls.push({ api: 'billingPortal.sessions.create', params, opts });
         return { url: 'https://billing.stripe.test/p/session' };
       };
-      c.subscriptions.retrieve = async (id) => {
-        h.calls.push({ api: 'subscriptions.retrieve', id });
-        if (!h.subs[id]) throw new Error('no fixture for ' + id);
-        return h.subs[id];
+      c.subscriptions.retrieve = async (id, params, ropts) => {
+        h.calls.push({ api: 'subscriptions.retrieve', id, params, ropts });
+        if (h.passthrough) return real['subscriptions.retrieve'](id, params, ropts);
+        const snap = h.subs[id];
+        const delay = h.retrieveDelays.length ? h.retrieveDelays.shift() : 0;
+        if (delay) await new Promise((r) => setTimeout(r, delay));
+        if (!snap) throw new Error('no fixture for ' + id);
+        return snap;
+      };
+      c.invoices.retrieve = async (id, params, ropts) => {
+        h.calls.push({ api: 'invoices.retrieve', id, params, ropts });
+        if (h.passthrough) return real['invoices.retrieve'](id, params, ropts);
+        if (!h.invoices[id]) throw new Error('no invoice fixture for ' + id);
+        return h.invoices[id];
       };
       return c;
     }
@@ -80,7 +132,7 @@ export async function loadStripeProvider() {
     .replace(/from ['"]stripe['"]/g, `from '${wrapper}'`);
   const mod = await import(dataUrl(js) + '#' + Math.random());
   mod._resetStripeClientForTests();
-  return { provider: new mod.StripeProvider(), calls, subs, mod };
+  return { provider: new mod.StripeProvider(), calls, subs, sessions, invoices, mod, harness: globalThis.__harness };
 }
 
 /** Sign `event` with the real Stripe signer. Returns { body, signature }. */
@@ -165,6 +217,22 @@ export const creditSessionFixture = (over = {}) => ({
   ...over,
 });
 
+/** Register what checkout.sessions.retrieve(id, { expand: ['line_items'] })
+ *  returns for `session`: the session plus ONE line item of `priceId`
+ *  (default: the price the session's metadata claims, i.e. an honest
+ *  session). Pass a different price to model metadata that lies. */
+export function stripeSession(h, session, priceId = session.metadata?.price_id, over = {}) {
+  h.sessions[session.id] = {
+    ...session,
+    line_items: {
+      object: 'list',
+      data: [{ id: 'li_1', object: 'item', quantity: 1, price: { id: priceId, object: 'price' } }],
+    },
+    ...over,
+  };
+  return session;
+}
+
 export const disputeFixture = (over = {}) => ({
   id: 'du_test_1',
   object: 'dispute',
@@ -190,6 +258,10 @@ export function makeState() {
     invalidated: [],
     // Every email dispatcher call the route makes: { fn, userId, vars }.
     emails: [],
+    // Every Sentry capture the route makes: { kind, message, opts }.
+    sentry: [],
+    // Advisory-lock keys taken, in order (fakeDb.tx serialises on them).
+    lockLog: [],
     // Fault injection: [{ re, times }]. A statement matching `re` throws
     // (after any earlier statements in the handler took effect) `times`
     // times, to model a partial failure that Stripe then retries.
@@ -203,7 +275,9 @@ export function fakeDb(state) {
     const r = (rows) => ({ rows, rowCount: rows.length });
     const f = (state.failures ?? []).find((x) => x.times > 0 && x.re.test(q));
     if (f) { f.times -= 1; throw new Error('fakeDb: injected failure: ' + q.slice(0, 60)); }
-    if (/pg_advisory_xact_lock/.test(q)) return r([]);
+    if (/pg_advisory_xact_lock/.test(q)) return r([]); // only reached outside fakeDb.tx
+    if (/^SET LOCAL /.test(q) || /^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) /.test(q)) return r([]);
+    if (/^SELECT set_config\('lock_timeout'/.test(q)) return r([{}]);
     if (/^SELECT welcomed_at FROM users WHERE id = \$1/.test(q))
       return r(state.users.filter((u) => u.id === p[0]).map((u) => ({ welcomed_at: u.welcomed_at ? new Date(u.welcomed_at) : null })));
     if (/^SELECT 1 FROM users WHERE id/.test(q)) return r(state.users.filter((u) => u.id === p[0]).map(() => ({})));
@@ -228,25 +302,42 @@ export function fakeDb(state) {
       return r(state.subscriptions.filter((s) => s.user_id === p[0] && ['active', 'trialing', 'past_due'].includes(s.status)).slice(0, 1).map(() => ({})));
     if (/^SELECT user_id FROM subscriptions WHERE provider = \$1 AND provider_subscription_id/.test(q))
       return r(state.subscriptions.filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1]).map((s) => ({ user_id: s.user_id })));
+    if (/^INSERT INTO subscriptions/.test(q) && /SELECT \$1::uuid, .*'canceled'.* WHERE EXISTS \(SELECT 1 FROM users WHERE id = \$1::uuid\)/.test(q)) {
+      // subscription_canceled's TOMBSTONE (review M-1 demo 2): written only
+      // while the user row still exists (review R2-1).
+      const [user_id, provider, provider_subscription_id, plan_code, ps, pe] = p;
+      if (!state.users.some((u) => u.id === user_id)) return { rows: [], rowCount: 0 };
+      const row = state.subscriptions.find((s) => s.provider === provider && s.provider_subscription_id === provider_subscription_id);
+      if (row) Object.assign(row, { status: 'canceled', cancel_at_period_end: true });
+      else state.subscriptions.push({ user_id, provider, provider_subscription_id, plan_code, status: 'canceled',
+        current_period_start: ps, current_period_end: pe, cancel_at_period_end: true });
+      return { rows: [], rowCount: 1 };
+    }
     if (/^INSERT INTO subscriptions/.test(q)) {
       const [user_id, provider, provider_subscription_id, plan_code, status, ps, pe, cap] = p;
       const row = state.subscriptions.find((s) => s.provider === provider && s.provider_subscription_id === provider_subscription_id);
       const vals = { plan_code, status, current_period_start: ps, current_period_end: pe, cancel_at_period_end: cap };
-      if (row) Object.assign(row, vals);
-      else state.subscriptions.push({ user_id, provider, provider_subscription_id, ...vals });
-      return r([]);
+      // Mirrors `ON CONFLICT ... DO UPDATE ... WHERE subscriptions.status <>
+      // 'canceled' RETURNING status` (QA B-04): a skipped update returns no row.
+      const guarded = /WHERE subscriptions\.status <> 'canceled'/.test(q);
+      if (row) {
+        if (guarded && row.status === 'canceled') return r([]);
+        Object.assign(row, vals);
+      } else state.subscriptions.push({ user_id, provider, provider_subscription_id, ...vals });
+      return r([{ status }]);
     }
     if (/^UPDATE subscriptions SET status = 'canceled'/.test(q)) {
       const rows = state.subscriptions.filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1]);
       rows.forEach((s) => { s.status = 'canceled'; });
       return r(rows.map((s) => ({ user_id: s.user_id, plan_code: s.plan_code, current_period_end: s.current_period_end })));
     }
-    if (/^UPDATE subscriptions SET status = 'past_due'/.test(q)) {
+    if (/^UPDATE subscriptions SET status = \$3, updated_at = now\(\)/.test(q)) {
+      // invoice_payment_failed applies Stripe's CURRENT status (QA B-04).
       // Mirrors `AND status NOT IN ('incomplete', 'canceled')` (review B1).
-      assert(/AND status NOT IN \('incomplete', 'canceled'\)/.test(q), 'past_due UPDATE must skip incomplete/canceled');
+      assert(/AND status NOT IN \('incomplete', 'canceled'\)/.test(q), 'payment_failed UPDATE must skip incomplete/canceled');
       const rows = state.subscriptions.filter((s) => s.provider === p[0] && s.provider_subscription_id === p[1]
         && !['incomplete', 'canceled'].includes(s.status));
-      rows.forEach((s) => { s.status = 'past_due'; });
+      rows.forEach((s) => { s.status = p[2]; });
       return r(rows.map((s) => ({ user_id: s.user_id, plan_code: s.plan_code, current_period_start: s.current_period_start })));
     }
     if (/^INSERT INTO entitlements/.test(q)) {
@@ -288,21 +379,84 @@ export function fakeDb(state) {
     if (/^INSERT INTO usage_events/.test(q)) { state.usage.push(p); return r([]); }
     throw new Error('fakeDb: unexpected SQL: ' + q);
   };
-  return { query, tx: async (fn) => fn({ query }) };
+  // A transaction that SERIALISES on pg_advisory_xact_lock keys, like
+  // Postgres: a second tx asking for a held key waits until the holder's tx
+  // ends. Without this the M-1 race tests could not fail or pass honestly.
+  const locks = (state.__locks ??= new Map());
+  const acquire = async (key) => {
+    while (locks.has(key)) await locks.get(key).done;
+    let release;
+    const done = new Promise((res) => { release = res; });
+    locks.set(key, { done, release });
+  };
+  const releaseKey = (key) => { const l = locks.get(key); locks.delete(key); l?.release(); };
+  // Like Postgres, a statement that fails inside a transaction ABORTS it:
+  // every later statement fails until ROLLBACK TO SAVEPOINT (this is what the
+  // ensureUserRow savepoint exists for).
+  const tx = async (fn) => {
+    const held = [];
+    let aborted = false;
+    const client = {
+      query: async (sql, p = []) => {
+        const flat = sql.replace(/\s+/g, ' ').trim();
+        if (/^ROLLBACK TO SAVEPOINT /.test(flat)) { aborted = false; return { rows: [], rowCount: 0 }; }
+        if (aborted) throw new Error('fakeDb: current transaction is aborted, commands ignored until end of transaction block');
+        try {
+          return await txQuery(sql, p);
+        } catch (err) {
+          aborted = true;
+          throw err;
+        }
+      },
+    };
+    const txQuery = async (sql, p) => {
+        if (/^SELECT set_config\('lock_timeout'/.test(sql.trim())) state.lockLog?.push({ sql: sql.replace(/\s+/g, ' '), key: null, params: p });
+        if (/pg_advisory_xact_lock/.test(sql)) {
+          const key = p.join('|');
+          state.lockLog?.push({ sql: sql.replace(/\s+/g, ' '), key });
+          await acquire(key);
+          held.push(key);
+          return { rows: [], rowCount: 0 };
+        }
+        return query(sql, p);
+    };
+    try { return await fn(client); } finally { held.forEach(releaseKey); }
+  };
+  return { query, tx };
 }
 
-/** Load the webhook route wired to the REAL provider and an in-memory DB. */
-export async function loadWebhookRoute(provider, state) {
+/** A recording @sentry/nextjs stub; captures land in globalThis.__routeState.sentry. */
+export function sentryStubUrl() {
+  return dataUrl(`
+    const rec = (kind) => (message, opts) => { globalThis.__routeState?.sentry?.push({ kind, message, opts }); };
+    export const captureMessage = rec('message');
+    export const captureException = rec('exception');
+  `);
+}
+
+/** Load the webhook route wired to the REAL provider and an in-memory DB.
+ *  `transform` (tests only) may rewrite the route source first, e.g. to
+ *  shorten a timeout so a real-PG test can trip it in seconds. */
+export async function loadWebhookRoute(provider, state, { transform } = {}) {
   globalThis.__routeProvider = provider;
   globalThis.__routeDb = fakeDb(state);
+  globalThis.__routeSharedDb = undefined;
   globalThis.__routeState = state;
   const billing = dataUrl(`export const getBillingProvider = () => globalThis.__routeProvider;`);
   // Late-bound: identical data: URLs are cached by Node, so the stub must read
   // the per-test DB from globalThis at call time, not at import time.
-  const db = dataUrl(`export const db = {
-    query: (...a) => globalThis.__routeDb.query(...a),
-    tx: (...a) => globalThis.__routeDb.tx(...a),
-  };`);
+  // webhookDb = the webhook's own pool (what the route must use); db = the
+  // shared pool (__routeSharedDb when a test sets one apart, review R2-2).
+  const db = dataUrl(`
+    export const webhookDb = {
+      query: (...a) => globalThis.__routeDb.query(...a),
+      tx: (...a) => globalThis.__routeDb.tx(...a),
+    };
+    const shared = () => globalThis.__routeSharedDb ?? globalThis.__routeDb;
+    export const db = {
+      query: (...a) => shared().query(...a),
+      tx: (...a) => shared().tx(...a),
+    };`);
   const ent = dataUrl(`export const invalidateEntitlement = (u) => { globalThis.__routeState.invalidated.push(u); };`);
   // Recording email stubs. sendWelcomeIfFirstTime mirrors the real
   // welcomed_at guard (per user, once) and returns whether it "sent".
@@ -330,18 +484,32 @@ export async function loadWebhookRoute(provider, state) {
     }
   `);
   const prorata = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/billing/prorata.ts'), 'utf8')));
-  const js = toJs(readFileSync(join(WEB, 'src/app/api/billing/webhook/route.ts'), 'utf8'))
+  let routeSrc = readFileSync(join(WEB, 'src/app/api/billing/webhook/route.ts'), 'utf8');
+  if (transform) routeSrc = transform(routeSrc);
+  const js = toJs(routeSrc)
     .replace(/from ['"]@\/lib\/billing\/prorata['"]/g, `from '${prorata}'`)
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${ent}'`)
     .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billing}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${db}'`)
     .replace(/from ['"]@\/lib\/emails\/dispatch['"]/g, `from '${em}'`)
-    .replace(/from ['"]next\/server['"]/g, `from '${next}'`);
+    .replace(/from ['"]next\/server['"]/g, `from '${next}'`)
+    .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStubUrl()}'`);
   return import(dataUrl(js) + '#' + Math.random());
 }
 
-/** POST a Stripe event through route.POST with a real signature. */
-export async function deliver(mod, event) {
+/** POST a Stripe event through route.POST with a real signature.
+ *
+ *  The route re-reads a subscription from Stripe on every
+ *  customer.subscription.* event (QA B-04). By default `deliver` models
+ *  IN-ORDER delivery: Stripe's current state of the subscription is the
+ *  object the event carries, so `subs[id]` is set to it before the POST.
+ *  Pass { syncStripe: false } to leave `subs` alone and model a stale,
+ *  replayed or out-of-order delivery against the state a test set. */
+export async function deliver(mod, event, { syncStripe = true } = {}) {
+  const obj = event?.data?.object;
+  if (syncStripe && /^customer\.subscription\./.test(event?.type ?? '') && obj?.id && globalThis.__harness?.subs) {
+    globalThis.__harness.subs[obj.id] = obj;
+  }
   const { body, signature } = sign(event);
   return mod.POST({
     headers: { get: (n) => (n.toLowerCase() === 'stripe-signature' ? signature : null) },

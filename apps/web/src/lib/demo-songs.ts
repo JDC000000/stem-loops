@@ -7,7 +7,7 @@
 // what the player and the home poster show: id, title, BPM, key. Never user_id.
 import { db } from '@/lib/db';
 import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
-import { DEMO_ARTIST, DEMO_SONGS, demoForJobId } from '@/lib/demo-catalog';
+import { DEMO_ARTIST, DEMO_SONGS, demoBySlug, demoForJobId } from '@/lib/demo-catalog';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -42,10 +42,34 @@ function toDemoJob(r: Row): DemoJob {
 }
 
 /**
- * Every playable demo song: done and retained, catalogued songs first in catalog order,
- * then any other demo row (oldest first). One indexed-or-small read; no write.
+ * How long one server instance reuses the demo list (review S2). /demo/<slug> and
+ * GET /api/demos are public and dynamic; without this every request was a scan of `jobs`.
+ * A demo flag change shows up within this window. A failed read is never cached.
  */
-export async function listDemoJobs(): Promise<DemoJob[]> {
+export const DEMO_LIST_TTL_MS = 60_000;
+let cached: { at: number; jobs: Promise<DemoJob[]> } | null = null;
+
+/** Forget the cached list (tests; and nothing else needs it). */
+export function clearDemoJobsCache(): void {
+  cached = null;
+}
+
+/**
+ * Every playable demo song: done and retained, catalogued songs first in catalog order,
+ * then any other demo row (oldest first). One small read per DEMO_LIST_TTL_MS per server
+ * instance; no write.
+ */
+export async function listDemoJobs(now: number = Date.now()): Promise<DemoJob[]> {
+  if (cached && now - cached.at < DEMO_LIST_TTL_MS) return cached.jobs;
+  const jobs = readDemoJobs();
+  cached = { at: now, jobs };
+  jobs.catch(() => {
+    if (cached?.jobs === jobs) cached = null;
+  });
+  return jobs;
+}
+
+async function readDemoJobs(): Promise<DemoJob[]> {
   const res = await db.query<Row>(
     `SELECT id::text AS id, title, bpm, musical_key
        FROM jobs
@@ -67,6 +91,9 @@ export async function listDemoJobs(): Promise<DemoJob[]> {
  */
 export async function resolveDemo(slugOrId: string): Promise<DemoJob | null> {
   const key = slugOrId.toLowerCase();
+  // Review S2: a key that can never match costs nothing — no database call. Only a catalog
+  // slug or a well-formed UUID goes on to the (cached) demo list.
+  if (!demoBySlug(key) && !UUID_RE.test(key)) return null;
   const demos = await listDemoJobs();
   if (UUID_RE.test(key)) return demos.find((d) => d.id === key) ?? null;
   return demos.find((d) => d.slug === key) ?? null;

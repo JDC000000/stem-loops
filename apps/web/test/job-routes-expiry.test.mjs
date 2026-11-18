@@ -457,12 +457,16 @@ test('every GET that returns a signed URL sends Cache-Control: private, no-store
 // value: a demo row whose expires_at is long past is still retained, its expiry reads as
 // 2099-12-31, and every TTL derived from it is the NORMAL cap (not NaN, not 1 s).
 
-test('demo: GET /api/jobs/:id serves a demo song past its expires_at; expiry reads 2099-12-31; 24 h URL cap', async () => {
+test('demo: GET /api/jobs/:id serves a demo song past its expires_at; expiry reads 2099-12-31; no loop URL to a non-owner', async () => {
   const res = await call(routes.job, DEMO);
   assert.equal(res.status, 200, `demo answered ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
   assert.equal(new Date(res.body.expires_at).toISOString(), '2099-12-31T00:00:00.000Z');
   assert.equal(res.body.is_demo, true, 'the player needs is_demo to hide "deleted in"');
-  assert.equal(ttlOf(res.body.loops[0].signed_url), 24 * 3600, 'presignTtlSec: the normal 24 h cap');
+  // Slice 2a review F1: this fixture demo has no owner (user_id NULL) and the caller is signed
+  // out, so its cut loop is NOT signed (it would be a 24 h WAV download). The owner's signed
+  // loop URL is covered in demo-route-rules.test.mjs.
+  assert.ok(res.body.loops.length > 0);
+  for (const l of res.body.loops) assert.equal(l.signed_url, null);
 });
 
 test('demo: GET /api/jobs/:id returns is_demo false for a regular job', async () => {

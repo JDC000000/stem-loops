@@ -117,7 +117,7 @@ const dbStub = dataUrl(`
 async function loadRoute() {
   const js = toJs('src/app/api/jobs/[id]/route.ts')
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub}'`)
-    .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl('export const mayReadJob = async () => true;')}'`)
+    .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl('export const mayReadJob = async () => true; export const mayActOnJob = async () => true;')}'`)
     .replace(DEMO_RATE_IMPORT_RE, `from '${DEMO_RATE_URL}'`)
     .replace(INPUT_TRIM_IMPORT_RE, `from '${INPUT_TRIM_URL}'`)
     .replace(/from ['"]@\/lib\/retention['"]/g, `from '${dataUrl("export const presignTtlSec = () => 900; export const JOB_RETAINED_UNTIL_SQL = 'expires_at';")}'`)

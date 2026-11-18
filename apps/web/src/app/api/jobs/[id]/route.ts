@@ -3,7 +3,7 @@ import * as Sentry from '@sentry/nextjs';
 import { db } from '@/lib/db';
 import { mintSignedUrl } from '@/lib/r2';
 import { JOB_RETAINED_UNTIL_SQL, presignTtlSec } from '@/lib/retention';
-import { mayReadJob } from '@/lib/job-access';
+import { mayActOnJob, mayReadJob } from '@/lib/job-access';
 import { demoReadAllowed, DEMO_RATE_LIMIT_MSG } from '@/lib/demo-rate';
 import { inputTrimFromEvents } from '@/lib/input-trim';
 // OWNERSHIP: a job with a user_id is readable only by that user; an anonymous job
@@ -20,6 +20,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // up to the job's remaining life). Same rule as ../stems and ../play-chords (#185): never
 // let a shared cache store it, which Next's default `public, max-age=0, must-revalidate` permits.
 const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
+
+// Dropped from a demo song's response for everyone but its owner (review S1): where the
+// operator's upload lives and what the file was called, and each loop's storage key and file
+// name. The player reads none of them (title comes from the catalog; sections from
+// section_label / start_sec / end_sec / bpm).
+const DEMO_OWNER_ONLY_JOB_FIELDS = ['upload_r2_key', 'original_filename', 'youtube_url'] as const;
+const DEMO_OWNER_ONLY_LOOP_FIELDS = ['r2_key', 'filename'] as const;
 
 // GET /api/jobs/:id — status + events + loops, read straight from Postgres.
 // Each loop gets a FRESHLY minted signed URL on every read (PRD §8 anti-goal #4), valid for
@@ -59,6 +66,16 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
         { status: 429, headers: NO_STORE },
       );
     }
+    // THE PUBLIC DEMO VIEW (Slice 2a review F1, S1). A demo song read by anyone but its owner
+    // (the demo system account) gets what the player needs and nothing else: no signed loop
+    // URL (a cut demo loop is a 24 h WAV download, and P3.1 makes demo loops owner-only), no
+    // storage key and no upload metadata. The decision is the central rule's `download` cell,
+    // so an orphaned demo (owner deleted) is public to everyone. An ordinary job never enters
+    // this branch, so its response is unchanged.
+    const publicDemoView = job.is_demo === true && !(await mayActOnJob('download', { ownerId, isDemo: true }));
+    if (publicDemoView) {
+      for (const field of DEMO_OWNER_ONLY_JOB_FIELDS) delete (job as Record<string, unknown>)[field];
+    }
     const urlTtlSec = presignTtlSec(job.expires_at);
 
     // `detail` is read ONLY to find the input trim (lib/input-trim.ts) and is then dropped
@@ -93,6 +110,11 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     // served in full by an uncut row.
     const loops = await Promise.all(
       loopsRes.rows.map(async (l) => {
+        if (publicDemoView) {
+          const pub: Record<string, unknown> = { ...l, signed_url: null };
+          for (const field of DEMO_OWNER_ONLY_LOOP_FIELDS) delete pub[field];
+          return pub;
+        }
         if (l.cut_at === null || l.cut_at === undefined) return { ...l, signed_url: null };
         let signed_url: string | null = null;
         try {

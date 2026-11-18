@@ -139,7 +139,7 @@ async function loadRoute({
     .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${clientIpStub()}'`)
     // Ownership is not what this file tests (test/job-access-routes.test.mjs runs the REAL helper);
     // here it is stubbed open so this file's own subject stays isolated.
-    .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl(`export const mayReadJob = async () => true;`)}'`)
+    .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl(`export const mayReadJob = async () => true; export const mayActOnJob = async () => true;`)}'`)
     .replace(DEMO_RATE_IMPORT_RE, `from '${DEMO_RATE_URL}'`)
     // the REAL modules, inlined — the logic under test, not a stub of it
     .replace(/from ['"]@\/lib\/stem-keys['"]/g, `from '${dataUrl(toJs(readFileSync(KEYS, 'utf8')))}'`)

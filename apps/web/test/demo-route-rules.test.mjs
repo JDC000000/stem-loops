@@ -67,7 +67,7 @@ const dbStub = dataUrl(`
     if (/FROM job_events/.test(t)) return { rows: [], rowCount: 0 };
     if (/cut_at IS NULL/.test(t)) return { rows: [{ count: 3 }], rowCount: 1 };
     if (/COUNT\\(cut_at\\)/.test(t)) return { rows: [{ total: 3, cut: 0 }], rowCount: 1 };
-    if (/FROM loops/.test(t)) return { rows: [{ id: 'l1', job_id: st.job.id, stem: 'drums', section_label: 'verse', start_sec: 0, end_sec: 8, cut_at: null, r2_key: 'k', filename: 'f' }], rowCount: 1 };
+    if (/FROM loops/.test(t)) return { rows: [{ id: 'l1', job_id: st.job.id, stem: 'drums', section_label: 'verse', start_sec: 0, end_sec: 8, bpm: 102, cut_at: st.cutLoops ? '2026-11-18T00:00:00Z' : null, r2_key: 'jobs/' + st.job.id + '/loops/drums_verse.wav', filename: 'drums_verse.wav' }], rowCount: 1 };
     if (/INSERT INTO loop_requests/.test(t)) return { rows: [{ id: 'req-1', status: 'queued', created_at: 'now' }], rowCount: 1 };
     if (/FROM loop_requests/.test(t)) return { rows: [], rowCount: 0 };
     if (/FROM entitlements e/.test(t)) {
@@ -201,6 +201,9 @@ function arrange(jobKind, callerKind) {
       status: 'done',
       expires_at: '2099-12-31T00:00:00.000Z',
       title: 'Lucky Ticket',
+      upload_r2_key: 'uploads/' + JOB + '/Lucky Ticket MASTER 24bit.wav',
+      original_filename: 'Lucky Ticket MASTER 24bit.wav',
+      youtube_url: null,
       bpm: 102,
       musical_key: 'A major',
     },
@@ -249,8 +252,11 @@ for (const route of ['GET /api/jobs/:id', 'GET /api/jobs/:id/play-chords']) {
   });
 
   test(`${route}: an ORDINARY job never reaches the demo limiter (its behaviour is unchanged)`, async () => {
-    for (const jobKind of ['ordinary', 'anonymous ordinary job']) {
-      arrange(jobKind, 'owner');
+    for (const jobKind of ['ordinary', 'anonymous ordinary job', 'owned, is_demo column absent']) {
+      if (jobKind === 'owned, is_demo column absent') {
+        arrange('ordinary', 'owner');
+        delete globalThis.__rr.job.is_demo;
+      } else arrange(jobKind, 'owner');
       globalThis.__demoRateAllowed = false; // would refuse, if it were asked
       globalThis.__demoRateCalls = 0;
       const res = await ROUTES[route][1](mods[route]);
@@ -284,11 +290,66 @@ test('fail closed: a demo row whose SELECT lost is_demo is just an owned job (40
   }
 });
 
-test('the response for a demo is the ordinary response plus nothing: same keys as the owner gets', async () => {
+test('a non-owner gets the owner\'s demo response minus exactly the owner-only fields (S1)', async () => {
   arrange('demo', 'owner');
   const owner = await ROUTES['GET /api/jobs/:id'][1](mods['GET /api/jobs/:id']);
   arrange('demo', 'signed out');
   const anon = await ROUTES['GET /api/jobs/:id'][1](mods['GET /api/jobs/:id']);
-  assert.deepEqual(Object.keys(anon.body).sort(), Object.keys(owner.body).sort());
+  const dropped = ['original_filename', 'upload_r2_key', 'youtube_url'];
+  assert.deepEqual(Object.keys(anon.body).sort(), Object.keys(owner.body).filter((k) => !dropped.includes(k)).sort());
   assert.equal(anon.body.is_demo, true);
+});
+
+// ── F1 (review of #302): a CUT loop of a demo is never signed for anyone but its owner ──
+// GET /api/jobs/:id signs every cut loop (a 24 h WAV download). For a demo that would hand
+// the owner-only loop cut to the public. [signed out, another user, owner]: true = a URL.
+const CUT_LOOP_URL = {
+  demo: [false, false, true],
+  'orphaned demo (owner deleted)': [false, false, false],
+  ordinary: [null, null, true], // null = the job itself is a 404 to that caller (unchanged)
+  'anonymous ordinary job': [true, true, true], // unchanged: the pre-2a anonymous-job rule
+};
+for (const [jobKind, row] of Object.entries(CUT_LOOP_URL)) {
+  Object.keys(CALLERS).forEach((callerKind, i) => {
+    const want = row[i];
+    test(`cut demo loop: GET /api/jobs/:id · ${jobKind} · ${callerKind} → ${want === null ? '404' : want ? 'signed URL' : 'signed_url null'}`, async () => {
+      arrange(jobKind, callerKind);
+      globalThis.__rr.cutLoops = true;
+      const res = await ROUTES['GET /api/jobs/:id'][1](mods['GET /api/jobs/:id']);
+      if (want === null) return assert.equal(res.status, 404);
+      assert.equal(res.status, 200);
+      assert.equal(res.body.loops.length, 1, 'the player still needs every section row');
+      const url = res.body.loops[0].signed_url;
+      if (want) assert.match(String(url), /^https:\/\/signed\/jobs\/.+\/loops\/drums_verse\.wav$/);
+      else assert.equal(url, null, `a ${jobKind} loop WAV was signed for ${callerKind}`);
+      assert.equal(JSON.stringify(res.body).includes('https://signed/'), !!want, 'a signed URL appeared elsewhere in the body');
+    });
+  });
+}
+
+// ── S1: a non-owner's demo response carries no storage keys or upload metadata ──
+test('S1: a demo read by a non-owner drops upload_r2_key, original_filename, youtube_url and loop r2_key/filename', async () => {
+  for (const [jobKind, callerKind] of [['demo', 'signed out'], ['demo', 'another user'], ['orphaned demo (owner deleted)', 'owner']]) {
+    arrange(jobKind, callerKind);
+    globalThis.__rr.cutLoops = true;
+    const res = await ROUTES['GET /api/jobs/:id'][1](mods['GET /api/jobs/:id']);
+    assert.equal(res.status, 200);
+    for (const k of ['upload_r2_key', 'original_filename', 'youtube_url']) assert.equal(k in res.body, false, `${jobKind}/${callerKind}: ${k} leaked`);
+    for (const k of ['r2_key', 'filename']) assert.equal(k in res.body.loops[0], false, `${jobKind}/${callerKind}: loop ${k} leaked`);
+    const body = JSON.stringify(res.body);
+    assert.doesNotMatch(body, /MASTER 24bit|uploads\/|\/loops\/|\.wav/, 'storage metadata reached the public body');
+    // What the player needs is all still there.
+    assert.equal(res.body.title, 'Lucky Ticket');
+    assert.deepEqual([res.body.loops[0].section_label, res.body.loops[0].start_sec, res.body.loops[0].end_sec, res.body.loops[0].bpm], ['verse', 0, 8, 102]);
+  }
+});
+
+test('S1: the demo OWNER and every ordinary job keep the full response (fields unchanged)', async () => {
+  for (const [jobKind, callerKind] of [['demo', 'owner'], ['ordinary', 'owner'], ['anonymous ordinary job', 'signed out']]) {
+    arrange(jobKind, callerKind);
+    globalThis.__rr.cutLoops = true;
+    const res = await ROUTES['GET /api/jobs/:id'][1](mods['GET /api/jobs/:id']);
+    for (const k of ['upload_r2_key', 'original_filename', 'youtube_url']) assert.equal(k in res.body, true, `${jobKind}: ${k} missing`);
+    for (const k of ['r2_key', 'filename']) assert.equal(k in res.body.loops[0], true, `${jobKind}: loop ${k} missing`);
+  }
 });

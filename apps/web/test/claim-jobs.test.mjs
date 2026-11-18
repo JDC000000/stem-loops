@@ -246,6 +246,8 @@ test('POST /api/users/me/claim-jobs — truncation: UPDATE hits MAX and remainin
     (c, i) => i > updateIdx && /SELECT COUNT\(\*\)/i.test(c.text) && /user_id IS NULL/.test(c.text),
   );
   assert.ok(countIdx !== -1, 'remaining-count probe must run when UPDATE hits MAX');
+  // Slice 2a: the probe counts what the UPDATE could claim, so it excludes demo songs too.
+  assert.match(calls[countIdx].text, /\bis_demo = false\b/, 'the truncation probe counts demo songs the UPDATE can never claim');
   // A second usage_events INSERT with kind='claim_jobs_truncated' must be
   // written, and its detail JSON must carry the TOTAL matched count
   // (claimed + remaining).

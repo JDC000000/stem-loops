@@ -60,6 +60,7 @@ const catalog = await import(catalogUrl);
 
 beforeEach(() => {
   globalThis.__ds = { rows: ROWS, sql: [], throws: false };
+  ds.clearDemoJobsCache();
 });
 
 // ── lib/demo-songs.ts ────────────────────────────────────────────────────────────────
@@ -88,6 +89,28 @@ test('resolveDemo: a catalog slug, or a demo row id; never an ordinary job; unkn
   assert.equal(await ds.resolveDemo('im-asking-you'), null, 'a catalog song with no row resolved');
   assert.equal(await ds.resolveDemo('nope'), null);
   assert.equal(await ds.resolveDemo("'; DROP TABLE jobs; --"), null);
+});
+
+test('S2: a key that is neither a catalog slug nor a UUID returns null with ZERO database calls', async () => {
+  for (const key of ['nonsense', '9c5ba587', 'lucky-ticket-x', '', '../../etc', "'; DROP TABLE jobs; --", 'x'.repeat(5000)]) {
+    globalThis.__ds.sql = [];
+    assert.equal(await ds.resolveDemo(key), null, key.slice(0, 20));
+    assert.equal(globalThis.__ds.sql.length, 0, `${key.slice(0, 20)} reached the database`);
+  }
+});
+
+test('S2: the demo list is read once per TTL per instance; a failed read is not cached', async () => {
+  const t0 = 1_000_000;
+  await ds.listDemoJobs(t0);
+  await ds.listDemoJobs(t0 + ds.DEMO_LIST_TTL_MS - 1);
+  assert.equal(globalThis.__ds.sql.length, 1, 'a second read inside the TTL hit the database');
+  await ds.listDemoJobs(t0 + ds.DEMO_LIST_TTL_MS);
+  assert.equal(globalThis.__ds.sql.length, 2, 'the TTL never expired');
+  ds.clearDemoJobsCache();
+  globalThis.__ds.throws = true;
+  await assert.rejects(() => ds.listDemoJobs(t0));
+  globalThis.__ds.throws = false;
+  assert.equal((await ds.listDemoJobs(t0 + 1)).length, 3, 'a failure was cached');
 });
 
 test('isDemoJob: true only for an is_demo row; a malformed id never reaches the database', async () => {

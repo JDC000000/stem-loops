@@ -189,7 +189,7 @@ async function loadJobRoute(loops) {
     )
     // Ownership is not what this file tests (test/job-access-routes.test.mjs runs the REAL helper);
     // here it is stubbed open so this file's own subject stays isolated.
-    .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl(`export const mayReadJob = async () => true;`)}'`)
+    .replace(/from ['"]@\/lib\/job-access['"]/g, `from '${dataUrl(`export const mayReadJob = async () => true; export const mayActOnJob = async () => true;`)}'`)
     .replace(DEMO_RATE_IMPORT_RE, `from '${DEMO_RATE_URL}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${dataUrl(`export const captureException = () => {};`)}'`)
     .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)

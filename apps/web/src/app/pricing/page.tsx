@@ -2,7 +2,7 @@ import { db } from '@/lib/db';
 import { getUser } from '@/lib/auth/supabase';
 import BillingButton, { CreditPackCheckout, PackBuyButton } from '@/components/BillingButton';
 // The feature bullets live in their own module: a Next.js App Router page may
-// only export a fixed set of fields, so exporting features()/quotaLine() from
+// only export a fixed set of fields, so exporting features()/benefitLine() from
 // here passed `tsc --noEmit` but failed `next build`.
 import { benefitLine, features } from '@/lib/pricing-copy';
 

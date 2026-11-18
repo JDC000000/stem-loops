@@ -11,11 +11,18 @@ export const LONG_PRESS_MS = 500;
 export const LONG_PRESS_SLOP_PX = 10;
 
 /**
- * How long after the long-press is RELEASED (pointerup / pointercancel /
- * pointerleave) its click may still arrive. The flag is held for as long as the
- * pointer stays down — a 2-second hold must still swallow its release click
- * (review R1 on #288) — and dropped this long after the release, so a click that
- * never comes cannot eat a later activation.
+ * How long after the long-press is RELEASED (pointerup / pointercancel) its
+ * click may still arrive. The flag is held for as long as the pointer stays
+ * down — a 2-second hold must still swallow its release click (review R1 on
+ * #288) — and dropped this long after the release, so a click that never comes
+ * cannot eat a later activation.
+ *
+ * pointerleave is NOT a release (Slice 1b, review nit on #288): a mouse held
+ * down can slide off the chip and back before letting go. Starting the window
+ * there let it expire mid-hold, so the eventual release click read as a tap and
+ * undid the loop. Leaving only cancels a long-press that has not fired yet. If
+ * the button is released elsewhere no click reaches the chip at all, and the
+ * next pointerdown or key press clears the flag.
  */
 export const SWALLOW_WINDOW_MS = 700;
 
@@ -97,11 +104,13 @@ export function SectionLoop({ names, state, onTap, onLongPress, hint = false }: 
       onLongPress(i);
     }, LONG_PRESS_MS);
   };
-  /** The pointer let go (or left): end the press, and start the swallow window if armed. */
+  /** The pointer let go: end the press, and start the swallow window if armed. */
   const release = () => {
     cancel();
     if (swallow.current && !swallowTimer.current) swallowTimer.current = setTimeout(clearSwallow, SWALLOW_WINDOW_MS);
   };
+  /** The pointer left the chip, still down: cancel a pending long-press, nothing else. */
+  const leave = () => cancel();
   const move = (e: ReactPointerEvent<HTMLButtonElement>) => {
     const s = start.current;
     if (!s) return;
@@ -127,7 +136,7 @@ export function SectionLoop({ names, state, onTap, onLongPress, hint = false }: 
               onPointerMove={move}
               onPointerUp={release}
               onPointerCancel={release}
-              onPointerLeave={release}
+              onPointerLeave={leave}
               onContextMenu={(e) => e.preventDefault()}
               onKeyDown={clearSwallow}
               onClick={(e) => {

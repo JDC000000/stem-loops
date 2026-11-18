@@ -34,7 +34,7 @@ test('"What you get" is the six true-today lines, in order, and about 70 words w
     ['loop', 'Loop any section — or several in a row.'],
     ['length', 'First 5 minutes of each song.'],
     ['device', 'Best in Chrome on a computer. Phones work too, with lighter audio; phone support is new.'],
-    ['account', 'Free account needed to play.'],
+    ['account', 'Free account needed to play your own songs. The demo songs open without signing in.'],
   ]);
   const n = words(flatten(wyg())) + words(flatten(soon()));
   assert.ok(n >= 55 && n <= 80, `"What you get" + "Coming soon" is ${n} words; P7 asks for ~70`);

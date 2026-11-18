@@ -164,7 +164,11 @@ export default async function run() {
     // the account page lists this job; a tester recognises it by its file name
     await page.goto('/account');
     const recent = (await page.locator('section[aria-label="Recent jobs"]').innerText().catch(() => '')).replace(/\s+/g, ' ');
-    j.check('account "Recent jobs" lists the upload by its file name (not its id)', recent.includes('w4-song') || /\.mp3/.test(recent), recent.slice(0, 200));
+    // Slice 1b (P5.1): the worker now stores the upload's title as its file name WITHOUT the
+    // extension, and jobLabel() prefers the title, so ".mp3" is no longer shown. The check is
+    // still "named by the file, not by its id": the file-name stem is present, the id is not.
+    j.check('account "Recent jobs" lists the upload by its file name (not its id)',
+      (/journey-song|w4-song/.test(recent) || /\.mp3/.test(recent)) && !(jobId && recent.includes(jobId)), recent.slice(0, 200));
     j.note(`job ${jobId}, user ${user.user_id}`);
   } catch (e) {
     j.step('journey aborted', 'fail', String(e).slice(0, 400));

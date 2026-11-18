@@ -528,7 +528,8 @@ html:not(.js) .lanes, html:not(.js) .pipe-art, html:not(.js) #ab, html:not(.js) 
 .wyg-soon { margin: var(--space-4) 0 0; color: var(--text-muted); }
 .wyg-soon strong { color: var(--text-secondary); font-weight: 600; }
 .faq-more { margin-top: var(--space-6); }
-.faq-more a { color: var(--text-primary); text-underline-offset: 4px; }
+/* A standalone link on its own line: a 44px tap target (j7-mobile measures every control). */
+.more-link a { display: inline-flex; align-items: center; min-height: 44px; color: var(--text-primary); text-underline-offset: 4px; }
 
 /* 360px, checked in Chrome: six stem names have to fit without an ellipsis, and the loop's
    name has nowhere to sit clear of the playhead once the track is this short — so the name

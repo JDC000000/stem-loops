@@ -127,7 +127,7 @@ export default function HomePage() {
               <p className="wyg-soon" data-testid="coming-soon">
                 <strong>Coming soon:</strong> {COMING_SOON.charAt(0).toLowerCase() + COMING_SOON.slice(1)}
               </p>
-              <p className="body-lg">
+              <p className="body-lg more-link">
                 <a href="/pricing">See the monthly song limits →</a>
               </p>
             </div>
@@ -210,7 +210,7 @@ export default function HomePage() {
                 {HOME_FAQ.slice(3).map((e) => <FaqItem key={e.id} entry={e} />)}
               </div>
             </div>
-            <p className="faq-more">
+            <p className="faq-more more-link">
               <a href="/help">More questions and answers →</a>
             </p>
           </div>

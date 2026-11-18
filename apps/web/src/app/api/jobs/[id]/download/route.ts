@@ -5,6 +5,7 @@ import { db } from '@/lib/db';
 import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { r2 } from '@/lib/r2';
 import { getUser } from '@/lib/auth/supabase';
+import { decideJobAccess } from '@/lib/job-access';
 import { EntitlementError, enforceEntitlement } from '@/lib/billing/entitlements';
 import { mintStemDownloadUrl } from '@/lib/stem-urls';
 import {
@@ -69,15 +70,17 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     }
 
     const jobRes = await db.query(
-      `SELECT id::text AS id, user_id::text AS user_id, status, ${JOB_RETAINED_UNTIL_SQL} AS expires_at
+      `SELECT id::text AS id, user_id::text AS user_id, status, is_demo, ${JOB_RETAINED_UNTIL_SQL} AS expires_at
          FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
       [params.id],
     );
     if (jobRes.rowCount === 0) return bad('NOT_FOUND', 'Job not found', 404);
     const job = jobRes.rows[0];
     // Only a literal null opens a job to other signed-in users; a row that lost its
-    // user_id column denies everyone rather than admitting everyone.
-    if (job.user_id !== null && job.user_id !== user.user_id) {
+    // user_id column denies everyone rather than admitting everyone. A DEMO song is never
+    // downloadable by anyone but the demo system account (design P3.1, DB-16 scope), even
+    // with a NULL owner. The rule is lib/job-access.ts's (`download`).
+    if (!decideJobAccess('download', { ownerId: job.user_id, isDemo: job.is_demo }, user.user_id)) {
       return bad('NOT_FOUND', 'Job not found', 404);
     }
     if (job.status !== 'done') return bad('NOT_READY', 'Job not yet complete', 404);

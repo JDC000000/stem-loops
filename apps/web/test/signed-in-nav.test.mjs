@@ -54,6 +54,7 @@ const SIGNED_IN_ROUTES = [
   '/account/delete',
   '/account/reset-password',
   '/history',
+  '/demo/[slug]', // Slice 2a: a demo song in the player, signed out included
   '/jobs/[id]',
   '/login',
   '/loops',
@@ -134,7 +135,7 @@ test('the bar carries every item it claims to', async () => {
   assert.ok(l.some((x) => x.href === TOOL), 'wordmark must link to the tool');
   assert.equal(by('Play along')?.href, TOOL);
   assert.equal(by('Download loops')?.href, '/loops');
-  assert.equal(by('Job history')?.href, '/history');
+  assert.equal(by('Library')?.href, '/history');
   assert.equal(by('Account')?.href, '/account');
   assert.equal(by('Pricing')?.href, '/pricing');
   // Exactly these, in this order (Story 7.2; the design canvas order). An item
@@ -145,7 +146,7 @@ test('the bar carries every item it claims to', async () => {
     'stem-loops',
     'Play along',
     'Download loops',
-    'Job history',
+    'Library',
     // P6 (Jon, 2026-11-17): Pricing in the top nav, signed in and out.
     'Pricing',
     'Account',
@@ -194,7 +195,7 @@ test('exactly one item is aria-current="page", and it is the right one', async (
     ['/', 'Play along'],
     ['/account', 'Account'],
     ['/account/delete', 'Account'],
-    ['/history', 'Job history'],
+    ['/history', 'Library'],
     [`/jobs/${JOB_A}`, 'Play along'],
     ['/loops', 'Download loops'],
     ['/pricing', 'Pricing'],
@@ -484,7 +485,7 @@ test('every nav item is reachable once the menu is open', async () => {
     await dom.act(() => toggle.click());
 
     const items = dom.findAll('#sin-menu.sin-open a.sin-item').map((a) => a.textContent.trim());
-    assert.deepEqual(items, ['Play along', 'Download loops', 'Job history', 'Pricing', 'Sign in']);
+    assert.deepEqual(items, ['Play along', 'Download loops', 'Library', 'Pricing', 'Sign in']);
   });
 });
 
@@ -507,7 +508,7 @@ test('every nav item is reachable once the menu is open', async () => {
 test('every signed-in layout opts its segment out of static rendering', async () => {
   const layouts = SIGNED_IN_ROUTES.flatMap(layoutChain);
   const unique = [...new Set(layouts)];
-  assert.equal(unique.length, 8, `expected 8 signed-in layouts, got: ${unique.join(', ')}`);
+  assert.equal(unique.length, 9, `expected 9 signed-in layouts (Slice 2a added app/demo), got: ${unique.join(', ')}`);
 
   const urls = compile(unique, {
     'next/navigation': navigationStub('/account'),

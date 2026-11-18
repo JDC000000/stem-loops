@@ -200,6 +200,8 @@ export async function POST(req: NextRequest) {
       //     retention rule requires (lib/retention.ts JOB_RETAINED_UNTIL_SQL).
       //     So a claimed job is owned (opens only for this account) but is
       //     still deleted at created_at + 24 h, never kept as library.
+      // `is_demo = false` (Slice 2a, design P3.1 "Claim into an account: Never"): a demo
+      // song whose system account was deleted has user_id NULL, and must not be claimable.
       const updateRes = await client.query<{ id: string }>(
         `UPDATE public.jobs
             SET user_id = $1::uuid,
@@ -207,6 +209,7 @@ export async function POST(req: NextRequest) {
           WHERE id IN (
             SELECT id FROM public.jobs
              WHERE user_id IS NULL
+               AND is_demo = false
                AND expires_at > now()
                AND client_fingerprint = $2
                AND client_ip_hash = ANY($3::text[])
@@ -228,6 +231,7 @@ export async function POST(req: NextRequest) {
         const remainingRes = await client.query<{ n: string }>(
           `SELECT COUNT(*)::text AS n FROM public.jobs
             WHERE user_id IS NULL
+              AND is_demo = false
               AND expires_at > now()
               AND client_fingerprint = $1
               AND client_ip_hash = ANY($2::text[])`,

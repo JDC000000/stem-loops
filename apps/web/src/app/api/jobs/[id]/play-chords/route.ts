@@ -4,6 +4,7 @@ import { db } from '@/lib/db';
 import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { mintPlayChordsSignedUrl, PLAY_CHORDS_SIGNED_URL_TTL_SEC } from '@/lib/r2';
 import { mayReadJob } from '@/lib/job-access';
+import { demoReadAllowed, DEMO_RATE_LIMIT_MSG } from '@/lib/demo-rate';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -21,7 +22,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 //           loader treats it as "no chord data for this job" either way.)
 const NO_STORE = { 'Cache-Control': 'private, no-store' } as const;
 
-export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   if (!UUID_RE.test(params.id)) {
     return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
   }
@@ -31,16 +32,23 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     // extra round trip doubles the API latency; on a cold-cache miss the browser
     // just gets a 404 from R2 directly and the loader returns null.
     const jobRes = await db.query(
-      `SELECT id, user_id, status FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
+      `SELECT id, user_id, status, is_demo FROM jobs WHERE id = $1 AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
       [params.id]
     );
     if (jobRes.rowCount === 0) {
       return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
     }
     // Ownership first (lib/job-access.ts): an owned job is served to its owner only, an
-    // anonymous one to anyone holding the id. Same 404 as a missing job.
-    if (!(await mayReadJob(jobRes.rows[0].user_id))) {
+    // anonymous one to anyone holding the id, a demo song to everyone. Same 404 as a missing job.
+    // A demo song (is_demo) is readable by everyone, and rate-limited per IP (read-only).
+    if (!(await mayReadJob(jobRes.rows[0].user_id, jobRes.rows[0].is_demo))) {
       return NextResponse.json({ error_code: 'NOT_FOUND', message: 'Job not found' }, { status: 404 });
+    }
+    if (jobRes.rows[0].is_demo === true && !(await demoReadAllowed(request))) {
+      return NextResponse.json(
+        { error_code: 'RATE_LIMITED', message: DEMO_RATE_LIMIT_MSG },
+        { status: 429, headers: NO_STORE },
+      );
     }
     // Only completed jobs will have a play.chords.json — surface a 404 for
     // not-yet-done jobs so the client doesn't mint a URL it will race against.

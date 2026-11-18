@@ -8,9 +8,10 @@ import { Journey, mintUser, newContext, uploadViaLanding } from './lib.mjs';
 export const id = 'j8-a11y';
 
 /** Press Tab n times; record each focused element's name and whether a focus ring is visible. */
-async function tabWalk(page, n) {
+async function tabWalk(page, n, stopAtId = null) {
   const stops = [];
   for (let i = 0; i < n; i++) {
+    if (stopAtId && stops.at(-1)?.id === stopAtId) break;
     await page.keyboard.press('Tab');
     stops.push(
       await page.evaluate(() => {
@@ -68,7 +69,12 @@ export default async function run() {
   try {
     // ── upload form ──
     await page.goto('/');
-    const lstops = await tabWalk(page, 18);
+    // Up to 24 stops, not 18 (Slice 2a): the home page's live demo (3 song chips, Play along,
+    // its own-page link) now sits between the nav and the tool, five stops the walk must get
+    // past. It stops at the CTA: walking on into the FAQ below left Chromium refusing the
+    // keyboard file chooser checked next (measured locally: a 24-stop walk ending on a FAQ
+    // summary → no chooser; any walk ending at or before the CTA → chooser).
+    const lstops = await tabWalk(page, 24, 'cta');
     const order = lstops.map((s) => s.id || s.name);
     const iFile = order.indexOf('file-btn');
     // narrow screens show an "options" toggle; wide screens show the stem chips inline

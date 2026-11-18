@@ -50,11 +50,34 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   .lead { font-size: var(--text-xl); margin-top: var(--space-4); }
 }
 @media (min-width: 1040px) {
-  .hero-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); grid-template-rows: auto 1fr; column-gap: var(--space-16); row-gap: var(--space-8); }
+  .hero-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); grid-template-rows: auto auto 1fr; column-gap: var(--space-16); row-gap: var(--space-8); }
   .hero-copy { grid-column: 1; grid-row: 1; }
-  .tool { grid-column: 1; grid-row: 2; }
-  .lanes { grid-column: 2; grid-row: 1 / span 2; align-self: start; }
+  .tool { grid-column: 1; grid-row: 2 / span 2; }
+  /* Design P4.1 desktop: the live demo to the right of the H1 and the input. */
+  .hero-demo { grid-column: 2; grid-row: 1 / span 2; align-self: start; }
+  .lanes { grid-column: 2; grid-row: 3; align-self: start; }
 }
+
+/* live play-along demo (Slice 2a, design P4.1 item 2; mockup Home.dc.html). A static poster
+   until Play is tapped. Lime stays with the one primary action (the tool's CTA, brand v2.3
+   A3), so the demo's Play is the secondary style; the song chips are 44px pills (A2). */
+.hero-demo { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); background: var(--bg-card); }
+.demo-kicker { font-size: var(--text-md); font-weight: 600; color: var(--text-secondary); }
+.demo-title { font-size: var(--text-h2); line-height: 1.15; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.demo-facts { color: var(--text-label); font-size: var(--text-md); }
+.demo-songs { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.demo-song { min-height: 44px; padding-inline: var(--space-4); border-radius: var(--radius-full); border: 1.5px solid var(--border-control); background: transparent; color: var(--text-secondary); font: inherit; font-size: var(--text-md); font-weight: 600; cursor: pointer; }
+.demo-song:hover { border-color: var(--text-primary); color: var(--text-primary); }
+.demo-song[aria-pressed="true"] { background: var(--bg-selected); border: 2px solid var(--text-primary); color: var(--text-primary); }
+.demo-song:focus-visible, .demo-play:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.demo-play { width: 100%; min-height: 48px; color: var(--text-primary); border-color: var(--text-secondary); }
+.demo-play[aria-busy="true"] { cursor: progress; }
+.demo-note { font-size: var(--text-md); line-height: 1.5; color: var(--text-muted); }
+.demo-note a { color: var(--text-secondary); text-underline-offset: 3px; }
+.demo-error { font-size: var(--text-md); color: var(--status-failed); }
+/* The layer the demo opens: portalled to <body>, above the page. The player inside is its
+   own fixed 100svh screen; this only covers the page while the job is first fetched. */
+.demo-layer { position: fixed; inset: 0; z-index: var(--z-modal, 200); overflow-y: auto; background: var(--bg-page); }
 
 /* form */
 .tool { display: flex; flex-direction: column; gap: var(--space-4); }

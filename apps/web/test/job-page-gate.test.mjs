@@ -65,6 +65,14 @@ const jobViewMod = put(
    }`,
 );
 
+const demoMod = put(
+  'demo-songs.mjs',
+  `export async function isDemoJob(id) {
+     (globalThis.__demoAsked ??= []).push(id);
+     return (globalThis.__demoIds ?? []).includes(id);
+   }`,
+);
+
 let loadSeq = 0;
 
 /** Load the real page module with its three runtime imports stubbed. */
@@ -72,6 +80,7 @@ async function loadPage(user) {
   globalThis.__redirects = [];
   globalThis.__getUserCalls = 0;
   globalThis.__jobViewProps = null;
+  globalThis.__demoAsked = [];
 
   const authMod = put(
     `auth-${loadSeq}.mjs`,
@@ -80,7 +89,10 @@ async function loadPage(user) {
   const js = toJs(readFileSync(PAGE_SRC, 'utf8'))
     .replace(/from ['"]next\/navigation['"]/g, `from '${navMod}'`)
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authMod}'`)
-    .replace(/from ['"]\.\/JobView['"]/g, `from '${jobViewMod}'`);
+    .replace(/from ['"]\.\/JobView['"]/g, `from '${jobViewMod}'`)
+    // Slice 2a: the signed-out branch asks whether the id is a demo song. The stub records
+    // every id it is asked about and answers from globalThis.__demoIds.
+    .replace(/from ['"]@\/lib\/demo-songs['"]/g, `from '${demoMod}'`);
 
   const name = `page-${loadSeq++}.mjs`;
   writeFileSync(join(dir, name), js);
@@ -168,4 +180,41 @@ test('the gate lives in the Server Component, not the client body', async () => 
   assert.doesNotMatch(jobView, /getUser\s*\(/, 'the client body called getUser');
   const page = codeOnly(readFileSync(PAGE_SRC, 'utf8'));
   assert.doesNotMatch(page, /'use client'/, 'the gated page became a client component');
+});
+
+// ═══ Slice 2a: demo songs play signed out (DB-12a) ═══════════════════════════
+
+const DEMO = '9c5ba587-0000-4000-8000-000000000001';
+
+test('a signed-OUT visitor to a DEMO song gets the player, signed out, with no redirect', async () => {
+  globalThis.__demoIds = [DEMO];
+  try {
+    const mod = await loadPage(null);
+    const el = await mod.default({ params: { id: DEMO } });
+    assert.equal(globalThis.__redirects.length, 0, 'a demo song redirected a signed-out visitor to /login');
+    assert.equal(el.props.id, DEMO);
+    assert.equal(el.props.signedIn, false, 'the demo player must say "Back to home", not "Back to library"');
+    assert.deepEqual(globalThis.__demoAsked, [DEMO]);
+  } finally {
+    globalThis.__demoIds = [];
+  }
+});
+
+test('a signed-OUT visitor to an ordinary job is still redirected (the demo check opens nothing else)', async () => {
+  globalThis.__demoIds = [DEMO];
+  try {
+    const mod = await loadPage(null);
+    await assert.rejects(() => mod.default({ params: { id: 'abc-123' } }), (e) => e.digest === 'NEXT_REDIRECT');
+    assert.equal(globalThis.__redirects[0], '/login?return_to=%2Fjobs%2Fabc-123');
+    assert.equal(globalThis.__jobViewProps, null);
+  } finally {
+    globalThis.__demoIds = [];
+  }
+});
+
+test('a signed-IN visitor never triggers the demo lookup (the signed-in path is unchanged)', async () => {
+  const mod = await loadPage(SIGNED_IN);
+  const el = await mod.default({ params: { id: DEMO } });
+  assert.deepEqual(globalThis.__demoAsked, [], 'the signed-in path made the extra demo read');
+  assert.equal(el.props.signedIn, true);
 });

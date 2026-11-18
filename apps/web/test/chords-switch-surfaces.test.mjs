@@ -334,7 +334,9 @@ const ALLOW = {
   'src/app/jobs/[id]/JobView.tsx': [0, 'comments only (the player owns the chord track)'],
   'src/app/jobs/[id]/page.tsx': [0, 'comment only (names the play-chords route)'],
   'src/lib/r2.ts': [1, 'storage: the play.chords.json key'],
-  'src/lib/job-access.ts': [0, 'comments only'],
+  'src/lib/job-access.ts': [3, "the JobAction name 'edit_chords' (type, list and switch case): code, never rendered"],
+  'src/lib/admission.ts': [0, 'comments only (Slice 2a: names the play-chords route)'],
+  'src/lib/demo-rate.ts': [0, 'comments only (Slice 2a: names the play-chords route)'],
   'src/lib/job-poll.ts': [0, 'comments only'],
   'src/lib/stem-keys.ts': [0, 'comments only'],
   'src/lib/stem-urls.ts': [0, 'comments only'],
@@ -353,6 +355,7 @@ const SWITCHED = {
   'src/app/(landing)/privacy/page.tsx': 8,
   'src/app/(landing)/terms/page.tsx': 4,
   'src/app/loops/LoopsView.tsx': 1,
+  'src/components/landing/HomeDemo.tsx': 1, // Slice 2a demo note: "chords in time", ON branch only (p7-copy SF-3 renders it OFF)
   'src/components/landing/PlayerArt.tsx': 6,
   'src/components/landing/faq.tsx': 5,
   'src/components/landing/what-you-get.ts': 2,

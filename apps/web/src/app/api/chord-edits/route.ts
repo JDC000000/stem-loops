@@ -170,7 +170,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (!parsed.ok) return parsed.res;
     const edit = parsed.edit;
 
-    // Ownership: a client can only submit edits against jobs they own.
+    // Ownership: a client can only submit edits against jobs they own. This is the
+    // `edit_chords` cell of lib/job-access.ts's rule table, enforced in SQL: owner only,
+    // for ordinary jobs AND demo songs (the demo system account corrects demo chords;
+    // design P3.1). An anonymous (user_id NULL) job matches nobody here.
     // This is the primary guarantee — RLS on chord_edits does not apply
     // when the route runs under the stemloops_app role (WITH CHECK true).
     const own = await db.query(

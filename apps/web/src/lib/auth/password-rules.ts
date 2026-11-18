@@ -90,3 +90,44 @@ export function validateSignupEmail(raw: unknown): string | null {
   }
   return validateEmail(raw);
 }
+
+// ─── "Did you mean …?" for common provider typos (QA A-09, 2026-11-18) ─────────
+// `jon@gmial.com` created an account and a confirmation email that bounced (the
+// bounce class behind QA-05). This is a WARNING, never a block: the sign-up form
+// shows "Did you mean jon@gmail.com?" with a one-tap fix and still submits what
+// was typed. Only exact, known misspellings of the big mail providers are
+// corrected, so no real domain is ever second-guessed (email.com, ymail.com,
+// hotmail.co.uk and friends are real and are left alone). No bare `.co` form is
+// listed (review of #301, F-6): `.co` is a real TLD, and gmail.co, hotmail.co,
+// outlook.co and icloud.co could not be ruled out as live mailbox domains.
+const TYPO_DOMAINS: Readonly<Record<string, readonly string[]>> = {
+  'gmail.com': [
+    'gmial.com', 'gmai.com', 'gmal.com', 'gmali.com', 'gmaill.com', 'gamil.com', 'gnail.com', 'gmaul.com', 'gmeil.com',
+    'gmail.con', 'gmail.cm', 'gmail.c', 'gmail.om', 'gmail.comm', 'gmail.cmo', 'gmail.ocm', 'gmail.vom', 'gmail.xom', 'gmailcom',
+  ],
+  'hotmail.com': [
+    'hotmial.com', 'hotmal.com', 'hotmil.com', 'hotmai.com', 'hotmaill.com', 'hotnail.com', 'homail.com', 'hotamil.com',
+    'hotmail.con', 'hotmail.cm', 'hotmail.c', 'hotmail.om', 'hotmailcom',
+  ],
+  'yahoo.com': ['yaho.com', 'yahooo.com', 'yhoo.com', 'yahho.com', 'yaoo.com', 'yahoo.con', 'yahoo.cm', 'yahoo.c', 'yahoo.om', 'yahoocom'],
+  'outlook.com': ['outlok.com', 'outllok.com', 'outloo.com', 'outook.com', 'oulook.com', 'otlook.com', 'outlookk.com', 'outlook.con', 'outlook.cm', 'outlookcom'],
+  'icloud.com': ['iclod.com', 'icoud.com', 'iclould.com', 'icloud.con', 'icloud.cm', 'icluod.com', 'icloudcom'],
+  'live.com': ['live.con', 'live.cm'],
+  'aol.com': ['aol.con', 'aol.cm', 'aoll.com'],
+};
+const TYPO_FIX: ReadonlyMap<string, string> = new Map(
+  Object.entries(TYPO_DOMAINS).flatMap(([good, typos]) => typos.map((t) => [t, good] as const)),
+);
+
+/**
+ * The address the person probably meant, or null. `jon@gmial.com` -> `jon@gmail.com`.
+ * The local part is kept exactly as typed; only a known misspelt domain is replaced.
+ */
+export function suggestEmailFix(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  const at = s.lastIndexOf('@');
+  if (at <= 0 || at === s.length - 1) return null;
+  const fix = TYPO_FIX.get(s.slice(at + 1).toLowerCase());
+  return fix ? `${s.slice(0, at)}@${fix}` : null;
+}

@@ -833,3 +833,67 @@ async function mountPlayerOnTouchOnly(body, server = router(() => ({ status: 500
     };
   });
 }
+
+// ═══ QA A-20 — the iOS ring/silent switch ═══════════════════════════════════
+// Web Audio on an iPhone with the silent switch on is muted unless the page says
+// its audio is music: `navigator.audioSession.type = 'playback'` (Safari 16.4+).
+// It used to be set only at load and only on the phone route, so an iPad
+// (desktop-class Safari: the desktop route) never set it. Now every Play tap sets
+// it, synchronously, before the engine starts; a missing or hostile
+// audioSession never costs the tap its sound; the AudioContext unlock stays.
+function fakeAudioSession({ hostile = false } = {}) {
+  let type = 'auto';
+  return {
+    get type() { return type; },
+    set type(v) {
+      globalThis.__audioLog.push(`audioSession.type=${v}`);
+      if (hostile) throw new Error('NotAllowedError');
+      type = v;
+    },
+  };
+}
+// Installed on the DOM window's navigator (withDom replaces globalThis.navigator), after the
+// mount, so what is observed is the TAP, not the load.
+function installAudioSession(session) {
+  const nav = globalThis.navigator;
+  if (session === undefined) delete nav.audioSession;
+  else Object.defineProperty(nav, 'audioSession', { value: session, configurable: true });
+  return () => { delete nav.audioSession; };
+}
+
+for (const phone of [true, false]) {
+  test(`A-20 (${phone ? 'phone' : 'desktop-class, e.g. iPad'} route): the Play tap sets audioSession.type = 'playback' inside the tap, before the engine starts`, async () => {
+    const session = fakeAudioSession();
+    await mountRoute({ phone, start: 'suspended' }, async (p) => {
+      const undo = installAudioSession(session);
+      try {
+        const sync = tapPlay(p);
+        const iSet = sync.indexOf('audioSession.type=playback');
+        const iSrc = sync.indexOf('source.start');
+        assert.ok(iSet >= 0, `audioSession.type was not set inside the tap: ${sync.join(', ')}`);
+        assert.ok(iSrc >= 0, `the engine did not start inside the tap: ${sync.join(', ')}`);
+        assert.ok(iSet < iSrc, `the engine started before the session was set: ${sync.join(', ')}`);
+        assert.equal(session.type, 'playback');
+        // The existing unlock is kept: a suspended context is resumed in the same tap.
+        assert.ok(sync.includes('ctx.resume'), `the AudioContext was not resumed in the tap: ${sync.join(', ')}`);
+      } finally {
+        undo();
+      }
+    });
+  });
+}
+
+test('A-20: no navigator.audioSession (every non-Safari browser) and a THROWING one both still play', async () => {
+  for (const session of [undefined, fakeAudioSession({ hostile: true })]) {
+    await mountRoute({ phone: true }, async (p) => {
+      const undo = installAudioSession(session);
+      try {
+        const sync = tapPlay(p);
+        assert.ok(sync.includes('source.start'), `no sound after the tap (${session ? 'hostile' : 'absent'} audioSession): ${sync.join(', ')}`);
+        if (session) assert.ok(sync.includes('audioSession.type=playback'), 'the hostile session was never even tried');
+      } finally {
+        undo();
+      }
+    });
+  }
+});

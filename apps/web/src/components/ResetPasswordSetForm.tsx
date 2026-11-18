@@ -6,6 +6,7 @@
 // POST /api/auth/reset-password-confirm which calls supabase.auth.updateUser.
 
 import { useState, type FormEvent } from 'react';
+import { authErrorMessage } from '@/lib/auth/login-errors';
 import { fieldStyle, buttonBase, primaryButton } from '@/lib/ui/form-styles';
 import {
   validatePassword,
@@ -56,8 +57,9 @@ export default function ResetPasswordSetForm() {
       // Redirect to /account where the user lands on the normal signed-in
       // view with a ?reset=success so the page can render a toast.
       window.location.assign('/account?reset=success');
-    } catch {
-      setError("We couldn't update your password. Please try again.");
+    } catch (e) {
+      // QA A-08: an offline submit says so (lib/auth/login-errors.ts), never "Failed to fetch".
+      setError(authErrorMessage(e, "We couldn't update your password. Please try again."));
     } finally {
       setBusy(false);
     }

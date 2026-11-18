@@ -102,21 +102,23 @@ test('ONE formatter: the stage (ChordPhone.helpers) delegates to it; nothing els
 // ── slash basses: spelled by the INTERVAL, not by the root (PR #294 review M-2) ─
 // Expected values computed OUTSIDE this code (a major-scale table: letter = root
 // letter + interval number, accidental = whatever makes that letter the pitch;
-// a double accidental or E♯/B♯/F♭/C♭ is written as the plain note in the
-// direction of the interval's accidental), then pasted here as literals.
+// a double accidental is written as the plain note in the direction of the
+// interval's accidental), then pasted here as literals. E♯ B♯ F♭ C♭ are kept
+// where the interval names them (D♭/b3 is D♭/F♭); see also
+// play-notation-exhaustive.test.mjs.
 const BASS_TABLE = {
   'C': { 'b2': 'D♭', 'b3': 'E♭', 'b5': 'G♭', 'b6': 'A♭', 'b7': 'B♭', '#4': 'F♯', '#5': 'G♯' },
-  'Db': { 'b2': 'D', 'b3': 'E', 'b5': 'G', 'b6': 'A', 'b7': 'B', '#4': 'G', '#5': 'A' },
+  'Db': { 'b2': 'D', 'b3': 'F♭', 'b5': 'G', 'b6': 'A', 'b7': 'C♭', '#4': 'G', '#5': 'A' },
   'D': { 'b2': 'E♭', 'b3': 'F', 'b5': 'A♭', 'b6': 'B♭', 'b7': 'C', '#4': 'G♯', '#5': 'A♯' },
-  'Eb': { 'b2': 'E', 'b3': 'G♭', 'b5': 'A', 'b6': 'B', 'b7': 'D♭', '#4': 'A', '#5': 'B' },
-  'E': { 'b2': 'F', 'b3': 'G', 'b5': 'B♭', 'b6': 'C', 'b7': 'D', '#4': 'A♯', '#5': 'C' },
-  'F': { 'b2': 'G♭', 'b3': 'A♭', 'b5': 'B', 'b6': 'D♭', 'b7': 'E♭', '#4': 'B', '#5': 'C♯' },
-  'F#': { 'b2': 'G', 'b3': 'A', 'b5': 'C', 'b6': 'D', 'b7': 'E', '#4': 'C', '#5': 'D' },
+  'Eb': { 'b2': 'F♭', 'b3': 'G♭', 'b5': 'A', 'b6': 'C♭', 'b7': 'D♭', '#4': 'A', '#5': 'B' },
+  'E': { 'b2': 'F', 'b3': 'G', 'b5': 'B♭', 'b6': 'C', 'b7': 'D', '#4': 'A♯', '#5': 'B♯' },
+  'F': { 'b2': 'G♭', 'b3': 'A♭', 'b5': 'C♭', 'b6': 'D♭', 'b7': 'E♭', '#4': 'B', '#5': 'C♯' },
+  'F#': { 'b2': 'G', 'b3': 'A', 'b5': 'C', 'b6': 'D', 'b7': 'E', '#4': 'B♯', '#5': 'D' },
   'G': { 'b2': 'A♭', 'b3': 'B♭', 'b5': 'D♭', 'b6': 'E♭', 'b7': 'F', '#4': 'C♯', '#5': 'D♯' },
-  'Ab': { 'b2': 'A', 'b3': 'B', 'b5': 'D', 'b6': 'E', 'b7': 'G♭', '#4': 'D', '#5': 'E' },
-  'A': { 'b2': 'B♭', 'b3': 'C', 'b5': 'E♭', 'b6': 'F', 'b7': 'G', '#4': 'D♯', '#5': 'F' },
-  'Bb': { 'b2': 'B', 'b3': 'D♭', 'b5': 'E', 'b6': 'G♭', 'b7': 'A♭', '#4': 'E', '#5': 'F♯' },
-  'B': { 'b2': 'C', 'b3': 'D', 'b5': 'F', 'b6': 'G', 'b7': 'A', '#4': 'F', '#5': 'G' },
+  'Ab': { 'b2': 'A', 'b3': 'C♭', 'b5': 'D', 'b6': 'F♭', 'b7': 'G♭', '#4': 'D', '#5': 'E' },
+  'A': { 'b2': 'B♭', 'b3': 'C', 'b5': 'E♭', 'b6': 'F', 'b7': 'G', '#4': 'D♯', '#5': 'E♯' },
+  'Bb': { 'b2': 'C♭', 'b3': 'D♭', 'b5': 'F♭', 'b6': 'G♭', 'b7': 'A♭', '#4': 'E', '#5': 'F♯' },
+  'B': { 'b2': 'C', 'b3': 'D', 'b5': 'F', 'b6': 'G', 'b7': 'A', '#4': 'E♯', '#5': 'G' },
 };
 
 test('slash basses: 12 roots x b2 b3 b5 b6 b7 #4 #5, spelled as a lead sheet spells them', () => {
@@ -134,7 +136,7 @@ test('slash basses: 12 roots x b2 b3 b5 b6 b7 #4 #5, spelled as a lead sheet spe
   assert.equal(spellChord('G:min/b6').spoken, 'G minor over E flat');
 });
 
-test('slash basses: every root spelling x every bass interval is the right PITCH, with no double or white-key accidental', () => {
+test('slash basses: every root spelling x every bass interval is the right PITCH, with at most one accidental', () => {
   const NAT = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
   const SEMIS = { '1': 0, b2: 1, '2': 2, '#2': 3, b3: 3, '3': 4, '4': 5, '#4': 6, b5: 6, '5': 7, '#5': 8, b6: 8,
     '6': 9, bb7: 9, b7: 10, '7': 11, b9: 1, '9': 2, '#9': 3, '11': 5, '#11': 6, b13: 8, '13': 9 };
@@ -148,7 +150,6 @@ test('slash basses: every root spelling x every bass interval is the right PITCH
       if (semis === 0) { assert.equal(ascii, root); continue; }
       const bass = ascii.split('/')[1];
       assert.match(bass, /^[A-G](#|b)?$/, `${root}/${iv}: bass ${bass}`);
-      assert.ok(!['E#', 'B#', 'Fb', 'Cb'].includes(bass), `${root}/${iv}: bass ${bass}`);
       assert.equal(pcOf(bass), (pcOf(root) + semis) % 12, `${root}/${iv}: ${bass} is the wrong pitch`);
       // From a natural or flat root a flat interval never gets a sharp bass (the
       // defect: C/b7 was C/A♯), and from a natural or sharp root a sharp

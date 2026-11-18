@@ -172,8 +172,10 @@ test('the chart paints guitarist notation and speaks it in words; the data stays
     ['G:7/5', 'G7/D', 'G 7 over D'],
     ['C#:hdim7/5', 'C\u266fm7\u266d5/G\u266f', 'C sharp minor 7 flat 5 over G sharp'],
     ['C:maj7', 'Cmaj7', 'C major 7'],
+    ['C:add9', 'Cadd9', 'C add 9'],
+    ['C:maj/b7', 'C/B\u266d', 'C over B flat'],
     // Not spellable exactly: shown as its Harte label, never a guess.
-    ['C:add9', 'C:add9', 'C:add9'],
+    ['A:min(9)', 'A:min(9)', 'A:min(9)'],
   ];
   for (const [harte, text, spoken] of cases) {
     assert.equal(displayText(chord(harte)), text, `${harte} painted`);

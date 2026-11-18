@@ -85,9 +85,11 @@ export const PIN_SOURCE_HARTE = [
   'C:maj9', 'G:sus4', 'D:sus2', 'B:9/10', 'Eb:aug7/8',
   // the notation switch: flat/sharp in root, quality and bass positions
   'C#:hdim7/5', 'Eb:min', 'Db:maj7/3', 'F#:dim7', 'Ab:aug',
-  // Harte labels the formatter cannot spell exactly, painted as-is: they keep
-  // '#' and 'n' (and ':' 'h') in the painted alphabet, so they need pins too
+  // add9 and the b11 bass: painted as Harte until review round 2 (QA C-09),
+  // now spelled (C♯add9, Gm/C♭); kept as pins for the a/d and C♭ glyphs
   'C#:add9', 'G:min/b11',
+  // a quality spelled since round 2; also the one pin that carries '3'
+  'A:min13',
   // the bare-root slash pair the first-glyph surplus exists for
   'A/3',
   // non-chords

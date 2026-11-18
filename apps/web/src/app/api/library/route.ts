@@ -43,6 +43,8 @@ export type LibrarySong = {
   created_at: string;
   /** When this song will be deleted (JOB_RETAINED_UNTIL_SQL). */
   expires_at: string;
+  /** A demo song (migration 040): kept until DEMO_RETAINED_UNTIL; the page hides "deleted in". */
+  is_demo: boolean;
 };
 
 export async function GET() {
@@ -56,7 +58,7 @@ export async function GET() {
     }
     const res = await db.query<LibrarySong>(
       `SELECT id::text AS id, title, original_filename, youtube_url, status, created_at,
-              ${JOB_RETAINED_UNTIL_SQL} AS expires_at
+              is_demo, ${JOB_RETAINED_UNTIL_SQL} AS expires_at
          FROM jobs
         WHERE user_id = $1::uuid AND ${JOB_RETAINED_UNTIL_SQL} > now()
         ORDER BY created_at DESC

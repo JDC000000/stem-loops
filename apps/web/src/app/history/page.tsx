@@ -78,9 +78,12 @@ export default function HistoryPage() {
                 }}
               >
                 <span className="jp-row-id" style={{ overflowWrap: 'anywhere' }}>{s.label}</span>
-                <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                  deleted {formatExpiresIn(s.expiresAtMs)}
-                </span>
+                {/* A demo song (migration 040) is kept until 2099: no "deleted in ~27,000 days". */}
+                {s.isDemo ? null : (
+                  <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                    deleted {formatExpiresIn(s.expiresAtMs)}
+                  </span>
+                )}
               </a>
             </li>
           ))}

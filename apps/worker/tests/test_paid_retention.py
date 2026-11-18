@@ -78,6 +78,21 @@ def test_rule_constants_match_the_web_and_the_shell_marker():
     assert f"jobs.client_ip_hash <> '{cleanup.PURGED_MARKER}'" in sql
 
 
+def test_demo_branch_is_finite_and_matches_the_web_constant():
+    """Migration 040: an is_demo row is retained until a FINITE far-future date, the same
+    literal the web exports as DEMO_RETAINED_UNTIL. Never 'infinity' (node-pg -> Infinity ->
+    NaN -> 1-second signed URLs on the stems/download routes)."""
+    sql = cleanup.RETAINED_UNTIL_SQL
+    assert cleanup.DEMO_RETAINED_UNTIL == "2099-12-31T00:00:00Z"
+    assert sql.startswith(
+        f"(CASE WHEN jobs.is_demo THEN '{cleanup.DEMO_RETAINED_UNTIL}'::timestamptz ELSE GREATEST("
+    )
+    assert sql.endswith(" END)")
+    assert "infinity" not in sql.lower()
+    web = RETENTION_TS.read_text()
+    assert f"export const DEMO_RETAINED_UNTIL = '{cleanup.DEMO_RETAINED_UNTIL}';" in web
+
+
 def test_sweep_selects_with_the_retention_rule():
     """The sweep's candidate query carries the rule, not just the 24 h expires_at."""
 
@@ -191,8 +206,11 @@ def _sub(
     )
 
 
-def _job(c: Any, user: uuid.UUID | None, age: timedelta, *, killed: bool = False) -> str:
-    """A done job `age` old with the default 24 h expires_at (or killed: expires_at = created_at)."""
+def _job(
+    c: Any, user: uuid.UUID | None, age: timedelta, *, killed: bool = False, demo: bool = False
+) -> str:
+    """A done job `age` old with the default 24 h expires_at (or killed: expires_at = created_at).
+    demo=True sets is_demo with a SEPARATE UPDATE, the way the operator's named write will."""
     jid = str(uuid.uuid4())
     c.execute(
         "INSERT INTO public.jobs (id, youtube_url, status, client_ip_hash, client_fingerprint, "
@@ -208,6 +226,8 @@ def _job(c: Any, user: uuid.UUID | None, age: timedelta, *, killed: bool = False
             timedelta(0) if killed else DAY,
         ),
     )
+    if demo:
+        c.execute("UPDATE public.jobs SET is_demo = true WHERE id IN (%s)", (jid,))
     return jid
 
 
@@ -320,6 +340,16 @@ def world(conn, r2):
         provider_id="comp_owner_jon_2026-11-15",
     )
     w["comp_owner_subscription_kept"] = (_job(c, owner, 3 * DAY), True)
+
+    # Demo songs (migration 040): kept whatever their age, owner or plan. Owned by a
+    # system account on Free (no subscription), as P3.1 specifies; plus the edges.
+    demo_owner = _user(c, "demo-system")
+    w["demo_owned_400d_kept"] = (_job(c, demo_owner, 400 * DAY, demo=True), True)
+    w["demo_anonymous_30d_kept"] = (_job(c, None, 30 * DAY, demo=True), True)
+    # Even an expires_at = created_at (the account-deletion shape) does not end a demo.
+    w["demo_killed_shape_still_kept"] = (_job(c, demo_owner, 2 * DAY, killed=True, demo=True), True)
+    # Control: the same owner's ordinary job is Free's 24 h.
+    w["demo_owner_regular_job_deleted"] = (_job(c, demo_owner, 25 * HOUR), False)
 
     c.commit()
     for jid, _ in w.values():
@@ -491,3 +521,126 @@ def test_a_claimed_anonymous_job_keeps_its_24_hours_for_a_paid_owner(conn, r2):
     assert not _exists(conn, jid), "a claimed anonymous job must be deleted at created_at + 24 h"
     assert not [k for k in r2.objs if jid in k]
     assert _exists(conn, own), "the owner's own signed-in job is library"
+
+
+# ----------------------------------------------------------------------------- demo songs
+
+
+@needs_db
+def test_is_demo_column_defaults_false_and_is_not_null(conn):
+    """Migration 040: every job not named by the operator's write is is_demo = false."""
+    row = conn.execute(
+        "SELECT data_type, is_nullable, column_default FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = 'jobs' AND column_name = 'is_demo'"
+    ).fetchone()
+    assert row == ("boolean", "NO", "false")
+    jid = _job(conn, None, 1 * HOUR)
+    conn.commit()
+    assert conn.execute("SELECT is_demo FROM jobs WHERE id = %s", (jid,)).fetchone() == (False,)
+
+
+@needs_db
+def test_demo_expiry_reads_2099_12_31_from_both_copies(conn):
+    """The value the web returns AS expires_at (and the sweep compares) for a demo row."""
+    jid = _job(conn, None, 30 * DAY, demo=True)
+    conn.commit()
+    want = datetime(2099, 12, 31, tzinfo=UTC)
+    for sql in (_web_sql(), cleanup.RETAINED_UNTIL_SQL):
+        (until,) = conn.execute(f"SELECT {sql} FROM jobs WHERE id = %s", (jid,)).fetchone()
+        assert until == want, until
+    assert _web_kept(conn, [jid]) == {jid}
+
+
+@needs_db
+def test_sweep_never_selects_a_demo_row(conn, r2):
+    """The candidate SELECT itself, run against the database: a long-expired demo row is not
+    a candidate (so neither its R2 objects nor its row can be touched)."""
+    demo = _job(conn, None, 90 * DAY, demo=True)
+    plain = _job(conn, None, 90 * DAY)
+    conn.commit()
+
+    class Rec:
+        def __init__(self, c):
+            self.c = c
+            self.rows: list[str] = []
+
+        async def execute(self, sql, params=None):
+            cur = self.c.execute(sql, params)
+            if sql.lstrip().upper().startswith("SELECT"):
+                self.rows = [r[0] for r in cur.fetchall()]
+
+            class Cur:
+                async def fetchall(_self):
+                    return [(r,) for r in self.rows]
+
+            return Cur()
+
+        async def commit(self):
+            self.c.commit()
+
+        async def rollback(self):
+            self.c.rollback()
+
+    rec = Rec(conn)
+    # Selection only: the fake R2 + real DELETE run, so assert on what was selected.
+    asyncio.run(cleanup._sweep_expired_jobs(rec, deadline=float("inf")))
+    assert plain in rec.rows, "control: an ordinary expired job is selected"
+    assert demo not in rec.rows, "a demo row must never be a sweep candidate"
+    assert _exists(conn, demo)
+
+
+@needs_db
+def test_account_deletion_statement_ends_a_demo(conn, r2):
+    """DELETE /api/users/me's job UPDATE (read from route.ts, run as stemloops_app) clears
+    is_demo, so a deleted demo owner never leaves demos retained until 2099 AND anonymous
+    (user_id ON DELETE SET NULL). Covers a live demo and one already in the killed shape
+    (expires_at = created_at), then deletes the owner and runs the real sweep."""
+    route = (
+        Path(__file__).resolve().parents[2]
+        / "web"
+        / "src"
+        / "app"
+        / "api"
+        / "users"
+        / "me"
+        / "route.ts"
+    ).read_text()
+    (stmt,) = re.findall(r"`(\s*UPDATE\s+public\.jobs\b[^`]*)`", route)
+    u = _user(conn, "demo-owner-deleting")
+    live_demo = _job(conn, u, 10 * DAY, demo=True)
+    killed_demo = _job(conn, u, 2 * DAY, killed=True, demo=True)
+    other = _user(conn, "demo-bystander")
+    bystander_demo = _job(conn, other, 10 * DAY, demo=True)
+    conn.commit()
+    for jid in (live_demo, killed_demo, bystander_demo):
+        r2.put(f"{jid}/_input.wav", 1 * HOUR)
+    assert _web_kept(conn, [live_demo, killed_demo]) == {live_demo, killed_demo}
+
+    conn.execute("SET ROLE stemloops_app")
+    n = conn.execute(stmt.replace("$1", "%s"), (u,)).rowcount
+    conn.commit()
+    conn.execute("RESET ROLE")
+    assert n == 2, "both demos of the deleting owner, the killed-shape one included"
+    flags = dict(
+        conn.execute(
+            "SELECT id::text, is_demo FROM jobs WHERE id = ANY(%s::uuid[])",
+            ([live_demo, killed_demo, bystander_demo],),
+        ).fetchall()
+    )
+    assert flags == {live_demo: False, killed_demo: False, bystander_demo: True}
+    assert _web_kept(conn, [live_demo, killed_demo]) == set(), "gone to the web at once"
+
+    # The FK step of the real deletion: the owner goes, user_id SET NULL. The rows are past
+    # retention and anonymous now, and the sweep deletes them; another owner's demo stays.
+    conn.execute("DELETE FROM public.users WHERE id = %s", (u,))
+    conn.execute("DELETE FROM auth.users WHERE id = %s", (u,))
+    conn.commit()
+    _sweep_until_quiet()
+    assert not _exists(conn, live_demo) and not _exists(conn, killed_demo)
+    assert not [k for k in r2.objs if live_demo in k or killed_demo in k]
+    assert _exists(conn, bystander_demo), "another owner's demo is untouched"
+
+    conn.execute("SET ROLE stemloops_app")
+    assert conn.execute(stmt.replace("$1", "%s"), (u,)).rowcount == 0, "idempotent"
+    conn.commit()
+    conn.execute("RESET ROLE")

@@ -25,7 +25,7 @@ import Link from 'next/link';
 import type { Job } from '@stem-loops/types';
 import { JobProgress } from '@/components/JobProgress';
 import Player from '@/components/play/Player';
-import { formatExpiresIn } from '@/lib/retention';
+import { formatExpiresIn, isDemoRow } from '@/lib/retention';
 import { jobLabel } from '@/lib/job-label';
 import { failedJobMessage } from '@/lib/error-copy';
 import { jobTrimNote } from '@/lib/input-trim';
@@ -78,7 +78,11 @@ export function backLink(signedIn: boolean): { href: string; label: string } {
   return signedIn ? { href: '/history', label: 'Back to library' } : { href: '/', label: 'Back to home' };
 }
 
-/** The player's Song info lines: the trim note and the deletion time, in neutral text. */
+/**
+ * The player's Song info lines: the trim note and the deletion time, in neutral
+ * text. A demo song (is_demo, migration 040, #289) is kept until 2099, so its
+ * countdown is not shown ("deleted in ~27,000 days").
+ */
 export function songInfoLines(job: Job, now: number = Date.now()): string[] {
   const lines: string[] = [];
   const trim = jobTrimNote(job);
@@ -86,7 +90,7 @@ export function songInfoLines(job: Job, now: number = Date.now()): string[] {
   const expires = job.expires_at ? new Date(job.expires_at).getTime() : NaN;
   lines.push(
     'On Free, files are deleted after 24 hours; on Pro and Studio they stay in your library.' +
-      (Number.isFinite(expires) ? ` This song is deleted ${formatExpiresIn(expires, now)}.` : ''),
+      (Number.isFinite(expires) && !isDemoRow(job) ? ` This song is deleted ${formatExpiresIn(expires, now)}.` : ''),
   );
   return lines;
 }

@@ -18,6 +18,8 @@ export type LibraryRow = {
   status?: string;
   created_at: string;
   expires_at: string;
+  /** Demo song (migration 040): its expires_at is 2099-12-31; no "deleted in" is shown. */
+  is_demo?: boolean;
 };
 
 /** A browser-history entry (lib/history.ts HistoryEntry). */
@@ -30,6 +32,8 @@ export type ListedSong = {
   /** When it is deleted. Library: the server's deadline. Browser-only: at + 24 h. */
   expiresAtMs: number;
   source: 'library' | 'browser';
+  /** A demo song: the list shows no "deleted in" for it. Library rows only. */
+  isDemo: boolean;
 };
 
 const ms = (iso: string): number => {
@@ -53,13 +57,13 @@ export function listedSongs(
     const createdAtMs = ms(r.created_at);
     const expiresAtMs = ms(r.expires_at);
     if (!Number.isFinite(createdAtMs) || !Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) continue;
-    out.set(r.id, { id: r.id, label: jobLabel(r), createdAtMs, expiresAtMs, source: 'library' });
+    out.set(r.id, { id: r.id, label: jobLabel(r), createdAtMs, expiresAtMs, source: 'library', isDemo: r.is_demo === true });
   }
   for (const e of browser) {
     if (out.has(e.id)) continue;
     const expiresAtMs = e.at + RETENTION_MS;
     if (expiresAtMs <= nowMs) continue;
-    out.set(e.id, { id: e.id, label: e.id, createdAtMs: e.at, expiresAtMs, source: 'browser' });
+    out.set(e.id, { id: e.id, label: e.id, createdAtMs: e.at, expiresAtMs, source: 'browser', isDemo: false });
   }
   return Array.from(out.values()).sort((a, b) => b.createdAtMs - a.createdAtMs);
 }

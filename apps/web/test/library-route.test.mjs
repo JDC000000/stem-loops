@@ -120,3 +120,27 @@ test('/history reads the library from /api/library (the DB), not only this brows
   assert.match(src, /fetch\('\/api\/library'/);
   assert.match(src, /listedSongs\(/);
 });
+
+// ── demo songs (V3 Slice 0, migration 040) ──
+test('GET /api/library: reads is_demo and passes it through, so /history can hide "deleted in"', async () => {
+  const { DEMO_RETAINED_UNTIL } = await import(retentionUrl);
+  const demo = { ...row(9), title: 'Lucky Ticket', expires_at: DEMO_RETAINED_UNTIL, is_demo: true };
+  const { GET } = await load({ user: { user_id: ME }, rows: [demo, { ...row(1), is_demo: false }] });
+  const res = await GET();
+  // The retention SQL in the same SELECT list contains `jobs.is_demo` (its CASE), so it is
+  // removed BEFORE matching; otherwise this passes with the bare column gone (review of #289,
+  // MF-2: a mutant dropping `is_demo, ` from the route survived the earlier regex).
+  const select = norm(globalThis.__lib.queries[0].text).split(' FROM jobs ')[0];
+  const columns = select.split(norm(JOB_RETAINED_UNTIL_SQL)).join('<RULE>');
+  // The BARE column, not an expression aliased to it (re-review N-1: `NULL AS is_demo` passed
+  // the looser regex, and the fake DB returns is_demo whatever is asked for). It must be its
+  // own select-list item, preceded by a comma, and nothing may be aliased AS is_demo.
+  assert.match(columns, /, is_demo, <RULE> AS expires_at$/, 'the SELECT list must read the is_demo column');
+  assert.doesNotMatch(columns, /\bAS\s+is_demo\b/i, 'is_demo must be the column, not an aliased expression');
+  assert.deepEqual(res.body.songs.map((s) => [s.is_demo, s.expires_at]), [[true, DEMO_RETAINED_UNTIL], [false, row(1).expires_at]]);
+});
+
+test('/history hides "deleted in" for a demo row (render test: history-demo-row.test.mjs)', () => {
+  const src = readFileSync(join(WEB, 'src/app/history/page.tsx'), 'utf8');
+  assert.match(src, /s\.isDemo \? null :/);
+});

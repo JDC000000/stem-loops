@@ -119,6 +119,9 @@ def r2(monkeypatch):
     with RealR2(monkeypatch) as server:
         # Bound AFTER RealR2 sets R2_BUCKET_NAME: the binding names that bucket (QA-57/59).
         monkeypatch.setenv(cleanup.ORPHAN_SWEEP_BINDING_ENV, cleanup.orphan_sweep_binding())
+        # The evidence brake latches per PROCESS; one test's trip must not switch the
+        # pass off for the rest of the session (PR #306 revision 2).
+        cleanup._reset_orphan_brake()
         yield server
     cleanup._failed.clear()
 

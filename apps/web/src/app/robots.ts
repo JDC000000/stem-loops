@@ -17,6 +17,11 @@ import type { MetadataRoute } from 'next';
 // allowed on "/" but kept off the API and per-job pages (the cost-control reason for this
 // file: no crawler walking dynamic routes). Training/fetch crawlers stay fully blocked.
 // test/robots.test.mjs fails if a training crawler is allowed or a search bot is blocked.
+//
+// QA-55: /demo/<slug> is deliberately crawlable by everyone allowed on the site, search bots
+// included, even though it is a dynamic player page: it is the public demo (signed out since
+// #302), listed in sitemap.xml and llms.txt. Only the 3 catalog slugs resolve, an off-catalog slug
+// is a 404 with no DB call, and catalog slugs read a 60 s cached list. test/sitemap.test.mjs pins it.
 export const SEARCH_BOT_USER_AGENTS = ['OAI-SearchBot', 'PerplexityBot'];
 export const BLOCKED_AI_USER_AGENTS = [
   'GPTBot',

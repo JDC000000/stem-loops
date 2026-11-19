@@ -287,9 +287,24 @@ test('the landing never claims an account is required to START — nothing enfor
   // page. See audienceLine/faqAnswer above for why the hero and the FAQ are asserted now.
   assert.match(audienceLine(), /Starting a job needs no account/);
   assert.match(faqAnswer('Do I need an account?'), /^Not to start one\./);
-  // Slice 1b: the spec sheet's Account row became one "What you get" line. Demos are not
-  // signed-out playable yet (Slice 2), so the line says an account is needed to PLAY.
-  assert.equal(wygLine('account'), 'Free account needed to play.');
+  // Since #302 the demo songs open in the player signed out (src/app/demo/[slug]/page.tsx;
+  // src/app/jobs/[id]/page.tsx skips its login redirect only for isDemoJob), so every account
+  // line is SCOPED to your own songs and states the demo half with the D-SEO-7 phrase
+  // "without signing in". The PLAY_NEEDS_NO_ACCOUNT guard below still fails any claim that
+  // the player opens your own songs signed out.
+  assert.match(audienceLine(), /opening the player with your own songs needs one\. The demo songs open without signing in\./);
+  assert.equal(wygLine('account'), 'Free account needed to play your own songs. The demo songs open without signing in.');
+  // The FAQ answer renders on / (HOME_FAQ) and on /help (HELP_SECTIONS). PR #305 review M1:
+  // putting back the old unscoped line passed the whole suite, so it is pinned both ways.
+  const faq = faqAnswer('Do I need an account?');
+  assert.match(faq, /Running a job works signed out, and so does playing a demo song\./);
+  assert.match(faq, /To open your own songs in the player you sign in/);
+  assert.doesNotMatch(faq, /The player asks you to sign in/i,
+    'the FAQ is back to the unscoped sign-in line, false for the demo songs since #302');
+  for (const [where, text] of [['hero', audienceLine()], ['what-you-get', wygLine('account')], ['FAQ', faq]]) {
+    assert.doesNotMatch(text, /opening the player needs one|needed to play\.|The player asks you to sign in/i,
+      `${where} has an unscoped account line again`);
+  }
   // …and the FAQ still carries the half that IS true. `on the sign-in page` rather than a
   // bare /sign in/i, which "no sign in needed" satisfies by containing the words.
   assert.match(faqAnswer('Do I need an account?'), /on the sign-in page/i);

@@ -41,6 +41,41 @@ class DownloadTimeoutError(StemLoopsError):
     user_message = "We couldn't reach that video in time. Check the link and try again."
 
 
+class FetchProxyFailedError(StemLoopsError):
+    """QA-61: our outbound proxy refused or failed the fetch -- OUR fault, not YouTube's.
+
+    Since 2026-11-18 23:04Z every link job failed with yt-dlp reporting
+    ``Tunnel connection failed: 407 Proxy Authentication Required``: the residential-proxy
+    credentials in ``PROXY_URL`` had lapsed. That was classed DOWNLOAD_BLOCKED, so users were
+    told YouTube was blocking them (false), nothing reached Sentry (DOWNLOAD_BLOCKED is a
+    user-fault code), and the credit-refund policy treated it as the user's problem.
+
+    Its own code, ``FETCH_PROXY_FAILED``: listed in ``job_failure.OUR_FAULT_CODES`` (inert
+    for link jobs, which never hold a credit; see the comment there), reported to Sentry at error level once per process per cause (``fetch_alerts``), and
+    shown with copy that says it was us. ``cause`` is ``proxy_auth`` (407 / bad
+    credentials: not transient, never retried) or ``proxy_connect`` (the proxy could not be
+    reached or could not open the tunnel). ``detail`` is a fixed string: the proxy URL
+    carries ``user:pass`` and must never reach a log, an event or the job row.
+    """
+
+    error_code = "FETCH_PROXY_FAILED"
+    # No credit/refund wording (review B-1): link jobs never spend a credit (credits are
+    # upload-only, migrations 013/039), and the monthly allowance a link job DOES use is not
+    # given back on failure today, so any "you haven't been charged" line would be false.
+    user_message = (
+        "Something went wrong on our end fetching this video. Try again in a few minutes."
+    )
+
+    def __init__(self, cause: str):
+        self.cause = cause
+        super().__init__(f"yt-dlp proxy failure: {cause}", failure_reason=cause)
+
+    @property
+    def retryable(self) -> bool:
+        """A credential failure is not transient; a connect failure may be (fresh exit)."""
+        return self.cause != "proxy_auth"
+
+
 class FetchPausedError(DownloadBlockedError):
     """SL21 kill switch (fetch_global / fetch_youtube) is engaged: no outbound fetch is made.
     Same error_code as its parent (still one of the typed classes); the message keeps the
@@ -194,6 +229,7 @@ class LinkUnmeasurableError(InternalError):
 _ALL_ERROR_CLASSES = [
     DownloadBlockedError,
     DownloadTimeoutError,
+    FetchProxyFailedError,
     DownloadInvalidUrlError,
     DownloadAgeRestrictedError,
     DownloadPrivateError,

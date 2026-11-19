@@ -1,9 +1,11 @@
 """Structured JSON logger with secret redaction and a detail-size cap (PRD §6.2).
 
 `log_structured(level, event, **fields)` emits one JSON line to stderr with the
-fields nested under `detail`. Two redaction passes run before anything is written,
+fields nested under `detail`. Redaction passes run before anything is written,
 so no token/cookie/secret can leak into logs or `job_events.detail` (PRD §6.1):
 
+  0. URL userinfo — `scheme://user:pass@host` and bare `user:pass@host` lose `user:pass`
+     (a proxy URL's credentials carry no keyword for pass 2 to find).
   1. Prefixed secrets — `Bearer X`, `token=X`, `Set-Cookie: X`, `Authorization: X`,
      `session_cookie=X`, `api_key=X`, `password=X` → value replaced with [REDACTED].
   2. Keyword tokens — any whitespace-delimited word that itself contains a
@@ -44,7 +46,20 @@ _KEYWORD_WORD_RE = re.compile(
 )
 
 
+# Pass 0 (QA-61 review m-3): URL userinfo. PROXY_URL is `http://user:pass@host:port`, and the
+# sticky form appends `_session-<id>_lifetime-2m` to the password; neither carries a keyword
+# pass 2 would catch. Any `scheme://<userinfo>@` loses its userinfo, and so does a scheme-less
+# `user:pass@host` (host must look like one: a dotted name or name:port, as in
+# sentry_config._BARE_USERINFO, so `12:30@noon` is left alone).
+_URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/?#@'\"<>]+@")
+_BARE_USERINFO_RE = re.compile(
+    r"(?<![\w/:.@-])[^\s/:@'\"()\[\]]+:[^\s/@'\"()\[\]]+@(?=[\w-]+(?:\.[\w-]+)+|[\w.-]+:\d+)"
+)
+
+
 def redact_secrets(text: str) -> str:
+    text = _URL_USERINFO_RE.sub(lambda m: m.group(1) + "[REDACTED]@", text)
+    text = _BARE_USERINFO_RE.sub("[REDACTED]@", text)
     text = _PREFIX_RE.sub(lambda m: m.group(1) + "[REDACTED]", text)
     text = _KEYWORD_WORD_RE.sub("[REDACTED]", text)
     return text

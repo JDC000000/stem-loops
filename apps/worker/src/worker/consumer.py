@@ -32,6 +32,7 @@ from . import tmpdirs
 from .artifact_audit import start_artifact_audit
 from .cleanup import sweep_expired
 from .errors import InternalError, StemLoopsError
+from .fetch_canary import start_fetch_canary
 from .job_failure import JobNoLongerActive, fail_job
 from .logger import log_structured
 from .loop_cutter import claim_and_cut, reap_stale_requests
@@ -213,6 +214,15 @@ def _safe_lifecycle_check() -> None:
         log_structured("WARN", "artifact_audit_failed", stage="start", error=str(e)[:200])
 
 
+def _safe_start_fetch_canary() -> None:
+    """Start the proxy/YouTube fetch canary (QA-61) on its own daemon thread; never raises,
+    never blocks. It loops on its own interval, so it is started once, not per pass."""
+    try:
+        start_fetch_canary()
+    except Exception as e:  # noqa: BLE001
+        log_structured("WARN", "fetch_canary_start_failed", error=str(e)[:200])
+
+
 async def poll_loop() -> None:
     """Continuously claim and run jobs; idle-sleep when the queue is empty.
 
@@ -226,6 +236,7 @@ async def poll_loop() -> None:
     except Exception as e:  # noqa: BLE001
         log_structured("ERROR", "tmp_sweep_error", error=str(e)[:200])
     _safe_lifecycle_check()
+    _safe_start_fetch_canary()
     await _safe_reap()
     await _safe_sweep()
     last_reap = time.monotonic()

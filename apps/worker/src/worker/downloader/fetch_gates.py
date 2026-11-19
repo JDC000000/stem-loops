@@ -30,6 +30,7 @@ import psycopg
 
 from ..errors import DownloadBlockedError
 from ..logger import log_structured
+from ..spend_gate import SCOPE_SPEND_GLOBAL
 
 KILL_SWITCH_TTL_S = 30.0
 # A gate read still waiting after this long logs one WARN (it does NOT stop waiting; see
@@ -44,6 +45,13 @@ _DEFAULT_ENGAGED = frozenset({SCOPE_FETCH_COBALT})
 # new misspelled row is refused at write time. Rows written before 035 survive where 035 had to
 # leave that CHECK NOT VALID; such a row is never consulted; see the kill_switch_unknown_scope WARN.
 _KNOWN_SCOPES = frozenset({SCOPE_FETCH_GLOBAL, SCOPE_FETCH_YOUTUBE, SCOPE_FETCH_COBALT})
+# Scopes ANOTHER component reads (QA-61 log noise): `spend_global` is the spend brake, read by
+# spend_gate.brake_state from consumer.claim_and_run. A row for it is correct, so it must not
+# be named in the "this row changes nothing" WARN. This module never acts on it; it is only
+# excluded from the warning.
+# fetch_spotify / serve_mix_first / payments_r are NOT listed: migration 035 allows them but
+# nothing reads them, so "this row changes nothing" is true for them and the WARN stays.
+_SCOPES_READ_ELSEWHERE = frozenset({SCOPE_SPEND_GLOBAL})
 
 _VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 _WATCH_PATH = re.compile(r"^/(?:shorts|embed|live|v|e)/([A-Za-z0-9_-]{11})(?:[/?#]|$)")
@@ -263,10 +271,10 @@ def _refresh_if_stale() -> None:
         # be silent. 035's CHECK refuses new ones, but leaves itself NOT VALID (with a WARNING)
         # when such rows already exist, so they can still be here. Name every scope this worker
         # does not read. It rides the refresh, so
-        # it is at most once per TTL. It also names valid scopes this module does not consume
-        # (fetch_spotify, serve_mix_first, payments_r, and spend_global, which the spend gate
-        # reads, not this one): true for those too, since setting them has no effect here.
-        unread = sorted({str(scope) for scope, _ in rows} - _KNOWN_SCOPES)
+        # it is at most once per TTL. It also names valid scopes that NOTHING consumes
+        # (fetch_spotify, serve_mix_first, payments_r): true for those too. It does not name
+        # spend_global, which the spend gate reads (_SCOPES_READ_ELSEWHERE).
+        unread = sorted({str(scope) for scope, _ in rows} - _KNOWN_SCOPES - _SCOPES_READ_ELSEWHERE)
         if unread:
             log_structured(
                 "WARN",
@@ -276,7 +284,8 @@ def _refresh_if_stale() -> None:
                 detail="kill_switches holds scope(s) this worker never reads (typo? wrong case, "
                 "stray space, '-' for '_'?); only "
                 + ", ".join(sorted(_KNOWN_SCOPES))
-                + " are consulted, so these rows change nothing",
+                + " are consulted here (spend_global by the spend gate), so these rows change "
+                "nothing",
             )
         _cache.clear()
         _cache.update({scope: bool(enabled) for scope, enabled in rows})

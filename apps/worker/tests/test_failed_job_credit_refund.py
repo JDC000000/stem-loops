@@ -12,7 +12,8 @@ Reproduced on the local stack against worker 602d0ce (overnight/W3 cases D01, D0
 credits 3 -> 2 and the job failed with no output.
 
 Policy implemented by ``pipeline._fail`` and pinned here:
-  1. Our-fault codes (SEPARATION_FAILED, UPLOAD_FAILED, INTERNAL_ERROR) -> refund.
+  1. Our-fault codes (SEPARATION_FAILED, UPLOAD_FAILED, INTERNAL_ERROR, and since QA-61
+     FETCH_PROXY_FAILED) -> refund.
   2. Any failure BEFORE a paid provider call (no ``replicate_prediction_id``: a corrupt or
      over-length upload) -> refund. Nothing was spent, so a refund cannot be farmed.
   3. An input-caused failure AFTER paid separation (EXTRACTION_FAILED on a beatless or
@@ -124,7 +125,9 @@ def _fail(pipeline, jid, code):
     asyncio.run(pipeline._fail(str(jid), code, "msg"))
 
 
-@pytest.mark.parametrize("code", ["SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR"])
+@pytest.mark.parametrize(
+    "code", ["SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR", "FETCH_PROXY_FAILED"]
+)
 def test_our_fault_failure_after_paid_call_returns_the_credit(conn, _pipeline_db, code):
     uid = _user(conn)
     jid = _job(conn, uid, pred="pred_abc")

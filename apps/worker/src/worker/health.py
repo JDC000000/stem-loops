@@ -16,9 +16,11 @@ way. The DSN itself is a credential and is NEVER in the response — on/off only
 Still cheap and dependency-free: no DB, no network, just the SDK's in-process state.
 
 ``fetch_canary`` (QA-61) is the last result of the proxy/YouTube canary thread
-(fetch_canary.py), read from memory: ``enabled``, ``ok`` (null before the first check),
-``last_checked`` (ISO-8601 UTC) and ``cause`` (proxy_auth / proxy_connect /
-youtube_bot_check / other, or null). Never a URL, a credential or yt-dlp output.
+(fetch_canary.py), read from memory: ``enabled``, an overall ``ok`` / ``last_checked`` /
+``cause``, and the two checks separately: ``proxy`` (the ~1 KB CONNECT check, every 15 min)
+and ``youtube`` (the yt-dlp metadata check, every 12 h), each ``{ok, last_checked, cause}``.
+``ok`` is null before a check has run; ``cause`` is proxy_auth / proxy_connect /
+youtube_bot_check / other, or null. Never a URL, a credential or yt-dlp output.
 """
 
 import sentry_sdk
@@ -62,7 +64,8 @@ def sentry_state() -> str:
 
 @app.get("/health")
 async def health():
-    # `fetch_canary` (QA-61): {"enabled", "ok", "last_checked", "cause"} from the proxy/YouTube
-    # canary. Informational only: the status stays "ok" and the response 200 whatever it says,
-    # so a dead proxy never makes anything restart the worker. No secret is in it.
+    # `fetch_canary` (QA-61): {"enabled", "ok", "last_checked", "cause", "proxy", "youtube"}
+    # from the proxy/YouTube canary. Informational only: the status stays "ok" and the
+    # response 200 whatever it says, so a dead proxy never makes anything restart the worker.
+    # No secret is in it.
     return {"status": "ok", "sentry": sentry_state(), "fetch_canary": canary_state()}

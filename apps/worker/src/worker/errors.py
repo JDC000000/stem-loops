@@ -50,8 +50,8 @@ class FetchProxyFailedError(StemLoopsError):
     told YouTube was blocking them (false), nothing reached Sentry (DOWNLOAD_BLOCKED is a
     user-fault code), and the credit-refund policy treated it as the user's problem.
 
-    Its own code, ``FETCH_PROXY_FAILED``: in ``job_failure.OUR_FAULT_CODES`` (refunded),
-    reported to Sentry at error level once per process per cause (``fetch_alerts``), and
+    Its own code, ``FETCH_PROXY_FAILED``: listed in ``job_failure.OUR_FAULT_CODES`` (inert
+    for link jobs, which never hold a credit; see the comment there), reported to Sentry at error level once per process per cause (``fetch_alerts``), and
     shown with copy that says it was us. ``cause`` is ``proxy_auth`` (407 / bad
     credentials: not transient, never retried) or ``proxy_connect`` (the proxy could not be
     reached or could not open the tunnel). ``detail`` is a fixed string: the proxy URL
@@ -59,9 +59,11 @@ class FetchProxyFailedError(StemLoopsError):
     """
 
     error_code = "FETCH_PROXY_FAILED"
+    # No credit/refund wording (review B-1): link jobs never spend a credit (credits are
+    # upload-only, migrations 013/039), and the monthly allowance a link job DOES use is not
+    # given back on failure today, so any "you haven't been charged" line would be false.
     user_message = (
-        "Something went wrong on our end fetching this video. "
-        "If it used a credit, it has been returned. Try again later."
+        "Something went wrong on our end fetching this video. Try again in a few minutes."
     )
 
     def __init__(self, cause: str):

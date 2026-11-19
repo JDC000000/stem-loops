@@ -30,7 +30,7 @@ from worker.downloader import fetch_gates, ytdlp_client
 from worker.errors import (
     ALL_ERROR_CODES,
     DownloadBlockedError,
-    DownloadPrivateError,
+    DownloadTimeoutError,
     FetchPausedError,
     FetchProxyFailedError,
 )
@@ -53,6 +53,12 @@ STDERR_CONNECT = (
 )
 STDERR_TUNNEL_502 = "ERROR: Unable to download webpage: Tunnel connection failed: 502 Bad Gateway"
 STDERR_BOT = "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies"
+# Observed by the reviewer against a fake proxy that closes the connection (yt-dlp 2026.10.26).
+STDERR_REMOTE_DISCONNECTED = (
+    "ERROR: [youtube] dQw4w9WgXcQ: Unable to download webpage: Remote end closed connection "
+    "without response (caused by TransportError(\"('Connection aborted.', "
+    "RemoteDisconnected('Remote end closed connection without response'))\"))"
+)
 
 
 # ------------------------------------------------------------------- classification
@@ -66,8 +72,15 @@ STDERR_BOT = "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --c
         ("HTTP Error 407: Proxy Authentication Required", "proxy_auth"),
         (STDERR_CONNECT, "proxy_connect"),
         (STDERR_TUNNEL_502, "proxy_connect"),
-        ("requests.exceptions.ProxyError: HTTPSConnectionPool", "proxy_connect"),
+        ("(caused by ProxyError('Cannot connect to proxy.'))", "proxy_connect"),
         ("Cannot connect to proxy.", "proxy_connect"),
+        # review m-2: the proxy dropping or resetting the connection
+        (STDERR_REMOTE_DISCONNECTED, "proxy_connect"),
+        (
+            "ERROR: [youtube] abc: Unable to download webpage: [Errno 104] "
+            "Connection reset by peer (caused by TransportError(ConnectionResetError(104)))",
+            "proxy_connect",
+        ),
     ],
 )
 def test_proxy_failures_are_recognised(stderr, cause):
@@ -88,6 +101,57 @@ def test_proxy_failures_are_recognised(stderr, cause):
 )
 def test_non_proxy_failures_are_not_called_proxy_failures(stderr):
     assert ytdlp_client.proxy_failure_cause(stderr) is None
+
+
+# Review M-1: an 11-char id is user-chosen and yt-dlp echoes it. None of these may read as a
+# proxy failure, whatever the rest of the line says.
+HOSTILE_IDS = ["x-407-proxy", "-proxyerror", "ProxyError_", "407-proxy-x", "proxy-407xx"]
+
+
+@pytest.mark.parametrize("vid", HOSTILE_IDS)
+def test_a_user_chosen_video_id_cannot_fake_a_proxy_failure(vid):
+    lines = [
+        f"ERROR: [youtube] {vid}: Video unavailable. This video is not available",
+        f"ERROR: [youtube] {vid}: Private video",
+        f"WARNING: [youtube] {vid}: Failed to fetch https://www.youtube.com/watch?v={vid}&x=1",
+        f"ERROR: Unable to download webpage for https://youtu.be/{vid} (HTTP Error 404)",
+    ]
+    for line in lines:
+        assert ytdlp_client.proxy_failure_cause(line, vid) is None, line
+        assert ytdlp_client.proxy_failure_cause(line) is None, line  # id unknown: still safe
+        assert ytdlp_client.classify_fetch_failure(line, vid) != "youtube_bot_check"
+
+
+@pytest.mark.parametrize("vid", HOSTILE_IDS)
+def test_no_pattern_can_match_inside_an_id_even_unstripped(vid):
+    """Layer 1 on its own: every pattern is too long for an id or needs a character an id
+    cannot hold, so even the raw "[youtube] <id>:" line matches nothing."""
+    for pattern, _ in ytdlp_client._PROXY_PATTERNS:
+        assert pattern.search(f"ERROR: [youtube] {vid}: Video unavailable") is None, pattern
+
+
+def test_user_tokens_are_stripped_before_matching():
+    """Layer 2 on its own: the item prefix, URL ids and the known id are cut out."""
+    strip = ytdlp_client._strip_user_tokens
+    assert strip("ERROR: [youtube] AbCdEfGhIjK: x", None) == "ERROR: [item]: x"
+    assert strip("ERROR: [youtube:tab] AbCdEfGhIjK: x", None) == "ERROR: [item]: x"
+    assert "AbCdEfGhIjK" not in strip("see https://www.youtube.com/watch?v=AbCdEfGhIjK", None)
+    assert "AbCdEfGhIjK" not in strip("see https://youtu.be/AbCdEfGhIjK now", None)
+    assert strip("id AbCdEfGhIjK here", "AbCdEfGhIjK") == "id [id] here"
+
+
+def test_remote_disconnected_alone_is_proxy_connect():
+    line = "ERROR: Unable to download webpage (caused by TransportError(RemoteDisconnected()))"
+    assert ytdlp_client.proxy_failure_cause(line) == "proxy_connect"
+
+
+def test_a_real_proxy_failure_on_a_hostile_id_is_still_seen():
+    vid = "x-407-proxy"
+    line = (
+        f"ERROR: [youtube] {vid}: Unable to download API page: ('Unable to connect to proxy', "
+        "OSError('Tunnel connection failed: 407 Proxy Authentication Required'))"
+    )
+    assert ytdlp_client.proxy_failure_cause(line, vid) == "proxy_auth"
 
 
 def test_canary_cause_classes():
@@ -124,6 +188,12 @@ def test_ytdlp_407_raises_fetch_proxy_failed_not_download_blocked(fake_ytdlp, ca
     assert any("s3cr3tpass" in " ".join(c) for c in fake_ytdlp["cmds"])
     assert "s3cr3tpass" not in str(ei.value) and "someuser" not in str(ei.value)
     assert "s3cr3tpass" not in capsys.readouterr().err
+
+
+def test_ytdlp_hostile_id_with_a_proxy_is_not_a_proxy_failure(fake_ytdlp):
+    fake_ytdlp["stderr"] = "ERROR: [youtube] x-407-proxy: Video unavailable"
+    with pytest.raises(DownloadBlockedError):
+        ytdlp_client.fetch_audio_file("https://www.youtube.com/watch?v=x-407-proxy")
 
 
 def test_ytdlp_proxy_connect_failure(fake_ytdlp):
@@ -231,15 +301,25 @@ def test_the_code_is_registered_everywhere_the_taxonomy_lives():
 def test_the_user_copy_is_honest():
     msg = FetchProxyFailedError("proxy_auth").user_message
     # Pinned verbatim in apps/web/test/job-page-render.test.mjs (the job page shows it).
-    assert msg == (
-        "Something went wrong on our end fetching this video. "
-        "If it used a credit, it has been returned. Try again later."
-    )
-    assert "on our end" in msg
+    assert msg == "Something went wrong on our end fetching this video. Try again in a few minutes."
     assert "on our side" not in msg  # BRAND-TONE avoid list
     assert "YouTube" not in msg and "blocking" not in msg
-    assert "credit" in msg and "returned" in msg
     assert "proxy" not in msg.lower()  # implementation detail stays server-side
+    # Review B-1: link jobs never spend a credit and the allowance they use is not returned,
+    # so the copy must promise nothing about charges, credits or refunds.
+    for word in ("credit", "charge", "refund", "returned", "allowance"):
+        assert word not in msg.lower(), word
+
+
+def test_web_copy_promises_no_refund_either():
+    from pathlib import Path
+
+    ts = (Path(__file__).resolve().parents[2] / "web/src/lib/error-copy.ts").read_text()
+    entry = ts[ts.index("FETCH_PROXY_FAILED: {") :]
+    entry = entry[: entry.index("},")]
+    assert "on our end" in entry
+    for word in ("credit", "charge", "refund", "returned"):
+        assert word not in entry.lower(), word
 
 
 def test_refund_sql_is_handed_the_proxy_code():
@@ -368,8 +448,44 @@ def test_burst_alerts_once_on_n_distinct_videos_with_the_same_code(sentry):
 def test_burst_needs_different_videos(sentry):
     d = fetch_alerts.DownloadBurstDetector(threshold=3, window_s=1800, clock=Clock())
     for _ in range(10):
-        assert d.record_failure("DOWNLOAD_PRIVATE", "aaaaaaaaaaa") is False
+        assert d.record_failure("DOWNLOAD_BLOCKED", "aaaaaaaaaaa") is False
     assert sentry == []
+
+
+@pytest.mark.parametrize(
+    "code", ["DOWNLOAD_PRIVATE", "DOWNLOAD_AGE_RESTRICTED", "DOWNLOAD_INVALID_URL"]
+)
+def test_burst_never_counts_user_class_codes(sentry, code):
+    """Review m-1: private / age-restricted / live (INVALID_URL) / malformed links are about
+    the video someone pasted, not an outage."""
+    d = fetch_alerts.DownloadBurstDetector(threshold=3, window_s=1800, clock=Clock())
+    for i in range(6):
+        assert d.record_failure(code, f"vid{i:08d}") is False
+    assert sentry == []
+
+
+@pytest.mark.parametrize("code", ["DOWNLOAD_BLOCKED", "DOWNLOAD_TIMEOUT", "FETCH_PROXY_FAILED"])
+def test_burst_counts_infra_class_codes(sentry, code):
+    d = fetch_alerts.DownloadBurstDetector(threshold=3, window_s=1800, clock=Clock())
+    results = [d.record_failure(code, f"vid{i:08d}") for i in range(3)]
+    assert results == [False, False, True]
+    assert sentry[0]["fp"] == ["download-failure-burst", code]
+
+
+def test_a_user_class_failure_neither_counts_nor_breaks_an_infra_streak(sentry):
+    d = fetch_alerts.DownloadBurstDetector(threshold=3, window_s=1800, clock=Clock())
+    d.record_failure("DOWNLOAD_BLOCKED", "aaaaaaaaaaa")
+    d.record_failure("DOWNLOAD_PRIVATE", "bbbbbbbbbbb")
+    d.record_failure("DOWNLOAD_BLOCKED", "ccccccccccc")
+    assert d.record_failure("DOWNLOAD_BLOCKED", "ddddddddddd") is True
+
+
+def test_infra_codes_are_exactly_the_fetch_path_ones():
+    assert {
+        "DOWNLOAD_BLOCKED",
+        "DOWNLOAD_TIMEOUT",
+        "FETCH_PROXY_FAILED",
+    } == fetch_alerts.INFRA_CODES
 
 
 def test_burst_streak_is_broken_by_success_or_a_different_code(sentry):
@@ -436,14 +552,14 @@ def test_kill_switch_refusals_never_feed_the_burst_detector(chain, sentry):
 def test_a_success_in_download_audio_resets_the_streak(chain, sentry):
     chain.cobalt_released = False
     seq = [
-        ("aaaaaaaaaaa", DownloadPrivateError("x")),
-        ("bbbbbbbbbbb", DownloadPrivateError("x")),
+        ("aaaaaaaaaaa", DownloadTimeoutError("x")),
+        ("bbbbbbbbbbb", DownloadTimeoutError("x")),
         ("ccccccccccc", "/tmp/ok.wav"),
-        ("ddddddddddd", DownloadPrivateError("x")),
+        ("ddddddddddd", DownloadTimeoutError("x")),
     ]
     for vid, outcome in seq:
-        chain.ytdlp_results = [outcome]
-        with contextlib.suppress(DownloadPrivateError):
+        chain.ytdlp_results = [outcome] * 3
+        with contextlib.suppress(DownloadTimeoutError):
             downloader.download_audio(f"https://www.youtube.com/watch?v={vid}", JOB)
     assert sentry == []
 
@@ -483,3 +599,41 @@ def test_spend_global_is_still_never_acted_on_by_the_fetch_gate(monkeypatch, cap
         assert fetch_gates.cobalt_allowed() is False
     finally:
         fetch_gates.reset_cache()
+
+
+# ------------------------------------------------------------------- log redaction (m-3)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "--proxy http://usr:hunter2xyz_session-abcd1234_lifetime-2m@geo.iproyal.com:12321",
+        "https://usr:hunter2xyz@proxy.example:8080/path",
+        "socks5h://usr:hunter2xyz@10.0.0.1:1080",
+        "proxy usr:hunter2xyz@geo.iproyal.com:12321 failed",
+        "('Unable to connect to proxy', 'http://usr:hunter2xyz@host.example:1')",
+    ],
+)
+def test_redact_secrets_strips_url_userinfo(text):
+    from worker.logger import redact_secrets
+
+    out = redact_secrets(text)
+    assert "hunter2xyz" not in out and "usr:" not in out, out
+    assert "[REDACTED]@" in out
+
+
+def test_redact_secrets_leaves_ordinary_text_alone():
+    from worker.logger import redact_secrets
+
+    for text in ("meet at 12:30@noon", "mail a@b.com", "https://example.com/a?b=c"):
+        assert redact_secrets(text) == text
+
+
+def test_log_structured_never_prints_proxy_credentials(capsys):
+    from worker.logger import log_structured
+
+    log_structured(
+        "ERROR", "ytdlp_failed", stderr=f"failed via {PROXY}_session-ab12cd34_lifetime-2m"
+    )
+    err = capsys.readouterr().err
+    assert "s3cr3tpass" not in err and "someuser" not in err

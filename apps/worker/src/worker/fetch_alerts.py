@@ -13,10 +13,10 @@ outage was silent until QA noticed. Two signals close that:
   fetch canary when the path recovers) lets the NEXT outage report again.
 
 * ``DownloadBurstDetector`` -- N consecutive link-job download failures with the same
-  error code, across N different videos, within a window, is one Sentry ERROR under
-  fingerprint ``["download-failure-burst", error_code]``. This catches the next outage that
-  wears a user-fault code (a YouTube-wide bot wall, a yt-dlp extractor break): one video
-  failing is the video; several different videos in a row failing the same way is us.
+  infrastructure-class code (``INFRA_CODES``), across N different videos, within a window,
+  is one Sentry ERROR under fingerprint ``["download-failure-burst", error_code]``. This
+  catches the next outage that wears a user-fault code (a YouTube-wide bot wall, a yt-dlp
+  extractor break): several different videos in a row failing the same way is us.
 
 Nothing here carries a credential: messages are fixed strings and tags are low-cardinality
 classes. No video ids are sent (a count of distinct ids is). Every function swallows its own
@@ -75,16 +75,18 @@ def _env_int(name: str, default: int, minimum: int) -> int:
     return value if value >= minimum else default
 
 
-# Only fetch OUTCOMES are recorded (downloader/__init__.py calls this after the blocklist and
-# kill-switch gates, so those refusals never arrive). A malformed or live-stream URL can still
-# be refused inside the fetch; that is about the link, never about whether fetching works.
-_NOT_FETCH_OUTCOMES = frozenset({"DOWNLOAD_INVALID_URL"})
+# Only INFRASTRUCTURE-class codes count (review m-1): a fetch path that is failing for us.
+# User-class codes (DOWNLOAD_PRIVATE, DOWNLOAD_AGE_RESTRICTED, DOWNLOAD_INVALID_URL -- which the
+# live-stream refusal shares) are properties of the video someone pasted; three users pasting
+# private links in a row is not an outage. They neither count nor break a streak. Kill-switch
+# and blocklist refusals never arrive (downloader/__init__.py records only past those gates).
+INFRA_CODES = frozenset({"DOWNLOAD_BLOCKED", "DOWNLOAD_TIMEOUT", "FETCH_PROXY_FAILED"})
 
 
 class DownloadBurstDetector:
-    """Consecutive same-code download failures across distinct videos within a window.
-
-    A success, or a failure with a different code, ends the streak. Entries older than
+    """Consecutive same-code INFRASTRUCTURE download failures across distinct videos within a
+    window. A success, or an infra failure with a different code, ends the streak; a
+    user-class failure is ignored. Entries older than
     ``window_s`` fall out of it. One alert per streak: the streak must end before another.
     """
 
@@ -121,7 +123,7 @@ class DownloadBurstDetector:
 
     def record_failure(self, error_code: str, video_id: str) -> bool:
         """Record one failed link download. Returns True if this failure raised the alert."""
-        if error_code in _NOT_FETCH_OUTCOMES:
+        if error_code not in INFRA_CODES:
             return False
         now = self._clock()
         with self._lock:

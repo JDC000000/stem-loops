@@ -2,23 +2,30 @@
 
 From 2026-11-18 23:04Z the residential-proxy credentials were rejected (HTTP 407) and every
 link job failed; nothing said so until a user's job did. The canary finds that out without a
-user: every ``FETCH_CANARY_INTERVAL_SECONDS`` (default 900) a daemon thread resolves the
-metadata of one fixed, public, long-lived video (``CANARY_YOUTUBE_ID``) through the SAME
-proxy path a real fetch uses (``ytdlp_client.canary_probe``), downloading nothing.
+user, with two checks on one daemon thread:
 
-* Failure (first, or a different cause than the last failure): log ERROR and one Sentry
-  ERROR, fingerprint ``["fetch-canary", cause]``, cause one of proxy_auth / proxy_connect /
-  youtube_bot_check / other. A failure that persists with the same cause logs ERROR each
-  check but does not re-send to Sentry.
-* Recovery (a success after a failure): log INFO and one Sentry INFO, and re-arm the
-  per-job FETCH_PROXY_FAILED reports so the next outage reports again.
-* ``canary_state()`` is served on /health as ``fetch_canary``. /health stays 200 whatever it
-  says: a dead proxy is not a reason for Fly to restart the worker.
+* PROXY check, every ``FETCH_CANARY_INTERVAL_SECONDS`` (default 900): open a CONNECT tunnel
+  to www.youtube.com:443 through the SAME sticky proxy URL a real fetch uses and read the
+  status line (``ytdlp_client.proxy_tunnel_probe``): 200 ok, 407 proxy_auth, anything else
+  proxy_connect. About 1 KB on the wire, no TLS to YouTube: ~96/day = ~3 MB/month.
+* FULL check, every ``FETCH_CANARY_FULL_INTERVAL_SECONDS`` (default 43200 = 12 h, and once
+  at start-up): a metadata-only yt-dlp resolve of ``CANARY_YOUTUBE_ID`` with the server
+  cookies, through the proxy (``ytdlp_client.canary_probe``). Catches what the proxy check
+  cannot (a bot wall, expired cookies, an extractor break). A full YouTube extraction is
+  ~0.25-0.6 MB through the proxy, so at 2/day it is ~15-40 MB/month (plus one per restart).
+  The proxy plan is metered (1 GB/month): this is why the full probe is NOT the frequent one.
+
+Alerting, per check: a failure (the first, or a different cause than the last) logs ERROR and
+sends one Sentry ERROR, fingerprint ``["fetch-canary", cause]``, tag ``check``; a persisting
+failure logs ERROR each time but does not re-send. Recovery logs INFO and sends one Sentry
+INFO. A success re-arms the per-job FETCH_PROXY_FAILED reports so the next outage reports.
+
+``canary_state()`` is served on /health as ``fetch_canary``. /health stays 200 whatever it
+says: a dead proxy is not a reason for Fly to restart the worker.
 
 Runs only where the link path is live (``ALLOW_YOUTUBE_INPUT=true``) and the interval is
-positive; ``FETCH_CANARY_INTERVAL_SECONDS=0`` turns it off. It never raises, never blocks
-the poll loop (own daemon thread, each probe bounded by ``FETCH_CANARY_TIMEOUT_SECONDS``),
-and never logs or sends text from yt-dlp: only the cause class. PROXY_URL carries
+positive. Never raises, never blocks the poll loop, every probe is bounded, and nothing from
+yt-dlp or the proxy URL is logged or sent: only cause classes. PROXY_URL carries
 ``user:pass``.
 """
 
@@ -39,14 +46,23 @@ from .logger import log_structured
 # "Me at the zoo" (2005), the first video uploaded to YouTube: public, short, not
 # age-gated, and as close to permanent as a YouTube video gets.
 DEFAULT_CANARY_YOUTUBE_ID = "jNQXAC9IVRw"
-DEFAULT_INTERVAL_S = 900
+DEFAULT_INTERVAL_S = 900.0
+DEFAULT_FULL_INTERVAL_S = 43200.0
 DEFAULT_TIMEOUT_S = 45.0
+DEFAULT_PROXY_TIMEOUT_S = 10.0
+MIN_SLEEP_S = 60.0
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 _state_lock = threading.Lock()
-_state: dict = {"enabled": False, "ok": None, "last_checked": None, "cause": None}
 _thread: threading.Thread | None = None
 _start_lock = threading.Lock()
+
+
+def _blank() -> dict:
+    return {"ok": None, "last_checked": None, "cause": None}
+
+
+_state: dict = {"enabled": False, "proxy": _blank(), "youtube": _blank()}
 
 
 def canary_video_id() -> str:
@@ -73,9 +89,19 @@ def interval_s() -> float:
     return _env_float("FETCH_CANARY_INTERVAL_SECONDS", DEFAULT_INTERVAL_S)
 
 
+def full_interval_s() -> float:
+    """0 turns the full (yt-dlp) probe off; the proxy check keeps running."""
+    return _env_float("FETCH_CANARY_FULL_INTERVAL_SECONDS", DEFAULT_FULL_INTERVAL_S)
+
+
 def timeout_s() -> float:
     value = _env_float("FETCH_CANARY_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_S)
     return value if value > 0 else DEFAULT_TIMEOUT_S
+
+
+def proxy_timeout_s() -> float:
+    value = _env_float("FETCH_CANARY_PROXY_TIMEOUT_SECONDS", DEFAULT_PROXY_TIMEOUT_S)
+    return value if value > 0 else DEFAULT_PROXY_TIMEOUT_S
 
 
 def enabled() -> bool:
@@ -83,62 +109,120 @@ def enabled() -> bool:
 
 
 def canary_state() -> dict:
-    """A copy of the canary's last result for /health. Holds no secrets: a bool, a
-    timestamp, a cause class and whether the canary runs at all."""
+    """The canary's last results for /health. Holds no secrets: bools, timestamps and cause
+    classes. Top-level ``ok`` is False if either check last failed, True if at least one
+    passed and none failed, None before any result; ``cause`` is the failing check's cause
+    (the proxy check's first); ``last_checked`` is the latest of the two."""
     with _state_lock:
-        return dict(_state)
+        proxy, youtube = dict(_state["proxy"]), dict(_state["youtube"])
+        enabled_ = _state["enabled"]
+    results = [c for c in (proxy, youtube) if c["ok"] is not None]
+    failing = [c for c in (proxy, youtube) if c["ok"] is False]
+    stamps = [c["last_checked"] for c in (proxy, youtube) if c["last_checked"]]
+    return {
+        "enabled": enabled_,
+        "ok": (not failing) if results else None,
+        "last_checked": max(stamps) if stamps else None,
+        "cause": failing[0]["cause"] if failing else None,
+        "proxy": proxy,
+        "youtube": youtube,
+    }
 
 
 def reset_state() -> None:
     """Tests only."""
     with _state_lock:
-        _state.update({"enabled": False, "ok": None, "last_checked": None, "cause": None})
+        _state.update({"enabled": False, "proxy": _blank(), "youtube": _blank()})
 
 
-def _send(message: str, level: str, cause: str | None) -> None:
+def _send(message: str, level: str, check: str, cause: str | None) -> None:
     with contextlib.suppress(Exception), sentry_sdk.new_scope() as scope:
+        scope.set_tag("check", check)
         scope.set_tag("cause", cause or "none")
         scope.fingerprint = ["fetch-canary", cause or "recovered"]
         sentry_sdk.capture_message(message, level=level)
 
 
-def _probe(video_id: str):
-    from .downloader import ytdlp_client
-
-    return ytdlp_client.canary_probe(f"https://www.youtube.com/watch?v={video_id}", timeout_s())
-
-
-def run_once(probe=None) -> dict:
-    """One canary check. Updates the state, logs, and alerts on transitions. Never raises."""
-    try:
-        result = (probe or _probe)(canary_video_id())
-        ok, cause = bool(result.ok), (None if result.ok else (result.cause or "other"))
-    except Exception as exc:  # noqa: BLE001 — a canary must never take anything down
-        log_structured("WARN", "fetch_canary_probe_error", error=type(exc).__name__)
-        ok, cause = False, "other"
-
+def _record(check: str, result) -> dict:
+    """Store one check's result and alert on transitions. ``result`` None means the check
+    does not apply (no proxy configured): stored as ok=None, never alerts."""
     now = datetime.now(UTC).isoformat(timespec="seconds")
+    if result is None:
+        with _state_lock:
+            _state["enabled"] = True
+            _state[check] = {"ok": None, "last_checked": now, "cause": None}
+        return canary_state()
+    ok = bool(result.ok)
+    cause = None if ok else (result.cause or "other")
     with _state_lock:
-        prev_ok, prev_cause = _state["ok"], _state["cause"]
-        _state.update({"enabled": True, "ok": ok, "last_checked": now, "cause": cause})
+        prev_ok, prev_cause = _state[check]["ok"], _state[check]["cause"]
+        _state["enabled"] = True
+        _state[check] = {"ok": ok, "last_checked": now, "cause": cause}
 
     if ok:
         if prev_ok is False:
-            log_structured("INFO", "fetch_canary_recovered", previous_cause=prev_cause)
-            _send("fetch canary recovered", "info", None)
+            log_structured("INFO", "fetch_canary_recovered", check=check, previous_cause=prev_cause)
+            _send(f"fetch canary recovered ({check})", "info", check, None)
         rearm_proxy_failure_reports()
     else:
-        log_structured("ERROR", "fetch_canary_failed", cause=cause)
+        log_structured("ERROR", "fetch_canary_failed", check=check, cause=cause)
         if prev_ok is not False or prev_cause != cause:
-            _send(f"fetch canary failed ({cause})", "error", cause)
+            _send(f"fetch canary failed: {check} ({cause})", "error", check, cause)
     return canary_state()
 
 
+def _default_proxy_probe():
+    from .downloader import ytdlp_client
+
+    return ytdlp_client.proxy_tunnel_probe(proxy_timeout_s())
+
+
+def _default_full_probe():
+    from .downloader import ytdlp_client
+
+    url = f"https://www.youtube.com/watch?v={canary_video_id()}"
+    return ytdlp_client.canary_probe(url, timeout_s())
+
+
+def _run(check: str, probe) -> dict:
+    try:
+        result = probe()
+    except Exception as exc:  # noqa: BLE001 — a canary must never take anything down
+        log_structured("WARN", "fetch_canary_probe_error", check=check, error=type(exc).__name__)
+        result = _PROBE_RAISED
+    return _record(check, result)
+
+
+class _ProbeRaised:
+    ok = False
+    cause = "other"
+
+
+_PROBE_RAISED = _ProbeRaised()
+
+
+def run_proxy_check(probe=None) -> dict:
+    """The cheap check (~1 KB). Never raises."""
+    return _run("proxy", probe or _default_proxy_probe)
+
+
+def run_full_check(probe=None) -> dict:
+    """The yt-dlp metadata check (~0.25-0.6 MB). Never raises."""
+    return _run("youtube", probe or _default_full_probe)
+
+
 def _loop() -> None:
+    next_full = 0.0  # the first pass runs the full check too
     while True:
-        with contextlib.suppress(Exception):  # run_once never raises; belt and braces
-            run_once()
-        time.sleep(max(interval_s(), 60.0))
+        now = time.monotonic()
+        with contextlib.suppress(Exception):  # the checks never raise; belt and braces
+            run_proxy_check()
+        full_every = full_interval_s()
+        if full_every > 0 and now >= next_full:
+            with contextlib.suppress(Exception):
+                run_full_check()
+            next_full = now + full_every
+        time.sleep(max(interval_s(), MIN_SLEEP_S))
 
 
 def start_fetch_canary() -> threading.Thread | None:

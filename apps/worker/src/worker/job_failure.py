@@ -25,10 +25,12 @@ from .logger import log_structured
 
 # Failures that are OUR fault (provider outage, our storage, an unanticipated exception, a
 # job we abandoned): the credit the web route debited for this job is returned.
-# FETCH_PROXY_FAILED (QA-61): our residential-proxy credentials or the proxy itself failed the
-# fetch. Not the user's link, so it is ours. It also fails before any paid call, so the
-# replicate_prediction_id IS NULL arm below would usually refund it anyway; listing it makes
-# the policy explicit and independent of where in the pipeline it is raised.
+# FETCH_PROXY_FAILED (QA-61): our proxy failed the fetch -- ours, not the user's. Listed for the
+# record, and INERT today: only link jobs can fail with it, and link jobs never spend a credit
+# (the credit_consumption trigger accepts upload jobs only: migrations 013 and 039), so
+# REFUND_SQL's join on credit_consumption never matches one. What a failed link job DOES use --
+# a unit of the monthly allowance / trial (entitlements.jobs_used) -- is NOT returned by
+# anything here; restoring it is separate money-path work (QA-61 follow-up).
 OUR_FAULT_CODES = ("SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR", "FETCH_PROXY_FAILED")
 REFUND_PROVIDER = "worker_job_failed"
 # Never refunded, even though no paid call was made (Jon 2026-11-18 09:23 PT: "No refund for

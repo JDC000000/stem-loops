@@ -1,0 +1,159 @@
+"""Alerts for link-fetch failures that are OURS, not the user's (QA-61).
+
+2026-11-18 23:04Z: the residential-proxy credentials lapsed and every link job failed with
+yt-dlp's ``Tunnel connection failed: 407 Proxy Authentication Required``. The jobs were
+classed DOWNLOAD_BLOCKED, a user-fault code that is deliberately NOT sent to Sentry, so the
+outage was silent until QA noticed. Two signals close that:
+
+* ``report_proxy_failure`` -- a FETCH_PROXY_FAILED job is reported at ERROR level, ONCE per
+  process per cause (``proxy_auth`` / ``proxy_connect``), under fingerprint
+  ``["fetch-proxy-failed", cause]``. Once, because during an outage every job fails the same
+  way and one event per job is noise; per cause, because a credential failure and an
+  unreachable proxy need different fixes. ``rearm_proxy_failure_reports`` (called by the
+  fetch canary when the path recovers) lets the NEXT outage report again.
+
+* ``DownloadBurstDetector`` -- N consecutive link-job download failures with the same
+  error code, across N different videos, within a window, is one Sentry ERROR under
+  fingerprint ``["download-failure-burst", error_code]``. This catches the next outage that
+  wears a user-fault code (a YouTube-wide bot wall, a yt-dlp extractor break): one video
+  failing is the video; several different videos in a row failing the same way is us.
+
+Nothing here carries a credential: messages are fixed strings and tags are low-cardinality
+classes. No video ids are sent (a count of distinct ids is). Every function swallows its own
+errors: telemetry must never fail a job or kill a thread.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import threading
+import time
+from collections import deque
+
+import sentry_sdk
+
+from .logger import log_structured
+
+_lock = threading.Lock()
+_reported_causes: set[str] = set()
+
+
+def report_proxy_failure(cause: str) -> bool:
+    """Send one Sentry ERROR for this proxy-failure cause, unless this process already has.
+    Returns True if THIS call sent it."""
+    cause = (cause or "unknown")[:32]
+    with _lock:
+        if cause in _reported_causes:
+            return False
+        _reported_causes.add(cause)
+    log_structured("ERROR", "fetch_proxy_failed", cause=cause)
+    with contextlib.suppress(Exception), sentry_sdk.new_scope() as scope:
+        scope.set_tag("error_code", "FETCH_PROXY_FAILED")
+        scope.set_tag("cause", cause)
+        scope.fingerprint = ["fetch-proxy-failed", cause]
+        sentry_sdk.capture_message(
+            f"link fetch failed at our proxy ({cause}); check PROXY_URL credentials",
+            level="error",
+        )
+    return True
+
+
+def rearm_proxy_failure_reports() -> None:
+    """Allow the next proxy failure to report again (the path was seen healthy)."""
+    with _lock:
+        _reported_causes.clear()
+
+
+def _env_int(name: str, default: int, minimum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = int(raw) if raw else default
+    except ValueError:
+        log_structured("WARN", "env_int_invalid", name=name)
+        return default
+    return value if value >= minimum else default
+
+
+# Only fetch OUTCOMES are recorded (downloader/__init__.py calls this after the blocklist and
+# kill-switch gates, so those refusals never arrive). A malformed or live-stream URL can still
+# be refused inside the fetch; that is about the link, never about whether fetching works.
+_NOT_FETCH_OUTCOMES = frozenset({"DOWNLOAD_INVALID_URL"})
+
+
+class DownloadBurstDetector:
+    """Consecutive same-code download failures across distinct videos within a window.
+
+    A success, or a failure with a different code, ends the streak. Entries older than
+    ``window_s`` fall out of it. One alert per streak: the streak must end before another.
+    """
+
+    def __init__(
+        self,
+        threshold: int | None = None,
+        window_s: float | None = None,
+        clock=time.monotonic,
+    ) -> None:
+        self.threshold = (
+            threshold
+            if threshold is not None
+            else _env_int("DOWNLOAD_BURST_THRESHOLD", 3, minimum=2)
+        )
+        self.window_s = (
+            window_s
+            if window_s is not None
+            else float(_env_int("DOWNLOAD_BURST_WINDOW_SECONDS", 1800, minimum=60))
+        )
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._code: str | None = None
+        self._streak: deque[tuple[float, str]] = deque()
+        self._alerted = False
+
+    def _reset(self) -> None:
+        self._code = None
+        self._streak.clear()
+        self._alerted = False
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._reset()
+
+    def record_failure(self, error_code: str, video_id: str) -> bool:
+        """Record one failed link download. Returns True if this failure raised the alert."""
+        if error_code in _NOT_FETCH_OUTCOMES:
+            return False
+        now = self._clock()
+        with self._lock:
+            if error_code != self._code:
+                self._reset()
+                self._code = error_code
+            self._streak.append((now, video_id))
+            while self._streak and now - self._streak[0][0] > self.window_s:
+                self._streak.popleft()
+            distinct = len({vid for _, vid in self._streak})
+            if self._alerted or distinct < self.threshold:
+                return False
+            self._alerted = True
+            count = len(self._streak)
+        log_structured(
+            "ERROR",
+            "download_failure_burst",
+            error_code=error_code,
+            failures=count,
+            distinct_videos=distinct,
+            window_s=self.window_s,
+        )
+        with contextlib.suppress(Exception), sentry_sdk.new_scope() as scope:
+            scope.set_tag("error_code", error_code)
+            scope.set_extra("failures", count)
+            scope.set_extra("distinct_videos", distinct)
+            scope.fingerprint = ["download-failure-burst", error_code]
+            sentry_sdk.capture_message(
+                f"{distinct} different videos failed to download in a row ({error_code})",
+                level="error",
+            )
+        return True
+
+
+burst_detector = DownloadBurstDetector()

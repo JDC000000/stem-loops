@@ -24,6 +24,24 @@ def _isolate_klangio_quota(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     monkeypatch.setenv("KLANGIO_QUOTA_FILE", str(tmp_path / "klangio_quota.json"))
 
 
+@pytest.fixture(autouse=True)
+def _quiet_fetch_alerting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """QA-61 fetch alerting is process-global state; give every test a clean slate.
+
+    * The fetch canary is OFF unless a test turns it on: a test that drives
+      ``consumer.poll_loop`` must never start a thread running real yt-dlp through whatever
+      ``PROXY_URL`` the shell exports.
+    * The burst detector's streak and the once-per-cause proxy reports are reset, so a test
+      that fails three downloads cannot make a later test's first failure "the fourth".
+    """
+    from worker import fetch_alerts, fetch_canary
+
+    monkeypatch.setenv("FETCH_CANARY_INTERVAL_SECONDS", "0")
+    fetch_alerts.rearm_proxy_failure_reports()
+    fetch_alerts.burst_detector.record_success()
+    fetch_canary.reset_state()
+
+
 # This file only PARSES URLs and hands them to child pytest processes (which have this guard
 # themselves); exempting it lets it assert, without being skipped, that the guard ALLOWS a
 # local database. It opens no connection.

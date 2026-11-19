@@ -76,7 +76,8 @@ def test_ytdlp_every_invocation_in_the_source_ends_options_before_the_url():
     """No `cmd.append(youtube_url)` (URL straight after the options) remains."""
     src = Path(ytdlp_client.__file__).read_text()
     assert "cmd.append(youtube_url)" not in src
-    assert src.count('cmd += ["--", youtube_url]') == 3
+    # live check, metadata probe, download, and the QA-61 fetch canary probe.
+    assert src.count('cmd += ["--", youtube_url]') == 4
 
 
 # ---------------------------------------------------------------------------------- ffmpeg

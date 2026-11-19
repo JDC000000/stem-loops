@@ -14,10 +14,17 @@ could answer that without opening the Fly dashboard, because main.py's
 ``if os.environ.get("SENTRY_DSN"): sentry_sdk.init(...)`` logs nothing either
 way. The DSN itself is a credential and is NEVER in the response — on/off only.
 Still cheap and dependency-free: no DB, no network, just the SDK's in-process state.
+
+``fetch_canary`` (QA-61) is the last result of the proxy/YouTube canary thread
+(fetch_canary.py), read from memory: ``enabled``, ``ok`` (null before the first check),
+``last_checked`` (ISO-8601 UTC) and ``cause`` (proxy_auth / proxy_connect /
+youtube_bot_check / other, or null). Never a URL, a credential or yt-dlp output.
 """
 
 import sentry_sdk
 from fastapi import FastAPI
+
+from .fetch_canary import canary_state
 
 app = FastAPI(title="stem-loops-worker")
 
@@ -55,4 +62,7 @@ def sentry_state() -> str:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "sentry": sentry_state()}
+    # `fetch_canary` (QA-61): {"enabled", "ok", "last_checked", "cause"} from the proxy/YouTube
+    # canary. Informational only: the status stays "ok" and the response 200 whatever it says,
+    # so a dead proxy never makes anything restart the worker. No secret is in it.
+    return {"status": "ok", "sentry": sentry_state(), "fetch_canary": canary_state()}

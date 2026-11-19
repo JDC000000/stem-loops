@@ -61,6 +61,7 @@ from .errors import (
 from .extractor import loop_extractor
 from .extractor.beat_grid import estimate_beat_grid
 from .extractor.loop_extractor import NoReliableBeatError, extract_loops
+from .fetch_alerts import report_proxy_failure
 from .job_failure import OUR_FAULT_CODES, JobNoLongerActive, fail_job
 from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
@@ -1836,6 +1837,14 @@ def _report_our_fault(exc: StemLoopsError) -> None:
     URLs. No-op for user/input-caused codes, and if SENTRY_DSN is unset (sdk not initialised).
     Never raises: reporting must not mask the failure being reported."""
     if exc.error_code not in _OUR_FAULT_CODES:
+        return
+    if exc.error_code == "FETCH_PROXY_FAILED":
+        # QA-61: an outage of our proxy fails EVERY link job the same way. One ERROR per
+        # process per cause (fetch_alerts), not one warning per job.
+        try:
+            report_proxy_failure(getattr(exc, "cause", None) or "unknown")
+        except Exception as report_exc:  # noqa: BLE001
+            log_structured("WARN", "sentry_report_failed", error=str(report_exc)[:120])
         return
     tags = {"error_code": exc.error_code}
     reason = getattr(exc, "failure_reason", None)

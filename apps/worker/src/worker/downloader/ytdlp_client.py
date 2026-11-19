@@ -33,6 +33,7 @@ from ..errors import (
     DownloadInvalidUrlError,
     DownloadPrivateError,
     DownloadTimeoutError,
+    FetchProxyFailedError,
     LiveStreamNotSupportedError,
 )
 from ..logger import log_structured, redact_secrets
@@ -62,6 +63,53 @@ _STDERR_MAP = [
     ("video is not available", DownloadBlockedError),
     ("invalid url", DownloadInvalidUrlError),
 ]
+
+
+# QA-61: failures of OUR proxy, not of YouTube. Checked BEFORE _STDERR_MAP so a proxy outage
+# can never be reported to the user as "YouTube is blocking" again. Every pattern is a phrase
+# that only the proxy leg produces (urllib3 / requests / yt-dlp's networking wording); a bare
+# "407" is never matched, since a video id or byte count can contain those digits.
+PROXY_AUTH = "proxy_auth"
+PROXY_CONNECT = "proxy_connect"
+YOUTUBE_BOT_CHECK = "youtube_bot_check"
+OTHER = "other"
+_PROXY_PATTERNS = [
+    # Credentials: the proxy answered and refused us. Not transient.
+    (re.compile(r"proxy authentication required", re.I), PROXY_AUTH),
+    (re.compile(r"tunnel connection failed:\s*407\b", re.I), PROXY_AUTH),
+    (re.compile(r"\b407\b[^\n]{0,40}\bproxy\b", re.I), PROXY_AUTH),
+    # Reachability: the proxy could not be reached or could not open the CONNECT tunnel.
+    (re.compile(r"unable to connect to proxy", re.I), PROXY_CONNECT),
+    (re.compile(r"cannot connect to proxy", re.I), PROXY_CONNECT),
+    (re.compile(r"tunnel connection failed", re.I), PROXY_CONNECT),
+    (re.compile(r"\bproxyerror\b", re.I), PROXY_CONNECT),
+]
+_BOT_CHECK_PHRASES = ("sign in to confirm", "not a bot")
+
+
+def proxy_failure_cause(stderr: str | None) -> str | None:
+    """``proxy_auth`` / ``proxy_connect`` when yt-dlp's stderr shows OUR proxy failed, else None.
+
+    Auth patterns are tried first: "Unable to connect to proxy ... Tunnel connection failed:
+    407 Proxy Authentication Required" is a credential failure, not a reachability one.
+    """
+    text = stderr or ""
+    for pattern, cause in _PROXY_PATTERNS:
+        if pattern.search(text):
+            return cause
+    return None
+
+
+def classify_fetch_failure(stderr: str | None) -> str:
+    """Cause class for a failed yt-dlp call: proxy_auth / proxy_connect / youtube_bot_check /
+    other. Used by the fetch canary; never returns any part of the stderr itself."""
+    cause = proxy_failure_cause(stderr)
+    if cause:
+        return cause
+    lower = (stderr or "").lower()
+    if any(p in lower for p in _BOT_CHECK_PHRASES):
+        return YOUTUBE_BOT_CHECK
+    return OTHER
 
 
 # SL21: per-thread record of the LAST attempt's exit-session hash so downloader/__init__.py can
@@ -224,6 +272,50 @@ def probe_metadata(youtube_url: str, proxy: str | None = None) -> LinkMetadata:
     return LinkMetadata(duration_sec=duration, title=title)
 
 
+@dataclass(frozen=True)
+class CanaryResult:
+    """One metadata-only probe through the production proxy path (QA-61 fetch canary).
+
+    ``cause`` is None on success, else one of proxy_auth / proxy_connect / youtube_bot_check /
+    other. Carries no stderr: the canary reports a class, never text that could hold the
+    proxy URL's credentials.
+    """
+
+    ok: bool
+    cause: str | None
+
+
+def canary_probe(youtube_url: str, timeout_s: float) -> CanaryResult:
+    """Resolve ``youtube_url``'s metadata through the SAME proxy path a real fetch uses
+    (``_sticky_proxy_url``: fresh sticky session, same credentials), downloading nothing.
+
+    Bounded by ``timeout_s``; never raises (a timeout or a failure to start the subprocess
+    is ``other``).
+    """
+    cmd = [sys.executable, "-m", "yt_dlp", "--simulate", "--no-warnings", "--print", "id"]
+    proxy = _sticky_proxy_url()
+    if proxy:
+        cmd += ["--proxy", proxy]
+    # `--` ends option parsing (QA track B, B-09): the URL can never be read as a flag.
+    cmd += ["--", youtube_url]
+    try:
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return CanaryResult(ok=False, cause=OTHER)
+    except Exception:  # noqa: BLE001 — a canary must never raise
+        return CanaryResult(ok=False, cause=OTHER)
+    if r.returncode == 0 and (r.stdout or "").strip():
+        return CanaryResult(ok=True, cause=None)
+    return CanaryResult(ok=False, cause=classify_fetch_failure(r.stderr))
+
+
 def fetch_audio_file(youtube_url: str) -> str:
     """Download audio via yt-dlp; return a local .wav path or raise a typed error."""
     # One sticky-session proxy string for this WHOLE attempt (live-check + the actual
@@ -265,6 +357,9 @@ def fetch_audio_file(youtube_url: str) -> str:
     if r.returncode != 0:
         safe_err = redact_secrets((r.stderr or "")[-1000:])
         log_structured("ERROR", "ytdlp_failed", stderr=safe_err)
+        proxy_cause = proxy_failure_cause(r.stderr) if proxy else None
+        if proxy_cause:
+            raise FetchProxyFailedError(proxy_cause)
         lower = (r.stderr or "").lower()
         for kw, exc_cls in _STDERR_MAP:
             if kw in lower:

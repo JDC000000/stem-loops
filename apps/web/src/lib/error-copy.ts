@@ -11,6 +11,13 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
   DOWNLOAD_INVALID_URL: { headline: "That doesn't look like a YouTube link.", action: 'Paste a full youtube.com or youtu.be URL.' },
   DOWNLOAD_AGE_RESTRICTED: { headline: "This video is age-restricted, so we can't get it.", action: 'Try another link, or upload the file.' },
   DOWNLOAD_PRIVATE: { headline: 'This video is private or unavailable.', action: 'Try another link, or upload the file.' },
+  // QA-61: our proxy refused or failed the fetch (e.g. expired proxy credentials, HTTP 407).
+  // Ours, not YouTube's and not the user's: the worker refunds it (job_failure.OUR_FAULT_CODES).
+  // The job page shows the worker's stored sentence; this entry is the API-envelope copy.
+  FETCH_PROXY_FAILED: {
+    headline: 'Something went wrong on our end fetching this video, and any credit it used has been returned.',
+    action: 'Try again later.',
+  },
   // Raised for provider-side failures: Replicate answering `failed`, the poll budget
   // running out, a cancelled prediction. None of those is about the song, and "Try a
   // different song" sent people away from a track that would work on a retry.

@@ -95,7 +95,10 @@ def test_health_endpoint_reports_both_states_and_leaks_no_dsn(
     _set_client(NonRecordingClient())
     off = client.get("/health")
     assert off.status_code == 200
-    assert off.json() == {"status": "ok", "sentry": "off"}
+    assert {k: v for k, v in off.json().items() if k != "fetch_canary"} == {
+        "status": "ok",
+        "sentry": "off",
+    }
 
     sentry_sdk.init(dsn=FAKE_DSN)
     try:
@@ -103,7 +106,10 @@ def test_health_endpoint_reports_both_states_and_leaks_no_dsn(
     finally:
         sentry_sdk.get_client().close()
     assert on.status_code == 200
-    assert on.json() == {"status": "ok", "sentry": "on"}
+    assert {k: v for k, v in on.json().items() if k != "fetch_canary"} == {
+        "status": "ok",
+        "sentry": "on",
+    }
 
     # The DSN is a credential. Nothing of it — not the key, not the host, not the
     # project id — may appear anywhere in the response, headers included.

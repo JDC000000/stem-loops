@@ -25,7 +25,11 @@ from .logger import log_structured
 
 # Failures that are OUR fault (provider outage, our storage, an unanticipated exception, a
 # job we abandoned): the credit the web route debited for this job is returned.
-OUR_FAULT_CODES = ("SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR")
+# FETCH_PROXY_FAILED (QA-61): our residential-proxy credentials or the proxy itself failed the
+# fetch. Not the user's link, so it is ours. It also fails before any paid call, so the
+# replicate_prediction_id IS NULL arm below would usually refund it anyway; listing it makes
+# the policy explicit and independent of where in the pipeline it is raised.
+OUR_FAULT_CODES = ("SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR", "FETCH_PROXY_FAILED")
 REFUND_PROVIDER = "worker_job_failed"
 # Never refunded, even though no paid call was made (Jon 2026-11-18 09:23 PT: "No refund for
 # over length."). Today an over-length upload is not rejected at all: it is TRIMMED to its

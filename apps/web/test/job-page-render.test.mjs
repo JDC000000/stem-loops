@@ -420,6 +420,7 @@ const WORKER_SENTENCE_CASES = [
   ['DownloadAgeRestrictedError (audit F80)', 'DOWNLOAD_AGE_RESTRICTED', "This video is age-restricted, so we can't use it."],
   ['DownloadInvalidUrlError (audit F76)', 'DOWNLOAD_INVALID_URL', "That doesn't look like a YouTube link. Paste a full youtube.com or youtu.be link."],
   ['DownloadTimeoutError', 'DOWNLOAD_TIMEOUT', "We couldn't reach that video in time. Check the link and try again."],
+  ['FetchProxyFailedError (QA-61)', 'FETCH_PROXY_FAILED', 'Something went wrong on our end fetching this video. If it used a credit, it has been returned. Try again later.'],
   ['code the web map does not know', 'UPLOAD_TOO_LONG', 'That track is too long. Trim it to a shorter length and upload it again.'],
 ];
 

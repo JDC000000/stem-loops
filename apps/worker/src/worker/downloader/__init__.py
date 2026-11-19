@@ -21,6 +21,7 @@ raised cleanly — so without a retry HERE, ~1-in-10-ish jobs would fail for a
 transient IP-reputation reason a second attempt would very likely clear.
 """
 
+import contextlib
 import os
 import re
 import time
@@ -30,8 +31,11 @@ from ..errors import (
     DownloadInvalidUrlError,
     DownloadTimeoutError,
     FetchPausedError,
+    FetchProxyFailedError,
+    StemLoopsError,
     VideoBlocklistedError,
 )
+from ..fetch_alerts import burst_detector
 from ..logger import log_structured
 from . import cobalt_client, fetch_gates, ytdlp_client
 
@@ -101,6 +105,27 @@ def download_audio(
     # From here down, `youtube_url` is only used for logging; never for a fetch.
     fetch_url = fetch_gates.canonical_watch_url(video_id)
 
+    # QA-61: every fetch OUTCOME past the gates feeds the burst detector (fetch_alerts): N
+    # different videos failing the same way in a row is an outage of ours, whatever the code.
+    try:
+        result = _fetch(fetch_url, video_id, job_id, max_duration_sec, meta)
+    except StemLoopsError as e:
+        with contextlib.suppress(Exception):  # telemetry never changes the outcome
+            burst_detector.record_failure(e.error_code, video_id)
+        raise
+    with contextlib.suppress(Exception):
+        burst_detector.record_success()
+    return result
+
+
+def _fetch(
+    fetch_url: str,
+    video_id: str,
+    job_id: str | None,
+    max_duration_sec: float | None,
+    meta: dict | None,
+) -> tuple[str, str]:
+    """Gate 0c, the yt-dlp attempts and the Cobalt leg, for a gate-approved video id."""
     # 0c. duration reading. Taken from metadata, before one byte is fetched, ONCE (not once
     # per retry attempt), and above the fetcher loop so it governs the Cobalt leg too.
     #
@@ -150,7 +175,15 @@ def download_audio(
                 exit_session_hash=ytdlp_client.last_session_hash(),
                 ytdlp_ver=fetch_gates.ytdlp_version(),
             )
-            if not isinstance(e, _RETRYABLE):
+            # QA-61: a proxy CREDENTIAL failure (407) is not transient -- every attempt
+            # uses the same credentials -- so it fails fast. A proxy CONNECT failure may
+            # clear on a fresh connection, so it gets the same retry as Blocked/Timeout.
+            # Cobalt (no proxy) may still be tried for a connect failure; if it does not
+            # serve, the job fails as FETCH_PROXY_FAILED (ours), not "YouTube is blocking".
+            if isinstance(e, FetchProxyFailedError):
+                if not e.retryable:
+                    raise
+            elif not isinstance(e, _RETRYABLE):
                 raise
             last_exc = e
             if attempt < YTDLP_MAX_ATTEMPTS:

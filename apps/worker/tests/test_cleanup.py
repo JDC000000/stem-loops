@@ -60,6 +60,11 @@ def r2(monkeypatch):
     monkeypatch.setattr(cleanup, "delete_prefix", fake.delete_prefix)
     monkeypatch.setattr(cleanup, "list_objects_older_than", fake.list_older)
     monkeypatch.setattr(cleanup, "delete_objects", fake.delete_objects)
+    # The orphan pass refuses to run unless the bucket + database are bound (QA-57/59).
+    monkeypatch.setenv(cleanup.ORPHAN_SWEEP_BINDING_ENV, cleanup.orphan_sweep_binding())
+    # The evidence brake latches per PROCESS; one test's trip must not switch the
+    # pass off for the rest of the session (PR #306 revision 2).
+    cleanup._reset_orphan_brake()
     return fake
 
 

@@ -315,3 +315,48 @@ export async function bumpJobsUsed(
     [userId],
   );
 }
+
+/** QA-64: record what this signed-in LINK job spent, so the worker can give it back, exactly
+ *  once, if the job fails for our reasons (migration 042: job_allowance_debits +
+ *  restore_job_allowance()).
+ *
+ *  CALL IT IN THE JOBS-INSERT TX, AFTER the allowance debit (bumpJobsUsed /
+ *  bumpJobsUsedWithinQuota) and, on the trial path, after consumeTrialInTx(). It copies the
+ *  entitlements.period_start the unit was just counted in, so a restore can tell "this
+ *  month's unit" from a unit of a period that has since ended (it never credits a new month).
+ *  `trialSong` is true only when the same tx also spent a trial song.
+ *
+ *  Runs in a SAVEPOINT. A database without migration 042 (undefined_table, 42P01) is "not
+ *  migrated yet": the savepoint is rolled back, the job is created exactly as before (no
+ *  debit row, so no restore — today's behaviour), and false is returned so the caller can
+ *  report it. Any other error is re-raised and fails the tx, like every other debit here.
+ *  ON CONFLICT DO NOTHING: one record per job (job_id is the primary key). */
+export async function recordAllowanceDebit(
+  client: QuotaTxClient,
+  userId: string,
+  jobId: string,
+  opts: { trialSong: boolean },
+): Promise<boolean> {
+  await client.query('SAVEPOINT job_allowance_debit');
+  try {
+    await client.query(
+      `INSERT INTO public.job_allowance_debits (job_id, user_id, allowance_period_start, trial_song)
+       VALUES (
+         $1::uuid,
+         $2::uuid,
+         (SELECT period_start FROM public.entitlements WHERE user_id = $2::uuid),
+         $3::boolean
+       )
+       ON CONFLICT (job_id) DO NOTHING`,
+      [jobId, userId, opts.trialSong],
+    );
+  } catch (err) {
+    if ((err as { code?: string } | null)?.code === '42P01') {
+      await client.query('ROLLBACK TO SAVEPOINT job_allowance_debit');
+      return false;
+    }
+    throw err;
+  }
+  await client.query('RELEASE SAVEPOINT job_allowance_debit');
+  return true;
+}

@@ -30,7 +30,9 @@ route debited for it is returned with the same idempotent SQL the pipeline uses
 (job_failure.refund_if_owed). Each job is failed and refunded inside its OWN savepoint
 (review SF-4): either both happen or neither does, and one job whose refund raises is rolled
 back alone -- it stays non-terminal and the next reap retries it -- instead of rolling back
-every other job in the batch.
+every other job in the batch. The same savepoint gives back a link job's monthly allowance
+unit / trial song (QA-64, job_failure.restore_allowance_if_owed), so "the reaper failed it" and
+"the song came back" commit together or not at all.
 
 QUEUED PAST ITS EXPIRY (QA C-06). A job waiting in `queued` (behind the spend brake, or a long
 queue) is not an orphan and is never re-queued or failed for being stale. But once it is past
@@ -55,7 +57,7 @@ import os
 import psycopg
 import sentry_sdk
 
-from .job_failure import refund_if_owed
+from .job_failure import refund_if_owed, restore_allowance_if_owed
 from .logger import log_structured
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -93,6 +95,9 @@ async def _fail_and_refund_each(
                 if row is None:
                     continue
                 refunded += await refund_if_owed(conn, str(job_id))
+                # QA-64: INTERNAL_ERROR is ours, so a link job's allowance unit / trial song
+                # comes back too, in the same savepoint (exactly once: migration 042).
+                await restore_allowance_if_owed(conn, str(job_id))
                 failed += 1
         except Exception as exc:  # noqa: BLE001 — one bad row must not roll back the batch
             log_structured(

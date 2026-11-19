@@ -137,6 +137,10 @@ function rateLimitStub({ burst = false, quota = false } = {}) {
     };
     export const bumpJobsUsedWithinQuota = async () => true; export const bumpJobsUsed = async () => {};
     export const rollPeriodIfStale = async () => {};
+    export const recordAllowanceDebit = async (_c, userId, jobId, opts) => {
+      globalThis.__calls.push({ fn: 'recordAllowanceDebit', userId, jobId, trialSong: opts.trialSong });
+      return true;
+    };
     export const BURST_WINDOW_MS = 60000;
     export const BURST_LIMIT_PER_USER = 3;
     export const UNLIMITED_QUOTA_SENTINEL = 100000;

@@ -26,6 +26,7 @@ import {
   checkMonthlyQuota,
   bumpJobsUsed,
   bumpJobsUsedWithinQuota,
+  recordAllowanceDebit,
   rollPeriodIfStale,
 } from '@/lib/billing/rate-limit';
 import {
@@ -38,6 +39,18 @@ import {
 import { consumeTrialInTx } from '@/lib/trial';
 import { consumeCreditInTx } from '@/lib/billing/credits';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
+
+// QA-64: recordAllowanceDebit() returns false only when migration 042 is not applied yet (the
+// job is created as before, with nothing recorded to give back). Say so once per process
+// instead of failing silently, and never fail the request for it.
+let allowanceDebitUnmigratedReported = false;
+function noteAllowanceDebitRecorded(recorded: boolean): void {
+  if (recorded || allowanceDebitUnmigratedReported) return;
+  allowanceDebitUnmigratedReported = true;
+  Sentry.captureException(
+    new Error('job_allowance_debits is missing (migration 042 not applied): link-job allowance is not restorable'),
+  );
+}
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
 const DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
@@ -289,6 +302,9 @@ export async function POST(request: NextRequest) {
               // authed UPLOAD branch. On the link branch below, a non-trial
               // job is one allowance unit (free) or one bumpJobsUsed (paid);
               // the free TRIAL link path still debits a trial song AND a unit.
+              // Link jobs record what they spent (recordAllowanceDebit, QA-64)
+              // so an our-fault failure gives it back; uploads do not (a
+              // credit-funded upload is refunded by the worker's REFUND_SQL).
               if (chargeCredit) {
                 try {
                   await consumeCreditInTx(client, user.user_id, jobId);
@@ -558,6 +574,11 @@ export async function POST(request: NextRequest) {
               throw RATE_SENTINEL;
             }
             await bumpJobsUsed(client, user.user_id);
+            // QA-64: this job spent a trial song AND an allowance unit; record both so an
+            // our-fault failure gives exactly those back (worker job_failure.py).
+            noteAllowanceDebitRecorded(
+              await recordAllowanceDebit(client, user.user_id, id, { trialSong: true }),
+            );
             return { consumed: true as const };
           });
           if (outcome.consumed) {
@@ -647,6 +668,11 @@ export async function POST(request: NextRequest) {
                   ? new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', LINK_CAP_CREDITS_DETAIL)
                   : new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', FREE_QUOTA_EXHAUSTED_MESSAGE);
               }
+              // QA-64: one allowance unit spent (paid or free); record it so an our-fault
+              // failure gives it back once, in the period it was spent in.
+              noteAllowanceDebitRecorded(
+                await recordAllowanceDebit(client, user.user_id, id, { trialSong: false }),
+              );
             }
             return r;
           })

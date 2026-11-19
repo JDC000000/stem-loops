@@ -454,6 +454,10 @@ function routeStubs({ planCode, credits, quotaDenied = false }) {
       export const rollPeriodIfStale = async (_c, userId) => {
         globalThis.__q.push({ fn: 'rollPeriodIfStale', userId });
       };
+      export const recordAllowanceDebit = async (_c, userId, jobId, opts) => {
+        globalThis.__q.push({ fn: 'recordAllowanceDebit', userId, jobId, trialSong: opts.trialSong });
+        return true;
+      };
       export const BURST_WINDOW_MS = 60000;
       export const BURST_LIMIT_PER_USER = 3;
       export const UNLIMITED_QUOTA_SENTINEL = 100000;

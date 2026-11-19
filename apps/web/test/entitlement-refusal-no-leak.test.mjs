@@ -189,6 +189,7 @@ function rateLimitStub(cfg) {
     export const bumpJobsUsedWithinQuota = async () => cfg.withinQuota;
     export const bumpJobsUsed = async () => {};
     export const rollPeriodIfStale = async () => {};
+    export const recordAllowanceDebit = async () => true;
   `);
 }
 

@@ -120,8 +120,8 @@ function creditsStub() {
   `);
 }
 
-function rateLimitStub({ burst = false, quota = false, withinQuota = true } = {}) {
-  const payload = JSON.stringify({ burst, quota, withinQuota });
+function rateLimitStub({ burst = false, quota = false, withinQuota = true, debitRecorded = true } = {}) {
+  const payload = JSON.stringify({ burst, quota, withinQuota, debitRecorded });
   return dataUrl(`
     const cfg = ${payload};
     globalThis.__calls = globalThis.__calls || [];
@@ -142,6 +142,10 @@ function rateLimitStub({ burst = false, quota = false, withinQuota = true } = {}
     };
     export const rollPeriodIfStale = async (_c, userId) => {
       globalThis.__calls.push({ fn: 'rollPeriodIfStale', userId });
+    };
+    export const recordAllowanceDebit = async (_c, userId, jobId, opts) => {
+      globalThis.__calls.push({ fn: 'recordAllowanceDebit', userId, jobId, trialSong: opts.trialSong });
+      return cfg.debitRecorded ?? true;
     };
     export const BURST_WINDOW_MS = 60000;
     export const BURST_LIMIT_PER_USER = 3;
@@ -200,7 +204,12 @@ function uploadStub() {
 }
 
 function sentryStub() {
-  return dataUrl(`export const captureException = () => {};`);
+  return dataUrl(`
+    globalThis.__calls = globalThis.__calls || [];
+    export const captureException = (err) => {
+      globalThis.__calls.push({ fn: 'Sentry.captureException', message: String(err && err.message) });
+    };
+  `);
 }
 
 function nextStub() {
@@ -440,4 +449,78 @@ test('upload branch untouched: pro upload does not hit the link guard', async ()
   assert.equal(res.status, 201);
   const actions = globalThis.__calls.filter((c) => c.fn === 'enforceEntitlement').map((c) => c.action);
   assert.deepEqual(actions, ['start_job_upload']);
+});
+
+// ── QA-64: what a link job spent is recorded in the same tx, so an our-fault failure can
+// give it back (worker job_failure.restore_allowance_if_owed, migration 042) ─────────────
+
+const debits = (calls) => calls.filter((c) => c.fn === 'recordAllowanceDebit');
+
+for (const plan of ['pro', 'studio']) {
+  test(`${plan}: link job records its allowance unit (no trial song), after the debit, for this job id`, async () => {
+    const { res, calls } = await postLink({ user: USER, ent: { planCode: plan } });
+    assert.equal(res.status, 201);
+    const d = debits(calls);
+    assert.equal(d.length, 1, 'one debit record');
+    assert.equal(d[0].trialSong, false);
+    assert.equal(d[0].userId, USER.user_id);
+    assert.equal(d[0].jobId, res.body.id, 'recorded against the job just created');
+    const bump = calls.findIndex((c) => c.fn === 'bumpJobsUsed');
+    const rec = calls.findIndex((c) => c.fn === 'recordAllowanceDebit');
+    const ins = calls.findIndex((c) => /INSERT INTO jobs/.test(c.sql ?? ''));
+    assert.ok(ins < bump && bump < rec, 'insert, then debit, then the record (period_start read after the bump)');
+  });
+}
+
+test('free trial link job records the trial song AND the allowance unit it spent', async () => {
+  const { res, calls } = await postLink({ user: USER, ent: { planCode: 'free' } });
+  assert.equal(res.status, 201);
+  assert.equal(count(calls, 'consumeTrial'), 1);
+  const d = debits(calls);
+  assert.equal(d.length, 1);
+  assert.equal(d[0].trialSong, true);
+  assert.equal(d[0].jobId, res.body.id);
+});
+
+test('free non-trial link job records one allowance unit, no trial song', async () => {
+  const { res, calls } = await postLink({ user: USER, ent: { planCode: 'free' }, trial: NO_TRIAL });
+  assert.equal(res.status, 201);
+  const d = debits(calls);
+  assert.equal(d.length, 1);
+  assert.equal(d[0].trialSong, false);
+  const cap = calls.findIndex((c) => c.fn === 'bumpJobsUsedWithinQuota');
+  assert.ok(cap < calls.findIndex((c) => c.fn === 'recordAllowanceDebit'));
+});
+
+test('free link refused at the cap records nothing (nothing was spent)', async () => {
+  const { res, calls } = await postLink({
+    user: USER,
+    ent: { planCode: 'free' },
+    trial: NO_TRIAL,
+    rateLimit: { withinQuota: false },
+  });
+  assert.equal(res.status, 402);
+  assert.equal(debits(calls).length, 0);
+});
+
+test('anonymous link job records nothing (it spends no allowance)', async () => {
+  const { res, calls } = await postLink({ user: null });
+  assert.equal(res.status, 201);
+  assert.equal(debits(calls).length, 0);
+});
+
+test('uploads are not recorded here (credit-funded uploads are refunded by REFUND_SQL)', async () => {
+  for (const plan of ['free', 'pro']) {
+    const mod = await loadRoute({ user: USER, entitlements: { planCode: plan } });
+    const res = await mod.POST(makeReq({ jobId: JOB_ID, uploadKey: UPLOAD_KEY, loop_length_bars: 4 }));
+    assert.equal(res.status, 201);
+    assert.equal(debits(globalThis.__calls).length, 0, plan);
+  }
+});
+
+test('migration 042 not applied: the link job is still created (201) and Sentry is told once', async () => {
+  const { res, calls } = await postLink({ user: USER, ent: { planCode: 'pro' }, rateLimit: { debitRecorded: false } });
+  assert.equal(res.status, 201);
+  const reports = calls.filter((c) => c.fn === 'Sentry.captureException' && /migration 042/.test(c.message));
+  assert.equal(reports.length, 1);
 });

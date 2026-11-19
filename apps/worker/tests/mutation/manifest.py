@@ -736,6 +736,18 @@ MUTANTS: tuple[Mutant, ...] = (
         "web test: the play-chords URL's real TTL equals the advertised 300 s.",
         suite="web",
     ),
+    Mutant(
+        "main_stops_starting_poll_loop",
+        "src/worker/main.py",
+        "poll = asyncio.create_task(poll_loop())",
+        "poll = asyncio.create_task(asyncio.sleep(3600))",
+        (
+            "tests/test_worker_drain.py::"
+            "test_signal_mid_job_finishes_the_job_and_exits_zero[SIGTERM]",
+        ),
+        "Was a SURVIVOR (nothing ran main.py) until QA-63: the drain tests start the real "
+        "`main._run()` in a subprocess and fail cleanly when no job is ever started.",
+    ),
 )
 
 
@@ -761,18 +773,6 @@ SURVIVORS: tuple[Survivor, ...] = (
         (T_EVERY, T_PAGES),
         "EQUIVALENT: `prefix[:36]` is the job id without its trailing slash. No other uuid starts "
         "with these 36 characters, so no neighbour is reachable. The slash itself is not pinned.",
-    ),
-    Survivor(
-        "main_stops_starting_poll_loop",
-        "src/worker/main.py",
-        "await asyncio.gather(server.serve(), poll_loop())",
-        "await asyncio.gather(server.serve())",
-        ("tests/",),
-        "NOT COVERED, and the PR's chain test cannot see it: it calls `consumer.poll_loop()` "
-        "itself, so nothing runs `main.py`. If the worker process stopped starting the poll loop "
-        "no retention sweep would ever run and the whole suite stays green. Run with `--full` "
-        "(this survives the FULL worker suite, not just the retention files). Closing it needs "
-        "a test of `main.py`'s startup, which is outside a tests-only change to retention.",
     ),
     Survivor(
         "health_sentry_ignores_is_active",

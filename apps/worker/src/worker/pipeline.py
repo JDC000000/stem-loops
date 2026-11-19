@@ -65,6 +65,7 @@ from .fetch_alerts import report_proxy_failure
 from .job_failure import OUR_FAULT_CODES, JobNoLongerActive, fail_job
 from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
+from .shutdown import abandoned as _drain_abandoned
 from .storage.r2_uploader import (
     download_object,
     loop_r2_key,
@@ -831,6 +832,19 @@ def retain_stems(job_id, stem_paths) -> dict:
     played: list[str] = []
     downloadable: list[str] = []
     for name, path in sorted(stem_paths.items()):
+        # QA-63: this runs in a worker thread, which a drain cannot cancel. Once the drain
+        # budget is spent the job has been put back in the queue and its scratch dirs are
+        # being deleted under us, so every remaining stem would "go missing" and be reported
+        # to Sentry as a retention defect. Stop instead; the rerun uploads all six again.
+        if _drain_abandoned():
+            log_structured("WARN", "stems_retain_abandoned_for_drain", job_id=job_id)
+            return {
+                "play": played,
+                "download": downloadable,
+                "expected": list(ALL_STEMS),
+                "complete": False,
+                "abandoned": True,
+            }
         if name not in ALL_STEMS or not path or not os.path.exists(path):
             continue
         opus = _encode_stem_opus(path, enc_dir, name, job_id=job_id)
@@ -867,6 +881,9 @@ def retain_stems(job_id, stem_paths) -> dict:
         "expected": list(ALL_STEMS),
         "complete": len(played) == len(ALL_STEMS),
     }
+    if _drain_abandoned():  # QA-63: the last stem's files were removed mid-loop by the drain
+        log_structured("WARN", "stems_retain_abandoned_for_drain", job_id=job_id)
+        return {**report, "complete": False, "abandoned": True}
     log_structured("INFO", "stems_retained", job_id=job_id, **report)
     # A short playback set means the mixer cannot present this song properly. Make it
     # visible where someone actually looks, not only in a log line nobody greps.

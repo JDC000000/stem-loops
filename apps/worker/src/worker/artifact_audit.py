@@ -8,7 +8,8 @@ check that asks the question directly.
 
 WHAT. Once a run (startup, then daily, from the consumer loop on a daemon thread):
 sample up to SAMPLE_LIMIT retained, done, non-purged jobs created after stem retention
-shipped (demos first, then a random sample of the rest), and for each
+shipped, plus EVERY retained demo whatever its age (demos first, then a random sample of
+the rest), and for each
   * list `<id>/_stems/play/` with MaxKeys=1 (playback stems: every such job has them), and
   * HEAD `jobs/<id>/play.chords.json`, but ONLY for a job that records a real Klangio job
     id. Without one, no chord file is the normal case (chords off, too long, no attempt).
@@ -41,6 +42,9 @@ from .cleanup import PURGED_MARKER, RETAINED_UNTIL_SQL
 from .logger import log_structured
 
 SAMPLE_LIMIT = 50
+# Seconds to wait for the audit's DB connection (PR #306 review, L-3). Each daily run starts a
+# new daemon thread; without a bound a hung connect would park one thread per day for ever.
+DB_CONNECT_TIMEOUT = 10
 # V3-J2 (stem retention, PR #174) merged 2026-11-10T19:13Z; next UTC midnight covers the
 # deploy. A done job created before this legitimately has no playback stems.
 STEMS_RETAINED_SINCE = "2026-11-11T00:00:00Z"
@@ -52,7 +56,9 @@ SAMPLE_SQL = (
     "SELECT id::text, is_demo, klangio_job_id FROM jobs "
     "WHERE status = 'done' "
     "  AND client_ip_hash <> %s "
-    f"  AND created_at >= '{STEMS_RETAINED_SINCE}'::timestamptz "
+    # Demos are audited whatever their age (PR #306 review, M-2): migration 040 flags
+    # EXISTING jobs, which may predate the cutoff, and a demo must be complete regardless.
+    f"  AND (is_demo OR created_at >= '{STEMS_RETAINED_SINCE}'::timestamptz) "
     f"  AND created_at < now() - interval '{MIN_AGE}' "
     f"  AND {RETAINED_UNTIL_SQL} > now() "
     "ORDER BY is_demo DESC, random() LIMIT %s"
@@ -99,7 +105,7 @@ def _report(kind: str, job_id: str, is_demo: bool) -> None:
 
 
 def sample_retained_jobs(database_url: str, limit: int = SAMPLE_LIMIT) -> list[tuple]:
-    with psycopg.connect(database_url) as conn:
+    with psycopg.connect(database_url, connect_timeout=DB_CONNECT_TIMEOUT) as conn:
         return conn.execute(SAMPLE_SQL, (PURGED_MARKER, limit)).fetchall()
 
 

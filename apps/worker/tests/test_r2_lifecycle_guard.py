@@ -63,6 +63,7 @@ def captured(monkeypatch, capsys):
     monkeypatch.setattr(
         guard.sentry_sdk, "capture_message", lambda msg, **kw: sent.append((msg, kw))
     )
+    monkeypatch.setattr(guard, "_read_failure_reported", False)
 
     def logs():
         out = []
@@ -146,9 +147,27 @@ def test_no_lifecycle_configuration_at_all_is_fine(captured):
 )
 def test_a_failing_read_is_a_warn_and_never_raises(captured, exc):
     assert guard.check_r2_lifecycle(FakeClient(exc=exc), BUCKET) == []
-    assert captured.sent == [], "a read failure is not evidence of an expiration rule"
     warns = [r for r in captured.logs() if r["event"] == "r2_lifecycle_check_failed"]
     assert len(warns) == 1 and warns[0]["level"] == "WARN"
+    # A read failure is not evidence of an expiration rule (never the error fingerprint),
+    # but a guard that cannot read is inert, so it says so in Sentry once (review M-3).
+    assert [kw["fingerprint"] for _m, kw in captured.sent] == [guard.READ_FAILED_FINGERPRINT]
+    assert captured.sent[0][1]["level"] == "warning"
+
+
+def test_an_unreadable_lifecycle_is_one_sentry_warning_per_process_not_per_day(captured):
+    """PR #306 review M-3: an object-scoped token without bucket-config read makes the guard
+    inert. The first failed read in a process raises ONE Sentry warning naming the error
+    code; later daily reads in the same process add WARN lines only."""
+    client = FakeClient(exc=_client_error("AccessDenied"))
+    for _ in range(3):
+        assert guard.check_r2_lifecycle(client, BUCKET) == []
+    assert len(captured.sent) == 1
+    msg, kw = captured.sent[0]
+    assert "AccessDenied" in msg and kw["level"] == "warning"
+    assert kw["fingerprint"] == guard.READ_FAILED_FINGERPRINT != guard.SENTRY_FINGERPRINT
+    warns = [r for r in captured.logs() if r["event"] == "r2_lifecycle_check_failed"]
+    assert len(warns) == 3
 
 
 def test_missing_r2_env_is_a_warn_and_never_raises(monkeypatch, captured):

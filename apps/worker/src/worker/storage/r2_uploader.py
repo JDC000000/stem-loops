@@ -6,6 +6,7 @@ so a retried job overwrites in place rather than creating duplicates.
 """
 
 import os
+import threading
 from functools import lru_cache
 
 import boto3
@@ -22,8 +23,21 @@ def _endpoint() -> str:
     return f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com"
 
 
-@lru_cache(maxsize=1)
+# Serialises the FIRST `_r2()` call (PR #306 review, L-4). `lru_cache` does not: at worker
+# startup the lifecycle-guard thread, the artifact-audit thread and the first sweep can all
+# miss the cache at once, and each would build a client from boto3's DEFAULT SESSION, which
+# boto3 documents as not thread-safe. Under the lock exactly one client is built; later
+# calls are a cache hit under an uncontended lock.
+_R2_LOCK = threading.Lock()
+
+
 def _r2():
+    with _R2_LOCK:
+        return _r2_client()
+
+
+@lru_cache(maxsize=1)
+def _r2_client():
     # Cached, thread-safe client — reused across all uploads in a job (boto3
     # clients are safe to share across threads for independent operations).
     return boto3.client(
@@ -34,6 +48,10 @@ def _r2():
         # Path-style addressing — required by MinIO (local dev) and supported by R2.
         config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
     )
+
+
+# Tests (tests/real_r2.py) reset the cached client with `_r2.cache_clear()`.
+_r2.cache_clear = _r2_client.cache_clear  # type: ignore[attr-defined]
 
 
 # Loop keys.

@@ -25,7 +25,8 @@ all (``NoSuchLifecycleConfiguration``) is fine.
 
 WHAT IT MUST NEVER DO: crash the worker or delay the queue. Every failure of the read
 (credentials without the lifecycle permission, network, a bucket that does not exist) is a
-WARN and nothing more, and ``start_r2_lifecycle_check()`` runs the read on a daemon thread
+WARN, plus ONE Sentry warning per process (a guard that cannot read is otherwise silent),
+and ``start_r2_lifecycle_check()`` runs the read on a daemon thread
 so even a hung R2 call cannot hold up startup or the poll loop. It changes nothing on the
 bucket: retention rules themselves are configure_r2_lifecycle.py's job.
 """
@@ -43,6 +44,28 @@ from ..logger import log_structured
 
 EVENT = "r2_lifecycle_expiration_present"
 SENTRY_FINGERPRINT = ["r2-lifecycle", "expiration-present"]
+READ_FAILED_FINGERPRINT = ["r2-lifecycle", "read-failed"]
+_read_failure_reported = False
+
+
+def _report_read_failure_once(error_type: str, error_code: str) -> None:
+    """One Sentry WARNING per process when the lifecycle read fails (PR #306 review, M-3).
+
+    If the worker's R2 token cannot read bucket configuration (AccessDenied) the guard is
+    inert, and a daily WARN line is easy to miss. Once per process, so a token that never
+    will read it raises one issue per deploy/restart, not one per day.
+    """
+    global _read_failure_reported
+    if _read_failure_reported:
+        return
+    _read_failure_reported = True
+    with contextlib.suppress(Exception):  # telemetry is never load-bearing
+        sentry_sdk.capture_message(
+            "R2 lifecycle guard cannot read the bucket lifecycle configuration "
+            f"({error_code or error_type}); the expiration alert is not running",
+            level="warning",
+            fingerprint=READ_FAILED_FINGERPRINT,
+        )
 
 
 def expiring_rules(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -104,6 +127,7 @@ def check_r2_lifecycle(client: Any = None, bucket: str | None = None) -> list[di
             error_code=_error_code(exc),
             error=str(exc)[:200],
         )
+        _report_read_failure_once(type(exc).__name__, _error_code(exc))
         return []
 
     try:

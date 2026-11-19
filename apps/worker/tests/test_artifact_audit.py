@@ -6,7 +6,8 @@ rows and a fake boto3 client, and pin: missing play stems and (for a job with a 
 Klangio id) a missing chord file are each a WARN with the full job id plus one Sentry
 warning tagged kind + job_ref and never the full id; present files and jobs that never
 had chords are quiet; the sample is bounded; and nothing raises. The sample QUERY is
-checked as text (the gates it must carry); running it needs a database (CI).
+checked as text (the gates it must carry) here; tests/test_artifact_audit_db.py runs it
+against a real database (CI only).
 """
 
 from __future__ import annotations
@@ -193,7 +194,9 @@ def test_the_sample_query_carries_every_gate():
     assert "status = 'done'" in sql
     assert "client_ip_hash <> %s" in sql, "anonymised shells have no files by design"
     assert cleanup.RETAINED_UNTIL_SQL in sql, "the same retention rule the sweep deletes by"
-    assert f"created_at >= '{audit.STEMS_RETAINED_SINCE}'" in sql, "pre-V3-J2 jobs have no stems"
+    assert (
+        f"(is_demo OR created_at >= '{audit.STEMS_RETAINED_SINCE}'" in sql
+    ), "pre-V3-J2 jobs have no stems, but every demo is audited whatever its age (M-2)"
     assert "interval '1 hour'" in sql, "a job still finishing its uploads is not sampled"
     assert "ORDER BY is_demo DESC" in sql, "every demo song is checked first"
     assert sql.rstrip().endswith("LIMIT %s")
@@ -213,3 +216,28 @@ def test_start_runs_on_a_daemon_thread_and_returns_at_once(monkeypatch):
     finally:
         release.set()
         t.join(2)
+
+
+def test_the_sample_connection_has_a_connect_timeout(monkeypatch):
+    """PR #306 review L-3: each daily run starts a new daemon thread, so a connect that can
+    hang for ever would park one thread per day. The connect must carry a timeout."""
+    seen = {}
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params):
+            return types.SimpleNamespace(fetchall=lambda: [])
+
+    def connect(url, **kw):
+        seen.update(url=url, **kw)
+        return Conn()
+
+    monkeypatch.setattr(audit.psycopg, "connect", connect)
+    assert audit.sample_retained_jobs("postgresql://example.invalid/db") == []
+    assert seen["connect_timeout"] == audit.DB_CONNECT_TIMEOUT
+    assert 0 < audit.DB_CONNECT_TIMEOUT <= 30

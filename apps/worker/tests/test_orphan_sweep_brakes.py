@@ -145,7 +145,9 @@ def test_unbound_pass_lists_and_deletes_nothing_and_says_so_once(env, monkeypatc
     assert len(warns) == 1, "warn once per process, not every 15 minutes"
     assert warns[0]["level"] == "WARN"
     action = warns[0]["detail"]["action"]
-    assert "--print-binding" in action, "names the command that prints the value"
+    # The container runs the worker as the `src.worker` package (Dockerfile: WORKDIR /app,
+    # `python -m src.worker.main`), so the command must name that module (review N-1).
+    assert "`python -m src.worker.cleanup --print-binding`" in action
     # Review L-2: the value is NOT printed (on a foreign stack it says how to re-arm).
     assert cleanup.orphan_sweep_binding() not in json.dumps(warns[0])
     # Review M-1: one Sentry WARNING per process, without the value.

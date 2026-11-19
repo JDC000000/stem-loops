@@ -294,7 +294,7 @@ def _orphan_sweep_refused() -> str | None:
                 "retention_orphan_sweep_unbound",
                 action=f"{ORPHAN_SWEEP_BINDING_ENV} is not set, so aged orphans are not "
                 "deleted. On the deployment whose database owns this bucket ONLY, read the "
-                "value with `python -m worker.cleanup --print-binding` and set it.",
+                "value with `python -m src.worker.cleanup --print-binding` (in /app) and set it.",
             )
             _report_unbound_once()
         return "unbound"

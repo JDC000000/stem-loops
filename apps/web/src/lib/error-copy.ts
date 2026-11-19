@@ -13,7 +13,10 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
   DOWNLOAD_PRIVATE: { headline: 'This video is private or unavailable.', action: 'Try another link, or upload the file.' },
   // QA-61: our proxy refused or failed the fetch (e.g. expired proxy credentials, HTTP 407).
   // Ours, not YouTube's and not the user's. No credit/refund wording: link jobs never spend a
-  // credit, and the monthly allowance they do use is not returned on failure (yet).
+  // credit. Whether the monthly song came back is not fixed copy (QA-64): the worker appends
+  // a USAGE_RETURNED_SENTENCES line to the stored message only when it actually gave the unit
+  // back (not for an anonymous job, a job from before migration 042, a rolled-over month or
+  // an expired trial), so it cannot be stated here, where it would be shown unconditionally.
   // The job page shows the worker's stored sentence; this entry is the API-envelope copy.
   FETCH_PROXY_FAILED: {
     headline: 'Something went wrong on our end fetching this video.',
@@ -157,16 +160,33 @@ const FAILED_JOB_COPY_OVERRIDES: ReadonlySet<string> = new Set(['SEPARATION_FAIL
 export const FAILED_JOB_FALLBACK = "We couldn't finish this track. Try another file.";
 
 /**
+ * QA-64. The sentence the worker appends to a failed job's stored `error_message_user` when,
+ * and only when, it gave back the monthly-allowance unit or trial song that job spent
+ * (worker/job_failure.py ALLOWANCE_RETURNED_SENTENCE / TRIAL_RETURNED_SENTENCE, pinned
+ * identical by test/allowance-restore.test.mjs). Its presence in the stored message IS
+ * the record that it is true for this job, so the job page may repeat it, and never adds it
+ * on its own.
+ */
+export const USAGE_RETURNED_SENTENCES: readonly string[] = [
+  "This didn't count toward your monthly songs.",
+  "This didn't use one of your trial songs.",
+];
+
+/**
  * The sentence in a failed job's box on /jobs/[id]. For SEPARATION_FAILED (a provider
  * outage, not the song) the web map's sentence wins over the worker's "Try a different
  * song". Every other code shows the worker's stored sentence, then a generic line.
+ * When the map wins, a USAGE_RETURNED_SENTENCES line the worker stored is kept (QA-64): it
+ * is there only when it is true for this job, and replacing the message must not drop it.
  * Never includes the error code itself.
  */
 export function failedJobMessage(job: { error_code?: string | null; error_message_user?: string | null }): string {
   const code = job.error_code ?? '';
   if (FAILED_JOB_COPY_OVERRIDES.has(code)) {
     const copy = ERROR_COPY[code];
-    return [copy.headline, copy.action].filter(Boolean).join(' ');
+    const stored = job.error_message_user ?? '';
+    const returned = USAGE_RETURNED_SENTENCES.find((s) => stored.endsWith(s));
+    return [copy.headline, copy.action, returned].filter(Boolean).join(' ');
   }
   return job.error_message_user ?? FAILED_JOB_FALLBACK;
 }

@@ -61,8 +61,24 @@
         "extract_and_tag passed the beat-reference stem (drums whenever present) to detect_bpm_and_key. A drum stem has no tonal centre. Prod 2026-11-18: Lucky Ticket G minor (A major), I'm Asking You B minor (A minor), Offline C# major (G major). Fixed: key is detected from the mono sum of all stems; BPM still from the drums beat grid.",
         "Existing jobs/loops rows keep their old keys; re-tag of retained rows is proposed in the PR, not run."
       ]
+    },
+    {
+      "id": "QA-64",
+      "opened": "2026-11-19",
+      "title": "Link job that fails for our reasons keeps the user's monthly song / trial song",
+      "severity": "high",
+      "area": "apps/worker/src/worker/job_failure.py",
+      "related_pr": "fix/allowance-restore-our-fault",
+      "repro": [
+        "cd apps/worker && python -m pytest tests/test_allowance_restore.py",
+        "cd apps/web && node --experimental-strip-types --test test/allowance-restore.test.mjs test/jobs-link-paid-allowed.test.mjs"
+      ],
+      "notes": [
+        "A signed-in link job spends one unit of entitlements.jobs_used (and on the trial path a trial song); credits are upload-only so REFUND_SQL never matched it. Fixed: web records the debit in job_allowance_debits (migration 042) in the jobs-INSERT tx; the worker's restore_job_allowance() gives it back exactly once when the stored error_code is in OUR_FAULT_CODES, only in the period it was spent in.",
+        "Jobs created before migration 042 + the web change are not restored."
+      ]
     }
   ],
-  "last_updated": "2026-11-18",
+  "last_updated": "2026-11-19",
   "note": "Pre-allocated per TSD §9. Add regression cases here."
 }

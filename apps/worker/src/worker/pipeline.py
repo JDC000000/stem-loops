@@ -1857,5 +1857,6 @@ def _report_our_fault(exc: StemLoopsError) -> None:
 
 
 async def _fail(job_id: str, error_code: str, user_message: str) -> None:
-    """Mark the job failed and return its credit if owed (job_failure.fail_job)."""
+    """Mark the job failed and return its credit / link allowance unit if owed
+    (job_failure.fail_job)."""
     await fail_job(DATABASE_URL, job_id, error_code, user_message)

@@ -84,7 +84,7 @@ const stub = {
   r2: dataUrl(`export const presignPut = async (key) => { globalThis.__b8.presigned.push(key); return 'https://r2.example/put'; };`),
   rate: dataUrl(`
     export const checkBurstLimit = async () => null; export const checkMonthlyQuota = async () => null;
-    export const bumpJobsUsedWithinQuota = async () => true; export const bumpJobsUsed = async () => {}; export const rollPeriodIfStale = async () => {};`),
+    export const bumpJobsUsedWithinQuota = async () => true; export const bumpJobsUsed = async () => {}; export const rollPeriodIfStale = async () => {}; export const recordAllowanceDebit = async () => true;`),
   ent: dataUrl(`
     export class EntitlementError extends Error {}
     export const getEntitlementSnapshot = async () => ({}); export const enforceEntitlement = async () => ({});

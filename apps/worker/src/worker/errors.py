@@ -50,8 +50,9 @@ class FetchProxyFailedError(StemLoopsError):
     told YouTube was blocking them (false), nothing reached Sentry (DOWNLOAD_BLOCKED is a
     user-fault code), and the credit-refund policy treated it as the user's problem.
 
-    Its own code, ``FETCH_PROXY_FAILED``: listed in ``job_failure.OUR_FAULT_CODES`` (inert
-    for link jobs, which never hold a credit; see the comment there), reported to Sentry at error level once per process per cause (``fetch_alerts``), and
+    Its own code, ``FETCH_PROXY_FAILED``: listed in ``job_failure.OUR_FAULT_CODES`` (link
+    jobs never hold a credit; the allowance unit / trial song they spent is given back,
+    QA-64; see the comment there), reported to Sentry at error level once per process per cause (``fetch_alerts``), and
     shown with copy that says it was us. ``cause`` is ``proxy_auth`` (407 / bad
     credentials: not transient, never retried) or ``proxy_connect`` (the proxy could not be
     reached or could not open the tunnel). ``detail`` is a fixed string: the proxy URL
@@ -59,9 +60,11 @@ class FetchProxyFailedError(StemLoopsError):
     """
 
     error_code = "FETCH_PROXY_FAILED"
-    # No credit/refund wording (review B-1): link jobs never spend a credit (credits are
-    # upload-only, migrations 013/039), and the monthly allowance a link job DOES use is not
-    # given back on failure today, so any "you haven't been charged" line would be false.
+    # No credit/refund wording here (review B-1): link jobs never spend a credit (credits are
+    # upload-only, migrations 013/039). Whether the monthly song came back is NOT fixed copy:
+    # job_failure.restore_allowance_if_owed appends "This didn't count toward your monthly
+    # songs." (or the trial sentence) to the stored message only when it actually gave one
+    # back (QA-64). An anonymous job, a pre-042 job or a rolled-over month gets no such line.
     user_message = (
         "Something went wrong on our end fetching this video. Try again in a few minutes."
     )

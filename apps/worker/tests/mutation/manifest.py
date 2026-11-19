@@ -52,6 +52,7 @@ CO = "src/worker/consumer.py"
 HL = "src/worker/health.py"
 
 _HE = "tests/test_health.py::"
+_D = "tests/test_worker_drain.py::"
 _R = "tests/test_retention_real_r2.py::"
 _W = "tests/test_consumer_sweep_wiring.py::"
 _H = "tests/test_real_r2_harness.py::"
@@ -747,6 +748,47 @@ MUTANTS: tuple[Mutant, ...] = (
         ),
         "Was a SURVIVOR (nothing ran main.py) until QA-63: the drain tests start the real "
         "`main._run()` in a subprocess and fail cleanly when no job is ever started.",
+    ),
+    Mutant(
+        "drain_exit_returns_instead_of_os_exit",
+        "src/worker/main.py",
+        "    os._exit(0)",
+        "    return",
+        (_D + "test_signal_mid_long_job_releases_it_and_exits_zero[SIGTERM]",),
+        "QA-63 main._exit_drained: a plain return joins the orphaned pipeline thread in "
+        "asyncio.run's teardown (review F-1).",
+    ),
+    Mutant(
+        "drain_still_claims_loop_cuts",
+        CO,
+        "if not claimed and not drain.requested:",
+        "if not claimed:",
+        (_D + "test_signal_during_an_empty_claim_starts_no_loop_cut",),
+        "QA-63 poll_loop: no loop cut is claimed once a drain is requested (review F-2).",
+    ),
+    Mutant(
+        "drain_budget_not_armed_on_entry",
+        "src/worker/shutdown.py",
+        "        if self._owner.requested:\n            self._arm()",
+        "        pass",
+        (
+            _D + "test_signal_during_the_claim_still_bounds_the_job",
+            _D + "test_budget_entered_after_the_signal_expires_on_schedule",
+        ),
+        "QA-63 _Budget: a signal received before the job's budget block still bounds the job "
+        "(review F-2).",
+    ),
+    Mutant(
+        "drain_klangio_claim_not_guarded",
+        "src/worker/pipeline.py",
+        "        if _drain_abandoned():  # before the sentinel",
+        "        if False:  # before the sentinel",
+        (
+            _D + "test_no_klangio_claim_once_abandoned",
+            _D + "test_abandoned_chord_stage_writes_no_tombstone_and_no_sentry",
+        ),
+        "QA-63 _KlangioJobLedger.claim: no new paid Klangio request once the drain budget is "
+        "spent (review F-3).",
     ),
 )
 

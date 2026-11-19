@@ -306,6 +306,124 @@ def test_idle_poll_loop_returns_on_drain(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_signal_during_an_empty_claim_starts_no_loop_cut(monkeypatch):
+    """Review F-2: the drain arrives while `claim_and_run` finds no job. The loop-cut claim
+    that would normally follow must not start either."""
+    _quiet_startup(monkeypatch)
+    calls = {"jobs": 0, "cuts": 0}
+
+    async def no_job_but_a_signal():
+        calls["jobs"] += 1
+        drain.request("SIGTERM")
+        return False
+
+    async def a_cut():
+        calls["cuts"] += 1
+        return True
+
+    monkeypatch.setattr(consumer, "claim_and_run", no_job_but_a_signal)
+    monkeypatch.setattr(consumer, "claim_and_cut", a_cut)
+
+    async def bounded():
+        await asyncio.wait_for(consumer.poll_loop(), timeout=5)
+
+    asyncio.run(bounded())
+    assert calls == {"jobs": 1, "cuts": 0}
+
+
+def test_signal_during_the_claim_still_bounds_the_job(monkeypatch):
+    """Review F-2: the signal lands AFTER claim_and_run's own drain check (here: inside the
+    claim's DB round trip) but BEFORE the job's budget block is entered. The budget must arm
+    on entry, or the job runs unbounded into Fly's SIGKILL."""
+    monkeypatch.setenv("WORKER_DRAIN_SECONDS", "0.1")
+    db, failed = _FakeDB(), []
+    real_connect = db.module.AsyncConnection.connect
+
+    async def connect_then_signal(url):
+        conn = await real_connect(url)
+        if db.connects == 1:  # the claim, not the release
+            drain.request("SIGTERM")
+        return conn
+
+    async def job(_job_id):
+        await asyncio.sleep(30)
+
+    _wire(monkeypatch, db, job, failed)
+    monkeypatch.setattr(
+        consumer,
+        "psycopg",
+        types.SimpleNamespace(AsyncConnection=types.SimpleNamespace(connect=connect_then_signal)),
+    )
+    t0 = time.monotonic()
+    assert asyncio.run(consumer.claim_and_run()) is True
+    assert time.monotonic() - t0 < 5, "a signal received before the budget block was ignored"
+    assert len(db.releases()) == 1 and failed == []
+
+
+def test_budget_entered_after_the_signal_expires_on_schedule(monkeypatch):
+    """The arm-on-entry half of `_Budget`, without the consumer around it."""
+    monkeypatch.setenv("WORKER_DRAIN_SECONDS", "0.05")
+
+    async def scenario():
+        drain.request("SIGTERM")
+        b = drain.budget()
+        with pytest.raises(TimeoutError):
+            async with b:
+                await asyncio.sleep(5)
+        assert b.expired()
+
+    t0 = time.monotonic()
+    asyncio.run(scenario())
+    assert time.monotonic() - t0 < 2
+
+
+# --------------------------------------------------------------------------- Klangio (F-3)
+
+
+def test_no_klangio_claim_once_abandoned(monkeypatch):
+    """Review F-3: once the budget is spent no new paid POST starts, and the sentinel is not
+    written (the rerun must be free to submit)."""
+
+    def no_db():
+        raise AssertionError("the claim touched the database after the budget was spent")
+
+    monkeypatch.setattr(pipeline, "_db", no_db)
+    monkeypatch.setenv("WORKER_DRAIN_SECONDS", "0")
+    drain.request("SIGTERM")
+    with pytest.raises(pipeline._ChordSubmitAbandonedForDrain):
+        pipeline._KlangioJobLedger("job-1").claim()
+
+
+def test_abandoned_chord_stage_writes_no_tombstone_and_no_sentry(monkeypatch, tmp_path):
+    """The chord hook treats the abandon as 'the rerun will do it', not as a failure."""
+    from worker import chord_source
+
+    tombstones, captured, posts = [], [], []
+    audio = tmp_path / "other.wav"
+    audio.write_bytes(b"x")
+
+    class _Provider:
+        def recognize(self, _path, stem, ledger):
+            ledger.claim()  # what klangio._submit does before its POST
+            posts.append(stem)
+            raise AssertionError("POST reached")
+
+    monkeypatch.setenv("CHORDS_PROVIDER", "klangio")
+    monkeypatch.setattr(pipeline, "_existing_play_chords", lambda _j: False)
+    monkeypatch.setattr(pipeline, "_probe_duration_sec", lambda _p: None)
+    monkeypatch.setattr(pipeline, "_choose_chord_input", lambda *a, **k: ("other", str(audio)))
+    monkeypatch.setattr(pipeline, "_write_chords_tombstone", lambda *a, **k: tombstones.append(a))
+    monkeypatch.setattr(
+        pipeline.sentry_sdk, "capture_exception", lambda *a, **k: captured.append(a)
+    )
+    monkeypatch.setattr(pipeline, "_db", lambda: (_ for _ in ()).throw(AssertionError("db")))
+    monkeypatch.setattr(chord_source, "get_chord_source", lambda _name: _Provider())
+    monkeypatch.setenv("WORKER_DRAIN_SECONDS", "0")
+    drain.request("SIGTERM")
+    pipeline._maybe_run_chord_recognition("job-1", {"other": str(audio)}, ["other"])
+    assert posts == [] and tombstones == [] and captured == []
+
+
 # --------------------------------------------------------------------------- retain_stems
 
 
@@ -385,12 +503,16 @@ def test_server_leaves_the_process_signal_handlers_alone():
 # --------------------------------------------------------------------------- real signals
 
 _HARNESS = textwrap.dedent("""
-    import asyncio, sys, types
+    import asyncio, sys, time, types
     import uvicorn
     from worker import consumer, main
 
     STOCK = sys.argv[1] == "stock"
     JOB_S = float(sys.argv[2])
+    # "thread": the job blocks a worker THREAD, as every real pipeline stage does
+    # (asyncio.to_thread). A drain cannot cancel it, only orphan it -- which is why main.py
+    # exits with os._exit: a plain return would join that thread in asyncio.run's teardown.
+    IN_THREAD = sys.argv[3] == "thread"
     if STOCK:
         # main.serve exactly as it was before QA-63.
         async def _old_serve():
@@ -436,7 +558,10 @@ _HARNESS = textwrap.dedent("""
 
     async def pipeline(job_id):
         print("JOB_STARTED", flush=True)
-        await asyncio.sleep(JOB_S)
+        if IN_THREAD:
+            await asyncio.to_thread(time.sleep, JOB_S)
+        else:
+            await asyncio.sleep(JOB_S)
         print("JOB_FINISHED", flush=True)
 
     consumer.brake_state = brake
@@ -457,7 +582,7 @@ _HARNESS = textwrap.dedent("""
 """)
 
 
-def _run_harness(sig, *, mode="drain", job_s=1.0, drain_s="270"):
+def _run_harness(sig, *, mode="drain", job_s=1.0, drain_s="270", in_thread=False):
     env = {
         **os.environ,
         "WORKER_DRAIN_SECONDS": drain_s,
@@ -467,7 +592,7 @@ def _run_harness(sig, *, mode="drain", job_s=1.0, drain_s="270"):
     env.pop("SENTRY_DSN", None)
     env.pop("DATABASE_URL", None)
     proc = subprocess.Popen(
-        [sys.executable, "-c", _HARNESS, mode, str(job_s)],
+        [sys.executable, "-c", _HARNESS, mode, str(job_s), "thread" if in_thread else "loop"],
         cwd=WORKER_DIR,
         env=env,
         stdout=subprocess.PIPE,
@@ -508,7 +633,11 @@ def test_signal_mid_job_finishes_the_job_and_exits_zero(sig):
 
 @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM], ids=["SIGINT", "SIGTERM"])
 def test_signal_mid_long_job_releases_it_and_exits_zero(sig):
-    code, out, err = _run_harness(sig, job_s=60.0, drain_s="0.5")
+    # The job holds a worker thread for 60 s (review F-1). Exiting well inside the 60 s
+    # communicate() timeout proves the orphaned thread is not joined on the way out.
+    t0 = time.monotonic()
+    code, out, err = _run_harness(sig, job_s=60.0, drain_s="0.5", in_thread=True)
+    assert time.monotonic() - t0 < 30, "the exit waited on the orphaned pipeline thread"
     assert code == 0, (code, out, err)
     assert "RELEASED job-1" in out
     assert "JOB_FINISHED" not in out and "FAILED" not in out

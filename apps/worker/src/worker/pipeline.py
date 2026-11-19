@@ -1128,6 +1128,14 @@ def _write_chords_tombstone(job_id: str, reason: str, **detail) -> None:
         )
 
 
+class _ChordSubmitAbandonedForDrain(Exception):
+    """QA-63 / review F-3: the drain budget was spent before a Klangio POST began. The job has
+    been (or is being) released to 'queued' and the process is about to exit, so no new paid
+    request may start: one cut off between `claim()` and `record()` leaves the `submitting`
+    sentinel behind and the rerun skips chords with the $0.20 spent. Raised BEFORE the
+    sentinel is written, so the rerun submits normally."""
+
+
 class _KlangioJobLedger:
     """``jobs.klangio_job_id`` as the durable at-most-once record of a Klangio spend.
 
@@ -1159,6 +1167,8 @@ class _KlangioJobLedger:
         return str(value)
 
     def claim(self) -> None:
+        if _drain_abandoned():  # before the sentinel and before the POST (review F-3)
+            raise _ChordSubmitAbandonedForDrain(self.job_id)
         with _db() as c:
             cur = c.execute(
                 "UPDATE jobs SET klangio_job_id=%s WHERE id=%s AND klangio_job_id IS NULL",
@@ -1302,6 +1312,10 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             stem=stem_name,
             r2_key=r2_key,
         )
+    except _ChordSubmitAbandonedForDrain:
+        # Not a failure and not a skip: the job is going back to the queue and the rerun does
+        # the chords. No tombstone (it would tell the user chords failed) and no Sentry event.
+        log_structured("WARN", "chords_abandoned_for_drain", job_id=job_id)
     except ChordQuotaExceeded as exc:
         # Klangio monthly cap (klangio._reserve_quota) or a 402: NO request was sent for this
         # track, so do not tell the user detection "failed for this track" -- that invites a

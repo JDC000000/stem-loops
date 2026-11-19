@@ -27,7 +27,7 @@ const ALL: readonly (WhatYouGetLine & { shown?: boolean })[] = [
   { key: 'loop', lead: 'Loop', rest: ' any section — or several in a row.' },
   { key: 'length', lead: `First ${MAX_TRACK_MIN} minutes`, rest: ' of each song.' },
   { key: 'device', lead: 'Best in Chrome on a computer.', rest: ' Phones work too, with lighter audio; phone support is new.' },
-  { key: 'account', lead: 'Free account', rest: ' needed to play.' },
+  { key: 'account', lead: 'Free account', rest: ' needed to play your own songs. The demo songs open without signing in.' },
 ];
 
 export const WHAT_YOU_GET: readonly WhatYouGetLine[] = ALL.filter((l) => l.shown !== false).map(({ key, lead, rest }) => ({ key, lead, rest }));

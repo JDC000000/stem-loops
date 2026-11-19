@@ -59,8 +59,8 @@ export default function TermsPage() {
               Prices and limits are on the <a href="/pricing">pricing page</a>.
             </p>
             <p>
-              You can start a job without an account. You need an account to open the player and reach your results. By using
-              stem-loops you agree to these terms.
+              You can start a job without an account. You need an account to open the player with your own songs and reach
+              your results. The demo songs open without signing in. By using stem-loops you agree to these terms.
             </p>
 
             <h2>What it can and cannot do</h2>

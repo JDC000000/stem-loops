@@ -88,7 +88,7 @@ export default function HomePage() {
               </p>
               <p className="audience">
                 Uses the first {MAX_TRACK_MIN}&nbsp;minutes of any song, on a computer or a phone. Starting a job needs no account;
-                opening the player needs one.
+                opening the player with your own songs needs one. The demo songs open without signing in.
               </p>
             </div>
             {/* Slice 2a (design P4.1 item 2): the live play-along demo, signed out, near the

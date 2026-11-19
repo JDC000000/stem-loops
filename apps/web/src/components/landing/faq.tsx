@@ -29,7 +29,8 @@ export const FAQ: Record<string, FaqEntry> = {
     q: 'Do I need an account?',
     a: (
       <p>
-        Not to start one. Running a job works signed out. The player asks you to sign in — that is where{' '}
+        Not to start one. Running a job works signed out, and so does playing a demo song. To open your own songs in
+        the player you sign in — that is where{' '}
         {CHORDS_LINE_SHOWN ? 'the stems and the chord track are shown' : 'the stems are shown'}. If you are new, you create an account on the <a href="/login">sign-in page</a>. A
         one-time link sent to your email only signs you back in to an account that already exists; it does not create
         one.

@@ -7,4 +7,4 @@ export const CONTACT_LABEL = CONTACT_EMAIL;
 // lib/seo/pages.ts; the copy-truth surfaces test pins that. Flipping the DB-17 switch changes
 // the text of BOTH pages, so bump both on flip day (its flip-day checklist says so too).
 export const TERMS_UPDATED = '18 November 2026';
-export const PRIVACY_UPDATED = '17 November 2026';
+export const PRIVACY_UPDATED = '20 November 2026';

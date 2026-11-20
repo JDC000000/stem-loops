@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import localFont from 'next/font/local';
 import './globals.css';
 import FlashBanner from '@/components/FlashBanner';
+import SiteAnalytics from '@/components/SiteAnalytics';
 import { SITE_DESCRIPTION } from '@/lib/seo/site';
 
 export const metadata: Metadata = {
@@ -48,6 +49,8 @@ export default function RootLayout({
       <body>
         <FlashBanner />
         {children}
+        {/* Vercel Web Analytics (2A): anonymous page views, no cookies; see lib/analytics.ts. */}
+        <SiteAnalytics />
       </body>
     </html>
   );

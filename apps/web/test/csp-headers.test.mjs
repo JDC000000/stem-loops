@@ -275,3 +275,16 @@ test('Sentry: no wildcard, no placeholder, safe fallback when DSN unset or malfo
     assert.ok(!connect.some((s) => /\.ingest\./.test(s)), `unusable dsn=${dsn} must add no ingest host`);
   }
 });
+
+// ── Vercel Web Analytics (2A) ───────────────────────────────────────────────
+// @vercel/analytics v2 loads its script from this origin (/_vercel/insights/script.js, or the
+// per-project path Vercel injects at build time) and posts views/events to the same origin, so
+// 'self' on script-src and connect-src is what admits it. Pin both: narrowing either would
+// silently zero the analytics. The cross-origin check of the package's real loader lives in
+// test/web-analytics.test.mjs; no Vercel third-party host belongs in this policy.
+test('Web Analytics: script-src and connect-src keep \'self\'; no Vercel third-party host', async () => {
+  const csp = (await loadMiddleware()).buildCsp();
+  assert.ok(directive(csp, 'script-src').includes("'self'"), "script-src must keep 'self' (/_vercel/insights/script.js)");
+  assert.ok(directive(csp, 'connect-src').includes("'self'"), "connect-src must keep 'self' (analytics view/event posts)");
+  assert.doesNotMatch(csp, /vercel-scripts\.com|vercel-insights\.com/);
+});

@@ -23,9 +23,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      # No `version:` here (QA-60). package.json pins `packageManager: pnpm@9.0.0`, and
+      # pnpm/action-setup fails with "Multiple versions of pnpm specified" when both are
+      # given. Same as every pnpm setup in ci.yml.
+      - uses: pnpm/action-setup@v4  # version from package.json packageManager
       - name: Install deps
         run: pnpm install --frozen-lockfile
       - name: Deploy to Vercel

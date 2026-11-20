@@ -18,7 +18,7 @@ type LibraryState =
   | { kind: 'signed_out' }
   | { kind: 'error' };
 
-// Library (P3-7; library 2026-11-15). Slice 2a (design P5.2) renamed the "Job history" label to Library; the URL stays /history.
+// Library (P3-7; library 2026-11-15). Slice 2a (design P5.2) renamed the "Job history" label to Library, and #316 to Song library; the URL stays /history.
 // Signed in: the account's songs from the database (GET /api/library, owner-scoped on the
 // server) — a Pro/Studio subscriber's library outlives the 24 h browser history, and works on
 // any device. Plus this browser's anonymous songs. Signed out: this browser's history only.
@@ -49,7 +49,7 @@ export default function HistoryPage() {
   return (
     <main style={{ minHeight: '100dvh', padding: 24, maxWidth: 640, margin: '0 auto' }}>
       <h1 style={{ color: 'var(--text-primary)', fontSize: 'var(--text-2xl)' }}>
-        {signedIn ? 'Your library' : 'Library'}
+        {signedIn ? 'Your song library' : 'Song library'}
       </h1>
       <p style={{ color: 'var(--text-muted)', marginTop: 4 }} data-testid="history-retention-note">
         {signedIn ? LIBRARY_NOTE_SIGNED_IN : LIBRARY_NOTE_SIGNED_OUT}

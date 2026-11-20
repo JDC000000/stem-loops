@@ -10,6 +10,13 @@
 // Auth: required via @/lib/auth/supabase getUser(). Unauthenticated -> 401.
 // Rate limit: 3/min per authenticated user, recorded in usage_events.
 //
+// One subscription at a time (decision 1A, 2026-11-19): a plan_code checkout is
+// refused with 409 PLAN_ALREADY_ACTIVE while the user has a live subscription
+// (active, trialing, past_due, paused, incomplete). Plan changes go through the
+// customer portal (/account). Credit packs are never blocked. See
+// lib/billing/checkout-guard.ts for the DB check and the Stripe stale-sync
+// fallback.
+//
 // Fulfillment of the sale happens in POST /api/billing/webhook — never on
 // the success page (TSD §1.1 processor-abstraction + anti-goal: no business
 // logic in the client-trusted success path).
@@ -21,6 +28,12 @@ import { db } from '@/lib/db';
 import { verifyHcaptchaToken } from '@/lib/hcaptcha';
 import { appOrigin } from '@/lib/app-url';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
+import {
+  findLiveSubscriptionInDb,
+  findingFromProvider,
+  planAlreadyActiveBody,
+  type LiveSubscriptionFinding,
+} from '@/lib/billing/checkout-guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,6 +62,21 @@ type Body = {
 
 function badRequest(code: string, message: string) {
   return NextResponse.json({ error: message, code }, { status: 400 });
+}
+
+function checkoutFailed() {
+  return NextResponse.json(
+    { error: 'We could not start checkout.', code: 'CHECKOUT_FAILED' },
+    { status: 502 },
+  );
+}
+
+function planAlreadyActive(userId: string, finding: LiveSubscriptionFinding) {
+  // No PII: the user id and what was found, so a refused checkout is traceable.
+  console.warn(
+    `[billing/checkout] refused plan checkout: live subscription (source=${finding.source} status=${finding.status}) user=${userId}`,
+  );
+  return NextResponse.json(planAlreadyActiveBody(finding), { status: 409 });
 }
 
 /** Atomic rate check + record in usage_events.
@@ -147,6 +175,25 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  const provider = getBillingProvider();
+
+  // Decision 1A, check 1 (DB): refuse a plan checkout while a subscription is
+  // live. Before the rate limiter, so a refusal does not burn checkout slots. A
+  // failed read is a 502, never "clear".
+  if (planRaw) {
+    let finding: LiveSubscriptionFinding | null;
+    try {
+      finding = await findLiveSubscriptionInDb(db.query.bind(db), user.user_id, provider.name);
+    } catch (err) {
+      console.error(
+        '[billing/checkout] live-subscription read failed:',
+        err instanceof Error ? err.message : 'unknown error',
+      );
+      return checkoutFailed();
+    }
+    if (finding) return planAlreadyActive(user.user_id, finding);
+  }
+
   if (!(await underCheckoutRateLimit(user.user_id))) {
     return NextResponse.json(
       { error: 'Too many checkout attempts. Wait a moment.', code: 'RATE_LIMITED' },
@@ -154,7 +201,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const provider = getBillingProvider();
   // QA track B, B-07: redirect targets come from config (lib/app-url.ts), never from the
   // request's Origin header, so a direct caller cannot make Stripe send a payer elsewhere.
   const origin = appOrigin();
@@ -195,6 +241,17 @@ export async function POST(req: NextRequest) {
       [user.user_id, providerName],
     );
     let providerCustomerId = existing.rows[0]?.provider_customer_id ?? null;
+
+    // Decision 1A, check 2 (stale sync): the DB was clear, but a Checkout that
+    // completed seconds ago may not have reached the webhook yet. A customer we
+    // stored before this request may own such a subscription, so ask the
+    // provider (one bounded read, STRIPE_CHECKOUT_READ_OPTIONS). A customer
+    // minted below, in this request, cannot have one. A failed read throws to
+    // the catch below: 502, never "clear".
+    if (planRaw && providerCustomerId && provider.listLiveSubscriptions) {
+      const finding = findingFromProvider(await provider.listLiveSubscriptions(providerCustomerId));
+      if (finding) return planAlreadyActive(user.user_id, finding);
+    }
     if (!providerCustomerId) {
       const cust = await provider.createCustomer(user.user_id, user.email);
       providerCustomerId = cust.providerCustomerId;
@@ -264,9 +321,6 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown error';
     console.error('[billing/checkout] failed:', message);
-    return NextResponse.json(
-      { error: 'We could not start checkout.', code: 'CHECKOUT_FAILED' },
-      { status: 502 },
-    );
+    return checkoutFailed();
   }
 }

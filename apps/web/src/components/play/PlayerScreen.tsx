@@ -45,7 +45,7 @@ import { Sheet } from './Sheet';
 import { Transport } from './Transport';
 import styles from './Player.module.css';
 
-export const DEFAULT_BACK = Object.freeze({ href: '/history', label: 'Back to library' });
+export const DEFAULT_BACK = Object.freeze({ href: '/history', label: 'Back to song library' });
 /** Song info (P1.5): the one honest caveat about the detected facts. */
 export const DETECTED_NOTE = 'Tempo and key are detected automatically and can be off.';
 export const NO_CHORDS_LINE = 'No chords for this song.';

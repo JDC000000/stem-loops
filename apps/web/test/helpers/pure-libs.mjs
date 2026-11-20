@@ -5,6 +5,7 @@
 //   @/lib/app-url         (B-07: redirect origin from config, not the Origin header)
 //   @/lib/read-rate-limit (B-11: in-process limiter on job reads)
 //   @/lib/same-origin     (B-06)
+//   @/lib/billing/checkout-guard (decision 1A: the plan-checkout live-subscription block)
 //   @/lib/client-ip       (a STUB: hash = the request's x-forwarded-for, else 'test-ip'; the
 //                          real module is tested on its own in client-ip-secret.test.mjs)
 // wirePureLibs(js) points any of those specifiers STILL PRESENT in `js` at the real
@@ -26,6 +27,7 @@ const lib = (name) => toJs(readFileSync(join(LIB, name), 'utf8'));
 export const SECRET_ENV_URL = dataUrl(lib('secret-env.ts'));
 export const APP_URL_URL = dataUrl(lib('app-url.ts'));
 export const SAME_ORIGIN_LIB_URL = dataUrl(lib('same-origin.ts'));
+export const CHECKOUT_GUARD_URL = dataUrl(lib('billing/checkout-guard.ts'));
 const READ_LIMIT_JS = lib('read-rate-limit.ts');
 export const CLIENT_IP_URL = dataUrl(
   "export const clientIpHashOf = (r) => r?.headers?.get?.('x-forwarded-for') ?? 'test-ip';" +
@@ -40,5 +42,6 @@ export function wirePureLibs(js) {
     .replace(/from ['"]@\/lib\/app-url['"]/g, `from '${APP_URL_URL}'`)
     .replace(/from ['"]@\/lib\/read-rate-limit['"]/g, `from '${readLimit}'`)
     .replace(/from ['"]@\/lib\/same-origin['"]/g, `from '${SAME_ORIGIN_LIB_URL}'`)
-    .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${CLIENT_IP_URL}'`);
+    .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${CLIENT_IP_URL}'`)
+    .replace(/from ['"]@\/lib\/billing\/checkout-guard['"]/g, `from '${CHECKOUT_GUARD_URL}'`);
 }

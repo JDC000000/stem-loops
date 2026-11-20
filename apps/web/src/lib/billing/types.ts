@@ -258,6 +258,14 @@ export interface BillingProvider {
    *  null (never throws) when unknown/inactive/unsupported. Optional so
    *  providers without the concept (Paddle) need not implement it. */
   resolvePromotionCodeId?(code: string): Promise<string | null>;
+
+  /** The customer's NON-TERMINAL subscriptions as the provider sees them right
+   *  now (Stripe: everything but canceled / incomplete_expired), for the
+   *  checkout guard's stale-sync fallback (lib/billing/checkout-guard.ts): a
+   *  Checkout that completed before its webhook landed. `status` is the
+   *  provider's own value. Bounded read; throws on timeout or error. Optional:
+   *  a provider without it gets the DB check only. */
+  listLiveSubscriptions?(customerId: string): Promise<Array<{ id: string; status: string }>>;
 }
 
 export class NotImplementedError extends Error {

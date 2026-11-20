@@ -135,7 +135,7 @@ test('the bar carries every item it claims to', async () => {
   assert.ok(l.some((x) => x.href === TOOL), 'wordmark must link to the tool');
   assert.equal(by('Play along')?.href, TOOL);
   assert.equal(by('Download loops')?.href, '/loops');
-  assert.equal(by('Library')?.href, '/history');
+  assert.equal(by('Song library')?.href, '/history');
   assert.equal(by('Account')?.href, '/account');
   assert.equal(by('Pricing')?.href, '/pricing');
   // Exactly these, in this order (Story 7.2; the design canvas order). An item
@@ -146,7 +146,7 @@ test('the bar carries every item it claims to', async () => {
     'stem-loops',
     'Play along',
     'Download loops',
-    'Library',
+    'Song library',
     // P6 (Jon, 2026-11-17): Pricing in the top nav, signed in and out.
     'Pricing',
     'Account',
@@ -195,7 +195,7 @@ test('exactly one item is aria-current="page", and it is the right one', async (
     ['/', 'Play along'],
     ['/account', 'Account'],
     ['/account/delete', 'Account'],
-    ['/history', 'Library'],
+    ['/history', 'Song library'],
     [`/jobs/${JOB_A}`, 'Play along'],
     ['/loops', 'Download loops'],
     ['/pricing', 'Pricing'],
@@ -485,7 +485,7 @@ test('every nav item is reachable once the menu is open', async () => {
     await dom.act(() => toggle.click());
 
     const items = dom.findAll('#sin-menu.sin-open a.sin-item').map((a) => a.textContent.trim());
-    assert.deepEqual(items, ['Play along', 'Download loops', 'Library', 'Pricing', 'Sign in']);
+    assert.deepEqual(items, ['Play along', 'Download loops', 'Song library', 'Pricing', 'Sign in']);
   });
 });
 

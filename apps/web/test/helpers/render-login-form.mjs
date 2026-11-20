@@ -46,7 +46,7 @@ async function build() {
     'resetPasswordForEmail: (...a) => globalThis.__loginStub?.reset?.(...a) } }; }');
   // 2A: records trackEvent calls into globalThis.__analyticsCalls when a test has set it (never
   // creates the global itself, so withDom's leaked-global check stays meaningful).
-  const analytics = put('analytics.mjs', 'export function trackEvent(...a) { globalThis.__analyticsCalls?.push(a); }');
+  const analytics = put('analytics.mjs', 'export function trackEvent(...a) { globalThis.__analyticsCalls?.push(a); } export const navigationGrace = async () => {};');
   const hcaptcha = put('hcaptcha.mjs', 'export default function HCaptcha() { return null; }');
   // The REAL show/hide password field (Slice 1b), not a stub: the toggle is what is tested.
   const passwordField = put('PasswordField.mjs', toJs(read('src/components/PasswordField.tsx'), true));

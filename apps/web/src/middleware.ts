@@ -154,7 +154,11 @@ export function buildCsp(): string {
 const STATIC_SECURITY_HEADERS: Record<string, string> = {
   'X-Frame-Options': 'DENY',
   'X-Content-Type-Options': 'nosniff',
-  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  // strict-origin (2A review S-1): never a path or query, same-origin included. Vercel Web
+  // Analytics records document.referrer and beforeSend cannot scrub it; under the old
+  // strict-origin-when-cross-origin a same-origin hop (e.g. /login?return_to=/jobs/<uuid> ->
+  // dest) handed it the full previous URL. Nothing in the app reads a Referer path.
+  'Referrer-Policy': 'strict-origin',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), interest-cohort=()',
 };
 

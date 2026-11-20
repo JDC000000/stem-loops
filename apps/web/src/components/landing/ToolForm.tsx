@@ -10,7 +10,7 @@ import { durationVerdict, probeDurationSec, trimNotice } from '@/lib/upload-dura
 import { putToR2 } from '@/lib/upload-client';
 import { canonicalizeYoutubeUrl, youtubeUrlProblem } from '@/lib/youtube-url';
 import { addToHistory } from '@/lib/history';
-import { trackEvent } from '@/lib/analytics';
+import { navigationGrace, trackEvent } from '@/lib/analytics';
 import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
 import { useDemo } from './DemoProvider';
 import { STEM_ORDER } from './demo-data';
@@ -260,6 +260,8 @@ export function ToolForm() {
       trackEvent('song_added', { source: isFile ? 'file' : 'link' });
       setPhase({ kind: 'done', jobId });
       focusNext.current = 'job';
+      // Give song_added a bounded moment (≤150 ms) to go out before the page unloads.
+      await navigationGrace();
       // Full navigation (not router.push): the job page has its own styles, and the
       // landing's stylesheet must not follow it there.
       window.location.assign(`/jobs/${jobId}`);

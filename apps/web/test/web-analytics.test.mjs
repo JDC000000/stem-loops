@@ -32,6 +32,13 @@ const withReact = (js) =>
     .replace(/from ['"]react\/jsx-runtime['"]/g, `from '${bare('react/jsx-runtime')}'`)
     .replace(/from ['"]react['"]/g, `from '${bare('react')}'`);
 
+// The real lib/sentry-options.ts (import-free): the same UUID mask Sentry uses.
+const SENTRY_OPTIONS = dataUrl(toJs(read('src/lib/sentry-options.ts')));
+const libJs = (vercelStub) =>
+  toJs(read('src/lib/analytics.ts'))
+    .replace(/from ['"]@vercel\/analytics['"]/, `from '${vercelStub}'`)
+    .replace(/from ['"]@\/lib\/sentry-options['"]/, `from '${SENTRY_OPTIONS}'`);
+
 /** lib/analytics.ts with `@vercel/analytics` replaced by a recorder (globalThis.__va). */
 async function loadAnalyticsLib({ trackThrows = false } = {}) {
   const stub = dataUrl(`
@@ -40,8 +47,7 @@ async function loadAnalyticsLib({ trackThrows = false } = {}) {
       (globalThis.__va ??= []).push([name, props]);
     }
   `);
-  const js = toJs(read('src/lib/analytics.ts')).replace(/from ['"]@vercel\/analytics['"]/, `from '${stub}'`);
-  return import(dataUrl(js) + '#' + Math.random());
+  return import(dataUrl(libJs(stub)) + '#' + Math.random());
 }
 
 // ── 1. layout mount ─────────────────────────────────────────────────────────
@@ -55,7 +61,7 @@ const ANALYTICS_STUB = dataUrl(`
 `);
 
 async function loadSiteAnalytics() {
-  const lib = dataUrl(toJs(read('src/lib/analytics.ts')).replace(/from ['"]@vercel\/analytics['"]/, `from '${dataUrl('export const track = () => {};')}'`));
+  const lib = dataUrl(libJs(dataUrl('export const track = () => {};')));
   const js = withReact(toJs(read('src/components/SiteAnalytics.tsx')))
     .replace(/from ['"]@vercel\/analytics\/next['"]/, `from '${ANALYTICS_STUB}'`)
     .replace(/from ['"]@\/lib\/analytics['"]/, `from '${lib}'`);
@@ -212,6 +218,41 @@ test('beforeSend scrubber drops query string and fragment, keeps the path', asyn
   }
 });
 
+// B-1 (review of #315): a job id is a bearer capability for a job started without an account
+// (lib/job-access.ts) and a per-user identifier otherwise. It must never reach Vercel.
+test('beforeSend scrubber masks every UUID in the path, any case, page views and events alike', async () => {
+  const { scrubAnalyticsUrl } = await loadAnalyticsLib();
+  const id = '3f2b9c1e-8a7d-4e2f-9b1c-0d5e6f7a8b9c';
+  const ID = id.toUpperCase();
+  const cases = [
+    [`https://stem-loops.com/jobs/${id}`, 'https://stem-loops.com/jobs/[id]'],
+    [`https://stem-loops.com/jobs/${id}/loops`, 'https://stem-loops.com/jobs/[id]/loops'],
+    [`https://stem-loops.com/jobs/${ID}?q=1#f`, 'https://stem-loops.com/jobs/[id]'],
+    [`https://stem-loops.com/demo/${id}`, 'https://stem-loops.com/demo/[id]'],
+    [`https://stem-loops.com/a/${id}/b/${ID}`, 'https://stem-loops.com/a/[id]/b/[id]'],
+    [`https://stem-loops.com/loops?job=${id}#${id}`, 'https://stem-loops.com/loops'],
+    [`/jobs/${ID}/loops?x=${id}`, '/jobs/[id]/loops'],
+    [`not a url /jobs/${id}?x`, 'not a url /jobs/[id]'],
+  ];
+  for (const type of ['pageview', 'event']) {
+    for (const [inUrl, out] of cases) {
+      const ev = scrubAnalyticsUrl({ type, url: inUrl });
+      assert.equal(ev.url, out, `${type}: ${inUrl}`);
+      assert.doesNotMatch(ev.url, /[0-9a-f]{8}-[0-9a-f]{4}-/i, 'a UUID survived');
+      assert.equal(ev.type, type);
+    }
+  }
+});
+
+test('navigationGrace is bounded at 150 ms (a larger ask is clamped)', async () => {
+  const { navigationGrace, NAV_GRACE_MS } = await loadAnalyticsLib();
+  assert.equal(NAV_GRACE_MS, 150);
+  const t0 = Date.now();
+  await navigationGrace(5000);
+  const dt = Date.now() - t0;
+  assert.ok(dt >= 140 && dt < 1000, `waited ${dt} ms`);
+});
+
 function walk(dir) {
   return readdirSync(dir).flatMap((n) => {
     const p = join(dir, n);
@@ -244,7 +285,11 @@ test('every trackEvent call site passes literal, non-personal props, at the righ
   const demo = files.find(([f]) => f.endsWith('HomeDemo.tsx'))[1];
   assert.match(demo, /if \(id\) trackEvent\('demo_play'/);
   const tool = files.find(([f]) => f.endsWith('ToolForm.tsx'))[1];
-  assert.ok(tool.indexOf('addToHistory(jobId);') < tool.indexOf("trackEvent('song_added'"));
+  // Unconditional (review S-5): the very next statement after addToHistory, same indentation,
+  // so `if (isFile) trackEvent(...)` or a wrapping block fails here.
+  assert.match(tool, /\n( +)addToHistory\(jobId\);\n\1trackEvent\('song_added', \{ source: isFile \? 'file' : 'link' \}\);\n/);
+  // ...and the navigation waits the bounded grace first (S-2).
+  assert.match(tool, /\n( +)await navigationGrace\(\);\n(?:[ \t]*\n)*\1window\.location\.assign\(`\/jobs\/\$\{jobId\}`\);/);
   assert.ok(tool.indexOf("postJson<{ id: string }>('/api/jobs', { url") < tool.indexOf("trackEvent('song_added'"));
   const login = files.find(([f]) => f.endsWith('LoginForm.tsx'))[1];
   assert.ok(login.indexOf('if (!res.ok || !json.ok)') < login.indexOf("trackEvent('signup'"));

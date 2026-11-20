@@ -2,8 +2,13 @@
 //
 // Privacy contract (pinned by test/web-analytics.test.mjs and the /privacy line):
 //   • No cookies: Vercel identifies a visit by a request hash that resets daily.
-//   • Page-view URLs are sent WITHOUT query string or fragment (scrubAnalyticsUrl), so
-//     auth codes, Stripe session ids, return_to targets and the like never leave the app.
+//   • Page-view and event URLs are sent WITHOUT query string or fragment, and with every
+//     UUID in the path masked to [id] (scrubAnalyticsUrl). Auth codes, Stripe session ids,
+//     return_to targets never leave the app, and neither does a job id: for a job started
+//     without an account its id is the only credential (lib/job-access.ts), and for an owned
+//     one it is a per-user identifier. Same mask as Sentry (lib/sentry-options.ts maskJobIds).
+//   • Referrers: the middleware sends Referrer-Policy: strict-origin, so document.referrer
+//     (which Vercel records and beforeSend cannot touch) is at most the bare origin.
 //   • Custom events carry only the closed, non-personal props typed below — never an email,
 //     user id, job id, song URL or file name. The type is the allowlist.
 //
@@ -11,6 +16,7 @@
 // trackEvent(). Custom events are recorded on Vercel Pro and up; on Hobby the dashboard
 // shows page views only and these calls are harmless.
 import { track } from '@vercel/analytics';
+import { maskJobIds } from '@/lib/sentry-options';
 
 export interface AnalyticsEvents {
   /** A visitor opened a demo song in the home-page player. `song` is the public catalog slug. */
@@ -38,13 +44,26 @@ interface OutgoingEvent {
   url: string;
 }
 
-/** beforeSend: drop the query string and fragment from every URL sent to Vercel. */
+/** beforeSend: drop the query string and fragment, and mask every UUID in the path to [id]. */
 export function scrubAnalyticsUrl<E extends OutgoingEvent>(event: E): E {
+  let url: string;
   try {
     const u = new URL(event.url);
-    return { ...event, url: `${u.origin}${u.pathname}` };
+    url = `${u.origin}${u.pathname}`;
   } catch {
     const cut = event.url.search(/[?#]/);
-    return cut === -1 ? event : { ...event, url: event.url.slice(0, cut) };
+    url = cut === -1 ? event.url : event.url.slice(0, cut);
   }
+  return { ...event, url: maskJobIds(url) };
+}
+
+/**
+ * Best-effort grace before a full-page navigation that follows trackEvent(), so the queued
+ * event has a moment to go out before the page unloads. Bounded (NAV_GRACE_MS); it never
+ * blocks on the network, and an event can still be lost (e.g. the tracker script has not
+ * loaded yet, or the browser cancels the request on unload).
+ */
+export const NAV_GRACE_MS = 150;
+export function navigationGrace(ms: number = NAV_GRACE_MS): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.min(ms, NAV_GRACE_MS)));
 }

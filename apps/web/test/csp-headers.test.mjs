@@ -180,7 +180,7 @@ test('middleware stamps CSP + security headers on the response', async () => {
   assert.ok(res.headers.get('content-security-policy'));
   assert.equal(res.headers.get('x-frame-options'), 'DENY');
   assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
-  assert.equal(res.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
+  assert.equal(res.headers.get('referrer-policy'), 'strict-origin', 'origin only, same-origin included (2A S-1)');
   assert.match(res.headers.get('permissions-policy') ?? '', /interest-cohort=\(\)/);
 });
 

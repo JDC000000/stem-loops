@@ -12,6 +12,7 @@
 // before we can honor the accepted-risk S4 fallback. Flagged in the PR body.
 
 import {
+  type AccountDeletionCancelResult,
   type BillingCheckoutResult,
   type BillingCustomer,
   type BillingEvent,
@@ -66,6 +67,13 @@ export class PaddleProvider implements BillingProvider {
     _atPeriodEnd: boolean,
   ): Promise<void> {
     throw new NotImplementedError('cancelSubscription');
+  }
+  async cancelAllForAccountDeletion(
+    _knownIds: string[],
+    _customerId: string | null,
+    _deadlineMs: number,
+  ): Promise<AccountDeletionCancelResult> {
+    throw new NotImplementedError('cancelAllForAccountDeletion');
   }
   async handleWebhook(_rawBody: string, _signature: string): Promise<BillingEvent> {
     throw new NotImplementedError('handleWebhook');

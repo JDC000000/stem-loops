@@ -13,8 +13,8 @@
 //   401 UNAUTHENTICATED
 //   403 BAD_ORIGIN — Origin header present and not same-origin (CSRF guard;
 //       DELETE + JSON already forces a CORS preflight, this is belt+braces)
-//   502 SUBSCRIPTION_CANCEL_FAILED — Stripe refused; NOTHING was deleted,
-//       safe to retry
+//   502 SUBSCRIPTION_CANCEL_FAILED — Stripe refused, or its time budget ran
+//       out; NOTHING was deleted, safe to retry. Alerted to Sentry.
 //   500 DELETE_FAILED — the chord_edits erasure failed (NOTHING irreversible
 //       happened: no subscription was cancelled, safe to retry), or the
 //       Supabase Admin delete failed after subscriptions were cancelled
@@ -22,7 +22,9 @@
 //
 // Order of operations (each step only runs if the previous one succeeded):
 //   1. getUser() + confirm_email check
-//   2. read this user's active/trialing/past_due subscriptions (read-only).
+//   2. read this user's subscriptions that are not 'canceled' (QA-53: paused
+//      and incomplete too, not just active/trialing/past_due) and their
+//      Stripe customer id (read-only).
 //   3. ONE database transaction, in this order:
 //        a. erase the user's public.chord_edits rows via
 //           public.delete_chord_edits_for_user() (migration 031). chord_edits
@@ -31,9 +33,13 @@
 //           the SECURITY DEFINER function is the one sanctioned erasure path.
 //           It runs FIRST so a missing function / missing privilege / deadlock
 //           fails the request while nothing irreversible has happened.
-//        b. cancel each subscription immediately (not at period end — the
-//           account is going away). A subscription Stripe says no longer
-//           exists counts as cancelled.
+//        b. provider.cancelAllForAccountDeletion (lib/billing): lists the
+//           customer's subscriptions AT STRIPE as well as our rows, cancels
+//           immediately (not at period end, no proration) every one that is
+//           not already over, whatever its status, and voids an incomplete
+//           subscription's still-open first invoice so it cannot be paid
+//           later. A subscription Stripe says no longer exists counts as
+//           cancelled. Bounded by STRIPE_BUDGET_MS (see the time budget).
 //      The transaction COMMITs only after every cancel succeeded. If Stripe
 //      refuses, the throw ROLLs BACK the erasure, so the user keeps their
 //      account AND their chord edits (502, safe to retry). Stripe cannot be
@@ -62,6 +68,7 @@
 // retry/stop. See PR notes.
 
 import { createHmac } from 'node:crypto';
+import * as Sentry from '@sentry/nextjs';
 import { NextRequest, NextResponse } from 'next/server';
 import { deleteAuthUser, getUser } from '@/lib/auth/supabase';
 import { getBillingProvider } from '@/lib/billing';
@@ -72,21 +79,47 @@ import { ipHashKey } from '@/lib/secret-env';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const CANCELLABLE_STATUSES = ['active', 'trialing', 'past_due'];
+// Time budget (QA-53, same rule as the webhook's PR #298 budget). The Stripe
+// step runs inside the erase transaction, holding a pooled connection, so it
+// is bounded: every Stripe call is 6 s per attempt with no SDK retries (at
+// most 2 x 6 = 12 s with stripe-node's forced reset retry), and the provider
+// starts no call that could end after STRIPE_BUDGET_MS. 36 s fits a list,
+// a cancel and a void (3 x 12 s), which is one subscription's worst case;
+// the remaining 24 s of maxDuration cover the auth lookup, the millisecond
+// statements, COMMIT, the Supabase admin delete and the audit row. A budget
+// overrun is a retryable 502 with nothing deleted, never a killed function
+// in the middle of the transaction.
+export const maxDuration = 60;
+const STRIPE_BUDGET_MS = 36_000;
 
 /** Thrown inside the erase+cancel transaction so it ROLLs BACK and maps to 502. */
 class SubscriptionCancelFailed extends Error {}
 
-function err(status: number, code: string, message: string) {
-  return NextResponse.json({ error: message, code }, { status });
+/** A live subscription may have survived a refused deletion: page a human
+ *  (the user was told to retry; nothing was deleted). Ids and codes only. */
+function alertCancelFailed(e: unknown, subscriptionRows: number): void {
+  const x = e as { name?: string; code?: string; type?: string; message?: string } | null;
+  const extra = {
+    error: x?.name ?? 'unknown',
+    stripeCode: x?.code ?? null,
+    stripeType: x?.type ?? null,
+    detail: typeof x?.message === 'string' ? x.message.slice(0, 300) : null,
+    subscriptionRows,
+  };
+  console.error('[users/me DELETE][ALERT] subscription cancel failed; account NOT deleted', JSON.stringify(extra));
+  try {
+    Sentry.captureMessage('account deletion: subscription cancel failed, account not deleted (retryable)', {
+      level: 'error',
+      tags: { route: 'api/users/me', qa: 'QA-53' },
+      extra,
+    });
+  } catch {
+    // never let reporting change the answer
+  }
 }
 
-/** True when Stripe says the subscription is already gone / canceled. */
-function isAlreadyCanceled(e: unknown): boolean {
-  const x = e as { code?: string; statusCode?: number; message?: string } | null;
-  if (!x) return false;
-  if (x.code === 'resource_missing' || x.statusCode === 404) return true;
-  return typeof x.message === 'string' && /already (been )?cancel/i.test(x.message);
+function err(status: number, code: string, message: string) {
+  return NextResponse.json({ error: message, code }, { status });
 }
 
 export async function DELETE(req: NextRequest) {
@@ -127,17 +160,28 @@ export async function DELETE(req: NextRequest) {
 
   try {
     // 2. Read the subscriptions to cancel (read-only; nothing changes yet).
+    //    Every status except 'canceled' (QA-53): a paused or incomplete
+    //    subscription can still bill. The customer id lets the provider list
+    //    the subscriptions it has, including any our webhook has not written.
     const provider = getBillingProvider();
     const subs = await db.query<{ provider_subscription_id: string }>(
       `SELECT provider_subscription_id FROM public.subscriptions
-        WHERE user_id = $1::uuid AND provider = $2 AND status = ANY($3::text[])`,
-      [user.user_id, provider.name, CANCELLABLE_STATUSES],
+        WHERE user_id = $1::uuid AND provider = $2 AND status <> 'canceled'`,
+      [user.user_id, provider.name],
     );
+    const cust = await db.query<{ provider_customer_id: string }>(
+      `SELECT provider_customer_id FROM public.customers_billing
+        WHERE user_id = $1::uuid AND provider = $2`,
+      [user.user_id, provider.name],
+    );
+    const knownIds = subs.rows.map((r) => r.provider_subscription_id);
+    const customerId = cust.rows[0]?.provider_customer_id ?? null;
 
     // 3. Erase chord_edits, THEN cancel Stripe, in one transaction. See the
     //    header: the erasure goes first so its failure cancels nothing, and a
     //    Stripe failure rolls the erasure back.
     let cancelled = 0;
+    let invoicesVoided = 0;
     try {
       await db.tx(async (client) => {
         try {
@@ -182,13 +226,14 @@ export async function DELETE(req: NextRequest) {
           [user.user_id],
         );
 
-        for (const row of subs.rows) {
+        // Nothing to look up for a user who never reached checkout.
+        if (knownIds.length > 0 || customerId) {
           try {
-            await provider.cancelSubscription(row.provider_subscription_id, false);
-            cancelled += 1;
+            const r = await provider.cancelAllForAccountDeletion(knownIds, customerId, Date.now() + STRIPE_BUDGET_MS);
+            cancelled = r.cancelled.length;
+            invoicesVoided = r.voidedInvoices.length;
           } catch (e) {
-            if (isAlreadyCanceled(e)) continue;
-            console.error('[users/me DELETE] subscription cancel failed:', e instanceof Error ? e.message : 'unknown');
+            alertCancelFailed(e, knownIds.length);
             throw new SubscriptionCancelFailed();
           }
         }
@@ -226,6 +271,7 @@ export async function DELETE(req: NextRequest) {
               .update(user.user_id)
               .digest('hex'),
             subscriptions_cancelled: cancelled,
+            invoices_voided: invoicesVoided,
           }),
         ],
       );

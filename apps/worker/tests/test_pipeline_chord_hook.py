@@ -545,7 +545,7 @@ def test_existing_artifact_skips_before_stem_mix(
 
 
 def test_stage_heartbeat_beats_while_running_and_stops(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The chord stage (Klangio polling up to 600s) must bump jobs.updated_at inside the
+    """The chord stage (Klangio polling up to KLANGIO_POLL_DEADLINE_SEC) must bump jobs.updated_at inside the
     300s reaper stale window; the beat task must be gone once the stage exits."""
     import asyncio
 

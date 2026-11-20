@@ -292,7 +292,7 @@ def test_a_hung_job_is_failed_and_refunded_at_the_wall_clock_deadline(
 
 
 def test_the_default_wall_clock_budget_is_ninety_minutes(monkeypatch):
-    """At least the web's ONE_JOB_WORST_CASE_S (4442 s, deployed values): a healthy job is
+    """At least the web's ONE_JOB_WORST_CASE_S (3962 s since #317, 4442 s before; deployed values): a healthy job is
     never cut off. The cross-check against job-poll.ts is in job-stall-derivation.test.mjs."""
     monkeypatch.delenv("JOB_WALL_TIMEOUT_SECONDS", raising=False)
     assert consumer._job_wall_timeout() == 5400.0

@@ -35,13 +35,21 @@ function authStub(user, { deleteFails = false } = {}) {
   `);
 }
 
-function billingStub({ cancelError = null, expireError = null, expired = [] } = {}) {
+// QA-53: the route hands every non-canceled DB subscription id AND the Stripe customer
+// id to provider.cancelAllForAccountDeletion (its Stripe behaviour is tested against
+// the real provider in account-delete-stripe-cancel.test.mjs). `result` overrides
+// what the stub reports; by default every id it was given was cancelled.
+function billingStub({ cancelError = null, result = null, expireError = null, expired = [] } = {}) {
   return dataUrl(`
     export const getBillingProvider = () => ({
       name: 'stripe',
-      cancelSubscription: async (id, atPeriodEnd) => {
-        globalThis.__ad.calls.push(['cancelSubscription', id, atPeriodEnd]);
+      cancelSubscription: async () => {
+        throw new Error('account deletion must not use cancelSubscription (QA-53)');
+      },
+      cancelAllForAccountDeletion: async (knownIds, customerId, deadlineMs) => {
+        globalThis.__ad.calls.push(['cancelAll', knownIds, customerId, deadlineMs, Date.now()]);
         if (${JSON.stringify(cancelError)}) throw Object.assign(new Error('stripe'), ${JSON.stringify(cancelError)});
+        return ${JSON.stringify(result)} ?? { cancelled: knownIds, alreadyOver: [], voidedInvoices: [] };
       },
       // QA-72: deletion expires the customer's open checkout sessions first.
       expireOpenCheckoutSessions: async (customerId, deadlineMs) => {
@@ -53,11 +61,10 @@ function billingStub({ cancelError = null, expireError = null, expired = [] } = 
   `);
 }
 
-// Records Sentry captures on globalThis.__ad.sentry.
 const sentryStub = () =>
   dataUrl(`
-    export const captureMessage = (message, opts) => { (globalThis.__ad.sentry ??= []).push({ message, opts }); };
-    export const captureException = (e, opts) => { (globalThis.__ad.sentry ??= []).push({ e, opts }); };
+    export const captureMessage = (message, opts) => { globalThis.__ad.calls.push(['sentry', message, opts]); };
+    export const captureException = (e, opts) => { globalThis.__ad.calls.push(['sentry', String(e), opts]); };
   `);
 
 // Records tx lifecycle as ['tx','begin'|'commit'|'rollback'] so tests can assert
@@ -66,14 +73,14 @@ const sentryStub = () =>
 function dbStub(subIds, errors = {}, customerId = null) {
   return dataUrl(`
     const errors = ${JSON.stringify(errors)};
-    const customerId = ${JSON.stringify(customerId)};
     const run = async (text, params) => {
       globalThis.__ad.calls.push(['query', text, params]);
       for (const [re, e] of Object.entries(errors)) {
         if (new RegExp(re).test(text)) throw Object.assign(new Error(e.message), { code: e.code });
       }
       if (/FROM public\\.customers_billing/.test(text)) {
-        return customerId ? { rows: [{ provider_customer_id: customerId }], rowCount: 1 } : { rows: [], rowCount: 0 };
+        const c = ${JSON.stringify(customerId)};
+        return { rows: c ? [{ provider_customer_id: c }] : [], rowCount: c ? 1 : 0 };
       }
       if (/FROM public\\.subscriptions/.test(text)) {
         return { rows: ${JSON.stringify(subIds)}.map((id) => ({ provider_subscription_id: id })), rowCount: ${subIds.length} };
@@ -111,16 +118,16 @@ const nextStub = () =>
 
 async function loadRoute({
   user = USER, subIds = [], cancelError = null, deleteFails = false, dbErrors = {},
-  customerId = null, expireError = null, expired = [],
+  customerId = null, result = null, expireError = null, expired = [],
 } = {}) {
   let js = toJs(readFileSync(SRC, 'utf8'));
   js = js
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user, { deleteFails })}'`)
-    .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billingStub({ cancelError, expireError, expired })}'`)
+    .replace(/from ['"]@\/lib\/billing['"]/g, `from '${billingStub({ cancelError, result, expireError, expired })}'`)
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub(subIds, dbErrors, customerId)}'`)
+    .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub()}'`)
     .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
-    .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`)
-    .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStub()}'`);
+    .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
   return await import(dataUrl(wirePureLibs(js)) + '#' + Math.random());
 }
 
@@ -172,7 +179,7 @@ test('DELETE /api/users/me — 403 on cross-origin request', async () => {
 });
 
 test('DELETE /api/users/me — happy path: cancels Stripe, deletes auth user, audits, 204', async () => {
-  const mod = await loadRoute({ subIds: ['sub_a', 'sub_b'] });
+  const mod = await loadRoute({ subIds: ['sub_a', 'sub_b'], customerId: 'cus_1' });
   const res = await mod.DELETE(
     makeReq({ confirm_email: '  jon@example.com ' }, { origin: 'https://stem-loops.com', host: 'stem-loops.com' }),
   );
@@ -180,11 +187,9 @@ test('DELETE /api/users/me — happy path: cancels Stripe, deletes auth user, au
   assert.equal(res.body, null);
 
   const calls = globalThis.__ad.calls;
-  const cancels = calls.filter((c) => c[0] === 'cancelSubscription');
-  assert.deepEqual(cancels, [
-    ['cancelSubscription', 'sub_a', false],
-    ['cancelSubscription', 'sub_b', false],
-  ]);
+  const cancels = calls.filter((c) => c[0] === 'cancelAll');
+  assert.equal(cancels.length, 1);
+  assert.deepEqual(cancels[0].slice(1, 3), [['sub_a', 'sub_b'], 'cus_1']);
   const del = calls.filter((c) => c[0] === 'deleteAuthUser');
   assert.deepEqual(del, [['deleteAuthUser', USER.user_id]]);
 
@@ -200,8 +205,8 @@ test('DELETE /api/users/me — happy path: cancels Stripe, deletes auth user, au
   });
   const at = (k) => order.indexOf(k);
   assert.ok(at('tx:begin') < at('query:chord_edits_erase'));
-  assert.ok(at('query:chord_edits_erase') < at('cancelSubscription'), 'erase BEFORE the irreversible Stripe cancel');
-  assert.ok(at('cancelSubscription') < at('tx:commit'));
+  assert.ok(at('query:chord_edits_erase') < at('cancelAll'), 'erase BEFORE the irreversible Stripe cancel');
+  assert.ok(at('cancelAll') < at('tx:commit'));
   assert.ok(at('tx:commit') < at('query:tombstone'));
   assert.ok(at('query:tombstone') < at('deleteAuthUser'));
   assert.ok(at('deleteAuthUser') < at('query:audit'));
@@ -217,10 +222,14 @@ test('DELETE /api/users/me — happy path: cancels Stripe, deletes auth user, au
   assert.ok(sweep, 'expected a delete_chord_edits_for_user() call before deleteAuthUser');
   assert.deepEqual(sweep[2], [USER.user_id]);
 
-  // Subscription lookup scoped to this user and live statuses.
+  // Subscription lookup scoped to this user and EVERY status but canceled (QA-53:
+  // paused and incomplete can still bill), plus the customer id for the Stripe list.
   const sel = calls.find((c) => c[0] === 'query' && /FROM public\.subscriptions/.test(c[1]));
-  assert.equal(sel[2][0], USER.user_id);
-  assert.deepEqual(sel[2][2], ['active', 'trialing', 'past_due']);
+  assert.deepEqual(sel[2], [USER.user_id, 'stripe']);
+  assert.match(sel[1], /status\s*<>\s*'canceled'/);
+  assert.doesNotMatch(sel[1], /status\s*=\s*ANY/);
+  const cust = calls.find((c) => c[0] === 'query' && /FROM public\.customers_billing/.test(c[1]));
+  assert.deepEqual(cust[2], [USER.user_id, 'stripe']);
 
   // usage_events audit row: kind=account_deleted, no raw user id / email.
   const audit = auditInserts();
@@ -228,6 +237,7 @@ test('DELETE /api/users/me — happy path: cancels Stripe, deletes auth user, au
   assert.match(audit[0][1], /'account_deleted'/);
   const detail = JSON.parse(audit[0][2][0]);
   assert.equal(detail.subscriptions_cancelled, 2);
+  assert.equal(detail.invoices_voided, 0);
   assert.match(detail.user_hash, /^[0-9a-f]{64}$/);
   assert.ok(!audit[0][2][0].includes(USER.user_id));
   assert.ok(!audit[0][2][0].toLowerCase().includes('jon@example.com'));
@@ -237,7 +247,7 @@ test('DELETE /api/users/me — no subscriptions: still deletes', async () => {
   const mod = await loadRoute({ subIds: [] });
   const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
   assert.equal(res.status, 204);
-  assert.ok(!names().includes('cancelSubscription'));
+  assert.ok(!names().includes('cancelAll'), 'no subscriptions and no Stripe customer: nothing to ask Stripe');
   assert.ok(names().includes('deleteAuthUser'));
 });
 
@@ -254,11 +264,55 @@ test('DELETE /api/users/me — Stripe failure ROLLS BACK the erasure, no tombsto
   assert.equal(auditInserts().length, 0);
 });
 
-test('DELETE /api/users/me — Stripe resource_missing counts as already cancelled', async () => {
-  const mod = await loadRoute({ subIds: ['sub_gone'], cancelError: { code: 'resource_missing' } });
+test('DELETE /api/users/me — subscriptions the provider reports already over still let deletion finish', async () => {
+  const mod = await loadRoute({ subIds: ['sub_gone'], result: { cancelled: [], alreadyOver: ['sub_gone'], voidedInvoices: [] } });
   const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
   assert.equal(res.status, 204);
   assert.ok(names().includes('deleteAuthUser'));
+  assert.equal(JSON.parse(auditInserts()[0][2][0]).subscriptions_cancelled, 0);
+});
+
+// QA-53: a paused / incomplete subscription used to be skipped (the lookup only took
+// active/trialing/past_due), so it survived the deletion and could still bill.
+test('DELETE /api/users/me — QA-53: a Stripe customer with no DB rows is still sent to the provider (webhook lag)', async () => {
+  const mod = await loadRoute({ subIds: [], customerId: 'cus_lag', result: { cancelled: ['sub_inc'], alreadyOver: [], voidedInvoices: ['in_1'] } });
+  const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
+  assert.equal(res.status, 204);
+  const [c] = globalThis.__ad.calls.filter((x) => x[0] === 'cancelAll');
+  assert.deepEqual(c.slice(1, 3), [[], 'cus_lag']);
+  const detail = JSON.parse(auditInserts()[0][2][0]);
+  assert.equal(detail.subscriptions_cancelled, 1);
+  assert.equal(detail.invoices_voided, 1);
+});
+
+test('DELETE /api/users/me — QA-53: the Stripe step gets a bounded deadline (STRIPE_BUDGET_MS from request start, L-1)', async () => {
+  const mod = await loadRoute({ subIds: ['sub_a'], customerId: 'cus_1' });
+  const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
+  assert.equal(res.status, 204);
+  const [c] = globalThis.__ad.calls.filter((x) => x[0] === 'cancelAll');
+  const [, , , deadline, calledAt] = c;
+  const budget = deadline - calledAt;
+  // L-1: 40 s from REQUEST START, so slightly under 40 s from the call; it
+  // must still fit a list + cancel + void at their worst (36 s).
+  assert.ok(budget > 36_000 && budget <= 40_000, `deadline is ${budget} ms out, expected just under 40 s`);
+  assert.equal(mod.maxDuration, 60);
+});
+
+test('DELETE /api/users/me — QA-53: a refused cancel or a spent budget is a 502, nothing deleted, and Sentry is alerted', async () => {
+  for (const cancelError of [{ code: 'api_connection_error' }, { name: 'StripeDeadlineError' }]) {
+    globalThis.__ad = { calls: [] };
+    const mod = await loadRoute({ subIds: ['sub_p'], customerId: 'cus_1', cancelError });
+    const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
+    assert.equal(res.status, 502);
+    assert.equal(res.body.code, 'SUBSCRIPTION_CANCEL_FAILED');
+    assert.ok(!names().includes('deleteAuthUser'));
+    const alerts = globalThis.__ad.calls.filter((x) => x[0] === 'sentry');
+    assert.equal(alerts.length, 1, JSON.stringify(cancelError));
+    assert.equal(alerts[0][2].level, 'error');
+    assert.equal(alerts[0][2].tags.route, 'api/users/me');
+    const extra = JSON.stringify(alerts[0][2].extra);
+    assert.ok(!extra.includes(USER.user_id) && !extra.toLowerCase().includes('jon@example.com'), 'no personal data in the alert');
+  }
 });
 
 test('DELETE /api/users/me — Supabase admin failure → 500, no audit row', async () => {
@@ -316,7 +370,7 @@ for (const [label, code, message] of [
     const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
     assert.equal(res.status, 500);
     assert.equal(res.body.code, 'DELETE_FAILED');
-    assert.ok(!names().includes('cancelSubscription'), 'subscription must NOT be cancelled');
+    assert.ok(!names().includes('cancelAll'), 'subscription must NOT be cancelled');
     assert.ok(!names().includes('deleteAuthUser'));
     assert.ok(
       !globalThis.__ad.calls.some((c) => c[0] === 'query' && /UPDATE public\.users/.test(c[1])),
@@ -414,6 +468,8 @@ test('DELETE /api/users/me — the job expiry runs on the TRANSACTION client, an
 // subscription for a user who no longer exists. The route now expires every
 // open session of the user's customer BEFORE the erase+cancel transaction.
 
+const sentryCaptures = () =>
+  globalThis.__ad.calls.filter((c) => c[0] === 'sentry').map((c) => ({ message: c[1], opts: c[2] }));
 const hmacOf = (id) => createHmac('sha256', process.env.IP_HASH_KEY || 'dev-key').update(id).digest('hex');
 
 test('QA-72: open checkouts are expired first (customer id, deadline from request start), then the deletion runs', async () => {
@@ -429,7 +485,7 @@ test('QA-72: open checkouts are expired first (customer id, deadline from reques
   const exAt = seq.indexOf('expireOpenCheckoutSessions');
   const txAt = globalThis.__ad.calls.findIndex((c) => c[0] === 'tx' && c[1] === 'begin');
   assert.ok(exAt < txAt, 'expiry must run before the erase+cancel transaction');
-  assert.ok(exAt < seq.indexOf('cancelSubscription'), 'expiry must run before the cancels');
+  assert.ok(exAt < seq.indexOf('cancelAll'), 'expiry must run before the cancels');
   const cb = globalThis.__ad.calls.find((c) => c[0] === 'query' && /FROM public\.customers_billing/.test(c[1]));
   assert.deepEqual(cb[2], [USER.user_id, 'stripe']);
   const audit = JSON.parse(auditInserts()[0][2][0]);
@@ -453,10 +509,10 @@ test('QA-72: expiry refused -> 502 CHECKOUT_EXPIRE_FAILED, NOTHING deleted or ca
   assert.match(res.body.error, /not deleted\. Please try again\.$/);
   const seq = names();
   assert.ok(!seq.includes('tx'), 'the erase transaction must not start');
-  assert.ok(!seq.includes('cancelSubscription'));
+  assert.ok(!seq.includes('cancelAll'));
   assert.ok(!seq.includes('deleteAuthUser'));
   assert.equal(auditInserts().length, 0);
-  const [alert] = globalThis.__ad.sentry ?? [];
+  const [alert] = sentryCaptures();
   assert.ok(alert, 'no Sentry alert for a refused deletion');
   assert.equal(alert.opts.level, 'error');
   assert.equal(alert.opts.extra.step, 'checkout_expire');
@@ -470,22 +526,9 @@ test('QA-72 / L-5: a refused subscription cancel is alerted with the user_hash t
   const mod = await loadRoute({ subIds: ['sub_a'], cancelError: { code: 'api_connection_error' } });
   const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
   assert.equal(res.status, 502);
-  const [alert] = globalThis.__ad.sentry ?? [];
+  const [alert] = sentryCaptures();
   assert.equal(alert.opts.extra.step, 'subscription_cancel');
   assert.equal(alert.opts.extra.user_hash, hmacOf(USER.user_id));
-});
-
-test('L-4: resource_missing that says the subscription exists in the OTHER mode is NOT "already cancelled" (502)', async () => {
-  const mod = await loadRoute({
-    subIds: ['sub_live'],
-    cancelError: {
-      code: 'resource_missing',
-      message: "No such subscription: 'sub_live'; a similar object exists in live mode, but a test mode key was used to make this request.",
-    },
-  });
-  const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
-  assert.equal(res.status, 502, 'a wrong-mode key would let deletion finish while the real subscription bills');
-  assert.ok(!names().includes('deleteAuthUser'));
 });
 
 test('QA-72: maxDuration is 60 and the expiry budget leaves room for the rest of the request', () => {
@@ -493,4 +536,25 @@ test('QA-72: maxDuration is 60 and the expiry budget leaves room for the rest of
   assert.match(src, /export const maxDuration = 60;/);
   assert.match(src, /const CHECKOUT_EXPIRE_BUDGET_MS = 24_000;/);
   assert.match(src, /const t0 = Date\.now\(\);/);
+});
+
+test('L-1: the cancel deadline is t0 + 40 s from REQUEST START (shared anchor with the expiry), not from the step', async () => {
+  const before = Date.now();
+  const mod = await loadRoute({ subIds: ['sub_a'], customerId: 'cus_1' });
+  assert.equal((await mod.DELETE(makeReq({ confirm_email: USER.email }))).status, 204);
+  const [c] = globalThis.__ad.calls.filter((x) => x[0] === 'cancelAll');
+  const ex = globalThis.__ad.calls.find((x) => x[0] === 'expireOpenCheckoutSessions');
+  assert.equal(c[3] - ex[2], 16_000, 'both deadlines must hang off the same t0');
+  assert.ok(c[3] >= before + 40_000 && c[3] <= Date.now() + 40_000);
+});
+
+test('L-1: the erase transaction sets lock_timeout and statement_timeout FIRST, on the transaction client', async () => {
+  const mod = await loadRoute({ subIds: ['sub_a'] });
+  assert.equal((await mod.DELETE(makeReq({ confirm_email: USER.email }))).status, 204);
+  const txq = globalThis.__ad.txq ?? [];
+  assert.match(txq[0], /set_config\('lock_timeout', \$1, true\), set_config\('statement_timeout', \$2, true\)/);
+  const q = globalThis.__ad.calls.find((x) => x[0] === 'query' && /set_config\('lock_timeout'/.test(x[1]));
+  assert.deepEqual(q[2], ['5s', '10s']);
+  assert.ok(!/idle_in_transaction/.test(readFileSync(SRC, 'utf8').match(/set_config\('lock_timeout'.*\n.*/)?.[0] ?? ''),
+    'no idle-in-tx timeout: the Stripe step idles the transaction');
 });

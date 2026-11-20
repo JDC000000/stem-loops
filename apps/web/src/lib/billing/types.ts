@@ -71,6 +71,16 @@ export interface BillingSubscription {
   createdAt?: Date | null;
 }
 
+/** What cancelAllForAccountDeletion did (QA-53). Ids only, no personal data. */
+export interface AccountDeletionCancelResult {
+  /** Subscriptions this call cancelled. */
+  cancelled: string[];
+  /** Subscriptions that were already over (cancelled / expired / gone). */
+  alreadyOver: string[];
+  /** Never-paid first invoices this call voided (incomplete subscriptions). */
+  voidedInvoices: string[];
+}
+
 /** Fields of a subscription an update event reports as changed. */
 export interface BillingSubscriptionChange {
   status?: SubscriptionStatus;
@@ -259,6 +269,20 @@ export interface BillingProvider {
     subscriptionId: string,
     atPeriodEnd: boolean,
   ): Promise<void>;
+
+  /** QA-53. Account deletion: cancel, immediately, EVERY subscription that is
+   *  not already over, whatever its status (active, trialing, past_due,
+   *  paused, incomplete, unpaid, or a status we do not know yet), and void a
+   *  never-paid first invoice so it cannot be paid later. `knownIds` are the
+   *  ids our DB holds; `customerId` (when we have one) is also listed at the
+   *  provider, so a subscription the webhook has not written yet is caught.
+   *  Throws (nothing to undo on our side) if any of it fails or if
+   *  `deadlineMs` (epoch ms) would be passed; safe to call again. */
+  cancelAllForAccountDeletion(
+    knownIds: string[],
+    customerId: string | null,
+    deadlineMs: number,
+  ): Promise<AccountDeletionCancelResult>;
 
   handleWebhook(rawBody: string, signature: string): Promise<BillingEvent>;
 

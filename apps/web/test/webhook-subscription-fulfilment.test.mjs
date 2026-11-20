@@ -50,14 +50,36 @@ test('subscription.created with EMPTY metadata: resolved via customers_billing, 
   assert.equal(state.entitlements[0]?.user_id, USER);
 });
 
-test('subscription.created, empty metadata, UNKNOWN customer: 500 (Stripe retries), nothing written', async () => {
+// QA-72 changed this case. A subscription no account owns (no metadata
+// user_id, a customer not in customers_billing, no row) used to be a 500, which
+// Stripe retried for ~3 days while the subscription kept billing. It is now
+// CLOSED at Stripe (cancelled, its invoice refunded; full coverage in
+// webhook-orphan-subscription.test.mjs) and acked. Still never a silent 200:
+// while the close has not succeeded, the answer stays 500.
+test('subscription.created, empty metadata, UNKNOWN customer: closed at Stripe (QA-72), nothing written; 500 until the close succeeds', async () => {
+  // The harness's subscriptions.cancel fake (QA-53) refuses first.
+  h.harness.cancelErrors = { sub_test_1: Object.assign(new Error('Stripe unavailable'), { type: 'StripeAPIError', statusCode: 500 }) };
   const restore = silence();
   let res;
   try {
     res = await deliver(route, envelope('customer.subscription.created',
       subscriptionFixture({ customer: 'cus_stranger' })));
   } finally { restore(); }
-  assert.equal(res.status, 500, 'must not ack a payment we cannot attribute');
+  assert.equal(res.status, 500, 'a close that did not happen must not be acked');
+  assert.equal(state.subscriptions.length, 0);
+  assert.equal(state.entitlements.length, 0);
+
+  h.harness.cancelErrors = {};
+  const r2 = silence();
+  try {
+    res = await deliver(route, envelope('customer.subscription.created',
+      subscriptionFixture({ customer: 'cus_stranger' })));
+  } finally { r2(); }
+  assert.equal(res.status, 200);
+  const cancels = h.calls.filter((c) => c.api === 'subscriptions.cancel');
+  assert.equal(cancels.length, 2, 'refused once, then cancelled');
+  assert.equal(cancels[1].params.cancellation_details.comment, 'stem-loops QA-72: account no longer exists');
+  assert.equal(h.subs.sub_test_1.status, 'canceled');
   assert.equal(state.subscriptions.length, 0);
   assert.equal(state.entitlements.length, 0);
 });

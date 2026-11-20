@@ -147,10 +147,10 @@ test('L-4: resource_missing because the object exists in the OTHER mode is a har
   assert.equal(h.mod.isStripeGone(stripeErr('boom', { statusCode: 500 })), false);
 });
 
-test('deadline: no call is started that could end after it (StripeTimeBudgetError, nothing sent)', async () => {
+test('deadline: no call is started that could end after it (StripeDeadlineError, nothing sent)', async () => {
   await assert.rejects(
     h.provider.expireOpenCheckoutSessions('cus_1', Date.now() + 11_000),
-    (e) => e.name === 'StripeTimeBudgetError',
+    (e) => e.name === 'StripeDeadlineError',
   );
   assert.equal(calls('checkout.sessions.list').length, 0);
   // Enough for the list, not for an expire after it.
@@ -163,7 +163,7 @@ test('deadline: no call is started that could end after it (StripeTimeBudgetErro
   h.mod._resetStripeClientForTests();
   await assert.rejects(
     h.provider.expireOpenCheckoutSessions('cus_1', Date.now() + 12_030),
-    (e) => e.name === 'StripeTimeBudgetError' && /expire/.test(e.message),
+    (e) => e.name === 'StripeDeadlineError' && /expire/.test(e.message),
   );
   assert.equal(calls('checkout.sessions.expire').length, 0);
 });
@@ -203,4 +203,15 @@ test('real stripe-node: the expire POST carries its idempotency key on the wire 
   assert.ok(post, 'no POST reached the transport');
   assert.match(post.path, /^\/v1\/checkout\/sessions\/cs_[ab]\/expire$/);
   assert.equal(post.timeout, 6000);
+});
+
+test('L-4 on the QA-53 cancel step: a DB subscription id "missing" because it exists in the OTHER mode rejects (never "already over")', async () => {
+  h.harness.retrieveErrors = {
+    sub_db: stripeErr("No such subscription: 'sub_db'; a similar object exists in live mode, but a test mode key was used to make this request.",
+      { code: 'resource_missing', statusCode: 404 }),
+  };
+  await assert.rejects(h.provider.cancelAllForAccountDeletion(['sub_db'], null, FAR()), /live mode/);
+  h.harness.retrieveErrors = { sub_db: stripeErr('No such subscription', { code: 'resource_missing', statusCode: 404 }) };
+  const r = await h.provider.cancelAllForAccountDeletion(['sub_db'], null, FAR());
+  assert.deepEqual(r.alreadyOver, ['sub_db'], 'a plain resource_missing still counts as over');
 });

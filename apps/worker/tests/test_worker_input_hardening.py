@@ -11,11 +11,14 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
-from worker import pipeline
+from worker import job_failure, pipeline
 from worker.downloader import ytdlp_client
 from worker.errors import InternalError, LinkUnmeasurableError, UploadInvalidError
 
@@ -360,3 +363,108 @@ def test_redirect_hops_share_the_one_stem_deadline(monkeypatch):
     assert _time.monotonic() - t0 < 1.0
     assert timeouts and all(t <= 0.3 for t in timeouts), timeouts
     assert timeouts == sorted(timeouts, reverse=True), "each hop gets only what is left"
+
+
+def test_more_than_three_redirects_fail_the_stem(monkeypatch):
+    """#300 review R3-5 (QA-54): the hand-followed chain stops at STEM_MAX_REDIRECTS (3).
+    Every hop here is on the allow-list, so only the cap can end it: 4 redirects fail the
+    job after exactly 4 requests, and are never retried as a transient drop."""
+    assert pipeline.STEM_MAX_REDIRECTS == 3
+    calls: list[str] = []
+
+    def stream(m, u, **k):
+        calls.append(u)
+        return _Resp(302, f"https://replicate.delivery/hop{len(calls)}.wav")
+
+    monkeypatch.setattr(pipeline.httpx, "stream", stream)
+    with pytest.raises(InternalError, match="more than 3 redirects"):
+        pipeline._fetch_stems(
+            {"drums": "https://replicate.delivery/a/drums.wav"}, [], pipeline.ALL_STEMS
+        )
+    assert len(calls) == 4, calls
+
+
+def test_exactly_three_redirects_are_still_followed(monkeypatch):
+    """The other side of the boundary: three in-list hops, then the body, succeeds."""
+    calls: list[str] = []
+
+    def stream(m, u, **k):
+        calls.append(u)
+        if len(calls) <= 3:
+            return _Resp(302, f"https://replicate.delivery/hop{len(calls)}.wav")
+        return _Resp()
+
+    monkeypatch.setattr(pipeline.httpx, "stream", stream)
+    paths = pipeline._fetch_stems(
+        {"drums": "https://replicate.delivery/a/drums.wav"}, [], pipeline.ALL_STEMS
+    )
+    assert set(paths) == {"drums"}
+    assert calls[-1] == "https://replicate.delivery/hop3.wav"
+
+
+# ---------------------------------------------- C-06: total-time cap, on a real socket
+class _Trickle(BaseHTTPRequestHandler):
+    """Promises 50 MB, then sends one byte every 50 ms: every read succeeds well inside any
+    per-read timeout, so only a TOTAL deadline can end it."""
+
+    def do_GET(self):  # noqa: N802
+        self.server.hits += 1  # type: ignore[attr-defined]
+        self.send_response(200)
+        self.send_header("Content-Length", str(50 * 1024 * 1024))
+        self.end_headers()
+        try:
+            while not self.server.stop.is_set():  # type: ignore[attr-defined]
+                self.wfile.write(b"\0")
+                self.wfile.flush()
+                time.sleep(0.05)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def log_message(self, *a):  # silence
+        pass
+
+
+@pytest.fixture
+def trickle_server():
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Trickle)
+    srv.stop = threading.Event()  # type: ignore[attr-defined]
+    srv.hits = 0  # type: ignore[attr-defined]
+    srv.daemon_threads = True
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    yield srv
+    srv.stop.set()  # type: ignore[attr-defined]
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_a_trickling_stem_download_hits_its_total_deadline(monkeypatch, trickle_server):
+    """#297's C-06 deadline on a REAL socket. Moved here from test_refund_reaped_jobs.py by
+    the #300 review (R3-1, QA-54): there it served http://127.0.0.1, which B-09's allow-list
+    refuses before any fetch, so it passed on the refusal and a deleted per-chunk deadline
+    check shipped green. The allow-list is widened to the loopback server for this test only,
+    and the test proves the server was reached and the failure is the BUDGET."""
+    monkeypatch.setenv("STEM_FETCH_DEADLINE_SEC", "1")
+    monkeypatch.setattr(pipeline, "STEM_URL_SCHEMES", ("http", "https"))
+    monkeypatch.setattr(pipeline, "STEM_URL_ALLOWED_HOSTS", ("127.0.0.1",))
+    url = f"http://127.0.0.1:{trickle_server.server_address[1]}/stem.wav"
+    box: dict = {}
+
+    def run():
+        try:
+            box["result"] = pipeline._fetch_stems({"drums": url}, ["drums"])
+        except BaseException as exc:  # noqa: BLE001
+            box["exc"] = exc
+
+    t = threading.Thread(target=run, daemon=True)
+    t0 = time.monotonic()
+    t.start()
+    t.join(timeout=15)
+    assert not t.is_alive(), "a trickling stem download was never cut off"
+    assert time.monotonic() - t0 < 5
+    assert trickle_server.hits >= 1, "the download never reached the server"
+    exc = box.get("exc")
+    assert isinstance(exc, InternalError), box
+    assert "budget" in str(exc) and "allow-list" not in str(exc), str(exc)
+    # INTERNAL_ERROR is our fault: the pipeline's _fail returns the credit.
+    assert exc.error_code in job_failure.OUR_FAULT_CODES

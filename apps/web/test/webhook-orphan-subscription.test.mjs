@@ -457,6 +457,6 @@ test('QA-72 budget arithmetic: four bounded calls fit the 50 s window inside max
   const { WEB } = await import('./helpers/billing-harness.mjs');
   const src = readFileSync(join(WEB, 'src/app/api/billing/webhook/route.ts'), 'utf8');
   assert.match(src, /export const maxDuration = 60;/);
-  assert.equal(h.mod.STRIPE_BOUNDED_CALL_WORST_MS, 12_000);
+  assert.equal(h.mod.STRIPE_CALL_WORST_MS, 12_000);
   assert.ok(50_000 + 2_000 < 60_000, 'the last call ends by 50 s, leaving room to answer');
 });

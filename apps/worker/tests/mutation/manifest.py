@@ -790,6 +790,71 @@ MUTANTS: tuple[Mutant, ...] = (
         "QA-63 _KlangioJobLedger.claim: no new paid Klangio request once the drain budget is "
         "spent (review F-3).",
     ),
+    # QA-53: account deletion cancels every subscription that can still bill.
+    Mutant(
+        "web_account_delete_status_allow_list",
+        "src/app/api/users/me/route.ts",
+        "AND provider = $2 AND status <> 'canceled'`",
+        "AND provider = $2 AND status IN ('active', 'trialing', 'past_due')`",
+        ("test/account-delete.test.mjs::DELETE /api/users/me — happy path",),
+        "QA-53: the deletion reads every subscription but canceled ones; the old allow-list "
+        "skipped paused and incomplete. Real-DB behaviour: "
+        "test_account_delete_subscription_lookup.py.",
+        suite="web",
+    ),
+    Mutant(
+        "web_account_delete_paused_counted_over",
+        "src/lib/billing/providers/stripe.ts",
+        "new Set(['canceled', 'incomplete_expired'])",
+        "new Set(['canceled', 'incomplete_expired', 'paused'])",
+        ("test/account-delete-stripe-cancel.test.mjs::paused (QA-53)",),
+        "QA-53: a paused subscription is cancelled on account deletion, not treated as over.",
+        suite="web",
+    ),
+    Mutant(
+        "web_account_delete_no_void_first_invoice",
+        "src/lib/billing/providers/stripe.ts",
+        "inv.status === 'open' && inv.billing_reason === 'subscription_create'",
+        "inv.status === 'never' && inv.billing_reason === 'subscription_create'",
+        ("test/account-delete-stripe-cancel.test.mjs::incomplete: cancels, then VOIDS",),
+        "QA-53: an incomplete subscription's open first invoice is voided, so it cannot be "
+        "paid after the account is gone.",
+        suite="web",
+    ),
+    Mutant(
+        "web_orphan_refunds_what_deletion_cancelled",
+        "src/lib/billing/providers/stripe.ts",
+        "      if (!result.ours) return result;\n",
+        "",
+        (
+            "test/webhook-orphan-subscription.test.mjs::QA-72: a subscription the ACCOUNT "
+            "DELETION cancelled",
+        ),
+        "QA-72: the webhook backstop never refunds a subscription it did not cancel itself "
+        "(one the account deletion ended was paid for a period the user had).",
+        suite="web",
+    ),
+    Mutant(
+        "web_orphan_refunds_twice",
+        "src/lib/billing/providers/stripe.ts",
+        "if (charge?.refunded === true) {",
+        "if (false) {",
+        ("test/webhook-orphan-subscription.test.mjs::QA-72: every redelivery is 200",),
+        "QA-72: a redelivery sees the charge already refunded and does not refund, alert or "
+        "audit again.",
+        suite="web",
+    ),
+    Mutant(
+        "web_account_delete_no_checkout_expiry",
+        "src/app/api/users/me/route.ts",
+        "const r = await provider.expireOpenCheckoutSessions(customerId, "
+        "t0 + CHECKOUT_EXPIRE_BUDGET_MS);",
+        "const r = { expired: [] as string[] };",
+        ("test/account-delete.test.mjs::QA-72: open checkouts are expired first",),
+        "QA-72: deletion expires the customer's open Checkout Sessions, so none can be "
+        "completed (and bill) after the account is gone.",
+        suite="web",
+    ),
 )
 
 

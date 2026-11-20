@@ -96,14 +96,43 @@ export async function loadStripeProvider() {
         'invoices.retrieve': c.invoices.retrieve.bind(c.invoices),
         'checkout.sessions.retrieve': c.checkout.sessions.retrieve.bind(c.checkout.sessions),
         'subscriptions.list': c.subscriptions.list.bind(c.subscriptions),
+        'subscriptions.cancel': c.subscriptions.cancel.bind(c.subscriptions),
+        'invoices.voidInvoice': c.invoices.voidInvoice.bind(c.invoices),
       };
-      // Checkout guard (decision 1A): the customer's subscription list.
-      // h.subsList is the page's data (default empty); h.subsListError throws.
+      // subscriptions.list serves both callers:
+      //   checkout guard (decision 1A): h.subsList is the page's data (default
+      //   empty); h.subsListError throws.
+      //   QA-53 (account deletion): h.listPages, one per call, or, with
+      //   h.listFromSubs set, h.subs for the customer; h.listError throws.
+      // QA-53: cancel flips h.subs[id] to 'canceled'
+      // (h.cancelErrors[id] throws instead; h.afterCancel[id] overrides the
+      // returned object); voidInvoice marks h.voided (h.voidError throws).
+      // h.passthroughApis: names sent through the real SDK one by one.
       c.subscriptions.list = async (params, ropts) => {
         h.calls.push({ api: 'subscriptions.list', params, ropts });
         if (h.passthrough) return real['subscriptions.list'](params, ropts);
         if (h.subsListError) throw h.subsListError;
-        return { object: 'list', data: h.subsList ?? [], has_more: false };
+        if (h.listError) throw h.listError;
+        if (h.listPages?.length) return h.listPages.shift();
+        const data = h.listFromSubs
+          ? Object.values(h.subs).filter((x) => x.customer === params.customer)
+          : h.subsList ?? [];
+        return { object: 'list', data, has_more: false };
+      };
+      c.subscriptions.cancel = async (id, params, ropts) => {
+        h.calls.push({ api: 'subscriptions.cancel', id, params, ropts });
+        if (h.passthrough || h.passthroughApis?.includes('subscriptions.cancel')) return real['subscriptions.cancel'](id, params, ropts);
+        if (h.cancelErrors?.[id]) throw h.cancelErrors[id];
+        if (!h.subs[id]) throw Object.assign(new Error('No such subscription'), { code: 'resource_missing', statusCode: 404 });
+        h.subs[id] = { ...h.subs[id], status: 'canceled', ...(h.afterCancel?.[id] ?? {}) };
+        return h.subs[id];
+      };
+      c.invoices.voidInvoice = async (id, params, ropts) => {
+        h.calls.push({ api: 'invoices.voidInvoice', id, params, ropts });
+        if (h.passthrough || h.passthroughApis?.includes('invoices.voidInvoice')) return real['invoices.voidInvoice'](id, params, ropts);
+        if (h.voidError) throw h.voidError;
+        (h.voided ??= []).push(id);
+        return { id, object: 'invoice', status: 'void' };
       };
       c.checkout.sessions.retrieve = async (id, params, ropts) => {
         h.calls.push({ api: 'checkout.sessions.retrieve', id, params, ropts });
@@ -123,6 +152,7 @@ export async function loadStripeProvider() {
       c.subscriptions.retrieve = async (id, params, ropts) => {
         h.calls.push({ api: 'subscriptions.retrieve', id, params, ropts });
         if (h.passthrough) return real['subscriptions.retrieve'](id, params, ropts);
+        if (h.retrieveErrors?.[id]) throw h.retrieveErrors[id];
         const snap = h.subs[id];
         const delay = h.retrieveDelays.length ? h.retrieveDelays.shift() : 0;
         if (delay) await new Promise((r) => setTimeout(r, delay));

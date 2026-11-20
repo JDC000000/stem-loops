@@ -4,6 +4,23 @@
 app = "stem-loops"
 primary_region = "iad"  # us-east, near the Supabase project; adjust to match DB region
 
+# GRACEFUL DRAIN (QA-63). Every restart -- `fly deploy`, `fly secrets set`, a config change --
+# stops this one Machine with `kill_signal`, waits `kill_timeout`, then SIGKILLs it. Before
+# this was set, the default 5 s (and uvicorn re-raising SIGINT as a KeyboardInterrupt) killed
+# the job in flight, and the reaper re-ran it ~5 min later, paying for download + separation
+# twice. Now the worker drains on the signal (src/worker/shutdown.py): it claims nothing new,
+# lets the current job finish within WORKER_DRAIN_SECONDS (default 270), else puts it back to
+# 'queued', and exits 0.
+#   • kill_timeout = 300 is Fly's documented MAXIMUM (fly.io/docs/blueprints/long-running-tasks:
+#     "The maximum is 300 seconds"). A typical job is 2-4 min, so most finish inside it.
+#   • The drain budget is kill_timeout minus a 30 s margin for the release + exit;
+#     tests/test_worker_drain.py reads THIS file and fails if the two stop fitting.
+#   • SIGTERM explicitly: Fly's own docs disagree on the default (SIGINT in the fly.toml
+#     reference, SIGTERM in the long-running-tasks guide); the worker drains on either.
+#   • Cost: a restart can now take up to 5 min while a job finishes. That is the point.
+kill_signal = "SIGTERM"
+kill_timeout = 300
+
 [build]
   dockerfile = "Dockerfile"
 

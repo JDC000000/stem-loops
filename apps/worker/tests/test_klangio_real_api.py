@@ -528,3 +528,38 @@ def test_throttle_is_thread_safe_unique_slots(monkeypatch: pytest.MonkeyPatch) -
     slots = sorted(round(w / 0.5) for w in waits)
     # 8 callers -> 7 waiters occupying distinct 0.5 s slots (first caller is free).
     assert slots == list(range(1, 8))
+
+
+# ---------------------------------------------------------------------------
+# Poll deadline default (Jon decision A, 2026-11-20): 600s -> 120s.
+# ---------------------------------------------------------------------------
+
+
+def test_poll_deadline_defaults_to_120s_when_env_unset(monkeypatch):
+    """The shipped default is 120s. Pinned so a revert to 600s is a visible, reviewed change.
+
+    Context: job f520692b waited the old full 600s on a Klangio job that never completed
+    (Sentry STEM-LOOPS-E). Every other recent job's whole extracting stage took 21-94s.
+    """
+    import importlib
+
+    monkeypatch.delenv("KLANGIO_POLL_DEADLINE_SEC", raising=False)
+    reloaded = importlib.reload(kg)
+    try:
+        assert reloaded.POLL_DEADLINE_SEC == 120.0
+    finally:
+        monkeypatch.undo()
+        importlib.reload(kg)
+
+
+def test_poll_deadline_env_override_still_wins(monkeypatch):
+    """Ops can raise (or lower) the deadline on Fly without a deploy."""
+    import importlib
+
+    monkeypatch.setenv("KLANGIO_POLL_DEADLINE_SEC", "300")
+    reloaded = importlib.reload(kg)
+    try:
+        assert reloaded.POLL_DEADLINE_SEC == 300.0
+    finally:
+        monkeypatch.undo()
+        importlib.reload(kg)

@@ -191,6 +191,14 @@ const TABLE = {
   },
 };
 
+// The read routes whose every response must carry Cache-Control: private, no-store (#300).
+const NO_STORE_ROUTES = new Set([
+  'GET /api/jobs/:id',
+  'GET /api/jobs/:id/stems',
+  'GET /api/jobs/:id/play-chords',
+  'GET /api/jobs/:id/loops',
+]);
+
 function arrange(jobKind, callerKind) {
   const caller = CALLERS[callerKind];
   globalThis.__rr = {
@@ -226,6 +234,16 @@ for (const [route, rows] of Object.entries(TABLE)) {
         if (expected[i] === 404) {
           assert.equal(res.body.error_code, 'NOT_FOUND', 'a denial must be the missing-job 404, not a 403');
           assert.equal(JSON.stringify(res.body).includes('signed'), false, 'a denial leaked a URL');
+        }
+        // #300 review R3-3 (QA-54): every answer of the four job READ routes is private,
+        // no-store, the ownership 404 included. A cached 404 or 200 at a shared proxy would
+        // outlive a demo flip or an ownership change; a cached owner view would leak it.
+        if (NO_STORE_ROUTES.has(route)) {
+          assert.equal(
+            res.headers?.['Cache-Control'],
+            'private, no-store',
+            `${route} ${jobKind} ${callerKind} (${res.status}) is cacheable`,
+          );
         }
         // Who wrote what: a GET on the read routes and the loops poll writes NOTHING (B-17).
         if (route.startsWith('GET')) {

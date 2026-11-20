@@ -94,6 +94,15 @@ export async function loadStripeProvider() {
         'subscriptions.retrieve': c.subscriptions.retrieve.bind(c.subscriptions),
         'invoices.retrieve': c.invoices.retrieve.bind(c.invoices),
         'checkout.sessions.retrieve': c.checkout.sessions.retrieve.bind(c.checkout.sessions),
+        'subscriptions.list': c.subscriptions.list.bind(c.subscriptions),
+      };
+      // Checkout guard (decision 1A): the customer's subscription list.
+      // h.subsList is the page's data (default empty); h.subsListError throws.
+      c.subscriptions.list = async (params, ropts) => {
+        h.calls.push({ api: 'subscriptions.list', params, ropts });
+        if (h.passthrough) return real['subscriptions.list'](params, ropts);
+        if (h.subsListError) throw h.subsListError;
+        return { object: 'list', data: h.subsList ?? [], has_more: false };
       };
       c.checkout.sessions.retrieve = async (id, params, ropts) => {
         h.calls.push({ api: 'checkout.sessions.retrieve', id, params, ropts });

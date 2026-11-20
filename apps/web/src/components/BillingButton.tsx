@@ -16,10 +16,15 @@ type Props = {
 export default function BillingButton({ label, endpoint, body, returnTo, primary = true }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Decision 1A: the server refused a plan checkout because a subscription is
+  // live (409 PLAN_ALREADY_ACTIVE). Its sentence is shown as sent, with a link
+  // to where the plan is managed, instead of the generic "unavailable" line.
+  const [manageUrl, setManageUrl] = useState<string | null>(null);
 
   async function go() {
     setBusy(true);
     setError(null);
+    setManageUrl(null);
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -29,6 +34,15 @@ export default function BillingButton({ label, endpoint, body, returnTo, primary
       if (res.status === 401) {
         window.location.href = `/login?return_to=${encodeURIComponent(returnTo)}`;
         return;
+      }
+      if (res.status === 409) {
+        const j = (await res.json().catch(() => ({}))) as { code?: string; error?: string; manage_url?: string };
+        if (j.code === 'PLAN_ALREADY_ACTIVE' && j.error) {
+          setError(j.error);
+          setManageUrl(j.manage_url === '/account' ? '/account' : null);
+          setBusy(false);
+          return;
+        }
       }
       if (!res.ok) throw new Error(String(res.status));
       const json = (await res.json()) as { checkout_url?: string; portal_url?: string };
@@ -51,7 +65,19 @@ export default function BillingButton({ label, endpoint, body, returnTo, primary
       >
         {busy ? 'Redirecting…' : label}
       </button>
-      {error && <p role="alert" style={{ color: 'var(--status-failed, #f66)', fontSize: 13, margin: '6px 0 0' }}>{error}</p>}
+      {error && (
+        <p role="alert" style={{ color: 'var(--status-failed, #f66)', fontSize: 13, margin: '6px 0 0' }}>
+          {error}
+          {manageUrl && (
+            <>
+              {' '}
+              <a href={manageUrl} style={{ display: 'inline-block', minHeight: 24, lineHeight: '24px', color: 'var(--text-primary)' }}>
+                Go to Account
+              </a>
+            </>
+          )}
+        </p>
+      )}
     </div>
   );
 }

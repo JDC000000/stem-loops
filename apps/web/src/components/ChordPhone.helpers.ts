@@ -639,6 +639,25 @@ export const SLOT_H_PX = 46;
 export const STACKED_SLOT_H_PX = 30;
 
 export const nameWidth = (text: string, px: number) => estimateStageLabelPx(text, px) * BOLD_FACTOR + 2 * SLOT_PAD_PX;
+/**
+ * QA-01: the smallest a chord button may be in EITHER direction (brand: tap
+ * targets >= 24px). A half-beat "F" needs only ~15.3px for its name, and the
+ * slot used to be exactly that wide. Every slot's width floor is now
+ * max(its name, this); heights are already >= STACKED_SLOT_H_PX (30).
+ *
+ * Why the floor is in the LAYOUT and not an invisible ::before hit box: slots
+ * sit side by side with a SLOT_GAP_PX gap, so a hit box wider than its slot
+ * would have to overlap a neighbour, and a tap there could open the wrong
+ * chord. Widening the visible slot keeps the drawn button and the hit area
+ * the same box, so they never overlap and what you see is what you tap.
+ * Beat alignment is unchanged in kind: slots were already proportional to
+ * their beats and then raised to fit their names (sideBySide); this only raises
+ * the floor, taking the few px from neighbours with room to spare. When a bar
+ * cannot give every chord 24px side by side it falls through to the same
+ * two-row / stacked layouts a crowded bar already uses.
+ */
+export const MIN_TAP_PX = 24;
+const slotNeed = (text: string) => Math.max(nameWidth(text, NAME_MIN_PX), MIN_TAP_PX);
 
 export interface SlotBox { runIndex: number; text: string; x: number; y: number; w: number; h: number; fontPx: number; wrap: boolean }
 export interface CellBox { cell: number; x: number; y: number; w: number; h: number; stacked: boolean; slots: SlotBox[] }
@@ -656,6 +675,28 @@ function sideBySide(widths: number[], shares: number[], inner: number): number[]
     const spare = w.map((x, i) => Math.max(0, x - need[i]));
     const spareSum = spare.reduce((a, b) => a + b, 0);
     w = w.map((x, i) => (x < need[i] ? need[i] : x - (spareSum > 0 ? (deficit * spare[i]) / spareSum : 0)));
+  }
+  // The loop above settles in a pass or two for real bars, but 8 passes are
+  // not a proof. If any slot is still under its need, solve it exactly: pin
+  // every slot whose proportional share is below its need to that need, and
+  // share what is left among the rest in proportion to time, repeating until
+  // nothing new is pinned (at most one pass per slot). Feasible because the
+  // needs fit `inner` (checked above). Deterministic and order-independent.
+  if (w.some((x, i) => x < need[i] - 1e-6)) {
+    const pinned = need.map(() => false);
+    for (let pass = 0; pass <= need.length; pass++) {
+      const freeShare = shares.reduce((a, s, i) => a + (pinned[i] ? 0 : s), 0);
+      const freeRoom = inner - need.reduce((a, n, i) => a + (pinned[i] ? n : 0), 0);
+      w = need.map((n, i) => (pinned[i] ? n : freeShare > 0 ? (shares[i] / freeShare) * freeRoom : freeRoom / Math.max(1, pinned.filter((p) => !p).length)));
+      let changed = false;
+      w.forEach((x, i) => {
+        if (!pinned[i] && x < need[i] - 1e-6) {
+          pinned[i] = true;
+          changed = true;
+        }
+      });
+      if (!changed) break;
+    }
   }
   return w;
 }
@@ -700,7 +741,7 @@ export function layoutLine(
       const t = texts(cell);
       const m = cell.slots.length;
       const inner = cellW - 2 * CELL_PAD_PX - SLOT_GAP_PX * (m - 1);
-      const need = t.map((s) => nameWidth(s, NAME_MIN_PX));
+      const need = t.map(slotNeed);
       const ws = sideBySide(need, cell.slots.map((s) => s.share), inner);
       const x0 = col * (cellW + CELL_GAP_PX);
       let box: CellBox;

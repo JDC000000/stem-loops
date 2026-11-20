@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { activeRunIndex, observationsToRuns } from '../ChordOverlay.helpers.ts';
 import {
   BEATS_PER_BAR,
+  MIN_TAP_PX,
   NAME_MIN_PX,
   showsBarTotal,
   beatInCell,
@@ -555,4 +556,84 @@ test('layoutLine: sequence mode lines have no bar-number strip', () => {
   const box = layoutLine(seq, RUNS, seq.lines[3], 304, -1);
   const barsBox = layoutLine(MODEL, RUNS, MODEL.lines[3], 304, -1);
   assert.ok(box.cells[0].slots[0].y < barsBox.cells[0].slots[0].y);
+});
+
+// ---------------------------------------------------------------------------
+// QA-01: every chord button is >= 24px to tap, and no two overlap
+// ---------------------------------------------------------------------------
+const QA01_PROG = [
+  [['C:maj', 4]],
+  [['A:min', 3.5], ['F:maj', 0.5]],
+  [['G:maj', 4]],
+  [['E:min', 2], ['C:maj', 1.5], ['G:maj', 0.5]],
+  [['A:min', 0.5], ['F:maj', 3.5]],
+  [['G:maj', 4]],
+  [['C:maj', 2], ['F:maj', 2]],
+  [['G:7', 4]],
+];
+const QA01 = song(Array.from({ length: 32 }, (_, k) => QA01_PROG[k % QA01_PROG.length]));
+const QA01_MODEL = buildPhoneModel(QA01.runs, QA01.grid, [], QA01.dur);
+
+test('QA-01: MIN_TAP_PX is the brand floor, and a half-beat "F" needs less than it for its name', () => {
+  assert.equal(MIN_TAP_PX, 24);
+  // The defect: the slot was exactly its name's width (15.3px in Chromium).
+  assert.ok(nameWidth('F', NAME_MIN_PX) < MIN_TAP_PX);
+});
+
+for (const w of [288, 296, 304, 328, 334, 358]) {
+  test(`QA-01 layoutLine @ ${w}px: half-beat chords get >= ${MIN_TAP_PX}px, slots never overlap, time order kept`, () => {
+    assert.equal(QA01_MODEL.mode, 'bars', `fell back: ${QA01_MODEL.reason}`);
+    let short = 0;
+    for (const line of QA01_MODEL.lines) {
+      for (const cur of [-1, ...line.cells.flatMap((ci) => QA01_MODEL.cells[ci].slots.map((s) => s.runIndex))]) {
+        const box = layoutLine(QA01_MODEL, QA01.runs, line, w, cur);
+        const all = box.cells.flatMap((cb) => cb.slots.map((sb) => ({ ...sb, cell: cb })));
+        for (const sb of all) {
+          const run = QA01.runs[sb.runIndex];
+          if (run.endSec - run.startSec < 0.75 * QA01.grid.beatSec) short++;
+          assert.ok(sb.w >= MIN_TAP_PX - 1e-6, `${sb.text} slot is ${sb.w.toFixed(2)}px wide @ ${w}px`);
+          assert.ok(sb.h >= MIN_TAP_PX, `${sb.text} slot is ${sb.h}px tall`);
+          assert.ok(sb.x >= sb.cell.x - 1e-6 && sb.x + sb.w <= sb.cell.x + sb.cell.w + 1e-6, `${sb.text} leaves its cell`);
+          assert.ok(sb.wrap || nameWidth(sb.text, sb.fontPx) <= sb.w + 1e-6, `${sb.text} does not fit`);
+        }
+        for (let i = 0; i < all.length; i++)
+          for (let j = i + 1; j < all.length; j++) {
+            const a = all[i];
+            const b = all[j];
+            const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+            const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+            assert.ok(!(ix > 1e-6 && iy > 1e-6), `${a.text} and ${b.text} overlap @ ${w}px`);
+          }
+        // Within a side-by-side cell the chords stay in time order, left to right.
+        for (const cb of box.cells) {
+          if (cb.stacked) continue;
+          for (let i = 1; i < cb.slots.length; i++) assert.ok(cb.slots[i].x > cb.slots[i - 1].x, 'slots out of time order');
+        }
+      }
+    }
+    assert.ok(short > 20, `only ${short} half-beat slots laid out`);
+  });
+}
+
+test('QA-01: the floor costs a half-beat chord its proportion only, not its honesty', () => {
+  // A|3.5 F|0.5: F is raised to the 24px floor, A keeps the rest and stays
+  // the wider; the bar's own width is unchanged.
+  const ci = QA01_MODEL.cells.findIndex((c) => c.slots.map((s) => QA01.runs[s.runIndex].label).join() === 'A:min,F:maj' && c.slots[0].share > 0.5);
+  assert.ok(ci >= 0);
+  const box = layoutLine(QA01_MODEL, QA01.runs, QA01_MODEL.lines[lineIndexOfCell(QA01_MODEL, ci)], 328, -1);
+  const cb = box.cells.find((c) => c.cell === ci);
+  const [a, f] = cb.slots;
+  assert.ok(Math.abs(f.w - MIN_TAP_PX) < 0.5, `F is ${f.w}px, want ~${MIN_TAP_PX}`);
+  assert.ok(a.w > 2 * f.w);
+  assert.ok(f.x + f.w <= cb.x + cb.w + 1e-6);
+});
+
+test('QA-01: a bar too crowded for 24px each side by side falls to two rows or stacks, never below 24px', () => {
+  const crowd = song(Array.from({ length: 16 }, (_, k) => (k % 4 === 1 ? [['C:maj', 0.5], ['F:maj', 0.5], ['G:maj', 0.5], ['E:min', 0.5], ['A:min', 2]] : [[['C:maj', 'G:maj', 'A:min', 'F:maj'][k % 4], 4]])));
+  const m = buildPhoneModel(crowd.runs, crowd.grid, [], crowd.dur);
+  for (const line of m.lines)
+    for (const w of [288, 328]) {
+      const box = layoutLine(m, crowd.runs, line, w, -1);
+      for (const cb of box.cells) for (const sb of cb.slots) assert.ok(sb.w >= MIN_TAP_PX - 1e-6 && sb.h >= MIN_TAP_PX, `${sb.text} ${sb.w}x${sb.h} @ ${w}px (${m.mode})`);
+    }
 });

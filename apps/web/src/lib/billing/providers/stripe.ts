@@ -201,6 +201,17 @@ export class BillingProviderUnavailableError extends Error {
 // the delivery (it retries for days), which is the right retry layer.
 export const STRIPE_WEBHOOK_READ_OPTIONS = Object.freeze({ timeout: 6000, maxNetworkRetries: 0 });
 
+// Checkout guard (decision 1A): the one Stripe READ on the checkout request path,
+// bounded the same way (#298): 5 s per attempt, no configured retries, so at
+// most 2 x 5 s = 10 s with stripe-node's forced reset retry. A timeout throws;
+// the checkout route answers 502 CHECKOUT_FAILED (never "clear").
+export const STRIPE_CHECKOUT_READ_OPTIONS = Object.freeze({ timeout: 5000, maxNetworkRetries: 0 });
+
+// Stripe statuses that can never bill again. Anything else, including a status
+// this SDK does not name yet, counts as live for the checkout guard (fail safe:
+// a refused checkout is recoverable, a second subscription is a double charge).
+const TERMINAL_STRIPE_STATUSES: ReadonlySet<string> = new Set(['canceled', 'incomplete_expired']);
+
 // Review I-1: the event's `livemode` disagrees with the API key's mode (a
 // live endpoint secret with a test key, or the reverse). Thrown after the
 // signature check; the route answers 500 and alerts. Matched by name.
@@ -457,6 +468,20 @@ export class StripeProvider implements BillingProvider {
   async getSubscription(subscriptionId: string): Promise<BillingSubscription> {
     const sub = await getClient().subscriptions.retrieve(subscriptionId, {}, { ...STRIPE_WEBHOOK_READ_OPTIONS });
     return subFromStripe(sub);
+  }
+
+  async listLiveSubscriptions(customerId: string): Promise<Array<{ id: string; status: string }>> {
+    // No `status` param: Stripe then lists every subscription that is not
+    // canceled, newest first. 10 is far above any real customer's count of
+    // non-canceled subscriptions; the newest (the one a just-completed
+    // Checkout made) is always on the first page.
+    const page = await getClient().subscriptions.list(
+      { customer: customerId, limit: 10 },
+      { ...STRIPE_CHECKOUT_READ_OPTIONS },
+    );
+    return page.data
+      .filter((s) => !TERMINAL_STRIPE_STATUSES.has(s.status))
+      .map((s) => ({ id: s.id, status: s.status }));
   }
 
   async getInvoiceState(invoiceId: string): Promise<{ status: string; amountRemaining: number }> {

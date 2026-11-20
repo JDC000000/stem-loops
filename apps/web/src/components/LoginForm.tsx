@@ -8,6 +8,7 @@ import { PASSWORD_MIN_LENGTH, PASSWORD_RULE_TEXT, suggestEmailFix, validatePassw
 import { PasswordField } from '@/components/PasswordField';
 import { appCopyError, authErrorMessage, loginErrorMessage } from '@/lib/auth/login-errors';
 import { sendMagicLink } from '@/lib/auth/magic-link';
+import { navigationGrace, trackEvent } from '@/lib/analytics';
 import { fieldStyle, buttonBase, primaryButton, secondaryButton, secondaryEmphasisButton, textButton } from '@/lib/ui/form-styles';
 
 type Mode = 'signin' | 'signup' | 'reset';
@@ -138,7 +139,11 @@ export default function LoginForm({
             signIn: json.sign_in === true,
           });
         }
+        // 2A: the account exists now (confirmed or not). No props: nothing about who.
+        trackEvent('signup', {});
         if (json.needs_confirmation) return 'Check your email to confirm your account.';
+        // Signed straight in: give `signup` a bounded moment (≤150 ms) before the navigation.
+        await navigationGrace();
       } else {
         const { error: err } = await supabase.auth.signInWithPassword({ email, password });
         if (err) throw err;

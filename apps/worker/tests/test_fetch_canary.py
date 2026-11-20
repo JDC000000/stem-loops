@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import socket
@@ -163,6 +164,72 @@ def test_tunnel_timeout_is_bounded_and_proxy_connect():
     assert time.monotonic() - t0 < 1.5
 
 
+def test_tunnel_credentials_are_percent_decoded_like_yt_dlp_does():
+    """Review R-5 (mutant R7): PROXY_URL percent-encodes reserved characters in the password.
+    Sending them still encoded would be a wrong password: a false proxy_auth every 15 min."""
+    fp = FakeProxy(b"HTTP/1.1 200 Connection established\r\n\r\n")
+    assert ytdlp_client.proxy_tunnel_probe(3, fp.url("some%40user:p%40ss%3Aw%2Fd")) == OK
+    fp.t.join(3)
+    auth = [ln for ln in fp.request.decode().split("\r\n") if ln.startswith("Proxy-Authorization")]
+    assert base64.b64decode(auth[0].split()[-1]).decode() == "some@user:p@ss:w/d"
+
+
+class HoldingProxy:
+    """A local 'proxy' that sends ``chunks`` (one every ``every`` s) and then keeps the
+    connection open until ``hold`` s have passed or the client goes away. Counts nothing
+    the client must not wait for."""
+
+    def __init__(self, chunks: list[bytes], every: float = 0.0, hold: float = 5.0):
+        self.chunks, self.every, self.hold = chunks, every, hold
+        self.srv = socket.socket()
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(1)
+        self.port = self.srv.getsockname()[1]
+        self.t = threading.Thread(target=self._serve, daemon=True)
+        self.t.start()
+
+    def _serve(self):
+        conn, _ = self.srv.accept()
+        with conn:
+            conn.settimeout(0.5)
+            with contextlib.suppress(OSError):
+                conn.recv(4096)
+            end = time.monotonic() + self.hold
+            try:
+                for chunk in self.chunks:
+                    if time.monotonic() >= end:
+                        break
+                    conn.sendall(chunk)
+                    time.sleep(self.every)
+                while time.monotonic() < end:
+                    time.sleep(0.05)
+            except OSError:
+                pass  # the client hung up: what we want
+        self.srv.close()
+
+    def url(self):
+        return f"http://u:p@127.0.0.1:{self.port}"
+
+
+def test_tunnel_deadline_is_total_not_per_read_against_a_trickling_proxy():
+    """QA-65 (review R-2): a proxy that sends one byte every 0.2 s and never a CRLF never
+    trips a per-read timeout of 1 s. The probe must still give up at ~1 s in TOTAL."""
+    tp = HoldingProxy([b"H"] * 200, every=0.2, hold=40)
+    t0 = time.monotonic()
+    assert ytdlp_client.proxy_tunnel_probe(1.0, tp.url()) == bad("proxy_connect")
+    assert time.monotonic() - t0 < 2.0
+
+
+def test_tunnel_reads_at_most_1kb_and_stops_there():
+    """Review R-5 (mutant R8): the read is capped at 1 KB. A proxy that sends 1 KB with no
+    CRLF and then holds the line gets an immediate answer, not a wait for the deadline."""
+    assert ytdlp_client._TUNNEL_READ_MAX == 1024
+    tp = HoldingProxy([b"x" * 1024], hold=10)
+    t0 = time.monotonic()
+    assert ytdlp_client.proxy_tunnel_probe(5.0, tp.url()) == bad("proxy_connect")
+    assert time.monotonic() - t0 < 2.0
+
+
 def test_tunnel_without_a_proxy_or_with_socks_does_not_apply(monkeypatch):
     monkeypatch.setattr(ytdlp_client, "PROXY_URL", "")
     assert ytdlp_client.proxy_tunnel_probe(1) is None
@@ -225,18 +292,29 @@ def test_full_probe_never_raises(monkeypatch):
 
 
 def test_timeout_kills_the_whole_process_group(tmp_path):
-    """Review m-7: a grandchild (yt-dlp's JS runtime) must not be orphaned on timeout."""
+    """Review m-7: a grandchild (yt-dlp's JS runtime) must not be orphaned on timeout.
+
+    QA-67 (flaky on CI): the child writes the pidfile atomically (tmp + os.replace), so it is
+    either absent or complete, never half-written; absent or empty means the child was killed
+    before it started the grandchild, so there is nothing that could have been orphaned; and
+    the last-resort kill tolerates the grandchild having exited by then."""
     pidfile = tmp_path / "grandchild.pid"
     script = (
-        "import subprocess, sys, time\n"
+        "import os, subprocess, sys, time\n"
         "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-        f"open({str(pidfile)!r}, 'w').write(str(p.pid))\n"
+        f"tmp = {str(pidfile)!r} + '.tmp'\n"
+        "with open(tmp, 'w') as f:\n"
+        "    f.write(str(p.pid))\n"
+        f"os.replace(tmp, {str(pidfile)!r})\n"
         "time.sleep(60)\n"
     )
     t0 = time.monotonic()
-    assert ytdlp_client._run_bounded([sys.executable, "-c", script], 1.5) is None
-    assert time.monotonic() - t0 < 10
-    gpid = int(pidfile.read_text())
+    assert ytdlp_client._run_bounded([sys.executable, "-c", script], 3) is None
+    assert time.monotonic() - t0 < 12
+    raw = pidfile.read_text().strip() if pidfile.exists() else ""
+    if not raw:
+        pytest.skip("the child was killed before it started a grandchild: nothing to orphan")
+    gpid = int(raw)
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         try:
@@ -252,7 +330,8 @@ def test_timeout_kills_the_whole_process_group(tmp_path):
             break
         time.sleep(0.1)
     else:
-        os.kill(gpid, 9)
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(gpid, 9)
         pytest.fail("grandchild survived the canary timeout")
 
 
@@ -273,8 +352,102 @@ def test_failure_alerts_once_per_outage_and_recovery_once(sentry, capsys):
     ]
     events = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line]
     names = [(e["level"], e["event"]) for e in events]
-    assert names.count(("ERROR", "fetch_canary_failed")) == 3
+    # QA-65 hysteresis: the first failure is below the threshold (WARN), then ERROR.
+    assert names.count(("WARN", "fetch_canary_failed")) == 1
+    assert names.count(("ERROR", "fetch_canary_failed")) == 2
     assert names.count(("INFO", "fetch_canary_recovered")) == 1
+
+
+# ------------------------------------------------------------------- hysteresis (QA-65)
+
+
+def test_a_single_proxy_blip_alerts_nothing(sentry, capsys):
+    """Production, 2026-11-19/20: "fetch canary failed: proxy (proxy_connect)" and "fetch
+    canary recovered (proxy)" 6 times each in ~32 h, every one a single failed check between
+    two good ones, while every real job succeeded. That pattern must page nothing."""
+    probe = seq(OK, bad("proxy_connect"), OK, bad("proxy_connect"), OK, bad("proxy_connect"), OK)
+    for _ in range(7):
+        state = fetch_canary.run_proxy_check(probe)
+    assert sentry == []
+    assert state["proxy"]["ok"] is True
+    events = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line]
+    names = [(e["level"], e["event"]) for e in events]
+    assert names.count(("WARN", "fetch_canary_failed")) == 3
+    assert ("ERROR", "fetch_canary_failed") not in names
+    assert ("INFO", "fetch_canary_recovered") not in names
+    assert names.count(("INFO", "fetch_canary_blip_cleared")) == 3
+
+
+def test_a_blip_still_shows_on_health_at_once(sentry):
+    state = fetch_canary.run_proxy_check(seq(bad("proxy_connect")))
+    assert sentry == []
+    assert state["ok"] is False and state["proxy"]["cause"] == "proxy_connect"
+
+
+def test_two_consecutive_proxy_failures_alert_once(sentry):
+    probe = seq(bad("proxy_connect"), bad("proxy_connect"), bad("proxy_connect"))
+    fetch_canary.run_proxy_check(probe)
+    assert sentry == []
+    fetch_canary.run_proxy_check(probe)
+    assert [(s["level"], s["fp"]) for s in sentry] == [("error", ["fetch-canary", "proxy_connect"])]
+    fetch_canary.run_proxy_check(probe)
+    assert len(sentry) == 1
+
+
+def test_the_streak_counts_failures_of_any_cause(sentry):
+    probe = seq(bad("proxy_auth"), bad("proxy_connect"))
+    fetch_canary.run_proxy_check(probe)
+    fetch_canary.run_proxy_check(probe)
+    assert [s["fp"][1] for s in sentry] == ["proxy_connect"]
+
+
+def test_a_success_resets_the_streak(sentry):
+    probe = seq(bad("proxy_auth"), OK, bad("proxy_auth"), OK)
+    for _ in range(4):
+        fetch_canary.run_proxy_check(probe)
+    assert sentry == []
+
+
+def test_a_blip_still_rearms_the_per_job_report(sentry):
+    assert fetch_alerts.report_proxy_failure("proxy_connect") is True
+    fetch_canary.run_proxy_check(seq(bad("proxy_connect")))
+    fetch_canary.run_proxy_check(seq(OK))
+    assert fetch_alerts.report_proxy_failure("proxy_connect") is True
+
+
+@pytest.mark.parametrize("value,first_alert_on", [("1", 1), ("3", 3), ("", 2), ("0", 2), ("x", 2)])
+def test_proxy_alert_threshold_from_env(sentry, monkeypatch, value, first_alert_on):
+    monkeypatch.setenv("FETCH_CANARY_PROXY_ALERT_AFTER", value)
+    probe = seq(*[bad("proxy_auth")] * 4)
+    for n in range(1, 5):
+        fetch_canary.run_proxy_check(probe)
+        assert len(sentry) == (1 if n >= first_alert_on else 0), n
+
+
+def test_the_full_check_alerts_on_its_first_failure_whatever_the_proxy_threshold(
+    sentry, monkeypatch
+):
+    """The full check runs every 12 h: waiting for a second failure would mean a day."""
+    monkeypatch.setenv("FETCH_CANARY_PROXY_ALERT_AFTER", "5")
+    fetch_canary.run_full_check(seq(bad("youtube_bot_check")))
+    assert [(s["level"], s["check"]) for s in sentry] == [("error", "youtube")]
+
+
+def test_the_recovery_event_is_never_an_error(sentry):
+    probe = seq(bad("proxy_auth"), bad("proxy_auth"), OK)
+    for _ in range(3):
+        fetch_canary.run_proxy_check(probe)
+    recovered = [s for s in sentry if s["fp"] == ["fetch-canary", "recovered"]]
+    assert len(recovered) == 1
+    assert recovered[0]["level"] in ("info", "warning")
+    assert fetch_canary.RECOVERY_LEVEL in ("info", "warning")
+
+
+def test_reset_state_clears_the_streak(sentry):
+    fetch_canary.run_proxy_check(seq(bad("proxy_auth")))
+    fetch_canary.reset_state()
+    fetch_canary.run_proxy_check(seq(bad("proxy_auth")))
+    assert sentry == []
 
 
 def test_a_change_of_cause_is_a_new_alert(sentry):

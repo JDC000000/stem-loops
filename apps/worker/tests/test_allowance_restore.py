@@ -18,7 +18,11 @@ INSERT and pins the worker's:
      not get a song;
   6. the "didn't count" sentence is appended to the stored message only when it is true;
   7. a database without migration 042's function leaves the failure (and credit refund)
-     working, with nothing restored.
+     working, with nothing restored;
+  8. (QA-66, #308 review L-2) the restore works as the RUNTIME role (SET ROLE stemloops_app:
+     CI connects as the owner, which would pass even with a broken grant), and anon /
+     authenticated hold no EXECUTE on restore_job_allowance (the PostgREST RPC path);
+  9. (QA-66, L-1) a restore error never blocks failing a link job.
 
 Local throwaway DB only (INSERTs into auth.users). Runs in CI; never against a shared DB.
 """
@@ -32,6 +36,7 @@ import uuid
 
 import psycopg
 import pytest
+from psycopg import sql
 
 from worker import consumer, job_failure, pipeline, reaper
 from worker.job_failure import (
@@ -47,7 +52,7 @@ if DB and not any(h in DB for h in ("127.0.0.1", "localhost")):
 
 EMAIL_PREFIX = "test-allowance-restore-"
 IP = "test-allowance-restore-ip"
-MSG = "Something went wrong on our end fetching this video. Try again in a few minutes."
+MSG = "Something went wrong on our end fetching this video. Try again later."
 USER_FAULT_CODES = [
     "DOWNLOAD_BLOCKED",
     "DOWNLOAD_TIMEOUT",
@@ -444,3 +449,117 @@ def test_without_migration_042_the_failure_still_commits_and_nothing_is_restored
     assert job_failure._restore_unmigrated_warned is True
     assert _used(conn, uid) == 1
     assert _call_restore(DB, jid) == [], "function is back (rolled back) and the job is not failed"
+
+
+# --------------------------------------------------------------------------- 8. grants (QA-66)
+RESTORE_FN = "public.restore_job_allowance(uuid, text[])"
+
+
+def _ensure_role(c, role: str) -> None:
+    """The CI database is Supabase-shaped (anon / authenticated / stemloops_app exist: 042
+    REVOKEs from them unconditionally). A missing one is created NOLOGIN, as
+    test_fetch_gates_restricted_role does, so the assertion is about the grant, not about
+    whether the role exists (a fresh role holds only PUBLIC's rights, and 042 revokes those)."""
+    if c.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone() is None:
+        c.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role)))
+    c.commit()
+
+
+def test_the_runtime_role_can_restore(conn):
+    """As stemloops_app (RLS on, no owner rights) the restore really runs and gives back."""
+    uid = _user(conn)
+    jid = _link_job(conn, uid)
+    conn.execute(
+        "UPDATE jobs SET status='failed', error_code='FETCH_PROXY_FAILED' WHERE id=%s", (jid,)
+    )
+    conn.commit()
+    conn.execute("SET ROLE stemloops_app")
+    try:
+        rows = conn.execute(
+            job_failure.RESTORE_SQL, {"job_id": jid, "our_fault_codes": list(OUR_FAULT_CODES)}
+        ).fetchall()
+        conn.commit()
+    finally:
+        conn.rollback()
+        conn.execute("RESET ROLE")
+    assert rows == [(True, False)]
+    assert _used(conn, uid) == 0
+    assert _debit(conn, jid) == (True, True, False)
+
+
+def test_the_runtime_role_restore_through_the_worker_helper(conn):
+    """The worker's own code path, on a connection running as stemloops_app."""
+    uid = _user(conn, trial_songs_used=0)
+    jid = _link_job(conn, uid, trial=True)
+    conn.execute("UPDATE jobs SET status='failed', error_code='INTERNAL_ERROR' WHERE id=%s", (jid,))
+    conn.commit()
+
+    async def run():
+        async with await psycopg.AsyncConnection.connect(DB) as c:  # type: ignore[arg-type]
+            await c.execute("SET ROLE stemloops_app")
+            got = await job_failure.restore_allowance_isolated(c, str(jid), stage="test")
+            await c.commit()
+            return got
+
+    assert asyncio.run(run()) == "trial"
+    assert _used(conn, uid) == 0 and _songs(conn, uid) == 0
+
+
+@pytest.mark.parametrize("role", ["anon", "authenticated"])
+def test_unprivileged_roles_cannot_execute_restore(conn, role):
+    _ensure_role(conn, role)
+    (allowed,) = conn.execute(
+        "SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, RESTORE_FN)
+    ).fetchone()
+    assert allowed is False, f"{role} can EXECUTE {RESTORE_FN}"
+    uid = _user(conn)
+    jid = _link_job(conn, uid)
+    conn.execute("UPDATE jobs SET status='failed', error_code='INTERNAL_ERROR' WHERE id=%s", (jid,))
+    conn.commit()
+    conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
+    try:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute(
+                "SELECT * FROM public.restore_job_allowance(%s::uuid, %s::text[])",
+                (jid, list(OUR_FAULT_CODES)),
+            )
+    finally:
+        conn.rollback()
+        conn.execute("RESET ROLE")
+    assert _used(conn, uid) == 1, "nothing was given back"
+
+
+def test_the_runtime_role_holds_execute(conn):
+    (allowed,) = conn.execute(
+        "SELECT has_function_privilege('stemloops_app', %s, 'EXECUTE')", (RESTORE_FN,)
+    ).fetchone()
+    assert allowed is True
+
+
+# --------------------------------------------------------------------------- 9. isolation (QA-66)
+def test_a_restore_error_never_blocks_the_reaper_failing_a_link_job(conn, monkeypatch):
+    working_sql = job_failure.RESTORE_SQL
+    monkeypatch.setattr(
+        job_failure,
+        "RESTORE_SQL",
+        "SELECT (1 / 0) > 0, false"
+        " WHERE %(job_id)s::uuid IS NOT NULL AND %(our_fault_codes)s::text[] IS NOT NULL",
+    )
+    uid = _user(conn)
+    jid = _link_job(
+        conn,
+        uid,
+        status="separating",
+        attempts=reaper.MAX_ATTEMPTS,
+        stale_s=reaper.STALE_SECONDS + 60,
+    )
+    asyncio.run(reaper.reap_stale_jobs())
+    status, code, message = _job(conn, jid)
+    assert (status, code) == ("failed", "INTERNAL_ERROR")
+    assert ALLOWANCE_RETURNED_SENTENCE not in (message or ""), "nothing was restored: no claim"
+    assert _used(conn, uid) == 1
+    # Once the restore works again, a later failure path still gives the unit back, once.
+    monkeypatch.setattr(job_failure, "RESTORE_SQL", working_sql)
+    _fail(jid, "INTERNAL_ERROR")
+    assert _used(conn, uid) == 0
+    assert _debit(conn, jid) == (True, True, False)

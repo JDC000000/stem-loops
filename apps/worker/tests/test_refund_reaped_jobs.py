@@ -721,3 +721,60 @@ def test_one_bad_refund_does_not_roll_back_the_rest_of_the_batch(conn, monkeypat
     assert _state(conn, bad) == ("failed", "INTERNAL_ERROR")
     assert _refunds(conn, bad) == ONE_REFUND
     assert _balance(conn, uid) == 20 - 3 + 3
+
+
+# --------------------------------------------------------------------------- QA-66 (#308 L-1)
+# A restore_job_allowance error that is NOT "function missing" (42883) used to propagate:
+# in the reaper it rolled back the job's per-job savepoint (fail AND credit refund), and in
+# fail_job's second transaction it rolled back the credit refund and was logged under the
+# misleading name credit_refund_failed. It is now isolated in its own savepoint and logged as
+# allowance_restore_failed. A broken RESTORE_SQL (division by zero, same parameters) stands in
+# for a persistent failure such as 42501.
+_BROKEN_RESTORE_SQL = (
+    "SELECT (1 / 0) > 0, false"
+    " WHERE %(job_id)s::uuid IS NOT NULL AND %(our_fault_codes)s::text[] IS NOT NULL"
+)
+
+
+def _events(capsys) -> list[str]:
+    import json
+
+    out = []
+    for line in capsys.readouterr().err.splitlines():
+        with contextlib.suppress(ValueError):
+            out.append(json.loads(line).get("event"))
+    return out
+
+
+def test_a_restore_error_in_the_reaper_never_blocks_the_failure_or_the_refund(
+    conn, monkeypatch, capsys
+):
+    monkeypatch.setattr(job_failure, "RESTORE_SQL", _BROKEN_RESTORE_SQL)
+    uid = _user(conn)
+    jid = _job(
+        conn, uid, "separating", attempts=reaper.MAX_ATTEMPTS, stale_s=reaper.STALE_SECONDS + 60
+    )
+    capsys.readouterr()
+    assert _reap()["failed"] >= 1
+    assert _state(conn, jid) == ("failed", "INTERNAL_ERROR"), "the restore error left it alive"
+    assert _refunds(conn, jid) == ONE_REFUND, "the restore error rolled back the credit refund"
+    assert _balance(conn, uid) == 20
+    events = _events(capsys)
+    assert "allowance_restore_failed" in events
+    assert "reaper_fail_refund_error" not in events
+
+
+def test_a_restore_error_in_fail_job_keeps_the_refund_and_is_named_for_what_it_is(
+    conn, monkeypatch, capsys
+):
+    monkeypatch.setattr(job_failure, "RESTORE_SQL", _BROKEN_RESTORE_SQL)
+    uid = _user(conn)
+    jid = _job(conn, uid, "separating")
+    capsys.readouterr()
+    assert asyncio.run(job_failure.fail_job(DB, str(jid), "INTERNAL_ERROR", "msg")) is True
+    assert _state(conn, jid) == ("failed", "INTERNAL_ERROR")
+    assert _refunds(conn, jid) == ONE_REFUND, "fail_job's 2nd transaction lost the refund"
+    assert _balance(conn, uid) == 20
+    events = _events(capsys)
+    assert events.count("allowance_restore_failed") == 2  # both transactions, each isolated
+    assert "credit_refund_failed" not in events

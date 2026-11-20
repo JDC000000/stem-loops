@@ -1,6 +1,6 @@
 """yt-dlp fallback client (T12) — server-managed cookies, never user-exposed.
 
-Captured stderr is passed through redact_secrets() before it is logged, so no
+Captured stderr is passed through redact_secrets() (via redact_tail) before it is logged, so no
 cookie/token material can leak (PRD §6.1). NOT wired into the live pipeline until
 the S1 bake-off passes.
 
@@ -28,6 +28,7 @@ import string
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from urllib.parse import unquote, urlsplit, urlunsplit
 
@@ -41,7 +42,7 @@ from ..errors import (
     FetchProxyFailedError,
     LiveStreamNotSupportedError,
 )
-from ..logger import log_structured, redact_secrets
+from ..logger import log_structured, redact_tail
 from ..titles import clean_title
 
 COOKIE_DIR = os.environ.get("YTDLP_COOKIE_DIR", "")
@@ -406,15 +407,28 @@ def proxy_tunnel_probe(timeout_s: float, proxy_url: str | None = None) -> Canary
         request = ("\r\n".join(lines) + "\r\n\r\n").encode()
     except Exception:  # noqa: BLE001 — a malformed PROXY_URL is a connect-class failure
         return CanaryResult(ok=False, cause=PROXY_CONNECT)
+    # ONE deadline for the whole probe (QA-65, review R-2): connect, TLS to an https proxy,
+    # send and every read. A per-call timeout let a proxy that trickles a byte at a time
+    # hold the canary thread for ~1024 x timeout_s.
+    deadline = time.monotonic() + timeout_s
+
+    def remaining() -> float:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("proxy tunnel probe deadline")
+        return left
+
     try:
-        with socket.create_connection((parts.hostname, port), timeout=timeout_s) as raw:
-            raw.settimeout(timeout_s)
+        with socket.create_connection((parts.hostname, port), timeout=remaining()) as raw:
+            raw.settimeout(remaining())
             sock = raw
             if scheme == "https":
                 sock = ssl.create_default_context().wrap_socket(raw, server_hostname=parts.hostname)
+            sock.settimeout(remaining())
             sock.sendall(request)
             buf = b""
             while b"\r\n" not in buf and len(buf) < _TUNNEL_READ_MAX:
+                sock.settimeout(remaining())
                 chunk = sock.recv(_TUNNEL_READ_MAX - len(buf))
                 if not chunk:
                     break
@@ -469,7 +483,9 @@ def fetch_audio_file(youtube_url: str) -> str:
         raise DownloadTimeoutError("yt-dlp timed out") from e
 
     if r.returncode != 0:
-        safe_err = redact_secrets((r.stderr or "")[-1000:])
+        # Redact BEFORE cutting (QA-65, review R-3): a cut that lands mid-password leaves a
+        # fragment no pattern can recognise.
+        safe_err = redact_tail(r.stderr or "", 1000)
         log_structured("ERROR", "ytdlp_failed", stderr=safe_err)
         proxy_cause = proxy_failure_cause(r.stderr, _video_id(youtube_url)) if proxy else None
         if proxy_cause:

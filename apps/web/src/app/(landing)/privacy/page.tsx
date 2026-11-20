@@ -142,6 +142,12 @@ export default function PrivacyPage() {
               <li>
                 <strong>Sentry</strong> receives error reports.
               </li>
+              {/* 2A: lib/analytics.ts (no cookies; URLs sent without query string; event props are a closed
+                  non-personal list). Pinned by test/legal-privacy-copy.test.mjs. */}
+              <li>
+                <strong>Vercel Web Analytics</strong> counts visits and page views, and a few actions such as playing a
+                demo song. It is anonymous and uses no cookies.
+              </li>
               <li>A proxy provider may be used to fetch audio from YouTube links.</li>
               <li>
                 <strong>YouTube</strong> serves the small picture shown next to a linked song in your library. Your

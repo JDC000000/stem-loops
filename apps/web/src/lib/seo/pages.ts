@@ -34,7 +34,7 @@ export const PUBLIC_PAGES: PublicPage[] = [
       : 'Answers about accounts, browsers and phones, how long a song takes, song links, and what happens to your files.',
     section: 'trust', lastModified: '2026-11-18', llms: true, published: true },
   { path: '/privacy', title: 'Privacy', description: 'What stem-loops stores, for how long, and who processes it.',
-    section: 'legal', lastModified: '2026-11-17', llms: true, published: true },
+    section: 'legal', lastModified: '2026-11-20', llms: true, published: true },
   { path: '/terms', title: 'Terms', description: 'The short terms for using stem-loops.',
     section: 'legal', lastModified: '2026-11-18', llms: false, published: true },
 ];

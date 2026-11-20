@@ -720,7 +720,7 @@ export interface PlayerViewProps {
   readonly musicalKey?: string | null;
   /** Artist or uploader, when known (P5 captures titles; until then usually absent). */
   readonly artist?: string | null;
-  /** The back arrow: the library when signed in, home when signed out. */
+  /** The back arrow: the Song library when signed in, home when signed out. */
   readonly back?: { readonly href: string; readonly label: string };
   /** Extra Song info lines (the trim note, when the song is deleted). */
   readonly songInfo?: readonly string[];

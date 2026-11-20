@@ -117,7 +117,7 @@ test('P1.1 header: back · the song title as THE h1 · "<BPM> BPM · <key>" with
   assert.equal((h.match(/<h1/g) || []).length, 1);
   assert.match(h, /<h1[^>]*data-testid="player-title"[^>]*>Lucky Ticket<\/h1>/);
   assert.match(h, /<span class="sr">Detected: <\/span>102 BPM · B♭ major/);
-  assert.match(h, /<a class="back" href="\/history" aria-label="Back to library">/);
+  assert.match(h, /<a class="back" href="\/history" aria-label="Back to song library">/);
   assert.match(h, /<button[^>]*aria-label="More: all chords, song info, download loops"[^>]*aria-expanded="false"/);
   assert.match(decode(ssr({ artist: 'The Royal Sundowners' })), /102 BPM · B♭ major<\/span> · <span>The Royal Sundowners<\/span>/);
 });
@@ -128,8 +128,8 @@ test('P1.1 header: BPM and key are hidden when null (no "null BPM", no empty sep
   assert.match(decode(ssr({ musicalKey: 'nonsense' })), /Detected: <\/span>102 BPM</);
 });
 
-test('the back link: "Back to library" signed in, "Back to home" signed out, never a compound label', () => {
-  assert.deepEqual(JobViewMod.backLink(true), { href: '/history', label: 'Back to library' });
+test('the back link: "Back to song library" signed in, "Back to home" signed out, never a compound label', () => {
+  assert.deepEqual(JobViewMod.backLink(true), { href: '/history', label: 'Back to song library' });
   assert.deepEqual(JobViewMod.backLink(false), { href: '/', label: 'Back to home' });
   for (const s of [true, false]) assert.doesNotMatch(JobViewMod.backLink(s).label, /\(|\/| or /);
   assert.match(decode(ssr({ back: JobViewMod.backLink(false) })), /href="\/" aria-label="Back to home"/);

@@ -65,6 +65,7 @@ from .fetch_alerts import report_proxy_failure
 from .job_failure import OUR_FAULT_CODES, JobNoLongerActive, fail_job
 from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
+from .shutdown import abandoned as _drain_abandoned
 from .storage.r2_uploader import (
     download_object,
     loop_r2_key,
@@ -831,6 +832,19 @@ def retain_stems(job_id, stem_paths) -> dict:
     played: list[str] = []
     downloadable: list[str] = []
     for name, path in sorted(stem_paths.items()):
+        # QA-63: this runs in a worker thread, which a drain cannot cancel. Once the drain
+        # budget is spent the job has been put back in the queue and its scratch dirs are
+        # being deleted under us, so every remaining stem would "go missing" and be reported
+        # to Sentry as a retention defect. Stop instead; the rerun uploads all six again.
+        if _drain_abandoned():
+            log_structured("WARN", "stems_retain_abandoned_for_drain", job_id=job_id)
+            return {
+                "play": played,
+                "download": downloadable,
+                "expected": list(ALL_STEMS),
+                "complete": False,
+                "abandoned": True,
+            }
         if name not in ALL_STEMS or not path or not os.path.exists(path):
             continue
         opus = _encode_stem_opus(path, enc_dir, name, job_id=job_id)
@@ -867,6 +881,9 @@ def retain_stems(job_id, stem_paths) -> dict:
         "expected": list(ALL_STEMS),
         "complete": len(played) == len(ALL_STEMS),
     }
+    if _drain_abandoned():  # QA-63: the last stem's files were removed mid-loop by the drain
+        log_structured("WARN", "stems_retain_abandoned_for_drain", job_id=job_id)
+        return {**report, "complete": False, "abandoned": True}
     log_structured("INFO", "stems_retained", job_id=job_id, **report)
     # A short playback set means the mixer cannot present this song properly. Make it
     # visible where someone actually looks, not only in a log line nobody greps.
@@ -1111,6 +1128,14 @@ def _write_chords_tombstone(job_id: str, reason: str, **detail) -> None:
         )
 
 
+class _ChordSubmitAbandonedForDrain(Exception):
+    """QA-63 / review F-3: the drain budget was spent before a Klangio POST began. The job has
+    been (or is being) released to 'queued' and the process is about to exit, so no new paid
+    request may start: one cut off between `claim()` and `record()` leaves the `submitting`
+    sentinel behind and the rerun skips chords with the $0.20 spent. Raised BEFORE the
+    sentinel is written, so the rerun submits normally."""
+
+
 class _KlangioJobLedger:
     """``jobs.klangio_job_id`` as the durable at-most-once record of a Klangio spend.
 
@@ -1142,6 +1167,8 @@ class _KlangioJobLedger:
         return str(value)
 
     def claim(self) -> None:
+        if _drain_abandoned():  # before the sentinel and before the POST (review F-3)
+            raise _ChordSubmitAbandonedForDrain(self.job_id)
         with _db() as c:
             cur = c.execute(
                 "UPDATE jobs SET klangio_job_id=%s WHERE id=%s AND klangio_job_id IS NULL",
@@ -1285,6 +1312,10 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             stem=stem_name,
             r2_key=r2_key,
         )
+    except _ChordSubmitAbandonedForDrain:
+        # Not a failure and not a skip: the job is going back to the queue and the rerun does
+        # the chords. No tombstone (it would tell the user chords failed) and no Sentry event.
+        log_structured("WARN", "chords_abandoned_for_drain", job_id=job_id)
     except ChordQuotaExceeded as exc:
         # Klangio monthly cap (klangio._reserve_quota) or a 402: NO request was sent for this
         # track, so do not tell the user detection "failed for this track" -- that invites a

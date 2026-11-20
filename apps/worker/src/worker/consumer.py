@@ -37,7 +37,8 @@ from .job_failure import JobNoLongerActive, fail_job
 from .logger import log_structured
 from .loop_cutter import claim_and_cut, reap_stale_requests
 from .pipeline import run_pipeline
-from .reaper import reap_stale_jobs
+from .reaper import _NON_TERMINAL, reap_stale_jobs
+from .shutdown import drain
 from .spend_gate import brake_state
 from .storage.r2_lifecycle_guard import start_r2_lifecycle_check
 
@@ -114,6 +115,8 @@ async def claim_and_run() -> bool:
     nothing is spent, and the job resumes when the brake is released. This is the only place the
     brake is consulted; both input paths and both paid providers sit behind a claimed job.
     """
+    if drain.requested:  # QA-63: a draining worker claims nothing new
+        return False
     if (await brake_state(DATABASE_URL)).engaged:
         return False
     async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
@@ -135,19 +138,26 @@ async def claim_and_run() -> bool:
     log_structured("INFO", "job_claimed", job_id=job_id)
     budget = _job_wall_timeout()
     deadline = asyncio.timeout(budget)
+    drain_cap = drain.budget()
     try:
         # The deadline cancels the pipeline coroutine. A worker thread it was awaiting cannot
         # be killed and finishes (or times out) in the background, but the job is already
         # terminal and the queue moves on. CancelledError is not an Exception, so the
         # pipeline's own handlers do not run; the branch below fails and refunds the job.
-        async with deadline:
+        #
+        # DRAIN (QA-63). `drain_cap` is unbounded until SIGINT/SIGTERM, then bounds the rest of
+        # this job by the drain budget (shutdown.py). Checked FIRST below: a TimeoutError
+        # leaving it means "out of time to drain", not a failure, and the job is released.
+        async with deadline, drain_cap:
             await run_pipeline(job_id)
     except JobNoLongerActive:
         # The reaper (or a deadline) already made the job terminal and refunded it; this run
         # was a zombie. Nothing to fail, nothing to refund (review MF-1).
         log_structured("WARN", "job_abandoned_terminal", job_id=job_id)
     except TimeoutError as e:
-        if deadline.expired():
+        if drain_cap.expired():
+            await release_for_drain(job_id)
+        elif deadline.expired():
             log_structured("ERROR", "job_wall_timeout", job_id=job_id, budget_s=budget)
             await mark_failed(job_id, "INTERNAL_ERROR", JOB_WALL_TIMEOUT_MESSAGE)
             _restart_process()
@@ -162,6 +172,39 @@ async def claim_and_run() -> bool:
         err = InternalError()
         await mark_failed(job_id, err.error_code, err.user_message)
     return True
+
+
+# Put an interrupted job back in the queue (QA-63). Only a job still in flight is moved: one
+# the pipeline already finished ('done') or failed keeps its state. `attempts` is NOT bumped --
+# that counter is the reaper's poison budget, and our own restart is not the job's fault.
+# Everything the rerun meets is already safe to meet twice (reaper.py docstring): the
+# persisted Replicate prediction is re-attached, loop rows are ON CONFLICT, R2 keys are
+# deterministic and are overwritten.
+_RELEASE_SQL = """
+UPDATE jobs SET status='queued', updated_at=now()
+ WHERE id=%s AND status = ANY(%s)
+RETURNING id
+"""
+
+
+async def release_for_drain(job_id: str) -> bool:
+    """Return a job the drain could not finish to 'queued'. Returns True if it was released.
+
+    Never raises: if the release cannot be written (DB unreachable) the job stays where it is
+    and the reaper re-queues it after its stale window, exactly as before this change."""
+    try:
+        async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+            row = await (await conn.execute(_RELEASE_SQL, (job_id, _NON_TERMINAL))).fetchone()
+            await conn.commit()
+    except Exception as e:  # noqa: BLE001 — the reaper is the fallback
+        log_structured("ERROR", "job_drain_release_failed", job_id=job_id, error=str(e)[:200])
+        return False
+    log_structured(
+        "WARN",
+        "job_released_for_drain" if row else "job_drain_release_noop",
+        job_id=job_id,
+    )
+    return row is not None
 
 
 async def mark_failed(job_id: str, error_code: str, message: str) -> None:
@@ -228,6 +271,9 @@ async def poll_loop() -> None:
 
     Reaps orphaned jobs at startup (recover whatever a prior crash abandoned) and
     then periodically (catch a sibling worker's death when horizontally scaled).
+
+    Returns once a drain is requested (QA-63, shutdown.py) and the unit of work in hand --
+    a job, or a loop cut -- has finished or been released. It claims nothing after that.
     """
     log_structured("INFO", "consumer_started")
     # A hard crash/OOM can strand a job's scratch dirs (user audio) on local disk.
@@ -242,7 +288,7 @@ async def poll_loop() -> None:
     last_reap = time.monotonic()
     last_cleanup = time.monotonic()
     last_lifecycle_check = time.monotonic()
-    while True:
+    while not drain.requested:
         try:
             claimed = await claim_and_run()
         except Exception as e:  # noqa: BLE001 — DB blips must not kill the worker
@@ -252,12 +298,14 @@ async def poll_loop() -> None:
         # progress bar for, a loop cut is not. `claim_and_cut` isolates its own
         # failures (it closes the request 'failed' and returns True), so the only
         # thing that reaches here is a DB-level blip, handled like the one above.
-        if not claimed:
+        if not claimed and not drain.requested:
             try:
                 claimed = await claim_and_cut()
             except Exception as e:  # noqa: BLE001 — DB blips must not kill the worker
                 log_structured("ERROR", "loop_cutter_loop_error", error=str(e)[:200])
                 claimed = False
+        if drain.requested:
+            break
         if time.monotonic() - last_reap >= REAP_INTERVAL:
             await _safe_reap()
             last_reap = time.monotonic()
@@ -269,3 +317,4 @@ async def poll_loop() -> None:
             last_lifecycle_check = time.monotonic()
         if not claimed:
             await asyncio.sleep(POLL_INTERVAL)
+    log_structured("INFO", "consumer_drained", signal=drain.signal_name)

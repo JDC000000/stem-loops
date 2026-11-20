@@ -597,6 +597,115 @@ for (const vp of [[390, 844], [360, 800]]) {
       await ctx.close();
     }
   });
+
+  // QA-01: a half-beat "F" used to get a slot exactly as wide as its name,
+  // 15.3px in this Chromium. Every chord button in the harmony track (both
+  // lines) must be >= 24x24, no two buttons' boxes may overlap (so a tap can
+  // never land on the wrong chord), the point at each button's centre must hit
+  // THAT button, and the current chord is still the one heard, in --chord-now.
+  test(`phone chords @ ${vp[0]}x${vp[1]}: QA-01 half-beat chords are >= 24px to tap, hit areas never overlap`, async () => {
+    // Single-letter names are the narrowest the layout can draw; half a beat
+    // is the shortest slot the model keeps (MIN_SLOT_BEATS).
+    const prog = [
+      [['C:maj', 4]],
+      [['A:min', 3.5], ['F:maj', 0.5]],
+      [['G:maj', 4]],
+      [['E:min', 2], ['C:maj', 1.5], ['G:maj', 0.5]],
+      [['A:min', 0.5], ['F:maj', 3.5]],
+      [['G:maj', 4]],
+      [['C:maj', 2], ['F:maj', 2]],
+      [['G:7', 4]],
+    ];
+    const bars = Array.from({ length: 32 }, (_, k) => prog[k % prog.length]);
+    const { payload, grid, beat } = synth(bars, 100);
+    const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections: [], payload });
+    try {
+      const f = [];
+      let buttons = 0;
+      let short = 0;
+      let tapped = 0;
+      let curShort = 0;
+      const halfBeat = payload.segments.filter((s) => s.end_sec - s.start_sec < beat * 0.75);
+      if (halfBeat.length < 8) f.push(`fixture has only ${halfBeat.length} half-beat chords`);
+      // Every bar's middle, plus the middle of every half-beat chord (so a
+      // half-beat chord is the CURRENT one, drawn at its larger current size).
+      const positions = [...bars.map((_, k) => 0.5 + (k * 4 + 1.3) * beat), ...halfBeat.map((s) => (s.start_sec + s.end_sec) / 2)];
+      for (const t of positions) {
+        await moveTo(page, t);
+        const ctxs = `${vp.join('x')} QA-01 t=${t.toFixed(2)}`;
+        const m = await page.evaluate(measure);
+        if (m.mode !== 'bars') { f.push(`mode ${m.mode} (${m.reason}), want bars @ ${ctxs}`); break; }
+        checkSlots(m, f, ctxs);
+        const r = await page.evaluate(() => {
+          const track = document.querySelector('[data-testid="player-harmony-track"]');
+          const bs = [...track.querySelectorAll('button[data-testid^="phone-slot-"]')];
+          return bs.map((b) => {
+            const q = b.getBoundingClientRect();
+            const cx = q.left + q.width / 2;
+            const cy = q.top + q.height / 2;
+            const hit = document.elementFromPoint(cx, cy)?.closest('button');
+            return {
+              id: b.dataset.testid, title: b.title, l: q.left, t: q.top, r: q.right, b: q.bottom, w: q.width, h: q.height,
+              start: Number(b.dataset.startSec), end: Number(b.dataset.endSec),
+              current: b.getAttribute('aria-current') === 'true', color: getComputedStyle(b).color,
+              hitSelf: hit === b, inView: cx >= 0 && cx <= innerWidth && cy >= 0 && cy <= innerHeight,
+            };
+          });
+        });
+        buttons += r.length;
+        for (const b of r) {
+          if (b.end - b.start < beat * 0.75) short++;
+          if (b.w < 24 || b.h < 24) f.push(`${b.id} ${b.title} (${(b.end - b.start).toFixed(2)}s) is ${b.w.toFixed(1)}x${b.h.toFixed(1)}px < 24 @ ${ctxs}`);
+          if (b.inView && !b.hitSelf) f.push(`${b.id} ${b.title}: a tap at its centre does not hit it @ ${ctxs}`);
+        }
+        for (let i = 0; i < r.length; i++)
+          for (let j = i + 1; j < r.length; j++) {
+            const a = r[i];
+            const c = r[j];
+            const ix = Math.min(a.r, c.r) - Math.max(a.l, c.l);
+            const iy = Math.min(a.b, c.b) - Math.max(a.t, c.t);
+            if (ix > 0.01 && iy > 0.01) f.push(`${a.id} ${a.title} and ${c.id} ${c.title} overlap ${ix.toFixed(1)}x${iy.toFixed(1)}px @ ${ctxs}`);
+          }
+        // The current chord is the one heard, painted in --chord-now (#f59e0b).
+        const heard = payload.segments.find((s) => s.start_sec <= t && t < s.end_sec);
+        const cur = r.filter((b) => b.current);
+        if (cur.length !== 1) f.push(`${cur.length} current chords @ ${ctxs}`);
+        else {
+          if (cur[0].title !== heard.label || Math.abs(cur[0].start - heard.start_sec) > 1e-3) f.push(`current chord ${cur[0].title}@${cur[0].start}, heard ${heard.label}@${heard.start_sec} @ ${ctxs}`);
+          if (cur[0].color !== 'rgb(245, 158, 11)') f.push(`current chord colour ${cur[0].color}, want --chord-now rgb(245, 158, 11) @ ${ctxs}`);
+          if (heard.end_sec - heard.start_sec < beat * 0.75) curShort++;
+        }
+      }
+      // A real tap on the centre of half-beat buttons opens THAT chord.
+      for (const t of positions.slice(0, 8)) {
+        await moveTo(page, t);
+        const ids = await page.evaluate((bt) => [...document.querySelectorAll('[data-testid="player-harmony-track"] button[data-testid^="phone-slot-"]')]
+          .filter((b) => Number(b.dataset.endSec) - Number(b.dataset.startSec) < bt * 0.75)
+          .map((b) => b.dataset.testid), beat);
+        for (const id of ids) {
+          const el = page.locator(`[data-testid="${id}"]`).first();
+          const box = await el.boundingBox();
+          if (!box) continue;
+          const want = await el.getAttribute('aria-label');
+          await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+          await settle(page);
+          const head = await page.locator('[data-testid="chord-popover-header"]').getAttribute('aria-label').catch(() => null);
+          if (!head || !want.startsWith(head.replace(/^Change /, ''))) f.push(`tap on ${id} ("${want}") opened "${head}" @ ${vp.join('x')} t=${t.toFixed(2)}`);
+          else tapped++;
+          await page.locator('[data-testid="chord-popover"] button:has-text("Cancel")').click();
+          await settle(page);
+        }
+      }
+      if (short < 20) f.push(`only ${short} half-beat buttons measured`);
+      if (curShort < 4) f.push(`a half-beat chord was current only ${curShort} times`);
+      if (tapped < 4) f.push(`only ${tapped} half-beat buttons tapped`);
+      if (process.env.CHORD_GATE_LOG) console.log(`QA-01 ${vp.join('x')}: ${buttons} buttons, ${short} half-beat, ${tapped} tapped, ${curShort} half-beat current`);
+      assert.deepEqual(errors, []);
+      fail(f);
+    } finally {
+      await ctx.close();
+    }
+  });
 }
 
 

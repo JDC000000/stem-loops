@@ -17,6 +17,7 @@ import { WEB, loadStripeProvider, subscriptionFixture } from './helpers/billing-
 let h;
 beforeEach(async () => {
   h = await loadStripeProvider();
+  h.harness.listFromSubs = true; // subscriptions.list serves h.subs for the customer
 });
 
 const FAR = () => Date.now() + 60_000;
@@ -160,7 +161,7 @@ test('a list failure throws (deletion must not go ahead blind)', async () => {
   assert.equal(apis('subscriptions.cancel').length, 0);
 });
 
-test('every Stripe POST carries a fresh idempotency key and the bounded call options', async () => {
+test('every Stripe write carries a fresh idempotency key (Stripe ignores it on the DELETE cancel) and the bounded call options', async () => {
   h.subs.sub_inc = sub('sub_inc', 'incomplete', { latest_invoice: openFirstInvoice('in_first') });
   await h.provider.cancelAllForAccountDeletion(['sub_inc'], CUS, FAR());
   for (const c of h.calls) {

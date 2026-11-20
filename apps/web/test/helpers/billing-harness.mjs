@@ -98,17 +98,24 @@ export async function loadStripeProvider() {
         'subscriptions.cancel': c.subscriptions.cancel.bind(c.subscriptions),
         'invoices.voidInvoice': c.invoices.voidInvoice.bind(c.invoices),
       };
-      // QA-53 (account deletion). list returns h.subs for the customer (or
-      // h.listPages, one per call); cancel flips h.subs[id] to 'canceled'
+      // subscriptions.list serves both callers:
+      //   checkout guard (decision 1A): h.subsList is the page's data (default
+      //   empty); h.subsListError throws.
+      //   QA-53 (account deletion): h.listPages, one per call, or, with
+      //   h.listFromSubs set, h.subs for the customer; h.listError throws.
+      // QA-53: cancel flips h.subs[id] to 'canceled'
       // (h.cancelErrors[id] throws instead; h.afterCancel[id] overrides the
       // returned object); voidInvoice marks h.voided (h.voidError throws).
       // h.passthroughApis: names sent through the real SDK one by one.
       c.subscriptions.list = async (params, ropts) => {
         h.calls.push({ api: 'subscriptions.list', params, ropts });
         if (h.passthrough) return real['subscriptions.list'](params, ropts);
+        if (h.subsListError) throw h.subsListError;
         if (h.listError) throw h.listError;
         if (h.listPages?.length) return h.listPages.shift();
-        const data = Object.values(h.subs).filter((x) => x.customer === params.customer);
+        const data = h.listFromSubs
+          ? Object.values(h.subs).filter((x) => x.customer === params.customer)
+          : h.subsList ?? [];
         return { object: 'list', data, has_more: false };
       };
       c.subscriptions.cancel = async (id, params, ropts) => {

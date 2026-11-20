@@ -203,11 +203,18 @@ export class BillingProviderUnavailableError extends Error {
 // the delivery (it retries for days), which is the right retry layer.
 export const STRIPE_WEBHOOK_READ_OPTIONS = Object.freeze({ timeout: 6000, maxNetworkRetries: 0 });
 
-// QA-53: account deletion. Statuses after which a subscription can never bill
-// again. EVERY other status is cancelled: active, trialing, past_due, paused,
-// incomplete, unpaid, and any status a future API version adds (fail safe:
-// an unknown status is treated as live, never as over).
-const SUBSCRIPTION_OVER: ReadonlySet<string> = new Set(['canceled', 'incomplete_expired']);
+// Checkout guard (decision 1A): the one Stripe READ on the checkout request path,
+// bounded the same way (#298): 5 s per attempt, no configured retries, so at
+// most 2 x 5 s = 10 s with stripe-node's forced reset retry. A timeout throws;
+// the checkout route answers 502 CHECKOUT_FAILED (never "clear").
+export const STRIPE_CHECKOUT_READ_OPTIONS = Object.freeze({ timeout: 5000, maxNetworkRetries: 0 });
+
+// Stripe statuses that can never bill again. Anything else, including a status
+// this SDK does not name yet, counts as live for the checkout guard (fail safe:
+// a refused checkout is recoverable, a second subscription is a double charge),
+// and is cancelled by account deletion (QA-53: active, trialing, past_due,
+// paused, incomplete, unpaid, or a status a future API version adds).
+const TERMINAL_STRIPE_STATUSES: ReadonlySet<string> = new Set(['canceled', 'incomplete_expired']);
 
 // Worst case of ONE bounded Stripe call: STRIPE_WEBHOOK_READ_OPTIONS.timeout
 // per attempt, and stripe-node retries a reset socket once even with
@@ -511,6 +518,20 @@ export class StripeProvider implements BillingProvider {
     return subFromStripe(sub);
   }
 
+  async listLiveSubscriptions(customerId: string): Promise<Array<{ id: string; status: string }>> {
+    // No `status` param: Stripe then lists every subscription that is not
+    // canceled, newest first. 10 is far above any real customer's count of
+    // non-canceled subscriptions; the newest (the one a just-completed
+    // Checkout made) is always on the first page.
+    const page = await getClient().subscriptions.list(
+      { customer: customerId, limit: 10 },
+      { ...STRIPE_CHECKOUT_READ_OPTIONS },
+    );
+    return page.data
+      .filter((s) => !TERMINAL_STRIPE_STATUSES.has(s.status))
+      .map((s) => ({ id: s.id, status: s.status }));
+  }
+
   async getInvoiceState(invoiceId: string): Promise<{ status: string; amountRemaining: number }> {
     const inv = await getClient().invoices.retrieve(invoiceId, {}, { ...STRIPE_WEBHOOK_READ_OPTIONS });
     return { status: inv.status ?? 'unknown', amountRemaining: inv.amount_remaining ?? 0 };
@@ -550,8 +571,10 @@ export class StripeProvider implements BillingProvider {
   // Every call is bounded like the webhook's (PR #298): 6 s per attempt, no
   // SDK retries, so one call is at most STRIPE_CALL_WORST_MS; before each
   // call we check it can finish by `deadlineMs`, else StripeDeadlineError.
-  // Every POST carries an idempotency key, so the SDK's forced retry on a
-  // reset socket cannot apply it twice. Safe to call again after any
+  // The void (a POST) carries an idempotency key, so the SDK's forced retry
+  // on a reset socket cannot apply it twice. The cancel is a DELETE, where
+  // Stripe ignores idempotency keys (the key sent there has no effect); a
+  // repeated cancel fails, and the caller's retry re-reads the state. Safe to call again after any
   // failure: a cancelled subscription reads as over, and its still-open
   // first invoice is voided on the next call.
   async cancelAllForAccountDeletion(
@@ -614,7 +637,7 @@ export class StripeProvider implements BillingProvider {
 
     for (const found of Array.from(subs.values())) {
       let sub = found;
-      if (SUBSCRIPTION_OVER.has(sub.status)) {
+      if (TERMINAL_STRIPE_STATUSES.has(sub.status)) {
         result.alreadyOver.push(sub.id);
       } else {
         budget('subscriptions.cancel');

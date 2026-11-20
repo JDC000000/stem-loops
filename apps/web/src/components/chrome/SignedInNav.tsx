@@ -116,7 +116,7 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
   const items: Item[] = [
     { label: 'Play along', href: '/', match: (p) => p === '/' || p.startsWith('/jobs/'), product: 'Play along' },
     { label: 'Download loops', href: '/loops', match: (p) => p === '/loops' || p.startsWith('/loops/'), product: 'Download loops' },
-    { label: 'Library', href: '/history', match: (p) => p === '/history' },
+    { label: 'Song library', href: '/history', match: (p) => p === '/history' },
     // P6 (Jon, 2026-11-17): Pricing is in the bar, signed in and out, on every
     // page including the landing. It belongs to neither product, so it carries
     // no `product` tag.

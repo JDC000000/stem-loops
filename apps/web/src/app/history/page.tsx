@@ -49,7 +49,7 @@ export default function HistoryPage() {
   return (
     <main style={{ minHeight: '100dvh', padding: 24, maxWidth: 640, margin: '0 auto' }}>
       <h1 style={{ color: 'var(--text-primary)', fontSize: 'var(--text-2xl)' }}>
-        {signedIn ? 'Your library' : 'Library'}
+        {signedIn ? 'Your song library' : 'Song library'}
       </h1>
       <p style={{ color: 'var(--text-muted)', marginTop: 4 }} data-testid="history-retention-note">
         {signedIn ? LIBRARY_NOTE_SIGNED_IN : LIBRARY_NOTE_SIGNED_OUT}

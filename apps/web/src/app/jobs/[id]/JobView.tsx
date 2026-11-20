@@ -77,7 +77,7 @@ const actionButton: React.CSSProperties = {
  * label. The library is /history until Slice 2 renames it.
  */
 export function backLink(signedIn: boolean): { href: string; label: string } {
-  return signedIn ? { href: '/history', label: 'Back to library' } : { href: '/', label: 'Back to home' };
+  return signedIn ? { href: '/history', label: 'Back to song library' } : { href: '/', label: 'Back to home' };
 }
 
 /**

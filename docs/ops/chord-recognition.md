@@ -173,7 +173,7 @@ worst one extra request. The artifact does not record which stem was used, so on
 under a different `CHORDS_STEM` is reused as-is; a requeue happens minutes after the first
 run, and re-billing to refresh a chart is the worse trade.
 
-**Heartbeat.** Klangio polling may run `KLANGIO_POLL_DEADLINE_SEC` (600s) against the
+**Heartbeat.** Klangio polling may run `KLANGIO_POLL_DEADLINE_SEC` (120s default since #317; was 600s) against the
 reaper's 300s stale window, and nothing else bumped `jobs.updated_at` during the chord stage.
 The pipeline now heartbeats every `SEPARATION_HEARTBEAT_SECONDS` (20s) for the stage's
 duration, so a second machine's reaper (deploy overlap) cannot requeue a live job and
@@ -291,7 +291,7 @@ See `.env.example` for the canonical list. The vars this module reads:
 | `KLANGIO_BACKOFF_BASE_SEC` | `1` | Base for the exponential backoff. |
 | `KLANGIO_HTTP_TIMEOUT_SEC` | `30` | Per-call HTTP timeout. |
 | `KLANGIO_POLL_INTERVAL_SEC` | `2` | Delay between job-status polls. |
-| `KLANGIO_POLL_DEADLINE_SEC` | `600` | Total wall-clock cap for job completion. |
+| `KLANGIO_POLL_DEADLINE_SEC` | `120` | Total wall-clock cap for job completion (600 before #317). Not a hard cap: each status GET has its own retries. Read at import, so changing it on Fly restarts the machine — the #309 drain rules apply. |
 | `KLANGIO_MAX_AUDIO_SEC` | `300` | Provider's per-file max. |
 | `CHORD_EVAL_FETCH` | *(unset)* | `1` enables audio downloads in the eval harness. |
 

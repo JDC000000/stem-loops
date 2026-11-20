@@ -1,7 +1,7 @@
 """A Klangio request is $0.20 and has no idempotency key: one pipeline job may pay AT MOST ONCE.
 
 Covers the three re-bill paths (failed R2 upload, zero-segment result, SIGTERM/deploy during the
-up-to-600 s poll), the pre-POST marker, chord-input selection against the real htdemucs_6s stem
+up-to-KLANGIO_POLL_DEADLINE_SEC poll), the pre-POST marker, chord-input selection against the real htdemucs_6s stem
 set, and the chord stage's position in the pipeline. The billable unit is the Klangio POST, so
 the tests drive the REAL ``KlangioChordSource`` through ``httpx.MockTransport`` and count POSTs;
 ``recognize`` itself may legitimately run twice (the second call reattaches with free GETs).

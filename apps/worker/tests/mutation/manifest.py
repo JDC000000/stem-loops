@@ -790,6 +790,37 @@ MUTANTS: tuple[Mutant, ...] = (
         "QA-63 _KlangioJobLedger.claim: no new paid Klangio request once the drain budget is "
         "spent (review F-3).",
     ),
+    # QA-53: account deletion cancels every subscription that can still bill.
+    Mutant(
+        "web_account_delete_status_allow_list",
+        "src/app/api/users/me/route.ts",
+        "AND provider = $2 AND status <> 'canceled'`",
+        "AND provider = $2 AND status IN ('active', 'trialing', 'past_due')`",
+        ("test/account-delete.test.mjs::DELETE /api/users/me — happy path",),
+        "QA-53: the deletion reads every subscription but canceled ones; the old allow-list "
+        "skipped paused and incomplete. Real-DB behaviour: "
+        "test_account_delete_subscription_lookup.py.",
+        suite="web",
+    ),
+    Mutant(
+        "web_account_delete_paused_counted_over",
+        "src/lib/billing/providers/stripe.ts",
+        "new Set(['canceled', 'incomplete_expired'])",
+        "new Set(['canceled', 'incomplete_expired', 'paused'])",
+        ("test/account-delete-stripe-cancel.test.mjs::paused (QA-53)",),
+        "QA-53: a paused subscription is cancelled on account deletion, not treated as over.",
+        suite="web",
+    ),
+    Mutant(
+        "web_account_delete_no_void_first_invoice",
+        "src/lib/billing/providers/stripe.ts",
+        "inv.status === 'open' && inv.billing_reason === 'subscription_create'",
+        "inv.status === 'never' && inv.billing_reason === 'subscription_create'",
+        ("test/account-delete-stripe-cancel.test.mjs::incomplete: cancels, then VOIDS",),
+        "QA-53: an incomplete subscription's open first invoice is voided, so it cannot be "
+        "paid after the account is gone.",
+        suite="web",
+    ),
 )
 
 

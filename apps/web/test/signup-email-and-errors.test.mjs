@@ -277,3 +277,32 @@ test('form: a reply without sign_in shows no Sign in link', async () => {
     } finally { restoreFetch(); }
   });
 });
+
+// ── 2A: the `signup` analytics event ───────────────────────────────────────────────────────
+// Fired once, only after the route says ok, with NO props (nothing about who signed up).
+test('form: a created account fires one `signup` event with no props; a refusal fires none', async () => {
+  globalThis.__analyticsCalls = [];
+  try {
+    await withDom(async (dom) => {
+      try {
+        globalThis.__analyticsCalls.length = 0;
+        await signupWith(dom, 'alice@example.com', { ok: false, code: 'SIGNUP_WEAK_PASSWORD', error: errs.SIGNUP_WEAK_PASSWORD });
+        assert.deepEqual(globalThis.__analyticsCalls, [], 'no event for a refused signup');
+      } finally { restoreFetch(); }
+    });
+    await withDom(async (dom) => {
+      try {
+        globalThis.__analyticsCalls.length = 0;
+        process.env.NEXT_PUBLIC_HCAPTCHA_SITE_KEY = 'test-site-key';
+        globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true, needs_confirmation: true }) });
+        await dom.mount(React.createElement(Form, { initialMode: 'signup' }));
+        await typeInto(dom, dom.find('input[type="email"]'), 'alice@example.com');
+        await typeInto(dom, dom.find('input[autocomplete="new-password"]'), 'correcthorse1battery');
+        await dom.act(async () => { dom.find('form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })); });
+        await dom.act(() => new Promise((r) => setTimeout(r, 0)));
+        assert.deepEqual(globalThis.__analyticsCalls, [['signup', {}]]);
+        assert.doesNotMatch(JSON.stringify(globalThis.__analyticsCalls), /alice|example/, 'no address in the event');
+      } finally { restoreFetch(); }
+    });
+  } finally { delete globalThis.__analyticsCalls; }
+});

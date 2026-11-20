@@ -172,6 +172,17 @@
 .sin-bars::before { top: -6px; }
 .sin-bars::after  { top: 6px; }
 
+/* Narrow tablet band (#316). "Library" became "Song library", which widened the nav row
+   by about 34px. Measured in real Chromium with this sheet: at 810-840px (iPad Air /
+   10th-gen and iPad Pro 11" portrait) the bar went from one row to two on /loops. Trimming
+   item padding 14px -> 10px in this band only gives back 40px across the five items.
+   Targets stay >= 44x44 (min-height / min-width above are untouched). */
+@media (min-width: 760px) and (max-width: 899px) {
+  .sin-item {
+    padding: 0 10px;
+  }
+}
+
 /* ── Phone ──────────────────────────────────────────────── */
 @media (max-width: 759px) {
   .sin-toggle {

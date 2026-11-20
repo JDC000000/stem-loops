@@ -35,7 +35,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ONE_JOB_WORST_CASE_S,
   QUEUED_STALL_MARGIN,
-  QUEUED_STALL_MS,
+  QUEUED_STALL_MS, QUEUED_STALL_FLOOR_S,
   jobStall,
 } from '../src/lib/job-poll.ts';
 
@@ -97,7 +97,7 @@ const EXPECTED = {
   STEM_FETCH_DEADLINE_S: 540,
   STEM_FETCH_READ_TIMEOUT_S: 180,
   CHORD_MIX_TIMEOUT_S: 300,
-  KLANGIO_POLL_DEADLINE_S: 600,
+  KLANGIO_POLL_DEADLINE_S: 120,
   STEM_OPUS_ENCODE_TIMEOUT_S: 300,
 };
 
@@ -154,7 +154,7 @@ test('ONE_JOB_WORST_CASE_S is exactly the sum of the stages read out of the work
     v.KLANGIO_POLL_DEADLINE_S +
     v.STEM_OPUS_ENCODE_TIMEOUT_S * 6;
 
-  assert.equal(derived, 4442, 'the arithmetic in the job-poll.ts comment is stale');
+  assert.equal(derived, 3962, 'the arithmetic in the job-poll.ts comment is stale');
   assert.equal(
     ONE_JOB_WORST_CASE_S,
     derived,
@@ -169,7 +169,13 @@ test('QUEUED_STALL_MS is the derivation plus margin, and 90 minutes is what the 
     `the threshold (${QUEUED_STALL_MS} ms) is BELOW the worst case one job ahead can legitimately take ` +
       `(${ONE_JOB_WORST_CASE_S * 1000} ms): the panel would fire on healthy jobs, which is the defect it was re-derived to fix`,
   );
-  assert.equal(QUEUED_STALL_MS, Math.ceil((ONE_JOB_WORST_CASE_S * QUEUED_STALL_MARGIN) / 300) * 300 * 1000);
+  const rederived = Math.ceil((ONE_JOB_WORST_CASE_S * QUEUED_STALL_MARGIN) / 300) * 300 * 1000;
+  // #317 lowered the worst case, so the plain re-derivation is 80 min. The user-facing 90 is
+  // held by QUEUED_STALL_FLOOR_S on purpose (see job-poll.ts). If you remove the floor,
+  // that is a decision about copy users read -- make it, don't let it fall out of arithmetic.
+  assert.equal(rederived, 4_800_000, 'the re-derivation moved: re-read the floor note in job-poll.ts');
+  assert.equal(QUEUED_STALL_FLOOR_S, 5400);
+  assert.equal(QUEUED_STALL_MS, Math.max(QUEUED_STALL_FLOOR_S * 1000, rederived));
   assert.equal(QUEUED_STALL_MS, 5_400_000);
   assert.equal(Math.round(QUEUED_STALL_MS / 60_000), 90, 'the panel names this many minutes');
 });

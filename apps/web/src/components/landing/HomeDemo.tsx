@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType } from 'react';
 import { DEMO_SONGS, demoHref, type DemoSong } from '@/lib/demo-catalog';
 import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
+import { trackEvent } from '@/lib/analytics';
 import { Ic } from './Icons';
 
 type LayerComponent = ComponentType<{ jobId: string; onClose: () => void }>;
@@ -67,6 +68,8 @@ export function HomeDemo() {
       // A component goes into state through the updater form, or React would call it.
       setLayer(() => mod.default);
       setState(id ? { kind: 'open', jobId: id } : { kind: 'error' });
+      // 2A: the public catalog slug only; this poster is the no-account entry to the demo.
+      if (id) trackEvent('demo_play', { song: chosen.slug });
     } catch {
       setState({ kind: 'error' });
     }

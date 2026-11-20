@@ -60,7 +60,8 @@ LIFECYCLE_CHECK_INTERVAL = 86400
 # never go stale, so the reaper cannot catch a hang there either; this deadline does.
 # The default must never cut off a healthy job. It is the web's queued-stall threshold
 # (apps/web/src/lib/job-poll.ts QUEUED_STALL_MS, 90 min): the sum of every stage the worker
-# bounds with a constant, using the DEPLOYED REPLICATE_DEADLINE (fly.toml, 300 s), is 4442 s
+# bounds with a constant, using the DEPLOYED REPLICATE_DEADLINE (fly.toml, 300 s), is 3962 s
+# (4442 s before #317 cut the Klangio poll deadline; 90 min is now held by a floor, not the sum)
 # (ONE_JOB_WORST_CASE_S), plus margin for extract_and_tag and the R2 PUTs, which no constant
 # bounds. test/job-stall-derivation.test.mjs pins this default at or above that sum.
 JOB_WALL_TIMEOUT_DEFAULT = 5400.0

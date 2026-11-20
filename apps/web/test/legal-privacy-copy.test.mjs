@@ -37,6 +37,22 @@ test('privacy: each processor still has an entry in the "Who else handles it" li
   assertSays(assert, list, 'proxy provider', 'privacy processor list [downloader/ytdlp_client.py]');
 });
 
+test('privacy: Vercel Web Analytics is disclosed in the processor list, as one whole line (2A)', async () => {
+  const page = await renderPage(PRIVACY);
+  // src/components/SiteAnalytics.tsx loads it on every route; lib/analytics.ts is what makes
+  // "anonymous" and "no cookies" true (no cookies set by the script, URLs sent without the
+  // query string, event props a closed non-personal list). Scoped to the list and pinned
+  // whole, so dropping "uses no cookies" or the disclosure itself is a red test.
+  const list = section(page, 'Who else handles it', 'We don');
+  const line =
+    'Vercel Web Analytics counts visits and page views, and a few actions such as playing a demo song. ' +
+    'It is anonymous and uses no cookies.';
+  assert.match(list.textSpaced, phrase(line), 'privacy (tags\u2192space): the analytics line changed');
+  assert.match(list.textTight, phrase(line), 'privacy (tags\u2192nothing): the analytics line changed');
+  // The short version's promise stays true with it on.
+  assertSays(assert, page, 'No ads, no tracking cookies, nothing sold.', 'privacy');
+});
+
 test('privacy: the account-rule fragments are still present', async () => {
   const page = await renderPage(PRIVACY);
   assertSays(assert, page, 'You can start a job without an account', 'privacy');

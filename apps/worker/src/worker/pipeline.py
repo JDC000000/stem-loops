@@ -1773,8 +1773,10 @@ async def _run_pipeline(job_id: str) -> None:
         # DISABLE — useful for fixture / Gate-2 runs that must not call the
         # provider. Failures here NEVER fail the pipeline: chords are an optional
         # overlay feature; a missing play.chords.json degrades Y1 UI only.
-        # Klangio polling can run 600s+ (POLL_DEADLINE_SEC) against a 300s reaper stale
-        # window and nothing else bumps updated_at here, so heartbeat for the duration.
+        # Klangio polling runs up to POLL_DEADLINE_SEC (120s default, env-overridable and
+        # previously 600s) on top of loop extraction, and nothing else bumps updated_at
+        # here. Keep the heartbeat whatever the deadline: it is env-tunable, and the
+        # reaper's stale window is 300s, so heartbeat for the duration.
         # Otherwise a second machine's reaper (deploy overlap) requeues a LIVE job and
         # the rerun submits a second billed request before the first artifact exists.
         async with _stage_heartbeat(job_id):

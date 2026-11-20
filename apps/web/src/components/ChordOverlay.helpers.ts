@@ -689,6 +689,167 @@ export function layoutRows(
   return rows;
 }
 
+// ---------------------------------------------------------------------------
+// QA-68: every wrapped chip is at least CHIP_MIN_TAP_PX wide (the constants
+// live next to CHIP_GAP_PX, below, which they are built from)
+// ---------------------------------------------------------------------------
+
+
+/** Pool-adjacent-violators: the least-squares non-decreasing fit to `z`. */
+function isotonicFit(z: readonly number[]): number[] {
+  const sum: number[] = [];
+  const cnt: number[] = [];
+  for (const v of z) {
+    let s = v;
+    let n = 1;
+    while (sum.length > 0 && sum[sum.length - 1] / cnt[cnt.length - 1] > s / n) {
+      s += sum.pop()!;
+      n += cnt.pop()!;
+    }
+    sum.push(s);
+    cnt.push(n);
+  }
+  const out: number[] = [];
+  for (let i = 0; i < sum.length; i++) for (let j = 0; j < cnt[i]; j++) out.push(sum[i] / cnt[i]);
+  return out;
+}
+
+/**
+ * Re-place one row's chips so that every chip is at least `minBoxPx` wide.
+ * They stay inside [0, rowWidthPx], in time order, with no overlap. Each
+ * chord boundary moves as LITTLE as possible.
+ *
+ * The chord boundaries b_0 < b_1 < ... are the unknowns. A chip between two of
+ * them must be at least minBoxPx wide. A gap in the chord data must be at
+ * least 0 wide. Write C_i for the sum of those minimums up to boundary i, and
+ * y_i = B_i - C_i. Then every constraint becomes "y is non-decreasing and lies
+ * in [0, rowWidthPx - C_last]". The closest such y to b - C, in least squares,
+ * is the isotonic regression of b - C, clipped to that range. Clipping is
+ * exact here, because the bound is the same for every element. A row whose
+ * chips are all already wide enough is returned where it was, to float error.
+ *
+ * The caller must make sure the row CAN fit: count x minBoxPx <= rowWidthPx.
+ * fitRowsToTap does that.
+ */
+export function fitRowSegments(
+  segments: readonly RowSegment[],
+  rowWidthPx: number,
+  minBoxPx: number = CHIP_MIN_BOX_PX,
+): RowSegment[] {
+  if (segments.length === 0) return [];
+  const b: number[] = [];
+  const c: number[] = []; // c[i - 1] = minimum width between b[i - 1] and b[i]
+  const spans: [number, number][] = [];
+  for (const seg of segments) {
+    const left = seg.leftPx;
+    const right = left + Math.max(0, seg.widthPx);
+    if (b.length === 0) b.push(left);
+    else if (left > b[b.length - 1] + 1e-6) {
+      b.push(left); // a gap in the chord data: it may shrink, but not below 0
+      c.push(0);
+    }
+    const from = b.length - 1;
+    b.push(Math.max(right, b[from]));
+    c.push(minBoxPx);
+    spans.push([from, b.length - 1]);
+  }
+  const C: number[] = [0];
+  for (let i = 0; i < c.length; i++) C.push(C[i] + c[i]);
+  const hi = Math.max(0, rowWidthPx - C[C.length - 1]);
+  const y = isotonicFit(b.map((v, i) => v - C[i])).map((v) => Math.min(hi, Math.max(0, v)));
+  const B = y.map((v, i) => v + C[i]);
+  return segments.map((seg, i) => {
+    const [from, to] = spans[i];
+    return { ...seg, leftPx: B[from], widthPx: B[to] - B[from] };
+  });
+}
+
+/**
+ * The wrapped layout, made tappable: layoutRows' rows with every chip at least
+ * CHIP_MIN_TAP_PX wide when rendered (QA-68).
+ *
+ * WHY NOT MERGE SHORT CHORDS. The chart's job is to show every chord. "One
+ * primary chip per segment" (#212) is asserted by two real-Chromium gates. A
+ * merged chip would hide chords behind a second tap, and it would need a new
+ * picker. So no chord is merged or dropped. Two moves are used instead:
+ *
+ *  1. A row that can hold all its chips at the floor KEEPS ITS TIME SPAN.
+ *     Short chips widen, and the chord boundaries around them move by the
+ *     least-squares minimum (fitRowSegments). The longer neighbours give up
+ *     the space. Time order is kept and the row still starts at its own time.
+ *  2. A row with more chips than fit (a dense passage, or a zoomed-out view)
+ *     is SPLIT into consecutive rows ("stacked"). Each new row holds about the
+ *     same number of chips, starts at its first chip's own time, and shows
+ *     that time in the gutter. Then each row is fitted as in 1.
+ *
+ * What it costs, and this is the honest part: inside a row, width is no longer
+ * exactly proportional to time. A 0.3s chord can be drawn as wide as a 1s one.
+ * Order, row start times and which chord is which stay true. A split row also
+ * covers less than `rowSec`, so the hint says "up to Ns per row" whenever a
+ * split happened.
+ */
+export function fitRowsToTap(
+  rows: readonly TimelineRow[],
+  rowWidthPx: number,
+  pxPerSec: number,
+  minBoxPx: number = CHIP_MIN_BOX_PX,
+): TimelineRow[] {
+  const k = Math.max(1, Math.floor(rowWidthPx / minBoxPx));
+  const out: TimelineRow[] = [];
+  for (const row of rows) {
+    const segs = [...row.segments].sort((a, b) => a.leftPx - b.leftPx);
+    if (segs.length <= k) {
+      out.push({ startSec: row.startSec, segments: fitRowSegments(segs, rowWidthPx, minBoxPx) });
+      continue;
+    }
+    const parts = Math.ceil(segs.length / k);
+    let at = 0;
+    for (let p = 0; p < parts; p++) {
+      const take = Math.floor(segs.length / parts) + (p < segs.length % parts ? 1 : 0);
+      const group = segs.slice(at, at + take);
+      at += take;
+      const offsetPx = p === 0 ? 0 : group[0].leftPx;
+      out.push({
+        startSec: row.startSec + (pxPerSec > 0 ? offsetPx / pxPerSec : 0),
+        segments: fitRowSegments(
+          group.map((s) => ({ ...s, leftPx: s.leftPx - offsetPx })),
+          rowWidthPx,
+          minBoxPx,
+        ),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Painted px the wrapped layout's zoom ceiling may use: MAX_WRAP_ROWS rows,
+ * less the rows fitRowsToTap may ADD by splitting over-full rows.
+ *
+ * A split adds at most floor((n - 1) / k) rows to a row of n chips, with k chips
+ * per row. So it adds at most S / k rows over a song with S chips. S is at most
+ * runs + rows - 1, because every extra chip is a run cut by a row boundary.
+ * Reserving (runs + MAX_WRAP_ROWS) / k rows keeps the DOM at or under
+ * MAX_WRAP_ROWS rows. Without the reserve, a burst of very short chords at the
+ * ceiling rendered 801 rows (chord-default-zoom.test.mjs, "the DOM-row budget").
+ * The reserve binds only where the row budget binds, which is pathological data.
+ */
+export function wrapPaintBudgetPx(runCount: number, rowWidthPx: number): number {
+  const k = Math.max(1, Math.floor(rowWidthPx / CHIP_MIN_BOX_PX));
+  const reserve = Math.ceil((Math.max(0, runCount) + MAX_WRAP_ROWS) / k);
+  return Math.min(MAX_TIMELINE_PX, Math.max(1, MAX_WRAP_ROWS - reserve) * rowWidthPx);
+}
+
+/** layoutRows then fitRowsToTap: what the wrapped chart renders. */
+export function layoutTapRows(
+  runs: readonly Pick<OverlayRun, 'startSec' | 'endSec'>[],
+  rowSec: number,
+  pxPerSec: number,
+  rowWidthPx: number,
+): TimelineRow[] {
+  return fitRowsToTap(layoutRows(runs, rowSec, pxPerSec), rowWidthPx, pxPerSec);
+}
+
 /** Hue (0-330) per root so repeated harmony is visible at a glance when zoomed out. */
 export function rootHue(label: string): number | null {
   const f = encodeFactored(label);
@@ -795,6 +956,30 @@ export const CHIP_FULL_PAD_PX = 16;
 export const CHIP_TIGHT_PAD_PX = 2;
 /** renderChip takes 1px off every chip so neighbours stay visually distinct. */
 export const CHIP_GAP_PX = 1;
+
+/**
+ * The narrowest a chord chip in the wrapped chart ("See all chords" on a
+ * phone) may RENDER, in px. Brand floor for tap targets and WCAG 2.5.8.
+ *
+ * Every chip is a <button> that opens the chord editor, including the
+ * label-less "tick" chips. In time-proportional rows they were sized
+ * duration x zoom. Measured in real Chromium (#312 review, M-1): 19-21 of
+ * 63 chips were under 24px on the QA-01 song, and 107-137 of 154 on a dense
+ * song. Some were only 2-4px wide.
+ *
+ * This is the same number as `MIN_TAP_PX` in ChordPhone.helpers.ts, which
+ * #312 adds for the stage. #312 was not merged when this was written, so the
+ * floor is defined here. Fold the two into one constant once both have landed.
+ */
+export const CHIP_MIN_TAP_PX = 24;
+
+/**
+ * The row space one chip needs: the chip, its CHIP_GAP_PX, and 0.02px of
+ * slack. The slack matters. Chromium lays out in 1/64px units, so a box of
+ * 24.9999999px renders a 23.984px chip. 0.02px is more than one of those
+ * units, so float error can never pull a chip under the floor.
+ */
+export const CHIP_MIN_BOX_PX = CHIP_MIN_TAP_PX + CHIP_GAP_PX + 0.02;
 
 export const ADVANCE_16PX: Readonly<Record<string, number>> = Object.freeze({
   A: 11.3594, B: 10.4688, C: 11.6875, D: 11.5469, E: 9.625, F: 9.4531, G: 11.9375, N: 12.0625,

@@ -406,17 +406,46 @@ test('real lib/db.ts tx: lockAnonIp is held until COMMIT, so a second tx for the
   assert.ok(t1Done > 0 && t2Got >= t1Done, `second tx got the lock at ${t2Got}, first committed at ${t1Done}`);
 });
 
-test('real lib/db.ts tx: a throw inside the tx rolls back AND releases the lock (release(err) path)', { skip }, async () => {
+// #300 review R3-2 (QA-54): the check must come from ANOTHER backend. Advisory locks are
+// re-entrant within one session, and pg-pool hands the same idle client straight back, so a
+// second db.tx re-acquired a leaked lock on the same backend and the old version of this test
+// passed with ROLLBACK deleted (review mutant P10). A plain throw takes the release() path;
+// release(err) is for a broken client and is pinned in db-tx-client-errors.test.mjs.
+async function heldByAnotherSession(ip) {
+  const c = await pool.connect(); // the test's own pool: never the backend lib/db.ts used
+  try {
+    const r = await c.query(
+      `SELECT pg_try_advisory_lock(hashtextextended('anon-caps:' || $1, 0)) AS got`,
+      [ip],
+    );
+    if (r.rows[0].got) {
+      await c.query(`SELECT pg_advisory_unlock(hashtextextended('anon-caps:' || $1, 0))`, [ip]);
+    }
+    return !r.rows[0].got;
+  } finally {
+    c.release();
+  }
+}
+
+test('real lib/db.ts tx: a throw inside the tx rolls back, and ANOTHER session can then take the lock', { skip }, async () => {
   const { db } = await realDb();
   const { lockAnonIp } = await realLock();
   const ip = `lock-${randomUUID()}`;
+  let backend = null;
   await assert.rejects(
     db.tx(async (c) => {
       await lockAnonIp(c, ip);
+      backend = (await c.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      // Sanity: while held, another session really is refused (so the check below can fail).
+      assert.equal(await heldByAnotherSession(ip), true, 'the probe cannot see a held lock');
       throw new Error('boom inside tx');
     }),
     /boom inside tx/,
   );
+  const probe = await pool.query('SELECT pg_backend_pid() AS pid');
+  assert.notEqual(probe.rows[0].pid, backend, 'the probe must run on a different backend');
+  assert.equal(await heldByAnotherSession(ip), false, 'the lock outlived the failed transaction (no ROLLBACK?)');
+  // And the next tx for the same IP still gets it promptly.
   const t0 = Date.now();
   await db.tx(async (c) => {
     await lockAnonIp(c, ip);

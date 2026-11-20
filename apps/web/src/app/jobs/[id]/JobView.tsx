@@ -73,8 +73,8 @@ const actionButton: React.CSSProperties = {
 
 /**
  * The back arrow on the player (coordinator note 6, 2026-11-17): "Back to
- * library" when signed in, "Back to home" when signed out — never a compound
- * label. The library is /history until Slice 2 renames it.
+ * song library" (#316) when signed in, "Back to home" when signed out — never a compound
+ * label. The Song library lives at /history.
  */
 export function backLink(signedIn: boolean): { href: string; label: string } {
   return signedIn ? { href: '/history', label: 'Back to song library' } : { href: '/', label: 'Back to home' };

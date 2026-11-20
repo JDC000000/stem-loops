@@ -18,7 +18,7 @@ type LibraryState =
   | { kind: 'signed_out' }
   | { kind: 'error' };
 
-// Library (P3-7; library 2026-11-15). Slice 2a (design P5.2) renamed the "Job history" label to Library; the URL stays /history.
+// Library (P3-7; library 2026-11-15). Slice 2a (design P5.2) renamed the "Job history" label to Library, and #316 to Song library; the URL stays /history.
 // Signed in: the account's songs from the database (GET /api/library, owner-scoped on the
 // server) — a Pro/Studio subscriber's library outlives the 24 h browser history, and works on
 // any device. Plus this browser's anonymous songs. Signed out: this browser's history only.

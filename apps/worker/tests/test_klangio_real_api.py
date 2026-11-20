@@ -532,34 +532,50 @@ def test_throttle_is_thread_safe_unique_slots(monkeypatch: pytest.MonkeyPatch) -
 
 # ---------------------------------------------------------------------------
 # Poll deadline default (Jon decision A, 2026-11-20): 600s -> 120s.
+#
+# Read in a SUBPROCESS, not via importlib.reload: reloading rebinds the module's classes
+# (ChordProviderError, KlangioChordSource), and test_chord_source.py imports those names at
+# collection, so a reload here made its isinstance / pytest.raises checks miss when the files
+# ran in that order (#317 review, finding 4).
 # ---------------------------------------------------------------------------
 
 
-def test_poll_deadline_defaults_to_120s_when_env_unset(monkeypatch):
+def _deadline_in_fresh_interpreter(env_value: str | None) -> float:
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ)
+    env.pop("KLANGIO_POLL_DEADLINE_SEC", None)
+    if env_value is not None:
+        env["KLANGIO_POLL_DEADLINE_SEC"] = env_value
+    src_dir = str(Path(kg.__file__).resolve().parents[2])  # .../apps/worker/src
+    env["PYTHONPATH"] = src_dir + os.pathsep + env.get("PYTHONPATH", "")
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from worker.chord_providers import klangio; print(klangio.POLL_DEADLINE_SEC)",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    return float(out.stdout.strip().splitlines()[-1])
+
+
+def test_poll_deadline_defaults_to_120s_when_env_unset():
     """The shipped default is 120s. Pinned so a revert to 600s is a visible, reviewed change.
 
     Context: job f520692b waited the old full 600s on a Klangio job that never completed
-    (Sentry STEM-LOOPS-E). Every other recent job's whole extracting stage took 21-94s.
+    (Sentry STEM-LOOPS-E). The whole extracting stage of the 13 other recent done jobs took
+    21-94s. The web's job-stall derivation (apps/web/src/lib/job-poll.ts) mirrors this value.
     """
-    import importlib
-
-    monkeypatch.delenv("KLANGIO_POLL_DEADLINE_SEC", raising=False)
-    reloaded = importlib.reload(kg)
-    try:
-        assert reloaded.POLL_DEADLINE_SEC == 120.0
-    finally:
-        monkeypatch.undo()
-        importlib.reload(kg)
+    assert _deadline_in_fresh_interpreter(None) == 120.0
 
 
-def test_poll_deadline_env_override_still_wins(monkeypatch):
-    """Ops can raise (or lower) the deadline on Fly without a deploy."""
-    import importlib
-
-    monkeypatch.setenv("KLANGIO_POLL_DEADLINE_SEC", "300")
-    reloaded = importlib.reload(kg)
-    try:
-        assert reloaded.POLL_DEADLINE_SEC == 300.0
-    finally:
-        monkeypatch.undo()
-        importlib.reload(kg)
+def test_poll_deadline_env_override_still_wins():
+    """Ops can change it without a code change (it is read at import: a machine restart)."""
+    assert _deadline_in_fresh_interpreter("300") == 300.0

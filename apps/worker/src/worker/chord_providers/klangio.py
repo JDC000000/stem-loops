@@ -109,7 +109,8 @@ POLL_INTERVAL_SEC = float(os.environ.get("KLANGIO_POLL_INTERVAL_SEC", "2"))
 # Measured: across every recent done job the WHOLE extracting stage (loop extraction +
 # Klangio) took 21-94s; the one 620s job was a Klangio job that never completed, and the
 # user waited the full 600s to get a provider_failed tombstone. 120s covers the measured
-# range with headroom. Env-overridable, so it can be raised on Fly without a deploy.
+# range with headroom. Env-overridable, so it can be changed without a code change -- but it
+# is read at import, so changing it on Fly restarts the machine and the #309 drain rules apply.
 # Timing out does NOT lose the paid job id: it is recorded by _KlangioJobLedger before
 # polling starts, which is what a later chord backfill (option B) would reattach to.
 POLL_DEADLINE_SEC = float(os.environ.get("KLANGIO_POLL_DEADLINE_SEC", "120"))

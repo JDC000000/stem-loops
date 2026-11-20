@@ -59,7 +59,7 @@ for (const [route, file, current] of MARKETING) {
     const header = headerOf(html);
     assert.ok(header, `${route} has no .sin-bar header`);
     assert.ok(!/class="site-header"/.test(html), `${route} still renders the old marketing-only bar`);
-    assert.deepEqual(navItems(html), ['Play along', 'Download loops', 'Library', 'Pricing', 'Sign in']);
+    assert.deepEqual(navItems(html), ['Play along', 'Download loops', 'Song library', 'Pricing', 'Sign in']);
     assert.equal(links(header).find((l) => l.text === 'Pricing')?.href, '/pricing');
     const dl = links(header).find((l) => l.text === 'Download loops');
     assert.equal(dl.href, '/loops');

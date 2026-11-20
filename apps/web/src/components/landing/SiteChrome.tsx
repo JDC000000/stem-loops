@@ -5,7 +5,7 @@ import { Ic } from './Icons';
 
 /**
  * The landing, /terms, /privacy and the 404 render THE SAME top nav as every other page
- * (2026-11-15): Play along · Download loops · Library ("Job history" until Slice 2a) · Sign in / Account, with the
+ * (2026-11-15): Play along · Download loops · Song library ("Job history" until Slice 2a, "Library" until #316) · Sign in / Account, with the
  * current product marked. These pages are statically rendered, so the session is not read
  * here; see the header of components/chrome/SignedInNav.tsx for how the last item is chosen.
  *

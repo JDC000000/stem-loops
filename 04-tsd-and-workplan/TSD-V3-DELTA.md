@@ -576,7 +576,7 @@ Built from the approved design (P1.1–P1.5, P2.1) and Jon's approved mockups. P
 - **Chord stage:** Now/Next on the fit ladder 72→64→56→44→40→36→32→28 px (larger starts when the stage has room), then a slash-bass second line, then Next below; beat row; two bar lines; `aria-current`; **no `aria-live`**.
 - **Widths:** ≥ 1024 wide (and ≥ 500 tall): two columns with the mixer always visible. 560–1023: the phone layout, centred. Short landscape (height < 500, width ≥ 560): two columns. Jon, 2026-11-17: portrait-only use, no rotation needed [DP].
 - **Wake Lock** held while playing, released on pause; feature-detected.
-- **Back link:** "Back to library" (`/history`) signed in, "Back to home" (`/`) signed out.
+- **Back link:** "Back to song library" (`/history`) signed in (was "Back to library" until #316), "Back to home" (`/`) signed out.
 
 **P2.1 — runs of sections (DB-14 (a), adjacent runs now).** A loop is **no loop** or a **run** of adjacent sections *i..j*. Tap outside the run extends it; tap inside a 2+ run shrinks it to that chip; tap the only chip clears it; long-press (500 ms, cancels on move, swallows its release click) loops only that chip. The Loop button has three states: on, off with a run remembered, and disabled "Tap a section to loop it". "Looping" is shown only while the engine's loop equals the run. `tapSection` / `longPressSection` / `toggleRunLoop` / `runRegion` in `lib/play/sections.ts`; `nextLoop` removed. Non-adjacent runs wait (DB-14).
 

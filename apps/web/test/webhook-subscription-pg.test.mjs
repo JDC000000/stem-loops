@@ -238,6 +238,46 @@ test('PG R2-1: account deleted first, then deleted x3 (+ a stale updated) -> 200
   assert.equal((await admin.query('SELECT 1 FROM public.users WHERE id = $1', [user])).rowCount, 0);
 });
 
+// ---- QA-72: a LIVE subscription for a deleted account, for real ------------
+// The users FK (public.users -> auth.users) is what proves the account is
+// gone: the defensive upsert fails with 23503 inside a savepoint as the app
+// role. The webhook must cancel + refund at Stripe and answer 200, without
+// recreating anything; the savepoint must keep the locked transaction usable.
+
+test('PG QA-72: account deleted, then a live subscription.created (checkout completed late) -> 200, cancelled + refunded, nothing recreated', { skip, timeout: 30000 }, async () => {
+  await fresh();
+  await admin.query('DELETE FROM auth.users WHERE id = $1', [user]);
+  const stripeCalls = [];
+  h.harness.install = (c) => {
+    c.subscriptions.cancel = async (id, params) => {
+      stripeCalls.push(['cancel', id, params.cancellation_details?.comment]);
+      h.subs[id] = { ...h.subs[id], status: 'canceled', cancellation_details: { comment: params.cancellation_details?.comment ?? null } };
+      return h.subs[id];
+    };
+    c.invoicePayments.list = async () => ({ object: 'list', has_more: false,
+      data: [{ id: 'inpay_pg', status: 'paid', payment: { type: 'payment_intent', payment_intent: { id: 'pi_pg', latest_charge: { id: 'ch_pg', refunded: stripeCalls.some((x) => x[0] === 'refund') } } } }] });
+    c.refunds.create = async (params, ropts) => {
+      stripeCalls.push(['refund', params.payment_intent, ropts.idempotencyKey]);
+      return { id: 're_pg', amount: 1200 };
+    };
+  };
+  h.mod._resetStripeClientForTests();
+  const live = sub({ latest_invoice: { id: 'in_pg', object: 'invoice', status: 'paid', amount_paid: 1200, currency: 'cad', billing_reason: 'subscription_create' } });
+  h.subs[subId] = live;
+  for (let i = 0; i < 2; i += 1) {
+    assert.equal((await raw(envelope('customer.subscription.created', live))).status, 200, `delivery ${i + 1}`);
+  }
+  assert.deepEqual(stripeCalls.map((x) => x[0]), ['cancel', 'refund'], 'one cancel and one refund across both deliveries');
+  assert.equal(stripeCalls[1][1], 'pi_pg');
+  assert.equal(await row(), undefined, 'no subscription row for a deleted account');
+  assert.equal((await admin.query('SELECT 1 FROM public.users WHERE id = $1', [user])).rowCount, 0, 'user recreated');
+  const audit = await admin.query(
+    `SELECT detail FROM usage_events WHERE kind = 'orphan_subscription_closed' AND user_id IS NULL AND detail->>'subscription' = $1`, [subId]);
+  assert.equal(audit.rowCount, 1, 'one audit row, written by the app role');
+  assert.equal(audit.rows[0].detail.user_hash.length, 64);
+  await realDb.query('SELECT 1'); // connections were returned
+});
+
 // ---- the ensureUserRow savepoint, for real (round-2 Low) ----------------------
 
 test('PG savepoint: public.users row missing, auth.users unreadable -> created still fulfilled (derived email)', { skip, timeout: 20000 }, async () => {

@@ -191,6 +191,18 @@ export type BillingEvent =
       amountRefunded: number;
     }
   | {
+      /** QA-72. A Checkout Session in subscription mode completed. Nothing is
+       *  granted from it (the customer.subscription.* events do that); the
+       *  route only uses it to catch a subscription bought by an account that
+       *  no longer exists (an open session completed after the account was
+       *  deleted) and close it. */
+      type: 'subscription_checkout_completed';
+      /** session.metadata.user_id, '' when absent. */
+      userId: string;
+      providerSubscriptionId: string;
+      providerCustomerId: string | null;
+    }
+  | {
       type: 'unhandled';
       eventType: string;
       /** Set when money may have been taken but nothing was granted (review
@@ -266,6 +278,44 @@ export interface BillingProvider {
    *  provider's own value. Bounded read; throws on timeout or error. Optional:
    *  a provider without it gets the DB check only. */
   listLiveSubscriptions?(customerId: string): Promise<Array<{ id: string; status: string }>>;
+
+  /** QA-72. Account deletion: expire every OPEN checkout session of the
+   *  customer, so none can be completed (and bill) after the account is gone.
+   *  Bounded: throws instead of starting a call that could end after
+   *  `deadlineMs` (epoch ms), and on any refusal. Safe to call again. */
+  expireOpenCheckoutSessions(customerId: string, deadlineMs: number): Promise<{ expired: string[] }>;
+
+  /** QA-72 webhook backstop. A subscription whose account no longer exists:
+   *  cancel it now and give the money back (see OrphanSubscriptionResult).
+   *  Throws on any refusal or when `deadlineMs` would be passed; safe to call
+   *  again (every step re-reads provider state first). */
+  closeOrphanSubscription(subscriptionId: string, deadlineMs: number): Promise<OrphanSubscriptionResult>;
+}
+
+/** What closeOrphanSubscription did (QA-72). Provider ids only, no personal data. */
+export interface OrphanSubscriptionResult {
+  subscriptionId: string;
+  customerId: string | null;
+  /** The provider has no such subscription (nothing to do). */
+  gone: boolean;
+  /** This call cancelled it. */
+  cancelled: boolean;
+  /** It is cancelled and WE cancelled it as an orphan (now or on an earlier
+   *  delivery). Only then is its invoice refunded: a subscription the account
+   *  deletion itself cancelled was paid for a period the user had. */
+  ours: boolean;
+  /** Never-paid first invoice voided by this call. */
+  voidedInvoiceId: string | null;
+  /** Refunds created by this call (one per paid payment of the latest invoice). */
+  refundIds: string[];
+  /** Minor units refunded by this call. */
+  amountRefunded: number;
+  currency: string | null;
+  /** The latest invoice's payment was already refunded (an earlier delivery). */
+  alreadyRefunded: boolean;
+  /** Set to the invoice id when it is paid, with money on it, but the
+   *  provider listed no refundable payment for it: a human must refund it. */
+  refundGapInvoiceId: string | null;
 }
 
 export class NotImplementedError extends Error {

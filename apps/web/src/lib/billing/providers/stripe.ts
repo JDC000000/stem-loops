@@ -18,6 +18,7 @@ import {
   type BillingProvider,
   type BillingSubscription,
   type BillingSubscriptionChange,
+  type OrphanSubscriptionResult,
   type PackCode,
   type PlanCode,
   type SubscriptionStatus,
@@ -523,6 +524,19 @@ export class StripeProvider implements BillingProvider {
         if (session.mode === 'payment' && session.payment_status === 'paid') {
           return await this._creditPurchaseFromSession(session);
         }
+        // QA-72: a completed subscription checkout. The subscription events
+        // grant the plan; this event only lets the route catch a session that
+        // was completed after its account was deleted.
+        const subId =
+          typeof session.subscription === 'string' ? session.subscription : session.subscription?.id;
+        if (session.mode === 'subscription' && subId) {
+          return {
+            type: 'subscription_checkout_completed',
+            userId: (session.metadata?.user_id as string | undefined) ?? '',
+            providerSubscriptionId: subId,
+            providerCustomerId: _customerId(session.customer),
+          };
+        }
         return { type: 'unhandled', eventType: event.type };
       }
       case 'invoice.paid': {
@@ -772,6 +786,263 @@ export class StripeProvider implements BillingProvider {
     // There's no API to attach a code to an existing session server-side.
     // Interface kept for parity with Paddle. Per TSD §1.5a V3-C9.
   }
+
+  // QA-72 layer 1 (account deletion). A Checkout Session stays open for 24 h
+  // by default; one completed in another tab after the account was deleted
+  // created and billed a subscription for a user who no longer exists. So
+  // deletion expires every OPEN session of the customer first:
+  //   GET  /v1/checkout/sessions?customer=..&status=open  (paginated)
+  //   POST /v1/checkout/sessions/:id/expire   (Stripe: only an `open` session
+  //        can be expired; it errors if the session already expired or is no
+  //        longer expireable)
+  // Any refusal throws: the caller answers a retryable 502, and the retry's
+  // list no longer contains a session that has since completed or expired,
+  // so it converges. A session completed in the race is a subscription, which
+  // the cancel step or the webhook backstop (closeOrphanSubscription) ends.
+  // Bounded like every Stripe call on these paths (#298): 6 s per attempt,
+  // no SDK retries, and no call is started that could end after deadlineMs.
+  async expireOpenCheckoutSessions(customerId: string, deadlineMs: number): Promise<{ expired: string[] }> {
+    const client = getClient();
+    const budget = _budget(deadlineMs);
+    const open: string[] = [];
+    let startingAfter: string | undefined;
+    for (;;) {
+      budget('checkout.sessions.list');
+      let page: Stripe.ApiList<Stripe.Checkout.Session>;
+      try {
+        page = await client.checkout.sessions.list(
+          {
+            customer: customerId,
+            status: 'open',
+            limit: 100,
+            ...(startingAfter ? { starting_after: startingAfter } : {}),
+          },
+          { ...STRIPE_WEBHOOK_READ_OPTIONS },
+        );
+      } catch (e) {
+        // A customer Stripe does not have has no sessions (L-4: never when
+        // the object exists in the OTHER mode; that is a config error).
+        if (isStripeGone(e)) break;
+        throw e;
+      }
+      for (const s of page.data) if (s.status === 'open') open.push(s.id);
+      if (!page.has_more || page.data.length === 0) break;
+      startingAfter = page.data[page.data.length - 1].id;
+    }
+    const expired: string[] = [];
+    for (const id of open) {
+      budget('checkout.sessions.expire');
+      try {
+        await client.checkout.sessions.expire(
+          id,
+          {},
+          { ...STRIPE_WEBHOOK_READ_OPTIONS, idempotencyKey: `qa72-expire-${id}` },
+        );
+        expired.push(id);
+      } catch (e) {
+        if (isStripeGone(e)) continue;
+        throw e;
+      }
+    }
+    return { expired };
+  }
+
+  // QA-72 layer 2 (webhook backstop). The subscription belongs to an account
+  // that no longer exists (or to a customer no account owns), so nobody can
+  // use what it sells: end it and return the money.
+  //   1. Re-read it (latest_invoice expanded). Gone at Stripe: nothing to do.
+  //   2. Not over yet: cancel NOW (invoice_now / prorate false, Stripe's
+  //      defaults written out: no final invoice, no proration), tagged with
+  //      ORPHAN_CANCEL_COMMENT in cancellation_details (Stripe keeps
+  //      cancellation_details editable and readable after a cancel). The tag
+  //      is how a LATER delivery knows this cancel was ours: a subscription
+  //      that is already over WITHOUT the tag was ended by someone else (the
+  //      account deletion itself, which cancels a plan the user had, or
+  //      Stripe expiring an unpaid one) and is NOT refunded.
+  //   3. Ours: an open first invoice is voided (cancelling only stops its
+  //      automatic collection; it would stay payable). A paid one with money
+  //      on it is refunded in full: every `paid` invoice payment of the latest
+  //      invoice gets one refund of its PaymentIntent (or charge), whole
+  //      amount. The refund POST carries a key derived from the invoice
+  //      payment, so a repeated delivery within Stripe's 24 h key window gets
+  //      the same refund back, and after it Stripe refuses with
+  //      charge_already_refunded, which counts as done.
+  // Every step re-reads or is refused when already done, so any failure is a
+  // 500 and Stripe's redelivery converges. Bounded per call like the rest.
+  async closeOrphanSubscription(subscriptionId: string, deadlineMs: number): Promise<OrphanSubscriptionResult> {
+    const client = getClient();
+    const budget = _budget(deadlineMs);
+    const result: OrphanSubscriptionResult = {
+      subscriptionId,
+      customerId: null,
+      gone: false,
+      cancelled: false,
+      ours: false,
+      voidedInvoiceId: null,
+      refundIds: [],
+      amountRefunded: 0,
+      currency: null,
+      alreadyRefunded: false,
+      refundGapInvoiceId: null,
+    };
+
+    budget('subscriptions.retrieve');
+    let sub: Stripe.Subscription;
+    try {
+      sub = await client.subscriptions.retrieve(
+        subscriptionId,
+        { expand: ['latest_invoice'] },
+        { ...STRIPE_WEBHOOK_READ_OPTIONS },
+      );
+    } catch (e) {
+      if (isStripeGone(e)) return { ...result, gone: true };
+      throw e;
+    }
+    result.customerId = _customerId(sub.customer);
+
+    if (TERMINAL_STRIPE_STATUSES.has(String(sub.status))) {
+      result.ours = sub.cancellation_details?.comment === ORPHAN_CANCEL_COMMENT;
+      if (!result.ours) return result;
+    } else {
+      budget('subscriptions.cancel');
+      // DELETE: Stripe ignores idempotency keys on it, so none is sent. A
+      // repeat (another delivery got there first) is refused and thrown: the
+      // redelivery re-reads, finds it canceled WITH our tag, and goes on.
+      sub = await client.subscriptions.cancel(
+        subscriptionId,
+        {
+          invoice_now: false,
+          prorate: false,
+          cancellation_details: { comment: ORPHAN_CANCEL_COMMENT },
+          expand: ['latest_invoice'],
+        },
+        { ...STRIPE_WEBHOOK_READ_OPTIONS },
+      );
+      result.cancelled = true;
+      result.ours = true;
+    }
+
+    const inv = sub.latest_invoice;
+    if (!inv || typeof inv !== 'object' || !inv.id) return result;
+    result.currency = inv.currency ?? null;
+
+    if (inv.status === 'open' && inv.billing_reason === 'subscription_create') {
+      budget('invoices.voidInvoice');
+      await client.invoices.voidInvoice(
+        inv.id,
+        {},
+        { ...STRIPE_WEBHOOK_READ_OPTIONS, idempotencyKey: `qa72-void-${inv.id}` },
+      );
+      result.voidedInvoiceId = inv.id;
+      return result;
+    }
+    if (inv.status !== 'paid' || !(inv.amount_paid > 0)) return result;
+
+    budget('invoicePayments.list');
+    // The charge is expanded so a payment refunded by an earlier delivery is
+    // seen as such (charge.refunded) and not refunded, alerted or audited
+    // again. Depth 4, Stripe's expand limit.
+    const payments = await client.invoicePayments.list(
+      {
+        invoice: inv.id,
+        status: 'paid',
+        limit: 100,
+        expand: ['data.payment.payment_intent.latest_charge', 'data.payment.charge'],
+      },
+      { ...STRIPE_WEBHOOK_READ_OPTIONS },
+    );
+    // Paid with money on it, yet no paid payment listed (paid out of band,
+    // or by credit balance): nothing the API can refund. Reported, not thrown
+    // (a redelivery would find the same), so the route alerts a human.
+    if (payments.data.length === 0) {
+      result.refundGapInvoiceId = inv.id;
+      return result;
+    }
+    for (const ip of payments.data) {
+      const pi = ip.payment?.payment_intent;
+      const ch = ip.payment?.charge;
+      const charge =
+        pi && typeof pi === 'object' && pi.latest_charge && typeof pi.latest_charge === 'object'
+          ? pi.latest_charge
+          : ch && typeof ch === 'object'
+            ? ch
+            : null;
+      if (charge?.refunded === true) {
+        result.alreadyRefunded = true;
+        continue;
+      }
+      const target = pi
+        ? { payment_intent: typeof pi === 'string' ? pi : pi.id }
+        : ch
+          ? { charge: typeof ch === 'string' ? ch : ch.id }
+          : null;
+      if (!target) {
+        // A payment the API cannot refund (e.g. a payment record made outside
+        // Stripe): reported for a human, like the empty list above.
+        result.refundGapInvoiceId = inv.id;
+        continue;
+      }
+      budget('refunds.create');
+      try {
+        const refund = await client.refunds.create(
+          {
+            ...target,
+            metadata: { qa: 'QA-72', reason: 'account_deleted', invoice: inv.id, subscription: subscriptionId },
+          },
+          { ...STRIPE_WEBHOOK_READ_OPTIONS, idempotencyKey: `qa72-refund-${ip.id}` },
+        );
+        result.refundIds.push(refund.id);
+        result.amountRefunded += refund.amount ?? 0;
+      } catch (e) {
+        if ((e as { code?: string } | null)?.code === 'charge_already_refunded') {
+          result.alreadyRefunded = true;
+          continue;
+        }
+        throw e;
+      }
+    }
+    return result;
+  }
+}
+
+// ---- QA-72 helpers --------------------------------------------------------
+
+/** cancellation_details.comment written on a subscription the webhook
+ *  backstop cancels because its account no longer exists. Read back on a
+ *  later delivery to tell "we cancelled it, refund it" from "someone else
+ *  ended it". Must never change once deployed. */
+export const ORPHAN_CANCEL_COMMENT = 'stem-loops QA-72: account no longer exists';
+
+/** Worst case of ONE bounded Stripe call on the QA-72 paths: the 6 s
+ *  STRIPE_WEBHOOK_READ_OPTIONS timeout, twice (stripe-node retries a reset
+ *  socket once even with maxNetworkRetries 0; review R3-2). */
+export const STRIPE_BOUNDED_CALL_WORST_MS = 2 * STRIPE_WEBHOOK_READ_OPTIONS.timeout;
+
+/** A QA-72 Stripe step would pass its deadline. Nothing after the last
+ *  finished call was sent; the caller answers "retry". */
+export class StripeTimeBudgetError extends Error {
+  constructor(step: string) {
+    super(`Stripe time budget spent before ${step}`);
+    this.name = 'StripeTimeBudgetError';
+  }
+}
+
+function _budget(deadlineMs: number): (step: string) => void {
+  return (step) => {
+    if (Date.now() + STRIPE_BOUNDED_CALL_WORST_MS > deadlineMs) throw new StripeTimeBudgetError(step);
+  };
+}
+
+/** Stripe says the object does not exist (resource_missing / 404), so there
+ *  is nothing left to cancel or expire. Review L-4 (PR #314): NOT when Stripe
+ *  adds that a similar object exists in the other mode ("... a similar object
+ *  exists in live mode, but a test mode key was used"): that is a key in the
+ *  wrong mode, and treating it as "gone" would let a deletion finish while
+ *  the real object keeps billing. That case is a hard error. */
+export function isStripeGone(e: unknown): boolean {
+  const x = e as { code?: string; statusCode?: number; message?: unknown } | null;
+  if (!x || !(x.code === 'resource_missing' || x.statusCode === 404)) return false;
+  return !(typeof x.message === 'string' && /exists in (live|test) mode/i.test(x.message));
 }
 
 // Test-only reset.

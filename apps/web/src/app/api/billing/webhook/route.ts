@@ -30,6 +30,7 @@
 // Raw body: we MUST use req.text() (Next 14 App Router) — JSON parsing
 // would normalize whitespace and invalidate the signature.
 
+import { createHmac } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { getBillingProvider, type BillingEvent, type BillingSubscription } from '@/lib/billing';
@@ -39,6 +40,7 @@ import type { BillingSubscriptionChange } from '@/lib/billing/types';
 import { webhookDb as db } from '@/lib/db';
 import { invalidateEntitlement } from '@/lib/billing/entitlements';
 import { computeProRataClawback } from '@/lib/billing/prorata';
+import { ipHashKey } from '@/lib/secret-env';
 import {
   sendPaymentFailed,
   sendPlanEnded,
@@ -72,6 +74,12 @@ const STATEMENT_TIMEOUT = '10s';
 // (2 x 6 s = 12 s; 20 s would also cover 2 x 8 s). A frozen instance's open
 // transaction (and its advisory lock) is then ended by the server after this.
 const IDLE_IN_TX_TIMEOUT = '20s';
+// QA-72: the orphan-subscription cleanup (cancel + refund at Stripe) runs
+// AFTER the locked transaction, and starts no Stripe call that could end
+// later than this many ms after the request began (each call is at most
+// 2 x 6 s). Running out is a 500: Stripe redelivers and the cleanup, which
+// re-reads Stripe at every step, carries on from where it stopped.
+const ORPHAN_CLEANUP_DEADLINE_MS = 50_000;
 
 // PR #29 aligned BillingProvider's PlanCode with plans.code ('free' | 'pro' |
 // 'studio'), so no translation is needed anymore. We just narrow 'free' out,
@@ -574,7 +582,98 @@ async function clawBackCreditPurchase(
   if (outcome.inserted) invalidateEntitlement(purchase.user_id);
 }
 
-async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'paddle'): Promise<void> {
+/** HMAC of a user id, keyed like the account-deletion audit row
+ *  (users/me/route.ts: IP_HASH_KEY), so an alert can be matched to that row
+ *  without carrying the id. null when there is no id or no key. */
+function userHashOf(userId: string | null | undefined): string | null {
+  if (!userId) return null;
+  try {
+    return createHmac('sha256', ipHashKey()).update(userId).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+/** QA-72. True when the user's account no longer exists. public.users has a
+ *  FK to auth.users and handle_new_user seeds it in the SAME transaction as
+ *  the auth row, so the defensive upsert (ensureUserRow) failing with
+ *  23503 foreign_key_violation PROVES the auth user is gone: the account was
+ *  deleted (DELETE /api/users/me) or never existed. A present row, or one the
+ *  upsert could seed, is a live account. Any other error throws (500, Stripe
+ *  retries). Inside a transaction the attempt is fenced by a savepoint, so
+ *  the failed INSERT does not abort it. */
+async function userAccountGone(userId: string, q: Queryable = db): Promise<boolean> {
+  const inTx = q !== db;
+  try {
+    if (inTx) await q.query('SAVEPOINT qa72_user_exists');
+    await ensureUserRow(userId, null, q);
+    if (inTx) await q.query('RELEASE SAVEPOINT qa72_user_exists');
+    return false;
+  } catch (err) {
+    if (inTx) await q.query('ROLLBACK TO SAVEPOINT qa72_user_exists');
+    if ((err as { code?: string } | null)?.code === '23503') return true;
+    throw err;
+  }
+}
+
+/** QA-72 webhook backstop. A subscription bought by an account that no
+ *  longer exists (an open Checkout Session completed after the account was
+ *  deleted), or by a customer no account owns: nobody can use what it sells,
+ *  so cancel it now and refund it (provider.closeOrphanSubscription), page a
+ *  human, and let the caller acknowledge with 200 so Stripe stops retrying.
+ *  Writes no subscription / user rows. A provider failure throws (500):
+ *  Stripe redelivers and the provider, which re-reads its state first, picks
+ *  up where it stopped. */
+async function closeOrphanSubscription(
+  providerName: 'stripe' | 'paddle',
+  providerSubscriptionId: string,
+  ctx: { trigger: string; userId: string | null; deadlineMs: number },
+): Promise<void> {
+  const r = await getBillingProvider().closeOrphanSubscription(providerSubscriptionId, ctx.deadlineMs);
+  const acted = r.cancelled || r.voidedInvoiceId !== null || r.refundIds.length > 0;
+  const detail = {
+    qa: 'QA-72',
+    provider: providerName,
+    trigger: ctx.trigger,
+    subscription: providerSubscriptionId,
+    customer: r.customerId,
+    account: ctx.userId ? 'deleted' : 'no_user',
+    user_hash: userHashOf(ctx.userId),
+    cancelled: r.cancelled,
+    ours: r.ours,
+    voided_invoice: r.voidedInvoiceId,
+    refunds: r.refundIds,
+    amount_refunded: r.amountRefunded,
+    currency: r.currency,
+    already_refunded: r.alreadyRefunded,
+    refund_gap_invoice: r.refundGapInvoiceId,
+  };
+  if (r.refundGapInvoiceId) {
+    alertBilling('QA-72: subscription of a deleted account is paid but has no refundable payment; refund it by hand', detail);
+  } else if (acted) {
+    alertBilling('QA-72: subscription of a deleted account cancelled and refunded', detail);
+  } else {
+    console.info(`[webhook] ${ctx.trigger} ${providerSubscriptionId}: account gone, nothing left to close`, JSON.stringify(detail));
+  }
+  if (!acted) return;
+  // Audit row: no user (the account is gone), the HMAC only. Best-effort: the
+  // Stripe side is done and Sentry has it; an audit failure must not make
+  // Stripe redeliver.
+  try {
+    await db.query(
+      `INSERT INTO usage_events (user_id, kind, detail) VALUES (NULL, 'orphan_subscription_closed', $1::jsonb)`,
+      [JSON.stringify(detail)],
+    );
+  } catch (err) {
+    console.error('[webhook] QA-72 audit insert failed:', err instanceof Error ? err.message : err);
+  }
+}
+
+async function handleBillingEvent(
+  evt: BillingEvent,
+  providerName: 'stripe' | 'paddle',
+  deadlineMs: number = Date.now() + ORPHAN_CLEANUP_DEADLINE_MS,
+): Promise<void> {
   switch (evt.type) {
     case 'credit_purchase_completed': {
       // Money has been taken. NEVER drop this with a 200: resolve the payer
@@ -675,30 +774,41 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
           q,
         );
         if (!subUserId) {
+          // QA-72: no metadata user_id, a customer no account owns, no row.
+          // Nobody can be granted this plan, and 500-ing (the old answer)
+          // only retried for ~3 days while the subscription kept billing.
+          // Closed (cancel + refund) after the lock.
           console.error(
-            `[webhook][UNFULFILLED SUBSCRIPTION] ${current.providerSubscriptionId} (${current.status}) has no user_id metadata and customer ${current.providerCustomerId} is not in customers_billing. Returning 500 so Stripe retries.`,
+            `[webhook][ORPHAN SUBSCRIPTION] ${current.providerSubscriptionId} (${current.status}) has no user_id metadata and customer ${current.providerCustomerId} is not in customers_billing; closing it.`,
           );
-          throw new UnresolvedPayerError('subscription_upserted', {
-            subscription: current.providerSubscriptionId,
-            customer: current.providerCustomerId,
-          });
+          return { orphan: true as const, orphanUserId: null };
         }
-        // A subscription that is already canceled at Stripe, for a user whose
-        // account is gone (DELETE /api/users/me cancels, then the auth.users
-        // cascade removes public.users), has nothing left to grant. Recreating
-        // the users row would violate its FK to auth.users and 500 on every
-        // retry for ~3 days (review R2-1), so ack it instead.
+        // A subscription for a user whose account is gone (DELETE
+        // /api/users/me, then the auth.users cascade removes public.users)
+        // has nothing left to grant. Recreating the users row would violate
+        // its FK to auth.users and 500 on every retry for ~3 days (review
+        // R2-1). Already canceled: the cheap read decides. Otherwise the
+        // defensive upsert's FK failure proves it (QA-72). Either way the
+        // subscription is handed to the orphan cleanup after the lock, which
+        // cancels and refunds one that is still live (QA-72), and leaves one
+        // the deletion itself cancelled alone.
         if (current.status === 'canceled') {
           const exists = await q.query('SELECT 1 FROM users WHERE id = $1', [subUserId]);
           if ((exists.rowCount ?? exists.rows.length) === 0) {
             console.info(
               `[webhook] subscription_upserted ${current.providerSubscriptionId}: canceled, and user ${subUserId} no longer exists; nothing to apply`,
             );
-            return null;
+            return { orphan: true as const, orphanUserId: subUserId };
           }
         }
-        // Defensive users-row upsert; throws on failure so Stripe retries.
-        await ensureUserRow(subUserId, null, q);
+        // Defensive users-row upsert; a failure other than "the account is
+        // gone" throws so Stripe retries.
+        if (await userAccountGone(subUserId, q)) {
+          console.warn(
+            `[webhook][ORPHAN SUBSCRIPTION] ${current.providerSubscriptionId} (${current.status}): its account no longer exists; closing it.`,
+          );
+          return { orphan: true as const, orphanUserId: subUserId };
+        }
         const planCode = dbPlanCode(current.planCode);
         if (!planCode) return null;
         // customers_billing must exist for the FK story; insert idempotently.
@@ -750,6 +860,14 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
         return { subUserId, current, planCode, blocked: false as const };
       });
       if (!applied) return;
+      if ('orphan' in applied) {
+        await closeOrphanSubscription(providerName, subId, {
+          trigger: 'subscription_upserted',
+          userId: applied.orphanUserId ?? null,
+          deadlineMs,
+        });
+        return;
+      }
       const { subUserId, planCode } = applied;
       invalidateEntitlement(subUserId);
       if (applied.blocked) return;
@@ -934,6 +1052,17 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
           subscription: evt.providerSubscriptionId,
         });
       }
+      // QA-72: the first invoice of a subscription bought after its account
+      // was deleted. Writing its entitlement would fail the users FK on every
+      // retry; close the subscription (cancel + refund this invoice) instead.
+      if (await userAccountGone(userId)) {
+        await closeOrphanSubscription(providerName, evt.providerSubscriptionId, {
+          trigger: 'invoice_paid',
+          userId,
+          deadlineMs,
+        });
+        return;
+      }
       // Reload the subscription to recompute entitlement period. Falls back
       // to extending the existing period by the invoice interval.
       let planLabel = 'stem-loops subscription';
@@ -1102,6 +1231,25 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
       return;
     }
 
+    case 'subscription_checkout_completed': {
+      // QA-72. The plan itself is granted by customer.subscription.* (which
+      // re-read Stripe under the subscription lock); this event only catches
+      // a checkout completed after its account was deleted (sessions stay
+      // open 24 h). A live account: nothing to do here.
+      const uid = await resolveUserId(providerName, {
+        userId: evt.userId,
+        customerId: evt.providerCustomerId,
+        subscriptionId: evt.providerSubscriptionId,
+      });
+      if (uid && !(await userAccountGone(uid))) return;
+      await closeOrphanSubscription(providerName, evt.providerSubscriptionId, {
+        trigger: 'checkout_session_completed',
+        userId: uid || null,
+        deadlineMs,
+      });
+      return;
+    }
+
     case 'unhandled':
       // Review L-5: a paid session (or subscription) the provider could not
       // map carries an alert. Stripe still gets 200 (a retry cannot fix a
@@ -1114,6 +1262,8 @@ async function handleBillingEvent(evt: BillingEvent, providerName: 'stripe' | 'p
 }
 
 export async function POST(req: NextRequest) {
+  // QA-72: the orphan cleanup's Stripe calls are bounded from request start.
+  const deadlineMs = Date.now() + ORPHAN_CLEANUP_DEADLINE_MS;
   const provider = getBillingProvider();
 
   // Stripe sends the signature in `stripe-signature`. Paddle uses its own
@@ -1159,7 +1309,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    await handleBillingEvent(event, provider.name);
+    await handleBillingEvent(event, provider.name, deadlineMs);
     return NextResponse.json({ received: true, type: event.type }, { status: 200 });
   } catch (err) {
     // 500 so the provider retries — our DB write was the thing that broke.

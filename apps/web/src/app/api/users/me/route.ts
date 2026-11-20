@@ -14,7 +14,10 @@
 //   403 BAD_ORIGIN — Origin header present and not same-origin (CSRF guard;
 //       DELETE + JSON already forces a CORS preflight, this is belt+braces)
 //   502 SUBSCRIPTION_CANCEL_FAILED — Stripe refused; NOTHING was deleted,
-//       safe to retry
+//       safe to retry. Alerted to Sentry with the user's HMAC hash.
+//   502 CHECKOUT_EXPIRE_FAILED — QA-72: Stripe refused to expire an open
+//       checkout session, or its time budget ran out; NOTHING was deleted,
+//       safe to retry. Alerted the same way.
 //   500 DELETE_FAILED — the chord_edits erasure failed (NOTHING irreversible
 //       happened: no subscription was cancelled, safe to retry), or the
 //       Supabase Admin delete failed after subscriptions were cancelled
@@ -23,6 +26,19 @@
 // Order of operations (each step only runs if the previous one succeeded):
 //   1. getUser() + confirm_email check
 //   2. read this user's active/trialing/past_due subscriptions (read-only).
+//   2b. QA-72: expire every OPEN Stripe Checkout Session of the user's
+//      customer (provider.expireOpenCheckoutSessions). A session stays open
+//      24 h; completed in another tab after the deletion, it created and
+//      billed a subscription for a user who no longer exists. Done BEFORE the
+//      transaction (it holds no rows while Stripe answers) and before the
+//      cancels below, so a session completed in the race is already a
+//      subscription when they run. Expiring is harmless if a later step
+//      fails (the user just starts a new checkout). Bounded by
+//      CHECKOUT_EXPIRE_BUDGET_MS from the START of the request. A refusal is
+//      a 502 with nothing deleted. Anything that still slips through (a
+//      session made without a customer, the race) is closed by the webhook
+//      backstop: billing/webhook cancels and refunds a subscription whose
+//      account no longer exists.
 //   3. ONE database transaction, in this order:
 //        a. erase the user's public.chord_edits rows via
 //           public.delete_chord_edits_for_user() (migration 031). chord_edits
@@ -59,9 +75,12 @@
 // Webhook interaction (not changed here): cancelling a subscription makes
 // Stripe emit customer.subscription.deleted for a user that no longer
 // exists moments later; the webhook's upsert may fail its FK and Stripe will
-// retry/stop. See PR notes.
+// retry/stop. See PR notes. QA-72: the webhook acknowledges events for a
+// deleted account, and cancels + refunds a subscription that is still live
+// for one (it never refunds a subscription this route cancelled).
 
 import { createHmac } from 'node:crypto';
+import * as Sentry from '@sentry/nextjs';
 import { NextRequest, NextResponse } from 'next/server';
 import { deleteAuthUser, getUser } from '@/lib/auth/supabase';
 import { getBillingProvider } from '@/lib/billing';
@@ -74,6 +93,14 @@ export const dynamic = 'force-dynamic';
 
 const CANCELLABLE_STATUSES = ['active', 'trialing', 'past_due'];
 
+// QA-72 time budget. maxDuration matches the webhook's (PR #298). The
+// checkout-expiry step starts no Stripe call that could end later than
+// CHECKOUT_EXPIRE_BUDGET_MS after the request began (each call is at most
+// 2 x 6 s), which fits a list and an expire at their worst and leaves the
+// rest for the transaction, the admin delete and the audit row.
+export const maxDuration = 60;
+const CHECKOUT_EXPIRE_BUDGET_MS = 24_000;
+
 /** Thrown inside the erase+cancel transaction so it ROLLs BACK and maps to 502. */
 class SubscriptionCancelFailed extends Error {}
 
@@ -81,15 +108,47 @@ function err(status: number, code: string, message: string) {
   return NextResponse.json({ error: message, code }, { status });
 }
 
-/** True when Stripe says the subscription is already gone / canceled. */
+/** A deletion was refused because Stripe refused (the user was told to retry;
+ *  nothing was deleted). Page a human: a live subscription or an open
+ *  checkout may be behind it. Review L-5: carries the HMAC user hash (the
+ *  same value the account_deleted audit row would hold), so the operator can
+ *  find which user is stuck without an id or email in Sentry. */
+function alertDeletionRefused(step: 'subscription_cancel' | 'checkout_expire', e: unknown, userHash: string): void {
+  const x = e as { name?: string; code?: string; type?: string; message?: string } | null;
+  const extra = {
+    step,
+    user_hash: userHash,
+    error: x?.name ?? 'unknown',
+    stripeCode: x?.code ?? null,
+    stripeType: x?.type ?? null,
+    detail: typeof x?.message === 'string' ? x.message.slice(0, 300) : null,
+  };
+  console.error('[users/me DELETE][ALERT] Stripe refused; account NOT deleted', JSON.stringify(extra));
+  try {
+    Sentry.captureMessage(`account deletion refused at ${step}; account not deleted (retryable)`, {
+      level: 'error',
+      tags: { route: 'api/users/me' },
+      extra,
+    });
+  } catch {
+    // never let reporting change the answer
+  }
+}
+
+/** True when Stripe says the subscription is already gone / canceled.
+ *  Review L-4: a resource_missing that says the object exists in the OTHER
+ *  mode is a key in the wrong mode, not a gone subscription: not "canceled". */
 function isAlreadyCanceled(e: unknown): boolean {
   const x = e as { code?: string; statusCode?: number; message?: string } | null;
   if (!x) return false;
+  if (typeof x.message === 'string' && /exists in (live|test) mode/i.test(x.message)) return false;
   if (x.code === 'resource_missing' || x.statusCode === 404) return true;
   return typeof x.message === 'string' && /already (been )?cancel/i.test(x.message);
 }
 
 export async function DELETE(req: NextRequest) {
+  // QA-72: the Stripe time budget counts from here, not from the Stripe step.
+  const t0 = Date.now();
   // Destructive endpoint — require a same-origin browser request. DELETE verb
   // alone isn't a sufficient CSRF barrier (fetch can issue it cross-origin
   // when the server returns permissive CORS on a preflight), so we require
@@ -124,6 +183,12 @@ export async function DELETE(req: NextRequest) {
     console.error('[users/me] DELETE refused:', e instanceof Error ? e.message : e);
     return err(500, 'INTERNAL_ERROR', 'Something went wrong on our end. Please try again.');
   }
+  // HMAC-SHA256 with the server-side IP_HASH_KEY so the audit hash isn't a
+  // confirmation oracle (plain SHA-256 of a known user_id would let anyone
+  // with the uuid verify deletion). Reuses the existing IP_HASH_KEY
+  // convention from lib/client-ip.ts rather than adding a new env var. The
+  // audit row and the refusal alert carry the same value.
+  const userHash = createHmac('sha256', auditKey).update(user.user_id).digest('hex');
 
   try {
     // 2. Read the subscriptions to cancel (read-only; nothing changes yet).
@@ -133,6 +198,28 @@ export async function DELETE(req: NextRequest) {
         WHERE user_id = $1::uuid AND provider = $2 AND status = ANY($3::text[])`,
       [user.user_id, provider.name, CANCELLABLE_STATUSES],
     );
+
+    // 2b. QA-72: no checkout of this user may complete after the deletion.
+    const cust = await db.query<{ provider_customer_id: string }>(
+      `SELECT provider_customer_id FROM public.customers_billing
+        WHERE user_id = $1::uuid AND provider = $2`,
+      [user.user_id, provider.name],
+    );
+    const customerId = cust.rows[0]?.provider_customer_id ?? null;
+    let checkoutsExpired = 0;
+    if (customerId) {
+      try {
+        const r = await provider.expireOpenCheckoutSessions(customerId, t0 + CHECKOUT_EXPIRE_BUDGET_MS);
+        checkoutsExpired = r.expired.length;
+      } catch (e) {
+        alertDeletionRefused('checkout_expire', e, userHash);
+        return err(
+          502,
+          'CHECKOUT_EXPIRE_FAILED',
+          'We could not close your open checkout, so your account was not deleted. Please try again.',
+        );
+      }
+    }
 
     // 3. Erase chord_edits, THEN cancel Stripe, in one transaction. See the
     //    header: the erasure goes first so its failure cancels nothing, and a
@@ -188,7 +275,7 @@ export async function DELETE(req: NextRequest) {
             cancelled += 1;
           } catch (e) {
             if (isAlreadyCanceled(e)) continue;
-            console.error('[users/me DELETE] subscription cancel failed:', e instanceof Error ? e.message : 'unknown');
+            alertDeletionRefused('subscription_cancel', e, userHash);
             throw new SubscriptionCancelFailed();
           }
         }
@@ -217,15 +304,10 @@ export async function DELETE(req: NextRequest) {
         `INSERT INTO public.usage_events (user_id, kind, detail) VALUES (NULL, 'account_deleted', $1::jsonb)`,
         [
           JSON.stringify({
-            // HMAC-SHA256 with the server-side IP_HASH_KEY so the audit hash
-            // isn't a confirmation oracle (plain SHA-256 of a known user_id
-            // would let anyone with the uuid verify deletion). Reuses the
-            // existing IP_HASH_KEY convention from lib/client-ip.ts rather
-            // than adding a new env var.
-            user_hash: createHmac('sha256', auditKey)
-              .update(user.user_id)
-              .digest('hex'),
+            // See userHash above (HMAC, never the raw id or email).
+            user_hash: userHash,
             subscriptions_cancelled: cancelled,
+            checkouts_expired: checkoutsExpired,
           }),
         ],
       );

@@ -15,6 +15,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
+import { SECRET_ENV_URL } from './pure-libs.mjs';
 
 export const WEB = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const require = createRequire(import.meta.url);
@@ -134,6 +135,11 @@ export async function loadStripeProvider() {
         if (!h.invoices[id]) throw new Error('no invoice fixture for ' + id);
         return h.invoices[id];
       };
+      // h.install(c), when a test sets it, adds its own fakes last (QA-72's
+      // tests fake checkout-session, cancel, refund and invoice-payment calls
+      // this way). Methods it does not replace are still the real SDK's,
+      // which reach only the blocked transport.
+      h.install?.(c);
       return c;
     }
   `);
@@ -293,6 +299,10 @@ export function fakeDb(state) {
     if (/^SELECT email FROM auth\.users/.test(q)) return r([]);
     if (/^SELECT id FROM users WHERE email/.test(q)) return r(state.users.filter((u) => u.email === p[0]).map((u) => ({ id: u.id })));
     if (/^INSERT INTO users/.test(q)) {
+      // public.users.id REFERENCES auth.users: an id in state.authGone (an
+      // account deleted through auth.admin.deleteUser) fails like Postgres.
+      if ((state.authGone ?? []).includes(p[0]) && !state.users.some((u) => u.id === p[0]))
+        throw Object.assign(new Error('insert or update on table "users" violates foreign key constraint'), { code: '23503' });
       if (!state.users.some((u) => u.id === p[0])) state.users.push({ id: p[0], email: p[1] });
       return r([]);
     }
@@ -502,7 +512,9 @@ export async function loadWebhookRoute(provider, state, { transform } = {}) {
     .replace(/from ['"]@\/lib\/db['"]/g, `from '${db}'`)
     .replace(/from ['"]@\/lib\/emails\/dispatch['"]/g, `from '${em}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${next}'`)
-    .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStubUrl()}'`);
+    .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${sentryStubUrl()}'`)
+    // QA-72: the route keys its alert user_hash with IP_HASH_KEY.
+    .replace(/from ['"]@\/lib\/secret-env['"]/g, `from '${SECRET_ENV_URL}'`);
   return import(dataUrl(js) + '#' + Math.random());
 }
 

@@ -117,8 +117,8 @@ const STEM_FETCH_DEADLINE_S = 540;
 const STEM_FETCH_READ_TIMEOUT_S = 180;
 /** pipeline.py:689 — the chord harmonic mix, `subprocess.run(..., timeout=300)`. */
 const CHORD_MIX_TIMEOUT_S = 300;
-/** chord_providers/klangio.py:108 `POLL_DEADLINE_SEC = 600`. */
-const KLANGIO_POLL_DEADLINE_S = 600;
+/** chord_providers/klangio.py `POLL_DEADLINE_SEC` default (120 since #317; was 600). */
+const KLANGIO_POLL_DEADLINE_S = 120;
 /** pipeline.py:508 `subprocess.run(..., timeout=300)` per stem. */
 const STEM_OPUS_ENCODE_TIMEOUT_S = 300;
 /** pipeline.py:459 `ALL_STEMS` — six, encoded SERIALLY in `retain_stems` (:563-566). */
@@ -126,17 +126,18 @@ const STEM_COUNT = 6;
 
 /**
  * The longest one job can legitimately hold the worker, as the sum of the
- * stages the repo bounds with a constant. 4442 s = 74 min.
+ * stages the repo bounds with a constant. 3962 s = 66 min (4442 s before #317 cut the
+ * Klangio poll deadline 600 -> 120).
  *
  *   claim by an idle worker                2
  *   ffmpeg normalise of the upload       120
  *   separation polls   300 x 3           900   <- the deployed REPLICATE_DEADLINE
  *   fetch 6 stems      540 + 180         720   (6-wide pool, so one stem's budget)
  *   chord harmonic mix                   300
- *   chord recognition poll               600
+ *   chord recognition poll               120   (600 before #317)
  *   Opus encode        300 x 6          1800   (SERIAL, one subprocess per stem)
  *                                      -----
- *                                       4442
+ *                                       3962
  *
  * TWO HONEST CAVEATS, because this is a floor on the ceiling and not the ceiling:
  *   1. `extract_and_tag` and the R2 PUTs are bounded by no constant at all, so
@@ -164,6 +165,14 @@ export const QUEUED_STALL_MARGIN = 1.2;
  * it could legitimately take, plus margin, rounded UP to a whole five minutes so
  * the sentence the user reads is a round number: 5400 s = 90 minutes.
  *
+ * HELD AT 90 MINUTES (#317, 2026-11-20). Cutting the Klangio deadline lowered the
+ * worst case to 3962 s, which re-derives to 4800 s = 80 minutes. That would move a
+ * sentence users read and fire the notice ten minutes earlier. Jon approved the
+ * Klangio change, not this one, and the note above says this threshold is never
+ * tightened without a decision. So the floor keeps 90; the derivation still
+ * guarantees it is never BELOW the worst case plus margin. Dropping to 80 is a
+ * one-line change to QUEUED_STALL_FLOOR_S once Jon decides.
+ *
  * WHY SO LATE. The panel asserts "nothing has picked it up". On a one-worker
  * deployment with ten beta testers, waiting behind another job is the NORMAL
  * case, and the previous 20-minute threshold made that assertion about jobs that
@@ -177,7 +186,11 @@ export const QUEUED_STALL_MARGIN = 1.2;
  * been a long time — true — beside a poll that is still running and will still
  * render the result.
  */
-export const QUEUED_STALL_MS = Math.ceil((ONE_JOB_WORST_CASE_S * QUEUED_STALL_MARGIN) / 300) * 300 * 1000;
+export const QUEUED_STALL_FLOOR_S = 5400;
+export const QUEUED_STALL_MS = Math.max(
+  QUEUED_STALL_FLOOR_S * 1000,
+  Math.ceil((ONE_JOB_WORST_CASE_S * QUEUED_STALL_MARGIN) / 300) * 300 * 1000,
+);
 
 export type Stall = 'queued' | 'active';
 

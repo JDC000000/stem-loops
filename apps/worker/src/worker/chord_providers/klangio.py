@@ -105,7 +105,15 @@ BACKOFF_BASE_SEC = float(os.environ.get("KLANGIO_BACKOFF_BASE_SEC", "1"))
 # track — the TOTAL time is controlled by POLL_DEADLINE_SEC, not this per-call.
 HTTP_TIMEOUT_SEC = float(os.environ.get("KLANGIO_HTTP_TIMEOUT_SEC", "30"))
 POLL_INTERVAL_SEC = float(os.environ.get("KLANGIO_POLL_INTERVAL_SEC", "2"))
-POLL_DEADLINE_SEC = float(os.environ.get("KLANGIO_POLL_DEADLINE_SEC", "600"))
+# Total wall clock we wait for one Klangio job (Jon decision A, 2026-11-20). Was 600s.
+# Measured: across every recent done job the WHOLE extracting stage (loop extraction +
+# Klangio) took 21-94s; the one 620s job was a Klangio job that never completed, and the
+# user waited the full 600s to get a provider_failed tombstone. 120s covers the measured
+# range with headroom. Env-overridable, so it can be changed without a code change -- but it
+# is read at import, so changing it on Fly restarts the machine and the #309 drain rules apply.
+# Timing out does NOT lose the paid job id: it is recorded by _KlangioJobLedger before
+# polling starts, which is what a later chord backfill (option B) would reattach to.
+POLL_DEADLINE_SEC = float(os.environ.get("KLANGIO_POLL_DEADLINE_SEC", "120"))
 # Klangio's hard per-file limits (Startup tier, measured 2026-11-05). We fail fast
 # on files outside them rather than let the provider reject the request: a
 # rejected request still costs quota, and quota is real money (500/mo, then $0.20).

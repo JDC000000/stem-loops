@@ -85,9 +85,13 @@ function toObservations(payload: unknown): ChordObservation[] {
 }
 
 /**
- * Why a job has no chords. `unknown` is the honest default: today the worker
- * writes nothing when the pass is skipped or fails, so the web cannot tell
- * "too long" from "provider failed" from "never attempted" without a tombstone.
+ * Why a job has no chords. The worker writes a tombstone
+ * (`{"status":"unavailable","reason":...}` at the play.chords.json key) when it
+ * skips or fails the pass: `too_long`, `not_attempted` (disabled / no harmonic
+ * stem / monthly cap) and `provider_failed` (any provider error, including a
+ * Klangio poll timeout). See `_write_chords_tombstone` in the worker's
+ * pipeline.py. `unknown` remains for jobs with no artifact AND no tombstone,
+ * e.g. jobs from before tombstones existed, or a tombstone upload that failed.
  */
 export type ChordUnavailableReason =
   | 'too_long' // over the provider's 300s limit

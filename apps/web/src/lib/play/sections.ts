@@ -22,9 +22,17 @@
  *   R4 times within SNAP_SEC of each other are one boundary (float noise)
  *   R5 where rows overlap, the label with the most rows wins (ties: the label
  *      already running, else alphabetical) - this is what collapses six stems
- *   R6 touching segments with the same label merge; a gap or another label
- *      between them keeps two regions (two choruses are two regions)
+ *   R6 touching segments with the same label merge
  *   R7 output is sorted by startSec, non-overlapping, every region end > start
+ *   R8 CONTIGUOUS (design review D2, Jon 2026-11-21): the worker's rows are
+ *      4-bar loop SAMPLES spaced ~20 s apart, so on the demo song 56% of the
+ *      track sat in no section. Each region now runs to the start of the next;
+ *      the first starts at 0, and the last runs to `durationSec` when known.
+ *      Starts are untouched (they are worker-snapped beats).
+ *   R9 after R8, adjacent regions with the same label merge into one, so a
+ *      "chorus" sampled twice is ONE section (1:50-2:33), not two 4-bar slices.
+ *      Labels are only used for this merge: the UI never shows them (D2, see
+ *      nameRegions), because the worker's labeller is an energy heuristic.
  */
 import type { LoopRegion } from './types';
 
@@ -116,7 +124,7 @@ export function deriveSections(
   events.sort((x, y) => x.t - y.t);
 
   const counts = new Map<string, number>();
-  const regions: { label: string; start: number; end: number }[] = [];
+  const regions: Span[] = [];
   let prevWinner = '';
   let i = 0;
   while (i < events.length) {
@@ -141,9 +149,23 @@ export function deriveSections(
     prevWinner = winner;
   }
 
-  return regions
+  return contiguous(regions, validCap(opts.durationSec))
     .map((r) => ({ startSec: round3(r.start), endSec: round3(r.end), label: r.label }))
     .filter((r) => r.endSec > r.startSec);
+}
+
+/** R8 + R9: close every gap (each region runs to the next one's start), then merge same-label neighbours. */
+function contiguous(regions: readonly Span[], cap: number | undefined): Span[] {
+  const out: Span[] = [];
+  regions.forEach((r, i) => {
+    const start = i === 0 ? 0 : r.start;
+    const next = regions[i + 1];
+    const end = next ? next.start : Math.max(r.end, cap ?? r.end);
+    const last = out[out.length - 1];
+    if (last && last.label === r.label) last.end = end;
+    else out.push({ label: r.label, start, end });
+  });
+  return out;
 }
 
 // ─── helpers shared with the component ──────────────────────────────────────
@@ -182,18 +204,31 @@ export function sanitizeRegions(
   return out.sort((a, b) => a.startSec - b.startSec || a.endSec - b.endSec);
 }
 
-// ─── runs of sections (design v1.4, P2.1) ────────────────────────────────────
+// ─── runs of sections (design v1.4 P2.1; tap/hold swapped by D4, 2026-11-21) ─
 //
 // State: no loop, or a RUN = sections i..j inclusive (one section is a run with
 // i = j). The engine already loops any continuous span (engine.ts setLoop, the
 // native AudioBufferSourceNode.loop), so a run is handed to it as ONE region
-// from section i's start to section j's end; a gap between derived sections
-// inside a run is included. "Loop off" keeps the run REMEMBERED so the loop
-// button can turn it back on.
+// from section i's start to section j's end. "Loop off" keeps the run
+// REMEMBERED so the loop button can turn it back on.
 //
-// Every row of the P2.1 table is one branch below, in the table's order, and
-// pinned by test/play-sections.test.mjs. Indices are into the list the strip
-// shows (sanitizeRegions order).
+// D4 (Jon, 2026-11-21): a TAP jumps, a HOLD loops. Every row below is one
+// branch, in order, pinned by test/play-sections.test.mjs. Indices are into the
+// list the strip shows (sanitizeRegions order).
+//
+//   tapChip  (tap, click, Enter, Space)
+//     looping, X inside the run         -> loop off (run remembered), no jump
+//     anything else                     -> jump to X and play; a loop that was
+//                                          on goes off (run remembered)
+//   holdChip (long-press 500 ms, Shift+Enter) — the P2 run model, unchanged
+//     no loop / loop off · hold X       -> loop [X]
+//     run [i..j] looping · hold outside -> extend to [min(i,X)..max(j,X)]
+//     run [i..j], 2+ chips · hold inside-> shrink to [X]
+//     run [X] looping · hold X          -> no change (still looping)
+//   loopHere (the transport's Loop button), with the playhead in section C
+//     looping                           -> loop off (run remembered)
+//     off, remembered run contains C    -> that run, on again
+//     otherwise                         -> loop [C]
 
 export interface SectionRun {
   readonly lo: number;
@@ -209,48 +244,73 @@ export interface RunState {
 
 export const NO_RUN: RunState = Object.freeze({ run: null, on: false });
 
-export interface RunTapResult {
+export interface ChipTapResult {
   readonly state: RunState;
-  /** True when this tap EXTENDED a run (the one-time hint fires on the first). */
+  /** True when the tap should seek to the chip's section start (and play). */
+  readonly jump: boolean;
+}
+
+export interface RunHoldResult {
+  readonly state: RunState;
+  /** True when this hold EXTENDED a run (the one-time hint fires on the first). */
   readonly extended: boolean;
 }
 
 const inRun = (run: SectionRun, i: number) => i >= run.lo && i <= run.hi;
+const okIndex = (i: number) => Number.isInteger(i) && i >= 0;
 
-/**
- * A tap (click, Enter or Space) on chip `i`. P2.1:
- *   no loop · tap X                        -> loop [X]
- *   loop off (run remembered or not) · tap X -> loop [X] alone, on. It never
- *                                            extends the remembered run
- *                                            (Jon, QA C-10 option (b), 2026-11-18)
- *   run [X] (one chip, looping) · tap X    -> clear
- *   run [i..j] looping · tap outside       -> extend to [min(i,X)..max(j,X)], looping
- *   run [i..j], 2+ chips · tap inside      -> shrink to that chip
- */
-export function tapSection(state: RunState, i: number): RunTapResult {
+/** A tap on chip `i` (D4): jump there and play, or stop the loop it is part of. */
+export function tapChip(state: RunState, i: number): ChipTapResult {
+  if (!okIndex(i)) return { state, jump: false };
   const { run, on } = state;
-  if (!Number.isInteger(i) || i < 0) return { state, extended: false };
+  if (run && on && inRun(run, i)) return { state: { run, on: false }, jump: false };
+  return { state: run ? { run, on: false } : NO_RUN, jump: true };
+}
+
+/** A long-press (or Shift+Enter) on chip `i` (D4): loop it, or extend/shrink the running loop (P2). */
+export function holdChip(state: RunState, i: number): RunHoldResult {
+  if (!okIndex(i)) return { state, extended: false };
+  const { run, on } = state;
   if (!run || !on) return { state: { run: { lo: i, hi: i }, on: true }, extended: false };
-  if (run.lo === run.hi && i === run.lo) return { state: NO_RUN, extended: false };
   if (!inRun(run, i)) {
     return { state: { run: { lo: Math.min(run.lo, i), hi: Math.max(run.hi, i) }, on: true }, extended: true };
   }
+  if (run.lo === run.hi) return { state, extended: false };
   return { state: { run: { lo: i, hi: i }, on: true }, extended: false };
 }
 
-/** Long-press on chip `i`: "loop only this", whatever was there before. */
-export function longPressSection(_state: RunState, i: number): RunState {
-  if (!Number.isInteger(i) || i < 0) return _state;
-  return { run: { lo: i, hi: i }, on: true };
+/** The transport's Loop button with the playhead in section `current` (-1 = none). */
+export function loopHere(state: RunState, current: number): RunState {
+  const { run, on } = state;
+  if (run && on) return { run, on: false };
+  if (run && (!okIndex(current) || inRun(run, current))) return { run, on: true };
+  if (!okIndex(current)) return state;
+  return { run: { lo: current, hi: current }, on: true };
+}
+
+/** Index of the section under `positionSec`, or -1. Sections are contiguous (R8), so -1 only past the end. */
+export function sectionAt(sections: readonly LoopRegion[], positionSec: number | null | undefined): number {
+  if (sections.length === 0) return -1;
+  const t = typeof positionSec === 'number' && Number.isFinite(positionSec) ? Math.max(0, positionSec) : 0;
+  const i = sections.findIndex((s) => t >= s.startSec && t < s.endSec);
+  if (i >= 0) return i;
+  // On the last section's end (a finished song) the last section is still "current".
+  const last = sections.length - 1;
+  return Math.abs(t - sections[last].endSec) <= MATCH_SEC ? last : -1;
 }
 
 /**
- * The loop button. On -> off (the run is remembered); off with a run -> back
- * on; nothing remembered -> no change (the button is disabled).
+ * Where "⟲" (back to the start of this section) seeks: the loop's start while
+ * a loop is on, else the start of the section under the playhead, else 0.
  */
-export function toggleRunLoop(state: RunState): RunState {
-  if (!state.run) return NO_RUN;
-  return { run: state.run, on: !state.on };
+export function restartTarget(
+  sections: readonly LoopRegion[],
+  loop: LoopRegion | null | undefined,
+  positionSec: number | null | undefined,
+): number {
+  if (loop && isValidRegion(loop)) return loop.startSec;
+  const i = sectionAt(sections, positionSec);
+  return i >= 0 ? sections[i].startSec : 0;
 }
 
 /** The one continuous span the engine loops for a run, or null when it cannot be built. */
@@ -278,14 +338,14 @@ export function runFromRegion(sections: readonly LoopRegion[], region: LoopRegio
   return null;
 }
 
-/** "Verse 1 → Chorus 1" (screen) / "Verse 1 to Chorus 1" (spoken). */
+/** "Part 2 → Part 3" (screen) / "Part 2 to Part 3" (spoken). */
 export function runName(names: readonly string[], run: SectionRun, spoken = false): string {
   const a = names[run.lo] ?? '';
   if (run.hi === run.lo) return a;
   return `${a}${spoken ? ' to ' : ' \u2192 '}${names[run.hi] ?? ''}`;
 }
 
-/** The transport readout: "Looping Verse 1 → Chorus 1 · 0:32–1:18", "Loop off", or "". */
+/** The transport readout: "Looping Part 2 → Part 3 · 0:32–1:18", "Loop off", or "". */
 export function runReadout(names: readonly string[], sections: readonly LoopRegion[], state: RunState): string {
   if (!state.run) return '';
   if (!state.on) return 'Loop off';
@@ -294,11 +354,20 @@ export function runReadout(names: readonly string[], sections: readonly LoopRegi
   return `Looping ${runName(names, state.run)} \u00b7 ${formatTime(region.startSec)}\u2013${formatTime(region.endSec)}`;
 }
 
+/** The one-time hint the first time the strip is shown (D4, Jon 2026-11-21). */
+export const STRIP_HINT = 'Tap to jump \u00b7 hold to loop';
+/** The one-time hint after the first extend (P2.1 "signposting the change"). */
+export const RUN_HINT = 'Looping these \u00b7 hold one to loop it alone';
+
+/** How the strip is used, in its group label (a screen reader hears it with the group). */
+export const STRIP_HOWTO = 'Tap to jump, hold or Shift+Enter to loop';
+
 /** The strip's legend (sr-only): what a screen reader hears for the group. */
 export function stripLegend(names: readonly string[], state: RunState): string {
-  if (!state.run) return 'Sections. No loop.';
+  const head = `Sections. ${STRIP_HOWTO}.`;
+  if (!state.run) return `${head} No loop.`;
   const spoken = runName(names, state.run, true);
-  return state.on ? `Sections. Looping ${spoken}` : `Sections. Loop off, ${spoken} remembered`;
+  return state.on ? `${head} Looping ${spoken}.` : `${head} Loop off, ${spoken} remembered.`;
 }
 
 /** m:ss, floored. Bad input renders as 0:00 rather than "NaN:NaN". */
@@ -307,22 +376,30 @@ export function formatTime(sec: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-export interface NamedRegion { readonly region: LoopRegion; readonly name: string }
+export interface NamedRegion {
+  readonly region: LoopRegion;
+  /** "Part 3": neutral, by position (D2). Never the worker's heuristic label. */
+  readonly name: string;
+  /** The section start, "1:50". */
+  readonly time: string;
+  /** Colour slot, 0..SECTION_TONES-1, cycling so neighbours always differ. */
+  readonly tone: number;
+}
 
-const titleCase = (s: string) => s.replace(/(^|\s)(\S)/g, (_m, sp: string, c: string) => sp + c.toUpperCase());
+/** Section colours cycle through this many tokens (SectionLoop.module.css, Transport ticks). */
+export const SECTION_TONES = 3;
 
-/** "Chorus 1", "Chorus 2" when a label repeats; plain "Verse" when it does not. */
+/** The display name for section `i` (0-based): "Part 1", "Part 2", ... */
+export const partName = (i: number) => `Part ${i + 1}`;
+
+/**
+ * Neutral names (D2, Jon 2026-11-21): "Part 1", "Part 2"... plus the start
+ * time. The worker labels sections by drum energy (section_labeler.py), so
+ * "Chorus" was a guess presented as fact; it is never shown. Renaming comes
+ * later (Phase C).
+ */
 export function nameRegions(regions: readonly LoopRegion[]): NamedRegion[] {
-  const label = (r: LoopRegion) => normalizeLabel(r.label) || 'section';
-  const total = new Map<string, number>();
-  for (const r of regions) total.set(label(r), (total.get(label(r)) ?? 0) + 1);
-  const seen = new Map<string, number>();
-  return regions.map((region) => {
-    const l = label(region);
-    const n = (seen.get(l) ?? 0) + 1;
-    seen.set(l, n);
-    return { region, name: (total.get(l) ?? 0) > 1 ? `${titleCase(l)} ${n}` : titleCase(l) };
-  });
+  return regions.map((region, i) => ({ region, name: partName(i), time: formatTime(region.startSec), tone: i % SECTION_TONES }));
 }
 
 // ---------------------------------------------------------------------------

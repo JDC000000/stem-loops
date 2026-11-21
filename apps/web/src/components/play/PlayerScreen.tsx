@@ -7,7 +7,7 @@
  * One fixed, non-scrolling screen of exactly 100svh, top to bottom:
  *   compact header (back · song title h1 · "<BPM> BPM · <key> · <artist>" · ⋯)
  *   → CHORD STAGE (the remainder; the one notice bar sits at its top)
- *   → section strip → seek line → transport (−5 · Play · +5 · Loop · Mix).
+ *   → section strip → seek line → transport (⟲ · Play · Loop · Mix).
  * Desktop (≥ 1024 wide): two columns, the mixer always visible on the right.
  *
  * PlayerView (Player.tsx) decides everything that depends on the engine
@@ -23,17 +23,21 @@ import { songFacts } from '@/lib/play/notation';
 import { type Part, type PresetId, presetOps, readPart, writePart, mixStateLabel } from '@/lib/play/presets';
 import {
   NO_RUN,
+  RUN_HINT,
   type RunState,
-  longPressSection,
+  STRIP_HINT,
+  holdChip,
+  loopHere,
   nameRegions,
   placeInSong,
+  restartTarget,
   runFromRegion,
   runReadout,
   runRegion,
   sameRegion,
   sanitizeRegions,
-  tapSection,
-  toggleRunLoop,
+  sectionAt,
+  tapChip,
 } from '@/lib/play/sections';
 import type { LoopRegion } from '@/lib/play/types';
 import type { Notice, PlayerViewProps } from './Player';
@@ -57,6 +61,8 @@ export const NO_CHORDS_LINE = 'No chords for this song.';
 export const LIGHT_AUDIO_HINT = 'Phones get lighter audio so all six stems fit. Details in Song info.';
 /** The one-time light-audio hint is remembered here once dismissed. */
 export const LIGHT_NOTE_SEEN_KEY = 'sl.play.lightNoteSeen.v1';
+/** The one-time "Tap to jump · hold to loop" hint (D4) is remembered here once the strip is used. */
+export const STRIP_HINT_SEEN_KEY = 'sl.play.sectionHintSeen.v1';
 /** P1.4 rule 4 (desktop): two columns, the mixer always visible. Rule 1 (short) wins first. */
 export const DESKTOP_QUERY = '(min-width: 1024px) and (min-height: 500px)';
 
@@ -141,7 +147,11 @@ export function PlayerScreen(props: ScreenProps) {
 
   // ── sections and the run (P2.1) ────────────────────────────────────────────
   const sections = useMemo(() => sanitizeRegions(rawSections, snapshot.durationSec || undefined), [rawSections, snapshot.durationSec]);
-  const names = useMemo(() => nameRegions(sections).map((n) => n.name), [sections]);
+  // D2: neutral names ("Part 3") + the start time + a cycling colour per section.
+  const named = useMemo(() => nameRegions(sections), [sections]);
+  const names = useMemo(() => named.map((n) => n.name), [named]);
+  const times = useMemo(() => named.map((n) => n.time), [named]);
+  const tones = useMemo(() => named.map((n) => n.tone), [named]);
   // The run starts from whatever the engine is looping (a gate or a remount may
   // hand in a loop). After that the screen REMEMBERS the run, but whether it is
   // LOOPING is always the engine's answer (review S3): the UI says "Looping"
@@ -157,6 +167,15 @@ export function PlayerScreen(props: ScreenProps) {
   const shown: RunState = { run: run.run, on: engineLoops };
   const [hintSeen, setHintSeen] = useState(false);
   const [hint, setHint] = useState(false);
+  // D4: "Tap to jump · hold to loop" until the strip is first used (then remembered).
+  // true until the stored flag is read, so a returning visitor never sees it flash.
+  const [stripHintSeen, setStripHintSeen] = useState(true);
+  useEffect(() => setStripHintSeen(readFlag(STRIP_HINT_SEEN_KEY)), []);
+  const stripUsed = () => {
+    if (stripHintSeen) return;
+    setStripHintSeen(true);
+    writeFlag(STRIP_HINT_SEEN_KEY);
+  };
   const applyRun = useCallback(
     (next: RunState) => {
       setRun(next);
@@ -179,26 +198,46 @@ export function PlayerScreen(props: ScreenProps) {
     // Only on entering `ready` (a load or a retry), not on every loop change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phaseKind]);
+  const playingNow = snapshot.status === 'playing';
+  // D4: a TAP jumps to the section and plays (a loop that was on goes off);
+  // a tap on a chip of the running loop stops the loop.
   const onTap = (i: number) => {
-    const { state, extended } = tapSection(shown, i);
-    applyRun(state);
+    stripUsed();
+    setHint(false);
+    const { state, jump } = tapChip(shown, i);
+    if (state.run !== shown.run || state.on !== shown.on) applyRun(state);
+    const target = sections[i];
+    if (jump && target) {
+      onSeek(target.startSec);
+      if (!playingNow) onPlay();
+    }
+  };
+  // D4: a HOLD loops; held while looping, it extends or shrinks the run (P2).
+  const onLongPress = (i: number) => {
+    stripUsed();
+    const { state, extended } = holdChip(shown, i);
+    if (state.run !== shown.run || state.on !== shown.on) applyRun(state);
     if (extended && !hintSeen) {
       setHint(true);
       setHintSeen(true);
     } else {
       setHint(false);
     }
+    if (!playingNow) onPlay();
   };
-  const onLongPress = (i: number) => {
-    setHint(false);
-    applyRun(longPressSection(shown, i));
-  };
+  // The Loop button: loop the section under the playhead (or resume the run).
+  const currentSection = sectionAt(sections, snapshot.positionSec);
   const onToggleLoop = () => {
     setHint(false);
-    applyRun(toggleRunLoop(shown));
+    applyRun(loopHere(shown, currentSection));
   };
   const runOn = shown.on && !!shown.run;
   const band = runOn ? snapshot.loop : null;
+  // ⟲ back to the start of this section (the loop's start while looping); play state is kept.
+  const onRestart = () => onSeek(restartTarget(sections, runOn ? snapshot.loop : null, snapshot.positionSec));
+  // The first-use hint sits in the seek line's readout slot (empty while nothing
+  // loops), so it costs the chord stage no height; the run hint stays under the strip.
+  const firstHint = !stripHintSeen && sections.length > 0 ? STRIP_HINT : '';
 
   // ── the mix (P1.3) ─────────────────────────────────────────────────────────
   const [part, setPart] = useState<Part | null>(null);
@@ -491,7 +530,16 @@ export function PlayerScreen(props: ScreenProps) {
 
           {playable ? (
             <>
-              <SectionLoop names={names} state={shown} onTap={onTap} onLongPress={onLongPress} hint={hint && runOn} />
+              <SectionLoop
+                names={names}
+                times={times}
+                tones={tones}
+                current={sectionAt(sections, chordPosition ?? snapshot.positionSec)}
+                state={shown}
+                onTap={onTap}
+                onLongPress={onLongPress}
+                hint={hint && runOn ? RUN_HINT : null}
+              />
               <Transport
                 status={snapshot.status}
                 positionSec={snapshot.positionSec}
@@ -500,9 +548,11 @@ export function PlayerScreen(props: ScreenProps) {
                 onPause={onPause}
                 onSeek={onSeek}
                 ticks={sections.slice(1).map((r: LoopRegion) => r.startSec)}
+                tickTones={tones.slice(1)}
+                onRestart={onRestart}
                 loopBand={band}
-                loopText={runReadout(names, sections, shown)}
-                loopState={!shown.run ? 'disabled' : shown.on ? 'on' : 'off'}
+                loopText={runReadout(names, sections, shown) || firstHint}
+                loopState={sections.length === 0 ? 'disabled' : shown.on ? 'on' : 'off'}
                 onToggleLoop={onToggleLoop}
                 mix={
                   desktop

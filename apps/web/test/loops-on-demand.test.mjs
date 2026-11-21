@@ -108,7 +108,8 @@ test('sections.ts reads NONE of the columns the on-demand split defers', async (
   const { deriveSections } = await loadSections();
   assert.deepEqual(
     deriveSections([{ section_label: 'verse', start_sec: 1, end_sec: 5 }]),
-    [{ startSec: 1, endSec: 5, label: 'verse' }],
+    // Contiguous sections (D2, R8): the first section starts at 0.
+    [{ startSec: 0, endSec: 5, label: 'verse' }],
   );
   assert.deepEqual(deriveSections([{ section_label: 'verse', start_sec: 1 }]), []);
   assert.deepEqual(deriveSections([{ start_sec: 1, end_sec: 5 }]), []);

@@ -204,8 +204,9 @@ test('R10: a 10-minute song gets parts of at most 20 bars (synthetic, 120 bpm, a
 
 test('R9: same-label samples further apart than 2 samples are NOT merged (unknown music between them)', () => {
   // 10 s samples; 25 s gap (2.5 samples) -> two parts; 15 s gap (1.5 samples) -> one.
-  assert.equal(deriveSections([row('verse', 0, 10), row('verse', 35, 45)], { durationSec: 50 }).length, 2);
-  assert.equal(deriveSections([row('verse', 0, 10), row('verse', 25, 35)], { durationSec: 40 }).length, 1);
+  // bpm 60 puts the R10 cap at 80 s, so only the gap rule can keep these apart.
+  assert.equal(deriveSections([row('verse', 0, 10), row('verse', 35, 45)], { durationSec: 50, bpm: 60 }).length, 2);
+  assert.equal(deriveSections([row('verse', 0, 10), row('verse', 25, 35)], { durationSec: 40, bpm: 60 }).length, 1);
 });
 
 test('R8: music before the first sample belongs to the first section; after the last, to the last', () => {
@@ -682,6 +683,20 @@ test('strip (D2): each chip shows "Part N · m:ss", carries its colour slot, and
   assert.deepEqual([...html.matchAll(/data-tone="(\d)"/g)].map((m) => Number(m[1])), TONES);
   assert.equal((html.match(/aria-current="true"/g) || []).length, 1);
   assert.match(html, /data-index="2"[^>]*aria-current="true"/);
+});
+
+test('strip: the "+N more" cue counts chips below AND above the visible box, and says which way to scroll', async () => {
+  const { mod } = await loadComponent();
+  const box = (top, bottom) => ({ getBoundingClientRect: () => ({ top, bottom, left: 0, right: 10 }) });
+  const list = (chips) => ({ ...box(100, 200), querySelectorAll: () => chips.map(([t, b]) => box(t, b)) });
+  assert.deepEqual(mod.countOverflow(list([[104, 148], [156, 200], [208, 252], [260, 304]])), { above: 0, below: 2 });
+  assert.deepEqual(mod.countOverflow(list([[0, 44], [52, 96], [104, 148], [156, 200]])), { above: 2, below: 0 });
+  assert.deepEqual(mod.countOverflow(list([[50, 94], [104, 148], [210, 254]])), { above: 1, below: 1 });
+  assert.deepEqual(mod.countOverflow(list([[99.6, 148], [156, 200.4]])), { above: 0, below: 0 }, 'half a pixel of rounding is inside');
+  assert.equal(mod.overflowText({ above: 0, below: 3 }), '+3 more \u2193');
+  assert.equal(mod.overflowText({ above: 2, below: 0 }), '+2 more \u2191');
+  assert.equal(mod.overflowText({ above: 1, below: 1 }), '+2 more \u2193');
+  assert.equal(mod.overflowText({ above: 0, below: 0 }), '');
 });
 
 test('strip: no sections renders nothing', async () => {

@@ -383,12 +383,9 @@ export function loopHere(state: RunState, current: number): RunState {
 export function sectionAt(sections: readonly LoopRegion[], positionSec: number | null | undefined): number {
   if (sections.length === 0) return -1;
   const t = typeof positionSec === 'number' && Number.isFinite(positionSec) ? Math.max(0, positionSec) : 0;
-  const i = sections.findIndex((s) => t >= s.startSec && t < s.endSec);
-  if (i >= 0) return i;
+  // Sorted and contiguous: the current section is the last one that has started.
   let last = -1;
-  sections.forEach((s, k) => {
-    if (s.startSec <= t) last = k;
-  });
+  for (let k = 0; k < sections.length && sections[k].startSec <= t; k++) last = k;
   return last;
 }
 

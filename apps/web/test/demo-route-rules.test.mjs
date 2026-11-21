@@ -68,7 +68,7 @@ const dbStub = dataUrl(`
     if (/FROM job_events/.test(t)) return { rows: [], rowCount: 0 };
     if (/cut_at IS NULL/.test(t)) return { rows: [{ count: 3 }], rowCount: 1 };
     if (/COUNT\\(cut_at\\)/.test(t)) return { rows: [{ total: 3, cut: 0 }], rowCount: 1 };
-    if (/FROM loops/.test(t)) return { rows: [{ id: 'l1', job_id: st.job.id, stem: 'drums', section_label: 'verse', start_sec: 0, end_sec: 8, bpm: 102, cut_at: st.cutLoops ? '2026-11-18T00:00:00Z' : null, r2_key: 'jobs/' + st.job.id + '/loops/drums_verse.wav', filename: 'drums_verse.wav' }], rowCount: 1 };
+    if (/FROM loops/.test(t)) return { rows: [{ id: 'l1', job_id: st.job.id, stem: 'drums', section_label: 'verse', start_sec: 0, end_sec: 8, bpm: 102, musical_key: st.loopKey ?? 'G minor', cut_at: st.cutLoops ? '2026-11-18T00:00:00Z' : null, r2_key: 'jobs/' + st.job.id + '/loops/drums_verse.wav', filename: 'drums_verse.wav' }], rowCount: 1 };
     if (/INSERT INTO loop_requests/.test(t)) return { rows: [{ id: 'req-1', status: 'queued', created_at: 'now' }], rowCount: 1 };
     if (/FROM loop_requests/.test(t)) return { rows: [], rowCount: 0 };
     if (/FROM entitlements e/.test(t)) {
@@ -371,4 +371,24 @@ test('S1: the demo OWNER and every ordinary job keep the full response (fields u
     for (const k of ['upload_r2_key', 'original_filename', 'youtube_url']) assert.equal(k in res.body, true, `${jobKind}: ${k} missing`);
     for (const k of ['r2_key', 'filename']) assert.equal(k in res.body.loops[0], true, `${jobKind}: loop ${k} missing`);
   }
+});
+
+
+// Phase A (J3): ONE key. The demo rows' job key was corrected in place on 2026-11-18 while
+// their loop rows kept the key detected on the drums stem (pre-#295), so the job API said
+// "A major" and its loops "G minor". The job row is the source of truth for every row.
+test('GET /api/jobs/:id: every loop carries the JOB key (stale loop keys never reach the client)', async () => {
+  for (const [jobKind, callerKind] of [['demo', 'signed out'], ['demo', 'owner'], ['ordinary', 'owner']]) {
+    arrange(jobKind, callerKind);
+    const res = await mods['GET /api/jobs/:id'].GET(req(), { params: { id: JOB } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.musical_key, 'A major');
+    assert.ok(res.body.loops.length > 0);
+    for (const l of res.body.loops) assert.equal(l.musical_key, 'A major', `${jobKind} / ${callerKind}`);
+  }
+  // A job with no key of its own leaves the loop rows as they are.
+  arrange('ordinary', 'owner');
+  globalThis.__rr.job.musical_key = null;
+  const res = await mods['GET /api/jobs/:id'].GET(req(), { params: { id: JOB } });
+  assert.equal(res.body.loops[0].musical_key, 'G minor');
 });

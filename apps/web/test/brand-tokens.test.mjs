@@ -380,11 +380,15 @@ test('amber keeps its ONE job: var(--chord-now) / #f59e0b only colour the curren
     assert.match(src, /const CHORD_NOW = 'var\(--chord-now, #f59e0b\)';/);
     // Every use of the constant is the current chord: the Now name (data-testid
     // playhead-now-name), the current bar's edge (outline, drawn inside the bar
-    // so the chords in it do not move) and the current chord's text.
+    // so the chords in it do not move) and the current chord's text; and
+    // (Phase A, J5, as briefed: "4 segments fill in amber") the countdown to
+    // the END of the current chord: its lit beat segments, or, with no beat
+    // grid, its time-bar fill. Both are the current chord's own time left.
+    // The Next name never turns amber (it grows white on the last beat).
     const uses = [...src.matchAll(/^.*CHORD_NOW.*$/gm)].map((m) => m[0].trim()).filter((l) => !l.startsWith('const CHORD_NOW'));
     assert.ok(uses.length >= 3, uses.join('\n'));
     for (const u of uses) {
-      assert.match(u, /^(color: isCurSlot \? CHORD_NOW|outline: isCur \? `2px solid \$\{CHORD_NOW\}`|style=\{\{ fontSize: fit\.px, [^}]*color: CHORD_NOW)/, `CHORD_NOW used outside the current chord: ${u}`);
+      assert.match(u, /^(color: isCurSlot \? CHORD_NOW|outline: isCur \? `2px solid \$\{CHORD_NOW\}`|style=\{\{ fontSize: fit\.px, [^}]*color: CHORD_NOW|style=\{\{ \.\.\.countdownTrackStyle, background: on \? CHORD_NOW : 'var\(--text-subtle, #666666\)' \}\}|<span style=\{\{ display: 'block', height: '100%', width: [^}]*background: CHORD_NOW \}\} \/>)/, `CHORD_NOW used outside the current chord: ${u}`);
     }
   }
 });

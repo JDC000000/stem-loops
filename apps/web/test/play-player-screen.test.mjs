@@ -32,7 +32,7 @@ const graph = buildModuleGraph({
         }, [props.onNowNext]);
         if (props.view === 'stage' && globalThis.__noChords)
           return typeof props.emptyStage === 'function' ? props.emptyStage(globalThis.__noChordsReason ?? null) : props.emptyStage;
-        return createElement('div', { 'data-testid': 'chord-overlay', 'data-view': String(props.view), 'data-position': String(props.positionSec) });
+        return createElement('div', { 'data-testid': 'chord-overlay', 'data-view': String(props.view), 'data-position': String(props.positionSec), 'data-simplify': String(props.simplify), 'data-playing': String(props.playing) });
       };
       export default ChordOverlay;`,
     'lib/play/report-failure.ts': 'export function reportStemFetchFailure() {}',
@@ -116,10 +116,16 @@ test('P1.1 header: back · the song title as THE h1 · "<BPM> BPM · <key>" with
   const h = decode(ssr());
   assert.equal((h.match(/<h1/g) || []).length, 1);
   assert.match(h, /<h1[^>]*data-testid="player-title"[^>]*>Lucky Ticket<\/h1>/);
-  assert.match(h, /<span class="sr">Detected: <\/span>102 BPM · B♭ major/);
+  assert.match(h, /<span class="facts" data-testid="player-facts"><span class="sr">Detected: <\/span>102 BPM · B♭ major<\/span>/);
   assert.match(h, /<a class="back" href="\/history" aria-label="Back to song library">/);
   assert.match(h, /<button[^>]*aria-label="More: all chords, song info, download loops"[^>]*aria-expanded="false"/);
-  assert.match(decode(ssr({ artist: 'The Royal Sundowners' })), /102 BPM · B♭ major<\/span> · <span>The Royal Sundowners<\/span>/);
+  assert.match(decode(ssr({ artist: 'The Royal Sundowners' })), /102 BPM · B♭ major<\/span><span class="artist">The Royal Sundowners<\/span>/);
+  // Phase A (J3): the BPM · key chip is 20px, white, readable at 70 cm.
+  const css = read('src/components/play/Player.module.css');
+  const chip = css.match(/\n\.facts\s*\{([^}]*)\}/)[1];
+  assert.match(chip, /font-size:\s*20px;/);
+  assert.match(chip, /color:\s*var\(--text-primary\);/);
+  assert.doesNotMatch(chip, /accent|chord-now/);
 });
 
 test('P1.1 header: BPM and key are hidden when null (no "null BPM", no empty separator)', () => {
@@ -564,4 +570,64 @@ test('stage growth: the ladder and the bars grow only into spare height, never p
   assert.equal(H.grownFontPx('C♯m7♭5/G♯', 14, 60, false, 1.6), 14, 'no room: unchanged');
   assert.equal(H.grownFontPx('Am', 20, 80, true, 1.6), 20, 'a wrapped name keeps its size');
   assert.ok(H.nameWidth('G', H.grownFontPx('G', 20, 40, false, 1.6)) <= 40);
+});
+
+
+// ═══ Phase A (2026-11-21) ═════════════════════════════════════════════════════
+
+test('D6: chords are Simple by default; ⋯ → Chords: Simple / Detailed switches both chord views and is remembered', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const open = async () => {
+      await dom.act(() => dom.find('[data-testid="player-more"]').click());
+    };
+    await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+    assert.equal(dom.find('[data-view="stage"]').dataset.simplify, 'true', 'Simple by default');
+    await open();
+    const simple = dom.find('[data-testid="chord-mode-simple"]');
+    const detailed = dom.find('[data-testid="chord-mode-detailed"]');
+    assert.equal(simple.getAttribute('aria-pressed'), 'true');
+    assert.equal(detailed.getAttribute('aria-pressed'), 'false');
+    assert.equal(simple.closest('[role="group"]').getAttribute('aria-labelledby'), 'player-chord-mode');
+    await dom.act(() => detailed.click());
+    assert.equal(dom.find('[data-view="stage"]').dataset.simplify, 'false');
+    assert.equal(dom.find('[data-testid="chord-mode-detailed"]').getAttribute('aria-pressed'), 'true');
+    assert.equal(dom.window.localStorage.getItem('sl.play.chordMode.v1'), 'detailed');
+    await dom.unmountAll();
+    // A new visit reads the choice back.
+    await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+    assert.equal(dom.find('[data-view="stage"]').dataset.simplify, 'false', 'remembered');
+    await dom.unmountAll();
+    // A broken localStorage is the default, never an error.
+    dom.window.localStorage.setItem('sl.play.chordMode.v1', 'garbage');
+    await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+    assert.equal(dom.find('[data-view="stage"]').dataset.simplify, 'true');
+    await dom.unmountAll();
+  });
+  const css = read('src/components/play/Player.module.css');
+  const seg = css.match(/\n\.segment\s*\{([^}]*)\}/)[1];
+  assert.match(seg, /min-height:\s*var\(--touch-min, 44px\);/);
+  assert.match(seg, /border-radius:\s*22px;/);
+  const on = css.match(/\.segment\[aria-pressed='true'\]\s*\{([^}]*)\}/)[1];
+  assert.match(on, /background:\s*var\(--bg-selected\);/);
+  assert.match(on, /border-color:\s*var\(--text-primary\);/);
+  assert.doesNotMatch(on, /accent|chord-now/);
+});
+
+test('J4: the stage knows when audio is playing (cells are never interactive under a strumming hand)', () => {
+  assert.match(ssr({ snapshot: snap({ status: 'playing' }) }), /data-view="stage"[^>]*data-playing="true"/);
+  assert.match(ssr(), /data-view="stage"[^>]*data-playing="false"/);
+});
+
+test('light-audio hint: a returning visitor who dismissed it never sees it again; it stays in Song info', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    dom.window.localStorage.setItem('sl.play.lightNoteSeen.v1', '1');
+    await dom.mount(React.createElement(Player.PlayerView, viewProps({ lightAudio: true })));
+    assert.equal(dom.find('[data-testid="player-light-audio"]'), null);
+    await dom.act(() => dom.find('[data-testid="player-more"]').click());
+    await dom.act(() => [...dom.findAll('#player-menu button')].find((b) => b.textContent === 'Song info').click());
+    assert.match(dom.find('[data-testid="info-sheet"]').textContent, /lighter audio/);
+    await dom.unmountAll();
+  });
 });

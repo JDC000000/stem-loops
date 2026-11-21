@@ -85,13 +85,45 @@
 }
 
 .sub {
+  /* Phase A (J3): the BPM · key chip, then the artist (13px, cut first). */
+  margin-top: 2px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
+}
+/* BPM and key at 20px (>= 20px: 25 arcmin cap height at 70 cm), white on the
+   page: readable from a music stand. A chip, not a control: no pointer. */
+.facts {
+  /* never cut: the artist gives way first */
+  flex: 0 0 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 9px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-default);
+  border-radius: 13px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 20px;
+  line-height: 24px;
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
   text-overflow: ellipsis;
 }
-.facts { color: var(--text-secondary); }
+.artist {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .menuWrap { position: relative; flex-shrink: 0; }
 
@@ -140,6 +172,43 @@
 }
 .menuItem:hover { background: var(--bg-hover); }
 
+/* Chords: Simple / Detailed (Phase A, D6). Two 44px pills; the chosen one is
+   the brand's selected state (#222 + 2px #fff), never lime or amber. */
+.menuGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 6px 8px;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  margin: 4px 0;
+}
+.menuLabel {
+  padding: 0 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.segment {
+  min-height: var(--touch-min, 44px);
+  padding: 0 12px;
+  border: 2px solid var(--border-control);
+  border-radius: 22px;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+.segment[aria-pressed='true'] {
+  background: var(--bg-selected);
+  border-color: var(--text-primary);
+}
+
 /* ── the body: the stage takes the remainder ───────────────────────────── */
 .body {
   /* grows, never shrinks below its content: see .root */
@@ -168,9 +237,9 @@
 }
 
 .chords {
-  /* THE FLOOR: where you are, Now/Next (down to 28px), the beat row and the
-     current bar line (ChordPhone.helpers stageChromePx(28) + one 62px line =
-     192px). The chord view sizes itself to this box's measured height: it picks
+  /* THE FLOOR: where you are, Now/Next (down to 28px), the countdown, the beat
+     row and the current bar line (ChordPhone.helpers stageChromePx(28) + one
+     62px line = 198px, floored at 200px). The chord view sizes itself to this box's measured height: it picks
      the Now step, drops the NEXT line and grows the bars to fit, never past it. */
   flex: 1 1 0;
   min-height: 200px;

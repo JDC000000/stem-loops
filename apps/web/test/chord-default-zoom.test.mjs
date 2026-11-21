@@ -1472,6 +1472,9 @@ function declaredProps(el) {
 /** What a chip (a <button> on the timeline) may declare. Nothing here but fontSize touches glyph advances. */
 const CHIP_DECLARES = new Set([
   'background', 'border', 'borderRadius', 'borderTopLeftRadius', 'borderBottomLeftRadius',
+  // Phase A: with no chord editor wired a chip is a <span role="img">, centred
+  // the way a <button> centres by default (layout only, no glyph advances).
+  'display', 'alignItems', 'justifyContent',
   'boxSizing', 'color', 'cursor', 'fontSize', 'height', 'left', 'opacity', 'overflow',
   'padding', 'position', 'textOverflow', 'top', 'whiteSpace', 'width',
 ]);

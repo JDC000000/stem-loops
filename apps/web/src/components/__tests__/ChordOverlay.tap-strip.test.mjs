@@ -292,3 +292,38 @@ test('QA-73 (m-2) zoom centring: the chord at the centre stays at the centre thr
   }
   assert.equal(stripScrollLeftForCentre(layoutTapStrip(runs, 20), 0, 900), 0);
 });
+
+test('QA-73 layoutTapStrip: overlapping, nested, zero-length and unsorted chords still give a monotone map and no overlap', () => {
+  // Not what the loader emits (observationsToRuns makes contiguous runs), but
+  // what the strip must survive: a chord nested inside a longer one, a
+  // zero-length chord, and input out of time order.
+  const runs = [
+    { startSec: 0.5, endSec: 6 },
+    { startSec: 1, endSec: 1.2 }, // nested: ends before the run above
+    { startSec: 3, endSec: 3 }, // zero length
+    { startSec: 9, endSec: 9.1 },
+    { startSec: 6, endSec: 8.5 }, // out of order
+    { startSec: 8.4, endSec: 8.45 }, // starts inside the one above
+  ];
+  for (const pps of [3, 17.5, 80]) {
+    const s = layoutTapStrip(runs, pps);
+    for (let k = 1; k < s.knotSec.length; k++) {
+      assert.ok(s.knotSec[k] >= s.knotSec[k - 1], `knot ${k}: time goes back (${s.knotSec[k - 1]} -> ${s.knotSec[k]}) @ ${pps}`);
+      assert.ok(s.knotPx[k] >= s.knotPx[k - 1], `knot ${k}: px goes back @ ${pps}`);
+    }
+    let prev = -1;
+    for (let t = 0; t <= 9.2; t += 0.05) {
+      const x = stripTimeToPx(s, t);
+      assert.ok(x >= prev - 1e-9, `time map goes back at ${t.toFixed(2)}s @ ${pps}`);
+      prev = x;
+    }
+    const order = runs.map((_, i) => i).sort((a, b) => runs[a].startSec - runs[b].startSec);
+    let right = 0;
+    for (const i of order) {
+      assert.ok(s.boxes[i].leftPx >= right - 1e-9, `chord ${i} overlaps @ ${pps}`);
+      assert.ok(chipContentPx(s.boxes[i].widthPx) >= MIN_TAP_PX);
+      right = s.boxes[i].leftPx + s.boxes[i].widthPx;
+    }
+    assert.ok(s.widthPx >= right);
+  }
+});

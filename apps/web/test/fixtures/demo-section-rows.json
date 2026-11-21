@@ -1,0 +1,206 @@
+{
+ "_note": "Section rows of the three public demo songs (GET /api/jobs/<demo>, 2026-11-20): one stem's loop rows each (the other five repeat them), the job bpm and the chord artifact's duration. Used by the section-strip fit gate and play-sections tests.",
+ "songs": {
+  "lucky-ticket": {
+   "title": "Lucky Ticket",
+   "bpm": "102",
+   "duration_sec": 213.24074074074073,
+   "rows": [
+    {
+     "section_label": "intro",
+     "start_sec": "0.297928993913276",
+     "end_sec": "9.70969369979563",
+     "bpm": "102"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "23.8267863285493",
+     "end_sec": "33.2385510344317",
+     "bpm": "102"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "45.0028916590044",
+     "end_sec": "54.4146563648867",
+     "bpm": "102"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "66.1777847417369",
+     "end_sec": "75.5895494476193",
+     "bpm": "102"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "87.3574396515603",
+     "end_sec": "96.7692043574427",
+     "bpm": "102"
+    },
+    {
+     "section_label": "chorus",
+     "start_sec": "110.885229433112",
+     "end_sec": "120.296994138995",
+     "bpm": "102"
+    },
+    {
+     "section_label": "chorus",
+     "start_sec": "132.062515073621",
+     "end_sec": "141.474279779503",
+     "bpm": "102"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "153.239189021931",
+     "end_sec": "162.650953727813",
+     "bpm": "102"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "174.424504212963",
+     "end_sec": "183.836268918845",
+     "bpm": "102"
+    },
+    {
+     "section_label": "outro",
+     "start_sec": "195.587009957218",
+     "end_sec": "204.998774663101",
+     "bpm": "102"
+    }
+   ]
+  },
+  "im-asking-you": {
+   "title": "I'm Asking You",
+   "bpm": "128",
+   "duration_sec": 188.79629629629628,
+   "rows": [
+    {
+     "section_label": "intro",
+     "start_sec": "0.233623793770607",
+     "end_sec": "7.73362379377061",
+     "bpm": "128"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "17.0928447440336",
+     "end_sec": "24.5928447440336",
+     "bpm": "128"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "41.4721078605556",
+     "end_sec": "48.9721078605556",
+     "bpm": "128"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "58.3366828426619",
+     "end_sec": "65.8366828426619",
+     "bpm": "128"
+    },
+    {
+     "section_label": "chorus",
+     "start_sec": "75.2214457114972",
+     "end_sec": "82.7214457114972",
+     "bpm": "128"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "99.5927252301333",
+     "end_sec": "107.092725230133",
+     "bpm": "128"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "116.46998456291",
+     "end_sec": "123.96998456291",
+     "bpm": "128"
+    },
+    {
+     "section_label": "chorus",
+     "start_sec": "131.465886077055",
+     "end_sec": "138.965886077055",
+     "bpm": "128"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "155.843725154005",
+     "end_sec": "163.343725154005",
+     "bpm": "128"
+    },
+    {
+     "section_label": "outro",
+     "start_sec": "174.593048804222",
+     "end_sec": "182.093048804222",
+     "bpm": "128"
+    }
+   ]
+  },
+  "offline": {
+   "title": "Offline",
+   "bpm": "95",
+   "duration_sec": 191.75925925925924,
+   "rows": [
+    {
+     "section_label": "intro",
+     "start_sec": "0.391511922324142",
+     "end_sec": "10.4967750802189",
+     "bpm": "95"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "25.6545955079569",
+     "end_sec": "35.7598586658517",
+     "bpm": "95"
+    },
+    {
+     "section_label": "chorus",
+     "start_sec": "35.7510874221327",
+     "end_sec": "45.8563505800274",
+     "bpm": "95"
+    },
+    {
+     "section_label": "bridge",
+     "start_sec": "61.0270166848407",
+     "end_sec": "71.1322798427354",
+     "bpm": "95"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "73.6521194236572",
+     "end_sec": "83.7573825815519",
+     "bpm": "95"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "98.9145331740871",
+     "end_sec": "109.019796331982",
+     "bpm": "95"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "111.555314906192",
+     "end_sec": "121.660578064087",
+     "bpm": "95"
+    },
+    {
+     "section_label": "verse",
+     "start_sec": "134.286132832373",
+     "end_sec": "144.391395990267",
+     "bpm": "95"
+    },
+    {
+     "section_label": "chorus",
+     "start_sec": "146.910524544923",
+     "end_sec": "157.015787702818",
+     "bpm": "95"
+    },
+    {
+     "section_label": "outro",
+     "start_sec": "172.172243751635",
+     "end_sec": "182.27750690953",
+     "bpm": "95"
+    }
+   ]
+  }
+ }
+}

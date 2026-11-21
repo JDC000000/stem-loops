@@ -1,0 +1,234 @@
+{
+  "390x844-signedout": {
+    "height": 2157,
+    "source": {
+      "top": 277,
+      "bottom": 325,
+      "h": 48,
+      "w": 273
+    },
+    "paste": {
+      "top": 277,
+      "bottom": 325,
+      "h": 48,
+      "w": 77
+    },
+    "cta": {
+      "top": 441,
+      "bottom": 489,
+      "h": 48,
+      "w": 358
+    },
+    "options": null,
+    "demoPlay": {
+      "top": 832,
+      "bottom": 880,
+      "h": 48,
+      "w": 324
+    },
+    "navItems": [
+      "Play alongPlay",
+      "Download loops",
+      "Song librarySongs",
+      "Pricing",
+      "Sign in"
+    ],
+    "h2s": [
+      "Lucky Ticket",
+      "What you get",
+      "Questions"
+    ],
+    "faq": 5,
+    "demoMentions": {
+      "homeDemo": 1,
+      "ownPageLink": 0,
+      "playerArt": 0,
+      "lanes": 0
+    },
+    "navVisible": [
+      "Play alongPlay",
+      "Song librarySongs",
+      "Sign in"
+    ],
+    "navBarVisible": [
+      "stem-loops, home",
+      "Play alongPlay",
+      "Song librarySongs",
+      "Sign in"
+    ]
+  },
+  "390x844-signedin": {
+    "height": 2157,
+    "source": {
+      "top": 277,
+      "bottom": 325,
+      "h": 48,
+      "w": 273
+    },
+    "paste": {
+      "top": 277,
+      "bottom": 325,
+      "h": 48,
+      "w": 77
+    },
+    "cta": {
+      "top": 441,
+      "bottom": 489,
+      "h": 48,
+      "w": 358
+    },
+    "options": null,
+    "demoPlay": {
+      "top": 832,
+      "bottom": 880,
+      "h": 48,
+      "w": 324
+    },
+    "navItems": [
+      "Play alongPlay",
+      "Download loops",
+      "Song librarySongs",
+      "Pricing",
+      "Account"
+    ],
+    "h2s": [
+      "Lucky Ticket",
+      "What you get",
+      "Questions"
+    ],
+    "faq": 5,
+    "demoMentions": {
+      "homeDemo": 1,
+      "ownPageLink": 0,
+      "playerArt": 0,
+      "lanes": 0
+    },
+    "navVisible": [
+      "Play alongPlay",
+      "Song librarySongs",
+      "Account"
+    ],
+    "navBarVisible": [
+      "stem-loops, home",
+      "Play alongPlay",
+      "Song librarySongs",
+      "Account"
+    ]
+  },
+  "360x800-signedout": {
+    "height": 2249,
+    "source": {
+      "top": 300,
+      "bottom": 348,
+      "h": 48,
+      "w": 243
+    },
+    "paste": {
+      "top": 300,
+      "bottom": 348,
+      "h": 48,
+      "w": 77
+    },
+    "cta": {
+      "top": 465,
+      "bottom": 513,
+      "h": 48,
+      "w": 328
+    },
+    "options": null,
+    "demoPlay": {
+      "top": 875,
+      "bottom": 923,
+      "h": 48,
+      "w": 294
+    },
+    "navItems": [
+      "Play alongPlay",
+      "Download loops",
+      "Song librarySongs",
+      "Pricing",
+      "Sign in"
+    ],
+    "h2s": [
+      "Lucky Ticket",
+      "What you get",
+      "Questions"
+    ],
+    "faq": 5,
+    "demoMentions": {
+      "homeDemo": 1,
+      "ownPageLink": 0,
+      "playerArt": 0,
+      "lanes": 0
+    },
+    "navVisible": [
+      "Play alongPlay",
+      "Song librarySongs",
+      "Sign in"
+    ],
+    "navBarVisible": [
+      "stem-loops, home",
+      "Play alongPlay",
+      "Song librarySongs",
+      "Sign in"
+    ]
+  },
+  "360x800-signedin": {
+    "height": 2249,
+    "source": {
+      "top": 300,
+      "bottom": 348,
+      "h": 48,
+      "w": 243
+    },
+    "paste": {
+      "top": 300,
+      "bottom": 348,
+      "h": 48,
+      "w": 77
+    },
+    "cta": {
+      "top": 465,
+      "bottom": 513,
+      "h": 48,
+      "w": 328
+    },
+    "options": null,
+    "demoPlay": {
+      "top": 875,
+      "bottom": 923,
+      "h": 48,
+      "w": 294
+    },
+    "navItems": [
+      "Play alongPlay",
+      "Download loops",
+      "Song librarySongs",
+      "Pricing",
+      "Account"
+    ],
+    "h2s": [
+      "Lucky Ticket",
+      "What you get",
+      "Questions"
+    ],
+    "faq": 5,
+    "demoMentions": {
+      "homeDemo": 1,
+      "ownPageLink": 0,
+      "playerArt": 0,
+      "lanes": 0
+    },
+    "navVisible": [
+      "Play alongPlay",
+      "Song librarySongs",
+      "Account"
+    ],
+    "navBarVisible": [
+      "stem-loops, home",
+      "Play alongPlay",
+      "Song librarySongs",
+      "Account"
+    ]
+  }
+}

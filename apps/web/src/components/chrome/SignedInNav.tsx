@@ -5,7 +5,7 @@
 // landing page"). Two products side by side — Play along · Download loops —
 // then Song library ("Job history" until Slice 2a, "Library" until #316), Pricing and Account / Sign in. The current product is marked
 // (aria-current + the #275 edge-and-weight cue) and named by a tag beside the
-// wordmark, which stays visible below 760px where the items fold into a menu.
+// wordmark (on a phone the bar shows three items, see PHONES below).
 // Moises-style separation: products are peers in the bar, each with its own
 // page, and the marketing page of one product does not sell the other.
 //
@@ -27,10 +27,16 @@
 //     sign-in, and no request is made (no /api/auth/me hit per landing view).
 //     This file still imports nothing from @/lib/auth.
 //
-// WHY A CLIENT COMPONENT: marking the current page needs the pathname and the
-// phone menu needs state; both are view concerns.
+// PHONES: THREE ITEMS, NO MENU (A4, 2026-11-21; Jon's J1/J8 story). Below 760px the bar shows
+// Play · Songs · Account (Sign in when signed out) inline, so the Song library is one tap from
+// any page. Download loops and Pricing are not in the phone bar: they are on /account and in the
+// footer (components/landing/SiteChrome.tsx). Desktop keeps all five, with their full labels.
+// The old hamburger menu is gone: three items fit the bar, and a menu was an extra tap.
+//
+// WHY A CLIENT COMPONENT: marking the current page needs the pathname, and the Account/Sign in
+// label hint reads the cookie after mount; both are view concerns.
 import { usePathname } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 export type SignedInNavProps = {
   /**
@@ -55,13 +61,16 @@ type Item = {
   outlined?: true;
   /** Set on the two product items: the tag shown beside the wordmark. */
   product?: string;
+  /** The phone label, when it differs from the desktop one (Play, Songs). */
+  short?: string;
+  /** Desktop only: not in the phone bar (it lives on /account and in the footer). */
+  wideOnly?: true;
 };
 
 export default function SignedInNav({ signedIn }: SignedInNavProps) {
   // usePathname returns null outside a router (and in renderToStaticMarkup).
   // The nav still renders in full; only aria-current goes quiet.
   const pathname = usePathname() ?? '';
-  const [open, setOpen] = useState(false);
   const [hinted, setHinted] = useState(false);
   useEffect(() => {
     if (signedIn !== null) return;
@@ -72,20 +81,6 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
     }
   }, [signedIn]);
   const showAccount = signedIn ?? hinted;
-
-  // Escape closes the phone menu and hands focus back to the toggle (WAI-ARIA disclosure
-  // pattern), so a keyboard user is never left inside a menu they cannot see the end of.
-  const toggleRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      setOpen(false);
-      toggleRef.current?.focus();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open]);
 
   // Sign in from the Download loops page comes back to it, as the page's own button does. Only
   // there: elsewhere the login page's default landing is the right one, and no other item may
@@ -114,22 +109,24 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
   // "Play along" is current on the landing too: the landing IS the Play along
   // product page (2026-11-15), as /loops is Download loops'.
   const items: Item[] = [
-    { label: 'Play along', href: '/', match: (p) => p === '/' || p.startsWith('/jobs/'), product: 'Play along' },
-    { label: 'Download loops', href: '/loops', match: (p) => p === '/loops' || p.startsWith('/loops/'), product: 'Download loops' },
-    { label: 'Song library', href: '/history', match: (p) => p === '/history' },
+    { label: 'Play along', short: 'Play', href: '/', match: (p) => p === '/' || p.startsWith('/jobs/'), product: 'Play along' },
+    { label: 'Download loops', href: '/loops', match: (p) => p === '/loops' || p.startsWith('/loops/'), product: 'Download loops', wideOnly: true },
+    { label: 'Song library', short: 'Songs', href: '/history', match: (p) => p === '/history' },
     // P6 (Jon, 2026-11-17): Pricing is in the bar, signed in and out, on every
     // page including the landing. It belongs to neither product, so it carries
     // no `product` tag.
-    { label: 'Pricing', href: '/pricing', match: (p) => p === '/pricing' },
+    // A4: desktop only; on a phone Pricing is on /account and in the footer.
+    { label: 'Pricing', href: '/pricing', match: (p) => p === '/pricing', wideOnly: true },
     showAccount
       ? { label: 'Account', href: '/account', match: (p) => p.startsWith('/account'), outlined: true }
       : { label: 'Sign in', href: signInHref, match: (p) => p === '/login', outlined: true },
   ];
 
-  // Story 7.4: say which product you are in. The current pill already does on
-  // a wide screen, but below 760px the items are folded into the menu, so the
-  // only thing on screen is the wordmark. A short tag beside it carries the
-  // product at every width. Off a product page there is no tag: /history,
+  // Story 7.4: say which product you are in. The current pill does on a wide
+  // screen; the tag beside the wordmark carries it too. Below 760px: on Play
+  // along pages the tag gives way to the three items (the current "Play" item
+  // says it); on /loops, which has no phone item, the tag stays, small, under the
+  // wordmark (signed-in-nav.css), so Story 8.4 holds at every width. Off a product page there is no tag: /history,
   // /account, /pricing and the legal pages belong to neither.
   const product = items.find((it) => it.product && it.match(pathname))?.product ?? null;
 
@@ -143,39 +140,30 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
             <span className="sin-loops">loops</span>
           </a>
           {product && (
-            <span className="sin-product" data-testid="sin-product">
+            <span className="sin-product" data-testid="sin-product" data-product={product}>
               {product}
             </span>
           )}
         </div>
 
-        <button
-          type="button"
-          className="sin-toggle"
-          ref={toggleRef}
-          aria-label={open ? 'Close menu' : 'Open menu'}
-          aria-expanded={open}
-          aria-controls="sin-menu"
-          onClick={() => setOpen((v) => !v)}
-        >
-          <span className="sin-bars" aria-hidden="true" />
-        </button>
-
-        <nav
-          id="sin-menu"
-          className={`sin-nav${open ? ' sin-open' : ''}`}
-          aria-label="Main"
-        >
+        <nav id="sin-menu" className="sin-nav" aria-label="Main">
           {items.map((it) => {
             const current = it.match(pathname);
+            const cls = ['sin-item', current ? 'sin-current' : '', it.outlined ? 'sin-outlined' : '', it.wideOnly ? 'sin-wide-only' : '']
+              .filter(Boolean)
+              .join(' ');
             return (
-              <a
-                key={it.label}
-                className={`sin-item${current ? ' sin-current' : ''}${it.outlined ? ' sin-outlined' : ''}`}
-                href={it.href}
-                {...(current ? { 'aria-current': 'page' as const } : {})}
-              >
-                {it.label}
+              <a key={it.label} className={cls} href={it.href} {...(current ? { 'aria-current': 'page' as const } : {})}>
+                {it.short ? (
+                  // One label per width: the hidden one is display:none, so the accessible name
+                  // always matches what is on screen.
+                  <>
+                    <span className="sin-l-wide">{it.label}</span>
+                    <span className="sin-l-phone">{it.short}</span>
+                  </>
+                ) : (
+                  it.label
+                )}
               </a>
             );
           })}

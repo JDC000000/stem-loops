@@ -10,6 +10,7 @@ import { appCopyError, authErrorMessage, loginErrorMessage } from '@/lib/auth/lo
 import { sendMagicLink } from '@/lib/auth/magic-link';
 import { navigationGrace, trackEvent } from '@/lib/analytics';
 import { fieldStyle, buttonBase, primaryButton, secondaryButton, secondaryEmphasisButton, textButton } from '@/lib/ui/form-styles';
+import { clearPendingLink, isPendingReturnTo } from '@/lib/pending-link';
 
 type Mode = 'signin' | 'signup' | 'reset';
 type BusyAction = Mode | 'magic' | 'google';
@@ -20,11 +21,28 @@ const btn = buttonBase;
 const linkBtn = textButton;
 const LOGIN_FAILED = 'Sign-in did not complete. Please try again.';
 
+const safeStorage = (): Storage | null => {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+};
+
 export default function LoginForm({
   returnTo, initialError, initialMode = 'signin',
 }: { returnTo?: string; initialError?: string; initialMode?: Mode }) {
-  const dest = sanitizeReturnTo(returnTo, '/account');
+  const rawDest = sanitizeReturnTo(returnTo, '/account');
   const [mode, setMode] = useState<Mode>(initialMode);
+  // A4 (2026-11-21): Google is the first and largest option; every email path (password, sign-up,
+  // reset, one-time link) is folded under "Use email instead". It starts OPEN when the visitor is
+  // already on an email path: sign-up or reset mode, or an error that is about email/password.
+  const [emailOpen, setEmailOpen] = useState<boolean>(initialMode !== 'signin' || !!initialError);
+  // Sent here by the home form with a link waiting to start (lib/pending-link.ts). "Not your
+  // song?" drops it (and the marker), so whoever signs in here does not start someone else's song.
+  const [dropped, setDropped] = useState(false);
+  const dest = dropped && isPendingReturnTo(rawDest) ? '/' : rawDest;
+  const linkWaiting = isPendingReturnTo(dest);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   // F57 (copy audit v1.3.1): which action is in flight, not just "something is". Every
@@ -64,6 +82,9 @@ export default function LoginForm({
     try {
       const supabase = createBrowserClient();
       const { data } = supabase.auth.onAuthStateChange((event, session) => {
+        // A sign-in that is NOT the pending-link round trip, and any sign-out, drops a saved link
+        // (lib/pending-link.ts): another person signing in on this device never inherits it.
+        if (event === 'SIGNED_OUT' || (event === 'SIGNED_IN' && !isPendingReturnTo(dest))) clearPendingLink(safeStorage());
         if (event === 'SIGNED_IN' && session) window.location.assign(dest);
       });
       unsub = () => data.subscription.unsubscribe();
@@ -172,6 +193,21 @@ export default function LoginForm({
 
   const title = mode === 'signup' ? 'Create account' : mode === 'reset' ? 'Reset password' : 'Sign in';
 
+  // Errors and notices sit under the action that caused them: inside the email options when they
+  // are open, under the Google button when they are folded (a Google error must never be hidden).
+  const messages = (
+    <>
+      {error && <p role="alert" style={{ color: 'var(--status-failed, #f66)', margin: 0, fontSize: 14 }}>{error}</p>}
+      {error && offerSignIn && mode === 'signup' && (
+        <button type="button" style={linkBtn} data-testid="signup-sign-in"
+          onClick={() => { setError(null); setOfferSignIn(false); setMode('signin'); }}>
+          Sign in
+        </button>
+      )}
+      {notice && <p role="status" style={{ color: 'var(--status-done, #6c6)', margin: 0, fontSize: 14 }}>{notice}</p>}
+    </>
+  );
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, color: 'var(--text-primary)' }}>{title}</h1>
@@ -185,7 +221,39 @@ export default function LoginForm({
           Sign in to open your player. If you are new, create an account.
         </p>
       )}
+      {!initialError && linkWaiting && (
+        <div data-testid="login-link-waiting" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {/* True to app/api/jobs/route.ts: every signed-in link job is metered against the
+              account's monthly songs (bumpJobsUsed / bumpJobsUsedWithinQuota; a trial song too,
+              while one is left), and credits never pay for a link. */}
+          <p style={{ margin: 0, fontSize: 16, color: 'var(--text-secondary)' }}>
+            Sign in and your song starts straight away. It uses 1 of your monthly songs. New here? Google creates your free
+            account in one step.
+          </p>
+          <button type="button" style={{ ...linkBtn, alignSelf: 'flex-start' }} data-testid="login-link-drop"
+            onClick={() => { clearPendingLink(safeStorage()); setDropped(true); }}>
+            Not your song? Sign in without it
+          </button>
+        </div>
+      )}
 
+      {/* Google first and largest. It is the one lime action on the view while the email options
+          are folded; once they are open the email form's own button takes the lime, and Google
+          steps down to a plain secondary (still first and largest), so there is still exactly one
+          lime action, and "New here? Create account" stays the one emphasised secondary. */}
+      <button type="button" onClick={google} disabled={busy} data-testid="login-google"
+        style={{ ...btn, ...(emailOpen ? secondaryButton : primaryButton), minHeight: 56, fontSize: 17 }}>
+        {busyAction === 'google' ? 'Opening Google…' : 'Continue with Google'}
+      </button>
+      {!emailOpen && messages}
+
+      <button type="button" style={{ ...linkBtn, alignSelf: 'flex-start' }} data-testid="login-email-toggle"
+        aria-expanded={emailOpen} aria-controls="login-email"
+        onClick={() => setEmailOpen((o) => !o)}>
+        {emailOpen ? 'Hide email options' : 'Use email instead'}
+      </button>
+
+      <div id="login-email" hidden={!emailOpen} style={{ display: emailOpen ? 'flex' : undefined, flexDirection: 'column', gap: 14 }}>
       <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, color: 'var(--text-secondary)', fontSize: 14 }}>
           Email
@@ -237,8 +305,10 @@ export default function LoginForm({
             disable ad or script blockers, check your connection, then reload the page.
           </p>
         )}
+        {/* Lime only while the email options are open (they are hidden otherwise), so the view
+            always has exactly one lime action: this, or Google above. */}
         <button type="submit" disabled={busy || (mode === 'signup' && !captchaToken)}
-          style={{ ...btn, ...primaryButton }}>
+          style={{ ...btn, ...(emailOpen ? primaryButton : secondaryButton) }}>
           {busyAction === 'signup' ? 'Creating account…'
             : busyAction === 'reset' ? 'Sending reset link…'
               : busyAction === 'signin' ? 'Signing in…'
@@ -246,14 +316,7 @@ export default function LoginForm({
         </button>
       </form>
 
-      {error && <p role="alert" style={{ color: 'var(--status-failed, #f66)', margin: 0, fontSize: 14 }}>{error}</p>}
-      {error && offerSignIn && mode === 'signup' && (
-        <button type="button" style={linkBtn} data-testid="signup-sign-in"
-          onClick={() => { setError(null); setOfferSignIn(false); setMode('signin'); }}>
-          Sign in
-        </button>
-      )}
-      {notice && <p role="status" style={{ color: 'var(--status-done, #6c6)', margin: 0, fontSize: 14 }}>{notice}</p>}
+      {emailOpen && messages}
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 8px', fontSize: 14, color: 'var(--text-muted)' }}>
         {mode === 'signin' && (
@@ -286,10 +349,7 @@ export default function LoginForm({
         The one-time link signs you in to an account you already have. It does not create one.
         {mode === 'signin' && ' New here? Use Create account.'}
       </p>
-      <button type="button" onClick={google} disabled={busy}
-        style={{ ...btn, ...secondaryButton }}>
-        {busyAction === 'google' ? 'Opening Google…' : 'Continue with Google'}
-      </button>
+      </div>
     </div>
   );
 }

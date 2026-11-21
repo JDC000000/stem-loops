@@ -1,13 +1,14 @@
 // SEO-05. Never add aggregateRating or review: there are none, and the landing bans social proof.
-import { ENTITY_ONE_LINER, MAX_TRACK_MIN, OG_IMAGE, SAME_AS, SITE_URL } from './site.ts';
+import { entityOneLiner, MAX_TRACK_MIN, ogImage, SAME_AS, SITE_URL } from './site.ts';
 import { pageFor } from './pages.ts';
-import { CHORDS_LINE_SHOWN } from '../chords-claim.ts';
+import { chordsLineShown } from '../chords-claim.ts';
 
 const ORG = `${SITE_URL}/#org`;
 const APP = `${SITE_URL}/#app`;
 const JON = `${SITE_URL}/about#jon`;
 
 export function homeGraph() {
+  const chords = chordsLineShown();
   const about = pageFor('/about');
   const withPerson = Boolean(about && about.published); // M9: no Person URL until /about is live
   const org: Record<string, unknown> = {
@@ -18,22 +19,22 @@ export function homeGraph() {
   };
   const app: Record<string, unknown> = {
     '@type': 'WebApplication', '@id': APP, name: 'stem-loops', url: `${SITE_URL}/`,
-    description: ENTITY_ONE_LINER,
+    description: entityOneLiner(),
     applicationCategory: 'MultimediaApplication', applicationSubCategory: 'Music practice',
     operatingSystem: 'Windows, macOS, ChromeOS, Linux, Android, iOS',
-    browserRequirements: 'Requires a browser with the Web Audio API. Built and tested in Google Chrome on a computer; phones load lighter audio.',
+    browserRequirements: 'Requires a browser with the Web Audio API. Built for phones and computers and tested in Google Chrome; phones load lighter audio.',
     inLanguage: 'en', isAccessibleForFree: true,
     featureList: [
       'Six stems: drums, bass, guitar, keys, vocals and other',
       'A fader, mute and solo on every stem',
-      ...(CHORDS_LINE_SHOWN ? ['A chord track estimated from the audio'] : []), // DB-17
+      ...(chords ? ['A chord track estimated from the audio'] : []), // DB-17
       'Looping of a detected section',
       'Bar-length loops from each stem as 24-bit WAV files',
       `Uses the first ${MAX_TRACK_MIN} minutes of any song`,
       'Free plan: files deleted after 24 hours. Pro and Studio: a song library kept while subscribed, plus 30 days',
     ],
     offers: { '@type': 'Offer', price: '0', priceCurrency: 'CAD', category: 'free' },
-    image: `${SITE_URL}${OG_IMAGE}`,
+    image: `${SITE_URL}${ogImage()}`,
     publisher: { '@id': ORG },
     ...(withPerson ? { creator: { '@id': JON } } : {}),
   };

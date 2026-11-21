@@ -40,6 +40,8 @@ async function loadPage(user) {
     .replace(/from ['"]next\/navigation['"]/g, `from '${nav}'`)
     .replace(/from ['"]\.\/LoopsView['"]/g, `from '${view}'`)
     .replace(/from ['"]@\/components\/loops\/LoopsIntro['"]/g, `from '${intro}'`)
+    // A4: the page reads the DB-17 runtime chord switch and passes it to LoopsView (the real module).
+    .replace(/from ['"]@\/lib\/chords-claim['"]/g, `from '${pathToFileURL(join(WEB, 'src/lib/chords-claim.ts')).href}'`)
     .replace(
       /from ['"]@\/lib\/loops\/availability['"]/g,
       `from '${pathToFileURL(join(WEB, 'src/lib/loops/availability.ts')).href}'`,

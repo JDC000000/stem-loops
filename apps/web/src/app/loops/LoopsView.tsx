@@ -46,7 +46,6 @@ import type { Job } from '@stem-loops/types';
 import { LoopResults } from '@/components/LoopResults';
 import { getStoredHistoryEntries } from '@/lib/history';
 import { formatExpiresIn } from '@/lib/retention';
-import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
 import { jobLabel } from '@/lib/job-label';
 import {
   LOOPS_CLOSED_COPY,
@@ -196,9 +195,12 @@ function ago(ms: number): string {
 export default function LoopsView({
   initialJobId = null,
   deps = productionDeps,
+  chordsShown = true,
 }: {
   initialJobId?: string | null;
   deps?: LoopsViewDeps;
+  /** DB-17 chord-claim switch, read on the server (lib/chords-claim.ts) and passed down: a client component cannot read it. */
+  chordsShown?: boolean;
 }) {
   const [songs, setSongs] = useState<SongEntry[] | null>(null);
   const [jobId, setJobId] = useState<string | null>(initialJobId);
@@ -443,7 +445,7 @@ export default function LoopsView({
               <p className="lp-muted" role="status" data-testid="lp-no-loops">
                 We found no steady beat in this song, so there are no bar-length loops to cut.{' '}
                 {/* DB-17 (lib/chords-claim.ts): no chord claim when the switch is off. */}
-                {CHORDS_LINE_SHOWN ? 'The stems and chords are still in the player.' : 'The stems are still in the player.'}
+                {chordsShown ? 'The stems and chords are still in the player.' : 'The stems are still in the player.'}
               </p>
             ) : (
               <LoopResults

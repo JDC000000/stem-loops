@@ -5,9 +5,16 @@ import type { Metadata } from 'next';
 import { pageMetadata } from '@/lib/seo/meta';
 import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
-import { FaqItem, HELP_SECTIONS } from '@/components/landing/faq';
+import { FaqItem, helpSections } from '@/components/landing/faq';
 
-export const metadata: Metadata = pageMetadata(pageFor('/help')!);
+// generateMetadata: the shared Open Graph image is a DB-17 chord claim (read at build: static page).
+export function generateMetadata(): Metadata {
+  return pageMetadata(pageFor('/help')!);
+}
+
+// STATIC and CDN-cached (PR #332, round 2): no `dynamic` export. The DB-17 chord switch
+// (lib/chords-claim.ts) is read when the page is BUILT; a Vercel env change needs a Redeploy,
+// which rebuilds this page with the new value.
 
 export default function HelpPage() {
   return (
@@ -17,7 +24,7 @@ export default function HelpPage() {
         <div className="container">
           <div className="reading">
             <h1>Help</h1>
-            {HELP_SECTIONS.map((s) => (
+            {helpSections().map((s) => (
               <section key={s.heading} aria-label={s.heading}>
                 <h2>{s.heading}</h2>
                 <div className="faq">

@@ -6,6 +6,7 @@
 import { useState, type FormEvent } from 'react';
 import { createBrowserClient } from '@/lib/auth/supabase';
 import { clearBufferedEdits } from '@/chord/edit-collector';
+import { clearPendingLink } from '@/lib/pending-link';
 import { fieldStyle, buttonBase } from '@/lib/ui/form-styles';
 
 const input = fieldStyle;
@@ -45,6 +46,12 @@ export default function DeleteAccountForm({ email }: { email: string }) {
         clearBufferedEdits();
       } catch {
         /* non-fatal; buffer is best-effort anyway */
+      }
+      // A link saved for a sign-in round trip (lib/pending-link.ts) must not outlive the account.
+      try {
+        clearPendingLink(window.localStorage);
+      } catch {
+        /* blocked storage holds nothing */
       }
       try {
         await createBrowserClient().auth.signOut({ scope: 'local' });

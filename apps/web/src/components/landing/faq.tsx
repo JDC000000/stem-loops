@@ -7,17 +7,22 @@
 // it must, and the answers point there.
 import type { ReactNode } from 'react';
 import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
-import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
+import { chordsLineShown } from '@/lib/chords-claim';
 
 export type FaqEntry = { id: string; q: string; a: ReactNode };
 
-export const FAQ: Record<string, FaqEntry> = {
+/**
+ * Every entry, built for one value of the DB-17 chords switch (lib/chords-claim.ts). A function,
+ * not a module constant: the switch is read when the page renders (at build for the static pages).
+ */
+export function faqEntries(chords: boolean = chordsLineShown()): Record<string, FaqEntry> {
+  return {
   get: {
     id: 'faq-get',
     q: 'What do I actually get?',
     a: (
       <p>
-        {CHORDS_LINE_SHOWN
+        {chords
           ? 'A player, in your browser, with the song’s six stems on their own faders and a chord track running above them.'
           : 'A player, in your browser, with the song’s six stems on their own faders.'}{' '}
         Mute the guitar and play the guitar part; solo the bass to work it out; loop the chorus until it sticks.
@@ -29,9 +34,10 @@ export const FAQ: Record<string, FaqEntry> = {
     q: 'Do I need an account?',
     a: (
       <p>
-        Not to start one. Running a job works signed out, and so does playing a demo song. To open your own songs in
-        the player you sign in — that is where{' '}
-        {CHORDS_LINE_SHOWN ? 'the stems and the chord track are shown' : 'the stems are shown'}. If you are new, you create an account on the <a href="/login">sign-in page</a>. A
+        To play your own songs, yes: a free one. When you paste a link signed out, you sign in first and the song
+        starts as soon as you are in. A file you upload starts straight away and asks you to sign in when its player
+        opens. The demo songs open without signing in. To open your own songs you sign in, which is where{' '}
+        {chords ? 'the stems and the chord track are shown' : 'the stems are shown'}. If you are new, you create an account on the <a href="/login">sign-in page</a>. A
         one-time link sent to your email only signs you back in to an account that already exists; it does not create
         one.
       </p>
@@ -42,8 +48,8 @@ export const FAQ: Record<string, FaqEntry> = {
     q: 'Which browsers work?',
     a: (
       <p>
-        Chrome on a computer, which is what the player is built and tested against. On a phone the player loads lighter
-        audio so all six stems fit in memory. Phone support is new, and other browsers are not tested yet.
+        Your phone or your computer: the player is built for both, and tested in Chrome. On a phone it loads lighter
+        audio so all six stems fit in memory. Other browsers are not tested yet.
       </p>
     ),
   },
@@ -87,8 +93,8 @@ export const FAQ: Record<string, FaqEntry> = {
     q: 'How clean is the split?',
     a: (
       <p>
-        Not perfect. Dense passages can leave a little bleed from other instruments in a stem. The before-and-after on
-        the home page is a 4-bar MP3 crop of the tool’s real output, so you can judge for yourself.
+        Not perfect. Dense passages can leave a little bleed from other instruments in a stem. The demo songs on the
+        home page are the tool’s real output: solo a part and judge for yourself.
       </p>
     ),
   },
@@ -99,7 +105,7 @@ export const FAQ: Record<string, FaqEntry> = {
       <p>
         {/* DB-17: with the chords switch off this stays a full disclosure (it names no feature, and
             the privacy notice lists every processor) rather than dropping a service silently. */}
-        {CHORDS_LINE_SHOWN
+        {chords
           ? 'Your link or file goes to our storage, and the audio goes to two outside services: one splits it into stems, one estimates the chords.'
           : 'Your link or file goes to our storage, and the audio goes to the outside services named in the privacy notice for processing.'}{' '}
         {/* Source of truth: 24 hours = RETENTION_HOURS, 30 days = PAID_RETENTION_GRACE_DAYS
@@ -129,29 +135,34 @@ export const FAQ: Record<string, FaqEntry> = {
       <p>
         Yes, with public videos on youtube.com or youtu.be, including Shorts and YouTube Music links. Playlists, private,
         age-restricted and live videos don’t work. If YouTube blocks a fetch, try again in a few minutes or upload the
-        file. A linked song counts toward your monthly songs, just like an upload.
+        file. A song you add from a link uses 1 of your monthly songs.
       </p>
     ) : (
       <p>Not right now: YouTube links are paused. Upload the audio or video file instead.</p>
     ),
   },
-};
+  };
+}
 
 /** The home page's five (P7: "Home-page FAQ ≤ 5"). Everything is on /help. */
 // DB-17 (lib/chords-claim.ts): with the chords switch off, the chords question leaves the home
-// page (and /help: see HELP_SECTIONS).
-export const HOME_FAQ: readonly FaqEntry[] = CHORDS_LINE_SHOWN
-  ? [FAQ.account, FAQ.chords, FAQ.time, FAQ.files, FAQ.youtube]
-  : [FAQ.account, FAQ.time, FAQ.files, FAQ.youtube];
+// page (and /help: see helpSections).
+export function homeFaq(chords: boolean = chordsLineShown()): readonly FaqEntry[] {
+  const FAQ = faqEntries(chords);
+  return chords ? [FAQ.account, FAQ.chords, FAQ.time, FAQ.files, FAQ.youtube] : [FAQ.account, FAQ.time, FAQ.files, FAQ.youtube];
+}
 
 /** /help, grouped. Every entry appears exactly once. */
 // DB-17: with the chords switch off, "How good are the chords?" leaves /help as well — the
 // question itself presents a chord track as part of what a new song gets.
-export const HELP_SECTIONS: readonly { heading: string; entries: readonly FaqEntry[] }[] = [
-  { heading: 'Getting started', entries: [FAQ.get, FAQ.account, FAQ.youtube, FAQ.browsers, FAQ.time] },
-  { heading: 'Playing along', entries: CHORDS_LINE_SHOWN ? [FAQ.chords, FAQ.split, FAQ.tempo] : [FAQ.split, FAQ.tempo] },
-  { heading: 'Your songs', entries: [FAQ.files, FAQ.rights] },
-];
+export function helpSections(chords: boolean = chordsLineShown()): readonly { heading: string; entries: readonly FaqEntry[] }[] {
+  const FAQ = faqEntries(chords);
+  return [
+    { heading: 'Getting started', entries: [FAQ.get, FAQ.account, FAQ.youtube, FAQ.browsers, FAQ.time] },
+    { heading: 'Playing along', entries: chords ? [FAQ.chords, FAQ.split, FAQ.tempo] : [FAQ.split, FAQ.tempo] },
+    { heading: 'Your songs', entries: [FAQ.files, FAQ.rights] },
+  ];
+}
 
 /** One question, as a native disclosure. The markup the landing tests read. */
 export function FaqItem({ entry }: { entry: FaqEntry }) {

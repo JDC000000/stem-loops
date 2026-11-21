@@ -16,8 +16,9 @@ import ts from 'typescript';
 
 import {
   deriveSections, sanitizeRegions, sameRegion, formatTime, nameRegions, normalizeLabel,
-  NO_RUN, tapSection, longPressSection, toggleRunLoop, runRegion, runFromRegion, runName, runReadout,
-  stripLegend, placeInSong,
+  NO_RUN, tapChip, holdChip, loopHere, sectionAt, restartTarget, runRegion, runFromRegion, runName, runReadout,
+  stripLegend, placeInSong, partName, SECTION_TONES, STRIP_HINT, RUN_HINT,
+  maxPartSec, splitAtCuts, MAX_PART_BARS, PART_SLACK_BARS, MAX_PART_SEC_NO_BPM, RESTART_GRACE_SEC,
 } from '../src/lib/play/sections.ts';
 import { withDom } from './helpers/dom.mjs';
 
@@ -63,7 +64,9 @@ function realJob() {
   return rows;
 }
 
-const expectedRegions = () => EXPECTED.map(([label, a, b]) => ({ label, startSec: at(a), endSec: at(b) }));
+// R8: with a known duration the last section runs to the end of the track.
+const expectedRegions = (dur) =>
+  EXPECTED.map(([label, a, b], i) => ({ label, startSec: at(a), endSec: dur !== undefined && i === EXPECTED.length - 1 ? dur : at(b) }));
 const shape = (rs) => rs.map((r) => ({ label: r.label, startSec: r.startSec, endSec: r.endSec }));
 const row = (label, s, e) => ({ section_label: label, start_sec: s, end_sec: e });
 
@@ -78,7 +81,8 @@ test('fixture really is 60 loops across 6 stems on a 142.6 s track', () => {
 // ─── R5 / R6: six stems collapse to one set of musical sections ─────────────
 test('six stems x 10 loops collapse to the 7 musical sections, not 60 rows', () => {
   const out = deriveSections(realJob(), { durationSec: TRACK_SEC });
-  assert.deepEqual(shape(out), expectedRegions());
+  assert.deepEqual(shape(out), expectedRegions(TRACK_SEC));
+  assert.deepEqual(shape(deriveSections(realJob())), expectedRegions(), 'no duration: the last section keeps its own end');
 });
 
 test('result does not depend on row order (DB returns ORDER BY stem, start_sec)', () => {
@@ -112,9 +116,104 @@ test('consecutive same-label loops form ONE region (chorus is a section, not fou
   assert.deepEqual(shape(out), [{ label: 'chorus', startSec: 0, endSec: 40 }]);
 });
 
-test('same label with a real gap between is two regions, even with nothing in the gap', () => {
+test('R8 + R9 (D2): same label with a gap between is ONE region (the gap is closed, then they merge)', () => {
+  // Was "two regions" before 2026-11-21: the worker's rows are 4-bar samples,
+  // so a gap is unlabelled song, not silence, and two samples of one label
+  // with nothing else between them are one section.
   const out = deriveSections([row('chorus', 0, 10), row('chorus', 20, 30)]);
-  assert.equal(out.length, 2);
+  assert.deepEqual(shape(out), [{ label: 'chorus', startSec: 0, endSec: 30 }]);
+});
+
+// ─── R8 / R9: contiguous sections (design review D2, Jon 2026-11-21) ────────
+// The production demo (Lucky Ticket, 3:33): 10 four-bar samples ~21 s apart, so
+// 56% of the song was in no section and "Chorus 1" was 1:50-2:00. One stem's
+// rows, verbatim from GET /api/jobs/<demo> (2026-11-20).
+const DEMO_SEC = 213.24074074074073;
+const DEMO_ROWS = [
+  ['intro', '0.297928993913276', '9.70969369979563'],
+  ['verse', '23.8267863285493', '33.2385510344317'],
+  ['verse', '45.0028916590044', '54.4146563648867'],
+  ['verse', '66.1777847417369', '75.5895494476193'],
+  ['verse', '87.3574396515603', '96.7692043574427'],
+  ['chorus', '110.885229433112', '120.296994138995'],
+  ['chorus', '132.062515073621', '141.474279779503'],
+  ['verse', '153.239189021931', '162.650953727813'],
+  ['verse', '174.424504212963', '183.836268918845'],
+  ['outro', '195.587009957218', '204.998774663101'],
+].map(([l, a, b]) => ({ ...row(l, a, b), bpm: '102' })); // every row carries the job's tempo
+
+test('R8/R9/R10 the demo song: 10 samples become 6 contiguous parts covering 100% of the track, none over 20 bars', () => {
+  const covered = (rs) => rs.reduce((n, r) => n + (r.endSec - r.startSec), 0);
+  const sampled = DEMO_ROWS.reduce((n, r) => n + (Number(r.end_sec) - Number(r.start_sec)), 0);
+  assert.ok(sampled / DEMO_SEC < 0.45, `the rows alone cover ${(100 * sampled / DEMO_SEC).toFixed(1)}%`);
+  const out = deriveSections(DEMO_ROWS, { durationSec: DEMO_SEC });
+  assert.deepEqual(shape(out), [
+    { label: 'intro', startSec: 0, endSec: 23.827 },
+    // R9 merged four "verse" samples into 0:23-1:50 (87 s, 37 bars); R10 cuts
+    // it back at a sample start into the two most even chunks that fit.
+    { label: 'verse', startSec: 23.827, endSec: 66.178 },
+    { label: 'verse', startSec: 66.178, endSec: 110.885 },
+    { label: 'chorus', startSec: 110.885, endSec: 153.239 },
+    { label: 'verse', startSec: 153.239, endSec: 195.587 },
+    { label: 'outro', startSec: 195.587, endSec: 213.241 },
+  ]);
+  const bar = 240 / 102;
+  for (const r of out) assert.ok((r.endSec - r.startSec) / bar <= MAX_PART_BARS + PART_SLACK_BARS, `a part of ${((r.endSec - r.startSec) / bar).toFixed(1)} bars`);
+  assert.ok(Math.abs(covered(out) - DEMO_SEC) < 0.001, 'every second of the song is in a section');
+  for (let i = 1; i < out.length; i++) assert.equal(out[i].startSec, out[i - 1].endSec, `gap before part ${i + 1}`);
+  // The chorus is the whole chorus (1:50-2:33, 18 bars), not a 4-bar slice.
+  assert.equal(formatTime(out[3].startSec) + '-' + formatTime(out[3].endSec), '1:50-2:33');
+});
+
+// ─── R10: the cap (review H1 on #330) ──────────────────────────────────────
+test('R10: the cap is 16 bars + one 4-bar loop of slack at the song tempo, 45 s without one', () => {
+  assert.equal(MAX_PART_BARS, 16);
+  assert.equal(PART_SLACK_BARS, 4);
+  assert.ok(Math.abs(maxPartSec(102) - (20 * 4 * 60) / 102) < 1e-9);
+  assert.equal(maxPartSec(120), 40);
+  for (const b of [null, undefined, NaN, 0, 30, 300]) assert.equal(maxPartSec(b), MAX_PART_SEC_NO_BPM);
+  assert.equal(MAX_PART_SEC_NO_BPM, 45);
+});
+
+test('R10: splitAtCuts makes the FEWEST chunks that fit, as even as possible, only at the given cuts', () => {
+  assert.deepEqual(splitAtCuts(0, 30, [10, 20], 40), [0, 30], 'short enough: untouched');
+  assert.deepEqual(splitAtCuts(23.827, 110.885, [0, 23.827, 45.003, 66.178, 87.357, 110.885], 47.06), [23.827, 66.178, 110.885], 'two even chunks, not 45|66');
+  assert.deepEqual(splitAtCuts(0, 120, Array.from({ length: 60 }, (_, i) => i * 2), 45), [0, 40, 80, 120]);
+  assert.deepEqual(splitAtCuts(0, 200, [150], 45), [0, 150, 200], 'no cut in reach: the next cut is the only choice');
+  assert.deepEqual(splitAtCuts(0, 200, [], 45), [0, 200], 'no cut at all: one long part (nowhere to cut)');
+});
+
+test('R10: one label for the whole song is no longer one 213 s part', () => {
+  const out = deriveSections(DEMO_ROWS.map((r) => ({ ...r, section_label: 'verse' })), { durationSec: DEMO_SEC });
+  assert.ok(out.length >= 5, `${out.length} parts`);
+  for (const r of out) assert.ok(r.endSec - r.startSec <= maxPartSec(102) + 0.05, `${r.startSec}-${r.endSec}`);
+  const cuts = new Set(DEMO_ROWS.map((r) => Math.round(Number(r.start_sec) * 1000) / 1000));
+  for (const r of out.slice(1)) assert.ok(cuts.has(r.startSec), `part start ${r.startSec} is a sample start`);
+});
+
+test('R10: a 10-minute song gets parts of at most 20 bars (synthetic, 120 bpm, a sample every 20 s)', () => {
+  const labels = 'intro verse verse verse chorus chorus verse verse verse verse chorus bridge verse verse verse verse verse chorus chorus chorus verse verse verse verse verse verse chorus chorus verse outro'.split(' ');
+  const rows = labels.map((l, i) => ({ ...row(l, i * 20 + 0.5, i * 20 + 8.5), bpm: 120 }));
+  const out = deriveSections(rows, { durationSec: 600 });
+  assert.equal(out.length, 19);
+  assert.ok(Math.max(...out.map((r) => r.endSec - r.startSec)) <= 40 + 1e-9);
+  const noBpm = deriveSections(rows.map((r) => ({ ...r, bpm: null })), { durationSec: 600 });
+  assert.ok(Math.max(...noBpm.map((r) => r.endSec - r.startSec)) <= 45);
+  assert.equal(deriveSections(rows, { durationSec: 600, bpm: 60 }).length < out.length, true, 'an explicit slower tempo allows longer parts');
+});
+
+test('R9: same-label samples further apart than 2 samples are NOT merged (unknown music between them)', () => {
+  // 10 s samples; 25 s gap (2.5 samples) -> two parts; 15 s gap (1.5 samples) -> one.
+  // bpm 60 puts the R10 cap at 80 s, so only the gap rule can keep these apart.
+  assert.equal(deriveSections([row('verse', 0, 10), row('verse', 35, 45)], { durationSec: 50, bpm: 60 }).length, 2);
+  assert.equal(deriveSections([row('verse', 0, 10), row('verse', 25, 35)], { durationSec: 40, bpm: 60 }).length, 1);
+});
+
+test('R8: music before the first sample belongs to the first section; after the last, to the last', () => {
+  assert.deepEqual(shape(deriveSections([row('verse', 5, 10), row('chorus', 20, 30)], { durationSec: 40 })), [
+    { label: 'verse', startSec: 0, endSec: 20 },
+    { label: 'chorus', startSec: 20, endSec: 40 },
+  ]);
 });
 
 test('same label separated by a different label is two regions', () => {
@@ -128,7 +227,7 @@ test('null, undefined, empty, blank and non-string labels are ignored, not throw
     row(null, 0, 10), row(undefined, 0, 10), row('', 0, 10), row('   ', 0, 10), row(42, 0, 10),
     row('verse', 10, 20),
   ];
-  assert.deepEqual(shape(deriveSections(rows)), [{ label: 'verse', startSec: 10, endSec: 20 }]);
+  assert.deepEqual(shape(deriveSections(rows)), [{ label: 'verse', startSec: 0, endSec: 20 }], 'R8: starts at 0');
 });
 
 test('a job with no section labels at all returns [] cleanly', () => {
@@ -148,7 +247,12 @@ test('60 identically-labelled rows are one region', () => {
   const rows = Array.from({ length: 60 }, (_, i) => row('chorus', (i % 6) * 0 + 0, 23.272));
   assert.deepEqual(shape(deriveSections(rows)), [{ label: 'chorus', startSec: 0, endSec: 23.272 }]);
   const tiled = Array.from({ length: 60 }, (_, i) => row('verse', i * 2, i * 2 + 2));
-  assert.deepEqual(shape(deriveSections(tiled)), [{ label: 'verse', startSec: 0, endSec: 120 }]);
+  // R10 (no tempo -> 45 s cap): one 120 s "verse" is cut at sample starts.
+  assert.deepEqual(shape(deriveSections(tiled)), [
+    { label: 'verse', startSec: 0, endSec: 40 },
+    { label: 'verse', startSec: 40, endSec: 80 },
+    { label: 'verse', startSec: 80, endSec: 120 },
+  ]);
 });
 
 // ─── empty / degenerate input ───────────────────────────────────────────────
@@ -183,19 +287,22 @@ test('a backwards row cannot lend phantom coverage to the rows around it', () =>
 });
 
 test('numeric strings from pg are coerced; blank string is not 0', () => {
-  assert.deepEqual(shape(deriveSections([row('verse', '11.636', '23.272')])), [{ label: 'verse', startSec: 11.636, endSec: 23.272 }]);
+  assert.deepEqual(shape(deriveSections([row('verse', '11.636', '23.272')])), [{ label: 'verse', startSec: 0, endSec: 23.272 }]);
+  assert.deepEqual(shape(deriveSections([row('intro', '0', '11.636'), row('verse', '11.636', '23.272')])).map((r) => r.startSec), [0, 11.636]);
   assert.deepEqual(deriveSections([row('verse', '', '5')]), []);
 });
 
 test('a region longer than the track is clamped to it; one starting past the end is dropped', () => {
   const out = deriveSections([row('outro', 130, 500), row('bridge', 200, 300)], { durationSec: TRACK_SEC });
-  assert.deepEqual(shape(out), [{ label: 'outro', startSec: 130, endSec: TRACK_SEC }]);
+  // R8: the only section starts at 0; R10: 0-142.6 is over the 45 s cap, so it
+  // is cut at the one sample start there is (130).
+  assert.deepEqual(shape(out), [{ label: 'outro', startSec: 0, endSec: 130 }, { label: 'outro', startSec: 130, endSec: TRACK_SEC }]);
   assert.ok(out.every((r) => r.endSec <= TRACK_SEC));
 });
 
 test('without a duration nothing is clamped; a nonsense duration is ignored', () => {
-  assert.equal(deriveSections([row('outro', 130, 500)])[0].endSec, 500);
-  for (const d of [0, -5, NaN, Infinity]) assert.equal(deriveSections([row('outro', 130, 500)], { durationSec: d })[0].endSec, 500);
+  assert.equal(deriveSections([row('outro', 130, 500)]).at(-1).endSec, 500);
+  for (const d of [0, -5, NaN, Infinity]) assert.equal(deriveSections([row('outro', 130, 500)], { durationSec: d }).at(-1).endSec, 500);
 });
 
 test('negative start is clamped to 0', () => {
@@ -218,8 +325,12 @@ test('stems that disagree on a boundary by <50 ms still give clean, abutting reg
   assert.ok(out.every((r) => r.endSec - r.startSec > 10));
 });
 
-test('a boundary gap of more than 50 ms is real and keeps two regions', () => {
-  assert.equal(deriveSections([row('verse', 0, 10), row('verse', 10.2, 20)]).length, 2);
+test('a boundary gap of more than 50 ms is real: two labels stay two regions, closed up (R8); one label merges (R9)', () => {
+  assert.deepEqual(shape(deriveSections([row('verse', 0, 10), row('chorus', 10.2, 20)])), [
+    { label: 'verse', startSec: 0, endSec: 10.2 },
+    { label: 'chorus', startSec: 10.2, endSec: 20 },
+  ]);
+  assert.equal(deriveSections([row('verse', 0, 10), row('verse', 10.2, 20)]).length, 1);
 });
 
 // ─── R5: overlap resolution ─────────────────────────────────────────────────
@@ -256,18 +367,24 @@ test('overlapping rows with the same label merge into one region', () => {
 });
 
 // ─── R7: output invariants ──────────────────────────────────────────────────
-function assertWellFormed(out) {
+function assertWellFormed(out, durationSec) {
   for (let i = 0; i < out.length; i++) {
     assert.ok(Number.isFinite(out[i].startSec) && Number.isFinite(out[i].endSec));
     assert.ok(out[i].endSec > out[i].startSec, `region ${i} has end <= start`);
     assert.ok(out[i].startSec >= 0);
     if (i > 0) assert.ok(out[i].startSec >= out[i - 1].endSec, `region ${i} overlaps the previous`);
     if (i > 0) assert.ok(out[i].startSec >= out[i - 1].startSec, 'not sorted by startSec');
+    // R8: contiguous from 0; R9: neighbours never share a label.
+    if (i === 0) assert.equal(out[i].startSec, 0, 'the first region starts at 0');
+    if (i > 0) assert.equal(out[i].startSec, out[i - 1].endSec, `a gap before region ${i}`);
+    // (Neighbours may share a label since R10 splits a long part, or R9 refuses a far merge.)
   }
+  if (durationSec !== undefined && out.length > 0) assert.equal(out[out.length - 1].endSec, Math.round(durationSec * 1000) / 1000, 'the last region runs to the end');
 }
 
 test('output is sorted by startSec with no overlaps (real job)', () => {
-  assertWellFormed(deriveSections(realJob(), { durationSec: TRACK_SEC }));
+  assertWellFormed(deriveSections(realJob(), { durationSec: TRACK_SEC }), TRACK_SEC);
+  assertWellFormed(deriveSections(DEMO_ROWS, { durationSec: DEMO_SEC }), DEMO_SEC);
 });
 
 test('output stays sorted/non-overlapping under adversarial random input', () => {
@@ -279,7 +396,7 @@ test('output stays sorted/non-overlapping under adversarial random input', () =>
       const s = rnd() * 150 - 5;
       return row(labels[Math.floor(rnd() * labels.length)], s, s + rnd() * 40 - 3);
     });
-    assertWellFormed(deriveSections(rows, { durationSec: 142.6 }));
+    assertWellFormed(deriveSections(rows, { durationSec: 142.6 }), 142.6);
   }
 });
 
@@ -322,106 +439,114 @@ test('sameRegion compares spans with tolerance and ignores labels; null is never
   assert.ok(!sameRegion({ startSec: 1, endSec: 2 }, null));
 });
 
-// ─── P2.1: runs of sections — EVERY row of the design table ───────────────
-// (DESIGN-PROPOSAL v1.4, P2.1; the mockup's pickSection is the same function.)
+// ─── D4 (Jon 2026-11-21): tap JUMPS, hold LOOPS — EVERY row of the table ───
+// (lib/play/sections.ts, the table above tapChip.) This replaces the P2.1
+// "tap = loop" rows and the QA C-10 (option b) rows, which pinned what a TAP
+// did with the loop off: a tap no longer loops at all. The P2 run model
+// (extend / shrink) is unchanged; it moved from the tap to the hold.
 const run = (lo, hi, on = true) => ({ run: { lo, hi }, on });
 
-test('P2.1 row 1 — no loop · tap chip X -> loop [X]', () => {
-  assert.deepEqual(tapSection(NO_RUN, 3), { state: run(3, 3), extended: false });
+test('D4 tap · no loop -> jump, nothing looped', () => {
+  assert.deepEqual(tapChip(NO_RUN, 3), { state: NO_RUN, jump: true });
 });
 
-test('P2.1 row 2 — run [X] (one chip) · tap X -> clear', () => {
-  assert.deepEqual(tapSection(run(3, 3), 3), { state: NO_RUN, extended: false });
+test('D4 tap · looping, a chip OF the run -> loop off (run remembered), no jump', () => {
+  assert.deepEqual(tapChip(run(3, 3), 3), { state: run(3, 3, false), jump: false }, 'the single looped chip');
+  for (const i of [2, 3, 4]) assert.deepEqual(tapChip(run(2, 4), i), { state: run(2, 4, false), jump: false }, `chip ${i} of a run`);
 });
 
-test('P2.1 row 3 — run [i..j] · tap OUTSIDE, either side -> extend to [min(i,X)..max(j,X)]', () => {
-  assert.deepEqual(tapSection(run(2, 3), 5), { state: run(2, 5), extended: true }, 'after');
-  assert.deepEqual(tapSection(run(2, 3), 0), { state: run(0, 3), extended: true }, 'before');
-  assert.deepEqual(tapSection(run(2, 2), 3), { state: run(2, 3), extended: true }, 'a single chip extends too');
-  assert.deepEqual(tapSection(run(2, 2), 1), { state: run(1, 2), extended: true });
+test('D4 tap · looping, a chip OUTSIDE the run -> jump there, the loop goes off (remembered)', () => {
+  assert.deepEqual(tapChip(run(2, 3), 5), { state: run(2, 3, false), jump: true });
+  assert.deepEqual(tapChip(run(2, 3), 0), { state: run(2, 3, false), jump: true });
 });
 
-test('P2.1 row 4 — run [i..j], 2+ chips · tap INSIDE -> shrink to that chip', () => {
-  for (const i of [2, 3, 4]) assert.deepEqual(tapSection(run(2, 4), i), { state: run(i, i), extended: false }, `chip ${i}`);
+test('D4 tap · loop off with a run remembered -> jump, the run stays remembered (never extended)', () => {
+  // The C-10 repro (loop off on Verse 1, tap Outro used to give Verse 1 -> Outro) cannot recur: a tap never loops.
+  assert.deepEqual(tapChip(run(2, 2, false), 5), { state: run(2, 2, false), jump: true });
+  assert.deepEqual(tapChip(run(1, 3, false), 2), { state: run(1, 3, false), jump: true }, 'inside the remembered run');
 });
 
-test('P2.1 row 5 — long-press any chip -> loop only this', () => {
-  assert.deepEqual(longPressSection(NO_RUN, 4), run(4, 4));
-  assert.deepEqual(longPressSection(run(0, 6), 2), run(2, 2), 'inside a run');
-  assert.deepEqual(longPressSection(run(0, 1), 5), run(5, 5), 'outside a run: no extend');
-  assert.deepEqual(longPressSection(run(1, 2, false), 2), run(2, 2), 'loop off: on again, alone');
-});
-
-test('P2.1 row 6 — loop button, loop on -> off, the run is remembered', () => {
-  assert.deepEqual(toggleRunLoop(run(1, 3)), run(1, 3, false));
-});
-
-test('P2.1 row 7 — loop button, loop off with a run remembered -> back on', () => {
-  assert.deepEqual(toggleRunLoop(run(1, 3, false)), run(1, 3));
-});
-
-test('P2.1 row 8 — loop button, loop off and nothing remembered -> no change (disabled)', () => {
-  assert.deepEqual(toggleRunLoop(NO_RUN), NO_RUN);
-});
-
-// QA C-10, Jon 2026-11-18 (option b): with the loop OFF, a tap loops just the
-// tapped section. It never extends the remembered run and never fires the hint.
-test('P2.1 (C-10 b) — loop off · tap OUTSIDE the remembered run -> loop just that chip, NOT extend', () => {
-  assert.deepEqual(tapSection(run(1, 2, false), 4), { state: run(4, 4), extended: false }, 'after the run');
-  assert.deepEqual(tapSection(run(2, 3, false), 0), { state: run(0, 0), extended: false }, 'before the run');
-  assert.deepEqual(tapSection(run(2, 2, false), 5), { state: run(5, 5), extended: false }, 'a remembered single chip, far tap');
-  assert.deepEqual(tapSection(run(2, 2, false), 3), { state: run(3, 3), extended: false }, 'a remembered single chip, adjacent tap');
-});
-
-test('P2.1 (C-10 b) — loop off · tap INSIDE the remembered run -> loop just that chip', () => {
-  for (const i of [1, 2, 3]) assert.deepEqual(tapSection(run(1, 3, false), i), { state: run(i, i), extended: false }, `chip ${i}`);
-  assert.deepEqual(tapSection(run(2, 2, false), 2), { state: run(2, 2), extended: false }, 'a remembered single chip loops, it does not clear');
-});
-
-test('P2.1 (C-10 b) — loop off, then any tap: the result is always [X] alone and on, whatever was remembered', () => {
-  const remembered = [null, [0, 0], [0, 6], [2, 4], [5, 5]];
-  for (const r of remembered) {
-    const state = r ? run(r[0], r[1], false) : NO_RUN;
-    for (let x = 0; x <= 6; x++) {
-      assert.deepEqual(tapSection(state, x), { state: run(x, x), extended: false }, `remembered ${JSON.stringify(r)} tap ${x}`);
-    }
+test('D4 hold · no loop or loop off -> loop [X] alone', () => {
+  assert.deepEqual(holdChip(NO_RUN, 4), { state: run(4, 4), extended: false });
+  for (const r of [[0, 0], [0, 6], [2, 4], [5, 5]]) {
+    for (let x = 0; x <= 6; x++) assert.deepEqual(holdChip(run(r[0], r[1], false), x), { state: run(x, x), extended: false }, `remembered ${r} hold ${x}`);
   }
 });
 
-test('P2.1 (C-10 b) — the C-10 repro: loop off on Verse 1, tap Outro -> loops Outro only, not Verse 1 -> Outro', () => {
-  // QA C-10: `{run:[2], on:false}` + tap 5 used to give [2..5], on.
-  assert.deepEqual(tapSection(run(2, 2, false), 5).state, run(5, 5));
+test('D4 hold · looping [i..j], hold OUTSIDE, either side -> extend to [min(i,X)..max(j,X)] (P2)', () => {
+  assert.deepEqual(holdChip(run(2, 3), 5), { state: run(2, 5), extended: true }, 'after');
+  assert.deepEqual(holdChip(run(2, 3), 0), { state: run(0, 3), extended: true }, 'before');
+  assert.deepEqual(holdChip(run(2, 2), 3), { state: run(2, 3), extended: true }, 'a single chip extends too');
 });
 
-test('P2.1 — the loop ON rows still hold after the C-10 change (extend + hint, clear, shrink)', () => {
-  // extend, either side, with the hint flag
-  assert.deepEqual(tapSection(run(2, 2), 5), { state: run(2, 5), extended: true });
-  assert.deepEqual(tapSection(run(2, 4), 0), { state: run(0, 4), extended: true });
-  // the single looped section tapped again clears
-  assert.deepEqual(tapSection(run(4, 4), 4), { state: NO_RUN, extended: false });
-  // shrink inside a 2+ run
-  assert.deepEqual(tapSection(run(0, 3), 1), { state: run(1, 1), extended: false });
-  // a full sequence: tap 2 (loop), tap 4 (extend), loop button off, tap 6 -> [6] alone
-  let s = tapSection(NO_RUN, 2).state;
-  s = tapSection(s, 4).state;
-  assert.deepEqual(s, run(2, 4));
-  s = toggleRunLoop(s);
-  assert.deepEqual(s, run(2, 4, false), 'off, remembered');
-  assert.deepEqual(tapSection(s, 6), { state: run(6, 6), extended: false }, 'off: loops the tapped chip only');
-  assert.deepEqual(toggleRunLoop(s), run(2, 4), 'the loop button still brings the remembered run back');
+test('D4 hold · looping [i..j] (2+ chips), hold INSIDE -> shrink to that chip (P2)', () => {
+  for (const i of [2, 3, 4]) assert.deepEqual(holdChip(run(2, 4), i), { state: run(i, i), extended: false }, `chip ${i}`);
 });
 
-test('P2.1 — long-press is unchanged by C-10: loop only this, on or off', () => {
-  assert.deepEqual(longPressSection(run(1, 2, false), 5), run(5, 5));
-  assert.deepEqual(longPressSection(run(1, 2), 5), run(5, 5));
-  assert.deepEqual(longPressSection(NO_RUN, 0), run(0, 0));
+test('D4 hold · looping [X], hold X again -> no change (it keeps looping, never clears)', () => {
+  assert.deepEqual(holdChip(run(4, 4), 4), { state: run(4, 4), extended: false });
 });
 
-test('P2.1 — a bad index changes nothing', () => {
+test('D4 the Loop button: on -> off (remembered); off -> the remembered run if the playhead is in it, else the section under the playhead', () => {
+  assert.deepEqual(loopHere(run(1, 3), 2), run(1, 3, false));
+  assert.deepEqual(loopHere(run(1, 3, false), 2), run(1, 3), 'playhead inside the remembered run');
+  assert.deepEqual(loopHere(run(1, 3, false), 5), run(5, 5), 'playhead elsewhere: loop where I am');
+  assert.deepEqual(loopHere(NO_RUN, 4), run(4, 4), 'nothing remembered: loop where I am');
+  assert.deepEqual(loopHere(NO_RUN, -1), NO_RUN, 'no section under the playhead: nothing to loop');
+  assert.deepEqual(loopHere(run(1, 3, false), -1), run(1, 3), 'no section: the remembered run comes back');
+});
+
+test('D4 a full sequence: tap Part 3 (jump), hold it (loop), hold Part 4 (extend), tap Part 4 (stop), Loop button (resume)', () => {
+  let s = NO_RUN;
+  let t = tapChip(s, 2);
+  assert.equal(t.jump, true);
+  s = t.state;
+  s = holdChip(s, 2).state;
+  assert.deepEqual(s, run(2, 2));
+  const h = holdChip(s, 3);
+  assert.equal(h.extended, true);
+  s = h.state;
+  t = tapChip(s, 3);
+  assert.deepEqual(t, { state: run(2, 3, false), jump: false });
+  assert.deepEqual(loopHere(t.state, 3), run(2, 3));
+});
+
+test('D4 a bad index changes nothing', () => {
   for (const i of [-1, 1.5, NaN]) {
-    assert.deepEqual(tapSection(run(1, 2), i).state, run(1, 2));
-    assert.deepEqual(longPressSection(run(1, 2), i), run(1, 2));
+    assert.deepEqual(tapChip(run(1, 2), i), { state: run(1, 2), jump: false });
+    assert.deepEqual(holdChip(run(1, 2), i), { state: run(1, 2), extended: false });
   }
+});
+
+test('sectionAt and restartTarget (⟲): the section under the playhead, or the loop start while looping', () => {
+  const secs = deriveSections(DEMO_ROWS, { durationSec: DEMO_SEC });
+  assert.equal(sectionAt(secs, 0), 0);
+  assert.equal(sectionAt(secs, 134), 3, '2:14 is in Part 4 (the old "Chorus 2")');
+  assert.equal(sectionAt(secs, 153.239), 4, 'a boundary belongs to the section it starts');
+  assert.equal(sectionAt(secs, DEMO_SEC), 5, 'the very end is still the last section');
+  assert.equal(sectionAt(secs, null), 0);
+  assert.equal(sectionAt([], 10), -1);
+  assert.equal(restartTarget(secs, null, 134), 110.885);
+  assert.equal(restartTarget(secs, { startSec: 23.827, endSec: 153.239 }, 134), 23.827, 'in a loop: the loop start');
+  assert.equal(restartTarget(secs, { startSec: 23.827, endSec: 153.239 }, 24), 23.827, 'in a loop, near its start: still the loop start (never out of the loop)');
+  assert.equal(restartTarget(secs, { startSec: 5, endSec: 5 }, 134), 110.885, 'an invalid loop is ignored');
+  assert.equal(restartTarget([], null, 50), 0, 'no sections: the top of the song');
+});
+
+test('⟲ (review M3): within 1.5 s of a section start it goes to the PREVIOUS section, like "previous track"', () => {
+  const secs = deriveSections(DEMO_ROWS, { durationSec: DEMO_SEC });
+  assert.equal(RESTART_GRACE_SEC, 1.5);
+  assert.equal(restartTarget(secs, null, 110.885), 66.178, 'exactly at Part 4: back to Part 3');
+  assert.equal(restartTarget(secs, null, 110.885 + 1.4), 66.178, '1.4 s in: back to Part 3');
+  assert.equal(restartTarget(secs, null, 110.885 + 1.6), 110.885, '1.6 s in: the start of Part 4');
+  assert.equal(restartTarget(secs, null, 0.5), 0, 'in Part 1 there is nothing before it');
+});
+
+test('sectionAt / ⟲ (review L1): past the last section while the duration is unknown, the last section still counts', () => {
+  const secs = deriveSections(DEMO_ROWS); // no duration: the last part ends at its own sample (204.999)
+  assert.equal(secs.at(-1).endSec, 204.999);
+  assert.equal(sectionAt(secs, 210), secs.length - 1);
+  assert.equal(restartTarget(secs, null, 210), 195.587, 'not 0:00');
 });
 
 test('P2.1 — a run is ONE continuous span for the engine, gaps between sections included', () => {
@@ -439,17 +564,18 @@ test('P2.1 — a run is ONE continuous span for the engine, gaps between section
 });
 
 test('P2.1 — the readout, the strip legend and the run name say the state in words', () => {
-  const names = ['Intro', 'Verse 1', 'Chorus 1'];
+  const names = ['Part 1', 'Part 2', 'Part 3'];
   const secs = [{ startSec: 0, endSec: 9 }, { startSec: 9, endSec: 47 }, { startSec: 47, endSec: 66 }];
-  assert.equal(runName(names, { lo: 1, hi: 2 }), 'Verse 1 \u2192 Chorus 1');
-  assert.equal(runName(names, { lo: 1, hi: 2 }, true), 'Verse 1 to Chorus 1');
-  assert.equal(runName(names, { lo: 2, hi: 2 }), 'Chorus 1');
-  assert.equal(runReadout(names, secs, run(1, 2)), 'Looping Verse 1 \u2192 Chorus 1 \u00b7 0:09\u20131:06');
+  assert.equal(runName(names, { lo: 1, hi: 2 }), 'Part 2 \u2192 Part 3');
+  assert.equal(runName(names, { lo: 1, hi: 2 }, true), 'Part 2 to Part 3');
+  assert.equal(runName(names, { lo: 2, hi: 2 }), 'Part 3');
+  assert.equal(runReadout(names, secs, run(1, 2)), 'Looping Part 2 \u2192 Part 3 \u00b7 0:09\u20131:06');
   assert.equal(runReadout(names, secs, run(1, 2, false)), 'Loop off');
   assert.equal(runReadout(names, secs, NO_RUN), '');
-  assert.equal(stripLegend(names, NO_RUN), 'Sections. No loop.');
-  assert.equal(stripLegend(names, run(1, 2)), 'Sections. Looping Verse 1 to Chorus 1');
-  assert.equal(stripLegend(names, run(1, 2, false)), 'Sections. Loop off, Verse 1 to Chorus 1 remembered');
+  // D4: the group label says how the strip works, then the state.
+  assert.equal(stripLegend(names, NO_RUN), 'Sections. Tap to jump, hold or Shift+Enter to loop. No loop.');
+  assert.equal(stripLegend(names, run(1, 2)), 'Sections. Tap to jump, hold or Shift+Enter to loop. Looping Part 2 to Part 3.');
+  assert.equal(stripLegend(names, run(1, 2, false)), 'Sections. Tap to jump, hold or Shift+Enter to loop. Loop off, Part 2 to Part 3 remembered.');
 });
 
 test('placeInSong: the no-chords stage knows the section, bar and beat (bars from the section start)', () => {
@@ -470,10 +596,16 @@ test('formatTime renders m:ss and survives bad input', () => {
   assert.equal(formatTime(-4), '0:00');
 });
 
-test('nameRegions numbers repeated labels and leaves unique ones plain', () => {
-  const names = nameRegions(deriveSections(realJob())).map((n) => n.name);
-  assert.deepEqual(names, ['Intro', 'Verse 1', 'Chorus 1', 'Verse 2', 'Chorus 2', 'Bridge', 'Outro']);
-  assert.deepEqual(nameRegions([{ startSec: 0, endSec: 1 }]).map((n) => n.name), ['Section']);
+test('nameRegions (D2): neutral "Part N" + start time, never the heuristic label; colours cycle so neighbours differ', () => {
+  const named = nameRegions(deriveSections(DEMO_ROWS, { durationSec: DEMO_SEC }));
+  assert.deepEqual(named.map((n) => `${n.name} \u00b7 ${n.time}`), ['Part 1 \u00b7 0:00', 'Part 2 \u00b7 0:23', 'Part 3 \u00b7 1:06', 'Part 4 \u00b7 1:50', 'Part 5 \u00b7 2:33', 'Part 6 \u00b7 3:15']);
+  assert.deepEqual(named.map((n) => n.tone), [0, 1, 2, 0, 1, 2]);
+  const real = nameRegions(deriveSections(realJob())).map((n) => n.name);
+  assert.deepEqual(real, ['Part 1', 'Part 2', 'Part 3', 'Part 4', 'Part 5', 'Part 6', 'Part 7']);
+  for (const n of [...named, ...nameRegions(deriveSections(realJob()))]) assert.doesNotMatch(n.name, /chorus|verse|intro|outro|bridge/i);
+  for (let i = 1; i < 20; i++) assert.notEqual(i % SECTION_TONES, (i - 1) % SECTION_TONES);
+  assert.equal(partName(0), 'Part 1');
+  assert.deepEqual(nameRegions([{ startSec: 0, endSec: 1 }]).map((n) => n.name), ['Part 1']);
 });
 
 // ─── the component: the section strip ───────────────────────────────────────
@@ -503,17 +635,20 @@ async function loadComponent() {
 }
 
 const NAMES = nameRegions(deriveSections(realJob(), { durationSec: TRACK_SEC })).map((n) => n.name);
+const TIMES = nameRegions(deriveSections(realJob(), { durationSec: TRACK_SEC })).map((n) => n.time);
+const TONES = nameRegions(deriveSections(realJob(), { durationSec: TRACK_SEC })).map((n) => n.tone);
 const noop = () => {};
 
 test('strip: one real <button> per section in a fieldset whose legend names the run; aria-pressed on each', async () => {
   const { render } = await loadComponent();
   const html = render({ names: NAMES, state: NO_RUN, onTap: noop, onLongPress: noop });
   assert.match(html, /^<fieldset/);
-  assert.match(html, /<legend class="srOnly">Sections\. No loop\.<\/legend>/);
+  assert.match(html, /<legend class="srOnly">Sections\. Tap to jump, hold or Shift\+Enter to loop\. No loop\.<\/legend>/);
   assert.equal((html.match(/<button/g) || []).length, NAMES.length);
   assert.equal((html.match(/aria-pressed="false"/g) || []).length, NAMES.length);
+  assert.equal((html.match(/aria-keyshortcuts="Shift\+Enter"/g) || []).length, NAMES.length);
   assert.ok(!html.includes('aria-pressed="true"'));
-  assert.ok(html.includes('Chorus 1') && html.includes('Chorus 2'));
+  assert.ok(html.includes('Part 3') && !/Chorus|Verse/.test(html), 'neutral names only (D2)');
   assert.doesNotMatch(html, /aria-live/, 'no live region in the strip');
 });
 
@@ -521,19 +656,47 @@ test('strip: a looping run presses EVERY chip in it; a remembered run presses no
   const { render } = await loadComponent();
   const on = render({ names: NAMES, state: { run: { lo: 1, hi: 2 }, on: true }, onTap: noop, onLongPress: noop });
   assert.equal((on.match(/aria-pressed="true"/g) || []).length, 2);
-  assert.match(on, /Sections\. Looping Verse 1 to Chorus 1/);
+  assert.match(on, /Looping Part 2 to Part 3/);
   const off = render({ names: NAMES, state: { run: { lo: 1, hi: 2 }, on: false }, onTap: noop, onLongPress: noop });
   assert.equal((off.match(/aria-pressed="true"/g) || []).length, 0);
   assert.equal((off.match(/data-run="remembered"/g) || []).length, 2);
-  assert.match(off, /Loop off, Verse 1 to Chorus 1 remembered/);
+  assert.match(off, /Loop off, Part 2 to Part 3 remembered/);
 });
 
-test('strip: the one-time hint is the copy P2.1 specifies, shown only when asked', async () => {
+test('strip: the one-time hints are the D4 / P2.1 copy, shown only when asked', async () => {
   const { render, mod } = await loadComponent();
-  assert.equal(mod.RUN_HINT, 'Looping these — tap one to loop it alone.');
+  assert.equal(mod.STRIP_HINT, 'Tap to jump \u00b7 hold to loop');
+  assert.equal(STRIP_HINT, mod.STRIP_HINT);
+  assert.equal(mod.RUN_HINT, 'Looping these \u00b7 hold one to loop it alone');
+  assert.equal(RUN_HINT, mod.RUN_HINT);
   const st = { run: { lo: 1, hi: 2 }, on: true };
-  assert.ok(render({ names: NAMES, state: st, onTap: noop, onLongPress: noop, hint: true }).includes(mod.RUN_HINT));
-  assert.ok(!render({ names: NAMES, state: st, onTap: noop, onLongPress: noop }).includes(mod.RUN_HINT));
+  assert.ok(render({ names: NAMES, state: st, onTap: noop, onLongPress: noop, hint: mod.RUN_HINT }).includes('Looping these'));
+  assert.ok(render({ names: NAMES, state: NO_RUN, onTap: noop, onLongPress: noop, hint: mod.STRIP_HINT }).includes('Tap to jump'));
+  assert.doesNotMatch(render({ names: NAMES, state: st, onTap: noop, onLongPress: noop }), /section-hint/);
+});
+
+test('strip (D2): each chip shows "Part N · m:ss", carries its colour slot, and the current section is aria-current', async () => {
+  const { render } = await loadComponent();
+  const html = render({ names: NAMES, times: TIMES, tones: TONES, current: 2, state: NO_RUN, onTap: noop, onLongPress: noop });
+  const text = html.replace(/<[^>]+>/g, '|').replace(/\|+/g, '|');
+  assert.match(text, /\|Part 3\| · \|0:34\|/);
+  assert.deepEqual([...html.matchAll(/data-tone="(\d)"/g)].map((m) => Number(m[1])), TONES);
+  assert.equal((html.match(/aria-current="true"/g) || []).length, 1);
+  assert.match(html, /data-index="2"[^>]*aria-current="true"/);
+});
+
+test('strip: the "+N more" cue counts chips below AND above the visible box, and says which way to scroll', async () => {
+  const { mod } = await loadComponent();
+  const box = (top, bottom) => ({ getBoundingClientRect: () => ({ top, bottom, left: 0, right: 10 }) });
+  const list = (chips) => ({ ...box(100, 200), querySelectorAll: () => chips.map(([t, b]) => box(t, b)) });
+  assert.deepEqual(mod.countOverflow(list([[104, 148], [156, 200], [208, 252], [260, 304]])), { above: 0, below: 2 });
+  assert.deepEqual(mod.countOverflow(list([[0, 44], [52, 96], [104, 148], [156, 200]])), { above: 2, below: 0 });
+  assert.deepEqual(mod.countOverflow(list([[50, 94], [104, 148], [210, 254]])), { above: 1, below: 1 });
+  assert.deepEqual(mod.countOverflow(list([[99.6, 148], [156, 200.4]])), { above: 0, below: 0 }, 'half a pixel of rounding is inside');
+  assert.equal(mod.overflowText({ above: 0, below: 3 }), '+3 more \u2193');
+  assert.equal(mod.overflowText({ above: 2, below: 0 }), '+2 more \u2191');
+  assert.equal(mod.overflowText({ above: 1, below: 1 }), '+2 more \u2193');
+  assert.equal(mod.overflowText({ above: 0, below: 0 }), '');
 });
 
 test('strip: no sections renders nothing', async () => {
@@ -549,6 +712,27 @@ test('strip (DOM): a click, Enter or Space is a TAP on that chip index', async (
     const chips = dom.findAll('button');
     await dom.act(() => chips[3].click());
     assert.deepEqual(taps, [3]);
+    await dom.unmountAll();
+  });
+});
+
+test('strip (DOM, D4): Shift+Enter is the keyboard long-press (loop); plain Enter is left to the button (a tap)', async () => {
+  const { mod, React } = await loadComponent();
+  await withDom(async (dom) => {
+    const taps = [];
+    const longs = [];
+    await dom.mount(React.createElement(mod.SectionLoop, { names: NAMES, state: NO_RUN, onTap: (i) => taps.push(i), onLongPress: (i) => longs.push(i) }));
+    const chip = dom.findAll('button')[4];
+    const shifted = await dom.keydown('Enter', { target: chip, shiftKey: true });
+    assert.deepEqual(longs, [4]);
+    assert.equal(shifted.defaultPrevented, true, 'Shift+Enter must not also click (jump)');
+    await dom.keydown('Enter', { target: chip, shiftKey: true, repeat: true });
+    assert.deepEqual(longs, [4], 'a held key repeats nothing');
+    const plain = await dom.keydown('Enter', { target: chip });
+    assert.equal(plain.defaultPrevented, false, 'plain Enter keeps its native click');
+    for (const mod2 of ['ctrlKey', 'metaKey', 'altKey']) await dom.keydown('Enter', { target: chip, shiftKey: true, [mod2]: true });
+    assert.deepEqual(longs, [4], 'Shift+Enter with another modifier is not ours');
+    assert.deepEqual(taps, []);
     await dom.unmountAll();
   });
 });
@@ -571,7 +755,7 @@ test('strip (DOM): long-press 500 ms = loop only this, and the POINTER click aft
     assert.deepEqual(longs, [2]);
     await dom.pointer('pointerup', chip, { clientX: 10, clientY: 10, pointerType: 'touch' });
     await pointerClick(dom, chip);
-    assert.deepEqual(taps, [], 'the release click must not read as a tap (it would clear the loop)');
+    assert.deepEqual(taps, [], 'the release click must not read as a tap (it would stop the loop it just started)');
     // ...and only that one click: the next is a tap again.
     await pointerClick(dom, chip);
     assert.deepEqual(taps, [2]);
@@ -673,4 +857,22 @@ test('strip CSS: no iOS callout or text selection on a chip; 44px tall; selected
   assert.match(chip, /user-select:\s*none/);
   assert.match(chip, /height:\s*var\(--touch-min, 44px\)/);
   assert.doesNotMatch(css.match(/\.chip\[aria-pressed='true'\]\s*\{([^}]*)\}/)[1], /accent/);
+  // Selected stays the ONE neutral pressed state: #222 + a 2px white edge.
+  assert.match(css.match(/\.chip\[aria-pressed='true'\]\s*\{([^}]*)\}/)[1], /background:\s*var\(--bg-selected\)[^}]*border:\s*2px solid var\(--text-primary\)/);
+});
+
+test('strip CSS (D4 item 4, review B1): chips WRAP; 2 rows, 3 at >= 800px tall, 1 below 600px; then the strip scrolls vertically', () => {
+  const css = readFileSync(join(WEB, 'src/components/play/SectionLoop.module.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const list = css.match(/\.list\s*\{([^}]*)\}/)[1];
+  assert.match(list, /flex-wrap:\s*wrap/);
+  assert.match(list, /--rows:\s*2;/);
+  assert.match(list, /max-height:\s*calc\(var\(--rows\) \* var\(--chip-h\) \+ \(var\(--rows\) - 1\) \* var\(--space-2, 8px\) \+ 8px\)/);
+  // The bands, exactly: a phone of 800-844px tall must get 3 rows, 600-799px 2, and only below 600px 1.
+  const media = [...css.matchAll(/@media\s*\(([^)]*)\)\s*\{\s*\.list\s*\{\s*--rows:\s*(\d)/g)].map((m) => `${m[1].replace(/\s+/g, '')}=${m[2]}`);
+  assert.deepEqual(media.sort(), ['max-height:599px=1', 'min-height:800px=3']);
+  // Phones up to 430px wide stack the time under the name (4 chips a row at 360-430px).
+  assert.match(css, /@media\s*\(max-width:\s*430px\)\s*\{\s*\.label\s*\{[^}]*flex-direction:\s*column/);
+  assert.match(list, /overflow-y:\s*auto/);
+  assert.doesNotMatch(list, /overflow-x:\s*auto/);
+  assert.match(css.match(/\.chip\s*\{([^}]*)\}/)[1], /touch-action:\s*pan-y/);
 });

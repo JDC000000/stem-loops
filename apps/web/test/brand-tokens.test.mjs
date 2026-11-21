@@ -380,15 +380,11 @@ test('amber keeps its ONE job: var(--chord-now) / #f59e0b only colour the curren
     assert.match(src, /const CHORD_NOW = 'var\(--chord-now, #f59e0b\)';/);
     // Every use of the constant is the current chord: the Now name (data-testid
     // playhead-now-name), the current bar's edge (outline, drawn inside the bar
-    // so the chords in it do not move) and the current chord's text; and
-    // (Phase A, J5, as briefed: "4 segments fill in amber") the countdown to
-    // the END of the current chord: its lit beat segments, or, with no beat
-    // grid, its time-bar fill. Both are the current chord's own time left.
-    // The Next name never turns amber (it grows white on the last beat).
+    // so the chords in it do not move) and the current chord's text.
     const uses = [...src.matchAll(/^.*CHORD_NOW.*$/gm)].map((m) => m[0].trim()).filter((l) => !l.startsWith('const CHORD_NOW'));
     assert.ok(uses.length >= 3, uses.join('\n'));
     for (const u of uses) {
-      assert.match(u, /^(color: isCurSlot \? CHORD_NOW|outline: isCur \? `2px solid \$\{CHORD_NOW\}`|style=\{\{ fontSize: fit\.px, [^}]*color: CHORD_NOW|style=\{\{ \.\.\.countdownTrackStyle, background: on \? CHORD_NOW : 'var\(--text-subtle, #666666\)' \}\}|<span style=\{\{ display: 'block', height: '100%', width: [^}]*background: CHORD_NOW \}\} \/>)/, `CHORD_NOW used outside the current chord: ${u}`);
+      assert.match(u, /^(color: isCurSlot \? CHORD_NOW|outline: isCur \? `2px solid \$\{CHORD_NOW\}`|style=\{\{ fontSize: fit\.px, [^}]*color: CHORD_NOW)/, `CHORD_NOW used outside the current chord: ${u}`);
     }
   }
 });
@@ -440,4 +436,16 @@ test('A16 (amended, approved by Jon 2026-11-17): section chips are 22px pills, a
   const chip = uncomment(read('src/components/play/SectionLoop.module.css')).match(/\.chip\s*\{([^}]*)\}/)[1];
   assert.match(chip, /border-radius:\s*22px;/);
   assert.match(chip, /height:\s*var\(--touch-min, 44px\)/);
+});
+
+test('the chord countdown is neutral (review of #333, H-1): #e0e0e0 lit, #737373 unlit, never amber', () => {
+  const src = readFileSync(join(WEB, 'src/components/ChordOverlay.tsx'), 'utf8');
+  assert.match(src, /const COUNTDOWN_ON = 'var\(--text-secondary, #e0e0e0\)';/);
+  assert.match(src, /const COUNTDOWN_OFF = 'var\(--border-control, #737373\)';/);
+  const block = src.slice(src.indexOf('const Countdown: FC'), src.indexOf('const PhoneChords: FC'));
+  assert.ok(block.length > 100);
+  assert.doesNotMatch(block, /CHORD_NOW|chord-now|f59e0b/i);
+  // Contrast: lit 15.4:1, unlit 4.10:1 on the page (>= 3:1 for UI, WCAG 1.4.11).
+  assert.ok(ratio(tok('--text-secondary'), tok('--bg-page')) >= 3);
+  assert.ok(ratio(tok('--border-control'), tok('--bg-page')) >= 3);
 });

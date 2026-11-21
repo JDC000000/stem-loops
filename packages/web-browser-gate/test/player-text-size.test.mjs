@@ -214,7 +214,7 @@ async function bundle() {
   return { js: js.text, css: css?.text ?? '' };
 }
 
-async function openPlayer(browser, built, width, positionSec, height = 900, { notice = true, touch = false } = {}) {
+async function openPlayer(browser, built, width, positionSec, height = 900, { notice = true, touch = false, chordMode = 'simple' } = {}) {
   const page = touch
     ? await (await browser.newContext({ viewport: { width, height }, isMobile: true, hasTouch: true })).newPage()
     : await browser.newPage({ viewport: { width, height } });
@@ -233,8 +233,10 @@ async function openPlayer(browser, built, width, positionSec, height = 900, { no
           '</head><body>' +
           // The job page's own frame: max 960px, centred, the app gutter.
           '<main style="max-width:960px;margin:0 auto;padding:48px var(--sl-gutter,16px) 96px"><div id="root"></div></main>' +
-          // The DETAILED chord view (Phase A, D6): chips are checked per detected segment.
-          '<script>try{localStorage.setItem("sl.play.chordMode.v1","detailed")}catch(e){}</script>' +
+          // The chord view (Phase A, D6): Simple is the app's default and what every
+          // check here sees unless a test asks for Detailed (review of #333, M-2:
+          // the floors hold in BOTH views).
+          `<script>try{localStorage.setItem("sl.play.chordMode.v1",${JSON.stringify(chordMode)})}catch(e){}</script>` +
           `<script>window.__gateSnapshot=${JSON.stringify(notice ? snapshotAt(positionSec) : { ...snapshotAt(positionSec), degraded: null })};window.__gateSections=${JSON.stringify(SECTIONS)};</script>` +
           '<script>Promise.all([400,500,600,700].map(function(w){return document.fonts.load(w+" 16px GateInter")}))' +
           ".then(function(){var s=document.createElement('script');s.src='/out.js';document.body.appendChild(s)})</script>" +
@@ -505,11 +507,11 @@ test('Chromium launches and the real PlayerView bundles', async () => {
   assert.ok(browser.isConnected(), 'chromium did not launch');
 });
 
-for (const width of VIEWPORTS) {
+for (const chordMode of ['simple', 'detailed']) for (const width of VIEWPORTS) {
   for (const pos of POSITIONS) {
-    test(`player text sizes @ ${width}px, playhead on the ${pos.name} chord`, async () => {
+    test(`player text sizes @ ${width}px, playhead on the ${pos.name} chord (${chordMode})`, async () => {
       assert.ok(browser && built, 'setup test did not run or failed');
-      const { page, pageErrors } = await openPlayer(browser, built, width, pos.sec);
+      const { page, pageErrors } = await openPlayer(browser, built, width, pos.sec, 900, { chordMode });
       const helper = await browser.newPage();
       try {
         const findings = [];
@@ -519,7 +521,7 @@ for (const width of VIEWPORTS) {
         for (const stop of SLIDER_STOPS) {
           if (stop !== null) await setSlider(page, stop);
           const zoom = stop === null ? 'default zoom' : `slider ${stop}/1000`;
-          const ctx = `${width}px, ${pos.name}, ${zoom}`;
+          const ctx = `${width}px, ${pos.name}, ${zoom}, ${chordMode}`;
           const m = await page.evaluate(measurePlayer);
 
           // ---- A11: the current chord --------------------------------------

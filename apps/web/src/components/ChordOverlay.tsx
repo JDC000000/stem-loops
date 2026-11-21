@@ -1257,6 +1257,8 @@ function renderChip(
       }}
       data-testid={continuedRow === null ? `chord-chip-${idx}` : `chord-chip-${idx}-r${continuedRow}`}
       data-kind={run.kind}
+      data-start-sec={run.startSec.toFixed(3)}
+      data-end-sec={run.endSec.toFixed(3)}
       data-density={density}
       // The chord's DISPLAYED name (guitarist notation), never the Harte data
       // label: the tooltip shows what the chip shows, and the real-Chromium
@@ -1561,7 +1563,13 @@ interface PhoneChordsProps {
 // chords in --text-muted, coming ones in --text-secondary.
 const CHORD_NOW = 'var(--chord-now, #f59e0b)';
 const NOW_PX = 72;
-const NEXT_PX = 32;
+/** Next's size (review of #333, H-4: >= 44px); it grows to GROWN_NEXT_PX on a change's last beat when there is room. */
+const NEXT_PX = 44;
+const GROWN_NEXT_PX = 64;
+/** Next on a stage too short for a 44px one (a phone on its side). */
+const SHORT_NEXT_PX = 32;
+/** Now keeps at least this before the NEXT bar line, then smaller steps (v4.0 1.2). */
+const NOW_FLOOR_PX = 72;
 /** The stage's bar background: past, coming and current. */
 function phoneCellBg(current: boolean): string {
   return current ? 'var(--bg-selected, #222222)' : 'var(--bg-card, #161616)';
@@ -1703,7 +1711,7 @@ function useReducedMotion(): boolean {
 
 /**
  * The countdown to the next chord, under Now (Phase A, J5): four segments that
- * light in --chord-now, one per beat, over the last four beats of the current
+ * light (neutral #e0e0e0 on #737373; amber is the current chord's only), one per beat, over the last four beats of the current
  * chord (all four lit = the last beat), and "3 beats" in 20px words. With no
  * beat grid it is a time bar to the change and "1.2 s". Reduced motion: the
  * time bar is drawn as the same four discrete segments; nothing transitions.
@@ -1726,7 +1734,7 @@ const Countdown: FC<{ cd: CountdownState; reduceMotion: boolean }> = ({ cd, redu
     >
       {continuous ? (
         <span style={{ ...countdownTrackStyle, flex: '1 1 auto' }} data-testid="phone-countdown-track">
-          <span style={{ display: 'block', height: '100%', width: pct, borderRadius: 4, background: CHORD_NOW }} />
+          <span style={{ display: 'block', height: '100%', width: pct, borderRadius: 4, background: COUNTDOWN_ON }} />
         </span>
       ) : (
         <span style={{ flex: '1 1 auto', display: 'grid', gridTemplateColumns: `repeat(${COUNTDOWN_SEGMENTS}, minmax(0, 1fr))`, gap: 6 }}>
@@ -1737,7 +1745,7 @@ const Countdown: FC<{ cd: CountdownState; reduceMotion: boolean }> = ({ cd, redu
                 key={i}
                 data-testid="phone-countdown-seg"
                 data-on={on ? 'true' : undefined}
-                style={{ ...countdownTrackStyle, background: on ? CHORD_NOW : 'var(--text-subtle, #666666)' }}
+                style={{ ...countdownTrackStyle, background: on ? COUNTDOWN_ON : COUNTDOWN_OFF }}
               />
             );
           })}
@@ -1793,46 +1801,74 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
   // first that fits with the current line alone (the NEXT line is dropped, not
   // clipped). Unknown height: the plain ladders, both lines.
   const wide = widthPx >= WIDE_STAGE_PX;
-  const nextPx = wide ? WIDE_NEXT_PX : NEXT_PX;
-  // On the change's last beat Next doubles (32 -> 64px). Room for the GROWN
-  // name is kept all along, so Now never jumps size and the two never overlap.
-  const grownNextPx = 2 * nextPx;
-  const nextW = nx ? Math.max(nameWidthPx(whenText, 13, 1.05), nameWidthPx(nextText, grownNextPx, 1.12)) : 0;
+  // Review of #333 (B-1, H-4, M-3): NOW IS SIZED FIRST. Next has a 44px
+  // baseline (48 on a wide stage); Now takes the largest ladder step that fits
+  // beside (or above) that baseline AND the stage height, keeping >= 72px
+  // before anything else: below 72 it first drops the NEXT bar line, and only
+  // then steps down. Next's last-beat growth (to 64 / 96) takes only the width
+  // and height that are left; it never shrinks Now.
+  const grownNextPx = wide ? 2 * WIDE_NEXT_PX : GROWN_NEXT_PX;
   const curH = curBox?.h ?? 0;
   const bothH = curH + (nextBox ? nextBox.h + LINE_GAP_PX : 0);
-  const ladders: readonly (readonly number[])[] = wide
-    ? [WIDE_NOW_SIZES, TALL_NOW_SIZES, NOW_SIZES]
-    : [TALLER_NOW_SIZES, TALL_NOW_SIZES, NOW_SIZES];
-  const fitFor = (l: readonly number[]) => fitNowName(nowText, widthPx - 4, nextW, l);
-  const need = (f: ReturnType<typeof fitNowName>, lines: number) =>
-    stageChromePx(f.lines.length * f.px) + (f.nextBelow ? Math.ceil(13 * 1.3) + Math.ceil(grownNextPx * 1.1) + 6 + NEXT_BELOW_GAP_PX : 0) + lines;
-  let fit = fitFor(wide ? WIDE_NOW_SIZES : NOW_SIZES);
-  let showNext = !!nextBox;
-  if (heightPx > 0) {
-    const fits = (lines: number) => {
-      for (const l of ladders) {
-        const f = fitFor(l);
-        if (need(f, lines) <= heightPx) return f;
-      }
-      return null;
-    };
-    const withBoth = nextBox ? fits(bothH) : null;
-    if (withBoth) fit = withBoth;
-    else {
-      showNext = false;
-      fit = fits(curH) ?? fitFor(NOW_SIZES);
+  const ladder = wide ? WIDE_NOW_SIZES : TALLER_NOW_SIZES;
+  const nextLabelH = Math.ceil(13 * 1.3);
+  // Pick Now (and whether the NEXT bar line shows) for a given Next size:
+  // Now >= 72 with both lines, then >= 72 with the current line only, then
+  // smaller Now. `need` counts the Next column where it is taller than Now
+  // (a small Now on a short screen), so the estimate is the real height.
+  const choose = (basePx: number) => {
+    const w = nx ? Math.max(nameWidthPx(whenText, 13, 1.05), nameWidthPx(nextText, basePx, 1.12)) : 0;
+    const colH = nextLabelH + Math.ceil(basePx * 1.1) + 6;
+    const need = (f: NowFit, lines: number) =>
+      stageChromePx(f.lines.length * f.px) +
+      (!nx ? 0 : f.nextBelow ? nextLabelH + Math.ceil(grownNextPx * 1.1) + 6 + NEXT_BELOW_GAP_PX : Math.max(0, colH - Math.ceil(f.lines.length * f.px * 1.05))) +
+      lines;
+    const cands = nowFitCandidates(nowText, widthPx - 4, w, ladder);
+    const plain = cands.find((c) => c.px <= (wide ? WIDE_NOW_SIZES[0] : NOW_PX)) ?? cands[cands.length - 1];
+    if (!(heightPx > 0)) return { fit: plain, both: !!nextBox, need, ok: true, over: 0 };
+    const big = cands.filter((c) => c.px >= NOW_FLOOR_PX);
+    const small = cands.filter((c) => c.px < NOW_FLOOR_PX);
+    const order: [readonly NowFit[], boolean][] = [[big, true], [big, false], [small, true], [small, false]];
+    for (const [list, both] of order) {
+      if (both && !nextBox) continue;
+      const f = list.find((c) => need(c, both ? bothH : curH) <= heightPx);
+      if (f) return { fit: f, both, need, ok: true, over: 0 };
+    }
+    // Nothing fits (a phone on its side, 400% zoom): the layout that needs the
+    // least height, so as little as possible goes past the stage.
+    let least = cands[0];
+    for (const c of cands) if (need(c, curH) < need(least, curH) || (need(c, curH) === need(least, curH) && c.px > least.px)) least = c;
+    return { fit: least, both: false, need, ok: false, over: need(least, curH) - heightPx };
+  };
+  // Next is 44px (48 wide). Only a stage too short for even the smallest Now
+  // beside a 44px Next (a phone on its side) keeps the 32px Next.
+  let nextPx = wide ? WIDE_NEXT_PX : NEXT_PX;
+  let picked = choose(nextPx);
+  if (!picked.ok && !wide) {
+    const short = choose(SHORT_NEXT_PX);
+    if (short.ok || short.over < picked.over) {
+      nextPx = SHORT_NEXT_PX;
+      picked = short;
     }
   }
+  const fit = picked.fit;
+  const showNext = picked.both;
+  const need = picked.need;
   const linesH = showNext ? bothH : curH;
-  // How far Next may grow WITHOUT moving anything: its column keeps one fixed
-  // height on every beat, so the bars below never jump. Beside Now, the grown
-  // name stays inside Now's own height (a small Now on a short landscape
-  // screen lets it grow less, or not at all); below Now, `need` already holds
-  // its room. 32 -> 64px on a phone in portrait.
-  const nextLabelH = Math.ceil(13 * 1.3);
-  const nextGrowPx = fit.nextBelow
-    ? grownNextPx
-    : Math.max(nextPx, Math.min(grownNextPx, Math.floor((fit.lines.length * fit.px * 1.05 - nextLabelH - 6) / 1.1)));
+  // How far Next may grow WITHOUT moving anything or touching Now: its column
+  // keeps one fixed height on every beat (the bars below never jump); beside
+  // Now it gets the width Now left and stays inside Now's own height; below
+  // Now, `need` already holds its room and the full width is its.
+  const nowW = Math.max(...fit.lines.map((l) => nameWidthPx(l, fit.px, NOW_WIDTH_FACTOR)));
+  const roomW = fit.nextBelow ? widthPx - 4 : widthPx - 4 - nowW - NOW_NEXT_GAP_PX;
+  const roomH = fit.nextBelow ? grownNextPx : Math.floor((fit.lines.length * fit.px * 1.05 - nextLabelH - 6) / 1.1);
+  let nextGrowPx = nextPx;
+  for (let px = grownNextPx; px > nextPx; px -= 2) {
+    if (px <= roomH && nameWidthPx(nextText, px, 1.12) <= roomW) {
+      nextGrowPx = px;
+      break;
+    }
+  }
   const nextNowPx = cd.lastBeat ? nextGrowPx : nextPx;
   const lineScale = growScale(heightPx > 0 ? heightPx - need(fit, linesH) : 0, curBox, showNext ? nextBox : null);
 
@@ -1910,11 +1946,14 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
         ) : null}
       </div>
       {nx ? <Countdown cd={cd} reduceMotion={reduceMotion} /> : null}
-      {beat >= 0 ? (
+      {/* The beat-in-bar row only when there is no countdown: two 4-segment
+          bars that can disagree read as one (review of #333, H-1). The bar
+          number is still in the line above ("Verse · bar 3/16"). */}
+      {beat >= 0 && !nx ? (
         <div
           role="img"
           aria-label={`Beat ${beat + 1} of ${model.beatsPerBar}`}
-          style={{ display: 'grid', gridTemplateColumns: `repeat(${model.beatsPerBar}, minmax(0, 1fr))`, gap: 6, marginTop: nx ? -4 : 0 }}
+          style={{ display: 'grid', gridTemplateColumns: `repeat(${model.beatsPerBar}, minmax(0, 1fr))`, gap: 6 }}
           data-testid="phone-beats"
           data-beat={beat + 1}
         >
@@ -1958,6 +1997,14 @@ export const WIDE_NOW_SIZES = [128, 96, ...NOW_SIZES] as const;
 export const TALL_NOW_SIZES = [TALL_NOW_PX, ...NOW_SIZES] as const;
 export const TALLER_NOW_SIZES = [TALLER_NOW_PX, TALL_NOW_PX, ...NOW_SIZES] as const;
 const WIDE_NEXT_PX = 48;
+/**
+ * Safety on the Now name's estimated width. The stage table already takes the
+ * widest advance for ♯/♭ and runs ~1.17x the real bold Inter width (F♯m7 at
+ * 72px: 210 estimated, 180 drawn), so 1.05 on top is enough; 1.15 kept Now a
+ * whole step smaller than the screen allowed (review of #333, M-3). The
+ * real-Chromium gates check Now is never clipped and never overlaps Next.
+ */
+const NOW_WIDTH_FACTOR = 1.05;
 /** Bold text width from the headless advance table, widened by `factor` (conservative; see STAGE_WIDEST_GLYPHS). */
 function nameWidthPx(text: string, px: number, factor: number): number {
   return text ? estimateStageLabelPx(text, px) * factor : 0;
@@ -1975,7 +2022,7 @@ export function fitNowName(
   sizes: readonly number[] = NOW_SIZES,
 ): { px: number; lines: string[]; nextBelow: boolean; how: string } {
   const room = innerPx - (nextPx > 0 ? nextPx + NOW_NEXT_GAP_PX : 0);
-  const w = (t: string, px: number) => nameWidthPx(t, px, 1.15);
+  const w = (t: string, px: number) => nameWidthPx(t, px, NOW_WIDTH_FACTOR);
   for (const px of sizes) if (w(text, px) <= room) return { px, lines: [text], nextBelow: false, how: `one-line-${px}` };
   const min = sizes[sizes.length - 1];
   const slash = text.indexOf('/');
@@ -1985,6 +2032,28 @@ export function fitNowName(
   }
   for (const px of sizes) if (w(text, px) <= innerPx) return { px, lines: [text], nextBelow: true, how: `next-below-${px}` };
   return { px: min, lines: slash > 0 ? [text.slice(0, slash), text.slice(slash)] : [text], nextBelow: true, how: 'next-below-min' };
+}
+
+type NowFit = ReturnType<typeof fitNowName>;
+/**
+ * Every way Now can be laid out with Next, largest Now first: one line beside
+ * Next, the slash bass on a second line beside Next, or Next on its own row
+ * below. The stage picks the first that fits its height (see PhoneChords).
+ */
+export function nowFitCandidates(text: string, innerPx: number, nextPx: number, sizes: readonly number[] = NOW_SIZES): NowFit[] {
+  const room = innerPx - (nextPx > 0 ? nextPx + NOW_NEXT_GAP_PX : 0);
+  const w = (t: string, px: number) => nameWidthPx(t, px, NOW_WIDTH_FACTOR);
+  const slash = text.indexOf('/');
+  const split = slash > 0 ? [text.slice(0, slash), text.slice(slash)] : null;
+  const out: NowFit[] = [];
+  for (const px of sizes) {
+    if (w(text, px) <= room) out.push({ px, lines: [text], nextBelow: false, how: `one-line-${px}` });
+    else if (split && Math.max(...split.map((l) => w(l, px))) <= room) out.push({ px, lines: split, nextBelow: false, how: `two-line-${px}` });
+    if (nextPx > 0 && w(text, px) <= innerPx) out.push({ px, lines: [text], nextBelow: true, how: `next-below-${px}` });
+    else if (nextPx > 0 && split && Math.max(...split.map((l) => w(l, px))) <= innerPx) out.push({ px, lines: split, nextBelow: true, how: `next-below-two-line-${px}` });
+  }
+  if (out.length === 0) out.push(fitNowName(text, innerPx, nextPx, sizes));
+  return out;
 }
 
 const barNumberStyle: CSSProperties = {
@@ -1999,12 +2068,17 @@ const barNumberStyle: CSSProperties = {
   fontVariantNumeric: 'tabular-nums',
   pointerEvents: 'none',
 };
+// The countdown is NEUTRAL (review of #333, H-1): amber is the current chord's
+// alone. Lit: --text-secondary (15.4:1 on #0d0d0d); unlit: --border-control
+// (4.10:1, WCAG 1.4.11).
+const COUNTDOWN_ON = 'var(--text-secondary, #e0e0e0)';
+const COUNTDOWN_OFF = 'var(--border-control, #737373)';
 const countdownTrackStyle: CSSProperties = {
   display: 'block',
   height: 8,
   borderRadius: 4,
   overflow: 'hidden',
-  background: 'var(--text-subtle, #666666)',
+  background: COUNTDOWN_OFF,
 };
 const countdownTextStyle: CSSProperties = {
   flex: 'none',

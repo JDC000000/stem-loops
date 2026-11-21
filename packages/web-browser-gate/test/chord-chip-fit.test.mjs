@@ -281,6 +281,9 @@ const EXH = exhaustiveSong();
 const DATASETS = [
   { name: `real-3m33s(${REAL.segments.length} segments)`, payload: REAL, inkBatches: null },
   { name: `alphabet(${EXH.labels.length} labels)`, payload: { segments: EXH.segments }, inkBatches: 10 },
+  // Review of #333 (M-2): the app's DEFAULT "Simple" view on the dense demo (no
+  // grid here: the time-based merge). Fewer chips than segments; every name fits.
+  { name: `lucky-ticket demo Simple`, payload: JSON.parse(readFileSync(join(WEB, 'test/fixtures/demo-chords/lucky-ticket.json'), 'utf8')), inkBatches: null, simplify: true },
 ];
 
 // ---------------------------------------------------------------------------
@@ -295,7 +298,7 @@ async function bundle() {
         import { ChordOverlay } from './src/components/ChordOverlay.tsx';
         import './src/app/globals.css';
         createRoot(document.getElementById('root')).render(
-          React.createElement(ChordOverlay, { jobId: 'gate-job', positionSec: null }),
+          React.createElement(ChordOverlay, { jobId: 'gate-job', positionSec: null, simplify: !!window.__simplify }),
         );
       `,
       resolveDir: WEB,
@@ -839,6 +842,7 @@ for (const width of VIEWPORTS) {
                 // Load the fonts BEFORE the bundle runs: the component's measurer
                 // reads canvas widths once per container, and a measurement taken
                 // before the webfont arrives is a fallback-font measurement.
+                (ds.simplify ? '<script>window.__simplify=true</script>' : '') +
                 '<script>(' +
                 (PIN_FONT
                   ? "Promise.all([400,500,600,700].reduce(function(a,w){return a.concat([document.fonts.load(w+' 16px GateInter'),document.fonts.load('italic '+w+' 16px GateInter')])},[]))"
@@ -955,7 +959,7 @@ for (const width of VIEWPORTS) {
           // (Not asserted: "no ticks at the ceiling". On v3/main the ceiling is
           // 80 px/s and 1,018 short chips are legitimately ticks there; that is
           // product behaviour, not this gate's business.)
-          if (m.primaryChips !== ds.payload.segments.length)
+          if (ds.simplify ? !(m.primaryChips > 0 && m.primaryChips < ds.payload.segments.length) : m.primaryChips !== ds.payload.segments.length)
             countFailures.push(`${m.primaryChips} primary chips for ${ds.payload.segments.length} segments @ ${ctx}`);
           if (m.emptyNonTick > 0)
             countFailures.push(`${m.emptyNonTick} chip(s) claim a full/tight density but have no text @ ${ctx}`);

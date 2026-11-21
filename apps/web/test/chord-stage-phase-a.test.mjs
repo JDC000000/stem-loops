@@ -136,15 +136,17 @@ test('J5: the countdown is always there on the dense demo (plain-list mode too):
         const lit = segs.filter((s) => s.dataset.on === 'true').length;
         assert.equal(lit, n <= 4 ? 5 - n : 0, `lit segments for ${n} beats`);
         const next = dom.find('[data-testid="phone-next-name"]');
-        assert.equal(next.style.fontSize, n === 1 ? `${next.dataset.growPx}px` : '32px', `Next size with ${n} beats left`);
+        assert.equal(next.style.fontSize, n === 1 ? `${next.dataset.growPx}px` : '44px', `Next size with ${n} beats left`);
         if (n === 1) grownTo.push(Number(next.dataset.growPx));
         seen++;
       }
       assert.ok(seen > 300, `checked ${seen} positions`);
       // 64px whenever Now is tall enough to hold it (most of the song); a long,
       // smaller Now caps it so the bars below never move.
-      assert.ok(grownTo.length > 20 && grownTo.every((p) => p >= 32 && p <= 64), `Next on the last beat: ${grownTo}`);
-      assert.ok(grownTo.filter((p) => p === 64).length >= grownTo.length * 0.75, `Next reached 64px on most last beats: ${grownTo}`);
+      assert.ok(grownTo.length > 20 && grownTo.every((p) => p >= 44 && p <= 64), `Next on the last beat: ${grownTo}`);
+      assert.ok(grownTo.filter((p) => p > 44).length >= grownTo.length * 0.75, `Next grew on most last beats: ${grownTo}`);
+      // Review of #333 (H-1): no amber in the countdown, no beat dots beside it.
+      assert.equal(dom.find('[data-testid="phone-beats"]'), null);
     } finally {
       m.restore();
       await dom.unmountAll();
@@ -194,9 +196,9 @@ test('the duplicate "Now" label is gone: the stage names no "Now" above the chor
   });
 });
 
-test('D6: Simple on Lucky Ticket draws 109 chords in the chart where Detailed draws all 201', async () => {
+test('D6: Simple on Lucky Ticket draws 103 chords in the chart where Detailed draws all 201', async () => {
   await withDom(async (dom) => {
-    for (const [simplify, want] of [[false, 201], [true, 109]]) {
+    for (const [simplify, want] of [[false, 201], [true, 103]]) {
       const m = await mount(dom, { view: 'chart', positionSec: null, simplify }, { w: 1200, h: 400 });
       try {
         const prim = dom.findAll('[data-testid^="chord-chip-"]').filter((c) => /^chord-chip-\d+$/.test(c.dataset.testid));
@@ -207,6 +209,43 @@ test('D6: Simple on Lucky Ticket draws 109 chords in the chart where Detailed dr
         m.restore();
         await dom.unmountAll();
       }
+    }
+  });
+});
+
+
+test('review #333: Simple (bars) hides the beat dots beside the countdown; Next grows only into the width Now leaves', async () => {
+  await withDom(async (dom) => {
+    const m = await mount(dom, { positionSec: 30, playing: true, simplify: true });
+    try {
+      assert.equal(dom.find('[data-testid="phone-chords"]').dataset.mode, 'bars');
+      let checked = 0;
+      for (let t = 20; t < 120; t += 0.37) {
+        await m.rerender({ positionSec: t });
+        if (!dom.find('[data-testid="phone-countdown"]')) continue;
+        assert.equal(dom.find('[data-testid="phone-beats"]'), null, `beat dots beside the countdown at ${t.toFixed(2)}`);
+        checked++;
+      }
+      assert.ok(checked > 200);
+    } finally {
+      m.restore();
+      await dom.unmountAll();
+    }
+    // A narrow stage: Now (sized first) leaves less width, so Next grows less than 64 on some last beats.
+    const n = await mount(dom, { positionSec: 30, playing: true, simplify: false }, { w: 250, h: 520 });
+    try {
+      const grown = [];
+      for (let t = 20; t < 200; t += 0.37) {
+        await n.rerender({ positionSec: t });
+        const next = dom.find('[data-testid="phone-next-name"]');
+        if (next?.dataset.grown === 'true') grown.push(Number(next.dataset.growPx));
+      }
+      assert.ok(grown.length > 20, `${grown.length} last beats`);
+      assert.ok(grown.some((p) => p < 64), `Next grew to 64 on every last beat at 250px: ${grown}`);
+      assert.ok(grown.every((p) => p >= 44));
+    } finally {
+      n.restore();
+      await dom.unmountAll();
     }
   });
 });

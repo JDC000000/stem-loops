@@ -43,21 +43,28 @@ export function createWakeLock(nav: unknown, doc: VisibilityDocument | null | un
   let pending = false;
   let disposed = false;
 
+  const visible = () => !(doc && doc.visibilityState && doc.visibilityState !== 'visible');
   const acquire = () => {
     if (disposed || !wanted || pending || (sentinel && !sentinel.released)) return;
-    if (doc && doc.visibilityState && doc.visibilityState !== 'visible') return;
+    if (!visible()) return;
     pending = true;
     api
       .request('screen')
       .then((s) => {
         pending = false;
-        if (disposed || !wanted) {
+        // Granted after the page went hidden (or after we stopped wanting it):
+        // give it straight back; visibilitychange takes a new one later.
+        if (disposed || !wanted || !visible()) {
           void s.release().catch(() => {});
           return;
         }
         sentinel = s;
         s.addEventListener?.('release', () => {
-          if (sentinel === s) sentinel = null;
+          if (sentinel !== s) return;
+          sentinel = null;
+          // The browser dropped it while we are still on screen (battery
+          // saver, a system dialog): take it back.
+          if (wanted && !disposed && visible()) acquire();
         });
       })
       .catch(() => {

@@ -429,9 +429,16 @@ for (const vp of [[390, 844], [360, 800]]) {
         if (m.mode !== 'bars') { f.push(`mode ${m.mode} (${m.reason}), want bars @ ${ctxs}`); break; }
         checkNow(m, f, ctxs, want.heard ? spell(want.heard.label) : '—');
         if (m.position !== want.label) f.push(`position "${m.position}", want "${want.label}" @ ${ctxs}`);
-        if (m.beat !== String(want.beat)) f.push(`beat dot ${m.beat}, want ${want.beat} @ ${ctxs}`);
-        if (m.dots.filter((d) => d.on).length !== 1) f.push(`${m.dots.filter((d) => d.on).length} lit beat dots @ ${ctxs}`);
-        for (const d of m.dots) if (!d.on && d.c < NONTEXT_CONTRAST) f.push(`inactive beat dot contrast ${d.c.toFixed(2)} @ ${ctxs}`);
+        // Review of #333 (H-1): the beat-in-bar dots give way to the countdown
+        // whenever it shows (two 4-segment bars read as one); they stay where
+        // there is no next chord.
+        if (m.countdown) {
+          if (m.beat !== null || m.dots.length) f.push(`beat dots beside the countdown @ ${ctxs}`);
+        } else {
+          if (m.beat !== String(want.beat)) f.push(`beat dot ${m.beat}, want ${want.beat} @ ${ctxs}`);
+          if (m.dots.filter((d) => d.on).length !== 1) f.push(`${m.dots.filter((d) => d.on).length} lit beat dots @ ${ctxs}`);
+          for (const d of m.dots) if (!d.on && d.c < NONTEXT_CONTRAST) f.push(`inactive beat dot contrast ${d.c.toFixed(2)} @ ${ctxs}`);
+        }
         if (want.next) {
           if (!m.next) f.push(`no Next, want ${want.next.label} @ ${ctxs}`);
           else {
@@ -590,7 +597,7 @@ for (const vp of [[390, 844], [360, 800]]) {
         const want = prog[k % 4].map(([l]) => SPELL[l]);
         const cur = m.groups.find((g) => g.label.startsWith(`Bar ${k + 1} of 48:`));
         if (!cur || cur.texts.join() !== want.join()) f.push(`bar ${k + 1} shows [${cur?.texts}], want [${want}] @ ${ctxs}`);
-        if (m.beat !== '3') f.push(`beat dot ${m.beat}, want 3 @ ${ctxs}`);
+        if (m.countdown ? m.beat !== null : m.beat !== '3') f.push(`beat dot ${m.beat} (countdown ${!!m.countdown}) @ ${ctxs}`);
         checkNow(m, f, ctxs, SPELL[prog[k % 4][1][0]]);
         checkSlots(m, f, ctxs);
       }
@@ -794,9 +801,9 @@ for (const vp of [[390, 844], [360, 800]]) {
           // Triple time shows no total (3/4 vs 6/8 is unknowable); 4/4 does.
           const wantPos = m3 === 3 ? `Bar ${k + 1}` : `Bar ${k + 1}/${nBars}`;
           if (m.position !== wantPos) f.push(`position "${m.position}", want "${wantPos}" @ ${ctxs}`);
-          if (m.dots.length !== m3) f.push(`${m.dots.length} beat dots, want ${m3} @ ${ctxs}`);
+          if (m.dots.length !== (m.countdown ? 0 : m3)) f.push(`${m.dots.length} beat dots, want ${m.countdown ? 0 : m3} @ ${ctxs}`);
           const wantBeat = Math.floor((t - 0.5 - k * m3 * beat) / beat + 1e-9) + 1;
-          if (m.beat !== String(wantBeat)) f.push(`beat ${m.beat}, want ${wantBeat} @ ${ctxs}`);
+          if (!m.countdown && m.beat !== String(wantBeat)) f.push(`beat ${m.beat}, want ${wantBeat} @ ${ctxs}`);
           // Every bar on screen holds exactly the chords of that bar of the song.
           for (const g of m.groups) {
             const n = Number(/^Bar (\d+)/.exec(g.label)?.[1]);
@@ -844,7 +851,7 @@ for (const vp of [[390, 844], [360, 800]]) {
           const m = await page.evaluate(measure);
           const ctxs = `${vp.join('x')} ${bc.name} cell ${k + 1}`;
           if (m.mode !== 'bars' || m.beatsPerBar !== String(bc.m)) { f.push(`drawn as ${m.mode}/${m.beatsPerBar}, want ${bc.m}-beat bars @ ${ctxs}`); continue; }
-          if (m.dots.length !== bc.m) f.push(`${m.dots.length} beat dots, want ${bc.m} @ ${ctxs}`);
+          if (m.dots.length !== (m.countdown ? 0 : bc.m)) f.push(`${m.dots.length} beat dots, want ${m.countdown ? 0 : bc.m} @ ${ctxs}`);
           const want = bc.total ? `Bar ${k + 1}/${bc.total}` : `Bar ${k + 1}`;
           if (m.position !== want) f.push(`position "${m.position}", want "${want}" @ ${ctxs}`);
           const pm = /^Bar \d+\/(\d+)$/.exec(m.position ?? '');
@@ -1084,55 +1091,95 @@ test('F-8 / N5 phone chords @ 667x375: a resize makes the next render re-follow 
   }
 });
 
-// Phase A (D6 + J5), on the flagship demo's REAL chord data (Lucky Ticket, 201
-// detected changes in 3:33, 87 under a beat) in the app's DEFAULT "Simple" view:
-// at every position, Now is >= 28px and never overlaps Next (also when Next has
-// grown to 64px on the last beat), the countdown under Now counts beats ("N
-// beats" >= 20px, 4 segments), and the chord track holds no button.
-const LUCKY = JSON.parse(readFileSync(join(WEB, 'test/fixtures/demo-chords/lucky-ticket.json'), 'utf8'));
-for (const vp of [[390, 844], [360, 800]]) {
-  test(`phone chords @ ${vp[0]}x${vp[1]}: Lucky Ticket, Simple (default): countdown always, Next grows on the last beat, no overlap`, async () => {
-    const beat = 60 / LUCKY.bpm;
-    const grid = { beatSec: beat, anchorSec: LUCKY.sections[0].start_sec, measured: true };
-    const sections = LUCKY.sections.map((s) => ({ startSec: s.start_sec, endSec: s.end_sec, label: s.label }));
-    const payload = { key: null, provider: 'klangio', provider_version: 'demo', duration_sec: LUCKY.duration_sec, model_ms: 1, segments: LUCKY.segments.map((s) => ({ ...s, confidence: 1 })) };
-    const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections, payload, chordMode: 'simple' });
+// Phase A (D6 + J5) and the review of #333 (B-1, H-4, M-3), on the three
+// demo songs' REAL chord data in the app's DEFAULT "Simple" view, every 0.37 s
+// of each song at 390x844 and 360x800:
+//   * Now >= 72px at >= 95% of positions, never < 28px, never overlapping Next;
+//   * Next >= 44px at every position at 390 (the share is logged at 360);
+//     on the last beat it grows (<= 64px) and never shrinks Now;
+//   * the countdown under Now at every position with a next chord ("N beats"
+//     >= 20px, 4 neutral segments), and the beat dots hidden beside it;
+//   * no empty band of 100px or more between the countdown and the bars
+//     unless Now is already at its largest step;
+//   * no button in the chord track.
+const DEMO_SLUGS = ['lucky-ticket', 'im-asking-you', 'offline'];
+function stageGeometry() {
+  const q = (s) => document.querySelector(s);
+  const cd = q('[data-testid="phone-countdown"]');
+  const above = cd ?? q('[data-testid="phone-beats"]') ?? q('[data-testid="playhead-now"]');
+  const line = q('[data-testid="phone-line-current"]');
+  const nn = q('[data-testid="phone-next-name"]');
+  const name = q('[data-testid="playhead-now-name"]');
+  const nx = q('[data-testid="phone-next"]');
+  const area = q('[data-testid="phone-chords"]');
+  return {
+    band: above && line ? line.getBoundingClientRect().top - above.getBoundingClientRect().bottom : 0,
+    nowW: name ? Math.max(...[...name.children].map((c) => c.getBoundingClientRect().width)) : 0,
+    nextW: nx ? nx.getBoundingClientRect().width : 0,
+    areaW: area ? area.getBoundingClientRect().width : 0,
+    nextPx: nn ? parseFloat(nn.style.fontSize) : null,
+    growPx: nn ? Number(nn.dataset.growPx) : null,
+    buttons: document.querySelectorAll('[data-testid="player-harmony-track"] button').length,
+  };
+}
+for (const mode of ['simple', 'detailed']) for (const vp of [[390, 844], [360, 800]]) for (const slug of DEMO_SLUGS) {
+  test(`phone chords @ ${vp[0]}x${vp[1]}: ${slug}, ${mode}${mode === 'simple' ? ' (default)' : ''}: Now >= 72 first, Next >= 44, countdown always, no empty band`, async () => {
+    const D = JSON.parse(readFileSync(join(WEB, 'test/fixtures/demo-chords', `${slug}.json`), 'utf8'));
+    const beat = 60 / D.bpm;
+    const grid = { beatSec: beat, anchorSec: D.sections[0].start_sec, measured: true };
+    const sections = D.sections.map((s) => ({ startSec: s.start_sec, endSec: s.end_sec, label: s.label }));
+    const payload = { key: null, provider: 'klangio', provider_version: 'demo', duration_sec: D.duration_sec, model_ms: 1, segments: D.segments.map((s) => ({ ...s, confidence: 1 })) };
+    const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections, payload, chordMode: mode });
     try {
       const f = [];
       const nowPx = [];
-      let grown = 0;
+      let nexts = 0;
+      let next44 = 0;
       let counted = 0;
-      for (let t = 1; t < LUCKY.duration_sec - 1; t += 0.83) {
+      for (let t = 1; t < D.duration_sec - 1; t += 0.37) {
         await moveTo(page, t);
         const m = await page.evaluate(measure);
-        const ctxs = `${vp.join('x')} t=${t.toFixed(2)}`;
+        const g = await page.evaluate(stageGeometry);
+        const ctxs = `${vp.join('x')} ${mode} t=${t.toFixed(2)}`;
         if (!m.now) { f.push(`no Now @ ${ctxs}`); continue; }
         nowPx.push(m.now.fontPx);
         if (m.now.fontPx < 28) f.push(`Now ${m.now.fontPx}px < 28 @ ${ctxs}`);
         if (m.now.overlap) f.push(`Now overlaps Next: ${m.now.overlap} @ ${ctxs}`);
         if (!m.now.inX || m.now.clippedBy.length) f.push(`Now clipped @ ${ctxs}`);
+        // No empty band of >= 100px when that height could hold a bigger Now:
+        // the next ladder step (beside Next if it fits the width, else with
+        // Next on its own ~105px row) would have fitted in the band.
+        if (g.band >= 100 && m.now.fontPx < 120) {
+          const step = m.now.fontPx < 72 ? 72 : m.now.fontPx < 96 ? 96 : 120;
+          // x1.2: the stage sizes names for any phone font, not just this
+          // gate's Inter, so a step that would fit with under 20% headroom is
+          // not counted as missed.
+          const wBig = ((g.nowW * step) / m.now.fontPx) * 1.2;
+          const beside = wBig + g.nextW + 12 <= g.areaW;
+          const cost = (step - m.now.fontPx) * 1.05 + (beside ? 0 : 105);
+          if (wBig <= g.areaW && g.band >= cost + 10)
+            f.push(`empty band ${g.band.toFixed(0)}px with Now at ${m.now.fontPx}px; ${step}px (${beside ? 'beside Next' : 'Next below'}) needs ${cost.toFixed(0)}px @ ${ctxs}`);
+        }
+        if (g.buttons) f.push(`${g.buttons} button(s) in the chord track @ ${ctxs}`);
         if (m.next) {
+          nexts++;
+          if (g.nextPx >= 44) next44++;
+          else if (vp[0] === 390) f.push(`Next ${g.nextPx}px < 44 @ ${ctxs}`);
           const c = m.countdown;
           if (!c || c.kind !== 'beats' || !(c.beatsLeft >= 1)) { f.push(`countdown ${JSON.stringify(c)} @ ${ctxs}`); continue; }
           const n = c.beatsLeft;
           if (c.text !== `${n} beat${n === 1 ? '' : 's'}` || c.textPx < 20) f.push(`countdown text "${c.text}" ${c.textPx}px @ ${ctxs}`);
           if (c.segs !== 4 || c.lit !== (n <= 4 ? 5 - n : 0)) f.push(`countdown ${c.lit}/4 lit for ${n} beats @ ${ctxs}`);
-          // The DECLARED size: the computed one is mid-transition for 120ms (motion allowed here).
-          const [nextPx, growPx] = await page.evaluate(() => { const e = document.querySelector('[data-testid="phone-next-name"]'); return [parseFloat(e.style.fontSize), Number(e.dataset.growPx)]; });
-          // On the last beat Next grows (32 -> 64px when Now is big enough to hold it;
-          // never past Now's own height, so nothing below moves).
-          if (!(growPx >= 32 && growPx <= 64)) f.push(`Next grow size ${growPx} @ ${ctxs}`);
-          if (nextPx !== (n === 1 ? growPx : 32)) f.push(`Next ${nextPx}px with ${n} beat(s) left (grow ${growPx}) @ ${ctxs}`);
-          if (n === 1 && growPx === 64) grown++;
+          if (m.dots.length) f.push(`beat dots beside the countdown @ ${ctxs}`);
+          if (!(g.growPx >= 44 && g.growPx <= 64)) f.push(`Next grow size ${g.growPx} @ ${ctxs}`);
+          if (g.nextPx !== (n === 1 ? g.growPx : 44)) f.push(`Next ${g.nextPx}px with ${n} beat(s) left (grow ${g.growPx}) @ ${ctxs}`);
           counted++;
         }
-        if (await page.locator('[data-testid="player-harmony-track"] button').count()) f.push(`a button in the chord track @ ${ctxs}`);
-        if (m.slots.length === 0) f.push(`no chord cells @ ${ctxs}`);
       }
+      const under = nowPx.filter((p) => p < 72).length / nowPx.length;
+      if (under > 0.05) f.push(`Now < 72px at ${(under * 100).toFixed(1)}% of positions (min ${Math.min(...nowPx)}), want <= 5%`);
       if (counted < 150) f.push(`only ${counted} countdowns checked`);
-      if (grown < 10) f.push(`Next grew to 64px only ${grown} times`);
-      nowPx.sort((a, b) => a - b);
-      if (process.env.CHORD_GATE_LOG) console.log(`LUCKY ${vp.join('x')}: Now px min ${nowPx[0]} median ${nowPx[nowPx.length >> 1]} max ${nowPx.at(-1)}; ${counted} countdowns, ${grown} grown`);
+      if (process.env.CHORD_GATE_LOG) console.log(`DEMO ${slug} ${mode} ${vp.join('x')}: Now<72 ${(under * 100).toFixed(1)}% min ${Math.min(...nowPx)} median ${nowPx.sort((a, b) => a - b)[nowPx.length >> 1]}; Next>=44 ${((next44 / nexts) * 100).toFixed(1)}% of ${nexts}`);
       assert.deepEqual(errors, []);
       fail(f);
     } finally {

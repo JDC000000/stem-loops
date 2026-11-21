@@ -73,6 +73,8 @@ import {
   growScale,
   grownFontPx,
   stageChromePx,
+  STAGE_GAP_PX,
+  MIN_LINE_SCALE,
   COUNTDOWN_ROW_PX,
   COUNTDOWN_SEGMENTS,
   type CountdownState,
@@ -1591,7 +1593,7 @@ interface PhoneLineViewProps {
 
 const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ model, runs, box, lineIndex, role, currentCell, activeIdx, positionSec, onOpen, scale = 1 }) {
   const bars = model.mode === 'bars';
-  const k = Number.isFinite(scale) && scale > 1 ? scale : 1;
+  const k = Number.isFinite(scale) && scale > 0 ? Math.max(MIN_LINE_SCALE, scale) : 1;
   return (
     <div
       data-testid={role === 'current' ? 'phone-line-current' : 'phone-line-next'}
@@ -1816,38 +1818,72 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
   // Now >= 72 with both lines, then >= 72 with the current line only, then
   // smaller Now. `need` counts the Next column where it is taller than Now
   // (a small Now on a short screen), so the estimate is the real height.
-  const choose = (basePx: number) => {
+  const choose = (basePx: number, belowPx: number) => {
     const w = nx ? Math.max(nameWidthPx(whenText, 13, 1.05), nameWidthPx(nextText, basePx, 1.12)) : 0;
     const colH = nextLabelH + Math.ceil(basePx * 1.1) + 6;
     const need = (f: NowFit, lines: number) =>
-      stageChromePx(f.lines.length * f.px) +
-      (!nx ? 0 : f.nextBelow ? nextLabelH + Math.ceil(grownNextPx * 1.1) + 6 + NEXT_BELOW_GAP_PX : Math.max(0, colH - Math.ceil(f.lines.length * f.px * 1.05))) +
+      stageChromePx(f.lines.length * f.px, !nx) +
+      (!nx ? 0 : f.nextBelow ? Math.ceil(belowPx * 1.1) + 6 + NEXT_BELOW_GAP_PX : Math.max(0, colH - Math.ceil(f.lines.length * f.px * 1.05))) +
       lines;
     const cands = nowFitCandidates(nowText, widthPx - 4, w, ladder);
     const plain = cands.find((c) => c.px <= (wide ? WIDE_NOW_SIZES[0] : NOW_PX)) ?? cands[cands.length - 1];
-    if (!(heightPx > 0)) return { fit: plain, both: !!nextBox, need, ok: true, over: 0 };
+    if (!(heightPx > 0)) return { fit: plain, both: !!nextBox, need, ok: true, over: 0, squeeze: null };
     const big = cands.filter((c) => c.px >= NOW_FLOOR_PX);
     const small = cands.filter((c) => c.px < NOW_FLOOR_PX);
-    const order: [readonly NowFit[], boolean][] = [[big, true], [big, false], [small, true], [small, false]];
-    for (const [list, both] of order) {
+    // Now >= 72 with both lines, then squeezing the lines (to x0.8) to keep
+    // both, then the current line only (never squeezed: a short landscape
+    // screen scrolls the chord area instead); only then a smaller Now.
+    // A name wrapped onto two lines in a stacked slot needs its full height: no squeeze then.
+    const wraps = (b: LineBox | null) => !!b && b.cells.some((c) => c.slots.some((x) => x.wrap));
+    // Each line is squeezed on its own (a line holding a wrapped name is not).
+    const kC = wraps(curBox) ? 1 : MIN_LINE_SCALE;
+    const kN = wraps(nextBox) ? 1 : MIN_LINE_SCALE;
+    const squeezedBothH = Math.ceil(curH * kC + (nextBox ? nextBox.h * kN + LINE_GAP_PX : 0));
+    const order: [readonly NowFit[], boolean, boolean][] = [
+      [big, true, false], [big, true, true], [big, false, false],
+      [small, true, false], [small, true, true], [small, false, false],
+    ];
+    for (const [list, both, sq] of order) {
       if (both && !nextBox) continue;
-      const f = list.find((c) => need(c, both ? bothH : curH) <= heightPx);
-      if (f) return { fit: f, both, need, ok: true, over: 0 };
+      const f = list.find((c) => need(c, both ? (sq ? squeezedBothH : bothH) : curH) <= heightPx);
+      if (f) return { fit: f, both, need, ok: true, over: 0, squeeze: sq ? [kC, kN] : null };
     }
     // Nothing fits (a phone on its side, 400% zoom): the layout that needs the
     // least height, so as little as possible goes past the stage.
     let least = cands[0];
     for (const c of cands) if (need(c, curH) < need(least, curH) || (need(c, curH) === need(least, curH) && c.px > least.px)) least = c;
-    return { fit: least, both: false, need, ok: false, over: need(least, curH) - heightPx };
+    return { fit: least, both: false, need, ok: false, over: need(least, curH) - heightPx, squeeze: null };
   };
   // Next is 44px (48 wide). Only a stage too short for even the smallest Now
   // beside a 44px Next (a phone on its side) keeps the 32px Next.
   let nextPx = wide ? WIDE_NEXT_PX : NEXT_PX;
-  let picked = choose(nextPx);
+  // Next on its own row below Now reserves room for its last-beat growth;
+  // when that costs the NEXT bar line (a short stage), it reserves only its
+  // own size and does not grow.
+  let belowPx = grownNextPx;
+  let picked = choose(nextPx, belowPx);
+  if (nextBox && !picked.both) {
+    const tight = choose(nextPx, nextPx);
+    if (tight.both && tight.fit.px >= NOW_FLOOR_PX) {
+      picked = tight;
+      belowPx = nextPx;
+    } else if (!wide) {
+      // Last before dropping the NEXT line (the stage with the section strip
+      // and the stem pills on screen, 2026-11-21): Next at 32px, so Now fits
+      // beside it.
+      const small32 = choose(SHORT_NEXT_PX, SHORT_NEXT_PX);
+      if (small32.both && small32.fit.px >= NOW_FLOOR_PX) {
+        picked = small32;
+        nextPx = SHORT_NEXT_PX;
+        belowPx = SHORT_NEXT_PX;
+      }
+    }
+  }
   if (!picked.ok && !wide) {
-    const short = choose(SHORT_NEXT_PX);
+    const short = choose(SHORT_NEXT_PX, SHORT_NEXT_PX);
     if (short.ok || short.over < picked.over) {
       nextPx = SHORT_NEXT_PX;
+      belowPx = SHORT_NEXT_PX;
       picked = short;
     }
   }
@@ -1861,7 +1897,7 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
   // Now, `need` already holds its room and the full width is its.
   const nowW = Math.max(...fit.lines.map((l) => nameWidthPx(l, fit.px, NOW_WIDTH_FACTOR)));
   const roomW = fit.nextBelow ? widthPx - 4 : widthPx - 4 - nowW - NOW_NEXT_GAP_PX;
-  const roomH = fit.nextBelow ? grownNextPx : Math.floor((fit.lines.length * fit.px * 1.05 - nextLabelH - 6) / 1.1);
+  const roomH = fit.nextBelow ? belowPx : Math.floor((fit.lines.length * fit.px * 1.05 - nextLabelH - 6) / 1.1);
   let nextGrowPx = nextPx;
   for (let px = grownNextPx; px > nextPx; px -= 2) {
     if (px <= roomH && nameWidthPx(nextText, px, 1.12) <= roomW) {
@@ -1870,7 +1906,8 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
     }
   }
   const nextNowPx = cd.lastBeat ? nextGrowPx : nextPx;
-  const lineScale = growScale(heightPx > 0 ? heightPx - need(fit, linesH) : 0, curBox, showNext ? nextBox : null);
+  const sq = picked.squeeze as [number, number] | null;
+  const lineScale = sq ? 1 : growScale(heightPx > 0 ? heightPx - need(fit, linesH) : 0, curBox, showNext ? nextBox : null);
 
   // The Mix sheet header reads these. Fired on a CHANGE of name, never per frame.
   const nowSpoken = nowRun ? spokenSymbol(nowRun) : '';
@@ -1887,7 +1924,9 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
       data-mode={model.mode}
       data-beats-per-bar={model.beatsPerBar}
       data-reason={model.reason}
-      style={{ display: 'flex', flexDirection: 'column', gap: 12, flex: '1 1 auto', minHeight: 0 }}
+      data-lines-h={`${curBox?.h ?? 0}/${nextBox?.h ?? 0}`}
+      data-squeeze={sq ? sq.map((k) => k.toFixed(2)).join('/') : undefined}
+      style={{ display: 'flex', flexDirection: 'column', gap: STAGE_GAP_PX, flex: '1 1 auto', minHeight: 0 }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 20 }}>
         <span style={positionStyle} data-testid="phone-position">
@@ -1918,7 +1957,13 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
         </span>
         {nextRun && nx ? (
           <span
-            style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: fit.nextBelow ? 'flex-start' : 'flex-end', flex: 'none', paddingBottom: 6, boxSizing: 'content-box', height: nextLabelH + Math.ceil(nextGrowPx * 1.1), ...(fit.nextBelow ? { width: '100%' } : null) }}
+            // Below Now (a long Now on a narrow screen), the label and the name
+            // share one row, so the Next block costs one name height.
+            style={
+              fit.nextBelow
+                ? { display: 'flex', flexDirection: 'row', alignItems: 'baseline', gap: 10, flex: 'none', width: '100%', paddingBottom: 6, boxSizing: 'content-box', height: Math.ceil(nextGrowPx * 1.1) }
+                : { display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'flex-end', flex: 'none', paddingBottom: 6, boxSizing: 'content-box', height: nextLabelH + Math.ceil(nextGrowPx * 1.1) }
+            }
             data-testid="phone-next"
             data-run-index={nx.runIndex}
             data-wraps={nx.wraps ? 'true' : undefined}
@@ -1969,10 +2014,10 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
       ) : null}
       <div style={{ display: 'flex', flexDirection: 'column', gap: LINE_GAP_PX, marginTop: 'auto' }}>
         {curBox ? (
-          <PhoneLineView model={model} runs={runs} box={curBox} lineIndex={line} role="current" currentCell={cur} activeIdx={activeIdx} positionSec={positionSec} onOpen={onOpen} scale={lineScale} />
+          <PhoneLineView model={model} runs={runs} box={curBox} lineIndex={line} role="current" currentCell={cur} activeIdx={activeIdx} positionSec={positionSec} onOpen={onOpen} scale={sq ? sq[0] : lineScale} />
         ) : null}
         {nextBox && showNext ? (
-          <PhoneLineView model={model} runs={runs} box={nextBox} lineIndex={next} role="next" currentCell={-1} activeIdx={-1} positionSec={null} onOpen={onOpen} scale={lineScale} />
+          <PhoneLineView model={model} runs={runs} box={nextBox} lineIndex={next} role="next" currentCell={-1} activeIdx={-1} positionSec={null} onOpen={onOpen} scale={sq ? sq[1] : lineScale} />
         ) : null}
       </div>
     </div>

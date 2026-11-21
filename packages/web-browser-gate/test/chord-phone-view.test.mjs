@@ -183,7 +183,7 @@ async function bundle() {
   return { js: js.text, css: res.outputFiles.find((f) => f.path.endsWith('.css'))?.text ?? '' };
 }
 
-async function open(browser, built, [w, h], { pos, grid = GRID, sections = F.sections, payload = FIX, loop = null, degraded = null, chordMode = 'detailed' }) {
+async function open(browser, built, [w, h], { pos, grid = GRID, sections = F.sections, payload = FIX, loop = null, degraded = null, chordMode = 'detailed', stageH = null }) {
   const ctx = await browser.newContext({ viewport: { width: w, height: h }, isMobile: true, hasTouch: true });
   const page = await ctx.newPage();
   const errors = [];
@@ -193,7 +193,7 @@ async function open(browser, built, [w, h], { pos, grid = GRID, sections = F.sec
     if (u.pathname === '/')
       return route.fulfill({ contentType: 'text/html', body:
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
-        `<link rel="stylesheet" href="/out.css"><style>${FONT_CSS}</style></head><body>` +
+        `<link rel="stylesheet" href="/out.css"><style>${FONT_CSS}${stageH ? `[data-testid="player"] [class*="stage"]{flex:0 0 ${stageH}px !important;height:${stageH}px !important;min-height:0 !important;box-sizing:border-box}` : ''}</style></head><body>` +
         '<main style="max-width:960px;margin:0 auto;padding:24px var(--sl-gutter,16px) 96px"><div id="root"></div></main>' +
         // The chord view (Phase A, D6). The sweeps below check the DETECTED segments, so
         // they pin Detailed; the Simple test passes 'simple' (the app's default).
@@ -1185,6 +1185,55 @@ for (const mode of ['simple', 'detailed']) for (const vp of [[390, 844], [360, 8
       if (under > 0.05) f.push(`Now < 72px at ${(under * 100).toFixed(1)}% of positions (min ${Math.min(...nowPx)}), want <= 5%`);
       if (counted < 150) f.push(`only ${counted} countdowns checked`);
       if (process.env.CHORD_GATE_LOG) console.log(`DEMO ${slug} ${mode} ${vp.join('x')}: Now<72 ${(under * 100).toFixed(1)}% min ${Math.min(...nowPx)} median ${nowPx.sort((a, b) => a - b)[nowPx.length >> 1]}; Next>=44 ${((next44 / nexts) * 100).toFixed(1)}% of ${nexts}`);
+      assert.deepEqual(errors, []);
+      fail(f);
+    } finally {
+      await ctx.close();
+    }
+  });
+}
+
+// Coordination (A1+A2+A3, 2026-11-21): with the section strip and the stem
+// pills on screen the chord STAGE (padding included) is ~460-516px tall. At a
+// 460px stage Now is >= 72px, the NEXT bar line shows (unless the song has no
+// more bars), and nothing is clipped. Below that (420px) it degrades: the next
+// line may go, Now is never clipped and never under 28px.
+for (const [stageH, full] of [[460, true], [420, false]]) for (const vp of [[390, 844], [360, 800]]) for (const mode of ['simple', 'detailed']) for (const slug of DEMO_SLUGS) {
+  test(`phone chords @ ${vp[0]}x${vp[1]}, stage ${stageH}px: ${slug}, ${mode}: ${full ? 'Now >= 72 AND the next line, nothing clipped' : 'next line may go, Now never clipped'}`, async () => {
+    const D = JSON.parse(readFileSync(join(WEB, 'test/fixtures/demo-chords', `${slug}.json`), 'utf8'));
+    const grid = { beatSec: 60 / D.bpm, anchorSec: D.sections[0].start_sec, measured: true };
+    const sections = D.sections.map((s) => ({ startSec: s.start_sec, endSec: s.end_sec, label: s.label }));
+    const payload = { key: null, provider: 'klangio', provider_version: 'demo', duration_sec: D.duration_sec, model_ms: 1, segments: D.segments.map((s) => ({ ...s, confidence: 1 })) };
+    const songEnd = Math.max(...D.segments.map((s) => s.end_sec));
+    const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections, payload, chordMode: mode, stageH });
+    try {
+      const f = [];
+      const got = await page.evaluate(() => Math.round(document.querySelector('[data-testid="player"] [class*="stage"]').getBoundingClientRect().height));
+      if (Math.abs(got - stageH) > 1) f.push(`stage is ${got}px, the case wants ${stageH}px`);
+      let noNext = 0;
+      let n = 0;
+      for (let t = 1; t < D.duration_sec - 1; t += full ? 0.37 : 0.74) {
+        await moveTo(page, t);
+        const m = await page.evaluate(measure);
+        const g = await page.evaluate(() => {
+          const area = document.querySelector('[data-testid="player-harmony-track"]').getBoundingClientRect();
+          const lines = [...document.querySelectorAll('[data-testid="phone-line-current"], [data-testid="phone-line-next"]')].map((l) => l.getBoundingClientRect());
+          const ends = [...document.querySelectorAll('[data-testid="phone-line-current"] [data-end-sec][data-cell]:not([data-run-index])')].map((c) => Number(c.dataset.endSec));
+          return { areaTop: area.top, areaBottom: area.bottom, lines: lines.map((r) => [r.top, r.bottom]), curEnd: ends.length ? Math.max(...ends) : 0, next: !!document.querySelector('[data-testid="phone-line-next"]') };
+        });
+        const ctxs = `${vp.join('x')} stage ${stageH} ${mode} t=${t.toFixed(2)}`;
+        n++;
+        if (!m.now) { f.push(`no Now @ ${ctxs}`); continue; }
+        if (!m.now.inX || m.now.clippedBy.length) f.push(`Now clipped (${m.now.clippedBy.join(',')}) @ ${ctxs}`);
+        if (m.now.overlap) f.push(`Now overlaps Next @ ${ctxs}`);
+        if (m.now.fontPx < (full ? 72 : 28)) f.push(`Now ${m.now.fontPx}px @ ${ctxs}`);
+        for (const [top, bottom] of g.lines) if (top < g.areaTop - 0.5 || bottom > g.areaBottom + 0.5) f.push(`a bar line (${top.toFixed(0)}-${bottom.toFixed(0)}) is outside the chord area (${g.areaTop.toFixed(0)}-${g.areaBottom.toFixed(0)}) @ ${ctxs}`);
+        if (!g.next) {
+          noNext++;
+          if (full && g.curEnd < songEnd - 0.05) f.push(`no next line, but the song goes on after ${g.curEnd.toFixed(2)}s @ ${ctxs}`);
+        }
+      }
+      if (process.env.CHORD_GATE_LOG) console.log(`STAGE ${stageH} ${slug} ${mode} ${vp.join('x')}: ${n} positions, next line hidden at ${noNext}`);
       assert.deepEqual(errors, []);
       fail(f);
     } finally {

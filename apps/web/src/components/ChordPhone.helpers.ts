@@ -871,9 +871,21 @@ export function grownFontPx(text: string, fontPx: number, slotW: number, wrap: b
  * (fonts, rounding). (Phase A: the 16px "Now" label went; the section line
  * above already says where you are.)
  */
-export function stageChromePx(nowPx: number): number {
-  return 20 + 4 * 12 + Math.ceil(nowPx * 1.05) + COUNTDOWN_ROW_PX + 6 + 10;
+/** The vertical gap between the stage's rows (position, Now/Next, countdown, beats, bars). */
+export const STAGE_GAP_PX = 10;
+export function stageChromePx(nowPx: number, beatRow = true): number {
+  // With a countdown the beat-dot row is hidden (review of #333, H-1): one
+  // row and one 12px gap fewer.
+  // Gaps are STAGE_GAP_PX; the countdown sits 4px into the gap above it.
+  return 20 + (beatRow ? 4 : 3) * STAGE_GAP_PX + Math.ceil(nowPx * 1.05) + COUNTDOWN_ROW_PX - 4 + (beatRow ? 6 : 0) + 10;
 }
+/**
+ * The least the bar lines may be squeezed (x0.8: a 46px slot -> 37px, a
+ * stacked 30px one -> 24px, still a 24px target) before the NEXT line is
+ * dropped on a short stage (the stage with the section strip and the stem
+ * pills on screen, 2026-11-21).
+ */
+export const MIN_LINE_SCALE = 0.8;
 /**
  * How much the bar lines may grow into `spare` px: never shrink, never past
  * GROWN_BAR_PX per one-row bar (a two-row line grows by the same factor).

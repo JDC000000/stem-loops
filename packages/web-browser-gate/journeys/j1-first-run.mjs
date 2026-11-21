@@ -107,14 +107,18 @@ export default async function run() {
     // one link there. The cut, the cards, the WAV and the ZIP are the same
     // <LoopResults> as before, mounted by /loops instead. So this journey
     // follows the link a user would follow, and then runs the same checks.
-    // Slice 1a: the link lives in the player's ⋯ menu.
+    // Phase A (2026-11-21): the play-along player no longer links to the loops
+    // product (it stays reachable from the nav and Account). So the ⋯ menu must
+    // NOT offer "Download loops", and the journey opens /loops?job=<id> itself,
+    // the address the loops page (reached from Account) preselects.
     await page.locator('[data-testid="player-more"]').click().catch(() => {});
-    const toLoops = page.locator('a[data-testid="loops-link"]');
-    const hasLink = await toLoops.first().isVisible().catch(() => false);
-    j.check('the job page links to this song\'s loops (⋯ → "Download loops")', hasLink,
-      hasLink ? `${(await toLoops.first().innerText()).replace(/\s+/g, ' ')} → ${await toLoops.first().getAttribute('href')}` : 'missing');
-    if (hasLink) await toLoops.first().click();
-    else await page.goto(`/loops?job=${jobId}`);
+    const menuText = (await page.locator('#player-menu').innerText().catch(() => '')).replace(/\s+/g, ' ');
+    const loopsInMenu = await page.locator('#player-menu a[href*="/loops"], [data-testid="loops-link"]').count();
+    // The menu must actually be open (it lists "Song info"), or "no loops link" proves nothing.
+    j.check('the player\'s ⋯ menu opened', /Song info/.test(menuText) && /See all chords/.test(menuText), `menu="${menuText}"`);
+    j.check('the player\'s ⋯ menu does not link to the loops product', /Song info/.test(menuText) && loopsInMenu === 0 && !/Download loops/.test(menuText), `menu="${menuText}"`);
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.goto(`/loops?job=${jobId}`);
     await page.waitForURL(/\/loops\b/, { timeout: 30_000 }).catch(() => {});
     // /loops fetches the job client-side, so its section is mounted as `loading`
     // first and the cut button is not there for the first frames. Wait for the

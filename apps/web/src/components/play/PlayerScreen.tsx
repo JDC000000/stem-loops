@@ -44,6 +44,7 @@ import type { LoopRegion } from '@/lib/play/types';
 import type { Notice, PlayerViewProps } from './Player';
 import Mixer from './Mixer';
 import { MixSheet } from './MixSheet';
+import { PartPills } from './PartPills';
 import { Presets } from './Presets';
 import { SectionLoop } from './SectionLoop';
 import { Sheet } from './Sheet';
@@ -72,6 +73,12 @@ interface ScreenProps extends PlayerViewProps {
   readonly chordPosition: number | null;
   readonly banner: Notice | null;
 }
+
+/**
+ * React 18 renders `inert` only as a string attribute (a boolean `true` is
+ * dropped with a warning), while @types/react types it as a boolean.
+ */
+const INERT = { inert: '' } as unknown as { inert: boolean };
 
 /** After the person scrolls the chord area themselves, auto-follow waits this long (F-8). */
 export const AUTO_SCROLL_PAUSE_MS = 4000;
@@ -139,7 +146,8 @@ export function PlayerScreen(props: ScreenProps) {
     artist,
     back = DEFAULT_BACK,
     songInfo = [],
-    loopsHref = null,
+    // `loopsHref` is no longer rendered (Phase A): the play-along player does
+    // not link to the loops product, which stays reachable from Account/nav.
     onBack,
     playable,
     chordPosition,
@@ -236,8 +244,10 @@ export function PlayerScreen(props: ScreenProps) {
   const band = runOn ? snapshot.loop : null;
   // ⟲ back to the start of this section (the loop's start while looping); play state is kept.
   const onRestart = () => onSeek(restartTarget(sections, runOn ? snapshot.loop : null, snapshot.positionSec));
-  // The first-use hint sits in the seek line's readout slot (empty while nothing
-  // loops), so it costs the chord stage no height; the run hint stays under the strip.
+  // The first-use hint is drawn on the strip's top edge (SectionLoop firstHint),
+  // above the chips, so it costs the chord stage no height and never sits next
+  // to the "my part" pills (where "hold" solos: PR #331 r2 M-1). The run hint
+  // stays under the strip.
   const firstHint = !stripHintSeen && sections.length > 0 ? STRIP_HINT : '';
 
   // ── the mix (P1.3) ─────────────────────────────────────────────────────────
@@ -250,6 +260,7 @@ export function PlayerScreen(props: ScreenProps) {
   const onPreset = (id: PresetId, p: Part) => {
     for (const op of presetOps(id, p, snapshot.stems)) {
       if (op.soloed !== undefined) onSolo(op.stem, op.soloed);
+      if (op.gain !== undefined) onGain(op.stem, op.gain);
       if (op.muted !== undefined) onMute(op.stem, op.muted);
     }
   };
@@ -429,11 +440,19 @@ export function PlayerScreen(props: ScreenProps) {
             ref={menuButton}
             type="button"
             className={styles.more}
-            aria-label="More: all chords, song info, download loops"
+            aria-label="More: all chords, song info"
             aria-haspopup="true"
             aria-expanded={menuOpen}
             aria-controls="player-menu"
             onClick={() => setMenuOpen((o) => !o)}
+            onKeyDown={(e) => {
+              // Escape on the ⋯ button itself closes its menu first (and not a
+              // non-modal Mix sheet behind it).
+              if (e.key === 'Escape' && menuOpen) {
+                e.preventDefault();
+                setMenuOpen(false);
+              }
+            }}
             data-testid="player-more"
           >
             <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
@@ -449,6 +468,7 @@ export function PlayerScreen(props: ScreenProps) {
               className={styles.menu}
               onKeyDown={(e) => {
                 if (e.key === 'Escape') {
+                  e.preventDefault(); // the menu used the key: a non-modal Mix sheet stays open
                   setMenuOpen(false);
                   menuButton.current?.focus();
                 }
@@ -493,17 +513,16 @@ export function PlayerScreen(props: ScreenProps) {
               >
                 Song info
               </button>
-              {loopsHref ? (
-                <a className={styles.menuItem} href={loopsHref} data-testid="loops-link">
-                  Download loops
-                </a>
-              ) : null}
             </div>
           ) : null}
         </div>
       </header>
 
-      <div className={styles.body}>
+      {/* While the non-modal Mix sheet is open, what it covers (pills, chips,
+          transport) and the stage above it are inert: visible, but not in the
+          Tab order and not tappable, so focus never lands under the sheet and a
+          tap on a chord cannot open the editor half behind it (review M3/M4). */}
+      <div className={styles.body} {...(mixOpen && !desktop ? INERT : {})} data-testid="player-body">
         <div className={styles.main}>
           <div className={styles.stage}>
             {notice ? (
@@ -512,6 +531,7 @@ export function PlayerScreen(props: ScreenProps) {
                   className={styles.noticeText}
                   role={notice.tone === 'error' ? 'alert' : 'status'}
                   data-testid={notice.testId ?? 'player-banner'}
+                  id="player-notice-text"
                 >
                   {notice.text}
                 </p>
@@ -573,7 +593,12 @@ export function PlayerScreen(props: ScreenProps) {
                 onTap={onTap}
                 onLongPress={onLongPress}
                 hint={hint && runOn ? RUN_HINT : null}
+                firstHint={firstHint || null}
               />
+              {/* Phase A D5: lower, mute and solo a part in one tap/hold, chords still on screen.
+                  Below the section strip, just above the transport: the strip's "+N more"
+                  cue sits on the strip's top edge, over the stage, and must not cover a pill. */}
+              {desktop ? null : <PartPills stems={snapshot.stems} onGain={onGain} onMute={onMute} onSolo={onSolo} reasonId={notice?.testId === 'player-degraded' ? 'player-notice-text' : null} />}
               <Transport
                 status={snapshot.status}
                 positionSec={snapshot.positionSec}
@@ -585,14 +610,14 @@ export function PlayerScreen(props: ScreenProps) {
                 tickTones={tones.slice(1)}
                 onRestart={onRestart}
                 loopBand={band}
-                loopText={runReadout(names, sections, shown) || firstHint}
+                loopText={runReadout(names, sections, shown)}
                 loopState={sections.length === 0 ? 'disabled' : shown.on ? 'on' : 'off'}
                 onToggleLoop={onToggleLoop}
                 mix={
                   desktop
                     ? null
                     : {
-                        label: mixStateLabel(snapshot.stems, part),
+                        label: mixStateLabel(snapshot.stems),
                         open: mixOpen,
                         onOpen: () => setMixOpen(true),
                         buttonRef: (el) => {
@@ -692,13 +717,6 @@ export function PlayerScreen(props: ScreenProps) {
               {line}
             </p>
           ))}
-          {loopsHref ? (
-            <p className={styles.info}>
-              <a href={loopsHref} className={styles.link}>
-                Download loops
-              </a>
-            </p>
-          ) : null}
         </div>
       </Sheet>
     </section>

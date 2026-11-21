@@ -852,7 +852,11 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
             {completedStatus.message ?? ''}
           </p>
         )}
-        {popover}
+        {/* Phase A (A2): the edit popover OVERLAYS the stage instead of taking
+            height from it. In flow it squeezed the chord view below its floor
+            whenever the screen gave the stage less room (the part pills row),
+            and the bars then painted over the popover's own buttons. */}
+        {popoverFor ? <div style={stagePopoverLayerStyle}>{popover}</div> : null}
       </div>
     );
   }
@@ -2152,6 +2156,16 @@ const stageLabelStyle: CSSProperties = {
   textTransform: 'uppercase',
   letterSpacing: '0.08em',
   whiteSpace: 'nowrap',
+};
+/** The stage's edit popover, laid over the bottom of the stage (scrolls if taller). */
+const stagePopoverLayerStyle: CSSProperties = {
+  position: 'absolute',
+  left: 0,
+  right: 0,
+  bottom: 0,
+  maxHeight: '100%',
+  overflowY: 'auto',
+  zIndex: 2,
 };
 const stageRootStyle: CSSProperties = {
   position: 'relative',

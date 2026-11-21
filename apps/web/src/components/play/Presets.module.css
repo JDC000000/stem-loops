@@ -18,8 +18,10 @@
 }
 
 .grid {
+  /* Phase A D5: three presets in one row (Mute my part · Solo my part · Full
+     song), so the half-height Mix sheet keeps room for the stem rows. */
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-2);
 }
 
@@ -38,6 +40,13 @@
   cursor: pointer;
 }
 
+.preset {
+  /* A narrow phone (360) gives each preset ~104px: let a long name wrap inside
+     the 44px pill rather than clip. */
+  padding: 0 6px;
+  line-height: 1.2;
+}
+
 /* Selected: the ONE neutral selected state (QA A-07; brand A5): --bg-selected
    (#222) with a 2px white edge, never a white fill. The padding gives back the
    extra 1px of edge so the label does not move when it is pressed. */
@@ -49,6 +58,7 @@
   color: var(--text-primary);
   font-weight: var(--weight-semibold);
 }
+.preset[aria-pressed='true'] { padding: 0 5px; }
 
 .preset[aria-disabled='true'] {
   color: var(--text-label);

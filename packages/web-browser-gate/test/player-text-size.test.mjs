@@ -647,6 +647,39 @@ test('S1: no scroll at the sizes the screen fits', async () => {
   if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);
 });
 
+// PR #331 review M1: the same, WITH the notice bar a degraded song always shows
+// (the engine sets `degraded` for a missing stem), and the part pills mounted.
+// Below 600px tall the pills row steps aside when a notice shows
+// (PartPills.module.css), so these phone sizes still fit one screen. Each case
+// also proves what it names: the notice is there, and whether the pills are.
+const FITS_WITH_NOTICE = [[320, 568, false], [360, 560, false], [375, 667, true], [390, 664, true], [390, 844, true], [360, 800, true]];
+test('S1 (M1): no scroll with the notice bar showing, pills shown where they fit', async () => {
+  assert.ok(browser && built, 'setup test did not run or failed');
+  const f = [];
+  for (const [w, h, pillsWanted] of FITS_WITH_NOTICE) {
+    const { page, pageErrors } = await openPlayer(browser, built, w, POSITIONS[0].sec, h, { notice: true, touch: true });
+    try {
+      const m = await page.evaluate(() => {
+        const r = document.querySelector('[data-testid="player"]');
+        const pills = document.querySelector('[data-testid="part-pills"]');
+        return {
+          sh: r.scrollHeight, ch: r.clientHeight, doc: document.scrollingElement.scrollHeight - innerHeight,
+          notice: !!document.querySelector('[data-testid="player-notice"]'),
+          pills: !!pills && getComputedStyle(pills).display !== 'none',
+        };
+      });
+      if (!m.notice) f.push(`${w}x${h}: no notice bar, so this case does not test what it names`);
+      if (m.pills !== pillsWanted) f.push(`${w}x${h}: pills ${m.pills ? 'shown' : 'hidden'}, want ${pillsWanted ? 'shown' : 'hidden'}`);
+      if (m.sh > m.ch) f.push(`${w}x${h}: the player scrolls with a notice (${m.sh} > ${m.ch})`);
+      if (m.doc > 0) f.push(`${w}x${h}: the page behind scrolls by ${m.doc}px`);
+      assert.deepEqual(pageErrors, []);
+    } finally {
+      await page.close();
+    }
+  }
+  if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);
+});
+
 test('S1: at 400% zoom (320x256, 320x225) the screen scrolls and ⟲, Play, Loop and Mix are reachable by pointer', async () => {
   assert.ok(browser && built, 'setup test did not run or failed');
   const f = [];

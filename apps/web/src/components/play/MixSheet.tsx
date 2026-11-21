@@ -30,8 +30,10 @@ export interface MixSheetProps {
 }
 
 /**
- * The Mix sheet (design v1.4, P1.3): a modal bottom sheet over the stage with
- * the header pinned (title, the Now/Next chord names so the harmony stays in
+ * The Mix sheet (design v1.4, P1.3; Phase A D5): a NON-MODAL, half-height
+ * bottom sheet (Sheet modal={false}), so the chord stage stays visible and
+ * bright above it while mixing. PlayerScreen makes the player body inert while
+ * it is open, so Tab and taps never land on what the sheet covers. The header is pinned (title, the Now/Next chord names so the harmony stays in
  * view while mixing, play/pause and Close), the presets pinned under it, and
  * the six stem rows scrolling below. Kept MOUNTED while closed (`hidden`) so
  * the Mixer's per-job memory (sessionStorage, Story 2.7) is restored when the
@@ -56,7 +58,7 @@ export function MixSheet({
   onTogglePlay,
 }: MixSheetProps) {
   return (
-    <Sheet open={open} onClose={onClose} labelledBy="mix-title" keepMounted returnFocus={returnFocus} testId="mix-sheet">
+    <Sheet open={open} onClose={onClose} labelledBy="mix-title" keepMounted modal={false} returnFocus={returnFocus} testId="mix-sheet">
       <div className={styles.head}>
         <h2 id="mix-title" className={styles.title}>
           Mix

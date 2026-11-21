@@ -6,20 +6,29 @@
 
 ## Project Overview
 
-**stem-loops** is a web app that takes a YouTube URL, separates the audio into stems (vocals/drums/bass/other) using AI (Replicate + demucs), extracts musical loops, and serves them for download.
+**stem-loops** (stem-loops.com) is a **phone-first play-along** web app for musicians learning a song.
+
+- **In:** a YouTube link or an uploaded audio/video file. A track over 5 minutes is trimmed to its first 5 minutes, not refused (TSD-V3-DELTA §12.5, v1.9).
+- **Separate:** 6 stems (drums, bass, guitar, keys, vocals, other) via Replicate `htdemucs_6s` (`apps/worker/src/worker/replicate_client.py`; `STEMS` in `apps/worker/src/worker/models.py`).
+- **Analyse:** chords (provider: Klangio, `apps/worker/src/worker/chord_providers/`; chords for new songs after 2026-12-05 are an open Jon decision, DR-D1), plus BPM and key (`jobs.bpm`, `jobs.musical_key`).
+- **Play:** the player at `/jobs/[id]`: chord stage (current chord + next), BPM/key, a mixer for the 6 stems, "my part" controls (turn my part down, mute or solo it), and section jump / section loops (TSD-V3-DELTA §12.12). Signed-in users have a song library (`/history`); demo songs play signed out.
+- **Secondary product:** bar-length 24-bit WAV loop downloads ("Download loops"), cut per stem and section.
+- **Commercial layer:** accounts (Supabase Auth), plans **Free / Pro / Studio** plus one-time credit packs, billed through **Stripe** (Checkout + Portal). Plan values live in the DB `plans` table; source of truth is `apps/worker/migrations/034_v3_pricing_model_truth.sql` (TSD-V3-DELTA §1.2, §1.2b).
 
 ## External Documents (on CRHQ platform)
 
-- **PRD**: `documents/requirements/stem-loops/requirements.md`
-  - Contains §10 Handoff Rules for Claude Code
-  - Full product requirements, user stories, acceptance criteria
-- **TSD**: `documents/requirements/stem-loops/technical-scope.md`
-  - Contains §6 Data model (jobs/job_events/loops tables)
-  - Contains §6.2 Error codes
-  - Contains §6.3 State machine
-  - Contains §8 Anti-goals (V1 mistakes to NOT repeat)
-  - Contains §9 Build order
-  - Contains FLAG 1 resolution (this file is the canonical context)
+> Heading kept unchanged so existing links resolve. The CRHQ platform is no longer where the live product docs are.
+
+**Current (use these):**
+
+- **PRD + TSD (one doc):** `04-tsd-and-workplan/TSD-V3-DELTA.md`, in this repo. A living delta over the pinned TSD (`stem-loops-handoff/07-roadmap/TSD.md`, SL21-tsd, commit `c3f6a911`). Each amendment takes effect when it merges.
+- **User stories:** play-along user stories **v4.0** (2026-11-21), in the Claude Project attached to this work, not in this repo. It replaces v3.1 (`claude/user-stories-play-along-2026-11-10.md`). If you cannot reach the Project, say so in your handover.
+- **Status and sequencing:** product plan v4.0 (2026-11-21), in the Claude Project. It defines no requirements.
+
+**Historical (CRHQ platform, V1/V2 era; do not treat as current):**
+
+- PRD: `documents/requirements/stem-loops/requirements.md` (§10 Handoff Rules for Claude Code)
+- TSD: `documents/requirements/stem-loops/technical-scope.md` (§6 data model, §6.2 error codes, §6.3 state machine, §8 anti-goals, §9 build order, FLAG 1 resolution)
 
 ## FLAG 1 Resolution (TSD reference)
 
@@ -50,25 +59,46 @@ Active stages emit events (job_events table):
 
 ## Error Codes (TSD §6.2)
 
-| Code | When |
-|------|------|
-| DOWNLOAD_BLOCKED | yt-dlp blocked/unavailable |
-| DOWNLOAD_TIMEOUT | yt-dlp timed out |
-| DOWNLOAD_INVALID_URL | Not a valid YouTube URL |
-| DOWNLOAD_AGE_RESTRICTED | Video age-restricted |
-| DOWNLOAD_PRIVATE | Video is private |
-| SEPARATION_FAILED | Replicate/demucs error |
-| EXTRACTION_FAILED | Loop extraction error |
-| UPLOAD_FAILED | R2/MinIO upload error |
-| INTERNAL_ERROR | Unexpected error |
-| RATE_LIMITED | Rate limit exceeded |
+Source of truth for job failure codes: `ALL_ERROR_CODES` in `apps/worker/src/worker/errors.py` (13 codes). User copy: the worker class's `user_message` is stored on the job; the API-envelope copy is `ERROR_COPY` in `apps/web/src/lib/error-copy.ts`. Subclasses that reuse a parent's code (e.g. `FetchPausedError`, `LiveStreamNotSupportedError`, `VideoBlocklistedError`, `LinkTooLongError`, `LinkUnmeasurableError`) add no new code.
+
+| Code | Raised by | When |
+|------|-----------|------|
+| DOWNLOAD_BLOCKED | worker | YouTube blocked the fetch; also the fetch kill switch (`FetchPausedError`) |
+| DOWNLOAD_TIMEOUT | worker | The video could not be fetched in time |
+| DOWNLOAD_INVALID_URL | worker | Not a valid YouTube URL; also live streams (`LiveStreamNotSupportedError`) |
+| DOWNLOAD_AGE_RESTRICTED | worker | Video is age-restricted |
+| DOWNLOAD_PRIVATE | worker | Video is private or unavailable; also a blocklist hit (`VideoBlocklistedError`) |
+| FETCH_PROXY_FAILED | worker | Our outbound proxy refused or failed the fetch (QA-61, #307). Our fault: in `OUR_FAULT_CODES`, reported to Sentry |
+| SEPARATION_FAILED | worker | Replicate / htdemucs_6s failed, timed out or was cancelled |
+| EXTRACTION_FAILED | worker | No steady beat / track too short to analyse |
+| UPLOAD_FAILED | worker | Stems or loops could not be saved to R2 |
+| UPLOAD_INVALID | worker | The uploaded file could not be read as audio/video |
+| UPLOAD_TOO_LARGE | worker | The upload is over the size cap (200 MB) |
+| UPLOAD_TOO_LONG | worker | **Defined, no longer raised for length** (since 2026-11-14 long tracks are trimmed; TSD-V3-DELTA §12.5). Kept for old rows |
+| INTERNAL_ERROR | worker | Unexpected error; also an unmeasurable link track (`LinkUnmeasurableError`) |
+| RATE_LIMITED | web | Admission: per-client rate limit or spend ceiling, before a job exists (HTTP 429) |
+| AT_CAPACITY | web | Admission: global in-flight cap reached (HTTP 503 + Retry-After) |
+
+Known drift (code, not this file): `ERROR_CODES` in `apps/worker/src/worker/models.py` lists 11 codes and lacks `UPLOAD_INVALID`, `UPLOAD_TOO_LARGE` and `UPLOAD_TOO_LONG`; the web `ERROR_COPY` map has no entry for those three (the job page shows the worker's stored message).
+
+Web API codes that are not job failures (billing, auth, entitlements, bot check), all in `ERROR_COPY`: CHECKOUT_FAILED, UNAUTHENTICATED, NO_CUSTOMER, PLAN_ALREADY_ACTIVE, ENTITLEMENT_UNAVAILABLE, PLAN_NOT_FOUND, TRIAL_EXHAUSTED, CREDIT_BALANCE_INSUFFICIENT, FREE_MONTHLY_QUOTA_EXHAUSTED, PAID_LINK_INGEST_DISALLOWED (legacy, no longer thrown), PROMO_INVALID, BOT_CHALLENGE_FAILED.
 
 ## §9 Build Order
+
+**Historical (V1/V2 loop-downloader build, complete). Kept for the record; it is not the current plan.**
 
 1. **Foundation** — DB schema, migrations, worker health, types codegen, CI green
 2. **Audio Pipeline** — Download (yt-dlp), Separate (Replicate demucs), Extract loops, Upload to R2
 3. **UX Polish** — Web UI, job status polling, loop playback, download
 4. **Production/Ship** — Rate limiting, IP hashing, expiry cleanup, deploy pipeline
+
+**Current phase order (product plan v4.0, 2026-11-21; status lives there, not here):**
+
+1. **Design Phase A — play screen fixes** (in progress): A1 chord stage (Simple chords by default, beat countdown, BPM/key at 20 px, wake lock); A2 my-part stem pills + half-height non-modal Mix sheet; A3 sections + transport (neutral names, tap = jump, long-press = loop, back-to-section-start); A4 home / link / nav / copy (link box first, sign-in before the job, 3-item phone nav, phone-first copy). **Gate:** each PR independently reviewed and merged, then Jon plays 3 songs on his own phone.
+2. **Design Phase B — library, set lists, corrections** (after the Phase A play-test): library row kept after audio expiry with a free Re-make; set lists (#322); Try again, capped at 2 (#321); library search / recent; saved chord corrections (#135); real section segmentation.
+3. **Design Phase C — later** (after Phase B): PWA share target and "ready" notification, progressive decode, slow-down / transpose, count-in, section rename, chord-edit flywheel.
+
+Running alongside, not in sequence: chords continuity past 2026-12-05 (DR-D1, Jon's decision), billing and money safety, ops, M2 merge automation, beta/launch. The loops product is maintenance only.
 
 ## §8 Anti-Goals (V1 mistakes — DO NOT repeat)
 

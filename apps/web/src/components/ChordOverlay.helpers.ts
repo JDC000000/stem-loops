@@ -868,17 +868,96 @@ export function layoutTapRows(
 // ---------------------------------------------------------------------------
 // QA-73: the strip (tablets and desktop) is tappable too
 // ---------------------------------------------------------------------------
+//
+// The strip SCROLLS, so unlike a wrapped row it has no fixed width to share.
+// A chip under the tap floor is therefore widened ADDITIVELY: it gets exactly
+// the px it lacks, and everything after it moves right by that much. No chip
+// gives up width, so every chord whose proportional width is already at least
+// CHIP_MIN_BOX_PX keeps its true, time-proportional width, and a long chord is
+// still drawn longer than a short one. The cost is length: the strip is
+// dur x zoom plus the sum of those deficits.
+
+/** px a chip of `sec` seconds is drawn at on the strip, at `pxPerSec`. */
+function stripChipPx(sec: number, pxPerSec: number, minBoxPx: number): number {
+  return Math.max(Math.max(0, sec) * pxPerSec, minBoxPx);
+}
 
 /**
- * The lowest zoom at which the strip can give every chord a chip of at least
- * MIN_TAP_PX: the whole song must be at least runCount x CHIP_MIN_BOX_PX wide.
- * The strip's zoom-out end is the higher of this and "whole track fits". On a
- * dense song that means the zoomed-out strip scrolls instead of fitting the
- * screen; a strip of 1.5px slivers that nobody can tap is not a view of the song.
+ * Width of the tappable strip at `pxPerSec`: every chord at max(proportional,
+ * box), every stretch with no chord at its proportional width. Increasing in
+ * the zoom, and never below runCount x minBoxPx.
  */
-export function stripMinPxPerSec(runCount: number, durSec: number): number {
-  if (!(durSec > 0) || !(runCount > 0)) return 0;
-  return (runCount * CHIP_MIN_BOX_PX) / durSec;
+export function stripWidthAt(
+  runs: readonly Pick<OverlayRun, 'startSec' | 'endSec'>[],
+  pxPerSec: number,
+  minBoxPx: number = CHIP_MIN_BOX_PX,
+): number {
+  return layoutTapStrip(runs, pxPerSec, minBoxPx).widthPx;
+}
+
+/**
+ * How much wider than the tap box a long chord is drawn at the strip's
+ * zoom-out end, when the song cannot fit the screen: 1.5x (37.5px against
+ * 25px), so a long chord reads as clearly longer than a passing one. 2x was
+ * measured too: it made a 200s song's zoomed-out strip 5.9 screens long
+ * against 4.3 here, for a difference the eye already sees at 1.5x.
+ */
+export const STRIP_LONG_CHORD_RATIO = 1.5;
+
+/**
+ * The "long chord" of a song: the time-weighted median chord length, i.e. half
+ * the song's chord time is in chords at least this long. Robust to a single
+ * very long intro chord, and to a flurry of short ones.
+ */
+export function longChordSec(runs: readonly Pick<OverlayRun, 'startSec' | 'endSec'>[]): number {
+  const d = runs.map((r) => Math.max(0, r.endSec - Math.max(0, r.startSec))).filter((x) => x > 0).sort((a, b) => b - a);
+  const total = d.reduce((a, x) => a + x, 0);
+  let acc = 0;
+  for (const x of d) {
+    acc += x;
+    if (acc >= total / 2) return x;
+  }
+  return 0;
+}
+
+/**
+ * The strip's zoom-out end (QA-73).
+ *
+ *  - If the song CAN fit the screen with every chip at the tap floor
+ *    (runCount x CHIP_MIN_BOX_PX <= viewport), the floor is the highest zoom
+ *    at which the tappable strip still fits the screen: "whole track" stays one
+ *    drag away, and as much of the song as possible is time-proportional.
+ *  - If it cannot, the strip has to scroll anyway, so the floor is the zoom at
+ *    which the song's long chords (longChordSec) are STRIP_LONG_CHORD_RATIO x
+ *    the tap floor wide: zoomed right out, long chords still read as long.
+ *
+ * Capped like fitPxPerSec at MAX_PX_PER_SEC in the first case; the second can
+ * exceed it, and ChordOverlay raises the ceiling to match.
+ */
+export function stripMinPxPerSec(
+  runs: readonly Pick<OverlayRun, 'startSec' | 'endSec'>[],
+  viewportPx: number,
+  minBoxPx: number = CHIP_MIN_BOX_PX,
+): number {
+  const dur = durationSec(runs);
+  if (!(dur > 0) || runs.length === 0 || !(viewportPx > 0)) return fitPxPerSec(dur, viewportPx);
+  if (runs.length * minBoxPx <= viewportPx) {
+    // The largest zoom whose strip fits. stripWidthAt is continuous and
+    // increasing from runCount x box at zoom 0; at viewport / dur it is at
+    // least the viewport. Bisection to 1e-6 relative.
+    let lo = 0;
+    let hi = Math.min(MAX_PX_PER_SEC, viewportPx / dur);
+    if (stripWidthAt(runs, hi, minBoxPx) <= viewportPx) return hi;
+    for (let k = 0; k < 60 && hi - lo > hi * 1e-9; k++) {
+      const mid = (lo + hi) / 2;
+      if (stripWidthAt(runs, mid, minBoxPx) <= viewportPx) lo = mid;
+      else hi = mid;
+    }
+    return lo;
+  }
+  const long = longChordSec(runs);
+  const fit = fitPxPerSec(dur, viewportPx);
+  return long > 0 ? Math.max(fit, (STRIP_LONG_CHORD_RATIO * minBoxPx) / long) : fit;
 }
 
 export interface StripLayout {
@@ -890,67 +969,58 @@ export interface StripLayout {
   widthPx: number;
   /**
    * Knots of the monotone, piecewise-linear time -> px map the strip uses for
-   * everything that is not a chip: ruler ticks, the visible-range hint and
-   * zoom centring. Each chord's [start, end] maps onto its chip's [left,
-   * right], so a tick at time t is drawn inside the chip of the chord heard at
-   * t, wherever fitting moved that chip.
+   * everything that is not a chip: ruler ticks, the playhead, the
+   * visible-range hint and zoom centring. Each chord's [start, end] maps onto
+   * its chip's [left, right], so a tick at time t is drawn inside the chip of
+   * the chord heard at t.
    */
   knotSec: number[];
   knotPx: number[];
 }
 
 /**
- * The strip, made tappable (QA-73): the same move as the wrapped rows (QA-68),
- * applied to the strip as ONE long row. Chips start time-proportional
- * (chipBox); fitRowSegments then widens every chip under the floor to
- * CHIP_MIN_BOX_PX, moving the chord boundaries by the least-squares minimum.
- * Longer neighbours give up the space, order is kept, no chord is merged or
- * dropped (#212), and a strip whose chips are all wide enough is unchanged.
- *
- * The strip's width is the song's length at this zoom, or runCount x
- * CHIP_MIN_BOX_PX if that is more (only reachable if the zoom is below
- * stripMinPxPerSec, which ChordOverlay does not allow; it keeps the fit
- * feasible regardless).
- *
- * What it costs, as in the wrapped rows: inside the strip, width is no longer
- * exactly proportional to time where chips were widened. The ruler is mapped
- * through the same geometry (stripTimeToPx), so it stays true to the chips.
+ * The strip, made tappable (QA-73), by ADDITIVE widening (see above). In time
+ * order: each chip starts where the time map puts its start (its proportional
+ * left plus every deficit before it), and is max(proportional, minBoxPx) wide.
+ * A chip that starts before the previous chip ends (overlapping data) starts
+ * at that end instead, so chips never overlap. Stretches with no chord keep
+ * their proportional width. Chord order is kept; nothing is merged (#212).
  */
 export function layoutTapStrip(
   runs: readonly Pick<OverlayRun, 'startSec' | 'endSec'>[],
   pxPerSec: number,
   minBoxPx: number = CHIP_MIN_BOX_PX,
 ): StripLayout {
+  const pps = pxPerSec > 0 && Number.isFinite(pxPerSec) ? pxPerSec : 0;
   const order = runs.map((_, i) => i).sort((a, b) => runs[a].startSec - runs[b].startSec || a - b);
-  const segs: RowSegment[] = order.map((i) => {
-    const box = chipBox(runs[i], pxPerSec);
-    return { runIndex: i, leftPx: box.leftPx, widthPx: box.widthPx, continued: false, startSec: Math.max(0, runs[i].startSec) };
-  });
-  const dur = durationSec(runs);
-  const widthPx = Math.max(dur * pxPerSec, runs.length * minBoxPx);
-  // A chip the fit did not move keeps its exact chipBox numbers. The fit
-  // returns unmoved chips "to float error", and the default zoom is derived to
-  // make some chip EXACTLY label + padding wide: 1e-14px less flips it from
-  // `full` to `tight` (measured on the bimodal song's Fmaj7).
-  const fitted = (segs.length > 0 ? fitRowSegments(segs, widthPx, minBoxPx) : []).map((f, k) =>
-    Math.abs(f.leftPx - segs[k].leftPx) < 1e-6 && Math.abs(f.widthPx - segs[k].widthPx) < 1e-6 ? segs[k] : f,
-  );
   const boxes: ChipBox[] = runs.map(() => ({ leftPx: 0, widthPx: 0 }));
+  const segments: RowSegment[] = [];
   const knotSec: number[] = [0];
   const knotPx: number[] = [0];
   const push = (sec: number, px: number) => {
     knotSec.push(Math.max(knotSec[knotSec.length - 1], sec));
     knotPx.push(Math.max(knotPx[knotPx.length - 1], px));
   };
-  for (const seg of fitted) {
-    boxes[seg.runIndex] = { leftPx: seg.leftPx, widthPx: seg.widthPx };
-    const run = runs[seg.runIndex];
-    const start = Math.max(0, run.startSec);
-    push(start, seg.leftPx);
-    push(Math.max(start, run.endSec), seg.leftPx + seg.widthPx);
+  let shiftPx = 0; // px added before the current point in time
+  let rightPx = 0; // right edge of the last chip placed
+  let endSec = 0; // the time that right edge stands for
+  for (const i of order) {
+    const start = Math.max(0, runs[i].startSec);
+    const end = Math.max(start, runs[i].endSec);
+    const leftPx = Math.max(rightPx, start * pps + shiftPx);
+    const widthPx = stripChipPx(end - start, pps, minBoxPx);
+    boxes[i] = { leftPx, widthPx };
+    segments.push({ runIndex: i, leftPx, widthPx, continued: false, startSec: start });
+    push(start, leftPx);
+    push(end, leftPx + widthPx);
+    rightPx = leftPx + widthPx;
+    endSec = Math.max(endSec, end);
+    shiftPx = rightPx - endSec * pps;
   }
+  const dur = durationSec(runs);
+  const widthPx = Math.max(rightPx, dur * pps + shiftPx);
   push(dur, widthPx);
-  return { boxes, row: { startSec: 0, segments: fitted }, widthPx, knotSec, knotPx };
+  return { boxes, row: { startSec: 0, segments }, widthPx, knotSec, knotPx };
 }
 
 function interpolateKnots(from: readonly number[], to: readonly number[], v: number): number {
@@ -978,6 +1048,33 @@ export function stripTimeToPx(layout: Pick<StripLayout, 'knotSec' | 'knotPx'>, s
 /** The time drawn at strip position `px`. Inverse of stripTimeToPx. */
 export function stripPxToTime(layout: Pick<StripLayout, 'knotSec' | 'knotPx'>, px: number): number {
   return interpolateKnots(layout.knotPx, layout.knotSec, px);
+}
+
+/** The times at the left and right edges of the strip's viewport ("Showing a–b"). */
+export function stripVisibleSec(
+  layout: Pick<StripLayout, 'knotSec' | 'knotPx'>,
+  scrollLeft: number,
+  clientWidth: number,
+): [number, number] {
+  return [stripPxToTime(layout, scrollLeft), stripPxToTime(layout, scrollLeft + clientWidth)];
+}
+
+/** The time at the centre of the strip's viewport: what a zoom keeps centred. */
+export function stripCentreSec(
+  layout: Pick<StripLayout, 'knotSec' | 'knotPx'>,
+  scrollLeft: number,
+  clientWidth: number,
+): number {
+  return stripPxToTime(layout, scrollLeft + clientWidth / 2);
+}
+
+/** The scrollLeft that puts `centreSec` at the centre of the viewport (unclamped above). */
+export function stripScrollLeftForCentre(
+  layout: Pick<StripLayout, 'knotSec' | 'knotPx'>,
+  centreSec: number,
+  clientWidth: number,
+): number {
+  return Math.max(0, stripTimeToPx(layout, centreSec) - clientWidth / 2);
 }
 
 /**

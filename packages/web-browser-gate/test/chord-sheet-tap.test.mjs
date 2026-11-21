@@ -99,7 +99,11 @@ const DENSE = [
 const SONGS = [
   { name: 'qa01', ...songOf(Array.from({ length: 32 }, (_, i) => QA01[i % QA01.length]), 100) },
   { name: 'dense', ...songOf(Array.from({ length: 33 }, (_, i) => DENSE[i % DENSE.length]), 120) },
+  // Short enough to fit a tablet screen with every chip at 24px (QA-73 M-1:
+  // then the zoomed-out strip must fit the screen, as before the fix).
+  { name: 'short', ...songOf(Array.from({ length: 8 }, (_, i) => QA01[i % QA01.length]), 100) },
 ];
+const BOX = MIN_TAP + 1; // a chip and its 1px gap: the strip's box per chord (plus 0.02px slack)
 
 const snapAt = (song, positionSec) => ({
   status: 'playing',
@@ -261,11 +265,13 @@ function measureSheet() {
     x: el.getBoundingClientRect().left,
   }));
   const hint = sheet.querySelector('[data-testid="timeline-hint"]')?.textContent ?? '';
+  const sc = sheet.querySelector('[data-testid="chord-scroll"]');
+  const scroll = sc ? { scrollWidth: sc.scrollWidth, clientWidth: sc.clientWidth, scrollLeft: sc.scrollLeft } : null;
   // Anything wider than the sheet makes it scroll sideways.
   let sheetOverflowX = 0;
   for (let e = tl; e && e !== sheet.parentElement; e = e.parentElement) sheetOverflowX = Math.max(sheetOverflowX, e.scrollWidth - e.clientWidth);
   sheetOverflowX = Math.max(sheetOverflowX, document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  return { sheetOverflowX, layout: tl?.dataset.layout ?? null, pps: Number(tl?.dataset.pxPerSec), chips, labels, rows, rings, lines, ticks, hint };
+  return { sheetOverflowX, layout: tl?.dataset.layout ?? null, pps: Number(tl?.dataset.pxPerSec), chips, labels, rows, rings, lines, ticks, hint, scroll };
 }
 
 const toSec = (t) => {
@@ -304,6 +310,7 @@ function check(m, song, pos, f, ctx, wantLayout) {
     if (toSec(m.labels[i]) < toSec(m.labels[i - 1])) f.push(`row label ${m.labels[i]} after ${m.labels[i - 1]} @ ${ctx}`);
   if (m.layout === 'wrapped') checkWrappedTimes(m, song, f, ctx);
   if (m.layout === 'strip') checkStripTimes(m, song, f, ctx);
+  if (m.layout === 'strip') checkStripDurations(m, song, f, ctx);
   // The current chord: the ring is on a chip of the chord being heard, exactly.
   const heard = song.segments.findIndex((s) => s.start_sec <= pos && pos < s.end_sec);
   if (m.rings.length === 0) f.push(`no current-chord ring @ ${ctx}`);
@@ -360,6 +367,124 @@ function checkWrappedTimes(m, song, f, ctx) {
     m.split = split;
     m.saysUpTo = saysUpTo;
   }
+}
+
+/**
+ * QA-73 review M-1: the strip still shows how long chords last. Widening is
+ * ADDITIVE: a chord whose proportional width (duration x zoom) is at least
+ * the box keeps exactly that width; a shorter one gets exactly the box. At the
+ * zoom-out end (m.zoomedOut) a song that fits the screen at 24px per chip
+ * does fit it, and one that does not still draws long chords >= 1.5x the box.
+ */
+function checkStripDurations(m, song, f, ctx) {
+  const segs = song.segments;
+  for (const c of m.chips.filter((x) => x.primary)) {
+    const prop = (segs[c.run].end_sec - segs[c.run].start_sec) * m.pps;
+    // Drawn = box width less the 1px gap. pps is printed to 3 dp.
+    const want = prop >= BOX + 0.02 ? prop - 1 : BOX - 1 + 0.02;
+    if (Math.abs(c.w - want) > 0.6)
+      f.push(`${c.id} (${segs[c.run].label}, ${(segs[c.run].end_sec - segs[c.run].start_sec).toFixed(2)}s) is ${c.w.toFixed(2)}px wide, want ${want.toFixed(2)} (${prop >= BOX ? 'its proportional width' : 'the tap box'}) @ ${ctx}`);
+  }
+  if (m.zoomedOut && m.scroll) {
+    const canFit = segs.length * (BOX + 0.02) <= m.scroll.clientWidth;
+    const scrolls = m.scroll.scrollWidth > m.scroll.clientWidth + 1;
+    if (canFit && scrolls) f.push(`${segs.length} chords fit ${m.scroll.clientWidth}px at 24px each, but the zoomed-out strip is ${m.scroll.scrollWidth}px @ ${ctx}`);
+    if (!canFit) {
+      const ws = m.chips.filter((x) => x.primary).map((x) => x.w);
+      if (Math.max(...ws) < 1.5 * Math.min(...ws) - 1) f.push(`zoomed out, the widest chip is ${Math.max(...ws).toFixed(1)}px and the narrowest ${Math.min(...ws).toFixed(1)}px: durations are gone @ ${ctx}`);
+    }
+  }
+}
+
+/** The time drawn at screen x, from the payload's times and the chips' DOM boxes only. */
+function timeAtX(m, song, x) {
+  const segs = song.segments;
+  const prim = m.chips.filter((c) => c.primary).sort((a, b) => a.x - b.x);
+  const k = [[0, m.stripL]];
+  for (const c of prim) {
+    k.push([segs[c.run].start_sec, c.x]);
+    k.push([segs[c.run].end_sec, c.x + c.w + 1]); // the box: chip + its 1px gap
+  }
+  k.push([segs.at(-1).end_sec, m.stripR]);
+  if (x <= k[0][1]) return 0;
+  for (let i = 1; i < k.length; i++)
+    if (x <= k[i][1]) return k[i][1] > k[i - 1][1] ? k[i - 1][0] + ((x - k[i - 1][1]) / (k[i][1] - k[i - 1][1])) * (k[i][0] - k[i - 1][0]) : k[i][0];
+  return segs.at(-1).end_sec;
+}
+const fmt = (t) => `${Math.floor(Math.floor(t) / 60)}:${String(Math.floor(t) % 60).padStart(2, '0')}`;
+const fmtOk = (shown, t) => shown === fmt(t) || shown === fmt(t + 0.05) || shown === fmt(Math.max(0, t - 0.05));
+
+/**
+ * QA-73 review m-2: the "Showing a–b of N" hint and zoom centring use the same
+ * time map as the chips. Scrolled to mid-song, "a" and "b" must be the times
+ * drawn at the viewport's edges, and a zoom must keep the chord at the centre
+ * of the viewport there (+-1 chord).
+ */
+async function checkStripHintAndCentre(page, song, f, ctx) {
+  // Paused, with no chord sounding: while a chord plays off screen, a zoom
+  // re-engages auto-follow and scrolls back to it (pre-existing, by design:
+  // resolveAutoScroll), which would hide what zoom centring does.
+  await page.evaluate(() => window.__render({ ...window.__snap, status: 'paused', positionSec: null }));
+  await settle(page);
+  const probe = () =>
+    page.evaluate(() => {
+      const sheet = document.querySelector('[data-testid="chart-sheet"]');
+      const sc = sheet.querySelector('[data-testid="chord-scroll"]');
+      const r = sc.getBoundingClientRect();
+      const inner = sc.firstElementChild.getBoundingClientRect();
+      const chipBox = sheet.querySelector('[data-testid^="chord-chip-"]').getBoundingClientRect();
+      const x0 = r.left + sc.clientLeft;
+      const cx = x0 + sc.clientWidth / 2;
+      const atC = document.elementFromPoint(cx, chipBox.top + chipBox.height / 2)?.closest('[data-testid^="chord-chip-"]')?.dataset.testid ?? null;
+      const chips = [...sheet.querySelectorAll('[data-testid^="chord-chip-"]')].map((c) => {
+        const b = c.getBoundingClientRect();
+        const mm = /^chord-chip-(\d+)$/.exec(c.dataset.testid);
+        return { run: mm ? Number(mm[1]) : -1, primary: !!mm, x: b.left, w: b.width };
+      });
+      return {
+        x0, x1: x0 + sc.clientWidth, cx, atC, chips, stripL: inner.left, stripR: inner.left + sc.scrollWidth,
+        scrollable: sc.scrollWidth - sc.clientWidth, sl: sc.scrollLeft,
+        hint: sheet.querySelector('[data-testid="timeline-hint"]')?.textContent ?? '',
+        pps: sheet.querySelector('[data-testid="chord-timeline"]').dataset.pxPerSec,
+      };
+    });
+  let p = await probe();
+  if (p.scrollable < 50) {
+    f.push(`the strip does not scroll (${p.scrollable}px), so the hint/centring check measured nothing @ ${ctx}`);
+    return;
+  }
+  await page.evaluate(() => {
+    const sc = document.querySelector('[data-testid="chart-sheet"] [data-testid="chord-scroll"]');
+    sc.scrollLeft = Math.round((sc.scrollWidth - sc.clientWidth) * 0.6);
+    sc.dispatchEvent(new Event('scroll'));
+  });
+  await settle(page);
+  await settle(page);
+  p = await probe();
+  const mm = /Showing (\d+:\d\d)–(\d+:\d\d) of/.exec(p.hint);
+  if (!mm) f.push(`strip hint "${p.hint}" has no "Showing a–b" @ ${ctx}`);
+  else {
+    const ta = timeAtX(p, song, p.x0);
+    const tb = timeAtX(p, song, p.x1);
+    if (!fmtOk(mm[1], ta) || !fmtOk(mm[2], tb))
+      f.push(`hint says ${mm[1]}–${mm[2]}, the viewport edges are drawn at ${ta.toFixed(2)}s–${tb.toFixed(2)}s @ ${ctx}`);
+  }
+  const before = p.atC ? Number(/^chord-chip-(\d+)/.exec(p.atC)[1]) : null;
+  const btn = await page.evaluate(() => {
+    const s = document.querySelector('[data-testid="chart-sheet"]');
+    return s.querySelector('[data-testid="zoom-in"]').disabled ? 'zoom-out' : 'zoom-in';
+  });
+  await page.click(`[data-testid="chart-sheet"] [data-testid="${btn}"]`);
+  await page.waitForFunction((b) => document.querySelector('[data-testid="chart-sheet"] [data-testid="chord-timeline"]').dataset.pxPerSec !== b, p.pps, { timeout: 10000 });
+  await settle(page);
+  await settle(page);
+  const q = await probe();
+  const after = q.atC ? Number(/^chord-chip-(\d+)/.exec(q.atC)[1]) : null;
+  if (before === null || after === null || Math.abs(after - before) > 1)
+    f.push(`${btn}: chord ${before} was at the centre, chord ${after} is now (pps ${p.pps} -> ${q.pps}) @ ${ctx}`);
+  if (Math.abs(q.sl - p.sl) < 20) f.push(`the zoom did not move the scroller (${p.sl} -> ${q.sl}), so centring was not exercised @ ${ctx}`);
+  await page.evaluate(() => window.__render(window.__snap));
+  await settle(page);
 }
 
 /**
@@ -458,10 +583,12 @@ for (const song of SONGS) {
         for (const stop of SLIDER_STOPS) {
           if (stop !== null) await setSlider(page, stop);
           const m = await page.evaluate(measureSheet);
+          m.zoomedOut = stop === 0;
           const ctxs = `${vp.join('x')} ${song.name} slider=${stop ?? 'default'} pps=${m.pps}`;
           check(m, song, pos, f, ctxs, wantLayout);
+          if (stop === null && m.layout === 'strip' && song.name !== 'short') await checkStripHintAndCentre(page, song, f, ctxs);
           measured += m.chips.length;
-          summary.push({ vp: vp.join('x'), layout: m.layout, song: song.name, stop: stop ?? 'default', min: Math.min(...m.chips.map((c) => Math.min(c.w, c.h))), under: m.chips.filter((c) => c.w < MIN_TAP || c.h < MIN_TAP).length, chips: m.chips.length, split: m.split, upTo: m.saysUpTo });
+          summary.push({ vp: vp.join('x'), layout: m.layout, song: song.name, stop: stop ?? 'default', min: Math.min(...m.chips.map((c) => Math.min(c.w, c.h))), under: m.chips.filter((c) => c.w < MIN_TAP || c.h < MIN_TAP).length, chips: m.chips.length, split: m.split, upTo: m.saysUpTo, pps: m.pps, screens: m.scroll ? m.scroll.scrollWidth / m.scroll.clientWidth : null, widths: Object.fromEntries(m.chips.filter((c) => c.primary).map((c) => [(song.segments[c.run].end_sec - song.segments[c.run].start_sec).toFixed(2), c.w])) });
           await tapShortest(page, song, f, ctxs);
         }
         if (measured < song.segments.length * SLIDER_STOPS.length) f.push(`only ${measured} chips measured`);

@@ -563,10 +563,10 @@ test('F1 per-frame cost: every O(n) helper in ChordOverlay is called inside a me
   // true of the chips and false of these three: durationSec and timelineWidthPx
   // each walk every run, and rulerTicks rebuilds (and re-allocates) every tick.
   // QA-73: the strip's width and ticks now come from layoutTapStrip (which
-  // walks every run, via durationSec and fitRowSegments) and stripRulerTicks,
-  // in place of timelineWidthPx and rulerTicks. Same rule, the helpers that
-  // run now.
-  for (const name of ['durationSec', 'layoutTapStrip', 'stripRulerTicks']) {
+  // walks every run) and stripRulerTicks, in place of timelineWidthPx and
+  // rulerTicks; its zoom-out end from stripMinPxPerSec (a bisection over
+  // layoutTapStrip). Same rule, the helpers that run now.
+  for (const name of ['durationSec', 'layoutTapStrip', 'stripRulerTicks', 'stripMinPxPerSec']) {
     const sites = callSites(name);
     assert.ok(sites.length > 0, `${name} is no longer called from ChordOverlay.tsx — update this test`);
     for (const site of sites) {

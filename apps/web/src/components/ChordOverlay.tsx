@@ -107,16 +107,16 @@ import {
   completedJobStatus,
   displayText,
   durationSec,
-  fitPxPerSec,
   formatTime,
   isManualScroll,
   layoutRows,
   layoutTapRows,
   layoutTapStrip,
+  stripCentreSec,
   stripMinPxPerSec,
-  stripPxToTime,
   stripRulerTicks,
-  stripTimeToPx,
+  stripScrollLeftForCentre,
+  stripVisibleSec,
   type StripLayout,
   wrapPaintBudgetPx,
   markMonotoneRuns,
@@ -134,6 +134,8 @@ export type { ChordEdit, ChordLabelEdit };
 
 // Visual constants for the timeline.
 const RULER_H = 20;
+// The strip of a phone, where it is not drawn: nothing to lay out.
+const EMPTY_STRIP: StripLayout = { boxes: [], row: { startSec: 0, segments: [] }, widthPx: 0, knotSec: [0, 0], knotPx: [0, 0] };
 const GUTTER_PX = 44; // row-time labels in the wrapped (narrow) layout
 const CHIP_H_STRIP = 36;
 const CHIP_H_WRAP = 44; // touch target
@@ -426,12 +428,18 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   const measured = widthPx > 0;
   const narrow = measured && widthPx < NARROW_BREAKPOINT_PX;
   const rowWidthPx = Math.max(120, widthPx - GUTTER_PX);
-  // Strip: the minimum zoom is "whole track fits", raised where needed so every
-  // chord still gets a >= MIN_TAP_PX chip (QA-73, stripMinPxPerSec). Wrapped:
-  // rows of at most 16s.
+  // Strip: the minimum zoom is "whole track fits" WITH every chip at least
+  // MIN_TAP_PX, when the song can fit that way; otherwise the zoom at which its
+  // long chords are still drawn clearly longer than a short one (QA-73,
+  // stripMinPxPerSec). O(n log n), so memoised: never per frame. Wrapped: rows
+  // of at most 16s.
+  const stripFloorPps = useMemo(
+    () => (narrow ? 0 : stripMinPxPerSec(state.runs, widthPx)),
+    [narrow, state.runs, widthPx],
+  );
   const minPps = narrow
     ? Math.min(MAX_PX_PER_SEC, rowWidthPx / WRAP_MAX_ROW_SEC)
-    : Math.max(fitPxPerSec(dur, widthPx), stripMinPxPerSec(state.runs.length, dur));
+    : stripFloorPps;
   // Real text metrics for the chips: FAMILY and WEIGHT are read off the element
   // the chips inherit them from; the SIZE is not read, it is declared (every
   // chip carries an inline px font size, see renderChip). Built once per
@@ -527,12 +535,16 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   // QA-73: the strip's chips, each at least MIN_TAP_PX wide (layoutTapStrip),
   // and the time -> px map that the ruler, the playhead, the hint and zoom
   // centring share with them. Zoom/resize only, never per frame.
-  const strip: StripLayout = useMemo(() => layoutTapStrip(state.runs, pps), [state.runs, pps]);
+  // Not drawn on phones (the wrapped rows are), so not built there.
+  const strip: StripLayout = useMemo(
+    () => (narrow ? EMPTY_STRIP : layoutTapStrip(state.runs, pps)),
+    [narrow, state.runs, pps],
+  );
 
   const setZoom = useCallback(
     (next: number | null) => {
       const el = scrollRef.current;
-      if (el && !narrow && pps > 0) centerSecRef.current = stripPxToTime(strip, el.scrollLeft + el.clientWidth / 2);
+      if (el && !narrow && pps > 0) centerSecRef.current = stripCentreSec(strip, el.scrollLeft, el.clientWidth);
       setUserPps(next);
     },
     [narrow, pps, strip],
@@ -559,7 +571,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   useEffect(() => {
     const el = scrollRef.current;
     if (el && centerSecRef.current !== null) {
-      const next = Math.max(0, stripTimeToPx(strip, centerSecRef.current) - el.clientWidth / 2);
+      const next = stripScrollLeftForCentre(strip, centerSecRef.current, el.clientWidth);
       // Ours, not the user's — so syncScroll below must not read this as a
       // manual scroll. Record what the element ACTUALLY took, not what we
       // asked for: the scrollLeft setter clamps to scrollWidth - clientWidth
@@ -619,11 +631,11 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   // nothing that is O(number of runs).
   const stripChips = useMemo(
     () =>
-      state.runs.map((run, idx) => {
+      narrow ? null : state.runs.map((run, idx) => {
         const box = strip.boxes[idx];
         return renderChip(run, idx, box.leftPx, box.widthPx, chipH, null, setPopoverFor, measureLabel);
       }),
-    [state.runs, strip, chipH, measureLabel],
+    [narrow, state.runs, strip, chipH, measureLabel],
   );
 
   // The ruler and the timeline width are the other two things a frame used to
@@ -1091,7 +1103,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
               {narrow
                 ? `${formatTime(dur)} total · ${wrapped.split ? 'up to ' : ''}${Math.round(rowWidthPx / pps)}s per row · zoom for more or less per row`
                 : scrollInfo.total - scrollInfo.client > 1
-                  ? `Showing ${formatTime(stripPxToTime(strip, scrollInfo.left))}–${formatTime(stripPxToTime(strip, scrollInfo.left + scrollInfo.client))} of ${formatTime(dur)} · scroll sideways or zoom out`
+                  ? `Showing ${stripVisibleSec(strip, scrollInfo.left, scrollInfo.client).map(formatTime).join('–')} of ${formatTime(dur)} · scroll sideways or zoom out`
                   : `Whole track (${formatTime(dur)}) shown · zoom in for detail`}
               {/* The chords that are too short to name AT THIS ZOOM, and
                   whether zooming in reaches them. Without this the raised

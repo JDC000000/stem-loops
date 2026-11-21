@@ -81,13 +81,13 @@ const decode = (h) => h.replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(
  * the view renders (as the real engine does through setLoop -> subscribe),
  * unless `reject` is set (an engine that refuses the loop). Also records calls.
  */
-function EngineEcho({ calls, reject = false, phase = { kind: 'ready' }, loopOverride, ...over }) {
+function EngineEcho({ calls, reject = false, phase = { kind: 'ready' }, loopOverride, positionSec, status, ...over }) {
   const [loop, setLoop] = React.useState(null);
   const shownLoop = loopOverride !== undefined ? loopOverride : loop;
   return React.createElement(Player.PlayerView, viewProps({
     ...over,
     phase,
-    snapshot: snap({ loop: shownLoop }),
+    snapshot: snap({ loop: shownLoop, ...(positionSec !== undefined ? { positionSec } : {}), ...(status ? { status } : {}) }),
     onLoop: (r) => {
       calls.push(r);
       if (!reject) setLoop(r);
@@ -195,7 +195,7 @@ test('P1.2 no chords: the section name large, bar/beat, "No chords for this song
   globalThis.__noChords = true;
   try {
     const h = decode(ssr({ beatGrid: { beatSec: 0.5, anchorSec: 0, measured: true }, snapshot: snap({ positionSec: 13.1 }) }));
-    assert.match(h, /data-testid="no-chords-section">Verse 1<\/span>/);
+    assert.match(h, /data-testid="no-chords-section">Part 2<\/span>/, 'D2: neutral section names');
     assert.match(h, /data-testid="no-chords-bar">bar 3 \/ 19 · beat 1<\/span>/);
     assert.match(h, /No chords for this song\./);
     assert.match(h, /data-testid="stage-presets"/);
@@ -215,84 +215,150 @@ test('P1.2 no chords: the section name large, bar/beat, "No chords for this song
 
 // ═══ P2.1 — runs, through the screen, into the engine ════════════════════════
 
-test('P2.1 through the screen: tap, extend (+ the one-time hint), shrink, loop off/on, long-press, clear', async () => {
+// D4 (Jon 2026-11-21) through the screen, into the engine. Replaces the P2.1
+// "tap = loop" walk-through and the QA C-10 (option b) screen test: a tap now
+// JUMPS (seek + play) and never loops, so the C-10 bug (a tap with the loop off
+// extending the remembered run) has no path left. The P2 run model moved to
+// the hold and is walked here.
+const keyHold = (dom, el) => dom.keydown('Enter', { target: el, shiftKey: true });
+const pointerTap = (dom, el) => dom.act(() => el.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })));
+
+test('D4 through the screen: tap jumps and plays, hold loops, hold another extends, tap the loop stops it, Loop button resumes, ⟲ restarts', async () => {
   await withDom(async (dom) => {
     setMedia(false);
+    try { globalThis.localStorage?.removeItem('sl.play.sectionHintSeen.v1'); } catch { /* none */ }
     const loops = [];
-    await dom.mount(React.createElement(EngineEcho, { calls: loops }));
+    const seeks = [];
+    let plays = 0;
+    await dom.mount(React.createElement(EngineEcho, { calls: loops, onSeek: (t) => seeks.push(t), onPlay: () => { plays += 1; } }));
     const chip = (i) => dom.findAll('[data-testid="section-strip"] button')[i];
     const loopBtn = () => dom.find('[data-testid="transport-loop"]');
-    assert.equal(loopBtn().getAttribute('aria-disabled'), 'true', 'nothing to loop yet');
-    await dom.act(() => loopBtn().click());
-    assert.deepEqual(loops, [], 'a disabled loop button does nothing');
+    const restart = () => dom.find('[data-testid="transport-restart"]');
+    const hint = () => dom.find('[data-testid="section-hint"]')?.textContent ?? null;
 
-    await dom.act(() => chip(1).click());
-    assert.deepEqual(loops.at(-1), { startSec: 9, endSec: 47 });
-    await dom.act(() => chip(2).click());
-    assert.deepEqual(loops.at(-1), { startSec: 9, endSec: 66 }, 'extend');
-    assert.match(dom.find('[data-testid="section-hint"]').textContent, /Looping these — tap one to loop it alone\./);
-    assert.match(dom.find('[data-testid="transport-loop-text"]').textContent, /Looping Verse 1 → Chorus · 0:09–1:06/);
-    assert.equal(dom.findAll('[data-testid="section-strip"] button[aria-pressed="true"]').length, 2);
+    const readout = () => dom.find('[data-testid="transport-loop-text"]').textContent;
+    assert.equal(readout(), 'Tap to jump \u00b7 hold to loop', 'the one-time hint, in the readout slot, before the strip is used');
+    assert.equal(hint(), null, 'not under the strip: it costs the chord stage no height');
+    assert.equal(loopBtn().getAttribute('aria-disabled'), null, 'with sections, Loop is live: it loops where the playhead is');
+    assert.equal(chip(2).textContent, 'Part 3 \u00b7 0:47');
 
-    await dom.act(() => chip(2).click());
-    assert.deepEqual(loops.at(-1), { startSec: 47, endSec: 66 }, 'shrink');
-    assert.equal(dom.find('[data-testid="section-hint"]'), null);
+    // TAP: jump + play, nothing looped.
+    await pointerTap(dom, chip(2));
+    assert.deepEqual(seeks, [47]);
+    assert.equal(plays, 1);
+    assert.deepEqual(loops, [], 'a tap never loops');
+    assert.equal(readout(), '', 'the hint goes once the strip is used');
+    assert.equal(globalThis.localStorage?.getItem('sl.play.sectionHintSeen.v1'), '1', 'and is remembered');
 
-    await dom.act(() => loopBtn().click());
-    assert.equal(loops.at(-1), null, 'loop off');
-    assert.equal(loopBtn().getAttribute('aria-pressed'), 'false');
-    assert.equal(dom.find('[data-testid="transport-loop-text"]').textContent, 'Loop off');
-    await dom.act(() => loopBtn().click());
-    assert.deepEqual(loops.at(-1), { startSec: 47, endSec: 66 }, 'back on: the remembered run');
-
-    await dom.act(() => chip(0).click());
-    assert.deepEqual(loops.at(-1), { startSec: 0, endSec: 66 }, 'extend backwards');
-    assert.equal(dom.find('[data-testid="section-hint"]'), null, 'the hint is one-time');
-
-    await dom.pointer('pointerdown', chip(3), { pointerType: 'touch', clientX: 5, clientY: 5 });
+    // HOLD (long-press): loop that section; the release click is swallowed.
+    await dom.pointer('pointerdown', chip(2), { pointerType: 'touch', clientX: 5, clientY: 5 });
     await dom.advance(550);
-    await dom.pointer('pointerup', chip(3), { pointerType: 'touch', clientX: 5, clientY: 5 });
-    await dom.act(() => chip(3).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })));
-    assert.deepEqual(loops.at(-1), { startSec: 66, endSec: 104 }, 'long-press: loop only this (the release click swallowed)');
+    await dom.pointer('pointerup', chip(2), { pointerType: 'touch', clientX: 5, clientY: 5 });
+    await pointerTap(dom, chip(2));
+    assert.deepEqual(loops.at(-1), { startSec: 47, endSec: 66 }, 'hold: loop Part 3');
+    assert.equal(chip(2).getAttribute('aria-pressed'), 'true');
+    assert.equal(plays, 2, 'a hold while paused starts playback (review L3/M23 on #330)');
+    assert.deepEqual(seeks, [47], 'the swallowed release click did not jump');
 
-    await dom.act(() => chip(3).click());
-    assert.equal(loops.at(-1), null, 'the only chip: clear');
-    assert.equal(loopBtn().getAttribute('aria-disabled'), 'true');
+    // HOLD another while looping: extend (P2) + the one-time run hint.
+    await keyHold(dom, chip(1));
+    assert.deepEqual(loops.at(-1), { startSec: 9, endSec: 66 }, 'Shift+Enter on Part 2 extends the run');
+    assert.match(hint(), /Looping these · hold one to loop it alone/);
+    assert.match(dom.find('[data-testid="transport-loop-text"]').textContent, /Looping Part 2 → Part 3 · 0:09–1:06/);
+    assert.equal(dom.findAll('[data-testid="section-strip"] button[aria-pressed="true"]').length, 2);
+    assert.match(dom.find('[data-testid="section-strip"] legend').textContent, /Tap to jump, hold or Shift\+Enter to loop\. Looping Part 2 to Part 3\./);
+
+    // ⟲ in a loop: back to the loop's start, play state kept.
+    await dom.act(() => restart().click());
+    assert.deepEqual(seeks.at(-1), 9);
+
+    // TAP a chip of the running loop: the loop stops, no jump, the run is remembered.
+    const nSeeks = seeks.length;
+    await pointerTap(dom, chip(2));
+    assert.equal(loops.at(-1), null, 'tap the looping chip: stop');
+    assert.equal(seeks.length, nSeeks, 'no jump');
+    assert.equal(dom.find('[data-testid="transport-loop-text"]').textContent, 'Loop off');
+
+    // The Loop button: the playhead (0:20) is inside the remembered run -> it comes back.
+    await dom.act(() => loopBtn().click());
+    assert.deepEqual(loops.at(-1), { startSec: 9, endSec: 66 });
+    await dom.act(() => loopBtn().click());
+    assert.equal(loops.at(-1), null);
+
+    // TAP outside a loop that is on: jump there, the loop goes off.
+    await keyHold(dom, chip(0));
+    assert.deepEqual(loops.at(-1), { startSec: 0, endSec: 9 });
+    await pointerTap(dom, chip(3));
+    assert.equal(loops.at(-1), null);
+    assert.deepEqual(seeks.at(-1), 66);
+
+    // ⟲ with no loop: the start of the section under the playhead (0:20 -> Part 2 at 0:09).
+    await dom.act(() => restart().click());
+    assert.deepEqual(seeks.at(-1), 9);
+    assert.equal(restart().getAttribute('aria-label'), 'Back to the start of this section');
     await dom.unmountAll();
   });
 });
 
-// QA C-10, Jon 2026-11-18 (option b): with the loop OFF, tapping a section loops
-// just that section. It must not extend the remembered run, and must not spend
-// the one-time hint (that belongs to the first real extend, with the loop on).
-test('P2.1 (C-10 b) through the screen: loop off, tap outside the remembered run -> loops that section alone', async () => {
+test('⟲ through the screen (review L2/M17): inside a multi-section loop it goes to the LOOP start, not the section start', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const loops = [];
+    const seeks = [];
+    // The playhead at 0:50 is in Part 3 (0:47-1:06), 3 s past its start.
+    await dom.mount(React.createElement(EngineEcho, { calls: loops, positionSec: 50, onSeek: (t) => seeks.push(t) }));
+    const chip = (i) => dom.findAll('[data-testid="section-strip"] button')[i];
+    const restart = () => dom.find('[data-testid="transport-restart"]');
+    await dom.act(() => restart().click());
+    assert.deepEqual(seeks, [47], 'no loop: the start of Part 3');
+    await keyHold(dom, chip(1));
+    await keyHold(dom, chip(2));
+    assert.deepEqual(loops.at(-1), { startSec: 9, endSec: 66 }, 'looping Part 2 -> Part 3');
+    await dom.act(() => restart().click());
+    assert.deepEqual(seeks.at(-1), 9, 'looping: the start of the loop (Part 2), not of Part 3');
+    await dom.unmountAll();
+  });
+});
+
+test('hold while PLAYING does not call play again (only a paused hold starts playback)', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const loops = [];
+    let plays = 0;
+    await dom.mount(React.createElement(EngineEcho, { calls: loops, status: 'playing', onPlay: () => { plays += 1; } }));
+    await keyHold(dom, dom.findAll('[data-testid="section-strip"] button')[2]);
+    assert.deepEqual(loops.at(-1), { startSec: 47, endSec: 66 });
+    assert.equal(plays, 0);
+    await dom.unmountAll();
+  });
+});
+
+test('D4 through the screen: the Loop button with nothing remembered loops the section under the playhead', async () => {
   await withDom(async (dom) => {
     setMedia(false);
     const loops = [];
     await dom.mount(React.createElement(EngineEcho, { calls: loops }));
-    const chip = (i) => dom.findAll('[data-testid="section-strip"] button')[i];
     const loopBtn = () => dom.find('[data-testid="transport-loop"]');
-
-    await dom.act(() => chip(1).click());
-    assert.deepEqual(loops.at(-1), { startSec: 9, endSec: 47 });
+    assert.equal(loopBtn().getAttribute('aria-label'), 'Loop this section');
     await dom.act(() => loopBtn().click());
-    assert.equal(loops.at(-1), null, 'loop off, Verse 1 remembered');
+    assert.deepEqual(loops.at(-1), { startSec: 9, endSec: 47 }, 'the playhead is at 0:20, in Part 2');
+    assert.equal(loopBtn().getAttribute('aria-pressed'), 'true');
+    await dom.unmountAll();
+  });
+});
 
-    await dom.act(() => chip(3).click());
-    assert.deepEqual(loops.at(-1), { startSec: 66, endSec: 104 }, 'loop off + tap outside: just that section, NOT Verse 1 -> it');
-    assert.equal(loopBtn().getAttribute('aria-pressed'), 'true', 'and the loop is on');
-    assert.equal(dom.findAll('[data-testid="section-strip"] button[aria-pressed="true"]').length, 1);
-    assert.equal(dom.find('[data-testid="section-hint"]'), null, 'no extend, so no hint');
-
-    // With the loop ON, outside still extends, and the one-time hint is still unspent.
-    await dom.act(() => chip(1).click());
-    assert.deepEqual(loops.at(-1), { startSec: 9, endSec: 104 }, 'loop on + tap outside: extend');
-    assert.match(dom.find('[data-testid="section-hint"]').textContent, /Looping these — tap one to loop it alone\./);
-
-    // Loop off on a 2+ run, tap inside: that chip alone.
-    await dom.act(() => loopBtn().click());
-    await dom.act(() => chip(2).click());
-    assert.deepEqual(loops.at(-1), { startSec: 47, endSec: 66 }, 'loop off + tap inside: just that section');
+test('D4: with no sections, Loop is disabled and ⟲ goes to the top of the song', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const loops = [];
+    const seeks = [];
+    await dom.mount(React.createElement(EngineEcho, { calls: loops, sections: [], onSeek: (t) => seeks.push(t) }));
+    assert.equal(dom.find('[data-testid="section-strip"]'), null);
+    assert.equal(dom.find('[data-testid="transport-loop"]').getAttribute('aria-disabled'), 'true');
+    await dom.act(() => dom.find('[data-testid="transport-loop"]').click());
+    assert.deepEqual(loops, []);
+    await dom.act(() => dom.find('[data-testid="transport-restart"]').click());
+    assert.deepEqual(seeks, [0]);
     await dom.unmountAll();
   });
 });
@@ -326,7 +392,7 @@ test('long-press (mouse): sliding off the chip and back does not lose the loop',
     // ...and the window still closes after the RELEASE: a later real click is a tap again.
     await dom.advance(800);
     await dom.act(() => chip(3).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })));
-    assert.equal(loops.at(-1), null, 'a click after the window is a tap (the only chip: clear)');
+    assert.equal(loops.at(-1), null, 'a click after the window is a tap (on the looping chip: stop the loop)');
     await dom.unmountAll();
   });
 });
@@ -352,7 +418,7 @@ test('review S3 (DOM): an engine that REFUSES the loop never leaves the UI sayin
     setMedia(false);
     const calls = [];
     await dom.mount(React.createElement(EngineEcho, { calls, reject: true }));
-    await dom.act(() => dom.findAll('[data-testid="section-strip"] button')[1].click());
+    await keyHold(dom, dom.findAll('[data-testid="section-strip"] button')[1]);
     assert.deepEqual(calls, [{ startSec: 9, endSec: 47 }], 'the run was asked for');
     assert.equal(dom.findAll('[data-testid="section-strip"] button[aria-pressed="true"]').length, 0, 'no chip pressed');
     assert.doesNotMatch(dom.find('[data-testid="transport-loop-text"]').textContent, /Looping/);
@@ -367,7 +433,7 @@ test('review S3 (DOM): after "Try again" builds a NEW engine, the run is handed 
     setMedia(false);
     const calls = [];
     const host = await dom.mount(React.createElement(EngineEcho, { calls }));
-    await dom.act(() => dom.findAll('[data-testid="section-strip"] button')[2].click());
+    await keyHold(dom, dom.findAll('[data-testid="section-strip"] button')[2]);
     assert.deepEqual(calls.at(-1), { startSec: 47, endSec: 66 });
     // Retry: the view goes back to loading with a fresh engine (no loop) ...
     await dom.rerender(host, React.createElement(EngineEcho, { calls, phase: { kind: 'loading' }, loopOverride: null }));
@@ -385,7 +451,7 @@ test('review S3 (DOM): after "Try again" builds a NEW engine, the run is handed 
 test('P2.1: a loop handed in by the engine shows as the matching run', () => {
   const h = ssr({ snapshot: snap({ loop: { startSec: 9, endSec: 66 } }) });
   assert.equal((h.match(/aria-pressed="true"/g) || []).length >= 2, true);
-  assert.match(decode(h), /Looping Verse 1 → Chorus · 0:09–1:06/);
+  assert.match(decode(h), /Looping Part 2 → Part 3 · 0:09–1:06/);
 });
 
 // ═══ P1.3 — the Mix sheet ═══════════════════════════════════════════════════
@@ -518,12 +584,13 @@ function MixEcho({ calls, unavailable = [], ...over }) {
   }));
 }
 
-test('D5: the pills sit between the chord stage and the section strip, Guitar first, one per stem', () => {
+test('D5: the pills sit below the section strip, just above the transport (the strip cue owns the stage edge), Guitar first, one per stem', () => {
   const h = ssr();
   const at = (re) => h.search(re);
-  assert.ok(at(/data-view="stage"/) < at(/data-testid="part-pills"/), 'below the stage');
-  assert.ok(at(/data-testid="part-pills"/) < at(/data-testid="section-strip"/), 'above the section strip');
-  const pills = h.slice(at(/data-testid="part-pills"/), at(/data-testid="section-strip"/));
+  assert.ok(at(/data-view="stage"/) < at(/data-testid="section-strip"/), 'stage, then strip');
+  assert.ok(at(/data-testid="section-strip"/) < at(/data-testid="part-pills"/), 'below the section strip');
+  assert.ok(at(/data-testid="part-pills"/) < at(/data-testid="transport"/), 'above the transport');
+  const pills = h.slice(at(/data-testid="part-pills"/), at(/data-testid="transport"/));
   assert.deepEqual([...pills.matchAll(/data-stem="(\w+)"/g)].map((m) => m[1]), ['guitar', 'bass', 'keys', 'drums', 'vocals', 'other']);
   assert.match(pills, /<legend class="sr">Parts\. Tap a part to step it 100%, 30%, muted\. Hold it, or press S, to solo it\. While a part is soloed, a tap ends the solo\.<\/legend>/);
 });
@@ -893,7 +960,7 @@ test('44px targets on every new control (CSS)', () => {
   const px = (body, prop) => Number((body.match(new RegExp(`(?:^|[;\\s])${prop}:\\s*(\\d+)px`)) || [])[1] ?? NaN);
   const rule = (src, sel) => src.match(new RegExp(`${sel.replace(/[.[\]'=]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`))[1];
   const t = css('Transport.module.css');
-  for (const sel of ['.skip', '.loop', '.mix']) assert.ok(px(rule(t, sel), 'height') >= 44, sel);
+  for (const sel of ['.restart', '.loop', '.mix']) assert.ok(px(rule(t, sel), 'height') >= 44, sel);
   assert.ok(px(rule(t, '.play'), 'height') >= 44);
   const p = css('Player.module.css');
   for (const sel of ['.back', '.more', '.dismiss']) assert.ok(px(rule(p, sel), 'height') >= 44, sel);

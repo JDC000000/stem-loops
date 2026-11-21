@@ -211,8 +211,8 @@ export function describeTarget(el: EventTarget | null): TargetInfo | null {
 
 // ─── component ───────────────────────────────────────────────────────────────
 
-/** −5 s / +5 s (design v1.4, P1.1). */
-export const SKIP_SEC = 5;
+/** "⟲": back to the start of the section (or loop) being played (D4, Jon 2026-11-21). */
+export const RESTART_LABEL = 'Back to the start of this section';
 
 /** The seek line's readout under the bar: "0:53" and "-2:41". */
 export function remainingText(positionSec: number, durationSec: number): string {
@@ -231,6 +231,10 @@ export type LoopButtonState = 'on' | 'off' | 'disabled';
 export interface PlayerTransportProps extends TransportProps {
   /** Section starts (seconds), drawn as ticks on the seek line. */
   readonly ticks?: readonly number[];
+  /** Each tick's section colour slot (same index as `ticks`; SectionLoop's data-tone). */
+  readonly tickTones?: readonly number[];
+  /** "⟲": seek to the start of the current section or loop, keeping play state. Absent = no button. */
+  readonly onRestart?: (() => void) | null;
   /** The span being looped, drawn as a band; null when the loop is off. */
   readonly loopBand?: { readonly startSec: number; readonly endSec: number } | null;
   /** "Looping Verse 1 → Chorus 1 · 0:32–1:18", "Loop off" or "". */
@@ -254,7 +258,9 @@ const SETTLE_MS = 500;
 /**
  * THE TRANSPORT (design v1.4, P1.1): the seek line — a REAL range input over a
  * drawn bar with section ticks, the loop band and a thumb that shows the focus
- * ring — then −5 s · Play/Pause · +5 s · Loop · Mix.
+ * ring — then ⟲ (back to this section's start) · Play/Pause · Loop · Mix.
+ * The −5 s / +5 s skips are gone (D4, 2026-11-21): the section chips and ⟲
+ * are the song's navigation, and the arrow keys on the seek line still step 5 s.
  *
  * SEEK STRATEGY (unchanged): while the user holds the thumb or is mid
  * key-burst, the bar renders the local value and ignores incoming positions;
@@ -271,6 +277,8 @@ export function Transport({
   onPause,
   onSeek,
   ticks = [],
+  tickTones,
+  onRestart = null,
   loopBand = null,
   loopText = '',
   loopState = 'disabled',
@@ -355,12 +363,7 @@ export function Transport({
   const shown = resolveDisplayPosition(override, positionSec, dur);
   const pct = pctOf(shown, dur);
   const valueText = `${formatTime(shown)} of ${formatTime(dur)}`;
-  const skip = (delta: number) => {
-    if (!aff.seekable) return;
-    onSeek(clamp(sanitizeSec(positionSec) + delta, 0, dur));
-  };
-
-  const loopLabel = loopState === 'disabled' ? 'Tap a section to loop it' : 'Loop';
+  const loopLabel = loopState === 'disabled' ? 'Loop (no sections)' : loopState === 'on' ? 'Loop' : 'Loop this section';
 
   return (
     <div
@@ -382,9 +385,17 @@ export function Transport({
           ) : null}
           <div className={s.fill} aria-hidden="true" style={{ width: `${pct}%` }} />
           {dur > 0
-            ? ticks
-                .filter((t) => t > 0 && t < dur)
-                .map((t) => <div key={t} className={s.tick} aria-hidden="true" style={{ left: `${pctOf(t, dur)}%` }} />)
+            ? ticks.map((t, i) =>
+                t > 0 && t < dur ? (
+                  <div
+                    key={t}
+                    className={s.tick}
+                    data-tone={tickTones?.[i]}
+                    aria-hidden="true"
+                    style={{ left: `${pctOf(t, dur)}%` }}
+                  />
+                ) : null,
+              )
             : null}
           <input
             className={s.range}
@@ -424,10 +435,19 @@ export function Transport({
       </div>
 
       <div className={s.buttons}>
-        <button type="button" className={s.skip} aria-label="Back 5 seconds" disabled={!aff.seekable} onClick={() => skip(-SKIP_SEC)}>
-          <BackIcon />
-          <span className={s.skipText} aria-hidden="true">5s</span>
-        </button>
+        {onRestart ? (
+          <button
+            type="button"
+            className={s.restart}
+            aria-label={RESTART_LABEL}
+            title={RESTART_LABEL}
+            disabled={!aff.seekable}
+            onClick={onRestart}
+            data-testid="transport-restart"
+          >
+            <RestartIcon />
+          </button>
+        ) : null}
         <button
           type="button"
           className={s.play}
@@ -437,10 +457,6 @@ export function Transport({
           data-testid="transport-play"
         >
           {aff.action === 'pause' ? <PauseIcon /> : aff.action === 'replay' ? <ReplayIcon /> : <PlayIcon />}
-        </button>
-        <button type="button" className={s.skip} aria-label="Forward 5 seconds" disabled={!aff.seekable} onClick={() => skip(SKIP_SEC)}>
-          <FwdIcon />
-          <span className={s.skipText} aria-hidden="true">5s</span>
         </button>
         <button
           type="button"
@@ -498,19 +514,12 @@ function PauseIcon() {
     </svg>
   );
 }
-function BackIcon() {
+/** ⟲, drawn (U+27F2 is missing from common phone fonts). */
+function RestartIcon() {
   return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
       <path d="M3 12a9 9 0 1 0 3-6.7" />
       <path d="M3 4v5h5" />
-    </svg>
-  );
-}
-function FwdIcon() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-      <path d="M21 12a9 9 0 1 1-3-6.7" />
-      <path d="M21 4v5h-5" />
     </svg>
   );
 }

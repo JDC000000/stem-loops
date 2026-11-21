@@ -1729,7 +1729,7 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 20 }}>
         <span style={positionStyle} data-testid="phone-position">
-          {cur >= 0 ? positionLabel(model, cur) : 'Now'}
+          {cur >= 0 ? positionLabel(model, cur, positionSec) : 'Now'}
         </span>
       </div>
       {nowRun ? (

@@ -66,12 +66,18 @@
 .tick {
   position: absolute;
   top: 16px;
-  width: 2px;
+  width: 3px;
   height: 12px;
-  margin-left: -1px;
+  margin-left: -1.5px;
+  border-radius: 1px;
   background: var(--text-primary);
   pointer-events: none;
 }
+/* Section colours (D2): the tick at a section's start takes that section's
+   chip colour (SectionLoop.module.css), >= 4.3:1 on the #3a3a3a rail. */
+.tick[data-tone='0'] { background: var(--section-a); }
+.tick[data-tone='1'] { background: var(--section-b); }
+.tick[data-tone='2'] { background: var(--section-c); }
 
 /* The real control: a native range input laid over the drawn bar, invisible,
    44px tall, so it is the hit area, the keyboard target and what assistive tech
@@ -123,24 +129,23 @@
   padding: 0 16px;
 }
 
-.skip {
+/* ⟲ back to the start of this section (D4): 44px, a neutral control edge. */
+.restart {
   flex-shrink: 0;
-  width: 48px;
-  height: 48px;
-  border-radius: 24px;
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
   background: none;
-  border: 0;
+  border: 1px solid var(--border-control);
   color: var(--text-primary);
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   padding: 0;
   font: inherit;
   cursor: pointer;
 }
-.skip:disabled { color: var(--text-disabled); cursor: not-allowed; }
-.skipText { font-size: 11px; }
+.restart:disabled { color: var(--text-disabled); border-color: var(--border-strong); cursor: not-allowed; }
 
 .play {
   width: 64px;
@@ -213,7 +218,7 @@
 /* Story 2.3 (v4.0): the mix state is text >= 13px ("Guitar 30%", "Vocals muted"). */
 .mixState { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
 
-.skip:focus-visible,
+.restart:focus-visible,
 .play:focus-visible,
 .loop:focus-visible,
 .mix:focus-visible {
@@ -258,7 +263,7 @@
 @media (max-height: 499px) and (min-width: 560px) {
   .seek { padding: 0 12px; }
   .buttons { height: 64px; padding: 0 8px; gap: 4px; }
-  .skip, .loop { width: 44px; height: 44px; }
+  .loop { width: 44px; height: 44px; }
   .play { width: 56px; height: 56px; border-radius: 28px; }
   .mix { min-width: 64px; height: 44px; padding: 0 8px; }
 }

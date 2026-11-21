@@ -51,6 +51,7 @@ const serialLocks = () => {
   };
 };
 const T0 = 1_800_000_000_000;
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── 1. lib/pending-link.ts ───────────────────────────────────────────────────────────────
 
@@ -132,6 +133,23 @@ test('two tabs: under a Web Lock, two claims of one saved link start it ONCE (50
     const got = await Promise.all([claimPendingLink({ store: s, nonce: N1, locks }), claimPendingLink({ store: s, nonce: N1, locks })]);
     assert.deepEqual(got.filter(Boolean), [CANON], `trial ${i}: ${JSON.stringify(got)}`);
   }
+});
+
+test('the claim runs INSIDE the Web Lock: nothing is taken until the lock is granted', async () => {
+  // One JS thread cannot race two tabs, so this proves the structure instead: the read-and-delete
+  // happens only in the lock callback (in a browser, the lock is what serialises two tabs).
+  const s = store();
+  savePendingLink(s, CANON, N1, Date.now());
+  const asked = [];
+  let grant;
+  const locks = { request: (name, cb) => { asked.push(name); return new Promise((res) => { grant = () => res(cb()); }); } };
+  const p = claimPendingLink({ store: s, nonce: N1, locks });
+  await wait(10);
+  assert.deepEqual(asked, ['sl.pendingLink']);
+  assert.ok(s.getItem(PENDING_LINK_KEY), 'the entry was taken before the lock was granted');
+  grant();
+  assert.equal(await p, CANON);
+  assert.equal(s.getItem(PENDING_LINK_KEY), null);
 });
 
 test('two tabs, no Web Locks: the compare-and-delete fallback starts it ONCE (20 trials)', async () => {
@@ -303,6 +321,15 @@ test('mounted: signed in (cookie + 200), the link starts here: 1 POST, no sign-i
   assert.deepEqual(r.assigns, ['/jobs/11111111-1111-4111-8111-111111111111']);
 });
 
+test('mounted: a stale session cookie (the server says 401) is signed out: sign-in first, not an error', async () => {
+  const r = await mountForm({ cookie: true, me: 401, after: (dom) => submit(dom, 'https://youtu.be/dQw4w9WgXcQ') });
+  assert.equal(r.posts.length, 0);
+  assert.equal(r.me, 1);
+  assert.equal(r.assigns.length, 1);
+  assert.match(r.assigns[0], /^\/login\?return_to=/);
+  assert.doesNotMatch(r.error, /couldn’t check/);
+});
+
 test('mounted: FAIL CLOSED — a 5xx or no answer from /api/auth/me, or blocked storage, starts no link job', async () => {
   for (const me of [500, 503, 'throw']) {
     const r = await mountForm({ cookie: true, me, after: (dom) => submit(dom, 'https://youtu.be/dQw4w9WgXcQ') });
@@ -332,6 +359,7 @@ test('mounted resume: NOT signed in (401) never starts it — the link goes back
   const r = await mountForm({ url: resumeUrl(N1), cookie: true, me: 401, entry: fresh() });
   assert.equal(r.posts.length, 0);
   assert.equal(r.value, CANON);
+  assert.doesNotMatch(r.error, /couldn’t check/, 'a 401 is an answer (signed out), not an unknown');
   assert.equal(r.entry, null);
   assert.equal(r.search, '');
 });

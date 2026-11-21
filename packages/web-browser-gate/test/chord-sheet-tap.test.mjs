@@ -2,7 +2,8 @@
 // targets on EVERY viewport class: phones (the wrapped rows, QA-68, #324) and
 // tablets in both orientations and desktop (the strip, QA-73).
 //
-// Every chip in the chart sheet is a <button> that opens the chord editor,
+// Every chip in the chart sheet is a tap-sized picture of its chord (it was a
+// <button> that opened a chord editor until Phase A hid the unwired editor),
 // including the label-less "tick" colour blocks. The #312 review (M-1)
 // measured 19-21 of 63 chips under 24px wide on the QA-01 song, and 107-137 of
 // 154 on a dense song, some only 2-4px. This gate renders the real PlayerView
@@ -17,7 +18,8 @@
 //   * one primary chip per segment (#212), so no chord was merged away;
 //   * the current-chord ring sits exactly on a chip of the chord being heard;
 //   * a real touchscreen tap on the chips of the SHORTEST chords lands on them
-//     (elementFromPoint) and opens the editor for that chord.
+//     (elementFromPoint) and opens NOTHING (Phase A: the editor that dropped
+//     every pick is hidden until it is wired).
 //
 // QA-73 adds, per layout:
 //
@@ -175,6 +177,9 @@ async function open(browser, built, [w, h], song, pos) {
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
         `<link rel="stylesheet" href="/out.css"><style>${FONT_CSS}</style></head><body>` +
         '<main style="max-width:960px;margin:0 auto;padding:24px var(--sl-gutter,16px) 96px"><div id="root"></div></main>' +
+        // Pinned to the DETAILED chord view (Phase A, D6): this gate checks one chip per
+        // detected segment. Simple is covered by test/chord-stage-phase-a and chord-phone-view.
+        '<script>try{localStorage.setItem("sl.play.chordMode.v1","detailed")}catch(e){}</script>' +
         `<script>window.__snap=${JSON.stringify(snapAt(song, pos))};window.__grid=${JSON.stringify(song.grid)};</script>` +
         '<script>Promise.all([400,500,600,700].map(function(w){return document.fonts.load(w+" 16px GateInter")})).then(function(){var s=document.createElement("script");s.src="/out.js";document.body.appendChild(s)})</script>' +
         '</body></html>' });
@@ -233,6 +238,7 @@ function measureSheet() {
       run: m ? Number(m[1]) : -1,
       primary: /^chord-chip-\d+$/.test(c.dataset.testid),
       tag: c.tagName,
+      role: c.getAttribute('role'),
       density: c.dataset.density,
       x: r.left, y: r.top, w: r.width, h: r.height,
       rowL: row.left, rowR: row.right,
@@ -285,7 +291,9 @@ function check(m, song, pos, f, ctx, wantLayout) {
   if (primaries !== song.segments.length) f.push(`${primaries} primary chips for ${song.segments.length} chords @ ${ctx}`);
   if (m.chips.length < song.segments.length) f.push(`only ${m.chips.length} chips measured @ ${ctx}`);
   for (const c of m.chips) {
-    if (c.tag !== 'BUTTON') f.push(`${c.id} is a ${c.tag}, the gate expects buttons @ ${ctx}`);
+    // Phase A: with no chord editor wired, a chip is a picture of its chord
+    // (SPAN role="img"), never a button that does nothing.
+    if (c.tag !== 'SPAN' || c.role !== 'img') f.push(`${c.id} is ${c.tag}/${c.role}, the gate expects SPAN/img (no editor wired) @ ${ctx}`);
     if (c.w < MIN_TAP || c.h < MIN_TAP)
       f.push(`${c.id} (${song.segments[c.run]?.label}, ${c.density}) is ${c.w.toFixed(2)}x${c.h.toFixed(2)}px < ${MIN_TAP} @ ${ctx}`);
   }
@@ -524,7 +532,7 @@ function checkStripTimes(m, song, f, ctx) {
   if (m.rings.length && m.lines.length !== 1) f.push(`${m.lines.length} playhead lines @ ${ctx}`);
 }
 
-/** Tap the chips of the shortest chords for real and see which editor opens. */
+/** Tap the chips of the shortest chords for real: the tap lands on them and opens nothing. */
 async function tapShortest(page, song, f, ctx, n = 4) {
   const order = song.segments.map((s, i) => [s.end_sec - s.start_sec, i]).sort((a, b) => a[0] - b[0]).slice(0, n);
   for (const [, i] of order) {
@@ -540,19 +548,14 @@ async function tapShortest(page, song, f, ctx, n = 4) {
       return { x, y, hits: [at(r.left + 1), at(x), at(r.right - 1)] };
     }, sel);
     for (const h of p.hits) if (h !== `chord-chip-${i}`) f.push(`a point inside chord-chip-${i} lands on ${h} @ ${ctx}`);
+    // Phase A: the chord editor is hidden (it dropped every pick; ChordOverlay's
+    // header). A tap lands on THAT chip (above) and opens nothing; the chip is a
+    // picture of the chord (role="img"), not a dead button.
+    const tag = await page.evaluate((s) => { const e = document.querySelector(s); return `${e.tagName}/${e.getAttribute('role')}`; }, sel);
+    if (tag !== 'SPAN/img') f.push(`chord-chip-${i} is ${tag}, want SPAN/img (no editor wired) @ ${ctx}`);
     await page.touchscreen.tap(p.x, p.y);
-    const header = await page
-      .waitForSelector('[data-testid="chord-popover-header"]', { timeout: 5000 })
-      .then((h) => h.getAttribute('aria-label'))
-      .catch(() => null);
-    if (!header) f.push(`tapping chord-chip-${i} opened no editor @ ${ctx}`);
-    else {
-      const want = await page.evaluate((s) => document.querySelector(s).getAttribute('aria-label'), sel);
-      if (!header.startsWith('Change ') || !want || !want.startsWith(header.slice('Change '.length)))
-        f.push(`tapping chord-chip-${i} ("${want}") opened "${header}" @ ${ctx}`);
-      await page.click('[data-testid="chord-popover"] button:has-text("Cancel")');
-      await settle(page);
-    }
+    await settle(page);
+    if (await page.locator('[data-testid="chord-popover"]').count()) f.push(`tapping chord-chip-${i} opened a chord editor @ ${ctx}`);
   }
 }
 

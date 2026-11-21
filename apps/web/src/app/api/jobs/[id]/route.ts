@@ -118,8 +118,16 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     // and nothing else about it changes — the play-along player reads only
     // `section_label` / `start_sec` / `end_sec` (lib/play/sections.ts) and is
     // served in full by an uncut row.
+    // ONE source of truth for the key (Phase A, J3). Loop rows copy the job's
+    // key when the worker writes them (pipeline.record_loops), so a loop row
+    // that disagrees is stale: rows written before #295 carry the key detected
+    // on the drums stem, and the demo rows' job key was corrected in place
+    // (2026-11-18) while their loop rows were not. The job row wins; a loop row
+    // keeps its own key only when the job has none.
+    const jobKey: unknown = job.musical_key;
     const loops = await Promise.all(
-      loopsRes.rows.map(async (l) => {
+      loopsRes.rows.map(async (row) => {
+        const l = typeof jobKey === 'string' && jobKey.trim() !== '' ? { ...row, musical_key: jobKey } : row;
         if (publicDemoView) {
           const pub: Record<string, unknown> = { ...l, signed_url: null };
           for (const field of DEMO_OWNER_ONLY_LOOP_FIELDS) delete pub[field];

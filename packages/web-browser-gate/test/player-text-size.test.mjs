@@ -233,6 +233,8 @@ async function openPlayer(browser, built, width, positionSec, height = 900, { no
           '</head><body>' +
           // The job page's own frame: max 960px, centred, the app gutter.
           '<main style="max-width:960px;margin:0 auto;padding:48px var(--sl-gutter,16px) 96px"><div id="root"></div></main>' +
+          // The DETAILED chord view (Phase A, D6): chips are checked per detected segment.
+          '<script>try{localStorage.setItem("sl.play.chordMode.v1","detailed")}catch(e){}</script>' +
           `<script>window.__gateSnapshot=${JSON.stringify(notice ? snapshotAt(positionSec) : { ...snapshotAt(positionSec), degraded: null })};window.__gateSections=${JSON.stringify(SECTIONS)};</script>` +
           '<script>Promise.all([400,500,600,700].map(function(w){return document.fonts.load(w+" 16px GateInter")}))' +
           ".then(function(){var s=document.createElement('script');s.src='/out.js';document.body.appendChild(s)})</script>" +

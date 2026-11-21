@@ -178,7 +178,7 @@ async function bundle() {
   return { js: js.text, css: res.outputFiles.find((f) => f.path.endsWith('.css'))?.text ?? '' };
 }
 
-async function open(browser, built, [w, h], { pos, grid = GRID, sections = F.sections, payload = FIX, loop = null, degraded = null }) {
+async function open(browser, built, [w, h], { pos, grid = GRID, sections = F.sections, payload = FIX, loop = null, degraded = null, chordMode = 'detailed' }) {
   const ctx = await browser.newContext({ viewport: { width: w, height: h }, isMobile: true, hasTouch: true });
   const page = await ctx.newPage();
   const errors = [];
@@ -190,6 +190,9 @@ async function open(browser, built, [w, h], { pos, grid = GRID, sections = F.sec
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
         `<link rel="stylesheet" href="/out.css"><style>${FONT_CSS}</style></head><body>` +
         '<main style="max-width:960px;margin:0 auto;padding:24px var(--sl-gutter,16px) 96px"><div id="root"></div></main>' +
+        // The chord view (Phase A, D6). The sweeps below check the DETECTED segments, so
+        // they pin Detailed; the Simple test passes 'simple' (the app's default).
+        `<script>try{localStorage.setItem("sl.play.chordMode.v1",${JSON.stringify(chordMode)})}catch(e){}</script>` +
         `<script>window.__snap=${JSON.stringify(snapAt(pos, loop, degraded))};window.__sections=${JSON.stringify(sections)};window.__grid=${JSON.stringify(grid)};</script>` +
         '<script>Promise.all([400,500,600,700].map(function(w){return document.fonts.load(w+" 16px GateInter")})).then(function(){var s=document.createElement("script");s.src="/out.js";document.body.appendChild(s)})</script>' +
         '</body></html>' });
@@ -252,7 +255,7 @@ function measure() {
     return ratio(over(parse(getComputedStyle(el).color), bg), bg);
   };
   const root = document.querySelector('[data-testid="phone-chords"]');
-  const out = { mode: root?.dataset.mode, beatsPerBar: root?.dataset.beatsPerBar, reason: root?.dataset.reason, now: null, position: null, beat: null, dots: [], next: null, curCells: [], curSlots: [], lineCur: [], lineNextFirst: null, slots: [], barNumbers: [], live: 0, primaries: 0, cellsMulti: 0 };
+  const out = { countdown: null, mode: root?.dataset.mode, beatsPerBar: root?.dataset.beatsPerBar, reason: root?.dataset.reason, now: null, position: null, beat: null, dots: [], next: null, curCells: [], curSlots: [], lineCur: [], lineNextFirst: null, slots: [], barNumbers: [], live: 0, primaries: 0, cellsMulti: 0 };
   if (!root) return out;
   const name = root.querySelector('[data-testid="playhead-now-name"]');
   if (name) {
@@ -287,24 +290,40 @@ function measure() {
   out.position = root.querySelector('[data-testid="phone-position"]')?.textContent ?? null;
   out.beat = root.querySelector('[data-testid="phone-beats"]')?.dataset.beat ?? null;
   out.dots = [...root.querySelectorAll('[data-testid="phone-beat-dot"]')].map((d) => ({ on: d.dataset.on === 'true', c: ratio(over(parse(getComputedStyle(d).backgroundColor), effBg(d.parentElement)), effBg(d.parentElement)) }));
+  const cd = root.querySelector('[data-testid="phone-countdown"]');
+  if (cd) {
+    const tx = cd.querySelector('[data-testid="phone-countdown-text"]');
+    out.countdown = {
+      kind: cd.dataset.kind,
+      beatsLeft: cd.dataset.beatsLeft === undefined ? null : Number(cd.dataset.beatsLeft),
+      lit: [...cd.querySelectorAll('[data-testid="phone-countdown-seg"]')].filter((x) => x.dataset.on === 'true').length,
+      segs: cd.querySelectorAll('[data-testid="phone-countdown-seg"]').length,
+      text: tx?.textContent ?? '',
+      textPx: px(getComputedStyle(tx).fontSize),
+      textC: textContrast(tx),
+    };
+  }
   const nx = root.querySelector('[data-testid="phone-next"]');
   if (nx) out.next = { name: nx.querySelector('[data-testid="phone-next-name"]').textContent, when: nx.querySelector('[data-testid="phone-next-when"]').textContent, wraps: nx.dataset.wraps === 'true' };
   out.curCells = [...root.querySelectorAll('[role="group"][aria-current="true"]')].map((c) => ({ label: c.getAttribute('aria-label'), inCurLine: !!c.closest('[data-testid="phone-line-current"]'), cell: c.dataset.testid }));
-  out.curSlots = [...root.querySelectorAll('button[aria-current="true"]')].map((b) => ({ title: b.title, cell: `phone-cell-${b.dataset.cell}` }));
+  // Chord cells (Phase A): plain role="img" text while playing / with no editor, so
+  // they are found by test id, not by tag.
+  const SLOT = '[data-testid^="phone-slot-"]';
+  out.curSlots = [...root.querySelectorAll(`${SLOT}[aria-current="true"]`)].map((b) => ({ title: b.title, cell: `phone-cell-${b.dataset.cell}` }));
   out.lineCur = [...root.querySelectorAll('[data-testid="phone-line-current"] [role="group"]')].map((c) => c.getAttribute('aria-label'));
   out.lineNextFirst = root.querySelector('[data-testid="phone-line-next"] [role="group"]')?.getAttribute('aria-label') ?? null;
   out.groups = [];
   for (const g of root.querySelectorAll('[role="group"]')) {
-    out.groups.push({ cell: g.dataset.cell, label: g.getAttribute('aria-label') ?? '', texts: [...g.querySelectorAll('button')].map((b) => b.textContent), titles: [...g.querySelectorAll('button')].map((b) => b.title) });
+    out.groups.push({ cell: g.dataset.cell, label: g.getAttribute('aria-label') ?? '', texts: [...g.querySelectorAll(SLOT)].map((b) => b.textContent), titles: [...g.querySelectorAll(SLOT)].map((b) => b.title) });
   }
-  for (const b of root.querySelectorAll('[data-testid="phone-line-current"] button, [data-testid="phone-line-next"] button')) {
+  for (const b of root.querySelectorAll(`[data-testid="phone-line-current"] ${SLOT}, [data-testid="phone-line-next"] ${SLOT}`)) {
     const r = b.getBoundingClientRect();
     out.slots.push({
       groupCell: b.closest('[role="group"]')?.dataset.cell ?? null,
       runStart: Number(b.dataset.startSec),
       runEnd: Number(b.dataset.endSec),
-      barStart: Number(b.closest('[data-start-sec][data-cell]:not(button)')?.dataset.startSec),
-      barEnd: Number(b.closest('[data-start-sec][data-cell]:not(button)')?.dataset.endSec),
+      barStart: Number(b.closest('[data-start-sec][data-cell]:not([data-run-index])')?.dataset.startSec),
+      barEnd: Number(b.closest('[data-start-sec][data-cell]:not([data-run-index])')?.dataset.endSec),
       cell: b.dataset.cell,
       title: b.title,
       text: b.textContent,
@@ -371,6 +390,17 @@ function checkNow(m, f, ctx, wantText) {
   if (m.now.overlap) f.push(`Now "${m.now.text}" (${m.now.fit}) overlaps Next: ${m.now.overlap} @ ${ctx}`);
 }
 
+// Phase A (J5): the countdown under Now. `n` = beats to the change, from the fixture.
+function checkCountdown(m, f, ctx, n) {
+  const c = m.countdown;
+  if (!c) return f.push(`no countdown @ ${ctx}`);
+  if (c.kind !== 'beats' || c.beatsLeft !== n) f.push(`countdown ${c.kind} ${c.beatsLeft}, want ${n} beats @ ${ctx}`);
+  if (c.text !== `${n} beat${n === 1 ? '' : 's'}`) f.push(`countdown reads "${c.text}" @ ${ctx}`);
+  if (c.textPx < 20) f.push(`countdown text ${c.textPx}px < 20 @ ${ctx}`);
+  if (c.textC < TEXT_CONTRAST) f.push(`countdown text contrast ${c.textC.toFixed(2)} @ ${ctx}`);
+  if (c.segs !== 4 || c.lit !== (n <= 4 ? 5 - n : 0)) f.push(`countdown ${c.lit}/${c.segs} lit for ${n} beats @ ${ctx}`);
+}
+
 const fail = (f, n = 25) => f.length && assert.fail(`GATE-FAIL ${f.length} finding(s):\n  ${f.slice(0, n).join('\n  ')}`);
 
 // ---------------------------------------------------------------------------
@@ -403,12 +433,12 @@ for (const vp of [[390, 844], [360, 800]]) {
         if (m.dots.filter((d) => d.on).length !== 1) f.push(`${m.dots.filter((d) => d.on).length} lit beat dots @ ${ctxs}`);
         for (const d of m.dots) if (!d.on && d.c < NONTEXT_CONTRAST) f.push(`inactive beat dot contrast ${d.c.toFixed(2)} @ ${ctxs}`);
         if (want.next) {
-          const wantWhen = `Next in ${want.count} beat${want.count === 1 ? '' : 's'}`;
           if (!m.next) f.push(`no Next, want ${want.next.label} @ ${ctxs}`);
           else {
             if (m.next.name !== spell(want.next.label)) f.push(`Next "${m.next.name}", want "${spell(want.next.label)}" @ ${ctxs}`);
-            if (m.next.when !== wantWhen) f.push(`Next count "${m.next.when}", want "${wantWhen}" @ ${ctxs}`);
+            if (m.next.when !== 'Next') f.push(`Next label "${m.next.when}", want "Next" @ ${ctxs}`);
           }
+          checkCountdown(m, f, ctxs, want.count);
         }
         if (m.curCells.length !== 1) f.push(`${m.curCells.length} bars carry aria-current @ ${ctxs}`);
         else {
@@ -456,7 +486,8 @@ for (const vp of [[390, 844], [360, 800]]) {
       const atStart = FIX.segments.find((s) => s.start_sec <= loop.startSec + 1e-3 && loop.startSec + 1e-3 < s.end_sec);
       if (!m.next?.wraps) f.push(`Next does not follow the loop (${JSON.stringify(m.next)})`);
       if (m.next?.name !== spell(atStart.label)) f.push(`Next "${m.next?.name}", want the loop-start chord "${spell(atStart.label)}"`);
-      if (!m.next?.when.startsWith('Loops back in')) f.push(`Next says "${m.next?.when}"`);
+      if (m.next?.when !== 'Loops back') f.push(`Next says "${m.next?.when}"`);
+      checkCountdown(m, f, 'loop', Math.max(1, Math.ceil((loop.endSec - t) / BEAT - 0.05)));
       if (m.lineNextFirst !== barTag(SEC_FIRST_BAR[si])) f.push(`next line starts "${m.lineNextFirst}", want the loop's first bar`);
       // Without the loop, the same position looks ahead into the bridge.
       await moveTo(page, t, null);
@@ -481,7 +512,8 @@ for (const vp of [[390, 844], [360, 800]]) {
       if (m.now?.text !== '—') f.push(`Now "${m.now?.text}" in a gap`);
       if (m.next?.name !== spell(want.label)) f.push(`Next "${m.next?.name}", want "${spell(want.label)}"`);
       const c = Math.max(1, Math.ceil((want.start_sec - t) / BEAT - 0.05));
-      if (m.next?.when !== `Next in ${c} beat${c === 1 ? '' : 's'}`) f.push(`Next count "${m.next?.when}", want ${c}`);
+      if (m.next?.when !== 'Next') f.push(`Next label "${m.next?.when}"`);
+      checkCountdown(m, f, 'gap', c);
       assert.deepEqual(errors, []);
       fail(f);
     } finally {
@@ -503,6 +535,9 @@ for (const vp of [[390, 844], [360, 800]]) {
         if (m.mode !== 'sequence' || m.reason !== 'no-grid') f.push(`mode ${m.mode}/${m.reason} @ ${ctxs}`);
         if (m.beat !== null || m.dots.length) f.push(`beat dots shown without a tempo @ ${ctxs}`);
         if (m.next && m.next.when !== 'Next') f.push(`"${m.next.when}": a beat count without a tempo @ ${ctxs}`);
+        // No tempo: the countdown is a time bar to the change, never a beat count.
+        if (m.next && (m.countdown?.kind !== 'time' || m.countdown.beatsLeft !== null || !/^\d+(\.\d)? s$/.test(m.countdown.text)))
+          f.push(`countdown without a tempo: ${JSON.stringify(m.countdown)} @ ${ctxs}`);
         if (m.barNumbers.length) f.push(`bar numbers shown without a tempo @ ${ctxs}`);
         if (m.cellsMulti) f.push(`${m.cellsMulti} split cells without a tempo @ ${ctxs}`);
         if (/bar/i.test(m.position ?? '')) f.push(`position "${m.position}" claims a bar @ ${ctxs}`);
@@ -638,12 +673,12 @@ for (const vp of [[390, 844], [360, 800]]) {
         checkSlots(m, f, ctxs);
         const r = await page.evaluate(() => {
           const track = document.querySelector('[data-testid="player-harmony-track"]');
-          const bs = [...track.querySelectorAll('button[data-testid^="phone-slot-"]')];
+          const bs = [...track.querySelectorAll('[data-testid^="phone-slot-"]')];
           return bs.map((b) => {
             const q = b.getBoundingClientRect();
             const cx = q.left + q.width / 2;
             const cy = q.top + q.height / 2;
-            const hit = document.elementFromPoint(cx, cy)?.closest('button');
+            const hit = document.elementFromPoint(cx, cy)?.closest('[data-testid^="phone-slot-"]');
             return {
               id: b.dataset.testid, title: b.title, l: q.left, t: q.top, r: q.right, b: q.bottom, w: q.width, h: q.height,
               start: Number(b.dataset.startSec), end: Number(b.dataset.endSec),
@@ -676,25 +711,29 @@ for (const vp of [[390, 844], [360, 800]]) {
           if (heard.end_sec - heard.start_sec < beat * 0.75) curShort++;
         }
       }
-      // A real tap on the centre of half-beat buttons opens THAT chord.
+      // Phase A: the chord editor is hidden (it dropped every pick, ChordOverlay's
+      // header) and cells are never interactive while playing. A real tap on the
+      // centre of half-beat cells lands on THAT cell and opens NOTHING.
       for (const t of positions.slice(0, 8)) {
         await moveTo(page, t);
-        const ids = await page.evaluate((bt) => [...document.querySelectorAll('[data-testid="player-harmony-track"] button[data-testid^="phone-slot-"]')]
+        const ids = await page.evaluate((bt) => [...document.querySelectorAll('[data-testid="player-harmony-track"] [data-testid^="phone-slot-"]')]
           .filter((b) => Number(b.dataset.endSec) - Number(b.dataset.startSec) < bt * 0.75)
           .map((b) => b.dataset.testid), beat);
         for (const id of ids) {
           const el = page.locator(`[data-testid="${id}"]`).first();
           const box = await el.boundingBox();
           if (!box) continue;
-          const want = await el.getAttribute('aria-label');
+          const tag = await el.evaluate((e) => `${e.tagName}/${e.getAttribute('role')}`);
+          if (tag !== 'SPAN/img') f.push(`${id} is ${tag}, want a non-interactive SPAN/img @ ${vp.join('x')} t=${t.toFixed(2)}`);
           await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
           await settle(page);
-          const head = await page.locator('[data-testid="chord-popover-header"]').getAttribute('aria-label').catch(() => null);
-          if (!head || !want.startsWith(head.replace(/^Change /, ''))) f.push(`tap on ${id} ("${want}") opened "${head}" @ ${vp.join('x')} t=${t.toFixed(2)}`);
-          else tapped++;
-          await page.locator('[data-testid="chord-popover"] button:has-text("Cancel")').click();
+          if (await page.locator('[data-testid="chord-popover"]').count()) {
+            f.push(`tap on ${id} opened a chord editor @ ${vp.join('x')} t=${t.toFixed(2)}`);
+            await page.locator('[data-testid="chord-popover"] button:has-text("Cancel")').click();
+          } else tapped++;
           await settle(page);
         }
+        if (await page.locator('[data-testid="player-harmony-track"] button').count()) f.push(`a button in the chord track while playing @ t=${t.toFixed(2)}`);
       }
       if (short < 20) f.push(`only ${short} half-beat buttons measured`);
       if (curShort < 4) f.push(`a half-beat chord was current only ${curShort} times`);
@@ -1044,6 +1083,63 @@ test('F-8 / N5 phone chords @ 667x375: a resize makes the next render re-follow 
     await ctx.close();
   }
 });
+
+// Phase A (D6 + J5), on the flagship demo's REAL chord data (Lucky Ticket, 201
+// detected changes in 3:33, 87 under a beat) in the app's DEFAULT "Simple" view:
+// at every position, Now is >= 28px and never overlaps Next (also when Next has
+// grown to 64px on the last beat), the countdown under Now counts beats ("N
+// beats" >= 20px, 4 segments), and the chord track holds no button.
+const LUCKY = JSON.parse(readFileSync(join(WEB, 'test/fixtures/demo-chords/lucky-ticket.json'), 'utf8'));
+for (const vp of [[390, 844], [360, 800]]) {
+  test(`phone chords @ ${vp[0]}x${vp[1]}: Lucky Ticket, Simple (default): countdown always, Next grows on the last beat, no overlap`, async () => {
+    const beat = 60 / LUCKY.bpm;
+    const grid = { beatSec: beat, anchorSec: LUCKY.sections[0].start_sec, measured: true };
+    const sections = LUCKY.sections.map((s) => ({ startSec: s.start_sec, endSec: s.end_sec, label: s.label }));
+    const payload = { key: null, provider: 'klangio', provider_version: 'demo', duration_sec: LUCKY.duration_sec, model_ms: 1, segments: LUCKY.segments.map((s) => ({ ...s, confidence: 1 })) };
+    const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections, payload, chordMode: 'simple' });
+    try {
+      const f = [];
+      const nowPx = [];
+      let grown = 0;
+      let counted = 0;
+      for (let t = 1; t < LUCKY.duration_sec - 1; t += 0.83) {
+        await moveTo(page, t);
+        const m = await page.evaluate(measure);
+        const ctxs = `${vp.join('x')} t=${t.toFixed(2)}`;
+        if (!m.now) { f.push(`no Now @ ${ctxs}`); continue; }
+        nowPx.push(m.now.fontPx);
+        if (m.now.fontPx < 28) f.push(`Now ${m.now.fontPx}px < 28 @ ${ctxs}`);
+        if (m.now.overlap) f.push(`Now overlaps Next: ${m.now.overlap} @ ${ctxs}`);
+        if (!m.now.inX || m.now.clippedBy.length) f.push(`Now clipped @ ${ctxs}`);
+        if (m.next) {
+          const c = m.countdown;
+          if (!c || c.kind !== 'beats' || !(c.beatsLeft >= 1)) { f.push(`countdown ${JSON.stringify(c)} @ ${ctxs}`); continue; }
+          const n = c.beatsLeft;
+          if (c.text !== `${n} beat${n === 1 ? '' : 's'}` || c.textPx < 20) f.push(`countdown text "${c.text}" ${c.textPx}px @ ${ctxs}`);
+          if (c.segs !== 4 || c.lit !== (n <= 4 ? 5 - n : 0)) f.push(`countdown ${c.lit}/4 lit for ${n} beats @ ${ctxs}`);
+          // The DECLARED size: the computed one is mid-transition for 120ms (motion allowed here).
+          const [nextPx, growPx] = await page.evaluate(() => { const e = document.querySelector('[data-testid="phone-next-name"]'); return [parseFloat(e.style.fontSize), Number(e.dataset.growPx)]; });
+          // On the last beat Next grows (32 -> 64px when Now is big enough to hold it;
+          // never past Now's own height, so nothing below moves).
+          if (!(growPx >= 32 && growPx <= 64)) f.push(`Next grow size ${growPx} @ ${ctxs}`);
+          if (nextPx !== (n === 1 ? growPx : 32)) f.push(`Next ${nextPx}px with ${n} beat(s) left (grow ${growPx}) @ ${ctxs}`);
+          if (n === 1 && growPx === 64) grown++;
+          counted++;
+        }
+        if (await page.locator('[data-testid="player-harmony-track"] button').count()) f.push(`a button in the chord track @ ${ctxs}`);
+        if (m.slots.length === 0) f.push(`no chord cells @ ${ctxs}`);
+      }
+      if (counted < 150) f.push(`only ${counted} countdowns checked`);
+      if (grown < 10) f.push(`Next grew to 64px only ${grown} times`);
+      nowPx.sort((a, b) => a - b);
+      if (process.env.CHORD_GATE_LOG) console.log(`LUCKY ${vp.join('x')}: Now px min ${nowPx[0]} median ${nowPx[nowPx.length >> 1]} max ${nowPx.at(-1)}; ${counted} countdowns, ${grown} grown`);
+      assert.deepEqual(errors, []);
+      fail(f);
+    } finally {
+      await ctx.close();
+    }
+  });
+}
 
 test('teardown', async () => {
   if (browser) await browser.close();

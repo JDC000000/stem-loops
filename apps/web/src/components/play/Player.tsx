@@ -640,22 +640,16 @@ export default function Player({
   const onLoop = useCallback((region: LoopRegion | null) => engineRef.current?.setLoop(region), []);
   const onRetry = useCallback(() => setAttempt((n) => n + 1), []);
 
-  // P1.2 — Screen Wake Lock while playing, released on pause or end, so the
-  // phone does not dim mid-song. Feature-detected: where it is missing or
+  // P1.2 — Screen Wake Lock for as long as the player page is visible, playing
+  // or paused (Phase A: a guitarist pauses to work out a shape and the screen
+  // must not dim). Released when the page is hidden, re-taken when it is
+  // visible again, let go on unmount. Feature-detected: where it is missing or
   // refused nothing changes (lib/play/wake-lock.ts).
-  const wakeRef = useRef<ReturnType<typeof createWakeLock> | null>(null);
   useEffect(() => {
     const lock = createWakeLock(globalThis.navigator, globalThis.document);
-    wakeRef.current = lock;
-    return () => {
-      lock.dispose();
-      wakeRef.current = null;
-    };
+    lock.set(true);
+    return () => lock.dispose();
   }, []);
-  const playing = snapshot.status === 'playing';
-  useEffect(() => {
-    wakeRef.current?.set(playing);
-  }, [playing]);
 
   const sections = useMemo(
     () => deriveSections(loops ?? null, { durationSec: snapshot.durationSec }),

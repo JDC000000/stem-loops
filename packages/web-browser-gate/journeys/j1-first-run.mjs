@@ -110,7 +110,7 @@ export default async function run() {
     // Phase A (2026-11-21): the play-along player no longer links to the loops
     // product (it stays reachable from the nav and Account). So the ⋯ menu must
     // NOT offer "Download loops", and the journey opens /loops?job=<id> itself,
-    // the address the nav's Download loops page preselects.
+    // the address the loops page (reached from Account) preselects.
     await page.locator('[data-testid="player-more"]').click().catch(() => {});
     const menuText = (await page.locator('#player-menu').innerText().catch(() => '')).replace(/\s+/g, ' ');
     const loopsInMenu = await page.locator('#player-menu a[href*="/loops"], [data-testid="loops-link"]').count();

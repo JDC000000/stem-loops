@@ -184,6 +184,30 @@ async def restore_allowance_if_owed(conn: psycopg.AsyncConnection, job_id: str) 
     return restored
 
 
+async def restore_allowance_isolated(
+    conn: psycopg.AsyncConnection, job_id: str, *, stage: str
+) -> str | None:
+    """``restore_allowance_if_owed`` that NEVER raises (QA-66, review #308 L-1).
+
+    The restore already runs in its own SAVEPOINT, so an error rolls back only the restore;
+    catching it here is what keeps the caller's transaction going: the reaper's per-job
+    savepoint still fails the job and keeps its credit refund, and fail_job's second
+    transaction still commits the credit refund. A persistent restore error (42501 if the
+    worker's role cannot run restore_job_allowance, say) can then never leave a job
+    non-terminal or silently stop upload refunds. Logged as ``allowance_restore_failed``
+    with ``stage`` and sent to Sentry; the restore is exactly-once in the database, so a
+    later path (or the next reaper sweep for a job not yet failed) can still apply it.
+    """
+    try:
+        return await restore_allowance_if_owed(conn, job_id)
+    except Exception as exc:  # noqa: BLE001 — a restore problem must never undo a failure/refund
+        log_structured(
+            "ERROR", "allowance_restore_failed", job_id=job_id, stage=stage, error=str(exc)[:200]
+        )
+        sentry_sdk.capture_exception(exc)
+        return None
+
+
 async def fail_job(database_url: str, job_id: str, error_code: str, user_message: str) -> bool:
     """Mark a job failed (unless it is already terminal), then return its credit if owed.
     Returns True if THIS call marked the job.
@@ -197,22 +221,21 @@ async def fail_job(database_url: str, job_id: str, error_code: str, user_message
     The allowance restore (QA-64) runs in the FAILING transaction, in its own savepoint, so
     the "didn't count" sentence is committed together with the failure and the job page never
     shows the failure without it. If it errors there, the failure still commits and the
-    restore is retried in the second transaction (it is exactly-once in the database).
+    restore is retried in the second transaction (it is exactly-once in the database). In
+    both transactions it is isolated (restore_allowance_isolated, QA-66): a restore error is
+    logged as ``allowance_restore_failed`` and never rolls back the failure or the credit
+    refund; ``credit_refund_failed`` now means only what it says.
     """
     async with await psycopg.AsyncConnection.connect(database_url) as conn:
         marked = await (
             await conn.execute(_FAIL_SQL, (error_code, user_message, job_id))
         ).fetchone()
-        try:
-            await restore_allowance_if_owed(conn, job_id)
-        except Exception as exc:  # noqa: BLE001 — a restore problem must never mask the failure
-            log_structured("ERROR", "allowance_restore_failed", job_id=job_id, error=str(exc)[:200])
-            sentry_sdk.capture_exception(exc)
+        await restore_allowance_isolated(conn, job_id, stage="fail_job")
         await conn.commit()
     try:
         async with await psycopg.AsyncConnection.connect(database_url) as conn:
             await refund_if_owed(conn, job_id)
-            await restore_allowance_if_owed(conn, job_id)
+            await restore_allowance_isolated(conn, job_id, stage="fail_job_retry")
             await conn.commit()
     except Exception as exc:  # noqa: BLE001 — a refund problem must never mask the failure
         log_structured("ERROR", "credit_refund_failed", job_id=job_id, error=str(exc)[:200])

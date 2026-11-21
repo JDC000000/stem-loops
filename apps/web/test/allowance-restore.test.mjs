@@ -87,9 +87,9 @@ test('fixed copy never claims the song came back (it is true only per job)', () 
 });
 
 test('failedJobMessage: the stored sentence is shown as stored (FETCH_PROXY_FAILED and others)', () => {
-  const stored = `Something went wrong on our end fetching this video. Try again in a few minutes. ${USAGE_RETURNED_SENTENCES[0]}`;
+  const stored = `Something went wrong on our end fetching this video. Try again later. ${USAGE_RETURNED_SENTENCES[0]}`;
   assert.equal(failedJobMessage({ error_code: 'FETCH_PROXY_FAILED', error_message_user: stored }), stored);
-  const plain = 'Something went wrong on our end fetching this video. Try again in a few minutes.';
+  const plain = 'Something went wrong on our end fetching this video. Try again later.';
   assert.equal(failedJobMessage({ error_code: 'FETCH_PROXY_FAILED', error_message_user: plain }), plain);
 });
 

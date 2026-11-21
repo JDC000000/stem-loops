@@ -65,9 +65,10 @@ class FetchProxyFailedError(StemLoopsError):
     # job_failure.restore_allowance_if_owed appends "This didn't count toward your monthly
     # songs." (or the trial sentence) to the stored message only when it actually gave one
     # back (QA-64). An anonymous job, a pre-042 job or a rolled-over month gets no such line.
-    user_message = (
-        "Something went wrong on our end fetching this video. Try again in a few minutes."
-    )
+    # "Try again later", not "in a few minutes" (QA-65, review R-4): a credentials outage can
+    # last hours, and a free user's retry that fails before the allowance restore applies
+    # still costs a song; the copy must not invite a retry every few minutes.
+    user_message = "Something went wrong on our end fetching this video. Try again later."
 
     def __init__(self, cause: str):
         self.cause = cause

@@ -5,7 +5,8 @@
 // /pricing offers a plan checkout only to a viewer on Free. But "Free" there is the
 // EFFECTIVE plan (getEntitlementSnapshot -> effectivePlanCode), which reads 'free'
 // for several viewers who still have a live subscription that /api/billing/checkout
-// would duplicate (it opens a new subscription and checks for none):
+// would duplicate (it opens a new subscription; since 1A it also refuses one server-side,
+// lib/billing/checkout-guard.ts, which uses the same live statuses):
 //   * past_due beyond the 7-day grace (Stripe is still dunning the card);
 //   * paused (resumable);
 //   * active, but entitlements.period_end has passed (a late renewal webhook);

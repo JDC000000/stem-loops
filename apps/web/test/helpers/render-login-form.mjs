@@ -44,6 +44,9 @@ async function build() {
     // QA A-08: sign-in and reset are scriptable the same way (globalThis.__loginStub.password / .reset).
     'signInWithPassword: (...a) => globalThis.__loginStub?.password?.(...a), ' +
     'resetPasswordForEmail: (...a) => globalThis.__loginStub?.reset?.(...a) } }; }');
+  // 2A: records trackEvent calls into globalThis.__analyticsCalls when a test has set it (never
+  // creates the global itself, so withDom's leaked-global check stays meaningful).
+  const analytics = put('analytics.mjs', 'export function trackEvent(...a) { globalThis.__analyticsCalls?.push(a); } export const navigationGrace = async () => {};');
   const hcaptcha = put('hcaptcha.mjs', 'export default function HCaptcha() { return null; }');
   // The REAL show/hide password field (Slice 1b), not a stub: the toggle is what is tested.
   const passwordField = put('PasswordField.mjs', toJs(read('src/components/PasswordField.tsx'), true));
@@ -56,7 +59,8 @@ async function build() {
     .replace(/from ['"]@\/lib\/auth\/login-errors['"]/g, `from '${errors}'`)
     .replace(/from ['"]@\/lib\/auth\/magic-link['"]/g, `from '${magic}'`)
     .replace(/from ['"]@\/lib\/ui\/form-styles['"]/g, `from '${formStyles}'`)
-    .replace(/from ['"]@\/components\/PasswordField['"]/g, `from '${passwordField}'`);
+    .replace(/from ['"]@\/components\/PasswordField['"]/g, `from '${passwordField}'`)
+    .replace(/from ['"]@\/lib\/analytics['"]/g, `from '${analytics}'`);
   const file = join(dir, 'LoginForm.mjs');
   writeFileSync(file, js);
 

@@ -54,6 +54,13 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
     headline: 'No billing account yet.',
     action: 'Make a purchase first — the billing portal opens after your first checkout.',
   },
+  // Decision 1A: a plan checkout refused because a subscription is live (HTTP 409).
+  // Mirrors lib/billing/checkout-guard.ts PLAN_ALREADY_ACTIVE_COPY.live (pinned by
+  // test/checkout-live-sub-block.test.mjs).
+  PLAN_ALREADY_ACTIVE: {
+    headline: 'You already have a plan.',
+    action: 'To change or cancel it, use Manage subscription on your Account page.',
+  },
   ENTITLEMENT_UNAVAILABLE: {
     headline: "We couldn't verify your plan right now.",
     action: 'Refresh in a moment — your access will be back as soon as billing is reachable.',

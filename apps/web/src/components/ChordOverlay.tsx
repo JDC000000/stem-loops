@@ -96,7 +96,6 @@ import {
   segmentDensityCounts,
   zoomCeilingPxPerSec,
   MAX_TIMELINE_PX,
-  MAX_WRAP_ROWS,
   estimateLabelPx,
   estimateStageLabelPx,
   makeCanvasMeasurer,
@@ -114,6 +113,8 @@ import {
   formatTime,
   isManualScroll,
   layoutRows,
+  layoutTapRows,
+  wrapPaintBudgetPx,
   markMonotoneRuns,
   observationsToRuns,
   playheadGeometry,
@@ -500,7 +501,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
       zoomCeilingPxPerSec(state.runs, measureLabel, {
         durSec: dur,
         maxPaintedPx: narrow
-          ? Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx)
+          ? wrapPaintBudgetPx(state.runs.length, rowWidthPx)
           : MAX_TIMELINE_PX,
       }),
     [state.runs, measureLabel, dur, narrow, rowWidthPx],
@@ -625,15 +626,20 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
 
   // Wrapped (narrow) layout. `byRun` turns "which segments belong to run i"
   // into an array index instead of a per-frame scan over every segment.
+  // QA-68: layoutTapRows, not bare layoutRows, so every chip is a >= 24px tap
+  // target (short chords widen, over-full rows split; see fitRowsToTap).
+  // `split` is whether any row was split, which makes the hint's "Ns per row"
+  // an upper bound.
   const wrapped = useMemo(() => {
-    const rows = layoutRows(state.runs, rowWidthPx / pps, pps);
+    const rows = layoutTapRows(state.runs, rowWidthPx / pps, pps, rowWidthPx);
+    const split = rows.length > layoutRows(state.runs, rowWidthPx / pps, pps).length;
     const byRun: { rowIndex: number; leftPx: number; widthPx: number }[][] = state.runs.map(() => []);
     rows.forEach((row, ri) => {
       for (const seg of row.segments) {
         byRun[seg.runIndex]?.push({ rowIndex: ri, leftPx: seg.leftPx, widthPx: seg.widthPx });
       }
     });
-    return { rows, byRun };
+    return { rows, byRun, split };
   }, [state.runs, rowWidthPx, pps]);
 
   // CHIPS the user cannot read at this zoom -- not RUNS. The wrapped layout
@@ -1065,7 +1071,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           {state.runs.length > 0 ? (
             <div style={hintStyle} data-testid="timeline-hint">
               {narrow
-                ? `${formatTime(dur)} total · ${Math.round(rowWidthPx / pps)}s per row · zoom for more or less per row`
+                ? `${formatTime(dur)} total · ${wrapped.split ? 'up to ' : ''}${Math.round(rowWidthPx / pps)}s per row · zoom for more or less per row`
                 : scrollInfo.total - scrollInfo.client > 1
                   ? `Showing ${formatTime(scrollInfo.left / pps)}–${formatTime((scrollInfo.left + scrollInfo.client) / pps)} of ${formatTime(dur)} · scroll sideways or zoom out`
                   : `Whole track (${formatTime(dur)}) shown · zoom in for detail`}

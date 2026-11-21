@@ -48,6 +48,8 @@ import {
   chipContentPx,
   densityCounts,
   layoutRows,
+  layoutTapRows,
+  wrapPaintBudgetPx,
   ppsToSlider,
   runContentPx,
   segmentDensityCounts,
@@ -2162,7 +2164,7 @@ test('wrapped layout: the hint counts the chips on screen, and at the ceiling it
     const rowWidthPx = Math.max(120, NARROW_CONTAINER_PX - GUTTER_PX);
     const ceiling = zoomCeilingPxPerSec(BIMODAL, PROD_MEASURE, {
       durSec: durationSec(BIMODAL),
-      maxPaintedPx: Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx),
+      maxPaintedPx: wrapPaintBudgetPx(BIMODAL.length, rowWidthPx),
     });
     assert.ok(Math.abs(top.pps - ceiling) <= 0.001, `slider top ${top.pps} vs ceiling ${ceiling.toFixed(3)}`);
     assert.ok(
@@ -2197,7 +2199,7 @@ test("wrapped layout: the DOM-row budget reaches the component's zoom ceiling", 
     const durSec = durationSec(runs);
     const budgeted = zoomCeilingPxPerSec(runs, PROD_MEASURE, {
       durSec,
-      maxPaintedPx: Math.min(MAX_TIMELINE_PX, MAX_WRAP_ROWS * rowWidthPx),
+      maxPaintedPx: wrapPaintBudgetPx(runs.length, rowWidthPx),
     });
     const unbudgeted = zoomCeilingPxPerSec(runs, PROD_MEASURE, { durSec, maxPaintedPx: MAX_TIMELINE_PX });
     assert.ok(unbudgeted > budgeted * 2, `the row budget does not bind on this song (${budgeted} vs ${unbudgeted})`);
@@ -2214,7 +2216,9 @@ test("wrapped layout: the DOM-row budget reaches the component's zoom ceiling", 
         seen.pps = Number(tl.dataset.pxPerSec);
         // One row-time <span> per wrapped row (the hint's own spans carry a testid).
         seen.domRows = [...tl.querySelectorAll('span')].filter((x) => !x.hasAttribute('data-testid')).length;
-        seen.helperRows = layoutRows(runs, rowWidthPx / seen.pps, seen.pps).length;
+        // QA-68: the chart renders layoutTapRows (over-full rows split), so that
+        // is the helper the DOM row count is checked against.
+        seen.helperRows = layoutTapRows(runs, rowWidthPx / seen.pps, seen.pps, rowWidthPx).length;
       },
     });
     assert.equal(seen.layout, 'wrapped');

@@ -71,6 +71,16 @@ export interface BillingSubscription {
   createdAt?: Date | null;
 }
 
+/** What cancelAllForAccountDeletion did (QA-53). Ids only, no personal data. */
+export interface AccountDeletionCancelResult {
+  /** Subscriptions this call cancelled. */
+  cancelled: string[];
+  /** Subscriptions that were already over (cancelled / expired / gone). */
+  alreadyOver: string[];
+  /** Never-paid first invoices this call voided (incomplete subscriptions). */
+  voidedInvoices: string[];
+}
+
 /** Fields of a subscription an update event reports as changed. */
 export interface BillingSubscriptionChange {
   status?: SubscriptionStatus;
@@ -248,6 +258,20 @@ export interface BillingProvider {
     atPeriodEnd: boolean,
   ): Promise<void>;
 
+  /** QA-53. Account deletion: cancel, immediately, EVERY subscription that is
+   *  not already over, whatever its status (active, trialing, past_due,
+   *  paused, incomplete, unpaid, or a status we do not know yet), and void a
+   *  never-paid first invoice so it cannot be paid later. `knownIds` are the
+   *  ids our DB holds; `customerId` (when we have one) is also listed at the
+   *  provider, so a subscription the webhook has not written yet is caught.
+   *  Throws (nothing to undo on our side) if any of it fails or if
+   *  `deadlineMs` (epoch ms) would be passed; safe to call again. */
+  cancelAllForAccountDeletion(
+    knownIds: string[],
+    customerId: string | null,
+    deadlineMs: number,
+  ): Promise<AccountDeletionCancelResult>;
+
   handleWebhook(rawBody: string, signature: string): Promise<BillingEvent>;
 
   listInvoices(customerId: string): Promise<BillingInvoice[]>;
@@ -258,6 +282,14 @@ export interface BillingProvider {
    *  null (never throws) when unknown/inactive/unsupported. Optional so
    *  providers without the concept (Paddle) need not implement it. */
   resolvePromotionCodeId?(code: string): Promise<string | null>;
+
+  /** The customer's NON-TERMINAL subscriptions as the provider sees them right
+   *  now (Stripe: everything but canceled / incomplete_expired), for the
+   *  checkout guard's stale-sync fallback (lib/billing/checkout-guard.ts): a
+   *  Checkout that completed before its webhook landed. `status` is the
+   *  provider's own value. Bounded read; throws on timeout or error. Optional:
+   *  a provider without it gets the DB check only. */
+  listLiveSubscriptions?(customerId: string): Promise<Array<{ id: string; status: string }>>;
 }
 
 export class NotImplementedError extends Error {

@@ -325,7 +325,7 @@ test('Slice 1a: the job page hands the player its header and Song info', () => {
   assert.equal(p.title, 'Lucky Ticket.mp3');
   assert.equal(p.bpm, 101.6);
   assert.equal(p.musicalKey, 'A# major');
-  assert.deepEqual(p.back, { href: '/history', label: 'Back to library' }, 'signed in: back to the library');
+  assert.deepEqual(p.back, { href: '/history', label: 'Back to song library' }, 'signed in: back to the song library');
   assert.ok(p.songInfo.some((l) => /On Free, files are deleted after 24 hours/.test(l)));
   renderJob({ ...DONE_JOB, bpm: null, musical_key: null });
   assert.equal(globalThis.__playerProps.bpm, null);

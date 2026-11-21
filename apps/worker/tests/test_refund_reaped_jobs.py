@@ -22,10 +22,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import threading
 import time
 import uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import psycopg
@@ -292,7 +290,7 @@ def test_a_hung_job_is_failed_and_refunded_at_the_wall_clock_deadline(
 
 
 def test_the_default_wall_clock_budget_is_ninety_minutes(monkeypatch):
-    """At least the web's ONE_JOB_WORST_CASE_S (4442 s, deployed values): a healthy job is
+    """At least the web's ONE_JOB_WORST_CASE_S (3962 s since #317, 4442 s before; deployed values): a healthy job is
     never cut off. The cross-check against job-poll.ts is in job-stall-derivation.test.mjs."""
     monkeypatch.delenv("JOB_WALL_TIMEOUT_SECONDS", raising=False)
     assert consumer._job_wall_timeout() == 5400.0
@@ -347,58 +345,10 @@ def test_a_finished_job_is_never_failed_or_refunded(conn, pred):
 
 
 # ------------------------------------------------ C-06: total-time cap on a stem download
-class _Trickle(BaseHTTPRequestHandler):
-    """Promises 50 MB, then sends one byte every 50 ms: every read succeeds well inside any
-    per-read timeout, so only a TOTAL deadline can end it."""
-
-    def do_GET(self):  # noqa: N802
-        self.send_response(200)
-        self.send_header("Content-Length", str(50 * 1024 * 1024))
-        self.end_headers()
-        try:
-            while not self.server.stop.is_set():  # type: ignore[attr-defined]
-                self.wfile.write(b"\0")
-                self.wfile.flush()
-                time.sleep(0.05)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-
-    def log_message(self, *a):  # silence
-        pass
-
-
-@pytest.fixture
-def trickle_url():
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Trickle)
-    srv.stop = threading.Event()  # type: ignore[attr-defined]
-    srv.daemon_threads = True
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    yield f"http://127.0.0.1:{srv.server_address[1]}/stem.wav"
-    srv.stop.set()  # type: ignore[attr-defined]
-    srv.shutdown()
-    srv.server_close()
-
-
-def test_a_trickling_stem_download_hits_its_total_deadline(monkeypatch, trickle_url):
-    monkeypatch.setenv("STEM_FETCH_DEADLINE_SEC", "1")
-    box: dict = {}
-
-    def run():
-        try:
-            box["result"] = pipeline._fetch_stems({"drums": trickle_url}, ["drums"])
-        except BaseException as exc:  # noqa: BLE001
-            box["exc"] = exc
-
-    t = threading.Thread(target=run, daemon=True)
-    t0 = time.monotonic()
-    t.start()
-    t.join(timeout=15)
-    assert not t.is_alive(), "a trickling stem download was never cut off"
-    assert time.monotonic() - t0 < 5
-    assert isinstance(box.get("exc"), InternalError), box
-    # INTERNAL_ERROR is our fault: the pipeline's _fail returns the credit.
-    assert box["exc"].error_code in job_failure.OUR_FAULT_CODES
+# The real-socket trickle test moved to test_worker_input_hardening.py (#300 review R3-1,
+# QA-54). Here it served http://127.0.0.1, which the B-09 allow-list refuses before any
+# fetch, so it passed without exercising the deadline; and this module skips without a DB,
+# while that test needs none.
 
 
 def test_the_default_stem_download_budget_is_nine_minutes(monkeypatch):

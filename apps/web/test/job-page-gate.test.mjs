@@ -193,7 +193,7 @@ test('a signed-OUT visitor to a DEMO song gets the player, signed out, with no r
     const el = await mod.default({ params: { id: DEMO } });
     assert.equal(globalThis.__redirects.length, 0, 'a demo song redirected a signed-out visitor to /login');
     assert.equal(el.props.id, DEMO);
-    assert.equal(el.props.signedIn, false, 'the demo player must say "Back to home", not "Back to library"');
+    assert.equal(el.props.signedIn, false, 'the demo player must say "Back to home", not "Back to song library"');
     assert.deepEqual(globalThis.__demoAsked, [DEMO]);
   } finally {
     globalThis.__demoIds = [];

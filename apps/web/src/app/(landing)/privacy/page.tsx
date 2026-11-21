@@ -64,7 +64,7 @@ export default function PrivacyPage() {
               </li>
               <li>
                 <strong>Your recent jobs.</strong> Your browser keeps a list of your recent job IDs (local storage plus a small
-                signed cookie; each job id is dropped once its job is deleted, and the cookie expires 24 hours after your last job) so the Library page works. It is not used for anything else.
+                signed cookie; each job id is dropped once its job is deleted, and the cookie expires 24 hours after your last job) so the Song library page works. It is not used for anything else.
               </li>
             </ul>
 
@@ -141,6 +141,12 @@ export default function PrivacyPage() {
               </li>
               <li>
                 <strong>Sentry</strong> receives error reports.
+              </li>
+              {/* 2A: lib/analytics.ts (no cookies; URLs sent without query string; event props are a closed
+                  non-personal list). Pinned by test/legal-privacy-copy.test.mjs. */}
+              <li>
+                <strong>Vercel Web Analytics</strong> counts visits and page views, and a few actions such as playing a
+                demo song. It is anonymous and uses no cookies.
               </li>
               <li>A proxy provider may be used to fetch audio from YouTube links.</li>
               <li>

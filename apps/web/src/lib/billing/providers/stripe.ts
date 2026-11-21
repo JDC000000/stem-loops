@@ -8,8 +8,10 @@
 // API version pinned to '2026-10-28.endive' per TSD lock (session 2
 // provisioning walkthrough).
 
+import { randomUUID } from 'node:crypto';
 import Stripe from 'stripe';
 import {
+  type AccountDeletionCancelResult,
   type BillingCheckoutResult,
   type BillingCustomer,
   type BillingEvent,
@@ -200,6 +202,63 @@ export class BillingProviderUnavailableError extends Error {
 // A timeout surfaces as an error; the webhook answers 500 and STRIPE retries
 // the delivery (it retries for days), which is the right retry layer.
 export const STRIPE_WEBHOOK_READ_OPTIONS = Object.freeze({ timeout: 6000, maxNetworkRetries: 0 });
+
+// Checkout guard (decision 1A): the one Stripe READ on the checkout request path,
+// bounded the same way (#298): 5 s per attempt, no configured retries, so at
+// most 2 x 5 s = 10 s with stripe-node's forced reset retry. A timeout throws;
+// the checkout route answers 502 CHECKOUT_FAILED (never "clear").
+export const STRIPE_CHECKOUT_READ_OPTIONS = Object.freeze({ timeout: 5000, maxNetworkRetries: 0 });
+
+// Stripe statuses that can never bill again. Anything else, including a status
+// this SDK does not name yet, counts as live for the checkout guard (fail safe:
+// a refused checkout is recoverable, a second subscription is a double charge),
+// and is cancelled by account deletion (QA-53: active, trialing, past_due,
+// paused, incomplete, unpaid, or a status a future API version adds).
+const TERMINAL_STRIPE_STATUSES: ReadonlySet<string> = new Set(['canceled', 'incomplete_expired']);
+
+// Worst case of ONE bounded Stripe call: STRIPE_WEBHOOK_READ_OPTIONS.timeout
+// per attempt, and stripe-node retries a reset socket once even with
+// maxNetworkRetries 0 (review R3-2), so two attempts.
+export const STRIPE_CALL_WORST_MS = 2 * STRIPE_WEBHOOK_READ_OPTIONS.timeout;
+
+/** cancelAllForAccountDeletion would pass its deadline. Nothing past the
+ *  last finished call was sent; the caller answers "retry". */
+export class StripeDeadlineError extends Error {
+  constructor(step: string) {
+    super(`Stripe time budget spent before ${step}`);
+    this.name = 'StripeDeadlineError';
+  }
+}
+
+/** Stripe says the object does not exist (deleted customer / subscription). */
+function _isStripeGone(e: unknown): boolean {
+  const x = e as { code?: string; statusCode?: number } | null;
+  return !!x && (x.code === 'resource_missing' || x.statusCode === 404);
+}
+
+/** Stripe refused a cancel because the subscription is already cancelled. */
+function _isAlreadyCanceled(e: unknown): boolean {
+  const m = (e as { message?: unknown } | null)?.message;
+  return typeof m === 'string' && /already (been )?cancel/i.test(m);
+}
+
+interface _SubForDeletion {
+  id: string;
+  status: string;
+  /** The subscription's FIRST invoice when it is still open, i.e. never paid
+   *  (an incomplete subscription, or one cancelled while incomplete). Needs
+   *  latest_invoice expanded; a bare id is never voided. */
+  openFirstInvoiceId: string | null;
+}
+
+function _subForDeletion(sub: Stripe.Subscription): _SubForDeletion {
+  const inv = sub.latest_invoice;
+  const open =
+    inv && typeof inv === 'object' && inv.status === 'open' && inv.billing_reason === 'subscription_create'
+      ? inv.id ?? null
+      : null;
+  return { id: sub.id, status: String(sub.status), openFirstInvoiceId: open };
+}
 
 // Review I-1: the event's `livemode` disagrees with the API key's mode (a
 // live endpoint secret with a test key, or the reverse). Thrown after the
@@ -459,6 +518,20 @@ export class StripeProvider implements BillingProvider {
     return subFromStripe(sub);
   }
 
+  async listLiveSubscriptions(customerId: string): Promise<Array<{ id: string; status: string }>> {
+    // No `status` param: Stripe then lists every subscription that is not
+    // canceled, newest first. 10 is far above any real customer's count of
+    // non-canceled subscriptions; the newest (the one a just-completed
+    // Checkout made) is always on the first page.
+    const page = await getClient().subscriptions.list(
+      { customer: customerId, limit: 10 },
+      { ...STRIPE_CHECKOUT_READ_OPTIONS },
+    );
+    return page.data
+      .filter((s) => !TERMINAL_STRIPE_STATUSES.has(s.status))
+      .map((s) => ({ id: s.id, status: s.status }));
+  }
+
   async getInvoiceState(invoiceId: string): Promise<{ status: string; amountRemaining: number }> {
     const inv = await getClient().invoices.retrieve(invoiceId, {}, { ...STRIPE_WEBHOOK_READ_OPTIONS });
     return { status: inv.status ?? 'unknown', amountRemaining: inv.amount_remaining ?? 0 };
@@ -475,6 +548,123 @@ export class StripeProvider implements BillingProvider {
     } else {
       await getClient().subscriptions.cancel(subscriptionId);
     }
+  }
+
+  // QA-53. Before this, account deletion cancelled only the subscriptions our
+  // DB had as active / trialing / past_due, so a paused or incomplete one
+  // survived the deletion and could still bill. Now:
+  //   1. list the customer's subscriptions AT STRIPE (status 'all'), so one
+  //      the webhook has not written yet, or a DB row with a stale status, is
+  //      still seen; then retrieve any DB id the list did not return;
+  //   2. cancel, immediately, every subscription whose status is not over
+  //      (canceled / incomplete_expired). invoice_now and prorate are false
+  //      (Stripe's defaults, written out): no final invoice, no proration
+  //      credit or charge, pending prorations dropped;
+  //   3. void the FIRST invoice when it is still open. Cancelling only turns
+  //      off automatic collection on open invoices (auto_advance=false, per
+  //      Stripe's cancel docs); an incomplete subscription's first invoice
+  //      would stay open and payable through its hosted page / PaymentIntent.
+  //      Voiding it closes that, and cancels its PaymentIntent. Later
+  //      invoices (a past_due renewal) are a real debt for a period that was
+  //      served: they are left as they are, with collection stopped by the
+  //      cancel.
+  // Every call is bounded like the webhook's (PR #298): 6 s per attempt, no
+  // SDK retries, so one call is at most STRIPE_CALL_WORST_MS; before each
+  // call we check it can finish by `deadlineMs`, else StripeDeadlineError.
+  // The void (a POST) carries an idempotency key, so the SDK's forced retry
+  // on a reset socket cannot apply it twice. The cancel is a DELETE, where
+  // Stripe ignores idempotency keys (the key sent there has no effect); a
+  // repeated cancel fails, and the caller's retry re-reads the state. Safe to call again after any
+  // failure: a cancelled subscription reads as over, and its still-open
+  // first invoice is voided on the next call.
+  async cancelAllForAccountDeletion(
+    knownIds: string[],
+    customerId: string | null,
+    deadlineMs: number,
+  ): Promise<AccountDeletionCancelResult> {
+    const client = getClient();
+    const opts = () => ({ ...STRIPE_WEBHOOK_READ_OPTIONS });
+    const postOpts = (what: string, id: string) => ({
+      ...STRIPE_WEBHOOK_READ_OPTIONS,
+      idempotencyKey: `account-delete-${what}-${id}-${randomUUID()}`,
+    });
+    const budget = (step: string) => {
+      if (Date.now() + STRIPE_CALL_WORST_MS > deadlineMs) throw new StripeDeadlineError(step);
+    };
+    const result: AccountDeletionCancelResult = { cancelled: [], alreadyOver: [], voidedInvoices: [] };
+    const subs = new Map<string, _SubForDeletion>();
+
+    if (customerId) {
+      let startingAfter: string | undefined;
+      for (;;) {
+        budget('subscriptions.list');
+        let page: Stripe.ApiList<Stripe.Subscription>;
+        try {
+          page = await client.subscriptions.list(
+            {
+              customer: customerId,
+              status: 'all',
+              limit: 100,
+              expand: ['data.latest_invoice'],
+              ...(startingAfter ? { starting_after: startingAfter } : {}),
+            },
+            opts(),
+          );
+        } catch (e) {
+          // A customer Stripe no longer has has no subscriptions left to bill.
+          if (_isStripeGone(e)) break;
+          throw e;
+        }
+        for (const sub of page.data) subs.set(sub.id, _subForDeletion(sub));
+        if (!page.has_more || page.data.length === 0) break;
+        startingAfter = page.data[page.data.length - 1].id;
+      }
+    }
+
+    for (const id of Array.from(new Set(knownIds))) {
+      if (subs.has(id)) continue;
+      budget('subscriptions.retrieve');
+      try {
+        subs.set(id, _subForDeletion(await client.subscriptions.retrieve(id, { expand: ['latest_invoice'] }, opts())));
+      } catch (e) {
+        if (_isStripeGone(e)) {
+          result.alreadyOver.push(id);
+          continue;
+        }
+        throw e;
+      }
+    }
+
+    for (const found of Array.from(subs.values())) {
+      let sub = found;
+      if (TERMINAL_STRIPE_STATUSES.has(sub.status)) {
+        result.alreadyOver.push(sub.id);
+      } else {
+        budget('subscriptions.cancel');
+        try {
+          sub = _subForDeletion(
+            await client.subscriptions.cancel(
+              sub.id,
+              { invoice_now: false, prorate: false, expand: ['latest_invoice'] },
+              postOpts('cancel', sub.id),
+            ),
+          );
+          result.cancelled.push(sub.id);
+        } catch (e) {
+          if (!_isStripeGone(e) && !_isAlreadyCanceled(e)) throw e;
+          // Cancelled meanwhile (a webhook-driven expiry, another tab). The
+          // invoice state read above is used; if it is stale the void below
+          // fails and the caller retries with a fresh read.
+          result.alreadyOver.push(sub.id);
+        }
+      }
+      if (sub.openFirstInvoiceId) {
+        budget('invoices.voidInvoice');
+        await client.invoices.voidInvoice(sub.openFirstInvoiceId, {}, postOpts('void', sub.openFirstInvoiceId));
+        result.voidedInvoices.push(sub.openFirstInvoiceId);
+      }
+    }
+    return result;
   }
 
   async handleWebhook(rawBody: string, signature: string): Promise<BillingEvent> {

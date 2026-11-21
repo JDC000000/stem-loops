@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { SECRET_ENV_URL } from './helpers/pure-libs.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(WEB, 'src/app/api/billing/webhook/route.ts');
@@ -71,7 +72,9 @@ async function loadRoute(evt) {
     .replace(/from ['"]@\/lib\/billing\/prorata['"]/g, `from 'data:text/javascript,export const computeProRataClawback = () => 0;'`)
     .replace(/from ['"]@\/lib\/emails\/dispatch['"]/g, `from '${em}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${next}'`)
-    .replace(/from ['"]@sentry\/nextjs['"]/g, `from 'data:text/javascript,export const captureMessage = () => {}; export const captureException = () => {};'`);
+    .replace(/from ['"]@sentry\/nextjs['"]/g, `from 'data:text/javascript,export const captureMessage = () => {}; export const captureException = () => {};'`)
+    // QA-72: the route keys its alert user_hash with IP_HASH_KEY.
+    .replace(/from ['"]@\/lib\/secret-env['"]/g, `from '${SECRET_ENV_URL}'`);
   return import(dataUrl(js) + '#' + Math.random());
 }
 

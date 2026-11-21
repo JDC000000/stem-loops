@@ -38,6 +38,10 @@ for (const status of ['active', 'trialing', 'past_due', 'paused', 'incomplete', 
     assert.equal(c.params.invoice_now, false);
     assert.equal(c.params.prorate, false);
     assert.deepEqual(c.params.expand, ['latest_invoice']);
+    // QA-72 review M-1: the deletion writes its OWN cancellation comment, so
+    // free text a customer typed into the portal never survives on it.
+    assert.deepEqual(c.params.cancellation_details, { comment: 'stem-loops QA-53: account deleted' });
+    assert.equal(h.mod.ACCOUNT_DELETION_CANCEL_COMMENT, 'stem-loops QA-53: account deleted');
     assert.equal(apis('subscriptions.update').length, 0, 'never cancel_at_period_end');
     assert.equal(h.subs.sub_x.status, 'canceled');
   });
@@ -66,7 +70,8 @@ test('incomplete: cancels, then VOIDS the open first invoice (it would stay paya
   assert.deepEqual(r.cancelled, ['sub_inc']);
   assert.deepEqual(r.voidedInvoices, ['in_first']);
   const order = h.calls.map((c) => c.api).filter((a) => a !== 'subscriptions.list');
-  assert.deepEqual(order, ['subscriptions.cancel', 'invoices.voidInvoice'], 'cancel first, then void');
+  // M-3: the customer-wide open-invoice sweep runs after; it finds nothing more.
+  assert.deepEqual(order, ['subscriptions.cancel', 'invoices.voidInvoice', 'invoices.list'], 'cancel first, then void');
   assert.deepEqual(h.harness.voided, ['in_first']);
 });
 
@@ -78,13 +83,69 @@ test('incomplete: an invoice Stripe already voided at cancel is not voided again
   assert.equal(apis('invoices.voidInvoice').length, 0);
 });
 
-test('past_due: an open RENEWAL invoice (a served period) is not voided; cancel stops its collection', async () => {
+// QA-72 review M-3 (policy change): an unpaid RENEWAL of a deleted account is
+// voided too, so it cannot be paid from its hosted page after the deletion.
+test('M-3: past_due: an open RENEWAL invoice is voided too (it would stay payable after the deletion)', async () => {
   h.subs.sub_pd = sub('sub_pd', 'past_due', {
     latest_invoice: { id: 'in_renew', object: 'invoice', status: 'open', billing_reason: 'subscription_cycle' },
   });
   const r = await h.provider.cancelAllForAccountDeletion(['sub_pd'], CUS, FAR());
   assert.deepEqual(r.cancelled, ['sub_pd']);
-  assert.deepEqual(r.voidedInvoices, []);
+  assert.deepEqual(r.voidedInvoices, ['in_renew']);
+  assert.match(apis('invoices.voidInvoice')[0].ropts.idempotencyKey, /^account-delete-void-in_renew-/);
+});
+
+test('M-3: no customer id: an open latest invoice (renewal) is still voided from the subscription read', async () => {
+  h.subs.sub_pd = sub('sub_pd', 'past_due', {
+    latest_invoice: { id: 'in_renew', object: 'invoice', status: 'open', billing_reason: 'subscription_cycle' },
+  });
+  const r = await h.provider.cancelAllForAccountDeletion(['sub_pd'], null, FAR());
+  assert.deepEqual(r.voidedInvoices, ['in_renew']);
+  assert.equal(apis('invoices.list').length, 0, 'no customer: no customer-wide list');
+});
+
+test('M-3: an OLDER open renewal (not the latest invoice) is found by the customer-wide open list and voided', async () => {
+  h.subs.sub_pd = sub('sub_pd', 'past_due', {
+    latest_invoice: { id: 'in_renew_2', object: 'invoice', status: 'open', billing_reason: 'subscription_cycle' },
+  });
+  const parent = (subId) => ({ type: 'subscription_details', subscription_details: { subscription: subId } });
+  h.harness.invoiceList = [
+    { id: 'in_renew_1', object: 'invoice', status: 'open', customer: CUS, parent: parent('sub_pd') },
+    { id: 'in_renew_2', object: 'invoice', status: 'open', customer: CUS, parent: parent('sub_pd') },
+    // a one-off invoice (no subscription) and another customer's subscription: left alone
+    { id: 'in_oneoff', object: 'invoice', status: 'open', customer: CUS, parent: null },
+    { id: 'in_foreign', object: 'invoice', status: 'open', customer: CUS, parent: parent('sub_not_this_customer') },
+  ];
+  const r = await h.provider.cancelAllForAccountDeletion(['sub_pd'], CUS, FAR());
+  assert.deepEqual(r.voidedInvoices.sort(), ['in_renew_1', 'in_renew_2']);
+  assert.equal(apis('invoices.voidInvoice').length, 2, 'the latest invoice is not voided twice');
+  const [l] = apis('invoices.list');
+  assert.deepEqual(l.params, { customer: CUS, status: 'open', limit: 100 });
+  assert.deepEqual(l.ropts, { timeout: 6000, maxNetworkRetries: 0 });
+});
+
+test('M-3: the open-invoice list follows pages; a list failure throws (the deletion is retried)', async () => {
+  h.subs.sub_a = sub('sub_a', 'active');
+  const parent = { type: 'subscription_details', subscription_details: { subscription: 'sub_a' } };
+  let n = 0;
+  h.harness.install = (c) => {
+    c.invoices.list = async (params, ropts) => {
+      h.calls.push({ api: 'invoices.list', params, ropts });
+      n += 1;
+      return n === 1
+        ? { object: 'list', data: [{ id: 'in_p1', status: 'open', parent }], has_more: true }
+        : { object: 'list', data: [{ id: 'in_p2', status: 'open', parent }], has_more: false };
+    };
+  };
+  h.mod._resetStripeClientForTests();
+  const r = await h.provider.cancelAllForAccountDeletion(['sub_a'], CUS, FAR());
+  assert.deepEqual(r.voidedInvoices, ['in_p1', 'in_p2']);
+  assert.equal(apis('invoices.list')[1].params.starting_after, 'in_p1');
+
+  h.harness.install = null;
+  h.mod._resetStripeClientForTests();
+  h.harness.invoiceListError = Object.assign(new Error('list down'), { type: 'StripeAPIError', statusCode: 500 });
+  await assert.rejects(() => h.provider.cancelAllForAccountDeletion(['sub_a'], CUS, FAR()), /list down/);
 });
 
 test('retry after a failed void: the now-cancelled subscription still gets its open first invoice voided', async () => {

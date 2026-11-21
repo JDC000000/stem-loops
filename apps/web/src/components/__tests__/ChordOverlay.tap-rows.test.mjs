@@ -1,14 +1,14 @@
 // QA-68: every chip of the wrapped chord chart ("See all chords" on a phone)
-// is at least CHIP_MIN_TAP_PX wide when rendered. Chips do not overlap, they
+// is at least MIN_TAP_PX wide when rendered. Chips do not overlap, they
 // stay inside their row and in time order, and no chord is merged or dropped.
 // The real-Chromium half of this is packages/web-browser-gate/test/chord-sheet-tap.test.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { MIN_TAP_PX } from '../tapTarget.ts';
 import {
   CHIP_GAP_PX,
   CHIP_MIN_BOX_PX,
-  CHIP_MIN_TAP_PX,
   MAX_PX_PER_SEC,
   MAX_WRAP_ROWS,
   chipContentPx,
@@ -55,7 +55,7 @@ function checkTapRows(rows, base, rowWidthPx, ctx) {
     let right = 0;
     for (const s of row.segments) {
       const w = chipContentPx(s.widthPx); // what renderChip draws
-      assert.ok(w >= CHIP_MIN_TAP_PX, `run ${s.runIndex} renders ${w.toFixed(3)}px < ${CHIP_MIN_TAP_PX} @ ${ctx}`);
+      assert.ok(w >= MIN_TAP_PX, `run ${s.runIndex} renders ${w.toFixed(3)}px < ${MIN_TAP_PX} @ ${ctx}`);
       assert.ok(s.leftPx >= right - 1e-9, `run ${s.runIndex} overlaps its left neighbour @ ${ctx}`);
       assert.ok(s.leftPx >= -1e-9 && s.leftPx + s.widthPx <= rowWidthPx + 1e-6, `run ${s.runIndex} leaves its row @ ${ctx}`);
       assert.ok(s.runIndex >= lastRun, `time order broken at run ${s.runIndex} @ ${ctx}`);
@@ -66,11 +66,11 @@ function checkTapRows(rows, base, rowWidthPx, ctx) {
 }
 
 test('QA-68: the floor is the brand tap floor, and a box leaves room for the gap', () => {
-  assert.equal(CHIP_MIN_TAP_PX, 24);
-  assert.ok(CHIP_MIN_BOX_PX > CHIP_MIN_TAP_PX + CHIP_GAP_PX);
+  assert.equal(MIN_TAP_PX, 24);
+  assert.ok(CHIP_MIN_BOX_PX > MIN_TAP_PX + CHIP_GAP_PX);
   // More than one Chromium LayoutUnit of slack, so float error cannot render 23.984px.
-  assert.ok(CHIP_MIN_BOX_PX - CHIP_MIN_TAP_PX - CHIP_GAP_PX > 1 / 64);
-  assert.ok(chipContentPx(CHIP_MIN_BOX_PX) >= CHIP_MIN_TAP_PX);
+  assert.ok(CHIP_MIN_BOX_PX - MIN_TAP_PX - CHIP_GAP_PX > 1 / 64);
+  assert.ok(chipContentPx(CHIP_MIN_BOX_PX) >= MIN_TAP_PX);
 });
 
 test('fitRowSegments: a row whose chips are all wide enough is left where it was', () => {
@@ -85,7 +85,7 @@ test('fitRowSegments: a row whose chips are all wide enough is left where it was
 test('fitRowSegments: a 5px chord widens to the floor and its long neighbours pay', () => {
   const out = fitRowSegments([seg(0, 0, 100), seg(1, 100, 5), seg(2, 105, 195)], 300);
   const [a, b, c] = out;
-  assert.ok(chipContentPx(b.widthPx) >= CHIP_MIN_TAP_PX, `short chip is ${b.widthPx}`);
+  assert.ok(chipContentPx(b.widthPx) >= MIN_TAP_PX, `short chip is ${b.widthPx}`);
   assert.equal(a.leftPx, 0);
   assert.ok(Math.abs(a.leftPx + a.widthPx - b.leftPx) < 1e-9 && Math.abs(b.leftPx + b.widthPx - c.leftPx) < 1e-9);
   assert.ok(Math.abs(c.leftPx + c.widthPx - 300) < 1e-9, 'the row end did not move');
@@ -99,7 +99,7 @@ test('fitRowSegments: a gap in the chord data can shrink but never goes negative
   let right = 0;
   for (const s of out) {
     assert.ok(s.leftPx >= right - 1e-9);
-    assert.ok(chipContentPx(s.widthPx) >= CHIP_MIN_TAP_PX);
+    assert.ok(chipContentPx(s.widthPx) >= MIN_TAP_PX);
     right = s.leftPx + s.widthPx;
   }
   assert.ok(right <= 100 + 1e-9);
@@ -107,7 +107,7 @@ test('fitRowSegments: a gap in the chord data can shrink but never goes negative
 
 test('fitRowSegments: zero-length chips and a row end at the edge still get the floor', () => {
   const out = fitRowSegments([seg(0, 0, 0), seg(1, 0, 0), seg(2, 299, 1)], 300);
-  for (const s of out) assert.ok(chipContentPx(s.widthPx) >= CHIP_MIN_TAP_PX);
+  for (const s of out) assert.ok(chipContentPx(s.widthPx) >= MIN_TAP_PX);
   assert.ok(out[2].leftPx + out[2].widthPx <= 300 + 1e-9);
 });
 

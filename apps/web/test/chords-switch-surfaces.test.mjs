@@ -297,6 +297,7 @@ const ALLOW = {
   'src/components/ChordOverlay.tsx': [26, 'player chord track: testids, aria-labels and pickers for the job\'s own chords'],
   'src/components/ChordOverlay.helpers.ts': [24, 'player chord track helpers: labels for the job\'s own chord runs ("No chord", "Unknown chord", kind === \'chord\')'],
   'src/components/ChordPhone.helpers.ts': [3, 'player chord track helpers (phone)'],
+  'src/components/tapTarget.ts': [0, 'comments only (the shared tap floor, QA-73)'],
   'src/components/play/PlayerScreen.tsx': [8, 'player: NO_CHORDS_LINE ("No chords for this song.") and no-chords testids'],
   'src/components/play/MixSheet.tsx': [0, 'comments only'],
   'src/components/play/Player.tsx': [0, 'comments only'],

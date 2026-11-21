@@ -8,9 +8,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { activeRunIndex, observationsToRuns } from '../ChordOverlay.helpers.ts';
+import { MIN_TAP_PX } from '../tapTarget.ts';
 import {
   BEATS_PER_BAR,
-  MIN_TAP_PX,
   NAME_MIN_PX,
   showsBarTotal,
   beatInCell,

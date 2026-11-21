@@ -17,6 +17,7 @@ import type {
   PlayChordsResult,
 } from '../chord/play-chords-loader.ts';
 import { MAX_TRACK_SEC } from '../lib/play/types.ts';
+import { MIN_TAP_PX } from './tapTarget.ts';
 import { spellChord } from '../lib/play/notation.ts';
 
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
@@ -649,6 +650,14 @@ export interface RowSegment {
   widthPx: number;
   /** True when this is the continuation of a chip that began on an earlier row. */
   continued: boolean;
+  /**
+   * The time this piece of the chord starts, in seconds: the run's start, or
+   * the row's start for a continuation. Carried so that a split row's gutter
+   * time is this number exactly, not row start + px / pxPerSec, whose float
+   * error can floor 12.0 to "0:11" (QA-73). Optional so hand-built segments in
+   * tests stay valid; layoutRows always sets it.
+   */
+  startSec?: number;
 }
 export interface TimelineRow {
   startSec: number;
@@ -683,6 +692,7 @@ export function layoutRows(
         leftPx: (a - r * rowSec) * pxPerSec,
         widthPx: Math.max(0, b - a) * pxPerSec,
         continued: r > first,
+        startSec: a,
       });
     }
   });
@@ -690,7 +700,7 @@ export function layoutRows(
 }
 
 // ---------------------------------------------------------------------------
-// QA-68: every wrapped chip is at least CHIP_MIN_TAP_PX wide (the constants
+// QA-68: every wrapped chip is at least MIN_TAP_PX wide (the constants
 // live next to CHIP_GAP_PX, below, which they are built from)
 // ---------------------------------------------------------------------------
 
@@ -766,7 +776,7 @@ export function fitRowSegments(
 
 /**
  * The wrapped layout, made tappable: layoutRows' rows with every chip at least
- * CHIP_MIN_TAP_PX wide when rendered (QA-68).
+ * MIN_TAP_PX wide when rendered (QA-68).
  *
  * WHY NOT MERGE SHORT CHORDS. The chart's job is to show every chord. "One
  * primary chip per segment" (#212) is asserted by two real-Chromium gates. A
@@ -810,7 +820,12 @@ export function fitRowsToTap(
       at += take;
       const offsetPx = p === 0 ? 0 : group[0].leftPx;
       out.push({
-        startSec: row.startSec + (pxPerSec > 0 ? offsetPx / pxPerSec : 0),
+        // The first chip's own start time when layoutRows recorded it; the px
+        // offset back to seconds only for hand-built segments.
+        startSec:
+          p === 0
+            ? row.startSec
+            : group[0].startSec ?? row.startSec + (pxPerSec > 0 ? offsetPx / pxPerSec : 0),
         segments: fitRowSegments(
           group.map((s) => ({ ...s, leftPx: s.leftPx - offsetPx })),
           rowWidthPx,
@@ -848,6 +863,142 @@ export function layoutTapRows(
   rowWidthPx: number,
 ): TimelineRow[] {
   return fitRowsToTap(layoutRows(runs, rowSec, pxPerSec), rowWidthPx, pxPerSec);
+}
+
+// ---------------------------------------------------------------------------
+// QA-73: the strip (tablets and desktop) is tappable too
+// ---------------------------------------------------------------------------
+
+/**
+ * The lowest zoom at which the strip can give every chord a chip of at least
+ * MIN_TAP_PX: the whole song must be at least runCount x CHIP_MIN_BOX_PX wide.
+ * The strip's zoom-out end is the higher of this and "whole track fits". On a
+ * dense song that means the zoomed-out strip scrolls instead of fitting the
+ * screen; a strip of 1.5px slivers that nobody can tap is not a view of the song.
+ */
+export function stripMinPxPerSec(runCount: number, durSec: number): number {
+  if (!(durSec > 0) || !(runCount > 0)) return 0;
+  return (runCount * CHIP_MIN_BOX_PX) / durSec;
+}
+
+export interface StripLayout {
+  /** One box per run, by run index: where the strip draws that chord's chip. */
+  boxes: ChipBox[];
+  /** The same chips as one TimelineRow, for segmentDensityCounts. */
+  row: TimelineRow;
+  /** Width of the strip's content, px. */
+  widthPx: number;
+  /**
+   * Knots of the monotone, piecewise-linear time -> px map the strip uses for
+   * everything that is not a chip: ruler ticks, the visible-range hint and
+   * zoom centring. Each chord's [start, end] maps onto its chip's [left,
+   * right], so a tick at time t is drawn inside the chip of the chord heard at
+   * t, wherever fitting moved that chip.
+   */
+  knotSec: number[];
+  knotPx: number[];
+}
+
+/**
+ * The strip, made tappable (QA-73): the same move as the wrapped rows (QA-68),
+ * applied to the strip as ONE long row. Chips start time-proportional
+ * (chipBox); fitRowSegments then widens every chip under the floor to
+ * CHIP_MIN_BOX_PX, moving the chord boundaries by the least-squares minimum.
+ * Longer neighbours give up the space, order is kept, no chord is merged or
+ * dropped (#212), and a strip whose chips are all wide enough is unchanged.
+ *
+ * The strip's width is the song's length at this zoom, or runCount x
+ * CHIP_MIN_BOX_PX if that is more (only reachable if the zoom is below
+ * stripMinPxPerSec, which ChordOverlay does not allow; it keeps the fit
+ * feasible regardless).
+ *
+ * What it costs, as in the wrapped rows: inside the strip, width is no longer
+ * exactly proportional to time where chips were widened. The ruler is mapped
+ * through the same geometry (stripTimeToPx), so it stays true to the chips.
+ */
+export function layoutTapStrip(
+  runs: readonly Pick<OverlayRun, 'startSec' | 'endSec'>[],
+  pxPerSec: number,
+  minBoxPx: number = CHIP_MIN_BOX_PX,
+): StripLayout {
+  const order = runs.map((_, i) => i).sort((a, b) => runs[a].startSec - runs[b].startSec || a - b);
+  const segs: RowSegment[] = order.map((i) => {
+    const box = chipBox(runs[i], pxPerSec);
+    return { runIndex: i, leftPx: box.leftPx, widthPx: box.widthPx, continued: false, startSec: Math.max(0, runs[i].startSec) };
+  });
+  const dur = durationSec(runs);
+  const widthPx = Math.max(dur * pxPerSec, runs.length * minBoxPx);
+  // A chip the fit did not move keeps its exact chipBox numbers. The fit
+  // returns unmoved chips "to float error", and the default zoom is derived to
+  // make some chip EXACTLY label + padding wide: 1e-14px less flips it from
+  // `full` to `tight` (measured on the bimodal song's Fmaj7).
+  const fitted = (segs.length > 0 ? fitRowSegments(segs, widthPx, minBoxPx) : []).map((f, k) =>
+    Math.abs(f.leftPx - segs[k].leftPx) < 1e-6 && Math.abs(f.widthPx - segs[k].widthPx) < 1e-6 ? segs[k] : f,
+  );
+  const boxes: ChipBox[] = runs.map(() => ({ leftPx: 0, widthPx: 0 }));
+  const knotSec: number[] = [0];
+  const knotPx: number[] = [0];
+  const push = (sec: number, px: number) => {
+    knotSec.push(Math.max(knotSec[knotSec.length - 1], sec));
+    knotPx.push(Math.max(knotPx[knotPx.length - 1], px));
+  };
+  for (const seg of fitted) {
+    boxes[seg.runIndex] = { leftPx: seg.leftPx, widthPx: seg.widthPx };
+    const run = runs[seg.runIndex];
+    const start = Math.max(0, run.startSec);
+    push(start, seg.leftPx);
+    push(Math.max(start, run.endSec), seg.leftPx + seg.widthPx);
+  }
+  push(dur, widthPx);
+  return { boxes, row: { startSec: 0, segments: fitted }, widthPx, knotSec, knotPx };
+}
+
+function interpolateKnots(from: readonly number[], to: readonly number[], v: number): number {
+  const n = from.length;
+  if (n === 0) return 0;
+  if (!(v > from[0])) return to[0];
+  if (v >= from[n - 1]) return to[n - 1];
+  // Last knot at or before v.
+  let lo = 0;
+  let hi = n - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (from[mid] <= v) lo = mid;
+    else hi = mid;
+  }
+  const span = from[hi] - from[lo];
+  return span > 0 ? to[lo] + ((v - from[lo]) / span) * (to[hi] - to[lo]) : to[lo];
+}
+
+/** Where time `sec` is drawn on a tappable strip, px. Monotone. */
+export function stripTimeToPx(layout: Pick<StripLayout, 'knotSec' | 'knotPx'>, sec: number): number {
+  return interpolateKnots(layout.knotSec, layout.knotPx, sec);
+}
+
+/** The time drawn at strip position `px`. Inverse of stripTimeToPx. */
+export function stripPxToTime(layout: Pick<StripLayout, 'knotSec' | 'knotPx'>, px: number): number {
+  return interpolateKnots(layout.knotPx, layout.knotSec, px);
+}
+
+/**
+ * Ruler ticks for a tappable strip: rulerTicks' times, placed by
+ * stripTimeToPx. Where widened chips squeeze the ruler, a tick closer than
+ * `minSpacingPx` to the last one kept is dropped rather than drawn on top of
+ * it; a dropped tick hides a label, it never moves one off its time.
+ */
+export function stripRulerTicks(
+  layout: Pick<StripLayout, 'knotSec' | 'knotPx'>,
+  durSec: number,
+  pxPerSec: number,
+  minSpacingPx = 40,
+): RulerTick[] {
+  const out: RulerTick[] = [];
+  for (const t of rulerTicks(durSec, pxPerSec)) {
+    const leftPx = stripTimeToPx(layout, t.sec);
+    if (out.length > 0 && leftPx - out[out.length - 1].leftPx < minSpacingPx) continue;
+    out.push({ ...t, leftPx });
+  }
+  return out;
 }
 
 /** Hue (0-330) per root so repeated harmony is visible at a glance when zoomed out. */
@@ -957,21 +1108,13 @@ export const CHIP_TIGHT_PAD_PX = 2;
 /** renderChip takes 1px off every chip so neighbours stay visually distinct. */
 export const CHIP_GAP_PX = 1;
 
-/**
- * The narrowest a chord chip in the wrapped chart ("See all chords" on a
- * phone) may RENDER, in px. Brand floor for tap targets and WCAG 2.5.8.
- *
- * Every chip is a <button> that opens the chord editor, including the
- * label-less "tick" chips. In time-proportional rows they were sized
- * duration x zoom. Measured in real Chromium (#312 review, M-1): 19-21 of
- * 63 chips were under 24px on the QA-01 song, and 107-137 of 154 on a dense
- * song. Some were only 2-4px wide.
- *
- * This is the same number as `MIN_TAP_PX` in ChordPhone.helpers.ts, which
- * #312 adds for the stage. #312 was not merged when this was written, so the
- * floor is defined here. Fold the two into one constant once both have landed.
- */
-export const CHIP_MIN_TAP_PX = 24;
+// The narrowest a chord chip may RENDER is MIN_TAP_PX (tapTarget.ts), the one
+// tap floor shared by every chord surface (QA-73). Every chip is a <button>
+// that opens the chord editor, including the label-less "tick" chips. In
+// time-proportional layouts they were sized duration x zoom: measured in real
+// Chromium, 19-21 of 63 wrapped chips were under 24px on the QA-01 song (#312
+// review, M-1), and the strip on tablets and desktop had chips 1.5px wide
+// (#324 review, m-5).
 
 /**
  * The row space one chip needs: the chip, its CHIP_GAP_PX, and 0.02px of
@@ -979,7 +1122,7 @@ export const CHIP_MIN_TAP_PX = 24;
  * 24.9999999px renders a 23.984px chip. 0.02px is more than one of those
  * units, so float error can never pull a chip under the floor.
  */
-export const CHIP_MIN_BOX_PX = CHIP_MIN_TAP_PX + CHIP_GAP_PX + 0.02;
+export const CHIP_MIN_BOX_PX = MIN_TAP_PX + CHIP_GAP_PX + 0.02;
 
 export const ADVANCE_16PX: Readonly<Record<string, number>> = Object.freeze({
   A: 11.3594, B: 10.4688, C: 11.6875, D: 11.5469, E: 9.625, F: 9.4531, G: 11.9375, N: 12.0625,

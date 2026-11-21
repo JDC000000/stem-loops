@@ -18,6 +18,7 @@
 import { type OverlayRun, activeRunIndex, displayText, estimateStageLabelPx } from './ChordOverlay.helpers.ts';
 import type { BeatGrid } from '../lib/play/sections.ts';
 import { spellChord } from '../lib/play/notation.ts';
+import { MIN_TAP_PX } from './tapTarget.ts';
 
 export type { BeatGrid };
 
@@ -656,7 +657,7 @@ export const nameWidth = (text: string, px: number) => estimateStageLabelPx(text
  * cannot give every chord 24px side by side it falls through to the same
  * two-row / stacked layouts a crowded bar already uses.
  */
-export const MIN_TAP_PX = 24;
+// The floor itself lives in tapTarget.ts, shared with the chart's chips (QA-73).
 const slotNeed = (text: string) => Math.max(nameWidth(text, NAME_MIN_PX), MIN_TAP_PX);
 
 export interface SlotBox { runIndex: number; text: string; x: number; y: number; w: number; h: number; fontPx: number; wrap: boolean }

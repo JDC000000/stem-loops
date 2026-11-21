@@ -110,6 +110,14 @@
   --stem-vocals: #ffd23f;   /* Voice      13.46:1 */
   --stem-other:  #9aa0a6;   /* Remainder   7.36:1 */
   --stem: var(--text-secondary);   /* re-pointed per element by [data-stem] (stem-color.css) */
+  /* ── Song sections (design review D2, 2026-11-21; NEW, for Jon to see): the section
+     strip's chips and their seek-line ticks cycle through these by position. Low
+     saturation on purpose, so they never read as a stem (the stem hues above mean
+     that stem and nothing else), lime (--accent), amber (--chord-now) or a status.
+     Ratios on #0d0d0d / #222222 (selected chip) / #3a3a3a (seek rail). ── */
+  --section-a: #8fa6c9;   /* Slate  7.84 / 6.41 / 4.59 */
+  --section-b: #98b59c;   /* Sage   8.72 / 7.14 / 5.10 */
+  --section-c: #b796b5;   /* Mauve  7.44 / 6.09 / 4.36 */
   /* The stem key: six equal segments in THE stem order, the same order as the mixer
      (Story 2.1; brand book A3): drums, bass, guitar, keys, vocals, other. */
   --sl-stem-strip: linear-gradient(90deg,

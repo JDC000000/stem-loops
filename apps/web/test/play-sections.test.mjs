@@ -18,6 +18,7 @@ import {
   deriveSections, sanitizeRegions, sameRegion, formatTime, nameRegions, normalizeLabel,
   NO_RUN, tapChip, holdChip, loopHere, sectionAt, restartTarget, runRegion, runFromRegion, runName, runReadout,
   stripLegend, placeInSong, partName, SECTION_TONES, STRIP_HINT, RUN_HINT,
+  maxPartSec, splitAtCuts, MAX_PART_BARS, PART_SLACK_BARS, MAX_PART_SEC_NO_BPM, RESTART_GRACE_SEC,
 } from '../src/lib/play/sections.ts';
 import { withDom } from './helpers/dom.mjs';
 
@@ -139,24 +140,72 @@ const DEMO_ROWS = [
   ['verse', '153.239189021931', '162.650953727813'],
   ['verse', '174.424504212963', '183.836268918845'],
   ['outro', '195.587009957218', '204.998774663101'],
-].map(([l, a, b]) => row(l, a, b));
+].map(([l, a, b]) => ({ ...row(l, a, b), bpm: '102' })); // every row carries the job's tempo
 
-test('R8/R9 the demo song: 10 samples become 5 contiguous parts covering 100% of the track', () => {
+test('R8/R9/R10 the demo song: 10 samples become 6 contiguous parts covering 100% of the track, none over 20 bars', () => {
   const covered = (rs) => rs.reduce((n, r) => n + (r.endSec - r.startSec), 0);
   const sampled = DEMO_ROWS.reduce((n, r) => n + (Number(r.end_sec) - Number(r.start_sec)), 0);
   assert.ok(sampled / DEMO_SEC < 0.45, `the rows alone cover ${(100 * sampled / DEMO_SEC).toFixed(1)}%`);
   const out = deriveSections(DEMO_ROWS, { durationSec: DEMO_SEC });
   assert.deepEqual(shape(out), [
     { label: 'intro', startSec: 0, endSec: 23.827 },
-    { label: 'verse', startSec: 23.827, endSec: 110.885 },
+    // R9 merged four "verse" samples into 0:23-1:50 (87 s, 37 bars); R10 cuts
+    // it back at a sample start into the two most even chunks that fit.
+    { label: 'verse', startSec: 23.827, endSec: 66.178 },
+    { label: 'verse', startSec: 66.178, endSec: 110.885 },
     { label: 'chorus', startSec: 110.885, endSec: 153.239 },
     { label: 'verse', startSec: 153.239, endSec: 195.587 },
     { label: 'outro', startSec: 195.587, endSec: 213.241 },
   ]);
+  const bar = 240 / 102;
+  for (const r of out) assert.ok((r.endSec - r.startSec) / bar <= MAX_PART_BARS + PART_SLACK_BARS, `a part of ${((r.endSec - r.startSec) / bar).toFixed(1)} bars`);
   assert.ok(Math.abs(covered(out) - DEMO_SEC) < 0.001, 'every second of the song is in a section');
   for (let i = 1; i < out.length; i++) assert.equal(out[i].startSec, out[i - 1].endSec, `gap before part ${i + 1}`);
-  // The chorus is the whole chorus (1:50-2:33), not a 4-bar slice.
-  assert.equal(formatTime(out[2].startSec) + '-' + formatTime(out[2].endSec), '1:50-2:33');
+  // The chorus is the whole chorus (1:50-2:33, 18 bars), not a 4-bar slice.
+  assert.equal(formatTime(out[3].startSec) + '-' + formatTime(out[3].endSec), '1:50-2:33');
+});
+
+// ─── R10: the cap (review H1 on #330) ──────────────────────────────────────
+test('R10: the cap is 16 bars + one 4-bar loop of slack at the song tempo, 45 s without one', () => {
+  assert.equal(MAX_PART_BARS, 16);
+  assert.equal(PART_SLACK_BARS, 4);
+  assert.ok(Math.abs(maxPartSec(102) - (20 * 4 * 60) / 102) < 1e-9);
+  assert.equal(maxPartSec(120), 40);
+  for (const b of [null, undefined, NaN, 0, 30, 300]) assert.equal(maxPartSec(b), MAX_PART_SEC_NO_BPM);
+  assert.equal(MAX_PART_SEC_NO_BPM, 45);
+});
+
+test('R10: splitAtCuts makes the FEWEST chunks that fit, as even as possible, only at the given cuts', () => {
+  assert.deepEqual(splitAtCuts(0, 30, [10, 20], 40), [0, 30], 'short enough: untouched');
+  assert.deepEqual(splitAtCuts(23.827, 110.885, [0, 23.827, 45.003, 66.178, 87.357, 110.885], 47.06), [23.827, 66.178, 110.885], 'two even chunks, not 45|66');
+  assert.deepEqual(splitAtCuts(0, 120, Array.from({ length: 60 }, (_, i) => i * 2), 45), [0, 40, 80, 120]);
+  assert.deepEqual(splitAtCuts(0, 200, [150], 45), [0, 150, 200], 'no cut in reach: the next cut is the only choice');
+  assert.deepEqual(splitAtCuts(0, 200, [], 45), [0, 200], 'no cut at all: one long part (nowhere to cut)');
+});
+
+test('R10: one label for the whole song is no longer one 213 s part', () => {
+  const out = deriveSections(DEMO_ROWS.map((r) => ({ ...r, section_label: 'verse' })), { durationSec: DEMO_SEC });
+  assert.ok(out.length >= 5, `${out.length} parts`);
+  for (const r of out) assert.ok(r.endSec - r.startSec <= maxPartSec(102) + 0.05, `${r.startSec}-${r.endSec}`);
+  const cuts = new Set(DEMO_ROWS.map((r) => Math.round(Number(r.start_sec) * 1000) / 1000));
+  for (const r of out.slice(1)) assert.ok(cuts.has(r.startSec), `part start ${r.startSec} is a sample start`);
+});
+
+test('R10: a 10-minute song gets parts of at most 20 bars (synthetic, 120 bpm, a sample every 20 s)', () => {
+  const labels = 'intro verse verse verse chorus chorus verse verse verse verse chorus bridge verse verse verse verse verse chorus chorus chorus verse verse verse verse verse verse chorus chorus verse outro'.split(' ');
+  const rows = labels.map((l, i) => ({ ...row(l, i * 20 + 0.5, i * 20 + 8.5), bpm: 120 }));
+  const out = deriveSections(rows, { durationSec: 600 });
+  assert.equal(out.length, 19);
+  assert.ok(Math.max(...out.map((r) => r.endSec - r.startSec)) <= 40 + 1e-9);
+  const noBpm = deriveSections(rows.map((r) => ({ ...r, bpm: null })), { durationSec: 600 });
+  assert.ok(Math.max(...noBpm.map((r) => r.endSec - r.startSec)) <= 45);
+  assert.equal(deriveSections(rows, { durationSec: 600, bpm: 60 }).length < out.length, true, 'an explicit slower tempo allows longer parts');
+});
+
+test('R9: same-label samples further apart than 2 samples are NOT merged (unknown music between them)', () => {
+  // 10 s samples; 25 s gap (2.5 samples) -> two parts; 15 s gap (1.5 samples) -> one.
+  assert.equal(deriveSections([row('verse', 0, 10), row('verse', 35, 45)], { durationSec: 50 }).length, 2);
+  assert.equal(deriveSections([row('verse', 0, 10), row('verse', 25, 35)], { durationSec: 40 }).length, 1);
 });
 
 test('R8: music before the first sample belongs to the first section; after the last, to the last', () => {
@@ -197,7 +246,12 @@ test('60 identically-labelled rows are one region', () => {
   const rows = Array.from({ length: 60 }, (_, i) => row('chorus', (i % 6) * 0 + 0, 23.272));
   assert.deepEqual(shape(deriveSections(rows)), [{ label: 'chorus', startSec: 0, endSec: 23.272 }]);
   const tiled = Array.from({ length: 60 }, (_, i) => row('verse', i * 2, i * 2 + 2));
-  assert.deepEqual(shape(deriveSections(tiled)), [{ label: 'verse', startSec: 0, endSec: 120 }]);
+  // R10 (no tempo -> 45 s cap): one 120 s "verse" is cut at sample starts.
+  assert.deepEqual(shape(deriveSections(tiled)), [
+    { label: 'verse', startSec: 0, endSec: 40 },
+    { label: 'verse', startSec: 40, endSec: 80 },
+    { label: 'verse', startSec: 80, endSec: 120 },
+  ]);
 });
 
 // ─── empty / degenerate input ───────────────────────────────────────────────
@@ -239,13 +293,15 @@ test('numeric strings from pg are coerced; blank string is not 0', () => {
 
 test('a region longer than the track is clamped to it; one starting past the end is dropped', () => {
   const out = deriveSections([row('outro', 130, 500), row('bridge', 200, 300)], { durationSec: TRACK_SEC });
-  assert.deepEqual(shape(out), [{ label: 'outro', startSec: 0, endSec: TRACK_SEC }], 'R8: the only section starts at 0');
+  // R8: the only section starts at 0; R10: 0-142.6 is over the 45 s cap, so it
+  // is cut at the one sample start there is (130).
+  assert.deepEqual(shape(out), [{ label: 'outro', startSec: 0, endSec: 130 }, { label: 'outro', startSec: 130, endSec: TRACK_SEC }]);
   assert.ok(out.every((r) => r.endSec <= TRACK_SEC));
 });
 
 test('without a duration nothing is clamped; a nonsense duration is ignored', () => {
-  assert.equal(deriveSections([row('outro', 130, 500)])[0].endSec, 500);
-  for (const d of [0, -5, NaN, Infinity]) assert.equal(deriveSections([row('outro', 130, 500)], { durationSec: d })[0].endSec, 500);
+  assert.equal(deriveSections([row('outro', 130, 500)]).at(-1).endSec, 500);
+  for (const d of [0, -5, NaN, Infinity]) assert.equal(deriveSections([row('outro', 130, 500)], { durationSec: d }).at(-1).endSec, 500);
 });
 
 test('negative start is clamped to 0', () => {
@@ -320,7 +376,7 @@ function assertWellFormed(out, durationSec) {
     // R8: contiguous from 0; R9: neighbours never share a label.
     if (i === 0) assert.equal(out[i].startSec, 0, 'the first region starts at 0');
     if (i > 0) assert.equal(out[i].startSec, out[i - 1].endSec, `a gap before region ${i}`);
-    if (i > 0) assert.notEqual(out[i].label, out[i - 1].label, `regions ${i - 1} and ${i} share a label`);
+    // (Neighbours may share a label since R10 splits a long part, or R9 refuses a far merge.)
   }
   if (durationSec !== undefined && out.length > 0) assert.equal(out[out.length - 1].endSec, Math.round(durationSec * 1000) / 1000, 'the last region runs to the end');
 }
@@ -464,15 +520,32 @@ test('D4 a bad index changes nothing', () => {
 test('sectionAt and restartTarget (⟲): the section under the playhead, or the loop start while looping', () => {
   const secs = deriveSections(DEMO_ROWS, { durationSec: DEMO_SEC });
   assert.equal(sectionAt(secs, 0), 0);
-  assert.equal(sectionAt(secs, 134), 2, '2:14 is in Part 3 (the old "Chorus 2")');
-  assert.equal(sectionAt(secs, 153.239), 3, 'a boundary belongs to the section it starts');
-  assert.equal(sectionAt(secs, DEMO_SEC), 4, 'the very end is still the last section');
+  assert.equal(sectionAt(secs, 134), 3, '2:14 is in Part 4 (the old "Chorus 2")');
+  assert.equal(sectionAt(secs, 153.239), 4, 'a boundary belongs to the section it starts');
+  assert.equal(sectionAt(secs, DEMO_SEC), 5, 'the very end is still the last section');
   assert.equal(sectionAt(secs, null), 0);
   assert.equal(sectionAt([], 10), -1);
   assert.equal(restartTarget(secs, null, 134), 110.885);
   assert.equal(restartTarget(secs, { startSec: 23.827, endSec: 153.239 }, 134), 23.827, 'in a loop: the loop start');
+  assert.equal(restartTarget(secs, { startSec: 23.827, endSec: 153.239 }, 24), 23.827, 'in a loop, near its start: still the loop start (never out of the loop)');
   assert.equal(restartTarget(secs, { startSec: 5, endSec: 5 }, 134), 110.885, 'an invalid loop is ignored');
   assert.equal(restartTarget([], null, 50), 0, 'no sections: the top of the song');
+});
+
+test('⟲ (review M3): within 1.5 s of a section start it goes to the PREVIOUS section, like "previous track"', () => {
+  const secs = deriveSections(DEMO_ROWS, { durationSec: DEMO_SEC });
+  assert.equal(RESTART_GRACE_SEC, 1.5);
+  assert.equal(restartTarget(secs, null, 110.885), 66.178, 'exactly at Part 4: back to Part 3');
+  assert.equal(restartTarget(secs, null, 110.885 + 1.4), 66.178, '1.4 s in: back to Part 3');
+  assert.equal(restartTarget(secs, null, 110.885 + 1.6), 110.885, '1.6 s in: the start of Part 4');
+  assert.equal(restartTarget(secs, null, 0.5), 0, 'in Part 1 there is nothing before it');
+});
+
+test('sectionAt / ⟲ (review L1): past the last section while the duration is unknown, the last section still counts', () => {
+  const secs = deriveSections(DEMO_ROWS); // no duration: the last part ends at its own sample (204.999)
+  assert.equal(secs.at(-1).endSec, 204.999);
+  assert.equal(sectionAt(secs, 210), secs.length - 1);
+  assert.equal(restartTarget(secs, null, 210), 195.587, 'not 0:00');
 });
 
 test('P2.1 — a run is ONE continuous span for the engine, gaps between sections included', () => {
@@ -524,8 +597,8 @@ test('formatTime renders m:ss and survives bad input', () => {
 
 test('nameRegions (D2): neutral "Part N" + start time, never the heuristic label; colours cycle so neighbours differ', () => {
   const named = nameRegions(deriveSections(DEMO_ROWS, { durationSec: DEMO_SEC }));
-  assert.deepEqual(named.map((n) => `${n.name} \u00b7 ${n.time}`), ['Part 1 \u00b7 0:00', 'Part 2 \u00b7 0:23', 'Part 3 \u00b7 1:50', 'Part 4 \u00b7 2:33', 'Part 5 \u00b7 3:15']);
-  assert.deepEqual(named.map((n) => n.tone), [0, 1, 2, 0, 1]);
+  assert.deepEqual(named.map((n) => `${n.name} \u00b7 ${n.time}`), ['Part 1 \u00b7 0:00', 'Part 2 \u00b7 0:23', 'Part 3 \u00b7 1:06', 'Part 4 \u00b7 1:50', 'Part 5 \u00b7 2:33', 'Part 6 \u00b7 3:15']);
+  assert.deepEqual(named.map((n) => n.tone), [0, 1, 2, 0, 1, 2]);
   const real = nameRegions(deriveSections(realJob())).map((n) => n.name);
   assert.deepEqual(real, ['Part 1', 'Part 2', 'Part 3', 'Part 4', 'Part 5', 'Part 6', 'Part 7']);
   for (const n of [...named, ...nameRegions(deriveSections(realJob()))]) assert.doesNotMatch(n.name, /chorus|verse|intro|outro|bridge/i);
@@ -773,11 +846,17 @@ test('strip CSS: no iOS callout or text selection on a chip; 44px tall; selected
   assert.match(css.match(/\.chip\[aria-pressed='true'\]\s*\{([^}]*)\}/)[1], /background:\s*var\(--bg-selected\)[^}]*border:\s*2px solid var\(--text-primary\)/);
 });
 
-test('strip CSS (D4 item 4): chips WRAP, two rows at most, then the strip scrolls vertically (never sideways)', () => {
-  const css = readFileSync(join(WEB, 'src/components/play/SectionLoop.module.css'), 'utf8');
+test('strip CSS (D4 item 4, review B1): chips WRAP; 2 rows, 3 at >= 800px tall, 1 below 600px; then the strip scrolls vertically', () => {
+  const css = readFileSync(join(WEB, 'src/components/play/SectionLoop.module.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
   const list = css.match(/\.list\s*\{([^}]*)\}/)[1];
   assert.match(list, /flex-wrap:\s*wrap/);
-  assert.match(list, /max-height:\s*calc\(2 \* var\(--chip-h\) \+ var\(--space-2, 8px\) \+ 8px\)/);
+  assert.match(list, /--rows:\s*2;/);
+  assert.match(list, /max-height:\s*calc\(var\(--rows\) \* var\(--chip-h\) \+ \(var\(--rows\) - 1\) \* var\(--space-2, 8px\) \+ 8px\)/);
+  // The bands, exactly: a phone of 800-844px tall must get 3 rows, 600-799px 2, and only below 600px 1.
+  const media = [...css.matchAll(/@media\s*\(([^)]*)\)\s*\{\s*\.list\s*\{\s*--rows:\s*(\d)/g)].map((m) => `${m[1].replace(/\s+/g, '')}=${m[2]}`);
+  assert.deepEqual(media.sort(), ['max-height:599px=1', 'min-height:800px=3']);
+  // Phones up to 430px wide stack the time under the name (4 chips a row at 360-430px).
+  assert.match(css, /@media\s*\(max-width:\s*430px\)\s*\{\s*\.label\s*\{[^}]*flex-direction:\s*column/);
   assert.match(list, /overflow-y:\s*auto/);
   assert.doesNotMatch(list, /overflow-x:\s*auto/);
   assert.match(css.match(/\.chip\s*\{([^}]*)\}/)[1], /touch-action:\s*pan-y/);

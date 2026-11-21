@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { type RunState, stripLegend } from '@/lib/play/sections';
 import styles from './SectionLoop.module.css';
@@ -48,6 +48,36 @@ export interface SectionStripProps {
   readonly hint?: string | null;
 }
 
+/** How many chips sit outside the strip's visible box, above and below (the "+N" cue). */
+export interface Overflow {
+  readonly above: number;
+  readonly below: number;
+}
+export const NO_OVERFLOW: Overflow = Object.freeze({ above: 0, below: 0 });
+
+/** Count the chips of `list` that are not fully inside its visible box. */
+export function countOverflow(list: HTMLElement): Overflow {
+  const l = list.getBoundingClientRect();
+  let above = 0;
+  let below = 0;
+  for (const chip of Array.from(list.querySelectorAll<HTMLElement>('button[data-index]'))) {
+    const c = chip.getBoundingClientRect();
+    if (c.bottom > l.bottom + 0.5) below += 1;
+    else if (c.top < l.top - 0.5) above += 1;
+  }
+  return { above, below };
+}
+
+/** The cue's text: "+3 more ↓" (the way to scroll); "" when every chip is visible. */
+export function overflowText(o: Overflow): string {
+  const n = o.above + o.below;
+  if (n === 0) return '';
+  return `+${n} more ${o.below > 0 ? '\u2193' : '\u2191'}`;
+}
+
+// useLayoutEffect warns under server rendering; the strip measures only in a browser.
+const useIsoLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
 /** Scroll `list` (only it, never the page) so `chip` is fully inside it. */
 export function scrollChipIntoList(list: HTMLElement, chip: HTMLElement): void {
   const l = list.getBoundingClientRect();
@@ -76,6 +106,13 @@ export function SectionLoop({ names, times, tones, current = -1, state, onTap, o
   const swallow = useRef(false);
   const swallowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const [overflow, setOverflow] = useState<Overflow>(NO_OVERFLOW);
+  const measure = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const next = countOverflow(el);
+    setOverflow((o) => (o.above === next.above && o.below === next.below ? o : next));
+  }, []);
 
   const cancel = () => {
     if (timer.current) clearTimeout(timer.current);
@@ -102,7 +139,25 @@ export function SectionLoop({ names, times, tones, current = -1, state, onTap, o
     if (!el || current < 0 || !(el.scrollHeight > el.clientHeight)) return;
     const chip = el.querySelector<HTMLElement>(`button[data-index="${current}"]`);
     if (chip) scrollChipIntoList(el, chip);
-  }, [current]);
+    measure();
+  }, [current, measure]);
+
+  // The "+N more" cue (review B1/M2 on #330): whenever chips do not all fit
+  // (a short phone, a long song), say how many are out of view and which way.
+  const count = names.length;
+  useIsoLayoutEffect(() => {
+    measure();
+    const el = listRef.current;
+    if (!el) return undefined;
+    const RO = (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
+    const ro = RO ? new RO(measure) : null;
+    ro?.observe(el);
+    globalThis.addEventListener?.('resize', measure);
+    return () => {
+      ro?.disconnect();
+      globalThis.removeEventListener?.('resize', measure);
+    };
+  }, [count, measure]);
 
   if (names.length === 0) return null;
 
@@ -135,61 +190,70 @@ export function SectionLoop({ names, times, tones, current = -1, state, onTap, o
   return (
     <fieldset className={styles.root} data-testid="section-strip">
       <legend className={styles.srOnly}>{stripLegend(names, state)}</legend>
-      <div className={styles.list} ref={listRef}>
-        {names.map((name, i) => {
-          const inRun = !!state.run && i >= state.run.lo && i <= state.run.hi;
-          const pressed = inRun && state.on;
-          const time = times?.[i];
-          const tone = tones?.[i];
-          return (
-            <button
-              key={`${i}-${name}`}
-              type="button"
-              className={styles.chip}
-              data-index={i}
-              data-tone={tone}
-              data-run={inRun ? (state.on ? 'on' : 'remembered') : undefined}
-              aria-pressed={pressed}
-              aria-current={i === current ? 'true' : undefined}
-              aria-keyshortcuts="Shift+Enter"
-              onPointerDown={down(i)}
-              onPointerMove={move}
-              onPointerUp={release}
-              onPointerCancel={release}
-              onPointerLeave={leave}
-              onContextMenu={(e) => e.preventDefault()}
-              onKeyDown={(e) => {
-                clearSwallow();
-                if (e.key === 'Enter' && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
-                  // The keyboard's long-press: loop this section.
-                  e.preventDefault();
-                  if (!e.repeat) onLongPress(i);
-                }
-              }}
-              onClick={(e) => {
-                // Only a POINTER click (detail >= 1) can be the long-press's
-                // release. Keyboard, switch and AT activation dispatch a click
-                // with detail 0 and is never swallowed.
-                if (swallow.current && e.detail > 0) {
+      <div className={styles.listWrap}>
+        <div className={styles.list} ref={listRef} onScroll={measure}>
+          {names.map((name, i) => {
+            const inRun = !!state.run && i >= state.run.lo && i <= state.run.hi;
+            const pressed = inRun && state.on;
+            const time = times?.[i];
+            const tone = tones?.[i];
+            return (
+              <button
+                key={`${i}-${name}`}
+                type="button"
+                className={styles.chip}
+                data-index={i}
+                data-tone={tone}
+                data-run={inRun ? (state.on ? 'on' : 'remembered') : undefined}
+                aria-pressed={pressed}
+                aria-current={i === current ? 'true' : undefined}
+                aria-keyshortcuts="Shift+Enter"
+                onPointerDown={down(i)}
+                onPointerMove={move}
+                onPointerUp={release}
+                onPointerCancel={release}
+                onPointerLeave={leave}
+                onContextMenu={(e) => e.preventDefault()}
+                onKeyDown={(e) => {
                   clearSwallow();
-                  return;
-                }
-                clearSwallow();
-                onTap(i);
-              }}
-            >
-              <span className={styles.label}>
-                {name}
-                {time ? (
-                  <span className={styles.time}>
-                    <span className={styles.sep}>{' · '}</span>
-                    {time}
-                  </span>
-                ) : null}
-              </span>
-            </button>
-          );
-        })}
+                  if (e.key === 'Enter' && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+                    // The keyboard's long-press: loop this section.
+                    e.preventDefault();
+                    if (!e.repeat) onLongPress(i);
+                  }
+                }}
+                onClick={(e) => {
+                  // Only a POINTER click (detail >= 1) can be the long-press's
+                  // release. Keyboard, switch and AT activation dispatch a click
+                  // with detail 0 and is never swallowed.
+                  if (swallow.current && e.detail > 0) {
+                    clearSwallow();
+                    return;
+                  }
+                  clearSwallow();
+                  onTap(i);
+                }}
+              >
+                <span className={styles.label}>
+                  {name}
+                  {time ? (
+                    <span className={styles.time}>
+                      <span className={styles.sep}>{' · '}</span>
+                      {time}
+                    </span>
+                  ) : null}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {overflowText(overflow) ? (
+          // Not a control (swipe the strip; every chip is in the tab order), so it
+          // is hidden from assistive tech, which reaches every chip anyway.
+          <span className={styles.more} data-testid="section-more" data-dir={overflow.below > 0 ? 'down' : 'up'} aria-hidden="true">
+            {overflowText(overflow)}
+          </span>
+        ) : null}
       </div>
       {hint ? (
         <p className={styles.hint} data-testid="section-hint">

@@ -135,18 +135,22 @@ test('M20: --border-control is >= 3:1 on every surface a control sits on, and co
   assert.match(uncomment(read('src/components/play/Player.module.css')), /\.retry\s*\{[^}]*border:\s*1\.5px solid var\(--border-control\)/);
 });
 
-test('D2: section colours (chip edge, dot, seek-line tick) are stem tokens, >= 3:1 on the page and on the selected fill', () => {
-  // Story 4.8 / Jon 2026-11-21: "I like the colour separations". Section colour
-  // comes back from the EXISTING stem tokens, never lime (--accent) or amber
-  // (--chord-now), and must read as UI (1.4.11, >= 3:1) where a chip sits
-  // (the page) and on the selected chip (#222), where the dot carries it.
+test('D2: section colours (chip edge, dot, seek-line tick) are the --section-* tokens, >= 3:1 on the page, the selected fill and the rail', () => {
+  // Story 4.8 / Jon 2026-11-21: "I like the colour separations". Review H2 on
+  // #330: NOT the stem hues (each one means its stem, and the "my part" pills
+  // sit right above the strip), never lime (--accent) or amber (--chord-now).
+  // They must read as UI (1.4.11, >= 3:1) where a chip sits (the page), on the
+  // selected chip (#222, where the dot carries it) and on the seek rail.
   const section = uncomment(read('src/components/play/SectionLoop.module.css'));
   const ticks = uncomment(read('src/components/play/Transport.module.css'));
   const tones = [...section.matchAll(/\.chip\[data-tone='(\d)'\]\s*\{\s*--sec:\s*var\((--[\w-]+)\)/g)].map((m) => [m[1], m[2]]);
   assert.ok(tones.length >= 3, `section tones found: ${tones.length}`);
   for (const [i, t] of tones) {
-    assert.match(t, /^--stem-/, `tone ${i} is a stem token`);
-    for (const bg of ['--bg-page', '--bg-selected']) {
+    assert.match(t, /^--section-[a-z]$/, `tone ${i} is a section token`);
+    const hex = tok(t).toLowerCase();
+    for (const other of ['--stem-drums', '--stem-bass', '--stem-guitar', '--stem-keys', '--stem-vocals', '--stem-other', '--accent', '--chord-now', '--status-expiry'])
+      assert.notEqual(hex, (hexTokens[other] ?? '').toLowerCase(), `${t} reuses ${other}`);
+    for (const bg of ['--bg-page', '--bg-selected', '--border-strong']) {
       const r = ratio(tok(t), tok(bg));
       assert.ok(r >= 3, `${t} on ${bg} is ${r.toFixed(2)}:1`);
     }

@@ -1,13 +1,14 @@
 /* The section strip (design v1.4, P1.1 + P2.1; Jon-approved mockup Main.dc.html;
    D2 + D4, 2026-11-21). Tokens only (src/styles/design-tokens.css).
 
-   - Pill chips that WRAP (no chip off-screen at 360/390px); at most two rows
-     tall, then the strip scrolls vertically. 44px tall (A16 touch target).
+   - Pill chips that WRAP (no chip off-screen at 360/390px); 1-3 rows tall by
+     screen height, then the strip scrolls vertically and a "+N more" cue
+     shows. 44px tall (A16 touch target).
    - Section colour is back (Story 4.8, Jon: "I like the colour separations"):
-     each chip's edge and dot take a stem token, cycling by position
-     (data-tone 0..2 = guitar teal, bass violet, keys pink). Each is >= 6.6:1 on
-     the page (--bg-page) and >= 5:1 on --bg-selected, so >= 3:1 for UI (1.4.11).
-     Lime and amber are never used (brand book A5 / --chord-now).
+     each chip's edge and dot take a SECTION token (--section-a/b/c), cycling by
+     position. Not the stem hues: those mean a stem, and the "my part" pills sit
+     right above this strip (review H2 on #330). Each is >= 7.4:1 on the page
+     and >= 6:1 on --bg-selected, so >= 3:1 for UI (1.4.11). Never lime or amber.
      A16 AMENDED, approved by Jon 2026-11-17: fully rounded pills (radius 22px)
      replace the 4px corners of the 2026-11-14 brand-book row.
    - Selected is NEUTRAL, never lime (brand book A5): --bg-selected with a 2px white
@@ -35,11 +36,16 @@
   border: 0;
 }
 
+.listWrap { position: relative; }
+
 .list {
-  /* two rows: 2 x 44px + the 8px gap, plus 4px so the 2px selected edge and
-     the focus ring are not cut by the scroll box */
+  /* Rows of chips the strip shows before it scrolls (review B1 on #330):
+     2 by default, 3 on tall screens (>= 800px), 1 on short ones (< 600px).
+     Each row is 44px + the 8px gap; +8px so the 2px selected edge and the
+     focus ring are not cut by the scroll box. */
   --chip-h: var(--touch-min, 44px);
-  max-height: calc(2 * var(--chip-h) + var(--space-2, 8px) + 8px);
+  --rows: 2;
+  max-height: calc(var(--rows) * var(--chip-h) + (var(--rows) - 1) * var(--space-2, 8px) + 8px);
   display: flex;
   flex-wrap: wrap;
   align-content: flex-start;
@@ -71,9 +77,9 @@
   user-select: none;
   touch-action: pan-y;
 }
-.chip[data-tone='0'] { --sec: var(--stem-guitar); }
-.chip[data-tone='1'] { --sec: var(--stem-bass); }
-.chip[data-tone='2'] { --sec: var(--stem-keys); }
+.chip[data-tone='0'] { --sec: var(--section-a); }
+.chip[data-tone='1'] { --sec: var(--section-b); }
+.chip[data-tone='2'] { --sec: var(--section-c); }
 
 /* The colour dot: keeps the section's colour visible in the selected state too. */
 .chip[data-tone]::before {
@@ -88,17 +94,50 @@
 .time { font-size: 13px; color: var(--text-label); font-variant-numeric: tabular-nums; }
 .chip[aria-pressed='true'] .time { color: var(--text-secondary); }
 
-/* Short screens (phone landscape is its own layout; this is e.g. 360x520 or a
-   1024x500 window): ONE row, then scroll, so the chord stage keeps its height. */
-@media (max-height: 699px) {
-  .list { max-height: calc(var(--chip-h) + 8px); }
+@media (min-height: 800px) {
+  .list { --rows: 3; }
+}
+/* Short screens (e.g. 360x520, 320x568, a 1024x500 window): ONE row, then
+   scroll, so the chord stage keeps its height. The "+N more" cue says so. */
+@media (max-height: 599px) {
+  .list { --rows: 1; }
 }
 
-/* Narrow phones (360px): the time goes under the name, so three or four chips
-   fit a row and a typical song's parts fit the two rows without scrolling. */
-@media (max-width: 374px) {
+/* "+N more ↓": chips out of view. It sits on the strip's top edge (over the
+   bottom of the chord stage, never over a chip) and lets taps through. */
+.more {
+  position: absolute;
+  right: 0;
+  top: -18px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-primary);
+  background: var(--bg-selected);
+  border: 1px solid var(--border-control);
+  pointer-events: none;
+}
+
+/* Phones (up to 430px wide): the time goes under the name, so four chips fit
+   a row at 360-430px (review B1 on #330: at 390px "Part N · m:ss" in one
+   line fitted three, and a 7-part song lost a chip off the second row). */
+@media (max-width: 430px) {
   .label { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.15; }
   .sep { display: none; }
+  /* The colour dot moves down beside the time (the shorter line), so a chip is
+     as wide as "Part 12" and four fit a 360px row even with 12 parts. */
+  .chip[data-tone]::before { display: none; }
+  .chip[data-tone] .time::before {
+    content: '';
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-right: 5px;
+    border-radius: 50%;
+    vertical-align: 1px;
+    background: var(--sec);
+  }
 }
 
 .chip:focus-visible {

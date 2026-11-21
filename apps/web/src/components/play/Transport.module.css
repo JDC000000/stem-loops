@@ -74,10 +74,10 @@
   pointer-events: none;
 }
 /* Section colours (D2): the tick at a section's start takes that section's
-   chip colour (SectionLoop.module.css), >= 6.6:1 on the page. */
-.tick[data-tone='0'] { background: var(--stem-guitar); }
-.tick[data-tone='1'] { background: var(--stem-bass); }
-.tick[data-tone='2'] { background: var(--stem-keys); }
+   chip colour (SectionLoop.module.css), >= 4.3:1 on the #3a3a3a rail. */
+.tick[data-tone='0'] { background: var(--section-a); }
+.tick[data-tone='1'] { background: var(--section-b); }
+.tick[data-tone='2'] { background: var(--section-c); }
 
 /* The real control: a native range input laid over the drawn bar, invisible,
    44px tall, so it is the hit area, the keyboard target and what assistive tech

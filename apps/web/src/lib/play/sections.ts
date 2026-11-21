@@ -33,6 +33,15 @@
  *      "chorus" sampled twice is ONE section (1:50-2:33), not two 4-bar slices.
  *      Labels are only used for this merge: the UI never shows them (D2, see
  *      nameRegions), because the worker's labeller is an energy heuristic.
+ *      Two same-label regions are NOT merged across a gap longer than
+ *      MAX_MERGE_GAP_SAMPLES samples (the music between them is unknown).
+ *  R10 CAP (review H1 on #330): the labeller only knows intro/verse/chorus/
+ *      bridge/outro, so R9 can build an 87 s "verse" (37 bars) or, with one
+ *      label, the whole song. A part longer than MAX_PART_BARS (+ one 4-bar
+ *      loop of slack, PART_SLACK_BARS, because a cut can only fall on a sample
+ *      start) is split back at the original sample starts (worker-snapped
+ *      downbeats) into the FEWEST chunks that fit, as even as possible. With no
+ *      believable tempo the cap is MAX_PART_SEC_NO_BPM seconds.
  */
 import type { LoopRegion } from './types';
 
@@ -41,11 +50,39 @@ export interface SectionLoopRow {
   readonly section_label?: string | null;
   readonly start_sec?: number | string | null;
   readonly end_sec?: number | string | null;
+  /** The job's tempo (every row carries it); sets the R10 cap. */
+  readonly bpm?: number | string | null;
 }
 
 export interface DeriveOptions {
   /** Track length in seconds; regions are clamped to it. Omit if unknown. */
   readonly durationSec?: number;
+  /** Tempo for the R10 cap. Default: the rows' own `bpm`. */
+  readonly bpm?: number | null;
+}
+
+/** R10: the longest part, in 4/4 bars, before it is split back at sample starts. */
+export const MAX_PART_BARS = 16;
+/** R10: slack on the cap, one worker loop (cuts can only fall on sample starts). */
+export const PART_SLACK_BARS = 4;
+/** R10 without a believable tempo. */
+export const MAX_PART_SEC_NO_BPM = 45;
+/** R9: same-label regions further apart than this many samples are not merged. */
+export const MAX_MERGE_GAP_SAMPLES = 2;
+
+/** The R10 cap in seconds for a tempo (null/unbelievable -> MAX_PART_SEC_NO_BPM). */
+export function maxPartSec(bpm: number | null | undefined): number {
+  if (typeof bpm !== 'number' || !Number.isFinite(bpm) || bpm < MIN_GRID_BPM || bpm > MAX_GRID_BPM) return MAX_PART_SEC_NO_BPM;
+  return ((MAX_PART_BARS + PART_SLACK_BARS) * 4 * 60) / bpm;
+}
+
+function rowsBpm(rows: readonly SectionLoopRow[]): number | null {
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue;
+    const b = toSec(r.bpm);
+    if (Number.isFinite(b) && b >= MIN_GRID_BPM && b <= MAX_GRID_BPM) return b;
+  }
+  return null;
 }
 
 /** Boundaries closer than this are the same boundary. 50 ms << 1 bar at any sane tempo. */
@@ -115,11 +152,15 @@ export function deriveSections(
   // instant does not matter. `b <= a` is the single place R2 (end <= start,
   // incl. after clamping) and snap-collapse (a <50 ms loop) are enforced.
   const events: { t: number; label: string; d: 1 | -1 }[] = [];
+  const cuts = new Set<number>(); // R10: the sample starts, the only places a long part may be cut
+  const lens: number[] = [];
   for (const s of spans) {
     const a = snap(s.start);
     const b = snap(s.end);
     if (b <= a) continue;
     events.push({ t: a, label: s.label, d: 1 }, { t: b, label: s.label, d: -1 });
+    cuts.add(a);
+    lens.push(b - a);
   }
   events.sort((x, y) => x.t - y.t);
 
@@ -149,22 +190,67 @@ export function deriveSections(
     prevWinner = winner;
   }
 
-  return contiguous(regions, validCap(opts.durationSec))
+  lens.sort((x, y) => x - y);
+  const sampleSec = lens.length ? lens[Math.floor(lens.length / 2)] : 0;
+  const bpm = opts.bpm !== undefined && opts.bpm !== null ? opts.bpm : rowsBpm(rows);
+  const merged = contiguous(regions, validCap(opts.durationSec), sampleSec > 0 ? MAX_MERGE_GAP_SAMPLES * sampleSec : Infinity);
+  const sortedCuts = Array.from(cuts).sort((x, y) => x - y);
+  const limit = maxPartSec(bpm);
+  return merged
+    .flatMap((p) => splitLong(p, sortedCuts, limit))
     .map((r) => ({ startSec: round3(r.start), endSec: round3(r.end), label: r.label }))
     .filter((r) => r.endSec > r.startSec);
 }
 
-/** R8 + R9: close every gap (each region runs to the next one's start), then merge same-label neighbours. */
-function contiguous(regions: readonly Span[], cap: number | undefined): Span[] {
+/**
+ * R8 + R9: close every gap (each region runs to the next one's start), then
+ * merge same-label neighbours, unless the gap between their samples is longer
+ * than `maxGap`.
+ */
+function contiguous(regions: readonly Span[], cap: number | undefined, maxGap: number): Span[] {
   const out: Span[] = [];
   regions.forEach((r, i) => {
     const start = i === 0 ? 0 : r.start;
     const next = regions[i + 1];
     const end = next ? next.start : Math.max(r.end, cap ?? r.end);
+    const prev = regions[i - 1];
+    const gap = prev ? r.start - prev.end : 0;
     const last = out[out.length - 1];
-    if (last && last.label === r.label) last.end = end;
+    if (last && last.label === r.label && gap <= maxGap + SNAP_SEC) last.end = end;
     else out.push({ label: r.label, start, end });
   });
+  return out;
+}
+
+/**
+ * R10: split a part longer than `limit` at sample starts inside it, into the
+ * fewest chunks that each fit (a gap between two cuts wider than `limit` is
+ * one chunk: there is nowhere else to cut), then the most even (smallest
+ * longest chunk). Exported for the unit test.
+ */
+export function splitAtCuts(start: number, end: number, cuts: readonly number[], limit: number): number[] {
+  if (!(end - start > limit + SNAP_SEC)) return [start, end];
+  const pts = [start, ...cuts.filter((c) => c > start + SNAP_SEC && c < end - SNAP_SEC), end];
+  const best: { n: number; worst: number; from: number }[] = pts.map(() => ({ n: Infinity, worst: Infinity, from: -1 }));
+  best[0] = { n: 0, worst: 0, from: -1 };
+  for (let j = 1; j < pts.length; j++) {
+    for (let i = j - 1; i >= 0; i--) {
+      const len = pts[j] - pts[i];
+      if (len > limit + SNAP_SEC && i !== j - 1) break; // only the next cut may overrun the limit
+      const n = best[i].n + 1;
+      const worst = Math.max(best[i].worst, len);
+      if (n < best[j].n || (n === best[j].n && worst < best[j].worst)) best[j] = { n, worst, from: i };
+    }
+  }
+  const out: number[] = [];
+  for (let k = pts.length - 1; k >= 0; k = best[k].from) out.unshift(pts[k]);
+  return out;
+}
+
+function splitLong(p: Span, cuts: readonly number[], limit: number): Span[] {
+  const pts = splitAtCuts(p.start, p.end, cuts, limit);
+  const out: Span[] = [];
+  for (let k = 1; k < pts.length; k++) out.push({ label: p.label, start: pts[k - 1], end: pts[k] });
   return out;
 }
 
@@ -288,20 +374,33 @@ export function loopHere(state: RunState, current: number): RunState {
   return { run: { lo: current, hi: current }, on: true };
 }
 
-/** Index of the section under `positionSec`, or -1. Sections are contiguous (R8), so -1 only past the end. */
+/**
+ * Index of the section under `positionSec`, or -1 when there are none. Sections
+ * are contiguous (R8). Past the last section's end (a finished song, or the
+ * track's duration not known yet so the last section ends at its own sample)
+ * the last section that started is still "current" (review L1 on #330).
+ */
 export function sectionAt(sections: readonly LoopRegion[], positionSec: number | null | undefined): number {
   if (sections.length === 0) return -1;
   const t = typeof positionSec === 'number' && Number.isFinite(positionSec) ? Math.max(0, positionSec) : 0;
   const i = sections.findIndex((s) => t >= s.startSec && t < s.endSec);
   if (i >= 0) return i;
-  // On the last section's end (a finished song) the last section is still "current".
-  const last = sections.length - 1;
-  return Math.abs(t - sections[last].endSec) <= MATCH_SEC ? last : -1;
+  let last = -1;
+  sections.forEach((s, k) => {
+    if (s.startSec <= t) last = k;
+  });
+  return last;
 }
 
+/** "⟲" this close to a section's start goes to the previous section, like "previous track". */
+export const RESTART_GRACE_SEC = 1.5;
+
 /**
- * Where "⟲" (back to the start of this section) seeks: the loop's start while
- * a loop is on, else the start of the section under the playhead, else 0.
+ * Where "⟲" (back to the start of this section) seeks:
+ *   - while a loop is on: the loop's start (a run of several sections included);
+ *   - else the start of the section under the playhead, or, within
+ *     RESTART_GRACE_SEC of that start, the previous section's start;
+ *   - with no sections: 0.
  */
 export function restartTarget(
   sections: readonly LoopRegion[],
@@ -310,7 +409,10 @@ export function restartTarget(
 ): number {
   if (loop && isValidRegion(loop)) return loop.startSec;
   const i = sectionAt(sections, positionSec);
-  return i >= 0 ? sections[i].startSec : 0;
+  if (i < 0) return 0;
+  const t = typeof positionSec === 'number' && Number.isFinite(positionSec) ? Math.max(0, positionSec) : 0;
+  if (i > 0 && t - sections[i].startSec < RESTART_GRACE_SEC) return sections[i - 1].startSec;
+  return sections[i].startSec;
 }
 
 /** The one continuous span the engine loops for a run, or null when it cannot be built. */
@@ -458,9 +560,10 @@ export interface SongPlace {
 
 /**
  * The section, bar and beat under the playhead, for a song with no chords:
- * "Pre-chorus 1 · bar 3 / 8 · beat 2". Bars count 4/4 from the section's start
- * (each section starts on a worker-snapped beat); without a grid only the
- * section is known.
+ * "Part 3 · bar 3 / 8 · beat 2". Bars count 4/4 from the section's start
+ * (every section but the first starts on a worker-snapped beat; the first
+ * starts at 0 since R8, so its count is from the top of the track); without a
+ * grid only the section is known.
  */
 export function placeInSong(
   sections: readonly LoopRegion[],

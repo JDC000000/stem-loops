@@ -81,13 +81,13 @@ const decode = (h) => h.replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(
  * the view renders (as the real engine does through setLoop -> subscribe),
  * unless `reject` is set (an engine that refuses the loop). Also records calls.
  */
-function EngineEcho({ calls, reject = false, phase = { kind: 'ready' }, loopOverride, ...over }) {
+function EngineEcho({ calls, reject = false, phase = { kind: 'ready' }, loopOverride, positionSec, status, ...over }) {
   const [loop, setLoop] = React.useState(null);
   const shownLoop = loopOverride !== undefined ? loopOverride : loop;
   return React.createElement(Player.PlayerView, viewProps({
     ...over,
     phase,
-    snapshot: snap({ loop: shownLoop }),
+    snapshot: snap({ loop: shownLoop, ...(positionSec !== undefined ? { positionSec } : {}), ...(status ? { status } : {}) }),
     onLoop: (r) => {
       calls.push(r);
       if (!reject) setLoop(r);
@@ -256,6 +256,7 @@ test('D4 through the screen: tap jumps and plays, hold loops, hold another exten
     await pointerTap(dom, chip(2));
     assert.deepEqual(loops.at(-1), { startSec: 47, endSec: 66 }, 'hold: loop Part 3');
     assert.equal(chip(2).getAttribute('aria-pressed'), 'true');
+    assert.equal(plays, 2, 'a hold while paused starts playback (review L3/M23 on #330)');
     assert.deepEqual(seeks, [47], 'the swallowed release click did not jump');
 
     // HOLD another while looping: extend (P2) + the one-time run hint.
@@ -294,6 +295,39 @@ test('D4 through the screen: tap jumps and plays, hold loops, hold another exten
     await dom.act(() => restart().click());
     assert.deepEqual(seeks.at(-1), 9);
     assert.equal(restart().getAttribute('aria-label'), 'Back to the start of this section');
+    await dom.unmountAll();
+  });
+});
+
+test('⟲ through the screen (review L2/M17): inside a multi-section loop it goes to the LOOP start, not the section start', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const loops = [];
+    const seeks = [];
+    // The playhead at 0:50 is in Part 3 (0:47-1:06), 3 s past its start.
+    await dom.mount(React.createElement(EngineEcho, { calls: loops, positionSec: 50, onSeek: (t) => seeks.push(t) }));
+    const chip = (i) => dom.findAll('[data-testid="section-strip"] button')[i];
+    const restart = () => dom.find('[data-testid="transport-restart"]');
+    await dom.act(() => restart().click());
+    assert.deepEqual(seeks, [47], 'no loop: the start of Part 3');
+    await keyHold(dom, chip(1));
+    await keyHold(dom, chip(2));
+    assert.deepEqual(loops.at(-1), { startSec: 9, endSec: 66 }, 'looping Part 2 -> Part 3');
+    await dom.act(() => restart().click());
+    assert.deepEqual(seeks.at(-1), 9, 'looping: the start of the loop (Part 2), not of Part 3');
+    await dom.unmountAll();
+  });
+});
+
+test('hold while PLAYING does not call play again (only a paused hold starts playback)', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const loops = [];
+    let plays = 0;
+    await dom.mount(React.createElement(EngineEcho, { calls: loops, status: 'playing', onPlay: () => { plays += 1; } }));
+    await keyHold(dom, dom.findAll('[data-testid="section-strip"] button')[2]);
+    assert.deepEqual(loops.at(-1), { startSec: 47, endSec: 66 });
+    assert.equal(plays, 0);
     await dom.unmountAll();
   });
 });

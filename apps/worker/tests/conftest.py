@@ -37,6 +37,7 @@ def _quiet_fetch_alerting(monkeypatch: pytest.MonkeyPatch) -> None:
     from worker import fetch_alerts, fetch_canary
 
     monkeypatch.setenv("FETCH_CANARY_INTERVAL_SECONDS", "0")
+    monkeypatch.delenv("FETCH_CANARY_PROXY_ALERT_AFTER", raising=False)
     fetch_alerts.rearm_proxy_failure_reports()
     fetch_alerts.burst_detector.record_success()
     fetch_canary.reset_state()

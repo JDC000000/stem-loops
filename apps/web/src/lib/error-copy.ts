@@ -20,7 +20,7 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
   // The job page shows the worker's stored sentence; this entry is the API-envelope copy.
   FETCH_PROXY_FAILED: {
     headline: 'Something went wrong on our end fetching this video.',
-    action: 'Try again in a few minutes.',
+    action: 'Try again later.',
   },
   // Raised for provider-side failures: Replicate answering `failed`, the poll budget
   // running out, a cancelled prediction. None of those is about the song, and "Try a

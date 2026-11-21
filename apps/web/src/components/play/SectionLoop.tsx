@@ -50,7 +50,7 @@ export interface SectionStripProps {
    * The first-run line ("Tap to jump · hold to loop") drawn on the strip's TOP
    * edge, left, like the "+N more" cue on the right: it names the chips, sits
    * above them (never next to or under the "my part" pills, where "hold" means
-   * solo), and costs the chord stage no height (PR #331 r2 M-1).
+   * solo), and costs the stage above no height (PR #331 r2 M-1).
    */
   readonly firstHint?: string | null;
 }

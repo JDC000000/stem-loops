@@ -126,3 +126,82 @@ test('brand: pills are 44px tall, 22px round, selected #222 + 2px white edge, ne
   assert.match(css, /@media \(min-height: 500px\) and \(max-height: 559px\) \{\s*\.root \{ display: none; \}/);
   assert.match(css, /@media \(min-height: 500px\) and \(max-height: 599px\) \{\s*:global\(\[data-testid='player'\]:has\(\[data-testid='player-notice'\]\)\) \.root \{ display: none; \}/);
 });
+
+// ── PR #331 r2 M-2: Mixer-made states ──────────────────────────────────────
+// The Mix sheet's faders, M and S buttons reach states pills never make: a
+// fader at 0%, a stem soloed AND muted, several solos at odd levels. The oracle
+// here is INDEPENDENT of the module's own `audible()` (it is the engine rule,
+// engine.ts: silent = muted || (anySoloed && !soloed), plus a ~0 gain), so a bug
+// in `audible()` cannot hide itself.
+const heard = (st) => {
+  const r = st.filter((x) => x.availability === 'ready');
+  const any = r.some((x) => x.soloed);
+  return r.some((x) => !(x.muted || (any && !x.soloed)) && x.gain > 0.004);
+};
+const show = (st) => st.map((x) => `${x.name}:${x.gain}${x.muted ? 'M' : ''}${x.soloed ? 'S' : ''}`).join(' ');
+
+test('M-2: EVERY Mixer-reachable state of 3 stems (gain 0/.3/.55/1 × mute × solo), every tap and hold: never silent after the gesture', () => {
+  const names = ['guitar', 'bass', 'drums'];
+  const vals = [];
+  for (const g of [0, 0.3, 0.55, 1]) for (const m of [false, true]) for (const so of [false, true]) vals.push({ g, m, so });
+  let gestures = 0;
+  let rescued = 0;
+  for (const a of vals) for (const b of vals) for (const c of vals) {
+    const st = [a, b, c].map((v, i) => stem(names[i], { gain: v.g, muted: v.m, soloed: v.so }));
+    for (const x of st)
+      for (const [kind, f] of [['tap', tapOps], ['hold', longPressOps]]) {
+        const ops = f(x, st);
+        if (ops.length === 0) continue;
+        gestures += 1;
+        const after = applyOps(st, ops);
+        if (!heard(st)) rescued += 1;
+        assert.ok(heard(after), `${kind} ${x.name}: silent. before ${show(st)} -> after ${show(after)}`);
+      }
+  }
+  assert.equal(gestures, 24576, 'every state and gesture was tried');
+  assert.ok(rescued > 0, 'already-silent Mixer states were among them (the guard rescues them)');
+});
+
+test('M-2: a seeded random walk mixing Mixer changes (faders to 0, M, S) with pill gestures, over all six stems, is never silent after a pill gesture', () => {
+  let seed = 9331;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
+  const pick = (a) => a[Math.floor(rnd() * a.length)];
+  for (let run = 0; run < 1500; run += 1) {
+    let m = mix();
+    for (let step = 0; step < 14; step += 1) {
+      const s = pick(m);
+      if (rnd() < 0.5) {
+        // A Mixer change: anything, including total silence.
+        const r = rnd();
+        const patch = r < 0.34 ? { gain: pick([0, 0.3, 0.55, 1]) } : r < 0.67 ? { muted: !s.muted } : { soloed: !s.soloed };
+        m = m.map((x) => (x.name === s.name ? { ...x, ...patch } : x));
+        continue;
+      }
+      const ops = rnd() < 0.7 ? tapOps(s, m) : longPressOps(s, m);
+      const before = show(m);
+      m = applyOps(m, ops);
+      assert.ok(heard(m), `run ${run} step ${step}: silent after a pill gesture on ${s.name}. before ${before} -> after ${show(m)}`);
+    }
+  }
+});
+
+test('M-2: the guard\'s pieces, one case each', () => {
+  // Other solos are ended (N2): bass soloed at 0%, drums soloed at 30%; tap drums.
+  const a = mix({ bass: { soloed: true, gain: 0 }, drums: { soloed: true, gain: 0.3 } });
+  let after = applyOps(a, tapOps(a[0], a));
+  assert.ok(heard(after), show(after));
+  // audible() honours solo (N3) and a 0% fader (N4).
+  assert.equal(audible(mix({ guitar: { soloed: true, muted: true } }).map((x) => (x.name === 'guitar' ? x : { ...x, muted: false }))), false, 'a soloed muted stem silences everything');
+  assert.equal(audible([stem('guitar', { gain: 0 })]), false, 'a 0% fader is silent');
+  assert.equal(audible([stem('guitar', { gain: 0 }), stem('bass', { soloed: true, gain: 0 })]), false);
+  // The net unmutes (N6): a soloed, muted stem with everything else muted; tap it.
+  const b = mix({ guitar: { soloed: true, muted: true }, drums: { muted: true }, bass: { muted: true }, keys: { muted: true }, vocals: { muted: true }, other: { muted: true } });
+  after = applyOps(b, tapOps(b[2], b));
+  assert.ok(heard(after), `tap the soloed muted guitar: ${show(after)}`);
+  assert.equal(after[2].muted, false);
+  // The net fires for any silencing op, not only a mute (N8): un-soloing the only
+  // audible solo while every other stem is at 0%.
+  const c = mix({ guitar: { soloed: true }, drums: { gain: 0 }, bass: { gain: 0 }, keys: { gain: 0 }, vocals: { gain: 0 }, other: { gain: 0 } });
+  after = applyOps(c, longPressOps(c[2], c));
+  assert.ok(heard(after), `un-solo the only audible stem: ${show(after)}`);
+});

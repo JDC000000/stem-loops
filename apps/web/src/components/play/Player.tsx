@@ -722,7 +722,7 @@ export interface PlayerViewProps {
   readonly back?: { readonly href: string; readonly label: string };
   /** Extra Song info lines (the trim note, when the song is deleted). */
   readonly songInfo?: readonly string[];
-  /** "Download loops" in the ⋯ menu; omitted when null. */
+  /** No longer rendered (Phase A Story 9: the player does not link to the loops product); kept so JobView can still pass it. */
   readonly loopsHref?: string | null;
   /**
    * When set, the back arrow calls this instead of following `back.href` (the href is

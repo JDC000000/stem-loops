@@ -243,8 +243,10 @@ export function PlayerScreen(props: ScreenProps) {
   const band = runOn ? snapshot.loop : null;
   // ⟲ back to the start of this section (the loop's start while looping); play state is kept.
   const onRestart = () => onSeek(restartTarget(sections, runOn ? snapshot.loop : null, snapshot.positionSec));
-  // The first-use hint sits in the seek line's readout slot (empty while nothing
-  // loops), so it costs the chord stage no height; the run hint stays under the strip.
+  // The first-use hint is drawn on the strip's top edge (SectionLoop firstHint),
+  // above the chips, so it costs the chord stage no height and never sits next
+  // to the "my part" pills (where "hold" solos: PR #331 r2 M-1). The run hint
+  // stays under the strip.
   const firstHint = !stripHintSeen && sections.length > 0 ? STRIP_HINT : '';
 
   // ── the mix (P1.3) ─────────────────────────────────────────────────────────
@@ -557,6 +559,7 @@ export function PlayerScreen(props: ScreenProps) {
                 onTap={onTap}
                 onLongPress={onLongPress}
                 hint={hint && runOn ? RUN_HINT : null}
+                firstHint={firstHint || null}
               />
               {/* Phase A D5: lower, mute and solo a part in one tap/hold, chords still on screen.
                   Below the section strip, just above the transport: the strip's "+N more"
@@ -573,7 +576,7 @@ export function PlayerScreen(props: ScreenProps) {
                 tickTones={tones.slice(1)}
                 onRestart={onRestart}
                 loopBand={band}
-                loopText={runReadout(names, sections, shown) || firstHint}
+                loopText={runReadout(names, sections, shown)}
                 loopState={sections.length === 0 ? 'disabled' : shown.on ? 'on' : 'off'}
                 onToggleLoop={onToggleLoop}
                 mix={

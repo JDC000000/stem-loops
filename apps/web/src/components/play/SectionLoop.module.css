@@ -126,6 +126,26 @@
   pointer-events: none;
 }
 
+/* The first-run line, on the strip's top edge at the LEFT (the cue is right):
+   over the bottom of the chord stage, like the cue, so it takes no height. */
+.first {
+  position: absolute;
+  left: 0;
+  top: -18px;
+  max-width: calc(100% - 96px);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+  background: var(--bg-selected);
+  border: 1px solid var(--border-control);
+  pointer-events: none;
+}
+
 /* Phones (up to 430px wide): the time goes under the name, so four chips fit
    a row at 360-430px (review B1 on #330: at 390px "Part N · m:ss" in one
    line fitted three, and a 7-part song lost a chip off the second row). */

@@ -237,8 +237,18 @@ test('D4 through the screen: tap jumps and plays, hold loops, hold another exten
     const hint = () => dom.find('[data-testid="section-hint"]')?.textContent ?? null;
 
     const readout = () => dom.find('[data-testid="transport-loop-text"]').textContent;
-    assert.equal(readout(), 'Tap to jump \u00b7 hold to loop', 'the one-time hint, in the readout slot, before the strip is used');
-    assert.equal(hint(), null, 'not under the strip: it costs the chord stage no height');
+    const first = () => dom.find('[data-testid="section-first-hint"]')?.textContent ?? null;
+    // PR #331 r2 M-1: the one-time hint is drawn on the strip's top edge, inside the
+    // strip and BEFORE its chips and the pills; never in the seek readout under the pills.
+    assert.equal(first(), 'Tap to jump \u00b7 hold to loop', 'the one-time hint, on the strip, before the strip is used');
+    assert.equal(readout(), '', 'not in the seek readout (under the pills, where "hold" solos)');
+    assert.equal(hint(), null, 'not an in-flow line under the strip: it costs the chord stage no height');
+    {
+      const html = dom.find('[data-testid="player"]').innerHTML;
+      const at = (t) => html.indexOf(`data-testid="${t}"`);
+      assert.ok(at('section-strip') < at('section-first-hint') && at('section-first-hint') < at('part-pills'), 'inside the strip, before the pills row');
+      assert.equal(dom.find('[data-testid="section-first-hint"]').closest('[data-testid="part-pills"]'), null);
+    }
     assert.equal(loopBtn().getAttribute('aria-disabled'), null, 'with sections, Loop is live: it loops where the playhead is');
     assert.equal(chip(2).textContent, 'Part 3 \u00b7 0:47');
 
@@ -247,7 +257,7 @@ test('D4 through the screen: tap jumps and plays, hold loops, hold another exten
     assert.deepEqual(seeks, [47]);
     assert.equal(plays, 1);
     assert.deepEqual(loops, [], 'a tap never loops');
-    assert.equal(readout(), '', 'the hint goes once the strip is used');
+    assert.equal(first(), null, 'the hint goes once the strip is used');
     assert.equal(globalThis.localStorage?.getItem('sl.play.sectionHintSeen.v1'), '1', 'and is remembered');
 
     // HOLD (long-press): loop that section; the release click is swallowed.

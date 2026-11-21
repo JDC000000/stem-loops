@@ -157,8 +157,22 @@ async function measure(browser, built, [width, height], c, { pills = true } = {}
       const pl = document.querySelector('[data-testid="part-pills"]');
       const plr = pl && getComputedStyle(pl).display !== 'none' ? pl.getBoundingClientRect() : null;
       const covered = !!plr && !!cr && cr.width > 0 && cr.bottom > plr.top + 0.5 && cr.top < plr.bottom - 0.5;
+      // PR #331 r2 M-1: the first-run line must sit ABOVE the chips, never next to
+      // or under the pills (where "hold" solos), and must not collide with the cue.
+      const fh = document.querySelector('[data-testid="section-first-hint"]');
+      const fr = fh ? fh.getBoundingClientRect() : null;
+      const firstChip = list.querySelector('button[data-index]').getBoundingClientRect();
+      const ro = (a, b) => !!a && !!b && a.width > 0 && b.width > 0 && a.right > b.left + 0.5 && a.left < b.right - 0.5 && a.bottom > b.top + 0.5 && a.top < b.bottom - 0.5;
+      const firstHint = fr ? {
+        text: fh.textContent,
+        aboveChips: fr.bottom <= firstChip.top + 0.5,
+        abovePills: !plr || fr.bottom <= plr.top - 40,
+        overCue: ro(fr, cr),
+        clipped: fh.scrollWidth > fh.clientWidth + 0.5,
+      } : null;
       const chipH = 44;
       return {
+        firstHint,
         pills: !!plr,
         cueCoversPills: covered,
         rows: Math.round((l.height - 8 + 8) / (chipH + 8)),
@@ -237,6 +251,12 @@ for (const vp of [...FULL, ...SHORT]) {
         if (!m.cue || !want.test(m.cue) || !m.cueVisible) f.push(`${ctx}: ${hidden.length} chip(s) hidden but the cue is ${JSON.stringify(m.cue)}${m.cueVisible ? '' : ' (not visible)'}`);
       } else if (m.cue) f.push(`${ctx}: the cue "${m.cue}" shows although every chip fits`);
       if (m.cueCoversPills) f.push(`${ctx}: the cue covers the pills row`);
+      if (!m.firstHint) f.push(`${ctx}: no first-run hint (a first visit must show it)`);
+      else {
+        if (!m.firstHint.aboveChips || !m.firstHint.abovePills) f.push(`${ctx}: the first-run hint is not above the chips and clear of the pills`);
+        if (m.firstHint.overCue) f.push(`${ctx}: the first-run hint overlaps the "+N more" cue`);
+        if (m.firstHint.clipped) f.push(`${ctx}: the first-run hint "${m.firstHint.text}" is clipped`);
+      }
     }
     if (LOG) for (const l of log) console.log(`# ${l}`);
     if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}\n${log.map((l) => '  # ' + l).join('\n')}`);

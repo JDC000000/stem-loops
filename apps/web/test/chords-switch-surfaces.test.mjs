@@ -1,13 +1,14 @@
 // QA C-12..C-17 (2026-11-18). DB-17: new songs may stop getting chords after 2026-12-05, and the
-// ONE switch for that is CHORDS_LINE_SHOWN in src/lib/chords-claim.ts. test/p7-copy.test.mjs
+// ONE switch for that is chordsLineShown() in src/lib/chords-claim.ts — since A4 (2026-11-21) a
+// RUNTIME switch read from the CHORDS_CLAIMS environment variable while a page renders. test/p7-copy.test.mjs
 // proves the home page obeys it. This file proves EVERY OTHER public surface does:
 //
 //   1. /help, /terms and /privacy are RENDERED (the repo's rule: test/helpers/render-landing-page.mjs)
-//      with the switch patched to false at its one definition, and searched in DOM text (both
+//      with CHORDS_CLAIMS=off in the environment for the render, and searched in DOM text (both
 //      normalisations), accessible-name attributes, the markup and the page metadata.
 //   2. /llms.txt, the welcome email, the site-wide default description, the shared Open Graph
-//      image + alt, and the JSON-LD are built from a module graph whose chords-claim.ts is the
-//      REAL file with `true` flipped to `false` — the same edit the operator will make.
+//      image + alt, and the JSON-LD are built from the REAL modules and read with CHORDS_CLAIMS=off
+//      set — the same thing the operator will do.
 //   3. /privacy keeps its DISCLOSURES with the switch off (Klangio as a processor; the chord data
 //      that already exists). Gating the promise must not silently drop the disclosure.
 //   4. A source scan: any file under src/ that mentions "chord" must either import the switch or
@@ -30,18 +31,34 @@ import { MAX_TRACK_SEC } from '../src/lib/play/types.ts';
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(WEB, 'src');
 const REPO = join(WEB, '..', '..');
-const SWITCH_REL = join('lib', 'chords-claim.ts');
-const SWITCH_SRC = readFileSync(join(SRC, SWITCH_REL), 'utf8');
-const ON_LINE = 'export const CHORDS_LINE_SHOWN = true;';
-const OFF_LINE = 'export const CHORDS_LINE_SHOWN = false;';
+const OFF_ENV = { CHORDS_CLAIMS: 'off' };
 
-test('sanity: the switch is ON today, defined once, so every OFF render below is a real flip', () => {
-  assert.equal(SWITCH_SRC.split(ON_LINE).length - 1, 1, 'the switch must be ON today and defined exactly once');
+test('sanity: the switch is ON by default (no CHORDS_CLAIMS), so every OFF render below is a real flip', async () => {
+  const { chordsLineShown } = await import('../src/lib/chords-claim.ts');
+  const before = process.env.CHORDS_CLAIMS;
+  try {
+    delete process.env.CHORDS_CLAIMS;
+    assert.equal(chordsLineShown(), true);
+    process.env.CHORDS_CLAIMS = 'off';
+    assert.equal(chordsLineShown(), false);
+  } finally {
+    if (before === undefined) delete process.env.CHORDS_CLAIMS; else process.env.CHORDS_CLAIMS = before;
+  }
 });
 
-const flipOff = (rel, src) => (rel === SWITCH_REL ? src.replace(ON_LINE, OFF_LINE) : src);
-const page = (p) => renderPage(p);
-const pageOff = (p) => renderPage(p, { patch: flipOff });
+/** Run `fn` with the environment variables in `env` set, then restore them. */
+async function withEnv(env, fn) {
+  const saved = {};
+  for (const [k, v] of Object.entries(env)) { saved[k] = process.env[k]; if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  try {
+    return await fn();
+  } finally {
+    for (const k of Object.keys(env)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+  }
+}
+
+const page = (p) => renderPage(p, { env: { CHORDS_CLAIMS: undefined } });
+const pageOff = (p) => renderPage(p, { env: OFF_ENV });
 
 const HELP = 'app/(landing)/help/page.tsx';
 const TERMS = 'app/(landing)/terms/page.tsx';
@@ -126,37 +143,37 @@ test('C-12 /privacy: every disclosure, Klangio first, is still there with the sw
 });
 
 // ── 4. the non-page surfaces: llms.txt, welcome email, shared metadata, JSON-LD ────────────
-const graphFor = (flag) => buildModuleGraph({
-  name: `chords-surfaces-${flag ? 'on' : 'off'}`,
+// The REAL modules, built once; the switch is flipped in the environment, as the operator will.
+const GRAPH = buildModuleGraph({
+  name: 'chords-surfaces',
   entries: ['lib/seo/llms.ts', 'lib/seo/site.ts', 'lib/seo/pages.ts', 'lib/seo/meta.ts', 'lib/seo/jsonld.ts',
     'lib/emails/templates/welcome.ts'],
-  // The REAL switch file, flipped the way the operator will flip it. ON is the file untouched.
-  overrides: flag ? {} : { [SWITCH_REL]: SWITCH_SRC.replace(ON_LINE, OFF_LINE) },
 });
 async function surfaces(flag) {
-  const g = graphFor(flag);
   const [llms, site, pages, meta, jsonld, welcome] = await Promise.all(
     ['lib/seo/llms.ts', 'lib/seo/site.ts', 'lib/seo/pages.ts', 'lib/seo/meta.ts', 'lib/seo/jsonld.ts',
-      'lib/emails/templates/welcome.ts'].map((r) => import(g.url(r))),
+      'lib/emails/templates/welcome.ts'].map((r) => import(GRAPH.url(r))),
   );
-  const email = welcome.renderWelcome({ plan_code: 'pro', period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 50 });
-  return {
-    '/llms.txt': llms.llmsText(),
-    'SITE_DESCRIPTION (app/layout.tsx default)': site.SITE_DESCRIPTION,
-    'ENTITY_ONE_LINER': site.ENTITY_ONE_LINER,
-    'OG_IMAGE + OG_ALT': `${site.OG_IMAGE} ${site.OG_ALT}`,
-    'every registry page description': pages.PUBLIC_PAGES.map((p) => p.description).join('\n'),
-    'every registry page metadata': JSON.stringify(pages.PUBLIC_PAGES.map((p) => meta.pageMetadata(p))),
-    'JSON-LD': JSON.stringify(jsonld.homeGraph()),
-    'welcome email (subject + text)': `${email.subject}\n${email.text}`,
-    'welcome email (html)': email.html,
-  };
+  return withEnv(flag ? { CHORDS_CLAIMS: undefined } : OFF_ENV, () => {
+    const email = welcome.renderWelcome({ plan_code: 'pro', period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 50 });
+    return {
+      '/llms.txt': llms.llmsText(),
+      'siteDescription (app/layout.tsx default)': site.siteDescription(),
+      'entityOneLiner': site.entityOneLiner(),
+      'ogImage + ogAlt': `${site.ogImage()} ${site.ogAlt()}`,
+      'every registry page description': pages.PUBLIC_PAGES.map((p) => p.description).join('\n'),
+      'every registry page metadata': JSON.stringify(pages.PUBLIC_PAGES.map((p) => meta.pageMetadata(p))),
+      'JSON-LD': JSON.stringify(jsonld.homeGraph()),
+      'welcome email (subject + text)': `${email.subject}\n${email.text}`,
+      'welcome email (html)': email.html,
+    };
+  });
 }
 const SURF_ON = await surfaces(true);
 const SURF_OFF = await surfaces(false);
 
 test('C-12: llms.txt, welcome email, default description, OG image/alt, JSON-LD — no chord claim with the switch OFF', () => {
-  for (const k of ['/llms.txt', 'SITE_DESCRIPTION (app/layout.tsx default)', 'OG_IMAGE + OG_ALT', 'welcome email (subject + text)', 'JSON-LD']) {
+  for (const k of ['/llms.txt', 'siteDescription (app/layout.tsx default)', 'ogImage + ogAlt', 'welcome email (subject + text)', 'JSON-LD']) {
     assert.match(SURF_ON[k], /chord/i, `sanity: ${k} talks about chords with the switch on`);
   }
   for (const [k, v] of Object.entries(SURF_OFF)) {
@@ -277,7 +294,8 @@ test('numeric claims: every hour and day figure on /help, /terms, /privacy, llms
 
 // ── 9. the source scan ─────────────────────────────────────────────────────────────────────
 // A file under src/ that mentions "chord" anywhere (comments included) must EITHER import and read
-// CHORDS_LINE_SHOWN from the one switch, OR be listed in ALLOW below — by exact path, no folder
+// chordsLineShown() from the one switch (or, for a CLIENT component, take it as the `chordsShown`
+// prop from the server page that renders it: PROP_SWITCHED below), OR be listed in ALLOW below — by exact path, no folder
 // prefixes — with the EXACT number of "chord" mentions it carries in COPY-CAPABLE text: string
 // literals, template text, JSX text and JSX attribute strings (title, aria-label, data-*…), as the
 // TypeScript parser sees them. Comments and identifiers (chordStatus, ChordOverlay) are not copy
@@ -346,6 +364,15 @@ const ALLOW = {
   'src/lib/stem-urls.ts': [0, 'comments only'],
   'src/lib/upload.ts': [0, 'comments only'],
   'src/middleware.ts': [0, 'comments only'],
+  // A4 (2026-11-21): comments naming the DB-17 runtime switch, on files that build metadata or a
+  // route body through the switched modules
+  'src/app/(landing)/help/page.tsx': [0, 'comment only (why the page is dynamic: the runtime chord switch)'],
+  'src/app/layout.tsx': [0, 'comment only (generateMetadata reads the switched default description)'],
+  'src/app/llms.txt/route.ts': [0, 'comment only (why the route is dynamic)'],
+  'src/app/loops/layout.tsx': [0, 'comment only (generateMetadata: the shared OG image is switched)'],
+  'src/app/pricing/layout.tsx': [0, 'comment only (generateMetadata: the shared OG image is switched)'],
+  'src/components/landing/legal.ts': [0, 'comments only (the legal dates follow CHORDS_CLAIMS_CHANGED_ON)'],
+  'src/lib/seo/meta.ts': [0, 'comment only (reads the switched OG image per call)'],
   // outside src/ (QA follow-up S-1: the scan covers all of apps/web except node_modules, .next, test)
   'package.json': [3, 'the test:chord script name and its paths: tooling, never rendered'],
   'e2e/chord-overlay-safari.spec.ts': [3, 'a manual Playwright QA stub for the player\'s chord overlay: not shipped'],
@@ -353,23 +380,29 @@ const ALLOW = {
 // Files that READ the switch are covered by the OFF renders above — but only for text they render.
 // An unrendered export (a new const nobody imports yet) would slip past the renders, so these are
 // pinned at their exact copy count too (review A3). Every chord literal in them is either inside a
-// CHORDS_LINE_SHOWN branch that an OFF render proves gone, or a /privacy or /terms DISCLOSURE.
+// switch branch that an OFF render proves gone, or a /privacy or /terms DISCLOSURE.
 const SWITCHED = {
-  'src/app/(landing)/page.tsx': 6,
+  'src/app/(landing)/page.tsx': 2, // A4: the hero lead and the OG description, both ON branches
+  'src/app/loops/page.tsx': 0, // reads the switch and passes it to LoopsView
   'src/app/(landing)/privacy/page.tsx': 8,
   'src/app/(landing)/terms/page.tsx': 4,
-  'src/app/loops/LoopsView.tsx': 1,
-  'src/components/landing/HomeDemo.tsx': 1, // Slice 2a demo note: "chords in time", ON branch only (p7-copy SF-3 renders it OFF)
-  'src/components/landing/PlayerArt.tsx': 6,
   'src/components/landing/faq.tsx': 5,
-  'src/components/landing/what-you-get.ts': 2,
   'src/lib/emails/templates/welcome.ts': 1,
   'src/lib/seo/jsonld.ts': 1,
   'src/lib/seo/llms.ts': 1,
   'src/lib/seo/pages.ts': 2,
   'src/lib/seo/site.ts': 3,
 };
-const IMPORT_RE = /import \{[^}]*\bCHORDS_LINE_SHOWN\b[^}]*\} from '(?:@\/lib\/chords-claim|\.\.\/chords-claim\.ts|\.\/chords-claim)'/;
+const IMPORT_RE = /import \{[^}]*\bchordsLineShown\b[^}]*\} from '(?:@\/lib\/chords-claim|\.\.\/chords-claim\.ts|\.\/chords-claim)'/;
+// Client components cannot read the server environment, so they take the switch as a prop. Each
+// is pinned at its exact copy count, and each has an OFF render elsewhere: HomeDemo in
+// test/p7-copy.test.mjs (the home page with CHORDS_CLAIMS=off), LoopsView in test/loops-page.test.mjs.
+const PROP_SWITCHED = {
+  'src/components/landing/HomeDemo.tsx': 1, // the demo note: "chords in time", ON branch only
+  'src/app/loops/LoopsView.tsx': 1, // "The stems and chords are still in the player.", ON branch only
+  'src/components/landing/what-you-get.ts': 2, // the Chords proof point; whatYouGet(chordsShown) is called by the home page
+};
+const PROP_RE = /\bchordsShown\b/g;
 
 const walk = (d) => readdirSync(d).flatMap((n) => {
   const p = join(d, n);
@@ -429,10 +462,19 @@ function scan(root) {
     if (/(^|\/)__tests__\/|\.test\.mjs$/.test(rel)) continue; // tests, not shipped
     const t = readFileSync(abs, 'utf8');
     if (!/chord/i.test(t)) continue;
+    if (PROP_SWITCHED[rel] !== undefined) {
+      // A client component: it must declare the prop AND read it.
+      assert.ok((t.match(PROP_RE) ?? []).length >= 2, `${rel} is listed as taking chordsShown but never reads it`);
+      assert.doesNotMatch(t, /from '@\/lib\/chords-claim'/, `${rel} is a client component: it cannot read the server switch itself`);
+      seen.add(rel);
+      const k = copyChordMentions(abs, t);
+      if (k !== PROP_SWITCHED[rel]) offenders.push(`${rel}: takes chordsShown, ${k} chord mention(s) in copy-capable text, pinned at ${PROP_SWITCHED[rel]}`);
+      continue;
+    }
     if (IMPORT_RE.test(t)) {
-      // Importing it is not enough: it must be read somewhere past the import.
-      assert.ok((t.match(/\bCHORDS_LINE_SHOWN\b/g) ?? []).length >= 2, `${rel} imports the switch but never reads it`);
-      assert.doesNotMatch(t, /const CHORDS_LINE_SHOWN\s*=/, `${rel} defines its own switch`);
+      // Importing it is not enough: it must be called somewhere past the import.
+      assert.ok((t.match(/\bchordsLineShown\(/g) ?? []).length >= 1, `${rel} imports the switch but never reads it`);
+      assert.doesNotMatch(t, /process\.env\.CHORDS_CLAIMS|CHORDS_CLAIMS_ENV\]/, `${rel} reads the variable itself instead of the one switch`);
       assert.ok(!ALLOW[rel], `${rel} imports the switch: drop it from ALLOW`);
       seen.add(rel);
       const k = copyChordMentions(abs, t);
@@ -449,10 +491,11 @@ function scan(root) {
 
 test('source scan: every file that mentions "chord" reads the switch, or is allow-listed at its exact copy count', () => {
   const { offenders, seen } = scan(WEB);
-  assert.deepEqual(offenders, [], 'chord text outside the DB-17 switch: gate it on CHORDS_LINE_SHOWN, or (if it is not a promise to a new song) update ALLOW with a reason');
+  assert.deepEqual(offenders, [], 'chord text outside the DB-17 switch: gate it on chordsLineShown(), or (if it is not a promise to a new song) update ALLOW with a reason');
   // A stale entry is a hole waiting to be reused.
   assert.deepEqual(Object.keys(ALLOW).filter((k) => !seen.has(k)), [], 'ALLOW names a file that no longer mentions chords');
   assert.deepEqual(Object.keys(SWITCHED).filter((k) => !seen.has(k)), [], 'SWITCHED names a file that no longer reads the switch');
+  assert.deepEqual(Object.keys(PROP_SWITCHED).filter((k) => !seen.has(k)), [], 'PROP_SWITCHED names a file that no longer takes the prop');
 });
 
 // The reviewer's S-1 case (rev299-tools/mut2.py E3a): a JSON file OUTSIDE src/ — apps/web/content/
@@ -477,4 +520,28 @@ test('source scan: public/ text assets carry no chord claim', () => {
   const hits = walk(join(WEB, 'public')).filter((p) => /\.(txt|md|json|webmanifest|html)$/.test(p) && !/cqt-plan/.test(p))
     .filter((p) => /chord/i.test(readFileSync(p, 'utf8')));
   assert.deepEqual(hits.map((p) => relative(WEB, p)), []);
+});
+
+// ── PR #332 round 2: "the date above shows the latest version" survives the flip ──────────────
+// The switch changes /terms and /privacy text without a code change, so the shown "Last updated"
+// day is the LATER of the page's own day and CHORDS_CLAIMS_CHANGED_ON (YYYY-MM-DD, validated).
+test('CHORDS_CLAIMS_CHANGED_ON: the flip day moves "Last updated" (and lastModified) on /terms and /privacy', async () => {
+  const { parseIsoDay, legalUpdated } = await import('../src/lib/chords-claim.ts');
+  for (const bad of ['', '2026-13-01', '2026-02-30', '26-12-05', '2026-12-5', 'tomorrow', '2026-12-05T00:00']) assert.equal(parseIsoDay(bad), null, bad);
+  assert.equal(parseIsoDay(' 2026-12-05 '), '2026-12-05');
+  await withEnv({ CHORDS_CLAIMS_CHANGED_ON: '2026-12-05' }, () => assert.equal(legalUpdated('2026-11-21'), '2026-12-05'));
+  await withEnv({ CHORDS_CLAIMS_CHANGED_ON: '2026-11-01' }, () => assert.equal(legalUpdated('2026-11-21'), '2026-11-21', 'an earlier flip day never moves a date back'));
+  await withEnv({ CHORDS_CLAIMS_CHANGED_ON: 'garbage' }, () => assert.equal(legalUpdated('2026-11-21'), '2026-11-21'));
+  for (const [file, path] of [[TERMS, '/terms'], [PRIVACY, '/privacy']]) {
+    const r = await renderPage(file, { env: { CHORDS_CLAIMS: 'off', CHORDS_CLAIMS_CHANGED_ON: '2026-12-05' } });
+    assert.match(r.textSpaced, /Last updated 5 December 2026/, path);
+    const lm = await withEnv({ CHORDS_CLAIMS_CHANGED_ON: '2026-12-05' }, async () => {
+      const { PUBLIC_PAGES } = await import('../src/lib/seo/pages.ts');
+      return PUBLIC_PAGES.find((p) => p.path === path).lastModified;
+    });
+    assert.equal(lm, '2026-12-05', `${path}: lastModified follows the flip day`);
+  }
+  // Unset: the pages' own days.
+  assert.match(ON.terms.textSpaced, /Last updated 21 November 2026/);
+  assert.match(ON.privacy.textSpaced, /Last updated 20 November 2026/);
 });

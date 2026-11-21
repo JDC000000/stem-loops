@@ -131,7 +131,8 @@ test('M20: --border-control is >= 3:1 on every surface a control sits on, and co
   }
   const nav = uncomment(read('src/styles/signed-in-nav.css'));
   assert.match(nav, /\.sin-item\.sin-outlined\s*\{[^}]*border-color:\s*var\(--border-control\)/);
-  assert.match(nav, /\.sin-toggle\s*\{[^}]*border:\s*1px solid var\(--border-control\)/);
+  // A4 (2026-11-21): the phone menu toggle is gone (three items inline), and with it its edge.
+  assert.doesNotMatch(nav, /\.sin-toggle\b/);
   assert.match(uncomment(read('src/components/play/Player.module.css')), /\.retry\s*\{[^}]*border:\s*1\.5px solid var\(--border-control\)/);
 });
 
@@ -228,7 +229,6 @@ test('A3: every stem list, key and strip uses the mixer order (Story 2.1)', () =
   const playable = [...types.match(/export const PLAYABLE_STEMS = \[([\s\S]*?)\]/)[1].matchAll(/'(\w+)'/g)].map((m) => m[1]);
   assert.deepEqual(playable, ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other']);
   const lists = {
-    'src/components/landing/demo-data.ts': /export const STEM_ORDER = \[([^\]]*)\]/,
     'src/components/JobProgress.tsx': /const STEM_ORDER = \[([^\]]*)\]/,
     'src/components/LoopResults.tsx': /const STEM_ORDER = \[([^\]]*)\]/,
   };
@@ -238,8 +238,9 @@ test('A3: every stem list, key and strip uses the mixer order (Story 2.1)', () =
   }
   const strip = TOKENS.match(/--sl-stem-strip:\s*linear-gradient\(([\s\S]*?)\);/)[1];
   assert.deepEqual([...strip.matchAll(/--stem-(\w+)/g)].map((m) => m[1]), playable, 'the stem key');
-  const phone = uncomment(read('src/styles/landing-color.css')).match(/#options-toggle\s*\{[^}]*linear-gradient\(([\s\S]*?)\);/)[1];
-  assert.deepEqual([...phone.matchAll(/--k-(\w+)/g)].map((m) => m[1]), playable, 'the phone options key');
+  // A4: the home form takes its stem list from PLAYABLE_STEMS itself (the phone options key and
+  // the landing demo's own STEM_ORDER copy are gone).
+  assert.match(read('src/components/landing/ToolForm.tsx'), /const STEM_ORDER: readonly string\[\] = PLAYABLE_STEMS;/);
   // prose on the landing names them in the same order
   const page = read('src/app/(landing)/page.tsx');
   assert.doesNotMatch(page, /drums, bass, vocals, guitar/);
@@ -289,7 +290,12 @@ test('A5/§7.1: one lime button; secondaries have a control edge; the sign-up st
   }
   const login = read('src/components/LoginForm.tsx');
   assert.match(login, /secondaryEmphasisButton \}\}>\s*New here\? Create account/, '"Create account" is the emphasised secondary');
-  assert.equal(login.match(/\.\.\.primaryButton/g).length, 1, 'one lime button on the login view');
+  // A4 (2026-11-21): two spreads, mutually exclusive on `emailOpen`: Google while the email options
+  // are folded, the email form's submit once they are open. Rendered both ways in
+  // test/a4-home-link.test.mjs ("one lime action" in each state).
+  assert.equal(uncomment(login).match(/\bprimaryButton\b/g).length, 3, 'the import and two lime uses, one per state');
+  assert.match(login, /\.\.\.\(emailOpen \? secondaryButton : primaryButton\)/, 'Google: lime only while email is folded');
+  assert.match(login, /\.\.\.\(emailOpen \? primaryButton : secondaryButton\)/, 'email submit: lime only while email is open');
   for (const f of CODE_FILES.filter((p) => /\.tsx?$/.test(p))) {
     assert.doesNotMatch(uncomment(readFileSync(f, 'utf8')), /\bborder\w*:\s*['`][^'`]*var\(--accent/, `${relative(WEB, f)}: lime edge`);
   }

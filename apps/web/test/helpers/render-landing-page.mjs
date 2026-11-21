@@ -193,11 +193,17 @@ const cache = new Map();
  * rendered here at all. Both legal pages are sync and read nothing, which is why they can
  * be gated this way and those pages cannot.
  */
-export async function renderPage(relPath, { patch = null } = {}) {
+export async function renderPage(relPath, { patch = null, env = null } = {}) {
   // `patch(srcRelPath, source) => source` rewrites a module's source before it is transpiled
   // (e.g. flipping a feature constant), so a test can render a variant of the page. A patched
   // render is never cached, and never shares a module graph with the unpatched one.
-  const hit = patch ? null : cache.get(relPath);
+  //
+  // `env` (A4, 2026-11-21): process.env values set for the duration of THIS render and its
+  // metadata, then restored — how a test renders a page with a RUNTIME switch flipped (the DB-17
+  // chord switch, CHORDS_CLAIMS, is read while the page renders: lib/chords-claim.ts). Cached
+  // per env, so an OFF render never answers for an ON one.
+  const key = `${relPath}|${env ? JSON.stringify(env) : ''}`;
+  const hit = patch ? null : cache.get(key);
   if (hit) return hit;
   const outRoot = join(WEB, 'node_modules/.cache');
   mkdirSync(outRoot, { recursive: true });
@@ -206,15 +212,25 @@ export async function renderPage(relPath, { patch = null } = {}) {
   const React = (await import('react')).default;
   const { renderToStaticMarkup } = await import('react-dom/server');
   const mod = await import(pathToFileURL(entry).href);
-  const html = renderToStaticMarkup(React.createElement(mod.default));
-  // `metadata` is a plain exported const on the module just imported. It is never rendered, so
-  // it has to be read off the module — it cannot be scraped out of the markup.
-  const meta = metaStrings(mod.metadata).join(' \u00b6 ');
+  const saved = {};
+  if (env) for (const [k, v] of Object.entries(env)) { saved[k] = process.env[k]; if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  let html;
+  let metaObj;
+  try {
+    html = renderToStaticMarkup(React.createElement(mod.default));
+    // `metadata` is a plain exported const, or (for a page whose metadata reads a runtime switch)
+    // `generateMetadata()`. It is never rendered, so it has to be read off the module.
+    metaObj = mod.metadata ?? (typeof mod.generateMetadata === 'function' ? await mod.generateMetadata({ params: {}, searchParams: {} }) : undefined);
+  } finally {
+    if (env) for (const k of Object.keys(env)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+  }
+  const meta = metaStrings(metaObj).join(' \u00b6 ');
   const out = {
     html, textSpaced: toText(html, ' '), textTight: toText(html, ''),
     metaSpaced: toText(meta, ' '), metaTight: toText(meta, ''), modules: count,
+    dynamic: mod.dynamic,
   };
-  if (!patch) cache.set(relPath, out);
+  if (!patch) cache.set(key, out);
   return out;
 }
 

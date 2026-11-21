@@ -23,6 +23,7 @@ import contextlib
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -317,22 +318,62 @@ def test_timeout_kills_the_whole_process_group(tmp_path):
     gpid = int(raw)
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        try:
-            os.kill(gpid, 0)
-        except ProcessLookupError:
-            break
-        # A killed-but-unreaped child of init can linger as a zombie briefly; check its state.
-        try:
-            with open(f"/proc/{gpid}/stat") as f:
-                if f.read().split(")")[-1].split()[0] == "Z":
-                    break
-        except FileNotFoundError:
+        if _process_gone(gpid):
             break
         time.sleep(0.1)
     else:
         with contextlib.suppress(ProcessLookupError):
             os.kill(gpid, 9)
         pytest.fail("grandchild survived the canary timeout")
+
+
+def _read_proc_stat(pid):
+    with open(f"/proc/{pid}/stat") as f:
+        return f.read()
+
+
+def _process_gone(pid, read_stat=_read_proc_stat):
+    """True when ``pid`` is dead: no such process, or a killed-but-unreaped zombie (a child
+    of init can linger as one briefly).
+
+    QA-67 residue: the process can be reaped at ANY point in here. Linux reports that as
+    FileNotFoundError when /proc/<pid>/stat is opened after the reap, but as
+    ProcessLookupError (ESRCH) when it was opened before the reap and read after. Both
+    mean the process is gone, which is exactly what the caller is waiting for."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    try:
+        return read_stat(pid).split(")")[-1].split()[0] == "Z"
+    except (FileNotFoundError, ProcessLookupError):
+        return True
+
+
+def test_process_gone_treats_a_reap_between_open_and_read_as_gone(monkeypatch):
+    """QA-67 residue, made deterministic: open the stat file of a live process, reap the
+    process, then read. The read raises ProcessLookupError from the kernel; that is the
+    race the process-group test hit on CI, and it must count as gone, not error."""
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    with open(f"/proc/{p.pid}/stat") as stat:
+        p.kill()
+        p.wait()
+        with pytest.raises(ProcessLookupError):
+            stat.read()  # the race really is ESRCH, not ENOENT
+        stat.seek(0)
+        # os.kill would say "gone" first; pretend it still sees the pid, to pin the read.
+        monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+        assert _process_gone(p.pid, read_stat=lambda pid: stat.read()) is True
+
+
+def test_process_gone_false_for_a_live_process():
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        assert _process_gone(p.pid) is False
+    finally:
+        p.kill()
+        p.wait()
+    assert _process_gone(p.pid) is True
 
 
 def test_run_bounded_returns_output():

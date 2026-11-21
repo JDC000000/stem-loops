@@ -196,9 +196,9 @@ test('the duplicate "Now" label is gone: the stage names no "Now" above the chor
   });
 });
 
-test('D6: Simple on Lucky Ticket draws 103 chords in the chart where Detailed draws all 201', async () => {
+test('D6: Simple on Lucky Ticket draws 87 chords in the chart where Detailed draws all 201', async () => {
   await withDom(async (dom) => {
-    for (const [simplify, want] of [[false, 201], [true, 103]]) {
+    for (const [simplify, want] of [[false, 201], [true, 87]]) {
       const m = await mount(dom, { view: 'chart', positionSec: null, simplify }, { w: 1200, h: 400 });
       try {
         const prim = dom.findAll('[data-testid^="chord-chip-"]').filter((c) => /^chord-chip-\d+$/.test(c.dataset.testid));

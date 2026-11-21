@@ -288,8 +288,8 @@ export function runFramesAreMonotone(
  * frame span that contradicted its own run.
  */
 /**
- * "Simple" chords (Phase A, D6): the loaded runs with every chord under one
- * beat merged into a neighbour and every change on a beat
+ * "Simple" chords (Phase A, D6): the loaded runs with every chord under two
+ * beats merged into a neighbour and every change on a beat
  * (lib/play/simplify-chords.ts). A DISPLAY layer: the runs passed in are not
  * modified. `grid` is used only when it is the job's measured tempo; without
  * one, chords under half a second are merged and nothing is snapped.

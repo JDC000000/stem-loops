@@ -9,6 +9,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  MIN_CHORD_BEATS,
   MIN_CHORD_SEC_NO_GRID,
   anchorsOn,
   changesPerMinute,
@@ -38,12 +39,13 @@ test('Lucky Ticket raw data is what the review measured: 201 changes in 3:33, 87
 });
 
 for (const slug of DEMOS) {
-  test(`${slug}: Simple leaves no chord under one beat, every change on a beat, and far fewer changes`, () => {
+  test(`${slug}: Simple leaves no chord under two beats (Jon, 21:36Z), every change on a beat, and far fewer changes`, () => {
     const { runs, grid, anchors, beatSec } = demo(slug);
     const before = changesPerMinute(runs);
     const out = simplifyChords(runs, { grid, anchors });
     const after = changesPerMinute(out);
-    for (const r of out) assert.ok(span(r) >= beatSec * 0.999, `${r.label} ${span(r).toFixed(3)}s < 1 beat`);
+    assert.equal(MIN_CHORD_BEATS, 2);
+    for (const r of out) assert.ok(span(r) >= 2 * beatSec * 0.999, `${r.label} ${span(r).toFixed(3)}s < 2 beats`);
     for (let i = 1; i < out.length; i++) {
       const t = out[i].startSec;
       assert.ok(Math.abs(snapToBeat(t, grid, anchors) - t) < 1e-6, `change at ${t} is off the beat`);
@@ -56,11 +58,12 @@ for (const slug of DEMOS) {
     // Every name is one the data had, or the plain triad of a chord the data had.
     const names = new Set(runs.map((r) => r.label));
     const fams = new Set(runs.map((r) => chordFamily(r.label)));
-    for (const r of out) assert.ok(names.has(r.label) || fams.has(chordFamily(r.label)), r.label);
+    // ... or "X" (shown "?"): a span no one chord holds for half of.
+    for (const r of out) assert.ok(r.label === 'X' || names.has(r.label) || fams.has(chordFamily(r.label)), r.label);
     // Honest: every shown chord sounds (same root and triad) for at least half of its span.
     assert.equal(underHalfSounding(runs, out), 0, `${slug}: a shown chord sounds for under half its span`);
-    // At least 30% fewer changes per minute on every demo.
-    assert.ok(after <= before * 0.7, `${slug}: ${before.toFixed(1)} -> ${after.toFixed(1)} changes/min`);
+    // At least 45% fewer changes per minute on every demo.
+    assert.ok(after <= before * 0.55, `${slug}: ${before.toFixed(1)} -> ${after.toFixed(1)} changes/min`);
     if (process.env.SIMPLE_LOG) console.log(`${slug}: ${runs.length} -> ${out.length} chords, ${before.toFixed(1)} -> ${after.toFixed(1)} changes/min`);
   });
 
@@ -75,11 +78,11 @@ for (const slug of DEMOS) {
   });
 }
 
-test('Lucky Ticket in numbers: 56.3 -> 28.7 changes/min with the grid, 29.3 without', () => {
+test('Lucky Ticket in numbers: 56.3 -> 24.2 changes/min with the grid, 25.6 without', () => {
   const { runs, grid, anchors } = demo('lucky-ticket');
   assert.equal(changesPerMinute(runs).toFixed(1), '56.3');
-  assert.equal(changesPerMinute(simplifyChords(runs, { grid, anchors })).toFixed(1), '28.7');
-  assert.equal(changesPerMinute(simplifyChords(runs, {})).toFixed(1), '29.3');
+  assert.equal(changesPerMinute(simplifyChords(runs, { grid, anchors })).toFixed(1), '24.2');
+  assert.equal(changesPerMinute(simplifyChords(runs, {})).toFixed(1), '25.6');
 });
 
 test('the input is never modified (display layer only)', () => {
@@ -128,7 +131,8 @@ test('edge cases: empty, one chord, junk and a long gap are handled', () => {
 });
 
 test('all three demos, changes per minute before -> after (Simple, beat grid)', () => {
-  const want = { 'lucky-ticket': ['56.3', '28.7'], 'im-asking-you': ['48.6', '28.9'], offline: ['61.6', '31.6'] };
+  // Jon's target with the 2-beat floor: about 22-25 changes/min.
+  const want = { 'lucky-ticket': ['56.3', '24.2'], 'im-asking-you': ['48.6', '24.5'], offline: ['61.6', '23.2'] };
   for (const slug of DEMOS) {
     const { runs, grid, anchors } = demo(slug);
     const got = [changesPerMinute(runs).toFixed(1), changesPerMinute(simplifyChords(runs, { grid, anchors })).toFixed(1)];
@@ -226,4 +230,18 @@ test('changes per minute and honesty, all three demos (Simple, beat grid): 0 sho
     assert.equal(underHalfSounding(runs, out), 0, slug);
     assert.equal(underHalfSounding(runs, simplifyChords(runs, {})), 0, `${slug} no grid`);
   }
+});
+
+test('the 2-beat floor (Jon, 21:36Z): a chord of 1.5 beats is absorbed, one of exactly 2 beats stays', () => {
+  const b = 0.5;
+  const g = { beatSec: b, anchorSec: 0 };
+  const R2 = (rows) => rows.map(([s, e, label]) => ({ startSec: s * b, endSec: e * b, label }));
+  // A 4 · D 1.5 · G 4: D (1.5 beats) goes.
+  assert.deepEqual(simplifyChords(R2([[0, 4, 'A'], [4, 5.5, 'D'], [5.5, 9.5, 'G']]), { grid: g }).map((r) => r.label), ['A', 'G']);
+  // A 4 · D 2 · G 4: D (2 beats) stays.
+  assert.deepEqual(simplifyChords(R2([[0, 4, 'A'], [4, 6, 'D'], [6, 10, 'G']]), { grid: g }).map((r) => r.label), ['A', 'D', 'G']);
+  // No grid: 1 s is the line.
+  assert.equal(MIN_CHORD_SEC_NO_GRID, 1);
+  assert.deepEqual(simplifyChords([{ startSec: 0, endSec: 3, label: 'A' }, { startSec: 3, endSec: 3.9, label: 'D' }, { startSec: 3.9, endSec: 7, label: 'G' }]).map((r) => r.label), ['A', 'G']);
+  assert.deepEqual(simplifyChords([{ startSec: 0, endSec: 3, label: 'A' }, { startSec: 3, endSec: 4, label: 'D' }, { startSec: 4, endSec: 7, label: 'G' }]).map((r) => r.label), ['A', 'D', 'G']);
 });

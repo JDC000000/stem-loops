@@ -9,9 +9,9 @@
 //
 //   1. SAME CHORD, SAME NAME: neighbours with the same root and the same triad
 //      (C, Cmaj7, C7, C/E; Em, Em7) are one chord to a player. They join first.
-//   2. MERGE every chord shorter than one beat into a neighbour (the real chord
+//   2. MERGE every chord shorter than MIN_CHORD_BEATS (2) beats into a neighbour (the real chord
 //      over "no chord", then the longer, then the earlier one), repeating until
-//      no chord is shorter than a beat. A merge is refused when it would make
+//      no chord is shorter than 2 beats. A merge is refused when it would make
 //      the merged chord sound for less than half of its span (a run of short,
 //      different chords must not all be painted as the one after them), unless
 //      no neighbour can take it at all.
@@ -25,12 +25,18 @@
 //      unknown ("?"), never as a chord that is not there.
 //
 // With no beat grid (a beatless or rubato song) there is nothing to snap to,
-// so steps 1, 2 and 5 run, with MIN_CHORD_SEC_NO_GRID as the "too short" line.
+// so steps 1, 2 and 5 run, with MIN_CHORD_SEC_NO_GRID (1 s) as the "too short" line.
 //
 // Pure and node-loadable (no DOM, explicit .ts imports): test/play-simplify-chords.test.mjs.
 
 /** Without a beat grid, a chord shorter than this is merged into a neighbour. */
-export const MIN_CHORD_SEC_NO_GRID = 0.5;
+export const MIN_CHORD_SEC_NO_GRID = 1;
+/**
+ * Simple shows no chord shorter than this many beats (Jon, 2026-11-21 21:36Z:
+ * "hide chords shorter than 2 beats"): a shorter one is absorbed into a
+ * neighbour. Detailed shows every detected chord.
+ */
+export const MIN_CHORD_BEATS = 2;
 /** A gap in the chord data longer than this is never bridged by a merge. */
 export const MAX_BRIDGE_SEC = 1;
 /** A section start re-anchors the beat grid only when it is this close to it, in beats. */
@@ -100,7 +106,7 @@ interface Ctx {
  */
 export function simplifyChords<T extends ChordSpan>(runs: readonly T[], opts: SimplifyOptions = {}): T[] {
   const grid = validGrid(opts.grid) ? opts.grid : null;
-  const minSec = grid ? grid.beatSec : MIN_CHORD_SEC_NO_GRID;
+  const minSec = grid ? MIN_CHORD_BEATS * grid.beatSec : MIN_CHORD_SEC_NO_GRID;
   const out: Mut<T>[] = runs
     .filter((r) => r && Number.isFinite(r.startSec) && Number.isFinite(r.endSec) && r.endSec > r.startSec)
     .map((r) => ({ ...r }))

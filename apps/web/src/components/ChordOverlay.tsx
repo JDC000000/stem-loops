@@ -213,8 +213,8 @@ export interface ChordOverlayProps extends Partial<ChordPlayheadProps> {
    */
   onNowNext?: (v: NowNext | null) => void;
   /**
-   * "Simple" chords (Phase A, D6): show the runs with every chord under one
-   * beat merged and every change snapped to the beat. Display only; the
+   * "Simple" chords (Phase A, D6): show the runs with every chord under two
+   * beats merged and every change snapped to the beat. Display only; the
    * loaded chord data is not changed. Default false (the data as loaded).
    */
   simplify?: boolean;

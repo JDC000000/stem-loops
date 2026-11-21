@@ -8,9 +8,11 @@ import {
   PART_QUESTION,
   PRESET_NAMES,
   PRESET_ORDER,
+  PRESET_VERBS,
   type Part,
   type PresetId,
   activePreset,
+  isPartPreset,
   partLabel,
   presetBlocked,
 } from '@/lib/play/presets';
@@ -20,7 +22,7 @@ export interface PresetsProps {
   readonly stems: readonly StemState[];
   /** The remembered part, or null when the player has not been asked yet. */
   readonly part: Part | null;
-  /** Apply a preset. For 'mine', `part` is the part to mute. */
+  /** Apply a preset. For 'mine' and 'solo', `part` is the part to mute or solo. */
   readonly onPreset: (id: PresetId, part: Part) => void;
   /** The player answered "Which part do you play?" (remember it). */
   readonly onPart: (part: Part) => void;
@@ -30,24 +32,27 @@ export interface PresetsProps {
 }
 
 /**
- * The four practice presets in a 2x2 grid (design v1.4, P1.3), each one tap.
- * Which is pressed is derived from the mix (lib/play/presets.ts), so touching
- * any mute or solo afterwards shows "Custom" in the legend by construction.
+ * The three practice presets in one row (design v1.4, P1.3; Phase A D5): Mute
+ * my part · Solo my part · Full song, each one tap. Which is pressed is derived
+ * from the mix (lib/play/presets.ts), so touching any control afterwards shows
+ * "Custom" in the legend by construction.
  *
- * DB-13 option (a): the FIRST tap of "Mute my part" asks "Which part do you
- * play?" (Guitar pre-selected · Bass · Keys · Drums · Vocals), then mutes it and
- * remembers the answer; after that it is one tap, with a "Change" link.
+ * DB-13 option (a): the FIRST tap of either part preset asks "Which part do you
+ * play?" (Guitar pre-selected · Bass · Keys · Drums · Vocals), then applies it
+ * and remembers the answer; after that it is one tap, with a "Change" link.
  */
 export function Presets({ stems, part, onPreset, onPart, legend = 'Practice presets', idPrefix = 'presets' }: PresetsProps) {
-  const [asking, setAsking] = useState(false);
+  // Which part preset the question is for; 'mine' when "Change" opened it.
+  const [asking, setAsking] = useState<'mine' | 'solo' | null>(null);
   const [choice, setChoice] = useState<Part>(part ?? DEFAULT_PART);
   const active = activePreset(stems, part);
-  const blockedMine = presetBlocked('mine', part, stems);
+  // Both part presets act on the same stem, so they are blocked together.
+  const blockedPart = presetBlocked('mine', part, stems);
 
   const pick = (id: PresetId) => {
-    if (id === 'mine' && !part) {
+    if (isPartPreset(id) && !part) {
       setChoice(DEFAULT_PART);
-      setAsking(true);
+      setAsking(id);
       return;
     }
     onPreset(id, part ?? DEFAULT_PART);
@@ -83,14 +88,14 @@ export function Presets({ stems, part, onPreset, onPart, legend = 'Practice pres
               type="button"
               className={styles.confirm}
               onClick={() => {
-                setAsking(false);
+                setAsking(null);
                 onPart(choice);
-                onPreset('mine', choice);
+                onPreset(asking, choice);
               }}
             >
-              Mute {partLabel(choice).toLowerCase()}
+              {PRESET_VERBS[asking]} {partLabel(choice).toLowerCase()}
             </button>
-            <button type="button" className={styles.cancel} onClick={() => setAsking(false)}>
+            <button type="button" className={styles.cancel} onClick={() => setAsking(null)}>
               Cancel
             </button>
           </div>
@@ -99,7 +104,7 @@ export function Presets({ stems, part, onPreset, onPart, legend = 'Practice pres
         <>
           <div className={styles.grid}>
             {PRESET_ORDER.map((id) => {
-              const blocked = id === 'mine' ? blockedMine : null;
+              const blocked = isPartPreset(id) ? blockedPart : null;
               return (
                 <button
                   key={id}
@@ -118,9 +123,9 @@ export function Presets({ stems, part, onPreset, onPart, legend = 'Practice pres
               );
             })}
           </div>
-          {blockedMine ? (
+          {blockedPart ? (
             <p className={styles.note} id={`${idPrefix}-blocked`}>
-              {blockedMine}
+              {blockedPart}
             </p>
           ) : part ? (
             <p className={styles.note}>
@@ -130,7 +135,7 @@ export function Presets({ stems, part, onPreset, onPart, legend = 'Practice pres
                 className={styles.change}
                 onClick={() => {
                   setChoice(part);
-                  setAsking(true);
+                  setAsking('mine');
                 }}
               >
                 Change

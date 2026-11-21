@@ -34,6 +34,14 @@ export interface SheetProps {
   readonly testId?: string;
   /** Show the swipe handle (bottom sheets). */
   readonly handle?: boolean;
+  /**
+   * false: a NON-MODAL half-height sheet (Phase A D5, the Mix sheet). No scrim,
+   * no aria-modal, Tab is not trapped and the page above it stays live, so the
+   * stage above it stays visible and usable. Escape (anywhere on the
+   * page), Close and a swipe down still close it, and focus still moves in on
+   * open and back on close.
+   */
+  readonly modal?: boolean;
 }
 
 /**
@@ -41,9 +49,10 @@ export interface SheetProps {
  * focus moved in on open, Tab trapped inside, Escape / Close / a tap on the
  * backdrop / a swipe down on the handle dismiss it, and focus goes back to
  * whatever opened it. On a short landscape screen it is a right-side panel
- * (Sheet.module.css).
+ * (Sheet.module.css). With `modal={false}` it is the non-modal variant (see
+ * the prop).
  */
-export function Sheet({ open, onClose, labelledBy, children, keepMounted = false, returnFocus, testId, handle = true }: SheetProps) {
+export function Sheet({ open, onClose, labelledBy, children, keepMounted = false, returnFocus, testId, handle = true, modal = true }: SheetProps) {
   const ref = useRef<HTMLDivElement | null>(null);
   const opener = useRef<HTMLElement | null>(null);
   const drag = useRef<number | null>(null);
@@ -69,15 +78,31 @@ export function Sheet({ open, onClose, labelledBy, children, keepMounted = false
     };
   }, [open]);
 
+  // Non-modal: focus may be anywhere on the page (the sheet does not trap it),
+  // so Escape is heard at the document. A handler that already used the key
+  // (the ⋯ menu closing itself, a modal sheet) calls preventDefault and wins.
+  useEffect(() => {
+    if (!open || modal) return;
+    const doc = globalThis.document;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      e.preventDefault();
+      close.current();
+    };
+    doc?.addEventListener('keydown', onKey);
+    return () => doc?.removeEventListener('keydown', onKey);
+  }, [open, modal]);
+
   if (!open && !keepMounted) return null;
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Escape') {
       e.stopPropagation();
+      e.preventDefault();
       close.current();
       return;
     }
-    if (e.key !== 'Tab' || !ref.current) return;
+    if (!modal || e.key !== 'Tab' || !ref.current) return;
     const items = Array.from(ref.current.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((x) => x.offsetParent !== null || x === globalThis.document?.activeElement);
     const next = trapTarget(items, (globalThis.document?.activeElement as HTMLElement | null) ?? null, e.shiftKey);
     if (next) {
@@ -97,18 +122,19 @@ export function Sheet({ open, onClose, labelledBy, children, keepMounted = false
 
   return (
     <div
-      className={styles.backdrop}
+      className={modal ? styles.backdrop : `${styles.backdrop} ${styles.modeless}`}
       hidden={!open}
       data-testid={testId ? `${testId}-backdrop` : undefined}
+      data-modal={modal ? undefined : 'false'}
       onPointerDown={(e) => {
-        if (e.target === e.currentTarget) close.current();
+        if (modal && e.target === e.currentTarget) close.current();
       }}
     >
       <div
         ref={ref}
         className={styles.sheet}
         role="dialog"
-        aria-modal="true"
+        aria-modal={modal ? 'true' : undefined}
         aria-labelledby={labelledBy}
         data-testid={testId}
         onKeyDown={onKeyDown}

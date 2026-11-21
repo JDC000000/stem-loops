@@ -118,7 +118,7 @@ test('P1.1 header: back · the song title as THE h1 · "<BPM> BPM · <key>" with
   assert.match(h, /<h1[^>]*data-testid="player-title"[^>]*>Lucky Ticket<\/h1>/);
   assert.match(h, /<span class="sr">Detected: <\/span>102 BPM · B♭ major/);
   assert.match(h, /<a class="back" href="\/history" aria-label="Back to song library">/);
-  assert.match(h, /<button[^>]*aria-label="More: all chords, song info, download loops"[^>]*aria-expanded="false"/);
+  assert.match(h, /<button[^>]*aria-label="More: all chords, song info"[^>]*aria-expanded="false"/);
   assert.match(decode(ssr({ artist: 'The Royal Sundowners' })), /102 BPM · B♭ major<\/span> · <span>The Royal Sundowners<\/span>/);
 });
 
@@ -200,7 +200,8 @@ test('P1.2 no chords: the section name large, bar/beat, "No chords for this song
     assert.match(h, /No chords for this song\./);
     assert.match(h, /data-testid="stage-presets"/);
     assert.ok(h.indexOf('stage-presets') < h.indexOf('section-strip'), 'the presets are IN the stage');
-    assert.match(h, /Mute my part[\s\S]*Full song[\s\S]*No vocals[\s\S]*Drums \+ bass/);
+    assert.match(h, /Mute my part[\s\S]*Solo my part[\s\S]*Full song/);
+    assert.doesNotMatch(h, /No vocals|Drums \+ bass/, 'Phase A D5: those two presets are gone');
     assert.doesNotMatch(h, /completed-job-message/, 'a song with no chords needs no reason line');
     // Chords UNAVAILABLE: the provider's reason is kept (never "failed for this track").
     globalThis.__noChordsReason = 'Chord detection didn\u2019t return a result for this track. This is usually on our end rather than your song.';
@@ -389,9 +390,13 @@ test('P2.1: a loop handed in by the engine shows as the matching run', () => {
 
 // ═══ P1.3 — the Mix sheet ═══════════════════════════════════════════════════
 
-test('P1.3: the Mix sheet is a modal dialog, kept mounted (hidden) so the mix memory restores on load', () => {
+test('P1.3 + D5: the Mix sheet is a NON-MODAL dialog (no aria-modal, no scrim, half height), kept mounted (hidden) so the mix memory restores on load', () => {
   const h = ssr();
-  assert.match(h, /<div class="backdrop" hidden="" data-testid="mix-sheet-backdrop"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="mix-title" data-testid="mix-sheet">/);
+  assert.match(h, /<div class="backdrop modeless" hidden="" data-testid="mix-sheet-backdrop" data-modal="false"><div class="sheet" role="dialog" aria-labelledby="mix-title" data-testid="mix-sheet">/);
+  assert.doesNotMatch(h.slice(h.indexOf('mix-sheet-backdrop') - 200), /aria-modal/, 'a non-modal dialog must not claim aria-modal');
+  const sheetCss = read('src/components/play/Sheet.module.css');
+  assert.match(sheetCss, /\.modeless\s*\{[^}]*background:\s*transparent;[^}]*pointer-events:\s*none;/, 'no scrim, and the stage above stays live');
+  assert.match(sheetCss, /\.modeless \.sheet\s*\{[^}]*pointer-events:\s*auto;[^}]*max-height:\s*50svh;/, 'half height');
   assert.match(h, /<h2 id="mix-title" class="title">Mix<\/h2>/);
   // The stem rows are real range inputs in the sheet, six of them, in the mixer order.
   const sheet = h.slice(h.indexOf('data-testid="mix-sheet"'));
@@ -401,7 +406,7 @@ test('P1.3: the Mix sheet is a modal dialog, kept mounted (hidden) so the mix me
   assert.match(css, /\.list\s*\{[^}]*overflow-y:\s*auto/, 'the stem list scrolls');
   assert.match(css, /\.head\s*\{[^}]*flex-shrink:\s*0/, 'the header is pinned');
   assert.match(read('src/components/play/Presets.module.css'), /\.root\s*\{[^}]*flex-shrink:\s*0/, 'the presets are pinned');
-  assert.match(read('src/components/play/Presets.module.css'), /\.grid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/, '2x2');
+  assert.match(read('src/components/play/Presets.module.css'), /\.grid\s*\{[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/, 'three presets in one row');
 });
 
 test('P1.3 (DOM): Mix opens the sheet, focus moves in, Escape closes it and focus returns to Mix; the header shows Now/Next and play/pause', async () => {
@@ -474,11 +479,271 @@ test('DB-13 (a) (DOM): the first "Mute my part" asks "Which part do you play?" (
   });
 });
 
-test('P1.3: the Mix button shows the mix state', () => {
-  assert.match(ssr(), /<span class="mixState">full song<\/span>/);
-  const muted = snap();
-  muted.stems = muted.stems.map((s) => (s.name === 'vocals' ? { ...s, muted: true } : s));
-  assert.match(ssr({ snapshot: muted }), /<span class="mixState">no vocals<\/span>/);
+test('P1.3 + D5: the Mix button names the mix state ("Guitar 30%", "Guitar solo", "Custom")', () => {
+  const at = (over) => {
+    const s = snap();
+    s.stems = s.stems.map((x) => ({ ...x, gain: 1, ...(over[x.name] ?? {}) }));
+    return ssr({ snapshot: s });
+  };
+  assert.match(at({}), /<span class="mixState">Full song<\/span>/);
+  assert.match(at({ guitar: { gain: 0.3 } }), /<span class="mixState">Guitar 30%<\/span>/);
+  assert.match(at({ vocals: { muted: true } }), /<span class="mixState">Vocals muted<\/span>/);
+  assert.match(at({ guitar: { soloed: true } }), /<span class="mixState">Guitar solo<\/span>/);
+  assert.match(at({ guitar: { gain: 0.3 }, bass: { muted: true } }), /<span class="mixState">Custom<\/span>/);
+});
+
+// ═══ Phase A D5 — "my part" pills on the play screen ════════════════════════
+
+/**
+ * An engine stand-in for the mix: onGain/onMute/onSolo are applied to the
+ * snapshot (effectivelySilent resolved as engine.ts does) and recorded.
+ * Nothing here can seek or restart: the test asserts no onSeek/onPlay/onPause.
+ */
+function MixEcho({ calls, unavailable = [], ...over }) {
+  const [st, setSt] = React.useState(() =>
+    STEMS.map((name) => ({ name, availability: unavailable.includes(name) ? 'unavailable' : 'ready', gain: 1, muted: false, soloed: false })),
+  );
+  const upd = (stem, patch) => setSt((a) => a.map((x) => (x.name === stem && x.availability === 'ready' ? { ...x, ...patch } : x)));
+  const any = st.some((x) => x.soloed);
+  const stems = st.map((x) => ({ ...x, effectivelySilent: x.muted || (any && !x.soloed) }));
+  return React.createElement(Player.PlayerView, viewProps({
+    ...over,
+    snapshot: snap({ stems }),
+    onGain: (stem, g) => { calls.push(['gain', stem, g]); upd(stem, { gain: g }); },
+    onMute: (stem, m) => { calls.push(['mute', stem, m]); upd(stem, { muted: m }); },
+    onSolo: (stem, v) => { calls.push(['solo', stem, v]); upd(stem, { soloed: v }); },
+    onSeek: () => calls.push(['seek']),
+    onPlay: () => calls.push(['play']),
+    onPause: () => calls.push(['pause']),
+  }));
+}
+
+test('D5: the pills sit between the chord stage and the section strip, Guitar first, one per stem', () => {
+  const h = ssr();
+  const at = (re) => h.search(re);
+  assert.ok(at(/data-view="stage"/) < at(/data-testid="part-pills"/), 'below the stage');
+  assert.ok(at(/data-testid="part-pills"/) < at(/data-testid="section-strip"/), 'above the section strip');
+  const pills = h.slice(at(/data-testid="part-pills"/), at(/data-testid="section-strip"/));
+  assert.deepEqual([...pills.matchAll(/data-stem="(\w+)"/g)].map((m) => m[1]), ['guitar', 'bass', 'keys', 'drums', 'vocals', 'other']);
+  assert.match(pills, /<legend class="sr">Parts\. Tap a part to step it 100%, 30%, muted\. Hold it, or press S, to solo it\.<\/legend>/);
+});
+
+test('D5: no pills on desktop (the mixer column is always there)', async () => {
+  await withDom(async (dom) => {
+    setMedia(true);
+    await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+    assert.equal(dom.find('[data-testid="part-pills"]'), null);
+    await dom.unmountAll();
+  });
+});
+
+test('D5 (DOM): a tap cycles Guitar 100% -> 30% -> muted -> 100%; the pill, its aria and the Mix label follow; nothing seeks or restarts', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const calls = [];
+    await dom.mount(React.createElement(MixEcho, { calls }));
+    const gtr = () => dom.find('[data-testid="part-pills"] button[data-stem="guitar"]');
+    const label = () => dom.find('[data-testid="transport-mix"] .mixState').textContent;
+    assert.equal(gtr().getAttribute('aria-label'), 'Guitar, 100%');
+    assert.equal(gtr().getAttribute('aria-pressed'), 'false');
+    assert.equal(label(), 'Full song');
+
+    await dom.act(() => gtr().click());
+    assert.deepEqual(calls, [['gain', 'guitar', 0.3]]);
+    assert.equal(gtr().textContent, 'Gtr 30%');
+    assert.equal(gtr().getAttribute('aria-label'), 'Guitar, 30%');
+    assert.equal(gtr().getAttribute('aria-pressed'), 'true');
+    assert.equal(label(), 'Guitar 30%');
+
+    calls.length = 0;
+    await dom.act(() => gtr().click());
+    assert.deepEqual(calls, [['mute', 'guitar', true]]);
+    assert.equal(gtr().textContent, 'Gtr muted');
+    assert.equal(gtr().getAttribute('aria-label'), 'Guitar, muted');
+    assert.equal(label(), 'Guitar muted');
+
+    calls.length = 0;
+    await dom.act(() => gtr().click());
+    assert.deepEqual(calls, [['gain', 'guitar', 1], ['mute', 'guitar', false]], 'level first, then unmute: never back through 30%');
+    assert.equal(gtr().textContent, 'Gtr 100%');
+    assert.equal(gtr().getAttribute('aria-pressed'), 'false');
+    assert.equal(label(), 'Full song');
+
+    // A second stem changed: the label says Custom.
+    await dom.act(() => gtr().click());
+    await dom.act(() => dom.find('[data-testid="part-pills"] button[data-stem="vocals"]').click());
+    assert.equal(label(), 'Custom');
+    await dom.unmountAll();
+  });
+});
+
+test('D5 (DOM): long-press (500 ms) solos Guitar, its release click is swallowed, and a second long-press un-solos it', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const calls = [];
+    await dom.mount(React.createElement(MixEcho, { calls }));
+    const pill = (stem) => dom.find(`[data-testid="part-pills"] button[data-stem="${stem}"]`);
+    const label = () => dom.find('[data-testid="transport-mix"] .mixState').textContent;
+    const hold = async () => {
+      await dom.pointer('pointerdown', pill('guitar'), { pointerType: 'touch', clientX: 5, clientY: 5 });
+      await dom.advance(550);
+      await dom.pointer('pointerup', pill('guitar'), { pointerType: 'touch', clientX: 5, clientY: 5 });
+      await dom.act(() => pill('guitar').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })));
+    };
+    await hold();
+    assert.deepEqual(calls, [['solo', 'guitar', true]], 'the release click did not also step the level');
+    assert.equal(pill('guitar').textContent, 'Gtr solo');
+    assert.equal(pill('guitar').getAttribute('aria-label'), 'Guitar, solo');
+    assert.equal(pill('bass').textContent, 'Bass silent');
+    assert.equal(pill('bass').getAttribute('aria-label'), 'Bass, 100%, silent while another part is soloed');
+    assert.equal(label(), 'Guitar solo');
+    calls.length = 0;
+    await dom.advance(800);
+    await hold();
+    assert.deepEqual(calls, [['solo', 'guitar', false]]);
+    assert.equal(label(), 'Full song');
+    await dom.unmountAll();
+  });
+});
+
+test('D5 (DOM): a long-press is cancelled when the finger moves (a scroll is not a hold)', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const calls = [];
+    await dom.mount(React.createElement(MixEcho, { calls }));
+    const gtr = dom.find('[data-testid="part-pills"] button[data-stem="guitar"]');
+    await dom.pointer('pointerdown', gtr, { pointerType: 'touch', clientX: 5, clientY: 5 });
+    await dom.pointer('pointermove', gtr, { pointerType: 'touch', clientX: 5, clientY: 30 });
+    await dom.advance(600);
+    assert.deepEqual(calls, []);
+    await dom.unmountAll();
+  });
+});
+
+test('D5 (DOM): keyboard — Enter/Space are a tap (button), S toggles solo; a soloed muted part is unmuted', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const calls = [];
+    await dom.mount(React.createElement(MixEcho, { calls }));
+    const gtr = () => dom.find('[data-testid="part-pills"] button[data-stem="guitar"]');
+    assert.equal(gtr().getAttribute('aria-keyshortcuts'), 'S');
+    assert.equal(gtr().tagName, 'BUTTON', 'native button: Enter and Space activate it');
+    // keyboard activation dispatches click with detail 0: never swallowed
+    await dom.act(() => gtr().dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, detail: 0 })));
+    await dom.act(() => gtr().dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, detail: 0 })));
+    assert.equal(gtr().textContent, 'Gtr muted');
+    calls.length = 0;
+    await dom.keydown('s', { target: gtr() });
+    assert.deepEqual(calls, [['solo', 'guitar', true], ['mute', 'guitar', false]]);
+    assert.equal(gtr().textContent, 'Gtr solo');
+    calls.length = 0;
+    await dom.keydown('S', { target: gtr() });
+    assert.deepEqual(calls, [['solo', 'guitar', false]]);
+    await dom.unmountAll();
+  });
+});
+
+test('D5 (DOM): a missing stem is a disabled pill with a reason; tapping it does nothing', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const calls = [];
+    await dom.mount(React.createElement(MixEcho, { calls, unavailable: ['keys'] }));
+    const keys = dom.find('[data-testid="part-pills"] button[data-stem="keys"]');
+    assert.equal(keys.getAttribute('aria-disabled'), 'true');
+    assert.equal(keys.getAttribute('aria-label'), 'Keys, not available');
+    assert.equal(keys.textContent, 'Keys n/a');
+    assert.equal(keys.getAttribute('aria-describedby'), 'part-pills-note');
+    assert.equal(dom.find('#part-pills-note').textContent, 'Keys is not available for this song.');
+    await dom.act(() => keys.click());
+    await dom.pointer('pointerdown', keys, { pointerType: 'touch', clientX: 5, clientY: 5 });
+    await dom.advance(600);
+    await dom.keydown('s', { target: keys });
+    assert.deepEqual(calls, []);
+    await dom.unmountAll();
+  });
+});
+
+test('D5 (DOM): presets — "Solo my part" asks once (Guitar pre-selected) then solos; "Full song" undoes a pill level', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const calls = [];
+    await dom.mount(React.createElement(MixEcho, { calls }));
+    const gtr = () => dom.find('[data-testid="part-pills"] button[data-stem="guitar"]');
+    await dom.act(() => dom.find('[data-testid="transport-mix"]').click());
+    const preset = (id) => dom.find(`[data-testid="mix-presets"] button[data-preset="${id}"]`);
+    assert.deepEqual(dom.findAll('[data-testid="mix-presets"] button[data-preset]').map((b) => b.textContent), ['Mute my part', 'Solo my part', 'Full song']);
+    await dom.act(() => preset('solo').click());
+    const sheet = dom.find('[data-testid="mix-sheet"]');
+    assert.match(sheet.textContent, /Which part do you play\?/);
+    await dom.act(() => [...sheet.querySelectorAll('button')].find((b) => b.textContent === 'Solo guitar').click());
+    assert.deepEqual(calls, [['solo', 'guitar', true]]);
+    assert.equal(preset('solo').getAttribute('aria-pressed'), 'true');
+    assert.equal(gtr().textContent, 'Gtr solo');
+    // Full song: the solo is cleared and a lowered level comes back to 100%.
+    await dom.act(() => dom.find('[data-testid="part-pills"] button[data-stem="bass"]').click());
+    calls.length = 0;
+    await dom.act(() => preset('full').click());
+    assert.deepEqual(calls.map(String).sort(), [['gain', 'bass', 1], ['solo', 'guitar', false]].map(String).sort());
+    assert.equal(preset('full').getAttribute('aria-pressed'), 'true');
+    assert.equal(dom.find('[data-testid="transport-mix"] .mixState').textContent, 'Full song');
+    await dom.unmountAll();
+  });
+});
+
+test('D5 (DOM): the non-modal Mix sheet leaves the screen live — pills still work under it, and Escape from outside the sheet closes it', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const calls = [];
+    await dom.mount(React.createElement(MixEcho, { calls }));
+    const mix = dom.find('[data-testid="transport-mix"]');
+    mix.focus();
+    await dom.act(() => mix.click());
+    const backdrop = dom.find('[data-testid="mix-sheet-backdrop"]');
+    assert.equal(backdrop.hidden, false);
+    assert.equal(dom.find('[data-testid="mix-sheet"]').getAttribute('aria-modal'), null);
+    // Tab is not trapped: Tab from the last control is left to the browser.
+    const items = [...dom.findAll('[data-testid="mix-sheet"] button, [data-testid="mix-sheet"] input')];
+    items.at(-1).focus();
+    const ev = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    await dom.act(() => items.at(-1).dispatchEvent(ev));
+    assert.equal(ev.defaultPrevented, false, 'no focus trap in a non-modal sheet');
+    // A tap on the backdrop layer does not close it (it passes through in CSS).
+    await dom.pointer('pointerdown', backdrop, {});
+    assert.equal(backdrop.hidden, false);
+    // Escape with focus on the page (outside the sheet) closes it; focus goes back to Mix.
+    dom.find('[data-testid="part-pills"] button[data-stem="bass"]').focus();
+    await dom.keydown('Escape', { target: dom.document.activeElement });
+    assert.equal(backdrop.hidden, true);
+    assert.equal(dom.document.activeElement, mix);
+    assert.deepEqual(calls.filter((c) => ['seek', 'play', 'pause'].includes(c[0])), []);
+    await dom.unmountAll();
+  });
+});
+
+test('D5 (DOM): with the ⋯ menu open over the Mix sheet, Escape closes only the menu', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    await dom.mount(React.createElement(MixEcho, { calls: [] }));
+    await dom.act(() => dom.find('[data-testid="transport-mix"]').click());
+    await dom.act(() => dom.find('[data-testid="player-more"]').click());
+    const first = dom.find('#player-menu button');
+    await dom.keydown('Escape', { target: first });
+    assert.equal(dom.find('#player-menu'), null, 'the menu closed');
+    assert.equal(dom.find('[data-testid="mix-sheet-backdrop"]').hidden, false, 'the Mix sheet stayed open');
+    await dom.unmountAll();
+  });
+});
+
+test('Phase A: the ⋯ menu and Song info do not link to the loops product, even when a loops URL is passed', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    await dom.mount(React.createElement(Player.PlayerView, viewProps({ loopsHref: '/loops?job=job-1' })));
+    await dom.act(() => dom.find('[data-testid="player-more"]').click());
+    assert.deepEqual(dom.findAll('#player-menu > *').map((b) => b.textContent), ['See all chords', 'Song info']);
+    await dom.act(() => [...dom.findAll('#player-menu button')].find((b) => b.textContent === 'Song info').click());
+    assert.doesNotMatch(dom.find('[data-testid="player"]').innerHTML, /href="\/loops|Download loops/);
+    await dom.unmountAll();
+  });
 });
 
 // ═══ P1.4 — desktop ═════════════════════════════════════════════════════════
@@ -510,7 +775,7 @@ test('44px targets on every new control (CSS)', () => {
   assert.ok(px(rule(t, '.play'), 'height') >= 44);
   const p = css('Player.module.css');
   for (const sel of ['.back', '.more', '.dismiss']) assert.ok(px(rule(p, sel), 'height') >= 44, sel);
-  for (const [f, sel] of [['Player.module.css', '.menuItem'], ['Player.module.css', '.retry'], ['Presets.module.css', '.change'], ['SectionLoop.module.css', '.chip']])
+  for (const [f, sel] of [['Player.module.css', '.menuItem'], ['Player.module.css', '.retry'], ['Presets.module.css', '.change'], ['SectionLoop.module.css', '.chip'], ['PartPills.module.css', '.pill']])
     assert.match(rule(css(f), sel), /(min-)?height:\s*var\(--touch-min, 44px\)/, `${f} ${sel}`);
   const m = css('MixSheet.module.css');
   assert.ok(px(rule(m, '.round,\n.close'), 'height') >= 44);

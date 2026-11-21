@@ -309,9 +309,10 @@ test('Story 6.1: the job page shows NO loops, and links to /loops with this job 
   assert.ok(html.indexOf('data-testid="player"') !== -1, 'no Player in the rendered output');
   assert.equal(count(html, /data-testid="loop-results"/g), 0, 'the job page renders loops again (Story 6.1)');
   assert.equal(globalThis.__loopResultsProps, null, 'LoopResults was mounted on the job page');
-  // Slice 1a (design v1.4 P1.1): the player is the whole screen, so the route
-  // to the loops is the player's ⋯ menu ("Download loops") and Song info, fed
-  // by this prop. The player renders it (test/play-player-screen.test.mjs).
+  // Slice 1a (design v1.4 P1.1) passed this prop for a ⋯ menu "Download loops"
+  // link. Phase A (2026-11-21) removed that link: the player no longer renders
+  // it (test/play-player-screen.test.mjs); the loops product is reached from
+  // the nav and Account. The prop is still computed here (no demo loops).
   assert.equal(globalThis.__playerProps.loopsHref, `/loops?job=${DONE_JOB.id}`, 'no route from the job page to its loops');
   assert.doesNotMatch(html, /data-testid="loops-link"/, 'nothing is rendered below the full-screen player');
   // ...or above it: the player covers the page, so anything else would be a

@@ -230,14 +230,16 @@ test('hostile props: duration 0, position > duration, negative, NaN', () => {
   assert.doesNotMatch(h, /NaN/);
   assert.match(h, /aria-valuetext="0:00 of 0:00"/);
 });
-test('seek, -5 and +5 are disabled when idle/loading/error', () => {
+test('seek and ⟲ are disabled when idle/loading/error (D4: the -5 s / +5 s skips are gone)', () => {
   for (const status of ['idle', 'loading', 'error']) {
-    const h = render({ status });
+    const h = render({ status, onRestart: noop });
     assert.match(seekOf(h), /disabled/, status);
-    assert.match(h, /<button[^>]*aria-label="Back 5 seconds"[^>]*disabled/, status);
-    assert.match(h, /<button[^>]*aria-label="Forward 5 seconds"[^>]*disabled/, status);
+    assert.match(h, /<button[^>]*aria-label="Back to the start of this section"[^>]*disabled/, status);
+    assert.doesNotMatch(h, /5 seconds|>5s</, status);
   }
   assert.doesNotMatch(seekOf(render({ status: 'ready' })), /disabled/);
+  assert.doesNotMatch(render({ status: 'ready', onRestart: noop }).match(/<button[^>]*transport-restart[^>]*>/)[0], /disabled/);
+  assert.equal(T.SKIP_SEC, undefined, 'no skip step left in the module');
 });
 test('error and loading explain themselves; error is an alert', () => {
   assert.match(render({ status: 'error' }), /role="alert"[^>]*>Playback unavailable/);
@@ -253,23 +255,26 @@ test('time readout: elapsed and remaining under the bar', () => {
 });
 test('section ticks and the loop band are drawn on the seek line; the readout states the run', () => {
   const h = render({
-    status: 'playing', positionSec: 10, durationSec: 100, ticks: [0, 25, 50, 150],
+    status: 'playing', positionSec: 10, durationSec: 100, ticks: [0, 25, 50, 150], tickTones: [0, 1, 2, 0],
     loopBand: { startSec: 25, endSec: 75 }, loopText: 'Looping Verse 1 → Chorus 1 · 0:25–1:15', loopState: 'on',
   });
   assert.equal((h.match(/class="tick"/g) || []).length, 2, 'ticks inside (0, duration) only');
+  // D2: each tick carries its section's colour slot (the same index as its tick).
+  assert.deepEqual([...h.matchAll(/class="tick" data-tone="(\d)"/g)].map((m) => m[1]), ['1', '2']);
   assert.match(h, /data-testid="transport-loop-band" style="left:25%;width:50%"/);
   assert.match(h, /data-testid="transport-loop-text">Looping Verse 1 → Chorus 1 · 0:25–1:15</);
   assert.doesNotMatch(render({ status: 'playing', durationSec: 100, loopBand: null }), /transport-loop-band/);
 });
-test('the loop button: on (pressed) / off / disabled-with-aria-disabled and the P2.1 label', () => {
+test('the loop button: on (pressed) / off / disabled-with-aria-disabled and the D4 labels', () => {
   const btn = (loopState) => render({ loopState }).match(/<button[^>]*data-testid="transport-loop"[^>]*>/)[0];
   assert.match(btn('on'), /aria-pressed="true"/);
   assert.match(btn('on'), /aria-label="Loop"/);
   assert.match(btn('off'), /aria-pressed="false"/);
+  assert.match(btn('off'), /aria-label="Loop this section"/, 'off: one tap loops where the playhead is');
   assert.doesNotMatch(btn('off'), /aria-disabled/);
   const d = btn('disabled');
   assert.match(d, /aria-disabled="true"/);
-  assert.match(d, /aria-label="Tap a section to loop it"/);
+  assert.match(d, /aria-label="Loop \(no sections\)"/);
   assert.doesNotMatch(d, / disabled=""/, 'shown and focusable, not removed from the tab order');
 });
 test('the Mix button shows the mix state and opens a dialog; absent where the mixer is always shown', () => {
@@ -277,21 +282,31 @@ test('the Mix button shows the mix state and opens a dialog; absent where the mi
   assert.match(h, /<button[^>]*aria-haspopup="dialog"[^>]*aria-expanded="false"[^>]*data-testid="transport-mix"[^>]*><span class="mixName">Mix<\/span><span class="mixState">guitar off<\/span>/);
   assert.doesNotMatch(render({}), /transport-mix/);
 });
-test('transport order (P1.1): -5 s, Play/Pause, +5 s, Loop, Mix', () => {
-  const h = render({ mix: { label: 'full song', open: false, onOpen: noop } });
+test('transport order (D4): ⟲, Play/Pause, Loop, Mix', () => {
+  const h = render({ onRestart: noop, mix: { label: 'full song', open: false, onOpen: noop } });
   const order = [...h.matchAll(/<button[^>]*(?:aria-label="([^"]+)"|data-testid="transport-mix")/g)].map((m) => m[1] ?? 'Mix');
-  assert.deepEqual(order, ['Back 5 seconds', 'Play', 'Forward 5 seconds', 'Tap a section to loop it', 'Mix']);
+  assert.deepEqual(order, ['Back to the start of this section', 'Play', 'Loop (no sections)', 'Mix']);
+  assert.doesNotMatch(render({}), /transport-restart/, 'no handler, no button');
 });
 
-test('(DOM) -5 s / +5 s seek from the engine position, clamped; the loop button toggles unless disabled', async () => {
+test('transport CSS (D4): ⟲ is 44px, Play stays 64px', () => {
+  const css = readFileSync(join(WEB, 'src/components/play/Transport.module.css'), 'utf8');
+  const rule = (sel) => css.match(new RegExp(`${sel.replace('.', '\\.')}\\s*\\{([^}]*)\\}`))[1];
+  assert.match(rule('.restart'), /width:\s*44px;[\s\S]*height:\s*44px/);
+  assert.match(rule('.play'), /width:\s*64px;[\s\S]*height:\s*64px/);
+  assert.doesNotMatch(css, /\.skip\b/);
+});
+
+test('(DOM) ⟲ calls onRestart (the screen decides where); the loop button toggles unless disabled', async () => {
   await withDom(async (dom) => {
     const seeks = [];
     let toggles = 0;
-    const props = { status: 'playing', positionSec: 3, durationSec: 100, onPlay: noop, onPause: noop, onSeek: (s) => seeks.push(s), onToggleLoop: () => toggles++ };
+    let restarts = 0;
+    const props = { status: 'playing', positionSec: 3, durationSec: 100, onPlay: noop, onPause: noop, onSeek: (s) => seeks.push(s), onToggleLoop: () => toggles++, onRestart: () => restarts++ };
     const host = await dom.mount(React.createElement(T.Transport, { ...props, loopState: 'on' }));
-    await dom.act(() => dom.find('[aria-label="Back 5 seconds"]').click());
-    await dom.act(() => dom.find('[aria-label="Forward 5 seconds"]').click());
-    assert.deepEqual(seeks, [0, 8]);
+    await dom.act(() => dom.find('[data-testid="transport-restart"]').click());
+    assert.equal(restarts, 1);
+    assert.deepEqual(seeks, [], 'the transport itself seeks nowhere for ⟲');
     await dom.act(() => dom.find('[data-testid="transport-loop"]').click());
     assert.equal(toggles, 1);
     await dom.rerender(host, React.createElement(T.Transport, { ...props, loopState: 'disabled' }));

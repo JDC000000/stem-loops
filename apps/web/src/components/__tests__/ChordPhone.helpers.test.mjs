@@ -107,13 +107,14 @@ test('beatGridFromLoops: bpm and earliest start, numeric strings, guards', () =>
 test('phoneBarLabel names the bar and its chords in order, in words', () => {
   const ci = MODEL.cells.findIndex((c) => c.slots.map((s) => RUNS[s.runIndex].label).join() === 'G:7,Bb:maj');
   const c = MODEL.cells[ci];
-  assert.equal(phoneBarLabel(MODEL, RUNS, ci), `Bar ${c.numberInSection} of ${c.countInSection}, Bridge: G 7, B flat`);
+  // D2: sections are named neutrally by position; the bridge is the 6th.
+  assert.equal(phoneBarLabel(MODEL, RUNS, ci), `Bar ${c.numberInSection} of ${c.countInSection}, Part 6: G 7, B flat`);
   const four = MODEL.cells.findIndex((x) => x.slots.length === 4);
-  assert.match(phoneBarLabel(MODEL, RUNS, four), /^Bar \d+ of 8, Outro: D minor 7, G 7, C sharp minor 7 flat 5 over G sharp, C$/);
+  assert.match(phoneBarLabel(MODEL, RUNS, four), /^Bar \d+ of 8, Part 8: D minor 7, G 7, C sharp minor 7 flat 5 over G sharp, C$/);
   assert.equal(phoneBarLabel(MODEL, RUNS, 99999), '');
 });
 
-test('phoneSections: sorted, clamped, numbered like nameRegions, overlaps dropped', () => {
+test('phoneSections: sorted, clamped, named "Part N" like nameRegions (D2: never the label), overlaps dropped', () => {
   const s = phoneSections(
     [
       { startSec: 40, endSec: 60, label: 'chorus' },
@@ -126,10 +127,10 @@ test('phoneSections: sorted, clamped, numbered like nameRegions, overlaps droppe
     100,
   );
   assert.deepEqual(s, [
-    { startSec: 0, endSec: 20, name: 'Verse' },
-    { startSec: 20, endSec: 40, name: 'Chorus 1' },
-    { startSec: 40, endSec: 60, name: 'Chorus 2' },
-    { startSec: 60, endSec: 100, name: null },
+    { startSec: 0, endSec: 20, name: 'Part 1' },
+    { startSec: 20, endSec: 40, name: 'Part 2' },
+    { startSec: 40, endSec: 60, name: 'Part 3' },
+    { startSec: 60, endSec: 100, name: 'Part 4' },
   ]);
   assert.deepEqual(phoneSections(undefined, 10), []);
 });
@@ -173,9 +174,9 @@ test('fixture: numbering is per section, 1-based, and lines start at sections', 
     const firstInSec = MODEL.cells[l.cells[0]].numberInSection;
     assert.equal((firstInSec - 1) % BEATS_PER_BAR, 0, 'a line does not start at bar 1, 5, 9 ... of its section');
   }
-  const chorus2 = MODEL.sections.findIndex((s) => s.name === 'Chorus 2');
+  const chorus2 = MODEL.sections.findIndex((s) => s.name === 'Part 5');
   const c = MODEL.cells.findIndex((x) => x.section === chorus2 && x.numberInSection === 3);
-  assert.equal(positionLabel(MODEL, c), 'Chorus 2 · bar 3/16');
+  assert.equal(positionLabel(MODEL, c), 'Part 5 · bar 3/16');
 });
 
 test('cellIndexAt / lineIndexOfCell / beatInCell / beatsUntil', () => {
@@ -219,7 +220,7 @@ test('nextChord: from the playhead, skips N and repeats, follows the loop, gap-s
   assert.equal(rr[nextChord(rr, 0.5, 0, null).runIndex].label, 'G:maj');
   assert.equal(nextChord(rr, 2.5, 3, null), null, 'nothing after the last chord');
   // Loop: near the loop end the next chord is the loop's first chord.
-  const sec = MODEL.sections.find((s) => s.name === 'Chorus 2');
+  const sec = MODEL.sections.find((s) => s.name === 'Part 5');
   const loop = { startSec: sec.startSec, endSec: sec.endSec };
   const late = sec.endSec - 0.3;
   const li = RUNS.findIndex((r) => r.startSec <= late && late < r.endSec);
@@ -236,7 +237,7 @@ test('nextChord: from the playhead, skips N and repeats, follows the loop, gap-s
 });
 
 test('nextLineIndex: following line, or the loop start line at the loop end', () => {
-  const sec = MODEL.sections.findIndex((s) => s.name === 'Chorus 2');
+  const sec = MODEL.sections.findIndex((s) => s.name === 'Part 5');
   const lines = MODEL.lines.map((l, i) => i).filter((i) => MODEL.lines[i].section === sec);
   const s = MODEL.sections[sec];
   const loop = { startSec: s.startSec, endSec: s.endSec };
@@ -249,7 +250,7 @@ test('nextLineIndex: following line, or the loop start line at the loop end', ()
 });
 
 test('nearestCellStart snaps a worker loop edge (a beat before the downbeat) to the bar line', () => {
-  const sec = MODEL.sections.find((s) => s.name === 'Chorus 2');
+  const sec = MODEL.sections.find((s) => s.name === 'Part 5');
   const ci = nearestCellStart(MODEL, sec.startSec);
   assert.ok(Math.abs(MODEL.cells[ci].startSec - (sec.startSec + BEAT)) < 1e-6);
   assert.equal(MODEL.cells[ci].numberInSection, 1);
@@ -260,6 +261,27 @@ test('positionLabel: bars, sequence, before the first section', () => {
   const seq = buildPhoneModel(RUNS, null, SECTIONS, DUR);
   const ci = cellIndexAt(seq, 120);
   assert.equal(positionLabel(seq, ci), seq.sections[seq.cells[ci].section].name);
+  // Review A (2026-11-20): in sequence mode the heading names the section
+  // under the PLAYHEAD, not the one the current chord started in. A chord
+  // held across a boundary used to read the previous section.
+  const held = buildPhoneModel(
+    toRuns([
+      { start_sec: 0, end_sec: 8, label: 'C:maj' },
+      { start_sec: 8, end_sec: 14, label: 'G:maj' }, // starts in Part 1, held into Part 2
+      { start_sec: 14, end_sec: 20, label: 'F:maj' },
+    ]),
+    null,
+    [
+      { startSec: 0, endSec: 10, label: 'verse' },
+      { startSec: 10, endSec: 20, label: 'chorus' },
+    ],
+    20,
+  );
+  assert.equal(held.mode, 'sequence');
+  const g = cellIndexAt(held, 12);
+  assert.equal(positionLabel(held, g), 'Part 1', 'without the playhead: the section the chord started in');
+  assert.equal(positionLabel(held, g, 12), 'Part 2', 'with the playhead: the section being heard');
+  assert.equal(positionLabel(held, g, 9), 'Part 1');
   const noSec = buildPhoneModel(RUNS, GRID, [], DUR);
   assert.equal(noSec.mode, 'bars');
   assert.match(positionLabel(noSec, 3), /^Bar 4\/\d+$/);
@@ -345,16 +367,16 @@ for (const bpm of [120, 150, 180]) {
   });
 }
 
-test('triple time in sections: "Verse · bar 3", never "bar 3/N"; 4/4 in sections keeps "bar 3/16"', () => {
+test('triple time in sections: "Part 1 · bar 3", never "bar 3/N"; 4/4 in sections keeps "bar 3/16"', () => {
   const w = waltz(Array.from({ length: 32 }, (_, k) => [[WP[k % 8], 6]]), 138);
   const beat = w.grid.beatSec;
   const sections = [];
   for (let b = 0; b < 32 * 6; b += 48) sections.push({ startSec: 0.5 + b * beat, endSec: 0.5 + (b + 48) * beat, label: 'verse' });
   const m = buildPhoneModel(w.runs, w.grid, sections, w.dur);
   assert.equal(m.beatsPerBar, 3);
-  assert.equal(positionLabel(m, 2), 'Verse 1 · bar 3');
+  assert.equal(positionLabel(m, 2), 'Part 1 · bar 3');
   noTotal(m, w.runs, 'sectioned 6/8 @138');
-  assert.equal(positionLabel(MODEL, cellIndexAt(MODEL, MODEL.cells.find((c) => c.numberInSection === 3 && MODEL.sections[c.section]?.name === 'Chorus 2').startSec)), 'Chorus 2 · bar 3/16');
+  assert.equal(positionLabel(MODEL, cellIndexAt(MODEL, MODEL.cells.find((c) => c.numberInSection === 3 && MODEL.sections[c.section]?.name === 'Part 5').startSec)), 'Part 5 · bar 3/16');
 });
 
 test('4/4 keeps its total: "Bar n/N" with N = the cells drawn', () => {

@@ -623,7 +623,8 @@ for (const chordMode of ['simple', 'detailed']) for (const width of VIEWPORTS) {
 // ---------------------------------------------------------------------------
 const FITS = [[390, 844], [390, 664], [360, 800], [320, 568], [360, 520], [600, 500], [1440, 900], [1024, 768], [1366, 600], [1024, 520], [1024, 500], [667, 375], [844, 390], [800, 360]];
 const ZOOMED = [[320, 256], [320, 225]];
-const CONTROLS = ['[aria-label="Back 5 seconds"]', '[data-testid="transport-play"]', '[aria-label="Forward 5 seconds"]', '[data-testid="transport-loop"]', '[data-testid="transport-mix"]'];
+// D4 (2026-11-21): the −5 s / +5 s skips were replaced by ⟲ (back to the start of this section).
+const CONTROLS = ['[data-testid="transport-restart"]', '[data-testid="transport-play"]', '[data-testid="transport-loop"]', '[data-testid="transport-mix"]'];
 
 test('S1: no scroll at the sizes the screen fits', async () => {
   assert.ok(browser && built, 'setup test did not run or failed');
@@ -646,7 +647,7 @@ test('S1: no scroll at the sizes the screen fits', async () => {
   if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}`);
 });
 
-test('S1: at 400% zoom (320x256, 320x225) the screen scrolls and Play, ±5, Loop and Mix are reachable by pointer', async () => {
+test('S1: at 400% zoom (320x256, 320x225) the screen scrolls and ⟲, Play, Loop and Mix are reachable by pointer', async () => {
   assert.ok(browser && built, 'setup test did not run or failed');
   const f = [];
   for (const [w, h] of ZOOMED) {
@@ -759,7 +760,12 @@ test('R4: landscape (667x375, 740x360, 800x360, 844x390): every player control i
 
 // Review R1: a long-press held for 2 s (mouse AND touch) must leave the chip
 // looping: its release click is swallowed however long the hold was.
-test('R1: a 2-second long-press loops that chip, by mouse and by touch (the release click is swallowed)', async () => {
+// D4 (2026-11-21): a long-press LOOPS; held on another chip while a loop runs,
+// it EXTENDS the run (the P2 model). This gate's snapshot is already looping
+// SECTIONS[2], so a hold on chip 4 must leave the run 2..4 looping. The
+// release click must still be swallowed: were it read as a tap, it would land
+// on a chip of the running loop and STOP it (the last loop call would be null).
+test('R1: a 2-second long-press loops (here: extends the running loop), by mouse and by touch (the release click is swallowed)', async () => {
   assert.ok(browser && built, 'setup test did not run or failed');
   const f = [];
   for (const touch of [false, true]) {
@@ -784,13 +790,13 @@ test('R1: a 2-second long-press loops that chip, by mouse and by touch (the rele
       await page.waitForTimeout(300);
       const loops = await page.evaluate(() => window.__loops ?? []);
       const pressed = await page.locator('[data-testid="section-strip"] button[aria-pressed="true"]').count();
-      const want = SECTIONS[4];
+      const want = { startSec: SECTIONS[2].startSec, endSec: SECTIONS[4].endSec };
       const last = loops[loops.length - 1];
       const how = touch ? 'touch' : 'mouse';
       if (loops.length === 0) f.push(`${how}: the long-press set no loop`);
       else if (!last || Math.abs(last.startSec - want.startSec) > 0.01 || Math.abs(last.endSec - want.endSec) > 0.01)
         f.push(`${how}: after a 2 s hold the last loop call was ${JSON.stringify(last)} (calls ${JSON.stringify(loops)}); the release click undid the long-press`);
-      else if (pressed !== 1) f.push(`${how}: ${pressed} chips pressed after the long-press, want 1`);
+      else if (pressed !== 3) f.push(`${how}: ${pressed} chips pressed after the long-press, want 3 (the run 2..4)`);
     } finally {
       await page.context().close().catch(() => {});
       await page.close().catch(() => {});

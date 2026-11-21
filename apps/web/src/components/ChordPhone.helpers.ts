@@ -16,7 +16,7 @@
 // Lines never cross a section, so every section starts a new line.
 
 import { type OverlayRun, activeRunIndex, displayText, estimateStageLabelPx } from './ChordOverlay.helpers.ts';
-import type { BeatGrid } from '../lib/play/sections.ts';
+import { type BeatGrid, partName } from '../lib/play/sections.ts';
 import { spellChord } from '../lib/play/notation.ts';
 import { MIN_TAP_PX } from './tapTarget.ts';
 
@@ -143,12 +143,10 @@ function fmtBeats(b: number): string {
 export interface PhoneSection {
   readonly startSec: number;
   readonly endSec: number;
-  /** "Chorus 2" when a label repeats, "Verse" when it does not (same rule as nameRegions in lib/play/sections.ts). */
+  /** "Part 3": neutral, by position (D2; same rule as nameRegions in lib/play/sections.ts). */
   readonly name: string | null;
 }
 
-const titleCase = (s: string) => s.replace(/(^|\s)(\S)/g, (_m, sp: string, c: string) => sp + c.toUpperCase());
-const normLabel = (l: unknown) => (typeof l === 'string' ? l.trim().replace(/\s+/g, ' ').toLowerCase() : '');
 
 /** Valid, sorted, non-overlapping, named sections. */
 export function phoneSections(
@@ -160,21 +158,15 @@ export function phoneSections(
     .filter((r) => r && Number.isFinite(r.startSec) && Number.isFinite(r.endSec) && r.endSec > r.startSec && r.startSec >= 0 && r.startSec < durSec)
     .slice()
     .sort((a, b) => a.startSec - b.startSec);
-  const out: { startSec: number; endSec: number; label: string }[] = [];
+  const out: { startSec: number; endSec: number }[] = [];
   for (const r of ok) {
     const prev = out[out.length - 1];
     if (prev && r.startSec < prev.endSec - 1e-6) continue; // overlap: keep the first
-    out.push({ startSec: r.startSec, endSec: Math.min(r.endSec, durSec), label: normLabel(r.label) });
+    out.push({ startSec: r.startSec, endSec: Math.min(r.endSec, durSec) });
   }
-  const total = new Map<string, number>();
-  for (const r of out) if (r.label) total.set(r.label, (total.get(r.label) ?? 0) + 1);
-  const seen = new Map<string, number>();
-  return out.map((r) => {
-    if (!r.label) return { startSec: r.startSec, endSec: r.endSec, name: null };
-    const n = (seen.get(r.label) ?? 0) + 1;
-    seen.set(r.label, n);
-    return { startSec: r.startSec, endSec: r.endSec, name: (total.get(r.label) ?? 0) > 1 ? `${titleCase(r.label)} ${n}` : titleCase(r.label) };
-  });
+  // D2 (Jon 2026-11-21): never the worker's heuristic label ("Chorus" was a
+  // drum-energy guess); "Part N" by position, matching the section strip.
+  return out.map((r, i) => ({ startSec: r.startSec, endSec: r.endSec, name: partName(i) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -669,14 +661,26 @@ export function beatInCell(cell: Pick<PhoneCell, 'startSec' | 'endSec'>, t: numb
 }
 
 /**
- * "Chorus 2 · bar 3/16" (4/4 bars), "Chorus 2 · bar 3" (triple time: no total,
- * see showsBarTotal), "Chorus 2" (sequence), "Bar 2/3" before the first section.
+ * "Part 5 · bar 3/16" (4/4 bars), "Part 5 · bar 3" (triple time: no total,
+ * see showsBarTotal), "Part 5" (sequence), "Bar 2/3" before the first section.
+ *
+ * Sequence mode names the section under `positionSec` when given, not the one
+ * the current chord STARTED in: a chord held across a section boundary made
+ * the heading read the previous section (review A, 2026-11-20: "Chorus 1"
+ * while "Chorus 2" was looping).
  */
-export function positionLabel(model: PhoneModel, cell: number): string {
+export function positionLabel(model: PhoneModel, cell: number, positionSec?: number | null): string {
   const c = model.cells[cell];
   if (!c) return 'Now';
+  if (model.mode === 'sequence') {
+    let s = c.section;
+    if (typeof positionSec === 'number' && Number.isFinite(positionSec)) {
+      s = -1;
+      for (let i = 0; i < model.sections.length; i++) if (model.sections[i].startSec <= positionSec + 1e-6) s = i;
+    }
+    return (s >= 0 ? model.sections[s]?.name ?? null : null) ?? 'Now';
+  }
   const name = c.section >= 0 ? model.sections[c.section]?.name ?? null : null;
-  if (model.mode === 'sequence') return name ?? 'Now';
   const pos = showsBarTotal(model) ? `bar ${c.numberInSection}/${c.countInSection}` : `bar ${c.numberInSection}`;
   return name ? `${name} · ${pos}` : pos[0].toUpperCase() + pos.slice(1);
 }

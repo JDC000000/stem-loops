@@ -8,7 +8,7 @@
 //  SWEEP (every bar of the 4:12 fixture is the current bar once, so every bar
 //  is drawn in a current or next line at least once), at each position:
 //   * Now: the chord heard, lead-sheet spelling, >= 24px / 600, on screen, unclipped.
-//   * the position line "Chorus 2 · bar 3/16" and the lit beat dot;
+//   * the position line "Part 5 · bar 3/16" and the lit beat dot;
 //   * Next: the next different chord and "in N beats";
 //   * exactly ONE current bar (aria-current) and ONE current chord
 //     (aria-current), in the current line, the chord heard;
@@ -68,7 +68,12 @@ const BEAT = 60 / F.bpm;
 const BAR = 4 * BEAT;
 const DOWN = F.first_downbeat_sec;
 const GRID = { beatSec: BEAT, anchorSec: F.anchor_sec, measured: true };
-const NAMES = ['Intro', 'Verse 1', 'Chorus 1', 'Verse 2', 'Chorus 2', 'Bridge', 'Chorus 3', 'Outro'];
+// The planted sections are intro, verse, chorus, verse, chorus, bridge, chorus,
+// outro. D2 (Jon 2026-11-21): the player names them neutrally by position and
+// never shows the worker's labels, so these are the names the gate expects.
+const NAMES = ['Part 1', 'Part 2', 'Part 3', 'Part 4', 'Part 5', 'Part 6', 'Part 7', 'Part 8'];
+const CHORUS_2 = 4; // the planted second chorus
+const BRIDGE = 5;
 // Section i's true first bar: its worker start is one beat before the downbeat (intro: the first downbeat).
 const SEC_FIRST_BAR = F.sections.map((s, i) => (i === 0 ? 0 : Math.round((s.startSec + BEAT - DOWN) / BAR)));
 const SEC_BARS = SEC_FIRST_BAR.map((b, i) => (i + 1 < SEC_FIRST_BAR.length ? SEC_FIRST_BAR[i + 1] : F.bars) - b);
@@ -483,7 +488,7 @@ for (const vp of [[390, 844], [360, 800]]) {
   });
 
   test(`phone chords @ ${vp[0]}x${vp[1]}: a section loop wraps Next and the next line`, async () => {
-    const si = NAMES.indexOf('Chorus 2');
+    const si = CHORUS_2;
     const loop = { startSec: F.sections[si].startSec, endSec: F.sections[si].endSec, label: 'chorus' };
     const t = loop.endSec - 0.3;
     const { ctx, page, errors } = await open(browser, built, vp, { pos: t, loop });
@@ -500,7 +505,7 @@ for (const vp of [[390, 844], [360, 800]]) {
       await moveTo(page, t, null);
       const m2 = await page.evaluate(measure);
       if (m2.next?.wraps) f.push('Next wraps with no loop');
-      if (m2.lineNextFirst !== barTag(SEC_FIRST_BAR[NAMES.indexOf('Bridge')])) f.push(`unlooped next line "${m2.lineNextFirst}"`);
+      if (m2.lineNextFirst !== barTag(SEC_FIRST_BAR[BRIDGE])) f.push(`unlooped next line "${m2.lineNextFirst}"`);
       assert.deepEqual(errors, []);
       fail(f);
     } finally {

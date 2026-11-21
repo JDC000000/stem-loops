@@ -41,10 +41,11 @@ from . import cobalt_client, fetch_gates, ytdlp_client
 
 _ALLOWED = re.compile(r"^https?://(www\.|m\.)?(youtube\.com|youtu\.be)(/|$)", re.IGNORECASE)
 
-# #320: a first-byte stall (ytdlp_client.first_byte_deadline_s, default 15 s) is raised as
-# FETCH_PROXY_FAILED(first_byte_stall) when proxied -- retryable like proxy_connect -- or as
-# DOWNLOAD_TIMEOUT when direct; either way the next attempt gets a fresh exit. The attempt
-# budget (YTDLP_MAX_ATTEMPTS) is unchanged, so the cut only ever shortens a job.
+# #320: a first-byte stall (ytdlp_client.first_byte_deadline_s, default 15 s) is cut only on a
+# NON-FINAL attempt, raised as FETCH_PROXY_FAILED(first_byte_stall) when proxied -- retryable
+# like proxy_connect -- or DOWNLOAD_TIMEOUT when direct; the next attempt gets a fresh exit.
+# The final attempt runs to TIMEOUT as before, so a job's final error is never a stall cut
+# and the attempt budget (YTDLP_MAX_ATTEMPTS) is unchanged.
 # Only retry error classes where a DIFFERENT exit IP plausibly changes the outcome.
 # DOWNLOAD_AGE_RESTRICTED / DOWNLOAD_PRIVATE / DOWNLOAD_INVALID_URL are properties of
 # the video itself, not the network path — retrying those just burns the retry budget
@@ -168,7 +169,8 @@ def _fetch(
         # #320: ms_first_byte is measured by ytdlp_client from the same start as ms_total.
         # Cleared here as well so a fetcher that never reaches the download cannot report the
         # previous attempt's reading.
-        ytdlp_client.begin_attempt()
+        # #320 / review B-1: only an attempt with another one after it may be cut early.
+        ytdlp_client.begin_attempt(stall_cut=attempt < YTDLP_MAX_ATTEMPTS)
         t0 = time.monotonic()
         try:
             path = ytdlp_client.fetch_audio_file(fetch_url)

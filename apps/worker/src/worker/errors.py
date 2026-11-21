@@ -56,7 +56,8 @@ class FetchProxyFailedError(StemLoopsError):
     shown with copy that says it was us. ``cause`` is ``proxy_auth`` (407 / bad
     credentials: not transient, never retried), ``proxy_connect`` (the proxy could not be
     reached or could not open the tunnel) or ``first_byte_stall`` (#320: the exit sent no
-    media byte within ``FETCH_FIRST_BYTE_DEADLINE_SEC``; retried on a fresh exit). ``detail`` is a fixed string: the proxy URL
+    media byte within ``FETCH_FIRST_BYTE_DEADLINE_SEC``; raised only on a NON-final attempt and
+    retried on a fresh exit, so it is never a job's final error). ``detail`` is a fixed string: the proxy URL
     carries ``user:pass`` and must never reach a log, an event or the job row.
     """
 

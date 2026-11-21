@@ -1,5 +1,6 @@
-"""#320: record the first media byte of every link fetch attempt, and cut an attempt that has
-had none within FETCH_FIRST_BYTE_DEADLINE_SEC (default 15 s) so the retry rotates the exit.
+"""#320: record the first media byte of every link fetch attempt, and cut a NON-FINAL attempt
+that has had none within FETCH_FIRST_BYTE_DEADLINE_SEC (default 15 s) so the retry rotates the
+exit. The final attempt is never cut (review B-1): it runs to TIMEOUT exactly as before.
 
 Offline. No YouTube, no proxy, no database: ``_run_download`` is exercised against small local
 child processes that print what yt-dlp's progress template prints; everything above it is
@@ -37,8 +38,9 @@ ENV = "FETCH_FIRST_BYTE_DEADLINE_SEC"
         ("20", 20.0),
         ("12.5", 12.5),
         ("1", 5.0),  # floor: never cut a healthy fetch on a typo
-        ("0", 5.0),
-        ("-3", 5.0),
+        ("0", None),  # 0 = off
+        ("0.0", None),
+        ("-3", 15.0),  # negative is a typo, not "off"
         ("600", 60.0),  # ceiling
         ("abc", 15.0),
         ("nan", 15.0),
@@ -143,13 +145,22 @@ def test_a_stall_kills_the_whole_process_group(tmp_path):
     pidfile = tmp_path / "grandchild.pid"
     body = (
         "import subprocess\n"
+        "import os\n"
         "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-        f"open({str(pidfile)!r}, 'w').write(str(p.pid))\n"
+        # Atomic (QA-67): the pidfile is either absent or complete, never half-written.
+        f"tmp = {str(pidfile)!r} + '.tmp'\n"
+        "with open(tmp, 'w') as f:\n"
+        "    f.write(str(p.pid))\n"
+        f"os.replace(tmp, {str(pidfile)!r})\n"
         "time.sleep(60)\n"
     )
-    run = ytdlp_client._run_download(_child(body), timeout_s=30, first_byte_deadline=1.5)
+    run = ytdlp_client._run_download(_child(body), timeout_s=30, first_byte_deadline=3)
     assert run.ended == ytdlp_client.STALLED
-    pid = int(pidfile.read_text())
+    assert run.reaped, "the killed child is waited for, not left a zombie"
+    raw = pidfile.read_text().strip() if pidfile.exists() else ""
+    if not raw:
+        pytest.skip("the child was killed before it started a grandchild: nothing to orphan")
+    pid = int(raw)
     for _ in range(50):
         try:
             os.kill(pid, 0)
@@ -178,6 +189,46 @@ def test_a_chatty_child_cannot_block_on_a_full_pipe():
     assert len(run.stderr) == 300000 and run.first_byte_at is not None
 
 
+@pytest.mark.parametrize("deadline", [None, 1.5, 3.0])
+def test_a_deadline_at_or_over_the_timeout_never_cuts(deadline):
+    """Review m-1: deadline == timeout used to report STALLED. The timeout always wins a tie,
+    and a deadline >= timeout (or None) is no cut at all."""
+    run = ytdlp_client._run_download(
+        _child("time.sleep(60)\n"), timeout_s=1.5, first_byte_deadline=deadline
+    )
+    assert run.ended == ytdlp_client.TIMED_OUT
+    assert run.reaped
+
+
+def test_a_timed_out_run_is_reaped():
+    run = ytdlp_client._run_download(
+        _child("print('__sl_fb__ 9')\ntime.sleep(60)\n"), timeout_s=1, first_byte_deadline=None
+    )
+    assert run.ended == ytdlp_client.TIMED_OUT and run.reaped
+
+
+def test_stdout_is_drained_after_the_first_byte():
+    """Review m-3 (M18): real yt-dlp prints a progress line per block. Stop reading after the
+    first byte and the child blocks on a full pipe until TIMEOUT kills a good download."""
+    run = ytdlp_client._run_download(
+        _child(
+            "print('__sl_fb__ 1')\n" "for i in range(200000):\n" "    print('__sl_fb__', i + 2)\n"
+        ),
+        timeout_s=20,
+        first_byte_deadline=5,
+    )
+    assert run.ended == ytdlp_client.EXITED and run.returncode == 0
+
+
+def test_a_filter_rejection_exits_fast_and_is_not_a_stall():
+    run = ytdlp_client._run_download(
+        _child("print('[info] Encountered a video that did not match filter')\nsys.exit(101)\n"),
+        timeout_s=10,
+        first_byte_deadline=2,
+    )
+    assert run.ended == ytdlp_client.EXITED and run.returncode == 101
+
+
 # ------------------------------------------------------------------- fetch_audio_file
 
 
@@ -193,7 +244,11 @@ def fake_download(monkeypatch, tmp_path):
         kind = box["script"].pop(0)
         now = time.monotonic()
         if kind == "stall":
-            return ytdlp_client.DownloadRun(ytdlp_client.STALLED, None, "", None)
+            # Like the real thing: without a deadline a dead exit runs to the timeout.
+            ended = ytdlp_client.TIMED_OUT if first_byte_deadline is None else ytdlp_client.STALLED
+            return ytdlp_client.DownloadRun(ended, None, "", None)
+        if kind == "live":
+            return ytdlp_client.DownloadRun(ytdlp_client.EXITED, 101, "", None)
         if kind == "timeout":
             return ytdlp_client.DownloadRun(ytdlp_client.TIMED_OUT, None, "", now)
         (tmp_path / "dQw4w9WgXcQ.wav").write_bytes(b"RIFF")
@@ -216,14 +271,66 @@ def test_the_command_asks_yt_dlp_for_one_progress_line_per_update(fake_download)
     tpl = cmd[cmd.index("--progress-template") + 1]
     assert tpl == "download:__sl_fb__ %(progress.downloaded_bytes)s"
     assert cmd.index("--progress-template") < cmd.index("--"), "options before the URL guard"
-    assert fake_download["deadlines"] == [(30, 15.0)]
+    # A direct call (no stall_cut from download_audio) is never cut: pre-#320 behaviour.
+    assert fake_download["deadlines"] == [(30, None)]
+
+
+def test_the_command_refuses_a_live_stream_before_any_download(fake_download):
+    """Review m-2: a live stream that slipped past the fail-open live probe is refused by
+    yt-dlp itself, so it can never be fetched by ffmpeg (no progress hook) and look stalled."""
+    fake_download["script"] = ["ok"]
+    ytdlp_client.fetch_audio_file(URL)
+    cmd = fake_download["cmds"][0]
+    i = cmd.index("--break-match-filters")
+    assert cmd[i + 1] == "!is_live" and i < cmd.index("--")
+
+
+@pytest.mark.parametrize("stall_cut", [True, False])
+def test_a_live_stream_rejected_by_the_filter_is_live_not_supported(fake_download, stall_cut):
+    from worker.errors import LiveStreamNotSupportedError
+
+    ytdlp_client.begin_attempt(stall_cut=stall_cut)
+    fake_download["script"] = ["live"]
+    with pytest.raises(LiveStreamNotSupportedError) as ei:
+        ytdlp_client.fetch_audio_file(URL)
+    assert ei.value.error_code == "DOWNLOAD_INVALID_URL"
+    assert not isinstance(ei.value, FetchProxyFailedError)
+
+
+def test_a_live_stream_is_not_retried_and_not_ours(fake_download, gates):
+    from worker.errors import LiveStreamNotSupportedError
+
+    fake_download["script"] = ["live", "ok"]
+    with pytest.raises(LiveStreamNotSupportedError):
+        downloader.download_audio(URL, JOB)
+    assert len(fake_download["cmds"]) == 1
+    assert gates.attempts[0]["outcome_class"] == "DOWNLOAD_INVALID_URL"
 
 
 def test_deadline_comes_from_the_env(fake_download, monkeypatch):
     monkeypatch.setenv(ENV, "22")
+    ytdlp_client.begin_attempt(stall_cut=True)
     fake_download["script"] = ["ok"]
     ytdlp_client.fetch_audio_file(URL)
     assert fake_download["deadlines"] == [(30, 22.0)]
+
+
+def test_env_zero_turns_the_cut_off(fake_download, monkeypatch):
+    monkeypatch.setenv(ENV, "0")
+    ytdlp_client.begin_attempt(stall_cut=True)
+    fake_download["script"] = ["stall"]
+    with pytest.raises(DownloadTimeoutError) as ei:
+        ytdlp_client.fetch_audio_file(URL)
+    assert fake_download["deadlines"] == [(30, None)]
+    assert not isinstance(ei.value, FetchProxyFailedError)
+
+
+def test_the_stall_cut_flag_is_consumed_by_one_call(fake_download):
+    ytdlp_client.begin_attempt(stall_cut=True)
+    fake_download["script"] = ["ok", "ok"]
+    ytdlp_client.fetch_audio_file(URL)
+    ytdlp_client.fetch_audio_file(URL)
+    assert [d for _, d in fake_download["deadlines"]] == [15.0, None]
 
 
 def test_success_records_ms_first_byte_from_attempt_start(fake_download):
@@ -234,6 +341,7 @@ def test_success_records_ms_first_byte_from_attempt_start(fake_download):
 
 
 def test_a_proxied_stall_is_a_retryable_proxy_failure_without_credentials(fake_download, capsys):
+    ytdlp_client.begin_attempt(stall_cut=True)
     fake_download["script"] = ["stall"]
     with pytest.raises(FetchProxyFailedError) as ei:
         ytdlp_client.fetch_audio_file(URL)
@@ -249,11 +357,24 @@ def test_a_proxied_stall_is_a_retryable_proxy_failure_without_credentials(fake_d
 
 def test_a_direct_stall_is_a_download_timeout_with_its_own_reason(fake_download, monkeypatch):
     monkeypatch.setattr(ytdlp_client, "PROXY_URL", "")
+    ytdlp_client.begin_attempt(stall_cut=True)
     fake_download["script"] = ["stall"]
     with pytest.raises(DownloadTimeoutError) as ei:
         ytdlp_client.fetch_audio_file(URL)
     assert not isinstance(ei.value, FetchProxyFailedError)
     assert ei.value.failure_reason == "first_byte_stall"
+
+
+def test_an_uncut_attempt_with_no_byte_fails_exactly_as_before(fake_download):
+    """The final attempt (no cut): DOWNLOAD_TIMEOUT as on v3/main, with the stall recorded
+    as failure_reason for observability. Never FETCH_PROXY_FAILED."""
+    fake_download["script"] = ["stall"]
+    with pytest.raises(DownloadTimeoutError) as ei:
+        ytdlp_client.fetch_audio_file(URL)
+    assert not isinstance(ei.value, FetchProxyFailedError)
+    assert ei.value.error_code == "DOWNLOAD_TIMEOUT"
+    assert ei.value.failure_reason == "first_byte_stall"
+    assert ei.value.error_code not in job_failure.OUR_FAULT_CODES
 
 
 def test_the_overall_timeout_is_still_download_timeout_and_keeps_its_first_byte(fake_download):
@@ -264,9 +385,9 @@ def test_the_overall_timeout_is_still_download_timeout_and_keeps_its_first_byte(
     assert isinstance(ytdlp_client.last_first_byte_ms(), int), "slow-but-moving: byte recorded"
 
 
-def test_stall_code_is_ours_so_the_allowance_comes_back():
-    """The FINAL error of an all-stall job: our-fault (042 allowance restore, refund policy,
-    Sentry), and an infrastructure code for the burst detector."""
+def test_a_cut_attempt_is_classed_as_our_proxy_and_infra():
+    """A cut (non-final) attempt's row reads FETCH_PROXY_FAILED: our exit, infra-class. It is
+    never a job's final error (the final attempt is not cut), so no restore follows from it."""
     assert FetchProxyFailedError("first_byte_stall").error_code in job_failure.OUR_FAULT_CODES
     assert "FETCH_PROXY_FAILED" in fetch_alerts.INFRA_CODES
 
@@ -298,6 +419,7 @@ def test_stall_then_rotated_exit_succeeds(fake_download, gates):
     assert source == "ytdlp" and path.endswith(".wav")
     rows = gates.attempts
     assert [r["outcome_class"] for r in rows] == ["FETCH_PROXY_FAILED", "ok"]
+    assert [d for _, d in fake_download["deadlines"]] == [15.0, None], "final attempt uncut"
     assert rows[0]["ms_first_byte"] is None
     assert isinstance(rows[1]["ms_first_byte"], int)
     assert rows[1]["ms_first_byte"] <= rows[1]["ms_total"] + 1
@@ -309,13 +431,41 @@ def test_stall_then_rotated_exit_succeeds(fake_download, gates):
         assert "s3cr3tpass" not in str(r)
 
 
-def test_every_attempt_stalling_fails_as_ours_within_the_attempt_budget(fake_download, gates):
+def test_every_attempt_stalling_fails_as_download_timeout_like_v3_main(fake_download, gates):
+    """B-1: the final attempt is not cut, so an all-dead job fails DOWNLOAD_TIMEOUT (user-class,
+    no allowance restore) exactly as before this PR -- never FETCH_PROXY_FAILED."""
     fake_download["script"] = ["stall", "stall"]
-    with pytest.raises(FetchProxyFailedError) as ei:
+    with pytest.raises(DownloadTimeoutError) as ei:
         downloader.download_audio(URL, JOB)
-    assert ei.value.cause == "first_byte_stall"
+    assert not isinstance(ei.value, FetchProxyFailedError)
+    assert ei.value.failure_reason == "first_byte_stall"
+    assert ei.value.error_code not in job_failure.OUR_FAULT_CODES
     assert len(fake_download["cmds"]) == 2, "no extra attempts: the budget is unchanged"
+    assert [d for _, d in fake_download["deadlines"]] == [15.0, None]
+    assert [r["outcome_class"] for r in gates.attempts] == [
+        "FETCH_PROXY_FAILED",
+        "DOWNLOAD_TIMEOUT",
+    ]
     assert [r["ms_first_byte"] for r in gates.attempts] == [None, None]
+
+
+@pytest.mark.parametrize(("attempts", "deadlines"), [(1, [None]), (3, [15.0, 15.0, None])])
+def test_only_non_final_attempts_are_cut(fake_download, gates, monkeypatch, attempts, deadlines):
+    monkeypatch.setattr(downloader, "YTDLP_MAX_ATTEMPTS", attempts)
+    fake_download["script"] = ["stall"] * attempts
+    with pytest.raises(DownloadTimeoutError):
+        downloader.download_audio(URL, JOB)
+    assert [d for _, d in fake_download["deadlines"]] == deadlines
+
+
+def test_a_timed_out_attempt_keeps_its_first_byte_in_fetch_attempts(fake_download, gates):
+    """Review m-3 (M14): the trickling-vs-dead row. A timed-out attempt that DID get a byte
+    must carry ms_first_byte into fetch_attempts."""
+    fake_download["script"] = ["timeout", "ok"]
+    downloader.download_audio(URL, JOB)
+    rows = gates.attempts
+    assert [r["outcome_class"] for r in rows] == ["DOWNLOAD_TIMEOUT", "ok"]
+    assert isinstance(rows[0]["ms_first_byte"], int)
 
 
 def test_every_attempt_stalling_direct_fails_as_download_timeout(fake_download, gates, monkeypatch):
@@ -325,6 +475,7 @@ def test_every_attempt_stalling_direct_fails_as_download_timeout(fake_download, 
         downloader.download_audio(URL, JOB)
     assert ei.value.failure_reason == "first_byte_stall"
     assert [r["outcome_class"] for r in gates.attempts] == ["DOWNLOAD_TIMEOUT"] * 2
+    assert all(r["ms_first_byte"] is None for r in gates.attempts)
 
 
 def test_a_407_still_fails_fast_and_records_no_first_byte(fake_download, gates, monkeypatch):

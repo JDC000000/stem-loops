@@ -52,18 +52,21 @@ PROXY_URL = os.environ.get("PROXY_URL", "")  # e.g. http://user:pass@geo.iproyal
 # (false DOWNLOAD_TIMEOUT), so give proxied fetches real headroom.
 TIMEOUT = 10 if not PROXY_URL else 30
 
-# #320: first-byte stall deadline. An attempt whose media download has received NO media byte
-# this many seconds after the download subprocess started is cut (whole process group killed)
-# and handed back to download_audio()'s retry loop, which rotates the exit. A slow-but-moving
-# download is never cut by this: once one byte has arrived only TIMEOUT applies. Read per call
-# so an env change needs no code change; bounded so a typo cannot cut every healthy fetch
-# (floor) or silently exceed the job's budget (ceiling; anything >= TIMEOUT is inert because
-# TIMEOUT fires first).
+# #320: first-byte stall deadline. A NON-FINAL attempt whose media download has received NO
+# media byte this many seconds after the download subprocess started is cut (whole process
+# group killed) and handed back to download_audio()'s retry loop, which rotates the exit.
+# The FINAL attempt is never cut (review B-1): it runs to TIMEOUT exactly as before, so the
+# cut can only move a retry earlier, never turn a slow-but-successful last chance into a
+# failure. A download that has received a byte is never cut: only TIMEOUT applies to it.
+# Read per call; 0 = off; other values clamped to [5, 60]. A deadline >= the attempt's TIMEOUT
+# is off too (review m-1: TIMEOUT wins, never a stall).
 FIRST_BYTE_DEADLINE_ENV = "FETCH_FIRST_BYTE_DEADLINE_SEC"
 FIRST_BYTE_DEADLINE_DEFAULT_S = 15.0
 FIRST_BYTE_DEADLINE_MIN_S = 5.0
 FIRST_BYTE_DEADLINE_MAX_S = 60.0
 FIRST_BYTE_STALL = "first_byte_stall"
+# yt-dlp's exit status when --break-match-filters rejects the video (review m-2).
+_YTDLP_REJECTED_BY_FILTER = 101
 # yt-dlp prints one line per progress-hook call with this prefix (``--progress-template`` +
 # ``--newline``). Only the number is ever read; a line must match exactly.
 _PROGRESS_MARK = "__sl_fb__"
@@ -173,14 +176,28 @@ def last_session_hash() -> str | None:
     return getattr(_attempt, "session_hash", None)
 
 
-def begin_attempt() -> None:
+def begin_attempt(*, stall_cut: bool | None = None) -> None:
     """Start the clock for one fetch attempt and clear the last attempt's first-byte reading.
 
     ``ms_first_byte`` (fetch_attempts, #320) is measured from HERE -- the same instant
     download_audio() starts ``ms_total`` from -- so ``ms_first_byte <= ms_total`` and both
-    include the live-stream probe."""
+    include the live-stream probe.
+
+    ``stall_cut``: download_audio() passes True for an attempt that has another attempt after
+    it, False for the final one. ``None`` (fetch_audio_file's own call) leaves the caller's
+    choice in place. fetch_audio_file consumes the flag, so it never carries over to a later
+    call; a direct fetch_audio_file call with no flag set is never cut (the pre-#320
+    behaviour)."""
     _attempt.t0 = time.monotonic()
     _attempt.ms_first_byte = None
+    if stall_cut is not None:
+        _attempt.stall_cut = stall_cut
+
+
+def _take_stall_cut() -> bool:
+    allowed = bool(getattr(_attempt, "stall_cut", False))
+    _attempt.stall_cut = False
+    return allowed
 
 
 def last_first_byte_ms() -> int | None:
@@ -189,8 +206,9 @@ def last_first_byte_ms() -> int | None:
     return getattr(_attempt, "ms_first_byte", None)
 
 
-def first_byte_deadline_s() -> float:
-    """``FETCH_FIRST_BYTE_DEADLINE_SEC`` (default 15), clamped to [5, 60]. Unparseable -> 15."""
+def first_byte_deadline_s() -> float | None:
+    """``FETCH_FIRST_BYTE_DEADLINE_SEC``: default 15; ``0`` -> None (cut off); any other value
+    clamped to [5, 60]; unparseable, negative or NaN -> 15 with a WARN."""
     raw = os.environ.get(FIRST_BYTE_DEADLINE_ENV, "").strip()
     if not raw:
         return FIRST_BYTE_DEADLINE_DEFAULT_S
@@ -199,9 +217,11 @@ def first_byte_deadline_s() -> float:
     except ValueError:
         log_structured("WARN", "env_float_invalid", name=FIRST_BYTE_DEADLINE_ENV)
         return FIRST_BYTE_DEADLINE_DEFAULT_S
-    if value != value:  # NaN
+    if value != value or value < 0:  # NaN / negative
         log_structured("WARN", "env_float_invalid", name=FIRST_BYTE_DEADLINE_ENV)
         return FIRST_BYTE_DEADLINE_DEFAULT_S
+    if value == 0:
+        return None
     return min(max(value, FIRST_BYTE_DEADLINE_MIN_S), FIRST_BYTE_DEADLINE_MAX_S)
 
 
@@ -406,13 +426,15 @@ class DownloadRun:
     ``ended``: ``exited`` (the process finished; ``returncode`` is set), ``stalled`` (no media
     byte within the first-byte deadline; process group killed) or ``timed_out`` (the overall
     ``TIMEOUT``; process group killed). ``first_byte_at``: ``time.monotonic()`` when the first
-    progress line with ``downloaded_bytes > 0`` was read, else None.
+    progress line with ``downloaded_bytes > 0`` was read, else None. ``reaped``: the process
+    was waited for (no zombie left behind), on every path.
     """
 
     ended: str
     returncode: int | None
     stderr: str
     first_byte_at: float | None
+    reaped: bool = True
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
@@ -422,7 +444,9 @@ def _kill_group(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
-def _run_download(cmd: list[str], timeout_s: float, first_byte_deadline: float) -> DownloadRun:
+def _run_download(
+    cmd: list[str], timeout_s: float, first_byte_deadline: float | None
+) -> DownloadRun:
     """Run the yt-dlp media download in its OWN process group, watching for the first byte.
 
     FIRST MEDIA BYTE (the definition behind ``fetch_attempts.ms_first_byte``): the first line
@@ -432,6 +456,8 @@ def _run_download(cmd: list[str], timeout_s: float, first_byte_deadline: float) 
     yt-dlp counts it, within ~one read buffer.
 
     If no such line has arrived ``first_byte_deadline`` seconds after the process started,
+    the whole group is killed. ``None``, or a deadline >= ``timeout_s``, means no stall cut at
+    all: the overall timeout always wins a tie (review m-1). Otherwise
     the whole group is killed (yt-dlp may run an ffmpeg / JS-runtime grandchild) and the run
     is ``stalled``. Independently, the whole run is bounded by ``timeout_s`` (``timed_out``),
     as before. stdout and stderr are drained by threads so a chatty child can never block on
@@ -470,18 +496,21 @@ def _run_download(cmd: list[str], timeout_s: float, first_byte_deadline: float) 
     for t in readers:
         t.start()
 
-    stall_at = start + first_byte_deadline
     end_at = start + timeout_s
+    cut = first_byte_deadline is not None
+    stall_at = start + first_byte_deadline if cut else end_at  # type: ignore[operator]
+    # The timeout is checked FIRST, so a deadline >= timeout_s can never report a stall: at a
+    # tie, and past it, the run is timed_out (review m-1).
     ended = EXITED
     while proc.poll() is None:
         now = time.monotonic()
-        if not first and now >= stall_at:
-            ended = STALLED
-            break
         if now >= end_at:
             ended = TIMED_OUT
             break
-        next_check = end_at if first else min(stall_at, end_at)
+        if cut and not first and now >= stall_at:
+            ended = STALLED
+            break
+        next_check = end_at if first or not cut else min(stall_at, end_at)
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=max(0.0, min(next_check - now, 0.25)))
     if ended != EXITED:
@@ -495,6 +524,7 @@ def _run_download(cmd: list[str], timeout_s: float, first_byte_deadline: float) 
         returncode=proc.returncode if ended == EXITED else None,
         stderr="".join(err_chunks),
         first_byte_at=first[0] if first else None,
+        reaped=proc.returncode is not None,
     )
 
 
@@ -603,6 +633,7 @@ def fetch_audio_file(youtube_url: str) -> str:
     # download) — see _sticky_proxy_url(). A retry (download_audio(), __init__.py)
     # calls this function again, generating a fresh session/IP each time.
     begin_attempt()
+    stall_cut = _take_stall_cut()
     proxy = _sticky_proxy_url()
     _record_session(proxy)
     _reject_if_live(youtube_url, proxy)
@@ -627,6 +658,11 @@ def fetch_audio_file(youtube_url: str) -> str:
         "--newline",
         "--progress-template",
         f"download:{_PROGRESS_MARK} %(progress.downloaded_bytes)s",
+        # Review m-2: _reject_if_live fails open, and a live stream reaching the download
+        # would be fetched by ffmpeg with no progress hook -- it must never look like a
+        # stall. yt-dlp refuses it here instead and exits 101 (mapped below).
+        "--break-match-filters",
+        "!is_live",
     ]
     cf = _pick_cookie_file()
     if cf:
@@ -636,7 +672,7 @@ def fetch_audio_file(youtube_url: str) -> str:
     # `--` ends option parsing (QA track B, B-09): the URL can never be read as a flag.
     cmd += ["--", youtube_url]
 
-    deadline = first_byte_deadline_s()
+    deadline = first_byte_deadline_s() if stall_cut else None
     r = _run_download(cmd, TIMEOUT, deadline)
     if r.first_byte_at is not None:
         _attempt.ms_first_byte = max(0, int((r.first_byte_at - _attempt.t0) * 1000))
@@ -652,7 +688,14 @@ def fetch_audio_file(youtube_url: str) -> str:
             raise FetchProxyFailedError(FIRST_BYTE_STALL)
         raise DownloadTimeoutError("yt-dlp: no first byte", failure_reason=FIRST_BYTE_STALL)
     if r.ended == TIMED_OUT:
-        raise DownloadTimeoutError("yt-dlp timed out")
+        # The final attempt is never cut (B-1): if it never got a byte, it fails exactly as
+        # before (DOWNLOAD_TIMEOUT), with the stall recorded as the reason for observability.
+        stalled = r.first_byte_at is None
+        raise DownloadTimeoutError(
+            "yt-dlp timed out", failure_reason=FIRST_BYTE_STALL if stalled else None
+        )
+    if r.returncode == _YTDLP_REJECTED_BY_FILTER:
+        raise LiveStreamNotSupportedError("is_live=True (download filter)")
 
     if r.returncode != 0:
         # Redact BEFORE cutting (QA-65, review R-3): a cut that lands mid-password leaves a

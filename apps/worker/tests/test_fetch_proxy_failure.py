@@ -196,6 +196,18 @@ def test_ytdlp_hostile_id_with_a_proxy_is_not_a_proxy_failure(fake_ytdlp):
         ytdlp_client.fetch_audio_file("https://www.youtube.com/watch?v=x-407-proxy")
 
 
+def test_ytdlp_passes_the_video_id_so_a_bare_echo_cannot_fake_a_proxy_failure(fake_ytdlp):
+    """Review R-5 (mutant R3): fetch_audio_file hands the video id to the classifier. The id
+    "_ProxyError" echoed bare (no "[youtube] <id>:" prefix, no watch URL) right before a "("
+    reads as "ProxyError(" unless the id itself is cut out first."""
+    vid = "_ProxyError"
+    fake_ytdlp["stderr"] = f"WARNING: giving up on {vid}(itag 251)\nERROR: Video unavailable"
+    assert ytdlp_client.proxy_failure_cause(fake_ytdlp["stderr"]) == "proxy_connect"  # unaided
+    with pytest.raises(DownloadBlockedError) as ei:
+        ytdlp_client.fetch_audio_file(f"https://www.youtube.com/watch?v={vid}")
+    assert not isinstance(ei.value, FetchProxyFailedError)
+
+
 def test_ytdlp_proxy_connect_failure(fake_ytdlp):
     fake_ytdlp["stderr"] = STDERR_CONNECT
     with pytest.raises(FetchProxyFailedError) as ei:
@@ -301,7 +313,7 @@ def test_the_code_is_registered_everywhere_the_taxonomy_lives():
 def test_the_user_copy_is_honest():
     msg = FetchProxyFailedError("proxy_auth").user_message
     # Pinned verbatim in apps/web/test/job-page-render.test.mjs (the job page shows it).
-    assert msg == "Something went wrong on our end fetching this video. Try again in a few minutes."
+    assert msg == "Something went wrong on our end fetching this video. Try again later."
     assert "on our side" not in msg  # BRAND-TONE avoid list
     assert "YouTube" not in msg and "blocking" not in msg
     assert "proxy" not in msg.lower()  # implementation detail stays server-side
@@ -309,6 +321,9 @@ def test_the_user_copy_is_honest():
     # so the copy must promise nothing about charges, credits or refunds.
     for word in ("credit", "charge", "refund", "returned", "allowance"):
         assert word not in msg.lower(), word
+    # QA-65 (review R-4): an outage can last hours, and the copy must not invite a retry
+    # every few minutes.
+    assert "few minutes" not in msg and "moment" not in msg
 
 
 def test_web_copy_promises_no_refund_either():
@@ -320,6 +335,8 @@ def test_web_copy_promises_no_refund_either():
     assert "on our end" in entry
     for word in ("credit", "charge", "refund", "returned"):
         assert word not in entry.lower(), word
+    assert "action: 'Try again later.'" in entry  # QA-65: matches the worker's sentence
+    assert "few minutes" not in entry
 
 
 def test_refund_sql_is_handed_the_proxy_code():
@@ -620,6 +637,106 @@ def test_redact_secrets_strips_url_userinfo(text):
     out = redact_secrets(text)
     assert "hunter2xyz" not in out and "usr:" not in out, out
     assert "[REDACTED]@" in out
+
+
+# QA-65 (review R-3): the redaction false negatives.
+@pytest.mark.parametrize(
+    "text,secret_bits",
+    [
+        # a raw '@' in the password: greedy to the LAST '@' before the host
+        ("--proxy http://usr:hun@ter2xyz@geo.iproyal.com:12321", ("hun", "ter2xyz")),
+        ("proxy usr:hun@ter2xyz@geo.iproyal.com:12321 failed", ("hun", "ter2xyz")),
+        ("http://usr:a@b@c@host.example:1/x", ("a@b@c",)),
+        # scheme-less user:pass@[ipv6]:port
+        ("via usr:hunter2xyz@[::1]:8080 refused", ("hunter2xyz",)),
+        ("via usr:hun@ter2xyz@[2001:db8::7]:3128 refused", ("hun", "ter2xyz")),
+        # a quote in the password, as it arrives JSON-escaped in log_structured's dump
+        ('{"stderr": "http://usr:hun\\"ter2xyz@host.example:1"}', ("hun", "ter2xyz")),
+        ('{"stderr": "usr:hun\\"ter2xyz@host.example:1"}', ("hun", "ter2xyz")),
+    ],
+)
+def test_redact_secrets_hardened_userinfo(text, secret_bits):
+    from worker.logger import redact_secrets
+
+    out = redact_secrets(text)
+    for bit in (*secret_bits, "usr:"):
+        assert bit not in out, out
+    assert "[REDACTED]@" in out
+
+
+def test_redaction_keeps_a_json_dump_valid():
+    from worker.logger import redact_secrets
+
+    dumped = json.dumps({"stderr": 'line one\nhttp://usr:hun"ter@2xyz@host.example:1 bad'})
+    out = json.loads(redact_secrets(dumped))["stderr"]
+    assert "hun" not in out and "2xyz" not in out and out.startswith("line one\n")
+
+
+def test_redact_secrets_stays_fast_on_long_unbroken_text():
+    import time
+
+    from worker.logger import redact_secrets
+
+    # The greedy userinfo runs must not go quadratic, and neither may the keyword pass (it
+    # did: 5 KB of keyword-free base64-ish stderr took ~1-2 s before QA-65).
+    blobs = [
+        "a:" + "@x" * 4000,
+        "http://" + "a@" * 4000,
+        "u:" + "\\x" * 4000,
+        "a:a@" * 2000,
+        "x" * 8000,
+        "Z9+/" * 2000,
+    ]
+    t0 = time.monotonic()
+    for blob in blobs:
+        redact_secrets(blob)
+    assert time.monotonic() - t0 < 0.5
+
+
+@pytest.mark.parametrize("cut_at", range(1, 60))
+def test_redact_tail_never_leaves_a_password_fragment(cut_at):
+    """The old code cut stderr[-1000:] THEN redacted: a cut landing mid-password left a
+    fragment with no 'user:' or '@' for any pattern to see. Redact first, then cut."""
+    from worker.logger import redact_secrets, redact_tail
+
+    secret = "http://usr:hunter2xyz_session-abcd1234_lifetime-2m@geo.iproyal.com:12321"
+    stderr = "x" * 5000 + " " + secret + " " + "y" * 30
+    limit = len(stderr) - (5001 + cut_at)  # the old cut would land inside the secret
+    out = redact_tail(stderr, limit)
+    assert len(out) <= limit
+    assert "hunter2" not in out and "abcd1234" not in out and "lifetime-2m" not in out, out
+    if len("http://usr:") < cut_at < secret.index("@"):  # the old order leaked: pin it
+        naive = redact_secrets(stderr[-limit:])
+        assert "[REDACTED]" not in naive and "@geo.iproyal.com" in naive
+
+
+def test_redact_tail_is_bounded_on_huge_stderr():
+    from worker.logger import redact_tail
+
+    assert redact_tail("z" * 2_000_000 + "END", 1000).endswith("END")
+    assert len(redact_tail("z" * 2_000_000, 1000)) == 1000
+
+
+def test_log_structured_redacts_before_capping(capsys):
+    """A cap that lands mid-password must not leave a fragment: redact first, then cap."""
+    from worker.logger import MAX_DETAIL, log_structured
+
+    # The cap lands 22 chars into the proxy URL: "http://someuser:s3cr3t" | "pass@geo...".
+    pad = "p" * (MAX_DETAIL - len('{"stderr": "') - 1 - 22)
+    log_structured("ERROR", "ytdlp_failed", stderr=pad + " " + PROXY + "_session-ab12cd34_x")
+    err = capsys.readouterr().err
+    assert "s3cr3t" not in err and "someuser" not in err and "ab12cd34" not in err
+
+
+def test_ytdlp_failure_log_redacts_before_cutting_to_1000(fake_ytdlp, capsys):
+    secret = "http://someuser:s3cr3tpass_session-ab12cd34_lifetime-2m@geo.iproyal.com:12321"
+    # The old stderr[-1000:] cut would land 20 chars into the secret, inside the password
+    # ("3tpass_session-...@geo...": no "user:" left, so nothing redacted it).
+    fake_ytdlp["stderr"] = "x" * 3000 + " " + secret + " " + "y" * (1019 - len(secret))
+    with pytest.raises(DownloadBlockedError):
+        ytdlp_client.fetch_audio_file(URL)
+    err = capsys.readouterr().err
+    assert "3tpass" not in err and "ab12cd34" not in err and "lifetime-2m" not in err
 
 
 def test_redact_secrets_leaves_ordinary_text_alone():

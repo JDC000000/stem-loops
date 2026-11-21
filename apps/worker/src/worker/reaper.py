@@ -57,7 +57,7 @@ import os
 import psycopg
 import sentry_sdk
 
-from .job_failure import refund_if_owed, restore_allowance_if_owed
+from .job_failure import refund_if_owed, restore_allowance_isolated
 from .logger import log_structured
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -96,8 +96,10 @@ async def _fail_and_refund_each(
                     continue
                 refunded += await refund_if_owed(conn, str(job_id))
                 # QA-64: INTERNAL_ERROR is ours, so a link job's allowance unit / trial song
-                # comes back too, in the same savepoint (exactly once: migration 042).
-                await restore_allowance_if_owed(conn, str(job_id))
+                # comes back too, in a savepoint nested in this one (exactly once: migration
+                # 042). Isolated (QA-66): a restore error rolls back only the restore and is
+                # logged; it never undoes this job's failure or its credit refund.
+                await restore_allowance_isolated(conn, str(job_id), stage="reaper")
                 failed += 1
         except Exception as exc:  # noqa: BLE001 — one bad row must not roll back the batch
             log_structured(

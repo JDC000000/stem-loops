@@ -326,7 +326,9 @@ def test_timeout_kills_the_whole_process_group(tmp_path):
             with open(f"/proc/{gpid}/stat") as f:
                 if f.read().split(")")[-1].split()[0] == "Z":
                     break
-        except FileNotFoundError:
+        # Reaped between open() and read(): the kernel answers ESRCH (ProcessLookupError).
+        # Seen twice on CI for PR #327; either way the grandchild is gone.
+        except (FileNotFoundError, ProcessLookupError):
             break
         time.sleep(0.1)
     else:

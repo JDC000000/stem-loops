@@ -137,6 +137,33 @@ def test_log_attempt_writes_one_row_and_never_raises(conn, monkeypatch):
     )
 
 
+def test_ms_first_byte_is_persisted_on_success_and_null_on_a_stall(conn, monkeypatch):
+    """#320: download_audio passes ytdlp_client's first-byte reading into fetch_attempts."""
+    from worker import downloader
+    from worker.downloader import ytdlp_client
+    from worker.errors import FetchProxyFailedError
+
+    calls = {"n": 0}
+
+    def fake_fetch(url):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise FetchProxyFailedError("first_byte_stall")
+        ytdlp_client._attempt.ms_first_byte = 4321
+        return "/nonexistent.wav"
+
+    monkeypatch.setattr(downloader.ytdlp_client, "fetch_audio_file", fake_fetch)
+    monkeypatch.setattr(downloader, "YTDLP_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(downloader, "YTDLP_RETRY_DELAY_S", 0)
+    downloader.download_audio(
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "33333333-3333-3333-3333-333333333333"
+    )
+    rows = conn.execute(
+        "SELECT attempt, outcome_class, ms_first_byte FROM fetch_attempts ORDER BY attempt"
+    ).fetchall()
+    assert rows == [(1, "FETCH_PROXY_FAILED", None), (2, "ok", 4321)]
+
+
 def test_down_migration_drops_exactly_the_008_tables_and_is_rolled_back_here(conn):
     conn.execute(DOWN.read_text())
     gone = conn.execute(

@@ -39,6 +39,16 @@ _lock = threading.Lock()
 _reported_causes: set[str] = set()
 
 
+_PROXY_FAILURE_DEFAULT = "link fetch failed at our proxy ({cause}); check PROXY_URL credentials"
+# #320: a stall is not a credential problem; say what it is.
+_PROXY_FAILURE_MESSAGES = {
+    "first_byte_stall": (
+        "link fetch failed at our proxy ({cause}): the last attempt's exit sent no media byte "
+        "before FETCH_FIRST_BYTE_DEADLINE_SEC"
+    ),
+}
+
+
 def report_proxy_failure(cause: str) -> bool:
     """Send one Sentry ERROR for this proxy-failure cause, unless this process already has.
     Returns True if THIS call sent it."""
@@ -53,7 +63,7 @@ def report_proxy_failure(cause: str) -> bool:
         scope.set_tag("cause", cause)
         scope.fingerprint = ["fetch-proxy-failed", cause]
         sentry_sdk.capture_message(
-            f"link fetch failed at our proxy ({cause}); check PROXY_URL credentials",
+            _PROXY_FAILURE_MESSAGES.get(cause, _PROXY_FAILURE_DEFAULT).format(cause=cause),
             level="error",
         )
     return True

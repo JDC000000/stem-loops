@@ -121,8 +121,7 @@ import { PlayerScreen } from './PlayerScreen';
  */
 export const UNSUPPORTED_BROWSER_MESSAGE =
   'Play along needs the Web Audio API, which this browser does not provide. ' +
-  'Open this page in an up-to-date browser such as Chrome, on a phone or a computer. ' +
-  'Your loops are still on the Download loops page.';
+  'Open this page in an up-to-date browser such as Chrome, on a phone or a computer.';
 
 /**
  * Story 5.3, reached when every stem decoded to nothing (ENGINE_ERROR.DECODE_FAILED).
@@ -132,7 +131,7 @@ export const UNSUPPORTED_BROWSER_MESSAGE =
  */
 export const UNDECODABLE_MESSAGE =
   'This browser could not decode this track’s audio. ' +
-  'Update it to the latest version, or open this page in Chrome. Your loops are still on the Download loops page.';
+  'Update it to the latest version, or open this page in Chrome.';
 
 /**
  * Story 6.4 — nothing was stored for this job (`state: 'unavailable'`). Not an
@@ -141,8 +140,7 @@ export const UNDECODABLE_MESSAGE =
  * and false of a fresh one, and the route cannot tell the two apart.
  */
 export const NO_STEMS_MESSAGE =
-  'Play along is not available for this track — no play-along audio was kept for it. ' +
-  'Your loops are on the Download loops page.';
+  'Play along is not available for this track — no play-along audio was kept for it.';
 
 /**
  * `state: 'encode_failed'` — the stems were separated and uploaded for download,
@@ -151,23 +149,23 @@ export const NO_STEMS_MESSAGE =
  */
 export const ENCODE_FAILED_MESSAGE =
   'We separated this track but could not prepare its audio for play along. ' +
-  'Your loops are on the Download loops page. To retry, add the track again on the home page. It counts as a new track.';
+  'To retry, add the track again on the home page. It counts as a new track.';
 
 /** Stems were offered and the browser never got a response (CORS / CSP / offline). */
 export const FETCH_NETWORK_MESSAGE =
   'Your browser could not reach the storage that holds this track’s audio, so play along ' +
   'cannot start. Check your connection and try again. If it keeps happening on a working ' +
-  'connection, the fault is on our end. Your loops are on the Download loops page.';
+  'connection, the fault is on our end.';
 
 /** Stems were offered and storage answered with an error status. */
 export const FETCH_HTTP_MESSAGE =
   'Our storage would not hand over this track’s audio files, so play along cannot start. ' +
-  'Try again in a moment. Your loops are on the Download loops page.';
+  'Try again in a moment.';
 
 /** Stems were offered, storage answered 200, and the bytes were unusable. */
 export const FETCH_BODY_MESSAGE =
   'This track’s audio files arrived empty or incomplete, so play along cannot start. ' +
-  'Try again. Your loops are on the Download loops page.';
+  'Try again.';
 
 export const GENERIC_LOAD_MESSAGE =
   'We could not load the audio for this track. Reload the page to try again.';
@@ -191,7 +189,7 @@ export const MANIFEST_UNREACHABLE_MESSAGE =
  */
 export const MANIFEST_SERVER_ERROR_MESSAGE =
   'Our server could not start play along for this track. This is on our end, not your connection. ' +
-  'Try again in a moment. Your loops are on the Download loops page.';
+  'Try again in a moment.';
 
 const LOAD_MESSAGES: Record<StemLoadErrorCode, string> = {
   RATE_LIMITED:
@@ -724,7 +722,7 @@ export interface PlayerViewProps {
   readonly back?: { readonly href: string; readonly label: string };
   /** Extra Song info lines (the trim note, when the song is deleted). */
   readonly songInfo?: readonly string[];
-  /** "Download loops" in the ⋯ menu; omitted when null. */
+  /** No longer rendered (Phase A Story 9: the player does not link to the loops product); kept so JobView can still pass it. */
   readonly loopsHref?: string | null;
   /**
    * When set, the back arrow calls this instead of following `back.href` (the href is

@@ -46,6 +46,13 @@ export interface SectionStripProps {
   readonly onLongPress: (i: number) => void;
   /** A line under the strip (STRIP_HINT or RUN_HINT), or nothing. */
   readonly hint?: string | null;
+  /**
+   * The first-run line ("Tap to jump · hold to loop") drawn on the strip's TOP
+   * edge, left, like the "+N more" cue on the right: it names the chips, sits
+   * above them (never next to or under the "my part" pills, where "hold" means
+   * solo), and costs the stage above no height (PR #331 r2 M-1).
+   */
+  readonly firstHint?: string | null;
 }
 
 /** How many chips sit outside the strip's visible box, above and below (the "+N" cue). */
@@ -100,7 +107,7 @@ export function scrollChipIntoList(list: HTMLElement, chip: HTMLElement): void {
  * and the click that follows its release is SWALLOWED, or the release would
  * read as a tap and stop the loop it just started.
  */
-export function SectionLoop({ names, times, tones, current = -1, state, onTap, onLongPress, hint = null }: SectionStripProps) {
+export function SectionLoop({ names, times, tones, current = -1, state, onTap, onLongPress, hint = null, firstHint = null }: SectionStripProps) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const start = useRef<{ x: number; y: number } | null>(null);
   const swallow = useRef(false);
@@ -247,6 +254,11 @@ export function SectionLoop({ names, times, tones, current = -1, state, onTap, o
             );
           })}
         </div>
+        {firstHint ? (
+          <span className={styles.first} data-testid="section-first-hint">
+            {firstHint}
+          </span>
+        ) : null}
         {overflowText(overflow) ? (
           // Not a control (swipe the strip; every chip is in the tab order), so it
           // is hidden from assistive tech, which reaches every chip anyway.

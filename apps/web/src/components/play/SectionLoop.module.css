@@ -103,6 +103,13 @@
   .list { --rows: 1; }
 }
 
+/* Phase A (orchestrator rule, PR #331): while the "my part" pills row is on the
+   play screen, the strip shows ONE row plus the "+N more" cue; 2 rows (3 at
+   >= 800px) only when the pills are not there. Phone priority: the Now chord and
+   the next line, then the pills, then extra section rows. (The pills are hidden
+   only below 600px tall, where the strip is one row anyway.) */
+:global([data-testid='player']:has([data-testid='part-pills'])) .list { --rows: 1; }
+
 /* "+N more ↓": chips out of view. It sits on the strip's top edge (over the
    bottom of the chord stage, never over a chip) and lets taps through. */
 .more {
@@ -113,6 +120,26 @@
   border-radius: 10px;
   font-size: 12px;
   line-height: 16px;
+  color: var(--text-primary);
+  background: var(--bg-selected);
+  border: 1px solid var(--border-control);
+  pointer-events: none;
+}
+
+/* The first-run line, on the strip's top edge at the LEFT (the cue is right):
+   over the bottom of the chord stage, like the cue, so it takes no height. */
+.first {
+  position: absolute;
+  left: 0;
+  top: -18px;
+  max-width: calc(100% - 96px);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--text-primary);
   background: var(--bg-selected);
   border: 1px solid var(--border-control);

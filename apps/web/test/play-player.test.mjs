@@ -299,12 +299,12 @@ test('the unsupported-browser copy is not byte-identical to any tab-capture mess
   }
 });
 
-test('the unsupported-browser copy names Chrome, points at the loops, and does not send phones to a desktop', () => {
+test('the unsupported-browser copy names Chrome, does not point at the loops product (Phase A Story 9), and does not send phones to a desktop', () => {
   // Story 8 (Jon, 2026-11-15): the player runs on phones. A phone user reading
   // either message must not be told the fix is a desktop or laptop.
   for (const message of [UNSUPPORTED_BROWSER_MESSAGE, UNDECODABLE_MESSAGE]) {
     assert.match(message, /Chrome/);
-    assert.match(message, /loops/);
+    assert.doesNotMatch(message, /loops/i);
     assert.doesNotMatch(message, /desktop|laptop|not supported|700|\bMB\b/i);
   }
 });
@@ -325,8 +325,9 @@ test('hasWebAudio: a scope without one is not, and nothing throws on a bad scope
 
 // ═══ Story 6.4 — "no stems" is a fallback, not an error ══════════════════════
 
-test('the no-stems copy explains the fallback without calling it a failure', () => {
-  assert.match(NO_STEMS_MESSAGE, /loops/);
+test('the no-stems copy says play along is not available, without calling it a failure or pointing at the loops product', () => {
+  assert.match(NO_STEMS_MESSAGE, /^Play along is not available for this track/);
+  assert.doesNotMatch(NO_STEMS_MESSAGE, /loops/i, 'Phase A Story 9: the player does not route to the loops product');
   for (const alarming of ['error', 'failed', 'went wrong', 'sorry']) {
     assert.ok(
       !NO_STEMS_MESSAGE.toLowerCase().includes(alarming),
@@ -1106,4 +1107,10 @@ test('chordPositionFor: latency after a loop wrap reads the END of the loop, not
   near(chordPositionFor(ready, { ...base, loop: { startSec: 20, endSec: 20.1 }, positionSec: 20.05 }, 0.2), 19.85, 'tiny span');
   // not playing: the latency never applies
   assert.equal(chordPositionFor(ready, { ...base, status: 'ready', loop, positionSec: 20.05 }, 0.2), 20.05);
+});
+
+test('Phase A Story 9: no player message points at the loops product (the nav item is gone)', async () => {
+  const src = readFileSync(join(WEB, 'src/components/play/Player.tsx'), 'utf8');
+  const strings = [...src.matchAll(/'([^'\\]|\\.)*'/g)].map((m) => m[0]);
+  assert.deepEqual(strings.filter((x) => /Download loops|Your loops/.test(x)), []);
 });

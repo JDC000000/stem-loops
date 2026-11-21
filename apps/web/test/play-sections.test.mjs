@@ -870,6 +870,8 @@ test('strip CSS (D4 item 4, review B1): chips WRAP; 2 rows, 3 at >= 800px tall, 
   // The bands, exactly: a phone of 800-844px tall must get 3 rows, 600-799px 2, and only below 600px 1.
   const media = [...css.matchAll(/@media\s*\(([^)]*)\)\s*\{\s*\.list\s*\{\s*--rows:\s*(\d)/g)].map((m) => `${m[1].replace(/\s+/g, '')}=${m[2]}`);
   assert.deepEqual(media.sort(), ['max-height:599px=1', 'min-height:800px=3']);
+  // Phase A (PR #331): while the "my part" pills are on the play screen, ONE row (+ the cue).
+  assert.match(css, /:global\(\[data-testid='player'\]:has\(\[data-testid='part-pills'\]\)\) \.list \{ --rows: 1; \}/);
   // Phones up to 430px wide stack the time under the name (4 chips a row at 360-430px).
   assert.match(css, /@media\s*\(max-width:\s*430px\)\s*\{\s*\.label\s*\{[^}]*flex-direction:\s*column/);
   assert.match(list, /overflow-y:\s*auto/);

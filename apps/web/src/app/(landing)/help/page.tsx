@@ -7,13 +7,14 @@ import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import { FaqItem, helpSections } from '@/components/landing/faq';
 
-// generateMetadata: the shared Open Graph image is a DB-17 chord claim, read at request time.
+// generateMetadata: the shared Open Graph image is a DB-17 chord claim (read at build: static page).
 export function generateMetadata(): Metadata {
   return pageMetadata(pageFor('/help')!);
 }
 
-// Rendered per request so the DB-17 chord switch (lib/chords-claim.ts) is read at request time.
-export const dynamic = 'force-dynamic';
+// STATIC and CDN-cached (PR #332, round 2): no `dynamic` export. The DB-17 chord switch
+// (lib/chords-claim.ts) is read when the page is BUILT; a Vercel env change needs a Redeploy,
+// which rebuilds this page with the new value.
 
 export default function HelpPage() {
   return (

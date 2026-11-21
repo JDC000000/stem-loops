@@ -37,7 +37,7 @@ const LANDING = [...walk(join(WEB, 'src/app/(landing)')), ...walk(join(WEB, 'src
  * UNDER-inclusive: a STRING literal is not a comment, so a literal can still SATISFY a
  * positive gate. That is a false GREEN and is not tolerable. The one gate it was demonstrated
  * against — the art-drift gate — therefore no longer reads source text at all; it asserts on
- * RENDERED OUTPUT, which no literal can fake. See test/helpers/render-player-art.mjs.
+ * RENDERED OUTPUT, which no literal can fake (that gate and its helper went with the drawn player, A4).
  *
  * AND THE SAFETY ARGUMENT ABOVE HAS A PRECONDITION. Being wrong only in the false-RED
  * direction holds because every surviving positive gate over this text is a PREFIX or a
@@ -464,9 +464,10 @@ test('the page itself names the player, the faders, mute, solo, the chords and t
 // copy, demo-data.ts) and the .pl-band breakpoint (the drawn player's layout). The drawn player,
 // the lanes and their data module are deleted, so there is nothing left for them to read.
 
-test('the landing reads the v3 demo set', () => {
+test('the demo loop file is the v3 set', () => {
+  // A4: the example lanes (which read demo-assets-v3/) are gone; the loops intro's WAV stays v3.
   const cfg = readFileSync(join(WEB, 'src/lib/public-config.ts'), 'utf8');
-  assert.match(cfg, /'demo-assets-v3\/'/);
+  assert.doesNotMatch(cfg, /DEMO_DATA_BASE|DEMO_BEFORE_PEAKS_URL/);
   assert.match(cfg, /'assets-v3\/'/);
   assert.match(cfg, /lucky_ticket_drums_102\.0bpm_G_minor_verse_0006\.wav/);
 });

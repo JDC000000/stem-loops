@@ -116,7 +116,7 @@
     ]
   },
   "360x800-signedout": {
-    "height": 2229,
+    "height": 2249,
     "source": {
       "top": 300,
       "bottom": 348,
@@ -137,8 +137,8 @@
     },
     "options": null,
     "demoPlay": {
-      "top": 855,
-      "bottom": 903,
+      "top": 875,
+      "bottom": 923,
       "h": 48,
       "w": 294
     },
@@ -174,7 +174,7 @@
     ]
   },
   "360x800-signedin": {
-    "height": 2229,
+    "height": 2249,
     "source": {
       "top": 300,
       "bottom": 348,
@@ -195,8 +195,8 @@
     },
     "options": null,
     "demoPlay": {
-      "top": 855,
-      "bottom": 903,
+      "top": 875,
+      "bottom": 923,
       "h": 48,
       "w": 294
     },

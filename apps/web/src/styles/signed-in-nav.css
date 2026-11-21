@@ -126,7 +126,9 @@
    .sin-outlined so the Account item takes it too when current. aria-current="page" is set in
    SignedInNav.tsx for assistive technology. */
 .sin-item.sin-current {
-  border-color: var(--text-secondary);
+  /* Brand selected state (A4 review): #222 fill with a 2px #fff edge, 15.91:1 on the fill. */
+  border-width: 2px;
+  border-color: var(--text-primary);
   font-weight: var(--weight-semibold);
 }
 .sin-item:focus-visible {
@@ -158,6 +160,11 @@
   .sin-l-wide { display: none; }
   .sin-l-phone { display: inline; }
   .sin-product { display: none; }
+  /* Story 8.4 on a phone: Download loops has no phone item, so on /loops the product tag stays,
+     small, under the wordmark (the brand stacks; the bar stays one row of items). On Play along
+     pages the current "Play" item already says it. */
+  .sin-brand:has(.sin-product[data-product="Download loops"]) { flex-direction: column; align-items: flex-start; gap: 0; }
+  .sin-product[data-product="Download loops"] { display: inline-flex; min-height: 0; padding: 0 6px; font-size: 12px; line-height: 16px; }
   .sin-inner { flex-wrap: nowrap; gap: 4px; }
   .sin-nav { gap: 2px; }
   .sin-item { padding: 0 10px; }

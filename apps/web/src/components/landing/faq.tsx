@@ -13,7 +13,7 @@ export type FaqEntry = { id: string; q: string; a: ReactNode };
 
 /**
  * Every entry, built for one value of the DB-17 chords switch (lib/chords-claim.ts). A function,
- * not a module constant: the switch is read at request time, so the answers are built per render.
+ * not a module constant: the switch is read when the page renders (at build for the static pages).
  */
 export function faqEntries(chords: boolean = chordsLineShown()): Record<string, FaqEntry> {
   return {
@@ -135,7 +135,7 @@ export function faqEntries(chords: boolean = chordsLineShown()): Record<string, 
       <p>
         Yes, with public videos on youtube.com or youtu.be, including Shorts and YouTube Music links. Playlists, private,
         age-restricted and live videos don’t work. If YouTube blocks a fetch, try again in a few minutes or upload the
-        file. A linked song counts toward your monthly songs, just like an upload.
+        file. A song you add from a link uses 1 of your monthly songs.
       </p>
     ) : (
       <p>Not right now: YouTube links are paused. Upload the audio or video file instead.</p>

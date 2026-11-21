@@ -488,3 +488,25 @@ test('every signed-in layout opts its segment out of static rendering', async ()
     );
   }
 });
+
+// PR #332 round 2: on a phone the current item is marked (aria-current + the brand selected state,
+// #222 with a 2px #fff edge, never lime or amber), and /loops, which has no phone item, keeps its
+// product tag under the wordmark (Story 8.4 at every width).
+test('phone: the current item is marked, and /loops keeps its product tag under the wordmark', async () => {
+  const css = readFileSync(join(APP, '..', 'styles', 'signed-in-nav.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const cur = [...css.matchAll(/\.sin-item\.sin-current\s*\{([^}]*)\}/g)].map((m) => m[1]).join(';');
+  assert.match(cur, /background:\s*var\(--bg-selected\)/);
+  assert.match(cur, /border-width:\s*2px/);
+  assert.match(cur, /border-color:\s*var\(--text-primary\)/);
+  assert.doesNotMatch(cur, /accent|chord-now|#a3e635|#f59e0b/);
+  const phone = css.match(/@media \(max-width: 759px\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  assert.match(phone, /\.sin-product\[data-product="Download loops"\] \{ display: inline-flex;/);
+  assert.match(phone, /\.sin-brand:has\(\.sin-product\[data-product="Download loops"\]\) \{ flex-direction: column;/);
+  for (const [path, current, tag] of [['/history', 'Song library', null], ['/', 'Play along', 'Play along'], ['/loops', 'Download loops', 'Download loops']]) {
+    const html = await chrome({ user: { user_id: 'u', email: 'a@b.c' }, path });
+    const marked = [...html.matchAll(/<a\b[^>]*aria-current="page"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => m[1].replace(PHONE_LABEL, '').replace(/<[^>]*>/g, '').trim());
+    assert.deepEqual(marked, [current], path);
+    const t = html.match(/<span class="sin-product" data-testid="sin-product" data-product="([^"]+)">/)?.[1] ?? null;
+    assert.equal(t, tag, path);
+  }
+});

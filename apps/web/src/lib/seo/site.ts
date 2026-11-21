@@ -8,7 +8,7 @@ export const SITE_NAME = 'stem-loops';
 // DB-17 (lib/chords-claim.ts): v4 draws four chord names over the mixer, so it is a chord claim
 // in its own right. With the switch off every page shares v3 instead (stems and a boxed loop, no
 // chords), and OG_ALT below describes whichever image is in use.
-// Functions, not constants: the switch is read at request time (lib/chords-claim.ts).
+// Functions, not constants: the switch is read when they are called (lib/chords-claim.ts).
 export const ogImage = (): string => (chordsLineShown() ? '/og-image-v4.png' : '/og-image-v3.png');
 export const ogAlt = (): string => chordsLineShown()
   ? 'Four chord names, Gm, E flat, B flat and F, above six mixer channels for drums, bass, guitar, keys, vocals and other, with the guitar fader pulled down and muted, under the headline Paste a song. Play along.'

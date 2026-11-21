@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { pageMetadata } from '@/lib/seo/meta';
 import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
-import { CONTACT_LABEL, CONTACT_URL, TERMS_UPDATED } from '@/components/landing/legal';
+import { CONTACT_LABEL, CONTACT_URL, formatDay, termsUpdatedOn } from '@/components/landing/legal';
 import { MAX_TRACK_SEC } from '@/lib/play/types';
 import { chordsLineShown } from '@/lib/chords-claim';
 
@@ -30,20 +30,21 @@ const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 // uploads and links alike. With BILLING_ENFORCED=true a Free upload with no credits is refused
 // (CREDIT_BALANCE_INSUFFICIENT) and the 5 covers LINKS only. On the day the flag goes on, in the
 // same change: reword the Free sentence below (e.g. "covers 5 song links a month; uploads use
-// credits"), bump TERMS_UPDATED and /terms lastModified, and re-check /pricing and /help.
+// credits"), bump TERMS_UPDATED_ON (components/landing/legal.ts), and re-check /pricing and /help.
 const FREE_MONTHLY_SONGS = 5;
 
 // SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
-// generateMetadata: the shared Open Graph image is a DB-17 chord claim, read at request time.
+// generateMetadata: the shared Open Graph image is a DB-17 chord claim (read at build: static page).
 export function generateMetadata(): Metadata {
   return pageMetadata(pageFor('/terms')!);
 }
 
-// Rendered per request so the DB-17 chord switch (lib/chords-claim.ts) is read at request time.
-export const dynamic = 'force-dynamic';
+// STATIC and CDN-cached (PR #332, round 2): no `dynamic` export. The DB-17 chord switch
+// (lib/chords-claim.ts) is read when the page is BUILT; a Vercel env change needs a Redeploy,
+// which rebuilds this page with the new value.
 
 export default function TermsPage() {
-  const chords = chordsLineShown(); // DB-17, read at request time
+  const chords = chordsLineShown(); // DB-17, read at build (the page is static)
   return (
     <>
       <SiteHeader />
@@ -51,7 +52,7 @@ export default function TermsPage() {
         <div className="container">
           <div className="reading">
             <h1>Terms</h1>
-            <p className="updated">Last updated {TERMS_UPDATED}</p>
+            <p className="updated">Last updated {formatDay(termsUpdatedOn())}</p>
 
             <h2>The service</h2>
             <p>
@@ -66,8 +67,8 @@ export default function TermsPage() {
               Prices and limits are on the <a href="/pricing">pricing page</a>.
             </p>
             <p>
-              You can start a job without an account. You need an account to open the player with your own songs and reach
-              your results. The demo songs open without signing in. By using stem-loops you agree to these terms.
+              You can start a job from an uploaded file without an account; a song link added on the home page asks you to
+              sign in first. You need an account to open the player with your own songs and reach your results. The demo songs open without signing in. By using stem-loops you agree to these terms.
             </p>
 
             <h2>What it can and cannot do</h2>
@@ -78,8 +79,8 @@ export default function TermsPage() {
                 {chords ? 'the chord track and the player both stop.' : 'the player stops.'}
               </li>
               <li>
-                Built and tested in Chrome on a computer. On a phone the player loads lighter audio.
-                Phone support is new, and other browsers are not tested yet.
+                Built for your phone and your computer, and tested in Chrome. On a phone the player loads lighter audio so
+                all six stems fit in memory. Other browsers are not tested yet.
               </li>
               {chords && (
                 <li>

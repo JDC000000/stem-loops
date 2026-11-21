@@ -11,7 +11,7 @@ import { pageMetadata } from '@/lib/seo/meta';
 // (lib/seo/pages.ts), the sitemap and llms.txt, and indexable. Its metadata comes from that one
 // registry entry, like /privacy and /terms. A signed-in visitor gets the same URL with their
 // songs on it; nothing private is in the head.
-// generateMetadata: the shared Open Graph image is a DB-17 chord claim, read at request time.
+// generateMetadata: the shared Open Graph image is a DB-17 chord claim, read per request (this route is dynamic).
 export function generateMetadata(): Metadata {
   return pageMetadata(pageFor('/loops')!);
 }

@@ -6,7 +6,7 @@ import SiteAnalytics from '@/components/SiteAnalytics';
 import { siteDescription } from '@/lib/seo/site';
 
 // generateMetadata, not a const: the default description carries the DB-17 chord claim, which
-// is read at request time (lib/chords-claim.ts). Every page that makes the claim is dynamic.
+// is read when this metadata is generated (lib/chords-claim.ts): at build for static pages.
 export function generateMetadata(): Metadata {
   return {
   metadataBase: new URL('https://stem-loops.com'),

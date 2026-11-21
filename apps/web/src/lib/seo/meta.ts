@@ -5,7 +5,7 @@ import { ogAlt, ogImage, SITE_NAME } from './site.ts';
 import type { PublicPage } from './pages.ts';
 
 export function pageMetadata(p: PublicPage): Metadata {
-  // Read once per call, at request time on a dynamic page (lib/chords-claim.ts).
+  // Read once per call (lib/chords-claim.ts): at build on a static page, per request on a dynamic one.
   const OG_IMAGE = ogImage();
   const OG_ALT = ogAlt();
   return {

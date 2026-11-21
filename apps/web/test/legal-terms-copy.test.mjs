@@ -51,9 +51,11 @@ test('terms: the four banned sentences match nothing in text or metadata', async
 test('terms: the account-rule fragments are still present', async () => {
   const page = await renderPage(TERMS);
   // TRUE: src/app/api/jobs/route.ts has ZERO 401s and an anonymous INSERT branch that omits
-  // user_id (:183-190); src/app/api/uploads/route.ts never calls getUser(); and
-  // src/components/landing/ToolForm.tsx has no client-side auth gate.
-  assertSays(assert, page, 'You can start a job without an account', 'terms');
+  // user_id; src/app/api/uploads/route.ts never calls getUser(). A4 (2026-11-21): the home form
+  // sends a signed-out LINK to sign-in first (components/landing/ToolForm.tsx,
+  // lib/pending-link.ts); a FILE still starts signed out. Both halves are stated.
+  assertSays(assert, page, 'You can start a job from an uploaded file without an account; a song link added on the home page asks you to sign in first.', 'terms');
+  assertSays(assert, page, 'Built for your phone and your computer, and tested in Chrome.', 'terms');
   // TRUE: src/app/jobs/[id]/page.tsx:32-33 — getUser() then redirect('/login?return_to=…').
   // Scoped to YOUR OWN songs since #302: /demo/<slug> opens the player signed out
   // (src/app/demo/[slug]/page.tsx), so the unscoped "to open the player" was false.

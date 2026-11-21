@@ -10,7 +10,7 @@ import { appCopyError, authErrorMessage, loginErrorMessage } from '@/lib/auth/lo
 import { sendMagicLink } from '@/lib/auth/magic-link';
 import { navigationGrace, trackEvent } from '@/lib/analytics';
 import { fieldStyle, buttonBase, primaryButton, secondaryButton, secondaryEmphasisButton, textButton } from '@/lib/ui/form-styles';
-import { PENDING_RETURN_TO } from '@/lib/pending-link';
+import { clearPendingLink, isPendingReturnTo } from '@/lib/pending-link';
 
 type Mode = 'signin' | 'signup' | 'reset';
 type BusyAction = Mode | 'magic' | 'google';
@@ -21,17 +21,28 @@ const btn = buttonBase;
 const linkBtn = textButton;
 const LOGIN_FAILED = 'Sign-in did not complete. Please try again.';
 
+const safeStorage = (): Storage | null => {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+};
+
 export default function LoginForm({
   returnTo, initialError, initialMode = 'signin',
 }: { returnTo?: string; initialError?: string; initialMode?: Mode }) {
-  const dest = sanitizeReturnTo(returnTo, '/account');
+  const rawDest = sanitizeReturnTo(returnTo, '/account');
   const [mode, setMode] = useState<Mode>(initialMode);
   // A4 (2026-11-21): Google is the first and largest option; every email path (password, sign-up,
   // reset, one-time link) is folded under "Use email instead". It starts OPEN when the visitor is
   // already on an email path: sign-up or reset mode, or an error that is about email/password.
   const [emailOpen, setEmailOpen] = useState<boolean>(initialMode !== 'signin' || !!initialError);
-  // Sent here by the home form with a link waiting to start (lib/pending-link.ts).
-  const linkWaiting = dest === PENDING_RETURN_TO;
+  // Sent here by the home form with a link waiting to start (lib/pending-link.ts). "Not your
+  // song?" drops it (and the marker), so whoever signs in here does not start someone else's song.
+  const [dropped, setDropped] = useState(false);
+  const dest = dropped && isPendingReturnTo(rawDest) ? '/' : rawDest;
+  const linkWaiting = isPendingReturnTo(dest);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   // F57 (copy audit v1.3.1): which action is in flight, not just "something is". Every
@@ -71,6 +82,9 @@ export default function LoginForm({
     try {
       const supabase = createBrowserClient();
       const { data } = supabase.auth.onAuthStateChange((event, session) => {
+        // A sign-in that is NOT the pending-link round trip, and any sign-out, drops a saved link
+        // (lib/pending-link.ts): another person signing in on this device never inherits it.
+        if (event === 'SIGNED_OUT' || (event === 'SIGNED_IN' && !isPendingReturnTo(dest))) clearPendingLink(safeStorage());
         if (event === 'SIGNED_IN' && session) window.location.assign(dest);
       });
       unsub = () => data.subscription.unsubscribe();
@@ -208,9 +222,19 @@ export default function LoginForm({
         </p>
       )}
       {!initialError && linkWaiting && (
-        <p data-testid="login-link-waiting" style={{ margin: 0, fontSize: 16, color: 'var(--text-secondary)' }}>
-          Sign in and your song starts straight away. New here? Google creates your free account in one step.
-        </p>
+        <div data-testid="login-link-waiting" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {/* True to app/api/jobs/route.ts: every signed-in link job is metered against the
+              account's monthly songs (bumpJobsUsed / bumpJobsUsedWithinQuota; a trial song too,
+              while one is left), and credits never pay for a link. */}
+          <p style={{ margin: 0, fontSize: 16, color: 'var(--text-secondary)' }}>
+            Sign in and your song starts straight away. It uses 1 of your monthly songs. New here? Google creates your free
+            account in one step.
+          </p>
+          <button type="button" style={{ ...linkBtn, alignSelf: 'flex-start' }} data-testid="login-link-drop"
+            onClick={() => { clearPendingLink(safeStorage()); setDropped(true); }}>
+            Not your song? Sign in without it
+          </button>
+        </div>
       )}
 
       {/* Google first and largest. It is the one lime action on the view while the email options

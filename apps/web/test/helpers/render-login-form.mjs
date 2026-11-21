@@ -41,7 +41,9 @@ async function build() {
   // Inert client: the mount effect subscribes to auth changes and must not throw; anything a
   // test has not scripted (signInWithPassword, ...) is simply absent and surfaces inline.
   const supabase = put('supabase.mjs',
-    'export function createBrowserClient() { return { auth: { onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }), ' +
+    // A test may capture the auth-change callback through globalThis.__loginStub.onAuth (A4: the
+    // pending-link clear on SIGNED_OUT / a non-resume SIGNED_IN).
+    'export function createBrowserClient() { return { auth: { onAuthStateChange: (cb) => { globalThis.__loginStub?.onAuth?.(cb); return { data: { subscription: { unsubscribe() {} } } }; }, ' +
     // A test may script the Google call through globalThis.__loginStub.oauth (F57 busy-label
     // test); unscripted, it returns undefined and the destructure throws, as an absent method did.
     'signInWithOAuth: (...a) => globalThis.__loginStub?.oauth?.(...a), ' +

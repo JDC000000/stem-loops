@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { pageMetadata } from '@/lib/seo/meta';
 import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
-import { CONTACT_LABEL, CONTACT_URL, PRIVACY_UPDATED } from '@/components/landing/legal';
+import { CONTACT_LABEL, CONTACT_URL, formatDay, privacyUpdatedOn } from '@/components/landing/legal';
 import { chordsLineShown } from '@/lib/chords-claim';
 
 // DB-17 (lib/chords-claim.ts). With the switch off, only the PROMISE goes: the short version and
@@ -13,16 +13,17 @@ import { chordsLineShown } from '@/lib/chords-claim';
 // has received audio must stay listed. test/chords-switch-surfaces.test.mjs pins both halves.
 
 // SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
-// generateMetadata: the shared Open Graph image is a DB-17 chord claim, read at request time.
+// generateMetadata: the shared Open Graph image is a DB-17 chord claim (read at build: static page).
 export function generateMetadata(): Metadata {
   return pageMetadata(pageFor('/privacy')!);
 }
 
-// Rendered per request so the DB-17 chord switch (lib/chords-claim.ts) is read at request time.
-export const dynamic = 'force-dynamic';
+// STATIC and CDN-cached (PR #332, round 2): no `dynamic` export. The DB-17 chord switch
+// (lib/chords-claim.ts) is read when the page is BUILT; a Vercel env change needs a Redeploy,
+// which rebuilds this page with the new value.
 
 export default function PrivacyPage() {
-  const chords = chordsLineShown(); // DB-17, read at request time
+  const chords = chordsLineShown(); // DB-17, read at build (the page is static)
   return (
     <>
       <SiteHeader />
@@ -30,7 +31,7 @@ export default function PrivacyPage() {
         <div className="container">
           <div className="reading">
             <h1>Privacy</h1>
-            <p className="updated">Last updated {PRIVACY_UPDATED}</p>
+            <p className="updated">Last updated {formatDay(privacyUpdatedOn())}</p>
 
             <h2>The short version</h2>
             <p>

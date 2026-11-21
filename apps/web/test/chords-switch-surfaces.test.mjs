@@ -369,6 +369,7 @@ const ALLOW = {
   'src/app/llms.txt/route.ts': [0, 'comment only (why the route is dynamic)'],
   'src/app/loops/layout.tsx': [0, 'comment only (generateMetadata: the shared OG image is switched)'],
   'src/app/pricing/layout.tsx': [0, 'comment only (generateMetadata: the shared OG image is switched)'],
+  'src/components/landing/legal.ts': [0, 'comments only (the legal dates follow CHORDS_CLAIMS_CHANGED_ON)'],
   'src/lib/seo/meta.ts': [0, 'comment only (reads the switched OG image per call)'],
   // outside src/ (QA follow-up S-1: the scan covers all of apps/web except node_modules, .next, test)
   'package.json': [3, 'the test:chord script name and its paths: tooling, never rendered'],
@@ -517,4 +518,28 @@ test('source scan: public/ text assets carry no chord claim', () => {
   const hits = walk(join(WEB, 'public')).filter((p) => /\.(txt|md|json|webmanifest|html)$/.test(p) && !/cqt-plan/.test(p))
     .filter((p) => /chord/i.test(readFileSync(p, 'utf8')));
   assert.deepEqual(hits.map((p) => relative(WEB, p)), []);
+});
+
+// ── PR #332 round 2: "the date above shows the latest version" survives the flip ──────────────
+// The switch changes /terms and /privacy text without a code change, so the shown "Last updated"
+// day is the LATER of the page's own day and CHORDS_CLAIMS_CHANGED_ON (YYYY-MM-DD, validated).
+test('CHORDS_CLAIMS_CHANGED_ON: the flip day moves "Last updated" (and lastModified) on /terms and /privacy', async () => {
+  const { parseIsoDay, legalUpdated } = await import('../src/lib/chords-claim.ts');
+  for (const bad of ['', '2026-13-01', '2026-02-30', '26-12-05', '2026-12-5', 'tomorrow', '2026-12-05T00:00']) assert.equal(parseIsoDay(bad), null, bad);
+  assert.equal(parseIsoDay(' 2026-12-05 '), '2026-12-05');
+  await withEnv({ CHORDS_CLAIMS_CHANGED_ON: '2026-12-05' }, () => assert.equal(legalUpdated('2026-11-21'), '2026-12-05'));
+  await withEnv({ CHORDS_CLAIMS_CHANGED_ON: '2026-11-01' }, () => assert.equal(legalUpdated('2026-11-21'), '2026-11-21', 'an earlier flip day never moves a date back'));
+  await withEnv({ CHORDS_CLAIMS_CHANGED_ON: 'garbage' }, () => assert.equal(legalUpdated('2026-11-21'), '2026-11-21'));
+  for (const [file, path] of [[TERMS, '/terms'], [PRIVACY, '/privacy']]) {
+    const r = await renderPage(file, { env: { CHORDS_CLAIMS: 'off', CHORDS_CLAIMS_CHANGED_ON: '2026-12-05' } });
+    assert.match(r.textSpaced, /Last updated 5 December 2026/, path);
+    const lm = await withEnv({ CHORDS_CLAIMS_CHANGED_ON: '2026-12-05' }, async () => {
+      const { PUBLIC_PAGES } = await import('../src/lib/seo/pages.ts');
+      return PUBLIC_PAGES.find((p) => p.path === path).lastModified;
+    });
+    assert.equal(lm, '2026-12-05', `${path}: lastModified follows the flip day`);
+  }
+  // Unset: the pages' own days.
+  assert.match(ON.terms.textSpaced, /Last updated 21 November 2026/);
+  assert.match(ON.privacy.textSpaced, /Last updated 20 November 2026/);
 });

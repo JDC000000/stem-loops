@@ -22,8 +22,7 @@
 // player" pipeline section is gone with its implementation detail, and "What you get" is three
 // one-line proof points. The FAQ stays at five, plus the one line linking the plans.
 //
-// Rendered per request: every chord claim here reads the DB-17 runtime switch
-// (lib/chords-claim.ts) while the page renders.
+// Every chord claim here reads the DB-17 switch (lib/chords-claim.ts) when the page is built.
 import { ToolForm } from '@/components/landing/ToolForm';
 import { HomeDemo } from '@/components/landing/HomeDemo';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
@@ -39,8 +38,9 @@ import { ogAlt, ogImage } from '@/lib/seo/site';
 // The length cap (Story 1.4) is stated by the tool's own note (ToolForm.tsx, from MAX_TRACK_SEC).
 const OG_TITLE = 'Paste a song. Play along.';
 
-// Read per request (DB-17 runtime switch, lib/chords-claim.ts).
-export const dynamic = 'force-dynamic';
+// STATIC and CDN-cached (PR #332, round 2): no `dynamic` export. The DB-17 chord switch
+// (lib/chords-claim.ts) is read when the page is BUILT; a Vercel env change needs a Redeploy,
+// which rebuilds this page with the new value.
 
 export function generateMetadata(): Metadata {
   // Every chord claim on this page depends on the switch (DB-17, lib/chords-claim.ts).

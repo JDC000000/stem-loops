@@ -341,24 +341,14 @@ test('N1: SiteHeader (what every static page renders) shows "Account" from a ses
   }
 });
 
-test('N1: the marketing pages read no session on the server', async () => {
-  // A4 (2026-11-21): the landing, /terms and /privacy now render per request (`dynamic =
-  // 'force-dynamic'`), because their chord claims read the DB-17 RUNTIME switch
-  // (lib/chords-claim.ts). That is the ONLY reason: they still read no session — the last nav
-  // item stays a cookie HINT after mount — so no response depends on who is asking, and the
-  // layout and the 404 stay static.
+test('N1: the static pages stay static — no session read, no dynamic export', async () => {
+  // PR #332 round 2: the chord claims read the DB-17 switch at BUILD (lib/chords-claim.ts), so the
+  // landing, /help, /terms and /privacy stay prerendered and CDN-cached, as before A4.
   const { readFileSync } = await import('node:fs');
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-  for (const f of ['app/(landing)/layout.tsx', 'app/(landing)/page.tsx', 'app/(landing)/terms/page.tsx', 'app/(landing)/privacy/page.tsx', 'app/not-found.tsx', 'components/landing/SiteChrome.tsx']) {
+  for (const f of ['app/(landing)/layout.tsx', 'app/(landing)/page.tsx', 'app/(landing)/help/page.tsx', 'app/(landing)/terms/page.tsx', 'app/(landing)/privacy/page.tsx', 'app/not-found.tsx', 'components/landing/SiteChrome.tsx']) {
     const src = strip(readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8'));
-    assert.doesNotMatch(src, /SignedInChrome|@\/lib\/auth|next\/headers|cookies\(\)/, `${f} reads the session`);
-    const dyn = src.match(/export const dynamic = '([^']+)'/)?.[1] ?? null;
-    if (/\(landing\)\/(?:page|terms\/page|privacy\/page)\.tsx$/.test(f)) {
-      assert.equal(dyn, 'force-dynamic', `${f} makes a chord claim, so it must render per request`);
-      assert.match(src, /chordsLineShown\(\)/, `${f} is dynamic but reads no runtime switch`);
-    } else {
-      assert.equal(dyn, null, `${f} opts out of static rendering`);
-    }
+    assert.doesNotMatch(src, /SignedInChrome|@\/lib\/auth|next\/headers|cookies\(\)|export const dynamic/, `${f} reads the session or opts out of static rendering`);
   }
 });
 

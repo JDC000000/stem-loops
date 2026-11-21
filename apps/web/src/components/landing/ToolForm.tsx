@@ -23,7 +23,10 @@ import { canonicalizeYoutubeUrl, youtubeUrlProblem } from '@/lib/youtube-url';
 import { addToHistory } from '@/lib/history';
 import { navigationGrace, trackEvent } from '@/lib/analytics';
 import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
-import { hasResumeMarker, pendingSignInHref, savePendingLink, takePendingLink, RESUME_PARAM } from '@/lib/pending-link';
+import {
+  claimPendingLink, clearInFlight, hasResumeMarker, newNonce, pendingSignInHref, resumeNonce, savePendingLink, takePendingLink,
+  NONCE_PARAM, RESUME_PARAM,
+} from '@/lib/pending-link';
 import { hasSessionCookie } from '@/components/chrome/SignedInNav';
 import { MAX_TRACK_SEC, PLAYABLE_STEMS } from '@/lib/play/types';
 import { Ic } from './Icons';
@@ -34,20 +37,47 @@ const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 /** Below the landing's 760px breakpoint there is no stem picker: every stem is sent. */
 const PHONE_QUERY = '(max-width: 759px)';
 
-const safeLocalStorage = (): Storage | null => {
-  try {
-    return window.localStorage;
-  } catch {
-    return null;
-  }
+type LockManagerLike = { request: (name: string, cb: () => Promise<unknown>) => Promise<unknown> };
+
+/**
+ * What the form reaches outside React for. Defaults are the browser's own; a test passes its own
+ * (test/a4-home-link.test.mjs mounts this form in a DOM with a recording fetch and navigation).
+ * The clipboard is NOT here on purpose: it is read from `navigator.clipboard` inside the Paste
+ * tap only, and the tests spy on that real object.
+ */
+export type ToolFormDeps = {
+  fetch: typeof fetch;
+  assign: (url: string) => void;
+  storage: () => Storage | null;
+  locks: () => LockManagerLike | null;
+};
+
+const browserDeps: ToolFormDeps = {
+  fetch: (...a) => fetch(...a),
+  assign: (url) => window.location.assign(url),
+  storage: () => {
+    try {
+      return window.localStorage;
+    } catch {
+      return null;
+    }
+  },
+  locks: () => {
+    try {
+      const l = (navigator as Navigator & { locks?: LockManagerLike }).locks;
+      return l && typeof l.request === 'function' ? l : null;
+    } catch {
+      return null;
+    }
+  },
 };
 
 /**
  * Is this browser signed in? false = no session cookie, or the server says 401: sign in first.
- * true = the server says yes. null = unknown (network error): carry on as before and let the
- * server decide (the job page still asks for sign-in).
+ * true = the server says yes. null = unknown (network error or a 5xx): the caller FAILS CLOSED
+ * and offers a retry; it never starts an anonymous link job on an unknown answer.
  */
-async function signedInNow(): Promise<boolean | null> {
+async function signedInNow(deps: ToolFormDeps): Promise<boolean | null> {
   let cookie = '';
   try {
     cookie = document.cookie;
@@ -56,7 +86,7 @@ async function signedInNow(): Promise<boolean | null> {
   }
   if (!hasSessionCookie(cookie)) return false;
   try {
-    const res = await fetch('/api/auth/me', { cache: 'no-store', credentials: 'same-origin' });
+    const res = await deps.fetch('/api/auth/me', { cache: 'no-store', credentials: 'same-origin' });
     if (res.status === 401) return false;
     return res.ok ? true : null;
   } catch {
@@ -75,6 +105,9 @@ const ERR = {
   clip_empty: ['Your clipboard is empty.', 'Copy the link in YouTube (Share, then Copy link) and tap Paste again.'],
   clip_other: ['That isn’t a YouTube video link.', 'Copy the video’s link in YouTube (Share, then Copy link) and tap Paste again.'],
   clip_denied: ['We couldn’t read your clipboard.', 'Press and hold the box, then choose Paste.'],
+  // Fail closed (PR #332, round 2): never start a signed-out link job on an unknown answer.
+  auth_unknown: ['We couldn’t check whether you’re signed in.', 'Check your connection, then tap Try again.'],
+  storage_blocked: ['Your browser is blocking site storage, so we can’t keep your link while you sign in.', 'Sign in first (top right), then paste the link again.'],
   type: ['We can’t use that file type.', 'Choose mp3, wav, m4a, aac, flac, ogg, opus, aiff, mp4, m4v, mov or webm.'],
   empty: ['That file is empty.', 'Choose a different one.'],
   large: ['That file is over the 200 MB limit.', 'Export a shorter or compressed version (mp3 or m4a) and try again.'],
@@ -100,10 +133,10 @@ function fmtSize(b: number): string {
   return `${mb >= 10 ? Math.round(mb) : Math.round(mb * 10) / 10} MB`;
 }
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
+async function postJson<T>(url: string, body: unknown, f: typeof fetch = fetch): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    res = await f(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   } catch {
     throw new ApiError('We couldn’t reach stem-loops. Check your connection and try again.');
   }
@@ -112,7 +145,7 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   return json as T;
 }
 
-export function ToolForm() {
+export function ToolForm({ deps = browserDeps }: { deps?: ToolFormDeps } = {}) {
   // No loop length here (2026-11-15): Download loops is its own product (/loops), and the Play
   // along form neither sells nor configures it. The job gets the API's default loop length
   // (4 bars, app/api/jobs/route.ts), which is what the /loops intro states.
@@ -294,7 +327,8 @@ export function ToolForm() {
   const stemTxt = `${n}${n === 1 ? ' stem' : ' stems'}`;
   const showStemsErr = stemsErr && n === 0;
 
-  async function runJob(canonicalUrl: string | null, sendStems: readonly string[]) {
+  /** Start a job. Resolves true when it started (the browser is on its way to the job page). */
+  async function runJob(canonicalUrl: string | null, sendStems: readonly string[]): Promise<boolean> {
     const isFile = !!file;
     const base = { isFile, done: null, pct: 0 } as const;
     try {
@@ -306,12 +340,12 @@ export function ToolForm() {
         const pres = await postJson<{ jobId: string; key: string; uploadUrl: string; contentType: string }>('/api/uploads', {
           filename: file.name,
           size: file.size,
-        });
+        }, deps.fetch);
         try {
           await putToR2(pres.uploadUrl, file, pres.contentType, sending);
         } catch (e) {
           setPhase({ kind: 'failed', head: 'The upload didn’t finish.', body: e instanceof Error ? e.message : 'Please try again.' });
-          return;
+          return false;
         }
         setPhase({ kind: 'busy', ...base, now: null, done: 'sending', pct: 100, label: 'Starting…', msg: 'File sent. Starting your job…' });
         const job = await postJson<{ id: string }>('/api/jobs', {
@@ -319,11 +353,11 @@ export function ToolForm() {
           uploadKey: pres.key,
           filename: file.name,
           stems: sendStems,
-        });
+        }, deps.fetch);
         jobId = job.id;
       } else {
         setPhase({ kind: 'busy', ...base, now: null, pct: 100, label: 'Starting…', msg: 'Starting your job…' });
-        const job = await postJson<{ id: string }>('/api/jobs', { url: canonicalUrl, stems: sendStems });
+        const job = await postJson<{ id: string }>('/api/jobs', { url: canonicalUrl, stems: sendStems }, deps.fetch);
         jobId = job.id;
       }
       addToHistory(jobId);
@@ -334,13 +368,15 @@ export function ToolForm() {
       await navigationGrace();
       // Full navigation (not router.push): the job page has its own styles, and the
       // landing's stylesheet must not follow it there.
-      window.location.assign(`/jobs/${jobId}`);
+      deps.assign(`/jobs/${jobId}`);
+      return true;
     } catch (e) {
       setPhase({
         kind: 'failed',
         head: 'We couldn’t start that job.',
         body: e instanceof Error ? e.message : 'Something went wrong. Please try again.',
       });
+      return false;
     }
   }
 
@@ -352,23 +388,29 @@ export function ToolForm() {
     }
   };
 
-  /**
-   * A link from a signed-out visitor: sign in first (lib/pending-link.ts). Returns true when the
-   * browser is on its way to /login, false when the job should start here.
-   */
-  async function signInFirst(canonical: string): Promise<boolean> {
-    setPhase({ kind: 'busy', isFile: false, done: null, now: null, pct: 0, label: 'Starting…', msg: 'Starting your job…' });
-    const signedIn = await signedInNow();
-    if (signedIn !== false) return false;
-    if (!savePendingLink(safeLocalStorage(), canonical)) return false; // no storage: start signed out, as before
-    setPhase({ kind: 'busy', isFile: false, done: null, now: null, pct: 0, label: 'Opening sign-in…', msg: 'Sign in and your song starts straight away.' });
-    window.location.assign(pendingSignInHref());
-    return true;
-  }
+  /** Show a fail-closed error: the CTA reads "Try again" and the link stays in the box. */
+  const failClosed = (code: 'auth_unknown' | 'storage_blocked') => {
+    setPhase({ kind: 'failed', head: ERR[code][0], body: ERR[code][1] });
+    focusNext.current = 'cta';
+  };
 
+  /**
+   * A link: signed in, it starts here; signed out, the visitor signs in FIRST
+   * (lib/pending-link.ts) and it starts when they are back. Unknown (network error, 5xx) or a
+   * storage that will not keep the link: FAIL CLOSED with a retry; never an anonymous link job.
+   */
   async function submitLink(canonical: string, sendStems: readonly string[]) {
-    if (await signInFirst(canonical)) return;
-    await runJob(canonical, sendStems);
+    setPhase({ kind: 'busy', isFile: false, done: null, now: null, pct: 0, label: 'Starting…', msg: 'Starting your job…' });
+    const signedIn = await signedInNow(deps);
+    if (signedIn === true) {
+      await runJob(canonical, sendStems);
+      return;
+    }
+    if (signedIn === null) return failClosed('auth_unknown');
+    const nonce = newNonce();
+    if (!savePendingLink(deps.storage(), canonical, nonce)) return failClosed('storage_blocked');
+    setPhase({ kind: 'busy', isFile: false, done: null, now: null, pct: 0, label: 'Opening sign-in…', msg: 'Sign in and your song starts straight away.' });
+    deps.assign(pendingSignInHref(nonce));
   }
 
   function onSubmit(e: React.FormEvent) {
@@ -416,39 +458,58 @@ export function ToolForm() {
     else void runJob(null, sendStems);
   }
 
-  // Back from sign-in with the resume marker (lib/pending-link.ts): take the saved link (once)
-  // and start it, as the signed-in user. The marker is removed from the address bar first, so a
-  // reload or a shared URL never starts a second job.
-  const resumed = useRef(false);
+  // Every home load settles the saved link (lib/pending-link.ts), once, on mount:
+  //   * WITH the marker and its nonce (back from /login): strip the marker from the address bar
+  //     FIRST (a reload or a shared URL can never start a second job), check the session, and
+  //     only when the server says signed in, CLAIM the link (Web Lock, nonce match, 60 s
+  //     in-flight guard) and start it as the signed-in user. Signed out: the link goes back in
+  //     the box. Unknown: fail closed with a retry.
+  //   * WITHOUT the marker (a normal visit, Back from /login): take the entry out and only put
+  //     the link back in the box, so it can never start later for whoever signs in next.
+  const settled = useRef(false);
   useEffect(() => {
-    if (resumed.current || !YOUTUBE_INPUT_ENABLED) return;
-    resumed.current = true;
+    if (settled.current || !YOUTUBE_INPUT_ENABLED) return;
+    settled.current = true;
     let search = '';
     try {
       search = window.location.search;
     } catch {
       return;
     }
-    if (!hasResumeMarker(search)) return;
+    const store = deps.storage();
+    if (!hasResumeMarker(search)) {
+      const back = takePendingLink(store, null);
+      if (back) {
+        setText(back);
+        setLive('Your link is back in the box.');
+      }
+      return;
+    }
+    const nonce = resumeNonce(search);
     try {
       const u = new URL(window.location.href);
       u.searchParams.delete(RESUME_PARAM);
+      u.searchParams.delete(NONCE_PARAM);
       window.history.replaceState(window.history.state, '', `${u.pathname}${u.search}${u.hash}`);
     } catch {
       /* the marker stays in the bar; the saved link is already one-shot */
     }
-    const link = takePendingLink(safeLocalStorage());
-    if (!link) return;
-    setText(link);
     void (async () => {
-      const signedIn = await signedInNow();
-      // Not signed in after all (the sign-in did not complete): leave the link in the box.
-      if (signedIn === false) {
-        setLive('Your link is in the box. Sign in, then tap Separate and play.');
+      const signedIn = nonce ? await signedInNow(deps) : false;
+      if (signedIn !== true) {
+        // Not signed in after all, a marker without a valid nonce, or no answer: never start.
+        const back = takePendingLink(store, null);
+        if (back) setText(back);
+        if (signedIn === null && back) failClosed('auth_unknown');
+        else if (back) setLive('Your link is in the box. Sign in, then tap Separate and play.');
         return;
       }
+      const link = await claimPendingLink({ store, nonce: nonce!, locks: deps.locks() });
+      if (!link) return; // nothing saved for this nonce, or another tab already started it
+      setText(link);
       setLive('Signed in. Starting your song.');
-      await runJob(link, isPhone() ? [...STEM_ORDER] : STEM_ORDER.filter((x) => stems.has(x)));
+      const ok = await runJob(link, isPhone() ? [...STEM_ORDER] : STEM_ORDER.filter((x) => stems.has(x)));
+      if (!ok) clearInFlight(store, link); // a failed start may be retried by hand at once
     })();
     // Runs once on mount; `stems` is the default set at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -69,11 +69,14 @@ test('DB-17: the chord claims hang on ONE runtime switch, read from CHORDS_CLAIM
   }
   assert.match(readFileSync(join(WEB, 'src/app/(landing)/page.tsx'), 'utf8'), /<HomeDemo chordsShown=\{chords\} \/>/);
   assert.match(readFileSync(join(WEB, 'src/app/loops/page.tsx'), 'utf8'), /chordsShown=\{chordsLineShown\(\)\}/);
-  // Request time: every page that makes the claim is rendered per request.
+  // PR #332 round 2: the claim pages stay STATIC and CDN-cached. The switch is read when they are
+  // BUILT, and the Redeploy a Vercel env change needs rebuilds them (lib/chords-claim.ts). So no
+  // claim page opts out of static rendering, and llms.txt is force-static.
   for (const f of ['src/app/(landing)/page.tsx', 'src/app/(landing)/help/page.tsx', 'src/app/(landing)/terms/page.tsx',
-    'src/app/(landing)/privacy/page.tsx', 'src/app/llms.txt/route.ts', 'src/app/loops/page.tsx']) {
-    assert.match(readFileSync(join(WEB, f), 'utf8'), /export const dynamic = 'force-dynamic';/, `${f} is prerendered, so the switch would be frozen at build time`);
+    'src/app/(landing)/privacy/page.tsx']) {
+    assert.doesNotMatch(readFileSync(join(WEB, f), 'utf8'), /export const dynamic\b/, `${f} opts out of static rendering (and CDN caching)`);
   }
+  assert.match(readFileSync(join(WEB, 'src/app/llms.txt/route.ts'), 'utf8'), /export const dynamic = 'force-static';/);
   const { whatYouGet } = await import('data:text/javascript;base64,' + Buffer.from(ts.transpileModule(
     readFileSync(join(WEB, 'src/components/landing/what-you-get.ts'), 'utf8'),
     { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText).toString('base64'));

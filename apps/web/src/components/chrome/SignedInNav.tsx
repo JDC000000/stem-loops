@@ -123,9 +123,10 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
   ];
 
   // Story 7.4: say which product you are in. The current pill does on a wide
-  // screen; the tag beside the wordmark carries it too. Below 760px the tag
-  // gives way to the three items (signed-in-nav.css: a 360px bar has no room
-  // for both); there the current item and the page's own heading say where you are. Off a product page there is no tag: /history,
+  // screen; the tag beside the wordmark carries it too. Below 760px: on Play
+  // along pages the tag gives way to the three items (the current "Play" item
+  // says it); on /loops, which has no phone item, the tag stays, small, under the
+  // wordmark (signed-in-nav.css), so Story 8.4 holds at every width. Off a product page there is no tag: /history,
   // /account, /pricing and the legal pages belong to neither.
   const product = items.find((it) => it.product && it.match(pathname))?.product ?? null;
 
@@ -139,7 +140,7 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
             <span className="sin-loops">loops</span>
           </a>
           {product && (
-            <span className="sin-product" data-testid="sin-product">
+            <span className="sin-product" data-testid="sin-product" data-product={product}>
               {product}
             </span>
           )}

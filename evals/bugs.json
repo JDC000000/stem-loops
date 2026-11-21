@@ -77,8 +77,24 @@
         "A signed-in link job spends one unit of entitlements.jobs_used (and on the trial path a trial song); credits are upload-only so REFUND_SQL never matched it. Fixed: web records the debit in job_allowance_debits (migration 042) in the jobs-INSERT tx; the worker's restore_job_allowance() gives it back exactly once when the stored error_code is in OUR_FAULT_CODES, only in the period it was spent in.",
         "Jobs created before migration 042 + the web change are not restored."
       ]
+    },
+    {
+      "id": "QA-72",
+      "opened": "2026-11-20",
+      "title": "Deleting an account leaves its open Stripe Checkout Sessions completable; a late checkout bills a deleted user",
+      "severity": "high",
+      "area": "apps/web/src/app/api/users/me/route.ts, apps/web/src/app/api/billing/webhook/route.ts",
+      "related_pr": "fix/deletion-closes-checkouts",
+      "repro": [
+        "cd apps/web && node --experimental-strip-types --test test/account-delete.test.mjs test/account-delete-checkout-expire.test.mjs test/webhook-orphan-subscription.test.mjs"
+      ],
+      "notes": [
+        "From the PR #314 review (M-1). A Checkout Session stays open 24 h; completed after deletion it created and billed a subscription, and the webhook 500-looped on the users FK for ~3 days while nothing cancelled it.",
+        "Fixed in two layers: deletion expires every open session of the customer first (502 on refusal, nothing deleted); the webhook cancels (tagged in cancellation_details) and fully refunds a subscription whose account no longer exists, alerts with the HMAC user_hash, and answers 200. A subscription the deletion itself cancelled is never refunded.",
+        "Real-Postgres FK path: test/webhook-subscription-pg.test.mjs 'PG QA-72' (CI only)."
+      ]
     }
   ],
-  "last_updated": "2026-11-19",
+  "last_updated": "2026-11-20",
   "note": "Pre-allocated per TSD §9. Add regression cases here."
 }

@@ -50,14 +50,28 @@ test('subscription.created with EMPTY metadata: resolved via customers_billing, 
   assert.equal(state.entitlements[0]?.user_id, USER);
 });
 
-test('subscription.created, empty metadata, UNKNOWN customer: 500 (Stripe retries), nothing written', async () => {
+// QA-72 changed this case. A subscription no account owns (no metadata
+// user_id, a customer not in customers_billing, no row) used to be a 500, which
+// Stripe retried for ~3 days and nobody acted on. Review M-2 (round 2): no
+// account was PROVEN deleted, so the webhook never writes to Stripe for it: it
+// pages a human (ids only) and acks 200. Full coverage in
+// webhook-orphan-subscription.test.mjs.
+test('subscription.created, empty metadata, UNKNOWN customer: alert only (QA-72 / M-2), no Stripe write, nothing written, 200', async () => {
   const restore = silence();
   let res;
   try {
     res = await deliver(route, envelope('customer.subscription.created',
       subscriptionFixture({ customer: 'cus_stranger' })));
   } finally { restore(); }
-  assert.equal(res.status, 500, 'must not ack a payment we cannot attribute');
+  assert.equal(res.status, 200);
+  for (const api of ['subscriptions.cancel', 'invoices.voidInvoice', 'refunds.create']) {
+    assert.equal(h.calls.filter((c) => c.api === api).length, 0, `${api} without proof of a deletion`);
+  }
+  const alerts = state.sentry.filter((x) => /QA-72/.test(x.message));
+  assert.equal(alerts.length, 1, 'a human must be paged');
+  assert.match(alerts[0].message, /NOT cancelled or refunded/);
+  assert.equal(alerts[0].opts.extra.customer, 'cus_stranger');
+  assert.equal(h.subs.sub_test_1.status, 'active', 'still live at Stripe');
   assert.equal(state.subscriptions.length, 0);
   assert.equal(state.entitlements.length, 0);
 });

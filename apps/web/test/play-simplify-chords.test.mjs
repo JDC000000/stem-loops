@@ -245,3 +245,12 @@ test('the 2-beat floor (Jon, 21:36Z): a chord of 1.5 beats is absorbed, one of e
   assert.deepEqual(simplifyChords([{ startSec: 0, endSec: 3, label: 'A' }, { startSec: 3, endSec: 3.9, label: 'D' }, { startSec: 3.9, endSec: 7, label: 'G' }]).map((r) => r.label), ['A', 'G']);
   assert.deepEqual(simplifyChords([{ startSec: 0, endSec: 3, label: 'A' }, { startSec: 3, endSec: 4, label: 'D' }, { startSec: 4, endSec: 7, label: 'G' }]).map((r) => r.label), ['A', 'D', 'G']);
 });
+
+test('the 2-beat floor holds AFTER the snap: a section re-anchor that trims a chord under 2 beats merges it again', () => {
+  // The section start 1.956 is 0.088 beat off the grid (accepted as an anchor):
+  // from there the beats shift, and E minor (2.15 beats detected) snaps to 1.87.
+  const raw = [[0, 1.862, 'D'], [1.862, 4.199, 'D'], [4.199, 5.316, 'G'], [5.316, 6.389, 'E:min']].map(([s, e, label]) => ({ startSec: s, endSec: e, label }));
+  const out = simplifyChords(raw, { grid: { beatSec: 0.5, anchorSec: 0 }, anchors: [1.956] });
+  for (const r of out) assert.ok(r.endSec - r.startSec >= 2 * 0.5 * 0.999, `${r.label} is ${((r.endSec - r.startSec) / 0.5).toFixed(2)} beats`);
+  assert.equal(underHalfSounding(raw, out), 0);
+});

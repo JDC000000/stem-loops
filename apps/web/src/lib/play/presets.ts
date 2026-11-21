@@ -4,14 +4,16 @@
 //
 //   * Three presets: "Mute my part", "Solo my part", "Full song" (D5: "No
 //     vocals" and "Drums + bass" are gone).
-//   * "Full song" puts every stem back: unmuted, unsoloed, at 100%. "Mute my
-//     part" is the full song with your part muted. Since D5 the play screen's
-//     part pills set LEVELS (100% -> 30% -> muted), so a preset that left levels
-//     alone could read "Full song" while the guitar sat at 30%; the presets now
-//     own levels too, which keeps the label true.
-//   * "Solo my part" solos your part (unmuting it if needed) and clears any
-//     other solo. It leaves the other stems' levels and mutes alone: they are
-//     silent while the solo holds, and come back as they were when it is cleared.
+//   * "Full song" puts every stem back: unmuted, unsoloed, at 100%. Since D5 the
+//     play screen's part pills set LEVELS (100% -> 30% -> muted), so "Full song"
+//     owns levels too, or it could read pressed while the guitar sat at 30%.
+//   * "Mute my part" keeps the pinned P1.3 rule (orchestrator, PR #331 fix
+//     round): it SETS MUTES (your part muted, every other stem unmuted), clears
+//     solos, and leaves every level as it is, so fader work is never thrown away.
+//   * "Solo my part" solos your part, unmutes it and brings it to 100% ("listen
+//     just to my part" at full level), and clears any other solo. It leaves the
+//     other stems' levels and mutes alone: they are silent while the solo holds,
+//     and come back as they were when it is cleared.
 //   * Which preset is pressed is DERIVED from the mix, never stored: the mix
 //     matches a preset or it is "Custom". So touching any control afterwards
 //     relabels the selection by construction, and the label can never disagree
@@ -74,13 +76,14 @@ export function presetOps(id: PresetId, part: Part, stems: readonly StemState[])
     if (id === 'solo') {
       const mine = s.name === part;
       if (s.soloed !== mine) ops.push({ stem: s.name, soloed: mine });
+      if (mine && !full(s)) ops.push({ stem: s.name, gain: 1 });
       if (mine && s.muted) ops.push({ stem: s.name, muted: false });
       continue;
     }
     if (s.soloed) ops.push({ stem: s.name, soloed: false });
     const mute = id === 'mine' && s.name === part;
-    // The muted part keeps its level; it comes back at that level when unmuted.
-    if (!mute && !full(s)) ops.push({ stem: s.name, gain: 1 });
+    // Only "Full song" touches levels; "Mute my part" sets mutes only (P1.3).
+    if (id === 'full' && !full(s)) ops.push({ stem: s.name, gain: 1 });
     if (s.muted !== mute) ops.push({ stem: s.name, muted: mute });
   }
   return ops;
@@ -88,7 +91,9 @@ export function presetOps(id: PresetId, part: Part, stems: readonly StemState[])
 
 /**
  * Which preset the mix is in, or 'custom'. Compared over the stems that exist.
- * Without a remembered part only "Full song" can match.
+ * Without a remembered part only "Full song" can match. "Full song" needs every
+ * level at 100%; "Mute my part" and "Solo my part" compare mutes and solos only
+ * (levels are not part of them once applied).
  */
 export function activePreset(stems: readonly StemState[], part: Part | null): PresetId | 'custom' {
   const live = stems.filter(present);
@@ -100,7 +105,7 @@ export function activePreset(stems: readonly StemState[], part: Part | null): Pr
   }
   if (live.every((s) => !s.muted && full(s))) return 'full';
   if (part && live.some((s) => s.name === part)) {
-    const mine = live.every((s) => (s.name === part ? s.muted : !s.muted && full(s)));
+    const mine = live.every((s) => (s.name === part ? s.muted : !s.muted));
     if (mine) return 'mine';
   }
   return 'custom';

@@ -8,7 +8,8 @@
        muted    selected, the name struck through, no bar
        solo     selected, "solo" in bold, the bar full width
        silent   (another part is soloed) muted text, no bar
-       n/a      disabled: dashed dim edge, "n/a", the reason under the row
+       n/a      disabled: dashed dim edge, "n/a"; the reason is the player's
+                notice bar (aria-describedby), not a second line here
    - Never lime, never amber: the stem hue is the existing --stem-* token
      (6.6–13.5:1 on the page), used only for the 3px level bar.
    - No transitions, so prefers-reduced-motion has nothing to stop. */
@@ -36,7 +37,9 @@
 .row {
   /* Equal columns whatever the edge width, so a pill never shifts its
      neighbours when it is pressed. */
-  height: 52px;
+  /* Compact (Phase A fit, review item 8): exactly the 44px target, no extra
+     margin; the section strip's own 52px row gives the gap below. */
+  height: var(--touch-min, 44px);
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(44px, 1fr);
@@ -124,12 +127,6 @@
   outline-offset: 2px;
 }
 
-.note {
-  margin: -4px 4px 4px;
-  font-size: 13px;
-  color: var(--text-label);
-}
-
 @media (forced-colors: active) {
   .pill[aria-pressed='true'] { border-color: Highlight; }
   .bar { background: CanvasText; }
@@ -144,6 +141,14 @@
    their own two-column layout below, where the row fits. */
 @media (min-height: 500px) and (max-height: 559px) {
   .root { display: none; }
+}
+
+/* With a notice bar (a missing stem, an error, the one-time light-audio hint)
+   the stage loses ~65px more, so below 600px tall the row steps aside too:
+   320x568 and 360x560 then still fit one screen (review M1). 375x667 and up
+   keep the pills with the notice. */
+@media (min-height: 500px) and (max-height: 599px) {
+  :global([data-testid='player']:has([data-testid='player-notice'])) .root { display: none; }
 }
 
 /* Landscape phones (Player.module.css P1.4 rule 1): the right column holds the

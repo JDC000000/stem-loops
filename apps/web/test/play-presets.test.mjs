@@ -28,25 +28,28 @@ test('Phase A D5: three presets — Mute my part, Solo my part, Full song — wi
   assert.equal(DEFAULT_PART, 'guitar');
 });
 
-test('"Full song" and "Mute my part" own levels too: every other stem back to 100%, unmuted, unsoloed; the muted part keeps its level', () => {
-  const base = stems({ keys: { soloed: true, gain: 0.3 }, drums: { muted: true }, bass: { gain: 0.55 } });
+test('"Full song" resets every level to 100%, unmuted, unsoloed; "Mute my part" sets mutes only and leaves every level (P1.3, kept)', () => {
+  const base = stems({ keys: { soloed: true, gain: 0.3 }, drums: { muted: true, gain: 0.7 }, bass: { gain: 0.55 } });
   const full = apply(base, presetOps('full', 'bass', base));
   assert.ok(full.every((s) => !s.muted && !s.soloed && s.gain === 1), JSON.stringify(full));
   assert.equal(activePreset(full, 'bass'), 'full');
-  const mine = apply(base, presetOps('mine', 'bass', base));
+  const ops = presetOps('mine', 'bass', base);
+  assert.ok(ops.every((o) => !('gain' in o)), 'Mute my part touches no level');
+  const mine = apply(base, ops);
   assert.deepEqual(mine.filter((s) => s.muted).map((s) => s.name), ['bass']);
-  assert.equal(mine.find((s) => s.name === 'bass').gain, 0.55, 'the muted part keeps its level for when it comes back');
-  assert.ok(mine.filter((s) => s.name !== 'bass').every((s) => s.gain === 1 && !s.soloed));
-  assert.equal(activePreset(mine, 'bass'), 'mine');
+  assert.deepEqual(mine.map((s) => s.gain), base.map((s) => s.gain), 'every level as it was');
+  assert.ok(mine.every((s) => !s.soloed));
+  assert.equal(activePreset(mine, 'bass'), 'mine', 'levels are not part of Mute my part');
 });
 
-test('"Solo my part" solos the part (unmuting it), clears other solos, and leaves the silent stems as they were', () => {
+test('"Solo my part" solos the part, unmutes it and brings it to 100%, clears other solos, and leaves the silent stems as they were', () => {
   const base = stems({ keys: { soloed: true }, guitar: { muted: true, gain: 0.3 }, drums: { gain: 0.4, muted: true } });
   const ops = presetOps('solo', 'guitar', base);
-  assert.ok(ops.every((o) => !('gain' in o)), 'no level changes');
+  assert.deepEqual(ops.filter((o) => 'gain' in o), [{ stem: 'guitar', gain: 1 }], 'only the part is brought to 100%');
   const after = apply(base, ops);
   assert.deepEqual(after.filter((s) => s.soloed).map((s) => s.name), ['guitar']);
   assert.equal(after.find((s) => s.name === 'guitar').muted, false, 'a muted part is unmuted, or the solo is silence');
+  assert.equal(after.find((s) => s.name === 'guitar').gain, 1);
   assert.deepEqual(after.find((s) => s.name === 'drums'), base.find((s) => s.name === 'drums'), 'drums untouched');
   assert.equal(activePreset(after, 'guitar'), 'solo');
   assert.equal(activePreset(after, 'bass'), 'custom', 'a solo that is not your part is custom');
@@ -64,7 +67,7 @@ test('touching any control after a preset relabels the selection "Custom"', () =
   assert.equal(activePreset(mine, 'guitar'), 'mine');
   assert.equal(activePreset(apply(mine, [{ stem: 'drums', muted: true }]), 'guitar'), 'custom');
   assert.equal(activePreset(apply(mine, [{ stem: 'bass', soloed: true }]), 'guitar'), 'custom');
-  assert.equal(activePreset(apply(mine, [{ stem: 'bass', gain: 0.3 }]), 'guitar'), 'custom', 'a lowered level is not "Mute my part"');
+  assert.equal(activePreset(apply(mine, [{ stem: 'bass', gain: 0.3 }]), 'guitar'), 'mine', 'a level is not part of "Mute my part" (P1.3)');
   assert.equal(activePreset(apply(stems(), [{ stem: 'bass', gain: 0.3 }]), 'guitar'), 'custom', 'nor "Full song"');
   assert.equal(activePreset(apply(stems(), [{ stem: 'guitar', soloed: true }, { stem: 'bass', soloed: true }]), 'guitar'), 'custom', 'two solos');
   assert.equal(activePreset(apply(stems(), [{ stem: 'guitar', soloed: true }, { stem: 'guitar', muted: true }]), 'guitar'), 'custom', 'a muted solo is silence, not "Solo my part"');

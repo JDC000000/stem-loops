@@ -67,6 +67,12 @@ interface ScreenProps extends PlayerViewProps {
   readonly banner: Notice | null;
 }
 
+/**
+ * React 18 renders `inert` only as a string attribute (a boolean `true` is
+ * dropped with a warning), while @types/react types it as a boolean.
+ */
+const INERT = { inert: '' } as unknown as { inert: boolean };
+
 /** After the person scrolls the chord area themselves, auto-follow waits this long (F-8). */
 export const AUTO_SCROLL_PAUSE_MS = 4000;
 
@@ -385,6 +391,14 @@ export function PlayerScreen(props: ScreenProps) {
             aria-expanded={menuOpen}
             aria-controls="player-menu"
             onClick={() => setMenuOpen((o) => !o)}
+            onKeyDown={(e) => {
+              // Escape on the ⋯ button itself closes its menu first (and not a
+              // non-modal Mix sheet behind it).
+              if (e.key === 'Escape' && menuOpen) {
+                e.preventDefault();
+                setMenuOpen(false);
+              }
+            }}
             data-testid="player-more"
           >
             <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
@@ -431,7 +445,11 @@ export function PlayerScreen(props: ScreenProps) {
         </div>
       </header>
 
-      <div className={styles.body}>
+      {/* While the non-modal Mix sheet is open, what it covers (pills, chips,
+          transport) and the stage above it are inert: visible, but not in the
+          Tab order and not tappable, so focus never lands under the sheet and a
+          tap on a chord cannot open the editor half behind it (review M3/M4). */}
+      <div className={styles.body} {...(mixOpen && !desktop ? INERT : {})} data-testid="player-body">
         <div className={styles.main}>
           <div className={styles.stage}>
             {notice ? (
@@ -440,6 +458,7 @@ export function PlayerScreen(props: ScreenProps) {
                   className={styles.noticeText}
                   role={notice.tone === 'error' ? 'alert' : 'status'}
                   data-testid={notice.testId ?? 'player-banner'}
+                  id="player-notice-text"
                 >
                   {notice.text}
                 </p>
@@ -491,7 +510,7 @@ export function PlayerScreen(props: ScreenProps) {
           {playable ? (
             <>
               {/* Phase A D5: lower, mute and solo a part in one tap/hold, chords still on screen. */}
-              {desktop ? null : <PartPills stems={snapshot.stems} onGain={onGain} onMute={onMute} onSolo={onSolo} />}
+              {desktop ? null : <PartPills stems={snapshot.stems} onGain={onGain} onMute={onMute} onSolo={onSolo} reasonId={notice?.testId === 'player-degraded' ? 'player-notice-text' : null} />}
               <SectionLoop names={names} state={shown} onTap={onTap} onLongPress={onLongPress} hint={hint && runOn} />
               <Transport
                 status={snapshot.status}

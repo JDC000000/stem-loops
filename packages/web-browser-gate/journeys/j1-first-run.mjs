@@ -114,7 +114,9 @@ export default async function run() {
     await page.locator('[data-testid="player-more"]').click().catch(() => {});
     const menuText = (await page.locator('#player-menu').innerText().catch(() => '')).replace(/\s+/g, ' ');
     const loopsInMenu = await page.locator('#player-menu a[href*="/loops"], [data-testid="loops-link"]').count();
-    j.check('the player\'s ⋯ menu does not link to the loops product', loopsInMenu === 0 && !/Download loops/.test(menuText), `menu="${menuText}"`);
+    // The menu must actually be open (it lists "Song info"), or "no loops link" proves nothing.
+    j.check('the player\'s ⋯ menu opened', /Song info/.test(menuText) && /See all chords/.test(menuText), `menu="${menuText}"`);
+    j.check('the player\'s ⋯ menu does not link to the loops product', /Song info/.test(menuText) && loopsInMenu === 0 && !/Download loops/.test(menuText), `menu="${menuText}"`);
     await page.keyboard.press('Escape').catch(() => {});
     await page.goto(`/loops?job=${jobId}`);
     await page.waitForURL(/\/loops\b/, { timeout: 30_000 }).catch(() => {});

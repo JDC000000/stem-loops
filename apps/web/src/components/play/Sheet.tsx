@@ -36,8 +36,9 @@ export interface SheetProps {
   readonly handle?: boolean;
   /**
    * false: a NON-MODAL half-height sheet (Phase A D5, the Mix sheet). No scrim,
-   * no aria-modal, Tab is not trapped and the page above it stays live, so the
-   * stage above it stays visible and usable. Escape (anywhere on the
+   * no aria-modal, Tab is not trapped, and the page above it stays visible.
+   * (The caller decides what stays interactive: PlayerScreen makes what the
+   * sheet covers inert.) Escape (anywhere on the
    * page), Close and a swipe down still close it, and focus still moves in on
    * open and back on close.
    */

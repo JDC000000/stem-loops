@@ -210,7 +210,8 @@
   cursor: pointer;
 }
 .mixName { font-size: 15px; font-weight: var(--weight-semibold); }
-.mixState { font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+/* Story 2.3 (v4.0): the mix state is text >= 13px ("Guitar 30%", "Vocals muted"). */
+.mixState { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
 
 .skip:focus-visible,
 .play:focus-visible,

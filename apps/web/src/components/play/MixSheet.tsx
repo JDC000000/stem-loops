@@ -32,7 +32,8 @@ export interface MixSheetProps {
 /**
  * The Mix sheet (design v1.4, P1.3; Phase A D5): a NON-MODAL, half-height
  * bottom sheet (Sheet modal={false}), so the chord stage stays visible and
- * bright above it while mixing. The header is pinned (title, the Now/Next chord names so the harmony stays in
+ * bright above it while mixing. PlayerScreen makes the player body inert while
+ * it is open, so Tab and taps never land on what the sheet covers. The header is pinned (title, the Now/Next chord names so the harmony stays in
  * view while mixing, play/pause and Close), the presets pinned under it, and
  * the six stem rows scrolling below. Kept MOUNTED while closed (`hidden`) so
  * the Mixer's per-job memory (sessionStorage, Story 2.7) is restored when the

@@ -1,7 +1,36 @@
 # TSD-V3-DELTA: Stem-Loops V3 (commercial layer + Play engine + Spotify + fetch) — delta over the pinned TSD
 
-Author: SL-V3 architect lane. Date: 2026-11-18 (**v2.0.1** fix-forward: the post-merge review of v2.0 (#291) scored it 86/100; its operational state was stale at merge, the demo-key item was wrong, and several IDs collided; see the v2.0 → v2.0.1 Changelog). Previous: 2026-11-17 (**v2.0** amendment: Jon's 2026-11-17 design decisions — DB-12(a) demo songs play signed out, DB-16 rights recorded, DB-17 still OPEN — and Slice 0 / Slice 1a / pricing as shipped in #289, #288, #287; deploy facts corrected; see the v1.10 → v2.0 Changelog). Previous: 2026-11-16 (v1.10 amendment: §1.2a link-ingest separation **REVERSED by Jon** — Pro and Studio may paste YouTube links, metered like uploads and kept in their library; O-8 closed; see the v1.9 → v1.10 Changelog). Previous: 2026-11-14 (v1.9 amendment: V3-J4 revised — a song over 5 minutes is TRIMMED to its first 5 minutes, not refused; see the v1.8 → v1.9 Changelog and §12.5). Previous: 2026-11-11 (v1.8 amendment pass — the plan catalog re-priced on tracks-converted-to-play-along, and every plan flag that advertised an unbuilt capability cleared; see Changelog below). Previous: 2026-11-10 (v1.7 amendment pass — corrections to v1.5/v1.6 after an adversarial review scored them 48/100, plus Jon's .wav and 3-free-stems decisions). Status: **living record, v2.0.1** — every amendment row that states a fact cites its source (Jon's words, a merged PR, or a measurement). This file was marked "DRAFT for Jon's review" from v1.0 to v1.10; that line was stale, because v1.8, v1.9 and v1.10 were each merged to `v3/main` (#210, #270, #282) and this file is the canonical PRD+TSD delta in the repo. Each amendment takes effect when it merges.
+Author: SL-V3 architect lane. **Version: v2.1. Date: 2026-11-21** (product-evolution amendment: the product is now a **phone-first play-along**, with Download loops a secondary product; Slice 0 / 1 / 2a outcomes, billing and ops work shipped 2026-11-18 → 11-21, migration 042, Jon's 2026-11-21 design decisions DR-D2…DR-D6 and the deferral of DR-D1 (chords after 2026-12-05); superseded requirements are marked, not deleted; see the v2.0.1 → v2.1 Changelog and §12.15). Previous: 2026-11-18 (**v2.0.1** fix-forward: the post-merge review of v2.0 (#291) scored it 86/100; its operational state was stale at merge, the demo-key item was wrong, and several IDs collided; see the v2.0 → v2.0.1 Changelog). Previous: 2026-11-17 (**v2.0** amendment: Jon's 2026-11-17 design decisions — DB-12(a) demo songs play signed out, DB-16 rights recorded, DB-17 still OPEN — and Slice 0 / Slice 1a / pricing as shipped in #289, #288, #287; deploy facts corrected; see the v1.10 → v2.0 Changelog). Previous: 2026-11-16 (v1.10 amendment: §1.2a link-ingest separation **REVERSED by Jon** — Pro and Studio may paste YouTube links, metered like uploads and kept in their library; O-8 closed; see the v1.9 → v1.10 Changelog). Previous: 2026-11-14 (v1.9 amendment: V3-J4 revised — a song over 5 minutes is TRIMMED to its first 5 minutes, not refused; see the v1.8 → v1.9 Changelog and §12.5). Previous: 2026-11-11 (v1.8 amendment pass — the plan catalog re-priced on tracks-converted-to-play-along, and every plan flag that advertised an unbuilt capability cleared; see Changelog below). Previous: 2026-11-10 (v1.7 amendment pass — corrections to v1.5/v1.6 after an adversarial review scored them 48/100, plus Jon's .wav and 3-free-stems decisions). Status: **living record, v2.1** (v2.1 is opened as a **draft PR**; it takes effect only when it merges) — every amendment row that states a fact cites its source (Jon's words, a merged PR, or a measurement). This file was marked "DRAFT for Jon's review" from v1.0 to v1.10; that line was stale, because v1.8, v1.9 and v1.10 were each merged to `v3/main` (#210, #270, #282) and this file is the canonical PRD+TSD delta in the repo. Each amendment takes effect when it merges.
 This document EXTENDS the pinned TSD at `stem-loops-handoff/07-roadmap/TSD.md` (SL21-tsd, commit c3f6a911 of `stem-loops`). It is a DELTA only — anything the pinned TSD covers (job state machine, kill switches, blocklist, fetch chain, loops/export, R2 layout, migrations 001–012) is NOT restated here, only cross-referenced by section number (e.g. `TSD §3.1`). All new requirement IDs are prefixed **V3-**; new tests prefixed **T-V3-**. Pinned reqs use their existing IDs (R-A0, R-X2, etc.).
+
+---
+
+## Changelog — v2.0.1 → v2.1 (2026-11-21 — the product as it is now: phone-first play-along; 2026-11-18 → 11-21 shipped; Jon's 2026-11-21 decisions)
+
+Sources, each fact cited to one of them:
+- **[PR #n `sha`]** a merged pull request and its squash commit on `v3/main`, read from the GitHub REST API on 2026-11-21 (`pulls?state=closed`, `merge_commit_sha`).
+- **[L17 hh:mmZ]** the session-17 orchestrator ledger (`LEDGER-17.md`, 2026-11-17 → 11-21, UTC rows). It lives in the Claude Project (`claude/handover-17/`), not in this repo.
+- **[DR]** the 2026-11-20/21 design review against Jon's play-along story: reviews A (live phone), B (code and flows) and C (user stories), and the synthesis doc. Session workspace and Claude Project, not this repo.
+- **[Jon 11-21]** Jon's decisions of 2026-11-21 06:57 PT (LEDGER-17 13:58Z). **[MJC]** Jon's decisions in the MissionJC chat of 2026-11-20 (LEDGER-17 00:53Z, 2026-11-21).
+- **[GH]** GitHub Actions and Deployments APIs, read 2026-11-21 ~14:00Z.
+
+**Decision-label collision, resolved here.** Two decision sets both use "D1…": the MissionJC chat of 2026-11-20 (**MJC-D1…MJC-D9**) and the design review of 2026-11-21 (**DR-D1…DR-D6**). This document always prefixes them. The design proposal's **DB-12…DB-17** keep their names.
+
+| § | Change | Source |
+|---|---|---|
+| §0 Header | v2.0.1 → **v2.1**; date 2026-11-21. Honesty note: the header has said *"living record"* since v2.0 (the *"Status: DRAFT"* line was replaced in v2.0, #291); what was stale was the version, the date and the product description in §12. No *"Date: 2026-11-11"* line remains in this file except as a dated changelog entry | this amendment |
+| **§12.15 (NEW)** | **Product evolution 2026-11-17 → 2026-11-21**: phone-first play-along, loops secondary; Slice 0/1/2a outcomes; billing and money safety shipped; demo songs public; allowance restore (042); first-byte stall cut (#327); Klangio poll deadline 120 s (#317); DR-D2…DR-D6 and the DR-D1 deferral; MJC-D1…D9; Phase A in progress | [PR], [L17], [DR], [Jon 11-21], [MJC] |
+| §12.1 | ⟲ v2.1 banner: the journey is now Jon's 2026-11-20 phone story (user stories v4.0 DRAFT, Story 1). The owner pass bar is the **Phase A play-test gate**: Jon plays 3 songs on his phone when Phase A is live | [Jon 11-21] |
+| §12.6 | ⟲ v2.1 banner: **V3-J7 MET 2026-11-17** (3/3 links `done`); the 2026-11-18/19 proxy outage (QA-61) and its fixes (#307, #313, #327) | [L17 17:37Z], [L17 03:57Z–05:18Z 11-19] |
+| §12.7 | **V3-J5 SUPERSEDED** (desktop-Chrome launch scope): phones are the reference device. Text kept as the record | design v1.5 [DP]; #278, #288 |
+| §12.8 | ⟲ v2.1 banner: DB-17 / O-3 is now **DR-D1, DEFERRED by Jon until after the Phase A design fixes**; decision brief scheduled 2026-11-28; the Klangio subscription still ends 2026-12-05. MJC-D1 and MJC-D9 recorded | [Jon 11-21], [MJC] |
+| §12.9 | ⟲ v2.1 banner: the signed-out demo read path is **built** (#302) and verified live | [PR #302 `3a69c2c`], [L17 13:21Z 11-18] |
+| §12.11 | ⟲ v2.1 banner: demos shared since #302; key-detection root cause fixed in #295 | [PR #302], [PR #295 `f7f3350`] |
+| §12.12 | ⟲ v2.1 banner: what changed since #288 (chart notation #294, chip sizes #312/#324/#326, tap-with-loop-off #303, clock #296), and which Slice 1a behaviours Phase A will supersede on merge (DR-D4, DR-D5, DR-D6, DR-D2) | [PR], [Jon 11-21] |
+| §9 | Requirement table: V3-J1, V3-J2, V3-J5, V3-J7, V3-J8 annotated (V3-J5 **superseded**, V3-J7 **met**); **new IDs** V3-PS1…PS6, V3-LB1…LB4, V3-CH1, V3-OP1…OP3 | this amendment |
+| §11 | "Open after 2026-11-17" rows marked with their outcome; **NEW "Open after 2026-11-21 (v2.1)"** table | [PR], [L17], [Jon 11-21] |
+
+Items intentionally UNCHANGED in v2.1: plan prices and quotas (DB-15 (a)); the 24-hour rule for Free jobs (DR-D3 changes what the **library shows** after expiry, not retention, and is Phase B, not built); the paid retention rule (#279); §1–§8 except where a banner says otherwise. **AGENTS.md is not edited** (agents never write it); its drift is listed in the PR body.
 
 ---
 
@@ -248,6 +277,8 @@ Items intentionally UNCHANGED in v1.5: §1 commercial layer (other than the §1.
 
 > ⟲ **v2.0.1:** superseded by §12.9 v2.0 — your own songs need sign-in (Jon, 2026-11-10); only the three demo songs play signed out (DB-12(a), not yet built — Slice 2). A visitor pasting a link must be signed in.
 
+> ⟲ **v2.1 (2026-11-21):** the journey is now Jon's own phone story of 2026-11-20: *"on my mobile, take a YouTube link and put it in, and very quickly be able to listen and learn the song"* (user stories v4.0 DRAFT, Story 1, J1–J10). The **owner pass bar is the Phase A play-test gate: Jon plays 3 songs on his phone, with his instrument, when Phase A is live** [Jon 11-21]. Not yet run. The three demo songs play signed out since #302 (§12.9).
+
 **Explicitly OUT of scope for V3-J1**, per Jon's answer that the guitar is mixed in hardware: live audio input, input monitoring, round-trip latency budgets, and any `getUserMedia` path. The guitar never enters the browser.
 
 **Pass bar:** Jon performs the journey end to end on a real song with his own guitar and confirms it. A green test suite is **not** a pass for V3-J1 — this requirement is defined by the owner's own use.
@@ -407,6 +438,8 @@ upload). Previously gate 0c refused it with `UPLOAD_TOO_LONG` before fetching.
 
 ### 12.6 V3-J7 — the fetch path must actually work (NEW in v1.7) — **THE LAUNCH BLOCKER**
 
+> ✅ **v2.1: V3-J7 and V3-J10 MET on 2026-11-17.** With `PROXY_URL` set on Fly, three different public YouTube links reached `done` from Jon's phone (jobs `85cf8212`, `96fb67cb`, `4a940d3d`; median about 2 min 26 s) [L17 17:37Z]. **Later outage:** from 2026-11-18 23:04Z every link job failed `DOWNLOAD_BLOCKED` because the proxy answered `407` (QA-61); Jon rotated the IPRoyal password and `PROXY_URL`, and the first job after it reached `done` at 04:13Z on 11-19 [L17 03:57Z–04:14Z 11-19]. Hardening shipped since: proxy failures are classed as ours with a cheap 15-min fetch canary on `/health` (#307 `9965f5c`), hysteresis and a total deadline on that check (#313 `e209a38`), and the first byte is recorded with stalled non-final attempts cut at 15 s (#327 `ddf1a18`). The text below is the 2026-11-10 record.
+
 V3-J1 begins *"a visitor pastes a public YouTube link"*. **That step currently fails 100% of the time.** Measured 2026-11-10, two jobs, same video, 26 minutes apart:
 
 | Job | Created | Result |
@@ -438,6 +471,8 @@ Both reached stage `downloading`, which **proves `ALLOW_YOUTUBE_INPUT` is `'true
 
 ### 12.7 V3-J5 — launch browser scope
 
+> ⛔ **SUPERSEDED in v2.1 (2026-11-21).** The text below (desktop Chrome/Edge as launch scope) is kept as the record, not as an instruction. **Phones are the reference device**: design proposal v1.5, approved 2026-11-17, records more than half of users on phones [DP]; the phone player shipped in #278 (light 24 kHz mono decode) and #288 (phone layout). The reference viewport is 390×844 portrait, then 360×800, then desktop (user stories v4.0 DRAFT, Story 10). Only a browser with no Web Audio is refused. Evidence of the phone player is **emulated** (`docs/perf/mobile-player-2026-11-14.md`; review A); a real-device test of locked-screen audio, the iPhone silent switch and memory is still owed **[UNVERIFIED on real hardware]**. Live drift on 2026-11-21: the landing page and `llms.txt` still say *"Best in Chrome on a computer"*; Phase A (A4) rewrites the landing copy.
+
 **Chrome and Edge, desktop.** Firefox and Safari only where measurably cheap.
 
 - Firefox's §5.4 exclusion was a **tab-capture** constraint, and Variant Y left the launch path in v1.5 — so it does **not** exclude Firefox from the player. §3.4 lists **Firefox ≥ 130** as supporting Opus in WebCodecs: a candidate pending measurement.
@@ -446,6 +481,8 @@ Both reached stage `downloading`, which **proves `ALLOW_YOUTUBE_INPUT` is `'true
 
 ### 12.9 V3-J9 — stem download requires sign-up (NEW in v1.7, decided by Jon)
 
+> ✅ **v2.1: built.** Slice 2a (#302 `3a69c2c`, merged 2026-11-18) added the `is_demo` read branch (`lib/job-access.ts`), `/demo/<slug>` signed out, `GET /api/demos`, and the home-page live demo; a demo's cut loops get no signed URL for anyone. Verified live signed out at 13:21Z on 11-18: `/demo/lucky-ticket` 200, `/api/demos` lists 3, `/api/jobs/9c5ba587` returns 0 signed URLs and 0 R2 keys [L17 13:21Z 11-18]. `llms.txt`, the sitemap (all three `/demo/*` pages) and the Terms say so (#304 `b7c5b9f`, #305 `add22e7`; sitemap and `llms.txt` re-checked live 2026-11-21). Your own songs still need sign-in. The *"Status: decided, not yet built"* bullet below is historical.
+>
 > ⟲ **v2.0 (2026-11-17) — where the sign-in gate sits. DB-12 decided: option (a).**
 >
 > - **Demo songs play signed out; your own songs still need sign-in.** Jon, 2026-11-17: *"APPROVED - should people play the demo songs without signing in? I recommend yes, for the demos only."* [DP]
@@ -508,6 +545,8 @@ The fix is already implemented: a **fresh random 8-character session id per fetc
 
 The Klangio Startup subscription cancels **2026-12-05** — v1.4's documented hard cap, working as designed. **Chords stop that day** unless it is kept, `autochord` is implemented, or ChordNet training is resourced (dataset is a random-label placeholder, R-4). Jon, 2026-11-10: *"we have to validate this product before THEN."* **V3-J1 must be validated by Jon's own use before that date.**
 
+> ⟲ **v2.1 (2026-11-21) — DB-17 / O-3 is now DR-D1, and Jon DEFERRED it** until after the Phase A design fixes. A decision brief is scheduled for **2026-11-28** (scheduled task `trig_01VC6B96dym36jC7TyHkE3KP`, 10:12 PT) [L17 14:02Z 11-21]. **The Klangio subscription still ends 2026-12-05**, so the brief leaves one week. Klangio remains the only chord provider in code (`chord_source.py`: `replicate` and `internal` raise `NotImplementedError`) [DR review C]. Recorded alongside: **MJC-D1** *"Klangio A+C now, B roadmap"* (B = late-result backfill, issue #323, default window 24 h); **MJC-D9** keep the Klangio poll deadline at **120 s** (#317 `15c290f`, 600 → 120 s), raising it to 180 s only if healthy tracks time out (watch Sentry STEM-LOOPS-E) [MJC]. The copy switch `CHORDS_LINE_SHOWN` is still a compile-time constant; Phase A (A4) makes it a runtime switch [L17 14:02Z 11-21].
+>
 > ⟲ **v2.0 (2026-11-17) — DB-17 (the design proposal's name for §11 O-3) is still OPEN.** Jon, 2026-11-17: *"LETS WAIT AND SEE"*. **So, unless it is decided, chords stop for every new song on 2026-12-05.** [DP] (The design processes the three demo songs before that date for exactly this reason, so their chords exist whatever is decided [DP §1 Slice 0].)
 >
 > The options, as the design proposal lays them out (kept here so the decision can be taken without re-deriving them):
@@ -524,6 +563,8 @@ The Klangio Startup subscription cancels **2026-12-05** — v1.4's documented ha
 > **What already handles the cliff:** the player's no-chords state ships in #288 (§12.12). **Copy:** the design requires any copy that promises chords to change the same day chords stop — the P7 capabilities block's Chords line and the P4.1 home-page line (Slice 1b / Slice 2) [DP P4.1, P7].
 
 ### 12.11 Demo songs and retention: `jobs.is_demo` (NEW in v2.0, shipped in #289)
+
+> ⟲ **v2.1:** the demos **are** shared signed out since #302 (§12.9); the future tense below is historical. The key-detection cause was the drums reference stem; #295 (`f7f3350`) detects the key from all stems, deployed with the worker at `3a69c2c` (Actions run 44346791884, 2026-11-18) [L17 06:58Z, 16:25Z 11-18]. Residue QA-10 (drums-only usable → key should be NULL) is open. The demo static export: **[UNVERIFIED]** — no ledger row after 2026-11-18 records it done.
 
 **What it is for.** Three of Jon's own recordings — *Lucky Ticket*, *I'm Asking You*, *Offline* (The Royal Sundowners) — are the demo songs: processed once through the real pipeline, and **will be** shared by everyone (Slice 2), never copied per account [DP P3.1]. **Today** they are ordinary owned jobs, readable by the demo system account only. They must survive the retention sweep. Migration **`040_v3_jobs_is_demo.sql`** (+ `down/040_v3_jobs_is_demo_down.sql`) adds:
 
@@ -567,6 +608,11 @@ UPDATE public.jobs SET is_demo = true
 - **Key detection was wrong on all three demos.** The prod pipeline wrote `jobs.musical_key` **G minor** (Lucky Ticket), **B minor** (I'm Asking You) and **C♯ major** (Offline); Jon's confirmed keys are **A major / A minor / G major**. BPM matched (102 / 128 / 95). The same detector run on the source files before upload gave the confirmed keys (LEDGER-17 22:49Z), so the prod pipeline diverges; the cause is not yet diagnosed. There is **no key-override feature**: `musical_key` is written only by `pipeline.py`. After Jon's named approval (*"approve demo keys"*, 2026-11-17 21:56 PT) the orchestrator corrected the three demo rows with a **Jon-approved named `UPDATE public.jobs SET musical_key = … WHERE id = … AND is_demo`** to A major, A minor and G major, and verified them. A **key-detection bug investigation** (PR in progress, §11) covers every user's song, not only the demos: the header shows `<BPM> BPM · <key>` on every song, and ⋯ → Song info already says *"Tempo and key are detected automatically and can be off."*
 
 ### 12.12 The play-along player as shipped (Slice 1a, #288) (NEW in v2.0)
+
+> ⟲ **v2.1 (2026-11-21) — what changed since #288, and what Phase A will supersede.**
+> - **Shipped since:** the "See all chords" chart and editor use guitarist notation (#294 `18d84b5`, so P1.5 is met); the player clock stays right when a repeating loop changes (#296 `ee29c40`); with the loop off, tapping a section loops just that section (#303 `0f7ee6b`, Jon's QA C-10 decision, superseding the "tap outside the run extends it" rule when no loop is on); every chord tap target is ≥ 24 px on phones, in the chart sheet and on tablet/desktop (#312 `18119dd`, #324 `337a3ab`, #326 `8d490c6`); landscape, library states and iOS audio session fixes (#301 `48e38d4`); "Song library" label (#316 `d75b4f4`).
+> - **Known defects found by the design review [DR]:** the chord-change popover is a dead control (`ChordOverlay.tsx` `onChordEdit` not wired, issue #135); on the Lucky Ticket demo 87 of 201 chord segments are shorter than one beat, so the stage drops to sequence mode with no beat countdown; "Chorus" is an energy guess over 4-bar loop slices, leaving about 55% of the song in no section; section colours are gone; turning your part down takes 2–3 taps behind a modal sheet that hides the chords.
+> - **Superseded when Phase A merges** (not yet; no Phase A PR was open at 2026-11-21 14:05Z): **DR-D4** a section tap **jumps and plays**, a long-press loops (replaces the P2.1 tap rules below); **DR-D5** my-part stem pills on the play screen, and the Mix sheet becomes **half-height and non-modal** (replaces "a modal bottom sheet"); **DR-D6** Simple chords by default, display layer only; **DR-D2** neutral section names. See §12.15 and V3-PS1…PS6 in §9.
 
 Built from the approved design (P1.1–P1.5, P2.1) and Jon's approved mockups. P1 was approved via the mockups (16:55 PT) and the whole work plan (19:05 PT), not as a separate P1 decision [DP]. This is what `/jobs/[id]` does on `v3/main` at `f29bf17`. [#288]
 
@@ -622,6 +668,98 @@ No price or plan change (DB-15 (a), Jon 2026-11-17 [DP]); this is presentation o
 
 - `deploy.yml` also offers `web` and `all` targets (`vercel deploy --prod`). They still exist; the normal web path is the merge.
 - **No line in v1.10 said the web app deploys manually**, so none needed a strike-through. Lines that remain correct alongside this: §12.9's *"a redeploy after the keys land"* (an env edit alone changes nothing, since `NEXT_PUBLIC_*` is build-time inlined — a merge or a manual redeploy both satisfy it), and §8.2's (and §11 O-4's) *"rollback is promote-previous-deployment"*. §12.6's note that *"`fly deploy` builds from the local working tree"* describes a deploy run from Jon's machine; the Deploy workflow builds from the checked-out ref (`flyctl deploy --remote-only`).
+
+---
+
+### 12.15 Product evolution, 2026-11-17 → 2026-11-21 (NEW in v2.1)
+
+**What the product is now.** A **phone-first play-along**: paste a YouTube link on a phone, then play along with the chords going by, the BPM and key shown, sections to jump to or loop, and your own part turned down or soloed. **Download loops** (the original stem-loops product) is a **secondary** product on its own page (`/loops`), for about 5% of users. Sources: design proposal v1.5, approved by Jon on 2026-11-17 (more than half of users on phones; about 95% want to play along) [DP]; Jon's primary user story, 2026-11-20 21:21 PT [DR]. The PRD half of this document follows from that: the user stories that define the product are **v4.0 DRAFT** (2026-11-21, Jon's sign-off pending), built on Jon's story; v3.1 (2026-11-14) stays approved until Jon signs v4.0 off.
+
+#### 12.15.1 Slice outcomes (design proposal v1.5)
+
+| Slice | Scope | Outcome | Evidence |
+|---|---|---|---|
+| P6 pricing | `/pricing` indexable, in nav, CAD, mobile cards | Shipped | #287 `9aeae03` |
+| 0 | `jobs.is_demo`, demo retention to 2099-12-31 | Shipped; migration 040 applied prod 2026-11-18 02:08Z; demos flagged 04:47Z | #289 `cbe5b16`; [L17 02:08Z, 04:48Z 11-18] |
+| 1a | Phone player: one-screen layout, Mix sheet + presets, section runs, `--chord-now`, BPM/key | Shipped; worker deployed run 44236315618 | #288 `f29bf17` |
+| 1b | Copy true-today, titles + thumbnails for new songs, sign-up fixes | Shipped | #290 `4351160` |
+| 2a | Demo songs play signed out; home-page live demo; "Library" rename | Shipped; verified live 2026-11-18 13:21Z | #302 `3a69c2c` |
+| 2 (rest) | Claim-on-sign-in redesign (P3.2) | **[UNVERIFIED]** — not in #302; no later PR found | — |
+| 3 | Playlists, section rename | Not built; replaced by design-review Phases B/C (§12.15.6) | — |
+
+#### 12.15.2 Billing and money safety (shipped)
+
+All `[billing]` PRs merged only on Jon's named approval and an independent review ≥ 90 [L17].
+
+| What | PR |
+|---|---|
+| Credit-pack buttons quiet (one lime action per view) | #292 `6c95fcb` |
+| Refund jobs we fail or abandon; per-job deadline; no refund for over-length uploads (Jon) | #297 `4cf820c` |
+| Stripe webhook applies the current subscription state under a per-subscription lock; price from line items | #298 `a356fc6` |
+| Proxy failures are ours: fail fast, honest copy, Sentry, fetch canary | #307 `9965f5c` |
+| Our-fault link failures give the monthly song back (+ migration 042) | #308 `3ec00e1` |
+| Server refuses a second plan checkout while a subscription is live | #310 `1fe5edc` |
+| Proxy-check hysteresis + total deadline, redaction, restore isolation | #313 `e209a38` |
+| Account deletion cancels paused and incomplete subscriptions | #314 `8aa3064` |
+| Account deletion closes open Checkout Sessions; webhook cancels + refunds subscriptions of deleted users (proof-gated) | #325 `45d39df` |
+
+Deferred by Jon: Stripe restricted-key permissions until 5 users (until then, deleting an account that has a Stripe customer may 502 with an alert) [L17 01:44Z 11-21]. Open residue: QA-69 (#310), QA-81 (#325).
+
+#### 12.15.3 Demo songs are public
+
+*Lucky Ticket*, *I'm Asking You*, *Offline* (The Royal Sundowners; rights: DB-16) open signed out at `/demo/<slug>` (#302), are in the sitemap and `llms.txt` (#304 `b7c5b9f`), and the Terms, Privacy, FAQ and home say so (#305 `add22e7`). Keys corrected by a Jon-approved named write to A major / A minor / G major [L17 04:57Z 11-18].
+
+#### 12.15.4 Operations and reliability
+
+| What | Evidence |
+|---|---|
+| Security hardening: `_migrations` RLS (migration **041**, applied prod + staging 2026-11-18 18:01Z), Next image optimiser off, anonymous caps with advisory locks, same-origin guard, worker input allow-lists | #300 `d212bcc`; [L17 18:02Z 11-18] |
+| Orphan-sweep safety brake + missing-song-file alerts (QA-57, QA-59) | #306 `6bbb992` |
+| Drain the current job on restart; web deploy pnpm fix | #309 `f2d076d` (V3-OP3) |
+| Flaky process-group test fixed | #328 `4419080` |
+| **Allowance restore live end to end:** migration **042** applied by Jon in the SQL editor; verified staging + prod: 40 `_migrations` rows, last `042_v3_job_allowance_debits.sql`, RLS on, `stemloops_app` EXECUTE true, `anon` EXECUTE false | [L17 04:01Z 11-21] (V3-OP1) |
+| **First-byte stall cut:** `ms_first_byte` recorded; non-final stalled attempts cut at 15 s | #327 `ddf1a18`; worker run 44861295141 success (V3-OP2) |
+| **Klangio poll deadline 600 s → 120 s** (MJC-D9: raise to 180 s only if healthy tracks time out) | #317 `15c290f`; worker run 44826467472 |
+| Vercel Web Analytics on (Jon enabled 2026-11-20) | #315 `3924078`; [L17 01:44Z 11-21] |
+| R2 credential incident 2026-11-19 ~03:08–03:50Z (web playback only): restored by Jon setting the Production R2 key rows and redeploying | [L17 03:34Z–03:50Z 11-19] |
+
+**State on 2026-11-21 ~14:05Z [GH]:** `v3/main` = `8d490c6` (#326); web production deployment of `8d490c6` success 04:25Z; worker last deployed at `ddf1a18` (run 44861295141), and no `apps/worker` file changed between `ddf1a18` and `8d490c6`; worker `/health` ok, fetch canary ok; DB migration level **042** (prod and staging); open PRs: **0**; open issues #318, #319, #321, #322, #323, #286, #143, #135.
+
+#### 12.15.5 Jon's decisions (carried)
+
+| ID | Decision | Date / source |
+|---|---|---|
+| DB-12 (a) | Demo songs play signed out; own songs need sign-in | 2026-11-17 [DP]; built #302 |
+| DB-13 (a) | "Mute my part" asks which part once (Guitar pre-selected) | 2026-11-17 [DP]; #288 |
+| DB-14 (a) | Adjacent section runs now; non-adjacent only if asked | 2026-11-17 [DP]; #288 |
+| DB-15 (a) | Prices unchanged; playlists Pro-only (see MJC-D8) | 2026-11-17 [DP] |
+| DB-16 | Rights: *"NOT NEEDED. I MADE ALL THE MUSIC WE HAVE RIGHTS"* | 2026-11-17 18:23 PT; `docs/legal/demo-songs-rights.md` |
+| DB-17 | Chords after 2026-12-05 → now DR-D1, deferred | see below |
+| MJC-D1 | Klangio A+C now, B (late-result backfill, #323) on the roadmap | 2026-11-20 [MJC] |
+| MJC-D5 | #320 (first-byte stall) before #321 (Try again) | 2026-11-20 [MJC]; #327 shipped |
+| MJC-D6 | Queued-stall notice stays at 90 min (`job-poll.ts` comment still stale: QA-79) | 2026-11-20 [MJC] |
+| MJC-D7 | "Try again" capped at 2 (#321) | 2026-11-20 [MJC] |
+| MJC-D8 | Set lists: a "Demo set" that must never delete; Free plan allowed (#322) | 2026-11-20 [MJC] |
+| MJC-D9 | Klangio poll 120 s; 180 s only if healthy tracks time out | 2026-11-20 [MJC]; #317 |
+| MJC-D2/D3/D4 | Process decisions (scheduled-task retry moot; do items in that session; attach repo) | 2026-11-20 [MJC] |
+| — | "I APPROVE ALL MERGES" | 2026-11-20 14:03 PT [MJC] |
+| — | Stripe key permissions deferred until 5 users; system account deferred until 5 beta users; hCaptcha Pro lapsed, revisit at 10 users (DB-5) | [L17 01:44Z 11-21], [L17 16:45Z 11-18], [L17 17:00Z 11-17] |
+| — | Vercel Web Analytics on | 2026-11-20 [L17 01:44Z 11-21] |
+| **DR-D1** | **Chords after 2026-12-05: DEFERRED until after the design fixes; brief 2026-11-28; subscription ends 2026-12-05** | Jon 2026-11-21 06:57 PT |
+| **DR-D2 A** | Neutral section names ("Part 1", "Part 2" + time); rename later | Jon 2026-11-21 |
+| **DR-D3 A** | Keep the library row after the audio expires; free Re-make (Phase B) | Jon 2026-11-21 |
+| **DR-D4 A** | Tap a section to jump and play; long-press to loop | Jon 2026-11-21 |
+| **DR-D5 A** | My-part stem pills on the play screen (tap 100 → 30 → mute; long-press solo) | Jon 2026-11-21 |
+| **DR-D6 A** | Simple chords by default, Detailed toggle | Jon 2026-11-21 |
+| — | All design-review recommendations approved incl. merge; M2 merge automation completes **after** the design fixes; handover to a new session after Phase A merges; play-test gate: Jon plays 3 songs on his phone when Phase A is live | Jon 2026-11-21 06:57 PT |
+
+#### 12.15.6 The design-fix plan (design review, 2026-11-21)
+
+- **Phase A — in progress** (started 2026-11-21 14:02Z; 4 PRs, none open at 14:05Z): **A1** chord stage (V3-PS1, PS2), **A2** my-part pills + half-height Mix sheet (V3-PS3), **A3** sections and transport (V3-PS4, PS5), **A4** home / link / nav / copy (V3-PS6, incl. the runtime chords switch and QA-55 copy). No migrations in Phase A. Gate: Jon's play-test of 3 songs on his phone.
+- **Phase B** (2–3 weeks, after the gate): library row + Re-make (V3-LB1), set lists (V3-LB2), Try again (V3-LB3), library search (V3-LB4), saved chord corrections (#135 / review B "B1"), real section segmentation, a second chord provider if DR-D1 says so.
+- **Phase C** (later): PWA share target and "ready" notifications, progressive decode, slow-down / transpose, count-in, section rename, the chord-edit flywheel.
+- **Gate 2:** chord work beyond Phase A waits on DR-D1.
+
 
 ---
 
@@ -1423,14 +1561,28 @@ Three surfaces, read in this priority order (first non-null wins), cached 30 s:
 | V3-M1..M3 | 1a | Each email flow fires once per trigger (idempotent by id); bounces recorded | T-V3-M* |
 | **V3-F1** | 1a entry gate | T-F1 ≥90% within 2 attempts AND own-file p95 <2s on 100 sessions | T-V3-F1 |
 | **V3-Y1** | **2 — NO LONGER ON THE LAUNCH PATH (v1.5)** | Variant Y chord detection median <500ms E2E on 2020 4-core Chrome; accuracy within 2% of server **chord-recognition provider** (Klangio bridge → ChordNet 2E1D student per PR-Y1.1 / PR-Y1.4; decision record v1.3) on 20-song eval. `allin1` is a structure-analysis model, **not** a chord recognizer; wording corrected v1.4 | T-V3-Y1 |
-| **V3-J1** | **LAUNCH** | Jon performs the full journey — YouTube link → stems → play along with a per-stem fader and a synced chord timeline — on a real song with his own guitar, and confirms it. **A green test suite is explicitly NOT a pass** | **owner acceptance**, not CI |
-| **V3-J2** | **LAUNCH** | 6 full-length Opus stems retained and reachable by short-TTL signed URL for a real job id; **a `.wav` per stem downloadable**; all bound by the existing 24-hour expiry | T-V3-J2 |
+| **V3-J1** | **LAUNCH** | Jon performs the full journey — YouTube link → stems → play along with a per-stem fader and a synced chord timeline — on a real song with his own guitar, and confirms it. **A green test suite is explicitly NOT a pass**. ⟲ v2.1: run as the **Phase A play-test gate** (3 songs on Jon's phone) — not yet run | **owner acceptance**, not CI |
+| **V3-J2** | **LAUNCH** | 6 full-length Opus stems retained and reachable by short-TTL signed URL for a real job id; **a `.wav` per stem downloadable**; all bound by the existing 24-hour expiry. ⟲ v2.1: stems retained and served (Opus playback) — met; the `.wav` stem **download** half is **superseded** (v1.8: `export_stems` false on every plan, no route); retention is three rules, not one (§12.2) | T-V3-J2 |
 | **V3-J3** | **LAUNCH** | The chord under the playhead is the chord being heard, within a stated and measured tolerance. ⚠️ **Tolerance number, test id and clock source are still UNSPECIFIED** — see §11 | T-V3-J3 |
 | **V3-J4** | **LAUNCH** | **REVISED v1.9:** any song is converted; one longer than 300 s is trimmed to its first 300 s (upload and link), Replicate never receives more than 300 s, and the job page says *"Using the first 5:00 of a M:SS track."* (v1.7 withdrew it; v1.8 reinstated it as a refusal.) See §12.5 | T-V3-J4: `test_link_duration_cap.py`, `test_upload_duration_cap.py`, `test_link_money_path_e2e.py`, `job-input-trim.test.mjs` |
-| **V3-J5** | **LAUNCH** | Chrome/Edge desktop pass V3-J1. Unsupported browsers show a feature-detected banner, never a failing button | T-V3-J5 |
+| ~~**V3-J5**~~ | ⛔ **SUPERSEDED v2.1** → V3-PS* (phone-first) | ~~Chrome/Edge desktop pass V3-J1.~~ Kept as the record:  Unsupported browsers show a feature-detected banner, never a failing button | T-V3-J5 (historical) |
 | **V3-J6** | — | **ID RETIRED in v1.7** to avoid collision: v1.6 used V3-J6 for the Dec-5 deadline, now **V3-J8** | — |
-| **V3-J7** | **LAUNCH — BLOCKER** | Three different public YouTube links reach `done`. **Currently 0%** — two measured failures 2026-11-10. ⚠️ Depends on an external purchase (residential proxy), not on code | T-V3-J7 |
-| **V3-J8** | **LAUNCH — dated** | V3-J1 validated by Jon's own use **before 2026-12-05**, when the Klangio bridge expires with no working replacement | **date gate** |
+| **V3-J7** | ✅ **MET 2026-11-17** (§12.6) | Three different public YouTube links reach `done`. ~~**Currently 0%** — two measured failures 2026-11-10.~~ 3/3 on 2026-11-17 [L17 17:37Z]; kept healthy by V3-OP1/OP2. ⚠️ Depends on an external purchase (residential proxy), not on code | T-V3-J7 |
+| **V3-J8** | **LAUNCH — dated** | V3-J1 validated by Jon's own use **before 2026-12-05**, when the Klangio bridge expires with no working replacement. ⟲ v2.1: the chords half moves to **V3-CH1** (DR-D1 deferred, brief 2026-11-28) | **date gate** |
+| **V3-PS1** | Phase A (A1) | **Simple chords by default** (DR-D6): any chord shorter than one beat merges into its neighbour; changes snap to the beat grid; target ≤ ~20 changes/min on typical songs; Simple / Detailed toggle in ⋯, remembered per user (`localStorage`, try/catch); stored chord data unchanged (display layer) | Phase A PR A1 + real-Chromium gates |
+| **V3-PS2** | Phase A (A1) | Next-chord lead: beat countdown shown whenever BPM exists (also in sequence mode); BPM and key ≥ 20 px; the dead chord-edit control hidden; Wake Lock held while the player is open | Phase A PR A1 |
+| **V3-PS3** | Phase A (A2) | **My-part pills on the play screen** (DR-D5): Guitar · Bass · Keys · Drums · Vocals (+ Other), each ≥ 44 px; tap cycles 100% → 30% → muted → 100%; long-press solos / un-solos; the Mix button shows the state (e.g. "Guitar 30%"); the Mix sheet half-height and non-modal; `aria-pressed` + level labels | Phase A PR A2 |
+| **V3-PS4** | Phase A (A3) | **Section tap = jump and play; long-press (500 ms) = loop** (DR-D4); long-press on another chip extends the run; tapping the active looped chip stops it; a ⟲ back-to-section-start button on the transport; keyboard equivalents | Phase A PR A3 |
+| **V3-PS5** | Phase A (A3) | **Neutral section names** ("Part 1", "Part 2" + time), never the heuristic "Verse"/"Chorus" (DR-D2); section colours back (contrast ≥ 3:1 UI, ≥ 4.5:1 text); chips in two rows, none off-screen; rename later (Phase C) | Phase A PR A3 |
+| **V3-PS6** | Phase A (A4) | Home: the link box first with a Paste button; sign-in before the job starts; phone nav 3 items; `CHORDS_LINE_SHOWN` a runtime switch; landing copy phone-first | Phase A PR A4 |
+| **V3-LB1** | Phase B | **Library row kept after the audio expires, with a free Re-make** of the same link (DR-D3). Not built | — |
+| **V3-LB2** | Phase B | **Set lists** (issue #322): a "Demo set" that never deletes, user lists; Free plan allowed (MJC-D8; note DB-15 (a) had said Pro-only, so MJC-D8 supersedes it for set lists **[UNVERIFIED reading of MJC-D8 "Free plan allowed"]**). Not built | — |
+| **V3-LB3** | Phase B | **"Try again"** on a failed song, capped at 2 (issue #321, MJC-D7); link retry relies on V3-OP1. Not built | — |
+| **V3-LB4** | Phase B | Library search by title/artist, recently played, BPM·key on rows. Not built | — |
+| **V3-CH1** | dated: **2026-12-05** | New songs keep getting chords after the Klangio subscription ends, **or** every surface stops promising chords the same day (DR-D1). Brief 2026-11-28 | date gate |
+| **V3-OP1** | ✅ shipped | An our-fault link failure gives back the monthly song or trial song it used, once per job: #308 `3ec00e1` + migration **042** (applied staging + prod by Jon, verified 2026-11-21 04:01Z) | #308 tests (real PG in CI) |
+| **V3-OP2** | ✅ shipped | First byte recorded (`ms_first_byte`); a stalled non-final download attempt is cut at 15 s; the final attempt is never cut: #327 `ddf1a18`, worker deployed run 44861295141. Tune from p99 after 1 week (QA-82) | #327 tests |
+| **V3-OP3** | ✅ shipped | A worker restart drains the current job (SIGTERM, `kill_timeout` 300) instead of killing it: #309 `f2d076d`, deployed run 44811403150 | #309 tests |
 | V3-R1 | pre-launch | Rollback drills 1–3 pass; drill-1 includes byte-equivalent `/play` HTML snapshot when flag OFF | T-V3-R1 |
 
 ---
@@ -1475,15 +1627,29 @@ Shipped on 2026-11-17: #287 (pricing), #289 (Slice 0 `is_demo`), #288 (Slice 1a 
 | Item | What it is | Source |
 |---|---|---|
 | **DB-17** | Chords after 2026-12-05 — **open, "wait and see"**. See §12.8 and O-3 above | [DP] |
-| **Slice 1b** | Copy, titles, sign-up fixes (in progress). The design's Slice 1 also lists P7 copy true-today, P5 thumbnails from `video_id` and titles for new songs, and §8 analytics | [DP] |
-| **Slice 2** (next) | **Demo routes** (`is_demo` read branch in `mayReadJob` and the page gate; explicit `is_demo` denial on download and loop cutting — which also closes the §12.11 Dashboard-deletion residue; static demo assets); **the new home page** with the live demo (P4); **the claim-on-sign-in redesign** (P3.2); **"Job history" renamed "Library"**; P2 runs are already in (§12.12) | [DP] §1, [#289] |
-| **Slice 3** | **Playlists** — Pro-only per DB-15 (a); P2 section rename; non-adjacent loops only if users ask (DB-14) | [DP] |
-| **Chart-notation PR** | The "See all chords" chart and the chord editor onto `lib/play/notation.ts` (P1.5 is partly met until then; §12.12). In progress, Jon approved 2026-11-17 21:39 PT | [DP], [BB2.3-A4] |
-| **[billing] quiet credit buttons** | Signed-in `/pricing` still shows three lime "Buy credits" buttons, hard-coded in `BillingButton.tsx` (§12.13). In progress, Jon approved 2026-11-17 21:39 PT | [BB2.3-A3] |
+| ✅ **Slice 1b** | **v2.1: shipped #290 `4351160`.** Copy, titles, sign-up fixes (in progress). The design's Slice 1 also lists P7 copy true-today, P5 thumbnails from `video_id` and titles for new songs, and §8 analytics | [DP] |
+| **Slice 2** (next) | **v2.1: Slice 2a shipped #302 `3a69c2c`** (demo routes, home live demo, rename; then "Song library", #316). The claim-on-sign-in redesign (P3.2) **[UNVERIFIED — not in #302's scope; no later PR found]**. **Demo routes** (`is_demo` read branch in `mayReadJob` and the page gate; explicit `is_demo` denial on download and loop cutting — which also closes the §12.11 Dashboard-deletion residue; static demo assets); **the new home page** with the live demo (P4); **the claim-on-sign-in redesign** (P3.2); **"Job history" renamed "Library"**; P2 runs are already in (§12.12) | [DP] §1, [#289] |
+| **Slice 3** | **v2.1: not built; replaced by the design-review Phases B/C** (set lists #322 = V3-LB2; section rename = Phase C). **Playlists** — Pro-only per DB-15 (a); P2 section rename; non-adjacent loops only if users ask (DB-14) | [DP] |
+| ✅ **Chart-notation PR** | **v2.1: shipped #294 `18d84b5`.** The "See all chords" chart and the chord editor onto `lib/play/notation.ts` (P1.5 is partly met until then; §12.12). In progress, Jon approved 2026-11-17 21:39 PT | [DP], [BB2.3-A4] |
+| ✅ **[billing] quiet credit buttons** | **v2.1: shipped #292 `6c95fcb`.** Signed-in `/pricing` still shows three lime "Buy credits" buttons, hard-coded in `BillingButton.tsx` (§12.13). In progress, Jon approved 2026-11-17 21:39 PT | [BB2.3-A3] |
 | ~~**Staging catch-up**~~ ✅ | **DONE 2026-11-18.** Staging `_migrations` has 38 rows (001–040 minus the non-existent 010 and 036); 009, 011, 012 and 013–040 applied 2026-11-18; 004 recorded as pre-applied after verification; `jobs.is_demo` present; plans match prod; 0 jobs, 0 users (§12.11). Verified read-only by the orchestrator 05:08Z | Jon 2026-11-17 21:39 PT, *"a now"* / *"do it yourself"*; LEDGER-17 |
-| **Migration re-run safety** | Migrations **004** (bare `ADD CONSTRAINT jobs_input_source_chk`) and **026** (9 unguarded `ADD CONSTRAINT`s) are **not re-run-safe**, despite the migrations README's claim that every migration is idempotent; a fix PR is planned | staging catch-up 2026-11-17/18 |
-| **Demo static export** | [DP] Slice 0 step (2): export the three demos' stems, chords and sections to the static demo host. **Not done** (§12.11) | [DP] §1 |
-| **Key-detection bug** | Diagnose why prod `musical_key` diverges from the same detector run locally (3/3 demos wrong, §12.11). Affects every user's song. Investigation PR in progress; the three demo rows were already corrected by a Jon-approved named write (2026-11-17 21:56 PT) | §12.11; LEDGER-17 |
+| **Migration re-run safety** | **v2.1: still open (QA-18).** Migrations **004** (bare `ADD CONSTRAINT jobs_input_source_chk`) and **026** (9 unguarded `ADD CONSTRAINT`s) are **not re-run-safe**, despite the migrations README's claim that every migration is idempotent; a fix PR is planned | staging catch-up 2026-11-17/18 |
+| **Demo static export** | **v2.1: [UNVERIFIED] — no record of it being done.** [DP] Slice 0 step (2): export the three demos' stems, chords and sections to the static demo host. **Not done** (§12.11) | [DP] §1 |
+| ✅ **Key-detection bug** | **v2.1: fixed #295 `f7f3350`** (key from all stems, not the drums reference); deployed 2026-11-18. Diagnose why prod `musical_key` diverges from the same detector run locally (3/3 demos wrong, §12.11). Affects every user's song. Investigation PR in progress; the three demo rows were already corrected by a Jon-approved named write (2026-11-17 21:56 PT) | §12.11; LEDGER-17 |
+
+### Open after 2026-11-21 (v2.1)
+
+| Item | What it is | Source |
+|---|---|---|
+| **DR-D1 / V3-CH1** | Chords after 2026-12-05. Deferred by Jon; brief 2026-11-28; subscription ends 2026-12-05 | Jon 2026-11-21 |
+| **Phase A (A1–A4)** | V3-PS1…PS6; in progress; then Jon's play-test gate (3 songs on his phone) | Jon 2026-11-21 |
+| **Phase B** | V3-LB1…LB4, saved chord corrections (#135), section segmentation | [DR] |
+| **M2 merge automation** | Owner steps 1–5 and §5 steps 1–3 done 2026-11-17; §5 steps 4–6 (DB-10) **after the design fixes** | [L17 18:42Z 11-17], Jon 2026-11-21 |
+| **Real-device phone test** | Locked-screen audio, iPhone silent switch, memory on a real iPhone and Android | [DR] review A/B |
+| **Open issues** | #318 drain reported as KeyboardInterrupt; #319 Nov 19 artifact burst; #321 Try again; #322 set lists; #323 Klangio backfill; #286 j8 flake; #143 App secrets; #135 chord-correction flywheel | GitHub, 2026-11-21 |
+| **Open QA** | QA-10, 15, 17, 18, 19, 20, 62, 69, 70, 71, 77–83 (QA bug log, statuses 2026-11-21 04:40Z) | QA-BUG-LOG |
+| **Staging R2 key** | Preview/Development `R2_*` rows point at the staging bucket with a key Jon must replace with a staging-scoped token | [L17 01:00Z 11-21] |
+
 
 #289's operator steps are done (v2.0.1): the demos were processed and flagged on 2026-11-18 04:47Z, and the R2 bucket has no lifecycle rules (§12.11). Still outstanding: the demo static export and the key-detection bug (rows above).
 

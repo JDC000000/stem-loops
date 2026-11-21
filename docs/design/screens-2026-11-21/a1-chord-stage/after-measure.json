@@ -4,7 +4,7 @@
    "t": 25.000000000000014,
    "mode": "bars",
    "now": 120,
-   "next": 32,
+   "next": 44,
    "when": "Next",
    "whenPx": 13,
    "countdown": "3",
@@ -17,32 +17,32 @@
     [
      "SPAN",
      81,
-     70
+     68
     ],
     [
      "SPAN",
      38,
-     70
+     68
     ],
     [
      "SPAN",
      40,
-     70
+     68
     ],
     [
      "SPAN",
      81,
-     70
+     68
     ],
     [
      "SPAN",
      38,
-     70
+     68
     ],
     [
      "SPAN",
      40,
-     70
+     68
     ]
    ],
    "slotTags": [
@@ -66,43 +66,43 @@
     [
      "SPAN",
      81,
-     70
+     68
     ],
     [
      "SPAN",
      38,
-     70
+     68
     ],
     [
      "SPAN",
      40,
-     70
+     68
     ],
     [
      "SPAN",
      81,
-     70
+     68
     ],
     [
      "SPAN",
      38,
-     70
+     68
     ],
     [
      "SPAN",
      40,
-     70
+     68
     ]
    ],
    "slotTags": [
     "SPAN"
    ]
   },
-  "nowChangesPerMinute60to120": 31,
+  "nowChangesPerMinute60to120": 30,
   "paused": {
    "mode": "bars",
    "now": 120,
-   "next": 32,
+   "next": 44,
    "when": "Next",
    "whenPx": 13,
    "countdown": "3",
@@ -115,32 +115,32 @@
     [
      "SPAN",
      81,
-     70
+     68
     ],
     [
      "SPAN",
      38,
-     70
+     68
     ],
     [
      "SPAN",
      40,
-     70
+     68
     ],
     [
      "SPAN",
      81,
-     70
+     68
     ],
     [
      "SPAN",
      38,
-     70
+     68
     ],
     [
      "SPAN",
      40,
-     70
+     68
     ]
    ],
    "slotTags": [
@@ -164,12 +164,12 @@
   "noGrid": {
    "mode": "sequence",
    "now": 120,
-   "next": 32,
+   "next": 44,
    "when": "Next",
    "whenPx": 13,
    "countdown": null,
    "countdownPx": 20,
-   "countdownText": "0.9 s",
+   "countdownText": "1.1 s",
    "factsPx": 20,
    "factsText": "Detected:\n102 BPM · A major",
    "stageInteractive": [],
@@ -214,8 +214,8 @@
   "three": {
    "t": 24.70000000000001,
    "mode": "sequence",
-   "now": 96,
-   "next": 32,
+   "now": 120,
+   "next": 44,
    "when": "Next",
    "whenPx": 13,
    "countdown": "3",
@@ -263,7 +263,7 @@
   "one": {
    "t": 24,
    "mode": "sequence",
-   "now": 96,
+   "now": 120,
    "next": 64,
    "when": "Next",
    "whenPx": 13,
@@ -315,8 +315,8 @@
   "three": {
    "t": 25.000000000000014,
    "mode": "bars",
-   "now": 96,
-   "next": 32,
+   "now": 120,
+   "next": 44,
    "when": "Next",
    "whenPx": 13,
    "countdown": "3",
@@ -329,32 +329,32 @@
     [
      "SPAN",
      73,
-     69
+     46
     ],
     [
      "SPAN",
      38,
-     69
+     46
     ],
     [
      "SPAN",
      33,
-     69
+     46
     ],
     [
      "SPAN",
      73,
-     69
+     46
     ],
     [
      "SPAN",
      38,
-     69
+     46
     ],
     [
      "SPAN",
      33,
-     69
+     46
     ]
    ],
    "slotTags": [
@@ -364,8 +364,8 @@
   "one": {
    "t": 26.20000000000003,
    "mode": "bars",
-   "now": 96,
-   "next": 64,
+   "now": 120,
+   "next": 58,
    "when": "Next",
    "whenPx": 13,
    "countdown": "1",
@@ -378,43 +378,43 @@
     [
      "SPAN",
      73,
-     69
+     46
     ],
     [
      "SPAN",
      38,
-     69
+     46
     ],
     [
      "SPAN",
      33,
-     69
+     46
     ],
     [
      "SPAN",
      73,
-     69
+     46
     ],
     [
      "SPAN",
      38,
-     69
+     46
     ],
     [
      "SPAN",
      33,
-     69
+     46
     ]
    ],
    "slotTags": [
     "SPAN"
    ]
   },
-  "nowChangesPerMinute60to120": 31,
+  "nowChangesPerMinute60to120": 30,
   "paused": {
    "mode": "bars",
-   "now": 96,
-   "next": 32,
+   "now": 120,
+   "next": 44,
    "when": "Next",
    "whenPx": 13,
    "countdown": "3",
@@ -427,32 +427,32 @@
     [
      "SPAN",
      73,
-     69
+     46
     ],
     [
      "SPAN",
      38,
-     69
+     46
     ],
     [
      "SPAN",
      33,
-     69
+     46
     ],
     [
      "SPAN",
      73,
-     69
+     46
     ],
     [
      "SPAN",
      38,
-     69
+     46
     ],
     [
      "SPAN",
      33,
-     69
+     46
     ]
    ],
    "slotTags": [
@@ -475,13 +475,13 @@
   ],
   "noGrid": {
    "mode": "sequence",
-   "now": 96,
-   "next": 32,
+   "now": 120,
+   "next": 44,
    "when": "Next",
    "whenPx": 13,
    "countdown": null,
    "countdownPx": 20,
-   "countdownText": "0.9 s",
+   "countdownText": "1.1 s",
    "factsPx": 20,
    "factsText": "Detected:\n102 BPM · A major",
    "stageInteractive": [],
@@ -489,32 +489,32 @@
     [
      "SPAN",
      73,
-     96
+     93
     ],
     [
      "SPAN",
      73,
-     96
+     93
     ],
     [
      "SPAN",
      73,
-     96
+     93
     ],
     [
      "SPAN",
      73,
-     96
+     93
     ],
     [
      "SPAN",
      73,
-     96
+     93
     ],
     [
      "SPAN",
      73,
-     96
+     93
     ]
    ],
    "slotTags": [
@@ -526,8 +526,8 @@
   "three": {
    "t": 24.70000000000001,
    "mode": "sequence",
-   "now": 72,
-   "next": 32,
+   "now": 120,
+   "next": 44,
    "when": "Next",
    "whenPx": 13,
    "countdown": "3",
@@ -540,32 +540,32 @@
     [
      "SPAN",
      73,
-     96
+     52
     ],
     [
      "SPAN",
      73,
-     96
+     52
     ],
     [
      "SPAN",
      73,
-     96
+     52
     ],
     [
      "SPAN",
      73,
-     96
+     52
     ],
     [
      "SPAN",
      73,
-     96
+     52
     ],
     [
      "SPAN",
      73,
-     96
+     52
     ]
    ],
    "slotTags": [
@@ -575,8 +575,8 @@
   "one": {
    "t": 24,
    "mode": "sequence",
-   "now": 72,
-   "next": 47,
+   "now": 120,
+   "next": 50,
    "when": "Next",
    "whenPx": 13,
    "countdown": "1",
@@ -589,32 +589,32 @@
     [
      "SPAN",
      73,
-     96
+     93
     ],
     [
      "SPAN",
      73,
-     96
+     93
     ],
     [
      "SPAN",
      73,
-     96
+     93
     ],
     [
      "SPAN",
      73,
-     96
+     93
     ],
     [
      "SPAN",
      73,
-     96
+     93
     ],
     [
      "SPAN",
      73,
-     96
+     93
     ]
    ],
    "slotTags": [

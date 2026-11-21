@@ -1979,7 +1979,9 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
                 fontWeight: cd.lastBeat ? 700 : 600,
                 color: cd.lastBeat ? 'var(--text-primary, #ffffff)' : 'var(--text-secondary, #e0e0e0)',
                 whiteSpace: 'nowrap',
-                transition: reduceMotion ? 'none' : 'font-size 120ms ease-out',
+                // Only the last-beat growth animates; a shrink or a re-layout is
+                // instant (an animated shrink would cross Now for 120ms).
+                transition: reduceMotion || !cd.lastBeat ? 'none' : 'font-size 120ms ease-out',
               }}
               data-testid="phone-next-name"
               data-grown={cd.lastBeat ? 'true' : undefined}

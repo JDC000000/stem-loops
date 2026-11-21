@@ -929,7 +929,11 @@ const A03_DENSE = [
 const A03_CASES = [
   ...A03_VIEWPORTS.map((vp) => ({ vp, name: 'stacked bars', bars: A03_BARS, mustScroll: vp[0] === 667 })),
   { vp: [844, 390], name: "QA's worst-case bars", bars: A03_DENSE, mustScroll: false },
-  { vp: [800, 360], name: "QA's worst-case bars", bars: A03_DENSE, mustScroll: true },
+  // Since the review of #333 the worst-case bars FIT at 800x360 (tighter row
+  // gaps, the beat row hidden beside the countdown): the scroll path is
+  // exercised one step shorter, at 800x330.
+  { vp: [800, 360], name: "QA's worst-case bars", bars: A03_DENSE, mustScroll: false },
+  { vp: [800, 330], name: "QA's worst-case bars", bars: A03_DENSE, mustScroll: true },
 ];
 for (const { vp, name, bars: shape, mustScroll } of A03_CASES) {
   test(`A-03 phone chords @ ${vp[0]}x${vp[1]}: the current bar is always fully on screen (${name}, notice showing)`, async () => {
@@ -1176,8 +1180,12 @@ for (const mode of ['simple', 'detailed']) for (const vp of [[390, 844], [360, 8
           if (c.text !== `${n} beat${n === 1 ? '' : 's'}` || c.textPx < 20) f.push(`countdown text "${c.text}" ${c.textPx}px @ ${ctxs}`);
           if (c.segs !== 4 || c.lit !== (n <= 4 ? 5 - n : 0)) f.push(`countdown ${c.lit}/4 lit for ${n} beats @ ${ctxs}`);
           if (m.dots.length) f.push(`beat dots beside the countdown @ ${ctxs}`);
-          if (!(g.growPx >= 44 && g.growPx <= 64)) f.push(`Next grow size ${g.growPx} @ ${ctxs}`);
-          if (g.nextPx !== (n === 1 ? g.growPx : 44)) f.push(`Next ${g.nextPx}px with ${n} beat(s) left (grow ${g.growPx}) @ ${ctxs}`);
+          // Next is 44px, or 32px where only that keeps Now >= 72 and the next
+          // line (allowed at 360, reported; never at 390). On the last beat
+          // it may grow, up to 64px.
+          if (n > 1 && g.nextPx !== 44 && !(g.nextPx === 32 && vp[0] === 360)) f.push(`Next ${g.nextPx}px with ${n} beat(s) left @ ${ctxs}`);
+          if (!(g.growPx >= 32 && g.growPx <= 64) || (vp[0] === 390 && g.growPx < 44)) f.push(`Next grow size ${g.growPx} @ ${ctxs}`);
+          if (n === 1 && g.nextPx !== g.growPx) f.push(`Next ${g.nextPx}px on the last beat (grow ${g.growPx}) @ ${ctxs}`);
           counted++;
         }
       }
@@ -1204,7 +1212,6 @@ for (const [stageH, full] of [[460, true], [420, false]]) for (const vp of [[390
     const grid = { beatSec: 60 / D.bpm, anchorSec: D.sections[0].start_sec, measured: true };
     const sections = D.sections.map((s) => ({ startSec: s.start_sec, endSec: s.end_sec, label: s.label }));
     const payload = { key: null, provider: 'klangio', provider_version: 'demo', duration_sec: D.duration_sec, model_ms: 1, segments: D.segments.map((s) => ({ ...s, confidence: 1 })) };
-    const songEnd = Math.max(...D.segments.map((s) => s.end_sec));
     const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections, payload, chordMode: mode, stageH });
     try {
       const f = [];
@@ -1225,12 +1232,13 @@ for (const [stageH, full] of [[460, true], [420, false]]) for (const vp of [[390
         n++;
         if (!m.now) { f.push(`no Now @ ${ctxs}`); continue; }
         if (!m.now.inX || m.now.clippedBy.length) f.push(`Now clipped (${m.now.clippedBy.join(',')}) @ ${ctxs}`);
-        if (m.now.overlap) f.push(`Now overlaps Next @ ${ctxs}`);
+        if (m.now.overlap) f.push(`Now overlaps Next: ${m.now.overlap} @ ${ctxs}`);
         if (m.now.fontPx < (full ? 72 : 28)) f.push(`Now ${m.now.fontPx}px @ ${ctxs}`);
         for (const [top, bottom] of g.lines) if (top < g.areaTop - 0.5 || bottom > g.areaBottom + 0.5) f.push(`a bar line (${top.toFixed(0)}-${bottom.toFixed(0)}) is outside the chord area (${g.areaTop.toFixed(0)}-${g.areaBottom.toFixed(0)}) @ ${ctxs}`);
         if (!g.next) {
           noNext++;
-          if (full && g.curEnd < songEnd - 0.05) f.push(`no next line, but the song goes on after ${g.curEnd.toFixed(2)}s @ ${ctxs}`);
+          // Allowed only on the song's last line: no chord starts after it.
+          if (full && D.segments.some((x) => x.label !== 'N' && x.start_sec >= g.curEnd + 0.05)) f.push(`no next line, but the song goes on after ${g.curEnd.toFixed(2)}s @ ${ctxs}`);
         }
       }
       if (process.env.CHORD_GATE_LOG) console.log(`STAGE ${stageH} ${slug} ${mode} ${vp.join('x')}: ${n} positions, next line hidden at ${noNext}`);

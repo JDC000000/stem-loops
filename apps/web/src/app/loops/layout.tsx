@@ -11,7 +11,10 @@ import { pageMetadata } from '@/lib/seo/meta';
 // (lib/seo/pages.ts), the sitemap and llms.txt, and indexable. Its metadata comes from that one
 // registry entry, like /privacy and /terms. A signed-in visitor gets the same URL with their
 // songs on it; nothing private is in the head.
-export const metadata: Metadata = pageMetadata(pageFor('/loops')!);
+// generateMetadata: the shared Open Graph image is a DB-17 chord claim, read per request (this route is dynamic).
+export function generateMetadata(): Metadata {
+  return pageMetadata(pageFor('/loops')!);
+}
 
 // The bar is session-aware, so this segment must never be prerendered: a
 // static render would bake `signedIn: false` into the HTML and show a cached

@@ -7,7 +7,6 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
-import { playerArt } from './helpers/render-player-art.mjs';
 import { landingPage } from './helpers/render-landing-page.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -38,7 +37,7 @@ const LANDING = [...walk(join(WEB, 'src/app/(landing)')), ...walk(join(WEB, 'src
  * UNDER-inclusive: a STRING literal is not a comment, so a literal can still SATISFY a
  * positive gate. That is a false GREEN and is not tolerable. The one gate it was demonstrated
  * against — the art-drift gate — therefore no longer reads source text at all; it asserts on
- * RENDERED OUTPUT, which no literal can fake. See test/helpers/render-player-art.mjs.
+ * RENDERED OUTPUT, which no literal can fake (that gate and its helper went with the drawn player, A4).
  *
  * AND THE SAFETY ARGUMENT ABOVE HAS A PRECONDITION. Being wrong only in the false-RED
  * direction holds because every surviving positive gate over this text is a PREFIX or a
@@ -171,9 +170,11 @@ const rxEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * the suite stayed green at 16/16 \u2014 the change this file exists to hold could be undone
  * without a red \u2014 and deleting both hero account sentences outright was green too.
  */
-const audienceLine = () => {
-  const m = RENDER.html.match(/<p class="audience">([\s\S]*?)<\/p>/);
-  assert.ok(m, 'the rendered hero has no .audience line');
+// A4 (2026-11-21): the hero's long `.audience` line is gone (home page diet). The account and
+// length facts are stated by the tool's own note under its button, read the same way.
+const ctaNote = () => {
+  const m = RENDER.html.match(/<p class="hint cta-note">([\s\S]*?)<\/p>/);
+  assert.ok(m, 'the rendered tool has no .cta-note line');
   return flatten(m[1]);
 };
 const faqAnswer = (summary) => {
@@ -236,23 +237,8 @@ test('the H1 stays "Paste a song. Play along."', () => {
  * a gate; the copy had been bent to fit the list.
  */
 const CLAUSES = (t) => t.split(/(?<=[.!?;:])\s+|\s*¶\s*/);
-const NEGATED = /\b(?:no|not|never|without|none|nothing)\b|n['’]t/i;
 
-// (A) "an account is needed to START". Negation-aware: a clause that negates the claim is
-//     stating the truth and must pass. Scoped to STARTING, so "the player asks you to sign
-//     in" — which is true — is not banned.
-const REQUIRES_TO_START = [
-  /\byou need an account\s*[.!]/i,                 // unqualified; no negated form matches this
-  /required\.\s*sign in/i,                         // the old scope-sheet row, verbatim
-  /\bneeds? an account\b[^.;!?]{0,40}\b(?:to|before)\b[^.;!?]{0,25}\b(?:start|paste|submit|run|use|upload|get going)/i,
-  /\ban account\b[^.;!?]{0,25}\brequired\b[^.;!?]{0,40}\b(?:to|before)\b[^.;!?]{0,25}\b(?:start|paste|submit|run|use|upload)/i,
-  /\b(?:sign.?in|sign.?up|log ?in|logging in)\b[^.;!?]{0,25}\b(?:is )?required\b/i,
-  /\bmust\b[^.;!?]{0,25}\b(?:sign|log) in\b/i,
-  /\b(?:create|make|get|open)\b[^.;!?]{0,25}\b(?:free )?account\b[^.;!?]{0,35}\b(?:first|to (?:get )?start)/i,
-  /\b(?:sign|log) ?in\b[^.;!?]{0,25}\b(?:first|to start|to get started)\b/i,
-  /\b(?:form|input|tool|uploader|box)\b[^.;!?]{0,45}\bunlocks?\b/i,
-  /\bno (?:job|jobs|songs?) without an account\b/i,
-];
+// (A) "an account is needed to START": RETIRED by A4 (2026-11-21), see the test below.
 
 // (B) the OPPOSITE falsehood: that the player, loops, chords or stems need no account. The
 //     /jobs/[id] page DOES redirect a signed-out visitor, so these are false. The negation
@@ -282,40 +268,31 @@ const DATA_IS_GATED = [
   /\b(?:sign.?in|an account|your account)\b[^.;!?]{0,25}\b(?:protects|secures|guards|keeps .{0,20}private)\b/i,
 ];
 
-test('the landing never claims an account is required to START — nothing enforces one', () => {
-  // POSITIVE, on ALL THREE places the page speaks about accounts, each read from the RENDERED
-  // page. See audienceLine/faqAnswer above for why the hero and the FAQ are asserted now.
-  assert.match(audienceLine(), /Starting a job needs no account/);
-  assert.match(faqAnswer('Do I need an account?'), /^Not to start one\./);
-  // Since #302 the demo songs open in the player signed out (src/app/demo/[slug]/page.tsx;
-  // src/app/jobs/[id]/page.tsx skips its login redirect only for isDemoJob), so every account
-  // line is SCOPED to your own songs and states the demo half with the D-SEO-7 phrase
-  // "without signing in". The PLAY_NEEDS_NO_ACCOUNT guard below still fails any claim that
-  // the player opens your own songs signed out.
-  assert.match(audienceLine(), /opening the player with your own songs needs one\. The demo songs open without signing in\./);
-  assert.equal(wygLine('account'), 'Free account needed to play your own songs. The demo songs open without signing in.');
-  // The FAQ answer renders on / (HOME_FAQ) and on /help (HELP_SECTIONS). PR #305 review M1:
-  // putting back the old unscoped line passed the whole suite, so it is pinned both ways.
+// A4 (2026-11-21): THE PREMISE OF FAMILY (A) CHANGED, ON PURPOSE. A signed-out visitor who
+// submits a LINK now signs in FIRST (components/landing/ToolForm.tsx, lib/pending-link.ts), and the
+// song starts as soon as they are back. A FILE still starts signed out. So "you sign in first" is
+// now TRUE for a link, and the REQUIRES_TO_START family, which banned saying so, is retired: it
+// would force the page to hide the very step the visitor is about to meet. What replaces it is the
+// exact rule, pinned whole below, with both halves (link: sign in first; file: starts signed out)
+// and the demo half. Families (B) and (C) still run: the player and the data claims are unchanged.
+test('the landing states the account rule as it is now: a link signs in first, a file starts signed out, demos need none', () => {
   const faq = faqAnswer('Do I need an account?');
-  assert.match(faq, /Running a job works signed out, and so does playing a demo song\./);
-  assert.match(faq, /To open your own songs in the player you sign in/);
-  assert.doesNotMatch(faq, /The player asks you to sign in/i,
-    'the FAQ is back to the unscoped sign-in line, false for the demo songs since #302');
-  for (const [where, text] of [['hero', audienceLine()], ['what-you-get', wygLine('account')], ['FAQ', faq]]) {
-    assert.doesNotMatch(text, /opening the player needs one|needed to play\.|The player asks you to sign in/i,
-      `${where} has an unscoped account line again`);
+  assert.match(faq, /^To play your own songs, yes: a free one\./);
+  assert.match(faq, /When you paste a link signed out, you sign in first and the song starts as soon as you are in\./);
+  assert.match(faq, /A file you upload starts straight away and asks you to sign in when its player opens\./);
+  assert.match(faq, /The demo songs open without signing in\./);
+  assert.match(faq, /on the sign-in page/i);
+  // the tool's own note and the demo poster
+  assert.match(ctaNote(), /Free account to play your own songs\./);
+  assert.match(RENDER.textSpaced, /Try it now · no account needed/);
+  // the old unscoped claims must not come back
+  for (const [where, text] of [['tool note', ctaNote()], ['FAQ', faq]]) {
+    assert.doesNotMatch(text, /Starting a job needs no account|Not to start one\./, `${where} still says starting needs no account`);
+    assert.doesNotMatch(text, /The player asks you to sign in/i, `${where} has the unscoped sign-in line`);
   }
-  // …and the FAQ still carries the half that IS true. `on the sign-in page` rather than a
-  // bare /sign in/i, which "no sign in needed" satisfies by containing the words.
-  assert.match(faqAnswer('Do I need an account?'), /on the sign-in page/i);
 
   const check = (where, text) => {
     for (const c of CLAUSES(text)) {
-      if (!NEGATED.test(c)) {
-        for (const re of REQUIRES_TO_START) {
-          assert.doesNotMatch(c, re, `${where} claims an account is needed to start — ${re} in ${JSON.stringify(c.slice(0, 110))}`);
-        }
-      }
       for (const re of PLAY_NEEDS_NO_ACCOUNT) {
         assert.doesNotMatch(c, re, `${where} claims the player needs no account — ${re} in ${JSON.stringify(c.slice(0, 110))}`);
       }
@@ -340,40 +317,50 @@ test('the landing shows no price, plan or paywall — there is no payment at lau
   const PRICING_WORD = /(?<!href="\/)\bpricing\b/i;
   const banned = [/\$\d/, /\bper month\b/i, /\/mo\b/, /\bfree forever\b/i, /\bupgrade\b/i, PRICING_WORD, /\bpaid plan/i, /\bcredits\b/i,
     /\bPro\b/, /\bStudio\b/, /\bFree plan\b/i];
-  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
+  // A4: the footer's one "Pricing" link label (SiteChrome.tsx) is the only allowed source occurrence.
+  const FOOTER_LINK = '<a href="/pricing">Pricing</a>';
+  for (const [file, src] of RAW_PAGE_AND_COMPONENTS) {
+    const t = file.endsWith('SiteChrome.tsx') ? src.split(FOOTER_LINK).join('') : src;
+    for (const re of banned) assert.doesNotMatch(t, re, `${file} matches ${re}`);
+  }
   for (const [where, text] of READ_AS) {
     for (const re of banned) {
       if (re === PRICING_WORD) continue;
       assert.doesNotMatch(text, re, `${where} says ${re}`);
     }
     // No \b: the markup-removed reading joins the nav labels ("LibraryPricingSign in").
+    // A4: two labels may say it — the desktop nav item and the footer link (Pricing left the
+    // phone bar, so the footer carries it).
     const n = (text.match(/pricing/gi) ?? []).length;
-    assert.equal(n, where.startsWith('the page metadata') ? 0 : 1, `${where}: "pricing" ${n} times; only the nav item may say it`);
+    assert.equal(n, where.startsWith('the page metadata') ? 0 : 2, `${where}: "pricing" ${n} times; only the nav item and the footer link may say it`);
   }
   const header = RENDER.html.match(/<header\b[^>]*class="sin-bar"[\s\S]*?<\/header>/)?.[0] ?? '';
-  assert.match(header, /<a\b[^>]*href="\/pricing"[^>]*>Pricing<\/a>/, 'the one allowed "Pricing" is the nav item');
-  const body = RENDER.html.replace(header, '');
-  assert.doesNotMatch(body.replace(/<[^>]*>/g, ' '), /\bpricing\b/i, 'outside the nav, the landing does not say "pricing"');
+  assert.match(header, /<a\b[^>]*href="\/pricing"[^>]*>Pricing<\/a>/, 'one allowed "Pricing" is the nav item');
+  const footer = RENDER.html.match(/<footer\b[\s\S]*?<\/footer>/)?.[0] ?? '';
+  assert.match(footer, /<a href="\/pricing">Pricing<\/a>/, 'the other is the footer link');
+  const body = RENDER.html.replace(header, '').replace(footer, '');
+  assert.doesNotMatch(body.replace(/<[^>]*>/g, ' '), /\bpricing\b/i, 'outside the nav and footer, the landing does not say "pricing"');
 });
 
-test('the landing links to /pricing exactly once in its own copy, plus the top-nav item (F31 + P6)', () => {
+test('the landing links to /pricing from its teaser line and its footer, plus the top-nav item (F31 + P6 + A4)', () => {
   let inSource = 0;
   for (const [, src] of RAW_PAGE_AND_COMPONENTS) inSource += (src.match(/href="\/pricing/g) ?? []).length;
-  assert.equal(inSource, 1, 'the landing source must carry exactly one /pricing link');
-  // P6 (Jon, 2026-11-17): the shared top nav adds one more on every page.
-  assert.equal((RENDER.html.match(/href="\/pricing/g) ?? []).length, 2, 'the rendered page: the scope sheet link and the nav item');
+  assert.equal(inSource, 2, 'the landing source carries two /pricing links: the teaser line and the footer');
+  // P6 (Jon, 2026-11-17): the shared top nav adds one more on every page (desktop; A4).
+  assert.equal((RENDER.html.match(/href="\/pricing/g) ?? []).length, 3, 'the rendered page: the teaser line, the footer and the nav item');
+  assert.match(RENDER.html, /<a href="\/pricing">See the monthly song limits →<\/a>/, 'the pricing teaser line');
   const header = RENDER.html.match(/<header\b[^>]*class="sin-bar"[\s\S]*?<\/header>/)?.[0] ?? '';
   assert.equal((header.match(/href="\/pricing/g) ?? []).length, 1, 'exactly one of them is in the nav');
 });
 
-test('the landing states the device scope truthfully: tested on desktop Chrome, phones new with lighter audio (Story 8)', () => {
-  // Jon 2026-11-15: the product must work on phones, so "phones are not supported" is now false.
-  // Positive first: the row has to SAY the scope, including what is NOT yet known. The ban list
-  // still stops over-claiming (no "works great on any phone", no "every browser").
-  // Slice 1b (P7): the scope sheet row became one "What you get" line, pinned whole.
-  const row = wygLine('device');
-  assert.equal(row, 'Best in Chrome on a computer. Phones work too, with lighter audio; phone support is new.');
-  assert.doesNotMatch(row, /not supported/);
+test('the landing states the device scope truthfully and phone first (Story 8; A4 2026-11-21)', () => {
+  // Jon 2026-11-15: the product must work on phones; 2026-11-21 (A4): the copy leads with the phone.
+  // True in code: the phone player shipped (#278/#288) and loads lighter audio
+  // (lib/play/device-support.ts). The desktop-first line is gone, and must not come back.
+  assert.match(RENDER.textSpaced, /on your phone or your computer\./);
+  for (const [where, text] of READ_AS) {
+    assert.doesNotMatch(text, /Best in Chrome on a computer|phone support is new/i, `${where} still ranks the computer above the phone`);
+  }
   // The untested-browser caveat lives in the FAQ on /help now; the home page no longer
   // carries a "Which browsers work?" answer.
   const banned = [/works (?:great |fine |perfectly )?on (?:any|every|all) (?:phone|mobile|device)/i, /\bany browser\b/i, /\bevery browser\b/i,
@@ -409,14 +396,17 @@ test('every minute figure on the page IS MAX_TRACK_MIN, not merely not-the-liter
   // The old gate banned the CORRECT figure and nothing else, so a WRONG one sailed through:
   // {MAX_TRACK_MIN} -> {6} rendered "Up to 6 minutes" against a 300 s ceiling, in the page and
   // in the meta description, with a green suite (adversarial sweep, 2026-11-11).
-  assert.match(PAGE, /import \{ MAX_TRACK_SEC \} from '@\/lib\/play\/types'/);
-  assert.match(PAGE, /MAX_TRACK_MIN = Math\.floor\(MAX_TRACK_SEC \/ 60\)/);
+  // A4: the home page states the cap once, in the tool's note (ToolForm.tsx).
+  const TOOL = PAGE_AND_COMPONENTS.find(([f]) => f.endsWith('components/landing/ToolForm.tsx'))[1];
+  assert.match(TOOL, /import \{[^}]*\bMAX_TRACK_SEC\b[^}]*\} from '@\/lib\/play\/types'/);
+  assert.match(TOOL, /MAX_TRACK_MIN = Math\.floor\(MAX_TRACK_SEC \/ 60\)/);
   assert.equal(MAX_TRACK_MIN, Math.floor(MAX_TRACK_SEC / 60));
 
-  // Every "… minutes" on the page must be fed by the binding, in {…} or ${…}.
-  const uses = [...PAGE.matchAll(/\{([^{}]*)\}(?:&nbsp;|\\u00a0|\s)*minutes?/g)].map((m) => m[1].trim());
-  assert.ok(uses.length >= 2, `expected the cap to appear at least twice, saw ${uses.length}`);
+  // Every "… minutes" in the page and the tool must be fed by the binding, in {…} or ${…}.
+  const uses = [PAGE, TOOL].flatMap((src) => [...src.matchAll(/\{([^{}]*)\}(?:&nbsp;|\\u00a0|\s)*minutes?/g)].map((m) => m[1].trim()));
+  assert.ok(uses.length >= 1, `expected the cap to appear at least once, saw ${uses.length}`);
   for (const u of uses) assert.equal(u, 'MAX_TRACK_MIN', `a minute figure is fed by ${JSON.stringify(u)}`);
+  assert.match(RENDER.textSpaced, new RegExp(`Uses the first ${MAX_TRACK_MIN} minutes of any song`));
 
   // …and no literal minute figure, in digits or in words, anywhere in the marketing copy.
   const literal = /\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:&nbsp;|\\u00a0|\s)*minutes?\b/i;
@@ -427,17 +417,15 @@ test('every minute figure on the page IS MAX_TRACK_MIN, not merely not-the-liter
   }
 });
 
-test('the page renders <PlayerArt /> — the one object the play section is built on', () => {
-  // Deleting the element left the suite green, because the capability words survived in the
-  // surrounding prose (adversarial sweep, 2026-11-11).
-  assert.match(PAGE, /import \{ PlayerArt \} from '@\/components\/landing\/PlayerArt'/);
-  assert.match(PAGE, /<PlayerArt\s*\/>/);
-  // …and it is in the RENDERED page. Both lines above are source text, which a dead string
-  // literal can satisfy; a literal cannot put a mounted component into rendered HTML.
-  assert.match(RENDER.html, /<figure class="player">/, 'the rendered page has no player illustration');
-  // scoped to the rail: `data-stem` is also used by the hero's example lanes.
-  assert.equal((RENDER.html.match(/<div class="pl-ch[^"]*" data-stem="/g) ?? []).length, 6,
-    'the rendered page must carry the six-channel mixer rail');
+test('A4: the demo is shown once — no drawn player, no example lanes, no own-page link, no pipeline section', () => {
+  // Jon's J1 story review (2026-11-20): the home page showed the demo three ways. Now the live
+  // demo card is the only one, and the "From one song to a player" pipeline section is gone.
+  assert.equal((RENDER.html.match(/data-testid="home-demo"/g) ?? []).length, 1);
+  assert.doesNotMatch(RENDER.html, /<figure class="player">|class="pl-ch|class="lanes|id="how"|id="play"/);
+  assert.doesNotMatch(RENDER.textSpaced, /What playing along looks like|From one song to a player|Open it on its own page/);
+  assert.doesNotMatch(PAGE, /PlayerArt|Lanes|DemoArt|DemoProvider/);
+  // three one-line proof points
+  assert.equal((RENDER.html.match(/<li data-line="/g) ?? []).length, 3);
 });
 
 test('the page claims no submit-time length gate — a long song is trimmed, not refused', () => {
@@ -449,10 +437,9 @@ test('the page claims no submit-time length gate — a long song is trimmed, not
     /\bnot supported\b[^.]*\blonger\b/i, /\blonger tracks are not\b/i, /-minute limit/i, /choose a shorter song/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} claims a gate that does not exist (${re})`);
   for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} claims a gate that does not exist (${re})`);
-  // Slice 1b (P7): the Track length row became a "What you get" line; the trim sentence moved
-  // to the pipeline's "Length used" entry, which terms are compared against (legal-terms-copy).
-  assert.equal(wygLine('length'), `First ${MAX_TRACK_MIN} minutes of each song.`);
-  assert.match(RENDER.textSpaced, /A longer song is trimmed on our end/);
+  // A4: the cap and the trim are stated by the tool's own note (terms are compared against it in
+  // legal-terms-copy).
+  assert.match(ctaNote(), new RegExp(`^Uses the first ${MAX_TRACK_MIN} minutes of any song; a longer one is trimmed on our end\\.`));
   assert.doesNotMatch(RENDER.textSpaced, /on our side/i, '"on our side" is on the brand-tone avoid list');
 });
 
@@ -463,154 +450,24 @@ test('the form carries the pre-submit trim note slot, empty until a long file is
 });
 
 test('the page itself names the player, the faders, mute, solo, the chords and the loop', () => {
-  // Two earlier versions of this gate were satisfied without the page saying anything:
-  //  - joining every landing file let the words survive in PlayerArt.tsx alone;
-  //  - reading raw source let a single `// player faders mute solo chords` line comment
-  //    satisfy it while the visible page was reduced to a bare H1.
-  // So: page.tsx only, comments stripped. Each of these is a row of the approved table.
-  for (const re of [/\bplayer\b/i, /\bfaders?\b/i, /\bmute\b/i, /\bsolo\b/i, /\bchords?\b/i, /section of the song/i, /six stems|<dd>Six —/i]) {
-    assert.match(PAGE, re, `the landing page never says ${re}`);
-  }
-  // …and the RENDERED page says them, which source text alone cannot prove: a dead literal
-  // satisfies a source-text `match`, and a commented-out section still reads as prose here.
-  for (const re of [/\bplayer\b/i, /\bfaders?\b/i, /\bmute\b/i, /\bsolo\b/i, /\bchords?\b/i, /section of the song/i, /six stems|\bSix —/i]) {
+  // Two earlier versions of this gate were satisfied without the page saying anything (a
+  // comment, or the words surviving in one component). A4: the words now live in the three
+  // proof points and the demo note, so the gate reads the RENDERED page, which no comment or
+  // dead literal can satisfy.
+  for (const re of [/\bplayer\b/i, /\bfaders?\b/i, /\bmute\b/i, /\bsolo\b/i, /\bchords?\b/i, /\bsection\b/i, /6 stems/i]) {
     assert.match(RENDER.textSpaced, re, `the rendered landing page never says ${re}`);
   }
 });
 
-test('the drawing shows what the copy claims — the art and the page cannot drift apart', async () => {
-  // The page says six faders with a mute and a solo, a chord track and a section loop. If
-  // PlayerArt stops drawing any of that, the page is claiming something its own illustration
-  // contradicts.
-  //
-  // This gate reads RENDERED HTML, not source text. Grepping the source let a dead
-  // `title="toggles: >M< mute, >S< solo"` attribute hold this green with BOTH TOGGLES DELETED
-  // from the component (adversarial sweep round 2, 2026-11-11): tsc --noEmit exit 0, suite
-  // unchanged at 925/905/0/20. Stripping comments would not have caught it, because a literal
-  // is not a comment. React escapes attribute values, so `>M<` can only reach the output as a
-  // real text node between real tags — a property no literal can fake and no scanner is needed
-  // to check.
-  const { html, STEM_ORDER } = await playerArt();
+// A4 (2026-11-21): three gates went with what they guarded — "the drawing shows what the copy
+// claims" (PlayerArt), "drift is stated as a per-length upper bound" (the example lanes' drift
+// copy, demo-data.ts) and the .pl-band breakpoint (the drawn player's layout). The drawn player,
+// the lanes and their data module are deleted, so there is nothing left for them to read.
 
-  // six channels, and they are the REAL STEM_ORDER in order — not six of anything
-  const drawn = [...html.matchAll(/<div class="pl-ch[^"]*" data-stem="([^"]+)"/g)].map((m) => m[1]);
-  assert.equal(STEM_ORDER.length, 6, 'STEM_ORDER is the six stems the page claims');
-  assert.deepEqual(drawn, STEM_ORDER, 'the rail must draw one channel per stem, in STEM_ORDER');
-
-  // a fader, a mute and a solo on EVERY channel, as real rendered nodes.
-  //
-  // Counting `>M<` across the whole document proves PRESENCE, not VISIBILITY, and not that
-  // the node is the toggle: deleting the real `.pl-toggles` and leaving
-  // `<span hidden>M</span><span hidden>S</span>` held the document-wide count at six with
-  // both controls gone from the picture (adversarial sweep round 3, 2026-11-11; tsc exit 0,
-  // suite unchanged at 926/906/0/20). So each letter has to be a `.pl-tog`, every `.pl-tog`
-  // has to be visible, and the document may hold no spare `>M<` the toggles do not account
-  // for. A `hidden` attribute is a deliberate act, unlike the `&nbsp;` of FG4 — but the gate
-  // should not be the thing that misses it.
-  const count = (re) => (html.match(re) ?? []).length;
-  assert.equal(count(/class="pl-fader"/g), STEM_ORDER.length, 'every channel must draw a fader');
-  for (const [label, letter] of [['mute', 'M'], ['solo', 'S']]) {
-    const togs = [...html.matchAll(new RegExp(`<span class="pl-tog[^"]*"([^>]*)>${letter}</span>`, 'g'))];
-    assert.equal(togs.length, STEM_ORDER.length, `every channel must draw a ${label} toggle as a .pl-tog`);
-    for (const t of togs) {
-      assert.doesNotMatch(t[1], /\bhidden\b|display:\s*none|visibility:\s*hidden/i,
-        `a ${label} toggle is rendered but hidden: ${JSON.stringify(t[0])}`);
-    }
-    assert.equal(count(new RegExp(`>${letter}<`, 'g')), STEM_ORDER.length,
-      `every >${letter}< in the page must BE a ${label} toggle — no spare copies elsewhere`);
-  }
-  // one of each per channel, not six on one channel
-  for (const [i, chunk] of html.split(/(?=<div class="pl-ch[ "])/).slice(1).entries()) {
-    const own = chunk.slice(0, chunk.indexOf('</div></div>') + 1 || undefined);
-    for (const [label, letter] of [['mute', 'M'], ['solo', 'S']]) {
-      assert.match(own, new RegExp(`<span class="pl-tog[^"]*"[^>]*>${letter}</span>`),
-        `channel ${i} (${STEM_ORDER[i]}) must draw its own ${label} toggle`);
-    }
-  }
-
-  // the chord ribbon, with chord names actually inside it
-  const ribbon = html.match(/<div class="pl-chords">([\s\S]*?)<\/div>/);
-  assert.ok(ribbon, 'the art must draw the chord ribbon');
-  assert.ok((ribbon[1].match(/class="pl-chord[^"]*"/g) ?? []).length >= 2, 'the chord ribbon must carry chord names');
-
-  // the section loop, and it must be a NAMED section, as SectionLoop.tsx renders one
-  assert.match(html, /class="pl-loop"/, 'the art must draw the section loop');
-  assert.match(html, /class="pl-loop-name[^"]*">[^<]+</, 'the section loop must be named');
-
-  // and it must still say it is a drawing, not a recorded result
-  assert.match(html, /<figcaption[^>]*>[\s\S]*?not a recorded result[\s\S]*?<\/figcaption>/i,
-    'the figcaption must keep its honesty note');
-});
-
-test('drift is stated as a per-length upper bound, never zero', async () => {
-  const src = readFileSync(join(WEB, 'src/components/landing/demo-data.ts'), 'utf8').replace(/^import .*$/m, 'const DEMO_DATA_BASE = "", DEMO_BEFORE_PEAKS_URL = "";');
-  const js = ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
-  const { driftBoundMs } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
-  // FINDINGS v3: |drift| 0.9 / 1.8 / 0.6 / 5.7 ms at 1 / 2 / 4 / 8 bars
-  const measured = { 1: 0.9, 2: 1.8, 4: 0.6, 8: 5.7 };
-  for (const [bars, ms] of Object.entries(measured)) {
-    const bound = driftBoundMs(+bars);
-    assert.ok(bound > 0, `bound for ${bars} bars must not be zero`);
-    assert.ok(bound > ms, `bound ${bound} ms must exceed the measured ${ms} ms at ${bars} bars`);
-  }
-});
-
-test('the player art gets its three-column layout only at the wide breakpoint (1040px)', () => {
-  // NOT a claim that the boxes fit — nothing in this suite can see a box. This gate holds the
-  // ONE number that was wrong, so the next person has to re-measure before changing it.
-  //
-  // `.pl-band`'s 160px | 1fr | 340px rhythm puts 564px of FIXED width in a three-column grid,
-  // so the middle track — the art — gets whatever is left. Introduced at 760px, that left 52px
-  // for six channels. Measured in real Chromium against a production `next build` +
-  // `next start`, 2026-11-11: at 760px the rail was 52px with 13px of overflow and every
-  // channel at 0px, all six stem names clipped to nothing, the transport overflowing by 34px
-  // and `.pl-loop` at width 0. It did not recover until about 1024px — the whole of iPad
-  // portrait, split-view and any desktop window under ~1000px.
-  //
-  // 1040px is the page's own wide breakpoint (.hero-grid, .faq, .take). Below it the band
-  // stacks, which measures clean down to 360px.
-  const css = readFileSync(join(WEB, 'src/styles/landing.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-
-  // Split into top-level text and @media blocks, so each rule knows the prelude it sits under.
-  const blocks = [];
-  for (let i = 0; i < css.length; ) {
-    const at = css.indexOf('@media', i);
-    if (at === -1) { blocks.push({ prelude: null, body: css.slice(i) }); break; }
-    blocks.push({ prelude: null, body: css.slice(i, at) });
-    const open = css.indexOf('{', at);
-    let depth = 1, j = open + 1;
-    while (j < css.length && depth > 0) { if (css[j] === '{') depth++; else if (css[j] === '}') depth--; j++; }
-    blocks.push({ prelude: css.slice(at + '@media'.length, open).trim(), body: css.slice(open + 1, j - 1) });
-    i = j;
-  }
-
-  const hits = [];
-  for (const b of blocks) {
-    for (const m of b.body.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      if (!/(^|,)\s*\.pl-band\s*(,|$)/.test(m[1].trim())) continue;
-      const g = m[2].match(/grid-template-columns\s*:\s*([^;]+)/);
-      if (!g) continue;
-      const tracks = g[1].trim().replace(/minmax\([^)]*\)/g, 'T').split(/\s+/).filter(Boolean).length;
-      hits.push({ prelude: b.prelude, tracks, value: g[1].trim() });
-    }
-  }
-
-  assert.ok(hits.some((h) => h.tracks === 1), '.pl-band must still have a one-column default');
-  const multi = hits.filter((h) => h.tracks > 1);
-  assert.equal(multi.length, 1, `expected exactly one multi-column .pl-band rule, saw ${multi.length}`);
-  const min = multi[0].prelude && multi[0].prelude.match(/min-width\s*:\s*(\d+)px/);
-  assert.ok(min, `the multi-column .pl-band rule must sit under a min-width media query, not ${JSON.stringify(multi[0].prelude)}`);
-  assert.ok(
-    Number(min[1]) >= 1040,
-    `.pl-band gets ${multi[0].tracks} columns from ${min[1]}px. Below 1040px the art starves: ` +
-      'measured 0px per channel and all six stem names clipped at 760px in Chrome. Re-measure at ' +
-      '360/390/414/559/560/759/760/780/800/860/900/1024/1039/1040/1280 before lowering this.',
-  );
-});
-
-test('the landing reads the v3 demo set', () => {
+test('the demo loop file is the v3 set', () => {
+  // A4: the example lanes (which read demo-assets-v3/) are gone; the loops intro's WAV stays v3.
   const cfg = readFileSync(join(WEB, 'src/lib/public-config.ts'), 'utf8');
-  assert.match(cfg, /'demo-assets-v3\/'/);
+  assert.doesNotMatch(cfg, /DEMO_DATA_BASE|DEMO_BEFORE_PEAKS_URL/);
   assert.match(cfg, /'assets-v3\/'/);
   assert.match(cfg, /lucky_ticket_drums_102\.0bpm_G_minor_verse_0006\.wav/);
 });

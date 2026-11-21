@@ -107,6 +107,14 @@ export default async function AccountPage() {
         <p style={{ ...muted, marginTop: 8 }}><a href="/pricing">See plans and credit packs</a></p>
       </section>
 
+      {/* A4 (2026-11-21): the phone top bar is Play · Songs · Account, so the second product and
+          Pricing (above) are reached from here on a phone. */}
+      <section style={section} aria-label="Download loops">
+        <h2 style={h2}>Download loops</h2>
+        <p style={muted}>Bar-length loops from the stems of your songs, as WAV files.</p>
+        <p style={{ ...muted, marginTop: 8 }}><a href="/loops">Open Download loops</a></p>
+      </section>
+
       <section style={section} aria-label="Credits">
         <h2 style={h2}>Credits</h2>
         {bal.ok ? (

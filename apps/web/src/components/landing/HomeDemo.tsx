@@ -17,8 +17,7 @@
 // which was designed to fit 390×844 and 360×800 portrait without turning the phone. Its
 // back arrow closes the layer in place and returns focus to the Play button.
 import { useCallback, useEffect, useRef, useState, type ComponentType } from 'react';
-import { DEMO_SONGS, demoHref, type DemoSong } from '@/lib/demo-catalog';
-import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
+import { DEMO_SONGS, type DemoSong } from '@/lib/demo-catalog';
 import { trackEvent } from '@/lib/analytics';
 import { Ic } from './Icons';
 
@@ -52,7 +51,11 @@ export function factsLine(song: DemoSong): string {
   return `${song.artist} · ${song.bpm} BPM · ${song.musicalKey}`;
 }
 
-export function HomeDemo() {
+/**
+ * `chordsShown` is the DB-17 chord-claim switch (lib/chords-claim.ts), read by the server page and
+ * passed down: this is a client component and cannot read the server environment.
+ */
+export function HomeDemo({ chordsShown = true }: { chordsShown?: boolean } = {}) {
   const [chosen, setChosen] = useState<DemoSong>(DEMO_SONGS[0]);
   const [state, setState] = useState<State>({ kind: 'poster' });
   const [Layer, setLayer] = useState<LayerComponent | null>(null);
@@ -124,9 +127,10 @@ export function HomeDemo() {
         {busy ? 'Opening the player…' : 'Play along'}
       </button>
       <p className="demo-note">
-        {/* Every chord claim on the home page hangs on the one DB-17 switch (lib/chords-claim.ts). */}
-        {CHORDS_LINE_SHOWN ? 'The real player: chords in time, mute any part, loop a section.' : 'The real player: mute any part, loop a section.'}{' '}
-        <a href={demoHref(chosen.slug)}>Open it on its own page</a>
+        {/* Every chord claim on the home page hangs on the one DB-17 switch (lib/chords-claim.ts).
+            A4 (home page diet): the demo is shown ONCE. The "Open it on its own page" link and the
+            drawn player further down are gone; /demo/<slug> stays in the sitemap and llms.txt. */}
+        {chordsShown ? 'The real player: chords in time, mute any part, loop a section.' : 'The real player: mute any part, loop a section.'}
       </p>
       {state.kind === 'error' ? (
         <p className="demo-error" role="alert" data-testid="home-demo-error">

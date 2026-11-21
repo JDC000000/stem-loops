@@ -24,7 +24,8 @@ const STUBS = { '@/components/chrome/SignedInChrome': 'export default function S
 test('/pricing layout: metadata is the registry entry, and it does not say noindex', async () => {
   const [url] = compile(['app/pricing/layout.tsx'], STUBS);
   const mod = await import(url);
-  const m = mod.metadata;
+  // A4: generateMetadata (the shared OG image reads the DB-17 runtime switch per request).
+  const m = mod.metadata ?? mod.generateMetadata?.();
   assert.ok(m, 'app/pricing/layout.tsx exports metadata');
   assert.notEqual(m.robots?.index, false, 'the layout still declares noindex');
   assert.notEqual(m.robots?.follow, false);

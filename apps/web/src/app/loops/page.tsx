@@ -27,6 +27,7 @@ import { redirect } from 'next/navigation';
 import { getUser } from '@/lib/auth/supabase';
 import { jobIdFrom } from '@/lib/loops/availability';
 import LoopsView from './LoopsView';
+import { chordsLineShown } from '@/lib/chords-claim';
 import LoopsIntro from '@/components/loops/LoopsIntro';
 // Imported HERE rather than inside LoopsView so the client component's module
 // graph is TypeScript only and can be compiled into node by the tests. Next
@@ -52,5 +53,5 @@ export default async function LoopsPage({
     redirect(`/login?return_to=${encodeURIComponent(`/loops?job=${jobId}`)}`);
   }
 
-  return <LoopsView initialJobId={jobId} />;
+  return <LoopsView initialJobId={jobId} chordsShown={chordsLineShown()} />;
 }

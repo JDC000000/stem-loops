@@ -102,11 +102,16 @@ async function chrome({ user = null, path = '/account' } = {}) {
 
 /** Every `href="…"` in a blob of markup, in document order. */
 const hrefs = (html) => [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]);
-/** Link text keyed by href — enough to say "this label goes there". */
+/** An item's phone label (A4): `<span class="sin-l-phone">Songs</span>` beside the wide one. */
+const PHONE_LABEL = /<span class="sin-l-phone">[\s\S]*?<\/span>/g;
+/** Link text keyed by href — enough to say "this label goes there". The WIDE label, as before;
+ *  the phone label of the same link is `phone`. */
 const links = (html) =>
   [...html.matchAll(/<a\b[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => ({
     href: m[1],
-    text: m[2].replace(/<[^>]*>/g, '').trim(),
+    text: m[2].replace(PHONE_LABEL, '').replace(/<[^>]*>/g, '').trim(),
+    phone: (m[2].match(/<span class="sin-l-phone">([\s\S]*?)<\/span>/)?.[1] ?? m[2].replace(PHONE_LABEL, '').replace(/<[^>]*>/g, '')).trim(),
+    wideOnly: /class="[^"]*\bsin-wide-only\b/.test(m[0]),
   }));
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -179,15 +184,28 @@ test('getUser throwing degrades to the signed-out bar, not to a dead end', async
 // 2. Accessibility affordances, read off the markup.
 // ═════════════════════════════════════════════════════════════════════════
 
-test('the icon-only menu toggle carries aria-label and aria-expanded', async () => {
-  const html = await chrome({ user: null });
-  const btn = html.match(/<button\b[^>]*class="[^"]*sin-toggle[^"]*"[^>]*>/);
-  assert.ok(btn, 'no toggle rendered');
-  assert.match(btn[0], /aria-label="[^"]+"/);
-  assert.match(btn[0], /aria-expanded="(true|false)"/);
-  assert.match(btn[0], /aria-controls="sin-menu"/);
-  // It is icon-only on purpose: no text node inside, so aria-label is the name.
-  assert.match(html, /<button\b[^>]*sin-toggle[\s\S]*?<span class="sin-bars"[^>]*><\/span><\/button>/);
+test('A4: on a phone the bar is three items, Play · Songs · Account, with no menu toggle', async () => {
+  // Jon's J1/J8 story (2026-11-21): five items behind a menu became three inline items, so the
+  // Song library is one tap from any page. Download loops and Pricing are desktop-only in the bar
+  // (signed-in-nav.css hides .sin-wide-only below 760px); on a phone they are on /account and in
+  // the footer.
+  for (const [user, last] of [[{ user_id: 'u', email: 'a@b.c' }, 'Account'], [null, 'Sign in']]) {
+    const html = await chrome({ user, path: '/history' });
+    assert.doesNotMatch(html, /sin-toggle|sin-bars|aria-expanded/, 'the phone menu toggle is back');
+    const items = links(html).filter((x) => x.text !== 'stem-loops');
+    assert.deepEqual(items.filter((x) => !x.wideOnly).map((x) => x.phone), ['Play', 'Songs', last]);
+    assert.deepEqual(items.filter((x) => x.wideOnly).map((x) => x.text), ['Download loops', 'Pricing']);
+  }
+  const css = readFileSync(join(APP, '..', 'styles', 'signed-in-nav.css'), 'utf8');
+  const phone = css.match(/@media \(max-width: 759px\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  assert.match(phone, /\.sin-wide-only \{ display: none; \}/);
+  assert.match(phone, /\.sin-l-wide \{ display: none; \}/);
+  assert.match(phone, /\.sin-l-phone \{ display: inline; \}/);
+  assert.match(css, /^\.sin-l-phone \{ display: none; \}/m, 'the phone label is hidden on wide screens');
+  // The account page carries the two items that left the phone bar.
+  const account = readFileSync(join(APP, 'account', 'page.tsx'), 'utf8');
+  assert.match(account, /<a href="\/pricing">/);
+  assert.match(account, /<a href="\/loops">/);
 });
 
 test('exactly one item is aria-current="page", and it is the right one', async () => {
@@ -202,7 +220,7 @@ test('exactly one item is aria-current="page", and it is the right one', async (
   ]) {
     const html = await chrome({ user: { user_id: 'u', email: 'a@b.c' }, path });
     const marked = [...html.matchAll(/<a\b[^>]*aria-current="page"[^>]*>([\s\S]*?)<\/a>/g)].map(
-      (m) => m[1].replace(/<[^>]*>/g, '').trim(),
+      (m) => m[1].replace(PHONE_LABEL, '').replace(/<[^>]*>/g, '').trim(),
     );
     assert.deepEqual(marked, [label], `at ${path}`);
   }
@@ -393,12 +411,12 @@ test('Story 7.4: the bar names the product you are in, at every width (not only 
       assert.equal(productTag(html), tag, `at ${path}`);
     }
   }
-  // The tag lives OUTSIDE #sin-menu, which is display:none below 760px until
-  // opened — inside it, a phone user would never see it.
+  // The tag lives OUTSIDE the nav. A4: below 760px it gives way to the three inline items (a
+  // 360px bar has no room for both); the current item says where you are.
   const html = await chrome({ user: null, path: '/loops' });
   const menu = html.match(/<nav\b[^>]*id="sin-menu"[\s\S]*?<\/nav>/)[0];
-  assert.ok(!menu.includes('sin-product'), 'the product tag is inside the collapsible menu');
-  assert.ok(html.indexOf('sin-product') < html.indexOf('sin-toggle'));
+  assert.ok(!menu.includes('sin-product'), 'the product tag is inside the nav');
+  assert.ok(html.indexOf('sin-product') < html.indexOf('id="sin-menu"'));
 });
 
 test('Story 7.3: from Account, both products are one visible click away', async () => {
@@ -409,71 +427,14 @@ test('Story 7.3: from Account, both products are one visible click away', async 
 });
 
 // ═════════════════════════════════════════════════════════════════════════
-// 6. THE TOGGLE ACTUALLY TOGGLES — a real DOM, a real click, real state.
-//
-// WHY THIS SECTION EXISTS. Every gate above goes through
-// renderToStaticMarkup, which renders the INITIAL state and never runs an
-// event handler. That left a hole a reviewer walked straight through:
-// changing `setOpen((v) => !v)` to `setOpen(false)` kept the whole suite at
-// 1210/1190/0/20 and `tsc` clean, while in Chromium at 390px the click did
-// nothing — aria-expanded stayed "false", `.sin-nav` stayed `display: none`,
-// and the number of visible nav items was ZERO.
-//
-// That is not a cosmetic miss. Below 760px `.sin-nav` is hidden unless
-// `.sin-open`, so a dead toggle means a signed-in user ON A PHONE has no
-// navigation at all — precisely the dead end this change exists to remove,
-// reintroduced for the half of the audience that matters most. The old
-// toggle test matched /aria-expanded="(true|false)"/ against initial markup,
-// which "false" satisfies forever.
-//
-// So: mount the real component in happy-dom (test/helpers/dom.mjs — React
-// effects, real events), click the real button, and assert the state MOVED.
-// Layout is still unreachable here (that helper's own header says so), so
-// this gates the STATE MACHINE; the pixels were measured in Chromium and are
-// reported in the PR, gated by nothing.
+// 6. THE PHONE BAR, MOUNTED. A4 (2026-11-21) removed the menu toggle that this section used to
+// click: on a phone the three items are inline, with nothing to open. What is gated now, on a
+// real mounted DOM (happy-dom, React effects), is that the session hint still swaps the last item
+// and that every item is a plain link in the nav from the first paint. Layout is unreachable
+// here; the 360/390 pixels were measured in Chromium and are in the PR.
 // ═════════════════════════════════════════════════════════════════════════
 
-test('clicking the toggle opens the menu, and clicking again closes it', async () => {
-  const [url] = compile(['components/chrome/SignedInNav.tsx'], {
-    'next/navigation': navigationStub('/account'),
-  });
-  const { default: SignedInNav } = await import(`${url}?${Math.random()}`);
-
-  await withDom(async (dom) => {
-    await dom.mount(React.createElement(SignedInNav, { signedIn: true }));
-
-    const toggle = dom.find('.sin-toggle');
-    const menu = dom.find('#sin-menu');
-    assert.ok(toggle && menu, 'the bar did not mount');
-
-    // CLOSED — and the gate would be vacuous if this were already open.
-    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
-    assert.ok(!menu.className.split(/\s+/).includes('sin-open'), menu.className);
-    const closedLabel = toggle.getAttribute('aria-label');
-
-    // OPEN
-    await dom.act(() => toggle.click());
-    assert.equal(toggle.getAttribute('aria-expanded'), 'true', 'the click did not open the menu');
-    assert.ok(
-      menu.className.split(/\s+/).includes('sin-open'),
-      `#sin-menu never gained sin-open, so below 760px it stays display:none: ${menu.className}`,
-    );
-    // The accessible name has to move too, or a screen-reader user is told
-    // "Open menu" on an open menu.
-    assert.notEqual(toggle.getAttribute('aria-label'), closedLabel);
-
-    // CLOSE AGAIN — kills a `setOpen(true)` mutant, which the open half alone
-    // would pass.
-    await dom.act(() => toggle.click());
-    assert.equal(toggle.getAttribute('aria-expanded'), 'false', 'the menu never closes again');
-    assert.ok(!menu.className.split(/\s+/).includes('sin-open'), menu.className);
-    assert.equal(toggle.getAttribute('aria-label'), closedLabel);
-  });
-});
-
-test('every nav item is reachable once the menu is open', async () => {
-  // The companion to the above: opening must reveal the WHOLE menu, not just
-  // flip an attribute. Asserted on the live DOM inside the opened <nav>.
+test('mounted: every item is in the nav from the first paint, and the phone set is Play · Songs · Sign in', async () => {
   const [url] = compile(['components/chrome/SignedInNav.tsx'], {
     'next/navigation': navigationStub('/account'),
   });
@@ -481,11 +442,14 @@ test('every nav item is reachable once the menu is open', async () => {
 
   await withDom(async (dom) => {
     await dom.mount(React.createElement(SignedInNav, { signedIn: false }));
-    const toggle = dom.find('.sin-toggle');
-    await dom.act(() => toggle.click());
-
-    const items = dom.findAll('#sin-menu.sin-open a.sin-item').map((a) => a.textContent.trim());
-    assert.deepEqual(items, ['Play along', 'Download loops', 'Song library', 'Pricing', 'Sign in']);
+    assert.equal(dom.find('.sin-toggle'), null, 'a menu toggle is back');
+    const all = dom.findAll('#sin-menu a.sin-item');
+    const wide = all.map((a) => (a.querySelector('.sin-l-wide')?.textContent ?? a.textContent).trim());
+    assert.deepEqual(wide, ['Play along', 'Download loops', 'Song library', 'Pricing', 'Sign in']);
+    const phone = all
+      .filter((a) => !a.className.split(/\s+/).includes('sin-wide-only'))
+      .map((a) => (a.querySelector('.sin-l-phone')?.textContent ?? a.textContent).trim());
+    assert.deepEqual(phone, ['Play', 'Songs', 'Sign in']);
   });
 });
 
@@ -522,5 +486,27 @@ test('every signed-in layout opts its segment out of static rendering', async ()
       `${unique[i]} does not export dynamic='force-dynamic', so its segment can be ` +
         'prerendered with a signed-out bar baked in',
     );
+  }
+});
+
+// PR #332 round 2: on a phone the current item is marked (aria-current + the brand selected state,
+// #222 with a 2px #fff edge, never lime or amber), and /loops, which has no phone item, keeps its
+// product tag under the wordmark (Story 8.4 at every width).
+test('phone: the current item is marked, and /loops keeps its product tag under the wordmark', async () => {
+  const css = readFileSync(join(APP, '..', 'styles', 'signed-in-nav.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const cur = [...css.matchAll(/\.sin-item\.sin-current\s*\{([^}]*)\}/g)].map((m) => m[1]).join(';');
+  assert.match(cur, /background:\s*var\(--bg-selected\)/);
+  assert.match(cur, /border-width:\s*2px/);
+  assert.match(cur, /border-color:\s*var\(--text-primary\)/);
+  assert.doesNotMatch(cur, /accent|chord-now|#a3e635|#f59e0b/);
+  const phone = css.match(/@media \(max-width: 759px\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  assert.match(phone, /\.sin-product\[data-product="Download loops"\] \{ display: inline-flex;/);
+  assert.match(phone, /\.sin-brand:has\(\.sin-product\[data-product="Download loops"\]\) \{ flex-direction: column;/);
+  for (const [path, current, tag] of [['/history', 'Song library', null], ['/', 'Play along', 'Play along'], ['/loops', 'Download loops', 'Download loops']]) {
+    const html = await chrome({ user: { user_id: 'u', email: 'a@b.c' }, path });
+    const marked = [...html.matchAll(/<a\b[^>]*aria-current="page"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => m[1].replace(PHONE_LABEL, '').replace(/<[^>]*>/g, '').trim());
+    assert.deepEqual(marked, [current], path);
+    const t = html.match(/<span class="sin-product" data-testid="sin-product" data-product="([^"]+)">/)?.[1] ?? null;
+    assert.equal(t, tag, path);
   }
 });

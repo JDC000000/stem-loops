@@ -126,51 +126,19 @@
    .sin-outlined so the Account item takes it too when current. aria-current="page" is set in
    SignedInNav.tsx for assistive technology. */
 .sin-item.sin-current {
-  border-color: var(--text-secondary);
+  /* Brand selected state (A4 review): #222 fill with a 2px #fff edge, 15.91:1 on the fill. */
+  border-width: 2px;
+  border-color: var(--text-primary);
   font-weight: var(--weight-semibold);
 }
-.sin-item:focus-visible,
-.sin-toggle:focus-visible {
+.sin-item:focus-visible {
   outline: 2px solid var(--accent, #a3e635);
   outline-offset: 2px;
 }
 
-/* ── Mobile toggle ──────────────────────────────────────── */
-.sin-toggle {
-  display: none;
-  width: 44px;
-  height: 44px;
-  min-width: 44px;
-  min-height: 44px;
-  padding: 0;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: 1px solid var(--border-control);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-}
-/* Three bars drawn from one box, so the button has no text to mis-size. */
-.sin-bars,
-.sin-bars::before,
-.sin-bars::after {
-  display: block;
-  width: 18px;
-  height: 2px;
-  background: var(--text-secondary, #e0e0e0);
-  border-radius: 1px;
-}
-.sin-bars {
-  position: relative;
-}
-.sin-bars::before,
-.sin-bars::after {
-  content: '';
-  position: absolute;
-  left: 0;
-}
-.sin-bars::before { top: -6px; }
-.sin-bars::after  { top: 6px; }
+/* Phone labels: one label per width (SignedInNav.tsx). The hidden one is display:none, so the
+   accessible name always matches the text on screen. */
+.sin-l-phone { display: none; }
 
 /* Narrow tablet band (#316). "Library" became "Song library", which widened the nav row
    by about 34px. Measured in real Chromium with this sheet: at 810-840px (iPad Air /
@@ -183,34 +151,24 @@
   }
 }
 
-/* ── Phone ──────────────────────────────────────────────── */
+/* ── Phone ──────────────────────────────────────────────
+   A4 (2026-11-21): three items inline, no menu: Play · Songs · Account (Sign in signed out).
+   Download loops and Pricing are desktop-only here; on a phone they are on /account and in the
+   footer. Measured in real Chromium at 360 and 390: one row, every item >= 44x44. */
 @media (max-width: 759px) {
-  .sin-toggle {
-    display: inline-flex;
-  }
-  .sin-nav {
-    display: none;
-  }
-  .sin-nav.sin-open {
-    /* full row under the bar: stacked 48px rows, never a horizontal strip */
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    flex-basis: 100%;
-    gap: 2px;
-    padding: 4px 0 12px;
-    border-top: 1px solid var(--border-subtle, #1e1e1e);
-  }
-  .sin-nav.sin-open .sin-item {
-    min-height: 48px;
-    justify-content: flex-start;
-    border-radius: var(--radius-md);
-    padding: 0 12px;
-  }
-  .sin-nav.sin-open .sin-item.sin-outlined {
-    margin-left: 0;
-    margin-top: 4px;
-  }
+  .sin-wide-only { display: none; }
+  .sin-l-wide { display: none; }
+  .sin-l-phone { display: inline; }
+  .sin-product { display: none; }
+  /* Story 8.4 on a phone: Download loops has no phone item, so on /loops the product tag stays,
+     small, under the wordmark (the brand stacks; the bar stays one row of items). On Play along
+     pages the current "Play" item already says it. */
+  .sin-brand:has(.sin-product[data-product="Download loops"]) { flex-direction: column; align-items: flex-start; gap: 0; }
+  .sin-product[data-product="Download loops"] { display: inline-flex; min-height: 0; padding: 0 6px; font-size: 12px; line-height: 16px; }
+  .sin-inner { flex-wrap: nowrap; gap: 4px; }
+  .sin-nav { gap: 2px; }
+  .sin-item { padding: 0 10px; }
+  .sin-item.sin-outlined { margin-left: 2px; }
 }
 
 /* Forced colours drop the selected fill, so the current item keeps a system-colour edge

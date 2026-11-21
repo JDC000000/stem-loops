@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import { pageMetadata } from '@/lib/seo/meta';
 import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
-import { CONTACT_LABEL, CONTACT_URL, PRIVACY_UPDATED } from '@/components/landing/legal';
-import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
+import { CONTACT_LABEL, CONTACT_URL, formatDay, privacyUpdatedOn } from '@/components/landing/legal';
+import { chordsLineShown } from '@/lib/chords-claim';
 
 // DB-17 (lib/chords-claim.ts). With the switch off, only the PROMISE goes: the short version and
 // "Your audio" stop describing chord estimation as what happens to a new song. Every DISCLOSURE
@@ -13,9 +13,17 @@ import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
 // has received audio must stay listed. test/chords-switch-surfaces.test.mjs pins both halves.
 
 // SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
-export const metadata: Metadata = pageMetadata(pageFor('/privacy')!);
+// generateMetadata: the shared Open Graph image is a DB-17 chord claim (read at build: static page).
+export function generateMetadata(): Metadata {
+  return pageMetadata(pageFor('/privacy')!);
+}
+
+// STATIC and CDN-cached (PR #332, round 2): no `dynamic` export. The DB-17 chord switch
+// (lib/chords-claim.ts) is read when the page is BUILT; a Vercel env change needs a Redeploy,
+// which rebuilds this page with the new value.
 
 export default function PrivacyPage() {
+  const chords = chordsLineShown(); // DB-17, read at build (the page is static)
   return (
     <>
       <SiteHeader />
@@ -23,13 +31,13 @@ export default function PrivacyPage() {
         <div className="container">
           <div className="reading">
             <h1>Privacy</h1>
-            <p className="updated">Last updated {PRIVACY_UPDATED}</p>
+            <p className="updated">Last updated {formatDay(privacyUpdatedOn())}</p>
 
             <h2>The short version</h2>
             <p>
               No ads, no tracking cookies, nothing sold. You can start a job without an account, but you need one to open the
               player with your own songs and reach your results. The demo songs open without signing in.{' '}
-              {CHORDS_LINE_SHOWN
+              {chords
                 ? 'Your audio goes to two outside services to be processed — one to split it into stems, one to estimate the chords — and both are named below.'
                 : 'Your audio goes to outside services to be processed, and every one of them is named below.'}{' '}
               {/* Source of truth: 24 hours = RETENTION_HOURS, 30 days = PAID_RETENTION_GRACE_DAYS, 7 days =
@@ -45,7 +53,7 @@ export default function PrivacyPage() {
               <li>
                 <strong>Your audio.</strong> The file you upload, or the audio fetched from the YouTube link you paste. It is
                 sent to the processors named below to be separated into stems
-                {CHORDS_LINE_SHOWN ? ' and to have its chords estimated.' : '.'}
+                {chords ? ' and to have its chords estimated.' : '.'}
               </li>
               <li>
                 <strong>Job details.</strong> The link or file name, the song’s title (the video’s title on YouTube, or the file name without its extension), the stems and loop length you chose, and the job’s progress.

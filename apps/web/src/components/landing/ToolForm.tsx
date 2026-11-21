@@ -4,6 +4,17 @@
 // Submit runs the real flow (same as the old home page): file → POST /api/uploads (presign)
 // → PUT straight to R2 (putToR2, with its retries) → POST /api/jobs; link → POST /api/jobs.
 // Validation, rate limits, admission and error codes all stay server-side in those routes.
+//
+// A4 (2026-11-21, Jon's J1: "on my mobile, take a YouTube link and put it in, and very quickly be
+// able to listen and learn"):
+//   * the form sits ABOVE the demo on the home page, so its button is on the first screen of a phone;
+//   * a 44 px "Paste" button reads the clipboard on that tap only (never without a user gesture);
+//     a YouTube link is filled in and the focus moves to the button;
+//   * no stem picker on phones: a phone always asks for all six (the picker's toggle did nothing
+//     there, and play-along needs every stem); desktop keeps the chips;
+//   * a signed-out visitor who submits a LINK signs in FIRST, and the link is started as soon as
+//     they are back (lib/pending-link.ts). A FILE still starts signed out: a picked file cannot be
+//     carried through a sign-in redirect, and the job page asks for sign-in as before.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ACCEPT_ATTR, validateUpload } from '@/lib/upload';
 import { durationVerdict, probeDurationSec, trimNotice } from '@/lib/upload-duration';
@@ -12,9 +23,76 @@ import { canonicalizeYoutubeUrl, youtubeUrlProblem } from '@/lib/youtube-url';
 import { addToHistory } from '@/lib/history';
 import { navigationGrace, trackEvent } from '@/lib/analytics';
 import { YOUTUBE_INPUT_ENABLED } from '@/lib/public-config';
-import { useDemo } from './DemoProvider';
-import { STEM_ORDER } from './demo-data';
+import {
+  claimPendingLink, clearInFlight, hasResumeMarker, newNonce, pendingSignInHref, resumeNonce, savePendingLink, takePendingLink,
+  NONCE_PARAM, RESUME_PARAM,
+} from '@/lib/pending-link';
+import { hasSessionCookie } from '@/components/chrome/SignedInNav';
+import { MAX_TRACK_SEC, PLAYABLE_STEMS } from '@/lib/play/types';
 import { Ic } from './Icons';
+
+/** The mixer order (lib/play/types.ts). A phone always asks for all six. */
+const STEM_ORDER: readonly string[] = PLAYABLE_STEMS;
+const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
+/** Below the landing's 760px breakpoint there is no stem picker: every stem is sent. */
+const PHONE_QUERY = '(max-width: 759px)';
+
+type LockManagerLike = { request: (name: string, cb: () => Promise<unknown>) => Promise<unknown> };
+
+/**
+ * What the form reaches outside React for. Defaults are the browser's own; a test passes its own
+ * (test/a4-home-link.test.mjs mounts this form in a DOM with a recording fetch and navigation).
+ * The clipboard is NOT here on purpose: it is read from `navigator.clipboard` inside the Paste
+ * tap only, and the tests spy on that real object.
+ */
+export type ToolFormDeps = {
+  fetch: typeof fetch;
+  assign: (url: string) => void;
+  storage: () => Storage | null;
+  locks: () => LockManagerLike | null;
+};
+
+const browserDeps: ToolFormDeps = {
+  fetch: (...a) => fetch(...a),
+  assign: (url) => window.location.assign(url),
+  storage: () => {
+    try {
+      return window.localStorage;
+    } catch {
+      return null;
+    }
+  },
+  locks: () => {
+    try {
+      const l = (navigator as Navigator & { locks?: LockManagerLike }).locks;
+      return l && typeof l.request === 'function' ? l : null;
+    } catch {
+      return null;
+    }
+  },
+};
+
+/**
+ * Is this browser signed in? false = no session cookie, or the server says 401: sign in first.
+ * true = the server says yes. null = unknown (network error or a 5xx): the caller FAILS CLOSED
+ * and offers a retry; it never starts an anonymous link job on an unknown answer.
+ */
+async function signedInNow(deps: ToolFormDeps): Promise<boolean | null> {
+  let cookie = '';
+  try {
+    cookie = document.cookie;
+  } catch {
+    return null;
+  }
+  if (!hasSessionCookie(cookie)) return false;
+  try {
+    const res = await deps.fetch('/api/auth/me', { cache: 'no-store', credentials: 'same-origin' });
+    if (res.status === 401) return false;
+    return res.ok ? true : null;
+  } catch {
+    return null;
+  }
+}
 
 const ERR = {
   empty_input: ['Add a song first.', 'Paste a YouTube link or choose a file.'],
@@ -24,6 +102,12 @@ const ERR = {
   channel: ['That’s a channel, not a video.', 'Open one video and paste its link.'],
   other: ['Only YouTube links work here.', 'For anything else, upload the audio file.'],
   yt_off: ['YouTube links are paused right now.', 'Upload the audio file instead.'],
+  clip_empty: ['Your clipboard is empty.', 'Copy the link in YouTube (Share, then Copy link) and tap Paste again.'],
+  clip_other: ['That isn’t a YouTube video link.', 'Copy the video’s link in YouTube (Share, then Copy link) and tap Paste again.'],
+  clip_denied: ['We couldn’t read your clipboard.', 'Press and hold the box, then choose Paste.'],
+  // Fail closed (PR #332, round 2): never start a signed-out link job on an unknown answer.
+  auth_unknown: ['We couldn’t check whether you’re signed in.', 'Check your connection, then tap Try again.'],
+  storage_blocked: ['Your browser is blocking site storage, so we can’t keep your link while you sign in.', 'Sign in first (top right), then paste the link again.'],
   type: ['We can’t use that file type.', 'Choose mp3, wav, m4a, aac, flac, ogg, opus, aiff, mp4, m4v, mov or webm.'],
   empty: ['That file is empty.', 'Choose a different one.'],
   large: ['That file is over the 200 MB limit.', 'Export a shorter or compressed version (mp3 or m4a) and try again.'],
@@ -49,10 +133,10 @@ function fmtSize(b: number): string {
   return `${mb >= 10 ? Math.round(mb) : Math.round(mb * 10) / 10} MB`;
 }
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
+async function postJson<T>(url: string, body: unknown, f: typeof fetch = fetch): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    res = await f(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   } catch {
     throw new ApiError('We couldn’t reach stem-loops. Check your connection and try again.');
   }
@@ -61,11 +145,19 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   return json as T;
 }
 
-export function ToolForm() {
+export function ToolForm({ deps = browserDeps }: { deps?: ToolFormDeps } = {}) {
   // No loop length here (2026-11-15): Download loops is its own product (/loops), and the Play
   // along form neither sells nor configures it. The job gets the API's default loop length
   // (4 bars, app/api/jobs/route.ts), which is what the /loops intro states.
-  const { stems, setStemChecked } = useDemo();
+  const [stems, setStems] = useState<ReadonlySet<string>>(() => new Set(STEM_ORDER));
+  const setStemChecked = useCallback((name: string, checked: boolean) => {
+    setStems((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(name);
+      else next.delete(name);
+      return next;
+    });
+  }, []);
   const formRef = useRef<HTMLFormElement>(null);
   const sourceRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -73,13 +165,15 @@ export function ToolForm() {
   const fileBtnRef = useRef<HTMLButtonElement>(null);
   const firstStemRef = useRef<HTMLInputElement>(null);
   const jobLinkRef = useRef<HTMLAnchorElement>(null);
-  const focusNext = useRef<'source' | 'replace' | 'stem' | 'job' | null>(null);
+  const ctaRef = useRef<HTMLButtonElement>(null);
+  const focusNext = useRef<'source' | 'replace' | 'stem' | 'job' | 'cta' | null>(null);
 
   const [text, setText] = useState('');
   const [file, setFileState] = useState<File | null>(null);
   const [err, setErr] = useState<{ code: ErrCode; suffix?: string } | null>(null);
   const [stemsErr, setStemsErr] = useState(false);
-  const [optionsOpen, setOptionsOpen] = useState(false);
+  // The Paste button shows only where the async clipboard read exists (checked after mount).
+  const [canPaste, setCanPaste] = useState(false);
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const [dragging, setDragging] = useState(false);
   const [live, setLive] = useState('');
@@ -101,6 +195,7 @@ export function ToolForm() {
     else if (f === 'replace') replaceRef.current?.focus();
     else if (f === 'stem') firstStemRef.current?.focus();
     else if (f === 'job') jobLinkRef.current?.focus();
+    else if (f === 'cta') ctaRef.current?.focus();
   });
 
   const resetJob = useCallback(() => setPhase((p) => (p.kind === 'busy' ? p : { kind: 'idle' })), []);
@@ -219,12 +314,21 @@ export function ToolForm() {
     return () => mq.removeEventListener('change', sync);
   }, []);
 
+  useEffect(() => {
+    try {
+      setCanPaste(typeof navigator !== 'undefined' && typeof navigator.clipboard?.readText === 'function');
+    } catch {
+      setCanPaste(false);
+    }
+  }, []);
+
   const orderedStems = STEM_ORDER.filter((s) => stems.has(s));
   const n = orderedStems.length;
   const stemTxt = `${n}${n === 1 ? ' stem' : ' stems'}`;
   const showStemsErr = stemsErr && n === 0;
 
-  async function runJob(canonicalUrl: string | null) {
+  /** Start a job. Resolves true when it started (the browser is on its way to the job page). */
+  async function runJob(canonicalUrl: string | null, sendStems: readonly string[]): Promise<boolean> {
     const isFile = !!file;
     const base = { isFile, done: null, pct: 0 } as const;
     try {
@@ -236,24 +340,24 @@ export function ToolForm() {
         const pres = await postJson<{ jobId: string; key: string; uploadUrl: string; contentType: string }>('/api/uploads', {
           filename: file.name,
           size: file.size,
-        });
+        }, deps.fetch);
         try {
           await putToR2(pres.uploadUrl, file, pres.contentType, sending);
         } catch (e) {
           setPhase({ kind: 'failed', head: 'The upload didn’t finish.', body: e instanceof Error ? e.message : 'Please try again.' });
-          return;
+          return false;
         }
         setPhase({ kind: 'busy', ...base, now: null, done: 'sending', pct: 100, label: 'Starting…', msg: 'File sent. Starting your job…' });
         const job = await postJson<{ id: string }>('/api/jobs', {
           jobId: pres.jobId,
           uploadKey: pres.key,
           filename: file.name,
-          stems: orderedStems,
-        });
+          stems: sendStems,
+        }, deps.fetch);
         jobId = job.id;
       } else {
         setPhase({ kind: 'busy', ...base, now: null, pct: 100, label: 'Starting…', msg: 'Starting your job…' });
-        const job = await postJson<{ id: string }>('/api/jobs', { url: canonicalUrl, stems: orderedStems });
+        const job = await postJson<{ id: string }>('/api/jobs', { url: canonicalUrl, stems: sendStems }, deps.fetch);
         jobId = job.id;
       }
       addToHistory(jobId);
@@ -264,14 +368,49 @@ export function ToolForm() {
       await navigationGrace();
       // Full navigation (not router.push): the job page has its own styles, and the
       // landing's stylesheet must not follow it there.
-      window.location.assign(`/jobs/${jobId}`);
+      deps.assign(`/jobs/${jobId}`);
+      return true;
     } catch (e) {
       setPhase({
         kind: 'failed',
         head: 'We couldn’t start that job.',
         body: e instanceof Error ? e.message : 'Something went wrong. Please try again.',
       });
+      return false;
     }
+  }
+
+  const isPhone = () => {
+    try {
+      return window.matchMedia(PHONE_QUERY).matches;
+    } catch {
+      return false;
+    }
+  };
+
+  /** Show a fail-closed error: the CTA reads "Try again" and the link stays in the box. */
+  const failClosed = (code: 'auth_unknown' | 'storage_blocked') => {
+    setPhase({ kind: 'failed', head: ERR[code][0], body: ERR[code][1] });
+    focusNext.current = 'cta';
+  };
+
+  /**
+   * A link: signed in, it starts here; signed out, the visitor signs in FIRST
+   * (lib/pending-link.ts) and it starts when they are back. Unknown (network error, 5xx) or a
+   * storage that will not keep the link: FAIL CLOSED with a retry; never an anonymous link job.
+   */
+  async function submitLink(canonical: string, sendStems: readonly string[]) {
+    setPhase({ kind: 'busy', isFile: false, done: null, now: null, pct: 0, label: 'Starting…', msg: 'Starting your job…' });
+    const signedIn = await signedInNow(deps);
+    if (signedIn === true) {
+      await runJob(canonical, sendStems);
+      return;
+    }
+    if (signedIn === null) return failClosed('auth_unknown');
+    const nonce = newNonce();
+    if (!savePendingLink(deps.storage(), canonical, nonce)) return failClosed('storage_blocked');
+    setPhase({ kind: 'busy', isFile: false, done: null, now: null, pct: 0, label: 'Opening sign-in…', msg: 'Sign in and your song starts straight away.' });
+    deps.assign(pendingSignInHref(nonce));
   }
 
   function onSubmit(e: React.FormEvent) {
@@ -290,8 +429,9 @@ export function ToolForm() {
       setPhase({ kind: 'idle' });
       return;
     }
-    if (!n) {
-      setOptionsOpen(true);
+    // Phones have no stem picker: all six, always. Desktop sends what its chips say.
+    const sendStems = isPhone() ? [...STEM_ORDER] : orderedStems;
+    if (!sendStems.length) {
       setStemsErr(true);
       focusNext.current = 'stem';
       setPhase((p) => (p.kind === 'failed' ? p : { kind: 'idle' }));
@@ -314,7 +454,93 @@ export function ToolForm() {
       }
     }
     setErr(null);
-    void runJob(canonical);
+    if (canonical) void submitLink(canonical, sendStems);
+    else void runJob(null, sendStems);
+  }
+
+  // Every home load settles the saved link (lib/pending-link.ts), once, on mount:
+  //   * WITH the marker and its nonce (back from /login): strip the marker from the address bar
+  //     FIRST (a reload or a shared URL can never start a second job), check the session, and
+  //     only when the server says signed in, CLAIM the link (Web Lock, nonce match, 60 s
+  //     in-flight guard) and start it as the signed-in user. Signed out: the link goes back in
+  //     the box. Unknown: fail closed with a retry.
+  //   * WITHOUT the marker (a normal visit, Back from /login): take the entry out and only put
+  //     the link back in the box, so it can never start later for whoever signs in next.
+  const settled = useRef(false);
+  useEffect(() => {
+    if (settled.current || !YOUTUBE_INPUT_ENABLED) return;
+    settled.current = true;
+    let search = '';
+    try {
+      search = window.location.search;
+    } catch {
+      return;
+    }
+    const store = deps.storage();
+    if (!hasResumeMarker(search)) {
+      const back = takePendingLink(store, null);
+      if (back) {
+        setText(back);
+        setLive('Your link is back in the box.');
+      }
+      return;
+    }
+    const nonce = resumeNonce(search);
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.delete(RESUME_PARAM);
+      u.searchParams.delete(NONCE_PARAM);
+      window.history.replaceState(window.history.state, '', `${u.pathname}${u.search}${u.hash}`);
+    } catch {
+      /* the marker stays in the bar; the saved link is already one-shot */
+    }
+    void (async () => {
+      const signedIn = nonce ? await signedInNow(deps) : false;
+      if (signedIn !== true) {
+        // Not signed in after all, a marker without a valid nonce, or no answer: never start.
+        const back = takePendingLink(store, null);
+        if (back) setText(back);
+        if (signedIn === null && back) failClosed('auth_unknown');
+        else if (back) setLive('Your link is in the box. Sign in, then tap Separate and play.');
+        return;
+      }
+      const link = await claimPendingLink({ store, nonce: nonce!, locks: deps.locks() });
+      if (!link) return; // nothing saved for this nonce, or another tab already started it
+      setText(link);
+      setLive('Signed in. Starting your song.');
+      const ok = await runJob(link, isPhone() ? [...STEM_ORDER] : STEM_ORDER.filter((x) => stems.has(x)));
+      if (!ok) clearInFlight(store, link); // a failed start may be retried by hand at once
+    })();
+    // Runs once on mount; `stems` is the default set at that moment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function onPaste() {
+    if (busy) return;
+    let t = '';
+    try {
+      // Read on this tap only: the browser may show its own Paste prompt.
+      t = (await navigator.clipboard.readText()).trim();
+    } catch {
+      setErr({ code: 'clip_denied' });
+      focusNext.current = 'source';
+      return;
+    }
+    if (!t) {
+      setErr({ code: 'clip_empty' });
+      return;
+    }
+    if (!canonicalizeYoutubeUrl(t)) {
+      setErr({ code: 'clip_other' });
+      return;
+    }
+    setFileState(null);
+    setNotice(null);
+    setText(t);
+    setErr(null);
+    resetJob();
+    setLive('Link pasted. Tap Separate and play.');
+    focusNext.current = 'cta';
   }
 
   function cutAnother() {
@@ -370,17 +596,34 @@ export function ToolForm() {
             }}
           />
           )}
+          {YOUTUBE_INPUT_ENABLED && (
+            // Reads the clipboard ON THIS TAP ONLY. Hidden until the browser is known to support
+            // the read (after mount), so a browser without it never shows a dead button.
+            <button
+              type="button"
+              id="paste-btn"
+              className="btn btn-secondary btn-field btn-paste"
+              hidden={!canPaste}
+              disabled={busy}
+              aria-describedby="source-help"
+              onClick={() => void onPaste()}
+            >
+              Paste
+            </button>
+          )}
+          {!YOUTUBE_INPUT_ENABLED && (
           <button
             type="button"
             id="file-btn"
             ref={fileBtnRef}
-            className={`btn btn-secondary btn-field${YOUTUBE_INPUT_ENABLED ? '' : ' btn-field-full'}`}
-            aria-describedby={YOUTUBE_INPUT_ENABLED ? undefined : 'source-label source-help source-error'}
+            className="btn btn-secondary btn-field btn-field-full"
+            aria-describedby="source-label source-help source-error"
             onClick={() => fileRef.current?.click()}
           >
             <Ic name="file" />
             <span>Choose a file</span>
           </button>
+          )}
           <input
             type="file"
             id="file"
@@ -435,20 +678,21 @@ export function ToolForm() {
         </p>
       </div>
 
-      <button
-        type="button"
-        className="options-toggle"
-        id="options-toggle"
-        aria-expanded={optionsOpen}
-        aria-controls="options"
-        onClick={() => setOptionsOpen((o) => !o)}
-      >
-        <span className="mono" id="options-summary">{n ? stemTxt : 'No stems'}</span>
-        <span className="options-change">
-          Change <Ic name="chev" />
-        </span>
-      </button>
+      {YOUTUBE_INPUT_ENABLED && !file && (
+        // The link is the main way in (phones above all); a file is the alternative, one row down.
+        <button
+          type="button"
+          id="file-btn"
+          ref={fileBtnRef}
+          className="btn btn-ghost btn-file-alt"
+          onClick={() => fileRef.current?.click()}
+        >
+          <Ic name="file" />
+          <span>Or choose a file</span>
+        </button>
+      )}
 
+      {/* Wide screens only: below 760px the picker is not shown and every stem is sent (landing.css). */}
       <div className="options" id="options">
         <fieldset className="group" id="stems-group">
           <legend className="label">Stems</legend>
@@ -489,6 +733,7 @@ export function ToolForm() {
       <button
         type="submit"
         id="cta"
+        ref={ctaRef}
         className="btn btn-primary btn-cta"
         hidden={phase.kind === 'done'}
         aria-busy={busy ? true : undefined}
@@ -548,9 +793,10 @@ export function ToolForm() {
       </div>
 
       <p className="hint cta-note">
-        {/* C-14: no processing-time figure (see FAQ.time in faq.tsx for why). 24 hours = RETENTION_HOURS
-            (lib/retention.ts; migration 007). */}
-        A song usually takes a few minutes. Without a subscription, files are deleted after 24 hours. Use audio you have the rights to.
+        {/* C-14: no processing-time figure (see FAQ.time in faq.tsx for why). The length cap is
+            MAX_TRACK_SEC (lib/play/types.ts). A4: true on a phone and a computer alike; a signed-out
+            LINK signs in first (lib/pending-link.ts), and the demo songs need no account. */}
+        Uses the first {MAX_TRACK_MIN}&nbsp;minutes of any song; a longer one is trimmed on our end. Free account to play your own songs. Use audio you have the rights to.
       </p>
     </form>
   );

@@ -1,14 +1,7 @@
-/* stem-loops landing (ported from documents/stem-loops-landing/prototype/css/landing.css, v5).
-   Tokens come from design-tokens.css (operator-locked). Lime has three jobs only: the
-   primary-action fill, the wordmark dash and the focus ring. */
 
-/* Every token (colour, type, size, layout, motion, lane art) is declared in design-tokens.css,
-   the one token file, which every route loads through globals.css. JetBrains Mono is loaded
-   app-wide by app/layout.tsx. Only the demo's two runtime state variables live here. */
-:root {
-  --region: 50%; /* 4 of 8 bars: the default loop length */
-  --ph: 0;
-}
+/* Every token (colour, type, size, layout, motion) is declared in design-tokens.css, the one token
+   file, which every route loads through globals.css. JetBrains Mono is loaded app-wide by
+   app/layout.tsx. */
 
 *, *::before, *::after { box-sizing: border-box; }
 * { font-synthesis: none; }
@@ -55,7 +48,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   .tool { grid-column: 1; grid-row: 2 / span 2; }
   /* Design P4.1 desktop: the live demo to the right of the H1 and the input. */
   .hero-demo { grid-column: 2; grid-row: 1 / span 2; align-self: start; }
-  .lanes { grid-column: 2; grid-row: 3; align-self: start; }
+  
 }
 
 /* live play-along demo (Slice 2a, design P4.1 item 2; mockup Home.dc.html). A static poster
@@ -108,16 +101,9 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .group { border: 0; padding: 0; margin: 0; min-width: 0; }
 .group legend { margin-bottom: var(--space-2); }
 .options { display: flex; flex-direction: column; gap: var(--space-4); }
-.options-toggle { display: none; }
+/* A4 (2026-11-21): no stem picker on phones; the form sends all six (ToolForm.tsx). */
 @media (max-width: 759px) {
-  .options-toggle { display: flex; align-items: center; justify-content: space-between; min-height: var(--h-control); width: 100%;
-    background: transparent; border: 1.5px solid var(--border-control); border-radius: var(--radius-md); padding-inline: var(--space-4); color: var(--text-primary); cursor: pointer; }
-  .options-toggle:hover { border-color: var(--text-muted); }
-  .options-toggle .mono { font-size: var(--text-md); }
-  .options-change { display: inline-flex; align-items: center; gap: var(--space-1); color: var(--text-secondary); font-size: var(--text-md); }
-  .options-change .ic { width: 20px; height: 20px; transition: transform var(--sl-dur-1) var(--sl-ease); }
-  .options-toggle[aria-expanded="true"] .ic { transform: rotate(180deg); }
-  .options.is-collapsed { display: none; }
+  .options { display: none; }
   .readout { display: none; }
 }
 .chips { display: grid; gap: var(--space-2); }
@@ -182,110 +168,12 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .job-msg a { color: var(--text-primary); font-weight: 600; text-underline-offset: 4px; }
 .job-msg .dev { color: var(--text-label); }
 
-/* ── lanes: THE signature device ── */
-.lanes { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-lg); padding: var(--space-3); position: relative; }
-@media (min-width: 760px) { .lanes { padding: var(--space-4); } }
-.lanes-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-height: var(--h-control); }
-.lanes-readout { color: var(--text-secondary); }
-.lanes-readout .bpm { font-weight: 600; color: var(--text-primary); }
-.lanes-stage { position: relative; margin-top: var(--space-3); }
-.song { display: flex; align-items: stretch; height: 40px; }
-.song-label { width: var(--sl-lane-label-w); flex: none; color: var(--text-label); line-height: 1.4; display: flex; flex-direction: column; justify-content: center; padding-left: var(--space-1); }
-.song-wave { position: relative; flex: 1; min-width: 0; background: var(--wf-bg); border-radius: var(--radius-sm); }
-.zoom { display: block; width: calc(100% - var(--sl-lane-label-w)); margin-left: var(--sl-lane-label-w); height: 16px; }
-.zoom polygon { fill: rgba(255, 255, 255, .08); }
-.lanes-body { position: relative; }
-.ruler { position: relative; height: 24px; margin-left: var(--sl-lane-label-w); color: var(--text-label); font-family: var(--font-mono); font-size: var(--text-12); font-variant-numeric: tabular-nums; }
-.ruler .bar { position: absolute; top: 0; padding-left: var(--space-1); line-height: 16px; }
-.ruler .beat { position: absolute; bottom: 0; width: 1px; height: 6px; background: var(--text-label); }
-.lane-list { display: flex; flex-direction: column; }
-.lane { position: relative; display: flex; align-items: stretch; height: var(--sl-lane-h); border-top: 1px solid var(--border-default); }
-.lane:last-child { border-bottom: 1px solid var(--border-default); }
-.lane-btn { flex: none; width: var(--sl-lane-label-w); display: flex; align-items: center; gap: var(--space-1); padding-inline: var(--space-1) var(--space-2); background: transparent; border: 0; color: var(--text-secondary);
-  font-size: var(--text-md); font-weight: 600; cursor: pointer; text-align: left; border-radius: var(--radius-md); min-height: var(--h-control); transition: color var(--sl-dur-1) var(--sl-ease), background var(--sl-dur-1) var(--sl-ease); }
-.lane-btn .ic { width: 20px; height: 20px; }
-.lane-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
-.lane-btn[aria-pressed="true"] { color: var(--text-primary); background: var(--bg-selected); }
-.lane-btn:disabled { cursor: default; color: var(--text-label); }
-.lane-btn .nm { display: flex; flex-direction: column; line-height: 1.15; overflow: hidden; }
-.lane-btn .note { font-family: var(--font-mono); font-size: var(--text-12); font-weight: 500; color: var(--text-label); }
-@media (min-width: 760px) { .lane-btn { padding-inline: var(--space-2); gap: var(--space-2); font-size: var(--text-lg); } }
-.lane-wave { position: relative; flex: 1; min-width: 0; transition: opacity var(--sl-dur-1) var(--sl-ease); }
-.wv { position: absolute; inset: 2px 0; width: 100%; height: calc(100% - 4px); display: block; }
-.wv path { fill: var(--sl-lane-peak); }
-.wv.is-loop path { fill: var(--sl-loop-peak); }
-.lane-wave .wv.is-loop, .pipe-cut .wv.is-loop { clip-path: inset(0 calc(100% - var(--region)) 0 0); transition: clip-path var(--sl-dur-2) var(--sl-ease); }
-.song-wave .wv.is-loop { clip-path: inset(0 calc(100% - var(--song-e, 14%)) 0 var(--song-s, 10%)); transition: clip-path var(--sl-dur-2) var(--sl-ease); }
-.lane.is-off .lane-wave { opacity: .35; }
-.lane.is-off .lane-btn .nm > span:not(.sr-only):not(.note) { text-decoration: line-through; color: var(--text-label); }
-.overlay { position: absolute; top: 0; bottom: 0; left: var(--sl-lane-label-w); right: 0; pointer-events: none; }
-.gridlines span { position: absolute; top: 16px; bottom: 0; width: 1px; background: var(--sl-grid); }
-.bracket { position: absolute; top: 16px; bottom: 0; left: 0; width: var(--region); background: var(--sl-region-fill); border: 1px solid var(--text-primary); border-top-width: 2px; border-bottom: 0;
-  transition: width var(--sl-dur-2) var(--sl-ease); }
-.playhead { position: absolute; top: 16px; bottom: 0; width: 2px; left: calc(var(--ph) * var(--region)); background: var(--wf-playhead); outline: 1px solid var(--bg-surface); display: none; }
-.is-playing-hero .playhead { display: block; }
-.lanes-foot { margin-top: var(--space-2); display: flex; justify-content: space-between; gap: var(--space-3); color: var(--text-muted); }
-.caption { margin-top: var(--space-2); color: var(--text-label); font-size: var(--text-md); line-height: 1.45; max-width: 64ch; }
-.load-error { position: absolute; inset: 0; display: flex; gap: var(--space-2); align-items: center; justify-content: center; padding: var(--space-4); background: var(--bg-surface); font-size: var(--text-md); color: var(--text-secondary); text-align: left; }
-.load-error .ic { width: 20px; height: 20px; color: var(--status-failed); }
-.load-error.is-inline { position: static; justify-content: flex-start; padding: var(--space-2) 0 0; background: none; }
-.lanes.is-loading .lane-list { min-height: calc(6 * var(--sl-lane-h)); }
-.lanes.is-failed .lanes-head .btn-play, .lanes.is-failed .lanes-foot { visibility: hidden; }
-
 /* sections */
 .section { padding-block: var(--sl-section) 0; }
 .section h2 { font-size: var(--text-h2); line-height: 1.15; letter-spacing: -0.01em; }
 .section h2 + p { margin-top: var(--space-3); }
 .body-lg { font-size: var(--text-lg); color: var(--text-muted); max-width: 65ch; line-height: 1.5; }
 @media (min-width: 760px) { .body-lg { font-size: var(--text-xl); } }
-
-/* pipeline on the lane grid */
-.pipe { margin-top: var(--space-8); border-top: 1px solid var(--border-default); }
-.pipe-row { display: grid; grid-template-columns: 1fr; gap: var(--space-3); padding-block: var(--space-6); border-bottom: 1px solid var(--border-default); }
-.pipe-name { font-size: var(--text-xl); font-weight: 600; color: var(--text-primary); line-height: 1.2; }
-.pipe-art { min-width: 0; }
-.pipe-song, .pipe-cut { position: relative; height: 56px; background: var(--wf-bg); border-radius: var(--radius-sm); }
-.pipe-stems { display: grid; gap: 4px; }
-.pipe-stem { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; height: 24px; }
-.pipe-stem .mono { color: var(--text-label); }
-.pipe-stem .w { position: relative; height: 100%; }
-.pipe-cut .bracket { top: 0; border-bottom: 0; }
-.pipe-meta { margin-top: var(--space-2); color: var(--text-muted); }
-.pipe-text { color: var(--text-muted); max-width: 52ch; }
-@media (min-width: 760px) {
-  .pipe-row { grid-template-columns: 160px minmax(0, 1fr) minmax(0, 340px); gap: var(--space-8); align-items: start; }
-}
-
-/* take one home */
-.take { margin-top: var(--space-8); display: grid; gap: var(--space-8); max-width: var(--sl-reading); }
-.file-card { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3) var(--space-4); padding: var(--space-4); background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-lg); }
-.file-ic { color: var(--text-muted); }
-.file-text { flex: 1; min-width: 200px; }
-.file-name { color: var(--text-primary); font-weight: 600; overflow-wrap: anywhere; }
-.file-meta { color: var(--text-muted); margin-top: var(--space-1); }
-.btn-dl { height: var(--h-control); }
-.ab { border: 0; margin: 0; padding: 0; min-width: 0; }
-.ab legend { margin-bottom: var(--space-3); }
-.ab-row { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
-.seg { display: inline-flex; border: 1.5px solid var(--border-control); border-radius: var(--radius-md); overflow: hidden; }
-.seg-opt { position: relative; }
-.seg-opt input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
-.seg-opt span { display: flex; align-items: center; justify-content: center; height: 44px; padding-inline: var(--space-4); font-weight: 600; color: var(--text-muted); transition: background var(--sl-dur-1) var(--sl-ease), color var(--sl-dur-1) var(--sl-ease); }
-.seg-opt + .seg-opt span { border-left: 1.5px solid var(--border-control); }
-.seg-opt input:checked + span { background: var(--bg-selected); color: var(--text-primary); }
-.seg-opt:hover span { color: var(--text-primary); }
-.seg-opt input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -4px; }
-.ab-wave { position: relative; margin-top: var(--space-3); height: 64px; background: var(--wf-bg); border-radius: var(--radius-sm); }
-.ab-wave .playhead { top: 0; left: calc(var(--ph) * 100%); }
-.is-playing-ab .ab-wave .playhead { display: block; }
-
-/* specs: one face, one row height (N18) */
-.specs { width: 100%; border-collapse: collapse; margin-top: var(--space-6); font-size: var(--text-lg); line-height: 24px; }
-.specs th, .specs td { text-align: left; vertical-align: top; padding: var(--space-3) 0; border-top: 1px solid var(--border-default); font-weight: 400; }
-.specs tr:last-child th, .specs tr:last-child td { border-bottom: 1px solid var(--border-default); }
-.specs th { width: 36%; color: var(--text-label); padding-right: var(--space-4); font-size: var(--text-lg); }
-.specs td { color: var(--text-secondary); }
-.specs .num { font-variant-numeric: tabular-nums; }
 
 /* faq */
 .faq { margin-top: var(--space-6); border-top: 1px solid var(--border-default); }
@@ -310,69 +198,26 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { transition-duration: 0.01ms !important; animation: none !important; }
-  .playhead { transition: none !important; }
+  
 }
-/* v2 fixes: equal lane geometry (N18), measure cap */
-.lane:last-child { border-bottom: 0; }
-.lane-list { border-bottom: 1px solid var(--border-default); }
-.ab .hint, .caption { max-width: 65ch; }
 
 /* ── v3 ── */
-.example-label { font-size: var(--text-md); font-weight: 600; color: var(--text-primary); }
-.lanes-title { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
-.tok { white-space: nowrap; }
-.btn-ghost-play { height: var(--h-control); padding-inline: var(--space-3); background: transparent; border-color: var(--border-control); color: var(--text-secondary); font-size: var(--text-md); }
-.btn-ghost-play:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--border-control); }
-.btn-ghost-play[aria-pressed="true"] { background: var(--bg-selected); color: var(--text-primary); }
-.lanes-foot span { white-space: nowrap; }
-.drift { margin-top: var(--space-2); font-size: var(--text-md); line-height: 1.45; color: var(--text-secondary); max-width: 65ch; }
-.readme { margin-top: var(--space-2); font-size: var(--text-md); color: var(--text-muted); }
-.readme summary { min-height: var(--h-control); display: inline-flex; align-items: center; cursor: pointer; color: var(--text-secondary); text-decoration: underline; text-underline-offset: 4px; }
-.readme ul { list-style: disc; padding-left: var(--space-5); display: grid; gap: var(--space-1); max-width: 65ch; }
-.ruler .beat { display: none; }
-.lanes:has(.readme[open]) .ruler .beat { display: block; }
-.wv.is-played { display: none; }
-.wv.is-played path { fill: var(--wf-bar-played); }
-.is-playing-hero .lane.is-on .wv.is-played { display: block; clip-path: inset(0 calc(100% - var(--ph) * var(--region)) 0 0); }
-.song-wave .wv:not(.is-loop) path { fill: var(--wf-bar-played); }
-.song-win { position: absolute; top: 0; bottom: 0; border: 1px solid var(--text-secondary); border-radius: var(--radius-sm); pointer-events: none; }
-.seg-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.seg-4 .seg-opt span { padding-inline: var(--space-2); white-space: nowrap; }
-.seg-opt input:checked + span { background: var(--bg-selected); color: var(--text-primary); }
-.rights-note { margin-top: calc(-1 * var(--space-3)); font-size: var(--text-md); color: var(--text-secondary); }
+
 .job-msg { flex-direction: column; gap: var(--space-2); }
 .job-msg.is-failed { flex-direction: row; }
 .job-h { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-lg); font-weight: 600; color: var(--text-primary); }
 .job-h .ic { color: var(--status-done); }
 .job-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .job-actions .btn { height: var(--h-field); }
-.kv { margin: var(--space-3) 0 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-3); font-size: var(--text-md); }
-.kv dt { color: var(--text-label); }
-.kv dd { margin: 0; color: var(--text-secondary); }
-.pipe-text > p { color: var(--text-muted); }
-.pipe-foot { margin-top: var(--space-4); font-size: var(--text-md); color: var(--text-muted); }
-.licence { flex-basis: 100%; font-size: var(--text-md); color: var(--text-muted); }
-.again { margin-top: var(--space-12); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-6); border: 1px solid var(--border-default); border-radius: var(--radius-lg); background: var(--bg-surface); }
-.again-text { font-size: var(--text-xl); font-weight: 600; color: var(--text-primary); }
-.btn-again { height: var(--h-field); }
+
 .faq { max-width: var(--sl-reading); }
 @media (min-width: 1040px) {
   .faq { max-width: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--space-16); border-top: 0; }
   .faq details { border-top: 1px solid var(--border-default); border-bottom: 0; }
-  .take { max-width: none; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: var(--space-16); align-items: start; }
+  
 }
 .noscript { padding: var(--space-3) var(--sl-gutter); background: var(--bg-elevated); color: var(--text-secondary); font-size: var(--text-md); }
 .noscript a { color: var(--text-primary); }
-body.no-data .lanes-readout, body.no-data .lanes-foot, body.no-data .drift, body.no-data .caption, body.no-data .readme,
-body.no-data .lanes-head .btn, body.no-data .pipe-art, body.no-data #ab, body.no-data .song, body.no-data .zoom { display: none; }
-body.no-data .lanes-stage { min-height: 160px; }
-@media (max-width: 359px) { .options-toggle .mono { font-size: var(--text-12); white-space: nowrap; } }
-.lane { height: calc(var(--sl-lane-h) + 1px); }
-/* collapse options before JS runs on phones (no CLS from the deferred script) */
-@media (max-width: 759px) { .options-toggle[aria-expanded="false"] + .options { display: none; } }
-.pipe-stems { min-height: 164px; }
-.pipe-song, .pipe-cut { min-height: 56px; }
-.pipe-foot { max-width: 65ch; }
 
 /* ── v4 ── */
 @media (min-width: 760px) {
@@ -383,21 +228,9 @@ body.no-data .lanes-stage { min-height: 160px; }
 @media (min-width: 1040px) { .hero-grid { row-gap: var(--space-6); } }
 .audience { margin-top: var(--space-2); font-size: var(--text-md); color: var(--text-secondary); }
 @media (max-width: 359px) { .h1-line { display: inline; } }
-.lane-list { min-height: calc(6 * (var(--sl-lane-h) + 1px)); }
-.lanes-readout .tok { white-space: nowrap; }
-.hear-msg:empty { display: none; }
-.lane.is-pending .lane-btn .ic { animation: sl-pulse .6s var(--sl-ease) infinite alternate; }
+
 .link-btn { min-height: var(--h-control); }
-/* file card: name breaks only at underscores, button on its own row */
-.file-card { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; }
-.file-name { overflow-wrap: normal; word-break: normal; }
-.file-note { margin-top: var(--space-1); font-size: var(--text-md); color: var(--text-muted); }
-.file-meta .tok { white-space: nowrap; }
-.btn-dl { grid-column: 1 / -1; justify-self: start; }
-.licence { grid-column: 1 / -1; }
-/* one return point, not a banner card */
-.again { margin-top: var(--space-12); padding: 0; border: 0; background: none; justify-content: flex-start; gap: var(--space-6); }
-.btn-again { height: var(--h-control); }
+
 /* FAQ: two independent columns, column-wise DOM and Tab order */
 .faq-col > details:last-child { border-bottom: 1px solid var(--border-default); }
 @media (min-width: 1040px) {
@@ -405,15 +238,6 @@ body.no-data .lanes-stage { min-height: 160px; }
   .faq-col { min-width: 0; }
 }
 @media (max-width: 1039px) { .faq-col + .faq-col > details:first-child { border-top: 0; } .faq-col:first-child > details:last-child { border-bottom: 1px solid var(--border-default); } }
-.kv { grid-template-columns: 88px minmax(0, 1fr); }
-.pipe-song .wv path { fill: var(--wf-bar-played); }
-.readme summary::after { content: ''; width: 20px; height: 20px; margin-left: var(--space-1); background: currentColor;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6.5 9.5l5.5 5.5 5.5-5.5' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6.5 9.5l5.5 5.5 5.5-5.5' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat; }
-.readme summary::-webkit-details-marker { display: none; }
-.readme summary { list-style: none; }
-.readme[open] summary::after { transform: rotate(180deg); }
-html:not(.js) .lanes, html:not(.js) .pipe-art, html:not(.js) #ab, html:not(.js) .again { display: none; }
 
 /* ── v4.1 ── */
 .lead { color: var(--text-secondary); }
@@ -425,14 +249,11 @@ html:not(.js) .lanes, html:not(.js) .pipe-art, html:not(.js) #ab, html:not(.js) 
    360. No min-height here: the padding already clears the bar, and the rule above
    (.link-btn { min-height: var(--h-control) }) is the one that states the floor. */
 .link-btn { padding-block: 12px; margin-block: -12px; }
-.file-ic { display: none; }
-.file-card { grid-template-columns: minmax(0, 1fr); }
+
 @media (max-width: 359px) {
-  .lanes-head { flex-direction: column; align-items: flex-start; }
   .h1-line { display: inline-block; }
   .hero h1 { font-size: 29px; }
 }
-.drift { color: var(--text-muted); }
 
 /* ── v5: wordmark "stem" white + lime dash + "loops" white (Jon 2026-10-10: name is always "stem-loops") ── */
 .wm-loops { color: var(--text-primary); }
@@ -443,14 +264,12 @@ html:not(.js) .lanes, html:not(.js) .pipe-art, html:not(.js) #ab, html:not(.js) 
 .footer-row { justify-content: flex-start; column-gap: var(--space-8); }
 .back-top { margin-left: auto; }
 
-/* ── apps/web port (2026-10-10) ── */
 /* review r5 CRO N4: no drop target on phones, whatever the pointer reports */
 @media (max-width: 759px) { .drop-hint { display: none; } }
-/* review r5 design m4: one primary-button height */
-.btn-again { height: var(--h-field); }
+
 /* body links: white and underlined, never lime (lime = primary action; brand book §7.10) */
 .faq details a, .legal a { color: var(--text-primary); text-underline-offset: 4px; }
-.btn-dl[aria-busy="true"] { cursor: progress; }
+
 /* /terms and /privacy */
 .legal { padding-block: var(--space-8) 0; }
 .legal h1 { font-size: var(--text-h2); line-height: 1.15; letter-spacing: -0.01em; }
@@ -461,87 +280,6 @@ html:not(.js) .lanes, html:not(.js) .pipe-art, html:not(.js) #ab, html:not(.js) 
 .legal li { margin-top: var(--space-2); }
 .legal strong { color: var(--text-secondary); font-weight: 600; }
 .btn-field-full { flex: 1; }
-
-/* ── v6: the play-along reposition (Story 0, 2026-11-11) ───────────────────────────────
-   The page sells the player now. One new object — the player, drawn — plus a spec sheet.
-   No new palette and no new type family: the player art is built from the six --stem-*
-   hues the rest of the product already uses, and lime keeps its one job (the action). */
-
-/* the player, drawn: three bands, each beside the sentence that explains it. Same
-   160px | 1fr | 340px rhythm as .pipe-row, so the two sections read as one system — but
-   only from 1040px up, because that rhythm starves fixed-size ART in a way it does not
-   starve prose. See the measurement above the media query below. */
-.player { margin-top: var(--space-8); }
-.pl-bands { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border-default); }
-.pl-band { display: grid; grid-template-columns: 1fr; gap: var(--space-3); padding-block: var(--space-6); border-bottom: 1px solid var(--border-default); }
-.pl-band > * { min-width: 0; }
-.pl-band-name { font-size: var(--text-xl); font-weight: 600; color: var(--text-primary); line-height: 1.2; }
-.pl-band-text { color: var(--text-muted); max-width: 52ch; }
-/* MEASURED IN REAL CHROMIUM against a production `next build` + `next start`, 2026-11-11.
-   This rule used to start at 760px, and from there to about 1000px it destroyed the art —
-   iPad portrait (768px), split-view, and any desktop window under ~1000px:
-
-     width   .pl-rail   per channel   stem names        notes
-      759      647px        98.5px    all six fit       stacked, one column
-      760       52px         0.0px    all six clipped   13px rail overflow; .pl-loop width 0
-      780       72px         2.7px    all six clipped
-      800       92px         6.0px    all six clipped
-      860      152px        16.0px    all six clipped   1px rail overflow
-      900      192px        22.7px    four of six clipped
-     1024      316px        43.3px    all six fit
-
-   160px + 340px + two 32px gaps is 564px of FIXED width, so the middle track — the art —
-   took whatever was left: 52px shared between six channels at the breakpoint itself, with
-   the chord names rendering as one unreadable smear and the M/S toggles spilling outside
-   the dark rail. The transport collapsed the same way, overflowing by 34px with .pl-loop
-   at width 0, so the section loop — a thing the copy beside it promises — was invisible.
-
-   The art is not at fault: at 390px and at 1024px the same markup is excellent. The
-   breakpoint was. So the three-column rhythm now starts at 1040px, the page's own wide
-   breakpoint — the one .hero-grid, .faq and .take already switch at. Below it the band
-   stays stacked, which measures clean the whole way down to 360px.
-
-   DO NOT lower this without re-measuring in Chrome at 360, 390, 414, 559, 560, 759, 760,
-   780, 800, 860, 900, 1024, 1039, 1040 and 1280. A green test suite is not evidence that
-   these boxes fit; nothing in the suite can see a box. */
-@media (min-width: 1040px) {
-  .pl-band { grid-template-columns: 160px minmax(0, 1fr) minmax(0, 340px); gap: var(--space-8); align-items: center; }
-}
-.pl-cap-note { margin-top: var(--space-4); font-size: var(--text-md); line-height: 1.45; color: var(--text-label); max-width: 65ch; }
-
-/* band 1 — the chord ribbon, on the song's time axis */
-.pl-chords { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); height: 56px; background: var(--wf-bg); border-radius: var(--radius-sm); overflow: hidden; }
-.pl-chord { display: flex; align-items: center; justify-content: center; font-size: var(--text-xl); font-weight: 600; color: var(--text-muted); border-right: 1px solid var(--sl-grid); }
-.pl-chord:last-child { border-right: 0; }
-.pl-chord.is-now { background: var(--bg-selected); color: var(--text-primary); }
-.pl-playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--wf-playhead); }
-
-/* band 2 — the mixer rail. Vertical faders, because the real mixer's are vertical. */
-.pl-rail { display: flex; gap: var(--space-2); padding: var(--space-3) var(--space-2); background: var(--wf-bg); border-radius: var(--radius-sm); }
-.pl-ch { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: var(--space-2); }
-.pl-ch-name { font-size: var(--text-xs); letter-spacing: -0.02em; color: var(--stem); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pl-fader { position: relative; width: 6px; height: 72px; border-radius: var(--radius-full); background: var(--border-default); }
-.pl-fader-fill { position: absolute; left: 0; right: 0; bottom: 0; height: var(--lvl, 50%); border-radius: var(--radius-full); background: var(--stem); }
-.pl-cap { position: absolute; left: 50%; bottom: var(--lvl, 50%); width: 22px; height: 10px; transform: translate(-50%, 50%); border-radius: 2px; background: var(--text-secondary); }
-/* 2px inside a pair against the 8px between channels, so the row reads as six pairs
-   and not as one strip of twelve (caught at 360px in Chrome) */
-.pl-toggles { display: flex; gap: 2px; }
-.pl-tog { display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; border: 1px solid var(--border-default); border-radius: 2px; font-size: var(--text-xs); line-height: 1; color: var(--text-label); }
-.pl-tog.is-on { border-color: var(--stem); color: var(--text-primary); background: color-mix(in srgb, var(--stem) 24%, var(--wf-bg)); }
-/* a muted channel reads the way an off lane does elsewhere on the page */
-.pl-ch.is-muted .pl-fader-fill { background: color-mix(in srgb, var(--stem) 30%, var(--wf-bg)); }
-.pl-ch.is-muted .pl-ch-name { color: var(--text-label); text-decoration: line-through; }
-
-/* band 3 — the transport, with a named section on loop */
-.pl-transport { display: flex; align-items: center; gap: var(--space-3); height: 48px; padding-inline: var(--space-3); background: var(--wf-bg); border-radius: var(--radius-sm); }
-.pl-time { flex: none; font-size: var(--text-xs); color: var(--text-label); }
-.pl-track { position: relative; flex: 1; min-width: 0; height: 24px; }
-.pl-track::before, .pl-track::after { content: ''; position: absolute; top: 50%; height: 4px; margin-top: -2px; border-radius: var(--radius-full); }
-.pl-track::before { left: 0; right: 0; background: var(--border-default); }
-.pl-track::after { left: 0; width: 40%; background: var(--text-muted); }
-.pl-loop { position: absolute; top: 0; bottom: 0; left: 34%; right: 36%; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); background: var(--sl-region-fill); box-shadow: inset 2px 0 0 var(--text-secondary), inset -2px 0 0 var(--text-secondary); }
-.pl-loop-name { font-size: var(--text-xs); color: var(--text-secondary); }
-.pl-pos { position: absolute; top: -4px; bottom: -4px; left: 40%; width: 2px; background: var(--wf-playhead); }
 
 /* "What you get" (P7): a short list, rules not cards. Bold lead, muted rest; neutral
    colours only (lime is reserved for its three jobs, brand-tokens.test.mjs). */
@@ -554,21 +292,9 @@ html:not(.js) .lanes, html:not(.js) .pipe-art, html:not(.js) #ab, html:not(.js) 
 /* A standalone link on its own line: a 44px tap target (j7-mobile measures every control). */
 .more-link a { display: inline-flex; align-items: center; min-height: 44px; color: var(--text-primary); text-underline-offset: 4px; }
 
-/* 360px, checked in Chrome: six stem names have to fit without an ellipsis, and the loop's
-   name has nowhere to sit clear of the playhead once the track is this short — so the name
-   goes and the band's own heading carries it. */
-@media (max-width: 559px) {
-  .pl-rail { gap: var(--space-1); padding-inline: var(--space-1); }
-  .pl-ch-name { font-size: 9px; }
-  .pl-toggles { gap: 1px; }
-  .pl-tog { width: 14px; }
-  .pl-loop-name { display: none; }
-  .pl-chord { font-size: var(--text-lg); }
-}
-
-/* forced colours: the UA drops the tints and insets, so restate the art's shapes */
-@media (forced-colors: active) {
-  .pl-chords, .pl-rail, .pl-transport { outline: 1px solid CanvasText; }
-  .pl-chord.is-now, .pl-tog.is-on, .pl-loop { outline: 2px solid Highlight; outline-offset: -2px; }
-  .pl-fader, .pl-fader-fill, .pl-cap, .pl-pos, .pl-playhead { forced-color-adjust: none; background: CanvasText; }
-}
+/* ── v9 (A4, 2026-11-21): phone-first tool ──
+   The link field and a 44px Paste button share the row; the file picker is the alternative, one
+   row down as a quiet text button. Paste is a secondary button: lime stays with Separate and play. */
+.btn-paste { padding-inline: var(--space-4); min-width: 44px; }
+.btn-file-alt { align-self: flex-start; margin-top: calc(-1 * var(--space-2)); padding-inline: var(--space-1); }
+.btn-file-alt .ic { width: 20px; height: 20px; }

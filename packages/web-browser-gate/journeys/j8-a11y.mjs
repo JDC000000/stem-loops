@@ -77,9 +77,10 @@ export default async function run() {
     const lstops = await tabWalk(page, 24, 'cta');
     const order = lstops.map((s) => s.id || s.name);
     const iFile = order.indexOf('file-btn');
-    // narrow screens show an "options" toggle; wide screens show the stem chips inline
-    // (the toggle is display:none there), so either is the middle stop.
-    const iOpt = order.indexOf('options-toggle') >= 0 ? order.indexOf('options-toggle') : lstops.findIndex((s) => s.tag === 'input');
+    // Wide screens show the stem chips inline (A4, 2026-11-21: phones have no stem picker and no
+    // options toggle). The link field (#source) and its Paste button now come BEFORE "Choose a
+    // file", so the middle stop is the first stem chip, not the first input.
+    const iOpt = lstops.findIndex((s) => s.tag === 'input' && s.id !== 'source');
     const iCta = order.indexOf('cta');
     j.check('upload form: tab reaches Choose a file → stem/length options → Separate and play, in that order', iFile >= 0 && iFile < iOpt && iOpt < iCta, order.join(' → '));
     const noRing = lstops.filter((s) => s.name !== '(body)' && !s.ring);

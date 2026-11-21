@@ -82,6 +82,9 @@ WEB_ENV=(PATH="$PATH" HOME="$HOME" LANG=C.UTF-8 NO_PROXY="$NO_PROXY" no_proxy="$
   MINIO_ENDPOINT="http://127.0.0.1:$STACK_S3_PORT"
   R2_ACCESS_KEY_ID=test R2_SECRET_ACCESS_KEY=test R2_BUCKET_NAME="$STACK_BUCKET" R2_ACCOUNT_ID=local
   IP_HASH_KEY=local-ip-hash-key-0123456789abcdef HISTORY_COOKIE_KEY=local-history-cookie-key-0123456789
+  # The link box, as in production (j10 drives the link sign-in-first flow; /api/jobs link POSTs
+  # are intercepted there, so the server-side ALLOW_YOUTUBE_INPUT stays off in the stack).
+  NEXT_PUBLIC_ALLOW_YOUTUBE_INPUT=true
   NEXT_PUBLIC_DEMO_ASSET_BASE=)   # only the web's loopback configuration; nothing from the calling shell
 W=$STACK_WEB_DIR
 if [ -z "${STACK_SKIP_BUILD:-}" ]; then

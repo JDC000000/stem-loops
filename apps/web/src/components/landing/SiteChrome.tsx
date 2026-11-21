@@ -1,6 +1,6 @@
 // Header + footer shared by the landing, /help, /terms, /privacy and the 404.
 import SignedInNav from '@/components/chrome/SignedInNav';
-import { ToInputLink } from './DemoArt';
+import { ToInputLink } from './ToInputLink';
 import { Ic } from './Icons';
 
 /**
@@ -28,7 +28,9 @@ export function SiteFooter({ onLanding = false }: { onLanding?: boolean }) {
           <a href="/">Play along</a>
           <a href="/loops">Download loops</a>
         </nav>
-        <nav className="footer-links" aria-label="Legal">
+        {/* A4: the plans link left the phone top bar, so it is here (and on /account). */}
+        <nav className="footer-links" aria-label="Help and legal">
+          <a href="/pricing">Pricing</a>
           <a href="/help">Help</a>
           <a href="/terms">Terms</a>
           <a href="/privacy">Privacy</a>

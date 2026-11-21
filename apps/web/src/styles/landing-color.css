@@ -1,40 +1,13 @@
-/* Colour option A: "Stem spectrum", stem colour as data (landing, /terms, /privacy).
-   The stem tokens (--stem-*, --sl-stem-strip) live in design-tokens.css and the
-   [data-stem] mapping in stem-color.css, shared with the job and history pages. Each stem's hue appears wherever that stem appears:
-   the stem chips, the example lanes, the Separate stage, the drums file and the A/B drums
-   wave. Everything that is not a stem stays monochrome. Large stem fills rest at 85% hue on
-   the plate and go to full hue while they sound, so lime stays the brightest thing on screen.
-   The results-page --wf-* tokens are not touched: the landing art reads its own --sl-* tokens.
-   Ratios are WCAG 2.x on 8-bit sRGB (brand book v2.2, Appendix C). */
+/* Colour option A: "Stem spectrum", stem colour as data (landing, /terms, /privacy). The stem
+   tokens live in design-tokens.css and the [data-stem] mapping in stem-color.css. Each stem's hue
+   appears on its stem chip; everything that is not a stem stays monochrome, so lime stays the
+   brightest thing on screen. Ratios are WCAG 2.x on 8-bit sRGB (brand book v2.2, Appendix C). */
 
 /* ── shell: the stem key as a quiet 1px rule under the header (overlays the existing 1px
    border, so no box changes), only on the page that has the tool: on /terms, /privacy and the
-   404 no stem is on the page, so the key would be ornament (D2-7). The labelled key is on the
-   options summary (phones). ── */
+   404 no stem is on the page, so the key would be ornament (D2-7). ── */
 .sl-root .sin-bar { position: relative; }
 .sl-root:has(#tool) .sin-bar::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--sl-stem-strip); opacity: .7; pointer-events: none; }
-
-/* ── phones: the collapsed options summary carries the stem key, built from the live choice.
-   A stem that is turned off drops to a grey segment, so the key is data, not decoration.
-   Background only: no box changes. ── */
-@media (max-width: 759px) {
-  #tool { --k-drums: var(--stem-drums); --k-bass: var(--stem-bass); --k-vocals: var(--stem-vocals);
-    --k-guitar: var(--stem-guitar); --k-keys: var(--stem-keys); --k-other: var(--stem-other); }
-  #tool:has(input[name="stem"][value="drums"]:not(:checked)) { --k-drums: var(--border-default); }
-  #tool:has(input[name="stem"][value="bass"]:not(:checked)) { --k-bass: var(--border-default); }
-  #tool:has(input[name="stem"][value="vocals"]:not(:checked)) { --k-vocals: var(--border-default); }
-  #tool:has(input[name="stem"][value="guitar"]:not(:checked)) { --k-guitar: var(--border-default); }
-  #tool:has(input[name="stem"][value="keys"]:not(:checked)) { --k-keys: var(--border-default); }
-  #tool:has(input[name="stem"][value="other"]:not(:checked)) { --k-other: var(--border-default); }
-  #options-toggle {
-    background-image: linear-gradient(90deg,
-      var(--k-drums) 0 16.666%, var(--k-bass) 0 33.333%, var(--k-guitar) 0 50%,
-      var(--k-keys) 0 66.666%, var(--k-vocals) 0 83.333%, var(--k-other) 0 100%);
-    background-repeat: no-repeat;
-    background-size: 100% 3px;
-    background-position: 0 100%;
-  }
-}
 
 /* ── stem chips: checked = the stem's hue on border, tick and a 14% tint, plus a 2px edge
    (inset, no box change) so "on" never depends on how saturated a stem's hue is ── */
@@ -55,56 +28,18 @@
   background: color-mix(in srgb, var(--stem-other) 24%, var(--bg-elevated)); }
 .chip[data-stem="other"] input:checked + .chip-face .chip-check { color: var(--text-secondary); }
 
-/* ── example lanes (D2-1): at rest the lanes are stem-tinted greys, so lime is the one loud
-   thing in the first viewport and the stems keep their identity through the chips, the play
-   icons and the tint. Context waves: 30% hue into #8a8a8a (5.5-7.3:1 on the plate, >= 3:1 for
-   QA A-1). The loop window: 35% hue into #b4b4b4, lighter than the context, as production's
-   loop is lighter than its context (the bracket marks it too). A lane takes its hue when you
-   point at or focus its play button (85%), and its full hue while it sounds; the played part
-   is lighter ── */
-.lane-wave .wv path { fill: color-mix(in srgb, var(--stem) 30%, #8a8a8a); }
-.lane-wave .wv.is-loop path { fill: color-mix(in srgb, var(--stem) 35%, #b4b4b4); transition: fill var(--sl-dur-1) var(--sl-ease); }
-.lane:has(.lane-btn:hover:not(:disabled)) .lane-wave .wv.is-loop path,
-.lane:has(.lane-btn:focus-visible) .lane-wave .wv.is-loop path { fill: color-mix(in srgb, var(--stem) 85%, var(--bg-surface)); }
-.lane.is-on .lane-wave .wv.is-loop path { fill: var(--stem); }
-.lane-wave .wv.is-played path { fill: color-mix(in srgb, var(--stem) 45%, #ffffff); }
-.lane-btn .ic { color: var(--stem); }
-.lane-btn:disabled .ic { color: color-mix(in srgb, var(--stem) 55%, var(--bg-surface)); }
-.lane-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--stem) 12%, var(--bg-surface)); }
-.lane-btn[aria-pressed="true"] { background: color-mix(in srgb, var(--stem) 20%, var(--bg-surface)); color: var(--text-primary); }
-.lane.is-on .lane-btn { box-shadow: inset 2px 0 0 var(--stem); }
-
-/* ── pipeline: the mix stays neutral at Paste; colour appears at Separate; Cut is the drums file ── */
-.pipe-stem .mono { color: var(--stem); }
-.pipe-stem .wv path { fill: color-mix(in srgb, var(--stem) 85%, var(--wf-bg)); }
-.pipe-cut { --stem: var(--stem-drums); }
-.pipe-cut .wv path { fill: color-mix(in srgb, var(--stem) 30%, #8a8a8a); }  /* context, as the lanes */
-.pipe-cut .wv.is-loop path { fill: color-mix(in srgb, var(--stem) 85%, var(--wf-bg)); }
-
-/* ── the file you get: "drums" in the filename and the A/B drums wave carry the drums hue ── */
-.fn-stem { color: var(--stem); }
-.ab-wave .wv.is-loop path { fill: color-mix(in srgb, var(--stem-drums) 85%, var(--wf-bg)); }
-.is-playing-ab .ab-wave .wv.is-loop path { fill: var(--stem-drums); }
-/* ── segments (loop length, A/B): the chosen one gets a 3px light underline as well as the
-   fill step, so "selected" never rests on a 1.22:1 fill (QA A-2). Neutral, not lime: lime's
-   one job is the action. The A/B "Drums stem" underline takes the drums hue. ── */
-.seg-opt input:checked + span { box-shadow: inset 0 -3px 0 var(--text-secondary); }
-.ab .seg-opt input[value="drums"]:checked + span { background: color-mix(in srgb, var(--stem-drums) 18%, var(--bg-page)); box-shadow: inset 0 -3px 0 var(--stem-drums); }
-
 /* ── job stages on the form (it only reaches "sending" before handing off to /jobs/[id]):
    monochrome status; the stage name and the pulse carry it, not a hue ── */
 .job-stages li.is-now::before { border-color: var(--text-primary); background: var(--text-primary); }
 .job-msg.is-done .ic, .job-h .ic { color: var(--text-primary); }
 
 @media (prefers-reduced-motion: reduce) {
-  .chip .chip-face, .lane-wave .wv.is-loop path { transition: none; }
+  .chip .chip-face { transition: none; }
 }
 
-/* ── forced colours (QA A-4, PB-1, PB-2): the UA drops box-shadows and does not force SVG
-   fills, so restate the selected segment and the waveforms in system colours ── */
+/* ── forced colours (QA A-4, PB-1, PB-2): the UA drops box-shadows, so restate the selected
+   chip in system colours ── */
 @media (forced-colors: active) {
-  .wv path { fill: CanvasText !important; } /* beats the more specific in-loop hue rules; the bracket marks the loop */
-  .seg-opt input:checked + span { outline: 3px solid Highlight; outline-offset: -3px; }
   .chip input:checked + .chip-face { border-width: 3px; }
   /* the tick keeps no stem hue on the system canvas (yellow was about 1.3:1 on white) */
   .chip .chip-check, .chip input:checked + .chip-face .chip-check { color: CanvasText !important; }

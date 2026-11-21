@@ -1,10 +1,13 @@
 // SEO-06. Every public page builds its metadata here. openGraph and twitter are COMPLETE objects:
 // Next merges metadata shallowly, so a page that sets `openGraph` replaces the root one whole.
 import type { Metadata } from 'next';
-import { OG_ALT, OG_IMAGE, SITE_NAME } from './site.ts';
+import { ogAlt, ogImage, SITE_NAME } from './site.ts';
 import type { PublicPage } from './pages.ts';
 
 export function pageMetadata(p: PublicPage): Metadata {
+  // Read once per call (lib/chords-claim.ts): at build on a static page, per request on a dynamic one.
+  const OG_IMAGE = ogImage();
+  const OG_ALT = ogAlt();
   return {
     title: p.absoluteTitle ? { absolute: p.title } : p.title,
     description: p.description,

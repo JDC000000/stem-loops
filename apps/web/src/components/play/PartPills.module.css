@@ -1,0 +1,161 @@
+/* "My part" pills (Phase A D5). Tokens only (src/styles/design-tokens.css).
+
+   - One row between the chord stage and the section strip. Each pill is 44px
+     tall (A16 touch target) and 22px round (the pill radius).
+   - State is shown by FILL and LABEL, never by colour alone:
+       100%     page fill, 1px control edge, the stem-colour bar full width
+       30% etc  selected (#222, 2px #fff edge), the bar at that width
+       muted    selected, the name struck through, no bar
+       solo     selected, "solo" in bold, the bar full width
+       silent   (another part is soloed) muted text, no bar
+       n/a      disabled: dashed dim edge, "n/a", the reason under the row
+   - Never lime, never amber: the stem hue is the existing --stem-* token
+     (6.6–13.5:1 on the page), used only for the 3px level bar.
+   - No transitions, so prefers-reduced-motion has nothing to stop. */
+
+.root {
+  margin: 0;
+  padding: 0 var(--space-4);
+  border: 0;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.row {
+  /* Equal columns whatever the edge width, so a pill never shifts its
+     neighbours when it is pressed. */
+  height: 52px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(44px, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.pill {
+  position: relative;
+  min-width: 44px;
+  height: var(--touch-min, 44px);
+  padding: 0 2px;
+  box-sizing: border-box;
+  overflow: hidden;
+  border-radius: 22px;
+  background: var(--bg-page);
+  border: 1px solid var(--border-control);   /* a control edge, >= 3:1 (brand book M20) */
+  color: var(--text-secondary);
+  font: inherit;
+  line-height: 1.1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.name {
+  font-size: 13px;
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+
+.state {
+  font-size: 12px;
+  color: var(--text-label);
+  white-space: nowrap;
+}
+
+/* The level, as a fill: a 3px bar in the stem's own hue along the bottom edge,
+   as wide as the level. */
+.bar {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 4px;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--stem) var(--pill-level, 100%), transparent var(--pill-level, 100%));
+}
+
+/* Changed from the full song: the ONE neutral selected state (brand A5). */
+.pill[aria-pressed='true'] {
+  background: var(--bg-selected);
+  border: 2px solid var(--text-primary);
+  color: var(--text-primary);
+}
+.pill[aria-pressed='true'] .state { color: var(--text-secondary); }
+
+.pill[data-level='muted'] .name { text-decoration: line-through; }
+.pill[data-level='muted'] .bar { display: none; }
+
+.pill[data-solo] .state {
+  color: var(--text-primary);
+  font-weight: var(--weight-bold);
+}
+
+.pill[data-silent] { color: var(--text-label); }
+.pill[data-silent] .bar { display: none; }
+
+.pill[aria-disabled='true'] {
+  color: var(--text-label);
+  border: 1px dashed var(--border-strong);
+  cursor: not-allowed;
+}
+.pill[aria-disabled='true'] .bar { display: none; }
+
+.pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.note {
+  margin: -4px 4px 4px;
+  font-size: 13px;
+  color: var(--text-label);
+}
+
+@media (forced-colors: active) {
+  .pill[aria-pressed='true'] { border-color: Highlight; }
+  .bar { background: CanvasText; }
+}
+
+/* Desktop never mounts the pills (the mixer column is always visible). */
+
+/* Short portrait windows (360x520, 600x500: split screen, a phone with the
+   keyboard up): the 52px row would push the screen past the chord floor and
+   make it scroll (the S1 gate). There the row steps aside and the Mix button
+   does the job. Real phones (320x568 and up) keep it. Landscape phones have
+   their own two-column layout below, where the row fits. */
+@media (min-height: 500px) and (max-height: 559px) {
+  .root { display: none; }
+}
+
+/* Landscape phones (Player.module.css P1.4 rule 1): the right column holds the
+   pills at the top of the free row and the section strip at its bottom. */
+@media (max-height: 499px) and (min-width: 560px) {
+  /* Doubled class: beats Player.module.css `.main > fieldset` (which bottom-
+     aligns the section strip in the same row) without depending on the order
+     the two modules load in. */
+  .root.root {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: start;
+    padding-top: 8px;
+  }
+}

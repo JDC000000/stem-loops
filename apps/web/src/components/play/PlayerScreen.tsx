@@ -39,6 +39,7 @@ import type { LoopRegion } from '@/lib/play/types';
 import type { Notice, PlayerViewProps } from './Player';
 import Mixer from './Mixer';
 import { MixSheet } from './MixSheet';
+import { PartPills } from './PartPills';
 import { Presets } from './Presets';
 import { SectionLoop } from './SectionLoop';
 import { Sheet } from './Sheet';
@@ -132,7 +133,8 @@ export function PlayerScreen(props: ScreenProps) {
     artist,
     back = DEFAULT_BACK,
     songInfo = [],
-    loopsHref = null,
+    // `loopsHref` is no longer rendered (Phase A): the play-along player does
+    // not link to the loops product, which stays reachable from Account/nav.
     onBack,
     playable,
     chordPosition,
@@ -210,6 +212,7 @@ export function PlayerScreen(props: ScreenProps) {
   const onPreset = (id: PresetId, p: Part) => {
     for (const op of presetOps(id, p, snapshot.stems)) {
       if (op.soloed !== undefined) onSolo(op.stem, op.soloed);
+      if (op.gain !== undefined) onGain(op.stem, op.gain);
       if (op.muted !== undefined) onMute(op.stem, op.muted);
     }
   };
@@ -377,7 +380,7 @@ export function PlayerScreen(props: ScreenProps) {
             ref={menuButton}
             type="button"
             className={styles.more}
-            aria-label="More: all chords, song info, download loops"
+            aria-label="More: all chords, song info"
             aria-haspopup="true"
             aria-expanded={menuOpen}
             aria-controls="player-menu"
@@ -397,6 +400,7 @@ export function PlayerScreen(props: ScreenProps) {
               className={styles.menu}
               onKeyDown={(e) => {
                 if (e.key === 'Escape') {
+                  e.preventDefault(); // the menu used the key: a non-modal Mix sheet stays open
                   setMenuOpen(false);
                   menuButton.current?.focus();
                 }
@@ -422,11 +426,6 @@ export function PlayerScreen(props: ScreenProps) {
               >
                 Song info
               </button>
-              {loopsHref ? (
-                <a className={styles.menuItem} href={loopsHref} data-testid="loops-link">
-                  Download loops
-                </a>
-              ) : null}
             </div>
           ) : null}
         </div>
@@ -491,6 +490,8 @@ export function PlayerScreen(props: ScreenProps) {
 
           {playable ? (
             <>
+              {/* Phase A D5: lower, mute and solo a part in one tap/hold, chords still on screen. */}
+              {desktop ? null : <PartPills stems={snapshot.stems} onGain={onGain} onMute={onMute} onSolo={onSolo} />}
               <SectionLoop names={names} state={shown} onTap={onTap} onLongPress={onLongPress} hint={hint && runOn} />
               <Transport
                 status={snapshot.status}
@@ -508,7 +509,7 @@ export function PlayerScreen(props: ScreenProps) {
                   desktop
                     ? null
                     : {
-                        label: mixStateLabel(snapshot.stems, part),
+                        label: mixStateLabel(snapshot.stems),
                         open: mixOpen,
                         onOpen: () => setMixOpen(true),
                         buttonRef: (el) => {
@@ -599,13 +600,6 @@ export function PlayerScreen(props: ScreenProps) {
               {line}
             </p>
           ))}
-          {loopsHref ? (
-            <p className={styles.info}>
-              <a href={loopsHref} className={styles.link}>
-                Download loops
-              </a>
-            </p>
-          ) : null}
         </div>
       </Sheet>
     </section>

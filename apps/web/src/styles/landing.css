@@ -108,16 +108,9 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .group { border: 0; padding: 0; margin: 0; min-width: 0; }
 .group legend { margin-bottom: var(--space-2); }
 .options { display: flex; flex-direction: column; gap: var(--space-4); }
-.options-toggle { display: none; }
+/* A4 (2026-11-21): no stem picker on phones; the form sends all six (ToolForm.tsx). */
 @media (max-width: 759px) {
-  .options-toggle { display: flex; align-items: center; justify-content: space-between; min-height: var(--h-control); width: 100%;
-    background: transparent; border: 1.5px solid var(--border-control); border-radius: var(--radius-md); padding-inline: var(--space-4); color: var(--text-primary); cursor: pointer; }
-  .options-toggle:hover { border-color: var(--text-muted); }
-  .options-toggle .mono { font-size: var(--text-md); }
-  .options-change { display: inline-flex; align-items: center; gap: var(--space-1); color: var(--text-secondary); font-size: var(--text-md); }
-  .options-change .ic { width: 20px; height: 20px; transition: transform var(--sl-dur-1) var(--sl-ease); }
-  .options-toggle[aria-expanded="true"] .ic { transform: rotate(180deg); }
-  .options.is-collapsed { display: none; }
+  .options { display: none; }
   .readout { display: none; }
 }
 .chips { display: grid; gap: var(--space-2); }
@@ -366,10 +359,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 body.no-data .lanes-readout, body.no-data .lanes-foot, body.no-data .drift, body.no-data .caption, body.no-data .readme,
 body.no-data .lanes-head .btn, body.no-data .pipe-art, body.no-data #ab, body.no-data .song, body.no-data .zoom { display: none; }
 body.no-data .lanes-stage { min-height: 160px; }
-@media (max-width: 359px) { .options-toggle .mono { font-size: var(--text-12); white-space: nowrap; } }
 .lane { height: calc(var(--sl-lane-h) + 1px); }
-/* collapse options before JS runs on phones (no CLS from the deferred script) */
-@media (max-width: 759px) { .options-toggle[aria-expanded="false"] + .options { display: none; } }
 .pipe-stems { min-height: 164px; }
 .pipe-song, .pipe-cut { min-height: 56px; }
 .pipe-foot { max-width: 65ch; }
@@ -572,3 +562,10 @@ html:not(.js) .lanes, html:not(.js) .pipe-art, html:not(.js) #ab, html:not(.js) 
   .pl-chord.is-now, .pl-tog.is-on, .pl-loop { outline: 2px solid Highlight; outline-offset: -2px; }
   .pl-fader, .pl-fader-fill, .pl-cap, .pl-pos, .pl-playhead { forced-color-adjust: none; background: CanvasText; }
 }
+
+/* ── v9 (A4, 2026-11-21): phone-first tool ──
+   The link field and a 44px Paste button share the row; the file picker is the alternative, one
+   row down as a quiet text button. Paste is a secondary button: lime stays with Separate and play. */
+.btn-paste { padding-inline: var(--space-4); min-width: 44px; }
+.btn-file-alt { align-self: flex-start; margin-top: calc(-1 * var(--space-2)); padding-inline: var(--space-1); }
+.btn-file-alt .ic { width: 20px; height: 20px; }

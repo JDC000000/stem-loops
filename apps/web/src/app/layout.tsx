@@ -3,13 +3,16 @@ import localFont from 'next/font/local';
 import './globals.css';
 import FlashBanner from '@/components/FlashBanner';
 import SiteAnalytics from '@/components/SiteAnalytics';
-import { SITE_DESCRIPTION } from '@/lib/seo/site';
+import { siteDescription } from '@/lib/seo/site';
 
-export const metadata: Metadata = {
+// generateMetadata, not a const: the default description carries the DB-17 chord claim, which
+// is read at request time (lib/chords-claim.ts). Every page that makes the claim is dynamic.
+export function generateMetadata(): Metadata {
+  return {
   metadataBase: new URL('https://stem-loops.com'),
   title: { default: 'stem-loops', template: '%s · stem-loops' },
   // DB-17: switched with the one claim switch; defined in lib/seo/site.ts.
-  description: SITE_DESCRIPTION,
+  description: siteDescription(),
   applicationName: 'stem-loops',
   icons: {
     icon: [
@@ -20,7 +23,8 @@ export const metadata: Metadata = {
     shortcut: '/favicon.ico',
     apple: '/apple-touch-icon.png',
   },
-};
+  };
+}
 
 // Self-hosted JetBrains Mono (variable, latin subset, 40 KB), loaded once for EVERY route so
 // the player's mono readouts match the landing (brand book M13). next/font sets --font-jbm on

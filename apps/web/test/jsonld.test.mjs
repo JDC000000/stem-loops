@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { renderPage } from './helpers/render-landing-page.mjs';
 import { compile } from './helpers/render-chrome.mjs';
-import { ENTITY_ONE_LINER, MAX_TRACK_MIN } from '../src/lib/seo/site.ts';
+import { entityOneLiner, MAX_TRACK_MIN } from '../src/lib/seo/site.ts';
+const ENTITY_ONE_LINER = entityOneLiner(); // DB-17 runtime switch, default ON
 import { pageFor } from '../src/lib/seo/pages.ts';
 import { MAX_TRACK_SEC } from '../src/lib/play/types.ts';
 
@@ -23,7 +24,7 @@ test('entity facts come from the shared constants', () => {
   // Story 2.1 stem order, everywhere.
   assert.ok(app.featureList.includes('Six stems: drums, bass, guitar, keys, vocals and other'));
   assert.ok(app.featureList.includes('Free plan: files deleted after 24 hours. Pro and Studio: a song library kept while subscribed, plus 30 days'));
-  assert.match(app.browserRequirements, /Chrome on a computer/);
+  assert.match(app.browserRequirements, /Built for phones and computers and tested in Google Chrome/); // A4: phone first
   assert.match(app.browserRequirements, /phones load lighter audio/);
   assert.match(app.operatingSystem, /Android, iOS/);
   assert.equal(app.offers.price, '0');
@@ -42,7 +43,7 @@ test('no ratings or reviews, no YouTube, no empty sameAs, no Person until /about
 test('the home meta description is the registry entry for "/" (one source, built from MAX_TRACK_MIN)', async () => {
   const [url] = compile(['app/(landing)/page.tsx']);
   const mod = await import(url);
-  assert.equal(mod.metadata.description, pageFor('/').description);
+  assert.equal(mod.generateMetadata().description, pageFor('/').description); // A4: generateMetadata (runtime DB-17 switch)
   assert.ok(pageFor('/').description.includes(`${MAX_TRACK_MIN} minutes`));
 });
 

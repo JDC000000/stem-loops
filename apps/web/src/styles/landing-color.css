@@ -9,32 +9,12 @@
 
 /* ── shell: the stem key as a quiet 1px rule under the header (overlays the existing 1px
    border, so no box changes), only on the page that has the tool: on /terms, /privacy and the
-   404 no stem is on the page, so the key would be ornament (D2-7). The labelled key is on the
-   options summary (phones). ── */
+   404 no stem is on the page, so the key would be ornament (D2-7). ── */
 .sl-root .sin-bar { position: relative; }
 .sl-root:has(#tool) .sin-bar::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--sl-stem-strip); opacity: .7; pointer-events: none; }
 
-/* ── phones: the collapsed options summary carries the stem key, built from the live choice.
-   A stem that is turned off drops to a grey segment, so the key is data, not decoration.
-   Background only: no box changes. ── */
-@media (max-width: 759px) {
-  #tool { --k-drums: var(--stem-drums); --k-bass: var(--stem-bass); --k-vocals: var(--stem-vocals);
-    --k-guitar: var(--stem-guitar); --k-keys: var(--stem-keys); --k-other: var(--stem-other); }
-  #tool:has(input[name="stem"][value="drums"]:not(:checked)) { --k-drums: var(--border-default); }
-  #tool:has(input[name="stem"][value="bass"]:not(:checked)) { --k-bass: var(--border-default); }
-  #tool:has(input[name="stem"][value="vocals"]:not(:checked)) { --k-vocals: var(--border-default); }
-  #tool:has(input[name="stem"][value="guitar"]:not(:checked)) { --k-guitar: var(--border-default); }
-  #tool:has(input[name="stem"][value="keys"]:not(:checked)) { --k-keys: var(--border-default); }
-  #tool:has(input[name="stem"][value="other"]:not(:checked)) { --k-other: var(--border-default); }
-  #options-toggle {
-    background-image: linear-gradient(90deg,
-      var(--k-drums) 0 16.666%, var(--k-bass) 0 33.333%, var(--k-guitar) 0 50%,
-      var(--k-keys) 0 66.666%, var(--k-vocals) 0 83.333%, var(--k-other) 0 100%);
-    background-repeat: no-repeat;
-    background-size: 100% 3px;
-    background-position: 0 100%;
-  }
-}
+/* ── phones: the options summary and its stem key are gone (A4, 2026-11-21): a phone has no
+   stem picker and always asks for all six stems. The key stays as the rule under the header. ── */
 
 /* ── stem chips: checked = the stem's hue on border, tick and a 14% tint, plus a 2px edge
    (inset, no box change) so "on" never depends on how saturated a stem's hue is ── */

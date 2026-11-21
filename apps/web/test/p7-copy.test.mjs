@@ -26,66 +26,73 @@ const wyg = () => HOME.html.match(/<ul class="wyg"[^>]*>([\s\S]*?)<\/ul>/)?.[1] 
 const homeFaq = () => HOME.html.match(/<section[^>]*id="faq"[\s\S]*?<\/section>/)?.[0] ?? '';
 const soon = () => HOME.html.match(/<p class="wyg-soon"[^>]*>([\s\S]*?)<\/p>/)?.[1] ?? '';
 
-test('"What you get" is the six true-today lines, in order, and about 70 words with "Coming soon"', () => {
+test('"What you get" is three true-today proof points, in order, short, with "Coming soon" (A4 home page diet)', () => {
   const lines = [...wyg().matchAll(/<li data-line="([^"]+)">([\s\S]*?)<\/li>/g)].map((m) => [m[1], flatten(m[2])]);
   assert.deepEqual(lines, [
-    ['stems', '6 stems — drums, bass, guitar, keys, vocals, other. Mute any of them.'],
-    ['chords', 'Chords in time with the song. Auto-detected, so trust your ear.'],
+    ['chords', 'Chords in time with the song, with the next one shown. Auto-detected, so trust your ear.'],
+    ['stems', '6 stems — drums, bass, guitar, keys, vocals, other. Turn your part down, mute it or solo it.'],
     ['loop', 'Loop any section — or several in a row.'],
-    ['length', 'First 5 minutes of each song.'],
-    ['device', 'Best in Chrome on a computer. Phones work too, with lighter audio; phone support is new.'],
-    ['account', 'Free account needed to play your own songs. The demo songs open without signing in.'],
   ]);
   const n = words(flatten(wyg())) + words(flatten(soon()));
-  assert.ok(n >= 55 && n <= 80, `"What you get" + "Coming soon" is ${n} words; P7 asks for ~70`);
-  // The old 8-row scope sheet is gone.
-  assert.doesNotMatch(HOME.html, /class="spec"|<dt>Where it runs<\/dt>|<dt>Track length<\/dt>/);
+  assert.ok(n >= 25 && n <= 60, `"What you get" + "Coming soon" is ${n} words; three one-liners`);
+  // The old 8-row scope sheet is gone, and so is the desktop-first device line.
+  assert.doesNotMatch(HOME.html, /class="spec"|<dt>Where it runs<\/dt>|<dt>Track length<\/dt>|Best in Chrome on a computer/);
 });
 
-test('DB-17: the Chords line is decided by ONE constant, and turning it off drops only that line', async () => {
+test('DB-17: the chord claims hang on ONE runtime switch, read from CHORDS_CLAIMS, default ON', async () => {
   const src = readFileSync(join(WEB, 'src/lib/chords-claim.ts'), 'utf8');
-  assert.equal((src.match(/export const CHORDS_LINE_SHOWN = (true|false);/g) ?? []).length, 1);
   assert.match(src, /DB-17/, 'the switch says why it exists');
-  // Nobody else defines it: every consumer imports this one.
-  for (const f of ['src/components/landing/what-you-get.ts', 'src/app/(landing)/page.tsx', 'src/components/landing/PlayerArt.tsx',
-    'src/components/landing/faq.tsx', 'src/lib/seo/pages.ts', 'src/lib/seo/jsonld.ts', 'src/lib/seo/site.ts',
-    // QA C-12 (2026-11-18): the rest of the site reads the same switch.
-    'src/lib/seo/llms.ts', 'src/app/(landing)/terms/page.tsx', 'src/app/(landing)/privacy/page.tsx',
-    'src/lib/emails/templates/welcome.ts', 'src/app/loops/LoopsView.tsx']) {
-    const t = readFileSync(join(WEB, f), 'utf8');
-    assert.doesNotMatch(t, /const CHORDS_LINE_SHOWN\s*=/, `${f} defines its own switch`);
-    assert.match(t, /import \{[^}]*\bCHORDS_LINE_SHOWN\b[^}]*\} from '(?:@\/lib\/chords-claim|\.\.\/chords-claim\.ts)'/, `${f} does not read the switch`);
+  assert.doesNotMatch(src, /export const CHORDS_LINE_SHOWN/, 'the old build-time constant is gone');
+  const { parseChordsClaims, chordsLineShown, CHORDS_CLAIMS_ENV } = await import('../src/lib/chords-claim.ts');
+  assert.equal(CHORDS_CLAIMS_ENV, 'CHORDS_CLAIMS');
+  for (const v of [undefined, null, '', 'on', 'true', '1', 'yes', 'ON', 'of', 'disabled']) assert.equal(parseChordsClaims(v), true, `${v} must leave the claims ON`);
+  for (const v of ['off', 'OFF', ' Off ', 'false', '0', 'no']) assert.equal(parseChordsClaims(v), false, `${v} must turn the claims OFF`);
+  // Read at CALL time, not module load: flipping the variable flips the next read.
+  const before = process.env.CHORDS_CLAIMS;
+  try {
+    delete process.env.CHORDS_CLAIMS;
+    assert.equal(chordsLineShown(), true);
+    process.env.CHORDS_CLAIMS = 'off';
+    assert.equal(chordsLineShown(), false);
+    process.env.CHORDS_CLAIMS = 'on';
+    assert.equal(chordsLineShown(), true);
+  } finally {
+    if (before === undefined) delete process.env.CHORDS_CLAIMS; else process.env.CHORDS_CLAIMS = before;
   }
-  const wygSrc = readFileSync(join(WEB, 'src/components/landing/what-you-get.ts'), 'utf8');
-  const load = async (flag) => {
-    const js = ts.transpileModule(
-      wygSrc.replace(/import \{ MAX_TRACK_SEC \} from '@\/lib\/play\/types';/, 'const MAX_TRACK_SEC = 300;')
-        .replace(/import \{ CHORDS_LINE_SHOWN \} from '@\/lib\/chords-claim';/, `const CHORDS_LINE_SHOWN = ${flag};`),
-      { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } },
-    ).outputText;
-    return import('data:text/javascript;base64,' + Buffer.from(js).toString('base64') + '#' + flag);
-  };
-  const on = (await load(true)).WHAT_YOU_GET.map((l) => l.key);
-  const off = (await load(false)).WHAT_YOU_GET.map((l) => l.key);
-  assert.deepEqual(on, ['stems', 'chords', 'loop', 'length', 'device', 'account']);
-  assert.deepEqual(off, ['stems', 'loop', 'length', 'device', 'account']);
+  // Nobody defines a switch of their own: server modules import chordsLineShown, and the two
+  // client components take it as a prop from the server page that renders them.
+  for (const f of ['src/app/(landing)/page.tsx', 'src/components/landing/faq.tsx', 'src/lib/seo/pages.ts', 'src/lib/seo/jsonld.ts',
+    'src/lib/seo/site.ts', 'src/lib/seo/llms.ts', 'src/app/(landing)/terms/page.tsx', 'src/app/(landing)/privacy/page.tsx',
+    'src/lib/emails/templates/welcome.ts', 'src/app/loops/page.tsx']) {
+    const t = readFileSync(join(WEB, f), 'utf8');
+    assert.match(t, /import \{[^}]*\bchordsLineShown\b[^}]*\} from '(?:@\/lib\/chords-claim|\.\.\/chords-claim\.ts)'/, `${f} does not read the switch`);
+  }
+  assert.match(readFileSync(join(WEB, 'src/app/(landing)/page.tsx'), 'utf8'), /<HomeDemo chordsShown=\{chords\} \/>/);
+  assert.match(readFileSync(join(WEB, 'src/app/loops/page.tsx'), 'utf8'), /chordsShown=\{chordsLineShown\(\)\}/);
+  // Request time: every page that makes the claim is rendered per request.
+  for (const f of ['src/app/(landing)/page.tsx', 'src/app/(landing)/help/page.tsx', 'src/app/(landing)/terms/page.tsx',
+    'src/app/(landing)/privacy/page.tsx', 'src/app/llms.txt/route.ts', 'src/app/loops/page.tsx']) {
+    assert.match(readFileSync(join(WEB, f), 'utf8'), /export const dynamic = 'force-dynamic';/, `${f} is prerendered, so the switch would be frozen at build time`);
+  }
+  const { whatYouGet } = await import('data:text/javascript;base64,' + Buffer.from(ts.transpileModule(
+    readFileSync(join(WEB, 'src/components/landing/what-you-get.ts'), 'utf8'),
+    { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText).toString('base64'));
+  assert.deepEqual(whatYouGet(true).map((l) => l.key), ['chords', 'stems', 'loop']);
+  assert.deepEqual(whatYouGet(false).map((l) => l.key), ['stems', 'loop', 'phone']);
 });
 
 // SF-3 (review round 2): flipping the switch alone must leave NO chord claim on the home page —
-// not just the "What you get" line. Rendered (the repo's rule), with the switch patched to false
-// at its one definition, then every channel the render helper exposes is searched: DOM text in
-// both normalisations, accessible-name attributes, the page metadata, and the JSON-LD script.
-const OFF = await renderPage('app/(landing)/page.tsx', {
-  patch: (rel, src) => (rel === join('lib', 'chords-claim.ts')
-    ? src.replace(/export const CHORDS_LINE_SHOWN = true;/, 'export const CHORDS_LINE_SHOWN = false;')
-    : src),
-});
+// not just the "What you get" line. Rendered (the repo's rule), with CHORDS_CLAIMS=off in the
+// environment for the render (the runtime switch, A4), then every channel the render helper
+// exposes is searched: DOM text in both normalisations, accessible-name attributes, the page
+// metadata, and the JSON-LD script.
+const OFF = await renderPage('app/(landing)/page.tsx', { env: { CHORDS_CLAIMS: 'off' } });
 // QA C-12 (2026-11-18): the Open Graph IMAGE and its alt text are switched too (OG_IMAGE and
 // OG_ALT in lib/seo/site.ts), so with the switch off the metadata has NO allowed chord mention.
 // The off-image is v3 (stems and a boxed loop): its alt is expected, and the v4 file must be gone.
 const OG_V3_ALT = 'Waveforms for four stems, drums, bass, vocals and guitar, with a four-bar loop boxed, under the headline Paste a song. Get bar-length loops.';
 
-test('SF-3: CHORDS_LINE_SHOWN=false removes EVERY chord claim from the rendered home page', () => {
+test('SF-3: CHORDS_CLAIMS=off removes EVERY chord claim from the rendered home page', () => {
   assert.ok(/chord/i.test(HOME.textSpaced), 'sanity: with the switch on, the page does talk about chords');
   for (const [where, text] of [['text (spaced)', OFF.textSpaced], ['text (tight)', OFF.textTight]]) {
     const hits = text.match(/.{0,50}chord.{0,50}/gi) ?? [];
@@ -105,15 +112,14 @@ test('SF-3: CHORDS_LINE_SHOWN=false removes EVERY chord claim from the rendered 
 });
 
 test('SF-3: with the switch off, the rest of the page is intact', () => {
-  assert.match(OFF.textSpaced, /Six stems on faders\. Turn your part down and play it yourself\./);
-  assert.match(OFF.textSpaced, /the six stems on faders, and a loop you can set on any detected section/);
-  assert.match(OFF.textSpaced, /trimmed on our end, where the player stops\./);
-  assert.match(OFF.textSpaced, /The stems load into the player\. Pull your part down/);
+  assert.match(OFF.textSpaced, /Every part on its own fader, on your phone or your computer\./);
+  assert.match(OFF.textSpaced, /The real player: mute any part, loop a section\./);
+  assert.match(OFF.textSpaced, /On your phone or your computer\. Phones load lighter audio so all six stems fit\./);
   const qs = [...OFF.html.match(/<section[^>]*id="faq"[\s\S]*?<\/section>/)[0].matchAll(/<summary>([^<]+)<\/summary>/g)].map((m) => m[1]);
   assert.deepEqual(qs.length, 4);
   // And with it on, the default render is unchanged: the chords lines are all there.
-  for (const re of [/with the chords running over the top/, /the chords across the top/, /where the chord track and the player both stop/,
-    /with the chord track over them/, /Chords An estimate, kept in time with the song/, /How good are the chords\?/]) {
+  for (const re of [/The chords in time and every part on its own fader/, /The real player: chords in time/,
+    /Chords in time with the song, with the next one shown/, /How good are the chords\?/]) {
     assert.match(HOME.textSpaced, re);
   }
 });

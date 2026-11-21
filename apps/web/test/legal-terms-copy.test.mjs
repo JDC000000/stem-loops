@@ -216,8 +216,10 @@ test('terms and the landing state the same thing about length', async () => {
   for (const [label, page] of [['terms', await renderPage(TERMS)], ['landing', await landingPage()]]) {
     assertSays(assert, page, `the first ${minutes} minutes of any song`, label);
     assertSays(assert, page, 'trimmed on our end', label);
-    assertSays(assert, page, 'the chord track and the player both stop', label);
   }
+  // A4 (home page diet): the landing states the cap and the trim in the tool's own note; the
+  // "where the chord track and the player both stop" detail is on /terms (switched, DB-17).
+  assertSays(assert, await renderPage(TERMS), 'the chord track and the player both stop', 'terms');
 });
 
 test('terms: the stripper itself is checked, so the two gates above cannot go vacuous', () => {

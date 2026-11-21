@@ -31,8 +31,11 @@ const links = (html) =>
   [...html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g)].map((m) => ({
     attrs: m[1],
     href: m[1].match(/href="([^"]*)"/)?.[1] ?? null,
-    text: m[2].replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim(),
+    // A4: an item may carry its phone label beside the wide one; the wide label is read here.
+    text: m[2].replace(/<span class="sin-l-phone">[\s\S]*?<\/span>/g, '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim(),
   }));
+/** A mounted item's wide label (A4: items may carry a phone label too). */
+const itemText = (a) => (a.querySelector('.sin-l-wide')?.textContent ?? a.textContent).trim();
 const headerOf = (html) => html.match(/<header class="sin-bar"[\s\S]*?<\/header>/)?.[0] ?? null;
 const navItems = (html) =>
   links(headerOf(html) ?? '')
@@ -79,13 +82,18 @@ for (const [route, file, current] of MARKETING) {
 // the top nav on every page, so the landing now carries exactly TWO: the nav item (in the
 // .sin-bar header, labelled "Pricing") and the scope sheet's link in the page body. It is still
 // NOT in the shared marketing footer, which lists the two products only.
-test('S4/P6: the landing carries exactly two /pricing links — the nav item and the scope sheet', async () => {
+// A4 (2026-11-21): on a phone the bar is Play · Songs · Account, so Pricing left the phone bar
+// (it stays in the desktop bar) and joined the footer. The landing now carries THREE.
+test('S4/P6/A4: the landing carries exactly three /pricing links — the nav item, the teaser line and the footer', async () => {
   const { html } = await landingPage();
-  assert.equal((html.match(/href="\/pricing/g) ?? []).length, 2);
+  assert.equal((html.match(/href="\/pricing/g) ?? []).length, 3);
   const header = html.match(/<header\b[^>]*class="sin-bar"[\s\S]*?<\/header>/)?.[0] ?? '';
   assert.deepEqual(links(header).filter((l) => l.href === '/pricing').map((l) => l.text), ['Pricing']);
-  const body = html.replace(header, '');
-  assert.equal((body.match(/href="\/pricing/g) ?? []).length, 1, 'outside the nav, only the scope sheet links /pricing');
+  assert.match(header, /<a class="sin-item sin-wide-only" href="\/pricing">Pricing<\/a>/, 'the nav item is desktop-only');
+  const footer = html.match(/<footer\b[\s\S]*?<\/footer>/)?.[0] ?? '';
+  assert.deepEqual(links(footer).filter((l) => l.href === '/pricing').map((l) => l.text), ['Pricing']);
+  const body = html.replace(header, '').replace(footer, '');
+  assert.equal((body.match(/href="\/pricing/g) ?? []).length, 1, 'in the page body, only the teaser line links /pricing');
 });
 
 test('the marketing footer lists the two products as peers', async () => {
@@ -106,8 +114,9 @@ test('the marketing footer lists the two products as peers', async () => {
 // The ban list reads the landing's <main> as rendered, in both normalisations. The header and
 // footer are outside <main> and are ALLOWED to name Download loops: that is the point.
 //
-// ONE FROZEN EXCEPTION, stated rather than hidden: the hero's example lanes, whose measured
-// captions (drift, beat alignment) are the demo-asset contract and describe the loop cut. The
+// THE FROZEN EXCEPTION IS GONE (A4, 2026-11-21): the hero's example lanes were removed with the
+// home page diet, so nothing on <main> is exempt any more. History: the lanes' measured captions
+// (drift, beat alignment) were the demo-asset contract and described the loop cut. The
 // tool form's "Loop length" picker and its "N-bar loops" summary are GONE (review of #280, B1):
 // the form sends no length and the API's default of 4 bars applies. The exception is pinned to
 // exactly that one element, so it cannot quietly grow.
@@ -135,7 +144,7 @@ async function landingMainWithoutExceptions() {
     holder.innerHTML = html;
     const main = holder.querySelector('main');
     assert.ok(main, 'the landing has no <main>');
-    for (const sel of ['section.lanes']) {
+    for (const sel of []) {
       for (const el of main.querySelectorAll(sel)) {
         removed.push(sel);
         el.remove();
@@ -159,10 +168,10 @@ test('the landing body sells no loop or stem downloads (outside the two frozen e
   assert.ok(!/class="file-card"/.test(html), 'the loop file card is back on the landing');
 });
 
-test('the frozen exception is exactly the example lanes, and nothing else', async () => {
+test('no frozen exception is left: the example lanes are gone from the landing (A4)', async () => {
   const removed = await landingMainWithoutExceptions();
-  // Matched exactly once: if the lanes are reworked, this goes red and the list shrinks.
-  assert.deepEqual([...removed], ['section.lanes']);
+  assert.deepEqual([...removed], []);
+  assert.ok(!/class="lanes/.test(removed.mainHtml), 'the example lanes are back');
 });
 
 test('B1: the Play along form neither shows nor sends a loop length', async () => {
@@ -265,10 +274,12 @@ test('/loops layout metadata is indexable, canonical /loops, from the registry e
     '@/components/chrome/SignedInChrome': 'export default function SignedInChrome() { return null; }',
   });
   const mod = await import(`${url}?${Math.random()}`);
-  assert.equal(mod.metadata.robots, undefined, '/loops is still noindex');
-  assert.equal(mod.metadata.alternates.canonical, '/loops');
-  assert.equal(mod.metadata.title, 'Download loops');
-  assert.equal(mod.metadata.description, pageFor('/loops').description);
+  // A4: generateMetadata (the shared OG image reads the DB-17 runtime switch per request).
+  const meta = mod.metadata ?? mod.generateMetadata();
+  assert.equal(meta.robots, undefined, '/loops is still noindex');
+  assert.equal(meta.alternates.canonical, '/loops');
+  assert.equal(meta.title, 'Download loops');
+  assert.equal(meta.description, pageFor('/loops').description);
   assert.equal(mod.dynamic, 'force-dynamic', 'the bar is session-aware; the segment must stay dynamic');
 });
 
@@ -295,9 +306,9 @@ test('static pages: "Sign in" by default, "Account" once a session cookie is pre
     await withDom(async (dom) => {
       if (cookie) dom.window.document.cookie = cookie;
       await dom.mount(React.createElement(Nav, { signedIn: null }));
-      const items = dom.findAll('a.sin-item').map((a) => a.textContent.trim());
+      const items = dom.findAll('a.sin-item').map(itemText);
       assert.equal(items.at(-1), want, `cookie=${cookie}`);
-      assert.equal(dom.find('a.sin-item[aria-current="page"]')?.textContent.trim(), 'Play along');
+      assert.equal(itemText(dom.find('a.sin-item[aria-current="page"]')), 'Play along');
     });
   }
 });
@@ -307,7 +318,7 @@ test('a server-resolved session always wins over the cookie hint', async () => {
   await withDom(async (dom) => {
     dom.window.document.cookie = 'sb-ref-auth-token=x';
     await dom.mount(React.createElement(Nav, { signedIn: false }));
-    assert.equal(dom.findAll('a.sin-item').at(-1).textContent.trim(), 'Sign in');
+    assert.equal(itemText(dom.findAll('a.sin-item').at(-1)), 'Sign in');
   });
   const html = await toMarkup(React.createElement(Nav, { signedIn: true }));
   assert.equal(navItems(html).at(-1), 'Account');
@@ -325,37 +336,33 @@ test('N1: SiteHeader (what every static page renders) shows "Account" from a ses
     await withDom(async (dom) => {
       if (cookie) dom.window.document.cookie = cookie;
       await dom.mount(React.createElement(SiteHeader));
-      assert.equal(dom.findAll('a.sin-item').at(-1).textContent.trim(), want, `cookie=${cookie}`);
+      assert.equal(itemText(dom.findAll('a.sin-item').at(-1)), want, `cookie=${cookie}`);
     });
   }
 });
 
-test('N1: the static pages stay static — no session read, no dynamic export', async () => {
+test('N1: the marketing pages read no session on the server', async () => {
+  // A4 (2026-11-21): the landing, /terms and /privacy now render per request (`dynamic =
+  // 'force-dynamic'`), because their chord claims read the DB-17 RUNTIME switch
+  // (lib/chords-claim.ts). That is the ONLY reason: they still read no session — the last nav
+  // item stays a cookie HINT after mount — so no response depends on who is asking, and the
+  // layout and the 404 stay static.
   const { readFileSync } = await import('node:fs');
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   for (const f of ['app/(landing)/layout.tsx', 'app/(landing)/page.tsx', 'app/(landing)/terms/page.tsx', 'app/(landing)/privacy/page.tsx', 'app/not-found.tsx', 'components/landing/SiteChrome.tsx']) {
     const src = strip(readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8'));
-    assert.doesNotMatch(src, /SignedInChrome|@\/lib\/auth|next\/headers|export const dynamic/, `${f} reads the session or opts out of static rendering`);
+    assert.doesNotMatch(src, /SignedInChrome|@\/lib\/auth|next\/headers|cookies\(\)/, `${f} reads the session`);
+    const dyn = src.match(/export const dynamic = '([^']+)'/)?.[1] ?? null;
+    if (/\(landing\)\/(?:page|terms\/page|privacy\/page)\.tsx$/.test(f)) {
+      assert.equal(dyn, 'force-dynamic', `${f} makes a chord claim, so it must render per request`);
+      assert.match(src, /chordsLineShown\(\)/, `${f} is dynamic but reads no runtime switch`);
+    } else {
+      assert.equal(dyn, null, `${f} opts out of static rendering`);
+    }
   }
 });
 
-test('N2: Escape closes the phone menu and returns focus to the toggle', async () => {
-  const { default: Nav } = await navModule('/');
-  await withDom(async (dom) => {
-    await dom.mount(React.createElement(Nav, { signedIn: null }));
-    const toggle = dom.find('.sin-toggle');
-    await dom.act(() => toggle.click());
-    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
-    await dom.act(() => dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
-    assert.equal(toggle.getAttribute('aria-expanded'), 'false', 'Escape did not close the menu');
-    assert.ok(!dom.find('#sin-menu').className.includes('sin-open'));
-    assert.equal(dom.window.document.activeElement, toggle, 'focus did not return to the toggle');
-    // Another key does nothing.
-    await dom.act(() => toggle.click());
-    await dom.act(() => dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'a', bubbles: true })));
-    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
-  });
-});
+// N2 (Escape closes the phone menu) went with the menu: A4 shows three items inline on phones.
 
 test('N3: on /loops the nav Sign in returns to /loops; elsewhere it is plain /login', async () => {
   const { default: OnLoops } = await navModule('/loops');
@@ -365,9 +372,4 @@ test('N3: on /loops the nav Sign in returns to /loops; elsewhere it is plain /lo
   assert.equal(links(await toMarkup(React.createElement(OnTerms, { signedIn: false }))).find((x) => x.text === 'Sign in').href, '/login');
 });
 
-test('the landing example lanes draw no loop bracket', async () => {
-  const { html } = await landingPage();
-  const lanes = html.match(/<section[^>]*class="lanes[\s\S]*?<\/section>/)?.[0];
-  assert.ok(lanes, 'no example lanes rendered');
-  assert.ok(!/class="bracket"/.test(lanes), 'the loop bracket is back on the Play along landing');
-});
+// "The landing example lanes draw no loop bracket" went with the lanes (A4).

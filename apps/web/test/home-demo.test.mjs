@@ -15,12 +15,15 @@ const SRC = readFileSync(join(WEB, 'src/components/landing/HomeDemo.tsx'), 'utf8
 const page = await landingPage();
 const html = page.html;
 
-test('the demo is on the home page, near the top: after the H1, before the paste box', () => {
+test('A4: the paste box comes first, then the demo — both in the hero, after the H1', () => {
+  // Jon's J1 story (2026-11-20): on a phone the link box must be on the first screen, so the
+  // tool now sits ABOVE the demo (it used to sit under it, with its button at y=958 on 844).
   const h1 = html.indexOf('id="h1"');
   const demo = html.indexOf('data-testid="home-demo"');
   const tool = html.indexOf('id="tool"');
   assert.ok(h1 > -1 && demo > -1 && tool > -1, 'h1, demo and tool must all render');
-  assert.ok(h1 < demo && demo < tool, `order h1=${h1} demo=${demo} tool=${tool}`);
+  assert.ok(h1 < tool && tool < demo, `order h1=${h1} tool=${tool} demo=${demo}`);
+  assert.equal((html.match(/data-testid="home-demo"/g) ?? []).length, 1, 'the demo is shown once');
 });
 
 test('the poster says no account is needed and names the first demo song with its BPM and key', () => {
@@ -29,7 +32,9 @@ test('the poster says no account is needed and names the first demo song with it
   assert.match(page.textSpaced, /The Royal Sundowners · 102 BPM · A major/);
   for (const s of ['Lucky Ticket', 'I’m Asking You', 'Offline']) assert.ok(page.textSpaced.includes(s), s);
   assert.match(html, /<button[^>]*aria-pressed="true"[^>]*data-testid="home-demo-song-lucky-ticket"/);
-  assert.match(html, /href="\/demo\/lucky-ticket"/, 'the stand-alone demo link');
+  // A4: the demo is shown once, so the poster no longer links its stand-alone page (that page
+  // stays in the sitemap and llms.txt).
+  assert.doesNotMatch(html, /href="\/demo\/lucky-ticket"/, 'the stand-alone demo link is back');
 });
 
 test('P4.2: nothing loads until Play is tapped — no player, no fetch, no audio in the server render', () => {
@@ -48,7 +53,8 @@ test('P4.2: nothing loads until Play is tapped — no player, no fetch, no audio
 
 test('one lime action per view (brand v2.3 A3): the demo Play is not btn-primary', () => {
   assert.match(html, /class="btn btn-secondary btn-play demo-play"/);
-  const demo = html.slice(html.indexOf('data-testid="home-demo"'), html.indexOf('id="tool"'));
+  const start = html.indexOf('data-testid="home-demo"');
+  const demo = html.slice(start, html.indexOf('</section>', start));
   assert.doesNotMatch(demo, /btn-primary/);
 });
 

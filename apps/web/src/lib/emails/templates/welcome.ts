@@ -5,7 +5,7 @@
 // A service email: no pricing link and no prompt to buy (D3, §2.8).
 
 import type { PlanCode } from '@/lib/billing/types';
-import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
+import { chordsLineShown } from '@/lib/chords-claim';
 import {
   footerFor,
   formatDateProse,
@@ -60,7 +60,7 @@ export function renderWelcome(vars: WelcomeVars = {}): RenderedEmail {
   // It is dropped rather than replaced: whether links are accepted also depends on the
   // ALLOW_YOUTUBE_INPUT rollout switch, which this email cannot see, and /pricing already says
   // what each plan takes. "Add a song" is true for a file and for a link.
-  const how = CHORDS_LINE_SHOWN
+  const how = chordsLineShown()
     ? 'Add a song and it opens in the player: six stems on faders, with a chord track to play along to.'
     : 'Add a song and it opens in the player: six stems on faders, to play along to.';
   // #270: songs over 5 minutes are trimmed to their first 5 minutes, not refused.

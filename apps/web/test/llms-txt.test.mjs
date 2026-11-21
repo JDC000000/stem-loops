@@ -2,7 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GET } from '../src/app/llms.txt/route.ts';
-import { ENTITY_LIMITS, ENTITY_ONE_LINER } from '../src/lib/seo/site.ts';
+import { ENTITY_LIMITS, entityOneLiner } from '../src/lib/seo/site.ts';
+const ENTITY_ONE_LINER = entityOneLiner(); // DB-17 runtime switch, default ON
 import { PUBLIC_PAGES } from '../src/lib/seo/pages.ts';
 import { DEMO_SONGS, demoHref } from '../src/lib/demo-catalog.ts';
 import { MAX_TRACK_SEC } from '../src/lib/play/types.ts';
@@ -24,7 +25,7 @@ test('ENTITY_LIMITS states the five brand limits, with the player cap as its onl
   assert.ok(ENTITY_LIMITS.includes(`uses the first ${cap} minutes of any song`));
   assert.doesNotMatch(ENTITY_LIMITS, /\bup to\s+\d+\s*minutes?\b/i, '#270: longer songs are trimmed, not refused');
   assert.deepEqual([...ENTITY_LIMITS.matchAll(/(\d+)\s*minutes?/g)].map((m) => Number(m[1])), [cap]);
-  assert.match(ENTITY_LIMITS, /Chrome on a computer/);
+  assert.match(ENTITY_LIMITS, /runs in the browser on a phone or a computer \(built and tested in Chrome\)/); // A4: phone first
   assert.match(ENTITY_LIMITS, /lighter audio on phones/);
   assert.match(ENTITY_LIMITS, /after 24 hours/);
   assert.match(ENTITY_LIMITS, /You need an account to open the player with your own songs/, 'D-SEO-7 wording');

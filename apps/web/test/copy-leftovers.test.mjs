@@ -49,7 +49,9 @@ test('F23: the FAQ says who can fetch a job by its link, matching the privacy no
  *  description switched by the DB-17 chords flag (`CHORDS_LINE_SHOWN ? `…` : `…``, review round
  *  2) yields BOTH branches, so each must fit. */
 const metaDescriptions = (rel) => {
-  const m = read(rel).match(/(?:\bdescription:|\bSITE_DESCRIPTION\s*=)\s*(?:CHORDS_LINE_SHOWN\s*\?\s*)?`([^`]*)`(?:\s*:\s*`([^`]*)`)?/);
+  // A4: the switch is a runtime function now, so a switched description reads `… = (): string => chordsLineShown()\n ? `…` : `…`` (site.ts)
+  // or a `get description() { return chordsLineShown() ? `…` : `…`; }` getter (pages.ts).
+  const m = read(rel).match(/(?:\bdescription:|\bsiteDescription\s*=\s*\(\):\s*string\s*=>|\bget description\(\)\s*\{\s*return)\s*(?:chordsLineShown\(\)\s*\?\s*)?`([^`]*)`(?:\s*:\s*`([^`]*)`)?/);
   assert.ok(m, `${rel} has no template-literal metadata description`);
   return [m[1], m[2]].filter((x) => x !== undefined).map((lit) => {
     const fills = [...lit.matchAll(/\$\{([^}]*)\}/g)].map((x) => x[1].trim());
@@ -61,10 +63,12 @@ const metaDescriptions = (rel) => {
 // The landing description now comes from the SEO page registry (#271), entry '/'. The root
 // layout's default description moved to SITE_DESCRIPTION in lib/seo/site.ts (QA C-12, so the
 // DB-17 chords switch reaches it); the layout must read it from there.
-test('A-02: app/layout.tsx takes its default description from SITE_DESCRIPTION', () => {
+test('A-02: app/layout.tsx takes its default description from siteDescription()', () => {
+  // A4: generateMetadata calls it, so the DB-17 runtime switch is read per request.
   const src = read('app/layout.tsx');
-  assert.match(src, /import \{ SITE_DESCRIPTION \} from '@\/lib\/seo\/site';/);
-  assert.match(src, /\bdescription:\s*SITE_DESCRIPTION,/);
+  assert.match(src, /import \{ siteDescription \} from '@\/lib\/seo\/site';/);
+  assert.match(src, /\bdescription:\s*siteDescription\(\),/);
+  assert.match(src, /export function generateMetadata\(\)/);
 });
 for (const rel of ['lib/seo/pages.ts', 'lib/seo/site.ts']) {
   test(`A-02: ${rel} meta description fits a search snippet (<= 160 characters)`, () => {

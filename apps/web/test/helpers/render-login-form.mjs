@@ -34,6 +34,10 @@ async function build() {
   const errors = lib('login-errors.mjs', 'src/lib/auth/login-errors.ts');
   const magic = lib('magic-link.mjs', 'src/lib/auth/magic-link.ts');
   const formStyles = lib('form-styles.mjs', 'src/lib/ui/form-styles.ts');
+  // A4: LoginForm reads PENDING_RETURN_TO (the home form's sign-in-first marker). The REAL module,
+  // with its one relative import pointed at the transpiled YouTube validator.
+  const youtube = lib('youtube-url.mjs', 'src/lib/youtube-url.ts');
+  const pendingLink = put('pending-link.mjs', toJs(read('src/lib/pending-link.ts')).replace(/from ['"]\.\/youtube-url\.ts['"]/g, `from '${youtube}'`));
   // Inert client: the mount effect subscribes to auth changes and must not throw; anything a
   // test has not scripted (signInWithPassword, ...) is simply absent and surfaces inline.
   const supabase = put('supabase.mjs',
@@ -59,6 +63,7 @@ async function build() {
     .replace(/from ['"]@\/lib\/auth\/login-errors['"]/g, `from '${errors}'`)
     .replace(/from ['"]@\/lib\/auth\/magic-link['"]/g, `from '${magic}'`)
     .replace(/from ['"]@\/lib\/ui\/form-styles['"]/g, `from '${formStyles}'`)
+    .replace(/from ['"]@\/lib\/pending-link['"]/g, `from '${pendingLink}'`)
     .replace(/from ['"]@\/components\/PasswordField['"]/g, `from '${passwordField}'`)
     .replace(/from ['"]@\/lib\/analytics['"]/g, `from '${analytics}'`);
   const file = join(dir, 'LoginForm.mjs');

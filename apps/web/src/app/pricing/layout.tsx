@@ -11,7 +11,10 @@ import { pageMetadata } from '@/lib/seo/meta';
 // comes from that one entry, like /loops. Nothing private is in the head: the
 // page shows plans and packs to everyone, and only the buy buttons differ by
 // session.
-export const metadata: Metadata = pageMetadata(pageFor('/pricing')!);
+// generateMetadata: the shared Open Graph image is a DB-17 chord claim, read at request time.
+export function generateMetadata(): Metadata {
+  return pageMetadata(pageFor('/pricing')!);
+}
 
 // The bar is session-aware, so this segment must never be prerendered: a
 // static render would bake `signedIn: false` into the HTML and show a cached

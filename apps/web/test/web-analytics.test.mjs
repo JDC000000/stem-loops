@@ -90,7 +90,7 @@ test('the root layout renders SiteAnalytics inside <body>, after the page', asyn
   `);
   const nothing = dataUrl(`export default function X() { return null; }`);
   const font = dataUrl(`export default function localFont() { return { variable: 'font-jbm' }; }`);
-  const site = dataUrl(`export const SITE_DESCRIPTION = 'd';`);
+  const site = dataUrl(`export const siteDescription = () => 'd';`);
   const js = withReact(toJs(read('src/app/layout.tsx')))
     .replace(/^import ['"]\.\/globals\.css['"];?$/m, '')
     .replace(/from ['"]next\/font\/local['"]/, `from '${font}'`)

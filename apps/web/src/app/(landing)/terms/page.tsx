@@ -4,7 +4,7 @@ import { pageFor } from '@/lib/seo/pages';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import { CONTACT_LABEL, CONTACT_URL, TERMS_UPDATED } from '@/components/landing/legal';
 import { MAX_TRACK_SEC } from '@/lib/play/types';
-import { CHORDS_LINE_SHOWN } from '@/lib/chords-claim';
+import { chordsLineShown } from '@/lib/chords-claim';
 
 // Read from the one ceiling, exactly as the landing page does, rather than typed as a word.
 // A legal page is the worst place to carry a number that a single env change can falsify, and
@@ -34,9 +34,16 @@ const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 const FREE_MONTHLY_SONGS = 5;
 
 // SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
-export const metadata: Metadata = pageMetadata(pageFor('/terms')!);
+// generateMetadata: the shared Open Graph image is a DB-17 chord claim, read at request time.
+export function generateMetadata(): Metadata {
+  return pageMetadata(pageFor('/terms')!);
+}
+
+// Rendered per request so the DB-17 chord switch (lib/chords-claim.ts) is read at request time.
+export const dynamic = 'force-dynamic';
 
 export default function TermsPage() {
+  const chords = chordsLineShown(); // DB-17, read at request time
   return (
     <>
       <SiteHeader />
@@ -50,7 +57,7 @@ export default function TermsPage() {
             <p>
               We split a song into six stems and play them back in your browser, with a fader, a mute and a solo on
               {/* DB-17 (lib/chords-claim.ts): no chord claim when the switch is off. */}
-              {CHORDS_LINE_SHOWN ? ' each, and an estimated chord track running above them.' : ' each.'} The same job also
+              {chords ? ' each, and an estimated chord track running above them.' : ' each.'} The same job also
               finds bar-length loops you can cut and download.
             </p>
             <p>
@@ -68,13 +75,13 @@ export default function TermsPage() {
               <li>
                 We use the first {MAX_TRACK_MIN}&nbsp;minutes of any song. A longer track is trimmed on our end to its
                 first {MAX_TRACK_MIN}&nbsp;minutes, which is where{' '}
-                {CHORDS_LINE_SHOWN ? 'the chord track and the player both stop.' : 'the player stops.'}
+                {chords ? 'the chord track and the player both stop.' : 'the player stops.'}
               </li>
               <li>
                 Built and tested in Chrome on a computer. On a phone the player loads lighter audio.
                 Phone support is new, and other browsers are not tested yet.
               </li>
-              {CHORDS_LINE_SHOWN && (
+              {chords && (
                 <li>
                   The chords are an <strong>estimate made from the audio</strong>, not a transcription anyone checked. Trust your
                   ears over the screen.

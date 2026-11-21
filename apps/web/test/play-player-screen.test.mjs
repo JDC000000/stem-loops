@@ -858,7 +858,10 @@ test('Phase A: the ⋯ menu and Song info do not link to the loops product, even
     setMedia(false);
     await dom.mount(React.createElement(Player.PlayerView, viewProps({ loopsHref: '/loops?job=job-1' })));
     await dom.act(() => dom.find('[data-testid="player-more"]').click());
-    assert.deepEqual(dom.findAll('#player-menu > *').map((b) => b.textContent), ['See all chords', 'Song info']);
+    const items = dom.findAll('#player-menu button, #player-menu a').map((b) => b.textContent);
+    assert.ok(items.includes('See all chords') && items.includes('Song info'), `the menu opened: ${items.join(' | ')}`);
+    assert.equal(dom.findAll('#player-menu a[href*="/loops"]').length, 0);
+    assert.doesNotMatch(dom.find('#player-menu').textContent, /Download loops/);
     await dom.act(() => [...dom.findAll('#player-menu button')].find((b) => b.textContent === 'Song info').click());
     assert.doesNotMatch(dom.find('[data-testid="player"]').innerHTML, /href="\/loops|Download loops/);
     await dom.unmountAll();

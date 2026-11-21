@@ -65,6 +65,7 @@ test('H1/M2: while a solo is on, a tap ends it and changes no level or mute', ()
   assert.deepEqual(tapOps(m[0], m), [{ stem: 'guitar', soloed: false }], 'silent pill: ends the solo, drums stay at 30%');
   const two = mix({ guitar: { soloed: true }, bass: { soloed: true } });
   assert.deepEqual(tapOps(two[0], two), [{ stem: 'bass', soloed: false }, { stem: 'guitar', soloed: false }]);
+  assert.deepEqual(tapOps(two[2], two), [{ stem: 'guitar', soloed: false }], 'a soloed pill un-solos only itself; the other solo stays');
 });
 
 test('H1: never total silence — 20 000 random tap/long-press sequences from the full song always leave something audible', () => {

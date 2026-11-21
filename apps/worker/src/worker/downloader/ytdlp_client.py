@@ -52,6 +52,23 @@ PROXY_URL = os.environ.get("PROXY_URL", "")  # e.g. http://user:pass@geo.iproyal
 # (false DOWNLOAD_TIMEOUT), so give proxied fetches real headroom.
 TIMEOUT = 10 if not PROXY_URL else 30
 
+# #320: first-byte stall deadline. An attempt whose media download has received NO media byte
+# this many seconds after the download subprocess started is cut (whole process group killed)
+# and handed back to download_audio()'s retry loop, which rotates the exit. A slow-but-moving
+# download is never cut by this: once one byte has arrived only TIMEOUT applies. Read per call
+# so an env change needs no code change; bounded so a typo cannot cut every healthy fetch
+# (floor) or silently exceed the job's budget (ceiling; anything >= TIMEOUT is inert because
+# TIMEOUT fires first).
+FIRST_BYTE_DEADLINE_ENV = "FETCH_FIRST_BYTE_DEADLINE_SEC"
+FIRST_BYTE_DEADLINE_DEFAULT_S = 15.0
+FIRST_BYTE_DEADLINE_MIN_S = 5.0
+FIRST_BYTE_DEADLINE_MAX_S = 60.0
+FIRST_BYTE_STALL = "first_byte_stall"
+# yt-dlp prints one line per progress-hook call with this prefix (``--progress-template`` +
+# ``--newline``). Only the number is ever read; a line must match exactly.
+_PROGRESS_MARK = "__sl_fb__"
+_PROGRESS_LINE = re.compile(r"^__sl_fb__ (\d+)$")
+
 
 # R2 fix (found during staging end-to-end test): the original bare "age" substring
 # match false-positived on ordinary words like "webpage"/"message", mislabeling a bot
@@ -154,6 +171,38 @@ _attempt = threading.local()
 
 def last_session_hash() -> str | None:
     return getattr(_attempt, "session_hash", None)
+
+
+def begin_attempt() -> None:
+    """Start the clock for one fetch attempt and clear the last attempt's first-byte reading.
+
+    ``ms_first_byte`` (fetch_attempts, #320) is measured from HERE -- the same instant
+    download_audio() starts ``ms_total`` from -- so ``ms_first_byte <= ms_total`` and both
+    include the live-stream probe."""
+    _attempt.t0 = time.monotonic()
+    _attempt.ms_first_byte = None
+
+
+def last_first_byte_ms() -> int | None:
+    """Milliseconds from attempt start to the first MEDIA byte of the last attempt, or None
+    when no media byte arrived (a stall, a failure before the download, or no attempt)."""
+    return getattr(_attempt, "ms_first_byte", None)
+
+
+def first_byte_deadline_s() -> float:
+    """``FETCH_FIRST_BYTE_DEADLINE_SEC`` (default 15), clamped to [5, 60]. Unparseable -> 15."""
+    raw = os.environ.get(FIRST_BYTE_DEADLINE_ENV, "").strip()
+    if not raw:
+        return FIRST_BYTE_DEADLINE_DEFAULT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        log_structured("WARN", "env_float_invalid", name=FIRST_BYTE_DEADLINE_ENV)
+        return FIRST_BYTE_DEADLINE_DEFAULT_S
+    if value != value:  # NaN
+        log_structured("WARN", "env_float_invalid", name=FIRST_BYTE_DEADLINE_ENV)
+        return FIRST_BYTE_DEADLINE_DEFAULT_S
+    return min(max(value, FIRST_BYTE_DEADLINE_MIN_S), FIRST_BYTE_DEADLINE_MAX_S)
 
 
 def _record_session(proxy: str) -> None:
@@ -345,6 +394,110 @@ def _run_bounded(cmd: list[str], timeout_s: float) -> tuple[int, str, str] | Non
     return proc.returncode, out or "", err or ""
 
 
+EXITED = "exited"
+STALLED = "stalled"
+TIMED_OUT = "timed_out"
+
+
+@dataclass(frozen=True)
+class DownloadRun:
+    """How one media-download subprocess ended (#320).
+
+    ``ended``: ``exited`` (the process finished; ``returncode`` is set), ``stalled`` (no media
+    byte within the first-byte deadline; process group killed) or ``timed_out`` (the overall
+    ``TIMEOUT``; process group killed). ``first_byte_at``: ``time.monotonic()`` when the first
+    progress line with ``downloaded_bytes > 0`` was read, else None.
+    """
+
+    ended: str
+    returncode: int | None
+    stderr: str
+    first_byte_at: float | None
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    with contextlib.suppress(Exception):
+        os.killpg(proc.pid, signal.SIGKILL)
+    with contextlib.suppress(Exception):
+        proc.kill()
+
+
+def _run_download(cmd: list[str], timeout_s: float, first_byte_deadline: float) -> DownloadRun:
+    """Run the yt-dlp media download in its OWN process group, watching for the first byte.
+
+    FIRST MEDIA BYTE (the definition behind ``fetch_attempts.ms_first_byte``): the first line
+    yt-dlp's progress hook prints (``--progress-template download:...``) whose
+    ``downloaded_bytes`` is > 0. The hook only runs for the media download itself (never for
+    the webpage / player-API requests), so this is the first byte of the media response as
+    yt-dlp counts it, within ~one read buffer.
+
+    If no such line has arrived ``first_byte_deadline`` seconds after the process started,
+    the whole group is killed (yt-dlp may run an ffmpeg / JS-runtime grandchild) and the run
+    is ``stalled``. Independently, the whole run is bounded by ``timeout_s`` (``timed_out``),
+    as before. stdout and stderr are drained by threads so a chatty child can never block on
+    a full pipe.
+    """
+    start = time.monotonic()
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        start_new_session=True,
+    )
+    first: list[float] = []
+    err_chunks: list[str] = []
+
+    def read_stdout() -> None:
+        with contextlib.suppress(Exception):
+            for line in proc.stdout:  # type: ignore[union-attr]
+                if first:
+                    continue  # keep draining; only the first byte matters
+                m = _PROGRESS_LINE.match(line.strip())
+                if m and int(m.group(1)) > 0:
+                    first.append(time.monotonic())
+
+    def read_stderr() -> None:
+        with contextlib.suppress(Exception):
+            err_chunks.append(proc.stderr.read())  # type: ignore[union-attr]
+
+    readers = [
+        threading.Thread(target=read_stdout, daemon=True),
+        threading.Thread(target=read_stderr, daemon=True),
+    ]
+    for t in readers:
+        t.start()
+
+    stall_at = start + first_byte_deadline
+    end_at = start + timeout_s
+    ended = EXITED
+    while proc.poll() is None:
+        now = time.monotonic()
+        if not first and now >= stall_at:
+            ended = STALLED
+            break
+        if now >= end_at:
+            ended = TIMED_OUT
+            break
+        next_check = end_at if first else min(stall_at, end_at)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=max(0.0, min(next_check - now, 0.25)))
+    if ended != EXITED:
+        _kill_group(proc)
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=5)
+    for t in readers:
+        t.join(timeout=5)
+    return DownloadRun(
+        ended=ended,
+        returncode=proc.returncode if ended == EXITED else None,
+        stderr="".join(err_chunks),
+        first_byte_at=first[0] if first else None,
+    )
+
+
 def canary_probe(youtube_url: str, timeout_s: float) -> CanaryResult:
     """FULL canary: resolve ``youtube_url``'s metadata through the same path a real fetch uses
     (``_sticky_proxy_url`` + the server cookie file, review m-6), downloading no media.
@@ -449,6 +602,7 @@ def fetch_audio_file(youtube_url: str) -> str:
     # One sticky-session proxy string for this WHOLE attempt (live-check + the actual
     # download) — see _sticky_proxy_url(). A retry (download_audio(), __init__.py)
     # calls this function again, generating a fresh session/IP each time.
+    begin_attempt()
     proxy = _sticky_proxy_url()
     _record_session(proxy)
     _reject_if_live(youtube_url, proxy)
@@ -468,6 +622,11 @@ def fetch_audio_file(youtube_url: str) -> str:
         "wav",
         "-o",
         f"{tmpdir}/%(id)s.%(ext)s",
+        # #320: one stdout line per progress-hook call, so the first media byte can be seen
+        # while the download runs (see _run_download).
+        "--newline",
+        "--progress-template",
+        f"download:{_PROGRESS_MARK} %(progress.downloaded_bytes)s",
     ]
     cf = _pick_cookie_file()
     if cf:
@@ -477,10 +636,23 @@ def fetch_audio_file(youtube_url: str) -> str:
     # `--` ends option parsing (QA track B, B-09): the URL can never be read as a flag.
     cmd += ["--", youtube_url]
 
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
-    except subprocess.TimeoutExpired as e:
-        raise DownloadTimeoutError("yt-dlp timed out") from e
+    deadline = first_byte_deadline_s()
+    r = _run_download(cmd, TIMEOUT, deadline)
+    if r.first_byte_at is not None:
+        _attempt.ms_first_byte = max(0, int((r.first_byte_at - _attempt.t0) * 1000))
+
+    if r.ended == STALLED:
+        # No media byte inside the deadline: this exit is dead for media. Cut now and let the
+        # retry loop rotate to a fresh exit, instead of waiting out TIMEOUT (#320). With a
+        # proxy it is OUR exit that failed us (FETCH_PROXY_FAILED: retried, allowance given
+        # back if it is the final error). Direct, there is no exit to blame: DOWNLOAD_TIMEOUT.
+        # Nothing from stderr is logged here: a stall says nothing the deadline does not.
+        log_structured("WARN", "ytdlp_first_byte_stall", deadline_s=deadline, proxied=bool(proxy))
+        if proxy:
+            raise FetchProxyFailedError(FIRST_BYTE_STALL)
+        raise DownloadTimeoutError("yt-dlp: no first byte", failure_reason=FIRST_BYTE_STALL)
+    if r.ended == TIMED_OUT:
+        raise DownloadTimeoutError("yt-dlp timed out")
 
     if r.returncode != 0:
         # Redact BEFORE cutting (QA-65, review R-3): a cut that lands mid-password leaves a

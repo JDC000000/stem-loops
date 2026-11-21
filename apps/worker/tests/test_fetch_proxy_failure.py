@@ -169,9 +169,15 @@ def fake_ytdlp(monkeypatch, tmp_path):
 
     def fake_run(cmd, *a, **k):
         box["cmds"].append(cmd)
-        return types.SimpleNamespace(returncode=box["returncode"], stdout="", stderr=box["stderr"])
+        return ytdlp_client.DownloadRun(
+            ended=ytdlp_client.EXITED,
+            returncode=box["returncode"],
+            stderr=box["stderr"],
+            first_byte_at=None,
+        )
 
-    monkeypatch.setattr(ytdlp_client.subprocess, "run", fake_run)
+    # #320: the media download runs through _run_download (process group + first-byte watch).
+    monkeypatch.setattr(ytdlp_client, "_run_download", fake_run)
     monkeypatch.setattr(ytdlp_client, "_reject_if_live", lambda url, proxy: None)
     monkeypatch.setattr(ytdlp_client.tmpdirs, "mkdtemp", lambda prefix: str(tmp_path))
     monkeypatch.setattr(ytdlp_client, "PROXY_URL", PROXY)

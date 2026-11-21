@@ -41,6 +41,10 @@ from . import cobalt_client, fetch_gates, ytdlp_client
 
 _ALLOWED = re.compile(r"^https?://(www\.|m\.)?(youtube\.com|youtu\.be)(/|$)", re.IGNORECASE)
 
+# #320: a first-byte stall (ytdlp_client.first_byte_deadline_s, default 15 s) is raised as
+# FETCH_PROXY_FAILED(first_byte_stall) when proxied -- retryable like proxy_connect -- or as
+# DOWNLOAD_TIMEOUT when direct; either way the next attempt gets a fresh exit. The attempt
+# budget (YTDLP_MAX_ATTEMPTS) is unchanged, so the cut only ever shortens a job.
 # Only retry error classes where a DIFFERENT exit IP plausibly changes the outcome.
 # DOWNLOAD_AGE_RESTRICTED / DOWNLOAD_PRIVATE / DOWNLOAD_INVALID_URL are properties of
 # the video itself, not the network path — retrying those just burns the retry budget
@@ -161,6 +165,10 @@ def _fetch(
     # 2. yt-dlp, attempt 1; on Blocked/Timeout attempt 2 (fresh subprocess = fresh exit IP).
     for attempt in range(1, max(YTDLP_MAX_ATTEMPTS, 1) + 1):
         attempt_no += 1
+        # #320: ms_first_byte is measured by ytdlp_client from the same start as ms_total.
+        # Cleared here as well so a fetcher that never reaches the download cannot report the
+        # previous attempt's reading.
+        ytdlp_client.begin_attempt()
         t0 = time.monotonic()
         try:
             path = ytdlp_client.fetch_audio_file(fetch_url)
@@ -173,6 +181,7 @@ def _fetch(
                 ms_total=int((time.monotonic() - t0) * 1000),
                 video_id=video_id,
                 exit_session_hash=ytdlp_client.last_session_hash(),
+                ms_first_byte=ytdlp_client.last_first_byte_ms(),
                 ytdlp_ver=fetch_gates.ytdlp_version(),
             )
             # QA-61: a proxy CREDENTIAL failure (407) is not transient -- every attempt
@@ -192,6 +201,7 @@ def _fetch(
                     "ytdlp_retrying",
                     attempt=attempt,
                     error_code=getattr(e, "error_code", None),
+                    failure_reason=getattr(e, "failure_reason", None),
                 )
                 time.sleep(YTDLP_RETRY_DELAY_S)
             continue
@@ -203,6 +213,7 @@ def _fetch(
             ms_total=int((time.monotonic() - t0) * 1000),
             video_id=video_id,
             exit_session_hash=ytdlp_client.last_session_hash(),
+            ms_first_byte=ytdlp_client.last_first_byte_ms(),
             nbytes=_size(path),
             ytdlp_ver=fetch_gates.ytdlp_version(),
         )

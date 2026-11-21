@@ -4,7 +4,7 @@ Forces a yt-dlp failure with poisoned stderr and asserts nothing secret survives
 into stderr (where structured logs are written). PRD §6.1 / §8 #6.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -18,11 +18,12 @@ FAKE_COOKIE = "session_cookie=xyz"
 
 def test_stderr_scrubbed(capsys):
     poisoned = f"error: {FAKE_TOKEN} {FAKE_COOKIE} not available"
-    result = MagicMock()
-    result.returncode = 1
-    result.stderr = poisoned
+    result = ytdlp_client.DownloadRun(
+        ended=ytdlp_client.EXITED, returncode=1, stderr=poisoned, first_byte_at=None
+    )
     with (
-        patch("worker.downloader.ytdlp_client.subprocess.run", return_value=result),
+        patch("worker.downloader.ytdlp_client._reject_if_live"),
+        patch("worker.downloader.ytdlp_client._run_download", return_value=result),
         pytest.raises(DownloadBlockedError),
     ):
         ytdlp_client.fetch_audio_file("https://youtu.be/fake")

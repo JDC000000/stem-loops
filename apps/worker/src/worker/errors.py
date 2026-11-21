@@ -54,8 +54,10 @@ class FetchProxyFailedError(StemLoopsError):
     jobs never hold a credit; the allowance unit / trial song they spent is given back,
     QA-64; see the comment there), reported to Sentry at error level once per process per cause (``fetch_alerts``), and
     shown with copy that says it was us. ``cause`` is ``proxy_auth`` (407 / bad
-    credentials: not transient, never retried) or ``proxy_connect`` (the proxy could not be
-    reached or could not open the tunnel). ``detail`` is a fixed string: the proxy URL
+    credentials: not transient, never retried), ``proxy_connect`` (the proxy could not be
+    reached or could not open the tunnel) or ``first_byte_stall`` (#320: the exit sent no
+    media byte within ``FETCH_FIRST_BYTE_DEADLINE_SEC``; raised only on a NON-final attempt and
+    retried on a fresh exit, so it is never a job's final error). ``detail`` is a fixed string: the proxy URL
     carries ``user:pass`` and must never reach a log, an event or the job row.
     """
 

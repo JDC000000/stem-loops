@@ -1,7 +1,13 @@
-/* The section strip (design v1.4, P1.1 + P2.1; Jon-approved mockup Main.dc.html).
-   Tokens only (src/styles/design-tokens.css).
+/* The section strip (design v1.4, P1.1 + P2.1; Jon-approved mockup Main.dc.html;
+   D2 + D4, 2026-11-21). Tokens only (src/styles/design-tokens.css).
 
-   - One row of pill chips that scrolls sideways; 44px tall (A16 touch target).
+   - Pill chips that WRAP (no chip off-screen at 360/390px); at most two rows
+     tall, then the strip scrolls vertically. 44px tall (A16 touch target).
+   - Section colour is back (Story 4.8, Jon: "I like the colour separations"):
+     each chip's edge and dot take a stem token, cycling by position
+     (data-tone 0..2 = guitar teal, bass violet, keys pink). Each is >= 6.6:1 on
+     the page (--bg-page) and >= 5:1 on --bg-selected, so >= 3:1 for UI (1.4.11).
+     Lime and amber are never used (brand book A5 / --chord-now).
      A16 AMENDED, approved by Jon 2026-11-17: fully rounded pills (radius 22px)
      replace the 4px corners of the 2026-11-14 brand-book row.
    - Selected is NEUTRAL, never lime (brand book A5): --bg-selected with a 2px white
@@ -30,33 +36,69 @@
 }
 
 .list {
-  height: 52px;
+  /* two rows: 2 x 44px + the 8px gap, plus 4px so the 2px selected edge and
+     the focus ring are not cut by the scroll box */
+  --chip-h: var(--touch-min, 44px);
+  max-height: calc(2 * var(--chip-h) + var(--space-2, 8px) + 8px);
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-content: flex-start;
   gap: var(--space-2);
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-width: none;
+  padding: 4px 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
-.list::-webkit-scrollbar { display: none; }
 
 .chip {
-  flex-shrink: 0;
+  --sec: var(--border-control);
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   height: var(--touch-min, 44px);
-  padding: 0 14px;
+  padding: 0 10px;
   box-sizing: border-box;
   border-radius: 22px;
   font: inherit;
-  font-size: 15px;
+  font-size: 14px;
   white-space: nowrap;
   color: var(--text-secondary);
   background: var(--bg-page);
-  border: 1px solid var(--border-control);   /* a control edge, >= 3:1 (brand book M20) */
+  border: 1px solid var(--sec);   /* a control edge in the section colour, >= 3:1 (brand book M20) */
   cursor: pointer;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
-  touch-action: pan-x;
+  touch-action: pan-y;
+}
+.chip[data-tone='0'] { --sec: var(--stem-guitar); }
+.chip[data-tone='1'] { --sec: var(--stem-bass); }
+.chip[data-tone='2'] { --sec: var(--stem-keys); }
+
+/* The colour dot: keeps the section's colour visible in the selected state too. */
+.chip[data-tone]::before {
+  content: '';
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sec);
+}
+
+.time { font-size: 13px; color: var(--text-label); font-variant-numeric: tabular-nums; }
+.chip[aria-pressed='true'] .time { color: var(--text-secondary); }
+
+/* Short screens (phone landscape is its own layout; this is e.g. 360x520 or a
+   1024x500 window): ONE row, then scroll, so the chord stage keeps its height. */
+@media (max-height: 699px) {
+  .list { max-height: calc(var(--chip-h) + 8px); }
+}
+
+/* Narrow phones (360px): the time goes under the name, so three or four chips
+   fit a row and a typical song's parts fit the two rows without scrolling. */
+@media (max-width: 374px) {
+  .label { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.15; }
+  .sep { display: none; }
 }
 
 .chip:focus-visible {
@@ -82,6 +124,7 @@
   /* the fieldset pads 16px; the seek line's readout sits at 20px: align them */
   margin: 0 4px 2px;
   font-size: 13px;
+  line-height: 18px;
   color: var(--text-secondary);
 }
 

@@ -1,7 +1,8 @@
 // J9 — Slice 2a: a SIGNED-OUT visitor plays a demo song (design v1.5 P3.1, P4; DB-12a).
 //
 //   home → the live demo poster (no network until the tap) → Play along → the real player
-//   → Play → chords visible → tap a section → it loops → back to home
+//   → Play → chords visible → tap a section → it jumps there → hold it → it loops
+//   → back to home  (D4, 2026-11-21: tap = jump, long-press = loop)
 //
 // at 390×844 and 360×800 portrait (touch), then the demo's stand-alone URL and the route
 // rules a signed-out visitor meets (reads open; download, loop cutting and ordinary jobs
@@ -112,12 +113,24 @@ async function ahHa(j, demoId, vp) {
     const chips = page.locator('[data-testid="section-strip"] button');
     const n = await chips.count();
     if (j.check(`${tag}: the section strip has sections`, n > 0, `${n} chips`)) {
-      await chips.first().tap();
+      const target = chips.nth(Math.min(2, n - 1));
+      const chipText = (await target.innerText()).replace(/\s+/g, ' ');
+      j.check(`${tag}: sections have neutral names ("Part N · m:ss")`, /^Part \d+( ·)? \d+:\d\d$/.test(chipText), `"${chipText}"`);
+      // TAP = jump there and play; nothing loops.
+      await target.tap();
       await sleep(600);
-      const pressed = await chips.first().getAttribute('aria-pressed');
+      const jumped = await page.locator('[data-testid="transport-time"]').innerText().catch(() => '');
+      const tapPressed = await target.getAttribute('aria-pressed');
+      j.check(`${tag}: tapping a section jumps there, without looping`, tapPressed === 'false', `chip=${tapPressed} time=${jumped.replace(/\s+/g, ' ')}`);
+      // HOLD (Shift+Enter is the strip's keyboard long-press; the touch long-press is
+      // covered by the real-Chromium R1 gate in test/player-text-size.test.mjs).
+      await target.focus();
+      await page.keyboard.press('Shift+Enter');
+      await sleep(600);
+      const pressed = await target.getAttribute('aria-pressed');
       const loopOn = await page.locator('[data-testid="transport-loop"]').getAttribute('aria-pressed');
       const loopText = await page.locator('[data-testid="transport-loop-text"]').innerText().catch(() => '');
-      j.check(`${tag}: tapping a section loops it`, pressed === 'true' && loopOn === 'true', `chip=${pressed} loop=${loopOn} "${loopText.replace(/\s+/g, ' ')}"`);
+      j.check(`${tag}: holding a section loops it`, pressed === 'true' && loopOn === 'true', `chip=${pressed} loop=${loopOn} "${loopText.replace(/\s+/g, ' ')}"`);
       await j.shot(page, `${tag}-03-section-loop`, { fullPage: false });
     }
 

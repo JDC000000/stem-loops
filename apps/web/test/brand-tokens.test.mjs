@@ -118,9 +118,12 @@ test('M20: --border-control is >= 3:1 on every surface a control sits on, and co
   }
   for (const weak of ['--border-strong', '--border-default']) assert.ok(ratio(tok(weak), tok('--bg-page')) < 3, `${weak} is not a control edge`);
   // Slice 1a: the section strip's chips are the approved mockup's pills, edged
-  // with the control colour (no time label any more; the readout is on the seek line).
+  // with a control colour. D2 (2026-11-21): the edge is the chip's SECTION
+  // colour (--sec), which defaults to the control colour; the section colours
+  // themselves are checked below (>= 3:1 too).
   const section = uncomment(read('src/components/play/SectionLoop.module.css'));
-  assert.match(section, /\.chip\s*\{[^}]*border:\s*1px solid var\(--border-control\)/);
+  assert.match(section, /\.chip\s*\{[^}]*--sec:\s*var\(--border-control\)/);
+  assert.match(section, /\.chip\s*\{[^}]*border:\s*1px solid var\(--sec\)/);
   for (const f of ['Transport', 'Presets', 'MixSheet']) {
     const css = uncomment(read(`src/components/play/${f}.module.css`));
     assert.match(css, /border:\s*1(\.5)?px solid var\(--border-control\)/, `${f}: controls take the control edge`);
@@ -130,6 +133,26 @@ test('M20: --border-control is >= 3:1 on every surface a control sits on, and co
   assert.match(nav, /\.sin-item\.sin-outlined\s*\{[^}]*border-color:\s*var\(--border-control\)/);
   assert.match(nav, /\.sin-toggle\s*\{[^}]*border:\s*1px solid var\(--border-control\)/);
   assert.match(uncomment(read('src/components/play/Player.module.css')), /\.retry\s*\{[^}]*border:\s*1\.5px solid var\(--border-control\)/);
+});
+
+test('D2: section colours (chip edge, dot, seek-line tick) are stem tokens, >= 3:1 on the page and on the selected fill', () => {
+  // Story 4.8 / Jon 2026-11-21: "I like the colour separations". Section colour
+  // comes back from the EXISTING stem tokens, never lime (--accent) or amber
+  // (--chord-now), and must read as UI (1.4.11, >= 3:1) where a chip sits
+  // (the page) and on the selected chip (#222), where the dot carries it.
+  const section = uncomment(read('src/components/play/SectionLoop.module.css'));
+  const ticks = uncomment(read('src/components/play/Transport.module.css'));
+  const tones = [...section.matchAll(/\.chip\[data-tone='(\d)'\]\s*\{\s*--sec:\s*var\((--[\w-]+)\)/g)].map((m) => [m[1], m[2]]);
+  assert.ok(tones.length >= 3, `section tones found: ${tones.length}`);
+  for (const [i, t] of tones) {
+    assert.match(t, /^--stem-/, `tone ${i} is a stem token`);
+    for (const bg of ['--bg-page', '--bg-selected']) {
+      const r = ratio(tok(t), tok(bg));
+      assert.ok(r >= 3, `${t} on ${bg} is ${r.toFixed(2)}:1`);
+    }
+    assert.match(ticks, new RegExp(`\\.tick\\[data-tone='${i}'\\]\\s*\\{\\s*background:\\s*var\\(${t}\\)`), `tick tone ${i} matches its chip`);
+  }
+  assert.doesNotMatch(section + ticks, /--sec:\s*var\(--(accent|chord-now|status-expiry)/);
 });
 
 // the body of one exported style object in form-styles.ts

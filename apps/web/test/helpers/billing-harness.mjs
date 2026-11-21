@@ -98,6 +98,7 @@ export async function loadStripeProvider() {
         'subscriptions.list': c.subscriptions.list.bind(c.subscriptions),
         'subscriptions.cancel': c.subscriptions.cancel.bind(c.subscriptions),
         'invoices.voidInvoice': c.invoices.voidInvoice.bind(c.invoices),
+        'invoices.list': c.invoices.list.bind(c.invoices),
       };
       // subscriptions.list serves both callers:
       //   checkout guard (decision 1A): h.subsList is the page's data (default
@@ -126,6 +127,24 @@ export async function loadStripeProvider() {
         if (!h.subs[id]) throw Object.assign(new Error('No such subscription'), { code: 'resource_missing', statusCode: 404 });
         h.subs[id] = { ...h.subs[id], status: 'canceled', ...(h.afterCancel?.[id] ?? {}) };
         return h.subs[id];
+      };
+      // QA-72 review M-3: account deletion lists the customer's OPEN invoices
+      // and voids the subscription ones. Served from h.invoiceList when a
+      // test sets it, else from each of the customer's subscriptions' CURRENT
+      // latest_invoice (with its subscription as parent), minus any voided.
+      c.invoices.list = async (params, ropts) => {
+        h.calls.push({ api: 'invoices.list', params, ropts });
+        // Only the deletion's open-invoice sweep is faked; any other list
+        // (e.g. listInvoices) still reaches the blocked transport.
+        if (h.passthrough || h.passthroughApis?.includes('invoices.list') || params?.status !== 'open') return real['invoices.list'](params, ropts);
+        if (h.invoiceListError) throw h.invoiceListError;
+        const all = h.invoiceList ?? Object.values(h.subs)
+          .filter((s) => s && (typeof s.customer === 'string' ? s.customer : s.customer?.id) === params.customer)
+          .filter((s) => s.latest_invoice && typeof s.latest_invoice === 'object')
+          .map((s) => ({ parent: { type: 'subscription_details', subscription_details: { subscription: s.id } },
+            customer: params.customer, ...s.latest_invoice }));
+        const data = all.filter((i) => !(h.voided ?? []).includes(i.id) && (!params.status || i.status === params.status));
+        return { object: 'list', data, has_more: false };
       };
       c.invoices.voidInvoice = async (id, params, ropts) => {
         h.calls.push({ api: 'invoices.voidInvoice', id, params, ropts });
@@ -311,6 +330,8 @@ export function makeState() {
     // (after any earlier statements in the handler took effect) `times`
     // times, to model a partial failure that Stripe then retries.
     failures: [],
+    // QA-72 review M-2: account_deleted audit rows, { user_hash, created_at }.
+    accountDeleted: [],
   };
 }
 
@@ -319,7 +340,7 @@ export function fakeDb(state) {
     const q = sql.replace(/\s+/g, ' ');
     const r = (rows) => ({ rows, rowCount: rows.length });
     const f = (state.failures ?? []).find((x) => x.times > 0 && x.re.test(q));
-    if (f) { f.times -= 1; throw new Error('fakeDb: injected failure: ' + q.slice(0, 60)); }
+    if (f) { f.times -= 1; throw Object.assign(new Error('fakeDb: injected failure: ' + q.slice(0, 60)), f.code ? { code: f.code } : {}); }
     if (/pg_advisory_xact_lock/.test(q)) return r([]); // only reached outside fakeDb.tx
     if (/^SET LOCAL /.test(q) || /^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) /.test(q)) return r([]);
     if (/^SELECT set_config\('lock_timeout'/.test(q)) return r([{}]);
@@ -426,6 +447,11 @@ export function fakeDb(state) {
       return { rows: [], rowCount: 1 };
     }
     if (/^INSERT INTO usage_events/.test(q)) { state.usage.push(p); return r([]); }
+    // QA-72 review M-2: the webhook's proof of an in-app deletion.
+    if (/^SELECT max\(created_at\) AS deleted_at FROM usage_events WHERE kind = 'account_deleted' AND detail->>'user_hash' = \$1$/.test(q.trim())) {
+      const ts = (state.accountDeleted ?? []).filter((a) => a.user_hash === p[0]).map((a) => new Date(a.created_at).getTime());
+      return r([{ deleted_at: ts.length ? new Date(Math.max(...ts)) : null }]);
+    }
     throw new Error('fakeDb: unexpected SQL: ' + q);
   };
   // A transaction that SERIALISES on pg_advisory_xact_lock keys, like

@@ -54,6 +54,8 @@ function billingStub({ cancelError = null, result = null, expireError = null, ex
       // QA-72: deletion expires the customer's open checkout sessions first.
       expireOpenCheckoutSessions: async (customerId, deadlineMs) => {
         globalThis.__ad.calls.push(['expireOpenCheckoutSessions', customerId, deadlineMs]);
+        // Review L-3: a test may make the expiry "take time" (advance a fake clock).
+        await globalThis.__ad.onExpire?.();
         if (${JSON.stringify(expireError)}) throw Object.assign(new Error('stripe expire'), ${JSON.stringify(expireError)});
         return { expired: ${JSON.stringify(expired)} };
       },
@@ -193,7 +195,9 @@ test('DELETE /api/users/me — happy path: cancels Stripe, deletes auth user, au
   const del = calls.filter((c) => c[0] === 'deleteAuthUser');
   assert.deepEqual(del, [['deleteAuthUser', USER.user_id]]);
 
-  // Order: erase chord_edits (fn) → cancel Stripe → COMMIT → tombstone → deleteAuthUser → audit.
+  // Order: erase chord_edits (fn) → cancel Stripe → COMMIT → tombstone → audit → deleteAuthUser.
+  // QA-72 review M-2: the audit row is the webhook's proof of an in-app
+  // deletion, so it is written BEFORE the auth user goes.
   const order = calls.map((c) => {
     if (c[0] === 'tx') return `tx:${c[1]}`;
     if (c[0] !== 'query') return c[0];
@@ -208,8 +212,8 @@ test('DELETE /api/users/me — happy path: cancels Stripe, deletes auth user, au
   assert.ok(at('query:chord_edits_erase') < at('cancelAll'), 'erase BEFORE the irreversible Stripe cancel');
   assert.ok(at('cancelAll') < at('tx:commit'));
   assert.ok(at('tx:commit') < at('query:tombstone'));
-  assert.ok(at('query:tombstone') < at('deleteAuthUser'));
-  assert.ok(at('deleteAuthUser') < at('query:audit'));
+  assert.ok(at('query:tombstone') < at('query:audit'));
+  assert.ok(at('query:audit') < at('deleteAuthUser'), 'M-2: proof row before the auth delete');
   assert.ok(!order.includes('tx:rollback'));
 
   // Erasure goes through the SECURITY DEFINER function (migration 031), never a
@@ -315,12 +319,26 @@ test('DELETE /api/users/me — QA-53: a refused cancel or a spent budget is a 50
   }
 });
 
-test('DELETE /api/users/me — Supabase admin failure → 500, no audit row', async () => {
+test('DELETE /api/users/me — Supabase admin failure → 500 (the proof row, written first, stays; append-only)', async () => {
   const mod = await loadRoute({ deleteFails: true });
   const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
   assert.equal(res.status, 500);
   assert.equal(res.body.code, 'DELETE_FAILED');
-  assert.equal(auditInserts().length, 0);
+  // QA-72 review M-2: written before the auth delete. It is read only for a
+  // user the database no longer has, so it authorises nothing while this
+  // account still exists; the retry writes the row that dates the deletion.
+  assert.equal(auditInserts().length, 1);
+});
+
+test('QA-72 M-2: the account_deleted proof row is REQUIRED: its failure is a 500 and the auth user is NOT deleted', async () => {
+  const mod = await loadRoute({
+    subIds: ['sub_a'],
+    dbErrors: { 'INSERT INTO public\\.usage_events': { code: '57014', message: 'canceling statement due to statement timeout' } },
+  });
+  const res = await mod.DELETE(makeReq({ confirm_email: USER.email }));
+  assert.equal(res.status, 500);
+  assert.equal(res.body.code, 'DELETE_FAILED');
+  assert.ok(!names().includes('deleteAuthUser'), 'no auth delete without the proof row the webhook needs');
 });
 
 // Review-fix tests (PR #54 round-2 adversarial findings)
@@ -539,13 +557,26 @@ test('QA-72: maxDuration is 60 and the expiry budget leaves room for the rest of
 });
 
 test('L-1: the cancel deadline is t0 + 40 s from REQUEST START (shared anchor with the expiry), not from the step', async () => {
-  const before = Date.now();
-  const mod = await loadRoute({ subIds: ['sub_a'], customerId: 'cus_1' });
-  assert.equal((await mod.DELETE(makeReq({ confirm_email: USER.email }))).status, 204);
-  const [c] = globalThis.__ad.calls.filter((x) => x[0] === 'cancelAll');
-  const ex = globalThis.__ad.calls.find((x) => x[0] === 'expireOpenCheckoutSessions');
-  assert.equal(c[3] - ex[2], 16_000, 'both deadlines must hang off the same t0');
-  assert.ok(c[3] >= before + 40_000 && c[3] <= Date.now() + 40_000);
+  // Review L-3: with instant fakes "same t0" and "Date.now() at the step"
+  // were indistinguishable. A fake clock makes the expiry take 7 s, so a
+  // deadline taken at the step would land 7 s later than t0 + 40 s.
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  try {
+    const before = Date.now();
+    const mod = await loadRoute({ subIds: ['sub_a'], customerId: 'cus_1' });
+    globalThis.__ad.onExpire = () => { skew += 7_000; };
+    assert.equal((await mod.DELETE(makeReq({ confirm_email: USER.email }))).status, 204);
+    const [c] = globalThis.__ad.calls.filter((x) => x[0] === 'cancelAll');
+    const ex = globalThis.__ad.calls.find((x) => x[0] === 'expireOpenCheckoutSessions');
+    assert.equal(c[3] - ex[2], 16_000, 'both deadlines must hang off the same t0');
+    assert.ok(c[4] - before >= 7_000, 'the fake expiry did advance the clock before the cancel step');
+    assert.ok(c[3] >= before + 40_000 && c[3] < before + 40_000 + 1_000, `cancel deadline ${c[3] - before} ms after start`);
+  } finally {
+    Date.now = realNow;
+    globalThis.__ad.onExpire = undefined;
+  }
 });
 
 test('L-1: the erase transaction sets lock_timeout and statement_timeout FIRST, on the transaction client', async () => {

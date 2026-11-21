@@ -616,44 +616,127 @@ async function userAccountGone(userId: string, q: Queryable = db): Promise<boole
   }
 }
 
-/** QA-72 webhook backstop. A subscription bought by an account that no
- *  longer exists (an open Checkout Session completed after the account was
- *  deleted), or by a customer no account owns: nobody can use what it sells,
- *  so cancel it now and refund it (provider.closeOrphanSubscription), page a
- *  human, and let the caller acknowledge with 200 so Stripe stops retrying.
- *  Writes no subscription / user rows. A provider failure throws (500):
- *  Stripe redelivers and the provider, which re-reads its state first, picks
- *  up where it stopped. */
+/** QA-72 review M-1: the cancellation_details.comment the backstop writes on
+ *  a subscription it cancels, and the only thing that later marks it as
+ *  "ours, refund it". An HMAC-SHA256 over the subscription id, keyed with the
+ *  same server secret as user_hash (IP_HASH_KEY; no new secret), so a
+ *  customer cannot type it into the portal's free-text cancellation reason.
+ *  The provider recomputes nothing: it compares Stripe's comment with this
+ *  value in constant time. Throws when the key is unavailable (never reached
+ *  then: without the key there is no deletion proof either). */
+function orphanCancelMarker(subscriptionId: string): string {
+  const mac = createHmac('sha256', ipHashKey()).update(`qa72-orphan-cancel:${subscriptionId}`).digest('hex');
+  return `stem-loops QA-72 ${mac}`;
+}
+
+/** QA-72 review M-2: POSITIVE proof that the account was deleted through the
+ *  app. DELETE /api/users/me writes an account_deleted usage_events row whose
+ *  user_hash is HMAC(IP_HASH_KEY, user id) BEFORE it deletes the auth user,
+ *  and fails the deletion if it cannot. A user that is merely missing from
+ *  the database behind this endpoint (a second endpoint on a different
+ *  database, a restored database, a user deleted in the Supabase dashboard)
+ *  has no such row. Returns the time of the latest such row, or null. A
+ *  failed read throws (500, Stripe retries); a missing key is "no proof". */
+async function accountDeletionProof(userId: string | null): Promise<{ deletedAtMs: number } | null> {
+  const hash = userHashOf(userId);
+  if (!hash) return null;
+  const res = await db.query<{ deleted_at: Date | string | null }>(
+    `SELECT max(created_at) AS deleted_at FROM usage_events
+      WHERE kind = 'account_deleted' AND detail->>'user_hash' = $1`,
+    [hash],
+  );
+  const v = res.rows[0]?.deleted_at;
+  if (!v) return null;
+  const ms = new Date(v).getTime();
+  return Number.isFinite(ms) ? { deletedAtMs: ms } : null;
+}
+
+/** QA-72 webhook backstop for a subscription event whose user this database
+ *  does not have (or that no account owns).
+ *   - No proof the account was deleted through the app (review M-2), or no
+ *     user at all: NO Stripe write. A human is paged (ids, amounts and the
+ *     HMAC user_hash; never the raw id or an email) and the caller acks 200,
+ *     since a retry cannot produce the proof (3 days of 500s helped nobody).
+ *   - Proven: provider.closeOrphanSubscription cancels it (HMAC marker),
+ *     refunds what it should, pages a human and writes an audit row; the
+ *     caller acks 200. A retryable provider failure throws (500): Stripe
+ *     redelivers and the provider, which re-reads its state first, carries
+ *     on from where it stopped.
+ *  Writes no subscription / user rows. */
 async function closeOrphanSubscription(
   providerName: 'stripe' | 'paddle',
   providerSubscriptionId: string,
-  ctx: { trigger: string; userId: string | null; deadlineMs: number },
+  ctx: {
+    trigger: string;
+    userId: string | null;
+    deadlineMs: number;
+    customerId?: string | null;
+    paidInvoiceId?: string | null;
+    amountCents?: number | null;
+    currency?: string | null;
+  },
 ): Promise<void> {
-  const r = await getBillingProvider().closeOrphanSubscription(providerSubscriptionId, ctx.deadlineMs);
-  const acted = r.cancelled || r.voidedInvoiceId !== null || r.refundIds.length > 0;
-  const detail = {
+  const base = {
     qa: 'QA-72',
     provider: providerName,
     trigger: ctx.trigger,
     subscription: providerSubscriptionId,
-    customer: r.customerId,
+    customer: ctx.customerId ?? null,
+    invoice: ctx.paidInvoiceId ?? null,
+    amount: ctx.amountCents ?? null,
+    currency: ctx.currency ?? null,
     account: ctx.userId ? 'deleted' : 'no_user',
     user_hash: userHashOf(ctx.userId),
+  };
+  const proof = await accountDeletionProof(ctx.userId);
+  if (!proof) {
+    alertBilling(
+      ctx.userId
+        ? 'QA-72: subscription event for a user this database does not have, and no in-app deletion on record; NOT cancelled or refunded, check by hand'
+        : 'QA-72: subscription no account owns; NOT cancelled or refunded, check by hand',
+      { ...base, account: ctx.userId ? 'missing_unproven' : 'no_user', action: 'alert_only' },
+    );
+    return;
+  }
+  const r = await getBillingProvider().closeOrphanSubscription(providerSubscriptionId, ctx.deadlineMs, {
+    marker: orphanCancelMarker(providerSubscriptionId),
+    deletedAtMs: proof.deletedAtMs,
+    paidInvoiceId: ctx.paidInvoiceId ?? null,
+  });
+  const detail = {
+    ...base,
+    customer: r.customerId ?? base.customer,
+    deleted_at: new Date(proof.deletedAtMs).toISOString(),
     cancelled: r.cancelled,
     ours: r.ours,
+    foreign_price: r.foreignPrice,
     voided_invoice: r.voidedInvoiceId,
+    refunded_invoices: r.refundedInvoiceIds,
+    paid_after_deletion: r.paidAfterDeletion,
     refunds: r.refundIds,
     amount_refunded: r.amountRefunded,
-    currency: r.currency,
+    currency: r.currency ?? base.currency,
     already_refunded: r.alreadyRefunded,
     refund_gap_invoice: r.refundGapInvoiceId,
+    refund_refused_code: r.refundRefusedCode,
   };
+  if (r.foreignPrice) {
+    // Review L-2: not one of our subscription prices: never ours to touch.
+    alertBilling('QA-72: subscription of a deleted account is not on one of our prices; NOT cancelled or refunded, check by hand', detail);
+    return;
+  }
+  const acted = r.cancelled || r.voidedInvoiceId !== null || r.refundIds.length > 0 || r.refundGapInvoiceId !== null;
   if (r.refundGapInvoiceId) {
-    alertBilling('QA-72: subscription of a deleted account is paid but has no refundable payment; refund it by hand', detail);
+    // Review L-4: also a refund Stripe refused for good (e.g. a disputed
+    // charge). Acked: a redelivery cannot change it.
+    alertBilling('QA-72: subscription of a deleted account is paid but cannot be refunded automatically; refund it by hand', detail);
+  } else if (r.paidAfterDeletion && r.refundIds.length > 0) {
+    // Review M-3: a renewal paid after the account was deleted.
+    alertBilling('QA-72: invoice paid after the account was deleted; refunded', detail);
   } else if (acted) {
     alertBilling('QA-72: subscription of a deleted account cancelled and refunded', detail);
   } else {
-    console.info(`[webhook] ${ctx.trigger} ${providerSubscriptionId}: account gone, nothing left to close`, JSON.stringify(detail));
+    console.info(`[webhook] ${ctx.trigger} ${providerSubscriptionId}: account deleted, nothing left to close`, JSON.stringify(detail));
   }
   if (!acted) return;
   // Audit row: no user (the account is gone), the HMAC only. Best-effort: the
@@ -776,12 +859,13 @@ async function handleBillingEvent(
         if (!subUserId) {
           // QA-72: no metadata user_id, a customer no account owns, no row.
           // Nobody can be granted this plan, and 500-ing (the old answer)
-          // only retried for ~3 days while the subscription kept billing.
-          // Closed (cancel + refund) after the lock.
+          // only retried for ~3 days. Review M-2: nothing proves an account
+          // was deleted, so this is alert-only (no Stripe write), after the
+          // lock, and acked.
           console.error(
-            `[webhook][ORPHAN SUBSCRIPTION] ${current.providerSubscriptionId} (${current.status}) has no user_id metadata and customer ${current.providerCustomerId} is not in customers_billing; closing it.`,
+            `[webhook][ORPHAN SUBSCRIPTION] ${current.providerSubscriptionId} (${current.status}) has no user_id metadata and customer ${current.providerCustomerId} is not in customers_billing; alerting.`,
           );
-          return { orphan: true as const, orphanUserId: null };
+          return { orphan: true as const, orphanUserId: null, orphanCustomerId: current.providerCustomerId };
         }
         // A subscription for a user whose account is gone (DELETE
         // /api/users/me, then the auth.users cascade removes public.users)
@@ -798,16 +882,16 @@ async function handleBillingEvent(
             console.info(
               `[webhook] subscription_upserted ${current.providerSubscriptionId}: canceled, and user ${subUserId} no longer exists; nothing to apply`,
             );
-            return { orphan: true as const, orphanUserId: subUserId };
+            return { orphan: true as const, orphanUserId: subUserId, orphanCustomerId: current.providerCustomerId };
           }
         }
         // Defensive users-row upsert; a failure other than "the account is
         // gone" throws so Stripe retries.
         if (await userAccountGone(subUserId, q)) {
           console.warn(
-            `[webhook][ORPHAN SUBSCRIPTION] ${current.providerSubscriptionId} (${current.status}): its account no longer exists; closing it.`,
+            `[webhook][ORPHAN SUBSCRIPTION] ${current.providerSubscriptionId} (${current.status}): its account no longer exists; closing it if the deletion is on record.`,
           );
-          return { orphan: true as const, orphanUserId: subUserId };
+          return { orphan: true as const, orphanUserId: subUserId, orphanCustomerId: current.providerCustomerId };
         }
         const planCode = dbPlanCode(current.planCode);
         if (!planCode) return null;
@@ -864,6 +948,7 @@ async function handleBillingEvent(
         await closeOrphanSubscription(providerName, subId, {
           trigger: 'subscription_upserted',
           userId: applied.orphanUserId ?? null,
+          customerId: applied.orphanCustomerId ?? null,
           deadlineMs,
         });
         return;
@@ -1052,13 +1137,20 @@ async function handleBillingEvent(
           subscription: evt.providerSubscriptionId,
         });
       }
-      // QA-72: the first invoice of a subscription bought after its account
-      // was deleted. Writing its entitlement would fail the users FK on every
-      // retry; close the subscription (cancel + refund this invoice) instead.
+      // QA-72: an invoice paid for an account that no longer exists (the
+      // first invoice of a subscription bought after the deletion, or, review
+      // M-3, a renewal paid after it). Writing its entitlement would fail the
+      // users FK on every retry; hand it to the backstop instead, which acts
+      // only on a deletion on record (review M-2) and refunds this invoice
+      // when it was paid after the deletion.
       if (await userAccountGone(userId)) {
         await closeOrphanSubscription(providerName, evt.providerSubscriptionId, {
           trigger: 'invoice_paid',
           userId,
+          customerId: evt.providerCustomerId ?? null,
+          paidInvoiceId: evt.invoice.providerInvoiceId,
+          amountCents: evt.invoice.amountCents,
+          currency: evt.invoice.currency,
           deadlineMs,
         });
         return;
@@ -1235,7 +1327,9 @@ async function handleBillingEvent(
       // QA-72. The plan itself is granted by customer.subscription.* (which
       // re-read Stripe under the subscription lock); this event only catches
       // a checkout completed after its account was deleted (sessions stay
-      // open 24 h). A live account: nothing to do here.
+      // open 24 h). A live account: nothing to do here. The provider only
+      // emits this for a session on one of OUR plan prices (review L-2); no
+      // user, or no deletion on record, is alert-only (review M-2).
       const uid = await resolveUserId(providerName, {
         userId: evt.userId,
         customerId: evt.providerCustomerId,
@@ -1245,6 +1339,7 @@ async function handleBillingEvent(
       await closeOrphanSubscription(providerName, evt.providerSubscriptionId, {
         trigger: 'checkout_session_completed',
         userId: uid || null,
+        customerId: evt.providerCustomerId,
         deadlineMs,
       });
       return;

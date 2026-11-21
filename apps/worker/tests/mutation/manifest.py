@@ -814,18 +814,21 @@ MUTANTS: tuple[Mutant, ...] = (
     Mutant(
         "web_account_delete_no_void_first_invoice",
         "src/lib/billing/providers/stripe.ts",
-        "inv.status === 'open' && inv.billing_reason === 'subscription_create'",
-        "inv.status === 'never' && inv.billing_reason === 'subscription_create'",
-        ("test/account-delete-stripe-cancel.test.mjs::incomplete: cancels, then VOIDS",),
-        "QA-53: an incomplete subscription's open first invoice is voided, so it cannot be "
-        "paid after the account is gone.",
+        "const open = inv && typeof inv === 'object' && inv.status === 'open' ? inv.id ?? null : null;",
+        "const open = inv && typeof inv === 'object' && inv.status === 'never' ? inv.id ?? null : null;",
+        (
+            "test/account-delete-stripe-cancel.test.mjs::incomplete: cancels, then VOIDS",
+            "test/account-delete-stripe-cancel.test.mjs::M-3: no customer id",
+        ),
+        "QA-53 / QA-72 M-3: a subscription's open latest invoice (first or renewal) is voided, "
+        "so it cannot be paid after the account is gone.",
         suite="web",
     ),
     Mutant(
         "web_orphan_refunds_what_deletion_cancelled",
         "src/lib/billing/providers/stripe.ts",
-        "      if (!result.ours) return result;\n",
-        "",
+        "    if (result.ours && latest) {",
+        "    if (latest) {",
         (
             "test/webhook-orphan-subscription.test.mjs::QA-72: a subscription the ACCOUNT "
             "DELETION cancelled",
@@ -853,6 +856,30 @@ MUTANTS: tuple[Mutant, ...] = (
         ("test/account-delete.test.mjs::QA-72: open checkouts are expired first",),
         "QA-72: deletion expires the customer's open Checkout Sessions, so none can be "
         "completed (and bill) after the account is gone.",
+        suite="web",
+    ),
+    Mutant(
+        "web_orphan_writes_without_deletion_proof",
+        "src/app/api/billing/webhook/route.ts",
+        "  const proof = await accountDeletionProof(ctx.userId);",
+        "  const proof = { deletedAtMs: 0 };",
+        (
+            "test/webhook-orphan-subscription.test.mjs::M-2: an account_deleted row for ANOTHER user",
+        ),
+        "QA-72 review M-2: the webhook never cancels or refunds at Stripe without an "
+        "account_deleted audit row proving the account was deleted through the app.",
+        suite="web",
+    ),
+    Mutant(
+        "web_orphan_marker_not_keyed",
+        "src/app/api/billing/webhook/route.ts",
+        "createHmac('sha256', ipHashKey()).update(`qa72-orphan-cancel:${subscriptionId}`)",
+        "createHmac('sha256', '').update(`qa72-orphan-cancel:${subscriptionId}`)",
+        (
+            "test/webhook-orphan-subscription.test.mjs::QA-72: subscription.created for a deleted account",
+        ),
+        "QA-72 review M-1: the refund-authorising cancellation marker is an HMAC keyed with a "
+        "server secret, so a customer cannot type it into the portal.",
         suite="web",
     ),
 )

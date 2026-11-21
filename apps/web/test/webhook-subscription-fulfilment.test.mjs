@@ -52,34 +52,26 @@ test('subscription.created with EMPTY metadata: resolved via customers_billing, 
 
 // QA-72 changed this case. A subscription no account owns (no metadata
 // user_id, a customer not in customers_billing, no row) used to be a 500, which
-// Stripe retried for ~3 days while the subscription kept billing. It is now
-// CLOSED at Stripe (cancelled, its invoice refunded; full coverage in
-// webhook-orphan-subscription.test.mjs) and acked. Still never a silent 200:
-// while the close has not succeeded, the answer stays 500.
-test('subscription.created, empty metadata, UNKNOWN customer: closed at Stripe (QA-72), nothing written; 500 until the close succeeds', async () => {
-  // The harness's subscriptions.cancel fake (QA-53) refuses first.
-  h.harness.cancelErrors = { sub_test_1: Object.assign(new Error('Stripe unavailable'), { type: 'StripeAPIError', statusCode: 500 }) };
+// Stripe retried for ~3 days and nobody acted on. Review M-2 (round 2): no
+// account was PROVEN deleted, so the webhook never writes to Stripe for it: it
+// pages a human (ids only) and acks 200. Full coverage in
+// webhook-orphan-subscription.test.mjs.
+test('subscription.created, empty metadata, UNKNOWN customer: alert only (QA-72 / M-2), no Stripe write, nothing written, 200', async () => {
   const restore = silence();
   let res;
   try {
     res = await deliver(route, envelope('customer.subscription.created',
       subscriptionFixture({ customer: 'cus_stranger' })));
   } finally { restore(); }
-  assert.equal(res.status, 500, 'a close that did not happen must not be acked');
-  assert.equal(state.subscriptions.length, 0);
-  assert.equal(state.entitlements.length, 0);
-
-  h.harness.cancelErrors = {};
-  const r2 = silence();
-  try {
-    res = await deliver(route, envelope('customer.subscription.created',
-      subscriptionFixture({ customer: 'cus_stranger' })));
-  } finally { r2(); }
   assert.equal(res.status, 200);
-  const cancels = h.calls.filter((c) => c.api === 'subscriptions.cancel');
-  assert.equal(cancels.length, 2, 'refused once, then cancelled');
-  assert.equal(cancels[1].params.cancellation_details.comment, 'stem-loops QA-72: account no longer exists');
-  assert.equal(h.subs.sub_test_1.status, 'canceled');
+  for (const api of ['subscriptions.cancel', 'invoices.voidInvoice', 'refunds.create']) {
+    assert.equal(h.calls.filter((c) => c.api === api).length, 0, `${api} without proof of a deletion`);
+  }
+  const alerts = state.sentry.filter((x) => /QA-72/.test(x.message));
+  assert.equal(alerts.length, 1, 'a human must be paged');
+  assert.match(alerts[0].message, /NOT cancelled or refunded/);
+  assert.equal(alerts[0].opts.extra.customer, 'cus_stranger');
+  assert.equal(h.subs.sub_test_1.status, 'active', 'still live at Stripe');
   assert.equal(state.subscriptions.length, 0);
   assert.equal(state.entitlements.length, 0);
 });

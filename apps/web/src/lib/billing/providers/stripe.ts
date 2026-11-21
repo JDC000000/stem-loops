@@ -8,7 +8,7 @@
 // API version pinned to '2026-10-28.endive' per TSD lock (session 2
 // provisioning walkthrough).
 
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import Stripe from 'stripe';
 import {
   type AccountDeletionCancelResult,
@@ -20,6 +20,7 @@ import {
   type BillingProvider,
   type BillingSubscription,
   type BillingSubscriptionChange,
+  type OrphanCloseOptions,
   type OrphanSubscriptionResult,
   type PackCode,
   type PlanCode,
@@ -246,19 +247,17 @@ function _isAlreadyCanceled(e: unknown): boolean {
 interface _SubForDeletion {
   id: string;
   status: string;
-  /** The subscription's FIRST invoice when it is still open, i.e. never paid
-   *  (an incomplete subscription, or one cancelled while incomplete). Needs
-   *  latest_invoice expanded; a bare id is never voided. */
-  openFirstInvoiceId: string | null;
+  /** The subscription's LATEST invoice when it is still open, i.e. unpaid:
+   *  an incomplete subscription's first invoice, or (QA-72 review M-3) a
+   *  past_due / unpaid renewal. Needs latest_invoice expanded; a bare id is
+   *  never voided. Older open invoices are found by the customer-wide list. */
+  openInvoiceId: string | null;
 }
 
 function _subForDeletion(sub: Stripe.Subscription): _SubForDeletion {
   const inv = sub.latest_invoice;
-  const open =
-    inv && typeof inv === 'object' && inv.status === 'open' && inv.billing_reason === 'subscription_create'
-      ? inv.id ?? null
-      : null;
-  return { id: sub.id, status: String(sub.status), openFirstInvoiceId: open };
+  const open = inv && typeof inv === 'object' && inv.status === 'open' ? inv.id ?? null : null;
+  return { id: sub.id, status: String(sub.status), openInvoiceId: open };
 }
 
 // Review I-1: the event's `livemode` disagrees with the API key's mode (a
@@ -561,14 +560,22 @@ export class StripeProvider implements BillingProvider {
   //      (canceled / incomplete_expired). invoice_now and prorate are false
   //      (Stripe's defaults, written out): no final invoice, no proration
   //      credit or charge, pending prorations dropped;
-  //   3. void the FIRST invoice when it is still open. Cancelling only turns
-  //      off automatic collection on open invoices (auto_advance=false, per
-  //      Stripe's cancel docs); an incomplete subscription's first invoice
-  //      would stay open and payable through its hosted page / PaymentIntent.
-  //      Voiding it closes that, and cancels its PaymentIntent. Later
-  //      invoices (a past_due renewal) are a real debt for a period that was
-  //      served: they are left as they are, with collection stopped by the
-  //      cancel.
+  //   3. void EVERY open (unpaid) invoice of those subscriptions. Cancelling
+  //      only turns off automatic collection on open invoices
+  //      (auto_advance=false, per Stripe's cancel docs); they would stay open
+  //      and payable through the hosted page / PaymentIntent. Voiding closes
+  //      that and cancels the PaymentIntent. QA-72 review M-3 (policy, Jon):
+  //      this now covers past_due / unpaid RENEWAL invoices too, not just an
+  //      incomplete subscription's first invoice: QA-72's rule is that an
+  //      irreversible user action closes every money path of that user, so a
+  //      deleted account's unpaid renewal is written off, not left payable.
+  //      Found two ways: each subscription's open latest invoice, and (with a
+  //      customer id) one customer-wide `status: open` invoice list, which
+  //      also catches an older open renewal. Only subscription invoices are
+  //      voided (one-off invoices are left to a human).
+  //   The cancel writes its own cancellation_details.comment (review M-1), so
+  //   free text a customer typed into the portal never survives on a
+  //   subscription the deletion cancelled.
   // Every call is bounded like the webhook's (PR #298): 6 s per attempt, no
   // SDK retries, so one call is at most STRIPE_CALL_WORST_MS; before each
   // call we check it can finish by `deadlineMs`, else StripeDeadlineError.
@@ -646,7 +653,12 @@ export class StripeProvider implements BillingProvider {
           sub = _subForDeletion(
             await client.subscriptions.cancel(
               sub.id,
-              { invoice_now: false, prorate: false, expand: ['latest_invoice'] },
+              {
+                invoice_now: false,
+                prorate: false,
+                cancellation_details: { comment: ACCOUNT_DELETION_CANCEL_COMMENT },
+                expand: ['latest_invoice'],
+              },
               postOpts('cancel', sub.id),
             ),
           );
@@ -659,10 +671,43 @@ export class StripeProvider implements BillingProvider {
           result.alreadyOver.push(sub.id);
         }
       }
-      if (sub.openFirstInvoiceId) {
+      if (sub.openInvoiceId && !result.voidedInvoices.includes(sub.openInvoiceId)) {
         budget('invoices.voidInvoice');
-        await client.invoices.voidInvoice(sub.openFirstInvoiceId, {}, postOpts('void', sub.openFirstInvoiceId));
-        result.voidedInvoices.push(sub.openFirstInvoiceId);
+        await client.invoices.voidInvoice(sub.openInvoiceId, {}, postOpts('void', sub.openInvoiceId));
+        result.voidedInvoices.push(sub.openInvoiceId);
+      }
+    }
+
+    // M-3: any OLDER open invoice of these subscriptions (a renewal that went
+    // past_due before the latest one). One customer-wide list, after the
+    // cancels, so nothing the cancels left open is missed.
+    if (customerId && subs.size > 0) {
+      const openInvoices: string[] = [];
+      let startingAfter: string | undefined;
+      for (;;) {
+        budget('invoices.list');
+        let page: Stripe.ApiList<Stripe.Invoice>;
+        try {
+          page = await client.invoices.list(
+            { customer: customerId, status: 'open', limit: 100, ...(startingAfter ? { starting_after: startingAfter } : {}) },
+            opts(),
+          );
+        } catch (e) {
+          if (_isStripeGone(e)) break;
+          throw e;
+        }
+        for (const inv of page.data) {
+          const subId = _invoiceSubId(inv);
+          if (inv.id && inv.status === 'open' && subId && subs.has(subId)) openInvoices.push(inv.id);
+        }
+        if (!page.has_more || page.data.length === 0) break;
+        startingAfter = page.data[page.data.length - 1].id;
+      }
+      for (const id of openInvoices) {
+        if (result.voidedInvoices.includes(id)) continue;
+        budget('invoices.voidInvoice');
+        await client.invoices.voidInvoice(id, {}, postOpts('void', id));
+        result.voidedInvoices.push(id);
       }
     }
     return result;
@@ -691,10 +736,15 @@ export class StripeProvider implements BillingProvider {
         }
         // QA-72: a completed subscription checkout. The subscription events
         // grant the plan; this event only lets the route catch a session that
-        // was completed after its account was deleted.
+        // was completed after its account was deleted. Review L-2: only OUR
+        // subscription checkouts (createCheckoutSession stamps
+        // metadata.price_id with one of our plan prices; a customer cannot
+        // set session metadata). Any other subscription-mode session on the
+        // account (a Payment Link, another product) is not ours to touch.
         const subId =
           typeof session.subscription === 'string' ? session.subscription : session.subscription?.id;
-        if (session.mode === 'subscription' && subId) {
+        const sessionPrice = (session.metadata?.price_id as string | undefined) ?? '';
+        if (session.mode === 'subscription' && subId && priceIdToPlan(sessionPrice)) {
           return {
             type: 'subscription_checkout_completed',
             userId: (session.metadata?.user_id as string | undefined) ?? '',
@@ -1012,29 +1062,46 @@ export class StripeProvider implements BillingProvider {
     return { expired };
   }
 
-  // QA-72 layer 2 (webhook backstop). The subscription belongs to an account
-  // that no longer exists (or to a customer no account owns), so nobody can
-  // use what it sells: end it and return the money.
-  //   1. Re-read it (latest_invoice expanded). Gone at Stripe: nothing to do.
-  //   2. Not over yet: cancel NOW (invoice_now / prorate false, Stripe's
-  //      defaults written out: no final invoice, no proration), tagged with
-  //      ORPHAN_CANCEL_COMMENT in cancellation_details (Stripe keeps
-  //      cancellation_details editable and readable after a cancel). The tag
-  //      is how a LATER delivery knows this cancel was ours: a subscription
-  //      that is already over WITHOUT the tag was ended by someone else (the
-  //      account deletion itself, which cancels a plan the user had, or
-  //      Stripe expiring an unpaid one) and is NOT refunded.
-  //   3. Ours: an open first invoice is voided (cancelling only stops its
-  //      automatic collection; it would stay payable). A paid one with money
-  //      on it is refunded in full: every `paid` invoice payment of the latest
-  //      invoice gets one refund of its PaymentIntent (or charge), whole
-  //      amount. The refund POST carries a key derived from the invoice
-  //      payment, so a repeated delivery within Stripe's 24 h key window gets
-  //      the same refund back, and after it Stripe refuses with
-  //      charge_already_refunded, which counts as done.
-  // Every step re-reads or is refused when already done, so any failure is a
-  // 500 and Stripe's redelivery converges. Bounded per call like the rest.
-  async closeOrphanSubscription(subscriptionId: string, deadlineMs: number): Promise<OrphanSubscriptionResult> {
+  // QA-72 layer 2 (webhook backstop). The CALLER has proven the account was
+  // deleted through the app (an account_deleted audit row with this user's
+  // HMAC; review M-2): nothing here runs for a user that is merely missing
+  // from one database. Then:
+  //   1. Re-read the subscription (latest_invoice expanded). Gone at Stripe:
+  //      nothing to do.
+  //   2. Review L-2: every item must be on one of OUR plan prices. Anything
+  //      else (a Dashboard / Payment Link product) is not ours to cancel or
+  //      refund: nothing is written, the caller alerts.
+  //   3. Not over yet: cancel NOW (invoice_now / prorate false), writing
+  //      opts.marker into cancellation_details.comment. Review M-1: the
+  //      marker is an HMAC over the subscription id keyed with a server
+  //      secret (computed by the caller), so a customer cannot type it into
+  //      the portal's "Other reason" box; it is compared in constant time.
+  //      Already over: it is OURS only if that marker is present. A
+  //      subscription over WITHOUT it was ended by someone else (the account
+  //      deletion itself, which writes its own comment, or Stripe expiring an
+  //      unpaid one) and its latest invoice is NOT refunded.
+  //   4. Ours: an open latest invoice is voided (cancelling only stops its
+  //      automatic collection); a paid one with money on it is refunded in
+  //      full.
+  //   5. Review M-3: opts.paidInvoiceId (invoice.paid) paid at or after the
+  //      deletion is refunded in full even when the deletion itself cancelled
+  //      the subscription: money taken from an account that no longer exists.
+  //      One paid BEFORE the deletion (a late delivery) paid for a period the
+  //      user had, and is kept.
+  // A refund: every `paid` invoice payment gets one refund of its
+  // PaymentIntent (or charge), whole amount, with a key derived from the
+  // invoice payment; after Stripe's 24 h key window a repeat is refused with
+  // charge_already_refunded, which counts as done. Review L-4: a refund that
+  // can never succeed (a disputed charge, a charge Stripe says is not
+  // refundable) is reported in refundGapInvoiceId / refundRefusedCode for a
+  // human instead of thrown, so the delivery is not retried for 3 days.
+  // Any other failure throws (500) and Stripe's redelivery converges: every
+  // step re-reads or is refused when already done. Bounded per call.
+  async closeOrphanSubscription(
+    subscriptionId: string,
+    deadlineMs: number,
+    opts: OrphanCloseOptions,
+  ): Promise<OrphanSubscriptionResult> {
     const client = getClient();
     const budget = _budget(deadlineMs);
     const result: OrphanSubscriptionResult = {
@@ -1043,12 +1110,16 @@ export class StripeProvider implements BillingProvider {
       gone: false,
       cancelled: false,
       ours: false,
+      foreignPrice: false,
       voidedInvoiceId: null,
+      refundedInvoiceIds: [],
+      paidAfterDeletion: false,
       refundIds: [],
       amountRefunded: 0,
       currency: null,
       alreadyRefunded: false,
       refundGapInvoiceId: null,
+      refundRefusedCode: null,
     };
 
     budget('subscriptions.retrieve');
@@ -1065,20 +1136,26 @@ export class StripeProvider implements BillingProvider {
     }
     result.customerId = _customerId(sub.customer);
 
+    const items = sub.items?.data ?? [];
+    if (items.length === 0 || items.some((it) => !priceIdToPlan(it.price?.id ?? ''))) {
+      result.foreignPrice = true;
+      return result;
+    }
+
     if (TERMINAL_STRIPE_STATUSES.has(String(sub.status))) {
-      result.ours = sub.cancellation_details?.comment === ORPHAN_CANCEL_COMMENT;
-      if (!result.ours) return result;
+      result.ours = orphanMarkerMatches(sub.cancellation_details?.comment, opts.marker);
     } else {
+      if (!isOrphanMarker(opts.marker)) throw new Error('closeOrphanSubscription: invalid marker');
       budget('subscriptions.cancel');
       // DELETE: Stripe ignores idempotency keys on it, so none is sent. A
       // repeat (another delivery got there first) is refused and thrown: the
-      // redelivery re-reads, finds it canceled WITH our tag, and goes on.
+      // redelivery re-reads, finds it canceled WITH our marker, and goes on.
       sub = await client.subscriptions.cancel(
         subscriptionId,
         {
           invoice_now: false,
           prorate: false,
-          cancellation_details: { comment: ORPHAN_CANCEL_COMMENT },
+          cancellation_details: { comment: opts.marker },
           expand: ['latest_invoice'],
         },
         { ...STRIPE_WEBHOOK_READ_OPTIONS },
@@ -1087,29 +1164,59 @@ export class StripeProvider implements BillingProvider {
       result.ours = true;
     }
 
-    const inv = sub.latest_invoice;
-    if (!inv || typeof inv !== 'object' || !inv.id) return result;
-    result.currency = inv.currency ?? null;
-
-    if (inv.billing_reason === 'subscription_create' && inv.status === 'open') {
-      budget('invoices.voidInvoice');
-      await client.invoices.voidInvoice(
-        inv.id,
-        {},
-        { ...STRIPE_WEBHOOK_READ_OPTIONS, idempotencyKey: `qa72-void-${inv.id}` },
-      );
-      result.voidedInvoiceId = inv.id;
-      return result;
+    const latest = sub.latest_invoice && typeof sub.latest_invoice === 'object' && sub.latest_invoice.id
+      ? sub.latest_invoice
+      : null;
+    const settle: Stripe.Invoice[] = [];
+    if (result.ours && latest) {
+      if (latest.status === 'open') {
+        budget('invoices.voidInvoice');
+        await client.invoices.voidInvoice(
+          latest.id!,
+          {},
+          { ...STRIPE_WEBHOOK_READ_OPTIONS, idempotencyKey: `qa72-void-${latest.id}` },
+        );
+        result.voidedInvoiceId = latest.id!;
+        result.currency = latest.currency ?? null;
+      } else {
+        settle.push(latest);
+      }
     }
-    if (inv.status !== 'paid' || !(inv.amount_paid > 0)) return result;
+    const paidId = opts.paidInvoiceId ?? null;
+    if (paidId && !settle.some((i) => i.id === paidId) && paidId !== result.voidedInvoiceId) {
+      let inv: Stripe.Invoice | null = latest?.id === paidId ? latest : null;
+      if (!inv) {
+        budget('invoices.retrieve');
+        inv = await client.invoices.retrieve(paidId, {}, { ...STRIPE_WEBHOOK_READ_OPTIONS });
+      }
+      const paidAt = inv.status_transitions?.paid_at ?? null;
+      if (inv.status === 'paid' && typeof paidAt === 'number' && paidAt * 1000 >= opts.deletedAtMs) {
+        result.paidAfterDeletion = true;
+        settle.push(inv);
+      }
+    }
+    for (const inv of settle) await this._refundInvoiceInFull(client, budget, inv, subscriptionId, result);
+    return result;
+  }
 
+  /** QA-72: refund every paid payment of `inv` in full (see above). */
+  private async _refundInvoiceInFull(
+    client: Stripe,
+    budget: (step: string) => void,
+    inv: Stripe.Invoice,
+    subscriptionId: string,
+    result: OrphanSubscriptionResult,
+  ): Promise<void> {
+    if (inv.status !== 'paid' || !(inv.amount_paid > 0) || !inv.id) return;
+    const invoiceId = inv.id;
+    result.currency = inv.currency ?? result.currency;
     budget('invoicePayments.list');
     // The charge is expanded so a payment refunded by an earlier delivery is
     // seen as such (charge.refunded) and not refunded, alerted or audited
     // again. Depth 4, Stripe's expand limit.
     const payments = await client.invoicePayments.list(
       {
-        invoice: inv.id,
+        invoice: invoiceId,
         status: 'paid',
         limit: 100,
         expand: ['data.payment.payment_intent.latest_charge', 'data.payment.charge'],
@@ -1120,9 +1227,10 @@ export class StripeProvider implements BillingProvider {
     // or by credit balance): nothing the API can refund. Reported, not thrown
     // (a redelivery would find the same), so the route alerts a human.
     if (payments.data.length === 0) {
-      result.refundGapInvoiceId = inv.id;
-      return result;
+      result.refundGapInvoiceId = invoiceId;
+      return;
     }
+    let settled = false;
     for (const ip of payments.data) {
       const pi = ip.payment?.payment_intent;
       const ch = ip.payment?.charge;
@@ -1134,6 +1242,13 @@ export class StripeProvider implements BillingProvider {
             : null;
       if (charge?.refunded === true) {
         result.alreadyRefunded = true;
+        settled = true;
+        continue;
+      }
+      // L-4: a charged-back payment can never be refunded; do not even try.
+      if (charge?.disputed === true) {
+        result.refundGapInvoiceId = invoiceId;
+        result.refundRefusedCode = 'charge_disputed';
         continue;
       }
       const target = pi
@@ -1144,7 +1259,7 @@ export class StripeProvider implements BillingProvider {
       if (!target) {
         // A payment the API cannot refund (e.g. a payment record made outside
         // Stripe): reported for a human, like the empty list above.
-        result.refundGapInvoiceId = inv.id;
+        result.refundGapInvoiceId = invoiceId;
         continue;
       }
       budget('refunds.create');
@@ -1152,31 +1267,73 @@ export class StripeProvider implements BillingProvider {
         const refund = await client.refunds.create(
           {
             ...target,
-            metadata: { qa: 'QA-72', reason: 'account_deleted', invoice: inv.id, subscription: subscriptionId },
+            metadata: { qa: 'QA-72', reason: 'account_deleted', invoice: invoiceId, subscription: subscriptionId },
           },
           { ...STRIPE_WEBHOOK_READ_OPTIONS, idempotencyKey: `qa72-refund-${ip.id}` },
         );
         result.refundIds.push(refund.id);
         result.amountRefunded += refund.amount ?? 0;
+        settled = true;
       } catch (e) {
-        if ((e as { code?: string } | null)?.code === 'charge_already_refunded') {
+        const code = (e as { code?: string } | null)?.code;
+        if (code === 'charge_already_refunded') {
           result.alreadyRefunded = true;
+          settled = true;
+          continue;
+        }
+        if (code && REFUND_NEVER_SUCCEEDS.has(code)) {
+          result.refundGapInvoiceId = invoiceId;
+          result.refundRefusedCode = code;
           continue;
         }
         throw e;
       }
     }
-    return result;
+    if (settled) result.refundedInvoiceIds.push(invoiceId);
   }
 }
 
 // ---- QA-72 helpers --------------------------------------------------------
 
-/** cancellation_details.comment written on a subscription the webhook
- *  backstop cancels because its account no longer exists. Read back on a
- *  later delivery to tell "we cancelled it, refund it" from "someone else
- *  ended it". Must never change once deployed. */
-export const ORPHAN_CANCEL_COMMENT = 'stem-loops QA-72: account no longer exists';
+/** cancellation_details.comment the ACCOUNT DELETION (QA-53) writes on every
+ *  subscription it cancels (QA-72 review M-1). It overwrites any free text
+ *  the customer typed into the portal, and it is not the backstop's marker,
+ *  so such a subscription is never read as "ours, refund it". */
+export const ACCOUNT_DELETION_CANCEL_COMMENT = 'stem-loops QA-53: account deleted';
+
+/** Prefix of the backstop's cancellation marker. The full marker is
+ *  `${ORPHAN_MARKER_PREFIX}<64 hex>`: an HMAC-SHA256 over the subscription id
+ *  keyed with the server secret IP_HASH_KEY, computed by the webhook route
+ *  (orphanCancelMarker). Must never change once deployed. */
+export const ORPHAN_MARKER_PREFIX = 'stem-loops QA-72 ';
+
+/** A well-formed backstop marker (prefix + 64 hex chars). */
+export function isOrphanMarker(m: unknown): m is string {
+  return typeof m === 'string' && m.startsWith(ORPHAN_MARKER_PREFIX)
+    && /^[0-9a-f]{64}$/.test(m.slice(ORPHAN_MARKER_PREFIX.length));
+}
+
+/** Review M-1: the comment Stripe holds equals the marker recomputed for this
+ *  subscription. Constant-time compare (timingSafeEqual on equal lengths). */
+export function orphanMarkerMatches(comment: unknown, marker: string): boolean {
+  if (!isOrphanMarker(marker) || typeof comment !== 'string') return false;
+  const a = Buffer.from(comment, 'utf8');
+  const b = Buffer.from(marker, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+/** Review L-4: refund refusals that a retry can never turn into a refund
+ *  (Stripe error codes, as named in stripe-node's error Code union): the
+ *  charge was disputed (charged back), or Stripe says it is not refundable
+ *  / its capture window passed. Anything else (rate limit, connection,
+ *  balance) may succeed later and stays a 500. */
+export const REFUND_NEVER_SUCCEEDS: ReadonlySet<string> = new Set([
+  'charge_disputed',
+  'refund_disputed_payment',
+  'charge_not_refundable',
+  'charge_expired_for_capture',
+]);
 
 /** The QA-53 per-call budget check (STRIPE_CALL_WORST_MS, StripeDeadlineError),
  *  shared by the QA-72 paths. */

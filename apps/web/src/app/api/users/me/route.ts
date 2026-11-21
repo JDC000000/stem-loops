@@ -21,8 +21,9 @@
 //       safe to retry. Alerted the same way.
 //   500 DELETE_FAILED — the chord_edits erasure failed (NOTHING irreversible
 //       happened: no subscription was cancelled, safe to retry), or the
-//       Supabase Admin delete failed after subscriptions were cancelled
-//       (users.deleted_at is stamped, retry is idempotent)
+//       account_deleted audit row (QA-72 M-2) or the Supabase Admin delete
+//       failed after subscriptions were cancelled (users.deleted_at is
+//       stamped, retry is idempotent)
 //
 // Order of operations (each step only runs if the previous one succeeded):
 //   1. getUser() + confirm_email check
@@ -53,26 +54,29 @@
 //        b. provider.cancelAllForAccountDeletion (lib/billing): lists the
 //           customer's subscriptions AT STRIPE as well as our rows, cancels
 //           immediately (not at period end, no proration) every one that is
-//           not already over, whatever its status, and voids an incomplete
-//           subscription's still-open first invoice so it cannot be paid
-//           later. A subscription Stripe says no longer exists counts as
+//           not already over, whatever its status (writing its own
+//           cancellation comment, QA-72 review M-1), and voids every open
+//           (unpaid) invoice of the customer's subscriptions so none can be
+//           paid later (QA-72 review M-3: renewals too, not just an
+//           incomplete subscription's first invoice). A subscription Stripe says no longer exists counts as
 //           cancelled. Bounded by t0 + STRIPE_BUDGET_MS (see the time budget).
 //      The transaction COMMITs only after every cancel succeeded. If Stripe
 //      refuses, the throw ROLLs BACK the erasure, so the user keeps their
 //      account AND their chord edits (502, safe to retry). Stripe cannot be
 //      rolled back, which is why it is the LAST thing inside the transaction:
 //      the only way to cancel and still fail is the COMMIT itself failing (or
-//      step 5), and by then the erasure statement has already succeeded.
+//      steps 5-6), and by then the erasure statement has already succeeded.
 //   4. stamp public.users.deleted_at (tombstone; migration 021). Tolerates
 //      the column not existing yet so the route works before 021 is applied.
-//   5. Supabase Admin auth.admin.deleteUser. The DB then cascades per the
+//   5. append a usage_events row kind='account_deleted'. user_id is NULL;
+//      the detail holds an HMAC of the user id, not the raw id or email, so
+//      the audit trail carries no personal data. QA-72 review M-2: written
+//      BEFORE the auth delete and required (a failure is a 500, safe to
+//      retry): it is the webhook's proof that this account was deleted
+//      through the app, without which the backstop never writes to Stripe.
+//   6. Supabase Admin auth.admin.deleteUser. The DB then cascades per the
 //      TSD §2.3 DDL (public.users and everything FK'd to it). We delete NO
 //      rows ourselves other than the step-3 erasure.
-//   6. append a usage_events row kind='account_deleted'. user_id is NULL
-//      (the FK is ON DELETE SET NULL and the user is gone); the detail holds
-//      an HMAC of the user id, not the raw id or email, so the audit trail
-//      carries no personal data. Failure here is logged, not surfaced — the
-//      account is already gone.
 //
 // Errors from the erasure are NOT tolerated (no 42P01 / 42883 swallowing):
 // a missing function (42883, migration 031 not applied) or a permission
@@ -83,8 +87,10 @@
 // Stripe emit customer.subscription.deleted for a user that no longer
 // exists moments later; the webhook's upsert may fail its FK and Stripe will
 // retry/stop. See PR notes. QA-72: the webhook acknowledges events for a
-// deleted account, and cancels + refunds a subscription that is still live
-// for one (it never refunds a subscription this route cancelled).
+// deleted account and, only when step 5's row proves the deletion, cancels +
+// refunds a subscription that is still live for one, and refunds an invoice
+// paid after the deletion (it never refunds a period this route left served).
+// Operator steps for every alert: docs/runbooks/account-deletion-billing.md.
 
 import { createHmac } from 'node:crypto';
 import * as Sentry from '@sentry/nextjs';
@@ -327,26 +333,31 @@ export async function DELETE(req: NextRequest) {
       if (code !== '42703') throw e; // 42703 = undefined_column
     }
 
-    // 5. Delete the auth user; the DB cascades the rest.
-    await deleteAuthUser(user.user_id);
+    // 5. Audit (no personal data), BEFORE the auth delete and NOT
+    //    best-effort (QA-72 review M-2). This row is the webhook's only proof
+    //    that the account was deleted through the app: the backstop cancels
+    //    and refunds a late subscription only for a user_hash that has it.
+    //    Written first, so no webhook can find the auth user gone without
+    //    it; a failed write is a 500 (DELETE_FAILED) and the retry converges
+    //    (the cancels re-read Stripe). If the auth delete below then fails,
+    //    the row stays (usage_events is append-only): it is only ever read
+    //    for a user the database no longer has, and the user's retry adds
+    //    the row that dates the real deletion (the webhook takes the latest).
+    await db.query(
+      `INSERT INTO public.usage_events (user_id, kind, detail) VALUES (NULL, 'account_deleted', $1::jsonb)`,
+      [
+        JSON.stringify({
+          // See userHash above (HMAC, never the raw id or email).
+          user_hash: userHash,
+          subscriptions_cancelled: cancelled,
+          invoices_voided: invoicesVoided,
+          checkouts_expired: checkoutsExpired,
+        }),
+      ],
+    );
 
-    // 6. Audit (no personal data).
-    try {
-      await db.query(
-        `INSERT INTO public.usage_events (user_id, kind, detail) VALUES (NULL, 'account_deleted', $1::jsonb)`,
-        [
-          JSON.stringify({
-            // See userHash above (HMAC, never the raw id or email).
-            user_hash: userHash,
-            subscriptions_cancelled: cancelled,
-            invoices_voided: invoicesVoided,
-            checkouts_expired: checkoutsExpired,
-          }),
-        ],
-      );
-    } catch (e) {
-      console.error('[users/me DELETE] audit insert failed:', e instanceof Error ? e.message : 'unknown');
-    }
+    // 6. Delete the auth user; the DB cascades the rest.
+    await deleteAuthUser(user.user_id);
 
     return new NextResponse(null, { status: 204 });
   } catch (e) {

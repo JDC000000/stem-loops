@@ -20,6 +20,7 @@ import {
   type BillingPortalResult,
   type BillingProvider,
   type BillingSubscription,
+  type OrphanCloseOptions,
   type OrphanSubscriptionResult,
   type PackCode,
   type PlanCode,
@@ -88,7 +89,11 @@ export class PaddleProvider implements BillingProvider {
   async expireOpenCheckoutSessions(_customerId: string, _deadlineMs: number): Promise<{ expired: string[] }> {
     throw new NotImplementedError('expireOpenCheckoutSessions');
   }
-  async closeOrphanSubscription(_subscriptionId: string, _deadlineMs: number): Promise<OrphanSubscriptionResult> {
+  async closeOrphanSubscription(
+    _subscriptionId: string,
+    _deadlineMs: number,
+    _opts: OrphanCloseOptions,
+  ): Promise<OrphanSubscriptionResult> {
     throw new NotImplementedError('closeOrphanSubscription');
   }
 }

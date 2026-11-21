@@ -24,7 +24,7 @@ import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHmac } from 'node:crypto';
 import ts from 'typescript';
 import {
   WEB, dataUrl, PRICE, loadStripeProvider, loadWebhookRoute, makeState, envelope, deliver,
@@ -244,8 +244,17 @@ test('PG R2-1: account deleted first, then deleted x3 (+ a stale updated) -> 200
 // role. The webhook must cancel + refund at Stripe and answer 200, without
 // recreating anything; the savepoint must keep the locked transaction usable.
 
+// Review M-2: the proof DELETE /api/users/me writes BEFORE the auth delete.
+// Keyed like lib/secret-env (IP_HASH_KEY, 'dev-key' when unset off Vercel prod).
+const ipKey = () => (process.env.IP_HASH_KEY && process.env.IP_HASH_KEY.trim() !== '' ? process.env.IP_HASH_KEY : 'dev-key');
+const userHash = (id) => createHmac('sha256', ipKey()).update(id).digest('hex');
+const writeDeletionProof = (id) => admin.query(
+  `INSERT INTO public.usage_events (user_id, kind, detail) VALUES (NULL, 'account_deleted', $1::jsonb)`,
+  [JSON.stringify({ user_hash: userHash(id), subscriptions_cancelled: 0, invoices_voided: 0, checkouts_expired: 0 })]);
+
 test('PG QA-72: account deleted, then a live subscription.created (checkout completed late) -> 200, cancelled + refunded, nothing recreated', { skip, timeout: 30000 }, async () => {
   await fresh();
+  await writeDeletionProof(user);
   await admin.query('DELETE FROM auth.users WHERE id = $1', [user]);
   const stripeCalls = [];
   h.harness.install = (c) => {
@@ -274,8 +283,29 @@ test('PG QA-72: account deleted, then a live subscription.created (checkout comp
   const audit = await admin.query(
     `SELECT detail FROM usage_events WHERE kind = 'orphan_subscription_closed' AND user_id IS NULL AND detail->>'subscription' = $1`, [subId]);
   assert.equal(audit.rowCount, 1, 'one audit row, written by the app role');
-  assert.equal(audit.rows[0].detail.user_hash.length, 64);
+  assert.equal(audit.rows[0].detail.user_hash, userHash(user));
+  assert.match(stripeCalls[0][2], /^stem-loops QA-72 [0-9a-f]{64}$/, 'the HMAC marker (review M-1)');
   await realDb.query('SELECT 1'); // connections were returned
+});
+
+test('PG QA-72 M-2: user gone from this database but NO account_deleted row -> 200, alert only, no Stripe write', { skip, timeout: 30000 }, async () => {
+  await fresh();
+  await admin.query('DELETE FROM auth.users WHERE id = $1', [user]);
+  const stripeCalls = [];
+  h.harness.install = (c) => {
+    c.subscriptions.cancel = async (id) => { stripeCalls.push(['cancel', id]); throw new Error('must not cancel'); };
+    c.refunds.create = async () => { stripeCalls.push(['refund']); throw new Error('must not refund'); };
+  };
+  h.mod._resetStripeClientForTests();
+  const live = sub({ latest_invoice: { id: 'in_pg2', object: 'invoice', status: 'paid', amount_paid: 1200, currency: 'cad', billing_reason: 'subscription_create' } });
+  h.subs[subId] = live;
+  assert.equal((await raw(envelope('customer.subscription.created', live))).status, 200);
+  assert.deepEqual(stripeCalls, [], 'no Stripe write without proof of an in-app deletion');
+  const alerts = state.sentry.filter((x) => /no in-app deletion on record/.test(x.message));
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].opts.extra.user_hash, userHash(user));
+  assert.equal(await row(), undefined);
+  await realDb.query('SELECT 1');
 });
 
 // ---- the ensureUserRow savepoint, for real (round-2 Low) ----------------------

@@ -19,12 +19,18 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import {
   loadStripeProvider, loadWebhookRoute, makeState, envelope, deliver,
-  subscriptionFixture, invoiceFixture,
+  subscriptionFixture, invoiceFixture, PRICE,
 } from './helpers/billing-harness.mjs';
 
 const GONE = '22222222-2222-2222-2222-222222222222';
 const LIVE = '11111111-1111-1111-1111-111111111111';
-const MARK = 'stem-loops QA-72: account no longer exists';
+// Review M-1: the backstop's cancellation marker is an HMAC over the
+// subscription id keyed with IP_HASH_KEY ('dev-key' in tests), not a constant.
+const markerFor = (id) => 'stem-loops QA-72 ' + createHmac('sha256', 'dev-key').update('qa72-orphan-cancel:' + id).digest('hex');
+const MARK = markerFor('sub_test_1');
+// Review M-2: GONE was deleted through the app a minute ago (its
+// account_deleted audit row, keyed by the HMAC user_hash, is in the DB).
+const DELETED_AT = Date.now() - 60_000;
 
 let h; let state; let route; let st;
 const quiet = async (fn) => {
@@ -128,6 +134,7 @@ beforeEach(async () => {
   // GONE was deleted: auth.users cascade removed public.users etc. Seeding the
   // row again fails the FK, like Postgres.
   state.authGone = [GONE];
+  state.accountDeleted.push({ user_hash: hmac(GONE), created_at: DELETED_AT });
   state.users.push({ id: LIVE, email: 'live@example.com' });
   state.customers_billing.push({ user_id: LIVE, provider: 'stripe', provider_customer_id: 'cus_live' });
   route = await loadWebhookRoute(h.provider, state);
@@ -139,6 +146,13 @@ const audit = () => state.usage
   .filter((p) => p.length === 1 && /"qa":"QA-72"/.test(p[0]))
   .map((p) => JSON.parse(p[0]));
 const hmac = (id) => createHmac('sha256', 'dev-key').update(id).digest('hex');
+
+/** Review M-2: not one Stripe WRITE (cancel / void / refund). */
+function assertNoStripeWrite() {
+  for (const api of ['subscriptions.cancel', 'invoices.voidInvoice', 'refunds.create']) {
+    assert.equal(calls(api).length, 0, `${api} called without proof of an in-app deletion`);
+  }
+}
 
 function assertNothingWritten() {
   assert.equal(state.subscriptions.length, 0, 'no subscription row for a deleted account');
@@ -161,6 +175,7 @@ test('QA-72: subscription.created for a deleted account -> cancelled now, invoic
   assert.equal(cancel.params.invoice_now, false);
   assert.equal(cancel.params.prorate, false);
   assert.equal(cancel.params.cancellation_details.comment, MARK);
+  assert.match(MARK, /^stem-loops QA-72 [0-9a-f]{64}$/);
   assert.deepEqual(cancel.ropts, { timeout: 6000, maxNetworkRetries: 0 });
 
   const refunds = calls('refunds.create');
@@ -210,7 +225,7 @@ test('QA-72: the other subscription events for it (updated, checkout completed, 
   h.subs.sub_test_1 = sub();
   const sess = {
     id: 'cs_sub_1', object: 'checkout.session', mode: 'subscription', status: 'complete', payment_status: 'paid',
-    customer: 'cus_gone', subscription: 'sub_test_1', metadata: { user_id: GONE },
+    customer: 'cus_gone', subscription: 'sub_test_1', metadata: { user_id: GONE, price_id: PRICE.pro },
   };
   const inv = invoiceFixture({
     id: 'in_orphan_1', customer: 'cus_gone', billing_reason: 'subscription_create',
@@ -233,7 +248,7 @@ test('QA-72: checkout.session.completed alone (first to arrive) closes it', asyn
   h.subs.sub_test_1 = sub();
   const res = await raw(envelope('checkout.session.completed', {
     id: 'cs_sub_1', object: 'checkout.session', mode: 'subscription', status: 'complete', payment_status: 'paid',
-    customer: 'cus_gone', subscription: 'sub_test_1', metadata: { user_id: GONE },
+    customer: 'cus_gone', subscription: 'sub_test_1', metadata: { user_id: GONE, price_id: PRICE.pro },
   }));
   assert.equal(res.status, 200);
   assert.equal(calls('subscriptions.cancel').length, 1);
@@ -284,7 +299,7 @@ test('QA-72: two deliveries racing the cancel -> the loser is a 500, its redeliv
   const a = raw(envelope('customer.subscription.created', sub()));
   const b = raw(envelope('checkout.session.completed', {
     id: 'cs_sub_1', object: 'checkout.session', mode: 'subscription', status: 'complete', payment_status: 'paid',
-    customer: 'cus_gone', subscription: 'sub_test_1', metadata: { user_id: GONE },
+    customer: 'cus_gone', subscription: 'sub_test_1', metadata: { user_id: GONE, price_id: PRICE.pro },
   }));
   const statuses = (await Promise.all([a, b])).map((r) => r.status);
   assert.ok(statuses.includes(200));
@@ -297,7 +312,7 @@ test('QA-72: two deliveries racing the cancel -> the loser is a 500, its redeliv
 
 test('QA-72: a subscription the ACCOUNT DELETION cancelled (no QA-72 tag) is acked and NOT refunded', async () => {
   // DELETE /api/users/me cancelled a plan the user had and paid for.
-  h.subs.sub_test_1 = sub({ status: 'canceled', cancellation_details: { comment: null, reason: 'cancellation_requested' } });
+  h.subs.sub_test_1 = sub({ status: 'canceled', cancellation_details: { comment: 'stem-loops QA-53: account deleted', reason: 'cancellation_requested' } });
   const res = await raw(envelope('customer.subscription.updated', sub(), { cancel_at_period_end: false }));
   assert.equal(res.status, 200);
   assert.equal(calls('subscriptions.cancel').length, 0);
@@ -315,7 +330,7 @@ test('QA-72: a live account is untouched: row written, nothing cancelled or refu
   assert.equal(state.entitlements.find((e) => e.user_id === LIVE)?.plan_code, 'pro');
   const done = await raw(envelope('checkout.session.completed', {
     id: 'cs_live', object: 'checkout.session', mode: 'subscription', status: 'complete', payment_status: 'paid',
-    customer: 'cus_live', subscription: 'sub_test_1', metadata: { user_id: LIVE },
+    customer: 'cus_live', subscription: 'sub_test_1', metadata: { user_id: LIVE, price_id: PRICE.pro },
   }));
   assert.equal(done.status, 200);
   assert.equal(calls('subscriptions.cancel').length, 0);
@@ -335,15 +350,20 @@ test('QA-72: a live account whose public.users row is missing but whose auth row
 
 // ---- other shapes -------------------------------------------------------------
 
-test('QA-72: a customer no account owns (no metadata, unknown customer) -> closed, no user_hash, 200 (was a 3-day 500 loop)', async () => {
+test('M-2: a customer no account owns (no metadata, unknown customer) -> ALERT ONLY: no Stripe write, 200 (was a 3-day 500 loop)', async () => {
   const s = sub({ metadata: {}, customer: 'cus_nobody' });
   h.subs.sub_test_1 = s;
   assert.equal((await raw(envelope('customer.subscription.created', s))).status, 200);
-  assert.equal(calls('subscriptions.cancel').length, 1);
-  assert.equal(st.refunded.size, 1);
-  const x = qa72Alerts()[0].opts.extra;
-  assert.equal(x.account, 'no_user');
-  assert.equal(x.user_hash, null);
+  assertNoStripeWrite();
+  const [a] = qa72Alerts();
+  assert.ok(a, 'a human must be paged');
+  assert.match(a.message, /NOT cancelled or refunded/);
+  assert.equal(a.opts.extra.account, 'no_user');
+  assert.equal(a.opts.extra.user_hash, null);
+  assert.equal(a.opts.extra.customer, 'cus_nobody');
+  assert.equal(a.opts.extra.subscription, 'sub_test_1');
+  assert.equal(audit().length, 0);
+  assertNothingWritten();
 });
 
 test('QA-72: incomplete (never paid) -> cancelled and its open first invoice voided, nothing refunded', async () => {
@@ -459,4 +479,314 @@ test('QA-72 budget arithmetic: four bounded calls fit the 50 s window inside max
   assert.match(src, /export const maxDuration = 60;/);
   assert.equal(h.mod.STRIPE_CALL_WORST_MS, 12_000);
   assert.ok(50_000 + 2_000 < 60_000, 'the last call ends by 50 s, leaving room to answer');
+});
+
+// ==== PR #325 review round 2 ================================================
+
+const renewalPaid = (over = {}) => ({
+  id: 'in_renew', object: 'invoice', status: 'paid', amount_paid: 1500, currency: 'cad',
+  billing_reason: 'subscription_cycle', customer: 'cus_gone',
+  status_transitions: { paid_at: Math.floor((DELETED_AT + 3_600_000) / 1000) },
+  parent: { type: 'subscription_details', subscription_details: { subscription: 'sub_test_1', metadata: { user_id: GONE } } },
+  ...over,
+});
+const checkoutSession = (meta, over = {}) => ({
+  id: 'cs_sub_1', object: 'checkout.session', mode: 'subscription', status: 'complete', payment_status: 'paid',
+  customer: 'cus_gone', subscription: 'sub_test_1', metadata: meta, ...over,
+});
+
+// ---- M-2: no Stripe write without POSITIVE proof of an in-app deletion ------
+
+for (const [name, evt] of [
+  ['subscription.created', () => envelope('customer.subscription.created', sub())],
+  ['subscription.updated', () => envelope('customer.subscription.updated', sub(), { status: 'incomplete' })],
+  ['checkout.session.completed', () => envelope('checkout.session.completed', checkoutSession({ user_id: GONE, price_id: PRICE.pro }))],
+  ['invoice.paid', () => envelope('invoice.paid', invoiceFixture({ id: 'in_orphan_1', customer: 'cus_gone',
+    parent: { type: 'subscription_details', subscription_details: { subscription: 'sub_test_1', metadata: { user_id: GONE } } } }))],
+]) {
+  test(`M-2: user missing from THIS database but no account_deleted row (${name}) -> no Stripe write, alert, 200`, async () => {
+    // e.g. a second webhook endpoint on another database, a restored database,
+    // or a user deleted in the Supabase dashboard.
+    state.accountDeleted.length = 0;
+    h.subs.sub_test_1 = sub();
+    assert.equal((await raw(evt())).status, 200, 'a retry cannot produce the proof: acked, not a 3-day loop');
+    assertNoStripeWrite();
+    assert.equal(calls('subscriptions.retrieve').filter((c) => c.params?.expand?.includes('latest_invoice')).length, 0,
+      'the backstop provider call must not even start');
+    const [a] = qa72Alerts();
+    assert.ok(a, 'no Sentry alert');
+    assert.match(a.message, /no in-app deletion on record; NOT cancelled or refunded/);
+    const x = a.opts.extra;
+    assert.equal(x.user_hash, hmac(GONE));
+    assert.equal(x.subscription, 'sub_test_1');
+    assert.equal(x.account, 'missing_unproven');
+    assert.equal(x.action, 'alert_only');
+    const blob = JSON.stringify(a);
+    assert.ok(!blob.includes(GONE), 'raw user id in the alert');
+    assert.ok(!/@/.test(blob), 'an email in the alert');
+    assert.equal(audit().length, 0);
+    assertNothingWritten();
+  });
+}
+
+test('M-2: invoice.paid without proof carries the invoice id and amount in the alert', async () => {
+  state.accountDeleted.length = 0;
+  h.subs.sub_test_1 = sub();
+  const inv = invoiceFixture({ id: 'in_orphan_1', customer: 'cus_gone', amount_paid: 1200, currency: 'cad',
+    parent: { type: 'subscription_details', subscription_details: { subscription: 'sub_test_1', metadata: { user_id: GONE } } } });
+  assert.equal((await raw(envelope('invoice.paid', inv))).status, 200);
+  const x = qa72Alerts()[0].opts.extra;
+  assert.equal(x.invoice, 'in_orphan_1');
+  assert.equal(x.amount, 1200);
+  assert.equal(x.currency, 'cad');
+  assertNoStripeWrite();
+});
+
+test('M-2: an account_deleted row for ANOTHER user, or one keyed without the secret, is not proof', async () => {
+  state.accountDeleted.length = 0;
+  state.accountDeleted.push({ user_hash: hmac(LIVE), created_at: DELETED_AT });
+  state.accountDeleted.push({ user_hash: createHmac('sha256', '').update(GONE).digest('hex'), created_at: DELETED_AT });
+  h.subs.sub_test_1 = sub();
+  assert.equal((await raw(envelope('customer.subscription.created', sub()))).status, 200);
+  assertNoStripeWrite();
+});
+
+test('M-2: the proof read failing is a 500 (Stripe retries), never treated as "no proof" or as proof', async () => {
+  state.failures.push({ re: /FROM usage_events WHERE kind = 'account_deleted'/, times: 1 });
+  h.subs.sub_test_1 = sub();
+  assert.equal((await raw(envelope('customer.subscription.created', sub()))).status, 500);
+  assertNoStripeWrite();
+  assert.equal(qa72Alerts().length, 0);
+  assert.equal((await raw(envelope('customer.subscription.created', sub()))).status, 200);
+  assert.equal(calls('subscriptions.cancel').length, 1);
+});
+
+// ---- M-1: the refund-authorising marker cannot be typed by a customer ----------
+
+for (const [label, comment] of [
+  ['the old constant tag', 'stem-loops QA-72: account no longer exists'],
+  ['a well-formed marker with the wrong MAC', 'stem-loops QA-72 ' + 'a'.repeat(64)],
+  ["another subscription's marker", markerFor('sub_other')],
+  ['a marker keyed without the secret', 'stem-loops QA-72 ' + createHmac('sha256', '').update('qa72-orphan-cancel:sub_test_1').digest('hex')],
+]) {
+  test(`M-1: a canceled subscription whose comment is ${label} (customer-typed portal text) is NOT refunded`, async () => {
+    h.subs.sub_test_1 = sub({ status: 'canceled', cancellation_details: { comment, reason: 'cancellation_requested' } });
+    assert.equal((await raw(envelope('customer.subscription.updated', sub()))).status, 200);
+    assert.equal(calls('subscriptions.cancel').length, 0);
+    assert.equal(calls('refunds.create').length, 0, 'a forged marker authorised a refund');
+    assert.equal(audit().length, 0);
+  });
+}
+
+test('M-1: the marker this subscription carries is recognised (constant-time, recomputed per subscription)', async () => {
+  h.subs.sub_test_1 = sub({ status: 'canceled', cancellation_details: { comment: MARK, reason: 'cancellation_requested' } });
+  assert.equal((await raw(envelope('customer.subscription.updated', sub()))).status, 200);
+  assert.equal(calls('refunds.create').length, 1);
+  assert.equal(h.mod.orphanMarkerMatches(MARK, MARK), true);
+  assert.equal(h.mod.orphanMarkerMatches(MARK.slice(0, -1) + (MARK.endsWith('0') ? '1' : '0'), MARK), false);
+  assert.equal(h.mod.orphanMarkerMatches(MARK + ' ', MARK), false);
+  assert.equal(h.mod.orphanMarkerMatches(null, MARK), false);
+  // a malformed expected marker never matches anything, even itself
+  assert.equal(h.mod.orphanMarkerMatches('stem-loops QA-72: account no longer exists', 'stem-loops QA-72: account no longer exists'), false);
+  const src = (await import('node:fs')).readFileSync(
+    (await import('node:path')).join((await import('./helpers/billing-harness.mjs')).WEB, 'src/lib/billing/providers/stripe.ts'), 'utf8');
+  assert.match(src, /return timingSafeEqual\(a, b\);/, 'constant-time compare');
+});
+
+test('M-1: the provider refuses to cancel with a malformed marker (no constant fallback)', async () => {
+  h.subs.sub_test_1 = sub();
+  await assert.rejects(
+    h.provider.closeOrphanSubscription('sub_test_1', Date.now() + 60_000, { marker: 'stem-loops QA-72: account no longer exists', deletedAtMs: DELETED_AT }),
+    /invalid marker/,
+  );
+  assert.equal(calls('subscriptions.cancel').length, 0);
+});
+
+// ---- M-3: a renewal paid after a PROVEN deletion is refunded and alerted ------
+
+test('M-3: a renewal invoice paid AFTER the deletion, on a subscription the deletion cancelled -> refunded in full, alerted, audited, 200', async () => {
+  h.subs.sub_test_1 = sub({ status: 'canceled', cancellation_details: { comment: 'stem-loops QA-53: account deleted' },
+    latest_invoice: renewalPaid() });
+  st.invoicePayments.in_renew = [{ id: 'inpay_r', status: 'paid', payment: { type: 'payment_intent', payment_intent: 'pi_renew' } }];
+  assert.equal((await raw(envelope('invoice.paid', invoiceFixture(renewalPaid())))).status, 200);
+  assert.equal(calls('subscriptions.cancel').length, 0, 'already over');
+  const [r] = calls('refunds.create');
+  assert.ok(r, 'a renewal paid after the account was deleted was kept');
+  assert.equal(r.params.payment_intent, 'pi_renew');
+  assert.equal(r.ropts.idempotencyKey, 'qa72-refund-inpay_r');
+  const [a] = qa72Alerts();
+  assert.match(a.message, /paid after the account was deleted; refunded/);
+  assert.equal(a.opts.level, 'error', 'a Sentry alert, not console.info');
+  assert.equal(a.opts.extra.paid_after_deletion, true);
+  assert.deepEqual(a.opts.extra.refunded_invoices, ['in_renew']);
+  assert.equal(a.opts.extra.user_hash, hmac(GONE));
+  assert.equal(audit().length, 1);
+  // redelivery: refunded once
+  assert.equal((await raw(envelope('invoice.paid', invoiceFixture(renewalPaid())))).status, 200);
+  assert.equal(st.refunded.size, 1);
+});
+
+test('M-3: an older invoice (not the latest) paid after the deletion is retrieved and refunded', async () => {
+  h.subs.sub_test_1 = sub({ status: 'canceled', cancellation_details: { comment: 'stem-loops QA-53: account deleted' } });
+  h.invoices.in_renew = renewalPaid();
+  st.invoicePayments.in_renew = [{ id: 'inpay_r', status: 'paid', payment: { type: 'payment_intent', payment_intent: 'pi_renew' } }];
+  assert.equal((await raw(envelope('invoice.paid', invoiceFixture(renewalPaid())))).status, 200);
+  assert.equal(calls('invoices.retrieve').filter((c) => c.id === 'in_renew').length, 1);
+  assert.equal(calls('refunds.create').length, 1);
+  assert.equal(calls('refunds.create')[0].params.payment_intent, 'pi_renew');
+});
+
+test('M-3: a renewal paid BEFORE the deletion (late delivery, a served period) is kept: no refund, no alert', async () => {
+  const before = renewalPaid({ status_transitions: { paid_at: Math.floor((DELETED_AT - 3_600_000) / 1000) } });
+  h.subs.sub_test_1 = sub({ status: 'canceled', cancellation_details: { comment: 'stem-loops QA-53: account deleted' }, latest_invoice: before });
+  st.invoicePayments.in_renew = [{ id: 'inpay_r', status: 'paid', payment: { type: 'payment_intent', payment_intent: 'pi_renew' } }];
+  assert.equal((await raw(envelope('invoice.paid', invoiceFixture(before)))).status, 200);
+  assert.equal(calls('refunds.create').length, 0);
+  assert.equal(qa72Alerts().length, 0);
+  assert.equal(audit().length, 0);
+});
+
+test('M-3: the deletion time is the LATEST account_deleted row (a retried deletion dates the real one)', async () => {
+  // First attempt's row 2 h before, real deletion 1 min before; paid 30 min before -> kept.
+  state.accountDeleted.push({ user_hash: hmac(GONE), created_at: DELETED_AT - 7_200_000 });
+  const mid = renewalPaid({ status_transitions: { paid_at: Math.floor((DELETED_AT - 1_800_000) / 1000) } });
+  h.subs.sub_test_1 = sub({ status: 'canceled', cancellation_details: { comment: 'stem-loops QA-53: account deleted' }, latest_invoice: mid });
+  st.invoicePayments.in_renew = [{ id: 'inpay_r', status: 'paid', payment: { type: 'payment_intent', payment_intent: 'pi_renew' } }];
+  assert.equal((await raw(envelope('invoice.paid', invoiceFixture(mid)))).status, 200);
+  assert.equal(calls('refunds.create').length, 0);
+});
+
+// ---- L-1: only 23503 means "gone" ---------------------------------------------
+
+for (const [label, failure] of [
+  ['23505 unique_violation', { code: '23505' }],
+  ['a connection error (no SQLSTATE)', {}],
+  ['57014 statement timeout', { code: '57014' }],
+]) {
+  test(`L-1: the defensive users upsert failing with ${label} -> 500 and NO Stripe write (subscription.created)`, async () => {
+    const OTHER = '44444444-4444-4444-4444-444444444444';
+    state.accountDeleted.push({ user_hash: hmac(OTHER), created_at: DELETED_AT }); // even with "proof"
+    state.failures.push({ re: /^INSERT INTO users/, times: 5, ...failure });
+    const s = subscriptionFixture({ metadata: { user_id: OTHER }, customer: 'cus_other', latest_invoice: paidInvoice() });
+    h.subs.sub_test_1 = s;
+    assert.equal((await raw(envelope('customer.subscription.created', s))).status, 500);
+    assertNoStripeWrite();
+    assert.equal(qa72Alerts().length, 0);
+  });
+
+  test(`L-1: the defensive users upsert failing with ${label} -> 500 and NO Stripe write (invoice.paid)`, async () => {
+    const OTHER = '44444444-4444-4444-4444-444444444444';
+    state.accountDeleted.push({ user_hash: hmac(OTHER), created_at: DELETED_AT });
+    state.failures.push({ re: /^INSERT INTO users/, times: 5, ...failure });
+    h.subs.sub_test_1 = subscriptionFixture({ metadata: { user_id: OTHER }, customer: 'cus_other', latest_invoice: paidInvoice() });
+    const inv = invoiceFixture({ id: 'in_orphan_1', customer: 'cus_other',
+      parent: { type: 'subscription_details', subscription_details: { subscription: 'sub_test_1', metadata: { user_id: OTHER } } } });
+    assert.equal((await raw(envelope('invoice.paid', inv))).status, 500);
+    assertNoStripeWrite();
+  });
+}
+
+// ---- L-2: only our subscription prices; the no-user branch -------------------
+
+test('L-2: checkout.session.completed for a session NOT on one of our prices is ignored: no Stripe call, no QA-72 alert', async () => {
+  h.subs.sub_test_1 = sub();
+  for (const meta of [{ user_id: GONE, price_id: 'price_someone_else' }, { user_id: GONE }, {}]) {
+    assert.equal((await raw(envelope('checkout.session.completed', checkoutSession(meta)))).status, 200);
+  }
+  assertNoStripeWrite();
+  assert.equal(calls('subscriptions.retrieve').length, 0);
+  assert.equal(qa72Alerts().length, 0);
+});
+
+test('L-2: checkout.session.completed on our price with NO user (unknown customer) -> alert only, no Stripe write, 200', async () => {
+  h.subs.sub_test_1 = sub({ metadata: {}, customer: 'cus_nobody' });
+  const res = await raw(envelope('checkout.session.completed', checkoutSession({ price_id: PRICE.pro }, { customer: 'cus_nobody' })));
+  assert.equal(res.status, 200);
+  assertNoStripeWrite();
+  const [a] = qa72Alerts();
+  assert.ok(a, 'the no-user branch must page a human');
+  assert.equal(a.opts.extra.trigger, 'checkout_session_completed');
+  assert.equal(a.opts.extra.account, 'no_user');
+  assert.equal(a.opts.extra.customer, 'cus_nobody');
+});
+
+test('L-2: checkout.session.completed on our price for a LIVE account -> nothing at all', async () => {
+  h.subs.sub_test_1 = sub({ metadata: { user_id: LIVE }, customer: 'cus_live' });
+  assert.equal((await raw(envelope('checkout.session.completed', checkoutSession({ user_id: LIVE, price_id: PRICE.pro }, { customer: 'cus_live' })))).status, 200);
+  assertNoStripeWrite();
+  assert.equal(qa72Alerts().length, 0);
+});
+
+test('L-2: a proven-deleted account whose subscription is on a FOREIGN price (provider re-check) -> no Stripe write, alerted', async () => {
+  const foreign = sub({ items: { object: 'list', data: [{ id: 'si_x', object: 'subscription_item', price: { id: 'price_someone_else' } }] } });
+  h.subs.sub_test_1 = foreign;
+  const inv = invoiceFixture({ id: 'in_orphan_1', customer: 'cus_gone',
+    parent: { type: 'subscription_details', subscription_details: { subscription: 'sub_test_1', metadata: { user_id: GONE } } } });
+  assert.equal((await raw(envelope('invoice.paid', inv))).status, 200);
+  assertNoStripeWrite();
+  const [a] = qa72Alerts();
+  assert.match(a.message, /not on one of our prices/);
+  assert.equal(a.opts.extra.foreign_price, true);
+});
+
+// ---- L-4: a refund that can never succeed is alerted + audited, not looped ----
+
+for (const code of ['charge_disputed', 'refund_disputed_payment', 'charge_not_refundable', 'charge_expired_for_capture']) {
+  test(`L-4: refund refused with ${code} -> cancelled, "by hand" alert + audit row, 200 (not a 3-day 500 loop)`, async () => {
+    h.subs.sub_test_1 = sub();
+    st.refundErrors.push(stripeErr('refused', { code, type: 'StripeInvalidRequestError', statusCode: 400 }));
+    assert.equal((await raw(envelope('customer.subscription.created', sub()))).status, 200);
+    assert.equal(calls('subscriptions.cancel').length, 1);
+    const [a] = qa72Alerts();
+    assert.match(a.message, /by hand/);
+    assert.equal(a.opts.extra.refund_refused_code, code);
+    assert.equal(a.opts.extra.refund_gap_invoice, 'in_orphan_1');
+    const rows = audit();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].refund_refused_code, code);
+  });
+}
+
+test('L-4: a charge already marked disputed is not even sent a refund; alerted for a human', async () => {
+  h.subs.sub_test_1 = sub();
+  const H = globalThis.__harness;
+  const prev = H.install;
+  H.install = (c) => {
+    prev(c);
+    c.invoicePayments.list = async (params, ropts) => {
+      H.calls.push({ api: 'invoicePayments.list', params, ropts });
+      return { object: 'list', has_more: false, data: [{ id: 'inpay_1', status: 'paid', payment: { type: 'payment_intent',
+        payment_intent: { id: 'pi_orphan_1', latest_charge: { id: 'ch_1', refunded: false, disputed: true } } } }] };
+    };
+  };
+  h.mod._resetStripeClientForTests();
+  assert.equal((await raw(envelope('customer.subscription.created', sub()))).status, 200);
+  assert.equal(calls('refunds.create').length, 0);
+  assert.equal(qa72Alerts()[0].opts.extra.refund_refused_code, 'charge_disputed');
+});
+
+for (const [label, err] of [
+  ['rate limited', { type: 'StripeRateLimitError', statusCode: 429, code: 'rate_limit' }],
+  ['balance_insufficient', { type: 'StripeInvalidRequestError', statusCode: 400, code: 'balance_insufficient' }],
+  ['an API error', { type: 'StripeAPIError', statusCode: 500 }],
+]) {
+  test(`L-4: a RETRYABLE refund refusal (${label}) is still a 500 with no "by hand" alert`, async () => {
+    h.subs.sub_test_1 = sub();
+    st.refundErrors.push(stripeErr('refused', err));
+    assert.equal((await raw(envelope('customer.subscription.created', sub()))).status, 500);
+    assert.equal(qa72Alerts().filter((a) => /by hand/.test(a.message)).length, 0);
+  });
+}
+
+test('L-4: a permanent refusal on a REDELIVERY (already cancelled by us, nothing cancelled now) is still alerted AND audited', async () => {
+  h.subs.sub_test_1 = sub({ status: 'canceled', cancellation_details: { comment: MARK, reason: 'cancellation_requested' } });
+  st.refundErrors.push(stripeErr('refused', { code: 'charge_disputed', type: 'StripeInvalidRequestError', statusCode: 400 }));
+  assert.equal((await raw(envelope('customer.subscription.updated', sub()))).status, 200);
+  assert.equal(calls('subscriptions.cancel').length, 0);
+  const [a] = qa72Alerts();
+  assert.match(a.message, /by hand/);
+  assert.equal(a.opts.extra.cancelled, false);
+  const rows = audit();
+  assert.equal(rows.length, 1, 'the refused refund must leave an audit row even when nothing was cancelled now');
+  assert.equal(rows[0].refund_refused_code, 'charge_disputed');
 });

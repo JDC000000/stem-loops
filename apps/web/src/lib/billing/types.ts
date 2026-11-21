@@ -309,11 +309,33 @@ export interface BillingProvider {
    *  `deadlineMs` (epoch ms), and on any refusal. Safe to call again. */
   expireOpenCheckoutSessions(customerId: string, deadlineMs: number): Promise<{ expired: string[] }>;
 
-  /** QA-72 webhook backstop. A subscription whose account no longer exists:
+  /** QA-72 webhook backstop. A subscription whose account was PROVEN deleted
+   *  through the app (the caller checked the account_deleted audit row):
    *  cancel it now and give the money back (see OrphanSubscriptionResult).
-   *  Throws on any refusal or when `deadlineMs` would be passed; safe to call
-   *  again (every step re-reads provider state first). */
-  closeOrphanSubscription(subscriptionId: string, deadlineMs: number): Promise<OrphanSubscriptionResult>;
+   *  Never called without that proof (review M-2). Throws on any retryable
+   *  refusal or when `deadlineMs` would be passed; safe to call again (every
+   *  step re-reads provider state first). */
+  closeOrphanSubscription(
+    subscriptionId: string,
+    deadlineMs: number,
+    opts: OrphanCloseOptions,
+  ): Promise<OrphanSubscriptionResult>;
+}
+
+/** Inputs of closeOrphanSubscription (QA-72, review M-1 / M-3). */
+export interface OrphanCloseOptions {
+  /** The cancellation comment this subscription's backstop cancel writes and
+   *  is recognised by: an HMAC over the subscription id keyed with a server
+   *  secret, computed by the caller. Compared in constant time. A customer
+   *  cannot type it (they do not know the key), so a portal comment can never
+   *  authorise a refund (review M-1). */
+  marker: string;
+  /** When the account was deleted (epoch ms, the account_deleted audit row). */
+  deletedAtMs: number;
+  /** invoice.paid: the invoice that was paid. Refunded in full when it was
+   *  paid at or after deletedAtMs, even on a subscription the deletion itself
+   *  cancelled (review M-3: a renewal paid after the account was gone). */
+  paidInvoiceId?: string | null;
 }
 
 /** What closeOrphanSubscription did (QA-72). Provider ids only, no personal data. */
@@ -325,21 +347,35 @@ export interface OrphanSubscriptionResult {
   /** This call cancelled it. */
   cancelled: boolean;
   /** It is cancelled and WE cancelled it as an orphan (now or on an earlier
-   *  delivery). Only then is its invoice refunded: a subscription the account
-   *  deletion itself cancelled was paid for a period the user had. */
+   *  delivery), recognised by the HMAC marker. Only then is its latest
+   *  invoice refunded: a subscription the account deletion itself cancelled
+   *  was paid for a period the user had. */
   ours: boolean;
-  /** Never-paid first invoice voided by this call. */
+  /** Review L-2: one of its items is not on one of our subscription prices
+   *  (a Dashboard / Payment Link product). Nothing was written at the
+   *  provider; the caller alerts a human. */
+  foreignPrice: boolean;
+  /** Open invoice voided by this call (it would stay payable). */
   voidedInvoiceId: string | null;
-  /** Refunds created by this call (one per paid payment of the latest invoice). */
+  /** Invoices this call refunded (or found refunded): the latest one of a
+   *  subscription that is ours, and/or a paid-after-deletion one (M-3). */
+  refundedInvoiceIds: string[];
+  /** The paidInvoiceId was paid at or after the deletion (review M-3). */
+  paidAfterDeletion: boolean;
+  /** Refunds created by this call (one per paid payment of each invoice). */
   refundIds: string[];
   /** Minor units refunded by this call. */
   amountRefunded: number;
   currency: string | null;
-  /** The latest invoice's payment was already refunded (an earlier delivery). */
+  /** An invoice's payment was already refunded (an earlier delivery). */
   alreadyRefunded: boolean;
   /** Set to the invoice id when it is paid, with money on it, but the
-   *  provider listed no refundable payment for it: a human must refund it. */
+   *  provider listed no refundable payment for it, or refused a refund that
+   *  can never succeed (review L-4: e.g. a disputed charge): a human must
+   *  settle it. */
   refundGapInvoiceId: string | null;
+  /** Review L-4: the provider's code for a refund that can never succeed. */
+  refundRefusedCode: string | null;
 }
 
 export class NotImplementedError extends Error {

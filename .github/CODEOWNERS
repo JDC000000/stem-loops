@@ -21,7 +21,7 @@
 # Pattern rules: last-match-wins per file.
 #
 # ─── 2026-11-05 T1+T2 trim ───────────────────────────────────────────────────
-# Reduced from ~40 patterns to the 8 below. Previous breadth was imported from
+# Reduced from ~40 patterns to the 8 below (9 since M2, 2026-11-13). Previous breadth was imported from
 # a multi-tenant SaaS context (MyZone brief) and inappropriate for a solo
 # lifestyle-business repo. Subagent writes to removed surfaces are now
 # guarded by `.claude/settings.json` deny rules instead.
@@ -40,6 +40,8 @@
 #   6  .github/workflows/**
 #   7  .github/CODEOWNERS
 #   8  AGENTS.md
+#   9  scripts/**   (added 2026-11-13 with the M2 class-auto arm; widened in M2 v1.3
+#                   from scripts/m2_verdict.py to the whole directory, REVIEW-3 MF-E)
 #
 # Audited 2026-11-05: the regex covers all 8, so there is no live GAP or LEAK.
 # Both this header and the workflow previously said "6", which is why the
@@ -81,3 +83,13 @@ apps/worker/migrations/*_v3_commercial*.sql     @JDC000000
 # session reading AGENTS.md at start.
 # ──────────────────────────────────────────────────────────────────────────────
 AGENTS.md                                       @JDC000000
+
+# ──────────────────────────────────────────────────────────────────────────────
+# M2 class-auto verdict (2026-11-13). auto-merge.yml runs scripts/m2_verdict.py,
+# from the BASE branch, to decide whether the bot may merge a PR with no human.
+# The WHOLE directory is owned, not one file (M2 v1.3, REVIEW-3 MF-E): the gate
+# read scripts/_gate_exit.py, and a new file such as scripts/secrets.py could
+# shadow a stdlib import. The other gates (check_*.py, safe_merge.sh) live here
+# too, so they are merge machinery as well.
+# ──────────────────────────────────────────────────────────────────────────────
+scripts/**                                      @JDC000000

@@ -15,6 +15,35 @@
 #                              review. Implementation is out of the allowlist
 #                              again; it takes the STANDARD path above.
 #     * NOT needs-jon-approval — hard stop regardless
+#   M2 CLASS-AUTO (2026-11-13, post-CI path ONLY; no label is read or written):
+#     * ENVIRONMENT variable AUTOMERGE_CLASS_AUTO of `m2-review` is exactly `on`
+#       (the kill switch; M2 v1.4). GitHub's docs disagree on whether a write
+#       collaborator can change environment variables by REST; M2-PACK Monday
+#       step 3 checks it. Anything acting as the owner can.
+#       A REPOSITORY variable is not enough and is refused: GitHub resolves
+#       environment > repository > organization, so if the environment value
+#       were absent a repository value (settable by any collaborator with write
+#       access, e.g. the bot account) would stand in for it. The job
+#       `m2-switch-scope` below runs with NO environment, so it sees only
+#       repository/organization values; if either AUTOMERGE_CLASS_AUTO or
+#       REVIEWER_API_KEY exists there it FAILS, and on that (fresh) run this
+#       whole job is skipped. A partial re-run of this job alone reuses the old
+#       probe: the labelled arms still run then; M2 does not (attempt check).
+#       Otherwise it hands `environment-only` to the resolve step, the m2 step
+#       and the script, each of which refuses without it.
+#     * v1.4.1: the probe also outputs the run attempt it ran in. resolve, the
+#       m2 step and the script refuse unless it equals THIS job's run attempt, so
+#       re-running only this job on an old run (which reuses the old probe's
+#       outputs) can never reach M2 (REVIEW-5 MF-K).
+#     * every check above still applies: M-1 all check-runs green on the head,
+#       codeowners_block() computed inline, needs-jon-approval absent
+#     * scripts/m2_verdict.py, checked out from the BASE branch (never PR code),
+#       returns exit 0: every file is in class A by name, no red flag, under the
+#       daily cap, and a non-Claude reviewer (REVIEWER_API_KEY) returns PASS.
+#       Any other exit, any error, any missing input: no merge. See that file.
+#     * it posts its verdict as a PR comment first; if the comment fails, no merge
+#     * the job runs in Environment `m2-review` (deployment branch v3/main only),
+#       which holds REVIEWER_API_KEY; see the job's `environment:` comment
 # When conditions hold, the merge step calls REST
 # `PUT /repos/{owner}/{repo}/pulls/{N}/merge` directly. GitHub's required
 # status checks still gate the actual merge — and as of 2026-11-05 the
@@ -123,9 +152,74 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ── M2 v1.4 (2026-11-13): THE KILL SWITCH MUST LIVE ONLY IN m2-review ─────
+  # No `environment:` here, on purpose: this job sees repository- and
+  # organization-level variables and secrets ONLY. A non-empty value means
+  # someone set the switch (or the reviewer key) outside the owner-configured
+  # environment, so this job fails. That fails the M2 gate, and because
+  # enable-auto-merge `needs:` this job, it also stops the labelled arms (on
+  # every fresh run; a partial re-run reuses an old probe) until Jon deletes
+  # the repository value: a raised switch outside m2-review is an
+  # incident, not a configuration. No token, no checkout, no write permission.
+  m2-switch-scope:
+    name: M2 switch scope (refuse a repository-level AUTOMERGE_CLASS_AUTO)
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      scope: ${{ steps.probe.outputs.scope }}
+      # v1.4.1 (REVIEW-5 MF-K): the attempt this probe ran in. A partial re-run
+      # of enable-auto-merge reuses this job's old outputs, so the old attempt.
+      attempt: ${{ steps.probe.outputs.attempt }}
+    steps:
+      - name: Refuse a repository- or organization-level switch or reviewer key
+        id: probe
+        env:
+          # Evaluated with no environment, so only repository/organization values.
+          OUTSIDE_SWITCH: ${{ vars.AUTOMERGE_CLASS_AUTO }}
+          # A boolean, never the value: 'false' when no such secret exists here.
+          OUTSIDE_KEY: ${{ secrets.REVIEWER_API_KEY != '' }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          bad=""
+          if [ -n "${OUTSIDE_SWITCH:-}" ]; then
+            bad="a repository- or organization-level variable AUTOMERGE_CLASS_AUTO exists"
+          fi
+          if [ "${OUTSIDE_KEY:-}" != "false" ]; then
+            bad="${bad:+$bad; }a repository- or organization-level secret REVIEWER_API_KEY exists (or could not be ruled out)"
+          fi
+          if [ -n "$bad" ]; then
+            echo "::error::M2: $bad. Both may live ONLY in Environment m2-review. Delete it under Settings > Secrets and variables > Actions. Auto-merge is stopped until then."
+            exit 1
+          fi
+          echo "M2: no repository- or organization-level switch or reviewer key."
+          if ! [[ "${RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::M2: run attempt unreadable; not proving scope."
+            exit 1
+          fi
+          printf 'scope=environment-only\nattempt=%s\n' "$RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
   enable-auto-merge:
     name: Enable auto-merge on rollback-safe + adversarial-reviewed PRs
     runs-on: ubuntu-latest
+    # M2 (2026-11-13): REVIEWER_API_KEY is an ENVIRONMENT secret of `m2-review`,
+    # whose deployment branches are limited to v3/main. Workflows running on any
+    # other ref (a PR branch's own pull_request run, a push to a feature branch)
+    # cannot read it. Consequence, accepted: this job now fails for a
+    # pull_request_target event whose base is not v3/main (its ref is not
+    # allowed), so the labelled arms work only for PRs into v3/main.
+    environment: m2-review
+    # M2 v1.4.4: job-level permissions REPLACE the workflow-level ones, so the
+    # three workflow-level keys are repeated here. statuses: write is for the
+    # m2 step's ask ledger only (m2_verdict.py records each reviewer ask as a
+    # commit status before it asks); drop-stale-review does not get it.
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+      statuses: write
+    # M2 v1.4: if m2-switch-scope fails, this job is skipped (no always() below).
+    needs: m2-switch-scope
     # synchronize is excluded: new commits invalidate the review verdict, so the
     # drop-stale-review job below handles that event instead.
     # Two merge paths:
@@ -163,6 +257,13 @@ jobs:
           EV_SHA: ${{ github.event.pull_request.head.sha }}
           EV_REF: ${{ github.event.pull_request.head.ref }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          # M2 kill switch, resolved in Environment m2-review. Unset -> empty -> off.
+          CLASS_AUTO: ${{ vars.AUTOMERGE_CLASS_AUTO }}
+          # M2 v1.4: `environment-only` only if no repository-level switch exists.
+          SWITCH_SCOPE: ${{ needs.m2-switch-scope.outputs.scope }}
+          # v1.4.1 (MF-K): the probe must have run in THIS attempt.
+          PROBE_ATTEMPT: ${{ needs.m2-switch-scope.outputs.attempt }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           emit() { printf 'proceed=%s\npr=%s\nsha=%s\nref=%s\n' "$1" "${2:-}" "${3:-}" "${4:-}" >> "$GITHUB_OUTPUT"; }
@@ -225,7 +326,7 @@ jobs:
           # .github/CODEOWNERS. There are now THREE copies of this path set;
           # scripts/check_codeowners_drift.py fails CI if they diverge, so do
           # not hand-sync them and hope.
-          CO_RE='^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$)'
+          CO_RE='^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$|scripts/)'
 
           BLOCK_REASON=""
           # Sets BLOCK_REASON and returns 0 when the PR must go to Jon.
@@ -326,10 +427,113 @@ jobs:
           }
           if fresh fast-path || { has rollback-safe && fresh adversarial-reviewed; }; then
             echo "PR #$PR: CI green on $RUN_SHA and approval labels are live and fresh."
-          else
-            skip "PR #$PR lacks fresh fast-path or rollback-safe+adversarial-reviewed (commit $COMMIT_AT)"
+            emit true "$PR" "$RUN_SHA" "$(jq -r .head.ref <<<"$PR_JSON")"
+            exit 0
           fi
-          emit true "$PR" "$RUN_SHA" "$(jq -r .head.ref <<<"$PR_JSON")"
+
+          # ── M2 CLASS-AUTO HAND-OFF (2026-11-13) ──
+          # Reached only with: CI green on the live head (M-1 above), no
+          # CODEOWNERS path (computed above), no needs-jon-approval label, and
+          # no fresh approval labels. proceed stays FALSE here: only the m2 step
+          # below can turn this into a merge, and only on exit 0.
+          if [ "${CLASS_AUTO:-}" != "on" ]; then
+            skip "PR #$PR lacks fresh fast-path or rollback-safe+adversarial-reviewed (commit $COMMIT_AT), and the M2 class-auto arm is off"
+          fi
+          if [ "${SWITCH_SCOPE:-}" != "environment-only" ]; then
+            skip "PR #$PR: the M2 switch is not proven to come from Environment m2-review only"
+          fi
+          if [ -z "${PROBE_ATTEMPT:-}" ] || [ "$PROBE_ATTEMPT" != "${RUN_ATTEMPT:-}" ]; then
+            skip "PR #$PR: the switch-scope probe did not run in this attempt (a partial re-run); M2 needs a fresh CI completion"
+          fi
+          echo "PR #$PR: no approval labels; handing to the M2 class-auto verdict."
+          emit false "$PR" "$RUN_SHA" "$(jq -r .head.ref <<<"$PR_JSON")"
+          echo "m2_candidate=true" >> "$GITHUB_OUTPUT"
+
+      # ── M2 CLASS-AUTO VERDICT (2026-11-13) ──────────────────────────────
+      # The verdict script runs from the BASE branch, so a PR cannot change
+      # the code that judges it. No credential is persisted in the checkout.
+      # The OpenAI key is in this one step's env only; the App token is minted
+      # later and never shares a step with it.
+      - name: M2 - check out the base branch (never PR code)
+        if: steps.resolve.outputs.m2_candidate == 'true'
+        # Pinned by commit (v4.4.0): this job holds a write token, the App key
+        # and the reviewer key, so a moved tag must not change what runs here.
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          path: base
+
+      - name: M2 - class-auto verdict (non-Claude review; fails closed)
+        id: m2
+        if: steps.resolve.outputs.m2_candidate == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr }}
+          HEAD_SHA: ${{ steps.resolve.outputs.sha }}
+          M2_SWITCH: ${{ vars.AUTOMERGE_CLASS_AUTO }}
+          M2_SWITCH_SCOPE: ${{ needs.m2-switch-scope.outputs.scope }}
+          M2_PROBE_ATTEMPT: ${{ needs.m2-switch-scope.outputs.attempt }}
+          M2_RUN_ATTEMPT: ${{ github.run_attempt }}
+          # Pinned here, in a CODEOWNERS file. Must be a non-Claude model (R-7);
+          # the script refuses any name containing "claude".
+          M2_MODEL: gpt-5.4
+          OPENAI_API_KEY: ${{ secrets.REVIEWER_API_KEY }}
+        # No `set -e`: every path must reach the single write of `pass` at the
+        # end. If this step dies anyway, `pass` is never written, and an unset
+        # output is not 'true', so the merge steps below do not run.
+        run: |
+          PASS=false
+          rc=none
+          # The gate runs ONLY the two files Jon reviewed, byte for byte. Both are
+          # under scripts/, a CODEOWNERS path, and both are pinned here, in another.
+          # Changing either file means changing this pin, in a PR Jon reviews.
+          # `python3 -I` keeps base/scripts off sys.path, so no other file in the
+          # checkout (a new scripts/secrets.py, say) is ever imported in this step.
+          M2_PINS='97b7ed591cc62bc93da9b8d4a38ccb836d1ccd7b1a990364a684ab561e8d262d  base/scripts/m2_verdict.py
+          7244c0a74d42a08f24b2345d47d1daa89038ae6a77e5d57e5d0791f8475fa587  base/scripts/_gate_exit.py'
+          if [ "${M2_SWITCH_SCOPE:-}" != "environment-only" ]; then
+            rc=scope
+            echo "::warning::M2: the switch is not proven to come from Environment m2-review only; not merging."
+          elif [ -z "${M2_PROBE_ATTEMPT:-}" ] || [ "$M2_PROBE_ATTEMPT" != "${M2_RUN_ATTEMPT:-}" ]; then
+            rc=attempt
+            echo "::warning::M2: the switch-scope probe did not run in this attempt; not merging."
+          elif [ ! -f base/scripts/m2_verdict.py ]; then
+            echo "::warning::M2: scripts/m2_verdict.py is not on the base branch; not merging."
+          elif [ -n "$(find base/scripts \( -name __pycache__ -o -name '*.pyc' -o -name '*.pyo' \) -print -quit)" ]; then
+            # Cached bytecode is not covered by the source pins (REVIEW-4 C11a).
+            # The script never imports it, but a committed .pyc is refused anyway.
+            rc=pyc
+            echo "::warning::M2: base/scripts carries committed bytecode; not merging."
+          elif ! printf '%s\n' "$M2_PINS" | sed 's/^ *//' | sha256sum --check --strict --quiet - ; then
+            rc=pin
+            echo "::warning::M2: the gate files on the base branch do not match this workflow's pins; not merging."
+          else
+            rc=0
+            python3 -I base/scripts/m2_verdict.py --out m2-verdict.md || rc=$?
+            echo "M2: m2_verdict.py exit $rc (0 PASS, 1 not mergeable by M2, 2 broken, 3 not checked)"
+            posted=false
+            if [ -s m2-verdict.md ]; then
+              if gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@m2-verdict.md > /dev/null; then
+                posted=true
+              else
+                echo "::warning::M2: could not post the verdict comment. The daily cap counts these comments, so no merge."
+              fi
+            fi
+            # Three conditions, each on its own enough to refuse: exit 0, the comment
+            # posted (the cap counts comments), and that comment's first line is the
+            # PASS marker for THIS head. The script writes that marker only with a
+            # model PASS on the record, so an exit code alone can never merge.
+            marker="<!-- m2-verdict PASS sha=$HEAD_SHA -->"
+            if [ "$rc" = "0" ] && [ "$posted" = "true" ] && [ "$(head -n 1 m2-verdict.md)" = "$marker" ]; then
+              PASS=true
+            elif [ "$rc" = "2" ] || [ "$rc" = "3" ]; then
+              echo "::warning::M2: verdict could not be reached (exit $rc); PR #$PR_NUMBER goes to the daily card."
+            fi
+          fi
+          echo "M2: pass=$PASS for PR #$PR_NUMBER at $HEAD_SHA"
+          echo "pass=$PASS" >> "$GITHUB_OUTPUT"
 
       # L2.1 — mint a short-lived GitHub App installation token.
       #
@@ -348,7 +552,7 @@ jobs:
       # why this is continue-on-error rather than a conditional.
       - name: Mint GitHub App token (optional — falls back to BOT_TOKEN)
         id: apptoken
-        if: steps.resolve.outputs.proceed == 'true'
+        if: steps.resolve.outputs.proceed == 'true' || steps.m2.outputs.pass == 'true'
         continue-on-error: true
         uses: actions/create-github-app-token@v2
         with:
@@ -356,7 +560,7 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Report which credential will be used
-        if: steps.resolve.outputs.proceed == 'true'
+        if: steps.resolve.outputs.proceed == 'true' || steps.m2.outputs.pass == 'true'
         env:
           HAVE_APP: ${{ steps.apptoken.outputs.token != '' }}
           HAVE_BOT: ${{ secrets.BOT_TOKEN != '' }}
@@ -372,7 +576,7 @@ jobs:
           fi
 
       - name: Enable auto-merge (squash, delete branch) — REST fallback for fine-grained PATs
-        if: steps.resolve.outputs.proceed == 'true'
+        if: steps.resolve.outputs.proceed == 'true' || steps.m2.outputs.pass == 'true'
         env:
           # From the `resolve` step. Passed via env, not interpolated into the
           # script, because head.ref is attacker-controllable text.

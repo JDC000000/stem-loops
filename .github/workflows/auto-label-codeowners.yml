@@ -47,12 +47,13 @@ jobs:
           # by .claude/settings.json deny rules (for subagents) and the main
           # session's safe_merge.sh discipline. See claude/session-7-handover.md §4.
           #
-          # Alternation, in order, 8 terms:
+          # Alternation, in order, 9 terms:
           #   1 apps/web/src/lib/billing/        5 commercial migrations
           #   2 apps/worker/src/worker/billing/  6 .github/workflows/
           #   3 apps/web/src/app/api/billing/    7 .github/CODEOWNERS
           #   4 apps/web/src/app/api/entitlements/  8 AGENTS.md
-          if echo "$changed" | grep -qE '^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$)'; then
+          #   9 scripts/** (M2 v1.3, 2026-11-13: the gate code that decides a no-human merge, and everything it could import)
+          if echo "$changed" | grep -qE '^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$|scripts/)'; then
             echo "PR touches a CODEOWNERS path. Applying needs-jon-approval label."
             gh pr edit "$PR_NUM" --repo "$REPO" --add-label needs-jon-approval
           else

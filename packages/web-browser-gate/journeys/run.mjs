@@ -24,6 +24,7 @@ const ALL = [
   // Slice 2a: a signed-out visitor plays a demo song at 390×844 and 360×800.
   'j9-demo-signed-out',
   'j10-link-signin-first',
+  'j11-library',
   'j12-set-lists',
 ];
 

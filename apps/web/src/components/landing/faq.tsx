@@ -111,7 +111,8 @@ export function faqEntries(chords: boolean = chordsLineShown()): Record<string, 
         {/* Source of truth: 24 hours = RETENTION_HOURS, 30 days = PAID_RETENTION_GRACE_DAYS
             (lib/retention.ts; migration 007). Pinned by test/chords-switch-surfaces.test.mjs. */}
         Sources, stems and loops are deleted after 24 hours. With a subscription, the songs in your
-        account are kept as a library while you subscribe, and for 30 days after it ends. Anyone holding the link to a
+        account are kept as a library while you subscribe, and for 30 days after it ends. When a song’s audio is
+        deleted, your library keeps its title, BPM and key (never the audio) so you can make it again. Anyone holding the link to a
         job you start without an account can fetch its audio and stems, so don’t pass that link around. A job you start
         while signed in opens only for your account. More in the <a href="/privacy">privacy notice</a>.
       </p>

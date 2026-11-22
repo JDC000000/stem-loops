@@ -294,7 +294,7 @@ for (const user of [null, USER]) {
     for (const m of prices) assert.ok(m[1].startsWith(' CAD'), `price without currency: ${m[0]}`);
     // The benefit line comes before the price and the bullets (it LEADS the card).
     // Retention is said once, in RETENTION_BULLET's exact words, never paraphrased.
-    assert.ok(textOf(s.Free).includes('Songs deleted after 24 hours'));
+    assert.ok(textOf(s.Free).includes('Audio deleted after 24 hours; songs stay in your library'));
     for (const n of ['Pro', 'Studio']) assert.ok(textOf(s[n]).includes('Song library: kept while you subscribe, plus 30 days'), n);
     assert.doesNotMatch(all, /library is kept/i);
     for (const [name, line] of [['Free', '5 songs a month'], ['Pro', '50 songs a month'], ['Studio', '150 songs a month']]) {

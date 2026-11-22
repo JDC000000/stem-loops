@@ -17,6 +17,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 import { withDom } from './helpers/dom.mjs';
+import { buildModuleGraph } from './helpers/module-graph.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => readFileSync(join(WEB, p), 'utf8');
@@ -25,45 +26,19 @@ const toJs = (src) =>
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
   }).outputText;
 
-const cache = join(WEB, 'node_modules/.cache');
-mkdirSync(cache, { recursive: true });
-const dir = mkdtempSync(join(cache, 'history-demo-row-'));
-const put = (name, code) => {
-  writeFileSync(join(dir, name), code);
-  return './' + name;
-};
-
-const retentionMod = put('retention.mjs', toJs(read('src/lib/retention.ts')));
-const jobLabelMod = put('job-label.mjs', toJs(read('src/lib/job-label.ts')));
-const youtubeUrlMod = put('youtube-url.mjs', toJs(read('src/lib/youtube-url.ts')));
-const songThumbMod = put(
-  'song-thumb.mjs',
-  toJs(read('src/lib/song-thumb.ts')).replace(/from ['"]\.\/youtube-url\.ts['"]/g, `from '${youtubeUrlMod}'`),
-);
-const libraryMod = put(
-  'library.mjs',
-  toJs(read('src/lib/library.ts'))
-    .replace(/from ['"]\.\/job-label\.ts['"]/g, `from '${jobLabelMod}'`)
-    .replace(/from ['"]\.\/song-thumb\.ts['"]/g, `from '${songThumbMod}'`)
-    .replace(/from ['"]\.\/retention\.ts['"]/g, `from '${retentionMod}'`),
-);
-const historyMod = put('history.mjs', 'export const getHistoryEntries = () => globalThis.__browserHistory ?? [];');
-
-const pageJs = toJs(read('src/app/history/page.tsx'))
-  .replace(/from ['"]@\/lib\/history['"]/g, `from '${historyMod}'`)
-  .replace(/from ['"]@\/lib\/retention['"]/g, `from '${retentionMod}'`)
-  .replace(/from ['"]@\/lib\/library['"]/g, `from '${libraryMod}'`);
-writeFileSync(join(dir, 'page.mjs'), pageJs);
-
-const UNRESOLVED = [
-  ...[pageJs, read('src/lib/library.ts')].flatMap((js) => [...js.matchAll(/from ['"]([^'"]+)['"]/g)].map((m) => m[1])),
-]
-  .filter((spec) => !spec.startsWith('.'))
-  .filter((spec) => spec !== 'react' && spec !== 'react/jsx-runtime');
+// Phase B, B1: the page now renders components/library/LibraryList.tsx (search, sort, the
+// expired rows); the REAL module graph is loaded (helpers/module-graph.mjs), only the browser
+// history is stubbed.
+const graph = buildModuleGraph({
+  name: 'history-demo-row',
+  entries: ['app/history/page.tsx', 'lib/retention.ts'],
+  overrides: { 'lib/history.ts': 'export const getHistoryEntries = () => globalThis.__browserHistory ?? [];' },
+});
+const UNRESOLVED = [];
 
 const React = (await import('react')).default;
-const HistoryPage = (await import(pathToFileURL(join(dir, 'page.mjs')).href)).default;
-const { DEMO_RETAINED_UNTIL } = await import(pathToFileURL(join(dir, 'retention.mjs')).href);
+const HistoryPage = (await import(graph.url('app/history/page.tsx'))).default;
+const { DEMO_RETAINED_UNTIL } = await import(graph.url('lib/retention.ts'));
 
 // Installed ONCE before any withDom() (see job-view-poll.test.mjs): each test swaps `songs`.
 let songs = [];

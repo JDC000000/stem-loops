@@ -86,7 +86,8 @@ test('privacy: the 24-hour deletion sentence names the chord track, as a whole s
   // gate. Scoped to the "How long" section and ^/$-anchored on BOTH normalisations, so a
   // sentence that merely contains these words elsewhere, or one with the clause removed,
   // does not satisfy it. The 'i' flag is dropped: casing is part of the sentence.
-  const how = section(page, 'How long', 'Account details are not');
+  // Phase B, B1: the library paragraph follows these two (pinned whole in the next test).
+  const how = section(page, 'How long', 'Your song library outlives that');
   // 2026-11-15 (Jon): the 24 h sentence now names WHO it applies to, and the paid library
   // follows it. Pinned whole, both paragraphs, so dropping Free's exactness or the paid
   // grace terms is a red test. The rule itself: lib/retention.ts JOB_RETAINED_UNTIL_SQL.
@@ -101,6 +102,23 @@ test('privacy: the 24-hour deletion sentence names the chord track, as a whole s
   const re = new RegExp(`^${phrase(sentence).source}\\s*$`);
   assert.match(how.textSpaced.trim(), re, 'privacy (tags\u2192space): the 24-hour sentence changed');
   assert.match(how.textTight.trim(), re, 'privacy (tags\u2192nothing): the 24-hour sentence changed');
+});
+
+test('privacy (Phase B, PB-1): the library and set lists outlive the 24 hours, as a whole paragraph', async () => {
+  const page = await renderPage(PRIVACY);
+  const lib = section(page, 'Your song library outlives that', 'Account details are not');
+  const para =
+    'Your song library outlives that. For a song you started while signed in, we keep its link (or file name), ' +
+    'title, video id, BPM and key after its audio is deleted, so it stays in your library marked \u201cAudio expired\u201d ' +
+    'and you can make it again. Nothing made from the audio is kept. That record stays until you remove the song ' +
+    'from your library or delete your account. Set lists you make (their names and the songs in them) are kept ' +
+    'until you delete them or your account.';
+  const re = new RegExp(`^${phrase(para).source}\\s*$`);
+  assert.match(lib.textSpaced.trim(), re, 'privacy: the library retention paragraph changed');
+  assertSays(assert, page, 'your song library keeps its link or file name, title, BPM and key until you remove it or delete your account', 'privacy');
+  assertSays(assert, page, 'It also removes your song library and your set lists.', 'privacy');
+  // Kept unchanged (PB-1): the saved chord corrections disclosure.
+  assertSays(assert, page, 'Chord corrections you save', 'privacy');
 });
 
 test('privacy: a fragment of each known 24-hour survivor is still present', async () => {

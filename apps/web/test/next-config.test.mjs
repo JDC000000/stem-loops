@@ -50,5 +50,5 @@ test('the app does not import next/image (so unoptimized changes no rendered pag
     if (e.status !== 1) throw e; // 1 = no match
   }
   assert.equal(hits.trim(), '', `next/image is imported in:\n${hits}`);
-  assert.ok(readFileSync(join(WEB, 'src/app/history/page.tsx'), 'utf8').includes('<img'));
+  assert.ok(readFileSync(join(WEB, 'src/components/library/LibraryList.tsx'), 'utf8').includes('<img'));
 });

@@ -552,6 +552,6 @@ test('CHORDS_CLAIMS_CHANGED_ON: the flip day moves "Last updated" (and lastModif
     assert.equal(lm, '2026-12-05', `${path}: lastModified follows the flip day`);
   }
   // Unset: the pages' own days.
-  assert.match(ON.terms.textSpaced, /Last updated 21 November 2026/);
-  assert.match(ON.privacy.textSpaced, /Last updated 20 November 2026/);
+  assert.match(ON.terms.textSpaced, /Last updated 22 November 2026/);
+  assert.match(ON.privacy.textSpaced, /Last updated 22 November 2026/);
 });

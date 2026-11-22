@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """M2 class-auto verdict: may the automerge bot merge this PR with no human?
 
+v1.4.14 (2026-11-22), after G0 (41/100): an added line may carry NO reviewer-facing
+text. Deterministic refusals, before any model call, for string and template
+literals, JSX text, bare-word runs, CSS ``content``, character-code / join / base-36
+decoders and computed global access (``TEXT_CHANNELS``; comments were already
+refused). The daily cap now counts ``m2/pass/<date>`` commit statuses, written by
+this script before it exits 0 and read back, not editable PR comments.
 v1.4.5 (2026-11-14): the read-back is retried once after READBACK_RETRY_S, and its
 lists are used to count again with this run's own rows in: if another run asked
 about this head at the same moment, or the PR or day cap is now exceeded, nobody
@@ -64,8 +70,13 @@ PASS only if EVERY one of these holds, in this order:
 5. No ADDED line hits a red flag: network, navigation, eval, raw HTML, env,
    storage, imports, CSS url(), invisible or control characters, prose, words
    addressed to a reviewer, fence-like tokens, very long identifiers.
-6. Fewer than ``DAILY_CAP`` PRs merged in the last 24 h carry an M2 PASS
-   marker posted by ``github-actions[bot]``.
+   And no ADDED line opens a TEXT CHANNEL (v1.4.14): a quote or backtick, JSX
+   text, bare words in a row, CSS ``content``, a decoder such as ``fromCharCode``
+   or ``.join(``, or computed access to a global.
+6. Fewer than ``DAILY_CAP`` ``github-actions[bot]`` statuses ``m2/pass/<date>``
+   on ``ASK_LEDGER_SHA`` in the last 24 h (v1.4.14; commit statuses cannot be
+   edited or deleted). A PASS writes one such row, reads it back and counts
+   again before exiting 0; any read or write failure is exit 2.
 7. The ask ledger allows one more ask (v1.4.3): the model was never asked about
    this head (a ``github-actions[bot]`` status ``m2/review-asked`` on the head),
    fewer than ``ASKS_PER_PR`` asks for this PR and fewer than ``ASKS_PER_DAY``
@@ -162,7 +173,7 @@ EXIT_OK, EXIT_DRIFT, EXIT_BROKEN, EXIT_NOT_CHECKED = _load_exit_contract(
 )
 
 # ── POLICY. Jon-owned: this file is a CODEOWNERS path. ──────────────────────
-# Class A: the 15 T1 files of L5-PLAN v1.3 §3 #12, BY NAME. Admit by name,
+# Class A: 12 T1 files of L5-PLAN v1.3 §3 #12 (3 deleted by #332), BY NAME. Admit by name,
 # never by directory (auto-label-fast-path.yml's lesson). Tests are NOT in the
 # class: a test is safety machinery (#216). Widen only after an A-2 card shows
 # d7 >= 3, in a PR Jon reviews.
@@ -191,11 +202,12 @@ DAILY_CAP = 5
 # stem-loops V2 monorepo scaffold", 2026-06-29 [D, gh api, read 06:09:58Z].
 ASK_LEDGER_SHA = "979e5fc8a0fb854460ceacdc1ebf67fb093cce37"
 ASK_CONTEXT_PREFIX = "m2/ask/"  # + UTC date: GitHub allows 1000 statuses per sha+context
+PASS_CONTEXT_PREFIX = "m2/pass/"  # + UTC date: one row per M2 PASS; the daily cap counts them
 HEAD_ASKED_CONTEXT = "m2/review-asked"
 ASKS_PER_PR = 2  # per PR, any heads, in 24 h
 READBACK_RETRY_S = 3.0  # one retry of the read-back, in case GitHub's list lags the write
 _sleep = time.sleep  # replaced in tests
-ASKS_PER_DAY = 10  # all PRs, in 24 h; also bounds merges, whatever happens to comments
+ASKS_PER_DAY = 10  # all PRs, in 24 h; also bounds the model's PASS answers
 CAP_WINDOW = timedelta(hours=24)
 REQUIRED_AUTHOR = "JDC000000"
 REQUIRED_BASE = "v3/main"
@@ -212,7 +224,7 @@ MAX_OUTPUT_TOKENS = 16000
 # Fixed public error codes. The comment never carries exception text.
 ERRORS = {
     "E-GH-READ": "a GitHub read failed or returned something unexpected",
-    "E-CAP-UNCOUNTABLE": "the daily cap could not be counted",
+    "E-CAP-UNCOUNTABLE": "the daily cap could not be counted or recorded",
     "E-MODEL-CALL": "the reviewer API call failed",
     "E-MODEL-STATUS": "the reviewer did not complete",
     "E-MODEL-ID": "the reviewer answer came from an unexpected model",
@@ -306,6 +318,93 @@ RED_FLAGS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"""['"`]\s*\+\s*['"`]"""), "adds string literals joined with +"),
     (re.compile(r"[A-Za-z_$][\w$]{39,}"), "adds an identifier of 40+ characters"),
 )
+
+# ── v1.4.14 (G0 finding 1): TEXT CHANNELS. Unlike the tripwires above, these are
+# not heuristics for prose: they close every place free text can live in an added
+# line, so no added line can carry words to the reviewer except as identifiers
+# (each <= 39 characters, no lexicon word, never two bare words in a row) and
+# numbers. Class A is therefore narrowed to edits that add NO literal text at all:
+# no string, template, JSX text, CSS string or content, comment, or decoder.
+# Scope: "any" = every class-A file; "tsx" = .tsx only; "css" = .css only.
+_KEYWORD_TEXT = (
+    "abstract as async await break case catch class const continue debugger declare default"
+    " delete do else enum export extends false finally for from function get if implements"
+    " in infer instanceof interface is keyof let namespace new null of private protected"
+    " public readonly return satisfies set static super switch this throw true try type"
+    " typeof undefined unique var void while with yield"
+)
+_KEYWORDS = frozenset(_KEYWORD_TEXT.split())  # JS/TS keywords: they break a bare-word run
+_WORD = r"[A-Za-z_$][\w$]*"
+
+
+def _non_keyword(word: str) -> bool:
+    return word not in _KEYWORDS
+
+
+def _bare_word_pair(line: str) -> bool:
+    """Two words in a row with only spaces or tabs between them, neither a keyword,
+    the second not an attribute or assignment target (``a b=``): JSX text, or JSX
+    attribute names used as words."""
+    for m in re.finditer(rf"(?<![\w$.])({_WORD})[ \t]+({_WORD})(?![\w$])(?![ \t]*=)", line):
+        if _non_keyword(m.group(1)) and _non_keyword(m.group(2)):
+            return True
+    return False
+
+
+# Text right after a tag (``<p>word``, ``</b> word``, ``<br/>word``; ``=>`` inside
+# an attribute is not a tag end), and text right before a closing tag (``word</p>``).
+_JSX_AFTER_TAG = re.compile(r"<\/?[A-Za-z][\w.:-]*(?:=>|[^<>])*?(?<!=)>[ \t]*[^\s<{)};,:?&|\]]")
+_JSX_BEFORE_CLOSE = re.compile(r"^\s*[\w$][^<]*<\/")
+# A word right after an expression container, ``{x} word``, at line end or before a tag.
+_JSX_AFTER_BRACE = re.compile(rf"\}}[ \t]*({_WORD})[ \t]*(?:<|$)")
+
+
+def _jsx_text(line: str) -> bool:
+    if _JSX_AFTER_TAG.search(line) or _JSX_BEFORE_CLOSE.search(line):
+        return True
+    return any(_non_keyword(m.group(1)) for m in _JSX_AFTER_BRACE.finditer(line))
+
+
+def _text_only_line(line: str) -> bool:
+    """A line of only words, digits, spaces and prose punctuation that names two or
+    more non-keywords, or one non-keyword and no keyword: JSX text, or one word per
+    line, the form REVIEW-3 Y7 spread over lines."""
+    if not re.fullmatch(r"[\w$\s,.;:!?-]*", line):
+        return False
+    words = re.findall(_WORD, line)
+    plain = [w for w in words if _non_keyword(w)]
+    return len(plain) >= 2 or (len(plain) == 1 and len(words) == 1)
+
+
+TEXT_CHANNELS: tuple[tuple[str, Callable[[str], bool], str], ...] = (
+    ("any", re.compile(r"['\"`]").search, "adds a string or template literal"),
+    ("tsx", _jsx_text, "adds JSX text"),
+    ("tsx", _bare_word_pair, "adds bare words in a row (JSX text or attribute names)"),
+    ("tsx", _text_only_line, "adds a line of bare words (JSX text)"),
+    ("css", re.compile(r"(?i)(?:^|[\s;{])content\s*:").search, "adds CSS content"),
+    ("css", re.compile(r"(?:^|[\s;{])--[\w-]+\s*:").search, "adds a CSS custom property"),
+    (
+        "any",
+        re.compile(
+            r"fromCharCode|fromCodePoint|charCodeAt|codePointAt|\.join\s*\(|\.concat\s*\("
+            r"|\batob\b|\bbtoa\b|TextDecoder|String\.raw|\bunescape\b|decodeURI"
+            r"|\.toString\s*\(\s*\d|\bparseInt\s*\(|\.reverse\s*\("
+        ).search,
+        "adds a character-code, join or decode construction",
+    ),
+    (
+        "any",
+        re.compile(
+            r"\b(?:window|globalThis|self|top|parent|frames|document)\s*\[|\bnew\s*\("
+        ).search,
+        "adds computed access to a global",
+    ),
+)
+
+
+def _scope_of(path: str) -> str:
+    return "css" if path.endswith(".css") else "tsx" if path.endswith(".tsx") else "other"
+
 
 SYSTEM_PROMPT = """You are the merge reviewer for a public Next.js web app.
 You review ONE pull request diff and decide if it can merge to production with no human.
@@ -546,29 +645,39 @@ def red_flags(sections: dict[str, Section]) -> list[str]:
     return hits
 
 
+def text_channels(sections: dict[str, Section]) -> list[str]:
+    """v1.4.14: refuse any ADDED line that opens a text channel. Public text names
+    the rule, file and line number, never the line itself. A file of a type no
+    rule is scoped to is refused outright (class A is .tsx and .css only)."""
+    hits = []
+    for path, sec in sorted(sections.items()):
+        scope = _scope_of(path)
+        if scope == "other":
+            hits.append(f"not a .tsx or .css file: {path}")
+            continue
+        for k, body in enumerate(sec.added, start=1):
+            for where, test, why in TEXT_CHANNELS:
+                if where in ("any", scope) and test(body):
+                    hits.append(f"{why}: {path}, added line {k}")
+    return hits
+
+
 def _parse_time(s: str) -> datetime:
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
-def count_recent_m2_merges(
-    closed_pulls: list[dict],
-    comments_for: Callable[[int], list[dict]],
-    now: datetime,
-) -> int:
-    """PRs merged inside the window that carry an M2 PASS marker posted by
-    github-actions[bot]. Agents comment as JDC000000, so they cannot forge one."""
+def _pass_rows(ledger: list[dict], now: datetime) -> int:
+    """github-actions[bot] ``m2/pass/<date>`` rows in the last 24 h: the daily cap.
+    Commit statuses cannot be edited or deleted, so this count only grows. A forged
+    bot row (a branch workflow) can only refuse more. An unreadable time is fatal."""
     since = now - CAP_WINDOW
-    count = 0
-    for p in closed_pulls:
-        merged_at = p.get("merged_at")
-        if not merged_at or _parse_time(merged_at) < since:
-            continue
-        for c in comments_for(p["number"]):
-            author = (c.get("user") or {}).get("login")
-            if author == MARKER_AUTHOR and (c.get("body") or "").startswith(MARKER_PASS):
-                count += 1
-                break
-    return count
+    return sum(
+        1
+        for s in ledger
+        if _by_bot(s)
+        and _ctx(s).startswith(PASS_CONTEXT_PREFIX)
+        and _parse_time(s["created_at"]) >= since
+    )
 
 
 MARKER_REVIEW_LINE = "Reviewer: verdict "
@@ -836,17 +945,6 @@ class GitHub:
     def diff(self, n: int) -> str:
         return self._get(f"pulls/{n}", accept="application/vnd.github.diff").decode("utf-8")
 
-    def recent_closed(self) -> list[dict]:
-        rows = self._json(
-            f"pulls?state=closed&base={REQUIRED_BASE}&sort=updated&direction=desc&per_page=100"
-        )
-        if not isinstance(rows, list):
-            raise GateError("E-GH-READ", "closed PR list unreadable")
-        return rows
-
-    def comments(self, n: int) -> list[dict]:
-        return self._pages(f"issues/{n}/comments")
-
     def statuses(self, sha: str, since: datetime | None) -> list[dict]:
         """Every status on a commit, newest first [A, REST docs]. With `since`,
         stop paging once a page ends before it."""
@@ -947,20 +1045,18 @@ def evaluate(env: dict, gh, openai: Callable[[dict, str], dict], now: datetime) 
             return Outcome(EXIT_DRIFT, reasons, public=candidate)
         diff = gh.diff(n)
         reasons, sections = check_diff(diff, files)
-        reasons = reasons or red_flags(sections)
+        reasons = reasons or red_flags(sections) or text_channels(sections)
         if reasons:
             return Outcome(EXIT_DRIFT, reasons)
-        stage = "E-CAP-UNCOUNTABLE"
-        closed = gh.recent_closed()
-        if len(closed) >= 100 and _parse_time(closed[-1]["updated_at"]) >= now - CAP_WINDOW:
-            raise GateError(stage, "more than 100 PRs closed in 24 h; cannot count the cap")
-        recent = count_recent_m2_merges(closed, gh.comments, now)
-        if recent >= DAILY_CAP:
-            return Outcome(EXIT_DRIFT, [f"daily cap: {recent} M2 merges in 24 h"])
         stage = "E-LEDGER"
-        refusal = ask_ledger_refusal(
-            gh.statuses(sha, None), gh.statuses(ASK_LEDGER_SHA, now - CAP_WINDOW), n, sha, now
-        )
+        head_rows = gh.statuses(sha, None)
+        ledger_rows = gh.statuses(ASK_LEDGER_SHA, now - CAP_WINDOW)
+        stage = "E-CAP-UNCOUNTABLE"
+        recent = _pass_rows(ledger_rows, now)
+        if recent >= DAILY_CAP:
+            return Outcome(EXIT_DRIFT, [f"daily cap: {recent} M2 passes in 24 h"])
+        stage = "E-LEDGER"
+        refusal = ask_ledger_refusal(head_rows, ledger_rows, n, sha, now)
         if refusal:
             return Outcome(EXIT_DRIFT, [refusal])
         # Record the ask BEFORE asking: a lost answer, a failed comment, an edited
@@ -996,7 +1092,36 @@ def evaluate(env: dict, gh, openai: Callable[[dict, str], dict], now: datetime) 
         return _broken(stage, f"{stage}: {type(exc).__name__}: {exc}")
 
     reasons = decide(review)
-    return Outcome(EXIT_DRIFT if reasons else EXIT_OK, reasons, review)
+    if reasons:
+        return Outcome(EXIT_DRIFT, reasons, review)
+    # v1.4.14 (G0 finding 4): the daily cap's record. Written BEFORE exit 0, read
+    # back as github-actions[bot], then counted again with this row in, so racing
+    # runs cannot overshoot DAILY_CAP. No row of ours, no PASS.
+    stage = "E-CAP-UNCOUNTABLE"
+    try:
+        pass_ctx = f"{PASS_CONTEXT_PREFIX}{now:%Y-%m-%d}"
+        pass_desc = f"pr={n} head={sha}"
+        gh.post_status(ASK_LEDGER_SHA, pass_ctx, pass_desc)
+        rows = gh.statuses(ASK_LEDGER_SHA, now - CAP_WINDOW)
+        if not _pass_landed(rows, pass_ctx, pass_desc):
+            _sleep(READBACK_RETRY_S)
+            rows = gh.statuses(ASK_LEDGER_SHA, now - CAP_WINDOW)
+            if not _pass_landed(rows, pass_ctx, pass_desc):
+                raise GateError(stage, "the pass record did not read back as github-actions[bot]")
+        recent = _pass_rows(rows, now)
+    except GateError as exc:
+        return _broken(exc.code, f"{exc.code}: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        return _broken(stage, f"{stage}: {type(exc).__name__}: {exc}")
+    if recent > DAILY_CAP:
+        return Outcome(
+            EXIT_DRIFT, [f"the daily cap went over {DAILY_CAP} with concurrent runs"], review
+        )
+    return Outcome(EXIT_OK, [], review)
+
+
+def _pass_landed(rows: list[dict], ctx: str, desc: str) -> bool:
+    return any(_by_bot(s) and _ctx(s) == ctx and s.get("description") == desc for s in rows)
 
 
 def scrub(text: str, env: dict) -> str:

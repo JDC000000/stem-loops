@@ -30,6 +30,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, sameOriginHeaders } from './helpers/same-origin.mjs';
+import { LINK_JOB_URL, LINK_JOB_IMPORT_RE } from './helpers/create-link-job.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = join(WEB, '../..');
@@ -521,6 +522,7 @@ async function loadRoute(opts) {
     .replace(/from ['"]@\/lib\/upload['"]/g, `from '${s.upload}'`)
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${s.sentry}'`)
     .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
+    .replace(LINK_JOB_IMPORT_RE, `from '${LINK_JOB_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${s.next}'`);
   return import(dataUrl(js) + '#' + Math.random());
 }

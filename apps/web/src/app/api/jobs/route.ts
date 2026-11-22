@@ -39,6 +39,7 @@ import {
 import { consumeTrialInTx } from '@/lib/trial';
 import { consumeCreditInTx } from '@/lib/billing/credits';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
+import { createAuthedLinkJob, type LinkJobDeps } from '@/lib/jobs/create-link-job';
 
 // QA-64: recordAllowanceDebit() returns false only when migration 042 is not applied yet (the
 // job is created as before, with nothing recorded to give back). Say so once per process
@@ -50,6 +51,36 @@ function noteAllowanceDebitRecorded(recorded: boolean): void {
   Sentry.captureException(
     new Error('job_allowance_debits is missing (migration 042 not applied): link-job allowance is not restorable'),
   );
+}
+
+// The authed link path's dependencies: this route's own imports, handed to
+// lib/jobs/create-link-job.ts (which has no runtime imports of its own). Built per request so
+// every call reads the current bindings.
+function linkJobDeps(): LinkJobDeps {
+  return {
+    db,
+    randomUUID,
+    canonicalizeYoutubeUrl,
+    checkAdmission,
+    RATE_LIMIT,
+    RATE_WINDOW_MS,
+    checkBurstLimit,
+    checkMonthlyQuota,
+    bumpJobsUsed,
+    bumpJobsUsedWithinQuota,
+    recordAllowanceDebit,
+    rollPeriodIfStale,
+    getEntitlementSnapshot,
+    enforceEntitlement,
+    EntitlementError,
+    FREE_QUOTA_EXHAUSTED_MESSAGE,
+    LINK_CAP_CREDITS_DETAIL,
+    RATE_LIMIT_MSG,
+    entitlementMessage,
+    consumeTrialInTx,
+    captureException: (err: unknown) => Sentry.captureException(err),
+    noteAllowanceDebitRecorded,
+  };
 }
 
 const VALID_BARS = new Set([1, 2, 4, 8]);
@@ -384,6 +415,32 @@ export async function POST(request: NextRequest) {
     }
 
     // ── YouTube / link-ingest job (DEFERRED — kept, unwired at the worker until S1 clears) ──
+    // Signed in: the whole authed link path (ALLOW_YOUTUBE_INPUT, canonicalisation, the paid
+    // entitlement, admission, then the trial or the non-trial funding branch) lives in
+    // lib/jobs/create-link-job.ts (Phase B, B0), which takes this route's own imports as its
+    // dependencies. Credits are never spent on a link (the credit_consumption trigger accepts
+    // upload jobs only, migration 013); that file meters a link with bumpJobsUsed /
+    // bumpJobsUsedWithinQuota instead.
+    if (user) {
+      const r = await createAuthedLinkJob(
+        {
+          user,
+          url: bodyObj.url,
+          stems: bodyObj.stems,
+          loopLengthBars: bodyObj.loop_length_bars,
+          clientIpHash: () => clientIpHashOf(request),
+        },
+        linkJobDeps(),
+      );
+      if (r.raw) {
+        return new NextResponse(JSON.stringify(r.body), { status: r.status, headers: r.headers });
+      }
+      return r.headers
+        ? NextResponse.json(r.body, { status: r.status, headers: r.headers })
+        : NextResponse.json(r.body, { status: r.status });
+    }
+
+    // Signed out from here on.
     // SECURITY / A1 scope (review #7): the worker would actually run Cobalt/yt-dlp for a
     // youtube job (STUB_MODE isn't set in prod env), so gate the parked path at the door
     // — it can't be reached from the UI, but this blocks a direct API call too.
@@ -436,53 +493,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Link-ingest entitlement (TSD-V3-DELTA §1.2a REVERSED by Jon, 2026-11-16:
-    // Pro and Studio may paste links; a paid link job is metered exactly like a
-    // paid upload). Runs BEFORE admission / trial / quota for AUTHENTICATED
-    // users so a refused paid request spends nothing.
-    //
-    // Who the gate's refusal is final for:
-    //   • Pro / Studio: every EntitlementError is returned as-is — the plan's
-    //     row does not list the service yet (migration 039 not applied:
-    //     'service not in plan') or the monthly quota is spent ('quota
-    //     exhausted', the same 402 + copy a paid upload gets). A paid account
-    //     NEVER falls through to the trial or free-allowance paths below.
-    //   • Free / trial / no-plan: unchanged — the outcome is ignored and the
-    //     existing gates below decide (trial consume, then burst/quota).
-    // Anonymous users (user === null) skip this and stay on the free-tier path.
-    if (user) {
-      try {
-        await enforceEntitlement('start_job_youtube', user.user_id);
-      } catch (err) {
-        if (err instanceof EntitlementError) {
-          let paid = false;
-          try {
-            const s = await getEntitlementSnapshot(user.user_id);
-            paid = s.plan_code === 'pro' || s.plan_code === 'studio';
-          } catch {
-            // Snapshot unreadable: not provably paid, so the free-tier gates
-            // below decide (they fail on the same unreadable snapshot).
-          }
-          if (paid) {
-            return NextResponse.json(
-              { error_code: err.code, message: entitlementMessage(err.code, err.message) },
-              { status: err.status },
-            );
-          }
-          // Free / trial outcomes are handled by the existing gates below.
-        } else {
-          // Snapshot/DB failure: fail open to the existing gates (same stance
-          // as the getEntitlementSnapshot try/catch below), but report it.
-          Sentry.captureException(err);
-        }
-      }
-    }
-
-    // §1.2a admission-before-consume (round-2 FIX #2): run per-IP admission
-    // BEFORE consumeTrial(). consumeTrial commits in its own tx, so if a
-    // rate-limited request spent a trial song first, the song would already
-    // be gone when we returned 429 — a leak. Admission first → the trial
-    // decrement only happens on a request that will actually proceed.
+    // Per-IP admission (anonymous users have no entitlement, trial or quota gate).
     const clientIpHash = clientIpHashOf(request);
     const adm = await checkAdmission(clientIpHash);
     if (!adm.allowed) {
@@ -497,23 +508,14 @@ export async function POST(request: NextRequest) {
     }
     // B-03: signed-out jobs — say WHICH per-IP cap was hit. The locked INSERT below is what
     // enforces it; this read only picks the sentence.
-    if (!user) {
-      const anon = await checkAnonJobCaps(clientIpHash);
-      if (!anon.allowed) {
-        return NextResponse.json({ error_code: anon.error_code, message: anon.message }, { status: 429 });
-      }
+    const anon = await checkAnonJobCaps(clientIpHash);
+    if (!anon.allowed) {
+      return NextResponse.json({ error_code: anon.error_code, message: anon.message }, { status: 429 });
     }
 
     const id = randomUUID();
     const requestedStems = Array.isArray(stems) && stems.length ? stems : DEFAULT_STEMS;
 
-    // Reusable INSERT body. Separate strings so we don't bend a query apart
-    // over two branches; the SQL parses once in the pool.
-    const AUTHED_INSERT_SQL = `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint, user_id)
-             SELECT $1, $2, $3, $4, 'queued', $5, '', $8::uuid
-             WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
-                    AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
-             RETURNING id`;
     // B-03: the per-IP in-flight (2) and daily (10) caps for signed-out jobs are in the same
     // WHERE as the per-minute window (lib/admission.ts anonJobCapsWhere). Burst-safe ONLY
     // because the signed-out INSERT below runs after lockAnonIp() in its own transaction.
@@ -524,177 +526,15 @@ export async function POST(request: NextRequest) {
              AND ${anonJobCapsWhere('$5', '$8', '$9', '$10')}
            RETURNING id`;
 
-    // §1.2a: trial applies ONLY to the link-ingest branch (this one). For
-    // authed non-Pro/Studio users: try consumeTrialInTx() inside the same
-    // tx as the jobs INSERT. If the per-IP rate-limit WHERE returns 0 rows,
-    // we THROW RATE_LIMITED_SENTINEL so the tx rolls back — the trial song
-    // is NOT burned (PR #39 Lens A follow-up). Pro/Studio skip the trial
-    // entirely and use burst+quota. Anonymous users have user===null and
-    // skip all of this; per-IP admission above is their only gate.
-    // How the authed, non-trial link job is funded (decided below, used in the
-    // INSERT tx): a paid plan meters it with bumpJobsUsed() exactly as a paid
-    // upload; everyone else spends one unit of the FREE monthly allowance,
-    // capped under the quota lock (bumpJobsUsedWithinQuota). Credits are never
-    // spent on a link (the credit_consumption trigger accepts upload jobs only,
-    // migration 013) and never waive the allowance for one — see below.
-    let linkPaid = false;
-    let linkQuota = 0;
-    let linkCreditHolder = false;
-    if (user) {
-      let subscribed = false;
-      try {
-        const snap = await getEntitlementSnapshot(user.user_id);
-        subscribed = snap.plan_code === 'pro' || snap.plan_code === 'studio';
-        linkPaid = subscribed;
-        linkQuota = snap.jobs_quota;
-        linkCreditHolder = !subscribed && snap.credits_remaining > 0;
-      } catch {
-        // Fail restrictive: treat as not-subscribed and let the existing
-        // gates decide (same stance enforceEntitlement takes on DB error).
-      }
-
-      if (!subscribed) {
-        // Try (consume trial + insert jobs) atomically. Three outcomes:
-        //   consumed:true          → tx committed, return 201
-        //   consumed:false         → tx committed, nothing changed; fall
-        //                            through to burst/quota + plain INSERT
-        //   throw RATE_SENTINEL    → tx rolled back (trial not burned), 429
-        const RATE_SENTINEL = Symbol('rate_limited');
-        try {
-          const outcome = await db.tx(async (client) => {
-            const consume = await consumeTrialInTx(client, user.user_id);
-            if (!consume.ok) return { consumed: false as const };
-            const r = await client.query(
-              AUTHED_INSERT_SQL,
-              [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT, user.user_id],
-            );
-            if (!r.rowCount) {
-              // Rate-limited AFTER a successful trial consume. Throw to
-              // roll back the whole tx — trial song is NOT burned.
-              throw RATE_SENTINEL;
-            }
-            await bumpJobsUsed(client, user.user_id);
-            // QA-64: this job spent a trial song AND an allowance unit; record both so an
-            // our-fault failure gives exactly those back (worker job_failure.py).
-            noteAllowanceDebitRecorded(
-              await recordAllowanceDebit(client, user.user_id, id, { trialSong: true }),
-            );
-            return { consumed: true as const };
-          });
-          if (outcome.consumed) {
-            return NextResponse.json({ id, status: 'queued' }, { status: 201 });
-          }
-          // consumed:false → fall through to burst/quota + plain INSERT.
-        } catch (err) {
-          if (err === RATE_SENTINEL) {
-            return NextResponse.json(
-              { error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG },
-              { status: 429 },
-            );
-          }
-          // Trial read/consume unexpected failure is non-fatal — log and
-          // fall through to the normal free-tier path.
-          Sentry.captureException(err);
-        }
-      }
-
-      // Non-trial path: subscribed, or trial exhausted/missing. Run the
-      // paid-plan gates and then do the plain INSERT below.
-      const burst = await checkBurstLimit(user.user_id);
-      if (burst) {
-        return new NextResponse(
-          JSON.stringify({
-            error: 'too many requests',
-            code: 'rate_limit_burst',
-            retry_after_s: burst.retry_after_s,
-          }),
-          {
-            status: 429,
-            headers: {
-              'content-type': 'application/json',
-              'Retry-After': String(burst.retry_after_s),
-            },
-          },
-        );
-      }
-      const quota = await checkMonthlyQuota(user.user_id);
-      if (quota) {
-        return NextResponse.json(
-          {
-            error: 'monthly quota reached',
-            code: 'quota_exceeded',
-            resets_at: quota.resets_at,
-          },
-          { status: 402 },
-        );
-      }
-    }
-
-    // V3-C4 (TSD §1.4): mirror the upload branch — tx + jobs_used bump for
-    // authed users so the counter is consistent with the real insert.
-    //
-    // One job, one debit (2026-11-16):
-    //   • Pro / Studio: bumpJobsUsed() — the same uncapped-in-tx metering a
-    //     paid upload gets; the cap is the start_job_youtube gate above plus
-    //     checkMonthlyQuota(), as for uploads.
-    //   • Free (incl. a free account holding credits): one unit of the free
-    //     allowance, capped HERE under the quota lock. checkMonthlyQuota()
-    //     waives the quota for a free account with credits (that waiver is for
-    //     credit-funded UPLOADS), so before this change a credit holder's link
-    //     jobs were never capped and never charged — a free path. A link job is
-    //     not credit-funded, so its cap must be enforced where it is counted.
-    let inserted;
-    try {
-      inserted = user
-        ? await db.tx(async (client) => {
-            const r = await client.query(
-              AUTHED_INSERT_SQL,
-              [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT, user.user_id],
-            );
-            if (r.rowCount) {
-              // Period bookkeeping first, on EVERY authed link job whatever funds
-              // it — the same call the paid upload makes (rate-limit.ts: "CALL
-              // THIS ON EVERY AUTHED JOB"). Without it a paid link in the
-              // past_due grace window keeps adding to the old period's counter.
-              await rollPeriodIfStale(client, user.user_id);
-              if (linkPaid) {
-                await bumpJobsUsed(client, user.user_id);
-              } else if (!(await bumpJobsUsedWithinQuota(client, user.user_id, linkQuota))) {
-                // Jon, 2026-11-16 ("Cap at 5/month"): a free account holding
-                // credits is capped at the free allowance for links too, and
-                // credits are not spent on links. Tell that account its credits
-                // still work on uploads instead of "all your free tracks".
-                throw linkCreditHolder
-                  ? new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', LINK_CAP_CREDITS_DETAIL)
-                  : new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', FREE_QUOTA_EXHAUSTED_MESSAGE);
-              }
-              // QA-64: one allowance unit spent (paid or free); record it so an our-fault
-              // failure gives it back once, in the period it was spent in.
-              noteAllowanceDebitRecorded(
-                await recordAllowanceDebit(client, user.user_id, id, { trialSong: false }),
-              );
-            }
-            return r;
-          })
-        : await db.tx(async (client) => {
-            // MF-1: serialise signed-out INSERTs per IP, then insert in a fresh statement.
-            await lockAnonIp(client, clientIpHash);
-            return client.query(
-              ANON_INSERT_SQL,
-              [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT,
-               IN_FLIGHT_STATUSES, anonJobMaxInFlight(), anonJobDailyCap()],
-            );
-          });
-    } catch (err) {
-      // Allowance spent under the lock: the tx rolled back, no job row exists.
-      if (err instanceof EntitlementError) {
-        return NextResponse.json(
-          { error_code: err.code, message: entitlementMessage(err.code, err.message) },
-          { status: err.status },
-        );
-      }
-      throw err;
-    }
+    const inserted = await db.tx(async (client) => {
+      // MF-1: serialise signed-out INSERTs per IP, then insert in a fresh statement.
+      await lockAnonIp(client, clientIpHash);
+      return client.query(
+        ANON_INSERT_SQL,
+        [id, canonicalUrl, requestedStems, bars, clientIpHash, RATE_WINDOW_MS, RATE_LIMIT,
+         IN_FLIGHT_STATUSES, anonJobMaxInFlight(), anonJobDailyCap()],
+      );
+    });
     if (!inserted.rowCount) {
       return NextResponse.json({ error_code: 'RATE_LIMITED', message: RATE_LIMIT_MSG }, { status: 429 });
     }

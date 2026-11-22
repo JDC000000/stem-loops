@@ -213,9 +213,16 @@ test('home FAQ: the link allowance is disclosed, true to the code (every signed-
   const yt = HOME.html.match(/<details id="faq-youtube">([\s\S]*?)<\/details>/)?.[1] ?? '';
   assert.match(yt.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' '), /A song you add from a link uses 1 of your monthly songs\./);
   assert.doesNotMatch(yt, /just like an upload/, 'not true for a signed-out upload (anonymous caps)');
-  // The code it describes: every signed-in link path bumps the monthly count.
-  const route = readFileSync(join(WEB, 'src/app/api/jobs/route.ts'), 'utf8');
-  assert.match(route, /bumpJobsUsedWithinQuota\(client, user\.user_id/);
+  // The code it describes: every signed-in link path bumps the monthly count. Since Phase B B0
+  // the route hands every signed-in link to lib/jobs/create-link-job.ts, so the assertions
+  // are on that hand-off and on each funding branch's bump there (comments stripped).
+  const route = code('src/app/api/jobs/route.ts');
+  assert.match(route, /if \(user\) \{\s*const r = await createAuthedLinkJob\(/);
+  const lib = code('src/lib/jobs/create-link-job.ts');
+  // trial branch: consume, INSERT, then one allowance unit
+  assert.match(lib, /consumeTrialInTx\(client, user\.user_id\)[\s\S]*?client\.query\(AUTHED_INSERT_SQL[\s\S]*?await deps\.bumpJobsUsed\(client, user\.user_id\)/);
+  // non-trial branch: paid bumps, free bumps under the cap
+  assert.match(lib, /if \(linkPaid\) \{\s*await deps\.bumpJobsUsed\(client, user\.user_id\);\s*\} else if \(!\(await deps\.bumpJobsUsedWithinQuota\(client, user\.user_id, linkQuota\)\)\)/);
 });
 
 // ── 3. the home form, MOUNTED ────────────────────────────────────────────────────────────

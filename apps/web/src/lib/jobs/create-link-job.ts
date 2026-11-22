@@ -34,6 +34,27 @@
 // uniform rewrite (test/helpers/create-link-job.mjs, the same shape as the same-origin
 // helper) and runs against whatever stubs that test already gives the route. `import type`
 // below is erased at compile time.
+//
+// FUNDING MODE mirror_restore (Phase B, B3: "Try again" on a failed link song, #321). An
+// OPTIONAL `funding` input; absent, everything above and below is exactly B0. Present, the
+// job is a retry of `funding.parentJobId` and is funded by MIRRORING what the parent's failure
+// gave back (migration 042's job_allowance_debits row: allowance_restored → one allowance
+// unit, trial_restored → one trial song, free if the trial has since expired; anything else,
+// including no row, → free, no debit row). Its order:
+//
+//   ALLOW_YOUTUBE_INPUT → url / canonicalisation → loop bars → stems → [findExisting]
+//   → read the parent's restore (lock-free) → link entitlement (charged retries only)
+//   → checkAdmission → checkBurstLimit (every retry) → checkMonthlyQuota (unit only)
+//   → db.tx { consumeTrialInTx (trial song only) → SELECT parent … FOR UPDATE
+//             → require owner, failed, link, retried_at IS NULL, retry_depth < RETRY_CAP
+//             → [beforeInsert] → INSERT (retry_of, retry_depth = parent + 1)
+//             → rollPeriodIfStale → bump (unit only) → debit row (charged only)
+//             → UPDATE parent SET retried_at = now()   ← only when the INSERT returned a row }
+//
+// A free retry (nothing was given back) therefore skips the paid entitlement, the quota and
+// the trial; admission and the burst limit still apply. Lock order is B0's: trial_grants →
+// the parent row (the "hook's lock") → entitlements. A second retry of the same parent waits
+// on the parent lock, then finds retried_at set and answers 200 with the first retry's id.
 
 import type { db as Db } from '@/lib/db';
 import type { checkAdmission as CheckAdmission } from '@/lib/admission';
@@ -109,6 +130,41 @@ export interface CreateAuthedLinkJobInput {
   findExisting?: (db: LinkJobDb, ctx: LinkJobHookContext) => Promise<string | null>;
   /** Hook 2: inside the tx, immediately before the INSERT. Returns an existing id, or null. */
   beforeInsert?: (client: LinkJobTxClient, ctx: LinkJobHookContext) => Promise<string | null>;
+  /**
+   * B3: fund this job as a retry of `parentJobId` (see "FUNDING MODE mirror_restore" above).
+   * Absent → B0's funding, unchanged. The caller (app/api/jobs/[id]/retry) has already checked
+   * ownership, the error code and the cooldown; the cap, the owner and `failed` are checked
+   * again here under the parent's row lock. `limitMessage` is the 429 copy for a parent that
+   * has used its retries (error-copy.ts RETRY_LIMIT_MSG; this file has no runtime imports).
+   */
+  funding?: MirrorRestoreFunding;
+}
+
+export interface MirrorRestoreFunding {
+  mode: 'mirror_restore';
+  parentJobId: string;
+  limitMessage: string;
+}
+
+/** At most this many user retries per original (Jon, D7). jobs.retry_depth's CHECK is 0..2. */
+export const RETRY_CAP = 2;
+
+/** The parent's job_allowance_debits restore columns (migration 042), or null for no row. */
+export interface ParentRestore {
+  restored_at: string | Date | null;
+  allowance_restored: boolean | null;
+  trial_restored: boolean | null;
+}
+
+/**
+ * What a retry spends: exactly what the parent's failure gave back. Only an explicit `true`
+ * restore counts. No row (an anonymous or pre-042 job, a free retry), an unclaimed row (a
+ * user-fault failure such as DOWNLOAD_BLOCKED) and a claimed row that gave nothing back
+ * (restored_at set, the period had rolled over) are all free.
+ */
+export function mirrorRestoreCharge(r: ParentRestore | null): { unit: boolean; trialSong: boolean } {
+  if (!r || r.restored_at === null || r.restored_at === undefined) return { unit: false, trialSong: false };
+  return { unit: r.allowance_restored === true, trialSong: r.trial_restored === true };
 }
 
 /**
@@ -209,6 +265,11 @@ async function run(input: CreateAuthedLinkJobInput, deps: LinkJobDeps): Promise<
   if (input.findExisting) {
     const hit = await input.findExisting(db, ctx);
     if (hit) return json(200, { id: hit });
+  }
+
+  // B3: a retry is funded by mirroring its parent's restore. Absent → B0, unchanged below.
+  if (input.funding && input.funding.mode === 'mirror_restore') {
+    return runMirrorRestore(input, input.funding, deps, ctx, bars);
   }
 
   // Link-ingest entitlement (TSD-V3-DELTA §1.2a REVERSED by Jon, 2026-11-16: Pro and Studio
@@ -381,5 +442,242 @@ async function run(input: CreateAuthedLinkJobInput, deps: LinkJobDeps): Promise<
   if (!inserted.rowCount) {
     return json(429, { error_code: 'RATE_LIMITED', message: deps.RATE_LIMIT_MSG });
   }
+  return json(201, { id, status: 'queued' });
+}
+
+// ── B3: funding mode mirror_restore ─────────────────────────────────────────────────────────
+
+// Thrown inside the retry tx to roll it back and answer a refusal (404 / 429).
+class MirrorRefusal {
+  constructor(readonly result: LinkJobResult) {}
+}
+
+const NOT_FOUND_BODY = { error_code: 'NOT_FOUND', message: 'Job not found' };
+
+// The parent's restore, read lock-free to decide which gates a retry passes. The row is
+// written once, in the transaction that marks the parent failed (migration 042), so it does
+// not change under a failed parent. A database without 042 (42P01) has no restore: free.
+const PARENT_RESTORE_SQL = `SELECT d.restored_at, d.allowance_restored, d.trial_restored
+             FROM public.job_allowance_debits d WHERE d.job_id = $1::uuid`;
+
+// The cap's lock (brief B3 step 1). Every retry of one parent serialises here.
+const LOCK_PARENT_SQL = `SELECT id, user_id, status, input_kind, retry_depth, retried_at
+             FROM jobs WHERE id = $1::uuid FOR UPDATE`;
+
+const RETRY_CHILD_SQL = `SELECT id FROM jobs WHERE retry_of = $1::uuid ORDER BY created_at DESC LIMIT 1`;
+
+// B0's INSERT plus retry_of / retry_depth; the same per-IP WHERE.
+const RETRY_INSERT_SQL = `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint, user_id, retry_of, retry_depth)
+             SELECT $1, $2, $3, $4, 'queued', $5, '', $8::uuid, $9::uuid, $10::smallint
+             WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
+                    AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
+             RETURNING id`;
+
+const MARK_RETRIED_SQL = `UPDATE jobs SET retried_at = now() WHERE id = $1::uuid`;
+
+// A trial song with no allowance unit (the parent's unit was not given back, e.g. the month
+// rolled over): recordAllowanceDebit always copies the current period, so this row is written
+// here with allowance_period_start NULL ("no allowance unit was spent", migration 042). Same
+// SAVEPOINT + 42P01 tolerance as recordAllowanceDebit.
+const TRIAL_ONLY_DEBIT_SQL = `INSERT INTO public.job_allowance_debits (job_id, user_id, allowance_period_start, trial_song)
+             VALUES ($1::uuid, $2::uuid, NULL, true)
+             ON CONFLICT (job_id) DO NOTHING`;
+
+async function recordTrialOnlyDebit(client: LinkJobTxClient, userId: string, jobId: string): Promise<boolean> {
+  await client.query('SAVEPOINT job_allowance_debit');
+  try {
+    await client.query(TRIAL_ONLY_DEBIT_SQL, [jobId, userId]);
+  } catch (err) {
+    if ((err as { code?: string } | null)?.code === '42P01') {
+      await client.query('ROLLBACK TO SAVEPOINT job_allowance_debit');
+      return false;
+    }
+    throw err;
+  }
+  await client.query('RELEASE SAVEPOINT job_allowance_debit');
+  return true;
+}
+
+async function readParentRestore(db: LinkJobDb, parentJobId: string): Promise<ParentRestore | null> {
+  try {
+    const r = await db.query(PARENT_RESTORE_SQL, [parentJobId]);
+    return (r.rows[0] as ParentRestore | undefined) ?? null;
+  } catch (err) {
+    if ((err as { code?: string } | null)?.code === '42P01') return null;
+    throw err;
+  }
+}
+
+type LockedParent = {
+  id: string;
+  user_id: string | null;
+  status: string;
+  input_kind: string | null;
+  retry_depth: number | null;
+  retried_at: string | Date | null;
+};
+
+async function runMirrorRestore(
+  input: CreateAuthedLinkJobInput,
+  funding: MirrorRestoreFunding,
+  deps: LinkJobDeps,
+  ctx: LinkJobHookContext,
+  bars: number,
+): Promise<LinkJobResult> {
+  const { user, stems } = input;
+  const { db, EntitlementError } = deps;
+  const parentJobId = funding.parentJobId;
+  const limit = (): LinkJobResult => json(429, { error_code: 'RETRY_LIMIT', message: funding.limitMessage });
+
+  const charge = mirrorRestoreCharge(await readParentRestore(db, parentJobId));
+  const charged = charge.unit || charge.trialSong;
+
+  // A charged retry passes B0's paid entitlement exactly as a new link does; a free retry
+  // spends nothing, so it is not asked about the plan's allowance.
+  if (charged) {
+    try {
+      await deps.enforceEntitlement('start_job_youtube', user.user_id);
+    } catch (err) {
+      if (err instanceof EntitlementError) {
+        let paid = false;
+        try {
+          const s = await deps.getEntitlementSnapshot(user.user_id);
+          paid = s.plan_code === 'pro' || s.plan_code === 'studio';
+        } catch {
+          // not provably paid: the gates below decide
+        }
+        if (paid) {
+          return json(err.status, { error_code: err.code, message: deps.entitlementMessage(err.code, err.message) });
+        }
+      } else {
+        deps.captureException(err);
+      }
+    }
+  }
+
+  // Admission on every retry, before anything is consumed (B0's order).
+  const clientIpHash = input.clientIpHash();
+  const adm = await deps.checkAdmission(clientIpHash);
+  if (!adm.allowed) {
+    if (adm.error_code === 'AT_CAPACITY') {
+      return json(
+        503,
+        { error_code: adm.error_code, message: adm.message },
+        { 'Retry-After': String(adm.retry_after_s) },
+      );
+    }
+    return json(429, { error_code: adm.error_code, message: adm.message });
+  }
+
+  let linkPaid = false;
+  let linkQuota = 0;
+  let linkCreditHolder = false;
+  if (charge.unit) {
+    try {
+      const snap = await deps.getEntitlementSnapshot(user.user_id);
+      linkPaid = snap.plan_code === 'pro' || snap.plan_code === 'studio';
+      linkQuota = snap.jobs_quota;
+      linkCreditHolder = !linkPaid && snap.credits_remaining > 0;
+    } catch {
+      // Fail restrictive, as B0: not paid, quota 0 → bumpJobsUsedWithinQuota refuses.
+    }
+  }
+
+  // The burst limit applies to every retry, free or charged (the button must not hammer).
+  const burst = await deps.checkBurstLimit(user.user_id);
+  if (burst) {
+    return {
+      status: 429,
+      body: { error: 'too many requests', code: 'rate_limit_burst', retry_after_s: burst.retry_after_s },
+      headers: { 'content-type': 'application/json', 'Retry-After': String(burst.retry_after_s) },
+      raw: true,
+    };
+  }
+  // Only a retry that spends an allowance unit is quota-checked.
+  if (charge.unit) {
+    const quota = await deps.checkMonthlyQuota(user.user_id);
+    if (quota) {
+      return json(402, { error: 'monthly quota reached', code: 'quota_exceeded', resets_at: quota.resets_at });
+    }
+  }
+
+  const id = deps.randomUUID();
+  const requestedStems = Array.isArray(stems) && stems.length ? stems : LINK_DEFAULT_STEMS;
+  const RATE_SENTINEL = Symbol('rate_limited');
+
+  let inserted: boolean;
+  try {
+    inserted = await db.tx(async (client) => {
+      // 1. The trial song first (lock order: trial_grants → parent row → entitlements).
+      let trialCharged = false;
+      if (charge.trialSong) {
+        const consume = await deps.consumeTrialInTx(client, user.user_id);
+        if (consume.ok) {
+          trialCharged = true;
+        } else if (consume.reason === 'exhausted') {
+          // The song given back has been spent since; the existing trial refusal applies.
+          throw new EntitlementError('TRIAL_EXHAUSTED', 'trial exhausted');
+        }
+        // 'expired' / 'no_grant': there is no trial left to spend into, so this part is free.
+      }
+
+      // 2. The cap, under the parent's row lock.
+      const p = (await client.query(LOCK_PARENT_SQL, [parentJobId])).rows[0] as LockedParent | undefined;
+      if (!p || p.user_id !== user.user_id || p.status !== 'failed' || p.input_kind !== 'youtube') {
+        throw new MirrorRefusal(json(404, NOT_FOUND_BODY));
+      }
+      if (p.retried_at !== null && p.retried_at !== undefined) {
+        // Already retried (a double tap, or a second tab): the same answer as a hook hit.
+        const child = (await client.query(RETRY_CHILD_SQL, [parentJobId])).rows[0] as { id: string } | undefined;
+        if (child) throw new ExistingJobHit(child.id);
+        throw new MirrorRefusal(limit());
+      }
+      const depth = Number(p.retry_depth ?? 0);
+      if (!(depth < RETRY_CAP)) throw new MirrorRefusal(limit());
+
+      await runBeforeInsert(input, client, ctx);
+
+      // 3. The retry row.
+      const r = await client.query(RETRY_INSERT_SQL, [
+        id, ctx.canonicalUrl, requestedStems, bars, clientIpHash, deps.RATE_WINDOW_MS, deps.RATE_LIMIT, user.user_id,
+        parentJobId, depth + 1,
+      ]);
+      if (!r.rowCount) {
+        // Per-IP limit. A consumed trial song must come back (roll back); otherwise nothing
+        // was written and the tx commits as B0's non-trial branch does — retried_at stays NULL.
+        if (trialCharged) throw RATE_SENTINEL;
+        return false;
+      }
+
+      await deps.rollPeriodIfStale(client, user.user_id);
+      if (charge.unit) {
+        if (linkPaid) {
+          await deps.bumpJobsUsed(client, user.user_id);
+        } else if (!(await deps.bumpJobsUsedWithinQuota(client, user.user_id, linkQuota))) {
+          throw linkCreditHolder
+            ? new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', deps.LINK_CAP_CREDITS_DETAIL)
+            : new EntitlementError('FREE_MONTHLY_QUOTA_EXHAUSTED', deps.FREE_QUOTA_EXHAUSTED_MESSAGE);
+        }
+        deps.noteAllowanceDebitRecorded(
+          await deps.recordAllowanceDebit(client, user.user_id, id, { trialSong: trialCharged }),
+        );
+      } else if (trialCharged) {
+        deps.noteAllowanceDebitRecorded(await recordTrialOnlyDebit(client, user.user_id, id));
+      }
+
+      // 4. Only now, with the row inserted: the parent has been retried.
+      await client.query(MARK_RETRIED_SQL, [parentJobId]);
+      return true;
+    });
+  } catch (err) {
+    if (err === RATE_SENTINEL) return json(429, { error_code: 'RATE_LIMITED', message: deps.RATE_LIMIT_MSG });
+    if (err instanceof ExistingJobHit) return json(200, { id: err.id });
+    if (err instanceof MirrorRefusal) return err.result;
+    if (err instanceof EntitlementError) {
+      return json(err.status, { error_code: err.code, message: deps.entitlementMessage(err.code, err.message) });
+    }
+    throw err;
+  }
+  if (!inserted) return json(429, { error_code: 'RATE_LIMITED', message: deps.RATE_LIMIT_MSG });
   return json(201, { id, status: 'queued' });
 }

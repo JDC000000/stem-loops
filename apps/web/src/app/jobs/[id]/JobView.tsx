@@ -28,7 +28,19 @@ import Player from '@/components/play/Player';
 import { formatExpiresIn, isDemoRow } from '@/lib/retention';
 import { jobLabel } from '@/lib/job-label';
 import { ProcessingHeading } from '@/components/ProcessingHeading';
-import { failedJobMessage } from '@/lib/error-copy';
+import {
+  failedJobMessage,
+  RETRY_ALREADY_MSG,
+  RETRY_BUTTON_LABEL,
+  RETRY_COOLDOWN_MSG,
+  RETRY_COST_CHARGED,
+  RETRY_COST_FREE,
+  RETRY_GO_TO_LABEL,
+  RETRY_LIMIT_MSG,
+  RETRY_OF_LABEL,
+  RETRY_OF_LINK_TEXT,
+  UPLOAD_AGAIN_LABEL,
+} from '@/lib/error-copy';
 import { jobTrimNote } from '@/lib/input-trim';
 import { DEMO_ARTIST, demoForJobId } from '@/lib/demo-catalog';
 import {
@@ -60,6 +72,24 @@ type Trouble =
   | { readonly kind: 'stalled'; readonly stall: Stall };
 
 const minutes = (ms: number) => Math.round(ms / 60000);
+
+/**
+ * GET /api/jobs/:id/retry (Phase B, B3, #321): what the failed box may offer for this job, and
+ * the job it retries. Fetched only for a signed-in visitor's LINK job, so an upload (and the
+ * poll tests' jobs) costs no extra request.
+ */
+export type RetryInfo = {
+  action: 'eligible' | 'none' | 'upload_again' | 'already_retried' | 'cap_reached' | 'cooldown';
+  retry_of?: string | null;
+  retries_left?: number;
+  charge?: 'free' | 'charged';
+  retried_by?: string | null;
+  retry_after_s?: number;
+};
+
+/** A failed UPLOAD gets "Upload again", never a retry (Q-F: link songs only). */
+export const isUploadJob = (job: Job): boolean =>
+  (job as { input_kind?: string | null }).input_kind === 'upload' || (!job.youtube_url && !!job.original_filename);
 
 // An <a class="jp-primary"> is sized by stem-color.css; a <button> is not, so it is sized here.
 const actionButton: React.CSSProperties = {
@@ -131,6 +161,10 @@ export default function JobView({
   const [trouble, setTrouble] = useState<Trouble | null>(null);
   // Bumped by "Try again" / "Check again": re-runs the polling effect.
   const [attempt, setAttempt] = useState(0);
+  // Phase B, B3: the retry facts for this job (null until fetched) and the last retry refusal.
+  const [retryInfo, setRetryInfo] = useState<RetryInfo | null>(null);
+  const [retryNote, setRetryNote] = useState<string | null>(null);
+  const [retryBusy, setRetryBusy] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -192,6 +226,46 @@ export default function JobView({
       if (timer.current) clearTimeout(timer.current);
     };
   }, [id, attempt]);
+
+  // B3: ask once per (job, failed?) whether this LINK job may be retried and what it retries.
+  const isLinkJob = !!job && !!job.youtube_url && signedIn;
+  const isFailed = job?.status === 'failed';
+  useEffect(() => {
+    if (!isLinkJob) return;
+    let stopped = false;
+    fetch(`/api/jobs/${id}/retry`, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b) => {
+        if (!stopped && b && typeof b.action === 'string') setRetryInfo(b as RetryInfo);
+      })
+      .catch(() => {});
+    return () => {
+      stopped = true;
+    };
+  }, [id, isLinkJob, isFailed]);
+
+  async function startRetry() {
+    if (retryBusy) return;
+    setRetryBusy(true);
+    setRetryNote(null);
+    try {
+      const res = await fetch(`/api/jobs/${id}/retry`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      const body = (await res.json().catch(() => null)) as { id?: string; message?: string; error_code?: string } | null;
+      if ((res.status === 200 || res.status === 201) && body?.id) {
+        window.location.assign(`/jobs/${body.id}`);
+        return;
+      }
+      if (res.status === 429 && body?.error_code === 'RETRY_LIMIT') {
+        setRetryInfo((cur) => ({ ...(cur ?? { action: 'cap_reached' }), action: 'cap_reached' }));
+      }
+      // Any other refusal (C-1: a 429 from the rate limit) keeps the button: it can work later.
+      setRetryNote(body?.message ?? 'We couldn\'t start that just now. Wait a moment and try again.');
+    } catch {
+      setRetryNote("We couldn't reach the server. Check your connection and try again.");
+    } finally {
+      setRetryBusy(false);
+    }
+  }
 
   // GUTTER: the token, never a literal. Found across #197 + #194 — neither PR
   // could see it alone. This was a hard-coded `24px`, and the mixer's entire
@@ -343,9 +417,14 @@ export default function JobView({
           <p style={{ margin: 0 }}>
             {failedJobMessage(job)}
           </p>
-          <Link href="/" className="jp-primary" style={{ marginTop: 16 }}>
-            Start a new song
-          </Link>
+          <RetryOfLine retryOf={retryInfo?.retry_of ?? null} />
+          {isUploadJob(job) ? (
+            <Link href="/" className="jp-primary" data-testid="job-upload-again" style={{ marginTop: 16 }}>
+              {UPLOAD_AGAIN_LABEL}
+            </Link>
+          ) : (
+            <RetryActions info={retryInfo} note={retryNote} busy={retryBusy} onRetry={startRetry} />
+          )}
         </div>
       ) : trouble?.kind === 'stalled' ? (
         <div
@@ -384,6 +463,7 @@ export default function JobView({
               instead of running off both edges (lib/job-label.ts). */}
           <ProcessingHeading job={job} />
           <p style={{ margin: '-16px 0 0', color: 'var(--text-muted)' }}>Processing…</p>
+          <RetryOfLine retryOf={retryInfo?.retry_of ?? null} />
           <TrimNote job={job} />
           <JobProgress job={job} />
         </>
@@ -404,5 +484,81 @@ function TrimNote({ job }: { job: Job }) {
     <p data-testid="trim-note" style={{ margin: 0, color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
       {note}
     </p>
+  );
+}
+
+/** "Retry of your earlier try" on a retry's page, while the job it retries still exists. */
+function RetryOfLine({ retryOf }: { retryOf: string | null }) {
+  if (!retryOf) return null;
+  return (
+    <p data-testid="job-retry-of" style={{ margin: '8px 0 0', color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
+      {RETRY_OF_LABEL}{' '}
+      <Link href={`/jobs/${retryOf}`} style={{ color: 'inherit' }}>
+        {RETRY_OF_LINK_TEXT}
+      </Link>
+    </p>
+  );
+}
+
+/**
+ * The failed LINK job's actions (B3). "Try this song again" (data-testid="job-retry", distinct
+ * from the poll panel's "Try again") only when GET /api/jobs/:id/retry says eligible, with what
+ * it costs; otherwise the reason, never a dead button. "Start a new song" is always there; it is
+ * the primary fill only when there is no retry button (one primary fill per view).
+ */
+export function RetryActions({
+  info,
+  note,
+  busy,
+  onRetry,
+}: {
+  info: RetryInfo | null;
+  note: string | null;
+  busy: boolean;
+  onRetry: () => void;
+}) {
+  const eligible = info?.action === 'eligible';
+  return (
+    <>
+      {eligible ? (
+        <>
+          <button
+            type="button"
+            className="jp-primary"
+            data-testid="job-retry"
+            style={actionButton}
+            disabled={busy}
+            onClick={onRetry}
+          >
+            {RETRY_BUTTON_LABEL}
+          </button>
+          <p data-testid="job-retry-cost" style={{ margin: '8px 0 0', fontSize: 'var(--text-sm, 13px)' }}>
+            {info?.charge === 'charged' ? RETRY_COST_CHARGED : RETRY_COST_FREE}
+          </p>
+        </>
+      ) : null}
+      {info?.action === 'cap_reached' ? (
+        <p data-testid="job-retry-limit" style={{ margin: '12px 0 0' }}>{RETRY_LIMIT_MSG}</p>
+      ) : null}
+      {info?.action === 'cooldown' ? (
+        <p data-testid="job-retry-cooldown" style={{ margin: '12px 0 0' }}>{RETRY_COOLDOWN_MSG}</p>
+      ) : null}
+      {info?.action === 'already_retried' ? (
+        <p data-testid="job-retry-already" style={{ margin: '12px 0 0' }}>
+          {RETRY_ALREADY_MSG}{' '}
+          {info.retried_by ? <Link href={`/jobs/${info.retried_by}`}>{RETRY_GO_TO_LABEL}</Link> : null}
+        </p>
+      ) : null}
+      {note && info?.action !== 'cap_reached' ? (
+        <p role="status" data-testid="job-retry-note" style={{ margin: '8px 0 0' }}>{note}</p>
+      ) : null}
+      <Link
+        href="/"
+        className={eligible ? 'jp-back' : 'jp-primary'}
+        style={eligible ? { marginTop: 16, display: 'inline-block', minHeight: 44, lineHeight: '44px' } : { marginTop: 16 }}
+      >
+        Start a new song
+      </Link>
+    </>
   );
 }

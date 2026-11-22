@@ -197,3 +197,24 @@ export function failedJobMessage(job: { error_code?: string | null; error_messag
   }
   return job.error_message_user ?? FAILED_JOB_FALLBACK;
 }
+
+// ── "Try again" on a failed link song (#321; Phase B, B3) ──────────────────────────────────
+// The failed-job box's own retry button. Its label differs from the poll panel's "Try again"
+// (that one re-asks the server; this one starts the song again as a new job).
+export const RETRY_BUTTON_LABEL = 'Try this song again';
+/** What a retry spends, said before the tap. A charged retry spends only what came back. */
+export const RETRY_COST_FREE = "This try is on us. It won't count toward your songs.";
+export const RETRY_COST_CHARGED = 'This uses 1 of your songs, the one we gave back when this try failed.';
+/** 429 from POST /api/jobs/:id/retry once a song has used its retries (cap 2, Jon D7). */
+export const RETRY_LIMIT_MSG = "You've tried this song again twice. Paste the link again later to start it fresh.";
+/** The job was already retried (a second tab): the button is replaced by a link to that try. */
+export const RETRY_ALREADY_MSG = 'You already tried this song again.';
+export const RETRY_GO_TO_LABEL = 'Go to the new try';
+/** On a retry's own page, before the link to the job it retries. */
+export const RETRY_OF_LABEL = 'Retry of';
+export const RETRY_OF_LINK_TEXT = 'your earlier try';
+/** A failed upload: its file is gone with the job, so the way back is a fresh upload. */
+export const UPLOAD_AGAIN_LABEL = 'Upload again';
+export const UPLOAD_AGAIN_MSG = "We can't try an uploaded file again. Upload it again to start over.";
+/** RATE_LIMITED parent still cooling down. */
+export const RETRY_COOLDOWN_MSG = 'Wait a minute, then try this song again.';

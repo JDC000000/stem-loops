@@ -219,8 +219,18 @@ test('C-17: /terms states the Free cap and that more needs a plan or credits', (
 });
 
 test('SF-3: the "credits for uploaded files" claim matches the code: link jobs never spend a credit', () => {
-  const route = readFileSync(join(SRC, 'app/api/jobs/route.ts'), 'utf8');
-  assert.match(route, /Credits are never\s*\n?\s*\/\/\s*spent on a link/, 'the jobs route still documents that links never spend credits');
+  // The code, not a comment (comments stripped): the route's only credit spend is in the
+  // upload branch, before the signed-in link hand-off, and the signed-in link path
+  // (lib/jobs/create-link-job.ts, Phase B B0) has no credit consumer at all.
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const route = strip(readFileSync(join(SRC, 'app/api/jobs/route.ts'), 'utf8'));
+  const spends = [...route.matchAll(/consumeCreditInTx\(/g)].map((m) => m.index);
+  assert.equal(spends.length, 1, 'one credit spend in the jobs route');
+  const upload = route.indexOf('if (bodyObj.uploadKey) {');
+  const link = route.indexOf('const r = await createAuthedLinkJob(');
+  assert.ok(upload > 0 && link > upload && spends[0] > upload && spends[0] < link, 'the credit spend sits in the upload branch');
+  const lib = strip(readFileSync(join(SRC, 'lib/jobs/create-link-job.ts'), 'utf8'));
+  assert.doesNotMatch(lib, /consumeCredit/, 'the signed-in link path never spends a credit');
   // The DB is the authority: check_credit_decrement (013) refuses a credit for any non-upload job,
   // and no later migration redefines it.
   const dir = join(REPO, 'apps/worker/migrations');

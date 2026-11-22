@@ -30,7 +30,9 @@ function seedEntries(userId, tag) {
     `INSERT INTO library_entries (user_id, input_kind, original_filename, title)
      VALUES ('${userId}', 'upload', 'band rehearsal.wav', 'band rehearsal') RETURNING id`,
   );
-  return { link, upload };
+  // psql -At prints the RETURNING row and then the command tag ("INSERT 0 1"): keep the id.
+  const first = (out) => out.split('\n')[0].trim();
+  return { link: first(link), upload: first(upload) };
 }
 
 async function walk(j, vp, user) {

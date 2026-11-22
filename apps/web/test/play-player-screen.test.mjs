@@ -118,7 +118,7 @@ test('P1.1 header: back · the song title as THE h1 · "<BPM> BPM · <key>" with
   assert.match(h, /<h1[^>]*data-testid="player-title"[^>]*>Lucky Ticket<\/h1>/);
   assert.match(h, /<span class="facts" data-testid="player-facts"><span class="sr">Detected: <\/span>102 BPM · B♭ major<\/span>/);
   assert.match(h, /<a class="back" href="\/history" aria-label="Back to song library">/);
-  assert.match(h, /<button[^>]*aria-label="More: all chords, song info"[^>]*aria-expanded="false"/);
+  assert.match(h, /<button[^>]*aria-label="More: all chords, song info, set lists"[^>]*aria-expanded="false"/);
   assert.match(decode(ssr({ artist: 'The Royal Sundowners' })), /102 BPM · B♭ major<\/span><span class="artist">The Royal Sundowners<\/span>/);
   // Phase A (J3): the BPM · key chip is 20px, white, readable at 70 cm.
   const css = read('src/components/play/Player.module.css');
@@ -1096,4 +1096,161 @@ test('light-audio hint: a returning visitor who dismissed it never sees it again
     assert.match(dom.find('[data-testid="info-sheet"]').textContent, /lighter audio/);
     await dom.unmountAll();
   });
+});
+
+// ═══ Set lists (#322; Phase B, B2) ══════════════════════════════════════════
+// The ⋯ menu's "Add to <last-used list>" / "Add to set list…", and with ?set=<id> the
+// "Next song ›" row and "Back to <set name>". fetch is stubbed per test and restored.
+
+function stubFetch(handler) {
+  const had = Object.prototype.hasOwnProperty.call(globalThis, 'fetch');
+  const real = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), method: init.method ?? 'GET', body: init.body ? JSON.parse(init.body) : null });
+    const [status, body] = handler(String(url), init);
+    return { ok: status >= 200 && status < 300, status, json: async () => body };
+  };
+  return { calls, restore: () => { if (had) globalThis.fetch = real; else delete globalThis.fetch; } };
+}
+const LIST_ID = '3f2b8c1e-5a4d-4e6f-8a9b-0c1d2e3f4a5b';
+const DEMO_LIST = (items) => ({ list: { id: 'demo', name: 'Demo set', is_demo: true, items } });
+const item = (i, state, job) => ({ item_id: `i${i}`, position: i, source: 'demo', title: `Song ${i}`, state, job_id: job });
+
+test('B2: the ⋯ menu offers "Add to <last-used list>" (one tap adds this song) and "Add to set list…"', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const f = stubFetch((url, init) =>
+      url.startsWith('/api/set-lists?job=') ? [200, { lists: [{ id: LIST_ID, name: 'JAMS', song_count: 2, updated_at: '2026-11-22T00:00:00Z', has_job: false }] }]
+        : init.method === 'POST' ? [201, { item_id: 'x', added: true }] : [404, {}]);
+    try {
+      await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+      await dom.act(() => dom.find('[data-testid="player-more"]').click());
+      await dom.act();
+      const labels = [...dom.findAll('#player-menu button')].map((b) => b.textContent);
+      assert.ok(labels.includes('Add to JAMS'), labels.join(' | '));
+      assert.ok(labels.includes('Add to set list…'), labels.join(' | '));
+      assert.equal(f.calls[0].url, '/api/set-lists?job=job-1');
+      await dom.act(() => dom.find('[data-testid="player-add-last"]').click());
+      await dom.act();
+      const post = f.calls.find((c) => c.method === 'POST');
+      assert.deepEqual([post.url, post.body], [`/api/set-lists/${LIST_ID}/songs`, { job_id: 'job-1' }]);
+      assert.equal(dom.find('#player-menu'), null, 'the menu closed');
+      assert.equal(dom.find('[data-testid="set-toast"]').textContent, 'Added to JAMS.');
+    } finally {
+      f.restore();
+      await dom.unmountAll();
+    }
+  });
+});
+
+test('B2: "Add to set list…" opens a checklist (ticked where the song already is); signed out it says to sign in', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    let signedIn = true;
+    const f = stubFetch((url) => (!signedIn ? [401, {}] : url.startsWith('/api/set-lists?job=')
+      ? [200, { lists: [{ id: LIST_ID, name: 'JAMS', song_count: 1, updated_at: 'x', has_job: true }, { id: 'b', name: 'Gig', song_count: 0, updated_at: 'x', has_job: false }] }]
+      : [200, {}]));
+    try {
+      await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+      await dom.act(() => dom.find('[data-testid="player-more"]').click());
+      await dom.act();
+      await dom.act(() => dom.find('[data-testid="player-add-to-set"]').click());
+      await dom.act();
+      const rows = dom.findAll('[data-testid="add-set-row"]');
+      assert.deepEqual([...rows].map((r) => [r.textContent, r.querySelector('input').checked]), [['JAMS', true], ['Gig', false]]);
+      assert.equal(dom.find('#add-set-new').value, 'Set list 1');
+      await dom.unmountAll();
+      signedIn = false;
+      await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+      await dom.act(() => dom.find('[data-testid="player-more"]').click());
+      await dom.act();
+      assert.equal(dom.find('[data-testid="player-add-last"]'), null);
+      await dom.act(() => dom.find('[data-testid="player-add-to-set"]').click());
+      await dom.act();
+      assert.match(dom.find('[data-testid="add-set-sign-in"]').textContent, /Sign in/);
+    } finally {
+      f.restore();
+      await dom.unmountAll();
+    }
+  });
+});
+
+test('B2: without ?set= there is no set row and the back link is the library', async () => {
+  const h = decode(ssr());
+  assert.doesNotMatch(h, /set-next/);
+  await withDom(async (dom) => {
+    setMedia(false);
+    const f = stubFetch(() => [500, {}]);
+    try {
+      await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+      await dom.act();
+      assert.equal(dom.find('[data-testid="set-next-row"]'), null);
+      assert.equal(f.calls.length, 0, 'nothing fetched for a set');
+    } finally {
+      f.restore();
+      await dom.unmountAll();
+    }
+  });
+});
+
+test('B2: ?set=demo -> "Next song ›" (1 tap) to the next PLAYABLE song, skipping an unavailable one with a one-line notice; back goes to the set', async () => {
+  await withDom(
+    async (dom) => {
+      setMedia(false);
+      const f = stubFetch((url) => (url === '/api/set-lists/demo'
+        ? [200, DEMO_LIST([item(0, 'ready', 'job-0'), item(1, 'ready', 'job-1'), item(2, 'unavailable', null), item(3, 'ready', 'job-3')])]
+        : [404, {}]));
+      try {
+        await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+        await dom.act();
+        await dom.act();
+        const next = dom.find('[data-testid="set-next"]');
+        assert.ok(next, 'Next song is shown');
+        assert.equal(next.textContent, 'Next song ›');
+        assert.equal(next.getAttribute('href'), '/jobs/job-3?set=demo');
+        assert.equal(next.getAttribute('aria-label'), 'Next song: Song 3');
+        assert.equal(dom.find('[data-testid="set-next-text"]').textContent, 'Skipped 1 song that can’t play now.');
+        const back = dom.find('header a');
+        assert.equal(back.getAttribute('href'), '/sets/demo');
+        assert.equal(back.getAttribute('aria-label'), 'Back to Demo set');
+        assert.equal(f.calls.filter((c) => c.url === '/api/set-lists/demo').length, 1);
+      } finally {
+        f.restore();
+        await dom.unmountAll();
+      }
+    },
+    { url: 'http://localhost:3000/jobs/job-1?set=demo' },
+  );
+});
+
+test('B2: at the last playable song there is no Next (it never runs past the end or wraps)', async () => {
+  await withDom(
+    async (dom) => {
+      setMedia(false);
+      const f = stubFetch(() => [200, { list: { id: LIST_ID, name: 'JAMS', is_demo: false, items: [item(0, 'ready', 'job-0'), item(1, 'ready', 'job-1'), item(2, 'expired', null)] } }]);
+      try {
+        await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+        await dom.act();
+        await dom.act();
+        assert.equal(dom.find('[data-testid="set-next"]'), null);
+        assert.equal(dom.find('[data-testid="set-next-text"]').textContent, 'Skipped 1 song that can’t play now.');
+        assert.equal(f.calls[0].url, `/api/set-lists/${LIST_ID}`);
+      } finally {
+        f.restore();
+        await dom.unmountAll();
+      }
+    },
+    { url: `http://localhost:3000/jobs/job-1?set=${LIST_ID}` },
+  );
+});
+
+test('B2: "Next song ›" is a >= 44px pill, neutral (the Play button stays the one lime fill)', () => {
+  const css = read('src/components/setlists/SetLists.module.css');
+  const btn = css.match(/\n\.nextBtn\s*\{([^}]*)\}/)[1];
+  assert.match(btn, /min-height:\s*var\(--touch-min\);/);
+  assert.match(btn, /border-radius:\s*22px;/);
+  assert.doesNotMatch(css, /--accent|#a3e635|chord-now/i);
+  const row = css.match(/\n\.nextRow\s*\{([^}]*)\}/)[1];
+  assert.match(row, /flex-shrink:\s*0;/, 'the header row never squeezes the stage into a scroll');
 });

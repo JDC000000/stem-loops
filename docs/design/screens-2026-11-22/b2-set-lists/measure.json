@@ -1,0 +1,250 @@
+{
+ "390x844-account-delete-409-demo-account": {
+  "hscroll": 0,
+  "vscroll": 65,
+  "small": [],
+  "player": null,
+  "moves": [],
+  "focus": null
+ },
+ "390x844-sets-empty": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [],
+  "focus": null
+ },
+ "390x844-sets-two-lists": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [],
+  "focus": null
+ },
+ "390x844-new-list-sheet": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [],
+  "focus": null
+ },
+ "390x844-list-3-songs-1-expired": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [
+   [
+    44,
+    44
+   ],
+   [
+    44,
+    44
+   ]
+  ],
+  "focus": null
+ },
+ "390x844-move-up-down-focus": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [
+   [
+    44,
+    44
+   ],
+   [
+    44,
+    44
+   ]
+  ],
+  "focus": "Move Creep up"
+ },
+ "390x844-delete-confirm": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [
+   [
+    44,
+    44
+   ],
+   [
+    44,
+    44
+   ]
+  ],
+  "focus": null
+ },
+ "390x844-player-menu-add-to-set-list": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": {
+   "scroll": 0,
+   "next": null
+  },
+  "moves": [],
+  "focus": null
+ },
+ "390x844-player-next-song": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": {
+   "scroll": 0,
+   "next": [
+    119,
+    44
+   ]
+  },
+  "moves": [],
+  "focus": null
+ },
+ "390x844-demo-set-signed-out": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [],
+  "focus": null
+ },
+ "390x844-demo-set-unavailable-song": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [],
+  "focus": null
+ },
+ "360x800-account-delete-409-demo-account": {
+  "hscroll": 0,
+  "vscroll": 65,
+  "small": [],
+  "player": null,
+  "moves": [],
+  "focus": null
+ },
+ "360x800-sets-empty": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [],
+  "focus": null
+ },
+ "360x800-sets-two-lists": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [],
+  "focus": null
+ },
+ "360x800-new-list-sheet": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [],
+  "focus": null
+ },
+ "360x800-list-3-songs-1-expired": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [
+   [
+    44,
+    44
+   ],
+   [
+    44,
+    44
+   ]
+  ],
+  "focus": null
+ },
+ "360x800-move-up-down-focus": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [
+   [
+    44,
+    44
+   ],
+   [
+    44,
+    44
+   ]
+  ],
+  "focus": "Move Creep up"
+ },
+ "360x800-delete-confirm": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [
+   [
+    44,
+    44
+   ],
+   [
+    44,
+    44
+   ]
+  ],
+  "focus": null
+ },
+ "360x800-player-menu-add-to-set-list": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": {
+   "scroll": 0,
+   "next": null
+  },
+  "moves": [],
+  "focus": null
+ },
+ "360x800-player-next-song": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": {
+   "scroll": 0,
+   "next": [
+    119,
+    44
+   ]
+  },
+  "moves": [],
+  "focus": null
+ },
+ "360x800-demo-set-signed-out": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [],
+  "focus": null
+ },
+ "360x800-demo-set-unavailable-song": {
+  "hscroll": 0,
+  "vscroll": 0,
+  "small": [],
+  "player": null,
+  "moves": [],
+  "focus": null
+ }
+}

@@ -19,6 +19,8 @@
 //   502 CHECKOUT_EXPIRE_FAILED — QA-72: Stripe refused to expire an open
 //       checkout session, or its time budget ran out; NOTHING was deleted,
 //       safe to retry. Alerted the same way.
+//   409 DEMO_ACCOUNT_DELETE_REFUSED — the account owns an is_demo job (Q-C, Phase B B2);
+//       nothing was read from or sent to Stripe, nothing deleted.
 //   500 DELETE_FAILED — the chord_edits erasure failed (NOTHING irreversible
 //       happened: no subscription was cancelled, safe to retry), or the
 //       account_deleted audit row (QA-72 M-2) or the Supabase Admin delete
@@ -27,6 +29,8 @@
 //
 // Order of operations (each step only runs if the previous one succeeded):
 //   1. getUser() + confirm_email check
+//   1b. Q-C: refuse (409) an account that owns any is_demo job, before any
+//      subscription read or Stripe call.
 //   2. read this user's subscriptions that are not 'canceled' (QA-53: paused
 //      and incomplete too, not just active/trialing/past_due) and their
 //      Stripe customer id (read-only).
@@ -218,6 +222,20 @@ export async function DELETE(req: NextRequest) {
   const userHash = createHmac('sha256', auditKey).update(user.user_id).digest('hex');
 
   try {
+    // 1b. Q-C (Phase B, B2): the account that owns the demo songs is never deleted here. Its
+    //     deletion would clear is_demo on them (step 3) and take the Demo set and the home
+    //     demo down for everyone. Checked by OWNERSHIP of an is_demo job, not by a hard-coded
+    //     account id, and BEFORE step 2/2b: a refusal makes zero Stripe calls, writes no
+    //     tombstone and leaves is_demo as it is. Inside the try, so a DB error is the normal
+    //     500 DELETE_FAILED. `rows`, not rowCount: nothing found must read as "no demo".
+    const demoOwned = await db.query(
+      `SELECT 1 FROM public.jobs WHERE user_id = $1::uuid AND is_demo = true LIMIT 1`,
+      [user.user_id],
+    );
+    if (demoOwned.rows.length > 0) {
+      return err(409, 'DEMO_ACCOUNT_DELETE_REFUSED', "This account holds the demo songs and can't be deleted here.");
+    }
+
     // 2. Read the subscriptions to cancel (read-only; nothing changes yet).
     //    Every status except 'canceled' (QA-53): a paused or incomplete
     //    subscription can still bill. The customer id lets the provider list

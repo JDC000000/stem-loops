@@ -115,6 +115,10 @@ function world(o = {}) {
       const j = st.jobs.get(params[0]);
       return rows(j ? { id: j.id, user_id: j.user_id, status: j.status, input_kind: j.input_kind, retry_depth: j.retry_depth, retried_at: j.retried_at } : null);
     }
+    if (/^SELECT retry_of FROM jobs WHERE id = \$1/.test(s)) {
+      const j = st.jobs.get(params[0]);
+      return rows(j ? { retry_of: j.retry_of } : null);
+    }
     if (/^SELECT id FROM jobs WHERE retry_of = \$1/.test(s)) {
       const kids = [...st.jobs.values()].filter((j) => j.retry_of === params[0]).sort((a, b) => b.created - a.created);
       return rows(kids[0] ? { id: kids[0].id } : null);
@@ -574,6 +578,18 @@ test('AC2: the lib refuses depth 2 under the lock even when the route\'s check i
   );
   assert.equal(r1.status, 201);
   assert.equal(child(ok).retry_depth, 2);
+}));
+
+test('AC3: under the lock the lib re-checks owner, failed and link — 404, nothing written', withYoutube(async () => {
+  for (const parent of [{ user_id: OTHER }, { user_id: null }, { status: 'queued' }, { status: 'done' }, { input_kind: 'upload' }]) {
+    const w = W0({ parent, restore: RESTORED });
+    const r = await lib.createAuthedLinkJob(
+      { user: { user_id: USER }, url: CANON, clientIpHash: () => 'iphash', funding: { mode: 'mirror_restore', parentJobId: PARENT, limitMessage: 'LIMIT' } },
+      libDeps(w),
+    );
+    assert.deepEqual(r, { status: 404, body: { error_code: 'NOT_FOUND', message: 'Job not found' } }, JSON.stringify(parent));
+    assert.deepEqual({ jobs: w.st.jobs.size, jobsUsed: w.st.jobsUsed, retried: w.st.jobs.get(PARENT).retried_at }, { jobs: 1, jobsUsed: 0, retried: null });
+  }
 }));
 
 test('AC2: root swept → retrying the newest (depth 2, retry_of NULL) is still refused', withYoutube(async () => {

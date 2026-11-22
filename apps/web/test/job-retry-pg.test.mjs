@@ -54,7 +54,7 @@ const dbStub = dataUrl(`
       // Test hook: globalThis.__retryOnQuery(sql, run) may hold a statement (the concurrency
       // barrier) before it reaches Postgres. Absent, the client is passed through untouched.
       const client = globalThis.__retryOnQuery
-        ? { query: (t, p) => globalThis.__retryOnQuery(String(t), () => c.query(t, p)) }
+        ? { query: (t, p) => globalThis.__retryOnQuery(String(t), p, () => c.query(t, p)) }
         : c;
       try { await c.query('BEGIN'); const r = await fn(client); await c.query('COMMIT'); return r; }
       catch (e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); } },
@@ -386,19 +386,26 @@ for (const [name, spend, code] of [['charged unit', 'unit', 'FETCH_PROXY_FAILED'
     const uid = await mkUser({ trial: spend === 'trial' });
     const p = await failedParent(uid, { spend, code });
     const before = await rowCounts(uid, p);
-    // BARRIER (review R1 should-fix 3): neither request may send the parent's FOR UPDATE until
-    // BOTH have reached it, so both have passed every lock-free gate. The first to get the lock
-    // then holds it 300 ms, and a third connection must SEE the other one waiting on it.
+    // BARRIER (review R1 should-fix 3): neither request may send the retry tx's FIRST lock
+    // until BOTH have reached it, so both have passed every lock-free gate. The first to get the
+    // lock then holds it, and a third connection must SEE the other one waiting on it. The
+    // first lock is the parent's FOR UPDATE, or on the trial path the trial_consume advisory
+    // lock (B0's lock order: trial_grants before the parent row).
+    const trialPath = spend === 'trial';
+    const isFirstLock = (sql, params) => trialPath
+      ? /pg_advisory_xact_lock/.test(sql) && params?.[0] === 'trial_consume'
+      : /FROM jobs WHERE id = \$1::uuid FOR UPDATE/.test(sql);
+    const waitLike = trialPath ? '%pg_advisory_xact_lock%' : '%retry_depth, retried_at%FOR UPDATE%';
     let arrived = 0;
     let open;
     const gate = new Promise((r) => (open = r));
     let firstLocked = false;
     let sawWait = false;
-    globalThis.__retryOnQuery = async (sql, run) => {
-      if (!/FROM jobs WHERE id = \$1::uuid FOR UPDATE/.test(sql)) return run();
+    globalThis.__retryOnQuery = async (sql, params, run) => {
+      if (!isFirstLock(sql, params)) return run();
       arrived += 1;
       if (arrived === 2) open();
-      await Promise.race([gate, new Promise((_, rej) => setTimeout(() => rej(new Error('barrier: only one request reached the parent lock')), 10_000))]);
+      await Promise.race([gate, new Promise((_, rej) => setTimeout(() => rej(new Error('barrier: only one request reached the first lock')), 10_000))]);
       const r = await run();
       if (!firstLocked) {
         firstLocked = true;
@@ -406,7 +413,7 @@ for (const [name, spend, code] of [['charged unit', 'unit', 'FETCH_PROXY_FAILED'
         while (Date.now() < end && !sawWait) {
           sawWait = (await pool.query(
             `SELECT count(*)::int AS n FROM pg_stat_activity
-              WHERE wait_event_type = 'Lock' AND query LIKE '%retry_depth, retried_at%FOR UPDATE%'`,
+              WHERE wait_event_type = 'Lock' AND query LIKE $1`, [waitLike],
           )).rows[0].n > 0;
           if (!sawWait) await new Promise((res) => setTimeout(res, 20));
         }
@@ -419,8 +426,8 @@ for (const [name, spend, code] of [['charged unit', 'unit', 'FETCH_PROXY_FAILED'
     } finally {
       globalThis.__retryOnQuery = undefined;
     }
-    assert.equal(arrived, 2, 'both requests reached the parent FOR UPDATE');
-    assert.ok(sawWait, 'the second request was seen WAITING on the parent row lock (pg_stat_activity)');
+    assert.equal(arrived, 2, 'both requests reached the retry tx\'s first lock');
+    assert.ok(sawWait, 'the second request was seen WAITING on that lock (pg_stat_activity)');
     assert.deepEqual([a.status, b.status].sort(), [200, 201], JSON.stringify([a.body, b.body]));
     assert.equal(a.body.id, b.body.id);
     const d = delta(before, await rowCounts(uid, p));

@@ -116,7 +116,9 @@ async function user({ trial = false, jobsUsed = null } = {}) {
   if (jobsUsed !== null) {
     await pool.query(
       `INSERT INTO public.entitlements (user_id, plan_code, period_start, period_end, jobs_used)
-       VALUES ($1, 'free', date_trunc('month', now()), date_trunc('month', now()) + interval '1 month', $2)`,
+       VALUES ($1, 'free', date_trunc('month', now()), date_trunc('month', now()) + interval '1 month', $2)
+       ON CONFLICT (user_id) DO UPDATE SET plan_code = 'free', period_start = EXCLUDED.period_start,
+         period_end = EXCLUDED.period_end, jobs_used = EXCLUDED.jobs_used`,
       [id, jobsUsed],
     );
   }

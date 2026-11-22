@@ -254,3 +254,16 @@ test('the 2-beat floor holds AFTER the snap: a section re-anchor that trims a ch
   for (const r of out) assert.ok(r.endSec - r.startSec >= 2 * 0.5 * 0.999, `${r.label} is ${((r.endSec - r.startSec) / 0.5).toFixed(2)} beats`);
   assert.equal(underHalfSounding(raw, out), 0);
 });
+
+test('the sounding guard is 50%: G 1 s + A7 0.29 s + C 0.93 s is shown as "?" (G would sound 45% of the span)', () => {
+  const raw = [[0, 1, 'G'], [1, 1.29, 'A:7'], [1.29, 2.22, 'C']].map(([s, e, label]) => ({ startSec: s, endSec: e, label }));
+  const out = simplifyChords(raw, { grid: { beatSec: 0.5, anchorSec: 0 } });
+  assert.deepEqual(out.map((r) => [+r.startSec.toFixed(3), +r.endSec.toFixed(3), r.label]), [[0, 2.22, 'X']]);
+  assert.equal(underHalfSounding(raw, out), 0);
+});
+
+test('a gap of up to 1 s is bridged: three A spans 0.64 s and 0.84 s apart are one A', () => {
+  const raw = [[0.53, 1.79, 'A:7'], [2.14, 2.73, 'N'], [2.73, 3.93, 'E:min'], [4.41, 6.05, 'A'], [6.69, 8.17, 'A'], [9.01, 10.15, 'A']].map(([s, e, label]) => ({ startSec: s, endSec: e, label }));
+  const out = simplifyChords(raw, { grid: { beatSec: 0.5, anchorSec: 0 } });
+  assert.deepEqual(out.map((r) => [+r.startSec.toFixed(3), +r.endSec.toFixed(3), r.label]), [[0.53, 2.5, 'A:7'], [2.5, 4, 'E:min'], [4.5, 10.15, 'A']]);
+});

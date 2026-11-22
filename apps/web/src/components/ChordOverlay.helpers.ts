@@ -292,7 +292,7 @@ export function runFramesAreMonotone(
  * beats merged into a neighbour and every change on a beat
  * (lib/play/simplify-chords.ts). A DISPLAY layer: the runs passed in are not
  * modified. `grid` is used only when it is the job's measured tempo; without
- * one, chords under half a second are merged and nothing is snapped.
+ * one, chords under 1 s (MIN_CHORD_SEC_NO_GRID) are merged and nothing is snapped.
  */
 export function simplifyOverlayRuns(
   runs: readonly OverlayRun[],

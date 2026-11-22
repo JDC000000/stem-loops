@@ -1818,11 +1818,32 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
   const bothH = curH + (nextBox ? nextBox.h + LINE_GAP_PX : 0);
   const ladder = wide ? WIDE_NOW_SIZES : TALLER_NOW_SIZES;
   const nextLabelH = Math.ceil(13 * 1.3);
-  // Pick Now (and whether the NEXT bar line shows) for a given Next size:
-  // Now >= 72 with both lines, then >= 72 with the current line only, then
-  // smaller Now. `need` counts the Next column where it is taller than Now
-  // (a small Now on a short screen), so the estimate is the real height.
-  const choose = (basePx: number, belowPx: number) => {
+  // THE LADDER (review of #333, rounds 1 and 2). Now >= 72px comes first,
+  // then the NEXT bar line, then Next's own size:
+  //   for Now >= 72, then (only if nothing fits) Now < 72:
+  //     with the NEXT line, then with the current line only:
+  //       Next 44px reserving its last-beat growth, then 44px not growing,
+  //       then 32px (not wide stages);
+  //         lines at full height, then squeezed x0.8 (a line holding a
+  //         wrapped name is never squeezed).
+  // `need` counts the Next column where it is taller than Now (a small Now on
+  // a short screen), so the estimate is the real height.
+  // How far a line may squeeze: to MIN_LINE_SCALE, but never so far that a
+  // name no longer fits its slot (the drawn name is fontPx x 1.2 tall; a name
+  // wrapped onto two lines is never squeezed).
+  const minScale = (b: LineBox | null) => {
+    if (!b) return 1;
+    let k = MIN_LINE_SCALE;
+    for (const c of b.cells)
+      for (const x of c.slots) k = Math.max(k, x.wrap ? 1 : Math.min(1, (x.fontPx * 1.2 + 1) / x.h));
+    return k;
+  };
+  const kC = minScale(curBox);
+  const kN = minScale(nextBox);
+  const configs: readonly (readonly [number, number])[] = wide
+    ? [[WIDE_NEXT_PX, grownNextPx], [WIDE_NEXT_PX, WIDE_NEXT_PX]]
+    : [[NEXT_PX, grownNextPx], [NEXT_PX, NEXT_PX], [SHORT_NEXT_PX, SHORT_NEXT_PX]];
+  const sized = configs.map(([basePx, belowPx]) => {
     const w = nx ? Math.max(nameWidthPx(whenText, 13, 1.05), nameWidthPx(nextText, basePx, 1.12)) : 0;
     const colH = nextLabelH + Math.ceil(basePx * 1.1) + 6;
     const need = (f: NowFit, lines: number) =>
@@ -1830,67 +1851,48 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
       (!nx ? 0 : f.nextBelow ? Math.ceil(belowPx * 1.1) + 6 + NEXT_BELOW_GAP_PX : Math.max(0, colH - Math.ceil(f.lines.length * f.px * 1.05))) +
       lines;
     const cands = nowFitCandidates(nowText, widthPx - 4, w, ladder);
-    const plain = cands.find((c) => c.px <= (wide ? WIDE_NOW_SIZES[0] : NOW_PX)) ?? cands[cands.length - 1];
-    if (!(heightPx > 0)) return { fit: plain, both: !!nextBox, need, ok: true, over: 0, squeeze: null };
-    const big = cands.filter((c) => c.px >= NOW_FLOOR_PX);
-    const small = cands.filter((c) => c.px < NOW_FLOOR_PX);
-    // Now >= 72 with both lines, then squeezing the lines (to x0.8) to keep
-    // both, then the current line only (never squeezed: a short landscape
-    // screen scrolls the chord area instead); only then a smaller Now.
-    // A name wrapped onto two lines in a stacked slot needs its full height: no squeeze then.
-    const wraps = (b: LineBox | null) => !!b && b.cells.some((c) => c.slots.some((x) => x.wrap));
-    // Each line is squeezed on its own (a line holding a wrapped name is not).
-    const kC = wraps(curBox) ? 1 : MIN_LINE_SCALE;
-    const kN = wraps(nextBox) ? 1 : MIN_LINE_SCALE;
-    const squeezedBothH = Math.ceil(curH * kC + (nextBox ? nextBox.h * kN + LINE_GAP_PX : 0));
-    const order: [readonly NowFit[], boolean, boolean][] = [
-      [big, true, false], [big, true, true], [big, false, false],
-      [small, true, false], [small, true, true], [small, false, false],
-    ];
-    for (const [list, both, sq] of order) {
-      if (both && !nextBox) continue;
-      const f = list.find((c) => need(c, both ? (sq ? squeezedBothH : bothH) : curH) <= heightPx);
-      if (f) return { fit: f, both, need, ok: true, over: 0, squeeze: sq ? [kC, kN] : null };
+    return { basePx, belowPx, need, cands };
+  });
+  type Pick = { fit: NowFit; both: boolean; need: (f: NowFit, lines: number) => number; squeeze: [number, number] | null; basePx: number; belowPx: number };
+  const pickLayout = (): Pick => {
+    const first = sized[0];
+    if (!(heightPx > 0)) {
+      const plain = first.cands.find((c) => c.px <= (wide ? WIDE_NOW_SIZES[0] : NOW_PX)) ?? first.cands[first.cands.length - 1];
+      return { fit: plain, both: !!nextBox, need: first.need, squeeze: null, basePx: first.basePx, belowPx: first.belowPx };
     }
+    const heights = (both: boolean, sq: boolean) =>
+      both
+        ? sq ? Math.ceil(curH * kC + (nextBox ? nextBox.h * kN + LINE_GAP_PX : 0)) : bothH
+        : sq ? Math.ceil(curH * kC) : curH;
+    for (const big of [true, false])
+      for (const both of [true, false]) {
+        if (both && !nextBox) continue;
+        for (const z of sized)
+          for (const sq of [false, true]) {
+            if (sq && (both ? kC >= 1 && kN >= 1 : kC >= 1)) continue;
+            const h = heights(both, sq);
+            const f = z.cands.find((c) => (big ? c.px >= NOW_FLOOR_PX : c.px < NOW_FLOOR_PX) && z.need(c, h) <= heightPx);
+            if (f) return { fit: f, both, need: z.need, squeeze: sq ? [kC, both ? kN : 1] : null, basePx: z.basePx, belowPx: z.belowPx };
+          }
+      }
     // Nothing fits (a phone on its side, 400% zoom): the layout that needs the
     // least height, so as little as possible goes past the stage.
-    let least = cands[0];
-    for (const c of cands) if (need(c, curH) < need(least, curH) || (need(c, curH) === need(least, curH) && c.px > least.px)) least = c;
-    return { fit: least, both: false, need, ok: false, over: need(least, curH) - heightPx, squeeze: null };
-  };
-  // Next is 44px (48 wide). Only a stage too short for even the smallest Now
-  // beside a 44px Next (a phone on its side) keeps the 32px Next.
-  let nextPx = wide ? WIDE_NEXT_PX : NEXT_PX;
-  // Next on its own row below Now reserves room for its last-beat growth;
-  // when that costs the NEXT bar line (a short stage), it reserves only its
-  // own size and does not grow.
-  let belowPx = grownNextPx;
-  let picked = choose(nextPx, belowPx);
-  if (nextBox && !picked.both) {
-    const tight = choose(nextPx, nextPx);
-    if (tight.both && tight.fit.px >= NOW_FLOOR_PX) {
-      picked = tight;
-      belowPx = nextPx;
-    } else if (!wide) {
-      // Last before dropping the NEXT line (the stage with the section strip
-      // and the stem pills on screen, 2026-11-21): Next at 32px, so Now fits
-      // beside it.
-      const small32 = choose(SHORT_NEXT_PX, SHORT_NEXT_PX);
-      if (small32.both && small32.fit.px >= NOW_FLOOR_PX) {
-        picked = small32;
-        nextPx = SHORT_NEXT_PX;
-        belowPx = SHORT_NEXT_PX;
+    let best: Pick | null = null;
+    let bestNeed = Infinity;
+    const h = heights(false, kC < 1);
+    for (const z of sized)
+      for (const c of z.cands) {
+        const n = z.need(c, h);
+        if (n < bestNeed || (n === bestNeed && best && c.px > best.fit.px)) {
+          bestNeed = n;
+          best = { fit: c, both: false, need: z.need, squeeze: kC < 1 ? [kC, 1] : null, basePx: z.basePx, belowPx: z.belowPx };
+        }
       }
-    }
-  }
-  if (!picked.ok && !wide) {
-    const short = choose(SHORT_NEXT_PX, SHORT_NEXT_PX);
-    if (short.ok || short.over < picked.over) {
-      nextPx = SHORT_NEXT_PX;
-      belowPx = SHORT_NEXT_PX;
-      picked = short;
-    }
-  }
+    return best!;
+  };
+  const picked = pickLayout();
+  const nextPx = picked.basePx;
+  const belowPx = picked.belowPx;
   const fit = picked.fit;
   const showNext = picked.both;
   const need = picked.need;
@@ -1910,8 +1912,9 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
     }
   }
   const nextNowPx = cd.lastBeat ? nextGrowPx : nextPx;
-  const sq = picked.squeeze as [number, number] | null;
-  const lineScale = sq ? 1 : growScale(heightPx > 0 ? heightPx - need(fit, linesH) : 0, curBox, showNext ? nextBox : null);
+  const sq = picked.squeeze;
+  // Spare height grows the bars only once Now has its 72px (it is Now's first).
+  const lineScale = sq || fit.px < NOW_FLOOR_PX ? 1 : growScale(heightPx > 0 ? heightPx - need(fit, linesH) : 0, curBox, showNext ? nextBox : null);
 
   // The Mix sheet header reads these. Fired on a CHANGE of name, never per frame.
   const nowSpoken = nowRun ? spokenSymbol(nowRun) : '';

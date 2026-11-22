@@ -50,6 +50,10 @@ import { SectionLoop } from './SectionLoop';
 import { Sheet } from './Sheet';
 import { Transport } from './Transport';
 import styles from './Player.module.css';
+import { SetListMenuItems, SetListPicker } from '@/components/setlists/AddToSetList';
+import { SetListNext } from '@/components/setlists/SetListNext';
+import setStyles from '@/components/setlists/SetLists.module.css';
+import { isSetId, setHref } from '@/lib/set-lists';
 
 export const DEFAULT_BACK = Object.freeze({ href: '/history', label: 'Back to song library' });
 /** Song info (P1.5): the one honest caveat about the detected facts. */
@@ -67,6 +71,19 @@ export const LIGHT_NOTE_SEEN_KEY = 'sl.play.lightNoteSeen.v1';
 export const STRIP_HINT_SEEN_KEY = 'sl.play.sectionHintSeen.v1';
 /** P1.4 rule 4 (desktop): two columns, the mixer always visible. Rule 1 (short) wins first. */
 export const DESKTOP_QUERY = '(min-width: 1024px) and (min-height: 500px)';
+/** How long the one-line set-list result ("Added to JAMS.") stays up. */
+export const SET_TOAST_MS = 3000;
+
+/** The `?set=` this page was opened with (a list id or `demo`), or null. Client only. */
+export function readSetParam(search: string | null | undefined): string | null {
+  if (!search) return null;
+  try {
+    const v = new URLSearchParams(search).get('set');
+    return isSetId(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
 
 interface ScreenProps extends PlayerViewProps {
   readonly playable: boolean;
@@ -308,6 +325,23 @@ export function PlayerScreen(props: ScreenProps) {
   };
   const simplify = chordMode === 'simple';
 
+  // ── set lists (#322, Phase B B2) ───────────────────────────────────────────
+  // ?set=<id> (read after mount, so the server render and the first client render agree)
+  // shows "Next song ›" under the header and points the back link at the set.
+  const [setId, setSetId] = useState<string | null>(null);
+  useEffect(() => setSetId(readSetParam(globalThis.location?.search)), []);
+  const [setInfo, setSetInfo] = useState<{ id: string; name: string } | null>(null);
+  const onSet = useCallback((s: { id: string; name: string }) => setSetInfo(s), []);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [setToast, setSetToast] = useState<string | null>(null);
+  useEffect(() => {
+    if (!setToast) return;
+    const t = setTimeout(() => setSetToast(null), SET_TOAST_MS);
+    return () => clearTimeout(t);
+  }, [setToast]);
+  const backLink = setInfo ? { href: setHref(setInfo.id), label: `Back to ${setInfo.name}` } : back;
+  const backClick = setInfo ? undefined : onBack;
+
   // ── header facts ───────────────────────────────────────────────────────────
   const facts = songFacts(bpm, musicalKey);
   const songTitle = (title ?? '').trim() || 'Your song';
@@ -399,15 +433,15 @@ export function PlayerScreen(props: ScreenProps) {
       <header className={styles.head}>
         <a
           className={styles.back}
-          href={back.href}
-          aria-label={back.label}
+          href={backLink.href}
+          aria-label={backLink.label}
           // The home page's demo layer (Slice 2a) closes in place instead of reloading
           // the page it is already on. The href stays, so the link still works without JS.
           onClick={
-            onBack
+            backClick
               ? (e) => {
                   e.preventDefault();
-                  onBack();
+                  backClick();
                 }
               : undefined
           }
@@ -415,7 +449,7 @@ export function PlayerScreen(props: ScreenProps) {
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
             <path d="M15 18l-6-6 6-6" />
           </svg>
-          <span className={styles.backText}>{back.label}</span>
+          <span className={styles.backText}>{backLink.label}</span>
         </a>
         <div className={styles.titles}>
           <h1 className={styles.title} data-testid="player-title">
@@ -440,7 +474,7 @@ export function PlayerScreen(props: ScreenProps) {
             ref={menuButton}
             type="button"
             className={styles.more}
-            aria-label="More: all chords, song info"
+            aria-label="More: all chords, song info, set lists"
             aria-haspopup="true"
             aria-expanded={menuOpen}
             aria-controls="player-menu"
@@ -513,10 +547,19 @@ export function PlayerScreen(props: ScreenProps) {
               >
                 Song info
               </button>
+              <SetListMenuItems
+                jobId={jobId}
+                itemClassName={styles.menuItem}
+                onClose={() => setMenuOpen(false)}
+                onOpenPicker={() => setPickerOpen(true)}
+                onMessage={setSetToast}
+              />
             </div>
           ) : null}
         </div>
       </header>
+
+      {setId ? <SetListNext setId={setId} jobId={jobId} onSet={onSet} /> : null}
 
       {/* While the non-modal Mix sheet is open, what it covers (pills, chips,
           transport) and the stage above it are inert: visible, but not in the
@@ -697,6 +740,19 @@ export function PlayerScreen(props: ScreenProps) {
           />
         </div>
       </Sheet>
+
+      <SetListPicker
+        jobId={jobId}
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        returnFocus={() => menuButton.current}
+        onMessage={setSetToast}
+      />
+      {setToast ? (
+        <p className={setStyles.toast} role="status" data-testid="set-toast">
+          {setToast}
+        </p>
+      ) : null}
 
       <Sheet open={infoOpen} onClose={() => setInfoOpen(false)} labelledBy="info-title" returnFocus={() => menuButton.current} testId="info-sheet">
         <div className={styles.sheetHead}>

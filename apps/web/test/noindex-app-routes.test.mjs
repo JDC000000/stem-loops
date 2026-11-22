@@ -13,7 +13,8 @@ import { compile } from './helpers/render-chrome.mjs';
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
 const STUBS = { '@/components/chrome/SignedInChrome': 'export default function SignedInChrome() { return null; }' };
 
-for (const f of ['app/login/layout.tsx', 'app/history/layout.tsx', 'app/account/layout.tsx']) {
+// Phase B B2 (#322): app/sets joins them.
+for (const f of ['app/login/layout.tsx', 'app/history/layout.tsx', 'app/account/layout.tsx', 'app/sets/layout.tsx']) {
   test(`${f}: metadata.robots.index === false`, async () => {
     const [url] = compile([f], STUBS);
     const mod = await import(url);
@@ -23,7 +24,7 @@ for (const f of ['app/login/layout.tsx', 'app/history/layout.tsx', 'app/account/
 
 // /pricing left this list in P6 (Jon, 2026-11-17): it is a public page now. Its
 // indexability is gated in test/pricing-indexable.test.mjs.
-for (const f of ['app/account/page.tsx', 'app/success/page.tsx', 'app/jobs/[id]/page.tsx']) {
+for (const f of ['app/account/page.tsx', 'app/success/page.tsx', 'app/jobs/[id]/page.tsx', 'app/sets/page.tsx', 'app/sets/[id]/page.tsx']) {
   test(`${f}: still declares noindex`, () => {
     assert.match(readFileSync(join(SRC, f), 'utf8'), /robots:\s*\{\s*index:\s*false/);
   });

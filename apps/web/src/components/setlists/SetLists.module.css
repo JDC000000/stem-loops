@@ -1,0 +1,279 @@
+/* Set lists (#322; Phase B, B2). Tokens only (src/styles/design-tokens.css).
+   Brand rules: no lime here (the one lime action is the inline primaryButton, one per view);
+   every control >= 44px (--touch-min); pills take the 22px radius; a control's edge is
+   --border-control; selected/pressed is neutral (#222 + a 2px white edge). */
+
+.page {
+  /* No min-height: 100dvh here. The signed-in bar sits above this page, so a full-viewport
+     main made every set-list page scroll by the bar's height (review R1, 65 px). */
+  padding: var(--space-4) var(--space-4) var(--space-8);
+  max-width: 640px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.title {
+  color: var(--text-primary);
+  font-size: var(--text-2xl);
+  margin: var(--space-2) 0;
+  overflow-wrap: anywhere;
+}
+
+.note {
+  color: var(--text-muted);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-md);
+}
+
+.list {
+  list-style: none;
+  padding: 0;
+  margin: var(--space-3) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch-min);
+  padding: 4px 4px 4px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+}
+
+.rowLink {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--touch-min);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.rowText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.rowTitle {
+  font-size: var(--text-lg);
+  overflow-wrap: anywhere;
+}
+
+.rowMeta {
+  color: var(--text-label);
+  font-size: var(--text-12);
+}
+
+.pos {
+  flex: 0 0 auto;
+  width: 24px;
+  text-align: right;
+  color: var(--text-label);
+  font-family: var(--font-mono);
+  font-size: var(--text-12);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  padding: 0 8px;
+  min-height: 22px;
+  border-radius: 22px;
+  border: 1px solid var(--border-control);
+  color: var(--text-secondary);
+  font-size: var(--text-12);
+  white-space: nowrap;
+}
+
+.dim {
+  color: var(--text-muted);
+}
+
+.iconBtn {
+  flex: 0 0 auto;
+  min-width: var(--touch-min);
+  min-height: var(--touch-min);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  border: 1.5px solid var(--border-control);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-lg);
+  cursor: pointer;
+  padding: 0 8px;
+}
+.iconBtn:disabled {
+  color: var(--text-disabled);
+  border-color: var(--border-default);
+  cursor: default;
+}
+
+.secondary {
+  min-height: var(--touch-min);
+  padding: 0 16px;
+  border-radius: var(--radius-md);
+  border: 1.5px solid var(--border-control);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.danger {
+  composes: secondary;
+  border-color: var(--status-failed);
+  color: var(--status-failed);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.textLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch-min);
+  padding: 0 2px;
+}
+
+.status {
+  color: var(--text-muted);
+  font-size: var(--text-md);
+  margin: var(--space-2) 0;
+}
+
+.error {
+  color: var(--status-failed);
+  font-size: var(--text-md);
+  margin: var(--space-2) 0;
+}
+
+/* Sheets (the new-list form, the delete confirm, the player's checklist) */
+.sheetHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.sheetTitle {
+  font-size: var(--text-xl);
+  margin: 0;
+}
+.sheetBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  overflow-y: auto;
+  /* Room for the 2px focus outline, which overflow would otherwise clip. */
+  padding: 4px 4px var(--space-2);
+}
+.label {
+  color: var(--text-secondary);
+  font-size: var(--text-md);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--touch-min);
+  padding: 0 4px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.check input {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--text-primary);
+}
+
+/* The player's "Next song ›" row (SetListNext). Neutral: the Play button is the player's
+   one lime fill. */
+.nextRow {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  min-height: var(--touch-min);
+}
+.nextText {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-label);
+  font-size: var(--text-12);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nextBtn {
+  flex: 0 0 auto;
+  min-height: var(--touch-min);
+  padding: 0 14px;
+  border-radius: 22px;
+  border: 1.5px solid var(--border-control);
+  background: transparent;
+  color: var(--text-primary);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+/* The player's one-line result after an add ("Added to JAMS."). Above the transport. */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(140px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 30;
+  max-width: calc(100vw - 32px);
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-control);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: var(--text-md);
+  box-shadow: var(--shadow-float);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row,
+  .iconBtn,
+  .nextBtn {
+    transition: none;
+  }
+}

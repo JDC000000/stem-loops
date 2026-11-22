@@ -164,11 +164,11 @@ export function SetListView({ id }: SetListViewProps) {
     return (
       <main className={styles.page} data-testid="set-view" data-state={state.kind}>
         <p className={styles.status}>
-          <a href="/sets">‹ Set lists</a>
+          <a className={styles.textLink} href="/sets">‹ Set lists</a>
         </p>
         {state.kind === 'loading' ? null : state.kind === 'signed_out' ? (
           <p className={styles.status}>
-            <a href={`/login?return_to=/sets/${encodeURIComponent(id)}`}>Sign in</a> to see this set list.
+            <a className={styles.textLink} href={`/login?return_to=/sets/${encodeURIComponent(id)}`}>Sign in</a> to see this set list.
           </p>
         ) : state.kind === 'not_found' ? (
           <p className={styles.status}>We couldn’t find that set list.</p>
@@ -188,7 +188,7 @@ export function SetListView({ id }: SetListViewProps) {
   return (
     <main className={styles.page} data-testid="set-view" data-state="ok" data-demo={list.is_demo ? 'true' : 'false'}>
       <p className={styles.status} style={{ margin: 0 }}>
-        <a href="/sets">‹ Set lists</a>
+        <a className={styles.textLink} href="/sets">‹ Set lists</a>
       </p>
       <div className={styles.head}>
         <h1 className={styles.title} data-testid="set-name">

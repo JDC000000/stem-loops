@@ -157,6 +157,13 @@
   margin-top: var(--space-4);
 }
 
+.textLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch-min);
+  padding: 0 2px;
+}
+
 .status {
   color: var(--text-muted);
   font-size: var(--text-md);
@@ -185,7 +192,8 @@
   flex-direction: column;
   gap: var(--space-3);
   overflow-y: auto;
-  padding-bottom: var(--space-2);
+  /* Room for the 2px focus outline, which overflow would otherwise clip. */
+  padding: 4px 4px var(--space-2);
 }
 .label {
   color: var(--text-secondary);

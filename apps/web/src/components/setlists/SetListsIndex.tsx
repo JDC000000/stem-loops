@@ -118,7 +118,7 @@ export function SetListsIndex() {
 
       {state.kind === 'loading' ? null : state.kind === 'signed_out' ? (
         <p className={styles.status} data-testid="sets-sign-in">
-          <a href="/login?return_to=/sets">Sign in</a> to make your own set lists.
+          <a className={styles.textLink} href="/login?return_to=/sets">Sign in</a> to make your own set lists.
         </p>
       ) : state.kind === 'error' ? (
         <p className={styles.error} role="status">
@@ -142,7 +142,7 @@ export function SetListsIndex() {
       )}
 
       <p className={styles.status}>
-        <a href="/history">Song library</a>
+        <a className={styles.textLink} href="/history">Song library</a>
       </p>
 
       <Sheet open={sheet} onClose={() => setSheet(false)} labelledBy="new-set-title" returnFocus={() => newButton.current} testId="sets-new-sheet">

@@ -185,7 +185,7 @@ export function SetListPicker({ jobId, open, onClose, returnFocus, onMessage }: 
           <p className={styles.status}>Loading your set lists…</p>
         ) : state.kind === 'signed_out' ? (
           <p className={styles.status} data-testid="add-set-sign-in">
-            Set lists belong to an account. <a href={`/login?return_to=${encodeURIComponent(here)}`}>Sign in</a> to make one.
+            Set lists belong to an account. <a className={styles.textLink} href={`/login?return_to=${encodeURIComponent(here)}`}>Sign in</a> to make one.
           </p>
         ) : state.kind === 'error' ? (
           <p className={styles.error} role="status">
@@ -201,7 +201,7 @@ export function SetListPicker({ jobId, open, onClose, returnFocus, onMessage }: 
               </label>
             ))}
             {canAddList(lists.length) ? (
-              <form onSubmit={create} className={styles.sheetBody} style={{ padding: 0 }}>
+              <form onSubmit={create} className={styles.sheetBody}>
                 <label className={styles.label} htmlFor="add-set-new">
                   New set list
                 </label>
@@ -219,7 +219,7 @@ export function SetListPicker({ jobId, open, onClose, returnFocus, onMessage }: 
           </>
         )}
         <p className={styles.status}>
-          <a href="/sets">See your set lists</a>
+          <a className={styles.textLink} href="/sets">See your set lists</a>
         </p>
       </div>
     </Sheet>

@@ -16,19 +16,25 @@ const VIEWPORTS = [
   { width: 360, height: 800 },
 ];
 
+// `psql -At` prints the RETURNING row and then the command tag ("INSERT 0 1"): keep the id.
+const idOf = (out) => {
+  const id = out.split('\n')[0].trim();
+  if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error(`seed did not return an id: ${out}`);
+  return id;
+};
 const seedLink = (uid, { code = 'FETCH_PROXY_FAILED', depth = 0, retryOf = null } = {}) =>
-  sql(`INSERT INTO jobs (id, youtube_url, title, requested_stems, loop_length_bars, status, error_code, error_message_user,
+  idOf(sql(`INSERT INTO jobs (id, youtube_url, title, requested_stems, loop_length_bars, status, error_code, error_message_user,
                          client_ip_hash, client_fingerprint, user_id, retry_depth, retry_of)
        VALUES (gen_random_uuid(), '${CANON}', 'Never Gonna Give You Up', ARRAY['drums','bass'], 4, 'failed', '${code}',
                'Something went wrong on our end fetching this video. Try again later.', 'j13-seed', '', '${uid}', ${depth},
                ${retryOf ? `'${retryOf}'` : 'NULL'})
-       RETURNING id`);
+       RETURNING id`));
 const seedUpload = (uid) =>
-  sql(`INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems, loop_length_bars, status, error_code,
+  idOf(sql(`INSERT INTO jobs (id, input_kind, upload_r2_key, original_filename, requested_stems, loop_length_bars, status, error_code,
                          error_message_user, client_ip_hash, client_fingerprint, user_id)
        VALUES (gen_random_uuid(), 'upload', 'j13/_input.mp3', 'take-5.mp3', ARRAY['drums'], 4, 'failed', 'SEPARATION_FAILED',
                'Stem separation failed.', 'j13-seed', '', '${uid}')
-       RETURNING id`);
+       RETURNING id`));
 
 async function box(page) {
   return (await page.locator('.jp-failed').innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
@@ -129,8 +135,10 @@ export default async function run() {
     const page = await ctx.newPage();
     try {
       await page.goto(`/jobs/${theirs}`);
-      await sleep(3000);
-      j.check('another user\'s failed job: no retry button', (await page.locator('[data-testid="job-retry"]').count()) === 0);
+      const notFound = await page.getByText("We couldn't find that job.").waitFor({ timeout: 20_000 }).then(() => true, () => false);
+      await sleep(1000);
+      j.check('another user\'s failed job: "couldn\'t find", and no retry button',
+        notFound && (await page.locator('[data-testid="job-retry"]').count()) === 0);
     } finally {
       await ctx.close();
     }

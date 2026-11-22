@@ -418,9 +418,9 @@ export async function POST(request: NextRequest) {
     // Signed in: the whole authed link path (ALLOW_YOUTUBE_INPUT, canonicalisation, the paid
     // entitlement, admission, then the trial or the non-trial funding branch) lives in
     // lib/jobs/create-link-job.ts (Phase B, B0), which takes this route's own imports as its
-    // dependencies. Credits are never
-    // spent on a link (the credit_consumption trigger accepts upload jobs only, migration 013);
-    // that file meters a link with bumpJobsUsed / bumpJobsUsedWithinQuota instead.
+    // dependencies. Credits are never spent on a link (the credit_consumption trigger accepts
+    // upload jobs only, migration 013); that file meters a link with bumpJobsUsed /
+    // bumpJobsUsedWithinQuota instead.
     if (user) {
       const r = await createAuthedLinkJob(
         {

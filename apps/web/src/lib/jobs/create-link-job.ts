@@ -24,6 +24,7 @@
 //      returns 200 { id } at once. It never falls through to the non-trial path the way
 //      consumed:false does. A hook that throws rolls the tx back and the error propagates
 //      (the route answers its normal 500); it never falls through to burst/quota either.
+//      That includes an EntitlementError thrown by a hook: it is a 500, not a 402.
 //   3. No hook runs after the INSERT.
 // Lock order: trial_grants → the hook's lock → entitlements.
 //

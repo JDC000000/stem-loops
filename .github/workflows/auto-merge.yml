@@ -460,7 +460,9 @@ jobs:
         # and the reviewer key, so a moved tag must not change what runs here.
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          # By name, never the repository's default branch (G0 finding 3, v1.4.14):
+          # the gate code must come from the protected production branch.
+          ref: v3/main
           persist-credentials: false
           path: base
 
@@ -491,7 +493,7 @@ jobs:
           # Changing either file means changing this pin, in a PR Jon reviews.
           # `python3 -I` keeps base/scripts off sys.path, so no other file in the
           # checkout (a new scripts/secrets.py, say) is ever imported in this step.
-          M2_PINS='97b7ed591cc62bc93da9b8d4a38ccb836d1ccd7b1a990364a684ab561e8d262d  base/scripts/m2_verdict.py
+          M2_PINS='46da321dfcf07cbe361170317df429985a0c7541d76f6161989df9f094d12a6a  base/scripts/m2_verdict.py
           7244c0a74d42a08f24b2345d47d1daa89038ae6a77e5d57e5d0791f8475fa587  base/scripts/_gate_exit.py'
           if [ "${M2_SWITCH_SCOPE:-}" != "environment-only" ]; then
             rc=scope
@@ -518,11 +520,11 @@ jobs:
               if gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@m2-verdict.md > /dev/null; then
                 posted=true
               else
-                echo "::warning::M2: could not post the verdict comment. The daily cap counts these comments, so no merge."
+                echo "::warning::M2: could not post the verdict comment; no merge without the PASS marker on record."
               fi
             fi
             # Three conditions, each on its own enough to refuse: exit 0, the comment
-            # posted (the cap counts comments), and that comment's first line is the
+            # posted (the public record of the verdict), and that comment's first line is the
             # PASS marker for THIS head. The script writes that marker only with a
             # model PASS on the record, so an exit code alone can never merge.
             marker="<!-- m2-verdict PASS sha=$HEAD_SHA -->"
@@ -554,7 +556,10 @@ jobs:
         id: apptoken
         if: steps.resolve.outputs.proceed == 'true' || steps.m2.outputs.pass == 'true'
         continue-on-error: true
-        uses: actions/create-github-app-token@v2
+        # Pinned by commit (v2.2.2; tag v2 -> fee1f7d6, a lightweight tag, resolved
+        # 2026-11-22, G0 finding 2): this step holds APP_PRIVATE_KEY and mints the
+        # merge token, so a moved tag must not change what runs here.
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -713,7 +718,7 @@ jobs:
           fi
 
       - name: Remove labels and comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.1.0
         with:
           script: |
             const { owner, repo } = context.repo;

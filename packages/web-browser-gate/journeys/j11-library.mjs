@@ -6,7 +6,7 @@
 //   "BPM · key" 13 px, "Audio expired", no amber → the link offers "Re-make · uses 1 of your
 //   songs" (>= 44 px), the upload "Upload again" → search narrows / "No songs match" → sort
 //   control (Recent / Newest / A–Z) → Remove asks first and removes → Re-make is ONE tap to the
-//   job page (360×800 pass; the stack has NEXT_PUBLIC_ALLOW_YOUTUBE_INPUT on, as j10 needs).
+//   job page (360×800; the POST is checked and answered by the journey, as j10 does).
 //   signed out: /history says "Sign in to see your library."
 //
 // Writes nothing outside its own user's rows.
@@ -19,11 +19,11 @@ const VIEWPORTS = [
   { width: 360, height: 800 },
 ];
 
-function seedEntries(userId, tag) {
+function seedEntries(userId, tag, width) {
   const v = `j11${tag}${Date.now().toString(36)}`.replace(/[^A-Za-z0-9]/g, '').slice(0, 11).padEnd(11, 'x');
   const link = sql(
     `INSERT INTO library_entries (user_id, input_kind, youtube_url, title, video_id, bpm, musical_key)
-     VALUES ('${userId}', 'youtube', 'https://www.youtube.com/watch?v=${v}', 'Lucky Ticket (live take)', '${v}', 102, 'A major')
+     VALUES ('${userId}', 'youtube', 'https://www.youtube.com/watch?v=${v}', 'Lucky Ticket (live take ${width})', '${v}', 102, 'A major')
      RETURNING id`,
   );
   const upload = sql(
@@ -37,7 +37,7 @@ function seedEntries(userId, tag) {
 
 async function walk(j, vp, user) {
   const tag = `${vp.width}x${vp.height}`;
-  const ids = seedEntries(user.user_id, tag.replace('x', ''));
+  const ids = seedEntries(user.user_id, tag.replace('x', ''), vp.width);
   const { ctx, log } = await newContext({ user, viewport: vp, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
   try {
@@ -68,8 +68,8 @@ async function walk(j, vp, user) {
     j.check(`${tag}: the upload offers "Upload again", not Re-make`, (await up.locator('[data-testid="library-upload-again"]').count()) === 1 && (await up.locator('[data-testid="library-remake"]').count()) === 0);
     await j.shot(page, `${tag}-01-library-expired`, { fullPage: false });
 
-    await page.locator('[data-testid="library-search"]').fill('lucky');
-    j.check(`${tag}: search "lucky" leaves the one match`, (await page.locator('[data-testid="library-entry"]').count()) === 1);
+    await page.locator('[data-testid="library-search"]').fill(`lucky ${vp.width}`);
+    j.check(`${tag}: search "lucky ${vp.width}" leaves the one match`, (await page.locator('[data-testid="library-entry"]').count()) === 1);
     await j.shot(page, `${tag}-02-search-hit`, { fullPage: false });
     await page.locator('[data-testid="library-search"]').fill('zzzz');
     j.check(`${tag}: no match says so`, (await page.locator('[data-testid="library-no-match"]').count()) === 1);
@@ -87,9 +87,17 @@ async function walk(j, vp, user) {
     j.check(`${tag}: Remove deleted the entry`, sql(`SELECT count(*) FROM library_entries WHERE id = '${ids.upload}'`) === '0');
 
     if (vp.width === 360) {
+      // The request is checked and answered here (the j10 way): the stack's worker must not
+      // fetch YouTube. Its real server path (gates, charge, race) is library-remake-pg.test.mjs.
+      const posts = [];
+      await page.route('**/api/library/remake', async (route) => {
+        posts.push(route.request().postDataJSON());
+        await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: '11111111-1111-4111-8111-111111111111', status: 'queued' }) });
+      });
+      await page.route('**/jobs/11111111-1111-4111-8111-111111111111', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>job</title>' }));
       await row.locator('[data-testid="library-remake"]').tap(); // one tap
       await page.waitForURL(/\/jobs\/[0-9a-f-]{36}$/, { timeout: 20_000 }).catch(() => {});
-      j.check(`${tag}: Re-make is one tap to the job page`, /\/jobs\/[0-9a-f-]{36}$/.test(page.url()), page.url());
+      j.check(`${tag}: Re-make is one tap to the job page`, /\/jobs\/[0-9a-f-]{36}$/.test(page.url()) && posts.length === 1 && posts[0]?.entry_id === ids.link, `${page.url()} ${JSON.stringify(posts)}`);
     }
   } catch (e) {
     j.step(`${tag}: aborted`, 'fail', String(e).slice(0, 400));

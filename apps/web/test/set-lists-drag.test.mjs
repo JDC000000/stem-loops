@@ -186,6 +186,62 @@ test('a drag that ends where it started, or is cancelled, sends nothing and chan
   });
 });
 
+for (const [name, end] of [
+  ['pointercancel', async (dom, h) => dom.pointer('pointercancel', h, { clientX: 20, clientY: 300 })],
+  ['lostpointercapture', async (dom, h) => dom.pointer('lostpointercapture', h, { clientX: 20, clientY: 300 })],
+  ['Escape', async (dom) => dom.keydown('Escape')],
+]) {
+  test(`${name} mid-drag cancels: the row goes back, the line goes, nothing is sent, and the next drag works`, async () => {
+    await withDom(async (dom) => {
+      const f = stubFetch(okList);
+      try {
+        const { rows, handle } = await mountList(dom);
+        const h = handle(0);
+        await dom.pointer('pointerdown', h, { clientX: 20, clientY: 126 });
+        await dom.pointer('pointermove', h, { clientX: 20, clientY: 300 });
+        assert.equal(rows()[0].dataset.drag, 'true');
+        assert.ok(dom.find('[data-drop]'), 'mid-drag there is a landing line');
+        await end(dom, h);
+        assert.equal(dom.find('[data-drag="true"]'), null, 'no row is left dragging');
+        assert.equal(dom.find('[data-drop]'), null, 'no landing line is left');
+        assert.equal(rows()[0].style.transform, '', 'the row is back in place');
+        assert.equal(h.hasPointerCapture(1), false, 'capture is released');
+        // A release after the cancel does not commit.
+        await dom.pointer('pointerup', h, { clientX: 20, clientY: 300 });
+        await dom.act();
+        assert.equal(f.calls.filter((c) => c.method === 'PUT').length, 0, 'nothing was sent');
+        assert.deepEqual(order(), ids);
+        // The cancel did not leave the view stuck: a new drag works.
+        await dom.drag(handle(0), [[20, 126], [20, 200]], { pointerId: 2 });
+        await dom.act();
+        assert.deepEqual(f.calls.filter((c) => c.method === 'PUT').map((c) => c.body.order), [[ids[1], ids[0], ids[2]]]);
+      } finally {
+        f.restore();
+        await dom.unmountAll();
+      }
+    });
+  });
+}
+
+test('a key other than Escape does not cancel a drag', async () => {
+  await withDom(async (dom) => {
+    const f = stubFetch(okList);
+    try {
+      const { handle } = await mountList(dom);
+      await dom.pointer('pointerdown', handle(0), { clientX: 20, clientY: 126 });
+      await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 200 });
+      await dom.keydown('Enter');
+      assert.equal(dom.find('[data-drag="true"]')?.dataset.item, ids[0]);
+      await dom.pointer('pointerup', handle(0), { clientX: 20, clientY: 200 });
+      await dom.act();
+      assert.equal(f.calls.filter((c) => c.method === 'PUT').length, 1);
+    } finally {
+      f.restore();
+      await dom.unmountAll();
+    }
+  });
+});
+
 test('a refused drop reloads the list as the server has it and says so', async () => {
   await withDom(async (dom) => {
     const f = stubFetch((url, init) => (init.method === 'PUT' ? [409, { message: 'That list changed. Try again.' }] : okList(url, init)));

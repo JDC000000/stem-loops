@@ -13,7 +13,9 @@
 // where it will land; on release the whole new order goes in ONE request, the same PUT the Move
 // buttons send. The Move buttons stay: they are the keyboard path, so the handle is
 // pointer-only and hidden from assistive tech. Reduced motion: the row does not follow the
-// pointer; only the landing line and the final order change.
+// pointer; only the landing line and the final order change. A drag ends without a change on
+// pointercancel, on lostpointercapture (capture taken away before the release) and on Escape
+// (review R1, S4); the row goes back to its place and nothing is sent.
 //
 // A row whose song cannot play says why: "Audio expired" (a link: paste it again and the row
 // plays the new one), "Unavailable" (an upload or a demo song that is gone), "Processing".
@@ -75,7 +77,34 @@ export function SetListView({ id }: SetListViewProps) {
   const listRef = useRef<HTMLOListElement | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   /** Measured when a drag starts; the row centres stay fixed for the whole drag. */
-  const dragInfo = useRef<{ pointerId: number; startY: number; mids: number[] } | null>(null);
+  const dragInfo = useRef<{ pointerId: number; startY: number; mids: number[]; handle: HTMLElement } | null>(null);
+
+  /** End a drag with no change: nothing is sent, the row goes back. Safe to call twice. */
+  const cancelDrag = useCallback(() => {
+    const info = dragInfo.current;
+    if (!info) return;
+    dragInfo.current = null;
+    setDrag(null);
+    try {
+      if (info.handle.hasPointerCapture?.(info.pointerId)) info.handle.releasePointerCapture(info.pointerId);
+    } catch {
+      // Already released.
+    }
+  }, []);
+
+  // Escape cancels a drag in progress (mouse or touch).
+  const dragging = drag !== null;
+  useEffect(() => {
+    if (!dragging) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      cancelDrag();
+    };
+    const win = globalThis.window;
+    win?.addEventListener('keydown', onKey);
+    return () => win?.removeEventListener('keydown', onKey);
+  }, [dragging, cancelDrag]);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -169,7 +198,7 @@ export function SetListView({ id }: SetListViewProps) {
     } catch {
       // A synthetic or already-released pointer: the drag still works while over the handle.
     }
-    dragInfo.current = { pointerId: e.pointerId, startY: e.clientY, mids };
+    dragInfo.current = { pointerId: e.pointerId, startY: e.clientY, mids, handle: e.currentTarget };
     setDrag({ from: i, to: i, dy: 0, reduced: prefersReducedMotion() });
   };
 
@@ -184,10 +213,11 @@ export function SetListView({ id }: SetListViewProps) {
   const endDrag = (e: ReactPointerEvent<HTMLSpanElement>, commit: boolean) => {
     const info = dragInfo.current;
     if (!info || e.pointerId !== info.pointerId) return;
+    if (!commit) return cancelDrag();
     dragInfo.current = null;
     const d = drag;
     setDrag(null);
-    if (!commit || !d || !list) return;
+    if (!d || !list) return;
     const to = dropIndex(info.mids, d.from, info.mids[d.from] + (e.clientY - info.startY));
     if (to === d.from) return;
     const item = list.items[d.from];
@@ -336,6 +366,9 @@ export function SetListView({ id }: SetListViewProps) {
                     onPointerMove={onDragMove}
                     onPointerUp={(e) => endDrag(e, true)}
                     onPointerCancel={(e) => endDrag(e, false)}
+                    onLostPointerCapture={(e) => {
+                      if (dragInfo.current?.pointerId === e.pointerId) cancelDrag();
+                    }}
                   />
                 ) : null}
                 {playable ? (

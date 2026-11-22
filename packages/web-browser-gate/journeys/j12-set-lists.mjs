@@ -2,8 +2,9 @@
 //
 //   signed in: /sets → "+ New set list" → "Create" (prefilled "Set list 1") → the empty list
 //   → a processed song → ⋯ → "Add to Set list 1" (one tap) → a second song the same way
-//   → /sets/<id> shows both (nav: Songs is current) → Move down / Move up → drag song 1 below
-//   song 2 and back (B2 follow-up: one PUT per drop) → open song 1 → "Next song ›" (one tap)
+//   → /sets/<id> shows both (nav: Songs is the current section, aria-current="true") → Move down /
+//   Move up → drag song 1 below song 2 and back with the mouse, then again with real TOUCH events
+//   (the page must not scroll; the order must persist) (B2 follow-up: one PUT per drop) → open song 1 → "Next song ›" (one tap)
 //   → song 2, last in the list: no Next → delete the list (confirm says songs are kept)
 //   signed out: /sets/demo → the Demo set, read-only.
 //
@@ -50,9 +51,10 @@ async function walk(j, vp, user, songs) {
   try {
     await page.goto('/sets');
     await page.locator('[data-testid="sets-new"]').waitFor({ timeout: 20_000 });
-    // B2 follow-up: set lists have no nav item of their own; Song library ("Songs") is current.
-    const navCurrent = (await page.locator('a.sin-item[aria-current="page"]').allInnerTexts()).map((t) => t.trim());
-    j.check(`${tag}: on /sets the nav marks Songs as current`, navCurrent.length === 1 && navCurrent[0] === 'Songs', JSON.stringify(navCurrent));
+    // B2 follow-up: set lists have no nav item of their own; Song library ("Songs") is the current
+    // section, aria-current="true" (not "page": the link goes to /history; review R1 S1).
+    const navCurrent = await page.locator('a.sin-item[aria-current]').evaluateAll((els) => els.map((e) => [e.innerText.trim(), e.getAttribute('aria-current')]));
+    j.check(`${tag}: on /sets the nav marks Songs as the current section`, JSON.stringify(navCurrent) === JSON.stringify([['Songs', 'true']]), JSON.stringify(navCurrent));
     await j.shot(page, `${tag}-01-sets-empty`, { fullPage: false });
     await page.locator('[data-testid="sets-new"]').tap(); // tap 1
     const prefill = await page.locator('[data-testid="sets-new-name"]').inputValue();
@@ -113,6 +115,45 @@ async function walk(j, vp, user, songs) {
     await j.shot(page, `${tag}-03c-after-drop`, { fullPage: false });
     await dragTo(1, 0, null);
     j.check(`${tag}: dragging it back restored the order`, (await page.locator('[data-testid="set-item"]').first().getAttribute('data-item')) === first);
+
+    // TOUCH drag (review R1 S2): real touch events through CDP. The handle has touch-action:none
+    // and takes pointer capture, so the page must not scroll while the finger moves.
+    {
+      const cdp = await ctx.newCDPSession(page);
+      // Make the page scrollable and scroll it a little, so a touch move that DID pan the page
+      // would show up as a change in scrollY (a finger moving down pans toward the top).
+      await page.evaluate(() => {
+        document.body.style.paddingBottom = '2000px';
+        window.scrollTo(0, 40);
+      });
+      await sleep(200);
+      const h = await page.locator('[data-testid="set-item"]').nth(0).locator('[data-testid="set-drag"]').boundingBox();
+      const target = await page.locator('[data-testid="set-item"]').nth(1).boundingBox();
+      const x = h.x + h.width / 2;
+      const y0 = h.y + h.height / 2;
+      const y1 = target.y + target.height * 0.85;
+      const touch = (type, y) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y, id: 1 }] });
+      const scroll0 = await page.evaluate(() => window.scrollY);
+      const put = page.waitForResponse((r) => r.request().method() === 'PUT' && r.url().endsWith(`/api/set-lists/${listId}/songs`), { timeout: 10_000 }).catch(() => null);
+      await touch('touchStart', y0);
+      const scrolls = [];
+      for (let i = 1; i <= 10; i += 1) {
+        await touch('touchMove', y0 + ((y1 - y0) * i) / 10);
+        scrolls.push(await page.evaluate(() => window.scrollY));
+      }
+      const dragged = await page.locator('[data-drag="true"]').count();
+      await touch('touchEnd', y1);
+      const res = await put;
+      await cdp.detach().catch(() => {});
+      j.check(`${tag}: touch: the row was dragged`, dragged === 1, String(dragged));
+      j.check(`${tag}: touch: window.scrollY did not change during the drag`, scrolls.every((v) => v === scroll0), JSON.stringify({ scroll0, scrolls }));
+      j.check(`${tag}: touch: the drop saved`, !!res && res.ok(), String(res?.status()));
+      await page.reload();
+      await page.locator('[data-testid="set-item"]').nth(1).waitFor({ timeout: 15_000 });
+      j.check(`${tag}: touch: the new order persists after a reload`, (await page.locator('[data-testid="set-item"]').nth(1).getAttribute('data-item')) === first);
+      await dragTo(1, 0, null);
+      j.check(`${tag}: touch: dragging back restored the order`, (await page.locator('[data-testid="set-item"]').first().getAttribute('data-item')) === first);
+    }
 
     await page.locator('[data-testid="set-item"] a').first().tap();
     await page.locator('[data-testid="set-next"]').waitFor({ timeout: 20_000 });

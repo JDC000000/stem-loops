@@ -216,9 +216,6 @@ test('exactly one item is aria-current="page", and it is the right one', async (
     ['/account', 'Account'],
     ['/account/delete', 'Account'],
     ['/history', 'Song library'],
-    // B2 follow-up: the set-list pages have no item of their own; they mark Song library.
-    ['/sets', 'Song library'],
-    ['/sets/demo', 'Song library'],
     [`/jobs/${JOB_A}`, 'Play along'],
     ['/loops', 'Download loops'],
     ['/pricing', 'Pricing'],
@@ -228,6 +225,20 @@ test('exactly one item is aria-current="page", and it is the right one', async (
       (m) => m[1].replace(PHONE_LABEL, '').replace(/<[^>]*>/g, '').trim(),
     );
     assert.deepEqual(marked, [label], `at ${path}`);
+  }
+});
+
+test('on the set-list pages Song library is the current SECTION: aria-current="true", never "page"', async () => {
+  // B2 follow-up, review R1 S1: set lists have no item of their own; the link goes to /history.
+  for (const path of ['/sets', '/sets/demo', '/sets/3f2b8c1e-5a4d-4e6f-8a9b-0c1d2e3f4a5b']) {
+    const html = await chrome({ user: { user_id: 'u', email: 'a@b.c' }, path });
+    const marked = [...html.matchAll(/<a\b([^>]*)aria-current="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => [
+      m[3].replace(PHONE_LABEL, '').replace(/<[^>]*>/g, '').trim(),
+      m[2],
+      /sin-current/.test(m[1] + m[0]),
+    ]);
+    assert.deepEqual(marked, [['Song library', 'true', true]], `at ${path}`);
+    assert.doesNotMatch(html, /aria-current="page"/, `no item claims to be ${path} itself`);
   }
 });
 

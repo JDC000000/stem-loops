@@ -316,12 +316,27 @@
   border-color: var(--text-primary);
   box-shadow: 0 0 0 1px var(--text-primary); /* 1px border + 1px ring = 2px, no layout shift */
 }
-/* Where it will land: a 2px #fff line above or below the row it would pass. */
-.row[data-drop='before'] {
-  box-shadow: 0 -5px 0 -3px var(--text-primary);
+/* Where it will land: a 2px #fff line in the gap above or below the row it would pass. The row
+   is positioned but makes no stacking context, so the line (z-index 2) paints over the dragged
+   row (z-index 1) and stays visible under the finger (review R1 nit). */
+.row[data-drop] {
+  position: relative;
 }
-.row[data-drop='after'] {
-  box-shadow: 0 5px 0 -3px var(--text-primary);
+.row[data-drop]::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  height: 2px;
+  background: var(--text-primary);
+  z-index: 2;
+  pointer-events: none;
+}
+.row[data-drop='before']::after {
+  top: -6px;
+}
+.row[data-drop='after']::after {
+  bottom: -6px;
 }
 
 @media (prefers-reduced-motion: reduce) {

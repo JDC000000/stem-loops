@@ -14,3 +14,16 @@ export function isAtOrUnder(p: string, root: string): boolean {
 export function isSongLibraryPath(p: string): boolean {
   return p === '/history' || isAtOrUnder(p, '/sets');
 }
+
+export type AriaCurrent = 'page' | 'true';
+
+/**
+ * The aria-current value of the "Song library" item (review R1, S1). On /history the link IS
+ * the page: "page". On the set-list pages it is the current SECTION, not this page (the link
+ * goes to /history), so "true". Elsewhere null: not current.
+ */
+export function songLibraryCurrent(p: string): AriaCurrent | null {
+  if (p === '/history') return 'page';
+  if (isAtOrUnder(p, '/sets')) return 'true';
+  return null;
+}

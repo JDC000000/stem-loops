@@ -6,17 +6,31 @@
 // plain sentence that deleting a list never deletes songs, AC 3).
 //
 // Each playable row opens the player with ?set=<id>, which is what shows "Next song ›".
+// Drag to reorder (B2 follow-up): each row of an account's own list also has a drag handle.
+// Pointer events only (mouse, touch and pen alike; no library). The handle captures the pointer
+// and has `touch-action: none`, so a drag on a phone moves the song and never scrolls the page.
+// While dragging, the row shows the selected style (#222 + 2px #fff) and a 2px #fff line marks
+// where it will land; on release the whole new order goes in ONE request, the same PUT the Move
+// buttons send. The Move buttons stay: they are the keyboard path, so the handle is
+// pointer-only and hidden from assistive tech. Reduced motion: the row does not follow the
+// pointer; only the landing line and the final order change. A drag ends without a change on
+// pointercancel, on lostpointercapture (capture taken away before the release) and on Escape
+// (review R1, S4); the row goes back to its place and nothing is sent.
+//
 // A row whose song cannot play says why: "Audio expired" (a link: paste it again and the row
 // plays the new one), "Unavailable" (an upload or a demo song that is gone), "Processing".
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { Sheet } from '@/components/play/Sheet';
 import { buttonBase, fieldStyle, primaryButton } from '@/lib/ui/form-styles';
 import {
   DELETE_LIST_NOTE,
   DEMO_SET_ID,
   checkSetListName,
+  dropIndex,
   itemStateLabel,
   moveItem,
+  reorderItem,
   playHref,
   type SetListDetail,
   type SetListItem,
@@ -30,6 +44,17 @@ type State =
   | { kind: 'signed_out' }
   | { kind: 'rate_limited'; message: string }
   | { kind: 'error' };
+
+/** A drag in progress: which row, where it would land, how far it has moved (px). */
+type Drag = { from: number; to: number; dy: number; reduced: boolean };
+
+const prefersReducedMotion = (): boolean => {
+  try {
+    return !!globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  } catch {
+    return false;
+  }
+};
 
 export interface SetListViewProps {
   readonly id: string;
@@ -49,6 +74,37 @@ export function SetListView({ id }: SetListViewProps) {
   const renameButton = useRef<HTMLButtonElement | null>(null);
   /** After a move, focus stays on the same song's button in its new place. */
   const refocus = useRef<{ item: string; dir: 'up' | 'down' } | null>(null);
+  const listRef = useRef<HTMLOListElement | null>(null);
+  const [drag, setDrag] = useState<Drag | null>(null);
+  /** Measured when a drag starts; the row centres stay fixed for the whole drag. */
+  const dragInfo = useRef<{ pointerId: number; startY: number; mids: number[]; handle: HTMLElement } | null>(null);
+
+  /** End a drag with no change: nothing is sent, the row goes back. Safe to call twice. */
+  const cancelDrag = useCallback(() => {
+    const info = dragInfo.current;
+    if (!info) return;
+    dragInfo.current = null;
+    setDrag(null);
+    try {
+      if (info.handle.hasPointerCapture?.(info.pointerId)) info.handle.releasePointerCapture(info.pointerId);
+    } catch {
+      // Already released.
+    }
+  }, []);
+
+  // Escape cancels a drag in progress (mouse or touch).
+  const dragging = drag !== null;
+  useEffect(() => {
+    if (!dragging) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      cancelDrag();
+    };
+    const win = globalThis.window;
+    win?.addEventListener('keydown', onKey);
+    return () => win?.removeEventListener('keydown', onKey);
+  }, [dragging, cancelDrag]);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -103,13 +159,10 @@ export function SetListView({ id }: SetListViewProps) {
     }
   };
 
-  const move = async (i: number, dir: 'up' | 'down') => {
-    if (!list || busy) return;
-    const order = moveItem(list.items, i, dir === 'up' ? -1 : 1);
-    const item = list.items[i];
+  /** Send a whole new order (Move buttons and drag alike: one atomic PUT). */
+  const saveOrder = async (current: SetListDetail, order: SetListItem[], done: string) => {
     // Optimistic: the list moves at once; a refusal reloads it as the server has it.
-    setState({ kind: 'ok', list: { ...list, items: order.map((it, position) => ({ ...it, position })) } });
-    refocus.current = { item: item.item_id, dir };
+    setState({ kind: 'ok', list: { ...current, items: order.map((it, position) => ({ ...it, position })) } });
     setBusy(true);
     const res = await write(`${api}/songs`, 'PUT', { order: order.map((it) => it.item_id) });
     setBusy(false);
@@ -118,8 +171,57 @@ export function SetListView({ id }: SetListViewProps) {
       if (res) setNotice(b?.message ?? 'We could not move that song. Please try again.');
       await load();
     } else {
-      setNotice(`Moved ${item.title} ${dir}.`);
+      setNotice(done);
     }
+  };
+
+  const move = async (i: number, dir: 'up' | 'down') => {
+    if (!list || busy) return;
+    const order = moveItem(list.items, i, dir === 'up' ? -1 : 1);
+    const item = list.items[i];
+    refocus.current = { item: item.item_id, dir };
+    await saveOrder(list, order, `Moved ${item.title} ${dir}.`);
+  };
+
+  const onDragStart = (i: number, e: ReactPointerEvent<HTMLSpanElement>) => {
+    if (!list || busy || dragInfo.current) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    const rows = listRef.current ? Array.from(listRef.current.querySelectorAll<HTMLElement>('[data-testid="set-item"]')) : [];
+    const mids = rows.map((r) => {
+      const b = r.getBoundingClientRect();
+      return b.top + b.height / 2;
+    });
+    if (mids.length !== list.items.length) return;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // A synthetic or already-released pointer: the drag still works while over the handle.
+    }
+    dragInfo.current = { pointerId: e.pointerId, startY: e.clientY, mids, handle: e.currentTarget };
+    setDrag({ from: i, to: i, dy: 0, reduced: prefersReducedMotion() });
+  };
+
+  const onDragMove = (e: ReactPointerEvent<HTMLSpanElement>) => {
+    const info = dragInfo.current;
+    if (!info || e.pointerId !== info.pointerId || !drag) return;
+    const dy = e.clientY - info.startY;
+    const to = dropIndex(info.mids, drag.from, info.mids[drag.from] + dy);
+    if (to !== drag.to || dy !== drag.dy) setDrag({ ...drag, to, dy });
+  };
+
+  const endDrag = (e: ReactPointerEvent<HTMLSpanElement>, commit: boolean) => {
+    const info = dragInfo.current;
+    if (!info || e.pointerId !== info.pointerId) return;
+    if (!commit) return cancelDrag();
+    dragInfo.current = null;
+    const d = drag;
+    setDrag(null);
+    if (!d || !list) return;
+    const to = dropIndex(info.mids, d.from, info.mids[d.from] + (e.clientY - info.startY));
+    if (to === d.from) return;
+    const item = list.items[d.from];
+    void saveOrder(list, reorderItem(list.items, d.from, to), `Moved ${item.title} to position ${to + 1}.`);
   };
 
   const remove = async (it: SetListItem) => {
@@ -219,13 +321,17 @@ export function SetListView({ id }: SetListViewProps) {
           No songs yet. Open a song and choose ⋯ then “Add to set list…”.
         </p>
       ) : (
-        <ol className={styles.list} data-testid="set-items">
+        <ol className={styles.list} data-testid="set-items" ref={listRef} data-dragging={drag ? 'true' : undefined}>
           {list.items.map((it, i) => {
+            const dragged = drag?.from === i;
+            const landing = drag && !dragged && drag.to === i ? (drag.to < drag.from ? 'before' : 'after') : undefined;
+            const draggable = editable && list.items.length > 1;
+            const shift = dragged && drag && !drag.reduced ? { transform: `translateY(${drag.dy}px)` } : undefined;
             const label = itemStateLabel(it.state);
             const playable = it.state === 'ready' && !!it.job_id;
             const body = (
               <>
-                <span className={styles.pos} aria-hidden="true">
+                <span className={`${styles.pos} ${draggable ? styles.posInHandle : ''}`} aria-hidden="true">
                   {i + 1}
                 </span>
                 <span className={styles.rowText}>
@@ -239,7 +345,32 @@ export function SetListView({ id }: SetListViewProps) {
               </>
             );
             return (
-              <li key={it.item_id} className={styles.row} data-item={it.item_id} data-testid="set-item" data-state={it.state}>
+              <li
+                key={it.item_id}
+                className={`${styles.row} ${dragged ? styles.dragging : ''}`}
+                style={shift}
+                data-item={it.item_id}
+                data-testid="set-item"
+                data-state={it.state}
+                data-drop={landing}
+                data-drag={dragged ? 'true' : undefined}
+              >
+                {draggable ? (
+                  <span
+                    className={styles.handle}
+                    data-testid="set-drag"
+                    data-pos={i + 1}
+                    aria-hidden="true"
+                    title="Drag to reorder"
+                    onPointerDown={(e) => onDragStart(i, e)}
+                    onPointerMove={onDragMove}
+                    onPointerUp={(e) => endDrag(e, true)}
+                    onPointerCancel={(e) => endDrag(e, false)}
+                    onLostPointerCapture={(e) => {
+                      if (dragInfo.current?.pointerId === e.pointerId) cancelDrag();
+                    }}
+                  />
+                ) : null}
                 {playable ? (
                   <a className={styles.rowLink} href={playHref(it.job_id as string, list.id)}>
                     {body}

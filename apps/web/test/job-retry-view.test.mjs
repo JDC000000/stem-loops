@@ -188,3 +188,18 @@ test('the poll panel\'s "Try again" is untouched and distinct from the retry but
   assert.match(src, />\s*Try again\s*</, 'the unreachable panel keeps its Try again');
   assert.match(src, /data-testid="job-retry"/);
 });
+
+test('review R1: the "Retry of" link is a ≥ 24 px tap target', () => {
+  const html = render(LINK_FAILED, { action: 'none', retry_of: ORIG });
+  const a = html.match(/<a[^>]*data-testid="job-retry-of-link"[^>]*>/)?.[0];
+  assert.ok(a, 'no Retry of link');
+  assert.match(a, /display:inline-block/);
+  assert.match(a, /min-height:24px/);
+});
+
+test('review R1: a used-up trial (GET trial_used) → no button, the retry-specific line (no credit pack)', () => {
+  const html = decode(render(LINK_FAILED, { action: 'trial_used', message: copy.RETRY_TRIAL_USED_MSG }));
+  assert.equal(button(html), null);
+  assert.ok(html.includes(copy.RETRY_TRIAL_USED_MSG));
+  assert.doesNotMatch(copy.RETRY_TRIAL_USED_MSG, /credit/i);
+});

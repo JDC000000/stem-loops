@@ -218,3 +218,6 @@ export const UPLOAD_AGAIN_LABEL = 'Upload again';
 export const UPLOAD_AGAIN_MSG = "We can't try an uploaded file again. Upload it again to start over.";
 /** RATE_LIMITED parent still cooling down. */
 export const RETRY_COOLDOWN_MSG = 'Wait a minute, then try this song again.';
+/** 402 from a retry whose given-back trial song has been used since. Credit packs never fund a
+ *  link (013 trigger), so this does not offer one, unlike the generic TRIAL_EXHAUSTED line. */
+export const RETRY_TRIAL_USED_MSG = "The trial song we gave back has been used since, so this one can't be tried again. Pick a plan to keep adding songs.";

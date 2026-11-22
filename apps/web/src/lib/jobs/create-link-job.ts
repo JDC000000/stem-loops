@@ -43,13 +43,25 @@
 // including no row, → free, no debit row). Its order:
 //
 //   ALLOW_YOUTUBE_INPUT → url / canonicalisation → loop bars → stems → [findExisting]
-//   → read the parent's restore (lock-free) → link entitlement (charged retries only)
+//   → read the parent's restore (lock-free: picks the gates) → link entitlement (charged only)
 //   → checkAdmission → checkBurstLimit (every retry) → checkMonthlyQuota (unit only)
 //   → db.tx { consumeTrialInTx (trial song only) → SELECT parent … FOR UPDATE
 //             → require owner, failed, link, retried_at IS NULL, retry_depth < RETRY_CAP
+//             → SELECT the parent's debit row … FOR UPDATE: the funding is decided HERE; if it
+//               differs from the lock-free read, roll back and run the gates again (once)
 //             → [beforeInsert] → INSERT (retry_of, retry_depth = parent + 1)
 //             → rollPeriodIfStale → bump (unit only) → debit row (charged only)
+//             → claim the parent's debit row if still unclaimed (nothing given back)
 //             → UPDATE parent SET retried_at = now()   ← only when the INSERT returned a row }
+//
+// THE LATE-RESTORE RACE (review R1 should-fix 1). The worker can commit a failure in one
+// transaction and give the unit back in a second (job_failure.fail_job). A retry that ran in
+// between would read "not given back" and be free, and the late restore would then give the
+// unit back too: +1 for the user. So the retry locks the parent's job_allowance_debits row
+// (restore_job_allowance() claims it with the same FOR UPDATE), decides the funding from that
+// locked read, and, when the row is still unclaimed, claims it itself (restored_at = now(),
+// nothing restored). A restore that comes later finds it claimed and gives nothing back; a
+// restore that came first is seen and the retry is charged for it.
 //
 // A free retry (nothing was given back) therefore skips the paid entitlement, the quota and
 // the trial; admission and the burst limit still apply. Lock order is B0's: trial_grants →
@@ -144,6 +156,8 @@ export interface MirrorRestoreFunding {
   mode: 'mirror_restore';
   parentJobId: string;
   limitMessage: string;
+  /** 402 copy when the trial song given back has been spent since (default: TRIAL_EXHAUSTED's). */
+  trialUsedMessage?: string;
 }
 
 /** At most this many user retries per original (Jon, D7). jobs.retry_depth's CHECK is 0..2. */
@@ -475,6 +489,35 @@ const RETRY_INSERT_SQL = `INSERT INTO jobs (id, youtube_url, requested_stems, lo
 
 const MARK_RETRIED_SQL = `UPDATE jobs SET retried_at = now() WHERE id = $1::uuid`;
 
+// The parent's restore, read under the same row lock restore_job_allowance() takes (042).
+const LOCK_RESTORE_SQL = `SELECT restored_at, allowance_restored, trial_restored
+             FROM public.job_allowance_debits WHERE job_id = $1::uuid FOR UPDATE`;
+
+// A still-unclaimed debit row is claimed by the retry: nothing was given back, and a later
+// restore must not give it back either (the retry stands in for it).
+const CLAIM_RESTORE_SQL = `UPDATE public.job_allowance_debits
+             SET restored_at = now(), allowance_restored = false, trial_restored = false
+             WHERE job_id = $1::uuid AND restored_at IS NULL`;
+
+/** The locked restore row: undefined = no row, null = no table (042 not applied). */
+async function lockParentRestore(client: LinkJobTxClient, parentJobId: string): Promise<ParentRestore | undefined | null> {
+  await client.query('SAVEPOINT parent_restore');
+  try {
+    const r = await client.query(LOCK_RESTORE_SQL, [parentJobId]);
+    await client.query('RELEASE SAVEPOINT parent_restore');
+    return (r.rows[0] as ParentRestore | undefined) ?? undefined;
+  } catch (err) {
+    if ((err as { code?: string } | null)?.code === '42P01') {
+      await client.query('ROLLBACK TO SAVEPOINT parent_restore');
+      return null;
+    }
+    throw err;
+  }
+}
+
+// The funding read under the lock differs from the lock-free one: roll back, run the gates again.
+class FundingChanged {}
+
 // A trial song with no allowance unit (the parent's unit was not given back, e.g. the month
 // rolled over): recordAllowanceDebit always copies the current period, so this row is written
 // here with allowance_period_start NULL ("no allowance unit was spent", migration 042). Same
@@ -523,6 +566,7 @@ async function runMirrorRestore(
   deps: LinkJobDeps,
   ctx: LinkJobHookContext,
   bars: number,
+  attempt = 0,
 ): Promise<LinkJobResult> {
   const { user, stems } = input;
   const { db, EntitlementError } = deps;
@@ -615,8 +659,12 @@ async function runMirrorRestore(
         if (consume.ok) {
           trialCharged = true;
         } else if (consume.reason === 'exhausted') {
-          // The song given back has been spent since; the existing trial refusal applies.
-          throw new EntitlementError('TRIAL_EXHAUSTED', 'trial exhausted');
+          // The song given back has been spent since: refused, with retry copy (credit packs
+          // never fund a link, so the generic trial line's "buy a credit pack" would be wrong).
+          throw new MirrorRefusal(json(402, {
+            error_code: 'TRIAL_EXHAUSTED',
+            message: funding.trialUsedMessage ?? deps.entitlementMessage('TRIAL_EXHAUSTED'),
+          }));
         }
         // 'expired' / 'no_grant': there is no trial left to spend into, so this part is free.
       }
@@ -634,6 +682,11 @@ async function runMirrorRestore(
       }
       const depth = Number(p.retry_depth ?? 0);
       if (!(depth < RETRY_CAP)) throw new MirrorRefusal(limit());
+
+      // 2b. The funding, decided under the debit row's lock (see THE LATE-RESTORE RACE).
+      const lockedRestore = await lockParentRestore(client, parentJobId);
+      const lockedCharge = mirrorRestoreCharge(lockedRestore ?? null);
+      if (lockedCharge.unit !== charge.unit || lockedCharge.trialSong !== charge.trialSong) throw new FundingChanged();
 
       await runBeforeInsert(input, client, ctx);
 
@@ -665,7 +718,8 @@ async function runMirrorRestore(
         deps.noteAllowanceDebitRecorded(await recordTrialOnlyDebit(client, user.user_id, id));
       }
 
-      // 4. Only now, with the row inserted: the parent has been retried.
+      // 4. Only now, with the row inserted: claim an unclaimed restore, and mark the parent.
+      if (lockedRestore) await client.query(CLAIM_RESTORE_SQL, [parentJobId]);
       await client.query(MARK_RETRIED_SQL, [parentJobId]);
       return true;
     });
@@ -673,6 +727,11 @@ async function runMirrorRestore(
     if (err === RATE_SENTINEL) return json(429, { error_code: 'RATE_LIMITED', message: deps.RATE_LIMIT_MSG });
     if (err instanceof ExistingJobHit) return json(200, { id: err.id });
     if (err instanceof MirrorRefusal) return err.result;
+    if (err instanceof FundingChanged) {
+      // A restore landed between the lock-free read and the lock: decide again, once.
+      if (attempt < 1) return runMirrorRestore(input, funding, deps, ctx, bars, attempt + 1);
+      return json(409, { error_code: 'RETRY_CONFLICT', message: 'Something changed while starting this. Try again.' });
+    }
     if (err instanceof EntitlementError) {
       return json(err.status, { error_code: err.code, message: deps.entitlementMessage(err.code, err.message) });
     }

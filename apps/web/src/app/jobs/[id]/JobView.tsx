@@ -39,6 +39,7 @@ import {
   RETRY_LIMIT_MSG,
   RETRY_OF_LABEL,
   RETRY_OF_LINK_TEXT,
+  RETRY_TRIAL_USED_MSG,
   UPLOAD_AGAIN_LABEL,
 } from '@/lib/error-copy';
 import { jobTrimNote } from '@/lib/input-trim';
@@ -79,7 +80,8 @@ const minutes = (ms: number) => Math.round(ms / 60000);
  * poll tests' jobs) costs no extra request.
  */
 export type RetryInfo = {
-  action: 'eligible' | 'none' | 'upload_again' | 'already_retried' | 'cap_reached' | 'cooldown';
+  action: 'eligible' | 'none' | 'upload_again' | 'already_retried' | 'cap_reached' | 'cooldown' | 'trial_used';
+  message?: string;
   retry_of?: string | null;
   retries_left?: number;
   charge?: 'free' | 'charged';
@@ -165,6 +167,8 @@ export default function JobView({
   const [retryInfo, setRetryInfo] = useState<RetryInfo | null>(null);
   const [retryNote, setRetryNote] = useState<string | null>(null);
   const [retryBusy, setRetryBusy] = useState(false);
+  // Bumped when a RATE_LIMITED cooldown ends, so the box asks again instead of staying stale.
+  const [retryCheck, setRetryCheck] = useState(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -242,7 +246,15 @@ export default function JobView({
     return () => {
       stopped = true;
     };
-  }, [id, isLinkJob, isFailed]);
+  }, [id, isLinkJob, isFailed, retryCheck]);
+
+  // B3: a cooldown says when it ends; ask again then (once per cooldown answer).
+  const cooldownS = retryInfo?.action === 'cooldown' ? retryInfo.retry_after_s ?? 60 : null;
+  useEffect(() => {
+    if (cooldownS === null) return;
+    const t = setTimeout(() => setRetryCheck((n) => n + 1), Math.max(1, cooldownS) * 1000 + 500);
+    return () => clearTimeout(t);
+  }, [cooldownS, retryInfo]);
 
   async function startRetry() {
     if (retryBusy) return;
@@ -493,7 +505,12 @@ function RetryOfLine({ retryOf }: { retryOf: string | null }) {
   return (
     <p data-testid="job-retry-of" style={{ margin: '8px 0 0', color: 'var(--text-muted)', fontSize: 'var(--text-sm, 13px)' }}>
       {RETRY_OF_LABEL}{' '}
-      <Link href={`/jobs/${retryOf}`} style={{ color: 'inherit' }}>
+      {/* ≥ 24 px tall tap target (brand: nothing under 24 px), though the text is 13 px. */}
+      <Link
+        href={`/jobs/${retryOf}`}
+        data-testid="job-retry-of-link"
+        style={{ color: 'inherit', display: 'inline-block', minHeight: 24, lineHeight: '24px', padding: '0 4px', margin: '0 -4px' }}
+      >
         {RETRY_OF_LINK_TEXT}
       </Link>
     </p>
@@ -542,6 +559,9 @@ export function RetryActions({
       ) : null}
       {info?.action === 'cooldown' ? (
         <p data-testid="job-retry-cooldown" style={{ margin: '12px 0 0' }}>{RETRY_COOLDOWN_MSG}</p>
+      ) : null}
+      {info?.action === 'trial_used' ? (
+        <p data-testid="job-retry-trial-used" style={{ margin: '12px 0 0' }}>{info.message ?? RETRY_TRIAL_USED_MSG}</p>
       ) : null}
       {info?.action === 'already_retried' ? (
         <p data-testid="job-retry-already" style={{ margin: '12px 0 0' }}>

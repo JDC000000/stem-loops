@@ -13,6 +13,7 @@ import {
   RETRY_LIMIT_MSG,
   RETRY_COOLDOWN_MSG,
   UPLOAD_AGAIN_MSG,
+  RETRY_TRIAL_USED_MSG,
 } from '@/lib/error-copy';
 import {
   checkBurstLimit,
@@ -28,7 +29,7 @@ import {
   EntitlementError,
   FREE_QUOTA_EXHAUSTED_MESSAGE,
 } from '@/lib/billing/entitlements';
-import { consumeTrialInTx } from '@/lib/trial';
+import { consumeTrialInTx, TRIAL_SONG_CAP } from '@/lib/trial';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { createAuthedLinkJob, type LinkJobDeps, type LinkJobResult, type ParentRestore } from '@/lib/jobs/create-link-job';
@@ -83,6 +84,17 @@ async function readRestore(id: string): Promise<ParentRestore | null> {
     if ((err as { code?: string } | null)?.code === '42P01') return null;
     throw err;
   }
+}
+
+/** The caller's trial, for a retry that would spend a trial song: 'active' | 'used' | 'none'. */
+async function trialState(userId: string): Promise<'active' | 'used' | 'none'> {
+  const r = await db.query(
+    `SELECT songs_used, expires_at > now() AS live FROM public.trial_grants WHERE user_id = $1`,
+    [userId],
+  );
+  const row = r.rows[0] as { songs_used: number; live: boolean } | undefined;
+  if (!row || !row.live) return 'none'; // no trial, or expired: that part of the retry is free
+  return row.songs_used < TRIAL_SONG_CAP ? 'active' : 'used';
 }
 
 async function retryChild(id: string): Promise<string | null> {
@@ -143,8 +155,17 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
     const body: Record<string, unknown> = { action: d.kind, retry_of: job.retry_of ?? null };
     if (d.kind === 'eligible') {
       body.retries_left = d.retries_left;
+      // Say what POST would do: a trial song is spent only from a live trial (expired → that
+      // part is free), and a used-up trial refuses the retry (the lib's TRIAL_EXHAUSTED).
       const c = mirrorRestoreCharge(await readRestore(job.id));
-      body.charge = c.unit || c.trialSong ? 'charged' : 'free';
+      const trial = c.trialSong && user ? await trialState(user.user_id) : 'none';
+      if (trial === 'used') {
+        body.action = 'trial_used';
+        body.message = RETRY_TRIAL_USED_MSG;
+        delete body.retries_left;
+      } else {
+        body.charge = c.unit || trial === 'active' ? 'charged' : 'free';
+      }
     }
     if (d.kind === 'cooldown') body.retry_after_s = d.retry_after_s;
     if (d.kind === 'already_retried') body.retried_by = await retryChild(job.id);
@@ -199,7 +220,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         stems,
         loopLengthBars: job.loop_length_bars ?? undefined,
         clientIpHash: () => clientIpHashOf(request),
-        funding: { mode: 'mirror_restore', parentJobId: job.id, limitMessage: RETRY_LIMIT_MSG },
+        funding: { mode: 'mirror_restore', parentJobId: job.id, limitMessage: RETRY_LIMIT_MSG, trialUsedMessage: RETRY_TRIAL_USED_MSG },
       },
       linkJobDeps(),
     );

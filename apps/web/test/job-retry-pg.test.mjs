@@ -51,7 +51,12 @@ const dbStub = dataUrl(`
   export const db = {
     query: (t, p) => ${P}.query(t, p),
     tx: async (fn) => { const c = await ${P}.connect();
-      try { await c.query('BEGIN'); const r = await fn(c); await c.query('COMMIT'); return r; }
+      // Test hook: globalThis.__retryOnQuery(sql, run) may hold a statement (the concurrency
+      // barrier) before it reaches Postgres. Absent, the client is passed through untouched.
+      const client = globalThis.__retryOnQuery
+        ? { query: (t, p) => globalThis.__retryOnQuery(String(t), () => c.query(t, p)) }
+        : c;
+      try { await c.query('BEGIN'); const r = await fn(client); await c.query('COMMIT'); return r; }
       catch (e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); } },
   };`);
 const entStub = dataUrl(`
@@ -142,7 +147,7 @@ async function mkUser({ trial = false } = {}) {
  * restore_job_allowance(). `rollPeriod`: move the period between the spend and the restore,
  * so the allowance unit is NOT given back (restored_at set, allowance_restored = false).
  */
-async function failedParent(uid, { code = 'FETCH_PROXY_FAILED', spend = 'unit', rollPeriod = false, depth = 0, retryOf = null, kind = 'youtube' } = {}) {
+async function failedParent(uid, { code = 'FETCH_PROXY_FAILED', spend = 'unit', rollPeriod = false, depth = 0, retryOf = null, kind = 'youtube', restore = true } = {}) {
   const jid = randomUUID();
   const c = await pool.connect();
   try {
@@ -170,7 +175,7 @@ async function failedParent(uid, { code = 'FETCH_PROXY_FAILED', spend = 'unit', 
   }
   await pool.query(`UPDATE jobs SET status = 'failed', error_code = $2, attempts = 1 WHERE id = $1`, [jid, code]);
   if (rollPeriod) await pool.query(`UPDATE public.entitlements SET period_start = period_start - interval '1 day' WHERE user_id = $1`, [uid]);
-  await pool.query('SELECT * FROM public.restore_job_allowance($1::uuid, $2::text[])', [jid, OUR_FAULT]);
+  if (restore) await pool.query('SELECT * FROM public.restore_job_allowance($1::uuid, $2::text[])', [jid, OUR_FAULT]);
   if (rollPeriod) await pool.query(`UPDATE public.entitlements SET period_start = period_start + interval '1 day' WHERE user_id = $1`, [uid]);
   return jid;
 }
@@ -274,6 +279,7 @@ T('(h1x) trial_restored, trial since expired → free: 0 songs_used, 0 jobs_used
   const uid = await mkUser({ trial: true });
   const p = await failedParent(uid, { spend: 'trial', code: 'INTERNAL_ERROR', rollPeriod: true });
   await pool.query(`UPDATE public.trial_grants SET expires_at = now() - interval '1 minute' WHERE user_id = $1`, [uid]);
+  assert.equal((await get(p)).body.charge, 'free', 'GET says free for an expired trial (review R1)');
   const before = await rowCounts(uid, p);
   assert.equal((await post(p)).status, 201);
   assert.deepEqual(delta(before, await rowCounts(uid, p)), { jobs: 1, jobs_used: 0, songs_used: 0, debits: 0, burst: 1 });
@@ -380,7 +386,41 @@ for (const [name, spend, code] of [['charged unit', 'unit', 'FETCH_PROXY_FAILED'
     const uid = await mkUser({ trial: spend === 'trial' });
     const p = await failedParent(uid, { spend, code });
     const before = await rowCounts(uid, p);
-    const [a, b] = await Promise.all([post(p), post(p)]);
+    // BARRIER (review R1 should-fix 3): neither request may send the parent's FOR UPDATE until
+    // BOTH have reached it, so both have passed every lock-free gate. The first to get the lock
+    // then holds it 300 ms, and a third connection must SEE the other one waiting on it.
+    let arrived = 0;
+    let open;
+    const gate = new Promise((r) => (open = r));
+    let firstLocked = false;
+    let sawWait = false;
+    globalThis.__retryOnQuery = async (sql, run) => {
+      if (!/FROM jobs WHERE id = \$1::uuid FOR UPDATE/.test(sql)) return run();
+      arrived += 1;
+      if (arrived === 2) open();
+      await Promise.race([gate, new Promise((_, rej) => setTimeout(() => rej(new Error('barrier: only one request reached the parent lock')), 10_000))]);
+      const r = await run();
+      if (!firstLocked) {
+        firstLocked = true;
+        const end = Date.now() + 3000;
+        while (Date.now() < end && !sawWait) {
+          sawWait = (await pool.query(
+            `SELECT count(*)::int AS n FROM pg_stat_activity
+              WHERE wait_event_type = 'Lock' AND query LIKE '%retry_depth, retried_at%FOR UPDATE%'`,
+          )).rows[0].n > 0;
+          if (!sawWait) await new Promise((res) => setTimeout(res, 20));
+        }
+      }
+      return r;
+    };
+    let a, b;
+    try {
+      [a, b] = await Promise.all([post(p), post(p)]);
+    } finally {
+      globalThis.__retryOnQuery = undefined;
+    }
+    assert.equal(arrived, 2, 'both requests reached the parent FOR UPDATE');
+    assert.ok(sawWait, 'the second request was seen WAITING on the parent row lock (pg_stat_activity)');
     assert.deepEqual([a.status, b.status].sort(), [200, 201], JSON.stringify([a.body, b.body]));
     assert.equal(a.body.id, b.body.id);
     const d = delta(before, await rowCounts(uid, p));
@@ -450,4 +490,68 @@ T('AC1: an upload parent → 409 Upload again, and no job reuses its key', async
   const r = await post(p);
   assert.deepEqual([r.status, r.body.error_code], [409, 'UPLOAD_AGAIN']);
   assert.equal((await one('SELECT count(*)::int AS n FROM jobs WHERE upload_r2_key = $1', [`${p}/_input.mp3`])).n, 1);
+});
+
+// ── review R1 should-fix 1: the late-restore race, on real locks ─────────────────────────
+
+T('late restore AFTER a free retry: the retry claimed the row, the restore gives nothing back (no +1)', async () => {
+  const uid = await mkUser();
+  const p = await failedParent(uid, { spend: 'unit', code: 'FETCH_PROXY_FAILED', restore: false });
+  assert.deepEqual(await restoreOf(p), { claimed: false, allowance_restored: null, trial_restored: null }, 'precondition: restore pending');
+  const before = await rowCounts(uid, p);
+  const r = await post(p);
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  // the worker's second transaction gives back only what is still owed
+  const late = (await pool.query('SELECT * FROM public.restore_job_allowance($1::uuid, $2::text[])', [p, OUR_FAULT])).rows;
+  assert.deepEqual(late, [], 'the late restore finds the row claimed by the retry');
+  assert.deepEqual(await restoreOf(p), { claimed: true, allowance_restored: false, trial_restored: false });
+  assert.deepEqual(delta(before, await rowCounts(uid, p)), { jobs: 1, jobs_used: 0, songs_used: null, debits: 0, burst: 1 },
+    'net: the failed song and its free retry cost one unit, never +1');
+});
+
+T('restore IN PROGRESS when the retry starts: the retry waits on the debit row, then is CHARGED', async () => {
+  const uid = await mkUser();
+  const p = await failedParent(uid, { spend: 'unit', code: 'FETCH_PROXY_FAILED', restore: false });
+  const before = await rowCounts(uid, p);
+  const x = await pool.connect();
+  let r;
+  try {
+    await x.query('BEGIN');
+    assert.deepEqual((await x.query('SELECT * FROM public.restore_job_allowance($1::uuid, $2::text[])', [p, OUR_FAULT])).rows,
+      [{ allowance_restored: true, trial_restored: false }], 'the restore holds the row, uncommitted');
+    const pending = post(p);
+    let waiting = false;
+    const end = Date.now() + 10_000;
+    while (!waiting && Date.now() < end) {
+      waiting = (await pool.query(
+        `SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE wait_event_type = 'Lock' AND query LIKE '%FROM public.job_allowance_debits WHERE job_id = $1::uuid FOR UPDATE%'`,
+      )).rows[0].n > 0;
+      if (!waiting) await new Promise((res) => setTimeout(res, 20));
+    }
+    assert.ok(waiting, 'the retry is waiting on the parent debit row lock');
+    await x.query('COMMIT');
+    r = await pending;
+  } finally {
+    x.release();
+  }
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const d = delta(before, await rowCounts(uid, p));
+  assert.deepEqual({ ...d, burst: 0 }, { jobs: 1, jobs_used: 0, songs_used: null, debits: 1, burst: 0 },
+    '1 spent → 1 given back → 1 spent by the retry: charged, net 0');
+  assert.equal(d.burst, 2, 'the gates ran again for the charged decision');
+  assert.deepEqual(await one('SELECT trial_song, allowance_period_start IS NOT NULL AS has_period FROM public.job_allowance_debits WHERE job_id = $1', [r.body.id]),
+    { trial_song: false, has_period: true });
+});
+
+T('GET (review R1): a used-up trial is refused with the retry line, not a credit-pack line', async () => {
+  const uid = await mkUser({ trial: true });
+  const p = await failedParent(uid, { spend: 'trial', code: 'INTERNAL_ERROR', rollPeriod: true });
+  await pool.query('UPDATE public.trial_grants SET songs_used = 3 WHERE user_id = $1', [uid]);
+  const g = await get(p);
+  assert.equal(g.body.action, 'trial_used');
+  assert.doesNotMatch(g.body.message, /credit/i);
+  const r = await post(p);
+  assert.deepEqual([r.status, r.body.error_code], [402, 'TRIAL_EXHAUSTED']);
+  assert.doesNotMatch(r.body.message, /credit/i);
 });

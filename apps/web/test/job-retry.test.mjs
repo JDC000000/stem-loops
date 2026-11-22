@@ -88,6 +88,17 @@ function world(o = {}) {
   const rows = (r) => ({ rows: r ? [r] : [], rowCount: r ? 1 : 0 });
   const tick = () => new Promise((r) => setImmediate(r));
 
+  async function lockRow(key, tx) {
+    if (!tx) throw new Error('FOR UPDATE outside a transaction');
+    while (locks.has(key) && locks.get(key).owner !== tx) await locks.get(key).p;
+    if (!locks.has(key)) {
+      let release;
+      const p = new Promise((r) => (release = r));
+      locks.set(key, { owner: tx, p, release });
+      tx.locks.push(key);
+    }
+  }
+
   async function query(sql, params, tx) {
     const s = String(sql).trim();
     st.sql.push(s.split(/\s+/).slice(0, 6).join(' '));
@@ -99,19 +110,29 @@ function world(o = {}) {
     }
     if (/^SELECT (d\.)?restored_at, (d\.)?allowance_restored, (d\.)?trial_restored\s+FROM public\.job_allowance_debits/.test(s)) {
       if (o.no042) throw Object.assign(new Error('relation does not exist'), { code: '42P01' });
+      if (/FOR UPDATE/.test(s)) {
+        st.log.push('LOCK_RESTORE');
+        // A late restore landing just before the retry's locked read (review R1 should-fix 1).
+        if (o.restoreBeforeLock && !st.restoredEarly) { st.restoredEarly = true; fakeRestore(params[0]); }
+        await lockRow('debit:' + params[0], tx);
+      }
       return rows(debitsOf(params[0]));
     }
-    if (/^SELECT id, user_id, status, input_kind, retry_depth, retried_at\s+FROM jobs WHERE id = \$1::uuid/.test(s)) {
-      if (/FOR UPDATE/.test(s)) {
-        if (!tx) throw new Error('FOR UPDATE outside a transaction');
-        while (locks.has(params[0]) && locks.get(params[0]).owner !== tx) await locks.get(params[0]).p;
-        if (!locks.has(params[0])) {
-          let release;
-          const p = new Promise((r) => (release = r));
-          locks.set(params[0], { owner: tx, p, release });
-          tx.locks.push(params[0]);
-        }
+    if (/^SELECT songs_used, expires_at > now\(\) AS live FROM public\.trial_grants/.test(s)) {
+      return rows(st.trial ? { songs_used: st.trial.used, live: !st.trial.expired } : null);
+    }
+    if (/^UPDATE public\.job_allowance_debits/.test(s)) {
+      st.log.push('CLAIM_RESTORE');
+      const d = st.debits.get(params[0]);
+      if (d && (d.restored_at === null || d.restored_at === undefined)) {
+        const prev = { ...d };
+        Object.assign(d, { restored_at: 'now', allowance_restored: false, trial_restored: false });
+        tx.undo.push(() => st.debits.set(params[0], prev));
       }
+      return rows(null);
+    }
+    if (/^SELECT id, user_id, status, input_kind, retry_depth, retried_at\s+FROM jobs WHERE id = \$1::uuid/.test(s)) {
+      if (/FOR UPDATE/.test(s)) await lockRow(params[0], tx);
       const j = st.jobs.get(params[0]);
       return rows(j ? { id: j.id, user_id: j.user_id, status: j.status, input_kind: j.input_kind, retry_depth: j.retry_depth, retried_at: j.retried_at } : null);
     }
@@ -158,6 +179,22 @@ function world(o = {}) {
     }
     throw new Error('unexpected SQL: ' + s);
   }
+
+  // migration 042's restore_job_allowance(), for the fake: claims an UNCLAIMED row of a failed
+  // our-fault job, gives back what it spent, and records it. Returns what it gave back.
+  function fakeRestore(jobId) {
+    const d = st.debits.get(jobId);
+    const j = st.jobs.get(jobId);
+    if (!d || (d.restored_at !== null && d.restored_at !== undefined)) return null;
+    if (!j || j.status !== 'failed' || !['SEPARATION_FAILED', 'UPLOAD_FAILED', 'INTERNAL_ERROR', 'FETCH_PROXY_FAILED'].includes(j.error_code)) return null;
+    let trialBack = false;
+    if (d.trial_song && st.trial && st.trial.used > 0 && !st.trial.expired) { st.trial.used -= 1; trialBack = true; }
+    let allowBack = false;
+    if (d.period && st.jobsUsed > 0) { st.jobsUsed -= 1; allowBack = true; }
+    Object.assign(d, { restored_at: 'late', allowance_restored: allowBack, trial_restored: trialBack });
+    return { allowance_restored: allowBack, trial_restored: trialBack };
+  }
+  st.fakeRestore = fakeRestore;
 
   const db = {
     query: (sql, params) => query(sql, params, null),
@@ -252,7 +289,7 @@ const STUBS = {
     export const getEntitlementSnapshot = (...a) => ${W}.deps.getEntitlementSnapshot(...a);
     export const enforceEntitlement = async (...a) => { try { return await ${W}.deps.enforceEntitlement(...a); } catch (e) { if (e.code) throw new EntitlementError(e.code, e.message); throw e; } };
     export const FREE_QUOTA_EXHAUSTED_MESSAGE = 'FREE_MSG';`),
-  '@/lib/trial': dataUrl(`export const consumeTrialInTx = (...a) => ${W}.deps.consumeTrialInTx(...a);`),
+  '@/lib/trial': dataUrl(`export const consumeTrialInTx = (...a) => ${W}.deps.consumeTrialInTx(...a); export const TRIAL_SONG_CAP = 3;`),
   '@/lib/same-origin': sameOriginUrl,
   '@/lib/retention': retentionUrl,
   '@/lib/jobs/create-link-job': LINK_JOB_URL,
@@ -440,7 +477,7 @@ test('(a) our-fault, allowance restored → 1 unit + 1 debit row; quota and burs
   assert.deepEqual(r.body, { id: c.id, status: 'queued' });
   assert.deepEqual(w.st.debits.get(c.id), { job_id: c.id, user_id: USER, period: 'P1', trial_song: false });
   assert.deepEqual(w.st.log, ['enforceEntitlement', 'checkAdmission', 'getEntitlementSnapshot', 'checkBurstLimit', 'checkMonthlyQuota',
-    'BEGIN', 'INSERT', 'rollPeriodIfStale', 'bumpJobsUsedWithinQuota', 'recordAllowanceDebit', 'MARK_RETRIED', 'COMMIT']);
+    'BEGIN', 'LOCK_RESTORE', 'INSERT', 'rollPeriodIfStale', 'bumpJobsUsedWithinQuota', 'recordAllowanceDebit', 'CLAIM_RESTORE', 'MARK_RETRIED', 'COMMIT']);
 }));
 
 test('(a, paid) Pro: the unit is metered with bumpJobsUsed, as a paid link', withYoutube(async () => {
@@ -454,7 +491,7 @@ test('(b) DOWNLOAD_BLOCKED (not restored) → free: 0 units, 0 debit rows, no qu
   const w = W0({ parent: { error_code: 'DOWNLOAD_BLOCKED' }, restore: { restored_at: null, allowance_restored: null, trial_restored: null }, trial: { used: 1, limit: 3 } });
   assert.equal((await post(w)).status, 201);
   assert.deepEqual(counts(w), { jobs: 2, jobsUsed: 0, songsUsed: 1, debits: 0, burst: 1 });
-  assert.deepEqual(w.st.log, ['checkAdmission', 'checkBurstLimit', 'BEGIN', 'INSERT', 'rollPeriodIfStale', 'MARK_RETRIED', 'COMMIT']);
+  assert.deepEqual(w.st.log, ['checkAdmission', 'checkBurstLimit', 'BEGIN', 'LOCK_RESTORE', 'INSERT', 'rollPeriodIfStale', 'CLAIM_RESTORE', 'MARK_RETRIED', 'COMMIT']);
 }));
 
 test('(f) pre-042 parent: no debit row → free; (f2) database without 042 → free', withYoutube(async () => {
@@ -491,7 +528,8 @@ test('(h1, exhausted) the given-back trial song was spent since → existing TRI
   const w = W0({ restore: { restored_at: 'x', allowance_restored: false, trial_restored: true }, trial: { used: 3, limit: 3 } });
   const r = await post(w);
   assert.equal(r.status, 402);
-  assert.deepEqual(r.body, { error_code: 'TRIAL_EXHAUSTED', message: copy.entitlementMessage('TRIAL_EXHAUSTED') });
+  assert.deepEqual(r.body, { error_code: 'TRIAL_EXHAUSTED', message: copy.RETRY_TRIAL_USED_MSG });
+  assert.doesNotMatch(copy.RETRY_TRIAL_USED_MSG, /credit/i, 'credit packs never fund a link');
   assert.deepEqual(counts(w), { jobs: 1, jobsUsed: 0, songsUsed: 3, debits: 0, burst: 1 });
   assert.equal(w.st.jobs.get(PARENT).retried_at, null);
 }));
@@ -783,3 +821,44 @@ test('the copy: one-sentence lines, no code-shaped tokens, no credit/refund word
 });
 
 void statSync; void readdirSync; void relative;
+
+// ── review R1 should-fix 1: the late-restore race ────────────────────────────────────────
+
+// A parent that spent a unit and failed our-fault, whose restore has NOT run yet (the worker's
+// second transaction): the debit row is still unclaimed.
+const PENDING = { restored_at: null, allowance_restored: null, trial_restored: null, period: 'P0' };
+
+test('late restore AFTER a free retry: the retry claims the row, the restore gives nothing back (no +1)', withYoutube(async () => {
+  const w = W0({ restore: PENDING, jobsUsed: 1 });
+  const r = await post(w);
+  assert.equal(r.status, 201);
+  assert.equal(w.st.jobsUsed, 1, 'the retry is free (nothing had been given back)');
+  assert.deepEqual(
+    { ...w.st.debits.get(PARENT), job_id: undefined, period: undefined, trial_song: undefined },
+    { job_id: undefined, period: undefined, trial_song: undefined, restored_at: 'now', allowance_restored: false, trial_restored: false },
+    'claimed by the retry, nothing restored',
+  );
+  assert.equal(w.st.fakeRestore(PARENT), null, 'the late restore finds it claimed');
+  assert.equal(w.st.jobsUsed, 1, 'net: one unit for the failed song and its retry, never +1');
+}));
+
+test('restore lands between the lock-free read and the lock → the retry is CHARGED (decided under the lock)', withYoutube(async () => {
+  const w = W0({ restore: PENDING, jobsUsed: 1, restoreBeforeLock: true });
+  const r = await post(w);
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.equal(w.st.restoredEarly, true, 'precondition: the restore ran inside the window');
+  assert.equal(w.st.jobsUsed, 1, '1 spent → 0 given back → 1 spent again by the retry');
+  assert.deepEqual(w.st.debits.get(child(w).id).trial_song, false);
+  assert.equal(w.st.burst, 2, 'the gates ran again for the charged decision');
+  assert.ok(w.st.log.includes('checkMonthlyQuota'), 'the charged retry was quota-checked');
+}));
+
+test('GET says free for an expired trial, and refuses (no button) for a used-up one', withYoutube(async () => {
+  const TRIAL_ONLY = { restored_at: 'x', allowance_restored: false, trial_restored: true };
+  assert.equal((await get(W0({ restore: TRIAL_ONLY, trial: { used: 1, limit: 3 } }))).body.charge, 'charged');
+  assert.equal((await get(W0({ restore: TRIAL_ONLY, trial: { used: 1, limit: 3, expired: true } }))).body.charge, 'free');
+  const used = (await get(W0({ restore: TRIAL_ONLY, trial: { used: 3, limit: 3 } }))).body;
+  assert.deepEqual(used, { action: 'trial_used', retry_of: null, message: copy.RETRY_TRIAL_USED_MSG });
+  // a unit + trial restore with an expired trial is still charged (the unit)
+  assert.equal((await get(W0({ restore: { restored_at: 'x', allowance_restored: true, trial_restored: true }, trial: { used: 1, limit: 3, expired: true } }))).body.charge, 'charged');
+}));

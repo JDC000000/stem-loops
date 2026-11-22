@@ -1,7 +1,8 @@
-// Screen Wake Lock while playing (design v1.4, P1.2): the phone must not dim
-// mid-song. Held while playing, released on pause; re-requested when the page
-// becomes visible again (the browser drops a screen lock whenever the page is
-// hidden). Feature-detected: where `navigator.wakeLock` is missing, or a
+// Screen Wake Lock on the player (design v1.4, P1.2; Phase A 2026-11-21): the
+// phone must not dim mid-song, NOR while paused (a guitarist pauses to work out
+// a shape). The player holds it for as long as its page is visible, playing or
+// not. It is released the moment the page is hidden (visibilitychange), and
+// re-requested when the page becomes visible again. Feature-detected: where `navigator.wakeLock` is missing, or a
 // request is refused (battery saver, permissions policy), nothing breaks.
 //
 // Pure wiring over injected `navigator` / `document`, so node:test drives it
@@ -24,7 +25,7 @@ interface VisibilityDocument {
 }
 
 export interface WakeLockController {
-  /** Hold the lock (playing) or let it go (paused, ended). Idempotent. */
+  /** Hold the lock (the player is on screen) or let it go. Idempotent. */
   set(wanted: boolean): void;
   dispose(): void;
 }
@@ -42,21 +43,28 @@ export function createWakeLock(nav: unknown, doc: VisibilityDocument | null | un
   let pending = false;
   let disposed = false;
 
+  const visible = () => !(doc && doc.visibilityState && doc.visibilityState !== 'visible');
   const acquire = () => {
     if (disposed || !wanted || pending || (sentinel && !sentinel.released)) return;
-    if (doc && doc.visibilityState && doc.visibilityState !== 'visible') return;
+    if (!visible()) return;
     pending = true;
     api
       .request('screen')
       .then((s) => {
         pending = false;
-        if (disposed || !wanted) {
+        // Granted after the page went hidden (or after we stopped wanting it):
+        // give it straight back; visibilitychange takes a new one later.
+        if (disposed || !wanted || !visible()) {
           void s.release().catch(() => {});
           return;
         }
         sentinel = s;
         s.addEventListener?.('release', () => {
-          if (sentinel === s) sentinel = null;
+          if (sentinel !== s) return;
+          sentinel = null;
+          // The browser dropped it while we are still on screen (battery
+          // saver, a system dialog): take it back.
+          if (wanted && !disposed && visible()) acquire();
         });
       })
       .catch(() => {
@@ -70,8 +78,11 @@ export function createWakeLock(nav: unknown, doc: VisibilityDocument | null | un
     if (s && !s.released) void s.release().catch(() => {});
   };
 
+  // Hidden: let the lock go now (the browser would drop it anyway; doing it
+  // ourselves means no sentinel is left looking held). Visible: take it back.
   const onVisible = () => {
     if (doc?.visibilityState === 'visible') acquire();
+    else release();
   };
   doc?.addEventListener('visibilitychange', onVisible);
 

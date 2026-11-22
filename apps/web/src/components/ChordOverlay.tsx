@@ -5,7 +5,10 @@
 //           → collapseRuns → timeline render.
 //
 // NOT WIRED (parked 2026-11-05). This component exposes `onChordEdit` and
-// `onChordLabelEdit`, but NOTHING consumes them: jobs/[id]/page.tsx mounts
+// `onChordLabelEdit`, but NOTHING consumes them. So the "Change chord" editor
+// is HIDDEN unless one of them is passed (Phase A, 2026-11-21: a picker that
+// drops the pick is a broken button): with no handler, chord cells and chips
+// are plain, non-interactive text. History: jobs/[id]/page.tsx mounts
 // <ChordOverlay jobId={...} /> with no handler, so every correction a user
 // makes is dropped on the floor. The write path behind them is also
 // incomplete -- play.chords.json carries neither `track_hash` nor
@@ -54,7 +57,6 @@ import {
   CELL_HEAD_PX,
   SLOT_PAD_PX,
   beatInCell,
-  beatsUntil,
   buildPhoneModel,
   cellIndexAt,
   layoutLine,
@@ -71,6 +73,13 @@ import {
   growScale,
   grownFontPx,
   stageChromePx,
+  STAGE_GAP_PX,
+  MIN_LINE_SCALE,
+  COUNTDOWN_ROW_PX,
+  COUNTDOWN_SEGMENTS,
+  type CountdownState,
+  countdownState,
+  countdownText,
 } from './ChordPhone.helpers.ts';
 import {
   type ChordAlternative,
@@ -92,6 +101,7 @@ import {
   chipContentPx,
   chipDensity,
   segmentDensityCounts,
+  simplifyOverlayRuns,
   zoomCeilingPxPerSec,
   MAX_TIMELINE_PX,
   estimateLabelPx,
@@ -202,6 +212,18 @@ export interface ChordOverlayProps extends Partial<ChordPlayheadProps> {
    * covers the stage. `null` when there is no current chord.
    */
   onNowNext?: (v: NowNext | null) => void;
+  /**
+   * "Simple" chords (Phase A, D6): show the runs with every chord under two
+   * beats merged and every change snapped to the beat. Display only; the
+   * loaded chord data is not changed. Default false (the data as loaded).
+   */
+  simplify?: boolean;
+  /**
+   * The audio is playing. While it is, chord cells are never interactive, so
+   * a strumming hand cannot open anything (Phase A). Only matters when an
+   * edit handler is passed; without one they are never interactive.
+   */
+  playing?: boolean;
 }
 
 /** The chord names the Mix sheet header shows (P1.3 "mixing by ear"). */
@@ -241,7 +263,13 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   view = 'both',
   emptyStage = null,
   onNowNext,
+  simplify = false,
+  playing = false,
 }) => {
+  // The chord editor exists only when someone consumes its picks (see the
+  // file header). Cells open it only while paused.
+  const editable = Boolean(onChordEdit || onChordLabelEdit);
+  const cellsOpen = editable && !playing;
   const [state, setState] = useState<State>(INITIAL_STATE);
   const [popoverFor, setPopoverFor] = useState<{ run: OverlayRun; idx: number } | null>(null);
   // Zoom: null = fit-to-width (the default); otherwise explicit px/sec.
@@ -422,9 +450,18 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
     return () => ro.disconnect();
   }, [wrapEl]);
 
+  // D6 "Simple" chords: a display layer over the loaded runs, memoised (it is
+  // O(n^2) in the worst case, never per frame). Section starts re-anchor the
+  // beat grid; the job's measured grid only (no pseudo-bars).
+  const sectionStarts = useMemo(() => (sections ?? []).map((s) => s.startSec), [sections]);
+  const runs = useMemo(
+    () => (simplify && state.runs.length > 1 ? simplifyOverlayRuns(state.runs, beatGrid, sectionStarts) : state.runs),
+    [simplify, state.runs, beatGrid, sectionStarts],
+  );
+
   // O(n) over the runs, so memoised: `positionSec` changes every frame and
   // must not re-walk 159 runs to re-derive a duration that cannot have moved.
-  const dur = useMemo(() => durationSec(state.runs), [state.runs]);
+  const dur = useMemo(() => durationSec(runs), [runs]);
   const measured = widthPx > 0;
   const narrow = measured && widthPx < NARROW_BREAKPOINT_PX;
   const rowWidthPx = Math.max(120, widthPx - GUTTER_PX);
@@ -434,8 +471,8 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   // stripMinPxPerSec). O(n log n), so memoised: never per frame. Wrapped: rows
   // of at most 16s.
   const stripFloorPps = useMemo(
-    () => (narrow ? 0 : stripMinPxPerSec(state.runs, widthPx)),
-    [narrow, state.runs, widthPx],
+    () => (narrow ? 0 : stripMinPxPerSec(runs, widthPx)),
+    [narrow, runs, widthPx],
   );
   const minPps = narrow
     ? Math.min(MAX_PX_PER_SEC, rowWidthPx / WRAP_MAX_ROW_SEC)
@@ -494,8 +531,8 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   // deliberately: lifting it would default a dense song to a ~4s window, which
   // is a separate decision about the first view and wants its own measurement.
   const readablePps = useMemo(
-    () => readablePxPerSec(state.runs, measureLabel),
-    [state.runs, measureLabel],
+    () => readablePxPerSec(runs, measureLabel),
+    [runs, measureLabel],
   );
 
   // THE MAXIMUM ZOOM. Was the bare MAX_PX_PER_SEC constant, which bounded
@@ -513,15 +550,15 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   const maxPps = useMemo(
     () =>
       Math.max(
-        zoomCeilingPxPerSec(state.runs, measureLabel, {
+        zoomCeilingPxPerSec(runs, measureLabel, {
           durSec: dur,
           maxPaintedPx: narrow
-            ? wrapPaintBudgetPx(state.runs.length, rowWidthPx)
+            ? wrapPaintBudgetPx(runs.length, rowWidthPx)
             : MAX_TIMELINE_PX,
         }),
         minPps,
       ),
-    [state.runs, measureLabel, dur, narrow, rowWidthPx, minPps],
+    [runs, measureLabel, dur, narrow, rowWidthPx, minPps],
   );
 
   const defaultPps = narrow
@@ -537,8 +574,8 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   // centring share with them. Zoom/resize only, never per frame.
   // Not drawn on phones (the wrapped rows are), so not built there.
   const strip: StripLayout = useMemo(
-    () => (narrow ? EMPTY_STRIP : layoutTapStrip(state.runs, pps)),
-    [narrow, state.runs, pps],
+    () => (narrow ? EMPTY_STRIP : layoutTapStrip(runs, pps)),
+    [narrow, runs, pps],
   );
 
   const setZoom = useCallback(
@@ -583,14 +620,14 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
       centerSecRef.current = null;
     }
     syncScroll();
-  }, [pps, widthPx, state.runs, strip, syncScroll]);
+  }, [pps, widthPx, runs, strip, syncScroll]);
 
   // ---- chord playhead (Story 3) -------------------------------------------
   // `positionSec` changes at animation frequency, so this block is written so
   // that a new position costs an O(1) lookup and moves two absolutely
   // positioned <div>s. It must NOT cost 159 chip re-renders, which is why the
   // chips below are memoised on geometry only and know nothing about position.
-  const activeIdx = activeRunIndex(state.runs, positionSec, activeHintRef.current);
+  const activeIdx = activeRunIndex(runs, positionSec, activeHintRef.current);
   // Only fires when the sounding chord CHANGES, not every frame.
   useEffect(() => {
     if (activeIdx >= 0) activeHintRef.current = activeIdx;
@@ -600,12 +637,12 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   // The strip's marker comes from the chip's own (fitted) box, so the line and
   // the ring stay on the chip of the chord being heard (QA-73).
   const playhead = useMemo(() => {
-    const g = playheadGeometry(state.runs, activeIdx, pps);
+    const g = playheadGeometry(runs, activeIdx, pps);
     if (!g || narrow) return g;
     const box = strip.boxes[g.runIndex];
     return box ? { runIndex: g.runIndex, leftPx: box.leftPx, widthPx: box.widthPx } : g;
-  }, [state.runs, activeIdx, pps, narrow, strip]);
-  const activeRun = activeIdx >= 0 ? state.runs[activeIdx] : null;
+  }, [runs, activeIdx, pps, narrow, strip]);
+  const activeRun = activeIdx >= 0 ? runs[activeIdx] : null;
 
   // ---- phone view (Stories 3 / 4.8 on phones) ------------------------------
   // The stage view draws the phone model at every width (it IS the player's
@@ -613,8 +650,8 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   const stage = view === 'stage';
   const wantPhone = (narrow || stage) && view !== 'chart';
   const phoneModel = useMemo(
-    () => (wantPhone ? buildPhoneModel(state.runs, beatGrid, sections, dur) : null),
-    [wantPhone, state.runs, beatGrid, sections, dur],
+    () => (wantPhone ? buildPhoneModel(runs, beatGrid, sections, dur) : null),
+    [wantPhone, runs, beatGrid, sections, dur],
   );
   const showPhone = wantPhone && measured && !!phoneModel && phoneModel.cells.length > 0;
   // "Playing" for LAYOUT purposes: a usable position arrived. Deliberately
@@ -631,11 +668,11 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   // nothing that is O(number of runs).
   const stripChips = useMemo(
     () =>
-      narrow ? null : state.runs.map((run, idx) => {
+      narrow ? null : runs.map((run, idx) => {
         const box = strip.boxes[idx];
-        return renderChip(run, idx, box.leftPx, box.widthPx, chipH, null, setPopoverFor, measureLabel);
+        return renderChip(run, idx, box.leftPx, box.widthPx, chipH, null, editable ? setPopoverFor : null, measureLabel);
       }),
-    [narrow, state.runs, strip, chipH, measureLabel],
+    [narrow, runs, strip, chipH, measureLabel, editable],
   );
 
   // The ruler and the timeline width are the other two things a frame used to
@@ -661,16 +698,16 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   // `split` is whether any row was split, which makes the hint's "Ns per row"
   // an upper bound.
   const wrapped = useMemo(() => {
-    const rows = layoutTapRows(state.runs, rowWidthPx / pps, pps, rowWidthPx);
-    const split = rows.length > layoutRows(state.runs, rowWidthPx / pps, pps).length;
-    const byRun: { rowIndex: number; leftPx: number; widthPx: number }[][] = state.runs.map(() => []);
+    const rows = layoutTapRows(runs, rowWidthPx / pps, pps, rowWidthPx);
+    const split = rows.length > layoutRows(runs, rowWidthPx / pps, pps).length;
+    const byRun: { rowIndex: number; leftPx: number; widthPx: number }[][] = runs.map(() => []);
     rows.forEach((row, ri) => {
       for (const seg of row.segments) {
         byRun[seg.runIndex]?.push({ rowIndex: ri, leftPx: seg.leftPx, widthPx: seg.widthPx });
       }
     });
     return { rows, byRun, split };
-  }, [state.runs, rowWidthPx, pps]);
+  }, [runs, rowWidthPx, pps]);
 
   // CHIPS the user cannot read at this zoom -- not RUNS. The wrapped layout
   // splits a run that crosses a row boundary and each piece is narrower than
@@ -680,9 +717,9 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   const nameless = useMemo(
     () =>
       narrow
-        ? segmentDensityCounts(state.runs, wrapped.rows, measureLabel).tick
-        : segmentDensityCounts(state.runs, [strip.row], measureLabel).tick,
-    [narrow, state.runs, wrapped.rows, strip, measureLabel],
+        ? segmentDensityCounts(runs, wrapped.rows, measureLabel).tick
+        : segmentDensityCounts(runs, [strip.row], measureLabel).tick,
+    [narrow, runs, wrapped.rows, strip, measureLabel],
   );
 
   const wrappedRows = useMemo(
@@ -693,20 +730,20 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           <div style={{ position: 'relative', height: chipH, width: rowWidthPx, flex: 'none' }}>
             {row.segments.map((seg) =>
               renderChip(
-                state.runs[seg.runIndex],
+                runs[seg.runIndex],
                 seg.runIndex,
                 seg.leftPx,
                 seg.widthPx,
                 chipH,
                 seg.continued ? ri : null,
-                setPopoverFor,
+                editable ? setPopoverFor : null,
                 measureLabel,
               ),
             )}
           </div>
         </div>
       )),
-    [wrapped.rows, state.runs, rowWidthPx, chipH, measureLabel],
+    [wrapped.rows, runs, rowWidthPx, chipH, measureLabel, editable],
   );
 
   // Keep the sounding chord visible — on chord change only. `playhead` is
@@ -735,7 +772,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
 
   const popover = (
     <>
-      {popoverFor ? (
+      {popoverFor && editable ? (
         <div
           role="dialog"
           aria-label="Pick a different chord"
@@ -756,8 +793,8 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           </div>
           <div style={popoverGridStyle}>
             {chordAlternatives(popoverFor.run.label, {
-              prevLabel: state.runs[popoverFor.idx - 1]?.label ?? null,
-              nextLabel: state.runs[popoverFor.idx + 1]?.label ?? null,
+              prevLabel: runs[popoverFor.idx - 1]?.label ?? null,
+              nextLabel: runs[popoverFor.idx + 1]?.label ?? null,
             }).map((alt) => (
               <button
                 type="button"
@@ -799,14 +836,15 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
             : emptyStage
         ) : showPhone ? (
           <PhoneChords
-            runs={state.runs}
+            runs={runs}
             model={phoneModel!}
             positionSec={isPlayingPos(positionSec) ? positionSec : null}
             activeIdx={activeIdx}
             widthPx={widthPx}
             loop={loop}
-            onOpen={setPopoverFor}
+            onOpen={cellsOpen ? setPopoverFor : null}
             onNowNext={onNowNext}
+            beatGrid={beatGrid}
             heightPx={heightPx}
           />
         ) : (
@@ -901,19 +939,20 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
       {showPhone && (!isCompletedJobMode || completedStatus.showTimeline) ? (
         <>
           <PhoneChords
-            runs={state.runs}
+            runs={runs}
             model={phoneModel!}
             positionSec={isPlayingPos(positionSec) ? positionSec : null}
             activeIdx={activeIdx}
             widthPx={widthPx}
             loop={loop}
-            onOpen={setPopoverFor}
+            onOpen={cellsOpen ? setPopoverFor : null}
+            beatGrid={beatGrid}
           />
           <h3 style={allChordsHeadingStyle} data-testid="all-chords-heading">All chords</h3>
         </>
       ) : null}
 
-      {(!isCompletedJobMode || completedStatus.showTimeline) && state.runs.length > 0 ? (
+      {(!isCompletedJobMode || completedStatus.showTimeline) && runs.length > 0 ? (
         <div style={zoomBarStyle} data-testid="zoom-bar">
           <button
             type="button"
@@ -978,7 +1017,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
           data-px-per-sec={pps.toFixed(3)}
         >
           <style>{SCROLLBAR_CSS}</style>
-          {state.runs.length === 0 && state.phase === 'capturing' ? (
+          {runs.length === 0 && state.phase === 'capturing' ? (
             <div style={emptyStyle}>Listening…</div>
           ) : null}
           {narrow ? (
@@ -1102,7 +1141,7 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
             </div>
           ) : null}
 
-          {state.runs.length > 0 ? (
+          {runs.length > 0 ? (
             <div style={hintStyle} data-testid="timeline-hint">
               {narrow
                 ? `${formatTime(dur)} total · ${wrapped.split ? 'up to ' : ''}${Math.round(rowWidthPx / pps)}s per row · zoom for more or less per row`
@@ -1155,7 +1194,7 @@ function renderChip(
   widthPx: number,
   heightPx: number,
   continuedRow: number | null,
-  open: (v: { run: OverlayRun; idx: number }) => void,
+  open: ((v: { run: OverlayRun; idx: number }) => void) | null,
   measureLabel: LabelMeasure,
 ) {
   // CHIP_GAP_PX, not a bare 1: fullChipPx reserves this same gap when deciding
@@ -1166,11 +1205,15 @@ function renderChip(
   const text = displayText(run);
   const density = chipDensity(w, measureLabel(text, CHIP_FONT_PX));
   const hue = run.kind === 'chord' ? rootHue(run.label) : null;
+  // With no chord editor (the file header) a chip is a picture of the chord,
+  // not a button: role="img" carries its spoken name.
+  const Tag = open ? 'button' : 'span';
   return (
-    <button
-      type="button"
+    <Tag
+      type={open ? 'button' : undefined}
+      role={open ? undefined : 'img'}
       key={continuedRow === null ? `${run.startFrame}-${run.endFrame}-${idx}` : `${run.startFrame}-${run.endFrame}-${idx}-r${continuedRow}`}
-      onClick={() => open({ run, idx })}
+      onClick={open ? () => open({ run, idx }) : undefined}
       style={{
         ...chipStyle,
         ...(hue !== null ? { background: `hsl(${hue} 50% 30%)` } : null),
@@ -1213,10 +1256,15 @@ function renderChip(
         // A tick has no text node, so its size is moot; it gets the full one.
         fontSize: `${density === 'tight' ? CHIP_TIGHT_FONT_PX : CHIP_FONT_PX}px`,
         borderRadius: density === 'tick' ? '2px' : '6px',
+        // A span gets what a <button> does by default: its label centred. Flex
+        // centring, so no text property (glyph advances) is added to a chip.
+        ...(open ? null : { cursor: 'default', display: 'flex', alignItems: 'center', justifyContent: 'center' }),
         ...(continuedRow !== null ? { opacity: 0.85, borderTopLeftRadius: 0, borderBottomLeftRadius: 0 } : null),
       }}
       data-testid={continuedRow === null ? `chord-chip-${idx}` : `chord-chip-${idx}-r${continuedRow}`}
       data-kind={run.kind}
+      data-start-sec={run.startSec.toFixed(3)}
+      data-end-sec={run.endSec.toFixed(3)}
       data-density={density}
       // The chord's DISPLAYED name (guitarist notation), never the Harte data
       // label: the tooltip shows what the chip shows, and the real-Chromium
@@ -1232,7 +1280,7 @@ function renderChip(
           `aria-label` and `title`, which is where an unreadable-but-present
           label belongs. */}
       {density === 'tick' ? null : text}
-    </button>
+    </Tag>
   );
 }
 
@@ -1503,10 +1551,13 @@ interface PhoneChordsProps {
   activeIdx: number;
   widthPx: number;
   loop: LoopRegion | null;
-  onOpen: (v: { run: OverlayRun; idx: number }) => void;
+  /** Opens the chord editor; null = cells are plain text (no editor, or playing). */
+  onOpen: ((v: { run: OverlayRun; idx: number }) => void) | null;
   onNowNext?: (v: NowNext | null) => void;
   /** The stage's height (stage view); 0 = unknown, nothing grows. */
   heightPx?: number;
+  /** The job's beat grid: the countdown counts its beats in every mode, sequence included. */
+  beatGrid?: BeatGrid | null;
 }
 
 // ── colours (design v1.4 + Jon 2026-11-17) ──────────────────────────────────
@@ -1518,7 +1569,13 @@ interface PhoneChordsProps {
 // chords in --text-muted, coming ones in --text-secondary.
 const CHORD_NOW = 'var(--chord-now, #f59e0b)';
 const NOW_PX = 72;
-const NEXT_PX = 32;
+/** Next's size (review of #333, H-4: >= 44px); it grows to GROWN_NEXT_PX on a change's last beat when there is room. */
+const NEXT_PX = 44;
+const GROWN_NEXT_PX = 64;
+/** Next on a stage too short for a 44px one (a phone on its side). */
+const SHORT_NEXT_PX = 32;
+/** Now keeps at least this before the NEXT bar line, then smaller steps (v4.0 1.2). */
+const NOW_FLOOR_PX = 72;
 /** The stage's bar background: past, coming and current. */
 function phoneCellBg(current: boolean): string {
   return current ? 'var(--bg-selected, #222222)' : 'var(--bg-card, #161616)';
@@ -1540,7 +1597,7 @@ interface PhoneLineViewProps {
 
 const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ model, runs, box, lineIndex, role, currentCell, activeIdx, positionSec, onOpen, scale = 1 }) {
   const bars = model.mode === 'bars';
-  const k = Number.isFinite(scale) && scale > 1 ? scale : 1;
+  const k = Number.isFinite(scale) && scale > 0 ? Math.max(MIN_LINE_SCALE, scale) : 1;
   return (
     <div
       data-testid={role === 'current' ? 'phone-line-current' : 'phone-line-next'}
@@ -1592,9 +1649,11 @@ const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ mode
               const run = runs[sb.runIndex];
               const slot = cell.slots[i];
               const isCurSlot = isCur && sb.runIndex === activeIdx;
+              const Slot = onOpen ? 'button' : 'span';
               return (
-                <button
-                  type="button"
+                <Slot
+                  type={onOpen ? 'button' : undefined}
+                  role={onOpen ? undefined : 'img'}
                   key={sb.runIndex}
                   data-testid={`phone-slot-${sb.runIndex}`}
                   data-cell={cb.cell}
@@ -1603,9 +1662,9 @@ const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ mode
                   data-end-sec={run.endSec.toFixed(3)}
                   data-current={isCurSlot ? 'true' : undefined}
                   aria-current={isCurSlot ? 'true' : undefined}
-                  aria-label={phoneSlotLabel(run, slot.beats)}
+                  aria-label={phoneSlotLabel(run, slot.beats, !!onOpen)}
                   title={run.label}
-                  onClick={() => onOpen({ run, idx: sb.runIndex })}
+                  onClick={onOpen ? () => onOpen({ run, idx: sb.runIndex }) : undefined}
                   style={{
                     position: 'absolute',
                     left: sb.x - cb.x,
@@ -1628,11 +1687,11 @@ const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ mode
                     whiteSpace: sb.wrap ? 'normal' : 'nowrap',
                     overflowWrap: sb.wrap ? 'anywhere' : undefined,
                     overflow: 'hidden',
-                    cursor: 'pointer',
+                    cursor: onOpen ? 'pointer' : 'default',
                   }}
                 >
                   {sb.text}
-                </button>
+                </Slot>
               );
             })}
           </div>
@@ -1642,7 +1701,71 @@ const PhoneLineView: FC<PhoneLineViewProps> = memo(function PhoneLineView({ mode
   );
 });
 
-const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx, widthPx, loop, onOpen, onNowNext, heightPx = 0 }) => {
+/** prefers-reduced-motion: reduce, live (Phase A: discrete steps only, no transitions). */
+function useReducedMotion(): boolean {
+  const [reduce, setReduce] = useState(false);
+  useEffect(() => {
+    const mq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
+    if (!mq) return;
+    const on = () => setReduce(mq.matches);
+    on();
+    mq.addEventListener?.('change', on);
+    return () => mq.removeEventListener?.('change', on);
+  }, []);
+  return reduce;
+}
+
+/**
+ * The countdown to the next chord, under Now (Phase A, J5): four segments that
+ * light (neutral #e0e0e0 on #737373; amber is the current chord's only), one per beat, over the last four beats of the current
+ * chord (all four lit = the last beat), and "3 beats" in 20px words. With no
+ * beat grid it is a time bar to the change and "1.2 s". Reduced motion: the
+ * time bar is drawn as the same four discrete segments; nothing transitions.
+ * Hidden from screen readers: the sr-only Now line says "Next in 3 beats".
+ */
+const Countdown: FC<{ cd: CountdownState; reduceMotion: boolean }> = ({ cd, reduceMotion }) => {
+  const continuous = cd.kind === 'time' && !reduceMotion;
+  const pct = `${(cd.fraction * 100).toFixed(1)}%`;
+  return (
+    <div
+      aria-hidden="true"
+      data-testid="phone-countdown"
+      data-kind={cd.kind}
+      data-beats-left={cd.beatsLeft ?? undefined}
+      data-filled={cd.filled}
+      data-continuous={continuous ? 'true' : undefined}
+      // Pulled 4px up to Now (it reads as Now's own time left) so the stage's
+      // short landscape layouts keep the current bar on screen.
+      style={{ display: 'flex', alignItems: 'center', gap: 12, height: COUNTDOWN_ROW_PX, flex: 'none', marginTop: -4 }}
+    >
+      {continuous ? (
+        <span style={{ ...countdownTrackStyle, flex: '1 1 auto' }} data-testid="phone-countdown-track">
+          <span style={{ display: 'block', height: '100%', width: pct, borderRadius: 4, background: COUNTDOWN_ON }} />
+        </span>
+      ) : (
+        <span style={{ flex: '1 1 auto', display: 'grid', gridTemplateColumns: `repeat(${COUNTDOWN_SEGMENTS}, minmax(0, 1fr))`, gap: 6 }}>
+          {Array.from({ length: COUNTDOWN_SEGMENTS }, (_, i) => {
+            const on = i < cd.filled;
+            return (
+              <span
+                key={i}
+                data-testid="phone-countdown-seg"
+                data-on={on ? 'true' : undefined}
+                style={{ ...countdownTrackStyle, background: on ? COUNTDOWN_ON : COUNTDOWN_OFF }}
+              />
+            );
+          })}
+        </span>
+      )}
+      <span data-testid="phone-countdown-text" style={countdownTextStyle}>
+        {countdownText(cd)}
+      </span>
+    </div>
+  );
+};
+
+const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx, widthPx, loop, onOpen, onNowNext, heightPx = 0, beatGrid = null }) => {
+  const reduceMotion = useReducedMotion();
   const bars = model.mode === 'bars';
   const cur = cellIndexAt(model, positionSec);
   const line = cur >= 0 ? lineIndexOfCell(model, cur) : 0;
@@ -1662,10 +1785,14 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
   const nextRun = nx ? runs[nx.runIndex] : null;
   const cell = cur >= 0 ? model.cells[cur] : null;
   const beat = bars && cell && positionSec !== null ? beatInCell(cell, positionSec, model.beatsPerBar) : -1;
-  const count = bars && cell && nx ? beatsUntil(cell, nx.inSec, model.beatsPerBar) : null;
+  const cd = countdownState(model, cell, beatGrid, nx, nowRun, positionSec);
+  const count = cd.beatsLeft;
   const nowText = nowRun ? leadSheetSymbol(nowRun) : '—';
   const nextText = nextRun ? leadSheetSymbol(nextRun) : '';
-  const whenText = nx ? `${nx.wraps ? 'Loops back' : 'Next'}${count !== null ? ` in ${count} beat${count === 1 ? '' : 's'}` : ''}` : '';
+  // The count itself is the countdown's ("3 beats", 20px, under Now); this
+  // label only says what the name beside it is.
+  const whenText = nx ? (nx.wraps ? 'Loops back' : 'Next') : '';
+  const spokenWhen = nx ? `${whenText}${count !== null ? ` in ${count} beat${count === 1 ? '' : 's'}` : ''}` : '';
   // Use the stage's spare HEIGHT (Jon, 2026-11-17: no empty band between the
   // beat row and the bars): when the 96px step fits beside the laid-out bars the
   // ladder starts there, and what is still spare grows the bar lines, up to
@@ -1680,35 +1807,114 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
   // first that fits with the current line alone (the NEXT line is dropped, not
   // clipped). Unknown height: the plain ladders, both lines.
   const wide = widthPx >= WIDE_STAGE_PX;
-  const nextPx = wide ? WIDE_NEXT_PX : NEXT_PX;
-  const nextW = nx ? Math.max(nameWidthPx(whenText, 13, 1.05), nameWidthPx(nextText, nextPx, 1.12)) : 0;
+  // Review of #333 (B-1, H-4, M-3): NOW IS SIZED FIRST. Next has a 44px
+  // baseline (48 on a wide stage); Now takes the largest ladder step that fits
+  // beside (or above) that baseline AND the stage height, keeping >= 72px
+  // before anything else: below 72 it first drops the NEXT bar line, and only
+  // then steps down. Next's last-beat growth (to 64 / 96) takes only the width
+  // and height that are left; it never shrinks Now.
+  const grownNextPx = wide ? 2 * WIDE_NEXT_PX : GROWN_NEXT_PX;
   const curH = curBox?.h ?? 0;
   const bothH = curH + (nextBox ? nextBox.h + LINE_GAP_PX : 0);
-  const ladders: readonly (readonly number[])[] = wide
-    ? [WIDE_NOW_SIZES, TALL_NOW_SIZES, NOW_SIZES]
-    : [TALLER_NOW_SIZES, TALL_NOW_SIZES, NOW_SIZES];
-  const fitFor = (l: readonly number[]) => fitNowName(nowText, widthPx - 4, nextW, l);
-  const need = (f: ReturnType<typeof fitNowName>, lines: number) =>
-    stageChromePx(f.lines.length * f.px) + (f.nextBelow ? Math.ceil(13 * 1.3 + nextPx * 1.1 + 4) : 0) + lines;
-  let fit = fitFor(wide ? WIDE_NOW_SIZES : NOW_SIZES);
-  let showNext = !!nextBox;
-  if (heightPx > 0) {
-    const fits = (lines: number) => {
-      for (const l of ladders) {
-        const f = fitFor(l);
-        if (need(f, lines) <= heightPx) return f;
+  const ladder = wide ? WIDE_NOW_SIZES : TALLER_NOW_SIZES;
+  const nextLabelH = Math.ceil(13 * 1.3);
+  // THE LADDER (review of #333, rounds 1 and 2). Now >= 72px comes first,
+  // then the NEXT bar line, then Next's own size:
+  //   for Now >= 72, then (only if nothing fits) Now < 72:
+  //     with the NEXT line, then with the current line only:
+  //       Next 44px reserving its last-beat growth, then 44px not growing,
+  //       then 32px (not wide stages);
+  //         lines at full height, then squeezed x0.8 (a line holding a
+  //         wrapped name is never squeezed).
+  // `need` counts the Next column where it is taller than Now (a small Now on
+  // a short screen), so the estimate is the real height.
+  // How far a line may squeeze: to MIN_LINE_SCALE, but never so far that a
+  // name no longer fits its slot (the drawn name is fontPx x 1.2 tall; a name
+  // wrapped onto two lines is never squeezed).
+  const minScale = (b: LineBox | null) => {
+    if (!b) return 1;
+    let k = MIN_LINE_SCALE;
+    for (const c of b.cells)
+      for (const x of c.slots) k = Math.max(k, x.wrap ? 1 : Math.min(1, (x.fontPx * 1.2 + 1) / x.h));
+    return k;
+  };
+  const kC = minScale(curBox);
+  const kN = minScale(nextBox);
+  const configs: readonly (readonly [number, number])[] = wide
+    ? [[WIDE_NEXT_PX, grownNextPx], [WIDE_NEXT_PX, WIDE_NEXT_PX]]
+    : [[NEXT_PX, grownNextPx], [NEXT_PX, NEXT_PX], [SHORT_NEXT_PX, SHORT_NEXT_PX]];
+  const sized = configs.map(([basePx, belowPx]) => {
+    const w = nx ? Math.max(nameWidthPx(whenText, 13, 1.05), nameWidthPx(nextText, basePx, 1.12)) : 0;
+    const colH = nextLabelH + Math.ceil(basePx * 1.1) + 6;
+    const need = (f: NowFit, lines: number) =>
+      stageChromePx(f.lines.length * f.px, !nx) +
+      (!nx ? 0 : f.nextBelow ? Math.ceil(belowPx * 1.1) + 6 + NEXT_BELOW_GAP_PX : Math.max(0, colH - Math.ceil(f.lines.length * f.px * 1.05))) +
+      lines;
+    const cands = nowFitCandidates(nowText, widthPx - 4, w, ladder);
+    return { basePx, belowPx, need, cands };
+  });
+  type Pick = { fit: NowFit; both: boolean; need: (f: NowFit, lines: number) => number; squeeze: [number, number] | null; basePx: number; belowPx: number };
+  const pickLayout = (): Pick => {
+    const first = sized[0];
+    if (!(heightPx > 0)) {
+      const plain = first.cands.find((c) => c.px <= (wide ? WIDE_NOW_SIZES[0] : NOW_PX)) ?? first.cands[first.cands.length - 1];
+      return { fit: plain, both: !!nextBox, need: first.need, squeeze: null, basePx: first.basePx, belowPx: first.belowPx };
+    }
+    const heights = (both: boolean, sq: boolean) =>
+      both
+        ? sq ? Math.ceil(curH * kC + (nextBox ? nextBox.h * kN + LINE_GAP_PX : 0)) : bothH
+        : sq ? Math.ceil(curH * kC) : curH;
+    for (const big of [true, false])
+      for (const both of [true, false]) {
+        if (both && !nextBox) continue;
+        for (const z of sized)
+          for (const sq of [false, true]) {
+            if (sq && (both ? kC >= 1 && kN >= 1 : kC >= 1)) continue;
+            const h = heights(both, sq);
+            const f = z.cands.find((c) => (big ? c.px >= NOW_FLOOR_PX : c.px < NOW_FLOOR_PX) && z.need(c, h) <= heightPx);
+            if (f) return { fit: f, both, need: z.need, squeeze: sq ? [kC, both ? kN : 1] : null, basePx: z.basePx, belowPx: z.belowPx };
+          }
       }
-      return null;
-    };
-    const withBoth = nextBox ? fits(bothH) : null;
-    if (withBoth) fit = withBoth;
-    else {
-      showNext = false;
-      fit = fits(curH) ?? fitFor(NOW_SIZES);
+    // Nothing fits (a phone on its side, 400% zoom): the layout that needs the
+    // least height, so as little as possible goes past the stage.
+    let best: Pick | null = null;
+    let bestNeed = Infinity;
+    const h = heights(false, kC < 1);
+    for (const z of sized)
+      for (const c of z.cands) {
+        const n = z.need(c, h);
+        if (n < bestNeed || (n === bestNeed && best && c.px > best.fit.px)) {
+          bestNeed = n;
+          best = { fit: c, both: false, need: z.need, squeeze: kC < 1 ? [kC, 1] : null, basePx: z.basePx, belowPx: z.belowPx };
+        }
+      }
+    return best!;
+  };
+  const picked = pickLayout();
+  const nextPx = picked.basePx;
+  const belowPx = picked.belowPx;
+  const fit = picked.fit;
+  const showNext = picked.both;
+  const need = picked.need;
+  const linesH = showNext ? bothH : curH;
+  // How far Next may grow WITHOUT moving anything or touching Now: its column
+  // keeps one fixed height on every beat (the bars below never jump); beside
+  // Now it gets the width Now left and stays inside Now's own height; below
+  // Now, `need` already holds its room and the full width is its.
+  const nowW = Math.max(...fit.lines.map((l) => nameWidthPx(l, fit.px, NOW_WIDTH_FACTOR)));
+  const roomW = fit.nextBelow ? widthPx - 4 : widthPx - 4 - nowW - NOW_NEXT_GAP_PX;
+  const roomH = fit.nextBelow ? belowPx : Math.floor((fit.lines.length * fit.px * 1.05 - nextLabelH - 6) / 1.1);
+  let nextGrowPx = nextPx;
+  for (let px = grownNextPx; px > nextPx; px -= 2) {
+    if (px <= roomH && nameWidthPx(nextText, px, 1.12) <= roomW) {
+      nextGrowPx = px;
+      break;
     }
   }
-  const linesH = showNext ? bothH : curH;
-  const lineScale = growScale(heightPx > 0 ? heightPx - need(fit, linesH) : 0, curBox, showNext ? nextBox : null);
+  const nextNowPx = cd.lastBeat ? nextGrowPx : nextPx;
+  const sq = picked.squeeze;
+  // Spare height grows the bars only once Now has its 72px (it is Now's first).
+  const lineScale = sq || fit.px < NOW_FLOOR_PX ? 1 : growScale(heightPx > 0 ? heightPx - need(fit, linesH) : 0, curBox, showNext ? nextBox : null);
 
   // The Mix sheet header reads these. Fired on a CHANGE of name, never per frame.
   const nowSpoken = nowRun ? spokenSymbol(nowRun) : '';
@@ -1725,7 +1931,9 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
       data-mode={model.mode}
       data-beats-per-bar={model.beatsPerBar}
       data-reason={model.reason}
-      style={{ display: 'flex', flexDirection: 'column', gap: 12, flex: '1 1 auto', minHeight: 0 }}
+      data-lines-h={`${curBox?.h ?? 0}/${nextBox?.h ?? 0}`}
+      data-squeeze={sq ? sq.map((k) => k.toFixed(2)).join('/') : undefined}
+      style={{ display: 'flex', flexDirection: 'column', gap: STAGE_GAP_PX, flex: '1 1 auto', minHeight: 0 }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 20 }}>
         <span style={positionStyle} data-testid="phone-position">
@@ -1736,12 +1944,11 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
         // The names in words, for a screen reader (the glyph text is hidden from it).
         // Not live: a chord a second would make a screen reader unusable (DECISION.md:44).
         <p style={srOnlyStyle} data-testid="phone-now-spoken">
-          {`Now ${nowSpoken}.${nextRun ? ` ${whenText} ${nextSpoken}.` : ''}`}
+          {`Now ${nowSpoken}.${nextRun ? ` ${spokenWhen} ${nextSpoken}.` : ''}`}
         </p>
       ) : null}
-      <div style={{ display: 'flex', flexWrap: fit.nextBelow ? 'wrap' : 'nowrap', alignItems: 'flex-end', justifyContent: 'space-between', columnGap: NOW_NEXT_GAP_PX, rowGap: 4 }}>
+      <div style={{ display: 'flex', flexWrap: fit.nextBelow ? 'wrap' : 'nowrap', alignItems: 'flex-end', justifyContent: 'space-between', columnGap: NOW_NEXT_GAP_PX, rowGap: NEXT_BELOW_GAP_PX }}>
         <span data-testid="playhead-now" data-run-index={activeIdx} style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          <span style={stageLabelStyle} aria-hidden={nowRun ? true : undefined}>Now</span>
           <span
             data-testid="playhead-now-name"
             data-fit={fit.how}
@@ -1757,7 +1964,13 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
         </span>
         {nextRun && nx ? (
           <span
-            style={{ display: 'flex', flexDirection: 'column', alignItems: fit.nextBelow ? 'flex-start' : 'flex-end', flex: 'none', paddingBottom: 6, ...(fit.nextBelow ? { width: '100%' } : null) }}
+            // Below Now (a long Now on a narrow screen), the label and the name
+            // share one row, so the Next block costs one name height.
+            style={
+              fit.nextBelow
+                ? { display: 'flex', flexDirection: 'row', alignItems: 'baseline', gap: 10, flex: 'none', width: '100%', paddingBottom: 6, boxSizing: 'content-box', height: Math.ceil(nextGrowPx * 1.1) }
+                : { display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'flex-end', flex: 'none', paddingBottom: 6, boxSizing: 'content-box', height: nextLabelH + Math.ceil(nextGrowPx * 1.1) }
+            }
             data-testid="phone-next"
             data-run-index={nx.runIndex}
             data-wraps={nx.wraps ? 'true' : undefined}
@@ -1765,13 +1978,32 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
             <span style={stageLabelStyle} data-testid="phone-next-when" aria-hidden="true">
               {whenText}
             </span>
-            <span aria-hidden="true" style={{ fontSize: nextPx, lineHeight: 1.1, fontWeight: 600, color: 'var(--text-secondary, #e0e0e0)', whiteSpace: 'nowrap' }} data-testid="phone-next-name">
+            <span
+              aria-hidden="true"
+              style={{
+                fontSize: nextNowPx,
+                lineHeight: 1.1,
+                fontWeight: cd.lastBeat ? 700 : 600,
+                color: cd.lastBeat ? 'var(--text-primary, #ffffff)' : 'var(--text-secondary, #e0e0e0)',
+                whiteSpace: 'nowrap',
+                // Only the last-beat growth animates; a shrink or a re-layout is
+                // instant (an animated shrink would cross Now for 120ms).
+                transition: reduceMotion || !cd.lastBeat ? 'none' : 'font-size 120ms ease-out',
+              }}
+              data-testid="phone-next-name"
+              data-grown={cd.lastBeat ? 'true' : undefined}
+              data-grow-px={nextGrowPx}
+            >
               {nextText}
             </span>
           </span>
         ) : null}
       </div>
-      {beat >= 0 ? (
+      {nx ? <Countdown cd={cd} reduceMotion={reduceMotion} /> : null}
+      {/* The beat-in-bar row only when there is no countdown: two 4-segment
+          bars that can disagree read as one (review of #333, H-1). The bar
+          number is still in the line above ("Verse · bar 3/16"). */}
+      {beat >= 0 && !nx ? (
         <div
           role="img"
           aria-label={`Beat ${beat + 1} of ${model.beatsPerBar}`}
@@ -1791,10 +2023,10 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
       ) : null}
       <div style={{ display: 'flex', flexDirection: 'column', gap: LINE_GAP_PX, marginTop: 'auto' }}>
         {curBox ? (
-          <PhoneLineView model={model} runs={runs} box={curBox} lineIndex={line} role="current" currentCell={cur} activeIdx={activeIdx} positionSec={positionSec} onOpen={onOpen} scale={lineScale} />
+          <PhoneLineView model={model} runs={runs} box={curBox} lineIndex={line} role="current" currentCell={cur} activeIdx={activeIdx} positionSec={positionSec} onOpen={onOpen} scale={sq ? sq[0] : lineScale} />
         ) : null}
         {nextBox && showNext ? (
-          <PhoneLineView model={model} runs={runs} box={nextBox} lineIndex={next} role="next" currentCell={-1} activeIdx={-1} positionSec={null} onOpen={onOpen} scale={lineScale} />
+          <PhoneLineView model={model} runs={runs} box={nextBox} lineIndex={next} role="next" currentCell={-1} activeIdx={-1} positionSec={null} onOpen={onOpen} scale={sq ? sq[1] : lineScale} />
         ) : null}
       </div>
     </div>
@@ -1803,6 +2035,8 @@ const PhoneChords: FC<PhoneChordsProps> = ({ runs, model, positionSec, activeIdx
 
 const PHONE_SLOT_PAD_PX = SLOT_PAD_PX;
 const NOW_NEXT_GAP_PX = 12;
+/** When Next sits below Now: room for the big name's glyphs, which overhang its 1.05 line box. */
+const NEXT_BELOW_GAP_PX = 12;
 const LINE_GAP_PX = 6;
 /**
  * The Now name's fit ladder, largest first (design v1.4, P1.2: the shipped
@@ -1817,6 +2051,14 @@ export const WIDE_NOW_SIZES = [128, 96, ...NOW_SIZES] as const;
 export const TALL_NOW_SIZES = [TALL_NOW_PX, ...NOW_SIZES] as const;
 export const TALLER_NOW_SIZES = [TALLER_NOW_PX, TALL_NOW_PX, ...NOW_SIZES] as const;
 const WIDE_NEXT_PX = 48;
+/**
+ * Safety on the Now name's estimated width. The stage table already takes the
+ * widest advance for ♯/♭ and runs ~1.17x the real bold Inter width (F♯m7 at
+ * 72px: 210 estimated, 180 drawn), so 1.05 on top is enough; 1.15 kept Now a
+ * whole step smaller than the screen allowed (review of #333, M-3). The
+ * real-Chromium gates check Now is never clipped and never overlaps Next.
+ */
+const NOW_WIDTH_FACTOR = 1.05;
 /** Bold text width from the headless advance table, widened by `factor` (conservative; see STAGE_WIDEST_GLYPHS). */
 function nameWidthPx(text: string, px: number, factor: number): number {
   return text ? estimateStageLabelPx(text, px) * factor : 0;
@@ -1834,7 +2076,7 @@ export function fitNowName(
   sizes: readonly number[] = NOW_SIZES,
 ): { px: number; lines: string[]; nextBelow: boolean; how: string } {
   const room = innerPx - (nextPx > 0 ? nextPx + NOW_NEXT_GAP_PX : 0);
-  const w = (t: string, px: number) => nameWidthPx(t, px, 1.15);
+  const w = (t: string, px: number) => nameWidthPx(t, px, NOW_WIDTH_FACTOR);
   for (const px of sizes) if (w(text, px) <= room) return { px, lines: [text], nextBelow: false, how: `one-line-${px}` };
   const min = sizes[sizes.length - 1];
   const slash = text.indexOf('/');
@@ -1844,6 +2086,28 @@ export function fitNowName(
   }
   for (const px of sizes) if (w(text, px) <= innerPx) return { px, lines: [text], nextBelow: true, how: `next-below-${px}` };
   return { px: min, lines: slash > 0 ? [text.slice(0, slash), text.slice(slash)] : [text], nextBelow: true, how: 'next-below-min' };
+}
+
+type NowFit = ReturnType<typeof fitNowName>;
+/**
+ * Every way Now can be laid out with Next, largest Now first: one line beside
+ * Next, the slash bass on a second line beside Next, or Next on its own row
+ * below. The stage picks the first that fits its height (see PhoneChords).
+ */
+export function nowFitCandidates(text: string, innerPx: number, nextPx: number, sizes: readonly number[] = NOW_SIZES): NowFit[] {
+  const room = innerPx - (nextPx > 0 ? nextPx + NOW_NEXT_GAP_PX : 0);
+  const w = (t: string, px: number) => nameWidthPx(t, px, NOW_WIDTH_FACTOR);
+  const slash = text.indexOf('/');
+  const split = slash > 0 ? [text.slice(0, slash), text.slice(slash)] : null;
+  const out: NowFit[] = [];
+  for (const px of sizes) {
+    if (w(text, px) <= room) out.push({ px, lines: [text], nextBelow: false, how: `one-line-${px}` });
+    else if (split && Math.max(...split.map((l) => w(l, px))) <= room) out.push({ px, lines: split, nextBelow: false, how: `two-line-${px}` });
+    if (nextPx > 0 && w(text, px) <= innerPx) out.push({ px, lines: [text], nextBelow: true, how: `next-below-${px}` });
+    else if (nextPx > 0 && split && Math.max(...split.map((l) => w(l, px))) <= innerPx) out.push({ px, lines: split, nextBelow: true, how: `next-below-two-line-${px}` });
+  }
+  if (out.length === 0) out.push(fitNowName(text, innerPx, nextPx, sizes));
+  return out;
 }
 
 const barNumberStyle: CSSProperties = {
@@ -1857,6 +2121,29 @@ const barNumberStyle: CSSProperties = {
   fontFamily: 'var(--font-mono)',
   fontVariantNumeric: 'tabular-nums',
   pointerEvents: 'none',
+};
+// The countdown is NEUTRAL (review of #333, H-1): amber is the current chord's
+// alone. Lit: --text-secondary (15.4:1 on #0d0d0d); unlit: --border-control
+// (4.10:1, WCAG 1.4.11).
+const COUNTDOWN_ON = 'var(--text-secondary, #e0e0e0)';
+const COUNTDOWN_OFF = 'var(--border-control, #737373)';
+const countdownTrackStyle: CSSProperties = {
+  display: 'block',
+  height: 8,
+  borderRadius: 4,
+  overflow: 'hidden',
+  background: COUNTDOWN_OFF,
+};
+const countdownTextStyle: CSSProperties = {
+  flex: 'none',
+  minWidth: '4.2em',
+  textAlign: 'right',
+  fontSize: 20,
+  lineHeight: 1.1,
+  fontWeight: 600,
+  color: 'var(--text-secondary, #e0e0e0)',
+  fontVariantNumeric: 'tabular-nums',
+  whiteSpace: 'nowrap',
 };
 const positionStyle: CSSProperties = {
   fontSize: 15,

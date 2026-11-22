@@ -183,7 +183,7 @@ async function bundle() {
   return { js: js.text, css: res.outputFiles.find((f) => f.path.endsWith('.css'))?.text ?? '' };
 }
 
-async function open(browser, built, [w, h], { pos, grid = GRID, sections = F.sections, payload = FIX, loop = null, degraded = null }) {
+async function open(browser, built, [w, h], { pos, grid = GRID, sections = F.sections, payload = FIX, loop = null, degraded = null, chordMode = 'detailed', stageH = null }) {
   const ctx = await browser.newContext({ viewport: { width: w, height: h }, isMobile: true, hasTouch: true });
   const page = await ctx.newPage();
   const errors = [];
@@ -193,8 +193,11 @@ async function open(browser, built, [w, h], { pos, grid = GRID, sections = F.sec
     if (u.pathname === '/')
       return route.fulfill({ contentType: 'text/html', body:
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
-        `<link rel="stylesheet" href="/out.css"><style>${FONT_CSS}</style></head><body>` +
+        `<link rel="stylesheet" href="/out.css"><style>${FONT_CSS}${stageH ? `[data-testid="player"] [class*="stage"]{flex:0 0 ${stageH}px !important;height:${stageH}px !important;min-height:0 !important;box-sizing:border-box}` : ''}</style></head><body>` +
         '<main style="max-width:960px;margin:0 auto;padding:24px var(--sl-gutter,16px) 96px"><div id="root"></div></main>' +
+        // The chord view (Phase A, D6). The sweeps below check the DETECTED segments, so
+        // they pin Detailed; the Simple test passes 'simple' (the app's default).
+        `<script>try{localStorage.setItem("sl.play.chordMode.v1",${JSON.stringify(chordMode)})}catch(e){}</script>` +
         `<script>window.__snap=${JSON.stringify(snapAt(pos, loop, degraded))};window.__sections=${JSON.stringify(sections)};window.__grid=${JSON.stringify(grid)};</script>` +
         '<script>Promise.all([400,500,600,700].map(function(w){return document.fonts.load(w+" 16px GateInter")})).then(function(){var s=document.createElement("script");s.src="/out.js";document.body.appendChild(s)})</script>' +
         '</body></html>' });
@@ -257,7 +260,7 @@ function measure() {
     return ratio(over(parse(getComputedStyle(el).color), bg), bg);
   };
   const root = document.querySelector('[data-testid="phone-chords"]');
-  const out = { mode: root?.dataset.mode, beatsPerBar: root?.dataset.beatsPerBar, reason: root?.dataset.reason, now: null, position: null, beat: null, dots: [], next: null, curCells: [], curSlots: [], lineCur: [], lineNextFirst: null, slots: [], barNumbers: [], live: 0, primaries: 0, cellsMulti: 0 };
+  const out = { countdown: null, mode: root?.dataset.mode, beatsPerBar: root?.dataset.beatsPerBar, reason: root?.dataset.reason, now: null, position: null, beat: null, dots: [], next: null, curCells: [], curSlots: [], lineCur: [], lineNextFirst: null, slots: [], barNumbers: [], live: 0, primaries: 0, cellsMulti: 0 };
   if (!root) return out;
   const name = root.querySelector('[data-testid="playhead-now-name"]');
   if (name) {
@@ -292,24 +295,40 @@ function measure() {
   out.position = root.querySelector('[data-testid="phone-position"]')?.textContent ?? null;
   out.beat = root.querySelector('[data-testid="phone-beats"]')?.dataset.beat ?? null;
   out.dots = [...root.querySelectorAll('[data-testid="phone-beat-dot"]')].map((d) => ({ on: d.dataset.on === 'true', c: ratio(over(parse(getComputedStyle(d).backgroundColor), effBg(d.parentElement)), effBg(d.parentElement)) }));
+  const cd = root.querySelector('[data-testid="phone-countdown"]');
+  if (cd) {
+    const tx = cd.querySelector('[data-testid="phone-countdown-text"]');
+    out.countdown = {
+      kind: cd.dataset.kind,
+      beatsLeft: cd.dataset.beatsLeft === undefined ? null : Number(cd.dataset.beatsLeft),
+      lit: [...cd.querySelectorAll('[data-testid="phone-countdown-seg"]')].filter((x) => x.dataset.on === 'true').length,
+      segs: cd.querySelectorAll('[data-testid="phone-countdown-seg"]').length,
+      text: tx?.textContent ?? '',
+      textPx: px(getComputedStyle(tx).fontSize),
+      textC: textContrast(tx),
+    };
+  }
   const nx = root.querySelector('[data-testid="phone-next"]');
   if (nx) out.next = { name: nx.querySelector('[data-testid="phone-next-name"]').textContent, when: nx.querySelector('[data-testid="phone-next-when"]').textContent, wraps: nx.dataset.wraps === 'true' };
   out.curCells = [...root.querySelectorAll('[role="group"][aria-current="true"]')].map((c) => ({ label: c.getAttribute('aria-label'), inCurLine: !!c.closest('[data-testid="phone-line-current"]'), cell: c.dataset.testid }));
-  out.curSlots = [...root.querySelectorAll('button[aria-current="true"]')].map((b) => ({ title: b.title, cell: `phone-cell-${b.dataset.cell}` }));
+  // Chord cells (Phase A): plain role="img" text while playing / with no editor, so
+  // they are found by test id, not by tag.
+  const SLOT = '[data-testid^="phone-slot-"]';
+  out.curSlots = [...root.querySelectorAll(`${SLOT}[aria-current="true"]`)].map((b) => ({ title: b.title, cell: `phone-cell-${b.dataset.cell}` }));
   out.lineCur = [...root.querySelectorAll('[data-testid="phone-line-current"] [role="group"]')].map((c) => c.getAttribute('aria-label'));
   out.lineNextFirst = root.querySelector('[data-testid="phone-line-next"] [role="group"]')?.getAttribute('aria-label') ?? null;
   out.groups = [];
   for (const g of root.querySelectorAll('[role="group"]')) {
-    out.groups.push({ cell: g.dataset.cell, label: g.getAttribute('aria-label') ?? '', texts: [...g.querySelectorAll('button')].map((b) => b.textContent), titles: [...g.querySelectorAll('button')].map((b) => b.title) });
+    out.groups.push({ cell: g.dataset.cell, label: g.getAttribute('aria-label') ?? '', texts: [...g.querySelectorAll(SLOT)].map((b) => b.textContent), titles: [...g.querySelectorAll(SLOT)].map((b) => b.title) });
   }
-  for (const b of root.querySelectorAll('[data-testid="phone-line-current"] button, [data-testid="phone-line-next"] button')) {
+  for (const b of root.querySelectorAll(`[data-testid="phone-line-current"] ${SLOT}, [data-testid="phone-line-next"] ${SLOT}`)) {
     const r = b.getBoundingClientRect();
     out.slots.push({
       groupCell: b.closest('[role="group"]')?.dataset.cell ?? null,
       runStart: Number(b.dataset.startSec),
       runEnd: Number(b.dataset.endSec),
-      barStart: Number(b.closest('[data-start-sec][data-cell]:not(button)')?.dataset.startSec),
-      barEnd: Number(b.closest('[data-start-sec][data-cell]:not(button)')?.dataset.endSec),
+      barStart: Number(b.closest('[data-start-sec][data-cell]:not([data-run-index])')?.dataset.startSec),
+      barEnd: Number(b.closest('[data-start-sec][data-cell]:not([data-run-index])')?.dataset.endSec),
       cell: b.dataset.cell,
       title: b.title,
       text: b.textContent,
@@ -376,6 +395,17 @@ function checkNow(m, f, ctx, wantText) {
   if (m.now.overlap) f.push(`Now "${m.now.text}" (${m.now.fit}) overlaps Next: ${m.now.overlap} @ ${ctx}`);
 }
 
+// Phase A (J5): the countdown under Now. `n` = beats to the change, from the fixture.
+function checkCountdown(m, f, ctx, n) {
+  const c = m.countdown;
+  if (!c) return f.push(`no countdown @ ${ctx}`);
+  if (c.kind !== 'beats' || c.beatsLeft !== n) f.push(`countdown ${c.kind} ${c.beatsLeft}, want ${n} beats @ ${ctx}`);
+  if (c.text !== `${n} beat${n === 1 ? '' : 's'}`) f.push(`countdown reads "${c.text}" @ ${ctx}`);
+  if (c.textPx < 20) f.push(`countdown text ${c.textPx}px < 20 @ ${ctx}`);
+  if (c.textC < TEXT_CONTRAST) f.push(`countdown text contrast ${c.textC.toFixed(2)} @ ${ctx}`);
+  if (c.segs !== 4 || c.lit !== (n <= 4 ? 5 - n : 0)) f.push(`countdown ${c.lit}/${c.segs} lit for ${n} beats @ ${ctx}`);
+}
+
 const fail = (f, n = 25) => f.length && assert.fail(`GATE-FAIL ${f.length} finding(s):\n  ${f.slice(0, n).join('\n  ')}`);
 
 // ---------------------------------------------------------------------------
@@ -404,16 +434,23 @@ for (const vp of [[390, 844], [360, 800]]) {
         if (m.mode !== 'bars') { f.push(`mode ${m.mode} (${m.reason}), want bars @ ${ctxs}`); break; }
         checkNow(m, f, ctxs, want.heard ? spell(want.heard.label) : '—');
         if (m.position !== want.label) f.push(`position "${m.position}", want "${want.label}" @ ${ctxs}`);
-        if (m.beat !== String(want.beat)) f.push(`beat dot ${m.beat}, want ${want.beat} @ ${ctxs}`);
-        if (m.dots.filter((d) => d.on).length !== 1) f.push(`${m.dots.filter((d) => d.on).length} lit beat dots @ ${ctxs}`);
-        for (const d of m.dots) if (!d.on && d.c < NONTEXT_CONTRAST) f.push(`inactive beat dot contrast ${d.c.toFixed(2)} @ ${ctxs}`);
+        // Review of #333 (H-1): the beat-in-bar dots give way to the countdown
+        // whenever it shows (two 4-segment bars read as one); they stay where
+        // there is no next chord.
+        if (m.countdown) {
+          if (m.beat !== null || m.dots.length) f.push(`beat dots beside the countdown @ ${ctxs}`);
+        } else {
+          if (m.beat !== String(want.beat)) f.push(`beat dot ${m.beat}, want ${want.beat} @ ${ctxs}`);
+          if (m.dots.filter((d) => d.on).length !== 1) f.push(`${m.dots.filter((d) => d.on).length} lit beat dots @ ${ctxs}`);
+          for (const d of m.dots) if (!d.on && d.c < NONTEXT_CONTRAST) f.push(`inactive beat dot contrast ${d.c.toFixed(2)} @ ${ctxs}`);
+        }
         if (want.next) {
-          const wantWhen = `Next in ${want.count} beat${want.count === 1 ? '' : 's'}`;
           if (!m.next) f.push(`no Next, want ${want.next.label} @ ${ctxs}`);
           else {
             if (m.next.name !== spell(want.next.label)) f.push(`Next "${m.next.name}", want "${spell(want.next.label)}" @ ${ctxs}`);
-            if (m.next.when !== wantWhen) f.push(`Next count "${m.next.when}", want "${wantWhen}" @ ${ctxs}`);
+            if (m.next.when !== 'Next') f.push(`Next label "${m.next.when}", want "Next" @ ${ctxs}`);
           }
+          checkCountdown(m, f, ctxs, want.count);
         }
         if (m.curCells.length !== 1) f.push(`${m.curCells.length} bars carry aria-current @ ${ctxs}`);
         else {
@@ -461,7 +498,8 @@ for (const vp of [[390, 844], [360, 800]]) {
       const atStart = FIX.segments.find((s) => s.start_sec <= loop.startSec + 1e-3 && loop.startSec + 1e-3 < s.end_sec);
       if (!m.next?.wraps) f.push(`Next does not follow the loop (${JSON.stringify(m.next)})`);
       if (m.next?.name !== spell(atStart.label)) f.push(`Next "${m.next?.name}", want the loop-start chord "${spell(atStart.label)}"`);
-      if (!m.next?.when.startsWith('Loops back in')) f.push(`Next says "${m.next?.when}"`);
+      if (m.next?.when !== 'Loops back') f.push(`Next says "${m.next?.when}"`);
+      checkCountdown(m, f, 'loop', Math.max(1, Math.ceil((loop.endSec - t) / BEAT - 0.05)));
       if (m.lineNextFirst !== barTag(SEC_FIRST_BAR[si])) f.push(`next line starts "${m.lineNextFirst}", want the loop's first bar`);
       // Without the loop, the same position looks ahead into the bridge.
       await moveTo(page, t, null);
@@ -486,7 +524,8 @@ for (const vp of [[390, 844], [360, 800]]) {
       if (m.now?.text !== '—') f.push(`Now "${m.now?.text}" in a gap`);
       if (m.next?.name !== spell(want.label)) f.push(`Next "${m.next?.name}", want "${spell(want.label)}"`);
       const c = Math.max(1, Math.ceil((want.start_sec - t) / BEAT - 0.05));
-      if (m.next?.when !== `Next in ${c} beat${c === 1 ? '' : 's'}`) f.push(`Next count "${m.next?.when}", want ${c}`);
+      if (m.next?.when !== 'Next') f.push(`Next label "${m.next?.when}"`);
+      checkCountdown(m, f, 'gap', c);
       assert.deepEqual(errors, []);
       fail(f);
     } finally {
@@ -508,6 +547,9 @@ for (const vp of [[390, 844], [360, 800]]) {
         if (m.mode !== 'sequence' || m.reason !== 'no-grid') f.push(`mode ${m.mode}/${m.reason} @ ${ctxs}`);
         if (m.beat !== null || m.dots.length) f.push(`beat dots shown without a tempo @ ${ctxs}`);
         if (m.next && m.next.when !== 'Next') f.push(`"${m.next.when}": a beat count without a tempo @ ${ctxs}`);
+        // No tempo: the countdown is a time bar to the change, never a beat count.
+        if (m.next && (m.countdown?.kind !== 'time' || m.countdown.beatsLeft !== null || !/^\d+(\.\d)? s$/.test(m.countdown.text)))
+          f.push(`countdown without a tempo: ${JSON.stringify(m.countdown)} @ ${ctxs}`);
         if (m.barNumbers.length) f.push(`bar numbers shown without a tempo @ ${ctxs}`);
         if (m.cellsMulti) f.push(`${m.cellsMulti} split cells without a tempo @ ${ctxs}`);
         if (/bar/i.test(m.position ?? '')) f.push(`position "${m.position}" claims a bar @ ${ctxs}`);
@@ -560,7 +602,7 @@ for (const vp of [[390, 844], [360, 800]]) {
         const want = prog[k % 4].map(([l]) => SPELL[l]);
         const cur = m.groups.find((g) => g.label.startsWith(`Bar ${k + 1} of 48:`));
         if (!cur || cur.texts.join() !== want.join()) f.push(`bar ${k + 1} shows [${cur?.texts}], want [${want}] @ ${ctxs}`);
-        if (m.beat !== '3') f.push(`beat dot ${m.beat}, want 3 @ ${ctxs}`);
+        if (m.countdown ? m.beat !== null : m.beat !== '3') f.push(`beat dot ${m.beat} (countdown ${!!m.countdown}) @ ${ctxs}`);
         checkNow(m, f, ctxs, SPELL[prog[k % 4][1][0]]);
         checkSlots(m, f, ctxs);
       }
@@ -643,12 +685,12 @@ for (const vp of [[390, 844], [360, 800]]) {
         checkSlots(m, f, ctxs);
         const r = await page.evaluate(() => {
           const track = document.querySelector('[data-testid="player-harmony-track"]');
-          const bs = [...track.querySelectorAll('button[data-testid^="phone-slot-"]')];
+          const bs = [...track.querySelectorAll('[data-testid^="phone-slot-"]')];
           return bs.map((b) => {
             const q = b.getBoundingClientRect();
             const cx = q.left + q.width / 2;
             const cy = q.top + q.height / 2;
-            const hit = document.elementFromPoint(cx, cy)?.closest('button');
+            const hit = document.elementFromPoint(cx, cy)?.closest('[data-testid^="phone-slot-"]');
             return {
               id: b.dataset.testid, title: b.title, l: q.left, t: q.top, r: q.right, b: q.bottom, w: q.width, h: q.height,
               start: Number(b.dataset.startSec), end: Number(b.dataset.endSec),
@@ -681,25 +723,29 @@ for (const vp of [[390, 844], [360, 800]]) {
           if (heard.end_sec - heard.start_sec < beat * 0.75) curShort++;
         }
       }
-      // A real tap on the centre of half-beat buttons opens THAT chord.
+      // Phase A: the chord editor is hidden (it dropped every pick, ChordOverlay's
+      // header) and cells are never interactive while playing. A real tap on the
+      // centre of half-beat cells lands on THAT cell and opens NOTHING.
       for (const t of positions.slice(0, 8)) {
         await moveTo(page, t);
-        const ids = await page.evaluate((bt) => [...document.querySelectorAll('[data-testid="player-harmony-track"] button[data-testid^="phone-slot-"]')]
+        const ids = await page.evaluate((bt) => [...document.querySelectorAll('[data-testid="player-harmony-track"] [data-testid^="phone-slot-"]')]
           .filter((b) => Number(b.dataset.endSec) - Number(b.dataset.startSec) < bt * 0.75)
           .map((b) => b.dataset.testid), beat);
         for (const id of ids) {
           const el = page.locator(`[data-testid="${id}"]`).first();
           const box = await el.boundingBox();
           if (!box) continue;
-          const want = await el.getAttribute('aria-label');
+          const tag = await el.evaluate((e) => `${e.tagName}/${e.getAttribute('role')}`);
+          if (tag !== 'SPAN/img') f.push(`${id} is ${tag}, want a non-interactive SPAN/img @ ${vp.join('x')} t=${t.toFixed(2)}`);
           await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
           await settle(page);
-          const head = await page.locator('[data-testid="chord-popover-header"]').getAttribute('aria-label').catch(() => null);
-          if (!head || !want.startsWith(head.replace(/^Change /, ''))) f.push(`tap on ${id} ("${want}") opened "${head}" @ ${vp.join('x')} t=${t.toFixed(2)}`);
-          else tapped++;
-          await page.locator('[data-testid="chord-popover"] button:has-text("Cancel")').click();
+          if (await page.locator('[data-testid="chord-popover"]').count()) {
+            f.push(`tap on ${id} opened a chord editor @ ${vp.join('x')} t=${t.toFixed(2)}`);
+            await page.locator('[data-testid="chord-popover"] button:has-text("Cancel")').click();
+          } else tapped++;
           await settle(page);
         }
+        if (await page.locator('[data-testid="player-harmony-track"] button').count()) f.push(`a button in the chord track while playing @ t=${t.toFixed(2)}`);
       }
       if (short < 20) f.push(`only ${short} half-beat buttons measured`);
       if (curShort < 4) f.push(`a half-beat chord was current only ${curShort} times`);
@@ -760,9 +806,9 @@ for (const vp of [[390, 844], [360, 800]]) {
           // Triple time shows no total (3/4 vs 6/8 is unknowable); 4/4 does.
           const wantPos = m3 === 3 ? `Bar ${k + 1}` : `Bar ${k + 1}/${nBars}`;
           if (m.position !== wantPos) f.push(`position "${m.position}", want "${wantPos}" @ ${ctxs}`);
-          if (m.dots.length !== m3) f.push(`${m.dots.length} beat dots, want ${m3} @ ${ctxs}`);
+          if (m.dots.length !== (m.countdown ? 0 : m3)) f.push(`${m.dots.length} beat dots, want ${m.countdown ? 0 : m3} @ ${ctxs}`);
           const wantBeat = Math.floor((t - 0.5 - k * m3 * beat) / beat + 1e-9) + 1;
-          if (m.beat !== String(wantBeat)) f.push(`beat ${m.beat}, want ${wantBeat} @ ${ctxs}`);
+          if (!m.countdown && m.beat !== String(wantBeat)) f.push(`beat ${m.beat}, want ${wantBeat} @ ${ctxs}`);
           // Every bar on screen holds exactly the chords of that bar of the song.
           for (const g of m.groups) {
             const n = Number(/^Bar (\d+)/.exec(g.label)?.[1]);
@@ -810,7 +856,7 @@ for (const vp of [[390, 844], [360, 800]]) {
           const m = await page.evaluate(measure);
           const ctxs = `${vp.join('x')} ${bc.name} cell ${k + 1}`;
           if (m.mode !== 'bars' || m.beatsPerBar !== String(bc.m)) { f.push(`drawn as ${m.mode}/${m.beatsPerBar}, want ${bc.m}-beat bars @ ${ctxs}`); continue; }
-          if (m.dots.length !== bc.m) f.push(`${m.dots.length} beat dots, want ${bc.m} @ ${ctxs}`);
+          if (m.dots.length !== (m.countdown ? 0 : bc.m)) f.push(`${m.dots.length} beat dots, want ${m.countdown ? 0 : bc.m} @ ${ctxs}`);
           const want = bc.total ? `Bar ${k + 1}/${bc.total}` : `Bar ${k + 1}`;
           if (m.position !== want) f.push(`position "${m.position}", want "${want}" @ ${ctxs}`);
           const pm = /^Bar \d+\/(\d+)$/.exec(m.position ?? '');
@@ -881,9 +927,16 @@ const A03_DENSE = [
   [['Eb:maj', 0.5], ['Bb:maj', 3.5]],
 ];
 const A03_CASES = [
-  ...A03_VIEWPORTS.map((vp) => ({ vp, name: 'stacked bars', bars: A03_BARS, mustScroll: vp[0] === 667 })),
+  ...A03_VIEWPORTS.map((vp) => ({ vp, name: 'stacked bars', bars: A03_BARS, mustScroll: false })),
   { vp: [844, 390], name: "QA's worst-case bars", bars: A03_DENSE, mustScroll: false },
-  { vp: [800, 360], name: "QA's worst-case bars", bars: A03_DENSE, mustScroll: true },
+  { vp: [800, 360], name: "QA's worst-case bars", bars: A03_DENSE, mustScroll: false },
+  { vp: [800, 330], name: "QA's worst-case bars", bars: A03_DENSE, mustScroll: false },
+  // The scroll path (content taller than its box). Since the review of #333
+  // (round 2) the current line may squeeze to x0.8 before the box scrolls, so
+  // these stacked / worst-case bars fit down to 667x375 and 800x330; the
+  // scroll path is exercised on the next shorter screens.
+  { vp: [667, 320], name: 'stacked bars', bars: A03_BARS, mustScroll: true },
+  { vp: [800, 300], name: "QA's worst-case bars", bars: A03_DENSE, mustScroll: true },
 ];
 for (const { vp, name, bars: shape, mustScroll } of A03_CASES) {
   test(`A-03 phone chords @ ${vp[0]}x${vp[1]}: the current bar is always fully on screen (${name}, notice showing)`, async () => {
@@ -958,12 +1011,14 @@ for (const { vp, name, bars: shape, mustScroll } of A03_CASES) {
 // render where neither the current bar nor the current chord changed, and (2)
 // stand back for a few seconds after the person scrolls the chord area, then
 // catch up. 667x375 with QA's stacked bars is a size where the area scrolls.
-test('F-8 phone chords @ 667x375: no layout read on unchanged renders; a manual scroll pauses the follow, then it resumes', async () => {
+// 667x320: the screen where these bars still overflow their box (since round 2
+// of the #333 review the current line squeezes before it scrolls; see A03_CASES).
+test('F-8 phone chords @ 667x320: no layout read on unchanged renders; a manual scroll pauses the follow, then it resumes', async () => {
   const bars = Array.from({ length: 32 }, (_, k) => A03_BARS[k % 4]);
   const { payload, grid, beat } = synth(bars, 96);
   const degraded = { missing: ['other'] };
   const at = (k, off) => 0.5 + (k * 4 + off) * beat;
-  const { ctx, page, errors } = await open(browser, built, [667, 375], { pos: at(2, 2.5), grid, sections: [], payload, degraded });
+  const { ctx, page, errors } = await open(browser, built, [667, 320], { pos: at(2, 2.5), grid, sections: [], payload, degraded });
   const f = [];
   try {
     await moveTo(page, at(2, 2.5), null, degraded);
@@ -1015,12 +1070,12 @@ test('F-8 phone chords @ 667x375: no layout read on unchanged renders; a manual 
 
 // Review of #301 round 2, N5: a resize (a rotation) resets the F-8 follow, so the
 // next render re-checks even when the current bar and chord are unchanged.
-test('F-8 / N5 phone chords @ 667x375: a resize makes the next render re-follow the same bar', async () => {
+test('F-8 / N5 phone chords @ 667x320: a resize makes the next render re-follow the same bar', async () => {
   const bars = Array.from({ length: 32 }, (_, k) => A03_BARS[k % 4]);
   const { payload, grid, beat } = synth(bars, 96);
   const degraded = { missing: ['other'] };
   const at = (k, off) => 0.5 + (k * 4 + off) * beat;
-  const { ctx, page, errors } = await open(browser, built, [667, 375], { pos: at(6, 2.5), grid, sections: [], payload, degraded });
+  const { ctx, page, errors } = await open(browser, built, [667, 320], { pos: at(6, 2.5), grid, sections: [], payload, degraded });
   const f = [];
   const area = () => page.evaluate(() => {
     const a = document.querySelector('[data-testid="player-harmony-track"]');
@@ -1049,6 +1104,303 @@ test('F-8 / N5 phone chords @ 667x375: a resize makes the next render re-follow 
     await ctx.close();
   }
 });
+
+// Phase A (D6 + J5) and the review of #333 (B-1, H-4, M-3), on the three
+// demo songs' REAL chord data in the app's DEFAULT "Simple" view, every 0.37 s
+// of each song at 390x844 and 360x800:
+//   * Now >= 72px at >= 95% of positions, never < 28px, never overlapping Next;
+//   * Next >= 44px at every position at 390 (the share is logged at 360);
+//     on the last beat it grows (<= 64px) and never shrinks Now;
+//   * the countdown under Now at every position with a next chord ("N beats"
+//     >= 20px, 4 neutral segments), and the beat dots hidden beside it;
+//   * no empty band of 100px or more between the countdown and the bars
+//     unless Now is already at its largest step;
+//   * no button in the chord track.
+const DEMO_SLUGS = ['lucky-ticket', 'im-asking-you', 'offline'];
+function stageGeometry() {
+  const q = (s) => document.querySelector(s);
+  const cd = q('[data-testid="phone-countdown"]');
+  const above = cd ?? q('[data-testid="phone-beats"]') ?? q('[data-testid="playhead-now"]');
+  const line = q('[data-testid="phone-line-current"]');
+  const nn = q('[data-testid="phone-next-name"]');
+  const name = q('[data-testid="playhead-now-name"]');
+  const nx = q('[data-testid="phone-next"]');
+  const area = q('[data-testid="phone-chords"]');
+  return {
+    band: above && line ? line.getBoundingClientRect().top - above.getBoundingClientRect().bottom : 0,
+    nowW: name ? Math.max(...[...name.children].map((c) => c.getBoundingClientRect().width)) : 0,
+    nextW: nx ? nx.getBoundingClientRect().width : 0,
+    areaW: area ? area.getBoundingClientRect().width : 0,
+    nextPx: nn ? parseFloat(nn.style.fontSize) : null,
+    growPx: nn ? Number(nn.dataset.growPx) : null,
+    buttons: document.querySelectorAll('[data-testid="player-harmony-track"] button').length,
+  };
+}
+for (const mode of ['simple', 'detailed']) for (const vp of [[390, 844], [360, 800]]) for (const slug of DEMO_SLUGS) {
+  test(`phone chords @ ${vp[0]}x${vp[1]}: ${slug}, ${mode}${mode === 'simple' ? ' (default)' : ''}: Now >= 72 first, Next >= 44, countdown always, no empty band`, async () => {
+    const D = JSON.parse(readFileSync(join(WEB, 'test/fixtures/demo-chords', `${slug}.json`), 'utf8'));
+    const beat = 60 / D.bpm;
+    const grid = { beatSec: beat, anchorSec: D.sections[0].start_sec, measured: true };
+    const sections = D.sections.map((s) => ({ startSec: s.start_sec, endSec: s.end_sec, label: s.label }));
+    const payload = { key: null, provider: 'klangio', provider_version: 'demo', duration_sec: D.duration_sec, model_ms: 1, segments: D.segments.map((s) => ({ ...s, confidence: 1 })) };
+    const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections, payload, chordMode: mode });
+    try {
+      const f = [];
+      const nowPx = [];
+      let nexts = 0;
+      let next44 = 0;
+      let counted = 0;
+      for (let t = 1; t < D.duration_sec - 1; t += 0.37) {
+        await moveTo(page, t);
+        const m = await page.evaluate(measure);
+        const g = await page.evaluate(stageGeometry);
+        const ctxs = `${vp.join('x')} ${mode} t=${t.toFixed(2)}`;
+        if (!m.now) { f.push(`no Now @ ${ctxs}`); continue; }
+        nowPx.push(m.now.fontPx);
+        if (m.now.fontPx < 28) f.push(`Now ${m.now.fontPx}px < 28 @ ${ctxs}`);
+        if (m.now.overlap) f.push(`Now overlaps Next: ${m.now.overlap} @ ${ctxs}`);
+        if (!m.now.inX || m.now.clippedBy.length) f.push(`Now clipped @ ${ctxs}`);
+        // No empty band of >= 100px when that height could hold a bigger Now:
+        // the next ladder step (beside Next if it fits the width, else with
+        // Next on its own ~105px row) would have fitted in the band.
+        if (g.band >= 100 && m.now.fontPx < 120) {
+          const step = m.now.fontPx < 72 ? 72 : m.now.fontPx < 96 ? 96 : 120;
+          // x1.2: the stage sizes names for any phone font, not just this
+          // gate's Inter, so a step that would fit with under 20% headroom is
+          // not counted as missed.
+          const wBig = ((g.nowW * step) / m.now.fontPx) * 1.2;
+          const beside = wBig + g.nextW + 12 <= g.areaW;
+          const cost = (step - m.now.fontPx) * 1.05 + (beside ? 0 : 105);
+          if (wBig <= g.areaW && g.band >= cost + 10)
+            f.push(`empty band ${g.band.toFixed(0)}px with Now at ${m.now.fontPx}px; ${step}px (${beside ? 'beside Next' : 'Next below'}) needs ${cost.toFixed(0)}px @ ${ctxs}`);
+        }
+        if (g.buttons) f.push(`${g.buttons} button(s) in the chord track @ ${ctxs}`);
+        if (m.next) {
+          nexts++;
+          if (g.nextPx >= 44) next44++;
+          else if (vp[0] === 390) f.push(`Next ${g.nextPx}px < 44 @ ${ctxs}`);
+          const c = m.countdown;
+          if (!c || c.kind !== 'beats' || !(c.beatsLeft >= 1)) { f.push(`countdown ${JSON.stringify(c)} @ ${ctxs}`); continue; }
+          const n = c.beatsLeft;
+          if (c.text !== `${n} beat${n === 1 ? '' : 's'}` || c.textPx < 20) f.push(`countdown text "${c.text}" ${c.textPx}px @ ${ctxs}`);
+          if (c.segs !== 4 || c.lit !== (n <= 4 ? 5 - n : 0)) f.push(`countdown ${c.lit}/4 lit for ${n} beats @ ${ctxs}`);
+          if (m.dots.length) f.push(`beat dots beside the countdown @ ${ctxs}`);
+          // Next is 44px, or 32px where only that keeps Now >= 72 and the next
+          // line (allowed at 360, reported; never at 390). On the last beat
+          // it may grow, up to 64px.
+          if (n > 1 && g.nextPx !== 44 && !(g.nextPx === 32 && vp[0] === 360)) f.push(`Next ${g.nextPx}px with ${n} beat(s) left @ ${ctxs}`);
+          if (!(g.growPx >= 32 && g.growPx <= 64) || (vp[0] === 390 && g.growPx < 44)) f.push(`Next grow size ${g.growPx} @ ${ctxs}`);
+          if (n === 1 && g.nextPx !== g.growPx) f.push(`Next ${g.nextPx}px on the last beat (grow ${g.growPx}) @ ${ctxs}`);
+          counted++;
+        }
+      }
+      const under = nowPx.filter((p) => p < 72).length / nowPx.length;
+      if (under > 0.05) f.push(`Now < 72px at ${(under * 100).toFixed(1)}% of positions (min ${Math.min(...nowPx)}), want <= 5%`);
+      if (counted < 150) f.push(`only ${counted} countdowns checked`);
+      if (process.env.CHORD_GATE_LOG) console.log(`DEMO ${slug} ${mode} ${vp.join('x')}: Now<72 ${(under * 100).toFixed(1)}% min ${Math.min(...nowPx)} median ${nowPx.sort((a, b) => a - b)[nowPx.length >> 1]}; Next>=44 ${((next44 / nexts) * 100).toFixed(1)}% of ${nexts}`);
+      assert.deepEqual(errors, []);
+      fail(f);
+    } finally {
+      await ctx.close();
+    }
+  });
+}
+
+// Coordination (A1+A2+A3, 2026-11-21): with the section strip and the stem
+// pills on screen the chord STAGE (padding included) is ~460-516px tall. At a
+// 460px stage Now is >= 72px, the NEXT bar line shows (unless the song has no
+// more bars), and nothing is clipped. Below that (420px) it degrades: the next
+// line may go, Now is never clipped and never under 28px.
+for (const [stageH, full] of [[460, true], [420, false]]) for (const vp of [[390, 844], [360, 800]]) for (const mode of ['simple', 'detailed']) for (const slug of DEMO_SLUGS) {
+  test(`phone chords @ ${vp[0]}x${vp[1]}, stage ${stageH}px: ${slug}, ${mode}: ${full ? 'Now >= 72 AND the next line, nothing clipped' : 'next line may go, Now never clipped'}`, async () => {
+    const D = JSON.parse(readFileSync(join(WEB, 'test/fixtures/demo-chords', `${slug}.json`), 'utf8'));
+    const grid = { beatSec: 60 / D.bpm, anchorSec: D.sections[0].start_sec, measured: true };
+    const sections = D.sections.map((s) => ({ startSec: s.start_sec, endSec: s.end_sec, label: s.label }));
+    const payload = { key: null, provider: 'klangio', provider_version: 'demo', duration_sec: D.duration_sec, model_ms: 1, segments: D.segments.map((s) => ({ ...s, confidence: 1 })) };
+    const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections, payload, chordMode: mode, stageH });
+    try {
+      const f = [];
+      const got = await page.evaluate(() => Math.round(document.querySelector('[data-testid="player"] [class*="stage"]').getBoundingClientRect().height));
+      if (Math.abs(got - stageH) > 1) f.push(`stage is ${got}px, the case wants ${stageH}px`);
+      let noNext = 0;
+      let n = 0;
+      for (let t = 1; t < D.duration_sec - 1; t += full ? 0.37 : 0.74) {
+        await moveTo(page, t);
+        const m = await page.evaluate(measure);
+        const g = await page.evaluate(() => {
+          const area = document.querySelector('[data-testid="player-harmony-track"]').getBoundingClientRect();
+          const lines = [...document.querySelectorAll('[data-testid="phone-line-current"], [data-testid="phone-line-next"]')].map((l) => l.getBoundingClientRect());
+          const ends = [...document.querySelectorAll('[data-testid="phone-line-current"] [data-end-sec][data-cell]:not([data-run-index])')].map((c) => Number(c.dataset.endSec));
+          return { areaTop: area.top, areaBottom: area.bottom, lines: lines.map((r) => [r.top, r.bottom]), curEnd: ends.length ? Math.max(...ends) : 0, next: !!document.querySelector('[data-testid="phone-line-next"]') };
+        });
+        const ctxs = `${vp.join('x')} stage ${stageH} ${mode} t=${t.toFixed(2)}`;
+        n++;
+        if (!m.now) { f.push(`no Now @ ${ctxs}`); continue; }
+        if (!m.now.inX || m.now.clippedBy.length) f.push(`Now clipped (${m.now.clippedBy.join(',')}) @ ${ctxs}`);
+        if (m.now.overlap) f.push(`Now overlaps Next: ${m.now.overlap} @ ${ctxs}`);
+        if (m.now.fontPx < (full ? 72 : 28)) f.push(`Now ${m.now.fontPx}px @ ${ctxs}`);
+        for (const [top, bottom] of g.lines) if (top < g.areaTop - 0.5 || bottom > g.areaBottom + 0.5) f.push(`a bar line (${top.toFixed(0)}-${bottom.toFixed(0)}) is outside the chord area (${g.areaTop.toFixed(0)}-${g.areaBottom.toFixed(0)}) @ ${ctxs}`);
+        if (!g.next) {
+          noNext++;
+          // Allowed only on the song's last line: no chord starts after it.
+          if (full && D.segments.some((x) => x.label !== 'N' && x.start_sec >= g.curEnd + 0.05)) f.push(`no next line, but the song goes on after ${g.curEnd.toFixed(2)}s @ ${ctxs}`);
+        }
+      }
+      if (process.env.CHORD_GATE_LOG) console.log(`STAGE ${stageH} ${slug} ${mode} ${vp.join('x')}: ${n} positions, next line hidden at ${noNext}`);
+      assert.deepEqual(errors, []);
+      fail(f);
+    } finally {
+      await ctx.close();
+    }
+  });
+}
+
+// Review of #333 round 2 (B-1r) and Jon (18:35 PT: "hold until it's
+// perfect"): the four target phones, 390x844, 360x800 and the small 375x667 /
+// 390x664, with #331 on screen
+// (the stem pills, the 1-row section strip with its "+N more" cue, the
+// first-run "Tap to jump · hold to loop" line), no CSS override. Every 0.37 s
+// of each demo, both views: Now >= 72px at EVERY position, nothing clipped,
+// no overlap, no bar line outside the chord area. If the NEXT line cannot fit
+// with Now at 72 it is hidden, never the other way round.
+// Measured at the round-2 fix (1 point below): Next falls to 32px only where
+// 44px (not growing) cannot keep Now at 72 with the next line.
+const SMALL_NEXT44_FLOOR = Object.fromEntries(
+  ['390x844', '360x800', '375x667', '390x664'].flatMap((v) => ['simple', 'detailed'].flatMap((m) => DEMO_SLUGS.map((d) => [`${d} ${m} ${v}`, 0.99]))),
+);
+SMALL_NEXT44_FLOOR['lucky-ticket simple 390x664'] = 0.91;
+SMALL_NEXT44_FLOOR['offline simple 390x664'] = 0.93;
+for (const vp of [[390, 844], [360, 800], [375, 667], [390, 664]]) for (const mode of ['simple', 'detailed']) for (const slug of DEMO_SLUGS) {
+  test(`phone chords @ ${vp[0]}x${vp[1]} (pills, 1-row strip, first-run hint): ${slug}, ${mode}: Now >= 72 everywhere`, async () => {
+    const D = JSON.parse(readFileSync(join(WEB, 'test/fixtures/demo-chords', `${slug}.json`), 'utf8'));
+    const grid = { beatSec: 60 / D.bpm, anchorSec: D.sections[0].start_sec, measured: true };
+    const sections = D.sections.map((s) => ({ startSec: s.start_sec, endSec: s.end_sec, label: s.label }));
+    const payload = { key: null, provider: 'klangio', provider_version: 'demo', duration_sec: D.duration_sec, model_ms: 1, segments: D.segments.map((s) => ({ ...s, confidence: 1 })) };
+    const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections, payload, chordMode: mode });
+    try {
+      const f = [];
+      const setup = await page.evaluate(() => ({
+        pills: !!document.querySelector('[data-testid="part-pills"]'),
+        hint: !!document.querySelector('[data-testid="section-first-hint"]'),
+        area: Math.round(document.querySelector('[data-testid="player-harmony-track"]').getBoundingClientRect().height),
+        scroll: document.documentElement.scrollHeight - innerHeight,
+      }));
+      if (!setup.pills) f.push('the stem pills are not on screen: this case does not test the small-phone layout');
+      if (!setup.hint) f.push('the first-run hint is not on screen');
+      const now = [];
+      const small = [];
+      let nextHidden = 0;
+      let nexts = 0;
+      let next44 = 0;
+      for (let t = 1; t < D.duration_sec - 1; t += 0.37) {
+        await moveTo(page, t);
+        const m = await page.evaluate(measure);
+        const g = await page.evaluate(() => {
+          const area = document.querySelector('[data-testid="player-harmony-track"]').getBoundingClientRect();
+          const lines = [...document.querySelectorAll('[data-testid="phone-line-current"], [data-testid="phone-line-next"]')].map((l) => l.getBoundingClientRect());
+          return { top: area.top, bottom: area.bottom, lines: lines.map((r) => [r.top, r.bottom]), next: !!document.querySelector('[data-testid="phone-line-next"]') };
+        });
+        const ctxs = `${vp.join('x')} ${mode} t=${t.toFixed(2)}`;
+        if (!m.now) { f.push(`no Now @ ${ctxs}`); continue; }
+        now.push(m.now.fontPx);
+        if (m.now.fontPx < 72) small.push(`${t.toFixed(2)}s "${m.now.text}" ${m.now.fontPx}px${g.next ? ' WITH the next line' : ''}`);
+        if (m.now.fontPx < 72 && g.next) f.push(`Now ${m.now.fontPx}px while the NEXT line is shown @ ${ctxs}`);
+        if (!m.now.inX || m.now.clippedBy.length) f.push(`Now clipped @ ${ctxs}`);
+        if (m.now.overlap) f.push(`Now overlaps Next: ${m.now.overlap} @ ${ctxs}`);
+        for (const [top, bottom] of g.lines) if (top < g.top - 0.5 || bottom > g.bottom + 0.5) f.push(`a bar line is outside the chord area @ ${ctxs}`);
+        if (!g.next) nextHidden++;
+        const npx = await page.evaluate(() => parseFloat(document.querySelector('[data-testid="phone-next-name"]')?.style.fontSize || 'NaN'));
+        if (Number.isFinite(npx)) { nexts++; if (npx >= 44) next44++; }
+      }
+      // Next keeps 44px (not growing) before it drops to 32px: the share is
+      // floored at what the ladder reaches today (SMALL_NEXT44_FLOOR).
+      const share = next44 / Math.max(1, nexts);
+      const floor = SMALL_NEXT44_FLOOR[`${slug} ${mode} ${vp.join('x')}`];
+      if (floor !== undefined && share < floor) f.push(`Next >= 44px at ${(share * 100).toFixed(1)}% of positions, floor ${(floor * 100).toFixed(0)}%`);
+      if (small.length) f.push(`Now < 72px at ${small.length}/${now.length} positions (min ${Math.min(...now)}): ${small.slice(0, 6).join('; ')}`);
+      if (process.env.CHORD_GATE_LOG) console.log(`SMALL ${slug} ${mode} ${vp.join('x')}: chord area ${setup.area}px, page scroll ${setup.scroll}px; Now>=72 ${(((now.length - small.length) / now.length) * 100).toFixed(1)}% min ${Math.min(...now)}; next line hidden at ${nextHidden}/${now.length}; Next>=44 ${(share * 100).toFixed(1)}%`);
+      assert.deepEqual(errors, []);
+      fail(f);
+    } finally {
+      await ctx.close();
+    }
+  });
+}
+
+// Review of #333 round 2 (S08): a squeezed bar line never clips a name.
+// Dense bars (long slash chords, three to a bar) on short narrow phones: every
+// chord name in the lines is whole and every slot is >= 24px. (Found here:
+// x0.8 on a stacked slot left 24px for a 20px name and cut "Cm7" by 2px.)
+for (const vp of [[320, 568], [360, 640], [375, 667]]) {
+  test(`phone chords @ ${vp[0]}x${vp[1]}: squeezed bar lines never clip a chord name`, async () => {
+    const bars = Array.from({ length: 32 }, (_, k) => A03_DENSE[k % A03_DENSE.length]);
+    const { payload, grid, beat } = synth(bars, 96);
+    const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections: [], payload });
+    try {
+      const f = [];
+      let squeezed = 0;
+      for (let k = 0; k < 32; k++) {
+        const t = 0.5 + (k * 4 + 1.3) * beat;
+        await moveTo(page, t);
+        const r = await page.evaluate(() => ({
+          squeeze: document.querySelector('[data-testid="phone-chords"]')?.dataset.squeeze ?? null,
+          slots: [...document.querySelectorAll('[data-testid="player-harmony-track"] [data-testid^="phone-slot-"]')].map((b) => {
+            const q = b.getBoundingClientRect();
+            return { t: b.title, text: b.textContent, overX: b.scrollWidth - b.clientWidth, overY: b.scrollHeight - b.clientHeight, w: q.width, h: q.height };
+          }),
+        }));
+        if (r.squeeze) squeezed++;
+        for (const x of r.slots) {
+          if (!x.text) f.push(`slot ${x.t} has no name @ ${vp.join('x')} bar#${k}`);
+          if (x.overX > 0 || x.overY > 0) f.push(`slot ${x.t} "${x.text}" is clipped (${x.overX}/${x.overY}px) @ ${vp.join('x')} bar#${k} squeeze ${r.squeeze}`);
+          if (x.w < 24 || x.h < 24) f.push(`slot ${x.t} is ${x.w.toFixed(1)}x${x.h.toFixed(1)}px @ ${vp.join('x')} bar#${k}`);
+        }
+      }
+      if (process.env.CHORD_GATE_LOG) console.log(`SQUEEZE ${vp.join('x')}: squeezed at ${squeezed}/32`);
+      assert.deepEqual(errors, []);
+      fail(f);
+    } finally {
+      await ctx.close();
+    }
+  });
+}
+
+// Review of #333 round 2 (S06, S13): where Now cannot reach 72px (a phone on
+// its side with the notice bar), the degrade order still holds: the NEXT line
+// is hidden before Now shrinks, and the bars never grow into spare height
+// while Now is under 72px. Not vacuous: Now must be under 72 somewhere.
+for (const vp of [[844, 390], [800, 360], [740, 360]]) {
+  test(`phone chords @ ${vp[0]}x${vp[1]}: Now < 72 => no next line and no grown bars`, async () => {
+    const bars = Array.from({ length: 32 }, (_, k) => A03_BARS[k % 4]);
+    const { payload, grid, beat } = synth(bars, 96);
+    const degraded = { missing: ['other'] };
+    const { ctx, page, errors } = await open(browser, built, vp, { pos: 1, grid, sections: [], payload, degraded });
+    try {
+      const f = [];
+      let under = 0;
+      for (let k = 0; k < 32; k++) {
+        const t = 0.5 + (k * 4 + 1.3) * beat;
+        await moveTo(page, t);
+        const m = await page.evaluate(measure);
+        const g = await page.evaluate(() => ({
+          next: !!document.querySelector('[data-testid="phone-line-next"]'),
+          scales: [...document.querySelectorAll('[data-testid="phone-line-current"], [data-testid="phone-line-next"]')].map((l) => Number(l.dataset.scale)),
+        }));
+        if (!m.now || m.now.fontPx >= 72) continue;
+        under++;
+        const ctxs = `${vp.join('x')} bar#${k} Now ${m.now.fontPx}px`;
+        if (g.next) f.push(`the NEXT line is shown while Now is ${m.now.fontPx}px @ ${ctxs}`);
+        for (const sc of g.scales) if (sc > 1.0001) f.push(`a bar line is grown x${sc} while Now is under 72px @ ${ctxs}`);
+      }
+      if (under === 0) f.push('Now was never under 72px here: this case tests nothing');
+      if (process.env.CHORD_GATE_LOG) console.log(`DEGRADE ${vp.join('x')}: Now < 72 at ${under}/32`);
+      assert.deepEqual(errors, []);
+      fail(f);
+    } finally {
+      await ctx.close();
+    }
+  });
+}
 
 test('teardown', async () => {
   if (browser) await browser.close();

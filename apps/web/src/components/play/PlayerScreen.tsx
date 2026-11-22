@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChordOverlay, type NowNext } from '@/components/ChordOverlay';
+import { type ChordMode, DEFAULT_CHORD_MODE, readChordMode, writeChordMode } from '@/lib/play/chord-mode';
 import { LIGHT_AUDIO_NOTE } from '@/lib/play/device-support';
 import { songFacts } from '@/lib/play/notation';
 import { type Part, type PresetId, presetOps, readPart, writePart, mixStateLabel } from '@/lib/play/presets';
@@ -296,6 +297,17 @@ export function PlayerScreen(props: ScreenProps) {
     banner ?? (playable && lightAudio && !lightSeen ? { tone: 'notice', text: LIGHT_AUDIO_HINT, testId: 'player-light-audio' } : null);
   const dismissible = !banner && notice !== null;
 
+  // ── Simple / Detailed chords (Phase A, D6) ─────────────────────────────────
+  // Simple until the stored choice is read (after mount, so the server render
+  // and the first client render agree).
+  const [chordMode, setChordMode] = useState<ChordMode>(DEFAULT_CHORD_MODE);
+  useEffect(() => setChordMode(readChordMode()), []);
+  const pickChordMode = (m: ChordMode) => {
+    setChordMode(m);
+    writeChordMode(m);
+  };
+  const simplify = chordMode === 'simple';
+
   // ── header facts ───────────────────────────────────────────────────────────
   const facts = songFacts(bpm, musicalKey);
   const songTitle = (title ?? '').trim() || 'Your song';
@@ -410,15 +422,16 @@ export function PlayerScreen(props: ScreenProps) {
             {songTitle}
           </h1>
           {facts || artist ? (
-            <span className={styles.sub} data-testid="player-facts">
+            <span className={styles.sub}>
+              {/* Phase A (J3): BPM and key in a 20px chip, readable from a
+                  music stand at 70 cm. One source: jobs.bpm / jobs.musical_key. */}
               {facts ? (
-                <span className={styles.facts}>
+                <span className={styles.facts} data-testid="player-facts">
                   <span className={styles.sr}>Detected: </span>
                   {facts.text}
                 </span>
               ) : null}
-              {facts && artist ? ' · ' : null}
-              {artist ? <span>{artist}</span> : null}
+              {artist ? <span className={styles.artist}>{artist}</span> : null}
             </span>
           ) : null}
         </div>
@@ -471,6 +484,25 @@ export function PlayerScreen(props: ScreenProps) {
               >
                 See all chords
               </button>
+              <div className={styles.menuGroup} role="group" aria-labelledby="player-chord-mode">
+                <span id="player-chord-mode" className={styles.menuLabel}>
+                  Chords
+                </span>
+                <div className={styles.segmented}>
+                  {(['simple', 'detailed'] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      className={styles.segment}
+                      aria-pressed={chordMode === m}
+                      onClick={() => pickChordMode(m)}
+                      data-testid={`chord-mode-${m}`}
+                    >
+                      {m === 'simple' ? 'Simple' : 'Detailed'}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <button
                 type="button"
                 className={styles.menuItem}
@@ -544,6 +576,8 @@ export function PlayerScreen(props: ScreenProps) {
                 loop={snapshot.loop}
                 emptyStage={emptyStage}
                 onNowNext={onNowNext}
+                simplify={simplify}
+                playing={playing}
               />
             </div>
           </div>
@@ -651,7 +685,16 @@ export function PlayerScreen(props: ScreenProps) {
           </button>
         </div>
         <div className={styles.sheetBody}>
-          <ChordOverlay jobId={jobId} view="chart" positionSec={chordPosition} beatGrid={beatGrid} sections={sections} loop={snapshot.loop} />
+          <ChordOverlay
+            jobId={jobId}
+            view="chart"
+            positionSec={chordPosition}
+            beatGrid={beatGrid}
+            sections={sections}
+            loop={snapshot.loop}
+            simplify={simplify}
+            playing={playing}
+          />
         </div>
       </Sheet>
 

@@ -19,6 +19,7 @@ import type {
 import { MAX_TRACK_SEC } from '../lib/play/types.ts';
 import { MIN_TAP_PX } from './tapTarget.ts';
 import { spellChord } from '../lib/play/notation.ts';
+import { simplifyChords } from '../lib/play/simplify-chords.ts';
 
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
@@ -286,6 +287,26 @@ export function runFramesAreMonotone(
  * anyway. So the floor was buying a shape no consumer wanted, at the cost of a
  * frame span that contradicted its own run.
  */
+/**
+ * "Simple" chords (Phase A, D6): the loaded runs with every chord under two
+ * beats merged into a neighbour and every change on a beat
+ * (lib/play/simplify-chords.ts). A DISPLAY layer: the runs passed in are not
+ * modified. `grid` is used only when it is the job's measured tempo; without
+ * one, chords under 1 s (MIN_CHORD_SEC_NO_GRID) are merged and nothing is snapped.
+ */
+export function simplifyOverlayRuns(
+  runs: readonly OverlayRun[],
+  grid: { readonly beatSec: number; readonly anchorSec: number; readonly measured?: boolean } | null | undefined,
+  anchors: readonly number[] = [],
+): OverlayRun[] {
+  const g = grid && grid.measured !== false ? grid : null;
+  const out = simplifyChords(runs, { grid: g, anchors }).map((r) => {
+    const startFrame = Math.max(0, Math.round(r.startSec * CHORDS_FRAMES_PER_SEC));
+    return { ...r, startFrame, endFrame: Math.max(startFrame, Math.round(r.endSec * CHORDS_FRAMES_PER_SEC)) };
+  });
+  return markMonotoneRuns(out);
+}
+
 export function observationsToRuns(obs: readonly ChordObservation[]): OverlayRun[] {
   const ordered = obs
     .map((o, i) => ({ o, i }))

@@ -659,3 +659,45 @@ test('QA-01: a bar too crowded for 24px each side by side falls to two rows or s
       for (const cb of box.cells) for (const sb of cb.slots) assert.ok(sb.w >= MIN_TAP_PX - 1e-6 && sb.h >= MIN_TAP_PX, `${sb.text} ${sb.w}x${sb.h} @ ${w}px (${m.mode})`);
     }
 });
+
+// ── Phase A (J5): the countdown under Now ──────────────────────────────────
+test('countdownState: bars mode counts the bar\'s beats; 1 segment lit at 4 beats to go, all 4 on the last beat', async () => {
+  const { countdownState, countdownText } = await import('../ChordPhone.helpers.ts');
+  const model = { mode: 'bars', beatsPerBar: 4 };
+  const cell = { startSec: 10, endSec: 12 }; // 0.5 s beats
+  const at = (inSec) => countdownState(model, cell, null, { inSec }, { startSec: 9 }, 10.2);
+  for (const [inSec, n, lit] of [[3.9, 8, 0], [2.4, 5, 0], [1.9, 4, 1], [1.4, 3, 2], [0.9, 2, 3], [0.4, 1, 4]]) {
+    const cd = at(inSec);
+    assert.equal(cd.kind, 'beats');
+    assert.equal(cd.beatsLeft, n, `${inSec}s`);
+    assert.equal(cd.filled, lit, `${inSec}s`);
+    assert.equal(cd.lastBeat, n === 1);
+  }
+  assert.equal(countdownText(at(0.4)), '1 beat');
+  assert.equal(countdownText(at(1.4)), '3 beats');
+});
+
+test('countdownState: the plain-list mode still counts beats on the measured grid; no grid -> time; no next -> none', async () => {
+  const { countdownState, countdownText } = await import('../ChordPhone.helpers.ts');
+  const seq = { mode: 'sequence', beatsPerBar: 4 };
+  const grid = { beatSec: 0.6, anchorSec: 0, measured: true };
+  const cd = countdownState(seq, null, grid, { inSec: 1.5 }, { startSec: 9 }, 10);
+  assert.deepEqual([cd.kind, cd.beatsLeft, cd.filled], ['beats', 3, 2]);
+  // A pseudo-bar grid is not a tempo: time, not beats.
+  assert.equal(countdownState(seq, null, { ...grid, measured: false }, { inSec: 1.5 }, { startSec: 9 }, 10).kind, 'time');
+  const t = countdownState(seq, null, null, { inSec: 1.5 }, { startSec: 9 }, 10);
+  assert.equal(t.kind, 'time');
+  assert.ok(Math.abs(t.fraction - 0.4) < 1e-9, 'one of 2.5 s gone');
+  assert.equal(t.filled, 1);
+  assert.equal(countdownText(t), '1.5 s');
+  assert.equal(countdownState(seq, null, null, { inSec: 0.4 }, { startSec: 9 }, 10).lastBeat, true);
+  assert.equal(countdownState(seq, null, null, null, null, 10).kind, 'none');
+  assert.equal(countdownText(countdownState(seq, null, null, { inSec: 12.3 }, null, 10)), '12 s');
+});
+
+test('phoneSlotLabel: " — edit" only on a cell that opens the editor', async () => {
+  const { phoneSlotLabel } = await import('../ChordPhone.helpers.ts');
+  const run = { kind: 'chord', label: 'E:min7' };
+  assert.equal(phoneSlotLabel(run, 2, false), 'E minor 7, 2 beats');
+  assert.equal(phoneSlotLabel(run, 2, true), 'E minor 7, 2 beats — edit');
+});

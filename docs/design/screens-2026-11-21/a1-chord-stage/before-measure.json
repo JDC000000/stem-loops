@@ -1,0 +1,666 @@
+{
+ "before-390x844-simple": {
+  "three": {
+   "t": 30.6,
+   "mode": "sequence",
+   "now": 96,
+   "next": 32,
+   "when": "Next",
+   "whenPx": 13,
+   "countdown": null,
+   "countdownPx": null,
+   "countdownText": null,
+   "factsPx": 13,
+   "factsText": "Detected:\n102 BPM · A major · The Royal Sundowners",
+   "stageInteractive": [
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ]
+   ],
+   "slots": [
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ]
+   ],
+   "slotTags": [
+    "BUTTON"
+   ]
+  },
+  "nowChangesPerMinute60to120": 55,
+  "paused": {
+   "mode": "sequence",
+   "now": 96,
+   "next": 32,
+   "when": "Next",
+   "whenPx": 13,
+   "countdown": null,
+   "countdownPx": null,
+   "countdownText": null,
+   "factsPx": 13,
+   "factsText": "Detected:\n102 BPM · A major · The Royal Sundowners",
+   "stageInteractive": [
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ]
+   ],
+   "slots": [
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ]
+   ],
+   "slotTags": [
+    "BUTTON"
+   ]
+  },
+  "noGrid": {
+   "mode": "sequence",
+   "now": 96,
+   "next": 32,
+   "when": "Next",
+   "whenPx": 13,
+   "countdown": null,
+   "countdownPx": null,
+   "countdownText": null,
+   "factsPx": 13,
+   "factsText": "Detected:\n102 BPM · A major · The Royal Sundowners",
+   "stageInteractive": [
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ]
+   ],
+   "slots": [
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ]
+   ],
+   "slotTags": [
+    "BUTTON"
+   ]
+  }
+ },
+ "before-390x844-detailed": {
+  "three": {
+   "t": 30.6,
+   "mode": "sequence",
+   "now": 96,
+   "next": 32,
+   "when": "Next",
+   "whenPx": 13,
+   "countdown": null,
+   "countdownPx": null,
+   "countdownText": null,
+   "factsPx": 13,
+   "factsText": "Detected:\n102 BPM · A major · The Royal Sundowners",
+   "stageInteractive": [
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ],
+    [
+     81,
+     96
+    ]
+   ],
+   "slots": [
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ],
+    [
+     "BUTTON",
+     81,
+     96
+    ]
+   ],
+   "slotTags": [
+    "BUTTON"
+   ]
+  },
+  "nowChangesPerMinute60to120": 55
+ },
+ "before-360x800-simple": {
+  "three": {
+   "t": 30.6,
+   "mode": "sequence",
+   "now": 96,
+   "next": 32,
+   "when": "Next",
+   "whenPx": 13,
+   "countdown": null,
+   "countdownPx": null,
+   "countdownText": null,
+   "factsPx": 13,
+   "factsText": "Detected:\n102 BPM · A major · The Royal Sundowners",
+   "stageInteractive": [
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ]
+   ],
+   "slots": [
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ]
+   ],
+   "slotTags": [
+    "BUTTON"
+   ]
+  },
+  "nowChangesPerMinute60to120": 55,
+  "paused": {
+   "mode": "sequence",
+   "now": 96,
+   "next": 32,
+   "when": "Next",
+   "whenPx": 13,
+   "countdown": null,
+   "countdownPx": null,
+   "countdownText": null,
+   "factsPx": 13,
+   "factsText": "Detected:\n102 BPM · A major · The Royal Sundowners",
+   "stageInteractive": [
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ]
+   ],
+   "slots": [
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ]
+   ],
+   "slotTags": [
+    "BUTTON"
+   ]
+  },
+  "noGrid": {
+   "mode": "sequence",
+   "now": 96,
+   "next": 32,
+   "when": "Next",
+   "whenPx": 13,
+   "countdown": null,
+   "countdownPx": null,
+   "countdownText": null,
+   "factsPx": 13,
+   "factsText": "Detected:\n102 BPM · A major · The Royal Sundowners",
+   "stageInteractive": [
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ]
+   ],
+   "slots": [
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ]
+   ],
+   "slotTags": [
+    "BUTTON"
+   ]
+  }
+ },
+ "before-360x800-detailed": {
+  "three": {
+   "t": 30.6,
+   "mode": "sequence",
+   "now": 96,
+   "next": 32,
+   "when": "Next",
+   "whenPx": 13,
+   "countdown": null,
+   "countdownPx": null,
+   "countdownText": null,
+   "factsPx": 13,
+   "factsText": "Detected:\n102 BPM · A major · The Royal Sundowners",
+   "stageInteractive": [
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ],
+    [
+     73,
+     96
+    ]
+   ],
+   "slots": [
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ],
+    [
+     "BUTTON",
+     73,
+     96
+    ]
+   ],
+   "slotTags": [
+    "BUTTON"
+   ]
+  },
+  "nowChangesPerMinute60to120": 55
+ }
+}

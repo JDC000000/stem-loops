@@ -98,9 +98,11 @@ export function spokenSymbol(run: Pick<OverlayRun, 'kind' | 'label'>): string {
  * held in this bar. Spoken words are the accessible equivalent of the painted
  * glyphs (WCAG 2.5.3: a speech user says "C sharp minor", not "C ♯ m").
  */
-export function phoneSlotLabel(run: Pick<OverlayRun, 'kind' | 'label'>, beats: number | null): string {
+export function phoneSlotLabel(run: Pick<OverlayRun, 'kind' | 'label'>, beats: number | null, editable = true): string {
   const held = beats === null ? '' : `, ${fmtBeats(beats)} beat${Math.abs(beats - 1) < 0.05 ? '' : 's'}`;
-  return `${spokenSymbol(run)}${held} — edit`;
+  // " — edit" only on a cell that opens the chord editor (none does unless an
+  // edit handler is wired: ChordOverlay's header).
+  return `${spokenSymbol(run)}${held}${editable ? ' — edit' : ''}`;
 }
 
 /**
@@ -588,6 +590,69 @@ export function beatsUntil(cell: Pick<PhoneCell, 'startSec' | 'endSec'>, inSec: 
   return Math.max(1, Math.ceil(inSec / beat - 0.05));
 }
 
+// ---------------------------------------------------------------------------
+// The countdown to the next chord (Phase A, J5)
+// ---------------------------------------------------------------------------
+/** Segments in the countdown bar: the last four beats before a change. */
+export const COUNTDOWN_SEGMENTS = 4;
+/** With no beat grid, "the last beat" is the last this-many seconds before the change. */
+export const LAST_BEAT_SEC_NO_GRID = 0.5;
+/** The countdown row's height: the 20px "3 beats" text at line height 1.1. */
+export const COUNTDOWN_ROW_PX = 22;
+
+export interface CountdownState {
+  /**
+   * 'beats': counted on the beat grid (bars mode: the bar's own beats; the
+   * plain-list mode: the job's measured grid, so a dense song still counts);
+   * 'time': no grid at all, a time bar to the change; 'none': no next chord.
+   */
+  readonly kind: 'beats' | 'time' | 'none';
+  /** Beats until the change, at least 1 ('beats' only). */
+  readonly beatsLeft: number | null;
+  /** Segments lit, 0..COUNTDOWN_SEGMENTS: 1 with four beats to go ... all four on the last beat. */
+  readonly filled: number;
+  /** 'time': how much of the current chord has gone by, 0..1. */
+  readonly fraction: number;
+  /** Seconds until the change. */
+  readonly secLeft: number | null;
+  /** The last beat before the change (Next grows). */
+  readonly lastBeat: boolean;
+}
+
+const NO_COUNTDOWN: CountdownState = { kind: 'none', beatsLeft: null, filled: 0, fraction: 0, secLeft: null, lastBeat: false };
+
+/** Where the countdown to the next chord stands at `t`. */
+export function countdownState(
+  model: Pick<PhoneModel, 'mode' | 'beatsPerBar'>,
+  cell: Pick<PhoneCell, 'startSec' | 'endSec'> | null,
+  grid: BeatGrid | null | undefined,
+  next: Pick<NextChord, 'inSec'> | null,
+  now: Pick<OverlayRun, 'startSec'> | null,
+  t: number | null,
+): CountdownState {
+  if (!next || t === null || !Number.isFinite(t) || !Number.isFinite(next.inSec)) return NO_COUNTDOWN;
+  const secLeft = Math.max(0, next.inSec);
+  let beatsLeft: number | null = null;
+  if (model.mode === 'bars' && cell) beatsLeft = beatsUntil(cell, secLeft, model.beatsPerBar);
+  else if (grid && grid.measured !== false && grid.beatSec > 0) beatsLeft = Math.max(1, Math.ceil(secLeft / grid.beatSec - 0.05));
+  const start = now && now.startSec <= t ? now.startSec : t;
+  const total = t - start + secLeft;
+  const fraction = total > 0 ? Math.min(1, Math.max(0, (t - start) / total)) : 0;
+  if (beatsLeft !== null) {
+    const filled = beatsLeft <= COUNTDOWN_SEGMENTS ? COUNTDOWN_SEGMENTS + 1 - beatsLeft : 0;
+    return { kind: 'beats', beatsLeft, filled, fraction, secLeft, lastBeat: beatsLeft === 1 };
+  }
+  const filled = Math.min(COUNTDOWN_SEGMENTS, Math.floor(fraction * COUNTDOWN_SEGMENTS + 1e-9));
+  return { kind: 'time', beatsLeft: null, filled, fraction, secLeft, lastBeat: secLeft <= LAST_BEAT_SEC_NO_GRID };
+}
+
+/** The countdown's words: "3 beats", "1 beat"; with no grid "1.2 s" (whole seconds from 10 s). */
+export function countdownText(cd: CountdownState): string {
+  if (cd.kind === 'beats' && cd.beatsLeft !== null) return `${cd.beatsLeft} beat${cd.beatsLeft === 1 ? '' : 's'}`;
+  if (cd.kind === 'time' && cd.secLeft !== null) return `${cd.secLeft < 10 ? cd.secLeft.toFixed(1) : Math.round(cd.secLeft)} s`;
+  return '';
+}
+
 /** 0-based beat of the bar at `t`. */
 export function beatInCell(cell: Pick<PhoneCell, 'startSec' | 'endSec'>, t: number, beatsPerBar: number = BEATS_PER_BAR): number {
   const beat = (cell.endSec - cell.startSec) / beatsPerBar;
@@ -801,12 +866,26 @@ export function grownFontPx(text: string, fontPx: number, slotW: number, wrap: b
 }
 /**
  * The stage's height outside the bar lines for a Now name `nowPx` tall:
- * position line 20, four 12px gaps, the "Now" label 16, the name at line
- * height 1.05, the beat row 6, and a 10px safety margin (fonts, rounding).
+ * position line 20, four 12px gaps, the name at line height 1.05, the
+ * countdown row (COUNTDOWN_ROW_PX), the beat row 6, and a 10px safety margin
+ * (fonts, rounding). (Phase A: the 16px "Now" label went; the section line
+ * above already says where you are.)
  */
-export function stageChromePx(nowPx: number): number {
-  return 20 + 4 * 12 + 16 + Math.ceil(nowPx * 1.05) + 6 + 10;
+/** The vertical gap between the stage's rows (position, Now/Next, countdown, beats, bars). */
+export const STAGE_GAP_PX = 10;
+export function stageChromePx(nowPx: number, beatRow = true): number {
+  // With a countdown the beat-dot row is hidden (review of #333, H-1): one
+  // row and one 12px gap fewer.
+  // Gaps are STAGE_GAP_PX; the countdown sits 4px into the gap above it.
+  return 20 + (beatRow ? 4 : 3) * STAGE_GAP_PX + Math.ceil(nowPx * 1.05) + COUNTDOWN_ROW_PX - 4 + (beatRow ? 6 : 0) + 10;
 }
+/**
+ * The least the bar lines may be squeezed (x0.8: a 46px slot -> 37px, a
+ * stacked 30px one -> 24px, still a 24px target) before the NEXT line is
+ * dropped on a short stage (the stage with the section strip and the stem
+ * pills on screen, 2026-11-21).
+ */
+export const MIN_LINE_SCALE = 0.8;
 /**
  * How much the bar lines may grow into `spare` px: never shrink, never past
  * GROWN_BAR_PX per one-row bar (a two-row line grows by the same factor).

@@ -99,9 +99,61 @@ test('feature-detected: no API, or a refused request, breaks nothing', async () 
   lock.dispose();
 });
 
-test('Player wires it to the playing state (and only that)', () => {
+test('Player holds it for as long as the player is mounted, playing or paused (Phase A)', () => {
   const src = readFileSync(join(WEB, 'src/components/play/Player.tsx'), 'utf8');
-  assert.match(src, /createWakeLock\(globalThis\.navigator, globalThis\.document\)/);
-  assert.match(src, /const playing = snapshot\.status === 'playing';\s*useEffect\(\(\) => \{\s*wakeRef\.current\?\.set\(playing\);\s*\}, \[playing\]\);/);
-  assert.match(src, /lock\.dispose\(\)/);
+  assert.match(src, /const lock = createWakeLock\(globalThis\.navigator, globalThis\.document\);\s*lock\.set\(true\);\s*return \(\) => lock\.dispose\(\);\s*\}, \[\]\);/);
+  // Never tied to the play state again (a pause must not let the screen dim).
+  assert.doesNotMatch(src, /\.set\(playing\)/);
+});
+
+test('held across a pause: only hiding the page lets it go, and showing it takes it back', async () => {
+  const f = fakes();
+  const lock = createWakeLock(f.nav, f.doc);
+  lock.set(true); // the player mounts
+  await tick();
+  assert.equal(f.live(), 1);
+  // Hidden (tab switch, screen off): released by us at once, not left to the browser.
+  f.doc.visibilityState = 'hidden';
+  f.doc.fire();
+  await tick();
+  assert.equal(f.live(), 0);
+  assert.ok(f.log.includes('release'), 'released on visibilitychange hidden');
+  f.doc.visibilityState = 'visible';
+  f.doc.fire();
+  await tick();
+  assert.equal(f.live(), 1, 'taken back when visible');
+  assert.equal(f.log.filter((l) => l === 'request:screen').length, 2);
+  lock.dispose();
+  await tick();
+  assert.equal(f.live(), 0);
+});
+
+test('review #333 L-2: a lock granted after the page went hidden is given straight back', async () => {
+  const f = fakes();
+  const lock = createWakeLock(f.nav, f.doc);
+  lock.set(true); // request in flight...
+  f.doc.visibilityState = 'hidden'; // ...the page hides before it resolves
+  await tick();
+  assert.equal(f.live(), 0, 'not kept while hidden');
+  f.doc.visibilityState = 'visible';
+  f.doc.fire();
+  await tick();
+  assert.equal(f.live(), 1, 'taken again when visible');
+  lock.dispose();
+  await tick();
+});
+
+test('review #333 L-2: a lock the browser drops while the page is visible is taken back', async () => {
+  const f = fakes();
+  const lock = createWakeLock(f.nav, f.doc);
+  lock.set(true);
+  await tick();
+  f.sentinels[0].drop(); // e.g. battery saver; the page is still visible
+  await tick();
+  assert.equal(f.live(), 1, 're-acquired');
+  assert.equal(f.log.filter((l) => l === 'request:screen').length, 2);
+  // Our own release (pause / unmount) never re-acquires.
+  lock.dispose();
+  await tick();
+  assert.equal(f.live(), 0);
 });

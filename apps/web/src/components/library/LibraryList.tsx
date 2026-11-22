@@ -90,7 +90,7 @@ const secondary: React.CSSProperties = {
 const textBtn: React.CSSProperties = {
   minHeight: 44,
   minWidth: 44,
-  padding: '0 8px',
+  padding: '0 4px',
   background: 'none',
   border: 'none',
   color: 'var(--text-secondary)',
@@ -329,7 +329,7 @@ function ExpiredRow({
             </span>
           </span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
           {s.isUpload ? (
             <a href="/" style={secondary} data-testid="library-upload-again">
               {UPLOAD_AGAIN_LABEL}

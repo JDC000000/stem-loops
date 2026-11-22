@@ -47,7 +47,7 @@ test('the library row wins over the same id in this browser; newest first; expir
 test('notes: Free\'s 24 hours stays exact; the paid library names both terms', () => {
   assert.equal(LIBRARY_NOTE_SIGNED_OUT, 'Files are deleted after 24 hours.');
   // Phase B, B1 (PB-1): on Free the AUDIO goes at 24 h; the song stays in the library.
-  assert.match(LIBRARY_NOTE_SIGNED_IN, /^On Free, a song’s audio, stems and loops are deleted 24 hours after you start it; the song stays in your library with its title, BPM and key until you remove it, and you can re-make it\./);
+  assert.match(LIBRARY_NOTE_SIGNED_IN, /^On Free, a song’s audio, stems, loops and chord file are deleted 24 hours after you start it\. Its title, BPM and key stay in your library until you remove the song or delete your account, and you can re-make it\./);
   assert.match(LIBRARY_NOTE_SIGNED_IN, /while you are subscribed, and for 30 days after your plan ends\.$/);
   assert.doesNotMatch(LIBRARY_NOTE_SIGNED_IN + LIBRARY_NOTE_SIGNED_OUT, /on our side|forever|unlimited/i);
 });

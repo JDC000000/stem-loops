@@ -246,5 +246,5 @@ export const REMOVE_NOTE = 'Its link, title, BPM and key are deleted. This can�
 
 /** The retention sentence under the page heading. Free's 24 h stays exact (PB-1). */
 export const LIBRARY_NOTE_SIGNED_IN =
-  'On Free, a song’s audio, stems and loops are deleted 24 hours after you start it; the song stays in your library with its title, BPM and key until you remove it, and you can re-make it. On Pro and Studio, songs you start while signed in keep their audio while you are subscribed, and for 30 days after your plan ends.';
+  'On Free, a song’s audio, stems, loops and chord file are deleted 24 hours after you start it. Its title, BPM and key stay in your library until you remove the song or delete your account, and you can re-make it. On Pro and Studio, songs you start while signed in keep their audio while you are subscribed, and for 30 days after your plan ends.';
 export const LIBRARY_NOTE_SIGNED_OUT = 'Files are deleted after 24 hours.';

@@ -328,6 +328,7 @@ const ALLOW = {
   'src/components/tapTarget.ts': [0, 'comments only (the shared tap floor, QA-73)'],
   'src/components/play/PlayerScreen.tsx': [12, 'player: NO_CHORDS_LINE ("No chords for this song.") and no-chords testids; the ⋯ "Chords: Simple / Detailed" view toggle (Phase A, D6) over the job\'s own chords'],
   'src/lib/play/simplify-chords.ts': [0, 'comments only (the Simple chord display layer, Phase A D6)'],
+  'src/lib/library.ts': [1, 'a DELETION disclosure, not a promise: the library note says the chord file goes at 24 hours with the audio (Phase B, PB-1)'],
   'src/lib/play/chord-mode.ts': [1, 'the stored Simple / Detailed chord-view choice (Phase A, D6): a storage key, no promise'],
   'src/components/play/MixSheet.tsx': [0, 'comments only'],
   'src/components/play/Player.tsx': [0, 'comments only'],

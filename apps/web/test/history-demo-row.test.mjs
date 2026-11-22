@@ -34,8 +34,6 @@ const graph = buildModuleGraph({
   entries: ['app/history/page.tsx', 'lib/retention.ts'],
   overrides: { 'lib/history.ts': 'export const getHistoryEntries = () => globalThis.__browserHistory ?? [];' },
 });
-const UNRESOLVED = [];
-
 const React = (await import('react')).default;
 const HistoryPage = (await import(graph.url('app/history/page.tsx'))).default;
 const { DEMO_RETAINED_UNTIL } = await import(graph.url('lib/retention.ts'));
@@ -66,10 +64,6 @@ async function render(rows) {
     }));
   });
 }
-
-test('harness: every import of the page and of lib/library.ts is mapped', () => {
-  assert.deepEqual(UNRESOLVED, [], `unmapped imports: ${UNRESOLVED.join(', ')}`);
-});
 
 test('/history: a demo row (is_demo) shows no "deleted in"; a regular library row does', async () => {
   const now = Date.now();

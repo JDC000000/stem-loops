@@ -94,7 +94,7 @@ export default function PrivacyPage() {
                 trigger on the account's deletion). */}
             <p data-testid="privacy-library-retention">
               Your song library outlives that. For a song you started while signed in, we keep its link (or file name),
-              title, video id, BPM and key after its audio is deleted, so it stays in your library marked “Audio expired”
+              title, video id, BPM and key, and when you first added it, after its audio is deleted, so it stays in your library marked “Audio expired”
               and you can make it again. Nothing made from the audio is kept. That record stays until you remove the song
               from your library or delete your account. Set lists you make (their names and the songs in them) are kept
               until you delete them or your account.

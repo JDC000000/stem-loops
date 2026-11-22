@@ -9,7 +9,7 @@
  },
  "390x844-sets-empty": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [],
@@ -17,7 +17,7 @@
  },
  "390x844-sets-two-lists": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [],
@@ -25,7 +25,7 @@
  },
  "390x844-new-list-sheet": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [],
@@ -33,7 +33,7 @@
  },
  "390x844-list-3-songs-1-expired": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [
@@ -50,7 +50,7 @@
  },
  "390x844-move-up-down-focus": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [
@@ -67,7 +67,7 @@
  },
  "390x844-delete-confirm": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [
@@ -109,7 +109,7 @@
  },
  "390x844-demo-set-signed-out": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [],
@@ -117,7 +117,7 @@
  },
  "390x844-demo-set-unavailable-song": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [],
@@ -133,7 +133,7 @@
  },
  "360x800-sets-empty": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [],
@@ -141,7 +141,7 @@
  },
  "360x800-sets-two-lists": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [],
@@ -149,7 +149,7 @@
  },
  "360x800-new-list-sheet": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [],
@@ -157,7 +157,7 @@
  },
  "360x800-list-3-songs-1-expired": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [
@@ -174,7 +174,7 @@
  },
  "360x800-move-up-down-focus": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [
@@ -191,7 +191,7 @@
  },
  "360x800-delete-confirm": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [
@@ -233,7 +233,7 @@
  },
  "360x800-demo-set-signed-out": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [],
@@ -241,7 +241,7 @@
  },
  "360x800-demo-set-unavailable-song": {
   "hscroll": 0,
-  "vscroll": 65,
+  "vscroll": 0,
   "small": [],
   "player": null,
   "moves": [],

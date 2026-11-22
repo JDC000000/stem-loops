@@ -180,7 +180,9 @@ test("DB AC 2: B gets 404 on every route for A's list; B cannot add A's job; A c
   const bl = await newList(b, 'Mine');
   const r2 = await add(b, bl, aj);
   assert.deepEqual([r2.status, r2.body.error_code], [404, 'JOB_NOT_FOUND']);
-  const dj = await job(null, { isDemo: true, title: 'Offline' });
+  // In flight, not done: a committed done demo row would show up in lib/demo-songs' list,
+  // which demo-songs-pg.test.mjs (running in parallel) asserts is exactly its own row.
+  const dj = await job(null, { isDemo: true, title: 'Offline', status: 'queued' });
   assert.equal((await add(b, bl, dj)).status, 201);
   assert.equal((await pool.query(`SELECT source FROM public.set_list_songs WHERE set_list_id = $1`, [bl])).rows[0].source, 'demo');
 });
@@ -271,6 +273,56 @@ test('DB AC 6: the Demo set never errors, with or without its songs, and is neve
   assert.equal(await count(`SELECT count(*) AS n FROM public.set_lists WHERE lower(name) = 'demo set' AND user_id IS NULL`), 0);
 });
 
+/** Run `fn` with the routes' db on ONE client inside a transaction that is rolled back, so
+ *  rows it writes (demo rows, a temporary role) are never visible to parallel test files. */
+async function inRolledBackTx(fn) {
+  const c = await pool.connect();
+  const real = globalThis.__slPool;
+  try {
+    await c.query('BEGIN');
+    globalThis.__slPool = { query: (t, p) => c.query(t, p) };
+    return await fn(c);
+  } finally {
+    globalThis.__slPool = real;
+    await c.query('ROLLBACK').catch(() => {});
+    c.release();
+  }
+}
+const PREFIX = { 'im-asking-you': '32f99278', offline: '3d43d743', 'lucky-ticket': '9c5ba587' };
+const withPrefix = (p) => `${p}-${randomUUID().slice(9)}`;
+
+test('DB AC 6: with the demo songs in the database, the Demo set plays all three, in #322 order — and still does after their owner is deleted', { skip }, async () => {
+  await inRolledBackTx(async (c) => {
+    const owner = randomUUID();
+    await c.query('INSERT INTO auth.users (id, email) VALUES ($1, $2)', [owner, `${EMAIL_PREFIX}demo-${owner.slice(0, 8)}@example.test`]);
+    // Inserted in catalog order (Lucky Ticket first), not the set's order.
+    for (const slug of ['lucky-ticket', 'im-asking-you', 'offline']) {
+      await c.query(
+        `INSERT INTO jobs (id, youtube_url, input_kind, upload_r2_key, requested_stems, loop_length_bars, status,
+                           client_ip_hash, client_fingerprint, user_id, title, is_demo)
+         VALUES ($1, NULL, 'upload', 'uploads/demo', ARRAY['drums'], 4, 'done', 'b2-set-lists', '', $2, $3, true)`,
+        [withPrefix(PREFIX[slug]), owner, slug],
+      );
+    }
+    const read = async () => {
+      demoSongs.clearDemoJobsCache();
+      as(null);
+      const r = await demo.GET(req(undefined));
+      assert.equal(r.status, 200);
+      return r.body.list.items;
+    };
+    const check = (items) => {
+      assert.deepEqual(items.map((x) => [x.title, x.state]), [['I’m Asking You', 'ready'], ['Offline', 'ready'], ['Lucky Ticket', 'ready']]);
+      assert.deepEqual(items.map((x) => x.job_id.slice(0, 8)), ['32f99278', '3d43d743', '9c5ba587']);
+    };
+    check(await read());
+    // The owner goes (outside the app's guarded path): jobs.user_id is SET NULL, is_demo stays.
+    await c.query('DELETE FROM auth.users WHERE id = $1', [owner]);
+    check(await read());
+  });
+  demoSongs.clearDemoJobsCache();
+});
+
 // ── AC 9 ───────────────────────────────────────────────────────────────────
 
 test('DB AC 9: deleting the users row leaves 0 lists (FK cascade)', { skip }, async () => {
@@ -292,6 +344,26 @@ test('DB AC 9: the tombstone alone (users.deleted_at) leaves 0 lists (backstop t
   await pool.query(`UPDATE public.users SET deleted_at = now() WHERE id = $1`, [a.user_id]);
   assert.equal(await count(`SELECT count(*) AS n FROM public.set_lists WHERE user_id = $1`, [a.user_id]), 0);
   assert.equal(await count(`SELECT count(*) AS n FROM public.set_lists WHERE id = $1`, [keep]), 1, "another user's list is untouched");
+});
+
+test('DB AC 9: the backstop works whichever role tombstones — one with UPDATE on users and NO rights on set_lists (SECURITY DEFINER)', { skip }, async () => {
+  await inRolledBackTx(async (c) => {
+    const uid = randomUUID();
+    await c.query('INSERT INTO auth.users (id, email) VALUES ($1, $2)', [uid, `${EMAIL_PREFIX}tomb-${uid.slice(0, 8)}@example.test`]);
+    await c.query(`INSERT INTO public.set_lists (user_id, name) VALUES ($1, 'One'), ($1, 'Two')`, [uid]);
+    const role = `b2_tomb_${randomUUID().slice(0, 8)}`;
+    await c.query(`CREATE ROLE ${role} NOLOGIN`);
+    await c.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
+    await c.query(`GRANT SELECT, UPDATE (deleted_at) ON public.users TO ${role}`);
+    await c.query(`CREATE POLICY ${role}_all ON public.users FOR ALL TO ${role} USING (true) WITH CHECK (true)`);
+    const g = await c.query(`SELECT has_table_privilege($1, 'public.set_lists', 'DELETE') AS d`, [role]);
+    assert.equal(g.rows[0].d, false, 'the tombstoning role holds no DELETE on set_lists');
+    await c.query(`SET LOCAL ROLE ${role}`);
+    const u = await c.query(`UPDATE public.users SET deleted_at = now() WHERE id = $1`, [uid]);
+    await c.query('RESET ROLE');
+    assert.equal(u.rowCount, 1);
+    assert.equal(Number((await c.query(`SELECT count(*) AS n FROM public.set_lists WHERE user_id = $1`, [uid])).rows[0].n), 0);
+  });
 });
 
 // ── limits ─────────────────────────────────────────────────────────────────

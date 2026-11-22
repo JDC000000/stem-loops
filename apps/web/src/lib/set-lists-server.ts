@@ -234,14 +234,16 @@ export type AddResult =
 export async function addSongToSetList(ownerId: string, listId: string, jobId: string): Promise<AddResult> {
   return db.tx(async (c: Client) => {
     if (!(await lockOwnedList(c, ownerId, listId))) return { ok: false, reason: 'not_found' } as const;
-    // The caller's own job, or a demo song. Never another user's ordinary job (AC 2).
+    // The caller's own job, or a demo song. Never another user's ordinary job (AC 2). Only a
+    // live one (D-a): done, or still in flight (it shows "Processing"); a failed job is refused.
     const job = await c.query<{ id: string; is_demo: boolean; youtube_url: string | null; video_id: string | null; title: string | null; original_filename: string | null }>(
       `SELECT jobs.id::text AS id, jobs.is_demo, jobs.youtube_url, jobs.video_id, jobs.title, jobs.original_filename
          FROM jobs
         WHERE jobs.id = $1::uuid
           AND (jobs.user_id = $2::uuid OR jobs.is_demo = true)
+          AND (jobs.status = 'done' OR jobs.status = ANY($3::text[]))
           AND ${JOB_RETAINED_UNTIL_SQL} > now()`,
-      [jobId, ownerId],
+      [jobId, ownerId, IN_FLIGHT_STATUSES],
     );
     const j = job.rows[0];
     if (!j) return { ok: false, reason: 'job_not_found' } as const;

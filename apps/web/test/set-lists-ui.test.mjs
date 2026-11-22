@@ -211,6 +211,11 @@ test('AC 6: the Demo set view is read-only (no move, remove, rename or delete) a
   });
 });
 
+test('the set-list pages do not take a full viewport under the signed-in bar (no page scroll, review R1)', () => {
+  const page = read('src/components/setlists/SetLists.module.css').match(/\n\.page\s*\{([^}]*)\}/)[1].replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.doesNotMatch(page, /min-height:\s*100d?vh/);
+});
+
 test("a list that is not the caller's reads as not found", async () => {
   await withDom(async (dom) => {
     const f = stubFetch(() => [404, { error_code: 'NOT_FOUND' }]);

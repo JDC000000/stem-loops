@@ -32,8 +32,12 @@
 --   3. Backstop: AFTER UPDATE OF deleted_at ON public.users deletes the user's lists the
 --      moment the account is tombstoned (DELETE /api/users/me step 4), so the lists are gone
 --      even if the later Supabase Admin delete (which cascades public.users) fails.
---      SECURITY INVOKER: it runs as the role that stamps the tombstone (stemloops_app, which
---      holds DELETE on set_lists below). EXECUTE revoked from PUBLIC, anon, authenticated.
+--      SECURITY DEFINER (the 013 check_credit_decrement pattern) with a pinned search_path:
+--      it deletes as the migration role, so it works whichever role stamps the tombstone (the
+--      app's stemloops_app today; an operator or a future worker path that holds UPDATE on
+--      users but no DELETE on set_lists tomorrow). It can only delete the lists of the row
+--      being tombstoned (NEW.id). EXECUTE revoked from PUBLIC, anon, authenticated; a trigger
+--      function is never callable directly anyway.
 --
 -- RLS: backend-only (the 028 / 041 / 042 pattern). The web connects as stemloops_app, whose
 --   policy admits every row; ownership is enforced in every route from getUser()
@@ -136,6 +140,7 @@ COMMENT ON TABLE public.set_list_songs IS
 CREATE OR REPLACE FUNCTION public.delete_set_lists_for_tombstoned_user()
   RETURNS trigger
   LANGUAGE plpgsql
+  SECURITY DEFINER
   SET search_path = public, pg_temp
 AS $$
 BEGIN

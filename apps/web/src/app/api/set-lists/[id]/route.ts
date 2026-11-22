@@ -2,19 +2,19 @@
 // PATCH  /api/set-lists/:id {name}   rename it.
 // DELETE /api/set-lists/:id          delete it. Its items go with it; songs (jobs) never do.
 //
-// The Demo set is /api/set-lists/demo (a sibling static route, read-only). Here, `demo`
-// is not a uuid, so it reads as "not found", and every write to it is refused 405.
+// The Demo set is /api/set-lists/demo, a sibling STATIC route: Next routes every method on
+// that path there (GET only; Next answers the rest 405), so this module never sees `demo`.
 //
 // SECURITY: owner-scoped from getUser(); a list that is not the caller's is 404, never 403
 // (a 403 would confirm the id is real). Writes run the same-origin guard FIRST.
 //
 // Errors: 400 INVALID_NAME / INVALID_BODY · 401 AUTH_REQUIRED · 403 BAD_ORIGIN ·
-//         404 NOT_FOUND · 405 DEMO_SET_READ_ONLY · 409 NAME_TAKEN · 500 INTERNAL_ERROR
+//         404 NOT_FOUND · 409 NAME_TAKEN · 500 INTERNAL_ERROR
 import { NextRequest, NextResponse } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 import { getUser } from '@/lib/auth/supabase';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
-import { DEMO_SET_ID, checkSetListName, isUuid, type SetListDetail } from '@/lib/set-lists';
+import { checkSetListName, isUuid, type SetListDetail } from '@/lib/set-lists';
 import { deleteSetList, getSetList, renameSetList } from '@/lib/set-lists-server';
 
 export const runtime = 'nodejs';
@@ -29,7 +29,6 @@ type Ctx = { params: { id: string } };
 const fail = (status: number, error_code: string, message: string) =>
   NextResponse.json({ error_code, message }, { status, headers: NO_STORE });
 const notFound = () => fail(404, 'NOT_FOUND', 'Set list not found.');
-const demoReadOnly = () => fail(405, 'DEMO_SET_READ_ONLY', 'The Demo set can’t be changed.');
 
 export async function GET(_req: NextRequest, { params }: Ctx) {
   try {
@@ -53,7 +52,6 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   try {
     const user = await getUser();
     if (!user) return fail(401, 'AUTH_REQUIRED', 'Sign in to change your set lists.');
-    if (params?.id === DEMO_SET_ID) return demoReadOnly();
     if (!isUuid(params?.id)) return notFound();
     let body: { name?: unknown };
     try {
@@ -79,7 +77,6 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   try {
     const user = await getUser();
     if (!user) return fail(401, 'AUTH_REQUIRED', 'Sign in to change your set lists.');
-    if (params?.id === DEMO_SET_ID) return demoReadOnly();
     if (!isUuid(params?.id)) return notFound();
     if (!(await deleteSetList(user.user_id, params.id))) return notFound();
     return new NextResponse(null, { status: 204, headers: NO_STORE });

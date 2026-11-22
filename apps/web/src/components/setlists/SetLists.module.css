@@ -4,7 +4,8 @@
    --border-control; selected/pressed is neutral (#222 + a 2px white edge). */
 
 .page {
-  min-height: 100dvh;
+  /* No min-height: 100dvh here. The signed-in bar sits above this page, so a full-viewport
+     main made every set-list page scroll by the bar's height (review R1, 65 px). */
   padding: var(--space-4) var(--space-4) var(--space-8);
   max-width: 640px;
   margin: 0 auto;

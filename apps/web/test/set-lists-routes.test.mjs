@@ -153,7 +153,9 @@ function makeFake() {
     }
     if (/^SELECT jobs\.id::text AS id, jobs\.is_demo/.test(q)) {
       const guarded = /AND \(jobs\.user_id = \$2::uuid OR jobs\.is_demo = true\)/.test(q);
-      return R(st.jobs.filter((j) => j.id === p[0] && j.retained && (!guarded || j.user_id === p[1] || j.is_demo === true))
+      const live = /AND \(jobs\.status = 'done' OR jobs\.status = ANY\(\$3::text\[\]\)\)/.test(q);
+      return R(st.jobs.filter((j) => j.id === p[0] && j.retained && (!guarded || j.user_id === p[1] || j.is_demo === true)
+          && (!live || j.status === 'done' || p[2].includes(j.status)))
         .map((j) => ({ id: j.id, is_demo: j.is_demo, youtube_url: j.youtube_url, video_id: null, title: j.title, original_filename: null })));
     }
     if (/^SELECT item_id::text AS item_id FROM public\.set_list_songs WHERE set_list_id = \$1::uuid AND \(job_id/.test(q)) {
@@ -333,7 +335,8 @@ test("AC 2: B cannot read, rename, delete, add to, reorder or take from A's list
   const id = await newList(A, 'JAMS');
   const aj = job(A);
   await add(A, id, aj.id);
-  const before = JSON.stringify(fake.st);
+  const snap = () => JSON.stringify({ lists: fake.st.lists, songs: fake.st.songs, jobs: fake.st.jobs });
+  const before = snap();
   const item = fake.st.songs[0].item_id;
   const bj = job(B);
   const r = [
@@ -348,7 +351,7 @@ test("AC 2: B cannot read, rename, delete, add to, reorder or take from A's list
   assert.deepEqual(r.map((x) => x.status), [404, 404, 404, 404, 404, 404, 404]);
   for (const x of r) assert.equal(x.body.error_code, 'NOT_FOUND');
   fake.st.jobs.pop(); // B's job, made after the snapshot
-  assert.equal(JSON.stringify(fake.st).replace(/"statements":\[[^\]]*\]/, ''), before.replace(/"statements":\[[^\]]*\]/, ''), "A's list changed");
+  assert.equal(snap(), before, "A's list changed");
   as(B);
   const mine = await lists.GET(req(undefined));
   assert.deepEqual(mine.body.lists, [], "A's list is not in B's index");
@@ -365,6 +368,17 @@ test("AC 2: A cannot add B's song to A's own list (404 JOB_NOT_FOUND), but CAN a
   const ok = await add(A, id, demoSong.id);
   assert.equal(ok.status, 201);
   assert.equal(fake.st.songs[0].source, 'demo');
+});
+
+test('a failed job cannot be added (404); a job still in flight can, and shows "Processing" (D-a)', async () => {
+  const id = await newList(A);
+  const failed = job(A, { status: 'failed' });
+  const r = await add(A, id, failed.id);
+  assert.deepEqual([r.status, r.body.error_code], [404, 'JOB_NOT_FOUND']);
+  assert.equal(fake.st.songs.length, 0);
+  const busy = job(A, { status: 'separating' });
+  assert.equal((await add(A, id, busy.id)).status, 201);
+  assert.deepEqual((await detail(A, id)).body.list.items.map((x) => [x.state, x.job_id]), [['processing', busy.id]]);
 });
 
 test('an expired song (not retained) cannot be added', async () => {
@@ -532,16 +546,20 @@ test('AC 6: the demo route is read-only — it exports GET only (Next answers PO
   assert.doesNotMatch(read('src/app/api/set-lists/demo/route.ts'), /export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)|export\s+(const|\{)[^;]*\b(POST|PUT|PATCH|DELETE)\b/);
 });
 
-test('AC 6: writes aimed at the Demo set through the :id routes are 405, and nothing is written', async () => {
+test('AC 6: writes aimed at the Demo set through /demo/songs are 405; nothing is written', async () => {
+  // /api/set-lists/demo itself is the static GET-only route (Next 405s PATCH/DELETE there), so
+  // :id never receives `demo`; if it ever did, `demo` is not a uuid: 404, nothing read.
   as(A);
   const r = [
-    await one.PATCH(req({ name: 'x' }), ctx('demo')),
-    await one.DELETE(req(undefined), ctx('demo')),
     await songs.POST(req({ job_id: randomUUID() }), ctx('demo')),
     await songs.DELETE(req({ item_id: randomUUID() }), ctx('demo')),
     await songs.PUT(req({ order: [] }), ctx('demo')),
   ];
-  assert.deepEqual(r.map((x) => [x.status, x.body.error_code]), Array(5).fill([405, 'DEMO_SET_READ_ONLY']));
+  assert.deepEqual(r.map((x) => [x.status, x.body.error_code]), Array(3).fill([405, 'DEMO_SET_READ_ONLY']));
+  as(A);
+  assert.equal((await one.PATCH(req({ name: 'x' }), ctx('demo'))).status, 404);
+  as(A);
+  assert.equal((await one.DELETE(req(undefined), ctx('demo'))).status, 404);
   assert.deepEqual(fake.st.statements, []);
 });
 

@@ -176,12 +176,15 @@ test('044: RLS backend-only on both tables, anon/authenticated revoked, the mark
   assert.match(SQL, /^-- rls-backend-only: set_lists, set_list_songs$/m);
 });
 
-test('044: tombstone backstop trigger deletes the lists; its function is not executable by PUBLIC/anon/authenticated', () => {
+test('044: tombstone backstop trigger deletes the lists, as SECURITY DEFINER with a pinned search_path (any tombstoning role); not executable by PUBLIC/anon/authenticated', () => {
   assert.match(code, /AFTER UPDATE OF deleted_at ON public\.users[\s\S]*WHEN \(NEW\.deleted_at IS NOT NULL\)[\s\S]*EXECUTE FUNCTION public\.delete_set_lists_for_tombstoned_user\(\)/);
   assert.match(code, /DELETE FROM public\.set_lists WHERE user_id = NEW\.id;/);
   assert.match(code, /REVOKE ALL ON FUNCTION public\.delete_set_lists_for_tombstoned_user\(\) FROM PUBLIC;/);
   assert.match(code, /REVOKE ALL ON FUNCTION public\.delete_set_lists_for_tombstoned_user\(\) FROM anon, authenticated;/);
-  assert.doesNotMatch(code, /SECURITY DEFINER/);
+  const fn = code.match(/CREATE OR REPLACE FUNCTION public\.delete_set_lists_for_tombstoned_user\(\)([\s\S]*?)AS \$\$/)[1];
+  assert.match(fn, /SECURITY DEFINER/);
+  assert.match(fn, /SET search_path = public, pg_temp/);
+  assert.equal((code.match(/SECURITY DEFINER/g) ?? []).length, 1, 'no other definer function');
 });
 
 test('044 down: drops what 044 made and its ledger row', () => {

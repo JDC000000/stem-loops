@@ -606,7 +606,7 @@ jobs:
   chord-chip-browser-gate:
     name: Chord chip fit (real Chromium)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45  # #333: the chord-stage sweeps (3 demos x 4 phones x 2 views, every 0.37 s) take ~25 min
     # The chord overlay is the product's differentiator and its gate in
     # apps/web/test/chord-default-zoom.test.mjs runs in happy-dom, which has no
     # layout engine and cannot see a clipped chord name. This job renders the

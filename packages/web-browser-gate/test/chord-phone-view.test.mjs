@@ -1255,7 +1255,9 @@ for (const [stageH, full] of [[460, true], [420, false]]) for (const vp of [[390
   });
 }
 
-// Review of #333 round 2 (B-1r): the REAL small phones with #331 on screen
+// Review of #333 round 2 (B-1r) and Jon (18:35 PT: "hold until it's
+// perfect"): the four target phones, 390x844, 360x800 and the small 375x667 /
+// 390x664, with #331 on screen
 // (the stem pills, the 1-row section strip with its "+N more" cue, the
 // first-run "Tap to jump · hold to loop" line), no CSS override. Every 0.37 s
 // of each demo, both views: Now >= 72px at EVERY position, nothing clipped,
@@ -1264,11 +1266,11 @@ for (const [stageH, full] of [[460, true], [420, false]]) for (const vp of [[390
 // Measured at the round-2 fix (1 point below): Next falls to 32px only where
 // 44px (not growing) cannot keep Now at 72 with the next line.
 const SMALL_NEXT44_FLOOR = Object.fromEntries(
-  ['375x667', '390x664'].flatMap((v) => ['simple', 'detailed'].flatMap((m) => DEMO_SLUGS.map((d) => [`${d} ${m} ${v}`, 0.99]))),
+  ['390x844', '360x800', '375x667', '390x664'].flatMap((v) => ['simple', 'detailed'].flatMap((m) => DEMO_SLUGS.map((d) => [`${d} ${m} ${v}`, 0.99]))),
 );
 SMALL_NEXT44_FLOOR['lucky-ticket simple 390x664'] = 0.91;
 SMALL_NEXT44_FLOOR['offline simple 390x664'] = 0.93;
-for (const vp of [[375, 667], [390, 664]]) for (const mode of ['simple', 'detailed']) for (const slug of DEMO_SLUGS) {
+for (const vp of [[390, 844], [360, 800], [375, 667], [390, 664]]) for (const mode of ['simple', 'detailed']) for (const slug of DEMO_SLUGS) {
   test(`phone chords @ ${vp[0]}x${vp[1]} (pills, 1-row strip, first-run hint): ${slug}, ${mode}: Now >= 72 everywhere`, async () => {
     const D = JSON.parse(readFileSync(join(WEB, 'test/fixtures/demo-chords', `${slug}.json`), 'utf8'));
     const grid = { beatSec: 60 / D.bpm, anchorSec: D.sections[0].start_sec, measured: true };

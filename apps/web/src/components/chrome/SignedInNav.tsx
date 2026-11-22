@@ -37,6 +37,7 @@
 // label hint reads the cookie after mount; both are view concerns.
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { isSongLibraryPath } from '@/lib/nav-current';
 
 export type SignedInNavProps = {
   /**
@@ -111,7 +112,9 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
   const items: Item[] = [
     { label: 'Play along', short: 'Play', href: '/', match: (p) => p === '/' || p.startsWith('/jobs/'), product: 'Play along' },
     { label: 'Download loops', href: '/loops', match: (p) => p === '/loops' || p.startsWith('/loops/'), product: 'Download loops', wideOnly: true },
-    { label: 'Song library', short: 'Songs', href: '/history', match: (p) => p === '/history' },
+    // Current on /history and on the set-list pages, /sets and /sets/<id> (B2 follow-up): set
+    // lists have no item of their own (three phone items, A4), and they are lists of library songs.
+    { label: 'Song library', short: 'Songs', href: '/history', match: isSongLibraryPath },
     // P6 (Jon, 2026-11-17): Pricing is in the bar, signed in and out, on every
     // page including the landing. It belongs to neither product, so it carries
     // no `product` tag.

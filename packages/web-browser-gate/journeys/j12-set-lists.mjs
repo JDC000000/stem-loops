@@ -2,7 +2,8 @@
 //
 //   signed in: /sets → "+ New set list" → "Create" (prefilled "Set list 1") → the empty list
 //   → a processed song → ⋯ → "Add to Set list 1" (one tap) → a second song the same way
-//   → /sets/<id> shows both → Move down / Move up → open song 1 → "Next song ›" (one tap)
+//   → /sets/<id> shows both (nav: Songs is current) → Move down / Move up → drag song 1 below
+//   song 2 and back (B2 follow-up: one PUT per drop) → open song 1 → "Next song ›" (one tap)
 //   → song 2, last in the list: no Next → delete the list (confirm says songs are kept)
 //   signed out: /sets/demo → the Demo set, read-only.
 //
@@ -49,6 +50,9 @@ async function walk(j, vp, user, songs) {
   try {
     await page.goto('/sets');
     await page.locator('[data-testid="sets-new"]').waitFor({ timeout: 20_000 });
+    // B2 follow-up: set lists have no nav item of their own; Song library ("Songs") is current.
+    const navCurrent = (await page.locator('a.sin-item[aria-current="page"]').allInnerTexts()).map((t) => t.trim());
+    j.check(`${tag}: on /sets the nav marks Songs as current`, navCurrent.length === 1 && navCurrent[0] === 'Songs', JSON.stringify(navCurrent));
     await j.shot(page, `${tag}-01-sets-empty`, { fullPage: false });
     await page.locator('[data-testid="sets-new"]').tap(); // tap 1
     const prefill = await page.locator('[data-testid="sets-new-name"]').inputValue();
@@ -75,6 +79,40 @@ async function walk(j, vp, user, songs) {
     await page.locator(`[data-item="${first}"] [data-move="up"]`).focus();
     await page.keyboard.press('Enter');
     await sleep(800);
+
+    // Drag to reorder (B2 follow-up): drag song 1's handle below song 2; one PUT; then back.
+    const dragTo = async (fromIdx, toIdx, shotName) => {
+      const h = await page.locator('[data-testid="set-item"]').nth(fromIdx).locator('[data-testid="set-drag"]').boundingBox();
+      const target = await page.locator('[data-testid="set-item"]').nth(toIdx).boundingBox();
+      const x = h.x + h.width / 2;
+      const dy = toIdx > fromIdx ? target.height * 0.8 : -target.height * 0.8;
+      const puts = [];
+      const onReq = (r) => r.method() === 'PUT' && r.url().endsWith(`/api/set-lists/${listId}/songs`) && puts.push(r);
+      page.on('request', onReq);
+      await page.mouse.move(x, h.y + h.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(x, target.y + target.height / 2 + dy, { steps: 10 });
+      if (shotName) {
+        j.check(`${tag}: mid-drag the row is marked as dragged`, (await page.locator('[data-drag="true"]').count()) === 1);
+        await j.shot(page, shotName, { fullPage: false });
+      }
+      await page.mouse.up();
+      await page.waitForResponse((r) => r.request().method() === 'PUT' && r.url().endsWith(`/api/set-lists/${listId}/songs`), { timeout: 10_000 }).catch(() => {});
+      await sleep(500);
+      page.off('request', onReq);
+      return puts.length;
+    };
+    const dragHandle = await page.locator('[data-testid="set-drag"]').first().boundingBox();
+    j.check(`${tag}: the drag handle is at least 44×44`, dragHandle && dragHandle.width >= 44 && dragHandle.height >= 44, JSON.stringify(dragHandle));
+    const sent = await dragTo(0, 1, `${tag}-03b-mid-drag`);
+    j.check(`${tag}: one drop sent one PUT`, sent === 1, String(sent));
+    j.check(`${tag}: dragging song 1 below song 2 moved it`, (await page.locator('[data-testid="set-item"]').nth(1).getAttribute('data-item')) === first);
+    await page.reload();
+    await page.locator('[data-testid="set-item"]').nth(1).waitFor({ timeout: 15_000 });
+    j.check(`${tag}: the dragged order is saved`, (await page.locator('[data-testid="set-item"]').nth(1).getAttribute('data-item')) === first);
+    await j.shot(page, `${tag}-03c-after-drop`, { fullPage: false });
+    await dragTo(1, 0, null);
+    j.check(`${tag}: dragging it back restored the order`, (await page.locator('[data-testid="set-item"]').first().getAttribute('data-item')) === first);
 
     await page.locator('[data-testid="set-item"] a').first().tap();
     await page.locator('[data-testid="set-next"]').waitFor({ timeout: 20_000 });

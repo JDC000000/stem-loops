@@ -270,10 +270,68 @@
   box-shadow: var(--shadow-float);
 }
 
+/* Drag to reorder (B2 follow-up). The handle is pointer-only (the Move buttons are the keyboard
+   path): 44px, and touch-action none so a drag on a phone never scrolls the page. */
+.handle {
+  flex: 0 0 auto;
+  width: var(--touch-min);
+  min-height: var(--touch-min);
+  margin-left: -10px;
+  margin-right: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-label);
+  font-size: var(--text-lg);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+/* The grip (and, on a reorderable list, the row number, so a 360px row keeps room for the
+   title) is drawn by CSS: the row's text stays the song alone. */
+.handle::before {
+  content: attr(data-pos);
+  min-width: 2ch;
+  text-align: right;
+  margin-right: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--text-12);
+}
+.handle::after {
+  content: '⠿';
+}
+.posInHandle {
+  display: none;
+}
+.list[data-dragging='true'] .handle {
+  cursor: grabbing;
+}
+/* The row being dragged: the brand selected state, #222 + 2px #fff. */
+.row.dragging {
+  position: relative;
+  z-index: 1;
+  background: var(--bg-selected);
+  border-color: var(--text-primary);
+  box-shadow: 0 0 0 1px var(--text-primary); /* 1px border + 1px ring = 2px, no layout shift */
+}
+/* Where it will land: a 2px #fff line above or below the row it would pass. */
+.row[data-drop='before'] {
+  box-shadow: 0 -5px 0 -3px var(--text-primary);
+}
+.row[data-drop='after'] {
+  box-shadow: 0 5px 0 -3px var(--text-primary);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .row,
   .iconBtn,
   .nextBtn {
     transition: none;
+  }
+  /* State changes only: the dragged row does not follow the pointer. */
+  .row.dragging {
+    transform: none !important;
   }
 }

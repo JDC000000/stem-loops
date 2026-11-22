@@ -216,6 +216,9 @@ test('exactly one item is aria-current="page", and it is the right one', async (
     ['/account', 'Account'],
     ['/account/delete', 'Account'],
     ['/history', 'Song library'],
+    // B2 follow-up: the set-list pages have no item of their own; they mark Song library.
+    ['/sets', 'Song library'],
+    ['/sets/demo', 'Song library'],
     [`/jobs/${JOB_A}`, 'Play along'],
     ['/loops', 'Download loops'],
     ['/pricing', 'Pricing'],

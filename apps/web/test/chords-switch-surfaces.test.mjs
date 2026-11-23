@@ -322,8 +322,8 @@ test('numeric claims: every hour and day figure on /help, /terms, /privacy, llms
 // count and say why in the reason.
 const ALLOW = {
   // the player and its chord track: render THE JOB'S OWN chord data, or "No chords for this song."
-  'src/components/ChordOverlay.tsx': [28, 'player chord track: testids, aria-labels and pickers for the job\'s own chords'],
-  'src/components/ChordOverlay.helpers.ts': [24, 'player chord track helpers: labels for the job\'s own chord runs ("No chord", "Unknown chord", kind === \'chord\')'],
+  'src/components/ChordOverlay.tsx': [27, 'player chord track: testids, aria-labels and pickers for the job\'s own chords'],
+  'src/components/ChordOverlay.helpers.ts': [25, 'player chord track helpers: labels for the job\'s own chord runs ("No chord", "Unknown chord", kind === \'chord\')'],
   'src/components/ChordPhone.helpers.ts': [3, 'player chord track helpers (phone)'],
   'src/components/tapTarget.ts': [0, 'comments only (the shared tap floor, QA-73)'],
   'src/components/play/PlayerScreen.tsx': [12, 'player: NO_CHORDS_LINE ("No chords for this song.") and no-chords testids; the ⋯ "Chords: Simple / Detailed" view toggle (Phase A, D6) over the job\'s own chords'],

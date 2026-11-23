@@ -20,6 +20,7 @@ import { MAX_TRACK_SEC } from '../lib/play/types.ts';
 import { MIN_TAP_PX } from './tapTarget.ts';
 import { spellChord } from '../lib/play/notation.ts';
 import { simplifyChords } from '../lib/play/simplify-chords.ts';
+import { transposeLabel } from '../lib/play/transpose.ts';
 
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
@@ -305,6 +306,28 @@ export function simplifyOverlayRuns(
     return { ...r, startFrame, endFrame: Math.max(startFrame, Math.round(r.endSec * CHORDS_FRAMES_PER_SEC)) };
   });
   return markMonotoneRuns(out);
+}
+
+/**
+ * What the chord views draw: the loaded runs, then (1) "Simple" merging when
+ * asked, then (2) Capo / transpose names. Simplify runs on the ORIGINAL labels
+ * (merging is by chord identity), then only the names move: times, kinds and
+ * classes stay as loaded. Pure; the input runs are not modified.
+ */
+export function displayRuns(
+  runs: readonly OverlayRun[],
+  opts: {
+    simplify: boolean;
+    grid?: { readonly beatSec: number; readonly anchorSec: number; readonly measured?: boolean } | null;
+    anchors?: readonly number[];
+    transpose?: number;
+    musicalKey?: string | null;
+  },
+): OverlayRun[] {
+  const base = opts.simplify && runs.length > 1 ? simplifyOverlayRuns(runs, opts.grid, opts.anchors ?? []) : (runs as OverlayRun[]);
+  const t = opts.transpose ?? 0;
+  if (t === 0) return base;
+  return base.map((r) => (r.kind === 'chord' ? { ...r, label: transposeLabel(r.label, t, opts.musicalKey ?? null) } : r));
 }
 
 export function observationsToRuns(obs: readonly ChordObservation[]): OverlayRun[] {

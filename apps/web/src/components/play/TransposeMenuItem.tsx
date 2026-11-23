@@ -40,7 +40,6 @@ export function TransposeMenuItem({ value, onChange }: { value: number; onChange
         <button
           type="button"
           className={styles.segment}
-          aria-pressed={false}
           onClick={() => onChange(0)}
           data-testid="transpose-reset"
         >

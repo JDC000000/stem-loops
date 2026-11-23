@@ -214,6 +214,57 @@ test('D6: Simple on Lucky Ticket draws 87 chords in the chart where Detailed dra
 });
 
 
+test('C4: Capo / transpose on the REAL overlay: stage chip, Now / Next and the aria-label show the shifted name; the chart too', async () => {
+  const seg = (a, b, label) => ({ start_sec: a, end_sec: b, label, confidence: 1 });
+  const payload = { ...PAYLOAD, duration_sec: 40, segments: [seg(0, 8, 'A:min7'), seg(8, 16, 'D:maj/3'), seg(16, 24, 'E:min7'), seg(24, 32, 'A:maj'), seg(32, 40, 'D:maj')] };
+  await withDom(async (dom) => {
+    const texts = (sel) => dom.findAll(sel).map((e) => e.textContent);
+    // Detailed (simplify false) so the names are exactly the payload's.
+    const m = await mount(dom, { payload, positionSec: 10, playing: true, simplify: false, transpose: -2, musicalKey: 'A major' });
+    try {
+      // Capo 2 in A major: D/F# shows as C/E, the next E:min7 as Dm7 (2 semitones DOWN)
+      assert.equal(dom.find('[data-testid="playhead-now-name"]').textContent, 'C/E');
+      assert.equal(dom.find('[data-testid="phone-next-name"]').textContent, 'Dm7');
+      assert.match(dom.find('[data-testid="phone-now-spoken"]').textContent, /^Now C over E\. .*D minor 7\./);
+      const slotTexts = texts('[data-testid^="phone-slot-"]').join('|');
+      assert.match(slotTexts, /Dm7/);
+      assert.doesNotMatch(slotTexts, /Em7/, 'the stored E:min7 is not shown');
+      assert.ok(dom.findAll('[aria-label]').every((e) => !/D major over F/.test(e.getAttribute('aria-label'))), 'no stale name in an aria-label');
+      // the key decides the spelling: in F major the same Capo 2 spells flats
+      await m.rerender({ transpose: 3, musicalKey: 'F major' });
+      assert.equal(dom.find('[data-testid="playhead-now-name"]').textContent, 'F/A');
+      // D/F# up 3 = F/A (key F major +3 = Ab major)
+      // the key picks the accidental: Am7 up 1 in E major (new key F major) is B-flat, not A-sharp
+      await m.rerender({ positionSec: 4, transpose: 1, musicalKey: 'E major' });
+      assert.equal(dom.find('[data-testid="playhead-now-name"]').textContent, 'B\u266Dm7');
+      await m.rerender({ positionSec: 10 });
+      // Capo off: the stored names again
+      await m.rerender({ transpose: 0 });
+      assert.equal(dom.find('[data-testid="playhead-now-name"]').textContent, 'D/F\u266F');
+      assert.equal(dom.find('[data-testid="phone-next-name"]').textContent, 'Em7');
+      // Simple stays on when transposed (the chart draws the merged run set)
+      await m.rerender({ transpose: -2, simplify: true });
+      assert.equal(dom.find('[data-testid="playhead-now-name"]').textContent, 'C/E');
+    } finally {
+      m.restore();
+      await dom.unmountAll();
+    }
+    // the "See all chords" chart
+    const c = await mount(dom, { payload, view: 'chart', positionSec: null, simplify: false, transpose: -2, musicalKey: 'A major' }, { w: 1200, h: 400 });
+    try {
+      const chips = dom.findAll('[data-testid^="chord-chip-"]').filter((x) => /^chord-chip-\d+$/.test(x.dataset.testid));
+      const label = (x) => x.getAttribute('aria-label') ?? '';
+      const joined = chips.map((x) => `${x.textContent}~${label(x)}`).join('|');
+      assert.match(joined, /Gm7/);
+      assert.match(joined, /C\/E/);
+      assert.doesNotMatch(joined, /Am7/);
+    } finally {
+      c.restore();
+      await dom.unmountAll();
+    }
+  });
+});
+
 test('review #333: Simple (bars) hides the beat dots beside the countdown; Next grows only into the width Now leaves', async () => {
   await withDom(async (dom) => {
     const m = await mount(dom, { positionSec: 30, playing: true, simplify: true });

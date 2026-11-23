@@ -91,10 +91,23 @@ export function transposeHarte(label: string, semis: number, spelling: Spelling)
   return m[1] + noteName(rootPc + semis, spelling) + rest;
 }
 
-/** The label a run shows, for the chosen shift and song key. */
+/**
+ * The label a run shows, for the chosen shift and song key. Accidentals follow
+ * the NEW key's signature, except the one chord-root a key always sharpens: the
+ * raised 7th of a minor key (C# in D minor, F# in G minor) and F# in C major.
+ */
 export function transposeLabel(label: string, semis: number, musicalKey: unknown): string {
   if (semis === 0) return label;
-  return transposeHarte(label, semis, spellingFor(musicalKey, semis));
+  let spelling = spellingFor(musicalKey, semis);
+  const key = parseKey(musicalKey);
+  const m = /^\s*([A-G](?:#|b)*)/.exec(typeof label === 'string' ? label : '');
+  const rootPc = m ? parseNote(m[1]) : null;
+  if (key && rootPc !== null) {
+    const outPc = (rootPc + semis + 120) % 12;
+    const keyPc = (key.pc + semis + 120) % 12;
+    if (key.minor ? outPc === (keyPc + 11) % 12 : keyPc === 0 && outPc === 6) spelling = 'sharp';
+  }
+  return transposeHarte(label, semis, spelling);
 }
 
 /** The small indicator: "" at 0, "Capo 2" below 0, "+2" above. */
@@ -103,7 +116,7 @@ export function transposeBadge(semis: number): string {
   return semis < 0 ? `Capo ${-semis}` : `+${semis}`;
 }
 
-/** The value in the menu: "Off", "Capo 2 (shapes down 2)", "+2 semitones". */
+/** The value in the menu: "Off", "Capo 2", "+2 semitones". */
 export function transposeSummary(semis: number): string {
   if (semis === 0) return 'Off';
   if (semis < 0) return `Capo ${-semis}`;
@@ -123,7 +136,7 @@ export function readTranspose(jobId: string): number {
 export function writeTranspose(jobId: string, semis: number): void {
   try {
     const key = TRANSPOSE_KEY_PREFIX + jobId;
-    if (semis === 0) globalThis.localStorage?.removeItem(key);
+    if (clampTranspose(semis) === 0) globalThis.localStorage?.removeItem(key);
     else globalThis.localStorage?.setItem(key, String(clampTranspose(semis)));
   } catch {
     /* not remembered: the choice still holds for this page */

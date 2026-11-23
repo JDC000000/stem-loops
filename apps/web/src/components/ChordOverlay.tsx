@@ -43,7 +43,6 @@ import {
 import { computeCQT, loadCqtPlan } from '../chord/cqt-frontend.ts';
 import { collapseRuns, smoothChordLogits } from '../chord/smoother.ts';
 import { usePlayChords } from '../chord/play-chords-loader.ts';
-import { transposeLabel } from '../lib/play/transpose.ts';
 import {
   type TabCapture,
   UnsupportedBrowserError,
@@ -102,7 +101,7 @@ import {
   chipContentPx,
   chipDensity,
   segmentDensityCounts,
-  simplifyOverlayRuns,
+  displayRuns,
   zoomCeilingPxPerSec,
   MAX_TIMELINE_PX,
   estimateLabelPx,
@@ -468,14 +467,9 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   // O(n^2) in the worst case, never per frame). Section starts re-anchor the
   // beat grid; the job's measured grid only (no pseudo-bars).
   const sectionStarts = useMemo(() => (sections ?? []).map((s) => s.startSec), [sections]);
-  const simplified = useMemo(
-    () => (simplify && state.runs.length > 1 ? simplifyOverlayRuns(state.runs, beatGrid, sectionStarts) : state.runs),
-    [simplify, state.runs, beatGrid, sectionStarts],
-  );
-  // Capo / transpose: names only (label); times, kinds and classes are as loaded.
   const runs = useMemo(
-    () => (transpose === 0 ? simplified : simplified.map((r) => (r.kind === 'chord' ? { ...r, label: transposeLabel(r.label, transpose, musicalKey) } : r))),
-    [simplified, transpose, musicalKey],
+    () => displayRuns(state.runs, { simplify, grid: beatGrid, anchors: sectionStarts, transpose, musicalKey }),
+    [simplify, state.runs, beatGrid, sectionStarts, transpose, musicalKey],
   );
   const hasChordRuns = state.runs.some((r) => r.kind === 'chord');
   useEffect(() => {

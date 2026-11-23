@@ -7,6 +7,7 @@ import {
   readTranspose, writeTranspose, TRANSPOSE_KEY_PREFIX,
 } from '../src/lib/play/transpose.ts';
 import { spellChord } from '../src/lib/play/notation.ts';
+import { displayRuns, observationsToRuns } from '../src/components/ChordOverlay.helpers.ts';
 
 const SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
@@ -43,7 +44,10 @@ test('12 keys x 12 roots: the spelling follows the new key (major and minor)', (
         const flats = (minor ? flatMinor : flatMajor).has(newPc);
         assert.equal(spellingFor(key, t), flats ? 'flat' : 'sharp', `${key} ${t}`);
         for (let r = 0; r < 12; r++) {
-          const want = (flats ? FLAT : SHARP)[(r + t + 12) % 12];
+          // the raised 7th of a minor key, and F# in C major, stay sharp
+          const outPc = (r + t + 12) % 12;
+          const sharpened = minor ? outPc === (newPc + 11) % 12 : newPc === 0 && outPc === 6;
+          const want = (flats && !sharpened ? FLAT : SHARP)[outPc];
           assert.equal(transposeLabel(`${SHARP[r]}:min`, t, key), `${want}:min`, `${key} ${t} root ${SHARP[r]}`);
         }
       }
@@ -132,6 +136,11 @@ test('storage is per job, best-effort, and a broken value is 0', () => {
     assert.equal(store.get(TRANSPOSE_KEY_PREFIX + 'a'), '-2');
     writeTranspose('a', 0);
     assert.equal(store.has(TRANSPOSE_KEY_PREFIX + 'a'), false);
+    writeTranspose('n', 3);
+    writeTranspose('n', NaN); // not a shift: clears, never stores "0"
+    assert.equal(store.has(TRANSPOSE_KEY_PREFIX + 'n'), false);
+    writeTranspose('n', 'x');
+    assert.equal(store.has(TRANSPOSE_KEY_PREFIX + 'n'), false);
     store.set(TRANSPOSE_KEY_PREFIX + 'z', 'junk');
     assert.equal(readTranspose('z'), 0);
     store.set(TRANSPOSE_KEY_PREFIX + 'z', '99');
@@ -145,4 +154,69 @@ test('storage is per job, best-effort, and a broken value is 0', () => {
   } finally {
     Object.defineProperty(globalThis, 'localStorage', { value: prev, configurable: true });
   }
+});
+
+test('sharps where the key wants them: vii of minor, F# in C major (spelling rows)', () => {
+  // E minor Capo 2 = D minor: D#dim -> C#dim (not Db)
+  assert.equal(transposeLabel('D#:dim', -2, 'E minor'), 'C#:dim');
+  // A minor Capo 2 = G minor: G#dim -> F#dim (not Gb)
+  assert.equal(transposeLabel('G#:dim', -2, 'A minor'), 'F#:dim');
+  assert.equal(transposeLabel('G#:hdim7', -2, 'A minor'), 'F#:hdim7');
+  // D major Capo 2 = C major: G#:hdim7 -> F#m7b5 (not Gb)
+  assert.equal(transposeLabel('G#:hdim7', -2, 'D major'), 'F#:hdim7');
+  assert.equal(transposeLabel('G#:dim', -2, 'D major'), 'F#:dim');
+  // ...but the flat degrees stay flat in those keys
+  assert.equal(transposeLabel('G:maj', -2, 'E minor'), 'F:maj');
+  assert.equal(transposeLabel('D:maj', -2, 'E minor'), 'C:maj');
+  assert.equal(transposeLabel('A:maj', -2, 'D major'), 'G:maj');
+  assert.equal(transposeLabel('D:maj', -2, 'D major'), 'C:maj');
+  // C major itself: Bb (flat VII) stays flat
+  assert.equal(transposeLabel('D:maj', -4, 'E major'), 'Bb:maj');
+});
+
+test('displayRuns: simplify THEN transpose, names only, key-aware, sign (Capo 2 = names 2 DOWN)', () => {
+  const mk = (l) => observationsToRuns(l.map(([a, b, label]) => ({ startSec: a, endSec: b, label })));
+  const raw = mk([[0, 3, 'A#:maj'], [3, 6, 'Bb:maj'], [6, 9, 'E:min7'], [9, 12, 'A:maj/3'], [12, 15, 'N']]);
+  const snapshot = JSON.stringify(raw);
+  const base = { simplify: true, grid: null, anchors: [], musicalKey: 'A major' };
+  const names = (rs) => rs.map((r) => `${r.startSec}-${r.endSec} ${r.label}`);
+
+  // Capo 2: A:min7 shows G:min7 (sign), 2 semitones DOWN
+  const one = displayRuns(mk([[0, 4, 'A:min7']]), { ...base, simplify: false, transpose: -2 });
+  assert.equal(one[0].label, 'G:min7');
+  assert.equal(displayRuns(mk([[0, 4, 'A:min7']]), { ...base, simplify: false, transpose: 2 })[0].label, 'B:min7');
+
+  // Simple is preserved when transposed: A#/Bb merge ONLY because simplify sees
+  // the stored labels; transposing first would normalise the spelling and merge
+  // them as a different run set.
+  const on = displayRuns(raw, { ...base, transpose: -2 });
+  assert.deepEqual(names(on), ['0-3 G#:maj', '3-6 G#:maj', '6-9 D:min7', '9-12 G:maj/3', '12-15 N']);
+  // ...and the same input with Detailed has the same number of runs as loaded
+  assert.equal(displayRuns(raw, { ...base, simplify: false, transpose: -2 }).length, raw.length);
+  // transposing before simplifying gives a different (merged) result: guard the order
+  const transposedFirst = displayRuns(
+    raw.map((r) => ({ ...r, label: transposeLabel(r.label, -2, 'A major') })),
+    { ...base, transpose: 0 },
+  );
+  assert.notDeepEqual(names(transposedFirst), names(on), 'the order matters for this input');
+  // Simple ON is not lost when transposed: it equals plain simplify + renamed
+  const plain = displayRuns(raw, { ...base, transpose: 0 });
+  assert.deepEqual(on.map((r) => [r.startSec, r.endSec]), plain.map((r) => [r.startSec, r.endSec]));
+
+  // the key decides the spelling of the same shift
+  const key = (k) => displayRuns(mk([[0, 4, 'F:maj']]), { ...base, simplify: false, transpose: 1, musicalKey: k })[0].label;
+  assert.equal(key('E major'), 'Gb:maj'); // new key F major: flats
+  assert.equal(key('G major'), 'Gb:maj'); // new key Ab major: flats
+  assert.equal(key('F major'), 'F#:maj');
+  assert.equal(key(null), 'F#:maj');
+  const flat = displayRuns(mk([[0, 4, 'F:maj']]), { ...base, simplify: false, transpose: -4, musicalKey: 'A major' })[0].label;
+  assert.equal(flat, 'Db:maj'); // new key F major: flats
+  const flatKey = displayRuns(mk([[0, 4, 'C:maj']]), { ...base, simplify: false, transpose: -3, musicalKey: 'A major' })[0].label;
+  assert.equal(flatKey, 'A:maj');
+  // N / X are not renamed; the input is not modified; times/classes as loaded
+  assert.equal(on.at(-1).label, 'N');
+  assert.equal(JSON.stringify(raw), snapshot);
+  const t0 = displayRuns(raw, { ...base, simplify: false, transpose: 0 });
+  assert.equal(t0, raw, 'no shift, no Simple: the same array');
+  assert.deepEqual(displayRuns(raw, { ...base, simplify: false, transpose: -2 }).map((r) => r.chordClass), raw.map((r) => r.chordClass));
 });

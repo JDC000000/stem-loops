@@ -43,6 +43,7 @@ import {
 import { computeCQT, loadCqtPlan } from '../chord/cqt-frontend.ts';
 import { collapseRuns, smoothChordLogits } from '../chord/smoother.ts';
 import { usePlayChords } from '../chord/play-chords-loader.ts';
+import { transposeLabel } from '../lib/play/transpose.ts';
 import {
   type TabCapture,
   UnsupportedBrowserError,
@@ -219,6 +220,16 @@ export interface ChordOverlayProps extends Partial<ChordPlayheadProps> {
    */
   simplify?: boolean;
   /**
+   * Capo / transpose (Phase C, C4): show every chord name moved by this many
+   * semitones (-6..+6), spelled for the song's key. A display layer: the
+   * loaded chord data is not changed. Default 0.
+   */
+  transpose?: number;
+  /** The song's key ("A# major"), for spelling transposed accidentals. */
+  musicalKey?: string | null;
+  /** Stage view: told whether the song has chords (to show the capo control). */
+  onHasChords?: (has: boolean) => void;
+  /**
    * The audio is playing. While it is, chord cells are never interactive, so
    * a strumming hand cannot open anything (Phase A). Only matters when an
    * edit handler is passed; without one they are never interactive.
@@ -264,6 +275,9 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   emptyStage = null,
   onNowNext,
   simplify = false,
+  transpose = 0,
+  musicalKey = null,
+  onHasChords,
   playing = false,
 }) => {
   // The chord editor exists only when someone consumes its picks (see the
@@ -454,10 +468,19 @@ export const ChordOverlay: FC<ChordOverlayProps> = ({
   // O(n^2) in the worst case, never per frame). Section starts re-anchor the
   // beat grid; the job's measured grid only (no pseudo-bars).
   const sectionStarts = useMemo(() => (sections ?? []).map((s) => s.startSec), [sections]);
-  const runs = useMemo(
+  const simplified = useMemo(
     () => (simplify && state.runs.length > 1 ? simplifyOverlayRuns(state.runs, beatGrid, sectionStarts) : state.runs),
     [simplify, state.runs, beatGrid, sectionStarts],
   );
+  // Capo / transpose: names only (label); times, kinds and classes are as loaded.
+  const runs = useMemo(
+    () => (transpose === 0 ? simplified : simplified.map((r) => (r.kind === 'chord' ? { ...r, label: transposeLabel(r.label, transpose, musicalKey) } : r))),
+    [simplified, transpose, musicalKey],
+  );
+  const hasChordRuns = state.runs.some((r) => r.kind === 'chord');
+  useEffect(() => {
+    onHasChords?.(hasChordRuns);
+  }, [onHasChords, hasChordRuns]);
 
   // O(n) over the runs, so memoised: `positionSec` changes every frame and
   // must not re-walk 159 runs to re-derive a duration that cannot have moved.

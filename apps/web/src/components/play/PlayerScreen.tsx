@@ -19,6 +19,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChordOverlay, type NowNext } from '@/components/ChordOverlay';
 import { type ChordMode, DEFAULT_CHORD_MODE, readChordMode, writeChordMode } from '@/lib/play/chord-mode';
+import { readTranspose, transposeBadge, writeTranspose } from '@/lib/play/transpose';
+import { TransposeMenuItem } from './TransposeMenuItem';
 import { LIGHT_AUDIO_NOTE } from '@/lib/play/device-support';
 import { songFacts } from '@/lib/play/notation';
 import { type Part, type PresetId, presetOps, readPart, writePart, mixStateLabel } from '@/lib/play/presets';
@@ -325,6 +327,19 @@ export function PlayerScreen(props: ScreenProps) {
   };
   const simplify = chordMode === 'simple';
 
+  // ── Capo / transpose (Phase C, C4) ─────────────────────────────────────────
+  // Display only, per job; 0 until the stored choice is read (after mount).
+  // The control shows only when the song has chords (reported by the overlay).
+  const [transpose, setTranspose] = useState(0);
+  useEffect(() => setTranspose(readTranspose(jobId)), [jobId]);
+  const pickTranspose = (n: number) => {
+    setTranspose(n);
+    writeTranspose(jobId, n);
+  };
+  const [hasChords, setHasChords] = useState(false);
+  const onHasChords = useCallback((v: boolean) => setHasChords(v), []);
+  const badge = hasChords ? transposeBadge(transpose) : '';
+
   // ── set lists (#322, Phase B B2) ───────────────────────────────────────────
   // ?set=<id> (read after mount, so the server render and the first client render agree)
   // shows "Next song ›" under the header and points the back link at the set.
@@ -455,7 +470,7 @@ export function PlayerScreen(props: ScreenProps) {
           <h1 className={styles.title} data-testid="player-title">
             {songTitle}
           </h1>
-          {facts || artist ? (
+          {facts || artist || badge ? (
             <span className={styles.sub}>
               {/* Phase A (J3): BPM and key in a 20px chip, readable from a
                   music stand at 70 cm. One source: jobs.bpm / jobs.musical_key. */}
@@ -466,6 +481,11 @@ export function PlayerScreen(props: ScreenProps) {
                 </span>
               ) : null}
               {artist ? <span className={styles.artist}>{artist}</span> : null}
+              {badge ? (
+                <span className={styles.capoBadge} data-testid="capo-indicator">
+                  {badge}
+                </span>
+              ) : null}
             </span>
           ) : null}
         </div>
@@ -537,6 +557,7 @@ export function PlayerScreen(props: ScreenProps) {
                   ))}
                 </div>
               </div>
+              {hasChords ? <TransposeMenuItem value={transpose} onChange={pickTranspose} /> : null}
               <button
                 type="button"
                 className={styles.menuItem}
@@ -620,6 +641,9 @@ export function PlayerScreen(props: ScreenProps) {
                 emptyStage={emptyStage}
                 onNowNext={onNowNext}
                 simplify={simplify}
+                transpose={transpose}
+                musicalKey={musicalKey}
+                onHasChords={onHasChords}
                 playing={playing}
               />
             </div>
@@ -736,6 +760,8 @@ export function PlayerScreen(props: ScreenProps) {
             sections={sections}
             loop={snapshot.loop}
             simplify={simplify}
+            transpose={transpose}
+            musicalKey={musicalKey}
             playing={playing}
           />
         </div>

@@ -209,6 +209,33 @@
   border-color: var(--text-primary);
 }
 
+/* Capo / transpose (Phase C, C4): - value + as 44px pills; the badge in the
+   header is a quiet outline pill (no lime, no amber). */
+.stepper {
+  display: grid;
+  grid-template-columns: var(--touch-min, 44px) 1fr var(--touch-min, 44px);
+  align-items: center;
+  gap: 6px;
+}
+.stepper .segment { padding: 0; }
+.segment:disabled { opacity: 0.4; cursor: default; }
+.stepperValue {
+  text-align: center;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+.capoBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border-control);
+  border-radius: 22px;
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
 /* ── the body: the stage takes the remainder ───────────────────────────── */
 .body {
   /* grows, never shrinks below its content: see .root */

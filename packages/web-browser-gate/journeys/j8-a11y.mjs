@@ -66,6 +66,15 @@ export default async function run() {
   // live in the Mix sheet, which j7 opens and measures.
   const { ctx, log } = await newContext({ user, viewport: { width: 1280, height: 900 } });
   const page = await ctx.newPage();
+  // Subscribe to file choosers BEFORE the page loads (#286). Playwright turns Chromium's
+  // chooser interception (Page.setInterceptFileChooserDialog) on lazily, with a
+  // fire-and-forget message, when the page gets its first 'filechooser' listener.
+  // keyboard.press sends its key straight away, so a waitForEvent started in the same
+  // Promise.all could lose that race: the page's click handler ran and called input.click()
+  // with user activation, but the chooser opened un-intercepted, headless cancelled it, and
+  // no event arrived (13 of 30 failed in a local loop). With this listener in place,
+  // interception is on long before the Enter below; the waitForEvent there still does the waiting.
+  page.on('filechooser', () => {});
   try {
     // ── upload form ──
     await page.goto('/');
@@ -73,7 +82,8 @@ export default async function run() {
     // its own-page link) now sits between the nav and the tool, five stops the walk must get
     // past. It stops at the CTA: walking on into the FAQ below left Chromium refusing the
     // keyboard file chooser checked next (measured locally: a 24-stop walk ending on a FAQ
-    // summary → no chooser; any walk ending at or before the CTA → chooser).
+    // summary → no chooser; any walk ending at or before the CTA → chooser). That measurement
+    // predates #286 and may have been the interception race described above, not the FAQ.
     const lstops = await tabWalk(page, 24, 'cta');
     const order = lstops.map((s) => s.id || s.name);
     const iFile = order.indexOf('file-btn');

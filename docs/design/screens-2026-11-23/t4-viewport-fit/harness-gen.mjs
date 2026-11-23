@@ -9,6 +9,8 @@ const css = ['src/styles/design-tokens.css', 'src/app/globals.css', 'src/compone
   .map((p) => sai(get(p)).replace(/@import[^;]+;/g, '')).join('\n');
 const banner = get('src/components/FlashBanner.tsx');
 const bannerTop = sai(banner.match(/top: ('[^']*'|\d+)/)[1].replace(/'/g, '').replace(/^(\d+)$/, '$1px'));
+const pmh = get('src/app/login/page.tsx').match(/minHeight: '([^']+)'/)[1];
+const prw = get('src/styles/pricing-page.css').match(/\.pr-wrap[^}]*?min-height: ([^;]+);/s)[1];
 const html = `<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>
 :root{--sai-top:${t}px;--sai-right:${r}px;--sai-bottom:${b}px;--sai-left:${l}px}
 ${css}
@@ -16,7 +18,7 @@ ${css}
 .tr{display:flex;gap:8px;justify-content:space-around;padding:8px 12px;border-top:1px solid #333}.tr b{border:1px solid #666;border-radius:22px;padding:12px 18px}
 .bar{height:64px;display:flex;align-items:center;padding:0 16px;border-bottom:1px solid #333}
 </style></head><body>
-${scene === 'player' ? `<div class="fb">Saved to your library</div>
+${scene === 'login' || scene === 'pricing' ? `<main style="min-height:${scene === 'login' ? pmh : prw};padding:24px 16px;box-sizing:border-box;background:#111"><h1>${scene}</h1><p>Fits without scrolling when the page height is compensated.</p></main><pre id=m style="position:fixed;left:8px;right:8px;bottom:60px;margin:0;background:#400;color:#fff;font:14px monospace"></pre><script>addEventListener('load',()=>{const d=document.documentElement;m.textContent='scrollH '+d.scrollHeight+' / innerH '+innerHeight+(d.scrollHeight>innerHeight?'  SCROLLS':'  no scroll')})</script>` : scene === 'player' ? `<div class="fb">Saved to your library</div>
 <div class="root"><div class="head" style="border-bottom:1px solid #333"><span class="back">&larr; Library</span><div class="titles"><div class="title">Song title</div><div class="sub">120 BPM &middot; A minor</div></div></div>
 <div style="flex:1;display:flex;align-items:center;justify-content:center;font-size:72px">Am7</div>
 <div class="tr"><b>-5</b><b>Play</b><b>+5</b><b>Loop</b><b>Mix</b></div></div>

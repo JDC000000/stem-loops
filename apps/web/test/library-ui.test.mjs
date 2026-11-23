@@ -224,3 +224,33 @@ test('the /jobs/[id] layout only marks last-opened (no data, no fetch)', () => {
   assert.match(marker, /recordLastOpened\(window\.localStorage, jobId\)/);
   assert.doesNotMatch(marker, /fetch\(/);
 });
+
+test('signed in, the library links to the set lists (/sets) with a 44 px tap target', async () => {
+  await withDom(async (dom) => {
+    const f = stubFetch(() => [200, LIBRARY]);
+    try {
+      await mountPage(dom);
+      const a = dom.find('[data-testid="history-sets-link"]');
+      assert.ok(a, 'the set lists link is shown');
+      assert.equal(a.tagName, 'A');
+      assert.equal(a.getAttribute('href'), '/sets');
+      assert.equal(a.textContent, 'Your set lists →');
+      assert.equal(a.style.minHeight, 'var(--touch-min)');
+    } finally {
+      f.restore();
+    }
+  });
+});
+
+test('signed out, the library does not show the set lists link', async () => {
+  await withDom(async (dom) => {
+    const f = stubFetch(() => [401, {}]);
+    try {
+      await mountPage(dom);
+      assert.equal(dom.find('[data-testid="history-sets-link"]'), null);
+      assert.ok(dom.find('[data-testid="history-sign-in"]'), 'the sign-in prompt shows instead');
+    } finally {
+      f.restore();
+    }
+  });
+});

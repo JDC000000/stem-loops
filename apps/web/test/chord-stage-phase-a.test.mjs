@@ -265,6 +265,31 @@ test('C4: Capo / transpose on the REAL overlay: stage chip, Now / Next and the a
   });
 });
 
+test('C4: Simple stays on when a capo is set: Lucky Ticket draws 87 chips in the chart at Capo 2, with shifted names', async () => {
+  await withDom(async (dom) => {
+    const chipsOf = () => dom.findAll('[data-testid^="chord-chip-"]').filter((c) => /^chord-chip-\d+$/.test(c.dataset.testid));
+    const m0 = await mount(dom, { view: 'chart', positionSec: null, simplify: true, transpose: 0 }, { w: 1200, h: 400 });
+    let plain;
+    try {
+      plain = chipsOf().map((c) => c.textContent);
+      assert.equal(plain.length, 87);
+    } finally {
+      m0.restore();
+      await dom.unmountAll();
+    }
+    const m = await mount(dom, { view: 'chart', positionSec: null, simplify: true, transpose: -2, musicalKey: 'A major' }, { w: 1200, h: 400 });
+    try {
+      const shifted = chipsOf().map((c) => c.textContent);
+      assert.equal(shifted.length, 87, 'Simple (87), not Detailed (201), when transposed');
+      assert.notDeepEqual(shifted, plain, 'the names moved');
+      assert.ok(shifted.some((t) => /^G/.test(t)) && plain.some((t) => /^A/.test(t)), 'A shapes show as G');
+    } finally {
+      m.restore();
+      await dom.unmountAll();
+    }
+  });
+});
+
 test('review #333: Simple (bars) hides the beat dots beside the countdown; Next grows only into the width Now leaves', async () => {
   await withDom(async (dom) => {
     const m = await mount(dom, { positionSec: 30, playing: true, simplify: true });

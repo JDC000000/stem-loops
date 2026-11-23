@@ -169,6 +169,86 @@ def canary_state() -> dict:
     }
 
 
+# Q-B: an absolute ceiling on the freshness window, whatever FETCH_CANARY_INTERVAL_SECONDS says
+# (review F-3): a 24 h interval must not let one failed result count for 48 h.
+MAX_OUTAGE_WINDOW_S = 1800.0
+
+# Q-B (review F-2): only these failure causes are evidence that OUR path is down. ``other``
+# (a probe that raised, the 45 s full-probe timeout on a loaded machine at start-up, an
+# unrecognised yt-dlp error) is not: it never opens the refund window. Values are
+# ytdlp_client.PROXY_AUTH / PROXY_CONNECT / YOUTUBE_BOT_CHECK (pinned by a test; not imported
+# here because ytdlp_client is loaded lazily).
+OUTAGE_CAUSES = frozenset({"proxy_auth", "proxy_connect", "youtube_bot_check"})
+
+# The FetchProxyFailedError cause given to a DownloadBlockedError reclassified because a canary
+# check was failing (downloader._attribute_block_to_outage). The canary's own alert already
+# reports the outage, so pipeline._report_our_fault sends NO per-job Sentry event for these
+# (review F-4: QA-65 hysteresis exists to stop exactly that noise).
+ATTRIBUTED_CAUSES = {"proxy": "canary_proxy", "youtube": "canary_youtube"}
+
+
+def outage_window_s() -> float:
+    """How old a FAILED canary result may be and still count as "failing now" (Q-B).
+
+    Two proxy-check periods, capped at ``MAX_OUTAGE_WINDOW_S`` (30 min): the loop runs the
+    proxy check every ``interval_s()`` (default 900 s; never faster than ``MIN_SLEEP_S``), so
+    a running canary always holds a result at most one period old, plus the probe's own time
+    (<= ``proxy_timeout_s()``, 10 s). Twice the period tolerates one late or slow tick; a
+    result older than that means the canary is not running on schedule, so we no longer know
+    -- and an unknown canary must not refund (fail closed). 0 when the canary is off
+    (interval <= 0): nothing is ever fresh. The same window applies to the youtube (full)
+    check: a 12-hourly result is "now" only within this window of when it ran, never for the
+    12 h it sits in ``_state``."""
+    every = interval_s()
+    if every <= 0:
+        return 0.0
+    return min(2.0 * max(every, MIN_SLEEP_S), MAX_OUTAGE_WINDOW_S)
+
+
+def outage_confirmed(now: datetime | None = None) -> str | None:
+    """Q-B: the name of a canary check ("proxy" or "youtube") that is in a real failing state
+    right now, else None. The proxy check is consulted first and wins if both qualify.
+
+    A check qualifies only if ALL hold:
+      * its LAST result is a failure whose cause is in ``OUTAGE_CAUSES`` (not ``other``);
+      * that result is no older than ``outage_window_s()`` and not dated in the future;
+      * its consecutive-failure streak has reached the same threshold the alerting uses
+        (QA-65 hysteresis, ``_alert_after``: 2 for the proxy check by default, 1 for the
+        full check). A single sub-threshold proxy blip -- production saw 6 in ~32 h while
+        every real job succeeded -- does not refund (review F-1).
+
+    Fail closed -- None -- whenever we do not positively know the path is failing: canary
+    not enabled or off, no result yet, last result ok, ``ok=None`` (no proxy configured),
+    a missing or unreadable timestamp, a stale or future result, cause ``other``, or a
+    streak below the threshold. Never raises."""
+    try:
+        window = outage_window_s()
+        if window <= 0:
+            return None
+        now = now or datetime.now(UTC)
+        with _state_lock:
+            if not _state["enabled"]:
+                return None
+            checks = [
+                (name, dict(_state[name]), _streak[name]["failures"])
+                for name in ("proxy", "youtube")
+            ]
+        for name, result, failures in checks:
+            if result.get("ok") is not False or not result.get("last_checked"):
+                continue
+            if result.get("cause") not in OUTAGE_CAUSES:
+                continue
+            if failures < _alert_after(name):
+                continue
+            checked = datetime.fromisoformat(result["last_checked"])
+            age = (now - checked).total_seconds()
+            if 0 <= age <= window:
+                return name
+    except Exception as exc:  # noqa: BLE001 — unknown canary state never refunds
+        log_structured("WARN", "fetch_canary_outage_check_failed", error=type(exc).__name__)
+    return None
+
+
 def reset_state() -> None:
     """Tests only."""
     with _state_lock:

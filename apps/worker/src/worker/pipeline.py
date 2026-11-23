@@ -41,7 +41,7 @@ import psycopg
 import sentry_sdk
 from psycopg.types.json import Json
 
-from . import tmpdirs
+from . import fetch_canary, tmpdirs
 from .chord_source import ChordQuotaExceeded, ChordSubmitUncertain
 from .classifier.energy_classifier import classify_energy
 from .classifier.section_labeler import label_sections
@@ -1872,6 +1872,13 @@ def _report_our_fault(exc: StemLoopsError) -> None:
     if exc.error_code not in _OUR_FAULT_CODES:
         return
     if exc.error_code == "FETCH_PROXY_FAILED":
+        cause = getattr(exc, "cause", None)
+        if cause in fetch_canary.ATTRIBUTED_CAUSES.values():
+            # Q-B (review F-4): a block reclassified because the canary is failing. The
+            # canary's own hysteresis-gated alert covers the outage; one per-job ERROR here
+            # is the noise QA-65 removed. Logged, not sent.
+            log_structured("WARN", "fetch_proxy_failed_canary_attributed", cause=cause)
+            return
         # QA-61: an outage of our proxy fails EVERY link job the same way. One ERROR per
         # process per cause (fetch_alerts), not one warning per job.
         try:

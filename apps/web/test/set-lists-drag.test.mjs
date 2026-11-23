@@ -11,7 +11,18 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { dropIndex, moveItem, reorderItem } from '../src/lib/set-lists.ts';
+import {
+  EDGE_MAX_SPEED_PX,
+  EDGE_ZONE_PX,
+  REDUCED_JUMP_INTERVAL_MS,
+  REDUCED_JUMP_PX,
+  autoScrollStep,
+  dragDelta,
+  dropIndex,
+  edgeScrollSpeed,
+  moveItem,
+  reorderItem,
+} from '../src/lib/set-lists.ts';
 import { buildModuleGraph } from './helpers/module-graph.mjs';
 import { withDom } from './helpers/dom.mjs';
 
@@ -317,6 +328,180 @@ test('the Demo set and a one-song list have no drag handle; Move buttons stay on
     } finally {
       f.restore();
       await dom.unmountAll();
+    }
+  });
+});
+
+// ---- auto-scroll while dragging (#343) -----------------------------------------------------
+
+test('edgeScrollSpeed: 0 away from the edges; grows with depth into the 48px zone; up at the top, down at the bottom', () => {
+  const H = 800;
+  assert.equal(EDGE_ZONE_PX, 48);
+  for (const y of [48, 100, 400, 752]) assert.equal(edgeScrollSpeed(y, H), 0, `y=${y}`);
+  const top = [47, 36, 24, 12, 0].map((y) => edgeScrollSpeed(y, H));
+  const bottom = [753, 764, 776, 788, 800].map((y) => edgeScrollSpeed(y, H));
+  for (const s of top) assert.ok(s < 0, 'top scrolls up');
+  for (const s of bottom) assert.ok(s > 0, 'bottom scrolls down');
+  for (let i = 1; i < 5; i += 1) {
+    assert.ok(-top[i] >= -top[i - 1], 'deeper at the top is at least as fast');
+    assert.ok(bottom[i] >= bottom[i - 1], 'deeper at the bottom is at least as fast');
+  }
+  assert.ok(-top[2] < EDGE_MAX_SPEED_PX && bottom[2] < EDGE_MAX_SPEED_PX, 'half way in is slower than the edge');
+  assert.equal(edgeScrollSpeed(0, H), -EDGE_MAX_SPEED_PX);
+  assert.equal(edgeScrollSpeed(-50, H), -EDGE_MAX_SPEED_PX, 'past the edge: capped');
+  assert.equal(edgeScrollSpeed(H + 50, H), EDGE_MAX_SPEED_PX);
+  assert.equal(edgeScrollSpeed(NaN, H), 0);
+  assert.equal(edgeScrollSpeed(10, 0), 0, 'no viewport: no scroll');
+});
+
+test('autoScrollStep: full motion is the edge speed; reduced motion jumps a fixed step, at most once per interval', () => {
+  const H = 800;
+  assert.equal(autoScrollStep({ clientY: 790, viewportH: H, reduced: false, now: 0, lastJumpAt: null }), edgeScrollSpeed(790, H));
+  assert.equal(autoScrollStep({ clientY: 400, viewportH: H, reduced: true, now: 0, lastJumpAt: null }), 0, 'not at an edge: nothing');
+  assert.equal(autoScrollStep({ clientY: 790, viewportH: H, reduced: true, now: 1000, lastJumpAt: null }), REDUCED_JUMP_PX);
+  assert.equal(autoScrollStep({ clientY: 760, viewportH: H, reduced: true, now: 1000, lastJumpAt: null }), REDUCED_JUMP_PX, 'fixed: not by depth');
+  assert.equal(autoScrollStep({ clientY: 5, viewportH: H, reduced: true, now: 1000, lastJumpAt: null }), -REDUCED_JUMP_PX);
+  assert.equal(autoScrollStep({ clientY: 790, viewportH: H, reduced: true, now: 1000 + REDUCED_JUMP_INTERVAL_MS - 1, lastJumpAt: 1000 }), 0, 'too soon');
+  assert.equal(autoScrollStep({ clientY: 790, viewportH: H, reduced: true, now: 1000 + REDUCED_JUMP_INTERVAL_MS, lastJumpAt: 1000 }), REDUCED_JUMP_PX);
+});
+
+test('dragDelta: pointer movement plus page scroll since the drag began', () => {
+  assert.equal(dragDelta(300, 200, 0, 0), 100);
+  assert.equal(dragDelta(200, 200, 150, 0), 150, 'page scrolled 150 with the pointer still: the row moves 150 down the list');
+  assert.equal(dragDelta(250, 200, 40, 100), -10, 'scrolled back up 60, pointer down 50');
+});
+
+/** Make the page scrollable in happy-dom: a viewport of `h` px and a scrollBy that moves scrollY. */
+function stubViewport(window, h) {
+  let y = 0;
+  const calls = [];
+  Object.defineProperty(window, 'innerHeight', { configurable: true, get: () => h });
+  Object.defineProperty(window, 'scrollY', { configurable: true, get: () => y });
+  window.scrollBy = (opts) => {
+    calls.push(opts.top);
+    y = Math.max(0, y + opts.top);
+  };
+  return { calls, setY: (v) => { y = v; } };
+}
+
+test('auto-scroll: holding at the bottom edge scrolls the page each frame; the row keeps up; the drop saves where the line is', async () => {
+  await withDom(async (dom) => {
+    const f = stubFetch(okList);
+    try {
+      const vp = stubViewport(dom.window, 300);
+      const { rows, handle } = await mountList(dom);
+      await dom.pointer('pointerdown', handle(0), { clientX: 20, clientY: 126 });
+      await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 296 }); // 4px from the bottom
+      assert.equal(rows()[0].style.transform, 'translateY(170px)');
+      await dom.nextFrame();
+      await dom.nextFrame();
+      assert.equal(vp.calls.length, 2, 'one scroll per frame');
+      assert.ok(vp.calls.every((t) => t > 0), 'scrolls down');
+      const scrolled = vp.calls.reduce((a, b) => a + b, 0);
+      assert.equal(rows()[0].style.transform, `translateY(${170 + scrolled}px)`, 'the row moves with the scroll');
+      await dom.pointer('pointerup', handle(0), { clientX: 20, clientY: 296 });
+      await dom.act();
+      assert.equal(dom.pendingFrames, 0, 'the loop stops on drop');
+      assert.deepEqual(f.calls.find((c) => c.method === 'PUT').body.order, [ids[1], ids[2], ids[0]]);
+      await dom.nextFrame();
+      assert.equal(vp.calls.length, 2, 'no scroll after the drop');
+    } finally {
+      f.restore();
+      await dom.unmountAll();
+    }
+  });
+});
+
+test('auto-scroll: nothing scrolls away from the edges; the top edge scrolls up', async () => {
+  await withDom(async (dom) => {
+    const f = stubFetch(okList);
+    try {
+      const vp = stubViewport(dom.window, 300);
+      vp.setY(200);
+      const { handle } = await mountList(dom);
+      await dom.pointer('pointerdown', handle(1), { clientX: 20, clientY: 186 });
+      await dom.nextFrame();
+      assert.equal(vp.calls.length, 0, 'mid-screen: no scroll');
+      await dom.pointer('pointermove', handle(1), { clientX: 20, clientY: 10 });
+      await dom.nextFrame();
+      assert.equal(vp.calls.length, 1);
+      assert.ok(vp.calls[0] < 0, 'scrolls up');
+      await dom.keydown('Escape');
+      assert.equal(dom.pendingFrames, 0, 'the loop stops on cancel');
+    } finally {
+      f.restore();
+      await dom.unmountAll();
+    }
+  });
+});
+
+test('a mouse-wheel scroll mid-drag keeps the row under the pointer and moves the landing line to match', async () => {
+  await withDom(async (dom) => {
+    const f = stubFetch(okList);
+    try {
+      const vp = stubViewport(dom.window, 800);
+      const { rows, handle } = await mountList(dom);
+      await dom.pointer('pointerdown', handle(0), { clientX: 20, clientY: 126 });
+      await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 136 });
+      assert.equal(rows()[0].style.transform, 'translateY(10px)');
+      assert.equal(rows()[1].dataset.drop, undefined);
+      vp.setY(100); // wheel: the list moves up 100px under a still pointer
+      await dom.act(() => { dom.window.dispatchEvent(new dom.window.Event('scroll')); });
+      assert.equal(rows()[0].style.transform, 'translateY(110px)', 'the row stays under the pointer');
+      assert.equal(rows()[1].dataset.drop, 'after', 'centre 126 + 110 = 236 has passed Creep (186), not my-take.wav (246)');
+      await dom.pointer('pointerup', handle(0), { clientX: 20, clientY: 136 });
+      await dom.act();
+      assert.deepEqual(f.calls.find((c) => c.method === 'PUT').body.order, [ids[1], ids[0], ids[2]], 'saved where the line was');
+    } finally {
+      f.restore();
+      await dom.unmountAll();
+    }
+  });
+});
+
+test('reduced motion: at an edge the page jumps a fixed step, not every frame, and never animates', async () => {
+  await withDom(async (dom) => {
+    const f = stubFetch(okList);
+    const realMM = globalThis.matchMedia;
+    globalThis.matchMedia = (q) => ({ matches: /prefers-reduced-motion: reduce/.test(q), media: q, addEventListener() {}, removeEventListener() {} });
+    const scrollOpts = [];
+    try {
+      const vp = stubViewport(dom.window, 300);
+      const by = dom.window.scrollBy;
+      dom.window.scrollBy = (o) => { scrollOpts.push(o); by(o); };
+      const { rows, handle } = await mountList(dom);
+      await dom.pointer('pointerdown', handle(0), { clientX: 20, clientY: 126 });
+      await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 296 });
+      await dom.nextFrame();
+      await dom.nextFrame();
+      await dom.nextFrame();
+      assert.deepEqual(vp.calls, [REDUCED_JUMP_PX], 'one fixed jump, then a pause');
+      assert.ok(scrollOpts.every((o) => o.behavior !== 'smooth'), 'no animated scroll');
+      assert.equal(rows()[0].style.transform, '', 'the row still does not follow');
+      await dom.pointer('pointerup', handle(0), { clientX: 20, clientY: 296 });
+      await dom.act();
+      assert.equal(dom.pendingFrames, 0);
+    } finally {
+      if (realMM === undefined) delete globalThis.matchMedia;
+      else globalThis.matchMedia = realMM;
+      f.restore();
+      await dom.unmountAll();
+    }
+  });
+});
+
+test('unmounting mid-drag stops the auto-scroll loop', async () => {
+  await withDom(async (dom) => {
+    const f = stubFetch(okList);
+    try {
+      stubViewport(dom.window, 300);
+      const { handle } = await mountList(dom);
+      await dom.pointer('pointerdown', handle(0), { clientX: 20, clientY: 296 });
+      assert.ok(dom.pendingFrames > 0, 'the loop runs while dragging');
+      await dom.unmountAll();
+      assert.equal(dom.pendingFrames, 0);
+    } finally {
+      f.restore();
     }
   });
 });

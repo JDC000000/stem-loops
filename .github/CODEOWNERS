@@ -38,7 +38,7 @@
 #   2  apps/worker/src/worker/billing/**
 #   3  apps/web/src/app/api/billing/**
 #   4  apps/web/src/app/api/entitlements/**
-#   5  apps/worker/migrations/*_v3_commercial*.sql
+#   5  **/migrations/**   (any depth)        — widened from commercial-only 2026-11-23, D-5
 #   6  .github/workflows/**
 #   7  .github/CODEOWNERS
 #   8  AGENTS.md
@@ -64,12 +64,14 @@ apps/web/src/app/api/billing/**                 @JDC000000
 apps/web/src/app/api/entitlements/**            @JDC000000
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Commercial (Stripe-touching) database migrations only.
-# Non-commercial migrations are now agent-mergeable under the standard
-# triple-gate; a commercial migration is the one that lands against prod
-# billing tables.
+# ALL database migrations — every `migrations/` directory at any depth (today:
+# apps/worker/migrations/ and apps/worker/migrations/down/). Jon decision D-5,
+# 2026-11-23: a migration changes the prod schema and cannot be cleanly rolled
+# back, so none are agent-mergeable. This supersedes the earlier commercial-
+# only rule (`apps/worker/migrations/*_v3_commercial*.sql`), which this line
+# now covers; it is not listed separately.
 # ──────────────────────────────────────────────────────────────────────────────
-apps/worker/migrations/*_v3_commercial*.sql     @JDC000000
+**/migrations/**                                @JDC000000
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CI / workflow surfaces — infrastructure of merge-gating itself.

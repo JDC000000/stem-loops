@@ -11,8 +11,17 @@ Offline, no database. That a stored FETCH_PROXY_FAILED really restores the allow
 pinned against Postgres in CI by test_allowance_restore.py
 (test_our_fault_failure_gives_the_monthly_song_back, parametrised over OUR_FAULT_CODES).
 
+Round 2 (review R1): a check counts only with an outage cause (not ``other``, F-2), with its
+failure streak at the alerting threshold (QA-65 hysteresis, F-1), inside a window capped at
+30 min (F-3); a reclassified job sends no per-job Sentry event (F-4); the proxy check wins
+over the youtube check when both qualify (R5).
+
 Mutants these kill: inverted canary condition (ok -> refund), dropped freshness, refund on a
-stale result, TIMEOUT reclassified too, the kill switch reclassified.
+stale result, TIMEOUT reclassified too, no hysteresis, cause ``other`` counted, uncapped
+window, per-job Sentry ERROR, youtube-before-proxy. Not killable: making the kill switch
+reclassifiable (``isinstance`` instead of ``type(...) is``) is an EQUIVALENT mutant today --
+FetchPausedError is raised before the reclassification point. The kill-switch test below
+pins the behaviour, not that mutant.
 """
 
 from __future__ import annotations
@@ -45,8 +54,25 @@ def _canary(monkeypatch):
     fetch_canary.reset_state()
 
 
-def set_check(check: str, ok, age_s: float | None, *, enabled: bool = True, now=None):
+DEFAULT_CAUSE = {"proxy": "proxy_auth", "youtube": "youtube_bot_check"}
+
+
+def set_check(
+    check: str,
+    ok,
+    age_s: float | None,
+    *,
+    enabled: bool = True,
+    now=None,
+    cause: str | None = None,
+    failures: int | None = None,
+):
+    """Put one check's last result in the canary state. A failure defaults to an outage
+    cause and a streak AT the alerting threshold (2 proxy / 1 youtube), i.e. a real failing
+    state; pass ``cause`` / ``failures`` to probe the gates."""
     now = now or datetime.now(UTC)
+    if failures is None:
+        failures = fetch_canary._alert_after(check) if ok is False else 0
     stamp = (
         None if age_s is None else (now - timedelta(seconds=age_s)).isoformat(timespec="seconds")
     )
@@ -55,8 +81,9 @@ def set_check(check: str, ok, age_s: float | None, *, enabled: bool = True, now=
         fetch_canary._state[check] = {
             "ok": ok,
             "last_checked": stamp,
-            "cause": None if ok in (True, None) else "proxy_auth",
+            "cause": None if ok in (True, None) else (cause or DEFAULT_CAUSE[check]),
         }
+        fetch_canary._streak[check] = {"failures": failures, "alerted_cause": None}
 
 
 # ------------------------------------------------------------------ the freshness rule
@@ -70,6 +97,17 @@ def test_window_is_two_proxy_check_periods(monkeypatch):
     assert fetch_canary.outage_window_s() == 120.0
     monkeypatch.setenv("FETCH_CANARY_INTERVAL_SECONDS", "0")  # canary off
     assert fetch_canary.outage_window_s() == 0.0
+
+
+@pytest.mark.parametrize("interval", ["901", "3600", "86400", "1e9"])
+def test_window_is_capped_at_30_minutes_whatever_the_interval(monkeypatch, interval):
+    """F-3: a huge FETCH_CANARY_INTERVAL_SECONDS must not stretch "now" to hours."""
+    monkeypatch.setenv("FETCH_CANARY_INTERVAL_SECONDS", interval)
+    assert fetch_canary.outage_window_s() == 1800.0
+    set_check("proxy", False, 1801, now=NOW)
+    assert fetch_canary.outage_confirmed(NOW) is None
+    set_check("proxy", False, 1800, now=NOW)
+    assert fetch_canary.outage_confirmed(NOW) == "proxy"
 
 
 @pytest.mark.parametrize("check", ["proxy", "youtube"])
@@ -104,6 +142,62 @@ def test_anything_but_a_fresh_failure_is_not_an_outage(check, ok, age, enabled):
     assert fetch_canary.outage_confirmed(NOW) is None
 
 
+def test_proxy_wins_when_both_checks_qualify():
+    """R5: the documented order. The cause (and so the log / stored reason) is the proxy's."""
+    set_check("proxy", False, 60, now=NOW)
+    set_check("youtube", False, 30, now=NOW)
+    assert fetch_canary.outage_confirmed(NOW) == "proxy"
+
+
+def test_youtube_qualifies_when_proxy_is_ok():
+    set_check("proxy", True, 60, now=NOW)
+    set_check("youtube", False, 30, now=NOW)
+    assert fetch_canary.outage_confirmed(NOW) == "youtube"
+
+
+@pytest.mark.parametrize("check", ["proxy", "youtube"])
+def test_cause_other_never_opens_the_window(check):
+    """F-2: a probe that raised or timed out (cause ``other``) is not evidence of an outage."""
+    set_check(check, False, 60, now=NOW, cause="other")
+    assert fetch_canary.outage_confirmed(NOW) is None
+
+
+@pytest.mark.parametrize(
+    "check,cause",
+    [("proxy", "proxy_auth"), ("proxy", "proxy_connect"), ("youtube", "youtube_bot_check")],
+)
+def test_outage_causes_open_the_window(check, cause):
+    set_check(check, False, 60, now=NOW, cause=cause)
+    assert fetch_canary.outage_confirmed(NOW) == check
+
+
+def test_outage_causes_are_the_ytdlp_cause_classes():
+    from worker.downloader import ytdlp_client
+
+    assert {
+        ytdlp_client.PROXY_AUTH,
+        ytdlp_client.PROXY_CONNECT,
+        ytdlp_client.YOUTUBE_BOT_CHECK,
+    } == fetch_canary.OUTAGE_CAUSES
+    assert ytdlp_client.OTHER not in fetch_canary.OUTAGE_CAUSES
+
+
+def test_a_single_proxy_blip_below_the_alert_threshold_does_not_count():
+    """F-1: one failed CONNECT (streak 1 < alert_after 2) is a blip, not an outage."""
+    set_check("proxy", False, 60, now=NOW, failures=1)
+    assert fetch_canary.outage_confirmed(NOW) is None
+    set_check("proxy", False, 60, now=NOW, failures=2)
+    assert fetch_canary.outage_confirmed(NOW) == "proxy"
+
+
+def test_the_threshold_follows_the_alerting_setting(monkeypatch):
+    monkeypatch.setenv("FETCH_CANARY_PROXY_ALERT_AFTER", "3")
+    set_check("proxy", False, 60, now=NOW, failures=2)
+    assert fetch_canary.outage_confirmed(NOW) is None
+    set_check("proxy", False, 60, now=NOW, failures=3)
+    assert fetch_canary.outage_confirmed(NOW) == "proxy"
+
+
 def test_canary_off_never_confirms(monkeypatch):
     set_check("proxy", False, 1, now=NOW)
     monkeypatch.setenv("FETCH_CANARY_INTERVAL_SECONDS", "0")
@@ -117,12 +211,40 @@ def test_an_unreadable_timestamp_fails_closed():
     assert fetch_canary.outage_confirmed(NOW) is None
 
 
-def test_a_real_failed_proxy_check_counts_and_a_later_success_clears_it():
+def _result(ok, cause=None):
+    return lambda: type("R", (), {"ok": ok, "cause": cause})()
+
+
+def test_real_proxy_checks_blip_then_outage_then_recovery(sentry_off):
     fetch_canary._state["enabled"] = True
-    fetch_canary.run_proxy_check(lambda: type("R", (), {"ok": False, "cause": "proxy_auth"})())
-    assert fetch_canary.outage_confirmed() == "proxy"
-    fetch_canary.run_proxy_check(lambda: type("R", (), {"ok": True, "cause": None})())
+    fetch_canary.run_proxy_check(_result(False, "proxy_auth"))
+    assert fetch_canary.outage_confirmed() is None, "one failure is a blip (F-1)"
+    fetch_canary.run_proxy_check(_result(False, "proxy_auth"))
+    assert fetch_canary.outage_confirmed() == "proxy", "two in a row is the alerting state"
+    fetch_canary.run_proxy_check(_result(True))
     assert fetch_canary.outage_confirmed() is None
+
+
+def test_real_full_check_that_raised_does_not_count(sentry_off):
+    """F-2: the start-up full probe timing out / raising gives cause ``other``."""
+    fetch_canary._state["enabled"] = True
+    fetch_canary.run_proxy_check(_result(True))
+
+    def boom():
+        raise TimeoutError("45 s")
+
+    fetch_canary.run_full_check(boom)
+    assert fetch_canary.canary_state()["youtube"]["cause"] == "other"
+    assert fetch_canary.outage_confirmed() is None
+    fetch_canary.run_full_check(_result(False, "youtube_bot_check"))
+    assert fetch_canary.outage_confirmed() == "youtube"
+
+
+@pytest.fixture
+def sentry_off(monkeypatch):
+    sent: list = []
+    monkeypatch.setattr(fetch_canary, "_send", lambda *a: sent.append(a))
+    return sent
 
 
 # ------------------------------------------------------------------ the download chain
@@ -283,7 +405,15 @@ def _drive_link_job(monkeypatch, chain):
     monkeypatch.setattr(pipeline, "set_status", noop)
     monkeypatch.setattr(pipeline, "emit_event", noop)
     monkeypatch.setattr(pipeline, "_max_upload_duration_sec", lambda: None)
-    monkeypatch.setattr(pipeline, "report_proxy_failure", lambda cause: True)
+    box["reported"] = []
+    monkeypatch.setattr(
+        pipeline, "report_proxy_failure", lambda cause: box["reported"].append(cause) or True
+    )
+    monkeypatch.setattr(
+        pipeline.sentry_sdk,
+        "capture_exception",
+        lambda *a, **k: box["reported"].append(("capture", a, k)),
+    )
 
     async def connect(url):
         return _Conn(box)
@@ -312,6 +442,7 @@ def test_outage_block_stores_our_code_and_the_restore_gives_the_song_back(monkey
     assert box["stored_code"] == "FETCH_PROXY_FAILED"
     assert box["stored_message"] == FetchProxyFailedError("x").user_message
     assert box["restores"] and all(r == (JOB, "FETCH_PROXY_FAILED", True) for r in box["restores"])
+    assert box["reported"] == [], "F-4: no per-job Sentry event for a canary-attributed block"
 
 
 @pytest.mark.parametrize("ok,age", [(True, 30), (False, 3 * 3600), (None, None)])
@@ -343,8 +474,25 @@ def test_policy_tuples_are_unchanged():
     assert "FETCH_PROXY_FAILED" in job_failure.OUR_FAULT_CODES
 
 
-def test_canary_causes_have_their_own_alert_message():
-    for cause in ("canary_proxy", "canary_youtube"):
-        msg = fetch_alerts._PROXY_FAILURE_MESSAGES[cause]
-        assert "PROXY_URL credentials" not in msg
-        assert len(cause) <= 32
+def test_a_genuine_proxy_failure_is_still_reported_once(monkeypatch):
+    """F-4 is narrow: a real 407 / connect failure (not canary-attributed) still reports."""
+    sent: list = []
+    monkeypatch.setattr(pipeline, "report_proxy_failure", lambda cause: sent.append(cause))
+    pipeline._report_our_fault(FetchProxyFailedError("proxy_auth"))
+    assert sent == ["proxy_auth"]
+
+
+@pytest.mark.parametrize("cause", ["canary_proxy", "canary_youtube"])
+def test_a_canary_attributed_failure_sends_nothing_to_sentry(monkeypatch, capsys, cause):
+    sent: list = []
+    monkeypatch.setattr(pipeline, "report_proxy_failure", lambda c: sent.append(c))
+    monkeypatch.setattr(pipeline.sentry_sdk, "capture_exception", lambda *a, **k: sent.append(a))
+    monkeypatch.setattr(pipeline.sentry_sdk, "capture_message", lambda *a, **k: sent.append(a))
+    pipeline._report_our_fault(FetchProxyFailedError(cause))
+    assert sent == []
+    assert "fetch_proxy_failed_canary_attributed" in capsys.readouterr().err
+
+
+def test_attributed_causes_fit_the_sentry_tag_limit():
+    assert set(fetch_canary.ATTRIBUTED_CAUSES) == {"proxy", "youtube"}
+    assert all(len(c) <= 32 for c in fetch_canary.ATTRIBUTED_CAUSES.values())

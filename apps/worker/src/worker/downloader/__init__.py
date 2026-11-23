@@ -137,16 +137,19 @@ def _attribute_block_to_outage(exc: StemLoopsError, job_id: str | None) -> StemL
     Exactly ``DownloadBlockedError`` -- not FetchPausedError (our deliberate kill switch,
     raised before the fetch and not an outage), not DOWNLOAD_TIMEOUT or any other code: those
     keep their classification. "Right now" is ``fetch_canary.outage_confirmed()``: the last
-    result of a canary check failed and is fresh (<= 2 proxy-check periods, 30 min by
-    default). A stale, missing or unreadable canary returns the original error (fail closed:
-    no refund without positive evidence the path was ours to fix)."""
+    result of a canary check failed with an outage cause (not ``other``), its failure streak
+    has reached the alerting threshold (QA-65), and it is fresh (<= 2 proxy-check periods,
+    capped at 30 min). A stale, missing, sub-threshold or unreadable canary returns the
+    original error (fail closed: no refund without positive evidence the path was ours)."""
     if type(exc) is not DownloadBlockedError:
         return exc
     check = fetch_canary.outage_confirmed()
     if check is None:
         return exc
+    # WARN log only. No Sentry event: the canary's own (hysteresis-gated) alert covers the
+    # outage, and pipeline._report_our_fault skips these causes (review F-4).
     log_structured("WARN", "download_blocked_during_canary_outage", job_id=job_id, check=check)
-    return FetchProxyFailedError(f"canary_{check}")
+    return FetchProxyFailedError(fetch_canary.ATTRIBUTED_CAUSES[check])
 
 
 def _fetch(

@@ -7,7 +7,7 @@
  * nameRegions in ./sections). A custom name REPLACES the default on the chip
  * and wherever the screen names a part; the start time is never part of it.
  *
- * Keyed by job id + the section's START SECOND (not its index): if the section
+ * Keyed by job id + the section's START (milliseconds) (not its index): if the section
  * list is re-derived with a part added or dropped earlier in the song, a name
  * stays with the music it was typed for.
  *
@@ -18,7 +18,7 @@ import type { LoopRegion } from './types';
 
 /** Longest custom name, in characters (after trimming). */
 export const MAX_PART_NAME_LEN = 24;
-/** One entry per job: `sl.play.partNames.v1:<jobId>` -> JSON `{ "<startSec>": "name" }`. */
+/** One entry per job: `sl.play.partNames.v1:<jobId>` -> JSON `{ "<start ms>": "name" }`. */
 export const PART_NAMES_KEY_PREFIX = 'sl.play.partNames.v1:';
 
 export type PartNameMap = Readonly<Record<string, string>>;
@@ -32,8 +32,8 @@ export interface NameStorage {
 
 export const partNamesKey = (jobId: string): string => `${PART_NAMES_KEY_PREFIX}${jobId}`;
 
-/** The map key for a section: its start, whole seconds. */
-export const partNameSlot = (region: Pick<LoopRegion, 'startSec'>): string => String(Math.max(0, Math.round(region.startSec)));
+/** The map key for a section: its start in whole MILLISECONDS (two parts that start in the same second keep separate names). */
+export const partNameSlot = (region: Pick<LoopRegion, 'startSec'>): string => String(Math.max(0, Math.round(region.startSec * 1000)));
 
 /** Trim, collapse inner whitespace runs, cap at MAX_PART_NAME_LEN. "" = use the default. */
 export function sanitizePartName(raw: unknown): string {
@@ -109,3 +109,6 @@ export function collectPartNames(drafts: readonly string[], regions: readonly Lo
   });
   return out;
 }
+
+/** Whether the player menu offers "Rename parts": only with a playable song that has parts. */
+export const canRenameParts = (playable: boolean, sectionCount: number): boolean => playable && sectionCount > 0;

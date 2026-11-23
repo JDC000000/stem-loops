@@ -48,7 +48,7 @@ import { PartPills } from './PartPills';
 import { Presets } from './Presets';
 import { SectionLoop } from './SectionLoop';
 import { RenameParts } from './RenameParts';
-import { applyPartNames, collectPartNames, readPartNames, writePartNames, type PartNameMap } from '@/lib/play/part-names';
+import { applyPartNames, canRenameParts, collectPartNames, readPartNames, writePartNames, type PartNameMap } from '@/lib/play/part-names';
 import { Sheet } from './Sheet';
 import { Transport } from './Transport';
 import styles from './Player.module.css';
@@ -75,6 +75,8 @@ export const STRIP_HINT_SEEN_KEY = 'sl.play.sectionHintSeen.v1';
 export const DESKTOP_QUERY = '(min-width: 1024px) and (min-height: 500px)';
 /** How long the one-line set-list result ("Added to JAMS.") stays up. */
 export const SET_TOAST_MS = 3000;
+/** Shown when the browser refuses to keep the part names (private mode, full storage). */
+export const PART_NAMES_NOT_SAVED = 'Names not saved: this browser blocked storage.';
 
 /** The `?set=` this page was opened with (a list id or `demo`), or null. Client only. */
 export function readSetParam(search: string | null | undefined): string | null {
@@ -554,7 +556,7 @@ export function PlayerScreen(props: ScreenProps) {
               >
                 Song info
               </button>
-              {playable && sections.length > 0 ? (
+              {canRenameParts(playable, sections.length) ? (
                 <button
                   type="button"
                   className={styles.menuItem}
@@ -783,8 +785,10 @@ export function PlayerScreen(props: ScreenProps) {
         times={times}
         onSave={(drafts) => {
           const next = collectPartNames(drafts, sections, defaultNames);
-          writePartNames(jobId, next);
+          const saved = writePartNames(jobId, next);
           setCustomNames(next);
+          // Quota or private mode: the names show now but will not survive a reload. Say so.
+          if (!saved) setSetToast(PART_NAMES_NOT_SAVED);
           setRenameOpen(false);
         }}
       />

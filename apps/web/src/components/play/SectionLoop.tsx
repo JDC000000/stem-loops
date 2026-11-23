@@ -152,6 +152,10 @@ export function SectionLoop({ names, times, tones, current = -1, state, onTap, o
   // The "+N more" cue (review B1/M2 on #330): whenever chips do not all fit
   // (a short phone, a long song), say how many are out of view and which way.
   const count = names.length;
+  // A rename changes the chips' widths (so how many fit) without changing the
+  // count or the list's own box, so the names are a dependency too (Phase C C3,
+  // review R1 F1): the cue must be right the moment a name changes.
+  const namesKey = names.join('\u0000');
   useIsoLayoutEffect(() => {
     measure();
     const el = listRef.current;
@@ -164,7 +168,7 @@ export function SectionLoop({ names, times, tones, current = -1, state, onTap, o
       ro?.disconnect();
       globalThis.removeEventListener?.('resize', measure);
     };
-  }, [count, measure]);
+  }, [count, namesKey, measure]);
 
   if (names.length === 0) return null;
 

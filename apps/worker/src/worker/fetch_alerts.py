@@ -46,6 +46,16 @@ _PROXY_FAILURE_MESSAGES = {
         "link fetch failed at our proxy ({cause}): the last attempt's exit sent no media byte "
         "before FETCH_FIRST_BYTE_DEADLINE_SEC"
     ),
+    # Q-B: a YouTube block while the fetch canary's check was failing (downloader
+    # _attribute_block_to_outage): classed ours so the song comes back.
+    "canary_proxy": (
+        "link fetch blocked while the fetch canary's proxy check was failing ({cause}); "
+        "treated as our outage"
+    ),
+    "canary_youtube": (
+        "link fetch blocked while the fetch canary's youtube check was failing ({cause}); "
+        "treated as our outage"
+    ),
 }
 
 

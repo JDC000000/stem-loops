@@ -26,6 +26,7 @@ import os
 import re
 import time
 
+from .. import fetch_canary
 from ..errors import (
     DownloadBlockedError,
     DownloadInvalidUrlError,
@@ -115,12 +116,37 @@ def download_audio(
     try:
         result = _fetch(fetch_url, video_id, job_id, max_duration_sec, meta)
     except StemLoopsError as e:
+        final = _attribute_block_to_outage(e, job_id)
         with contextlib.suppress(Exception):  # telemetry never changes the outcome
-            burst_detector.record_failure(e.error_code, video_id)
-        raise
+            burst_detector.record_failure(final.error_code, video_id)
+        if final is e:
+            raise
+        raise final from e
     with contextlib.suppress(Exception):
         burst_detector.record_success()
     return result
+
+
+def _attribute_block_to_outage(exc: StemLoopsError, job_id: str | None) -> StemLoopsError:
+    """Jon Q-B (2026-11-21): a link job's FINAL DownloadBlockedError, raised while the fetch
+    canary reports our proxy / YouTube path failing right now, is OUR outage, not the video's:
+    it becomes FETCH_PROXY_FAILED (an OUR_FAULT_CODES code, #307), so the job's stored code
+    makes migration 042's restore_job_allowance give the song back. Issue #321: during the
+    proxy outages every link job "was blocked by YouTube" and nobody got their song back.
+
+    Exactly ``DownloadBlockedError`` -- not FetchPausedError (our deliberate kill switch,
+    raised before the fetch and not an outage), not DOWNLOAD_TIMEOUT or any other code: those
+    keep their classification. "Right now" is ``fetch_canary.outage_confirmed()``: the last
+    result of a canary check failed and is fresh (<= 2 proxy-check periods, 30 min by
+    default). A stale, missing or unreadable canary returns the original error (fail closed:
+    no refund without positive evidence the path was ours to fix)."""
+    if type(exc) is not DownloadBlockedError:
+        return exc
+    check = fetch_canary.outage_confirmed()
+    if check is None:
+        return exc
+    log_structured("WARN", "download_blocked_during_canary_outage", job_id=job_id, check=check)
+    return FetchProxyFailedError(f"canary_{check}")
 
 
 def _fetch(

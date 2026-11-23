@@ -389,13 +389,21 @@ for (const [name, spend, code] of [['charged unit', 'unit', 'FETCH_PROXY_FAILED'
     // BARRIER (review R1 should-fix 3): neither request may send the retry tx's FIRST lock
     // until BOTH have reached it, so both have passed every lock-free gate. The first to get the
     // lock then holds it, and a third connection must SEE the other one waiting on it. The
-    // first lock is the parent's FOR UPDATE, or on the trial path the trial_consume advisory
-    // lock (B0's lock order: trial_grants before the parent row).
-    const trialPath = spend === 'trial';
-    const isFirstLock = (sql, params) => trialPath
-      ? /pg_advisory_xact_lock/.test(sql) && params?.[0] === 'trial_consume'
-      : /FROM jobs WHERE id = \$1::uuid FOR UPDATE/.test(sql);
-    const waitLike = trialPath ? '%pg_advisory_xact_lock%' : '%retry_depth, retried_at%FOR UPDATE%';
+    // first lock (#345 lock order: trial_grants → debit row → parent row) is the trial_consume
+    // advisory lock on the trial path, the parent's debit row FOR UPDATE when it has one, and
+    // the parent's FOR UPDATE when it has none (a debit-row FOR UPDATE that finds no row locks
+    // nothing).
+    const firstLock = spend === 'trial' ? 'trial' : spend === 'none' ? 'parent' : 'debit';
+    const isFirstLock = (sql, params) => ({
+      trial: () => /pg_advisory_xact_lock/.test(sql) && params?.[0] === 'trial_consume',
+      debit: () => /FROM public\.job_allowance_debits WHERE job_id = \$1::uuid FOR UPDATE/.test(sql),
+      parent: () => /FROM jobs WHERE id = \$1::uuid FOR UPDATE/.test(sql),
+    })[firstLock]();
+    const waitLike = {
+      trial: '%pg_advisory_xact_lock%',
+      debit: '%job_allowance_debits WHERE job_id = $1::uuid FOR UPDATE%',
+      parent: '%retry_depth, retried_at%FOR UPDATE%',
+    }[firstLock];
     let arrived = 0;
     let open;
     const gate = new Promise((r) => (open = r));
@@ -546,9 +554,140 @@ T('restore IN PROGRESS when the retry starts: the retry waits on the debit row, 
   const d = delta(before, await rowCounts(uid, p));
   assert.deepEqual({ ...d, burst: 0 }, { jobs: 1, jobs_used: 0, songs_used: null, debits: 1, burst: 0 },
     '1 spent → 1 given back → 1 spent by the retry: charged, net 0');
-  assert.equal(d.burst, 2, 'the gates ran again for the charged decision');
+  assert.equal(d.burst, 1, 'one request, one burst row: the re-run for the charged decision does not record a second (#345)');
   assert.deepEqual(await one('SELECT trial_song, allowance_period_start IS NOT NULL AS has_period FROM public.job_allowance_debits WHERE job_id = $1', [r.body.id]),
     { trial_song: false, has_period: true });
+});
+
+// ── #345: B3 residue ─────────────────────────────────────────────────────────────────────
+
+// The worker's fail_job SECOND transaction, statement for statement: restore_job_allowance()
+// locks the parent's debit row, then job_failure._NOTE_RESTORED_SQL updates the parent's job row.
+const ALLOWANCE_RETURNED_SENTENCE = "This didn't count toward your monthly songs.";
+const NOTE_RESTORED_SQL = `UPDATE jobs SET error_message_user = COALESCE(error_message_user || ' ', '') || $1 WHERE id = $2`;
+const DEBIT_LOCK_RE = /FROM public\.job_allowance_debits WHERE job_id = \$1::uuid FOR UPDATE/;
+
+async function waitForLockWait(like) {
+  const end = Date.now() + 10_000;
+  while (Date.now() < end) {
+    const n = (await pool.query(
+      `SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE $1`, [like],
+    )).rows[0].n;
+    if (n > 0) return true;
+    await new Promise((res) => setTimeout(res, 20));
+  }
+  return false;
+}
+
+T('#345 lock order: worker restore (debit row → job row) concurrent with a retry → no deadlock; retry charged', async () => {
+  const uid = await mkUser();
+  const p = await failedParent(uid, { spend: 'unit', code: 'FETCH_PROXY_FAILED', restore: false });
+  const before = await rowCounts(uid, p);
+  const x = await pool.connect();
+  let r;
+  let workerErr = null;
+  try {
+    await x.query('BEGIN');
+    // 1. The worker claims the debit row (uncommitted) ...
+    assert.deepEqual((await x.query('SELECT * FROM public.restore_job_allowance($1::uuid, $2::text[])', [p, OUR_FAULT])).rows,
+      [{ allowance_restored: true, trial_restored: false }]);
+    // 2. ... a retry starts and blocks on that debit row ...
+    const pending = post(p);
+    assert.ok(await waitForLockWait('%FROM public.job_allowance_debits WHERE job_id = $1::uuid FOR UPDATE%'),
+      'the retry is waiting on the parent debit row lock');
+    // 3. ... then the worker updates the parent's job row. With the old order (parent row first)
+    // the retry held this row while waiting for the debit row: a cycle, 40P01 on one side.
+    try {
+      await x.query(NOTE_RESTORED_SQL, [ALLOWANCE_RETURNED_SENTENCE, p]);
+      await x.query('COMMIT');
+    } catch (e) {
+      workerErr = e;
+      await x.query('ROLLBACK');
+    }
+    r = await pending;
+  } finally {
+    x.release();
+  }
+  assert.equal(workerErr, null, `the worker's job-row update was not aborted: ${workerErr?.code} ${workerErr?.message}`);
+  assert.equal(r.status, 201, `the retry was not aborted: ${JSON.stringify(r.body)}`);
+  // Consistent: the restore committed in full, and the retry saw it and was charged for it.
+  assert.deepEqual(await restoreOf(p), { claimed: true, allowance_restored: true, trial_restored: false });
+  assert.match((await one('SELECT error_message_user FROM jobs WHERE id = $1', [p])).error_message_user ?? '', /didn't count toward your monthly songs/);
+  assert.deepEqual(delta(before, await rowCounts(uid, p)), { jobs: 1, jobs_used: 0, songs_used: null, debits: 1, burst: 1 },
+    '1 spent → 1 given back → 1 spent by the retry; one burst row');
+  assert.ok((await jobRow(p)).retried_at, 'the parent is marked retried');
+  assert.equal((await jobRow(r.body.id)).retry_of, p);
+});
+
+T('#345 lock order: the retry holds the debit row → the worker restore waits, then gives nothing back; no deadlock', async () => {
+  const uid = await mkUser();
+  const p = await failedParent(uid, { spend: 'unit', code: 'FETCH_PROXY_FAILED', restore: false });
+  const before = await rowCounts(uid, p);
+  // Hold the retry just after its FIRST lock (the debit row) is granted, then run the worker's
+  // whole second transaction on another connection: it must wait for the retry, never cycle.
+  let release;
+  const held = new Promise((res) => (release = res));
+  let reached;
+  const atLock = new Promise((res) => (reached = res));
+  globalThis.__retryOnQuery = async (sql, params, run) => {
+    const out = await run();
+    if (DEBIT_LOCK_RE.test(sql)) { reached(); await held; }
+    return out;
+  };
+  let r;
+  let worker;
+  try {
+    const pending = post(p);
+    await atLock;
+    const x = await pool.connect();
+    worker = (async () => {
+      try {
+        await x.query('BEGIN');
+        const rows = (await x.query('SELECT * FROM public.restore_job_allowance($1::uuid, $2::text[])', [p, OUR_FAULT])).rows;
+        if (rows.some((row) => row.allowance_restored || row.trial_restored)) {
+          await x.query(NOTE_RESTORED_SQL, [ALLOWANCE_RETURNED_SENTENCE, p]);
+        }
+        await x.query('COMMIT');
+        return { rows };
+      } catch (e) {
+        await x.query('ROLLBACK');
+        return { err: e };
+      } finally {
+        x.release();
+      }
+    })();
+    assert.ok(await waitForLockWait('%restore_job_allowance%'), 'the worker restore waits on the retry');
+    release();
+    r = await pending;
+  } finally {
+    release();
+    globalThis.__retryOnQuery = undefined;
+  }
+  const w = await worker;
+  assert.equal(w.err, undefined, `worker aborted: ${w.err?.code} ${w.err?.message}`);
+  assert.deepEqual(w.rows, [], 'the restore finds the row claimed by the retry');
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.deepEqual(await restoreOf(p), { claimed: true, allowance_restored: false, trial_restored: false });
+  assert.deepEqual(delta(before, await rowCounts(uid, p)), { jobs: 1, jobs_used: 0, songs_used: null, debits: 0, burst: 1 },
+    'free retry, nothing given back: never +1');
+});
+
+T('#345 mutant R3: a CHARGED retry leaves the parent\'s already-restored debit row exactly as the restore wrote it', async () => {
+  for (const [spend, code, rollPeriod, want] of [
+    ['unit', 'FETCH_PROXY_FAILED', false, { allowance_restored: true, trial_restored: false }],
+    ['trial', 'INTERNAL_ERROR', false, { allowance_restored: true, trial_restored: true }],
+    ['trial', 'INTERNAL_ERROR', true, { allowance_restored: false, trial_restored: true }],
+  ]) {
+    const uid = await mkUser({ trial: true });
+    const p = await failedParent(uid, { spend, code, rollPeriod });
+    const audit = () => one('SELECT restored_at, allowance_restored, trial_restored FROM public.job_allowance_debits WHERE job_id = $1', [p]);
+    const was = await audit();
+    assert.deepEqual({ allowance_restored: was.allowance_restored, trial_restored: was.trial_restored }, want, 'precondition');
+    await new Promise((res) => setTimeout(res, 5)); // a later transaction's now() differs
+    const r = await post(p);
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.deepEqual(await audit(), was, `${spend}/rollPeriod=${rollPeriod}: restored_at and both flags unchanged`);
+  }
 });
 
 T('GET (review R1): a used-up trial is refused with the retry line, not a credit-pack line', async () => {

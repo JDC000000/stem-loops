@@ -1,0 +1,265 @@
+# .github/autonomy/deny.txt — anything matching here makes the PR `human`.
+#
+# Owner: Jon. Read by scripts/autonomy_class.py from the BASE branch only.
+# Spec: AGENTIC-L5-PLAN v1.2.1 §2 R1 and review carry-forwards C1-C3.
+#
+# DENY WINS over allow.txt. This list is NOT exhaustive by design: anything
+# not in allow.txt is already `human`. These lines exist so that (a) a later
+# widening of allow.txt cannot silently admit a sensitive path, and (b) the
+# sensitive files INSIDE allowed directories are carved out by name.
+#
+# LINE FORMS
+#   <glob>              path glob. Matched CASE-INSENSITIVELY against the
+#                       changed file's path AND, for renames/copies, its
+#                       previous path.
+#   content: <regex>    Python regex, case-insensitive, searched in the WHOLE
+#                       head version of every changed file — not just the
+#                       added lines (C2). Also searched in the NFKC-normalised
+#                       text, so full-width lookalikes match too.
+#   content-cs: <regex> same, case-sensitive (for SQL keywords etc. that would
+#                       otherwise fire on ordinary UI copy).
+#   import: <glob>      an import target. Every import/export-from/@import in
+#                       a changed file is resolved (`@/` -> apps/web/src/,
+#                       relative paths against the file's directory) and
+#                       matched against these globs; bare package names are
+#                       matched as written (C1).
+# Glob syntax is the same as allow.txt. An unknown `xxx:` prefix or an invalid
+# regex makes the checker fail, and a failed checker posts `human`.
+
+# ── Merge machinery and agent-instruction files ──────────────────────────────
+.github/**
+**/CODEOWNERS
+**/AGENTS.md
+**/CLAUDE.md
+**/CLAUDE.local.md
+**/.claude/**
+**/SKILL.md
+**/.mcp.json
+scripts/**
+# Every dotfile and dot-directory (.env*, .gitattributes, .gitmodules, .npmrc,
+# .eslintrc, .vercel/, .husky/ ...): config, hooks, secrets, submodules.
+**/.*
+**/.*/**
+**/.env*
+
+# ── Data: migrations, SQL, RLS ───────────────────────────────────────────────
+# Migrations live in apps/worker/migrations/ (RLS policies are in them; the
+# RLS gate is scripts/check_rls.py, denied above). Any-depth form covers a
+# future supabase/migrations/.
+**/migrations/**
+supabase/**
+**/*.sql
+**/*rls*
+**/*rls*/**
+**/*polic*
+**/*polic*/**
+
+# ── Money: Stripe, billing, checkout, credits, entitlements, pricing ─────────
+# Real paths today: apps/web/src/lib/billing/** (providers/stripe.ts,
+# providers/paddle.ts), apps/worker/src/worker/billing/**,
+# apps/web/src/app/api/billing/** (checkout, portal, webhook, credits),
+# apps/web/src/app/api/entitlements/**, apps/web/src/app/pricing/**,
+# apps/web/src/app/success/**, apps/web/src/app/trial/**,
+# apps/web/src/lib/pricing-copy.ts, apps/web/src/components/BillingButton.tsx.
+# BillingButton is ALSO caught by content (whole-file), which the fixtures
+# assert separately.
+# Each word is denied as a file name AND as a directory name at any depth
+# (`**/*w*` alone only matches the basename, so `api/entitlements/route.ts`
+# would slip through it; the fixtures pin both forms).
+**/*billing*
+**/*billing*/**
+**/*stripe*
+**/*stripe*/**
+**/*paddle*
+**/*paddle*/**
+**/*checkout*
+**/*checkout*/**
+**/*entitlement*
+**/*entitlement*/**
+**/*credit*
+**/*credit*/**
+**/*pricing*
+**/*pricing*/**
+**/*allowance*
+**/*allowance*/**
+**/*trial*
+**/*trial*/**
+**/*success*/**
+apps/web/src/app/pricing/**
+apps/web/src/app/success/**
+apps/web/src/app/trial/**
+
+# ── Auth, accounts, sessions, secrets ────────────────────────────────────────
+**/*auth*
+**/*auth*/**
+**/*login*
+**/*login*/**
+**/*password*
+**/*password*/**
+**/*account*
+**/*account*/**
+**/*session*
+**/*session*/**
+**/*secret*
+**/*secret*/**
+**/middleware.*
+**/*.pem
+**/*.key
+**/*.p12
+# Auth/account forms and other sensitive components, denied BY NAME (plan R1).
+**/LoginForm*
+**/DeleteAccountForm*
+**/ResetPassword*
+**/ToolForm*
+**/JsonLd*
+**/seo/**
+**/*Analytics*
+**/legal*
+
+# ── Server code, workers, build/deploy config, dependencies ─────────────────
+apps/web/src/app/api/**
+apps/web/src/lib/**
+apps/web/src/middleware.*
+apps/web/src/instrumentation*
+apps/worker/**
+apps/training/**
+packages/web-browser-gate/**
+packages/types/**
+**/layout.*
+**/*.config.*
+**/next.config.*
+**/package.json
+**/pnpm-lock.yaml
+**/pnpm-workspace.yaml
+**/package-lock.json
+**/yarn.lock
+**/requirements*.txt
+**/constraints*.txt
+**/pyproject.toml
+**/poetry.lock
+**/Makefile
+**/Dockerfile*
+**/docker-compose*
+**/fly.toml
+**/vercel.json
+**/tsconfig*.json
+
+# ── Legal pages ──────────────────────────────────────────────────────────────
+apps/web/src/app/(landing)/privacy/**
+apps/web/src/app/(landing)/terms/**
+**/privacy/**
+**/terms/**
+
+# ── Tests (C3: a weakened test is invisible, so tests are never `auto`) ──────
+**/__tests__/**
+**/*.test.*
+**/*.spec.*
+**/test/**
+**/tests/**
+**/e2e/**
+**/fixtures/**
+
+# ── Agent docs and runbooks ──────────────────────────────────────────────────
+docs/agent*
+docs/agent*/**
+**/*runbook*
+**/RESTORE*
+claude/**
+04-tsd-and-workplan/**
+
+# ── Whole-file content patterns (C2) ─────────────────────────────────────────
+# Money (plan R1 list).
+content: stripe
+content: /api/billing
+content: /api/entitlements
+content: checkout
+content: entitlement
+content: allowance
+content: credit
+content: \[billing\]
+# Network: any fetch, and the other ways to reach the network.
+content: \bfetch\s*\(
+content: XMLHttpRequest
+content: sendBeacon
+content: \bWebSocket\b
+content: \bEventSource\b
+content: /api/auth
+# A URL literal to any host (new hosts) except the SVG namespace.
+content: \bhttps?://(?!www\.w3\.org/)
+# Secrets and environment.
+content: process\.env
+content: import\.meta\.env
+content: service[_-]?role
+content: SUPABASE_
+content: \bsk_(live|test)_
+content: \bwhsec_
+content: api[_-]?key
+content: secret
+content: \bsupabase\b
+content: document\.cookie
+# Code execution and the usual obfuscations of the above.
+content: \beval\s*\(
+content: \bnew\s+Function\b
+content: \bFunction\s*\(
+content: child_process
+content: \brequire\s*\(
+content: \bimport\s*\(
+content: \bglobalThis\b
+content: \b(window|self|global)\s*\[
+content: \bReflect\.
+content: \batob\s*\(
+content: fromCharCode
+content: \\u\{?[0-9a-f]{2,}
+content: \\x[0-9a-f]{2}
+# HTML injection.
+content: dangerouslySetInnerHTML
+content: \binnerHTML\b
+content: \bouterHTML\b
+content: <script
+content: javascript:
+# SQL (upper-case keywords only; lower-case "select a section" is UI copy).
+content-cs: \b(SELECT|INSERT INTO|UPDATE|DELETE FROM|DROP|ALTER TABLE|CREATE TABLE|CREATE POLICY|GRANT|REVOKE|TRUNCATE)\b
+content: \.rpc\s*\(
+content: \bsql`
+
+# ── Import rule (C1) ─────────────────────────────────────────────────────────
+import: apps/web/src/lib/billing/**
+import: apps/web/src/lib/billing
+import: apps/web/src/lib/auth/**
+import: apps/web/src/lib/auth
+import: apps/web/src/lib/jobs/**
+import: apps/web/src/lib/jobs
+import: apps/web/src/lib/supabase*
+import: apps/web/src/lib/supabase/**
+import: apps/web/src/lib/secret-env*
+import: apps/web/src/lib/db*
+import: apps/web/src/lib/r2*
+import: apps/web/src/lib/admission*
+import: apps/web/src/lib/pricing-copy*
+import: apps/web/src/lib/trial*
+import: apps/web/src/lib/hcaptcha*
+import: apps/web/src/app/api/**
+import: apps/web/src/middleware*
+import: **/LoginForm*
+import: **/DeleteAccountForm*
+import: **/ResetPassword*
+import: **/ToolForm*
+import: **/JsonLd*
+import: **/BillingButton*
+import: **/PasswordField*
+import: @supabase/**
+import: stripe
+import: @stripe/**
+import: @hcaptcha/**
+import: next/headers
+import: next/server
+import: server-only
+import: node:*
+import: child_process
+import: fs
+import: fs/**
+import: net
+import: http
+import: https
+import: os
+import: crypto

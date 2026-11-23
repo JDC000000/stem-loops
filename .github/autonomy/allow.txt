@@ -1,0 +1,38 @@
+# .github/autonomy/allow.txt — paths a PR may touch and still be class `auto`.
+#
+# Owner: Jon. Read by scripts/autonomy_class.py from the BASE branch only
+# (.github/workflows/autonomy-class.yml), so a PR cannot widen its own class.
+# Spec: AGENTIC-L5-PLAN v1.2.1 §2 R1 ("Initial allow list:
+# apps/web/src/components/** and docs/design/** only").
+#
+# HOW THIS FILE IS USED
+#   * deny.txt is applied FIRST and wins. A path here that also matches
+#     deny.txt is `human`.
+#   * Anything that matches NO line here is `human` (default deny).
+#   * Matching is CASE-SENSITIVE and exact; deny matching is case-insensitive.
+#     So `apps/web/src/Components/x.tsx` is not allowed, and `.CLAUDE/x` is
+#     still denied.
+#   * Glob syntax (same as deny.txt): `**` = any number of path segments
+#     (including none), `*` = anything inside one segment, `?` = one char.
+#     A pattern with no `/` matches the file's basename at any depth; one
+#     with a `/` is anchored at the repo root.
+#   * Widen ONLY with a reviewed PR that adds a line and a reason (plan §5,
+#     "Start narrow; widen only with a reviewed PR that adds paths").
+#
+# Each line is narrowed by file extension on purpose: no .js/.mjs/.json/.svg
+# or images, so a "component" PR cannot smuggle a config, a script or a
+# binary in under an allowed directory.
+
+# Web UI components: presentational React + their CSS modules. This is where
+# the named R1 candidates live (QA-78 nav wrap, QA-85..90 UI fixes, B2 drag
+# reorder / nav current item). Billing/auth/SEO/analytics components inside
+# this directory are carved out by name in deny.txt, and every file here is
+# still content-scanned (whole file) and import-scanned.
+apps/web/src/components/**/*.tsx
+apps/web/src/components/**/*.ts
+apps/web/src/components/**/*.module.css
+
+# Design notes (markdown only). Not policy: agent/runbook/policy docs live
+# elsewhere in docs/ and stay denied by default. Screenshots (.png) are
+# deliberately NOT allowed: binary content cannot be content-scanned.
+docs/design/**/*.md

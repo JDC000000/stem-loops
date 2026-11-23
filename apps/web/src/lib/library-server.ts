@@ -1,5 +1,5 @@
 // Server-side SQL for the song library (Phase B, B1; migration 043). Shared by GET /api/library,
-// POST /api/library/remake and DELETE /api/library/:entryId.
+// POST /api/library/remake and DELETE /api/library/:entryId; POST /api/jobs uses pasteHooks (#372).
 //
 // D-a (brief): an expired song is a METADATA row keyed by source, `library_entries`, with no
 // job_id. A link entry resolves by URL to the newest LIVE job of the same user and URL, where
@@ -72,6 +72,15 @@ export class EntryGone extends Error {
 }
 
 /**
+ * The newest live job of this user for this (canonical) URL, or null. Shared by Re-make's hooks
+ * and the pasted-link hooks below (#372); read-only.
+ */
+export async function findLiveJobByUrl(db: Queryable, userId: string, url: string): Promise<string | null> {
+  const r = await db.query(LIVE_JOB_BY_URL_SQL, liveJobParams(userId, url));
+  return (r.rows[0] as { id: string } | undefined)?.id ?? null;
+}
+
+/**
  * Re-make's hooks for createAuthedLinkJob (B0, D-e). NEITHER writes the entry.
  *   findExisting: read-only, lock-free; the newest live job of this user + URL, or null.
  *   beforeInsert: inside the insert tx, immediately before the INSERT: lock the caller's
@@ -82,18 +91,54 @@ export class EntryGone extends Error {
  */
 export function remakeHooks(entryId: string, userId: string) {
   return {
-    findExisting: async (db: Queryable, ctx: { userId: string; canonicalUrl: string }): Promise<string | null> => {
-      const r = await db.query(LIVE_JOB_BY_URL_SQL, liveJobParams(ctx.userId, ctx.canonicalUrl));
-      return (r.rows[0] as { id: string } | undefined)?.id ?? null;
-    },
+    findExisting: async (db: Queryable, ctx: { userId: string; canonicalUrl: string }): Promise<string | null> =>
+      findLiveJobByUrl(db, ctx.userId, ctx.canonicalUrl),
     beforeInsert: async (client: Queryable, ctx: { userId: string; canonicalUrl: string }): Promise<string | null> => {
       const lock = await client.query(
         `SELECT id FROM library_entries WHERE id = $1::uuid AND user_id = $2::uuid FOR UPDATE`,
         [entryId, userId],
       );
       if (!lock.rows.length) throw new EntryGone();
-      const r = await client.query(LIVE_JOB_BY_URL_SQL, liveJobParams(ctx.userId, ctx.canonicalUrl));
-      return (r.rows[0] as { id: string } | undefined)?.id ?? null;
+      return findLiveJobByUrl(client, ctx.userId, ctx.canonicalUrl);
+    },
+  };
+}
+
+/**
+ * The per-(user, canonical URL) lock a pasted link takes in its insert tx (#372). A transaction-
+ * scoped advisory lock: there is no row to lock before the job exists, and it releases at
+ * COMMIT / ROLLBACK. The 'link-dedupe:' namespace keeps it apart from every other advisory key
+ * in this app (trial, quota, anon-caps, rate, set_lists, billing).
+ */
+export const LINK_DEDUPE_LOCK_SQL = `SELECT pg_advisory_xact_lock(hashtextextended('link-dedupe:' || $1::text || ':' || $2::text, 0))`;
+
+/**
+ * POST /api/jobs's hooks for a SIGNED-IN pasted link (#372: a double tap, two tabs or a client
+ * retry made two jobs and spent two songs). Same lookup as Re-make: reuse the newest job of
+ * this user + canonical URL that is in flight (IN_FLIGHT_STATUSES) or done and retained
+ * (JOB_RETAINED_UNTIL_SQL > now()). A FAILED (or expired, or cancelled) job is NOT live, so a
+ * re-paste after a failure is a fresh, normally charged job.
+ *   findExisting: read-only, lock-free. A hit answers 200 { id } before every gate that writes
+ *     (no burst row, quota, trial or debit).
+ *   beforeInsert: inside the insert tx, immediately before the INSERT: take LINK_DEDUPE_LOCK_SQL
+ *     for (user, canonical URL), then repeat the lookup. Two concurrent pastes serialise on the
+ *     lock; the loser waits for the winner's COMMIT, sees its job, and its tx rolls back with
+ *     nothing spent (an undone trial consume included).
+ * LOCK ORDER (D-e: trial_grants → the hook's lock → entitlements): in the trial branch this lock
+ * comes after consumeTrialInTx's trial lock; in the non-trial branch it is the tx's first lock;
+ * in both it is taken before the INSERT and before rollPeriodIfStale / bumpJobsUsed[WithinQuota]
+ * / recordAllowanceDebit take the entitlements / quota locks. Nothing else takes this key, so it
+ * can only ever be waited on by another paste of the same user + URL.
+ * NOT covered: a paste racing a Re-make of the same URL (Re-make serialises on its entry row, not
+ * this key); each path still dedupes against the other's COMMITTED job via findExisting.
+ */
+export function pasteHooks() {
+  return {
+    findExisting: async (db: Queryable, ctx: { userId: string; canonicalUrl: string }): Promise<string | null> =>
+      findLiveJobByUrl(db, ctx.userId, ctx.canonicalUrl),
+    beforeInsert: async (client: Queryable, ctx: { userId: string; canonicalUrl: string }): Promise<string | null> => {
+      await client.query(LINK_DEDUPE_LOCK_SQL, [ctx.userId, ctx.canonicalUrl]);
+      return findLiveJobByUrl(client, ctx.userId, ctx.canonicalUrl);
     },
   };
 }

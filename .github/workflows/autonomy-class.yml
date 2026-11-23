@@ -1,16 +1,35 @@
 # autonomy-class — CONTENT-ONLY class for the bot merge path
 # (AGENTIC-L5-PLAN v1.2.1 §2 R1, rebuilt per Jon's decision, LEDGER-18
-# row 143: regex denylists over JS lost two review rounds).
+# row 143, and NARROWED by Jon on 2026-11-23, LEDGER-19A row 49).
 #
 # Posts ONE check-run named `autonomy-class` on the PR head commit:
 #   conclusion success, title `auto`   — every changed file is a modified,
 #                                        allowed, non-denied text file, and a
 #                                        PARSER proved base and head differ
-#                                        only in literal text (TS/TSX string
-#                                        literals / JSX text in content
-#                                        positions; CSS declaration values)
+#                                        ONLY in (a) plain JSX text directly
+#                                        inside <p>/<h1-6>/<li>/<span>/
+#                                        <strong>/<em>, or (b) the value of a
+#                                        CSS `color` / `background-color`
+#                                        declaration in a strict colour
+#                                        grammar (scripts/autonomy_class.py)
 #   conclusion neutral, title `human`  — anything else, INCLUDING any error in
 #                                        this workflow (fail closed)
+#
+# BINDING (review R3 O1). The class is for ONE (head SHA, base SHA) pair. The
+# check-run's external_id is the base SHA it was computed against, and the
+# summary names both. Right before posting, this workflow re-reads the PR and
+# the v3/main ref; if the head or base moved, or base is no longer the
+# v3/main tip, it posts `human`. v3/main moving LATER triggers no re-run, so:
+#
+# CONSUMER RULE (for the bot merge path; not wired in by this PR): read the
+# LATEST check-run named `autonomy-class` on the exact head SHA whose app is
+# the GitHub Actions app (app id 15368, slug github-actions), and treat the PR
+# as `auto` only if conclusion == success AND output.title == auto AND
+# external_id == the CURRENT v3/main tip SHA. Anything else (missing, older,
+# other app, other base) is `human`. (R3 O2: a same-repo `pull_request`
+# workflow with checks: write could also post under app 15368; the merge path
+# should therefore also recompute the class from base code or check the
+# check-run's workflow; tracked outside this PR.)
 #
 # `auto` is an input to the bot path, never a merge by itself. This workflow
 # does not label, comment, approve or merge, and auto-merge.yml does not read
@@ -122,25 +141,47 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           VERDICT: ${{ steps.classify.outputs.verdict }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          summary_file="$RUNNER_TEMP/summary.md"
+          if [ "$VERDICT" != "auto" ] && [ "$VERDICT" != "human" ]; then
+            printf '**Class: `human`** — the checker did not produce a verdict (error), so this fails closed. Run: %s\n' "$RUN_URL" > "$summary_file"
+          fi
+          # The (head, base) pair the verdict was computed for.
+          vhead=""; base_sha=""
+          if [ -f "$RUNNER_TEMP/verdict.json" ]; then
+            vhead=$(jq -r '.head_sha // ""' "$RUNNER_TEMP/verdict.json" || true)
+            base_sha=$(jq -r '.base_sha // ""' "$RUNNER_TEMP/verdict.json" || true)
+          fi
+          case "$base_sha" in *[!0-9a-f]*) base_sha="" ;; esac
+          [ "${#base_sha}" -eq 40 ] || base_sha=""
+          # Re-check the binding right before posting (review R3 O1): the PR's
+          # head and base, and the v3/main tip, must all still match.
+          if [ "$VERDICT" = "auto" ]; then
+            now=$(gh api "repos/$REPO/pulls/$PR_NUM" --jq '.head.sha + " " + .base.sha' || true)
+            tip=$(gh api "repos/$REPO/git/ref/heads/v3/main" --jq '.object.sha' || true)
+            if [ "$vhead" != "$HEAD_SHA" ] || [ -z "$base_sha" ] \
+               || [ "$now" != "$HEAD_SHA $base_sha" ] || [ "$tip" != "$base_sha" ]; then
+              VERDICT=human
+              printf '**Class: `human`** — the PR head or base, or the v3/main tip, moved after classification (classified head %s base %s; now %s, v3/main %s). A newer run classifies the new pair. Run: %s\n' \
+                "$vhead" "$base_sha" "$now" "$tip" "$RUN_URL" > "$summary_file"
+            fi
+          fi
           if [ "$VERDICT" = "auto" ]; then
             conclusion=success; title=auto
           else
             conclusion=neutral; title=human
           fi
-          summary_file="$RUNNER_TEMP/summary.md"
-          if [ "$VERDICT" != "auto" ] && [ "$VERDICT" != "human" ]; then
-            printf '**Class: `human`** — the checker did not produce a verdict (error), so this fails closed. Run: %s\n' "$RUN_URL" > "$summary_file"
-          fi
           jq -n \
             --arg sha "$HEAD_SHA" --arg c "$conclusion" --arg t "$title" \
-            --arg url "$RUN_URL" --rawfile s "$summary_file" \
+            --arg url "$RUN_URL" --arg base "${base_sha:-unbound}" \
+            --rawfile s "$summary_file" \
             '{name: "autonomy-class", head_sha: $sha, status: "completed",
-              conclusion: $c, details_url: $url,
+              conclusion: $c, details_url: $url, external_id: $base,
               output: {title: $t, summary: $s}}' \
           | gh api -X POST "repos/$REPO/check-runs" --input - > /dev/null
-          echo "::notice::autonomy-class = $title ($conclusion) on $HEAD_SHA"
+          echo "::notice::autonomy-class = $title ($conclusion) on head $HEAD_SHA base ${base_sha:-unbound}"

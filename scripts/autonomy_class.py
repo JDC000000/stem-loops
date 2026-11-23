@@ -3,17 +3,39 @@
 
 WHAT IT DECIDES
 ---------------
-CONTENT-ONLY (Jon, LEDGER-18 row 143). `auto` means: every changed file is a
-MODIFIED, allowed, non-denied regular text file, and a PARSER proves that its
-base and head versions differ only in literal text — string literals, template
-text and JSX text (TS/TSX, parsed by the lockfile-pinned `typescript`
-package, see scripts/autonomy_class_ast.cjs) or declaration values (CSS,
-strict tokenizer). Everything else is `human`; simplicity beats coverage.
-Two review rounds showed that regex denylists over JS lose (computed member
-access, runtime-built URLs, one-hop imports), so the deciding rule is now R8;
-R0-R7 stay as extra fail-closed layers. The class is an INPUT to the bot merge
-path (rollback-safe + adversarial-reviewed + a non-author VERDICT: PASS),
-never a merge by itself.
+CONTENT-ONLY, NARROWED (Jon, LEDGER-18 row 143; narrowed 2026-11-23,
+LEDGER-19A row 49, after review R3). `auto` means: every changed file is a
+MODIFIED, allowed, non-denied regular text file, and a PARSER proves that the
+ONLY differences between its base and head versions are
+  (a) .tsx: JSX TEXT (JsxText nodes; not attributes, not {"..."} children,
+      not any string literal or template) whose direct parent is an intrinsic
+      <p>, <h1>-<h6>, <li>, <span>, <strong> or <em> with no spread, on*,
+      ref, key or dangerouslySetInnerHTML attribute, inside a tree of
+      intrinsic elements (never under <a>, <button>, <label>, <option>,
+      <title>, <script>, <style>, <textarea>, ... or a component) returned by
+      a React component; the old and new text hold no URL-like token and no
+      `<`, `>`, `{`, `}` after entity decoding;
+  (b) .module.css: the value of a `color` or `background-color` declaration,
+      both old and new values in a strict colour grammar (hex, numeric
+      rgb()/rgba()/hsl()/hsla(), a fixed list of named colours, or
+      var(--[a-z0-9-]+)), only under plain selectors or @media (never
+      :export / :import or another at-rule).
+Everything else is `human`: every string literal anywhere, any comment or
+token change, whitespace outside the changed text, .md / docs and every other
+file type, and file add / delete / rename / mode change. Two review rounds
+showed that regex denylists over JS lose, and R3 showed that guessing which
+literals are "prose" loses too, so the deciding rule is R8 and it proves
+positions instead of guessing; R0-R7 stay as extra fail-closed layers. The
+class is an INPUT to the bot merge path (rollback-safe + adversarial-reviewed
++ a non-author VERDICT: PASS), never a merge by itself.
+
+BINDING. The verdict is for one (head SHA, base SHA) pair: `collect` records
+both and fails closed if either moves while reading, and the workflow
+re-checks both (and that base is still the v3/main tip) right before posting,
+else it posts `human`. Consumers must read the LATEST check-run named
+`autonomy-class` from the GitHub Actions app (app id 15368) for the exact head
+SHA, and require conclusion success, title `auto`, and external_id equal to
+the current v3/main tip; anything else is `human`.
 
 Rules, in the order they are reported (all reasons are collected; any one
 makes the PR `human`):
@@ -42,16 +64,16 @@ makes the PR `human`):
   R7  import           every import in the head file resolves to an
                        imports-allow.txt entry or an allowed path (defence in
                        depth; R8 already forbids any import change).
-  R8  content-only     base object missing / not a regular file / unreadable;
-                       TS/TSX: parse error, or the normalised token streams
-                       (comments included) differ, or a changed literal is
-                       not in a content position (JSX text, a text attribute
-                       such as alt/title/className, a JSX child, a prose
-                       constant) or is/becomes empty, URL/path-like, markup
-                       or an entity; CSS: any backslash, any change to
-                       selectors / properties / at-rules / comments, or a
-                       changed value with url()/image()/@/`//`; any other
-                       file type except .md design notes.
+  R8  content-only     base object missing / not a regular file /
+                       unreadable; TS/TSX: parse error, or the token streams
+                       (comments verbatim) differ, or a changed literal is
+                       not JSX text under the rules in (a) above, or the
+                       text is/becomes empty, URL-like, markup or braces, or
+                       the file reads rendered text back (textContent, ...),
+                       or bytes outside the changed text differ; CSS: any
+                       backslash, any change to selectors / properties /
+                       at-rules / comments / whitespace, or a changed value
+                       outside (b); any other file type (.md included).
 
 Lists (allow.txt, deny.txt, imports-allow.txt) are read from the directory
 given by --lists; in CI that is a checkout of v3/main
@@ -465,83 +487,102 @@ def import_hits(L: Lists, file_path: str, text: str, tree) -> list:
     return reasons
 
 
-# -- R8 content-only ----------------------------------------------------------
-# A changed file is `auto` only if a PARSER proves that base and head differ in
-# literal text alone: parse both, replace string literals / template text /
-# JSX text (TS, TSX) or declaration values (CSS) with a placeholder, and
-# require the two results to be IDENTICAL, token for token, comments included.
-# No identifier, import, attribute, call, member, key, selector or property
-# can be added, removed or changed. Each changed literal must then sit in a
-# content position and look like content (not a URL, path, markup, or empty).
-# Anything the parser cannot prove is `human`. (Jon, LEDGER-18 row 143.)
+# -- R8 content-only (NARROWED, Jon 2026-11-23, LEDGER-19A row 49) -----------
+# A changed file is `auto` only if a PARSER proves that base and head differ
+# in exactly these things and nothing else:
+#   (a) .tsx: JSX TEXT (JsxText nodes only: not attributes, not {"..."}
+#       children, not string literals anywhere) whose direct parent is an
+#       intrinsic <p>, <h1>-<h6>, <li>, <span>, <strong> or <em> with no
+#       spread / handler / ref / key / dangerouslySetInnerHTML attribute,
+#       inside a tree of intrinsic elements returned by a React component
+#       (rules in scripts/autonomy_class_ast.cjs). The new and old text must
+#       be plain words: no URL-like token, no `<>{}` after entity decoding,
+#       only listed named entities, not empty.
+#   (b) .css: the VALUE of a `color` or `background-color` declaration,
+#       where both old and new values match a strict colour grammar
+#       (COLOR_RE), and the declaration is only inside plain selectors or
+#       @media (never :export / :import, never another at-rule).
+# Everything else is `human`: every string literal (consts, attributes,
+# props, templates, String.raw / tagged), any comment, any token, any
+# whitespace outside a changed text/value, .md and every other file type.
+# The base and head token streams (comments verbatim) must be IDENTICAL, and
+# the two files must be byte-identical once the changed JSX text / colour
+# values are masked out (CRLF and a leading BOM are normalised).
 TS_VERSION = "5.9.3"  # the version pnpm-lock.yaml pins; checked at load time
 AST_HELPER = posixpath.join(
     posixpath.dirname(posixpath.abspath(__file__)), "autonomy_class_ast.cjs"
 )
-TS_EXTS = (".ts", ".tsx")
-TEXT_EXTS = (".md",)  # inert design notes: any text change is content
-# JSX attributes whose string value is shown to a person and nothing else.
-CONTENT_ATTRS = {
-    "alt",
-    "title",
-    "placeholder",
-    "className",
-    "label",
-    "aria-label",
-    "aria-description",
-    "aria-placeholder",
-    "aria-roledescription",
-    "aria-valuetext",
-}
-# Property / variable names whose value is never treated as prose.
-SENSITIVE_KEYS = {
-    "href",
-    "src",
-    "srcset",
-    "srcSet",
-    "action",
-    "formAction",
-    "url",
-    "uri",
-    "endpoint",
-    "path",
-    "pathname",
-    "method",
-    "poster",
-    "data",
-    "ping",
-    "__html",
-    "dangerouslySetInnerHTML",
-    "as",
-    "rel",
-    "target",
-    "type",
-    "integrity",
-    "crossOrigin",
-    "nonce",
-    "key",
-    "id",
-    "name",
-    "redirect",
-    "redirectTo",
-    "callbackUrl",
-    "next",
-    "to",
-    "host",
-    "origin",
-    "domain",
-}
+TS_EXTS = (".tsx", ".ts")  # .ts has no JSX, so any literal change there is human
 URLISH = [
     re.compile(r"://"),
+    re.compile(r"(?i)www\."),
+    re.compile(r"(?i)(?:javascript|vbscript|data|blob|file|mailto|tel|about)\s*:"),
     re.compile(r"^\s*(?:/|\./|\.\./|~/)"),
     re.compile(r"^\s*[A-Za-z][A-Za-z0-9+.-]*:\S"),  # scheme:...
-    re.compile(r"(?i)(?:javascript|vbscript|data|blob|file|mailto|tel)\s*:"),
-    re.compile(r"(?i)url\s*\(|@import|/api\b|www\."),
+    re.compile(r"(?i)url\s*\(|@import|/api\b"),
     re.compile(r"(?i)\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?:[/:?#]|\b)"),
 ]
-MARKUP = re.compile(r"[<>\\\\]|&(?:#|[A-Za-z]+;)")
-CSS_VALUE_DANGER = re.compile(
-    r"(?i)url\s*\(|image(?:-set)?\s*\(|expression\s*\(|@|//|javascript|<|>"
+# Named entities a text edit may use (decoded before every check). Any other
+# named entity is `human`; numeric ones are decoded and checked like text.
+JSX_ENTITIES = {
+    "amp": "&",
+    "nbsp": "\u00a0",
+    "quot": '"',
+    "apos": "'",
+    "mdash": "\u2014",
+    "ndash": "\u2013",
+    "hellip": "\u2026",
+    "lsquo": "\u2018",
+    "rsquo": "\u2019",
+    "ldquo": "\u201c",
+    "rdquo": "\u201d",
+    "middot": "\u00b7",
+    "times": "\u00d7",
+    "bull": "\u2022",
+    "copy": "\u00a9",
+    "reg": "\u00ae",
+    "trade": "\u2122",
+    "deg": "\u00b0",
+    "larr": "\u2190",
+    "rarr": "\u2192",
+    "uarr": "\u2191",
+    "darr": "\u2193",
+    "laquo": "\u00ab",
+    "raquo": "\u00bb",
+}
+ENTITY = re.compile(r"&(?:#([0-9]+)|#[xX]([0-9a-fA-F]+)|([A-Za-z][A-Za-z0-9]*));")
+CSS_COLOR_PROPS = ("color", "background-color")
+CSS_NAMED_COLORS = frozenset(
+    """aliceblue antiquewhite aqua aquamarine azure beige bisque black
+    blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse
+    chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan
+    darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta
+    darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen
+    darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink
+    deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite forestgreen
+    fuchsia gainsboro ghostwhite gold goldenrod gray green greenyellow grey
+    honeydew hotpink indianred indigo ivory khaki lavender lavenderblush
+    lawngreen lemonchiffon lightblue lightcoral lightcyan lightgoldenrodyellow
+    lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen
+    lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime
+    limegreen linen magenta maroon mediumaquamarine mediumblue mediumorchid
+    mediumpurple mediumseagreen mediumslateblue mediumspringgreen
+    mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin
+    navajowhite navy oldlace olive olivedrab orange orangered orchid
+    palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff
+    peru pink plum powderblue purple rebeccapurple red rosybrown royalblue
+    saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue
+    slateblue slategray slategrey snow springgreen steelblue tan teal thistle
+    tomato turquoise violet wheat white whitesmoke yellow yellowgreen
+    transparent currentcolor""".split()  # noqa: SIM905 - 150 names, one per word
+)
+_NUM = r"-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)"
+_ARG = _NUM + r"(?:%|deg)?"
+COLOR_RE = re.compile(
+    r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})"
+    r"|(?:rgb|rgba|hsl|hsla)\( *" + _ARG + r"(?: *[, ] *" + _ARG + r"){2}"
+    r"(?: *[,/] *" + _NUM + r"%?)? *\)"
+    r"|var\(--[a-z0-9-]+\)"
 )
 
 
@@ -574,60 +615,109 @@ def base_problems(f: dict) -> list:
     return out
 
 
-def literal_problem(old: str, new: str, ctx: str, dynamic: bool) -> str | None:
-    """Is this changed literal (old -> new) content? None = yes."""
-    if ctx.startswith("no:"):
-        return f"changed literal in a non-content position ({ctx[3:]})"
-    if ctx.startswith("attr:") and ctx[5:] not in CONTENT_ATTRS:
-        return f"changed value of JSX attribute {ctx[5:]!r} (not a text attribute)"
-    if ctx.startswith("value:"):
-        if dynamic:
-            return "changed string constant in a file with computed member access"
-        if ctx[6:] in SENSITIVE_KEYS:
-            return f"changed value of {ctx[6:]!r}"
-        if not re.search(r"\s", new.strip()):
-            return "changed string constant is not prose (no space)"
-        # A constant can flow anywhere (a src, a fetch). Prose needs none of
-        # the characters that make a relative URL, a query or a selector.
-        if re.search(r"[/?#%=@:&\[\]{}()$]", old + new):
-            return "changed string constant holds URL/selector punctuation"
-    if ctx != "text" and (not old.strip() or not new.strip()):
-        return "changed literal is or becomes empty"
-    for v in (old, new):
-        if any(rx.search(v) for rx in URLISH):
-            return f"changed literal is or becomes URL/path-like: {v[:60]!r}"
-        if MARKUP.search(v):
-            return f"changed literal holds markup, an entity or a backslash: {v[:60]!r}"
+def decode_jsx_text(raw: str) -> tuple[str | None, str | None]:
+    """JSX text as React renders it (entities decoded) or (None, why)."""
+    bad = None
+
+    def rep(m):
+        nonlocal bad
+        dec, hexa, name = m.groups()
+        if name is None:
+            try:
+                ch = chr(int(dec) if dec is not None else int(hexa, 16))
+            except (ValueError, OverflowError):
+                bad = f"bad numeric entity {m.group(0)}"
+                return ""
+            cat = unicodedata.category(ch)
+            if ch in BIDI or cat in ("Cc", "Cs", "Co", "Cn"):
+                bad = f"entity {m.group(0)} decodes to a control character"
+            return ch
+        if name not in JSX_ENTITIES:
+            bad = f"named entity {m.group(0)} is not on the text list"
+            return ""
+        return JSX_ENTITIES[name]
+
+    text = ENTITY.sub(rep, raw)
+    return (None, bad) if bad else (text, None)
+
+
+def jsx_text_problem(raw: str) -> str | None:
+    """Is this (old or new) JSX text plain words? None = yes."""
+    text, why = decode_jsx_text(raw)
+    if why:
+        return why
+    if not text.strip():
+        return "changed JSX text is or becomes empty"
+    if any(c in text for c in "<>{}\\"):
+        return f"changed JSX text holds markup or braces: {text.strip()[:60]!r}"
+    for rx in URLISH:
+        if rx.search(text):
+            return f"changed JSX text is or holds a URL/path: {text.strip()[:60]!r}"
     return None
 
 
-def css_shape(text: str):
-    """Strict CSS tokenizer -> (shape, values). Raises ContentError.
+def _norm(text: str) -> str:
+    return text.lstrip("﻿").replace("\r\n", "\n")
 
-    Shape keeps comments, selectors/at-rule preludes, statements, property
-    names and braces; values are the declaration values. No backslash
-    anywhere (escapes are how `\\2f\\2f host` hides)."""
+
+def masked_equal(base: str, head: str, bspans: list, hspans: list) -> bool:
+    """True if the files are identical once the given spans are masked."""
+
+    def mask(text, spans):
+        out, last = [], 0
+        for s, e in sorted(spans):
+            out.append(text[last:s])
+            out.append("\x00")
+            last = e
+        out.append(text[last:])
+        return _norm("".join(out))
+
+    return mask(base, bspans) == mask(head, hspans)
+
+
+def css_parse(text: str):
+    """Strict CSS tokenizer -> (shape, decls). Raises ContentError.
+
+    shape keeps comments (verbatim), selectors/at-rule preludes, statements,
+    property names and braces. decls: one (prop, value, context, (start, end),
+    raw_declaration) per declaration, where context is the tuple of enclosing
+    preludes and (start, end) the value's span. No backslash anywhere."""
     if "\\" in text:
         raise ContentError("backslash escape in CSS")
     shape: list = []
-    values: list = []
+    decls: list = []
+    stack: list = []
     buf: list = []
-    depth = 0
+    seg_start = None
     paren = 0
     i, n = 0, len(text)
 
-    def flush(end: str):
+    def flush(end: str, at: int):
+        nonlocal seg_start
         seg = " ".join("".join(buf).split())
+        raw = text[seg_start:at] if seg_start is not None else ""
+        start = seg_start
         buf.clear()
+        seg_start = None
         if end == "{":
             shape.append(("P", seg))
+            stack.append(seg)
             return
         if not seg:
             return
         colon = _top_level_colon(seg)
-        if depth > 0 and not seg.startswith("@") and colon > 0:
+        if stack and not seg.startswith("@") and colon > 0:
             shape.append(("D", seg[:colon].strip()))
-            values.append(seg[colon + 1 :].strip())
+            rc = _top_level_colon(raw)
+            vs = start + rc + 1
+            while vs < at and text[vs].isspace():
+                vs += 1
+            ve = at
+            while ve > vs and text[ve - 1].isspace():
+                ve -= 1
+            decls.append(
+                (seg[:colon].strip(), text[vs:ve], tuple(stack), (vs, ve), raw)
+            )
         else:
             shape.append(("S", seg))
 
@@ -637,10 +727,13 @@ def css_shape(text: str):
             j = text.find("*/", i + 2)
             if j < 0:
                 raise ContentError("unterminated CSS comment")
-            shape.append(("C", "".join(text[i + 2 : j].split())))
+            shape.append(("C", text[i : j + 2]))
             buf.append(" ")
             i = j + 2
-        elif c in "'\"":
+            continue
+        if seg_start is None and not c.isspace() and c not in "{};":
+            seg_start = i
+        if c in "'\"":
             j = text.find(c, i + 1)
             nl = text.find("\n", i + 1)
             if j < 0 or (0 <= nl < j):
@@ -658,28 +751,27 @@ def css_shape(text: str):
             buf.append(c)
             i += 1
         elif paren == 0 and c == "{":
-            flush("{")
+            flush("{", i)
             shape.append(("{",))
-            depth += 1
             i += 1
         elif paren == 0 and c == "}":
-            flush("}")
-            depth -= 1
-            if depth < 0:
+            flush("}", i)
+            if not stack:
                 raise ContentError("unbalanced } in CSS")
+            stack.pop()
             shape.append(("}",))
             i += 1
         elif paren == 0 and c == ";":
-            flush(";")
+            flush(";", i)
             shape.append((";",))
             i += 1
         else:
             buf.append(c)
             i += 1
-    flush(";")
-    if depth or paren:
+    flush(";", n)
+    if stack or paren:
         raise ContentError("unbalanced braces or parentheses in CSS")
-    return shape, values
+    return shape, decls
 
 
 def _top_level_colon(seg: str) -> int:
@@ -700,20 +792,54 @@ def _top_level_colon(seg: str) -> int:
     return -1
 
 
+def css_color_ok(value: str) -> bool:
+    return bool(COLOR_RE.fullmatch(value)) or value in CSS_NAMED_COLORS
+
+
+def css_context_problem(ctx: tuple) -> str | None:
+    for prelude in ctx:
+        low = prelude.lower()
+        if low.startswith("@"):
+            if not re.match(r"@media\b", low):
+                return f"declaration inside at-rule {prelude[:40]!r}"
+        elif ":export" in low or ":import" in low:
+            return f"declaration inside ICSS block {prelude[:40]!r}"
+    return None
+
+
 def css_problems(base: str, head: str) -> list:
     try:
-        bs, bv = css_shape(base)
-        hs, hv = css_shape(head)
+        bs, bd = css_parse(base)
+        hs, hd = css_parse(head)
     except ContentError as e:
         return [str(e)]
-    if bs != hs:
+    if bs != hs or len(bd) != len(hd):
         return ["CSS structure changed (selector, property, at-rule or comment)"]
     out = []
-    for old, new in zip(bv, hv):
-        if old != new and (
-            CSS_VALUE_DANGER.search(old) or CSS_VALUE_DANGER.search(new)
-        ):
-            out.append(f"changed CSS value is or becomes a url/@/markup: {new[:60]!r}")
+    bspans, hspans = [], []
+    for (prop, old, ctx, bsp, braw), (_, new, _, hsp, hraw) in zip(bd, hd):
+        if old == new:
+            continue
+        bspans.append(bsp)
+        hspans.append(hsp)
+        if prop not in CSS_COLOR_PROPS:
+            out.append(
+                f"changed CSS value of {prop[:40]!r} (only color / background-color)"
+            )
+            continue
+        if "/*" in braw or "/*" in hraw:
+            out.append("comment inside a changed CSS declaration")
+            continue
+        why = css_context_problem(ctx)
+        if why:
+            out.append(why)
+            continue
+        for v in (old, new):
+            if not css_color_ok(v):
+                out.append(f"CSS {prop} value is not a plain colour: {v[:60]!r}")
+                break
+    if not out and not masked_equal(base, head, bspans, hspans):
+        out.append("CSS whitespace or other bytes changed outside a colour value")
     return out
 
 
@@ -759,11 +885,11 @@ def run_ast_helper(ts_js: str, jobs: list) -> dict:
     return json.loads(r.stdout)
 
 
-def ts_problems(base: dict, head: dict) -> list:
+def ts_problems(base: dict, head: dict, base_text: str, head_text: str) -> list:
     for side, r in (("base", base), ("head", head)):
         if r is None or r.get("error"):
             return [f"{side}: {(r or {}).get('error') or 'no parser result'}"]
-    if base["shape"] != head["shape"]:
+    if base["shape"] != head["shape"] or len(base["lits"]) != len(head["lits"]):
         return [
             (
                 "code structure changed (identifier, import, attribute, call,"
@@ -771,16 +897,29 @@ def ts_problems(base: dict, head: dict) -> list:
             )
         ]
     out = []
-    dynamic = bool(base.get("dynamic") or head.get("dynamic"))
+    bspans, hspans = [], []
     for b, h in zip(base["lits"], head["lits"]):
-        if b["v"] == h["v"]:
+        if b["raw"] == h["raw"]:  # SOURCE text, never the cooked value
             continue
-        if b["ctx"] != h["ctx"]:
-            out.append("literal context changed")
-            continue
-        why = literal_problem(b["v"], h["v"], h["ctx"], dynamic)
-        if why:
-            out.append(why)
+        bspans.append((b["pos"], b["end"]))
+        hspans.append((h["pos"], h["end"]))
+        for ctx in (b["ctx"], h["ctx"]):
+            if ctx != "text":
+                out.append(f"changed literal is not plain JSX text ({ctx[3:]})")
+                break
+        else:
+            why = jsx_text_problem(b["raw"]) or jsx_text_problem(h["raw"])
+            if why:
+                out.append(why)
+    if bspans:
+        dom = sorted(set(base.get("domRead") or []) | set(head.get("domRead") or []))
+        if dom:
+            out.append(
+                "file reads rendered text back (" + ", ".join(dom)[:80] + "); "
+                "a text change there can change behaviour"
+            )
+    if not out and not masked_equal(base_text, head_text, bspans, hspans):
+        out.append("whitespace or other bytes changed outside JSX text")
     return out
 
 
@@ -790,7 +929,8 @@ def content_only_problems(files: list, reasons_by_index: dict, ts_dir=None) -> d
     Runs on every `modified` file, even one already human on R0-R7, so each
     verdict reports R8 independently. A file whose base or head bytes are
     unreadable is already human (R5 / R8 base) and is not parsed. Every file
-    must pass here to be `auto`."""
+    must pass here to be `auto`. Only .tsx/.ts and .css have a parser; .md
+    (and everything else) is always `human`."""
     out: dict = {}
     jobs: list = []
     pending: dict = {}
@@ -806,8 +946,6 @@ def content_only_problems(files: list, reasons_by_index: dict, ts_dir=None) -> d
             if not reasons_by_index.get(i):
                 out[i] = ["base or head content unreadable"]
             continue
-        if name.endswith(TEXT_EXTS):
-            continue
         if name.endswith(".css"):
             why = css_problems(base, head)
             if why:
@@ -818,9 +956,9 @@ def content_only_problems(files: list, reasons_by_index: dict, ts_dir=None) -> d
                 {"id": f"{i}b", "name": name, "text": base},
                 {"id": f"{i}h", "name": name, "text": head},
             ]
-            pending[i] = True
+            pending[i] = (base, head)
             continue
-        out[i] = ["no content-only parser for this file type"]
+        out[i] = ["no content-only parser for this file type (only .tsx/.ts/.css)"]
     if pending:
         ts_js = find_typescript(ts_dir)
         if ts_js is None:
@@ -833,8 +971,8 @@ def content_only_problems(files: list, reasons_by_index: dict, ts_dir=None) -> d
             for i in pending:
                 out[i] = [f"parser failed: {type(e).__name__}"]
             return out
-        for i in pending:
-            why = ts_problems(res.get(f"{i}b"), res.get(f"{i}h"))
+        for i, (btext, htext) in pending.items():
+            why = ts_problems(res.get(f"{i}b"), res.get(f"{i}h"), btext, htext)
             if why:
                 out[i] = why
     return out
@@ -962,6 +1100,11 @@ def classify(L: Lists, bundle: dict, ts_dir: str | None = None) -> dict:
     human = bool(pr_reasons) or any(x["reasons"] for x in files_out)
     return {
         "verdict": "human" if human else "auto",
+        # The (head, base) pair this verdict is for. The workflow re-checks
+        # both right before posting and puts base_sha in the check-run's
+        # external_id; consumers compare it with the current v3/main tip.
+        "head_sha": pr.get("head_sha"),
+        "base_sha": pr.get("base_sha"),
         "pr_reasons": pr_reasons,
         "files": files_out,
     }
@@ -1084,7 +1227,15 @@ def summary_markdown(v: dict) -> str:
     def esc(s) -> str:
         return re.sub(r"[`|<>\r\n]", "_", str(s))[:200]
 
-    lines = [f"**Class: `{v['verdict']}`**", ""]
+    lines = [
+        f"**Class: `{v['verdict']}`**",
+        "",
+        (
+            f"Bound to head `{esc(v.get('head_sha'))}` and base"
+            f" `{esc(v.get('base_sha'))}` (v3/main tip when classified)."
+        ),
+        "",
+    ]
     for r in v["pr_reasons"]:
         lines.append(f"- PR: {esc(r)}")
     lines += ["", "| file | reasons |", "|---|---|"]

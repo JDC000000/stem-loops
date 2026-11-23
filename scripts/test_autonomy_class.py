@@ -13,8 +13,8 @@ bytes are read from the repo, so a fixture cannot drift from the file it is
 about.
 
 Structure:
-  * PositiveControl  — non-vacuity first: a pure component style change and a
-                       design note MUST be `auto`. A checker that refuses
+  * PositiveControl  — non-vacuity first: an unchanged component / CSS module
+                       MUST be `auto` (design notes are now `human`). A checker that refuses
                        everything would pass every other test; this fails it.
   * PlanFixtures     — the exact list in plan R1 ("Fixture tests ... prove").
   * Bypass           — rename, symlink, binary, huge diff, path tricks, case
@@ -31,11 +31,14 @@ Structure:
   * ContentOnlyMutants — all 15 R1 + 30 R2 review mutants, each `human`
                        head-only, over a plain base, and over a same-shape
                        base with benign literals (R8 must name it).
-  * ContentOnly      — R8 itself: positive controls (JSX text, text attribute,
-                       prose constant, CSS colour -> `auto`), negative controls
-                       (same edit + new identifier/attribute/import -> human),
-                       literal position/value rules, parse errors, pinning.
+  * ContentOnly      — R8 itself, NARROWED (Jon 2026-11-23, LEDGER-19A row
+                       49): positive controls (JSX text in p/h1-6/li/span/
+                       strong/em, CSS color/background-color -> `auto`), the
+                       brief's negative controls, every string literal,
+                       attribute, comment, reformat and .md -> human; parse
+                       errors, pinning, (head, base) binding.
   * WorkflowStatic   — the workflow file's security properties.
+  * ReviewR3Pairs    — all 85 base+head pairs of review R3 (31 attacks).
 """
 
 from __future__ import annotations
@@ -154,13 +157,16 @@ class PositiveControl(Base):
         p = "apps/web/src/components/play/PartPills.tsx"
         self.assertAuto(bundle(fe(p, real(p))))
 
-    def test_real_css_module_and_design_note_together_are_auto(self):
+    def test_real_css_module_is_auto_and_design_note_is_human(self):
         css = "apps/web/src/components/play/Mixer.module.css"
-        self.assertAuto(
+        self.assertAuto(bundle(fe(css, real(css))))
+        # docs/design/** left allow.txt (Jon 2026-11-23, LEDGER-19A row 49)
+        self.assertHuman(
             bundle(
                 fe(css, real(css)),
                 fe("docs/design/nav-wrap.md", b"# Nav wrap\n\nWrap at 360px.\n"),
-            )
+            ),
+            "R4 docs/design/nav-wrap.md is not in allow.txt",
         )
 
     def test_added_and_renamed_within_allow_are_human(self):
@@ -852,9 +858,9 @@ class NetworkAndScope(Base):
         body = b"import Link from 'next/link';\nexport const A = () => <Link href='/history'>x</Link>;\n"
         self.assertAuto(bundle(fe(self.C, body)))
 
-    def test_design_note_gets_secrets_only_set(self):
+    def test_design_note_is_human_and_still_gets_secrets_set(self):
         note = b"# Nav\n\nSee https://example.com/ref and the checkout page; fetch() is not called.\n"
-        self.assertAuto(bundle(fe("docs/design/nav.md", note)))
+        self.assertHuman(bundle(fe("docs/design/nav.md", note)), "R4")
         for secret in [b"process.env.X", b"sk_live_abc", b"SUPABASE_URL", b"[billing]"]:
             with self.subTest(secret=secret):
                 self.assertHuman(
@@ -1337,8 +1343,10 @@ class ContentOnlyMutants(Base):
 
 
 class ContentOnly(Base):
-    """R8: base vs head, parsed. Positive controls first (non-vacuity), then
-    negative controls (the same literal edit plus one structural change)."""
+    """R8, NARROWED (Jon 2026-11-23, LEDGER-19A row 49): base vs head, parsed.
+    `auto` only for plain JSX text directly in <p>/<h1-6>/<li>/<span>/
+    <strong>/<em>, and CSS color / background-color values in a strict
+    colour grammar. Positive controls first (non-vacuity), then negatives."""
 
     C = "apps/web/src/components/play/Pill.tsx"
     CSS = "apps/web/src/components/play/Pill.module.css"
@@ -1365,43 +1373,76 @@ class ContentOnly(Base):
     def tsx(self, head, base=None):
         return bundle(fe(self.C, head, base=self.BASE if base is None else base))
 
+    @staticmethod
+    def comp(inner: str, sig: str = "Panel()") -> bytes:
+        return (
+            f"export function {sig} {{\n  return (\n    <div>\n      {inner}\n"
+            "    </div>\n  );\n}\n"
+        ).encode()
+
+    def pair(self, base_inner, head_inner, sig="Panel()"):
+        return bundle(
+            fe(
+                self.C,
+                self.comp(head_inner, sig),
+                base=self.comp(base_inner, sig),
+            )
+        )
+
+    def css(self, base, head):
+        return bundle(fe(self.CSS, head, base=base))
+
     # ---- positive controls: auto ------------------------------------------
     def test_jsx_text_change_is_auto(self):
         self.assertAuto(self.tsx(self.edit((b"Now playing", b"Playing now"))))
 
-    def test_text_attribute_and_class_change_is_auto(self):
-        self.assertAuto(
-            self.tsx(
-                self.edit((b'"Stem pill"', b'"Part pill"'), (b'"row"', b'"row wide"'))
+    def test_brief_positive_controls(self):
+        for tag in ("p", "li", "h1", "h2", "h6", "span", "strong", "em"):
+            with self.subTest(tag=tag):
+                inner = f"<{tag}>Hello</{tag}>"
+                if tag == "li":
+                    inner = f"<ul>{inner}</ul>"
+                self.assertAuto(self.pair(inner, inner.replace("Hello", "Hi there")))
+        with self.subTest(case="arrow component"):
+            b = b"export const A = () => <p>Hello</p>;\n"
+            self.assertAuto(
+                bundle(fe(self.C, b.replace(b"Hello", b"Hi there"), base=b))
             )
-        )
-
-    def test_jsx_child_string_and_prose_constant_change_is_auto(self):
-        self.assertAuto(
-            self.tsx(
-                self.edit(
-                    (b"'loud'", b"'louder'"),
-                    (b"'Tap a stem to hear it'", b"'Tap any stem to hear it'"),
+        with self.subTest(case="allowed entities and punctuation"):
+            self.assertAuto(
+                self.pair(
+                    "<p>Hello</p>", "<p>It&rsquo;s here &mdash; 3 &times; 4, ok?</p>"
                 )
             )
-        )
+        with self.subTest(case="text in a .map callback rendered as children"):
+            sig = "Panel({ items }: { items: string[] })"
+            b = "<ul>{items.map((i) => <li>{i} row</li>)}</ul>"
+            self.assertAuto(self.pair(b, b.replace(" row", " item"), sig))
+        with self.subTest(case="conditional and && branches"):
+            sig = "Panel({ on }: { on: boolean })"
+            b = "{on ? <p>Yes</p> : <p>No</p>}{on && <em>Live</em>}"
+            h = b.replace("Yes", "Yes please").replace("Live", "Live now")
+            self.assertAuto(self.pair(b, h, sig))
 
-    def test_whitespace_only_reformat_is_auto(self):
-        self.assertAuto(
-            self.tsx(
-                self.edit(
-                    (
-                        b"const [on] = useState(false);",
-                        b"const [on]  =  useState(false) ;",
-                    )
-                )
-            )
-        )
-
-    def test_css_colour_change_is_auto(self):
-        base = b".row {\n  color: #222;\n  gap: 12px;\n}\n"
-        head = b".row {\n  color: #444;\n  gap: 14px;\n}\n"
-        self.assertAuto(bundle(fe(self.CSS, head, base=base)))
+    def test_brief_css_positive_controls(self):
+        for old, new in (
+            (b".a{color:#fff}", b".a{color:#000}"),
+            (b".a {\n  color: #222;\n}\n", b".a {\n  color: #444444;\n}\n"),
+            (b".a{color:#11223344}", b".a{color:red}"),
+            (b".a{background-color:rgb(1, 2, 3)}", b".a{background-color:var(--bg-2)}"),
+            (b".a{color:rgba(0,0,0,0.5)}", b".a{color:hsl(210deg 40% 50% / 50%)}"),
+            (b".a{color:transparent}", b".a{color:currentcolor}"),
+            (
+                b"@media (max-width: 400px) {\n  .a { color: red; }\n}\n",
+                b"@media (max-width: 400px) {\n  .a { color: rebeccapurple; }\n}\n",
+            ),
+            (
+                b".a:hover:not(:disabled){color:red}",
+                b".a:hover:not(:disabled){color:blue}",
+            ),
+        ):
+            with self.subTest(head=new):
+                self.assertAuto(self.css(old, new))
 
     def test_real_component_text_and_css_edits_are_auto(self):
         p = "apps/web/src/components/play/Mixer.tsx"
@@ -1417,18 +1458,273 @@ class ContentOnly(Base):
             bundle(fe(p, head, base=src), fe(css, chead.encode(), base=csrc.encode()))
         )
 
-    def test_design_note_text_change_is_auto(self):
-        self.assertAuto(
-            bundle(
-                fe(
-                    "docs/design/nav.md",
-                    b"# Nav\n\nWrap at 380px.\n",
-                    base=b"# Nav\n\nWrap at 360px.\n",
+    # ---- negative controls from the brief ---------------------------------
+    def test_brief_negative_controls(self):
+        cases = {
+            "<a>": ("<a href='x'>Hello</a>", "under <a>"),
+            "<Button>": ("<Button>Hello</Button>", "not an intrinsic element"),
+            "<option>": ("<select><option>Hello</option></select>", "under <option>"),
+            "<p onClick>": ("<p onClick={() => 1}>Hello</p>", "handler attribute"),
+            "<p {...x}>": ("<p {...x}>Hello</p>", "spread attribute"),
+            "<p key>": ("<p key='k'>Hello</p>", "attribute key"),
+            "<p ref>": ("<p ref={r}>Hello</p>", "attribute ref"),
+            "<title>": ("<title>Hello</title>", "under <title>"),
+            "<textarea>": ("<textarea>Hello</textarea>", "under <textarea>"),
+            "<label>": ("<label>Hello</label>", "under <label>"),
+            "<button>": ("<button>Hello</button>", "under <button>"),
+            "<div>": ("<div>Hello</div>", "under <div>"),
+            "<P> (component)": ("<P>Hello</P>", "not an intrinsic element"),
+            "<x.p> (dotted)": ("<x.p>Hello</x.p>", "not a plain identifier"),
+            "<svg:p> (namespaced)": ("<svg:p>Hello</svg:p>", "not a plain identifier"),
+            "span inside <button>": (
+                "<button><span>Hello</span></button>",
+                "inside <button>",
+            ),
+            "p inside <a>": ("<a href='h'><p>Hello</p></a>", "inside <a>"),
+            "p inside a component": ("<Need><p>Hello</p></Need>", "under a component"),
+            "ancestor handler": (
+                "<div onClick={f}><p>Hello</p></div>",
+                "ancestor <div>",
+            ),
+            "ancestor ref": ("<div ref={r}><p>Hello</p></div>", "ancestor <div>"),
+            "ancestor spread": ("<div {...x}><p>Hello</p></div>", "ancestor <div>"),
+            "fragment parent": ("<>Hello</>", "not directly inside an element"),
+            "JSX as an attribute value": (
+                "<Tab icon={<p>Hello</p>} />",
+                "attribute value",
+            ),
+        }
+        for name, (b, why) in cases.items():
+            with self.subTest(name=name):
+                self.assertHuman(
+                    self.pair(b, b.replace("Hello", "Hi there")), "R8", why
                 )
-            )
-        )
 
-    # ---- negative controls: same literal edit + one structural change -----
+    def test_brief_text_value_negatives(self):
+        for name, new, why in (
+            ("https://", "<p>See https://x now</p>", ""),
+            ("www.", "<p>See www.x now</p>", "URL"),
+            ("javascript:", "<p>javascript: x</p>", ""),
+            ("data:", "<p>data: x</p>", ""),
+            ("domain", "<p>see evil.example now</p>", "URL"),
+            ("entity <", "<p>a &lt; b</p>", "entity &lt;"),
+            ("entity >", "<p>a &gt; b</p>", "entity &gt;"),
+            ("numeric entity {", "<p>a &#123; b</p>", "braces"),
+            ("hex entity }", "<p>a &#x7D; b</p>", "braces"),
+            ("numeric entity <", "<p>a &#60;b&#62;</p>", "markup"),
+            ("unlisted entity", "<p>a &lbrace; b</p>", "not on the text list"),
+            ("control entity", "<p>a &#8238; b</p>", "control"),
+            ("empty", "<p> </p>", "empty"),
+            ("backslash", "<p>a \\ b</p>", "markup"),
+        ):
+            with self.subTest(name=name):
+                v = self.assertHuman(self.pair("<p>Hello</p>", new), why)
+                self.assertTrue(any(r.startswith(("R8", "R6")) for r in reasons(v)))
+
+    def test_brief_css_negative_controls(self):
+        for name, old, new, why in (
+            ("url()", b".a{color: red}", b".a{color: url(x)}", "not a plain colour"),
+            (
+                "background",
+                b".a{background: red}",
+                b".a{background: blue}",
+                "'background'",
+            ),
+            ("other property", b".a{gap: 1px}", b".a{gap: 2px}", "'gap'"),
+            ("display", b".a{display: flex}", b".a{display: none}", "'display'"),
+            (":export", b":export{color:red}", b":export{color:blue}", "ICSS"),
+            (
+                ":import",
+                b':import("x"){color:red}',
+                b':import("x"){color:blue}',
+                "ICSS",
+            ),
+            (
+                "@supports",
+                b"@supports (x: y) { .a{color:red} }",
+                b"@supports (x: y) { .a{color:blue} }",
+                "at-rule",
+            ),
+            (
+                "@layer",
+                b"@layer x { .a{color:red} }",
+                b"@layer x { .a{color:blue} }",
+                "at-rule",
+            ),
+            (
+                "comment change",
+                b"/* a */.a{color:red}",
+                b"/* b */.a{color:red}",
+                "CSS structure",
+            ),
+            (
+                "comment spacing",
+                b"/* a */.a{color:red}",
+                b"/*  a */.a{color:red}",
+                "CSS structure",
+            ),
+            (
+                "comment in decl",
+                b".a{color:/*x*/red}",
+                b".a{color:/*x*/blue}",
+                "comment inside",
+            ),
+            (
+                "!important",
+                b".a{color:red}",
+                b".a{color:blue !important}",
+                "not a plain colour",
+            ),
+            (
+                "var uppercase",
+                b".a{color:var(--A)}",
+                b".a{color:var(--b)}",
+                "not a plain colour",
+            ),
+            (
+                "var fallback",
+                b".a{color:var(--a)}",
+                b".a{color:var(--a, red)}",
+                "not a plain colour",
+            ),
+            ("unknown name", b".a{color:red}", b".a{color:redd}", "not a plain colour"),
+            (
+                "calc arg",
+                b".a{color:red}",
+                b".a{color:rgb(calc(1),2,3)}",
+                "not a plain colour",
+            ),
+            (
+                "expression",
+                b".a{color:red}",
+                b".a{color:expression(x)}",
+                "not a plain colour",
+            ),
+            (
+                "whitespace",
+                b".a{color:red}",
+                b".a { color:red}",
+                "outside a colour value",
+            ),
+            ("Color case", b".a{Color:red}", b".a{Color:blue}", "'Color'"),
+            ("composes", b".a{composes: b}", b".a{composes: c}", "'composes'"),
+            ("custom prop", b".a{--c: red}", b".a{--c: blue}", "'--c'"),
+            ("backslash", b".a{color:red}", b".a{color:r\\65 d}", "backslash"),
+        ):
+            with self.subTest(name=name):
+                self.assertHuman(self.css(old, new), "R8", why)
+
+    # ---- everything that used to be "content" is now human ---------------
+    def test_attributes_children_constants_and_reformat_are_human(self):
+        cases = {
+            "title + className attr": (
+                (b'"Stem pill"', b'"Part pill"'),
+                (b'"row"', b'"row wide"'),
+            ),
+            "JSX child string": ((b"'loud'", b"'louder'"),),
+            "prose constant": (
+                (b"'Tap a stem to hear it'", b"'Tap any stem to hear it'"),
+            ),
+            "whitespace reformat": (
+                (
+                    b"const [on] = useState(false);",
+                    b"const [on]  =  useState(false) ;",
+                ),
+            ),
+            "text + whitespace reformat": (
+                (b"Now playing", b"Playing now"),
+                (b"return (", b"return  ("),
+            ),
+        }
+        for name, pairs in cases.items():
+            with self.subTest(name=name):
+                self.assertHuman(self.tsx(self.edit(*pairs)), "R8")
+
+    def test_text_only_flows_to_a_component_return(self):
+        cases = {
+            "const": (
+                b"const el = <p>Hello</p>;\nexport const A = () => el;\n",
+                "VariableDeclaration",
+            ),
+            "called directly": (
+                b"export const A = () => <p>Hello</p>;\nexport const t = A();\n",
+                "used as a value",
+            ),
+            "wrapped in memo": (
+                b"declare const memo: any;\nconst A = () => <p>Hello</p>;\nexport const M = memo(A);\n",
+                "used as a value",
+            ),
+            "lowercase helper": (
+                b"function a() { return <p>Hello</p>; }\n",
+                "Capitalised",
+            ),
+            "call argument": (
+                b"declare const f: any;\nexport const A = () => f(<p>Hello</p>);\n",
+                "CallExpression",
+            ),
+            "object property": (
+                b"export const O = { a: <p>Hello</p> };\n",
+                "PropertyAssignment",
+            ),
+            "class method": (
+                b"export class A { render() { return <p>Hello</p>; } }\n",
+                "not a named component",
+            ),
+            "condition of &&": (
+                b"export const A = () => (<p>Hello</p>) && null;\n",
+                "BinaryExpression",
+            ),
+            "map not as child": (
+                b"export const A = (x: string[]) => { const r = x.map(() => <p>Hello</p>); return <div>{r}</div>; };\n",
+                "VariableDeclaration",
+            ),
+        }
+        for name, (b, why) in cases.items():
+            with self.subTest(name=name):
+                h = b.replace(b"Hello", b"Hi there")
+                self.assertHuman(bundle(fe(self.C, h, base=b)), "R8", why)
+
+    def test_file_that_reads_rendered_text_is_human(self):
+        for reader in (
+            b"(e: any) => e.target.textContent",
+            b"(e: any) => e.currentTarget.innerText",
+            b"() => document.querySelector('p')",
+            b"(n: any) => n.firstChild",
+            b"(e: any) => e.target['text' + 'Content']",
+            b"(e: any) => e.target[('textContent')]",
+            b"(e: any, k = 'textContent') => e.target[k]",
+        ):
+            with self.subTest(reader=reader):
+                b = (
+                    b"export const A = () => <p>Hello</p>;\nexport const f = "
+                    + reader
+                    + b";\n"
+                )
+                h = b.replace(b"Hello", b"Hi there")
+                self.assertHuman(
+                    bundle(fe(self.C, h, base=b)), "R8 file reads rendered text"
+                )
+
+    def test_comment_and_raw_template_changes_are_human(self):
+        cases = (
+            (b"// note a\nexport const A = 1;\n", b"// note b\nexport const A = 1;\n"),
+            (b"// note a\nexport const A = 1;\n", b"//  note a\nexport const A = 1;\n"),
+            (b"/* a */\nexport const A = 1;\n", b"/** a */\nexport const A = 1;\n"),
+            (
+                b"export const A = () => <p>{/* a */}Hello</p>;\n",
+                b"export const A = () => <p>{/* b */}Hello</p>;\n",
+            ),
+            (
+                b"export const R = String.raw`^\\d+$`;\n",
+                b"export const R = String.raw`^d+$`;\n",
+            ),
+            (b"export const T = `a\\,b`;\n", b"export const T = `a,b`;\n"),
+        )
+        for b, h in cases:
+            with self.subTest(head=h):
+                self.assertHuman(bundle(fe(self.C, h, base=b)), "R8")
+
+    # ---- negative controls: same text edit + one structural change ---------
     def test_literal_edit_plus_structure_is_human(self):
         t = (b"Now playing", b"Playing now")
         cases = {
@@ -1468,7 +1764,7 @@ class ContentOnly(Base):
                 b".row {\n  color: #444;\n  background: url(x.png);\n}\n",
                 "CSS structure",
             ),
-            ("url swap", None, "url"),
+            ("url swap", None, "'background'"),
             ("backslash", b".row {\n  color: \\23 444;\n}\n", "backslash"),
             ("unbalanced", b".row {\n  color: #444;\n", "unbalanced"),
         ):
@@ -1480,135 +1776,89 @@ class ContentOnly(Base):
                 else:
                     self.assertHuman(bundle(fe(self.CSS, head, base=base)), why)
 
-    # ---- literal position and value rules ---------------------------------
-    def test_literal_in_non_content_position_is_human(self):
+    # ---- every string literal position is human ---------------------------
+    def test_every_string_literal_change_is_human(self):
         cases = {
-            "href": (
-                b"<a href='/a'>Hi there</a>",
-                b"<a href='/b'>Hi there</a>",
-                "attribute 'href'",
-            ),
-            "src": (
-                b"<img src='a.png' alt='x y' />",
-                b"<img src='b.png' alt='x y' />",
-                "attribute 'src'",
-            ),
+            "href": (b"<a href='/a'>Hi there</a>", b"<a href='/b'>Hi there</a>"),
+            "src": (b"<img src='a.png' alt='x y' />", b"<img src='b.png' alt='x y' />"),
+            "alt": (b"<img src='a.png' alt='x y' />", b"<img src='a.png' alt='x z' />"),
             "action": (
                 b"<form action='a b'><i>x</i></form>",
                 b"<form action='c d'><i>x</i></form>",
-                "attribute 'action'",
             ),
-            "call argument": (
-                b"<p>{f('a b')}</p>",
-                b"<p>{f('c d')}</p>",
-                "call argument",
-            ),
-            "member key": (b"<p>{o['a b']}</p>", b"<p>{o['c d']}</p>", "member key"),
-            "computed key": (
-                b"<p>{({['a b']: 1})}</p>",
-                b"<p>{({['c d']: 1})}</p>",
-                "computed key",
-            ),
+            "call argument": (b"<p>{f('a b')}</p>", b"<p>{f('c d')}</p>"),
+            "member key": (b"<p>{o['a b']}</p>", b"<p>{o['c d']}</p>"),
+            "computed key": (b"<p>{({['a b']: 1})}</p>", b"<p>{({['c d']: 1})}</p>"),
             "comparison": (
                 b"<p>{x === 'a b' ? 1 : 2}</p>",
                 b"<p>{x === 'c d' ? 1 : 2}</p>",
-                "non-content position",
             ),
-            "tagged template": (
-                b"<p>{t`a b`}</p>",
-                b"<p>{t`c d`}</p>",
-                "tagged template",
-            ),
-            "style element": (
-                b"<style>{'a b'}</style>",
-                b"<style>{'c d'}</style>",
-                "raw-text element",
-            ),
+            "tagged template": (b"<p>{t`a b`}</p>", b"<p>{t`c d`}</p>"),
+            "template": (b"<p>{`a b`}</p>", b"<p>{`c d`}</p>"),
+            "style element": (b"<style>{'a b'}</style>", b"<style>{'c d'}</style>"),
             "Script component": (
                 b"<Script>{'a b'}</Script>",
                 b"<Script>{'c d'}</Script>",
-                "raw-text element",
             ),
             "spread html key": (
                 b"<div dangerouslySetInnerHTML={{ __html: 'a b' }} />",
                 b"<div dangerouslySetInnerHTML={{ __html: 'c d' }} />",
-                "changed value of '__html'",
             ),
+            "child string in <p>": (b"<p>{'a b'}</p>", b"<p>{'c d'}</p>"),
         }
-        for name, (b0, h0, why) in cases.items():
+        for name, (b0, h0) in cases.items():
             with self.subTest(name=name):
-                base = (
-                    b"export const A = (x: any, o: any, f: any, t: any) => "
-                    + b0
-                    + b";\n"
+                pre = b"export const A = (x: any, o: any, f: any, t: any) => "
+                self.assertHuman(
+                    bundle(fe(self.C, pre + h0 + b";\n", base=pre + b0 + b";\n")), "R8"
                 )
-                head = (
-                    b"export const A = (x: any, o: any, f: any, t: any) => "
-                    + h0
-                    + b";\n"
-                )
-                self.assertHuman(bundle(fe(self.C, head, base=base)), why)
 
-    def test_directive_import_and_type_literals_are_human(self):
+    def test_directive_import_type_and_ts_literals_are_human(self):
+        ts_file = "apps/web/src/components/play/pill.ts"
         cases = (
             (
                 b"'use client';\nexport const A = 1;\n",
                 b"'use server';\nexport const A = 1;\n",
-                "non-content position",
             ),
             (
                 b"import x from 'a';\nexport const A = x;\n",
                 b"import x from 'b';\nexport const A = x;\n",
-                "import/export",
             ),
-            (b"export type T = 'a b';\n", b"export type T = 'c d';\n", "type position"),
+            (b"export type T = 'a b';\n", b"export type T = 'c d';\n"),
             (
                 b"export const A = (p: any) => p['a b'];\n",
                 b"export const A = (p: any) => p['c d'];\n",
-                "member key",
             ),
+            (b"export const S = ['a b'];\n", b"export const S = ['c d'];\n"),
         )
-        for base, head, why in cases:
-            with self.subTest(head=head):
-                self.assertHuman(bundle(fe(self.C, head, base=base)), why)
+        for base, head in cases:
+            for fn in (self.C, ts_file):
+                with self.subTest(head=head, fn=fn):
+                    self.assertHuman(bundle(fe(fn, head, base=base)), "R8")
 
-    def test_literal_values_that_are_not_content_are_human(self):
-        cases = {
-            "url in text attr": (b"'Stem pill'", b"'https://evil.example'", "URL/path"),
-            "path in child": (b"'loud'", b"'/api/jobs'", "URL/path"),
-            "protocol-relative": (b"'loud'", b"'//evil.example'", "URL/path"),
-            "domain": (b"'loud'", b"'see evil.example now'", "URL/path"),
-            "javascript scheme": (b"'loud'", b"'javascript:alert(1)'", "URL/path"),
-            "markup": (b"'loud'", b"'<img src=x onerror=y>'", "markup"),
-            "entity in JSX text": (b"Now playing", b"Now &lt;b&gt;", "markup"),
-            "empty": (b"'loud'", b"''", "empty"),
-            "constant without space": (
-                b"'Tap a stem to hear it'",
-                b"'fetch'",
-                "not prose",
-            ),
-            "constant relative path": (
-                b"'Tap a stem to hear it'",
-                b"'api/jobs/1 retry'",
-                "URL/selector punctuation",
-            ),
-        }
-        for name, (a, b, why) in cases.items():
-            with self.subTest(name=name):
-                head = self.edit(
-                    (a.replace(b"'", b'"') if a not in self.BASE else a, b)
-                )
-                self.assertHuman(self.tsx(head), why)
-
-    def test_sensitive_key_and_dynamic_file_constants_are_human(self):
-        base = b"export const O = { method: 'get it now' };\n"
-        head = b"export const O = { method: 'delete it now' };\n"
+    def test_design_notes_and_other_types_are_human(self):
         self.assertHuman(
-            bundle(fe(self.C, head, base=base)), "changed value of 'method'"
+            bundle(
+                fe(
+                    "docs/design/nav.md",
+                    b"# Nav\n\nWrap at 380px.\n",
+                    base=b"# Nav\n\nWrap at 360px.\n",
+                )
+            ),
+            "R4 docs/design/nav.md is not in allow.txt",
         )
-        base = b"const K = 'a b c';\nexport const A = (o: any) => o[K];\n"
-        head = b"const K = 'd e f';\nexport const A = (o: any) => o[K];\n"
-        self.assertHuman(bundle(fe(self.C, head, base=base)), "computed member access")
+        lists = ac.parse_lists("docs/design/**/*.md\n", "secrets/**\n", "react\n")
+        self.assertHuman(
+            bundle(
+                fe(
+                    "docs/design/nav.md",
+                    b"# Nav\n\nWrap at 380px.\n",
+                    base=b"# Nav\n\nWrap at 360px.\n",
+                )
+            ),
+            "R8 no content-only parser",
+            lists=lists,
+        )
 
     def test_parse_errors_and_missing_parser_are_human(self):
         bad = b"export const A = () => <p>;\n"
@@ -1646,6 +1896,18 @@ class ContentOnly(Base):
             "no content-only parser",
             lists=lists,
         )
+
+    def test_verdict_names_head_and_base(self):
+        h, b = "a" * 40, "b" * 40
+        v = run(self.tsx(self.edit((b"Now playing", b"Playing now"))))
+        self.assertEqual(
+            (v["verdict"], v["head_sha"], v["base_sha"]), ("auto", None, None)
+        )
+        bb = self.tsx(self.BASE)
+        bb["pr"].update(head_sha=h, base_sha=b)
+        v = run(bb)
+        self.assertEqual((v["head_sha"], v["base_sha"]), (h, b))
+        self.assertIn(f"head `{h}` and base `{b}`", ac.summary_markdown(v))
 
     def test_parser_is_pinned_by_the_lockfile(self):
         with open(os.path.join(ROOT, "pnpm-lock.yaml"), encoding="utf-8") as f:
@@ -1739,11 +2001,736 @@ class WorkflowStatic(unittest.TestCase):
         self.assertNotIn("labels", self.code)
         self.assertNotIn("/merge", self.code)
 
+    def test_check_run_is_bound_to_head_and_base(self):
+        # review R3 O1: base SHA goes into external_id; head, base and the
+        # v3/main tip are re-read right before posting, else `human`.
+        self.assertIn("external_id: $base", self.code)
+        self.assertIn('gh api "repos/$REPO/git/ref/heads/v3/main"', self.code)
+        self.assertIn('[ "$now" != "$HEAD_SHA $base_sha" ]', self.code)
+        self.assertIn('[ "$tip" != "$base_sha" ]', self.code)
+        self.assertLess(
+            self.code.index("VERDICT=human"), self.code.index("conclusion=success")
+        )
+        # the consumer rule is documented in the header
+        self.assertIn("app id 15368", self.src)
+        self.assertIn("external_id == the CURRENT v3/main tip", self.src)
+
     def test_fails_closed_to_neutral_human(self):
         self.assertRegex(
             self.code,
             r'if \[ "\$VERDICT" = "auto" \]; then\s+conclusion=success; title=auto\s+else\s+conclusion=neutral; title=human',
         )
+
+
+# -- 6. review R3 base+head pairs (PR351-R3-pairs.py, copied) ----------------
+# Every pair of /home/claude/s19a/reviews/PR351-R3-pairs.py (review R3), as
+# data. ATTACK (HARD/SOFT) and CTRL-H pairs must be `human`. CTRL-A pairs were
+# benign "content" under the old rule; under the narrowed class G0, G1, G4
+# (JSX text) stay `auto` and G2 (alt/title attributes), G3 (padding) and G5
+# (a string constant in a .ts file) are now `human` by design. The E1 payload
+# is neutralised (same shape: a .md edit with raw HTML and a remote image).
+R3_PAIRS: list = []
+R3_NOW_HUMAN = {"G2", "G3", "G5"}
+X = "apps/web/src/components/x/Panel.tsx"
+XT = "apps/web/src/components/x/panel.ts"
+XC = "apps/web/src/components/x/panel.module.css"
+T = "\t"  # a real TAB character inside a string literal (no backslash needed)
+
+
+def real_s(path: str) -> str:
+    return real(path).decode("utf-8")
+
+
+def sub(text, old, new):
+    assert text.count(old) >= 1, old
+    return text.replace(old, new, 1)
+
+
+def _r3(cid, kind, payload, fn, base, head, status="modified", pr_extra=None, **kw):
+    R3_PAIRS.append((cid, kind, payload, fn, base, head, status, pr_extra, kw))
+
+
+# ============================ A. prose "constants" that feed a sink ==========
+# The value rule only asks: has whitespace, no /?#%=@:&[]{}()$, name not in
+# SENSITIVE_KEYS (case-sensitive), file has no x[k]. It does not look at where
+# the constant GOES. The sink is already in base; only the literal changes.
+
+s = 'const dest = "history";\nexport const A = () => <a href={dest}>Open</a>;\n'
+_r3(
+    "A1",
+    "HARD",
+    "const -> <a href>: 'history' -> 'log<TAB>out' (URL parser strips TAB => /logout)",
+    X,
+    s,
+    sub(s, '"history"', '"log' + T + 'out"'),
+)
+_r3(
+    "A2",
+    "HARD",
+    "const -> <a href>: 'history' -> '.<TAB>.' (=> '..', parent path)",
+    X,
+    s,
+    sub(s, '"history"', '".' + T + '."'),
+)
+_r3(
+    "A3",
+    "HARD",
+    "same as A1 with a \\t escape instead of a raw TAB",
+    X,
+    s,
+    sub(s, '"history"', '"log\\tout"'),
+)
+
+s = (
+    'const FORM_METHOD = "post";\nexport const A = () => (\n  <form method={FORM_METHOD}>\n'
+    '    <input name="pw" type="password" />\n    <button>Go</button>\n  </form>\n);\n'
+)
+_r3(
+    "A4",
+    "HARD",
+    "const -> <form method>: 'post' -> 'post it' (invalid enum => GET; fields land in the URL)",
+    X,
+    s,
+    sub(s, '"post"', '"post it"'),
+)
+
+s = 'const FIELD_KIND = "password";\nexport const A = () => <input name="pw" type={FIELD_KIND} />;\n'
+_r3(
+    "A5",
+    "HARD",
+    "const -> <input type>: 'password' -> 'plain text' (invalid enum => text; unmasked)",
+    X,
+    s,
+    sub(s, '"password"', '"plain text"'),
+)
+
+s = (
+    'const BTN_KIND = "button";\nexport const A = ({ wipe }: { wipe: () => void }) => (\n'
+    "  <form onSubmit={wipe}>\n    <button type={BTN_KIND}>Help</button>\n  </form>\n);\n"
+)
+_r3(
+    "A6",
+    "HARD",
+    "const -> <button type>: 'button' -> 'button now' (invalid enum => submit; Help now submits the form)",
+    X,
+    s,
+    sub(s, '"button"', '"button now"'),
+)
+
+s = (
+    'const FREE_PLAN = "free";\nconst Wall = () => <p>Upgrade to keep going</p>;\nconst Full = () => <p>All stems</p>;\n'
+    "export const A = ({ plan }: { plan: string }) => (plan === FREE_PLAN ? <Wall /> : <Full />);\n"
+)
+_r3(
+    "A7",
+    "HARD",
+    "const used in a === gate: 'free' -> 'free tier' (paywall branch never taken)",
+    X,
+    s,
+    sub(s, '"free"', '"free tier"'),
+)
+
+s = (
+    'const LOCKED = ["vocals", "other"];\nexport const A = ({ stem }: { stem: string }) =>\n'
+    "  LOCKED.includes(stem) ? <p>Locked</p> : <button>Solo</button>;\n"
+)
+_r3(
+    "A8",
+    "HARD",
+    "array item used by .includes(): 'vocals' -> 'no stem' (lock list no longer matches)",
+    X,
+    s,
+    sub(sub(s, '"vocals"', '"no stem"'), '"other"', '"no other"'),
+)
+
+s = (
+    'function access() {\n  return "locked";\n}\n'
+    'export const A = () => (access() === "locked" ? <p>Sign in</p> : <button>Download</button>);\n'
+)
+_r3(
+    "A9",
+    "HARD",
+    "return value compared elsewhere: 'locked' -> 'not locked' (gate flips; comparison untouched)",
+    X,
+    s,
+    sub(s, 'return "locked"', 'return "not locked"'),
+)
+
+s = (
+    'const NAV = [{ label: "History", link: "history" }];\n'
+    "export const A = () => <nav>{NAV.map((n) => <a href={n.link}>{n.label}</a>)}</nav>;\n"
+)
+_r3(
+    "A10",
+    "HARD",
+    "object value under key `link` (not in SENSITIVE_KEYS) -> href: 'history' -> 'log<TAB>out'",
+    X,
+    s,
+    sub(s, '"history"', '"log' + T + 'out"'),
+)
+
+s = 'const TICK = "void 0";\nexport const A = () => {\n  setTimeout(TICK, 10);\n  return <p>Hi</p>;\n};\n'
+_r3(
+    "A11",
+    "HARD",
+    "const -> setTimeout(string): 'void 0' -> 'alert`x` + 0' (string timer = eval; code runs)",
+    X,
+    s,
+    sub(s, '"void 0"', '"alert`x` + 0"'),
+)
+
+s = (
+    'const HIDE_EVENT = "visibilitychange";\nexport function watch(stop: () => void) {\n'
+    "  document.addEventListener(HIDE_EVENT, stop);\n}\n"
+)
+_r3(
+    "A12",
+    "HARD",
+    "const -> addEventListener: 'visibilitychange' -> 'visibility change' (handler never fires)",
+    XT,
+    s,
+    sub(s, '"visibilitychange"', '"visibility change"'),
+)
+
+s = 'const SEEN = "sl-tour-seen";\nexport function seen() {\n  return localStorage.getItem(SEEN) !== null;\n}\n'
+_r3(
+    "A13",
+    "HARD",
+    "const -> localStorage key: 'sl-tour-seen' -> 'sl tour seen' (stored state orphaned)",
+    XT,
+    s,
+    sub(s, '"sl-tour-seen"', '"sl tour seen"'),
+)
+
+s = (
+    'const TGT = "_self";\nconst REL = "noopener noreferrer";\n'
+    'export const A = () => <a href="pricing" target={TGT} rel={REL}>Plans</a>;\n'
+)
+_r3(
+    "A14",
+    "HARD",
+    "const -> target/rel (vars named TGT/REL): '_self'->'new tab', rel -> 'opener ok'",
+    X,
+    s,
+    sub(sub(s, '"_self"', '"new tab"'), '"noopener noreferrer"', '"opener ok"'),
+)
+
+s = 'export const STEM_ORDER = ["drums", "bass", "keys"];\n'
+_r3(
+    "A15",
+    "HARD",
+    "exported array (consumers in OTHER files, never seen): 'bass' -> 'bass guitar'",
+    XT,
+    s,
+    sub(s, '"bass"', '"bass guitar"'),
+)
+
+s = (
+    'export const A = ({ go }: { go: (s: string) => void }) => {\n  const mode = "soft";\n'
+    "  return <button onClick={() => go(mode)}>Reset</button>;\n};\n"
+)
+_r3(
+    "A16",
+    "HARD",
+    "const -> callback argument: 'soft' -> 'hard reset' (a direct call-arg literal is human; via a const it is auto)",
+    X,
+    s,
+    sub(s, '"soft"', '"hard reset"'),
+)
+
+# ============================ B. JSX text / content attrs that are data ======
+s = 'export const A = () => (\n  <select name="plan">\n    <option>Free</option>\n    <option>Pro</option>\n  </select>\n);\n'
+_r3(
+    "B1",
+    "HARD",
+    "<option> text IS the submitted value: Free -> Studio (option not in RAW_TAGS)",
+    X,
+    s,
+    sub(s, "<option>Free</option>", "<option>Studio</option>"),
+)
+s2 = s.replace("<option>Free</option>", '<option>{"Free"}</option>')
+_r3(
+    "B2",
+    "HARD",
+    "<option>{'Free'}</option> child literal -> 'Studio'",
+    X,
+    s2,
+    sub(s2, '{"Free"}', '{"Studio"}'),
+)
+
+s = (
+    "function Tab({ label, onPick }: { label: string; onPick: (s: string) => void }) {\n"
+    "  return <button onClick={() => onPick(label)}>{label}</button>;\n}\n"
+    'export const A = ({ setStem }: { setStem: (s: string) => void }) => <Tab label="drums" onPick={setStem} />;\n'
+)
+_r3(
+    "B3",
+    "HARD",
+    "`label` attr on a CUSTOM component used as the value passed to a callback: drums -> vocals",
+    X,
+    s,
+    sub(s, 'label="drums"', 'label="vocals"'),
+)
+
+s = (
+    "function Go({ title }: { title: string }) {\n  return <a href={title}>{title}</a>;\n}\n"
+    'export const A = () => <Go title="history" />;\n'
+)
+_r3(
+    "B4",
+    "HARD",
+    "`title` attr on a CUSTOM component that renders it as href: history -> logout",
+    X,
+    s,
+    sub(s, 'title="history"', 'title="logout"'),
+)
+
+s = (
+    "function Need({ children, plan }: { children: string; plan: string }) {\n"
+    "  return plan === children ? <button>Download</button> : null;\n}\n"
+    "export const A = ({ plan }: { plan: string }) => <Need plan={plan}>studio</Need>;\n"
+)
+_r3(
+    "B5",
+    "HARD",
+    "JSX text child of a CUSTOM component used as data: studio -> free (gate opens for free)",
+    X,
+    s,
+    sub(s, ">studio</Need>", ">free</Need>"),
+)
+
+s = (
+    "export function A({ onDel }: { onDel: () => void }) {\n"
+    '  return (\n    <ul onClick={(e) => { if ((e.target as HTMLElement).className === "del") onDel(); }}>\n'
+    '      <li className="row">Song</li>\n      <li className="del">Remove</li>\n    </ul>\n  );\n}\n'
+)
+_r3(
+    "B6",
+    "HARD",
+    "className read back by a handler: 'row' -> 'del' (clicking the song row now deletes)",
+    X,
+    s,
+    sub(s, 'className="row"', 'className="del"'),
+)
+
+# ============================ C. raw vs cooked template text =================
+s = "const DIGITS = new RegExp(String.raw`^\\d+$`);\nexport const ok = (v: string) => DIGITS.test(v);\n"
+_r3(
+    "C1",
+    "HARD",
+    "String.raw`^\\d+$` -> String.raw`^d+$` (cooked text equal, RAW differs; validator broken; "
+    "the literal is even a call argument)",
+    XT,
+    s,
+    sub(s, "^\\d+$", "^d+$"),
+)
+s = 'const tag = (t: TemplateStringsArray) => t.raw.join("");\nexport const SEP = tag`a\\,b`;\n'
+_r3(
+    "C2",
+    "HARD",
+    "tagged template: `a\\,b` -> `a,b` (cooked equal, t.raw differs) -> never compared",
+    XT,
+    s,
+    sub(s, "a\\,b", "a,b"),
+)
+
+# ============================ D. CSS values ==================================
+s = ":export {\n  gate: locked;\n  maxStems: 6;\n}\n.a {\n  color: red;\n}\n"
+_r3(
+    "D1",
+    "HARD",
+    "CSS-modules ICSS `:export { gate: locked }` -> `open` (value is imported by JS as styles.gate)",
+    XC,
+    s,
+    sub(s, "gate: locked", "gate: open"),
+)
+s = '.btn {\n  composes: base from "./base.module.css";\n  color: red;\n}\n'
+_r3(
+    "D2",
+    "SOFT",
+    '`composes: base from "./base.module.css"` -> `veil from "../play/Sheet.module.css"` '
+    "(CSS import specifier changes; R7 still limits the target to allowed CSS)",
+    XC,
+    s,
+    sub(
+        s,
+        'composes: base from "./base.module.css"',
+        'composes: veil from "../play/Sheet.module.css"',
+    ),
+)
+SL = "apps/web/src/components/setlists/SetLists.module.css"
+s = real_s(SL)
+_r3(
+    "D3",
+    "SOFT",
+    "REAL SetLists.module.css: `.danger { composes: secondary }` -> `composes: posInHandle` "
+    "(display:none class; the danger button vanishes)",
+    SL,
+    s,
+    sub(s, "  composes: secondary;", "  composes: posInHandle;"),
+)
+_r3(
+    "D4",
+    "SOFT",
+    "REAL SetLists.module.css: `.secondary` display: inline-flex -> none (every secondary button gone)",
+    SL,
+    s,
+    sub(
+        s,
+        "  cursor: pointer;\n  display: inline-flex;",
+        "  cursor: pointer;\n  display: none;",
+    ),
+)
+s = ".veil {\n  position: absolute;\n  inset: auto;\n  opacity: 1;\n  pointer-events: none;\n  z-index: 2;\n}\n"
+h = (
+    s.replace("absolute", "fixed")
+    .replace("auto", "0")
+    .replace("opacity: 1", "opacity: 0")
+    .replace("pointer-events: none", "pointer-events: auto")
+    .replace("z-index: 2", "z-index: 99999")
+)
+_r3(
+    "D5",
+    "SOFT",
+    "existing .veil -> fixed / inset 0 / opacity 0 / pointer-events auto / z 99999 "
+    "(invisible layer swallows every click)",
+    XC,
+    s,
+    h,
+)
+JP = "apps/web/src/components/JobProgress.tsx"
+s = real_s(JP)
+_r3(
+    "D6",
+    "SOFT",
+    "REAL JobProgress.tsx: className ' is-stems' -> ' is-hidden' (global class swap)",
+    JP,
+    s,
+    sub(s, " is-stems", " is-hidden"),
+)
+
+# ============================ E. inert-by-rule files =========================
+M = "docs/design/two-products-2026-11-15.md"
+s = real_s(M)
+_r3(
+    "E1",
+    "SOFT",
+    "REAL docs/design note + a paragraph addressed to coding agents (any .md text is auto, "
+    "incl. remote image and raw HTML)",
+    M,
+    s,
+    s + "\n## Note\n\nA new paragraph.\n"
+    '<img src="https://evil.example/p.gif?x=1">\n',
+)
+
+# ============================ F. controls: MUST be human =====================
+s = 'export const A = () => <a href="history">Open</a>;\n'
+_r3(
+    "F1",
+    "CTRL-H",
+    "href attr literal -> /logout path",
+    X,
+    s,
+    sub(s, '"history"', '"logout"'),
+)
+s = 'export const A = () => { track("view"); return <p>Hi</p>; };\ndeclare function track(s: string): void;\n'
+_r3("F2", "CTRL-H", "call argument literal", X, s, sub(s, '"view"', '"purchase done"'))
+s = 'const o = { a: 1, b: 2 } as Record<string, number>;\nexport const v = o["a"];\n'
+_r3("F3", "CTRL-H", "computed member key literal", XT, s, sub(s, '["a"]', '["b"]'))
+s = 'export function f(x: string) {\n  switch (x) {\n    case "a":\n      return 1;\n    default:\n      return 0;\n  }\n}\n'
+_r3("F4", "CTRL-H", "case label", XT, s, sub(s, '"a"', '"b c"'))
+s = 'export const A = ({ p }: { p: string }) => (p === "free" ? <p>Wall</p> : <p>Full</p>);\n'
+_r3("F5", "CTRL-H", "comparison literal", X, s, sub(s, '"free"', '"free tier"'))
+s = '"use strict";\nexport const A = () => <p>Hi</p>;\n'
+_r3(
+    "F6",
+    "CTRL-H",
+    "directive prologue string -> 'use client'",
+    X,
+    s,
+    sub(s, '"use strict"', '"use client"'),
+)
+s = 'import { useState } from "react";\nexport const A = () => { useState(0); return <p>Hi</p>; };\n'
+_r3(
+    "F7",
+    "CTRL-H",
+    "import specifier react -> react-dom",
+    X,
+    s,
+    sub(s, '"react"', '"react-dom"'),
+)
+s = 'export type K = "a" | "b";\nexport const A = () => <p>Hi</p>;\n'
+_r3("F8", "CTRL-H", "type literal", X, s, sub(s, '"a"', '"c d"'))
+s = "declare function css(t: TemplateStringsArray): string;\nexport const c = css`color red`;\n"
+_r3(
+    "F9",
+    "CTRL-H",
+    "tagged template text (cooked differs)",
+    XT,
+    s,
+    sub(s, "color red", "color blue"),
+)
+s = "export const A = () => <p>Hi there</p>;\n"
+_r3("F10", "CTRL-H", "new comment // @ts-nocheck", X, s, "// @ts-nocheck\n" + s)
+_r3("F11", "CTRL-H", "new JSX pragma comment", X, s, "/** @jsx h */\n" + s)
+_r3(
+    "F12",
+    "CTRL-H",
+    "JSX entity text &lt;b&gt;",
+    X,
+    s,
+    sub(s, "Hi there", "Hi &lt;b&gt; there"),
+)
+_r3(
+    "F13",
+    "CTRL-H",
+    "JSX text becomes a URL",
+    X,
+    s,
+    sub(s, "Hi there", "Go to evil.example now"),
+)
+s = "export const re = /^a+$/;\n"
+_r3("F14", "CTRL-H", "regex literal", XT, s, sub(s, "a+", "a*"))
+s = 'export const A = () => <button type="button" name="op" value="keep">Go</button>;\n'
+_r3("F15", "CTRL-H", "type attr button -> submit", X, s, sub(s, '"button"', '"submit"'))
+_r3("F16", "CTRL-H", "value attr", X, s, sub(s, '"keep"', '"wipe"'))
+s = 'export const A = () => <div data-state="idle" id="a" role="status">Hi</div>;\n'
+_r3("F17", "CTRL-H", "data-* attr", X, s, sub(s, '"idle"', '"busy"'))
+_r3("F18", "CTRL-H", "role attr", X, s, sub(s, '"status"', '"alert"'))
+s = 'const o: Record<string, string> = {};\nconst K = "a";\nconst label = "Save now";\nexport const v = o[K] + label;\n'
+_r3(
+    "F19",
+    "CTRL-H",
+    "prose const in a file with computed member access",
+    XT,
+    s,
+    sub(s, '"Save now"', '"Save later"'),
+)
+s = 'export const cfg = { href: "pricing page", label: "Plans" };\n'
+_r3(
+    "F20",
+    "CTRL-H",
+    "object value under sensitive key href",
+    XT,
+    s,
+    sub(s, '"pricing page"', '"log out"'),
+)
+s = 'export const A = () => <p>Hi</p>;\ndocument.title = "Stem loops";\n'
+_r3(
+    "F21",
+    "CTRL-H",
+    "assignment RHS literal",
+    X,
+    s,
+    sub(s, '"Stem loops"', '"Other site"'),
+)
+s = ".a {\n  background: none;\n}\n"
+_r3("F22", "CTRL-H", "CSS value -> url()", XC, s, sub(s, "none", "url(p.gif)"))
+_r3(
+    "F23",
+    "CTRL-H",
+    "CSS value -> image-set string",
+    XC,
+    s,
+    sub(s, "none", 'image-set("p.gif" 1x)'),
+)
+_r3(
+    "F24",
+    "CTRL-H",
+    "CSS new declaration",
+    XC,
+    s,
+    sub(s, "none;", "none;\n  display: none;"),
+)
+_r3("F25", "CTRL-H", "CSS selector change", XC, s, sub(s, ".a {", ".a, .b {"))
+_r3(
+    "F26",
+    "CTRL-H",
+    "CSS backslash escape in value",
+    XC,
+    s,
+    sub(s, "none", "\\75rl(p.gif)"),
+)
+_r3("F27", "CTRL-H", "CSS @import added", XC, s, '@import "x.css";\n' + s)
+_r3("F28", "CTRL-H", "CSS comment inside value", XC, s, sub(s, "none", "no/**/ne"))
+s = 'export const A = () => <p title="Hi">Hi there</p>;\n'
+h = sub(s, "Hi there", "Hello there")
+_r3("F29", "CTRL-H", "status added", X, s, h, status="added")
+_r3(
+    "F30",
+    "CTRL-H",
+    "status renamed",
+    X,
+    s,
+    h,
+    status="renamed",
+    previous_filename=X.replace("Panel", "Old"),
+)
+_r3("F31", "CTRL-H", "status changed (mode only)", X, s, h, status="changed")
+_r3("F32", "CTRL-H", "status removed", X, s, h, status="removed")
+_r3("F33", "CTRL-H", "status copied", X, s, h, status="copied")
+_r3("F34", "CTRL-H", "head is executable (100755)", X, s, h, type="executable")
+_r3("F35", "CTRL-H", "base is a symlink", X, s, h, base_type="symlink")
+_r3("F36", "CTRL-H", "base content missing", X, s, h, base_content_b64=None)
+_r3(
+    "F37",
+    "CTRL-H",
+    "base missing in tree",
+    X,
+    s,
+    h,
+    base_type="missing",
+    base_content_b64=None,
+)
+_r3("F38", "CTRL-H", "fork head repo", X, s, h, pr_extra={"head_repo": "evil/r"})
+_r3("F39", "CTRL-H", "base_ref not v3/main", X, s, h, pr_extra={"base_ref": "dev"})
+_r3(
+    "F40",
+    "CTRL-H",
+    ".js under components (not allowed)",
+    X.replace(".tsx", ".js"),
+    s,
+    h,
+)
+_r3(
+    "F41",
+    "CTRL-H",
+    ".mts under components (not allowed)",
+    XT.replace(".ts", ".mts"),
+    "export const a = 'x y';\n",
+    "export const a = 'x z';\n",
+)
+_r3("F42", "CTRL-H", "JSX in a .ts file (parse mode = TS => parse error)", XT, s, h)
+_r3(
+    "F43",
+    "CTRL-H",
+    "denied path (LoginForm) even for a text-only edit",
+    "apps/web/src/components/LoginForm.tsx",
+    s,
+    h,
+)
+_r3(
+    "F44",
+    "CTRL-H",
+    "non-allowed dir (app/) text-only edit",
+    "apps/web/src/app/page.tsx",
+    s,
+    h,
+)
+s = 'export const A = () => <iframe title="Demo" sandbox="allow-forms" />;\n'
+_r3(
+    "F45",
+    "CTRL-H",
+    "iframe sandbox attr",
+    X,
+    s,
+    sub(s, '"allow-forms"', '"allow-scripts allow-same-origin"'),
+)
+s = 'export const A = () => <div dangerouslySetInnerHTML={{ __html: "hello" }} />;\n'
+_r3(
+    "F46",
+    "CTRL-H",
+    "__html literal (prop already in base)",
+    X,
+    s,
+    sub(s, '"hello"', '"hello world"'),
+)
+s = 'export const A = () => <script>{"var a"}</script>;\n'
+_r3("F47", "CTRL-H", "<script> child text", X, s, sub(s, '"var a"', '"var b"'))
+s = 'export const A = () => <p style={{ display: "block" }}>Hi</p>;\n'
+_r3(
+    "F48",
+    "CTRL-H",
+    "style object value display block -> none (no space => not prose)",
+    X,
+    s,
+    sub(s, '"block"', '"none"'),
+)
+s = "export const A = () => <p>Hi there</p>;\n"
+_r3(
+    "G0",
+    "CTRL-A",
+    "BOM added + text edit (harmless; accepted)",
+    X,
+    s,
+    "﻿" + sub(s, "Hi there", "Hello there"),
+)
+
+# ============================ G. controls: benign content, expected auto =====
+_r3("G1", "CTRL-A", "JSX text edit", X, s, sub(s, "Hi there", "Hello there"))
+s = 'export const A = () => <img alt="Wave form" title="A wave" className="pic" />;\n'
+_r3(
+    "G2",
+    "CTRL-A",
+    "alt + title edit on an intrinsic element",
+    X,
+    s,
+    sub(sub(s, "Wave form", "Waveform view"), "A wave", "The wave"),
+)
+s = ".a {\n  color: red;\n  padding: 4px;\n}\n"
+_r3(
+    "G3",
+    "CTRL-A",
+    "CSS colour + size",
+    XC,
+    s,
+    sub(sub(s, "red", "#f472b6"), "4px", "8px"),
+)
+s = "export const A = () => <p>Hi there</p>;\n"
+_r3(
+    "G4",
+    "CTRL-A",
+    "LF -> CRLF plus text edit",
+    X,
+    s,
+    sub(s, "Hi there", "Hello there").replace("\n", "\r\n"),
+)
+W = "apps/web/src/components/landing/what-you-get.ts"
+s = real_s(W)
+_r3(
+    "G5",
+    "CTRL-A",
+    "REAL what-you-get.ts prose edit",
+    W,
+    s,
+    sub(s, "trust your ear.", "trust your ears."),
+)
+
+
+class ReviewR3Pairs(Base):
+    def _bundle(self, fn, base, head, status, pr_extra, kw):
+        f = {
+            "filename": fn,
+            "status": status,
+            "additions": 2,
+            "deletions": 2,
+            "patch": "@@ -1 +1 @@\n-a\n+b",
+            "type": "file",
+            "content_b64": base64.b64encode(head.encode()).decode(),
+            "base_type": "file",
+            "base_content_b64": base64.b64encode(base.encode()).decode(),
+        }
+        f.update(kw)
+        f = {k: v for k, v in f.items() if v is not None}
+        pr = {
+            "changed_files": 1,
+            "head_repo": "o/r",
+            "base_repo": "o/r",
+            "base_ref": "v3/main",
+        }
+        pr.update(pr_extra or {})
+        return {"pr": pr, "files": [f], "tree": sorted(set(REPO_TREE) | {fn})}
+
+    def test_every_r3_pair(self):
+        self.assertEqual(len(R3_PAIRS), 85)
+        self.assertEqual(sum(1 for p in R3_PAIRS if p[1] in ("HARD", "SOFT")), 31)
+        for cid, kind, payload, fn, base, head, status, pr_extra, kw in R3_PAIRS:
+            with self.subTest(cid=cid, payload=payload[:60]):
+                b = self._bundle(fn, base, head, status, pr_extra, kw)
+                if kind == "CTRL-A" and cid not in R3_NOW_HUMAN:
+                    self.assertAuto(b)
+                else:
+                    self.assertHuman(b)
 
 
 if __name__ == "__main__":

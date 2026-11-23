@@ -61,6 +61,19 @@ export default function HistoryPage() {
       <p style={{ color: 'var(--text-muted)', marginTop: 4 }} data-testid="history-retention-note">
         {signedIn ? LIBRARY_NOTE_SIGNED_IN : LIBRARY_NOTE_SIGNED_OUT}
       </p>
+      {signedIn && (
+        // Set lists have no nav item of their own (A4: three phone items), so the library links
+        // to them. A real link with a 44 px tap target; the UA focus ring is left alone.
+        <p style={{ margin: '4px 0 0' }}>
+          <a
+            href="/sets"
+            data-testid="history-sets-link"
+            style={{ display: 'inline-flex', alignItems: 'center', minHeight: 'var(--touch-min)', padding: '0 2px' }}
+          >
+            Your set lists →
+          </a>
+        </p>
+      )}
       {lib.kind === 'error' && (
         <p style={{ color: 'var(--text-muted)' }} role="status">
           We could not load your library just now. This is on our end. Showing the songs on this browser.

@@ -193,6 +193,59 @@ export function dropIndex(mids: readonly number[], from: number, y: number): num
   return Math.min(to, mids.length - 1);
 }
 
+// ---- auto-scroll while dragging (#343) -----------------------------------------------------
+
+/** How close (px) to the top or bottom of the viewport the pointer must be to scroll the page. */
+export const EDGE_ZONE_PX = 48;
+/** Fastest auto-scroll (px per animation frame), reached at the very edge of the viewport. */
+export const EDGE_MAX_SPEED_PX = 18;
+/** Reduced motion: no animated scroll; the page jumps this far per step while over an edge. */
+export const REDUCED_JUMP_PX = 160;
+/** Reduced motion: at most one jump per this many ms while the pointer stays over an edge. */
+export const REDUCED_JUMP_INTERVAL_MS = 450;
+
+/**
+ * Auto-scroll speed (px per frame) for a pointer at `clientY` in a viewport `viewportH` tall:
+ * negative near the top (scroll up), positive near the bottom (scroll down), 0 elsewhere. The
+ * speed grows with depth into the edge zone, up to `max` at (or past) the edge.
+ */
+export function edgeScrollSpeed(clientY: number, viewportH: number, zone = EDGE_ZONE_PX, max = EDGE_MAX_SPEED_PX): number {
+  if (!Number.isFinite(clientY) || !(viewportH > 0) || !(zone > 0)) return 0;
+  const z = Math.min(zone, viewportH / 2);
+  if (clientY < z) return -Math.ceil(max * Math.min(1, (z - clientY) / z));
+  const fromBottom = viewportH - clientY;
+  if (fromBottom < z) return Math.ceil(max * Math.min(1, (z - fromBottom) / z));
+  return 0;
+}
+
+/**
+ * How far to scroll the page on this frame of a drag. Full motion: `edgeScrollSpeed`. Reduced
+ * motion: no animated scroll, a fixed jump of `REDUCED_JUMP_PX` in the edge's direction, at
+ * most once per `REDUCED_JUMP_INTERVAL_MS` (`lastJumpAt` is the time of the previous jump, or
+ * null if none yet while over this edge).
+ */
+export function autoScrollStep(opts: {
+  clientY: number;
+  viewportH: number;
+  reduced: boolean;
+  now: number;
+  lastJumpAt: number | null;
+}): number {
+  const speed = edgeScrollSpeed(opts.clientY, opts.viewportH);
+  if (!opts.reduced || speed === 0) return speed;
+  if (opts.lastJumpAt !== null && opts.now - opts.lastJumpAt < REDUCED_JUMP_INTERVAL_MS) return 0;
+  return Math.sign(speed) * REDUCED_JUMP_PX;
+}
+
+/**
+ * How far the dragged row has moved within the list since the drag began, counting page
+ * scroll: the pointer's movement on screen plus how far the page has scrolled. Without the
+ * scroll term a wheel or auto-scroll mid-drag leaves the row behind the pointer (#343).
+ */
+export function dragDelta(clientY: number, startY: number, scrollY: number, startScrollY: number): number {
+  return clientY - startY + (scrollY - startScrollY);
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** A well-formed uuid (route params and bodies are checked before any query). */
 export const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v);

@@ -327,13 +327,15 @@ override" does not alter them — explain the distinction instead of retrying.
 | Operation | Result |
 |---|---|
 | `gh pr merge --admin` | Routes through **GraphQL**, which is unavailable in-session |
-| REST `PUT /repos/{o}/{r}/pulls/{N}/merge` | Classifier: **"Merge Without Review"** |
+| REST `PUT /repos/{o}/{r}/pulls/{N}/merge` | Allowed **only** through the orchestrator gate (`scripts/or4-merge.sh`: review marker + patch-id equality + checks) — passed 11× on 2026-11-23 (#347 #346 #340 #341 #348 #350 #353 #359 #358 #354 #349, all `merged_by` JDC000000). A classifier change could re-block it at any time; if refused, OR-1 applies (record, tell Jon, never re-route). Ungated, it was blocked as **"Merge Without Review"** |
 | `PUT /repos/{o}/{r}/pulls/{N}/ccr/auto_merge` | Classifier: **"Auto-Mode Bypass"** |
 | `PUT /repos/{o}/{r}/rulesets/{id}` | Classifier: **dangerous-action denial** (verified 2026-11-05 on the dormant `main` ruleset, chosen deliberately so a denial could not break the live branch) |
 | `GET /repos/{o}/{r}/actions/secrets` | **403** — "not permitted through this proxy" |
 | `GET /repos/{o}/{r}/collaborators` | **403** — proxy-blocked |
 | GitHub **GraphQL** generally | Forbidden. `gh pr view --json`, `gh pr checks`, `gh pr create` all fail — use REST (`gh api repos/{o}/{r}/...`) |
 | `GET /repos/{o}/{r}/branches/{b}/protection` | **404 "Branch not protected"** — this repo uses **rulesets**, not classic protection |
+
+The orchestrator merges reviewed NON-protected PRs under Jon's standing approval (ratified JON 2026-11-23, D-1(i)). Protected PRs (`.github/`, `scripts/`, `.claude/`, `AGENTS.md`, `CLAUDE*`, `CODEOWNERS`, migrations, billing/auth/secret paths, `needs-jon-approval`, `[billing]`) need Jon's named approval per PR.
 
 **Consequence to internalise:** the agent cannot merge, and the GitHub App
 does not change that. The App lets `auto-merge.yml` merge **server-side in

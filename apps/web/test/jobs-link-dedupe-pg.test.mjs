@@ -12,6 +12,10 @@
 //   (c) re-paste of a done and retained job -> same id, no charge.
 //   (d) re-paste after the previous job FAILED -> a new job, charged normally.
 //   (e) a different URL -> a new job.
+//   R2 MF-1: same URL, a different stem selection -> a new job, charged; the same set in another
+//       order -> the same job.
+//   R2 MF-2: a paste racing a Re-make of the same URL (non-trial) -> 1 job, 1 debit; the loser
+//       is SEEN waiting on the shared link-dedupe lock.
 //
 // Skips locally without a LOCAL DATABASE_URL and FAILS under CI=true (a skipped gate is not a
 // pass). Never point it at a shared database: it INSERTs into auth.users and jobs.
@@ -36,7 +40,7 @@ else {
 }
 if (skip && process.env.CI) throw new Error(`CI=true but ${skip}`);
 
-let pool, jobs, ent;
+let pool, jobs, remake, ent;
 if (!skip) {
   const { Pool } = require('pg');
   pool = new Pool({ connectionString: DB_URL, max: 12 });
@@ -47,7 +51,7 @@ if (!skip) {
   process.env.ADMISSION_MAX_IN_FLIGHT = '100000'; // other suites' queued jobs share this database
   const graph = buildModuleGraph({
     name: 'jobs-link-dedupe-pg',
-    entries: ['app/api/jobs/route.ts', 'lib/billing/entitlements.ts'],
+    entries: ['app/api/jobs/route.ts', 'app/api/library/remake/route.ts', 'lib/billing/entitlements.ts'],
     overrides: {
       'lib/db.ts': `export const db = {
         query: (t, p) => globalThis.__ldPool.query(t, p),
@@ -70,6 +74,7 @@ if (!skip) {
     },
   });
   jobs = await import(graph.url('app/api/jobs/route.ts'));
+  remake = await import(graph.url('app/api/library/remake/route.ts'));
   ent = await import(graph.url('lib/billing/entitlements.ts'));
 }
 
@@ -124,7 +129,8 @@ async function counts(u, url) {
     [u.user_id, url],
   );
 }
-const paste = (url) => jobs.POST(req({ url }));
+const paste = (url, extra = {}) => jobs.POST(req({ url, ...extra }));
+const HIT = (id) => ({ id, existing: true });
 
 /** Wait until another session is blocked on a lock while running a statement LIKE `like`. */
 async function sawLockWait(like, ms = 5000) {
@@ -216,7 +222,7 @@ test('(b) re-paste while queued -> same id, 0 new rows (no job, debit, jobs_used
   assert.deepEqual([before.jobs, before.debits, before.jobs_used], [1, 1, 1]);
   const again = await paste(`${url}&t=30`);
   assert.equal(again.status, 200);
-  assert.deepEqual(again.body, { id: first.body.id });
+  assert.deepEqual(again.body, HIT(first.body.id));
   assert.deepEqual(await counts(u, url), before);
 });
 
@@ -229,7 +235,7 @@ test('(c) re-paste of a done and retained job -> same id, no charge', { skip }, 
   await pool.query("UPDATE jobs SET status = 'done' WHERE id = $1", [first.body.id]);
   const before = await counts(u, url);
   const again = await paste(url);
-  assert.deepEqual([again.status, again.body], [200, { id: first.body.id }]);
+  assert.deepEqual([again.status, again.body], [200, HIT(first.body.id)]);
   assert.deepEqual(await counts(u, url), before);
   // Past retention it is no longer live: a fresh, charged job.
   await pool.query("UPDATE jobs SET created_at = now() - interval '30 hours', expires_at = now() - interval '6 hours' WHERE id = $1", [first.body.id]);
@@ -268,4 +274,59 @@ test('(e) a different URL -> a new job, charged', { skip }, async () => {
   assert.notEqual(ra.body.id, rb.body.id);
   assert.equal((await counts(u, b)).jobs, 1);
   assert.equal((await counts(u, b)).jobs_used, 2);
+});
+
+// ── #372 R2 ─────────────────────────────────────────────────────────────────────────────────
+
+test('R2 MF-1: same URL, a DIFFERENT stem selection -> a new job, charged normally; same set reordered -> same job', { skip }, async () => {
+  const u = await user();
+  const url = canon(vid());
+  as(u);
+  const drums = await paste(url, { stems: ['drums'] });
+  assert.equal(drums.status, 201, JSON.stringify(drums.body));
+  const before = await counts(u, url);
+  const all = await paste(url);
+  assert.equal(all.status, 201, JSON.stringify(all.body));
+  assert.notEqual(all.body.id, drums.body.id);
+  const after = await counts(u, url);
+  assert.deepEqual(
+    [after.jobs - before.jobs, after.debits - before.debits, after.jobs_used - before.jobs_used],
+    [1, 1, 1],
+  );
+  const stored = (await one('SELECT requested_stems FROM jobs WHERE id = $1', [all.body.id])).requested_stems;
+  assert.equal(stored.length, 6, 'the new job asks for all six');
+  // All six spelt out in another order is the default selection: the same job, no charge.
+  const spelt = await paste(url, { stems: ['other', 'keys', 'guitar', 'vocals', 'bass', 'drums'] });
+  assert.deepEqual([spelt.status, spelt.body], [200, HIT(all.body.id)]);
+  // A different loop length is a different product too.
+  const eight = await paste(url, { loop_length_bars: 8 });
+  assert.equal(eight.status, 201, JSON.stringify(eight.body));
+  assert.deepEqual(await counts(u, url).then((c) => c.jobs), 3);
+});
+
+async function entry(u, url) {
+  const r = await pool.query(
+    `INSERT INTO public.library_entries (user_id, input_kind, youtube_url, title, bpm, musical_key)
+     VALUES ($1, 'youtube', $2, 'Expired song', 101, 'D minor') RETURNING id::text AS id`,
+    [u.user_id, url],
+  );
+  return r.rows[0].id;
+}
+
+test('R2 MF-2: a paste racing a Re-make of the same URL (non-trial) -> 1 job, 1 debit, both answer its id', { skip, timeout: 60_000 }, async () => {
+  const u = await user({ jobsUsed: 0 });
+  const url = canon(vid());
+  const entryId = await entry(u, url);
+  const before = await counts(u, url);
+  as(u);
+  const b = lockBarrier(DEDUPE_POINT, DEDUPE_WAIT);
+  const results = await withHook(b.onQuery, () => Promise.all([paste(url), remake.POST(req({ entry_id: entryId }))]));
+  assert.equal(b.arrived, 2, 'both requests passed findExisting and every gate, and reached the link-dedupe point');
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 201], JSON.stringify(results.map((r) => r.body)));
+  assert.equal(results[0].body.id, results[1].body.id, "the loser answers with the winner's job");
+  const after = await counts(u, url);
+  assert.equal(after.jobs - before.jobs, 1, 'exactly one job');
+  assert.equal(after.debits - before.debits, 1, 'exactly one job_allowance_debits row');
+  assert.equal(after.jobs_used - before.jobs_used, 1, 'one song spent');
+  assert.ok(b.sawWait, 'the loser was SEEN waiting on the shared link-dedupe lock (pg_stat_activity)');
 });

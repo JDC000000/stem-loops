@@ -14,6 +14,7 @@
 // no entries and an entry lookup finds nothing (the routes answer 404), exactly like before.
 import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { IN_FLIGHT_STATUSES } from '@/lib/admission';
+import { LINK_DEFAULT_STEMS } from '@/lib/jobs/create-link-job';
 
 /** True for "relation does not exist": migration 043 not applied yet. */
 export const isUnmigrated = (err: unknown): boolean => (err as { code?: string } | null)?.code === '42P01';
@@ -33,6 +34,30 @@ export const LIVE_JOB_BY_URL_SQL = `SELECT jobs.id::text AS id FROM jobs
   ORDER BY jobs.created_at DESC LIMIT 1`;
 
 export const liveJobParams = (userId: string, url: string) => [userId, url, IN_FLIGHT_STATUSES];
+
+/**
+ * A stem selection as a set: distinct, sorted. Empty (or absent) means the default, all six
+ * (LINK_DEFAULT_STEMS), which is what a job created without `stems` is given.
+ */
+export function normaliseStems(stems: readonly string[] | null | undefined): string[] {
+  const src = stems && stems.length ? stems : LINK_DEFAULT_STEMS;
+  return Array.from(new Set(src)).sort();
+}
+
+/**
+ * #372 R2 (paste only): the newest live job of this user for this URL whose loops are the ones
+ * this request asks for — the SAME stem set (order, duplicates and "default = all six" ignored;
+ * a stored '{}' counts as all six) and the SAME loop length. A different selection is a
+ * different product (the worker cuts loops only for requested_stems), so it is a new job.
+ * Params [userId, url, IN_FLIGHT_STATUSES, normalisedStems, loopLengthBars, defaultStems].
+ */
+export const LIVE_JOB_BY_URL_AND_SELECTION_SQL = `SELECT jobs.id::text AS id FROM jobs
+  WHERE jobs.user_id = $1::uuid AND jobs.youtube_url = $2 AND ${liveJobPredicate('$3')}
+    AND jobs.loop_length_bars = $5::int
+    AND ARRAY(SELECT DISTINCT s FROM unnest(CASE WHEN COALESCE(cardinality(jobs.requested_stems), 0) = 0
+                                                 THEN $6::text[] ELSE jobs.requested_stems END) AS u(s)
+              ORDER BY s) = $4::text[]
+  ORDER BY jobs.created_at DESC LIMIT 1`;
 
 /** One of the caller's entries (Re-make reads this before anything else). */
 export type OwnedEntry = { id: string; youtube_url: string | null; input_kind: string; title: string | null };
@@ -82,13 +107,29 @@ export async function findLiveJobByUrl(db: Queryable, userId: string, url: strin
 
 /**
  * Re-make's hooks for createAuthedLinkJob (B0, D-e). NEITHER writes the entry.
+ * SEMANTICS (kept in #372 R2): Re-make has no stem or loop-length choice, so it reuses the
+ * newest live job of this user + URL WHATEVER its stems / bars (any live copy of the song makes
+ * it playable again); a new Re-make job gets the defaults (all six stems, 4 bars).
  *   findExisting: read-only, lock-free; the newest live job of this user + URL, or null.
  *   beforeInsert: inside the insert tx, immediately before the INSERT: lock the caller's
- *     entry row (FOR UPDATE) so two Re-makes of one entry serialise here, then repeat the
+ *     entry row (FOR UPDATE) so two Re-makes of one entry serialise here, then take
+ *     LINK_DEDUPE_LOCK_SQL (#372 R2: serialises with a paste of the same URL), then repeat the
  *     live-job lookup. The loser of a race waits for the winner's COMMIT, sees its job, and
  *     the tx rolls back with nothing spent (200 with that id). An entry that vanished (Removed
  *     meanwhile) throws EntryGone: the tx rolls back and the route answers 404.
  */
+/**
+ * The per-(user, canonical URL) lock every signed-in link-job creation for one URL takes in its
+ * insert tx: a paste (pasteHooks) and a Re-make (remakeHooks, after its entry row). A
+ * transaction-scoped advisory lock: there is no row to lock before the job exists, and it
+ * releases at COMMIT / ROLLBACK. The 'link-dedupe:' namespace keeps it apart from every other
+ * advisory key in this app (trial, quota, anon-caps, rate, set_lists, billing).
+ * The key is user + URL, NOT the stem selection (#372 R2, deliberate): Re-make reuses a live job
+ * of ANY selection, so a Re-make must serialise with a paste of every selection; a coarser key
+ * only ever adds waiting between two creations of one user's one link, never a missed dedupe.
+ */
+export const LINK_DEDUPE_LOCK_SQL = `SELECT pg_advisory_xact_lock(hashtextextended('link-dedupe:' || $1::text || ':' || $2::text, 0))`;
+
 export function remakeHooks(entryId: string, userId: string) {
   return {
     findExisting: async (db: Queryable, ctx: { userId: string; canonicalUrl: string }): Promise<string | null> =>
@@ -99,46 +140,50 @@ export function remakeHooks(entryId: string, userId: string) {
         [entryId, userId],
       );
       if (!lock.rows.length) throw new EntryGone();
+      // #372 R2: the same per-(user, URL) key a paste takes, so a Re-make racing a paste of the
+      // same link serialises with it (order: trial → entry row → link-dedupe → entitlements).
+      await client.query(LINK_DEDUPE_LOCK_SQL, [ctx.userId, ctx.canonicalUrl]);
       return findLiveJobByUrl(client, ctx.userId, ctx.canonicalUrl);
     },
   };
 }
 
-/**
- * The per-(user, canonical URL) lock a pasted link takes in its insert tx (#372). A transaction-
- * scoped advisory lock: there is no row to lock before the job exists, and it releases at
- * COMMIT / ROLLBACK. The 'link-dedupe:' namespace keeps it apart from every other advisory key
- * in this app (trial, quota, anon-caps, rate, set_lists, billing).
- */
-export const LINK_DEDUPE_LOCK_SQL = `SELECT pg_advisory_xact_lock(hashtextextended('link-dedupe:' || $1::text || ':' || $2::text, 0))`;
+type HookCtx = { userId: string; canonicalUrl: string; requestedStems: readonly string[]; loopLengthBars: number };
+
+/** The paste lookup: live job of this user + URL with the same stem set and loop length. */
+export async function findLiveJobForPaste(db: Queryable, ctx: HookCtx): Promise<string | null> {
+  const r = await db.query(LIVE_JOB_BY_URL_AND_SELECTION_SQL, [
+    ctx.userId, ctx.canonicalUrl, IN_FLIGHT_STATUSES, normaliseStems(ctx.requestedStems), ctx.loopLengthBars,
+    [...LINK_DEFAULT_STEMS],
+  ]);
+  return (r.rows[0] as { id: string } | undefined)?.id ?? null;
+}
 
 /**
  * POST /api/jobs's hooks for a SIGNED-IN pasted link (#372: a double tap, two tabs or a client
- * retry made two jobs and spent two songs). Same lookup as Re-make: reuse the newest job of
- * this user + canonical URL that is in flight (IN_FLIGHT_STATUSES) or done and retained
- * (JOB_RETAINED_UNTIL_SQL > now()). A FAILED (or expired, or cancelled) job is NOT live, so a
- * re-paste after a failure is a fresh, normally charged job.
- *   findExisting: read-only, lock-free. A hit answers 200 { id } before every gate that writes
- *     (no burst row, quota, trial or debit).
+ * retry made two jobs and spent two songs). Reuse the newest job of this user + canonical URL
+ * that is in flight (IN_FLIGHT_STATUSES) or done and retained (JOB_RETAINED_UNTIL_SQL > now())
+ * AND asks for the same loops (same stem set, same loop length; R2 MF-1). A FAILED (or expired,
+ * or cancelled) job is NOT live, so a re-paste after a failure is a fresh, normally charged job;
+ * so is a re-paste with a different stem selection.
+ *   findExisting: read-only, lock-free. A hit answers 200 { id, existing: true } before every
+ *     gate that writes (no burst row, quota, trial or debit).
  *   beforeInsert: inside the insert tx, immediately before the INSERT: take LINK_DEDUPE_LOCK_SQL
- *     for (user, canonical URL), then repeat the lookup. Two concurrent pastes serialise on the
- *     lock; the loser waits for the winner's COMMIT, sees its job, and its tx rolls back with
- *     nothing spent (an undone trial consume included).
+ *     for (user, canonical URL), then repeat the lookup. Two concurrent pastes (or a paste and a
+ *     Re-make) serialise on the lock; the loser waits for the winner's COMMIT, sees its job, and
+ *     its tx rolls back with nothing spent (an undone trial consume included).
  * LOCK ORDER (D-e: trial_grants → the hook's lock → entitlements): in the trial branch this lock
  * comes after consumeTrialInTx's trial lock; in the non-trial branch it is the tx's first lock;
  * in both it is taken before the INSERT and before rollPeriodIfStale / bumpJobsUsed[WithinQuota]
- * / recordAllowanceDebit take the entitlements / quota locks. Nothing else takes this key, so it
- * can only ever be waited on by another paste of the same user + URL.
- * NOT covered: a paste racing a Re-make of the same URL (Re-make serialises on its entry row, not
- * this key); each path still dedupes against the other's COMMITTED job via findExisting.
+ * / recordAllowanceDebit take the entitlements / quota locks. Re-make takes it after its entry
+ * row; a paste never takes an entry row and nothing else takes this key, so there is no cycle.
  */
 export function pasteHooks() {
   return {
-    findExisting: async (db: Queryable, ctx: { userId: string; canonicalUrl: string }): Promise<string | null> =>
-      findLiveJobByUrl(db, ctx.userId, ctx.canonicalUrl),
-    beforeInsert: async (client: Queryable, ctx: { userId: string; canonicalUrl: string }): Promise<string | null> => {
+    findExisting: async (db: Queryable, ctx: HookCtx): Promise<string | null> => findLiveJobForPaste(db, ctx),
+    beforeInsert: async (client: Queryable, ctx: HookCtx): Promise<string | null> => {
       await client.query(LINK_DEDUPE_LOCK_SQL, [ctx.userId, ctx.canonicalUrl]);
-      return findLiveJobByUrl(client, ctx.userId, ctx.canonicalUrl);
+      return findLiveJobForPaste(client, ctx);
     },
   };
 }

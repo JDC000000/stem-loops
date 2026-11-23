@@ -423,10 +423,12 @@ export async function POST(request: NextRequest) {
     // upload jobs only, migration 013); that file meters a link with bumpJobsUsed /
     // bumpJobsUsedWithinQuota instead.
     // NO DOUBLE CHARGE (#372): pasteHooks() reuses this user's live job for the same canonical
-    // URL (in flight, or done and retained; never a failed one) — 200 { id } with nothing spent
-    // — and repeats that lookup under a per-(user, URL) advisory lock in the insert tx, so two
-    // concurrent pastes make one job and one debit (lib/library-server.ts). ToolForm treats
-    // 200 and 201 alike (res.ok, then job.id).
+    // URL AND the same loops (stem set + loop length; in flight, or done and retained; never a
+    // failed one) — 200 { id, existing: true } with nothing spent — and repeats that lookup
+    // under a per-(user, URL) advisory lock in the insert tx, so two concurrent pastes (or a
+    // paste and a Re-make) make one job and one debit (lib/library-server.ts). The lib answers
+    // 200 ONLY for such a hit; a new job stays 201 { id, status: 'queued' }. ToolForm opens the
+    // job either way and counts `song_added` only for a new one.
     if (user) {
       const r = await createAuthedLinkJob(
         {
@@ -439,6 +441,7 @@ export async function POST(request: NextRequest) {
         },
         linkJobDeps(),
       );
+      if (r.status === 200) return NextResponse.json({ ...r.body, existing: true }, { status: 200 });
       if (r.raw) {
         return new NextResponse(JSON.stringify(r.body), { status: r.status, headers: r.headers });
       }

@@ -1,5 +1,6 @@
-/* Rename parts sheet (Phase C C3). Tokens only. Targets >= 44px. Lime is the
-   ONE primary action here (Save); Cancel is neutral. Pills: 22px radius. */
+/* Rename parts sheet (Phase C C3). Tokens only. Targets >= 44px. No lime fill:
+   lime is the player's ONE primary fill (Play; brand A5 tests), so Save is the
+   neutral selected style (#222 + 2px #fff) and Cancel the plain pill. Pills: 22px radius. */
 .form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
 .title { margin: 0 0 4px; font-size: 20px; }
 .note { margin: 0 0 12px; font-size: 14px; line-height: 1.4; color: var(--text-secondary); }
@@ -30,6 +31,5 @@
   cursor: pointer;
 }
 .cancel { background: var(--bg-elevated); border: 1px solid var(--border-control); color: var(--text-primary); }
-.save { background: var(--accent); border: 0; color: var(--text-inverse); font-weight: var(--weight-semibold); }
-.save:hover { background: var(--accent-hover, var(--accent)); }
+.save { background: var(--bg-selected); border: 2px solid #fff; color: var(--text-primary); font-weight: var(--weight-semibold); }
 .cancel:focus-visible, .save:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 2px; }

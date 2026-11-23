@@ -163,6 +163,6 @@ test('player: "Rename parts" is a ⋯ menu item that opens the sheet; chips get 
   assert.match(sheet, /onClick=\{onClose\}[\s\S]{0,120}Cancel/);
   const css = readFileSync(join(WEB, 'src/components/play/RenameParts.module.css'), 'utf8');
   assert.equal((css.match(/height: 44px/g) || []).length >= 2, true, 'inputs and buttons are >= 44px');
-  assert.equal((css.match(/background: var\(--accent\)[;\s]/g) || []).length, 1, 'lime on ONE control: Save');
-  assert.match(css, /\.save \{ background: var\(--accent\)/);
+  assert.doesNotMatch(css, /background: var\(--accent/, 'lime stays the Play button\'s alone (A5)');
+  assert.match(css, /\.save \{ background: var\(--bg-selected\); border: 2px solid #fff/);
 });

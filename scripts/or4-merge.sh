@@ -13,12 +13,34 @@
 # Never use a bare PUT .../merge (E-S18-2).
 set -uo pipefail
 # Single definitions shared with scripts/test_or4_merge.py (it sources this file with OR4_LIB=1; no copy can drift).
-PROTECTED_RE='^(\.github/|scripts/|AGENTS\.md|CLAUDE|\.mcp\.json)|(^|/)\.claude/|(^|/)SKILL\.md$|CODEOWNERS|migrations/|(^|/)\.env|billing|stripe|entitlement|(^|/)auth(/|\.)|service[-_]?role|secret'
+# v3.3 R2: AGENTS.md/CLAUDE*/.mcp.json/SKILL.md match at ANY depth; matching is always case-insensitive (grep -i).
+PROTECTED_RE='^(\.github/|scripts/)|(^|/)(AGENTS\.md|CLAUDE[^/]*|\.mcp\.json|SKILL\.md)$|(^|/)\.claude/|CODEOWNERS|migrations/|(^|/)\.env|billing|stripe|entitlement|(^|/)auth(/|\.)|authz|oauth|middleware|webhook|service[-_]?role|secret'
 # marker_sha <review-file>: HEAD prefix of the last "VERDICT: PASS <91-100> HEAD <sha7-40>" line, else nothing.
 marker_sha() { grep -E '^VERDICT: ' "$1" | tail -1 | grep -oE "^VERDICT: PASS (9[1-9]|100) HEAD [0-9a-f]{7,40}( |$)" | awk '{print $5}'; }
 # marker_ok <review-file> <reviewed-sha>: 0 iff the marker is valid and its sha is a prefix of <reviewed-sha>.
 marker_ok() { local ms; ms=$(marker_sha "$1"); [ -n "$ms" ] && [ "${2#$ms}" != "$2" ]; }
-if [ "${OR4_LIB:-0}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
+# protected_match: stdin = NUL-separated paths; prints (newline-separated) those in the protected class.
+protected_match() { grep -zEi "$PROTECTED_RE" | tr '\0' '\n'; }
+# protected_decision <labels> <title> <protected-paths> <pr>: prints notes; rc 1 = FAIL (protected and no valid approval).
+# Approval = JON_ROW (numeric ledger row) AND JON_PR equal to <pr> (ties the approval to this PR).
+protected_decision() {
+  local l=$1 T=$2 prot=$3 pr=$4
+  if echo "$l" | grep -qi needs-jon-approval || echo "$T" | grep -qi '\[billing\]' || [ -n "$prot" ]; then
+    echo "protected: labels/title/paths -> ${prot:-label-or-title}"
+    [ -n "${JON_ROW:-}" ] && echo "JON_ROW=$JON_ROW JON_PR=${JON_PR:-}"
+    [[ "${JON_ROW:-}" =~ ^[0-9]+$ ]] && [[ "${JON_PR:-}" =~ ^[0-9]+$ ]] && [ "$JON_PR" = "$pr" ] && return 0
+    echo "FAIL: protected PR needs JON_ROW=<ledger row with Jon's named approval> and JON_PR=$pr"
+    return 1
+  fi
+  return 0
+}
+# list_changed <repo> <base> <head> <outfile>: NUL-separated changed paths, renames split into delete+add (old AND new
+# names), unquoted. rc 0 only if git succeeded AND the list is non-empty (fail closed).
+list_changed() { [ -n "$2" ] && git -C "$1" -c core.quotePath=false diff --no-renames --name-only -z "$2" "$3" >"$4" 2>/dev/null && [ -s "$4" ]; }
+if [ "${OR4_LIB:-0}" = 1 ]; then
+  return 0 2>/dev/null
+  echo "OR4_LIB set: library mode, NOT a merge" >&2; exit 2
+fi
 PR=$1; REVIEW=$2; REVIEWED=$3; R=repos/JDC000000/stem-loops; REPO=/home/claude/stem-loops; fail=0
 [[ "$PR" =~ ^[0-9]+$ ]] || { echo "FAIL: PR not numeric"; exit 1; }
 H=$(gh api $R/pulls/$PR --jq .head.sha) || { echo "FAIL: cannot read PR"; exit 1; }
@@ -39,15 +61,18 @@ EMPTY=$(printf '' | sha256sum | cut -c1-16); echo "pr-content reviewed=$a head=$
 { [ -n "$a" ] && [ "$a" != "$EMPTY" ] && [ "$a" = "$b" ]; } || { echo "FAIL: PR content at head ≠ reviewed (or not computable)"; fail=1; }
 bb=$(gh api $R/compare/v3/main...$H --jq .behind_by); [ "$bb" = 0 ] || { echo "FAIL: behind_by=$bb"; fail=1; }
 d=$(gh api $R/pulls/$PR --jq .draft); [ "$d" = false ] || { echo "FAIL: draft"; fail=1; }
-l=$(gh api $R/pulls/$PR --jq '[.labels[].name]|join(",")'); echo "labels=$l"
+l=$(gh api $R/pulls/$PR --jq '[.labels[].name]|join(",")') || { echo "FAIL: cannot read PR labels"; fail=1; l=""; }; echo "labels=$l"
 echo "$l" | grep -qE "fast-path|rollback-safe|adversarial-reviewed" && { echo "FAIL: merge-bot label present"; fail=1; }
-T=$(gh api $R/pulls/$PR --jq .title); mb=$(git -C $REPO merge-base origin/v3/main "$H" 2>/dev/null)
-prot=$(git -C $REPO diff --name-only "$mb" "$H" 2>/dev/null | grep -Ei "$PROTECTED_RE" | head -5 | tr '\n' ' ')
-if echo "$l" | grep -q needs-jon-approval || echo "$T" | grep -qi '\[billing\]' || [ -n "$prot" ]; then
-  echo "protected: labels/title/paths -> ${prot:-label-or-title}"
-  [[ "${JON_ROW:-}" =~ ^[0-9]+$ ]] || { echo "FAIL: protected PR needs JON_ROW=<ledger row with Jon's named approval>"; fail=1; }
-  [ -n "${JON_ROW:-}" ] && echo "JON_ROW=$JON_ROW"
+T=$(gh api $R/pulls/$PR --jq .title) || { echo "FAIL: cannot read PR title"; fail=1; T=""; }
+mb=$(git -C $REPO merge-base origin/v3/main "$H" 2>/dev/null)
+# v3.3 R2: names via -z, quotePath off, renames split into delete+add (both old and new names listed); fail closed.
+fl=$(mktemp); trap 'rm -f "$fl"' EXIT
+if list_changed "$REPO" "$mb" "$H" "$fl"; then
+  prot=$(protected_match <"$fl" | head -5 | tr '\n' ' ')
+else
+  echo "FAIL: cannot list PR changed files (merge-base/diff failed or empty)"; fail=1; prot=""
 fi
+protected_decision "$l" "$T" "$prot" "$PR" || fail=1
 n=$(gh api "$R/commits/$H/check-runs?per_page=100" --jq '[.check_runs[]|select(.conclusion!="success" and .conclusion!="skipped")]|length')
 [ "$n" = 0 ] || { echo "FAIL: $n checks not success/skipped"; fail=1; }
 t=$(gh api "$R/commits/$H/check-runs?per_page=100" --jq '.total_count'); [ "${t:-0}" -ge 10 ] || { echo "FAIL: only ${t:-0} check-runs registered (need ≥10)"; fail=1; }

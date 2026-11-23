@@ -17,6 +17,11 @@ Structure:
   * Bypass           — rename, symlink, binary, huge diff, path tricks, case
                        variants, Unicode lookalikes, obfuscated content,
                        import laundering, partial file lists, forks.
+  * ReviewMutants    — the 15 bypasses from review R1 (PR351-R1-mutants.py),
+                       each asserted human FOR ITS RULE.
+  * ImportAllowList  — the import allow list, canonicalisation, resolution
+                       against the head tree, scan views.
+  * NetworkAndScope  — network forms; code-vs-docs pattern scope; base ref.
   * ListParsing      — deny wins; malformed lists fail (and so post human).
   * CollectStub      — the REST half against a stub `gh`: tree modes, head
                        moved, any API failure or truncation -> human.
@@ -43,12 +48,17 @@ LISTS = ac.load_lists(os.path.join(ROOT, ".github", "autonomy"))
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "autonomy-class.yml")
 
 STYLE_CSS = b""".row {\n  display: flex;\n  gap: 12px;\n  padding: 8px 12px;\n}\n"""
-STYLE_TSX = b"""import styles from './Pill.module.css';
+STYLE_TSX = b"""import { useState } from 'react';
 
 export function Pill({ label }: { label: string }) {
-  return <span className={styles.row}>{label}</span>;
+  const [on] = useState(false);
+  return <span className={on ? 'row on' : 'row'}>{label}</span>;
 }
 """
+# Every path in the repo at HEAD: imports are resolved against the head tree.
+REPO_TREE = subprocess.run(
+    ["git", "-C", ROOT, "ls-files"], capture_output=True, text=True, check=True
+).stdout.split()
 
 
 def real(path: str) -> bytes:
@@ -72,10 +82,20 @@ def fe(filename, content=STYLE_TSX, status="modified", **kw):
     return d
 
 
-def bundle(*files, **pr):
-    p = {"changed_files": len(files), "head_repo": "o/r", "base_repo": "o/r"}
+def bundle(*files, tree=None, **pr):
+    p = {
+        "changed_files": len(files),
+        "head_repo": "o/r",
+        "base_repo": "o/r",
+        "base_ref": "v3/main",
+    }
     p.update(pr)
-    return {"pr": p, "files": list(files)}
+    names = [f.get("filename") for f in files if isinstance(f.get("filename"), str)]
+    return {
+        "pr": p,
+        "files": list(files),
+        "tree": (REPO_TREE if tree is None else tree) + names,
+    }
 
 
 def run(b, lists=LISTS):
@@ -503,10 +523,330 @@ class Bypass(Base):
         )
 
 
+# -- 3b. review R1 mutants (PR351-R1-mutants.py), kept as permanent fixtures --
+# Each of these came back `auto` at bf9192b. Every one must be `human`, and
+# for the RULE named, not by accident (e.g. not merely for a missing base_ref).
+REVIEW_MUTANTS = {
+    "M1 dot-segment alias import of lib/billing": (
+        (
+            'import { getBillingProvider } from "@/lib/./billing";\n'
+            "export const A=()=>{getBillingProvider();return null};\n"
+        ),
+        "dot segment in alias import",
+    ),
+    "M2 dot-segment alias import of lib/jobs": (
+        (
+            'import * as j from "@/lib/./jobs/create-link-job";\n'
+            "export const A=()=>{void j;return null};\n"
+        ),
+        "dot segment in alias import",
+    ),
+    "M3 comment between from and specifier": (
+        'import * as b from/**/"@/lib/billing";\nexport const A=()=>{void b;return null};\n',
+        "matches import: apps/web/src/lib/billing",
+    ),
+    "M4 dynamic import with comment": (
+        'export async function A(){ const m = await import/**/("@/lib/billing"); return m; }\n',
+        r"code: \bimport(?:",
+    ),
+    "M5 un-denied server lib (DB DELETE)": (
+        (
+            '"use server";\nimport { deleteLibraryEntry } from "@/lib/library-server";\n'
+            "export async function zap(id: string, u: string)"
+            "{ return deleteLibraryEntry(id, u); }\n"
+        ),
+        "use server",
+    ),
+    "M6 email dispatch (sends mail, reads billing)": (
+        'import * as d from "@/lib/emails/dispatch";\nexport const A=()=>{void d;return null};\n',
+        "R7 imports '@/lib/emails/dispatch'",
+    ),
+    "M7 fetch alias call": (
+        (
+            "const go = 1; const f = fetch; export const A=()=>"
+            '{f("/api/library/x",{method:"DELETE"});return null};\n'
+        ),
+        r"code: \bfetch\b",
+    ),
+    "M8 fetch tagged template": (
+        "export const A=()=>{fetch`/api/jobs`;return null};\n",
+        r"code: \bfetch\b",
+    ),
+    "M9 form POST to API": (
+        (
+            'export const A=()=> <form action="/api/library/remake" method="post">'
+            "<button>go</button></form>;\n"
+        ),
+        r"code: \baction\s*=",
+    ),
+    "M10 protocol-relative 3rd-party host": (
+        'export const A=()=> <img src="//evil.example/p.gif" alt="" />;\n',
+        "code: (?<![\\w:])//",
+    ),
+    "M11 query suffix import": (
+        (
+            'import { getBillingProvider } from "@/lib/billing?x";\n'
+            "export const A=()=>{getBillingProvider();return null};\n"
+        ),
+        "non-canonical import specifier",
+    ),
+    "M12 @/.. re-entry": (
+        'import * as b from "@/../src/lib/billing";\nexport const A=()=>{void b;return null};\n',
+        "dot segment in alias import",
+    ),
+    "M13 auth via dot alias": (
+        (
+            'import { getUser } from "@/lib/./auth/supabase";\n'
+            "export const A=()=>{void getUser;return null};\n"
+        ),
+        "dot segment in alias import",
+    ),
+    "M14 next/headers via comment": (
+        'import { cookies } from/* */"next/headers";\nexport const A=()=>{void cookies;return null};\n',
+        "matches import: next/headers",
+    ),
+}
+
+
+class ReviewMutants(Base):
+    C = "apps/web/src/components/x/Evil.tsx"
+
+    def test_each_review_mutant_is_human_for_its_rule(self):
+        for name, (src, why) in REVIEW_MUTANTS.items():
+            with self.subTest(name=name):
+                self.assertHuman(bundle(fe(self.C, src.encode())), why)
+
+    def test_m15_css_protocol_relative_url(self):
+        css = b".a{background:url(//evil.example/p.gif)}\n"
+        self.assertHuman(
+            bundle(fe("apps/web/src/components/x/a.module.css", css)),
+            "code: (?<![\\w:])//",
+        )
+
+    def test_control_relative_billing_import(self):
+        src = b'import * as b from "../../lib/billing";\n'
+        self.assertHuman(
+            bundle(fe(self.C, src)), "matches import: apps/web/src/lib/billing"
+        )
+
+
+class ImportAllowList(Base):
+    """Review R1 #3: the import rule is an allow list over lib/ and packages."""
+
+    C = "apps/web/src/components/play/X.tsx"
+
+    def imp(self, line):
+        return bundle(fe(self.C, (line + "\nexport const A = 1;\n").encode()))
+
+    def test_listed_pure_modules_and_packages_are_auto(self):
+        for line in [
+            "import { X } from '@/lib/play/types';",
+            "import { X } from '../../lib/play/types';",
+            "import { X } from '../../lib/play/types.ts';",
+            "import { X } from '@/lib/ui/form-styles';",
+            "import { X } from '@/chord/alphabet';",
+            "import { useState } from 'react';",
+            "import { useRouter } from 'next/navigation';",
+            "import type { Job } from '@stem-loops/types';",
+            "import Sheet from './Sheet';",
+            "import styles from './Mixer.module.css';",
+            "import Pills from '@/components/play/PartPills';",
+        ]:
+            with self.subTest(line=line):
+                self.assertAuto(self.imp(line))
+
+    def test_unlisted_lib_module_is_human(self):
+        # Real modules components import today that are NOT pure.
+        for mod in [
+            "@/lib/play/sections",
+            "@/lib/play/presets",
+            "@/lib/set-lists",
+            "@/lib/library",
+            "@/lib/library-server",
+            "@/lib/set-lists-server",
+            "@/lib/emails/resend",
+            "@/lib/job-access",
+            "@/lib/demo-rate",
+            "@/lib/read-rate-limit",
+            "@/lib/public-config",
+            "@/lib/upload-client",
+        ]:
+            with self.subTest(mod=mod):
+                self.assertHuman(self.imp(f"import * as m from '{mod}';"), "R7")
+
+    def test_unlisted_package_is_human(self):
+        for pkg in [
+            "axios",
+            "swr",
+            "ky",
+            "@vercel/analytics/next",
+            "next/script",
+            "next/server",
+        ]:
+            with self.subTest(pkg=pkg):
+                self.assertHuman(self.imp(f"import x from '{pkg}';"), "R7")
+
+    def test_denied_component_and_unallowed_targets_are_human(self):
+        for line, why in [
+            ("import L from '@/components/LoginForm';", "LoginForm"),
+            ("import S from '@/components/SiteAnalytics';", "not an allowed path"),
+            (
+                "import T from '@/components/__tests__/ChordOverlay.test.mjs';",
+                "not an allowed",
+            ),
+            ("import R from '@/app/api/billing/checkout/route';", "R7"),
+            ("import M from '@/middleware';", "R7"),
+        ]:
+            with self.subTest(line=line):
+                self.assertHuman(self.imp(line), why)
+
+    def test_non_canonical_specifiers_are_human(self):
+        for spec in [
+            "@/lib/./play/types",
+            "@/lib/play/../play/types",
+            "@/lib//play/types",
+            "@/lib/play/types?raw",
+            "@/lib/play/types#x",
+            "@/lib/play/types/",
+            "./../play/X",
+            "../../lib/./play/types",
+            "@/lib/play/types%2e",
+            "@/lib/pl\\u0061y/types",
+            "../../../../../../etc/passwd",
+            "/abs/path",
+            "node:fs",
+            "",
+        ]:
+            with self.subTest(spec=spec):
+                self.assertHuman(self.imp(f"import x from '{spec}';"), "R7")
+
+    def test_case_variant_alias_is_not_the_allowed_file(self):
+        # Exact-case allow list; on a case-insensitive disk this could load
+        # lib/play/types, on Linux it does not resolve. Either way: human.
+        self.assertHuman(self.imp("import x from '@/lib/Play/types';"), "R7")
+
+    def test_missing_target_or_missing_tree_is_human(self):
+        self.assertHuman(
+            self.imp("import x from './DoesNotExist';"), "resolves to no file"
+        )
+        b = self.imp("import x from './Sheet';")
+        del b["tree"]
+        self.assertHuman(b, "head tree not available")
+
+    def test_ambiguous_resolution_uses_the_first_existing_file(self):
+        # ./Sheet with only Sheet.js present must judge Sheet.js (not allowed),
+        # not a non-existent Sheet.tsx that would be.
+        d = "apps/web/src/components/q/"
+        b = bundle(
+            fe(d + "X.tsx", b"import s from './Sheet';\nexport const A = s;\n"),
+            tree=[d + "Sheet.js"],
+        )
+        self.assertHuman(b, "not an allowed path")
+
+    def test_every_import_form_is_scanned(self):
+        for line in [
+            "export { x } from '@/lib/play/sections';",
+            "export * from '@/lib/play/sections';",
+            "import '@/lib/play/sections';",
+            "import x, { y } from\n  '@/lib/play/sections';",
+            "import x from // c\n '@/lib/play/sections';",
+            "import x from /* a */ /* b */ '@/lib/play/sections';",
+            "import x from `@/lib/play/sections`;",
+        ]:
+            with self.subTest(line=line):
+                self.assertHuman(self.imp(line), "R7")
+
+    def test_lexer_confusion_still_catches_the_import(self):
+        # A regex literal holding a quote makes the comment stripper think a
+        # string opened, so the stripped view keeps `from/**/"x"` intact. The
+        # raw statement-start scan, which tolerates comments, still sees it.
+        src = b"const r = /'/;\nimport * as b from/**/\"@/lib/play/sections\"; // '\nexport const A = b;\n"
+        self.assertHuman(bundle(fe(self.C, src)), "R7")
+
+    def test_raw_scan_catches_import_the_stripper_swallows(self):
+        # `/x\/*/` is a valid regex literal, but the stripper reads `/*` as a
+        # block comment and swallows up to the `*/` in a later string: the
+        # import vanishes from the stripped view. Only the raw statement-start
+        # scan can see it.
+        src = (
+            b"const r = /x\\/*/;\n"
+            b"import * as b from '@/lib/play/sections';\n"
+            b"const t = '*/';\nexport const A = [r, b, t];\n"
+        )
+        self.assertNotIn(b"sections", ac.strip_comments(src.decode()).encode())
+        self.assertHuman(bundle(fe(self.C, src)), "R7")
+
+    def test_stripped_scan_catches_import_after_a_leading_comment(self):
+        # Not at a statement start in the raw text (a comment precedes it on
+        # the line), so only the comment-stripped view sees this import.
+        src = (
+            b"/* hi */ import * as b from '@/lib/play/sections';\nexport const A = b;\n"
+        )
+        self.assertHuman(bundle(fe(self.C, src)), "R7")
+
+    def test_prose_in_comments_is_not_an_import(self):
+        src = b"// chords come from 'the provider' at runtime\nexport const A = 1;\n"
+        self.assertAuto(bundle(fe(self.C, src)))
+
+    def test_use_server_and_server_only(self):
+        self.assertHuman(
+            bundle(fe(self.C, b"'use server';\nexport const A = 1;\n")), "use server"
+        )
+        self.assertHuman(self.imp("import 'server-only';"), "server-only")
+
+
+class NetworkAndScope(Base):
+    C = "apps/web/src/components/play/X.tsx"
+
+    def test_network_forms_are_human(self):
+        for snippet in [
+            "const f = fetch;",
+            "window.fetch(u);",
+            "fetch`x`;",
+            "<button formAction={go}>x</button>",
+            "<img src='//cdn.evil.example/x.png' />",
+            "<a href='/api/jobs'>x</a>",
+            "location.href = u;",
+            "location.assign(u);",
+            "window.open(u);",
+            "new Image().src = u;",
+            "navigator.sendBeacon(u);",
+            "<iframe src='x' />",
+            "<link rel='prefetch' href='x' />",
+            "fe/**/tch(u);".replace("fe/**/tch", "fetch/**/"),
+        ]:
+            with self.subTest(snippet=snippet):
+                body = ("export const A = 1;\n" + snippet + "\n").encode()
+                self.assertHuman(bundle(fe(self.C, body)), "R6")
+
+    def test_comment_split_tokens_match_in_stripped_view(self):
+        for snippet in ["const q = sql/**/`select 1`;", "db.rpc/* x */('wipe');"]:
+            with self.subTest(snippet=snippet):
+                body = ("export const A = 1;\n" + snippet + "\n").encode()
+                self.assertHuman(bundle(fe(self.C, body)), "R6")
+
+    def test_next_link_component_is_not_an_html_link(self):
+        body = b"import Link from 'next/link';\nexport const A = () => <Link href='/history'>x</Link>;\n"
+        self.assertAuto(bundle(fe(self.C, body)))
+
+    def test_design_note_gets_secrets_only_set(self):
+        note = b"# Nav\n\nSee https://example.com/ref and the checkout page; fetch() is not called.\n"
+        self.assertAuto(bundle(fe("docs/design/nav.md", note)))
+        for secret in [b"process.env.X", b"sk_live_abc", b"SUPABASE_URL", b"[billing]"]:
+            with self.subTest(secret=secret):
+                self.assertHuman(
+                    bundle(fe("docs/design/nav.md", b"# x\n" + secret + b"\n")), "R6"
+                )
+
+    def test_wrong_base_branch_is_human(self):
+        self.assertHuman(bundle(fe(self.C), base_ref="feature-x"), "R0 base branch")
+        self.assertHuman(bundle(fe(self.C), base_ref=None), "R0 base branch")
+
+
 # -- 4. lists -----------------------------------------------------------------
 class ListParsing(Base):
     def test_deny_wins_over_allow(self):
-        L = ac.parse_lists("apps/**\n", "apps/secret/**\n")
+        L = ac.parse_lists("apps/**\n", "apps/secret/**\n", "react\n")
         self.assertAuto(bundle(fe("apps/ok/A.tsx")), lists=L)
         self.assertHuman(bundle(fe("apps/secret/A.tsx")), "R3", lists=L)
 
@@ -526,6 +866,37 @@ class ListParsing(Base):
         ]:
             with self.subTest(a=a, d=d), self.assertRaises(ac.ListError):
                 ac.parse_lists(a, d)
+
+    def test_imports_allow_entries_are_exact(self):
+        for bad in [
+            "apps/web/src/lib/play/*",
+            "apps/web/src/lib/**",
+            "./x",
+            "/abs",
+            "a b",
+        ]:
+            with self.subTest(bad=bad), self.assertRaises(ac.ListError):
+                ac.parse_lists("x/**\n", "y\n", bad + "\n")
+
+    def test_real_lists_need_imports_allow(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("allow.txt", "deny.txt"):
+                with (
+                    open(os.path.join(ROOT, ".github", "autonomy", name)) as src,
+                    open(os.path.join(d, name), "w") as dst,
+                ):
+                    dst.write(src.read())
+            with self.assertRaises(FileNotFoundError):
+                ac.load_lists(d)
+            with open(os.path.join(d, "imports-allow.txt"), "w") as f:
+                f.write("# empty\n")
+            with self.assertRaises(ac.ListError):
+                ac.load_lists(d)
+
+    def test_unknown_or_bad_content_prefix(self):
+        for d in ["code: (\n", "code-cs: [\n", "codes: x\n", "import-allow: x\n"]:
+            with self.subTest(d=d), self.assertRaises(ac.ListError):
+                ac.parse_lists("x/**\n", "y\n" + d)
 
     def test_glob_semantics(self):
         rx = lambda g: re.compile(ac.glob_to_regex(g))
@@ -601,6 +972,8 @@ class ListParsing(Base):
 
 
 # -- 4b. collect() against a stub `gh` (no network) --------------------------
+# Routes map a URL to a LIST of bodies served in order (the last one repeats),
+# so a PR that moves between the first and second read can be simulated.
 STUB_GH = r"""#!/usr/bin/env python3
 import json, os, sys
 fx = json.load(open(os.environ["STUB_FIXTURE"]))
@@ -610,12 +983,13 @@ if "--jq" in args:
 url = args[0].split("?")[0]
 if url in fx["fail"] or url not in fx["routes"]:
     sys.exit(1)
-body = fx["routes"][url]
-if url.endswith("/files"):
-    for x in body:
-        print(json.dumps(x))
-else:
-    print(json.dumps(body))
+cpath = os.environ["STUB_FIXTURE"] + ".count"
+counts = json.load(open(cpath)) if os.path.exists(cpath) else {}
+i = counts.get(url, 0)
+counts[url] = i + 1
+json.dump(counts, open(cpath, "w"))
+seq = fx["routes"][url]
+print(json.dumps(seq[min(i, len(seq) - 1)]))
 """
 
 
@@ -623,6 +997,7 @@ class CollectStub(Base):
     """The network half, run against a stub `gh` serving REST-shaped JSON."""
 
     SHA = "a" * 40
+    BASE = "d" * 40
     BLOB = "b" * 40
     F = "apps/web/src/components/play/Pill.tsx"
 
@@ -644,34 +1019,68 @@ class CollectStub(Base):
                 os.environ.clear()
                 os.environ.update(old)
 
-    def _routes(self, mode="100644", head=None):
+    def _pr(self, head=None, base=None, ref="v3/main"):
         return {
-            "repos/o/r/pulls/7": {
-                "changed_files": 1,
-                "head": {"sha": head or self.SHA, "repo": {"full_name": "o/r"}},
-                "base": {"repo": {"full_name": "o/r"}},
+            "changed_files": 1,
+            "head": {"sha": head or self.SHA, "repo": {"full_name": "o/r"}},
+            "base": {
+                "sha": base or self.BASE,
+                "ref": ref,
+                "repo": {"full_name": "o/r"},
             },
-            "repos/o/r/pulls/7/files": [
+        }
+
+    def _routes(self, mode="100644", content=STYLE_TSX, files=None):
+        return {
+            "repos/o/r/pulls/7": [self._pr()],
+            f"repos/o/r/compare/{self.BASE}...{self.SHA}": [
                 {
-                    "filename": self.F,
-                    "status": "modified",
-                    "additions": 1,
-                    "deletions": 1,
-                    "patch": "@@ x",
+                    "files": files
+                    or [
+                        {
+                            "filename": self.F,
+                            "status": "modified",
+                            "additions": 1,
+                            "deletions": 1,
+                            "patch": "@@ x",
+                        }
+                    ]
                 }
             ],
-            f"repos/o/r/git/trees/{self.SHA}": {
-                "truncated": False,
-                "tree": [{"path": self.F, "mode": mode, "sha": self.BLOB}],
-            },
-            f"repos/o/r/git/blobs/{self.BLOB}": {
-                "encoding": "base64",
-                "content": base64.b64encode(STYLE_TSX).decode(),
-            },
+            f"repos/o/r/git/trees/{self.SHA}": [
+                {
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": self.F,
+                            "mode": mode,
+                            "sha": self.BLOB,
+                            "type": "blob",
+                        },
+                        {
+                            "path": "apps/web/src/lib/play/types.ts",
+                            "mode": "100644",
+                            "sha": "e" * 40,
+                            "type": "blob",
+                        },
+                    ],
+                }
+            ],
+            f"repos/o/r/git/blobs/{self.BLOB}": [
+                {"encoding": "base64", "content": base64.b64encode(content).decode()}
+            ],
         }
 
     def test_collect_then_classify_auto(self):
         self.assertAuto(self._collect(self._routes()))
+
+    def test_imports_resolve_against_the_head_tree(self):
+        ok = b"import { X } from '@/lib/play/types';\nexport const A = X;\n"
+        self.assertAuto(self._collect(self._routes(content=ok)))
+        gone = b"import { X } from '@/lib/play/notation';\nexport const A = X;\n"
+        self.assertHuman(
+            self._collect(self._routes(content=gone)), "resolves to no file"
+        )
 
     def test_symlink_seen_through_tree_mode(self):
         # The contents API would follow a symlink and say "file"; the tree
@@ -680,13 +1089,50 @@ class CollectStub(Base):
         self.assertHuman(self._collect(self._routes(mode="100755")), "executable")
         self.assertHuman(self._collect(self._routes(mode="160000")), "submodule")
 
-    def test_head_moved_fails_closed(self):
-        self.assertHuman(self._collect(self._routes(head="c" * 40)), "head moved")
+    def test_head_moved_before_first_read_fails_closed(self):
+        r = self._routes()
+        r["repos/o/r/pulls/7"] = [self._pr(head="c" * 40)]
+        self.assertHuman(self._collect(r), "head moved")
+
+    def test_head_or_base_moved_during_read_fails_closed(self):
+        # Review R1 #6 (TOCTOU): the file list must not come from a different
+        # head than the bytes. The PR is re-read at the end.
+        for second in (self._pr(head="c" * 40), self._pr(base="f" * 40)):
+            with self.subTest(
+                second=second["head"]["sha"][:1] + second["base"]["sha"][:1]
+            ):
+                r = self._routes()
+                r["repos/o/r/pulls/7"] = [self._pr(), second]
+                self.assertHuman(self._collect(r), "moved while reading")
+
+    def test_file_list_comes_from_sha_pinned_compare(self):
+        # If only the moving pulls/N/files route existed, collect must fail.
+        r = self._routes()
+        r["repos/o/r/pulls/7/files"] = r.pop(
+            f"repos/o/r/compare/{self.BASE}...{self.SHA}"
+        )
+        self.assertHuman(self._collect(r), "could not read")
+
+    def test_compare_at_300_file_cap_fails_closed(self):
+        many = [
+            {
+                "filename": f"apps/web/src/components/F{i}.tsx",
+                "status": "added",
+                "patch": "@@",
+            }
+            for i in range(300)
+        ]
+        self.assertHuman(self._collect(self._routes(files=many)), "300-file cap")
+
+    def test_non_v3_main_base_is_human(self):
+        r = self._routes()
+        r["repos/o/r/pulls/7"] = [self._pr(ref="evil-branch")]
+        self.assertHuman(self._collect(r), "R0 base branch is 'evil-branch'")
 
     def test_any_api_failure_fails_closed(self):
         for url in (
             "repos/o/r/pulls/7",
-            "repos/o/r/pulls/7/files",
+            f"repos/o/r/compare/{self.BASE}...{self.SHA}",
             f"repos/o/r/git/trees/{self.SHA}",
             f"repos/o/r/git/blobs/{self.BLOB}",
         ):
@@ -697,7 +1143,7 @@ class CollectStub(Base):
 
     def test_truncated_tree_fails_closed(self):
         r = self._routes()
-        r[f"repos/o/r/git/trees/{self.SHA}"]["truncated"] = True
+        r[f"repos/o/r/git/trees/{self.SHA}"][0]["truncated"] = True
         self.assertHuman(self._collect(r), "truncated")
 
 
@@ -735,7 +1181,8 @@ class WorkflowStatic(unittest.TestCase):
             self.assertRegex(u, r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$", u)
 
     def test_checks_out_base_only_without_credentials(self):
-        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", self.code)
+        self.assertIn("ref: v3/main", self.code)
+        self.assertIn("if: github.event.pull_request.base.ref == 'v3/main'", self.code)
         self.assertIn("persist-credentials: false", self.code)
         for bad in ("head.ref", "head.repo", "merge_commit_sha", "refs/pull"):
             self.assertNotIn(bad, self.code, bad)

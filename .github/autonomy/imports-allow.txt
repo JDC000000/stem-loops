@@ -1,0 +1,55 @@
+# .github/autonomy/imports-allow.txt — what an `auto` file may import.
+#
+# Owner: Jon. Read by scripts/autonomy_class.py from v3/main only.
+# Added for PR #351 review R1 finding 3: the import rule is an ALLOW list,
+# not a blocklist over lib/. An import in a changed file is `auto` only if:
+#   * it resolves (first existing file, TypeScript resolution order, in the
+#     head tree) to a path listed here EXACTLY, or
+#   * it resolves to another path that allow.txt admits and deny.txt does not
+#     (a sibling UI component or CSS module), or
+#   * it is a bare package name listed here EXACTLY.
+# deny.txt `import:` lines win over this file.
+# Everything else is `human`: any other apps/web/src/lib/** module, server
+# code, an unlisted package, an unresolvable or non-canonical specifier.
+#
+# Format: one exact repo path or package name per line. No globs: a new file
+# in lib/play/ is NOT admitted until someone reviews it and adds it here.
+#
+# HOW THIS LIST WAS BUILT (2026-11-23, main @ ebd0a8f): the modules that
+# today's components import, kept only if the module, with comments removed,
+# matches none of deny.txt's content/code patterns (no fetch, no /api/, no
+# env, no globalThis, no "use server"...) AND everything it imports is itself
+# on this list or a listed package (checked transitively). Modules that
+# components import but that FAIL this test are deliberately absent, e.g.
+# lib/play/sections, lib/play/presets, lib/set-lists, lib/library,
+# lib/song-thumb, lib/job-label, lib/analytics, lib/upload*, lib/pending-link,
+# lib/public-config (process.env). A component importing one of them is
+# `human`.
+#
+# The listed modules are themselves DENIED for editing (deny.txt
+# apps/web/src/lib/**), so their content can only change through a reviewed
+# PR. Whoever reviews that PR should re-check that the module still belongs
+# here.
+
+# ── Packages ─────────────────────────────────────────────────────────────────
+react
+react-dom
+next/navigation
+next/link
+@stem-loops/types
+
+# ── Pure client modules (no network, no env, no server code) ─────────────────
+# Shared button/input class strings.
+apps/web/src/lib/ui/form-styles.ts
+# Player types, chord notation and display helpers.
+apps/web/src/lib/play/types.ts
+apps/web/src/lib/play/notation.ts
+apps/web/src/lib/play/simplify-chords.ts
+apps/web/src/lib/play/part-pills.ts
+apps/web/src/lib/play/device-support.ts
+apps/web/src/lib/play/wake-lock.ts
+apps/web/src/chord/alphabet.ts
+# Navigation highlight, waveform palette, demo song catalogue (static data).
+apps/web/src/lib/nav-current.ts
+apps/web/src/lib/wave-colors.ts
+apps/web/src/lib/demo-catalog.ts

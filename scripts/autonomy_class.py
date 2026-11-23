@@ -12,9 +12,11 @@ adversarial-reviewed + a non-author VERDICT: PASS), never a merge by itself.
 Rules, in the order they are reported (all reasons are collected; any one
 makes the PR `human`):
 
-  R0  whole-PR shape   file list unreadable / partial / empty; more than
-                       MAX_FILES files; more than MAX_CHANGED_LINES lines
-                       changed; head repo is a fork.
+  R0  whole-PR shape   base branch is not v3/main; file list unreadable /
+                       partial / empty / at the compare cap; head or base
+                       moved while reading; more than MAX_FILES files; more
+                       than MAX_CHANGED_LINES lines changed; head repo is a
+                       fork.
   R1  path hygiene     a path (or a rename's previous path) that is not plain
                        ASCII from a small safe alphabet, or has empty, `.` or
                        `..` segments, a leading `/`, a backslash, or is over
@@ -31,21 +33,30 @@ makes the PR `human`):
                        submodule), has no textual patch (binary / too large),
                        is over MAX_FILE_BYTES, is not strict UTF-8, or holds a
                        NUL, a control character or a bidi override.
-  R6  content          a deny.txt `content:` / `content-cs:` regex matches
-                       the WHOLE head file (raw or NFKC-normalised) — not
-                       just the changed lines (C2).
-  R7  import           an import / export-from / @import in the file resolves
-                       to a deny.txt `import:` glob, or cannot be resolved
-                       (C1).
+  R6  content          a deny.txt regex matches the WHOLE head file — not just
+                       the changed lines (C2). `content:` lines apply to every
+                       file (secrets); `code:` lines only to code files
+                       (money, network, execution). Code is scanned raw,
+                       comment-stripped and NFKC-normalised.
+  R7  import           every import / export-from / side-effect import / CSS
+                       @import is canonicalised (no `.`/`..`/empty segments,
+                       `?`, `#`, `%`, backslash) and resolved against the
+                       head tree in TypeScript order. It is `auto` only if
+                       the target is listed in imports-allow.txt or is
+                       itself an allowed, non-denied path; a bare package
+                       only if listed. deny.txt `import:` wins (C1; review
+                       R1 #1-#3).
 
-Lists are read from the directory given by --lists; in CI that is the BASE
-branch's checkout (.github/workflows/autonomy-class.yml), never the PR's.
+Lists (allow.txt, deny.txt, imports-allow.txt) are read from the directory
+given by --lists; in CI that is a checkout of v3/main
+(.github/workflows/autonomy-class.yml), never the PR's.
 
 USAGE
 -----
   autonomy_class.py collect --repo O/R --pr N --head-sha SHA --out bundle.json
-      Network step: reads the PR, its file list (+ patches) and every changed
-      file's head content through `gh api` (REST only). Never runs PR code.
+      Network step: reads the PR, its file list (+ patches) from the
+      SHA-pinned compare endpoint, the head tree (modes, paths) and every
+      changed file's blob through `gh api` (REST only). Never runs PR code.
       Any read error is recorded in the bundle as `collect_error`, which
       classifies as `human` (fail closed).
   autonomy_class.py classify --lists DIR --bundle bundle.json [--out v.json]
@@ -83,28 +94,44 @@ MODE_TYPES = {
     "040000": "dir",
 }
 SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9._@()\[\]+-]+$")
-CODE_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css")
+JS_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+CSS_EXTS = (".css",)
+CODE_EXTS = JS_EXTS + CSS_EXTS
+# Module resolution order (TypeScript/Next bundler): the spec as written, then
+# these suffixes. The FIRST one that exists in the head tree is the target.
 RESOLVE_SUFFIXES = (
     "",
-    ".ts",
     ".tsx",
-    ".js",
+    ".ts",
     ".jsx",
+    ".js",
     ".mjs",
     ".cjs",
     ".css",
-    "/index.ts",
     "/index.tsx",
+    "/index.ts",
+    "/index.jsx",
     "/index.js",
 )
+REQUIRED_BASE_REF = "v3/main"
 # Bidi overrides/isolates (Trojan Source) and other controls.
 BIDI = set("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u200e\u200f")
 
+# A "gap" between two JS tokens: whitespace and/or comments. `from/**/"x"` and
+# `import/**/("x")` are valid syntax (review R1 #2), so every import pattern
+# tolerates comments between its tokens, and the text is ALSO scanned with
+# comments stripped.
+GAP = r"(?:\s|/\*[\s\S]*?\*/|//[^\n]*(?:\n|$))*"
 IMPORT_RES = [
-    re.compile(r"""\bfrom\s*(['"])(.+?)\1"""),
-    re.compile(r"""\bimport\s*(['"])(.+?)\1"""),
-    re.compile(r"""@import\s+(?:url\(\s*)?(['"]?)([^'")\s;]+)\1"""),
+    re.compile(r"\bfrom" + GAP + r"""(['"`])(.*?)\1"""),
+    re.compile(r"\bimport" + GAP + r"""(['"`])(.*?)\1"""),
+    re.compile(
+        r"@import" + GAP + r"""(?:url\(""" + GAP + r""")?(['"]?)([^'")\s;]+)\1"""
+    ),
 ]
+BARE_SPEC = re.compile(
+    r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+)
 
 
 class ListError(Exception):
@@ -150,11 +177,19 @@ def glob_to_regex(pat: str) -> str:
 class Lists:
     allow: list = field(default_factory=list)  # (glob, compiled)
     deny_paths: list = field(default_factory=list)
-    deny_content: list = field(default_factory=list)  # (source, compiled)
+    # (source line, compiled, scope) scope: "all" = every file, "code" = CODE_EXTS
+    deny_content: list = field(default_factory=list)
     deny_imports: list = field(default_factory=list)
+    import_allow: set = field(default_factory=set)  # exact repo paths / package names
 
 
 PREFIX = re.compile(r"^([a-z][a-z-]*):\s+(.*)$")
+CONTENT_PREFIXES = {
+    "content": ("all", re.IGNORECASE),
+    "content-cs": ("all", 0),
+    "code": ("code", re.IGNORECASE),
+    "code-cs": ("code", 0),
+}
 
 
 def _lines(text: str):
@@ -164,7 +199,7 @@ def _lines(text: str):
             yield n, line
 
 
-def parse_lists(allow_text: str, deny_text: str) -> Lists:
+def parse_lists(allow_text: str, deny_text: str, imports_allow_text: str = "") -> Lists:
     L = Lists()
     for n, line in _lines(allow_text):
         if PREFIX.match(line):
@@ -177,10 +212,9 @@ def parse_lists(allow_text: str, deny_text: str) -> Lists:
                 L.deny_paths.append(
                     (line, re.compile(glob_to_regex(line), re.IGNORECASE))
                 )
-            elif m.group(1) == "content":
-                L.deny_content.append((line, re.compile(m.group(2), re.IGNORECASE)))
-            elif m.group(1) == "content-cs":
-                L.deny_content.append((line, re.compile(m.group(2))))
+            elif m.group(1) in CONTENT_PREFIXES:
+                scope, flags = CONTENT_PREFIXES[m.group(1)]
+                L.deny_content.append((line, re.compile(m.group(2), flags), scope))
             elif m.group(1) == "import":
                 L.deny_imports.append(
                     (m.group(2), re.compile(glob_to_regex(m.group(2)), re.IGNORECASE))
@@ -189,17 +223,26 @@ def parse_lists(allow_text: str, deny_text: str) -> Lists:
                 raise ListError(f"deny.txt:{n}: unknown prefix {m.group(1)!r}")
         except re.error as e:
             raise ListError(f"deny.txt:{n}: bad regex: {e}") from e
+    for n, line in _lines(imports_allow_text):
+        if any(c in line for c in "*?[] \t") or line.startswith(("/", ".")):
+            raise ListError(
+                f"imports-allow.txt:{n}: entries are exact paths/names, no globs"
+            )
+        L.import_allow.add(line)
     if not L.allow or not L.deny_paths:
         raise ListError("allow.txt and deny.txt must both be non-empty")
     return L
 
 
 def load_lists(directory: str) -> Lists:
-    with open(posixpath.join(directory, "allow.txt"), encoding="utf-8") as f:
-        a = f.read()
-    with open(posixpath.join(directory, "deny.txt"), encoding="utf-8") as f:
-        d = f.read()
-    return parse_lists(a, d)
+    texts = []
+    for name in ("allow.txt", "deny.txt", "imports-allow.txt"):
+        with open(posixpath.join(directory, name), encoding="utf-8") as f:
+            texts.append(f.read())
+    L = parse_lists(*texts)
+    if not L.import_allow:
+        raise ListError("imports-allow.txt must be non-empty")
+    return L
 
 
 # -- per-rule helpers ---------------------------------------------------------
@@ -244,46 +287,167 @@ def text_problem(raw: bytes) -> tuple[str | None, str | None]:
     return text, None
 
 
-def content_hits(L: Lists, text: str) -> list:
-    norm = unicodedata.normalize("NFKC", text)
-    return [src for src, rx in L.deny_content if rx.search(text) or rx.search(norm)]
+def strip_comments(text: str, js: bool = True) -> str:
+    """Replace comments with a space, leaving string/template contents alone.
+
+    A small lexer, not a parser: a regex literal containing a quote can
+    confuse it. That is why callers scan the RAW text as well, and why every
+    import pattern tolerates comments itself. A miss needs both to fail.
+    `//` is a comment only in JS (in CSS it is a protocol-relative URL)."""
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "/" and text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            out.append(" ")
+        elif js and c == "/" and text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            out.append(" ")
+        elif c in "'\"`":
+            j = i + 1
+            while j < n and text[j] != c:
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i : j + 1])
+            i = j + 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
 
 
-def import_specs(text: str) -> list:
-    specs = []
-    for rx in IMPORT_RES:
-        specs += [m.group(2) for m in rx.finditer(text)]
+def scan_views(name: str, text: str) -> list:
+    """Every text an attacker's bytes must survive: raw, comment-stripped,
+    and the NFKC form of each."""
+    views = [text]
+    if name.endswith(CODE_EXTS):
+        views.append(strip_comments(text, js=name.endswith(JS_EXTS)))
+    views += [unicodedata.normalize("NFKC", v) for v in list(views)]
+    return views
+
+
+def content_hits(L: Lists, name: str, text: str) -> list:
+    is_code = name.endswith(CODE_EXTS)
+    views = scan_views(name, text)
+    return [
+        src
+        for src, rx, scope in L.deny_content
+        if (scope == "all" or is_code) and any(rx.search(v) for v in views)
+    ]
+
+
+# On the RAW text (comments intact) only statement-start imports count, so
+# prose in a comment ("... from 'x'") is not read as an import, while a real
+# import hidden from the comment stripper by a lexer confusion still is.
+RAW_IMPORT_RES = [
+    re.compile(
+        r"(?:^|[;{}])[ \t]*(?:import|export)\b[^;'\"`]*?\bfrom"
+        + GAP
+        + r"""(['"`])(.*?)\1""",
+        re.MULTILINE,
+    ),
+    re.compile(r"(?:^|[;{}])[ \t]*import" + GAP + r"""(['"`])(.*?)\1""", re.MULTILINE),
+]
+
+
+def import_specs(name: str, text: str) -> list:
+    """Specifiers from the comment-stripped text (all import forms, comments
+    between tokens tolerated) plus statement-start imports in the raw text,
+    each also NFKC-normalised."""
+    specs: list = []
+    views = []
+    if name.endswith(CODE_EXTS):
+        views.append((strip_comments(text, js=name.endswith(JS_EXTS)), IMPORT_RES))
+    views.append((text, RAW_IMPORT_RES + IMPORT_RES[2:]))
+    views += [(unicodedata.normalize("NFKC", v), r) for v, r in list(views)]
+    for v, rxs in views:
+        for rx in rxs:
+            for m in rx.finditer(v):
+                if m.group(2) not in specs:
+                    specs.append(m.group(2))
     return specs
 
 
 def resolve_import(file_path: str, spec: str):
-    """-> (kind, value): ('path', repo-relative) | ('bare', spec) | ('bad', why)."""
+    """Canonicalise a specifier BEFORE matching (review R1 #1).
+
+    -> ('path', repo-relative base) | ('bare', name) | ('bad', why).
+    Anything non-canonical is 'bad' (human): no `?`/`#`/`%`/backslash/space/
+    `${`, no `//`, no `.`/`..`/empty segment except a leading `./` or run of
+    `../`, nothing that leaves apps/web/src (for `@/`) or the repo."""
+    if not spec or not spec.isascii() or any(c in spec for c in "?#%\\ \t\n`$"):
+        return "bad", f"non-canonical import specifier {spec!r}"
+    if "//" in spec or spec.endswith("/"):
+        return "bad", f"non-canonical import specifier {spec!r}"
     if spec.startswith("@/"):
         if not file_path.startswith("apps/web/"):
             return "bad", f"'@/' import outside apps/web: {spec}"
-        return "path", "apps/web/src/" + spec[2:]
-    if spec.startswith(("./", "../")) or spec in (".", ".."):
+        rest = spec[2:].split("/")
+        if any(s in ("", ".", "..") for s in rest):
+            return "bad", f"dot segment in alias import {spec!r}"
+        return "path", "apps/web/src/" + "/".join(rest)
+    if spec.startswith(("./", "../")):
+        segs = spec.split("/")
+        k = 0
+        if segs[0] == ".":
+            k = 1
+        else:
+            while k < len(segs) and segs[k] == "..":
+                k += 1
+        if k == len(segs) or any(s in ("", ".", "..") for s in segs[k:]):
+            return "bad", f"dot segment in relative import {spec!r}"
         joined = posixpath.normpath(posixpath.join(posixpath.dirname(file_path), spec))
-        if joined.startswith(("..", "/")):
+        if joined.startswith(("..", "/")) or joined == ".":
             return "bad", f"import escapes the repo: {spec}"
         return "path", joined
-    if spec.startswith("/") or "\\" in spec or not spec.isascii():
-        return "bad", f"unresolvable import specifier: {spec!r}"
-    return "bare", spec
+    if BARE_SPEC.match(spec):
+        return "bare", spec
+    return "bad", f"unresolvable import specifier {spec!r}"
 
 
-def import_hits(L: Lists, file_path: str, text: str) -> list:
+def import_hits(L: Lists, file_path: str, text: str, tree) -> list:
+    """Import rule, ALLOW-list form (review R1 #3).
+
+    A relative/alias import is fine only if the file it resolves to (first
+    existing candidate in the head tree) is (a) named in imports-allow.txt, or
+    (b) itself an allowed, non-denied path (another UI component / CSS module).
+    A bare package is fine only if named in imports-allow.txt. deny.txt
+    `import:` globs win over both."""
     reasons = []
-    for spec in import_specs(text):
+    for spec in import_specs(file_path, text):
         kind, val = resolve_import(file_path, spec)
         if kind == "bad":
             reasons.append(val)
             continue
         cands = [val + s for s in RESOLVE_SUFFIXES] if kind == "path" else [val]
-        for g, rx in L.deny_imports:
-            if any(rx.fullmatch(c) for c in cands):
-                reasons.append(f"imports {spec!r} (matches import: {g})")
-                break
+        named = [
+            g
+            for g, rx in L.deny_imports
+            if any(rx.fullmatch(c) for c in cands + [spec])
+        ]
+        if named:
+            reasons.append(f"imports {spec!r} (matches import: {named[0]})")
+            continue
+        if kind == "bare":
+            if val not in L.import_allow:
+                reasons.append(f"imports package {spec!r}, not in imports-allow.txt")
+            continue
+        if tree is None:
+            reasons.append(f"cannot resolve {spec!r}: head tree not available")
+            continue
+        target = next((c for c in cands if c in tree), None)
+        if target is None:
+            reasons.append(f"import {spec!r} resolves to no file in the head tree")
+        elif target in L.import_allow or (
+            allowed(L, target) and not deny_hits(L, target)
+        ):
+            continue
+        else:
+            reasons.append(
+                f"imports {target} ({spec!r}): not in imports-allow.txt and not an allowed path"
+            )
     return reasons
 
 
@@ -305,6 +469,11 @@ def classify(L: Lists, bundle: dict) -> dict:
         pr_reasons.append(
             f"R0 file list is partial: PR says {pr.get('changed_files')}, read {len(files)}"
         )
+    if pr.get("base_ref") != REQUIRED_BASE_REF:
+        pr_reasons.append(
+            f"R0 base branch is {pr.get('base_ref')!r}, not {REQUIRED_BASE_REF} "
+            "(lists are only authoritative for that branch)"
+        )
     if pr.get("head_repo") != pr.get("base_repo") or not pr.get("base_repo"):
         pr_reasons.append("R0 head repository is not the base repository (fork)")
     if len(files) > MAX_FILES:
@@ -313,6 +482,8 @@ def classify(L: Lists, bundle: dict) -> dict:
     if total > MAX_CHANGED_LINES:
         pr_reasons.append(f"R0 {total} changed lines > {MAX_CHANGED_LINES}")
 
+    tree = bundle.get("tree")
+    tree = set(tree) if isinstance(tree, list) else None
     for f in files:
         name = f.get("filename")
         prev = f.get("previous_filename")
@@ -354,10 +525,10 @@ def classify(L: Lists, bundle: dict) -> dict:
                     if why:
                         reasons.append(f"R5 {why}")
                     if text is not None:
-                        for src in content_hits(L, text):
+                        for src in content_hits(L, str(name), text):
                             reasons.append(f"R6 whole-file content matches `{src}`")
                         if isinstance(name, str) and name.endswith(CODE_EXTS):
-                            for r in import_hits(L, name, text):
+                            for r in import_hits(L, name, text, tree):
                                 reasons.append(f"R7 {r}")
         files_out.append(
             {"filename": name, "previous_filename": prev, "reasons": reasons}
@@ -381,7 +552,16 @@ def _gh(args: list) -> str:
     return r.stdout
 
 
+COMPARE_FILE_CAP = 300  # GitHub's compare endpoint returns at most 300 files
+
+
 def collect(repo: str, pr_num: int, head_sha: str) -> dict:
+    """Read one PR as DATA, pinned to SHAs (review R1 #6).
+
+    The file list comes from `compare/{base_sha}...{head_sha}`, which is
+    immutable for those two SHAs, not from the moving `pulls/N/files`. The PR
+    is re-read afterwards; if its head or base moved, this fails closed and
+    the newer event's run classifies the new head."""
     bundle: dict = {"pr": {}, "files": []}
     try:
         pr = json.loads(_gh([f"repos/{repo}/pulls/{pr_num}"]))
@@ -389,22 +569,22 @@ def collect(repo: str, pr_num: int, head_sha: str) -> dict:
             raise RuntimeError(
                 "PR head moved since the event; a newer run will classify it"
             )
+        base_sha = pr["base"]["sha"]
         bundle["pr"] = {
             "number": pr_num,
             "head_sha": head_sha,
+            "base_sha": base_sha,
+            "base_ref": pr["base"].get("ref"),
             "changed_files": pr.get("changed_files"),
             "head_repo": (pr["head"].get("repo") or {}).get("full_name"),
             "base_repo": pr["base"]["repo"]["full_name"],
         }
-        out = _gh(
-            [
-                "--paginate",
-                f"repos/{repo}/pulls/{pr_num}/files?per_page=100",
-                "--jq",
-                ".[]",
-            ]
-        )
-        files = [json.loads(line) for line in out.splitlines() if line.strip()]
+        cmp_ = json.loads(_gh([f"repos/{repo}/compare/{base_sha}...{head_sha}"]))
+        files = cmp_.get("files")
+        if not isinstance(files, list):
+            raise RuntimeError("compare returned no file list")  # noqa: TRY004
+        if len(files) >= COMPARE_FILE_CAP:
+            raise RuntimeError("compare file list is at GitHub's 300-file cap")
         bundle["files"] = [
             {
                 k: f.get(k)
@@ -422,11 +602,15 @@ def collect(repo: str, pr_num: int, head_sha: str) -> dict:
         if len(files) > MAX_FILES:
             return bundle  # classifies human on R0; do not fetch hundreds of blobs
         # The git tree gives each path's MODE, which the contents API hides
-        # (it follows a symlink to a file and reports type "file").
+        # (it follows a symlink to a file and reports type "file"). Its path
+        # list is also what imports are resolved against.
         tree = json.loads(_gh([f"repos/{repo}/git/trees/{head_sha}?recursive=1"]))
         if tree.get("truncated"):
             raise RuntimeError("git tree listing truncated")
-        by_path = {e["path"]: e for e in tree.get("tree", [])}
+        by_path = {
+            e["path"]: e for e in tree.get("tree", []) if e.get("type") == "blob"
+        }
+        bundle["tree"] = sorted(by_path)
         for f in bundle["files"]:
             if f["status"] == "removed" or path_problem(f["filename"]):
                 continue
@@ -440,6 +624,11 @@ def collect(repo: str, pr_num: int, head_sha: str) -> dict:
                 if blob.get("encoding") != "base64":
                     raise RuntimeError(f"unexpected blob encoding for {f['filename']}")
                 f["content_b64"] = "".join(blob.get("content", "").split())
+        again = json.loads(_gh([f"repos/{repo}/pulls/{pr_num}"]))
+        if again["head"]["sha"] != head_sha or again["base"]["sha"] != base_sha:
+            raise RuntimeError(
+                "PR head or base moved while reading; refusing a mixed read"
+            )
     except Exception as e:  # noqa: BLE001 - fail closed, never guess
         bundle["collect_error"] = str(e)[:300]
     return bundle

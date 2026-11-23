@@ -18,9 +18,10 @@
 # a PR cannot edit the workflow, the checker (scripts/autonomy_class.py) or
 # the lists (.github/autonomy/*.txt) and have its own edit judge it.
 # The classic danger of pull_request_target is checking out and running PR
-# code with that token. This workflow NEVER does: it checks out the base
-# commit only (persist-credentials: false), and reads the PR's file list,
-# patches, git modes and blob bytes through the REST API as DATA. Nothing from
+# code with that token. This workflow NEVER does: it checks out v3/main only
+# (persist-credentials: false), and reads the PR's file list (from
+# compare/<base_sha>...<head_sha>, pinned to SHAs), patches, git modes and
+# blob bytes through the REST API as DATA. Nothing from
 # the PR is executed, imported, installed or interpolated into a script; PR
 # fields reach the shell only through env vars.
 #
@@ -51,11 +52,19 @@ jobs:
     name: autonomy-class (compute)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Only PRs INTO v3/main are classified (review R1 #5). pull_request_target
+    # runs the workflow, and would read the lists, from whatever branch a PR
+    # targets; an agent that can push a branch could give that branch
+    # `allow.txt = **`, open a PR into it and collect an Actions-app success
+    # on a head SHA it later points at v3/main. PRs into any other branch get
+    # no autonomy-class check at all, and the checker refuses a non-v3/main
+    # base too (R0), so this `if` is not the only guard.
+    if: github.event.pull_request.base.ref == 'v3/main'
     steps:
-      - name: Check out the BASE commit only (lists + checker; never PR code)
+      - name: Check out v3/main only (lists + checker; never PR code)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: v3/main
           persist-credentials: false
 
       - name: Read the PR through the REST API (data only)

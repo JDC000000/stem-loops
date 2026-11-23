@@ -13,16 +13,28 @@
 #                       changed file's path AND, for renames/copies, its
 #                       previous path.
 #   content: <regex>    Python regex, case-insensitive, searched in the WHOLE
-#                       head version of every changed file — not just the
-#                       added lines (C2). Also searched in the NFKC-normalised
-#                       text, so full-width lookalikes match too.
-#   content-cs: <regex> same, case-sensitive (for SQL keywords etc. that would
-#                       otherwise fire on ordinary UI copy).
-#   import: <glob>      an import target. Every import/export-from/@import in
-#                       a changed file is resolved (`@/` -> apps/web/src/,
-#                       relative paths against the file's directory) and
-#                       matched against these globs; bare package names are
-#                       matched as written (C1).
+#                       head version of EVERY changed file (C2) — not just the
+#                       added lines. Used for secrets, which matter in any file.
+#   content-cs: <regex> same, case-sensitive.
+#   code: <regex>       like content:, but only for code files (.ts .tsx .js
+#                       .jsx .mjs .cjs .css). Money, network and execution
+#                       patterns live here, so a design note (.md) that links
+#                       to a page is not `human` for that alone.
+#   code-cs: <regex>    same, case-sensitive.
+#   import: <glob>      an import target that is ALWAYS denied, even if
+#                       imports-allow.txt or allow.txt would admit it (C1).
+#                       Matched against the resolved path candidates and the
+#                       specifier as written.
+# Code files are scanned raw, with comments stripped, and NFKC-normalised
+# (each combination), so `fetch/**/(`, `from/**/"x"` and full-width letters
+# all match.
+#
+# The import rule itself is an ALLOW list (review R1 #3): see
+# imports-allow.txt. An import is `auto` only if it resolves to a file named
+# there, or to another allowed, non-denied path (a sibling UI component or
+# CSS module). Everything else — any other apps/web/src/lib/** module, server
+# code, an unlisted package, a non-canonical specifier (`@/lib/./x`,
+# `../x?y`, `@/../src/x`) — is `human`.
 # Glob syntax is the same as allow.txt. An unknown `xxx:` prefix or an invalid
 # regex makes the checker fail, and a failed checker posts `human`.
 
@@ -168,25 +180,7 @@ claude/**
 04-tsd-and-workplan/**
 
 # ── Whole-file content patterns (C2) ─────────────────────────────────────────
-# Money (plan R1 list).
-content: stripe
-content: /api/billing
-content: /api/entitlements
-content: checkout
-content: entitlement
-content: allowance
-content: credit
-content: \[billing\]
-# Network: any fetch, and the other ways to reach the network.
-content: \bfetch\s*\(
-content: XMLHttpRequest
-content: sendBeacon
-content: \bWebSocket\b
-content: \bEventSource\b
-content: /api/auth
-# A URL literal to any host (new hosts) except the SVG namespace.
-content: \bhttps?://(?!www\.w3\.org/)
-# Secrets and environment.
+# Secrets and environment: every file, including docs.
 content: process\.env
 content: import\.meta\.env
 content: service[_-]?role
@@ -195,34 +189,71 @@ content: \bsk_(live|test)_
 content: \bwhsec_
 content: api[_-]?key
 content: secret
-content: \bsupabase\b
-content: document\.cookie
-# Code execution and the usual obfuscations of the above.
-content: \beval\s*\(
-content: \bnew\s+Function\b
-content: \bFunction\s*\(
-content: child_process
-content: \brequire\s*\(
-content: \bimport\s*\(
-content: \bglobalThis\b
-content: \b(window|self|global)\s*\[
-content: \bReflect\.
-content: \batob\s*\(
-content: fromCharCode
-content: \\u\{?[0-9a-f]{2,}
-content: \\x[0-9a-f]{2}
+content: PRIVATE KEY
+content: \[billing\]
+# Money (plan R1 list): code files.
+code: stripe
+code: /api/billing
+code: /api/entitlements
+code: checkout
+code: entitlement
+code: allowance
+code: credit
+# Server code markers.
+code-cs: ['"]use server['"]
+code: server-only
+code: \bsupabase\b
+code: document\.cookie
+# Network (review R1 #4): ANY reference to fetch (alias, tagged template,
+# member), any API path, any form action, protocol-relative and absolute
+# URLs, and the other ways a browser reaches the network or navigates away.
+code: \bfetch\b
+code: /api/
+code: \bformAction\b
+code: \baction\s*=
+code: (?<![\w:])//[a-z0-9-]+\.[a-z]
+code: \bhttps?://(?!www\.w3\.org/)
+code: XMLHttpRequest
+code: sendBeacon
+code: \bWebSocket\b
+code: \bEventSource\b
+code: \bnew\s+(Image|Request|Worker|SharedWorker)\b
+code: \bnavigator\s*\.\s*(sendBeacon|serviceWorker|clipboard)
+code: \blocation\s*(\.\s*(href|assign|replace)|=)
+code: \bwindow\s*\.\s*open\b
+code-cs: <(iframe|object|embed|base|link|meta|portal)\b
+# Tagged templates: `fetch\`...\`` is caught by `\bfetch\b` above and
+# `sql\`...\`` below. A generic "identifier then backtick" rule fired on every
+# backtick in a comment, so it is not used; an aliased tag still needs a
+# reference to fetch or an import, which other rules catch.
+code: \bsql\s*`
+# Code execution, dynamic module loading and the usual obfuscations.
+code: \beval\b
+code: \bnew\s+Function\b
+code: \bFunction\s*\(
+code: child_process
+code: \brequire\b
+code: \bimport(?:\s|/\*[\s\S]*?\*/|//[^\n]*\n)*\(
+code: \bglobalThis\b
+code: \b(window|self|global|document)\s*\[
+code: \bReflect\.
+code: \batob\b
+code: fromCharCode
+code: \\u\{?[0-9a-f]{2,}
+code: \\x[0-9a-f]{2}
 # HTML injection.
-content: dangerouslySetInnerHTML
-content: \binnerHTML\b
-content: \bouterHTML\b
-content: <script
-content: javascript:
+code: dangerouslySetInnerHTML
+code: \binnerHTML\b
+code: \bouterHTML\b
+code: <script
+code: javascript:
 # SQL (upper-case keywords only; lower-case "select a section" is UI copy).
-content-cs: \b(SELECT|INSERT INTO|UPDATE|DELETE FROM|DROP|ALTER TABLE|CREATE TABLE|CREATE POLICY|GRANT|REVOKE|TRUNCATE)\b
-content: \.rpc\s*\(
-content: \bsql`
+code-cs: \b(SELECT|INSERT INTO|UPDATE|DELETE FROM|DROP|ALTER TABLE|CREATE TABLE|CREATE POLICY|GRANT|REVOKE|TRUNCATE)\b
+code: \.rpc\s*\(
 
-# ── Import rule (C1) ─────────────────────────────────────────────────────────
+# ── Import rule (C1): always-denied targets ──────────────────────────────────
+# Most of lib/ is already refused by the imports-allow.txt default; these are
+# named so that a later widening of imports-allow.txt cannot admit them.
 import: apps/web/src/lib/billing/**
 import: apps/web/src/lib/billing
 import: apps/web/src/lib/auth/**
@@ -232,6 +263,13 @@ import: apps/web/src/lib/jobs
 import: apps/web/src/lib/supabase*
 import: apps/web/src/lib/supabase/**
 import: apps/web/src/lib/secret-env*
+import: apps/web/src/lib/**/*server*
+import: apps/web/src/lib/emails/**
+import: apps/web/src/lib/job-access*
+import: apps/web/src/lib/demo-rate*
+import: apps/web/src/lib/read-rate-limit*
+import: apps/web/src/lib/upload*
+import: apps/web/src/lib/analytics*
 import: apps/web/src/lib/db*
 import: apps/web/src/lib/r2*
 import: apps/web/src/lib/admission*

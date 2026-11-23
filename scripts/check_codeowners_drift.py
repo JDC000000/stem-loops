@@ -66,6 +66,45 @@ MERGER = REPO / ".github" / "workflows" / "auto-merge.yml"
 # regex is not doing what we think and every positive result below is suspect.
 NEGATIVE_CONTROL = "apps/web/src/components/play/Mixer.tsx"
 
+# Further negatives, added with §11 R5. Each sits next to a new owned term and
+# would be swallowed by a sloppy version of it: a `claude` substring that is
+# not a `.claude/` directory, a SKILL.md lookalike, a nested `scripts/` dir
+# (the scripts/** pattern is root-anchored on BOTH sides), and plain docs.
+# None may be claimed by the regex OR by CODEOWNERS.
+EXTRA_NEGATIVES = (
+    "apps/web/src/lib/claude-client.ts",
+    "docs/claude.md",
+    "fixtures/SKILL.md.json",
+    "apps/web/scripts/build.mjs",
+    "docs/design/play-screen.md",
+)
+
+# The R5 exit criterion, pinned as concrete paths (AGENTIC-L5-PLAN §11 R5):
+# every one of these MUST be owned by CODEOWNERS AND matched by the regex the
+# labeller and auto-merge.yml share. The GAP/LEAK pass below proves the two
+# agree with each other; this list proves they still cover what R5 promised,
+# so deleting a CODEOWNERS line AND its regex term together (which keeps them
+# in agreement) still fails CI.
+MUST_BE_OWNED = (
+    "CLAUDE.md",
+    "apps/web/CLAUDE.md",
+    ".claude/agents/x.md",
+    ".claude/settings.json",
+    ".claude/hooks.json",
+    ".claude/skills/foo/SKILL.md",
+    "apps/web/.claude/agents/x.md",
+    "skills/foo/SKILL.md",
+    "scripts/safe_merge.sh",
+    "scripts/check_codeowners_drift.py",
+    "scripts/check_merge_gate.py",
+    "scripts/or4-merge.sh",
+    "AGENTS.md",
+    "docs/AGENTS.md",
+    ".github/workflows/auto-merge.yml",
+    ".github/CODEOWNERS",
+    "apps/web/src/lib/billing/stripe.ts",
+)
+
 
 def fail(code: int, msg: str) -> int:
     print(f"check_codeowners_drift: {msg}", file=sys.stderr)
@@ -120,6 +159,18 @@ def sample_paths(pattern: str) -> list[str]:
     a nested sample as well, and the gate is only as good as the samples it
     thinks to try: that is this function's whole risk surface.
     """
+    if pattern.startswith("**/"):
+        rest = pattern[3:]
+        if rest.endswith("/**"):
+            # **/DIR/** — DIR at any depth, anything beneath it
+            d = rest[:-3]
+            if "*" in d or "/" in d:
+                raise ValueError(f"unsupported **/ pattern shape {pattern!r}")
+            return [f"{d}/_sample.ts", f"apps/web/{d}/agents/_sample.md"]
+        if "*" in rest or "/" in rest:
+            raise ValueError(f"unsupported **/ pattern shape {pattern!r}")
+        # **/FILE — that filename at any depth
+        return [rest, f"docs/{rest}", f".claude/skills/foo/{rest}"]
     if pattern.endswith("/**"):
         return [pattern[:-3] + "/_sample.ts"]
     if "*" in pattern:
@@ -135,6 +186,11 @@ def sample_paths(pattern: str) -> list[str]:
 
 def claims(pattern: str, path: str) -> bool:
     """Does this CODEOWNERS pattern claim this path?"""
+    if pattern.startswith("**/"):
+        rest = pattern[3:]
+        if rest.endswith("/**"):
+            return f"/{rest[:-3]}/" in f"/{path}"
+        return path == rest or path.endswith("/" + rest)
     if pattern.endswith("/**"):
         return path.startswith(pattern[:-2])
     if "*" in pattern:
@@ -201,6 +257,23 @@ def main() -> int:
 
     problems: list[str] = []
 
+    # 4 — further negatives: neither side may claim them.
+    for neg in EXTRA_NEGATIVES:
+        if rx.search(neg):
+            problems.append(f"OVER  the workflow regex claims negative control {neg!r}")
+        if any(claims(p, neg) for p in patterns):
+            problems.append(f"OVER  .github/CODEOWNERS claims negative control {neg!r}")
+
+    # 5 — R5 exit criterion: both sides must cover every pinned path.
+    for must in MUST_BE_OWNED:
+        if not rx.search(must):
+            problems.append(
+                f"R5    the workflow regex does not match {must!r}; a PR touching it "
+                f"would not get needs-jon-approval and could auto-merge."
+            )
+        if not any(claims(p, must) for p in patterns):
+            problems.append(f"R5    no .github/CODEOWNERS line owns {must!r}.")
+
     # 2a — GAP: every owned pattern must be covered by the regex, at every
     # depth the pattern reaches.
     for pat in patterns:
@@ -247,7 +320,8 @@ def main() -> int:
     print(
         f"check_codeowners_drift: ok — {len(patterns)} owned patterns, "
         f"{len(terms)} regex terms, two workflow copies byte-identical, "
-        f"negative control refused."
+        f"{1 + len(EXTRA_NEGATIVES)} negative controls refused, "
+        f"{len(MUST_BE_OWNED)} R5 must-own paths covered."
     )
     return OK
 

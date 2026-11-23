@@ -1,20 +1,31 @@
-# Auto-enable auto-merge on PRs that are gated. Two paths:
+# Auto-enable auto-merge on PRs that are gated. ONE path:
 #   STANDARD (R-3 review path):
 #     * rollback-safe        — reversible by git revert
-#     * adversarial-reviewed — 3-lens review passed
-#     * NOT needs-jon-approval — Jon still eyes money/prod-touching code
-#   FAST PATH (T2 auto-merge, 2026-11-05):
-#     * fast-path            — auto-applied by .github/workflows/auto-label-fast-path.yml
-#                              when the entire diff is docs / tests / fixtures /
-#                              generated types / apps/training / scripts.
-#                              NOTE (2026-11-11): between 2026-11-05 and
-#                              2026-11-11 this ALSO covered apps/web/src/ and
-#                              apps/worker/src/, i.e. all product code, so this
-#                              comment was false and ~5,100 lines of the
-#                              play-along player merged with no independent
-#                              review. Implementation is out of the allowlist
-#                              again; it takes the STANDARD path above.
-#     * NOT needs-jon-approval — hard stop regardless
+#     * adversarial-reviewed — 3-lens review passed (fresh: applied at or
+#                              after the head commit)
+#     * NOT needs-jon-approval — Jon still eyes money/prod-touching code,
+#                              workflows, agent-instruction files and scripts
+#                              (computed inline from the diff via CO_RE, AND
+#                              read from the label; either one refuses)
+#
+# ── FAST PATH RETIRED (2026-11-22, AGENTIC-L5-PLAN §11 R5) ────────────────
+#
+# There used to be a second arm: a bot-applied `fast-path` label ALONE armed
+# the merge (auto-label-fast-path.yml applied it when the whole diff was
+# docs / *.md anywhere / fixtures / generated types / apps/training). It was
+# the only zero-review merge path in the repo, and its `*.md (anywhere)` term
+# covered CLAUDE.md, .claude/agents/*.md and SKILL.md — the files that
+# instruct every later agent session. It had already been narrowed three
+# times after unreviewed merges (#182-#187 product code, #216 a test gate,
+# scripts/), each time by patching the allowlist. R5 retires the arm instead
+# of patching the regex again. auto-label-fast-path.yml and
+# scripts/check_fast_path_allowlist.py are deleted in the same change, and
+# a `fast-path` label, if anyone still applies one, now grants NOTHING here:
+# it appears in neither the job `if` nor the post-CI freshness check.
+# scripts/check_merge_gate.py (run in Lint, a required context) executes the
+# real gate script against fixtures and fails if a fast-path-only PR, or a PR
+# touching CLAUDE.md / .claude/** / SKILL.md / scripts/**, could proceed.
+# Docs PRs now take the STANDARD path like everything else.
 # When conditions hold, the merge step calls REST
 # `PUT /repos/{owner}/{repo}/pulls/{N}/merge` directly. GitHub's required
 # status checks still gate the actual merge — and as of 2026-11-05 the
@@ -128,10 +139,9 @@ jobs:
     runs-on: ubuntu-latest
     # synchronize is excluded: new commits invalidate the review verdict, so the
     # drop-stale-review job below handles that event instead.
-    # Two merge paths:
-    #   STANDARD: rollback-safe + adversarial-reviewed
-    #   FAST PATH: fast-path (auto-applied by auto-label-fast-path.yml)
-    # Both require: NOT needs-jon-approval.
+    # ONE merge path: rollback-safe + adversarial-reviewed, and NOT
+    # needs-jon-approval. The fast-path arm was retired 2026-11-22 (§11 R5);
+    # see the header. Do not re-add an arm that skips adversarial-reviewed.
     # workflow_run: only a COMPLETED + SUCCESSFUL CI run for a same-repo
     # pull_request. Red CI, push-to-branch CI and fork PRs never start the job
     # (shown as "skipped", not failed). Labels are checked live in `resolve`.
@@ -144,13 +154,8 @@ jobs:
       ) || (
       github.event.action != 'synchronize' &&
       !contains(github.event.pull_request.labels.*.name, 'needs-jon-approval') &&
-      (
-        (
-          contains(github.event.pull_request.labels.*.name, 'rollback-safe') &&
-          contains(github.event.pull_request.labels.*.name, 'adversarial-reviewed')
-        ) ||
-        contains(github.event.pull_request.labels.*.name, 'fast-path')
-      )
+      contains(github.event.pull_request.labels.*.name, 'rollback-safe') &&
+      contains(github.event.pull_request.labels.*.name, 'adversarial-reviewed')
       )
     steps:
       - name: Resolve PR and gate (post-CI path re-checks CI, labels and freshness live)
@@ -225,7 +230,7 @@ jobs:
           # .github/CODEOWNERS. There are now THREE copies of this path set;
           # scripts/check_codeowners_drift.py fails CI if they diverge, so do
           # not hand-sync them and hope.
-          CO_RE='^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$)'
+          CO_RE='^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$|(.*/)?CLAUDE\.md$|(.*/)?\.claude/|(.*/)?SKILL\.md$|scripts/)'
 
           BLOCK_REASON=""
           # Sets BLOCK_REASON and returns 0 when the PR must go to Jon.
@@ -309,12 +314,13 @@ jobs:
           if has needs-jon-approval; then skip "needs-jon-approval is set"; fi
 
           # Stale-approval race. drop-stale-review removes adversarial-reviewed
-          # and fast-path on synchronize, but it is a separate run that could be
-          # delayed past the new commit's CI. So those two labels only count if
-          # they were (last) applied at or after the head commit's own date;
-          # a label older than the commit approved different code. The head-SHA
-          # check above and the sha pinned in the merge call cover the rest.
+          # on synchronize, but it is a separate run that could be delayed past
+          # the new commit's CI. So that label only counts if it was (last)
+          # applied at or after the head commit's own date; a label older than
+          # the commit approved different code. The head-SHA check above and
+          # the sha pinned in the merge call cover the rest.
           # (rollback-safe is not dropped on push, so presence is enough.)
+          # `fast-path` is deliberately NOT accepted here (retired, §11 R5).
           COMMIT_AT=$(gh api "repos/$REPO/commits/$RUN_SHA" --jq .commit.committer.date)
           EVENTS=$(gh api --paginate "repos/$REPO/issues/$PR/events?per_page=100" \
             --jq '.[] | select(.event == "labeled") | "\(.label.name) \(.created_at)"')
@@ -324,10 +330,10 @@ jobs:
             at=$(grep "^$1 " <<<"$EVENTS" | cut -d' ' -f2 | sort | tail -1 || true)
             [ -n "$at" ] && [[ ! "$at" < "$COMMIT_AT" ]]
           }
-          if fresh fast-path || { has rollback-safe && fresh adversarial-reviewed; }; then
+          if has rollback-safe && fresh adversarial-reviewed; then
             echo "PR #$PR: CI green on $RUN_SHA and approval labels are live and fresh."
           else
-            skip "PR #$PR lacks fresh fast-path or rollback-safe+adversarial-reviewed (commit $COMMIT_AT)"
+            skip "PR #$PR lacks rollback-safe + fresh adversarial-reviewed (commit $COMMIT_AT)"
           fi
           emit true "$PR" "$RUN_SHA" "$(jq -r .head.ref <<<"$PR_JSON")"
 
@@ -350,7 +356,11 @@ jobs:
         id: apptoken
         if: steps.resolve.outputs.proceed == 'true'
         continue-on-error: true
-        uses: actions/create-github-app-token@v2
+        # Pinned to a full commit SHA (§11 R5, G0 blocker #2): this step mints
+        # the token that MERGES, so a moved tag would be code execution with
+        # merge rights. Resolved with `git ls-remote` on 2026-11-22; v2 and
+        # v2.2.2 point at the same commit, so this is a no-op for behaviour.
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -459,7 +469,7 @@ jobs:
             printf '%s\n' "$MARKER" > body.md
             printf '%s\n\n' "**auto-merge did not merge this PR.** Branch protection blocked it:" >> body.md
             printf '> %s\n\n' "$REASON" >> body.md
-            printf '%s\n' "This is expected for PRs touching CODEOWNERS paths (billing, .github/workflows/**, AGENTS.md, commercial migrations). The workflow check is green because the workflow behaved correctly — it is the merge that was refused, not the automation that failed." >> body.md
+            printf '%s\n' "This is expected for PRs touching CODEOWNERS paths (billing, .github/workflows/**, AGENTS.md, CLAUDE.md, .claude/**, SKILL.md, scripts/**, commercial migrations). The workflow check is green because the workflow behaved correctly — it is the merge that was refused, not the automation that failed." >> body.md
             printf '\n%s\n' "**Path forward:** run scripts/safe_merge.sh $PR_NUM with CODEOWNER approval, or merge from the GitHub UI." >> body.md
             EXISTING=$(gh api "repos/$REPO/issues/$PR_NUM/comments" --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" 2>/dev/null | head -1)
             if [ -n "$EXISTING" ]; then
@@ -474,20 +484,17 @@ jobs:
           exit 1
 
   drop-stale-review:
-    name: Drop adversarial-reviewed / fast-path label on new commits (stale-approval guard)
+    name: Drop adversarial-reviewed label on new commits (stale-approval guard)
     runs-on: ubuntu-latest
     # Any push to the PR head (including rebases and back-merges) invalidates the
-    # review AND the fast-path classification (a new file outside the allowlist
-    # could have landed). There is no reliable way to prove a push is content-
-    # neutral, so re-review / re-classify on every synchronize is the safe default.
-    # auto-label-fast-path.yml also fires on synchronize, so it will re-apply
-    # fast-path on the next push if the diff still qualifies.
+    # review. There is no reliable way to prove a push is content-neutral, so
+    # re-review on every synchronize is the safe default.
+    # (fast-path was dropped here too until it was retired, §11 R5. A stale
+    # `fast-path` label on an old PR is still removed below for hygiene, but it
+    # no longer grants anything, so it no longer triggers this job.)
     if: >
       github.event.action == 'synchronize' &&
-      (
-        contains(github.event.pull_request.labels.*.name, 'adversarial-reviewed') ||
-        contains(github.event.pull_request.labels.*.name, 'fast-path')
-      )
+      contains(github.event.pull_request.labels.*.name, 'adversarial-reviewed')
     steps:
       - name: Disable any pending auto-merge
         env:
@@ -509,13 +516,16 @@ jobs:
           fi
 
       - name: Remove labels and comment
-        uses: actions/github-script@v7
+        # Pinned to a full commit SHA (§11 R5). v7 and v7.1.0 point at the
+        # same commit (git ls-remote, 2026-11-22), so behaviour is unchanged.
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
-            // Try to remove both labels; fast-path and adversarial-reviewed
-            // are mutually substitutable but either can be the live one.
+            // adversarial-reviewed is the approval being invalidated. fast-path
+            // is retired (§11 R5) and grants nothing; it is removed only so a
+            // legacy label cannot linger and mislead a human reader.
             const toRemove = ['adversarial-reviewed', 'fast-path'];
             const removed = [];
             for (const name of toRemove) {
@@ -533,5 +543,5 @@ jobs:
             const label_phrase = removed.map(n => '`' + n + '`').join(' and ');
             await github.rest.issues.createComment({
               owner, repo, issue_number,
-              body: `Re-review / re-classify required: new commits since approval. Removed ${label_phrase}. auto-label-fast-path.yml will re-apply fast-path on this synchronize if the diff still qualifies.`,
+              body: `Re-review / re-classify required: new commits since approval. Removed ${label_phrase}. A reviewer must re-review the new head and re-apply \`adversarial-reviewed\`.`,
             });

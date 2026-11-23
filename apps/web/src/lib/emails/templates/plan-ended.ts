@@ -74,11 +74,12 @@ export function renderPlanEnded(vars: PlanEndedVars): RenderedEmail {
     typeof vars.free_quota === 'number' && vars.free_quota > 0
       ? `The Free plan covers ${vars.free_quota} tracks a month. Any credits you hold stay on your account.`
       : 'Any credits you hold stay on your account.';
-  // Paid-plan retention (lib/retention.ts): the library gets 30 days' grace from the end
-  // of the plan, then is deleted; new songs on Free are deleted after 24 hours. No "until":
-  // the ended email states no date it cannot vouch for (see the test).
+  // Paid-plan retention (lib/retention.ts): the library's audio gets 30 days' grace from the
+  // end of the plan; new songs on Free lose their audio after 24 hours. Since Phase B B1
+  // (#344) the library row (title, BPM, key) outlives the audio. No "until": the ended email
+  // states no date it cannot vouch for (see the test).
   const libraryLine =
-    'Songs already in your library are kept for 30 more days, then deleted. Songs you start on the Free plan are deleted after 24 hours.';
+    'Songs already in your library keep their audio for 30 more days. Then the audio and everything made from it is deleted, but each song’s title, BPM and key stay. On the Free plan, a new song’s audio is deleted after 24 hours.';
   const paragraphs = onFree ? [lead, detailText(rows), freeLine, libraryLine] : [lead, detailText(rows)];
 
   const cta = { label: 'Go to your account', url: `${base}/account` };

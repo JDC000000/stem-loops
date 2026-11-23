@@ -632,8 +632,8 @@ jobs:
     # ALL packages/web-browser-gate/test/*.test.mjs, which bundle the real Player,
     # History page, ProcessingHeading and globals.css from apps/web, plus its
     # fixtures, and apps/web/tsconfig.json maps @stem-loops/types to
-    # packages/types/src. Hence: apps/web/, packages/, fixtures/contracts/
-    # (harte-labels.json), root package.json / lockfile / workspace / .npmrc, and
+    # packages/types/src. Hence: apps/web/, packages/, fixtures/
+    # (contracts/harte-labels.json), .github/actions/, root package.json / lockfile / workspace / .npmrc, and
     # this workflow file (so edits to this job are self-validated).
     #
     # MERGE ORDER (a transition, not a steady state): this job is RED on any tree
@@ -642,6 +642,8 @@ jobs:
     # for the first time, (4) add the check to the ruleset in that same sitting.
     # Merged before #212 and left non-required it is red on every PR, the
     # permanently-red-smoke pattern; required before #212 it blocks every PR.
+    # (With the path gate above, PRs that touch no gated path report green even
+    # while the base is red: they cannot affect chord rendering.)
     #
     # Chromium: pinned to the Playwright version in pnpm-lock.yaml (1.63.0 ->
     # Chromium build 1243). `playwright install` MUST be the repo's own copy
@@ -661,13 +663,15 @@ jobs:
             echo "Not a pull_request build: always run the full sweep."
             exit 0
           fi
-          if ! changed="$(git diff --name-only HEAD^1 HEAD)" || [ -z "$changed" ]; then
+          # -z + --no-renames: NUL-separated, never quoted (non-ASCII / tab names),
+          # and a rename lists BOTH old and new path (a move out of apps/web counts).
+          if ! git diff -z --no-renames --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed.z" || [ ! -s "$RUNNER_TEMP/changed.z" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "Could not compute a changed-file list: run (fail safe)."
             exit 0
           fi
-          echo "$changed"
-          if echo "$changed" | grep -qE '^(apps/web/|packages/|fixtures/contracts/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.npmrc$|\.nvmrc$|\.github/workflows/ci\.yml$)'; then
+          tr '\0' '\n' < "$RUNNER_TEMP/changed.z"
+          if grep -qzE '^(apps/web/|packages/|fixtures/|\.github/actions/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.npmrc$|\.nvmrc$|\.github/workflows/ci\.yml$)' "$RUNNER_TEMP/changed.z"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"

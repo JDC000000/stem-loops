@@ -569,7 +569,7 @@ test('an untouched job renders no trim note', () => {
 // The retention stub's formatExpiresIn returns 'in 24 hours'; the demo gate is the REAL
 // isDemoRow. A regular job with an expiry shows the countdown (so the negative below is
 // discriminating); a demo job with the SAME expiry shows none, and keeps the plan sentence.
-test('a job with an expiry says "This song is deleted in …"; a demo song (is_demo) does not', () => {
+test('a job with an expiry says "This song’s audio is deleted in …"; a demo song (is_demo) does not', () => {
   // Slice 1a: the line is the player's neutral Song info text (JobView's
   // songInfoLines -> the Player's `songInfo` prop), so it is asserted there.
   const expires_at = '2099-12-31T00:00:00Z';
@@ -578,14 +578,14 @@ test('a job with an expiry says "This song is deleted in …"; a demo song (is_d
     assert.match(html, /data-testid="player"/, 'the job still reaches the done branch');
     return globalThis.__playerProps.songInfo.join('\n');
   };
-  assert.match(info({ ...DONE_JOB, expires_at }), /This song is deleted in 24 hours\./, 'the countdown must render for a regular job');
+  assert.match(info({ ...DONE_JOB, expires_at }), /This song’s audio is deleted in 24 hours\./, 'the countdown must render for a regular job');
   for (const job of [{ ...DONE_JOB, expires_at, is_demo: true }]) {
     const lines = info(job);
-    assert.doesNotMatch(lines, /This song is deleted/, 'a demo song must not read "deleted in ~27,000 days"');
+    assert.doesNotMatch(lines, /This song(’s audio)? is deleted/, 'a demo song must not read "deleted in ~27,000 days"');
     assert.match(lines, /On Free, files are deleted after 24 hours/, 'only the countdown is hidden');
   }
   // is_demo: false (every job the API returns that is not a demo) keeps the countdown.
-  assert.match(info({ ...DONE_JOB, expires_at, is_demo: false }), /This song is deleted in 24 hours\./);
+  assert.match(info({ ...DONE_JOB, expires_at, is_demo: false }), /This song’s audio is deleted in 24 hours\./);
 });
 
 // ── P5.1 (Slice 1b): the song's title names it in the player and while it processes ──

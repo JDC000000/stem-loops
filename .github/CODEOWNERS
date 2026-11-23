@@ -28,9 +28,11 @@
 # See claude/merge-autonomy-recommendations.md §3 and
 # claude/session-7-handover.md §4 for the rationale.
 #
-# THE 8 PATTERNS (keep this list in sync with the entries below AND with the
-# regex in .github/workflows/auto-label-codeowners.yml — a pattern missing
-# from that regex is a GAP; a regex alternation missing from here is a LEAK):
+# THE 14 PATTERNS (keep this list in sync with the entries below AND with the
+# regex in .github/workflows/auto-label-codeowners.yml and auto-merge.yml's
+# CO_RE — a pattern missing from that regex is a GAP; a regex alternation
+# missing from here is a LEAK; scripts/check_codeowners_drift.py fails CI on
+# either):
 #
 #   1  apps/web/src/lib/billing/**
 #   2  apps/worker/src/worker/billing/**
@@ -40,11 +42,17 @@
 #   6  .github/workflows/**
 #   7  .github/CODEOWNERS
 #   8  AGENTS.md
+#   9  CLAUDE.md          (any depth)        — added 2026-11-22, §11 R5
+#  10  **/.claude/**      (any depth)        — added 2026-11-22, §11 R5
+#  11  **/SKILL.md        (any depth)        — added 2026-11-22, §11 R5
+#  12  CLAUDE.local.md    (any depth)        — added 2026-11-22, §11 R5 review
+#  13  .mcp.json          (any depth)        — added 2026-11-22, §11 R5 review
+#  14  scripts/**                            — added 2026-11-22, §11 R5
 #
-# Audited 2026-11-05: the regex covers all 8, so there is no live GAP or LEAK.
-# Both this header and the workflow previously said "6", which is why the
-# count is now enumerated rather than stated — a bare number goes stale
-# silently, a list does not.
+# The count is enumerated rather than stated because a bare number goes stale
+# silently (this header once said "6" when the real count was 8). Agreement
+# with the regex copies is no longer an audit claim here: it is enforced on
+# every PR by scripts/check_codeowners_drift.py, run in the required Lint job.
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -75,9 +83,36 @@ apps/worker/migrations/*_v3_commercial*.sql     @JDC000000
 .github/CODEOWNERS                              @JDC000000
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Prompt-injection surface — the single doc read by every agent session.
-# CLAUDE.md is kept out of CODEOWNERS post-trim because it is a thin pointer
-# to AGENTS.md per repo convention; a drift there is caught by the main
-# session reading AGENTS.md at start.
+# Prompt-injection surface — the files that instruct agents.
+# AGENTS.md is the single doc read by every agent session.
+#
+# 2026-11-22 (AGENTIC-L5-PLAN §11 R5): CLAUDE.md, .claude/** and SKILL.md
+# were previously unowned on the theory that CLAUDE.md is "a thin pointer to
+# AGENTS.md". That theory does not survive contact with the runtime: Claude
+# Code loads CLAUDE.md (at any depth), .claude/settings.json (permission
+# allow/deny), .claude/agents/*.md (subagent tool grants) and SKILL.md files
+# as INSTRUCTIONS, before it reads AGENTS.md. A PR that edits them changes
+# what every later agent session is allowed and told to do — the same class
+# as AGENTS.md. Until this change they were also reachable by the now-retired
+# fast-path arm (`*.md` anywhere), i.e. mergeable with zero review.
+# The `**/` forms are deliberate: nested .claude/ directories and SKILL.md
+# files are loaded too, so root-only would be a GAP.
 # ──────────────────────────────────────────────────────────────────────────────
 AGENTS.md                                       @JDC000000
+CLAUDE.md                                       @JDC000000
+**/.claude/**                                   @JDC000000
+**/SKILL.md                                     @JDC000000
+# Also loaded by Claude Code as instructions/config: personal memory file and
+# MCP server definitions (which servers an agent session connects to).
+CLAUDE.local.md                                 @JDC000000
+.mcp.json                                       @JDC000000
+
+# ──────────────────────────────────────────────────────────────────────────────
+# scripts/** — the merge rail (safe_merge.sh), every CI gate (check_*.py,
+# _gate_exit.py), the staging smoke gate and its sweeper. A weakened gate is
+# invisible by construction (the suite goes green either way), so these are
+# owned as a CLASS, not by filename. Added 2026-11-22, §11 R5; this is also
+# what makes the orchestrator merge gate (R6, scripts/or4-merge.sh) owned
+# once it is committed.
+# ──────────────────────────────────────────────────────────────────────────────
+scripts/**                                      @JDC000000

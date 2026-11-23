@@ -63,17 +63,23 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
-      - name: Fast-path allowlist gate
-        # Runs FIRST, before any linter, because it is a governance check and a
-        # failure here means a PR could skip adversarial review entirely.
+      - name: Merge gate fixtures (one reviewed merge path; agent-instruction files need Jon)
+        # Replaces the fast-path allowlist gate (retired with the fast-path arm,
+        # AGENTIC-L5-PLAN §11 R5). Runs FIRST, before any linter, because it is
+        # a governance check: it EXECUTES auto-merge.yml's job `if` and
+        # `resolve` script and auto-label-codeowners.yml's labeller against a
+        # stub `gh`, and fails if a fast-path-only PR, or any PR touching
+        # CLAUDE.md / .claude/** / SKILL.md / scripts/**, could auto-merge,
+        # or if a merge-path action is not SHA-pinned.
         #
         # `Lint` is in the v3/main ruleset's required_status_checks, so putting
         # this step here is what makes the check BLOCKING. Standing orders: a
         # gate that is not required is advice, not a gate.
         #
-        # Stdlib only -- no pip install needed, so it cannot be skipped by a
-        # dependency failure.
-        run: python3 scripts/check_fast_path_allowlist.py
+        # Stdlib + bash + jq (preinstalled on ubuntu-latest) -- no pip install,
+        # so it cannot be skipped by a dependency failure. Exit 3 (jq/bash
+        # missing) fails the step too: not-checked is never success.
+        run: python3 scripts/check_merge_gate.py
 
       - name: Install Python deps
         # Pinned via the prod constraints so a new ruff/black release can't turn main red.

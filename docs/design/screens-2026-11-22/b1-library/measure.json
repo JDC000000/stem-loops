@@ -1,0 +1,128 @@
+{
+ "390x844-library-live-expired-failed": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "390x844-search-hit": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "390x844-search-none": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "390x844-sort-az": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "390x844-remove-confirm": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "390x844-remake-pending": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "390x844-remake-refused-quota": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "390x844-signed-out": {
+  "hscroll": 0,
+  "small": [],
+  "under44": [
+   {
+    "t": "Sign in →",
+    "h": 24
+   }
+  ]
+ },
+ "390x844-privacy-retention": {
+  "hscroll": 0,
+  "small": [],
+  "under44": [
+   {
+    "t": "account page",
+    "h": 20
+   },
+   {
+    "t": "joncartwright00@gmail.com",
+    "h": 20
+   },
+   {
+    "t": "terms",
+    "h": 20
+   }
+  ]
+ },
+ "360x800-library-live-expired-failed": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "360x800-search-hit": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "360x800-search-none": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "360x800-sort-az": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "360x800-remove-confirm": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "360x800-remake-pending": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "360x800-remake-refused-quota": {
+  "hscroll": 0,
+  "small": [],
+  "under44": []
+ },
+ "360x800-signed-out": {
+  "hscroll": 0,
+  "small": [],
+  "under44": [
+   {
+    "t": "Sign in →",
+    "h": 24
+   }
+  ]
+ },
+ "360x800-privacy-retention": {
+  "hscroll": 0,
+  "small": [],
+  "under44": [
+   {
+    "t": "account page",
+    "h": 20
+   },
+   {
+    "t": "joncartwright00@gmail.com",
+    "h": 20
+   },
+   {
+    "t": "terms",
+    "h": 20
+   }
+  ]
+ }
+}

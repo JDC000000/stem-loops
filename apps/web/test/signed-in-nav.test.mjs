@@ -488,7 +488,7 @@ test('mounted: every item is in the nav from the first paint, and the phone set 
 test('every signed-in layout opts its segment out of static rendering', async () => {
   const layouts = SIGNED_IN_ROUTES.flatMap(layoutChain);
   const unique = [...new Set(layouts)];
-  assert.equal(unique.length, 10, `expected 10 signed-in layouts (Slice 2a added app/demo, Phase B B2 app/sets), got: ${unique.join(', ')}`);
+  assert.equal(unique.length, 11, `expected 11 signed-in layouts (Slice 2a added app/demo, Phase B B2 app/sets, B1 app/jobs/[id]), got: ${unique.join(', ')}`);
 
   const urls = compile(unique, {
     'next/navigation': navigationStub('/account'),

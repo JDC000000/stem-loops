@@ -273,3 +273,13 @@ test('terms: Free\'s 24 hours stays exact, and the paid library is stated with i
   assertSays(assert, page, 'On Pro and Studio, the songs in your account are kept as your library while your subscription is active, and for 30 days after it ends', 'terms');
   assertSays(assert, page, 'A song you start after your plan has ended is deleted after 24 hours.', 'terms');
 });
+
+test('terms (Phase B, PB-1): the song library record and set lists outlive the 24 hours until removed or the account is deleted', async () => {
+  const page = await renderPage(TERMS);
+  assertSays(
+    assert, page,
+    'your song library’s record of each song you started while signed in (its link or file name, title, BPM and key, never its audio) and your set lists, until you remove them or delete your account',
+    'terms',
+  );
+  assertSays(assert, page, 'any chord corrections you saved', 'terms');
+});

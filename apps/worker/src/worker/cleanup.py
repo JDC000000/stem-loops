@@ -443,6 +443,8 @@ async def _anonymise_job(conn, job_id: str) -> None:
     prediction id and job_events (cost trace) — none of it is user content, and the ledger rows
     (credit_consumption, chord_edits) point at the id. The text columns use '' not NULL because
     jobs_input_source_chk requires youtube_url / upload_r2_key to be non-null for their kind.
+
+    Does NOT commit: the caller owns the transaction (see _sweep_expired_jobs).
     """
     await conn.execute("DELETE FROM loops WHERE job_id = %s", (job_id,))
     await conn.execute(
@@ -453,7 +455,69 @@ async def _anonymise_job(conn, job_id: str) -> None:
         "WHERE id = %s",
         (PURGED_MARKER, PURGED_MARKER, job_id),
     )
-    await conn.commit()
+    # NO commit here (Phase B, B1): the sweep runs this inside the job's one transaction,
+    # after ROLLBACK TO SAVEPOINT before_delete, so the library snapshot taken before the
+    # failed DELETE commits together with the shell. The caller commits.
+
+
+# ---------------------------------------------------------------------------------------
+# Song library (Phase B, B1; migration 043). When the sweep removes a signed-in user's song
+# it keeps a METADATA row (link or file name, title, video id, BPM, key; no job_id) so the
+# library still lists it as "Audio expired" with a Re-make. Written in the job's own sweep
+# transaction BEFORE the DELETE (reading the row it is about to delete), so the entry and the
+# delete/anonymise commit or roll back together.
+#
+# Only for a job that is: owned (user_id set), `done`, not a demo, not already an anonymised
+# shell, and whose owner is NOT tombstoned (account deletion in progress: the entry would
+# outlive the account's promise). A link entry is UPSERTed on (user_id, youtube_url), so a
+# re-made song refreshes the one row instead of adding a second.
+# ---------------------------------------------------------------------------------------
+LIBRARY_SNAPSHOT_SQL = (
+    "INSERT INTO library_entries AS e (user_id, input_kind, youtube_url, original_filename, "
+    "  title, video_id, bpm, musical_key, first_created_at, updated_at) "
+    "SELECT jobs.user_id, jobs.input_kind, "
+    "  CASE WHEN jobs.input_kind = 'youtube' THEN jobs.youtube_url END, "
+    "  CASE WHEN jobs.input_kind = 'upload' THEN jobs.original_filename END, "
+    "  jobs.title, jobs.video_id, jobs.bpm, jobs.musical_key, jobs.created_at, now() "
+    "FROM jobs "
+    "WHERE jobs.id = %s "
+    "  AND jobs.user_id IS NOT NULL "
+    "  AND jobs.status = 'done' "
+    "  AND jobs.is_demo = false "
+    "  AND jobs.client_ip_hash <> %s "
+    "  AND EXISTS (SELECT 1 FROM users u WHERE u.id = jobs.user_id AND u.deleted_at IS NULL) "
+    "ON CONFLICT (user_id, youtube_url) WHERE youtube_url IS NOT NULL DO UPDATE SET "
+    "  title = COALESCE(EXCLUDED.title, e.title), "
+    "  video_id = COALESCE(EXCLUDED.video_id, e.video_id), "
+    "  bpm = COALESCE(EXCLUDED.bpm, e.bpm), "
+    "  musical_key = COALESCE(EXCLUDED.musical_key, e.musical_key), "
+    "  first_created_at = LEAST(e.first_created_at, EXCLUDED.first_created_at), "
+    "  updated_at = now()"
+)
+_library_unmigrated_reported = False
+
+
+async def _snapshot_library_entry(conn, job_id: str) -> int:
+    """UPSERT the job's library entry inside the caller's transaction. Returns rows written
+    (0 or 1). Runs in its own SAVEPOINT so a database without migration 043 (42P01,
+    UndefinedTable) is tolerated: the savepoint is rolled back and the job is swept exactly as
+    before. Any other error propagates and the caller rolls the whole job back."""
+    global _library_unmigrated_reported
+    await conn.execute("SAVEPOINT library_snapshot")
+    try:
+        cur = await conn.execute(LIBRARY_SNAPSHOT_SQL, (job_id, PURGED_MARKER))
+    except pg_errors.UndefinedTable:
+        await conn.execute("ROLLBACK TO SAVEPOINT library_snapshot")
+        if not _library_unmigrated_reported:
+            _library_unmigrated_reported = True
+            log_structured(
+                "WARN",
+                "library_entries_unmigrated",
+                action="migration 043 is not applied: swept songs leave no library entry",
+            )
+        return 0
+    await conn.execute("RELEASE SAVEPOINT library_snapshot")
+    return max(0, getattr(cur, "rowcount", 0) or 0)
 
 
 async def _sweep_expired_jobs(conn, deadline: float) -> tuple[int, int, int]:
@@ -476,6 +540,7 @@ async def _sweep_expired_jobs(conn, deadline: float) -> tuple[int, int, int]:
     ).fetchall()
     swept = 0
     anonymised = 0
+    snapshotted = 0
     for (job_id,) in rows:
         if time.monotonic() >= deadline:
             log_structured(
@@ -490,28 +555,38 @@ async def _sweep_expired_jobs(conn, deadline: float) -> tuple[int, int, int]:
         except Exception as e:  # noqa: BLE001 — one bad job must not block the rest
             _record_failure(job_id, "retention_r2_delete_failed", e)
             continue
+        # ONE transaction per job (Phase B, B1): (1) the library snapshot, (2) SAVEPOINT
+        # before_delete + DELETE, (3) on ForeignKeyViolation ROLLBACK TO that savepoint (NOT
+        # conn.rollback(), which would also undo the snapshot) and anonymise in the same
+        # transaction, (4) COMMIT. (5) Any other failure rolls ALL of it back (no entry, row
+        # kept) and the job is retried later with backoff.
+        event = "retention_db_delete_failed"
         try:
-            await conn.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
+            n_snap = await _snapshot_library_entry(conn, job_id)
+            await conn.execute("SAVEPOINT before_delete")
+            try:
+                await conn.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
+                deleted = True
+            except pg_errors.ForeignKeyViolation:
+                # Ledger rows reference this job (append-only by design): keep the shell.
+                await conn.execute("ROLLBACK TO SAVEPOINT before_delete")
+                event = "retention_anonymise_failed"
+                await _anonymise_job(conn, job_id)
+                deleted = False
             await conn.commit()
-            _failed.pop(job_id, None)
-            swept += 1
-            continue
-        except pg_errors.ForeignKeyViolation:
-            # Ledger rows reference this job (append-only by design): keep the shell.
-            await conn.rollback()
         except Exception as e:  # noqa: BLE001 — one bad row must never abort the sweep
             await conn.rollback()
-            _record_failure(job_id, "retention_db_delete_failed", e)
+            _record_failure(job_id, event, e)
             continue
-        try:
-            await _anonymise_job(conn, job_id)
-        except Exception as e:  # noqa: BLE001
-            await conn.rollback()
-            _record_failure(job_id, "retention_anonymise_failed", e)
-            continue
-        _failed.pop(job_id, None)
-        anonymised += 1
-        log_structured("INFO", "retention_job_anonymised", job_id=job_id)
+        snapshotted += n_snap
+        if deleted:
+            _failed.pop(job_id, None)
+            swept += 1
+        else:
+            _failed.pop(job_id, None)
+            anonymised += 1
+            log_structured("INFO", "retention_job_anonymised", job_id=job_id)
+    log_structured("INFO", "library_entry_snapshotted", count=snapshotted)
     stuck = sum(1 for n, _ in _failed.values() if n >= STUCK_AFTER_FAILURES)
     return swept, stuck, anonymised
 

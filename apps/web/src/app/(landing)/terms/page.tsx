@@ -126,7 +126,9 @@ export default function TermsPage() {
               deleted the same way. A song you start after your plan has ended is deleted after 24 hours.
             </p>
             <p>
-              Some things outlive that: your account, until you delete it; a stripped-down shell of any job that charged a
+              Some things outlive that: your account, until you delete it; your song library’s record of each song you
+              started while signed in (its link or file name, title, BPM and key, never its audio) and your set lists,
+              until you remove them or delete your account; a stripped-down shell of any job that charged a
               credit, so purchases stay accounted for; any chord corrections you saved, which are kept until you delete your
               account; and counters and diagnostics that hold no audio, file names or links. The{' '}
               <a href="/privacy">privacy notice</a> sets out exactly what each of those keeps. Every other job is deleted

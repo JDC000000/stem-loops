@@ -43,8 +43,10 @@ export default function PrivacyPage() {
               {/* Source of truth: 24 hours = RETENTION_HOURS, 30 days = PAID_RETENTION_GRACE_DAYS, 7 days =
                   the past_due interval in JOB_RETAINED_UNTIL_SQL (lib/retention.ts; migration 007). Pinned by
                   test/chords-switch-surfaces.test.mjs. */}
+              {/* Phase B, B1 (PB-1): the library entry (migration 043) outlives the audio. */}
               On the Free plan we delete your audio, stems, loops
-              and job records after 24 hours. On Pro and Studio they stay in your library while you are subscribed, and for
+              and job records after 24 hours; for a song you started while signed in, your song library keeps its link
+              or file name, title, BPM and key until you remove it or delete your account. On Pro and Studio they stay in your library while you are subscribed, and for
               30 days after your plan ends. Account details stay until you delete the account.
             </p>
 
@@ -87,6 +89,16 @@ export default function PrivacyPage() {
               renewal payment is retried), and for 30 days after it ends. Then they are deleted the same way. A song you
               start after your plan has ended is deleted after 24 hours.
             </p>
+            {/* Phase B (PB-1): library_entries (migration 043, written by the retention sweep) and
+                set lists (migration 044). Both are deleted with the account (FK cascade, and a
+                trigger on the account's deletion). */}
+            <p data-testid="privacy-library-retention">
+              Your song library outlives that. For a song you started while signed in, we keep its link (or file name),
+              title, video id, BPM and key, and when you first added it, after its audio is deleted, so it stays in your library marked “Audio expired”
+              and you can make it again. Nothing made from the audio is kept. That record stays until you remove the song
+              from your library or delete your account. Set lists you make (their names and the songs in them) are kept
+              until you delete them or your account.
+            </p>
             <p>
               Account details are not on that clock, because an account has to outlive a job to be useful. They stay until you
               delete the account, which you can do yourself from your <a href="/account">account page</a> at any time, or by
@@ -113,7 +125,7 @@ export default function PrivacyPage() {
                 recorded against a one-way hash of the video id, never the address you pasted.
               </li>
             </ul>
-            <p>Deleting your account removes your account details and your chord corrections.</p>
+            <p>Deleting your account removes your account details and your chord corrections. It also removes your song library and your set lists.</p>
 
             <h2>Who else handles it</h2>
             <p>These are everyone who touches your audio or your account, and what each one does:</p>

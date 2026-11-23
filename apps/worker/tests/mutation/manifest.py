@@ -319,16 +319,16 @@ MUTANTS: tuple[Mutant, ...] = (
     Mutant(
         "failed_pop_removed_on_delete",
         CL,
-        "            await conn.commit()\n            _failed.pop(job_id, None)\n            swept += 1",
-        "            await conn.commit()\n            swept += 1",
+        "            _failed.pop(job_id, None)\n            swept += 1",
+        "            swept += 1",
         (T_BACKOFF,),
         "Round 3 body: `_failed.pop` removal on the DELETE path.",
     ),
     Mutant(
         "failed_pop_removed_on_anonymise",
         CL,
-        "        _failed.pop(job_id, None)\n        anonymised += 1",
-        "        anonymised += 1",
+        "            _failed.pop(job_id, None)\n            anonymised += 1",
+        "            anonymised += 1",
         (T_ANON_FORGET,),
         "Round 4, 3a: `_failed.pop` removal on the ANONYMISE path (the "
         "round 3 body listed only one of the two sites).",

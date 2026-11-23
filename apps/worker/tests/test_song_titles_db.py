@@ -70,6 +70,7 @@ def test_an_anonymised_shell_is_never_given_a_title_back(conn):
         aconn = await psycopg.AsyncConnection.connect(DB)  # type: ignore[arg-type]
         try:
             await cleanup._anonymise_job(aconn, jid)
+            await aconn.commit()  # _anonymise_job leaves the commit to its caller (B1)
         finally:
             await aconn.close()
 

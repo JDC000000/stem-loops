@@ -459,8 +459,9 @@ export default function LoopsView({
 
       <footer className="lp-foot">
         <p className="lp-muted">
-          On Free, songs, stems and loops are deleted 24 hours after a song is split, so download what you want to
-          keep. On Pro and Studio they stay in your library while you are subscribed, and for 30 days after.
+          On Free, a song’s audio, stems and loops are deleted 24 hours after it is split, so download what you want
+          to keep; its title, BPM and key stay in your song library. On Pro and Studio the audio stays while you are
+          subscribed, and for 30 days after.
           Splitting a song does not change who owns it; see the{' '}
           <a href="/terms" className="lp-link">
             terms

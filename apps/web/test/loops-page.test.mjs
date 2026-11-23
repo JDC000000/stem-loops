@@ -422,8 +422,10 @@ test('copy: the page states Free\'s exact 24 hours and the paid library, per pla
     assert.match(note, /On Free that is 24 hours after you split it\./);
     assert.match(note, /On Pro and Studio it is as long as the song is in your library\./);
     const foot = dom.find('.lp-foot').textContent.replace(/\s+/g, ' ');
-    assert.match(foot, /On Free, songs, stems and loops are deleted 24 hours after a song is split/);
-    assert.match(foot, /On Pro and Studio they stay in your library while you are subscribed, and for 30 days after\./);
+    // Phase B, B1 (PB-1): the audio goes at 24 h; the song's title, BPM and key stay in the library.
+    assert.match(foot, /On Free, a song’s audio, stems and loops are deleted 24 hours after it is split/);
+    assert.match(foot, /its title, BPM and key stay in your song library\./);
+    assert.match(foot, /On Pro and Studio the audio stays while you are subscribed, and for 30 days after\./);
   });
 });
 

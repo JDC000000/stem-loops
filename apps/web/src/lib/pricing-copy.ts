@@ -38,7 +38,7 @@ export type PlanCopyInput = {
  *  (jobs.expires_at, migration 007); Pro and Studio is JOB_RETAINED_UNTIL_SQL in
  *  lib/retention.ts and RETAINED_UNTIL_SQL in the worker's cleanup.py. */
 export const RETENTION_BULLET: Readonly<Record<string, string>> = {
-  free: 'Songs deleted after 24 hours',
+  free: 'Audio deleted after 24 hours; title, BPM and key stay in your library',
   pro: 'Song library: kept while you subscribe, plus 30 days',
   studio: 'Song library: kept while you subscribe, plus 30 days',
 };

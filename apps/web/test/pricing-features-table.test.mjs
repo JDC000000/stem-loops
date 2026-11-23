@@ -269,7 +269,7 @@ const EXPECTED = {
     'Link import: YouTube',
     'Loop download — 24-bit WAV',
     // Jon, 2026-11-15: Free keeps its exact 24-hour promise.
-    'Songs deleted after 24 hours',
+    'Audio deleted after 24 hours; title, BPM and key stay in your library',
   ],
   pro: [
     // Jon, 2026-11-16 (migration 039): paid plans paste YouTube links too.

@@ -59,7 +59,7 @@ from .errors import (
     UploadInvalidError,
 )
 from .extractor import loop_extractor
-from .extractor.beat_grid import estimate_beat_grid
+from .extractor.beat_grid import detect_music_start, estimate_beat_grid
 from .extractor.loop_extractor import NoReliableBeatError, extract_loops
 from .fetch_alerts import report_proxy_failure
 from .job_failure import OUR_FAULT_CODES, JobNoLongerActive, fail_job
@@ -544,14 +544,17 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     ref_stem = next((s for s in ("drums", "bass", "other") if s in sp), next(iter(sp)))
     sp = {ref_stem: sp[ref_stem], **{k: v for k, v in sp.items() if k != ref_stem}}
     y_ref, _ = librosa.load(sp[ref_stem], sr=sr, mono=True)
-    # One beat grid (fitted tempo + first-beat anchor) drives the reported BPM, the loop
-    # length and where loops start, so all three agree.
-    grid = estimate_beat_grid(y_ref, sr)
+    # The song as heard (all stems summed): the key source, and where the music starts.
+    mix = _key_audio(stem_paths, sr)
+    # One beat grid (fitted tempo, bar 1 on the first musical downbeat, per-beat times
+    # when the tempo drifts — QA-15) drives the reported BPM, the loop length and where
+    # loops start, so all three agree. `music_start` lets a drumless intro keep its bars.
+    grid = estimate_beat_grid(y_ref, sr, music_start=detect_music_start(mix, sr))
     # The KEY must come from the song, not the beat reference. The reference is the drums
     # stem whenever drums exist, and a drum stem carries no tonal centre: chroma over it is
     # cymbal/kick noise plus bleed. Prod wrote three wrong keys this way (2026-11-18).
     # BPM is unaffected because, with `grid` passed, detect_bpm_and_key takes it from there.
-    tags = detect_bpm_and_key(_key_audio(stem_paths, sr), sr, grid=grid)
+    tags = detect_bpm_and_key(mix, sr, grid=grid)
     try:
         loops = list(extract_loops(sp, tags["bpm"], sr=sr, loop_length_bars=bars, grid=grid))
     except NoReliableBeatError as exc:

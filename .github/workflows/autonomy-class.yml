@@ -1,16 +1,26 @@
-# autonomy-class — deny-first path/content class for the bot merge path
-# (AGENTIC-L5-PLAN v1.2.1 §2 R1; review carry-forwards C1-C3).
+# autonomy-class — CONTENT-ONLY class for the bot merge path
+# (AGENTIC-L5-PLAN v1.2.1 §2 R1, rebuilt per Jon's decision, LEDGER-18
+# row 143: regex denylists over JS lost two review rounds).
 #
 # Posts ONE check-run named `autonomy-class` on the PR head commit:
-#   conclusion success, title `auto`   — every changed file is in Jon's allow
-#                                        list, none in his deny list, and no
-#                                        whole-file content / import rule fired
+#   conclusion success, title `auto`   — every changed file is a modified,
+#                                        allowed, non-denied text file, and a
+#                                        PARSER proved base and head differ
+#                                        only in literal text (TS/TSX string
+#                                        literals / JSX text in content
+#                                        positions; CSS declaration values)
 #   conclusion neutral, title `human`  — anything else, INCLUDING any error in
 #                                        this workflow (fail closed)
 #
 # `auto` is an input to the bot path, never a merge by itself. This workflow
 # does not label, comment, approve or merge, and auto-merge.yml does not read
 # it yet (wiring it in is a separate Jon-owned change; see the PR body).
+#
+# The parser is the `typescript` package at the version pnpm-lock.yaml on
+# v3/main pins. Its tarball is downloaded from the npm registry, checked
+# against the lockfile's sha512 BEFORE it is unpacked, and unpacked without
+# running any install script. The PR's bytes are only PARSED by it
+# (ts.createSourceFile) — never type-checked, transpiled, resolved or run.
 #
 # ── WHY pull_request_target, AND WHY IT IS SAFE HERE ─────────────────────────
 # pull_request_target runs THIS FILE as it exists on the BASE branch, with a
@@ -21,16 +31,18 @@
 # code with that token. This workflow NEVER does: it checks out v3/main only
 # (persist-credentials: false), and reads the PR's file list (from
 # compare/<base_sha>...<head_sha>, pinned to SHAs), patches, git modes and
-# blob bytes through the REST API as DATA. Nothing from
+# the HEAD and BASE blob bytes of each changed file through the REST API as
+# DATA. Nothing from
 # the PR is executed, imported, installed or interpolated into a script; PR
 # fields reach the shell only through env vars.
 #
 # ── PERMISSIONS ─────────────────────────────────────────────────────────────
-# checks: write (post the check-run), contents: read (git tree + blobs),
+# checks: write (post the check-run), contents: read (git trees + blobs),
 # pull-requests: read (PR + file list). Nothing else.
 #
 # Every `uses:` is pinned to a full 40-hex commit SHA (§11 R5 rule for merge-
-# path workflows). There is exactly one: actions/checkout.
+# path workflows). There is exactly one: actions/checkout. The parser
+# download is pinned by content hash (the lockfile's sha512), not by tag.
 
 name: autonomy-class
 
@@ -79,11 +91,24 @@ jobs:
             --repo "$REPO" --pr "$PR_NUM" --head-sha "$HEAD_SHA" \
             --out "$RUNNER_TEMP/bundle.json"
 
+      - name: Fetch the lockfile-pinned TypeScript parser (hash-checked)
+        run: |
+          set -euo pipefail
+          ver=$(python3 -I -c 'import sys; sys.path.insert(0, "scripts"); import autonomy_class as a; print(a.TS_VERSION)')
+          case "$ver" in *[!0-9.]*|"") echo "bad parser version"; exit 2 ;; esac
+          curl -fsSL --retry 3 --max-time 120 -o "$RUNNER_TEMP/typescript.tgz" \
+            "https://registry.npmjs.org/typescript/-/typescript-$ver.tgz"
+          python3 scripts/autonomy_class.py install-parser \
+            --lockfile pnpm-lock.yaml --tarball "$RUNNER_TEMP/typescript.tgz" \
+            --dest "$RUNNER_TEMP/ts"
+          node --version
+
       - name: Classify with the base branch's lists
         id: classify
         run: |
           set -euo pipefail
           python3 scripts/autonomy_class.py classify \
+            --typescript "$RUNNER_TEMP/ts/package" \
             --lists .github/autonomy \
             --bundle "$RUNNER_TEMP/bundle.json" \
             --out "$RUNNER_TEMP/verdict.json" \

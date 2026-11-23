@@ -3,11 +3,17 @@
 
 WHAT IT DECIDES
 ---------------
-`auto` means: every changed file is in Jon's allow list, none is in his deny
-list, no whole-file content pattern fires, no import reaches a denied module,
-and the diff is small, textual and fully readable. Everything else is
-`human`. The class is an INPUT to the bot merge path (rollback-safe +
-adversarial-reviewed + a non-author VERDICT: PASS), never a merge by itself.
+CONTENT-ONLY (Jon, LEDGER-18 row 143). `auto` means: every changed file is a
+MODIFIED, allowed, non-denied regular text file, and a PARSER proves that its
+base and head versions differ only in literal text — string literals, template
+text and JSX text (TS/TSX, parsed by the lockfile-pinned `typescript`
+package, see scripts/autonomy_class_ast.cjs) or declaration values (CSS,
+strict tokenizer). Everything else is `human`; simplicity beats coverage.
+Two review rounds showed that regex denylists over JS lose (computed member
+access, runtime-built URLs, one-hop imports), so the deciding rule is now R8;
+R0-R7 stay as extra fail-closed layers. The class is an INPUT to the bot merge
+path (rollback-safe + adversarial-reviewed + a non-author VERDICT: PASS),
+never a merge by itself.
 
 Rules, in the order they are reported (all reasons are collected; any one
 makes the PR `human`):
@@ -21,31 +27,31 @@ makes the PR `human`):
                        ASCII from a small safe alphabet, or has empty, `.` or
                        `..` segments, a leading `/`, a backslash, or is over
                        MAX_PATH_LEN.  (Unicode lookalikes, `../` tricks.)
-  R2  status           only `added`, `modified`, `renamed` can be `auto`.
-                       `removed`, `copied`, `changed` (mode change) and
-                       anything unknown are `human`.
+  R2  status           only `modified` can be `auto`. Added, renamed,
+                       removed, copied, `changed` (mode) and unknown: `human`.
   R3  deny path        new OR previous path matches deny.txt (case-
-                       insensitive).  (Rename out of a denied path.)
+                       insensitive).
   R4  not allowed      new or previous path matches no allow.txt line
-                       (case-sensitive).  (Rename into an allowed path from
-                       outside it; case variants.)
+                       (case-sensitive).
   R5  file object      head object is not a regular file (symlink,
                        submodule), has no textual patch (binary / too large),
                        is over MAX_FILE_BYTES, is not strict UTF-8, or holds a
                        NUL, a control character or a bidi override.
-  R6  content          a deny.txt regex matches the WHOLE head file — not just
-                       the changed lines (C2). `content:` lines apply to every
-                       file (secrets); `code:` lines only to code files
-                       (money, network, execution). Code is scanned raw,
-                       comment-stripped and NFKC-normalised.
-  R7  import           every import / export-from / side-effect import / CSS
-                       @import is canonicalised (no `.`/`..`/empty segments,
-                       `?`, `#`, `%`, backslash) and resolved against the
-                       head tree in TypeScript order. It is `auto` only if
-                       the target is listed in imports-allow.txt or is
-                       itself an allowed, non-denied path; a bare package
-                       only if listed. deny.txt `import:` wins (C1; review
-                       R1 #1-#3).
+  R6  content          a deny.txt regex matches the WHOLE head file
+                       (defence in depth; secrets, money, network).
+  R7  import           every import in the head file resolves to an
+                       imports-allow.txt entry or an allowed path (defence in
+                       depth; R8 already forbids any import change).
+  R8  content-only     base object missing / not a regular file / unreadable;
+                       TS/TSX: parse error, or the normalised token streams
+                       (comments included) differ, or a changed literal is
+                       not in a content position (JSX text, a text attribute
+                       such as alt/title/className, a JSX child, a prose
+                       constant) or is/becomes empty, URL/path-like, markup
+                       or an entity; CSS: any backslash, any change to
+                       selectors / properties / at-rules / comments, or a
+                       changed value with url()/image()/@/`//`; any other
+                       file type except .md design notes.
 
 Lists (allow.txt, deny.txt, imports-allow.txt) are read from the directory
 given by --lists; in CI that is a checkout of v3/main
@@ -55,14 +61,19 @@ USAGE
 -----
   autonomy_class.py collect --repo O/R --pr N --head-sha SHA --out bundle.json
       Network step: reads the PR, its file list (+ patches) from the
-      SHA-pinned compare endpoint, the head tree (modes, paths) and every
-      changed file's blob through `gh api` (REST only). Never runs PR code.
+      SHA-pinned compare endpoint, the head and base trees (modes, paths) and
+      every changed file's head AND base blob through `gh api` (REST only).
+      Never runs PR code.
       Any read error is recorded in the bundle as `collect_error`, which
       classifies as `human` (fail closed).
   autonomy_class.py classify --lists DIR --bundle bundle.json [--out v.json]
-      Pure function of (lists, bundle). Prints the verdict JSON.
+                             [--typescript DIR]
+      Pure function of (lists, bundle, parser). Prints the verdict JSON.
+  autonomy_class.py install-parser --lockfile pnpm-lock.yaml --tarball T --dest D
+      Checks a downloaded typescript tarball against the sha512 that the
+      lockfile pins for TS_VERSION and unpacks it (no install scripts run).
 
-Stdlib only. Exit codes (house convention, scripts/_gate_exit.py):
+Stdlib + node (for the TS parser only). Exit codes (house convention, scripts/_gate_exit.py):
   0 a verdict was computed (auto OR human — read the verdict, not the code)
   2 attempted and failed (bad list file, unreadable bundle, crash)
 """
@@ -84,7 +95,10 @@ MAX_CHANGED_LINES = 1500
 MAX_FILE_BYTES = 100_000
 MAX_PATH_LEN = 300
 
-AUTO_STATUSES = {"added", "modified", "renamed"}
+# Content-only (R8) needs a base AND a head version of the same path, so only
+# `modified` can be `auto`. Added, renamed, removed, copied, mode-changed and
+# unknown statuses are all `human`.
+AUTO_STATUSES = {"modified"}
 # Git tree modes. Only a plain non-executable blob can be `auto`.
 MODE_TYPES = {
     "100644": "file",
@@ -451,8 +465,413 @@ def import_hits(L: Lists, file_path: str, text: str, tree) -> list:
     return reasons
 
 
+# -- R8 content-only ----------------------------------------------------------
+# A changed file is `auto` only if a PARSER proves that base and head differ in
+# literal text alone: parse both, replace string literals / template text /
+# JSX text (TS, TSX) or declaration values (CSS) with a placeholder, and
+# require the two results to be IDENTICAL, token for token, comments included.
+# No identifier, import, attribute, call, member, key, selector or property
+# can be added, removed or changed. Each changed literal must then sit in a
+# content position and look like content (not a URL, path, markup, or empty).
+# Anything the parser cannot prove is `human`. (Jon, LEDGER-18 row 143.)
+TS_VERSION = "5.9.3"  # the version pnpm-lock.yaml pins; checked at load time
+AST_HELPER = posixpath.join(
+    posixpath.dirname(posixpath.abspath(__file__)), "autonomy_class_ast.cjs"
+)
+TS_EXTS = (".ts", ".tsx")
+TEXT_EXTS = (".md",)  # inert design notes: any text change is content
+# JSX attributes whose string value is shown to a person and nothing else.
+CONTENT_ATTRS = {
+    "alt",
+    "title",
+    "placeholder",
+    "className",
+    "label",
+    "aria-label",
+    "aria-description",
+    "aria-placeholder",
+    "aria-roledescription",
+    "aria-valuetext",
+}
+# Property / variable names whose value is never treated as prose.
+SENSITIVE_KEYS = {
+    "href",
+    "src",
+    "srcset",
+    "srcSet",
+    "action",
+    "formAction",
+    "url",
+    "uri",
+    "endpoint",
+    "path",
+    "pathname",
+    "method",
+    "poster",
+    "data",
+    "ping",
+    "__html",
+    "dangerouslySetInnerHTML",
+    "as",
+    "rel",
+    "target",
+    "type",
+    "integrity",
+    "crossOrigin",
+    "nonce",
+    "key",
+    "id",
+    "name",
+    "redirect",
+    "redirectTo",
+    "callbackUrl",
+    "next",
+    "to",
+    "host",
+    "origin",
+    "domain",
+}
+URLISH = [
+    re.compile(r"://"),
+    re.compile(r"^\s*(?:/|\./|\.\./|~/)"),
+    re.compile(r"^\s*[A-Za-z][A-Za-z0-9+.-]*:\S"),  # scheme:...
+    re.compile(r"(?i)(?:javascript|vbscript|data|blob|file|mailto|tel)\s*:"),
+    re.compile(r"(?i)url\s*\(|@import|/api\b|www\."),
+    re.compile(r"(?i)\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?:[/:?#]|\b)"),
+]
+MARKUP = re.compile(r"[<>\\\\]|&(?:#|[A-Za-z]+;)")
+CSS_VALUE_DANGER = re.compile(
+    r"(?i)url\s*\(|image(?:-set)?\s*\(|expression\s*\(|@|//|javascript|<|>"
+)
+
+
+class ContentError(Exception):
+    pass
+
+
+def _decode(f: dict, key: str):
+    raw = f.get(key)
+    if raw is None:
+        return None, "not read"
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except Exception:  # noqa: BLE001 - any decode failure is human
+        return None, "not valid base64"
+    text, why = text_problem(data)
+    return text, why
+
+
+def base_problems(f: dict) -> list:
+    """R8 needs the base version of the same path, as a regular text file."""
+    if f.get("status") != "modified":
+        return []  # already human on R2
+    out = []
+    if f.get("base_type") != "file":
+        out.append(f"R8 base object is {f.get('base_type')!r}, not a regular file")
+    _, why = _decode(f, "base_content_b64")
+    if why:
+        out.append(f"R8 base content {why}")
+    return out
+
+
+def literal_problem(old: str, new: str, ctx: str, dynamic: bool) -> str | None:
+    """Is this changed literal (old -> new) content? None = yes."""
+    if ctx.startswith("no:"):
+        return f"changed literal in a non-content position ({ctx[3:]})"
+    if ctx.startswith("attr:") and ctx[5:] not in CONTENT_ATTRS:
+        return f"changed value of JSX attribute {ctx[5:]!r} (not a text attribute)"
+    if ctx.startswith("value:"):
+        if dynamic:
+            return "changed string constant in a file with computed member access"
+        if ctx[6:] in SENSITIVE_KEYS:
+            return f"changed value of {ctx[6:]!r}"
+        if not re.search(r"\s", new.strip()):
+            return "changed string constant is not prose (no space)"
+        # A constant can flow anywhere (a src, a fetch). Prose needs none of
+        # the characters that make a relative URL, a query or a selector.
+        if re.search(r"[/?#%=@:&\[\]{}()$]", old + new):
+            return "changed string constant holds URL/selector punctuation"
+    if ctx != "text" and (not old.strip() or not new.strip()):
+        return "changed literal is or becomes empty"
+    for v in (old, new):
+        if any(rx.search(v) for rx in URLISH):
+            return f"changed literal is or becomes URL/path-like: {v[:60]!r}"
+        if MARKUP.search(v):
+            return f"changed literal holds markup, an entity or a backslash: {v[:60]!r}"
+    return None
+
+
+def css_shape(text: str):
+    """Strict CSS tokenizer -> (shape, values). Raises ContentError.
+
+    Shape keeps comments, selectors/at-rule preludes, statements, property
+    names and braces; values are the declaration values. No backslash
+    anywhere (escapes are how `\\2f\\2f host` hides)."""
+    if "\\" in text:
+        raise ContentError("backslash escape in CSS")
+    shape: list = []
+    values: list = []
+    buf: list = []
+    depth = 0
+    paren = 0
+    i, n = 0, len(text)
+
+    def flush(end: str):
+        seg = " ".join("".join(buf).split())
+        buf.clear()
+        if end == "{":
+            shape.append(("P", seg))
+            return
+        if not seg:
+            return
+        colon = _top_level_colon(seg)
+        if depth > 0 and not seg.startswith("@") and colon > 0:
+            shape.append(("D", seg[:colon].strip()))
+            values.append(seg[colon + 1 :].strip())
+        else:
+            shape.append(("S", seg))
+
+    while i < n:
+        c = text[i]
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            if j < 0:
+                raise ContentError("unterminated CSS comment")
+            shape.append(("C", "".join(text[i + 2 : j].split())))
+            buf.append(" ")
+            i = j + 2
+        elif c in "'\"":
+            j = text.find(c, i + 1)
+            nl = text.find("\n", i + 1)
+            if j < 0 or (0 <= nl < j):
+                raise ContentError("unterminated CSS string")
+            buf.append(text[i : j + 1])
+            i = j + 1
+        elif c == "(":
+            paren += 1
+            buf.append(c)
+            i += 1
+        elif c == ")":
+            paren -= 1
+            if paren < 0:
+                raise ContentError("unbalanced ) in CSS")
+            buf.append(c)
+            i += 1
+        elif paren == 0 and c == "{":
+            flush("{")
+            shape.append(("{",))
+            depth += 1
+            i += 1
+        elif paren == 0 and c == "}":
+            flush("}")
+            depth -= 1
+            if depth < 0:
+                raise ContentError("unbalanced } in CSS")
+            shape.append(("}",))
+            i += 1
+        elif paren == 0 and c == ";":
+            flush(";")
+            shape.append((";",))
+            i += 1
+        else:
+            buf.append(c)
+            i += 1
+    flush(";")
+    if depth or paren:
+        raise ContentError("unbalanced braces or parentheses in CSS")
+    return shape, values
+
+
+def _top_level_colon(seg: str) -> int:
+    q = None
+    par = 0
+    for k, ch in enumerate(seg):
+        if q:
+            if ch == q:
+                q = None
+        elif ch in "'\"":
+            q = ch
+        elif ch == "(":
+            par += 1
+        elif ch == ")":
+            par -= 1
+        elif ch == ":" and par == 0:
+            return k
+    return -1
+
+
+def css_problems(base: str, head: str) -> list:
+    try:
+        bs, bv = css_shape(base)
+        hs, hv = css_shape(head)
+    except ContentError as e:
+        return [str(e)]
+    if bs != hs:
+        return ["CSS structure changed (selector, property, at-rule or comment)"]
+    out = []
+    for old, new in zip(bv, hv):
+        if old != new and (
+            CSS_VALUE_DANGER.search(old) or CSS_VALUE_DANGER.search(new)
+        ):
+            out.append(f"changed CSS value is or becomes a url/@/markup: {new[:60]!r}")
+    return out
+
+
+def find_typescript(ts_dir: str | None = None) -> str | None:
+    """Path to typescript/lib/typescript.js at exactly TS_VERSION, or None.
+
+    Order: explicit ts_dir, $AUTONOMY_TS_DIR, then the repo's node_modules
+    (after `pnpm install --frozen-lockfile`)."""
+    import os
+
+    root = posixpath.dirname(posixpath.dirname(posixpath.abspath(__file__)))
+    cands = [ts_dir, os.environ.get("AUTONOMY_TS_DIR")] + [
+        posixpath.join(root, d, "node_modules", "typescript")
+        for d in ("", "apps/web", "packages/types")
+    ]
+    for d in cands:
+        if not d:
+            continue
+        try:
+            with open(posixpath.join(d, "package.json"), encoding="utf-8") as f:
+                if json.load(f).get("version") != TS_VERSION:
+                    continue
+        except (OSError, ValueError):
+            continue
+        js = posixpath.join(d, "lib", "typescript.js")
+        if posixpath.isfile(js):
+            return js
+    return None
+
+
+def run_ast_helper(ts_js: str, jobs: list) -> dict:
+    payload = json.dumps({"typescript": ts_js, "files": jobs})
+    r = subprocess.run(
+        ["node", AST_HELPER],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if r.returncode != 0:
+        raise ContentError(f"parser exited {r.returncode}")
+    return json.loads(r.stdout)
+
+
+def ts_problems(base: dict, head: dict) -> list:
+    for side, r in (("base", base), ("head", head)):
+        if r is None or r.get("error"):
+            return [f"{side}: {(r or {}).get('error') or 'no parser result'}"]
+    if base["shape"] != head["shape"]:
+        return [
+            (
+                "code structure changed (identifier, import, attribute, call,"
+                " member, key, operator, number or comment differs)"
+            )
+        ]
+    out = []
+    dynamic = bool(base.get("dynamic") or head.get("dynamic"))
+    for b, h in zip(base["lits"], head["lits"]):
+        if b["v"] == h["v"]:
+            continue
+        if b["ctx"] != h["ctx"]:
+            out.append("literal context changed")
+            continue
+        why = literal_problem(b["v"], h["v"], h["ctx"], dynamic)
+        if why:
+            out.append(why)
+    return out
+
+
+def content_only_problems(files: list, reasons_by_index: dict, ts_dir=None) -> dict:
+    """{file index: [why, ...]} for every file R8 cannot prove content-only.
+
+    Runs on every `modified` file, even one already human on R0-R7, so each
+    verdict reports R8 independently. A file whose base or head bytes are
+    unreadable is already human (R5 / R8 base) and is not parsed. Every file
+    must pass here to be `auto`."""
+    out: dict = {}
+    jobs: list = []
+    pending: dict = {}
+    for i, f in enumerate(files):
+        if f.get("status") != "modified":
+            if not reasons_by_index.get(i):
+                out[i] = ["not a modified file"]  # unreachable: R2 fires first
+            continue
+        name = f.get("filename") if isinstance(f.get("filename"), str) else ""
+        base, why_b = _decode(f, "base_content_b64")
+        head, why_h = _decode(f, "content_b64")
+        if why_b or why_h or base is None or head is None:
+            if not reasons_by_index.get(i):
+                out[i] = ["base or head content unreadable"]
+            continue
+        if name.endswith(TEXT_EXTS):
+            continue
+        if name.endswith(".css"):
+            why = css_problems(base, head)
+            if why:
+                out[i] = why
+            continue
+        if name.endswith(TS_EXTS):
+            jobs += [
+                {"id": f"{i}b", "name": name, "text": base},
+                {"id": f"{i}h", "name": name, "text": head},
+            ]
+            pending[i] = True
+            continue
+        out[i] = ["no content-only parser for this file type"]
+    if pending:
+        ts_js = find_typescript(ts_dir)
+        if ts_js is None:
+            for i in pending:
+                out[i] = [f"TypeScript {TS_VERSION} parser not available"]
+            return out
+        try:
+            res = run_ast_helper(ts_js, jobs)
+        except Exception as e:  # noqa: BLE001 - parser trouble is human
+            for i in pending:
+                out[i] = [f"parser failed: {type(e).__name__}"]
+            return out
+        for i in pending:
+            why = ts_problems(res.get(f"{i}b"), res.get(f"{i}h"))
+            if why:
+                out[i] = why
+    return out
+
+
+def lockfile_integrity(lock_text: str, version: str = TS_VERSION) -> str:
+    """The sha512 integrity pnpm-lock.yaml pins for typescript@version."""
+    m = re.search(
+        r"^  typescript@" + re.escape(version) + r":\n\s+resolution: \{integrity: "
+        r"(sha512-[A-Za-z0-9+/=]+)\}",
+        lock_text,
+        re.MULTILINE,
+    )
+    if not m:
+        raise ContentError(f"typescript@{version} not pinned in pnpm-lock.yaml")
+    return m.group(1)
+
+
+def install_parser(lockfile: str, tarball: str, dest: str) -> str:
+    """Verify a downloaded typescript tarball against the lockfile's sha512
+    and unpack it. Returns the package dir (dest/package)."""
+    import hashlib
+    import tarfile
+
+    with open(lockfile, encoding="utf-8") as f:
+        want = lockfile_integrity(f.read())
+    with open(tarball, "rb") as f:
+        got = "sha512-" + base64.b64encode(hashlib.sha512(f.read()).digest()).decode()
+    if got != want:
+        raise ContentError("typescript tarball does not match pnpm-lock.yaml")
+    with tarfile.open(tarball, "r:gz") as t:
+        t.extractall(dest, filter="data")
+    return posixpath.join(dest, "package")
+
+
 # -- classifier ---------------------------------------------------------------
-def classify(L: Lists, bundle: dict) -> dict:
+def classify(L: Lists, bundle: dict, ts_dir: str | None = None) -> dict:
     pr_reasons: list = []
     files_out: list = []
 
@@ -530,9 +949,15 @@ def classify(L: Lists, bundle: dict) -> dict:
                         if isinstance(name, str) and name.endswith(CODE_EXTS):
                             for r in import_hits(L, name, text, tree):
                                 reasons.append(f"R7 {r}")
+            reasons += base_problems(f)
         files_out.append(
             {"filename": name, "previous_filename": prev, "reasons": reasons}
         )
+
+    # R8 content-only: one parser pass over every file that is still clean.
+    reasons_by_index = {i: x["reasons"] for i, x in enumerate(files_out)}
+    for i, why in content_only_problems(files, reasons_by_index, ts_dir).items():
+        reasons_by_index[i].extend(f"R8 {w}" for w in why)
 
     human = bool(pr_reasons) or any(x["reasons"] for x in files_out)
     return {
@@ -611,19 +1036,40 @@ def collect(repo: str, pr_num: int, head_sha: str) -> dict:
             e["path"]: e for e in tree.get("tree", []) if e.get("type") == "blob"
         }
         bundle["tree"] = sorted(by_path)
+        # R8 compares each modified file with the SAME path at base_sha (the
+        # v3/main tip this PR would merge into), read the same way.
+        btree = json.loads(_gh([f"repos/{repo}/git/trees/{base_sha}?recursive=1"]))
+        if btree.get("truncated"):
+            raise RuntimeError("base git tree listing truncated")
+        base_by_path = {
+            e["path"]: e for e in btree.get("tree", []) if e.get("type") == "blob"
+        }
+
+        def blob_b64(e: dict, what: str) -> str:
+            blob = json.loads(_gh([f"repos/{repo}/git/blobs/{e['sha']}"]))
+            if blob.get("encoding") != "base64":
+                raise RuntimeError(f"unexpected blob encoding for {what}")
+            return "".join(blob.get("content", "").split())
+
         for f in bundle["files"]:
             if f["status"] == "removed" or path_problem(f["filename"]):
                 continue
             e = by_path.get(f["filename"])
             if e is None:
                 f["type"] = "missing"
+            else:
+                f["type"] = MODE_TYPES.get(e.get("mode"), f"mode {e.get('mode')}")
+                if f["type"] == "file":
+                    f["content_b64"] = blob_b64(e, f["filename"])
+            if f["status"] != "modified":
+                continue  # human on R2; no base read needed
+            be = base_by_path.get(f["filename"])
+            if be is None:
+                f["base_type"] = "missing"
                 continue
-            f["type"] = MODE_TYPES.get(e.get("mode"), f"mode {e.get('mode')}")
-            if f["type"] == "file":
-                blob = json.loads(_gh([f"repos/{repo}/git/blobs/{e['sha']}"]))
-                if blob.get("encoding") != "base64":
-                    raise RuntimeError(f"unexpected blob encoding for {f['filename']}")
-                f["content_b64"] = "".join(blob.get("content", "").split())
+            f["base_type"] = MODE_TYPES.get(be.get("mode"), f"mode {be.get('mode')}")
+            if f["base_type"] == "file":
+                f["base_content_b64"] = blob_b64(be, "base " + f["filename"])
         again = json.loads(_gh([f"repos/{repo}/pulls/{pr_num}"]))
         if again["head"]["sha"] != head_sha or again["base"]["sha"] != base_sha:
             raise RuntimeError(
@@ -663,8 +1109,19 @@ def main(argv=None) -> int:
     k.add_argument("--bundle", required=True)
     k.add_argument("--out")
     k.add_argument("--summary-out")
+    k.add_argument(
+        "--typescript",
+        help=f"dir of the typescript@{TS_VERSION} package (else $AUTONOMY_TS_DIR)",
+    )
+    ip = sub.add_parser("install-parser")
+    ip.add_argument("--lockfile", required=True)
+    ip.add_argument("--tarball", required=True)
+    ip.add_argument("--dest", required=True)
     a = ap.parse_args(argv)
     try:
+        if a.cmd == "install-parser":
+            print(install_parser(a.lockfile, a.tarball, a.dest))
+            return 0
         if a.cmd == "collect":
             b = collect(a.repo, a.pr, a.head_sha)
             with open(a.out, "w", encoding="utf-8") as f:
@@ -673,7 +1130,7 @@ def main(argv=None) -> int:
         L = load_lists(a.lists)
         with open(a.bundle, encoding="utf-8") as f:
             bundle = json.load(f)
-        v = classify(L, bundle)
+        v = classify(L, bundle, a.typescript)
         s = json.dumps(v, indent=2)
         print(s)
         if a.out:

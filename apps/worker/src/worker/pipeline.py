@@ -576,6 +576,20 @@ def extract_and_tag(job_id, stem_paths, requested_stems, bars, sr=44100):
     return loops, tags, seg_label, seg_energy
 
 
+def _loop_duration_ms(loop: dict, nominal_sec: float, nominal_ms: int) -> int:
+    """The loop's real length in ms: ``end_sec - start_sec``, what the cut WAV will hold.
+
+    On a steady grid every loop is exactly ``bars`` nominal bars, and the value stays the
+    historical ``int(bars * bar * 1000)`` byte for byte (float subtraction must not turn
+    8000 into 7999). On a beat-following grid (QA-15, tempo drift) loops span their bars
+    at the local tempo, so the nominal value would disagree with the audio.
+    """
+    dur = float(loop["end_sec"]) - float(loop["start_sec"])
+    if abs(dur - nominal_sec) < 1e-6:
+        return nominal_ms
+    return int(round(dur * 1000))
+
+
 def record_loops(job_id, loops, tags, seg_label, seg_energy, bars, title=None) -> int:
     """Describe every loop in the DB WITHOUT cutting a single byte. Returns count.
 
@@ -601,7 +615,7 @@ def record_loops(job_id, loops, tags, seg_label, seg_energy, bars, title=None) -
         # divides by bpm, so nothing past here may run for it.
         return 0
     bar = 4 * 60.0 / tags["bpm"]
-    duration_ms = int(bars * bar * 1000)
+    nominal_ms = int(bars * bar * 1000)
     # Loops inherit the job-level BPM/key (computed once: BPM from the reference stem,
     # key from all stems summed).
     # Re-detecting per loop is both slow and musically wrong — an isolated drum
@@ -638,7 +652,7 @@ def record_loops(job_id, loops, tags, seg_label, seg_energy, bars, title=None) -
                 key,
                 r2_key,
                 fname,
-                duration_ms,
+                _loop_duration_ms(loop, bars * bar, nominal_ms),
                 None,  # waveform_peaks — produced by the cut, not by the description
             )
         )

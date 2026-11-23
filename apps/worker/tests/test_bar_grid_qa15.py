@@ -229,3 +229,97 @@ def test_steady_tempo_output_is_unchanged(tmp_path, key):
     for lp in loops:
         assert lp["end_sec"] - lp["start_sec"] == pytest.approx(true_len)
         assert lp["audio"].shape[-1] == round(true_len * SR)
+
+
+def test_first_beat_at_t0_is_bar_one():
+    # The onset envelope has no flux at t=0, so a downbeat there is judged by the beats
+    # after it (ONSET_EDGE_S). Without that allowance bar 1 moves a beat later.
+    grid = estimate_beat_grid(_render(_steady(120.0, 0.0, 40.0), 40.0), SR)
+    assert abs(grid.anchor) < 0.015
+
+
+def test_detect_music_start_finds_a_quiet_but_audible_intro():
+    # Intro at -20 dB under the loud part: still music, so the start is the intro's.
+    n = np.arange(SR * 20) / SR
+    y = 0.03 * np.sin(2 * np.pi * 220 * n)
+    y[int(6 * SR) :] *= 10.0
+    y[: int(1.2 * SR)] = 0.0
+    assert detect_music_start(y.astype(np.float32), SR) == pytest.approx(1.2, abs=0.03)
+
+
+# ---------------------------------------------------------------------------
+# Pipeline wiring: music_start comes from the MIX, so a drumless intro keeps its bars.
+# ---------------------------------------------------------------------------
+
+
+def _drumless_intro_stems(tmp_path):
+    """drums enter at 8.0 s (bar 5 @ 120 BPM); a quiet in-tempo bass line from 0.0 s."""
+    dur, bpm = 40.0, 120.0
+    drums = _render(_steady(bpm, 8.0, dur), dur)
+    n = np.arange(int(dur * SR)) / SR
+    beat = 60.0 / bpm
+    # Soft sustained notes, one per bar, ~-20 dB under the drums: audible, not beat-like
+    # in the drum stem (the drum stem is the beat reference).
+    bass = 0.06 * np.sin(2 * np.pi * (55.0 + 5.0 * (np.floor(n / (4 * beat)) % 2)) * n)
+    paths = {}
+    for name, y in (("drums", drums), ("bass", bass.astype(np.float32))):
+        paths[name] = os.path.join(tmp_path, f"{name}.wav")
+        sf.write(paths[name], y, SR)
+    return paths
+
+
+def test_pipeline_drumless_intro_gets_bars_from_the_mix_start(tmp_path, monkeypatch):
+    from worker import pipeline
+
+    monkeypatch.setattr(pipeline, "_update_job_tags", lambda *_a, **_k: None)
+    paths = _drumless_intro_stems(tmp_path)
+    loops, tags, _, _ = pipeline.extract_and_tag("job-qa15", paths, ["drums", "bass"], 1)
+    assert tags["bpm"] == 120.0
+    starts = sorted({lp["start_sec"] for lp in loops})
+    # The drum stem alone starts at 8.0 s; the song starts at 0.0 s. Loops cover the
+    # intro, on the drums' bar phase (2 s bars), numbered from the song's bar 1.
+    assert starts[0] < 0.03, f"first loop at {starts[0]:.3f}s: intro lost its bars"
+    for s in starts:
+        assert abs(s / 2.0 - round(s / 2.0)) * 2.0 < 0.03
+    first = min(loops, key=lambda lp: lp["start_sec"])
+    assert first["start_bar"] == 0
+
+
+# ---------------------------------------------------------------------------
+# loops.duration_ms = the loop's real length (beat-following loops vary).
+# ---------------------------------------------------------------------------
+
+
+def _recorded_durations(monkeypatch, loops, bpm, bars):
+    from worker import pipeline
+
+    rows: list[tuple] = []
+    monkeypatch.setattr(pipeline, "_insert_loop", rows.append)
+    tags = {"bpm": bpm, "musical_key": "C major"}
+    pipeline.record_loops("job-qa15", loops, tags, {}, {}, bars)
+    return [r[13] for r in rows]
+
+
+@pytest.mark.parametrize("bpm,bars", [(120.0, 4), (120.0, 1), (102.0, 4), (97.0, 2)])
+def test_duration_ms_unchanged_on_steady_loops(monkeypatch, bpm, bars):
+    nominal = bars * 4 * 60.0 / bpm
+    # Start times whose float subtraction is not exact (e.g. 8.0 -> 7.999999999999998).
+    loops = [
+        {"stem": "drums", "start_sec": s, "end_sec": s + nominal, "start_bar": i}
+        for i, s in enumerate((0.118649, 11.883538, 23.648039, 33.059879, 0.1 + 0.2))
+    ]
+    got = _recorded_durations(monkeypatch, loops, bpm, bars)
+    assert got == [int(bars * 4 * 60.0 / bpm * 1000)] * len(loops)
+
+
+def test_duration_ms_follows_the_real_loop_length_on_a_drifting_grid(tmp_path, monkeypatch):
+    beats = _ramp(118.0, 124.0, 1.0, 90.0)
+    path = os.path.join(tmp_path, "drums.wav")
+    sf.write(path, _render(beats, 90.0), SR)
+    y, _ = sf.read(path)
+    grid = estimate_beat_grid(y.astype(np.float32), SR)
+    loops = list(extract_loops({"drums": path}, grid.bpm, loop_length_bars=4, grid=grid))
+    got = _recorded_durations(monkeypatch, loops, grid.bpm, 4)
+    want = [round((lp["end_sec"] - lp["start_sec"]) * 1000) for lp in loops]
+    assert got == want
+    assert max(want) - min(want) > 150  # 118 -> 124 BPM: 4-bar loops differ by ~0.4 s

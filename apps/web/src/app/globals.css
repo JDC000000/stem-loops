@@ -27,6 +27,12 @@ body {
   overflow-x: hidden;
 }
 
+/* viewport-fit=cover (#360): scrolling pages keep clear of the notch / Dynamic Island, the
+   landscape side cutouts and the home indicator. 0px (no change) wherever there is no inset. */
+body {
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
+
 /* Links are white and underlined, never lime: lime is the primary action, the wordmark dash
    and the focus ring only (brand book §7.10, M19). */
 a {
@@ -68,6 +74,7 @@ textarea {
     bottom: 0;
     z-index: 10;
     padding-top: 12px;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
     background: linear-gradient(to top, var(--bg-page) 70%, transparent);
   }
 }

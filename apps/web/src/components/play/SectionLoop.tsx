@@ -242,7 +242,7 @@ export function SectionLoop({ names, times, tones, current = -1, state, onTap, o
                 }}
               >
                 <span className={styles.label}>
-                  {name}
+                  <span className={styles.name}>{name}</span>
                   {time ? (
                     <span className={styles.time}>
                       <span className={styles.sep}>{' · '}</span>

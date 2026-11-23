@@ -47,6 +47,8 @@ import { MixSheet } from './MixSheet';
 import { PartPills } from './PartPills';
 import { Presets } from './Presets';
 import { SectionLoop } from './SectionLoop';
+import { RenameParts } from './RenameParts';
+import { applyPartNames, collectPartNames, readPartNames, writePartNames, type PartNameMap } from '@/lib/play/part-names';
 import { Sheet } from './Sheet';
 import { Transport } from './Transport';
 import styles from './Player.module.css';
@@ -175,7 +177,11 @@ export function PlayerScreen(props: ScreenProps) {
   const sections = useMemo(() => sanitizeRegions(rawSections, snapshot.durationSec || undefined), [rawSections, snapshot.durationSec]);
   // D2: neutral names ("Part 3") + the start time + a cycling colour per section.
   const named = useMemo(() => nameRegions(sections), [sections]);
-  const names = useMemo(() => named.map((n) => n.name), [named]);
+  const defaultNames = useMemo(() => named.map((n) => n.name), [named]);
+  // Phase C C3: custom part names, this device only (lib/play/part-names).
+  const [customNames, setCustomNames] = useState<PartNameMap>({});
+  useEffect(() => setCustomNames(readPartNames(jobId)), [jobId]);
+  const names = useMemo(() => applyPartNames(defaultNames, sections, customNames), [defaultNames, sections, customNames]);
   const times = useMemo(() => named.map((n) => n.time), [named]);
   const tones = useMemo(() => named.map((n) => n.tone), [named]);
   // The run starts from whatever the engine is looping (a gate or a remount may
@@ -291,6 +297,7 @@ export function PlayerScreen(props: ScreenProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [chartOpen, setChartOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -547,6 +554,19 @@ export function PlayerScreen(props: ScreenProps) {
               >
                 Song info
               </button>
+              {playable && sections.length > 0 ? (
+                <button
+                  type="button"
+                  className={styles.menuItem}
+                  data-testid="menu-rename-parts"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setRenameOpen(true);
+                  }}
+                >
+                  Rename parts
+                </button>
+              ) : null}
               <SetListMenuItems
                 jobId={jobId}
                 itemClassName={styles.menuItem}
@@ -753,6 +773,21 @@ export function PlayerScreen(props: ScreenProps) {
           {setToast}
         </p>
       ) : null}
+
+      <RenameParts
+        open={renameOpen}
+        onClose={() => setRenameOpen(false)}
+        returnFocus={() => menuButton.current}
+        defaults={defaultNames}
+        current={names}
+        times={times}
+        onSave={(drafts) => {
+          const next = collectPartNames(drafts, sections, defaultNames);
+          writePartNames(jobId, next);
+          setCustomNames(next);
+          setRenameOpen(false);
+        }}
+      />
 
       <Sheet open={infoOpen} onClose={() => setInfoOpen(false)} labelledBy="info-title" returnFocus={() => menuButton.current} testId="info-sheet">
         <div className={styles.sheetHead}>

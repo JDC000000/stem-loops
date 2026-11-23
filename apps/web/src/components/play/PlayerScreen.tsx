@@ -21,6 +21,7 @@ import { ChordOverlay, type NowNext } from '@/components/ChordOverlay';
 import { type ChordMode, DEFAULT_CHORD_MODE, readChordMode, writeChordMode } from '@/lib/play/chord-mode';
 import {
   COUNT_IN_NEEDS_BPM,
+  type ClickSink,
   type CountIn,
   cancelOnOtherInput,
   countInBpm,
@@ -161,6 +162,9 @@ export function PlayerScreen(props: ScreenProps) {
     lightAudio = false,
     onPlay,
     onPause,
+    onPrime,
+    onUnprime,
+    getEngineLatencySec,
     onSeek,
     onGain,
     onMute,
@@ -248,8 +252,29 @@ export function PlayerScreen(props: ScreenProps) {
   const countInReady = countInOn && bpmNum !== null;
   const [countBeat, setCountBeat] = useState<number | null>(null);
   const countRef = useRef<CountIn | null>(null);
+  // ONE click AudioContext per player: the sink owns it, opens it on the first
+  // click (inside the tap) and closes it here on unmount.
+  const sinkRef = useRef<ClickSink | null>(null);
   useEffect(() => {
-    const c = createCountIn({ bpm: bpmNum, onBeat: setCountBeat, clicks: createClickSink() });
+    const sink = createClickSink();
+    sinkRef.current = sink;
+    return () => {
+      sink.close?.();
+      sinkRef.current = null;
+    };
+  }, []);
+  const unprimeRef = useRef(onUnprime);
+  unprimeRef.current = onUnprime;
+  const engineLatRef = useRef(getEngineLatencySec);
+  engineLatRef.current = getEngineLatencySec;
+  useEffect(() => {
+    const c = createCountIn({
+      bpm: bpmNum,
+      onBeat: setCountBeat,
+      clicks: sinkRef.current ?? undefined,
+      timing: () => ({ clickLatencySec: sinkRef.current?.latencySec?.() ?? 0, engineLatencySec: engineLatRef.current?.() ?? 0 }),
+      onCancel: () => unprimeRef.current?.(),
+    });
     countRef.current = c;
     return () => {
       c.cancel();
@@ -276,8 +301,14 @@ export function PlayerScreen(props: ScreenProps) {
       return;
     }
     if (playingNow) onPause();
-    before?.();
+    // Synchronous, inside the tap: the click context (opened and resumed by the
+    // first scheduled click) and the player's priming (audio session, element,
+    // engine context). Only the transport start waits for the count. start()
+    // first: it cancels a count already running, and that cancel must not undo
+    // the priming below.
     c.start(go);
+    onPrime?.();
+    before?.();
   };
   // While the numbers are up, any other tap or key press cancels the count.
   const counting = countBeat !== null;
@@ -321,8 +352,10 @@ export function PlayerScreen(props: ScreenProps) {
     stripUsed();
     const { state, extended } = holdChip(shown, i);
     const region = state.on ? runRegion(sections, state.run) : null;
-    // Count-in first (it pauses a playing song), then the loop is installed.
-    const countLoop = countInReady && !!region;
+    // A loop START only: a hold that extends or shrinks a loop that is already
+    // playing keeps the music going, exactly as before. The count pauses a playing
+    // song BEFORE the loop is installed (no blip of the new loop).
+    const countLoop = countInReady && !!region && !(playingNow && shown.on);
     if (countLoop && playingNow) onPause();
     if (state.run !== shown.run || state.on !== shown.on) applyRun(state);
     if (extended && !hintSeen) {

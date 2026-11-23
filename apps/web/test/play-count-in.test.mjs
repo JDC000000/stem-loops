@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   COUNT_IN_BEATS, COUNT_IN_KEY, COUNT_IN_NEEDS_BPM, CANCEL_SWALLOW_MS, beatSec, clickOffsets, countInBpm, countInSec,
-  createCountIn, cancelOnOtherInput, readCountIn, writeCountIn,
+  createCountIn, cancelOnOtherInput, readCountIn, writeCountIn, createClickSink, timingOffsets, CLICK_LEAD_SEC, ENGINE_LEAD_SEC,
 } from '../src/lib/play/count-in.ts';
 import { buildModuleGraph } from './helpers/module-graph.mjs';
 import { withDom } from './helpers/dom.mjs';
@@ -162,6 +162,77 @@ test('cancelOnOtherInput: a pointerdown or key press anywhere cancels; key repea
   off2();
 });
 
+// ═══ clocks (F4) ═════════════════════════════════════════════════════════════
+
+test('timing: numbers land with their clicks, and play() is called early by (engine lead + route latency) minus (click lead + click latency)', () => {
+  assert.deepEqual(timingOffsets(null), { ui: 0, downbeat: 0 });
+  const t = timingOffsets({ clickLatencySec: 0.02, engineLatencySec: 0.2 });
+  assert.ok(Math.abs(t.ui - (CLICK_LEAD_SEC + 0.02)) < 1e-9);
+  assert.ok(Math.abs(t.downbeat - (CLICK_LEAD_SEC + 0.02 - ENGINE_LEAD_SEC - 0.2)) < 1e-9);
+  assert.ok(t.downbeat < 0, 'a slow route (phone) is called early');
+  assert.deepEqual(timingOffsets({ clickLatencySec: NaN, engineLatencySec: -3 }), { ui: CLICK_LEAD_SEC, downbeat: CLICK_LEAD_SEC - ENGINE_LEAD_SEC }, 'garbage latency = 0');
+  assert.equal(timingOffsets({ clickLatencySec: 0, engineLatencySec: 99 }).downbeat, CLICK_LEAD_SEC - ENGINE_LEAD_SEC - 0.5, 'capped at 0.5 s');
+});
+
+test('timing in the controller: at 120 BPM with 0.2 s route latency play() is called 2000 - 220 ms after the start', () => {
+  const clock = fakeClock();
+  const beats = [];
+  let thens = 0;
+  const c = createCountIn({ bpm: 120, timers: clock, onBeat: (b) => beats.push(b), timing: () => ({ clickLatencySec: 0, engineLatencySec: 0.2 }) });
+  c.start(() => { thens += 1; });
+  const want = 2000 + (CLICK_LEAD_SEC - ENGINE_LEAD_SEC - 0.2) * 1000;
+  clock.tick(want - 1); assert.equal(thens, 0);
+  clock.tick(1); assert.equal(thens, 1);
+  const n = timingOffsets({ clickLatencySec: 0, engineLatencySec: 0.2 }).ui * 1000;
+  assert.deepEqual(beats.slice(0, 2), [4, 3], 'the "3" is shifted by the click lead');
+  assert.ok(n > 0);
+});
+
+// ═══ one click context (F2) ══════════════════════════════════════════════════
+
+function fakeAudio() {
+  const made = [];
+  class Ctx {
+    constructor() { this.state = 'suspended'; this.currentTime = 0; this.destination = {}; this.closed = false; this.resumed = 0; made.push(this); }
+    resume() { this.resumed += 1; this.state = 'running'; return Promise.resolve(); }
+    close() { this.closed = true; this.state = 'closed'; return Promise.resolve(); }
+    createOscillator() { return { frequency: {}, connect() {}, start() {}, stop() {} }; }
+    createGain() { return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }; }
+  }
+  return { made, Ctx };
+}
+
+test('click sink: ONE AudioContext, opened and resumed synchronously by the first click, reused, closed on close()', () => {
+  const real = globalThis.AudioContext;
+  const { made, Ctx } = fakeAudio();
+  globalThis.AudioContext = Ctx;
+  try {
+    const sink = createClickSink();
+    assert.equal(made.length, 0, 'lazy: nothing until a count');
+    sink.schedule(0, true);
+    assert.equal(made.length, 1);
+    assert.equal(made[0].resumed, 1, 'resume() is called in the same synchronous turn as the first click');
+    for (let i = 0; i < 3; i += 1) for (const o of [0, 0.5, 1, 1.5]) sink.schedule(o, o === 0);
+    assert.equal(made.length, 1, 'many counts, one context');
+    sink.close();
+    assert.equal(made[0].closed, true, 'closed on unmount');
+    assert.equal(sink.latencySec(), 0);
+    sink.schedule(0, true);
+    assert.equal(made.filter((c) => !c.closed).length, 1, 'never more than one alive');
+  } finally {
+    if (real) globalThis.AudioContext = real; else delete globalThis.AudioContext;
+  }
+});
+
+test('cancel() reports onCancel for an active count only (not on completion)', () => {
+  const clock = fakeClock();
+  let cancels = 0;
+  const c = createCountIn({ bpm: 120, timers: clock, onBeat() {}, onCancel: () => { cancels += 1; } });
+  c.cancel(); assert.equal(cancels, 0, 'nothing running');
+  c.start(() => {}); c.cancel(true); assert.equal(cancels, 1);
+  c.start(() => {}); clock.tick(2100); assert.equal(cancels, 1, 'a finished count is not a cancel');
+});
+
 // ═══ no BPM ══════════════════════════════════════════════════════════════════
 
 test('no usable BPM: no count at all (then() runs immediately) and the BPM gate says so', () => {
@@ -230,15 +301,21 @@ const snap = (over = {}) => ({
 const BPM = 300; // the fastest accepted tempo: a whole count is 800 ms of real time
 const WAIT = 900;
 
+const meta = (log) => {
+  if (!log.meta) Object.defineProperty(log, 'meta', { value: { extra: [], order: [] }, enumerable: false });
+  return log.meta;
+};
 /** Records every engine call, in order. Playing/paused follows pause()/play(). */
-function Rig({ log, bpm = BPM, status0 = 'ready' }) {
-  const [loop, setLoop] = React.useState(null);
+function Rig({ log, bpm = BPM, status0 = 'ready', loop0 = null }) {
+  const [loop, setLoop] = React.useState(loop0);
   const [status, setStatus] = React.useState(status0);
   return React.createElement(Player.PlayerView, {
     jobId: 'job-1', phase: { kind: 'ready' }, snapshot: snap({ loop, status }), sections: SECTIONS,
-    onPlay: () => { log.push('play'); setStatus('playing'); },
+    onPlay: () => { log.push('play'); meta(log).order.push('play'); setStatus('playing'); },
     onPause: () => { log.push('pause'); setStatus('ready'); },
-    onSeek: (t) => log.push(`seek ${t}`),
+    onPrime: () => { meta(log).extra.push('prime'); meta(log).order.push('prime'); },
+    onUnprime: () => { meta(log).extra.push('unprime'); meta(log).order.push('unprime'); },
+    onSeek: (t) => { log.push(`seek ${t}`); meta(log).order.push(`seek ${t}`); },
     onGain() {}, onMute() {}, onSolo() {},
     onLoop: (r) => { log.push(`loop ${r ? `${r.startSec}-${r.endSec}` : 'off'}`); setLoop(r); },
     title: 'Lucky Ticket', bpm, musicalKey: 'A major',
@@ -477,4 +554,150 @@ test('brand: the count-in numbers are neutral (never amber or lime); no animatio
   assert.doesNotMatch(block, /accent|chord-now|#f59e0b|#a3e635/i);
   assert.doesNotMatch(block, /animation|transition|@keyframes/, 'reduced motion: numbers only, nothing moves');
   assert.match(css, /\.menuItem\s*\{[^}]*min-height:\s*var\(--touch-min, 44px\)/);
+});
+
+// ═══ review R1 round 2 ═══════════════════════════════════════════════════════
+
+test('F1: everything that needs the tap happens SYNCHRONOUSLY in the handler; only the transport start waits', async () => {
+  await withDom(async (dom) => {
+    setMedia(); fresh();
+    const log = [];
+    await dom.mount(React.createElement(Rig, { log }));
+    await turnOn(dom);
+    // chip tap
+    meta(log).order = [];
+    chip(dom, 2).dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+    assert.deepEqual(meta(log).order, ['prime', 'seek 47'], 'prime ran in the very same turn as the tap; play did not');
+    await dom.advance(WAIT);
+    assert.deepEqual(meta(log).order, ['prime', 'seek 47', 'play'], 'only play() waited for the count');
+    // Play from pause
+    await dom.act(() => dom.find('[data-testid="transport-play"]').click()); // playing -> pause
+    meta(log).order = [];
+    dom.find('[data-testid="transport-play"]').click();
+    assert.deepEqual(meta(log).order, ['prime'], 'Play: primed synchronously, not played');
+    await dom.advance(WAIT);
+    assert.deepEqual(meta(log).order, ['prime', 'play']);
+  });
+});
+
+test('F1: a cancelled count un-primes (the silent element is stopped); a finished one does not', async () => {
+  await withDom(async (dom) => {
+    setMedia(); fresh();
+    const log = [];
+    await dom.mount(React.createElement(Rig, { log }));
+    await turnOn(dom);
+    await tap(dom, chip(dom, 1));
+    await dom.pointer('pointerdown', dom.find('[data-testid="player-title"]'), { pointerType: 'touch', clientX: 1, clientY: 1 });
+    assert.deepEqual(meta(log).extra, ['prime', 'unprime']);
+    meta(log).extra.length = 0;
+    await tap(dom, chip(dom, 1));
+    await dom.advance(WAIT);
+    assert.deepEqual(meta(log).extra, ['prime'], 'completed: nothing to undo');
+    // replacing a running count must not un-prime AFTER the new prime
+    meta(log).extra.length = 0;
+    await dom.pointer('pointerdown', chip(dom, 3), { pointerType: 'touch', clientX: 1, clientY: 1 });
+    await dom.pointer('pointerup', chip(dom, 3), { pointerType: 'touch', clientX: 1, clientY: 1 });
+    await tap(dom, chip(dom, 3));
+    assert.equal(meta(log).extra.at(-1), 'prime', 'the last word is the new prime');
+  });
+});
+
+test('F1 (source): Player.onPrime does the gesture work in order — audio session, element, engine resume — before any await, and play() waits', () => {
+  const src = read('src/components/play/Player.tsx');
+  const body = src.slice(src.indexOf('const onPrime = useCallback'), src.indexOf('const onUnprime'));
+  const at = (t) => body.indexOf(t);
+  assert.ok(at('setPlaybackAudioSession') >= 0 && at('setPlaybackAudioSession') < at('outputRef.current?.play()'));
+  assert.ok(at('outputRef.current?.play()') < at('engine.play()') && at('engine.play()') < at('engine.pause()'));
+  assert.ok(at('engine.pause()') < body.lastIndexOf('outputRef.current?.play()'), 'the element is started again after the engine pause stops it');
+  assert.doesNotMatch(body, /await|setTimeout|then\(/, 'nothing deferred');
+});
+
+test('F3: a hold that EXTENDS a loop that is already playing does exactly what it did before: no pause, no seek, no count', async () => {
+  await withDom(async (dom) => {
+    setMedia(); fresh();
+    const log = [];
+    await dom.mount(React.createElement(Rig, { log, status0: 'playing', loop0: { startSec: 47, endSec: 66 } }));
+    await turnOn(dom);
+    await dom.keydown('Enter', { target: chip(dom, 3), shiftKey: true }); // hold Part 4: extend the run
+    assert.ok(log.includes('loop 47-104'), `extended: ${log}`);
+    assert.ok(!log.includes('pause') && !log.some((l) => l.startsWith('seek')) && !log.includes('play'), `untouched music: ${log}`);
+    assert.equal(countNum(dom), null);
+    assert.deepEqual(meta(log).extra, [], 'not primed either');
+  });
+});
+
+test('F3: a hold that STARTS a loop while playing still counts in (pause, loop, seek to its start, then play)', async () => {
+  await withDom(async (dom) => {
+    setMedia(); fresh();
+    const log = [];
+    await dom.mount(React.createElement(Rig, { log, status0: 'playing' }));
+    await turnOn(dom);
+    await dom.keydown('Enter', { target: chip(dom, 2), shiftKey: true });
+    assert.equal(log[0], 'pause', 'paused BEFORE the loop is installed');
+    assert.ok(log.includes('loop 47-66') && log.includes('seek 47'));
+    assert.equal(countNum(dom), '4');
+    await dom.advance(WAIT);
+    assert.equal(log.at(-1), 'play');
+  });
+});
+
+test('M7: unmounting mid-count cancels it: play never runs, the numbers are gone, the silent element is stopped', async () => {
+  await withDom(async (dom) => {
+    setMedia(); fresh();
+    const log = [];
+    const host = await dom.mount(React.createElement(Rig, { log }));
+    await turnOn(dom);
+    await tap(dom, chip(dom, 2));
+    assert.equal(countNum(dom), '4');
+    await dom.unmountAll();
+    await dom.advance(WAIT);
+    assert.ok(!log.includes('play'), `no play after unmount: ${log}`);
+    assert.ok(meta(log).extra.includes('unprime'));
+    void host;
+  });
+});
+
+test('M13: switching Count-in OFF in the menu cancels a running count', async () => {
+  await withDom(async (dom) => {
+    setMedia(); fresh();
+    const log = [];
+    await dom.mount(React.createElement(Rig, { log }));
+    await turnOn(dom);
+    await tap(dom, chip(dom, 2));
+    assert.equal(countNum(dom), '4');
+    // .click() dispatches no pointerdown: only the toggle itself can cancel
+    await dom.act(() => dom.find('button[aria-controls="player-menu"]').click());
+    await dom.act(() => dom.find('[data-testid="count-in-toggle"]').click());
+    assert.equal(countNum(dom), null);
+    await dom.advance(WAIT);
+    assert.ok(!log.includes('play'));
+    assert.equal(globalThis.localStorage.getItem(COUNT_IN_KEY), null);
+  });
+});
+
+test('F2 (screen): two counts reuse ONE click AudioContext, and unmounting the player closes it', async () => {
+  const real = globalThis.AudioContext;
+  const { made, Ctx } = fakeAudio();
+  try {
+    await withDom(async (dom) => {
+      setMedia(); fresh();
+      globalThis.AudioContext = Ctx;
+      const log = [];
+      await dom.mount(React.createElement(Rig, { log }));
+      await turnOn(dom);
+      await tap(dom, chip(dom, 1));
+      assert.equal(made.length, 1);
+      assert.equal(made[0].resumed >= 1, true, 'resumed inside the tap');
+      await dom.advance(WAIT);
+      await tap(dom, chip(dom, 2));
+      await dom.advance(WAIT);
+      assert.equal(made.length, 1, 'the second count reused it');
+      assert.equal(made[0].closed, false);
+      await dom.unmountAll();
+      assert.equal(made[0].closed, true, 'closed on unmount');
+      delete globalThis.AudioContext; // before withDom's pollution check
+    });
+  } finally {
+    if (real) globalThis.AudioContext = real; else delete globalThis.AudioContext;
+  }
 });

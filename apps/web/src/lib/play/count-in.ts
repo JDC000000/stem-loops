@@ -33,6 +33,34 @@ export const MAX_COUNT_IN_BPM = 300;
  * follows), not a new request: it must not start the count again.
  */
 export const CANCEL_SWALLOW_MS = 600;
+/** The click context schedules its first click this far ahead (`CLICK_LEAD_SEC`). */
+export const CLICK_LEAD_SEC = 0.03;
+/** The engine starts its voices this far after `play()` (engine.ts START_LEAD_SEC). */
+export const ENGINE_LEAD_SEC = 0.05;
+/** Latencies above this are not believed (the project's route estimate is capped the same way). */
+export const MAX_LATENCY_SEC = 0.5;
+
+export interface CountTiming {
+  /** Click context: outputLatency (else baseLatency), seconds. */
+  readonly clickLatencySec: number;
+  /** Engine route latency (the playhead compensation), seconds. */
+  readonly engineLatencySec: number;
+}
+const lat = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.min(n, MAX_LATENCY_SEC) : 0);
+
+/**
+ * Two contexts, two clocks. Click i is HEARD at t0 + CLICK_LEAD + i*beat + clickLat.
+ * The music is heard at (the play() call) + ENGINE_LEAD + engineLat. So:
+ *  - `ui`: when to show a number so it lands with its click;
+ *  - `downbeat`: how far from t0 + 4 beats to call play() so the first note
+ *    lands on the 5th beat (a negative value calls it early).
+ */
+export function timingOffsets(t: CountTiming | null | undefined): { ui: number; downbeat: number } {
+  if (!t) return { ui: 0, downbeat: 0 }; // no timing source: plain 4 x 60/BPM
+  const c = lat(t.clickLatencySec);
+  const e = lat(t.engineLatencySec);
+  return { ui: CLICK_LEAD_SEC + c, downbeat: CLICK_LEAD_SEC + c - ENGINE_LEAD_SEC - e };
+}
 
 /** A usable BPM (number or numeric string, e.g. jobs.bpm), or null. */
 export function countInBpm(bpm: unknown): number | null {
@@ -76,6 +104,10 @@ export function writeCountIn(on: boolean): void {
 export interface ClickSink {
   schedule(offsetSec: number, accent: boolean): void;
   stop(): void;
+  /** Close the one context (unmount). A later `schedule` may open a new one. */
+  close?(): void;
+  /** The click context's output latency in seconds (0 when unknown or not open). */
+  latencySec?(): number;
 }
 
 export interface Timers {
@@ -97,6 +129,10 @@ export interface CountInOptions {
   readonly onBeat: (beat: number | null) => void;
   readonly clicks?: ClickSink;
   readonly timers?: Timers;
+  /** Read at each start: the two output latencies (see `timingOffsets`). Absent = none. */
+  readonly timing?: () => CountTiming | null | undefined;
+  /** An ACTIVE count was cancelled (by the user, a toggle, a replace or an unmount); never when it completes. */
+  readonly onCancel?: () => void;
 }
 
 export interface CountIn {
@@ -127,6 +163,7 @@ export function createCountIn(options: CountInOptions): CountIn {
     options.clicks?.stop();
     if (byUser) cancelledAt = timers.now();
     options.onBeat(null);
+    options.onCancel?.();
   };
 
   return {
@@ -146,13 +183,14 @@ export function createCountIn(options: CountInOptions): CountIn {
       cancelledAt = -Infinity;
       active = true;
       const offsets = clickOffsets(bpm);
+      const { ui, downbeat } = timingOffsets(options.timing?.());
       offsets.forEach((off, i) => {
         options.clicks?.schedule(off, i === 0);
         if (i === 0) return; // beat 4 is shown by the onBeat() below
         ids.push(
           timers.setTimeout(() => {
             if (active) options.onBeat(COUNT_IN_BEATS - i);
-          }, off * 1000),
+          }, (off + ui) * 1000),
         );
       });
       options.onBeat(COUNT_IN_BEATS);
@@ -163,7 +201,7 @@ export function createCountIn(options: CountInOptions): CountIn {
           clear();
           options.onBeat(null);
           then();
-        }, countInSec(bpm) * 1000),
+        }, Math.max(0, countInSec(bpm) + downbeat) * 1000),
       );
       return true;
     },
@@ -191,7 +229,12 @@ export function cancelOnOtherInput(count: CountIn, target: Pick<Document, 'addEv
   };
 }
 
-/** Short click sounds on a private AudioContext (the engine exposes none). Silent where Web Audio is missing. */
+/**
+ * Short click sounds on a private AudioContext (the engine exposes none). Silent
+ * where Web Audio is missing. ONE context per sink, opened on the first click (so
+ * inside the user's tap, where `resume()` must be called) and reused for every
+ * count; `close()` releases it on unmount, so no more than one is ever alive.
+ */
 export function createClickSink(): ClickSink {
   let ctx: AudioContext | null = null;
   let live: OscillatorNode[] = [];
@@ -213,7 +256,7 @@ export function createClickSink(): ClickSink {
       if (!c) return;
       try {
         if (c.state === 'suspended') void Promise.resolve(c.resume()).catch(() => {});
-        const t = c.currentTime + 0.03 + offsetSec;
+        const t = c.currentTime + CLICK_LEAD_SEC + offsetSec;
         const osc = c.createOscillator();
         const gain = c.createGain();
         osc.frequency.value = accent ? 1600 : 1100;
@@ -240,6 +283,21 @@ export function createClickSink(): ClickSink {
           /* already ended */
         }
       }
+    },
+    close() {
+      this.stop();
+      const c = ctx;
+      ctx = null;
+      if (!c) return;
+      try {
+        void Promise.resolve(c.close()).catch(() => {});
+      } catch {
+        /* already closed */
+      }
+    },
+    latencySec() {
+      const c = ctx as (AudioContext & { outputLatency?: number }) | null;
+      return c ? lat(c.outputLatency ?? c.baseLatency) : 0;
     },
   };
 }

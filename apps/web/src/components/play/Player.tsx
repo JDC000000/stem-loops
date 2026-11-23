@@ -631,6 +631,33 @@ export default function Player({
     engineRef.current?.pause();
     outputRef.current?.pause();
   }, []);
+  // Count-in (Phase C C2). The transport will start LATER (after the count), but
+  // iOS only lets the audio session, the `<audio>` element and the AudioContext
+  // start inside the tap. So the tap does ALL of that now, synchronously:
+  // session, element, then engine.play() (which resumes its context) followed at
+  // once by engine.pause(), which stops the voices before their 50 ms start lead
+  // has elapsed, so nothing is heard and the position does not move. The element
+  // is then started again, because pausing the engine stops it. The engine ends
+  // paused with a RUNNING context, an element already playing, and the real
+  // onPlay() at the downbeat needs no gesture. Public engine API only.
+  const onPrime = useCallback(() => {
+    setPlaybackAudioSession(globalThis.navigator);
+    outputRef.current?.play();
+    const engine = engineRef.current;
+    if (engine && engine.getSnapshot().status !== 'playing') {
+      engine.play();
+      engine.pause();
+      outputRef.current?.play();
+    }
+  }, []);
+  /** A count was cancelled: the music never started, so the silent element is stopped. */
+  const onUnprime = useCallback(() => {
+    if (engineRef.current?.getSnapshot().status !== 'playing') outputRef.current?.pause();
+  }, []);
+  const getEngineLatencySec = useCallback(
+    () => routeLatencySec(engineRef.current?.audioLatency?.(), !!outputRef.current?.routed),
+    [],
+  );
   const onSeek = useCallback((positionSec: number) => engineRef.current?.seek(positionSec), []);
   const onGain = useCallback((stem: StemName, gain: number) => engineRef.current?.setGain(stem, gain), []);
   const onMute = useCallback((stem: StemName, muted: boolean) => engineRef.current?.setMute(stem, muted), []);
@@ -667,6 +694,9 @@ export default function Player({
       chordLatencySec={chordLatencySec}
       onPlay={onPlay}
       onPause={onPause}
+      onPrime={onPrime}
+      onUnprime={onUnprime}
+      getEngineLatencySec={getEngineLatencySec}
       onSeek={onSeek}
       onGain={onGain}
       onMute={onMute}
@@ -698,6 +728,15 @@ export interface PlayerViewProps {
   readonly chordLatencySec?: number;
   readonly onPlay: () => void;
   readonly onPause: () => void;
+  /**
+   * Count-in: do everything that needs the user's tap (audio session, `<audio>`
+   * element, AudioContext resume) NOW, without starting the transport. Absent = nothing to prime.
+   */
+  readonly onPrime?: () => void;
+  /** A primed count was cancelled: undo the silent priming. */
+  readonly onUnprime?: () => void;
+  /** The engine route's output latency in seconds (count-in timing). */
+  readonly getEngineLatencySec?: () => number;
   readonly onSeek: (positionSec: number) => void;
   readonly onGain: (stem: StemName, gain: number) => void;
   readonly onMute: (stem: StemName, muted: boolean) => void;

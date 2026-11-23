@@ -23,7 +23,12 @@
 // scroll; the page jumps a fixed step while the pointer stays over an edge. Any page scroll
 // mid-drag (auto-scroll or a mouse wheel) is counted in the row's offset (dragDelta), so the
 // row stays under the pointer and the landing line matches where it will save. The loop stops
-// on drop, cancel and unmount.
+// on drop, cancel (pointercancel, lostpointercapture, Escape) and unmount.
+// Polish (#355): auto-scroll waits until the pointer has moved AUTOSCROLL_ARM_PX from where the
+// drag began (a drag that starts in an edge zone does not scroll at once); the speed is px per
+// second from the rAF timestamps (dt clamped), so 60Hz and 120Hz scroll alike; a scrollBy that
+// throws falls back to the plain scrollBy(x, y) form, so the loop never silently dies; and the
+// bottom zone sits above the iOS home-indicator safe area (env(safe-area-inset-bottom)).
 //
 // A row whose song cannot play says why: "Audio expired" (a link: paste it again and the row
 // plays the new one), "Unavailable" (an upload or a demo song that is gone), "Processing".
@@ -38,8 +43,11 @@ import {
   checkSetListName,
   dragDelta,
   dropIndex,
+  autoScrollArmed,
   edgeScrollSpeed,
   itemStateLabel,
+  parsePx,
+  splitWholePx,
   moveItem,
   reorderItem,
   playHref,
@@ -71,7 +79,46 @@ const prefersReducedMotion = (): boolean => {
 const pageScrollY = (): number => globalThis.window?.scrollY ?? 0;
 
 /** True when the pointer is outside both edge zones (full-speed probe; reduced-motion reset). */
-const edgeIdle = (clientY: number, viewportH: number): boolean => edgeScrollSpeed(clientY, viewportH) === 0;
+const edgeIdle = (clientY: number, viewportH: number, insetBottom: number): boolean =>
+  edgeScrollSpeed(clientY, viewportH, undefined, undefined, insetBottom) === 0;
+
+/**
+ * The bottom safe-area inset (px): env(safe-area-inset-bottom) resolved by a hidden probe,
+ * since a custom property holding env() is not resolved by every engine. 0 when unknown.
+ */
+const safeAreaBottomPx = (): number => {
+  const doc = globalThis.document;
+  const win = globalThis.window;
+  if (!doc?.body || !win?.getComputedStyle) return 0;
+  let probe: HTMLElement | null = null;
+  try {
+    probe = doc.createElement('div');
+    probe.setAttribute('aria-hidden', 'true');
+    probe.setAttribute('data-safe-area-probe', '');
+    probe.style.cssText =
+      'position:fixed;left:0;bottom:0;width:0;height:0;visibility:hidden;pointer-events:none;padding-bottom:env(safe-area-inset-bottom, 0px)';
+    doc.body.appendChild(probe);
+    return parsePx(win.getComputedStyle(probe).paddingBottom);
+  } catch {
+    return 0;
+  } finally {
+    probe?.remove();
+  }
+};
+
+/** Scroll the page by `top` px at once. Never throws: an engine that rejects the options form
+ *  (or 'instant') gets the plain scrollBy(x, y) form (#355 F3). */
+const scrollPageBy = (win: Window, top: number): void => {
+  try {
+    win.scrollBy({ top, left: 0, behavior: 'instant' as ScrollBehavior });
+  } catch {
+    try {
+      win.scrollBy(0, top);
+    } catch {
+      // Nothing more to try; the loop keeps running and the row still follows any scroll.
+    }
+  }
+};
 
 export interface SetListViewProps {
   readonly id: string;
@@ -100,6 +147,10 @@ export function SetListView({ id }: SetListViewProps) {
     startScrollY: number;
     /** The pointer's latest clientY: auto-scroll and page scroll re-place the row from it. */
     lastY: number;
+    /** True once the pointer has moved AUTOSCROLL_ARM_PX: only then may edge auto-scroll run. */
+    armed: boolean;
+    /** Bottom safe-area inset (px), read when the drag starts. */
+    insetBottom: number;
     mids: number[];
     handle: HTMLElement;
   } | null>(null);
@@ -152,17 +203,34 @@ export function SetListView({ id }: SetListViewProps) {
     if (!win) return;
     let frame: number | null = null;
     let lastJumpAt: number | null = null;
+    let lastFrameAt: number | null = null;
+    let carry = 0;
     const tick = (now: number) => {
       frame = null;
       const info = dragInfo.current;
       if (!info) return;
-      const step = autoScrollStep({ clientY: info.lastY, viewportH: win.innerHeight, reduced: dragReduced, now, lastJumpAt });
+      const step = autoScrollStep({
+        clientY: info.lastY,
+        viewportH: win.innerHeight,
+        reduced: dragReduced,
+        now,
+        lastJumpAt,
+        lastFrameAt,
+        insetBottom: info.insetBottom,
+        armed: info.armed,
+      });
+      lastFrameAt = now;
       if (step !== 0) {
-        win.scrollBy({ top: step, left: 0, behavior: 'instant' as ScrollBehavior });
         if (dragReduced) lastJumpAt = now;
-        syncDrag();
-      } else if (edgeIdle(info.lastY, win.innerHeight)) {
+        const { px, carry: rest } = splitWholePx(carry + step);
+        carry = rest;
+        if (px !== 0) {
+          scrollPageBy(win, px);
+          syncDrag();
+        }
+      } else if (edgeIdle(info.lastY, win.innerHeight, info.insetBottom)) {
         lastJumpAt = null; // left the edge: the next visit jumps at once
+        carry = 0;
       }
       frame = win.requestAnimationFrame?.(tick) ?? null;
     };
@@ -271,6 +339,8 @@ export function SetListView({ id }: SetListViewProps) {
       startY: e.clientY,
       startScrollY: pageScrollY(),
       lastY: e.clientY,
+      armed: false,
+      insetBottom: safeAreaBottomPx(),
       mids,
       handle: e.currentTarget,
     };
@@ -281,6 +351,7 @@ export function SetListView({ id }: SetListViewProps) {
     const info = dragInfo.current;
     if (!info || e.pointerId !== info.pointerId) return;
     info.lastY = e.clientY;
+    if (!info.armed && autoScrollArmed(e.clientY, info.startY)) info.armed = true;
     syncDrag();
   };
 

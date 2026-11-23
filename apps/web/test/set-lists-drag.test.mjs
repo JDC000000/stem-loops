@@ -12,16 +12,23 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  EDGE_MAX_SPEED_PX,
+  AUTOSCROLL_ARM_PX,
+  EDGE_MAX_SPEED_PX_PER_S,
   EDGE_ZONE_PX,
+  MAX_FRAME_DT_MS,
+  NOMINAL_FRAME_MS,
   REDUCED_JUMP_INTERVAL_MS,
   REDUCED_JUMP_PX,
+  autoScrollArmed,
   autoScrollStep,
   dragDelta,
   dropIndex,
   edgeScrollSpeed,
+  frameDt,
   moveItem,
+  parsePx,
   reorderItem,
+  splitWholePx,
 } from '../src/lib/set-lists.ts';
 import { buildModuleGraph } from './helpers/module-graph.mjs';
 import { withDom } from './helpers/dom.mjs';
@@ -346,17 +353,21 @@ test('edgeScrollSpeed: 0 away from the edges; grows with depth into the 48px zon
     assert.ok(-top[i] >= -top[i - 1], 'deeper at the top is at least as fast');
     assert.ok(bottom[i] >= bottom[i - 1], 'deeper at the bottom is at least as fast');
   }
-  assert.ok(-top[2] < EDGE_MAX_SPEED_PX && bottom[2] < EDGE_MAX_SPEED_PX, 'half way in is slower than the edge');
-  assert.equal(edgeScrollSpeed(0, H), -EDGE_MAX_SPEED_PX);
-  assert.equal(edgeScrollSpeed(-50, H), -EDGE_MAX_SPEED_PX, 'past the edge: capped');
-  assert.equal(edgeScrollSpeed(H + 50, H), EDGE_MAX_SPEED_PX);
+  assert.ok(-top[2] < EDGE_MAX_SPEED_PX_PER_S && bottom[2] < EDGE_MAX_SPEED_PX_PER_S, 'half way in is slower than the edge');
+  assert.equal(edgeScrollSpeed(0, H), -EDGE_MAX_SPEED_PX_PER_S);
+  assert.equal(edgeScrollSpeed(-50, H), -EDGE_MAX_SPEED_PX_PER_S, 'past the edge: capped');
+  assert.equal(edgeScrollSpeed(H + 50, H), EDGE_MAX_SPEED_PX_PER_S);
   assert.equal(edgeScrollSpeed(NaN, H), 0);
   assert.equal(edgeScrollSpeed(10, 0), 0, 'no viewport: no scroll');
 });
 
 test('autoScrollStep: full motion is the edge speed; reduced motion jumps a fixed step, at most once per interval', () => {
   const H = 800;
-  assert.equal(autoScrollStep({ clientY: 790, viewportH: H, reduced: false, now: 0, lastJumpAt: null }), edgeScrollSpeed(790, H));
+  assert.equal(
+    autoScrollStep({ clientY: 790, viewportH: H, reduced: false, now: 0, lastJumpAt: null }),
+    (edgeScrollSpeed(790, H) * NOMINAL_FRAME_MS) / 1000,
+    'first frame: the edge speed over one nominal 60Hz frame',
+  );
   assert.equal(autoScrollStep({ clientY: 400, viewportH: H, reduced: true, now: 0, lastJumpAt: null }), 0, 'not at an edge: nothing');
   assert.equal(autoScrollStep({ clientY: 790, viewportH: H, reduced: true, now: 1000, lastJumpAt: null }), REDUCED_JUMP_PX);
   assert.equal(autoScrollStep({ clientY: 760, viewportH: H, reduced: true, now: 1000, lastJumpAt: null }), REDUCED_JUMP_PX, 'fixed: not by depth');
@@ -394,9 +405,10 @@ test('auto-scroll: holding at the bottom edge scrolls the page each frame; the r
       await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 296 }); // 4px from the bottom
       assert.equal(rows()[0].style.transform, 'translateY(170px)');
       await dom.nextFrame();
+      await dom.advance(20); // a real frame gap: the speed is per second, not per frame
       await dom.nextFrame();
       assert.equal(vp.calls.length, 2, 'one scroll per frame');
-      assert.ok(vp.calls.every((t) => t > 0), 'scrolls down');
+      assert.ok(vp.calls.every((t) => t > 0 && Number.isInteger(t)), 'scrolls down, in whole pixels');
       const scrolled = vp.calls.reduce((a, b) => a + b, 0);
       assert.equal(rows()[0].style.transform, `translateY(${170 + scrolled}px)`, 'the row moves with the scroll');
       await dom.pointer('pointerup', handle(0), { clientX: 20, clientY: 296 });
@@ -423,6 +435,7 @@ test('auto-scroll: nothing scrolls away from the edges; the top edge scrolls up'
       await dom.nextFrame();
       assert.equal(vp.calls.length, 0, 'mid-screen: no scroll');
       await dom.pointer('pointermove', handle(1), { clientX: 20, clientY: 10 });
+      await dom.advance(20);
       await dom.nextFrame();
       assert.equal(vp.calls.length, 1);
       assert.ok(vp.calls[0] < 0, 'scrolls up');
@@ -502,6 +515,270 @@ test('unmounting mid-drag stops the auto-scroll loop', async () => {
       assert.equal(dom.pendingFrames, 0);
     } finally {
       f.restore();
+    }
+  });
+});
+
+// ---- auto-scroll polish (#355) --------------------------------------------------------------
+
+test('F1 autoScrollArmed: armed only once the pointer has moved AUTOSCROLL_ARM_PX either way', () => {
+  assert.equal(AUTOSCROLL_ARM_PX, 8);
+  assert.equal(autoScrollArmed(296, 296), false);
+  assert.equal(autoScrollArmed(303, 296), false, '7px: not yet');
+  assert.equal(autoScrollArmed(304, 296), true, '8px down');
+  assert.equal(autoScrollArmed(288, 296), true, '8px up');
+  assert.equal(autoScrollArmed(NaN, 296), false);
+  assert.equal(autoScrollStep({ clientY: 799, viewportH: 800, reduced: false, now: 0, lastJumpAt: null, armed: false }), 0, 'not armed: no scroll');
+  assert.equal(autoScrollStep({ clientY: 799, viewportH: 800, reduced: true, now: 0, lastJumpAt: null, armed: false }), 0, 'not armed: no jump either');
+  assert.ok(autoScrollStep({ clientY: 799, viewportH: 800, reduced: false, now: 0, lastJumpAt: null, armed: true }) > 0);
+});
+
+test('F2 frameDt: nominal on the first frame, clamped to 0..MAX_FRAME_DT_MS after', () => {
+  assert.equal(frameDt(1000, null), NOMINAL_FRAME_MS);
+  assert.equal(frameDt(1008, 1000), 8);
+  assert.equal(frameDt(1000, 1008), 0, 'a clock that goes back: no scroll, never backwards');
+  assert.equal(frameDt(5000, 1000), MAX_FRAME_DT_MS, 'a stalled tab does not jump the page');
+  assert.equal(frameDt(NaN, 1000), NOMINAL_FRAME_MS);
+});
+
+test('F2 auto-scroll is time-based: one second at the edge scrolls the same at 60Hz and 120Hz', () => {
+  const H = 800;
+  const run = (hz) => {
+    const period = 1000 / hz;
+    let total = 0;
+    let carry = 0;
+    let last = null;
+    for (let i = 0; i < hz; i += 1) {
+      const now = 1000 + i * period;
+      const step = autoScrollStep({ clientY: 800, viewportH: H, reduced: false, now, lastJumpAt: null, lastFrameAt: last, armed: true });
+      last = now;
+      const { px, carry: rest } = splitWholePx(carry + step);
+      carry = rest;
+      total += px;
+    }
+    return total;
+  };
+  const at60 = run(60);
+  const at120 = run(120);
+  assert.ok(Math.abs(at60 - EDGE_MAX_SPEED_PX_PER_S) <= 20, `60Hz ~1s of max speed (${at60})`);
+  assert.ok(Math.abs(at60 - at120) <= 10, `60Hz ${at60} vs 120Hz ${at120}`);
+  // A per-frame speed (the old 18px/frame) would make 120Hz twice as fast.
+  assert.ok(at120 < at60 * 1.1);
+});
+
+test('F2 splitWholePx: whole pixels now, the fraction carried (toward zero), so slow speeds add up', () => {
+  assert.deepEqual(splitWholePx(16.5), { px: 16, carry: 0.5 });
+  assert.deepEqual(splitWholePx(0.4), { px: 0, carry: 0.4 });
+  const neg = splitWholePx(-2.25);
+  assert.equal(neg.px, -2);
+  assert.ok(Math.abs(neg.carry + 0.25) < 1e-9);
+  assert.deepEqual(splitWholePx(NaN), { px: 0, carry: 0 });
+  let carry = 0;
+  let total = 0;
+  for (let i = 0; i < 10; i += 1) {
+    const r = splitWholePx(carry + 0.3);
+    carry = r.carry;
+    total += r.px;
+  }
+  assert.equal(total, 3, '10 frames of 0.3px scroll 3px, not 0');
+});
+
+test('F4 edgeScrollSpeed: the bottom zone sits above the safe-area inset; inside the inset is past the edge', () => {
+  const H = 800;
+  const max = EDGE_MAX_SPEED_PX_PER_S;
+  assert.equal(edgeScrollSpeed(740, H), 0, 'no inset: 60px from the bottom is outside the zone');
+  assert.ok(edgeScrollSpeed(740, H, EDGE_ZONE_PX, max, 34) > 0, '34px inset: 26px above the usable bottom scrolls');
+  assert.equal(edgeScrollSpeed(780, H, EDGE_ZONE_PX, max, 34), max, 'inside the inset: full speed');
+  assert.equal(edgeScrollSpeed(700, H, EDGE_ZONE_PX, max, 34), 0);
+  assert.equal(edgeScrollSpeed(10, H, EDGE_ZONE_PX, max, 34), edgeScrollSpeed(10, H), 'the top edge is unchanged');
+  assert.equal(edgeScrollSpeed(740, H, EDGE_ZONE_PX, max, NaN), 0, 'a bad inset is 0');
+  assert.equal(edgeScrollSpeed(740, H, EDGE_ZONE_PX, max, -50), 0, 'a negative inset is 0');
+  assert.equal(edgeScrollSpeed(10, 30, EDGE_ZONE_PX, max, 40), 0, 'inset taller than the viewport: no scroll');
+  assert.equal(
+    autoScrollStep({ clientY: 740, viewportH: H, reduced: true, now: 0, lastJumpAt: null, insetBottom: 34 }),
+    REDUCED_JUMP_PX,
+    'autoScrollStep passes the inset through',
+  );
+  assert.equal(parsePx('34px'), 34);
+  assert.equal(parsePx('0px'), 0);
+  assert.equal(parsePx(''), 0);
+  assert.equal(parsePx('env(safe-area-inset-bottom, 0px)'), 0);
+  assert.equal(parsePx(undefined), 0);
+  assert.equal(parsePx('-3px'), 0);
+});
+
+test('M7 edgeScrollSpeed on a viewport under 96px: each zone is half the viewport, no overlap', () => {
+  const H = 60;
+  const max = EDGE_MAX_SPEED_PX_PER_S;
+  assert.equal(edgeScrollSpeed(30, H), 0, 'the exact middle scrolls neither way');
+  assert.equal(edgeScrollSpeed(0, H), -max);
+  assert.equal(edgeScrollSpeed(60, H), max);
+  assert.equal(edgeScrollSpeed(15, H), -max / 2, 'half way into a 30px top zone: half speed');
+  assert.equal(edgeScrollSpeed(45, H), max / 2, 'half way into a 30px bottom zone: half speed');
+  assert.ok(edgeScrollSpeed(29, H) < 0);
+  assert.ok(edgeScrollSpeed(31, H) > 0);
+  // At 96px and above the zone is the full 48px.
+  assert.equal(edgeScrollSpeed(24, 96), -max / 2);
+  assert.equal(edgeScrollSpeed(48, 96), 0);
+});
+
+test('F1 a drag that starts inside the bottom edge zone does not scroll until the pointer moves 8px', async () => {
+  await withDom(async (dom) => {
+    const f = stubFetch(okList);
+    try {
+      const vp = stubViewport(dom.window, 300);
+      const { handle } = await mountList(dom);
+      await dom.pointer('pointerdown', handle(0), { clientX: 20, clientY: 290 });
+      await dom.nextFrame();
+      await dom.advance(20);
+      await dom.nextFrame();
+      assert.deepEqual(vp.calls, [], 'pressed in the zone: no scroll yet');
+      await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 293 }); // 3px
+      await dom.advance(20);
+      await dom.nextFrame();
+      assert.deepEqual(vp.calls, [], 'a 3px wobble does not start it');
+      await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 298 }); // 8px
+      await dom.advance(20);
+      await dom.nextFrame();
+      assert.equal(vp.calls.length, 1, 'moved 8px: auto-scroll starts');
+      assert.ok(vp.calls[0] > 0);
+      await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 290 }); // back to the start point
+      await dom.advance(20);
+      await dom.nextFrame();
+      assert.equal(vp.calls.length, 2, 'once armed it stays armed for this drag');
+      await dom.keydown('Escape');
+    } finally {
+      f.restore();
+      await dom.unmountAll();
+    }
+  });
+});
+
+test('F3 a scrollBy that throws on the options form falls back to scrollBy(x, y); the loop keeps going', async () => {
+  await withDom(async (dom) => {
+    const f = stubFetch(okList);
+    try {
+      const vp = stubViewport(dom.window, 300);
+      const plain = [];
+      const byOpts = dom.window.scrollBy;
+      dom.window.scrollBy = (a, b) => {
+        if (typeof a === 'object') throw new TypeError("'instant' is not a valid ScrollBehavior");
+        plain.push([a, b]);
+        byOpts({ top: b });
+      };
+      const { rows, handle } = await mountList(dom);
+      await dom.pointer('pointerdown', handle(0), { clientX: 20, clientY: 126 });
+      await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 296 });
+      await dom.nextFrame();
+      await dom.advance(20);
+      await dom.nextFrame();
+      assert.equal(plain.length, 2, 'both frames scrolled through the fallback');
+      assert.ok(plain.every(([x, y]) => x === 0 && y > 0));
+      assert.ok(dom.pendingFrames > 0, 'the loop is still alive');
+      const scrolled = vp.calls.reduce((a, b) => a + b, 0);
+      assert.equal(rows()[0].style.transform, `translateY(${170 + scrolled}px)`, 'the row keeps up');
+      // Both forms throwing: still no crash, the loop still runs.
+      dom.window.scrollBy = () => { throw new Error('nope'); };
+      await dom.advance(20);
+      await dom.nextFrame();
+      assert.ok(dom.pendingFrames > 0, 'the loop survives a scrollBy that always throws');
+      await dom.pointer('pointerup', handle(0), { clientX: 20, clientY: 296 });
+      await dom.act();
+      assert.equal(dom.pendingFrames, 0);
+    } finally {
+      f.restore();
+      await dom.unmountAll();
+    }
+  });
+});
+
+test('F4 the bottom zone starts above the safe-area inset read from env(safe-area-inset-bottom)', async () => {
+  for (const [inset, expectScroll] of [['0px', false], ['34px', true]]) {
+    await withDom(async (dom) => {
+      const f = stubFetch(okList);
+      const realGCS = dom.window.getComputedStyle;
+      const probes = [];
+      dom.window.getComputedStyle = function (el, ...rest) {
+        if (el?.hasAttribute?.('data-safe-area-probe')) {
+          probes.push(el);
+          return { paddingBottom: inset };
+        }
+        return realGCS.call(this, el, ...rest);
+      };
+      try {
+        const vp = stubViewport(dom.window, 300);
+        const { handle } = await mountList(dom);
+        await dom.pointer('pointerdown', handle(0), { clientX: 20, clientY: 126 });
+        assert.equal(probes.length, 1, 'the inset is read once, when the drag starts');
+        assert.equal(probes[0].isConnected, false, 'the probe is removed again');
+        await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 240 }); // 60px from the bottom
+        await dom.nextFrame();
+        assert.equal(vp.calls.length > 0, expectScroll, `inset ${inset}`);
+        await dom.keydown('Escape');
+      } finally {
+        dom.window.getComputedStyle = realGCS;
+        f.restore();
+        await dom.unmountAll();
+      }
+    });
+  }
+});
+
+for (const name of ['pointercancel', 'lostpointercapture']) {
+  test(`F6 ${name} stops the auto-scroll loop: no frame left queued, no more scrolling`, async () => {
+    await withDom(async (dom) => {
+      const f = stubFetch(okList);
+      try {
+        const vp = stubViewport(dom.window, 300);
+        const { handle } = await mountList(dom);
+        const h = handle(0);
+        await dom.pointer('pointerdown', h, { clientX: 20, clientY: 126 });
+        await dom.pointer('pointermove', h, { clientX: 20, clientY: 296 });
+        await dom.nextFrame();
+        assert.equal(vp.calls.length, 1, 'scrolling at the edge');
+        assert.ok(dom.pendingFrames > 0, 'the loop is running');
+        await dom.pointer(name, h, { clientX: 20, clientY: 296 });
+        await dom.act();
+        assert.equal(dom.pendingFrames, 0, `${name} cancelled the frame`);
+        await dom.advance(20);
+        await dom.nextFrame();
+        assert.equal(vp.calls.length, 1, 'no scroll after the cancel');
+        assert.equal(f.calls.filter((c) => c.method === 'PUT').length, 0, 'nothing was sent');
+      } finally {
+        f.restore();
+        await dom.unmountAll();
+      }
+    });
+  });
+}
+
+test('M5 reduced motion: leave the edge and come back, and the next jump comes at once (not after the interval)', async () => {
+  await withDom(async (dom) => {
+    const f = stubFetch(okList);
+    const realMM = globalThis.matchMedia;
+    globalThis.matchMedia = (q) => ({ matches: /prefers-reduced-motion: reduce/.test(q), media: q, addEventListener() {}, removeEventListener() {} });
+    try {
+      const vp = stubViewport(dom.window, 300);
+      const { handle } = await mountList(dom);
+      await dom.pointer('pointerdown', handle(0), { clientX: 20, clientY: 126 });
+      await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 296 });
+      await dom.nextFrame();
+      await dom.nextFrame();
+      assert.deepEqual(vp.calls, [REDUCED_JUMP_PX], 'one jump, then the interval holds');
+      await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 150 }); // away from both edges
+      await dom.nextFrame();
+      await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 296 }); // back, well inside 450ms
+      await dom.nextFrame();
+      assert.deepEqual(vp.calls, [REDUCED_JUMP_PX, REDUCED_JUMP_PX], 're-entering the edge jumps at once');
+      await dom.nextFrame();
+      assert.equal(vp.calls.length, 2, 'and then waits again');
+      await dom.pointer('pointerup', handle(0), { clientX: 20, clientY: 296 });
+      await dom.act();
+    } finally {
+      if (realMM === undefined) delete globalThis.matchMedia;
+      else globalThis.matchMedia = realMM;
+      f.restore();
+      await dom.unmountAll();
     }
   });
 });

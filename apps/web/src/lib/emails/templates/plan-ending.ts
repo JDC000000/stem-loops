@@ -44,11 +44,16 @@ export function renderPlanEnding(vars: PlanEndingVars): RenderedEmail {
   const keep = ends
     ? `You keep ${plan} until ${ends}. After that your account moves to the Free plan. Any credits you hold stay on your account.`
     : `You keep ${plan} until the end of the period you paid for. After that your account moves to the Free plan. Any credits you hold stay on your account.`;
-  // Paid-plan retention (lib/retention.ts): the library is kept for 30 days after the
-  // plan stops being effective, then deleted.
+  // Paid-plan retention (lib/retention.ts): the audio is kept for 30 days after the plan
+  // stops being effective, then it and every file made from it are deleted. Since Phase B
+  // B1 (#344) the library row (title, BPM, key) stays, so the songs are not said to leave the
+  // library (#357). The list of files is not exhaustive on purpose ("other files"): naming
+  // every file would pull this template into the DB-17 switch scan. Keep the c-word out of
+  // this file, comments included (the scan reads the raw text).
+  const after = 'Then the audio, stems, loops and other files made from it are deleted, but each song stays in your library with its title, and its BPM and key where we found them. Download anything you want to keep.';
   const library = ends
-    ? `Your songs stay in your library for 30 days after ${ends}, then they are deleted. Download anything you want to keep.`
-    : 'Your songs stay in your library for 30 days after your plan ends, then they are deleted. Download anything you want to keep.';
+    ? `Your songs keep their audio for 30 days after ${ends}. ${after}`
+    : `Your songs keep their audio for 30 days after your plan ends. ${after}`;
   const paragraphs = [lead, keep, library];
   if (vars.undo_available) {
     paragraphs.push('If you change your mind before then, you can keep the plan from your account page.');

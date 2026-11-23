@@ -17,6 +17,19 @@
 // pointercancel, on lostpointercapture (capture taken away before the release) and on Escape
 // (review R1, S4); the row goes back to its place and nothing is sent.
 //
+// Auto-scroll (#343): while dragging, a pointer within EDGE_ZONE_PX of the top or bottom of the
+// viewport scrolls the page (a rAF loop, faster the deeper into the zone), so a list taller
+// than a phone screen can be reordered end to end in one drag. Reduced motion: no animated
+// scroll; the page jumps a fixed step while the pointer stays over an edge. Any page scroll
+// mid-drag (auto-scroll or a mouse wheel) is counted in the row's offset (dragDelta), so the
+// row stays under the pointer and the landing line matches where it will save. The loop stops
+// on drop, cancel (pointercancel, lostpointercapture, Escape) and unmount.
+// Polish (#355): auto-scroll waits until the pointer has moved AUTOSCROLL_ARM_PX from where the
+// drag began (a drag that starts in an edge zone does not scroll at once); the speed is px per
+// second from the rAF timestamps (dt clamped), so 60Hz and 120Hz scroll alike; a scrollBy that
+// throws falls back to the plain scrollBy(x, y) form, so the loop never silently dies; and the
+// bottom zone sits above the iOS home-indicator safe area (env(safe-area-inset-bottom)).
+//
 // A row whose song cannot play says why: "Audio expired" (a link: paste it again and the row
 // plays the new one), "Unavailable" (an upload or a demo song that is gone), "Processing".
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -26,9 +39,15 @@ import { buttonBase, fieldStyle, primaryButton } from '@/lib/ui/form-styles';
 import {
   DELETE_LIST_NOTE,
   DEMO_SET_ID,
+  autoScrollStep,
   checkSetListName,
+  dragDelta,
   dropIndex,
+  autoScrollArmed,
+  edgeScrollSpeed,
   itemStateLabel,
+  parsePx,
+  splitWholePx,
   moveItem,
   reorderItem,
   playHref,
@@ -56,6 +75,51 @@ const prefersReducedMotion = (): boolean => {
   }
 };
 
+/** The page's vertical scroll (0 where there is no window). */
+const pageScrollY = (): number => globalThis.window?.scrollY ?? 0;
+
+/** True when the pointer is outside both edge zones (full-speed probe; reduced-motion reset). */
+const edgeIdle = (clientY: number, viewportH: number, insetBottom: number): boolean =>
+  edgeScrollSpeed(clientY, viewportH, undefined, undefined, insetBottom) === 0;
+
+/**
+ * The bottom safe-area inset (px): env(safe-area-inset-bottom) resolved by a hidden probe,
+ * since a custom property holding env() is not resolved by every engine. 0 when unknown.
+ */
+const safeAreaBottomPx = (): number => {
+  const doc = globalThis.document;
+  const win = globalThis.window;
+  if (!doc?.body || !win?.getComputedStyle) return 0;
+  let probe: HTMLElement | null = null;
+  try {
+    probe = doc.createElement('div');
+    probe.setAttribute('aria-hidden', 'true');
+    probe.setAttribute('data-safe-area-probe', '');
+    probe.style.cssText =
+      'position:fixed;left:0;bottom:0;width:0;height:0;visibility:hidden;pointer-events:none;padding-bottom:env(safe-area-inset-bottom, 0px)';
+    doc.body.appendChild(probe);
+    return parsePx(win.getComputedStyle(probe).paddingBottom);
+  } catch {
+    return 0;
+  } finally {
+    probe?.remove();
+  }
+};
+
+/** Scroll the page by `top` px at once. Never throws: an engine that rejects the options form
+ *  (or 'instant') gets the plain scrollBy(x, y) form (#355 F3). */
+const scrollPageBy = (win: Window, top: number): void => {
+  try {
+    win.scrollBy({ top, left: 0, behavior: 'instant' as ScrollBehavior });
+  } catch {
+    try {
+      win.scrollBy(0, top);
+    } catch {
+      // Nothing more to try; the loop keeps running and the row still follows any scroll.
+    }
+  }
+};
+
 export interface SetListViewProps {
   readonly id: string;
 }
@@ -77,7 +141,19 @@ export function SetListView({ id }: SetListViewProps) {
   const listRef = useRef<HTMLOListElement | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   /** Measured when a drag starts; the row centres stay fixed for the whole drag. */
-  const dragInfo = useRef<{ pointerId: number; startY: number; mids: number[]; handle: HTMLElement } | null>(null);
+  const dragInfo = useRef<{
+    pointerId: number;
+    startY: number;
+    startScrollY: number;
+    /** The pointer's latest clientY: auto-scroll and page scroll re-place the row from it. */
+    lastY: number;
+    /** True once the pointer has moved AUTOSCROLL_ARM_PX: only then may edge auto-scroll run. */
+    armed: boolean;
+    /** Bottom safe-area inset (px), read when the drag starts. */
+    insetBottom: number;
+    mids: number[];
+    handle: HTMLElement;
+  } | null>(null);
 
   /** End a drag with no change: nothing is sent, the row goes back. Safe to call twice. */
   const cancelDrag = useCallback(() => {
@@ -92,8 +168,21 @@ export function SetListView({ id }: SetListViewProps) {
     }
   }, []);
 
+  /** Re-place the dragged row from the latest pointer position and page scroll. */
+  const syncDrag = useCallback(() => {
+    const info = dragInfo.current;
+    if (!info) return;
+    const dy = dragDelta(info.lastY, info.startY, pageScrollY(), info.startScrollY);
+    setDrag((d) => {
+      if (!d) return d;
+      const to = dropIndex(info.mids, d.from, info.mids[d.from] + dy);
+      return to === d.to && dy === d.dy ? d : { ...d, to, dy };
+    });
+  }, []);
+
   // Escape cancels a drag in progress (mouse or touch).
   const dragging = drag !== null;
+  const dragReduced = drag?.reduced ?? false;
   useEffect(() => {
     if (!dragging) return;
     const onKey = (e: KeyboardEvent) => {
@@ -105,6 +194,53 @@ export function SetListView({ id }: SetListViewProps) {
     win?.addEventListener('keydown', onKey);
     return () => win?.removeEventListener('keydown', onKey);
   }, [dragging, cancelDrag]);
+
+  // Auto-scroll near the viewport edges while dragging (#343), and follow any page scroll
+  // (wheel or auto) so the row stays under the pointer. Stops on drop, cancel and unmount.
+  useEffect(() => {
+    if (!dragging) return;
+    const win = globalThis.window;
+    if (!win) return;
+    let frame: number | null = null;
+    let lastJumpAt: number | null = null;
+    let lastFrameAt: number | null = null;
+    let carry = 0;
+    const tick = (now: number) => {
+      frame = null;
+      const info = dragInfo.current;
+      if (!info) return;
+      const step = autoScrollStep({
+        clientY: info.lastY,
+        viewportH: win.innerHeight,
+        reduced: dragReduced,
+        now,
+        lastJumpAt,
+        lastFrameAt,
+        insetBottom: info.insetBottom,
+        armed: info.armed,
+      });
+      lastFrameAt = now;
+      if (step !== 0) {
+        if (dragReduced) lastJumpAt = now;
+        const { px, carry: rest } = splitWholePx(carry + step);
+        carry = rest;
+        if (px !== 0) {
+          scrollPageBy(win, px);
+          syncDrag();
+        }
+      } else if (edgeIdle(info.lastY, win.innerHeight, info.insetBottom)) {
+        lastJumpAt = null; // left the edge: the next visit jumps at once
+        carry = 0;
+      }
+      frame = win.requestAnimationFrame?.(tick) ?? null;
+    };
+    frame = win.requestAnimationFrame?.(tick) ?? null;
+    win.addEventListener('scroll', syncDrag, { passive: true });
+    return () => {
+      if (frame !== null) win.cancelAnimationFrame?.(frame);
+      win.removeEventListener('scroll', syncDrag);
+    };
+  }, [dragging, dragReduced, syncDrag]);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -198,16 +334,25 @@ export function SetListView({ id }: SetListViewProps) {
     } catch {
       // A synthetic or already-released pointer: the drag still works while over the handle.
     }
-    dragInfo.current = { pointerId: e.pointerId, startY: e.clientY, mids, handle: e.currentTarget };
+    dragInfo.current = {
+      pointerId: e.pointerId,
+      startY: e.clientY,
+      startScrollY: pageScrollY(),
+      lastY: e.clientY,
+      armed: false,
+      insetBottom: safeAreaBottomPx(),
+      mids,
+      handle: e.currentTarget,
+    };
     setDrag({ from: i, to: i, dy: 0, reduced: prefersReducedMotion() });
   };
 
   const onDragMove = (e: ReactPointerEvent<HTMLSpanElement>) => {
     const info = dragInfo.current;
-    if (!info || e.pointerId !== info.pointerId || !drag) return;
-    const dy = e.clientY - info.startY;
-    const to = dropIndex(info.mids, drag.from, info.mids[drag.from] + dy);
-    if (to !== drag.to || dy !== drag.dy) setDrag({ ...drag, to, dy });
+    if (!info || e.pointerId !== info.pointerId) return;
+    info.lastY = e.clientY;
+    if (!info.armed && autoScrollArmed(e.clientY, info.startY)) info.armed = true;
+    syncDrag();
   };
 
   const endDrag = (e: ReactPointerEvent<HTMLSpanElement>, commit: boolean) => {
@@ -218,7 +363,7 @@ export function SetListView({ id }: SetListViewProps) {
     const d = drag;
     setDrag(null);
     if (!d || !list) return;
-    const to = dropIndex(info.mids, d.from, info.mids[d.from] + (e.clientY - info.startY));
+    const to = dropIndex(info.mids, d.from, info.mids[d.from] + dragDelta(e.clientY, info.startY, pageScrollY(), info.startScrollY));
     if (to === d.from) return;
     const item = list.items[d.from];
     void saveOrder(list, reorderItem(list.items, d.from, to), `Moved ${item.title} to position ${to + 1}.`);

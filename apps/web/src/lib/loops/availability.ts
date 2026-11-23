@@ -37,7 +37,9 @@ export const LOOPS_CLOSED_COPY: Readonly<Record<LoopsClosedReason, string>> = {
     'Loops can only be cut while a song is kept: within 24 hours of splitting it on Free, or while it is in your Pro or Studio library. ' +
     'This song is past that, so its audio has been deleted on our end. To get its loops, start the song again. It counts as a new track.',
   not_found:
-    'We could not find that song. On Free, songs are deleted 24 hours after they are split, so it may be older than that, or the link may be wrong. ' +
+    // #357: since Phase B B1 only the audio and its files go at 24 h. No library promise here:
+    // a 404 can also be an unfinished, demo, someone else's or mistyped song (PR #358 review).
+    'We could not find that song. On Free, a song’s audio is deleted 24 hours after it is split, so it may be older than that, or the link may be wrong. ' +
     'To get its loops, start the song again. It counts as a new track.',
   no_stems:
     'This song’s stems were not kept, so its loops cannot be cut. To get its loops, start the song again. It counts as a new track.',

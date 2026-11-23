@@ -193,6 +193,124 @@ export function dropIndex(mids: readonly number[], from: number, y: number): num
   return Math.min(to, mids.length - 1);
 }
 
+// ---- auto-scroll while dragging (#343) -----------------------------------------------------
+
+/** How close (px) to the top or bottom of the viewport the pointer must be to scroll the page. */
+export const EDGE_ZONE_PX = 48;
+/**
+ * Fastest auto-scroll, in px per SECOND, reached at the very edge of the viewport. Time-based
+ * (#355 F2): a 120Hz phone scrolls exactly as fast as a 60Hz one (was 18px per frame).
+ */
+export const EDGE_MAX_SPEED_PX_PER_S = 1080;
+/** The frame length assumed for the first frame of a drag, before there is a previous frame. */
+export const NOMINAL_FRAME_MS = 1000 / 60;
+/** A longer gap between frames (a stalled or backgrounded tab) counts as this long, no more. */
+export const MAX_FRAME_DT_MS = 50;
+/**
+ * The pointer must move this far (px) from where the drag began before edge auto-scroll can
+ * start (#355 F1): a drag that begins inside an edge zone does not scroll the page at once.
+ */
+export const AUTOSCROLL_ARM_PX = 8;
+/** Reduced motion: no animated scroll; the page jumps this far per step while over an edge. */
+export const REDUCED_JUMP_PX = 160;
+/** Reduced motion: at most one jump per this many ms while the pointer stays over an edge. */
+export const REDUCED_JUMP_INTERVAL_MS = 450;
+
+/**
+ * Auto-scroll speed (px per second) for a pointer at `clientY` in a viewport `viewportH` tall:
+ * negative near the top (scroll up), positive near the bottom (scroll down), 0 elsewhere. The
+ * speed grows with depth into the edge zone, up to `max` at (or past) the edge.
+ *
+ * `insetBottom` is the bottom safe area (env(safe-area-inset-bottom), the iOS home indicator,
+ * #355 F4): the bottom zone sits above it, and a pointer inside the inset counts as past the
+ * edge. On a viewport shorter than two zones each zone is half of what is left (M7).
+ */
+export function edgeScrollSpeed(
+  clientY: number,
+  viewportH: number,
+  zone = EDGE_ZONE_PX,
+  max = EDGE_MAX_SPEED_PX_PER_S,
+  insetBottom = 0,
+): number {
+  if (!Number.isFinite(clientY) || !(viewportH > 0) || !(zone > 0)) return 0;
+  const inset = Number.isFinite(insetBottom) && insetBottom > 0 ? insetBottom : 0;
+  const usable = viewportH - inset;
+  if (!(usable > 0)) return 0;
+  const z = Math.min(zone, usable / 2);
+  if (clientY < z) return -max * Math.min(1, (z - clientY) / z);
+  const fromBottom = usable - clientY;
+  if (fromBottom < z) return max * Math.min(1, (z - fromBottom) / z);
+  return 0;
+}
+
+/** True once the pointer has moved at least `threshold` px (either way) from the drag start. */
+export function autoScrollArmed(clientY: number, startY: number, threshold = AUTOSCROLL_ARM_PX): boolean {
+  return Number.isFinite(clientY) && Number.isFinite(startY) && Math.abs(clientY - startY) >= threshold;
+}
+
+/**
+ * Milliseconds this frame stands for: `now - lastFrameAt`, clamped to 0..MAX_FRAME_DT_MS, or
+ * NOMINAL_FRAME_MS on the first frame (`lastFrameAt` null) or for a nonsense timestamp.
+ */
+export function frameDt(now: number, lastFrameAt: number | null): number {
+  if (lastFrameAt === null || !Number.isFinite(now) || !Number.isFinite(lastFrameAt)) return NOMINAL_FRAME_MS;
+  return Math.min(MAX_FRAME_DT_MS, Math.max(0, now - lastFrameAt));
+}
+
+/**
+ * How far to scroll the page on this frame of a drag (px, may be fractional). Nothing until the
+ * drag is `armed` (AUTOSCROLL_ARM_PX). Full motion: `edgeScrollSpeed` times this frame's
+ * length (`frameDt`). Reduced motion: no animated scroll, a fixed jump of `REDUCED_JUMP_PX` in
+ * the edge's direction, at most once per `REDUCED_JUMP_INTERVAL_MS` (`lastJumpAt` is the time
+ * of the previous jump, or null if none yet while over this edge).
+ */
+export function autoScrollStep(opts: {
+  clientY: number;
+  viewportH: number;
+  reduced: boolean;
+  now: number;
+  lastJumpAt: number | null;
+  /** The previous frame's timestamp, null on the first frame. */
+  lastFrameAt?: number | null;
+  /** Bottom safe-area inset (px). */
+  insetBottom?: number;
+  /** False until the pointer has moved AUTOSCROLL_ARM_PX from the drag start. */
+  armed?: boolean;
+}): number {
+  if (opts.armed === false) return 0;
+  const speed = edgeScrollSpeed(opts.clientY, opts.viewportH, EDGE_ZONE_PX, EDGE_MAX_SPEED_PX_PER_S, opts.insetBottom ?? 0);
+  if (speed === 0) return 0;
+  if (!opts.reduced) return (speed * frameDt(opts.now, opts.lastFrameAt ?? null)) / 1000;
+  if (opts.lastJumpAt !== null && opts.now - opts.lastJumpAt < REDUCED_JUMP_INTERVAL_MS) return 0;
+  return Math.sign(speed) * REDUCED_JUMP_PX;
+}
+
+/**
+ * Split an accumulated scroll amount into the whole pixels to scroll now and the fraction to
+ * carry to the next frame (toward zero, so slow speeds still add up instead of rounding away).
+ */
+export function splitWholePx(total: number): { px: number; carry: number } {
+  if (!Number.isFinite(total)) return { px: 0, carry: 0 };
+  // A hair of tolerance so 0.3 + 0.3 + ... lands on 3, not 2.9999999.
+  const px = Math.trunc(total + Math.sign(total) * 1e-9);
+  return { px: px === 0 ? 0 : px, carry: px === 0 ? total : total - px };
+}
+
+/** A CSS length in px ("34px", "0", "") as a number; 0 for anything else or negative. */
+export function parsePx(value: string | null | undefined): number {
+  const n = Number.parseFloat(String(value ?? ''));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * How far the dragged row has moved within the list since the drag began, counting page
+ * scroll: the pointer's movement on screen plus how far the page has scrolled. Without the
+ * scroll term a wheel or auto-scroll mid-drag leaves the row behind the pointer (#343).
+ */
+export function dragDelta(clientY: number, startY: number, scrollY: number, startScrollY: number): number {
+  return clientY - startY + (scrollY - startScrollY);
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** A well-formed uuid (route params and bodies are checked before any query). */
 export const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v);

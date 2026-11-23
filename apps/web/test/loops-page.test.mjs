@@ -268,6 +268,12 @@ test('a pasted link to a song this browser has never seen, answered 404, is clos
     assert.deepEqual(calls.fetchJob, [STRANGER], 'the pasted id was not lowercased or not used');
     assert.equal(dom.find('[data-testid="lp-closed"]')?.getAttribute('data-reason'), 'not_found');
     assert.equal(dom.find('[data-testid="cut-loops"]').disabled, true);
+    // #357: since B1 only the audio goes at 24 h on Free.
+    const closed = dom.find('[data-testid="lp-closed"]').textContent;
+    assert.match(closed, /On Free, a song’s audio is deleted 24 hours after it is split/);
+    assert.doesNotMatch(closed, /songs are deleted 24 hours after they are split/);
+    // A 404 may be a demo, unfinished, someone else's or mistyped song: no library promise.
+    assert.doesNotMatch(closed, /library|title, BPM and key/i);
   });
 });
 
@@ -416,18 +422,37 @@ test('copy: the page states Free\'s exact 24 hours and the paid library, per pla
   const LoopsView = await loadLoopsView();
   const { deps } = harness();
   await withDom(async (dom) => {
-    await dom.mount(React.createElement(LoopsView, { deps }));
+    await dom.mount(React.createElement(LoopsView, { deps: libraryDeps(deps, { kind: 'ok', songs: [] }) }));
     await settle(dom);
     const note = dom.find('[data-testid="lp-window-note"]').textContent.replace(/\s+/g, ' ');
     assert.match(note, /On Free that is 24 hours after you split it\./);
     assert.match(note, /On Pro and Studio it is as long as the song is in your library\./);
     const foot = dom.find('.lp-foot').textContent.replace(/\s+/g, ' ');
     // Phase B, B1 (PB-1): the audio goes at 24 h; the song's title, BPM and key stay in the library.
-    assert.match(foot, /On Free, a song’s audio, stems and loops are deleted 24 hours after it is split/);
-    assert.match(foot, /its title, BPM and key stay in your song library\./);
+    assert.match(foot, /On Free, a song’s audio, stems and loops are deleted 24 hours after it is split, so download what you want to keep; its title, BPM and key stay in your song library\. On Pro/);
     assert.match(foot, /On Pro and Studio the audio stays while you are subscribed, and for 30 days after\./);
   });
 });
+
+// #344: an anonymous job gets no library row, so the footer must not promise one when signed out
+// (or when the library could not be read, or no library dep at all).
+for (const [name, mk] of [
+  ['signed out', (d) => libraryDeps(d, { kind: 'signed_out' })],
+  ['library unreadable', (d) => libraryDeps(d, { kind: 'error' })],
+  ['no library dep', (d) => d],
+]) {
+  test(`copy (#344): ${name}, the footer makes no song-library promise`, async () => {
+    const LoopsView = await loadLoopsView();
+    const { deps } = harness();
+    await withDom(async (dom) => {
+      await dom.mount(React.createElement(LoopsView, { deps: mk(deps) }));
+      await settle(dom);
+      const foot = dom.find('.lp-foot').textContent.replace(/\s+/g, ' ');
+      assert.doesNotMatch(foot, /song library|title, BPM and key/);
+      assert.match(foot, /deleted 24 hours after it is split, so download what you want to keep\. On Pro and Studio the audio stays while you are subscribed, and for 30 days after\./);
+    });
+  });
+}
 
 // DB-17 / QA C-12 review MF-2: the "no steady beat" note is a switched surface. Rendered, both ways,
 // with the switch passed as the page passes it (app/loops/page.tsx: chordsShown={chordsLineShown()}).

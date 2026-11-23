@@ -127,7 +127,7 @@ export function songInfoLines(job: Job, now: number = Date.now()): string[] {
   const expires = job.expires_at ? new Date(job.expires_at).getTime() : NaN;
   lines.push(
     'On Free, files are deleted after 24 hours; on Pro and Studio they stay in your library.' +
-      (Number.isFinite(expires) && !isDemoRow(job) ? ` This song is deleted ${formatExpiresIn(expires, now)}.` : ''),
+      (Number.isFinite(expires) && !isDemoRow(job) ? ` This song’s audio is deleted ${formatExpiresIn(expires, now)}.` : ''),
   );
   return lines;
 }
